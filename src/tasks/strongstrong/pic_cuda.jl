@@ -829,13 +829,14 @@ if _HAS_CUDA
 
             t_field = time_ns()
             source_center = T(param_source.center)
-            field_xmin = T(mapreduce((x, px, z) -> x + px * T(0.5) * (z - source_center), min,
+            half = T(0.5)
+            field_xmin = T(mapreduce((x, px, z) -> x + px * half * (z - source_center), min,
                                       field.x, field.px, field.z))
-            field_xmax = T(mapreduce((x, px, z) -> x + px * T(0.5) * (z - source_center), max,
+            field_xmax = T(mapreduce((x, px, z) -> x + px * half * (z - source_center), max,
                                       field.x, field.px, field.z))
-            field_ymin = T(mapreduce((y, py, z) -> y + py * T(0.5) * (z - source_center), min,
+            field_ymin = T(mapreduce((y, py, z) -> y + py * half * (z - source_center), min,
                                       field.y, field.py, field.z))
-            field_ymax = T(mapreduce((y, py, z) -> y + py * T(0.5) * (z - source_center), max,
+            field_ymax = T(mapreduce((y, py, z) -> y + py * half * (z - source_center), max,
                                       field.y, field.py, field.z))
             _cuda_pic_add_time!(timing, :prepare_field, t_field)
 
