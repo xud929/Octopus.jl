@@ -186,12 +186,10 @@ Hirata-map form of the PIC algorithm. Set
 transverse-only map.
 `PICPoissonSolver(batch_mode=:sequential)` is the default slice-pair schedule.
 `PICPoissonSolver(batch_mode=:wavefront)` groups ready, non-overlapping
-slice-pairs with `collision_pair_batches`. In the current CUDA PIC
-implementation, wavefront mode gathers every active slice in a batch, processes
-those pairs with the existing pair interaction kernels, then scatters the batch
-back before moving to the next dependency frontier. This is a correctness-first
-scheduler path; batched field solves and batched cuFFT are still future
-optimizations.
+slice-pairs with `collision_pair_batches`. In CUDA PIC, wavefront mode gathers
+every active slice in a batch, solves all `4 * batch_size` source-boundary
+field problems in one batched cuFFT stack, applies the non-overlapping kicks,
+then scatters the batch back before moving to the next dependency frontier.
 If a diagnostic run produces a zero-width field slice, the current
 implementation uses equal left/right interpolation weights for that slice
 instead of dividing by zero.
@@ -241,14 +239,17 @@ slices for the whole collision. For the default longitudinal PIC map, compact
 PIC buffers store `x`, `px`, `y`, `py`, `z`, and `pz` so the field-particle
 longitudinal kick can be scattered back. If
 `PICPoissonSolver(longitudinal_kick=false)` is used, the CUDA compact buffers
-omit `pz`. For each slice-pair, CUDA PIC launches the four independent
-source-boundary field solves as one batched cuFFT operation over a
-`(2nx, 2ny, 4)` charge stack, then applies the two beam kicks to compact field
-buffers. Set `OCTOPUS_CUDA_PIC_BATCH_FFT=0` to fall back to the previous
-four-stream field-solve path for timing comparisons. The CUDA PIC workspace
-reuses its field streams, luminosity stream, synchronization event, charge
-grids, batched charge/field arrays, and luminosity grids through the
-`StrongStrongTask` runtime cache across turns. Standalone
+omit `pz`. In sequential PIC mode, each slice-pair solves the four independent
+source-boundary field problems as one batched cuFFT over a `(2nx, 2ny, 4)`
+charge stack. In wavefront PIC mode, the stack grows to
+`(2nx, 2ny, 4 * batch_size)` for the current dependency frontier. Set
+`OCTOPUS_CUDA_PIC_WAVEFRONT_FFT=0` to fall back from wavefront-level batching
+to per-pair batched FFTs, or `OCTOPUS_CUDA_PIC_BATCH_FFT=0` to fall back to the
+previous four-stream field-solve path for timing comparisons. The CUDA PIC
+workspace reuses its field streams, luminosity stream, synchronization event,
+charge grids, batched charge/field arrays, wavefront charge/field-array cache,
+and luminosity grids through the `StrongStrongTask` runtime cache across turns.
+Standalone
 `collide!(solver, beam1, beam2, CUDABackend)` calls still allocate a temporary
 workspace for that call.
 The luminosity grid

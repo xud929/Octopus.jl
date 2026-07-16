@@ -124,40 +124,51 @@ if _HAS_CUDA
                 _cuda_pic_add_time!(timing, :gather, t_gather)
                 _cuda_nvtx_pop(CUDABackend, gather_range)
 
-                for item in gathered
-                    pair_count += 1
-                    (item.slice1 === nothing || item.slice2 === nothing) && continue
-                    pair_range = _cuda_nvtx_push(CUDABackend, "pic wavefront pair interaction")
+                if use_async && _cuda_pic_batch_fft_enabled() && _cuda_pic_wavefront_fft_enabled()
+                    pair_count += length(gathered)
+                    pair_range = _cuda_nvtx_push(CUDABackend, "pic wavefront batch interaction")
                     t_interaction = time_ns()
-                    if use_async && _cuda_pic_batch_fft_enabled()
-                        lum = _cuda_pic_interaction_pair_batched_fft!(
-                            solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
-                            kbb1, kbb2, green_cache, klum, workspace, timing,
-                        )
-                        luminosity += lum
-                    elseif use_async
-                        lum = _cuda_pic_interaction_pair_async!(
-                            solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
-                            kbb1, kbb2, green_cache, klum, workspace, timing,
-                        )
-                        luminosity += lum
-                    else
-                        _cuda_pic_interaction!(
-                            solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
-                            kbb2, green_cache, workspace.charges[1], timing,
-                        )
-                        _cuda_pic_interaction!(
-                            solver, item.slice2.coords, item.p2, item.slice1.coords, item.p1,
-                            kbb1, green_cache, workspace.charges[2], timing,
-                        )
-                        t_luminosity = time_ns()
-                        luminosity += _cuda_pic_luminosity(
-                            solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, klum, workspace,
-                        )
-                        _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
-                    end
+                    luminosity += _cuda_pic_interaction_wavefront_batched_fft!(
+                        solver, gathered, kbb1, kbb2, green_cache, klum, workspace, timing,
+                    )
                     _cuda_pic_add_time!(timing, :interaction, t_interaction)
                     _cuda_nvtx_pop(CUDABackend, pair_range)
+                else
+                    for item in gathered
+                        pair_count += 1
+                        (item.slice1 === nothing || item.slice2 === nothing) && continue
+                        pair_range = _cuda_nvtx_push(CUDABackend, "pic wavefront pair interaction")
+                        t_interaction = time_ns()
+                        if use_async && _cuda_pic_batch_fft_enabled()
+                            lum = _cuda_pic_interaction_pair_batched_fft!(
+                                solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
+                                kbb1, kbb2, green_cache, klum, workspace, timing,
+                            )
+                            luminosity += lum
+                        elseif use_async
+                            lum = _cuda_pic_interaction_pair_async!(
+                                solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
+                                kbb1, kbb2, green_cache, klum, workspace, timing,
+                            )
+                            luminosity += lum
+                        else
+                            _cuda_pic_interaction!(
+                                solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
+                                kbb2, green_cache, workspace.charges[1], timing,
+                            )
+                            _cuda_pic_interaction!(
+                                solver, item.slice2.coords, item.p2, item.slice1.coords, item.p1,
+                                kbb1, green_cache, workspace.charges[2], timing,
+                            )
+                            t_luminosity = time_ns()
+                            luminosity += _cuda_pic_luminosity(
+                                solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, klum, workspace,
+                            )
+                            _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+                        end
+                        _cuda_pic_add_time!(timing, :interaction, t_interaction)
+                        _cuda_nvtx_pop(CUDABackend, pair_range)
+                    end
                 end
 
                 scatter_range = _cuda_nvtx_push(CUDABackend, "pic scatter wavefront")
@@ -194,6 +205,7 @@ if _HAS_CUDA
             batch_charges::Any
             batch_Ex::Any
             batch_Ey::Any
+            wavefront_cache::Dict{Int,Any}
             luminosity_q1::Any
             luminosity_q2::Any
             field_streams::NTuple{4,Any}
@@ -225,6 +237,9 @@ if _HAS_CUDA
 
         _cuda_pic_batch_fft_enabled() =
             get(ENV, "OCTOPUS_CUDA_PIC_BATCH_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
+
+        _cuda_pic_wavefront_fft_enabled() =
+            get(ENV, "OCTOPUS_CUDA_PIC_WAVEFRONT_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
 
         function _cuda_pic_timing_stats()
             _cuda_pic_timing_enabled() || return nothing
@@ -287,6 +302,7 @@ if _HAS_CUDA
                 CUDA.zeros(T, 2nx, 2ny, 4),
                 CUDA.zeros(T, nx, ny, 4),
                 CUDA.zeros(T, nx, ny, 4),
+                Dict{Int,Any}(),
                 CUDA.zeros(T, nx + 1, ny + 1),
                 CUDA.zeros(T, nx + 1, ny + 1),
                 (CUDA.CuStream(), CUDA.CuStream(), CUDA.CuStream(), CUDA.CuStream()),
@@ -597,6 +613,101 @@ if _HAS_CUDA
             return luminosity
         end
 
+        function _cuda_pic_interaction_wavefront_batched_fft!(solver::PICPoissonSolver,
+                                                              gathered,
+                                                              kbb1, kbb2, green_cache, klum,
+                                                              workspace::_CUDAPICWorkspace,
+                                                              timing=nothing)
+            valid = Any[item for item in gathered if item.slice1 !== nothing && item.slice2 !== nothing]
+            isempty(valid) && return zero(eltype(workspace.batch_charges))
+            npairs = length(valid)
+            nplanes = 4 * npairs
+            T = eltype(valid[1].slice1.coords.x)
+
+            prepare_range = _cuda_nvtx_push(CUDABackend, "pic wavefront prepare")
+            t_prepare = time_ns()
+            prep12 = Vector{Any}(undef, npairs)
+            prep21 = Vector{Any}(undef, npairs)
+            for n in 1:npairs
+                item = valid[n]
+                prep12[n] = _cuda_pic_prepare_interaction(
+                    solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
+                )
+                prep21[n] = _cuda_pic_prepare_interaction(
+                    solver, item.slice2.coords, item.p2, item.slice1.coords, item.p1,
+                )
+            end
+            _cuda_pic_add_time!(timing, :prepare, t_prepare)
+            _cuda_nvtx_pop(CUDABackend, prepare_range)
+
+            t_luminosity = time_ns()
+            luminosity = zero(T)
+            for item in valid
+                luminosity += _cuda_pic_luminosity(
+                    solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, klum, workspace,
+                )
+            end
+            _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+
+            t_green = time_ns()
+            green12 = Vector{Any}(undef, npairs)
+            green21 = Vector{Any}(undef, npairs)
+            for n in 1:npairs
+                item = valid[n]
+                green12[n] = _cuda_pic_green_fft(
+                    solver, T, prep12[n].source_grid, prep12[n].field_grid, green_cache,
+                )
+                green21[n] = _cuda_pic_green_fft(
+                    solver, T, prep21[n].source_grid, prep21[n].field_grid, green_cache,
+                )
+            end
+            _cuda_pic_add_time!(timing, :field_green, t_green)
+
+            field_range = _cuda_nvtx_push(CUDABackend, "pic wavefront batched field solve")
+            t_fields = time_ns()
+            wf = _cuda_pic_wavefront_workspace!(workspace, solver, T, nplanes)
+            phi_batch, Ex_batch, Ey_batch = _cuda_pic_solve_wavefront_fields_batched_fft!(
+                solver, valid, prep12, prep21, green12, green21, wf, timing,
+            )
+            _cuda_pic_add_time!(timing, :fields, t_fields)
+            _cuda_nvtx_pop(CUDABackend, field_range)
+
+            kick_range = _cuda_nvtx_push(CUDABackend, "pic wavefront kicks")
+            t_kick = time_ns()
+            stream = CUDA.stream()
+            nx, ny = solver.grid
+            for n in 1:npairs
+                item = valid[n]
+                offset = 4 * (n - 1)
+                _cuda_pic_launch_kick!(
+                    solver, item.slice2.coords, item.p1.center, item.p2, item.slice2.coords,
+                    kbb2, prep12[n].field_grid,
+                    @view(phi_batch[1:nx, 1:ny, offset + 1]),
+                    @view(Ex_batch[:, :, offset + 1]),
+                    @view(Ey_batch[:, :, offset + 1]),
+                    @view(phi_batch[1:nx, 1:ny, offset + 2]),
+                    @view(Ex_batch[:, :, offset + 2]),
+                    @view(Ey_batch[:, :, offset + 2]),
+                    stream,
+                )
+                _cuda_pic_launch_kick!(
+                    solver, item.slice1.coords, item.p2.center, item.p1, item.slice1.coords,
+                    kbb1, prep21[n].field_grid,
+                    @view(phi_batch[1:nx, 1:ny, offset + 3]),
+                    @view(Ex_batch[:, :, offset + 3]),
+                    @view(Ey_batch[:, :, offset + 3]),
+                    @view(phi_batch[1:nx, 1:ny, offset + 4]),
+                    @view(Ex_batch[:, :, offset + 4]),
+                    @view(Ey_batch[:, :, offset + 4]),
+                    stream,
+                )
+            end
+            CUDA.synchronize(stream)
+            _cuda_pic_add_time!(timing, :kick, t_kick)
+            _cuda_nvtx_pop(CUDABackend, kick_range)
+            return luminosity
+        end
+
         function _cuda_pic_field_task(solver::PICPoissonSolver, source, drift_s, source_grid, green_fft,
                                       charge, timing, stream, prep_done, label)
             return @async CUDA.stream!(stream) do
@@ -832,6 +943,104 @@ if _HAS_CUDA
             )
             _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
             return phi_batch, Ex, Ey
+        end
+
+        function _cuda_pic_wavefront_workspace!(workspace::_CUDAPICWorkspace,
+                                                solver::PICPoissonSolver,
+                                                ::Type{T}, nplanes::Integer) where {T}
+            nx, ny = solver.grid
+            return get!(workspace.wavefront_cache, Int(nplanes)) do
+                (
+                    charges=CUDA.zeros(T, 2nx, 2ny, nplanes),
+                    Ex=CUDA.zeros(T, nx, ny, nplanes),
+                    Ey=CUDA.zeros(T, nx, ny, nplanes),
+                    hx=CUDA.zeros(T, nplanes),
+                    hy=CUDA.zeros(T, nplanes),
+                )
+            end
+        end
+
+        function _cuda_pic_solve_wavefront_fields_batched_fft!(solver::PICPoissonSolver,
+                                                               valid, prep12, prep21,
+                                                               green12, green21, wf,
+                                                               timing=nothing)
+            nx, ny = solver.grid
+            npairs = length(valid)
+            nplanes = 4 * npairs
+            T = eltype(valid[1].slice1.coords.x)
+            charge = wf.charges
+            fill!(charge, zero(T))
+            method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
+            threads = 256
+            stream = CUDA.stream()
+            hx_host = Vector{T}(undef, nplanes)
+            hy_host = Vector{T}(undef, nplanes)
+
+            t_deposit = time_ns()
+            for n in 1:npairs
+                item = valid[n]
+                offset = 4 * (n - 1)
+                _cuda_pic_deposit_drifted_plane!(
+                    solver, charge, Int32(offset + 1), item.slice1.coords, prep12[n].sL,
+                    prep12[n].source_grid, method_code, threads, stream,
+                )
+                _cuda_pic_deposit_drifted_plane!(
+                    solver, charge, Int32(offset + 2), item.slice1.coords, prep12[n].sR,
+                    prep12[n].source_grid, method_code, threads, stream,
+                )
+                _cuda_pic_deposit_drifted_plane!(
+                    solver, charge, Int32(offset + 3), item.slice2.coords, prep21[n].sL,
+                    prep21[n].source_grid, method_code, threads, stream,
+                )
+                _cuda_pic_deposit_drifted_plane!(
+                    solver, charge, Int32(offset + 4), item.slice2.coords, prep21[n].sR,
+                    prep21[n].source_grid, method_code, threads, stream,
+                )
+                hx12 = T(prep12[n].source_grid.width) / T(nx - 1)
+                hy12 = T(prep12[n].source_grid.height) / T(ny - 1)
+                hx21 = T(prep21[n].source_grid.width) / T(nx - 1)
+                hy21 = T(prep21[n].source_grid.height) / T(ny - 1)
+                hx_host[offset + 1] = hx12
+                hx_host[offset + 2] = hx12
+                hx_host[offset + 3] = hx21
+                hx_host[offset + 4] = hx21
+                hy_host[offset + 1] = hy12
+                hy_host[offset + 2] = hy12
+                hy_host[offset + 3] = hy21
+                hy_host[offset + 4] = hy21
+            end
+            _cuda_pic_add_time!(timing, :field_deposit, t_deposit)
+
+            copyto!(wf.hx, hx_host)
+            copyto!(wf.hy, hy_host)
+
+            t_fft = time_ns()
+            spectral = fft(charge, (1, 2))
+            for n in 1:npairs
+                offset = 4 * (n - 1)
+                _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 1), threads, stream)
+                _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 2), threads, stream)
+                _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 3), threads, stream)
+                _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 4), threads, stream)
+            end
+            phi_batch = real(ifft(spectral, (1, 2)))
+            _cuda_pic_add_time!(timing, :field_fft, t_fft)
+
+            t_derivative = time_ns()
+            blocks_grid = cld(nx * ny * nplanes, threads)
+            CUDA.@cuda threads=threads blocks=blocks_grid stream=stream _cuda_pic_field_wavefront_kernel!(
+                wf.Ex, wf.Ey, phi_batch, wf.hx, wf.hy, Int32(nx), Int32(ny), Int32(nplanes),
+            )
+            _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
+            return phi_batch, wf.Ex, wf.Ey
+        end
+
+        function _cuda_pic_apply_green_plane!(spectral, green, plane::Int32, threads::Integer, stream)
+            blocks = cld(size(spectral, 1) * size(spectral, 2), threads)
+            CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_apply_green_plane_kernel!(
+                spectral, green, plane,
+            )
+            return nothing
         end
 
         function _cuda_pic_deposit_drifted_plane!(solver::PICPoissonSolver, charge, plane::Int32,
@@ -1274,6 +1483,21 @@ if _HAS_CUDA
             return nothing
         end
 
+        function _cuda_pic_apply_green_plane_kernel!(spectral, green, plane::Int32)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            n1 = size(spectral, 1)
+            n2 = size(spectral, 2)
+            total = n1 * n2
+            while index <= total
+                i = (index - 1) % n1 + 1
+                j = (index - 1) ÷ n1 + 1
+                @inbounds spectral[i, j, plane] *= green[i, j]
+                index += stride
+            end
+            return nothing
+        end
+
         function _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, nx::Int32, ny::Int32)
             linear = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
@@ -1297,6 +1521,43 @@ if _HAS_CUDA
                         Ex[i, j] = hxi * (-typeof(hx)(1.5) * phi[i, j] + 2 * phi[i - 1, j] - typeof(hx)(0.5) * phi[i - 2, j])
                     else
                         Ex[i, j] = typeof(hx)(0.5) * hxi * (phi[i - 1, j] - phi[i + 1, j])
+                    end
+                end
+                linear += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_field_wavefront_kernel!(Ex, Ey, phi, hx, hy, nx::Int32, ny::Int32,
+                                                  nplanes::Int32)
+            linear = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            total_plane = Int(nx) * Int(ny)
+            total = total_plane * Int(nplanes)
+            while linear <= total
+                plane0 = (linear - 1) ÷ total_plane
+                local_index = linear - plane0 * total_plane
+                i = Int32((local_index - 1) % Int(nx) + 1)
+                j = Int32((local_index - 1) ÷ Int(nx) + 1)
+                plane = Int32(plane0 + 1)
+                hx_plane = hx[plane]
+                hy_plane = hy[plane]
+                hxi = inv(hx_plane)
+                hyi = inv(hy_plane)
+                @inbounds begin
+                    if j == 1
+                        Ey[i, j, plane] = hyi * (typeof(hy_plane)(1.5) * phi[i, j, plane] - 2 * phi[i, j + 1, plane] + typeof(hy_plane)(0.5) * phi[i, j + 2, plane])
+                    elseif j == ny
+                        Ey[i, j, plane] = hyi * (-typeof(hy_plane)(1.5) * phi[i, j, plane] + 2 * phi[i, j - 1, plane] - typeof(hy_plane)(0.5) * phi[i, j - 2, plane])
+                    else
+                        Ey[i, j, plane] = typeof(hy_plane)(0.5) * hyi * (phi[i, j - 1, plane] - phi[i, j + 1, plane])
+                    end
+                    if i == 1
+                        Ex[i, j, plane] = hxi * (typeof(hx_plane)(1.5) * phi[i, j, plane] - 2 * phi[i + 1, j, plane] + typeof(hx_plane)(0.5) * phi[i + 2, j, plane])
+                    elseif i == nx
+                        Ex[i, j, plane] = hxi * (-typeof(hx_plane)(1.5) * phi[i, j, plane] + 2 * phi[i - 1, j, plane] - typeof(hx_plane)(0.5) * phi[i - 2, j, plane])
+                    else
+                        Ex[i, j, plane] = typeof(hx_plane)(0.5) * hxi * (phi[i - 1, j, plane] - phi[i + 1, j, plane])
                     end
                 end
                 linear += stride
