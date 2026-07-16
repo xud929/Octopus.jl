@@ -119,6 +119,10 @@ Supported methods:
   current macroparticles by longitudinal coordinate.
 - `:equal_width`: choose uniformly spaced boundaries between the current
   minimum and maximum longitudinal coordinates.
+- `:gaussian`: choose equal-probability Gaussian quantile boundaries from the
+  current longitudinal mean/rms. Slice centers are still controlled by
+  `center_position`, and slice weights come from the macroparticle counts in
+  each slice.
 - `:specified`: use `positions` as internal boundaries in units of beam
   longitudinal rms around the beam mean.
 
@@ -140,6 +144,7 @@ end
     GaussianPoissonSolver(; kbb1=nothing, kbb2=nothing,
                            luminosity_scale=nothing,
                            slicing=LongitudinalSlicing(),
+                           slicing1=nothing, slicing2=nothing,
                            min_sigma=eps(Float64),
                            gaussian_when_luminosity=2,
                            ignore_centroid1=false,
@@ -165,12 +170,18 @@ kbb2 = beam1.charge * beam2.charge * beam2.r0 * beam1.npart * beam2.mc2 / beam2.
 `luminosity_scale` defaults to a macroparticle-to-physical-particle
 normalization for the beam sampled by the luminosity estimate. This solver is a
 sliced moment-based Poisson approximation, not a grid PIC solver.
+
+`slicing` applies the same longitudinal slicing to both beams. Use `slicing1`
+and `slicing2` to specify different slicing configurations for beam 1 and beam
+2.
 """
 struct GaussianPoissonSolver{T<:Real} <: AbstractPoissonSolver
     kbb1::Union{Nothing,T}
     kbb2::Union{Nothing,T}
     luminosity_scale::Union{Nothing,T}
     slicing::LongitudinalSlicing
+    slicing1::LongitudinalSlicing
+    slicing2::LongitudinalSlicing
     min_sigma::T
     gaussian_when_luminosity::Int
     ignore_centroid1::Bool
@@ -183,15 +194,21 @@ _optional_solver_value(::Type{T}, value) where {T<:Real} =
 function GaussianPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   luminosity_scale=nothing,
                                   slicing::LongitudinalSlicing=LongitudinalSlicing(),
+                                  slicing1=nothing,
+                                  slicing2=nothing,
                                   min_sigma=eps(T),
                                   gaussian_when_luminosity::Integer=2,
                                   ignore_centroid1::Bool=false,
                                   ignore_centroid2::Bool=false) where {T<:Real}
+    s1 = slicing1 === nothing ? slicing : slicing1
+    s2 = slicing2 === nothing ? slicing : slicing2
     return GaussianPoissonSolver{T}(
         _optional_solver_value(T, kbb1),
         _optional_solver_value(T, kbb2),
         _optional_solver_value(T, luminosity_scale),
         slicing,
+        s1,
+        s2,
         T(min_sigma),
         Int(gaussian_when_luminosity),
         ignore_centroid1,
@@ -209,7 +226,8 @@ const StrongStrongGaussianPoissonSolver = GaussianPoissonSolver
                       green_type=:integrated,
                       green_cache=:none,
                       longitudinal_kick=true,
-                      slicing=LongitudinalSlicing())
+                      slicing=LongitudinalSlicing(),
+                      slicing1=nothing, slicing2=nothing)
 
 Grid particle-in-cell strong-strong collision solver. Each directed slice-pair
 interaction deposits the source slice onto a transverse mesh at the left and
@@ -235,6 +253,10 @@ the current source and field domains with deposition/interpolation margin.
 CUDA execution uses atomic grid deposition and CUDA FFT convolution. The first
 CUDA implementation is correctness-oriented; later versions may replace atomic
 deposition with binned or tiled reductions for dense beams.
+
+`slicing` applies the same longitudinal slicing to both beams. Use `slicing1`
+and `slicing2` to specify different slicing configurations for beam 1 and beam
+2.
 """
 struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     kbb1::Union{Nothing,T}
@@ -246,6 +268,8 @@ struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     green_cache::Symbol
     longitudinal_kick::Bool
     slicing::LongitudinalSlicing
+    slicing1::LongitudinalSlicing
+    slicing2::LongitudinalSlicing
 end
 
 function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
@@ -255,7 +279,11 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                              green_type::Symbol=:integrated,
                              green_cache::Symbol=:none,
                              longitudinal_kick::Bool=true,
-                             slicing::LongitudinalSlicing=LongitudinalSlicing()) where {T<:Real}
+                             slicing::LongitudinalSlicing=LongitudinalSlicing(),
+                             slicing1=nothing,
+                             slicing2=nothing) where {T<:Real}
+    s1 = slicing1 === nothing ? slicing : slicing1
+    s2 = slicing2 === nothing ? slicing : slicing2
     return PICPoissonSolver{T}(
         _optional_solver_value(T, kbb1),
         _optional_solver_value(T, kbb2),
@@ -266,6 +294,8 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         green_cache,
         longitudinal_kick,
         slicing,
+        s1,
+        s2,
     )
 end
 

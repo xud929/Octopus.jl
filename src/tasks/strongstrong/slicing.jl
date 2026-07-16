@@ -57,6 +57,8 @@ function longitudinal_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
         return _longitudinal_slices_equal_count(rep, slicing)
     elseif method == :equal_width || method == :equal_spaced
         return _longitudinal_slices_equal_width(rep, slicing)
+    elseif method == :gaussian || method == :Gaussian
+        return _longitudinal_slices_gaussian(rep, slicing)
     elseif method == :specified
         return _longitudinal_slices_specified(rep, slicing)
     else
@@ -221,6 +223,32 @@ function _longitudinal_slices_specified(rep::Phase6DRep, slicing::LongitudinalSl
         boundaries[i + 1] = clamp(b, boundaries[1], boundaries[end])
     end
     return _slices_from_boundaries(rep, slicing, boundaries)
+end
+
+function _longitudinal_slices_gaussian(rep::Phase6DRep, slicing::LongitudinalSlicing)
+    z = _host_array(rep.z)
+    T = eltype(z)
+    n = length(z)
+    ns = slicing.nslices
+    μ = sum(z) / n
+    σ = sqrt(max(sum(zi -> (zi - μ)^2, z) / n, zero(T)))
+    if σ == zero(T)
+        boundaries = fill(T(μ), ns + 1)
+        return _slices_from_boundaries(rep, slicing, boundaries)
+    end
+    boundaries = _gaussian_slice_boundaries(T, ns, μ, σ, minimum(z), maximum(z))
+    return _slices_from_boundaries(rep, slicing, boundaries)
+end
+
+function _gaussian_slice_boundaries(::Type{T}, ns::Integer, μ, σ, zmin, zmax) where {T}
+    boundaries = Vector{T}(undef, Int(ns) + 1)
+    boundaries[1] = T(zmin)
+    boundaries[end] = T(zmax)
+    for s in 1:(Int(ns) - 1)
+        q = sqrt(T(2)) * inverse_erf(T(2 * s / ns - 1))
+        boundaries[s + 1] = clamp(T(μ + σ * q), boundaries[1], boundaries[end])
+    end
+    return boundaries
 end
 
 function _slices_from_boundaries(rep::Phase6DRep, slicing, boundaries)

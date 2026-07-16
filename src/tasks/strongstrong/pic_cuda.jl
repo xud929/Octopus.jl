@@ -20,8 +20,8 @@ if _HAS_CUDA
             _validate_pic_solver(solver)
             timing = _cuda_pic_timing_stats()
             t0 = time_ns()
-            slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing)
-            slices2 = _cuda_longitudinal_slices(beam2.rep, solver.slicing)
+            slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing1)
+            slices2 = _cuda_longitudinal_slices(beam2.rep, solver.slicing2)
             _cuda_pic_add_time!(timing, :slicing, t0)
             kbb1 = _pic_kbb1(solver, beam1, beam2)
             kbb2 = _pic_kbb2(solver, beam1, beam2)
@@ -1146,8 +1146,8 @@ if _HAS_CUDA
         end
 
         function collide!(solver::GaussianPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend})
-            slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing)
-            slices2 = _cuda_longitudinal_slices(beam2.rep, solver.slicing)
+            slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing1)
+            slices2 = _cuda_longitudinal_slices(beam2.rep, solver.slicing2)
             kbb1 = _strong_strong_kbb1(solver, beam1, beam2)
             kbb2 = _strong_strong_kbb2(solver, beam1, beam2)
             klum1, klum2 = _strong_strong_luminosity_scales(solver, beam1, beam2)
@@ -1192,6 +1192,8 @@ if _HAS_CUDA
                 return _cuda_equal_width_slices(rep, slicing)
             elseif method == :equal_area
                 return _cuda_equal_area_slices(rep, slicing)
+            elseif method == :gaussian || method == :Gaussian
+                return _cuda_gaussian_slices(rep, slicing)
             elseif method == :specified
                 return _cuda_specified_slices(rep, slicing)
             elseif method == :equal_count
@@ -1280,6 +1282,22 @@ if _HAS_CUDA
             for (i, b) in enumerate(internal)
                 boundaries[i + 1] = clamp(b, zmin, zmax)
             end
+            return _cuda_slices_from_boundaries(rep, slicing, boundaries)
+        end
+
+        function _cuda_gaussian_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
+            z = rep.z
+            T = eltype(z)
+            ns = slicing.nslices
+            zmin = T(minimum(z))
+            zmax = T(maximum(z))
+            n = T(length(rep))
+            μ = T(sum(z) / n)
+            σ = sqrt(max(T(sum((z .- μ) .* (z .- μ)) / n), zero(T)))
+            if σ == zero(T)
+                return _cuda_slices_from_boundaries(rep, slicing, fill(T(μ), ns + 1))
+            end
+            boundaries = _gaussian_slice_boundaries(T, ns, μ, σ, zmin, zmax)
             return _cuda_slices_from_boundaries(rep, slicing, boundaries)
         end
 

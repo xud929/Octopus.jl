@@ -191,13 +191,9 @@ beam_pro = Beam(n_macro_pro, policy, Float64;
 eltype(beam_ele.rep.x) === Float64 || error("electron beam tracking arrays must be Float64")
 eltype(beam_pro.rep.x) === Float64 || error("proton beam tracking arrays must be Float64")
 
-slice_positions = [
-    sqrt(2.0) * inverse_erf(2.0 * i / input.slicing.zslice - 1.0)
-    for i in 1:(input.slicing.zslice - 1)
-]
 slicing = LongitudinalSlicing(;
-    method = :specified,
-    positions = slice_positions,
+    method = :gaussian,
+    nslices = input.slicing.zslice,
     center_position = input.slicing.center,
 )
 

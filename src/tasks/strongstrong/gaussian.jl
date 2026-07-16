@@ -5,8 +5,8 @@ Advance two beams through one strong-strong collision and return the luminosity
 estimate for that collision.
 """
 function collide!(solver::GaussianPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend})
-    slices1 = longitudinal_slices(beam1.rep, solver.slicing)
-    slices2 = longitudinal_slices(beam2.rep, solver.slicing)
+    slices1 = longitudinal_slices(beam1.rep, solver.slicing1)
+    slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
     kbb1 = _strong_strong_kbb1(solver, beam1, beam2)
     kbb2 = _strong_strong_kbb2(solver, beam1, beam2)
     klum1, klum2 = _strong_strong_luminosity_scales(solver, beam1, beam2)
