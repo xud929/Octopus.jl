@@ -107,7 +107,6 @@ buffer is flushed:
 ```julia
 records = read(moments, :record_count)
 seconds = read(moments, :elapsed_time)
-flush_log = read(moments, :flush_log)
 ```
 
 Developer-facing numerical checks live in `validation/`. They may use internal
