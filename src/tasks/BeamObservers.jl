@@ -888,6 +888,10 @@ function _read_hdf5_special(h5, item)
     if key == "record_count"
         return _read_hdf5_record_count(h5)
     elseif key == "elapsed_time"
+        haskey(h5, "elapsed_time") || throw(ArgumentError(
+            "`elapsed_time` is not present in this output file. " *
+            "Recreate the file with the current MomentObserver to monitor elapsed wall time."
+        ))
         return Float64(first(read(h5["elapsed_time"])))
     end
     return _NOT_HDF5_SPECIAL
