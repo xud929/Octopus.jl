@@ -214,6 +214,8 @@ if _HAS_CUDA
         end
 
         struct _CUDAPICGridTemplate{T}
+            id::Int
+            bin_key::NTuple{4,Int}
             source_width::T
             source_height::T
             field_width::T
@@ -228,7 +230,10 @@ if _HAS_CUDA
         mutable struct _CUDAPICGreenCache{T}
             mode::Symbol
             greens::Dict{_PICGreenKey{T},Any}
-            templates::Vector{_CUDAPICGridTemplate{T}}
+            templates::Dict{Int,_CUDAPICGridTemplate{T}}
+            template_order::Vector{Int}
+            template_bins::Dict{NTuple{4,Int},Vector{Int}}
+            next_template_id::Int
             hits::Int
             misses::Int
             evictions::Int
@@ -394,7 +399,9 @@ if _HAS_CUDA
                 return nothing
             max_entries = parse(Int, get(ENV, "OCTOPUS_CUDA_PIC_GREEN_CACHE_MAX_ENTRIES", "256"))
             return _CUDAPICGreenCache{T}(
-                cache, Dict{_PICGreenKey{T},Any}(), _CUDAPICGridTemplate{T}[],
+                cache, Dict{_PICGreenKey{T},Any}(),
+                Dict{Int,_CUDAPICGridTemplate{T}}(), Int[],
+                Dict{NTuple{4,Int},Vector{Int}}(), 1,
                 0, 0, 0, max_entries, ReentrantLock(),
             )
         end
@@ -427,7 +434,7 @@ if _HAS_CUDA
             hit_rate = total == 0 ? 0.0 : cache.hits / total
             if cache.mode == :grid_template
                 println(
-                    "CUDA PIC grid-template cache: templates=$(length(cache.templates)), " *
+                    "CUDA PIC grid-template cache: templates=$(length(cache.templates)), bins=$(length(cache.template_bins)), " *
                     "hits=$(cache.hits), misses=$(cache.misses), evictions=$(cache.evictions), " *
                     "max_entries=$(cache.max_entries), hit_rate=$(hit_rate)"
                 )
@@ -965,7 +972,11 @@ if _HAS_CUDA
             cache isa _CUDAPICGreenCache{T} || return source_grid, field_grid, nothing
             cache.mode == :grid_template || return source_grid, field_grid, nothing
             lock(cache.lock) do
-                for template in cache.templates
+                _, _, bin_key = _cuda_pic_quantized_template_grids(T, source_grid, field_grid)
+                ids = get(cache.template_bins, bin_key, Int[])
+                for id in ids
+                    template = get(cache.templates, id, nothing)
+                    template === nothing && continue
                     translated = _cuda_pic_translate_template_if_covers(
                         template, source_grid, field_grid,
                         sxmin, sxmax, symin, symax, fxmin, fxmax, fymin, fymax,
@@ -976,7 +987,8 @@ if _HAS_CUDA
                     end
                 end
             end
-            return source_grid, field_grid, nothing
+            source_q, field_q, _ = _cuda_pic_quantized_template_grids(T, source_grid, field_grid)
+            return source_q, field_q, nothing
         end
 
         function _cuda_pic_translate_template_if_covers(template, source_grid0, field_grid0,
@@ -1000,8 +1012,8 @@ if _HAS_CUDA
         end
 
         function _cuda_pic_template_within_tolerance(template, source_grid, field_grid)
-            width_rtol = parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_WIDTH_RTOL", "Inf"))
-            height_rtol = parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_HEIGHT_RTOL", "Inf"))
+            width_rtol = _cuda_pic_template_width_rtol()
+            height_rtol = _cuda_pic_template_height_rtol()
             width_scale = max(abs(source_grid.width), eps(typeof(source_grid.width)))
             field_width_scale = max(abs(field_grid.width), eps(typeof(field_grid.width)))
             height_scale = max(abs(source_grid.height), eps(typeof(source_grid.height)))
@@ -1020,6 +1032,47 @@ if _HAS_CUDA
             )
             return max_width_err <= width_rtol &&
                    max_height_err <= height_rtol
+        end
+
+        _cuda_pic_template_width_rtol() =
+            parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_WIDTH_RTOL", "0.10"))
+
+        _cuda_pic_template_height_rtol() =
+            parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_HEIGHT_RTOL", "0.10"))
+
+        function _cuda_pic_quantized_template_grids(::Type{T}, source_grid, field_grid) where {T}
+            width_rtol = _cuda_pic_template_width_rtol()
+            height_rtol = _cuda_pic_template_height_rtol()
+            sw, sw_bin = _cuda_pic_quantize_extent(T(source_grid.width), width_rtol)
+            fw, fw_bin = _cuda_pic_quantize_extent(T(field_grid.width), width_rtol)
+            sh, sh_bin = _cuda_pic_quantize_extent(T(source_grid.height), height_rtol)
+            fh, fh_bin = _cuda_pic_quantize_extent(T(field_grid.height), height_rtol)
+            source_q = _cuda_pic_expand_grid(source_grid, sw, sh)
+            field_q = _cuda_pic_expand_grid(field_grid, fw, fh)
+            return source_q, field_q, (sw_bin, sh_bin, fw_bin, fh_bin)
+        end
+
+        function _cuda_pic_quantize_extent(::Type{T}, value, rtol::Real) where {T}
+            v = max(T(value), eps(T))
+            if !(isfinite(rtol)) || rtol <= 0
+                return v, 0
+            end
+            step = log1p(T(rtol))
+            bin = ceil(Int, log(v) / step - T(100) * eps(T))
+            q = exp(T(bin) * step)
+            return max(q, v), bin
+        end
+
+        function _cuda_pic_expand_grid(grid, new_width, new_height)
+            T = promote_type(typeof(grid.x0), typeof(new_width))
+            dw = T(new_width) - T(grid.width)
+            dh = T(new_height) - T(grid.height)
+            return (
+                x0=T(grid.x0) - T(0.5) * dw,
+                y0=T(grid.y0) - T(0.5) * dh,
+                width=T(new_width),
+                height=T(new_height),
+            )
         end
 
         function _cuda_pic_solve_field_with_green_fft(solver::PICPoissonSolver, x, y,
@@ -1291,13 +1344,7 @@ if _HAS_CUDA
                 _cuda_pic_add_time!(timing, :green_cache_sync, t_sync)
                 t_insert = time_ns()
                 lock(cache.lock) do
-                    if cache.max_entries > 0
-                        if length(cache.templates) >= cache.max_entries
-                            popfirst!(cache.templates)
-                            cache.evictions += 1
-                        end
-                        push!(cache.templates, _cuda_pic_grid_template(solver, T, source_grid, field_grid, green_fft))
-                    end
+                    _cuda_pic_insert_template!(cache, solver, T, source_grid, field_grid, green_fft)
                     cache.misses += 1
                 end
                 _cuda_pic_add_time!(timing, :green_cache_insert, t_insert)
@@ -1311,7 +1358,11 @@ if _HAS_CUDA
             nx, ny = solver.grid
             hx = T(source_grid.width) / T(nx - 1)
             hy = T(source_grid.height) / T(ny - 1)
+            _, _, bin_key = _cuda_pic_quantized_template_grids(T, source_grid, field_grid)
+            id = 0
             return _CUDAPICGridTemplate{T}(
+                id,
+                bin_key,
                 T(source_grid.width),
                 T(source_grid.height),
                 T(field_grid.width),
@@ -1322,6 +1373,43 @@ if _HAS_CUDA
                 T(hy),
                 green_fft,
             )
+        end
+
+        function _cuda_pic_insert_template!(cache::_CUDAPICGreenCache{T}, solver::PICPoissonSolver,
+                                            ::Type{T}, source_grid, field_grid, green_fft) where {T}
+            cache.max_entries <= 0 && return nothing
+            while length(cache.templates) >= cache.max_entries && !isempty(cache.template_order)
+                old_id = popfirst!(cache.template_order)
+                old_template = pop!(cache.templates, old_id, nothing)
+                if old_template !== nothing
+                    ids = get(cache.template_bins, old_template.bin_key, nothing)
+                    if ids !== nothing
+                        filter!(!=(old_id), ids)
+                        isempty(ids) && delete!(cache.template_bins, old_template.bin_key)
+                    end
+                    cache.evictions += 1
+                end
+            end
+            template0 = _cuda_pic_grid_template(solver, T, source_grid, field_grid, green_fft)
+            id = cache.next_template_id
+            cache.next_template_id += 1
+            template = _CUDAPICGridTemplate{T}(
+                id,
+                template0.bin_key,
+                template0.source_width,
+                template0.source_height,
+                template0.field_width,
+                template0.field_height,
+                template0.dx,
+                template0.dy,
+                template0.hx,
+                template0.hy,
+                template0.green_fft,
+            )
+            cache.templates[id] = template
+            push!(cache.template_order, id)
+            push!(get!(cache.template_bins, template.bin_key, Int[]), id)
+            return nothing
         end
 
         function _cuda_pic_build_green_fft(solver::PICPoissonSolver, ::Type{T}, source_grid, field_grid,
