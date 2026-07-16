@@ -81,6 +81,9 @@ each source file.
 
 `MomentObserver` writes HDF5 columnar moment files. Common access pattern:
 
+Use `?MomentObserver`, `?Moment`, and `?OutputFile` for the complete output API
+docstrings. This section is the quick entry point.
+
 ```julia
 observer = MomentObserver("result/pic_hcc.pro.h5";
     orders = 1:2,

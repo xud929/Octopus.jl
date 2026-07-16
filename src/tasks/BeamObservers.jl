@@ -396,11 +396,86 @@ end
 """
     MomentObserver(path; orders=1:2, extra=(), exclude=(), capacity=1024)
 
-Write selected beam moments to an HDF5 table. The file contains `/data`,
-`/column_names`, `/record_count`, and `/elapsed_time`. Column 1 is always
-`turn`; moment columns are selected by expanding `orders`, adding `extra`, and
-then removing `exclude`. Use `Moment(; x=1)`, `Moment(; x=1, px=1)`, or
-`Moment(:m100000)` to identify individual moments.
+Write selected beam moments to an HDF5 table.
+
+`MomentObserver` is a scheduled observer. Put it in a task line or task hooks
+through `ScheduledObserver`. The observer writes one row per scheduled
+observation. Column 1 is always `turn`; the remaining columns are selected
+moments.
+
+The HDF5 file contains:
+
+- `/data`: dense numeric matrix. Column 1 is `turn`.
+- `/column_names`: string names aligned with `/data` columns.
+- `/record_count`: number of rows already flushed to disk.
+- `/elapsed_time`: elapsed wall time in seconds, updated whenever the buffer is
+  flushed.
+
+Moment selection is:
+
+```julia
+selected = expand_orders(orders)
+selected = union(selected, extra)
+selected = setdiff(selected, exclude)
+```
+
+`exclude` wins. `turn` is always present and is not part of moment selection.
+Column order is canonical and does not depend on user input order.
+
+Default output:
+
+```julia
+MomentObserver("moments.h5")
+```
+
+writes all first-order moments and all unique second-order central moments.
+First-order moments are means. Moments of order 2 or higher are central moments.
+
+Common examples:
+
+```julia
+obs = MomentObserver("moments.h5")
+hook = ScheduledObserver(obs, EveryNSteps(start = 0, stop = 1000, step = 10))
+task = TrackingTask((line..., hook))
+execute!(task, beam; turns = 1000)
+```
+
+Select only first-order moments:
+
+```julia
+MomentObserver("mean_only.h5"; orders = 1)
+```
+
+Add a fourth-order longitudinal momentum moment:
+
+```julia
+MomentObserver("moments.h5";
+    orders = 1:2,
+    extra = (Moment(; pz = 4),),
+)
+```
+
+Remove one default moment, for example the `z` variance:
+
+```julia
+MomentObserver("moments.h5";
+    orders = 1:2,
+    exclude = (Moment(; z = 2),),
+)
+```
+
+Read output:
+
+```julia
+out = OutputFile("moments.h5")
+data = read(out)
+turns = read(out, :turn)
+mx = read(out, Moment(; x = 1))
+sxpx = read(out, :m110000)
+names = column_names(out)
+records = read(out, :record_count)
+seconds = read(out, :elapsed_time)
+```
 
 The observer requires a predictable schedule (`AlwaysSchedule`,
 `EveryNSteps`, or `AtTurns`) so the HDF5 data matrix can be preallocated.
@@ -804,12 +879,25 @@ end
 
 Lightweight handle for reading an Octopus moment output file.
 
+For HDF5 files written by `MomentObserver`, `read(file)` returns the full
+written `/data` matrix up to `/record_count`. Use `read(file, item)` for one
+column and keyword moment selection for a smaller matrix.
+
 ```julia
-moments = OutputFile("result/pic_hcc.h5")
-data = read(moments)
-turn = read(moments, :turn)
-mx = read(moments, Moment(; x=1))
+out = OutputFile("result/pic_hcc.h5")
+
+data = read(out)
+turn = read(out, :turn)
+mx = read(out, Moment(; x = 1))
+sxpx = read(out, :m110000)
+first_second = read(out; orders = 1:2)
+names = column_names(out)
+records = read(out, :record_count)
+seconds = read(out, :elapsed_time)
 ```
+
+Legacy JLD2 moment files remain readable through `OutputFile` and
+`read_moment`, but new output should use `MomentObserver`.
 """
 struct OutputFile
     path::String
