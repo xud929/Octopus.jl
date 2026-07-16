@@ -3,23 +3,38 @@ if _HAS_CUDA
         function collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend})
             workspace = _cuda_pic_workspace(solver, eltype(beam1.rep.x))
             green_cache = _cuda_pic_green_cache(solver, eltype(beam1.rep.x))
-            return _cuda_pic_collide!(solver, beam1, beam2, workspace, green_cache)
+            return _cuda_pic_collide!(solver, beam1, beam2, workspace, green_cache, nothing)
+        end
+
+        function collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend},
+                          ctx::Nothing)
+            workspace = _cuda_pic_workspace(solver, eltype(beam1.rep.x))
+            green_cache = _cuda_pic_green_cache(solver, eltype(beam1.rep.x))
+            return _cuda_pic_collide!(solver, beam1, beam2, workspace, green_cache, ctx)
+        end
+
+        function collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend},
+                          ctx::TrackingContext)
+            workspace = _cuda_pic_workspace(solver, eltype(beam1.rep.x))
+            green_cache = _cuda_pic_green_cache(solver, eltype(beam1.rep.x))
+            return _cuda_pic_collide!(solver, beam1, beam2, workspace, green_cache, ctx)
         end
 
         function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
                                          solver::PICPoissonSolver,
-                                         beam1::Beam, beam2::Beam, ::Type{CUDABackend})
+                                         beam1::Beam, beam2::Beam, ::Type{CUDABackend},
+                                         ctx::TrackingContext)
             T = eltype(beam1.rep.x)
             workspace = _cuda_pic_workspace!(task.runtime_cache, label, solver, T)
             green_cache = _cuda_pic_green_cache(solver, T)
-            return _cuda_pic_collide!(solver, beam1, beam2, workspace, green_cache)
+            return _cuda_pic_collide!(solver, beam1, beam2, workspace, green_cache, ctx)
         end
 
         function _cuda_pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam,
-                                    workspace, green_cache)
+                                    workspace, green_cache, ctx=nothing)
             _validate_pic_solver(solver)
             if Symbol(solver.batch_mode) == :wavefront
-                return _cuda_pic_collide_wavefront!(solver, beam1, beam2, workspace, green_cache)
+                return _cuda_pic_collide_wavefront!(solver, beam1, beam2, workspace, green_cache, ctx)
             end
             timing = _cuda_pic_timing_stats()
             t0 = time_ns()
@@ -29,7 +44,8 @@ if _HAS_CUDA
             kbb1 = _pic_kbb1(solver, beam1, beam2)
             kbb2 = _pic_kbb2(solver, beam1, beam2)
             klum = _pic_luminosity_scale(solver, beam1, beam2)
-            luminosity = zero(eltype(beam1.rep.x))
+            compute_luminosity = _pic_compute_luminosity(solver, ctx)
+            luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
             detailed_timing = _cuda_pic_detailed_timing_enabled()
             use_async = get(ENV, "OCTOPUS_CUDA_PIC_ASYNC", "1") != "0" && !detailed_timing
             reclaim_policy = _cuda_pic_reclaim_policy()
@@ -52,21 +68,23 @@ if _HAS_CUDA
                 if use_async && _cuda_pic_batch_fft_enabled()
                     lum = _cuda_pic_interaction_pair_batched_fft!(
                         solver, slice1.coords, p1, slice2.coords, p2, kbb1, kbb2, green_cache, klum,
-                        workspace, timing,
+                        workspace, timing, compute_luminosity,
                     )
-                    luminosity += lum
+                    compute_luminosity && (luminosity += lum)
                 elseif use_async
                     lum = _cuda_pic_interaction_pair_async!(
                         solver, slice1.coords, p1, slice2.coords, p2, kbb1, kbb2, green_cache, klum,
-                        workspace, timing,
+                        workspace, timing, compute_luminosity,
                     )
-                    luminosity += lum
+                    compute_luminosity && (luminosity += lum)
                 else
                     _cuda_pic_interaction!(solver, slice1.coords, p1, slice2.coords, p2, kbb2, green_cache, workspace.charges[1], timing)
                     _cuda_pic_interaction!(solver, slice2.coords, p2, slice1.coords, p1, kbb1, green_cache, workspace.charges[2], timing)
-                    t_luminosity = time_ns()
-                    luminosity += _cuda_pic_luminosity(solver, slice1.coords, p1, slice2.coords, p2, klum, workspace)
-                    _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+                    if compute_luminosity
+                        t_luminosity = time_ns()
+                        luminosity += _cuda_pic_luminosity(solver, slice1.coords, p1, slice2.coords, p2, klum, workspace)
+                        _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+                    end
                 end
                 _cuda_pic_add_time!(timing, :interaction, t_interaction)
                 _cuda_nvtx_pop(CUDABackend, pair_range)
@@ -87,7 +105,7 @@ if _HAS_CUDA
         end
 
         function _cuda_pic_collide_wavefront!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam,
-                                              workspace, green_cache)
+                                              workspace, green_cache, ctx=nothing)
             timing = _cuda_pic_timing_stats()
             t0 = time_ns()
             slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing1)
@@ -97,7 +115,8 @@ if _HAS_CUDA
             kbb1 = _pic_kbb1(solver, beam1, beam2)
             kbb2 = _pic_kbb2(solver, beam1, beam2)
             klum = _pic_luminosity_scale(solver, beam1, beam2)
-            luminosity = zero(eltype(beam1.rep.x))
+            compute_luminosity = _pic_compute_luminosity(solver, ctx)
+            luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
             detailed_timing = _cuda_pic_detailed_timing_enabled()
             use_async = get(ENV, "OCTOPUS_CUDA_PIC_ASYNC", "1") != "0" && !detailed_timing
             reclaim_policy = _cuda_pic_reclaim_policy()
@@ -128,9 +147,10 @@ if _HAS_CUDA
                     pair_count += length(gathered)
                     pair_range = _cuda_nvtx_push(CUDABackend, "pic wavefront batch interaction")
                     t_interaction = time_ns()
-                    luminosity += _cuda_pic_interaction_wavefront_batched_fft!(
-                        solver, gathered, kbb1, kbb2, green_cache, klum, workspace, timing,
+                    lum = _cuda_pic_interaction_wavefront_batched_fft!(
+                        solver, gathered, kbb1, kbb2, green_cache, klum, workspace, timing, compute_luminosity,
                     )
+                    compute_luminosity && (luminosity += lum)
                     _cuda_pic_add_time!(timing, :interaction, t_interaction)
                     _cuda_nvtx_pop(CUDABackend, pair_range)
                 else
@@ -142,15 +162,15 @@ if _HAS_CUDA
                         if use_async && _cuda_pic_batch_fft_enabled()
                             lum = _cuda_pic_interaction_pair_batched_fft!(
                                 solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
-                                kbb1, kbb2, green_cache, klum, workspace, timing,
+                                kbb1, kbb2, green_cache, klum, workspace, timing, compute_luminosity,
                             )
-                            luminosity += lum
+                            compute_luminosity && (luminosity += lum)
                         elseif use_async
                             lum = _cuda_pic_interaction_pair_async!(
                                 solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
-                                kbb1, kbb2, green_cache, klum, workspace, timing,
+                                kbb1, kbb2, green_cache, klum, workspace, timing, compute_luminosity,
                             )
-                            luminosity += lum
+                            compute_luminosity && (luminosity += lum)
                         else
                             _cuda_pic_interaction!(
                                 solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
@@ -160,11 +180,13 @@ if _HAS_CUDA
                                 solver, item.slice2.coords, item.p2, item.slice1.coords, item.p1,
                                 kbb1, green_cache, workspace.charges[2], timing,
                             )
-                            t_luminosity = time_ns()
-                            luminosity += _cuda_pic_luminosity(
-                                solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, klum, workspace,
-                            )
-                            _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+                            if compute_luminosity
+                                t_luminosity = time_ns()
+                                luminosity += _cuda_pic_luminosity(
+                                    solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, klum, workspace,
+                                )
+                                _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+                            end
                         end
                         _cuda_pic_add_time!(timing, :interaction, t_interaction)
                         _cuda_nvtx_pop(CUDABackend, pair_range)
@@ -460,7 +482,8 @@ if _HAS_CUDA
                                                    old1, p1, old2, p2,
                                                    kbb1, kbb2, green_cache, klum,
                                                    workspace::_CUDAPICWorkspace,
-                                                   timing=nothing)
+                                                   timing=nothing,
+                                                   compute_luminosity::Bool=true)
             prepare_range = _cuda_nvtx_push(CUDABackend, "pic prepare interaction")
             t_prepare = time_ns()
             prep12 = _cuda_pic_prepare_interaction(solver, old1, p1, old2, p2)
@@ -481,14 +504,18 @@ if _HAS_CUDA
             luminosity_stream = workspace.luminosity_stream
             prep_done = workspace.prep_done
             CUDA.record(prep_done, CUDA.stream())
-            luminosity_task = @async CUDA.stream!(luminosity_stream) do
-                CUDA.wait(prep_done, luminosity_stream)
-                lum_range = _cuda_nvtx_push(CUDABackend, "pic luminosity")
-                try
-                    _cuda_pic_luminosity(solver, old1, p1, old2, p2, klum, workspace)
-                finally
-                    _cuda_nvtx_pop(CUDABackend, lum_range)
+            luminosity_task = if compute_luminosity
+                @async CUDA.stream!(luminosity_stream) do
+                    CUDA.wait(prep_done, luminosity_stream)
+                    lum_range = _cuda_nvtx_push(CUDABackend, "pic luminosity")
+                    try
+                        _cuda_pic_luminosity(solver, old1, p1, old2, p2, klum, workspace)
+                    finally
+                        _cuda_nvtx_pop(CUDABackend, lum_range)
+                    end
                 end
+            else
+                nothing
             end
 
             t_fields = time_ns()
@@ -534,17 +561,21 @@ if _HAS_CUDA
             _cuda_pic_add_time!(timing, :kick, t_kick)
             _cuda_nvtx_pop(CUDABackend, kick_range)
             t_luminosity = time_ns()
-            luminosity = fetch(luminosity_task)
-            CUDA.synchronize(luminosity_stream)
-            _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
-            return luminosity
+            if compute_luminosity
+                luminosity = fetch(luminosity_task)
+                CUDA.synchronize(luminosity_stream)
+                _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+                return luminosity
+            end
+            return zero(eltype(old1.x))
         end
 
         function _cuda_pic_interaction_pair_batched_fft!(solver::PICPoissonSolver,
                                                          old1, p1, old2, p2,
                                                          kbb1, kbb2, green_cache, klum,
                                                          workspace::_CUDAPICWorkspace,
-                                                         timing=nothing)
+                                                         timing=nothing,
+                                                         compute_luminosity::Bool=true)
             prepare_range = _cuda_nvtx_push(CUDABackend, "pic prepare interaction")
             t_prepare = time_ns()
             prep12 = _cuda_pic_prepare_interaction(solver, old1, p1, old2, p2)
@@ -564,14 +595,18 @@ if _HAS_CUDA
             luminosity_stream = workspace.luminosity_stream
             prep_done = workspace.prep_done
             CUDA.record(prep_done, CUDA.stream())
-            luminosity_task = @async CUDA.stream!(luminosity_stream) do
-                CUDA.wait(prep_done, luminosity_stream)
-                lum_range = _cuda_nvtx_push(CUDABackend, "pic luminosity")
-                try
-                    _cuda_pic_luminosity(solver, old1, p1, old2, p2, klum, workspace)
-                finally
-                    _cuda_nvtx_pop(CUDABackend, lum_range)
+            luminosity_task = if compute_luminosity
+                @async CUDA.stream!(luminosity_stream) do
+                    CUDA.wait(prep_done, luminosity_stream)
+                    lum_range = _cuda_nvtx_push(CUDABackend, "pic luminosity")
+                    try
+                        _cuda_pic_luminosity(solver, old1, p1, old2, p2, klum, workspace)
+                    finally
+                        _cuda_nvtx_pop(CUDABackend, lum_range)
+                    end
                 end
+            else
+                nothing
             end
 
             field_range = _cuda_nvtx_push(CUDABackend, "pic batched field solve")
@@ -610,17 +645,21 @@ if _HAS_CUDA
             _cuda_nvtx_pop(CUDABackend, kick_range)
 
             t_luminosity = time_ns()
-            luminosity = fetch(luminosity_task)
-            CUDA.synchronize(luminosity_stream)
-            _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
-            return luminosity
+            if compute_luminosity
+                luminosity = fetch(luminosity_task)
+                CUDA.synchronize(luminosity_stream)
+                _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+                return luminosity
+            end
+            return zero(eltype(old1.x))
         end
 
         function _cuda_pic_interaction_wavefront_batched_fft!(solver::PICPoissonSolver,
                                                               gathered,
                                                               kbb1, kbb2, green_cache, klum,
                                                               workspace::_CUDAPICWorkspace,
-                                                              timing=nothing)
+                                                              timing=nothing,
+                                                              compute_luminosity::Bool=true)
             valid = Any[item for item in gathered if item.slice1 !== nothing && item.slice2 !== nothing]
             isempty(valid) && return zero(eltype(workspace.batch_charges))
             npairs = length(valid)
@@ -643,33 +682,20 @@ if _HAS_CUDA
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
             _cuda_nvtx_pop(CUDABackend, prepare_range)
 
-            t_luminosity = time_ns()
-            async_luminosity = _cuda_pic_async_luminosity_enabled()
             luminosity = zero(T)
             luminosity_task = nothing
-            if async_luminosity
+            if compute_luminosity && _cuda_pic_async_luminosity_enabled()
                 luminosity_stream = workspace.luminosity_stream
                 luminosity_task = @async CUDA.stream!(luminosity_stream) do
                     lum_range = _cuda_nvtx_push(CUDABackend, "pic wavefront luminosity")
                     try
-                        luminosity = zero(T)
-                        for item in valid
-                            luminosity += _cuda_pic_luminosity(
-                                solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, klum, workspace,
-                            )
-                        end
-                        luminosity
+                        _cuda_pic_wavefront_luminosity(solver, valid, klum, workspace, timing)
                     finally
                         _cuda_nvtx_pop(CUDABackend, lum_range)
                     end
                 end
-            else
-                for item in valid
-                    luminosity += _cuda_pic_luminosity(
-                        solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, klum, workspace,
-                    )
-                end
-                _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+            elseif compute_luminosity
+                luminosity = _cuda_pic_wavefront_luminosity(solver, valid, klum, workspace, timing)
             end
 
             t_green = time_ns()
@@ -728,10 +754,9 @@ if _HAS_CUDA
             CUDA.synchronize(stream)
             _cuda_pic_add_time!(timing, :kick, t_kick)
             _cuda_nvtx_pop(CUDABackend, kick_range)
-            if async_luminosity
+            if compute_luminosity && luminosity_task !== nothing
                 luminosity = fetch(luminosity_task)
                 CUDA.synchronize(workspace.luminosity_stream)
-                _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
             end
             return luminosity
         end
@@ -982,6 +1007,10 @@ if _HAS_CUDA
                     charges=CUDA.zeros(T, 2nx, 2ny, nplanes),
                     Ex=CUDA.zeros(T, nx, ny, nplanes),
                     Ey=CUDA.zeros(T, nx, ny, nplanes),
+                    luminosity_q1=CUDA.zeros(T, nx + 1, ny + 1, max(1, nplanes ÷ 4)),
+                    luminosity_q2=CUDA.zeros(T, nx + 1, ny + 1, max(1, nplanes ÷ 4)),
+                    luminosity_scale=CUDA.zeros(T, max(1, nplanes ÷ 4)),
+                    luminosity_accum=CUDA.zeros(T, 1),
                     hx=CUDA.zeros(T, nplanes),
                     hy=CUDA.zeros(T, nplanes),
                 )
@@ -1126,6 +1155,70 @@ if _HAS_CUDA
                 hx, hy, Int32(nx), Int32(ny),
             )
             return fft(green)
+        end
+
+        function _cuda_pic_wavefront_luminosity(solver::PICPoissonSolver, valid, klum,
+                                                workspace::_CUDAPICWorkspace, timing=nothing)
+            npairs = length(valid)
+            npairs == 0 && return zero(eltype(workspace.batch_charges))
+            nx, ny = solver.grid
+            T = eltype(valid[1].slice1.coords.x)
+            wf = _cuda_pic_wavefront_workspace!(workspace, solver, T, 4 * npairs)
+            q1 = wf.luminosity_q1
+            q2 = wf.luminosity_q2
+            scale = wf.luminosity_scale
+            accum = wf.luminosity_accum
+            fill!(q1, zero(T))
+            fill!(q2, zero(T))
+            fill!(accum, zero(T))
+            scale_host = Vector{T}(undef, npairs)
+            threads = 256
+            stream = CUDA.stream()
+            t_luminosity = time_ns()
+            for n in 1:npairs
+                item = valid[n]
+                rep1 = item.slice1.coords
+                rep2 = item.slice2.coords
+                p1 = item.p1
+                p2 = item.p2
+                s1 = T(0.5) * (T(p1.center) - T(p2.center))
+                s2 = -s1
+                x1 = rep1.x .+ rep1.px .* s1
+                y1 = rep1.y .+ rep1.py .* s1
+                x2 = rep2.x .+ rep2.px .* s2
+                y2 = rep2.y .+ rep2.py .* s2
+                xmin = min(T(minimum(x1)), T(minimum(x2)))
+                xmax = max(T(maximum(x1)), T(maximum(x2)))
+                ymin = min(T(minimum(y1)), T(minimum(y2)))
+                ymax = max(T(maximum(y1)), T(maximum(y2)))
+                width = max(T(xmax - xmin), eps(T))
+                height = max(T(ymax - ymin), eps(T))
+                tx = width / T(nx - 1.1)
+                ty = height / T(ny - 1.1)
+                width += T(0.1) * tx
+                height += T(0.1) * ty
+                xmin -= T(0.05) * tx
+                ymin -= T(0.05) * ty
+                hx = width / T(nx - 1)
+                hy = height / T(ny - 1)
+                scale_host[n] = T(klum) / (hx * hy)
+                CUDA.@cuda threads=threads blocks=cld(length(rep1.x), threads) stream=stream _cuda_pic_deposit_drifted_plane_kernel!(
+                    q1, Int32(n), rep1.x, rep1.px, rep1.y, rep1.py, s1,
+                    xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), Int32(1),
+                )
+                CUDA.@cuda threads=threads blocks=cld(length(rep2.x), threads) stream=stream _cuda_pic_deposit_drifted_plane_kernel!(
+                    q2, Int32(n), rep2.x, rep2.px, rep2.y, rep2.py, s2,
+                    xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), Int32(1),
+                )
+            end
+            copyto!(scale, scale_host)
+            blocks_grid = cld(nx * ny * npairs, threads)
+            CUDA.@cuda threads=threads blocks=blocks_grid stream=stream _cuda_pic_luminosity_wavefront_kernel!(
+                accum, q1, q2, scale, Int32(nx), Int32(ny), Int32(npairs),
+            )
+            CUDA.synchronize(stream)
+            _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+            return T(CUDA.@allowscalar accum[1])
         end
 
         function _cuda_pic_luminosity(solver::PICPoissonSolver, rep1, p1, rep2, p2, klum,
@@ -1522,6 +1615,24 @@ if _HAS_CUDA
                 j = (index - 1) ÷ n1 + 1
                 @inbounds spectral[i, j, plane] *= green[i, j]
                 index += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_luminosity_wavefront_kernel!(accum, q1, q2, scale,
+                                                        nx::Int32, ny::Int32, npairs::Int32)
+            linear = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            plane_size = Int(nx) * Int(ny)
+            total = plane_size * Int(npairs)
+            while linear <= total
+                pair0 = (linear - 1) ÷ plane_size
+                local_index = linear - pair0 * plane_size
+                i = Int32((local_index - 1) % Int(nx) + 1)
+                j = Int32((local_index - 1) ÷ Int(nx) + 1)
+                plane = Int32(pair0 + 1)
+                @inbounds CUDA.@atomic accum[1] += q1[i, j, plane] * q2[i, j, plane] * scale[plane]
+                linear += stride
             end
             return nothing
         end

@@ -34,6 +34,10 @@ Select PIC slice-pair scheduling:
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=sequential julia --project=. examples/strong_strong_tracking.jl
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront julia --project=. examples/strong_strong_tracking.jl
 
+Compute PIC luminosity every N turns. Use 0 to disable luminosity computation:
+
+    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_LUMINOSITY_EVERY=10 julia --project=. examples/strong_strong_tracking.jl
+
 Use PIC Green-function cache modes:
 
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=exact julia --project=. examples/strong_strong_tracking.jl
@@ -214,6 +218,12 @@ solver_kind = lowercase(get(ENV, "OCTOPUS_POISSON_SOLVER", "PIC"))
 pic_green_cache = Symbol(lowercase(get(ENV, "OCTOPUS_PIC_GREEN_CACHE", "none")))
 pic_longitudinal_kick = get(ENV, "OCTOPUS_PIC_LONGITUDINAL_KICK", "1") in ("1", "true", "TRUE", "yes", "YES")
 pic_batch_mode = Symbol(lowercase(get(ENV, "OCTOPUS_PIC_BATCH_MODE", "sequential")))
+pic_luminosity_every = parse(Int, get(ENV, "OCTOPUS_PIC_LUMINOSITY_EVERY", "1"))
+pic_luminosity_schedule =
+    pic_luminosity_every < 0 ? error("OCTOPUS_PIC_LUMINOSITY_EVERY must be >= 0") :
+    pic_luminosity_every == 0 ? AtTurns(Int[]) :
+    pic_luminosity_every == 1 ? nothing :
+    EveryNSteps(step = pic_luminosity_every)
 solver = if solver_kind == "gaussian"
     GaussianPoissonSolver(;
         slicing = slicing,
@@ -230,6 +240,7 @@ elseif solver_kind == "pic"
         green_cache = pic_green_cache,
         longitudinal_kick = pic_longitudinal_kick,
         batch_mode = pic_batch_mode,
+        luminosity_schedule = pic_luminosity_schedule,
     )
 else
     error("unknown OCTOPUS_POISSON_SOLVER=$(solver_kind); use gaussian or PIC")
@@ -393,6 +404,7 @@ println("poisson_solver = ", solver_kind)
 if solver_kind == "pic"
     println("pic_longitudinal_kick = ", pic_longitudinal_kick)
     println("pic_batch_mode = ", pic_batch_mode)
+    println("pic_luminosity_every = ", pic_luminosity_every)
 end
 println("luminosity = ", luminosity_path)
 println("electron moments = ", electron_moment_path)

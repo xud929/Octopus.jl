@@ -1,15 +1,30 @@
 function collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend})
+    return collide!(solver, beam1, beam2, CPUThreadsBackend, nothing)
+end
+
+function collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend},
+                  ctx::Nothing)
+    return _pic_collide!(solver, beam1, beam2, ctx)
+end
+
+function collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend},
+                  ctx::TrackingContext)
+    return _pic_collide!(solver, beam1, beam2, ctx)
+end
+
+function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx)
     _validate_pic_solver(solver)
     slices1 = longitudinal_slices(beam1.rep, solver.slicing1)
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
     kbb1 = _pic_kbb1(solver, beam1, beam2)
     kbb2 = _pic_kbb2(solver, beam1, beam2)
     klum = _pic_luminosity_scale(solver, beam1, beam2)
+    compute_luminosity = _pic_compute_luminosity(solver, ctx)
     T = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(kbb1), typeof(kbb2))
     nx, ny = solver.grid
     workspace = _pic_cpu_workspace(T, nx, ny)
     green_cache = _pic_green_cache(solver, T)
-    luminosity = zero(eltype(beam1.rep.x))
+    luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : T(NaN)
     for (_, i, j) in _slice_collision_order(slices1, slices2)
         idx1 = slices1.indices[i]
         idx2 = slices2.indices[j]
@@ -26,7 +41,7 @@ function collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPU
         vx2, vy2 = _pic_interaction!(solver, coord2, param2, field1, param1, kbb1, workspace, green_cache)
         _pic_store_slice!(beam1.rep, idx1, field1)
         _pic_store_slice!(beam2.rep, idx2, field2)
-        luminosity += _pic_luminosity(solver, vx1, vy1, vx2, vy2, klum, workspace)
+        compute_luminosity && (luminosity += _pic_luminosity(solver, vx1, vy1, vx2, vy2, klum, workspace))
     end
     _pic_report_green_cache(green_cache)
     return luminosity

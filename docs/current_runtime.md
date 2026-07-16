@@ -190,6 +190,12 @@ slice-pairs with `collision_pair_batches`. In CUDA PIC, wavefront mode gathers
 every active slice in a batch, solves all `4 * batch_size` source-boundary
 field problems in one batched cuFFT stack, applies the non-overlapping kicks,
 then scatters the batch back before moving to the next dependency frontier.
+`PICPoissonSolver(luminosity_schedule=EveryNSteps(step=N))` computes PIC
+luminosity only on scheduled turns while still applying beam-beam kicks every
+turn. Use `AtTurns(Int[])` to disable luminosity computation. Skipped
+luminosity values are returned as `NaN`, so the fixed turn-by-turn output
+format remains unambiguous. In `examples/strong_strong_tracking.jl`, use
+`OCTOPUS_PIC_LUMINOSITY_EVERY=N`; `0` disables luminosity.
 If a diagnostic run produces a zero-width field slice, the current
 implementation uses equal left/right interpolation weights for that slice
 instead of dividing by zero.
@@ -253,13 +259,15 @@ Standalone
 `collide!(solver, beam1, beam2, CUDABackend)` calls still allocate a temporary
 workspace for that call.
 The luminosity grid deposition/reduction reads only the old compact slice
-buffers. In wavefront mode it runs synchronously by default because measured
-Julia task/stream overhead outweighed the available overlap on the tested path.
-Set `OCTOPUS_CUDA_PIC_ASYNC_LUMINOSITY=1` to run it on the luminosity stream
-for profiling. Compact slice operations use mask-free CUDA kernels and reuse
-fixed-size PIC grid work buffers within a collision. Stream/event ordering
-replaces the previous global synchronization before launching independent field
-solves. Set
+buffers. In CUDA wavefront mode, scheduled luminosity uses stacked
+`(nx + 1, ny + 1, batch_size)` grids and one batched grid-product reduction for
+the current dependency frontier. It runs synchronously by default because
+measured Julia task/stream overhead outweighed the available overlap on the
+tested path. Set `OCTOPUS_CUDA_PIC_ASYNC_LUMINOSITY=1` to run it on the
+luminosity stream for profiling. Compact slice operations use mask-free CUDA
+kernels and reuse fixed-size PIC grid work buffers within a collision.
+Stream/event ordering replaces the previous global synchronization before
+launching independent field solves. Set
 `OCTOPUS_CUDA_PIC_ASYNC=0` to use the sequential CUDA PIC path for debugging.
 Set `OCTOPUS_PIC_BATCH_MODE=wavefront` in the strong-strong example to run the
 CUDA PIC wavefront scheduler, or pass `batch_mode=:wavefront` directly to

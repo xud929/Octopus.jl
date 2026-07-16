@@ -21,6 +21,9 @@ The current concrete implementations are `GaussianPoissonSolver` and
 """
 abstract type AbstractPoissonSolver <: AbstractOctopusObject end
 
+collide!(solver::AbstractPoissonSolver, beam1::Beam, beam2::Beam, backend, ctx::TrackingContext) =
+    collide!(solver, beam1, beam2, backend)
+
 # Internal performance thresholds. Below these slice sizes, serial CPU work is
 # usually cheaper than thread scheduling and per-thread reduction overhead.
 const _STRONG_STRONG_PARALLEL_MOMENT_MIN = 4096
@@ -227,6 +230,7 @@ const StrongStrongGaussianPoissonSolver = GaussianPoissonSolver
                       green_cache=:none,
                       longitudinal_kick=true,
                       batch_mode=:sequential,
+                      luminosity_schedule=nothing,
                       slicing=LongitudinalSlicing(),
                       slicing1=nothing, slicing2=nothing)
 
@@ -254,6 +258,11 @@ the current source and field domains with deposition/interpolation margin.
 the original one-slice-pair-at-a-time execution. Wavefront mode groups ready,
 non-overlapping slice pairs with `collision_pair_batches`; it currently affects
 the CUDA PIC path.
+`luminosity_schedule` may be `nothing` or a schedule such as
+`EveryNSteps(step=10)` or `AtTurns([0, 100])`. `nothing` computes luminosity
+on every turn. When the schedule does not run, PIC still applies beam-beam
+kicks but returns `NaN` for luminosity to mark that it was intentionally not
+computed.
 
 CUDA execution uses atomic grid deposition and CUDA FFT convolution. The first
 CUDA implementation is correctness-oriented; later versions may replace atomic
@@ -273,6 +282,7 @@ struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     green_cache::Symbol
     longitudinal_kick::Bool
     batch_mode::Symbol
+    luminosity_schedule::Union{Nothing,AbstractSchedule}
     slicing::LongitudinalSlicing
     slicing1::LongitudinalSlicing
     slicing2::LongitudinalSlicing
@@ -286,6 +296,7 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                              green_cache::Symbol=:none,
                              longitudinal_kick::Bool=true,
                              batch_mode::Symbol=:sequential,
+                             luminosity_schedule::Union{Nothing,AbstractSchedule}=nothing,
                              slicing::LongitudinalSlicing=LongitudinalSlicing(),
                              slicing1=nothing,
                              slicing2=nothing) where {T<:Real}
@@ -301,6 +312,7 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         green_cache,
         longitudinal_kick,
         batch_mode,
+        luminosity_schedule,
         slicing,
         s1,
         s2,
@@ -451,7 +463,7 @@ function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, bac
                 solver = _collision_solver(task, blocks1[j].collision, blocks2[j].collision)
                 collision_range = _cuda_nvtx_push(backend, "strongstrong collision")
                 lum = _strong_strong_collide!(
-                    task, blocks1[j].collision.label, solver, beam1, beam2, backend,
+                    task, blocks1[j].collision.label, solver, beam1, beam2, backend, ctx,
                 )
                 _cuda_nvtx_pop(backend, collision_range)
                 io === nothing || print(io, '\t', lum)
@@ -466,8 +478,14 @@ end
 
 function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
                                  solver::AbstractPoissonSolver,
-                                 beam1::Beam, beam2::Beam, backend)
-    return collide!(solver, beam1, beam2, backend)
+                                 beam1::Beam, beam2::Beam, backend, ctx::TrackingContext)
+    return collide!(solver, beam1, beam2, backend, ctx)
+end
+
+_pic_compute_luminosity(::PICPoissonSolver, ::Nothing) = true
+function _pic_compute_luminosity(solver::PICPoissonSolver, ctx::TrackingContext)
+    schedule = solver.luminosity_schedule
+    return schedule === nothing || should_run(schedule, ctx)
 end
 
 _cuda_nvtx_enabled() = get(ENV, "OCTOPUS_CUDA_NVTX", "0") in ("1", "true", "TRUE", "yes", "YES")
