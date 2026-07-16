@@ -249,6 +249,37 @@ mutable struct JLD2BeamMomentObserver <: AbstractBeamObserver
     initialized::Bool
 end
 
+"""
+    Moment(p1, p2, p3, p4, p5, p6)
+    Moment(; x=0, px=0, y=0, py=0, z=0, pz=0)
+    Moment(name::Union{Symbol,AbstractString})
+
+Multi-index identifier for a beam moment in six-dimensional phase space.
+Coordinates are ordered as `(x, px, y, py, z, pz)`, and all powers must be
+nonnegative integers.
+
+Examples:
+
+```julia
+Moment(; x = 1)          # mean x
+Moment(; px = 1)         # mean px
+Moment(; x = 1, px = 1)  # central <(x-<x>)(px-<px>)>
+Moment(; z = 2)          # central <(z-<z>)^2>
+Moment(; pz = 4)         # central <(pz-<pz>)^4>
+Moment(1, 0, 0, 0, 0, 0)
+Moment(:m100000)
+Moment("m1_0_0_0_0_0")
+```
+
+Moment convention:
+
+- Order 1 moments are raw means.
+- Order 2 and higher moments are central moments.
+- `Moment(0, 0, 0, 0, 0, 0)` is ignored by `MomentObserver` selection.
+
+The canonical column name is available with `name(moment)`, and the canonical
+symbol with `symbol(moment)`.
+"""
 struct Moment
     powers::NTuple{6,Int}
     function Moment(powers::NTuple{6,Int})
@@ -285,7 +316,27 @@ Base.isless(a::Moment, b::Moment) =
     (sum(a.powers), _moment_order_key(a.powers)) < (sum(b.powers), _moment_order_key(b.powers))
 Base.show(io::IO, moment::Moment) = print(io, "Moment(", join(moment.powers, ", "), ")")
 
-"""Return the canonical column name for a `Moment`."""
+"""
+    name(moment::Moment)
+
+Return the canonical HDF5 column name for a moment.
+
+Compact form is used when all powers are single digits:
+
+```julia
+name(Moment(; x = 1))       == "m100000"
+name(Moment(; x = 1, px=1)) == "m110000"
+name(Moment(; pz = 4))      == "m000004"
+```
+
+If any power is multi-digit, underscore-separated form is used without an
+underscore after `m`:
+
+```julia
+name(Moment(; x = 10))       == "m10_0_0_0_0_0"
+name(Moment(; x = 1, px=10)) == "m1_10_0_0_0_0"
+```
+"""
 function name(moment::Moment)
     powers = moment.powers
     if all(p -> 0 <= p <= 9, powers)
@@ -294,7 +345,15 @@ function name(moment::Moment)
     return "m" * join(string.(powers), "_")
 end
 
-"""Return the canonical column symbol for a `Moment`."""
+"""
+    symbol(moment::Moment)
+
+Return `Symbol(name(moment))`.
+
+```julia
+symbol(Moment(; x = 1)) == :m100000
+```
+"""
 symbol(moment::Moment) = Symbol(name(moment))
 
 _moment_order_key(powers::NTuple{6,Int}) = ntuple(i -> -powers[i], 6)
@@ -411,6 +470,11 @@ The HDF5 file contains:
 - `/elapsed_time`: elapsed wall time in seconds, updated whenever the buffer is
   flushed.
 
+`capacity` is the number of observed rows buffered in memory before a block is
+written to HDF5. Larger values reduce I/O overhead. Smaller values update
+`/record_count` and `/elapsed_time` more frequently for progress monitoring.
+`capacity = 0` disables output.
+
 Moment selection is:
 
 ```julia
@@ -421,6 +485,8 @@ selected = setdiff(selected, exclude)
 
 `exclude` wins. `turn` is always present and is not part of moment selection.
 Column order is canonical and does not depend on user input order.
+`orders` accepts integers, ranges, vectors, tuples, and nested combinations
+such as `1:2`, `(1, 2)`, `(1:2, 3)`, or `()`.
 
 Default output:
 
@@ -877,7 +943,7 @@ end
 """
     OutputFile(path)
 
-Lightweight handle for reading an Octopus moment output file.
+Lightweight handle for reading an Octopus output file.
 
 For HDF5 files written by `MomentObserver`, `read(file)` returns the full
 written `/data` matrix up to `/record_count`. Use `read(file, item)` for one
@@ -896,8 +962,7 @@ records = read(out, :record_count)
 seconds = read(out, :elapsed_time)
 ```
 
-Legacy JLD2 moment files remain readable through `OutputFile` and
-`read_moment`, but new output should use `MomentObserver`.
+`OutputFile` is the preferred reader for `MomentObserver` HDF5 files.
 """
 struct OutputFile
     path::String
@@ -909,11 +974,61 @@ const MomentFile = OutputFile
 
 const _READ_ALL_MOMENT_COLUMNS = :__octopus_read_all_moment_columns__
 
+"""
+    read(file::OutputFile)
+    read(file::OutputFile; orders=..., extra=(), exclude=())
+
+Read an output data matrix.
+
+With no keyword selection, this returns the full written data matrix
+`/data[1:record_count, :]`. Column 1 is `turn`, and the remaining columns match
+`column_names(file)`.
+
+With `orders`, `extra`, or `exclude`, this returns a selected HDF5 moment table.
+The returned matrix still includes `turn` as column 1. Selection uses the same
+rules as `MomentObserver`: expand `orders`, add `extra`, then remove `exclude`.
+Unavailable requested moments are skipped.
+
+```julia
+out = OutputFile("moments.h5")
+data = read(out)
+names = column_names(out)
+
+first_order = read(out; orders = 1)
+first_second = read(out; orders = 1:2)
+selected = read(out; orders = (), extra = (Moment(; pz = 4),))
+without_z2 = read(out; orders = 1:2, exclude = (Moment(; z = 2),))
+```
+"""
 function read(file::OutputFile)
     _is_hdf5_output(file.path) && return _read_hdf5_data(file.path)
     return read_moment(file.path, :data)
 end
 
+"""
+    read(file::OutputFile, item)
+
+Read one named output column or progress field.
+
+For HDF5 moment output, `item` may be:
+
+- `:turn` or `"turn"`
+- a `Moment`, such as `Moment(; x=1)`
+- a compact or separated moment name, such as `:m100000` or `:m1_0_0_0_0_0`
+- `:record_count`
+- `:elapsed_time`
+
+Examples:
+
+```julia
+out = OutputFile("moments.h5")
+turns = read(out, :turn)
+mx = read(out, Moment(; x = 1))
+sxpx = read(out, :m110000)
+records = read(out, :record_count)
+seconds = read(out, :elapsed_time)
+```
+"""
 function read(file::OutputFile, item::Union{Moment,Symbol,AbstractString})
     _is_hdf5_output(file.path) && return _read_hdf5_column(file.path, item)
     item isa Symbol && return read_moment(file.path, item)
@@ -929,7 +1044,29 @@ function read(file::OutputFile; orders=_READ_ALL_MOMENT_COLUMNS, extra=(), exclu
     return _read_hdf5_selection(file.path; orders=orders, extra=extra, exclude=exclude)
 end
 
-"""Return output column names as strings."""
+"""
+    column_names(file::OutputFile)
+
+Return output column names as strings.
+
+For `MomentObserver` HDF5 files, this reads `/column_names`. The returned names
+align with columns of `read(file)`.
+
+```julia
+out = OutputFile("moments.h5")
+data = read(out)
+names = column_names(out)
+
+names[1] == "turn"
+```
+
+This is useful for table conversion:
+
+```julia
+using DataFrames
+df = DataFrame(data, Symbol.(names))
+```
+"""
 function column_names(file::OutputFile)
     if _is_hdf5_output(file.path)
         return HDF5.h5open(file.path, "r") do h5
