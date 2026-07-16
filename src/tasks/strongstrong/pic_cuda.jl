@@ -414,7 +414,6 @@ if _HAS_CUDA
                 max_entries,
                 get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_WIDTH_RTOL", "Inf"),
                 get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_HEIGHT_RTOL", "Inf"),
-                get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_OFFSET_ATOL_CELLS", "Inf"),
             )
             return get!(runtime_cache, key) do
                 _cuda_pic_green_cache(solver, T)
@@ -1003,9 +1002,6 @@ if _HAS_CUDA
         function _cuda_pic_template_within_tolerance(template, source_grid, field_grid)
             width_rtol = parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_WIDTH_RTOL", "Inf"))
             height_rtol = parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_HEIGHT_RTOL", "Inf"))
-            offset_atol_cells = parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_OFFSET_ATOL_CELLS", "Inf"))
-            req_dx = field_grid.x0 - source_grid.x0
-            req_dy = field_grid.y0 - source_grid.y0
             width_scale = max(abs(source_grid.width), eps(typeof(source_grid.width)))
             field_width_scale = max(abs(field_grid.width), eps(typeof(field_grid.width)))
             height_scale = max(abs(source_grid.height), eps(typeof(source_grid.height)))
@@ -1022,12 +1018,8 @@ if _HAS_CUDA
                 (template.source_height - source_grid.height) / height_scale,
                 (template.field_height - field_grid.height) / field_height_scale,
             )
-            offset_x_err = abs(template.dx - req_dx) / max(abs(template.hx), eps(typeof(template.hx)))
-            offset_y_err = abs(template.dy - req_dy) / max(abs(template.hy), eps(typeof(template.hy)))
             return max_width_err <= width_rtol &&
-                   max_height_err <= height_rtol &&
-                   offset_x_err <= offset_atol_cells &&
-                   offset_y_err <= offset_atol_cells
+                   max_height_err <= height_rtol
         end
 
         function _cuda_pic_solve_field_with_green_fft(solver::PICPoissonSolver, x, y,
