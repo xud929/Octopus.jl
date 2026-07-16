@@ -6,6 +6,39 @@ struct LongitudinalSlices{T,I}
 end
 
 """
+    gaussian_slice_centers(nslices; sigma=1, mean=0)
+
+Return equal-population longitudinal slice centroids for a Gaussian bunch.
+
+The internal slice boundaries are Gaussian quantiles,
+`sqrt(2) * inverse_erf(2p - 1)`. The returned center for each slice is the
+conditional mean of the Gaussian between adjacent boundaries, so the two
+outermost slices are finite even though their ideal boundaries are infinite.
+
+```julia
+centers = gaussian_slice_centers(15; sigma = 0.007)
+```
+"""
+function gaussian_slice_centers(nslices::Integer; sigma::Real=1.0, mean::Real=0.0)
+    ns = Int(nslices)
+    ns > 0 || throw(ArgumentError("nslices must be positive"))
+    T = promote_type(typeof(float(sigma)), typeof(float(mean)), Float64)
+    σ = T(sigma)
+    μ = T(mean)
+    σ > zero(T) || throw(ArgumentError("sigma must be positive"))
+    invsqrt2pi = inv(sqrt(TWOPI))
+    centers = Vector{T}(undef, ns)
+    for s in 1:ns
+        a = s == 1 ? T(-Inf) : sqrt(T(2)) * inverse_erf(T(2 * (s - 1) / ns - 1))
+        b = s == ns ? T(Inf) : sqrt(T(2)) * inverse_erf(T(2 * s / ns - 1))
+        pdfa = isinf(a) ? zero(T) : invsqrt2pi * exp(-a * a / 2)
+        pdfb = isinf(b) ? zero(T) : invsqrt2pi * exp(-b * b / 2)
+        centers[s] = μ + σ * T(ns) * (pdfa - pdfb)
+    end
+    return centers
+end
+
+"""
     longitudinal_slices(rep_or_beam, slicing)
 
 Return longitudinal slice centers, weights, boundaries, and particle indices for
@@ -279,6 +312,68 @@ function _slice_collision_order(slices1, slices2)
     end
     sort!(order, by=first)
     return order
+end
+
+function _slice_collision_order_from_centers(centers1::AbstractVector, centers2::AbstractVector)
+    T = promote_type(eltype(centers1), eltype(centers2))
+    order = Tuple{T,Int,Int}[]
+    for i in eachindex(centers1), j in eachindex(centers2)
+        push!(order, (-(T(centers1[i]) + T(centers2[j])) / 2, i, j))
+    end
+    sort!(order, by=first)
+    return order
+end
+
+"""
+    collision_pair_batches(centers1, centers2)
+    collision_pair_batches(nslices1, nslices2; sigma1=1, sigma2=1, mean1=0, mean2=0)
+
+Group slice-pair collisions into conservative contiguous conflict-free batches.
+
+Pairs are sorted by computed collision time,
+`-(center1[i] + center2[j]) / 2`. The sorted list is then split without
+lookahead: a pair is appended to the current batch only if neither its beam-1
+slice nor beam-2 slice has already appeared in that batch. Otherwise a new
+batch starts. This preserves the serial collision-time order while exposing
+only safe parallelism.
+
+Each returned pair is a named tuple `(time, i, j)`.
+
+```julia
+batches = collision_pair_batches(15, 15; sigma1 = 0.007, sigma2 = 0.060)
+length(batches)
+maximum(length, batches)
+```
+"""
+function collision_pair_batches(centers1::AbstractVector, centers2::AbstractVector)
+    order = _slice_collision_order_from_centers(centers1, centers2)
+    T = promote_type(eltype(centers1), eltype(centers2))
+    pairtype = NamedTuple{(:time,:i,:j),Tuple{T,Int,Int}}
+    batches = Vector{Vector{pairtype}}()
+    current = pairtype[]
+    used_i = Set{Int}()
+    used_j = Set{Int}()
+    for (time, i, j) in order
+        if !isempty(current) && (i in used_i || j in used_j)
+            push!(batches, current)
+            current = typeof(current)()
+            empty!(used_i)
+            empty!(used_j)
+        end
+        push!(current, (time=time, i=i, j=j))
+        push!(used_i, i)
+        push!(used_j, j)
+    end
+    isempty(current) || push!(batches, current)
+    return batches
+end
+
+function collision_pair_batches(nslices1::Integer, nslices2::Integer;
+                                sigma1::Real=1.0, sigma2::Real=1.0,
+                                mean1::Real=0.0, mean2::Real=0.0)
+    centers1 = gaussian_slice_centers(nslices1; sigma=sigma1, mean=mean1)
+    centers2 = gaussian_slice_centers(nslices2; sigma=sigma2, mean=mean2)
+    return collision_pair_batches(centers1, centers2)
 end
 
 function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int}, ignore_centroid::Bool, min_sigma)

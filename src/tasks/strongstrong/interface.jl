@@ -1,4 +1,5 @@
 export AbstractPoissonSolver, LongitudinalSlicing, longitudinal_slices,
+       gaussian_slice_centers, collision_pair_batches,
        GaussianPoissonSolver, PICPoissonSolver,
        StrongStrongGaussianPoissonSolver, StrongStrongCollision,
        StrongStrongTask, collide!
