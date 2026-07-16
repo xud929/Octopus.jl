@@ -34,8 +34,8 @@ This file is meant to be a concise precedent for realistic weak-strong tracking:
 Outputs are written to `result/`:
 
 - `weak_strong.lum`: turn and luminosity values.
-- `weak_strong_moments.jld2`: scheduled beam statistics written by
-  `JLD2BeamMomentObserver`.
+- `weak_strong_moments.h5`: scheduled first- and second-order moments written
+  by `MomentObserver`.
 =#
 
 if !isdefined(Main, :Octopus)
@@ -116,7 +116,7 @@ input = (
 
     output = (
         luminosity_file = "weak_strong.lum",
-        moment_file = "weak_strong_moments.jld2",
+        moment_file = "weak_strong_moments.h5",
         moment_start = 0,
         moment_step = 1,
         moment_stop = 1_000_000,
@@ -273,7 +273,7 @@ luminosity_path = joinpath(input.result_dir, input.output.luminosity_file)
 moment_path = joinpath(input.result_dir, input.output.moment_file)
 luminosity_observer = ScheduledObserver(LuminosityObserver(luminosity_path))
 moment_observer = ScheduledObserver(
-    JLD2BeamMomentObserver(moment_path; capacity = input.output.moment_capacity),
+    MomentObserver(moment_path; capacity = input.output.moment_capacity),
     EveryNSteps(
         start = input.output.moment_start,
         stop = input.output.moment_stop,

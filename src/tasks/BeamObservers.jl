@@ -3,10 +3,12 @@ import Base: read
 export AbstractSchedule, AbstractBeamObserver, AbstractBeamAction,
        AlwaysSchedule, EveryNSteps, AtTurns, PredicateSchedule,
        should_run, ScheduledObserver, ScheduledAction,
-       BeamMomentObserver, JLD2BeamMomentObserver,
+       Moment, name, symbol, column_names,
+       BeamMomentObserver, JLD2BeamMomentObserver, MomentObserver,
        CoordinateSnapshotObserver, LuminosityObserver, BeamSwapAction,
        observe!, apply_action!, run_observers!, run_actions!,
-       prepare_observers!, finalize_observers!, requires_elementwise_tracking,
+       prepare_observers!, prepare_line_observers!,
+       finalize_observers!, requires_elementwise_tracking,
        OutputFile, MomentFile, read_moment
 
 abstract type AbstractSchedule end
@@ -88,15 +90,30 @@ function run_observers!(observers, ctx::TrackingContext, rep)
     return nothing
 end
 
-function prepare_observers!(observers, runtime_elems)
+function prepare_observers!(observers, runtime_elems; turns=nothing)
     for raw in _hook_tuple(observers)
         item = _as_scheduled_observer(raw)
-        prepare_observer!(item.observer, runtime_elems)
+        prepare_observer!(item.observer, runtime_elems, item.schedule, turns)
     end
     return nothing
 end
 
 prepare_observer!(observer::AbstractBeamObserver, runtime_elems) = nothing
+prepare_observer!(observer::AbstractBeamObserver, runtime_elems, schedule, turns) =
+    prepare_observer!(observer, runtime_elems)
+
+function prepare_line_observers!(entries::Tuple; turns=nothing)
+    for entry in entries
+        if entry isa LineObserverEntry
+            prepare_line_observer!(entry.observer, turns)
+        end
+    end
+    return nothing
+end
+
+prepare_line_observer!(observer::ScheduledObserver, turns) =
+    prepare_line_observer!(observer.observer, observer.schedule, turns)
+prepare_line_observer!(observer::AbstractBeamObserver, schedule, turns) = nothing
 
 function finalize_observers!(observers)
     for raw in _hook_tuple(observers)
@@ -232,6 +249,128 @@ mutable struct JLD2BeamMomentObserver <: AbstractBeamObserver
     initialized::Bool
 end
 
+struct Moment
+    powers::NTuple{6,Int}
+    function Moment(powers::NTuple{6,Int})
+        all(p -> p >= 0, powers) || throw(ArgumentError("moment powers must be nonnegative integers"))
+        return new(powers)
+    end
+end
+
+Moment(moment::Moment) = moment
+Moment(powers::Vararg{Integer,6}) = Moment(ntuple(i -> Int(powers[i]), 6))
+Moment(; x::Integer=0, px::Integer=0, y::Integer=0, py::Integer=0,
+       z::Integer=0, pz::Integer=0) =
+    Moment(Int(x), Int(px), Int(y), Int(py), Int(z), Int(pz))
+Moment(name::Symbol) = Moment(String(name))
+function Moment(raw::AbstractString)
+    text = String(raw)
+    startswith(text, "m") || throw(ArgumentError("moment name must start with `m`: $text"))
+    body = text[2:end]
+    isempty(body) && throw(ArgumentError("moment name has no powers: $text"))
+    powers = if occursin('_', body)
+        parts = split(body, '_')
+        length(parts) == 6 || throw(ArgumentError("separated moment name must contain six powers: $text"))
+        ntuple(i -> parse(Int, parts[i]), 6)
+    else
+        length(body) == 6 || throw(ArgumentError("compact moment name must contain six powers: $text"))
+        ntuple(i -> parse(Int, body[i]), 6)
+    end
+    return Moment(powers)
+end
+
+Base.:(==)(a::Moment, b::Moment) = a.powers == b.powers
+Base.hash(moment::Moment, h::UInt) = hash(moment.powers, h)
+Base.isless(a::Moment, b::Moment) =
+    (sum(a.powers), _moment_order_key(a.powers)) < (sum(b.powers), _moment_order_key(b.powers))
+Base.show(io::IO, moment::Moment) = print(io, "Moment(", join(moment.powers, ", "), ")")
+
+"""Return the canonical column name for a `Moment`."""
+function name(moment::Moment)
+    powers = moment.powers
+    if all(p -> 0 <= p <= 9, powers)
+        return "m" * join(string.(powers), "")
+    end
+    return "m" * join(string.(powers), "_")
+end
+
+"""Return the canonical column symbol for a `Moment`."""
+symbol(moment::Moment) = Symbol(name(moment))
+
+_moment_order_key(powers::NTuple{6,Int}) = ntuple(i -> -powers[i], 6)
+_moment_order(moment::Moment) = sum(moment.powers)
+
+function _normalize_orders(orders)
+    out = Int[]
+    _flatten_orders!(out, orders)
+    filter!(>(0), out)
+    return Tuple(sort!(unique!(out)))
+end
+
+function _flatten_orders!(out, order::Integer)
+    push!(out, Int(order))
+    return out
+end
+
+function _flatten_orders!(out, orders)
+    for order in orders
+        _flatten_orders!(out, order)
+    end
+    return out
+end
+
+function _moment_tuple(items)
+    items === nothing && return ()
+    items isa Moment && return (items,)
+    items isa Union{AbstractString,Symbol} && return (Moment(items),)
+    return Tuple(Moment(item) for item in items)
+end
+
+function _moments_for_order(order::Integer)
+    order <= 0 && return Moment[]
+    out = Moment[]
+    powers = zeros(Int, 6)
+    _append_moments_for_order!(out, powers, Int(order), 1)
+    return out
+end
+
+function _append_moments_for_order!(out, powers, remaining::Int, dim::Int)
+    if dim == 6
+        powers[dim] = remaining
+        push!(out, Moment(ntuple(i -> powers[i], 6)))
+        return out
+    end
+    for p in remaining:-1:0
+        powers[dim] = p
+        _append_moments_for_order!(out, powers, remaining - p, dim + 1)
+    end
+    powers[dim] = 0
+    return out
+end
+
+function _selected_moments(; orders=1:2, extra=(), exclude=())
+    moments = Moment[]
+    for order in _normalize_orders(orders)
+        append!(moments, _moments_for_order(order))
+    end
+    append!(moments, _moment_tuple(extra))
+    excluded = Set(_moment_tuple(exclude))
+    moments = [moment for moment in unique(moments) if _moment_order(moment) > 0 && !(moment in excluded)]
+    return Tuple(sort!(moments))
+end
+
+mutable struct MomentObserver <: AbstractBeamObserver
+    path::String
+    moments::Tuple
+    column_names::Vector{String}
+    buffer_capacity::Int
+    buffer::Matrix{Float64}
+    buffer_length::Int
+    record_count::Int
+    planned_records::Int
+    initialized::Bool
+end
+
 """
     JLD2BeamMomentObserver(path; capacity=1)
 
@@ -251,6 +390,26 @@ datasets in the file.
 function JLD2BeamMomentObserver(path::AbstractString; capacity::Integer=1)
     capacity >= 0 || throw(ArgumentError("capacity must be nonnegative"))
     return JLD2BeamMomentObserver(String(path), Int(capacity), Float64[], Any[], 0, false)
+end
+
+"""
+    MomentObserver(path; orders=1:2, extra=(), exclude=(), capacity=1024)
+
+Write selected beam moments to an HDF5 table. The file contains `/data`,
+`/column_names`, and `/record_count`. Column 1 is always `turn`; moment columns
+are selected by expanding `orders`, adding `extra`, and then removing
+`exclude`. Use `Moment(; x=1)`, `Moment(; x=1, px=1)`, or `Moment(:m100000)`
+to identify individual moments.
+
+The observer requires a predictable schedule (`AlwaysSchedule`,
+`EveryNSteps`, or `AtTurns`) so the HDF5 data matrix can be preallocated.
+"""
+function MomentObserver(path::AbstractString; orders=1:2, extra=(), exclude=(), capacity::Integer=1024)
+    capacity >= 0 || throw(ArgumentError("capacity must be nonnegative"))
+    moments = _selected_moments(orders=orders, extra=extra, exclude=exclude)
+    names = ["turn"; collect(name.(moments))]
+    buffer = Matrix{Float64}(undef, max(Int(capacity), 1), length(names))
+    return MomentObserver(String(path), moments, names, Int(capacity), buffer, 0, 0, 0, false)
 end
 
 mutable struct CoordinateSnapshotObserver <: AbstractBeamObserver
@@ -317,6 +476,15 @@ function observe!(observer::JLD2BeamMomentObserver, ctx::TrackingContext, rep)
     return nothing
 end
 
+function observe!(observer::MomentObserver, ctx::TrackingContext, rep)
+    observer.buffer_capacity == 0 && return nothing
+    observer.initialized || throw(ArgumentError("MomentObserver must be prepared by a predictable schedule before tracking"))
+    observer.buffer_length += 1
+    observer.buffer[observer.buffer_length, :] .= _moment_observer_row(ctx, rep, observer.moments)
+    observer.buffer_length >= observer.buffer_capacity && _flush_moment_observer!(observer)
+    return nothing
+end
+
 function observe!(observer::CoordinateSnapshotObserver, ctx::TrackingContext, rep)
     npart = observer.npart === nothing ? length(rep) : observer.npart
     write_beam_coordinates(observer.path, rep; npart=npart, append=observer.append)
@@ -340,6 +508,16 @@ end
 
 function prepare_observer!(observer::LuminosityObserver, runtime_elems)
     observer.elements = runtime_elems
+    return nothing
+end
+
+function prepare_observer!(observer::MomentObserver, runtime_elems, schedule, turns)
+    _prepare_moment_observer!(observer, schedule, turns)
+    return nothing
+end
+
+function prepare_line_observer!(observer::MomentObserver, schedule, turns)
+    _prepare_moment_observer!(observer, schedule, turns)
     return nothing
 end
 
@@ -435,6 +613,98 @@ end
 finalize_observer!(observer::JLD2BeamMomentObserver) =
     _flush_jld2_moment_buffer!(observer)
 
+finalize_observer!(observer::MomentObserver) =
+    _flush_moment_observer!(observer)
+
+function _prepare_moment_observer!(observer::MomentObserver, schedule, turns)
+    observer.buffer_capacity == 0 && return nothing
+    observer.initialized && return nothing
+    planned_turns = _scheduled_turns(schedule, turns)
+    planned_turns === nothing && throw(ArgumentError(
+        "MomentObserver requires a predictable schedule: use AlwaysSchedule, EveryNSteps, or AtTurns with known task turns."
+    ))
+    observer.planned_records = length(planned_turns)
+    observer.record_count = 0
+    observer.buffer_length = 0
+    _initialize_hdf5_moment_file!(observer)
+    observer.initialized = true
+    return nothing
+end
+
+function _scheduled_turns(::AlwaysSchedule, turns)
+    turns === nothing && return nothing
+    return collect(0:(Int(turns) - 1))
+end
+
+function _scheduled_turns(schedule::EveryNSteps, turns)
+    turns === nothing && return nothing
+    stop = min(schedule.stop, Int(turns))
+    schedule.start >= stop && return Int[]
+    return [turn for turn in schedule.start:schedule.step:(stop - 1) if 0 <= turn < Int(turns)]
+end
+
+function _scheduled_turns(schedule::AtTurns, turns)
+    turns === nothing && return nothing
+    return sort!([turn for turn in schedule.turns if 0 <= turn < Int(turns)])
+end
+
+_scheduled_turns(schedule::PredicateSchedule, turns) = nothing
+
+function _initialize_hdf5_moment_file!(observer::MomentObserver)
+    HDF5.h5open(observer.path, "w") do file
+        file["data"] = zeros(Float64, observer.planned_records, length(observer.column_names))
+        file["column_names"] = observer.column_names
+        file["record_count"] = Int64[0]
+        HDF5.flush(file)
+    end
+    return nothing
+end
+
+function _flush_moment_observer!(observer::MomentObserver)
+    observer.buffer_length == 0 && return nothing
+    row1 = observer.record_count + 1
+    row2 = observer.record_count + observer.buffer_length
+    row2 <= observer.planned_records || throw(BoundsError("MomentObserver received more records than planned"))
+    HDF5.h5open(observer.path, "r+") do file
+        file["data"][row1:row2, :] = observer.buffer[1:observer.buffer_length, :]
+        file["record_count"][1] = Int64(row2)
+        HDF5.flush(file)
+    end
+    observer.record_count = row2
+    observer.buffer_length = 0
+    return nothing
+end
+
+function _moment_observer_row(ctx::TrackingContext, rep, moments::Tuple)
+    row = Vector{Float64}(undef, length(moments) + 1)
+    row[1] = Float64(ctx.turn)
+    isempty(moments) && return row
+    arrays = map(collect, coordinate_arrays(rep))
+    means = ntuple(i -> Float64(sum(arrays[i]) / length(arrays[i])), 6)
+    for (j, moment) in enumerate(moments)
+        row[j + 1] = _compute_moment(arrays, means, moment)
+    end
+    return row
+end
+
+function _compute_moment(arrays, means, moment::Moment)
+    powers = moment.powers
+    order = sum(powers)
+    order == 1 && return means[findfirst(!=(0), powers)]
+    n = length(arrays[1])
+    acc = 0.0
+    @inbounds for i in 1:n
+        term = 1.0
+        for d in 1:6
+            p = powers[d]
+            p == 0 && continue
+            term *= (arrays[d][i] - means[d]) ^ p
+        end
+        acc += term
+    end
+    return acc / n
+end
+
 function _jld2_moment_column_names()
     labels = ["x", "px", "y", "py", "z", "pz"]
     names = String["turn"]
@@ -527,13 +797,13 @@ end
 """
     OutputFile(path)
 
-Lightweight handle for reading a columnar `JLD2BeamMomentObserver` file.
+Lightweight handle for reading an Octopus moment output file.
 
 ```julia
-moments = OutputFile("result/pic_hcc.pro.jld2")
+moments = OutputFile("result/pic_hcc.h5")
 data = read(moments)
 turn = read(moments, :turn)
-emittance = read(moments, :emittance)
+mx = read(moments, Moment(; x=1))
 ```
 """
 struct OutputFile
@@ -544,8 +814,100 @@ OutputFile(path::AbstractString) = OutputFile(String(path))
 
 const MomentFile = OutputFile
 
-read(file::OutputFile) = read_moment(file.path, :data)
-read(file::OutputFile, name::Symbol) = read_moment(file.path, name)
+const _READ_ALL_MOMENT_COLUMNS = :__octopus_read_all_moment_columns__
+
+function read(file::OutputFile)
+    _is_hdf5_output(file.path) && return _read_hdf5_data(file.path)
+    return read_moment(file.path, :data)
+end
+
+function read(file::OutputFile, item::Union{Moment,Symbol,AbstractString})
+    _is_hdf5_output(file.path) && return _read_hdf5_column(file.path, item)
+    item isa Symbol && return read_moment(file.path, item)
+    item isa AbstractString && return read_moment(file.path, Symbol(item))
+    return read_moment(file.path, Symbol(name(item)))
+end
+
+function read(file::OutputFile; orders=_READ_ALL_MOMENT_COLUMNS, extra=(), exclude=())
+    _is_hdf5_output(file.path) || throw(ArgumentError("keyword moment selection is only supported for HDF5 output files"))
+    if orders === _READ_ALL_MOMENT_COLUMNS && isempty(extra) && isempty(exclude)
+        return _read_hdf5_data(file.path)
+    end
+    return _read_hdf5_selection(file.path; orders=orders, extra=extra, exclude=exclude)
+end
+
+"""Return output column names as strings."""
+function column_names(file::OutputFile)
+    if _is_hdf5_output(file.path)
+        return HDF5.h5open(file.path, "r") do h5
+            String.(read(h5["column_names"]))
+        end
+    end
+    return JLD2.jldopen(file.path, "r") do jld
+        String.(jld["metadata/column_names"])
+    end
+end
+
+_is_hdf5_output(path::AbstractString) =
+    lowercase(splitext(String(path))[2]) in (".h5", ".hdf5")
+
+function _read_hdf5_record_count(h5)
+    count = read(h5["record_count"])
+    return count isa AbstractArray ? Int(first(count)) : Int(count)
+end
+
+function _read_hdf5_data(path::AbstractString)
+    return HDF5.h5open(path, "r") do h5
+        n = _read_hdf5_record_count(h5)
+        data = read(h5["data"])
+        data[1:n, :]
+    end
+end
+
+function _read_hdf5_column(path::AbstractString, item)
+    return HDF5.h5open(path, "r") do h5
+        names = String.(read(h5["column_names"]))
+        index = _hdf5_column_index(names, item)
+        n = _read_hdf5_record_count(h5)
+        vec(h5["data"][1:n, index])
+    end
+end
+
+function _read_hdf5_selection(path::AbstractString; orders=(), extra=(), exclude=())
+    requested = _selected_moments(orders=orders, extra=extra, exclude=exclude)
+    return HDF5.h5open(path, "r") do h5
+        names = String.(read(h5["column_names"]))
+        name_to_index = Dict(name => i for (i, name) in pairs(names))
+        cols = Int[1]
+        for moment in requested
+            idx = get(name_to_index, name(moment), nothing)
+            idx === nothing && continue
+            push!(cols, idx)
+        end
+        n = _read_hdf5_record_count(h5)
+        data = h5["data"][1:n, :]
+        data[:, cols]
+    end
+end
+
+function _hdf5_column_index(names::Vector{String}, item::Moment)
+    idx = findfirst(==(name(item)), names)
+    idx === nothing && throw(KeyError(name(item)))
+    return idx
+end
+
+function _hdf5_column_index(names::Vector{String}, item::Symbol)
+    item === :turn && return _hdf5_column_index(names, "turn")
+    return _hdf5_column_index(names, String(item))
+end
+
+function _hdf5_column_index(names::Vector{String}, item::AbstractString)
+    key = String(item)
+    normalized = key == "turn" ? key : name(Moment(key))
+    idx = findfirst(==(normalized), names)
+    idx === nothing && throw(KeyError(key))
+    return idx
+end
 
 """
     read_moment(file_or_path, name)

@@ -70,7 +70,8 @@ Use Julia help:
 ?ScheduledAction
 ?EveryNSteps
 ?AtTurns
-?JLD2BeamMomentObserver
+?Moment
+?MomentObserver
 ?OutputFile
 ?LuminosityObserver
 ```
@@ -78,19 +79,27 @@ Use Julia help:
 Runnable examples live in `examples/` and are self-documenting at the top of
 each source file.
 
-`JLD2BeamMomentObserver` writes columnar files. Common access pattern:
+`MomentObserver` writes HDF5 columnar moment files. Common access pattern:
 
 ```julia
-moments = OutputFile("result/pic_hcc.pro.jld2")
+observer = MomentObserver("result/pic_hcc.pro.h5";
+    orders = 1:2,
+    extra = (Moment(; pz=4),),
+    exclude = (Moment(; z=2),),
+)
+
+moments = OutputFile("result/pic_hcc.pro.h5")
 data = read(moments)               # column 1 is turn
 turns = read(moments, :turn)        # same values as data[:, 1]
-emittance = read(moments, :emittance)
-covariance = read(moments, :covariance)
+mx = read(moments, Moment(; x=1))
+sxpx = read(moments, :m110000)
+first_second = read(moments; orders = 1:2)
+names = column_names(moments)
 ```
 
-The file stores one dense `data` matrix plus metadata. Named accessors slice
-that matrix; they do not duplicate `emittance`, `covariance`, or `turn`
-datasets on disk.
+The file stores only `/data`, `/column_names`, and `/record_count`. Moment
+names are canonical strings such as `m100000`; if any exponent is multi-digit,
+separator form is used, such as `m10_0_0_0_0_0`.
 
 Developer-facing numerical checks live in `validation/`. They may use internal
 helpers and should not be treated as public API examples.

@@ -3,6 +3,7 @@ module Octopus
 using LinearAlgebra
 using Random
 using JLD2
+using HDF5
 using FFTW
 
 export AbstractExecutionBackend, CPUThreadsBackend, CUDABackend,

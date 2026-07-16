@@ -321,8 +321,8 @@ function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam; turns::Integ
     blocks1 = _strong_strong_runtime_blocks(task, 1)
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
-    prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1))
-    prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2))
+    prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1); turns=Int(turns))
+    prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2); turns=Int(turns))
     ctx = TrackingContext()
     if task.luminosity_path === nothing
         _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, backend, ctx, Int(turns), nothing)
@@ -537,7 +537,7 @@ end
 function _line_observers(lines::Tuple)
     observers = Any[]
     for block in lines, entry in block.entries
-        entry isa LineObserverEntry && push!(observers, entry.observer.observer)
+        entry isa LineObserverEntry && push!(observers, entry.observer)
     end
     return Tuple(observers)
 end

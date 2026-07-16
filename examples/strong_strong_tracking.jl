@@ -50,8 +50,8 @@ diagnosis:
 Output is written to:
 
 - `result/pic_hcc.lum`
-- `result/pic_hcc.ele.jld2`
-- `result/pic_hcc.pro.jld2`
+- `result/pic_hcc.ele.h5`
+- `result/pic_hcc.pro.h5`
 =#
 
 if !isdefined(Main, :Octopus)
@@ -127,8 +127,8 @@ input = (
 
     output = (
         luminosity_file = "pic_hcc.lum",
-        electron_moment_file = "pic_hcc.ele.jld2",
-        proton_moment_file = "pic_hcc.pro.jld2",
+        electron_moment_file = "pic_hcc.ele.h5",
+        proton_moment_file = "pic_hcc.pro.h5",
         moment_start = 0,
         moment_step = 1,
         moment_capacity = 100,
@@ -335,7 +335,7 @@ line_ele = (
     electron_chrom,
     electron_rad,
     ScheduledObserver(
-        JLD2BeamMomentObserver(electron_moment_path; capacity = input.output.moment_capacity),
+        MomentObserver(electron_moment_path; capacity = input.output.moment_capacity),
         moment_schedule,
     ),
 )
@@ -353,7 +353,7 @@ line_pro = (
     proton_one_turn,
     proton_chrom,
     ScheduledObserver(
-        JLD2BeamMomentObserver(proton_moment_path; capacity = input.output.moment_capacity),
+        MomentObserver(proton_moment_path; capacity = input.output.moment_capacity),
         moment_schedule,
     ),
 )

@@ -150,7 +150,8 @@ function execute!(task::TrackingTask, rep; turns::Integer=1)
         track!(rep, runtime_elems, Int(turns), backend, TrackingContext())
         return rep
     end
-    prepare_observers!(task.observers, runtime_elems)
+    prepare_observers!(task.observers, runtime_elems; turns=Int(turns))
+    prepare_line_observers!(runtime_entries; turns=Int(turns))
     base_ctx = TrackingContext()
     for turn in 0:(Int(turns) - 1)
         ctx = with_turn(base_ctx, turn)
