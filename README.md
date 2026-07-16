@@ -51,6 +51,9 @@ OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=none \
 julia --project=. examples/strong_strong_tracking.jl
 ```
 
+Select a specific CUDA device by adding `OCTOPUS_CUDA_DEVICE=N`, for example
+`OCTOPUS_CUDA_DEVICE=1`.
+
 `PICPoissonSolver` uses the longitudinal/Hirata-style kick by default. Disable
 it for a transverse-only benchmark with:
 

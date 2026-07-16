@@ -16,6 +16,10 @@ Run the same example with CUDA storage and CUDA tracking kernels:
 
     OCTOPUS_USE_GPU=1 julia --project=. examples/weak_strong_tracking.jl
 
+Select a CUDA device explicitly:
+
+    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_DEVICE=1 julia --project=. examples/weak_strong_tracking.jl
+
 CUDA checks:
 
     julia --project=. -e 'using CUDA; println(CUDA.functional()); println(CUDA.has_cuda_gpu())'
@@ -136,7 +140,13 @@ if use_gpu
     import CUDA
     CUDA.functional(false) || error("OCTOPUS_USE_GPU=1 requested, but CUDA.functional(false) is false.")
 end
-policy = use_gpu ? GPUExecutionPolicy() : CPUThreadsExecutionPolicy()
+policy = if use_gpu
+    cuda_device_env = get(ENV, "OCTOPUS_CUDA_DEVICE", "")
+    cuda_device = isempty(cuda_device_env) ? nothing : parse(Int, cuda_device_env)
+    GPUExecutionPolicy(device = cuda_device)
+else
+    CPUThreadsExecutionPolicy()
+end
 set_global_rng!(seed = input.seed, method = :philox)
 
 wb = input.weak_beam

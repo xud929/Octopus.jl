@@ -100,6 +100,11 @@ Current task execution infers the backend from the beam or phase-space
 representation storage. An explicit task policy is accepted as a consistency
 assertion and must match that storage.
 
+`GPUExecutionPolicy()` keeps the current CUDA device. Use
+`GPUExecutionPolicy(device=N)` to call `CUDA.device!(N)` before GPU allocation
+or task execution. The examples expose the same choice through
+`OCTOPUS_CUDA_DEVICE=N` when `OCTOPUS_USE_GPU=1`.
+
 ## Current Counter RNG
 
 `counter_philox4x32`, `counter_uint64`, `counter_uniform01`,
@@ -269,6 +274,8 @@ nvidia-smi
 
 If `CUDA.functional()` is false or `nvidia-smi` cannot see a device, report the
 environment limitation instead of treating it as an Octopus tracking failure.
+For multi-GPU runs, select a device with `GPUExecutionPolicy(device=N)` or the
+example environment variable `OCTOPUS_CUDA_DEVICE=N`.
 
 ## Current Limitations
 

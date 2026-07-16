@@ -177,6 +177,7 @@ function _execution_backend(task::TrackingTask, rep)
         "task policy requests $(requested), but particle storage requires $(inferred). " *
         "Construct the beam with the same backend or omit the task policy."
     ))
+    activate_policy!(task.policy)
     return requested
 end
 

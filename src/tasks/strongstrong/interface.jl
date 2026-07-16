@@ -346,6 +346,7 @@ function _execution_backend(task::StrongStrongTask, beam1::Beam{BTAG1}, beam2::B
         "task policy requests $(requested), but beam storage requires $(BTAG1). " *
         "Construct both beams with the same backend or omit the task policy."
     ))
+    activate_policy!(task.policy)
     return requested
 end
 

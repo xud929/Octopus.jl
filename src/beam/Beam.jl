@@ -222,6 +222,7 @@ If `rng_id == 0`, a stream id is assigned with `next_rng_id!()`. Passing an
 explicit `rng` uses that RNG as a convenience override and ignores `rng_id`.
 """
 function Beam(N::Integer, policy::AbstractExecutionPolicy, FloatT::Type{RT}=Float64; kwargs...) where {RT<:Real}
+	activate_policy!(policy)
 	return Beam(Int(N), backend_type(policy), RT; kwargs...)
 end
 
