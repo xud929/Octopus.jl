@@ -80,15 +80,16 @@ each source file.
 `JLD2BeamMomentObserver` writes columnar files. Common access pattern:
 
 ```julia
-using JLD2
-
-jldopen("result/pic_hcc.pro.jld2", "r") do io
-    turns = io["turn"]
-    data = io["data"]
-    emittance = read_moment(io, :emittance)
-    column_names = io["metadata/column_names"]
-end
+moments = MomentFile("result/pic_hcc.pro.jld2")
+data = read(moments)               # column 1 is turn
+turns = read(moments, :turn)        # same values as data[:, 1]
+emittance = read(moments, :emittance)
+covariance = read(moments, :covariance)
 ```
+
+The file stores one dense `data` matrix plus metadata. Named accessors slice
+that matrix; they do not duplicate `emittance`, `covariance`, or `turn`
+datasets on disk.
 
 Developer-facing numerical checks live in `validation/`. They may use internal
 helpers and should not be treated as public API examples.

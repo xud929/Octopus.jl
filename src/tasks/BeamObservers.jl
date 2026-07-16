@@ -1,3 +1,5 @@
+import Base: read
+
 export AbstractSchedule, AbstractBeamObserver, AbstractBeamAction,
        AlwaysSchedule, EveryNSteps, AtTurns, PredicateSchedule,
        should_run, ScheduledObserver, ScheduledAction,
@@ -5,7 +7,7 @@ export AbstractSchedule, AbstractBeamObserver, AbstractBeamAction,
        CoordinateSnapshotObserver, LuminosityObserver, BeamSwapAction,
        observe!, apply_action!, run_observers!, run_actions!,
        prepare_observers!, finalize_observers!, requires_elementwise_tracking,
-       read_moment
+       MomentFile, read_moment
 
 abstract type AbstractSchedule end
 abstract type AbstractBeamObserver end
@@ -237,13 +239,13 @@ Write beam statistics to a Julia-native JLD2 file.
 
 The file uses a columnar layout:
 
-- `turn`: vector of observed turn numbers.
-- `data`: dense matrix with one row per observed turn and flattened statistic
-  columns.
+- `data`: dense matrix with one row per observed turn. Column 1 is `turn`;
+  the remaining columns are flattened beam statistics.
 
 Column metadata is stored under `metadata/column_names` and
-`metadata/ranges/<name>`. Use `read_moment(path, :emittance)` or
-`read_moment(file, :emittance)` to extract named blocks without duplicating
+`metadata/ranges/<name>`. Turn is column 1 of `data`; no duplicate `turn`
+dataset is stored. Use `read(MomentFile(path), :emittance)` or
+`read_moment(path, :emittance)` to extract named blocks without duplicating
 datasets in the file.
 """
 function JLD2BeamMomentObserver(path::AbstractString; capacity::Integer=1)
@@ -459,14 +461,11 @@ function _append_jld2_moment_columns!(file, observer::JLD2BeamMomentObserver)
         new_turn, new_mean, new_covariance, new_rms, new_emittance, new_xz, new_yz, new_fourth,
     )
 
-    turn = _jld2_read_or_empty(file, "turn", Float64[])
     data = _jld2_read_or_empty(file, "data", zeros(Float64, 0, length(_jld2_moment_column_names())))
 
-    turn = vcat(turn, new_turn)
     data = vcat(data, new_data)
 
-    observer.record_count = length(turn)
-    _jld2_replace!(file, "turn", turn)
+    observer.record_count = size(data, 1)
     _jld2_replace!(file, "data", data)
     _jld2_replace!(file, "record_count", Int64(observer.record_count))
     return nothing
@@ -499,6 +498,7 @@ end
 
 function _jld2_moment_ranges()
     return (
+        turn = 1:1,
         mean = 2:7,
         covariance = 8:43,
         rms = 44:49,
@@ -525,10 +525,34 @@ function _jld2_moment_data_matrix(turn, mean, covariance, rms, emittance, xz, yz
 end
 
 """
+    MomentFile(path)
+
+Lightweight handle for reading a columnar `JLD2BeamMomentObserver` file.
+
+```julia
+moments = MomentFile("result/pic_hcc.pro.jld2")
+data = read(moments)
+turn = read(moments, :turn)
+emittance = read(moments, :emittance)
+```
+"""
+struct MomentFile
+    path::String
+end
+
+MomentFile(path::AbstractString) = MomentFile(String(path))
+
+read(file::MomentFile) = read_moment(file.path, :data)
+read(file::MomentFile, name::Symbol) = read_moment(file.path, name)
+
+"""
     read_moment(file_or_path, name)
 
 Read a named moment block from a columnar `JLD2BeamMomentObserver` file without
 duplicating datasets on disk.
+
+Prefer `read(MomentFile(path))` for new code. `read_moment` is kept as a
+compatibility alias and for callers that already have an open JLD2 file handle.
 
 Supported names are `:turn`, `:data`, `:mean`, `:covariance`, `:rms`,
 `:emittance`, `:xz_covariance`, `:yz_covariance`, and
@@ -541,7 +565,6 @@ function read_moment(path::AbstractString, name::Symbol)
 end
 
 function read_moment(file, name::Symbol)
-    name === :turn && return file["turn"]
     name === :data && return file["data"]
     range_key = "metadata/ranges/$(name)"
     haskey(file, range_key) || throw(KeyError(name))
