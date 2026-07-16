@@ -71,6 +71,7 @@ Use Julia help:
 ?EveryNSteps
 ?AtTurns
 ?JLD2BeamMomentObserver
+?OutputFile
 ?LuminosityObserver
 ```
 
@@ -80,7 +81,7 @@ each source file.
 `JLD2BeamMomentObserver` writes columnar files. Common access pattern:
 
 ```julia
-moments = MomentFile("result/pic_hcc.pro.jld2")
+moments = OutputFile("result/pic_hcc.pro.jld2")
 data = read(moments)               # column 1 is turn
 turns = read(moments, :turn)        # same values as data[:, 1]
 emittance = read(moments, :emittance)

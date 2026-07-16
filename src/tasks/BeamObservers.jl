@@ -7,7 +7,7 @@ export AbstractSchedule, AbstractBeamObserver, AbstractBeamAction,
        CoordinateSnapshotObserver, LuminosityObserver, BeamSwapAction,
        observe!, apply_action!, run_observers!, run_actions!,
        prepare_observers!, finalize_observers!, requires_elementwise_tracking,
-       MomentFile, read_moment
+       OutputFile, MomentFile, read_moment
 
 abstract type AbstractSchedule end
 abstract type AbstractBeamObserver end
@@ -244,7 +244,7 @@ The file uses a columnar layout:
 
 Column metadata is stored under `metadata/column_names` and
 `metadata/ranges/<name>`. Turn is column 1 of `data`; no duplicate `turn`
-dataset is stored. Use `read(MomentFile(path), :emittance)` or
+dataset is stored. Use `read(OutputFile(path), :emittance)` or
 `read_moment(path, :emittance)` to extract named blocks without duplicating
 datasets in the file.
 """
@@ -525,25 +525,27 @@ function _jld2_moment_data_matrix(turn, mean, covariance, rms, emittance, xz, yz
 end
 
 """
-    MomentFile(path)
+    OutputFile(path)
 
 Lightweight handle for reading a columnar `JLD2BeamMomentObserver` file.
 
 ```julia
-moments = MomentFile("result/pic_hcc.pro.jld2")
+moments = OutputFile("result/pic_hcc.pro.jld2")
 data = read(moments)
 turn = read(moments, :turn)
 emittance = read(moments, :emittance)
 ```
 """
-struct MomentFile
+struct OutputFile
     path::String
 end
 
-MomentFile(path::AbstractString) = MomentFile(String(path))
+OutputFile(path::AbstractString) = OutputFile(String(path))
 
-read(file::MomentFile) = read_moment(file.path, :data)
-read(file::MomentFile, name::Symbol) = read_moment(file.path, name)
+const MomentFile = OutputFile
+
+read(file::OutputFile) = read_moment(file.path, :data)
+read(file::OutputFile, name::Symbol) = read_moment(file.path, name)
 
 """
     read_moment(file_or_path, name)
@@ -551,7 +553,7 @@ read(file::MomentFile, name::Symbol) = read_moment(file.path, name)
 Read a named moment block from a columnar `JLD2BeamMomentObserver` file without
 duplicating datasets on disk.
 
-Prefer `read(MomentFile(path))` for new code. `read_moment` is kept as a
+Prefer `read(OutputFile(path))` for new code. `read_moment` is kept as a
 compatibility alias and for callers that already have an open JLD2 file handle.
 
 Supported names are `:turn`, `:data`, `:mean`, `:covariance`, `:rms`,
