@@ -1204,10 +1204,11 @@ if _HAS_CUDA
                                                 solver::PICPoissonSolver,
                                                 ::Type{T}, nplanes::Integer) where {T}
             nx, ny = solver.grid
+            ngreen = max(1, Int(nplanes) ÷ 2)
             return get!(workspace.wavefront_cache, Int(nplanes)) do
                 (
                     charges=CUDA.zeros(T, 2nx, 2ny, nplanes),
-                    greens=CUDA.zeros(T, 2nx, 2ny, nplanes),
+                    greens=CUDA.zeros(T, 2nx, 2ny, ngreen),
                     Ex=CUDA.zeros(T, nx, ny, nplanes),
                     Ey=CUDA.zeros(T, nx, ny, nplanes),
                     luminosity_q1=CUDA.zeros(T, nx + 1, ny + 1, max(1, nplanes ÷ 4)),
@@ -1216,12 +1217,12 @@ if _HAS_CUDA
                     luminosity_accum=CUDA.zeros(T, 1),
                     hx=CUDA.zeros(T, nplanes),
                     hy=CUDA.zeros(T, nplanes),
-                    green_field_x0=CUDA.zeros(T, nplanes),
-                    green_field_y0=CUDA.zeros(T, nplanes),
-                    green_source_x0=CUDA.zeros(T, nplanes),
-                    green_source_y0=CUDA.zeros(T, nplanes),
-                    green_hx=CUDA.zeros(T, nplanes),
-                    green_hy=CUDA.zeros(T, nplanes),
+                    green_field_x0=CUDA.zeros(T, ngreen),
+                    green_field_y0=CUDA.zeros(T, ngreen),
+                    green_source_x0=CUDA.zeros(T, ngreen),
+                    green_source_y0=CUDA.zeros(T, ngreen),
+                    green_hx=CUDA.zeros(T, ngreen),
+                    green_hy=CUDA.zeros(T, ngreen),
                 )
             end
         end
@@ -1320,23 +1321,19 @@ if _HAS_CUDA
                                                       timing, threads::Integer, stream) where {T}
             t_green_total = time_ns()
             nx, ny = solver.grid
-            nplanes = length(prep12) * 4
-            field_x0 = Vector{T}(undef, nplanes)
-            field_y0 = Vector{T}(undef, nplanes)
-            source_x0 = Vector{T}(undef, nplanes)
-            source_y0 = Vector{T}(undef, nplanes)
-            hx = Vector{T}(undef, nplanes)
-            hy = Vector{T}(undef, nplanes)
+            ngreen = length(prep12) * 2
+            field_x0 = Vector{T}(undef, ngreen)
+            field_y0 = Vector{T}(undef, ngreen)
+            source_x0 = Vector{T}(undef, ngreen)
+            source_y0 = Vector{T}(undef, ngreen)
+            hx = Vector{T}(undef, ngreen)
+            hy = Vector{T}(undef, ngreen)
             for n in eachindex(prep12)
-                offset = 4 * (n - 1)
+                offset = 2 * (n - 1)
                 _cuda_pic_green_plane_params!(field_x0, field_y0, source_x0, source_y0, hx, hy,
                                               offset + 1, prep12[n].source_grid, prep12[n].field_grid, nx, ny)
                 _cuda_pic_green_plane_params!(field_x0, field_y0, source_x0, source_y0, hx, hy,
-                                              offset + 2, prep12[n].source_grid, prep12[n].field_grid, nx, ny)
-                _cuda_pic_green_plane_params!(field_x0, field_y0, source_x0, source_y0, hx, hy,
-                                              offset + 3, prep21[n].source_grid, prep21[n].field_grid, nx, ny)
-                _cuda_pic_green_plane_params!(field_x0, field_y0, source_x0, source_y0, hx, hy,
-                                              offset + 4, prep21[n].source_grid, prep21[n].field_grid, nx, ny)
+                                              offset + 2, prep21[n].source_grid, prep21[n].field_grid, nx, ny)
             end
             copyto!(wf.green_field_x0, field_x0)
             copyto!(wf.green_field_y0, field_y0)
@@ -1350,7 +1347,7 @@ if _HAS_CUDA
             CUDA.@cuda threads=threads blocks=cld(length(wf.greens), threads) stream=stream _cuda_pic_green_stack_kernel!(
                 wf.greens, wf.green_field_x0, wf.green_field_y0,
                 wf.green_source_x0, wf.green_source_y0, wf.green_hx, wf.green_hy,
-                green_code, Int32(nx), Int32(ny), Int32(nplanes),
+                green_code, Int32(nx), Int32(ny), Int32(ngreen),
             )
             _cuda_pic_add_time!(timing, :green_build_kernel, t_build)
 
@@ -2031,9 +2028,17 @@ if _HAS_CUDA
         function _cuda_pic_multiply_spectral_stack_kernel!(spectral, green_spectral)
             index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
+            n1 = size(spectral, 1)
+            n2 = size(spectral, 2)
+            plane_size = n1 * n2
             total = length(spectral)
             while index <= total
-                @inbounds spectral[index] *= green_spectral[index]
+                plane0 = (index - 1) ÷ plane_size
+                local_index = index - plane0 * plane_size
+                i = (local_index - 1) % n1 + 1
+                j = (local_index - 1) ÷ n1 + 1
+                green_plane = plane0 ÷ 2 + 1
+                @inbounds spectral[index] *= green_spectral[i, j, green_plane]
                 index += stride
             end
             return nothing
