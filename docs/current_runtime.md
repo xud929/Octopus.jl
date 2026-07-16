@@ -259,9 +259,11 @@ Standalone
 `collide!(solver, beam1, beam2, CUDABackend)` calls still allocate a temporary
 workspace for that call.
 The luminosity grid deposition/reduction reads only the old compact slice
-buffers. In CUDA wavefront mode, scheduled luminosity uses stacked
-`(nx + 1, ny + 1, batch_size)` grids and one batched grid-product reduction for
-the current dependency frontier. It runs synchronously by default because
+buffers. In CUDA wavefront mode, scheduled luminosity uses the same per-pair
+formula as the sequential path by default. An experimental stacked-grid
+wavefront luminosity path can be enabled with
+`OCTOPUS_CUDA_PIC_BATCH_LUMINOSITY=1`, but it is not the default until validated
+against the per-pair formula. Luminosity runs synchronously by default because
 measured Julia task/stream overhead outweighed the available overlap on the
 tested path. Set `OCTOPUS_CUDA_PIC_ASYNC_LUMINOSITY=1` to run it on the
 luminosity stream for profiling. Compact slice operations use mask-free CUDA

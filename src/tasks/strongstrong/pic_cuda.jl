@@ -266,6 +266,9 @@ if _HAS_CUDA
         _cuda_pic_async_luminosity_enabled() =
             get(ENV, "OCTOPUS_CUDA_PIC_ASYNC_LUMINOSITY", "0") in ("1", "true", "TRUE", "yes", "YES")
 
+        _cuda_pic_batched_luminosity_enabled() =
+            get(ENV, "OCTOPUS_CUDA_PIC_BATCH_LUMINOSITY", "0") in ("1", "true", "TRUE", "yes", "YES")
+
         function _cuda_pic_timing_stats()
             _cuda_pic_timing_enabled() || return nothing
             return _CUDAPICTimingStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
@@ -1159,6 +1162,23 @@ if _HAS_CUDA
 
         function _cuda_pic_wavefront_luminosity(solver::PICPoissonSolver, valid, klum,
                                                 workspace::_CUDAPICWorkspace, timing=nothing)
+            if _cuda_pic_batched_luminosity_enabled()
+                return _cuda_pic_wavefront_luminosity_batched(solver, valid, klum, workspace, timing)
+            end
+            T = eltype(valid[1].slice1.coords.x)
+            t_luminosity = time_ns()
+            luminosity = zero(T)
+            for item in valid
+                luminosity += _cuda_pic_luminosity(
+                    solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, klum, workspace,
+                )
+            end
+            _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+            return luminosity
+        end
+
+        function _cuda_pic_wavefront_luminosity_batched(solver::PICPoissonSolver, valid, klum,
+                                                        workspace::_CUDAPICWorkspace, timing=nothing)
             npairs = length(valid)
             npairs == 0 && return zero(eltype(workspace.batch_charges))
             nx, ny = solver.grid
