@@ -240,6 +240,9 @@ if _HAS_CUDA
             gather::UInt64
             interaction::UInt64
             prepare::UInt64
+            prepare_source::UInt64
+            prepare_field::UInt64
+            prepare_grid::UInt64
             fields::UInt64
             field_deposit::UInt64
             field_green::UInt64
@@ -271,7 +274,7 @@ if _HAS_CUDA
 
         function _cuda_pic_timing_stats()
             _cuda_pic_timing_enabled() || return nothing
-            return _CUDAPICTimingStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            return _CUDAPICTimingStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         end
 
         function _cuda_pic_add_time!(stats::_CUDAPICTimingStats, field::Symbol, t0::UInt64)
@@ -290,6 +293,9 @@ if _HAS_CUDA
             println("  gather      = ", stats.gather * scale, " s")
             println("  interaction = ", stats.interaction * scale, " s")
             println("    prepare   = ", stats.prepare * scale, " s")
+            println("      source  = ", stats.prepare_source * scale, " s")
+            println("      field   = ", stats.prepare_field * scale, " s")
+            println("      grid    = ", stats.prepare_grid * scale, " s")
             println("    fields    = ", stats.fields * scale, " s")
             println("      deposit = ", stats.field_deposit * scale, " s")
             println("      green   = ", stats.field_green * scale, " s")
@@ -489,8 +495,8 @@ if _HAS_CUDA
                                                    compute_luminosity::Bool=true)
             prepare_range = _cuda_nvtx_push(CUDABackend, "pic prepare interaction")
             t_prepare = time_ns()
-            prep12 = _cuda_pic_prepare_interaction(solver, old1, p1, old2, p2)
-            prep21 = _cuda_pic_prepare_interaction(solver, old2, p2, old1, p1)
+            prep12 = _cuda_pic_prepare_interaction(solver, old1, p1, old2, p2, timing)
+            prep21 = _cuda_pic_prepare_interaction(solver, old2, p2, old1, p1, timing)
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
             _cuda_nvtx_pop(CUDABackend, prepare_range)
 
@@ -581,8 +587,8 @@ if _HAS_CUDA
                                                          compute_luminosity::Bool=true)
             prepare_range = _cuda_nvtx_push(CUDABackend, "pic prepare interaction")
             t_prepare = time_ns()
-            prep12 = _cuda_pic_prepare_interaction(solver, old1, p1, old2, p2)
-            prep21 = _cuda_pic_prepare_interaction(solver, old2, p2, old1, p1)
+            prep12 = _cuda_pic_prepare_interaction(solver, old1, p1, old2, p2, timing)
+            prep21 = _cuda_pic_prepare_interaction(solver, old2, p2, old1, p1, timing)
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
             _cuda_nvtx_pop(CUDABackend, prepare_range)
 
@@ -676,10 +682,10 @@ if _HAS_CUDA
             for n in 1:npairs
                 item = valid[n]
                 prep12[n] = _cuda_pic_prepare_interaction(
-                    solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
+                    solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, timing,
                 )
                 prep21[n] = _cuda_pic_prepare_interaction(
-                    solver, item.slice2.coords, item.p2, item.slice1.coords, item.p1,
+                    solver, item.slice2.coords, item.p2, item.slice1.coords, item.p1, timing,
                 )
             end
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
@@ -783,7 +789,7 @@ if _HAS_CUDA
                                         field, param_field, kbb,
                                         green_cache=nothing, charge=nothing, timing=nothing)
             t_prepare = time_ns()
-            prep = _cuda_pic_prepare_interaction(solver, source, param_source, field, param_field)
+            prep = _cuda_pic_prepare_interaction(solver, source, param_source, field, param_field, timing)
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
             t_green = time_ns()
             green_fft = _cuda_pic_green_fft(
@@ -810,32 +816,38 @@ if _HAS_CUDA
         end
 
         function _cuda_pic_prepare_interaction(solver::PICPoissonSolver, source, param_source,
-                                               field, param_field)
+                                               field, param_field, timing=nothing)
             T = eltype(source.x)
             sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
             sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
+            t_source = time_ns()
             source_xl = source.x .+ source.px .* sL
             source_yl = source.y .+ source.py .* sL
             source_xr = source.x .+ source.px .* sR
             source_yr = source.y .+ source.py .* sR
 
-            field_s = T(0.5) .* (field.z .- T(param_source.center))
-            field_x = field.x .+ field.px .* field_s
-            field_y = field.y .+ field.py .* field_s
-
             source_xmin = min(T(minimum(source_xl)), T(minimum(source_xr)))
             source_xmax = max(T(maximum(source_xl)), T(maximum(source_xr)))
             source_ymin = min(T(minimum(source_yl)), T(minimum(source_yr)))
             source_ymax = max(T(maximum(source_yl)), T(maximum(source_yr)))
+            _cuda_pic_add_time!(timing, :prepare_source, t_source)
+
+            t_field = time_ns()
+            field_s = T(0.5) .* (field.z .- T(param_source.center))
+            field_x = field.x .+ field.px .* field_s
+            field_y = field.y .+ field.py .* field_s
             field_xmin = T(minimum(field_x))
             field_xmax = T(maximum(field_x))
             field_ymin = T(minimum(field_y))
             field_ymax = T(maximum(field_y))
+            _cuda_pic_add_time!(timing, :prepare_field, t_field)
 
+            t_grid = time_ns()
             source_grid, field_grid = _pic_interaction_grids(
                 solver, source_xmin, source_xmax, source_ymin, source_ymax,
                 field_xmin, field_xmax, field_ymin, field_ymax,
             )
+            _cuda_pic_add_time!(timing, :prepare_grid, t_grid)
             return (
                 sL=sL,
                 sR=sR,
