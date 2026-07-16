@@ -26,7 +26,7 @@ if _HAS_CUDA
                                          ctx::TrackingContext)
             T = eltype(beam1.rep.x)
             workspace = _cuda_pic_workspace!(task.runtime_cache, label, solver, T)
-            green_cache = _cuda_pic_green_cache(solver, T)
+            green_cache = _cuda_pic_green_cache!(task.runtime_cache, label, solver, T)
             return _cuda_pic_collide!(solver, beam1, beam2, workspace, green_cache, ctx)
         end
 
@@ -213,8 +213,22 @@ if _HAS_CUDA
             return luminosity
         end
 
+        struct _CUDAPICGridTemplate{T}
+            source_width::T
+            source_height::T
+            field_width::T
+            field_height::T
+            dx::T
+            dy::T
+            hx::T
+            hy::T
+            green_fft::Any
+        end
+
         mutable struct _CUDAPICGreenCache{T}
+            mode::Symbol
             greens::Dict{_PICGreenKey{T},Any}
+            templates::Vector{_CUDAPICGridTemplate{T}}
             hits::Int
             misses::Int
             evictions::Int
@@ -379,7 +393,32 @@ if _HAS_CUDA
             (cache == :exact || cache == :grid_template) ||
                 return nothing
             max_entries = parse(Int, get(ENV, "OCTOPUS_CUDA_PIC_GREEN_CACHE_MAX_ENTRIES", "256"))
-            return _CUDAPICGreenCache{T}(Dict{_PICGreenKey{T},Any}(), 0, 0, 0, max_entries, ReentrantLock())
+            return _CUDAPICGreenCache{T}(
+                cache, Dict{_PICGreenKey{T},Any}(), _CUDAPICGridTemplate{T}[],
+                0, 0, 0, max_entries, ReentrantLock(),
+            )
+        end
+
+        function _cuda_pic_green_cache!(runtime_cache::Dict, label::Symbol,
+                                        solver::PICPoissonSolver, ::Type{T}) where {T}
+            cache_mode = Symbol(solver.green_cache)
+            (cache_mode == :exact || cache_mode == :grid_template) || return nothing
+            max_entries = parse(Int, get(ENV, "OCTOPUS_CUDA_PIC_GREEN_CACHE_MAX_ENTRIES", "256"))
+            key = (
+                :cuda_pic_green_cache,
+                label,
+                T,
+                solver.grid,
+                Symbol(solver.green_type),
+                cache_mode,
+                max_entries,
+                get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_WIDTH_RTOL", "Inf"),
+                get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_HEIGHT_RTOL", "Inf"),
+                get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_OFFSET_ATOL_CELLS", "Inf"),
+            )
+            return get!(runtime_cache, key) do
+                _cuda_pic_green_cache(solver, T)
+            end
         end
 
         function _cuda_pic_report_green_cache(cache)
@@ -387,11 +426,19 @@ if _HAS_CUDA
             get(ENV, "OCTOPUS_PIC_CACHE_STATS", "0") in ("1", "true", "TRUE", "yes", "YES") || return nothing
             total = cache.hits + cache.misses
             hit_rate = total == 0 ? 0.0 : cache.hits / total
-            println(
-                "CUDA PIC Green cache: entries=$(length(cache.greens)), " *
-                "hits=$(cache.hits), misses=$(cache.misses), evictions=$(cache.evictions), " *
-                "max_entries=$(cache.max_entries), hit_rate=$(hit_rate)"
-            )
+            if cache.mode == :grid_template
+                println(
+                    "CUDA PIC grid-template cache: templates=$(length(cache.templates)), " *
+                    "hits=$(cache.hits), misses=$(cache.misses), evictions=$(cache.evictions), " *
+                    "max_entries=$(cache.max_entries), hit_rate=$(hit_rate)"
+                )
+            else
+                println(
+                    "CUDA PIC exact Green cache: entries=$(length(cache.greens)), " *
+                    "hits=$(cache.hits), misses=$(cache.misses), evictions=$(cache.evictions), " *
+                    "max_entries=$(cache.max_entries), hit_rate=$(hit_rate)"
+                )
+            end
             return nothing
         end
 
@@ -507,18 +554,18 @@ if _HAS_CUDA
                                                    compute_luminosity::Bool=true)
             prepare_range = _cuda_nvtx_push(CUDABackend, "pic prepare interaction")
             t_prepare = time_ns()
-            prep12 = _cuda_pic_prepare_interaction(solver, old1, p1, old2, p2, timing)
-            prep21 = _cuda_pic_prepare_interaction(solver, old2, p2, old1, p1, timing)
+            prep12 = _cuda_pic_prepare_interaction(solver, old1, p1, old2, p2, green_cache, timing)
+            prep21 = _cuda_pic_prepare_interaction(solver, old2, p2, old1, p1, green_cache, timing)
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
             _cuda_nvtx_pop(CUDABackend, prepare_range)
 
             t_green = time_ns()
-            green12 = _cuda_pic_green_fft(
-                solver, eltype(old1.x), prep12.source_grid, prep12.field_grid, green_cache, timing,
-            )
-            green21 = _cuda_pic_green_fft(
-                solver, eltype(old2.x), prep21.source_grid, prep21.field_grid, green_cache, timing,
-            )
+            green12 = prep12.green_fft === nothing ?
+                _cuda_pic_green_fft(solver, eltype(old1.x), prep12.source_grid, prep12.field_grid, green_cache, timing) :
+                prep12.green_fft
+            green21 = prep21.green_fft === nothing ?
+                _cuda_pic_green_fft(solver, eltype(old2.x), prep21.source_grid, prep21.field_grid, green_cache, timing) :
+                prep21.green_fft
             _cuda_pic_add_time!(timing, :field_green, t_green)
 
             streams = workspace.field_streams
@@ -599,18 +646,18 @@ if _HAS_CUDA
                                                          compute_luminosity::Bool=true)
             prepare_range = _cuda_nvtx_push(CUDABackend, "pic prepare interaction")
             t_prepare = time_ns()
-            prep12 = _cuda_pic_prepare_interaction(solver, old1, p1, old2, p2, timing)
-            prep21 = _cuda_pic_prepare_interaction(solver, old2, p2, old1, p1, timing)
+            prep12 = _cuda_pic_prepare_interaction(solver, old1, p1, old2, p2, green_cache, timing)
+            prep21 = _cuda_pic_prepare_interaction(solver, old2, p2, old1, p1, green_cache, timing)
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
             _cuda_nvtx_pop(CUDABackend, prepare_range)
 
             t_green = time_ns()
-            green12 = _cuda_pic_green_fft(
-                solver, eltype(old1.x), prep12.source_grid, prep12.field_grid, green_cache, timing,
-            )
-            green21 = _cuda_pic_green_fft(
-                solver, eltype(old2.x), prep21.source_grid, prep21.field_grid, green_cache, timing,
-            )
+            green12 = prep12.green_fft === nothing ?
+                _cuda_pic_green_fft(solver, eltype(old1.x), prep12.source_grid, prep12.field_grid, green_cache, timing) :
+                prep12.green_fft
+            green21 = prep21.green_fft === nothing ?
+                _cuda_pic_green_fft(solver, eltype(old2.x), prep21.source_grid, prep21.field_grid, green_cache, timing) :
+                prep21.green_fft
             _cuda_pic_add_time!(timing, :field_green, t_green)
 
             luminosity_stream = workspace.luminosity_stream
@@ -694,10 +741,10 @@ if _HAS_CUDA
             for n in 1:npairs
                 item = valid[n]
                 prep12[n] = _cuda_pic_prepare_interaction(
-                    solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, timing,
+                    solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, green_cache, timing,
                 )
                 prep21[n] = _cuda_pic_prepare_interaction(
-                    solver, item.slice2.coords, item.p2, item.slice1.coords, item.p1, timing,
+                    solver, item.slice2.coords, item.p2, item.slice1.coords, item.p1, green_cache, timing,
                 )
             end
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
@@ -724,12 +771,12 @@ if _HAS_CUDA
             green21 = Vector{Any}(undef, npairs)
             for n in 1:npairs
                 item = valid[n]
-                green12[n] = _cuda_pic_green_fft(
-                    solver, T, prep12[n].source_grid, prep12[n].field_grid, green_cache, timing,
-                )
-                green21[n] = _cuda_pic_green_fft(
-                    solver, T, prep21[n].source_grid, prep21[n].field_grid, green_cache, timing,
-                )
+                green12[n] = prep12[n].green_fft === nothing ?
+                    _cuda_pic_green_fft(solver, T, prep12[n].source_grid, prep12[n].field_grid, green_cache, timing) :
+                    prep12[n].green_fft
+                green21[n] = prep21[n].green_fft === nothing ?
+                    _cuda_pic_green_fft(solver, T, prep21[n].source_grid, prep21[n].field_grid, green_cache, timing) :
+                    prep21[n].green_fft
             end
             _cuda_pic_add_time!(timing, :field_green, t_green)
 
@@ -801,12 +848,12 @@ if _HAS_CUDA
                                         field, param_field, kbb,
                                         green_cache=nothing, charge=nothing, timing=nothing)
             t_prepare = time_ns()
-            prep = _cuda_pic_prepare_interaction(solver, source, param_source, field, param_field, timing)
+            prep = _cuda_pic_prepare_interaction(solver, source, param_source, field, param_field, green_cache, timing)
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
             t_green = time_ns()
-            green_fft = _cuda_pic_green_fft(
-                solver, eltype(source.x), prep.source_grid, prep.field_grid, green_cache, timing,
-            )
+            green_fft = prep.green_fft === nothing ?
+                _cuda_pic_green_fft(solver, eltype(source.x), prep.source_grid, prep.field_grid, green_cache, timing) :
+                prep.green_fft
             _cuda_pic_add_time!(timing, :field_green, t_green)
             t_fields = time_ns()
             phiL, ExL, EyL = _cuda_pic_solve_drifted_field_with_green_fft(
@@ -828,7 +875,7 @@ if _HAS_CUDA
         end
 
         function _cuda_pic_prepare_interaction(solver::PICPoissonSolver, source, param_source,
-                                               field, param_field, timing=nothing)
+                                               field, param_field, green_cache=nothing, timing=nothing)
             T = eltype(source.x)
             sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
             sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
@@ -853,8 +900,13 @@ if _HAS_CUDA
             _cuda_pic_add_time!(timing, :prepare_field, t_field)
 
             t_grid = time_ns()
-            source_grid, field_grid = _pic_interaction_grids(
+            source_grid0, field_grid0 = _pic_interaction_grids(
                 solver, source_xmin, source_xmax, source_ymin, source_ymax,
+                field_xmin, field_xmax, field_ymin, field_ymax,
+            )
+            source_grid, field_grid, green_fft = _cuda_pic_cached_interaction_grids(
+                solver, T, green_cache, source_grid0, field_grid0,
+                source_xmin, source_xmax, source_ymin, source_ymax,
                 field_xmin, field_xmax, field_ymin, field_ymax,
             )
             _cuda_pic_add_time!(timing, :prepare_grid, t_grid)
@@ -863,6 +915,7 @@ if _HAS_CUDA
                 sR=sR,
                 source_grid=source_grid,
                 field_grid=field_grid,
+                green_fft=green_fft,
             )
         end
 
@@ -904,6 +957,71 @@ if _HAS_CUDA
             green_fft = _cuda_pic_green_fft(solver, eltype(x), source_grid, field_grid, green_cache, timing)
             _cuda_pic_add_time!(timing, :field_green, t_green)
             return _cuda_pic_solve_field_with_green_fft(solver, x, y, source_grid, green_fft, charge, timing)
+        end
+
+        function _cuda_pic_cached_interaction_grids(solver::PICPoissonSolver, ::Type{T}, cache,
+                                                    source_grid, field_grid,
+                                                    sxmin, sxmax, symin, symax,
+                                                    fxmin, fxmax, fymin, fymax) where {T}
+            cache isa _CUDAPICGreenCache{T} || return source_grid, field_grid, nothing
+            cache.mode == :grid_template || return source_grid, field_grid, nothing
+            lock(cache.lock) do
+                for template in cache.templates
+                    translated = _cuda_pic_translate_template_if_covers(
+                        template, source_grid, field_grid,
+                        sxmin, sxmax, symin, symax, fxmin, fxmax, fymin, fymax,
+                    )
+                    if translated !== nothing
+                        cache.hits += 1
+                        return translated[1], translated[2], template.green_fft
+                    end
+                end
+            end
+            return source_grid, field_grid, nothing
+        end
+
+        function _cuda_pic_translate_template_if_covers(template, source_grid0, field_grid0,
+                                                        sxmin, sxmax, symin, symax,
+                                                        fxmin, fxmax, fymin, fymax)
+            _cuda_pic_template_within_tolerance(template, source_grid0, field_grid0) || return nothing
+            sx0 = _pic_template_origin_1d(
+                sxmin, sxmax, fxmin, fxmax,
+                template.source_width, template.field_width, template.dx, template.hx,
+            )
+            sx0 === nothing && return nothing
+            sy0 = _pic_template_origin_1d(
+                symin, symax, fymin, fymax,
+                template.source_height, template.field_height, template.dy, template.hy,
+            )
+            sy0 === nothing && return nothing
+            source_grid = (x0=sx0, y0=sy0, width=template.source_width, height=template.source_height)
+            field_grid = (x0=sx0 + template.dx, y0=sy0 + template.dy,
+                          width=template.field_width, height=template.field_height)
+            return source_grid, field_grid
+        end
+
+        function _cuda_pic_template_within_tolerance(template, source_grid, field_grid)
+            width_rtol = parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_WIDTH_RTOL", "Inf"))
+            height_rtol = parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_HEIGHT_RTOL", "Inf"))
+            offset_atol_cells = parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_TEMPLATE_OFFSET_ATOL_CELLS", "Inf"))
+            req_dx = field_grid.x0 - source_grid.x0
+            req_dy = field_grid.y0 - source_grid.y0
+            width_scale = max(abs(source_grid.width), eps(typeof(source_grid.width)))
+            height_scale = max(abs(source_grid.height), eps(typeof(source_grid.height)))
+            max_width_err = max(
+                abs(template.source_width - source_grid.width) / width_scale,
+                abs(template.field_width - field_grid.width) / max(abs(field_grid.width), eps(typeof(field_grid.width))),
+            )
+            max_height_err = max(
+                abs(template.source_height - source_grid.height) / height_scale,
+                abs(template.field_height - field_grid.height) / max(abs(field_grid.height), eps(typeof(field_grid.height))),
+            )
+            offset_x_err = abs(template.dx - req_dx) / max(abs(template.hx), eps(typeof(template.hx)))
+            offset_y_err = abs(template.dy - req_dy) / max(abs(template.hy), eps(typeof(template.hy)))
+            return max_width_err <= width_rtol &&
+                   max_height_err <= height_rtol &&
+                   offset_x_err <= offset_atol_cells &&
+                   offset_y_err <= offset_atol_cells
         end
 
         function _cuda_pic_solve_field_with_green_fft(solver::PICPoissonSolver, x, y,
@@ -1141,7 +1259,7 @@ if _HAS_CUDA
 
         function _cuda_pic_green_fft(solver::PICPoissonSolver, ::Type{T}, source_grid, field_grid,
                                      cache, timing=nothing) where {T}
-            if cache isa _CUDAPICGreenCache{T}
+            if cache isa _CUDAPICGreenCache{T} && cache.mode == :exact
                 t_lookup = time_ns()
                 key = _pic_green_key(solver, T, source_grid, field_grid)
                 lock(cache.lock) do
@@ -1168,8 +1286,44 @@ if _HAS_CUDA
                     _cuda_pic_add_time!(timing, :green_cache_insert, t_insert)
                     return green_fft
                 end
+            elseif cache isa _CUDAPICGreenCache{T} && cache.mode == :grid_template
+                green_fft = _cuda_pic_build_green_fft(solver, T, source_grid, field_grid, timing)
+                t_sync = time_ns()
+                CUDA.synchronize(CUDA.stream())
+                _cuda_pic_add_time!(timing, :green_cache_sync, t_sync)
+                t_insert = time_ns()
+                lock(cache.lock) do
+                    if cache.max_entries > 0
+                        if length(cache.templates) >= cache.max_entries
+                            popfirst!(cache.templates)
+                            cache.evictions += 1
+                        end
+                        push!(cache.templates, _cuda_pic_grid_template(solver, T, source_grid, field_grid, green_fft))
+                    end
+                    cache.misses += 1
+                end
+                _cuda_pic_add_time!(timing, :green_cache_insert, t_insert)
+                return green_fft
             end
             return _cuda_pic_build_green_fft(solver, T, source_grid, field_grid, timing)
+        end
+
+        function _cuda_pic_grid_template(solver::PICPoissonSolver, ::Type{T}, source_grid, field_grid,
+                                         green_fft) where {T}
+            nx, ny = solver.grid
+            hx = T(source_grid.width) / T(nx - 1)
+            hy = T(source_grid.height) / T(ny - 1)
+            return _CUDAPICGridTemplate{T}(
+                T(source_grid.width),
+                T(source_grid.height),
+                T(field_grid.width),
+                T(field_grid.height),
+                T(field_grid.x0 - source_grid.x0),
+                T(field_grid.y0 - source_grid.y0),
+                T(hx),
+                T(hy),
+                green_fft,
+            )
         end
 
         function _cuda_pic_build_green_fft(solver::PICPoissonSolver, ::Type{T}, source_grid, field_grid,
