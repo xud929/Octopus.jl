@@ -182,7 +182,7 @@ function _execution_backend(task::TrackingTask, rep)
 end
 
 function _infer_backend(rep::Phase6DRep)
-    if _HAS_CUDA && rep.x isa CUDA.AbstractGPUArray
+    if _HAS_CUDA && rep.x isa CUDA.CuArray
         return CUDABackend
     end
     return CPUThreadsBackend

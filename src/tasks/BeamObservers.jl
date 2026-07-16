@@ -37,7 +37,7 @@ end
 struct AtTurns <: AbstractSchedule
     turns::Set{Int}
 end
-AtTurns(turns) = AtTurns(Set(Int.(turns)))
+AtTurns(turns::Union{AbstractVector,AbstractRange,Tuple}) = AtTurns(Set(Int.(turns)))
 
 """Run when `predicate(ctx)` returns true."""
 struct PredicateSchedule{F} <: AbstractSchedule
@@ -63,8 +63,8 @@ struct ScheduledObserver{O<:AbstractBeamObserver,S<:AbstractSchedule}
     observer::O
     schedule::S
 end
-ScheduledObserver(observer::AbstractBeamObserver, schedule::AbstractSchedule=AlwaysSchedule()) =
-    ScheduledObserver{typeof(observer),typeof(schedule)}(observer, schedule)
+ScheduledObserver(observer::AbstractBeamObserver) =
+    ScheduledObserver(observer, AlwaysSchedule())
 
 """
     ScheduledAction(action, schedule=AlwaysSchedule())
@@ -77,8 +77,8 @@ struct ScheduledAction{A<:AbstractBeamAction,S<:AbstractSchedule}
     action::A
     schedule::S
 end
-ScheduledAction(action::AbstractBeamAction, schedule::AbstractSchedule=AlwaysSchedule()) =
-    ScheduledAction{typeof(action),typeof(schedule)}(action, schedule)
+ScheduledAction(action::AbstractBeamAction) =
+    ScheduledAction(action, AlwaysSchedule())
 
 function run_observers!(observers, ctx::TrackingContext, rep)
     for raw in _hook_tuple(observers)
@@ -598,7 +598,6 @@ Replace the current representation with the `Phase6DRep` or `Beam` returned by
 `provider(ctx)`. If `provider` accepts no arguments, it is called as
 `provider()`.
 """
-BeamSwapAction(provider) = BeamSwapAction{typeof(provider)}(provider)
 
 function observe!(observer::BeamMomentObserver, ctx::TrackingContext, rep)
     observer.buffer_capacity == 0 && return nothing
@@ -1002,9 +1001,15 @@ selected = read(out; orders = (), extra = (Moment(; pz = 4),))
 without_z2 = read(out; orders = 1:2, exclude = (Moment(; z = 2),))
 ```
 """
-function read(file::MomentOutputFile)
-    _is_hdf5_output(file.path) && return _read_hdf5_data(file.path)
-    return read_moment(file.path, :data)
+function read(file::MomentOutputFile; orders=_READ_ALL_MOMENT_COLUMNS, extra=(), exclude=())
+    if !_is_hdf5_output(file.path)
+        orders === _READ_ALL_MOMENT_COLUMNS && isempty(extra) && isempty(exclude) && return read_moment(file.path, :data)
+        throw(ArgumentError("keyword moment selection is only supported for HDF5 output files"))
+    end
+    if orders === _READ_ALL_MOMENT_COLUMNS && isempty(extra) && isempty(exclude)
+        return _read_hdf5_data(file.path)
+    end
+    return _read_hdf5_selection(file.path; orders=orders, extra=extra, exclude=exclude)
 end
 
 """
@@ -1036,14 +1041,6 @@ function read(file::MomentOutputFile, item::Union{Moment,Symbol,AbstractString})
     item isa Symbol && return read_moment(file.path, item)
     item isa AbstractString && return read_moment(file.path, Symbol(item))
     return read_moment(file.path, Symbol(name(item)))
-end
-
-function read(file::MomentOutputFile; orders=_READ_ALL_MOMENT_COLUMNS, extra=(), exclude=())
-    _is_hdf5_output(file.path) || throw(ArgumentError("keyword moment selection is only supported for HDF5 output files"))
-    if orders === _READ_ALL_MOMENT_COLUMNS && isempty(extra) && isempty(exclude)
-        return _read_hdf5_data(file.path)
-    end
-    return _read_hdf5_selection(file.path; orders=orders, extra=extra, exclude=exclude)
 end
 
 """

@@ -47,7 +47,6 @@ mutable struct PinkNoiseTurnSignal{N,T} <: AbstractTurnSignal{N,T}
 end
 
 NoTurnSignal{N,T}() where {N,T} = NoTurnSignal{N,T}(ntuple(_ -> zero(T), N))
-NoTurnSignal(values::NTuple{N,T}) where {N,T} = NoTurnSignal{N,T}(values)
 LinearTurnSignal(base, slope) = LinearTurnSignal(_strong_tuple(base), _strong_tuple(slope))
 SinTurnSignal(amplitude, frequency; offset=nothing) =
     SinTurnSignal(_strong_tuple(amplitude), _strong_tuple(frequency),

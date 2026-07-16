@@ -165,15 +165,37 @@ kbb2 = beam1.charge * beam2.charge * beam2.r0 * beam1.npart * beam2.mc2 / beam2.
 normalization for the beam sampled by the luminosity estimate. This solver is a
 sliced moment-based Poisson approximation, not a grid PIC solver.
 """
-Base.@kwdef struct GaussianPoissonSolver{T<:Real} <: AbstractPoissonSolver
-    kbb1::Union{Nothing,T} = nothing
-    kbb2::Union{Nothing,T} = nothing
-    luminosity_scale::Union{Nothing,T} = nothing
-    slicing::LongitudinalSlicing = LongitudinalSlicing()
-    min_sigma::T = eps(T)
-    gaussian_when_luminosity::Int = 2
-    ignore_centroid1::Bool = false
-    ignore_centroid2::Bool = false
+struct GaussianPoissonSolver{T<:Real} <: AbstractPoissonSolver
+    kbb1::Union{Nothing,T}
+    kbb2::Union{Nothing,T}
+    luminosity_scale::Union{Nothing,T}
+    slicing::LongitudinalSlicing
+    min_sigma::T
+    gaussian_when_luminosity::Int
+    ignore_centroid1::Bool
+    ignore_centroid2::Bool
+end
+
+_optional_solver_value(::Type{T}, value) where {T<:Real} =
+    value === nothing ? nothing : T(value)
+
+function GaussianPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
+                                  luminosity_scale=nothing,
+                                  slicing::LongitudinalSlicing=LongitudinalSlicing(),
+                                  min_sigma=eps(T),
+                                  gaussian_when_luminosity::Integer=2,
+                                  ignore_centroid1::Bool=false,
+                                  ignore_centroid2::Bool=false) where {T<:Real}
+    return GaussianPoissonSolver{T}(
+        _optional_solver_value(T, kbb1),
+        _optional_solver_value(T, kbb2),
+        _optional_solver_value(T, luminosity_scale),
+        slicing,
+        T(min_sigma),
+        Int(gaussian_when_luminosity),
+        ignore_centroid1,
+        ignore_centroid2,
+    )
 end
 
 GaussianPoissonSolver(; kwargs...) = GaussianPoissonSolver{Float64}(; kwargs...)
@@ -213,16 +235,37 @@ CUDA execution uses atomic grid deposition and CUDA FFT convolution. The first
 CUDA implementation is correctness-oriented; later versions may replace atomic
 deposition with binned or tiled reductions for dense beams.
 """
-Base.@kwdef struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
-    kbb1::Union{Nothing,T} = nothing
-    kbb2::Union{Nothing,T} = nothing
-    luminosity_scale::Union{Nothing,T} = nothing
-    grid::Tuple{Int,Int} = (128, 128)
-    deposit_method::Symbol = :CIC
-    green_type::Symbol = :integrated
-    green_cache::Symbol = :none
-    longitudinal_kick::Bool = true
-    slicing::LongitudinalSlicing = LongitudinalSlicing()
+struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
+    kbb1::Union{Nothing,T}
+    kbb2::Union{Nothing,T}
+    luminosity_scale::Union{Nothing,T}
+    grid::Tuple{Int,Int}
+    deposit_method::Symbol
+    green_type::Symbol
+    green_cache::Symbol
+    longitudinal_kick::Bool
+    slicing::LongitudinalSlicing
+end
+
+function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
+                             luminosity_scale=nothing,
+                             grid=(128, 128),
+                             deposit_method::Symbol=:CIC,
+                             green_type::Symbol=:integrated,
+                             green_cache::Symbol=:none,
+                             longitudinal_kick::Bool=true,
+                             slicing::LongitudinalSlicing=LongitudinalSlicing()) where {T<:Real}
+    return PICPoissonSolver{T}(
+        _optional_solver_value(T, kbb1),
+        _optional_solver_value(T, kbb2),
+        _optional_solver_value(T, luminosity_scale),
+        (Int(grid[1]), Int(grid[2])),
+        deposit_method,
+        green_type,
+        green_cache,
+        longitudinal_kick,
+        slicing,
+    )
 end
 
 PICPoissonSolver(; kwargs...) = PICPoissonSolver{Float64}(; kwargs...)

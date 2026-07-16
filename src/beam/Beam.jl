@@ -54,7 +54,7 @@ function _alloc_randn(::Type{CUDABackend}, T, N; cutoff=Inf, rng=nothing)
 	_HAS_CUDA || error("CUDABackend requires CUDA.jl to be available.")
 	rng = rng === nothing ? CUDA.default_rng() : rng
 	values = Random.randn(rng, T, N)
-	if !(values isa CUDA.AbstractGPUArray)
+	if !(values isa CUDA.CuArray)
 		values = CUDA.CuArray(values)
 	end
 	if isfinite(cutoff)
@@ -328,7 +328,7 @@ end
 add_offset!(beam::Beam, offsets) = (add_offset!(beam.rep, offsets); beam)
 
 function _host_array(v)
-	_HAS_CUDA && v isa CUDA.AbstractGPUArray && return Array(v)
+	_HAS_CUDA && v isa CUDA.CuArray && return Array(v)
 	return v
 end
 
