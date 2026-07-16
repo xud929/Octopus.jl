@@ -368,6 +368,9 @@ mutable struct MomentObserver <: AbstractBeamObserver
     buffer_length::Int
     record_count::Int
     planned_records::Int
+    planned_flushes::Int
+    flush_count::Int
+    start_time_ns::UInt64
     initialized::Bool
 end
 
@@ -396,10 +399,11 @@ end
     MomentObserver(path; orders=1:2, extra=(), exclude=(), capacity=1024)
 
 Write selected beam moments to an HDF5 table. The file contains `/data`,
-`/column_names`, and `/record_count`. Column 1 is always `turn`; moment columns
-are selected by expanding `orders`, adding `extra`, and then removing
-`exclude`. Use `Moment(; x=1)`, `Moment(; x=1, px=1)`, or `Moment(:m100000)`
-to identify individual moments.
+`/column_names`, `/record_count`, `/elapsed_time`, `/flush_count`, and
+`/flush_log`. Column 1 is always `turn`; moment columns are selected by
+expanding `orders`, adding `extra`, and then removing `exclude`. Use
+`Moment(; x=1)`, `Moment(; x=1, px=1)`, or `Moment(:m100000)` to identify
+individual moments.
 
 The observer requires a predictable schedule (`AlwaysSchedule`,
 `EveryNSteps`, or `AtTurns`) so the HDF5 data matrix can be preallocated.
@@ -409,7 +413,7 @@ function MomentObserver(path::AbstractString; orders=1:2, extra=(), exclude=(), 
     moments = _selected_moments(orders=orders, extra=extra, exclude=exclude)
     names = ["turn"; collect(name.(moments))]
     buffer = Matrix{Float64}(undef, max(Int(capacity), 1), length(names))
-    return MomentObserver(String(path), moments, names, Int(capacity), buffer, 0, 0, 0, false)
+    return MomentObserver(String(path), moments, names, Int(capacity), buffer, 0, 0, 0, 0, 0, UInt64(0), false)
 end
 
 mutable struct CoordinateSnapshotObserver <: AbstractBeamObserver
@@ -624,8 +628,11 @@ function _prepare_moment_observer!(observer::MomentObserver, schedule, turns)
         "MomentObserver requires a predictable schedule: use AlwaysSchedule, EveryNSteps, or AtTurns with known task turns."
     ))
     observer.planned_records = length(planned_turns)
+    observer.planned_flushes = observer.buffer_capacity == 0 ? 0 : cld(observer.planned_records, observer.buffer_capacity)
     observer.record_count = 0
+    observer.flush_count = 0
     observer.buffer_length = 0
+    observer.start_time_ns = time_ns()
     _initialize_hdf5_moment_file!(observer)
     observer.initialized = true
     return nothing
@@ -655,6 +662,10 @@ function _initialize_hdf5_moment_file!(observer::MomentObserver)
         file["data"] = zeros(Float64, observer.planned_records, length(observer.column_names))
         file["column_names"] = observer.column_names
         file["record_count"] = Int64[0]
+        file["elapsed_time"] = Float64[0.0]
+        file["flush_count"] = Int64[0]
+        file["flush_log"] = zeros(Float64, observer.planned_flushes, 3)
+        file["flush_log_column_names"] = ["record_count", "elapsed_time", "unix_time"]
         HDF5.flush(file)
     end
     return nothing
@@ -668,6 +679,13 @@ function _flush_moment_observer!(observer::MomentObserver)
     HDF5.h5open(observer.path, "r+") do file
         file["data"][row1:row2, :] = observer.buffer[1:observer.buffer_length, :]
         file["record_count"][1] = Int64(row2)
+        observer.flush_count += 1
+        elapsed = (time_ns() - observer.start_time_ns) / 1.0e9
+        file["elapsed_time"][1] = Float64(elapsed)
+        file["flush_count"][1] = Int64(observer.flush_count)
+        if observer.flush_count <= observer.planned_flushes
+            file["flush_log"][observer.flush_count, :] = [Float64(row2), Float64(elapsed), Float64(time())]
+        end
         HDF5.flush(file)
     end
     observer.record_count = row2
@@ -866,11 +884,34 @@ end
 
 function _read_hdf5_column(path::AbstractString, item)
     return HDF5.h5open(path, "r") do h5
+        special = _read_hdf5_special(h5, item)
+        special === _NOT_HDF5_SPECIAL || return special
         names = String.(read(h5["column_names"]))
         index = _hdf5_column_index(names, item)
         n = _read_hdf5_record_count(h5)
         vec(h5["data"][1:n, index])
     end
+end
+
+const _NOT_HDF5_SPECIAL = :__octopus_not_hdf5_special__
+
+function _read_hdf5_special(h5, item)
+    item isa Union{Symbol,AbstractString} || return _NOT_HDF5_SPECIAL
+    key = String(item)
+    if key == "record_count"
+        return _read_hdf5_record_count(h5)
+    elseif key == "elapsed_time"
+        return Float64(first(read(h5["elapsed_time"])))
+    elseif key == "flush_count"
+        return Int(first(read(h5["flush_count"])))
+    elseif key == "flush_log"
+        count = Int(first(read(h5["flush_count"])))
+        log = read(h5["flush_log"])
+        return log[1:count, :]
+    elseif key == "flush_log_column_names"
+        return String.(read(h5["flush_log_column_names"]))
+    end
+    return _NOT_HDF5_SPECIAL
 end
 
 function _read_hdf5_selection(path::AbstractString; orders=(), extra=(), exclude=())

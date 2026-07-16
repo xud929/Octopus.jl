@@ -97,9 +97,18 @@ first_second = read(moments; orders = 1:2)
 names = column_names(moments)
 ```
 
-The file stores only `/data`, `/column_names`, and `/record_count`. Moment
-names are canonical strings such as `m100000`; if any exponent is multi-digit,
-separator form is used, such as `m10_0_0_0_0_0`.
+The main output datasets are `/data`, `/column_names`, and `/record_count`.
+Moment names are canonical strings such as `m100000`; if any exponent is
+multi-digit, separator form is used, such as `m10_0_0_0_0_0`.
+
+`MomentObserver` also updates lightweight progress datasets whenever its
+buffer is flushed:
+
+```julia
+records = read(moments, :record_count)
+seconds = read(moments, :elapsed_time)
+flush_log = read(moments, :flush_log)
+```
 
 Developer-facing numerical checks live in `validation/`. They may use internal
 helpers and should not be treated as public API examples.
