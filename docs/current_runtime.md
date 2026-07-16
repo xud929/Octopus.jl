@@ -242,10 +242,13 @@ PIC buffers store `x`, `px`, `y`, `py`, `z`, and `pz` so the field-particle
 longitudinal kick can be scattered back. If
 `PICPoissonSolver(longitudinal_kick=false)` is used, the CUDA compact buffers
 omit `pz`. For each slice-pair, CUDA PIC launches the four independent
-source-boundary field solves on separate streams and applies the two beam kicks
-to compact field buffers. The CUDA PIC workspace reuses its field streams,
-luminosity stream, synchronization event, charge grids, and luminosity grids
-through the `StrongStrongTask` runtime cache across turns. Standalone
+source-boundary field solves as one batched cuFFT operation over a
+`(2nx, 2ny, 4)` charge stack, then applies the two beam kicks to compact field
+buffers. Set `OCTOPUS_CUDA_PIC_BATCH_FFT=0` to fall back to the previous
+four-stream field-solve path for timing comparisons. The CUDA PIC workspace
+reuses its field streams, luminosity stream, synchronization event, charge
+grids, batched charge/field arrays, and luminosity grids through the
+`StrongStrongTask` runtime cache across turns. Standalone
 `collide!(solver, beam1, beam2, CUDABackend)` calls still allocate a temporary
 workspace for that call.
 The luminosity grid
