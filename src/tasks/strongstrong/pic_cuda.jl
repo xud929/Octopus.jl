@@ -640,14 +640,22 @@ if _HAS_CUDA
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
             _cuda_nvtx_pop(CUDABackend, prepare_range)
 
+            luminosity_stream = workspace.luminosity_stream
             t_luminosity = time_ns()
-            luminosity = zero(T)
-            for item in valid
-                luminosity += _cuda_pic_luminosity(
-                    solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, klum, workspace,
-                )
+            luminosity_task = @async CUDA.stream!(luminosity_stream) do
+                lum_range = _cuda_nvtx_push(CUDABackend, "pic wavefront luminosity")
+                try
+                    luminosity = zero(T)
+                    for item in valid
+                        luminosity += _cuda_pic_luminosity(
+                            solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, klum, workspace,
+                        )
+                    end
+                    luminosity
+                finally
+                    _cuda_nvtx_pop(CUDABackend, lum_range)
+                end
             end
-            _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
 
             t_green = time_ns()
             green12 = Vector{Any}(undef, npairs)
@@ -705,6 +713,9 @@ if _HAS_CUDA
             CUDA.synchronize(stream)
             _cuda_pic_add_time!(timing, :kick, t_kick)
             _cuda_nvtx_pop(CUDABackend, kick_range)
+            luminosity = fetch(luminosity_task)
+            CUDA.synchronize(luminosity_stream)
+            _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
             return luminosity
         end
 
