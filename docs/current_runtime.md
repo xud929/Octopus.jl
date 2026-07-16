@@ -224,18 +224,11 @@ construct boundaries before returning to GPU reductions and kick kernels.
 CUDA `GaussianPoissonSolver` mirrors the no-interpolation soft-Gaussian path.
 CUDA `PICPoissonSolver` uses atomic grid deposition, CUDA FFT convolution, GPU
 Green-function construction, GPU finite-difference field construction, and GPU
-interpolation/kick kernels. CUDA PIC currently computes drifted source/field
-bounding boxes with broadcasted temporary arrays followed by CUDA reductions;
-the generic fused `mapreduce` version was rejected because it introduced too
-many small reductions in this hot path. Source deposition computes drifted
-coordinates directly in the deposition kernel. `green_cache=:exact` caches
-exact GPU Green FFTs.
-On CUDA, `green_cache=:grid_template` currently falls back to the same exact GPU
-cache; the approximate template matching remains CPU-only. The CUDA exact Green
-cache is bounded by `OCTOPUS_CUDA_PIC_GREEN_CACHE_MAX_ENTRIES` and defaults to
-256 entries; evicted entries are rebuilt exactly when needed. Within one
-directed slice interaction, CUDA PIC builds one Green FFT and reuses it for the
-left and right source-boundary solves, matching the CPU implementation and the
+interpolation/kick kernels. CUDA PIC computes drifted source/field bounding
+boxes with fused CUDA reductions and computes drifted source coordinates
+directly in the deposition kernel. Within one directed slice interaction, CUDA
+PIC builds one Green FFT and reuses it for the left and right source-boundary
+solves, matching the CPU implementation and the
 reference PIC algorithm. For each slice-pair, CUDA slicing builds per-slice GPU
 index vectors. The CUDA PIC path
 uses those indices to gather the two active slices into compact GPU coordinate
@@ -255,6 +248,16 @@ previous four-stream field-solve path for timing comparisons. The CUDA PIC
 workspace reuses its field streams, luminosity stream, synchronization event,
 charge grids, batched charge/field arrays, wavefront charge/field-array cache,
 and luminosity grids through the `StrongStrongTask` runtime cache across turns.
+`green_cache=:exact` and `green_cache=:grid_template` are implemented as
+experimental CUDA Green FFT cache modes. July 2026 benchmarks found no
+wall-time improvement for the current strong-strong PIC workload: exact caching
+had essentially no hits, while template caching was correct but still created
+many Green FFTs and added lookup/preparation overhead. Use
+`green_cache=:none` for CUDA PIC production runs unless a future validation and
+performance study shows a clear benefit. If experimenting with CUDA Green
+caches, keep `OCTOPUS_CUDA_PIC_GREEN_CACHE_MAX_ENTRIES` bounded and compare
+luminosity, RMS, cache hit/build counts, and wall time against
+`green_cache=:none`.
 Standalone
 `collide!(solver, beam1, beam2, CUDABackend)` calls still allocate a temporary
 workspace for that call.

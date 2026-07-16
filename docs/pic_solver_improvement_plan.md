@@ -63,16 +63,21 @@ green_type, nx, ny, source_grid, field_grid, hx, hy, eltype
 Use exact keys only at first. Approximate or rounded geometry keys should wait
 until a validation contract defines acceptable error.
 
-Status: implemented for exact geometry reuse through
-`PICPoissonSolver(green_cache=:exact)`. CUDA uses an exact GPU Green FFT cache
-and builds missed Green functions on the GPU. An experimental CPU template
-cache is also available through `PICPoissonSolver(green_cache=:grid_template)`.
+Status: experimental, not recommended for CUDA production. Exact geometry reuse
+is available through `PICPoissonSolver(green_cache=:exact)`. Template geometry
+reuse is available through `PICPoissonSolver(green_cache=:grid_template)`.
 The template cache stores shifted source/field grid templates and reuses a
 template only when a translated copy can cover the current source and field
-domains with stencil margin. On CUDA, `:grid_template` currently falls back to
-the exact GPU cache. The CUDA exact cache is bounded by
-`OCTOPUS_CUDA_PIC_GREEN_CACHE_MAX_ENTRIES` and defaults to 256 entries; evicted
-entries are rebuilt exactly. The default remains `:none`.
+domains with stencil margin.
+
+July 2026 CUDA benchmarks found that neither exact nor template Green caches
+improved the strong-strong PIC workload. Exact caching had essentially no hits
+for evolving slice-pair geometries. Template caching was correct but still
+created many Green FFTs, added lookup/preparation overhead, and did not reduce
+wall time versus `green_cache=:none`. CUDA cache capacity is bounded by
+`OCTOPUS_CUDA_PIC_GREEN_CACHE_MAX_ENTRIES`; bounded capacity avoids unbounded
+GPU memory growth but can cause churn. The production default remains
+`green_cache=:none`.
 
 ### 4. Overlap Independent CUDA PIC Field Solves
 
