@@ -1,0 +1,1417 @@
+if _HAS_CUDA
+    @eval begin
+        function collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend})
+            workspace = _cuda_pic_workspace(solver, eltype(beam1.rep.x))
+            green_cache = _cuda_pic_green_cache(solver, eltype(beam1.rep.x))
+            return _cuda_pic_collide!(solver, beam1, beam2, workspace, green_cache)
+        end
+
+        function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
+                                         solver::PICPoissonSolver,
+                                         beam1::Beam, beam2::Beam, ::Type{CUDABackend})
+            T = eltype(beam1.rep.x)
+            workspace = _cuda_pic_workspace!(task.runtime_cache, label, solver, T)
+            green_cache = _cuda_pic_green_cache(solver, T)
+            return _cuda_pic_collide!(solver, beam1, beam2, workspace, green_cache)
+        end
+
+        function _cuda_pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam,
+                                    workspace, green_cache)
+            _validate_pic_solver(solver)
+            timing = _cuda_pic_timing_stats()
+            t0 = time_ns()
+            slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing)
+            slices2 = _cuda_longitudinal_slices(beam2.rep, solver.slicing)
+            _cuda_pic_add_time!(timing, :slicing, t0)
+            kbb1 = _pic_kbb1(solver, beam1, beam2)
+            kbb2 = _pic_kbb2(solver, beam1, beam2)
+            klum = _pic_luminosity_scale(solver, beam1, beam2)
+            luminosity = zero(eltype(beam1.rep.x))
+            detailed_timing = _cuda_pic_detailed_timing_enabled()
+            use_async = get(ENV, "OCTOPUS_CUDA_PIC_ASYNC", "1") != "0" && !detailed_timing
+            reclaim_policy = _cuda_pic_reclaim_policy()
+            pair_count = 0
+            for (_, i, j) in _slice_collision_order(slices1, slices2)
+                pair_count += 1
+                p1 = (lb=slices1.boundary[i], center=slices1.center[i], rb=slices1.boundary[i + 1],
+                      include_hi=i == length(slices1.center))
+                p2 = (lb=slices2.boundary[j], center=slices2.center[j], rb=slices2.boundary[j + 1],
+                      include_hi=j == length(slices2.center))
+                gather_range = _cuda_nvtx_push(CUDABackend, "pic gather slices")
+                t_gather = time_ns()
+                slice1 = _cuda_pic_extract_slice(beam1.rep, slices1.indices[i], solver.longitudinal_kick)
+                slice2 = _cuda_pic_extract_slice(beam2.rep, slices2.indices[j], solver.longitudinal_kick)
+                _cuda_pic_add_time!(timing, :gather, t_gather)
+                _cuda_nvtx_pop(CUDABackend, gather_range)
+                (slice1 === nothing || slice2 === nothing) && continue
+                pair_range = _cuda_nvtx_push(CUDABackend, "pic slice-pair interaction")
+                t_interaction = time_ns()
+                if use_async
+                    lum = _cuda_pic_interaction_pair_async!(
+                        solver, slice1.coords, p1, slice2.coords, p2, kbb1, kbb2, green_cache, klum,
+                        workspace, timing,
+                    )
+                    luminosity += lum
+                else
+                    _cuda_pic_interaction!(solver, slice1.coords, p1, slice2.coords, p2, kbb2, green_cache, workspace.charges[1], timing)
+                    _cuda_pic_interaction!(solver, slice2.coords, p2, slice1.coords, p1, kbb1, green_cache, workspace.charges[2], timing)
+                    t_luminosity = time_ns()
+                    luminosity += _cuda_pic_luminosity(solver, slice1.coords, p1, slice2.coords, p2, klum, workspace)
+                    _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+                end
+                _cuda_pic_add_time!(timing, :interaction, t_interaction)
+                _cuda_nvtx_pop(CUDABackend, pair_range)
+                scatter_range = _cuda_nvtx_push(CUDABackend, "pic scatter slices")
+                t_scatter = time_ns()
+                _cuda_pic_store_slice!(beam1.rep, slice1.idx, slice1.coords, solver.longitudinal_kick)
+                _cuda_pic_store_slice!(beam2.rep, slice2.idx, slice2.coords, solver.longitudinal_kick)
+                _cuda_pic_add_time!(timing, :scatter, t_scatter)
+                _cuda_nvtx_pop(CUDABackend, scatter_range)
+                t_reclaim = time_ns()
+                _cuda_pic_maybe_reclaim(pair_count, reclaim_policy)
+                _cuda_pic_add_time!(timing, :reclaim, t_reclaim)
+            end
+            _cuda_pic_reclaim_if_pressure(reclaim_policy)
+            _cuda_pic_report_green_cache(green_cache)
+            _cuda_pic_report_timing(timing, pair_count)
+            return luminosity
+        end
+
+        mutable struct _CUDAPICGreenCache{T}
+            greens::Dict{_PICGreenKey{T},Any}
+            hits::Int
+            misses::Int
+            evictions::Int
+            max_entries::Int
+            lock::ReentrantLock
+        end
+
+        struct _CUDAPICWorkspace{T}
+            charges::NTuple{4,Any}
+            luminosity_q1::Any
+            luminosity_q2::Any
+            field_streams::NTuple{4,Any}
+            luminosity_stream::Any
+            prep_done::Any
+        end
+
+        mutable struct _CUDAPICTimingStats
+            slicing::UInt64
+            gather::UInt64
+            interaction::UInt64
+            prepare::UInt64
+            fields::UInt64
+            field_deposit::UInt64
+            field_green::UInt64
+            field_fft::UInt64
+            field_derivative::UInt64
+            kick::UInt64
+            luminosity::UInt64
+            scatter::UInt64
+            reclaim::UInt64
+        end
+
+        _cuda_pic_timing_enabled() =
+            get(ENV, "OCTOPUS_CUDA_PIC_TIMING", "0") in ("1", "true", "TRUE", "yes", "YES")
+
+        _cuda_pic_detailed_timing_enabled() =
+            get(ENV, "OCTOPUS_CUDA_PIC_TIMING_DETAIL", "0") in ("1", "true", "TRUE", "yes", "YES")
+
+        function _cuda_pic_timing_stats()
+            _cuda_pic_timing_enabled() || return nothing
+            return _CUDAPICTimingStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        end
+
+        function _cuda_pic_add_time!(stats::_CUDAPICTimingStats, field::Symbol, t0::UInt64)
+            CUDA.synchronize()
+            setproperty!(stats, field, getproperty(stats, field) + (time_ns() - t0))
+            return nothing
+        end
+        _cuda_pic_add_time!(::Nothing, field::Symbol, t0::UInt64) = nothing
+
+        function _cuda_pic_report_timing(stats::_CUDAPICTimingStats, pair_count::Integer)
+            scale = 1.0e-9
+            total = stats.slicing + stats.gather + stats.interaction + stats.scatter + stats.reclaim
+            println("CUDA PIC timing profile:")
+            println("  slice_pairs = ", pair_count)
+            println("  slicing     = ", stats.slicing * scale, " s")
+            println("  gather      = ", stats.gather * scale, " s")
+            println("  interaction = ", stats.interaction * scale, " s")
+            println("    prepare   = ", stats.prepare * scale, " s")
+            println("    fields    = ", stats.fields * scale, " s")
+            println("      deposit = ", stats.field_deposit * scale, " s")
+            println("      green   = ", stats.field_green * scale, " s")
+            println("      fft     = ", stats.field_fft * scale, " s")
+            println("      deriv   = ", stats.field_derivative * scale, " s")
+            println("    kick      = ", stats.kick * scale, " s")
+            println("    luminosity= ", stats.luminosity * scale, " s")
+            println("  scatter     = ", stats.scatter * scale, " s")
+            println("  reclaim     = ", stats.reclaim * scale, " s")
+            println("  measured_total = ", total * scale, " s")
+            _cuda_pic_detailed_timing_enabled() || println(
+                "  note: field sub-timers are diagnostic only in async mode; " *
+                "use OCTOPUS_CUDA_PIC_TIMING_DETAIL=1 for additive field breakdown."
+            )
+            return nothing
+        end
+        _cuda_pic_report_timing(::Nothing, pair_count::Integer) = nothing
+
+        function _cuda_pic_workspace(solver::PICPoissonSolver, ::Type{T}) where {T}
+            nx, ny = solver.grid
+            charges = ntuple(_ -> CUDA.zeros(T, 2nx, 2ny), 4)
+            return _CUDAPICWorkspace{T}(
+                charges,
+                CUDA.zeros(T, nx + 1, ny + 1),
+                CUDA.zeros(T, nx + 1, ny + 1),
+                (CUDA.CuStream(), CUDA.CuStream(), CUDA.CuStream(), CUDA.CuStream()),
+                CUDA.CuStream(),
+                CUDA.CuEvent(CUDA.EVENT_DISABLE_TIMING),
+            )
+        end
+
+        function _cuda_pic_workspace!(cache::Dict, label::Symbol,
+                                      solver::PICPoissonSolver, ::Type{T}) where {T}
+            key = (
+                :cuda_pic_workspace,
+                label,
+                T,
+                solver.grid,
+                Symbol(solver.deposit_method),
+                Symbol(solver.green_type),
+                Bool(solver.longitudinal_kick),
+            )
+            return get!(cache, key) do
+                _cuda_pic_workspace(solver, T)
+            end
+        end
+
+        function _cuda_pic_green_cache(solver::PICPoissonSolver, ::Type{T}) where {T}
+            cache = Symbol(solver.green_cache)
+            (cache == :exact || cache == :grid_template) ||
+                return nothing
+            max_entries = parse(Int, get(ENV, "OCTOPUS_CUDA_PIC_GREEN_CACHE_MAX_ENTRIES", "256"))
+            return _CUDAPICGreenCache{T}(Dict{_PICGreenKey{T},Any}(), 0, 0, 0, max_entries, ReentrantLock())
+        end
+
+        function _cuda_pic_report_green_cache(cache)
+            cache === nothing && return nothing
+            get(ENV, "OCTOPUS_PIC_CACHE_STATS", "0") in ("1", "true", "TRUE", "yes", "YES") || return nothing
+            total = cache.hits + cache.misses
+            hit_rate = total == 0 ? 0.0 : cache.hits / total
+            println(
+                "CUDA PIC Green cache: entries=$(length(cache.greens)), " *
+                "hits=$(cache.hits), misses=$(cache.misses), evictions=$(cache.evictions), " *
+                "max_entries=$(cache.max_entries), hit_rate=$(hit_rate)"
+            )
+            return nothing
+        end
+
+        function _cuda_pic_reclaim_policy()
+            threshold = parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_RECLAIM_FREE_FRACTION", "0.12"))
+            check_every = parse(Int, get(ENV, "OCTOPUS_CUDA_PIC_RECLAIM_CHECK_EVERY", "16"))
+            if haskey(ENV, "OCTOPUS_CUDA_PIC_RECLAIM_EVERY")
+                every = max(parse(Int, ENV["OCTOPUS_CUDA_PIC_RECLAIM_EVERY"]), 0)
+                return (mode=:fixed, every=every, check_every=max(check_every, 1), threshold=threshold)
+            end
+            return (mode=:adaptive, every=0, check_every=max(check_every, 1), threshold=threshold)
+        end
+
+        function _cuda_pic_maybe_reclaim(pair_count::Integer, policy)
+            if policy.mode == :fixed
+                policy.every == 0 && return nothing
+                pair_count % policy.every == 0 || return nothing
+                _cuda_pic_reclaim()
+            else
+                pair_count % policy.check_every == 0 || return nothing
+                _cuda_pic_reclaim_if_pressure(policy)
+            end
+            return nothing
+        end
+
+        function _cuda_pic_reclaim_if_pressure(policy)
+            CUDA.free_memory() / CUDA.total_memory() < policy.threshold || return nothing
+            _cuda_pic_reclaim()
+            return nothing
+        end
+
+        function _cuda_pic_reclaim()
+            CUDA.synchronize()
+            GC.gc(false)
+            CUDA.reclaim()
+            return nothing
+        end
+
+        function _cuda_pic_slice_mask(z, p)
+            return p.include_hi ? ((z .>= p.lb) .& (z .<= p.rb)) : ((z .>= p.lb) .& (z .< p.rb))
+        end
+
+        function _cuda_pic_extract_slice(rep::Phase6DRep, idx, longitudinal_kick::Bool=false)
+            n = length(idx)
+            n == 0 && return nothing
+            T = eltype(rep.x)
+            coords = longitudinal_kick ?
+                (
+                    x=CUDA.CuArray{T}(undef, n),
+                    px=CUDA.CuArray{T}(undef, n),
+                    y=CUDA.CuArray{T}(undef, n),
+                    py=CUDA.CuArray{T}(undef, n),
+                    z=CUDA.CuArray{T}(undef, n),
+                    pz=CUDA.CuArray{T}(undef, n),
+                ) :
+                (
+                    x=CUDA.CuArray{T}(undef, n),
+                    px=CUDA.CuArray{T}(undef, n),
+                    y=CUDA.CuArray{T}(undef, n),
+                    py=CUDA.CuArray{T}(undef, n),
+                    z=CUDA.CuArray{T}(undef, n),
+                )
+            threads = 256
+            if longitudinal_kick
+                CUDA.@cuda threads=threads blocks=cld(n, threads) _cuda_pic_gather_slice_longitudinal_kernel!(
+                    coords.x, coords.px, coords.y, coords.py, coords.z, coords.pz,
+                    rep.x, rep.px, rep.y, rep.py, rep.z, rep.pz, idx,
+                )
+            else
+                CUDA.@cuda threads=threads blocks=cld(n, threads) _cuda_pic_gather_slice_kernel!(
+                    coords.x, coords.px, coords.y, coords.py, coords.z,
+                    rep.x, rep.px, rep.y, rep.py, rep.z, idx,
+                )
+            end
+            return (idx=idx, coords=coords)
+        end
+
+        function _cuda_pic_store_slice!(rep::Phase6DRep, idx, coords, longitudinal_kick::Bool=false)
+            n = length(idx)
+            threads = 256
+            if longitudinal_kick
+                CUDA.@cuda threads=threads blocks=cld(n, threads) _cuda_pic_scatter_slice_longitudinal_kernel!(
+                    rep.x, rep.px, rep.y, rep.py, rep.pz,
+                    coords.x, coords.px, coords.y, coords.py, coords.pz, idx,
+                )
+            else
+                CUDA.@cuda threads=threads blocks=cld(n, threads) _cuda_pic_scatter_slice_kernel!(
+                    rep.x, rep.px, rep.y, rep.py,
+                    coords.x, coords.px, coords.y, coords.py, idx,
+                )
+            end
+            return nothing
+        end
+
+        function _cuda_indices_from_mask(mask)
+            flags = ifelse.(mask, 1, 0)
+            positions = cumsum(flags)
+            n = length(mask) == 0 ? 0 : Int(CUDA.@allowscalar positions[end])
+            idx = CUDA.CuArray{Int}(undef, n)
+            n == 0 && return idx
+            threads = 256
+            CUDA.@cuda threads=threads blocks=cld(length(mask), threads) _cuda_indices_from_mask_kernel!(
+                idx, mask, positions,
+            )
+            return idx
+        end
+
+        function _cuda_pic_interaction_pair_async!(solver::PICPoissonSolver,
+                                                   old1, p1, old2, p2,
+                                                   kbb1, kbb2, green_cache, klum,
+                                                   workspace::_CUDAPICWorkspace,
+                                                   timing=nothing)
+            prepare_range = _cuda_nvtx_push(CUDABackend, "pic prepare interaction")
+            t_prepare = time_ns()
+            prep12 = _cuda_pic_prepare_interaction(solver, old1, p1, old2, p2)
+            prep21 = _cuda_pic_prepare_interaction(solver, old2, p2, old1, p1)
+            _cuda_pic_add_time!(timing, :prepare, t_prepare)
+            _cuda_nvtx_pop(CUDABackend, prepare_range)
+
+            t_green = time_ns()
+            green12 = _cuda_pic_green_fft(
+                solver, eltype(old1.x), prep12.source_grid, prep12.field_grid, green_cache,
+            )
+            green21 = _cuda_pic_green_fft(
+                solver, eltype(old2.x), prep21.source_grid, prep21.field_grid, green_cache,
+            )
+            _cuda_pic_add_time!(timing, :field_green, t_green)
+
+            streams = workspace.field_streams
+            luminosity_stream = workspace.luminosity_stream
+            prep_done = workspace.prep_done
+            CUDA.record(prep_done, CUDA.stream())
+            luminosity_task = @async CUDA.stream!(luminosity_stream) do
+                CUDA.wait(prep_done, luminosity_stream)
+                lum_range = _cuda_nvtx_push(CUDABackend, "pic luminosity")
+                try
+                    _cuda_pic_luminosity(solver, old1, p1, old2, p2, klum, workspace)
+                finally
+                    _cuda_nvtx_pop(CUDABackend, lum_range)
+                end
+            end
+
+            t_fields = time_ns()
+            task12L = _cuda_pic_field_task(
+                solver, old1, prep12.sL, prep12.source_grid,
+                green12, workspace.charges[1], timing, streams[1], prep_done,
+                "pic field solve 12 left",
+            )
+            task21L = _cuda_pic_field_task(
+                solver, old2, prep21.sL, prep21.source_grid,
+                green21, workspace.charges[3], timing, streams[3], prep_done,
+                "pic field solve 21 left",
+            )
+            task12R = _cuda_pic_field_task(
+                solver, old1, prep12.sR, prep12.source_grid,
+                green12, workspace.charges[2], timing, streams[2], prep_done,
+                "pic field solve 12 right",
+            )
+            task21R = _cuda_pic_field_task(
+                solver, old2, prep21.sR, prep21.source_grid,
+                green21, workspace.charges[4], timing, streams[4], prep_done,
+                "pic field solve 21 right",
+            )
+            phi12L, Ex12L, Ey12L = fetch(task12L)
+            phi12R, Ex12R, Ey12R = fetch(task12R)
+            phi21L, Ex21L, Ey21L = fetch(task21L)
+            phi21R, Ex21R, Ey21R = fetch(task21R)
+            foreach(CUDA.synchronize, streams)
+            _cuda_pic_add_time!(timing, :fields, t_fields)
+
+            kick_range = _cuda_nvtx_push(CUDABackend, "pic kick")
+            t_kick = time_ns()
+            _cuda_pic_launch_kick!(
+                solver, old2, p1.center, p2, old2, kbb2, prep12.field_grid,
+                phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R, streams[1],
+            )
+            _cuda_pic_launch_kick!(
+                solver, old1, p2.center, p1, old1, kbb1, prep21.field_grid,
+                phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R, streams[3],
+            )
+            CUDA.synchronize(streams[1])
+            CUDA.synchronize(streams[3])
+            _cuda_pic_add_time!(timing, :kick, t_kick)
+            _cuda_nvtx_pop(CUDABackend, kick_range)
+            t_luminosity = time_ns()
+            luminosity = fetch(luminosity_task)
+            CUDA.synchronize(luminosity_stream)
+            _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+            return luminosity
+        end
+
+        function _cuda_pic_field_task(solver::PICPoissonSolver, source, drift_s, source_grid, green_fft,
+                                      charge, timing, stream, prep_done, label)
+            return @async CUDA.stream!(stream) do
+                CUDA.wait(prep_done, stream)
+                field_range = _cuda_nvtx_push(CUDABackend, label)
+                try
+                    _cuda_pic_solve_drifted_field_with_green_fft(
+                        solver, source, drift_s, source_grid, green_fft, charge, timing,
+                    )
+                finally
+                    _cuda_nvtx_pop(CUDABackend, field_range)
+                end
+            end
+        end
+
+        function _cuda_pic_interaction!(solver::PICPoissonSolver, source, param_source,
+                                        field, param_field, kbb,
+                                        green_cache=nothing, charge=nothing, timing=nothing)
+            t_prepare = time_ns()
+            prep = _cuda_pic_prepare_interaction(solver, source, param_source, field, param_field)
+            _cuda_pic_add_time!(timing, :prepare, t_prepare)
+            t_green = time_ns()
+            green_fft = _cuda_pic_green_fft(
+                solver, eltype(source.x), prep.source_grid, prep.field_grid, green_cache,
+            )
+            _cuda_pic_add_time!(timing, :field_green, t_green)
+            t_fields = time_ns()
+            phiL, ExL, EyL = _cuda_pic_solve_drifted_field_with_green_fft(
+                solver, source, prep.sL,
+                prep.source_grid, green_fft, charge, timing,
+            )
+            phiR, ExR, EyR = _cuda_pic_solve_drifted_field_with_green_fft(
+                solver, source, prep.sR,
+                prep.source_grid, green_fft, charge, timing,
+            )
+            _cuda_pic_add_time!(timing, :fields, t_fields)
+            t_kick = time_ns()
+            _cuda_pic_launch_kick!(
+                solver, field, param_source.center, param_field, field, kbb, prep.field_grid,
+                phiL, ExL, EyL, phiR, ExR, EyR, CUDA.stream(),
+            )
+            _cuda_pic_add_time!(timing, :kick, t_kick)
+            return nothing
+        end
+
+        function _cuda_pic_prepare_interaction(solver::PICPoissonSolver, source, param_source,
+                                               field, param_field)
+            T = eltype(source.x)
+            sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
+            sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
+            source_xl = source.x .+ source.px .* sL
+            source_yl = source.y .+ source.py .* sL
+            source_xr = source.x .+ source.px .* sR
+            source_yr = source.y .+ source.py .* sR
+
+            field_s = T(0.5) .* (field.z .- T(param_source.center))
+            field_x = field.x .+ field.px .* field_s
+            field_y = field.y .+ field.py .* field_s
+
+            source_xmin = min(T(minimum(source_xl)), T(minimum(source_xr)))
+            source_xmax = max(T(maximum(source_xl)), T(maximum(source_xr)))
+            source_ymin = min(T(minimum(source_yl)), T(minimum(source_yr)))
+            source_ymax = max(T(maximum(source_yl)), T(maximum(source_yr)))
+            field_xmin = T(minimum(field_x))
+            field_xmax = T(maximum(field_x))
+            field_ymin = T(minimum(field_y))
+            field_ymax = T(maximum(field_y))
+
+            source_grid, field_grid = _pic_interaction_grids(
+                solver, source_xmin, source_xmax, source_ymin, source_ymax,
+                field_xmin, field_xmax, field_ymin, field_ymax,
+            )
+            return (
+                sL=sL,
+                sR=sR,
+                source_grid=source_grid,
+                field_grid=field_grid,
+            )
+        end
+
+        function _cuda_pic_launch_kick!(solver::PICPoissonSolver, field, source_center, param_field,
+                                        out, kbb, field_grid,
+                                        phiL, ExL, EyL, phiR, ExR, EyR, stream)
+            T = eltype(field.x)
+            threads = 256
+            blocks = cld(length(field.x), threads)
+            method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
+            nx, ny = solver.grid
+            if solver.longitudinal_kick
+                CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_longitudinal_kernel!(
+                    out.x, out.px, out.y, out.py, out.pz,
+                    field.x, field.px, field.y, field.py, field.z, field.pz,
+                    phiL, ExL, EyL, phiR, ExR, EyR,
+                    T(field_grid.x0), T(field_grid.y0),
+                    T(field_grid.width) / T(nx - 1), T(field_grid.height) / T(ny - 1),
+                    Int32(nx), Int32(ny), method_code,
+                    T(source_center), T(param_field.lb), T(param_field.rb), T(kbb),
+                )
+            else
+                CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_kernel!(
+                    out.x, out.px, out.y, out.py,
+                    field.x, field.px, field.y, field.py, field.z,
+                    phiL, ExL, EyL, phiR, ExR, EyR,
+                    T(field_grid.x0), T(field_grid.y0),
+                    T(field_grid.width) / T(nx - 1), T(field_grid.height) / T(ny - 1),
+                    Int32(nx), Int32(ny), method_code,
+                    T(source_center), T(param_field.lb), T(param_field.rb), T(kbb),
+                )
+            end
+            return nothing
+        end
+
+        function _cuda_pic_solve_field(solver::PICPoissonSolver, x, y, source_grid, field_grid,
+                                       green_cache=nothing, charge=nothing, timing=nothing)
+            t_green = time_ns()
+            green_fft = _cuda_pic_green_fft(solver, eltype(x), source_grid, field_grid, green_cache)
+            _cuda_pic_add_time!(timing, :field_green, t_green)
+            return _cuda_pic_solve_field_with_green_fft(solver, x, y, source_grid, green_fft, charge, timing)
+        end
+
+        function _cuda_pic_solve_field_with_green_fft(solver::PICPoissonSolver, x, y,
+                                                      source_grid, green_fft,
+                                                      charge=nothing, timing=nothing)
+            nx, ny = solver.grid
+            T = eltype(x)
+            hx = T(source_grid.width) / T(nx - 1)
+            hy = T(source_grid.height) / T(ny - 1)
+            charge = charge === nothing ? CUDA.zeros(T, 2nx, 2ny) : charge
+            fill!(charge, zero(T))
+            method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
+            threads = 256
+            blocks = cld(length(x), threads)
+            stream = CUDA.stream()
+            t_deposit = time_ns()
+            CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_deposit_nomask_kernel!(
+                charge, x, y, T(source_grid.x0), T(source_grid.y0), hx, hy,
+                Int32(nx), Int32(ny), method_code,
+            )
+            _cuda_pic_add_time!(timing, :field_deposit, t_deposit)
+            t_fft = time_ns()
+            phi_pad = real(ifft(fft(charge) .* green_fft))
+            phi = phi_pad[1:nx, 1:ny]
+            _cuda_pic_add_time!(timing, :field_fft, t_fft)
+            Ex = similar(phi)
+            Ey = similar(phi)
+            blocks_grid = cld(nx * ny, threads)
+            t_derivative = time_ns()
+            CUDA.@cuda threads=threads blocks=blocks_grid stream=stream _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, Int32(nx), Int32(ny))
+            _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
+            return phi, Ex, Ey
+        end
+
+        function _cuda_pic_solve_drifted_field_with_green_fft(solver::PICPoissonSolver, source, drift_s,
+                                                              source_grid, green_fft,
+                                                              charge=nothing, timing=nothing)
+            nx, ny = solver.grid
+            T = eltype(source.x)
+            hx = T(source_grid.width) / T(nx - 1)
+            hy = T(source_grid.height) / T(ny - 1)
+            charge = charge === nothing ? CUDA.zeros(T, 2nx, 2ny) : charge
+            fill!(charge, zero(T))
+            method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
+            threads = 256
+            blocks = cld(length(source.x), threads)
+            stream = CUDA.stream()
+            t_deposit = time_ns()
+            CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_deposit_drifted_nomask_kernel!(
+                charge, source.x, source.px, source.y, source.py, T(drift_s),
+                T(source_grid.x0), T(source_grid.y0), hx, hy,
+                Int32(nx), Int32(ny), method_code,
+            )
+            _cuda_pic_add_time!(timing, :field_deposit, t_deposit)
+            t_fft = time_ns()
+            phi_pad = real(ifft(fft(charge) .* green_fft))
+            phi = phi_pad[1:nx, 1:ny]
+            _cuda_pic_add_time!(timing, :field_fft, t_fft)
+            Ex = similar(phi)
+            Ey = similar(phi)
+            blocks_grid = cld(nx * ny, threads)
+            t_derivative = time_ns()
+            CUDA.@cuda threads=threads blocks=blocks_grid stream=stream _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, Int32(nx), Int32(ny))
+            _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
+            return phi, Ex, Ey
+        end
+
+        function _cuda_pic_green_fft(solver::PICPoissonSolver, ::Type{T}, source_grid, field_grid,
+                                     cache) where {T}
+            if cache isa _CUDAPICGreenCache{T}
+                key = _pic_green_key(solver, T, source_grid, field_grid)
+                lock(cache.lock) do
+                    cached = get(cache.greens, key, nothing)
+                    if cached !== nothing
+                        cache.hits += 1
+                        return cached
+                    end
+                    green_fft = _cuda_pic_build_green_fft(solver, T, source_grid, field_grid)
+                    CUDA.synchronize(CUDA.stream())
+                    if cache.max_entries > 0
+                        if length(cache.greens) >= cache.max_entries
+                            empty!(cache.greens)
+                            cache.evictions += 1
+                        end
+                        cache.greens[key] = green_fft
+                    end
+                    cache.misses += 1
+                    return green_fft
+                end
+            end
+            return _cuda_pic_build_green_fft(solver, T, source_grid, field_grid)
+        end
+
+        function _cuda_pic_build_green_fft(solver::PICPoissonSolver, ::Type{T}, source_grid, field_grid) where {T}
+            nx, ny = solver.grid
+            hx = T(source_grid.width) / T(nx - 1)
+            hy = T(source_grid.height) / T(ny - 1)
+            green = CUDA.zeros(T, 2nx, 2ny)
+            green_code = Symbol(solver.green_type) == :integrated ? Int32(1) : Int32(2)
+            threads = 256
+            blocks = cld(length(green), threads)
+            CUDA.@cuda threads=threads blocks=blocks stream=CUDA.stream() _cuda_pic_green_kernel!(
+                green, green_code,
+                T(field_grid.x0), T(field_grid.y0),
+                T(source_grid.x0), T(source_grid.y0),
+                hx, hy, Int32(nx), Int32(ny),
+            )
+            return fft(green)
+        end
+
+        function _cuda_pic_luminosity(solver::PICPoissonSolver, rep1, p1, rep2, p2, klum,
+                                      workspace=nothing)
+            nx, ny = solver.grid
+            T = eltype(rep1.x)
+            s1 = T(0.5) * (T(p1.center) - T(p2.center))
+            s2 = -s1
+            x1 = rep1.x .+ rep1.px .* s1
+            y1 = rep1.y .+ rep1.py .* s1
+            x2 = rep2.x .+ rep2.px .* s2
+            y2 = rep2.y .+ rep2.py .* s2
+            xmin = min(T(minimum(x1)), T(minimum(x2)))
+            xmax = max(T(maximum(x1)), T(maximum(x2)))
+            ymin = min(T(minimum(y1)), T(minimum(y2)))
+            ymax = max(T(maximum(y1)), T(maximum(y2)))
+            width = max(T(xmax - xmin), eps(T))
+            height = max(T(ymax - ymin), eps(T))
+            tx = width / T(nx - 1.1)
+            ty = height / T(ny - 1.1)
+            width += T(0.1) * tx
+            height += T(0.1) * ty
+            xmin -= T(0.05) * tx
+            ymin -= T(0.05) * ty
+            hx = width / T(nx - 1)
+            hy = height / T(ny - 1)
+            q1 = workspace === nothing ? CUDA.zeros(T, nx + 1, ny + 1) : workspace.luminosity_q1
+            q2 = workspace === nothing ? CUDA.zeros(T, nx + 1, ny + 1) : workspace.luminosity_q2
+            fill!(q1, zero(T))
+            fill!(q2, zero(T))
+            threads = 256
+            stream = CUDA.stream()
+            CUDA.@cuda threads=threads blocks=cld(length(x1), threads) stream=stream _cuda_pic_deposit_nomask_kernel!(
+                q1, x1, y1, xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), Int32(1),
+            )
+            CUDA.@cuda threads=threads blocks=cld(length(x2), threads) stream=stream _cuda_pic_deposit_nomask_kernel!(
+                q2, x2, y2, xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), Int32(1),
+            )
+            lum = sum(q1[1:nx, 1:ny] .* q2[1:nx, 1:ny])
+            return T(lum) * T(klum) / (hx * hy)
+        end
+
+        function _cuda_pic_gather_slice_kernel!(sx, spx, sy, spy, sz,
+                                                x, px, y, py, z, idx)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            while index <= length(idx)
+                source_index = idx[index]
+                @inbounds begin
+                    sx[index] = x[source_index]
+                    spx[index] = px[source_index]
+                    sy[index] = y[source_index]
+                    spy[index] = py[source_index]
+                    sz[index] = z[source_index]
+                end
+                index += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_gather_slice_longitudinal_kernel!(sx, spx, sy, spy, sz, spz,
+                                                             x, px, y, py, z, pz, idx)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            while index <= length(idx)
+                source_index = idx[index]
+                @inbounds begin
+                    sx[index] = x[source_index]
+                    spx[index] = px[source_index]
+                    sy[index] = y[source_index]
+                    spy[index] = py[source_index]
+                    sz[index] = z[source_index]
+                    spz[index] = pz[source_index]
+                end
+                index += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_scatter_slice_kernel!(x, px, y, py,
+                                                 sx, spx, sy, spy, idx)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            while index <= length(idx)
+                target_index = idx[index]
+                @inbounds begin
+                    x[target_index] = sx[index]
+                    px[target_index] = spx[index]
+                    y[target_index] = sy[index]
+                    py[target_index] = spy[index]
+                end
+                index += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_scatter_slice_longitudinal_kernel!(x, px, y, py, pz,
+                                                              sx, spx, sy, spy, spz, idx)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            while index <= length(idx)
+                target_index = idx[index]
+                @inbounds begin
+                    x[target_index] = sx[index]
+                    px[target_index] = spx[index]
+                    y[target_index] = sy[index]
+                    py[target_index] = spy[index]
+                    pz[target_index] = spz[index]
+                end
+                index += stride
+            end
+            return nothing
+        end
+
+        function _cuda_indices_from_mask_kernel!(idx, mask, positions)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            while index <= length(mask)
+                if mask[index]
+                    @inbounds idx[positions[index]] = index
+                end
+                index += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_green_kernel!(green, green_code::Int32,
+                                         field_x0, field_y0, source_x0, source_y0,
+                                         hx, hy, nx::Int32, ny::Int32)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            nx2 = Int32(2) * nx
+            ny2 = Int32(2) * ny
+            total = Int(nx2) * Int(ny2)
+            half_hx = hx / 2
+            half_hy = hy / 2
+            hxihyi = typeof(hx)(-0.5) / (hx * hy)
+            while index <= total
+                i0 = Int32((index - 1) % Int(nx2))
+                j0 = Int32((index - 1) ÷ Int(nx2))
+                ii = i0 < nx ? i0 : i0 - nx2
+                jj = j0 < ny ? j0 : j0 - ny2
+                x = field_x0 - source_x0 + ii * hx
+                y = field_y0 - source_y0 + jj * hy
+                @inbounds begin
+                    if green_code == Int32(1)
+                        val = _cuda_pic_kernel_integral(x + half_hx, y + half_hy)
+                        val += _cuda_pic_kernel_integral(x - half_hx, y - half_hy)
+                        val -= _cuda_pic_kernel_integral(x + half_hx, y - half_hy)
+                        val -= _cuda_pic_kernel_integral(x - half_hx, y + half_hy)
+                        green[i0 + Int32(1), j0 + Int32(1)] = hxihyi * val
+                    else
+                        r2 = max(x * x + y * y, eps(typeof(x)))
+                        green[i0 + Int32(1), j0 + Int32(1)] = typeof(x)(-0.5) * log(r2)
+                    end
+                end
+                index += stride
+            end
+            return nothing
+        end
+
+        @inline function _cuda_pic_atan_ratio(num, den)
+            if den == 0
+                num == 0 && return zero(num + den)
+                return copysign(typeof(num / one(den))(pi / 2), num)
+            end
+            return atan(num / den)
+        end
+
+        @inline function _cuda_pic_kernel_integral(x, y)
+            r2 = x * x + y * y
+            r2 = max(r2, eps(typeof(r2)))
+            return (log(r2) - 3) * x * y +
+                   _cuda_pic_atan_ratio(y, x) * x * x +
+                   _cuda_pic_atan_ratio(x, y) * y * y
+        end
+
+        function _cuda_pic_deposit_kernel!(charge, x, y, mask, x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            hxi = inv(hx)
+            hyi = inv(hy)
+            while index <= length(x)
+                if mask[index]
+                    ux = (x[index] - x0) * hxi
+                    uy = (y[index] - y0) * hyi
+                    if method_code == 1
+                        ix, wx1, wx2 = _cuda_pic_cic_weights(ux, nx)
+                        iy, wy1, wy2 = _cuda_pic_cic_weights(uy, ny)
+                        @inbounds begin
+                            CUDA.@atomic charge[ix, iy] += wx1 * wy1
+                            CUDA.@atomic charge[ix + 1, iy] += wx2 * wy1
+                            CUDA.@atomic charge[ix, iy + 1] += wx1 * wy2
+                            CUDA.@atomic charge[ix + 1, iy + 1] += wx2 * wy2
+                        end
+                    else
+                        ix, wx1, wx2, wx3 = _cuda_pic_tsc_weights(ux, nx)
+                        iy, wy1, wy2, wy3 = _cuda_pic_tsc_weights(uy, ny)
+                        @inbounds begin
+                            CUDA.@atomic charge[ix, iy] += wx1 * wy1
+                            CUDA.@atomic charge[ix, iy + 1] += wx1 * wy2
+                            CUDA.@atomic charge[ix, iy + 2] += wx1 * wy3
+                            CUDA.@atomic charge[ix + 1, iy] += wx2 * wy1
+                            CUDA.@atomic charge[ix + 1, iy + 1] += wx2 * wy2
+                            CUDA.@atomic charge[ix + 1, iy + 2] += wx2 * wy3
+                            CUDA.@atomic charge[ix + 2, iy] += wx3 * wy1
+                            CUDA.@atomic charge[ix + 2, iy + 1] += wx3 * wy2
+                            CUDA.@atomic charge[ix + 2, iy + 2] += wx3 * wy3
+                        end
+                    end
+                end
+                index += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_deposit_nomask_kernel!(charge, x, y, x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            hxi = inv(hx)
+            hyi = inv(hy)
+            while index <= length(x)
+                ux = (x[index] - x0) * hxi
+                uy = (y[index] - y0) * hyi
+                if method_code == 1
+                    ix, wx1, wx2 = _cuda_pic_cic_weights(ux, nx)
+                    iy, wy1, wy2 = _cuda_pic_cic_weights(uy, ny)
+                    @inbounds begin
+                        CUDA.@atomic charge[ix, iy] += wx1 * wy1
+                        CUDA.@atomic charge[ix + 1, iy] += wx2 * wy1
+                        CUDA.@atomic charge[ix, iy + 1] += wx1 * wy2
+                        CUDA.@atomic charge[ix + 1, iy + 1] += wx2 * wy2
+                    end
+                else
+                    ix, wx1, wx2, wx3 = _cuda_pic_tsc_weights(ux, nx)
+                    iy, wy1, wy2, wy3 = _cuda_pic_tsc_weights(uy, ny)
+                    @inbounds begin
+                        CUDA.@atomic charge[ix, iy] += wx1 * wy1
+                        CUDA.@atomic charge[ix, iy + 1] += wx1 * wy2
+                        CUDA.@atomic charge[ix, iy + 2] += wx1 * wy3
+                        CUDA.@atomic charge[ix + 1, iy] += wx2 * wy1
+                        CUDA.@atomic charge[ix + 1, iy + 1] += wx2 * wy2
+                        CUDA.@atomic charge[ix + 1, iy + 2] += wx2 * wy3
+                        CUDA.@atomic charge[ix + 2, iy] += wx3 * wy1
+                        CUDA.@atomic charge[ix + 2, iy + 1] += wx3 * wy2
+                        CUDA.@atomic charge[ix + 2, iy + 2] += wx3 * wy3
+                    end
+                end
+                index += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_deposit_drifted_nomask_kernel!(charge, x, px, y, py, drift_s,
+                                                          x0, y0, hx, hy,
+                                                          nx::Int32, ny::Int32, method_code::Int32)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            hxi = inv(hx)
+            hyi = inv(hy)
+            while index <= length(x)
+                xd = x[index] + px[index] * drift_s
+                yd = y[index] + py[index] * drift_s
+                ux = (xd - x0) * hxi
+                uy = (yd - y0) * hyi
+                if method_code == 1
+                    ix, wx1, wx2 = _cuda_pic_cic_weights(ux, nx)
+                    iy, wy1, wy2 = _cuda_pic_cic_weights(uy, ny)
+                    @inbounds begin
+                        CUDA.@atomic charge[ix, iy] += wx1 * wy1
+                        CUDA.@atomic charge[ix + 1, iy] += wx2 * wy1
+                        CUDA.@atomic charge[ix, iy + 1] += wx1 * wy2
+                        CUDA.@atomic charge[ix + 1, iy + 1] += wx2 * wy2
+                    end
+                else
+                    ix, wx1, wx2, wx3 = _cuda_pic_tsc_weights(ux, nx)
+                    iy, wy1, wy2, wy3 = _cuda_pic_tsc_weights(uy, ny)
+                    @inbounds begin
+                        CUDA.@atomic charge[ix, iy] += wx1 * wy1
+                        CUDA.@atomic charge[ix, iy + 1] += wx1 * wy2
+                        CUDA.@atomic charge[ix, iy + 2] += wx1 * wy3
+                        CUDA.@atomic charge[ix + 1, iy] += wx2 * wy1
+                        CUDA.@atomic charge[ix + 1, iy + 1] += wx2 * wy2
+                        CUDA.@atomic charge[ix + 1, iy + 2] += wx2 * wy3
+                        CUDA.@atomic charge[ix + 2, iy] += wx3 * wy1
+                        CUDA.@atomic charge[ix + 2, iy + 1] += wx3 * wy2
+                        CUDA.@atomic charge[ix + 2, iy + 2] += wx3 * wy3
+                    end
+                end
+                index += stride
+            end
+            return nothing
+        end
+
+        @inline function _cuda_pic_cic_weights(u, n::Int32)
+            f0 = floor(u)
+            base = Int32(f0) + Int32(1)
+            base = max(Int32(1), min(base, n - Int32(1)))
+            f = min(max(u - f0, zero(u)), one(u))
+            return base, one(f) - f, f
+        end
+
+        @inline function _cuda_pic_tsc_weights(u, n::Int32)
+            f0 = floor(u)
+            ix = Int32(f0)
+            f = u - f0
+            if f < typeof(u)(0.5)
+                t = f * f
+                w1 = typeof(u)(0.125) + typeof(u)(0.5) * (t - f)
+                w2 = typeof(u)(0.75) - t
+                w3 = one(u) - w1 - w2
+                base = ix
+            else
+                fr = one(u) - f
+                t = fr * fr
+                w1 = typeof(u)(0.125) + typeof(u)(0.5) * (t + fr)
+                w2 = typeof(u)(0.75) - t
+                w3 = one(u) - w1 - w2
+                base = ix + Int32(1)
+            end
+            base = max(Int32(1), min(base, n - Int32(2)))
+            return base, w1, w2, w3
+        end
+
+        function _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, nx::Int32, ny::Int32)
+            linear = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            hxi = inv(hx)
+            hyi = inv(hy)
+            total = Int(nx) * Int(ny)
+            while linear <= total
+                i = Int32((linear - 1) % Int(nx) + 1)
+                j = Int32((linear - 1) ÷ Int(nx) + 1)
+                @inbounds begin
+                    if j == 1
+                        Ey[i, j] = hyi * (typeof(hy)(1.5) * phi[i, j] - 2 * phi[i, j + 1] + typeof(hy)(0.5) * phi[i, j + 2])
+                    elseif j == ny
+                        Ey[i, j] = hyi * (-typeof(hy)(1.5) * phi[i, j] + 2 * phi[i, j - 1] - typeof(hy)(0.5) * phi[i, j - 2])
+                    else
+                        Ey[i, j] = typeof(hy)(0.5) * hyi * (phi[i, j - 1] - phi[i, j + 1])
+                    end
+                    if i == 1
+                        Ex[i, j] = hxi * (typeof(hx)(1.5) * phi[i, j] - 2 * phi[i + 1, j] + typeof(hx)(0.5) * phi[i + 2, j])
+                    elseif i == nx
+                        Ex[i, j] = hxi * (-typeof(hx)(1.5) * phi[i, j] + 2 * phi[i - 1, j] - typeof(hx)(0.5) * phi[i - 2, j])
+                    else
+                        Ex[i, j] = typeof(hx)(0.5) * hxi * (phi[i - 1, j] - phi[i + 1, j])
+                    end
+                end
+                linear += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_kick_kernel!(outx, outpx, outy, outpy,
+                                        fx, fpx, fy, fpy, fz,
+                                        phiL, ExL, EyL, phiR, ExR, EyR,
+                                        x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32,
+                                        source_center, field_lb, field_rb, kbb)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            hxi = inv(hx)
+            hyi = inv(hy)
+            hz = field_rb - field_lb
+            while index <= length(fx)
+                s1 = typeof(source_center)(0.5) * (fz[index] - source_center)
+                x = fx[index] + fpx[index] * s1
+                y = fy[index] + fpy[index] * s1
+                if hz == zero(hz) || hz != hz
+                    zL = typeof(source_center)(0.5)
+                else
+                    zL = (field_rb - fz[index]) / hz
+                    zL = min(max(zL, zero(zL)), one(zL))
+                end
+                zR = one(zL) - zL
+                Kx, Ky = _cuda_pic_interpolate_field(
+                    method_code, x, y, x0, y0, hxi, hyi, nx, ny,
+                    phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
+                )
+                newpx = fpx[index] + 2 * kbb * Kx
+                newpy = fpy[index] + 2 * kbb * Ky
+                s2 = typeof(source_center)(0.5) * (source_center - fz[index])
+                outx[index] = x + s2 * newpx
+                outy[index] = y + s2 * newpy
+                outpx[index] = newpx
+                outpy[index] = newpy
+                index += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_kick_longitudinal_kernel!(outx, outpx, outy, outpy, outpz,
+                                                     fx, fpx, fy, fpy, fz, fpz,
+                                                     phiL, ExL, EyL, phiR, ExR, EyR,
+                                                     x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32,
+                                                     source_center, field_lb, field_rb, kbb)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            hxi = inv(hx)
+            hyi = inv(hy)
+            hz = field_rb - field_lb
+            hzi = inv(hz)
+            kick_scale = 2 * kbb
+            while index <= length(fx)
+                oldpx = fpx[index]
+                oldpy = fpy[index]
+                s1 = typeof(source_center)(0.5) * (fz[index] - source_center)
+                x = fx[index] + oldpx * s1
+                y = fy[index] + oldpy * s1
+                pz = fpz[index] - typeof(source_center)(0.25) * (oldpx * oldpx + oldpy * oldpy)
+                if hz == zero(hz) || hz != hz
+                    zL = typeof(source_center)(0.5)
+                else
+                    zL = (field_rb - fz[index]) * hzi
+                    zL = min(max(zL, zero(zL)), one(zL))
+                end
+                zR = one(zL) - zL
+                Kx, Ky, Kz = _cuda_pic_interpolate_kick(
+                    method_code, x, y, x0, y0, hxi, hyi, nx, ny,
+                    phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
+                )
+                newpx = oldpx + kick_scale * Kx
+                newpy = oldpy + kick_scale * Ky
+                pz += kick_scale * Kz * hzi
+                s2 = typeof(source_center)(0.5) * (source_center - fz[index])
+                outx[index] = x + s2 * newpx
+                outy[index] = y + s2 * newpy
+                outpx[index] = newpx
+                outpy[index] = newpy
+                outpz[index] = pz + typeof(source_center)(0.25) * (newpx * newpx + newpy * newpy)
+                index += stride
+            end
+            return nothing
+        end
+
+        @inline function _cuda_pic_interpolate_field(method_code::Int32, x, y, x0, y0, hxi, hyi,
+                                                     nx::Int32, ny::Int32,
+                                                     phiL, ExL, EyL, phiR, ExR, EyR, zL, zR)
+            ux = (x - x0) * hxi
+            uy = (y - y0) * hyi
+            Kx = zero(x)
+            Ky = zero(x)
+            if method_code == 1
+                ix, wx1, wx2 = _cuda_pic_cic_weights(ux, nx)
+                iy, wy1, wy2 = _cuda_pic_cic_weights(uy, ny)
+                @inbounds begin
+                    w = wx1 * wy1
+                    Kx += w * (zL * ExL[ix, iy] + zR * ExR[ix, iy])
+                    Ky += w * (zL * EyL[ix, iy] + zR * EyR[ix, iy])
+                    w = wx2 * wy1
+                    Kx += w * (zL * ExL[ix + 1, iy] + zR * ExR[ix + 1, iy])
+                    Ky += w * (zL * EyL[ix + 1, iy] + zR * EyR[ix + 1, iy])
+                    w = wx1 * wy2
+                    Kx += w * (zL * ExL[ix, iy + 1] + zR * ExR[ix, iy + 1])
+                    Ky += w * (zL * EyL[ix, iy + 1] + zR * EyR[ix, iy + 1])
+                    w = wx2 * wy2
+                    Kx += w * (zL * ExL[ix + 1, iy + 1] + zR * ExR[ix + 1, iy + 1])
+                    Ky += w * (zL * EyL[ix + 1, iy + 1] + zR * EyR[ix + 1, iy + 1])
+                end
+            else
+                ix, wx1, wx2, wx3 = _cuda_pic_tsc_weights(ux, nx)
+                iy, wy1, wy2, wy3 = _cuda_pic_tsc_weights(uy, ny)
+                wx = (wx1, wx2, wx3)
+                wy = (wy1, wy2, wy3)
+                for m in 1:3, n in 1:3
+                    @inbounds begin
+                        w = wx[m] * wy[n]
+                        ii = ix + Int32(m - 1)
+                        jj = iy + Int32(n - 1)
+                        Kx += w * (zL * ExL[ii, jj] + zR * ExR[ii, jj])
+                        Ky += w * (zL * EyL[ii, jj] + zR * EyR[ii, jj])
+                    end
+                end
+            end
+            return Kx, Ky
+        end
+
+        @inline function _cuda_pic_interpolate_kick(method_code::Int32, x, y, x0, y0, hxi, hyi,
+                                                    nx::Int32, ny::Int32,
+                                                    phiL, ExL, EyL, phiR, ExR, EyR, zL, zR)
+            ux = (x - x0) * hxi
+            uy = (y - y0) * hyi
+            Kx = zero(x)
+            Ky = zero(x)
+            Kz = zero(x)
+            if method_code == 1
+                ix, wx1, wx2 = _cuda_pic_cic_weights(ux, nx)
+                iy, wy1, wy2 = _cuda_pic_cic_weights(uy, ny)
+                @inbounds begin
+                    w = wx1 * wy1
+                    Kx += w * (zL * ExL[ix, iy] + zR * ExR[ix, iy])
+                    Ky += w * (zL * EyL[ix, iy] + zR * EyR[ix, iy])
+                    Kz += w * (phiL[ix, iy] - phiR[ix, iy])
+                    w = wx2 * wy1
+                    Kx += w * (zL * ExL[ix + 1, iy] + zR * ExR[ix + 1, iy])
+                    Ky += w * (zL * EyL[ix + 1, iy] + zR * EyR[ix + 1, iy])
+                    Kz += w * (phiL[ix + 1, iy] - phiR[ix + 1, iy])
+                    w = wx1 * wy2
+                    Kx += w * (zL * ExL[ix, iy + 1] + zR * ExR[ix, iy + 1])
+                    Ky += w * (zL * EyL[ix, iy + 1] + zR * EyR[ix, iy + 1])
+                    Kz += w * (phiL[ix, iy + 1] - phiR[ix, iy + 1])
+                    w = wx2 * wy2
+                    Kx += w * (zL * ExL[ix + 1, iy + 1] + zR * ExR[ix + 1, iy + 1])
+                    Ky += w * (zL * EyL[ix + 1, iy + 1] + zR * EyR[ix + 1, iy + 1])
+                    Kz += w * (phiL[ix + 1, iy + 1] - phiR[ix + 1, iy + 1])
+                end
+            else
+                ix, wx1, wx2, wx3 = _cuda_pic_tsc_weights(ux, nx)
+                iy, wy1, wy2, wy3 = _cuda_pic_tsc_weights(uy, ny)
+                wx = (wx1, wx2, wx3)
+                wy = (wy1, wy2, wy3)
+                for m in 1:3, n in 1:3
+                    @inbounds begin
+                        w = wx[m] * wy[n]
+                        ii = ix + Int32(m - 1)
+                        jj = iy + Int32(n - 1)
+                        Kx += w * (zL * ExL[ii, jj] + zR * ExR[ii, jj])
+                        Ky += w * (zL * EyL[ii, jj] + zR * EyR[ii, jj])
+                        Kz += w * (phiL[ii, jj] - phiR[ii, jj])
+                    end
+                end
+            end
+            return Kx, Ky, Kz
+        end
+
+        function collide!(solver::GaussianPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend})
+            slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing)
+            slices2 = _cuda_longitudinal_slices(beam2.rep, solver.slicing)
+            kbb1 = _strong_strong_kbb1(solver, beam1, beam2)
+            kbb2 = _strong_strong_kbb2(solver, beam1, beam2)
+            klum1, klum2 = _strong_strong_luminosity_scales(solver, beam1, beam2)
+            T = eltype(beam1.rep.x)
+            lum1 = CUDA.zeros(T, length(beam1.rep))
+            lum2 = CUDA.zeros(T, length(beam2.rep))
+            luminosity = zero(T)
+            for (_, i, j) in _slice_collision_order(slices1, slices2)
+                moments1 = _cuda_slice_transverse_moments(
+                    beam1.rep, slices1.boundary[i], slices1.boundary[i + 1], i == length(slices1.center),
+                    solver.ignore_centroid1, solver.min_sigma,
+                )
+                moments2 = _cuda_slice_transverse_moments(
+                    beam2.rep, slices2.boundary[j], slices2.boundary[j + 1], j == length(slices2.center),
+                    solver.ignore_centroid2, solver.min_sigma,
+                )
+                CUDA.@cuda threads=256 blocks=256 _cuda_slice_kick_kernel!(
+                    beam1.rep, lum1,
+                    slices1.boundary[i], slices1.boundary[i + 1], i == length(slices1.center),
+                    moments2, slices2.center[j],
+                    slices2.weight[j] * kbb1,
+                    solver.min_sigma,
+                )
+                CUDA.@cuda threads=256 blocks=256 _cuda_slice_kick_kernel!(
+                    beam2.rep, lum2,
+                    slices2.boundary[j], slices2.boundary[j + 1], j == length(slices2.center),
+                    moments1, slices1.center[i],
+                    slices1.weight[i] * kbb2,
+                    solver.min_sigma,
+                )
+                slum2 = sum(lum1) / TWOPI * slices2.weight[j] * klum1
+                slum1 = sum(lum2) / TWOPI * slices1.weight[i] * klum2
+                luminosity += solver.gaussian_when_luminosity == 1 ? slum1 : slum2
+            end
+            return luminosity
+        end
+
+        function _cuda_longitudinal_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
+            slicing.nslices > 0 || throw(ArgumentError("nslices must be positive"))
+            method = slicing.method
+            if method == :equal_width || method == :equal_spaced
+                return _cuda_equal_width_slices(rep, slicing)
+            elseif method == :equal_area
+                return _cuda_equal_area_slices(rep, slicing)
+            elseif method == :specified
+                return _cuda_specified_slices(rep, slicing)
+            elseif method == :equal_count
+                return _cuda_equal_count_slices(rep, slicing)
+            else
+                throw(ArgumentError("unknown longitudinal slicing method $method"))
+            end
+        end
+
+        function _cuda_equal_width_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
+            z = rep.z
+            T = eltype(z)
+            ns = slicing.nslices
+            zmin = T(minimum(z))
+            zmax = T(maximum(z))
+            boundaries = collect(range(zmin, zmax; length=ns + 1))
+            return _cuda_slices_from_boundaries(rep, slicing, boundaries)
+        end
+
+        function _cuda_equal_area_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
+            slicing.resolution > 0 || throw(ArgumentError("resolution must be positive"))
+            z = rep.z
+            T = eltype(z)
+            ns = slicing.nslices
+            bins = ns * slicing.resolution
+            zmin = T(minimum(z))
+            zmax = T(maximum(z))
+            if zmin == zmax
+                return _cuda_slices_from_boundaries(rep, slicing, fill(T(zmin), ns + 1))
+            end
+            width = (zmax - zmin) / bins
+            counts = Vector{Int}(undef, bins)
+            for b in 1:bins
+                lb = T(zmin + (b - 1) * width)
+                rb = T(zmin + b * width)
+                mask = b == bins ? ((z .>= lb) .& (z .<= rb)) : ((z .>= lb) .& (z .< rb))
+                counts[b] = Int(sum(mask))
+            end
+            cumulative = cumsum(counts) ./ length(z)
+            cumulative[end] = one(T)
+            centers = [T(zmin + (i - 0.5) * width) for i in 1:bins]
+            boundaries = Vector{T}(undef, ns + 1)
+            boundaries[1] = T(zmin)
+            boundaries[end] = T(zmax)
+            current = 1
+            for s in 1:(ns - 1)
+                target = s / ns
+                while current <= bins && cumulative[current] <= target
+                    current += 1
+                end
+                if current <= 1
+                    x1 = boundaries[1]
+                    x2 = centers[1]
+                    y1 = zero(T)
+                    y2 = cumulative[1]
+                elseif current > bins
+                    x1 = centers[end]
+                    x2 = boundaries[end]
+                    y1 = cumulative[end - 1]
+                    y2 = one(T)
+                else
+                    x1 = centers[current - 1]
+                    x2 = centers[current]
+                    y1 = cumulative[current - 1]
+                    y2 = cumulative[current]
+                end
+                boundaries[s + 1] = y2 == y1 ? (x1 + x2) / 2 :
+                                    x2 * (target - y1) / (y2 - y1) +
+                                    x1 * (target - y2) / (y1 - y2)
+            end
+            return _cuda_slices_from_boundaries(rep, slicing, boundaries)
+        end
+
+        function _cuda_specified_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
+            z = rep.z
+            T = eltype(z)
+            zmin = T(minimum(z))
+            zmax = T(maximum(z))
+            n = T(length(rep))
+            μ = T(sum(z) / n)
+            σ = sqrt(max(T(sum((z .- μ) .* (z .- μ)) / n), zero(T)))
+            internal = sort([T(μ + p * σ) for p in slicing.positions])
+            boundaries = Vector{T}(undef, length(internal) + 2)
+            boundaries[1] = zmin
+            boundaries[end] = zmax
+            for (i, b) in enumerate(internal)
+                boundaries[i + 1] = clamp(b, zmin, zmax)
+            end
+            return _cuda_slices_from_boundaries(rep, slicing, boundaries)
+        end
+
+        function _cuda_equal_count_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
+            z_host = Array(rep.z)
+            T = eltype(z_host)
+            n = length(z_host)
+            ns = slicing.nslices
+            order = sortperm(z_host)
+            sorted_z = z_host[order]
+            boundaries = Vector{T}(undef, ns + 1)
+            boundaries[1] = minimum(z_host)
+            boundaries[end] = maximum(z_host)
+            for s in 1:(ns - 1)
+                pos = floor(Int, s * n / ns)
+                boundaries[s + 1] = (sorted_z[pos] + sorted_z[pos + 1]) / 2
+            end
+            return _cuda_slices_from_boundaries(rep, slicing, boundaries)
+        end
+
+        function _cuda_slices_from_boundaries(rep::Phase6DRep, slicing::LongitudinalSlicing, boundaries)
+            z = rep.z
+            T = eltype(z)
+            ns = length(boundaries) - 1
+            centers = Vector{T}(undef, ns)
+            weights = Vector{T}(undef, ns)
+            indices = Vector{Any}(undef, ns)
+            for s in 1:ns
+                lb = boundaries[s]
+                rb = boundaries[s + 1]
+                include_hi = s == ns
+                mask = include_hi ? ((z .>= lb) .& (z .<= rb)) : ((z .>= lb) .& (z .< rb))
+                idx = _cuda_indices_from_mask(mask)
+                count = length(idx)
+                indices[s] = idx
+                weights[s] = T(count) / T(length(rep))
+                if slicing.center_position == :centroid
+                    centers[s] = count == 0 ? (lb + rb) / 2 : T(sum(ifelse.(mask, z, zero(T))) / count)
+                elseif slicing.center_position == :midpoint
+                    centers[s] = (lb + rb) / 2
+                else
+                    throw(ArgumentError("unknown slice center_position $(slicing.center_position)"))
+                end
+            end
+            return LongitudinalSlices(centers, weights, boundaries, indices)
+        end
+
+        function _cuda_slice_transverse_moments(rep::Phase6DRep, lb, rb, include_hi::Bool,
+                                               ignore_centroid::Bool, min_sigma)
+            x, px, y, py, z = rep.x, rep.px, rep.y, rep.py, rep.z
+            T = eltype(x)
+            mask = include_hi ? ((z .>= lb) .& (z .<= rb)) : ((z .>= lb) .& (z .< rb))
+            n = sum(mask)
+            if n == 0
+                zz = zero(T)
+                return (mx=zz, sx=T(min_sigma), mpx=zz, spx=zz, covxpx=zz,
+                        my=zz, sy=T(min_sigma), mpy=zz, spy=zz, covypy=zz)
+            end
+            sx = sum(ifelse.(mask, x, zero(T)))
+            spx = sum(ifelse.(mask, px, zero(T)))
+            sy = sum(ifelse.(mask, y, zero(T)))
+            spy = sum(ifelse.(mask, py, zero(T)))
+            sx2sum = sum(ifelse.(mask, x .* x, zero(T)))
+            spx2sum = sum(ifelse.(mask, px .* px, zero(T)))
+            sy2sum = sum(ifelse.(mask, y .* y, zero(T)))
+            spy2sum = sum(ifelse.(mask, py .* py, zero(T)))
+            sxpxsum = sum(ifelse.(mask, x .* px, zero(T)))
+            sypysum = sum(ifelse.(mask, y .* py, zero(T)))
+            invn = inv(T(n))
+            mx = T(sx * invn)
+            mpx = T(spx * invn)
+            my = T(sy * invn)
+            mpy = T(spy * invn)
+            sx2 = T(sx2sum * invn - mx * mx)
+            spx2 = T(spx2sum * invn - mpx * mpx)
+            sy2 = T(sy2sum * invn - my * my)
+            spy2 = T(spy2sum * invn - mpy * mpy)
+            covxpx = T(sxpxsum * invn - mx * mpx)
+            covypy = T(sypysum * invn - my * mpy)
+            if ignore_centroid
+                mx = zero(T); mpx = zero(T); my = zero(T); mpy = zero(T)
+            end
+            return (
+                mx=mx, sx=max(sqrt(max(sx2, zero(T))), T(min_sigma)),
+                mpx=mpx, spx=sqrt(max(spx2, zero(T))), covxpx=covxpx,
+                my=my, sy=max(sqrt(max(sy2, zero(T))), T(min_sigma)),
+                mpy=mpy, spy=sqrt(max(spy2, zero(T))), covypy=covypy,
+            )
+        end
+
+        function _cuda_slice_kick_kernel!(rep, lum, lb, rb, include_hi, moments2, center2, kbb_slice, min_sigma)
+            start_index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            index = start_index
+            while index <= length(rep)
+                @inbounds begin
+                    zi = rep.z[index]
+                    active = include_hi ? (zi >= lb && zi <= rb) : (zi >= lb && zi < rb)
+                    if active
+                        S1 = (zi - center2) / 2
+                        S2 = -S1
+                        mx2 = moments2.mx + moments2.mpx * S2
+                        my2 = moments2.my + moments2.mpy * S2
+                        sx2 = moments2.sx * moments2.sx + (2 * moments2.covxpx + moments2.spx * moments2.spx * S2) * S2
+                        sy2 = moments2.sy * moments2.sy + (2 * moments2.covypy + moments2.spy * moments2.spy * S2) * S2
+                        sigx = max(sqrt(max(sx2, zero(sx2))), min_sigma)
+                        sigy = max(sqrt(max(sy2, zero(sy2))), min_sigma)
+                        rep.x[index] += rep.px[index] * S1
+                        rep.y[index] += rep.py[index] * S1
+                        xx = rep.x[index] - mx2
+                        yy = rep.y[index] - my2
+                        Kx, Ky = _cuda_gaussian_beambeam_kick(sigx, sigy, xx, yy)
+                        rep.px[index] += kbb_slice * Kx
+                        rep.py[index] += kbb_slice * Ky
+                        expterm = exp(-0.5 * (xx * xx / (sigx * sigx) + yy * yy / (sigy * sigy)))
+                        lum[index] = expterm / sigx / sigy
+                        rep.x[index] -= rep.px[index] * S1
+                        rep.y[index] -= rep.py[index] * S1
+                    else
+                        lum[index] = zero(eltype(lum))
+                    end
+                end
+                index += stride
+            end
+            return nothing
+        end
+    end
+else
+    function collide!(solver::GaussianPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend})
+        error("CUDABackend requires CUDA.jl to be available.")
+    end
+    function collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend})
+        error("CUDABackend requires CUDA.jl to be available.")
+    end
+end
