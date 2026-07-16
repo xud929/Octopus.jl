@@ -44,6 +44,9 @@ function _validate_pic_solver(solver::PICPoissonSolver)
     cache = Symbol(solver.green_cache)
     (cache == :none || cache == :exact || cache == :grid_template) ||
         throw(ArgumentError("PICPoissonSolver green_cache must be :none, :exact, or :grid_template"))
+    batch_mode = Symbol(solver.batch_mode)
+    (batch_mode == :sequential || batch_mode == :wavefront) ||
+        throw(ArgumentError("PICPoissonSolver batch_mode must be :sequential or :wavefront"))
     return nothing
 end
 

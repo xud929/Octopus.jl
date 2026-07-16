@@ -184,6 +184,14 @@ Hirata-map form of the PIC algorithm. Set
 `PICPoissonSolver(longitudinal_kick=false)`, or
 `OCTOPUS_PIC_LONGITUDINAL_KICK=0` in the strong-strong example, to use a
 transverse-only map.
+`PICPoissonSolver(batch_mode=:sequential)` is the default slice-pair schedule.
+`PICPoissonSolver(batch_mode=:wavefront)` groups ready, non-overlapping
+slice-pairs with `collision_pair_batches`. In the current CUDA PIC
+implementation, wavefront mode gathers every active slice in a batch, processes
+those pairs with the existing pair interaction kernels, then scatters the batch
+back before moving to the next dependency frontier. This is a correctness-first
+scheduler path; batched field solves and batched cuFFT are still future
+optimizations.
 If a diagnostic run produces a zero-width field slice, the current
 implementation uses equal left/right interpolation weights for that slice
 instead of dividing by zero.
@@ -247,6 +255,9 @@ use mask-free CUDA kernels and reuse fixed-size PIC grid work buffers within a
 collision. Stream/event ordering replaces the previous global synchronization
 before launching independent field solves. Set
 `OCTOPUS_CUDA_PIC_ASYNC=0` to use the sequential CUDA PIC path for debugging.
+Set `OCTOPUS_PIC_BATCH_MODE=wavefront` in the strong-strong example to run the
+CUDA PIC wavefront scheduler, or pass `batch_mode=:wavefront` directly to
+`PICPoissonSolver`.
 CUDA PIC performs adaptive CUDA memory-pool cleanup for temporary arrays. By
 default, it checks memory pressure every 16 slice-pairs and reclaims only when
 free GPU memory is below 12% of total memory. Use

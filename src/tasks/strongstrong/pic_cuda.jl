@@ -18,6 +18,9 @@ if _HAS_CUDA
         function _cuda_pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam,
                                     workspace, green_cache)
             _validate_pic_solver(solver)
+            if Symbol(solver.batch_mode) == :wavefront
+                return _cuda_pic_collide_wavefront!(solver, beam1, beam2, workspace, green_cache)
+            end
             timing = _cuda_pic_timing_stats()
             t0 = time_ns()
             slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing1)
@@ -74,6 +77,94 @@ if _HAS_CUDA
             _cuda_pic_reclaim_if_pressure(reclaim_policy)
             _cuda_pic_report_green_cache(green_cache)
             _cuda_pic_report_timing(timing, pair_count)
+            return luminosity
+        end
+
+        function _cuda_pic_collide_wavefront!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam,
+                                              workspace, green_cache)
+            timing = _cuda_pic_timing_stats()
+            t0 = time_ns()
+            slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing1)
+            slices2 = _cuda_longitudinal_slices(beam2.rep, solver.slicing2)
+            batches = collision_pair_batches(slices1, slices2)
+            _cuda_pic_add_time!(timing, :slicing, t0)
+            kbb1 = _pic_kbb1(solver, beam1, beam2)
+            kbb2 = _pic_kbb2(solver, beam1, beam2)
+            klum = _pic_luminosity_scale(solver, beam1, beam2)
+            luminosity = zero(eltype(beam1.rep.x))
+            detailed_timing = _cuda_pic_detailed_timing_enabled()
+            use_async = get(ENV, "OCTOPUS_CUDA_PIC_ASYNC", "1") != "0" && !detailed_timing
+            reclaim_policy = _cuda_pic_reclaim_policy()
+            pair_count = 0
+            batch_count = 0
+            max_batch_size = 0
+            for batch in batches
+                batch_count += 1
+                max_batch_size = max(max_batch_size, length(batch))
+                gathered = Vector{Any}(undef, length(batch))
+                gather_range = _cuda_nvtx_push(CUDABackend, "pic gather wavefront")
+                t_gather = time_ns()
+                for n in eachindex(batch)
+                    pair = batch[n]
+                    i, j = pair.i, pair.j
+                    p1 = (lb=slices1.boundary[i], center=slices1.center[i], rb=slices1.boundary[i + 1],
+                          include_hi=i == length(slices1.center))
+                    p2 = (lb=slices2.boundary[j], center=slices2.center[j], rb=slices2.boundary[j + 1],
+                          include_hi=j == length(slices2.center))
+                    slice1 = _cuda_pic_extract_slice(beam1.rep, slices1.indices[i], solver.longitudinal_kick)
+                    slice2 = _cuda_pic_extract_slice(beam2.rep, slices2.indices[j], solver.longitudinal_kick)
+                    gathered[n] = (pair=pair, p1=p1, p2=p2, slice1=slice1, slice2=slice2)
+                end
+                _cuda_pic_add_time!(timing, :gather, t_gather)
+                _cuda_nvtx_pop(CUDABackend, gather_range)
+
+                for item in gathered
+                    pair_count += 1
+                    (item.slice1 === nothing || item.slice2 === nothing) && continue
+                    pair_range = _cuda_nvtx_push(CUDABackend, "pic wavefront pair interaction")
+                    t_interaction = time_ns()
+                    if use_async
+                        lum = _cuda_pic_interaction_pair_async!(
+                            solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
+                            kbb1, kbb2, green_cache, klum, workspace, timing,
+                        )
+                        luminosity += lum
+                    else
+                        _cuda_pic_interaction!(
+                            solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
+                            kbb2, green_cache, workspace.charges[1], timing,
+                        )
+                        _cuda_pic_interaction!(
+                            solver, item.slice2.coords, item.p2, item.slice1.coords, item.p1,
+                            kbb1, green_cache, workspace.charges[2], timing,
+                        )
+                        t_luminosity = time_ns()
+                        luminosity += _cuda_pic_luminosity(
+                            solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, klum, workspace,
+                        )
+                        _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+                    end
+                    _cuda_pic_add_time!(timing, :interaction, t_interaction)
+                    _cuda_nvtx_pop(CUDABackend, pair_range)
+                end
+
+                scatter_range = _cuda_nvtx_push(CUDABackend, "pic scatter wavefront")
+                t_scatter = time_ns()
+                for item in gathered
+                    item.slice1 === nothing && continue
+                    item.slice2 === nothing && continue
+                    _cuda_pic_store_slice!(beam1.rep, item.slice1.idx, item.slice1.coords, solver.longitudinal_kick)
+                    _cuda_pic_store_slice!(beam2.rep, item.slice2.idx, item.slice2.coords, solver.longitudinal_kick)
+                end
+                _cuda_pic_add_time!(timing, :scatter, t_scatter)
+                _cuda_nvtx_pop(CUDABackend, scatter_range)
+                t_reclaim = time_ns()
+                _cuda_pic_maybe_reclaim(pair_count, reclaim_policy)
+                _cuda_pic_add_time!(timing, :reclaim, t_reclaim)
+            end
+            _cuda_pic_reclaim_if_pressure(reclaim_policy)
+            _cuda_pic_report_green_cache(green_cache)
+            _cuda_pic_report_wavefront_timing(timing, pair_count, batch_count, max_batch_size)
             return luminosity
         end
 
@@ -156,6 +247,20 @@ if _HAS_CUDA
         end
         _cuda_pic_report_timing(::Nothing, pair_count::Integer) = nothing
 
+        function _cuda_pic_report_wavefront_timing(stats::_CUDAPICTimingStats,
+                                                   pair_count::Integer,
+                                                   batch_count::Integer,
+                                                   max_batch_size::Integer)
+            _cuda_pic_report_timing(stats, pair_count)
+            println("  wavefront_batches = ", batch_count)
+            println("  max_batch_size    = ", max_batch_size)
+            println("  mean_batch_size   = ", pair_count / max(batch_count, 1))
+            return nothing
+        end
+        _cuda_pic_report_wavefront_timing(::Nothing, pair_count::Integer,
+                                          batch_count::Integer,
+                                          max_batch_size::Integer) = nothing
+
         function _cuda_pic_workspace(solver::PICPoissonSolver, ::Type{T}) where {T}
             nx, ny = solver.grid
             charges = ntuple(_ -> CUDA.zeros(T, 2nx, 2ny), 4)
@@ -179,6 +284,7 @@ if _HAS_CUDA
                 Symbol(solver.deposit_method),
                 Symbol(solver.green_type),
                 Bool(solver.longitudinal_kick),
+                Symbol(solver.batch_mode),
             )
             return get!(cache, key) do
                 _cuda_pic_workspace(solver, T)

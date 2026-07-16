@@ -226,6 +226,7 @@ const StrongStrongGaussianPoissonSolver = GaussianPoissonSolver
                       green_type=:integrated,
                       green_cache=:none,
                       longitudinal_kick=true,
+                      batch_mode=:sequential,
                       slicing=LongitudinalSlicing(),
                       slicing1=nothing, slicing2=nothing)
 
@@ -249,6 +250,10 @@ cell-integrated logarithmic kernel.
 reuses Green FFTs for identical source/field grids. The template cache reuses
 shifted source/field grid geometry when a translated cached template can cover
 the current source and field domains with deposition/interpolation margin.
+`batch_mode` may be `:sequential` or `:wavefront`. Sequential mode preserves
+the original one-slice-pair-at-a-time execution. Wavefront mode groups ready,
+non-overlapping slice pairs with `collision_pair_batches`; it currently affects
+the CUDA PIC path.
 
 CUDA execution uses atomic grid deposition and CUDA FFT convolution. The first
 CUDA implementation is correctness-oriented; later versions may replace atomic
@@ -267,6 +272,7 @@ struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     green_type::Symbol
     green_cache::Symbol
     longitudinal_kick::Bool
+    batch_mode::Symbol
     slicing::LongitudinalSlicing
     slicing1::LongitudinalSlicing
     slicing2::LongitudinalSlicing
@@ -279,6 +285,7 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                              green_type::Symbol=:integrated,
                              green_cache::Symbol=:none,
                              longitudinal_kick::Bool=true,
+                             batch_mode::Symbol=:sequential,
                              slicing::LongitudinalSlicing=LongitudinalSlicing(),
                              slicing1=nothing,
                              slicing2=nothing) where {T<:Real}
@@ -293,6 +300,7 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         green_type,
         green_cache,
         longitudinal_kick,
+        batch_mode,
         slicing,
         s1,
         s2,
