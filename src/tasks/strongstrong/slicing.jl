@@ -328,14 +328,14 @@ end
     collision_pair_batches(centers1, centers2)
     collision_pair_batches(nslices1, nslices2; sigma1=1, sigma2=1, mean1=0, mean2=0)
 
-Group slice-pair collisions into conservative contiguous conflict-free batches.
+Group slice-pair collisions into ready conflict-free batches.
 
 Pairs are sorted by computed collision time,
-`-(center1[i] + center2[j]) / 2`. The sorted list is then split without
-lookahead: a pair is appended to the current batch only if neither its beam-1
-slice nor beam-2 slice has already appeared in that batch. Otherwise a new
-batch starts. This preserves the serial collision-time order while exposing
-only safe parallelism.
+`-(center1[i] + center2[j]) / 2`. A pair is ready when every earlier
+collision involving its beam-1 slice and every earlier collision involving its
+beam-2 slice has already been completed. Each batch contains ready pairs with
+no repeated beam-1 or beam-2 slice, so the pairs in that batch can be processed
+simultaneously without changing the per-slice collision order.
 
 Each returned pair is a named tuple `(time, i, j)`.
 
@@ -349,24 +349,52 @@ function collision_pair_batches(centers1::AbstractVector, centers2::AbstractVect
     order = _slice_collision_order_from_centers(centers1, centers2)
     T = promote_type(eltype(centers1), eltype(centers2))
     pairtype = NamedTuple{(:time,:i,:j),Tuple{T,Int,Int}}
+    pairs = [(time=T(time), i=i, j=j) for (time, i, j) in order]
     batches = Vector{Vector{pairtype}}()
-    current = pairtype[]
-    used_i = Set{Int}()
-    used_j = Set{Int}()
-    for (time, i, j) in order
-        if !isempty(current) && (i in used_i || j in used_j)
-            push!(batches, current)
-            current = typeof(current)()
-            empty!(used_i)
-            empty!(used_j)
-        end
-        push!(current, (time=time, i=i, j=j))
-        push!(used_i, i)
-        push!(used_j, j)
+    isempty(pairs) && return batches
+
+    ns1 = length(centers1)
+    ns2 = length(centers2)
+    by_i = [Int[] for _ in 1:ns1]
+    by_j = [Int[] for _ in 1:ns2]
+    for k in eachindex(pairs)
+        p = pairs[k]
+        push!(by_i[p.i], k)
+        push!(by_j[p.j], k)
     end
-    isempty(current) || push!(batches, current)
+
+    next_i = ones(Int, ns1)
+    next_j = ones(Int, ns2)
+    done = falses(length(pairs))
+    remaining = length(pairs)
+    while remaining > 0
+        current = pairtype[]
+        used_i = Set{Int}()
+        used_j = Set{Int}()
+        for k in eachindex(pairs)
+            done[k] && continue
+            p = pairs[k]
+            (p.i in used_i || p.j in used_j) && continue
+            ready_i = next_i[p.i] <= length(by_i[p.i]) && by_i[p.i][next_i[p.i]] == k
+            ready_j = next_j[p.j] <= length(by_j[p.j]) && by_j[p.j][next_j[p.j]] == k
+            if ready_i && ready_j
+                push!(current, p)
+                push!(used_i, p.i)
+                push!(used_j, p.j)
+                done[k] = true
+                next_i[p.i] += 1
+                next_j[p.j] += 1
+                remaining -= 1
+            end
+        end
+        isempty(current) && error("internal collision scheduler error: no ready slice-pair found")
+        push!(batches, current)
+    end
     return batches
 end
+
+collision_pair_batches(slices1::LongitudinalSlices, slices2::LongitudinalSlices) =
+    collision_pair_batches(slices1.center, slices2.center)
 
 function collision_pair_batches(nslices1::Integer, nslices2::Integer;
                                 sigma1::Real=1.0, sigma2::Real=1.0,
