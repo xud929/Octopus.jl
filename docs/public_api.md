@@ -72,7 +72,7 @@ Use Julia help:
 ?AtTurns
 ?Moment
 ?MomentObserver
-?OutputFile
+?MomentOutputFile
 ?column_names
 ?name
 ?symbol
@@ -84,9 +84,9 @@ each source file.
 
 `MomentObserver` writes HDF5 columnar moment files. Common access pattern:
 
-Use `?MomentObserver`, `?Moment`, `?OutputFile`, `?column_names`, `?name`, and
-`?symbol` for the complete output API docstrings. This section is the quick
-entry point.
+Use `?MomentObserver`, `?Moment`, `?MomentOutputFile`, `?column_names`,
+`?name`, and `?symbol` for the complete output API docstrings. This section is
+the quick entry point.
 
 ```julia
 observer = MomentObserver("result/pic_hcc.pro.h5";
@@ -95,7 +95,7 @@ observer = MomentObserver("result/pic_hcc.pro.h5";
     exclude = (Moment(; z=2),),
 )
 
-moments = OutputFile("result/pic_hcc.pro.h5")
+moments = MomentOutputFile("result/pic_hcc.pro.h5")
 data = read(moments)               # column 1 is turn
 turns = read(moments, :turn)        # same values as data[:, 1]
 mx = read(moments, Moment(; x=1))

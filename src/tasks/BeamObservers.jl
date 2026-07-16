@@ -9,7 +9,7 @@ export AbstractSchedule, AbstractBeamObserver, AbstractBeamAction,
        observe!, apply_action!, run_observers!, run_actions!,
        prepare_observers!, prepare_line_observers!,
        finalize_observers!, requires_elementwise_tracking,
-       OutputFile, MomentFile, read_moment
+       MomentOutputFile, OutputFile, MomentFile, read_moment
 
 abstract type AbstractSchedule end
 abstract type AbstractBeamObserver end
@@ -443,7 +443,7 @@ The file uses a columnar layout:
 
 Column metadata is stored under `metadata/column_names` and
 `metadata/ranges/<name>`. Turn is column 1 of `data`; no duplicate `turn`
-dataset is stored. Use `read(OutputFile(path), :emittance)` or
+dataset is stored. Use `read(MomentOutputFile(path), :emittance)` or
 `read_moment(path, :emittance)` to extract named blocks without duplicating
 datasets in the file.
 """
@@ -533,7 +533,7 @@ MomentObserver("moments.h5";
 Read output:
 
 ```julia
-out = OutputFile("moments.h5")
+out = MomentOutputFile("moments.h5")
 data = read(out)
 turns = read(out, :turn)
 mx = read(out, Moment(; x = 1))
@@ -941,16 +941,16 @@ function _jld2_moment_data_matrix(turn, mean, covariance, rms, emittance, xz, yz
 end
 
 """
-    OutputFile(path)
+    MomentOutputFile(path)
 
-Lightweight handle for reading an Octopus output file.
+Lightweight handle for reading a `MomentObserver` output file.
 
 For HDF5 files written by `MomentObserver`, `read(file)` returns the full
 written `/data` matrix up to `/record_count`. Use `read(file, item)` for one
 column and keyword moment selection for a smaller matrix.
 
 ```julia
-out = OutputFile("result/pic_hcc.h5")
+out = MomentOutputFile("result/pic_hcc.h5")
 
 data = read(out)
 turn = read(out, :turn)
@@ -962,21 +962,23 @@ records = read(out, :record_count)
 seconds = read(out, :elapsed_time)
 ```
 
-`OutputFile` is the preferred reader for `MomentObserver` HDF5 files.
+`MomentOutputFile` is the preferred reader for `MomentObserver` HDF5 files.
+`OutputFile` and `MomentFile` remain compatibility aliases.
 """
-struct OutputFile
+struct MomentOutputFile
     path::String
 end
 
-OutputFile(path::AbstractString) = OutputFile(String(path))
+MomentOutputFile(path::AbstractString) = MomentOutputFile(String(path))
 
-const MomentFile = OutputFile
+const OutputFile = MomentOutputFile
+const MomentFile = MomentOutputFile
 
 const _READ_ALL_MOMENT_COLUMNS = :__octopus_read_all_moment_columns__
 
 """
-    read(file::OutputFile)
-    read(file::OutputFile; orders=..., extra=(), exclude=())
+    read(file::MomentOutputFile)
+    read(file::MomentOutputFile; orders=..., extra=(), exclude=())
 
 Read an output data matrix.
 
@@ -990,7 +992,7 @@ rules as `MomentObserver`: expand `orders`, add `extra`, then remove `exclude`.
 Unavailable requested moments are skipped.
 
 ```julia
-out = OutputFile("moments.h5")
+out = MomentOutputFile("moments.h5")
 data = read(out)
 names = column_names(out)
 
@@ -1000,13 +1002,13 @@ selected = read(out; orders = (), extra = (Moment(; pz = 4),))
 without_z2 = read(out; orders = 1:2, exclude = (Moment(; z = 2),))
 ```
 """
-function read(file::OutputFile)
+function read(file::MomentOutputFile)
     _is_hdf5_output(file.path) && return _read_hdf5_data(file.path)
     return read_moment(file.path, :data)
 end
 
 """
-    read(file::OutputFile, item)
+    read(file::MomentOutputFile, item)
 
 Read one named output column or progress field.
 
@@ -1021,7 +1023,7 @@ For HDF5 moment output, `item` may be:
 Examples:
 
 ```julia
-out = OutputFile("moments.h5")
+out = MomentOutputFile("moments.h5")
 turns = read(out, :turn)
 mx = read(out, Moment(; x = 1))
 sxpx = read(out, :m110000)
@@ -1029,14 +1031,14 @@ records = read(out, :record_count)
 seconds = read(out, :elapsed_time)
 ```
 """
-function read(file::OutputFile, item::Union{Moment,Symbol,AbstractString})
+function read(file::MomentOutputFile, item::Union{Moment,Symbol,AbstractString})
     _is_hdf5_output(file.path) && return _read_hdf5_column(file.path, item)
     item isa Symbol && return read_moment(file.path, item)
     item isa AbstractString && return read_moment(file.path, Symbol(item))
     return read_moment(file.path, Symbol(name(item)))
 end
 
-function read(file::OutputFile; orders=_READ_ALL_MOMENT_COLUMNS, extra=(), exclude=())
+function read(file::MomentOutputFile; orders=_READ_ALL_MOMENT_COLUMNS, extra=(), exclude=())
     _is_hdf5_output(file.path) || throw(ArgumentError("keyword moment selection is only supported for HDF5 output files"))
     if orders === _READ_ALL_MOMENT_COLUMNS && isempty(extra) && isempty(exclude)
         return _read_hdf5_data(file.path)
@@ -1045,7 +1047,7 @@ function read(file::OutputFile; orders=_READ_ALL_MOMENT_COLUMNS, extra=(), exclu
 end
 
 """
-    column_names(file::OutputFile)
+    column_names(file::MomentOutputFile)
 
 Return output column names as strings.
 
@@ -1053,7 +1055,7 @@ For `MomentObserver` HDF5 files, this reads `/column_names`. The returned names
 align with columns of `read(file)`.
 
 ```julia
-out = OutputFile("moments.h5")
+out = MomentOutputFile("moments.h5")
 data = read(out)
 names = column_names(out)
 
@@ -1067,7 +1069,7 @@ using DataFrames
 df = DataFrame(data, Symbol.(names))
 ```
 """
-function column_names(file::OutputFile)
+function column_names(file::MomentOutputFile)
     if _is_hdf5_output(file.path)
         return HDF5.h5open(file.path, "r") do h5
             String.(read(h5["column_names"]))
@@ -1164,7 +1166,7 @@ end
 Read a named moment block from a columnar `JLD2BeamMomentObserver` file without
 duplicating datasets on disk.
 
-Prefer `read(OutputFile(path))` for new code. `read_moment` is kept as a
+Prefer `read(MomentOutputFile(path))` for new code. `read_moment` is kept as a
 compatibility alias and for callers that already have an open JLD2 file handle.
 
 Supported names are `:turn`, `:data`, `:mean`, `:covariance`, `:rms`,
