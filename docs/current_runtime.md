@@ -253,12 +253,13 @@ Standalone
 `collide!(solver, beam1, beam2, CUDABackend)` calls still allocate a temporary
 workspace for that call.
 The luminosity grid deposition/reduction reads only the old compact slice
-buffers, so CUDA launches it on a separate stream. In wavefront mode, the
-luminosity loop for the current dependency frontier overlaps with the batched
-field solve and kicks. Compact slice operations use mask-free CUDA kernels and
-reuse fixed-size PIC grid work buffers within a collision. Stream/event
-ordering replaces the previous global synchronization before launching
-independent field solves. Set
+buffers. In wavefront mode it runs synchronously by default because measured
+Julia task/stream overhead outweighed the available overlap on the tested path.
+Set `OCTOPUS_CUDA_PIC_ASYNC_LUMINOSITY=1` to run it on the luminosity stream
+for profiling. Compact slice operations use mask-free CUDA kernels and reuse
+fixed-size PIC grid work buffers within a collision. Stream/event ordering
+replaces the previous global synchronization before launching independent field
+solves. Set
 `OCTOPUS_CUDA_PIC_ASYNC=0` to use the sequential CUDA PIC path for debugging.
 Set `OCTOPUS_PIC_BATCH_MODE=wavefront` in the strong-strong example to run the
 CUDA PIC wavefront scheduler, or pass `batch_mode=:wavefront` directly to
