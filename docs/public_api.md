@@ -77,6 +77,19 @@ Use Julia help:
 Runnable examples live in `examples/` and are self-documenting at the top of
 each source file.
 
+`JLD2BeamMomentObserver` writes columnar files. Common access pattern:
+
+```julia
+using JLD2
+
+jldopen("result/pic_hcc.pro.jld2", "r") do io
+    turns = io["turn"]
+    data = io["data"]
+    emittance = io["emittance"]
+    column_names = io["metadata/column_names"]
+end
+```
+
 Developer-facing numerical checks live in `validation/`. They may use internal
 helpers and should not be treated as public API examples.
 

@@ -232,11 +232,19 @@ end
 """
     JLD2BeamMomentObserver(path; capacity=1)
 
-Write beam statistics to a Julia-native JLD2 file. Each observed turn is stored
-under `records/<index>/` with datasets for `turn`, `mean`, `covariance`, `rms`,
-`emittance`, `xz_covariance`, `yz_covariance`, and
-`diagonal_fourth_central`. File metadata includes coordinate labels and
-`record_count`.
+Write beam statistics to a Julia-native JLD2 file.
+
+The file uses a columnar layout:
+
+- `turn`: vector of observed turn numbers.
+- `data`: dense matrix with one row per observed turn and flattened statistic
+  columns.
+- `mean`, `rms`, `emittance`, and `diagonal_fourth_central`: one row per
+  observed turn.
+- `covariance`: array with shape `(record_count, 6, 6)`.
+- `xz_covariance` and `yz_covariance`: vectors.
+
+Column metadata is stored under `metadata/column_names`.
 """
 function JLD2BeamMomentObserver(path::AbstractString; capacity::Integer=1)
     capacity >= 0 || throw(ArgumentError("capacity must be nonnegative"))
@@ -399,8 +407,10 @@ finalize_observer!(observer::BeamMomentObserver) =
 function _initialize_jld2_moment_file!(observer::JLD2BeamMomentObserver)
     JLD2.jldopen(observer.path, "w") do file
         file["metadata/format"] = "Octopus.JLD2BeamMomentObserver"
+        file["metadata/layout"] = "columnar_v2"
         file["metadata/labels"] = ["x", "px", "y", "py", "z", "pz"]
         file["metadata/covariance_layout"] = "full_6x6"
+        file["metadata/column_names"] = _jld2_moment_column_names()
         file["record_count"] = Int64(0)
     end
     observer.initialized = true
@@ -410,20 +420,7 @@ end
 function _flush_jld2_moment_buffer!(observer::JLD2BeamMomentObserver)
     isempty(observer.buffer) && return nothing
     JLD2.jldopen(observer.path, "r+") do file
-        for (turn, stats) in zip(observer.buffer_turns, observer.buffer)
-            observer.record_count += 1
-            prefix = "records/$(observer.record_count)"
-            file["$prefix/turn"] = Float64(turn)
-            file["$prefix/mean"] = Float64.(stats.mean)
-            file["$prefix/covariance"] = Float64.(stats.covariance)
-            file["$prefix/rms"] = Float64.(stats.rms)
-            file["$prefix/emittance"] = Float64.(stats.emittance)
-            file["$prefix/xz_covariance"] = Float64(stats.xz_covariance)
-            file["$prefix/yz_covariance"] = Float64(stats.yz_covariance)
-            file["$prefix/diagonal_fourth_central"] = Float64.(stats.diagonal_fourth_central)
-        end
-        haskey(file, "record_count") && delete!(file, "record_count")
-        file["record_count"] = Int64(observer.record_count)
+        _append_jld2_moment_columns!(file, observer)
     end
     empty!(observer.buffer_turns)
     empty!(observer.buffer)
@@ -432,6 +429,106 @@ end
 
 finalize_observer!(observer::JLD2BeamMomentObserver) =
     _flush_jld2_moment_buffer!(observer)
+
+function _jld2_moment_column_names()
+    labels = ["x", "px", "y", "py", "z", "pz"]
+    names = String["turn"]
+    append!(names, ["mean_$label" for label in labels])
+    append!(names, ["cov_$(labels[i])_$(labels[j])" for i in 1:6 for j in 1:6])
+    append!(names, ["rms_$label" for label in labels])
+    append!(names, ["emit_x", "emit_y", "emit_z"])
+    push!(names, "xz_covariance")
+    push!(names, "yz_covariance")
+    append!(names, ["diagonal_fourth_$label" for label in labels])
+    return names
+end
+
+function _append_jld2_moment_columns!(file, observer::JLD2BeamMomentObserver)
+    new_turn = Float64.(observer.buffer_turns)
+    new_mean = _rows_matrix(stats -> stats.mean, observer.buffer, 6)
+    new_covariance = _rows_covariance(observer.buffer)
+    new_rms = _rows_matrix(stats -> stats.rms, observer.buffer, 6)
+    new_emittance = _rows_matrix(stats -> stats.emittance, observer.buffer, 3)
+    new_xz = Float64[stats.xz_covariance for stats in observer.buffer]
+    new_yz = Float64[stats.yz_covariance for stats in observer.buffer]
+    new_fourth = _rows_matrix(stats -> stats.diagonal_fourth_central, observer.buffer, 6)
+    new_data = _jld2_moment_data_matrix(
+        new_turn, new_mean, new_covariance, new_rms, new_emittance, new_xz, new_yz, new_fourth,
+    )
+
+    turn = _jld2_read_or_empty(file, "turn", Float64[])
+    mean = _jld2_read_or_empty(file, "mean", zeros(Float64, 0, 6))
+    covariance = _jld2_read_or_empty(file, "covariance", zeros(Float64, 0, 6, 6))
+    rms = _jld2_read_or_empty(file, "rms", zeros(Float64, 0, 6))
+    emittance = _jld2_read_or_empty(file, "emittance", zeros(Float64, 0, 3))
+    xz = _jld2_read_or_empty(file, "xz_covariance", Float64[])
+    yz = _jld2_read_or_empty(file, "yz_covariance", Float64[])
+    fourth = _jld2_read_or_empty(file, "diagonal_fourth_central", zeros(Float64, 0, 6))
+    data = _jld2_read_or_empty(file, "data", zeros(Float64, 0, length(_jld2_moment_column_names())))
+
+    turn = vcat(turn, new_turn)
+    mean = vcat(mean, new_mean)
+    covariance = cat(covariance, new_covariance; dims=1)
+    rms = vcat(rms, new_rms)
+    emittance = vcat(emittance, new_emittance)
+    xz = vcat(xz, new_xz)
+    yz = vcat(yz, new_yz)
+    fourth = vcat(fourth, new_fourth)
+    data = vcat(data, new_data)
+
+    observer.record_count = length(turn)
+    _jld2_replace!(file, "turn", turn)
+    _jld2_replace!(file, "data", data)
+    _jld2_replace!(file, "mean", mean)
+    _jld2_replace!(file, "covariance", covariance)
+    _jld2_replace!(file, "rms", rms)
+    _jld2_replace!(file, "emittance", emittance)
+    _jld2_replace!(file, "xz_covariance", xz)
+    _jld2_replace!(file, "yz_covariance", yz)
+    _jld2_replace!(file, "diagonal_fourth_central", fourth)
+    _jld2_replace!(file, "record_count", Int64(observer.record_count))
+    return nothing
+end
+
+_jld2_read_or_empty(file, key::AbstractString, default) =
+    haskey(file, key) ? file[key] : default
+
+function _jld2_replace!(file, key::AbstractString, value)
+    haskey(file, key) && delete!(file, key)
+    file[key] = value
+    return nothing
+end
+
+function _rows_matrix(getter, stats_buffer, width::Integer)
+    out = Matrix{Float64}(undef, length(stats_buffer), width)
+    for (i, stats) in pairs(stats_buffer)
+        out[i, :] .= Float64.(getter(stats))
+    end
+    return out
+end
+
+function _rows_covariance(stats_buffer)
+    out = Array{Float64}(undef, length(stats_buffer), 6, 6)
+    for (i, stats) in pairs(stats_buffer)
+        out[i, :, :] .= Float64.(stats.covariance)
+    end
+    return out
+end
+
+function _jld2_moment_data_matrix(turn, mean, covariance, rms, emittance, xz, yz, fourth)
+    n = length(turn)
+    data = Matrix{Float64}(undef, n, length(_jld2_moment_column_names()))
+    col = 1
+    data[:, col] .= turn; col += 1
+    data[:, col:(col + 5)] .= mean; col += 6
+    data[:, col:(col + 35)] .= reshape(covariance, n, 36); col += 36
+    data[:, col:(col + 5)] .= rms; col += 6
+    data[:, col:(col + 2)] .= emittance; col += 3
+    data[:, col] .= xz; col += 1
+    data[:, col] .= yz; col += 1
+    data[:, col:(col + 5)] .= fourth
+    return data
+end
 
 function _copy_rep!(dest, src)
     length(dest) == length(src) || throw(DimensionMismatch("replacement beam length does not match destination"))
