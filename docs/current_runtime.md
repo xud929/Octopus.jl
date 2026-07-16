@@ -257,10 +257,11 @@ many Green FFTs and added lookup/preparation overhead. Use
 performance study shows a clear benefit. If experimenting with CUDA Green
 caches, keep `OCTOPUS_CUDA_PIC_GREEN_CACHE_MAX_ENTRIES` bounded and compare
 luminosity, RMS, cache hit/build counts, and wall time against
-`green_cache=:none`. CUDA also has an experimental wavefront Green-stack FFT
-path controlled by `OCTOPUS_CUDA_PIC_WAVEFRONT_GREEN_FFT=1`; July 2026 timing
-showed it was slower than the default per-geometry Green FFT path, so it is
-disabled by default.
+`green_cache=:none`. In CUDA wavefront mode with `green_cache=:none`, PIC also
+builds the wavefront Green functions as a two-plane-per-slice-pair stack and
+runs a batched Green FFT. The charge FFT and inverse FFT are already batched
+over the wavefront charge stack. Set `OCTOPUS_CUDA_PIC_WAVEFRONT_GREEN_FFT=0`
+to fall back to the older per-geometry Green FFT path for comparison.
 Standalone
 `collide!(solver, beam1, beam2, CUDABackend)` calls still allocate a temporary
 workspace for that call.
