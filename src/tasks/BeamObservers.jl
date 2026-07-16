@@ -4,7 +4,8 @@ export AbstractSchedule, AbstractBeamObserver, AbstractBeamAction,
        BeamMomentObserver, JLD2BeamMomentObserver,
        CoordinateSnapshotObserver, LuminosityObserver, BeamSwapAction,
        observe!, apply_action!, run_observers!, run_actions!,
-       prepare_observers!, finalize_observers!, requires_elementwise_tracking
+       prepare_observers!, finalize_observers!, requires_elementwise_tracking,
+       read_moment
 
 abstract type AbstractSchedule end
 abstract type AbstractBeamObserver end
@@ -239,12 +240,11 @@ The file uses a columnar layout:
 - `turn`: vector of observed turn numbers.
 - `data`: dense matrix with one row per observed turn and flattened statistic
   columns.
-- `mean`, `rms`, `emittance`, and `diagonal_fourth_central`: one row per
-  observed turn.
-- `covariance`: array with shape `(record_count, 6, 6)`.
-- `xz_covariance` and `yz_covariance`: vectors.
 
-Column metadata is stored under `metadata/column_names`.
+Column metadata is stored under `metadata/column_names` and
+`metadata/ranges/<name>`. Use `read_moment(path, :emittance)` or
+`read_moment(file, :emittance)` to extract named blocks without duplicating
+datasets in the file.
 """
 function JLD2BeamMomentObserver(path::AbstractString; capacity::Integer=1)
     capacity >= 0 || throw(ArgumentError("capacity must be nonnegative"))
@@ -411,6 +411,9 @@ function _initialize_jld2_moment_file!(observer::JLD2BeamMomentObserver)
         file["metadata/labels"] = ["x", "px", "y", "py", "z", "pz"]
         file["metadata/covariance_layout"] = "full_6x6"
         file["metadata/column_names"] = _jld2_moment_column_names()
+        for (name, range) in pairs(_jld2_moment_ranges())
+            file["metadata/ranges/$(name)"] = collect(range)
+        end
         file["record_count"] = Int64(0)
     end
     observer.initialized = true
@@ -457,35 +460,14 @@ function _append_jld2_moment_columns!(file, observer::JLD2BeamMomentObserver)
     )
 
     turn = _jld2_read_or_empty(file, "turn", Float64[])
-    mean = _jld2_read_or_empty(file, "mean", zeros(Float64, 0, 6))
-    covariance = _jld2_read_or_empty(file, "covariance", zeros(Float64, 0, 6, 6))
-    rms = _jld2_read_or_empty(file, "rms", zeros(Float64, 0, 6))
-    emittance = _jld2_read_or_empty(file, "emittance", zeros(Float64, 0, 3))
-    xz = _jld2_read_or_empty(file, "xz_covariance", Float64[])
-    yz = _jld2_read_or_empty(file, "yz_covariance", Float64[])
-    fourth = _jld2_read_or_empty(file, "diagonal_fourth_central", zeros(Float64, 0, 6))
     data = _jld2_read_or_empty(file, "data", zeros(Float64, 0, length(_jld2_moment_column_names())))
 
     turn = vcat(turn, new_turn)
-    mean = vcat(mean, new_mean)
-    covariance = cat(covariance, new_covariance; dims=1)
-    rms = vcat(rms, new_rms)
-    emittance = vcat(emittance, new_emittance)
-    xz = vcat(xz, new_xz)
-    yz = vcat(yz, new_yz)
-    fourth = vcat(fourth, new_fourth)
     data = vcat(data, new_data)
 
     observer.record_count = length(turn)
     _jld2_replace!(file, "turn", turn)
     _jld2_replace!(file, "data", data)
-    _jld2_replace!(file, "mean", mean)
-    _jld2_replace!(file, "covariance", covariance)
-    _jld2_replace!(file, "rms", rms)
-    _jld2_replace!(file, "emittance", emittance)
-    _jld2_replace!(file, "xz_covariance", xz)
-    _jld2_replace!(file, "yz_covariance", yz)
-    _jld2_replace!(file, "diagonal_fourth_central", fourth)
     _jld2_replace!(file, "record_count", Int64(observer.record_count))
     return nothing
 end
@@ -515,6 +497,18 @@ function _rows_covariance(stats_buffer)
     return out
 end
 
+function _jld2_moment_ranges()
+    return (
+        mean = 2:7,
+        covariance = 8:43,
+        rms = 44:49,
+        emittance = 50:52,
+        xz_covariance = 53:53,
+        yz_covariance = 54:54,
+        diagonal_fourth_central = 55:60,
+    )
+end
+
 function _jld2_moment_data_matrix(turn, mean, covariance, rms, emittance, xz, yz, fourth)
     n = length(turn)
     data = Matrix{Float64}(undef, n, length(_jld2_moment_column_names()))
@@ -528,6 +522,34 @@ function _jld2_moment_data_matrix(turn, mean, covariance, rms, emittance, xz, yz
     data[:, col] .= yz; col += 1
     data[:, col:(col + 5)] .= fourth
     return data
+end
+
+"""
+    read_moment(file_or_path, name)
+
+Read a named moment block from a columnar `JLD2BeamMomentObserver` file without
+duplicating datasets on disk.
+
+Supported names are `:turn`, `:data`, `:mean`, `:covariance`, `:rms`,
+`:emittance`, `:xz_covariance`, `:yz_covariance`, and
+`:diagonal_fourth_central`.
+"""
+function read_moment(path::AbstractString, name::Symbol)
+    return JLD2.jldopen(path, "r") do file
+        read_moment(file, name)
+    end
+end
+
+function read_moment(file, name::Symbol)
+    name === :turn && return file["turn"]
+    name === :data && return file["data"]
+    range_key = "metadata/ranges/$(name)"
+    haskey(file, range_key) || throw(KeyError(name))
+    data = file["data"]
+    cols = file[range_key]
+    block = data[:, cols]
+    name === :covariance && return reshape(block, size(block, 1), 6, 6)
+    return size(block, 2) == 1 ? vec(block) : block
 end
 
 function _copy_rep!(dest, src)

@@ -85,7 +85,7 @@ using JLD2
 jldopen("result/pic_hcc.pro.jld2", "r") do io
     turns = io["turn"]
     data = io["data"]
-    emittance = io["emittance"]
+    emittance = read_moment(io, :emittance)
     column_names = io["metadata/column_names"]
 end
 ```
