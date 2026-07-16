@@ -1007,14 +1007,20 @@ if _HAS_CUDA
             req_dx = field_grid.x0 - source_grid.x0
             req_dy = field_grid.y0 - source_grid.y0
             width_scale = max(abs(source_grid.width), eps(typeof(source_grid.width)))
+            field_width_scale = max(abs(field_grid.width), eps(typeof(field_grid.width)))
             height_scale = max(abs(source_grid.height), eps(typeof(source_grid.height)))
+            field_height_scale = max(abs(field_grid.height), eps(typeof(field_grid.height)))
+            template.source_width >= source_grid.width || return false
+            template.field_width >= field_grid.width || return false
+            template.source_height >= source_grid.height || return false
+            template.field_height >= field_grid.height || return false
             max_width_err = max(
-                abs(template.source_width - source_grid.width) / width_scale,
-                abs(template.field_width - field_grid.width) / max(abs(field_grid.width), eps(typeof(field_grid.width))),
+                (template.source_width - source_grid.width) / width_scale,
+                (template.field_width - field_grid.width) / field_width_scale,
             )
             max_height_err = max(
-                abs(template.source_height - source_grid.height) / height_scale,
-                abs(template.field_height - field_grid.height) / max(abs(field_grid.height), eps(typeof(field_grid.height))),
+                (template.source_height - source_grid.height) / height_scale,
+                (template.field_height - field_grid.height) / field_height_scale,
             )
             offset_x_err = abs(template.dx - req_dx) / max(abs(template.hx), eps(typeof(template.hx)))
             offset_y_err = abs(template.dy - req_dy) / max(abs(template.hy), eps(typeof(template.hy)))
