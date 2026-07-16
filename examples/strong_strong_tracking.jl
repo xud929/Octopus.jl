@@ -57,6 +57,11 @@ Disable CUDA PIC wavefront-level batched FFTs for comparison:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_WAVEFRONT_FFT=0 julia --project=. examples/strong_strong_tracking.jl
 
+Enable the experimental CUDA PIC wavefront Green-stack FFT path. This is off by
+default because current timing is slower than the default Green path:
+
+    OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_WAVEFRONT_GREEN_FFT=1 julia --project=. examples/strong_strong_tracking.jl
+
 Log CUDA memory every N turns:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_MEMORY_LOG_EVERY=10 julia --project=. examples/strong_strong_tracking.jl

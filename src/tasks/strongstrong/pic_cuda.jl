@@ -291,7 +291,7 @@ if _HAS_CUDA
             get(ENV, "OCTOPUS_CUDA_PIC_WAVEFRONT_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
 
         _cuda_pic_wavefront_green_fft_enabled() =
-            get(ENV, "OCTOPUS_CUDA_PIC_WAVEFRONT_GREEN_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
+            get(ENV, "OCTOPUS_CUDA_PIC_WAVEFRONT_GREEN_FFT", "0") in ("1", "true", "TRUE", "yes", "YES")
 
         _cuda_pic_async_luminosity_enabled() =
             get(ENV, "OCTOPUS_CUDA_PIC_ASYNC_LUMINOSITY", "0") in ("1", "true", "TRUE", "yes", "YES")
