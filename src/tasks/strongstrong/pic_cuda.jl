@@ -246,6 +246,11 @@ if _HAS_CUDA
             fields::UInt64
             field_deposit::UInt64
             field_green::UInt64
+            green_lookup::UInt64
+            green_build_kernel::UInt64
+            green_build_fft::UInt64
+            green_cache_sync::UInt64
+            green_cache_insert::UInt64
             field_fft::UInt64
             field_derivative::UInt64
             kick::UInt64
@@ -274,7 +279,9 @@ if _HAS_CUDA
 
         function _cuda_pic_timing_stats()
             _cuda_pic_timing_enabled() || return nothing
-            return _CUDAPICTimingStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            return _CUDAPICTimingStats(
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            )
         end
 
         function _cuda_pic_add_time!(stats::_CUDAPICTimingStats, field::Symbol, t0::UInt64)
@@ -299,6 +306,11 @@ if _HAS_CUDA
             println("    fields    = ", stats.fields * scale, " s")
             println("      deposit = ", stats.field_deposit * scale, " s")
             println("      green   = ", stats.field_green * scale, " s")
+            println("        lookup= ", stats.green_lookup * scale, " s")
+            println("        build = ", stats.green_build_kernel * scale, " s")
+            println("        fft   = ", stats.green_build_fft * scale, " s")
+            println("        sync  = ", stats.green_cache_sync * scale, " s")
+            println("        insert= ", stats.green_cache_insert * scale, " s")
             println("      fft     = ", stats.field_fft * scale, " s")
             println("      deriv   = ", stats.field_derivative * scale, " s")
             println("    kick      = ", stats.kick * scale, " s")
@@ -502,10 +514,10 @@ if _HAS_CUDA
 
             t_green = time_ns()
             green12 = _cuda_pic_green_fft(
-                solver, eltype(old1.x), prep12.source_grid, prep12.field_grid, green_cache,
+                solver, eltype(old1.x), prep12.source_grid, prep12.field_grid, green_cache, timing,
             )
             green21 = _cuda_pic_green_fft(
-                solver, eltype(old2.x), prep21.source_grid, prep21.field_grid, green_cache,
+                solver, eltype(old2.x), prep21.source_grid, prep21.field_grid, green_cache, timing,
             )
             _cuda_pic_add_time!(timing, :field_green, t_green)
 
@@ -594,10 +606,10 @@ if _HAS_CUDA
 
             t_green = time_ns()
             green12 = _cuda_pic_green_fft(
-                solver, eltype(old1.x), prep12.source_grid, prep12.field_grid, green_cache,
+                solver, eltype(old1.x), prep12.source_grid, prep12.field_grid, green_cache, timing,
             )
             green21 = _cuda_pic_green_fft(
-                solver, eltype(old2.x), prep21.source_grid, prep21.field_grid, green_cache,
+                solver, eltype(old2.x), prep21.source_grid, prep21.field_grid, green_cache, timing,
             )
             _cuda_pic_add_time!(timing, :field_green, t_green)
 
@@ -713,10 +725,10 @@ if _HAS_CUDA
             for n in 1:npairs
                 item = valid[n]
                 green12[n] = _cuda_pic_green_fft(
-                    solver, T, prep12[n].source_grid, prep12[n].field_grid, green_cache,
+                    solver, T, prep12[n].source_grid, prep12[n].field_grid, green_cache, timing,
                 )
                 green21[n] = _cuda_pic_green_fft(
-                    solver, T, prep21[n].source_grid, prep21[n].field_grid, green_cache,
+                    solver, T, prep21[n].source_grid, prep21[n].field_grid, green_cache, timing,
                 )
             end
             _cuda_pic_add_time!(timing, :field_green, t_green)
@@ -793,7 +805,7 @@ if _HAS_CUDA
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
             t_green = time_ns()
             green_fft = _cuda_pic_green_fft(
-                solver, eltype(source.x), prep.source_grid, prep.field_grid, green_cache,
+                solver, eltype(source.x), prep.source_grid, prep.field_grid, green_cache, timing,
             )
             _cuda_pic_add_time!(timing, :field_green, t_green)
             t_fields = time_ns()
@@ -889,7 +901,7 @@ if _HAS_CUDA
         function _cuda_pic_solve_field(solver::PICPoissonSolver, x, y, source_grid, field_grid,
                                        green_cache=nothing, charge=nothing, timing=nothing)
             t_green = time_ns()
-            green_fft = _cuda_pic_green_fft(solver, eltype(x), source_grid, field_grid, green_cache)
+            green_fft = _cuda_pic_green_fft(solver, eltype(x), source_grid, field_grid, green_cache, timing)
             _cuda_pic_add_time!(timing, :field_green, t_green)
             return _cuda_pic_solve_field_with_green_fft(solver, x, y, source_grid, green_fft, charge, timing)
         end
@@ -1128,17 +1140,23 @@ if _HAS_CUDA
         end
 
         function _cuda_pic_green_fft(solver::PICPoissonSolver, ::Type{T}, source_grid, field_grid,
-                                     cache) where {T}
+                                     cache, timing=nothing) where {T}
             if cache isa _CUDAPICGreenCache{T}
+                t_lookup = time_ns()
                 key = _pic_green_key(solver, T, source_grid, field_grid)
                 lock(cache.lock) do
                     cached = get(cache.greens, key, nothing)
                     if cached !== nothing
                         cache.hits += 1
+                        _cuda_pic_add_time!(timing, :green_lookup, t_lookup)
                         return cached
                     end
-                    green_fft = _cuda_pic_build_green_fft(solver, T, source_grid, field_grid)
+                    _cuda_pic_add_time!(timing, :green_lookup, t_lookup)
+                    green_fft = _cuda_pic_build_green_fft(solver, T, source_grid, field_grid, timing)
+                    t_sync = time_ns()
                     CUDA.synchronize(CUDA.stream())
+                    _cuda_pic_add_time!(timing, :green_cache_sync, t_sync)
+                    t_insert = time_ns()
                     if cache.max_entries > 0
                         if length(cache.greens) >= cache.max_entries
                             empty!(cache.greens)
@@ -1147,16 +1165,19 @@ if _HAS_CUDA
                         cache.greens[key] = green_fft
                     end
                     cache.misses += 1
+                    _cuda_pic_add_time!(timing, :green_cache_insert, t_insert)
                     return green_fft
                 end
             end
-            return _cuda_pic_build_green_fft(solver, T, source_grid, field_grid)
+            return _cuda_pic_build_green_fft(solver, T, source_grid, field_grid, timing)
         end
 
-        function _cuda_pic_build_green_fft(solver::PICPoissonSolver, ::Type{T}, source_grid, field_grid) where {T}
+        function _cuda_pic_build_green_fft(solver::PICPoissonSolver, ::Type{T}, source_grid, field_grid,
+                                           timing=nothing) where {T}
             nx, ny = solver.grid
             hx = T(source_grid.width) / T(nx - 1)
             hy = T(source_grid.height) / T(ny - 1)
+            t_build = time_ns()
             green = CUDA.zeros(T, 2nx, 2ny)
             green_code = Symbol(solver.green_type) == :integrated ? Int32(1) : Int32(2)
             threads = 256
@@ -1167,7 +1188,11 @@ if _HAS_CUDA
                 T(source_grid.x0), T(source_grid.y0),
                 hx, hy, Int32(nx), Int32(ny),
             )
-            return fft(green)
+            _cuda_pic_add_time!(timing, :green_build_kernel, t_build)
+            t_fft = time_ns()
+            green_fft = fft(green)
+            _cuda_pic_add_time!(timing, :green_build_fft, t_fft)
+            return green_fft
         end
 
         function _cuda_pic_wavefront_luminosity(solver::PICPoissonSolver, valid, klum,
