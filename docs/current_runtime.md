@@ -272,7 +272,10 @@ modes. July 2026 benchmarks found no wall-time improvement for the generic
 exact/template CUDA caches: exact caching had essentially no hits, while
 template caching was correct but still created many Green FFTs and added
 lookup/preparation overhead. The slice-pair cache is a slice-pair-specific
-experiment and should be benchmarked separately. Use
+experiment and should be benchmarked separately. Its CUDA reuse defaults are
+`OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO=0.50` and
+`OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH=0.25`, matching the July 2026
+long-run timing tests that kept rebuilds low. Use
 `green_cache=:none` for CUDA PIC production runs unless a future validation and
 performance study shows a clear benefit. If experimenting with CUDA Green
 caches, keep `OCTOPUS_CUDA_PIC_GREEN_CACHE_MAX_ENTRIES` bounded and compare

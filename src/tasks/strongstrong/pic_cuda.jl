@@ -350,10 +350,10 @@ if _HAS_CUDA
             get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_CACHE", "0") in ("1", "true", "TRUE", "yes", "YES")
 
         _cuda_pic_slice_pair_green_min_ratio() =
-            parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO", "0.70"))
+            parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO", "0.50"))
 
         _cuda_pic_slice_pair_green_growth() =
-            parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH", "0.10"))
+            parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH", "0.25"))
 
         _cuda_pic_stack_cached_green_enabled() =
             get(ENV, "OCTOPUS_CUDA_PIC_STACK_CACHED_GREEN", "1") in ("1", "true", "TRUE", "yes", "YES")
