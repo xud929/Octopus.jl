@@ -3047,7 +3047,7 @@ if _HAS_CUDA
                 return _cuda_equal_width_slices(rep, slicing)
             elseif method == :equal_area
                 return _cuda_equal_area_slices(rep, slicing)
-            elseif method == :gaussian || method == :Gaussian
+            elseif method == :normal_quantile || method == :gaussian || method == :Gaussian
                 return _cuda_gaussian_slices(rep, slicing)
             elseif method == :specified
                 return _cuda_specified_slices(rep, slicing)

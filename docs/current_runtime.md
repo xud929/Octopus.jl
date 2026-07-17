@@ -159,9 +159,10 @@ after both beams reach the collision marker. CPU execution remains sequential.
 The implemented solvers are `GaussianPoissonSolver` and `PICPoissonSolver`.
 Both slice the beams longitudinally, order slice-pair collisions by collision
 time, apply kicks to both live beams, and return a luminosity estimate.
-Use `LongitudinalSlicing(method=:gaussian, nslices=N)` for Gaussian
-equal-probability quantile boundaries; this replaces manually constructing
-Gaussian `positions`. A solver `slicing=...` value applies to both beams, while
+Use `LongitudinalSlicing(method=:normal_quantile, nslices=N)` for
+equal-probability normal-distribution quantile boundaries based on the current
+longitudinal mean/rms; this replaces manually constructing Gaussian
+`positions`. A solver `slicing=...` value applies to both beams, while
 `slicing1=...` and `slicing2=...` allow different slicing configurations for
 beam 1 and beam 2.
 

@@ -99,10 +99,10 @@ Supported methods:
   current macroparticles by longitudinal coordinate.
 - `:equal_width`: choose uniformly spaced boundaries between the current
   minimum and maximum longitudinal coordinates.
-- `:gaussian`: choose equal-probability Gaussian quantile boundaries from the
-  current longitudinal mean/rms. Slice centers are still controlled by
-  `center_position`, and slice weights come from the macroparticle counts in
-  each slice.
+- `:normal_quantile`: choose equal-probability normal-distribution quantile
+  boundaries from the current longitudinal mean/rms. Slice centers are still
+  controlled by `center_position`, and slice weights come from the
+  macroparticle counts in each slice.
 - `:specified`: use `positions` as internal boundaries in units of beam
   longitudinal rms around the beam mean.
 

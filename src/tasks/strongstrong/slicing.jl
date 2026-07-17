@@ -57,7 +57,7 @@ function longitudinal_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
         return _longitudinal_slices_equal_count(rep, slicing)
     elseif method == :equal_width || method == :equal_spaced
         return _longitudinal_slices_equal_width(rep, slicing)
-    elseif method == :gaussian || method == :Gaussian
+    elseif method == :normal_quantile || method == :gaussian || method == :Gaussian
         return _longitudinal_slices_gaussian(rep, slicing)
     elseif method == :specified
         return _longitudinal_slices_specified(rep, slicing)

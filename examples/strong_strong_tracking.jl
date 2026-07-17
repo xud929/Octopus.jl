@@ -225,7 +225,7 @@ eltype(beam_ele.rep.x) === Float64 || error("electron beam tracking arrays must 
 eltype(beam_pro.rep.x) === Float64 || error("proton beam tracking arrays must be Float64")
 
 slicing = LongitudinalSlicing(;
-    method = :gaussian,
+    method = :normal_quantile,
     nslices = input.slicing.zslice,
     center_position = input.slicing.center,
 )
