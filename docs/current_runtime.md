@@ -255,11 +255,6 @@ computes drifted bounds from full beam arrays using slice index vectors,
 deposits directly from those indexed particles into the wavefront charge stack,
 keeps the same large batched charge FFT and Green FFT path, and applies kicks
 back to the original beam arrays by particle index after the fields are solved.
-`OCTOPUS_CUDA_PIC_SORT_SLICE_INDICES=1` explicitly sorts each CUDA slice index
-vector by particle id after slicing. The current mask-prefix-sum CUDA slicing
-path already emits increasing particle ids, so this flag is a diagnostic hook
-for benchmarking and for future slicing paths that may not preserve index
-order.
 Keep this path under validation until it matches the compact path for
 luminosity and beam moments.
 The CUDA PIC

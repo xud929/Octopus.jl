@@ -361,9 +361,6 @@ if _HAS_CUDA
         _cuda_pic_indexed_wavefront_enabled() =
             get(ENV, "OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT", "0") in ("1", "true", "TRUE", "yes", "YES")
 
-        _cuda_pic_sort_slice_indices_enabled() =
-            get(ENV, "OCTOPUS_CUDA_PIC_SORT_SLICE_INDICES", "0") in ("1", "true", "TRUE", "yes", "YES")
-
         function _cuda_pic_timing_stats()
             _cuda_pic_timing_enabled() || return nothing
             return _CUDAPICTimingStats(
@@ -3449,10 +3446,6 @@ if _HAS_CUDA
                 include_hi = s == ns
                 mask = include_hi ? ((z .>= lb) .& (z .<= rb)) : ((z .>= lb) .& (z .< rb))
                 idx = _cuda_indices_from_mask(mask)
-                # _cuda_indices_from_mask already emits increasing particle ids.
-                # Keep this switch as an explicit benchmark hook in case future
-                # slicing paths produce unsorted indices.
-                _cuda_pic_sort_slice_indices_enabled() && sort!(idx)
                 count = length(idx)
                 indices[s] = idx
                 weights[s] = T(count) / T(length(rep))
