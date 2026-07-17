@@ -73,6 +73,12 @@ gather/scatter and deposits/kicks through slice index vectors:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT=1 julia --project=. examples/strong_strong_tracking.jl
 
+Benchmark explicit particle-id sorting of CUDA slice index vectors. Current
+mask-based CUDA slicing already emits increasing particle ids, so this is mainly
+a diagnostic switch for future slicing/indexing paths:
+
+    OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT=1 OCTOPUS_CUDA_PIC_SORT_SLICE_INDICES=1 julia --project=. examples/strong_strong_tracking.jl
+
 Log CUDA memory every N turns:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_MEMORY_LOG_EVERY=10 julia --project=. examples/strong_strong_tracking.jl
