@@ -79,6 +79,16 @@ wall time versus `green_cache=:none`. CUDA cache capacity is bounded by
 GPU memory growth but can cause churn. The production default remains
 `green_cache=:none`.
 
+A slice-pair CUDA Green cache can be tested with
+`PICPoissonSolver(green_cache=:slice_pair)` or
+`OCTOPUS_PIC_GREEN_CACHE=slice_pair` in the strong-strong example. It keeps two
+reusable Green FFTs per slice-pair, one per beam-beam direction, enlarges
+rebuilt grids by a configurable factor, and reuses a cached entry only when the
+current source and field domains fit inside the cached grids. This is intended
+to test the hypothesis that a fixed slice-pair identity is a better cache key
+than generic geometry. It is not a production recommendation until benchmarked
+against the default wavefront Green-stack path.
+
 ### 4. Overlap Independent CUDA PIC Field Solves
 
 For one slice-pair collision, the four source-boundary field solves are
@@ -113,6 +123,16 @@ CUDA PIC temporary arrays are reclaimed adaptively during long collisions. The
 default checks memory pressure every 16 slice-pairs and reclaims only when free
 GPU memory is below 12% of total memory. `OCTOPUS_CUDA_PIC_RECLAIM_EVERY`
 enables fixed-interval cleanup for debugging or constrained-memory runs.
+
+### 4.2 Evaluate a Two-State Indexed CUDA Collision Path
+
+A possible next optimization is to avoid compact slice gather/scatter by
+keeping old/new full-size coordinate arrays on the GPU and writing active
+wavefront slices back by original particle index. The design must preserve the
+current two-direction slice-pair semantics: both beams in one pair read the
+pre-collision state before either direction's kick is visible to the opposite
+direction. This path should remain experimental until it matches the compact
+implementation for luminosity, RMS moments, and backend consistency.
 
 ### 5. Improve GPU Deposition
 

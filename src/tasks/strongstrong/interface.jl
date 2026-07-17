@@ -250,10 +250,13 @@ This is the default. Set `longitudinal_kick=false` for a transverse-only map.
 or `:standard`; the integrated Green function is the robust default and uses a
 cell-integrated logarithmic kernel.
 
-`green_cache` may be `:none`, `:exact`, or `:grid_template`. The exact cache
-reuses Green FFTs for identical source/field grids. The template cache reuses
-shifted source/field grid geometry when a translated cached template can cover
-the current source and field domains with deposition/interpolation margin.
+`green_cache` may be `:none`, `:exact`, `:grid_template`, or `:slice_pair`. The
+exact cache reuses Green FFTs for identical source/field grids. The template
+cache reuses shifted source/field grid geometry when a translated cached
+template can cover the current source and field domains with
+deposition/interpolation margin. The slice-pair cache is a CUDA wavefront
+experiment that keeps two Green FFTs per slice-pair, one per beam-beam
+direction, and reuses each for the left/right source-boundary charge planes.
 `batch_mode` may be `:sequential` or `:wavefront`. Sequential mode preserves
 the original one-slice-pair-at-a-time execution. Wavefront mode groups ready,
 non-overlapping slice pairs with `collision_pair_batches`; it currently affects

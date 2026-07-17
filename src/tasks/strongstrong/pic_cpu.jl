@@ -57,8 +57,8 @@ function _validate_pic_solver(solver::PICPoissonSolver)
     (green == :integrated || green == :standard) ||
         throw(ArgumentError("PICPoissonSolver green_type must be :integrated or :standard"))
     cache = Symbol(solver.green_cache)
-    (cache == :none || cache == :exact || cache == :grid_template) ||
-        throw(ArgumentError("PICPoissonSolver green_cache must be :none, :exact, or :grid_template"))
+    (cache == :none || cache == :exact || cache == :grid_template || cache == :slice_pair) ||
+        throw(ArgumentError("PICPoissonSolver green_cache must be :none, :exact, :grid_template, or :slice_pair"))
     batch_mode = Symbol(solver.batch_mode)
     (batch_mode == :sequential || batch_mode == :wavefront) ||
         throw(ArgumentError("PICPoissonSolver batch_mode must be :sequential or :wavefront"))

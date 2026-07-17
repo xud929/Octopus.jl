@@ -44,6 +44,7 @@ experimental diagnostics and should be compared against `none` before use:
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=none julia --project=. examples/strong_strong_tracking.jl
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=exact julia --project=. examples/strong_strong_tracking.jl
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=grid_template julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=slice_pair julia --project=. examples/strong_strong_tracking.jl
 
 Disable CUDA PIC asynchronous field solves for comparison:
 
@@ -61,6 +62,16 @@ Disable CUDA PIC wavefront Green-stack FFTs for comparison. In CUDA wavefront
 mode with `green_cache=none`, this path is enabled by default:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_WAVEFRONT_GREEN_FFT=0 julia --project=. examples/strong_strong_tracking.jl
+
+Test the experimental slice-pair Green cache. This is a benchmark
+option, not the recommended production default:
+
+    OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_PIC_GREEN_CACHE=slice_pair OCTOPUS_PIC_CACHE_STATS=1 julia --project=. examples/strong_strong_tracking.jl
+
+Test the experimental indexed CUDA wavefront path. It skips compact
+gather/scatter and deposits/kicks through slice index vectors:
+
+    OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT=1 julia --project=. examples/strong_strong_tracking.jl
 
 Log CUDA memory every N turns:
 

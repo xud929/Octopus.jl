@@ -211,7 +211,11 @@ one directed slice interaction. `PICPoissonSolver(green_cache=:exact)` enables
 a deterministic CPU cache for identical source/field Green FFT geometries.
 `PICPoissonSolver(green_cache=:grid_template)` enables an experimental CPU
 template cache that reuses shifted source/field grid templates when a
-translated template covers the current source and field domains. The default is
+translated template covers the current source and field domains.
+`PICPoissonSolver(green_cache=:slice_pair)` enables an experimental CUDA
+wavefront cache keyed by slice-pair and direction. It stores two Green FFTs per
+slice-pair, one for each beam-beam direction, and reuses each Green for the
+left and right source-boundary charge solves. The default is
 `green_cache=:none`. Set `OCTOPUS_PIC_CACHE_STATS=1` to print cache hits,
 misses, and hit rate for PIC runs.
 
@@ -245,14 +249,25 @@ charge stack. In wavefront PIC mode, the stack grows to
 `OCTOPUS_CUDA_PIC_WAVEFRONT_FFT=0` to fall back from wavefront-level batching
 to per-pair batched FFTs, or `OCTOPUS_CUDA_PIC_BATCH_FFT=0` to fall back to the
 previous four-stream field-solve path for timing comparisons. The CUDA PIC
+experimental indexed wavefront path, enabled by
+`OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT=1`, skips compact slice gather/scatter. It
+computes drifted bounds from full beam arrays using slice index vectors,
+deposits directly from those indexed particles into the wavefront charge stack,
+keeps the same large batched charge FFT and Green FFT path, and applies kicks
+back to the original beam arrays by particle index after the fields are solved.
+Keep this path under validation until it matches the compact path for
+luminosity and beam moments.
+The CUDA PIC
 workspace reuses its field streams, luminosity stream, synchronization event,
 charge grids, batched charge/field arrays, wavefront charge/field-array cache,
 and luminosity grids through the `StrongStrongTask` runtime cache across turns.
-`green_cache=:exact` and `green_cache=:grid_template` are implemented as
-experimental CUDA Green FFT cache modes. July 2026 benchmarks found no
-wall-time improvement for the current strong-strong PIC workload: exact caching
-had essentially no hits, while template caching was correct but still created
-many Green FFTs and added lookup/preparation overhead. Use
+`green_cache=:exact`, `green_cache=:grid_template`, and
+`green_cache=:slice_pair` are implemented as experimental CUDA Green FFT cache
+modes. July 2026 benchmarks found no wall-time improvement for the generic
+exact/template CUDA caches: exact caching had essentially no hits, while
+template caching was correct but still created many Green FFTs and added
+lookup/preparation overhead. The slice-pair cache is a slice-pair-specific
+experiment and should be benchmarked separately. Use
 `green_cache=:none` for CUDA PIC production runs unless a future validation and
 performance study shows a clear benefit. If experimenting with CUDA Green
 caches, keep `OCTOPUS_CUDA_PIC_GREEN_CACHE_MAX_ENTRIES` bounded and compare
