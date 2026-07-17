@@ -259,10 +259,14 @@ workspace reuses its field streams, luminosity stream, synchronization event,
 charge grids, batched charge/field arrays, wavefront charge/field-array cache,
 and luminosity grids through the `StrongStrongTask` runtime cache across turns.
 `green_cache=:slice_pair` is the only persistent PIC Green FFT cache mode. Its
-reuse defaults are
-`OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO=0.50` and
-`OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH=0.25`, matching the July 2026
-long-run timing tests that kept rebuilds low. Use
+reuse defaults are `slice_pair_green_min_ratio=0.50` and
+`slice_pair_green_growth=0.25`, matching the July 2026 long-run timing tests
+that kept rebuilds low. Define them directly in the solver, for example
+`PICPoissonSolver(green_cache=:slice_pair, slice_pair_green_min_ratio=0.50,
+slice_pair_green_growth=0.20)`. The strong-strong example also maps
+`OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO` and
+`OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH` into these constructor keywords for
+command-line convenience. Use
 `green_cache=:none` for CUDA PIC production runs unless a future validation and
 performance study shows a clear benefit. If experimenting with the slice-pair
 cache, compare luminosity, RMS, cache hit/build counts, and wall time against

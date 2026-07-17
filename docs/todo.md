@@ -48,7 +48,10 @@ Future experiments:
   slice-pair, rebuilds an enlarged grid when the current source/field domains
   no longer fit or become too small relative to the cached grid, and reuses
   cached FFTs across turns. CPUThreads and CUDA support the same public cache
-  modes: `:none` and `:slice_pair`.
+  modes: `:none` and `:slice_pair`. Tune reuse with
+  `PICPoissonSolver(slice_pair_green_min_ratio=..., slice_pair_green_growth=...)`;
+  the example maps `OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO` and
+  `OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH` into those solver fields.
 - Compare `green_cache=:slice_pair` against `green_cache=:none` with the same initial beams,
   same turns, luminosity/RMS validation, cache hit/build counts, and wall time.
 

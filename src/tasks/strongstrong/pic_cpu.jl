@@ -276,8 +276,8 @@ function _pic_slice_pair_green!(workspace::_PICCPUWorkspace, solver::PICPoissonS
             entry.uses += 1
             return entry.source_grid, entry.field_grid, entry.green_fft
         end
-        expanded_source = _pic_expand_grid_by(source_grid, T(1) + T(_pic_slice_pair_green_growth()))
-        expanded_field = _pic_expand_grid_by(field_grid, T(1) + T(_pic_slice_pair_green_growth()))
+        expanded_source = _pic_expand_grid_by(source_grid, T(1) + T(solver.slice_pair_green_growth))
+        expanded_field = _pic_expand_grid_by(field_grid, T(1) + T(solver.slice_pair_green_growth))
         green_fft = copy(_pic_green_fft!(workspace, solver, T, expanded_source, expanded_field))
         if entry === nothing
             cache.misses += 1
@@ -292,16 +292,8 @@ function _pic_slice_pair_green!(workspace::_PICCPUWorkspace, solver::PICPoissonS
     return source_grid, field_grid, _pic_green_fft!(workspace, solver, T, source_grid, field_grid)
 end
 
-_pic_slice_pair_green_min_ratio() =
-    parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO",
-                       get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO", "0.50")))
-
-_pic_slice_pair_green_growth() =
-    parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH",
-                       get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH", "0.25")))
-
 function _pic_slice_pair_entry_usable(solver::PICPoissonSolver, entry, source_grid, field_grid, source_bounds, field_bounds)
-    min_ratio = _pic_slice_pair_green_min_ratio()
+    min_ratio = solver.slice_pair_green_min_ratio
     _pic_grid_size_usable(entry.source_grid, source_grid, min_ratio) || return false
     _pic_grid_size_usable(entry.field_grid, field_grid, min_ratio) || return false
     _pic_grid_covers_bounds(solver, entry.source_grid, source_bounds) || return false

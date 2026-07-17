@@ -44,6 +44,11 @@ is an experimental diagnostic and should be compared against `none` before use:
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=none julia --project=. examples/strong_strong_tracking.jl
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=slice_pair julia --project=. examples/strong_strong_tracking.jl
 
+Tune the experimental slice-pair Green cache. `GROWTH=0.20` builds cached
+grids 1.20 times larger than the current request:
+
+    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=slice_pair OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO=0.50 OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH=0.20 julia --project=. examples/strong_strong_tracking.jl
+
 Disable CUDA PIC asynchronous field solves for comparison:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_CUDA_PIC_ASYNC=0 julia --project=. examples/strong_strong_tracking.jl
@@ -158,6 +163,8 @@ input = (
         pic_grid = (128, 128),
         pic_deposit_method = :CIC,
         pic_green_type = :integrated,
+        pic_slice_pair_green_min_ratio = 0.50,
+        pic_slice_pair_green_growth = 0.25,
         min_sigma = 1.0e-12,
         luminosity_scale = nothing,
     ),
@@ -232,6 +239,12 @@ slicing = LongitudinalSlicing(;
 
 solver_kind = lowercase(get(ENV, "OCTOPUS_POISSON_SOLVER", "PIC"))
 pic_green_cache = Symbol(lowercase(get(ENV, "OCTOPUS_PIC_GREEN_CACHE", "none")))
+pic_slice_pair_green_min_ratio = parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO",
+                                                    get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO",
+                                                        string(input.solver.pic_slice_pair_green_min_ratio))))
+pic_slice_pair_green_growth = parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH",
+                                                 get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH",
+                                                     string(input.solver.pic_slice_pair_green_growth))))
 pic_longitudinal_kick = get(ENV, "OCTOPUS_PIC_LONGITUDINAL_KICK", "1") in ("1", "true", "TRUE", "yes", "YES")
 pic_batch_mode = Symbol(lowercase(get(ENV, "OCTOPUS_PIC_BATCH_MODE", "sequential")))
 pic_luminosity_every = parse(Int, get(ENV, "OCTOPUS_PIC_LUMINOSITY_EVERY", "1"))
@@ -254,6 +267,8 @@ elseif solver_kind == "pic"
         deposit_method = input.solver.pic_deposit_method,
         green_type = input.solver.pic_green_type,
         green_cache = pic_green_cache,
+        slice_pair_green_min_ratio = pic_slice_pair_green_min_ratio,
+        slice_pair_green_growth = pic_slice_pair_green_growth,
         longitudinal_kick = pic_longitudinal_kick,
         batch_mode = pic_batch_mode,
         luminosity_schedule = pic_luminosity_schedule,
@@ -420,6 +435,9 @@ println("poisson_solver = ", solver_kind)
 if solver_kind == "pic"
     println("pic_longitudinal_kick = ", pic_longitudinal_kick)
     println("pic_batch_mode = ", pic_batch_mode)
+    println("pic_green_cache = ", pic_green_cache)
+    println("pic_slice_pair_green_min_ratio = ", pic_slice_pair_green_min_ratio)
+    println("pic_slice_pair_green_growth = ", pic_slice_pair_green_growth)
     println("pic_luminosity_every = ", pic_luminosity_every)
 end
 println("luminosity = ", luminosity_path)

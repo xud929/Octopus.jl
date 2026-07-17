@@ -205,6 +205,8 @@ const StrongStrongGaussianPoissonSolver = GaussianPoissonSolver
                       grid=(128, 128), deposit_method=:CIC,
                       green_type=:integrated,
                       green_cache=:none,
+                      slice_pair_green_min_ratio=0.50,
+                      slice_pair_green_growth=0.25,
                       longitudinal_kick=true,
                       batch_mode=:sequential,
                       luminosity_schedule=nothing,
@@ -230,7 +232,12 @@ cell-integrated logarithmic kernel.
 `green_cache` may be `:none` or `:slice_pair`. The slice-pair cache keeps two
 Green FFTs per slice-pair, one per beam-beam direction, and reuses each for the
 left/right source-boundary charge planes when the current source and field
-domains still fit inside the cached grids.
+domains still fit inside the cached grids. `slice_pair_green_min_ratio`
+controls when a cached grid is considered too large for the current domain; a
+value of `0.50` means the current requested width and height must both be at
+least half of the cached width and height. `slice_pair_green_growth` is the
+fractional grid enlargement used when building or rebuilding a cached entry; a
+value of `0.25` builds a grid 1.25 times larger than the current request.
 `batch_mode` may be `:sequential` or `:wavefront`. Sequential mode preserves
 the original one-slice-pair-at-a-time execution. Wavefront mode groups ready,
 non-overlapping slice pairs with `collision_pair_batches`; it currently affects
@@ -257,6 +264,8 @@ struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     deposit_method::Symbol
     green_type::Symbol
     green_cache::Symbol
+    slice_pair_green_min_ratio::T
+    slice_pair_green_growth::T
     longitudinal_kick::Bool
     batch_mode::Symbol
     luminosity_schedule::Union{Nothing,AbstractSchedule}
@@ -271,6 +280,8 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                              deposit_method::Symbol=:CIC,
                              green_type::Symbol=:integrated,
                              green_cache::Symbol=:none,
+                             slice_pair_green_min_ratio=0.50,
+                             slice_pair_green_growth=0.25,
                              longitudinal_kick::Bool=true,
                              batch_mode::Symbol=:sequential,
                              luminosity_schedule::Union{Nothing,AbstractSchedule}=nothing,
@@ -279,6 +290,14 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                              slicing2=nothing) where {T<:Real}
     s1 = slicing1 === nothing ? slicing : slicing1
     s2 = slicing2 === nothing ? slicing : slicing2
+    min_ratio = T(slice_pair_green_min_ratio)
+    growth = T(slice_pair_green_growth)
+    zero(T) < min_ratio <= one(T) || throw(ArgumentError(
+        "slice_pair_green_min_ratio must be in (0, 1]; got $(slice_pair_green_min_ratio)."
+    ))
+    growth >= zero(T) || throw(ArgumentError(
+        "slice_pair_green_growth must be non-negative; got $(slice_pair_green_growth)."
+    ))
     return PICPoissonSolver{T}(
         _optional_solver_value(T, kbb1),
         _optional_solver_value(T, kbb2),
@@ -287,6 +306,8 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         deposit_method,
         green_type,
         green_cache,
+        min_ratio,
+        growth,
         longitudinal_kick,
         batch_mode,
         luminosity_schedule,

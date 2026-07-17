@@ -321,12 +321,6 @@ if _HAS_CUDA
             Symbol(solver.green_cache) == :slice_pair ||
             get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_CACHE", "0") in ("1", "true", "TRUE", "yes", "YES")
 
-        _cuda_pic_slice_pair_green_min_ratio() =
-            parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO", "0.50"))
-
-        _cuda_pic_slice_pair_green_growth() =
-            parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH", "0.25"))
-
         _cuda_pic_stack_cached_green_enabled() =
             get(ENV, "OCTOPUS_CUDA_PIC_STACK_CACHED_GREEN", "1") in ("1", "true", "TRUE", "yes", "YES")
 
@@ -1253,8 +1247,8 @@ if _HAS_CUDA
             end
             _cuda_pic_add_time!(timing, :green_lookup, t_lookup)
 
-            source_grid = _cuda_pic_expand_grid_by(prep.source_grid, T(1) + T(_cuda_pic_slice_pair_green_growth()))
-            field_grid = _cuda_pic_expand_grid_by(prep.field_grid, T(1) + T(_cuda_pic_slice_pair_green_growth()))
+            source_grid = _cuda_pic_expand_grid_by(prep.source_grid, T(1) + T(solver.slice_pair_green_growth))
+            field_grid = _cuda_pic_expand_grid_by(prep.field_grid, T(1) + T(solver.slice_pair_green_growth))
             t_green = time_ns()
             green_fft = _cuda_pic_build_green_fft(solver, T, source_grid, field_grid, timing)
             _cuda_pic_add_time!(timing, :field_green, t_green)
@@ -1274,7 +1268,7 @@ if _HAS_CUDA
         end
 
         function _cuda_pic_slice_pair_entry_usable(solver::PICPoissonSolver, entry, prep)
-            min_ratio = _cuda_pic_slice_pair_green_min_ratio()
+            min_ratio = solver.slice_pair_green_min_ratio
             _cuda_pic_grid_size_usable(entry.source_grid, prep.source_grid, min_ratio) || return false
             _cuda_pic_grid_size_usable(entry.field_grid, prep.field_grid, min_ratio) || return false
             _cuda_pic_grid_covers_bounds(solver, entry.source_grid, prep.source_bounds) || return false
