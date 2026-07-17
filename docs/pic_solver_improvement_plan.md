@@ -52,42 +52,21 @@ directed slice interactions in one `collide!` call. It also reuses temporary
 source-boundary coordinate arrays and luminosity deposition grids. In-place
 FFTW plans are stored in the workspace and reused for the CPU convolution.
 
-### 3. Cache Green FFTs Across Compatible Interactions
+### 3. Cache Green FFTs Across Slice Pairs
 
-Cache Green FFTs by a geometry key:
+Generic exact-geometry and grid-template Green caches were removed after July
+2026 CUDA benchmarks showed no wall-time benefit for the strong-strong PIC
+workload. The remaining persistent cache mode is slice-pair based.
 
-```text
-green_type, nx, ny, source_grid, field_grid, hx, hy, eltype
-```
-
-Use exact keys only at first. Approximate or rounded geometry keys should wait
-until a validation contract defines acceptable error.
-
-Status: experimental, not recommended for CUDA production. Exact geometry reuse
-is available through `PICPoissonSolver(green_cache=:exact)`. Template geometry
-reuse is available through `PICPoissonSolver(green_cache=:grid_template)`.
-The template cache stores shifted source/field grid templates and reuses a
-template only when a translated copy can cover the current source and field
-domains with stencil margin.
-
-July 2026 CUDA benchmarks found that neither exact nor template Green caches
-improved the strong-strong PIC workload. Exact caching had essentially no hits
-for evolving slice-pair geometries. Template caching was correct but still
-created many Green FFTs, added lookup/preparation overhead, and did not reduce
-wall time versus `green_cache=:none`. CUDA cache capacity is bounded by
-`OCTOPUS_CUDA_PIC_GREEN_CACHE_MAX_ENTRIES`; bounded capacity avoids unbounded
-GPU memory growth but can cause churn. The production default remains
-`green_cache=:none`.
-
-A slice-pair CUDA Green cache can be tested with
+A slice-pair Green cache can be tested with
 `PICPoissonSolver(green_cache=:slice_pair)` or
 `OCTOPUS_PIC_GREEN_CACHE=slice_pair` in the strong-strong example. It keeps two
 reusable Green FFTs per slice-pair, one per beam-beam direction, enlarges
 rebuilt grids by a configurable factor, and reuses a cached entry only when the
-current source and field domains fit inside the cached grids. This is intended
-to test the hypothesis that a fixed slice-pair identity is a better cache key
-than generic geometry. It is not a production recommendation until benchmarked
-against the default wavefront Green-stack path.
+current source and field domains fit inside the cached grids. CPUThreads and
+CUDA support the same `:none` / `:slice_pair` cache API. The production default
+remains `green_cache=:none` until slice-pair caching shows a clear benefit for
+a validated workload.
 
 ### 4. Overlap Independent CUDA PIC Field Solves
 
@@ -167,11 +146,11 @@ OCTOPUS_PIC_VALIDATION_RANDOM_CASES=100 \
 OCTOPUS_PIC_VALIDATION_WRITE_CASE_DATA=false \
 julia --project=. validation/pic_gaussian_field_validation.jl
 OCTOPUS_POISSON_SOLVER=PIC julia --project=. examples/strong_strong_tracking.jl
-OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=grid_template \
+OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=slice_pair \
 julia --project=. examples/strong_strong_tracking.jl
-OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=exact \
+OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=slice_pair \
 julia --project=. examples/strong_strong_tracking.jl
-OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=exact \
+OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=slice_pair \
 OCTOPUS_CUDA_PIC_ASYNC=0 julia --project=. examples/strong_strong_tracking.jl
 ```
 

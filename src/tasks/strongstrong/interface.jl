@@ -54,42 +54,19 @@ struct _PICCPUWorkspace{T}
     luminosity_q2::Matrix{T}
 end
 
-struct _PICGridTemplate{T}
-    source_width::T
-    source_height::T
-    field_width::T
-    field_height::T
-    dx::T
-    dy::T
-    hx::T
-    hy::T
+mutable struct _PICSlicePairGreenEntry{T}
+    source_grid::Any
+    field_grid::Any
     green_fft::Matrix{Complex{T}}
+    uses::Int
+    rebuilds::Int
 end
 
-struct _PICGreenKey{T}
-    green_type::Symbol
-    nx::Int
-    ny::Int
-    source_x0::T
-    source_y0::T
-    source_width::T
-    source_height::T
-    field_x0::T
-    field_y0::T
-    field_width::T
-    field_height::T
-end
-
-mutable struct _PICExactGreenCache{T}
-    greens::Dict{_PICGreenKey{T},Matrix{Complex{T}}}
+mutable struct _PICSlicePairGreenCache{T}
+    entries::Dict{Tuple{Int,Int,Int},_PICSlicePairGreenEntry{T}}
     hits::Int
     misses::Int
-end
-
-mutable struct _PICGridTemplateCache{T}
-    templates::Vector{_PICGridTemplate{T}}
-    hits::Int
-    misses::Int
+    rebuilds::Int
 end
 
 function _pic_cpu_workspace(::Type{T}, nx::Integer, ny::Integer) where {T}
@@ -250,13 +227,10 @@ This is the default. Set `longitudinal_kick=false` for a transverse-only map.
 or `:standard`; the integrated Green function is the robust default and uses a
 cell-integrated logarithmic kernel.
 
-`green_cache` may be `:none`, `:exact`, `:grid_template`, or `:slice_pair`. The
-exact cache reuses Green FFTs for identical source/field grids. The template
-cache reuses shifted source/field grid geometry when a translated cached
-template can cover the current source and field domains with
-deposition/interpolation margin. The slice-pair cache is a CUDA wavefront
-experiment that keeps two Green FFTs per slice-pair, one per beam-beam
-direction, and reuses each for the left/right source-boundary charge planes.
+`green_cache` may be `:none` or `:slice_pair`. The slice-pair cache keeps two
+Green FFTs per slice-pair, one per beam-beam direction, and reuses each for the
+left/right source-boundary charge planes when the current source and field
+domains still fit inside the cached grids.
 `batch_mode` may be `:sequential` or `:wavefront`. Sequential mode preserves
 the original one-slice-pair-at-a-time execution. Wavefront mode groups ready,
 non-overlapping slice pairs with `collision_pair_batches`; it currently affects

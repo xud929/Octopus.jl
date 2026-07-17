@@ -37,8 +37,12 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx)
         coord2 = _pic_extract_slice(beam2.rep, idx2)
         field1 = _pic_copy_coords(coord1)
         field2 = _pic_copy_coords(coord2)
-        vx1, vy1 = _pic_interaction!(solver, coord1, param1, field2, param2, kbb2, workspace, green_cache)
-        vx2, vy2 = _pic_interaction!(solver, coord2, param2, field1, param1, kbb1, workspace, green_cache)
+        vx1, vy1 = _pic_interaction!(
+            solver, coord1, param1, field2, param2, kbb2, workspace, green_cache, (i, j, 1),
+        )
+        vx2, vy2 = _pic_interaction!(
+            solver, coord2, param2, field1, param1, kbb1, workspace, green_cache, (i, j, 2),
+        )
         _pic_store_slice!(beam1.rep, idx1, field1)
         _pic_store_slice!(beam2.rep, idx2, field2)
         compute_luminosity && (luminosity += _pic_luminosity(solver, vx1, vy1, vx2, vy2, klum, workspace))
@@ -57,8 +61,8 @@ function _validate_pic_solver(solver::PICPoissonSolver)
     (green == :integrated || green == :standard) ||
         throw(ArgumentError("PICPoissonSolver green_type must be :integrated or :standard"))
     cache = Symbol(solver.green_cache)
-    (cache == :none || cache == :exact || cache == :grid_template || cache == :slice_pair) ||
-        throw(ArgumentError("PICPoissonSolver green_cache must be :none, :exact, :grid_template, or :slice_pair"))
+    (cache == :none || cache == :slice_pair) ||
+        throw(ArgumentError("PICPoissonSolver green_cache must be :none or :slice_pair"))
     batch_mode = Symbol(solver.batch_mode)
     (batch_mode == :sequential || batch_mode == :wavefront) ||
         throw(ArgumentError("PICPoissonSolver batch_mode must be :sequential or :wavefront"))
@@ -125,6 +129,11 @@ end
 
 function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field, param_field, kbb,
                            workspace::_PICCPUWorkspace, green_cache)
+    return _pic_interaction!(solver, source, param_source, field, param_field, kbb, workspace, green_cache, nothing)
+end
+
+function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field, param_field, kbb,
+                           workspace::_PICCPUWorkspace, green_cache, cache_key)
     nsource = length(source.x)
     nfield = length(field.x)
     T = promote_type(eltype(source.x), eltype(field.x), typeof(kbb))
@@ -171,15 +180,11 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
         solver, source_xmin, source_xmax, source_ymin, source_ymax,
         field_xmin, field_xmax, field_ymin, field_ymax,
     )
-    source_grid, field_grid, cached_green_fft = _pic_cached_interaction_grids(
-        solver, T, green_cache, source_grid0, field_grid0,
-        source_xmin, source_xmax, source_ymin, source_ymax,
-        field_xmin, field_xmax, field_ymin, field_ymax,
+    source_bounds = (xmin=source_xmin, xmax=source_xmax, ymin=source_ymin, ymax=source_ymax)
+    field_bounds = (xmin=field_xmin, xmax=field_xmax, ymin=field_ymin, ymax=field_ymax)
+    source_grid, field_grid, green_fft = _pic_slice_pair_green!(
+        workspace, solver, T, green_cache, cache_key, source_grid0, field_grid0, source_bounds, field_bounds,
     )
-
-    green_fft = cached_green_fft === nothing ?
-        _pic_cached_green_fft!(workspace, solver, T, source_grid, field_grid, green_cache) :
-        cached_green_fft
     phiL, ExL, EyL = _pic_solve_drifted_field_with_green_fft!(
         workspace.left, solver, source, sL, source_grid, green_fft, workspace,
     )
@@ -255,121 +260,104 @@ end
 
 function _pic_green_cache(solver::PICPoissonSolver, ::Type{T}) where {T}
     cache = Symbol(solver.green_cache)
-    cache == :exact && return _PICExactGreenCache{T}(Dict{_PICGreenKey{T},Matrix{Complex{T}}}(), 0, 0)
-    cache == :grid_template && return _PICGridTemplateCache{T}(_PICGridTemplate{T}[], 0, 0)
+    cache == :slice_pair && return _PICSlicePairGreenCache{T}(
+        Dict{Tuple{Int,Int,Int},_PICSlicePairGreenEntry{T}}(), 0, 0, 0,
+    )
     return nothing
 end
 
-function _pic_cached_interaction_grids(solver::PICPoissonSolver, ::Type{T}, cache, source_grid, field_grid,
-                                       sxmin, sxmax, symin, symax,
-                                       fxmin, fxmax, fymin, fymax) where {T}
-    cache isa _PICGridTemplateCache || return source_grid, field_grid, nothing
-    for template in cache.templates
-        translated = _pic_translate_template_if_covers(template, sxmin, sxmax, symin, symax,
-                                                       fxmin, fxmax, fymin, fymax)
-        if translated !== nothing
+function _pic_slice_pair_green!(workspace::_PICCPUWorkspace, solver::PICPoissonSolver, ::Type{T},
+                                cache, cache_key, source_grid, field_grid,
+                                source_bounds, field_bounds) where {T}
+    if cache isa _PICSlicePairGreenCache{T} && cache_key !== nothing
+        entry = get(cache.entries, cache_key, nothing)
+        if entry !== nothing && _pic_slice_pair_entry_usable(solver, entry, source_grid, field_grid, source_bounds, field_bounds)
             cache.hits += 1
-            return translated[1], translated[2], template.green_fft
+            entry.uses += 1
+            return entry.source_grid, entry.field_grid, entry.green_fft
         end
-    end
-    template = _pic_grid_template(solver, T, source_grid, field_grid)
-    push!(cache.templates, template)
-    cache.misses += 1
-    return source_grid, field_grid, template.green_fft
-end
-
-function _pic_cached_green_fft!(workspace::_PICCPUWorkspace, solver::PICPoissonSolver,
-                                ::Type{T}, source_grid, field_grid, cache) where {T}
-    if cache isa _PICExactGreenCache{T}
-        key = _pic_green_key(solver, T, source_grid, field_grid)
-        cached = get(cache.greens, key, nothing)
-        if cached !== nothing
-            cache.hits += 1
-            return cached
+        expanded_source = _pic_expand_grid_by(source_grid, T(1) + T(_pic_slice_pair_green_growth()))
+        expanded_field = _pic_expand_grid_by(field_grid, T(1) + T(_pic_slice_pair_green_growth()))
+        green_fft = copy(_pic_green_fft!(workspace, solver, T, expanded_source, expanded_field))
+        if entry === nothing
+            cache.misses += 1
+            cache.entries[cache_key] = _PICSlicePairGreenEntry{T}(expanded_source, expanded_field, green_fft, 1, 0)
+        else
+            cache.rebuilds += 1
+            entry.rebuilds += 1
+            cache.entries[cache_key] = _PICSlicePairGreenEntry{T}(expanded_source, expanded_field, green_fft, 1, entry.rebuilds)
         end
-        green_fft = copy(_pic_green_fft!(workspace, solver, T, source_grid, field_grid))
-        cache.greens[key] = green_fft
-        cache.misses += 1
-        return green_fft
+        return expanded_source, expanded_field, green_fft
     end
-    return _pic_green_fft!(workspace, solver, T, source_grid, field_grid)
+    return source_grid, field_grid, _pic_green_fft!(workspace, solver, T, source_grid, field_grid)
 end
 
-function _pic_green_key(solver::PICPoissonSolver, ::Type{T}, source_grid, field_grid) where {T}
-    nx, ny = solver.grid
-    return _PICGreenKey{T}(
-        Symbol(solver.green_type), Int(nx), Int(ny),
-        T(source_grid.x0), T(source_grid.y0), T(source_grid.width), T(source_grid.height),
-        T(field_grid.x0), T(field_grid.y0), T(field_grid.width), T(field_grid.height),
-    )
+_pic_slice_pair_green_min_ratio() =
+    parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO",
+                       get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO", "0.50")))
+
+_pic_slice_pair_green_growth() =
+    parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH",
+                       get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH", "0.25")))
+
+function _pic_slice_pair_entry_usable(solver::PICPoissonSolver, entry, source_grid, field_grid, source_bounds, field_bounds)
+    min_ratio = _pic_slice_pair_green_min_ratio()
+    _pic_grid_size_usable(entry.source_grid, source_grid, min_ratio) || return false
+    _pic_grid_size_usable(entry.field_grid, field_grid, min_ratio) || return false
+    _pic_grid_covers_bounds(solver, entry.source_grid, source_bounds) || return false
+    _pic_grid_covers_bounds(solver, entry.field_grid, field_bounds) || return false
+    return true
 end
 
-function _pic_grid_template(solver::PICPoissonSolver, ::Type{T}, source_grid, field_grid) where {T}
+function _pic_grid_size_usable(cached_grid, requested_grid, min_ratio)
+    cached_grid.width >= requested_grid.width || return false
+    cached_grid.height >= requested_grid.height || return false
+    requested_grid.width >= min_ratio * cached_grid.width || return false
+    requested_grid.height >= min_ratio * cached_grid.height || return false
+    return true
+end
+
+function _pic_grid_covers_bounds(solver::PICPoissonSolver, grid, bounds)
     nx, ny = solver.grid
-    hx = source_grid.width / (nx - 1)
-    hy = source_grid.height / (ny - 1)
-    return _PICGridTemplate{T}(
-        T(source_grid.width),
-        T(source_grid.height),
-        T(field_grid.width),
-        T(field_grid.height),
-        T(field_grid.x0 - source_grid.x0),
-        T(field_grid.y0 - source_grid.y0),
-        T(hx),
-        T(hy),
-        _pic_green_fft(solver, T, source_grid, field_grid),
+    T = promote_type(typeof(grid.x0), typeof(bounds.xmin))
+    hx = T(grid.width) / T(nx - 1)
+    hy = T(grid.height) / T(ny - 1)
+    margin = T(_PIC_TEMPLATE_MARGIN_CELLS)
+    grid.x0 + margin * hx <= bounds.xmin || return false
+    grid.x0 + grid.width - margin * hx >= bounds.xmax || return false
+    grid.y0 + margin * hy <= bounds.ymin || return false
+    grid.y0 + grid.height - margin * hy >= bounds.ymax || return false
+    return true
+end
+
+function _pic_expand_grid_by(grid, factor)
+    factor <= one(factor) && return grid
+    T = promote_type(typeof(grid.x0), typeof(grid.width), typeof(factor))
+    new_width = T(grid.width) * T(factor)
+    new_height = T(grid.height) * T(factor)
+    return (
+        x0=T(grid.x0) - (new_width - T(grid.width)) / T(2),
+        y0=T(grid.y0) - (new_height - T(grid.height)) / T(2),
+        width=new_width,
+        height=new_height,
     )
 end
 
 function _pic_report_green_cache(cache)
     cache === nothing && return nothing
     get(ENV, "OCTOPUS_PIC_CACHE_STATS", "0") in ("1", "true", "TRUE", "yes", "YES") || return nothing
-    total = cache.hits + cache.misses
-    hit_rate = total == 0 ? 0.0 : cache.hits / total
-    if cache isa _PICGridTemplateCache
+    if cache isa _PICSlicePairGreenCache
+        total = cache.hits + cache.misses + cache.rebuilds
+        reuse_rate = total == 0 ? 0.0 : cache.hits / total
+        initial_fill_rate = total == 0 ? 0.0 : cache.misses / total
+        rebuild_rate = total == 0 ? 0.0 : cache.rebuilds / total
         println(
-            "PIC grid-template cache: templates=$(length(cache.templates)), " *
-            "hits=$(cache.hits), misses=$(cache.misses), hit_rate=$(hit_rate)"
-        )
-    elseif cache isa _PICExactGreenCache
-        println(
-            "PIC exact Green cache: entries=$(length(cache.greens)), " *
-            "hits=$(cache.hits), misses=$(cache.misses), hit_rate=$(hit_rate)"
+            "PIC slice-pair Green cache: entries=$(length(cache.entries)), " *
+            "hits=$(cache.hits), misses=$(cache.misses), rebuilds=$(cache.rebuilds), " *
+            "reuse_rate=$(reuse_rate), initial_fill_rate=$(initial_fill_rate), rebuild_rate=$(rebuild_rate)"
         )
     end
     return nothing
-end
-
-function _pic_translate_template_if_covers(template, sxmin, sxmax, symin, symax,
-                                           fxmin, fxmax, fymin, fymax)
-    sx0 = _pic_template_origin_1d(
-        sxmin, sxmax, fxmin, fxmax,
-        template.source_width, template.field_width, template.dx, template.hx,
-    )
-    sx0 === nothing && return nothing
-    sy0 = _pic_template_origin_1d(
-        symin, symax, fymin, fymax,
-        template.source_height, template.field_height, template.dy, template.hy,
-    )
-    sy0 === nothing && return nothing
-    source_grid = (x0=sx0, y0=sy0, width=template.source_width, height=template.source_height)
-    field_grid = (x0=sx0 + template.dx, y0=sy0 + template.dy,
-                  width=template.field_width, height=template.field_height)
-    return source_grid, field_grid
-end
-
-function _pic_template_origin_1d(source_min, source_max, field_min, field_max,
-                                 source_width, field_width, delta, h)
-    margin = _PIC_TEMPLATE_MARGIN_CELLS * h
-    source_inner = source_width - 2 * margin
-    field_inner = field_width - 2 * margin
-    (source_inner > 0 && field_inner > 0) || return nothing
-    lo = max(source_max - (source_width - margin),
-             field_max - delta - (field_width - margin))
-    hi = min(source_min - margin,
-             field_min - delta - margin)
-    lo <= hi || return nothing
-    return (lo + hi) / 2
 end
 
 function _pic_align_grid_origins(green_type, source0, field0, h)

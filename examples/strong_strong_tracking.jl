@@ -38,12 +38,10 @@ Compute PIC luminosity every N turns. Use 0 to disable luminosity computation:
 
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_LUMINOSITY_EVERY=10 julia --project=. examples/strong_strong_tracking.jl
 
-Use no PIC Green-function cache for production CUDA runs. Cache modes are
-experimental diagnostics and should be compared against `none` before use:
+Use no PIC Green-function cache for production CUDA runs. The slice-pair cache
+is an experimental diagnostic and should be compared against `none` before use:
 
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=none julia --project=. examples/strong_strong_tracking.jl
-    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=exact julia --project=. examples/strong_strong_tracking.jl
-    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=grid_template julia --project=. examples/strong_strong_tracking.jl
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=slice_pair julia --project=. examples/strong_strong_tracking.jl
 
 Disable CUDA PIC asynchronous field solves for comparison:
