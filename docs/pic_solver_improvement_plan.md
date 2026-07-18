@@ -48,9 +48,10 @@ Expected effect: reduce allocation pressure during long multi-slice tracking.
 Status: partially implemented. The CPU path now reuses the charge grid,
 thread-local deposit grids, complex spectral work array, Green construction
 buffer, Green FFT buffer, and left/right `phi/Ex/Ey` field arrays across all
-directed slice interactions in one `collide!` call. It also reuses temporary
-source-boundary coordinate arrays and luminosity deposition grids. In-place
-FFTW plans are stored in the workspace and reused for the CPU convolution.
+directed slice interactions in one `collide!` call. It deposits drifted source
+coordinates directly without separate source-boundary coordinate arrays and
+reuses luminosity deposition grids. In-place FFTW plans are stored in the
+workspace and reused for the CPU convolution.
 
 ### 3. Cache Green FFTs Across Slice Pairs
 
@@ -90,8 +91,10 @@ For each CUDA PIC slice-pair collision, gather the two active longitudinal
 slices into compact GPU coordinate buffers, compute fields and kicks on those
 buffers, then scatter the updated slices back immediately. This keeps peak
 memory bounded by the active slice-pair instead of retaining all slices for the
-whole collision. The compact PIC buffers store `x`, `px`, `y`, `py`, and `z`;
-`pz` stays in the full beam because this interaction does not read or modify it.
+whole collision. With the default longitudinal kick, the compact PIC buffers
+store `x`, `px`, `y`, `py`, `z`, and `pz` so the updated longitudinal momentum
+can be scattered back. With `longitudinal_kick=false`, the compact buffers omit
+`pz`.
 
 Status: implemented for CUDA PIC. CUDA slicing now compacts each slice mask into
 a GPU index vector during slicing, and the PIC collision reuses those index

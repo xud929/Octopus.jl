@@ -65,13 +65,13 @@ OCTOPUS_PIC_LONGITUDINAL_KICK=0
 
 ```bash
 julia --project=. validation/counter_rng_validation.jl
-OCTOPUS_BACKEND_B=cpu julia --project=. validation/tracking_backend_consistency.jl
+OCTOPUS_RUN_GPU_CONTRACT=0 julia --project=. validation/tracking_backend_consistency.jl
 ```
 
 CUDA backend validation requires a working CUDA.jl environment:
 
 ```bash
-OCTOPUS_BACKEND_B=cuda julia --project=. validation/tracking_backend_consistency.jl
+OCTOPUS_RUN_GPU_CONTRACT=1 julia --project=. validation/tracking_backend_consistency.jl
 ```
 
 ## Documentation Map
