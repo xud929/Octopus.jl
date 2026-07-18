@@ -162,3 +162,20 @@ julia --project=. validation/strong_strong_pic_extreme_benchmark.jl
 Tracked run-by-run results, commands, validation gates, and decisions are in
 `strong_strong_pic_extreme_benchmark_history.md`. Generated timing TSV files
 under `result/` remain intentionally gitignored.
+
+## Strong-Strong Diagnostic Output Benchmark
+
+`strong_strong_diagnostics_benchmark.jl` holds the fastest validated PIC
+solver configuration fixed while measuring no output, luminosity computation,
+luminosity text output, moment HDF5 output, and both diagnostics. The default
+run is 200 turns and measures turns 100-199.
+
+Tracked results, accuracy checks, and accepted/rejected experiments are in
+`strong_strong_diagnostics_benchmark_history.md`.
+
+`moment_observer_backend_consistency.jl` directly compares every default
+first- and second-order moment produced by the CPU and CUDA reduction paths:
+
+```bash
+julia --project=. validation/moment_observer_backend_consistency.jl
+```

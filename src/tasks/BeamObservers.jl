@@ -429,6 +429,7 @@ mutable struct MomentObserver <: AbstractBeamObserver
     planned_records::Int
     start_time_ns::UInt64
     initialized::Bool
+    reduction_scratch::Any
 end
 
 """
@@ -551,7 +552,7 @@ function MomentObserver(path::AbstractString; orders=1:2, extra=(), exclude=(), 
     moments = _selected_moments(orders=orders, extra=extra, exclude=exclude)
     names = ["turn"; collect(name.(moments))]
     buffer = Matrix{Float64}(undef, max(Int(capacity), 1), length(names))
-    return MomentObserver(String(path), moments, names, Int(capacity), buffer, 0, 0, 0, UInt64(0), false)
+    return MomentObserver(String(path), moments, names, Int(capacity), buffer, 0, 0, 0, UInt64(0), false, nothing)
 end
 
 mutable struct CoordinateSnapshotObserver <: AbstractBeamObserver
@@ -621,7 +622,7 @@ function observe!(observer::MomentObserver, ctx::TrackingContext, rep)
     observer.buffer_capacity == 0 && return nothing
     observer.initialized || throw(ArgumentError("MomentObserver must be prepared by a predictable schedule before tracking"))
     observer.buffer_length += 1
-    observer.buffer[observer.buffer_length, :] .= _moment_observer_row(ctx, rep, observer.moments)
+    observer.buffer[observer.buffer_length, :] .= _moment_observer_row(ctx, rep, observer.moments, observer)
     observer.buffer_length >= observer.buffer_capacity && _flush_moment_observer!(observer)
     return nothing
 end
@@ -820,7 +821,7 @@ function _flush_moment_observer!(observer::MomentObserver)
     return nothing
 end
 
-function _moment_observer_row(ctx::TrackingContext, rep, moments::Tuple)
+function _moment_observer_row(ctx::TrackingContext, rep, moments::Tuple, observer=nothing)
     row = Vector{Float64}(undef, length(moments) + 1)
     row[1] = Float64(ctx.turn)
     isempty(moments) && return row
@@ -830,6 +831,52 @@ function _moment_observer_row(ctx::TrackingContext, rep, moments::Tuple)
         row[j + 1] = _compute_moment(arrays, means, moment)
     end
     return row
+end
+
+if _HAS_CUDA
+    @eval begin
+        function _moment_observer_row(ctx::TrackingContext,
+                                      rep::Phase6DRep{<:CUDA.CuArray}, moments::Tuple,
+                                      observer::MomentObserver)
+            get(ENV, "OCTOPUS_CUDA_MOMENT_REDUCTION", "1") in
+                ("1", "true", "TRUE", "yes", "YES") ||
+                return _moment_observer_row(ctx, Phase6DRep(map(Array, coordinate_arrays(rep))...), moments)
+            row = Vector{Float64}(undef, length(moments) + 1)
+            row[1] = Float64(ctx.turn)
+            isempty(moments) && return row
+            arrays = coordinate_arrays(rep)
+            n = length(arrays[1])
+            means = ntuple(i -> Float64(sum(arrays[i]) / n), 6)
+            scratch = observer.reduction_scratch
+            if !(scratch isa CUDA.CuArray) || length(scratch) != n || eltype(scratch) != eltype(arrays[1])
+                scratch = similar(arrays[1])
+                observer.reduction_scratch = scratch
+            end
+            for (j, moment) in enumerate(moments)
+                row[j + 1] = _cuda_compute_moment!(scratch, arrays, means, moment)
+            end
+            return row
+        end
+
+        function _cuda_compute_moment!(scratch, arrays, means, moment::Moment)
+            powers = moment.powers
+            order = sum(powers)
+            order == 1 && return means[findfirst(!=(0), powers)]
+            fill!(scratch, one(eltype(scratch)))
+            for d in 1:6
+                p = powers[d]
+                p == 0 && continue
+                if p == 1
+                    scratch .= scratch .* (arrays[d] .- means[d])
+                elseif p == 2
+                    scratch .= scratch .* (arrays[d] .- means[d]) .^ 2
+                else
+                    scratch .= scratch .* (arrays[d] .- means[d]) .^ p
+                end
+            end
+            return Float64(sum(scratch) / length(scratch))
+        end
+    end
 end
 
 function _compute_moment(arrays, means, moment::Moment)

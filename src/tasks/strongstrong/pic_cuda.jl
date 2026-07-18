@@ -404,6 +404,7 @@ if _HAS_CUDA
 
         function _cuda_pic_workspace(solver::PICPoissonSolver, ::Type{T}) where {T}
             nx, ny = solver.grid
+            lnx, lny = _pic_luminosity_grid(solver)
             charges = ntuple(_ -> CUDA.zeros(T, 2nx, 2ny), 4)
             return _CUDAPICWorkspace{T}(
                 charges,
@@ -412,8 +413,8 @@ if _HAS_CUDA
                 CUDA.zeros(T, nx, ny, 4),
                 Dict{Int,Any}(),
                 _CUDAPICSlicePairGreenCache{T}(Dict{Tuple{Int,Int,Int},_CUDAPICSlicePairGreenEntry{T}}(), 0, 0, 0),
-                CUDA.zeros(T, nx + 1, ny + 1),
-                CUDA.zeros(T, nx + 1, ny + 1),
+                CUDA.zeros(T, lnx + 1, lny + 1),
+                CUDA.zeros(T, lnx + 1, lny + 1),
                 (CUDA.CuStream(), CUDA.CuStream(), CUDA.CuStream(), CUDA.CuStream()),
                 CUDA.CuStream(),
                 CUDA.CuEvent(CUDA.EVENT_DISABLE_TIMING),
@@ -1473,6 +1474,7 @@ if _HAS_CUDA
                                                 solver::PICPoissonSolver,
                                                 ::Type{T}, nplanes::Integer) where {T}
             nx, ny = solver.grid
+            lnx, lny = _pic_luminosity_grid(solver)
             ngreen = max(1, Int(nplanes) ÷ 2)
             return get!(workspace.wavefront_cache, Int(nplanes)) do
                 (
@@ -1480,8 +1482,8 @@ if _HAS_CUDA
                     greens=CUDA.zeros(T, 2nx, 2ny, ngreen),
                     Ex=CUDA.zeros(T, nx, ny, nplanes),
                     Ey=CUDA.zeros(T, nx, ny, nplanes),
-                    luminosity_q1=CUDA.zeros(T, nx + 1, ny + 1, max(1, nplanes ÷ 4)),
-                    luminosity_q2=CUDA.zeros(T, nx + 1, ny + 1, max(1, nplanes ÷ 4)),
+                    luminosity_q1=CUDA.zeros(T, lnx + 1, lny + 1, max(1, nplanes ÷ 4)),
+                    luminosity_q2=CUDA.zeros(T, lnx + 1, lny + 1, max(1, nplanes ÷ 4)),
                     luminosity_scale=CUDA.zeros(T, max(1, nplanes ÷ 4)),
                     luminosity_accum=CUDA.zeros(T, 1),
                     hx=CUDA.zeros(T, nplanes),
@@ -1843,7 +1845,7 @@ if _HAS_CUDA
                                                         workspace::_CUDAPICWorkspace, timing=nothing)
             npairs = length(valid)
             npairs == 0 && return zero(eltype(workspace.batch_charges))
-            nx, ny = solver.grid
+            nx, ny = _pic_luminosity_grid(solver)
             T = eltype(valid[1].slice1.coords.x)
             wf = _cuda_pic_wavefront_workspace!(workspace, solver, T, 4 * npairs)
             q1 = wf.luminosity_q1
@@ -1908,7 +1910,7 @@ if _HAS_CUDA
                                                         workspace::_CUDAPICWorkspace, timing=nothing)
             npairs = length(valid)
             npairs == 0 && return zero(eltype(rep1.x))
-            nx, ny = solver.grid
+            nx, ny = _pic_luminosity_grid(solver)
             T = eltype(rep1.x)
             wf = _cuda_pic_wavefront_workspace!(workspace, solver, T, 4 * npairs)
             q1 = wf.luminosity_q1
@@ -1930,14 +1932,21 @@ if _HAS_CUDA
                 idx2 = item.idx2
                 s1 = T(0.5) * (T(p1.center) - T(p2.center))
                 s2 = -s1
-                x1min = T(mapreduce(i -> rep1.x[i] + rep1.px[i] * s1, min, idx1))
-                x1max = T(mapreduce(i -> rep1.x[i] + rep1.px[i] * s1, max, idx1))
-                y1min = T(mapreduce(i -> rep1.y[i] + rep1.py[i] * s1, min, idx1))
-                y1max = T(mapreduce(i -> rep1.y[i] + rep1.py[i] * s1, max, idx1))
-                x2min = T(mapreduce(i -> rep2.x[i] + rep2.px[i] * s2, min, idx2))
-                x2max = T(mapreduce(i -> rep2.x[i] + rep2.px[i] * s2, max, idx2))
-                y2min = T(mapreduce(i -> rep2.y[i] + rep2.py[i] * s2, min, idx2))
-                y2max = T(mapreduce(i -> rep2.y[i] + rep2.py[i] * s2, max, idx2))
+                neutral_bounds = _cuda_pic_bounds_neutral(T)
+                bounds1 = mapreduce(
+                    i -> _cuda_pic_luminosity_bounds_value(
+                        rep1.x[i], rep1.px[i], rep1.y[i], rep1.py[i], s1,
+                    ),
+                    _cuda_pic_bounds_combine, idx1; init=neutral_bounds,
+                )
+                bounds2 = mapreduce(
+                    i -> _cuda_pic_luminosity_bounds_value(
+                        rep2.x[i], rep2.px[i], rep2.y[i], rep2.py[i], s2,
+                    ),
+                    _cuda_pic_bounds_combine, idx2; init=neutral_bounds,
+                )
+                x1min, x1max, y1min, y1max = T.(bounds1)
+                x2min, x2max, y2min, y2max = T.(bounds2)
                 xmin = min(x1min, x2min)
                 xmax = max(x1max, x2max)
                 ymin = min(y1min, y2min)
@@ -1972,9 +1981,15 @@ if _HAS_CUDA
             return T(CUDA.@allowscalar accum[1])
         end
 
+        @inline function _cuda_pic_luminosity_bounds_value(x, px, y, py, drift)
+            xd = x + px * drift
+            yd = y + py * drift
+            return (xd, xd, yd, yd)
+        end
+
         function _cuda_pic_luminosity(solver::PICPoissonSolver, rep1, p1, rep2, p2, klum,
                                       workspace=nothing)
-            nx, ny = solver.grid
+            nx, ny = _pic_luminosity_grid(solver)
             T = eltype(rep1.x)
             s1 = T(0.5) * (T(p1.center) - T(p2.center))
             s2 = -s1

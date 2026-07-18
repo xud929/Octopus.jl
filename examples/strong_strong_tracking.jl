@@ -260,6 +260,13 @@ cuda_pic_batch_fft = get(ENV, "OCTOPUS_CUDA_PIC_BATCH_FFT", "1") in ("1", "true"
 cuda_pic_wavefront_fft = get(ENV, "OCTOPUS_CUDA_PIC_WAVEFRONT_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
 cuda_pic_indexed_wavefront = get(ENV, "OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT", "1") in ("1", "true", "TRUE", "yes", "YES")
 pic_luminosity_every = parse(Int, get(ENV, "OCTOPUS_PIC_LUMINOSITY_EVERY", "1"))
+pic_luminosity_grid = if haskey(ENV, "OCTOPUS_PIC_LUMINOSITY_GRID")
+    values = parse.(Int, split(ENV["OCTOPUS_PIC_LUMINOSITY_GRID"], ','))
+    length(values) == 2 || error("OCTOPUS_PIC_LUMINOSITY_GRID must be nx,ny")
+    (values[1], values[2])
+else
+    nothing
+end
 pic_luminosity_schedule =
     pic_luminosity_every < 0 ? error("OCTOPUS_PIC_LUMINOSITY_EVERY must be >= 0") :
     pic_luminosity_every == 0 ? AtTurns(Int[]) :
@@ -273,6 +280,8 @@ disable_luminosity_output = get(ENV, "OCTOPUS_DISABLE_LUMINOSITY_OUTPUT", "0") i
                             ("1", "true", "TRUE", "yes", "YES")
 disable_collision = get(ENV, "OCTOPUS_DISABLE_COLLISION", "0") in
                     ("1", "true", "TRUE", "yes", "YES")
+moment_capacity = parse(Int, get(ENV, "OCTOPUS_MOMENT_CAPACITY",
+                                 string(input.output.moment_capacity)))
 solver = if solver_kind == "gaussian"
     GaussianPoissonSolver(;
         slicing = slicing,
@@ -296,6 +305,7 @@ elseif solver_kind == "pic"
         cuda_wavefront_fft = cuda_pic_wavefront_fft,
         cuda_indexed_wavefront = cuda_pic_indexed_wavefront,
         luminosity_schedule = pic_luminosity_schedule,
+        luminosity_grid = pic_luminosity_grid,
     )
 else
     error("unknown OCTOPUS_POISSON_SOLVER=$(solver_kind); use gaussian or PIC")
@@ -410,13 +420,13 @@ moment_schedule = EveryNSteps(;
 )
 electron_observers = disable_moments ? () : (
     ScheduledObserver(
-        MomentObserver(electron_moment_path; capacity = input.output.moment_capacity),
+        MomentObserver(electron_moment_path; capacity = moment_capacity),
         moment_schedule,
     ),
 )
 proton_observers = disable_moments ? () : (
     ScheduledObserver(
-        MomentObserver(proton_moment_path; capacity = input.output.moment_capacity),
+        MomentObserver(proton_moment_path; capacity = moment_capacity),
         moment_schedule,
     ),
 )
@@ -491,6 +501,8 @@ if solver_kind == "pic"
     println("pic_slice_pair_green_min_ratio = ", pic_slice_pair_green_min_ratio)
     println("pic_slice_pair_green_growth = ", pic_slice_pair_green_growth)
     println("pic_luminosity_every = ", pic_luminosity_every)
+    println("pic_luminosity_grid = ",
+            pic_luminosity_grid === nothing ? input.solver.pic_grid : pic_luminosity_grid)
 end
 println("luminosity = ", disable_luminosity_output ? "disabled" : luminosity_path)
 println("electron moments = ", disable_moments ? "disabled" : electron_moment_path)

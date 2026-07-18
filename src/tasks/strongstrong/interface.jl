@@ -267,6 +267,7 @@ const StrongStrongGaussianPoissonSolver = GaussianPoissonSolver
                       cuda_batch_fft=true,
                       cuda_wavefront_fft=true,
                       cuda_indexed_wavefront=true,
+                      luminosity_grid=nothing,
                       luminosity_schedule=nothing,
                       slicing=LongitudinalSlicing(),
                       slicing1=nothing, slicing2=nothing)
@@ -311,6 +312,9 @@ environment variables remain available as debugging overrides.
 on every turn. When the schedule does not run, PIC still applies beam-beam
 kicks but returns `NaN` for luminosity to mark that it was intentionally not
 computed.
+`luminosity_grid` may be `nothing` or a transverse `(nx, ny)` mesh. `nothing`
+uses `grid`, preserving the historical behavior. An explicit value changes
+only luminosity deposition and does not change the PIC force solve.
 
 CUDA execution uses atomic grid deposition and CUDA FFT convolution. The first
 CUDA implementation is correctness-oriented; later versions may replace atomic
@@ -336,6 +340,7 @@ struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     cuda_batch_fft::Bool
     cuda_wavefront_fft::Bool
     cuda_indexed_wavefront::Bool
+    luminosity_grid::Union{Nothing,Tuple{Int,Int}}
     luminosity_schedule::Union{Nothing,AbstractSchedule}
     slicing::LongitudinalSlicing
     slicing1::LongitudinalSlicing
@@ -356,6 +361,7 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                              cuda_batch_fft::Bool=true,
                              cuda_wavefront_fft::Bool=true,
                              cuda_indexed_wavefront::Bool=true,
+                             luminosity_grid=nothing,
                              luminosity_schedule::Union{Nothing,AbstractSchedule}=nothing,
                              slicing::LongitudinalSlicing=LongitudinalSlicing(),
                              slicing1=nothing,
@@ -369,6 +375,11 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
     ))
     growth >= zero(T) || throw(ArgumentError(
         "slice_pair_green_growth must be non-negative; got $(slice_pair_green_growth)."
+    ))
+    lum_grid = luminosity_grid === nothing ? nothing :
+        (Int(luminosity_grid[1]), Int(luminosity_grid[2]))
+    lum_grid === nothing || all(>=(3), lum_grid) || throw(ArgumentError(
+        "luminosity_grid dimensions must both be at least 3; got $(luminosity_grid)."
     ))
     return PICPoissonSolver{T}(
         _optional_solver_value(T, kbb1),
@@ -386,6 +397,7 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         cuda_batch_fft,
         cuda_wavefront_fft,
         cuda_indexed_wavefront,
+        lum_grid,
         luminosity_schedule,
         slicing,
         s1,
@@ -394,6 +406,9 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
 end
 
 PICPoissonSolver(; kwargs...) = PICPoissonSolver{Float64}(; kwargs...)
+
+_pic_luminosity_grid(solver::PICPoissonSolver) =
+    solver.luminosity_grid === nothing ? solver.grid : solver.luminosity_grid
 
 const _PIC_SOLVER_OPTION_SCHEMA = (
     kbb1 = SolverOptionMeta(Union{Nothing,Real}, nothing,
@@ -438,6 +453,9 @@ const _PIC_SOLVER_OPTION_SCHEMA = (
         supported_backends=(CUDABackend,), category=:execution,
         environment_override="OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT",
         dependencies=(:batch_mode, :cuda_async, :cuda_batch_fft, :cuda_wavefront_fft)),
+    luminosity_grid = SolverOptionMeta(Union{Nothing,Tuple{Int,Int}}, nothing,
+        "Optional luminosity-only transverse mesh; nothing uses the PIC force grid.";
+        category=:accuracy_performance),
     luminosity_schedule = SolverOptionMeta(Union{Nothing,AbstractSchedule}, nothing,
         "Schedule for luminosity evaluation; nothing evaluates every turn."; category=:diagnostic),
     slicing = SolverOptionMeta(LongitudinalSlicing, LongitudinalSlicing(),

@@ -34,6 +34,62 @@ physics validation or changing a particle's persistent identity from turn to
 turn. Use the existing implementation as the reference and change only one
 optimization variable in each experiment.
 
+## Reuse PIC Density Grids for Luminosity
+
+Treat reuse of the already deposited PIC density grids as an independent
+luminosity-numerics task. The required luminosity Green function is an overlap
+or transfer kernel between two density grids. It is not the logarithmic Green
+function used by the Poisson field solver.
+
+- Document the present luminosity algorithm: drift both slices to their
+  collision point, deposit them on one newly constructed common grid, and sum
+  the same-cell density products. Quantify its error for unequal grid spacing,
+  beam separation, and transverse aspect ratio.
+- Derive the cross-grid overlap in the form
+  `L = sum(q1[i] * G_lum[i,j] * q2[j], i, j)`, where `G_lum` is the integral
+  of the two deposition basis functions. Include different grid origins and
+  spacings and derive the kernel for CIC first; consider TSC separately.
+- Exploit the compact support of the CIC/TSC basis so the luminosity transfer
+  is sparse/local rather than a dense all-grid-pair operation. Determine the
+  exact normalization and boundary treatment.
+- The existing PIC charge planes are deposited only at the left and right ends
+  of the opposing field slice; there is no centroid-plane deposition. Under
+  the thin-slice luminosity model, all particles in a slice collide at the
+  slice-centroid encounter plane, so no particle-dependent longitudinal
+  interpolation is part of the luminosity definition.
+- Endpoint density grids do not in general determine the exact centroid-plane
+  density because deposition discards transverse position-momentum
+  correlations. Treat interpolation of left/right density grids as an
+  explicitly approximate alternative, not as the reference reuse method.
+- Implement the exact reuse candidate by adding one centroid-plane charge
+  deposition per beam and slice pair to the existing batched PIC deposition
+  stage. Reuse particle indices, bounds where valid, workspace allocation, and
+  scheduling, but keep the centroid-plane density distinct from the four
+  endpoint planes used by the force solver.
+- Apply `G_lum` between the two centroid-plane density grids. This permits
+  different grid origins and spacings without constructing a new common grid.
+- Review WarpX's collider luminosity diagnostics and beam-beam implementation,
+  including how particle densities and differential luminosity are accumulated:
+  <https://warpx.readthedocs.io/en/26.07/usage/parameters.html> and
+  <https://arxiv.org/abs/2405.09583>.
+- Add deterministic Gaussian-beam validation. For centered, offset, unequal,
+  round, and flat Gaussian beams, compare the numerical transverse overlap
+  integral against the analytic Gaussian formula. Sweep grid resolution,
+  domain padding, beam separation, aspect ratio, slice count, and macroparticle
+  count; report convergence and statistical error separately.
+- Compare the PIC-grid overlap result with both the current independent
+  center-plane deposition and the analytic Gaussian overlap. Validate every
+  slice-pair contribution as well as total luminosity on CPU and CUDA.
+- Benchmark construction/cache cost for `G_lum`, the two added centroid-plane
+  depositions, and sparse overlap evaluation against the current independent
+  common-grid luminosity deposition. Cache keys must include both grid origins,
+  spacings, dimensions, and deposition basis.
+- Optionally test endpoint-density interpolation as a separate approximation.
+  Report its error against direct centroid-plane deposition; never present it
+  as algebraically exact.
+- Do not change the Poisson solver Green function or force calculation as part
+  of this task.
+
 Relevant precedents:
 
 - WarpX enables periodic particle sorting on GPUs to improve memory locality.

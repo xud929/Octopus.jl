@@ -772,7 +772,7 @@ function _pic_interpolate_kick(solver, grid, x, y, phiL, ExL, EyL, phiR, ExR, Ey
 end
 
 function _pic_luminosity(solver::PICPoissonSolver, x1, y1, x2, y2, klum)
-    nx, ny = solver.grid
+    nx, ny = _pic_luminosity_grid(solver)
     T = promote_type(eltype(x1), eltype(x2), typeof(klum))
     q1 = zeros(T, nx + 1, ny + 1)
     q2 = zeros(T, nx + 1, ny + 1)
@@ -781,12 +781,16 @@ end
 
 function _pic_luminosity(solver::PICPoissonSolver, x1, y1, x2, y2, klum,
                          workspace::_PICCPUWorkspace)
+    nx, ny = _pic_luminosity_grid(solver)
+    if size(workspace.luminosity_q1) != (nx + 1, ny + 1)
+        return _pic_luminosity(solver, x1, y1, x2, y2, klum)
+    end
     return _pic_luminosity!(solver, x1, y1, x2, y2, klum,
                             workspace.luminosity_q1, workspace.luminosity_q2)
 end
 
 function _pic_luminosity!(solver::PICPoissonSolver, x1, y1, x2, y2, klum, q1, q2)
-    nx, ny = solver.grid
+    nx, ny = _pic_luminosity_grid(solver)
     T = promote_type(eltype(x1), eltype(x2), typeof(klum))
     xmin = min(minimum(x1), minimum(x2))
     xmax = max(maximum(x1), maximum(x2))
