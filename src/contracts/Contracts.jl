@@ -1,5 +1,6 @@
 export ContractResult, passed, validate,
-       TrackingBackendConsistencyContract
+       TrackingBackendConsistencyContract,
+       StrongStrongPICBackendConsistencyContract
 
 """
     ContractResult(passed, message; residual=nothing, metrics=Dict())
@@ -64,6 +65,36 @@ Base.@kwdef struct TrackingBackendConsistencyContract <: AbstractPhysicsContract
 end
 
 """
+    StrongStrongPICBackendConsistencyContract(; n_particles=1024, turns=2,
+        grid=(32, 32), nslices=3, green_cache=:slice_pair,
+        slice_pair_green_min_ratio=0.50, slice_pair_green_growth=0.25,
+        batch_mode=:wavefront, seed=123456789, atol=1e-10, rtol=1e-10,
+        luminosity_rtol=1e-10)
+
+Validate CPU/CUDA consistency for a live-beam strong-strong PIC collision.
+The contract constructs identical electron/proton beams, executes matching
+`StrongStrongTask`s, compares both final six-dimensional beam states and
+luminosity, and—when `green_cache=:slice_pair`—requires identical cache
+hit/miss/rebuild histories with at least one reuse.
+
+If CUDA is unavailable, validation returns `status=:skipped`.
+"""
+Base.@kwdef struct StrongStrongPICBackendConsistencyContract <: AbstractPhysicsContract
+    n_particles::Int = 1024
+    turns::Int = 2
+    grid::Tuple{Int,Int} = (32, 32)
+    nslices::Int = 3
+    green_cache::Symbol = :slice_pair
+    slice_pair_green_min_ratio::Float64 = 0.50
+    slice_pair_green_growth::Float64 = 0.25
+    batch_mode::Symbol = :wavefront
+    seed::UInt64 = UInt64(123456789)
+    atol::Float64 = 1e-10
+    rtol::Float64 = 1e-10
+    luminosity_rtol::Float64 = 1e-10
+end
+
+"""
     validate(contract, args...; kwargs...)
 
 Run a physics contract against the supplied objects. Concrete contracts should
@@ -76,6 +107,9 @@ end
 
 description(::Type{TrackingBackendConsistencyContract}) =
     "Checks coordinate consistency for the same tracking line across two execution backends."
+
+description(::Type{StrongStrongPICBackendConsistencyContract}) =
+    "Checks strong-strong PIC coordinates, luminosity, and cache history across CPU and CUDA."
 
 function validate(contract::TrackingBackendConsistencyContract; kwargs...)
     available, reason = _contract_backends_available(contract.backend_a, contract.backend_b)
@@ -119,6 +153,103 @@ function validate(contract::TrackingBackendConsistencyContract; kwargs...)
         "Tracking backends agree within tolerance." :
         "Tracking backends disagree beyond tolerance."
     return ContractResult(ok, message; residual=metrics[:max_abs_error], metrics=metrics)
+end
+
+function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...)
+    available, reason = _contract_backends_available(CPUThreadsBackend, CUDABackend)
+    if !available
+        return ContractResult(:skipped, reason; metrics=Dict(
+            :backend_a => :CPUThreadsBackend,
+            :backend_b => :CUDABackend,
+        ))
+    end
+    contract.n_particles > 0 || return ContractResult(false, "n_particles must be positive.")
+    contract.turns > 0 || return ContractResult(false, "turns must be positive.")
+    contract.nslices > 0 || return ContractResult(false, "nslices must be positive.")
+    if contract.green_cache == :slice_pair && contract.turns < 2
+        return ContractResult(false,
+            "slice-pair cache consistency requires at least two turns to exercise reuse.")
+    end
+
+    old_seed = global_rng_seed()
+    old_method = global_rng_method()
+    try
+        set_global_rng!(seed=contract.seed, method=:philox)
+        base1, base2 = _strong_strong_contract_base_beams(contract)
+        cpu1 = _strong_strong_contract_beam(base1, CPUThreadsBackend)
+        cpu2 = _strong_strong_contract_beam(base2, CPUThreadsBackend)
+        gpu1 = _strong_strong_contract_beam(base1, CUDABackend)
+        gpu2 = _strong_strong_contract_beam(base2, CUDABackend)
+
+        return mktempdir() do tempdir
+            cpu_path = joinpath(tempdir, "cpu.lum")
+            gpu_path = joinpath(tempdir, "gpu.lum")
+            cpu_task = _strong_strong_contract_task(contract, cpu_path)
+            gpu_task = _strong_strong_contract_task(contract, gpu_path)
+
+            execute!(cpu_task, cpu1, cpu2; turns=contract.turns)
+            execute!(gpu_task, gpu1, gpu2; turns=contract.turns)
+            CUDA.synchronize()
+
+            beam1_metrics = _contract_coordinate_metrics(
+                cpu1.rep, gpu1.rep, contract.atol, contract.rtol)
+            beam2_metrics = _contract_coordinate_metrics(
+                cpu2.rep, gpu2.rep, contract.atol, contract.rtol)
+            coordinate_ok = Bool(beam1_metrics[:passed_tolerance]) &&
+                            Bool(beam2_metrics[:passed_tolerance])
+            max_abs = max(beam1_metrics[:max_abs_error], beam2_metrics[:max_abs_error])
+            max_ratio = max(beam1_metrics[:max_allowed_ratio], beam2_metrics[:max_allowed_ratio])
+            max_component_rel = max(
+                beam1_metrics[:max_component_rel_error],
+                beam2_metrics[:max_component_rel_error],
+            )
+
+            cpu_luminosity = _strong_strong_contract_last_luminosity(cpu_path)
+            gpu_luminosity = _strong_strong_contract_last_luminosity(gpu_path)
+            luminosity_rel = abs(gpu_luminosity - cpu_luminosity) /
+                             max(abs(cpu_luminosity), eps(Float64))
+            luminosity_ok = luminosity_rel <= contract.luminosity_rtol
+
+            cpu_history = _strong_strong_contract_cpu_cache_history(cpu_task)
+            gpu_history = _strong_strong_contract_cuda_cache_history(gpu_task)
+            cache_history_ok = cpu_history == gpu_history
+            cache_reuse_ok = contract.green_cache != :slice_pair || cpu_history[1] > 0
+
+            metrics = Dict{Symbol,Any}(
+                :backend_a => :CPUThreadsBackend,
+                :backend_b => :CUDABackend,
+                :n_particles => contract.n_particles,
+                :turns => contract.turns,
+                :grid => contract.grid,
+                :nslices => contract.nslices,
+                :green_cache => contract.green_cache,
+                :slice_pair_green_min_ratio => contract.slice_pair_green_min_ratio,
+                :slice_pair_green_growth => contract.slice_pair_green_growth,
+                :batch_mode => contract.batch_mode,
+                :max_abs_error => max_abs,
+                :max_allowed_ratio => max_ratio,
+                :max_component_rel_error => max_component_rel,
+                :coordinate_passed_tolerance => coordinate_ok,
+                :cpu_luminosity => cpu_luminosity,
+                :gpu_luminosity => gpu_luminosity,
+                :luminosity_rel_error => luminosity_rel,
+                :luminosity_rtol => contract.luminosity_rtol,
+                :luminosity_passed_tolerance => luminosity_ok,
+                :cpu_cache_history => cpu_history,
+                :gpu_cache_history => gpu_history,
+                :cache_histories_match => cache_history_ok,
+                :cache_reuse_observed => cache_reuse_ok,
+                :cpu_threads => Threads.nthreads(),
+            )
+            ok = coordinate_ok && luminosity_ok && cache_history_ok && cache_reuse_ok
+            message = ok ?
+                "Strong-strong PIC CPU and CUDA results agree within tolerance." :
+                "Strong-strong PIC CPU and CUDA results disagree or cache histories diverge."
+            return ContractResult(ok, message; residual=max_abs, metrics=metrics)
+        end
+    finally
+        set_global_rng!(seed=old_seed, method=old_method)
+    end
 end
 
 function _contract_backends_available(backends::DataType...)
@@ -202,4 +333,73 @@ function _contract_coordinate_metrics(rep_a, rep_b, atol, rtol)
         :rtol => Float64(rtol),
         :passed_tolerance => max_allowed_ratio <= 1.0,
     )
+end
+
+function _strong_strong_contract_base_beams(contract::StrongStrongPICBackendConsistencyContract)
+    n = contract.n_particles
+    beam1 = Beam(n, CPUThreadsBackend, Float64;
+        beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0),
+        sigma=(106e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=1,
+        charge=-1.0, mc2=EMASS_EV, E0=10e9, r0=RE, npart=1.7203e11)
+    beam2 = Beam(n, CPUThreadsBackend, Float64;
+        beta=(0.8, 0.072, 6e-2 / 6.6e-4), alpha=(0.0, 0.0),
+        sigma=(95e-6, 8.5e-6, 6e-2), cutoff=5.0, rng_id=2,
+        charge=1.0, mc2=PMASS_EV, E0=275e9,
+        r0=RE * ME0 / PMASS_EV, npart=0.6881e11)
+    return beam1, beam2
+end
+
+function _strong_strong_contract_beam(beam, ::Type{CPUThreadsBackend})
+    rep = _contract_rep_for_backend(beam.rep, CPUThreadsBackend)
+    return Beam{CPUThreadsBackend,typeof(beam.params),typeof(rep)}(beam.params, rep)
+end
+
+function _strong_strong_contract_beam(beam, ::Type{CUDABackend})
+    rep = _contract_rep_for_backend(beam.rep, CUDABackend)
+    return Beam{CUDABackend,typeof(beam.params),typeof(rep)}(beam.params, rep)
+end
+
+function _strong_strong_contract_task(contract::StrongStrongPICBackendConsistencyContract,
+                                      luminosity_path)
+    slicing = LongitudinalSlicing(
+        method=:normal_quantile,
+        nslices=contract.nslices,
+        center_position=:centroid,
+    )
+    solver = PICPoissonSolver(
+        slicing=slicing,
+        grid=contract.grid,
+        green_cache=contract.green_cache,
+        slice_pair_green_min_ratio=contract.slice_pair_green_min_ratio,
+        slice_pair_green_growth=contract.slice_pair_green_growth,
+        batch_mode=contract.batch_mode,
+        longitudinal_kick=true,
+        luminosity_schedule=nothing,
+    )
+    ip = StrongStrongCollision(:ip; poisson_solver=solver)
+    return StrongStrongTask((ip,), (ip,); luminosity_path=luminosity_path)
+end
+
+function _strong_strong_contract_last_luminosity(path)
+    lines = readlines(path)
+    isempty(lines) && error("strong-strong contract produced no luminosity records")
+    return parse(Float64, last(split(lines[end], '\t')))
+end
+
+function _strong_strong_contract_cpu_cache_history(task)
+    caches = [value for value in values(task.runtime_cache)
+              if value isa _PICSlicePairGreenCache]
+    isempty(caches) && return (0, 0, 0)
+    length(caches) == 1 || error("expected one CPU PIC slice-pair cache")
+    cache = only(caches)
+    return (cache.hits, cache.misses, cache.rebuilds)
+end
+
+function _strong_strong_contract_cuda_cache_history(task)
+    workspaces = [value for value in values(task.runtime_cache)
+                  if hasproperty(value, :slice_pair_green_cache)]
+    isempty(workspaces) && return (0, 0, 0)
+    length(workspaces) == 1 || error("expected one CUDA PIC workspace")
+    cache = only(workspaces).slice_pair_green_cache
+    return (cache.hits, cache.misses, cache.rebuilds)
 end

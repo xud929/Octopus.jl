@@ -119,6 +119,7 @@ constructor names remain the user-facing way to build those specs.
 
 ## Physics Contracts
 
+- `StrongStrongPICBackendConsistencyContract`
 - `TrackingBackendConsistencyContract`
 
 ## Analyses

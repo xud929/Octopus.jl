@@ -13,6 +13,25 @@ function collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPU
 end
 
 function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx)
+    T = _pic_cpu_scalar_type(solver, beam1, beam2)
+    nx, ny = solver.grid
+    workspace = _pic_cpu_workspace(T, nx, ny)
+    green_cache = _pic_green_cache(solver, T)
+    return _pic_collide!(solver, beam1, beam2, ctx, workspace, green_cache)
+end
+
+function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
+                                 solver::PICPoissonSolver,
+                                 beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend},
+                                 ctx::TrackingContext)
+    T = _pic_cpu_scalar_type(solver, beam1, beam2)
+    workspace = _pic_cpu_workspace!(task.runtime_cache, label, solver, T)
+    green_cache = _pic_green_cache!(task.runtime_cache, label, solver, T)
+    return _pic_collide!(solver, beam1, beam2, ctx, workspace, green_cache)
+end
+
+function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
+                       workspace::_PICCPUWorkspace, green_cache)
     _validate_pic_solver(solver)
     slices1 = longitudinal_slices(beam1.rep, solver.slicing1)
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
@@ -21,9 +40,6 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx)
     klum = _pic_luminosity_scale(solver, beam1, beam2)
     compute_luminosity = _pic_compute_luminosity(solver, ctx)
     T = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(kbb1), typeof(kbb2))
-    nx, ny = solver.grid
-    workspace = _pic_cpu_workspace(T, nx, ny)
-    green_cache = _pic_green_cache(solver, T)
     luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : T(NaN)
     for (_, i, j) in _slice_collision_order(slices1, slices2)
         idx1 = slices1.indices[i]
@@ -49,6 +65,39 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx)
     end
     _pic_report_green_cache(green_cache)
     return luminosity
+end
+
+function _pic_cpu_scalar_type(solver::PICPoissonSolver, beam1::Beam, beam2::Beam)
+    return promote_type(
+        eltype(beam1.rep.x), eltype(beam2.rep.x),
+        typeof(_pic_kbb1(solver, beam1, beam2)),
+        typeof(_pic_kbb2(solver, beam1, beam2)),
+    )
+end
+
+function _pic_cpu_workspace!(runtime_cache::Dict, label::Symbol,
+                             solver::PICPoissonSolver, ::Type{T}) where {T}
+    key = (:cpu_pic_workspace, label, T, solver.grid, Threads.nthreads())
+    return get!(runtime_cache, key) do
+        _pic_cpu_workspace(T, solver.grid...)
+    end
+end
+
+function _pic_green_cache!(runtime_cache::Dict, label::Symbol,
+                           solver::PICPoissonSolver, ::Type{T}) where {T}
+    key = (
+        :cpu_pic_green_cache,
+        label,
+        T,
+        solver.grid,
+        Symbol(solver.green_type),
+        Symbol(solver.green_cache),
+        solver.slice_pair_green_min_ratio,
+        solver.slice_pair_green_growth,
+    )
+    return get!(runtime_cache, key) do
+        _pic_green_cache(solver, T)
+    end
 end
 
 function _validate_pic_solver(solver::PICPoissonSolver)

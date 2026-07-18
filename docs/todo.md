@@ -27,19 +27,19 @@ usage for long tracking runs.
 
 Production default:
 
-- Use `PICPoissonSolver(green_cache=:none)` for CUDA PIC production runs.
-- In the `strong_strong_tracking.jl` example, keep
-  `OCTOPUS_PIC_GREEN_CACHE=none` as the recommended setting.
+- Use `PICPoissonSolver(green_cache=:slice_pair)` for persistent CPU and CUDA
+  task execution.
+- Use `green_cache=:none` as the uncached physics reference.
 
 Discovery from July 2026 CUDA benchmarks:
 
 - Generic exact-geometry and grid-template Green caches did not reduce wall
   time and have been removed.
-- Current conclusion: slice-pair Green FFT caching is experimental and should
-  not be used for production until a future validation/performance study shows
-  a clear wall-time improvement at acceptable physics error.
+- CPU and CUDA now share persistent task-owned cache lifetimes and are checked
+  by `StrongStrongPICBackendConsistencyContract`. The remaining decision is the
+  acceptable cached-versus-uncached physics error for each production study.
 
-Future experiments:
+Validation and tuning:
 
 - A slice-pair Green cache is available as
   `PICPoissonSolver(green_cache=:slice_pair)` or

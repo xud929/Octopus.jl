@@ -47,7 +47,7 @@ julia --project=. examples/strong_strong_tracking.jl
 Run the CUDA strong-strong PIC example:
 
 ```bash
-OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=none \
+OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC \
 julia --project=. examples/strong_strong_tracking.jl
 ```
 
@@ -72,6 +72,7 @@ CUDA backend validation requires a working CUDA.jl environment:
 
 ```bash
 OCTOPUS_RUN_GPU_CONTRACT=1 julia --project=. validation/tracking_backend_consistency.jl
+julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consistency.jl
 ```
 
 ## Documentation Map

@@ -38,13 +38,13 @@ Compute PIC luminosity every N turns. Use 0 to disable luminosity computation:
 
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_LUMINOSITY_EVERY=10 julia --project=. examples/strong_strong_tracking.jl
 
-Use no PIC Green-function cache for production CUDA runs. The slice-pair cache
-is an experimental diagnostic and should be compared against `none` before use:
+The persistent slice-pair Green cache is the default for CPU and CUDA task
+execution. Disable it to run an uncached reference comparison:
 
-    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=none julia --project=. examples/strong_strong_tracking.jl
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=slice_pair julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=none julia --project=. examples/strong_strong_tracking.jl
 
-Tune the experimental slice-pair Green cache. `GROWTH=0.20` builds cached
+Tune the slice-pair Green cache. `GROWTH=0.20` builds cached
 grids 1.20 times larger than the current request:
 
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=slice_pair OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO=0.50 OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH=0.20 julia --project=. examples/strong_strong_tracking.jl
@@ -66,8 +66,7 @@ mode with `green_cache=none`, this path is enabled by default:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_WAVEFRONT_GREEN_FFT=0 julia --project=. examples/strong_strong_tracking.jl
 
-Test the experimental slice-pair Green cache. This is a benchmark
-option, not the recommended production default:
+Print statistics for the default slice-pair Green cache:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_PIC_GREEN_CACHE=slice_pair OCTOPUS_PIC_CACHE_STATS=1 julia --project=. examples/strong_strong_tracking.jl
 
@@ -238,7 +237,7 @@ slicing = LongitudinalSlicing(;
 )
 
 solver_kind = lowercase(get(ENV, "OCTOPUS_POISSON_SOLVER", "PIC"))
-pic_green_cache = Symbol(lowercase(get(ENV, "OCTOPUS_PIC_GREEN_CACHE", "none")))
+pic_green_cache = Symbol(lowercase(get(ENV, "OCTOPUS_PIC_GREEN_CACHE", "slice_pair")))
 pic_slice_pair_green_min_ratio = parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO",
                                                     get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO",
                                                         string(input.solver.pic_slice_pair_green_min_ratio))))
@@ -246,7 +245,7 @@ pic_slice_pair_green_growth = parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR_GR
                                                  get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH",
                                                      string(input.solver.pic_slice_pair_green_growth))))
 pic_longitudinal_kick = get(ENV, "OCTOPUS_PIC_LONGITUDINAL_KICK", "1") in ("1", "true", "TRUE", "yes", "YES")
-pic_batch_mode = Symbol(lowercase(get(ENV, "OCTOPUS_PIC_BATCH_MODE", "sequential")))
+pic_batch_mode = Symbol(lowercase(get(ENV, "OCTOPUS_PIC_BATCH_MODE", "wavefront")))
 pic_luminosity_every = parse(Int, get(ENV, "OCTOPUS_PIC_LUMINOSITY_EVERY", "1"))
 pic_luminosity_schedule =
     pic_luminosity_every < 0 ? error("OCTOPUS_PIC_LUMINOSITY_EVERY must be >= 0") :

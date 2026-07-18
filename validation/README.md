@@ -105,3 +105,14 @@ OCTOPUS_CONTRACT_ATOL=1e-10 \
 OCTOPUS_CONTRACT_RTOL=1e-10 \
 julia --project=. validation/tracking_backend_consistency.jl
 ```
+
+## Strong-Strong PIC Cache Backend Consistency
+
+`strong_strong_pic_cache_backend_consistency.jl` runs
+`StrongStrongPICBackendConsistencyContract`. It checks persistent slice-pair
+cache reuse, identical CPU/CUDA cache histories, both final beam states, and
+luminosity.
+
+```bash
+julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consistency.jl
+```

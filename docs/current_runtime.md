@@ -185,12 +185,14 @@ Hirata-map form of the PIC algorithm. Set
 `PICPoissonSolver(longitudinal_kick=false)`, or
 `OCTOPUS_PIC_LONGITUDINAL_KICK=0` in the strong-strong example, to use a
 transverse-only map.
-`PICPoissonSolver(batch_mode=:sequential)` is the default slice-pair schedule.
-`PICPoissonSolver(batch_mode=:wavefront)` groups ready, non-overlapping
+`PICPoissonSolver(batch_mode=:wavefront)` is the default slice-pair schedule
+and groups ready, non-overlapping
 slice-pairs with `collision_pair_batches`. In CUDA PIC, wavefront mode gathers
 every active slice in a batch, solves all `4 * batch_size` source-boundary
 field problems in one batched cuFFT stack, applies the non-overlapping kicks,
 then scatters the batch back before moving to the next dependency frontier.
+Use `PICPoissonSolver(batch_mode=:sequential)` for the one-pair-at-a-time
+fallback.
 `PICPoissonSolver(luminosity_schedule=EveryNSteps(step=N))` computes PIC
 luminosity only on scheduled turns while still applying beam-beam kicks every
 turn. Use `AtTurns(Int[])` to disable luminosity computation. Skipped
@@ -202,19 +204,22 @@ implementation uses equal left/right interpolation weights for that slice
 instead of dividing by zero.
 For CPU threaded execution, PIC deposition uses per-thread local charge grids
 followed by a deterministic reduction, avoiding concurrent writes to the same
-grid cell. The CPU path reuses a charge-grid, spectral work array, in-place
-FFTW plans, and left/right field-array workspace across all directed slice
-interactions in one collision call. It computes virtual-drifted source bounds
-in the source scan and deposits drifted source coordinates directly, avoiding
-separate source left/right coordinate arrays. It also reuses the
+grid cell. In `StrongStrongTask`, the CPU path retains its PIC workspace and
+slice-pair Green cache in the task runtime cache across turns. Standalone
+`collide!` calls use temporary per-call state. The CPU workspace reuses a
+charge-grid, spectral work array, in-place FFTW plans, and left/right field
+arrays across all directed slice interactions. It computes virtual-drifted
+source bounds in the source scan and deposits drifted source coordinates
+directly, avoiding separate source left/right coordinate arrays. It also reuses the
 Green-function FFT between the left and right source-boundary solves within
 one directed slice interaction. `PICPoissonSolver(green_cache=:slice_pair)`
 enables a slice-pair cache keyed by slice-pair and direction. It stores two
 Green FFTs per slice-pair, one for each beam-beam direction, and reuses each
 Green for the left and right source-boundary charge solves when the current
 source and field domains still fit inside the cached grids. The default is
-`green_cache=:none`. Set `OCTOPUS_PIC_CACHE_STATS=1` to print cache hits,
-misses, and hit rate for PIC runs.
+`green_cache=:slice_pair`; use `green_cache=:none` for an uncached reference.
+Set `OCTOPUS_PIC_CACHE_STATS=1` to print cache hits, misses, and hit rate for
+PIC runs.
 
 CPU execution supports the implemented slicing methods. CUDA execution supports
 the same public slicing methods for `GaussianPoissonSolver` and
@@ -267,10 +272,12 @@ slice_pair_green_growth=0.20)`. The strong-strong example also maps
 `OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO` and
 `OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH` into these constructor keywords for
 command-line convenience. Use
-`green_cache=:none` for CUDA PIC production runs unless a future validation and
-performance study shows a clear benefit. If experimenting with the slice-pair
-cache, compare luminosity, RMS, cache hit/build counts, and wall time against
-`green_cache=:none`. In CUDA wavefront mode with `green_cache=:none`, PIC also
+`green_cache=:slice_pair` for the default persistent task cache. CPU/CUDA
+consistency is covered by `StrongStrongPICBackendConsistencyContract`; the
+cache remains an accuracy/performance tradeoff relative to an uncached solve,
+so compare luminosity, RMS, cache hit/build counts, and wall time against
+`green_cache=:none` for new production studies. In CUDA wavefront mode with
+`green_cache=:none`, PIC also
 builds the wavefront Green functions as a two-plane-per-slice-pair stack and
 runs a batched Green FFT. The charge FFT and inverse FFT are already batched
 over the wavefront charge stack. Set `OCTOPUS_CUDA_PIC_WAVEFRONT_GREEN_FFT=0`

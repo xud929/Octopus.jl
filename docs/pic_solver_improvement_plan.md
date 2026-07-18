@@ -48,10 +48,11 @@ Expected effect: reduce allocation pressure during long multi-slice tracking.
 Status: partially implemented. The CPU path now reuses the charge grid,
 thread-local deposit grids, complex spectral work array, Green construction
 buffer, Green FFT buffer, and left/right `phi/Ex/Ey` field arrays across all
-directed slice interactions in one `collide!` call. It deposits drifted source
-coordinates directly without separate source-boundary coordinate arrays and
-reuses luminosity deposition grids. In-place FFTW plans are stored in the
-workspace and reused for the CPU convolution.
+directed slice interactions. `StrongStrongTask` retains this workspace across
+turns; standalone `collide!` calls use temporary state. The CPU path deposits
+drifted source coordinates directly without separate source-boundary coordinate
+arrays and reuses luminosity deposition grids. In-place FFTW plans are stored
+in the workspace and reused for the CPU convolution.
 
 ### 3. Cache Green FFTs Across Slice Pairs
 
@@ -66,8 +67,9 @@ reusable Green FFTs per slice-pair, one per beam-beam direction, enlarges
 rebuilt grids by a configurable factor, and reuses a cached entry only when the
 current source and field domains fit inside the cached grids. CPUThreads and
 CUDA support the same `:none` / `:slice_pair` cache API. The production default
-remains `green_cache=:none` until slice-pair caching shows a clear benefit for
-a validated workload.
+is `green_cache=:slice_pair`; `green_cache=:none` remains the uncached physics
+reference. `StrongStrongPICBackendConsistencyContract` checks persistent
+CPU/CUDA cache history, coordinates, and luminosity.
 
 ### 4. Overlap Independent CUDA PIC Field Solves
 

@@ -204,11 +204,11 @@ const StrongStrongGaussianPoissonSolver = GaussianPoissonSolver
     PICPoissonSolver(; kbb1=nothing, kbb2=nothing, luminosity_scale=nothing,
                       grid=(128, 128), deposit_method=:CIC,
                       green_type=:integrated,
-                      green_cache=:none,
+                      green_cache=:slice_pair,
                       slice_pair_green_min_ratio=0.50,
                       slice_pair_green_growth=0.25,
                       longitudinal_kick=true,
-                      batch_mode=:sequential,
+                      batch_mode=:wavefront,
                       luminosity_schedule=nothing,
                       slicing=LongitudinalSlicing(),
                       slicing1=nothing, slicing2=nothing)
@@ -279,11 +279,11 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                              grid=(128, 128),
                              deposit_method::Symbol=:CIC,
                              green_type::Symbol=:integrated,
-                             green_cache::Symbol=:none,
+                             green_cache::Symbol=:slice_pair,
                              slice_pair_green_min_ratio=0.50,
                              slice_pair_green_growth=0.25,
                              longitudinal_kick::Bool=true,
-                             batch_mode::Symbol=:sequential,
+                             batch_mode::Symbol=:wavefront,
                              luminosity_schedule::Union{Nothing,AbstractSchedule}=nothing,
                              slicing::LongitudinalSlicing=LongitudinalSlicing(),
                              slicing1=nothing,
@@ -365,6 +365,9 @@ line2 = (arc2_to_ip, ip, arc2_after_ip)
 task = StrongStrongTask(line1, line2)
 execute!(task, beam1, beam2; turns=10)
 ```
+
+Use `validate(StrongStrongPICBackendConsistencyContract())` to check PIC
+coordinates, luminosity, and persistent cache history across CPU and CUDA.
 """
 struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: AbstractTask
     line1::L1
@@ -378,6 +381,11 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     plan_cache2::Dict{Any,Any}
     runtime_cache::Dict{Any,Any}
 end
+
+required_contracts(::Type{<:StrongStrongTask}) =
+    DataType[StrongStrongPICBackendConsistencyContract]
+required_contracts(::StrongStrongTask) =
+    DataType[StrongStrongPICBackendConsistencyContract]
 
 function StrongStrongTask(line1, line2;
                           policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
