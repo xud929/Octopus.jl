@@ -179,3 +179,11 @@ first- and second-order moment produced by the CPU and CUDA reduction paths:
 ```bash
 julia --project=. validation/moment_observer_backend_consistency.jl
 ```
+
+`strong_strong_luminosity_schedule_output.jl` verifies that luminosity files
+omit unscheduled turns while preserving all scheduled results, including an
+evaluated `NaN`, and that the header identifies collision columns:
+
+```bash
+julia --project=. validation/strong_strong_luminosity_schedule_output.jl
+```

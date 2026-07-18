@@ -311,7 +311,12 @@ environment variables remain available as debugging overrides.
 `EveryNSteps(step=10)` or `AtTurns([0, 100])`. `nothing` computes luminosity
 on every turn. When the schedule does not run, PIC still applies beam-beam
 kicks but returns `NaN` for luminosity to mark that it was intentionally not
-computed.
+computed. `StrongStrongTask` does not write those skipped turns to its
+luminosity output file; the file contains only evaluated turns. A luminosity
+that evaluates to `NaN` on a scheduled turn is still written so numerical
+failures remain visible and are not confused with schedule skips.
+The first output row contains `turn` followed by collision labels in line
+order, so each luminosity column remains identifiable for multiple IPs.
 `luminosity_grid` may be `nothing` or a transverse `(nx, ny)` mesh. `nothing`
 uses `grid`, preserving the historical behavior. An explicit value changes
 only luminosity deposition and does not change the PIC force solve.
@@ -594,12 +599,22 @@ function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam; turns::Integ
         _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, backend, ctx, Int(turns), nothing)
     else
         open(task.luminosity_path, "w") do io
+            _write_strong_strong_luminosity_header(io, blocks1)
             _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, backend, ctx, Int(turns), io)
         end
     end
     _finalize_strong_strong_line_observers!(blocks1)
     _finalize_strong_strong_line_observers!(blocks2)
     return beam1, beam2
+end
+
+function _write_strong_strong_luminosity_header(io, blocks)
+    print(io, "turn")
+    for block in blocks
+        block.collision === nothing || print(io, '\t', block.collision.label)
+    end
+    println(io)
+    return nothing
 end
 
 function _execution_backend(task::StrongStrongTask, beam1::Beam{BTAG1}, beam2::Beam{BTAG2}) where {BTAG1<:AbstractExecutionBackend,BTAG2<:AbstractExecutionBackend}
@@ -622,7 +637,8 @@ function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, bac
     for turn in 0:(turns - 1)
         turn_t0 = task.record_turn_times ? time_ns() : UInt64(0)
         ctx = with_turn(ctx, turn)
-        io === nothing || print(io, turn)
+        luminosities = io === nothing ? nothing : Float64[]
+        luminosity_evaluated = io === nothing ? nothing : Bool[]
         turn_range = _cuda_nvtx_push(backend, "strongstrong turn")
         for j in eachindex(blocks1)
             line_range = _cuda_nvtx_push(backend, "strongstrong line tracking")
@@ -634,16 +650,24 @@ function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, bac
             _cuda_nvtx_pop(backend, line_range)
             if blocks1[j].collision !== nothing
                 solver = _collision_solver(task, blocks1[j].collision, blocks2[j].collision)
+                luminosity_evaluated === nothing ||
+                    push!(luminosity_evaluated, _strong_strong_luminosity_evaluated(solver, ctx))
                 collision_range = _cuda_nvtx_push(backend, "strongstrong collision")
                 lum = _strong_strong_collide!(
                     task, blocks1[j].collision.label, solver, beam1, beam2, backend, ctx,
                 )
                 _cuda_nvtx_pop(backend, collision_range)
-                io === nothing || print(io, '\t', lum)
+                luminosities === nothing || push!(luminosities, Float64(lum))
             end
         end
         _cuda_nvtx_pop(backend, turn_range)
-        io === nothing || println(io)
+        if luminosities !== nothing && !isempty(luminosities) && all(luminosity_evaluated)
+            print(io, turn)
+            for lum in luminosities
+                print(io, '\t', lum)
+            end
+            println(io)
+        end
         _strong_strong_maybe_log_cuda_memory(backend, turn, memory_log_every)
         if task.record_turn_times
             backend === CUDABackend && CUDA.synchronize()
@@ -664,6 +688,10 @@ function _pic_compute_luminosity(solver::PICPoissonSolver, ctx::TrackingContext)
     schedule = solver.luminosity_schedule
     return schedule === nothing || should_run(schedule, ctx)
 end
+
+_strong_strong_luminosity_evaluated(::AbstractPoissonSolver, ::TrackingContext) = true
+_strong_strong_luminosity_evaluated(solver::PICPoissonSolver, ctx::TrackingContext) =
+    _pic_compute_luminosity(solver, ctx)
 
 _cuda_nvtx_enabled() = get(ENV, "OCTOPUS_CUDA_NVTX", "0") in ("1", "true", "TRUE", "yes", "YES")
 
