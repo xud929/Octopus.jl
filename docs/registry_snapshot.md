@@ -122,6 +122,7 @@ constructor names remain the user-facing way to build those specs.
 - `AbstractImplementationContract`
 - `AbstractBackendConsistencyContract`
 - `ElementTrackingBackendConsistencyContract`
+- `StrongStrongGaussianBackendConsistencyContract`
 - `StrongStrongPICBackendConsistencyContract`
 - `AbstractPhysicsContract`
 

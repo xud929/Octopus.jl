@@ -1,5 +1,6 @@
 export ContractResult, passed, validate,
        ElementTrackingBackendConsistencyContract,
+       StrongStrongGaussianBackendConsistencyContract,
        StrongStrongPICBackendConsistencyContract
 
 """
@@ -65,6 +66,28 @@ Base.@kwdef struct ElementTrackingBackendConsistencyContract <: AbstractBackendC
 end
 
 """
+    StrongStrongGaussianBackendConsistencyContract(; n_particles=1024, turns=2,
+        nslices=3, seed=123456789, atol=1e-10, rtol=1e-10,
+        luminosity_rtol=1e-10)
+
+Validate CPU/CUDA consistency for a live-beam strong-strong soft-Gaussian
+collision. The contract constructs identical electron/proton beams, executes
+matching `StrongStrongTask`s, and compares both final six-dimensional beam
+states and luminosity.
+
+If CUDA is unavailable, validation returns `status=:skipped`.
+"""
+Base.@kwdef struct StrongStrongGaussianBackendConsistencyContract <: AbstractBackendConsistencyContract
+    n_particles::Int = 1024
+    turns::Int = 2
+    nslices::Int = 3
+    seed::UInt64 = UInt64(123456789)
+    atol::Float64 = 1e-10
+    rtol::Float64 = 1e-10
+    luminosity_rtol::Float64 = 1e-10
+end
+
+"""
     StrongStrongPICBackendConsistencyContract(; n_particles=1024, turns=2,
         grid=(32, 32), nslices=3, green_cache=:slice_pair,
         slice_pair_green_min_ratio=0.50, slice_pair_green_growth=0.25,
@@ -107,6 +130,9 @@ end
 
 description(::Type{ElementTrackingBackendConsistencyContract}) =
     "Checks coordinate consistency for the same tracking line across two execution backends."
+
+description(::Type{StrongStrongGaussianBackendConsistencyContract}) =
+    "Checks strong-strong soft-Gaussian coordinates and luminosity across CPU and CUDA."
 
 description(::Type{StrongStrongPICBackendConsistencyContract}) =
     "Checks strong-strong PIC coordinates, luminosity, and cache history across CPU and CUDA."
@@ -153,6 +179,84 @@ function validate(contract::ElementTrackingBackendConsistencyContract; kwargs...
         "Tracking backends agree within tolerance." :
         "Tracking backends disagree beyond tolerance."
     return ContractResult(ok, message; residual=metrics[:max_abs_error], metrics=metrics)
+end
+
+function validate(contract::StrongStrongGaussianBackendConsistencyContract; kwargs...)
+    available, reason = _contract_backends_available(CPUThreadsBackend, CUDABackend)
+    if !available
+        return ContractResult(:skipped, reason; metrics=Dict(
+            :backend_a => :CPUThreadsBackend,
+            :backend_b => :CUDABackend,
+        ))
+    end
+    contract.n_particles > 0 || return ContractResult(false, "n_particles must be positive.")
+    contract.turns > 0 || return ContractResult(false, "turns must be positive.")
+    contract.nslices > 0 || return ContractResult(false, "nslices must be positive.")
+
+    old_seed = global_rng_seed()
+    old_method = global_rng_method()
+    try
+        set_global_rng!(seed=contract.seed, method=:philox)
+        base1, base2 = _strong_strong_contract_base_beams(contract)
+        cpu1 = _strong_strong_contract_beam(base1, CPUThreadsBackend)
+        cpu2 = _strong_strong_contract_beam(base2, CPUThreadsBackend)
+        gpu1 = _strong_strong_contract_beam(base1, CUDABackend)
+        gpu2 = _strong_strong_contract_beam(base2, CUDABackend)
+
+        return mktempdir() do tempdir
+            cpu_path = joinpath(tempdir, "cpu.lum")
+            gpu_path = joinpath(tempdir, "gpu.lum")
+            cpu_task = _strong_strong_gaussian_contract_task(contract, cpu_path)
+            gpu_task = _strong_strong_gaussian_contract_task(contract, gpu_path)
+
+            execute!(cpu_task, cpu1, cpu2; turns=contract.turns)
+            execute!(gpu_task, gpu1, gpu2; turns=contract.turns)
+            CUDA.synchronize()
+
+            beam1_metrics = _contract_coordinate_metrics(
+                cpu1.rep, gpu1.rep, contract.atol, contract.rtol)
+            beam2_metrics = _contract_coordinate_metrics(
+                cpu2.rep, gpu2.rep, contract.atol, contract.rtol)
+            coordinate_ok = Bool(beam1_metrics[:passed_tolerance]) &&
+                            Bool(beam2_metrics[:passed_tolerance])
+            max_abs = max(beam1_metrics[:max_abs_error], beam2_metrics[:max_abs_error])
+            max_ratio = max(beam1_metrics[:max_allowed_ratio], beam2_metrics[:max_allowed_ratio])
+            max_component_rel = max(
+                beam1_metrics[:max_component_rel_error],
+                beam2_metrics[:max_component_rel_error],
+            )
+
+            cpu_luminosity = _strong_strong_contract_last_luminosity(cpu_path)
+            gpu_luminosity = _strong_strong_contract_last_luminosity(gpu_path)
+            luminosity_rel = abs(gpu_luminosity - cpu_luminosity) /
+                             max(abs(cpu_luminosity), eps(Float64))
+            luminosity_ok = luminosity_rel <= contract.luminosity_rtol
+            metrics = Dict{Symbol,Any}(
+                :backend_a => :CPUThreadsBackend,
+                :backend_b => :CUDABackend,
+                :n_particles => contract.n_particles,
+                :turns => contract.turns,
+                :nslices => contract.nslices,
+                :max_abs_error => max_abs,
+                :max_allowed_ratio => max_ratio,
+                :max_component_rel_error => max_component_rel,
+                :coordinate_passed_tolerance => coordinate_ok,
+                :cpu_luminosity => cpu_luminosity,
+                :gpu_luminosity => gpu_luminosity,
+                :luminosity_rel_error => luminosity_rel,
+                :luminosity_rtol => contract.luminosity_rtol,
+                :luminosity_passed_tolerance => luminosity_ok,
+                :cpu_threads => Threads.nthreads(),
+            )
+            ok = coordinate_ok && luminosity_ok
+            message = ok ?
+                "Strong-strong Gaussian CPU and CUDA results agree within tolerance." :
+                "Strong-strong Gaussian CPU and CUDA results disagree beyond tolerance."
+            return ContractResult(ok, message; residual=max_abs, metrics=metrics)
+        end
+    finally
+        set_global_rng!(seed=old_seed, method=old_method)
+    end
 end
 
 function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...)
@@ -335,7 +439,9 @@ function _contract_coordinate_metrics(rep_a, rep_b, atol, rtol)
     )
 end
 
-function _strong_strong_contract_base_beams(contract::StrongStrongPICBackendConsistencyContract)
+function _strong_strong_contract_base_beams(contract::Union{
+        StrongStrongGaussianBackendConsistencyContract,
+        StrongStrongPICBackendConsistencyContract})
     n = contract.n_particles
     beam1 = Beam(n, CPUThreadsBackend, Float64;
         beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0),
@@ -347,6 +453,18 @@ function _strong_strong_contract_base_beams(contract::StrongStrongPICBackendCons
         charge=1.0, mc2=PMASS_EV, E0=275e9,
         r0=RE * ME0 / PMASS_EV, npart=0.6881e11)
     return beam1, beam2
+end
+
+function _strong_strong_gaussian_contract_task(
+        contract::StrongStrongGaussianBackendConsistencyContract, luminosity_path)
+    slicing = LongitudinalSlicing(
+        method=:normal_quantile,
+        nslices=contract.nslices,
+        center_position=:centroid,
+    )
+    solver = GaussianPoissonSolver(slicing=slicing)
+    ip = StrongStrongCollision(:ip; poisson_solver=solver)
+    return StrongStrongTask((ip,), (ip,); luminosity_path=luminosity_path)
 end
 
 function _strong_strong_contract_beam(beam, ::Type{CPUThreadsBackend})

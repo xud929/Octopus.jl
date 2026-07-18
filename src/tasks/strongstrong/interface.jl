@@ -366,8 +366,10 @@ task = StrongStrongTask(line1, line2)
 execute!(task, beam1, beam2; turns=10)
 ```
 
-Use `validate(StrongStrongPICBackendConsistencyContract())` to check PIC
-coordinates, luminosity, and persistent cache history across CPU and CUDA.
+Use `validate(StrongStrongGaussianBackendConsistencyContract())` to check the
+soft-Gaussian solver across CPU and CUDA. Use
+`validate(StrongStrongPICBackendConsistencyContract())` to check PIC
+coordinates, luminosity, and persistent cache history.
 """
 struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: AbstractTask
     line1::L1
@@ -383,9 +385,11 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
 end
 
 required_contracts(::Type{<:StrongStrongTask}) =
-    DataType[StrongStrongPICBackendConsistencyContract]
+    DataType[StrongStrongGaussianBackendConsistencyContract,
+             StrongStrongPICBackendConsistencyContract]
 required_contracts(::StrongStrongTask) =
-    DataType[StrongStrongPICBackendConsistencyContract]
+    DataType[StrongStrongGaussianBackendConsistencyContract,
+             StrongStrongPICBackendConsistencyContract]
 
 function StrongStrongTask(line1, line2;
                           policy::Union{Nothing,AbstractExecutionPolicy}=nothing,

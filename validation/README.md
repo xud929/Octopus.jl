@@ -126,3 +126,13 @@ luminosity.
 ```bash
 julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consistency.jl
 ```
+
+## Strong-Strong Gaussian Backend Consistency
+
+`strong_strong_gaussian_backend_consistency.jl` runs
+`StrongStrongGaussianBackendConsistencyContract`. It compares both final beam
+states and luminosity between the CPU and CUDA soft-Gaussian solvers.
+
+```bash
+julia --threads=4 --project=. validation/strong_strong_gaussian_backend_consistency.jl
+```
