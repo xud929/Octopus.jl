@@ -111,6 +111,12 @@ constructor names remain the user-facing way to build those specs.
 - `Symplectic6DMap`
 - `WeakStrongBeamBeamMap`
 
+## Strong-Strong Solvers
+
+- `GaussianPoissonSolver`
+- `PICPoissonSolver`
+  - Construction metadata: `solver_option_schema`, `solver_help`
+
 ## Execution Policies
 
 - `CPUThreadsExecutionPolicy`

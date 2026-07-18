@@ -13,6 +13,7 @@ edited as external metadata.
 struct OctopusRegistry
     elements::Vector{Any}
     tracking_methods::Vector{Any}
+    solvers::Vector{Any}
     policies::Vector{Any}
     contracts::Vector{Any}
     analyses::Vector{Any}
@@ -41,6 +42,7 @@ function build_registry()
     return OctopusRegistry(
         registered_element_specs(),
         _subtypes_recursive(AbstractTrackingMethod),
+        _subtypes_recursive(AbstractPoissonSolver),
         _subtypes_recursive(AbstractExecutionPolicy),
         _subtypes_recursive(AbstractContract),
         _subtypes_recursive(AbstractAnalysis),
@@ -59,6 +61,7 @@ function summarize_registry(reg::OctopusRegistry=build_registry())
     return (
         elements = name.(reg.elements),
         tracking_methods = name.(reg.tracking_methods),
+        solvers = name.(reg.solvers),
         policies = name.(reg.policies),
         contracts = name.(reg.contracts),
         analyses = name.(reg.analyses),
@@ -106,6 +109,14 @@ function registry_snapshot_markdown(reg::OctopusRegistry=build_registry())
     end
 
     _write_type_section(io, "Tracking Methods", reg.tracking_methods)
+    println(io, "## Strong-Strong Solvers")
+    println(io)
+    for T in reg.solvers
+        println(io, "- `", nameof(T), "`")
+        isempty(keys(solver_option_schema(T))) ||
+            println(io, "  - Construction metadata: `solver_option_schema`, `solver_help`")
+    end
+    println(io)
     _write_type_section(io, "Execution Policies", reg.policies)
     _write_type_section(io, "Contracts", reg.contracts)
     _write_type_section(io, "Analyses", reg.analyses)

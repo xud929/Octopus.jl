@@ -274,7 +274,12 @@ slice_pair_green_growth=0.20)`. The strong-strong example also maps
 `OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO` and
 `OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH` into these constructor keywords for
 command-line convenience. Use
-`green_cache=:slice_pair` for the default persistent task cache. CPU/CUDA
+`green_cache=:slice_pair` for the default persistent task cache. Solver option
+scope, defaults, dependencies, and debugging overrides are available
+programmatically through `solver_option_schema(PICPoissonSolver)` and as a
+readable summary through `solver_help(PICPoissonSolver)`. CUDA-only options are
+explicitly marked with `supported_backends=(CUDABackend,)`.
+CPU/CUDA
 consistency is covered by `StrongStrongPICBackendConsistencyContract`; the
 cache remains an accuracy/performance tradeoff relative to an uncached solve,
 so compare luminosity, RMS, cache hit/build counts, and wall time against

@@ -1,6 +1,7 @@
 export AbstractPoissonSolver, LongitudinalSlicing, longitudinal_slices,
        gaussian_slice_centers, collision_pair_batches,
        GaussianPoissonSolver, PICPoissonSolver,
+       SolverOptionMeta, solver_option_schema, solver_help,
        StrongStrongGaussianPoissonSolver, StrongStrongCollision,
        StrongStrongTask, turn_timings, collide!
 
@@ -20,6 +21,59 @@ The current concrete implementations are `GaussianPoissonSolver` and
 `PICPoissonSolver`.
 """
 abstract type AbstractPoissonSolver <: AbstractOctopusObject end
+
+"""Structured metadata for one public solver constructor option."""
+struct SolverOptionMeta
+    option_type::Any
+    default::Any
+    meaning::String
+    supported_backends::Tuple
+    category::Symbol
+    environment_override::Union{Nothing,String}
+    dependencies::Tuple{Vararg{Symbol}}
+end
+
+SolverOptionMeta(option_type, default, meaning;
+                 supported_backends=(CPUThreadsBackend, CUDABackend),
+                 category=:numerical, environment_override=nothing,
+                 dependencies=()) =
+    SolverOptionMeta(option_type, default, String(meaning), Tuple(supported_backends),
+                     Symbol(category), environment_override === nothing ? nothing : String(environment_override),
+                     Tuple(Symbol.(dependencies)))
+
+"""Return structured constructor-option metadata for a solver type or instance."""
+solver_option_schema(::Type{<:AbstractPoissonSolver}) = NamedTuple()
+solver_option_schema(solver::AbstractPoissonSolver) = solver_option_schema(typeof(solver))
+
+"""Print structured solver configuration help."""
+function solver_help(; io::IO=stdout)
+    println(io, "Available strong-strong solvers:")
+    for T in build_registry().solvers
+        println(io, "  - ", T)
+    end
+    println(io, "Use solver_help(PICPoissonSolver) or solver_option_schema(PICPoissonSolver).")
+    return nothing
+end
+
+function solver_help(solver_type::Type{<:AbstractPoissonSolver}; io::IO=stdout)
+    println(io, "Solver: ", solver_type)
+    schema = solver_option_schema(solver_type)
+    isempty(keys(schema)) && return println(io, "No structured solver-option metadata is registered.")
+    println(io, "Options:")
+    for (name, meta) in pairs(schema)
+        backends = join((string(B) for B in meta.supported_backends), ", ")
+        println(io, "  - ", name, "::", meta.option_type, " = ", repr(meta.default))
+        println(io, "      ", meta.meaning)
+        println(io, "      category=", meta.category, "; backends=", backends)
+        meta.environment_override === nothing ||
+            println(io, "      debug override=", meta.environment_override)
+        isempty(meta.dependencies) || println(io, "      dependencies=", join(meta.dependencies, ", "))
+    end
+    return nothing
+end
+solver_help(solver::AbstractPoissonSolver; io::IO=stdout) = solver_help(typeof(solver); io=io)
+solver_help(io::IO) = solver_help(; io=io)
+solver_help(io::IO, solver) = solver_help(solver; io=io)
 
 collide!(solver::AbstractPoissonSolver, beam1::Beam, beam2::Beam, backend, ctx::TrackingContext) =
     collide!(solver, beam1, beam2, backend)
@@ -340,6 +394,61 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
 end
 
 PICPoissonSolver(; kwargs...) = PICPoissonSolver{Float64}(; kwargs...)
+
+const _PIC_SOLVER_OPTION_SCHEMA = (
+    kbb1 = SolverOptionMeta(Union{Nothing,Real}, nothing,
+        "Optional beam-1 kick-scale override."; category=:physics_override),
+    kbb2 = SolverOptionMeta(Union{Nothing,Real}, nothing,
+        "Optional beam-2 kick-scale override."; category=:physics_override),
+    luminosity_scale = SolverOptionMeta(Union{Nothing,Real}, nothing,
+        "Optional luminosity normalization override."; category=:physics_override),
+    grid = SolverOptionMeta(Tuple{Int,Int}, (128, 128),
+        "Physical transverse PIC mesh dimensions."),
+    deposit_method = SolverOptionMeta(Symbol, :CIC,
+        "Particle-to-grid deposition and field-interpolation method; :CIC or :TSC."),
+    green_type = SolverOptionMeta(Symbol, :integrated,
+        "Open-boundary logarithmic Green kernel; :integrated or :standard."),
+    green_cache = SolverOptionMeta(Symbol, :slice_pair,
+        "Persistent Green FFT caching mode; :slice_pair or :none."; category=:execution),
+    slice_pair_green_min_ratio = SolverOptionMeta(Real, 0.50,
+        "Minimum requested-to-cached domain ratio before rebuilding a slice-pair Green entry.";
+        category=:accuracy_performance, dependencies=(:green_cache,)),
+    slice_pair_green_growth = SolverOptionMeta(Real, 0.25,
+        "Fractional domain enlargement when building a slice-pair Green entry.";
+        category=:accuracy_performance, dependencies=(:green_cache,)),
+    longitudinal_kick = SolverOptionMeta(Bool, true,
+        "Apply the Hirata-map potential-difference longitudinal kick."; category=:physics),
+    batch_mode = SolverOptionMeta(Symbol, :wavefront,
+        "Slice-pair scheduling mode; :wavefront or :sequential."; category=:execution),
+    cuda_async = SolverOptionMeta(Bool, true,
+        "Overlap independent CUDA field work.";
+        supported_backends=(CUDABackend,), category=:execution,
+        environment_override="OCTOPUS_CUDA_PIC_ASYNC"),
+    cuda_batch_fft = SolverOptionMeta(Bool, true,
+        "Use batched CUDA FFT field solves.";
+        supported_backends=(CUDABackend,), category=:execution,
+        environment_override="OCTOPUS_CUDA_PIC_BATCH_FFT", dependencies=(:cuda_async,)),
+    cuda_wavefront_fft = SolverOptionMeta(Bool, true,
+        "Batch FFT planes across each CUDA collision wavefront.";
+        supported_backends=(CUDABackend,), category=:execution,
+        environment_override="OCTOPUS_CUDA_PIC_WAVEFRONT_FFT",
+        dependencies=(:batch_mode, :cuda_async, :cuda_batch_fft)),
+    cuda_indexed_wavefront = SolverOptionMeta(Bool, true,
+        "Track slice membership by indices without gathering, sorting, or changing particle IDs.";
+        supported_backends=(CUDABackend,), category=:execution,
+        environment_override="OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT",
+        dependencies=(:batch_mode, :cuda_async, :cuda_batch_fft, :cuda_wavefront_fft)),
+    luminosity_schedule = SolverOptionMeta(Union{Nothing,AbstractSchedule}, nothing,
+        "Schedule for luminosity evaluation; nothing evaluates every turn."; category=:diagnostic),
+    slicing = SolverOptionMeta(LongitudinalSlicing, LongitudinalSlicing(),
+        "Shared longitudinal slicing configuration for both beams."; category=:physics),
+    slicing1 = SolverOptionMeta(Union{Nothing,LongitudinalSlicing}, nothing,
+        "Optional beam-1 slicing override."; category=:physics, dependencies=(:slicing,)),
+    slicing2 = SolverOptionMeta(Union{Nothing,LongitudinalSlicing}, nothing,
+        "Optional beam-2 slicing override."; category=:physics, dependencies=(:slicing,)),
+)
+
+solver_option_schema(::Type{<:PICPoissonSolver}) = _PIC_SOLVER_OPTION_SCHEMA
 
 """
     StrongStrongCollision(label; poisson_solver=nothing)

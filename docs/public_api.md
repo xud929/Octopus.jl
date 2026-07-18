@@ -61,6 +61,9 @@ Use Julia help:
 ?StrongStrongCollision
 ?GaussianPoissonSolver
 ?PICPoissonSolver
+?SolverOptionMeta
+?solver_option_schema
+?solver_help
 ?LongitudinalSlicing
 ?longitudinal_slices
 ?AbstractPoissonSolver
