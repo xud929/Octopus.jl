@@ -24,6 +24,10 @@ Select the Poisson solver:
     OCTOPUS_POISSON_SOLVER=PIC julia --project=. examples/strong_strong_tracking.jl
     OCTOPUS_POISSON_SOLVER=gaussian julia --project=. examples/strong_strong_tracking.jl
 
+Disable the beam-beam collision while retaining both complete ring lines:
+
+    OCTOPUS_DISABLE_COLLISION=1 julia --project=. examples/strong_strong_tracking.jl
+
 Control the PIC longitudinal potential-difference kick. It is enabled by default:
 
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_LONGITUDINAL_KICK=1 julia --project=. examples/strong_strong_tracking.jl
@@ -70,8 +74,9 @@ Print statistics for the default slice-pair Green cache:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_PIC_GREEN_CACHE=slice_pair OCTOPUS_PIC_CACHE_STATS=1 julia --project=. examples/strong_strong_tracking.jl
 
-Test the experimental indexed CUDA wavefront path. It skips compact
-gather/scatter and deposits/kicks through slice index vectors:
+Test the indexed CUDA wavefront path. It skips compact gather/scatter and
+deposits/kicks through slice index vectors while leaving canonical particle
+order unchanged:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT=1 julia --project=. examples/strong_strong_tracking.jl
 
@@ -82,6 +87,10 @@ Log CUDA memory every N turns:
 Print CUDA PIC phase timings:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_CUDA_PIC_TIMING=1 julia --project=. examples/strong_strong_tracking.jl
+
+Record synchronized complete-turn timings and optionally write them as TSV:
+
+    OCTOPUS_USE_GPU=1 OCTOPUS_RECORD_TURN_TIMES=1 OCTOPUS_TURN_TIMING_PATH=result/pic_turn_times.tsv julia --project=. examples/strong_strong_tracking.jl
 
 Print additive field subphase timings. This disables async PIC field solves for
 diagnosis:
@@ -252,6 +261,14 @@ pic_luminosity_schedule =
     pic_luminosity_every == 0 ? AtTurns(Int[]) :
     pic_luminosity_every == 1 ? nothing :
     EveryNSteps(step = pic_luminosity_every)
+record_turn_times = get(ENV, "OCTOPUS_RECORD_TURN_TIMES", "0") in
+                    ("1", "true", "TRUE", "yes", "YES")
+disable_moments = get(ENV, "OCTOPUS_DISABLE_MOMENTS", "0") in
+                  ("1", "true", "TRUE", "yes", "YES")
+disable_luminosity_output = get(ENV, "OCTOPUS_DISABLE_LUMINOSITY_OUTPUT", "0") in
+                            ("1", "true", "TRUE", "yes", "YES")
+disable_collision = get(ENV, "OCTOPUS_DISABLE_COLLISION", "0") in
+                    ("1", "true", "TRUE", "yes", "YES")
 solver = if solver_kind == "gaussian"
     GaussianPoissonSolver(;
         slicing = slicing,
@@ -372,6 +389,7 @@ proton_chrom = ChromaticityKickSpec{Float64}(;
 lb = LorentzBoostSpec(input.crossing_angle)
 rlb = RevLorentzBoostSpec(input.crossing_angle)
 ip = StrongStrongCollision(:ip; poisson_solver = solver)
+collision_elements = disable_collision ? () : (ip,)
 
 mkpath(input.result_dir)
 luminosity_path = joinpath(input.result_dir, input.output.luminosity_file)
@@ -382,13 +400,25 @@ moment_schedule = EveryNSteps(;
     stop = input.total_turns,
     step = input.output.moment_step,
 )
+electron_observers = disable_moments ? () : (
+    ScheduledObserver(
+        MomentObserver(electron_moment_path; capacity = input.output.moment_capacity),
+        moment_schedule,
+    ),
+)
+proton_observers = disable_moments ? () : (
+    ScheduledObserver(
+        MomentObserver(proton_moment_path; capacity = input.output.moment_capacity),
+        moment_schedule,
+    ),
+)
 
 line_ele = (
     electron_tccb2ip_inv,
     electron_tccb,
     electron_tccb2ip,
     lb,
-    ip,
+    collision_elements...,
     rlb,
     electron_ip2tcca,
     electron_tcca,
@@ -396,10 +426,7 @@ line_ele = (
     electron_one_turn,
     electron_chrom,
     electron_rad,
-    ScheduledObserver(
-        MomentObserver(electron_moment_path; capacity = input.output.moment_capacity),
-        moment_schedule,
-    ),
+    electron_observers...,
 )
 
 line_pro = (
@@ -407,23 +434,36 @@ line_pro = (
     proton_tccb,
     proton_tccb2ip,
     lb,
-    ip,
+    collision_elements...,
     rlb,
     proton_ip2tcca,
     proton_tcca,
     proton_ip2tcca_inv,
     proton_one_turn,
     proton_chrom,
-    ScheduledObserver(
-        MomentObserver(proton_moment_path; capacity = input.output.moment_capacity),
-        moment_schedule,
-    ),
+    proton_observers...,
 )
 
 task = StrongStrongTask(line_ele, line_pro;
-    luminosity_path = luminosity_path,
+    luminosity_path = disable_luminosity_output ? nothing : luminosity_path,
+    record_turn_times = record_turn_times,
 )
 execute!(task, beam_ele, beam_pro; turns = turns)
+
+if record_turn_times
+    timings = turn_timings(task)
+    println("turn_timings_seconds = ", join(timings, ','))
+    timing_path = get(ENV, "OCTOPUS_TURN_TIMING_PATH", "")
+    if !isempty(timing_path)
+        mkpath(dirname(timing_path))
+        open(timing_path, "w") do io
+            println(io, "turn\tseconds")
+            for (turn, seconds) in enumerate(timings)
+                println(io, turn - 1, '\t', seconds)
+            end
+        end
+    end
+end
 
 stats_ele = beam_statistics(beam_ele)
 stats_pro = beam_statistics(beam_pro)
@@ -431,6 +471,7 @@ println("turns = ", turns)
 println("n_macro_ele = ", n_macro_ele)
 println("n_macro_pro = ", n_macro_pro)
 println("poisson_solver = ", solver_kind)
+println("beam_beam_collision = ", disable_collision ? "disabled" : "enabled")
 if solver_kind == "pic"
     println("pic_longitudinal_kick = ", pic_longitudinal_kick)
     println("pic_batch_mode = ", pic_batch_mode)
@@ -439,8 +480,8 @@ if solver_kind == "pic"
     println("pic_slice_pair_green_growth = ", pic_slice_pair_green_growth)
     println("pic_luminosity_every = ", pic_luminosity_every)
 end
-println("luminosity = ", luminosity_path)
-println("electron moments = ", electron_moment_path)
-println("proton moments = ", proton_moment_path)
+println("luminosity = ", disable_luminosity_output ? "disabled" : luminosity_path)
+println("electron moments = ", disable_moments ? "disabled" : electron_moment_path)
+println("proton moments = ", disable_moments ? "disabled" : proton_moment_path)
 println("electron rms = ", stats_ele.rms)
 println("proton rms = ", stats_pro.rms)

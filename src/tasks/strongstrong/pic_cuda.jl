@@ -102,6 +102,9 @@ if _HAS_CUDA
             _cuda_pic_report_green_cache(green_cache)
             _cuda_pic_report_slice_pair_green_cache(workspace.slice_pair_green_cache)
             _cuda_pic_report_timing(timing, pair_count)
+            # Scatter writes are launched on the current stream. Complete them
+            # before post-collision tracking starts on independent beam streams.
+            CUDA.synchronize(CUDA.stream())
             return luminosity
         end
 
@@ -240,6 +243,9 @@ if _HAS_CUDA
             _cuda_pic_report_green_cache(green_cache)
             _cuda_pic_report_slice_pair_green_cache(workspace.slice_pair_green_cache)
             _cuda_pic_report_wavefront_timing(timing, pair_count, batch_count, max_batch_size)
+            # Scatter writes are launched on the current stream. Complete them
+            # before post-collision tracking starts on independent beam streams.
+            CUDA.synchronize(CUDA.stream())
             return luminosity
         end
 

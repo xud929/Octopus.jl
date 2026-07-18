@@ -175,6 +175,7 @@ Use Julia help:
 ?StrongStrongGaussianBackendConsistencyContract
 ?StrongStrongPICBackendConsistencyContract
 ?validate
+?turn_timings
 ```
 
 After public element metadata changes:

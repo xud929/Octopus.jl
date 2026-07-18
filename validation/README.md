@@ -136,3 +136,29 @@ states and luminosity between the CPU and CUDA soft-Gaussian solvers.
 ```bash
 julia --threads=4 --project=. validation/strong_strong_gaussian_backend_consistency.jl
 ```
+
+## Strong-Strong Observer Plan Consistency
+
+`strong_strong_observer_plan_consistency.jl` verifies that inserting a
+read-only observer after a collision does not change either beam. It guards
+the block-aware strong-strong plan cache.
+
+```bash
+julia --threads=4 --project=. validation/strong_strong_observer_plan_consistency.jl
+```
+
+## Strong-Strong PIC Extreme CUDA Benchmark
+
+`strong_strong_pic_extreme_benchmark.jl` runs the frozen production-size CUDA
+reference with 2.56M electrons, 1M protons, a 128×128 grid, and 15 slices per
+beam. It runs 30 turns and reports the mean, median, minimum, standard
+deviation, and individual timings for the final 10 turns. Moment and luminosity
+file output are disabled in the timed region.
+
+```bash
+julia --project=. validation/strong_strong_pic_extreme_benchmark.jl
+```
+
+Tracked run-by-run results, commands, validation gates, and decisions are in
+`strong_strong_pic_extreme_benchmark_history.md`. Generated timing TSV files
+under `result/` remain intentionally gitignored.

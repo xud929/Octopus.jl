@@ -251,14 +251,14 @@ charge stack. In wavefront PIC mode, the stack grows to
 `OCTOPUS_CUDA_PIC_WAVEFRONT_FFT=0` to fall back from wavefront-level batching
 to per-pair batched FFTs, or `OCTOPUS_CUDA_PIC_BATCH_FFT=0` to fall back to the
 previous four-stream field-solve path for timing comparisons. The CUDA PIC
-experimental indexed wavefront path, enabled by
+indexed wavefront path, enabled with
 `OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT=1`, skips compact slice gather/scatter. It
 computes drifted bounds from full beam arrays using slice index vectors,
 deposits directly from those indexed particles into the wavefront charge stack,
 keeps the same large batched charge FFT and Green FFT path, and applies kicks
 back to the original beam arrays by particle index after the fields are solved.
-Keep this path under validation until it matches the compact path for
-luminosity and beam moments.
+Keep this path opt-in until longer luminosity and beam-moment studies establish
+acceptable sensitivity to the changed CUDA deposition order.
 The CUDA PIC
 workspace reuses its field streams, luminosity stream, synchronization event,
 charge grids, batched charge/field arrays, wavefront charge/field-array cache,

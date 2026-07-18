@@ -2,7 +2,7 @@ export AbstractPoissonSolver, LongitudinalSlicing, longitudinal_slices,
        gaussian_slice_centers, collision_pair_batches,
        GaussianPoissonSolver, PICPoissonSolver,
        StrongStrongGaussianPoissonSolver, StrongStrongCollision,
-       StrongStrongTask, collide!
+       StrongStrongTask, turn_timings, collide!
 
 """
     AbstractPoissonSolver
@@ -366,6 +366,10 @@ task = StrongStrongTask(line1, line2)
 execute!(task, beam1, beam2; turns=10)
 ```
 
+Set `record_turn_times=true` to synchronize once at each turn boundary and
+record steady-state wall time for the complete CPU or CUDA turn. Retrieve the
+measurements with `turn_timings(task)`.
+
 Use `validate(StrongStrongGaussianBackendConsistencyContract())` to check the
 soft-Gaussian solver across CPU and CUDA. Use
 `validate(StrongStrongPICBackendConsistencyContract())` to check PIC
@@ -377,6 +381,8 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     policy::Union{Nothing,AbstractExecutionPolicy}
     default_poisson_solver::S
     luminosity_path::Union{Nothing,String}
+    record_turn_times::Bool
+    turn_times::Vector{Float64}
     runtime_entries_cache1::Base.RefValue{Any}
     runtime_entries_cache2::Base.RefValue{Any}
     plan_cache1::Dict{Any,Any}
@@ -396,7 +402,8 @@ function StrongStrongTask(line1, line2;
                           seed=nothing,
                           default_poisson_solver::AbstractPoissonSolver=GaussianPoissonSolver(),
                           poisson_solver::Union{Nothing,AbstractPoissonSolver}=nothing,
-                          luminosity_path::Union{Nothing,AbstractString}=nothing)
+                          luminosity_path::Union{Nothing,AbstractString}=nothing,
+                          record_turn_times::Bool=false)
     line_tuple1 = _element_tuple(line1)
     line_tuple2 = _element_tuple(line2)
     seed !== nothing && @warn "StrongStrongTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
@@ -407,6 +414,8 @@ function StrongStrongTask(line1, line2;
         policy,
         solver,
         luminosity_path === nothing ? nothing : String(luminosity_path),
+        record_turn_times,
+        Float64[],
         Ref{Any}(nothing),
         Ref{Any}(nothing),
         Dict{Any,Any}(),
@@ -415,12 +424,16 @@ function StrongStrongTask(line1, line2;
     )
 end
 
+"""Return complete-turn timings in seconds from the most recent task execution."""
+turn_timings(task::StrongStrongTask) = copy(task.turn_times)
+
 """
     execute!(task::StrongStrongTask, beam1, beam2; turns=1)
 
 Execute a strong-strong task in place. Returns `(beam1, beam2)`.
 """
 function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam; turns::Integer=1)
+    empty!(task.turn_times)
     backend = _execution_backend(task, beam1, beam2)
     blocks1 = _strong_strong_runtime_blocks(task, 1)
     blocks2 = _strong_strong_runtime_blocks(task, 2)
@@ -458,6 +471,7 @@ function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, bac
     streams = _strong_strong_segment_streams(backend)
     memory_log_every = _strong_strong_cuda_memory_log_every(backend)
     for turn in 0:(turns - 1)
+        turn_t0 = task.record_turn_times ? time_ns() : UInt64(0)
         ctx = with_turn(ctx, turn)
         io === nothing || print(io, turn)
         turn_range = _cuda_nvtx_push(backend, "strongstrong turn")
@@ -466,7 +480,7 @@ function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, bac
             _execute_strong_strong_segment_pair!(
                 beam1.rep, blocks1[j].entries, task.plan_cache1,
                 beam2.rep, blocks2[j].entries, task.plan_cache2,
-                backend, ctx, streams,
+                backend, ctx, streams, j,
             )
             _cuda_nvtx_pop(backend, line_range)
             if blocks1[j].collision !== nothing
@@ -482,6 +496,10 @@ function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, bac
         _cuda_nvtx_pop(backend, turn_range)
         io === nothing || println(io)
         _strong_strong_maybe_log_cuda_memory(backend, turn, memory_log_every)
+        if task.record_turn_times
+            backend === CUDABackend && CUDA.synchronize()
+            push!(task.turn_times, (time_ns() - turn_t0) * 1.0e-9)
+        end
     end
     return nothing
 end
@@ -537,15 +555,15 @@ end
 
 function _execute_strong_strong_segment_pair!(rep1, entries1::Tuple, plan_cache1,
                                               rep2, entries2::Tuple, plan_cache2,
-                                              backend, ctx, streams)
+                                              backend, ctx, streams, block_index::Integer)
     if backend === CUDABackend && streams !== nothing
-        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, backend, ctx, streams[1])
-        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, backend, ctx, streams[2])
+        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, backend, ctx, block_index, streams[1])
+        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, backend, ctx, block_index, streams[2])
         CUDA.synchronize(streams[1])
         CUDA.synchronize(streams[2])
     else
-        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, backend, ctx)
-        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, backend, ctx)
+        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, backend, ctx, block_index)
+        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, backend, ctx, block_index)
     end
     return nothing
 end
@@ -558,11 +576,14 @@ function _strong_strong_segment_streams(backend)
     return nothing
 end
 
-function _execute_strong_strong_segment!(rep, entries::Tuple, plan_cache, backend, ctx, stream=nothing)
+function _execute_strong_strong_segment!(rep, entries::Tuple, plan_cache, backend, ctx,
+                                         block_index::Integer, stream=nothing)
     isempty(entries) && return nothing
-    plan_key = _active_plan_key(entries, ctx, false)
+    # Active-hook state alone is not unique: blocks before and after a collision
+    # commonly have the same hook state but contain different physics elements.
+    plan_key = (Int(block_index), _active_plan_key(entries, ctx, false))
     plan = get!(plan_cache, plan_key) do
-        _build_tracking_plan(entries, plan_key)
+        _build_tracking_plan(entries, plan_key[2])
     end
     _execute_tracking_plan_turn!(rep, plan, backend, ctx; stream=stream)
     return nothing
