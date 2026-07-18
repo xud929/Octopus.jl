@@ -194,29 +194,25 @@ and a longer physics regression before making the optimized path the default.
 
 ### Accepted-results log
 
-- Reference commit `1f8a513`, NVIDIA RTX 4500 Ada, CUDA `Float64`, 30 turns:
-  compact wavefront final-ten means were `0.5379`, `0.5503`, and `0.5449`
-  seconds/turn; the median-of-three reference is `0.5449` seconds/turn.
-- Accepted extreme-performance indexed wavefront candidate: final-ten means were `0.3486`,
-  `0.3461`, and `0.3520` seconds/turn; median `0.3486` seconds/turn, a `36.0%`
-  reduction (`1.56×` throughput). The 30-turn CPU/CUDA PIC contract passed with
-  maximum coordinate error `5.68e-16`, luminosity relative error `2.72e-14`,
-  and identical cache history. Canonical coordinate storage and particle index
-  order remain unchanged.
-- Physics sensitivity: at the 2.56M/1M target size, changing CUDA deposition
-  order through indexed execution produces visible 30-turn RMS differences
-  from the older compact CUDA ordering, including about 8% in proton horizontal
-  RMS in this strongly nonlinear case. Retain the compact path as a comparison
-  switch and require longer statistical beam-evolution studies before treating
-  the two CUDA reduction orders as physically interchangeable for production.
-- Rejected `slice_pair_green_growth=0.50`: `0.5460` seconds/turn in the first
-  target-size run, with no improvement over the compact `0.5449` reference.
-- Rejected indexed launch-width changes: 128 threads produced `0.3487`
-  seconds/turn, indistinguishable from the accepted 256-thread result; 512
-  threads cannot launch the longitudinal kick kernel because its 150 registers
-  per thread exceed the Ada per-block register limit.
-- Final indexed-candidate target-size run: `0.3496` seconds/turn for the final-ten
-  mean and `0.3459` seconds/turn median. The remaining indexed profile is led
-  by preparation (`0.149` seconds), fields (`0.106` seconds), and kick (`0.080`
-  seconds); deposition alone is only about `0.042` seconds, so physical sorting
-  is not the next justified optimization without a new profile.
+- Corrected reference commit `ccf7986`, NVIDIA RTX 4500 Ada, CUDA `Float64`, 30
+  turns: compact final-ten means are `0.6468`, `0.6462`, and `0.6416`
+  seconds/turn; median-of-means `0.6462` seconds/turn.
+- Accepted corrected indexed wavefront candidate: `0.3637`, `0.3605`, and
+  `0.3578` seconds/turn; median-of-means `0.3605`, a 44.2% reduction and 1.79x
+  throughput. Compact and indexed 30-turn RMS values agree to printed
+  precision. The 30-turn backend contract passed with maximum coordinate error
+  `4.90e-16`, luminosity relative error `3.30e-15`, and identical cache history.
+- Rejected indexed `slice_pair_green_growth=0.50` despite its timing improvement:
+  the enlarged cached grids contain too many empty cells and do not meet the
+  physical-model requirement. Fix subsequent rounds at
+  `slice_pair_green_growth=0.25` and `slice_pair_green_min_ratio=0.50`.
+- Rejected `slice_pair_green_growth=0.75`: `0.3572` seconds/turn, 3.1% slower
+  than the diagnostic growth-0.50 median-of-means.
+- Rejected midpoint `slice_pair_green_growth=0.625`: `0.3577` seconds/turn.
+- Corrected async profile at the diagnostic growth-0.50 configuration:
+  preparation `~0.125 s`,
+  fields `~0.119 s`, kick `~0.081 s`, and deposition `~0.043 s`. Indexed
+  execution eliminates compact gather/scatter; sorting is not the next target.
+- All results from commit `1f8a513` are historical only: the no-observer path
+  reused the wrong lattice block and PIC scatter lacked a stream-completion
+  boundary. Repeat old candidate conclusions before using them.

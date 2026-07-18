@@ -26,10 +26,74 @@ after 30 turns to printed precision:
 - electron RMS: `(94.638, 238.960, 9.136, 182.090, 7001.506, 549.834) μm`;
 - proton RMS: `(95.191, 118.929, 8.553, 117.836, 59999.998, 660.000) μm`.
 
+This also resolves the previously reported approximately 8% compact/indexed
+proton horizontal-size discrepancy. With both paths fixed at
+`slice_pair_green_growth=0.25` and `slice_pair_green_min_ratio=0.50`, compact
+and indexed execution both give `95.190997 μm` after 30 turns. The earlier
+difference was caused by the wrong cached lattice block and incomplete PIC
+scatter ordering; it was not an indexed-wavefront physics effect.
+
 The corrected compact final-ten mean was `0.640772 s/turn`. Re-establish the
 reference and repeat every optimization candidate after this correctness fix;
 the earlier compact/indexed speed comparisons remain historical diagnostics,
 not acceptance evidence.
+
+## Corrected campaign at commit `ccf7986`
+
+| Experiment | Final-ten mean (s) | Median (s) | Std. dev. (s) | Decision |
+|---|---:|---:|---:|---|
+| Compact run 1 | 0.646808 | 0.645930 | 0.013405 | Corrected reference |
+| Compact run 2 | 0.646160 | 0.644931 | 0.012159 | Corrected reference |
+| Compact run 3 | 0.641565 | 0.639978 | 0.009943 | Corrected reference |
+| Indexed run 1 | 0.363715 | 0.357408 | 0.020322 | Accepted candidate |
+| Indexed run 2 | 0.360489 | 0.356433 | 0.013188 | Accepted candidate |
+| Indexed run 3 | 0.357806 | 0.352789 | 0.012514 | Accepted candidate |
+| Indexed, Green growth 0.50 run 1 | 0.343047 | 0.342410 | 0.001693 | Rejected: physical grid occupancy |
+| Indexed, Green growth 0.50 run 2 | 0.353744 | 0.353382 | 0.001940 | Rejected: physical grid occupancy |
+| Indexed, Green growth 0.50 run 3 | 0.346404 | 0.345885 | 0.003296 | Rejected: physical grid occupancy |
+| Indexed, Green growth 0.75 | 0.357228 | 0.357017 | 0.002114 | Rejected: slower than 0.50 |
+| Indexed, Green growth 0.625 | 0.357695 | 0.356790 | 0.002663 | Rejected: slower than 0.50 |
+
+The corrected compact median-of-means is `0.646160 s/turn`. Indexed wavefront
+reduces this to `0.360489 s/turn`, a 44.2% reduction and 1.79x throughput.
+Unlike the invalid earlier campaign, compact and indexed execution now produce
+the same 30-turn RMS values to printed precision. The indexed 30-turn CPU/CUDA
+contract passed with maximum coordinate error `4.90e-16`, luminosity relative
+error `3.30e-15`, and identical cache histories.
+
+Increasing `slice_pair_green_growth` from 0.25 to 0.50 on the indexed baseline
+reduced the median-of-means to `0.346404 s/turn`, a further 3.9%, and passed the
+numerical backend contract. It is nevertheless rejected: the enlarged cached
+grids contain too many empty cells and violate the required physical grid
+occupancy. Subsequent optimization rounds fix growth at 0.25 and minimum ratio
+at 0.50.
+
+Growth `0.75` was rejected after one run because its `0.357228 s/turn` mean
+was 3.1% slower than the diagnostic growth-0.50 median-of-means.
+The midpoint probe at growth `0.625` was likewise rejected at
+`0.357695 s/turn`.
+
+The corrected indexed asynchronous diagnostic profile at growth 0.50 reports preparation
+at approximately `0.125 s`, fields at `0.119 s`, and kick at `0.081 s` per
+turn. Indexed execution eliminates compact gather/scatter. Deposition is only
+about `0.043 s`, so physical particle sorting is not the next justified
+optimization. Field sub-timers overlap in async mode and are diagnostic rather
+than additive. The detailed synchronized profiler disables async/indexed
+execution and therefore describes the compact fallback, not this baseline.
+
+Corrected final-ten samples, ordered from turn 20 through turn 29:
+
+- Compact run 1: `0.640266723, 0.633268193, 0.629664634, 0.646410789, 0.645448770, 0.649555652, 0.640743974, 0.655508951, 0.677937162, 0.649273063`
+- Compact run 2: `0.641229891, 0.642924667, 0.630125469, 0.646936338, 0.647175537, 0.649001622, 0.642110460, 0.637891998, 0.676865031, 0.647343463`
+- Compact run 3: `0.638788632, 0.641127342, 0.627488158, 0.643933601, 0.634777967, 0.645386233, 0.638148894, 0.639099428, 0.666042149, 0.640856639`
+- Indexed run 1: `0.353928510, 0.353031328, 0.360406864, 0.355092307, 0.357436242, 0.363211093, 0.359584582, 0.356199142, 0.420883978, 0.357379226`
+- Indexed run 2: `0.350254776, 0.351407095, 0.357738723, 0.352167037, 0.353959763, 0.366927313, 0.362929297, 0.355127559, 0.394862073, 0.359516450`
+- Indexed run 3: `0.353007197, 0.350309850, 0.361443709, 0.348771350, 0.352248798, 0.359694331, 0.357264003, 0.351311725, 0.391434909, 0.352570560`
+- Indexed, Green growth 0.50 run 1: `0.342527042, 0.341814285, 0.341916783, 0.342293921, 0.342038429, 0.347480572, 0.343099068, 0.343841121, 0.343299734, 0.342160231`
+- Indexed, Green growth 0.50 run 2: `0.353875549, 0.354006936, 0.352962988, 0.352061959, 0.351921729, 0.358901034, 0.353341927, 0.353383792, 0.353380616, 0.353607871`
+- Indexed, Green growth 0.50 run 3: `0.347680298, 0.346488766, 0.345730390, 0.346040298, 0.344418047, 0.354673358, 0.341921528, 0.346610196, 0.345671840, 0.344809015`
+- Indexed, Green growth 0.75: `0.358864831, 0.356528868, 0.355776701, 0.353523535, 0.357505111, 0.358558730, 0.356247517, 0.355443580, 0.360551524, 0.359275039`
+- Indexed, Green growth 0.625: `0.355968677, 0.355454314, 0.356516802, 0.355914349, 0.355446293, 0.364180354, 0.358576587, 0.358828837, 0.357064014, 0.358996716`
 
 ## Benchmark protocol
 
