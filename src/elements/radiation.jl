@@ -229,7 +229,7 @@ end
     description = "Flexible lumped radiation damping and excitation element specification."
     keywords = [:thin_element, :radiation]
     tracking_methods = [Radiation6DMap, Damping6DMap, Diffusion6DMap]
-    contracts = [TrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         damping_turns=ParamMeta(required=true, meaning="horizontal, vertical, and longitudinal damping turns"),

@@ -42,7 +42,7 @@ function build_registry()
         registered_element_specs(),
         _subtypes_recursive(AbstractTrackingMethod),
         _subtypes_recursive(AbstractExecutionPolicy),
-        _subtypes_recursive(AbstractPhysicsContract),
+        _subtypes_recursive(AbstractContract),
         _subtypes_recursive(AbstractAnalysis),
         _subtypes_recursive(AbstractExample),
         _subtypes_recursive(AbstractTask),
@@ -107,7 +107,7 @@ function registry_snapshot_markdown(reg::OctopusRegistry=build_registry())
 
     _write_type_section(io, "Tracking Methods", reg.tracking_methods)
     _write_type_section(io, "Execution Policies", reg.policies)
-    _write_type_section(io, "Physics Contracts", reg.contracts)
+    _write_type_section(io, "Contracts", reg.contracts)
     _write_type_section(io, "Analyses", reg.analyses)
     _write_type_section(io, "Examples", reg.examples)
     _write_type_section(io, "Tasks", reg.tasks)

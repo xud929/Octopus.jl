@@ -156,7 +156,7 @@ end
     description = "Flexible chromaticity kick specification."
     keywords = [:thin_element, :coordinate_transform]
     tracking_methods = [Symplectic6DMap]
-    contracts = [TrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         xi=ParamMeta(required=true, meaning="horizontal and vertical chromaticities"),

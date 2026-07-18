@@ -45,7 +45,7 @@ end
     description = "Flexible zero-length Lorentz boost coordinate-transform specification."
     keywords = [:thin_element, :lorentz_boost, :coordinate_transform]
     tracking_methods = [Symplectic6DMap]
-    contracts = [TrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         angle=ParamMeta(required=true, unit="rad", meaning="boost crossing angle"),
@@ -77,7 +77,7 @@ end
     description = "Flexible reverse zero-length Lorentz boost coordinate-transform specification."
     keywords = [:thin_element, :reverse_lorentz_boost, :coordinate_transform]
     tracking_methods = [Symplectic6DMap]
-    contracts = [TrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         angle=ParamMeta(required=true, unit="rad", meaning="reverse boost crossing angle"),

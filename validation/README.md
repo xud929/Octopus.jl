@@ -63,7 +63,7 @@ julia --project=. validation/counter_rng_validation.jl
 
 ## Tracking Backend Consistency
 
-`tracking_backend_consistency.jl` runs `TrackingBackendConsistencyContract` on
+`tracking_backend_consistency.jl` runs `ElementTrackingBackendConsistencyContract` on
 a deterministic mixed tracking line, including stochastic `LumpedRad`. It
 always runs CPU/CPU and runs CPU/GPU when CUDA is visible or explicitly
 requested.
@@ -104,6 +104,16 @@ OCTOPUS_CONTRACT_TURNS=5 \
 OCTOPUS_CONTRACT_ATOL=1e-10 \
 OCTOPUS_CONTRACT_RTOL=1e-10 \
 julia --project=. validation/tracking_backend_consistency.jl
+```
+
+## TrackingTask Turn Updates
+
+`tracking_task_turn_update.jl` checks that `TrackingTask` applies
+turn-dependent runtime updates in the no-hook fast path. It compares a
+turn-signaled weak-strong line with and without a no-op observer.
+
+```bash
+julia --project=. validation/tracking_task_turn_update.jl
 ```
 
 ## Strong-Strong PIC Cache Backend Consistency

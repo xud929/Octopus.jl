@@ -52,7 +52,7 @@ CrabDispersion{T}(zeta1, zeta2, zeta3, zeta4) where {T<:AbstractFloat} =
     description = "Flexible crab-dispersion element specification."
     keywords = [:crab_dispersion]
     tracking_methods = [Symplectic6DMap]
-    contracts = [TrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         zeta1=ParamMeta(default=0, meaning="x-z crab dispersion coefficient"),
@@ -117,7 +117,7 @@ MomentumDispersion{T}(eta1, eta2, eta3, eta4) where {T<:AbstractFloat} =
     description = "Flexible momentum-dispersion element specification."
     keywords = [:momentum_dispersion]
     tracking_methods = [Symplectic6DMap]
-    contracts = [TrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         eta1=ParamMeta(default=0, meaning="x-pz momentum dispersion coefficient"),
@@ -182,7 +182,7 @@ end
     description = "Flexible transverse x-y coupling element specification."
     keywords = [:xy_coupling]
     tracking_methods = [Symplectic6DMap]
-    contracts = [TrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         r1=ParamMeta(default=0, meaning="coupling coefficient r1"),

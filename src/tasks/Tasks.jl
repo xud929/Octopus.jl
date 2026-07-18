@@ -147,7 +147,7 @@ function execute!(task::TrackingTask, rep; turns::Integer=1)
     runtime_elems = _physics_line(runtime_entries)
     backend = _execution_backend(task, rep)
     if isempty(task.actions) && isempty(task.observers) && !_has_line_hooks(runtime_entries)
-        track!(rep, runtime_elems, Int(turns), backend, TrackingContext())
+        _execute_fast_tracking_turns!(rep, runtime_elems, Int(turns), backend, TrackingContext())
         return rep
     end
     prepare_observers!(task.observers, runtime_elems; turns=Int(turns))
@@ -167,6 +167,16 @@ function execute!(task::TrackingTask, rep; turns::Integer=1)
     finalize_observers!(task.observers)
     _finalize_line_observers!(runtime_entries)
     return rep
+end
+
+function _execute_fast_tracking_turns!(rep, runtime_elems, turns::Int, backend,
+                                       base_ctx::TrackingContext)
+    for turn in 0:(turns - 1)
+        ctx = with_turn(base_ctx, turn)
+        _update_runtime_line!(runtime_elems, ctx)
+        track!(rep, runtime_elems, 1, backend, ctx)
+    end
+    return nothing
 end
 
 function _execution_backend(task::TrackingTask, rep)

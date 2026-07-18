@@ -125,7 +125,7 @@ line = (
     ),
 )
 
-cpu_cpu = TrackingBackendConsistencyContract(;
+cpu_cpu = ElementTrackingBackendConsistencyContract(;
     line=line,
     n_particles=N,
     turns=turns,
@@ -142,7 +142,7 @@ cpu_cpu_result.passed || error("CPU/CPU tracking backend consistency failed")
 
 should_run_gpu = run_gpu == "auto" ? _cuda_visible() : _bool_env("OCTOPUS_RUN_GPU_CONTRACT", false)
 if should_run_gpu || require_gpu
-    cpu_gpu = TrackingBackendConsistencyContract(;
+    cpu_gpu = ElementTrackingBackendConsistencyContract(;
         line=line,
         n_particles=N,
         turns=turns,

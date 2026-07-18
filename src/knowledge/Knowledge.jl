@@ -1,6 +1,7 @@
 export AbstractOctopusObject,
        AbstractElementSpec, AbstractTrackingMethod, AbstractExecutionPolicy,
-       AbstractPhysicsContract, AbstractAnalysis, AbstractExample, AbstractTask,
+       AbstractContract, AbstractPhysicsContract, AbstractImplementationContract,
+       AbstractBackendConsistencyContract, AbstractAnalysis, AbstractExample, AbstractTask,
        name, physics_keywords, supported_tracking_methods, tracking_method,
        supported_analyses,
        required_contracts, runtime_type, description, compile_runtime,
@@ -285,8 +286,17 @@ abstract type AbstractTrackingMethod <: AbstractOctopusObject end
 """Numerical execution decisions such as slicing, threading, GPU, or MPI."""
 abstract type AbstractExecutionPolicy <: AbstractOctopusObject end
 
-"""Executable validation rule for a physics implementation."""
-abstract type AbstractPhysicsContract <: AbstractOctopusObject end
+"""Executable validation rule for a scientific-software implementation."""
+abstract type AbstractContract <: AbstractOctopusObject end
+
+"""Contract that validates physical correctness or a physics-level invariant."""
+abstract type AbstractPhysicsContract <: AbstractContract end
+
+"""Contract that validates a numerical or runtime implementation property."""
+abstract type AbstractImplementationContract <: AbstractContract end
+
+"""Implementation contract comparing results across execution backends."""
+abstract type AbstractBackendConsistencyContract <: AbstractImplementationContract end
 
 """Post-processing or accelerator-physics analysis."""
 abstract type AbstractAnalysis <: AbstractOctopusObject end
@@ -394,17 +404,17 @@ end
 """
     required_contracts(spec)
 
-Return physics contract types that should validate an implementation of the
+Return contract types that should validate an implementation of the
 given element spec.
 """
 function required_contracts(T::Type{<:AbstractElementSpec})
     meta = _element_meta_or_nothing(T)
-    return meta === nothing ? Type{<:AbstractPhysicsContract}[] : meta.contracts
+    return meta === nothing ? Type{<:AbstractContract}[] : meta.contracts
 end
 required_contracts(x::AbstractElementSpec) = required_contracts(typeof(x))
 function required_contracts(T::Type)
     meta = _element_meta_or_nothing(T)
-    return meta === nothing ? Type{<:AbstractPhysicsContract}[] : meta.contracts
+    return meta === nothing ? Type{<:AbstractContract}[] : meta.contracts
 end
 
 """

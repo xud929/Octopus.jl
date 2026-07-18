@@ -125,7 +125,7 @@ end
     description = "Flexible thin 2D crab cavity specification with fixed harmonic count."
     keywords = [:thin_element, :crab_cavity, :harmonic]
     tracking_methods = [Symplectic6DMap]
-    contracts = [TrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         N=ParamMeta(required=true, meaning="maximum harmonic count encoded by ThinCrabCavitySpec{N}"),

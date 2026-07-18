@@ -619,7 +619,7 @@ end
     description = "Flexible thin weak-strong beam-beam interaction specification."
     keywords = [:beam_beam, :nonlinear_interaction]
     tracking_methods = [WeakStrongBeamBeamMap]
-    contracts = [TrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         kbb=ParamMeta(required=true, meaning="beam-beam kick coefficient"),
@@ -648,7 +648,7 @@ end
     description = "Flexible sliced Gaussian weak-strong beam-beam interaction specification."
     keywords = [:beam_beam, :nonlinear_interaction]
     tracking_methods = [WeakStrongBeamBeamMap]
-    contracts = [TrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         thin=ParamMeta(required=true, meaning="base ThinStrongBeamSpec or ThinStrongBeam"),

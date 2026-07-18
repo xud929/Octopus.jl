@@ -1,5 +1,5 @@
 export ContractResult, passed, validate,
-       TrackingBackendConsistencyContract,
+       ElementTrackingBackendConsistencyContract,
        StrongStrongPICBackendConsistencyContract
 
 """
@@ -33,7 +33,7 @@ ContractResult(status::Symbol, message::AbstractString; residual=nothing,
 passed(result::ContractResult) = result.passed
 
 """
-    TrackingBackendConsistencyContract(; line, initial_rep=nothing,
+    ElementTrackingBackendConsistencyContract(; line, initial_rep=nothing,
         n_particles=1024, turns=1, backend_a=CPUThreadsBackend,
         backend_b=CPUThreadsBackend, seed=123456789, rng_method=:philox,
         atol=1e-10, rtol=1e-10)
@@ -51,7 +51,7 @@ repeatability check. Exact zero coordinate error is expected for the current
 elementwise fused path because particles do not share reductions and stochastic
 samples are keyed by particle index, turn, seed, and `rng_id`.
 """
-Base.@kwdef struct TrackingBackendConsistencyContract <: AbstractPhysicsContract
+Base.@kwdef struct ElementTrackingBackendConsistencyContract <: AbstractBackendConsistencyContract
     line
     initial_rep = nothing
     n_particles::Int = 1024
@@ -79,7 +79,7 @@ hit/miss/rebuild histories with at least one reuse.
 
 If CUDA is unavailable, validation returns `status=:skipped`.
 """
-Base.@kwdef struct StrongStrongPICBackendConsistencyContract <: AbstractPhysicsContract
+Base.@kwdef struct StrongStrongPICBackendConsistencyContract <: AbstractBackendConsistencyContract
     n_particles::Int = 1024
     turns::Int = 2
     grid::Tuple{Int,Int} = (32, 32)
@@ -97,21 +97,21 @@ end
 """
     validate(contract, args...; kwargs...)
 
-Run a physics contract against the supplied objects. Concrete contracts should
+Run a validation contract against the supplied objects. Concrete contracts should
 extend this method and return `ContractResult`.
 """
-function validate(contract::AbstractPhysicsContract, args...; kwargs...)
+function validate(contract::AbstractContract, args...; kwargs...)
     return ContractResult(false,
         "No validation implementation registered for $(nameof(typeof(contract))).")
 end
 
-description(::Type{TrackingBackendConsistencyContract}) =
+description(::Type{ElementTrackingBackendConsistencyContract}) =
     "Checks coordinate consistency for the same tracking line across two execution backends."
 
 description(::Type{StrongStrongPICBackendConsistencyContract}) =
     "Checks strong-strong PIC coordinates, luminosity, and cache history across CPU and CUDA."
 
-function validate(contract::TrackingBackendConsistencyContract; kwargs...)
+function validate(contract::ElementTrackingBackendConsistencyContract; kwargs...)
     available, reason = _contract_backends_available(contract.backend_a, contract.backend_b)
     if !available
         return ContractResult(:skipped, reason; metrics=Dict(

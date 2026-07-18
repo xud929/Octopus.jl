@@ -171,7 +171,7 @@ Use Julia help:
 
 ```julia
 ?ContractResult
-?TrackingBackendConsistencyContract
+?ElementTrackingBackendConsistencyContract
 ?StrongStrongPICBackendConsistencyContract
 ?validate
 ```

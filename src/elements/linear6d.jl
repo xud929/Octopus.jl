@@ -208,7 +208,7 @@ end
     description = "Flexible six-dimensional linear map specification."
     keywords = [:coordinate_transform]
     tracking_methods = [Symplectic6DMap]
-    contracts = [TrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         matrix=ParamMeta(meaning="explicit 6x6 transfer matrix, or length-36 row-major collection"),

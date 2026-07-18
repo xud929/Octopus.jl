@@ -60,7 +60,7 @@ Knowledge Layer
     ↓
 Implementation
     ↓
-Physics Contracts
+Contracts
     ↓
 Validated Scientific Software
 ```
@@ -90,7 +90,7 @@ The first-class architecture objects are:
 - `ElementSpec`
 - `TrackingMethod`
 - `ExecutionPolicy`
-- `PhysicsContract`
+- `Contract`
 - `Analysis`
 - `Example`
 - `Task`
@@ -257,7 +257,7 @@ When adding a validation rule:
 5. Prefer physics-level agreement criteria over bitwise equality.
 6. Attach the contract to relevant specs through `required_contracts`.
 
-`TrackingBackendConsistencyContract` is the first general implementation
+`ElementTrackingBackendConsistencyContract` is the first general implementation
 contract. Run `validation/tracking_backend_consistency.jl` after changing
 generic tracking, fused tracking, stochastic tracking, CUDA tracking, or an
 element implementation used by that script.
