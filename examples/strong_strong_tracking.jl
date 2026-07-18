@@ -255,6 +255,10 @@ pic_slice_pair_green_growth = parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR_GR
                                                      string(input.solver.pic_slice_pair_green_growth))))
 pic_longitudinal_kick = get(ENV, "OCTOPUS_PIC_LONGITUDINAL_KICK", "1") in ("1", "true", "TRUE", "yes", "YES")
 pic_batch_mode = Symbol(lowercase(get(ENV, "OCTOPUS_PIC_BATCH_MODE", "wavefront")))
+cuda_pic_async = get(ENV, "OCTOPUS_CUDA_PIC_ASYNC", "1") in ("1", "true", "TRUE", "yes", "YES")
+cuda_pic_batch_fft = get(ENV, "OCTOPUS_CUDA_PIC_BATCH_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
+cuda_pic_wavefront_fft = get(ENV, "OCTOPUS_CUDA_PIC_WAVEFRONT_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
+cuda_pic_indexed_wavefront = get(ENV, "OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT", "1") in ("1", "true", "TRUE", "yes", "YES")
 pic_luminosity_every = parse(Int, get(ENV, "OCTOPUS_PIC_LUMINOSITY_EVERY", "1"))
 pic_luminosity_schedule =
     pic_luminosity_every < 0 ? error("OCTOPUS_PIC_LUMINOSITY_EVERY must be >= 0") :
@@ -287,6 +291,10 @@ elseif solver_kind == "pic"
         slice_pair_green_growth = pic_slice_pair_green_growth,
         longitudinal_kick = pic_longitudinal_kick,
         batch_mode = pic_batch_mode,
+        cuda_async = cuda_pic_async,
+        cuda_batch_fft = cuda_pic_batch_fft,
+        cuda_wavefront_fft = cuda_pic_wavefront_fft,
+        cuda_indexed_wavefront = cuda_pic_indexed_wavefront,
         luminosity_schedule = pic_luminosity_schedule,
     )
 else
@@ -475,6 +483,10 @@ println("beam_beam_collision = ", disable_collision ? "disabled" : "enabled")
 if solver_kind == "pic"
     println("pic_longitudinal_kick = ", pic_longitudinal_kick)
     println("pic_batch_mode = ", pic_batch_mode)
+    println("cuda_pic_async = ", cuda_pic_async)
+    println("cuda_pic_batch_fft = ", cuda_pic_batch_fft)
+    println("cuda_pic_wavefront_fft = ", cuda_pic_wavefront_fft)
+    println("cuda_pic_indexed_wavefront = ", cuda_pic_indexed_wavefront)
     println("pic_green_cache = ", pic_green_cache)
     println("pic_slice_pair_green_min_ratio = ", pic_slice_pair_green_min_ratio)
     println("pic_slice_pair_green_growth = ", pic_slice_pair_green_growth)

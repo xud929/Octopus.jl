@@ -47,7 +47,7 @@ if _HAS_CUDA
             compute_luminosity = _pic_compute_luminosity(solver, ctx)
             luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
             detailed_timing = _cuda_pic_detailed_timing_enabled()
-            use_async = get(ENV, "OCTOPUS_CUDA_PIC_ASYNC", "1") != "0" && !detailed_timing
+            use_async = _cuda_pic_async_enabled(solver) && !detailed_timing
             reclaim_policy = _cuda_pic_reclaim_policy()
             pair_count = 0
             for (_, i, j) in _slice_collision_order(slices1, slices2)
@@ -65,7 +65,7 @@ if _HAS_CUDA
                 (slice1 === nothing || slice2 === nothing) && continue
                 pair_range = _cuda_nvtx_push(CUDABackend, "pic slice-pair interaction")
                 t_interaction = time_ns()
-                if use_async && _cuda_pic_batch_fft_enabled()
+                if use_async && _cuda_pic_batch_fft_enabled(solver)
                     lum = _cuda_pic_interaction_pair_batched_fft!(
                         solver, slice1.coords, p1, slice2.coords, p2, kbb1, kbb2, green_cache, klum,
                         workspace, timing, compute_luminosity,
@@ -122,13 +122,13 @@ if _HAS_CUDA
             compute_luminosity = _pic_compute_luminosity(solver, ctx)
             luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
             detailed_timing = _cuda_pic_detailed_timing_enabled()
-            use_async = get(ENV, "OCTOPUS_CUDA_PIC_ASYNC", "1") != "0" && !detailed_timing
+            use_async = _cuda_pic_async_enabled(solver) && !detailed_timing
             reclaim_policy = _cuda_pic_reclaim_policy()
             pair_count = 0
             batch_count = 0
             max_batch_size = 0
-            use_indexed_wavefront = _cuda_pic_indexed_wavefront_enabled() &&
-                use_async && _cuda_pic_batch_fft_enabled() && _cuda_pic_wavefront_fft_enabled()
+            use_indexed_wavefront = _cuda_pic_indexed_wavefront_enabled(solver) &&
+                use_async && _cuda_pic_batch_fft_enabled(solver) && _cuda_pic_wavefront_fft_enabled(solver)
             for batch in batches
                 batch_count += 1
                 max_batch_size = max(max_batch_size, length(batch))
@@ -175,7 +175,7 @@ if _HAS_CUDA
                 _cuda_pic_add_time!(timing, :gather, t_gather)
                 _cuda_nvtx_pop(CUDABackend, gather_range)
 
-                if use_async && _cuda_pic_batch_fft_enabled() && _cuda_pic_wavefront_fft_enabled()
+                if use_async && _cuda_pic_batch_fft_enabled(solver) && _cuda_pic_wavefront_fft_enabled(solver)
                     pair_count += length(gathered)
                     pair_range = _cuda_nvtx_push(CUDABackend, "pic wavefront batch interaction")
                     t_interaction = time_ns()
@@ -191,7 +191,7 @@ if _HAS_CUDA
                         (item.slice1 === nothing || item.slice2 === nothing) && continue
                         pair_range = _cuda_nvtx_push(CUDABackend, "pic wavefront pair interaction")
                         t_interaction = time_ns()
-                        if use_async && _cuda_pic_batch_fft_enabled()
+                        if use_async && _cuda_pic_batch_fft_enabled(solver)
                             lum = _cuda_pic_interaction_pair_batched_fft!(
                                 solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
                                 kbb1, kbb2, green_cache, klum, workspace, timing, compute_luminosity,
@@ -308,11 +308,17 @@ if _HAS_CUDA
         _cuda_pic_detailed_timing_enabled() =
             get(ENV, "OCTOPUS_CUDA_PIC_TIMING_DETAIL", "0") in ("1", "true", "TRUE", "yes", "YES")
 
-        _cuda_pic_batch_fft_enabled() =
-            get(ENV, "OCTOPUS_CUDA_PIC_BATCH_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
+        _cuda_pic_env_override(name, fallback::Bool) =
+            haskey(ENV, name) ? ENV[name] in ("1", "true", "TRUE", "yes", "YES") : fallback
 
-        _cuda_pic_wavefront_fft_enabled() =
-            get(ENV, "OCTOPUS_CUDA_PIC_WAVEFRONT_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
+        _cuda_pic_async_enabled(solver::PICPoissonSolver) =
+            _cuda_pic_env_override("OCTOPUS_CUDA_PIC_ASYNC", solver.cuda_async)
+
+        _cuda_pic_batch_fft_enabled(solver::PICPoissonSolver) =
+            _cuda_pic_env_override("OCTOPUS_CUDA_PIC_BATCH_FFT", solver.cuda_batch_fft)
+
+        _cuda_pic_wavefront_fft_enabled(solver::PICPoissonSolver) =
+            _cuda_pic_env_override("OCTOPUS_CUDA_PIC_WAVEFRONT_FFT", solver.cuda_wavefront_fft)
 
         _cuda_pic_wavefront_green_fft_enabled() =
             get(ENV, "OCTOPUS_CUDA_PIC_WAVEFRONT_GREEN_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
@@ -330,8 +336,8 @@ if _HAS_CUDA
         _cuda_pic_stack_cached_green_enabled() =
             get(ENV, "OCTOPUS_CUDA_PIC_STACK_CACHED_GREEN", "1") in ("1", "true", "TRUE", "yes", "YES")
 
-        _cuda_pic_indexed_wavefront_enabled() =
-            get(ENV, "OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT", "0") in ("1", "true", "TRUE", "yes", "YES")
+        _cuda_pic_indexed_wavefront_enabled(solver::PICPoissonSolver) =
+            _cuda_pic_env_override("OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT", solver.cuda_indexed_wavefront)
 
         function _cuda_pic_timing_stats()
             _cuda_pic_timing_enabled() || return nothing

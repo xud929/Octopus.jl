@@ -209,6 +209,10 @@ const StrongStrongGaussianPoissonSolver = GaussianPoissonSolver
                       slice_pair_green_growth=0.25,
                       longitudinal_kick=true,
                       batch_mode=:wavefront,
+                      cuda_async=true,
+                      cuda_batch_fft=true,
+                      cuda_wavefront_fft=true,
+                      cuda_indexed_wavefront=true,
                       luminosity_schedule=nothing,
                       slicing=LongitudinalSlicing(),
                       slicing1=nothing, slicing2=nothing)
@@ -242,6 +246,12 @@ value of `0.25` builds a grid 1.25 times larger than the current request.
 the original one-slice-pair-at-a-time execution. Wavefront mode groups ready,
 non-overlapping slice pairs with `collision_pair_batches`; it currently affects
 the CUDA PIC path.
+The CUDA execution options are explicit solver configuration. `cuda_async`
+enables overlapping CUDA field work, `cuda_batch_fft` enables batched FFT
+solves, `cuda_wavefront_fft` enables the wavefront FFT path, and
+`cuda_indexed_wavefront` operates directly through slice indices without
+reordering canonical particle storage. The corresponding `OCTOPUS_CUDA_PIC_*`
+environment variables remain available as debugging overrides.
 `luminosity_schedule` may be `nothing` or a schedule such as
 `EveryNSteps(step=10)` or `AtTurns([0, 100])`. `nothing` computes luminosity
 on every turn. When the schedule does not run, PIC still applies beam-beam
@@ -268,6 +278,10 @@ struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     slice_pair_green_growth::T
     longitudinal_kick::Bool
     batch_mode::Symbol
+    cuda_async::Bool
+    cuda_batch_fft::Bool
+    cuda_wavefront_fft::Bool
+    cuda_indexed_wavefront::Bool
     luminosity_schedule::Union{Nothing,AbstractSchedule}
     slicing::LongitudinalSlicing
     slicing1::LongitudinalSlicing
@@ -284,6 +298,10 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                              slice_pair_green_growth=0.25,
                              longitudinal_kick::Bool=true,
                              batch_mode::Symbol=:wavefront,
+                             cuda_async::Bool=true,
+                             cuda_batch_fft::Bool=true,
+                             cuda_wavefront_fft::Bool=true,
+                             cuda_indexed_wavefront::Bool=true,
                              luminosity_schedule::Union{Nothing,AbstractSchedule}=nothing,
                              slicing::LongitudinalSlicing=LongitudinalSlicing(),
                              slicing1=nothing,
@@ -310,6 +328,10 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         growth,
         longitudinal_kick,
         batch_mode,
+        cuda_async,
+        cuda_batch_fft,
+        cuda_wavefront_fft,
+        cuda_indexed_wavefront,
         luminosity_schedule,
         slicing,
         s1,

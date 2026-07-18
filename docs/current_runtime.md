@@ -247,18 +247,20 @@ longitudinal kick can be scattered back. If
 omit `pz`. In sequential PIC mode, each slice-pair solves the four independent
 source-boundary field problems as one batched cuFFT over a `(2nx, 2ny, 4)`
 charge stack. In wavefront PIC mode, the stack grows to
-`(2nx, 2ny, 4 * batch_size)` for the current dependency frontier. Set
-`OCTOPUS_CUDA_PIC_WAVEFRONT_FFT=0` to fall back from wavefront-level batching
-to per-pair batched FFTs, or `OCTOPUS_CUDA_PIC_BATCH_FFT=0` to fall back to the
-previous four-stream field-solve path for timing comparisons. The CUDA PIC
-indexed wavefront path, enabled with
-`OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT=1`, skips compact slice gather/scatter. It
+`(2nx, 2ny, 4 * batch_size)` for the current dependency frontier. Use
+`PICPoissonSolver(cuda_wavefront_fft=false)` to fall back from
+wavefront-level batching to per-pair batched FFTs, or
+`PICPoissonSolver(cuda_batch_fft=false)` to fall back to the previous
+four-stream field-solve path. The equivalent environment variables are
+debugging overrides. The default CUDA PIC indexed wavefront path skips compact
+slice gather/scatter. It
 computes drifted bounds from full beam arrays using slice index vectors,
 deposits directly from those indexed particles into the wavefront charge stack,
 keeps the same large batched charge FFT and Green FFT path, and applies kicks
 back to the original beam arrays by particle index after the fields are solved.
-Keep this path opt-in until longer luminosity and beam-moment studies establish
-acceptable sensitivity to the changed CUDA deposition order.
+The corrected 30-turn compact/indexed comparison agrees to printed precision.
+Use `PICPoissonSolver(cuda_indexed_wavefront=false)` to keep the compact path
+as a production comparison switch.
 The CUDA PIC
 workspace reuses its field streams, luminosity stream, synchronization event,
 charge grids, batched charge/field arrays, wavefront charge/field-array cache,
@@ -297,7 +299,8 @@ luminosity stream for profiling. Compact slice operations use mask-free CUDA
 kernels and reuse fixed-size PIC grid work buffers within a collision.
 Stream/event ordering replaces the previous global synchronization before
 launching independent field solves. Set
-`OCTOPUS_CUDA_PIC_ASYNC=0` to use the sequential CUDA PIC path for debugging.
+`PICPoissonSolver(cuda_async=false)` to use the sequential CUDA PIC path.
+`OCTOPUS_CUDA_PIC_ASYNC=0` remains a debugging override.
 Set `OCTOPUS_PIC_BATCH_MODE=wavefront` in the strong-strong example to run the
 CUDA PIC wavefront scheduler, or pass `batch_mode=:wavefront` directly to
 `PICPoissonSolver`.
