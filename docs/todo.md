@@ -1,248 +1,84 @@
 # TODO
 
-## 2D PIC Extreme CUDA Performance Investigation
+## 1. Complete 2D PIC CUDA Optimization
 
-Goal: maximize strong-strong 2D PIC throughput on CUDA without weakening
-physics validation or changing a particle's persistent identity from turn to
-turn. Use the existing implementation as the reference and change only one
-optimization variable in each experiment.
+Goal: improve target-size strong-strong PIC throughput without changing
+particle identity or weakening physics validation.
 
-## Reuse PIC Density Grids for Luminosity
+Reference case:
 
-Treat reuse of the already deposited PIC density grids as an independent
-luminosity-numerics task. The required luminosity Green function is an overlap
-or transfer kernel between two density grids. It is not the logarithmic Green
-function used by the Poisson field solver.
+- CUDA `Float64`, CIC, `(128,128)` grid, `15x15` slice pairs.
+- 2,560,000 electron and 1,000,000 proton macroparticles.
+- 30 turns; compare the final-ten mean across at least three runs.
+- Fixed cache settings: `slice_pair_green_min_ratio=0.50` and
+  `slice_pair_green_growth=0.25`.
+- Fast path: wavefront scheduling, asynchronous/batched FFT fields,
+  slice-pair Green cache, and indexed wavefront tracking.
 
-- Document the present luminosity algorithm: drift both slices to their
-  collision point, deposit them on one newly constructed common grid, and sum
-  the same-cell density products. Quantify its error for unequal grid spacing,
-  beam separation, and transverse aspect ratio.
-- Derive the cross-grid overlap in the form
-  `L = sum(q1[i] * G_lum[i,j] * q2[j], i, j)`, where `G_lum` is the integral
-  of the two deposition basis functions. Include different grid origins and
-  spacings and derive the kernel for CIC first; consider TSC separately.
-- Exploit the compact support of the CIC/TSC basis so the luminosity transfer
-  is sparse/local rather than a dense all-grid-pair operation. Determine the
-  exact normalization and boundary treatment.
-- The existing PIC charge planes are deposited only at the left and right ends
-  of the opposing field slice; there is no centroid-plane deposition. Under
-  the thin-slice luminosity model, all particles in a slice collide at the
-  slice-centroid encounter plane, so no particle-dependent longitudinal
-  interpolation is part of the luminosity definition.
-- Endpoint density grids do not in general determine the exact centroid-plane
-  density because deposition discards transverse position-momentum
-  correlations. Treat interpolation of left/right density grids as an
-  explicitly approximate alternative, not as the reference reuse method.
-- Implement the exact reuse candidate by adding one centroid-plane charge
-  deposition per beam and slice pair to the existing batched PIC deposition
-  stage. Reuse particle indices, bounds where valid, workspace allocation, and
-  scheduling, but keep the centroid-plane density distinct from the four
-  endpoint planes used by the force solver.
-- Apply `G_lum` between the two centroid-plane density grids. This permits
-  different grid origins and spacings without constructing a new common grid.
-- Review WarpX's collider luminosity diagnostics and beam-beam implementation,
-  including how particle densities and differential luminosity are accumulated:
-  <https://warpx.readthedocs.io/en/26.07/usage/parameters.html> and
-  <https://arxiv.org/abs/2405.09583>.
-- Add deterministic Gaussian-beam validation. For centered, offset, unequal,
-  round, and flat Gaussian beams, compare the numerical transverse overlap
-  integral against the analytic Gaussian formula. Sweep grid resolution,
-  domain padding, beam separation, aspect ratio, slice count, and macroparticle
-  count; report convergence and statistical error separately.
-- Compare the PIC-grid overlap result with both the current independent
-  center-plane deposition and the analytic Gaussian overlap. Validate every
-  slice-pair contribution as well as total luminosity on CPU and CUDA.
-- Benchmark construction/cache cost for `G_lum`, the two added centroid-plane
-  depositions, and sparse overlap evaluation against the current independent
-  common-grid luminosity deposition. Cache keys must include both grid origins,
-  spacings, dimensions, and deposition basis.
-- Optionally test endpoint-density interpolation as a separate approximation.
-  Report its error against direct centroid-plane deposition; never present it
-  as algebraically exact.
-- Do not change the Poisson solver Green function or force calculation as part
-  of this task.
+Remaining work:
 
-Relevant precedents:
+1. Profile the accepted reference with Nsight Systems and Nsight Compute.
+   Identify launch/synchronization gaps, memory traffic, atomic contention,
+   occupancy, and the current dominant kernels.
+2. Test GPU spatial bin indices without reordering canonical particle arrays.
+   Compare `1x1`, `2x2`, and `4x4` cell bins, including index-construction cost.
+3. If binning helps, test tiled/shared-memory CIC deposition one configuration
+   at a time.
+4. Test physical SoA sorting only if index-only binning is insufficient. Keep
+   immutable particle IDs and include sorting cost in total-turn timing.
+5. Choose later kernel fusion, launch tuning, FFT, overlap, or CUDA Graph work
+   strictly from the latest profile.
+6. Finish with the target-size 30-turn benchmark, backend contract, identity
+   checks, and a longer physics regression.
 
-- WarpX enables periodic particle sorting on GPUs to improve memory locality.
-  Its CUDA default sorts every four steps, and its documentation recommends
-  sorting by deposition cell when many particles occupy each cell. WarpX also
-  keeps a separate global `idcpu` identifier created with the particle, so
-  storage order and particle identity are distinct concepts:
-  <https://warpx.readthedocs.io/en/26.04/usage/parameters.html> and
-  <https://warpx.readthedocs.io/en/25.11/developers/particles.html>.
-- AMReX exposes cell/bin particle sorting and recommends structure-of-arrays
-  storage for accelerator execution:
-  <https://amrex-codes.github.io/amrex/docs_html/Particle.html>.
-- NVIDIA recommends coalesced global-memory access, profiling before
-  optimization, and CUDA event timing for device work. cuFFT plans should be
-  reused, batched transforms should use contiguous device-resident data, and
-  power-of-two dimensions are favorable:
-  <https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/> and
-  <https://docs.nvidia.com/cuda/cufft/>.
+Acceptance gates:
 
-### Rules and acceptance gates
+- Change one optimization variable at a time and retain only total-turn gains.
+- Use complete-turn timing for throughput; detailed synchronized phase timing
+  is diagnostic only.
+- Preserve `StrongStrongPICBackendConsistencyContract` and compare coordinates,
+  luminosity, RMS moments, slice populations, losses, and cache history.
+- Never key diagnostics, stochastic behavior, or comparisons by mutable storage
+  position.
+- Record hardware/software versions, commit, solver/task settings, individual
+  final-ten samples, memory use, and validation residuals.
 
-- Preserve an immutable particle ID for the full run. Sorting or binning may
-  change execution/storage order, but never identity. Diagnostics, stochastic
-  counters, checkpoints, and comparisons must use the persistent ID rather
-  than the current array position. Prefer an index/permutation view over
-  physically reordering the canonical beam arrays for the first experiments.
-- Change one optimization at a time from the current accepted implementation.
-  Keep a change only when repeated measurements improve the primary timing
-  observable without failing correctness gates; otherwise revert it before
-  testing the next idea.
-- Preserve `StrongStrongPICBackendConsistencyContract`. Run it after every
-  candidate change and again after every accepted change. Also compare against
-  the frozen CUDA reference using persistent-ID-aligned coordinates,
-  luminosity, beam RMS moments, slice populations, and lost-particle counts.
-- Record the GPU model, driver, CUDA/CUDA.jl versions, Julia version, precision,
-  clocks/power mode when available, git commit, solver settings, and all
-  environment/task options with every result.
-- Do not combine per-subphase diagnostic synchronization overhead with the
-  throughput result. Synchronize once at each complete-turn boundary and time
-  the end-to-end turn through the task API. Run synchronized phase timers and
-  Nsight Systems/Compute separately to explain the result.
+Current accepted result: indexed wavefront reduced the corrected target-case
+median final-ten mean from `0.6462` to `0.3605 s/turn` (44.2%, 1.79x). The
+30-turn backend contract passed with maximum coordinate error `4.90e-16`,
+luminosity relative error `3.30e-15`, and identical cache history.
 
-### Step 1: freeze and measure the current fastest reference
+Do not use results from commit `1f8a513`: that path had an incorrect no-observer
+lattice block and a missing PIC scatter stream-completion boundary. Growth
+values `0.50`, `0.625`, and `0.75` were rejected; `0.50` was faster but did not
+meet the physical-domain requirement.
 
-Create a dedicated validation/benchmark driver derived from
-`examples/strong_strong_tracking.jl`, with no moment-file output in the timed
-region and the following fixed production-size case:
+## 2. Reuse PIC Density Grids for Luminosity
 
-- CUDA, `Float64`, `PICPoissonSolver`, CIC deposition.
-- 2,560,000 electron macroparticles and 1,000,000 proton macroparticles.
-- `(128, 128)` transverse grid and `15 × 15` longitudinal slice pairs.
-- Current fastest accepted configuration: wavefront scheduling, asynchronous
-  field solves, wavefront batched FFTs, persistent slice-pair Green cache, and
-  the current compact gather/scatter path. Record every toggle explicitly.
-- Run 30 turns by default (20 is acceptable for constrained tests). Treat the
-  first 20 as warm-up and use the arithmetic mean of the final 10 turn times as
-  the primary observable. Also report median, minimum, standard deviation, and
-  all individual final-ten values. Repeat the complete process at least three
-  times and use the median of the three final-ten means for comparisons.
+Goal: replace the independent common-grid luminosity deposition with a
+validated overlap between the two PIC density grids. This uses a luminosity
+overlap/transfer kernel, not the Poisson Green function.
 
-Record end-to-end time per turn and a non-overlapping phase breakdown that
-sums to the same total:
+1. Document and benchmark the current centroid-plane common-grid algorithm.
+   Compare centered, offset, unequal, round, and flat Gaussian beams with the
+   analytic overlap while sweeping resolution, padding, separation, aspect
+   ratio, slices, and macroparticles.
+2. Derive the CIC cross-grid overlap
+   `L = sum(q1[i] * G_lum[i,j] * q2[j], i, j)` for different origins and cell
+   sizes. Use compact support to implement a sparse/local transfer; treat TSC
+   separately.
+3. Add one centroid-plane deposition per beam and slice pair to the batched PIC
+   stage. Reuse particle indices, valid bounds, workspaces, and scheduling, but
+   keep these densities separate from the four endpoint force planes.
+4. Apply `G_lum` between the centroid-plane grids. Do not infer exact
+   centroid-plane density by interpolating endpoint grids; evaluate that only
+   as a separately labeled approximation.
+5. Validate every slice-pair contribution and total luminosity against both the
+   existing method and analytic Gaussian results on CPU and CUDA.
+6. Benchmark deposition, transfer-kernel construction/cache, and overlap cost.
+   Cache keys must include both grid origins, spacings, dimensions, and basis.
+7. Review WarpX collider luminosity diagnostics and beam-beam implementation:
+   <https://warpx.readthedocs.io/en/26.07/usage/parameters.html> and
+   <https://arxiv.org/abs/2405.09583>.
 
-- slicing and collision schedule;
-- gather/bin/index preparation;
-- bounds, grid, and Green-cache preparation;
-- charge deposition;
-- forward/inverse FFT and Green convolution;
-- field derivative/interpolation;
-- particle kick;
-- luminosity;
-- scatter/reorder;
-- allocation/reclaim and unavoidable synchronization.
-
-The current `StrongStrongDiagnostics(pic_timing_detail=true)` path synchronizes
-subphases and disables normal asynchronous overlap, so use it only as a
-diagnostic reference.
-Use task-level complete-turn timing and NVTX instrumentation to measure normal
-asynchronous execution without changing its internal production schedule. Save
-a compact machine-readable summary under `result/`; do not save dense particle
-data for every turn.
-
-Before optimization, rerun the reference until variance is understood and
-confirm that initialization, compilation, cuFFT planning, cache construction,
-and output I/O are excluded from the final-ten steady-state observable.
-
-### Step 2: profile the reference
-
-Use Nsight Systems to locate synchronization gaps, launch overhead, transfers,
-and lost overlap. Use Nsight Compute on the dominant deposition, preparation,
-and kick kernels to record achieved memory bandwidth, global-load efficiency,
-atomic throughput/contention, occupancy, register pressure, and shared-memory
-use. Confirm with measurements whether deposition and FFT are still dominant
-at the target particle counts before selecting the first optimization.
-
-### Step 3: test spatial bin indices without reordering particles
-
-Build cell or small-tile keys and compact bin offsets/particle-index lists on
-the GPU. Use the lists for deposition and field interpolation while leaving
-the canonical coordinate arrays and persistent IDs unchanged. Compare bin
-sizes such as `1×1`, `2×2`, and `4×4` cells one at a time, including the cost
-of key generation, histogram/prefix sum, and index construction in the timed
-turn. Test rebuilding every turn first; only test reuse/update intervals after
-particle cell-crossing statistics justify it.
-
-Accept this direction only if total steady-state turn time improves, not merely
-the deposition kernel. Verify that every ID appears exactly once and maps to
-the same physical particle before and after every turn.
-
-### Step 4: test tiled/shared-memory deposition
-
-Starting from the best accepted bin-index implementation, test one deposition
-kernel that accumulates a tile in shared memory and flushes reduced values to
-global memory. Sweep one tile/block configuration at a time. Measure reduced
-global atomic traffic against added binning, shared-memory, occupancy, and
-flush costs. Preserve CIC weights and boundary behavior exactly.
-
-### Step 5: test physical particle sorting only if needed
-
-If index-only binning cannot provide adequate locality, test physical SoA
-sorting as a separate experiment. Add an immutable `UInt64` particle-ID array
-and permute it with every coordinate component. Diagnostics must either emit
-the ID or restore ID order through an inverse permutation. RNG keys must use
-the persistent ID, never the post-sort storage index. Measure sorting cost and
-test sorting every 1, 2, 4, and 8 turns independently; keep sorting only when
-its amortized total-turn benefit exceeds the cost and all identity checks pass.
-
-### Step 6: optimize the remaining measured bottlenecks
-
-After deposition/locality work, choose the next item strictly from the latest
-profile and test only one at a time:
-
-- fuse compatible bounds, preparation, interpolation, or kick kernels to
-  reduce full-array traffic and launch overhead;
-- improve coalescing and eliminate temporary gather/scatter arrays where the
-  persistent-ID and two-direction collision semantics remain explicit;
-- tune CUDA block size, register pressure, and launch geometry per dominant
-  kernel;
-- verify cuFFT plan/workspace reuse, contiguous batch layout, batch size, and
-  stream assignment; retain the `(256, 256)` padded FFT shape implied by the
-  `(128, 128)` physical grid unless a measured alternative is faster and
-  physically equivalent;
-- test CUDA Graph capture only if launch/synchronization overhead is material;
-- test overlap of preparation, Green-cache work, luminosity, and field solves
-  only when dependencies permit it.
-
-Treat reduced or mixed precision as a separate physics study, not a routine
-performance optimization. It requires explicit tolerances and agreement for
-coordinates, luminosity, RMS moments, and long-run beam evolution.
-
-### Step 7: consolidate each accepted improvement
-
-For every accepted change, record before/after final-ten timing, phase timing,
-speedup, memory use, profile counters, and validation residuals. Update the
-frozen reference commit/configuration to the accepted version, then begin the
-next single-change experiment from that state. Finish with a 30-turn target-size
-run, the standard CPU/CUDA backend contract, persistent-ID invariance checks,
-and a longer physics regression before making the optimized path the default.
-
-### Accepted-results log
-
-- Corrected reference commit `ccf7986`, NVIDIA RTX 4500 Ada, CUDA `Float64`, 30
-  turns: compact final-ten means are `0.6468`, `0.6462`, and `0.6416`
-  seconds/turn; median-of-means `0.6462` seconds/turn.
-- Accepted corrected indexed wavefront candidate: `0.3637`, `0.3605`, and
-  `0.3578` seconds/turn; median-of-means `0.3605`, a 44.2% reduction and 1.79x
-  throughput. Compact and indexed 30-turn RMS values agree to printed
-  precision. The 30-turn backend contract passed with maximum coordinate error
-  `4.90e-16`, luminosity relative error `3.30e-15`, and identical cache history.
-- Rejected indexed `slice_pair_green_growth=0.50` despite its timing improvement:
-  the enlarged cached grids contain too many empty cells and do not meet the
-  physical-model requirement. Fix subsequent rounds at
-  `slice_pair_green_growth=0.25` and `slice_pair_green_min_ratio=0.50`.
-- Rejected `slice_pair_green_growth=0.75`: `0.3572` seconds/turn, 3.1% slower
-  than the diagnostic growth-0.50 median-of-means.
-- Rejected midpoint `slice_pair_green_growth=0.625`: `0.3577` seconds/turn.
-- Corrected async profile at the diagnostic growth-0.50 configuration:
-  preparation `~0.125 s`,
-  fields `~0.119 s`, kick `~0.081 s`, and deposition `~0.043 s`. Indexed
-  execution eliminates compact gather/scatter; sorting is not the next target.
-- All results from commit `1f8a513` are historical only: the no-observer path
-  reused the wrong lattice block and PIC scatter lacked a stream-completion
-  boundary. Repeat old candidate conclusions before using them.
+Do not change the Poisson Green function or force calculation in this task.
