@@ -2,11 +2,23 @@ export ChromaticityKickSpec, ChromaticityKick
 
 abstract type ChromaticityKickSpec{T} end
 
+"""
+    ChromaticityKickSpec{T=Float64}(; xi, beta, alpha=(0,0,0), ...)
+
+Create a symplectic chromaticity kick. The horizontal and vertical phase
+advances depend on the longitudinal momentum offset `pz`. To complete the
+six-dimensional symplectic map, the kick also changes the conjugate
+longitudinal coordinate `z` by the chromatic transverse actions.
+
+`beta` and `alpha` may use the shared three-plane optics interface; this
+element uses only their horizontal and vertical components. Legacy
+two-component tuples remain accepted.
+"""
 ChromaticityKickSpec(; kwargs...) = ChromaticityKickSpec{Float64}(; kwargs...)
 function (::Type{ChromaticityKickSpec{T}})(;
                                           xi,
                                           beta,
-                                          alpha=(zero(T), zero(T)),
+                                          alpha=(zero(T), zero(T), zero(T)),
                                           zeta=(zero(T), zero(T), zero(T), zero(T)),
                                           eta=(zero(T), zero(T), zero(T), zero(T)),
                                           R=(zero(T), zero(T), zero(T), zero(T)),
@@ -15,8 +27,8 @@ function (::Type{ChromaticityKickSpec{T}})(;
     return ElementSpec{:chromaticity_kick}(
         _spec_params(;
             xi=_pair_tuple(xi, T),
-            beta=_pair_tuple(beta, T),
-            alpha=_pair_tuple(alpha, T),
+            beta=_transverse_optics_tuple(beta, T, :beta),
+            alpha=_transverse_optics_tuple(alpha, T, :alpha),
             zeta=_quad_tuple(zeta, T),
             eta=_quad_tuple(eta, T),
             R=_quad_tuple(R, T),
@@ -24,6 +36,11 @@ function (::Type{ChromaticityKickSpec{T}})(;
             kwargs...,
         ),
     )
+end
+
+function _transverse_optics_tuple(values, ::Type{T}, name::Symbol) where {T}
+    length(values) in (2, 3) || throw(ArgumentError("$name must contain 2 or 3 values, got $(length(values))"))
+    return ntuple(i -> T(values[i]), length(values))
 end
 
 struct ChromaticityKick{M<:AbstractTrackingMethod,T<:AbstractFloat} <: AbstractTrackOp
@@ -160,13 +177,13 @@ end
     analyses = [PlaceholderAnalysis]
     parameters = (
         xi=ParamMeta(required=true, meaning="horizontal and vertical chromaticities"),
-        beta=ParamMeta(required=true, meaning="horizontal and vertical beta functions"),
-        alpha=ParamMeta(default=(0, 0), meaning="horizontal and vertical alpha functions"),
+        beta=ParamMeta(required=true, meaning="two- or three-plane beta functions; only horizontal and vertical values are used"),
+        alpha=ParamMeta(default=(0, 0, 0), meaning="two- or three-plane alpha functions; only horizontal and vertical values are used"),
         zeta=ParamMeta(default=(0, 0, 0, 0), meaning="crab dispersion coefficients"),
         eta=ParamMeta(default=(0, 0, 0, 0), meaning="momentum dispersion coefficients"),
         R=ParamMeta(default=(0, 0, 0, 0), meaning="x-y coupling coefficients"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
     )
     example = ChromaticityKickSpec{Float64}(xi=(1.0, 1.0), beta=(1.0, 1.0))
-    construction_help = "Friendly constructor: ChromaticityKickSpec{T}(; xi, beta, alpha=(0,0), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), tracking_method=Symplectic6DMap(), kwargs...)."
+    construction_help = "Friendly constructor: ChromaticityKickSpec{T}(; xi, beta, alpha=(0,0,0), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), tracking_method=Symplectic6DMap(), kwargs...). beta and alpha accept two or three values; only the transverse pair is used."
 end

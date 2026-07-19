@@ -116,6 +116,17 @@ turn-signaled weak-strong line with and without a no-op observer.
 julia --project=. validation/tracking_task_turn_update.jl
 ```
 
+## Beam Optics Interface Consistency
+
+`beam_optics_interface_consistency.jl` checks the shared three-plane
+`beta`/`alpha` Beam interface, exact compatibility with legacy two-component
+alpha input when `alpha_z=0`, sigma/emittance equivalence, longitudinal
+covariance, and CPU/CUDA agreement.
+
+```bash
+julia --project=. validation/beam_optics_interface_consistency.jl
+```
+
 ## Strong-Strong PIC Cache Backend Consistency
 
 `strong_strong_pic_cache_backend_consistency.jl` runs

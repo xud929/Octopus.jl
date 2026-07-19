@@ -202,7 +202,7 @@ coordinate_arrays(beam::Beam) = coordinate_arrays(beam.rep)
 coordinate_array(beam::Beam, dim::Integer) = coordinate_array(beam.rep, dim)
 
 """
-    Beam(N, policy_or_backend, FloatT=Float64; beta, alpha, sigma=nothing,
+    Beam(N, policy_or_backend, FloatT=Float64; beta, alpha=(0,0,0), sigma=nothing,
          emit=nothing, rng=..., zeta=zeros(...), eta=zeros(...),
          coupling=zeros(...), initial_offset=zeros(...))
 
@@ -213,6 +213,12 @@ threaded backend or CUDA backend:
 2. normalize by Twiss/sigma or Twiss/emittance parameters,
 3. apply optional `XYCoupling`, `MomentumDispersion`, and `CrabDispersion`,
 4. apply an optional six-coordinate `initial_offset`.
+
+`beta=(βx,βy,βz)` and `alpha=(αx,αy,αz)` use the same three-plane Twiss
+convention as `Linear6DSpec` and `LumpedRadSpec`. For sigma-based construction,
+the longitudinal covariance is `cov(z,pz) = -αz*σz^2/βz`. A legacy
+two-component `alpha=(αx,αy)` is accepted temporarily and interpreted as
+`(αx,αy,0)`.
 
 `policy_or_backend` may be `CPUThreadsExecutionPolicy()`,
 `GPUExecutionPolicy()`, `CPUThreadsBackend`, or `CUDABackend`.
@@ -228,7 +234,7 @@ end
 
 function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
               beta=(one(RT), one(RT), one(RT)),
-              alpha=(zero(RT), zero(RT)),
+              alpha=(zero(RT), zero(RT), zero(RT)),
               sigma=nothing,
               emit=nothing,
               zeta=zeros(RT, 4),
@@ -246,11 +252,12 @@ function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
 	params = _beam_params(RT, Int(N); kwargs...)
 	rep = _standard_gaussian_rep(BTAG, RT, Int(N);
 		cutoff=cutoff, rng=rng, seed=seed, rng_id=rng_id)
+	α = _beam_alpha(alpha, RT)
 	if emit === nothing
 		σ = sigma === nothing ? ntuple(_ -> one(RT), 3) : _tuple_typed(sigma, 3, RT)
-		_normalize_sigma!(rep, _tuple_typed(beta, 3, RT), _tuple_typed(alpha, 2, RT), σ)
+		_normalize_sigma!(rep, _tuple_typed(beta, 3, RT), α, σ)
 	else
-		_normalize_emit!(rep, _tuple_typed(beta, 3, RT), _tuple_typed(alpha, 3, RT), _tuple_typed(emit, 3, RT))
+		_normalize_emit!(rep, _tuple_typed(beta, 3, RT), α, _tuple_typed(emit, 3, RT))
 	end
 	coupling_values = C === nothing ? (R === nothing ? coupling : R) : C
 	_apply_initial_maps!(rep, BTAG, RT;
@@ -261,6 +268,14 @@ function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
 	)
 	add_offset!(rep, _tuple_typed(initial_offset, 6, RT))
 	return Beam{BTAG, typeof(params), typeof(rep)}(params, rep)
+end
+
+function _beam_alpha(alpha, ::Type{T}) where {T}
+	if length(alpha) == 2
+		Base.depwarn("two-component Beam alpha is deprecated; pass (alpha_x, alpha_y, alpha_z)", :Beam)
+		return (T(alpha[1]), T(alpha[2]), zero(T))
+	end
+	return _tuple_typed(alpha, 3, T)
 end
 
 function _beam_params(::Type{T}, N::Int; kwargs...) where {T}
@@ -283,7 +298,7 @@ function _normalize_sigma!(rep::Phase6DRep, beta, alpha, sigma)
 	rep.x .*= sigma[1]
 	rep.py .= (sigma[2] / beta[2]) .* (rep.py .- alpha[2] .* rep.y)
 	rep.y .*= sigma[2]
-	rep.pz .*= sigma[3] / beta[3]
+	rep.pz .= (sigma[3] / beta[3]) .* (rep.pz .- alpha[3] .* rep.z)
 	rep.z .*= sigma[3]
 	return rep
 end

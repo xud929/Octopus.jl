@@ -232,8 +232,8 @@ one_turn = Linear6DSpec{Float64}(;
 
 chrom = ChromaticityKickSpec{Float64}(;
     xi = opt.chromaticity,
-    beta = (wb.beta_x, wb.beta_y),
-    alpha = (0.0, 0.0),
+    beta = (wb.beta_x, wb.beta_y, beta_z),
+    alpha = wb.alpha,
     zeta = (0.0, 0.0, 0.0, 0.0),
     eta = (0.0, 0.0, 0.0, 0.0),
     R = (0.0, 0.0, 0.0, 0.0),

@@ -131,6 +131,15 @@ external RNG for convenience and ignores `rng_id` with a warning if nonzero. In
 the current CUDA implementation, Octopus counter-RNG beam initialization
 generates host values and transfers them to GPU storage.
 
+Beam optics use three-plane tuples `beta=(beta_x,beta_y,beta_z)` and
+`alpha=(alpha_x,alpha_y,alpha_z)`, consistently with `Linear6DSpec` and
+`LumpedRadSpec`. Sigma-based and emittance-based initialization apply the same
+Twiss correlation in all three planes. A two-component Beam `alpha` remains a
+temporary compatibility input and implies `alpha_z=0`. `ChromaticityKickSpec`
+accepts either two- or three-plane optics tuples but consumes only their first
+two components: its transverse phase advances depend on `pz`, while its `z`
+update completes the six-dimensional symplectic map.
+
 SplitMix64-backed comparison functions are also exposed as `splitmix_uint64`,
 `splitmix_uniform01`, `splitmix_normal_pair`, and `splitmix_normal`. They use
 the same counter tuple and are intended for validation and benchmarking against

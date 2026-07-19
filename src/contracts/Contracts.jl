@@ -444,11 +444,11 @@ function _strong_strong_contract_base_beams(contract::Union{
         StrongStrongPICBackendConsistencyContract})
     n = contract.n_particles
     beam1 = Beam(n, CPUThreadsBackend, Float64;
-        beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0),
+        beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0, 0.0),
         sigma=(106e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=1,
         charge=-1.0, mc2=EMASS_EV, E0=10e9, r0=RE, npart=1.7203e11)
     beam2 = Beam(n, CPUThreadsBackend, Float64;
-        beta=(0.8, 0.072, 6e-2 / 6.6e-4), alpha=(0.0, 0.0),
+        beta=(0.8, 0.072, 6e-2 / 6.6e-4), alpha=(0.0, 0.0, 0.0),
         sigma=(95e-6, 8.5e-6, 6e-2), cutoff=5.0, rng_id=2,
         charge=1.0, mc2=PMASS_EV, E0=275e9,
         r0=RE * ME0 / PMASS_EV, npart=0.6881e11)

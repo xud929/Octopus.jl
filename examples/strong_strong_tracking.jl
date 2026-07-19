@@ -121,8 +121,7 @@ input = (
         cutoff = 5.0,
         sigma = (106.0e-6, 9.5e-6, 0.7e-2),
         beta = (0.55, 0.056, 0.7e-2 / 5.5e-4),
-        alpha = (0.0, 0.0),
-        alpha6 = (0.0, 0.0, 0.0),
+        alpha = (0.0, 0.0, 0.0),
         crab_beta = (150.0, 30.0, 0.7e-2 / 5.5e-4),
         tune = (0.08, 0.14, -0.069),
         chromaticity = (1.0, 1.0),
@@ -142,8 +141,7 @@ input = (
         cutoff = 5.0,
         sigma = (95.0e-6, 8.5e-6, 6.0e-2),
         beta = (0.8, 0.072, 6.0e-2 / 6.6e-4),
-        alpha = (0.0, 0.0),
-        alpha6 = (0.0, 0.0, 0.0),
+        alpha = (0.0, 0.0, 0.0),
         crab_beta = (1300.0, 30.0, 6.0e-2 / 6.6e-4),
         tune = (0.228, 0.210, -0.01),
         chromaticity = (2.0, 2.0),
@@ -321,8 +319,8 @@ end
 electron_tccb2ip = Linear6DSpec{Float64}(;
     beta1 = ele.crab_beta,
     beta2 = ele.beta,
-    alpha1 = ele.alpha6,
-    alpha2 = ele.alpha6,
+    alpha1 = ele.alpha,
+    alpha2 = ele.alpha,
     dmu = (pi / 2.0, 0.0, 0.0),
 )
 electron_tccb2ip_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(electron_tccb2ip))))
@@ -330,8 +328,8 @@ electron_tccb2ip_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(electr
 electron_ip2tcca = Linear6DSpec{Float64}(;
     beta1 = ele.beta,
     beta2 = ele.crab_beta,
-    alpha1 = ele.alpha6,
-    alpha2 = ele.alpha6,
+    alpha1 = ele.alpha,
+    alpha2 = ele.alpha,
     dmu = (pi / 2.0, 0.0, 0.0),
 )
 electron_ip2tcca_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(electron_ip2tcca))))
@@ -350,19 +348,19 @@ electron_tcca = ThinCrabCavitySpec{3}(ele.crab_frequency;
 electron_one_turn = Linear6DSpec{Float64}(;
     beta1 = ele.beta,
     beta2 = ele.beta,
-    alpha1 = ele.alpha6,
-    alpha2 = ele.alpha6,
+    alpha1 = ele.alpha,
+    alpha2 = ele.alpha,
     dmu = 2pi .* ele.tune,
 )
 electron_chrom = ChromaticityKickSpec{Float64}(;
     xi = ele.chromaticity,
-    beta = (ele.beta[1], ele.beta[2]),
+    beta = ele.beta,
     alpha = ele.alpha,
 )
 electron_rad = LumpedRadSpec{Float64}(;
     damping_turns = ele.radiation_damping_turns,
     beta = ele.beta,
-    alpha = ele.alpha6,
+    alpha = ele.alpha,
     sigma = ele.sigma,
     is_damping = true,
     is_excitation = true,
@@ -372,8 +370,8 @@ electron_rad = LumpedRadSpec{Float64}(;
 proton_tccb2ip = Linear6DSpec{Float64}(;
     beta1 = pro.crab_beta,
     beta2 = pro.beta,
-    alpha1 = pro.alpha6,
-    alpha2 = pro.alpha6,
+    alpha1 = pro.alpha,
+    alpha2 = pro.alpha,
     dmu = (pi / 2.0, 0.0, 0.0),
 )
 proton_tccb2ip_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(proton_tccb2ip))))
@@ -381,8 +379,8 @@ proton_tccb2ip_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(proton_t
 proton_ip2tcca = Linear6DSpec{Float64}(;
     beta1 = pro.beta,
     beta2 = pro.crab_beta,
-    alpha1 = pro.alpha6,
-    alpha2 = pro.alpha6,
+    alpha1 = pro.alpha,
+    alpha2 = pro.alpha,
     dmu = (pi / 2.0, 0.0, 0.0),
 )
 proton_ip2tcca_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(proton_ip2tcca))))
@@ -401,13 +399,13 @@ proton_tcca = ThinCrabCavitySpec{3}(pro.crab_frequency;
 proton_one_turn = Linear6DSpec{Float64}(;
     beta1 = pro.beta,
     beta2 = pro.beta,
-    alpha1 = pro.alpha6,
-    alpha2 = pro.alpha6,
+    alpha1 = pro.alpha,
+    alpha2 = pro.alpha,
     dmu = 2pi .* pro.tune,
 )
 proton_chrom = ChromaticityKickSpec{Float64}(;
     xi = pro.chromaticity,
-    beta = (pro.beta[1], pro.beta[2]),
+    beta = pro.beta,
     alpha = pro.alpha,
 )
 
