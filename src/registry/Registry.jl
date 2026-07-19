@@ -123,6 +123,12 @@ function registry_snapshot_markdown(reg::OctopusRegistry=build_registry())
     _write_type_section(io, "Examples", reg.examples)
     _write_type_section(io, "Tasks", reg.tasks)
 
+    println(io, "## Task Diagnostics")
+    println(io)
+    println(io, "- `StrongStrongDiagnostics`")
+    println(io, "  - Construction metadata: `diagnostics_option_schema`, `diagnostics_help`")
+    println(io)
+
     println(io, "## Runtime Objects")
     println(io)
     println(io, "Runtime element objects live under `src/elements/`. Generic tracking helpers")

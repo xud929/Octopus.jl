@@ -147,6 +147,11 @@ constructor names remain the user-facing way to build those specs.
 - `StrongStrongTask`
 - `TrackingTask`
 
+## Task Diagnostics
+
+- `StrongStrongDiagnostics`
+  - Construction metadata: `diagnostics_option_schema`, `diagnostics_help`
+
 ## Runtime Objects
 
 Runtime element objects live under `src/elements/`. Generic tracking helpers

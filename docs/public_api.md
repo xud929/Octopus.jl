@@ -58,6 +58,13 @@ Use Julia help:
 ```julia
 ?TrackingTask
 ?StrongStrongTask
+?StrongStrongDiagnostics
+?DiagnosticsOptionMeta
+?diagnostics_option_schema
+?diagnostics_help
+?turn_timings
+?pic_phase_timings
+?diagnostic_summary
 ?StrongStrongCollision
 ?GaussianPoissonSolver
 ?PICPoissonSolver

@@ -3,7 +3,9 @@ export AbstractPoissonSolver, LongitudinalSlicing, longitudinal_slices,
        GaussianPoissonSolver, PICPoissonSolver,
        SolverOptionMeta, solver_option_schema, solver_help,
        StrongStrongGaussianPoissonSolver, StrongStrongCollision,
-       StrongStrongTask, turn_timings, collide!
+       StrongStrongDiagnostics, DiagnosticsOptionMeta, diagnostics_option_schema,
+       diagnostics_help, StrongStrongTask, turn_timings,
+       pic_phase_timings, diagnostic_summary, collide!
 
 """
     AbstractPoissonSolver
@@ -21,6 +23,94 @@ The current concrete implementations are `GaussianPoissonSolver` and
 `PICPoissonSolver`.
 """
 abstract type AbstractPoissonSolver <: AbstractOctopusObject end
+
+"""
+    StrongStrongDiagnostics(; record_turn_times=false, memory_log_every=0,
+                              pic_timing=false, pic_timing_detail=false,
+                              cache_stats=false, nvtx=false)
+
+Explicit diagnostic and profiling configuration for `StrongStrongTask`.
+Detailed PIC timing synchronizes CUDA subphases and can perturb throughput;
+leave it disabled for production timing. `memory_log_every=0` disables memory
+logging. These options observe execution and must not change tracking results.
+"""
+struct StrongStrongDiagnostics <: AbstractOctopusObject
+    record_turn_times::Bool
+    memory_log_every::Int
+    pic_timing::Bool
+    pic_timing_detail::Bool
+    cache_stats::Bool
+    nvtx::Bool
+end
+
+function StrongStrongDiagnostics(; record_turn_times::Bool=false,
+                                 memory_log_every::Integer=0,
+                                 pic_timing::Bool=false,
+                                 pic_timing_detail::Bool=false,
+                                 cache_stats::Bool=false,
+                                 nvtx::Bool=false)
+    memory_log_every >= 0 || throw(ArgumentError("memory_log_every must be nonnegative"))
+    return StrongStrongDiagnostics(record_turn_times, Int(memory_log_every), pic_timing,
+                                   pic_timing_detail, cache_stats, nvtx)
+end
+
+"""Structured metadata for one `StrongStrongDiagnostics` option."""
+struct DiagnosticsOptionMeta
+    option_type::Any
+    default::Any
+    meaning::String
+    supported_backends::Tuple
+    perturbs_timing::Bool
+end
+
+DiagnosticsOptionMeta(option_type, default, meaning;
+                      supported_backends=(CPUThreadsBackend, CUDABackend),
+                      perturbs_timing=false) =
+    DiagnosticsOptionMeta(option_type, default, String(meaning),
+                          Tuple(supported_backends), perturbs_timing)
+
+const _STRONG_STRONG_DIAGNOSTICS_OPTION_SCHEMA = (
+    record_turn_times=DiagnosticsOptionMeta(Bool, false,
+        "Synchronize at complete-turn boundaries and record wall-clock seconds."; perturbs_timing=true),
+    memory_log_every=DiagnosticsOptionMeta(Int, 0,
+        "Print CUDA allocator state every N turns; zero disables logging.";
+        supported_backends=(CUDABackend,), perturbs_timing=true),
+    pic_timing=DiagnosticsOptionMeta(Bool, false,
+        "Collect and print CUDA PIC phase timing records.";
+        supported_backends=(CUDABackend,), perturbs_timing=true),
+    pic_timing_detail=DiagnosticsOptionMeta(Bool, false,
+        "Synchronize CUDA PIC subphases for an additive detailed breakdown.";
+        supported_backends=(CUDABackend,), perturbs_timing=true),
+    cache_stats=DiagnosticsOptionMeta(Bool, false,
+        "Print PIC Green-cache reuse and rebuild counters."),
+    nvtx=DiagnosticsOptionMeta(Bool, false,
+        "Emit CUDA NVTX ranges for external profilers.";
+        supported_backends=(CUDABackend,), perturbs_timing=true),
+)
+
+"""Return structured metadata for every `StrongStrongDiagnostics` option."""
+diagnostics_option_schema(::Type{StrongStrongDiagnostics}=StrongStrongDiagnostics) =
+    _STRONG_STRONG_DIAGNOSTICS_OPTION_SCHEMA
+diagnostics_option_schema(::StrongStrongDiagnostics) = _STRONG_STRONG_DIAGNOSTICS_OPTION_SCHEMA
+
+"""Print discoverable help for `StrongStrongDiagnostics` options."""
+function diagnostics_help(; io::IO=stdout)
+    println(io, "StrongStrongDiagnostics options:")
+    for (name, meta) in pairs(diagnostics_option_schema())
+        backends = join(string.(meta.supported_backends), ", ")
+        println(io, "  - ", name, "::", meta.option_type, " = ", repr(meta.default))
+        println(io, "      ", meta.meaning)
+        println(io, "      backends=", backends, "; perturbs_timing=", meta.perturbs_timing)
+    end
+    return nothing
+end
+diagnostics_help(io::IO) = diagnostics_help(; io)
+
+const _DEFAULT_STRONG_STRONG_DIAGNOSTICS = StrongStrongDiagnostics()
+const _ACTIVE_STRONG_STRONG_DIAGNOSTICS = Base.ScopedValues.ScopedValue(_DEFAULT_STRONG_STRONG_DIAGNOSTICS)
+const _ACTIVE_PIC_PHASE_TIMING_SINK = Base.ScopedValues.ScopedValue{Any}(nothing)
+const _ACTIVE_PIC_TIMING_CONTEXT = Base.ScopedValues.ScopedValue{Any}(nothing)
+_strong_strong_diagnostics() = _ACTIVE_STRONG_STRONG_DIAGNOSTICS[]
 
 """Structured metadata for one public solver constructor option."""
 struct SolverOptionMeta
@@ -305,8 +395,8 @@ The CUDA execution options are explicit solver configuration. `cuda_async`
 enables overlapping CUDA field work, `cuda_batch_fft` enables batched FFT
 solves, `cuda_wavefront_fft` enables the wavefront FFT path, and
 `cuda_indexed_wavefront` operates directly through slice indices without
-reordering canonical particle storage. The corresponding `OCTOPUS_CUDA_PIC_*`
-environment variables remain available as debugging overrides.
+reordering canonical particle storage. Shell examples may map environment
+variables into these constructor options; runtime code does not read them.
 `luminosity_schedule` may be `nothing` or a schedule such as
 `EveryNSteps(step=10)` or `AtTurns([0, 100])`. `nothing` computes luminosity
 on every turn. When the schedule does not run, PIC still applies beam-beam
@@ -442,21 +532,17 @@ const _PIC_SOLVER_OPTION_SCHEMA = (
         "Slice-pair scheduling mode; :wavefront or :sequential."; category=:execution),
     cuda_async = SolverOptionMeta(Bool, true,
         "Overlap independent CUDA field work.";
-        supported_backends=(CUDABackend,), category=:execution,
-        environment_override="OCTOPUS_CUDA_PIC_ASYNC"),
+        supported_backends=(CUDABackend,), category=:execution),
     cuda_batch_fft = SolverOptionMeta(Bool, true,
         "Use batched CUDA FFT field solves.";
-        supported_backends=(CUDABackend,), category=:execution,
-        environment_override="OCTOPUS_CUDA_PIC_BATCH_FFT", dependencies=(:cuda_async,)),
+        supported_backends=(CUDABackend,), category=:execution, dependencies=(:cuda_async,)),
     cuda_wavefront_fft = SolverOptionMeta(Bool, true,
         "Batch FFT planes across each CUDA collision wavefront.";
         supported_backends=(CUDABackend,), category=:execution,
-        environment_override="OCTOPUS_CUDA_PIC_WAVEFRONT_FFT",
         dependencies=(:batch_mode, :cuda_async, :cuda_batch_fft)),
     cuda_indexed_wavefront = SolverOptionMeta(Bool, true,
         "Track slice membership by indices without gathering, sorting, or changing particle IDs.";
         supported_backends=(CUDABackend,), category=:execution,
-        environment_override="OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT",
         dependencies=(:batch_mode, :cuda_async, :cuda_batch_fft, :cuda_wavefront_fft)),
     luminosity_grid = SolverOptionMeta(Union{Nothing,Tuple{Int,Int}}, nothing,
         "Optional luminosity-only transverse mesh; nothing uses the PIC force grid.";
@@ -520,9 +606,10 @@ task = StrongStrongTask(line1, line2)
 execute!(task, beam1, beam2; turns=10)
 ```
 
-Set `record_turn_times=true` to synchronize once at each turn boundary and
-record steady-state wall time for the complete CPU or CUDA turn. Retrieve the
-measurements with `turn_timings(task)`.
+Pass `diagnostics=StrongStrongDiagnostics(record_turn_times=true)` to
+synchronize once at each turn boundary and record complete-turn wall time.
+Retrieve structured results with `diagnostic_summary(task)`. The legacy
+`record_turn_times` task keyword remains as a compatibility adapter.
 
 Use `validate(StrongStrongGaussianBackendConsistencyContract())` to check the
 soft-Gaussian solver across CPU and CUDA. Use
@@ -535,8 +622,9 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     policy::Union{Nothing,AbstractExecutionPolicy}
     default_poisson_solver::S
     luminosity_path::Union{Nothing,String}
-    record_turn_times::Bool
+    diagnostics::StrongStrongDiagnostics
     turn_times::Vector{Float64}
+    pic_phase_times::Vector{Any}
     runtime_entries_cache1::Base.RefValue{Any}
     runtime_entries_cache2::Base.RefValue{Any}
     plan_cache1::Dict{Any,Any}
@@ -557,19 +645,27 @@ function StrongStrongTask(line1, line2;
                           default_poisson_solver::AbstractPoissonSolver=GaussianPoissonSolver(),
                           poisson_solver::Union{Nothing,AbstractPoissonSolver}=nothing,
                           luminosity_path::Union{Nothing,AbstractString}=nothing,
-                          record_turn_times::Bool=false)
+                          diagnostics::StrongStrongDiagnostics=StrongStrongDiagnostics(),
+                          record_turn_times::Union{Nothing,Bool}=nothing)
     line_tuple1 = _element_tuple(line1)
     line_tuple2 = _element_tuple(line2)
     seed !== nothing && @warn "StrongStrongTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
     solver = poisson_solver === nothing ? default_poisson_solver : poisson_solver
+    if record_turn_times !== nothing
+        diagnostics == StrongStrongDiagnostics() || throw(ArgumentError(
+            "use either diagnostics or the compatibility record_turn_times keyword, not both"
+        ))
+        diagnostics = StrongStrongDiagnostics(record_turn_times=record_turn_times)
+    end
     return StrongStrongTask(
         line_tuple1,
         line_tuple2,
         policy,
         solver,
         luminosity_path === nothing ? nothing : String(luminosity_path),
-        record_turn_times,
+        diagnostics,
         Float64[],
+        Any[],
         Ref{Any}(nothing),
         Ref{Any}(nothing),
         Dict{Any,Any}(),
@@ -580,6 +676,14 @@ end
 
 """Return complete-turn timings in seconds from the most recent task execution."""
 turn_timings(task::StrongStrongTask) = copy(task.turn_times)
+"""Return structured CUDA PIC phase records from the most recent execution."""
+pic_phase_timings(task::StrongStrongTask) = copy(task.pic_phase_times)
+"""Return explicit diagnostic configuration and collected timing results."""
+diagnostic_summary(task::StrongStrongTask) = (
+    configuration=task.diagnostics,
+    turn_timings=turn_timings(task),
+    pic_phase_timings=pic_phase_timings(task),
+)
 
 """
     execute!(task::StrongStrongTask, beam1, beam2; turns=1)
@@ -588,6 +692,7 @@ Execute a strong-strong task in place. Returns `(beam1, beam2)`.
 """
 function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam; turns::Integer=1)
     empty!(task.turn_times)
+    empty!(task.pic_phase_times)
     backend = _execution_backend(task, beam1, beam2)
     blocks1 = _strong_strong_runtime_blocks(task, 1)
     blocks2 = _strong_strong_runtime_blocks(task, 2)
@@ -595,12 +700,15 @@ function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam; turns::Integ
     prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1); turns=Int(turns))
     prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2); turns=Int(turns))
     ctx = TrackingContext()
-    if task.luminosity_path === nothing
-        _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, backend, ctx, Int(turns), nothing)
-    else
-        open(task.luminosity_path, "w") do io
-            _write_strong_strong_luminosity_header(io, blocks1)
-            _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, backend, ctx, Int(turns), io)
+    Base.ScopedValues.with(_ACTIVE_STRONG_STRONG_DIAGNOSTICS => task.diagnostics,
+                           _ACTIVE_PIC_PHASE_TIMING_SINK => task.pic_phase_times) do
+        if task.luminosity_path === nothing
+            _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, backend, ctx, Int(turns), nothing)
+        else
+            open(task.luminosity_path, "w") do io
+                _write_strong_strong_luminosity_header(io, blocks1)
+                _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, backend, ctx, Int(turns), io)
+            end
         end
     end
     _finalize_strong_strong_line_observers!(blocks1)
@@ -635,7 +743,7 @@ function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, bac
     streams = _strong_strong_segment_streams(backend)
     memory_log_every = _strong_strong_cuda_memory_log_every(backend)
     for turn in 0:(turns - 1)
-        turn_t0 = task.record_turn_times ? time_ns() : UInt64(0)
+        turn_t0 = task.diagnostics.record_turn_times ? time_ns() : UInt64(0)
         ctx = with_turn(ctx, turn)
         luminosities = io === nothing ? nothing : Float64[]
         luminosity_evaluated = io === nothing ? nothing : Bool[]
@@ -669,7 +777,7 @@ function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, bac
             println(io)
         end
         _strong_strong_maybe_log_cuda_memory(backend, turn, memory_log_every)
-        if task.record_turn_times
+        if task.diagnostics.record_turn_times
             backend === CUDABackend && CUDA.synchronize()
             push!(task.turn_times, (time_ns() - turn_t0) * 1.0e-9)
         end
@@ -680,7 +788,9 @@ end
 function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
                                  solver::AbstractPoissonSolver,
                                  beam1::Beam, beam2::Beam, backend, ctx::TrackingContext)
-    return collide!(solver, beam1, beam2, backend, ctx)
+    return Base.ScopedValues.with(_ACTIVE_PIC_TIMING_CONTEXT => (label=label, turn=ctx.turn)) do
+        collide!(solver, beam1, beam2, backend, ctx)
+    end
 end
 
 _pic_compute_luminosity(::PICPoissonSolver, ::Nothing) = true
@@ -693,7 +803,7 @@ _strong_strong_luminosity_evaluated(::AbstractPoissonSolver, ::TrackingContext) 
 _strong_strong_luminosity_evaluated(solver::PICPoissonSolver, ctx::TrackingContext) =
     _pic_compute_luminosity(solver, ctx)
 
-_cuda_nvtx_enabled() = get(ENV, "OCTOPUS_CUDA_NVTX", "0") in ("1", "true", "TRUE", "yes", "YES")
+_cuda_nvtx_enabled() = _strong_strong_diagnostics().nvtx
 
 function _cuda_nvtx_push(backend, message::AbstractString)
     backend === CUDABackend || return false
@@ -710,7 +820,7 @@ end
 
 function _strong_strong_cuda_memory_log_every(backend)
     backend === CUDABackend || return 0
-    return max(parse(Int, get(ENV, "OCTOPUS_CUDA_MEMORY_LOG_EVERY", "0")), 0)
+    return _strong_strong_diagnostics().memory_log_every
 end
 
 function _strong_strong_maybe_log_cuda_memory(backend, turn::Integer, every::Integer)

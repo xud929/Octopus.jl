@@ -1,32 +1,5 @@
 # TODO
 
-## Task Diagnostics API
-
-Move runtime diagnostic controls into explicit task configuration.
-
-Current state:
-
-- `StrongStrongTask(...; record_turn_times=true)` now records synchronized
-  complete-turn timings, discoverable through `turn_timings(task)`. The
-  strong-strong example maps `OCTOPUS_RECORD_TURN_TIMES` into this explicit
-  task option.
-- Some diagnostics are controlled by environment variables read inside runtime
-  code, for example `OCTOPUS_CUDA_MEMORY_LOG_EVERY`.
-- This is convenient for shell and batch runs, but hidden from constructors,
-  docstrings, notebooks, and API discovery.
-
-Target design:
-
-- Define diagnostics as task-level options, for example
-  `StrongStrongTask(...; memory_log_every=100)`.
-- Keep environment variables only in examples as command-line convenience
-  adapters.
-- Examples should parse environment variables and pass explicit task options.
-- Runtime code should prefer task fields over direct `ENV` reads.
-
-This keeps the public API discoverable while preserving convenient command-line
-usage for long tracking runs.
-
 ## 2D PIC Extreme CUDA Performance Investigation
 
 Goal: maximize strong-strong 2D PIC throughput on CUDA without weakening
@@ -164,8 +137,9 @@ sums to the same total:
 - scatter/reorder;
 - allocation/reclaim and unavoidable synchronization.
 
-The current `OCTOPUS_CUDA_PIC_TIMING_DETAIL=1` path synchronizes subphases and
-disables normal asynchronous overlap, so use it only as a diagnostic reference.
+The current `StrongStrongDiagnostics(pic_timing_detail=true)` path synchronizes
+subphases and disables normal asynchronous overlap, so use it only as a
+diagnostic reference.
 Use task-level complete-turn timing and NVTX instrumentation to measure normal
 asynchronous execution without changing its internal production schedule. Save
 a compact machine-readable summary under `result/`; do not save dense particle

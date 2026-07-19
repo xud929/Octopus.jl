@@ -147,6 +147,16 @@ the block-aware strong-strong plan cache.
 julia --threads=4 --project=. validation/strong_strong_observer_plan_consistency.jl
 ```
 
+## Strong-Strong Diagnostics Consistency
+
+`strong_strong_diagnostics_consistency.jl` verifies that enabling observational
+task diagnostics leaves both beams exactly unchanged and that complete-turn
+timings and the structured diagnostics summary are populated correctly.
+
+```bash
+julia --threads=4 --project=. validation/strong_strong_diagnostics_consistency.jl
+```
+
 ## Strong-Strong PIC Extreme CUDA Benchmark
 
 `strong_strong_pic_extreme_benchmark.jl` runs the frozen production-size CUDA

@@ -65,11 +65,6 @@ Disable CUDA PIC wavefront-level batched FFTs for comparison:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_WAVEFRONT_FFT=0 julia --project=. examples/strong_strong_tracking.jl
 
-Disable CUDA PIC wavefront Green-stack FFTs for comparison. In CUDA wavefront
-mode with `green_cache=none`, this path is enabled by default:
-
-    OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_WAVEFRONT_GREEN_FFT=0 julia --project=. examples/strong_strong_tracking.jl
-
 Print statistics for the default slice-pair Green cache:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_PIC_GREEN_CACHE=slice_pair OCTOPUS_PIC_CACHE_STATS=1 julia --project=. examples/strong_strong_tracking.jl
@@ -274,6 +269,18 @@ pic_luminosity_schedule =
     EveryNSteps(step = pic_luminosity_every)
 record_turn_times = get(ENV, "OCTOPUS_RECORD_TURN_TIMES", "0") in
                     ("1", "true", "TRUE", "yes", "YES")
+diagnostics = StrongStrongDiagnostics(;
+    record_turn_times,
+    memory_log_every = parse(Int, get(ENV, "OCTOPUS_CUDA_MEMORY_LOG_EVERY", "0")),
+    pic_timing = get(ENV, "OCTOPUS_CUDA_PIC_TIMING", "0") in
+                 ("1", "true", "TRUE", "yes", "YES"),
+    pic_timing_detail = get(ENV, "OCTOPUS_CUDA_PIC_TIMING_DETAIL", "0") in
+                        ("1", "true", "TRUE", "yes", "YES"),
+    cache_stats = get(ENV, "OCTOPUS_PIC_CACHE_STATS", "0") in
+                  ("1", "true", "TRUE", "yes", "YES"),
+    nvtx = get(ENV, "OCTOPUS_CUDA_NVTX", "0") in
+           ("1", "true", "TRUE", "yes", "YES"),
+)
 disable_moments = get(ENV, "OCTOPUS_DISABLE_MOMENTS", "0") in
                   ("1", "true", "TRUE", "yes", "YES")
 disable_luminosity_output = get(ENV, "OCTOPUS_DISABLE_LUMINOSITY_OUTPUT", "0") in
@@ -464,7 +471,7 @@ line_pro = (
 
 task = StrongStrongTask(line_ele, line_pro;
     luminosity_path = disable_luminosity_output ? nothing : luminosity_path,
-    record_turn_times = record_turn_times,
+    diagnostics,
 )
 execute!(task, beam_ele, beam_pro; turns = turns)
 

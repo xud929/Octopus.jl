@@ -84,8 +84,9 @@ independent:
 Launch those solves on separate CUDA streams, synchronize, then apply the two
 field-particle kick kernels.
 
-Status: implemented for CUDA PIC. Set `OCTOPUS_CUDA_PIC_ASYNC=0` to disable
-this path for debugging or performance comparison.
+Status: implemented for CUDA PIC. Set
+`PICPoissonSolver(cuda_async=false)` to disable this path for debugging or
+performance comparison.
 
 ### 4.1 Use Compact CUDA Slice Buffers
 
@@ -105,8 +106,7 @@ remain small host-side metadata values.
 
 CUDA PIC temporary arrays are reclaimed adaptively during long collisions. The
 default checks memory pressure every 16 slice-pairs and reclaims only when free
-GPU memory is below 12% of total memory. `OCTOPUS_CUDA_PIC_RECLAIM_EVERY`
-enables fixed-interval cleanup for debugging or constrained-memory runs.
+GPU memory is below 12% of total memory.
 
 ### 4.2 Evaluate a Two-State Indexed CUDA Collision Path
 

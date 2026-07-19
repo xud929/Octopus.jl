@@ -166,6 +166,15 @@ longitudinal mean/rms; this replaces manually constructing Gaussian
 `slicing1=...` and `slicing2=...` allow different slicing configurations for
 beam 1 and beam 2.
 
+Runtime observation is explicit and task-scoped. Pass
+`diagnostics=StrongStrongDiagnostics(...)` to `StrongStrongTask`; controls
+cover complete-turn timing, CUDA memory logging, PIC phase timing, Green-cache
+statistics, and NVTX ranges. Read structured results with `turn_timings`,
+`pic_phase_timings`, or `diagnostic_summary`. Detailed PIC phase timing inserts
+synchronization and is not a production throughput measurement. Environment
+variables in the shell example are convenience adapters; library runtime code
+does not read them.
+
 `GaussianPoissonSolver` uses a sliced soft-Gaussian field approximation. For
 each slice pair, the source slice is represented by its transverse Gaussian
 moments at the slice center; each field particle uses a per-particle drifted
@@ -218,8 +227,8 @@ Green FFTs per slice-pair, one for each beam-beam direction, and reuses each
 Green for the left and right source-boundary charge solves when the current
 source and field domains still fit inside the cached grids. The default is
 `green_cache=:slice_pair`; use `green_cache=:none` for an uncached reference.
-Set `OCTOPUS_PIC_CACHE_STATS=1` to print cache hits, misses, and hit rate for
-PIC runs.
+Set `StrongStrongDiagnostics(cache_stats=true)` to print cache hits, misses,
+and hit rate for PIC runs.
 
 CPU execution supports the implemented slicing methods. CUDA execution supports
 the same public slicing methods for `GaussianPoissonSolver` and
@@ -251,9 +260,8 @@ charge stack. In wavefront PIC mode, the stack grows to
 `PICPoissonSolver(cuda_wavefront_fft=false)` to fall back from
 wavefront-level batching to per-pair batched FFTs, or
 `PICPoissonSolver(cuda_batch_fft=false)` to fall back to the previous
-four-stream field-solve path. The equivalent environment variables are
-debugging overrides. The default CUDA PIC indexed wavefront path skips compact
-slice gather/scatter. It
+four-stream field-solve path. The default CUDA PIC indexed wavefront path skips
+compact slice gather/scatter. It
 computes drifted bounds from full beam arrays using slice index vectors,
 deposits directly from those indexed particles into the wavefront charge stack,
 keeps the same large batched charge FFT and Green FFT path, and applies kicks
@@ -275,7 +283,7 @@ slice_pair_green_growth=0.20)`. The strong-strong example also maps
 `OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH` into these constructor keywords for
 command-line convenience. Use
 `green_cache=:slice_pair` for the default persistent task cache. Solver option
-scope, defaults, dependencies, and debugging overrides are available
+scope, defaults, and dependencies are available
 programmatically through `solver_option_schema(PICPoissonSolver)` and as a
 readable summary through `solver_help(PICPoissonSolver)`. CUDA-only options are
 explicitly marked with `supported_backends=(CUDABackend,)`.
@@ -287,35 +295,25 @@ so compare luminosity, RMS, cache hit/build counts, and wall time against
 `green_cache=:none`, PIC also
 builds the wavefront Green functions as a two-plane-per-slice-pair stack and
 runs a batched Green FFT. The charge FFT and inverse FFT are already batched
-over the wavefront charge stack. Set `OCTOPUS_CUDA_PIC_WAVEFRONT_GREEN_FFT=0`
-to fall back to the older per-geometry Green FFT path for comparison.
+over the wavefront charge stack.
 Standalone
 `collide!(solver, beam1, beam2, CUDABackend)` calls still allocate a temporary
 workspace for that call.
 The luminosity grid deposition/reduction reads only the old compact slice
-buffers. In CUDA wavefront mode, scheduled luminosity uses the same per-pair
-formula as the sequential path by default. An experimental stacked-grid
-wavefront luminosity path can be enabled with
-`OCTOPUS_CUDA_PIC_BATCH_LUMINOSITY=1`, but it is not the default until validated
-against the per-pair formula. Luminosity runs synchronously by default because
-measured Julia task/stream overhead outweighed the available overlap on the
-tested path. Set `OCTOPUS_CUDA_PIC_ASYNC_LUMINOSITY=1` to run it on the
-luminosity stream for profiling. Compact slice operations use mask-free CUDA
+buffers. In CUDA wavefront mode, scheduled luminosity uses the validated
+per-pair formula. Luminosity runs synchronously because measured Julia
+task/stream overhead outweighed the available overlap on the tested path.
+Compact slice operations use mask-free CUDA
 kernels and reuse fixed-size PIC grid work buffers within a collision.
 Stream/event ordering replaces the previous global synchronization before
 launching independent field solves. Set
 `PICPoissonSolver(cuda_async=false)` to use the sequential CUDA PIC path.
-`OCTOPUS_CUDA_PIC_ASYNC=0` remains a debugging override.
 Set `OCTOPUS_PIC_BATCH_MODE=wavefront` in the strong-strong example to run the
 CUDA PIC wavefront scheduler, or pass `batch_mode=:wavefront` directly to
 `PICPoissonSolver`.
 CUDA PIC performs adaptive CUDA memory-pool cleanup for temporary arrays. By
 default, it checks memory pressure every 16 slice-pairs and reclaims only when
-free GPU memory is below 12% of total memory. Use
-`OCTOPUS_CUDA_PIC_RECLAIM_CHECK_EVERY` and
-`OCTOPUS_CUDA_PIC_RECLAIM_FREE_FRACTION` to tune the adaptive path. Setting
-`OCTOPUS_CUDA_PIC_RECLAIM_EVERY` enables fixed-interval cleanup in slice-pairs;
-`OCTOPUS_CUDA_PIC_RECLAIM_EVERY=0` disables explicit cleanup.
+free GPU memory is below 12% of total memory.
 This CUDA PIC path is still dominated by deposition and FFT costs for dense
 beams; binned or tiled deposition may be needed later to reduce atomic
 contention.

@@ -838,9 +838,6 @@ if _HAS_CUDA
         function _moment_observer_row(ctx::TrackingContext,
                                       rep::Phase6DRep{<:CUDA.CuArray}, moments::Tuple,
                                       observer::MomentObserver)
-            get(ENV, "OCTOPUS_CUDA_MOMENT_REDUCTION", "1") in
-                ("1", "true", "TRUE", "yes", "YES") ||
-                return _moment_observer_row(ctx, Phase6DRep(map(Array, coordinate_arrays(rep))...), moments)
             row = Vector{Float64}(undef, length(moments) + 1)
             row[1] = Float64(ctx.turn)
             isempty(moments) && return row

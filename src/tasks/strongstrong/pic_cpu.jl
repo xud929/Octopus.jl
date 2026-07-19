@@ -386,7 +386,7 @@ end
 
 function _pic_report_green_cache(cache)
     cache === nothing && return nothing
-    get(ENV, "OCTOPUS_PIC_CACHE_STATS", "0") in ("1", "true", "TRUE", "yes", "YES") || return nothing
+    _strong_strong_diagnostics().cache_stats || return nothing
     if cache isa _PICSlicePairGreenCache
         total = cache.hits + cache.misses + cache.rebuilds
         reuse_rate = total == 0 ? 0.0 : cache.hits / total

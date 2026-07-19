@@ -27,7 +27,9 @@ if _HAS_CUDA
             T = eltype(beam1.rep.x)
             workspace = _cuda_pic_workspace!(task.runtime_cache, label, solver, T)
             green_cache = _cuda_pic_green_cache!(task.runtime_cache, label, solver, T)
-            return _cuda_pic_collide!(solver, beam1, beam2, workspace, green_cache, ctx)
+            return Base.ScopedValues.with(_ACTIVE_PIC_TIMING_CONTEXT => (label=label, turn=ctx.turn)) do
+                _cuda_pic_collide!(solver, beam1, beam2, workspace, green_cache, ctx)
+            end
         end
 
         function _cuda_pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam,
@@ -302,42 +304,32 @@ if _HAS_CUDA
             reclaim::UInt64
         end
 
-        _cuda_pic_timing_enabled() =
-            get(ENV, "OCTOPUS_CUDA_PIC_TIMING", "0") in ("1", "true", "TRUE", "yes", "YES")
+        _cuda_pic_timing_enabled() = begin
+            diagnostics = _strong_strong_diagnostics()
+            diagnostics.pic_timing || diagnostics.pic_timing_detail
+        end
 
-        _cuda_pic_detailed_timing_enabled() =
-            get(ENV, "OCTOPUS_CUDA_PIC_TIMING_DETAIL", "0") in ("1", "true", "TRUE", "yes", "YES")
+        _cuda_pic_detailed_timing_enabled() = _strong_strong_diagnostics().pic_timing_detail
 
-        _cuda_pic_env_override(name, fallback::Bool) =
-            haskey(ENV, name) ? ENV[name] in ("1", "true", "TRUE", "yes", "YES") : fallback
+        _cuda_pic_async_enabled(solver::PICPoissonSolver) = solver.cuda_async
 
-        _cuda_pic_async_enabled(solver::PICPoissonSolver) =
-            _cuda_pic_env_override("OCTOPUS_CUDA_PIC_ASYNC", solver.cuda_async)
+        _cuda_pic_batch_fft_enabled(solver::PICPoissonSolver) = solver.cuda_batch_fft
 
-        _cuda_pic_batch_fft_enabled(solver::PICPoissonSolver) =
-            _cuda_pic_env_override("OCTOPUS_CUDA_PIC_BATCH_FFT", solver.cuda_batch_fft)
+        _cuda_pic_wavefront_fft_enabled(solver::PICPoissonSolver) = solver.cuda_wavefront_fft
 
-        _cuda_pic_wavefront_fft_enabled(solver::PICPoissonSolver) =
-            _cuda_pic_env_override("OCTOPUS_CUDA_PIC_WAVEFRONT_FFT", solver.cuda_wavefront_fft)
+        _cuda_pic_wavefront_green_fft_enabled() = true
 
-        _cuda_pic_wavefront_green_fft_enabled() =
-            get(ENV, "OCTOPUS_CUDA_PIC_WAVEFRONT_GREEN_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
+        _cuda_pic_async_luminosity_enabled() = false
 
-        _cuda_pic_async_luminosity_enabled() =
-            get(ENV, "OCTOPUS_CUDA_PIC_ASYNC_LUMINOSITY", "0") in ("1", "true", "TRUE", "yes", "YES")
-
-        _cuda_pic_batched_luminosity_enabled() =
-            get(ENV, "OCTOPUS_CUDA_PIC_BATCH_LUMINOSITY", "0") in ("1", "true", "TRUE", "yes", "YES")
+        _cuda_pic_batched_luminosity_enabled() = false
 
         _cuda_pic_slice_pair_green_cache_enabled(solver::PICPoissonSolver) =
-            Symbol(solver.green_cache) == :slice_pair ||
-            get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_CACHE", "0") in ("1", "true", "TRUE", "yes", "YES")
+            Symbol(solver.green_cache) == :slice_pair
 
-        _cuda_pic_stack_cached_green_enabled() =
-            get(ENV, "OCTOPUS_CUDA_PIC_STACK_CACHED_GREEN", "1") in ("1", "true", "TRUE", "yes", "YES")
+        _cuda_pic_stack_cached_green_enabled() = true
 
         _cuda_pic_indexed_wavefront_enabled(solver::PICPoissonSolver) =
-            _cuda_pic_env_override("OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT", solver.cuda_indexed_wavefront)
+            solver.cuda_indexed_wavefront
 
         function _cuda_pic_timing_stats()
             _cuda_pic_timing_enabled() || return nothing
@@ -356,6 +348,11 @@ if _HAS_CUDA
         function _cuda_pic_report_timing(stats::_CUDAPICTimingStats, pair_count::Integer)
             scale = 1.0e-9
             total = stats.slicing + stats.gather + stats.interaction + stats.scatter + stats.reclaim
+            record = (; context=_ACTIVE_PIC_TIMING_CONTEXT[], slice_pairs=Int(pair_count),
+                      (field => getproperty(stats, field) * scale for field in fieldnames(_CUDAPICTimingStats))...,
+                      measured_total=total * scale)
+            sink = _ACTIVE_PIC_PHASE_TIMING_SINK[]
+            sink === nothing || push!(sink, record)
             println("CUDA PIC timing profile:")
             println("  slice_pairs = ", pair_count)
             println("  slicing     = ", stats.slicing * scale, " s")
@@ -382,7 +379,7 @@ if _HAS_CUDA
             println("  measured_total = ", total * scale, " s")
             _cuda_pic_detailed_timing_enabled() || println(
                 "  note: field sub-timers are diagnostic only in async mode; " *
-                "use OCTOPUS_CUDA_PIC_TIMING_DETAIL=1 for additive field breakdown."
+                "use StrongStrongDiagnostics(pic_timing_detail=true) for additive field breakdown."
             )
             return nothing
         end
@@ -453,7 +450,7 @@ if _HAS_CUDA
 
         function _cuda_pic_report_slice_pair_green_cache(cache::_CUDAPICSlicePairGreenCache)
             isempty(cache.entries) && return nothing
-            get(ENV, "OCTOPUS_PIC_CACHE_STATS", "0") in ("1", "true", "TRUE", "yes", "YES") || return nothing
+            _strong_strong_diagnostics().cache_stats || return nothing
             total_lookups = cache.hits + cache.misses + cache.rebuilds
             reuse_rate = total_lookups == 0 ? 0.0 : cache.hits / total_lookups
             initial_fill_rate = total_lookups == 0 ? 0.0 : cache.misses / total_lookups
@@ -468,13 +465,7 @@ if _HAS_CUDA
         end
 
         function _cuda_pic_reclaim_policy()
-            threshold = parse(Float64, get(ENV, "OCTOPUS_CUDA_PIC_RECLAIM_FREE_FRACTION", "0.12"))
-            check_every = parse(Int, get(ENV, "OCTOPUS_CUDA_PIC_RECLAIM_CHECK_EVERY", "16"))
-            if haskey(ENV, "OCTOPUS_CUDA_PIC_RECLAIM_EVERY")
-                every = max(parse(Int, ENV["OCTOPUS_CUDA_PIC_RECLAIM_EVERY"]), 0)
-                return (mode=:fixed, every=every, check_every=max(check_every, 1), threshold=threshold)
-            end
-            return (mode=:adaptive, every=0, check_every=max(check_every, 1), threshold=threshold)
+            return (mode=:adaptive, every=0, check_every=16, threshold=0.12)
         end
 
         function _cuda_pic_maybe_reclaim(pair_count::Integer, policy)
