@@ -2817,25 +2817,21 @@ if _HAS_CUDA
             source_center2, field_lb2, field_rb2, kbb2,
         )
             index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-            stride = CUDA.gridDim().x * CUDA.blockDim().x
-            while index <= max(length(idx1), length(idx2))
-                if index <= length(idx2)
-                    _cuda_pic_apply_indexed_longitudinal_kick!(
-                        x2, px2, y2, py2, pz2, z2, idx2[index],
-                        phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R,
-                        x02, y02, hx2, hy2, nx, ny, method_code,
-                        source_center2, field_lb2, field_rb2, kbb2,
-                    )
-                end
-                if index <= length(idx1)
-                    _cuda_pic_apply_indexed_longitudinal_kick!(
-                        x1, px1, y1, py1, pz1, z1, idx1[index],
-                        phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R,
-                        x01, y01, hx1, hy1, nx, ny, method_code,
-                        source_center1, field_lb1, field_rb1, kbb1,
-                    )
-                end
-                index += stride
+            if index <= length(idx2)
+                _cuda_pic_apply_indexed_longitudinal_kick!(
+                    x2, px2, y2, py2, pz2, z2, idx2[index],
+                    phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R,
+                    x02, y02, hx2, hy2, nx, ny, method_code,
+                    source_center2, field_lb2, field_rb2, kbb2,
+                )
+            end
+            if index <= length(idx1)
+                _cuda_pic_apply_indexed_longitudinal_kick!(
+                    x1, px1, y1, py1, pz1, z1, idx1[index],
+                    phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R,
+                    x01, y01, hx1, hy1, nx, ny, method_code,
+                    source_center1, field_lb1, field_rb1, kbb1,
+                )
             end
             return nothing
         end

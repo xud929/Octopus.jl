@@ -808,13 +808,13 @@ _cuda_nvtx_enabled() = _strong_strong_diagnostics().nvtx
 function _cuda_nvtx_push(backend, message::AbstractString)
     backend === CUDABackend || return false
     (_HAS_CUDA && _cuda_nvtx_enabled()) || return false
-    CUDA.NVTX.range_push(message=String(message))
+    NVTX.range_push(message=String(message))
     return true
 end
 
 function _cuda_nvtx_pop(backend, active::Bool)
     (backend === CUDABackend && active && _HAS_CUDA) || return nothing
-    CUDA.NVTX.range_pop()
+    NVTX.range_pop()
     return nothing
 end
 

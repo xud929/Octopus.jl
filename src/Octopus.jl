@@ -5,6 +5,7 @@ using Random
 using JLD2
 using HDF5
 using FFTW
+using NVTX
 
 export AbstractExecutionBackend, CPUThreadsBackend, CUDABackend,
        AbstractPhaseRep, track!

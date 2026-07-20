@@ -2,7 +2,7 @@
 
 julia_version = "1.12.4"
 manifest_format = "2.0"
-project_hash = "d5b0235b72aef5da442238e6c72360c1d8bd74fe"
+project_hash = "372b03735fe301e1a4b3d09fc51c9551b7e163ef"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -538,7 +538,7 @@ uuid = "ca575930-c2e3-43a9-ace4-1e988b2c1908"
 version = "1.3.0"
 
 [[deps.Octopus]]
-deps = ["FFTW", "HDF5", "InteractiveUtils", "JLD2", "LinearAlgebra", "Random", "SpecialFunctions"]
+deps = ["Adapt", "CUDA", "FFTW", "HDF5", "InteractiveUtils", "JLD2", "LinearAlgebra", "NVTX", "Random", "SpecialFunctions"]
 path = "."
 uuid = "badbaa64-7004-4ad4-8ce5-525483dccda7"
 version = "0.1.0"

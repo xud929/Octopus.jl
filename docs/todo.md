@@ -17,18 +17,21 @@ Reference case:
 
 Remaining work:
 
-1. Profile the accepted reference with Nsight Systems and Nsight Compute.
-   Identify launch/synchronization gaps, memory traffic, atomic contention,
-   occupancy, and the current dominant kernels.
-2. Test GPU spatial bin indices without reordering canonical particle arrays.
+1. Consolidate grid partial reductions and reduce their launch count. They are
+   the next measured aggregate hotspot (`27.3%` and 1,876 launches/turn).
+2. Revisit the indexed longitudinal kick after Nsight Compute counters become
+   available. Removing its redundant grid-stride loop reduced allocation from
+   150 to 134 registers/thread and improved complete-turn time by 1.6%, but it
+   remains the hottest individual kernel.
+3. Test GPU spatial bin indices without reordering canonical particle arrays.
    Compare `1x1`, `2x2`, and `4x4` cell bins, including index-construction cost.
-3. If binning helps, test tiled/shared-memory CIC deposition one configuration
+4. If binning helps, test tiled/shared-memory CIC deposition one configuration
    at a time.
-4. Test physical SoA sorting only if index-only binning is insufficient. Keep
+5. Test physical SoA sorting only if index-only binning is insufficient. Keep
    immutable particle IDs and include sorting cost in total-turn timing.
-5. Choose later kernel fusion, launch tuning, FFT, overlap, or CUDA Graph work
+6. Choose later kernel fusion, launch tuning, FFT, overlap, or CUDA Graph work
    strictly from the latest profile.
-6. Finish with the target-size 30-turn benchmark, backend contract, identity
+7. Finish with the target-size 30-turn benchmark, backend contract, identity
    checks, and a longer physics regression.
 
 Acceptance gates:
@@ -47,6 +50,12 @@ Current accepted result: indexed wavefront reduced the corrected target-case
 median final-ten mean from `0.6462` to `0.3605 s/turn` (44.2%, 1.79x). The
 30-turn backend contract passed with maximum coordinate error `4.90e-16`,
 luminosity relative error `3.30e-15`, and identical cache history.
+
+The 2026-07-20 Nsight Systems profile is recorded in
+`validation/strong_strong_pic_extreme_benchmark_history.md`. Nsight Compute
+hardware counters remain permission-gated on the benchmark host
+(`ERR_NVGPUCTRPERM`); do not infer measured bandwidth, atomic contention, or
+achieved occupancy from that run.
 
 Do not use results from commit `1f8a513`: that path had an incorrect no-observer
 lattice block and a missing PIC scatter stream-completion boundary. Growth

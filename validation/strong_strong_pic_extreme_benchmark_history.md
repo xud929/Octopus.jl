@@ -245,3 +245,92 @@ The indexed asynchronous diagnostic profile reported approximately:
 Because deposition alone is not the leading cost after indexed execution,
 physical particle sorting is not the next justified change. Re-profile before
 revisiting bin sorting, shared-memory deposition, or physical SoA reordering.
+
+## 2026-07-20 accepted-reference Nsight profile
+
+The accepted indexed-wavefront reference at commit `480ec6b` was traced for
+five target-size turns with luminosity and moment output disabled. The machine
+used an NVIDIA RTX 4500 Ada Generation (24 GiB), driver `580.119.02`, CUDA
+toolkit `13.0`, CUDA.jl `6.2.1`, Julia `1.12.4`, Nsight Systems `2026.3.1`, and
+Nsight Compute `2026.2.1`. Turns 2--5 were used as the steady interval; turn 1
+included Julia/CUDA compilation and cache setup.
+
+The steady turns took `0.5615`, `0.4473`, `0.4337`, and `0.4753 s`. Summed
+kernel durations were approximately `0.263 s/turn`; this sum is diagnostic and
+does not account for concurrent execution. The leading steady GPU kernels were:
+
+| Kernel family | Time/turn (ms) | Kernel time | Launches/turn |
+|---|---:|---:|---:|
+| indexed longitudinal kick | 74.98 | 28.49% | 225 |
+| grid partial reduction | 71.74 | 27.26% | 1,876 |
+| indexed drifted-plane deposition | 38.95 | 14.80% | 900 |
+| line tracking | 26.74 | 10.16% | 4 |
+| batched/vector FFT | 13.59 | 5.17% | 71.5 |
+| regular FFT | 13.20 | 5.02% | 71.5 |
+
+The indexed longitudinal kick is therefore the hottest individual kernel. It
+used 150 registers/thread with 256-thread blocks. On this GPU (65,536 registers
+and 1,536 threads per SM), register demand permits only one such block per SM,
+or about 16.7% theoretical thread occupancy. This is a launch-resource estimate,
+not Nsight Compute's measured achieved occupancy. The grid reductions are a
+nearly equal aggregate target, but no single reduction launch dominates.
+
+Across the full trace, including setup, CUDA API time was led by stream
+synchronization (9,927 calls, 515 ms), followed by module loading (setup only),
+device-to-host asynchronous copies (4,876 calls, 157 ms), and kernel-launch
+calls (20,231 calls, 149 ms). The gap between complete-turn time and summed GPU
+kernel duration makes launch/synchronization orchestration another measured
+optimization target.
+
+Nsight Compute attached to a representative target-size kick launch, but the
+driver has `RmProfilingAdminOnly=1` and rejected hardware-counter collection
+with `ERR_NVGPUCTRPERM`. Consequently this experiment did not measure achieved
+occupancy, memory bandwidth, stall reasons, or atomic contention. Those metrics
+must be collected after an administrator enables performance-counter access;
+they must not be inferred from the Systems trace.
+
+Enabling the existing `OCTOPUS_CUDA_NVTX=1` diagnostic exposed a stale API use:
+CUDA.jl no longer provides `CUDA.NVTX`. The diagnostic now uses the direct
+`NVTX.jl` dependency. This affects profiler annotation only, not tracking
+physics or the default production path.
+
+## 2026-07-20 indexed-kick experiments
+
+Each proposal was applied independently to the accepted reference. Complete
+turn timing used three 30-turn target-size runs and the final-ten mean unless a
+clear regression justified stopping after the first run. The fresh unchanged
+baseline means were `0.36360`, `0.35659`, and `0.36379 s/turn`; their median was
+`0.36360 s/turn`.
+
+| Proposal | Final-ten means (s/turn) | Accuracy | Decision |
+|---|---|---|---|
+| Two single-beam kernels per pair | `0.36473`, `0.36619`, `0.36342` | contract passed | Rejected: 0.3% slower median |
+| One launch with beam-partitioned blocks | `0.35690`, `0.36341`, `0.36203` | contract passed | Rejected: 0.43% gain, within timing noise |
+| Value-specialized CIC/TSC dispatch | n/a | compiler failed | Rejected: Julia/LLVM compilation segfault |
+| Explicit CIC wrapper kernel | `0.40313` | contract passed | Rejected: 10.9% slower; further repeats stopped |
+| Precomputed pair-invariant reciprocals | `0.36398`, `0.36223`, `0.36277` | contract passed | Rejected: 0.23% gain, within timing noise |
+| Remove redundant kick grid-stride loop | `0.36118`, `0.35608`, `0.35779` | contract passed | **Accepted: 1.60% faster median** |
+| Accepted loop removal plus 128 threads | `0.36421` | contract passed | Rejected: slower; further repeats stopped |
+
+The accepted kernel is launched with `cld(max(length(idx1), length(idx2)),
+256)` blocks, so each thread can visit at most one indexed particle in either
+beam. Removing the unreachable second loop iteration preserves particle order,
+field interpolation, kick arithmetic, and beam ordering. It changes neither
+particle storage nor IDs.
+
+The retained median final-ten mean is `0.35779 s/turn`, 1.60% below the fresh
+baseline. The median of the per-run final-ten medians improves from `0.35847`
+to `0.35327 s/turn` (1.45%). The three-turn backend contract reported maximum
+coordinate error `1.03e-16`, luminosity relative error `2.85e-15`, and identical
+CPU/CUDA cache histories.
+
+The final 30-turn backend contract also passed with maximum coordinate error
+`8.20e-16`, luminosity relative error `1.69e-14`, and identical cache history
+`(476, 18, 46)`. The independent diagnostics consistency check passed.
+
+A follow-up five-turn Nsight Systems trace measured 134 registers/thread, down
+from 150, with the same 256-thread block size. The kick averaged `332.2 us` per
+launch versus `333.8 us` in the preceding trace. It remains limited to one
+resident block per SM, so the next optimization target moves to the nearly tied
+grid-reduction aggregate until hardware counters can guide a deeper kick
+rewrite.
