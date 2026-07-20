@@ -1707,20 +1707,14 @@ if _HAS_CUDA
             for n in 1:npairs
                 item = valid[n]
                 offset = 4 * (n - 1)
-                _cuda_pic_deposit_drifted_indexed_plane!(
-                    solver, charge, Int32(offset + 1), rep1, item.idx1, prep12[n].sL,
+                _cuda_pic_deposit_drifted_indexed_plane_pair!(
+                    solver, charge, Int32(offset + 1), Int32(offset + 2),
+                    rep1, item.idx1, prep12[n].sL, prep12[n].sR,
                     prep12[n].source_grid, method_code, threads, stream,
                 )
-                _cuda_pic_deposit_drifted_indexed_plane!(
-                    solver, charge, Int32(offset + 2), rep1, item.idx1, prep12[n].sR,
-                    prep12[n].source_grid, method_code, threads, stream,
-                )
-                _cuda_pic_deposit_drifted_indexed_plane!(
-                    solver, charge, Int32(offset + 3), rep2, item.idx2, prep21[n].sL,
-                    prep21[n].source_grid, method_code, threads, stream,
-                )
-                _cuda_pic_deposit_drifted_indexed_plane!(
-                    solver, charge, Int32(offset + 4), rep2, item.idx2, prep21[n].sR,
+                _cuda_pic_deposit_drifted_indexed_plane_pair!(
+                    solver, charge, Int32(offset + 3), Int32(offset + 4),
+                    rep2, item.idx2, prep21[n].sL, prep21[n].sR,
                     prep21[n].source_grid, method_code, threads, stream,
                 )
                 hx12 = T(prep12[n].source_grid.width) / T(nx - 1)
@@ -1882,6 +1876,23 @@ if _HAS_CUDA
             CUDA.@cuda threads=threads blocks=cld(length(idx), threads) stream=stream _cuda_pic_deposit_drifted_indexed_plane_kernel!(
                 charge, plane, source.x, source.px, source.y, source.py, idx, T(drift_s),
                 T(source_grid.x0), T(source_grid.y0), hx, hy, Int32(nx), Int32(ny), method_code,
+            )
+            return nothing
+        end
+
+        function _cuda_pic_deposit_drifted_indexed_plane_pair!(
+            solver::PICPoissonSolver, charge, planeL::Int32, planeR::Int32,
+            source, idx, driftL, driftR, source_grid,
+            method_code::Int32, threads::Integer, stream,
+        )
+            nx, ny = solver.grid
+            T = eltype(source.x)
+            hx = T(source_grid.width) / T(nx - 1)
+            hy = T(source_grid.height) / T(ny - 1)
+            CUDA.@cuda threads=threads blocks=cld(length(idx), threads) stream=stream _cuda_pic_deposit_drifted_indexed_plane_pair_kernel!(
+                charge, planeL, planeR, source.x, source.px, source.y, source.py, idx,
+                T(driftL), T(driftR), T(source_grid.x0), T(source_grid.y0), hx, hy,
+                Int32(nx), Int32(ny), method_code,
             )
             return nothing
         end
@@ -2490,6 +2501,66 @@ if _HAS_CUDA
                     end
                 end
                 index += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_deposit_drifted_indexed_plane_pair_kernel!(
+            charge, planeL::Int32, planeR::Int32,
+            x, px, y, py, idx, driftL, driftR,
+            x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32,
+        )
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            hxi = inv(hx)
+            hyi = inv(hy)
+            while index <= length(idx)
+                particle = idx[index]
+                xp = x[particle]
+                pxp = px[particle]
+                yp = y[particle]
+                pyp = py[particle]
+                _cuda_pic_deposit_point!(
+                    charge, planeL, xp + pxp * driftL, yp + pyp * driftL,
+                    x0, y0, hxi, hyi, nx, ny, method_code,
+                )
+                _cuda_pic_deposit_point!(
+                    charge, planeR, xp + pxp * driftR, yp + pyp * driftR,
+                    x0, y0, hxi, hyi, nx, ny, method_code,
+                )
+                index += stride
+            end
+            return nothing
+        end
+
+        @inline function _cuda_pic_deposit_point!(charge, plane::Int32, xd, yd,
+                                                  x0, y0, hxi, hyi,
+                                                  nx::Int32, ny::Int32, method_code::Int32)
+            ux = (xd - x0) * hxi
+            uy = (yd - y0) * hyi
+            if method_code == 1
+                ix, wx1, wx2 = _cuda_pic_cic_weights(ux, nx)
+                iy, wy1, wy2 = _cuda_pic_cic_weights(uy, ny)
+                @inbounds begin
+                    CUDA.@atomic charge[ix, iy, plane] += wx1 * wy1
+                    CUDA.@atomic charge[ix + 1, iy, plane] += wx2 * wy1
+                    CUDA.@atomic charge[ix, iy + 1, plane] += wx1 * wy2
+                    CUDA.@atomic charge[ix + 1, iy + 1, plane] += wx2 * wy2
+                end
+            else
+                ix, wx1, wx2, wx3 = _cuda_pic_tsc_weights(ux, nx)
+                iy, wy1, wy2, wy3 = _cuda_pic_tsc_weights(uy, ny)
+                @inbounds begin
+                    CUDA.@atomic charge[ix, iy, plane] += wx1 * wy1
+                    CUDA.@atomic charge[ix, iy + 1, plane] += wx1 * wy2
+                    CUDA.@atomic charge[ix, iy + 2, plane] += wx1 * wy3
+                    CUDA.@atomic charge[ix + 1, iy, plane] += wx2 * wy1
+                    CUDA.@atomic charge[ix + 1, iy + 1, plane] += wx2 * wy2
+                    CUDA.@atomic charge[ix + 1, iy + 2, plane] += wx2 * wy3
+                    CUDA.@atomic charge[ix + 2, iy, plane] += wx3 * wy1
+                    CUDA.@atomic charge[ix + 2, iy + 1, plane] += wx3 * wy2
+                    CUDA.@atomic charge[ix + 2, iy + 2, plane] += wx3 * wy3
+                end
             end
             return nothing
         end

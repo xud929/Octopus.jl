@@ -397,3 +397,90 @@ Post-revert verification confirmed no source or dependency diff from commit
 `0.31573 s/turn` result. The repeated 30-turn contract passed with maximum
 coordinate error `5.54e-16`, luminosity relative error `2.35e-14`, and identical
 cache history `(476, 18, 46)`.
+
+## 2026-07-20 launch and deposition experiments
+
+Each candidate preserved canonical particle storage and immutable IDs. CUDA
+Graph capture around the indexed kick passed the short backend contract, but
+changing wavefront sizes required graph updates or re-instantiation. Three
+target means (`0.31380`, `0.31562`, `0.31663 s/turn`) showed no gain over the
+`0.31573 s/turn` reference, so the graph path was removed. Removing the explicit
+indexed-kick stream synchronization also passed the contract but measured
+`0.31639 s/turn`; it too was removed. An earlier synchronization experiment in
+the inactive compact path was classified as a no-op control and not retained.
+
+The accepted deposition change combines the left and right endpoint deposits
+for one beam into one CUDA kernel. It reduces deposition launches from 900 to
+450 per turn while retaining the same CIC/TSC weights and atomic additions on
+separate charge planes. The three target-size final-ten means were `0.29801`,
+`0.29816`, and `0.30495 s/turn`; their median is `0.29816 s/turn`, 5.57% below
+the fused-bounds reference. The short backend contract passed with maximum
+coordinate error `1.15e-16`, luminosity relative error `3.66e-15`, and identical
+cache history. Electron and proton RMS values were unchanged.
+
+A five-turn Nsight Systems trace (`/tmp/octopus-pic-fused-plane.nsys-rep` on
+the benchmark host) measured paired deposition at `27.17 ms/turn` over 450
+launches, down from `38.95 ms/turn` over 900 launches. The indexed kick remains
+the leading kernel family at about `74.66 ms/turn`; bounds reductions account
+for about `42.38 ms/turn`.
+
+Fusing both beams and all four endpoint planes into one launch passed the short
+contract but regressed to `0.30032 s/turn`, so it was reverted. Removing the
+paired kernel's grid-stride loop also passed the contract (`9.18e-17` maximum
+coordinate error, `5.15e-15` luminosity relative error), but three means of
+`0.30571`, `0.30484`, and `0.30231 s/turn` were slower and the loop was restored.
+A 128-thread launch specialization did not complete reliably and produced no
+valid timing, so it was not retained.
+
+The new deposition profile does not justify a histogram/prefix/scatter and
+tiled shared-memory implementation: that design requires several full index
+passes and launches to replace a stage now taking about 9% of total turn time.
+Physical SoA sorting is consequently also rejected at this stage; it was
+conditional on the linear-time binned design being insufficient and would add
+sorting cost while making canonical ordering harder to audit. Reconsider both
+only if a future profile again identifies deposition as a leading cost.
+
+The independent `strong_strong_diagnostics_consistency.jl` check passed. An
+initial final-contract attempt hung in indexed luminosity deposition. Review
+found that the later grid-stride-loop experiment had removed
+`index += stride` from the legacy single-plane luminosity kernel and its broad
+revert had inserted that increment in the indexed kick kernel. The target
+benchmark disables luminosity and preceded this faulty experimental revert, so
+its accepted paired-plane timing was unaffected. Both control-flow changes were
+restored exactly to the preceding implementation, leaving only the intended
+paired-plane deposition diff.
+
+After that correction, the 30-turn backend contract passed with maximum
+coordinate error `8.14e-16`, luminosity relative error `1.85e-14`, and identical
+CPU/CUDA cache history `(476, 18, 46)`. The contract used the required Green
+cache settings (`slice_pair_green_min_ratio=0.50`,
+`slice_pair_green_growth=0.25`).
+
+## 2026-07-20 luminosity-inclusive timing
+
+The accepted target case was repeated with luminosity evaluated every turn
+(`pic_luminosity_every=1`) while luminosity file output and moments remained
+disabled. Thus the measurement includes luminosity calculation but excludes
+disk-I/O cost. Three 30-turn runs gave final-ten means of `0.39798`, `0.39873`,
+and `0.39621 s/turn`; the median is `0.39798 s/turn`. Relative to the
+luminosity-disabled `0.29816 s/turn` median, evaluating luminosity every turn
+adds about `0.09982 s/turn` or 33.5% to complete-turn time.
+
+For an I/O-inclusive comparison, the same case was run for 200 turns and
+turns 100--199 were averaged. Luminosity was evaluated and written every turn;
+electron and proton moments were reduced every turn and written through the
+default capacity-100 HDF5 buffers. The solver-only and luminosity-compute
+controls used one run each. Three complete-diagnostics runs were used, with
+their median reported below.
+
+| Configuration | Last-100 mean (s/turn) | Last-100 median (s/turn) | Change from solver-only |
+|---|---:|---:|---:|
+| Solver only | 0.30318 | 0.30305 | reference |
+| Luminosity calculation only | 0.38607 | 0.38575 | +27.3% |
+| Luminosity file + both moment files | 0.38737 | 0.38727 | +27.8% |
+
+The three full-diagnostics last-100 means were `0.38737`, `0.38394`, and
+`0.40217 s/turn`. Their median indicates about `0.00129 s/turn` (0.34%) beyond
+luminosity computation for luminosity text I/O, two GPU moment reductions, and
+the two buffered HDF5 outputs together. The final files contained 200
+luminosity records and both capacity-100 moment buffers were exercised.

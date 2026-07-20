@@ -21,18 +21,12 @@ Remaining work:
    available. Removing its redundant grid-stride loop reduced allocation from
    150 to 134 registers/thread and improved complete-turn time by 1.6%, but it
    remains the hottest individual kernel.
-2. Investigate launch/synchronization reduction or CUDA Graph capture for the
-   stable wavefront shape, including graph-update cost when cached grids change.
-3. Revisit spatial binning only with a linear-time histogram/prefix builder and
-   tiled/shared-memory deposition as one measured design. GPU comparison-sort
-   index lists were rejected for `1x1`, `2x2`, and `4x4` bins because total-turn
-   time more than doubled. Keep canonical particle arrays and IDs unchanged.
-4. Test physical SoA sorting only if the combined linear-time bin/tile design is
-   still insufficient. Keep immutable particle IDs and include sorting cost.
-5. Choose later kernel fusion, launch tuning, FFT, or overlap work
-   strictly from the latest profile.
-6. Finish with the target-size 30-turn benchmark, backend contract, identity
-   checks, and a longer physics regression.
+2. Revisit deposition binning only if a future profile makes deposition a
+   leading cost. The current paired-plane kernel costs about `27.2 ms/turn`;
+   a linear histogram/prefix/scatter plus tiled deposition requires several
+   passes and launches in place of each current launch, so it has no credible
+   total-turn gain at the present profile. Keep canonical particle arrays and
+   IDs unchanged.
 
 Acceptance gates:
 
@@ -46,11 +40,12 @@ Acceptance gates:
 - Record hardware/software versions, commit, solver/task settings, individual
   final-ten samples, memory use, and validation residuals.
 
-Current accepted result: indexed wavefront, the simplified kick kernel, and
-fused source/field bounds reductions reduced the corrected target-case median
-final-ten mean from `0.6462` to `0.3157 s/turn` (51.1%, 2.05x). The latest
-30-turn backend contract passed with maximum coordinate error `7.20e-16`,
-luminosity relative error `1.55e-14`, and identical cache history.
+Current accepted result: indexed wavefront, the simplified kick kernel, fused
+source/field bounds reductions, and paired-plane deposition reduced the
+accepted indexed target-case median final-ten mean from `0.3605` to
+`0.2982 s/turn` (17.3%, 1.21x). The paired-plane candidate passed the short
+and 30-turn backend contracts; the target-size benchmark and diagnostics check
+also passed.
 
 The 2026-07-20 Nsight Systems profile is recorded in
 `validation/strong_strong_pic_extreme_benchmark_history.md`. Nsight Compute
