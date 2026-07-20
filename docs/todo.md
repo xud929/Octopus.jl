@@ -21,13 +21,15 @@ Remaining work:
    available. Removing its redundant grid-stride loop reduced allocation from
    150 to 134 registers/thread and improved complete-turn time by 1.6%, but it
    remains the hottest individual kernel.
-2. Test GPU spatial bin indices without reordering canonical particle arrays.
-   Compare `1x1`, `2x2`, and `4x4` cell bins, including index-construction cost.
-3. If binning helps, test tiled/shared-memory CIC deposition one configuration
-   at a time.
-4. Test physical SoA sorting only if index-only binning is insufficient. Keep
-   immutable particle IDs and include sorting cost in total-turn timing.
-5. Choose later kernel fusion, launch tuning, FFT, overlap, or CUDA Graph work
+2. Investigate launch/synchronization reduction or CUDA Graph capture for the
+   stable wavefront shape, including graph-update cost when cached grids change.
+3. Revisit spatial binning only with a linear-time histogram/prefix builder and
+   tiled/shared-memory deposition as one measured design. GPU comparison-sort
+   index lists were rejected for `1x1`, `2x2`, and `4x4` bins because total-turn
+   time more than doubled. Keep canonical particle arrays and IDs unchanged.
+4. Test physical SoA sorting only if the combined linear-time bin/tile design is
+   still insufficient. Keep immutable particle IDs and include sorting cost.
+5. Choose later kernel fusion, launch tuning, FFT, or overlap work
    strictly from the latest profile.
 6. Finish with the target-size 30-turn benchmark, backend contract, identity
    checks, and a longer physics regression.

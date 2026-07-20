@@ -361,3 +361,39 @@ The three-turn backend contract passed with maximum coordinate error
 The final 30-turn contract passed with maximum coordinate error `7.20e-16`,
 luminosity relative error `1.55e-14`, and identical cache history
 `(476, 18, 46)`. Diagnostics consistency also passed.
+
+## 2026-07-20 index-only spatial binning
+
+An experimental path generated centroid-plane cell keys for each beam and
+slice pair, sorted only the temporary CUDA index list, and reused that ordering
+for the left- and right-plane CIC deposits. Canonical particle arrays and IDs
+were never reordered. Key generation and GPU `sortperm` were included in
+complete-turn timing.
+
+One target-size 30-turn run was sufficient for each configuration because all
+were decisive regressions relative to the accepted `0.31573 s/turn` reference:
+
+| Bin size | Final-ten mean (s/turn) | Change |
+|---|---:|---:|
+| `1x1` cells | 0.65147 | 106.3% slower |
+| `2x2` cells | 0.64291 | 103.6% slower |
+| `4x4` cells | 0.64611 | 104.6% slower |
+
+The `1x1` candidate passed the three-turn backend contract with maximum
+coordinate error `1.03e-16`, luminosity relative error `3.12e-15`, and
+identical cache history. All three runs reproduced the accepted electron and
+proton RMS values. The failure is performance, not accuracy: comparison sorting
+costs more than the entire unbinned turn and cannot be recovered by locality in
+the existing atomic deposition kernel.
+
+No spatial-binning code or solver option was retained. Revisit only as a
+combined linear-time histogram/prefix index builder plus tiled/shared-memory
+deposition experiment; continue to preserve canonical particle storage and
+immutable IDs.
+
+Post-revert verification confirmed no source or dependency diff from commit
+`7fa9c42`. Three target-size final-ten means were `0.31600`, `0.31832`, and
+`0.31752 s/turn`; the median `0.31752 s/turn` is within 0.57% of the accepted
+`0.31573 s/turn` result. The repeated 30-turn contract passed with maximum
+coordinate error `5.54e-16`, luminosity relative error `2.35e-14`, and identical
+cache history `(476, 18, 46)`.
