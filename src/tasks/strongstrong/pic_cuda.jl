@@ -345,6 +345,12 @@ if _HAS_CUDA
         end
         _cuda_pic_add_time!(::Nothing, field::Symbol, t0::UInt64) = nothing
 
+        function _cuda_pic_add_elapsed!(stats::_CUDAPICTimingStats, field::Symbol, elapsed::UInt64)
+            setproperty!(stats, field, getproperty(stats, field) + elapsed)
+            return nothing
+        end
+        _cuda_pic_add_elapsed!(::Nothing, field::Symbol, elapsed::UInt64) = nothing
+
         function _cuda_pic_report_timing(stats::_CUDAPICTimingStats, pair_count::Integer)
             scale = 1.0e-9
             total = stats.slicing + stats.gather + stats.interaction + stats.scatter + stats.reclaim
@@ -881,11 +887,11 @@ if _HAS_CUDA
             prep21 = Vector{Any}(undef, npairs)
             for n in 1:npairs
                 item = valid[n]
-                prep12[n] = _cuda_pic_prepare_interaction_indexed(
-                    solver, rep1, item.idx1, item.p1, rep2, item.idx2, item.p2, green_cache, timing,
-                )
-                prep21[n] = _cuda_pic_prepare_interaction_indexed(
-                    solver, rep2, item.idx2, item.p2, rep1, item.idx1, item.p1, green_cache, timing,
+                prep12[n], prep21[n] = _cuda_pic_prepare_interaction_pair_indexed(
+                    solver,
+                    rep1, item.idx1, item.p1,
+                    rep2, item.idx2, item.p2,
+                    green_cache, timing,
                 )
                 if green_cache === nothing && _cuda_pic_slice_pair_green_cache_enabled(solver)
                     prep12[n] = _cuda_pic_slice_pair_cached_prep!(
@@ -1085,6 +1091,79 @@ if _HAS_CUDA
             )
             field_xmin, field_xmax, field_ymin, field_ymax = T.(field_bounds)
             _cuda_pic_add_time!(timing, :prepare_field, t_field)
+
+            return _cuda_pic_finish_interaction_indexed(
+                solver, T, sL, sR,
+                (source_xmin, source_xmax, source_ymin, source_ymax),
+                (field_xmin, field_xmax, field_ymin, field_ymax),
+                green_cache, timing,
+            )
+        end
+
+        function _cuda_pic_prepare_interaction_pair_indexed(
+            solver::PICPoissonSolver,
+            rep1, idx1, param1,
+            rep2, idx2, param2,
+            green_cache=nothing, timing=nothing,
+        )
+            T = eltype(rep1.x)
+            half = T(0.5)
+            sL12 = half * (T(param1.center) - T(param2.lb))
+            sR12 = half * (T(param1.center) - T(param2.rb))
+            sL21 = half * (T(param2.center) - T(param1.lb))
+            sR21 = half * (T(param2.center) - T(param1.rb))
+            center1 = T(param1.center)
+            center2 = T(param2.center)
+            neutral = _cuda_pic_bounds_pair_neutral(T)
+
+            t_bounds1 = time_ns()
+            bounds1 = mapreduce(
+                i -> _cuda_pic_source_field_bounds_value(
+                    rep1.x[i], rep1.px[i], rep1.y[i], rep1.py[i], rep1.z[i],
+                    sL12, sR12, center2, half,
+                ),
+                _cuda_pic_bounds_pair_combine,
+                idx1,
+                init=neutral,
+            )
+            elapsed1 = time_ns() - t_bounds1
+
+            t_bounds2 = time_ns()
+            bounds2 = mapreduce(
+                i -> _cuda_pic_source_field_bounds_value(
+                    rep2.x[i], rep2.px[i], rep2.y[i], rep2.py[i], rep2.z[i],
+                    sL21, sR21, center1, half,
+                ),
+                _cuda_pic_bounds_pair_combine,
+                idx2,
+                init=neutral,
+            )
+            elapsed2 = time_ns() - t_bounds2
+            # Source and field bounds are now measured together. Split only the
+            # diagnostic attribution; complete-turn timing remains authoritative.
+            total_bounds = elapsed1 + elapsed2
+            _cuda_pic_add_elapsed!(timing, :prepare_source, total_bounds ÷ 2)
+            _cuda_pic_add_elapsed!(timing, :prepare_field, total_bounds - total_bounds ÷ 2)
+
+            source12 = T.(bounds1[1:4])
+            field12 = T.(bounds2[5:8])
+            source21 = T.(bounds2[1:4])
+            field21 = T.(bounds1[5:8])
+            prep12 = _cuda_pic_finish_interaction_indexed(
+                solver, T, sL12, sR12, source12, field12, green_cache, timing,
+            )
+            prep21 = _cuda_pic_finish_interaction_indexed(
+                solver, T, sL21, sR21, source21, field21, green_cache, timing,
+            )
+            return prep12, prep21
+        end
+
+        function _cuda_pic_finish_interaction_indexed(
+            solver::PICPoissonSolver, ::Type{T}, sL, sR,
+            source_bounds, field_bounds, green_cache, timing,
+        ) where {T}
+            source_xmin, source_xmax, source_ymin, source_ymax = source_bounds
+            field_xmin, field_xmax, field_ymin, field_ymax = field_bounds
 
             t_grid = time_ns()
             source_grid0, field_grid0 = _pic_interaction_grids(
@@ -1330,6 +1409,26 @@ if _HAS_CUDA
             xd = x + px * s
             yd = y + py * s
             return (xd, xd, yd, yd)
+        end
+
+        @inline function _cuda_pic_bounds_pair_neutral(::Type{T}) where {T}
+            bounds = _cuda_pic_bounds_neutral(T)
+            return (bounds..., bounds...)
+        end
+
+        @inline function _cuda_pic_bounds_pair_combine(a, b)
+            return (
+                min(a[1], b[1]), max(a[2], b[2]), min(a[3], b[3]), max(a[4], b[4]),
+                min(a[5], b[5]), max(a[6], b[6]), min(a[7], b[7]), max(a[8], b[8]),
+            )
+        end
+
+        @inline function _cuda_pic_source_field_bounds_value(
+            x, px, y, py, z, sL, sR, opposing_center, half,
+        )
+            source = _cuda_pic_source_bounds_value(x, px, y, py, sL, sR)
+            field = _cuda_pic_field_bounds_value(x, px, y, py, z, opposing_center, half)
+            return (source..., field...)
         end
 
         function _cuda_pic_expand_grid(grid, new_width, new_height)

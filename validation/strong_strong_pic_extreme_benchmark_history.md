@@ -334,3 +334,30 @@ launch versus `333.8 us` in the preceding trace. It remains limited to one
 resident block per SM, so the next optimization target moves to the nearly tied
 grid-reduction aggregate until hardware counters can guide a deeper kick
 rewrite.
+
+## 2026-07-20 fused bounds reductions
+
+The indexed preparation originally reduced source and field bounds separately
+in each interaction direction: four logical reductions per slice pair. The
+accepted implementation reduces each beam once and returns its source and field
+bounds together as an eight-value tuple. The same componentwise `min`/`max`
+definitions, indexed particles, drift equations, and grid/cache construction
+are retained.
+
+Against the retained kick-loop baseline median of `0.35779 s/turn`, three
+target-size 30-turn runs reported final-ten means of `0.31573`, `0.31822`, and
+`0.31542 s/turn`. Their median is `0.31573 s/turn`, an 11.75% time reduction and
+1.13x throughput improvement. Electron and proton RMS values remained
+consistent with the reference runs.
+
+The follow-up Nsight Systems trace reduced `partial_mapreduce_grid` launches
+from approximately 1,886 to 946 per turn and aggregate reduction time from
+about `72.7` to `42.3 ms/turn`. The indexed longitudinal kick is again the
+dominant measured kernel family at about `74.6 ms/turn`; further custom bounds
+reduction work is therefore deferred.
+
+The three-turn backend contract passed with maximum coordinate error
+`8.83e-17`, luminosity relative error `5.42e-15`, and identical cache history.
+The final 30-turn contract passed with maximum coordinate error `7.20e-16`,
+luminosity relative error `1.55e-14`, and identical cache history
+`(476, 18, 46)`. Diagnostics consistency also passed.
