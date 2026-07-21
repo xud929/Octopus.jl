@@ -30,6 +30,12 @@ function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
     return _pic_collide!(solver, beam1, beam2, ctx, workspace, green_cache)
 end
 
+_strong_strong_collide_backend!(task::StrongStrongTask, label::Symbol,
+                                solver::PICPoissonSolver,
+                                beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend},
+                                ctx::TrackingContext) =
+    _strong_strong_collide!(task, label, solver, beam1, beam2, CPUThreadsBackend, ctx)
+
 function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
                        workspace::_PICCPUWorkspace, green_cache)
     _validate_pic_solver(solver)
@@ -85,7 +91,7 @@ end
 
 function _pic_cpu_workspace!(runtime_cache::Dict, label::Symbol,
                              solver::PICPoissonSolver, ::Type{T}) where {T}
-    key = (:cpu_pic_workspace, label, T, solver.grid, Threads.nthreads())
+    key = (:cpu_pic_workspace, label, T, solver.grid, _cpu_worker_count())
     return get!(runtime_cache, key) do
         _pic_cpu_workspace(T, solver.grid...)
     end
@@ -515,7 +521,7 @@ function _pic_solve_drifted_field_with_green_fft!(field::_PICFieldWorkspace,
 end
 
 function _pic_deposit!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
-    if Threads.nthreads() > 1 && length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
+    if _cpu_worker_count() > 1 && length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
         return _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
     end
     return _pic_deposit_serial!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
@@ -523,7 +529,7 @@ end
 
 function _pic_deposit!(charge, method, x, y, x0, y0, hx, hy, nx, ny,
                        workspace::_PICCPUWorkspace)
-    if Threads.nthreads() > 1 && length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
+    if _cpu_worker_count() > 1 && length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
         return _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny, workspace)
     end
     return _pic_deposit_serial!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
@@ -531,7 +537,7 @@ end
 
 function _pic_deposit_drifted!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny,
                                workspace::_PICCPUWorkspace)
-    if Threads.nthreads() > 1 && length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
+    if _cpu_worker_count() > 1 && length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
         return _pic_deposit_drifted_threaded!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny, workspace)
     end
     return _pic_deposit_drifted_serial!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny)
@@ -574,9 +580,9 @@ function _pic_deposit_drifted_serial!(charge, method, x, px, y, py, drift_s, x0,
 end
 
 function _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
-    nchunks = Threads.nthreads()
+    nchunks = _cpu_worker_count()
     local_charge = [zero(charge) for _ in 1:nchunks]
-    Threads.@threads :static for chunk in 1:nchunks
+    _run_logical_workers(nchunks) do chunk, _
         first_i, last_i = _chunk_bounds(length(x), nchunks, chunk)
         local_grid = local_charge[chunk]
         _pic_deposit_range!(local_grid, method, x, y, x0, y0, hx, hy, nx, ny, first_i, last_i)
@@ -589,10 +595,10 @@ end
 
 function _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny,
                                 workspace::_PICCPUWorkspace)
-    nchunks = Threads.nthreads()
+    nchunks = _cpu_worker_count()
     local_charge = workspace.local_charge
     length(local_charge) == nchunks || return _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
-    Threads.@threads :static for chunk in 1:nchunks
+    _run_logical_workers(nchunks) do chunk, _
         local_grid = local_charge[chunk]
         fill!(local_grid, zero(eltype(local_grid)))
         first_i, last_i = _chunk_bounds(length(x), nchunks, chunk)
@@ -606,11 +612,11 @@ end
 
 function _pic_deposit_drifted_threaded!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny,
                                         workspace::_PICCPUWorkspace)
-    nchunks = Threads.nthreads()
+    nchunks = _cpu_worker_count()
     local_charge = workspace.local_charge
     length(local_charge) == nchunks ||
         return _pic_deposit_drifted_serial!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny)
-    Threads.@threads :static for chunk in 1:nchunks
+    _run_logical_workers(nchunks) do chunk, _
         local_grid = local_charge[chunk]
         fill!(local_grid, zero(eltype(local_grid)))
         first_i, last_i = _chunk_bounds(length(x), nchunks, chunk)

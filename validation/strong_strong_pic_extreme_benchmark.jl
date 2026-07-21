@@ -83,6 +83,20 @@ summary = [
     "steady_last_ten_min_seconds" => string(steady_min),
     "steady_last_ten_std_seconds" => string(steady_std),
 ]
+if policy isa CUDAExecutionPolicy
+    push!(summary, "cuda_fused_threads_requested" => string(policy.launch.threads))
+    push!(summary, "cuda_fused_blocks_requested" => string(policy.launch.blocks))
+    push!(summary, "cuda_fused_blocks_resolution" =>
+        (policy.launch.blocks === :auto ? "per_compiled_kernel_occupancy_and_particle_coverage" :
+                                          "explicit"))
+    config_entries = configuration_report(solver; policy=policy, backend=CUDABackend)
+    for family in (:gather_scatter, :deposition, :kick, :field, :spectral, :green, :luminosity)
+        option = Symbol(:cuda_pic_, family, :_threads)
+        entry = only(filter(item -> item.name === option, config_entries))
+        push!(summary, string(option, "_requested") => string(entry.requested))
+        push!(summary, string(option, "_resolved") => string(entry.resolved))
+    end
+end
 open(summary_path, "w") do io
     println(io, "key\tvalue")
     for (key, value) in summary

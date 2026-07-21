@@ -143,7 +143,7 @@ end
 policy = if use_gpu
     cuda_device_env = get(ENV, "OCTOPUS_CUDA_DEVICE", "")
     cuda_device = isempty(cuda_device_env) ? nothing : parse(Int, cuda_device_env)
-    GPUExecutionPolicy(device = cuda_device)
+    CUDAExecutionPolicy(device = cuda_device)
 else
     CPUThreadsExecutionPolicy()
 end

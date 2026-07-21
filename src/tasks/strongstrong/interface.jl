@@ -1,6 +1,8 @@
 export AbstractPoissonSolver, LongitudinalSlicing, longitudinal_slices,
+       slicing_option_schema,
        gaussian_slice_centers, collision_pair_batches,
        GaussianPoissonSolver, PICPoissonSolver,
+       CUDAPICLaunchConfig, cuda_pic_launch_option_schema,
        SolverOptionMeta, solver_option_schema, solver_configuration, solver_help,
        StrongStrongGaussianPoissonSolver, StrongStrongCollision,
        StrongStrongDiagnostics, DiagnosticsOptionMeta, diagnostics_option_schema,
@@ -23,6 +25,156 @@ The current concrete implementations are `GaussianPoissonSolver` and
 `PICPoissonSolver`.
 """
 abstract type AbstractPoissonSolver <: AbstractOctopusObject end
+
+const _CUDA_PIC_LAUNCH_FAMILIES = (
+    :gather_scatter, :deposition, :kick, :field, :spectral, :green, :luminosity,
+)
+
+"""
+    CUDAPICLaunchConfig(; gather_scatter_threads=nothing,
+                         deposition_threads=nothing, kick_threads=nothing,
+                         field_threads=nothing, spectral_threads=nothing,
+                         green_threads=nothing, luminosity_threads=nothing)
+
+Optional CUDA-only PIC launch overrides. `nothing` inherits the thread count
+from `CUDAExecutionPolicy`. PIC block counts remain derived from the particle,
+grid, spectral, or reduction topology. Luminosity threads must be a power of
+two because the current overlap kernel uses a tree reduction.
+"""
+struct CUDAPICLaunchConfig <: AbstractOctopusObject
+    gather_scatter_threads::Union{Nothing,Int}
+    deposition_threads::Union{Nothing,Int}
+    kick_threads::Union{Nothing,Int}
+    field_threads::Union{Nothing,Int}
+    spectral_threads::Union{Nothing,Int}
+    green_threads::Union{Nothing,Int}
+    luminosity_threads::Union{Nothing,Int}
+end
+
+function CUDAPICLaunchConfig(; gather_scatter_threads=nothing,
+                             deposition_threads=nothing,
+                             kick_threads=nothing,
+                             field_threads=nothing,
+                             spectral_threads=nothing,
+                             green_threads=nothing,
+                             luminosity_threads=nothing)
+    values = map(
+        value -> value === nothing ? nothing : Int(value),
+        (gather_scatter_threads, deposition_threads, kick_threads, field_threads,
+         spectral_threads, green_threads, luminosity_threads),
+    )
+    all(value -> value === nothing || 1 <= value <= 1024, values) ||
+        throw(ArgumentError("CUDA PIC thread counts must be nothing or integers in 1:1024"))
+    lum = values[7]
+    lum === nothing || ispow2(lum) || throw(ArgumentError(
+        "luminosity_threads must be a power of two for the current tree reduction; got $(lum)"))
+    return CUDAPICLaunchConfig(values...)
+end
+
+struct ResolvedCUDAPICLaunchConfig
+    gather_scatter::Int
+    deposition::Int
+    kick::Int
+    field::Int
+    spectral::Int
+    green::Int
+    luminosity::Int
+end
+
+const _CUDA_PIC_LAUNCH_OPTION_SCHEMA = (
+    gather_scatter_threads=ConfigurationOptionMeta(Union{Nothing,Int}, nothing,
+        "Threads for slice gather/scatter and mask-index construction.";
+        supported_backends=(CUDABackend,), consumer=:cuda_pic_launch),
+    deposition_threads=ConfigurationOptionMeta(Union{Nothing,Int}, nothing,
+        "Threads for particle-to-grid deposition.";
+        supported_backends=(CUDABackend,), consumer=:cuda_pic_launch),
+    kick_threads=ConfigurationOptionMeta(Union{Nothing,Int}, nothing,
+        "Threads for field interpolation and particle kicks.";
+        supported_backends=(CUDABackend,), consumer=:cuda_pic_launch),
+    field_threads=ConfigurationOptionMeta(Union{Nothing,Int}, nothing,
+        "Threads for transverse field derivatives.";
+        supported_backends=(CUDABackend,), consumer=:cuda_pic_launch),
+    spectral_threads=ConfigurationOptionMeta(Union{Nothing,Int}, nothing,
+        "Threads for Octopus spectral multiply kernels; cuFFT remains library-managed.";
+        supported_backends=(CUDABackend,), consumer=:cuda_pic_launch),
+    green_threads=ConfigurationOptionMeta(Union{Nothing,Int}, nothing,
+        "Threads for Green-kernel construction.";
+        supported_backends=(CUDABackend,), consumer=:cuda_pic_launch),
+    luminosity_threads=ConfigurationOptionMeta(Union{Nothing,Int}, nothing,
+        "Power-of-two thread count for luminosity deposition/reduction.";
+        supported_backends=(CUDABackend,), consumer=:cuda_pic_launch),
+)
+
+cuda_pic_launch_option_schema(::Type{CUDAPICLaunchConfig}=CUDAPICLaunchConfig) =
+    _CUDA_PIC_LAUNCH_OPTION_SCHEMA
+cuda_pic_launch_option_schema(::CUDAPICLaunchConfig) = _CUDA_PIC_LAUNCH_OPTION_SCHEMA
+
+function configuration_report(config::CUDAPICLaunchConfig,
+                              policy::CUDAExecutionPolicy=CUDAExecutionPolicy())
+    return Tuple(ConfigurationEntry(name, getproperty(config, name),
+        something(getproperty(config, name), policy.launch.threads),
+        getproperty(config, name) === nothing ? :inherited : :resolved,
+        getproperty(config, name) === nothing ? "inherited from CUDAExecutionPolicy" :
+                                               "explicit CUDA PIC override",
+        meta.consumer) for (name, meta) in pairs(cuda_pic_launch_option_schema(config)))
+end
+
+const _ACTIVE_CUDA_PIC_LAUNCH_CONFIG = Base.ScopedValues.ScopedValue{Any}(nothing)
+
+function _cuda_pic_configuration(solver)
+    configs = solver.backend_configurations
+    matches = filter(config -> config isa CUDAPICLaunchConfig, configs)
+    length(matches) <= 1 || throw(ArgumentError(
+        "PICPoissonSolver accepts at most one CUDAPICLaunchConfig"))
+    return isempty(matches) ? nothing : first(matches)
+end
+
+function _resolve_cuda_pic_configuration(solver, policy::ResolvedCUDAExecutionPolicy)
+    config = _cuda_pic_configuration(solver)
+    value(field) = config === nothing ? nothing : getproperty(config, field)
+    inherited(field) = something(value(field), policy.threads)
+    resolved = ResolvedCUDAPICLaunchConfig(
+        inherited(:gather_scatter_threads), inherited(:deposition_threads),
+        inherited(:kick_threads), inherited(:field_threads),
+        inherited(:spectral_threads), inherited(:green_threads),
+        inherited(:luminosity_threads),
+    )
+    ispow2(resolved.luminosity) || throw(ArgumentError(
+        "resolved luminosity threads must be a power of two; got $(resolved.luminosity). " *
+        "Set CUDAPICLaunchConfig(luminosity_threads=...) when the generic CUDA thread count is not a power of two."))
+    device = CUDA.CuDevice(policy.device)
+    max_threads = CUDA.attribute(device, CUDA.DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK)
+    for family in _CUDA_PIC_LAUNCH_FAMILIES
+        threads = getproperty(resolved, family)
+        threads <= max_threads || throw(ArgumentError(
+            "CUDA PIC $(family) threads $(threads) exceed device $(policy.device) maximum $(max_threads)"))
+    end
+    return resolved
+end
+
+function _with_solver_execution_configuration(f::F, solver, policy) where {F}
+    if solver isa PICPoissonSolver && policy isa ResolvedCUDAExecutionPolicy
+        resolved = _resolve_cuda_pic_configuration(solver, policy)
+        return Base.ScopedValues.with(_ACTIVE_CUDA_PIC_LAUNCH_CONFIG => resolved) do
+            f()
+        end
+    end
+    if solver isa PICPoissonSolver && !isempty(solver.backend_configurations)
+        _record_execution!(:cuda_pic_configuration, backend_type(policy),
+                           (status=:inactive_backend,))
+    end
+    return f()
+end
+
+function _cuda_pic_threads(family::Symbol)
+    family in _CUDA_PIC_LAUNCH_FAMILIES || throw(ArgumentError(
+        "unknown CUDA PIC launch family $(family)"))
+    config = _ACTIVE_CUDA_PIC_LAUNCH_CONFIG[]
+    config isa ResolvedCUDAPICLaunchConfig || return 256
+    threads = getproperty(config, family)
+    _record_execution!(:cuda_pic_launch, CUDABackend, (family=family, threads=threads))
+    return threads
+end
 
 """
     StrongStrongDiagnostics(; record_turn_times=false, memory_log_every=0,
@@ -61,13 +213,14 @@ struct DiagnosticsOptionMeta
     meaning::String
     supported_backends::Tuple
     perturbs_timing::Bool
+    consumer::Symbol
 end
 
 DiagnosticsOptionMeta(option_type, default, meaning;
                       supported_backends=(CPUThreadsBackend, CUDABackend),
-                      perturbs_timing=false) =
+                      perturbs_timing=false, consumer=:strong_strong_diagnostics) =
     DiagnosticsOptionMeta(option_type, default, String(meaning),
-                          Tuple(supported_backends), perturbs_timing)
+                          Tuple(supported_backends), perturbs_timing, Symbol(consumer))
 
 const _STRONG_STRONG_DIAGNOSTICS_OPTION_SCHEMA = (
     record_turn_times=DiagnosticsOptionMeta(Bool, false,
@@ -100,7 +253,8 @@ function diagnostics_help(; io::IO=stdout)
         backends = join(string.(meta.supported_backends), ", ")
         println(io, "  - ", name, "::", meta.option_type, " = ", repr(meta.default))
         println(io, "      ", meta.meaning)
-        println(io, "      backends=", backends, "; perturbs_timing=", meta.perturbs_timing)
+        println(io, "      backends=", backends, "; perturbs_timing=", meta.perturbs_timing,
+                "; consumer=", meta.consumer)
     end
     return nothing
 end
@@ -122,15 +276,16 @@ struct SolverOptionMeta
     category::Symbol
     environment_override::Union{Nothing,String}
     dependencies::Tuple{Vararg{Symbol}}
+    consumer::Symbol
 end
 
 SolverOptionMeta(option_type, default, meaning;
                  supported_backends=(CPUThreadsBackend, CUDABackend),
                  category=:numerical, environment_override=nothing,
-                 dependencies=()) =
+                 dependencies=(), consumer=:solver_runtime) =
     SolverOptionMeta(option_type, default, String(meaning), Tuple(supported_backends),
                      Symbol(category), environment_override === nothing ? nothing : String(environment_override),
-                     Tuple(Symbol.(dependencies)))
+                     Tuple(Symbol.(dependencies)), Symbol(consumer))
 
 """Return structured constructor-option metadata for a solver type or instance."""
 solver_option_schema(::Type{<:AbstractPoissonSolver}) = NamedTuple()
@@ -162,7 +317,8 @@ function solver_help(solver_type::Type{<:AbstractPoissonSolver}; io::IO=stdout)
         backends = join((string(B) for B in meta.supported_backends), ", ")
         println(io, "  - ", name, "::", meta.option_type, " = ", repr(meta.default))
         println(io, "      ", meta.meaning)
-        println(io, "      category=", meta.category, "; backends=", backends)
+        println(io, "      category=", meta.category, "; backends=", backends,
+                "; consumer=", meta.consumer)
         meta.environment_override === nothing ||
             println(io, "      debug override=", meta.environment_override)
         isempty(meta.dependencies) || println(io, "      dependencies=", join(meta.dependencies, ", "))
@@ -235,7 +391,7 @@ function _pic_cpu_workspace(::Type{T}, nx::Integer, ny::Integer) where {T}
     green_fft = zeros(Complex{T}, 2nx, 2ny)
     fft_plan = plan_fft!(spectral)
     ifft_plan = plan_ifft!(spectral)
-    local_charge = [similar(charge) for _ in 1:Threads.nthreads()]
+    local_charge = [similar(charge) for _ in 1:_cpu_worker_count()]
     left = _PICFieldWorkspace(zeros(T, nx, ny), zeros(T, nx, ny), zeros(T, nx, ny))
     right = _PICFieldWorkspace(zeros(T, nx, ny), zeros(T, nx, ny), zeros(T, nx, ny))
     return _PICCPUWorkspace{T}(
@@ -267,16 +423,70 @@ Supported methods:
 
 `center_position` may be `:centroid` or `:midpoint`.
 """
-Base.@kwdef struct LongitudinalSlicing <: AbstractOctopusObject
-    nslices::Int = 1
-    method::Symbol = :equal_area
-    resolution::Int = 100
-    center_position::Symbol = :centroid
-    positions::Vector{Float64} = Float64[]
+struct LongitudinalSlicing <: AbstractOctopusObject
+    nslices::Int
+    method::Symbol
+    resolution::Int
+    center_position::Symbol
+    positions::Vector{Float64}
+end
+
+Base.:(==)(a::LongitudinalSlicing, b::LongitudinalSlicing) =
+    a.nslices == b.nslices && a.method == b.method &&
+    a.resolution == b.resolution && a.center_position == b.center_position &&
+    a.positions == b.positions
+Base.isequal(a::LongitudinalSlicing, b::LongitudinalSlicing) = a == b
+Base.hash(s::LongitudinalSlicing, h::UInt) =
+    hash((s.nslices, s.method, s.resolution, s.center_position, s.positions), h)
+
+function LongitudinalSlicing(; nslices::Integer=1, method::Symbol=:equal_area,
+                             resolution::Integer=100,
+                             center_position::Symbol=:centroid,
+                             positions=Float64[])
+    nslices > 0 || throw(ArgumentError("nslices must be positive"))
+    resolution > 0 || throw(ArgumentError("slicing resolution must be positive"))
+    method in (:equal_area, :equal_count, :equal_width, :equal_spaced,
+               :normal_quantile, :gaussian, :Gaussian, :specified) ||
+        throw(ArgumentError("unsupported longitudinal slicing method $(repr(method))"))
+    center_position in (:centroid, :midpoint) || throw(ArgumentError(
+        "center_position must be :centroid or :midpoint"))
+    values = Float64.(positions)
+    method === :specified && length(values) != nslices - 1 && throw(ArgumentError(
+        "specified slicing requires nslices-1 internal positions"))
+    return LongitudinalSlicing(Int(nslices), method, Int(resolution), center_position, values)
 end
 
 function LongitudinalSlicing(nslices::Integer; kwargs...)
     return LongitudinalSlicing(; nslices=Int(nslices), kwargs...)
+end
+
+const _LONGITUDINAL_SLICING_OPTION_SCHEMA = (
+    nslices=ConfigurationOptionMeta(Int, 1, "Number of longitudinal slices.";
+        category=:physics, consumer=:longitudinal_slicing),
+    method=ConfigurationOptionMeta(Symbol, :equal_area, "Slice-boundary construction method.";
+        category=:numerical, consumer=:longitudinal_slicing),
+    resolution=ConfigurationOptionMeta(Int, 100, "Histogram resolution per slice.";
+        category=:numerical, dependencies=(:method,), consumer=:longitudinal_slicing),
+    center_position=ConfigurationOptionMeta(Symbol, :centroid, "Slice center convention.";
+        category=:physics, consumer=:longitudinal_slicing),
+    positions=ConfigurationOptionMeta(Vector{Float64}, Float64[],
+        "Internal boundaries for :specified slicing.";
+        category=:physics, dependencies=(:method,), consumer=:longitudinal_slicing),
+)
+slicing_option_schema(::Type{LongitudinalSlicing}=LongitudinalSlicing) =
+    _LONGITUDINAL_SLICING_OPTION_SCHEMA
+slicing_option_schema(::LongitudinalSlicing) = _LONGITUDINAL_SLICING_OPTION_SCHEMA
+
+function configuration_report(slicing::LongitudinalSlicing)
+    return Tuple(ConfigurationEntry(name, getproperty(slicing, name), getproperty(slicing, name),
+        (name === :resolution && slicing.method !== :equal_area) ||
+        (name === :positions && slicing.method !== :specified) ? :inactive_dependency : :resolved,
+        name === :resolution && slicing.method !== :equal_area ?
+            "resolution is unused by the selected slicing method" :
+        name === :positions && slicing.method !== :specified ?
+            "positions are used only by :specified slicing" :
+            "validated longitudinal slicing configuration",
+        meta.consumer) for (name, meta) in pairs(slicing_option_schema(slicing)))
 end
 
 """
@@ -321,6 +531,8 @@ struct GaussianPoissonSolver{T<:Real} <: AbstractPoissonSolver
     slicing::LongitudinalSlicing
     slicing1::LongitudinalSlicing
     slicing2::LongitudinalSlicing
+    requested_slicing1::Union{Nothing,LongitudinalSlicing}
+    requested_slicing2::Union{Nothing,LongitudinalSlicing}
     min_sigma::T
     gaussian_when_luminosity::Int
     ignore_centroid1::Bool
@@ -341,6 +553,9 @@ function GaussianPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   ignore_centroid2::Bool=false) where {T<:Real}
     s1 = slicing1 === nothing ? slicing : slicing1
     s2 = slicing2 === nothing ? slicing : slicing2
+    min_sigma >= 0 || throw(ArgumentError("min_sigma must be nonnegative"))
+    gaussian_when_luminosity in (1, 2) || throw(ArgumentError(
+        "gaussian_when_luminosity must be 1 or 2"))
     return GaussianPoissonSolver{T}(
         _optional_solver_value(T, kbb1),
         _optional_solver_value(T, kbb2),
@@ -348,6 +563,8 @@ function GaussianPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         slicing,
         s1,
         s2,
+        slicing1,
+        slicing2,
         T(min_sigma),
         Int(gaussian_when_luminosity),
         ignore_centroid1,
@@ -356,6 +573,41 @@ function GaussianPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
 end
 
 GaussianPoissonSolver(; kwargs...) = GaussianPoissonSolver{Float64}(; kwargs...)
+
+function solver_configuration(solver::GaussianPoissonSolver)
+    configured = _solver_configured_values(solver)
+    return merge(configured, (
+        slicing1=solver.requested_slicing1,
+        slicing2=solver.requested_slicing2,
+        resolved_slicing1=solver.slicing1,
+        resolved_slicing2=solver.slicing2,
+    ))
+end
+
+const _GAUSSIAN_SOLVER_OPTION_SCHEMA = (
+    kbb1=SolverOptionMeta(Union{Nothing,Real}, nothing,
+        "Optional beam-1 kick-scale override."; category=:physics_override),
+    kbb2=SolverOptionMeta(Union{Nothing,Real}, nothing,
+        "Optional beam-2 kick-scale override."; category=:physics_override),
+    luminosity_scale=SolverOptionMeta(Union{Nothing,Real}, nothing,
+        "Optional luminosity normalization override."; category=:physics_override),
+    slicing=SolverOptionMeta(LongitudinalSlicing, LongitudinalSlicing(),
+        "Shared longitudinal slicing configuration."; category=:physics),
+    slicing1=SolverOptionMeta(Union{Nothing,LongitudinalSlicing}, nothing,
+        "Optional beam-1 slicing override."; category=:physics, dependencies=(:slicing,)),
+    slicing2=SolverOptionMeta(Union{Nothing,LongitudinalSlicing}, nothing,
+        "Optional beam-2 slicing override."; category=:physics, dependencies=(:slicing,)),
+    min_sigma=SolverOptionMeta(Real, eps(Float64),
+        "Lower transverse RMS bound used by Gaussian moments."; category=:numerical),
+    gaussian_when_luminosity=SolverOptionMeta(Int, 2,
+        "Select beam 1 or beam 2 macroparticle sampling for luminosity."; category=:numerical),
+    ignore_centroid1=SolverOptionMeta(Bool, false,
+        "Ignore beam-1 slice centroids in Gaussian moments."; category=:physics),
+    ignore_centroid2=SolverOptionMeta(Bool, false,
+        "Ignore beam-2 slice centroids in Gaussian moments."; category=:physics),
+)
+
+solver_option_schema(::Type{<:GaussianPoissonSolver}) = _GAUSSIAN_SOLVER_OPTION_SCHEMA
 
 const StrongStrongGaussianPoissonSolver = GaussianPoissonSolver
 
@@ -463,6 +715,9 @@ struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     slicing::LongitudinalSlicing
     slicing1::LongitudinalSlicing
     slicing2::LongitudinalSlicing
+    requested_slicing1::Union{Nothing,LongitudinalSlicing}
+    requested_slicing2::Union{Nothing,LongitudinalSlicing}
+    backend_configurations::Tuple
 end
 
 function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
@@ -484,7 +739,8 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                              luminosity_schedule::Union{Nothing,AbstractSchedule}=nothing,
                              slicing::LongitudinalSlicing=LongitudinalSlicing(),
                              slicing1=nothing,
-                             slicing2=nothing) where {T<:Real}
+                             slicing2=nothing,
+                             backend_configurations=()) where {T<:Real}
     s1 = slicing1 === nothing ? slicing : slicing1
     s2 = slicing2 === nothing ? slicing : slicing2
     min_ratio = T(slice_pair_green_min_ratio)
@@ -495,6 +751,17 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
     growth >= zero(T) || throw(ArgumentError(
         "slice_pair_green_growth must be non-negative; got $(slice_pair_green_growth)."
     ))
+    grid_value = (Int(grid[1]), Int(grid[2]))
+    all(>=(5), grid_value) || throw(ArgumentError(
+        "PICPoissonSolver grid dimensions must both be at least 5; got $(grid)."))
+    deposit_method in (:CIC, :TSC) || throw(ArgumentError(
+        "deposit_method must be :CIC or :TSC; got $(repr(deposit_method))."))
+    green_type in (:integrated, :standard) || throw(ArgumentError(
+        "green_type must be :integrated or :standard; got $(repr(green_type))."))
+    green_cache in (:none, :slice_pair) || throw(ArgumentError(
+        "green_cache must be :none or :slice_pair; got $(repr(green_cache))."))
+    batch_mode in (:sequential, :wavefront) || throw(ArgumentError(
+        "batch_mode must be :sequential or :wavefront; got $(repr(batch_mode))."))
     lum_grid = luminosity_grid === nothing ? nothing :
         (Int(luminosity_grid[1]), Int(luminosity_grid[2]))
     lum_grid === nothing || all(>=(3), lum_grid) || throw(ArgumentError(
@@ -505,11 +772,16 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         throw(ArgumentError(
             "luminosity_deposit_method must be nothing, :CIC, or :TSC; got $(repr(luminosity_deposit_method))."
         ))
+    configs = Tuple(backend_configurations)
+    all(config -> config isa CUDAPICLaunchConfig, configs) || throw(ArgumentError(
+        "PIC backend_configurations currently accepts only CUDAPICLaunchConfig values"))
+    count(config -> config isa CUDAPICLaunchConfig, configs) <= 1 || throw(ArgumentError(
+        "PICPoissonSolver accepts at most one CUDAPICLaunchConfig"))
     return PICPoissonSolver{T}(
         _optional_solver_value(T, kbb1),
         _optional_solver_value(T, kbb2),
         _optional_solver_value(T, luminosity_scale),
-        (Int(grid[1]), Int(grid[2])),
+        grid_value,
         deposit_method,
         green_type,
         green_cache,
@@ -527,6 +799,9 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         slicing,
         s1,
         s2,
+        slicing1,
+        slicing2,
+        configs,
     )
 end
 
@@ -541,6 +816,10 @@ _pic_luminosity_deposit_method(solver::PICPoissonSolver) =
 function solver_configuration(solver::PICPoissonSolver)
     configured = _solver_configured_values(solver)
     return merge(configured, (
+        slicing1=solver.requested_slicing1,
+        slicing2=solver.requested_slicing2,
+        resolved_slicing1=solver.slicing1,
+        resolved_slicing2=solver.slicing2,
         resolved_luminosity_grid=_pic_luminosity_grid(solver),
         resolved_luminosity_deposit_method=_pic_luminosity_deposit_method(solver),
     ))
@@ -570,21 +849,26 @@ const _PIC_SOLVER_OPTION_SCHEMA = (
     longitudinal_kick = SolverOptionMeta(Bool, true,
         "Apply the Hirata-map potential-difference longitudinal kick."; category=:physics),
     batch_mode = SolverOptionMeta(Symbol, :wavefront,
-        "Slice-pair scheduling mode; :wavefront or :sequential."; category=:execution),
+        "Slice-pair scheduling mode; :wavefront or :sequential.";
+        category=:execution, consumer=:cuda_pic_algorithm),
     cuda_async = SolverOptionMeta(Bool, true,
         "Overlap independent CUDA field work.";
-        supported_backends=(CUDABackend,), category=:execution),
+        supported_backends=(CUDABackend,), category=:execution,
+        consumer=:cuda_pic_algorithm),
     cuda_batch_fft = SolverOptionMeta(Bool, true,
         "Use batched CUDA FFT field solves.";
-        supported_backends=(CUDABackend,), category=:execution, dependencies=(:cuda_async,)),
+        supported_backends=(CUDABackend,), category=:execution,
+        dependencies=(:cuda_async,), consumer=:cuda_pic_algorithm),
     cuda_wavefront_fft = SolverOptionMeta(Bool, true,
         "Batch FFT planes across each CUDA collision wavefront.";
         supported_backends=(CUDABackend,), category=:execution,
-        dependencies=(:batch_mode, :cuda_async, :cuda_batch_fft)),
+        dependencies=(:batch_mode, :cuda_async, :cuda_batch_fft),
+        consumer=:cuda_pic_algorithm),
     cuda_indexed_wavefront = SolverOptionMeta(Bool, true,
         "Track slice membership by indices without gathering, sorting, or changing particle IDs.";
         supported_backends=(CUDABackend,), category=:execution,
-        dependencies=(:batch_mode, :cuda_async, :cuda_batch_fft, :cuda_wavefront_fft)),
+        dependencies=(:batch_mode, :cuda_async, :cuda_batch_fft, :cuda_wavefront_fft),
+        consumer=:cuda_pic_algorithm),
     luminosity_grid = SolverOptionMeta(Union{Nothing,Tuple{Int,Int}}, nothing,
         "Optional luminosity-only transverse mesh; nothing inherits the PIC force-grid dimensions.";
         category=:accuracy_performance),
@@ -599,9 +883,215 @@ const _PIC_SOLVER_OPTION_SCHEMA = (
         "Optional beam-1 slicing override."; category=:physics, dependencies=(:slicing,)),
     slicing2 = SolverOptionMeta(Union{Nothing,LongitudinalSlicing}, nothing,
         "Optional beam-2 slicing override."; category=:physics, dependencies=(:slicing,)),
+    backend_configurations = SolverOptionMeta(Tuple, (),
+        "Optional backend-specific implementation configuration, currently CUDAPICLaunchConfig.";
+        supported_backends=(CUDABackend,), category=:execution),
 )
 
 solver_option_schema(::Type{<:PICPoissonSolver}) = _PIC_SOLVER_OPTION_SCHEMA
+
+function _pic_option_active(name::Symbol, solver::PICPoissonSolver)
+    name === :slice_pair_green_min_ratio && return solver.green_cache === :slice_pair
+    name === :slice_pair_green_growth && return solver.green_cache === :slice_pair
+    name === :cuda_batch_fft && return solver.cuda_async
+    name === :cuda_wavefront_fft &&
+        return solver.batch_mode === :wavefront && solver.cuda_async && solver.cuda_batch_fft
+    name === :cuda_indexed_wavefront &&
+        return solver.batch_mode === :wavefront && solver.cuda_async &&
+               solver.cuda_batch_fft && solver.cuda_wavefront_fft
+    return true
+end
+
+function configuration_report(solver::PICPoissonSolver;
+                              policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
+                              backend=nothing)
+    selected_backend = backend === nothing ?
+        (policy === nothing ? nothing : backend_type(policy)) : backend
+    configured = solver_configuration(solver)
+    entries = ConfigurationEntry[]
+    for (name, meta) in pairs(solver_option_schema(solver))
+        requested = getproperty(configured, name)
+        if selected_backend !== nothing && !(selected_backend in meta.supported_backends)
+            push!(entries, ConfigurationEntry(name, requested, requested, :inactive_backend,
+                "option does not apply to $(selected_backend)", meta.consumer))
+        elseif !_pic_option_active(name, solver)
+            push!(entries, ConfigurationEntry(name, requested, requested, :inactive_dependency,
+                "one or more declared dependencies disable this option", meta.consumer))
+        else
+            resolved = name === :luminosity_grid ? configured.resolved_luminosity_grid :
+                       name === :luminosity_deposit_method ? configured.resolved_luminosity_deposit_method :
+                       name === :slicing1 ? configured.resolved_slicing1 :
+                       name === :slicing2 ? configured.resolved_slicing2 : requested
+            status = requested === nothing && resolved !== nothing ? :inherited : :resolved
+            push!(entries, ConfigurationEntry(name, requested, resolved, status,
+                status === :inherited ? "inherited from the associated shared option" :
+                                        "validated solver configuration",
+                meta.consumer))
+        end
+    end
+    if selected_backend === CUDABackend
+        cuda_policy = policy isa GPUExecutionPolicy ? _legacy_cuda_policy(policy) : policy
+        generic_threads = cuda_policy isa CUDAExecutionPolicy ? cuda_policy.launch.threads : 256
+        config = _cuda_pic_configuration(solver)
+        for family in _CUDA_PIC_LAUNCH_FAMILIES
+            field = Symbol(family, :_threads)
+            requested = config === nothing ? nothing : getproperty(config, field)
+            resolved = something(requested, generic_threads)
+            push!(entries, ConfigurationEntry(Symbol(:cuda_pic_, family, :_threads),
+                requested, resolved, requested === nothing ? :inherited : :resolved,
+                requested === nothing ? "inherited from CUDAExecutionPolicy" :
+                                        "explicit CUDAPICLaunchConfig override",
+                :cuda_pic_launch))
+        end
+    end
+    return Tuple(entries)
+end
+
+function configuration_report(solver::GaussianPoissonSolver;
+                              policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
+                              backend=nothing)
+    configured = solver_configuration(solver)
+    entries = ConfigurationEntry[]
+    for (name, meta) in pairs(solver_option_schema(solver))
+        requested = getproperty(configured, name)
+        resolved = name === :slicing1 ? configured.resolved_slicing1 :
+                   name === :slicing2 ? configured.resolved_slicing2 : requested
+        status = requested === nothing && resolved !== nothing ? :inherited : :resolved
+        push!(entries, ConfigurationEntry(name, requested, resolved, status,
+            status === :inherited ? "inherited from shared slicing" :
+                                    "validated Gaussian solver configuration",
+            meta.consumer))
+    end
+    return Tuple(entries)
+end
+
+function configuration_report(diagnostics::StrongStrongDiagnostics; backend=nothing)
+    entries = ConfigurationEntry[]
+    for (name, meta) in pairs(diagnostics_option_schema(diagnostics))
+        requested = getproperty(diagnostics, name)
+        if backend !== nothing && !(backend in meta.supported_backends)
+            push!(entries, ConfigurationEntry(name, requested, requested, :inactive_backend,
+                "diagnostic does not apply to $(backend)", meta.consumer))
+        else
+            push!(entries, ConfigurationEntry(name, requested, requested, :resolved,
+                "validated diagnostic configuration", meta.consumer))
+        end
+    end
+    return Tuple(entries)
+end
+
+function validate_configuration_metadata()
+    errors = String[]
+    for policy_type in (CPUThreadsExecutionPolicy, CUDAExecutionPolicy, GPUExecutionPolicy)
+        schema = policy_option_schema(policy_type)
+        for (name, meta) in pairs(schema)
+            meta.consumer === :unspecified && push!(errors,
+                "$(policy_type).$(name) has no runtime consumer")
+        end
+    end
+    default_cpu = CPUThreadsExecutionPolicy()
+    policy_option_schema(default_cpu).threads.default === :auto ||
+        push!(errors, "CPU policy metadata default disagrees with constructor")
+    default_cuda = CUDAExecutionPolicy()
+    default_cuda.launch.threads == policy_option_schema(default_cuda).threads.default ||
+        push!(errors, "CUDA thread metadata default disagrees with constructor")
+    default_cuda.launch.blocks == policy_option_schema(default_cuda).blocks.default ||
+        push!(errors, "CUDA block metadata default disagrees with constructor")
+    Set(fieldnames(CUDALaunchConfig)) == Set((:threads, :blocks)) ||
+        push!(errors, "CUDALaunchConfig public fields changed without metadata review")
+    policy_option_schema(GPUExecutionPolicy).threads.default == 256 ||
+        push!(errors, "legacy GPU thread metadata default disagrees with constructor")
+    policy_option_schema(GPUExecutionPolicy).blocks.default == 256 ||
+        push!(errors, "legacy GPU block metadata default disagrees with constructor")
+
+    Set(keys(slicing_option_schema())) == Set(fieldnames(LongitudinalSlicing)) ||
+        push!(errors, "LongitudinalSlicing fields and metadata keys disagree")
+    default_slicing = LongitudinalSlicing()
+    for (name, meta) in pairs(slicing_option_schema())
+        meta.consumer === :unspecified && push!(errors,
+            "LongitudinalSlicing.$(name) has no runtime consumer")
+        isequal(getproperty(default_slicing, name), meta.default) || push!(errors,
+            "LongitudinalSlicing.$(name) metadata default disagrees with constructor")
+    end
+
+    Set(keys(cuda_pic_launch_option_schema())) == Set(fieldnames(CUDAPICLaunchConfig)) ||
+        push!(errors, "CUDAPICLaunchConfig fields and metadata keys disagree")
+    for (name, meta) in pairs(cuda_pic_launch_option_schema())
+        meta.consumer === :unspecified && push!(errors,
+            "CUDAPICLaunchConfig.$(name) has no runtime consumer")
+    end
+    solver_fields = Set(fieldnames(PICPoissonSolver))
+    schema_fields = Set(keys(solver_option_schema(PICPoissonSolver)))
+    internal_fields = Set((:requested_slicing1, :requested_slicing2))
+    schema_fields == setdiff(solver_fields, internal_fields) || push!(errors,
+        "PICPoissonSolver fields and solver_option_schema keys disagree")
+    for (name, meta) in pairs(solver_option_schema(PICPoissonSolver))
+        meta.consumer === :unspecified && push!(errors,
+            "PICPoissonSolver.$(name) has no runtime consumer")
+    end
+    default_pic = solver_configuration(PICPoissonSolver())
+    for (name, meta) in pairs(solver_option_schema(PICPoissonSolver))
+        isequal(getproperty(default_pic, name), meta.default) || push!(errors,
+            "PICPoissonSolver.$(name) metadata default disagrees with constructor")
+    end
+    gaussian_fields = Set(fieldnames(GaussianPoissonSolver))
+    gaussian_schema_fields = Set(keys(solver_option_schema(GaussianPoissonSolver)))
+    gaussian_schema_fields == setdiff(gaussian_fields, internal_fields) || push!(errors,
+        "GaussianPoissonSolver fields and solver_option_schema keys disagree")
+    default_gaussian = solver_configuration(GaussianPoissonSolver())
+    for (name, meta) in pairs(solver_option_schema(GaussianPoissonSolver))
+        meta.consumer === :unspecified && push!(errors,
+            "GaussianPoissonSolver.$(name) has no runtime consumer")
+        isequal(getproperty(default_gaussian, name), meta.default) || push!(errors,
+            "GaussianPoissonSolver.$(name) metadata default disagrees with constructor")
+    end
+    Set(keys(diagnostics_option_schema())) == Set(fieldnames(StrongStrongDiagnostics)) ||
+        push!(errors, "StrongStrongDiagnostics fields and metadata keys disagree")
+    default_diagnostics = StrongStrongDiagnostics()
+    for (name, meta) in pairs(diagnostics_option_schema())
+        meta.consumer === :unspecified && push!(errors,
+            "StrongStrongDiagnostics.$(name) has no runtime consumer")
+        isequal(getproperty(default_diagnostics, name), meta.default) || push!(errors,
+            "StrongStrongDiagnostics.$(name) metadata default disagrees with constructor")
+    end
+    for schedule_type in (AlwaysSchedule, EveryNSteps, AtTurns)
+        for (name, meta) in pairs(schedule_option_schema(schedule_type))
+            meta.consumer === :unspecified && push!(errors,
+                "$(schedule_type).$(name) has no runtime consumer")
+        end
+    end
+    default_every = EveryNSteps()
+    for (name, meta) in pairs(schedule_option_schema(default_every))
+        isequal(getproperty(default_every, name), meta.default) || push!(errors,
+            "EveryNSteps.$(name) metadata default disagrees with constructor")
+    end
+    for (_, meta) in pairs(schedule_option_schema(PredicateSchedule(identity)))
+        meta.consumer === :unspecified && push!(errors,
+            "PredicateSchedule has no runtime consumer")
+    end
+    observer_instances = (
+        BeamMomentObserver("metadata.bin"),
+        JLD2BeamMomentObserver("metadata.jld2"),
+        MomentObserver("metadata.h5"),
+        CoordinateSnapshotObserver("metadata.coord"),
+        LuminosityObserver("metadata.lum"),
+    )
+    for observer_type in (BeamMomentObserver, JLD2BeamMomentObserver, MomentObserver,
+                          CoordinateSnapshotObserver, LuminosityObserver)
+        for (name, meta) in pairs(observer_option_schema(observer_type))
+            meta.consumer === :unspecified && push!(errors,
+                "$(observer_type).$(name) has no runtime consumer")
+        end
+    end
+    for observer in observer_instances
+        schema_names = Set(keys(observer_option_schema(observer)))
+        report_names = Set(entry.name for entry in configuration_report(observer))
+        schema_names == report_names || push!(errors,
+            "$(typeof(observer)) schema and configuration-report keys disagree")
+    end
+    isempty(errors) || throw(ArgumentError(join(errors, '\n')))
+    return true
+end
 
 """
     StrongStrongCollision(label; poisson_solver=nothing)
@@ -636,9 +1126,10 @@ Track two live beams through ordinary tracking lines containing matching
 
 The two lines must contain the same ordered collision labels. Ordinary elements
 before, between, and after collision markers are compiled into fused tracking
-segments whenever possible. The execution backend is inferred from the two beam
-containers passed to `execute!`. If `policy` is provided, it is treated as an
-explicit assertion and must match both beam backends. The immutable
+segments whenever possible. With `policy=nothing`, an execution policy is
+inferred from the two beam containers passed to `execute!`. An explicit policy
+must match both beams, including the CUDA device, and is resolved once for both
+line streams and collision solvers. The immutable
 `TrackingContext` used by context-aware stochastic tracking snapshots the
 Octopus global RNG state at execution time.
 
@@ -674,6 +1165,31 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     plan_cache1::Dict{Any,Any}
     plan_cache2::Dict{Any,Any}
     runtime_cache::Dict{Any,Any}
+end
+
+function configuration_report(task::StrongStrongTask, beam1::Beam, beam2::Beam)
+    policy = _resolve_strong_strong_policy(task, beam1, beam2)
+    public_policy = task.policy === nothing ?
+        (backend_type(policy) === CPUThreadsBackend ? CPUThreadsExecutionPolicy() : CUDAExecutionPolicy()) :
+        task.policy
+    blocks1 = _strong_strong_runtime_blocks(task, 1)
+    blocks2 = _strong_strong_runtime_blocks(task, 2)
+    _validate_strong_strong_blocks(blocks1, blocks2)
+    solvers = unique(_collision_solver(task, block1.collision, block2.collision)
+                     for (block1, block2) in zip(blocks1, blocks2)
+                     if block1.collision !== nothing)
+    return (
+        policy=configuration_report(public_policy, beam1.rep),
+        output=(ConfigurationEntry(:luminosity_path, task.luminosity_path,
+            task.luminosity_path,
+            task.luminosity_path === nothing ? :inactive_dependency : :resolved,
+            task.luminosity_path === nothing ? "luminosity file output disabled" :
+                                               "active task-level luminosity output path",
+            :strong_strong_output),),
+        diagnostics=configuration_report(task.diagnostics; backend=backend_type(policy)),
+        solvers=Tuple(configuration_report(solver; policy=public_policy,
+                                           backend=backend_type(policy)) for solver in solvers),
+    )
 end
 
 required_contracts(::Type{<:StrongStrongTask}) =
@@ -737,27 +1253,75 @@ Execute a strong-strong task in place. Returns `(beam1, beam2)`.
 function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam; turns::Integer=1)
     empty!(task.turn_times)
     empty!(task.pic_phase_times)
-    backend = _execution_backend(task, beam1, beam2)
+    policy = _resolve_strong_strong_policy(task, beam1, beam2)
+    return _with_execution_policy(policy) do
+        _execute_strong_strong_task!(task, beam1, beam2, Int(turns), policy)
+    end
+end
+
+function _execute_strong_strong_task!(task, beam1, beam2, turns::Int, policy)
+    _warn_inactive_diagnostics(task.diagnostics, backend_type(policy))
+    _record_execution!(:strong_strong_diagnostics, backend_type(policy), (
+        record_turn_times=task.diagnostics.record_turn_times,
+        memory_log_every=task.diagnostics.memory_log_every,
+        pic_timing=task.diagnostics.pic_timing,
+        pic_timing_detail=task.diagnostics.pic_timing_detail,
+        cache_stats=task.diagnostics.cache_stats,
+        nvtx=task.diagnostics.nvtx,
+    ))
+    _record_execution!(:strong_strong_output, backend_type(policy),
+                       (luminosity_path=task.luminosity_path,))
     blocks1 = _strong_strong_runtime_blocks(task, 1)
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
+    _preflight_solver_configurations!(task, blocks1, blocks2, policy)
     prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1); turns=Int(turns))
     prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2); turns=Int(turns))
     ctx = TrackingContext()
     Base.ScopedValues.with(_ACTIVE_STRONG_STRONG_DIAGNOSTICS => task.diagnostics,
                            _ACTIVE_PIC_PHASE_TIMING_SINK => task.pic_phase_times) do
         if task.luminosity_path === nothing
-            _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, backend, ctx, Int(turns), nothing)
+            _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, policy, ctx, turns, nothing)
         else
             open(task.luminosity_path, "w") do io
                 _write_strong_strong_luminosity_header(io, blocks1)
-                _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, backend, ctx, Int(turns), io)
+                _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, policy, ctx, turns, io)
             end
         end
     end
     _finalize_strong_strong_line_observers!(blocks1)
     _finalize_strong_strong_line_observers!(blocks2)
     return beam1, beam2
+end
+
+function _preflight_solver_configurations!(task, blocks1, blocks2, policy)
+    inactive = Set{Symbol}()
+    for (block1, block2) in zip(blocks1, blocks2)
+        block1.collision === nothing && continue
+        solver = _collision_solver(task, block1.collision, block2.collision)
+        solver isa PICPoissonSolver || continue
+        if policy isa ResolvedCUDAExecutionPolicy
+            _resolve_cuda_pic_configuration(solver, policy)
+        else
+            for (name, meta) in pairs(solver_option_schema(solver))
+                CPUThreadsBackend in meta.supported_backends && continue
+                requested = getproperty(solver_configuration(solver), name)
+                isequal(requested, meta.default) || push!(inactive, name)
+            end
+        end
+    end
+    isempty(inactive) || @warn "non-default CUDA PIC options are inactive on CPU storage" options=sort!(collect(inactive))
+    return nothing
+end
+
+function _warn_inactive_diagnostics(diagnostics::StrongStrongDiagnostics, backend)
+    inactive = Symbol[]
+    for (name, meta) in pairs(diagnostics_option_schema(diagnostics))
+        backend in meta.supported_backends && continue
+        isequal(getproperty(diagnostics, name), meta.default) || push!(inactive, name)
+    end
+    isempty(inactive) || @warn "non-default diagnostics are inactive on the selected backend" backend options=inactive
+    return nothing
 end
 
 function _write_strong_strong_luminosity_header(io, blocks)
@@ -769,22 +1333,25 @@ function _write_strong_strong_luminosity_header(io, blocks)
     return nothing
 end
 
-function _execution_backend(task::StrongStrongTask, beam1::Beam{BTAG1}, beam2::Beam{BTAG2}) where {BTAG1<:AbstractExecutionBackend,BTAG2<:AbstractExecutionBackend}
+function _resolve_strong_strong_policy(task::StrongStrongTask,
+                                       beam1::Beam{BTAG1}, beam2::Beam{BTAG2}) where {BTAG1<:AbstractExecutionBackend,BTAG2<:AbstractExecutionBackend}
     BTAG1 === BTAG2 || throw(ArgumentError(
         "strong-strong tracking requires both beams to use the same backend; got $(BTAG1) and $(BTAG2)."
     ))
-    task.policy === nothing && return BTAG1
-    requested = backend_type(task.policy)
-    requested === BTAG1 || throw(ArgumentError(
-        "task policy requests $(requested), but beam storage requires $(BTAG1). " *
-        "Construct both beams with the same backend or omit the task policy."
-    ))
-    activate_policy!(task.policy)
-    return requested
+    policy1 = _resolve_execution_policy(task.policy, beam1.rep)
+    policy2 = _resolve_execution_policy(task.policy, beam2.rep)
+    typeof(policy1) === typeof(policy2) || throw(ArgumentError(
+        "strong-strong beams resolved to different execution policies"))
+    if policy1 isa ResolvedCUDAExecutionPolicy
+        policy1.device == policy2.device || throw(ArgumentError(
+            "strong-strong CUDA beams must reside on the same device; got $(policy1.device) and $(policy2.device)"))
+    end
+    return policy1
 end
 
-function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, backend, ctx, turns::Int, io)
-    streams = _strong_strong_segment_streams(backend)
+function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, policy, ctx, turns::Int, io)
+    backend = backend_type(policy)
+    streams = _strong_strong_segment_streams(policy)
     memory_log_every = _strong_strong_cuda_memory_log_every(backend)
     for turn in 0:(turns - 1)
         turn_t0 = task.diagnostics.record_turn_times ? time_ns() : UInt64(0)
@@ -797,7 +1364,7 @@ function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, bac
             _execute_strong_strong_segment_pair!(
                 beam1.rep, blocks1[j].entries, task.plan_cache1,
                 beam2.rep, blocks2[j].entries, task.plan_cache2,
-                backend, ctx, streams, j,
+                policy, ctx, streams, j,
             )
             _cuda_nvtx_pop(backend, line_range)
             if blocks1[j].collision !== nothing
@@ -806,7 +1373,7 @@ function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, bac
                     push!(luminosity_evaluated, _strong_strong_luminosity_evaluated(solver, ctx))
                 collision_range = _cuda_nvtx_push(backend, "strongstrong collision")
                 lum = _strong_strong_collide!(
-                    task, blocks1[j].collision.label, solver, beam1, beam2, backend, ctx,
+                    task, blocks1[j].collision.label, solver, beam1, beam2, policy, ctx,
                 )
                 _cuda_nvtx_pop(backend, collision_range)
                 luminosities === nothing || push!(luminosities, Float64(lum))
@@ -831,16 +1398,48 @@ end
 
 function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
                                  solver::AbstractPoissonSolver,
-                                 beam1::Beam, beam2::Beam, backend, ctx::TrackingContext)
+                                 beam1::Beam, beam2::Beam, policy, ctx::TrackingContext)
     return Base.ScopedValues.with(_ACTIVE_PIC_TIMING_CONTEXT => (label=label, turn=ctx.turn)) do
-        collide!(solver, beam1, beam2, backend, ctx)
+        _record_execution!(:strong_strong_collision, backend_type(policy),
+                           (solver=Symbol(nameof(typeof(solver))), turn=ctx.turn))
+        if solver isa PICPoissonSolver
+            _record_execution!(:solver_runtime, backend_type(policy), (
+                deposit_method=solver.deposit_method,
+                green_type=solver.green_type,
+                green_cache=solver.green_cache,
+                longitudinal_kick=solver.longitudinal_kick,
+                batch_mode=solver.batch_mode,
+                cuda_async=solver.cuda_async,
+                cuda_batch_fft=solver.cuda_batch_fft,
+                cuda_wavefront_fft=solver.cuda_wavefront_fft,
+                cuda_indexed_wavefront=solver.cuda_indexed_wavefront,
+                luminosity_grid=_pic_luminosity_grid(solver),
+                luminosity_deposit_method=_pic_luminosity_deposit_method(solver),
+            ))
+        end
+        _with_solver_execution_configuration(solver, policy) do
+            _strong_strong_collide_backend!(
+                task, label, solver, beam1, beam2, backend_type(policy), ctx,
+            )
+        end
     end
+end
+
+function _strong_strong_collide_backend!(task, label, solver, beam1, beam2, backend, ctx)
+    return collide!(solver, beam1, beam2, backend, ctx)
 end
 
 _pic_compute_luminosity(::PICPoissonSolver, ::Nothing) = true
 function _pic_compute_luminosity(solver::PICPoissonSolver, ctx::TrackingContext)
     schedule = solver.luminosity_schedule
-    return schedule === nothing || should_run(schedule, ctx)
+    evaluated = schedule === nothing || should_run(schedule, ctx)
+    active_policy = _ACTIVE_RESOLVED_POLICY[]
+    active_backend = active_policy isa AbstractResolvedExecutionPolicy ?
+        backend_type(active_policy) : :unknown
+    _record_execution!(:pic_luminosity_schedule, active_backend,
+                       (turn=ctx.turn, evaluated=evaluated,
+                        schedule=schedule === nothing ? :every_turn : Symbol(nameof(typeof(schedule)))))
+    return evaluated
 end
 
 _strong_strong_luminosity_evaluated(::AbstractPoissonSolver, ::TrackingContext) = true
@@ -886,28 +1485,28 @@ end
 
 function _execute_strong_strong_segment_pair!(rep1, entries1::Tuple, plan_cache1,
                                               rep2, entries2::Tuple, plan_cache2,
-                                              backend, ctx, streams, block_index::Integer)
-    if backend === CUDABackend && streams !== nothing
-        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, backend, ctx, block_index, streams[1])
-        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, backend, ctx, block_index, streams[2])
+                                              policy, ctx, streams, block_index::Integer)
+    if policy isa ResolvedCUDAExecutionPolicy && streams !== nothing
+        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, policy, ctx, block_index, streams[1])
+        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, policy, ctx, block_index, streams[2])
         CUDA.synchronize(streams[1])
         CUDA.synchronize(streams[2])
     else
-        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, backend, ctx, block_index)
-        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, backend, ctx, block_index)
+        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, policy, ctx, block_index)
+        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, policy, ctx, block_index)
     end
     return nothing
 end
 
-function _strong_strong_segment_streams(backend)
-    if backend === CUDABackend
+function _strong_strong_segment_streams(policy)
+    if policy isa ResolvedCUDAExecutionPolicy
         _HAS_CUDA || error("CUDABackend requires CUDA.jl to be available.")
         return (CUDA.CuStream(), CUDA.CuStream())
     end
     return nothing
 end
 
-function _execute_strong_strong_segment!(rep, entries::Tuple, plan_cache, backend, ctx,
+function _execute_strong_strong_segment!(rep, entries::Tuple, plan_cache, policy, ctx,
                                          block_index::Integer, stream=nothing)
     isempty(entries) && return nothing
     # Active-hook state alone is not unique: blocks before and after a collision
@@ -916,7 +1515,7 @@ function _execute_strong_strong_segment!(rep, entries::Tuple, plan_cache, backen
     plan = get!(plan_cache, plan_key) do
         _build_tracking_plan(entries, plan_key[2])
     end
-    _execute_tracking_plan_turn!(rep, plan, backend, ctx; stream=stream)
+    _execute_tracking_plan_turn!(rep, plan, policy, ctx; stream=stream)
     return nothing
 end
 

@@ -96,14 +96,59 @@ The current backend tags are:
 - `CPUThreadsBackend`
 - `CUDABackend`
 
-Current task execution infers the backend from the beam or phase-space
-representation storage. An explicit task policy is accepted as a consistency
-assertion and must match that storage.
+Current task execution infers a default execution policy from beam or
+phase-space storage. A supplied policy selects execution for that storage; it
+does not migrate arrays. Storage/backend and CUDA-device mismatches are rejected
+before tracking mutates the beam.
 
-`GPUExecutionPolicy()` keeps the current CUDA device. Use
-`GPUExecutionPolicy(device=N)` to call `CUDA.device!(N)` before GPU allocation
-or task execution. The examples expose the same choice through
-`OCTOPUS_CUDA_DEVICE=N` when `OCTOPUS_USE_GPU=1`.
+Use `CPUThreadsExecutionPolicy(threads=:auto)` for CPU storage. An explicit
+integer is an Octopus logical-worker limit within Julia's default thread pool
+and must not exceed `Threads.nthreads(:default)`.
+
+Use `CUDAExecutionPolicy(device=nothing,
+launch=CUDALaunchConfig(threads=256, blocks=:auto))` for CUDA storage.
+`device=nothing` resolves from particle storage. Fused tracking resolves
+`:auto` blocks from compiled-kernel occupancy and particle coverage; an integer
+block count remains available for reproducible tuning. PIC-family thread
+overrides live separately in `CUDAPICLaunchConfig` on `PICPoissonSolver`.
+`GPUExecutionPolicy` remains only as a deprecated CUDA compatibility adapter.
+
+For example, keep fused tracking at 256 threads with automatic blocks while
+testing only PIC deposition at 128 threads:
+
+```julia
+policy = CUDAExecutionPolicy(
+    launch=CUDALaunchConfig(threads=256, blocks=:auto),
+)
+solver = PICPoissonSolver(
+    backend_configurations=(
+        CUDAPICLaunchConfig(deposition_threads=128),
+    ),
+)
+```
+
+Unset PIC-family fields inherit `policy.launch.threads`. PIC block counts stay
+topology-derived, and cuFFT remains library-managed. A CUDA PIC configuration
+on CPU storage is reported as inactive and a non-default request warns before
+tracking begins.
+
+The public direct-tracking form is:
+
+```julia
+track!(rep, runtime_line, turns; policy=policy, context=TrackingContext())
+```
+
+`TrackingContext` carries turn and counter-RNG state. It does not select an
+execution backend or launch geometry. `TrackingTask` and `StrongStrongTask`
+resolve one policy at execution entry and propagate it through fused,
+isolated, two-stream, and collision execution.
+
+Use `configuration_report` to inspect requested and resolved policy, solver,
+task, schedule, observer, and diagnostic settings. Reports distinguish
+inheritance and inactive settings from resolution. For validation,
+`with_execution_audit` records receipts at the actual worker, kernel, schedule,
+buffer, solver, and output consumers without enabling production-time
+synchronization.
 
 ## Current Counter RNG
 
@@ -362,8 +407,9 @@ nvidia-smi
 
 If `CUDA.functional()` is false or `nvidia-smi` cannot see a device, report the
 environment limitation instead of treating it as an Octopus tracking failure.
-For multi-GPU runs, select a device with `GPUExecutionPolicy(device=N)` or the
-example environment variable `OCTOPUS_CUDA_DEVICE=N`.
+For multi-GPU runs, place each beam on the intended device and use
+`CUDAExecutionPolicy(device=N)`. The requested device must match every
+coordinate array in the tracked representation.
 
 ## Current Limitations
 

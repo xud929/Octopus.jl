@@ -139,7 +139,7 @@ function _longitudinal_slices_equal_area(rep::Phase6DRep, slicing::LongitudinalS
 end
 
 function _threaded_histogram(z, zmin, width, bins::Int)
-    nchunks = Threads.nthreads()
+    nchunks = _cpu_worker_count()
     if nchunks == 1
         counts = zeros(Int, bins)
         for zi in z
@@ -149,7 +149,7 @@ function _threaded_histogram(z, zmin, width, bins::Int)
         return counts
     end
     local_counts = [zeros(Int, bins) for _ in 1:nchunks]
-    Threads.@threads :static for chunk in 1:nchunks
+    _run_logical_workers(nchunks) do chunk, _
         first_i, last_i = _chunk_bounds(length(z), nchunks, chunk)
         counts = local_counts[chunk]
         for i in first_i:last_i
@@ -262,7 +262,7 @@ function _slices_from_boundaries(rep::Phase6DRep, slicing, boundaries)
 end
 
 function _threaded_indices_by_function(slice_index, z, ns::Int)
-    nchunks = Threads.nthreads()
+    nchunks = _cpu_worker_count()
     if nchunks == 1
         indices = [Int[] for _ in 1:ns]
         for i in eachindex(z)
@@ -271,7 +271,7 @@ function _threaded_indices_by_function(slice_index, z, ns::Int)
         return indices
     end
     local_counts = [zeros(Int, ns) for _ in 1:nchunks]
-    Threads.@threads :static for chunk in 1:nchunks
+    _run_logical_workers(nchunks) do chunk, _
         first_i, last_i = _chunk_bounds(length(z), nchunks, chunk)
         counts = local_counts[chunk]
         for i in first_i:last_i
@@ -281,7 +281,7 @@ function _threaded_indices_by_function(slice_index, z, ns::Int)
     end
     local_indices = [[Vector{Int}(undef, local_counts[chunk][s]) for s in 1:ns] for chunk in 1:nchunks]
     local_offsets = [zeros(Int, ns) for _ in 1:nchunks]
-    Threads.@threads :static for chunk in 1:nchunks
+    _run_logical_workers(nchunks) do chunk, _
         first_i, last_i = _chunk_bounds(length(z), nchunks, chunk)
         offsets = local_offsets[chunk]
         chunk_indices = local_indices[chunk]
@@ -444,7 +444,7 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int}, ignore_cen
     sx = zero(T); spx = zero(T); sy = zero(T); spy = zero(T)
     sx2sum = zero(T); spx2sum = zero(T); sy2sum = zero(T); spy2sum = zero(T)
     sxpxsum = zero(T); sypysum = zero(T)
-    nchunks = Threads.nthreads()
+    nchunks = _cpu_worker_count()
     if nchunks == 1 || n < _STRONG_STRONG_PARALLEL_MOMENT_MIN
         for i in idx
             @inbounds begin
@@ -457,7 +457,7 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int}, ignore_cen
         end
     else
         local_sums = [zeros(T, 10) for _ in 1:nchunks]
-        Threads.@threads :static for chunk in 1:nchunks
+        _run_logical_workers(nchunks) do chunk, _
             first_i, last_i = _chunk_bounds(n, nchunks, chunk)
             sums = local_sums[chunk]
             for pos in first_i:last_i

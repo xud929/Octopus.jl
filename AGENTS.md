@@ -245,6 +245,16 @@ When adding an execution policy:
 4. Update task execution only if the policy changes workflow behavior.
 5. Document defaults and units in docstrings.
 
+Every new public configuration field or keyword must land together with its
+runtime consumer, structured metadata, invalid/inactive behavior, and an
+effectiveness test that observes the value at the consumer boundary. Storing,
+documenting, or returning a value from a configuration helper is not evidence
+that it is applied. Do not accept silently ignored non-default requests. Run
+`validate_configuration_metadata()` and
+`validate(PublicConfigurationEffectivenessContract())` after changing public
+policies, solver options, task options, diagnostics, schedules, buffers, or
+backend-specific launch configuration.
+
 ## Updating Contracts
 
 When adding a validation rule:

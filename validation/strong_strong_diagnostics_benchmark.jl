@@ -82,24 +82,36 @@ println("electron_moment_bytes = ", electron_moment_bytes)
 println("proton_moment_bytes = ", proton_moment_bytes)
 
 summary_path = joinpath(result_dir, "pic_diagnostics_$(mode)_summary.tsv")
+configuration_rows = Pair{String,Any}[
+    "git_commit" => readchomp(`git rev-parse HEAD`),
+    "mode" => mode,
+    "turns" => turns,
+    "sample_turns" => sample_turns,
+    "sample_mean_seconds" => sample_mean,
+    "sample_median_seconds" => sample_median,
+    "sample_min_seconds" => minimum(sample),
+    "sample_std_seconds" => sample_std,
+    "moment_capacity" => ENV["OCTOPUS_MOMENT_CAPACITY"],
+    "luminosity_bytes" => luminosity_bytes,
+    "electron_moment_bytes" => electron_moment_bytes,
+    "proton_moment_bytes" => proton_moment_bytes,
+    "electron_rms" => join(stats_ele.rms, ','),
+    "proton_rms" => join(stats_pro.rms, ','),
+]
+if policy isa CUDAExecutionPolicy
+    push!(configuration_rows, "cuda_fused_threads_requested" => policy.launch.threads)
+    push!(configuration_rows, "cuda_fused_blocks_requested" => policy.launch.blocks)
+    config_entries = configuration_report(solver; policy=policy, backend=CUDABackend)
+    for family in (:gather_scatter, :deposition, :kick, :field, :spectral, :green, :luminosity)
+        option = Symbol(:cuda_pic_, family, :_threads)
+        entry = only(filter(item -> item.name === option, config_entries))
+        push!(configuration_rows, string(option, "_requested") => entry.requested)
+        push!(configuration_rows, string(option, "_resolved") => entry.resolved)
+    end
+end
 open(summary_path, "w") do io
     println(io, "key\tvalue")
-    for (key, value) in (
-        "git_commit" => readchomp(`git rev-parse HEAD`),
-        "mode" => mode,
-        "turns" => turns,
-        "sample_turns" => sample_turns,
-        "sample_mean_seconds" => sample_mean,
-        "sample_median_seconds" => sample_median,
-        "sample_min_seconds" => minimum(sample),
-        "sample_std_seconds" => sample_std,
-        "moment_capacity" => ENV["OCTOPUS_MOMENT_CAPACITY"],
-        "luminosity_bytes" => luminosity_bytes,
-        "electron_moment_bytes" => electron_moment_bytes,
-        "proton_moment_bytes" => proton_moment_bytes,
-        "electron_rms" => join(stats_ele.rms, ','),
-        "proton_rms" => join(stats_pro.rms, ','),
-    )
+    for (key, value) in configuration_rows
         println(io, key, '\t', value)
     end
 end

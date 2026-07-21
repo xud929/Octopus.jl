@@ -1,13 +1,24 @@
 function track!(rep, elem::ThinStrongBeam, turns, ::Type{CPUThreadsBackend})
-	for turn in 1:turns
-		local_lum = zeros(eltype(rep.x), Threads.maxthreadid())
-		Threads.@threads for index in keys(rep)
-			@inbounds begin
-				x, px, y, py, z, pz, lum =
-					_thin_strong_beam_track(elem, rep[index]...)
-				rep[index] = (x, px, y, py, z, pz)
-				local_lum[Threads.threadid()] += lum
+	Base.depwarn("backend-tag track! is deprecated; pass policy=CPUThreadsExecutionPolicy()", :track!)
+	policy = ResolvedCPUExecutionPolicy(Threads.nthreads(:default))
+	return _with_execution_policy(policy) do
+		track!(rep, elem, turns, policy)
+	end
+end
+
+function track!(rep, elem::ThinStrongBeam, turns, policy::ResolvedCPUExecutionPolicy)
+	for _ in 1:turns
+		local_lum = zeros(eltype(rep.x), policy.threads)
+		_run_logical_workers(policy.threads) do worker, nworkers
+			value = zero(eltype(rep.x))
+			for index in worker:nworkers:length(rep)
+				@inbounds begin
+					x, px, y, py, z, pz, lum = _thin_strong_beam_track(elem, rep[index]...)
+					rep[index] = (x, px, y, py, z, pz)
+					value += lum
+				end
 			end
+			local_lum[worker] = value
 		end
 		elem.last_luminosity = sum(local_lum)
 	end
@@ -15,15 +26,27 @@ function track!(rep, elem::ThinStrongBeam, turns, ::Type{CPUThreadsBackend})
 end
 
 function track!(rep, elem::GaussianStrongBeam, turns, ::Type{CPUThreadsBackend})
-	for turn in 1:turns
-		local_lum = zeros(eltype(rep.x), Threads.maxthreadid())
-		Threads.@threads for index in keys(rep)
-			@inbounds begin
-				x, px, y, py, z, pz, lum =
-					_track_gaussian_strong_beam_with_luminosity(elem, rep[index]...)
-				rep[index] = (x, px, y, py, z, pz)
-				local_lum[Threads.threadid()] += lum
+	Base.depwarn("backend-tag track! is deprecated; pass policy=CPUThreadsExecutionPolicy()", :track!)
+	policy = ResolvedCPUExecutionPolicy(Threads.nthreads(:default))
+	return _with_execution_policy(policy) do
+		track!(rep, elem, turns, policy)
+	end
+end
+
+function track!(rep, elem::GaussianStrongBeam, turns, policy::ResolvedCPUExecutionPolicy)
+	for _ in 1:turns
+		local_lum = zeros(eltype(rep.x), policy.threads)
+		_run_logical_workers(policy.threads) do worker, nworkers
+			value = zero(eltype(rep.x))
+			for index in worker:nworkers:length(rep)
+				@inbounds begin
+					x, px, y, py, z, pz, lum =
+						_track_gaussian_strong_beam_with_luminosity(elem, rep[index]...)
+					rep[index] = (x, px, y, py, z, pz)
+					value += lum
+				end
 			end
+			local_lum[worker] = value
 		end
 		elem.last_luminosity = sum(local_lum)
 	end
@@ -122,9 +145,6 @@ end
 
 function track!(rep, elem::ThinStrongBeam, turns, ::Type{CUDABackend}; threads=256, blocks=256, stream=nothing)
 	_HAS_CUDA || error("CUDABackend requires CUDA.jl to be available.")
-	elem.size_signal === nothing || error("CUDA ThinStrongBeam tracking requires pre-updated numeric fields; size_signal is not supported inside the kernel.")
-	elem.centroid_signal === nothing || error("CUDA ThinStrongBeam tracking requires pre-updated numeric fields; centroid_signal is not supported inside the kernel.")
-	elem.angle_signal === nothing || error("CUDA ThinStrongBeam tracking requires pre-updated numeric fields; angle_signal is not supported inside the kernel.")
 	N = length(rep)
 	T = eltype(rep.x)
 	lum = CUDA.zeros(T, N)
@@ -150,11 +170,19 @@ function track!(rep, elem::ThinStrongBeam, turns, ::Type{CUDABackend}; threads=2
 	return nothing
 end
 
+function track!(rep, elem::ThinStrongBeam, turns, policy::ResolvedCUDAExecutionPolicy;
+				stream=nothing)
+	blocks = policy.blocks isa Int ? policy.blocks : min(cld(length(rep), policy.threads), 256)
+	blocks == 0 && return nothing
+	_record_execution!(:cuda_weak_strong_launch, CUDABackend,
+		(threads=policy.threads, blocks=blocks, requested_blocks=policy.blocks,
+		 element=:thin, stream=stream === nothing ? :default : :explicit))
+	return track!(rep, elem, turns, CUDABackend;
+		threads=policy.threads, blocks=blocks, stream=stream)
+end
+
 function track!(rep, elem::GaussianStrongBeam, turns, ::Type{CUDABackend}; threads=256, blocks=256, stream=nothing)
 	_HAS_CUDA || error("CUDABackend requires CUDA.jl to be available.")
-	elem.thin.size_signal === nothing || error("CUDA GaussianStrongBeam tracking requires pre-updated numeric fields; size_signal is not supported inside the kernel.")
-	elem.thin.centroid_signal === nothing || error("CUDA GaussianStrongBeam tracking requires pre-updated numeric fields; centroid_signal is not supported inside the kernel.")
-	elem.thin.angle_signal === nothing || error("CUDA GaussianStrongBeam tracking requires pre-updated numeric fields; angle_signal is not supported inside the kernel.")
 	N = length(rep)
 	T = eltype(rep.x)
 	lum = CUDA.zeros(T, N)
@@ -183,6 +211,17 @@ function track!(rep, elem::GaussianStrongBeam, turns, ::Type{CUDABackend}; threa
 	end
 	elem.last_luminosity = sum(Array(lum))
 	return nothing
+end
+
+function track!(rep, elem::GaussianStrongBeam, turns, policy::ResolvedCUDAExecutionPolicy;
+				stream=nothing)
+	blocks = policy.blocks isa Int ? policy.blocks : min(cld(length(rep), policy.threads), 256)
+	blocks == 0 && return nothing
+	_record_execution!(:cuda_weak_strong_launch, CUDABackend,
+		(threads=policy.threads, blocks=blocks, requested_blocks=policy.blocks,
+		 element=:gaussian, stream=stream === nothing ? :default : :explicit))
+	return track!(rep, elem, turns, CUDABackend;
+		threads=policy.threads, blocks=blocks, stream=stream)
 end
 
 @inline function _cuda_thin_strong_beam_track(

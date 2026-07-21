@@ -52,5 +52,16 @@ if _HAS_CUDA
 			end
 			return nothing
 		end
+
+		function track!(rep, elem::LumpedRad, turns, policy::ResolvedCUDAExecutionPolicy;
+						stream=nothing)
+			blocks = policy.blocks isa Int ? policy.blocks : min(cld(length(rep), policy.threads), 256)
+			blocks == 0 && return nothing
+			_record_execution!(:cuda_radiation_compatibility_launch, CUDABackend,
+				(threads=policy.threads, blocks=blocks, requested_blocks=policy.blocks,
+				 stream=stream === nothing ? :default : :explicit))
+			return track!(rep, elem, turns, CUDABackend;
+				threads=policy.threads, blocks=blocks, stream=stream)
+		end
 	end
 end

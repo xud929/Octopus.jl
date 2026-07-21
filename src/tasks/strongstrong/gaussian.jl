@@ -34,7 +34,7 @@ function _slice_slice_gaussian_kick!(rep::Phase6DRep, idx::Vector{Int}, moments2
     isempty(idx) && return zero(eltype(rep.x))
     T = eltype(rep.x)
     n = length(idx)
-    nchunks = Threads.nthreads()
+    nchunks = _cpu_worker_count()
     if nchunks == 1 || n < _STRONG_STRONG_PARALLEL_KICK_MIN
         lum = zero(T)
         for i in idx
@@ -43,7 +43,7 @@ function _slice_slice_gaussian_kick!(rep::Phase6DRep, idx::Vector{Int}, moments2
         return lum / TWOPI * klum_slice
     end
     local_lum = zeros(T, nchunks)
-    Threads.@threads :static for chunk in 1:nchunks
+    _run_logical_workers(nchunks) do chunk, _
         first_i, last_i = _chunk_bounds(n, nchunks, chunk)
         lum = zero(T)
         for pos in first_i:last_i

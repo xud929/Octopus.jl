@@ -32,6 +32,12 @@ if _HAS_CUDA
             end
         end
 
+        _strong_strong_collide_backend!(task::StrongStrongTask, label::Symbol,
+                                        solver::PICPoissonSolver,
+                                        beam1::Beam, beam2::Beam, ::Type{CUDABackend},
+                                        ctx::TrackingContext) =
+            _strong_strong_collide!(task, label, solver, beam1, beam2, CUDABackend, ctx)
+
         function _cuda_pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam,
                                     workspace, green_cache, ctx=nothing)
             _validate_pic_solver(solver)
@@ -50,6 +56,15 @@ if _HAS_CUDA
             luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
             detailed_timing = _cuda_pic_detailed_timing_enabled()
             use_async = _cuda_pic_async_enabled(solver) && !detailed_timing
+            use_batch_fft = use_async && _cuda_pic_batch_fft_enabled(solver)
+            _record_execution!(:cuda_pic_algorithm, CUDABackend, (
+                batch_mode=:sequential,
+                cuda_async=use_async,
+                cuda_batch_fft=use_batch_fft,
+                cuda_wavefront_fft=false,
+                cuda_indexed_wavefront=false,
+                detailed_timing=detailed_timing,
+            ))
             reclaim_policy = _cuda_pic_reclaim_policy()
             pair_count = 0
             for (_, i, j) in _slice_collision_order(slices1, slices2)
@@ -67,7 +82,7 @@ if _HAS_CUDA
                 (slice1 === nothing || slice2 === nothing) && continue
                 pair_range = _cuda_nvtx_push(CUDABackend, "pic slice-pair interaction")
                 t_interaction = time_ns()
-                if use_async && _cuda_pic_batch_fft_enabled(solver)
+                if use_batch_fft
                     lum = _cuda_pic_interaction_pair_batched_fft!(
                         solver, slice1.coords, p1, slice2.coords, p2, kbb1, kbb2, green_cache, klum,
                         workspace, timing, compute_luminosity,
@@ -125,12 +140,22 @@ if _HAS_CUDA
             luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
             detailed_timing = _cuda_pic_detailed_timing_enabled()
             use_async = _cuda_pic_async_enabled(solver) && !detailed_timing
+            use_batch_fft = use_async && _cuda_pic_batch_fft_enabled(solver)
+            use_wavefront_fft = use_batch_fft && _cuda_pic_wavefront_fft_enabled(solver)
             reclaim_policy = _cuda_pic_reclaim_policy()
             pair_count = 0
             batch_count = 0
             max_batch_size = 0
             use_indexed_wavefront = _cuda_pic_indexed_wavefront_enabled(solver) &&
-                use_async && _cuda_pic_batch_fft_enabled(solver) && _cuda_pic_wavefront_fft_enabled(solver)
+                use_wavefront_fft
+            _record_execution!(:cuda_pic_algorithm, CUDABackend, (
+                batch_mode=:wavefront,
+                cuda_async=use_async,
+                cuda_batch_fft=use_batch_fft,
+                cuda_wavefront_fft=use_wavefront_fft,
+                cuda_indexed_wavefront=use_indexed_wavefront,
+                detailed_timing=detailed_timing,
+            ))
             for batch in batches
                 batch_count += 1
                 max_batch_size = max(max_batch_size, length(batch))
@@ -177,7 +202,7 @@ if _HAS_CUDA
                 _cuda_pic_add_time!(timing, :gather, t_gather)
                 _cuda_nvtx_pop(CUDABackend, gather_range)
 
-                if use_async && _cuda_pic_batch_fft_enabled(solver) && _cuda_pic_wavefront_fft_enabled(solver)
+                if use_wavefront_fft
                     pair_count += length(gathered)
                     pair_range = _cuda_nvtx_push(CUDABackend, "pic wavefront batch interaction")
                     t_interaction = time_ns()
@@ -193,7 +218,7 @@ if _HAS_CUDA
                         (item.slice1 === nothing || item.slice2 === nothing) && continue
                         pair_range = _cuda_nvtx_push(CUDABackend, "pic wavefront pair interaction")
                         t_interaction = time_ns()
-                        if use_async && _cuda_pic_batch_fft_enabled(solver)
+                        if use_batch_fft
                             lum = _cuda_pic_interaction_pair_batched_fft!(
                                 solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
                                 kbb1, kbb2, green_cache, klum, workspace, timing, compute_luminosity,
@@ -271,7 +296,7 @@ if _HAS_CUDA
             batch_charges::Any
             batch_Ex::Any
             batch_Ey::Any
-            wavefront_cache::Dict{Int,Any}
+            wavefront_cache::Dict{Any,Any}
             slice_pair_green_cache::_CUDAPICSlicePairGreenCache{T}
             luminosity_q1::Any
             luminosity_q2::Any
@@ -414,7 +439,7 @@ if _HAS_CUDA
                 CUDA.zeros(T, 2nx, 2ny, 4),
                 CUDA.zeros(T, nx, ny, 4),
                 CUDA.zeros(T, nx, ny, 4),
-                Dict{Int,Any}(),
+                Dict{Any,Any}(),
                 _CUDAPICSlicePairGreenCache{T}(Dict{Tuple{Int,Int,Int},_CUDAPICSlicePairGreenEntry{T}}(), 0, 0, 0),
                 CUDA.zeros(T, lnx + 1, lny + 1),
                 CUDA.zeros(T, lnx + 1, lny + 1),
@@ -525,7 +550,7 @@ if _HAS_CUDA
                     py=CUDA.CuArray{T}(undef, n),
                     z=CUDA.CuArray{T}(undef, n),
                 )
-            threads = 256
+            threads = _cuda_pic_threads(:gather_scatter)
             if longitudinal_kick
                 CUDA.@cuda threads=threads blocks=cld(n, threads) _cuda_pic_gather_slice_longitudinal_kernel!(
                     coords.x, coords.px, coords.y, coords.py, coords.z, coords.pz,
@@ -542,7 +567,7 @@ if _HAS_CUDA
 
         function _cuda_pic_store_slice!(rep::Phase6DRep, idx, coords, longitudinal_kick::Bool=false)
             n = length(idx)
-            threads = 256
+            threads = _cuda_pic_threads(:gather_scatter)
             if longitudinal_kick
                 CUDA.@cuda threads=threads blocks=cld(n, threads) _cuda_pic_scatter_slice_longitudinal_kernel!(
                     rep.x, rep.px, rep.y, rep.py, rep.pz,
@@ -563,7 +588,7 @@ if _HAS_CUDA
             n = length(mask) == 0 ? 0 : Int(CUDA.@allowscalar positions[end])
             idx = CUDA.CuArray{Int}(undef, n)
             n == 0 && return idx
-            threads = 256
+            threads = _cuda_pic_threads(:gather_scatter)
             CUDA.@cuda threads=threads blocks=cld(length(mask), threads) _cuda_indices_from_mask_kernel!(
                 idx, mask, positions,
             )
@@ -1193,7 +1218,7 @@ if _HAS_CUDA
                                         out, kbb, field_grid,
                                         phiL, ExL, EyL, phiR, ExR, EyR, stream)
             T = eltype(field.x)
-            threads = 256
+            threads = _cuda_pic_threads(:kick)
             blocks = cld(length(field.x), threads)
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
             nx, ny = solver.grid
@@ -1226,7 +1251,7 @@ if _HAS_CUDA
                                                 kbb, field_grid,
                                                 phiL, ExL, EyL, phiR, ExR, EyR, stream)
             T = eltype(rep.x)
-            threads = 256
+            threads = _cuda_pic_threads(:kick)
             blocks = cld(length(idx), threads)
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
             nx, ny = solver.grid
@@ -1261,7 +1286,7 @@ if _HAS_CUDA
             stream,
         )
             T = eltype(rep1.x)
-            threads = 256
+            threads = _cuda_pic_threads(:kick)
             n = max(length(idx1), length(idx2))
             blocks = cld(n, threads)
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
@@ -1455,11 +1480,11 @@ if _HAS_CUDA
             charge = charge === nothing ? CUDA.zeros(T, 2nx, 2ny) : charge
             fill!(charge, zero(T))
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
-            threads = 256
-            blocks = cld(length(x), threads)
+            deposit_threads = _cuda_pic_threads(:deposition)
+            blocks = cld(length(x), deposit_threads)
             stream = CUDA.stream()
             t_deposit = time_ns()
-            CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_deposit_nomask_kernel!(
+            CUDA.@cuda threads=deposit_threads blocks=blocks stream=stream _cuda_pic_deposit_nomask_kernel!(
                 charge, x, y, T(source_grid.x0), T(source_grid.y0), hx, hy,
                 Int32(nx), Int32(ny), method_code,
             )
@@ -1470,9 +1495,10 @@ if _HAS_CUDA
             _cuda_pic_add_time!(timing, :field_fft, t_fft)
             Ex = similar(phi)
             Ey = similar(phi)
-            blocks_grid = cld(nx * ny, threads)
+            field_threads = _cuda_pic_threads(:field)
+            blocks_grid = cld(nx * ny, field_threads)
             t_derivative = time_ns()
-            CUDA.@cuda threads=threads blocks=blocks_grid stream=stream _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, Int32(nx), Int32(ny))
+            CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, Int32(nx), Int32(ny))
             _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
             return phi, Ex, Ey
         end
@@ -1487,11 +1513,11 @@ if _HAS_CUDA
             charge = charge === nothing ? CUDA.zeros(T, 2nx, 2ny) : charge
             fill!(charge, zero(T))
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
-            threads = 256
-            blocks = cld(length(source.x), threads)
+            deposit_threads = _cuda_pic_threads(:deposition)
+            blocks = cld(length(source.x), deposit_threads)
             stream = CUDA.stream()
             t_deposit = time_ns()
-            CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_deposit_drifted_nomask_kernel!(
+            CUDA.@cuda threads=deposit_threads blocks=blocks stream=stream _cuda_pic_deposit_drifted_nomask_kernel!(
                 charge, source.x, source.px, source.y, source.py, T(drift_s),
                 T(source_grid.x0), T(source_grid.y0), hx, hy,
                 Int32(nx), Int32(ny), method_code,
@@ -1503,9 +1529,10 @@ if _HAS_CUDA
             _cuda_pic_add_time!(timing, :field_fft, t_fft)
             Ex = similar(phi)
             Ey = similar(phi)
-            blocks_grid = cld(nx * ny, threads)
+            field_threads = _cuda_pic_threads(:field)
+            blocks_grid = cld(nx * ny, field_threads)
             t_derivative = time_ns()
-            CUDA.@cuda threads=threads blocks=blocks_grid stream=stream _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, Int32(nx), Int32(ny))
+            CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, Int32(nx), Int32(ny))
             _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
             return phi, Ex, Ey
         end
@@ -1521,27 +1548,28 @@ if _HAS_CUDA
             charge = workspace.batch_charges
             fill!(charge, zero(T))
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
-            threads = 256
+            deposit_threads = _cuda_pic_threads(:deposition)
             stream = CUDA.stream()
             t_deposit = time_ns()
             _cuda_pic_deposit_drifted_plane!(
-                solver, charge, Int32(1), source12, prep12.sL, prep12.source_grid, method_code, threads, stream,
+                solver, charge, Int32(1), source12, prep12.sL, prep12.source_grid, method_code, deposit_threads, stream,
             )
             _cuda_pic_deposit_drifted_plane!(
-                solver, charge, Int32(2), source12, prep12.sR, prep12.source_grid, method_code, threads, stream,
+                solver, charge, Int32(2), source12, prep12.sR, prep12.source_grid, method_code, deposit_threads, stream,
             )
             _cuda_pic_deposit_drifted_plane!(
-                solver, charge, Int32(3), source21, prep21.sL, prep21.source_grid, method_code, threads, stream,
+                solver, charge, Int32(3), source21, prep21.sL, prep21.source_grid, method_code, deposit_threads, stream,
             )
             _cuda_pic_deposit_drifted_plane!(
-                solver, charge, Int32(4), source21, prep21.sR, prep21.source_grid, method_code, threads, stream,
+                solver, charge, Int32(4), source21, prep21.sR, prep21.source_grid, method_code, deposit_threads, stream,
             )
             _cuda_pic_add_time!(timing, :field_deposit, t_deposit)
 
             t_fft = time_ns()
             spectral = fft(charge, (1, 2))
-            blocks_spectral = cld(length(spectral), threads)
-            CUDA.@cuda threads=threads blocks=blocks_spectral stream=stream _cuda_pic_apply_green_batch_kernel!(
+            spectral_threads = _cuda_pic_threads(:spectral)
+            blocks_spectral = cld(length(spectral), spectral_threads)
+            CUDA.@cuda threads=spectral_threads blocks=blocks_spectral stream=stream _cuda_pic_apply_green_batch_kernel!(
                 spectral, green12, green21,
             )
             phi_batch = real(ifft(spectral, (1, 2)))
@@ -1550,12 +1578,13 @@ if _HAS_CUDA
             Ex = workspace.batch_Ex
             Ey = workspace.batch_Ey
             t_derivative = time_ns()
-            blocks_grid = cld(nx * ny * 4, threads)
+            field_threads = _cuda_pic_threads(:field)
+            blocks_grid = cld(nx * ny * 4, field_threads)
             hx12 = T(prep12.source_grid.width) / T(nx - 1)
             hy12 = T(prep12.source_grid.height) / T(ny - 1)
             hx21 = T(prep21.source_grid.width) / T(nx - 1)
             hy21 = T(prep21.source_grid.height) / T(ny - 1)
-            CUDA.@cuda threads=threads blocks=blocks_grid stream=stream _cuda_pic_field_batch_kernel!(
+            CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_batch_kernel!(
                 Ex, Ey, phi_batch, hx12, hy12, hx21, hy21, Int32(nx), Int32(ny),
             )
             _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
@@ -1568,7 +1597,8 @@ if _HAS_CUDA
             nx, ny = solver.grid
             lnx, lny = _pic_luminosity_grid(solver)
             ngreen = max(1, Int(nplanes) ÷ 2)
-            return get!(workspace.wavefront_cache, Int(nplanes)) do
+            luminosity_threads = _cuda_pic_threads(:luminosity)
+            return get!(workspace.wavefront_cache, (Int(nplanes), luminosity_threads)) do
                 (
                     charges=CUDA.zeros(T, 2nx, 2ny, nplanes),
                     greens=CUDA.zeros(T, 2nx, 2ny, ngreen),
@@ -1578,7 +1608,10 @@ if _HAS_CUDA
                     luminosity_q2=CUDA.zeros(T, lnx + 1, lny + 1, max(1, nplanes ÷ 4)),
                     luminosity_scale=CUDA.zeros(T, max(1, nplanes ÷ 4)),
                     luminosity_accum=CUDA.zeros(T, 1),
-                    luminosity_overlap_partials=CUDA.zeros(T, cld(lnx * lny, 256) * max(1, nplanes ÷ 4)),
+                    luminosity_overlap_partials=CUDA.zeros(
+                        T,
+                        cld(lnx * lny, luminosity_threads) * max(1, nplanes ÷ 4),
+                    ),
                     hx=CUDA.zeros(T, nplanes),
                     hy=CUDA.zeros(T, nplanes),
                     green_field_x0=CUDA.zeros(T, ngreen),
@@ -1603,7 +1636,7 @@ if _HAS_CUDA
             charge = wf.charges
             fill!(charge, zero(T))
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
-            threads = 256
+            deposit_threads = _cuda_pic_threads(:deposition)
             stream = CUDA.stream()
             hx_host = Vector{T}(undef, nplanes)
             hy_host = Vector{T}(undef, nplanes)
@@ -1614,19 +1647,19 @@ if _HAS_CUDA
                 offset = 4 * (n - 1)
                 _cuda_pic_deposit_drifted_plane!(
                     solver, charge, Int32(offset + 1), item.slice1.coords, prep12[n].sL,
-                    prep12[n].source_grid, method_code, threads, stream,
+                    prep12[n].source_grid, method_code, deposit_threads, stream,
                 )
                 _cuda_pic_deposit_drifted_plane!(
                     solver, charge, Int32(offset + 2), item.slice1.coords, prep12[n].sR,
-                    prep12[n].source_grid, method_code, threads, stream,
+                    prep12[n].source_grid, method_code, deposit_threads, stream,
                 )
                 _cuda_pic_deposit_drifted_plane!(
                     solver, charge, Int32(offset + 3), item.slice2.coords, prep21[n].sL,
-                    prep21[n].source_grid, method_code, threads, stream,
+                    prep21[n].source_grid, method_code, deposit_threads, stream,
                 )
                 _cuda_pic_deposit_drifted_plane!(
                     solver, charge, Int32(offset + 4), item.slice2.coords, prep21[n].sR,
-                    prep21[n].source_grid, method_code, threads, stream,
+                    prep21[n].source_grid, method_code, deposit_threads, stream,
                 )
                 hx12 = T(prep12[n].source_grid.width) / T(nx - 1)
                 hy12 = T(prep12[n].source_grid.height) / T(ny - 1)
@@ -1649,40 +1682,44 @@ if _HAS_CUDA
             green_spectral = nothing
             if green12 === nothing && green21 === nothing
                 green_spectral = _cuda_pic_build_wavefront_green_fft!(
-                    solver, wf, prep12, prep21, T, timing, threads, stream,
+                    solver, wf, prep12, prep21, T, timing, _cuda_pic_threads(:green), stream,
                 )
             end
 
             t_fft = time_ns()
             spectral = fft(charge, (1, 2))
             if green12 === nothing && green21 === nothing
-                blocks_spectral = cld(length(spectral), threads)
-                CUDA.@cuda threads=threads blocks=blocks_spectral stream=stream _cuda_pic_multiply_spectral_stack_kernel!(
+                spectral_threads = _cuda_pic_threads(:spectral)
+                blocks_spectral = cld(length(spectral), spectral_threads)
+                CUDA.@cuda threads=spectral_threads blocks=blocks_spectral stream=stream _cuda_pic_multiply_spectral_stack_kernel!(
                     spectral, green_spectral,
                 )
             elseif _cuda_pic_stack_cached_green_enabled()
                 t_green_stack = time_ns()
                 _cuda_pic_copy_green_spectral_stack!(wf.green_spectral, green12, green21, stream)
                 _cuda_pic_add_time!(timing, :green_lookup, t_green_stack)
-                blocks_spectral = cld(length(spectral), threads)
-                CUDA.@cuda threads=threads blocks=blocks_spectral stream=stream _cuda_pic_multiply_spectral_stack_kernel!(
+                spectral_threads = _cuda_pic_threads(:spectral)
+                blocks_spectral = cld(length(spectral), spectral_threads)
+                CUDA.@cuda threads=spectral_threads blocks=blocks_spectral stream=stream _cuda_pic_multiply_spectral_stack_kernel!(
                     spectral, wf.green_spectral,
                 )
             else
                 for n in 1:npairs
                     offset = 4 * (n - 1)
-                    _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 1), threads, stream)
-                    _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 2), threads, stream)
-                    _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 3), threads, stream)
-                    _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 4), threads, stream)
+                    spectral_threads = _cuda_pic_threads(:spectral)
+                    _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 1), spectral_threads, stream)
+                    _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 2), spectral_threads, stream)
+                    _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 3), spectral_threads, stream)
+                    _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 4), spectral_threads, stream)
                 end
             end
             phi_batch = real(ifft(spectral, (1, 2)))
             _cuda_pic_add_time!(timing, :field_fft, t_fft)
 
             t_derivative = time_ns()
-            blocks_grid = cld(nx * ny * nplanes, threads)
-            CUDA.@cuda threads=threads blocks=blocks_grid stream=stream _cuda_pic_field_wavefront_kernel!(
+            field_threads = _cuda_pic_threads(:field)
+            blocks_grid = cld(nx * ny * nplanes, field_threads)
+            CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_wavefront_kernel!(
                 wf.Ex, wf.Ey, phi_batch, wf.hx, wf.hy, Int32(nx), Int32(ny), Int32(nplanes),
             )
             _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
@@ -1701,7 +1738,7 @@ if _HAS_CUDA
             charge = wf.charges
             fill!(charge, zero(T))
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
-            threads = 256
+            deposit_threads = _cuda_pic_threads(:deposition)
             stream = CUDA.stream()
             hx_host = Vector{T}(undef, nplanes)
             hy_host = Vector{T}(undef, nplanes)
@@ -1713,12 +1750,12 @@ if _HAS_CUDA
                 _cuda_pic_deposit_drifted_indexed_plane_pair!(
                     solver, charge, Int32(offset + 1), Int32(offset + 2),
                     rep1, item.idx1, prep12[n].sL, prep12[n].sR,
-                    prep12[n].source_grid, method_code, threads, stream,
+                    prep12[n].source_grid, method_code, deposit_threads, stream,
                 )
                 _cuda_pic_deposit_drifted_indexed_plane_pair!(
                     solver, charge, Int32(offset + 3), Int32(offset + 4),
                     rep2, item.idx2, prep21[n].sL, prep21[n].sR,
-                    prep21[n].source_grid, method_code, threads, stream,
+                    prep21[n].source_grid, method_code, deposit_threads, stream,
                 )
                 hx12 = T(prep12[n].source_grid.width) / T(nx - 1)
                 hy12 = T(prep12[n].source_grid.height) / T(ny - 1)
@@ -1741,40 +1778,42 @@ if _HAS_CUDA
             green_spectral = nothing
             if green12 === nothing && green21 === nothing
                 green_spectral = _cuda_pic_build_wavefront_green_fft!(
-                    solver, wf, prep12, prep21, T, timing, threads, stream,
+                    solver, wf, prep12, prep21, T, timing, _cuda_pic_threads(:green), stream,
                 )
             end
 
             t_fft = time_ns()
             spectral = fft(charge, (1, 2))
+            spectral_threads = _cuda_pic_threads(:spectral)
             if green12 === nothing && green21 === nothing
-                blocks_spectral = cld(length(spectral), threads)
-                CUDA.@cuda threads=threads blocks=blocks_spectral stream=stream _cuda_pic_multiply_spectral_stack_kernel!(
+                blocks_spectral = cld(length(spectral), spectral_threads)
+                CUDA.@cuda threads=spectral_threads blocks=blocks_spectral stream=stream _cuda_pic_multiply_spectral_stack_kernel!(
                     spectral, green_spectral,
                 )
             elseif _cuda_pic_stack_cached_green_enabled()
                 t_green_stack = time_ns()
                 _cuda_pic_copy_green_spectral_stack!(wf.green_spectral, green12, green21, stream)
                 _cuda_pic_add_time!(timing, :green_lookup, t_green_stack)
-                blocks_spectral = cld(length(spectral), threads)
-                CUDA.@cuda threads=threads blocks=blocks_spectral stream=stream _cuda_pic_multiply_spectral_stack_kernel!(
+                blocks_spectral = cld(length(spectral), spectral_threads)
+                CUDA.@cuda threads=spectral_threads blocks=blocks_spectral stream=stream _cuda_pic_multiply_spectral_stack_kernel!(
                     spectral, wf.green_spectral,
                 )
             else
                 for n in 1:npairs
                     offset = 4 * (n - 1)
-                    _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 1), threads, stream)
-                    _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 2), threads, stream)
-                    _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 3), threads, stream)
-                    _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 4), threads, stream)
+                    _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 1), spectral_threads, stream)
+                    _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 2), spectral_threads, stream)
+                    _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 3), spectral_threads, stream)
+                    _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 4), spectral_threads, stream)
                 end
             end
             phi_batch = real(ifft(spectral, (1, 2)))
             _cuda_pic_add_time!(timing, :field_fft, t_fft)
 
             t_derivative = time_ns()
-            blocks_grid = cld(nx * ny * nplanes, threads)
-            CUDA.@cuda threads=threads blocks=blocks_grid stream=stream _cuda_pic_field_wavefront_kernel!(
+            field_threads = _cuda_pic_threads(:field)
+            blocks_grid = cld(nx * ny * nplanes, field_threads)
+            CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_wavefront_kernel!(
                 wf.Ex, wf.Ey, phi_batch, wf.hx, wf.hy, Int32(nx), Int32(ny), Int32(nplanes),
             )
             _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
@@ -1913,7 +1952,7 @@ if _HAS_CUDA
             t_build = time_ns()
             green = CUDA.zeros(T, 2nx, 2ny)
             green_code = Symbol(solver.green_type) == :integrated ? Int32(1) : Int32(2)
-            threads = 256
+            threads = _cuda_pic_threads(:green)
             blocks = cld(length(green), threads)
             CUDA.@cuda threads=threads blocks=blocks stream=CUDA.stream() _cuda_pic_green_kernel!(
                 green, green_code,
@@ -1960,7 +1999,7 @@ if _HAS_CUDA
             fill!(q2, zero(T))
             fill!(accum, zero(T))
             scale_host = Vector{T}(undef, npairs)
-            threads = 256
+            threads = _cuda_pic_threads(:luminosity)
             stream = CUDA.stream()
             t_luminosity = time_ns()
             method_code = _pic_luminosity_deposit_method(solver) == :CIC ? Int32(1) : Int32(2)
@@ -2022,7 +2061,7 @@ if _HAS_CUDA
             fill!(q1, zero(T))
             fill!(q2, zero(T))
             scale_host = Vector{T}(undef, npairs)
-            threads = 256
+            threads = _cuda_pic_threads(:luminosity)
             stream = CUDA.stream()
             method_code = _pic_luminosity_deposit_method(solver) == :CIC ? Int32(1) : Int32(2)
             t_luminosity = time_ns()
@@ -2128,7 +2167,7 @@ if _HAS_CUDA
             q2 = workspace === nothing ? CUDA.zeros(T, nx + 1, ny + 1) : workspace.luminosity_q2
             fill!(q1, zero(T))
             fill!(q2, zero(T))
-            threads = 256
+            threads = _cuda_pic_threads(:luminosity)
             stream = CUDA.stream()
             method_code = _pic_luminosity_deposit_method(solver) == :CIC ? Int32(1) : Int32(2)
             CUDA.@cuda threads=threads blocks=cld(length(x1), threads) stream=stream _cuda_pic_deposit_nomask_kernel!(
@@ -3234,6 +3273,12 @@ if _HAS_CUDA
             lum1 = CUDA.zeros(T, length(beam1.rep))
             lum2 = CUDA.zeros(T, length(beam2.rep))
             luminosity = zero(T)
+            launch1 = _active_cuda_launch(length(beam1.rep))
+            launch2 = _active_cuda_launch(length(beam2.rep))
+            _record_execution!(:cuda_gaussian_strong_strong_launch, CUDABackend,
+                (beam=1, threads=launch1.threads, blocks=launch1.blocks))
+            _record_execution!(:cuda_gaussian_strong_strong_launch, CUDABackend,
+                (beam=2, threads=launch2.threads, blocks=launch2.blocks))
             for (_, i, j) in _slice_collision_order(slices1, slices2)
                 moments1 = _cuda_slice_transverse_moments(
                     beam1.rep, slices1.boundary[i], slices1.boundary[i + 1], i == length(slices1.center),
@@ -3243,14 +3288,14 @@ if _HAS_CUDA
                     beam2.rep, slices2.boundary[j], slices2.boundary[j + 1], j == length(slices2.center),
                     solver.ignore_centroid2, solver.min_sigma,
                 )
-                CUDA.@cuda threads=256 blocks=256 _cuda_slice_kick_kernel!(
+                CUDA.@cuda threads=launch1.threads blocks=launch1.blocks _cuda_slice_kick_kernel!(
                     beam1.rep, lum1,
                     slices1.boundary[i], slices1.boundary[i + 1], i == length(slices1.center),
                     moments2, slices2.center[j],
                     slices2.weight[j] * kbb1,
                     solver.min_sigma,
                 )
-                CUDA.@cuda threads=256 blocks=256 _cuda_slice_kick_kernel!(
+                CUDA.@cuda threads=launch2.threads blocks=launch2.blocks _cuda_slice_kick_kernel!(
                     beam2.rep, lum2,
                     slices2.boundary[j], slices2.boundary[j + 1], j == length(slices2.center),
                     moments1, slices1.center[i],

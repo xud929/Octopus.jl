@@ -58,6 +58,17 @@ Use Julia help:
 ```julia
 ?TrackingTask
 ?StrongStrongTask
+?CPUThreadsExecutionPolicy
+?CUDAExecutionPolicy
+?CUDALaunchConfig
+?CUDAPICLaunchConfig
+?policy_option_schema
+?cuda_pic_launch_option_schema
+?configuration_report
+?ExecutionAudit
+?with_execution_audit
+?execution_receipts
+?validate_configuration_metadata
 ?StrongStrongDiagnostics
 ?DiagnosticsOptionMeta
 ?diagnostics_option_schema
@@ -81,6 +92,8 @@ Use Julia help:
 ?ScheduledAction
 ?EveryNSteps
 ?AtTurns
+?schedule_option_schema
+?observer_option_schema
 ?Moment
 ?MomentObserver
 ?MomentOutputFile
@@ -185,6 +198,7 @@ Use Julia help:
 ?ElementTrackingBackendConsistencyContract
 ?StrongStrongGaussianBackendConsistencyContract
 ?StrongStrongPICBackendConsistencyContract
+?PublicConfigurationEffectivenessContract
 ?validate
 ?turn_timings
 ```

@@ -92,6 +92,12 @@ Record synchronized complete-turn timings and optionally write them as TSV:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_RECORD_TURN_TIMES=1 OCTOPUS_TURN_TIMING_PATH=result/pic_turn_times.tsv julia --project=. examples/strong_strong_tracking.jl
 
+Benchmark fused CUDA launch geometry through the public policy interface. PIC
+family overrides are optional and otherwise inherit `CUDA_THREADS`:
+
+    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_THREADS=256 OCTOPUS_CUDA_BLOCKS=auto julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_PIC_DEPOSITION_THREADS=128 julia --project=. examples/strong_strong_tracking.jl
+
 Print additive field subphase timings. This disables async PIC field solves for
 diagnosis:
 
@@ -201,9 +207,15 @@ end
 policy = if use_gpu
     cuda_device_env = get(ENV, "OCTOPUS_CUDA_DEVICE", "")
     cuda_device = isempty(cuda_device_env) ? nothing : parse(Int, cuda_device_env)
-    GPUExecutionPolicy(device = cuda_device)
+    cuda_threads = parse(Int, get(ENV, "OCTOPUS_CUDA_THREADS", "256"))
+    cuda_blocks_text = lowercase(get(ENV, "OCTOPUS_CUDA_BLOCKS", "auto"))
+    cuda_blocks = cuda_blocks_text == "auto" ? :auto : parse(Int, cuda_blocks_text)
+    CUDAExecutionPolicy(device = cuda_device,
+        launch = CUDALaunchConfig(threads = cuda_threads, blocks = cuda_blocks))
 else
-    CPUThreadsExecutionPolicy()
+    cpu_threads_text = lowercase(get(ENV, "OCTOPUS_CPU_THREADS", "auto"))
+    cpu_threads = cpu_threads_text == "auto" ? :auto : parse(Int, cpu_threads_text)
+    CPUThreadsExecutionPolicy(threads = cpu_threads)
 end
 set_global_rng!(seed = input.seed, method = :philox)
 
@@ -299,6 +311,17 @@ disable_collision = get(ENV, "OCTOPUS_DISABLE_COLLISION", "0") in
                     ("1", "true", "TRUE", "yes", "YES")
 moment_capacity = parse(Int, get(ENV, "OCTOPUS_MOMENT_CAPACITY",
                                  string(input.output.moment_capacity)))
+optional_cuda_pic_threads(key) = haskey(ENV, key) ? parse(Int, ENV[key]) : nothing
+cuda_pic_launch = CUDAPICLaunchConfig(
+    gather_scatter_threads = optional_cuda_pic_threads("OCTOPUS_CUDA_PIC_GATHER_SCATTER_THREADS"),
+    deposition_threads = optional_cuda_pic_threads("OCTOPUS_CUDA_PIC_DEPOSITION_THREADS"),
+    kick_threads = optional_cuda_pic_threads("OCTOPUS_CUDA_PIC_KICK_THREADS"),
+    field_threads = optional_cuda_pic_threads("OCTOPUS_CUDA_PIC_FIELD_THREADS"),
+    spectral_threads = optional_cuda_pic_threads("OCTOPUS_CUDA_PIC_SPECTRAL_THREADS"),
+    green_threads = optional_cuda_pic_threads("OCTOPUS_CUDA_PIC_GREEN_THREADS"),
+    luminosity_threads = optional_cuda_pic_threads("OCTOPUS_CUDA_PIC_LUMINOSITY_THREADS"),
+)
+cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 solver = if solver_kind == "gaussian"
     GaussianPoissonSolver(;
         slicing = slicing,
@@ -324,6 +347,7 @@ elseif solver_kind == "pic"
         luminosity_schedule = pic_luminosity_schedule,
         luminosity_grid = pic_luminosity_grid,
         luminosity_deposit_method = pic_luminosity_deposit_method,
+        backend_configurations = cuda_pic_backend_configurations,
     )
 else
     error("unknown OCTOPUS_POISSON_SOLVER=$(solver_kind); use gaussian or PIC")

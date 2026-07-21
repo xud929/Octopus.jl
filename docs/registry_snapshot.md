@@ -114,13 +114,16 @@ constructor names remain the user-facing way to build those specs.
 ## Strong-Strong Solvers
 
 - `GaussianPoissonSolver`
+  - Construction metadata: `solver_option_schema`, `solver_help`
 - `PICPoissonSolver`
   - Construction metadata: `solver_option_schema`, `solver_help`
 
 ## Execution Policies
 
-- `CPUThreadsExecutionPolicy`
+- `AbstractGPUExecutionPolicy`
+- `CUDAExecutionPolicy`
 - `GPUExecutionPolicy`
+- `CPUThreadsExecutionPolicy`
 - `PlaceholderPolicy`
 
 ## Contracts
@@ -130,6 +133,7 @@ constructor names remain the user-facing way to build those specs.
 - `ElementTrackingBackendConsistencyContract`
 - `StrongStrongGaussianBackendConsistencyContract`
 - `StrongStrongPICBackendConsistencyContract`
+- `PublicConfigurationEffectivenessContract`
 - `AbstractPhysicsContract`
 
 ## Analyses

@@ -187,6 +187,95 @@ coordinate_arrays(rep::Phase6DRep) = (rep.x, rep.px, rep.y, rep.py, rep.z, rep.p
 """Return coordinate array `dim`, where `dim` is 1-based: `1=>x`, ..., `6=>pz`."""
 coordinate_array(rep::Phase6DRep, dim::Integer) = coordinate_arrays(rep)[Int(dim)]
 
+function _infer_backend(rep::Phase6DRep)
+	if _HAS_CUDA && rep.x isa CUDA.CuArray
+		all(array -> array isa CUDA.CuArray, coordinate_arrays(rep)) || throw(ArgumentError(
+			"all Phase6DRep coordinate arrays must use the same CPU or CUDA storage backend"))
+		return CUDABackend
+	end
+	any(array -> _HAS_CUDA && array isa CUDA.CuArray, coordinate_arrays(rep)) &&
+		throw(ArgumentError(
+			"all Phase6DRep coordinate arrays must use the same CPU or CUDA storage backend"))
+	return CPUThreadsBackend
+end
+
+function _cuda_storage_device(rep::Phase6DRep)
+	_HAS_CUDA || error("CUDA storage requires CUDA.jl to be available.")
+	_infer_backend(rep) === CUDABackend || throw(ArgumentError("particle storage is not CUDA storage"))
+	devices = map(array -> CUDA.deviceid(CUDA.device(array)), coordinate_arrays(rep))
+	all(==(first(devices)), devices) || throw(ArgumentError(
+		"all Phase6DRep CUDA arrays must reside on the same device; got $(devices)"))
+	return first(devices)
+end
+
+function _resolve_execution_policy(policy::Union{Nothing,AbstractExecutionPolicy}, rep::Phase6DRep)
+	backend = _infer_backend(rep)
+	if policy === nothing
+		policy = backend === CPUThreadsBackend ? CPUThreadsExecutionPolicy() : CUDAExecutionPolicy()
+	elseif policy isa PlaceholderPolicy
+		backend_type(policy) # raises the public, specific error
+	end
+	requested = backend_type(policy)
+	requested === backend || throw(ArgumentError(
+		"execution policy requests $(requested), but particle storage requires $(backend); " *
+		"policies never migrate storage"))
+	if policy isa CPUThreadsExecutionPolicy
+		return ResolvedCPUExecutionPolicy(_resolved_cpu_threads(policy))
+	end
+	cuda_policy = policy isa GPUExecutionPolicy ? _legacy_cuda_policy(policy) : policy
+	cuda_policy isa CUDAExecutionPolicy || throw(ArgumentError(
+		"unsupported execution policy $(typeof(policy))"))
+	device = _cuda_storage_device(rep)
+	cuda_policy.device === nothing || cuda_policy.device == device || throw(ArgumentError(
+		"CUDA policy requests device $(cuda_policy.device), but particle storage is on device $(device)"))
+	dev = CUDA.CuDevice(device)
+	max_threads = CUDA.attribute(dev, CUDA.DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK)
+	cuda_policy.launch.threads <= max_threads || throw(ArgumentError(
+		"CUDA threads $(cuda_policy.launch.threads) exceed device $(device) maximum $(max_threads)"))
+	return ResolvedCUDAExecutionPolicy(device, cuda_policy.launch.threads, cuda_policy.launch.blocks)
+end
+
+function _activate_resolved_policy!(policy::ResolvedCPUExecutionPolicy)
+	return policy
+end
+
+function _activate_resolved_policy!(policy::ResolvedCUDAExecutionPolicy)
+	_HAS_CUDA || error("CUDA execution requires CUDA.jl to be available.")
+	CUDA.device!(policy.device)
+	_record_execution!(:cuda_device, CUDABackend, (device=policy.device,))
+	return policy
+end
+
+function _with_execution_policy(f::F, policy::AbstractResolvedExecutionPolicy) where {F}
+	_activate_resolved_policy!(policy)
+	return _with_resolved_policy(f, policy)
+end
+
+function configuration_report(policy::AbstractExecutionPolicy, rep::Phase6DRep)
+	resolved = _resolve_execution_policy(policy, rep)
+	if resolved isa ResolvedCPUExecutionPolicy
+		return (ConfigurationEntry(:threads,
+			policy isa CPUThreadsExecutionPolicy ? policy.threads : resolved.threads,
+			resolved.threads, :resolved, "validated for CPU storage",
+			:cpu_logical_workers),)
+	end
+	requested = policy isa GPUExecutionPolicy ? _legacy_cuda_policy(policy) : policy
+	status = policy isa GPUExecutionPolicy ? :deprecated : :resolved
+	reason_suffix = policy isa GPUExecutionPolicy ? " through deprecated compatibility adapter" : ""
+	return (
+		ConfigurationEntry(:device, requested.device, resolved.device, status,
+			"validated against CUDA particle storage" * reason_suffix, :cuda_device),
+		ConfigurationEntry(:threads, requested.launch.threads, resolved.threads, status,
+			"validated against the CUDA device limit" * reason_suffix, :cuda_fused_launch),
+		ConfigurationEntry(:blocks, requested.launch.blocks, resolved.blocks,
+			policy isa GPUExecutionPolicy ? :deprecated :
+			resolved.blocks === :auto ? :unresolved : :resolved,
+			resolved.blocks === :auto ? "resolved per compiled kernel and particle count" :
+			                            "explicit CUDA block count" * reason_suffix,
+			:cuda_fused_launch),
+	)
+end
+
 """
     Beam
 
@@ -221,7 +310,8 @@ two-component `alpha=(αx,αy)` is accepted temporarily and interpreted as
 `(αx,αy,0)`.
 
 `policy_or_backend` may be `CPUThreadsExecutionPolicy()`,
-`GPUExecutionPolicy()`, `CPUThreadsBackend`, or `CUDABackend`.
+`CUDAExecutionPolicy()`, a deprecated `GPUExecutionPolicy()`,
+`CPUThreadsBackend`, or `CUDABackend`.
 If `rng` is omitted, coordinates are generated with the Octopus global counter
 RNG using `global_rng_seed()`, `global_rng_method()`, and the beam `rng_id`.
 If `rng_id == 0`, a stream id is assigned with `next_rng_id!()`. Passing an
@@ -229,7 +319,7 @@ explicit `rng` uses that RNG as a convenience override and ignores `rng_id`.
 """
 function Beam(N::Integer, policy::AbstractExecutionPolicy, FloatT::Type{RT}=Float64; kwargs...) where {RT<:Real}
 	activate_policy!(policy)
-	return Beam(Int(N), backend_type(policy), RT; kwargs...)
+	return Beam(Int(N), backend_type(policy), RT; execution_policy=policy, kwargs...)
 end
 
 function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
@@ -248,6 +338,7 @@ function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
               seed=nothing,
               rng_id=0,
               initial_offset=zeros(RT, 6),
+              execution_policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
               kwargs...) where {BTAG<:AbstractExecutionBackend,RT<:Real}
 	params = _beam_params(RT, Int(N); kwargs...)
 	rep = _standard_gaussian_rep(BTAG, RT, Int(N);
@@ -265,6 +356,7 @@ function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
 		eta=_tuple_typed(eta, 4, RT),
 		zeta=_tuple_typed(zeta, 4, RT),
 		mode=mode,
+		policy=execution_policy,
 	)
 	add_offset!(rep, _tuple_typed(initial_offset, 6, RT))
 	return Beam{BTAG, typeof(params), typeof(rep)}(params, rep)
@@ -279,6 +371,11 @@ function _beam_alpha(alpha, ::Type{T}) where {T}
 end
 
 function _beam_params(::Type{T}, N::Int; kwargs...) where {T}
+	allowed = (:charge, :mc2, :E0, :r0, :npart)
+	unknown = setdiff(Tuple(keys(kwargs)), allowed)
+	isempty(unknown) || throw(ArgumentError(
+		"unknown Beam keyword(s): $(join(string.(unknown), ", ")). " *
+		"Beam-parameter keywords are $(join(string.(allowed), ", "))."))
 	return BeamParams{T}(;
 		charge=T(get(kwargs, :charge, 0)),
 		mc2=T(get(kwargs, :mc2, 0)),
@@ -315,15 +412,22 @@ function _normalize_emit!(rep::Phase6DRep, beta, alpha, emit)
 end
 
 function _apply_initial_maps!(rep::Phase6DRep, backend::Type{BTAG}, ::Type{T};
-                              coupling, eta, zeta, mode) where {BTAG<:AbstractExecutionBackend,T}
+                              coupling, eta, zeta, mode,
+                              policy=nothing) where {BTAG<:AbstractExecutionBackend,T}
 	if any(!iszero, coupling)
-		track!(rep, XYCoupling(Symplectic6DMap(), coupling..., mode), 1, backend)
+		policy === nothing ?
+			track!(rep, XYCoupling(Symplectic6DMap(), coupling..., mode), 1, backend) :
+			track!(rep, XYCoupling(Symplectic6DMap(), coupling..., mode), 1; policy=policy)
 	end
 	if any(!iszero, eta)
-		track!(rep, MomentumDispersion(Symplectic6DMap(), eta...), 1, backend)
+		policy === nothing ?
+			track!(rep, MomentumDispersion(Symplectic6DMap(), eta...), 1, backend) :
+			track!(rep, MomentumDispersion(Symplectic6DMap(), eta...), 1; policy=policy)
 	end
 	if any(!iszero, zeta)
-		track!(rep, CrabDispersion(Symplectic6DMap(), zeta...), 1, backend)
+		policy === nothing ?
+			track!(rep, CrabDispersion(Symplectic6DMap(), zeta...), 1, backend) :
+			track!(rep, CrabDispersion(Symplectic6DMap(), zeta...), 1; policy=policy)
 	end
 	return rep
 end

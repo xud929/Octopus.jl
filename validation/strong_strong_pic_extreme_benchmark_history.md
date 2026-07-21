@@ -644,3 +644,68 @@ differences were 0.62% for electrons and 0.50% for protons, both in small cross
 correlations rather than beam sizes. Thus the methods give similar aggregate
 observables for this 30-turn case, but they are distinct numerical models and
 should not be required to agree at backend-consistency tolerances.
+
+## 2026-07-21 policy-interface performance gate
+
+The execution-policy refactor made CPU logical-worker limits, CUDA fused launch
+geometry, and seven CUDA PIC thread families reach their actual consumers. It
+did not change the PIC physics defaults: CIC, the 128 x 128 force/luminosity
+grid, 15 x 15 slice pairs, indexed wavefront, asynchronous batched/wavefront
+FFT, slice-pair Green cache, minimum ratio 0.50, growth 0.25, and longitudinal
+kick all remained fixed. Runs used Julia's four-thread default pool and were
+pinned to NUMA node 0.
+
+Fresh pre-refactor 200-turn controls at commit `e5e92fc`, using turns 100--199,
+were `0.30524 s/turn` solver-only, `0.38455 s/turn` with luminosity calculation,
+and `0.38140 s/turn` with luminosity file plus both capacity-100 moment files.
+The full-output control was a single noisy run and is reported as context, not
+as a paired estimate.
+
+Three post-refactor 30-turn solver-only runs compared automatic fused blocks
+with the reproducible legacy 256-block setting. The final-ten mean medians were
+`0.30918 s/turn` for `blocks=:auto` and `0.31345 s/turn` for `blocks=256`.
+Automatic occupancy/particle-coverage resolution is therefore retained as the
+new default; it was 1.36% faster in this A/B. The explicit setting remains
+available through `CUDALaunchConfig`.
+
+PIC thread families were then changed one at a time from inherited 256 threads
+to 128. These screening trials did not justify a default change:
+
+| Only 128-thread family | Final-ten mean (s/turn) | Decision |
+| --- | ---: | --- |
+| gather/scatter | 0.30806 | retained interface, no default change |
+| deposition | 0.31042 | retained interface, no default change |
+| kick/interpolation | 0.30679 | retained interface, no default change |
+| field derivative | 0.31096 | retained interface, no default change |
+| spectral multiply | 0.31311 | retained interface, no default change |
+| Green construction | 0.30944 | retained interface, no default change |
+
+The apparent gather/scatter and kick gains are smaller than the unchanged-run
+spread, so all PIC families continue to inherit 256 threads. For luminosity,
+three 200-turn runs at 128 threads had a median last-100 mean of `0.38695
+s/turn`, versus `0.38789 s/turn` at inherited 256 threads. The 0.24% difference
+is likewise unresolved and the default was not changed.
+
+The final 200-turn production matrix was:
+
+| Configuration | Three last-100 means (s/turn) | Median (s/turn) |
+| --- | --- | ---: |
+| solver only | 0.30722, 0.30782, 0.30772 | 0.30772 |
+| luminosity calculation only | 0.39296, 0.36592, 0.38789 | 0.38789 |
+| luminosity file + both moment files | 0.39778, 0.36503, 0.36700 | 0.36700 |
+
+Every full-output run wrote 200 luminosity records and 200 records to each
+moment file. The previously documented fast/slow machine regimes remain
+visible, especially in luminosity workloads; no performance conclusion is
+drawn from the ordering of unmatched modes. The median solver and luminosity
+results are within the observed pre-refactor variability, and the full-output
+median agrees with the prior optimized `0.36965 s/turn` result.
+
+Correctness gates passed after the timing study. CPU worker counts 1, 2, and 4
+were bitwise identical. CUDA fused tracking at 64, 128, 256, and 512 threads,
+with explicit and automatic blocks, was bitwise identical. Radiation and
+weak-strong fast/planned paths passed; Gaussian strong-strong passed; CIC, TSC,
+and mixed force/luminosity PIC contracts passed with identical cache histories.
+All seven PIC launch-family overrides emitted consumer receipts, and invalid
+storage, device, worker, and inherited PIC launch configurations were rejected
+before particle mutation.

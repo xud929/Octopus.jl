@@ -26,8 +26,9 @@ luminosity(elem::Union{ThinStrongBeam,GaussianStrongBeam}, ctx::TrackingContext,
     TrackingTask
 
 Workflow for tracking one or more element specs through a phase-space
-representation. Each element spec owns its selected tracking method, while the
-execution backend is inferred from the particle storage by default.
+representation. Each element spec owns its selected tracking method. The
+execution policy is inferred from particle storage by default or supplied
+explicitly to select CPU concurrency or CUDA launch configuration.
 
 Typical use:
 
@@ -56,6 +57,22 @@ struct TrackingTask <: AbstractTask
     plan_cache::Dict{Any,Any}
 end
 
+function configuration_report(task::TrackingTask, rep::Phase6DRep)
+    policy = task.policy === nothing ?
+        (_infer_backend(rep) === CPUThreadsBackend ? CPUThreadsExecutionPolicy() : CUDAExecutionPolicy()) :
+        task.policy
+    action_reports = Tuple((
+        action=Symbol(nameof(typeof(item.action))),
+        schedule=configuration_report(item.schedule),
+    ) for item in task.actions)
+    observer_reports = Tuple((
+        observer=configuration_report(item.observer),
+        schedule=configuration_report(item.schedule),
+    ) for item in task.observers)
+    return (policy=configuration_report(policy, rep),
+            actions=action_reports, observers=observer_reports)
+end
+
 """
     TrackingTask(elements; policy=nothing,
                  hooks=(),
@@ -63,10 +80,11 @@ end
 
 Construct a tracking workflow from one element spec or a sequence of element
 specs. The sequence is stored as a tuple so it can later compile to the
-tuple-based runtime line used by `fusedTrack`. The execution backend is
-inferred from the beam or representation passed to `execute!`. If `policy` is
-provided, it is treated as an explicit assertion and must match the storage
-backend. The immutable `TrackingContext` used by context-aware stochastic
+tuple-based runtime line used by `fusedTrack`. If `policy=nothing`, a default
+policy is inferred from the representation passed to `execute!`. An explicit
+policy must match storage and its resolved worker count or CUDA launch geometry
+is applied to both fused and isolated tracking segments. The immutable
+`TrackingContext` used by context-aware stochastic
 tracking snapshots the Octopus global RNG state at execution time. `hooks` may
 contain scheduled or unscheduled observers and actions.
 Actions run before each turn and may mutate the representation; observers run
@@ -133,9 +151,9 @@ end
     execute!(task::TrackingTask, beam::Beam; turns=1)
 
 Execute a tracking task on an existing phase-space representation. Each element
-spec in `task.elements` is compiled with `compile_runtime`, the backend is
-selected from the representation storage, and particles are tracked through the
-resulting runtime element sequence in place.
+spec in `task.elements` is compiled with `compile_runtime`, one execution
+policy is resolved and checked against representation storage, and particles
+are tracked through the resulting runtime element sequence in place.
 
 Returns `rep`.
 """
@@ -145,15 +163,22 @@ execute!(task::TrackingTask, beam::Beam; turns::Integer=1) =
 function execute!(task::TrackingTask, rep; turns::Integer=1)
     runtime_entries = _runtime_entries(task)
     runtime_elems = _physics_line(runtime_entries)
-    backend = _execution_backend(task, rep)
+    policy = _resolve_execution_policy(task.policy, rep)
+    return _with_execution_policy(policy) do
+        _execute_tracking_task!(task, rep, runtime_entries, runtime_elems, Int(turns), policy)
+    end
+end
+
+function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
+                                 turns::Int, policy)
     if isempty(task.actions) && isempty(task.observers) && !_has_line_hooks(runtime_entries)
-        _execute_fast_tracking_turns!(rep, runtime_elems, Int(turns), backend, TrackingContext())
+        _execute_fast_tracking_turns!(rep, runtime_elems, turns, policy, TrackingContext())
         return rep
     end
-    prepare_observers!(task.observers, runtime_elems; turns=Int(turns))
-    prepare_line_observers!(runtime_entries; turns=Int(turns))
+    prepare_observers!(task.observers, runtime_elems; turns=turns)
+    prepare_line_observers!(runtime_entries; turns=turns)
     base_ctx = TrackingContext()
-    for turn in 0:(Int(turns) - 1)
+    for turn in 0:(turns - 1)
         ctx = with_turn(base_ctx, turn)
         run_actions!(task.actions, ctx, rep)
         task_diagnostics = requires_elementwise_tracking(task.observers, ctx)
@@ -161,7 +186,7 @@ function execute!(task::TrackingTask, rep; turns::Integer=1)
         plan = get!(task.plan_cache, plan_key) do
             _build_tracking_plan(runtime_entries, plan_key)
         end
-        _execute_tracking_plan_turn!(rep, plan, backend, ctx)
+        _execute_tracking_plan_turn!(rep, plan, policy, ctx)
         run_observers!(task.observers, ctx, rep)
     end
     finalize_observers!(task.observers)
@@ -169,33 +194,14 @@ function execute!(task::TrackingTask, rep; turns::Integer=1)
     return rep
 end
 
-function _execute_fast_tracking_turns!(rep, runtime_elems, turns::Int, backend,
+function _execute_fast_tracking_turns!(rep, runtime_elems, turns::Int, policy,
                                        base_ctx::TrackingContext)
     for turn in 0:(turns - 1)
         ctx = with_turn(base_ctx, turn)
         _update_runtime_line!(runtime_elems, ctx)
-        track!(rep, runtime_elems, 1, backend, ctx)
+        track!(rep, runtime_elems, 1, policy, ctx)
     end
     return nothing
-end
-
-function _execution_backend(task::TrackingTask, rep)
-    inferred = _infer_backend(rep)
-    task.policy === nothing && return inferred
-    requested = backend_type(task.policy)
-    requested === inferred || throw(ArgumentError(
-        "task policy requests $(requested), but particle storage requires $(inferred). " *
-        "Construct the beam with the same backend or omit the task policy."
-    ))
-    activate_policy!(task.policy)
-    return requested
-end
-
-function _infer_backend(rep::Phase6DRep)
-    if _HAS_CUDA && rep.x isa CUDA.CuArray
-        return CUDABackend
-    end
-    return CPUThreadsBackend
 end
 
 _runtime_or_existing(element::AbstractElementSpec) = compile_runtime(element)
@@ -362,50 +368,54 @@ end
 requires_isolated_tracking(elem) = false
 requires_isolated_tracking(elem::Union{ThinStrongBeam,GaussianStrongBeam}) = true
 
-function _execute_tracking_plan_turn!(rep, plan::Tuple, backend, ctx; stream=nothing)
+function _execute_tracking_plan_turn!(rep, plan::Tuple, policy, ctx; stream=nothing)
     for segment in plan
-        _execute_tracking_segment_turn!(rep, segment, backend, ctx; stream=stream)
+        _execute_tracking_segment_turn!(rep, segment, policy, ctx; stream=stream)
     end
     return nothing
 end
 
-function _execute_tracking_segment_turn!(rep, segment::FusedSegment, backend, ctx; stream=nothing)
+function _execute_tracking_segment_turn!(rep, segment::FusedSegment, policy, ctx; stream=nothing)
     _update_runtime_line!(segment.elements, ctx)
-    _track_segment_runtime!(rep, segment.elements, backend, ctx, stream)
+    _track_fused_runtime!(rep, segment.elements, policy, ctx, stream)
     return nothing
 end
 
-function _execute_tracking_segment_turn!(rep, segment::IsolatedSegment, backend, ctx; stream=nothing)
+function _execute_tracking_segment_turn!(rep, segment::IsolatedSegment, policy, ctx; stream=nothing)
     update!(segment.element, ctx)
-    _track_segment_runtime!(rep, segment.element, backend, nothing, stream)
+    _track_isolated_runtime!(rep, segment.element, policy, ctx, stream)
     return nothing
 end
 
-function _execute_tracking_segment_turn!(rep, segment::ObserverSegment, backend, ctx; stream=nothing)
+function _execute_tracking_segment_turn!(rep, segment::ObserverSegment, policy, ctx; stream=nothing)
     _synchronize_segment_stream(stream)
     run_observers!((segment.observer,), ctx, rep)
     return nothing
 end
 
-function _execute_tracking_segment_turn!(rep, segment::ActionSegment, backend, ctx; stream=nothing)
+function _execute_tracking_segment_turn!(rep, segment::ActionSegment, policy, ctx; stream=nothing)
     _synchronize_segment_stream(stream)
     run_actions!((segment.action,), ctx, rep)
     return nothing
 end
 
-function _track_segment_runtime!(rep, elems, backend, ctx, stream)
-    if backend === CUDABackend && stream !== nothing
-        if ctx === nothing
-            track!(rep, elems, 1, backend; stream=stream)
-        else
-            track!(rep, elems, 1, backend, ctx; stream=stream)
-        end
+function _track_fused_runtime!(rep, elems, policy, ctx, stream)
+    if policy isa ResolvedCUDAExecutionPolicy && stream !== nothing
+        track!(rep, elems, 1, policy, ctx; stream=stream)
     else
-        if ctx === nothing
-            track!(rep, elems, 1, backend)
-        else
-            track!(rep, elems, 1, backend, ctx)
-        end
+        track!(rep, elems, 1, policy, ctx)
+    end
+    return nothing
+end
+
+function _track_isolated_runtime!(rep, elem, policy, ctx, stream)
+    _record_execution!(:isolated_tracking, backend_type(policy),
+                       (element=Symbol(nameof(typeof(elem))), turn=ctx.turn,
+                        stream=stream === nothing ? :default : :explicit))
+    if policy isa ResolvedCUDAExecutionPolicy && stream !== nothing
+        track!(rep, elem, 1, policy; stream=stream)
+    else
+        track!(rep, elem, 1, policy)
     end
     return nothing
 end

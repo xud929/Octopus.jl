@@ -3,6 +3,7 @@ import Base: read
 export AbstractSchedule, AbstractBeamObserver, AbstractBeamAction,
        AlwaysSchedule, EveryNSteps, AtTurns, PredicateSchedule,
        should_run, ScheduledObserver, ScheduledAction,
+       schedule_option_schema, observer_option_schema,
        Moment, name, symbol, column_names,
        BeamMomentObserver, JLD2BeamMomentObserver, MomentObserver,
        CoordinateSnapshotObserver, LuminosityObserver, BeamSwapAction,
@@ -52,6 +53,33 @@ should_run(schedule::EveryNSteps, ctx::TrackingContext) =
 should_run(schedule::AtTurns, ctx::TrackingContext) = ctx.turn in schedule.turns
 should_run(schedule::PredicateSchedule, ctx::TrackingContext) = Bool(schedule.predicate(ctx))
 
+schedule_option_schema(::Type{AlwaysSchedule}) = NamedTuple()
+schedule_option_schema(::AlwaysSchedule) = NamedTuple()
+const _EVERY_N_STEPS_OPTION_SCHEMA = (
+    start=ConfigurationOptionMeta(Int, 0, "First eligible turn.";
+        category=:diagnostic, consumer=:hook_schedule),
+    stop=ConfigurationOptionMeta(Int, typemax(Int), "Exclusive final eligible turn.";
+        category=:diagnostic, consumer=:hook_schedule),
+    step=ConfigurationOptionMeta(Int, 1, "Turn interval between observations/actions.";
+        category=:diagnostic, consumer=:hook_schedule),
+)
+schedule_option_schema(::Type{EveryNSteps}) = _EVERY_N_STEPS_OPTION_SCHEMA
+schedule_option_schema(::EveryNSteps) = _EVERY_N_STEPS_OPTION_SCHEMA
+schedule_option_schema(::Type{AtTurns}) = (
+    turns=ConfigurationOptionMeta(Set{Int}, Set{Int}(), "Explicit observed/action turns.";
+        category=:diagnostic, consumer=:hook_schedule),)
+schedule_option_schema(::AtTurns) = schedule_option_schema(AtTurns)
+schedule_option_schema(::Type{<:PredicateSchedule}) = (
+    predicate=ConfigurationOptionMeta(Function, nothing, "User predicate evaluated for each turn.";
+        category=:diagnostic, consumer=:hook_schedule),)
+schedule_option_schema(::PredicateSchedule) = schedule_option_schema(typeof(PredicateSchedule(identity)))
+
+function configuration_report(schedule::AbstractSchedule)
+    return Tuple(ConfigurationEntry(name, getproperty(schedule, name), getproperty(schedule, name),
+        :resolved, "validated schedule configuration", meta.consumer)
+        for (name, meta) in pairs(schedule_option_schema(schedule)))
+end
+
 """
     ScheduledObserver(observer, schedule=AlwaysSchedule())
 
@@ -83,7 +111,13 @@ ScheduledAction(action::AbstractBeamAction) =
 function run_observers!(observers, ctx::TrackingContext, rep)
     for raw in _hook_tuple(observers)
         item = _as_scheduled_observer(raw)
-        if should_run(item.schedule, ctx)
+        active = should_run(item.schedule, ctx)
+        policy = _ACTIVE_RESOLVED_POLICY[]
+        backend = policy isa AbstractResolvedExecutionPolicy ? backend_type(policy) : :unknown
+        _record_execution!(:hook_schedule, backend,
+            (kind=:observer, observer=Symbol(nameof(typeof(item.observer))),
+             schedule=Symbol(nameof(typeof(item.schedule))), turn=ctx.turn, active=active))
+        if active
             observe!(item.observer, ctx, rep)
         end
     end
@@ -147,7 +181,13 @@ requires_elementwise_tracking(observer::AbstractBeamObserver) = false
 function run_actions!(actions, ctx::TrackingContext, rep)
     for raw in _hook_tuple(actions)
         item = _as_scheduled_action(raw)
-        if should_run(item.schedule, ctx)
+        active = should_run(item.schedule, ctx)
+        policy = _ACTIVE_RESOLVED_POLICY[]
+        backend = policy isa AbstractResolvedExecutionPolicy ? backend_type(policy) : :unknown
+        _record_execution!(:hook_schedule, backend,
+            (kind=:action, action=Symbol(nameof(typeof(item.action))),
+             schedule=Symbol(nameof(typeof(item.schedule))), turn=ctx.turn, active=active))
+        if active
             apply_action!(item.action, ctx, rep)
         end
     end
@@ -567,7 +607,9 @@ end
 Write coordinate snapshots in the Octopus compact coordinate record format.
 """
 function CoordinateSnapshotObserver(path::AbstractString; npart=nothing, append::Bool=true)
-    return CoordinateSnapshotObserver(String(path), npart === nothing ? nothing : Int(npart), append)
+    count = npart === nothing ? nothing : Int(npart)
+    count === nothing || count >= 0 || throw(ArgumentError("npart must be nonnegative or nothing"))
+    return CoordinateSnapshotObserver(String(path), count, append)
 end
 
 mutable struct LuminosityObserver <: AbstractBeamObserver
@@ -588,6 +630,86 @@ update their `last_luminosity` field.
 """
 LuminosityObserver(path::AbstractString) = LuminosityObserver(String(path), (), false)
 
+const _BUFFERED_OBSERVER_OPTION_SCHEMA = (
+    path=ConfigurationOptionMeta(String, nothing, "Required output path.";
+        category=:output, consumer=:observer_output),
+    capacity=ConfigurationOptionMeta(Int, 1, "Number of observed rows buffered before a flush.";
+        category=:output, consumer=:observer_output),
+)
+observer_option_schema(::Type{BeamMomentObserver}) = _BUFFERED_OBSERVER_OPTION_SCHEMA
+observer_option_schema(::BeamMomentObserver) = _BUFFERED_OBSERVER_OPTION_SCHEMA
+observer_option_schema(::Type{JLD2BeamMomentObserver}) = _BUFFERED_OBSERVER_OPTION_SCHEMA
+observer_option_schema(::JLD2BeamMomentObserver) = _BUFFERED_OBSERVER_OPTION_SCHEMA
+observer_option_schema(::Type{MomentObserver}) = (
+    path=ConfigurationOptionMeta(String, nothing, "Required HDF5 output path.";
+        category=:output, consumer=:observer_output),
+    moments=ConfigurationOptionMeta(Tuple, nothing, "Resolved canonical moment selection.";
+        category=:diagnostic, consumer=:moment_reduction),
+    capacity=ConfigurationOptionMeta(Int, 1024, "Observed rows buffered before an HDF5 flush.";
+        category=:output, consumer=:observer_output),
+)
+observer_option_schema(::MomentObserver) = observer_option_schema(MomentObserver)
+observer_option_schema(::Type{CoordinateSnapshotObserver}) = (
+    path=ConfigurationOptionMeta(String, nothing, "Required coordinate output path.";
+        category=:output, consumer=:observer_output),
+    npart=ConfigurationOptionMeta(Union{Nothing,Int}, nothing,
+        "Number of particles written; nothing writes all particles.";
+        category=:output, consumer=:observer_output),
+    append=ConfigurationOptionMeta(Bool, true, "Append after the first snapshot.";
+        category=:output, consumer=:observer_output),
+)
+observer_option_schema(::CoordinateSnapshotObserver) = observer_option_schema(CoordinateSnapshotObserver)
+observer_option_schema(::Type{LuminosityObserver}) = (
+    path=ConfigurationOptionMeta(String, nothing, "Required weak-strong luminosity output path.";
+        category=:output, consumer=:observer_output),)
+observer_option_schema(::LuminosityObserver) = observer_option_schema(LuminosityObserver)
+
+function configuration_report(observer::Union{BeamMomentObserver,JLD2BeamMomentObserver})
+    return (
+        ConfigurationEntry(:path, observer.path, observer.path, :resolved,
+            "required output path", :observer_output),
+        ConfigurationEntry(:capacity, observer.buffer_capacity, observer.buffer_capacity,
+            observer.buffer_capacity == 0 ? :inactive_dependency : :resolved,
+            observer.buffer_capacity == 0 ? "zero capacity disables output" :
+                                            "active output buffer capacity",
+            :observer_output),
+    )
+end
+
+function configuration_report(observer::MomentObserver)
+    return (
+        ConfigurationEntry(:path, observer.path, observer.path, :resolved,
+            "required HDF5 output path", :observer_output),
+        ConfigurationEntry(:moments, observer.moments, observer.moments, :resolved,
+            "canonical selection resolved from orders/extra/exclude", :moment_reduction),
+        ConfigurationEntry(:capacity, observer.buffer_capacity, observer.buffer_capacity,
+            observer.buffer_capacity == 0 ? :inactive_dependency : :resolved,
+            observer.buffer_capacity == 0 ? "zero capacity disables output" :
+                                            "active HDF5 buffer capacity",
+            :observer_output),
+    )
+end
+
+function configuration_report(observer::CoordinateSnapshotObserver)
+    return (
+        ConfigurationEntry(:path, observer.path, observer.path, :resolved,
+            "required coordinate output path", :observer_output),
+        ConfigurationEntry(:npart, observer.npart, observer.npart, :resolved,
+            observer.npart === nothing ? "all particles" : "explicit particle count",
+            :observer_output),
+        ConfigurationEntry(:append, observer.append, observer.append, :resolved,
+            "snapshot append mode", :observer_output),
+    )
+end
+configuration_report(observer::LuminosityObserver) = (
+    ConfigurationEntry(:path, observer.path, observer.path, :resolved,
+        "required luminosity output path", :observer_output),)
+
+function _observer_backend()
+    policy = _ACTIVE_RESOLVED_POLICY[]
+    return policy isa AbstractResolvedExecutionPolicy ? backend_type(policy) : :unknown
+end
+
 struct BeamSwapAction{F} <: AbstractBeamAction
     provider::F
 end
@@ -602,6 +724,8 @@ Replace the current representation with the `Phase6DRep` or `Beam` returned by
 
 function observe!(observer::BeamMomentObserver, ctx::TrackingContext, rep)
     observer.buffer_capacity == 0 && return nothing
+    _record_execution!(:observer_output, _observer_backend(),
+        (observer=:BeamMomentObserver, turn=ctx.turn, capacity=observer.buffer_capacity))
     observer.initialized || _initialize_moment_file!(observer)
     push!(observer.buffer_turns, Float64(ctx.turn))
     push!(observer.buffer, _moment_output_row(beam_statistics(rep; diagonal_fourth=true)))
@@ -611,6 +735,8 @@ end
 
 function observe!(observer::JLD2BeamMomentObserver, ctx::TrackingContext, rep)
     observer.buffer_capacity == 0 && return nothing
+    _record_execution!(:observer_output, _observer_backend(),
+        (observer=:JLD2BeamMomentObserver, turn=ctx.turn, capacity=observer.buffer_capacity))
     observer.initialized || _initialize_jld2_moment_file!(observer)
     push!(observer.buffer_turns, Float64(ctx.turn))
     push!(observer.buffer, beam_statistics(rep; diagonal_fourth=true))
@@ -620,6 +746,9 @@ end
 
 function observe!(observer::MomentObserver, ctx::TrackingContext, rep)
     observer.buffer_capacity == 0 && return nothing
+    _record_execution!(:observer_output, _observer_backend(),
+        (observer=:MomentObserver, turn=ctx.turn, capacity=observer.buffer_capacity,
+         moments=length(observer.moments)))
     observer.initialized || throw(ArgumentError("MomentObserver must be prepared by a predictable schedule before tracking"))
     observer.buffer_length += 1
     observer.buffer[observer.buffer_length, :] .= _moment_observer_row(ctx, rep, observer.moments, observer)
@@ -629,12 +758,19 @@ end
 
 function observe!(observer::CoordinateSnapshotObserver, ctx::TrackingContext, rep)
     npart = observer.npart === nothing ? length(rep) : observer.npart
+    npart <= length(rep) || throw(ArgumentError(
+        "CoordinateSnapshotObserver npart $(npart) exceeds particle count $(length(rep))"))
+    _record_execution!(:observer_output, _observer_backend(),
+        (observer=:CoordinateSnapshotObserver, turn=ctx.turn, npart=npart,
+         append=observer.append))
     write_beam_coordinates(observer.path, rep; npart=npart, append=observer.append)
     observer.append = true
     return nothing
 end
 
 function observe!(observer::LuminosityObserver, ctx::TrackingContext, rep)
+    _record_execution!(:observer_output, _observer_backend(),
+        (observer=:LuminosityObserver, turn=ctx.turn, elements=length(observer.elements)))
     mode = observer.initialized ? "a" : "w"
     open(observer.path, mode) do io
         print(io, ctx.turn, '\t')

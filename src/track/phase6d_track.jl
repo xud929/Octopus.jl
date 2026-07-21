@@ -1,27 +1,65 @@
 """
-    track!(rep, elems, turns, CPUThreadsBackend)
+    track!(rep, elems, turns; policy=nothing, context=TrackingContext())
 
-Track all particles in `rep` through `elems` for `turns` turns using CPU
-threads. `elems` must be callable runtime elements or a nested tuple of
-callable runtime elements.
+Track all particles in `rep` through callable runtime `elems` for `turns`
+turns. With `policy=nothing`, the execution policy is inferred from particle
+storage. A supplied policy selects execution for existing storage and never
+migrates it. `context` supplies turn and counter-RNG state independently of the
+execution policy.
 """
-function track!(rep, elems, turns, ::Type{CPUThreadsBackend})
+function track!(rep, elems, turns; policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
+                context::TrackingContext=TrackingContext())
+	resolved = _resolve_execution_policy(policy, rep)
+	_with_execution_policy(resolved) do
+		track!(rep, elems, turns, resolved, context)
+	end
+	return nothing
+end
+
+function track!(rep, elems, turns, policy::AbstractExecutionPolicy;
+                context::TrackingContext=TrackingContext())
+	Base.depwarn("pass execution policy with policy= instead of as a positional argument", :track!)
+	return track!(rep, elems, turns; policy=policy, context=context)
+end
+
+function track!(rep, elems, turns, policy::ResolvedCPUExecutionPolicy,
+				ctx::TrackingContext)
 	for turn in 1:turns
-		Threads.@threads for index in keys(rep)
-			@inbounds rep[index] = fusedTrack(elems, rep[index]...)
+		turn_ctx = with_turn(ctx, ctx.turn + Int64(turn - 1))
+		_run_logical_workers(policy.threads) do worker, nworkers
+			for index in worker:nworkers:length(rep)
+				@inbounds rep[index] = fusedTrack(turn_ctx, elems, index, rep[index]...)
+			end
 		end
 	end
 	return nothing
 end
 
-function track!(rep, elems, turns, ::Type{CPUThreadsBackend}, ctx::TrackingContext)
+function track!(rep, elems, turns, policy::ResolvedCPUExecutionPolicy)
 	for turn in 1:turns
-		turn_ctx = with_turn(ctx, ctx.turn + Int64(turn - 1))
-		Threads.@threads for index in keys(rep)
-			@inbounds rep[index] = fusedTrack(turn_ctx, elems, index, rep[index]...)
+		_run_logical_workers(policy.threads) do worker, nworkers
+			for index in worker:nworkers:length(rep)
+				@inbounds rep[index] = fusedTrack(elems, rep[index]...)
+			end
 		end
 	end
 	return nothing
+end
+
+function track!(rep, elems, turns, ::Type{CPUThreadsBackend})
+	Base.depwarn("backend-tag track! is deprecated; pass policy=CPUThreadsExecutionPolicy()", :track!)
+	policy = ResolvedCPUExecutionPolicy(Threads.nthreads(:default))
+	return _with_execution_policy(policy) do
+		track!(rep, elems, turns, policy)
+	end
+end
+
+function track!(rep, elems, turns, ::Type{CPUThreadsBackend}, ctx::TrackingContext)
+	Base.depwarn("backend-tag track! is deprecated; pass policy= and context=", :track!)
+	policy = ResolvedCPUExecutionPolicy(Threads.nthreads(:default))
+	return _with_execution_policy(policy) do
+		track!(rep, elems, turns, policy, ctx)
+	end
 end
 
 _requires_cuda_elementwise(elem) = false
@@ -108,6 +146,9 @@ end
 
 if _HAS_CUDA
 	@eval begin
+		const _CUDA_FUSED_OCCUPANCY_CACHE = Dict{Any,Int}()
+		const _CUDA_FUSED_OCCUPANCY_LOCK = ReentrantLock()
+
 		function CUDA.cudaconvert(rep::Phase6DRep)
 			return Phase6DRep(
 				CUDA.cudaconvert(rep.x),
@@ -153,9 +194,10 @@ if _HAS_CUDA
 		end
 
 		"""
-		    track!(rep, elems, turns, CUDABackend; threads=256, blocks=256)
+		    _cuda_launch_track_kernel!(rep, elems, turns; threads, blocks, stream=nothing)
 
-		Track all particles with a CUDA kernel. Requires `CUDA.jl`.
+		Private CUDA fused-kernel launcher. Public callers select geometry with a
+		`CUDAExecutionPolicy`.
 		"""
 		function _cuda_launch_track_kernel!(rep, elems, turns; threads=256, blocks=256, stream=nothing)
 			if stream === nothing
@@ -175,27 +217,111 @@ if _HAS_CUDA
 			return nothing
 		end
 
-		function track!(rep, elems, turns, ::Type{CUDABackend}; threads=256, blocks=256, stream=nothing)
-			if _requires_cuda_elementwise(elems)
-				for turn in 1:turns
-					_track_line_elementwise!(rep, elems, CUDABackend)
+		function _cuda_fused_occupancy_blocks(rep, elems, turns, ctx, threads::Int)
+			length(rep) == 0 && return 0
+			kernel = ctx === nothing ?
+				CUDA.@cuda(launch=false, cuda_track_kernel!(rep, elems, turns)) :
+				CUDA.@cuda(launch=false, cuda_track_kernel!(rep, elems, turns, ctx))
+			device = CUDA.deviceid(CUDA.device(rep.x))
+			key = (device, typeof(rep), typeof(elems), ctx === nothing, threads)
+			active_per_sm = lock(_CUDA_FUSED_OCCUPANCY_LOCK) do
+				get!(_CUDA_FUSED_OCCUPANCY_CACHE, key) do
+					CUDA.active_blocks(kernel.fun, threads)
 				end
+			end
+			sm_count = CUDA.attribute(CUDA.device(rep.x), CUDA.DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)
+			return min(cld(length(rep), threads), active_per_sm * sm_count)
+		end
+
+		function _cuda_resolve_fused_blocks(policy::ResolvedCUDAExecutionPolicy,
+										 rep, elems, turns, ctx)
+			policy.blocks isa Int && return policy.blocks
+			return _cuda_fused_occupancy_blocks(rep, elems, turns, ctx, policy.threads)
+		end
+
+		function _cuda_launch_track_policy!(rep, elems, turns,
+									 policy::ResolvedCUDAExecutionPolicy,
+									 ctx; stream=nothing)
+			length(rep) == 0 && return nothing
+			blocks = _cuda_resolve_fused_blocks(policy, rep, elems, turns, ctx)
+			_record_execution!(:cuda_fused_launch, CUDABackend,
+				(threads=policy.threads, blocks=blocks, requested_blocks=policy.blocks,
+				 particles=length(rep), stream=stream === nothing ? :default : :explicit))
+			if ctx === nothing
+				_cuda_launch_track_kernel!(rep, elems, turns;
+					threads=policy.threads, blocks=blocks, stream=stream)
 			else
-				_cuda_launch_track_kernel!(rep, elems, turns; threads=threads, blocks=blocks, stream=stream)
+				_cuda_launch_track_kernel!(rep, elems, turns, ctx;
+					threads=policy.threads, blocks=blocks, stream=stream)
 			end
 			return nothing
 		end
 
-		function track!(rep, elems, turns, ::Type{CUDABackend}, ctx::TrackingContext; threads=256, blocks=256, stream=nothing)
+		function _flush_cuda_policy_segment!(rep, fused, policy, ctx, stream)
+			isempty(fused) && return nothing
+			track!(rep, Tuple(fused), 1, policy, ctx; stream=stream)
+			empty!(fused)
+			return nothing
+		end
+
+		function _track_cuda_policy_elementwise!(rep, elems::Tuple, policy, ctx, stream)
+			fused = Any[]
+			for elem in elems
+				if elem isa Tuple
+					_flush_cuda_policy_segment!(rep, fused, policy, ctx, stream)
+					_track_cuda_policy_elementwise!(rep, elem, policy, ctx, stream)
+				elseif _requires_cuda_elementwise(elem, ctx)
+					_flush_cuda_policy_segment!(rep, fused, policy, ctx, stream)
+					track!(rep, elem, 1, policy; stream=stream)
+				else
+					push!(fused, elem)
+				end
+			end
+			_flush_cuda_policy_segment!(rep, fused, policy, ctx, stream)
+			return nothing
+		end
+
+		function track!(rep, elems, turns, policy::ResolvedCUDAExecutionPolicy;
+						stream=nothing)
+			if _requires_cuda_elementwise(elems)
+				for _ in 1:turns
+					_track_cuda_policy_elementwise!(rep, elems, policy, TrackingContext(), stream)
+				end
+			else
+				_cuda_launch_track_policy!(rep, elems, turns, policy, nothing; stream=stream)
+			end
+			return nothing
+		end
+
+		function track!(rep, elems, turns, policy::ResolvedCUDAExecutionPolicy,
+						ctx::TrackingContext; stream=nothing)
 			if _requires_cuda_elementwise(elems, ctx)
 				for turn in 1:turns
 					turn_ctx = with_turn(ctx, ctx.turn + Int64(turn - 1))
-					_track_line_elementwise!(rep, elems, CUDABackend, turn_ctx)
+					_track_cuda_policy_elementwise!(rep, elems, policy, turn_ctx, stream)
 				end
 			else
-				_cuda_launch_track_kernel!(rep, elems, turns, ctx; threads=threads, blocks=blocks, stream=stream)
+				_cuda_launch_track_policy!(rep, elems, turns, policy, ctx; stream=stream)
 			end
 			return nothing
+		end
+
+		function track!(rep, elems, turns, ::Type{CUDABackend}; threads=256, blocks=256, stream=nothing)
+			Base.depwarn("backend-tag/CUDA-keyword track! is deprecated; pass policy=CUDAExecutionPolicy(...) instead", :track!)
+			policy = ResolvedCUDAExecutionPolicy(
+				CUDA.deviceid(CUDA.device(rep.x)), Int(threads), Int(blocks))
+			return _with_execution_policy(policy) do
+				track!(rep, elems, turns, policy; stream=stream)
+			end
+		end
+
+		function track!(rep, elems, turns, ::Type{CUDABackend}, ctx::TrackingContext; threads=256, blocks=256, stream=nothing)
+			Base.depwarn("backend-tag/CUDA-keyword track! is deprecated; pass policy= and context=", :track!)
+			policy = ResolvedCUDAExecutionPolicy(
+				CUDA.deviceid(CUDA.device(rep.x)), Int(threads), Int(blocks))
+			return _with_execution_policy(policy) do
+				track!(rep, elems, turns, policy, ctx; stream=stream)
+			end
 		end
 	end
 else

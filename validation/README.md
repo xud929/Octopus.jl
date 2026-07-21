@@ -4,6 +4,27 @@ Validation scripts are developer-facing numerical checks. They may use internal
 helpers to test implementation details and should not be treated as public API
 examples.
 
+## Public Configuration Effectiveness
+
+`public_configuration_effectiveness.jl` checks that registered public
+configuration reaches real runtime consumers. It exercises CPU logical-worker
+counts, fused CUDA thread/block sweeps, CUDA device mismatch rejection, all
+CUDA PIC launch families, optimized wavefront and non-default sequential PIC
+branches, schedules, buffers, inherited/inactive reports, and pre-mutation
+configuration rejection. CUDA-unavailable runs are reported as skipped.
+
+```bash
+julia --threads=4 --project=. validation/public_configuration_effectiveness.jl
+```
+
+`tracking_context_policy_consistency.jl` verifies that radiation stays on the
+context-aware fused path, CUDA launch geometry does not change counter-RNG
+samples, and weak-strong luminosity diagnostics isolate exactly once per turn.
+
+```bash
+julia --threads=4 --project=. validation/tracking_context_policy_consistency.jl
+```
+
 ## PIC Gaussian Field
 
 `pic_gaussian_field_validation.jl` compares the PIC transverse field from a

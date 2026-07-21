@@ -1,4 +1,5 @@
 export ContractResult, passed, validate,
+       PublicConfigurationEffectivenessContract,
        ElementTrackingBackendConsistencyContract,
        StrongStrongGaussianBackendConsistencyContract,
        StrongStrongPICBackendConsistencyContract
@@ -127,6 +128,25 @@ Base.@kwdef struct StrongStrongPICBackendConsistencyContract <: AbstractBackendC
 end
 
 """
+    PublicConfigurationEffectivenessContract(; n_particles=256,
+        cuda_threads=128, cuda_blocks=3)
+
+Verify that public execution configuration reaches actual runtime consumers.
+The contract checks CPU logical-worker receipts, explicit and automatic fused
+CUDA launch receipts, policy/storage mismatch rejection before mutation, and
+all CUDA PIC launch-family overrides. Execution-geometry changes must preserve
+the deterministic fused tracking result.
+
+If CUDA is unavailable, CPU/schema checks run and the overall result is
+`status=:skipped`; an unavailable CUDA check is never reported as passed.
+"""
+Base.@kwdef struct PublicConfigurationEffectivenessContract <: AbstractImplementationContract
+    n_particles::Int = 256
+    cuda_threads::Int = 128
+    cuda_blocks::Int = 3
+end
+
+"""
     validate(contract, args...; kwargs...)
 
 Run a validation contract against the supplied objects. Concrete contracts should
@@ -145,6 +165,305 @@ description(::Type{StrongStrongGaussianBackendConsistencyContract}) =
 
 description(::Type{StrongStrongPICBackendConsistencyContract}) =
     "Checks strong-strong PIC coordinates, luminosity, and cache history across CPU and CUDA."
+
+description(::Type{PublicConfigurationEffectivenessContract}) =
+    "Checks that public configuration values reach their declared runtime consumers."
+
+function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
+    metrics = Dict{Symbol,Any}()
+    try
+        validate_configuration_metadata()
+    catch err
+        return ContractResult(false, "configuration metadata validation failed: $(sprint(showerror, err))";
+                              metrics=metrics)
+    end
+
+    base = _contract_default_initial_rep(contract.n_particles, Float64)
+    line = (CrabDispersionSpec{Float64}(zeta1=0.02, zeta3=-0.01),)
+    worker_sweep = unique((1, min(2, Threads.nthreads(:default)),
+                           Threads.nthreads(:default)))
+    rep_cpu = nothing
+    cpu_receipt_counts = Dict{Int,Int}()
+    cpu_coordinate_error = 0.0
+    for workers in worker_sweep
+        candidate = _contract_rep_for_backend(base, CPUThreadsBackend)
+        cpu_audit = ExecutionAudit()
+        with_execution_audit(cpu_audit) do
+            execute!(TrackingTask(line; policy=CPUThreadsExecutionPolicy(threads=workers)),
+                     candidate; turns=2)
+        end
+        cpu_receipts = filter(r -> r.consumer === :cpu_logical_workers,
+                              execution_receipts(cpu_audit))
+        effective = !isempty(cpu_receipts) &&
+                    all(r -> r.values.workers == workers, cpu_receipts)
+        effective || return ContractResult(false,
+            "CPUThreadsExecutionPolicy($(workers)) did not reach the logical-worker consumer.";
+            metrics=metrics)
+        cpu_receipt_counts[workers] = length(cpu_receipts)
+        if rep_cpu === nothing
+            rep_cpu = candidate
+        else
+            comparison = _contract_coordinate_metrics(rep_cpu, candidate, 0.0, 0.0)
+            cpu_coordinate_error = max(cpu_coordinate_error, comparison[:max_abs_error])
+            comparison[:max_abs_error] == 0.0 || return ContractResult(false,
+                "CPU logical-worker count changed independent-particle tracking results.";
+                residual=comparison[:max_abs_error], metrics=metrics)
+        end
+    end
+    metrics[:cpu_workers_tested] = worker_sweep
+    metrics[:cpu_worker_receipts] = cpu_receipt_counts
+    metrics[:cpu_worker_coordinate_max_abs_error] = cpu_coordinate_error
+    metrics[:cpu_worker_effective] = true
+
+    invalid_rejected = try
+        CPUThreadsExecutionPolicy(threads=Threads.nthreads(:default) + 1)
+        false
+    catch err
+        err isa ArgumentError
+    end
+    metrics[:invalid_cpu_threads_rejected] = invalid_rejected
+    invalid_rejected || return ContractResult(false,
+        "invalid CPU thread count was not rejected."; metrics=metrics)
+
+    beam_typo_rejected = try
+        Beam(4, CPUThreadsExecutionPolicy(threads=1), Float64; typo_option=1)
+        false
+    catch err
+        err isa ArgumentError
+    end
+    metrics[:unknown_beam_keyword_rejected] = beam_typo_rejected
+    beam_typo_rejected || return ContractResult(false,
+        "unknown Beam keyword was silently ignored."; metrics=metrics)
+
+    schedule_effective = mktempdir() do dir
+        observer = MomentObserver(joinpath(dir, "moments.h5"); orders=1, capacity=2)
+        scheduled = ScheduledObserver(observer, EveryNSteps(start=0, stop=5, step=2))
+        rep = _contract_rep_for_backend(base, CPUThreadsBackend)
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            execute!(TrackingTask((line..., scheduled);
+                                  policy=CPUThreadsExecutionPolicy(threads=first(worker_sweep))),
+                     rep; turns=5)
+        end
+        receipts = execution_receipts(audit)
+        schedule_receipts = filter(r -> r.consumer === :hook_schedule, receipts)
+        output_receipts = filter(r -> r.consumer === :observer_output &&
+                                      r.values.observer === :MomentObserver, receipts)
+        active_turns = [r.values.turn for r in schedule_receipts if r.values.active]
+        return active_turns == [0, 2, 4] && length(output_receipts) == 3 &&
+               all(r -> r.values.capacity == 2, output_receipts)
+    end
+    metrics[:schedule_and_capacity_effective] = schedule_effective
+    schedule_effective || return ContractResult(false,
+        "observer schedule or buffer capacity did not reach its runtime consumer.";
+        metrics=metrics)
+
+    report_solver = PICPoissonSolver(grid=(16, 16), deposit_method=:TSC,
+        backend_configurations=(CUDAPICLaunchConfig(deposition_threads=64),))
+    report_entries = configuration_report(report_solver;
+        policy=CPUThreadsExecutionPolicy(threads=first(worker_sweep)),
+        backend=CPUThreadsBackend)
+    report_by_name = Dict(entry.name => entry for entry in report_entries)
+    inherited_reported = report_by_name[:luminosity_grid].status === :inherited &&
+                         report_by_name[:luminosity_grid].resolved == (16, 16) &&
+                         report_by_name[:luminosity_deposit_method].status === :inherited &&
+                         report_by_name[:luminosity_deposit_method].resolved === :TSC
+    inactive_reported = report_by_name[:backend_configurations].status === :inactive_backend
+    metrics[:inherited_configuration_reported] = inherited_reported
+    metrics[:inactive_configuration_reported] = inactive_reported
+    (inherited_reported && inactive_reported) || return ContractResult(false,
+        "configuration report did not distinguish inherited and inactive settings.";
+        metrics=metrics)
+
+    mismatch_beam1 = Beam(16, CPUThreadsExecutionPolicy(threads=first(worker_sweep)),
+                          Float64; rng_id=101)
+    mismatch_beam2 = Beam(16, CPUThreadsExecutionPolicy(threads=first(worker_sweep)),
+                          Float64; rng_id=102)
+    mismatch_before1 = map(copy, coordinate_arrays(mismatch_beam1.rep))
+    mismatch_before2 = map(copy, coordinate_arrays(mismatch_beam2.rep))
+    mismatch_ip1 = StrongStrongCollision(:mismatch;
+        poisson_solver=GaussianPoissonSolver())
+    mismatch_ip2 = StrongStrongCollision(:mismatch;
+        poisson_solver=GaussianPoissonSolver())
+    solver_mismatch_rejected = try
+        execute!(StrongStrongTask((line[1], mismatch_ip1), (line[1], mismatch_ip2);
+            policy=CPUThreadsExecutionPolicy(threads=first(worker_sweep))),
+            mismatch_beam1, mismatch_beam2; turns=1)
+        false
+    catch err
+        err isa ArgumentError
+    end
+    solver_mismatch_unchanged =
+        all(map(==, mismatch_before1, coordinate_arrays(mismatch_beam1.rep))) &&
+        all(map(==, mismatch_before2, coordinate_arrays(mismatch_beam2.rep)))
+    metrics[:solver_mismatch_rejected] = solver_mismatch_rejected
+    metrics[:solver_mismatch_unchanged] = solver_mismatch_unchanged
+    (solver_mismatch_rejected && solver_mismatch_unchanged) || return ContractResult(false,
+        "strong-strong solver mismatch was not rejected before line mutation.";
+        metrics=metrics)
+
+    available, reason = _contract_backends_available(CUDABackend)
+    if !available
+        metrics[:cuda_status] = :skipped
+        return ContractResult(:skipped,
+            "CPU configuration checks passed; CUDA effectiveness was skipped: $(reason)";
+            metrics=metrics)
+    end
+
+    cuda_threads_sweep = (64, 128, 256, 512)
+    cuda_launch_receipts = Dict{Tuple{Int,Any},Int}()
+    cuda_coordinate_error = 0.0
+    rep_cuda = nothing
+    for threads in cuda_threads_sweep, requested_blocks in (contract.cuda_blocks, :auto)
+        candidate = _contract_rep_for_backend(base, CUDABackend)
+        cuda_audit = ExecutionAudit()
+        policy = CUDAExecutionPolicy(launch=CUDALaunchConfig(
+            threads=threads, blocks=requested_blocks))
+        with_execution_audit(cuda_audit) do
+            execute!(TrackingTask(line; policy=policy), candidate; turns=2)
+            CUDA.synchronize()
+        end
+        receipts = filter(r -> r.consumer === :cuda_fused_launch,
+                          execution_receipts(cuda_audit))
+        effective = !isempty(receipts) && all(r ->
+            r.values.threads == threads &&
+            r.values.requested_blocks == requested_blocks &&
+            (requested_blocks === :auto ? r.values.blocks > 0 :
+                                          r.values.blocks == requested_blocks), receipts)
+        effective || return ContractResult(false,
+            "CUDA launch ($(threads), $(requested_blocks)) did not reach fused tracking.";
+            metrics=metrics)
+        cuda_launch_receipts[(threads, requested_blocks)] = length(receipts)
+        comparison = _contract_coordinate_metrics(rep_cpu, candidate, 1e-12, 1e-12)
+        cuda_coordinate_error = max(cuda_coordinate_error, comparison[:max_abs_error])
+        comparison[:passed_tolerance] || return ContractResult(false,
+            "CUDA launch geometry changed deterministic fused tracking results.";
+            residual=comparison[:max_abs_error], metrics=metrics)
+        rep_cuda = candidate
+    end
+    metrics[:cuda_threads_tested] = cuda_threads_sweep
+    metrics[:cuda_fused_receipts] = cuda_launch_receipts
+    metrics[:cuda_explicit_launch_effective] = true
+    metrics[:cuda_auto_launch_effective] = true
+    metrics[:cuda_coordinate_max_abs_error] = cuda_coordinate_error
+
+    before = Array(rep_cuda.x)
+    wrong_device = CUDA.deviceid(CUDA.device(rep_cuda.x)) + 1
+    mismatch_rejected = try
+        execute!(TrackingTask(line; policy=CUDAExecutionPolicy(device=wrong_device)),
+                 rep_cuda; turns=1)
+        false
+    catch err
+        err isa ArgumentError
+    end
+    mismatch_unchanged = before == Array(rep_cuda.x)
+    metrics[:cuda_device_mismatch_rejected] = mismatch_rejected
+    metrics[:cuda_device_mismatch_unchanged] = mismatch_unchanged
+    (mismatch_rejected && mismatch_unchanged) || return ContractResult(false,
+        "CUDA device mismatch was not rejected before particle mutation."; metrics=metrics)
+
+    base_beam1, base_beam2 = _strong_strong_contract_base_beams(
+        StrongStrongPICBackendConsistencyContract(n_particles=contract.n_particles,
+            turns=2, grid=(16, 16), nslices=3, green_cache=:none))
+    invalid_beam1 = _strong_strong_contract_beam(base_beam1, CUDABackend)
+    invalid_beam2 = _strong_strong_contract_beam(base_beam2, CUDABackend)
+    invalid_before1 = map(Array, coordinate_arrays(invalid_beam1.rep))
+    invalid_before2 = map(Array, coordinate_arrays(invalid_beam2.rep))
+    invalid_solver = PICPoissonSolver(grid=(16, 16), green_cache=:none,
+        slicing=LongitudinalSlicing(method=:normal_quantile, nslices=3,
+                                    center_position=:centroid))
+    invalid_ip = StrongStrongCollision(:invalid; poisson_solver=invalid_solver)
+    invalid_pic_rejected = try
+        execute!(StrongStrongTask((line[1], invalid_ip), (line[1], invalid_ip);
+            policy=CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=96, blocks=3))),
+            invalid_beam1, invalid_beam2; turns=1)
+        false
+    catch err
+        err isa ArgumentError
+    end
+    invalid_pic_unchanged = all(map(==, invalid_before1,
+                                    map(Array, coordinate_arrays(invalid_beam1.rep)))) &&
+                            all(map(==, invalid_before2,
+                                    map(Array, coordinate_arrays(invalid_beam2.rep))))
+    metrics[:invalid_cuda_pic_launch_rejected] = invalid_pic_rejected
+    metrics[:invalid_cuda_pic_launch_unchanged] = invalid_pic_unchanged
+    (invalid_pic_rejected && invalid_pic_unchanged) || return ContractResult(false,
+        "invalid inherited CUDA PIC launch was not rejected before line mutation.";
+        metrics=metrics)
+
+    beam1 = _strong_strong_contract_beam(base_beam1, CUDABackend)
+    beam2 = _strong_strong_contract_beam(base_beam2, CUDABackend)
+    pic_launch = CUDAPICLaunchConfig(
+        gather_scatter_threads=contract.cuda_threads,
+        deposition_threads=contract.cuda_threads,
+        kick_threads=contract.cuda_threads,
+        field_threads=contract.cuda_threads,
+        spectral_threads=contract.cuda_threads,
+        green_threads=contract.cuda_threads,
+        luminosity_threads=contract.cuda_threads,
+    )
+    slicing = LongitudinalSlicing(method=:normal_quantile, nslices=3,
+                                  center_position=:centroid)
+    solver = PICPoissonSolver(grid=(16, 16), slicing=slicing, green_cache=:none,
+        cuda_indexed_wavefront=false, backend_configurations=(pic_launch,))
+    ip = StrongStrongCollision(:ip; poisson_solver=solver)
+    explicit_policy = CUDAExecutionPolicy(
+        launch=CUDALaunchConfig(threads=contract.cuda_threads,
+                                blocks=contract.cuda_blocks))
+    pic_task = StrongStrongTask((ip,), (ip,); policy=explicit_policy)
+    pic_audit = ExecutionAudit()
+    with_execution_audit(pic_audit) do
+        execute!(pic_task, beam1, beam2; turns=1)
+        CUDA.synchronize()
+    end
+    pic_receipts = filter(r -> r.consumer === :cuda_pic_launch,
+                          execution_receipts(pic_audit))
+    families = Set(r.values.family for r in pic_receipts)
+    required_families = Set(_CUDA_PIC_LAUNCH_FAMILIES)
+    pic_effective = required_families <= families &&
+                    all(r -> r.values.threads == contract.cuda_threads, pic_receipts)
+    algorithm_receipts = filter(r -> r.consumer === :cuda_pic_algorithm,
+                                execution_receipts(pic_audit))
+    wavefront_algorithm_effective = !isempty(algorithm_receipts) && all(r ->
+        r.values.batch_mode === :wavefront && r.values.cuda_async &&
+        r.values.cuda_batch_fft && r.values.cuda_wavefront_fft &&
+        !r.values.cuda_indexed_wavefront, algorithm_receipts)
+    metrics[:cuda_pic_families_observed] = sort!(collect(families))
+    metrics[:cuda_pic_launch_effective] = pic_effective
+    metrics[:cuda_pic_wavefront_algorithm_effective] = wavefront_algorithm_effective
+    (pic_effective && wavefront_algorithm_effective) || return ContractResult(false,
+        "CUDA PIC launch or wavefront algorithm settings did not reach their consumers.";
+        metrics=metrics)
+
+    sequential_beam1 = _strong_strong_contract_beam(base_beam1, CUDABackend)
+    sequential_beam2 = _strong_strong_contract_beam(base_beam2, CUDABackend)
+    sequential_solver = PICPoissonSolver(grid=(16, 16), slicing=slicing,
+        green_cache=:none, batch_mode=:sequential, cuda_async=false,
+        cuda_batch_fft=false, cuda_wavefront_fft=false,
+        cuda_indexed_wavefront=false, backend_configurations=(pic_launch,))
+    sequential_ip = StrongStrongCollision(:sequential; poisson_solver=sequential_solver)
+    sequential_audit = ExecutionAudit()
+    with_execution_audit(sequential_audit) do
+        execute!(StrongStrongTask((sequential_ip,), (sequential_ip,);
+            policy=explicit_policy), sequential_beam1, sequential_beam2; turns=1)
+        CUDA.synchronize()
+    end
+    sequential_receipts = filter(r -> r.consumer === :cuda_pic_algorithm,
+                                 execution_receipts(sequential_audit))
+    sequential_effective = !isempty(sequential_receipts) && all(r ->
+        r.values.batch_mode === :sequential && !r.values.cuda_async &&
+        !r.values.cuda_batch_fft && !r.values.cuda_wavefront_fft &&
+        !r.values.cuda_indexed_wavefront, sequential_receipts)
+    metrics[:cuda_pic_sequential_algorithm_effective] = sequential_effective
+    sequential_effective || return ContractResult(false,
+        "non-default sequential CUDA PIC settings did not reach their consumer.";
+        metrics=metrics)
+
+    metrics[:cuda_status] = :passed
+    return ContractResult(true,
+        "Public configuration reached CPU, fused CUDA, and CUDA PIC consumers.";
+        residual=cuda_coordinate_error, metrics=metrics)
+end
 
 function validate(contract::ElementTrackingBackendConsistencyContract; kwargs...)
     available, reason = _contract_backends_available(contract.backend_a, contract.backend_b)
@@ -436,7 +755,7 @@ function _contract_backends_available(backends::DataType...)
 end
 
 _contract_policy(::Type{CPUThreadsBackend}) = CPUThreadsExecutionPolicy()
-_contract_policy(::Type{CUDABackend}) = GPUExecutionPolicy()
+_contract_policy(::Type{CUDABackend}) = CUDAExecutionPolicy()
 
 function _contract_default_initial_rep(N::Integer, ::Type{T}=Float64) where {T}
     n = Int(N)
