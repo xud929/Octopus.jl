@@ -63,6 +63,15 @@ OCTOPUS_PIC_LONGITUDINAL_KICK=0
 
 ## Validation
 
+Run the fast CPU-only package regression suite:
+
+```bash
+julia --project=. -e 'using Pkg; Pkg.test()'
+```
+
+Scientific accuracy studies, backend consistency checks, and production-size
+benchmarks remain separate scripts under `validation/`.
+
 ```bash
 julia --project=. validation/counter_rng_validation.jl
 OCTOPUS_RUN_GPU_CONTRACT=0 julia --project=. validation/tracking_backend_consistency.jl

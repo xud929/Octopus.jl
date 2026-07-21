@@ -324,7 +324,7 @@ Validations are correctness checks, not user workflow examples.
 From the project root:
 
 ```bash
-julia --startup-file=no -e 'include("src/Octopus.jl"); using .Octopus; println(summarize_registry())'
+julia --startup-file=no --project=. -e 'include("src/Octopus.jl"); using .Octopus; println(summarize_registry())'
 ```
 
 Run a task or notebook relevant to the change. Use CUDA validation only when the

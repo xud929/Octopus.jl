@@ -191,6 +191,15 @@ Implementation details that are expected to evolve are summarized in
 
 ## Validation
 
+Run the fast CPU-only package regression suite with:
+
+```bash
+julia --project=. -e 'using Pkg; Pkg.test()'
+```
+
+The broader numerical studies and CPU/CUDA consistency checks remain separate
+scripts under `validation/`.
+
 Use Julia help:
 
 ```julia

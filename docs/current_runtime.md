@@ -154,7 +154,8 @@ synchronization.
 
 `counter_philox4x32`, `counter_uint64`, `counter_uniform01`,
 `counter_normal_pair`, and `counter_normal` provide a stateless counter-based
-RNG for future stochastic tracking kernels. The current implementation uses
+RNG for stochastic beam initialization and tracking kernels such as
+`LumpedRad`. The current implementation uses
 Philox4x32-10 plus Box-Muller normal generation. Values are keyed by:
 
 ```text

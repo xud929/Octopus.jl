@@ -4,6 +4,13 @@ Validation scripts are developer-facing numerical checks. They may use internal
 helpers to test implementation details and should not be treated as public API
 examples.
 
+The fast, CPU-only package regression suite is separate from these scientific
+validations and benchmarks:
+
+```bash
+julia --project=. -e 'using Pkg; Pkg.test()'
+```
+
 ## Public Configuration Effectiveness
 
 `public_configuration_effectiveness.jl` checks that registered public
@@ -48,12 +55,17 @@ julia --project=. validation/pic_gaussian_field_validation.jl
 Outputs are written to `result/`. Relative error is normalized by
 `max_grid(|K_exact|)` for each case.
 
+This is an accuracy-characterization study, not an exact-agreement gate. PIC
+has finite-particle, grid, deposition, and domain-truncation error, so the
+script reports the observed distribution and worst case without imposing one
+universal pass/fail tolerance.
+
 ## Counter RNG
 
 `counter_rng_validation.jl` checks the Philox-based stateless counter RNG used
-for future stochastic tracking kernels. It reports basic uniform and normal
-statistics, component correlation, neighboring-particle correlation, and
-reproducibility checks.
+for current stochastic beam initialization and tracking. It reports basic
+uniform and normal statistics, component correlation, neighboring-particle
+correlation, and reproducibility checks.
 
 Run the default one-million-sample check:
 
@@ -176,6 +188,11 @@ and flat Gaussian beams. It sweeps grid resolution and grid-edge padding using
 deterministic Halton-Gaussian macroparticles. The reported grid sum is a
 convergent quadrature, not an exact finite-particle-shape overlap.
 
+The analytic comparison characterizes convergence rather than enforcing exact
+agreement. The script strictly gates only agreement between the production
+luminosity implementation and the independently assembled discrete
+quadrature.
+
 ```bash
 julia --project=. validation/pic_gaussian_luminosity_validation.jl
 ```
@@ -232,6 +249,15 @@ under `result/` remain intentionally gitignored.
 solver configuration fixed while measuring no output, luminosity computation,
 luminosity text output, moment HDF5 output, and both diagnostics. The default
 run is 200 turns and measures turns 100-199.
+
+```bash
+julia --project=. validation/strong_strong_diagnostics_benchmark.jl
+```
+
+Select another measurement mode with
+`OCTOPUS_DIAGNOSTIC_BENCHMARK_MODE=luminosity`, `luminosity_io`, `moments`, or
+`both`. Production-size diagnostic benchmarks are manual runs and are not part
+of the fast package test suite.
 
 Tracked results, accuracy checks, and accepted/rejected experiments are in
 `strong_strong_diagnostics_benchmark_history.md`.
