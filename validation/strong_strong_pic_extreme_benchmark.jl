@@ -68,6 +68,7 @@ summary = [
     "n_macro_ele" => ENV["OCTOPUS_N_MACRO_ELE"],
     "n_macro_pro" => ENV["OCTOPUS_N_MACRO_PRO"],
     "grid" => "128x128",
+    "deposit_method" => string(input.solver.pic_deposit_method),
     "slices_per_beam" => "15",
     "batch_mode" => ENV["OCTOPUS_PIC_BATCH_MODE"],
     "green_cache" => ENV["OCTOPUS_PIC_GREEN_CACHE"],

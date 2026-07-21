@@ -132,10 +132,14 @@ julia --project=. validation/beam_optics_interface_consistency.jl
 `strong_strong_pic_cache_backend_consistency.jl` runs
 `StrongStrongPICBackendConsistencyContract`. It checks persistent slice-pair
 cache reuse, identical CPU/CUDA cache histories, both final beam states, and
-luminosity.
+luminosity. The default deposition method is CIC; set
+`OCTOPUS_CACHE_CONTRACT_DEPOSIT_METHOD=TSC` to exercise the public TSC path.
 
 ```bash
 julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consistency.jl
+
+OCTOPUS_CACHE_CONTRACT_DEPOSIT_METHOD=TSC \
+    julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consistency.jl
 ```
 
 ## Strong-Strong Gaussian Backend Consistency

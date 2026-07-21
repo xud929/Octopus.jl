@@ -1,64 +1,6 @@
 # TODO
 
-## 1. Complete 2D PIC CUDA Optimization
-
-Goal: improve target-size strong-strong PIC throughput without changing
-particle identity or weakening physics validation.
-
-Reference case:
-
-- CUDA `Float64`, CIC, `(128,128)` grid, `15x15` slice pairs.
-- 2,560,000 electron and 1,000,000 proton macroparticles.
-- 30 turns; compare the final-ten mean across at least three runs.
-- Fixed cache settings: `slice_pair_green_min_ratio=0.50` and
-  `slice_pair_green_growth=0.25`.
-- Fast path: wavefront scheduling, asynchronous/batched FFT fields,
-  slice-pair Green cache, and indexed wavefront tracking.
-
-Remaining work:
-
-1. Revisit the indexed longitudinal kick after Nsight Compute counters become
-   available. Removing its redundant grid-stride loop reduced allocation from
-   150 to 134 registers/thread and improved complete-turn time by 1.6%, but it
-   remains the hottest individual kernel.
-2. Revisit deposition binning only if a future profile makes deposition a
-   leading cost. The current paired-plane kernel costs about `27.2 ms/turn`;
-   a linear histogram/prefix/scatter plus tiled deposition requires several
-   passes and launches in place of each current launch, so it has no credible
-   total-turn gain at the present profile. Keep canonical particle arrays and
-   IDs unchanged.
-
-Acceptance gates:
-
-- Change one optimization variable at a time and retain only total-turn gains.
-- Use complete-turn timing for throughput; detailed synchronized phase timing
-  is diagnostic only.
-- Preserve `StrongStrongPICBackendConsistencyContract` and compare coordinates,
-  luminosity, RMS moments, slice populations, losses, and cache history.
-- Never key diagnostics, stochastic behavior, or comparisons by mutable storage
-  position.
-- Record hardware/software versions, commit, solver/task settings, individual
-  final-ten samples, memory use, and validation residuals.
-
-Current accepted result: indexed wavefront, the simplified kick kernel, fused
-source/field bounds reductions, and paired-plane deposition reduced the
-accepted indexed target-case median final-ten mean from `0.3605` to
-`0.2982 s/turn` (17.3%, 1.21x). The paired-plane candidate passed the short
-and 30-turn backend contracts; the target-size benchmark and diagnostics check
-also passed.
-
-The 2026-07-20 Nsight Systems profile is recorded in
-`validation/strong_strong_pic_extreme_benchmark_history.md`. Nsight Compute
-hardware counters remain permission-gated on the benchmark host
-(`ERR_NVGPUCTRPERM`); do not infer measured bandwidth, atomic contention, or
-achieved occupancy from that run.
-
-Do not use results from commit `1f8a513`: that path had an incorrect no-observer
-lattice block and a missing PIC scatter stream-completion boundary. Growth
-values `0.50`, `0.625`, and `0.75` were rejected; `0.50` was faster but did not
-meet the physical-domain requirement.
-
-## 2. Reuse PIC Density Grids for Luminosity
+## 1. Reuse PIC Density Grids for Luminosity
 
 Goal: replace the independent common-grid luminosity deposition with a
 validated overlap between the two PIC density grids. This uses a luminosity

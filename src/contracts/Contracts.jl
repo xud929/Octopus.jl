@@ -89,7 +89,8 @@ end
 
 """
     StrongStrongPICBackendConsistencyContract(; n_particles=1024, turns=2,
-        grid=(32, 32), nslices=3, green_cache=:slice_pair,
+        grid=(32, 32), nslices=3, deposit_method=:CIC,
+        green_cache=:slice_pair,
         slice_pair_green_min_ratio=0.50, slice_pair_green_growth=0.25,
         batch_mode=:wavefront, seed=123456789, atol=1e-10, rtol=1e-10,
         luminosity_rtol=1e-10)
@@ -99,6 +100,7 @@ The contract constructs identical electron/proton beams, executes matching
 `StrongStrongTask`s, compares both final six-dimensional beam states and
 luminosity, and—when `green_cache=:slice_pair`—requires identical cache
 hit/miss/rebuild histories with at least one reuse.
+Set `deposit_method=:CIC` or `:TSC` to validate either public deposition path.
 
 If CUDA is unavailable, validation returns `status=:skipped`.
 """
@@ -107,6 +109,7 @@ Base.@kwdef struct StrongStrongPICBackendConsistencyContract <: AbstractBackendC
     turns::Int = 2
     grid::Tuple{Int,Int} = (32, 32)
     nslices::Int = 3
+    deposit_method::Symbol = :CIC
     green_cache::Symbol = :slice_pair
     slice_pair_green_min_ratio::Float64 = 0.50
     slice_pair_green_growth::Float64 = 0.25
@@ -270,6 +273,8 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
     contract.n_particles > 0 || return ContractResult(false, "n_particles must be positive.")
     contract.turns > 0 || return ContractResult(false, "turns must be positive.")
     contract.nslices > 0 || return ContractResult(false, "nslices must be positive.")
+    contract.deposit_method in (:CIC, :TSC) || return ContractResult(false,
+        "deposit_method must be :CIC or :TSC; got $(contract.deposit_method).")
     if contract.green_cache == :slice_pair && contract.turns < 2
         return ContractResult(false,
             "slice-pair cache consistency requires at least two turns to exercise reuse.")
@@ -326,6 +331,7 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
                 :turns => contract.turns,
                 :grid => contract.grid,
                 :nslices => contract.nslices,
+                :deposit_method => contract.deposit_method,
                 :green_cache => contract.green_cache,
                 :slice_pair_green_min_ratio => contract.slice_pair_green_min_ratio,
                 :slice_pair_green_growth => contract.slice_pair_green_growth,
@@ -487,6 +493,7 @@ function _strong_strong_contract_task(contract::StrongStrongPICBackendConsistenc
     solver = PICPoissonSolver(
         slicing=slicing,
         grid=contract.grid,
+        deposit_method=contract.deposit_method,
         green_cache=contract.green_cache,
         slice_pair_green_min_ratio=contract.slice_pair_green_min_ratio,
         slice_pair_green_growth=contract.slice_pair_green_growth,

@@ -480,7 +480,53 @@ their median reported below.
 | Luminosity file + both moment files | 0.38737 | 0.38727 | +27.8% |
 
 The three full-diagnostics last-100 means were `0.38737`, `0.38394`, and
-`0.40217 s/turn`. Their median indicates about `0.00129 s/turn` (0.34%) beyond
-luminosity computation for luminosity text I/O, two GPU moment reductions, and
-the two buffered HDF5 outputs together. The final files contained 200
-luminosity records and both capacity-100 moment buffers were exercised.
+`0.40217 s/turn`. This spread is much larger than the difference between the
+single luminosity-only control and the median full-diagnostics run, so the
+incremental cost of luminosity text I/O, two GPU moment reductions, and the two
+buffered HDF5 outputs is unresolved within timing noise in this comparison.
+The final files contained 200 luminosity records and both capacity-100 moment
+buffers were exercised. Repeat the solver-only and luminosity-only controls
+three times before assigning a percentage to the incremental diagnostic cost.
+
+## 2026-07-20 longitudinal-kick cost control
+
+The target-size, luminosity-disabled benchmark was repeated with only
+`longitudinal_kick=false`. Three 30-turn final-ten means were `0.28439`,
+`0.28555`, and `0.28488 s/turn`; their median is `0.28488 s/turn`. Relative to
+the physics-enabled `0.29816 s/turn` reference, disabling the longitudinal
+part saves `0.01328 s/turn` (4.45%). This is a timing control with different
+physics, not an optimization candidate. It also confirms that the previously
+profiled `74.7 ms/turn` kick-kernel family includes the transverse kick and
+field interpolation rather than representing longitudinal work alone.
+
+## 2026-07-20 TSC backend contract
+
+`StrongStrongPICBackendConsistencyContract` now accepts `deposit_method`, and
+the reusable validation script maps
+`OCTOPUS_CACHE_CONTRACT_DEPOSIT_METHOD=CIC|TSC` to that option. The 30-turn TSC
+contract passed with maximum coordinate error `3.91e-16`, luminosity relative
+error `4.15e-15`, and identical CPU/CUDA cache history `(475, 18, 47)`. This
+closes the validation-coverage gap for the paired-plane TSC deposition branch;
+the default contract remains CIC.
+
+The target-size TSC timing used the otherwise unchanged fastest configuration:
+CUDA `Float64`, `(128,128)` grid, `15x15` slice pairs, indexed wavefront,
+slice-pair Green cache, growth `0.25`, minimum ratio `0.50`, and luminosity and
+moments disabled. Three final-ten means were `0.33362`, `0.33209`, and
+`0.33135 s/turn`; their median is `0.33209 s/turn`. The matching CIC median is
+`0.29816 s/turn`, so TSC costs `0.03393 s/turn` or 11.4% more. CIC remains the
+fastest and default configuration; selecting TSC is an accuracy/shape-function
+choice rather than a performance optimization.
+
+A separate production-size 30-turn physics comparison enabled luminosity every
+turn and both capacity-100 moment observers from identical initial beams. CIC
+and TSC are not expected to be bitwise equivalent because they use different
+particle shape functions. Their luminosity series differed by at most `2.24e-4`
+relative (0.0224%); the final-turn difference was `3.23e-6` relative. The
+largest final RMS difference was `1.73e-4` relative (0.0173%) for the electron
+horizontal-momentum size and `4.36e-5` (0.00436%) across proton RMS components.
+Across all first- and second-order moment columns, the largest column-normalized
+differences were 0.62% for electrons and 0.50% for protons, both in small cross
+correlations rather than beam sizes. Thus the methods give similar aggregate
+observables for this 30-turn case, but they are distinct numerical models and
+should not be required to agree at backend-consistency tolerances.

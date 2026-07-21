@@ -214,9 +214,10 @@ fallback.
 `PICPoissonSolver(luminosity_schedule=EveryNSteps(step=N))` computes PIC
 luminosity only on scheduled turns while still applying beam-beam kicks every
 turn. Use `AtTurns(Int[])` to disable luminosity computation. Skipped
-luminosity values are returned as `NaN`, so the fixed turn-by-turn output
-format remains unambiguous. In `examples/strong_strong_tracking.jl`, use
-`OCTOPUS_PIC_LUMINOSITY_EVERY=N`; `0` disables luminosity.
+luminosity evaluations return `NaN` internally, but `StrongStrongTask` omits
+those turns from its luminosity file. An evaluated result that is genuinely
+`NaN` is still written. In `examples/strong_strong_tracking.jl`, use
+`OCTOPUS_PIC_LUMINOSITY_EVERY=N`; `0` disables luminosity computation.
 If a diagnostic run produces a zero-width field slice, the current
 implementation uses equal left/right interpolation weights for that slice
 instead of dividing by zero.

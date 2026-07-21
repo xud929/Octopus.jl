@@ -13,6 +13,7 @@ Controls:
 
     OCTOPUS_CACHE_CONTRACT_N=1000
     OCTOPUS_CACHE_CONTRACT_TURNS=2
+    OCTOPUS_CACHE_CONTRACT_DEPOSIT_METHOD=CIC
     OCTOPUS_CACHE_CONTRACT_RTOL=1e-10
     OCTOPUS_REQUIRE_GPU_CONTRACT=1
 
@@ -26,6 +27,9 @@ using .Octopus
 
 const N = parse(Int, get(ENV, "OCTOPUS_CACHE_CONTRACT_N", "1000"))
 const TURNS = parse(Int, get(ENV, "OCTOPUS_CACHE_CONTRACT_TURNS", "2"))
+const DEPOSIT_METHOD = Symbol(uppercase(
+    get(ENV, "OCTOPUS_CACHE_CONTRACT_DEPOSIT_METHOD", "CIC"),
+))
 const RTOL = parse(Float64, get(ENV, "OCTOPUS_CACHE_CONTRACT_RTOL", "1e-10"))
 const REQUIRE_GPU = get(ENV, "OCTOPUS_REQUIRE_GPU_CONTRACT", "0") in
                     ("1", "true", "TRUE", "yes", "YES")
@@ -33,6 +37,7 @@ const REQUIRE_GPU = get(ENV, "OCTOPUS_REQUIRE_GPU_CONTRACT", "0") in
 contract = StrongStrongPICBackendConsistencyContract(
     n_particles=N,
     turns=TURNS,
+    deposit_method=DEPOSIT_METHOD,
     rtol=RTOL,
     luminosity_rtol=RTOL,
 )
