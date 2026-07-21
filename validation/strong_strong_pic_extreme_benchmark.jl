@@ -69,6 +69,9 @@ summary = [
     "n_macro_pro" => ENV["OCTOPUS_N_MACRO_PRO"],
     "grid" => "128x128",
     "deposit_method" => string(input.solver.pic_deposit_method),
+    "luminosity_deposit_method" => string(solver.luminosity_deposit_method),
+    "resolved_luminosity_deposit_method" => string(
+        solver_configuration(solver).resolved_luminosity_deposit_method),
     "slices_per_beam" => "15",
     "batch_mode" => ENV["OCTOPUS_PIC_BATCH_MODE"],
     "green_cache" => ENV["OCTOPUS_PIC_GREEN_CACHE"],

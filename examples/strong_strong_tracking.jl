@@ -42,6 +42,11 @@ Compute PIC luminosity every N turns. Use 0 to disable luminosity computation:
 
     OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_LUMINOSITY_EVERY=10 julia --project=. examples/strong_strong_tracking.jl
 
+Select an independent luminosity grid or deposition method. `INHERIT` (the
+default) follows the force `deposit_method`; `CIC` and `TSC` override it:
+
+    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_LUMINOSITY_GRID=128,128 OCTOPUS_PIC_LUMINOSITY_DEPOSIT_METHOD=TSC julia --project=. examples/strong_strong_tracking.jl
+
 The persistent slice-pair Green cache is the default for CPU and CUDA task
 execution. Disable it to run an uncached reference comparison:
 
@@ -163,6 +168,7 @@ input = (
     solver = (
         pic_grid = (128, 128),
         pic_deposit_method = :CIC,
+        pic_luminosity_deposit_method = nothing,
         pic_green_type = :integrated,
         pic_slice_pair_green_min_ratio = 0.50,
         pic_slice_pair_green_growth = 0.25,
@@ -260,6 +266,12 @@ pic_luminosity_grid = if haskey(ENV, "OCTOPUS_PIC_LUMINOSITY_GRID")
 else
     nothing
 end
+pic_luminosity_deposit_method = if haskey(ENV, "OCTOPUS_PIC_LUMINOSITY_DEPOSIT_METHOD")
+    value = uppercase(ENV["OCTOPUS_PIC_LUMINOSITY_DEPOSIT_METHOD"])
+    value == "INHERIT" ? nothing : Symbol(value)
+else
+    input.solver.pic_luminosity_deposit_method
+end
 pic_luminosity_schedule =
     pic_luminosity_every < 0 ? error("OCTOPUS_PIC_LUMINOSITY_EVERY must be >= 0") :
     pic_luminosity_every == 0 ? AtTurns(Int[]) :
@@ -311,6 +323,7 @@ elseif solver_kind == "pic"
         cuda_indexed_wavefront = cuda_pic_indexed_wavefront,
         luminosity_schedule = pic_luminosity_schedule,
         luminosity_grid = pic_luminosity_grid,
+        luminosity_deposit_method = pic_luminosity_deposit_method,
     )
 else
     error("unknown OCTOPUS_POISSON_SOLVER=$(solver_kind); use gaussian or PIC")
@@ -508,6 +521,10 @@ if solver_kind == "pic"
     println("pic_luminosity_every = ", pic_luminosity_every)
     println("pic_luminosity_grid = ",
             pic_luminosity_grid === nothing ? input.solver.pic_grid : pic_luminosity_grid)
+    println("pic_luminosity_deposit_method = ",
+            pic_luminosity_deposit_method === nothing ? "inherit" : pic_luminosity_deposit_method)
+    println("pic_luminosity_deposit_method_resolved = ",
+            solver_configuration(solver).resolved_luminosity_deposit_method)
 end
 println("luminosity = ", disable_luminosity_output ? "disabled" : luminosity_path)
 println("electron moments = ", disable_moments ? "disabled" : electron_moment_path)

@@ -1,7 +1,7 @@
 export AbstractPoissonSolver, LongitudinalSlicing, longitudinal_slices,
        gaussian_slice_centers, collision_pair_batches,
        GaussianPoissonSolver, PICPoissonSolver,
-       SolverOptionMeta, solver_option_schema, solver_help,
+       SolverOptionMeta, solver_option_schema, solver_configuration, solver_help,
        StrongStrongGaussianPoissonSolver, StrongStrongCollision,
        StrongStrongDiagnostics, DiagnosticsOptionMeta, diagnostics_option_schema,
        diagnostics_help, StrongStrongTask, turn_timings,
@@ -110,6 +110,7 @@ const _DEFAULT_STRONG_STRONG_DIAGNOSTICS = StrongStrongDiagnostics()
 const _ACTIVE_STRONG_STRONG_DIAGNOSTICS = Base.ScopedValues.ScopedValue(_DEFAULT_STRONG_STRONG_DIAGNOSTICS)
 const _ACTIVE_PIC_PHASE_TIMING_SINK = Base.ScopedValues.ScopedValue{Any}(nothing)
 const _ACTIVE_PIC_TIMING_CONTEXT = Base.ScopedValues.ScopedValue{Any}(nothing)
+const _ACTIVE_PIC_LUMINOSITY_PAIR_SINK = Base.ScopedValues.ScopedValue{Any}(nothing)
 _strong_strong_diagnostics() = _ACTIVE_STRONG_STRONG_DIAGNOSTICS[]
 
 """Structured metadata for one public solver constructor option."""
@@ -134,6 +135,13 @@ SolverOptionMeta(option_type, default, meaning;
 """Return structured constructor-option metadata for a solver type or instance."""
 solver_option_schema(::Type{<:AbstractPoissonSolver}) = NamedTuple()
 solver_option_schema(solver::AbstractPoissonSolver) = solver_option_schema(typeof(solver))
+
+"""Return current public option fields, plus solver-specific resolved values."""
+function _solver_configured_values(solver::AbstractPoissonSolver)
+    schema = solver_option_schema(solver)
+    return (; (name => getproperty(solver, name) for name in keys(schema))...)
+end
+solver_configuration(solver::AbstractPoissonSolver) = _solver_configured_values(solver)
 
 """Print structured solver configuration help."""
 function solver_help(; io::IO=stdout)
@@ -161,7 +169,14 @@ function solver_help(solver_type::Type{<:AbstractPoissonSolver}; io::IO=stdout)
     end
     return nothing
 end
-solver_help(solver::AbstractPoissonSolver; io::IO=stdout) = solver_help(typeof(solver); io=io)
+function solver_help(solver::AbstractPoissonSolver; io::IO=stdout)
+    solver_help(typeof(solver); io=io)
+    println(io, "Current/resolved values:")
+    for (name, value) in pairs(solver_configuration(solver))
+        println(io, "  - ", name, " = ", repr(value))
+    end
+    return nothing
+end
 solver_help(io::IO) = solver_help(; io=io)
 solver_help(io::IO, solver) = solver_help(solver; io=io)
 
@@ -358,6 +373,7 @@ const StrongStrongGaussianPoissonSolver = GaussianPoissonSolver
                       cuda_wavefront_fft=true,
                       cuda_indexed_wavefront=true,
                       luminosity_grid=nothing,
+                      luminosity_deposit_method=nothing,
                       luminosity_schedule=nothing,
                       slicing=LongitudinalSlicing(),
                       slicing1=nothing, slicing2=nothing)
@@ -408,8 +424,14 @@ failures remain visible and are not confused with schedule skips.
 The first output row contains `turn` followed by collision labels in line
 order, so each luminosity column remains identifiable for multiple IPs.
 `luminosity_grid` may be `nothing` or a transverse `(nx, ny)` mesh. `nothing`
-uses `grid`, preserving the historical behavior. An explicit value changes
-only luminosity deposition and does not change the PIC force solve.
+inherits the dimensions of `grid`, preserving the historical behavior; the
+luminosity deposition workspace remains separate from the force grids. An
+explicit value changes only luminosity deposition and does not change the PIC
+force solve.
+`luminosity_deposit_method` may be `nothing`, `:CIC`, or `:TSC`. `nothing`
+inherits `deposit_method`; an explicit method changes only luminosity
+deposition. This keeps force and luminosity deposition consistent by default
+while allowing controlled quadrature studies.
 
 CUDA execution uses atomic grid deposition and CUDA FFT convolution. The first
 CUDA implementation is correctness-oriented; later versions may replace atomic
@@ -436,6 +458,7 @@ struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     cuda_wavefront_fft::Bool
     cuda_indexed_wavefront::Bool
     luminosity_grid::Union{Nothing,Tuple{Int,Int}}
+    luminosity_deposit_method::Union{Nothing,Symbol}
     luminosity_schedule::Union{Nothing,AbstractSchedule}
     slicing::LongitudinalSlicing
     slicing1::LongitudinalSlicing
@@ -457,6 +480,7 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                              cuda_wavefront_fft::Bool=true,
                              cuda_indexed_wavefront::Bool=true,
                              luminosity_grid=nothing,
+                             luminosity_deposit_method::Union{Nothing,Symbol}=nothing,
                              luminosity_schedule::Union{Nothing,AbstractSchedule}=nothing,
                              slicing::LongitudinalSlicing=LongitudinalSlicing(),
                              slicing1=nothing,
@@ -476,6 +500,11 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
     lum_grid === nothing || all(>=(3), lum_grid) || throw(ArgumentError(
         "luminosity_grid dimensions must both be at least 3; got $(luminosity_grid)."
     ))
+    (luminosity_deposit_method === nothing ||
+     luminosity_deposit_method === :CIC || luminosity_deposit_method === :TSC) ||
+        throw(ArgumentError(
+            "luminosity_deposit_method must be nothing, :CIC, or :TSC; got $(repr(luminosity_deposit_method))."
+        ))
     return PICPoissonSolver{T}(
         _optional_solver_value(T, kbb1),
         _optional_solver_value(T, kbb2),
@@ -493,6 +522,7 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         cuda_wavefront_fft,
         cuda_indexed_wavefront,
         lum_grid,
+        luminosity_deposit_method,
         luminosity_schedule,
         slicing,
         s1,
@@ -504,6 +534,17 @@ PICPoissonSolver(; kwargs...) = PICPoissonSolver{Float64}(; kwargs...)
 
 _pic_luminosity_grid(solver::PICPoissonSolver) =
     solver.luminosity_grid === nothing ? solver.grid : solver.luminosity_grid
+
+_pic_luminosity_deposit_method(solver::PICPoissonSolver) =
+    solver.luminosity_deposit_method === nothing ? solver.deposit_method : solver.luminosity_deposit_method
+
+function solver_configuration(solver::PICPoissonSolver)
+    configured = _solver_configured_values(solver)
+    return merge(configured, (
+        resolved_luminosity_grid=_pic_luminosity_grid(solver),
+        resolved_luminosity_deposit_method=_pic_luminosity_deposit_method(solver),
+    ))
+end
 
 const _PIC_SOLVER_OPTION_SCHEMA = (
     kbb1 = SolverOptionMeta(Union{Nothing,Real}, nothing,
@@ -545,8 +586,11 @@ const _PIC_SOLVER_OPTION_SCHEMA = (
         supported_backends=(CUDABackend,), category=:execution,
         dependencies=(:batch_mode, :cuda_async, :cuda_batch_fft, :cuda_wavefront_fft)),
     luminosity_grid = SolverOptionMeta(Union{Nothing,Tuple{Int,Int}}, nothing,
-        "Optional luminosity-only transverse mesh; nothing uses the PIC force grid.";
+        "Optional luminosity-only transverse mesh; nothing inherits the PIC force-grid dimensions.";
         category=:accuracy_performance),
+    luminosity_deposit_method = SolverOptionMeta(Union{Nothing,Symbol}, nothing,
+        "Luminosity deposition method; nothing inherits deposit_method, or set :CIC/:TSC explicitly.";
+        category=:accuracy_performance, dependencies=(:deposit_method,)),
     luminosity_schedule = SolverOptionMeta(Union{Nothing,AbstractSchedule}, nothing,
         "Schedule for luminosity evaluation; nothing evaluates every turn."; category=:diagnostic),
     slicing = SolverOptionMeta(LongitudinalSlicing, LongitudinalSlicing(),

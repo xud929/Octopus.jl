@@ -509,6 +509,120 @@ error `4.15e-15`, and identical CPU/CUDA cache history `(475, 18, 47)`. This
 closes the validation-coverage gap for the paired-plane TSC deposition branch;
 the default contract remains CIC.
 
+## 2026-07-20 centroid-plane luminosity optimization
+
+PIC luminosity now has an independent
+`luminosity_deposit_method::Union{Nothing,Symbol}` option. `nothing` inherits
+the force `deposit_method`; explicit `:CIC` or `:TSC` changes luminosity only.
+The option is present in structured solver metadata, the strong-strong example
+and notebook, validation contracts, and benchmark summaries. The force solve,
+Poisson Green function, centroid-plane definition, and canonical particle IDs
+were not changed.
+
+The original indexed CUDA luminosity path performed two bounds reductions and
+two deposits for every active pair, then sent every `(cell,pair)` product to a
+single global `Float64` atomic. Changes were tested one at a time:
+
+| Trial | 30-turn final-ten result (s/turn) | Decision |
+|---|---:|---|
+| Previous luminosity reference | `0.39798` median of three means | reference |
+| Flattened indices + global atomic device bounds | `0.70461` mean | rejected |
+| Flattened indices + block-local device bounds + product array | `0.39056` mean | rejected |
+| Flattened indices + block-local bounds + hierarchical overlap | `0.38891` mean, `0.38664` median | rejected |
+| Pairwise bounds/deposition + hierarchical overlap | `0.36217`, `0.36307`, `0.38090` means | accepted |
+
+The accepted run medians were `0.36050`, `0.36026`, and `0.37638 s/turn`;
+their median is `0.36050 s/turn`, 9.42% below the previous `0.39798 s/turn`
+luminosity reference. Relative to the `0.29816 s/turn` solver-only reference,
+the measured luminosity increment falls from about `0.09982` to `0.06234
+s/turn`, a 37.5% reduction. The losing batched paths were removed: copying
+slice index vectors and constructing segmented bounds cost more than the saved
+launches. The reusable wavefront `Q1/Q2` grids remain, but bounds and deposits
+stay pair-specific.
+
+The retained overlap kernel produces one block-local partial sum for each
+grid tile and slice pair; CUDA's final device reduction transfers only the
+completed luminosity scalar. A five-turn Nsight Systems 2026.3.1 trace at
+`/tmp/octopus-pic-lum-hierarchical.nsys-rep` measured this partial-sum kernel
+at only `0.254 ms/turn`. Luminosity deposition remained about `29.72 ms/turn`,
+and its two bounds-reduction kernel families totaled about `31.18 ms/turn`.
+The indexed longitudinal kick remained the largest kernel family at about
+`74.71 ms/turn`. These values are kernel-duration sums and do not include host
+launch/synchronization cost or account for concurrency.
+
+The analytic Gaussian luminosity validation covers five centered/offset,
+equal/unequal, round/flat cases; CIC/TSC; 32--256 grids; three edge paddings;
+and 20k, 100k, and 400k deterministic Halton-Gaussian macroparticles. At 400k
+particles and a 256×256 grid, the worst case relative errors were `3.84e-4`
+for CIC and `5.77e-4` for TSC. The production interface and independently
+assembled validation quadrature agreed within `9.32e-15`. These are
+convergence tests of the deposited-grid quadrature, not claims that a finite
+particle basis has the exact continuous Gaussian overlap.
+
+All four 30-turn force/luminosity combinations passed the CPU/CUDA backend
+contract: inherited CIC, inherited TSC, CIC force with explicit TSC
+luminosity, and TSC force with explicit CIC luminosity. Every turn's
+luminosity and all 270 nonempty slice-pair contributions were compared. The
+worst total-luminosity relative error was `4.51e-14`, the worst slice-pair
+relative error was `3.45e-13`, the worst final coordinate error was `6.38e-16`,
+and CPU/CUDA cache histories were identical (`(476, 18, 46)` for CIC force and
+`(475, 18, 47)` for TSC).
+
+Three final 200-turn all-output runs evaluated and wrote luminosity every turn
+and reduced/wrote both moment streams with capacity 100. All three outputs
+contained 200 records and no luminosity was `NaN`. For turns 100--199, the run
+means were `0.39013`, `0.37029`, and `0.39211 s/turn`; their median was
+`0.39013 s/turn`. The corresponding run medians were `0.38921`, `0.36891`, and
+`0.39142 s/turn`, with median `0.38921 s/turn`.
+
+The previous full-output run means were `0.38737`, `0.38394`, and `0.40217
+s/turn`, with median `0.38737 s/turn`. The new median-of-means is 0.71% slower,
+while the new mean-of-means is 0.82% faster than that previous median. Both
+differences are much smaller than the observed run-to-run spread. Therefore,
+these unmatched full-run aggregates do not resolve the luminosity optimization;
+the follow-up controlled comparison below supersedes that conclusion.
+
+### Controlled 200-turn follow-up
+
+A follow-up used the same 200-turn driver and turns 100--199 for every measured
+window. Two optimized luminosity-compute-only runs measured `0.36320` and
+`0.36230 s/turn`. A detached worktree at the pre-optimization commit `dead820`
+then measured `0.39555 s/turn` with the original global-atomic reduction and
+otherwise identical inputs. The accepted hierarchical reduction therefore
+saved `0.03325 s/turn`, or 8.4% of complete-turn time, in a direct A/B. Final
+beam RMS coordinates agreed to roundoff.
+
+The optimized luminosity-file-only follow-up measured `0.36658 s/turn`, only
+`0.00428 s/turn` above the adjacent compute-only run. An earlier file-only run
+measured `0.38326 s/turn`, but its timing changed abruptly within the run; this
+and the `0.37029`--`0.39211 s/turn` spread of the three earlier all-output runs
+show an uncontrolled slow timing regime whose variation is much larger than
+the actual text-output cost. The luminosity file remains open and buffered for
+the complete task; it is not reopened per turn.
+
+A final optimized run with luminosity output and both capacity-100 moment files
+measured `0.36965 s/turn`. It wrote all 200 luminosities and both 200-record
+moment streams. Thus the luminosity computation gain is real and remains
+visible with all outputs enabled. The earlier apparent masking resulted from
+comparing unmatched noisy runs, not from moment diagnostics or loss of the
+kernel improvement. The machine-level cause of the historical slow regime was
+not captured and remains unresolved.
+
+Follow-up telemetry did not support the initial GPU-clock or NUMA hypotheses.
+An instrumented slow run measured `0.39244 s/turn`, while active SM clocks
+remained at 2670--2685 MHz, temperature at 43--56 degrees C, power near 104 W
+against a 210 W limit, and no thermal or power throttle reason was active.
+However, polling `nvidia-smi` every 200 ms itself perturbed the run, so that
+sample cannot identify the historical cause. Clean full-output runs pinned to
+the GPU-local NUMA node 0 and remote node 1 measured `0.36899` and `0.37007
+s/turn`, respectively, ruling out remote NUMA placement as the source of the
+approximately `0.392 s/turn` regime. No competing CUDA process or process I/O
+wait was observed during the investigation.
+
+Future optimization comparisons should use paired old/new runs with fixed CPU
+affinity and should record low-overhead machine telemetry. High-frequency
+`nvidia-smi` sampling must not be used inside the timed experiment.
+
 The target-size TSC timing used the otherwise unchanged fastest configuration:
 CUDA `Float64`, `(128,128)` grid, `15x15` slice pairs, indexed wavefront,
 slice-pair Green cache, growth `0.25`, minimum ratio `0.50`, and luminosity and

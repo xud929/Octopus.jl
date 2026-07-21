@@ -30,6 +30,11 @@ const TURNS = parse(Int, get(ENV, "OCTOPUS_CACHE_CONTRACT_TURNS", "2"))
 const DEPOSIT_METHOD = Symbol(uppercase(
     get(ENV, "OCTOPUS_CACHE_CONTRACT_DEPOSIT_METHOD", "CIC"),
 ))
+const LUMINOSITY_DEPOSIT_METHOD = let value = uppercase(
+    get(ENV, "OCTOPUS_CACHE_CONTRACT_LUMINOSITY_DEPOSIT_METHOD", "INHERIT"),
+)
+    value == "INHERIT" ? nothing : Symbol(value)
+end
 const RTOL = parse(Float64, get(ENV, "OCTOPUS_CACHE_CONTRACT_RTOL", "1e-10"))
 const REQUIRE_GPU = get(ENV, "OCTOPUS_REQUIRE_GPU_CONTRACT", "0") in
                     ("1", "true", "TRUE", "yes", "YES")
@@ -38,6 +43,7 @@ contract = StrongStrongPICBackendConsistencyContract(
     n_particles=N,
     turns=TURNS,
     deposit_method=DEPOSIT_METHOD,
+    luminosity_deposit_method=LUMINOSITY_DEPOSIT_METHOD,
     rtol=RTOL,
     luminosity_rtol=RTOL,
 )

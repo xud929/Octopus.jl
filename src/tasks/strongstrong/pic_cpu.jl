@@ -61,7 +61,15 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
         )
         _pic_store_slice!(beam1.rep, idx1, field1)
         _pic_store_slice!(beam2.rep, idx2, field2)
-        compute_luminosity && (luminosity += _pic_luminosity(solver, vx1, vy1, vx2, vy2, klum, workspace))
+        if compute_luminosity
+            pair_luminosity = _pic_luminosity(solver, vx1, vy1, vx2, vy2, klum, workspace)
+            luminosity += pair_luminosity
+            sink = _ACTIVE_PIC_LUMINOSITY_PAIR_SINK[]
+            sink === nothing || push!(sink, (
+                turn=ctx === nothing ? -1 : ctx.turn, i=Int(i), j=Int(j),
+                luminosity=Float64(pair_luminosity),
+            ))
+        end
     end
     _pic_report_green_cache(green_cache)
     return luminosity
@@ -106,6 +114,9 @@ function _validate_pic_solver(solver::PICPoissonSolver)
     method = Symbol(solver.deposit_method)
     (method == :CIC || method == :TSC) ||
         throw(ArgumentError("PICPoissonSolver deposit_method must be :CIC or :TSC"))
+    luminosity_method = _pic_luminosity_deposit_method(solver)
+    (luminosity_method == :CIC || luminosity_method == :TSC) ||
+        throw(ArgumentError("PICPoissonSolver luminosity_deposit_method must resolve to :CIC or :TSC"))
     green = Symbol(solver.green_type)
     (green == :integrated || green == :standard) ||
         throw(ArgumentError("PICPoissonSolver green_type must be :integrated or :standard"))
@@ -809,8 +820,9 @@ function _pic_luminosity!(solver::PICPoissonSolver, x1, y1, x2, y2, klum, q1, q2
     hxi = inv(hx); hyi = inv(hy)
     fill!(q1, zero(T))
     fill!(q2, zero(T))
-    _pic_deposit!(q1, :CIC, x1, y1, xmin, ymin, hx, hy, nx + 1, ny + 1)
-    _pic_deposit!(q2, :CIC, x2, y2, xmin, ymin, hx, hy, nx + 1, ny + 1)
+    method = _pic_luminosity_deposit_method(solver)
+    _pic_deposit!(q1, method, x1, y1, xmin, ymin, hx, hy, nx + 1, ny + 1)
+    _pic_deposit!(q2, method, x2, y2, xmin, ymin, hx, hy, nx + 1, ny + 1)
     lum = zero(T)
     for j in 1:ny, i in 1:nx
         @inbounds lum += q1[i, j] * q2[i, j]

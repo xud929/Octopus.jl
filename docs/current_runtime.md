@@ -218,6 +218,17 @@ luminosity evaluations return `NaN` internally, but `StrongStrongTask` omits
 those turns from its luminosity file. An evaluated result that is genuinely
 `NaN` is still written. In `examples/strong_strong_tracking.jl`, use
 `OCTOPUS_PIC_LUMINOSITY_EVERY=N`; `0` disables luminosity computation.
+PIC luminosity deposits both slices at their common centroid plane and
+evaluates `sum(Q1 .* Q2) / (hx * hy)`. Set
+`luminosity_deposit_method=:CIC` or `:TSC` to select its deposition method;
+the default `nothing` inherits the force `deposit_method`. A
+`luminosity_grid=nothing` setting inherits the force-grid dimensions but uses
+a separate luminosity workspace. The CUDA indexed wavefront path retains one
+3D luminosity-grid pair per active wavefront and
+uses block-local overlap sums followed by a final device reduction, avoiding
+contention on one global scalar. Bounds and deposits remain pair-specific
+because flattening slice index vectors and segmented device bounds were slower
+in the production-size benchmark.
 If a diagnostic run produces a zero-width field slice, the current
 implementation uses equal left/right interpolation weights for that slice
 instead of dividing by zero.
@@ -295,7 +306,9 @@ command-line convenience. Use
 `green_cache=:slice_pair` for the default persistent task cache. Solver option
 scope, defaults, and dependencies are available
 programmatically through `solver_option_schema(PICPoissonSolver)` and as a
-readable summary through `solver_help(PICPoissonSolver)`. CUDA-only options are
+readable summary through `solver_help(PICPoissonSolver)`. Use
+`solver_configuration(solver)` or `solver_help(solver)` to inspect configured
+values and resolved inherited luminosity settings. CUDA-only options are
 explicitly marked with `supported_backends=(CUDABackend,)`.
 CPU/CUDA
 consistency is covered by `StrongStrongPICBackendConsistencyContract`; the

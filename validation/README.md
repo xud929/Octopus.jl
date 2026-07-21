@@ -131,8 +131,9 @@ julia --project=. validation/beam_optics_interface_consistency.jl
 
 `strong_strong_pic_cache_backend_consistency.jl` runs
 `StrongStrongPICBackendConsistencyContract`. It checks persistent slice-pair
-cache reuse, identical CPU/CUDA cache histories, both final beam states, and
-luminosity. The default deposition method is CIC; set
+cache reuse, identical CPU/CUDA cache histories, both final beam states, the
+complete turn luminosity series, and every nonempty wavefront slice-pair
+contribution. The default deposition method is CIC; set
 `OCTOPUS_CACHE_CONTRACT_DEPOSIT_METHOD=TSC` to exercise the public TSC path.
 
 ```bash
@@ -140,6 +141,22 @@ julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consist
 
 OCTOPUS_CACHE_CONTRACT_DEPOSIT_METHOD=TSC \
     julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consistency.jl
+```
+
+Set `OCTOPUS_CACHE_CONTRACT_LUMINOSITY_DEPOSIT_METHOD=INHERIT`, `CIC`, or
+`TSC` to cover inherited and explicit luminosity deposition independently of
+the force deposition method.
+
+## PIC Gaussian Luminosity Quadrature
+
+`pic_gaussian_luminosity_validation.jl` checks CIC and TSC deposited-grid
+luminosity against the analytic overlap of centered, offset, unequal, round,
+and flat Gaussian beams. It sweeps grid resolution and grid-edge padding using
+deterministic Halton-Gaussian macroparticles. The reported grid sum is a
+convergent quadrature, not an exact finite-particle-shape overlap.
+
+```bash
+julia --project=. validation/pic_gaussian_luminosity_validation.jl
 ```
 
 ## Strong-Strong Gaussian Backend Consistency

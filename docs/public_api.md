@@ -70,6 +70,7 @@ Use Julia help:
 ?PICPoissonSolver
 ?SolverOptionMeta
 ?solver_option_schema
+?solver_configuration
 ?solver_help
 ?LongitudinalSlicing
 ?longitudinal_slices

@@ -431,7 +431,9 @@ if _HAS_CUDA
                 label,
                 T,
                 solver.grid,
+                _pic_luminosity_grid(solver),
                 Symbol(solver.deposit_method),
+                solver.luminosity_deposit_method,
                 Symbol(solver.green_type),
                 Bool(solver.longitudinal_kick),
                 Symbol(solver.batch_mode),
@@ -1576,6 +1578,7 @@ if _HAS_CUDA
                     luminosity_q2=CUDA.zeros(T, lnx + 1, lny + 1, max(1, nplanes ÷ 4)),
                     luminosity_scale=CUDA.zeros(T, max(1, nplanes ÷ 4)),
                     luminosity_accum=CUDA.zeros(T, 1),
+                    luminosity_overlap_partials=CUDA.zeros(T, cld(lnx * lny, 256) * max(1, nplanes ÷ 4)),
                     hx=CUDA.zeros(T, nplanes),
                     hy=CUDA.zeros(T, nplanes),
                     green_field_x0=CUDA.zeros(T, ngreen),
@@ -1960,6 +1963,7 @@ if _HAS_CUDA
             threads = 256
             stream = CUDA.stream()
             t_luminosity = time_ns()
+            method_code = _pic_luminosity_deposit_method(solver) == :CIC ? Int32(1) : Int32(2)
             for n in 1:npairs
                 item = valid[n]
                 rep1 = item.slice1.coords
@@ -1989,11 +1993,11 @@ if _HAS_CUDA
                 scale_host[n] = T(klum) / (hx * hy)
                 CUDA.@cuda threads=threads blocks=cld(length(rep1.x), threads) stream=stream _cuda_pic_deposit_drifted_plane_kernel!(
                     q1, Int32(n), rep1.x, rep1.px, rep1.y, rep1.py, s1,
-                    xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), Int32(1),
+                    xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), method_code,
                 )
                 CUDA.@cuda threads=threads blocks=cld(length(rep2.x), threads) stream=stream _cuda_pic_deposit_drifted_plane_kernel!(
                     q2, Int32(n), rep2.x, rep2.px, rep2.y, rep2.py, s2,
-                    xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), Int32(1),
+                    xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), method_code,
                 )
             end
             copyto!(scale, scale_host)
@@ -2014,46 +2018,37 @@ if _HAS_CUDA
             nx, ny = _pic_luminosity_grid(solver)
             T = eltype(rep1.x)
             wf = _cuda_pic_wavefront_workspace!(workspace, solver, T, 4 * npairs)
-            q1 = wf.luminosity_q1
-            q2 = wf.luminosity_q2
-            scale = wf.luminosity_scale
-            accum = wf.luminosity_accum
+            q1, q2 = wf.luminosity_q1, wf.luminosity_q2
             fill!(q1, zero(T))
             fill!(q2, zero(T))
-            fill!(accum, zero(T))
             scale_host = Vector{T}(undef, npairs)
             threads = 256
             stream = CUDA.stream()
+            method_code = _pic_luminosity_deposit_method(solver) == :CIC ? Int32(1) : Int32(2)
             t_luminosity = time_ns()
             for n in 1:npairs
                 item = valid[n]
-                p1 = item.p1
-                p2 = item.p2
-                idx1 = item.idx1
-                idx2 = item.idx2
-                s1 = T(0.5) * (T(p1.center) - T(p2.center))
+                s1 = T(0.5) * (T(item.p1.center) - T(item.p2.center))
                 s2 = -s1
-                neutral_bounds = _cuda_pic_bounds_neutral(T)
+                neutral = _cuda_pic_bounds_neutral(T)
                 bounds1 = mapreduce(
                     i -> _cuda_pic_luminosity_bounds_value(
                         rep1.x[i], rep1.px[i], rep1.y[i], rep1.py[i], s1,
                     ),
-                    _cuda_pic_bounds_combine, idx1; init=neutral_bounds,
+                    _cuda_pic_bounds_combine, item.idx1; init=neutral,
                 )
                 bounds2 = mapreduce(
                     i -> _cuda_pic_luminosity_bounds_value(
                         rep2.x[i], rep2.px[i], rep2.y[i], rep2.py[i], s2,
                     ),
-                    _cuda_pic_bounds_combine, idx2; init=neutral_bounds,
+                    _cuda_pic_bounds_combine, item.idx2; init=neutral,
                 )
-                x1min, x1max, y1min, y1max = T.(bounds1)
-                x2min, x2max, y2min, y2max = T.(bounds2)
-                xmin = min(x1min, x2min)
-                xmax = max(x1max, x2max)
-                ymin = min(y1min, y2min)
-                ymax = max(y1max, y2max)
-                width = max(T(xmax - xmin), eps(T))
-                height = max(T(ymax - ymin), eps(T))
+                xmin = min(T(bounds1[1]), T(bounds2[1]))
+                xmax = max(T(bounds1[2]), T(bounds2[2]))
+                ymin = min(T(bounds1[3]), T(bounds2[3]))
+                ymax = max(T(bounds1[4]), T(bounds2[4]))
+                width = max(xmax - xmin, eps(T))
+                height = max(ymax - ymin, eps(T))
                 tx = width / T(nx - 1.1)
                 ty = height / T(ny - 1.1)
                 width += T(0.1) * tx
@@ -2063,23 +2058,40 @@ if _HAS_CUDA
                 hx = width / T(nx - 1)
                 hy = height / T(ny - 1)
                 scale_host[n] = T(klum) / (hx * hy)
-                CUDA.@cuda threads=threads blocks=cld(length(idx1), threads) stream=stream _cuda_pic_deposit_drifted_indexed_plane_kernel!(
-                    q1, Int32(n), rep1.x, rep1.px, rep1.y, rep1.py, idx1, s1,
-                    xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), Int32(1),
+                CUDA.@cuda threads=threads blocks=cld(length(item.idx1), threads) stream=stream _cuda_pic_deposit_drifted_indexed_plane_kernel!(
+                    q1, Int32(n), rep1.x, rep1.px, rep1.y, rep1.py, item.idx1, s1,
+                    xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), method_code,
                 )
-                CUDA.@cuda threads=threads blocks=cld(length(idx2), threads) stream=stream _cuda_pic_deposit_drifted_indexed_plane_kernel!(
-                    q2, Int32(n), rep2.x, rep2.px, rep2.y, rep2.py, idx2, s2,
-                    xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), Int32(1),
+                CUDA.@cuda threads=threads blocks=cld(length(item.idx2), threads) stream=stream _cuda_pic_deposit_drifted_indexed_plane_kernel!(
+                    q2, Int32(n), rep2.x, rep2.px, rep2.y, rep2.py, item.idx2, s2,
+                    xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), method_code,
                 )
             end
-            copyto!(scale, scale_host)
-            blocks_grid = cld(nx * ny * npairs, threads)
-            CUDA.@cuda threads=threads blocks=blocks_grid stream=stream _cuda_pic_luminosity_wavefront_kernel!(
-                accum, q1, q2, scale, Int32(nx), Int32(ny), Int32(npairs),
+            copyto!(wf.luminosity_scale, scale_host)
+            blocks_per_pair = cld(nx * ny, threads)
+            overlap_blocks = blocks_per_pair * npairs
+            CUDA.@cuda threads=threads blocks=overlap_blocks shmem=threads*sizeof(T) stream=stream _cuda_pic_luminosity_overlap_partials_kernel!(
+                wf.luminosity_overlap_partials, q1, q2, wf.luminosity_scale,
+                Int32(nx), Int32(ny), Int32(blocks_per_pair), Int32(npairs),
             )
-            CUDA.synchronize(stream)
+            luminosity = sum(wf.luminosity_overlap_partials)
+            sink = _ACTIVE_PIC_LUMINOSITY_PAIR_SINK[]
+            if sink !== nothing
+                partials = Array(@view(wf.luminosity_overlap_partials[1:overlap_blocks]))
+                context = _ACTIVE_PIC_TIMING_CONTEXT[]
+                turn = context === nothing ? -1 : context.turn
+                for n in 1:npairs
+                    first_block = (n - 1) * blocks_per_pair + 1
+                    pair_luminosity = sum(@view(partials[first_block:(first_block + blocks_per_pair - 1)]))
+                    item = valid[n]
+                    push!(sink, (
+                        turn=turn, i=Int(item.pair.i), j=Int(item.pair.j),
+                        luminosity=Float64(pair_luminosity),
+                    ))
+                end
+            end
             _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
-            return T(CUDA.@allowscalar accum[1])
+            return T(luminosity)
         end
 
         @inline function _cuda_pic_luminosity_bounds_value(x, px, y, py, drift)
@@ -2118,11 +2130,12 @@ if _HAS_CUDA
             fill!(q2, zero(T))
             threads = 256
             stream = CUDA.stream()
+            method_code = _pic_luminosity_deposit_method(solver) == :CIC ? Int32(1) : Int32(2)
             CUDA.@cuda threads=threads blocks=cld(length(x1), threads) stream=stream _cuda_pic_deposit_nomask_kernel!(
-                q1, x1, y1, xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), Int32(1),
+                q1, x1, y1, xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), method_code,
             )
             CUDA.@cuda threads=threads blocks=cld(length(x2), threads) stream=stream _cuda_pic_deposit_nomask_kernel!(
-                q2, x2, y2, xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), Int32(1),
+                q2, x2, y2, xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), method_code,
             )
             lum = sum(q1[1:nx, 1:ny] .* q2[1:nx, 1:ny])
             return T(lum) * T(klum) / (hx * hy)
@@ -2645,6 +2658,39 @@ if _HAS_CUDA
                 j = (index - 1) ÷ n1 + 1
                 @inbounds spectral[i, j, plane] *= green[i, j]
                 index += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_luminosity_overlap_partials_kernel!(
+            partials, q1, q2, scale, nx::Int32, ny::Int32,
+            blocks_per_pair::Int32, npairs::Int32,
+        )
+            block0 = CUDA.blockIdx().x - 1
+            pair = Int32(block0 ÷ blocks_per_pair + 1)
+            local_block = block0 % blocks_per_pair
+            tid = CUDA.threadIdx().x
+            plane_size = Int(nx) * Int(ny)
+            local_index = Int(local_block) * CUDA.blockDim().x + tid
+            value = zero(eltype(partials))
+            if pair <= npairs && local_index <= plane_size
+                i = Int32((local_index - 1) % Int(nx) + 1)
+                j = Int32((local_index - 1) ÷ Int(nx) + 1)
+                @inbounds value = q1[i, j, pair] * q2[i, j, pair] * scale[pair]
+            end
+            shared = CUDA.CuDynamicSharedArray(eltype(partials), CUDA.blockDim().x)
+            @inbounds shared[tid] = value
+            CUDA.sync_threads()
+            step = CUDA.blockDim().x ÷ 2
+            while step >= 1
+                if tid <= step
+                    @inbounds shared[tid] += shared[tid + step]
+                end
+                CUDA.sync_threads()
+                step ÷= 2
+            end
+            if tid == 1
+                @inbounds partials[CUDA.blockIdx().x] = shared[1]
             end
             return nothing
         end

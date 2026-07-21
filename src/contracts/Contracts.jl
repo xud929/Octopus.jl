@@ -90,6 +90,7 @@ end
 """
     StrongStrongPICBackendConsistencyContract(; n_particles=1024, turns=2,
         grid=(32, 32), nslices=3, deposit_method=:CIC,
+        luminosity_deposit_method=nothing,
         green_cache=:slice_pair,
         slice_pair_green_min_ratio=0.50, slice_pair_green_growth=0.25,
         batch_mode=:wavefront, seed=123456789, atol=1e-10, rtol=1e-10,
@@ -100,7 +101,11 @@ The contract constructs identical electron/proton beams, executes matching
 `StrongStrongTask`s, compares both final six-dimensional beam states and
 luminosity, and—when `green_cache=:slice_pair`—requires identical cache
 hit/miss/rebuild histories with at least one reuse.
-Set `deposit_method=:CIC` or `:TSC` to validate either public deposition path.
+Set `deposit_method=:CIC` or `:TSC` to validate either force deposition path.
+`luminosity_deposit_method=nothing` inherits that method; explicit `:CIC` or
+`:TSC` validates an independent luminosity-deposition choice. Wavefront mode
+also compares every nonempty slice-pair luminosity contribution; sequential
+mode compares the complete per-turn luminosity series.
 
 If CUDA is unavailable, validation returns `status=:skipped`.
 """
@@ -110,6 +115,7 @@ Base.@kwdef struct StrongStrongPICBackendConsistencyContract <: AbstractBackendC
     grid::Tuple{Int,Int} = (32, 32)
     nslices::Int = 3
     deposit_method::Symbol = :CIC
+    luminosity_deposit_method::Union{Nothing,Symbol} = nothing
     green_cache::Symbol = :slice_pair
     slice_pair_green_min_ratio::Float64 = 0.50
     slice_pair_green_growth::Float64 = 0.25
@@ -229,11 +235,17 @@ function validate(contract::StrongStrongGaussianBackendConsistencyContract; kwar
                 beam2_metrics[:max_component_rel_error],
             )
 
-            cpu_luminosity = _strong_strong_contract_last_luminosity(cpu_path)
-            gpu_luminosity = _strong_strong_contract_last_luminosity(gpu_path)
-            luminosity_rel = abs(gpu_luminosity - cpu_luminosity) /
-                             max(abs(cpu_luminosity), eps(Float64))
+            cpu_luminosity_series = _strong_strong_contract_luminosity_series(cpu_path)
+            gpu_luminosity_series = _strong_strong_contract_luminosity_series(gpu_path)
+            length(cpu_luminosity_series) == length(gpu_luminosity_series) ||
+                error("CPU/CUDA luminosity series lengths differ")
+            luminosity_rel = maximum(
+                abs(gpu - cpu) / max(abs(cpu), eps(Float64))
+                for (cpu, gpu) in zip(cpu_luminosity_series, gpu_luminosity_series)
+            )
             luminosity_ok = luminosity_rel <= contract.luminosity_rtol
+            cpu_luminosity = last(cpu_luminosity_series)
+            gpu_luminosity = last(gpu_luminosity_series)
             metrics = Dict{Symbol,Any}(
                 :backend_a => :CPUThreadsBackend,
                 :backend_b => :CUDABackend,
@@ -246,6 +258,7 @@ function validate(contract::StrongStrongGaussianBackendConsistencyContract; kwar
                 :coordinate_passed_tolerance => coordinate_ok,
                 :cpu_luminosity => cpu_luminosity,
                 :gpu_luminosity => gpu_luminosity,
+                :luminosity_records_compared => length(cpu_luminosity_series),
                 :luminosity_rel_error => luminosity_rel,
                 :luminosity_rtol => contract.luminosity_rtol,
                 :luminosity_passed_tolerance => luminosity_ok,
@@ -275,6 +288,9 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
     contract.nslices > 0 || return ContractResult(false, "nslices must be positive.")
     contract.deposit_method in (:CIC, :TSC) || return ContractResult(false,
         "deposit_method must be :CIC or :TSC; got $(contract.deposit_method).")
+    (contract.luminosity_deposit_method === nothing ||
+     contract.luminosity_deposit_method in (:CIC, :TSC)) || return ContractResult(false,
+        "luminosity_deposit_method must be nothing, :CIC, or :TSC; got $(contract.luminosity_deposit_method).")
     if contract.green_cache == :slice_pair && contract.turns < 2
         return ContractResult(false,
             "slice-pair cache consistency requires at least two turns to exercise reuse.")
@@ -296,8 +312,18 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
             cpu_task = _strong_strong_contract_task(contract, cpu_path)
             gpu_task = _strong_strong_contract_task(contract, gpu_path)
 
-            execute!(cpu_task, cpu1, cpu2; turns=contract.turns)
-            execute!(gpu_task, gpu1, gpu2; turns=contract.turns)
+            cpu_pair_luminosities = Any[]
+            gpu_pair_luminosities = Any[]
+            Base.ScopedValues.with(
+                _ACTIVE_PIC_LUMINOSITY_PAIR_SINK => cpu_pair_luminosities,
+            ) do
+                execute!(cpu_task, cpu1, cpu2; turns=contract.turns)
+            end
+            Base.ScopedValues.with(
+                _ACTIVE_PIC_LUMINOSITY_PAIR_SINK => gpu_pair_luminosities,
+            ) do
+                execute!(gpu_task, gpu1, gpu2; turns=contract.turns)
+            end
             CUDA.synchronize()
 
             beam1_metrics = _contract_coordinate_metrics(
@@ -313,11 +339,29 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
                 beam2_metrics[:max_component_rel_error],
             )
 
-            cpu_luminosity = _strong_strong_contract_last_luminosity(cpu_path)
-            gpu_luminosity = _strong_strong_contract_last_luminosity(gpu_path)
-            luminosity_rel = abs(gpu_luminosity - cpu_luminosity) /
-                             max(abs(cpu_luminosity), eps(Float64))
+            cpu_luminosity_series = _strong_strong_contract_luminosity_series(cpu_path)
+            gpu_luminosity_series = _strong_strong_contract_luminosity_series(gpu_path)
+            length(cpu_luminosity_series) == length(gpu_luminosity_series) ||
+                error("CPU/CUDA luminosity series lengths differ")
+            luminosity_rel = maximum(
+                abs(gpu - cpu) / max(abs(cpu), eps(Float64))
+                for (cpu, gpu) in zip(cpu_luminosity_series, gpu_luminosity_series)
+            )
             luminosity_ok = luminosity_rel <= contract.luminosity_rtol
+            cpu_luminosity = last(cpu_luminosity_series)
+            gpu_luminosity = last(gpu_luminosity_series)
+            cpu_pair_map = Dict((row.turn, row.i, row.j) => row.luminosity
+                                for row in cpu_pair_luminosities)
+            gpu_pair_map = Dict((row.turn, row.i, row.j) => row.luminosity
+                                for row in gpu_pair_luminosities)
+            pair_trace_expected = contract.batch_mode == :wavefront
+            pair_keys_match = !pair_trace_expected || keys(cpu_pair_map) == keys(gpu_pair_map)
+            pair_luminosity_rel = pair_trace_expected && pair_keys_match ? maximum(
+                abs(gpu_pair_map[key] - cpu_pair_map[key]) /
+                max(abs(cpu_pair_map[key]), eps(Float64)) for key in keys(cpu_pair_map)
+            ) : pair_trace_expected ? Inf : 0.0
+            pair_luminosity_ok = pair_keys_match &&
+                (!pair_trace_expected || pair_luminosity_rel <= contract.luminosity_rtol)
 
             cpu_history = _strong_strong_contract_cpu_cache_history(cpu_task)
             gpu_history = _strong_strong_contract_cuda_cache_history(gpu_task)
@@ -332,6 +376,9 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
                 :grid => contract.grid,
                 :nslices => contract.nslices,
                 :deposit_method => contract.deposit_method,
+                :luminosity_deposit_method => contract.luminosity_deposit_method,
+                :resolved_luminosity_deposit_method =>
+                    something(contract.luminosity_deposit_method, contract.deposit_method),
                 :green_cache => contract.green_cache,
                 :slice_pair_green_min_ratio => contract.slice_pair_green_min_ratio,
                 :slice_pair_green_growth => contract.slice_pair_green_growth,
@@ -342,6 +389,11 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
                 :coordinate_passed_tolerance => coordinate_ok,
                 :cpu_luminosity => cpu_luminosity,
                 :gpu_luminosity => gpu_luminosity,
+                :luminosity_records_compared => length(cpu_luminosity_series),
+                :slice_pair_luminosity_records_compared =>
+                    pair_trace_expected ? length(cpu_pair_map) : 0,
+                :slice_pair_luminosity_rel_error => pair_luminosity_rel,
+                :slice_pair_luminosity_passed_tolerance => pair_luminosity_ok,
                 :luminosity_rel_error => luminosity_rel,
                 :luminosity_rtol => contract.luminosity_rtol,
                 :luminosity_passed_tolerance => luminosity_ok,
@@ -351,7 +403,8 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
                 :cache_reuse_observed => cache_reuse_ok,
                 :cpu_threads => Threads.nthreads(),
             )
-            ok = coordinate_ok && luminosity_ok && cache_history_ok && cache_reuse_ok
+            ok = coordinate_ok && luminosity_ok && pair_luminosity_ok &&
+                 cache_history_ok && cache_reuse_ok
             message = ok ?
                 "Strong-strong PIC CPU and CUDA results agree within tolerance." :
                 "Strong-strong PIC CPU and CUDA results disagree or cache histories diverge."
@@ -494,6 +547,7 @@ function _strong_strong_contract_task(contract::StrongStrongPICBackendConsistenc
         slicing=slicing,
         grid=contract.grid,
         deposit_method=contract.deposit_method,
+        luminosity_deposit_method=contract.luminosity_deposit_method,
         green_cache=contract.green_cache,
         slice_pair_green_min_ratio=contract.slice_pair_green_min_ratio,
         slice_pair_green_growth=contract.slice_pair_green_growth,
@@ -506,9 +560,13 @@ function _strong_strong_contract_task(contract::StrongStrongPICBackendConsistenc
 end
 
 function _strong_strong_contract_last_luminosity(path)
+    return last(_strong_strong_contract_luminosity_series(path))
+end
+
+function _strong_strong_contract_luminosity_series(path)
     lines = readlines(path)
-    isempty(lines) && error("strong-strong contract produced no luminosity records")
-    return parse(Float64, last(split(lines[end], '\t')))
+    length(lines) > 1 || error("strong-strong contract produced no luminosity records")
+    return [parse(Float64, last(split(line, '\t'))) for line in @view(lines[2:end])]
 end
 
 function _strong_strong_contract_cpu_cache_history(task)
