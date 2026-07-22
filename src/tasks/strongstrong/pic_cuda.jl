@@ -1222,6 +1222,7 @@ if _HAS_CUDA
             blocks = cld(length(field.x), threads)
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
             nx, ny = solver.grid
+            hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
             if solver.longitudinal_kick
                 CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_longitudinal_kernel!(
                     out.x, out.px, out.y, out.py, out.pz,
@@ -1230,7 +1231,7 @@ if _HAS_CUDA
                     T(field_grid.x0), T(field_grid.y0),
                     T(field_grid.width) / T(nx - 1), T(field_grid.height) / T(ny - 1),
                     Int32(nx), Int32(ny), method_code,
-                    T(source_center), T(param_field.lb), T(param_field.rb), T(kbb),
+                    T(source_center), hzi, zbias, T(kbb),
                 )
             else
                 CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_kernel!(
@@ -1240,7 +1241,7 @@ if _HAS_CUDA
                     T(field_grid.x0), T(field_grid.y0),
                     T(field_grid.width) / T(nx - 1), T(field_grid.height) / T(ny - 1),
                     Int32(nx), Int32(ny), method_code,
-                    T(source_center), T(param_field.lb), T(param_field.rb), T(kbb),
+                    T(source_center), hzi, zbias, T(kbb),
                 )
             end
             return nothing
@@ -1255,6 +1256,7 @@ if _HAS_CUDA
             blocks = cld(length(idx), threads)
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
             nx, ny = solver.grid
+            hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
             if solver.longitudinal_kick
                 CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_indexed_longitudinal_kernel!(
                     rep.x, rep.px, rep.y, rep.py, rep.pz, rep.z, idx,
@@ -1262,7 +1264,7 @@ if _HAS_CUDA
                     T(field_grid.x0), T(field_grid.y0),
                     T(field_grid.width) / T(nx - 1), T(field_grid.height) / T(ny - 1),
                     Int32(nx), Int32(ny), method_code,
-                    T(source_center), T(param_field.lb), T(param_field.rb), T(kbb),
+                    T(source_center), hzi, zbias, T(kbb),
                 )
             else
                 CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_indexed_kernel!(
@@ -1271,7 +1273,7 @@ if _HAS_CUDA
                     T(field_grid.x0), T(field_grid.y0),
                     T(field_grid.width) / T(nx - 1), T(field_grid.height) / T(ny - 1),
                     Int32(nx), Int32(ny), method_code,
-                    T(source_center), T(param_field.lb), T(param_field.rb), T(kbb),
+                    T(source_center), hzi, zbias, T(kbb),
                 )
             end
             return nothing
@@ -1291,6 +1293,8 @@ if _HAS_CUDA
             blocks = cld(n, threads)
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
             nx, ny = solver.grid
+            hzi1, zbias1 = _slice_interpolation_parameters(T(param_field1.lb), T(param_field1.rb))
+            hzi2, zbias2 = _slice_interpolation_parameters(T(param_field2.lb), T(param_field2.rb))
             if solver.longitudinal_kick
                 CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_pair_indexed_longitudinal_kernel!(
                     rep1.x, rep1.px, rep1.y, rep1.py, rep1.pz, rep1.z, idx1,
@@ -1302,8 +1306,8 @@ if _HAS_CUDA
                     T(field_grid2.x0), T(field_grid2.y0),
                     T(field_grid2.width) / T(nx - 1), T(field_grid2.height) / T(ny - 1),
                     Int32(nx), Int32(ny), method_code,
-                    T(source_center1), T(param_field1.lb), T(param_field1.rb), T(kbb1),
-                    T(source_center2), T(param_field2.lb), T(param_field2.rb), T(kbb2),
+                    T(source_center1), hzi1, zbias1, T(kbb1),
+                    T(source_center2), hzi2, zbias2, T(kbb2),
                 )
             else
                 CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_pair_indexed_kernel!(
@@ -1316,8 +1320,8 @@ if _HAS_CUDA
                     T(field_grid2.x0), T(field_grid2.y0),
                     T(field_grid2.width) / T(nx - 1), T(field_grid2.height) / T(ny - 1),
                     Int32(nx), Int32(ny), method_code,
-                    T(source_center1), T(param_field1.lb), T(param_field1.rb), T(kbb1),
-                    T(source_center2), T(param_field2.lb), T(param_field2.rb), T(kbb2),
+                    T(source_center1), hzi1, zbias1, T(kbb1),
+                    T(source_center2), hzi2, zbias2, T(kbb2),
                 )
             end
             return nothing
@@ -2860,22 +2864,17 @@ if _HAS_CUDA
                                         fx, fpx, fy, fpy, fz,
                                         phiL, ExL, EyL, phiR, ExR, EyR,
                                         x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32,
-                                        source_center, field_lb, field_rb, kbb)
+                                        source_center, field_hzi, field_zbias, kbb)
             index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
             hxi = inv(hx)
             hyi = inv(hy)
-            hz = field_rb - field_lb
             while index <= length(fx)
                 s1 = typeof(source_center)(0.5) * (fz[index] - source_center)
                 x = fx[index] + fpx[index] * s1
                 y = fy[index] + fpy[index] * s1
-                if hz == zero(hz) || hz != hz
-                    zL = typeof(source_center)(0.5)
-                else
-                    zL = (field_rb - fz[index]) / hz
-                    zL = min(max(zL, zero(zL)), one(zL))
-                end
+                zL = -fz[index] * field_hzi + field_zbias
+                zL = min(max(zL, zero(zL)), one(zL))
                 zR = one(zL) - zL
                 Kx, Ky = _cuda_pic_interpolate_field(
                     method_code, x, y, x0, y0, hxi, hyi, nx, ny,
@@ -2897,13 +2896,11 @@ if _HAS_CUDA
                                                      fx, fpx, fy, fpy, fz, fpz,
                                                      phiL, ExL, EyL, phiR, ExR, EyR,
                                                      x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32,
-                                                     source_center, field_lb, field_rb, kbb)
+                                                     source_center, field_hzi, field_zbias, kbb)
             index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
             hxi = inv(hx)
             hyi = inv(hy)
-            hz = field_rb - field_lb
-            hzi = inv(hz)
             kick_scale = 2 * kbb
             while index <= length(fx)
                 oldpx = fpx[index]
@@ -2912,12 +2909,8 @@ if _HAS_CUDA
                 x = fx[index] + oldpx * s1
                 y = fy[index] + oldpy * s1
                 pz = fpz[index] - typeof(source_center)(0.25) * (oldpx * oldpx + oldpy * oldpy)
-                if hz == zero(hz) || hz != hz
-                    zL = typeof(source_center)(0.5)
-                else
-                    zL = (field_rb - fz[index]) * hzi
-                    zL = min(max(zL, zero(zL)), one(zL))
-                end
+                zL = -fz[index] * field_hzi + field_zbias
+                zL = min(max(zL, zero(zL)), one(zL))
                 zR = one(zL) - zL
                 Kx, Ky, Kz = _cuda_pic_interpolate_kick(
                     method_code, x, y, x0, y0, hxi, hyi, nx, ny,
@@ -2925,7 +2918,7 @@ if _HAS_CUDA
                 )
                 newpx = oldpx + kick_scale * Kx
                 newpy = oldpy + kick_scale * Ky
-                pz += kick_scale * Kz * hzi
+                pz += kick_scale * Kz * field_hzi
                 s2 = typeof(source_center)(0.5) * (source_center - fz[index])
                 outx[index] = x + s2 * newpx
                 outy[index] = y + s2 * newpy
@@ -2940,12 +2933,11 @@ if _HAS_CUDA
         function _cuda_pic_kick_indexed_kernel!(xarr, pxarr, yarr, pyarr, zarr, idx,
                                                 phiL, ExL, EyL, phiR, ExR, EyR,
                                                 x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32,
-                                                source_center, field_lb, field_rb, kbb)
+                                                source_center, field_hzi, field_zbias, kbb)
             index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
             hxi = inv(hx)
             hyi = inv(hy)
-            hz = field_rb - field_lb
             while index <= length(idx)
                 particle = idx[index]
                 oldx = xarr[particle]
@@ -2956,12 +2948,8 @@ if _HAS_CUDA
                 s1 = typeof(source_center)(0.5) * (oldz - source_center)
                 x = oldx + oldpx * s1
                 y = oldy + oldpy * s1
-                if hz == zero(hz) || hz != hz
-                    zL = typeof(source_center)(0.5)
-                else
-                    zL = (field_rb - oldz) / hz
-                    zL = min(max(zL, zero(zL)), one(zL))
-                end
+                zL = -oldz * field_hzi + field_zbias
+                zL = min(max(zL, zero(zL)), one(zL))
                 zR = one(zL) - zL
                 Kx, Ky = _cuda_pic_interpolate_field(
                     method_code, x, y, x0, y0, hxi, hyi, nx, ny,
@@ -2982,13 +2970,11 @@ if _HAS_CUDA
         function _cuda_pic_kick_indexed_longitudinal_kernel!(xarr, pxarr, yarr, pyarr, pzarr, zarr, idx,
                                                              phiL, ExL, EyL, phiR, ExR, EyR,
                                                              x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32,
-                                                             source_center, field_lb, field_rb, kbb)
+                                                             source_center, field_hzi, field_zbias, kbb)
             index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
             hxi = inv(hx)
             hyi = inv(hy)
-            hz = field_rb - field_lb
-            hzi = inv(hz)
             kick_scale = 2 * kbb
             while index <= length(idx)
                 particle = idx[index]
@@ -3002,12 +2988,8 @@ if _HAS_CUDA
                 x = oldx + oldpx * s1
                 y = oldy + oldpy * s1
                 pz = oldpz - typeof(source_center)(0.25) * (oldpx * oldpx + oldpy * oldpy)
-                if hz == zero(hz) || hz != hz
-                    zL = typeof(source_center)(0.5)
-                else
-                    zL = (field_rb - oldz) * hzi
-                    zL = min(max(zL, zero(zL)), one(zL))
-                end
+                zL = -oldz * field_hzi + field_zbias
+                zL = min(max(zL, zero(zL)), one(zL))
                 zR = one(zL) - zL
                 Kx, Ky, Kz = _cuda_pic_interpolate_kick(
                     method_code, x, y, x0, y0, hxi, hyi, nx, ny,
@@ -3015,7 +2997,7 @@ if _HAS_CUDA
                 )
                 newpx = oldpx + kick_scale * Kx
                 newpy = oldpy + kick_scale * Ky
-                pz += kick_scale * Kz * hzi
+                pz += kick_scale * Kz * field_hzi
                 s2 = typeof(source_center)(0.5) * (source_center - oldz)
                 xarr[particle] = x + s2 * newpx
                 yarr[particle] = y + s2 * newpy
@@ -3034,8 +3016,8 @@ if _HAS_CUDA
             phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R,
             x01, y01, hx1, hy1, x02, y02, hx2, hy2,
             nx::Int32, ny::Int32, method_code::Int32,
-            source_center1, field_lb1, field_rb1, kbb1,
-            source_center2, field_lb2, field_rb2, kbb2,
+            source_center1, field_hzi1, field_zbias1, kbb1,
+            source_center2, field_hzi2, field_zbias2, kbb2,
         )
             index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
@@ -3045,7 +3027,7 @@ if _HAS_CUDA
                         x2, px2, y2, py2, z2, idx2[index],
                         phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R,
                         x02, y02, hx2, hy2, nx, ny, method_code,
-                        source_center2, field_lb2, field_rb2, kbb2,
+                        source_center2, field_hzi2, field_zbias2, kbb2,
                     )
                 end
                 if index <= length(idx1)
@@ -3053,7 +3035,7 @@ if _HAS_CUDA
                         x1, px1, y1, py1, z1, idx1[index],
                         phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R,
                         x01, y01, hx1, hy1, nx, ny, method_code,
-                        source_center1, field_lb1, field_rb1, kbb1,
+                        source_center1, field_hzi1, field_zbias1, kbb1,
                     )
                 end
                 index += stride
@@ -3068,8 +3050,8 @@ if _HAS_CUDA
             phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R,
             x01, y01, hx1, hy1, x02, y02, hx2, hy2,
             nx::Int32, ny::Int32, method_code::Int32,
-            source_center1, field_lb1, field_rb1, kbb1,
-            source_center2, field_lb2, field_rb2, kbb2,
+            source_center1, field_hzi1, field_zbias1, kbb1,
+            source_center2, field_hzi2, field_zbias2, kbb2,
         )
             index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             if index <= length(idx2)
@@ -3077,7 +3059,7 @@ if _HAS_CUDA
                     x2, px2, y2, py2, pz2, z2, idx2[index],
                     phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R,
                     x02, y02, hx2, hy2, nx, ny, method_code,
-                    source_center2, field_lb2, field_rb2, kbb2,
+                    source_center2, field_hzi2, field_zbias2, kbb2,
                 )
             end
             if index <= length(idx1)
@@ -3085,7 +3067,7 @@ if _HAS_CUDA
                     x1, px1, y1, py1, pz1, z1, idx1[index],
                     phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R,
                     x01, y01, hx1, hy1, nx, ny, method_code,
-                    source_center1, field_lb1, field_rb1, kbb1,
+                    source_center1, field_hzi1, field_zbias1, kbb1,
                 )
             end
             return nothing
@@ -3095,11 +3077,10 @@ if _HAS_CUDA
             xarr, pxarr, yarr, pyarr, zarr, particle,
             phiL, ExL, EyL, phiR, ExR, EyR,
             x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32,
-            source_center, field_lb, field_rb, kbb,
+            source_center, field_hzi, field_zbias, kbb,
         )
             hxi = inv(hx)
             hyi = inv(hy)
-            hz = field_rb - field_lb
             oldx = xarr[particle]
             oldpx = pxarr[particle]
             oldy = yarr[particle]
@@ -3108,12 +3089,8 @@ if _HAS_CUDA
             s1 = typeof(source_center)(0.5) * (oldz - source_center)
             x = oldx + oldpx * s1
             y = oldy + oldpy * s1
-            if hz == zero(hz) || hz != hz
-                zL = typeof(source_center)(0.5)
-            else
-                zL = (field_rb - oldz) / hz
-                zL = min(max(zL, zero(zL)), one(zL))
-            end
+            zL = -oldz * field_hzi + field_zbias
+            zL = min(max(zL, zero(zL)), one(zL))
             zR = one(zL) - zL
             Kx, Ky = _cuda_pic_interpolate_field(
                 method_code, x, y, x0, y0, hxi, hyi, nx, ny,
@@ -3133,12 +3110,10 @@ if _HAS_CUDA
             xarr, pxarr, yarr, pyarr, pzarr, zarr, particle,
             phiL, ExL, EyL, phiR, ExR, EyR,
             x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32,
-            source_center, field_lb, field_rb, kbb,
+            source_center, field_hzi, field_zbias, kbb,
         )
             hxi = inv(hx)
             hyi = inv(hy)
-            hz = field_rb - field_lb
-            hzi = inv(hz)
             kick_scale = 2 * kbb
             oldx = xarr[particle]
             oldpx = pxarr[particle]
@@ -3150,12 +3125,8 @@ if _HAS_CUDA
             x = oldx + oldpx * s1
             y = oldy + oldpy * s1
             pz = oldpz - typeof(source_center)(0.25) * (oldpx * oldpx + oldpy * oldpy)
-            if hz == zero(hz) || hz != hz
-                zL = typeof(source_center)(0.5)
-            else
-                zL = (field_rb - oldz) * hzi
-                zL = min(max(zL, zero(zL)), one(zL))
-            end
+            zL = -oldz * field_hzi + field_zbias
+            zL = min(max(zL, zero(zL)), one(zL))
             zR = one(zL) - zL
             Kx, Ky, Kz = _cuda_pic_interpolate_kick(
                 method_code, x, y, x0, y0, hxi, hyi, nx, ny,
@@ -3163,7 +3134,7 @@ if _HAS_CUDA
             )
             newpx = oldpx + kick_scale * Kx
             newpy = oldpy + kick_scale * Ky
-            pz += kick_scale * Kz * hzi
+            pz += kick_scale * Kz * field_hzi
             s2 = typeof(source_center)(0.5) * (source_center - oldz)
             xarr[particle] = x + s2 * newpx
             yarr[particle] = y + s2 * newpy
@@ -3311,6 +3282,7 @@ if _HAS_CUDA
 
         function _cuda_longitudinal_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
             slicing.nslices > 0 || throw(ArgumentError("nslices must be positive"))
+            isempty(rep.z) && throw(ArgumentError("longitudinal slicing requires at least one particle"))
             method = slicing.method
             if method == :equal_width || method == :equal_spaced
                 return _cuda_equal_width_slices(rep, slicing)
@@ -3437,7 +3409,13 @@ if _HAS_CUDA
             boundaries[end] = maximum(z_host)
             for s in 1:(ns - 1)
                 pos = floor(Int, s * n / ns)
-                boundaries[s + 1] = (sorted_z[pos] + sorted_z[pos + 1]) / 2
+                boundaries[s + 1] = if pos == 0
+                    sorted_z[1]
+                elseif pos == n
+                    sorted_z[end]
+                else
+                    (sorted_z[pos] + sorted_z[pos + 1]) / 2
+                end
             end
             return _cuda_slices_from_boundaries(rep, slicing, boundaries)
         end

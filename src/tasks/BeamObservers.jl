@@ -586,6 +586,8 @@ seconds = read(out, :elapsed_time)
 
 The observer requires a predictable schedule (`AlwaysSchedule`,
 `EveryNSteps`, or `AtTurns`) so the HDF5 data matrix can be preallocated.
+Re-executing a task prepares a fresh table at `path`; output from the previous
+execution is replaced.
 """
 function MomentObserver(path::AbstractString; orders=1:2, extra=(), exclude=(), capacity::Integer=1024)
     capacity >= 0 || throw(ArgumentError("capacity must be nonnegative"))
@@ -891,12 +893,19 @@ end
 finalize_observer!(observer::JLD2BeamMomentObserver) =
     _flush_jld2_moment_buffer!(observer)
 
-finalize_observer!(observer::MomentObserver) =
-    _flush_moment_observer!(observer)
+function finalize_observer!(observer::MomentObserver)
+    try
+        _flush_moment_observer!(observer)
+    finally
+        # A MomentObserver owns one output table per task execution. Mark it
+        # unprepared after every run so the same task can be executed again.
+        observer.initialized = false
+    end
+    return nothing
+end
 
 function _prepare_moment_observer!(observer::MomentObserver, schedule, turns)
     observer.buffer_capacity == 0 && return nothing
-    observer.initialized && return nothing
     planned_turns = _scheduled_turns(schedule, turns)
     planned_turns === nothing && throw(ArgumentError(
         "MomentObserver requires a predictable schedule: use AlwaysSchedule, EveryNSteps, or AtTurns with known task turns."

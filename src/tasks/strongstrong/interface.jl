@@ -1277,20 +1277,23 @@ function _execute_strong_strong_task!(task, beam1, beam2, turns::Int, policy)
     _preflight_solver_configurations!(task, blocks1, blocks2, policy)
     prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1); turns=Int(turns))
     prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2); turns=Int(turns))
-    ctx = TrackingContext()
-    Base.ScopedValues.with(_ACTIVE_STRONG_STRONG_DIAGNOSTICS => task.diagnostics,
-                           _ACTIVE_PIC_PHASE_TIMING_SINK => task.pic_phase_times) do
-        if task.luminosity_path === nothing
-            _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, policy, ctx, turns, nothing)
-        else
-            open(task.luminosity_path, "w") do io
-                _write_strong_strong_luminosity_header(io, blocks1)
-                _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, policy, ctx, turns, io)
+    try
+        ctx = TrackingContext()
+        Base.ScopedValues.with(_ACTIVE_STRONG_STRONG_DIAGNOSTICS => task.diagnostics,
+                               _ACTIVE_PIC_PHASE_TIMING_SINK => task.pic_phase_times) do
+            if task.luminosity_path === nothing
+                _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, policy, ctx, turns, nothing)
+            else
+                open(task.luminosity_path, "w") do io
+                    _write_strong_strong_luminosity_header(io, blocks1)
+                    _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, policy, ctx, turns, io)
+                end
             end
         end
+    finally
+        _finalize_strong_strong_line_observers!(blocks1)
+        _finalize_strong_strong_line_observers!(blocks2)
     end
-    _finalize_strong_strong_line_observers!(blocks1)
-    _finalize_strong_strong_line_observers!(blocks2)
     return beam1, beam2
 end
 

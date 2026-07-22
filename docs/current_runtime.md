@@ -277,7 +277,8 @@ because flattening slice index vectors and segmented device bounds were slower
 in the production-size benchmark.
 If a diagnostic run produces a zero-width field slice, the current
 implementation uses equal left/right interpolation weights for that slice
-instead of dividing by zero.
+and sets its longitudinal potential-gradient scale to zero instead of dividing
+by zero.
 For CPU threaded execution, PIC deposition uses per-thread local charge grids
 followed by a deterministic reduction, avoiding concurrent writes to the same
 grid cell. In `StrongStrongTask`, the CPU path retains its PIC workspace and

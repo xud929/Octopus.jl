@@ -37,12 +37,20 @@ end
     Phase6DRep(x, px, y, py, z, pz)
 
 Structure-of-arrays six-dimensional phase-space representation. Indexing a
-`Phase6DRep` returns one particle as `(x, px, y, py, z, pz)`.
+`Phase6DRep` returns one particle as `(x, px, y, py, z, pz)`. All six arrays
+must have equal lengths. Empty representations are allowed for storage and I/O,
+but operations such as longitudinal slicing may require at least one particle.
 """
 struct Phase6DRep{FloatArray} <: AbstractPhaseRep
 	x::FloatArray; px::FloatArray
 	y::FloatArray; py::FloatArray
 	z::FloatArray; pz::FloatArray
+	function Phase6DRep(x::A, px::A, y::A, py::A, z::A, pz::A) where {A}
+		lengths = map(length, (x, px, y, py, z, pz))
+		all(==(first(lengths)), lengths) || throw(ArgumentError(
+			"Phase6DRep coordinate arrays must have equal lengths; got $(lengths)"))
+		return new{A}(x, px, y, py, z, pz)
+	end
 end
 
 if _HAS_ADAPT
@@ -303,6 +311,9 @@ threaded backend or CUDA backend:
 3. apply optional `XYCoupling`, `MomentumDispersion`, and `CrabDispersion`,
 4. apply an optional six-coordinate `initial_offset`.
 
+`N` must be positive. Construct `Phase6DRep` directly when an empty
+representation is needed.
+
 `beta=(βx,βy,βz)` and `alpha=(αx,αy,αz)` use the same three-plane Twiss
 convention as `Linear6DSpec` and `LumpedRadSpec`. For sigma-based construction,
 the longitudinal covariance is `cov(z,pz) = -αz*σz^2/βz`. A legacy
@@ -340,6 +351,7 @@ function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
               initial_offset=zeros(RT, 6),
               execution_policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
               kwargs...) where {BTAG<:AbstractExecutionBackend,RT<:Real}
+	N > 0 || throw(ArgumentError("random Beam construction requires a positive particle count; got $(N)"))
 	params = _beam_params(RT, Int(N); kwargs...)
 	rep = _standard_gaussian_rep(BTAG, RT, Int(N);
 		cutoff=cutoff, rng=rng, seed=seed, rng_id=rng_id)

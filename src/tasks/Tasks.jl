@@ -177,20 +177,23 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     end
     prepare_observers!(task.observers, runtime_elems; turns=turns)
     prepare_line_observers!(runtime_entries; turns=turns)
-    base_ctx = TrackingContext()
-    for turn in 0:(turns - 1)
-        ctx = with_turn(base_ctx, turn)
-        run_actions!(task.actions, ctx, rep)
-        task_diagnostics = requires_elementwise_tracking(task.observers, ctx)
-        plan_key = _active_plan_key(runtime_entries, ctx, task_diagnostics)
-        plan = get!(task.plan_cache, plan_key) do
-            _build_tracking_plan(runtime_entries, plan_key)
+    try
+        base_ctx = TrackingContext()
+        for turn in 0:(turns - 1)
+            ctx = with_turn(base_ctx, turn)
+            run_actions!(task.actions, ctx, rep)
+            task_diagnostics = requires_elementwise_tracking(task.observers, ctx)
+            plan_key = _active_plan_key(runtime_entries, ctx, task_diagnostics)
+            plan = get!(task.plan_cache, plan_key) do
+                _build_tracking_plan(runtime_entries, plan_key)
+            end
+            _execute_tracking_plan_turn!(rep, plan, policy, ctx)
+            run_observers!(task.observers, ctx, rep)
         end
-        _execute_tracking_plan_turn!(rep, plan, policy, ctx)
-        run_observers!(task.observers, ctx, rep)
+    finally
+        finalize_observers!(task.observers)
+        _finalize_line_observers!(runtime_entries)
     end
-    finalize_observers!(task.observers)
-    _finalize_line_observers!(runtime_entries)
     return rep
 end
 

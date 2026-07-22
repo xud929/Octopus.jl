@@ -7,17 +7,17 @@ Speed of light in vacuum, in meters per second.
 """
 const CLIGHT = 299_792_458.0
 
-"""Classical electron radius in meters."""
-const RE = 2.8179403227e-15
+"""Classical electron radius in meters (2022 CODATA)."""
+const RE = 2.8179403205e-15
 
-"""Electron rest energy in eV."""
-const ME0 = 0.51099895e6
+"""Electron rest energy in eV (2022 CODATA)."""
+const EMASS_EV = 0.51099895069e6
 
-"""Electron rest energy in eV."""
-const EMASS_EV = 0.5109989461e6
+"""Compatibility alias for [`EMASS_EV`](@ref)."""
+const ME0 = EMASS_EV
 
-"""Proton rest energy in eV."""
-const PMASS_EV = 938.272081e6
+"""Proton rest energy in eV (2022 CODATA)."""
+const PMASS_EV = 938.27208943e6
 
 """2π."""
 const TWOPI = 6.283185307179586476925286766559005768394338

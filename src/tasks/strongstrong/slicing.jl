@@ -50,6 +50,7 @@ longitudinal_slices(beam::Beam, slicing::LongitudinalSlicing) =
 
 function longitudinal_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
     slicing.nslices > 0 || throw(ArgumentError("nslices must be positive"))
+    isempty(rep.z) && throw(ArgumentError("longitudinal slicing requires at least one particle"))
     method = slicing.method
     if method == :equal_area
         return _longitudinal_slices_equal_area(rep, slicing)
@@ -69,12 +70,16 @@ end
 function _strong_strong_kbb1(solver, beam1, beam2)
     solver.kbb1 !== nothing && return solver.kbb1
     p1, p2 = beam1.params, beam2.params
+    isfinite(p1.E0) && !iszero(p1.E0) || throw(ArgumentError(
+        "beam1 E0 must be finite and nonzero when kbb1 is not specified; got $(p1.E0)"))
     return p1.charge * p2.charge * p1.r0 * p2.npart * p1.mc2 / p1.E0
 end
 
 function _strong_strong_kbb2(solver, beam1, beam2)
     solver.kbb2 !== nothing && return solver.kbb2
     p1, p2 = beam1.params, beam2.params
+    isfinite(p2.E0) && !iszero(p2.E0) || throw(ArgumentError(
+        "beam2 E0 must be finite and nonzero when kbb2 is not specified; got $(p2.E0)"))
     return p1.charge * p2.charge * p2.r0 * p1.npart * p2.mc2 / p2.E0
 end
 
@@ -83,6 +88,8 @@ function _strong_strong_luminosity_scales(solver, beam1, beam2)
         return solver.luminosity_scale, solver.luminosity_scale
     end
     p1, p2 = beam1.params, beam2.params
+    length(beam1.rep) == 0 && throw(ArgumentError("strong-strong luminosity requires a nonempty beam1"))
+    length(beam2.rep) == 0 && throw(ArgumentError("strong-strong luminosity requires a nonempty beam2"))
     return p1.npart * p2.npart / length(beam1.rep),
            p1.npart * p2.npart / length(beam2.rep)
 end
@@ -185,7 +192,13 @@ function _longitudinal_slices_equal_count(rep::Phase6DRep, slicing::Longitudinal
     boundaries[end] = maximum(z)
     for s in 1:(ns - 1)
         pos = floor(Int, s * n / ns)
-        boundaries[s + 1] = (sorted_z[pos] + sorted_z[pos + 1]) / 2
+        boundaries[s + 1] = if pos == 0
+            sorted_z[1]
+        elseif pos == n
+            sorted_z[end]
+        else
+            (sorted_z[pos] + sorted_z[pos + 1]) / 2
+        end
     end
     return _finish_longitudinal_slices(rep, slicing, indices, boundaries)
 end

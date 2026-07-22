@@ -9,7 +9,7 @@ abstract type ThinCrabCavitySpec{N} end
 Create an `ElementSpec{:thin_crab_cavity}` for a thin two-dimensional crab
 cavity with `N` harmonics. `frequency` is in Hz. Each harmonic stores horizontal
 strength, vertical strength, and phase. Extra keyword arguments are stored as
-descriptive spec metadata.
+descriptive spec metadata. `frequency` must be finite and nonzero.
 """
 function (::Type{ThinCrabCavitySpec{N}})(frequency::Real;
                                          strengthX=(),
@@ -18,6 +18,7 @@ function (::Type{ThinCrabCavitySpec{N}})(frequency::Real;
                                          tracking_method=Symplectic6DMap(),
                                          kwargs...) where {N}
     T = typeof(float(frequency))
+    _validate_crab_frequency(T(frequency))
     return ElementSpec{:thin_crab_cavity}(
         _spec_params(;
             N=N,
@@ -36,6 +37,7 @@ end
 
 Runtime thin 2D crab cavity with `N` harmonics: `N` is a type parameter,
 and the harmonic data are stored in fixed-size tuples for CPU/GPU tracking.
+`frequency` must be finite and nonzero.
 
 The map applies the kick
 
@@ -60,6 +62,7 @@ function ThinCrabCavity{N}(frequency::Real;
                            strengthY=(),
                            phase=()) where {N}
     T = typeof(float(frequency))
+    _validate_crab_frequency(T(frequency))
     kcc = T(2) * T(pi) * T(frequency) / T(CLIGHT)
     return ThinCrabCavity{N,Symplectic6DMap,T}(
         Symplectic6DMap(),
@@ -74,6 +77,7 @@ function ThinCrabCavity(spec::ElementSpec{:thin_crab_cavity}, method::AbstractTr
     N = param(spec, :N)
     frequency = param(spec, :frequency)
     T = typeof(float(frequency))
+    _validate_crab_frequency(T(frequency))
     return ThinCrabCavity{N,typeof(method),T}(
         method,
         T(2) * T(pi) * T(frequency) / T(CLIGHT),
@@ -81,6 +85,12 @@ function ThinCrabCavity(spec::ElementSpec{:thin_crab_cavity}, method::AbstractTr
         _harmonic_tuple(Val(N), param(spec, :strengthY), T),
         _harmonic_tuple(Val(N), param(spec, :phase), T),
     )
+end
+
+function _validate_crab_frequency(frequency)
+    isfinite(frequency) && !iszero(frequency) || throw(ArgumentError(
+        "thin crab-cavity frequency must be finite and nonzero; got $(frequency)"))
+    return frequency
 end
 
 Base.getindex(cavity::ThinCrabCavity, row::Integer, harmonic::Integer) =

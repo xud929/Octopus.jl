@@ -259,10 +259,11 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
     )
 
     kick_scale = T(2) * T(kbb)
-    hzi = inv(T(param_field.rb) - T(param_field.lb))
+    hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
     for i in 1:nfield
         @inbounds begin
-            zL, zR = _slice_interpolation_weights(field.z[i], T(param_field.lb), T(param_field.rb))
+            zL = clamp(-T(field.z[i]) * hzi + zbias, zero(T), one(T))
+            zR = one(T) - zL
             Kx, Ky, Kz = _pic_interpolate_kick(
                 solver, field_grid, field.x[i], field.y[i],
                 phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
@@ -293,15 +294,14 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
     return vx, vy
 end
 
-@inline function _slice_interpolation_weights(z, lb, rb)
-    T = typeof(z + lb + rb)
+@inline function _slice_interpolation_parameters(lb, rb)
+    T = typeof(lb + rb)
     denom = T(rb - lb)
     if !isfinite(denom) || denom == zero(T)
-        half = T(0.5)
-        return half, half
+        return zero(T), T(0.5)
     end
-    zL = clamp(T(rb - z) / denom, zero(T), one(T))
-    return zL, one(T) - zL
+    hzi = inv(denom)
+    return hzi, T(rb) * hzi
 end
 
 function _pic_interaction_grids(solver::PICPoissonSolver, sxmin, sxmax, symin, symax,

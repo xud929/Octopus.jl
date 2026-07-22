@@ -8,8 +8,8 @@ export RNG_PHILOX, RNG_SPLITMIX,
 
 const RNG_PHILOX = UInt8(1)
 const RNG_SPLITMIX = UInt8(2)
-const COUNTER_RNG_TWO_NEG_24 = 5.9604644775390625f-8
-const COUNTER_RNG_TWO_NEG_53 = 1.1102230246251565e-16
+const COUNTER_RNG_TWO_NEG_23 = 1.1920928955078125f-7
+const COUNTER_RNG_TWO_NEG_52 = 2.220446049250313e-16
 const COUNTER_RNG_TWO_PI = 6.283185307179586476925286766559
 const PHILOX4X32_M0 = UInt32(0xD2511F53)
 const PHILOX4X32_M1 = UInt32(0xCD9E8D57)
@@ -88,14 +88,18 @@ end
 """Method-selected version of `counter_uniform01`."""
 @inline function octopus_uniform01(seed, method_code::UInt8, turn, rng_id, particle_index, component,
                                   ::Type{Float64})
-    bits = octopus_uint64(seed, method_code, turn, rng_id, particle_index, component) >> 11
-    return (Float64(bits) + 0.5) * COUNTER_RNG_TWO_NEG_53
+    return _uniform_open01(
+        octopus_uint64(seed, method_code, turn, rng_id, particle_index, component),
+        Float64,
+    )
 end
 
 @inline function octopus_uniform01(seed, method_code::UInt8, turn, rng_id, particle_index, component,
                                   ::Type{Float32})
-    bits = octopus_uint64(seed, method_code, turn, rng_id, particle_index, component) >> 40
-    return (Float32(bits) + 0.5f0) * COUNTER_RNG_TWO_NEG_24
+    return _uniform_open01(
+        octopus_uint64(seed, method_code, turn, rng_id, particle_index, component),
+        Float32,
+    )
 end
 
 @inline octopus_uniform01(seed, method, turn, rng_id, particle_index, component, ::Type{T}) where {T<:AbstractFloat} =
@@ -205,14 +209,16 @@ counter RNG bits and is suitable for CPU and CUDA device code.
 
 @inline function counter_uniform01(seed, turn, rng_id, particle_index, component,
                                    ::Type{Float64})
-    bits = counter_uint64(seed, turn, rng_id, particle_index, component) >> 11
-    return (Float64(bits) + 0.5) * COUNTER_RNG_TWO_NEG_53
+    return _uniform_open01(
+        counter_uint64(seed, turn, rng_id, particle_index, component), Float64,
+    )
 end
 
 @inline function counter_uniform01(seed, turn, rng_id, particle_index, component,
                                    ::Type{Float32})
-    bits = counter_uint64(seed, turn, rng_id, particle_index, component) >> 40
-    return (Float32(bits) + 0.5f0) * COUNTER_RNG_TWO_NEG_24
+    return _uniform_open01(
+        counter_uint64(seed, turn, rng_id, particle_index, component), Float32,
+    )
 end
 
 """SplitMix64-backed version of [`counter_uniform01`](@ref)."""
@@ -221,14 +227,30 @@ end
 
 @inline function splitmix_uniform01(seed, turn, rng_id, particle_index, component,
                                     ::Type{Float64})
-    bits = splitmix_uint64(seed, turn, rng_id, particle_index, component) >> 11
-    return (Float64(bits) + 0.5) * COUNTER_RNG_TWO_NEG_53
+    return _uniform_open01(
+        splitmix_uint64(seed, turn, rng_id, particle_index, component), Float64,
+    )
 end
 
 @inline function splitmix_uniform01(seed, turn, rng_id, particle_index, component,
                                     ::Type{Float32})
-    bits = splitmix_uint64(seed, turn, rng_id, particle_index, component) >> 40
-    return (Float32(bits) + 0.5f0) * COUNTER_RNG_TWO_NEG_24
+    return _uniform_open01(
+        splitmix_uint64(seed, turn, rng_id, particle_index, component), Float32,
+    )
+end
+
+# Use one fewer source bit than the significand precision so adding the half-bin
+# offset is exact. The resulting midpoint grids are strictly inside (0, 1) for
+# every UInt64 input on both CPU and CUDA; using 53/24 bits can round the upper
+# endpoint to exactly one.
+@inline function _uniform_open01(value::UInt64, ::Type{Float64})
+    bits = value >> 12
+    return (Float64(bits) + 0.5) * COUNTER_RNG_TWO_NEG_52
+end
+
+@inline function _uniform_open01(value::UInt64, ::Type{Float32})
+    bits = value >> 41
+    return (Float32(bits) + 0.5f0) * COUNTER_RNG_TWO_NEG_23
 end
 
 """
