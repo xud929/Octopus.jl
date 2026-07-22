@@ -353,6 +353,8 @@ if _HAS_CUDA
 
         _cuda_pic_stack_cached_green_enabled() = true
 
+        const _CUDA_PIC_BOUNDS_PARTIAL_BLOCKS = 64
+
         _cuda_pic_indexed_wavefront_enabled(solver::PICPoissonSolver) =
             solver.cuda_indexed_wavefront
 
@@ -910,16 +912,11 @@ if _HAS_CUDA
 
             prepare_range = _cuda_nvtx_push(CUDABackend, "pic indexed wavefront prepare")
             t_prepare = time_ns()
-            prep12 = Vector{Any}(undef, npairs)
-            prep21 = Vector{Any}(undef, npairs)
+            prep12, prep21, luminosity_bounds = _cuda_pic_prepare_interaction_wavefront_indexed!(
+                solver, valid, rep1, rep2, green_cache, wf, timing, compute_luminosity,
+            )
             for n in 1:npairs
                 item = valid[n]
-                prep12[n], prep21[n] = _cuda_pic_prepare_interaction_pair_indexed(
-                    solver,
-                    rep1, item.idx1, item.p1,
-                    rep2, item.idx2, item.p2,
-                    green_cache, timing,
-                )
                 if green_cache === nothing && _cuda_pic_slice_pair_green_cache_enabled(solver)
                     prep12[n] = _cuda_pic_slice_pair_cached_prep!(
                         solver, T, workspace.slice_pair_green_cache,
@@ -935,7 +932,9 @@ if _HAS_CUDA
             _cuda_nvtx_pop(CUDABackend, prepare_range)
 
             luminosity = compute_luminosity ?
-                _cuda_pic_wavefront_luminosity_indexed(solver, valid, rep1, rep2, klum, workspace, timing) :
+                _cuda_pic_wavefront_luminosity_indexed(
+                    solver, valid, rep1, rep2, klum, workspace, timing, luminosity_bounds,
+                ) :
                 zero(T)
 
             use_slice_pair_green = green_cache === nothing && _cuda_pic_slice_pair_green_cache_enabled(solver)
@@ -1183,6 +1182,101 @@ if _HAS_CUDA
                 solver, T, sL21, sR21, source21, field21, green_cache, timing,
             )
             return prep12, prep21
+        end
+
+        function _cuda_pic_prepare_interaction_wavefront_indexed!(
+            solver::PICPoissonSolver, valid, rep1, rep2, green_cache, wf,
+            timing=nothing, compute_luminosity::Bool=false,
+        )
+            T = eltype(rep1.x)
+            npairs = length(valid)
+            half = T(0.5)
+            threads = 256
+            block_cap = _CUDA_PIC_BOUNDS_PARTIAL_BLOCKS
+            stream = CUDA.stream()
+            t_bounds = time_ns()
+
+            CUDA.@cuda threads=threads blocks=cld(length(wf.bounds_partials), threads) stream=stream _cuda_pic_init_wavefront_bounds_partials_kernel!(
+                wf.bounds_partials,
+            )
+            for n in 1:npairs
+                item = valid[n]
+                center1 = T(item.p1.center)
+                center2 = T(item.p2.center)
+                sL12 = half * (center1 - T(item.p2.lb))
+                sR12 = half * (center1 - T(item.p2.rb))
+                sL21 = half * (center2 - T(item.p1.lb))
+                sR21 = half * (center2 - T(item.p1.rb))
+                blocks1 = min(cld(length(item.idx1), threads), block_cap)
+                blocks2 = min(cld(length(item.idx2), threads), block_cap)
+                if compute_luminosity
+                    s1 = half * (center1 - center2)
+                    CUDA.@cuda threads=threads blocks=blocks1 stream=stream _cuda_pic_force_luminosity_bounds_indexed_kernel!(
+                        wf.bounds_partials, Int32(2n - 1),
+                        rep1.x, rep1.px, rep1.y, rep1.py, rep1.z, item.idx1,
+                        sL12, sR12, center2, half, s1,
+                    )
+                    CUDA.@cuda threads=threads blocks=blocks2 stream=stream _cuda_pic_force_luminosity_bounds_indexed_kernel!(
+                        wf.bounds_partials, Int32(2n),
+                        rep2.x, rep2.px, rep2.y, rep2.py, rep2.z, item.idx2,
+                        sL21, sR21, center1, half, -s1,
+                    )
+                else
+                    CUDA.@cuda threads=threads blocks=blocks1 stream=stream _cuda_pic_force_bounds_indexed_kernel!(
+                        wf.bounds_partials, Int32(2n - 1),
+                        rep1.x, rep1.px, rep1.y, rep1.py, rep1.z, item.idx1,
+                        sL12, sR12, center2, half,
+                    )
+                    CUDA.@cuda threads=threads blocks=blocks2 stream=stream _cuda_pic_force_bounds_indexed_kernel!(
+                        wf.bounds_partials, Int32(2n),
+                        rep2.x, rep2.px, rep2.y, rep2.py, rep2.z, item.idx2,
+                        sL21, sR21, center1, half,
+                    )
+                end
+            end
+            if compute_luminosity
+                CUDA.@cuda threads=block_cap blocks=2npairs stream=stream _cuda_pic_finalize_force_luminosity_bounds_kernel!(
+                    wf.bounds, wf.bounds_partials,
+                )
+            else
+                CUDA.@cuda threads=block_cap blocks=2npairs stream=stream _cuda_pic_finalize_force_bounds_kernel!(
+                    wf.bounds, wf.bounds_partials,
+                )
+            end
+            copyto!(wf.bounds_host, wf.bounds)
+            elapsed = time_ns() - t_bounds
+            _cuda_pic_add_elapsed!(timing, :prepare_source, elapsed ÷ 2)
+            _cuda_pic_add_elapsed!(timing, :prepare_field, elapsed - elapsed ÷ 2)
+
+            prep12 = Vector{Any}(undef, npairs)
+            prep21 = Vector{Any}(undef, npairs)
+            luminosity_bounds = compute_luminosity ? Vector{Any}(undef, npairs) : nothing
+            for n in 1:npairs
+                item = valid[n]
+                center1 = T(item.p1.center)
+                center2 = T(item.p2.center)
+                sL12 = half * (center1 - T(item.p2.lb))
+                sR12 = half * (center1 - T(item.p2.rb))
+                sL21 = half * (center2 - T(item.p1.lb))
+                sR21 = half * (center2 - T(item.p1.rb))
+                column1 = 2n - 1
+                column2 = 2n
+                bounds1 = ntuple(row -> wf.bounds_host[row, column1], 8)
+                bounds2 = ntuple(row -> wf.bounds_host[row, column2], 8)
+                prep12[n] = _cuda_pic_finish_interaction_indexed(
+                    solver, T, sL12, sR12, bounds1[1:4], bounds2[5:8], green_cache, timing,
+                )
+                prep21[n] = _cuda_pic_finish_interaction_indexed(
+                    solver, T, sL21, sR21, bounds2[1:4], bounds1[5:8], green_cache, timing,
+                )
+                if compute_luminosity
+                    luminosity_bounds[n] = (
+                        beam1=ntuple(row -> wf.bounds_host[row + 8, column1], 4),
+                        beam2=ntuple(row -> wf.bounds_host[row + 8, column2], 4),
+                    )
+                end
+            end
+            return prep12, prep21, luminosity_bounds
         end
 
         function _cuda_pic_finish_interaction_indexed(
@@ -1462,6 +1556,16 @@ if _HAS_CUDA
             return (source..., field...)
         end
 
+        @inline function _cuda_pic_source_field_luminosity_bounds_value(
+            x, px, y, py, z, sL, sR, opposing_center, half, luminosity_drift,
+        )
+            force = _cuda_pic_source_field_bounds_value(
+                x, px, y, py, z, sL, sR, opposing_center, half,
+            )
+            luminosity = _cuda_pic_luminosity_bounds_value(x, px, y, py, luminosity_drift)
+            return (force..., luminosity...)
+        end
+
         function _cuda_pic_expand_grid(grid, new_width, new_height)
             T = promote_type(typeof(grid.x0), typeof(new_width))
             dw = T(new_width) - T(grid.width)
@@ -1625,6 +1729,12 @@ if _HAS_CUDA
                     green_hx=CUDA.zeros(T, ngreen),
                     green_hy=CUDA.zeros(T, ngreen),
                     green_spectral=CUDA.zeros(Complex{T}, 2nx, 2ny, ngreen),
+                    bounds=CUDA.zeros(T, 12, 2 * max(1, nplanes ÷ 4)),
+                    bounds_partials=CUDA.zeros(
+                        T, 12, _CUDA_PIC_BOUNDS_PARTIAL_BLOCKS,
+                        2 * max(1, nplanes ÷ 4),
+                    ),
+                    bounds_host=Array{T}(undef, 12, 2 * max(1, nplanes ÷ 4)),
                 )
             end
         end
@@ -2055,7 +2165,8 @@ if _HAS_CUDA
 
         function _cuda_pic_wavefront_luminosity_indexed(solver::PICPoissonSolver, valid,
                                                         rep1, rep2, klum,
-                                                        workspace::_CUDAPICWorkspace, timing=nothing)
+                                                        workspace::_CUDAPICWorkspace, timing=nothing,
+                                                        prepared_bounds=nothing)
             npairs = length(valid)
             npairs == 0 && return zero(eltype(rep1.x))
             nx, ny = _pic_luminosity_grid(solver)
@@ -2073,19 +2184,25 @@ if _HAS_CUDA
                 item = valid[n]
                 s1 = T(0.5) * (T(item.p1.center) - T(item.p2.center))
                 s2 = -s1
-                neutral = _cuda_pic_bounds_neutral(T)
-                bounds1 = mapreduce(
-                    i -> _cuda_pic_luminosity_bounds_value(
-                        rep1.x[i], rep1.px[i], rep1.y[i], rep1.py[i], s1,
-                    ),
-                    _cuda_pic_bounds_combine, item.idx1; init=neutral,
-                )
-                bounds2 = mapreduce(
-                    i -> _cuda_pic_luminosity_bounds_value(
-                        rep2.x[i], rep2.px[i], rep2.y[i], rep2.py[i], s2,
-                    ),
-                    _cuda_pic_bounds_combine, item.idx2; init=neutral,
-                )
+                bounds1, bounds2 = if prepared_bounds === nothing
+                    neutral = _cuda_pic_bounds_neutral(T)
+                    (
+                        mapreduce(
+                            i -> _cuda_pic_luminosity_bounds_value(
+                                rep1.x[i], rep1.px[i], rep1.y[i], rep1.py[i], s1,
+                            ),
+                            _cuda_pic_bounds_combine, item.idx1; init=neutral,
+                        ),
+                        mapreduce(
+                            i -> _cuda_pic_luminosity_bounds_value(
+                                rep2.x[i], rep2.px[i], rep2.y[i], rep2.py[i], s2,
+                            ),
+                            _cuda_pic_bounds_combine, item.idx2; init=neutral,
+                        ),
+                    )
+                else
+                    (prepared_bounds[n].beam1, prepared_bounds[n].beam2)
+                end
                 xmin = min(T(bounds1[1]), T(bounds2[1]))
                 xmax = max(T(bounds1[2]), T(bounds2[2]))
                 ymin = min(T(bounds1[3]), T(bounds2[3]))
@@ -2616,6 +2733,151 @@ if _HAS_CUDA
                     CUDA.@atomic charge[ix + 2, iy, plane] += wx3 * wy1
                     CUDA.@atomic charge[ix + 2, iy + 1, plane] += wx3 * wy2
                     CUDA.@atomic charge[ix + 2, iy + 2, plane] += wx3 * wy3
+                end
+            end
+            return nothing
+        end
+
+        @inline function _cuda_pic_bounds_tuple_combine(a::NTuple{N,T}, b::NTuple{N,T}) where {N,T}
+            return ntuple(
+                row -> isodd(row) ? min(a[row], b[row]) : max(a[row], b[row]),
+                Val(N),
+            )
+        end
+
+        @inline function _cuda_pic_bounds_tuple_shuffle_down(values::NTuple{N,T}, offset) where {N,T}
+            shuffled = ntuple(
+                row -> CUDA.shfl_down_sync(UInt32(0xffffffff), values[row], offset),
+                Val(N),
+            )
+            return _cuda_pic_bounds_tuple_combine(values, shuffled)
+        end
+
+        @inline function _cuda_pic_bounds_block_reduce(values::NTuple{N,T},
+                                                       neutral::NTuple{N,T}) where {N,T}
+            lane = Int(CUDA.threadIdx().x - 1) % 32 + 1
+            warp = Int(CUDA.threadIdx().x - 1) ÷ 32 + 1
+            offset = 16
+            while offset >= 1
+                values = _cuda_pic_bounds_tuple_shuffle_down(values, offset)
+                offset ÷= 2
+            end
+
+            shared = CUDA.CuStaticSharedArray(T, (N, 32))
+            if lane == 1
+                for row in 1:N
+                    @inbounds shared[row, warp] = values[row]
+                end
+            end
+            CUDA.sync_threads()
+
+            if warp == 1
+                nwarps = cld(Int(CUDA.blockDim().x), 32)
+                values = ntuple(
+                    row -> lane <= nwarps ? (@inbounds shared[row, lane]) : neutral[row],
+                    Val(N),
+                )
+                offset = 16
+                while offset >= 1
+                    values = _cuda_pic_bounds_tuple_shuffle_down(values, offset)
+                    offset ÷= 2
+                end
+            end
+            return values
+        end
+
+        function _cuda_pic_init_wavefront_bounds_partials_kernel!(bounds)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            if index <= length(bounds)
+                row = (index - 1) % Int32(12) + 1
+                T = eltype(bounds)
+                @inbounds bounds[index] = isodd(row) ? T(Inf) : -T(Inf)
+            end
+            return nothing
+        end
+
+        function _cuda_pic_force_bounds_indexed_kernel!(
+            partials, column::Int32, x, px, y, py, z, idx,
+            sL, sR, opposing_center, half,
+        )
+            neutral = _cuda_pic_bounds_pair_neutral(eltype(x))
+            values = neutral
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            while index <= length(idx)
+                particle = @inbounds idx[index]
+                point = @inbounds _cuda_pic_source_field_bounds_value(
+                    x[particle], px[particle], y[particle], py[particle], z[particle],
+                    sL, sR, opposing_center, half,
+                )
+                values = _cuda_pic_bounds_tuple_combine(values, point)
+                index += stride
+            end
+            values = _cuda_pic_bounds_block_reduce(values, neutral)
+            if CUDA.threadIdx().x == 1
+                block = CUDA.blockIdx().x
+                for row in 1:8
+                    @inbounds partials[row, block, column] = values[row]
+                end
+            end
+            return nothing
+        end
+
+        function _cuda_pic_force_luminosity_bounds_indexed_kernel!(
+            partials, column::Int32, x, px, y, py, z, idx,
+            sL, sR, opposing_center, half, luminosity_drift,
+        )
+            T = eltype(x)
+            neutral8 = _cuda_pic_bounds_pair_neutral(T)
+            neutral = (neutral8..., _cuda_pic_bounds_neutral(T)...)
+            values = neutral
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            while index <= length(idx)
+                particle = @inbounds idx[index]
+                point = @inbounds _cuda_pic_source_field_luminosity_bounds_value(
+                    x[particle], px[particle], y[particle], py[particle], z[particle],
+                    sL, sR, opposing_center, half, luminosity_drift,
+                )
+                values = _cuda_pic_bounds_tuple_combine(values, point)
+                index += stride
+            end
+            values = _cuda_pic_bounds_block_reduce(values, neutral)
+            if CUDA.threadIdx().x == 1
+                block = CUDA.blockIdx().x
+                for row in 1:12
+                    @inbounds partials[row, block, column] = values[row]
+                end
+            end
+            return nothing
+        end
+
+        function _cuda_pic_finalize_force_bounds_kernel!(bounds, partials)
+            column = CUDA.blockIdx().x
+            thread = CUDA.threadIdx().x
+            T = eltype(bounds)
+            neutral = _cuda_pic_bounds_pair_neutral(T)
+            values = ntuple(row -> (@inbounds partials[row, thread, column]), Val(8))
+            values = _cuda_pic_bounds_block_reduce(values, neutral)
+            if thread == 1
+                for row in 1:8
+                    @inbounds bounds[row, column] = values[row]
+                end
+            end
+            return nothing
+        end
+
+        function _cuda_pic_finalize_force_luminosity_bounds_kernel!(bounds, partials)
+            column = CUDA.blockIdx().x
+            thread = CUDA.threadIdx().x
+            T = eltype(bounds)
+            neutral8 = _cuda_pic_bounds_pair_neutral(T)
+            neutral = (neutral8..., _cuda_pic_bounds_neutral(T)...)
+            values = ntuple(row -> (@inbounds partials[row, thread, column]), Val(12))
+            values = _cuda_pic_bounds_block_reduce(values, neutral)
+            if thread == 1
+                for row in 1:12
+                    @inbounds bounds[row, column] = values[row]
                 end
             end
             return nothing

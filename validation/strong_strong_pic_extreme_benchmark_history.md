@@ -709,3 +709,50 @@ and mixed force/luminosity PIC contracts passed with identical cache histories.
 All seven PIC launch-family overrides emitted consumer receipts, and invalid
 storage, device, worker, and inherited PIC launch configurations were rejected
 before particle mutation.
+
+## 2026-07-21 two-level wavefront bounds reduction
+
+The indexed CUDA wavefront path previously called CUDA.jl's generic
+`mapreduce` twice per slice pair and transferred each completed extrema tuple
+to the host before preparing the next pair. The retained implementation queues
+one indexed scan per beam and pair, writes 64 block-local extrema tuples into a
+reusable wavefront buffer, reduces all partials in one final kernel per
+wavefront, and transfers the completed bounds matrix once. Grid construction,
+slice-pair cache coverage and size checks, drift equations, and componentwise
+`min`/`max` definitions are unchanged. The CPU path is untouched.
+
+When luminosity is requested, the scan also returns the exact centroid-plane
+extrema. The luminosity path reuses those results instead of scanning both
+beams a second time. Solver-only launches use the eight-value force kernel, so
+they do not carry the four additional luminosity extrema or their register
+cost.
+
+An initial one-kernel implementation atomically accumulated every block's
+`Float64` extrema. It passed the backend contract but regressed to `0.31991
+s/turn`; diagnostic bounds time was about `65--71 ms/turn`. Restricting the
+scan to 32 blocks reduced bounds time to about `45--49 ms/turn` but remained
+too close to the generic reduction. It was rejected. The retained two-level
+design removes the global extrema atomics and measured about `38.6--39.1
+ms/turn` for the force bounds scan in synchronized phase diagnostics.
+
+The production-size solver-only reference after the numerical edge fixes had
+three final-ten means of `0.31004`, `0.30899`, and `0.30969 s/turn`, with a
+median of `0.30969 s/turn`. The retained implementation produced `0.28302`,
+`0.28534`, and `0.28753 s/turn`; its median is `0.28534 s/turn`, a 7.86% time
+reduction and 1.09x throughput improvement. The matching luminosity-enabled
+runs were `0.31535`, `0.31893`, and `0.32351 s/turn`, with a median of `0.31893
+s/turn`. This is 12.23% below the immediately preceding 30-turn luminosity
+control of `0.36335 s/turn`; that comparison has one control run, so the
+three-run optimized spread is retained alongside it rather than implying a
+paired three-run estimate.
+
+All four CPU/CUDA force/luminosity method combinations passed: inherited CIC,
+inherited TSC, CIC force with TSC luminosity, and TSC force with CIC
+luminosity. Across them, the maximum final-coordinate absolute error was
+`8.62e-17`, total-luminosity relative error was `9.05e-15`, slice-pair
+luminosity relative error was `5.92e-14`, and CPU/CUDA cache histories were
+identical. A separate production 30-turn output comparison against the
+immediately preceding CUDA implementation found a maximum luminosity relative
+difference of `1.12e-15`; every final electron and proton RMS component agreed
+to about `1.5e-15` relative or better. The general tracking backend validation
+and full package test suite also passed.
