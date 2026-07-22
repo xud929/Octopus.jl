@@ -101,10 +101,7 @@ input = (
         center = (0.0, 0.0, 0.0),
         angle = (0.0, 0.0, 0.0),
         curvature = (0.0, 0.0, 0.0),
-        dynamic_drift_flag = 0,
-        size_signal = nothing,
-        centroid_signal = nothing,
-        angle_signal = nothing,
+        virtual_drift = :hirata,
         hvoffset = nothing,
     ),
 
@@ -251,10 +248,7 @@ thin_strong = ThinStrongBeamSpec{Float64}(;
     center = strong.center,
     angle = strong.angle,
     curvature = strong.curvature,
-    dynamic_drift_flag = strong.dynamic_drift_flag,
-    size_signal = strong.size_signal,
-    centroid_signal = strong.centroid_signal,
-    angle_signal = strong.angle_signal,
+    virtual_drift = strong.virtual_drift,
 )
 gsb = GaussianStrongBeamSpec{Float64}(;
     thin = thin_strong,

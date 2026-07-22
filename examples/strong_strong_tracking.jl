@@ -24,6 +24,16 @@ Select the Poisson solver:
     OCTOPUS_POISSON_SOLVER=PIC julia --project=. examples/strong_strong_tracking.jl
     OCTOPUS_POISSON_SOLVER=gaussian julia --project=. examples/strong_strong_tracking.jl
 
+The soft-Gaussian solver applies the canonical longitudinal synchro-beam kick
+by default. Disable it only for transverse-map compatibility comparisons:
+
+    OCTOPUS_POISSON_SOLVER=gaussian OCTOPUS_GAUSSIAN_LONGITUDINAL_KICK=0 julia --project=. examples/strong_strong_tracking.jl
+
+Select its physical virtual drift, optional coupled covariance, and CUDA
+slice-pair scheduler with `OCTOPUS_GAUSSIAN_VIRTUAL_DRIFT` (`hirata`,
+`chromatic`, or `exact`), `OCTOPUS_GAUSSIAN_SIGMA_XY`, and
+`OCTOPUS_GAUSSIAN_BATCH_MODE` (`sequential` or `wavefront`).
+
 Disable the beam-beam collision while retaining both complete ring lines:
 
     OCTOPUS_DISABLE_COLLISION=1 julia --project=. examples/strong_strong_tracking.jl
@@ -323,10 +333,22 @@ cuda_pic_launch = CUDAPICLaunchConfig(
 )
 cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 solver = if solver_kind == "gaussian"
+    gaussian_longitudinal_kick = get(ENV, "OCTOPUS_GAUSSIAN_LONGITUDINAL_KICK", "1") in
+                                 ("1", "true", "TRUE", "yes", "YES")
+    gaussian_virtual_drift = Symbol(lowercase(
+        get(ENV, "OCTOPUS_GAUSSIAN_VIRTUAL_DRIFT", "hirata")))
+    gaussian_sigma_xy = get(ENV, "OCTOPUS_GAUSSIAN_SIGMA_XY", "0") in
+                        ("1", "true", "TRUE", "yes", "YES")
+    gaussian_batch_mode = Symbol(lowercase(
+        get(ENV, "OCTOPUS_GAUSSIAN_BATCH_MODE", "wavefront")))
     GaussianPoissonSolver(;
         slicing = slicing,
         min_sigma = input.solver.min_sigma,
         luminosity_scale = input.solver.luminosity_scale,
+        longitudinal_kick = gaussian_longitudinal_kick,
+        virtual_drift = gaussian_virtual_drift,
+        include_sigma_xy = gaussian_sigma_xy,
+        batch_mode = gaussian_batch_mode,
     )
 elseif solver_kind == "pic"
     PICPoissonSolver(;
@@ -532,7 +554,12 @@ println("n_macro_ele = ", n_macro_ele)
 println("n_macro_pro = ", n_macro_pro)
 println("poisson_solver = ", solver_kind)
 println("beam_beam_collision = ", disable_collision ? "disabled" : "enabled")
-if solver_kind == "pic"
+if solver_kind == "gaussian"
+    println("gaussian_longitudinal_kick = ", gaussian_longitudinal_kick)
+    println("gaussian_virtual_drift = ", gaussian_virtual_drift)
+    println("gaussian_sigma_xy = ", gaussian_sigma_xy)
+    println("gaussian_batch_mode = ", gaussian_batch_mode)
+elseif solver_kind == "pic"
     println("pic_longitudinal_kick = ", pic_longitudinal_kick)
     println("pic_batch_mode = ", pic_batch_mode)
     println("cuda_pic_async = ", cuda_pic_async)

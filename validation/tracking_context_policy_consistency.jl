@@ -1,9 +1,9 @@
 #=
 Validate context-aware policy execution for radiation and weak-strong tracking.
-The fast and planned paths must preserve counter-RNG samples and turn signals;
+The fast and planned paths must preserve counter-RNG samples;
 CUDA launch geometry must not change stochastic results. Radiation must remain
 in fused tracking, while luminosity observers explicitly isolate weak-strong
-elements and preserve CPU/CUDA coordinates and output.
+elements, explicit source-modulation actions, and CPU/CUDA coordinates.
 
 Run from the project root:
 
@@ -67,18 +67,32 @@ else
     println("CUDA radiation checks skipped: ", reason)
 end
 
-weak = ThinStrongBeamSpec{Float64}(
+weak_spec = ThinStrongBeamSpec{Float64}(
     kbb=1e-8, klum=1.0, beta=(0.82, 0.075), alpha=(0.01, -0.02),
     sigma=(110e-6, 12e-6),
-    centroid_signal=LinearTurnSignal((0.0, 0.0), (1e-7, -2e-7)),
 )
+
+struct ContextPolicyCentroidRamp{E,T} <: AbstractBeamAction
+    element::E
+    slope::NTuple{2,T}
+end
+
+function Octopus.apply_action!(ramp::ContextPolicyCentroidRamp,
+                               ctx::TrackingContext, rep)
+    ramp.element.xo = ctx.turn * ramp.slope[1]
+    ramp.element.yo = ctx.turn * ramp.slope[2]
+    return nothing
+end
 
 function run_weak(policy, backend, path)
     rep = Octopus._contract_rep_for_backend(base_rep(), backend)
+    weak = ThinStrongBeam(weak_spec)
+    ramp = ContextPolicyCentroidRamp(weak, (1e-7, -2e-7))
     observer = ScheduledObserver(LuminosityObserver(path))
     audit = ExecutionAudit()
     with_execution_audit(audit) do
-        execute!(TrackingTask((weak, observer); policy=policy), rep; turns=2)
+        execute!(TrackingTask((weak, observer); policy=policy, hooks=(ramp,)),
+                 rep; turns=2)
         backend === CUDABackend && Octopus.CUDA.synchronize()
     end
     return rep, audit

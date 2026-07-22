@@ -89,6 +89,8 @@ julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consist
 - `AGENTS.md`: development rules for human and AI collaborators.
 - `docs/public_api.md`: entry points to public docstrings and metadata queries.
 - `docs/current_runtime.md`: current runtime/backend behavior.
+- `docs/beam_beam_longitudinal_kick.md`: derivation of weak-strong and
+  soft-Gaussian longitudinal kicks, virtual drifts, and the slingshot effect.
 - `docs/registry_snapshot.md`: generated registry snapshot.
 - `docs/pic_solver_improvement_plan.md`: PIC solver optimization notes.
 - `examples/`: runnable case-law examples.

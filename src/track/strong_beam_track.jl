@@ -53,24 +53,38 @@ function track!(rep, elem::GaussianStrongBeam, turns, policy::ResolvedCPUExecuti
 	return nothing
 end
 
-function _track_gaussian_strong_beam_with_luminosity(elem::GaussianStrongBeam,
-                                                     x, px, y, py, z, pz)
+@inline function _track_gaussian_strong_beam_with_luminosity(
+		elem::GaussianStrongBeam, x, px, y, py, z, pz)
 	lum = zero(x + px + y + py + z + pz)
 	kbb0 = elem.thin.kbb
 	x0, y0, z0 = elem.thin.xo, elem.thin.yo, elem.thin.zo
 	for i in elem.ns:-1:1
+		slice_pxo, slice_pyo = _slice_transverse_angles(elem, i)
 		thin = _slice_thin_strong_beam(
 			elem.thin,
 			kbb0 * elem.slice_weight[i],
 			x0 + elem.slice_hoffset[i],
 			y0 + elem.slice_voffset[i],
-			elem.slice_center[i],
+			z0 + elem.slice_center[i],
+			slice_pxo,
+			slice_pyo,
 		)
 		x, px, y, py, z, pz, l = _thin_strong_beam_track(thin, x, px, y, py, z, pz)
 		lum += l * elem.slice_weight[i]
 	end
 	return x, px, y, py, z, pz, lum
 end
+
+@inline _slice_transverse_angles(
+		elem::GaussianStrongBeam{M,T,P,D,false}, i) where {M,T,P,D} =
+	(elem.thin.pxo, elem.thin.pyo)
+
+@inline _slice_transverse_angles(
+		elem::GaussianStrongBeam{M,T,P,D,true}, i) where {M,T,P,D} =
+	(elem.thin.pxo + elem.slice_pxoffset[i],
+	 elem.thin.pyo + elem.slice_pyoffset[i])
+
+@inline _has_slice_angles(::GaussianStrongBeam{M,T,P,D,A}) where {M,T,P,D,A} = A
 
 if _HAS_CUDA
 	@eval begin
@@ -79,9 +93,8 @@ if _HAS_CUDA
 
 		function cuda_track_thin_strong_beam_kernel!(
 			rep, lum, turns,
-			sigx0, sigy0, betx0, bety0, alfx0, alfy0, gamx0, gamy0,
-			emitx, emity, kbb, klum, xo, yo, zo, pxo, pyo, pzo,
-			ppxo, ppyo, ppzo, dynamic_drift_flag,
+			moments, kbb, klum, xo, yo, zo, pxo, pyo, pzo,
+			ppxo, ppyo, ppzo, virtual_drift,
 		)
 			start_index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
 			stride = CUDA.gridDim().x * CUDA.blockDim().x
@@ -93,9 +106,8 @@ if _HAS_CUDA
 					for turn in 1:turns
 						x, px, y, py, z, pz, l = _cuda_thin_strong_beam_track(
 							x, px, y, py, z, pz,
-							sigx0, sigy0, betx0, bety0, alfx0, alfy0, gamx0, gamy0,
-							emitx, emity, kbb, klum, xo, yo, zo, pxo, pyo, pzo,
-							ppxo, ppyo, ppzo, dynamic_drift_flag,
+							moments, kbb, klum, xo, yo, zo, pxo, pyo, pzo,
+							ppxo, ppyo, ppzo, virtual_drift,
 						)
 						total_lum += l
 					end
@@ -109,9 +121,9 @@ if _HAS_CUDA
 
 		function cuda_track_gaussian_strong_beam_kernel!(
 			rep, lum, turns, ns, slice_center, slice_weight, slice_hoffset, slice_voffset,
-			sigx0, sigy0, betx0, bety0, alfx0, alfy0, gamx0, gamy0,
-			emitx, emity, kbb, klum, xo, yo, zo, pxo, pyo, pzo,
-			ppxo, ppyo, ppzo, dynamic_drift_flag,
+			slice_pxoffset, slice_pyoffset, has_slice_angles,
+			moments, kbb, klum, xo, yo, zo, pxo, pyo, pzo,
+			ppxo, ppyo, ppzo, virtual_drift,
 		)
 			start_index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
 			stride = CUDA.gridDim().x * CUDA.blockDim().x
@@ -122,13 +134,16 @@ if _HAS_CUDA
 					total_lum = zero(x)
 					for turn in 1:turns
 						for i in ns:-1:1
+							slice_pxo, slice_pyo = _cuda_slice_transverse_angles(
+								has_slice_angles, pxo, pyo,
+								slice_pxoffset, slice_pyoffset, i)
 							x, px, y, py, z, pz, l = _cuda_thin_strong_beam_track(
 								x, px, y, py, z, pz,
-								sigx0, sigy0, betx0, bety0, alfx0, alfy0, gamx0, gamy0,
-								emitx, emity,
+								moments,
 								kbb * slice_weight[i], klum,
-								xo + slice_hoffset[i], yo + slice_voffset[i], slice_center[i],
-								pxo, pyo, pzo, ppxo, ppyo, ppzo, dynamic_drift_flag,
+								xo + slice_hoffset[i], yo + slice_voffset[i], zo + slice_center[i],
+								slice_pxo, slice_pyo, pzo,
+								ppxo, ppyo, ppzo, virtual_drift,
 							)
 							total_lum += l * slice_weight[i]
 						end
@@ -140,6 +155,13 @@ if _HAS_CUDA
 			end
 			return nothing
 		end
+
+		@inline _cuda_slice_transverse_angles(
+			::Val{false}, pxo, pyo, slice_pxoffset, slice_pyoffset, i) = (pxo, pyo)
+
+		@inline _cuda_slice_transverse_angles(
+			::Val{true}, pxo, pyo, slice_pxoffset, slice_pyoffset, i) =
+			(pxo + slice_pxoffset[i], pyo + slice_pyoffset[i])
 	end
 end
 
@@ -151,18 +173,16 @@ function track!(rep, elem::ThinStrongBeam, turns, ::Type{CUDABackend}; threads=2
 	if stream === nothing
 		CUDA.@cuda threads=threads blocks=blocks cuda_track_thin_strong_beam_kernel!(
 			rep, lum, Int(turns),
-			elem.sigx0, elem.sigy0, elem.betx0, elem.bety0, elem.alfx0, elem.alfy0,
-			elem.gamx0, elem.gamy0, elem.emitx, elem.emity, elem.kbb, elem.klum,
+			elem.moments, elem.kbb, elem.klum,
 			elem.xo, elem.yo, elem.zo, elem.pxo, elem.pyo, elem.pzo,
-			elem.ppxo, elem.ppyo, elem.ppzo, elem.dynamic_drift_flag,
+			elem.ppxo, elem.ppyo, elem.ppzo, elem.virtual_drift,
 		)
 	else
 		CUDA.@cuda threads=threads blocks=blocks stream=stream cuda_track_thin_strong_beam_kernel!(
 			rep, lum, Int(turns),
-			elem.sigx0, elem.sigy0, elem.betx0, elem.bety0, elem.alfx0, elem.alfy0,
-			elem.gamx0, elem.gamy0, elem.emitx, elem.emity, elem.kbb, elem.klum,
+			elem.moments, elem.kbb, elem.klum,
 			elem.xo, elem.yo, elem.zo, elem.pxo, elem.pyo, elem.pzo,
-			elem.ppxo, elem.ppyo, elem.ppzo, elem.dynamic_drift_flag,
+			elem.ppxo, elem.ppyo, elem.ppzo, elem.virtual_drift,
 		)
 		CUDA.synchronize(stream)
 	end
@@ -190,22 +210,25 @@ function track!(rep, elem::GaussianStrongBeam, turns, ::Type{CUDABackend}; threa
 	slice_weight = CUDA.CuArray(T.(elem.slice_weight))
 	slice_hoffset = CUDA.CuArray(T.(elem.slice_hoffset))
 	slice_voffset = CUDA.CuArray(T.(elem.slice_voffset))
+	has_slice_angles = Val(_has_slice_angles(elem))
+	slice_pxoffset = _has_slice_angles(elem) ? CUDA.CuArray(T.(elem.slice_pxoffset)) : nothing
+	slice_pyoffset = _has_slice_angles(elem) ? CUDA.CuArray(T.(elem.slice_pyoffset)) : nothing
 	t = elem.thin
 	if stream === nothing
 		CUDA.@cuda threads=threads blocks=blocks cuda_track_gaussian_strong_beam_kernel!(
 			rep, lum, Int(turns), elem.ns, slice_center, slice_weight, slice_hoffset, slice_voffset,
-			t.sigx0, t.sigy0, t.betx0, t.bety0, t.alfx0, t.alfy0,
-			t.gamx0, t.gamy0, t.emitx, t.emity, t.kbb, t.klum,
+			slice_pxoffset, slice_pyoffset, has_slice_angles,
+			t.moments, t.kbb, t.klum,
 			t.xo, t.yo, t.zo, t.pxo, t.pyo, t.pzo,
-			t.ppxo, t.ppyo, t.ppzo, t.dynamic_drift_flag,
+			t.ppxo, t.ppyo, t.ppzo, t.virtual_drift,
 		)
 	else
 		CUDA.@cuda threads=threads blocks=blocks stream=stream cuda_track_gaussian_strong_beam_kernel!(
 			rep, lum, Int(turns), elem.ns, slice_center, slice_weight, slice_hoffset, slice_voffset,
-			t.sigx0, t.sigy0, t.betx0, t.bety0, t.alfx0, t.alfy0,
-			t.gamx0, t.gamy0, t.emitx, t.emity, t.kbb, t.klum,
+			slice_pxoffset, slice_pyoffset, has_slice_angles,
+			t.moments, t.kbb, t.klum,
 			t.xo, t.yo, t.zo, t.pxo, t.pyo, t.pzo,
-			t.ppxo, t.ppyo, t.ppzo, t.dynamic_drift_flag,
+			t.ppxo, t.ppyo, t.ppzo, t.virtual_drift,
 		)
 		CUDA.synchronize(stream)
 	end
@@ -226,117 +249,94 @@ end
 
 @inline function _cuda_thin_strong_beam_track(
 	x, px, y, py, z, pz,
-	sigx0, sigy0, betx0, bety0, alfx0, alfy0, gamx0, gamy0,
-	emitx, emity, kbb, klum, xo, yo, zo, pxo, pyo, pzo,
-	ppxo, ppyo, ppzo, dynamic_drift_flag,
+	moments, kbb, klum, xo, yo, zo, pxo, pyo, pzo,
+	ppxo, ppyo, ppzo, virtual_drift,
 )
-	(sigx0 == 0 || sigy0 == 0) && return x, px, y, py, z, pz, zero(x)
-	x, px, y, py, z, pz, S = _cuda_dynamic_drift(x, px, y, py, z, pz, zo, dynamic_drift_flag)
+	(moments.a0 == 0 || moments.d0 == 0) && return x, px, y, py, z, pz, zero(x)
+	x, px, y, py, z, pz, S = _forward_virtual_drift(
+		virtual_drift, x, px, y, py, z, pz, zo)
 	x, px, y, py, z, pz, lum = _cuda_cp_kick(
 		x, px, y, py, z, pz, S,
-		betx0, bety0, alfx0, alfy0, gamx0, gamy0, emitx, emity,
-		kbb, xo, yo, pxo, pyo, ppxo, ppyo,
+		moments, kbb, xo, yo, pxo, pyo, ppxo, ppyo,
 	)
-	x, px, y, py, z, pz = _cuda_reverse_dynamic_drift(x, px, y, py, z, pz, zo, dynamic_drift_flag)
+	x, px, y, py, z, pz = _reverse_virtual_drift(
+		virtual_drift, x, px, y, py, z, pz, zo)
 	return x, px, y, py, z, pz, lum * klum
-end
-
-@inline function _cuda_dynamic_drift(x, px, y, py, z, pz, zo, flag)
-	S = 0.5 * (z - zo)
-	if flag == -2
-		PHI = sqrt(1 - 0.5 * (px * px + py * py) / ((1 + pz) * (1 + pz))) - 1
-		x += S * px / (1 + pz)
-		y += S * py / (1 + pz)
-		z += 2 * S * PHI
-	elseif flag == -1
-		x += S * px
-		y += S * py
-	elseif flag == 0
-		x += S * px
-		y += S * py
-		pz -= 0.25 * (px * px + py * py)
-	elseif flag == 1
-		PHI = sqrt(1 - 0.5 * (px * px + py * py) / ((1 + pz) * (1 + pz))) - 1
-		x += S * px / (1 + pz)
-		y += S * py / (1 + pz)
-		z += 2 * S * PHI
-		pz += (1 + pz) * PHI
-	else
-		ps = sqrt((1 + pz) * (1 + pz) - px * px - py * py)
-		H = 1 + pz - ps
-		rr = 0.5 * H / ps
-		z2 = (z + rr * zo) / (1 + rr)
-		S = 0.5 * (z2 - zo)
-		z -= H / ps * S
-		pz -= 0.5 * H
-		x += px / ps * S
-		y += py / ps * S
-	end
-	return x, px, y, py, z, pz, S
-end
-
-@inline function _cuda_reverse_dynamic_drift(x, px, y, py, z, pz, zo, flag)
-	S = 0.5 * (z - zo)
-	if flag == -2
-		PSI = sqrt(1 + 0.5 * (px * px + py * py) / ((1 + pz) * (1 + pz))) - 1
-		x -= S * px / (1 + pz)
-		y -= S * py / (1 + pz)
-		z += 2 * S * PSI
-	elseif flag == -1
-		x -= S * px
-		y -= S * py
-	elseif flag == 0
-		x -= S * px
-		y -= S * py
-		pz += 0.25 * (px * px + py * py)
-	elseif flag == 1
-		PSI = sqrt(1 + 0.5 * (px * px + py * py) / ((1 + pz) * (1 + pz))) - 1
-		x -= S * px / (1 + pz)
-		y -= S * py / (1 + pz)
-		z += 2 * S * PSI
-		pz += (1 + pz) * PSI
-	else
-		H0 = 0.5 * (px * px + py * py) / (1 + pz)
-		ps0 = 1 + pz - 0.5 * H0
-		pz += 0.5 * H0
-		x -= px / ps0 * S
-		y -= py / ps0 * S
-		z += H0 / ps0 * S
-	end
-	return x, px, y, py, z, pz
 end
 
 @inline function _cuda_cp_kick(
 	x, px, y, py, z, pz, S,
-	betx0, bety0, alfx0, alfy0, gamx0, gamy0, emitx, emity,
-	kbb, xo, yo, pxo, pyo, ppxo, ppyo,
+	moments, kbb, xo, yo, pxo, pyo, ppxo, ppyo,
 )
-	betx = betx0 + 2 * S * alfx0 + S * S * gamx0
-	bety = bety0 + 2 * S * alfy0 + S * S * gamy0
-	sigx = sqrt(emitx * betx)
-	sigy = sqrt(emity * bety)
 	xx = x - xo + pxo * S - 0.5 * ppxo * S * S
 	yy = y - yo + pyo * S - 0.5 * ppyo * S * S
+	px0, py0 = px, py
+	x, px, y, py, z, pz, density = _cuda_cp_covariance_kick(
+		moments, kbb, S, xx, yy, x, px, y, py, z, pz)
+	pz += 0.5 * ((px - px0) * (pxo - ppxo * S) +
+	             (py - py0) * (pyo - ppyo * S))
+	return x, px, y, py, z, pz, density
+end
+
+@inline function _cuda_cp_covariance_kick(m::StrongTransverseMoments{T,false}, kbb,
+	S, xx, yy, x, px, y, py, z, pz) where {T}
+	a, _, d, au, _, du = _transport_transverse_moments(m, S)
+	(a <= 0 || d <= 0) && return x, px, y, py, z, pz, zero(x)
+	sigx, sigy = sqrt(a), sqrt(d)
 	Kx, Ky = _cuda_gaussian_beambeam_kick(sigx, sigy, xx, yy)
-	expterm = exp(-0.5 * (xx * xx / (sigx * sigx) + yy * yy / (sigy * sigy)))
-	px += Kx * kbb
-	py += Ky * kbb
-	dsize = abs((sigx - sigy) / 2)
-	msize = sigx - (sigx - sigy) / 2
+	expterm = exp(-0.5 * (xx * xx / a + yy * yy / d))
+	px += kbb * Kx
+	py += kbb * Ky
+	dsize = abs(sigx - sigy) / 2
+	msize = (sigx + sigy) / 2
 	if dsize / msize < ROUND_BEAM_THRESHOLD
-		Uxx = -kbb * expterm / msize / sigx
-		Uyy = -kbb * expterm / msize / sigy
+		Hxx, _, Hyy = _round_gaussian_hessian(kbb, msize, xx, yy, expterm)
 	else
-		temp1 = kbb * (xx * Kx + yy * Ky)
-		temp2 = sigx * sigx - sigy * sigy
-		temp3 = sigy / sigx
-		Uxx = (temp1 - 2 * kbb * (1 - expterm * temp3)) / temp2
-		Uyy = (-temp1 + 2 * kbb * (1 - expterm / temp3)) / temp2
+		Hxx, Hyy = _elliptic_gaussian_hessian_diagonal(
+			kbb, sigx, sigy, xx, yy, Kx, Ky, expterm)
 	end
-	dsigx2 = 0.5 * emitx * (alfx0 + S * gamx0)
-	dsigy2 = 0.5 * emity * (alfy0 + S * gamy0)
-	pz -= Uxx * dsigx2 + Uyy * dsigy2
-	return x, px, y, py, z, pz, expterm / TWOPI / sigx / sigy
+	pz += 0.25 * (Hxx * au + Hyy * du)
+	return x, px, y, py, z, pz, expterm / (TWOPI * sigx * sigy)
+end
+
+@inline function _cuda_cp_covariance_kick(m::StrongTransverseMoments{T,true}, kbb,
+	S, xx, yy, x, px, y, py, z, pz) where {T}
+	a, b, d, au, bu, du = _transport_transverse_moments(m, S)
+	detA = a * d - b * b
+	(a <= 0 || d <= 0 || detA <= 0) && return x, px, y, py, z, pz, zero(x)
+	D = sqrt((a - d) * (a - d) + 4 * b * b)
+	if D <= ROUND_BEAM_THRESHOLD * (a + d)
+		sigma = sqrt((a + d) / 2)
+		Kx, Ky = _cuda_gaussian_beambeam_kick(sigma, sigma, xx, yy)
+		expterm = exp(-0.5 * (xx * xx + yy * yy) / (sigma * sigma))
+		Fx, Fy = kbb * Kx, kbb * Ky
+		Hxx, Hxy, Hyy = _round_gaussian_hessian(kbb, sigma, xx, yy, expterm)
+		px += Fx
+		py += Fy
+		pz += 0.25 * (Hxx * au + 2 * Hxy * bu + Hyy * du)
+		return x, px, y, py, z, pz, expterm / (TWOPI * sigma * sigma)
+	end
+	theta = 0.5 * atan(2 * b, a - d)
+	c, s = cos(theta), sin(theta)
+	lambda1 = (a + d + D) / 2
+	lambda2 = (a + d - D) / 2
+	sig1, sig2 = sqrt(lambda1), sqrt(lambda2)
+	xh = c * xx + s * yy
+	yh = -s * xx + c * yy
+	Kxh, Kyh = _cuda_gaussian_beambeam_kick(sig1, sig2, xh, yh)
+	expterm = exp(-0.5 * (xh * xh / lambda1 + yh * yh / lambda2))
+	Fxh, Fyh = kbb * Kxh, kbb * Kyh
+	px += c * Fxh - s * Fyh
+	py += s * Fxh + c * Fyh
+	H11, H22 = _elliptic_gaussian_hessian_diagonal(
+		kbb, sig1, sig2, xh, yh, Kxh, Kyh, expterm)
+	Du = ((a - d) * (au - du) + 4 * b * bu) / D
+	lambda1u = (au + du + Du) / 2
+	lambda2u = (au + du - Du) / 2
+	thetau = ((a - d) * bu - b * (au - du)) / (D * D)
+	pz += 0.25 * (H11 * lambda1u + H22 * lambda2u)
+	pz -= 0.5 * thetau * (Fxh * yh - Fyh * xh)
+	return x, px, y, py, z, pz, expterm / (TWOPI * sig1 * sig2)
 end
 
 @inline function _cuda_gaussian_beambeam_kick(sigx, sigy, x, y)

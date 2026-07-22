@@ -4,42 +4,52 @@ end
 using .Octopus
 
 #=
-Validate that `TrackingTask` applies turn-dependent runtime updates in the
-no-hook fast path.
+Validate that `TrackingTask` applies an explicit turn-dependent source action
+consistently with and without a read-only observer.
 
 Run from the project root:
 
     julia --project=. validation/tracking_task_turn_update.jl
 
-This compares a plain weak-strong line against the same line with a no-op
-observer. The no-op observer forces the planned execution path; both paths must
-produce identical coordinates when `ThinStrongBeam` turn signals are updated
-correctly.
+The source modulation is workflow state owned by an `AbstractBeamAction`, not
+state hidden inside `ThinStrongBeam`.
 =#
 
 struct _NoopObserver <: AbstractBeamObserver end
 Octopus.observe!(::_NoopObserver, ctx::TrackingContext, rep) = nothing
 
-function _turn_signal_case(hooks)
-    spec = ThinStrongBeamSpec(;
+struct _CentroidRamp{E,T} <: AbstractBeamAction
+    element::E
+    base::NTuple{2,T}
+    slope::NTuple{2,T}
+end
+
+function Octopus.apply_action!(ramp::_CentroidRamp, ctx::TrackingContext, rep)
+    ramp.element.xo = ramp.base[1] + ctx.turn * ramp.slope[1]
+    ramp.element.yo = ramp.base[2] + ctx.turn * ramp.slope[2]
+    return nothing
+end
+
+function _source_action_case(hooks)
+    element = ThinStrongBeam(ThinStrongBeamSpec(;
         kbb = 1.0e-4,
         beta = (1.0, 1.0),
         sigma = (1.0e-3, 1.0e-3),
-        centroid_signal = LinearTurnSignal((0.0, 0.0), (1.0e-3, 0.0)),
-    )
+    ))
+    ramp = _CentroidRamp(element, (0.0, 0.0), (1.0e-3, 0.0))
     rep = Phase6DRep([1.0e-3], [0.0], [2.0e-3], [0.0], [0.0], [0.0])
-    execute!(TrackingTask((spec,); hooks = hooks), rep; turns = 2)
+    execute!(TrackingTask((element,); hooks = (ramp, hooks...)), rep; turns = 2)
     return rep[1]
 end
 
-fast = _turn_signal_case(())
-planned = _turn_signal_case((_NoopObserver(),))
-max_abs_error = maximum(abs.(fast .- planned))
+unobserved = _source_action_case(())
+observed = _source_action_case((_NoopObserver(),))
+max_abs_error = maximum(abs.(unobserved .- observed))
 
 println("TrackingTask turn-update validation")
-println("fast path coordinate = ", fast)
-println("planned path coordinate = ", planned)
+println("unobserved coordinate = ", unobserved)
+println("observed coordinate = ", observed)
 println("max_abs_error = ", max_abs_error)
 
-max_abs_error == 0.0 || error("TrackingTask fast path skipped or mismatched turn-dependent updates")
+max_abs_error == 0.0 || error("TrackingTask observer changed turn-dependent source updates")
 println("tracking task turn-update validation passed")

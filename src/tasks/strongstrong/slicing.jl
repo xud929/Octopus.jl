@@ -445,18 +445,29 @@ function collision_pair_batches(nslices1::Integer, nslices2::Integer;
     return collision_pair_batches(centers1, centers2)
 end
 
-function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int}, ignore_centroid::Bool, min_sigma)
+_slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
+                          ignore_centroid::Bool, min_sigma) =
+    _slice_transverse_moments(rep, idx, ignore_centroid, min_sigma, Val(false))
+
+function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
+                                   ignore_centroid::Bool, min_sigma,
+                                   ::Val{COUPLED}) where {COUPLED}
     x, px, y, py = rep.x, rep.px, rep.y, rep.py
     T = promote_type(eltype(x), typeof(min_sigma))
     n = length(idx)
     if n == 0
         z = zero(T)
+        floor2 = T(min_sigma) * T(min_sigma)
+        moments = StrongTransverseMoments{T,COUPLED}(
+            floor2, z, floor2, z, z, z, z, z, z, z)
         return (mx=z, sx=T(min_sigma), mpx=z, spx=z, covxpx=z,
-                my=z, sy=T(min_sigma), mpy=z, spy=z, covypy=z)
+                my=z, sy=T(min_sigma), mpy=z, spy=z, covypy=z,
+                moments=moments)
     end
     sx = zero(T); spx = zero(T); sy = zero(T); spy = zero(T)
     sx2sum = zero(T); spx2sum = zero(T); sy2sum = zero(T); spy2sum = zero(T)
     sxpxsum = zero(T); sypysum = zero(T)
+    sxysum = zero(T); sxpysum = zero(T); spxysum = zero(T); spxpysum = zero(T)
     nchunks = _cpu_worker_count()
     if nchunks == 1 || n < _STRONG_STRONG_PARALLEL_MOMENT_MIN
         for i in idx
@@ -466,10 +477,14 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int}, ignore_cen
                 sx2sum += xi * xi; spx2sum += pxi * pxi
                 sy2sum += yi * yi; spy2sum += pyi * pyi
                 sxpxsum += xi * pxi; sypysum += yi * pyi
+                if COUPLED
+                    sxysum += xi * yi; sxpysum += xi * pyi
+                    spxysum += pxi * yi; spxpysum += pxi * pyi
+                end
             end
         end
     else
-        local_sums = [zeros(T, 10) for _ in 1:nchunks]
+        local_sums = [zeros(T, COUPLED ? 14 : 10) for _ in 1:nchunks]
         _run_logical_workers(nchunks) do chunk, _
             first_i, last_i = _chunk_bounds(n, nchunks, chunk)
             sums = local_sums[chunk]
@@ -481,6 +496,10 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int}, ignore_cen
                     sums[5] += xi * xi; sums[6] += pxi * pxi
                     sums[7] += yi * yi; sums[8] += pyi * pyi
                     sums[9] += xi * pxi; sums[10] += yi * pyi
+                    if COUPLED
+                        sums[11] += xi * yi; sums[12] += xi * pyi
+                        sums[13] += pxi * yi; sums[14] += pxi * pyi
+                    end
                 end
             end
         end
@@ -489,6 +508,10 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int}, ignore_cen
             sx2sum += sums[5]; spx2sum += sums[6]
             sy2sum += sums[7]; spy2sum += sums[8]
             sxpxsum += sums[9]; sypysum += sums[10]
+            if COUPLED
+                sxysum += sums[11]; sxpysum += sums[12]
+                spxysum += sums[13]; spxpysum += sums[14]
+            end
         end
     end
     invn = inv(T(n))
@@ -502,13 +525,26 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int}, ignore_cen
     spy2 = spy2sum * invn - mpy * mpy
     covxpx = sxpxsum * invn - mx * mpx
     covypy = sypysum * invn - my * mpy
+    covxy = COUPLED ? sxysum * invn - mx * my : zero(T)
+    covxpy = COUPLED ? sxpysum * invn - mx * mpy : zero(T)
+    covpxy = COUPLED ? spxysum * invn - mpx * my : zero(T)
+    covpxpy = COUPLED ? spxpysum * invn - mpx * mpy : zero(T)
+    floor2 = T(min_sigma) * T(min_sigma)
+    varx = max(T(sx2), floor2)
+    vary = max(T(sy2), floor2)
+    moments = StrongTransverseMoments{T,COUPLED}(
+        varx, T(covxy), vary,
+        T(covxpx), T(covxpy), T(covpxy), T(covypy),
+        max(T(spx2), zero(T)), T(covpxpy), max(T(spy2), zero(T)),
+    )
     if ignore_centroid
         mx = zero(T); mpx = zero(T); my = zero(T); mpy = zero(T)
     end
     return (
-        mx=T(mx), sx=max(sqrt(max(T(sx2), zero(T))), T(min_sigma)),
+        mx=T(mx), sx=sqrt(varx),
         mpx=T(mpx), spx=sqrt(max(T(spx2), zero(T))), covxpx=T(covxpx),
-        my=T(my), sy=max(sqrt(max(T(sy2), zero(T))), T(min_sigma)),
+        my=T(my), sy=sqrt(vary),
         mpy=T(mpy), spy=sqrt(max(T(spy2), zero(T))), covypy=T(covypy),
+        moments=moments,
     )
 end

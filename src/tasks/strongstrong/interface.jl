@@ -497,7 +497,11 @@ end
                            min_sigma=eps(Float64),
                            gaussian_when_luminosity=2,
                            ignore_centroid1=false,
-                           ignore_centroid2=false)
+                           ignore_centroid2=false,
+                           longitudinal_kick=true,
+                           virtual_drift=:hirata,
+                           include_sigma_xy=false,
+                           batch_mode=:wavefront)
 
 Soft-Gaussian strong-strong collision solver. At each collision it computes
 longitudinal slices of both live beams, orders slice-pair collisions by
@@ -506,6 +510,20 @@ a luminosity estimate. For each slice pair, the source slice is represented by
 its transverse Gaussian moments at the slice center; each field particle uses a
 per-particle drifted source moment at its own collision point. This follows the
 no-interpolation soft-Gaussian path.
+
+With the default `virtual_drift=:hirata`, the solver applies the same canonical
+collision-point map as `ThinStrongBeam`: forward virtual drift, Gaussian kick,
+moving-centroid and transported-covariance longitudinal terms, and inverse
+virtual drift. `:chromatic` and `:exact` select the other physical virtual-drift
+Hamiltonians. Set `longitudinal_kick=false` only for compatibility with the
+former transverse-only, non-symplectic map.
+
+`include_sigma_xy=true` measures the full slice covariance in
+`(x, px, y, py)`, including `sigma_xy` and its collision-point derivative,
+rotates the Gaussian kick to its instantaneous principal axes, and includes
+the rotation derivative in the longitudinal kick. The default `false` retains
+the specialized uncoupled hot path. `batch_mode` may be `:sequential` or
+`:wavefront`; the latter groups dependency-safe slice pairs on CUDA.
 
 `kbb1` scales the kick applied to beam 1 by beam 2. `kbb2` scales the kick
 applied to beam 2 by beam 1. If either is `nothing`, it is derived from
@@ -524,7 +542,7 @@ sliced moment-based Poisson approximation, not a grid PIC solver.
 and `slicing2` to specify different slicing configurations for beam 1 and beam
 2.
 """
-struct GaussianPoissonSolver{T<:Real} <: AbstractPoissonSolver
+struct GaussianPoissonSolver{T<:Real,D<:AbstractVirtualDrift,Coupled,Longitudinal} <: AbstractPoissonSolver
     kbb1::Union{Nothing,T}
     kbb2::Union{Nothing,T}
     luminosity_scale::Union{Nothing,T}
@@ -537,6 +555,10 @@ struct GaussianPoissonSolver{T<:Real} <: AbstractPoissonSolver
     gaussian_when_luminosity::Int
     ignore_centroid1::Bool
     ignore_centroid2::Bool
+    longitudinal_kick::Bool
+    virtual_drift::D
+    include_sigma_xy::Bool
+    batch_mode::Symbol
 end
 
 _optional_solver_value(::Type{T}, value) where {T<:Real} =
@@ -550,13 +572,20 @@ function GaussianPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   min_sigma=eps(T),
                                   gaussian_when_luminosity::Integer=2,
                                   ignore_centroid1::Bool=false,
-                                  ignore_centroid2::Bool=false) where {T<:Real}
+                                  ignore_centroid2::Bool=false,
+                                  longitudinal_kick::Bool=true,
+                                  virtual_drift=:hirata,
+                                  include_sigma_xy::Bool=false,
+                                  batch_mode::Symbol=:wavefront) where {T<:Real}
     s1 = slicing1 === nothing ? slicing : slicing1
     s2 = slicing2 === nothing ? slicing : slicing2
     min_sigma >= 0 || throw(ArgumentError("min_sigma must be nonnegative"))
     gaussian_when_luminosity in (1, 2) || throw(ArgumentError(
         "gaussian_when_luminosity must be 1 or 2"))
-    return GaussianPoissonSolver{T}(
+    batch_mode in (:sequential, :wavefront) || throw(ArgumentError(
+        "batch_mode must be :sequential or :wavefront"))
+    drift = _virtual_drift(virtual_drift)
+    return GaussianPoissonSolver{T,typeof(drift),include_sigma_xy,longitudinal_kick}(
         _optional_solver_value(T, kbb1),
         _optional_solver_value(T, kbb2),
         _optional_solver_value(T, luminosity_scale),
@@ -569,6 +598,10 @@ function GaussianPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         Int(gaussian_when_luminosity),
         ignore_centroid1,
         ignore_centroid2,
+        longitudinal_kick,
+        drift,
+        include_sigma_xy,
+        batch_mode,
     )
 end
 
@@ -605,6 +638,14 @@ const _GAUSSIAN_SOLVER_OPTION_SCHEMA = (
         "Ignore beam-1 slice centroids in Gaussian moments."; category=:physics),
     ignore_centroid2=SolverOptionMeta(Bool, false,
         "Ignore beam-2 slice centroids in Gaussian moments."; category=:physics),
+    longitudinal_kick=SolverOptionMeta(Bool, true,
+        "Apply the canonical synchro-beam longitudinal kick."; category=:physics),
+    virtual_drift=SolverOptionMeta(Union{Symbol,AbstractVirtualDrift}, HirataParaxialDrift(),
+        "Collision-point virtual-drift Hamiltonian."; category=:physics),
+    include_sigma_xy=SolverOptionMeta(Bool, false,
+        "Include the full coupled transverse slice covariance."; category=:physics),
+    batch_mode=SolverOptionMeta(Symbol, :wavefront,
+        "CUDA slice-pair scheduling mode (:sequential or :wavefront)."; category=:performance),
 )
 
 solver_option_schema(::Type{<:GaussianPoissonSolver}) = _GAUSSIAN_SOLVER_OPTION_SCHEMA

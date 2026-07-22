@@ -141,13 +141,20 @@ julia --project=. validation/tracking_backend_consistency.jl
 
 ## TrackingTask Turn Updates
 
-`tracking_task_turn_update.jl` checks that `TrackingTask` applies
-turn-dependent runtime updates in the no-hook fast path. It compares a
-turn-signaled weak-strong line with and without a no-op observer.
+`tracking_task_turn_update.jl` checks that `TrackingTask` applies an explicit
+turn-dependent source-modulation action identically with and without a no-op
+observer. The action owns the schedule state; the collision element remains a
+fixed physical source model.
 
 ```bash
 julia --project=. validation/tracking_task_turn_update.jl
 ```
+
+## Weak–Strong Six-Dimensional Source
+
+The coupled-covariance audit, limiting-case coverage, CPU/CUDA parity, and
+performance regression measurements are recorded in
+[`weak_strong_6d_model.md`](weak_strong_6d_model.md).
 
 ## Beam Optics Interface Consistency
 
@@ -203,8 +210,23 @@ julia --project=. validation/pic_gaussian_luminosity_validation.jl
 `StrongStrongGaussianBackendConsistencyContract`. It compares both final beam
 states and luminosity between the CPU and CUDA soft-Gaussian solvers.
 
+The implementation audit, public-code comparison, correctness findings, and
+CPU/CUDA performance measurements are recorded in
+[`strong_strong_gaussian_optimization.md`](strong_strong_gaussian_optimization.md).
+
 ```bash
 julia --threads=4 --project=. validation/strong_strong_gaussian_backend_consistency.jl
+```
+
+`soft_gaussian_pic_comparison.jl` characterizes the intentional model
+difference between soft-Gaussian and PIC using identical cloned live beams. It
+reports luminosity, final six-dimensional RMS sizes, particle-coordinate RMS
+differences, and synchronized CUDA timings. The comparison is not an equality
+gate.
+
+```bash
+julia --project=. validation/soft_gaussian_pic_comparison.jl
+OCTOPUS_SOFT_SIGMA_XY=true julia --project=. validation/soft_gaussian_pic_comparison.jl
 ```
 
 ## Strong-Strong Observer Plan Consistency

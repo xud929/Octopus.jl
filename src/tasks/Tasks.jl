@@ -7,10 +7,6 @@ Per-turn runtime-element update hook. Elements that need turn-dependent
 ramping, modulation, or cached state should extend this method.
 """
 update!(elem, ctx::TrackingContext) = nothing
-update!(elem::ThinStrongBeam, ctx::TrackingContext) =
-    update_strong_beam!(elem, ctx.turn)
-update!(elem::GaussianStrongBeam, ctx::TrackingContext) =
-    update_strong_beam!(elem, ctx.turn)
 
 """
     luminosity(elem, ctx, rep)
