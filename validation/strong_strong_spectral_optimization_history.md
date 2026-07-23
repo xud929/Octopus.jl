@@ -47,8 +47,27 @@ electron `dpx 1.010, dpy 0.992, dpz 1.008`; proton `dpx 1.011, dpy 0.989,
 dpz 1.001`; luminosity ratio `0.9994`. `(128,1024)/16` is `~1.002/0.998` — both
 within the ~1% graininess floor, so the coarser grid preserves the accuracy.
 
-One-turn time, CUDA, 15 slices, RTX 4500 Ada (best of 3 x reps, PIC = `(128,128)`,
-green_cache=:slice_pair):
+One-turn time, CUDA, 15 slices, **RTX 4500 Ada** (a workstation GPU with 1:64 FP64
+and ~430 GB/s; a datacenter GPU with strong FP64 and higher bandwidth would be
+roughly 1.5-3x faster in absolute terms, but the *ratio* is the portable metric),
+measured **interleaved** (PIC and spectral alternate reps in one process) because
+the card shows ~15-20% thermal run-to-run drift in absolute time.
+
+Exact production case (electron `n_macro=2,560,000`, proton `n_macro=1,024,000` --
+these are the `examples/strong_strong_tracking.jl` counts -- 15 slices,
+PIC `(128,128)`, spectral `(127,383)/d8`), median of 6 interleaved reps:
+
+| solver | median s/turn | min | luminosity |
+| --- | ---: | ---: | ---: |
+| PIC `(128,128)` | 0.564 | 0.429 | 1.0256e30 |
+| spectral `(127,383)/d8` | 0.724 | 0.656 | 1.0257e30 |
+
+Ratio of medians `1.28x`. The luminosity matches PIC to 0.01% and is `~1.0e30` at
+production statistics (the density-overlap estimator needs the full macroparticle
+count to converge -- a low-statistics 50k/beam test gives ~9e29, which is a
+sampling artifact, not a solver difference).
+
+Symmetric-N sweep (both beams equal N) for the particle-count trend:
 
 | particles/beam | PIC | spectral (127,383)/d8 | ratio |
 | ---: | ---: | ---: | ---: |
@@ -56,25 +75,17 @@ green_cache=:slice_pair):
 | 100k | 0.232 | 0.392 | ~1.7x |
 | 1M | 0.394 | 0.487 | ~1.24x |
 
-Timing method matters here: the RTX 4500 Ada shows ~15-20% run-to-run variance in
-absolute time (thermal), so PIC and spectral must be measured **interleaved** in one
-process (alternate reps) to cancel the drift. The 1M row above is the median of 8
-interleaved reps (PIC min/median/max `0.335/0.394/0.484`, spectral
-`0.427/0.487/0.558`); the ratio of medians is `1.24x` and of mins `1.27x`, i.e. the
-*ratio* is stable at ~1.25x even though the absolute times swing.
-
-(Correction: an earlier note here claimed `~1.0x parity` at 1M from a single
-120-turn run that happened to catch PIC high and spectral low. The fair interleaved
-measurement is ~1.24x. The honest headline is a ~5x speedup, from 6.05x to ~1.24x
-at 1M, i.e. spectral 6D is now *comparable to* PIC at production scale, not at
-parity.)
+(Correction: an earlier note claimed `~1.0x parity` at 1M from a single 120-turn run
+that happened to catch PIC high and spectral low; the fair interleaved measurement
+is ~1.24-1.28x. The honest headline is a ~5x speedup, from 6.05x to ~1.28x at the
+production case -- comparable to PIC, not at parity.)
 
 The ratio improves with particle count because the O(N) deposit/interpolate/gather
 work (comparable to PIC) dominates at large N while the fixed transform cost is
-amortized; the PIC baseline itself grows from ~0.23 s/turn at 20k-100k to ~0.39 at
-1M for the same reason. Smaller cases stay transform-bound (~1.7-1.9x). The CPU path
-and `longitudinal_kick=false` are unchanged; the CPU 6D grid path (same four solves
-per pair) remains an open performance item.
+amortized; the PIC baseline itself grows from ~0.23 s/turn at 20k-100k to ~0.56 at
+the 2.56M/1.024M production case for the same reason. Smaller cases stay transform-
+bound (~1.7-1.9x). The CPU path and `longitudinal_kick=false` are unchanged; the CPU
+6D grid path (same four solves per pair) remains an open performance item.
 
 Remaining levers not taken (would close the ~1.24x gap, higher risk): a Makhoul-style
 N-point real transform would remove the 2(N+1) extension entirely (roughly halving
