@@ -917,12 +917,23 @@ if _HAS_CUDA
             device_sums = CUDA.CuArray{T}(undef, nstats, 2 * max_batch)
             block_counts = CUDA.CuArray{Int32}(undef, 2 * max_batch)
             host_block_counts = Vector{Int32}(undef, 2 * max_batch)
+            # Idea #1: keep slice moments on the device instead of transferring
+            # device_sums to the host and rebuilding StrongTransverseMoments per
+            # wavefront. col_n carries the per-column slice particle count.
+            host_col_n = Vector{Int32}(undef, 2 * max_batch)
+            col_n = CUDA.CuArray{Int32}(undef, 2 * max_batch)
+            device_kmoments = CUDA.CuArray{StrongTransverseMoments{T,COUPLED}}(undef, 2 * max_batch)
+            device_means = CUDA.CuArray{T}(undef, 4, 2 * max_batch)
             max_lum = maximum(batches; init=0) do batch
                 sum(pair -> sample_beam1 ? length(slices2.indices[pair.j]) :
                                            length(slices1.indices[pair.i]), batch)
             end
             lum = CUDA.CuArray{T}(undef, max(max_lum, 1))
             luminosity = zero(T)
+            # Accumulate per-wavefront luminosity on the device and read it back
+            # once at the end, instead of a blocking host reduction per batch.
+            luminosity_acc = CUDA.zeros(T, 1)
+            batch_lum = CUDA.CuArray{T}(undef, 1)
             _record_execution!(:cuda_gaussian_algorithm, CUDABackend, (
                 batch_mode=:wavefront, include_sigma_xy=COUPLED,
                 virtual_drift=typeof(solver.virtual_drift),
@@ -935,29 +946,24 @@ if _HAS_CUDA
                     host_block_counts[column] = Int32(_cuda_launch_gaussian_moment_partials!(
                         partials, column, beam1.rep, idx1, Val(COUPLED))
                     )
+                    host_col_n[column] = Int32(length(idx1))
                     column2 = length(batch) + column
                     host_block_counts[column2] = Int32(_cuda_launch_gaussian_moment_partials!(
                         partials, column2, beam2.rep, idx2, Val(COUPLED))
                     )
+                    host_col_n[column2] = Int32(length(idx2))
                 end
                 ncolumns = 2 * length(batch)
                 copyto!(block_counts, 1, host_block_counts, 1, ncolumns)
+                copyto!(col_n, 1, host_col_n, 1, ncolumns)
                 launch_reduce = _active_cuda_launch(nstats * ncolumns)
                 CUDA.@cuda threads=launch_reduce.threads blocks=launch_reduce.blocks _cuda_gaussian_reduce_partials_kernel!(
                         device_sums, partials, block_counts, nstats, ncolumns)
-                host_sums = Array(@view device_sums[:, 1:ncolumns])
-
-                moments1 = Vector{Any}(undef, length(batch))
-                moments2 = Vector{Any}(undef, length(batch))
-                for (column, pair) in enumerate(batch)
-                    moments1[column] = _cuda_gaussian_moments_from_sums(
-                        @view(host_sums[:, column]), length(slices1.indices[pair.i]),
-                        solver.ignore_centroid1, solver.min_sigma, Val(COUPLED))
-                    moments2[column] = _cuda_gaussian_moments_from_sums(
-                        @view(host_sums[:, length(batch) + column]),
-                        length(slices2.indices[pair.j]), solver.ignore_centroid2,
-                        solver.min_sigma, Val(COUPLED))
-                end
+                launch_moments = _active_cuda_launch(ncolumns)
+                CUDA.@cuda threads=launch_moments.threads blocks=launch_moments.blocks _cuda_gaussian_build_moments_kernel!(
+                        device_kmoments, device_means, device_sums, col_n, length(batch),
+                        solver.ignore_centroid1, solver.ignore_centroid2,
+                        T(solver.min_sigma), ncolumns, Val(COUPLED))
 
                 lum_offset = 0
                 for (column, pair) in enumerate(batch)
@@ -971,13 +977,15 @@ if _HAS_CUDA
                         slices2.weight[pair.j] * klum1 / TWOPI
                     scale2 = sample_beam1 ?
                         slices1.weight[pair.i] * klum2 / TWOPI : one(T)
-                    CUDA.@cuda threads=launch1.threads blocks=launch1.blocks _cuda_slice_kick_kernel!(
-                            beam1.rep, idx1, lum, moments2[column], slices2.center[pair.j],
+                    CUDA.@cuda threads=launch1.threads blocks=launch1.blocks _cuda_slice_kick_devmoments_kernel!(
+                            beam1.rep, idx1, lum, device_kmoments, device_means,
+                            length(batch) + column, slices2.center[pair.j],
                             slices2.weight[pair.j] * kbb1, solver.virtual_drift,
                             Val(LONGITUDINAL), Val(!sample_beam1),
                             offset1, scale1)
-                    CUDA.@cuda threads=launch2.threads blocks=launch2.blocks _cuda_slice_kick_kernel!(
-                            beam2.rep, idx2, lum, moments1[column], slices1.center[pair.i],
+                    CUDA.@cuda threads=launch2.threads blocks=launch2.blocks _cuda_slice_kick_devmoments_kernel!(
+                            beam2.rep, idx2, lum, device_kmoments, device_means,
+                            column, slices1.center[pair.i],
                             slices1.weight[pair.i] * kbb2, solver.virtual_drift,
                             Val(LONGITUDINAL), Val(sample_beam1),
                             offset2, scale2)
@@ -987,8 +995,12 @@ if _HAS_CUDA
                         lum_offset += length(idx1)
                     end
                 end
-                lum_offset > 0 && (luminosity += sum(@view lum[1:lum_offset]))
+                if lum_offset > 0
+                    Base.sum!(batch_lum, @view lum[1:lum_offset])
+                    luminosity_acc .+= batch_lum
+                end
             end
+            luminosity = Array(luminosity_acc)[1]
             return luminosity
         end
 
@@ -4017,6 +4029,82 @@ if _HAS_CUDA
                     if LONGITUDINAL
                         pz += 0.5 * ((px - px0) * moments2.mpx +
                                     (py - py0) * moments2.mpy)
+                    else
+                        pz = pz0
+                    end
+                    x, px, y, py, z, pz = _reverse_virtual_drift(
+                        drift, x, px, y, py, z, pz, center2)
+                    rep.x[index] = x; rep.px[index] = px
+                    rep.y[index] = y; rep.py[index] = py
+                    rep.z[index] = z; rep.pz[index] = pz
+                    if COMPUTE_LUMINOSITY
+                        lum[lum_offset + position] = density * TWOPI * lum_scale
+                    end
+                end
+                position += stride
+            end
+            return nothing
+        end
+
+        # Idea #1: build the per-column kick moments on the device from the
+        # reduced sums, so the wavefront path needs no host round-trip. The
+        # arithmetic mirrors the host `_cuda_gaussian_moments_from_sums`.
+        function _cuda_gaussian_build_moments_kernel!(kmoments, means, device_sums,
+                                                      col_n, L, ignore1, ignore2,
+                                                      min_sigma, ncolumns,
+                                                      ::Val{COUPLED}) where {COUPLED}
+            col = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            while col <= ncolumns
+                @inbounds begin
+                    n = Int(col_n[col])
+                    ignore = col <= L ? ignore1 : ignore2
+                    r = _cuda_gaussian_moments_from_sums(
+                        @view(device_sums[:, col]), n, ignore, min_sigma, Val(COUPLED))
+                    kmoments[col] = r.moments
+                    means[1, col] = r.mx
+                    means[2, col] = r.mpx
+                    means[3, col] = r.my
+                    means[4, col] = r.mpy
+                end
+                col += stride
+            end
+            return nothing
+        end
+
+        # Idea #1: kick kernel that reads its slice moments from device memory
+        # (kmoments[mcol], means[:, mcol]) instead of a host-built argument.
+        function _cuda_slice_kick_devmoments_kernel!(rep, idx, lum, kmoments, means, mcol,
+                                                     center2, kbb_slice, virtual_drift,
+                                                     longitudinal_kick::Val{LONGITUDINAL},
+                                                     ::Val{COMPUTE_LUMINOSITY}, lum_offset,
+                                                     lum_scale) where {LONGITUDINAL,COMPUTE_LUMINOSITY}
+            @inbounds mstruct = kmoments[mcol]
+            @inbounds mmx = means[1, mcol]
+            @inbounds mmpx = means[2, mcol]
+            @inbounds mmy = means[3, mcol]
+            @inbounds mmpy = means[4, mcol]
+            start_index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            position = start_index
+            while position <= length(idx)
+                @inbounds begin
+                    index = idx[position]
+                    x = rep.x[index]; px = rep.px[index]
+                    y = rep.y[index]; py = rep.py[index]
+                    z = rep.z[index]; pz = rep.pz[index]
+                    drift = _soft_gaussian_drift(virtual_drift, longitudinal_kick)
+                    x, px, y, py, z, pz, S = _forward_virtual_drift(
+                        drift, x, px, y, py, z, pz, center2)
+                    xx = x - mmx + mmpx * S
+                    yy = y - mmy + mmpy * S
+                    px0, py0, pz0 = px, py, pz
+                    x, px, y, py, z, pz, density = _cuda_cp_covariance_kick(
+                        mstruct, kbb_slice, S, xx, yy,
+                        x, px, y, py, z, pz)
+                    if LONGITUDINAL
+                        pz += 0.5 * ((px - px0) * mmpx +
+                                    (py - py0) * mmpy)
                     else
                         pz = pz0
                     end
