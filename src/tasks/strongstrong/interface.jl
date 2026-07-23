@@ -730,6 +730,22 @@ CUDA execution uses atomic grid deposition and CUDA FFT convolution. The first
 CUDA implementation is correctness-oriented; later versions may replace atomic
 deposition with binned or tiled reductions for dense beams.
 
+`kbb1` and `kbb2` are the physical kick scales, using the same convention as
+`GaussianPoissonSolver` and `ThinStrongBeam`:
+
+```julia
+kbb1 = beam1.charge * beam2.charge * beam1.r0 * beam2.npart * beam1.mc2 / beam1.E0
+kbb2 = beam1.charge * beam2.charge * beam2.r0 * beam1.npart * beam2.mc2 / beam2.E0
+```
+
+If either is `nothing` it is derived from `BeamParams`. Because PIC builds the
+field by depositing the source beam's macroparticles, the physical scale is
+divided internally by the source macroparticle count; a user-supplied override
+therefore means the same physical quantity as it does for `GaussianPoissonSolver`.
+`luminosity_scale` overrides the PIC grid-overlap luminosity normalization
+`beam1.npart * beam2.npart / (n_macro1 * n_macro2)`; it differs in form from the
+soft-Gaussian sampled estimator because PIC deposits both beams onto grids.
+
 `slicing` applies the same longitudinal slicing to both beams. Use `slicing1`
 and `slicing2` to specify different slicing configurations for beam 1 and beam
 2.

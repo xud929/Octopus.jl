@@ -140,10 +140,15 @@ function _validate_pic_grid(nx::Integer, ny::Integer)
     return nothing
 end
 
+# kbb1/kbb2 are the physical kick scales (same convention as GaussianPoissonSolver
+# and ThinStrongBeam). PIC deposits the source beam's macroparticles, so the
+# physical scale is divided by the source macroparticle count to give the
+# per-deposited-particle scale. The division applies to a user-supplied override
+# too, so an explicit kbb1/kbb2 means the same physical quantity for both solvers.
 _pic_kbb1(solver::PICPoissonSolver, beam1, beam2) =
-    solver.kbb1 !== nothing ? solver.kbb1 : _strong_strong_kbb1(solver, beam1, beam2) / length(beam2.rep)
+    (solver.kbb1 !== nothing ? solver.kbb1 : _strong_strong_kbb1(solver, beam1, beam2)) / length(beam2.rep)
 _pic_kbb2(solver::PICPoissonSolver, beam1, beam2) =
-    solver.kbb2 !== nothing ? solver.kbb2 : _strong_strong_kbb2(solver, beam1, beam2) / length(beam1.rep)
+    (solver.kbb2 !== nothing ? solver.kbb2 : _strong_strong_kbb2(solver, beam1, beam2)) / length(beam1.rep)
 
 function _pic_luminosity_scale(solver::PICPoissonSolver, beam1, beam2)
     solver.luminosity_scale !== nothing && return solver.luminosity_scale

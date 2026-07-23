@@ -429,6 +429,40 @@ end
     @test all(array -> all(isfinite, array), coordinate_arrays(beam2))
 end
 
+@testset "PIC kbb override uses physical units" begin
+    function kbb_pair()
+        set_global_rng!(seed=42, method=:philox)
+        e = Beam(2000, CPUThreadsBackend, Float64;
+            beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0, 0.0),
+            sigma=(106.0e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=1,
+            charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7203e11)
+        p = Beam(2000, CPUThreadsBackend, Float64;
+            beta=(0.8, 0.072, 6.0e-2 / 6.6e-4), alpha=(0.0, 0.0, 0.0),
+            sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
+            charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.6881e11)
+        return e, p
+    end
+    sl = LongitudinalSlicing(method=:normal_quantile, nslices=3, center_position=:centroid)
+    e, p = kbb_pair()
+    base = PICPoissonSolver(slicing=sl, grid=(32, 32))
+    phys1 = Octopus._strong_strong_kbb1(base, e, p)
+    phys2 = Octopus._strong_strong_kbb2(base, e, p)
+    over = PICPoissonSolver(slicing=sl, grid=(32, 32), kbb1=phys1, kbb2=phys2)
+    # A physical-unit override resolves to the same per-deposited-particle scale
+    # as the derived value, i.e. kbb means the same thing as for the Gaussian
+    # solver. (Before the fix the override skipped the /n_macro division.)
+    @test Octopus._pic_kbb1(over, e, p) == Octopus._pic_kbb1(base, e, p)
+    @test Octopus._pic_kbb2(over, e, p) == Octopus._pic_kbb2(base, e, p)
+    # The explicit physical override reproduces the derived collision byte-for-byte.
+    e1, p1 = kbb_pair()
+    e2, p2 = kbb_pair()
+    lum_derived = collide!(base, e1, p1, CPUThreadsBackend)
+    lum_override = collide!(over, e2, p2, CPUThreadsBackend)
+    @test lum_derived == lum_override
+    @test all(a == b for (a, b) in zip(coordinate_arrays(e1.rep), coordinate_arrays(e2.rep)))
+    @test all(a == b for (a, b) in zip(coordinate_arrays(p1.rep), coordinate_arrays(p2.rep)))
+end
+
 @testset "Soft-Gaussian synchro-beam longitudinal map" begin
     moments = (
         mx=2.0e-5, sx=1.1e-4, mpx=3.0e-4, spx=0.0, covxpx=0.0,
