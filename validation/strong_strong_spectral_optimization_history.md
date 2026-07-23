@@ -57,6 +57,10 @@ green_cache=:slice_pair):
 | 1M | 0.36-0.43 | 0.405 | ~0.94-1.12x |
 | 2M | 0.533 | 0.524 | 0.98x |
 
+Definitive 120-turn average at 1e6 particles/beam (collide-only, with a small
+per-turn damping so the un-lattice'd beams stay finite): PIC `0.4303 s/turn`,
+spectral `(127,383)/d8` `0.4349 s/turn` -> **1.01x (parity)**, both finite.
+
 The ratio improves with particle count because the O(N) deposit/interpolate/gather
 work (comparable to PIC) dominates at large N while the fixed transform cost is
 amortized. At production scale (~1e6+ particles/beam) the spectral 6D solver is at
