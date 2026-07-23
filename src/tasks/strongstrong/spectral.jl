@@ -139,6 +139,120 @@ function _spectral_cosderiv(A, d)
     end
 end
 
+# --- cached grid workspace (reusable buffers + FFTW plans) --------------------
+# The allocating _spectral_field_grid below is the reference; production reuses
+# this workspace across all slice-pair field solves to avoid ~18 MiB/solve of GC
+# pressure. Plans are keyed by (Nx, Ny); the mode arrays al/bm and the diagonal
+# mode-Green G = 1/(al^2+bm^2) are recomputed only when the box (a, b) changes.
+mutable struct _SpectralGridWS
+    Nx::Int; Ny::Int
+    a::Float64; b::Float64
+    al::Vector{Float64}; bm::Vector{Float64}; G::Matrix{Float64}
+    rho::Matrix{Float64}; rholm::Matrix{Float64}; philm::Matrix{Float64}
+    tmp::Matrix{Float64}                    # directional DST of philm
+    padx::Matrix{Float64}; cosx::Matrix{Float64}   # (Nx+2) x Ny
+    pady::Matrix{Float64}; cosy::Matrix{Float64}   # Nx x (Ny+2)
+    Exg::Matrix{Float64}; Eyg::Matrix{Float64}
+    prho::FFTW.r2rFFTWPlan          # RODFT00 both dims
+    prow::FFTW.r2rFFTWPlan          # RODFT00 dim 2
+    pcol::FFTW.r2rFFTWPlan          # RODFT00 dim 1
+    pcosx::FFTW.r2rFFTWPlan         # REDFT00 dim 1 on padx
+    pcosy::FFTW.r2rFFTWPlan         # REDFT00 dim 2 on pady
+end
+
+function _SpectralGridWS(Nx::Int, Ny::Int)
+    rho = zeros(Nx, Ny); rholm = zeros(Nx, Ny); philm = zeros(Nx, Ny)
+    tmp = zeros(Nx, Ny); Exg = zeros(Nx, Ny); Eyg = zeros(Nx, Ny)
+    padx = zeros(Nx + 2, Ny); cosx = zeros(Nx + 2, Ny)
+    pady = zeros(Nx, Ny + 2); cosy = zeros(Nx, Ny + 2)
+    prho = FFTW.plan_r2r(rho, FFTW.RODFT00)
+    prow = FFTW.plan_r2r(philm, FFTW.RODFT00, 2)
+    pcol = FFTW.plan_r2r(philm, FFTW.RODFT00, 1)
+    pcosx = FFTW.plan_r2r(padx, FFTW.REDFT00, 1)
+    pcosy = FFTW.plan_r2r(pady, FFTW.REDFT00, 2)
+    return _SpectralGridWS(Nx, Ny, NaN, NaN, zeros(Nx), zeros(Ny), zeros(Nx, Ny),
+        rho, rholm, philm, tmp, padx, cosx, pady, cosy, Exg, Eyg,
+        prho, prow, pcol, pcosx, pcosy)
+end
+
+const _SPECTRAL_WS_CACHE = Dict{Tuple{Int,Int},_SpectralGridWS}()
+const _SPECTRAL_WS_LOCK = ReentrantLock()
+
+function _spectral_grid_ws(Nx::Int, Ny::Int)
+    lock(_SPECTRAL_WS_LOCK) do
+        get!(() -> _SpectralGridWS(Nx, Ny), _SPECTRAL_WS_CACHE, (Nx, Ny))
+    end
+end
+
+# Refresh mode arrays / mode-Green only when the box changed.
+function _spectral_ws_setbox!(ws::_SpectralGridWS, a::Float64, b::Float64)
+    (ws.a == a && ws.b == b) && return ws
+    Nx, Ny = ws.Nx, ws.Ny
+    @inbounds for l in 1:Nx; ws.al[l] = l * pi / a; end
+    @inbounds for m in 1:Ny; ws.bm[m] = m * pi / b; end
+    @inbounds for m in 1:Ny, l in 1:Nx
+        ws.G[l, m] = 1.0 / (ws.al[l]^2 + ws.bm[m]^2)
+    end
+    ws.a = a; ws.b = b
+    return ws
+end
+
+function _spectral_field_grid!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly)
+    Nx, Ny = ws.Nx, ws.Ny
+    a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1)
+    ns = length(sx)
+    _spectral_ws_setbox!(ws, a, b)
+    rho = ws.rho; fill!(rho, 0.0)
+    @inbounds for p in eachindex(sx)
+        X = (sx[p] + Lx) / hx; Y = (sy[p] + Ly) / hy
+        i = floor(Int, X); j = floor(Int, Y); wx = X - i; wy = Y - j
+        for (ii, cx) in ((i, 1 - wx), (i + 1, wx)), (jj, cy) in ((j, 1 - wy), (j + 1, wy))
+            (1 <= ii <= Nx && 1 <= jj <= Ny) && (rho[ii, jj] += cx * cy)
+        end
+    end
+    # rholm = DST(rho) / (a*b*ns); philm = -rholm * G
+    mul!(ws.rholm, ws.prho, rho)
+    invn = ns > 0 ? 1.0 / (a * b * ns) : 1.0 / (a * b)
+    @inbounds for k in eachindex(ws.philm)
+        ws.philm[k] = -(ws.rholm[k] * invn) * ws.G[k]
+    end
+    scale = _SPECTRAL_FIELD_C0_GRID * Nx * Ny / (2 * (Nx + 1) * 2 * (Ny + 1))
+    # Ex = -scale * ddx( DST_y(philm) ), spectral x-derivative via padded DCT-I
+    mul!(ws.tmp, ws.prow, ws.philm)
+    fill!(ws.padx, 0.0)
+    @inbounds for m in 1:Ny, l in 1:Nx
+        ws.padx[l + 1, m] = ws.al[l] * ws.tmp[l, m]
+    end
+    mul!(ws.cosx, ws.pcosx, ws.padx)
+    @inbounds for m in 1:Ny, l in 1:Nx
+        ws.Exg[l, m] = -scale * (ws.cosx[l + 1, m] / 2)
+    end
+    # Ey = -scale * ddy( DST_x(philm) )
+    mul!(ws.tmp, ws.pcol, ws.philm)
+    fill!(ws.pady, 0.0)
+    @inbounds for m in 1:Ny, l in 1:Nx
+        ws.pady[l, m + 1] = ws.tmp[l, m] * ws.bm[m]
+    end
+    mul!(ws.cosy, ws.pcosy, ws.pady)
+    @inbounds for m in 1:Ny, l in 1:Nx
+        ws.Eyg[l, m] = -scale * (ws.cosy[l, m + 1] / 2)
+    end
+    nf = length(fx); Ex = Vector{Float64}(undef, nf); Ey = Vector{Float64}(undef, nf)
+    Exg = ws.Exg; Eyg = ws.Eyg
+    @inbounds for k in 1:nf
+        X = (fx[k] + Lx) / hx; Y = (fy[k] + Ly) / hy
+        i = floor(Int, X); j = floor(Int, Y); wx = X - i; wy = Y - j
+        ex = 0.0; ey = 0.0
+        for (ii, cx) in ((i, 1 - wx), (i + 1, wx)), (jj, cy) in ((j, 1 - wy), (j + 1, wy))
+            if 1 <= ii <= Nx && 1 <= jj <= Ny
+                ex += cx * cy * Exg[ii, jj]; ey += cx * cy * Eyg[ii, jj]
+            end
+        end
+        Ex[k] = ex; Ey[k] = ey
+    end
+    return Ex, Ey
+end
+
 function _spectral_field_grid(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
     a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1)
     ns = length(sx)
@@ -241,10 +355,13 @@ function _spectral_cic_deposit!(q, x, y, x0, y0, hx, hy)
     return q
 end
 
-_spectral_field(solver::SpectralPoissonSolver, sx, sy, fx, fy, Lx, Ly) =
-    solver.method === :grid_free ?
-        _spectral_field_free(sx, sy, fx, fy, Lx, Ly, solver.grid...) :
-        _spectral_field_grid(sx, sy, fx, fy, Lx, Ly, solver.grid...)
+function _spectral_field(solver::SpectralPoissonSolver, sx, sy, fx, fy, Lx, Ly)
+    if solver.method === :grid_free
+        return _spectral_field_free(sx, sy, fx, fy, Lx, Ly, solver.grid...)
+    end
+    ws = _spectral_grid_ws(solver.grid[1], solver.grid[2])
+    return _spectral_field_grid!(ws, sx, sy, fx, fy, Lx, Ly)
+end
 
 function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2)
     rms(v) = begin m = sum(v) / length(v); sqrt(sum(abs2, v .- m) / length(v)) end
