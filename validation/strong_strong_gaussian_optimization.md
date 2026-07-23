@@ -163,6 +163,24 @@ collision benchmark measured `0.07711` s mean (`0.07319` s median) for
 `:wavefront`: a `16.6%` mean speedup (`12.2%` by median). The optional coupled
 path retains the same scheduling and specialized moment/kick kernels.
 
+A follow-up profile added `profiling/profile_soft_gaussian.jl` and removed the
+full CUDA wavefront partial-moment workspace clear. The reducer now receives
+per-column block counts and only reads written partial blocks. A 50,000
+particle-per-beam, 5-slice, three-repeat isolated profile measured:
+
+| backend | `include_sigma_xy` | `batch_mode` | mean seconds | median seconds |
+| --- | --- | --- | ---: | ---: |
+| CPU | `false` | `:sequential` | `0.15441` | `0.12912` |
+| CPU | `true` | `:sequential` | `0.15803` | `0.14235` |
+| CUDA | `false` | `:sequential` | `0.009461` | `0.009474` |
+| CUDA | `false` | `:wavefront` | `0.007799` | `0.007762` |
+| CUDA | `true` | `:sequential` | `0.009759` | `0.009777` |
+| CUDA | `true` | `:wavefront` | `0.007259` | `0.007272` |
+
+The normal full-tracking Gaussian example with 50,000 electrons, 20,000
+protons, 15 slices, CUDA, three turns, and output disabled completed with
+post-compilation turn timings `0.03664` s and `0.04031` s.
+
 ## Soft-Gaussian versus PIC characterization
 
 `soft_gaussian_pic_comparison.jl` applies one identical collision to cloned

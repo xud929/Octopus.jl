@@ -1,4 +1,4 @@
-export Symplectic6DMap, Damping6DMap, Diffusion6DMap, Radiation6DMap,
+export Symplectic6DMap, NonSymplectic6DMap, Damping6DMap, Diffusion6DMap, Radiation6DMap,
        WeakStrongBeamBeamMap, default_method
 
 """
@@ -9,6 +9,16 @@ tag is used for thin coordinate transforms and kicks that preserve the
 six-dimensional canonical structure.
 """
 struct Symplectic6DMap <: AbstractTrackingMethod end
+
+"""
+    NonSymplectic6DMap
+
+Closed-form deterministic six-dimensional map that is not canonical in the
+accelerator coordinates being tracked. This method tag is used for exact
+coordinate transformations whose Jacobian does not satisfy `J' * S * J == S`.
+It is distinct from damping, diffusion, and radiation methods.
+"""
+struct NonSymplectic6DMap <: AbstractTrackingMethod end
 
 """
     Damping6DMap
@@ -53,6 +63,8 @@ default_method(spec::AbstractElementSpec) = default_method(typeof(spec))
 
 description(::Type{Symplectic6DMap}) =
     "Closed-form six-dimensional symplectic coordinate transformation."
+description(::Type{NonSymplectic6DMap}) =
+    "Closed-form deterministic six-dimensional non-canonical coordinate transformation."
 description(::Type{Damping6DMap}) =
     "Closed-form six-dimensional dissipative damping transformation."
 description(::Type{Diffusion6DMap}) =

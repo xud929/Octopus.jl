@@ -142,6 +142,8 @@ seconds = read(moments, :elapsed_time)
 
 Developer-facing numerical checks live in `validation/`. They may use internal
 helpers and should not be treated as public API examples.
+For beam-beam longitudinal-kick formulas, virtual-drift conventions, and the
+slingshot term, start from `docs/beam_beam_longitudinal_kick.md`.
 
 ## Beam And Runtime Helpers
 
@@ -199,6 +201,14 @@ julia --project=. -e 'using Pkg; Pkg.test()'
 
 The broader numerical studies and CPU/CUDA consistency checks remain separate
 scripts under `validation/`.
+
+Useful beam-beam checks:
+
+```bash
+julia --project=. validation/symplecticity_validation.jl
+julia --project=. validation/high_energy_weakstrong_limit.jl
+julia --project=. validation/soft_gaussian_pic_comparison.jl
+```
 
 Use Julia help:
 

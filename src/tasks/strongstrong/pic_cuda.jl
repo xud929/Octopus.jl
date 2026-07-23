@@ -915,6 +915,8 @@ if _HAS_CUDA
             nstats = COUPLED ? 14 : 10
             partials = CUDA.zeros(T, nstats, max_moment_blocks, 2 * max_batch)
             device_sums = CUDA.CuArray{T}(undef, nstats, 2 * max_batch)
+            block_counts = CUDA.CuArray{Int32}(undef, 2 * max_batch)
+            host_block_counts = Vector{Int32}(undef, 2 * max_batch)
             max_lum = maximum(batches; init=0) do batch
                 sum(pair -> sample_beam1 ? length(slices2.indices[pair.j]) :
                                            length(slices1.indices[pair.i]), batch)
@@ -927,20 +929,22 @@ if _HAS_CUDA
             ))
 
             for batch in batches
-                fill!(partials, zero(T))
                 for (column, pair) in enumerate(batch)
                     idx1 = slices1.indices[pair.i]
                     idx2 = slices2.indices[pair.j]
-                    _cuda_launch_gaussian_moment_partials!(
+                    host_block_counts[column] = Int32(_cuda_launch_gaussian_moment_partials!(
                         partials, column, beam1.rep, idx1, Val(COUPLED))
+                    )
                     column2 = length(batch) + column
-                    _cuda_launch_gaussian_moment_partials!(
+                    host_block_counts[column2] = Int32(_cuda_launch_gaussian_moment_partials!(
                         partials, column2, beam2.rep, idx2, Val(COUPLED))
+                    )
                 end
                 ncolumns = 2 * length(batch)
+                copyto!(block_counts, 1, host_block_counts, 1, ncolumns)
                 launch_reduce = _active_cuda_launch(nstats * ncolumns)
                 CUDA.@cuda threads=launch_reduce.threads blocks=launch_reduce.blocks _cuda_gaussian_reduce_partials_kernel!(
-                        device_sums, partials, max_moment_blocks, nstats, ncolumns)
+                        device_sums, partials, block_counts, nstats, ncolumns)
                 host_sums = Array(@view device_sums[:, 1:ncolumns])
 
                 moments1 = Vector{Any}(undef, length(batch))
@@ -3968,7 +3972,7 @@ if _HAS_CUDA
         end
 
         function _cuda_gaussian_reduce_partials_kernel!(sums, partials,
-                                                         nblocks, nstats,
+                                                         block_counts, nstats,
                                                          ncolumns)
             linear = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
@@ -3977,6 +3981,7 @@ if _HAS_CUDA
                 stat = (linear - 1) % nstats + 1
                 column = (linear - 1) ÷ nstats + 1
                 value = zero(eltype(sums))
+                nblocks = block_counts[column]
                 for block in 1:nblocks
                     @inbounds value += partials[stat, block, column]
                 end

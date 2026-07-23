@@ -1,54 +1,23 @@
 # TODO
 
-## Soft-Gaussian Solver Follow-Up
+## Open
 
-- Profile the soft-Gaussian strong-strong solver on CPU and CUDA.
-  - Measure isolated `collide!` timing and full `examples/strong_strong_tracking.jl`
-    timing.
-  - Separate solver time from task bookkeeping, diagnostics, luminosity output,
-    slicing, and host-device synchronization.
-  - Compare `batch_mode=:wavefront` and `batch_mode=:sequential`.
-  - Compare `include_sigma_xy=false` and `include_sigma_xy=true`.
+- None. The Lorentz crossing maps are now documented and validated as
+  Hirata quasi-symplectic coordinate transformations. A future canonical
+  reformulation would be a separate physics feature, not a bug fix.
 
-- Improve soft-Gaussian performance without degrading CPU or CUDA accuracy.
-  - Use the profiling results to identify the real hot path before editing.
-  - Preserve weak-strong consistency, virtual-drift behavior, longitudinal kick
-    behavior, and CPU/CUDA parity.
-  - Re-run solver-level and full-tracking benchmarks after each material change.
+## Completed
 
-- Implement a finite-difference symplecticity validation for all elements that
-  support `Symplectic6DMap`.
-  - Cover `Linear6D`, `CrabDispersion`, `MomentumDispersion`, `XYCoupling`,
-    `LorentzBoost`, `RevLorentzBoost`, `ThinCrabCavity`,
-    `ChromaticityKick`, `ThinStrongBeam`, and `GaussianStrongBeam`.
-  - Report the infinity norm of `J' * S * J - S`.
-  - Keep stochastic or non-symplectic radiation maps out of this check.
-  - Add a reusable validation script and focused tests.
-
-- Add the high-energy weak-strong limiting-case validation.
-  - Set the electron energy to an effectively infinite value, for example
-    `1.0e100` GeV, while keeping the proton beam finite.
-  - Compare PIC and soft-Gaussian strong-strong results against the weak-strong
-    reference.
-  - Check luminosity history and final centered beam sizes, not only coordinate
-    deltas.
-  - Document expected PIC versus soft-Gaussian differences from grid and
-    Gaussian-slice modeling.
-
-- Update examples and notebooks.
-  - Update `examples/strong_strong_tracking.jl` with a documented high-energy
-    weak-strong limit mode.
-  - Update the strong-strong notebook to expose current Gaussian options:
-    `virtual_drift`, `include_sigma_xy`, `longitudinal_kick`, and
-    `batch_mode`.
-  - Remove old `dynamic_drift_flag` references from CUDA tracking notebooks and
-    replace them with the current `virtual_drift` interface.
-
-- Review source and documentation consistency.
-  - Confirm `docs/beam_beam_longitudinal_kick.md` matches the current
-    weak-strong and soft-Gaussian implementations.
-  - Confirm the `include_sigma_xy` documentation matches the source behavior,
-    including the longitudinal derivative of the rotated covariance.
-  - Make the longitudinal-kick note discoverable from the main entry points:
-    `README.md`, `docs/current_runtime.md`, `docs/public_api.md`, and relevant
-    notebook/example text.
+- Soft-Gaussian profiling and CUDA wavefront optimization.
+- Finite-difference symplecticity validation script and tests.
+- High-energy weak-strong limiting-case validation.
+- Strong-strong example high-energy mode.
+- Notebook updates for `virtual_drift`, `include_sigma_xy`,
+  `longitudinal_kick`, and `batch_mode`.
+- Entry-point documentation links to the longitudinal-kick note and new
+  validations.
+- Lorentz/reverse-Lorentz review: the implementation is an exact inverse pair;
+  finite-difference validation checks determinants `sec(theta)^3` and
+  `cos(theta)^3` rather than incorrectly requiring standalone canonical
+  symplecticity. The reference is Hirata et al., Phys. Rev. Lett. 74, 2228
+  (1995), which calls the map quasisymplectic and gives the same Jacobian.

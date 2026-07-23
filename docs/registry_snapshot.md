@@ -56,19 +56,19 @@ constructor names remain the user-facing way to build those specs.
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
 - `ElementSpec{:lorentz_boost}` via `LorentzBoostSpec`
-  - Physics keywords: `:thin_element`, `:lorentz_boost`, `:coordinate_transform`
-  - Supported tracking methods: `Symplectic6DMap`
+  - Physics keywords: `:thin_element`, `:lorentz_boost`, `:coordinate_transform`, `:quasi_symplectic`
+  - Supported tracking methods: `NonSymplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
   - Supported analyses: `PlaceholderAnalysis`
-  - Runtime mappings: `Symplectic6DMap => LorentzBoost`
+  - Runtime mappings: `NonSymplectic6DMap => LorentzBoost`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
 - `ElementSpec{:rev_lorentz_boost}` via `RevLorentzBoostSpec`
-  - Physics keywords: `:thin_element`, `:reverse_lorentz_boost`, `:coordinate_transform`
-  - Supported tracking methods: `Symplectic6DMap`
+  - Physics keywords: `:thin_element`, `:reverse_lorentz_boost`, `:coordinate_transform`, `:quasi_symplectic`
+  - Supported tracking methods: `NonSymplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
   - Supported analyses: `PlaceholderAnalysis`
-  - Runtime mappings: `Symplectic6DMap => RevLorentzBoost`
+  - Runtime mappings: `NonSymplectic6DMap => RevLorentzBoost`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
 - `ElementSpec{:chromaticity_kick}` via `ChromaticityKickSpec`
@@ -107,6 +107,7 @@ constructor names remain the user-facing way to build those specs.
 
 - `Damping6DMap`
 - `Diffusion6DMap`
+- `NonSymplectic6DMap`
 - `Radiation6DMap`
 - `Symplectic6DMap`
 - `WeakStrongBeamBeamMap`

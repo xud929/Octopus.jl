@@ -74,6 +74,8 @@ benchmarks remain separate scripts under `validation/`.
 
 ```bash
 julia --project=. validation/counter_rng_validation.jl
+julia --project=. validation/symplecticity_validation.jl
+julia --project=. validation/high_energy_weakstrong_limit.jl
 OCTOPUS_RUN_GPU_CONTRACT=0 julia --project=. validation/tracking_backend_consistency.jl
 ```
 
@@ -94,6 +96,7 @@ julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consist
 - `docs/registry_snapshot.md`: generated registry snapshot.
 - `docs/pic_solver_improvement_plan.md`: PIC solver optimization notes.
 - `examples/`: runnable case-law examples.
+- `profiling/`: focused runtime profiling scripts.
 - `validation/`: numerical checks and backend consistency tests.
 
 ## Notes

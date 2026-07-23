@@ -11,6 +11,27 @@ using LinearAlgebra
     @test registry_snapshot_markdown() == read(snapshot_path, String)
 end
 
+@testset "Non-symplectic Lorentz method classification" begin
+    forward_spec = LorentzBoostSpec(0.01)
+    reverse_spec = RevLorentzBoostSpec(0.01)
+    raw_forward_spec = ElementSpec{:lorentz_boost}(; angle=0.01)
+    raw_reverse_spec = ElementSpec{:rev_lorentz_boost}(; angle=0.01)
+    @test tracking_method(forward_spec) isa NonSymplectic6DMap
+    @test tracking_method(reverse_spec) isa NonSymplectic6DMap
+    @test tracking_method(raw_forward_spec) isa NonSymplectic6DMap
+    @test tracking_method(raw_reverse_spec) isa NonSymplectic6DMap
+    @test supported_tracking_methods(forward_spec) == DataType[NonSymplectic6DMap]
+    @test supported_tracking_methods(reverse_spec) == DataType[NonSymplectic6DMap]
+    @test :quasi_symplectic in physics_keywords(forward_spec)
+    @test :quasi_symplectic in physics_keywords(reverse_spec)
+    @test compile_runtime(forward_spec) isa LorentzBoost{NonSymplectic6DMap}
+    @test compile_runtime(reverse_spec) isa RevLorentzBoost{NonSymplectic6DMap}
+    @test compile_runtime(raw_forward_spec) isa LorentzBoost{NonSymplectic6DMap}
+    @test compile_runtime(raw_reverse_spec) isa RevLorentzBoost{NonSymplectic6DMap}
+    @test_throws MethodError compile_runtime(
+        LorentzBoostSpec(0.01; tracking_method=Symplectic6DMap()))
+end
+
 @testset "Counter RNG smoke tests" begin
     philox1 = [counter_normal(0x12345678, 3, 9, i, 1, Float64) for i in 1:1000]
     philox2 = [counter_normal(0x12345678, 3, 9, i, 1, Float64) for i in 1:1000]
@@ -527,6 +548,28 @@ end
     @test luminosity == 0.0
     @test all(array -> all(isfinite, array), coordinate_arrays(beam1))
     @test all(array -> all(isfinite, array), coordinate_arrays(beam2))
+end
+
+include(joinpath(pkgdir(Octopus), "validation", "symplecticity_validation.jl"))
+
+@testset "Finite-difference 6D symplecticity validation" begin
+    results = run_symplecticity_validation(; step=3.0e-7, default_tolerance=5.0e-6)
+    @test all(result -> result.passed, results)
+    lorentz = run_lorentz_quasisymplectic_validation(; step=3.0e-7)
+    @test lorentz.inverse_passed
+    @test lorentz.determinant_passed
+end
+
+include(joinpath(pkgdir(Octopus), "validation", "high_energy_weakstrong_limit.jl"))
+
+@testset "High-energy weak-strong strong-strong limit" begin
+    result = run_high_energy_weakstrong_limit(;
+        n=256, nslices=3, grid=48,
+        pic_luminosity_rtol=0.60,
+        pic_size_rtol=0.60,
+    )
+    @test result.gaussian_passed
+    @test result.pic_passed
 end
 
 if Octopus._HAS_CUDA && Octopus.CUDA.functional()

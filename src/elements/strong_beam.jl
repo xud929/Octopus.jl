@@ -381,9 +381,9 @@ end
 
 function _thin_strong_beam_track(elem::ThinStrongBeam, x, px, y, py, z, pz)
     (elem.moments.a0 == 0 || elem.moments.d0 == 0) && return x, px, y, py, z, pz, zero(x)
-    x, px, y, py, z, pz, S = _dynamic_drift(elem, x, px, y, py, z, pz)
+    x, px, y, py, z, pz, S = _thin_strong_forward_virtual_drift(elem, x, px, y, py, z, pz)
     x, px, y, py, z, pz, lum = _cp_kick(elem, S, x, px, y, py, z, pz)
-    x, px, y, py, z, pz = _reverse_dynamic_drift(elem, x, px, y, py, z, pz)
+    x, px, y, py, z, pz = _thin_strong_reverse_virtual_drift(elem, x, px, y, py, z, pz)
     return x, px, y, py, z, pz, lum * elem.klum
 end
 
@@ -401,10 +401,10 @@ function _slice_thin_strong_beam(base::ThinStrongBeam{M,T}, kbb, xo, yo, zo,
     )
 end
 
-@inline _dynamic_drift(elem::ThinStrongBeam, x, px, y, py, z, pz) =
+@inline _thin_strong_forward_virtual_drift(elem::ThinStrongBeam, x, px, y, py, z, pz) =
     _forward_virtual_drift(elem.virtual_drift, x, px, y, py, z, pz, elem.zo)
 
-@inline _reverse_dynamic_drift(elem::ThinStrongBeam, x, px, y, py, z, pz) =
+@inline _thin_strong_reverse_virtual_drift(elem::ThinStrongBeam, x, px, y, py, z, pz) =
     _reverse_virtual_drift(elem.virtual_drift, x, px, y, py, z, pz, elem.zo)
 
 @inline function _forward_virtual_drift(

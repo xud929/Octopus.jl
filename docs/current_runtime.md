@@ -89,6 +89,18 @@ records, normally via `@element_spec begin ... end`. The public query functions
 such as `parameter_schema`, `example_spec`, `construction_help`, and
 `element_help` read from that metadata registry.
 
+## Crossing-Angle Coordinate Maps
+
+`LorentzBoostSpec` and `RevLorentzBoostSpec` compile with
+`NonSymplectic6DMap()`, not `Symplectic6DMap()`. Hirata's forward and reverse
+crossing-angle transformations are an exact inverse pair, but in the tracked
+accelerator coordinates their Jacobian determinants are respectively
+`sec(angle)^3` and `cos(angle)^3`. They are therefore tagged
+`:quasi_symplectic` and validated by their determinant and inverse relation,
+rather than by the standalone canonical-symplectic criterion. See
+`docs/beam_beam_longitudinal_kick.md` for the collision model and
+`validation/symplecticity_validation.jl` for the executable check.
+
 ## Current Backends
 
 The current backend tags are:
@@ -234,7 +246,17 @@ does not read them.
 each slice pair, the source slice is represented by its transverse Gaussian
 moments at the slice center; each field particle uses a per-particle drifted
 source moment at its own collision point. It does not use left/right
-field-slice boundary interpolation.
+field-slice boundary interpolation. The longitudinal kick, virtual-drift
+Hamiltonians, moving-centroid term, slingshot contribution, and coupled
+`sigma_xy` derivative are derived in
+`docs/beam_beam_longitudinal_kick.md`.
+`GaussianPoissonSolver(batch_mode=:wavefront)` is the default CUDA scheduler.
+It groups dependency-ready non-overlapping slice pairs, reduces all active
+source moments in one wavefront, then launches independent slice kicks. Set
+`batch_mode=:sequential` for the one-pair-at-a-time fallback. Set
+`include_sigma_xy=true` when the full coupled transverse source covariance,
+including the longitudinal derivative of the rotated principal axes, is part
+of the model.
 
 `PICPoissonSolver` deposits particles onto a transverse grid, solves the open
 2D Poisson problem with zero-padded FFT convolution, interpolates the grid

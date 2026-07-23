@@ -229,6 +229,24 @@ julia --project=. validation/soft_gaussian_pic_comparison.jl
 OCTOPUS_SOFT_SIGMA_XY=true julia --project=. validation/soft_gaussian_pic_comparison.jl
 ```
 
+`high_energy_weakstrong_limit.jl` checks the limiting case where the electron
+energy is effectively infinite, so the electron beam is a frozen source. It
+compares the soft-Gaussian strong-strong collision to an explicit frozen-source
+weak-strong reference, and compares PIC to the same reference with grid/model
+tolerances.
+
+```bash
+julia --project=. validation/high_energy_weakstrong_limit.jl
+```
+
+`symplecticity_validation.jl` computes finite-difference Jacobians for all
+current six-dimensional symplectic runtime maps and reports
+`norm(J' * S * J - S, Inf)`.
+
+```bash
+julia --project=. validation/symplecticity_validation.jl
+```
+
 ## Strong-Strong Observer Plan Consistency
 
 `strong_strong_observer_plan_consistency.jl` verifies that inserting a

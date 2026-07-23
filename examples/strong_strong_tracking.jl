@@ -34,6 +34,12 @@ slice-pair scheduler with `OCTOPUS_GAUSSIAN_VIRTUAL_DRIFT` (`hirata`,
 `chromatic`, or `exact`), `OCTOPUS_GAUSSIAN_SIGMA_XY`, and
 `OCTOPUS_GAUSSIAN_BATCH_MODE` (`sequential` or `wavefront`).
 
+Run the high-energy weak-strong limiting case by making the electron beam
+effectively rigid. Energies are supplied in GeV for these convenience knobs:
+
+    OCTOPUS_WEAK_STRONG_LIMIT=1 OCTOPUS_POISSON_SOLVER=gaussian julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_ELECTRON_ENERGY_GEV=1e100 julia --project=. examples/strong_strong_tracking.jl
+
 Disable the beam-beam collision while retaining both complete ring lines:
 
     OCTOPUS_DISABLE_COLLISION=1 julia --project=. examples/strong_strong_tracking.jl
@@ -230,6 +236,20 @@ end
 set_global_rng!(seed = input.seed, method = :philox)
 
 ele = input.electron
+pro = input.proton
+weak_strong_limit = get(ENV, "OCTOPUS_WEAK_STRONG_LIMIT", "0") in
+                    ("1", "true", "TRUE", "yes", "YES")
+electron_energy = if haskey(ENV, "OCTOPUS_ELECTRON_ENERGY_GEV")
+    parse(Float64, ENV["OCTOPUS_ELECTRON_ENERGY_GEV"]) * 1.0e9
+elseif weak_strong_limit
+    1.0e100 * 1.0e9
+else
+    ele.energy
+end
+proton_energy = haskey(ENV, "OCTOPUS_PROTON_ENERGY_GEV") ?
+    parse(Float64, ENV["OCTOPUS_PROTON_ENERGY_GEV"]) * 1.0e9 :
+    pro.energy
+
 beam_ele = Beam(n_macro_ele, policy, Float64;
     beta = ele.beta,
     alpha = ele.alpha,
@@ -238,12 +258,11 @@ beam_ele = Beam(n_macro_ele, policy, Float64;
     rng_id = 1,
     charge = ele.charge,
     mc2 = ele.mass,
-    E0 = ele.energy,
+    E0 = electron_energy,
     r0 = RE * ME0 / ele.mass,
     npart = ele.n_particle,
 )
 
-pro = input.proton
 beam_pro = Beam(n_macro_pro, policy, Float64;
     beta = pro.beta,
     alpha = pro.alpha,
@@ -252,7 +271,7 @@ beam_pro = Beam(n_macro_pro, policy, Float64;
     rng_id = 2,
     charge = pro.charge,
     mc2 = pro.mass,
-    E0 = pro.energy,
+    E0 = proton_energy,
     r0 = RE * ME0 / pro.mass,
     npart = pro.n_particle,
 )
@@ -554,6 +573,9 @@ println("n_macro_ele = ", n_macro_ele)
 println("n_macro_pro = ", n_macro_pro)
 println("poisson_solver = ", solver_kind)
 println("beam_beam_collision = ", disable_collision ? "disabled" : "enabled")
+println("weak_strong_limit = ", weak_strong_limit)
+println("electron_energy_GeV = ", electron_energy / 1.0e9)
+println("proton_energy_GeV = ", proton_energy / 1.0e9)
 if solver_kind == "gaussian"
     println("gaussian_longitudinal_kick = ", gaussian_longitudinal_kick)
     println("gaussian_virtual_drift = ", gaussian_virtual_drift)

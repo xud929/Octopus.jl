@@ -44,7 +44,7 @@ abstract type AbstractTrackOp end
     track_particle(tracking_method, op, x, px, y, py, z, pz)
 
 Per-particle tracking primitive. Implementations dispatch on the tracking
-method type, such as `Symplectic6DMap`, and a runtime element object. The
+method type, such as `Symplectic6DMap` or `NonSymplectic6DMap`, and a runtime element object. The
 method receives one particle as `(x, px, y, py, z, pz)` and returns the updated
 six-tuple.
 """

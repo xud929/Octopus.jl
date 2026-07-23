@@ -133,6 +133,7 @@ const ALLOWED_PHYSICS_KEYWORDS = Set{Symbol}([
     :lorentz_boost,
     :reverse_lorentz_boost,
     :coordinate_transform,
+    :quasi_symplectic,
     :radiation,
     :beam_beam,
     :nonlinear_interaction,
