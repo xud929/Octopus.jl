@@ -5,5 +5,6 @@
 include("strongstrong/interface.jl")
 include("strongstrong/slicing.jl")
 include("strongstrong/gaussian.jl")
+include("strongstrong/spectral.jl")
 include("strongstrong/pic_cpu.jl")
 include("strongstrong/pic_cuda.jl")

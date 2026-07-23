@@ -9,24 +9,18 @@ solver integration.
 
 ### Open
 
-- Add `SpectralPoissonSolver{T} <: AbstractPoissonSolver` (new
-  `src/tasks/strongstrong/spectral.jl`). Options: `slicing` (+ `slicing1/2`),
-  physical-units `kbb1/kbb2`, `luminosity_scale`, `domain_factor`, transverse
-  grid `(Nx, Ny)` with an anisotropy rule `N_thin ~ 5*d*(sigma_large/sigma_small)`,
-  `deposit_method`, `longitudinal_kick`, `batch_mode`. Register structured option
-  metadata and a runtime consumer for every field.
-- Pin the absolute field-solve normalization so a physical `kbb` reproduces the
-  Bassetti-Erskine kick (validation currently uses least-squares shape
-  calibration). Keep the kbb convention consistent with `GaussianPoissonSolver`,
-  `PICPoissonSolver`, and `ThinStrongBeam` (physical units; divide by the source
-  macroparticle count internally, as the PIC path does).
-- Implement **both** field-solve variants and select by a solver option:
-  - Grid (DST): CIC deposit -> 2D DST -> mode solve -> on-mesh spectral (DST/DCT)
-    derivative -> interpolate. FFT-fast; the production path.
-  - Grid-free: mode coefficients directly from particles with the harmonic
-    recurrence (`sin(l*theta)` via three-term Chebyshev, re-anchored for large L),
-    and direct field evaluation. Deposition-error-free reference; best for round
-    beams with few modes.
+- **Flat-beam wide-component kick bias.** In the aligned round-beam test the
+  spectral kick matches the soft-Gaussian solver to ~0.2% (both variants), but for
+  a 5:1 flat beam the wide-direction kick (`Ex`) is ~9% low while the thin
+  direction (`Ey`) is ~0.7% high. It plateaus at ~0.91 and does **not** close with
+  finer/anisotropic grids (256x768, 384x768), so it is a geometry-dependent
+  component bias, not a resolution effect. Production beams are ~11:1 flat, so this
+  must be understood before the solver is used for physics. Suspect the on-mesh
+  DST/DCT derivative or the square-box mode spectrum interacting with beam
+  anisotropy; the least-squares shape validation hid it by fitting a single scale.
+- Density-overlap luminosity: replace the placeholder in `_spectral_collide!`
+  (currently `sum_ij weight_i weight_j klum1`) with a real transverse
+  density-overlap integral, matching the PIC luminosity convention.
 - Caching (spectral analog of the PIC slice-pair Green cache, lighter; see
   `docs/spectral_sine_poisson_solver.md` Section 17): cache FFTW DST/DCT plans per
   `(Nx, Ny)` and the diagonal mode-Green array `G_lm = 1/(alpha_l^2 + beta_m^2)`
@@ -34,11 +28,6 @@ solver integration.
   under uniform domain scaling and is an O(Nx*Ny) recompute otherwise. Prefer a
   fixed domain over the run. No shifted Green function is needed (single box holds
   both source and field; offsets are absorbed into deposition).
-- Implement CPU `collide!(solver::SpectralPoissonSolver, beam1, beam2,
-  CPUThreadsBackend)`: slice both beams, loop slice pairs in collision order,
-  deposit each source slice, solve the field (grid or grid-free per option), kick
-  the opposing field slice in both directions, accumulate luminosity. Reuse the
-  shared `_strong_strong_*` slicing/kbb/luminosity helpers and the cache above.
 - Implement CUDA `collide!` for the grid path: cuFFT DST (symmetric extension)
   and the DCT cosine-derivative, batched over slice pairs following the Gaussian
   and PIC wavefront pattern; no zero mode and no doubled grid. Grid-free CUDA is
@@ -60,6 +49,23 @@ solver integration.
 
 ### Completed
 
+- `SpectralPoissonSolver{T} <: AbstractPoissonSolver`
+  (`src/tasks/strongstrong/spectral.jl`): auto-registered, structured option
+  schema (`slicing`/`slicing1`/`slicing2`, physical `kbb1`/`kbb2`,
+  `luminosity_scale`, `grid`, `domain_factor`, `method`), both `:grid` (CIC deposit
+  -> 2D DST -> mode solve -> on-mesh DST/DCT derivative -> interpolate) and
+  `:grid_free` (direct converged mode sums) field solves, and a transverse CPU
+  `collide!` over slice pairs in collision order.
+- Field-solve normalization pinned to physical units. The source deposit is
+  normalized to unit charge inside the field solve, so the field is the
+  per-unit-charge Bassetti-Erskine field and the caller applies physical
+  `kbb * slice_weight` **identically to `GaussianPoissonSolver`** (no `/n_macro`;
+  kbb means the same across Gaussian/PIC/spectral). Two separately pinned scale
+  constants: grid folds in the DST inverse-normalization and grows with mode count;
+  grid-free uses a mode-count-independent constant (the direct sum is converged).
+  Verified: round-beam kick matches the soft-Gaussian solver to ~0.2% for both
+  variants, and stays within ~0.3% across `domain_factor` 10-16 (drift at larger
+  `d` is fixed-grid resolution loss, not normalization).
 - Derivation of the 2D Fourier sine-series Poisson solver, discrete DST/FFT form,
   open-boundary discussion, circular/elliptical generalization, and correctness
   checks (manufactured band-limited solution recovered to 1e-15).
