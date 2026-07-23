@@ -46,13 +46,32 @@ optimization history: rfft DST/DCT, fused build/extract kernels, right-sized
 FFT-friendly grid, drift-folded deposit). The **CPU** 6D path has not had the same
 campaign and remains the top open performance item.
 
-1. **CPU 6D performance campaign.** Profile complete 6D turns at production
-   settings (`grid=(127,383)`, 15 slices) and attack the dominant costs (deposit,
-   the four transforms/mode-multiplies per pair, interpolation/scatter, luminosity,
-   worker sync, allocation) before changing defaults. Note the four solves reuse
-   one box/plan set already; the win is in reducing redundant transforms (e.g.
-   compute both directions' fields from shared drifted-source transforms where the
-   math allows) and in wavefront-level workspace batching.
+1. **CPU 6D performance campaign (top open item).** The CPU `longitudinal_kick=true`
+   grid path never got the throughput campaign the CUDA path did. Measured baseline
+   (20k/beam, 15 slices, `grid=(128,1024)/16`, 8 threads, one turn): spectral 6D
+   `5.06 s/turn` vs PIC `4.23` and Gaussian `0.15` (see the 2026-07-23 6D-map entry
+   in the optimization history). Concrete plan:
+   - **Easy win first: adopt the smaller FFT-friendly grid.** The CUDA campaign
+     showed `(128,1024)/16` is heavily over-resolved; `(127,383)/domain_factor=8`
+     matches PIC to ~1% on both beams in x/y/z. That is ~2.7x fewer transform points
+     in the thin direction and should transfer directly to CPU (FFTW `r2r` cost
+     scales with the transform length, and `2(N+1)` is a power of two at
+     `N=2^k-1`). Re-benchmark CPU 6D at `(127,383)/8` before anything deeper.
+   - Then profile complete 6D turns and attack the dominant costs (deposit, the
+     four `r2r` transforms/mode-multiplies per pair, interpolation/scatter,
+     luminosity, worker sync, allocation). Note the CPU path already uses FFTW `r2r`
+     RODFT00 (a real DST), so it does **not** carry the complex-extension overhead
+     the CUDA path had — the "rfft" win there is CUDA-specific and not applicable.
+   - Structural levers: reduce redundant transforms (share `DST_x(philm)` between
+     the potential and Ey, as the CUDA path now does — 7 transforms/solve, not 8),
+     preallocate the L/R potential/field output buffers (the allocating
+     `_spectral_field_grid_potential!` still returns fresh arrays per solve), and
+     fold the drift into the deposit to avoid the drifted-source snapshots. The CPU
+     collide already parallelizes over dependency-safe collision wavefronts with a
+     per-worker workspace pool; the remaining win is per-solve transform/allocation
+     cost, not scheduling.
+   - Gate any change on complete-turn A/B timing plus the CPU accuracy-vs-PIC and
+     CPU/CUDA parity tests (both already in `test/runtests.jl`).
 2. **Further CUDA 6D throughput (lower priority; parity already reached).** Two
    larger, higher-risk transform rewrites were deferred: a Makhoul-style N-point
    real transform (removes the `2(N+1)` extension, ~halving each transform) and L/R
