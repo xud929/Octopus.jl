@@ -362,8 +362,8 @@ cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 #
 # Recommended CUDA production setting for the ~11:1 flat beams: grid=(127, 383),
 # domain_factor=8. This matches the analytic/PIC kick to ~1% (both beams, all of
-# x/y/z) and is ~6x faster than grid=(128,1024)/16 on GPU, reaching parity with the
-# PIC solver at ~1e6 particles/beam. The odd sizes are deliberate: a grid dimension
+# x/y/z) and is ~6x faster than grid=(128,1024)/16 on GPU, ~1.24x the PIC solver at
+# ~1e6 particles/beam (comparable). The odd sizes are deliberate: a grid dimension
 # N gives a DST/DCT extension of length 2(N+1), so N = 2^k-1 (127, 383, 511, ...)
 # makes that a power of two and the CUDA real-FFT optimal. See the optimization
 # history for the CPU/CUDA performance campaign.

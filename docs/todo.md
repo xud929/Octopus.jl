@@ -3,15 +3,16 @@
 ## Spectral Sine-Series Poisson Solver
 
 **Status (2026-07-23): production-ready 6D solver, correctness-validated against
-PIC and CUDA-optimized to PIC-level throughput.** `SpectralPoissonSolver` is
+PIC and CUDA-optimized to near-PIC throughput.** `SpectralPoissonSolver` is
 implemented, registered, validated, and optimized on both CPU and CUDA. It is a
 documented (commented) option in `examples/strong_strong_tracking.jl`. Recommended
 CUDA production setting for the ~11:1 flat beams: **`grid=(127, 383)`,
 `domain_factor=8`, `method=:grid`** (odd sizes are intentional: a grid dimension
 `N` gives a DST/DCT extension `2(N+1)`, so `N=2^k-1` is FFT-optimal). At this grid
-the 6D CUDA solver reaches parity with (or beats) PIC at ~1e6 particles/beam,
-down from 6.05x slower at `(128,1024)/16`, with the kick matching PIC to ~1% on
-both beams in x/y/z. See the optimization history for the campaign.
+the 6D CUDA solver is ~1.24x PIC at ~1e6 particles/beam (fair interleaved median),
+down from 6.05x slower at `(128,1024)/16` -- a ~5x speedup and comparable to PIC,
+with the kick matching PIC to ~1% on both beams in x/y/z. See the optimization
+history for the campaign and the measurement caveats.
 
 **Correctness note (2026-07-23):** the grid-path longitudinal `pz` kick was found
 ~2x too large (the on-mesh potential reconstruction carried a factor 2 relative to
@@ -40,11 +41,11 @@ refinements.
 ### Open (priority order)
 
 The full 6D map needs **four** source-boundary spectral solves per slice pair
-(left/right x two directions). The CUDA 6D path has been optimized to PIC-level
-throughput at production scale (see the 2026-07-23 CUDA campaign in the
-optimization history: rfft DST/DCT, fused build/extract kernels, right-sized
-FFT-friendly grid, drift-folded deposit). The **CPU** 6D path has not had the same
-campaign and remains the top open performance item.
+(left/right x two directions). The CUDA 6D path has been optimized to near-PIC
+throughput at production scale (~1.24x PIC at 1e6/beam; see the 2026-07-23 CUDA
+campaign in the optimization history: rfft DST/DCT, fused build/extract kernels,
+right-sized FFT-friendly grid, drift-folded deposit). The **CPU** 6D path has not
+had the same campaign and remains the top open performance item.
 
 1. **CPU 6D performance campaign (top open item).** The CPU `longitudinal_kick=true`
    grid path never got the throughput campaign the CUDA path did. Measured baseline
@@ -72,12 +73,12 @@ campaign and remains the top open performance item.
      cost, not scheduling.
    - Gate any change on complete-turn A/B timing plus the CPU accuracy-vs-PIC and
      CPU/CUDA parity tests (both already in `test/runtests.jl`).
-2. **Further CUDA 6D throughput (lower priority; parity already reached).** Two
+2. **Further CUDA 6D throughput (would close the remaining ~1.24x gap).** Two
    larger, higher-risk transform rewrites were deferred: a Makhoul-style N-point
    real transform (removes the `2(N+1)` extension, ~halving each transform) and L/R
-   complex-packing (halves the transform count). Take these only with complete-turn
-   A/B timing and the CPU/CUDA 6D parity test, and only if a decisive sub-PIC margin
-   is wanted at small particle counts (parity is already reached at ~1e6/beam).
+   complex-packing (halves the transform count). Either could bring 1e6/beam to
+   parity or below. Take them only with fair interleaved complete-turn A/B timing
+   and the CPU/CUDA 6D parity test.
 3. Adaptive spectral Dirichlet-box strategy: the current spectral kick solve uses
   one shared global square box for both source and field beams across all slice
   pairs. This is conservative and keeps DST/DCT plans and workspaces simple, but
@@ -110,9 +111,10 @@ campaign and remains the top open performance item.
   preallocated L/R output buffers, drift-folded deposit (no drifted-source arrays),
   shared DST_x(philm) (7 transforms/solve), and a right-sized FFT-friendly grid
   (`N=2^k-1` so the `2(N+1)` extension is a power of two). Brought the 6D CUDA grid
-  solver from 6.05x slower than PIC to parity (~1x) at 1e6/beam with unchanged ~1%
-  accuracy and preserved CPU/CUDA parity (~1e-14). New recommended production grid
-  `(127,383)/d=8`. See the optimization history for measurements.
+  solver from 6.05x slower than PIC to ~1.24x at 1e6/beam (fair interleaved median)
+  with unchanged ~1% accuracy and preserved CPU/CUDA parity (~1e-14). New
+  recommended production grid `(127,383)/d=8`. See the optimization history for
+  measurements and the interleaved-timing caveat.
 - Grid longitudinal-potential factor-of-2 fix (CPU and CUDA): the on-mesh
   potential `Phig` needed an explicit `1/2` (2D DST reconstruction carries factor
   4, each field component factor 2, sharing one fitted `scale`). Before the fix the

@@ -52,27 +52,34 @@ green_cache=:slice_pair):
 
 | particles/beam | PIC | spectral (127,383)/d8 | ratio |
 | ---: | ---: | ---: | ---: |
-| 100k | 0.227 | 0.336 | 1.48x |
-| 300k | 0.242 | 0.345 | 1.42x |
-| 1M | 0.36-0.43 | 0.405 | ~0.94-1.12x |
-| 2M | 0.533 | 0.524 | 0.98x |
+| 20k | 0.246 | 0.47 | ~1.9x |
+| 100k | 0.232 | 0.392 | ~1.7x |
+| 1M | 0.394 | 0.487 | ~1.24x |
 
-Definitive 120-turn average at 1e6 particles/beam (collide-only, with a small
-per-turn damping so the un-lattice'd beams stay finite): PIC `0.4303 s/turn`,
-spectral `(127,383)/d8` `0.4349 s/turn` -> **1.01x (parity)**, both finite.
+Timing method matters here: the RTX 4500 Ada shows ~15-20% run-to-run variance in
+absolute time (thermal), so PIC and spectral must be measured **interleaved** in one
+process (alternate reps) to cancel the drift. The 1M row above is the median of 8
+interleaved reps (PIC min/median/max `0.335/0.394/0.484`, spectral
+`0.427/0.487/0.558`); the ratio of medians is `1.24x` and of mins `1.27x`, i.e. the
+*ratio* is stable at ~1.25x even though the absolute times swing.
+
+(Correction: an earlier note here claimed `~1.0x parity` at 1M from a single
+120-turn run that happened to catch PIC high and spectral low. The fair interleaved
+measurement is ~1.24x. The honest headline is a ~5x speedup, from 6.05x to ~1.24x
+at 1M, i.e. spectral 6D is now *comparable to* PIC at production scale, not at
+parity.)
 
 The ratio improves with particle count because the O(N) deposit/interpolate/gather
 work (comparable to PIC) dominates at large N while the fixed transform cost is
-amortized. At production scale (~1e6+ particles/beam) the spectral 6D solver is at
-parity with or faster than PIC, down from 6.05x. Smaller cases remain transform-
-bound (~1.5x). The CPU path and `longitudinal_kick=false` are unchanged; the CPU
-6D grid path (which does the same four solves per pair) remains an open performance
-item.
+amortized; the PIC baseline itself grows from ~0.23 s/turn at 20k-100k to ~0.39 at
+1M for the same reason. Smaller cases stay transform-bound (~1.7-1.9x). The CPU path
+and `longitudinal_kick=false` are unchanged; the CPU 6D grid path (same four solves
+per pair) remains an open performance item.
 
-Remaining lever not taken (higher risk): a Makhoul-style N-point real transform
-would remove the 2(N+1) extension entirely (roughly halving the transform), and
-L/R complex-packing would halve the transform count; both were deferred as large
-rewrites with correctness risk given parity is already at ~1x.
+Remaining levers not taken (would close the ~1.24x gap, higher risk): a Makhoul-style
+N-point real transform would remove the 2(N+1) extension entirely (roughly halving
+each transform), and L/R complex-packing would halve the transform count; both were
+deferred as large rewrites with correctness risk.
 
 ## 2026-07-23: fix grid longitudinal-potential factor of 2
 
