@@ -10,16 +10,26 @@ Controls:
     OCTOPUS_HIGH_ENERGY_N=20000
     OCTOPUS_HIGH_ENERGY_NSLICES=5
     OCTOPUS_HIGH_ENERGY_GRID=96
+    OCTOPUS_HIGH_ENERGY_SPECTRAL_GRID=128,1024
+    OCTOPUS_HIGH_ENERGY_SPECTRAL_FREE_GRID=48,48
     OCTOPUS_HIGH_ENERGY_ELECTRON_GEV=1e100
     OCTOPUS_HIGH_ENERGY_SIGMA_XY=false
     OCTOPUS_HIGH_ENERGY_PIC_LUM_RTOL=0.08
     OCTOPUS_HIGH_ENERGY_PIC_SIZE_RTOL=0.08
+    OCTOPUS_HIGH_ENERGY_SPECTRAL_MODEL_LUM_RTOL=0.08
+    OCTOPUS_HIGH_ENERGY_SPECTRAL_MODEL_SIZE_RTOL=0.08
+    OCTOPUS_HIGH_ENERGY_SPECTRAL_LIMIT_ATOL=5e-13
+    OCTOPUS_HIGH_ENERGY_SPECTRAL_LIMIT_LUM_RTOL=1e-12
+    OCTOPUS_HIGH_ENERGY_SPECTRAL_CUDA=0
 
 The electron beam energy is made effectively infinite, so its beam-beam kick is
 negligible while the proton beam still sees the electron source. The
 soft-Gaussian solver is compared against a frozen-source weak-strong reference.
 PIC is compared as a grid/model convergence characterization with explicit
-tolerances.
+tolerances. Spectral grid and grid-free solvers are compared both against a
+frozen-source spectral weak-strong reference, to verify the high-energy
+strong-strong limit, and against the same analytic soft-Gaussian weak-strong
+reference, to record model/grid error.
 =#
 
 if !isdefined(Main, :Octopus)
@@ -35,6 +45,28 @@ const INCLUDE_SIGMA_XY = lowercase(get(ENV, "OCTOPUS_HIGH_ENERGY_SIGMA_XY", "fal
     ("1", "true", "yes", "on")
 const PIC_LUM_RTOL = parse(Float64, get(ENV, "OCTOPUS_HIGH_ENERGY_PIC_LUM_RTOL", "0.08"))
 const PIC_SIZE_RTOL = parse(Float64, get(ENV, "OCTOPUS_HIGH_ENERGY_PIC_SIZE_RTOL", "0.08"))
+const SPECTRAL_MODEL_LUM_RTOL =
+    parse(Float64, get(ENV, "OCTOPUS_HIGH_ENERGY_SPECTRAL_MODEL_LUM_RTOL", "0.08"))
+const SPECTRAL_MODEL_SIZE_RTOL =
+    parse(Float64, get(ENV, "OCTOPUS_HIGH_ENERGY_SPECTRAL_MODEL_SIZE_RTOL", "0.08"))
+const SPECTRAL_LIMIT_ATOL =
+    parse(Float64, get(ENV, "OCTOPUS_HIGH_ENERGY_SPECTRAL_LIMIT_ATOL", "5e-13"))
+const SPECTRAL_LIMIT_LUM_RTOL =
+    parse(Float64, get(ENV, "OCTOPUS_HIGH_ENERGY_SPECTRAL_LIMIT_LUM_RTOL", "1e-12"))
+const SPECTRAL_CUDA = lowercase(get(ENV, "OCTOPUS_HIGH_ENERGY_SPECTRAL_CUDA", "0")) in
+    ("1", "true", "yes", "on")
+
+function _parse_pair_grid(text)
+    parts = parse.(Int, split(text, ','))
+    length(parts) == 1 && return (parts[1], parts[1])
+    length(parts) == 2 || error("grid must be n or nx,ny; got $text")
+    return (parts[1], parts[2])
+end
+
+const SPECTRAL_GRID =
+    _parse_pair_grid(get(ENV, "OCTOPUS_HIGH_ENERGY_SPECTRAL_GRID", "128,1024"))
+const SPECTRAL_FREE_GRID =
+    _parse_pair_grid(get(ENV, "OCTOPUS_HIGH_ENERGY_SPECTRAL_FREE_GRID", "48,48"))
 
 function high_energy_base_beams(; n=N, electron_gev=ELECTRON_GEV)
     set_global_rng!(seed=0x123456789abcdef, method=:philox)
@@ -95,11 +127,175 @@ function weakstrong_limit_reference!(source, probe, solver)
     return luminosity
 end
 
+function _slice_params(slices, i)
+    return (
+        weight=slices.weight[i],
+        lb=slices.boundary[i],
+        center=slices.center[i],
+        rb=slices.boundary[i + 1],
+    )
+end
+
+function spectral_weakstrong_limit_reference!(source, probe, solver)
+    slices_source = longitudinal_slices(source.rep, solver.slicing1)
+    slices_probe = longitudinal_slices(probe.rep, solver.slicing2)
+    kbb_probe = Octopus._spectral_kbb2(solver, source, probe)
+    klum = Octopus._spectral_luminosity_scale(solver, source, probe)
+    lnx, lny = solver.grid
+    Lx, Ly = Octopus._spectral_box(
+        solver, source.rep.x, source.rep.y, probe.rep.x, probe.rep.y)
+    grid_method = solver.method !== :grid_free
+    ws = grid_method ? Octopus._spectral_grid_ws(solver.grid[1], solver.grid[2]) : nothing
+    T = promote_type(eltype(source.rep.x), eltype(probe.rep.x), typeof(kbb_probe))
+    luminosity = zero(T)
+
+    for (_, i, j) in Octopus._slice_collision_order(slices_source, slices_probe)
+        idx_source = slices_source.indices[i]
+        idx_probe = slices_probe.indices[j]
+        (isempty(idx_source) || isempty(idx_probe)) && continue
+        param_source = _slice_params(slices_source, i)
+        param_probe = _slice_params(slices_probe, j)
+        coord_source = Octopus._pic_extract_slice(source.rep, idx_source)
+        coord_probe = Octopus._pic_extract_slice(probe.rep, idx_probe)
+
+        if solver.longitudinal_kick
+            field_probe = Octopus._pic_copy_coords(coord_probe)
+            vx_source, vy_source = Octopus._spectral_interaction!(
+                solver, coord_source, param_source, field_probe, param_probe,
+                slices_source.weight[i] * kbb_probe, ws, Lx, Ly)
+            vx_probe, vy_probe = Octopus._spectral_midpoint_source(
+                coord_probe, param_probe, param_source, T)
+            Octopus._pic_store_slice!(probe.rep, idx_probe, field_probe)
+            luminosity += Octopus._spectral_luminosity_pair(
+                vx_source, vy_source, vx_probe, vy_probe, klum, lnx, lny)
+        else
+            ex, ey = Octopus._spectral_field_ws(
+                solver, ws, coord_source.x, coord_source.y,
+                coord_probe.x, coord_probe.y, Lx, Ly)
+            kick_scale = slices_source.weight[i] * kbb_probe
+            @inbounds for (t, p) in enumerate(idx_probe)
+                probe.rep.px[p] += kick_scale * ex[t]
+                probe.rep.py[p] += kick_scale * ey[t]
+            end
+            luminosity += Octopus._spectral_luminosity_pair(
+                coord_source.x, coord_source.y, coord_probe.x, coord_probe.y,
+                klum, lnx, lny)
+        end
+    end
+    return luminosity
+end
+
+function _spectral_high_energy_case(name, solver, base_electron, base_proton,
+                                    gaussian_reference_luminosity,
+                                    gaussian_reference_proton;
+                                    model_luminosity_rtol,
+                                    model_size_rtol,
+                                    limit_atol,
+                                    limit_luminosity_rtol)
+    limit_electron = clone_cpu_beam(base_electron)
+    limit_proton = clone_cpu_beam(base_proton)
+    limit_luminosity = spectral_weakstrong_limit_reference!(
+        limit_electron, limit_proton, solver)
+
+    strong_electron = clone_cpu_beam(base_electron)
+    strong_proton = clone_cpu_beam(base_proton)
+    strong_luminosity = collide!(
+        solver, strong_electron, strong_proton, CPUThreadsBackend)
+
+    proton_limit_error = max_coordinate_abs(strong_proton.rep, limit_proton.rep)
+    electron_change = max_coordinate_abs(strong_electron.rep, base_electron.rep)
+    limit_luminosity_relative_error =
+        abs(strong_luminosity - limit_luminosity) /
+        max(abs(limit_luminosity), eps(Float64))
+    model_luminosity_relative_error =
+        abs(strong_luminosity - gaussian_reference_luminosity) /
+        max(abs(gaussian_reference_luminosity), eps(Float64))
+    model_size_relative_error =
+        maximum(abs.(centered_rms(strong_proton.rep) .-
+                     centered_rms(gaussian_reference_proton.rep)) ./
+                max.(centered_rms(gaussian_reference_proton.rep), eps(Float64)))
+
+    return (
+        name=name,
+        method=solver.method,
+        grid=solver.grid,
+        strong_luminosity=strong_luminosity,
+        frozen_source_luminosity=limit_luminosity,
+        limit_luminosity_relative_error=limit_luminosity_relative_error,
+        proton_limit_max_abs_error=proton_limit_error,
+        electron_max_abs_change=electron_change,
+        model_luminosity_relative_error=model_luminosity_relative_error,
+        model_size_relative_error=model_size_relative_error,
+        limit_passed=proton_limit_error <= limit_atol &&
+                     electron_change <= limit_atol &&
+                     limit_luminosity_relative_error <= limit_luminosity_rtol,
+        model_passed=model_luminosity_relative_error <= model_luminosity_rtol &&
+                     model_size_relative_error <= model_size_rtol,
+        limit_atol=limit_atol,
+        limit_luminosity_rtol=limit_luminosity_rtol,
+        model_luminosity_rtol=model_luminosity_rtol,
+        model_size_rtol=model_size_rtol,
+    )
+end
+
+function clone_cuda_beam(beam)
+    Octopus._HAS_CUDA && Octopus.CUDA.functional(false) ||
+        error("CUDA requested, but CUDA.jl is not functional")
+    rep = Phase6DRep((Octopus.CUDA.CuArray(copy(Array(a)))
+                      for a in coordinate_arrays(beam.rep))...)
+    return Beam{CUDABackend,typeof(beam.params),typeof(rep)}(beam.params, rep)
+end
+
+function _spectral_high_energy_cuda_grid_case(solver, base_electron, base_proton,
+                                              cpu_case; limit_atol,
+                                              limit_luminosity_rtol)
+    solver.method === :grid || error("CUDA spectral high-energy check supports method=:grid")
+    cpu_reference_electron = clone_cpu_beam(base_electron)
+    cpu_reference_proton = clone_cpu_beam(base_proton)
+    reference_luminosity = spectral_weakstrong_limit_reference!(
+        cpu_reference_electron, cpu_reference_proton, solver)
+
+    cuda_electron = clone_cuda_beam(base_electron)
+    cuda_proton = clone_cuda_beam(base_proton)
+    cuda_luminosity = collide!(solver, cuda_electron, cuda_proton, CUDABackend)
+    Octopus.CUDA.synchronize()
+
+    proton_limit_error = max_coordinate_abs(cuda_proton.rep, cpu_reference_proton.rep)
+    electron_change = max_coordinate_abs(cuda_electron.rep, base_electron.rep)
+    limit_luminosity_relative_error =
+        abs(Float64(cuda_luminosity) - reference_luminosity) /
+        max(abs(reference_luminosity), eps(Float64))
+
+    return (
+        name=:spectral_grid_cuda,
+        method=solver.method,
+        grid=solver.grid,
+        strong_luminosity=Float64(cuda_luminosity),
+        frozen_source_luminosity=reference_luminosity,
+        limit_luminosity_relative_error=limit_luminosity_relative_error,
+        proton_limit_max_abs_error=proton_limit_error,
+        electron_max_abs_change=electron_change,
+        cpu_grid_proton_limit_max_abs_error=cpu_case.proton_limit_max_abs_error,
+        limit_passed=proton_limit_error <= limit_atol &&
+                     electron_change <= limit_atol &&
+                     limit_luminosity_relative_error <= limit_luminosity_rtol,
+        limit_atol=limit_atol,
+        limit_luminosity_rtol=limit_luminosity_rtol,
+    )
+end
+
 function run_high_energy_weakstrong_limit(; n=N, nslices=NSLICES, grid=GRID,
+                                          spectral_grid=SPECTRAL_GRID,
+                                          spectral_free_grid=SPECTRAL_FREE_GRID,
                                           electron_gev=ELECTRON_GEV,
                                           include_sigma_xy=INCLUDE_SIGMA_XY,
                                           pic_luminosity_rtol=PIC_LUM_RTOL,
-                                          pic_size_rtol=PIC_SIZE_RTOL)
+                                          pic_size_rtol=PIC_SIZE_RTOL,
+                                          spectral_model_luminosity_rtol=SPECTRAL_MODEL_LUM_RTOL,
+                                          spectral_model_size_rtol=SPECTRAL_MODEL_SIZE_RTOL,
+                                          spectral_limit_atol=SPECTRAL_LIMIT_ATOL,
+                                          spectral_limit_luminosity_rtol=SPECTRAL_LIMIT_LUM_RTOL,
+                                          spectral_cuda=SPECTRAL_CUDA)
     base_electron, base_proton = high_energy_base_beams(;
         n=n, electron_gev=electron_gev)
     slicing = LongitudinalSlicing(
@@ -111,6 +307,12 @@ function run_high_energy_weakstrong_limit(; n=N, nslices=NSLICES, grid=GRID,
         slicing=slicing, grid=(grid, grid), deposit_method=:CIC,
         green_type=:integrated, green_cache=:slice_pair,
         longitudinal_kick=true, batch_mode=:wavefront)
+    spectral_grid_solver = SpectralPoissonSolver(
+        slicing=slicing, method=:grid, grid=spectral_grid,
+        domain_factor=16.0, longitudinal_kick=true)
+    spectral_grid_free_solver = SpectralPoissonSolver(
+        slicing=slicing, method=:grid_free, grid=spectral_free_grid,
+        domain_factor=16.0, longitudinal_kick=true)
 
     reference_electron = clone_cpu_beam(base_electron)
     reference_proton = clone_cpu_beam(base_proton)
@@ -138,11 +340,32 @@ function run_high_energy_weakstrong_limit(; n=N, nslices=NSLICES, grid=GRID,
         max(abs(reference_luminosity), eps(Float64))
     pic_lum_rel = abs(pic_luminosity - reference_luminosity) /
         max(abs(reference_luminosity), eps(Float64))
+    spectral_grid_result = _spectral_high_energy_case(
+        :spectral_grid, spectral_grid_solver, base_electron, base_proton,
+        reference_luminosity, reference_proton;
+        model_luminosity_rtol=spectral_model_luminosity_rtol,
+        model_size_rtol=spectral_model_size_rtol,
+        limit_atol=spectral_limit_atol,
+        limit_luminosity_rtol=spectral_limit_luminosity_rtol)
+    spectral_grid_free_result = _spectral_high_energy_case(
+        :spectral_grid_free, spectral_grid_free_solver, base_electron, base_proton,
+        reference_luminosity, reference_proton;
+        model_luminosity_rtol=spectral_model_luminosity_rtol,
+        model_size_rtol=spectral_model_size_rtol,
+        limit_atol=spectral_limit_atol,
+        limit_luminosity_rtol=spectral_limit_luminosity_rtol)
+    spectral_cuda_grid_result =
+        spectral_cuda ? _spectral_high_energy_cuda_grid_case(
+            spectral_grid_solver, base_electron, base_proton, spectral_grid_result;
+            limit_atol=spectral_limit_atol,
+            limit_luminosity_rtol=spectral_limit_luminosity_rtol) : nothing
 
     return (
         particles=n,
         nslices=nslices,
         pic_grid=(grid, grid),
+        spectral_grid_config=spectral_grid,
+        spectral_free_grid_config=spectral_free_grid,
         electron_energy_GeV=electron_gev,
         include_sigma_xy=include_sigma_xy,
         reference_luminosity=reference_luminosity,
@@ -159,13 +382,32 @@ function run_high_energy_weakstrong_limit(; n=N, nslices=NSLICES, grid=GRID,
         pic_passed=pic_lum_rel <= pic_luminosity_rtol && pic_size_rel <= pic_size_rtol,
         pic_luminosity_rtol=pic_luminosity_rtol,
         pic_size_rtol=pic_size_rtol,
+        spectral_grid=spectral_grid_result,
+        spectral_grid_free=spectral_grid_free_result,
+        spectral_cuda_grid=spectral_cuda_grid_result,
+        spectral_limit_passed=spectral_grid_result.limit_passed &&
+                              spectral_grid_free_result.limit_passed &&
+                              (spectral_cuda_grid_result === nothing ||
+                               spectral_cuda_grid_result.limit_passed),
+        spectral_model_passed=spectral_grid_result.model_passed &&
+                              spectral_grid_free_result.model_passed,
     )
 end
 
-function print_high_energy_result(result)
-    println("High-energy weak-strong limit")
+function _print_result(io, prefix, value)
+    if value isa NamedTuple
+        for key in propertynames(value)
+            _print_result(io, prefix * string(key) * ".", getproperty(value, key))
+        end
+    else
+        println(io, "  ", chop(prefix; tail=1), " = ", value)
+    end
+end
+
+function print_high_energy_result(result; io=stdout)
+    println(io, "High-energy weak-strong limit")
     for key in propertynames(result)
-        println("  ", key, " = ", getproperty(result, key))
+        _print_result(io, string(key) * ".", getproperty(result, key))
     end
 end
 
@@ -174,4 +416,5 @@ if abspath(PROGRAM_FILE) == @__FILE__
     print_high_energy_result(result)
     result.gaussian_passed || error("soft-Gaussian weak-strong limit failed")
     result.pic_passed || error("PIC weak-strong limit tolerance failed")
+    result.spectral_limit_passed || error("spectral high-energy weak-strong limit failed")
 end

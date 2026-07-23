@@ -67,6 +67,9 @@ Poisson solver (see `../docs/spectral_sine_poisson_solver.md`) against the exact
 Bassetti-Erskine field, for both the grid (DST) and grid-free variants, and
 records how accuracy scales with the domain size and the mode/grid resolution.
 It also runs the PIC solver on the same cases for a shape-accuracy comparison.
+For `method=:grid`, `grid=(Nx,Ny)` means both the interior mesh and retained
+sine-mode count. For `method=:grid_free`, the same setting means retained
+direct mode counts only; no particle-deposition mesh is used.
 
 ```bash
 julia --project=. validation/spectral_poisson_field_validation.jl
@@ -91,6 +94,9 @@ julia --project=. validation/strong_strong_spectral_comparison.jl
 Outputs are written as TSV files under
 `result/strong_strong_spectral_comparison*`. Set
 `OCTOPUS_SPECTRAL_COMPARE_BACKEND=cuda` for CUDA runs; grid-free is CPU-only.
+`OCTOPUS_SPECTRAL_COMPARE_GRID` is a mesh-and-mode shape for the grid solver,
+while `OCTOPUS_SPECTRAL_COMPARE_FREE_GRID` is a direct mode-count shape for the
+grid-free solver.
 
 ## Counter RNG
 
@@ -267,11 +273,16 @@ OCTOPUS_SOFT_SIGMA_XY=true julia --project=. validation/soft_gaussian_pic_compar
 `high_energy_weakstrong_limit.jl` checks the limiting case where the electron
 energy is effectively infinite, so the electron beam is a frozen source. It
 compares the soft-Gaussian strong-strong collision to an explicit frozen-source
-weak-strong reference, and compares PIC to the same reference with grid/model
-tolerances.
+weak-strong reference, compares PIC to the same reference with grid/model
+tolerances, and verifies that spectral grid and grid-free strong-strong maps
+collapse to frozen-source spectral weak-strong references. The spectral grid
+default is the production flat-beam setting `(128,1024)`; the grid-free direct
+reference defaults to `(48,48)`. Set `OCTOPUS_HIGH_ENERGY_SPECTRAL_CUDA=1` to
+also check the CUDA spectral grid path when CUDA is functional.
 
 ```bash
 julia --project=. validation/high_energy_weakstrong_limit.jl
+OCTOPUS_HIGH_ENERGY_SPECTRAL_CUDA=1 julia --project=. validation/high_energy_weakstrong_limit.jl
 ```
 
 `symplecticity_validation.jl` computes finite-difference Jacobians for all

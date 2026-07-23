@@ -252,6 +252,14 @@ $1/[2(N_x+1)\,2(N_y+1)]$ factor. The DST-I is computed by FFT, so the solve is
 $O(N_x N_y \log(N_x N_y))$. Unlike the Hockney method, the mesh is **not** doubled
 (no zero padding), which halves the transform size in each dimension.
 
+In the Octopus `SpectralPoissonSolver` API, `grid=(N_x,N_y)` has this coupled
+meaning for `method=:grid`: it is both the number of interior mesh points and
+the number of retained sine modes in each transverse direction. This coupling is
+natural for the DST collocation implementation because the discrete sine
+coefficients live on the same shape as the deposited charge mesh. In contrast,
+for `method=:grid_free`, no mesh is constructed; the same option names only the
+retained direct mode counts, commonly written $L=N_x$ and $M=N_y$.
+
 ## 10. Open-boundary approximation and domain sizing
 
 The exact free-space (open) 2D potential of a net charge $Q$ behaves like
@@ -446,8 +454,8 @@ always split $N_x$ and $N_y$.
 
 | variant | deposition | solve | field eval | practical use |
 | --- | --- | --- | --- | --- |
-| grid-free | $O(N_p L M)$ | $O(LM)$ | $O(N_f L M)$ | round beams, few modes, reference |
-| grid (DST) | $O(N_p)$ | $O(N_x N_y\log)$ | $O(N_x N_y)+O(N_f)$ | production; required for flat beams |
+| grid-free | $O(N_p L M)$ | $O(LM)$ | $O(N_f L M)$ | round beams, few modes, reference; `grid=(L,M)` means modes only |
+| grid (DST) | $O(N_p)$ | $O(N_x N_y\log)$ | $O(N_x N_y)+O(N_f)$ | production; `grid=(N_x,N_y)` means mesh points and modes |
 
 The grid (DST) variant is $10^2$--$10^3\times$ faster than grid-free at matched
 accuracy and is the only practical choice when many modes are needed. Grid-free
@@ -497,6 +505,10 @@ mesh. The method also has no singular zero mode and no doubled grid.
 - Round or mild aspect ratio: $d = 12$--$16$, $N_x = N_y \approx 4d$ ($\sim 128$).
 - Aspect ratio $r$: $L_x=L_y = 8\,\sigma_\text{large}$, $N_x \approx 32$,
   $N_y \approx 5\,d\,r$ (anisotropic), grid (DST) variant.
+- In API terms, `grid=(128,1024)` for `method=:grid` means a `128x1024`
+  interior collocation mesh and a `128x1024` sine-mode expansion. For
+  `method=:grid_free`, `grid=(48,48)` means a direct `48x48` mode expansion and
+  no mesh.
 - Validate the chosen $d$, $N_x$, $N_y$ against Bassetti-Erskine for the actual
   beam aspect ratio before production use.
 

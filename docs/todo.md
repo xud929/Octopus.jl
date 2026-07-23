@@ -7,7 +7,9 @@ implemented and under performance characterization.** `SpectralPoissonSolver` is
 implemented, registered, validated, and optimized on both CPU and CUDA. It is a
 documented (commented) option in `examples/strong_strong_tracking.jl`. Recommended
 production setting for the ~11:1 flat beams: `grid=(128, 1024)`, `domain_factor=16`,
-`method=:grid`. Transverse-kick headline numbers: kick matches the analytic
+`method=:grid`. In the grid solver this means both a `128x1024` interior mesh and
+a `128x1024` sine-mode expansion; in `method=:grid_free`, the same option is a
+direct mode-count tuple and no mesh is used. Transverse-kick headline numbers: kick matches the analytic
 soft-Gaussian solver to ~0.2% (round) / ~0.4% (production flat); transverse-only
 CPU 2.0 s/turn (100k/beam, 15 slices, 8 threads); transverse-only CUDA 0.62
 s/turn at 2.56M/beam, ~4x faster than PIC on GPU. The default

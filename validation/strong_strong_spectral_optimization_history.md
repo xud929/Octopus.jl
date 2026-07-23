@@ -4,6 +4,31 @@ Chronological record of the `SpectralPoissonSolver` build-out, with measured
 evidence. See `docs/spectral_sine_poisson_solver.md` for the method and
 `src/tasks/strongstrong/spectral.jl` / `spectral_cuda.jl` for the code.
 
+## 2026-07-23: high-energy weak-strong limit for spectral grid and grid-free
+
+`validation/high_energy_weakstrong_limit.jl` now includes spectral-specific
+high-energy checks. The electron beam energy is set to `1e100 GeV`, making its
+kick negligible. Each spectral strong-strong run is compared against a separate
+frozen-source spectral weak-strong reference that applies only the electron
+source field to the proton beam. This isolates the high-energy limit from the
+expected grid/model difference relative to the analytic soft-Gaussian
+weak-strong reference.
+
+Production CPU run, `20k/beam`, five slices, PIC grid `96x96`, spectral grid
+`128x1024`, grid-free direct modes `48x48`, 8 Julia threads:
+
+| solver | luminosity | frozen-source luminosity | limit lum rel err | proton limit max abs | electron max abs change | Gaussian-ref lum rel err | Gaussian-ref size rel err |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Gaussian | 9.513905885442607e29 | same analytic reference | 0 | 5.42e-20 | 5.42e-20 | 0 | 0 |
+| PIC `96x96` | 9.485268272757882e29 | analytic reference | n/a | n/a | n/a | 3.01e-3 | 8.50e-5 |
+| spectral grid `128x1024` | 9.482692778262468e29 | 9.482692778262469e29 | 1.48e-16 | 2.17e-19 | 5.42e-20 | 3.28e-3 | 6.68e-5 |
+| spectral grid-free `48x48` | 9.453190104201961e29 | 9.453190104201960e29 | 1.49e-16 | 5.42e-20 | 5.42e-20 | 6.38e-3 | 1.83e-3 |
+
+Optional CUDA spectral grid check on the same case passed against the CPU
+frozen-source spectral reference: luminosity matched exactly at printed
+precision, proton limit max-absolute difference was `2.17e-19`, and electron
+max-absolute change was `8.13e-20`. Grid-free remains CPU-only.
+
 ## 2026-07-23: full 6D synchro-beam map and comparison harness
 
 `SpectralPoissonSolver` now has a public `longitudinal_kick` option. The default

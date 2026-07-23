@@ -664,11 +664,19 @@ include(joinpath(pkgdir(Octopus), "validation", "high_energy_weakstrong_limit.jl
 @testset "High-energy weak-strong strong-strong limit" begin
     result = run_high_energy_weakstrong_limit(;
         n=256, nslices=3, grid=48,
+        spectral_grid=(32, 64),
+        spectral_free_grid=(16, 16),
         pic_luminosity_rtol=0.60,
         pic_size_rtol=0.60,
+        spectral_model_luminosity_rtol=0.80,
+        spectral_model_size_rtol=0.80,
+        spectral_limit_atol=5.0e-12,
+        spectral_limit_luminosity_rtol=1.0e-10,
     )
     @test result.gaussian_passed
     @test result.pic_passed
+    @test result.spectral_limit_passed
+    @test result.spectral_model_passed
 end
 
 if Octopus._HAS_CUDA && Octopus.CUDA.functional()

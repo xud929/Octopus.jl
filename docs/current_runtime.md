@@ -416,6 +416,9 @@ slice's left/right collision planes, interpolate the two transverse fields to
 each field particle, apply the potential-difference `pz` kick, and reverse the
 field-particle virtual drift. `longitudinal_kick=false` retains the original
 transverse-only spectral map for validation and speed comparisons.
+For `method=:grid`, `grid=(Nx, Ny)` names both the interior collocation mesh and
+the retained sine modes solved by the DST/DCT path. For `method=:grid_free`, no
+mesh is allocated; `grid=(Nx, Ny)` is only the direct sine-mode count.
 For `method=:grid`, FFTW/cuFFT plans are reusable across slice pairs because the
 DST/DCT transforms depend only on `(Nx, Ny)`. The spectral mode-Green array
 `1/(alpha_l^2 + beta_m^2)` depends on the shared adaptive box and is reused

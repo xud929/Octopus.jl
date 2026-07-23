@@ -56,14 +56,18 @@ end
 
 Spectral sine-series strong-strong collision solver on a rectangular domain with
 homogeneous Dirichlet boundaries (a large-box approximation to open boundary
-conditions). `grid=(Nx, Ny)` sets the mesh and mode counts; use an anisotropic
-grid for flat beams (`Ny ~ 5 * domain_factor * sigma_x/sigma_y`). `domain_factor`
-sets the box half-width as a multiple of the larger transverse rms (the box is
-square — sized to the larger rms in both directions — because a flat beam's field
-extends on that scale in both). `method` is `:grid` (DST/DCT, the fast path, and
-the only CUDA-supported variant) or `:grid_free` (mode sums straight from
-particles; CPU only). `kbb1`/`kbb2` are the physical kick scales, same convention
-as `GaussianPoissonSolver` and `PICPoissonSolver`.
+conditions). The meaning of `grid=(Nx, Ny)` depends on `method`: for
+`method=:grid`, it is both the number of interior mesh points and the retained
+sine-mode count in each transverse direction; for `method=:grid_free`, no mesh is
+constructed, and the same tuple means direct sine-mode counts `Nx` and `Ny`.
+Use an anisotropic `grid` for flat beams
+(`Ny ~ 5 * domain_factor * sigma_x/sigma_y`). `domain_factor` sets the box
+half-width as a multiple of the larger transverse rms (the box is square — sized
+to the larger rms in both directions — because a flat beam's field extends on
+that scale in both). `method` is `:grid` (DST/DCT, the fast path, and the only
+CUDA-supported variant) or `:grid_free` (mode sums straight from particles; CPU
+only). `kbb1`/`kbb2` are the physical kick scales, same convention as
+`GaussianPoissonSolver` and `PICPoissonSolver`.
 
 `longitudinal_kick=true` applies the Hirata-map synchro-beam drift and
 potential-difference `pz` kick. Set it to `false` for the original
@@ -104,7 +108,7 @@ const _SPECTRAL_SOLVER_OPTION_SCHEMA = (
     luminosity_scale = SolverOptionMeta(Union{Nothing,Real}, nothing,
         "Optional luminosity normalization override."; category=:physics_override),
     grid = SolverOptionMeta(Tuple{Int,Int}, (128, 128),
-        "Transverse sine-mode mesh (Nx, Ny); use anisotropic for flat beams."),
+        "Transverse shape (Nx, Ny): grid nodes and modes for :grid, modes only for :grid_free."),
     domain_factor = SolverOptionMeta(Real, 16.0,
         "Box half-width as a multiple of the larger transverse rms."; category=:accuracy_performance),
     method = SolverOptionMeta(Symbol, :grid,
