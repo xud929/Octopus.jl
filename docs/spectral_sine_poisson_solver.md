@@ -316,6 +316,24 @@ standard FFT/DST.
 
 ## 13. CUDA parallelization
 
+**Implemented** in `src/tasks/strongstrong/spectral_cuda.jl` for `method=:grid`.
+cuFFT has no native DST/DCT, so both are realized through complex FFTs of
+symmetric extensions, verified to machine precision against FFTW:
+
+$$
+\text{DST-I}(a)_k = -\operatorname{Im}\big(\mathrm{FFT}(\text{odd\_ext}(a))\big)_k,
+\qquad
+\text{DCT-I}(c)_k = \operatorname{Re}\big(\mathrm{FFT}(\text{even\_ext}(c))\big)_k .
+$$
+
+A single in-place FFT plan per dimension serves both the DST and the cosine
+derivative (only the extension sign differs). The CUDA `collide!` agrees with the
+CPU path to machine precision (kicks ~4e-16, luminosity ~9e-16) and runs the
+production case (2.56M/beam, 15 slices, grid 128x1024) at ~0.62 s/turn — about 4x
+faster than the PIC CUDA path at matched grid resolution, since there is no
+zero-padding and no Green-function convolution. See
+`validation/strong_strong_spectral_optimization_history.md`.
+
 Every stage maps to a strong GPU primitive, and the solve is embarrassingly
 parallel over modes:
 
