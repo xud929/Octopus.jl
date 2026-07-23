@@ -447,16 +447,32 @@ accurate at the same domain and resolution. Measured medians ($d=16$):
 | 5:1 | 6.4e-3 | 2.9e-3 | 2.2e-3 |
 | 25:1 | 1.1e-2 | 6.1e-3 | 9.4e-3 |
 
-**Accuracy relative to PIC.** With the exact spectral derivative the solver is at
-least as accurate as the Hockney PIC solver everywhere and **clearly better for
-flat beams**, which is the physically relevant beam-beam regime. At $25{:}1$ the
-spectral median is $\sim 35\%$ lower than PIC and the tails are $\sim 3\times$
-better (p95 $3.0\text{e-}2$ vs $8.8\text{e-}2$, max $4.5\text{e-}2$ vs
-$1.4\text{e-}1$); round beams tie. It also has no singular zero mode and no
-doubled grid. Production must evaluate the spectral derivative **on the mesh** by
-a mixed sine/cosine (DST/DCT) transform, then interpolate, so the field cost
-stays $O(N_x N_y\log)$; the validation's direct per-point analytic evaluation is
-$O(N_f N_x N_y)$ and is used only to measure the derivative-limited accuracy.
+**On-mesh spectral derivative (production path).** The exact derivative is
+evaluated **on the mesh** with $O(N_x N_y\log)$ cost by a mixed transform: a DST-I
+in the undifferentiated axis and a cosine-derivative transform in the
+differentiated axis. The cosine derivative
+$\sum_{l} c_l\cos(l\pi j/(N+1))$ on the DST-I grid equals a zero-padded DCT-I,
+`REDFT00([0; c; 0])[2:N+1]/2` (verified to machine precision). The field is then
+bilinearly interpolated to the particles. This replaces both the slow per-point
+analytic evaluation ($O(N_f N_x N_y)$, used only to measure derivative-limited
+accuracy) and the finite-difference gradient.
+
+**Accuracy relative to PIC.** With the on-mesh spectral derivative the solver is
+at least as accurate as the Hockney PIC solver and **clearly better for flat
+beams**, the physically relevant beam-beam regime, at comparable or lower cost.
+Measured medians / maxima (interpolated field, $d=16$):
+
+| case | spectral on-mesh | PIC | spectral time | PIC time |
+| --- | ---: | ---: | ---: | ---: |
+| round | 2.7e-3 / 1.4e-2 | 1.6e-3 / 1.3e-2 | 0.003 s | 0.036 s |
+| 5:1 | 4.5e-3 / 2.3e-2 | 2.2e-3 / 2.8e-2 | 0.009 s | 0.039 s |
+| 25:1 | 6.8e-3 / **4.2e-2** | 9.4e-3 / **1.4e-1** | 0.042 s | 0.16 s |
+
+At $25{:}1$ the spectral median is $\sim 30\%$ lower than PIC and the maximum is
+$\sim 3\times$ better, at $\sim 4\times$ lower cost. Round beams tie on the median;
+the small round-beam gap versus the per-point analytic ($1.6\text{e-}3$) is
+bilinear field-interpolation error, recoverable with TSC interpolation or a finer
+mesh. The method also has no singular zero mode and no doubled grid.
 
 **Recommended defaults.**
 

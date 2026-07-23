@@ -153,6 +153,49 @@ function spectral_specderiv_field(xp, yp, Lx, Ly, Nx, Ny, xf, yf)
     return Ex, Ey
 end
 
+# ---------------------------------------------------------------- on-mesh spectral derivative (production-representative)
+# Cosine-derivative transform along dim d: out[i] = sum_k A[k] cos(k*pi*i/(N+1))
+# via a zero-padded DCT-I. This is the FFT-fast (O(N log N)) exact derivative.
+function _cosderiv(A, d)
+    N = size(A, d)
+    if d == 1
+        P = vcat(zeros(1, size(A, 2)), A, zeros(1, size(A, 2)))
+        return (FFTW.r2r(P, FFTW.REDFT00, 1) ./ 2)[2:N + 1, :]
+    else
+        P = hcat(zeros(size(A, 1), 1), A, zeros(size(A, 1), 1))
+        return (FFTW.r2r(P, FFTW.REDFT00, 2) ./ 2)[:, 2:N + 1]
+    end
+end
+
+# DST deposit -> mode solve -> exact spectral derivative ON THE MESH (DST + DCT)
+# -> bilinear interpolation. This is the O(Nx*Ny*log) production field path.
+function spectral_onmesh_field(xp, yp, Lx, Ly, Nx, Ny, xf, yf)
+    a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1); rho = zeros(Nx, Ny)
+    @inbounds for p in eachindex(xp)
+        X = (xp[p] + Lx) / hx; Y = (yp[p] + Ly) / hy
+        i = floor(Int, X); j = floor(Int, Y); fx = X - i; fy = Y - j
+        for (ii, wx) in ((i, 1 - fx), (i + 1, fx)), (jj, wy) in ((j, 1 - fy), (j + 1, fy))
+            (1 <= ii <= Nx && 1 <= jj <= Ny) && (rho[ii, jj] += wx * wy)
+        end
+    end
+    al = [l * pi / a for l in 1:Nx]; bm = [m * pi / b for m in 1:Ny]
+    rhat = FFTW.r2r(rho, FFTW.RODFT00)
+    phat = [-rhat[l, m] / (al[l]^2 + bm[m]^2) for l in 1:Nx, m in 1:Ny]
+    Exg = -_cosderiv(al .* FFTW.r2r(phat, FFTW.RODFT00, 2), 1)
+    Eyg = -_cosderiv(FFTW.r2r(phat, FFTW.RODFT00, 1) .* transpose(bm), 2)
+    interp(F, X, Y) = begin
+        xi = (X + Lx) / hx; yj = (Y + Ly) / hy; i = floor(Int, xi); j = floor(Int, yj)
+        fx = xi - i; fy = yj - j; v = 0.0
+        for (ii, wx) in ((i, 1 - fx), (i + 1, fx)), (jj, wy) in ((j, 1 - fy), (j + 1, fy))
+            (1 <= ii <= Nx && 1 <= jj <= Ny) && (v += wx * wy * F[ii, jj])
+        end
+        v
+    end
+    Ex = [interp(Exg, xf[k], yf[k]) for k in eachindex(xf)]
+    Ey = [interp(Eyg, xf[k], yf[k]) for k in eachindex(yf)]
+    return Ex, Ey
+end
+
 # ---------------------------------------------------------------- PIC reference
 function pic_field(sxv, syv, xf, yf, pg)
     solver = PICPoissonSolver(grid=(pg, pg), deposit_method=:TSC, green_type=:integrated)
@@ -205,9 +248,9 @@ for (ratio, name, pg) in cases
     Nx = 128; Ny = max(128, ceil(Int, 6 * domsig * (smax / min(sx, sy))))
     Ny = min(Ny, 1200)
     for (label, f) in (
+            ("spectral-onmesh", () -> spectral_onmesh_field(sxv, syv, Lx, Ly, Nx, Ny, xf, yf)),
             ("spectral-specderiv", () -> spectral_specderiv_field(sxv, syv, Lx, Ly, Nx, Ny, xf, yf)),
             ("spectral-grid-fd", () -> spectral_grid_field(sxv, syv, Lx, Ly, Nx, Ny, xf, yf)),
-            ("spectral-free", () -> spectral_free_field(sxv, syv, Lx, Ly, 96, 96, xf, yf)),
             ("pic", () -> pic_field(sxv, syv, xf, yf, pg)))
         Ex, Ey = f()
         md, p95, mx = shape_relerr(Ex, Ey, Kx, Ky)
