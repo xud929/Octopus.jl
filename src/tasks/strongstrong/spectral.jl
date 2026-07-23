@@ -175,14 +175,23 @@ function _SpectralGridWS(Nx::Int, Ny::Int)
         prho, prow, pcol, pcosx, pcosy)
 end
 
-const _SPECTRAL_WS_CACHE = Dict{Tuple{Int,Int},_SpectralGridWS}()
+# Per-worker workspace pool: the collision parallelizes over field slices, so each
+# logical worker needs its own buffers/plans. Cached by (Nx, Ny) and grown to the
+# requested worker count on demand.
+const _SPECTRAL_WS_CACHE = Dict{Tuple{Int,Int},Vector{_SpectralGridWS}}()
 const _SPECTRAL_WS_LOCK = ReentrantLock()
 
-function _spectral_grid_ws(Nx::Int, Ny::Int)
+function _spectral_grid_ws_pool(Nx::Int, Ny::Int, nworkers::Int)
     lock(_SPECTRAL_WS_LOCK) do
-        get!(() -> _SpectralGridWS(Nx, Ny), _SPECTRAL_WS_CACHE, (Nx, Ny))
+        pool = get!(() -> _SpectralGridWS[], _SPECTRAL_WS_CACHE, (Nx, Ny))
+        while length(pool) < nworkers
+            push!(pool, _SpectralGridWS(Nx, Ny))
+        end
+        return pool
     end
 end
+
+_spectral_grid_ws(Nx::Int, Ny::Int) = _spectral_grid_ws_pool(Nx, Ny, 1)[1]
 
 # Refresh mode arrays / mode-Green only when the box changed.
 function _spectral_ws_setbox!(ws::_SpectralGridWS, a::Float64, b::Float64)
@@ -355,12 +364,18 @@ function _spectral_cic_deposit!(q, x, y, x0, y0, hx, hy)
     return q
 end
 
-function _spectral_field(solver::SpectralPoissonSolver, sx, sy, fx, fy, Lx, Ly)
-    if solver.method === :grid_free
+# Field for one directed interaction using a caller-supplied workspace (grid) or
+# the allocating grid-free path. `ws` is ignored for :grid_free.
+function _spectral_field_ws(solver::SpectralPoissonSolver, ws, sx, sy, fx, fy, Lx, Ly)
+    solver.method === :grid_free &&
         return _spectral_field_free(sx, sy, fx, fy, Lx, Ly, solver.grid...)
-    end
-    ws = _spectral_grid_ws(solver.grid[1], solver.grid[2])
     return _spectral_field_grid!(ws, sx, sy, fx, fy, Lx, Ly)
+end
+
+function _spectral_field(solver::SpectralPoissonSolver, sx, sy, fx, fy, Lx, Ly)
+    ws = solver.method === :grid_free ? nothing :
+         _spectral_grid_ws(solver.grid[1], solver.grid[2])
+    return _spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
 end
 
 function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2)
@@ -386,6 +401,11 @@ collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThre
 collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend}, ::TrackingContext) =
     _spectral_collide!(solver, beam1, beam2)
 
+# The transverse-only collision reads original positions and only accumulates
+# px/py, so slice-pair order is irrelevant (addition is commutative). We therefore
+# parallelize over FIELD slices: each worker owns a disjoint set of field slices
+# and accumulates the kick from every source slice, so writes never collide.
+# Direction 1 (kick beam2) also accumulates the density-overlap luminosity.
 function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
     slices1 = longitudinal_slices(beam1.rep, solver.slicing1)
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
@@ -397,26 +417,55 @@ function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::B
     klum = _spectral_luminosity_scale(solver, beam1, beam2)
     lnx, lny = solver.grid
     r1 = beam1.rep; r2 = beam2.rep
-    luminosity = zero(eltype(r1.x))
+    T = eltype(r1.x)
+    idx1 = slices1.indices; idx2 = slices2.indices
+    w1 = slices1.weight; w2 = slices2.weight
+    n1 = length(idx1); n2 = length(idx2)
     Lx, Ly = _spectral_box(solver, r1.x, r1.y, r2.x, r2.y)
-    for (_, i, j) in _slice_collision_order(slices1, slices2)
-        idx1 = slices1.indices[i]; idx2 = slices2.indices[j]
-        (isempty(idx1) || isempty(idx2)) && continue
-        sx1 = @view r1.x[idx1]; sy1 = @view r1.y[idx1]
-        sx2 = @view r2.x[idx2]; sy2 = @view r2.y[idx2]
-        # beam1 sources -> kick beam2 field particles (weighted by beam1 slice weight)
-        ex2, ey2 = _spectral_field(solver, sx1, sy1, sx2, sy2, Lx, Ly)
-        w1 = slices1.weight[i] * kbb2
-        @inbounds for (t, p) in enumerate(idx2)
-            r2.px[p] += w1 * ex2[t]; r2.py[p] += w1 * ey2[t]
+    grid = solver.method !== :grid_free
+    nchunks = clamp(_cpu_worker_count(), 1, max(n1, n2))
+    pool = grid ? _spectral_grid_ws_pool(solver.grid[1], solver.grid[2], nchunks) : nothing
+
+    # Direction 1: beam1 sources -> kick beam2 field slices (parallel over j).
+    lum_parts = zeros(T, nchunks)
+    _run_logical_workers(nchunks) do chunk, _
+        ws = grid ? pool[chunk] : nothing
+        jlo, jhi = _chunk_bounds(n2, nchunks, chunk)
+        lp = zero(T)
+        for j in jlo:jhi
+            jdx = idx2[j]; isempty(jdx) && continue
+            fx = @view r2.x[jdx]; fy = @view r2.y[jdx]
+            for i in 1:n1
+                sdx = idx1[i]; isempty(sdx) && continue
+                sx = @view r1.x[sdx]; sy = @view r1.y[sdx]
+                ex, ey = _spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
+                a = w1[i] * kbb2
+                @inbounds for (t, p) in enumerate(jdx)
+                    r2.px[p] += a * ex[t]; r2.py[p] += a * ey[t]
+                end
+                lp += _spectral_luminosity_pair(sx, sy, fx, fy, klum, lnx, lny)
+            end
         end
-        # beam2 sources -> kick beam1 field particles
-        ex1, ey1 = _spectral_field(solver, sx2, sy2, sx1, sy1, Lx, Ly)
-        w2 = slices2.weight[j] * kbb1
-        @inbounds for (t, p) in enumerate(idx1)
-            r1.px[p] += w2 * ex1[t]; r1.py[p] += w2 * ey1[t]
-        end
-        luminosity += _spectral_luminosity_pair(sx1, sy1, sx2, sy2, klum, lnx, lny)
+        lum_parts[chunk] = lp
     end
-    return luminosity
+
+    # Direction 2: beam2 sources -> kick beam1 field slices (parallel over i).
+    _run_logical_workers(nchunks) do chunk, _
+        ws = grid ? pool[chunk] : nothing
+        ilo, ihi = _chunk_bounds(n1, nchunks, chunk)
+        for i in ilo:ihi
+            fdx = idx1[i]; isempty(fdx) && continue
+            fx = @view r1.x[fdx]; fy = @view r1.y[fdx]
+            for j in 1:n2
+                sdx = idx2[j]; isempty(sdx) && continue
+                sx = @view r2.x[sdx]; sy = @view r2.y[sdx]
+                ex, ey = _spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
+                a = w2[j] * kbb1
+                @inbounds for (t, p) in enumerate(fdx)
+                    r1.px[p] += a * ex[t]; r1.py[p] += a * ey[t]
+                end
+            end
+        end
+    end
+    return sum(lum_parts)
 end
