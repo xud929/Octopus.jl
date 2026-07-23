@@ -924,6 +924,37 @@ if _HAS_CUDA
             col_n = CUDA.CuArray{Int32}(undef, 2 * max_batch)
             device_kmoments = CUDA.CuArray{StrongTransverseMoments{T,COUPLED}}(undef, 2 * max_batch)
             device_means = CUDA.CuArray{T}(undef, 4, 2 * max_batch)
+            # Idea #2: per-column and per-kick-segment metadata for the fused
+            # wavefront moment and kick kernels. Columns 1..L are beam-1 slices,
+            # L+1..2L beam-2 slices; segments are the 2 directed kicks per pair.
+            host_col_beam = Vector{Int32}(undef, 2 * max_batch)
+            col_beam = CUDA.CuArray{Int32}(undef, 2 * max_batch)
+            host_col_off = Vector{Int32}(undef, 2 * max_batch)
+            col_off = CUDA.CuArray{Int32}(undef, 2 * max_batch)
+            host_seg_beam = Vector{Int32}(undef, 2 * max_batch)
+            seg_beam = CUDA.CuArray{Int32}(undef, 2 * max_batch)
+            host_seg_off = Vector{Int32}(undef, 2 * max_batch)
+            seg_off = CUDA.CuArray{Int32}(undef, 2 * max_batch)
+            host_seg_len = Vector{Int32}(undef, 2 * max_batch)
+            seg_len = CUDA.CuArray{Int32}(undef, 2 * max_batch)
+            host_seg_mcol = Vector{Int32}(undef, 2 * max_batch)
+            seg_mcol = CUDA.CuArray{Int32}(undef, 2 * max_batch)
+            host_seg_lumoff = Vector{Int32}(undef, 2 * max_batch)
+            seg_lumoff = CUDA.CuArray{Int32}(undef, 2 * max_batch)
+            host_seg_complum = Vector{Int32}(undef, 2 * max_batch)
+            seg_complum = CUDA.CuArray{Int32}(undef, 2 * max_batch)
+            host_seg_center = Vector{T}(undef, 2 * max_batch)
+            seg_center = CUDA.CuArray{T}(undef, 2 * max_batch)
+            host_seg_kbb = Vector{T}(undef, 2 * max_batch)
+            seg_kbb = CUDA.CuArray{T}(undef, 2 * max_batch)
+            host_seg_scale = Vector{T}(undef, 2 * max_batch)
+            seg_scale = CUDA.CuArray{T}(undef, 2 * max_batch)
+            perm1 = slices1.indices.perm
+            perm2 = slices2.indices.perm
+            offsets1 = slices1.indices.offsets
+            offsets2 = slices2.indices.offsets
+            moment_threads = _cuda_gaussian_moment_launch(1).threads
+            moment_shmem = nstats * moment_threads * sizeof(T)
             max_lum = maximum(batches; init=0) do batch
                 sum(pair -> sample_beam1 ? length(slices2.indices[pair.j]) :
                                            length(slices1.indices[pair.i]), batch)
@@ -940,61 +971,89 @@ if _HAS_CUDA
             ))
 
             for batch in batches
+                L = length(batch)
+                ncolumns = 2 * L
+                max_block = 1
+                max_seg_len = 1
+                lum_offset = 0
                 for (column, pair) in enumerate(batch)
-                    idx1 = slices1.indices[pair.i]
-                    idx2 = slices2.indices[pair.j]
-                    host_block_counts[column] = Int32(_cuda_launch_gaussian_moment_partials!(
-                        partials, column, beam1.rep, idx1, Val(COUPLED))
-                    )
-                    host_col_n[column] = Int32(length(idx1))
-                    column2 = length(batch) + column
-                    host_block_counts[column2] = Int32(_cuda_launch_gaussian_moment_partials!(
-                        partials, column2, beam2.rep, idx2, Val(COUPLED))
-                    )
-                    host_col_n[column2] = Int32(length(idx2))
+                    i = pair.i
+                    j = pair.j
+                    len1 = offsets1[i + 1] - offsets1[i]
+                    len2 = offsets2[j + 1] - offsets2[j]
+                    nb1 = _cuda_gaussian_moment_launch(len1).blocks
+                    nb2 = _cuda_gaussian_moment_launch(len2).blocks
+                    max_block = max(max_block, nb1, nb2)
+                    host_col_beam[column] = Int32(1)
+                    host_col_off[column] = Int32(offsets1[i])
+                    host_col_n[column] = Int32(len1)
+                    host_block_counts[column] = Int32(nb1)
+                    column2 = L + column
+                    host_col_beam[column2] = Int32(2)
+                    host_col_off[column2] = Int32(offsets2[j])
+                    host_col_n[column2] = Int32(len2)
+                    host_block_counts[column2] = Int32(nb2)
+
+                    s1 = 2 * column - 1
+                    host_seg_beam[s1] = Int32(1)
+                    host_seg_off[s1] = Int32(offsets1[i])
+                    host_seg_len[s1] = Int32(len1)
+                    host_seg_mcol[s1] = Int32(L + column)
+                    host_seg_center[s1] = slices2.center[j]
+                    host_seg_kbb[s1] = slices2.weight[j] * kbb1
+                    host_seg_complum[s1] = sample_beam1 ? Int32(0) : Int32(1)
+                    host_seg_lumoff[s1] = sample_beam1 ? Int32(0) : Int32(lum_offset)
+                    host_seg_scale[s1] = sample_beam1 ? one(T) : slices2.weight[j] * klum1 / TWOPI
+
+                    s2 = 2 * column
+                    host_seg_beam[s2] = Int32(2)
+                    host_seg_off[s2] = Int32(offsets2[j])
+                    host_seg_len[s2] = Int32(len2)
+                    host_seg_mcol[s2] = Int32(column)
+                    host_seg_center[s2] = slices1.center[i]
+                    host_seg_kbb[s2] = slices1.weight[i] * kbb2
+                    host_seg_complum[s2] = sample_beam1 ? Int32(1) : Int32(0)
+                    host_seg_lumoff[s2] = sample_beam1 ? Int32(lum_offset) : Int32(0)
+                    host_seg_scale[s2] = sample_beam1 ? slices1.weight[i] * klum2 / TWOPI : one(T)
+
+                    max_seg_len = max(max_seg_len, len1, len2)
+                    lum_offset += sample_beam1 ? len2 : len1
                 end
-                ncolumns = 2 * length(batch)
+                nsegments = ncolumns
+
                 copyto!(block_counts, 1, host_block_counts, 1, ncolumns)
                 copyto!(col_n, 1, host_col_n, 1, ncolumns)
+                copyto!(col_beam, 1, host_col_beam, 1, ncolumns)
+                copyto!(col_off, 1, host_col_off, 1, ncolumns)
+                copyto!(seg_beam, 1, host_seg_beam, 1, nsegments)
+                copyto!(seg_off, 1, host_seg_off, 1, nsegments)
+                copyto!(seg_len, 1, host_seg_len, 1, nsegments)
+                copyto!(seg_mcol, 1, host_seg_mcol, 1, nsegments)
+                copyto!(seg_center, 1, host_seg_center, 1, nsegments)
+                copyto!(seg_kbb, 1, host_seg_kbb, 1, nsegments)
+                copyto!(seg_lumoff, 1, host_seg_lumoff, 1, nsegments)
+                copyto!(seg_scale, 1, host_seg_scale, 1, nsegments)
+                copyto!(seg_complum, 1, host_seg_complum, 1, nsegments)
+
+                CUDA.@cuda threads=moment_threads blocks=(max_block, ncolumns) shmem=moment_shmem _cuda_gaussian_fused_moment_kernel!(
+                        partials, beam1.rep.x, beam1.rep.px, beam1.rep.y, beam1.rep.py,
+                        beam2.rep.x, beam2.rep.px, beam2.rep.y, beam2.rep.py,
+                        perm1, perm2, col_beam, col_off, col_n, block_counts,
+                        ncolumns, Val(COUPLED))
                 launch_reduce = _active_cuda_launch(nstats * ncolumns)
                 CUDA.@cuda threads=launch_reduce.threads blocks=launch_reduce.blocks _cuda_gaussian_reduce_partials_kernel!(
                         device_sums, partials, block_counts, nstats, ncolumns)
-                launch_moments = _active_cuda_launch(ncolumns)
-                CUDA.@cuda threads=launch_moments.threads blocks=launch_moments.blocks _cuda_gaussian_build_moments_kernel!(
-                        device_kmoments, device_means, device_sums, col_n, length(batch),
+                launch_build = _active_cuda_launch(ncolumns)
+                CUDA.@cuda threads=launch_build.threads blocks=launch_build.blocks _cuda_gaussian_build_moments_kernel!(
+                        device_kmoments, device_means, device_sums, col_n, L,
                         solver.ignore_centroid1, solver.ignore_centroid2,
                         T(solver.min_sigma), ncolumns, Val(COUPLED))
-
-                lum_offset = 0
-                for (column, pair) in enumerate(batch)
-                    idx1 = slices1.indices[pair.i]
-                    idx2 = slices2.indices[pair.j]
-                    launch1 = _active_cuda_launch(length(idx1))
-                    launch2 = _active_cuda_launch(length(idx2))
-                    offset1 = sample_beam1 ? 0 : lum_offset
-                    offset2 = sample_beam1 ? lum_offset : 0
-                    scale1 = sample_beam1 ? one(T) :
-                        slices2.weight[pair.j] * klum1 / TWOPI
-                    scale2 = sample_beam1 ?
-                        slices1.weight[pair.i] * klum2 / TWOPI : one(T)
-                    CUDA.@cuda threads=launch1.threads blocks=launch1.blocks _cuda_slice_kick_devmoments_kernel!(
-                            beam1.rep, idx1, lum, device_kmoments, device_means,
-                            length(batch) + column, slices2.center[pair.j],
-                            slices2.weight[pair.j] * kbb1, solver.virtual_drift,
-                            Val(LONGITUDINAL), Val(!sample_beam1),
-                            offset1, scale1)
-                    CUDA.@cuda threads=launch2.threads blocks=launch2.blocks _cuda_slice_kick_devmoments_kernel!(
-                            beam2.rep, idx2, lum, device_kmoments, device_means,
-                            column, slices1.center[pair.i],
-                            slices1.weight[pair.i] * kbb2, solver.virtual_drift,
-                            Val(LONGITUDINAL), Val(sample_beam1),
-                            offset2, scale2)
-                    if sample_beam1
-                        lum_offset += length(idx2)
-                    else
-                        lum_offset += length(idx1)
-                    end
-                end
+                kick_launch = _active_cuda_launch(max_seg_len)
+                CUDA.@cuda threads=kick_launch.threads blocks=(kick_launch.blocks, nsegments) _cuda_gaussian_fused_kick_kernel!(
+                        beam1.rep, beam2.rep, perm1, perm2, seg_beam, seg_off, seg_len,
+                        seg_mcol, seg_center, seg_kbb, seg_lumoff, seg_scale, seg_complum,
+                        device_kmoments, device_means, lum, solver.virtual_drift,
+                        nsegments, Val(LONGITUDINAL))
                 if lum_offset > 0
                     Base.sum!(batch_lum, @view lum[1:lum_offset])
                     luminosity_acc .+= batch_lum
@@ -3807,6 +3866,26 @@ if _HAS_CUDA
             return _cuda_slices_from_boundaries(rep, slicing, boundaries)
         end
 
+        # Contiguous slice-index storage: one device permutation array holding
+        # every slice's particle indices back to back, plus host offsets so that
+        # `indices[i]` is a view of slice i. Keeping all slices in one array lets
+        # the wavefront path launch fused moment/kick kernels (blockIdx.y selects
+        # the slice) instead of one launch per slice pair. `getindex` preserves
+        # the interface used by the Gaussian and PIC consumers.
+        struct _CuSliceIndices{V<:AbstractVector,O<:AbstractVector{Int}}
+            perm::V
+            offsets::O
+        end
+        Base.length(w::_CuSliceIndices) = length(w.offsets) - 1
+        Base.firstindex(::_CuSliceIndices) = 1
+        Base.lastindex(w::_CuSliceIndices) = length(w)
+        Base.eachindex(w::_CuSliceIndices) = Base.OneTo(length(w))
+        @inline Base.getindex(w::_CuSliceIndices, i::Integer) =
+            @view w.perm[(w.offsets[i] + 1):w.offsets[i + 1]]
+        Base.iterate(w::_CuSliceIndices, s::Int=1) =
+            s > length(w) ? nothing : (w[s], s + 1)
+        Base.eltype(::Type{<:_CuSliceIndices{V}}) where {V} = SubArray
+
         function _cuda_slices_from_boundaries(rep::Phase6DRep, slicing::LongitudinalSlicing, boundaries)
             z = rep.z
             T = eltype(z)
@@ -3831,7 +3910,15 @@ if _HAS_CUDA
                     throw(ArgumentError("unknown slice center_position $(slicing.center_position)"))
                 end
             end
-            return LongitudinalSlices(centers, weights, boundaries, indices)
+            offsets = Vector{Int}(undef, ns + 1)
+            offsets[1] = 0
+            for s in 1:ns
+                offsets[s + 1] = offsets[s] + length(indices[s])
+            end
+            perm = ns == 0 ? CUDA.CuArray{Int}(undef, 0) :
+                   offsets[end] == 0 ? CUDA.CuArray{Int}(undef, 0) : vcat(indices...)
+            return LongitudinalSlices(centers, weights, boundaries,
+                                      _CuSliceIndices(perm, offsets))
         end
 
         function _cuda_slice_transverse_moments(rep::Phase6DRep, idx, partials,
@@ -4114,6 +4201,157 @@ if _HAS_CUDA
                     rep.y[index] = y; rep.py[index] = py
                     rep.z[index] = z; rep.pz[index] = pz
                     if COMPUTE_LUMINOSITY
+                        lum[lum_offset + position] = density * TWOPI * lum_scale
+                    end
+                end
+                position += stride
+            end
+            return nothing
+        end
+
+        # Idea #2: one fused moment-partial kernel for a whole wavefront.
+        # blockIdx().y selects the column (slice); blockIdx().x strides over that
+        # slice's particles using the column's own block count, so the reduction
+        # is bit-identical to the per-column kernel. Columns read their particle
+        # indices from the contiguous beam-1/beam-2 permutation arrays.
+        function _cuda_gaussian_fused_moment_kernel!(partials, x1, px1, y1, py1,
+                                                     x2, px2, y2, py2, perm1, perm2,
+                                                     col_beam, col_off, col_len,
+                                                     block_counts, ncolumns,
+                                                     ::Val{COUPLED}) where {COUPLED}
+            col = CUDA.blockIdx().y
+            col > ncolumns && return nothing
+            @inbounds nb = block_counts[col]
+            bx = CUDA.blockIdx().x
+            bx > nb && return nothing
+            T = eltype(partials)
+            nstats = COUPLED ? 14 : 10
+            @inbounds len = col_len[col]
+            @inbounds off = col_off[col]
+            @inbounds beam1 = col_beam[col] == Int32(1)
+            values = ntuple(_ -> zero(T), Val(nstats))
+            threads = CUDA.blockDim().x
+            position = (bx - 1) * threads + CUDA.threadIdx().x
+            stride = nb * threads
+            while position <= len
+                @inbounds begin
+                    particle = beam1 ? perm1[off + position] : perm2[off + position]
+                    xi = beam1 ? x1[particle] : x2[particle]
+                    pxi = beam1 ? px1[particle] : px2[particle]
+                    yi = beam1 ? y1[particle] : y2[particle]
+                    pyi = beam1 ? py1[particle] : py2[particle]
+                    if COUPLED
+                        values = (
+                            values[1] + xi, values[2] + pxi,
+                            values[3] + yi, values[4] + pyi,
+                            values[5] + xi * xi, values[6] + pxi * pxi,
+                            values[7] + yi * yi, values[8] + pyi * pyi,
+                            values[9] + xi * pxi, values[10] + yi * pyi,
+                            values[11] + xi * yi, values[12] + xi * pyi,
+                            values[13] + pxi * yi, values[14] + pxi * pyi,
+                        )
+                    else
+                        values = (
+                            values[1] + xi, values[2] + pxi,
+                            values[3] + yi, values[4] + pyi,
+                            values[5] + xi * xi, values[6] + pxi * pxi,
+                            values[7] + yi * yi, values[8] + pyi * pyi,
+                            values[9] + xi * pxi, values[10] + yi * pyi,
+                        )
+                    end
+                end
+                position += stride
+            end
+            shared = CUDA.CuDynamicSharedArray(T, nstats * CUDA.blockDim().x)
+            base = nstats * (CUDA.threadIdx().x - 1)
+            for stat in 1:nstats
+                @inbounds shared[base + stat] = values[stat]
+            end
+            CUDA.sync_threads()
+            active = CUDA.blockDim().x
+            while active > 1
+                offset = (active + 1) ÷ 2
+                if CUDA.threadIdx().x <= active ÷ 2
+                    other = nstats * (CUDA.threadIdx().x + offset - 1)
+                    for stat in 1:nstats
+                        @inbounds shared[base + stat] += shared[other + stat]
+                    end
+                end
+                CUDA.sync_threads()
+                active = offset
+            end
+            if CUDA.threadIdx().x == 1
+                for stat in 1:nstats
+                    @inbounds partials[stat, bx, col] = shared[stat]
+                end
+            end
+            return nothing
+        end
+
+        # Idea #2: one fused kick kernel for a whole wavefront. blockIdx().y
+        # selects a directed kick segment (one field slice + its source moment
+        # column); blockIdx().x strides over that slice's field particles. Each
+        # particle kick is independent, so the fused ordering is bit-identical.
+        function _cuda_gaussian_fused_kick_kernel!(rep1, rep2, perm1, perm2,
+                                                   seg_beam, seg_off, seg_len, seg_mcol,
+                                                   seg_center, seg_kbb, seg_lumoff,
+                                                   seg_scale, seg_complum,
+                                                   kmoments, means, lum, virtual_drift,
+                                                   nsegments,
+                                                   longitudinal_kick::Val{LONGITUDINAL}) where {LONGITUDINAL}
+            seg = CUDA.blockIdx().y
+            seg > nsegments && return nothing
+            @inbounds beam1 = seg_beam[seg] == Int32(1)
+            @inbounds off = seg_off[seg]
+            @inbounds len = seg_len[seg]
+            @inbounds mcol = seg_mcol[seg]
+            @inbounds center2 = seg_center[seg]
+            @inbounds kbb_slice = seg_kbb[seg]
+            @inbounds lum_offset = seg_lumoff[seg]
+            @inbounds lum_scale = seg_scale[seg]
+            @inbounds compute_lum = seg_complum[seg] == Int32(1)
+            @inbounds mstruct = kmoments[mcol]
+            @inbounds mmx = means[1, mcol]
+            @inbounds mmpx = means[2, mcol]
+            @inbounds mmy = means[3, mcol]
+            @inbounds mmpy = means[4, mcol]
+            drift = _soft_gaussian_drift(virtual_drift, longitudinal_kick)
+            threads = CUDA.blockDim().x
+            position = (CUDA.blockIdx().x - 1) * threads + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * threads
+            while position <= len
+                @inbounds begin
+                    particle = beam1 ? perm1[off + position] : perm2[off + position]
+                    x = beam1 ? rep1.x[particle] : rep2.x[particle]
+                    px = beam1 ? rep1.px[particle] : rep2.px[particle]
+                    y = beam1 ? rep1.y[particle] : rep2.y[particle]
+                    py = beam1 ? rep1.py[particle] : rep2.py[particle]
+                    z = beam1 ? rep1.z[particle] : rep2.z[particle]
+                    pz = beam1 ? rep1.pz[particle] : rep2.pz[particle]
+                    x, px, y, py, z, pz, S = _forward_virtual_drift(
+                        drift, x, px, y, py, z, pz, center2)
+                    xx = x - mmx + mmpx * S
+                    yy = y - mmy + mmpy * S
+                    px0, py0, pz0 = px, py, pz
+                    x, px, y, py, z, pz, density = _cuda_cp_covariance_kick(
+                        mstruct, kbb_slice, S, xx, yy, x, px, y, py, z, pz)
+                    if LONGITUDINAL
+                        pz += 0.5 * ((px - px0) * mmpx + (py - py0) * mmpy)
+                    else
+                        pz = pz0
+                    end
+                    x, px, y, py, z, pz = _reverse_virtual_drift(
+                        drift, x, px, y, py, z, pz, center2)
+                    if beam1
+                        rep1.x[particle] = x; rep1.px[particle] = px
+                        rep1.y[particle] = y; rep1.py[particle] = py
+                        rep1.z[particle] = z; rep1.pz[particle] = pz
+                    else
+                        rep2.x[particle] = x; rep2.px[particle] = px
+                        rep2.y[particle] = y; rep2.py[particle] = py
+                        rep2.z[particle] = z; rep2.pz[particle] = pz
+                    end
+                    if compute_lum
                         lum[lum_offset + position] = density * TWOPI * lum_scale
                     end
                 end
