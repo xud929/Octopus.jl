@@ -353,6 +353,20 @@ cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 #     include_sigma_xy = false,     # true for the full coupled transverse covariance
 #     batch_mode = :wavefront,      # :wavefront or :sequential
 # )
+#
+# Or the spectral sine-series solver (Dirichlet box + DST/DCT field solve). On GPU
+# it is ~4x faster than PIC at matched grid resolution and more accurate on flat
+# beams; the grid follows N_thin ~ 5*domain_factor*sigma_x/sigma_y (see
+# docs/spectral_sine_poisson_solver.md). Note: transverse kick only (no synchro-
+# beam kick yet), and CUDA supports method=:grid only.
+#
+# solver = SpectralPoissonSolver(;
+#     slicing = slicing,
+#     luminosity_scale = input.solver.luminosity_scale,
+#     grid = (128, 1024),           # ~11:1 production beams; (128,128) for round
+#     domain_factor = 16.0,
+#     method = :grid,               # :grid (fast, CUDA) or :grid_free (CPU only)
+# )
 
 solver = PICPoissonSolver(;
     slicing = slicing,
