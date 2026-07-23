@@ -9,15 +9,6 @@ solver integration.
 
 ### Open
 
-- **Flat-beam wide-component kick bias.** In the aligned round-beam test the
-  spectral kick matches the soft-Gaussian solver to ~0.2% (both variants), but for
-  a 5:1 flat beam the wide-direction kick (`Ex`) is ~9% low while the thin
-  direction (`Ey`) is ~0.7% high. It plateaus at ~0.91 and does **not** close with
-  finer/anisotropic grids (256x768, 384x768), so it is a geometry-dependent
-  component bias, not a resolution effect. Production beams are ~11:1 flat, so this
-  must be understood before the solver is used for physics. Suspect the on-mesh
-  DST/DCT derivative or the square-box mode spectrum interacting with beam
-  anisotropy; the least-squares shape validation hid it by fitting a single scale.
 - Density-overlap luminosity: replace the placeholder in `_spectral_collide!`
   (currently `sum_ij weight_i weight_j klum1`) with a real transverse
   density-overlap integral, matching the PIC luminosity convention.
@@ -66,6 +57,15 @@ solver integration.
   Verified: round-beam kick matches the soft-Gaussian solver to ~0.2% for both
   variants, and stays within ~0.3% across `domain_factor` 10-16 (drift at larger
   `d` is fixed-grid resolution loss, not normalization).
+- Flat-beam box fix. `_spectral_box` was sizing the Dirichlet box anisotropically
+  (`Ly ~ d*sigma_y`), which clips the wide field of a flat beam (its transverse
+  field extends on the `sigma_large` scale in both directions) and biased the
+  wide-direction kick by ~9% at 5:1 (plateauing, not a resolution effect). Fixed
+  to a square box sized to `sigma_max` in both directions, matching the docs and
+  the earlier validation, with the thin direction resolved by the grid (`Ny`).
+  Verified against the soft-Gaussian solver: flat 5:1 now matches to ~0.5% at
+  `(128,512)`, and the production ~11:1 flat beam matches to ~0.4% at `(128,1024)`
+  (`N_thin ~ 5*d*sigma_x/sigma_y`); round-beam accuracy is unchanged.
 - Derivation of the 2D Fourier sine-series Poisson solver, discrete DST/FFT form,
   open-boundary discussion, circular/elliptical generalization, and correctness
   checks (manufactured band-limited solution recovered to 1e-15).

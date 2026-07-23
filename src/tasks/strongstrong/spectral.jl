@@ -206,12 +206,17 @@ _spectral_field(solver::SpectralPoissonSolver, sx, sy, fx, fy, Lx, Ly) =
 
 function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2)
     rms(v) = begin m = sum(v) / length(v); sqrt(sum(abs2, v .- m) / length(v)) end
-    sx = max(rms(x1), rms(x2)); sy = max(rms(y1), rms(y2))
     d = solver.domain_factor
     ext(v) = maximum(abs, v)
-    Lx = max(d * sx, 1.05 * max(ext(x1), ext(x2)))
-    Ly = max(d * sy, 1.05 * max(ext(y1), ext(y2)))
-    return Lx, Ly
+    # A flat beam's transverse field extends on the scale of the LARGER rms in
+    # BOTH directions, so the Dirichlet box must be square and sized to sigma_max.
+    # An anisotropic box (Ly ~ d*sigma_y) clips the wide field and biases the
+    # kick by ~10% at 5:1; the thin direction is resolved by the grid (Ny), not a
+    # smaller box. See docs/spectral_sine_poisson_solver.md.
+    smax = max(rms(x1), rms(x2), rms(y1), rms(y2))
+    emax = max(ext(x1), ext(x2), ext(y1), ext(y2))
+    L = max(d * smax, 1.05 * emax)
+    return L, L
 end
 
 function collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend})
