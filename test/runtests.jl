@@ -526,6 +526,34 @@ end
     @test maximum(abs, full_p.rep.pz .- p0.rep.pz) > 0
     @test maximum(abs, transverse_e.rep.pz .- e0.rep.pz) == 0
     @test maximum(abs, transverse_p.rep.pz .- p0.rep.pz) == 0
+
+    # The spectral synchro-beam pz kick uses the same map as the PIC solver, so its
+    # magnitude must match PIC. This guards the potential normalization: the grid
+    # potential reconstruction carries a factor 2 relative to the field and needs an
+    # explicit 1/2 to keep pz consistent with the transverse kick. A round beam on a
+    # square grid converges to PIC to ~1%, so the comparison is meaningful (a missing
+    # 1/2 would show up as a ~2x mismatch).
+    rms(v) = sqrt(sum(abs2, v) / length(v))
+    set_global_rng!(seed=23, method=:philox)
+    er = Beam(3000, CPUThreadsBackend, Float64; beta=(1.0, 1.0, 10.0),
+        alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 7.0e-3), cutoff=5.0, rng_id=1,
+        charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+    pr = Beam(3000, CPUThreadsBackend, Float64; beta=(1.0, 1.0, 10.0),
+        alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 6.0e-3), cutoff=5.0, rng_id=2,
+        charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=1.7e11)
+    sr = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
+    spec_e, spec_p = clone_beam(er), clone_beam(pr)
+    pic_e, pic_p = clone_beam(er), clone_beam(pr)
+    collide!(SpectralPoissonSolver(slicing=sr, method=:grid, grid=(128, 128),
+                                   domain_factor=16.0, longitudinal_kick=true),
+             spec_e, spec_p, CPUThreadsBackend)
+    collide!(PICPoissonSolver(slicing=sr, grid=(128, 128), green_cache=:none,
+                              longitudinal_kick=true),
+             pic_e, pic_p, CPUThreadsBackend)
+    @test isapprox(rms(spec_e.rep.pz .- er.rep.pz),
+                   rms(pic_e.rep.pz .- er.rep.pz); rtol=0.05)
+    @test isapprox(rms(spec_p.rep.pz .- pr.rep.pz),
+                   rms(pic_p.rep.pz .- pr.rep.pz); rtol=0.05)
 end
 
 @testset "Soft-Gaussian synchro-beam longitudinal map" begin
@@ -712,25 +740,32 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             return e, p
         end
         sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
-        solver = SpectralPoissonSolver(slicing=sl, method=:grid, grid=(64, 512),
-                                       domain_factor=16.0, longitudinal_kick=false)
-        ecpu, pcpu = flat_pair()
-        egpu, pgpu = to_gpu(ecpu), to_gpu(pcpu)
-        lum_cpu = collide!(solver, ecpu, pcpu, CPUThreadsBackend)
-        lum_gpu = collide!(solver, egpu, pgpu, Octopus.CUDABackend)
-        Octopus.CUDA.synchronize()
-        # Same algorithm and particle data, so CPU and CUDA agree to round-off (up
-        # to accumulation order across the two backends' parallel reductions).
-        for (cpu_beam, gpu_beam) in ((ecpu, egpu), (pcpu, pgpu))
-            for (expected, actual) in zip(coordinate_arrays(cpu_beam),
-                                          coordinate_arrays(gpu_beam))
-                @test Array(actual) ≈ expected rtol=1.0e-9 atol=1.0e-18
+        # Cover both the transverse-only map and the full 6D synchro-beam map (the
+        # latter exercises the potential/pz path on both backends).
+        for longitudinal_kick in (false, true)
+            solver = SpectralPoissonSolver(slicing=sl, method=:grid, grid=(64, 512),
+                                           domain_factor=16.0,
+                                           longitudinal_kick=longitudinal_kick)
+            ecpu, pcpu = flat_pair()
+            egpu, pgpu = to_gpu(ecpu), to_gpu(pcpu)
+            lum_cpu = collide!(solver, ecpu, pcpu, CPUThreadsBackend)
+            lum_gpu = collide!(solver, egpu, pgpu, Octopus.CUDABackend)
+            Octopus.CUDA.synchronize()
+            # Same algorithm and particle data, so CPU and CUDA agree to round-off
+            # (up to accumulation order across the backends' parallel reductions).
+            for (cpu_beam, gpu_beam) in ((ecpu, egpu), (pcpu, pgpu))
+                for (expected, actual) in zip(coordinate_arrays(cpu_beam),
+                                              coordinate_arrays(gpu_beam))
+                    @test Array(actual) ≈ expected rtol=1.0e-9 atol=1.0e-18
+                end
             end
+            @test lum_gpu ≈ lum_cpu rtol=1.0e-9
         end
-        @test lum_gpu ≈ lum_cpu rtol=1.0e-9
         # grid-free is CPU-only on CUDA
         gf = SpectralPoissonSolver(slicing=sl, method=:grid_free, grid=(48, 48),
                                    longitudinal_kick=false)
+        ecpu, pcpu = flat_pair()
+        egpu, pgpu = to_gpu(ecpu), to_gpu(pcpu)
         @test_throws ArgumentError collide!(gf, egpu, pgpu, Octopus.CUDABackend)
     end
 

@@ -4,6 +4,39 @@ Chronological record of the `SpectralPoissonSolver` build-out, with measured
 evidence. See `docs/spectral_sine_poisson_solver.md` for the method and
 `src/tasks/strongstrong/spectral.jl` / `spectral_cuda.jl` for the code.
 
+## 2026-07-23: fix grid longitudinal-potential factor of 2
+
+The grid-path `pz` (synchro-beam) kick was ~2x too large. The on-mesh potential
+`Phig` is reconstructed with a 2D DST (FFTW `RODFT00`, factor 2 per dimension =
+factor 4), while each field component carries a factor 2 (one DST plus one
+zero-padded DCT whose explicit `/2` nets to `1x` on the derivative dimension).
+Sharing the single fitted `scale` between potential and field therefore left the
+potential a factor 2 too large relative to `E = -grad(phi)`, so the
+potential-difference `pz` kick (`kbb * (phiL - phiR) * hzi`) was doubled. Fixed by
+folding an explicit `1/2` into `Phig` on both CPU
+(`_spectral_field_grid_potential!`) and CUDA (`_cuda_spectral_field_potential!`).
+
+The transverse (`px`, `py`) kick was never affected (it does not use `Phig`), and
+`longitudinal_kick=false` is byte-identical. The grid-free path was already
+correct (it evaluates the sine/cosine series directly with matching signs, no
+DST normalization factor). Evidence after the fix:
+
+- `E = -grad(phi)` finite-difference consistency: grid ratio `Ex/(-dPhi/dx)`
+  moved from `0.487` to `0.974` (residual is grid/CIC discretization); grid-free
+  stayed at `1.000`.
+- Isolated `rms(pz_after - pz_before)` vs PIC on a 5-slice flat case at
+  `grid=(128,1024)`: grid/PIC `1.001` (e), `0.995` (p); before the fix these were
+  ~2x. Grid-free converged to PIC as its mode count grew (`48x48` -> `0.84`/`0.66`;
+  `64x256` -> `0.997`/`0.992`), confirming the same normalization.
+- CUDA 6D vs CPU 6D on a 3-slice flat case: max relative coordinate error
+  `1.2e-14`, luminosity ratio `1.0`.
+
+Regression guards added: a CPU round-beam `rms(dpz)` vs PIC check (`rtol=0.05`)
+in the "Spectral synchro-beam longitudinal map is finite" testset, and the CUDA
+parity testset now runs both `longitudinal_kick=false` and `true`. The earlier
+coordinate-delta tables did not catch this because total `pz` is dominated by the
+initial energy spread (`~1e-3`), which masks a 2x error in the `~1e-8` kick.
+
 ## 2026-07-23: high-energy weak-strong limit for spectral grid and grid-free
 
 `validation/high_energy_weakstrong_limit.jl` now includes spectral-specific

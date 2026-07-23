@@ -306,10 +306,14 @@ function _spectral_field_grid_potential!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx
     end
     scale = _SPECTRAL_FIELD_C0_GRID * Nx * Ny / (2 * (Nx + 1) * 2 * (Ny + 1))
 
-    # Potential on the mesh. Its arbitrary Dirichlet gauge cancels in phiL-phiR.
+    # Potential on the mesh (phi = 0 at the Dirichlet boundary). The 2D DST
+    # reconstruction carries a factor 4 (FFTW RODFT00 is 2x per dimension), while
+    # each field component carries only a factor 2 (one DST + one padded DCT whose
+    # explicit /2 nets to 1x on the derivative dimension). To keep phi consistent
+    # with E = -grad(phi) at the shared `scale`, the potential needs an extra 1/2.
     mul!(ws.tmp, ws.prho, ws.philm)
     @inbounds for k in eachindex(ws.Phig)
-        ws.Phig[k] = scale * ws.tmp[k]
+        ws.Phig[k] = 0.5 * scale * ws.tmp[k]
     end
 
     # Ex = -scale * ddx( DST_y(philm) ), spectral x-derivative via padded DCT-I
@@ -499,46 +503,6 @@ function _spectral_luminosity_pair(x1, y1, x2, y2, klum, nx, ny)
     lum = zero(T)
     @inbounds for k in eachindex(q1); lum += q1[k] * q2[k]; end
     return lum * T(klum) / (hx * hy)
-end
-
-function _spectral_midpoint_luminosity_pair(source, param_source, field, param_field,
-                                            klum, nx, ny)
-    T = promote_type(eltype(source.x), eltype(field.x), typeof(klum))
-    nsource = length(source.x)
-    nfield = length(field.x)
-    s_source = T(0.5) * (T(param_source.center) - T(param_field.center))
-    s_field = T(0.5) * (T(param_field.center) - T(param_source.center))
-    x1 = Vector{T}(undef, nsource); y1 = Vector{T}(undef, nsource)
-    x2 = Vector{T}(undef, nfield); y2 = Vector{T}(undef, nfield)
-    @inbounds for i in 1:nsource
-        x1[i] = source.x[i] + source.px[i] * s_source
-        y1[i] = source.y[i] + source.py[i] * s_source
-    end
-    @inbounds for i in 1:nfield
-        x2[i] = field.x[i] + field.px[i] * s_field
-        y2[i] = field.y[i] + field.py[i] * s_field
-    end
-    return _spectral_luminosity_pair(x1, y1, x2, y2, klum, nx, ny)
-end
-
-function _spectral_midpoint_luminosity_pair(x1, px1, y1, py1, param1,
-                                            x2, px2, y2, py2, param2,
-                                            klum, nx, ny)
-    T = promote_type(eltype(x1), eltype(x2), typeof(klum))
-    n1 = length(x1); n2 = length(x2)
-    s1 = T(0.5) * (T(param1.center) - T(param2.center))
-    s2 = T(0.5) * (T(param2.center) - T(param1.center))
-    vx1 = Vector{T}(undef, n1); vy1 = Vector{T}(undef, n1)
-    vx2 = Vector{T}(undef, n2); vy2 = Vector{T}(undef, n2)
-    @inbounds for i in 1:n1
-        vx1[i] = x1[i] + px1[i] * s1
-        vy1[i] = y1[i] + py1[i] * s1
-    end
-    @inbounds for i in 1:n2
-        vx2[i] = x2[i] + px2[i] * s2
-        vy2[i] = y2[i] + py2[i] * s2
-    end
-    return _spectral_luminosity_pair(vx1, vy1, vx2, vy2, klum, nx, ny)
 end
 
 function _spectral_cic_deposit!(q, x, y, x0, y0, hx, hy)

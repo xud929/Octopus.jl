@@ -239,7 +239,10 @@ if _HAS_CUDA
             _cuda_dst1!(ws.s2, ws, ws.s1)
             Phig = CUDA.similar(ws.rho)
             _cuda_dst2!(Phig, ws, ws.s2)
-            @. Phig = scale * Phig
+            # Factor 1/2: the 2D DST potential reconstruction carries a factor 4
+            # while each field component carries a factor 2 (see the CPU
+            # _spectral_field_grid_potential! comment); keep phi = -grad^-1(E).
+            @. Phig = 0.5 * scale * Phig
 
             _cuda_dst2!(ws.s2, ws, ws.s1)
             @. ws.s2 = ws.al * ws.s2
