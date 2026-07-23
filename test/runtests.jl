@@ -463,6 +463,35 @@ end
     @test all(a == b for (a, b) in zip(coordinate_arrays(p1.rep), coordinate_arrays(p2.rep)))
 end
 
+@testset "Spectral solver reproduces soft-Gaussian kick" begin
+    rms(v) = sqrt(sum(abs2, v) / length(v))
+    function round_pair()
+        set_global_rng!(seed=7, method=:philox)
+        e = Beam(8000, CPUThreadsBackend, Float64;
+            beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 1.0e-2),
+            cutoff=5.0, rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+            r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        p = Beam(8000, CPUThreadsBackend, Float64;
+            beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 1.0e-2),
+            cutoff=5.0, rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
+            r0=RE * ME0 / PMASS_EV, npart=1.7e11)
+        return e, p
+    end
+    sl = LongitudinalSlicing(nslices=1, method=:normal_quantile, center_position=:centroid)
+    eg, pg = round_pair()
+    collide!(GaussianPoissonSolver(slicing=sl, longitudinal_kick=false), eg, pg, CPUThreadsBackend)
+    # Both spectral variants reproduce the analytic Bassetti-Erskine kick (physical
+    # kbb convention identical to GaussianPoissonSolver); the residual is the
+    # deposition/mode-truncation shape error, well under 3%.
+    for (method, grid) in ((:grid, (128, 128)), (:grid_free, (48, 48)))
+        es, ps = round_pair()
+        collide!(SpectralPoissonSolver(slicing=sl, method=method, grid=grid,
+                                       domain_factor=16.0), es, ps, CPUThreadsBackend)
+        @test isapprox(rms(es.rep.px) / rms(eg.rep.px), 1.0; atol=0.03)
+        @test isapprox(rms(ps.rep.py) / rms(pg.rep.py), 1.0; atol=0.03)
+    end
+end
+
 @testset "Soft-Gaussian synchro-beam longitudinal map" begin
     moments = (
         mx=2.0e-5, sx=1.1e-4, mpx=3.0e-4, spx=0.0, covxpx=0.0,
@@ -618,6 +647,46 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=n,
         )
         return Beam{Octopus.CUDABackend,typeof(params),typeof(rep)}(params, rep)
+    end
+
+    @testset "CUDA spectral solver matches CPU" begin
+        function to_gpu(b)
+            rep = Phase6DRep(
+                (Octopus.CUDA.CuArray(copy(a)) for a in coordinate_arrays(b.rep))...)
+            return Beam{Octopus.CUDABackend,typeof(b.params),typeof(rep)}(b.params, rep)
+        end
+        function flat_pair()
+            set_global_rng!(seed=11, method=:philox)
+            e = Beam(4000, CPUThreadsBackend, Float64;
+                beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0),
+                sigma=(106.0e-6, 9.5e-6, 1.0e-2), cutoff=5.0, rng_id=1,
+                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            p = Beam(4000, CPUThreadsBackend, Float64;
+                beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0),
+                sigma=(95.0e-6, 8.5e-6, 1.0e-2), cutoff=5.0, rng_id=2,
+                charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=1.7e11)
+            return e, p
+        end
+        sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
+        solver = SpectralPoissonSolver(slicing=sl, method=:grid, grid=(64, 512),
+                                       domain_factor=16.0)
+        ecpu, pcpu = flat_pair()
+        egpu, pgpu = to_gpu(ecpu), to_gpu(pcpu)
+        lum_cpu = collide!(solver, ecpu, pcpu, CPUThreadsBackend)
+        lum_gpu = collide!(solver, egpu, pgpu, Octopus.CUDABackend)
+        Octopus.CUDA.synchronize()
+        # Same algorithm and particle data, so CPU and CUDA agree to round-off (up
+        # to accumulation order across the two backends' parallel reductions).
+        for (cpu_beam, gpu_beam) in ((ecpu, egpu), (pcpu, pgpu))
+            for (expected, actual) in zip(coordinate_arrays(cpu_beam),
+                                          coordinate_arrays(gpu_beam))
+                @test Array(actual) ≈ expected rtol=1.0e-9 atol=1.0e-18
+            end
+        end
+        @test lum_gpu ≈ lum_cpu rtol=1.0e-9
+        # grid-free is CPU-only on CUDA
+        gf = SpectralPoissonSolver(slicing=sl, method=:grid_free, grid=(48, 48))
+        @test_throws ArgumentError collide!(gf, egpu, pgpu, Octopus.CUDABackend)
     end
 
     @testset "CUDA coupled weak-strong parity" begin
