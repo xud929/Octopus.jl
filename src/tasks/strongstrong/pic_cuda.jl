@@ -949,10 +949,8 @@ if _HAS_CUDA
             seg_kbb = CUDA.CuArray{T}(undef, 2 * max_batch)
             host_seg_scale = Vector{T}(undef, 2 * max_batch)
             seg_scale = CUDA.CuArray{T}(undef, 2 * max_batch)
-            perm1 = slices1.indices.perm
-            perm2 = slices2.indices.perm
-            offsets1 = slices1.indices.offsets
-            offsets2 = slices2.indices.offsets
+            perm1, offsets1 = _cuda_concat_slice_indices(slices1.indices)
+            perm2, offsets2 = _cuda_concat_slice_indices(slices2.indices)
             moment_threads = _cuda_gaussian_moment_launch(1).threads
             moment_shmem = nstats * moment_threads * sizeof(T)
             max_lum = maximum(batches; init=0) do batch
@@ -3866,26 +3864,6 @@ if _HAS_CUDA
             return _cuda_slices_from_boundaries(rep, slicing, boundaries)
         end
 
-        # Contiguous slice-index storage: one device permutation array holding
-        # every slice's particle indices back to back, plus host offsets so that
-        # `indices[i]` is a view of slice i. Keeping all slices in one array lets
-        # the wavefront path launch fused moment/kick kernels (blockIdx.y selects
-        # the slice) instead of one launch per slice pair. `getindex` preserves
-        # the interface used by the Gaussian and PIC consumers.
-        struct _CuSliceIndices{V<:AbstractVector,O<:AbstractVector{Int}}
-            perm::V
-            offsets::O
-        end
-        Base.length(w::_CuSliceIndices) = length(w.offsets) - 1
-        Base.firstindex(::_CuSliceIndices) = 1
-        Base.lastindex(w::_CuSliceIndices) = length(w)
-        Base.eachindex(w::_CuSliceIndices) = Base.OneTo(length(w))
-        @inline Base.getindex(w::_CuSliceIndices, i::Integer) =
-            @view w.perm[(w.offsets[i] + 1):w.offsets[i + 1]]
-        Base.iterate(w::_CuSliceIndices, s::Int=1) =
-            s > length(w) ? nothing : (w[s], s + 1)
-        Base.eltype(::Type{<:_CuSliceIndices{V}}) where {V} = SubArray
-
         function _cuda_slices_from_boundaries(rep::Phase6DRep, slicing::LongitudinalSlicing, boundaries)
             z = rep.z
             T = eltype(z)
@@ -3910,15 +3888,23 @@ if _HAS_CUDA
                     throw(ArgumentError("unknown slice center_position $(slicing.center_position)"))
                 end
             end
+            return LongitudinalSlices(centers, weights, boundaries, indices)
+        end
+
+        # Concatenate a beam's per-slice index vectors into one contiguous device
+        # permutation array plus host offsets (offsets[i]+1 : offsets[i+1] is slice
+        # i). This is built only inside the fused Gaussian wavefront path; the
+        # per-slice `indices` used by the sequential and PIC paths are unchanged.
+        function _cuda_concat_slice_indices(indices)
+            ns = length(indices)
             offsets = Vector{Int}(undef, ns + 1)
             offsets[1] = 0
             for s in 1:ns
                 offsets[s + 1] = offsets[s] + length(indices[s])
             end
-            perm = ns == 0 ? CUDA.CuArray{Int}(undef, 0) :
-                   offsets[end] == 0 ? CUDA.CuArray{Int}(undef, 0) : vcat(indices...)
-            return LongitudinalSlices(centers, weights, boundaries,
-                                      _CuSliceIndices(perm, offsets))
+            perm = (ns == 0 || offsets[end] == 0) ? CUDA.CuArray{Int}(undef, 0) :
+                   vcat(indices...)
+            return perm, offsets
         end
 
         function _cuda_slice_transverse_moments(rep::Phase6DRep, idx, partials,
