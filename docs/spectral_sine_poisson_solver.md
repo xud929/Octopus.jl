@@ -482,6 +482,70 @@ mesh. The method also has no singular zero mode and no doubled grid.
 - Validate the chosen $d$, $N_x$, $N_y$ against Bassetti-Erskine for the actual
   beam aspect ratio before production use.
 
+## 17. Caching and the mode-Green function
+
+The solve $\tilde\phi_{lm} = -k_{bb}\tilde\rho_{lm}/(\alpha_l^2+\beta_m^2)$ has a
+diagonal operator $G_{lm} = 1/(\alpha_l^2+\beta_m^2)$ that plays the role of the
+PIC solver's Green function, but it is much cheaper to cache.
+
+**The transforms are domain-independent.** At the DST grid nodes
+$x_i = i\,a/(N_x+1)$ with $\alpha_l = l\pi/a$, the domain cancels:
+
+$$
+    \alpha_l x_i = \frac{l\pi}{a}\cdot\frac{i\,a}{N_x+1} = \frac{l\pi i}{N_x+1},
+$$
+
+so $\sin(\alpha_l x_i)$ depends only on the grid indices, not the domain size
+(verified to $1.4\text{e-}14$ across domains, with the DST of a fixed gridded
+charge bit-identical). The forward/inverse DST and the DCT derivative therefore
+depend only on $(N_x, N_y)$; their FFTW plans are built once and reused for every
+slice pair and turn.
+
+**Only $G_{lm}$ depends on the domain, and simply.** Under a uniform rescaling
+$a\to s a,\ b\to s b$,
+
+$$
+    G_{lm}(sa,sb) = s^2\,G_{lm}(a,b)
+$$
+
+exactly (verified to $5\text{e-}17$). So the mode-Green array is cached once per
+domain; a uniform domain change is a single $s^2$ multiply, and an aspect-ratio
+change is an $O(N_x N_y)$ recomputation. This is the analog of the PIC slice-pair
+Green cache, but the cached object is a real reciprocal array rather than a
+complex Green FFT, and it is source-independent.
+
+**No shifted Green function is needed.** The PIC solver uses a shifted Green
+function because its source and field live on separate, possibly transversely
+offset grids. The sine method uses a single rectangular box that contains both
+the source slice and the field slice; a transverse offset between colliding
+slices is absorbed into the deposition (particles are placed at their true
+positions in the fixed box), not into a kernel. For beam-beam the colliding
+slices are nearly transversely aligned at the collision point, so one box sized to
+the beam is sufficient, and the shifted-Green machinery disappears.
+
+**Recommendation.** Use a fixed domain sized to the beam over the whole run so
+$G_{lm}$ and the FFTW plans are built once; adapt only when the beam evolves
+enough to warrant it, then rescale ($s^2$) or recompute $G_{lm}$. Per slice pair
+the only unavoidable work is deposition, the transforms (cached plans), the
+diagonal multiply (cached $G$), the DCT derivative, and interpolation.
+
+**Grid-free harmonic recurrence.** For the grid-free variant the mode sums
+$\rho_{lm} = (4/ab)\sum_p \sin(\alpha_l x_p)\sin(\beta_m y_p)$ and the direct field
+evaluation can avoid per-mode trigonometric calls: with $\theta = \pi x_p/a$,
+generate $\sin(l\theta),\cos(l\theta)$ for $l=1,2,\dots$ from the fundamental by
+
+$$
+    \sin(l\theta) = \sin((l-1)\theta)\cos\theta + \cos((l-1)\theta)\sin\theta,
+$$
+
+or the more stable Chebyshev three-term
+$\sin(l\theta) = 2\cos\theta\,\sin((l-1)\theta) - \sin((l-2)\theta)$, replacing $L$
+transcendental evaluations with $L$ multiply-adds (verified accurate to
+$\sim 2\text{e-}13$ up to $l=2000$; re-anchor to an exact value every few hundred
+modes for very large $L$). This benefits **only the grid-free path**: the
+FFT-based grid path already exploits the same harmonic structure internally, so
+the recurrence gives it no additional speedup.
+
 ## References
 
 1. R. W. Hockney and J. W. Eastwood, *Computer Simulation Using Particles*,

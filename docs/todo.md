@@ -20,22 +20,38 @@ solver integration.
   calibration). Keep the kbb convention consistent with `GaussianPoissonSolver`,
   `PICPoissonSolver`, and `ThinStrongBeam` (physical units; divide by the source
   macroparticle count internally, as the PIC path does).
+- Implement **both** field-solve variants and select by a solver option:
+  - Grid (DST): CIC deposit -> 2D DST -> mode solve -> on-mesh spectral (DST/DCT)
+    derivative -> interpolate. FFT-fast; the production path.
+  - Grid-free: mode coefficients directly from particles with the harmonic
+    recurrence (`sin(l*theta)` via three-term Chebyshev, re-anchored for large L),
+    and direct field evaluation. Deposition-error-free reference; best for round
+    beams with few modes.
+- Caching (spectral analog of the PIC slice-pair Green cache, lighter; see
+  `docs/spectral_sine_poisson_solver.md` Section 17): cache FFTW DST/DCT plans per
+  `(Nx, Ny)` and the diagonal mode-Green array `G_lm = 1/(alpha_l^2 + beta_m^2)`
+  per domain. Basis is domain-independent at grid nodes; `G_lm` rescales by `s^2`
+  under uniform domain scaling and is an O(Nx*Ny) recompute otherwise. Prefer a
+  fixed domain over the run. No shifted Green function is needed (single box holds
+  both source and field; offsets are absorbed into deposition).
 - Implement CPU `collide!(solver::SpectralPoissonSolver, beam1, beam2,
   CPUThreadsBackend)`: slice both beams, loop slice pairs in collision order,
-  deposit each source slice, solve the field with the on-mesh spectral-derivative
-  pipeline (DST deposit -> mode solve -> DST/DCT derivative -> interpolate), kick
+  deposit each source slice, solve the field (grid or grid-free per option), kick
   the opposing field slice in both directions, accumulate luminosity. Reuse the
-  shared `_strong_strong_*` slicing/kbb/luminosity helpers.
-- Implement CUDA `collide!` for the same path: cuFFT DST (symmetric extension)
+  shared `_strong_strong_*` slicing/kbb/luminosity helpers and the cache above.
+- Implement CUDA `collide!` for the grid path: cuFFT DST (symmetric extension)
   and the DCT cosine-derivative, batched over slice pairs following the Gaussian
-  and PIC wavefront pattern; no zero mode and no doubled grid.
+  and PIC wavefront pattern; no zero mode and no doubled grid. Grid-free CUDA is
+  optional (the recurrence-based mode sums are parallel but the mode count limits
+  it for flat beams).
 - Add `StrongStrongSpectralBackendConsistencyContract` (CPU/CUDA coordinate and
   luminosity agreement) and wire it into `test/runtests.jl`. Add a single
   high-energy-limit collision check against the soft-Gaussian solver, which must
   match as it does for PIC/Gaussian.
 - Profile the spectral solver at production scale (2.56M/1.024M, 15 slices) on
-  CPU and CUDA, compare complete-turn time to PIC, then optimize; record the runs
-  in a dated `validation/strong_strong_spectral_optimization_history.md`.
+  CPU and CUDA. Compare **grid versus grid-free** complete-turn time head to head,
+  and both against PIC, then optimize; record the runs in a dated
+  `validation/strong_strong_spectral_optimization_history.md`.
 - Optional precision refinement: TSC field interpolation (or a finer mesh) to
   close the round-beam gap between the interpolated on-mesh result (~2.7e-3) and
   the per-point analytic (~1.6e-3).
