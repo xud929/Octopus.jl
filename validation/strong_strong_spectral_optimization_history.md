@@ -4,6 +4,87 @@ Chronological record of the `SpectralPoissonSolver` build-out, with measured
 evidence. See `docs/spectral_sine_poisson_solver.md` for the method and
 `src/tasks/strongstrong/spectral.jl` / `spectral_cuda.jl` for the code.
 
+## 2026-07-23: full 6D synchro-beam map and comparison harness
+
+`SpectralPoissonSolver` now has a public `longitudinal_kick` option. The default
+`true` path applies the same slice-boundary synchro-beam structure as the PIC
+solver: source slices are drifted to the field-slice left/right collision planes,
+the spectral potential and transverse fields are evaluated at both planes, field
+particles receive the longitudinally interpolated transverse kick plus the
+potential-difference `pz` kick, and the virtual drift is reversed.
+`longitudinal_kick=false` retains the original transverse-only spectral map for
+validation and speed comparisons.
+
+The full 6D luminosity path now uses the same midpoint convention as PIC: both
+slices are drifted to their common collision midpoint before the density-overlap
+integral. The transverse-only comparison path keeps the original x/y overlap so
+its kick and luminosity remain order-independent. The comparison harness
+`validation/strong_strong_spectral_comparison.jl` records per-solver timing,
+luminosity, final beam moments, and particle-coordinate differences against PIC
+under `result/strong_strong_spectral_*`.
+
+Production-shaped CPU baseline before the 6D change, `20k/beam`, 15 slices,
+`grid=(128,1024)`, `domain_factor=16`, one collision turn, 8 Julia threads:
+
+| solver | s/turn | allocated | final luminosity |
+| --- | ---: | ---: | ---: |
+| Gaussian | 0.154 | 15.4 MB | 1.0277e30 |
+| PIC `(128,128)` | 4.216 | 972 MB | 1.0240e30 |
+| spectral grid, transverse-only | 1.897 | 483 MB | 1.0481e30 |
+
+After the 6D change on the same CPU case:
+
+| solver | s/turn | allocated | final luminosity |
+| --- | ---: | ---: | ---: |
+| Gaussian | 0.154 | 15.4 MB | 1.0277e30 |
+| PIC `(128,128)` | 4.229 | 972 MB | 1.0240e30 |
+| spectral grid 6D `(128,1024)` | 5.064 | 590 MB | 1.0194e30 |
+
+The CPU grid path is now slower than PIC for this small-particle benchmark
+because the full synchro-beam map needs four spectral source-boundary solves per
+slice pair. The mode-Green and FFTW plans are still reused across slice pairs:
+the extra cost is real field/potential work, not Green recomputation. The CPU
+6D implementation parallelizes over dependency-safe collision wavefronts, with
+one grid workspace per logical worker.
+
+CUDA `20k/beam`, 15 slices, `grid=(128,1024)`:
+
+| solver | s/turn | allocated | final luminosity |
+| --- | ---: | ---: | ---: |
+| Gaussian | 0.0111 | 0.9 MB | 1.0277e30 |
+| PIC `(128,128)` | 0.2315 | 35.4 MB | 1.0240e30 |
+| spectral grid 6D `(128,1024)` | 1.332 | 91.0 MB | 1.0194e30 |
+
+CPU/CUDA spectral 6D agreement on a 512-particle, three-slice smoke case was at
+roundoff: luminosity matched to `4e-16` relative and maximum coordinate
+differences were `<= 9e-19`.
+
+Coordinate and moment comparison for the `20k/beam` CPU run:
+
+- spectral grid versus PIC final luminosity: `-0.45%`;
+- Gaussian versus PIC final luminosity: `+0.36%`;
+- spectral grid versus PIC beam-1 relative coordinate RMS deltas:
+  `x 4.96e-4`, `px 8.47e-3`, `y 5.95e-3`, `py 9.75e-3`, `pz 1.46e-6`;
+- spectral grid versus PIC beam-2 relative coordinate RMS deltas:
+  `x 4.40e-5`, `px 1.22e-3`, `y 5.66e-4`, `py 1.60e-3`, `pz 7.42e-7`.
+
+Grid-free performance was optimized by replacing scalar particle/mode loops with
+harmonic recurrence for sine/cosine bases and dense matrix products for the mode
+coefficients and field evaluation. On the smaller measured case (`2k/beam`, 15
+slices, grid path `(64,512)`, grid-free `(48,48)`, one 6D CPU turn), grid-free
+ran in `0.209 s/turn`; the previous transverse-only scalar grid-free baseline on
+the same `48x48` direct-mode setting was `0.452 s/turn`, so the direct reference
+path is substantially faster despite now doing the full 6D map. It remains a
+reference path, not a production flat-beam setting.
+
+Rejected CUDA optimization: batching the four source-boundary spectral solves
+inside each slice pair as a `Nx x Ny x 4` cuFFT stack was slower (`1.467 s/turn`)
+than the individual cached-workspace solves (`1.332 s/turn`) on the 20k/beam
+case. The likely cause is inefficient small 3D batched transform/layout overhead
+at this batch size. A future CUDA optimization should batch across an entire
+collision wavefront, not just the four solves within one pair, and should be
+accepted only after complete-turn A/B timing and CPU/CUDA parity checks.
+
 ## Accuracy validation (vs soft-Gaussian analytic kick)
 
 Aligned Gaussian beams, kick compared to `GaussianPoissonSolver` (physical `kbb`

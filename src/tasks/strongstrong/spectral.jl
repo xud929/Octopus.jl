@@ -11,8 +11,10 @@ This is the CPU implementation. The grid variant deposits the source slice, take
 a 2D DST, solves per mode, differentiates on the mesh with the exact spectral
 derivative (DST + zero-padded DCT), and interpolates the field to the field-slice
 particles. The grid-free variant forms the mode coefficients directly from the
-source particles and evaluates the field analytically. Both apply a thin
-transverse kick per slice pair (no longitudinal synchro-beam kick yet).
+source particles and evaluates the field analytically. The default collision
+uses the same synchro-beam virtual-drift and longitudinal potential-difference
+structure as the PIC path; `longitudinal_kick=false` retains the original
+transverse-only map for comparisons.
 =#
 
 # Field scale that turns the raw DST/DCT field into the per-unit-charge
@@ -37,6 +39,7 @@ struct SpectralPoissonSolver{T<:Real} <: AbstractPoissonSolver
     grid::Tuple{Int,Int}
     domain_factor::T
     method::Symbol
+    longitudinal_kick::Bool
     slicing::LongitudinalSlicing
     slicing1::LongitudinalSlicing
     slicing2::LongitudinalSlicing
@@ -47,6 +50,7 @@ end
 """
     SpectralPoissonSolver(; kbb1=nothing, kbb2=nothing, luminosity_scale=nothing,
                            grid=(128, 128), domain_factor=16.0, method=:grid,
+                           longitudinal_kick=true,
                            slicing=LongitudinalSlicing(), slicing1=nothing,
                            slicing2=nothing)
 
@@ -61,8 +65,12 @@ the only CUDA-supported variant) or `:grid_free` (mode sums straight from
 particles; CPU only). `kbb1`/`kbb2` are the physical kick scales, same convention
 as `GaussianPoissonSolver` and `PICPoissonSolver`.
 
+`longitudinal_kick=true` applies the Hirata-map synchro-beam drift and
+potential-difference `pz` kick. Set it to `false` for the original
+transverse-only spectral map.
+
 For the production ~11:1 flat beams, `grid=(128, 1024)` with `domain_factor=16`
-reproduces the kick to ~1% (the transverse-kick graininess floor); see
+reproduces the transverse kick to ~1% (the transverse-kick graininess floor); see
 `validation/strong_strong_spectral_optimization_history.md`. Runs on both
 `CPUThreadsBackend` (parallel over field slices) and `CUDABackend`; the CUDA grid
 path is ~4x faster than PIC at matched resolution.
@@ -71,6 +79,7 @@ function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   luminosity_scale=nothing,
                                   grid=(128, 128), domain_factor=16.0,
                                   method::Symbol=:grid,
+                                  longitudinal_kick::Bool=true,
                                   slicing::LongitudinalSlicing=LongitudinalSlicing(),
                                   slicing1=nothing, slicing2=nothing) where {T<:Real}
     s1 = slicing1 === nothing ? slicing : slicing1
@@ -82,7 +91,7 @@ function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
     return SpectralPoissonSolver{T}(
         _optional_solver_value(T, kbb1), _optional_solver_value(T, kbb2),
         _optional_solver_value(T, luminosity_scale), (gx, gy), T(domain_factor), method,
-        slicing, s1, s2, slicing1, slicing2)
+        Bool(longitudinal_kick), slicing, s1, s2, slicing1, slicing2)
 end
 
 SpectralPoissonSolver(; kwargs...) = SpectralPoissonSolver{Float64}(; kwargs...)
@@ -100,6 +109,8 @@ const _SPECTRAL_SOLVER_OPTION_SCHEMA = (
         "Box half-width as a multiple of the larger transverse rms."; category=:accuracy_performance),
     method = SolverOptionMeta(Symbol, :grid,
         "Field-solve variant; :grid (DST/DCT) or :grid_free (direct mode sums)."; category=:performance),
+    longitudinal_kick = SolverOptionMeta(Bool, true,
+        "Apply the synchro-beam virtual drift and potential-difference pz kick."; category=:physics),
     slicing = SolverOptionMeta(LongitudinalSlicing, LongitudinalSlicing(),
         "Shared longitudinal slicing configuration."; category=:physics),
     slicing1 = SolverOptionMeta(Union{Nothing,LongitudinalSlicing}, nothing,
@@ -160,6 +171,7 @@ mutable struct _SpectralGridWS
     tmp::Matrix{Float64}                    # directional DST of philm
     padx::Matrix{Float64}; cosx::Matrix{Float64}   # (Nx+2) x Ny
     pady::Matrix{Float64}; cosy::Matrix{Float64}   # Nx x (Ny+2)
+    Phig::Matrix{Float64}
     Exg::Matrix{Float64}; Eyg::Matrix{Float64}
     prho::FFTW.r2rFFTWPlan          # RODFT00 both dims
     prow::FFTW.r2rFFTWPlan          # RODFT00 dim 2
@@ -170,7 +182,7 @@ end
 
 function _SpectralGridWS(Nx::Int, Ny::Int)
     rho = zeros(Nx, Ny); rholm = zeros(Nx, Ny); philm = zeros(Nx, Ny)
-    tmp = zeros(Nx, Ny); Exg = zeros(Nx, Ny); Eyg = zeros(Nx, Ny)
+    tmp = zeros(Nx, Ny); Phig = zeros(Nx, Ny); Exg = zeros(Nx, Ny); Eyg = zeros(Nx, Ny)
     padx = zeros(Nx + 2, Ny); cosx = zeros(Nx + 2, Ny)
     pady = zeros(Nx, Ny + 2); cosy = zeros(Nx, Ny + 2)
     prho = FFTW.plan_r2r(rho, FFTW.RODFT00)
@@ -179,7 +191,7 @@ function _SpectralGridWS(Nx::Int, Ny::Int)
     pcosx = FFTW.plan_r2r(padx, FFTW.REDFT00, 1)
     pcosy = FFTW.plan_r2r(pady, FFTW.REDFT00, 2)
     return _SpectralGridWS(Nx, Ny, NaN, NaN, zeros(Nx), zeros(Ny), zeros(Nx, Ny),
-        rho, rholm, philm, tmp, padx, cosx, pady, cosy, Exg, Eyg,
+        rho, rholm, philm, tmp, padx, cosx, pady, cosy, Phig, Exg, Eyg,
         prho, prow, pcol, pcosx, pcosy)
 end
 
@@ -270,6 +282,74 @@ function _spectral_field_grid!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly)
     return Ex, Ey
 end
 
+function _spectral_field_grid_potential!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly)
+    Nx, Ny = ws.Nx, ws.Ny
+    a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1)
+    ns = length(sx)
+    _spectral_ws_setbox!(ws, a, b)
+    rho = ws.rho; fill!(rho, 0.0)
+    @inbounds for p in eachindex(sx)
+        X = (sx[p] + Lx) / hx; Y = (sy[p] + Ly) / hy
+        i = floor(Int, X); j = floor(Int, Y); wx = X - i; wy = Y - j
+        for (ii, cx) in ((i, 1 - wx), (i + 1, wx)), (jj, cy) in ((j, 1 - wy), (j + 1, wy))
+            (1 <= ii <= Nx && 1 <= jj <= Ny) && (rho[ii, jj] += cx * cy)
+        end
+    end
+    mul!(ws.rholm, ws.prho, rho)
+    invn = ns > 0 ? 1.0 / (a * b * ns) : 1.0 / (a * b)
+    @inbounds for k in eachindex(ws.philm)
+        ws.philm[k] = -(ws.rholm[k] * invn) * ws.G[k]
+    end
+    scale = _SPECTRAL_FIELD_C0_GRID * Nx * Ny / (2 * (Nx + 1) * 2 * (Ny + 1))
+
+    # Potential on the mesh. Its arbitrary Dirichlet gauge cancels in phiL-phiR.
+    mul!(ws.tmp, ws.prho, ws.philm)
+    @inbounds for k in eachindex(ws.Phig)
+        ws.Phig[k] = scale * ws.tmp[k]
+    end
+
+    # Ex = -scale * ddx( DST_y(philm) ), spectral x-derivative via padded DCT-I
+    mul!(ws.tmp, ws.prow, ws.philm)
+    fill!(ws.padx, 0.0)
+    @inbounds for m in 1:Ny, l in 1:Nx
+        ws.padx[l + 1, m] = ws.al[l] * ws.tmp[l, m]
+    end
+    mul!(ws.cosx, ws.pcosx, ws.padx)
+    @inbounds for m in 1:Ny, l in 1:Nx
+        ws.Exg[l, m] = -scale * (ws.cosx[l + 1, m] / 2)
+    end
+    # Ey = -scale * ddy( DST_x(philm) )
+    mul!(ws.tmp, ws.pcol, ws.philm)
+    fill!(ws.pady, 0.0)
+    @inbounds for m in 1:Ny, l in 1:Nx
+        ws.pady[l, m + 1] = ws.tmp[l, m] * ws.bm[m]
+    end
+    mul!(ws.cosy, ws.pcosy, ws.pady)
+    @inbounds for m in 1:Ny, l in 1:Nx
+        ws.Eyg[l, m] = -scale * (ws.cosy[l, m + 1] / 2)
+    end
+    nf = length(fx)
+    Phi = Vector{Float64}(undef, nf)
+    Ex = Vector{Float64}(undef, nf)
+    Ey = Vector{Float64}(undef, nf)
+    Phig = ws.Phig; Exg = ws.Exg; Eyg = ws.Eyg
+    @inbounds for k in 1:nf
+        X = (fx[k] + Lx) / hx; Y = (fy[k] + Ly) / hy
+        i = floor(Int, X); j = floor(Int, Y); wx = X - i; wy = Y - j
+        phi = 0.0; ex = 0.0; ey = 0.0
+        for (ii, cx) in ((i, 1 - wx), (i + 1, wx)), (jj, cy) in ((j, 1 - wy), (j + 1, wy))
+            if 1 <= ii <= Nx && 1 <= jj <= Ny
+                c = cx * cy
+                phi += c * Phig[ii, jj]
+                ex += c * Exg[ii, jj]
+                ey += c * Eyg[ii, jj]
+            end
+        end
+        Phi[k] = phi; Ex[k] = ex; Ey[k] = ey
+    end
+    return Phi, Ex, Ey
+end
+
 function _spectral_field_grid(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
     a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1)
     ns = length(sx)
@@ -306,36 +386,93 @@ function _spectral_field_grid(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
     return Ex, Ey
 end
 
-function _spectral_field_free(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
-    a = 2Lx; b = 2Ly; ns = length(sx)
-    al = [l * pi / a for l in 1:Nx]; bm = [m * pi / b for m in 1:Ny]
-    sS = Matrix{Float64}(undef, Nx, ns); sC = Matrix{Float64}(undef, Ny, ns)
-    @inbounds for p in 1:ns
-        xs = sx[p] + Lx; ys = sy[p] + Ly
-        for l in 1:Nx; sS[l, p] = sin(al[l] * xs); end
-        for m in 1:Ny; sC[m, p] = sin(bm[m] * ys); end
+function _spectral_mode_sincos(coords, Lbox, Nmodes; need_cos::Bool)
+    n = length(coords)
+    S = Matrix{Float64}(undef, n, Nmodes)
+    C = need_cos ? Matrix{Float64}(undef, n, Nmodes) : Matrix{Float64}(undef, 0, 0)
+    inva = inv(2Lbox)
+    @inbounds for p in 1:n
+        theta = pi * (coords[p] + Lbox) * inva
+        s1, c1 = sincos(theta)
+        sm2 = 0.0
+        sm1 = s1
+        cm2 = 1.0
+        cm1 = c1
+        for l in 1:Nmodes
+            if l == 1
+                s = sm1
+                c = cm1
+            else
+                s = 2c1 * sm1 - sm2
+                c = 2c1 * cm1 - cm2
+                sm2, sm1 = sm1, s
+                cm2, cm1 = cm1, c
+            end
+            S[p, l] = s
+            need_cos && (C[p, l] = c)
+        end
     end
+    return S, C
+end
+
+function _spectral_field_free_potential(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
+    a = 2Lx; b = 2Ly; ns = length(sx)
+    al = [l * pi / a for l in 1:Nx]
+    bm = [m * pi / b for m in 1:Ny]
+    sX, _ = _spectral_mode_sincos(sx, Lx, Nx; need_cos=false)
+    sY, _ = _spectral_mode_sincos(sy, Ly, Ny; need_cos=false)
+    rho_modes = transpose(sX) * sY
     invns = ns > 0 ? 1.0 / ns : 1.0
     philm = Matrix{Float64}(undef, Nx, Ny)
-    @inbounds for l in 1:Nx, m in 1:Ny
-        s = 0.0
-        for p in 1:ns; s += sS[l, p] * sC[m, p]; end
+    @inbounds for m in 1:Ny, l in 1:Nx
         # invns normalizes the source to unit total charge (see _spectral_field_grid).
-        philm[l, m] = -(4 / (a * b)) * (s * invns) / (al[l]^2 + bm[m]^2)
+        philm[l, m] = -(4 / (a * b)) * (rho_modes[l, m] * invns) /
+            (al[l]^2 + bm[m]^2)
     end
+    fSinX, fCosX = _spectral_mode_sincos(fx, Lx, Nx; need_cos=true)
+    fSinY, fCosY = _spectral_mode_sincos(fy, Ly, Ny; need_cos=true)
+
+    nf = length(fx)
+    Phi = Vector{Float64}(undef, nf)
+    Ex = Vector{Float64}(undef, nf)
+    Ey = Vector{Float64}(undef, nf)
+    tmp = fSinX * philm
     scale = _SPECTRAL_FIELD_C0_FREE  # mode-count independent (direct sum is converged)
-    nf = length(fx); Ex = Vector{Float64}(undef, nf); Ey = Vector{Float64}(undef, nf)
     @inbounds for k in 1:nf
-        X = fx[k] + Lx; Y = fy[k] + Ly; ex = 0.0; ey = 0.0
-        for l in 1:Nx
-            cX = cos(al[l] * X); sX = sin(al[l] * X)
-            for m in 1:Ny
-                ex += philm[l, m] * al[l] * cX * sin(bm[m] * Y)
-                ey += philm[l, m] * bm[m] * sX * cos(bm[m] * Y)
-            end
+        phi = 0.0
+        for m in 1:Ny
+            phi += tmp[k, m] * fSinY[k, m]
         end
-        Ex[k] = -scale * (-ex); Ey[k] = -scale * (-ey)
+        Phi[k] = -scale * phi
     end
+
+    ex_modes = similar(philm)
+    ey_modes = similar(philm)
+    @inbounds for m in 1:Ny, l in 1:Nx
+        ex_modes[l, m] = al[l] * philm[l, m]
+        ey_modes[l, m] = bm[m] * philm[l, m]
+    end
+    tmp = fCosX * ex_modes
+    @inbounds for k in 1:nf
+        ex = 0.0
+        for m in 1:Ny
+            ex += tmp[k, m] * fSinY[k, m]
+        end
+        Ex[k] = scale * ex
+    end
+    tmp = fSinX * ey_modes
+    @inbounds for k in 1:nf
+        ey = 0.0
+        for m in 1:Ny
+            ey += tmp[k, m] * fCosY[k, m]
+        end
+        Ey[k] = scale * ey
+    end
+    return Phi, Ex, Ey
+end
+
+function _spectral_field_free(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
+    _, Ex, Ey = _spectral_field_free_potential(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
     return Ex, Ey
 end
 
@@ -360,6 +497,46 @@ function _spectral_luminosity_pair(x1, y1, x2, y2, klum, nx, ny)
     return lum * T(klum) / (hx * hy)
 end
 
+function _spectral_midpoint_luminosity_pair(source, param_source, field, param_field,
+                                            klum, nx, ny)
+    T = promote_type(eltype(source.x), eltype(field.x), typeof(klum))
+    nsource = length(source.x)
+    nfield = length(field.x)
+    s_source = T(0.5) * (T(param_source.center) - T(param_field.center))
+    s_field = T(0.5) * (T(param_field.center) - T(param_source.center))
+    x1 = Vector{T}(undef, nsource); y1 = Vector{T}(undef, nsource)
+    x2 = Vector{T}(undef, nfield); y2 = Vector{T}(undef, nfield)
+    @inbounds for i in 1:nsource
+        x1[i] = source.x[i] + source.px[i] * s_source
+        y1[i] = source.y[i] + source.py[i] * s_source
+    end
+    @inbounds for i in 1:nfield
+        x2[i] = field.x[i] + field.px[i] * s_field
+        y2[i] = field.y[i] + field.py[i] * s_field
+    end
+    return _spectral_luminosity_pair(x1, y1, x2, y2, klum, nx, ny)
+end
+
+function _spectral_midpoint_luminosity_pair(x1, px1, y1, py1, param1,
+                                            x2, px2, y2, py2, param2,
+                                            klum, nx, ny)
+    T = promote_type(eltype(x1), eltype(x2), typeof(klum))
+    n1 = length(x1); n2 = length(x2)
+    s1 = T(0.5) * (T(param1.center) - T(param2.center))
+    s2 = T(0.5) * (T(param2.center) - T(param1.center))
+    vx1 = Vector{T}(undef, n1); vy1 = Vector{T}(undef, n1)
+    vx2 = Vector{T}(undef, n2); vy2 = Vector{T}(undef, n2)
+    @inbounds for i in 1:n1
+        vx1[i] = x1[i] + px1[i] * s1
+        vy1[i] = y1[i] + py1[i] * s1
+    end
+    @inbounds for i in 1:n2
+        vx2[i] = x2[i] + px2[i] * s2
+        vy2[i] = y2[i] + py2[i] * s2
+    end
+    return _spectral_luminosity_pair(vx1, vy1, vx2, vy2, klum, nx, ny)
+end
+
 function _spectral_cic_deposit!(q, x, y, x0, y0, hx, hy)
     nx, ny = size(q)
     @inbounds for p in eachindex(x)
@@ -378,6 +555,12 @@ function _spectral_field_ws(solver::SpectralPoissonSolver, ws, sx, sy, fx, fy, L
     solver.method === :grid_free &&
         return _spectral_field_free(sx, sy, fx, fy, Lx, Ly, solver.grid...)
     return _spectral_field_grid!(ws, sx, sy, fx, fy, Lx, Ly)
+end
+
+function _spectral_field_potential_ws(solver::SpectralPoissonSolver, ws, sx, sy, fx, fy, Lx, Ly)
+    solver.method === :grid_free &&
+        return _spectral_field_free_potential(sx, sy, fx, fy, Lx, Ly, solver.grid...)
+    return _spectral_field_grid_potential!(ws, sx, sy, fx, fy, Lx, Ly)
 end
 
 function _spectral_field(solver::SpectralPoissonSolver, sx, sy, fx, fy, Lx, Ly)
@@ -401,6 +584,68 @@ function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2)
     return L, L
 end
 
+function _spectral_drifted_source(source, drift_s, ::Type{T}) where {T}
+    n = length(source.x)
+    x = Vector{T}(undef, n)
+    y = Vector{T}(undef, n)
+    @inbounds for i in 1:n
+        x[i] = T(source.x[i]) + T(source.px[i]) * T(drift_s)
+        y[i] = T(source.y[i]) + T(source.py[i]) * T(drift_s)
+    end
+    return x, y
+end
+
+function _spectral_midpoint_source(source, param_source, param_field, ::Type{T}) where {T}
+    sM = T(0.5) * (T(param_source.center) - T(param_field.center))
+    n = length(source.x)
+    x = Vector{T}(undef, n)
+    y = Vector{T}(undef, n)
+    @inbounds for i in 1:n
+        x[i] = T(source.x[i]) + T(source.px[i]) * sM
+        y[i] = T(source.y[i]) + T(source.py[i]) * sM
+    end
+    return x, y
+end
+
+function _spectral_interaction!(solver::SpectralPoissonSolver, source, param_source,
+                                field, param_field, kbb_slice, ws, Lx, Ly)
+    T = promote_type(eltype(source.x), eltype(field.x), typeof(kbb_slice))
+    nfield = length(field.x)
+    sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
+    sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
+    sxL, syL = _spectral_drifted_source(source, sL, T)
+    sxR, syR = _spectral_drifted_source(source, sR, T)
+
+    @inbounds for i in 1:nfield
+        s = T(0.5) * (T(field.z[i]) - T(param_source.center))
+        field.x[i] += s * field.px[i]
+        field.y[i] += s * field.py[i]
+        field.pz[i] -= T(0.25) * (field.px[i] * field.px[i] + field.py[i] * field.py[i])
+    end
+
+    phiL, ExL, EyL = _spectral_field_potential_ws(solver, ws, sxL, syL, field.x, field.y, Lx, Ly)
+    phiR, ExR, EyR = _spectral_field_potential_ws(solver, ws, sxR, syR, field.x, field.y, Lx, Ly)
+
+    hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
+    kick_scale = T(kbb_slice)
+    @inbounds for i in 1:nfield
+        zL = clamp(-T(field.z[i]) * hzi + zbias, zero(T), one(T))
+        zR = one(T) - zL
+        Kx = zL * ExL[i] + zR * ExR[i]
+        Ky = zL * EyL[i] + zR * EyR[i]
+        Kz = phiL[i] - phiR[i]
+        field.px[i] += kick_scale * Kx
+        field.py[i] += kick_scale * Ky
+        field.pz[i] += kick_scale * Kz * hzi
+        s = T(0.5) * (T(param_source.center) - T(field.z[i]))
+        field.x[i] += s * field.px[i]
+        field.y[i] += s * field.py[i]
+        field.pz[i] += T(0.25) * (field.px[i] * field.px[i] + field.py[i] * field.py[i])
+    end
+
+    return _spectral_midpoint_source(source, param_source, param_field, T)
+end
+
 function collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend})
     return collide!(solver, beam1, beam2, CPUThreadsBackend, nothing)
 end
@@ -415,6 +660,12 @@ collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThre
 # and accumulates the kick from every source slice, so writes never collide.
 # Direction 1 (kick beam2) also accumulates the density-overlap luminosity.
 function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
+    return solver.longitudinal_kick ?
+        _spectral_collide_longitudinal!(solver, beam1, beam2) :
+        _spectral_collide_transverse!(solver, beam1, beam2)
+end
+
+function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
     slices1 = longitudinal_slices(beam1.rep, solver.slicing1)
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
     kbb1 = _spectral_kbb1(solver, beam1, beam2)
@@ -476,4 +727,54 @@ function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::B
         end
     end
     return sum(lum_parts)
+end
+
+function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
+    slices1 = longitudinal_slices(beam1.rep, solver.slicing1)
+    slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
+    kbb1 = _spectral_kbb1(solver, beam1, beam2)
+    kbb2 = _spectral_kbb2(solver, beam1, beam2)
+    klum = _spectral_luminosity_scale(solver, beam1, beam2)
+    lnx, lny = solver.grid
+    Lx, Ly = _spectral_box(solver, beam1.rep.x, beam1.rep.y, beam2.rep.x, beam2.rep.y)
+    luminosity = zero(promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(klum)))
+    grid = solver.method !== :grid_free
+    batches = collision_pair_batches(slices1, slices2)
+    max_workers = clamp(_cpu_worker_count(), 1, max(1, maximum(length, batches; init=1)))
+    pool = grid ? _spectral_grid_ws_pool(solver.grid[1], solver.grid[2], max_workers) : nothing
+
+    for batch in batches
+        nworkers = clamp(max_workers, 1, length(batch))
+        lum_parts = zeros(typeof(luminosity), nworkers)
+        _run_logical_workers(nworkers) do chunk, _
+            ws = grid ? pool[chunk] : nothing
+            lo, hi = _chunk_bounds(length(batch), nworkers, chunk)
+            local_lum = zero(typeof(luminosity))
+            for pos in lo:hi
+                pair = batch[pos]
+                i = pair.i; j = pair.j
+                idx1 = slices1.indices[i]
+                idx2 = slices2.indices[j]
+                (isempty(idx1) || isempty(idx2)) && continue
+                param1 = (weight=slices1.weight[i], lb=slices1.boundary[i],
+                          center=slices1.center[i], rb=slices1.boundary[i + 1])
+                param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
+                          center=slices2.center[j], rb=slices2.boundary[j + 1])
+                coord1 = _pic_extract_slice(beam1.rep, idx1)
+                coord2 = _pic_extract_slice(beam2.rep, idx2)
+                field1 = _pic_copy_coords(coord1)
+                field2 = _pic_copy_coords(coord2)
+                vx1, vy1 = _spectral_interaction!(
+                    solver, coord1, param1, field2, param2, slices1.weight[i] * kbb2, ws, Lx, Ly)
+                vx2, vy2 = _spectral_interaction!(
+                    solver, coord2, param2, field1, param1, slices2.weight[j] * kbb1, ws, Lx, Ly)
+                _pic_store_slice!(beam1.rep, idx1, field1)
+                _pic_store_slice!(beam2.rep, idx2, field2)
+                local_lum += _spectral_luminosity_pair(vx1, vy1, vx2, vy2, klum, lnx, lny)
+            end
+            lum_parts[chunk] = local_lum
+        end
+        luminosity += sum(lum_parts)
+    end
+    return luminosity
 end

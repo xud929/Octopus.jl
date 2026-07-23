@@ -2,14 +2,18 @@
 
 ## Spectral Sine-Series Poisson Solver
 
-**Status (2026-07-23): production-ready.** `SpectralPoissonSolver` is implemented,
-registered, validated, and optimized on both CPU and CUDA; the full test suite is
-green (including the new spectral accuracy and CPU/CUDA consistency tests). It is a
+**Status (2026-07-23): production-ready transverse solver; full 6D map now
+implemented and under performance characterization.** `SpectralPoissonSolver` is
+implemented, registered, validated, and optimized on both CPU and CUDA. It is a
 documented (commented) option in `examples/strong_strong_tracking.jl`. Recommended
 production setting for the ~11:1 flat beams: `grid=(128, 1024)`, `domain_factor=16`,
-`method=:grid`. Headline numbers: kick matches the analytic soft-Gaussian solver to
-~0.2% (round) / ~0.4% (production flat); CPU 2.0 s/turn (100k/beam, 15 slices, 8
-threads); CUDA 0.62 s/turn at 2.56M/beam, ~4x faster than PIC on GPU.
+`method=:grid`. Transverse-kick headline numbers: kick matches the analytic
+soft-Gaussian solver to ~0.2% (round) / ~0.4% (production flat); transverse-only
+CPU 2.0 s/turn (100k/beam, 15 slices, 8 threads); transverse-only CUDA 0.62
+s/turn at 2.56M/beam, ~4x faster than PIC on GPU. The default
+`longitudinal_kick=true` path now applies the PIC-style synchro-beam drift and
+potential-difference `pz` kick on CPU and CUDA; see the dated optimization
+history for current 6D timing and solver-difference records.
 
 References: method + measured accuracy in `docs/spectral_sine_poisson_solver.md`;
 performance + validation history in
@@ -17,31 +21,36 @@ performance + validation history in
 implementations in `validation/spectral_poisson_field_validation.jl`. Code:
 `src/tasks/strongstrong/spectral.jl` (CPU) and `spectral_cuda.jl` (CUDA).
 
-The only substantive remaining work is the longitudinal synchro-beam kick (v1 is
-transverse-only); everything else Open is optional.
+The longitudinal synchro-beam kick and midpoint luminosity refinement are now
+complete. Remaining Open items are performance/accuracy refinements.
 
 ### Open
 
-- Longitudinal synchro-beam kick: v1 is transverse-only (reads original positions,
-  accumulates px/py). Add the drift-to-collision-point and pz kick so the spectral
-  solver covers the full 6D map like the Gaussian/PIC paths. (This also constrains
-  the field-slice CPU parallelization, which currently relies on order-independent
-  transverse accumulation.)
-- Density-overlap luminosity refinement: the current integral agrees with PIC to
-  ~4%; drift the source slices to the collision midpoint (as PIC does) to close the
-  residual if exact agreement is wanted.
-- Optional CUDA throughput: batch the many small per-slice-pair FFTs across pairs
-  (currently sequential). Not pursued yet — the grid path is already ~4x faster
-  than PIC on GPU, so this is past the point of clear benefit; revisit if a much
-  larger slice count makes launch overhead dominate.
+- CUDA 6D throughput: the full synchro-beam map needs four source-boundary
+  spectral solves per slice pair. A per-pair 4-plane cuFFT batch was measured and
+  rejected as slower; revisit wavefront-level batching only with complete-turn A/B
+  timing and CPU/CUDA parity checks.
 - Optional precision refinement: TSC field interpolation (or a finer mesh) to
   close the round-beam gap between the interpolated on-mesh result (~2.7e-3) and
   the per-point analytic (~1.6e-3).
-- Optional: circular (Fourier-Bessel) domain variant for round beams, per
-  `docs/spectral_sine_poisson_solver.md` Section 12.
 
 ### Completed
 
+- Full 6D synchro-beam map (CPU and CUDA): `longitudinal_kick=true` drifts source
+  slices to field-slice boundaries, interpolates left/right spectral fields,
+  applies the potential-difference `pz` kick, and reverses the field-particle
+  virtual drift. `longitudinal_kick=false` keeps the original transverse-only map.
+- Midpoint density-overlap luminosity for the full 6D path: both slices are
+  drifted to the common collision midpoint before the spectral/PIC-style density
+  overlap. The transverse-only comparison path keeps its original order-
+  independent x/y overlap.
+- Solver-comparison harness:
+  `validation/strong_strong_spectral_comparison.jl` records timing, luminosity,
+  final beam moments, and particle-coordinate differences against PIC/Gaussian
+  references under `result/strong_strong_spectral_*`.
+- Grid-free performance pass: direct mode coefficients and field evaluation now
+  use harmonic recurrence plus dense matrix products, cutting the measured
+  48x48 direct-mode reference case while preserving the grid-free API.
 - Density-overlap luminosity (CPU and CUDA): CIC-deposit both source slices on a
   shared grid, sum the product, scale `npart1*npart2/(nmacro1*nmacro2)` over the
   cell area. Matches `_pic_luminosity!` to machine precision on identical inputs and

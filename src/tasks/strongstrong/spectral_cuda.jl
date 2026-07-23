@@ -48,6 +48,71 @@ if _HAS_CUDA
             return nothing
         end
 
+        function _cuda_spectral_interp_scatter_6d_kernel!(
+                x, px, y, py, z, pz, idx,
+                PhigL, ExgL, EygL, PhigR, ExgR, EygR,
+                center_source, field_lb, field_rb, Lx, Ly, hx, hy, Nx, Ny, a)
+            k = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            k <= length(idx) || return nothing
+            p = idx[k]
+            @inbounds begin
+                xv = x[p]; pxv = px[p]
+                yv = y[p]; pyv = py[p]
+                zv = z[p]; pzv = pz[p]
+
+                s = 0.5 * (zv - center_source)
+                xd = xv + s * pxv
+                yd = yv + s * pyv
+                pzv -= 0.25 * (pxv * pxv + pyv * pyv)
+
+                X = (xd + Lx) / hx
+                Y = (yd + Ly) / hy
+                i = unsafe_trunc(Int, floor(X))
+                j = unsafe_trunc(Int, floor(Y))
+                wx = X - i
+                wy = Y - j
+                phiL = zero(eltype(x)); exL = zero(eltype(x)); eyL = zero(eltype(x))
+                phiR = zero(eltype(x)); exR = zero(eltype(x)); eyR = zero(eltype(x))
+                if 1 <= i <= Nx && 1 <= j <= Ny
+                    c = (1 - wx) * (1 - wy)
+                    phiL += c * PhigL[i, j]; exL += c * ExgL[i, j]; eyL += c * EygL[i, j]
+                    phiR += c * PhigR[i, j]; exR += c * ExgR[i, j]; eyR += c * EygR[i, j]
+                end
+                if 1 <= i + 1 <= Nx && 1 <= j <= Ny
+                    c = wx * (1 - wy)
+                    phiL += c * PhigL[i + 1, j]; exL += c * ExgL[i + 1, j]; eyL += c * EygL[i + 1, j]
+                    phiR += c * PhigR[i + 1, j]; exR += c * ExgR[i + 1, j]; eyR += c * EygR[i + 1, j]
+                end
+                if 1 <= i <= Nx && 1 <= j + 1 <= Ny
+                    c = (1 - wx) * wy
+                    phiL += c * PhigL[i, j + 1]; exL += c * ExgL[i, j + 1]; eyL += c * EygL[i, j + 1]
+                    phiR += c * PhigR[i, j + 1]; exR += c * ExgR[i, j + 1]; eyR += c * EygR[i, j + 1]
+                end
+                if 1 <= i + 1 <= Nx && 1 <= j + 1 <= Ny
+                    c = wx * wy
+                    phiL += c * PhigL[i + 1, j + 1]; exL += c * ExgL[i + 1, j + 1]; eyL += c * EygL[i + 1, j + 1]
+                    phiR += c * PhigR[i + 1, j + 1]; exR += c * ExgR[i + 1, j + 1]; eyR += c * EygR[i + 1, j + 1]
+                end
+
+                denom = field_rb - field_lb
+                hzi = (!isfinite(denom) || denom == zero(denom)) ? zero(denom) : inv(denom)
+                zbias = hzi == zero(hzi) ? eltype(x)(0.5) : field_rb * hzi
+                zL = min(max(-zv * hzi + zbias, zero(eltype(x))), one(eltype(x)))
+                zR = one(eltype(x)) - zL
+                pxn = pxv + a * (zL * exL + zR * exR)
+                pyn = pyv + a * (zL * eyL + zR * eyR)
+                pzn = pzv + a * (phiL - phiR) * hzi
+
+                sback = 0.5 * (center_source - zv)
+                x[p] = xd + sback * pxn
+                y[p] = yd + sback * pyn
+                px[p] = pxn
+                py[p] = pyn
+                pz[p] = pzn + 0.25 * (pxn * pxn + pyn * pyn)
+            end
+            return nothing
+        end
+
         # --- cached workspace (plans + buffers) --------------------------------
         mutable struct _SpectralCudaWS{T,P1,P2}
             Nx::Int; Ny::Int; a::Float64; b::Float64
@@ -157,6 +222,34 @@ if _HAS_CUDA
             return Exg, Eyg, T(hx), T(hy)
         end
 
+        function _cuda_spectral_field_potential!(ws::_SpectralCudaWS{T}, sx, sy, Lx, Ly) where {T}
+            Nx, Ny = ws.Nx, ws.Ny
+            a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1); ns = length(sx)
+            _spectral_cuda_setbox!(ws, Float64(a), Float64(b))
+            CUDA.fill!(ws.rho, 0)
+            threads = 256
+            CUDA.@cuda threads=threads blocks=cld(ns, threads) _cuda_spectral_deposit_kernel!(
+                ws.rho, sx, sy, T(Lx), T(Ly), T(hx), T(hy), Nx, Ny)
+            _cuda_dst1!(ws.s2, ws, ws.rho)
+            _cuda_dst2!(ws.s1, ws, ws.s2)
+            invn = T(ns > 0 ? 1 / (a * b * ns) : 1 / (a * b))
+            @. ws.s1 = -(ws.s1 * invn) * ws.G            # philm in s1
+            scale = T(_SPECTRAL_FIELD_C0_GRID) * Nx * Ny / (2 * (Nx + 1) * 2 * (Ny + 1))
+
+            _cuda_dst1!(ws.s2, ws, ws.s1)
+            Phig = CUDA.similar(ws.rho)
+            _cuda_dst2!(Phig, ws, ws.s2)
+            @. Phig = scale * Phig
+
+            _cuda_dst2!(ws.s2, ws, ws.s1)
+            @. ws.s2 = ws.al * ws.s2
+            Exg = CUDA.similar(ws.rho); _cuda_cosderiv1!(Exg, ws, ws.s2); @. Exg = -scale * Exg
+            _cuda_dst1!(ws.s2, ws, ws.s1)
+            @. ws.s2 = ws.s2 * ws.bm
+            Eyg = CUDA.similar(ws.rho); _cuda_cosderiv2!(Eyg, ws, ws.s2); @. Eyg = -scale * Eyg
+            return Phig, Exg, Eyg, T(hx), T(hy)
+        end
+
         # --- collide! entry points --------------------------------------------
         collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend}) =
             _cuda_spectral_collide!(solver, beam1, beam2)
@@ -166,6 +259,12 @@ if _HAS_CUDA
             _cuda_spectral_collide!(solver, beam1, beam2)
 
         function _cuda_spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
+            return solver.longitudinal_kick ?
+                _cuda_spectral_collide_longitudinal!(solver, beam1, beam2) :
+                _cuda_spectral_collide_transverse!(solver, beam1, beam2)
+        end
+
+        function _cuda_spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
             solver.method === :grid || throw(ArgumentError(
                 "CUDA SpectralPoissonSolver supports method=:grid only; got $(repr(solver.method))"))
             slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing1)
@@ -198,6 +297,81 @@ if _HAS_CUDA
                 CUDA.@cuda threads=threads blocks=cld(length(idx1), threads) _cuda_spectral_interp_scatter_kernel!(
                     r1.px, r1.py, idx1, Exg2, Eyg2, sx1, sy1, T(Lx), T(Ly), hx2, hy2, Nx, Ny, a2)
                 luminosity += _cuda_spectral_luminosity_pair(sx1, sy1, sx2, sy2, klum, lnx, lny)
+            end
+            return luminosity
+        end
+
+        function _cuda_drifted_source(sx, spx, sy, spy, drift_s, ::Type{T}) where {T}
+            return sx .+ spx .* T(drift_s), sy .+ spy .* T(drift_s)
+        end
+
+        function _cuda_spectral_midpoint_luminosity_pair(sx1, spx1, sy1, spy1, center1,
+                                                         sx2, spx2, sy2, spy2, center2,
+                                                         klum, nx, ny)
+            T = eltype(sx1)
+            s1 = T(0.5) * (T(center1) - T(center2))
+            s2 = T(0.5) * (T(center2) - T(center1))
+            mx1 = sx1 .+ spx1 .* s1
+            my1 = sy1 .+ spy1 .* s1
+            mx2 = sx2 .+ spx2 .* s2
+            my2 = sy2 .+ spy2 .* s2
+            return _cuda_spectral_luminosity_pair(mx1, my1, mx2, my2, klum, nx, ny)
+        end
+
+        function _cuda_spectral_collision_direction_6d!(
+                solver::SpectralPoissonSolver, ws::_SpectralCudaWS{T},
+                sx, spx, sy, spy, field_rep, field_idx,
+                param_source, param_field, kbb_slice, Lx, Ly) where {T}
+            sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
+            sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
+            sxL, syL = _cuda_drifted_source(sx, spx, sy, spy, sL, T)
+            sxR, syR = _cuda_drifted_source(sx, spx, sy, spy, sR, T)
+
+            PhigL, ExgL, EygL, hx, hy = _cuda_spectral_field_potential!(ws, sxL, syL, Lx, Ly)
+            PhigR, ExgR, EygR, _, _ = _cuda_spectral_field_potential!(ws, sxR, syR, Lx, Ly)
+            Nx, Ny = solver.grid
+            threads = 256
+            CUDA.@cuda threads=threads blocks=cld(length(field_idx), threads) _cuda_spectral_interp_scatter_6d_kernel!(
+                field_rep.x, field_rep.px, field_rep.y, field_rep.py, field_rep.z, field_rep.pz,
+                field_idx, PhigL, ExgL, EygL, PhigR, ExgR, EygR,
+                T(param_source.center), T(param_field.lb), T(param_field.rb),
+                T(Lx), T(Ly), hx, hy, Nx, Ny, T(kbb_slice))
+            return nothing
+        end
+
+        function _cuda_spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
+            solver.method === :grid || throw(ArgumentError(
+                "CUDA SpectralPoissonSolver supports method=:grid only; got $(repr(solver.method))"))
+            slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing1)
+            slices2 = _cuda_longitudinal_slices(beam2.rep, solver.slicing2)
+            kbb1 = _spectral_kbb1(solver, beam1, beam2)
+            kbb2 = _spectral_kbb2(solver, beam1, beam2)
+            klum = _spectral_luminosity_scale(solver, beam1, beam2)
+            lnx, lny = solver.grid
+            T = eltype(beam1.rep.x)
+            r1 = beam1.rep; r2 = beam2.rep
+            Nx, Ny = solver.grid
+            ws = _spectral_cuda_ws(T, Nx, Ny)
+            Lx, Ly = _cuda_spectral_box(solver, r1, r2)
+            luminosity = zero(T)
+            for (_, i, j) in _slice_collision_order(slices1, slices2)
+                idx1 = slices1.indices[i]; idx2 = slices2.indices[j]
+                (length(idx1) == 0 || length(idx2) == 0) && continue
+                param1 = (weight=slices1.weight[i], lb=slices1.boundary[i],
+                          center=slices1.center[i], rb=slices1.boundary[i + 1])
+                param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
+                          center=slices2.center[j], rb=slices2.boundary[j + 1])
+                sx1 = r1.x[idx1]; spx1 = r1.px[idx1]; sy1 = r1.y[idx1]; spy1 = r1.py[idx1]
+                sx2 = r2.x[idx2]; spx2 = r2.px[idx2]; sy2 = r2.y[idx2]; spy2 = r2.py[idx2]
+                _cuda_spectral_collision_direction_6d!(
+                    solver, ws, sx1, spx1, sy1, spy1, r2, idx2, param1, param2,
+                    slices1.weight[i] * kbb2, Lx, Ly)
+                _cuda_spectral_collision_direction_6d!(
+                    solver, ws, sx2, spx2, sy2, spy2, r1, idx1, param2, param1,
+                    slices2.weight[j] * kbb1, Lx, Ly)
+                luminosity += _cuda_spectral_midpoint_luminosity_pair(
+                    sx1, spx1, sy1, spy1, param1.center,
+                    sx2, spx2, sy2, spy2, param2.center, klum, lnx, lny)
             end
             return luminosity
         end

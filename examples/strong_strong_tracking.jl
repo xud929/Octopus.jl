@@ -354,11 +354,11 @@ cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 #     batch_mode = :wavefront,      # :wavefront or :sequential
 # )
 #
-# Or the spectral sine-series solver (Dirichlet box + DST/DCT field solve). On GPU
-# it is ~4x faster than PIC at matched grid resolution and more accurate on flat
-# beams; the grid follows N_thin ~ 5*domain_factor*sigma_x/sigma_y (see
-# docs/spectral_sine_poisson_solver.md). Note: transverse kick only (no synchro-
-# beam kick yet), and CUDA supports method=:grid only.
+# Or the spectral sine-series solver (Dirichlet box + DST/DCT field solve). The
+# grid follows N_thin ~ 5*domain_factor*sigma_x/sigma_y for flat beams (see
+# docs/spectral_sine_poisson_solver.md). With `longitudinal_kick=true` it applies
+# the same synchro-beam drift and potential-difference pz structure as the PIC
+# path. CUDA supports method=:grid only; method=:grid_free is CPU-only.
 #
 # solver = SpectralPoissonSolver(;
 #     slicing = slicing,
@@ -366,6 +366,7 @@ cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 #     grid = (128, 1024),           # ~11:1 production beams; (128,128) for round
 #     domain_factor = 16.0,
 #     method = :grid,               # :grid (fast, CUDA) or :grid_free (CPU only)
+#     longitudinal_kick = true,
 # )
 
 solver = PICPoissonSolver(;

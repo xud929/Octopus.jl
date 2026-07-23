@@ -1102,6 +1102,17 @@ function validate_configuration_metadata()
         isequal(getproperty(default_gaussian, name), meta.default) || push!(errors,
             "GaussianPoissonSolver.$(name) metadata default disagrees with constructor")
     end
+    spectral_fields = Set(fieldnames(SpectralPoissonSolver))
+    spectral_schema_fields = Set(keys(solver_option_schema(SpectralPoissonSolver)))
+    spectral_schema_fields == setdiff(spectral_fields, internal_fields) || push!(errors,
+        "SpectralPoissonSolver fields and solver_option_schema keys disagree")
+    default_spectral = solver_configuration(SpectralPoissonSolver())
+    for (name, meta) in pairs(solver_option_schema(SpectralPoissonSolver))
+        meta.consumer === :unspecified && push!(errors,
+            "SpectralPoissonSolver.$(name) has no runtime consumer")
+        isequal(getproperty(default_spectral, name), meta.default) || push!(errors,
+            "SpectralPoissonSolver.$(name) metadata default disagrees with constructor")
+    end
     Set(keys(diagnostics_option_schema())) == Set(fieldnames(StrongStrongDiagnostics)) ||
         push!(errors, "StrongStrongDiagnostics fields and metadata keys disagree")
     default_diagnostics = StrongStrongDiagnostics()

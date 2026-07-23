@@ -486,10 +486,46 @@ end
     for (method, grid) in ((:grid, (128, 128)), (:grid_free, (48, 48)))
         es, ps = round_pair()
         collide!(SpectralPoissonSolver(slicing=sl, method=method, grid=grid,
-                                       domain_factor=16.0), es, ps, CPUThreadsBackend)
+                                       domain_factor=16.0, longitudinal_kick=false),
+                 es, ps, CPUThreadsBackend)
         @test isapprox(rms(es.rep.px) / rms(eg.rep.px), 1.0; atol=0.03)
         @test isapprox(rms(ps.rep.py) / rms(pg.rep.py), 1.0; atol=0.03)
     end
+end
+
+@testset "Spectral synchro-beam longitudinal map is finite" begin
+    set_global_rng!(seed=17, method=:philox)
+    e0 = Beam(1200, CPUThreadsBackend, Float64;
+        beta=(0.55, 0.056, 12.0), alpha=(0.0, 0.0, 0.0),
+        sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=1,
+        charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV,
+        npart=1.7e11)
+    p0 = Beam(1200, CPUThreadsBackend, Float64;
+        beta=(0.8, 0.072, 90.0), alpha=(0.0, 0.0, 0.0),
+        sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
+        charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV,
+        npart=0.7e11)
+    clone_beam(b) = begin
+        rep = Phase6DRep((copy(a) for a in coordinate_arrays(b.rep))...)
+        Beam{CPUThreadsBackend,typeof(b.params),typeof(rep)}(b.params, rep)
+    end
+    sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
+    transverse_e, transverse_p = clone_beam(e0), clone_beam(p0)
+    full_e, full_p = clone_beam(e0), clone_beam(p0)
+    transverse_lum = collide!(SpectralPoissonSolver(slicing=sl, method=:grid,
+        grid=(32, 128), domain_factor=16.0, longitudinal_kick=false),
+        transverse_e, transverse_p, CPUThreadsBackend)
+    full_lum = collide!(SpectralPoissonSolver(slicing=sl, method=:grid,
+        grid=(32, 128), domain_factor=16.0, longitudinal_kick=true),
+        full_e, full_p, CPUThreadsBackend)
+    @test isfinite(transverse_lum)
+    @test isfinite(full_lum)
+    @test all(array -> all(isfinite, array), coordinate_arrays(full_e))
+    @test all(array -> all(isfinite, array), coordinate_arrays(full_p))
+    @test maximum(abs, full_e.rep.pz .- e0.rep.pz) > 0
+    @test maximum(abs, full_p.rep.pz .- p0.rep.pz) > 0
+    @test maximum(abs, transverse_e.rep.pz .- e0.rep.pz) == 0
+    @test maximum(abs, transverse_p.rep.pz .- p0.rep.pz) == 0
 end
 
 @testset "Soft-Gaussian synchro-beam longitudinal map" begin
@@ -669,7 +705,7 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         end
         sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
         solver = SpectralPoissonSolver(slicing=sl, method=:grid, grid=(64, 512),
-                                       domain_factor=16.0)
+                                       domain_factor=16.0, longitudinal_kick=false)
         ecpu, pcpu = flat_pair()
         egpu, pgpu = to_gpu(ecpu), to_gpu(pcpu)
         lum_cpu = collide!(solver, ecpu, pcpu, CPUThreadsBackend)
@@ -685,7 +721,8 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         end
         @test lum_gpu ≈ lum_cpu rtol=1.0e-9
         # grid-free is CPU-only on CUDA
-        gf = SpectralPoissonSolver(slicing=sl, method=:grid_free, grid=(48, 48))
+        gf = SpectralPoissonSolver(slicing=sl, method=:grid_free, grid=(48, 48),
+                                   longitudinal_kick=false)
         @test_throws ArgumentError collide!(gf, egpu, pgpu, Octopus.CUDABackend)
     end
 

@@ -410,6 +410,21 @@ This CUDA PIC path is still dominated by deposition and FFT costs for dense
 beams; binned or tiled deposition may be needed later to reduce atomic
 contention.
 
+`SpectralPoissonSolver(longitudinal_kick=true)` uses the same slice-boundary
+synchro-beam structure as the PIC path: drift each source slice to the field
+slice's left/right collision planes, interpolate the two transverse fields to
+each field particle, apply the potential-difference `pz` kick, and reverse the
+field-particle virtual drift. `longitudinal_kick=false` retains the original
+transverse-only spectral map for validation and speed comparisons.
+For `method=:grid`, FFTW/cuFFT plans are reusable across slice pairs because the
+DST/DCT transforms depend only on `(Nx, Ny)`. The spectral mode-Green array
+`1/(alpha_l^2 + beta_m^2)` depends on the shared adaptive box and is reused
+until that box changes. The CPU grid path uses a per-worker workspace pool; the
+CUDA grid path uses one cached workspace for the current grid and scalar type.
+`method=:grid_free` is CPU-only and uses direct mode coefficients as a
+deposition-error-free reference path; it is not intended for production flat
+beams at `grid=(128, 1024)`.
+
 ## Current GPU Validation Notes
 
 CUDA validation requires a GPU that is visible to the Julia process. In some

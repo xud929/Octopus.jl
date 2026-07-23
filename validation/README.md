@@ -77,6 +77,21 @@ this is a characterization, not a fixed pass/fail gate; the measured domain-size
 and thin-direction scaling laws and the recommended parameter choices are
 summarized in the doc.
 
+`strong_strong_spectral_comparison.jl` runs deterministic production-shaped
+live-beam collisions with Gaussian, PIC, spectral grid, and optionally spectral
+grid-free solvers. It records complete-turn timing, luminosity, final beam
+moments, and particle-coordinate differences against PIC.
+
+```bash
+OCTOPUS_SPECTRAL_COMPARE_N=20000 \
+OCTOPUS_SPECTRAL_COMPARE_GRID=128,1024 \
+julia --project=. validation/strong_strong_spectral_comparison.jl
+```
+
+Outputs are written as TSV files under
+`result/strong_strong_spectral_comparison*`. Set
+`OCTOPUS_SPECTRAL_COMPARE_BACKEND=cuda` for CUDA runs; grid-free is CPU-only.
+
 ## Counter RNG
 
 `counter_rng_validation.jl` checks the Philox-based stateless counter RNG used
