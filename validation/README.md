@@ -213,6 +213,9 @@ states and luminosity between the CPU and CUDA soft-Gaussian solvers.
 The implementation audit, public-code comparison, correctness findings, and
 CPU/CUDA performance measurements are recorded in
 [`strong_strong_gaussian_optimization.md`](strong_strong_gaussian_optimization.md).
+Dated soft-Gaussian optimization experiments, including rejected and reverted
+attempts, are logged in
+[`strong_strong_gaussian_optimization_history.md`](strong_strong_gaussian_optimization_history.md).
 
 ```bash
 julia --threads=4 --project=. validation/strong_strong_gaussian_backend_consistency.jl
