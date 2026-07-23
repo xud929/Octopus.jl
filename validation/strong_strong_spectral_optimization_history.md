@@ -4,6 +4,72 @@ Chronological record of the `SpectralPoissonSolver` build-out, with measured
 evidence. See `docs/spectral_sine_poisson_solver.md` for the method and
 `src/tasks/strongstrong/spectral.jl` / `spectral_cuda.jl` for the code.
 
+## 2026-07-23: CUDA 6D throughput campaign (grid path)
+
+Goal: bring the full 6D (`longitudinal_kick=true`) CUDA grid solver to PIC-level
+one-turn time at production scale while keeping the ~1% accuracy. Baseline was
+`grid=(128,1024)`, `domain_factor=16`: **6.05x** slower than PIC at 100k/beam
+(1.44 vs 0.238 s/turn, RTX 4500 Ada, 15 slices).
+
+Profiling (per field-potential solve, 900 solves/turn = 4 per slice pair over 225
+pairs): the seven DST/DCT transforms are ~87% of a solve and ~62% of the turn.
+Within a transform, the FFT itself is only ~20 us; the symmetric-extension build
+and extract were ~75% of it. Batching the FFTs across pairs was measured to give
+only ~1.1x (the transforms are bandwidth/compute-bound, not launch-bound), so the
+levers were transform *cost* and grid *size*, not batching.
+
+Changes, each verified to preserve CPU/CUDA parity (max relative coordinate error
+~1e-14, luminosity ratio 1.0):
+
+- **Real-FFT (rfft) DST/DCT.** The DST-I/DCT-I are computed from a real FFT of the
+  real odd/even extension instead of a complex FFT of a complex extension: half the
+  extension memory traffic and ~1.8x cheaper FFT, bit-identical to the complex
+  path. ~2.6x faster per transform in isolation.
+- **Fused, 2D-indexed build/extract kernels.** One kernel builds the whole
+  extension (replacing fill! + two strided copies + a reversed-index copy); a fused
+  extract folds the final field scale in (removing a per-solve scaling kernel) and
+  writes contiguously. 2D grid indexing avoids a per-thread integer divide.
+- **Preallocated left/right output buffers + drift-folded deposit.** The four
+  per-pair solves write into reused workspace buffers (no per-solve allocation), and
+  the virtual drift to each collision plane is folded into the deposit kernel, so no
+  drifted-source array is materialized. Source slices are snapshotted once per pair.
+- **Shared DST_x(philm)** between the potential and Ey (7 transforms/solve, was 8).
+- **FFT-friendly, right-sized grid.** `(128,1024)/16` is heavily over-resolved: the
+  kick matches PIC to ~1% already at much coarser grids. A grid dimension `N` gives
+  a DST/DCT extension of length `2(N+1)`, so `N = 2^k-1` makes it a power of two and
+  the cuFFT transform far faster (e.g. `Ny=256` -> extension 514 = 2x257 is a bad
+  size; `Ny=255` -> 512 and `Ny=383` -> 768 are good). The recommended production
+  grid is now **`(127, 383)`, `domain_factor=8`** (extensions 256 and 768).
+
+Accuracy at `(127,383)/d=8` vs the PIC solver on the production flat beams (60k/beam,
+15 slices, isolated one-turn `rms(delta)` per coordinate):
+electron `dpx 1.010, dpy 0.992, dpz 1.008`; proton `dpx 1.011, dpy 0.989,
+dpz 1.001`; luminosity ratio `0.9994`. `(128,1024)/16` is `~1.002/0.998` — both
+within the ~1% graininess floor, so the coarser grid preserves the accuracy.
+
+One-turn time, CUDA, 15 slices, RTX 4500 Ada (best of 3 x reps, PIC = `(128,128)`,
+green_cache=:slice_pair):
+
+| particles/beam | PIC | spectral (127,383)/d8 | ratio |
+| ---: | ---: | ---: | ---: |
+| 100k | 0.227 | 0.336 | 1.48x |
+| 300k | 0.242 | 0.345 | 1.42x |
+| 1M | 0.36-0.43 | 0.405 | ~0.94-1.12x |
+| 2M | 0.533 | 0.524 | 0.98x |
+
+The ratio improves with particle count because the O(N) deposit/interpolate/gather
+work (comparable to PIC) dominates at large N while the fixed transform cost is
+amortized. At production scale (~1e6+ particles/beam) the spectral 6D solver is at
+parity with or faster than PIC, down from 6.05x. Smaller cases remain transform-
+bound (~1.5x). The CPU path and `longitudinal_kick=false` are unchanged; the CPU
+6D grid path (which does the same four solves per pair) remains an open performance
+item.
+
+Remaining lever not taken (higher risk): a Makhoul-style N-point real transform
+would remove the 2(N+1) extension entirely (roughly halving the transform), and
+L/R complex-packing would halve the transform count; both were deferred as large
+rewrites with correctness risk given parity is already at ~1x.
+
 ## 2026-07-23: fix grid longitudinal-potential factor of 2
 
 The grid-path `pz` (synchro-beam) kick was ~2x too large. The on-mesh potential

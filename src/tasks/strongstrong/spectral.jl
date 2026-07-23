@@ -73,11 +73,15 @@ only). `kbb1`/`kbb2` are the physical kick scales, same convention as
 potential-difference `pz` kick. Set it to `false` for the original
 transverse-only spectral map.
 
-For the production ~11:1 flat beams, `grid=(128, 1024)` with `domain_factor=16`
-reproduces the transverse kick to ~1% (the transverse-kick graininess floor); see
+For the production ~11:1 flat beams the recommended grid is `grid=(127, 383)` with
+`domain_factor=8`, which reproduces the PIC/analytic kick to ~1% (the graininess
+floor) on both beams in x/y/z. The odd sizes are intentional: a grid dimension `N`
+gives a DST/DCT extension of length `2(N+1)`, so `N=2^k-1` makes that a power of
+two and the CUDA real-FFT optimal. `(128, 1024)/16` also works but is heavily
+over-resolved and ~6x slower on GPU. See
 `validation/strong_strong_spectral_optimization_history.md`. Runs on both
-`CPUThreadsBackend` (parallel over field slices) and `CUDABackend`; the CUDA grid
-path is ~4x faster than PIC at matched resolution.
+`CPUThreadsBackend` (parallel over field slices) and `CUDABackend`; the optimized
+CUDA 6D grid path reaches PIC-level one-turn time at ~1e6 particles/beam.
 """
 function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   luminosity_scale=nothing,

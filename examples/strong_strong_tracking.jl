@@ -360,11 +360,19 @@ cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 # the same synchro-beam drift and potential-difference pz structure as the PIC
 # path. CUDA supports method=:grid only; method=:grid_free is CPU-only.
 #
+# Recommended CUDA production setting for the ~11:1 flat beams: grid=(127, 383),
+# domain_factor=8. This matches the analytic/PIC kick to ~1% (both beams, all of
+# x/y/z) and is ~6x faster than grid=(128,1024)/16 on GPU, reaching parity with the
+# PIC solver at ~1e6 particles/beam. The odd sizes are deliberate: a grid dimension
+# N gives a DST/DCT extension of length 2(N+1), so N = 2^k-1 (127, 383, 511, ...)
+# makes that a power of two and the CUDA real-FFT optimal. See the optimization
+# history for the CPU/CUDA performance campaign.
+#
 # solver = SpectralPoissonSolver(;
 #     slicing = slicing,
 #     luminosity_scale = input.solver.luminosity_scale,
-#     grid = (128, 1024),           # ~11:1 production beams; (128,128) for round
-#     domain_factor = 16.0,
+#     grid = (127, 383),            # ~11:1 flat production beams; (127,127) for round
+#     domain_factor = 8.0,
 #     method = :grid,               # :grid (fast, CUDA) or :grid_free (CPU only)
 #     longitudinal_kick = true,
 # )
