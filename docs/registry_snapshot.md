@@ -118,6 +118,8 @@ constructor names remain the user-facing way to build those specs.
   - Construction metadata: `solver_option_schema`, `solver_help`
 - `PICPoissonSolver`
   - Construction metadata: `solver_option_schema`, `solver_help`
+- `SpectralPoissonSolver`
+  - Construction metadata: `solver_option_schema`, `solver_help`
 
 ## Execution Policies
 
