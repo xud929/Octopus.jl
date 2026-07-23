@@ -435,16 +435,28 @@ The grid (DST) variant is $10^2$--$10^3\times$ faster than grid-free at matched
 accuracy and is the only practical choice when many modes are needed. Grid-free
 is retained as a deposition-error-free reference.
 
-**Accuracy relative to PIC.** On identical sources and field grids, the spectral
-solver is **comparable to, not dramatically better than**, the current Hockney
-PIC solver: median field-shape errors of $\sim 0.1$--$0.2\%$ (round),
-$\sim 0.2$--$0.8\%$ (5:1), and $\sim 1$--$2\%$ (25:1), against PIC's $0.16\%$,
-$0.22\%$, and $0.94\%$. The spectral method tends to have a lower maximum error
-and no singular zero mode or doubled grid, while PIC is often more accurate per
-unit cost at moderate resolution. The spectral grid variant above uses a
-second-order finite-difference field gradient; replacing it with an exact
-spectral (cosine-transform) derivative is the clearest path to improve its field
-accuracy beyond PIC.
+**Field derivative: finite difference versus exact spectral.** The field must be
+differentiated from $\phi$. A second-order finite-difference gradient on the mesh
+is fast but caps the accuracy; the exact analytic derivative (cosine in the
+differentiated axis, from the same mode coefficients) is $2$--$3\times$ more
+accurate at the same domain and resolution. Measured medians ($d=16$):
+
+| case | FD gradient | spectral derivative | PIC |
+| --- | ---: | ---: | ---: |
+| round | 4.7e-3 | **1.6e-3** | 1.6e-3 |
+| 5:1 | 6.4e-3 | 2.9e-3 | 2.2e-3 |
+| 25:1 | 1.1e-2 | 6.1e-3 | 9.4e-3 |
+
+**Accuracy relative to PIC.** With the exact spectral derivative the solver is at
+least as accurate as the Hockney PIC solver everywhere and **clearly better for
+flat beams**, which is the physically relevant beam-beam regime. At $25{:}1$ the
+spectral median is $\sim 35\%$ lower than PIC and the tails are $\sim 3\times$
+better (p95 $3.0\text{e-}2$ vs $8.8\text{e-}2$, max $4.5\text{e-}2$ vs
+$1.4\text{e-}1$); round beams tie. It also has no singular zero mode and no
+doubled grid. Production must evaluate the spectral derivative **on the mesh** by
+a mixed sine/cosine (DST/DCT) transform, then interpolate, so the field cost
+stays $O(N_x N_y\log)$; the validation's direct per-point analytic evaluation is
+$O(N_f N_x N_y)$ and is used only to measure the derivative-limited accuracy.
 
 **Recommended defaults.**
 

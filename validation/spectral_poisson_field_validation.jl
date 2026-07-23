@@ -118,6 +118,41 @@ function spectral_grid_field(xp, yp, Lx, Ly, Nx, Ny, xf, yf)
     return Ex, Ey
 end
 
+# ---------------------------------------------------------------- hybrid: DST deposit + exact spectral derivative
+# Fast DST deposition for the mode coefficients, then the exact analytic field
+# derivative (cosine in the differentiated axis) evaluated at the field points.
+# This removes both the O(Np L M) direct deposition and the finite-difference
+# field error, and is the accuracy-competitive variant.
+function spectral_specderiv_field(xp, yp, Lx, Ly, Nx, Ny, xf, yf)
+    a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1)
+    rho = zeros(Nx, Ny)
+    @inbounds for p in eachindex(xp)
+        X = (xp[p] + Lx) / hx; Y = (yp[p] + Ly) / hy
+        i = floor(Int, X); j = floor(Int, Y); fx = X - i; fy = Y - j
+        for (ii, wx) in ((i, 1 - fx), (i + 1, fx)), (jj, wy) in ((j, 1 - fy), (j + 1, fy))
+            (1 <= ii <= Nx && 1 <= jj <= Ny) && (rho[ii, jj] += wx * wy)
+        end
+    end
+    al = [l * pi / a for l in 1:Nx]; bm = [m * pi / b for m in 1:Ny]
+    rhat = FFTW.r2r(rho, FFTW.RODFT00)
+    phat = [-rhat[l, m] / (al[l]^2 + bm[m]^2) for l in 1:Nx, m in 1:Ny]
+    nrm = (Nx + 1) * (Ny + 1)                              # phi_lm = phat / nrm
+    nf = length(xf); Ex = zeros(nf); Ey = zeros(nf)
+    @inbounds for k in 1:nf
+        X = xf[k] + Lx; Y = yf[k] + Ly; ex = 0.0; ey = 0.0
+        for l in 1:Nx
+            cX = cos(al[l] * X); sX = sin(al[l] * X)
+            for m in 1:Ny
+                pc = phat[l, m] / nrm
+                ex += pc * al[l] * cX * sin(bm[m] * Y)
+                ey += pc * bm[m] * sX * cos(bm[m] * Y)
+            end
+        end
+        Ex[k] = -ex; Ey[k] = -ey
+    end
+    return Ex, Ey
+end
+
 # ---------------------------------------------------------------- PIC reference
 function pic_field(sxv, syv, xf, yf, pg)
     solver = PICPoissonSolver(grid=(pg, pg), deposit_method=:TSC, green_type=:integrated)
@@ -165,20 +200,21 @@ for (ratio, name, pg) in cases
 
     # Recommended settings: square domain sized to max(sx,sy); anisotropic grid
     # resolving the thin direction with Ny ~ 2*domsig*(sx/sy).
-    smax = max(sx, sy); domsig = 8.0
+    smax = max(sx, sy); domsig = 16.0
     Lx = domsig * smax; Ly = domsig * smax
-    Nx = 64; Ny = max(64, ceil(Int, 2 * domsig * (smax / min(sx, sy))))
-    Ny = min(Ny, 1024)
+    Nx = 128; Ny = max(128, ceil(Int, 6 * domsig * (smax / min(sx, sy))))
+    Ny = min(Ny, 1200)
     for (label, f) in (
-            ("spectral-grid", () -> spectral_grid_field(sxv, syv, Lx, Ly, Nx, Ny, xf, yf)),
+            ("spectral-specderiv", () -> spectral_specderiv_field(sxv, syv, Lx, Ly, Nx, Ny, xf, yf)),
+            ("spectral-grid-fd", () -> spectral_grid_field(sxv, syv, Lx, Ly, Nx, Ny, xf, yf)),
             ("spectral-free", () -> spectral_free_field(sxv, syv, Lx, Ly, 96, 96, xf, yf)),
             ("pic", () -> pic_field(sxv, syv, xf, yf, pg)))
         Ex, Ey = f()
         md, p95, mx = shape_relerr(Ex, Ey, Kx, Ky)
         t = bench(f)
-        params = label == "spectral-grid" ? "domsig=8 Nx=$Nx Ny=$Ny" :
-                 label == "spectral-free" ? "domsig=8 L=M=96" : "grid=$pg TSC"
-        @printf("%-9s %5.0f  %-8s %-22s %.3e  %.3e  %.3e  %.4f\n", name, ratio, label, params, md, p95, mx, t)
+        params = startswith(label, "spectral") ?
+                 (label == "spectral-free" ? "d=16 L=M=96" : "d=16 Nx=$Nx Ny=$Ny") : "grid=$pg TSC"
+        @printf("%-9s %5.0f  %-18s %-16s %.3e  %.3e  %.3e  %.4f\n", name, ratio, label, params, md, p95, mx, t)
         push!(rows, @sprintf("%s\t%.0f\t%s\t%s\t%.6e\t%.6e\t%.6e\t%.6f", name, ratio, label, params, md, p95, mx, t))
     end
 end
