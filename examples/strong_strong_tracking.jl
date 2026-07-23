@@ -19,25 +19,14 @@ Select a CUDA device explicitly:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_DEVICE=1 julia --project=. examples/strong_strong_tracking.jl
 
-Select the Poisson solver:
-
-    OCTOPUS_POISSON_SOLVER=PIC julia --project=. examples/strong_strong_tracking.jl
-    OCTOPUS_POISSON_SOLVER=gaussian julia --project=. examples/strong_strong_tracking.jl
-
-The soft-Gaussian solver applies the canonical longitudinal synchro-beam kick
-by default. Disable it only for transverse-map compatibility comparisons:
-
-    OCTOPUS_POISSON_SOLVER=gaussian OCTOPUS_GAUSSIAN_LONGITUDINAL_KICK=0 julia --project=. examples/strong_strong_tracking.jl
-
-Select its physical virtual drift, optional coupled covariance, and CUDA
-slice-pair scheduler with `OCTOPUS_GAUSSIAN_VIRTUAL_DRIFT` (`hirata`,
-`chromatic`, or `exact`), `OCTOPUS_GAUSSIAN_SIGMA_XY`, and
-`OCTOPUS_GAUSSIAN_BATCH_MODE` (`sequential` or `wavefront`).
+This example uses the PIC solver. The soft-Gaussian solver is available as a
+commented alternative: uncomment the `GaussianPoissonSolver(...)` block where the
+solver is constructed and comment out the `PICPoissonSolver(...)` construction.
 
 Run the high-energy weak-strong limiting case by making the electron beam
 effectively rigid. Energies are supplied in GeV for these convenience knobs:
 
-    OCTOPUS_WEAK_STRONG_LIMIT=1 OCTOPUS_POISSON_SOLVER=gaussian julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_WEAK_STRONG_LIMIT=1 julia --project=. examples/strong_strong_tracking.jl
     OCTOPUS_ELECTRON_ENERGY_GEV=1e100 julia --project=. examples/strong_strong_tracking.jl
 
 Disable the beam-beam collision while retaining both complete ring lines:
@@ -46,55 +35,55 @@ Disable the beam-beam collision while retaining both complete ring lines:
 
 Control the PIC longitudinal potential-difference kick. It is enabled by default:
 
-    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_LONGITUDINAL_KICK=1 julia --project=. examples/strong_strong_tracking.jl
-    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_LONGITUDINAL_KICK=0 julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_PIC_LONGITUDINAL_KICK=1 julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_PIC_LONGITUDINAL_KICK=0 julia --project=. examples/strong_strong_tracking.jl
 
 Select PIC slice-pair scheduling:
 
-    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=sequential julia --project=. examples/strong_strong_tracking.jl
-    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_PIC_BATCH_MODE=sequential julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_PIC_BATCH_MODE=wavefront julia --project=. examples/strong_strong_tracking.jl
 
 Compute PIC luminosity every N turns. Use 0 to disable luminosity computation:
 
-    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_LUMINOSITY_EVERY=10 julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_PIC_LUMINOSITY_EVERY=10 julia --project=. examples/strong_strong_tracking.jl
 
 Select an independent luminosity grid or deposition method. `INHERIT` (the
 default) follows the force `deposit_method`; `CIC` and `TSC` override it:
 
-    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_LUMINOSITY_GRID=128,128 OCTOPUS_PIC_LUMINOSITY_DEPOSIT_METHOD=TSC julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_PIC_LUMINOSITY_GRID=128,128 OCTOPUS_PIC_LUMINOSITY_DEPOSIT_METHOD=TSC julia --project=. examples/strong_strong_tracking.jl
 
 The persistent slice-pair Green cache is the default for CPU and CUDA task
 execution. Disable it to run an uncached reference comparison:
 
-    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=slice_pair julia --project=. examples/strong_strong_tracking.jl
-    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=none julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_PIC_GREEN_CACHE=slice_pair julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_PIC_GREEN_CACHE=none julia --project=. examples/strong_strong_tracking.jl
 
 Tune the slice-pair Green cache. `GROWTH=0.20` builds cached
 grids 1.20 times larger than the current request:
 
-    OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_GREEN_CACHE=slice_pair OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO=0.50 OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH=0.20 julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_PIC_GREEN_CACHE=slice_pair OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO=0.50 OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH=0.20 julia --project=. examples/strong_strong_tracking.jl
 
 Disable CUDA PIC asynchronous field solves for comparison:
 
-    OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_CUDA_PIC_ASYNC=0 julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_PIC_ASYNC=0 julia --project=. examples/strong_strong_tracking.jl
 
 Disable CUDA PIC batched FFT field solves for comparison:
 
-    OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_CUDA_PIC_BATCH_FFT=0 julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_PIC_BATCH_FFT=0 julia --project=. examples/strong_strong_tracking.jl
 
 Disable CUDA PIC wavefront-level batched FFTs for comparison:
 
-    OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_WAVEFRONT_FFT=0 julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_USE_GPU=1 OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_WAVEFRONT_FFT=0 julia --project=. examples/strong_strong_tracking.jl
 
 Print statistics for the default slice-pair Green cache:
 
-    OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_PIC_GREEN_CACHE=slice_pair OCTOPUS_PIC_CACHE_STATS=1 julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_USE_GPU=1 OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_PIC_GREEN_CACHE=slice_pair OCTOPUS_PIC_CACHE_STATS=1 julia --project=. examples/strong_strong_tracking.jl
 
 Test the indexed CUDA wavefront path. It skips compact gather/scatter and
 deposits/kicks through slice index vectors while leaving canonical particle
 order unchanged:
 
-    OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT=1 julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_USE_GPU=1 OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT=1 julia --project=. examples/strong_strong_tracking.jl
 
 Log CUDA memory every N turns:
 
@@ -102,7 +91,7 @@ Log CUDA memory every N turns:
 
 Print CUDA PIC phase timings:
 
-    OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_CUDA_PIC_TIMING=1 julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_PIC_TIMING=1 julia --project=. examples/strong_strong_tracking.jl
 
 Record synchronized complete-turn timings and optionally write them as TSV:
 
@@ -117,7 +106,7 @@ family overrides are optional and otherwise inherit `CUDA_THREADS`:
 Print additive field subphase timings. This disables async PIC field solves for
 diagnosis:
 
-    OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC OCTOPUS_CUDA_PIC_TIMING=1 OCTOPUS_CUDA_PIC_TIMING_DETAIL=1 julia --project=. examples/strong_strong_tracking.jl
+    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_PIC_TIMING=1 OCTOPUS_CUDA_PIC_TIMING_DETAIL=1 julia --project=. examples/strong_strong_tracking.jl
 
 Output is written to:
 
@@ -285,7 +274,6 @@ slicing = LongitudinalSlicing(;
     center_position = input.slicing.center,
 )
 
-solver_kind = lowercase(get(ENV, "OCTOPUS_POISSON_SOLVER", "PIC"))
 pic_green_cache = Symbol(lowercase(get(ENV, "OCTOPUS_PIC_GREEN_CACHE", "slice_pair")))
 pic_slice_pair_green_min_ratio = parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO",
                                                     get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO",
@@ -351,48 +339,41 @@ cuda_pic_launch = CUDAPICLaunchConfig(
     luminosity_threads = optional_cuda_pic_threads("OCTOPUS_CUDA_PIC_LUMINOSITY_THREADS"),
 )
 cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
-solver = if solver_kind == "gaussian"
-    gaussian_longitudinal_kick = get(ENV, "OCTOPUS_GAUSSIAN_LONGITUDINAL_KICK", "1") in
-                                 ("1", "true", "TRUE", "yes", "YES")
-    gaussian_virtual_drift = Symbol(lowercase(
-        get(ENV, "OCTOPUS_GAUSSIAN_VIRTUAL_DRIFT", "hirata")))
-    gaussian_sigma_xy = get(ENV, "OCTOPUS_GAUSSIAN_SIGMA_XY", "0") in
-                        ("1", "true", "TRUE", "yes", "YES")
-    gaussian_batch_mode = Symbol(lowercase(
-        get(ENV, "OCTOPUS_GAUSSIAN_BATCH_MODE", "wavefront")))
-    GaussianPoissonSolver(;
-        slicing = slicing,
-        min_sigma = input.solver.min_sigma,
-        luminosity_scale = input.solver.luminosity_scale,
-        longitudinal_kick = gaussian_longitudinal_kick,
-        virtual_drift = gaussian_virtual_drift,
-        include_sigma_xy = gaussian_sigma_xy,
-        batch_mode = gaussian_batch_mode,
-    )
-elseif solver_kind == "pic"
-    PICPoissonSolver(;
-        slicing = slicing,
-        luminosity_scale = input.solver.luminosity_scale,
-        grid = input.solver.pic_grid,
-        deposit_method = input.solver.pic_deposit_method,
-        green_type = input.solver.pic_green_type,
-        green_cache = pic_green_cache,
-        slice_pair_green_min_ratio = pic_slice_pair_green_min_ratio,
-        slice_pair_green_growth = pic_slice_pair_green_growth,
-        longitudinal_kick = pic_longitudinal_kick,
-        batch_mode = pic_batch_mode,
-        cuda_async = cuda_pic_async,
-        cuda_batch_fft = cuda_pic_batch_fft,
-        cuda_wavefront_fft = cuda_pic_wavefront_fft,
-        cuda_indexed_wavefront = cuda_pic_indexed_wavefront,
-        luminosity_schedule = pic_luminosity_schedule,
-        luminosity_grid = pic_luminosity_grid,
-        luminosity_deposit_method = pic_luminosity_deposit_method,
-        backend_configurations = cuda_pic_backend_configurations,
-    )
-else
-    error("unknown OCTOPUS_POISSON_SOLVER=$(solver_kind); use gaussian or PIC")
-end
+# PIC is the default solver. To use the soft-Gaussian solver instead, comment
+# out the PICPoissonSolver construction below and uncomment this block. It
+# replaces the grid PIC field solve with sliced Gaussian moments and a
+# closed-form Bassetti-Erskine kick; see docs/beam_beam_longitudinal_kick.md.
+#
+# solver = GaussianPoissonSolver(;
+#     slicing = slicing,
+#     min_sigma = input.solver.min_sigma,
+#     luminosity_scale = input.solver.luminosity_scale,
+#     longitudinal_kick = true,
+#     virtual_drift = :hirata,      # :hirata, :chromatic, or :exact
+#     include_sigma_xy = false,     # true for the full coupled transverse covariance
+#     batch_mode = :wavefront,      # :wavefront or :sequential
+# )
+
+solver = PICPoissonSolver(;
+    slicing = slicing,
+    luminosity_scale = input.solver.luminosity_scale,
+    grid = input.solver.pic_grid,
+    deposit_method = input.solver.pic_deposit_method,
+    green_type = input.solver.pic_green_type,
+    green_cache = pic_green_cache,
+    slice_pair_green_min_ratio = pic_slice_pair_green_min_ratio,
+    slice_pair_green_growth = pic_slice_pair_green_growth,
+    longitudinal_kick = pic_longitudinal_kick,
+    batch_mode = pic_batch_mode,
+    cuda_async = cuda_pic_async,
+    cuda_batch_fft = cuda_pic_batch_fft,
+    cuda_wavefront_fft = cuda_pic_wavefront_fft,
+    cuda_indexed_wavefront = cuda_pic_indexed_wavefront,
+    luminosity_schedule = pic_luminosity_schedule,
+    luminosity_grid = pic_luminosity_grid,
+    luminosity_deposit_method = pic_luminosity_deposit_method,
+    backend_configurations = cuda_pic_backend_configurations,
+)
 
 electron_tccb2ip = Linear6DSpec{Float64}(;
     beta1 = ele.crab_beta,
@@ -571,34 +552,27 @@ stats_pro = beam_statistics(beam_pro)
 println("turns = ", turns)
 println("n_macro_ele = ", n_macro_ele)
 println("n_macro_pro = ", n_macro_pro)
-println("poisson_solver = ", solver_kind)
+println("poisson_solver = ", nameof(typeof(solver)))
 println("beam_beam_collision = ", disable_collision ? "disabled" : "enabled")
 println("weak_strong_limit = ", weak_strong_limit)
 println("electron_energy_GeV = ", electron_energy / 1.0e9)
 println("proton_energy_GeV = ", proton_energy / 1.0e9)
-if solver_kind == "gaussian"
-    println("gaussian_longitudinal_kick = ", gaussian_longitudinal_kick)
-    println("gaussian_virtual_drift = ", gaussian_virtual_drift)
-    println("gaussian_sigma_xy = ", gaussian_sigma_xy)
-    println("gaussian_batch_mode = ", gaussian_batch_mode)
-elseif solver_kind == "pic"
-    println("pic_longitudinal_kick = ", pic_longitudinal_kick)
-    println("pic_batch_mode = ", pic_batch_mode)
-    println("cuda_pic_async = ", cuda_pic_async)
-    println("cuda_pic_batch_fft = ", cuda_pic_batch_fft)
-    println("cuda_pic_wavefront_fft = ", cuda_pic_wavefront_fft)
-    println("cuda_pic_indexed_wavefront = ", cuda_pic_indexed_wavefront)
-    println("pic_green_cache = ", pic_green_cache)
-    println("pic_slice_pair_green_min_ratio = ", pic_slice_pair_green_min_ratio)
-    println("pic_slice_pair_green_growth = ", pic_slice_pair_green_growth)
-    println("pic_luminosity_every = ", pic_luminosity_every)
-    println("pic_luminosity_grid = ",
-            pic_luminosity_grid === nothing ? input.solver.pic_grid : pic_luminosity_grid)
-    println("pic_luminosity_deposit_method = ",
-            pic_luminosity_deposit_method === nothing ? "inherit" : pic_luminosity_deposit_method)
-    println("pic_luminosity_deposit_method_resolved = ",
-            solver_configuration(solver).resolved_luminosity_deposit_method)
-end
+println("pic_longitudinal_kick = ", pic_longitudinal_kick)
+println("pic_batch_mode = ", pic_batch_mode)
+println("cuda_pic_async = ", cuda_pic_async)
+println("cuda_pic_batch_fft = ", cuda_pic_batch_fft)
+println("cuda_pic_wavefront_fft = ", cuda_pic_wavefront_fft)
+println("cuda_pic_indexed_wavefront = ", cuda_pic_indexed_wavefront)
+println("pic_green_cache = ", pic_green_cache)
+println("pic_slice_pair_green_min_ratio = ", pic_slice_pair_green_min_ratio)
+println("pic_slice_pair_green_growth = ", pic_slice_pair_green_growth)
+println("pic_luminosity_every = ", pic_luminosity_every)
+println("pic_luminosity_grid = ",
+        pic_luminosity_grid === nothing ? input.solver.pic_grid : pic_luminosity_grid)
+println("pic_luminosity_deposit_method = ",
+        pic_luminosity_deposit_method === nothing ? "inherit" : pic_luminosity_deposit_method)
+println("pic_luminosity_deposit_method_resolved = ",
+        solver_configuration(solver).resolved_luminosity_deposit_method)
 println("luminosity = ", disable_luminosity_output ? "disabled" : luminosity_path)
 println("electron moments = ", disable_moments ? "disabled" : electron_moment_path)
 println("proton moments = ", disable_moments ? "disabled" : proton_moment_path)
