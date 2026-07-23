@@ -116,6 +116,15 @@ end
 _spectral_kbb1(solver, beam1, beam2) = _strong_strong_kbb1(solver, beam1, beam2)
 _spectral_kbb2(solver, beam1, beam2) = _strong_strong_kbb2(solver, beam1, beam2)
 
+# Density-overlap luminosity scale, identical to PICPoissonSolver: divides by both
+# macroparticle counts (a grid overlap of the two deposited slices carries both
+# 1/nmacro factors).
+function _spectral_luminosity_scale(solver, beam1, beam2)
+    solver.luminosity_scale !== nothing && return solver.luminosity_scale
+    return beam1.params.npart * beam2.params.npart /
+           (length(beam1.rep) * length(beam2.rep))
+end
+
 # --- field solve for one directed interaction: source (sx,sy) -> field (fx,fy) ---
 # Returns per-field-particle (Ex, Ey) already scaled to the physical BE per-unit-
 # charge convention (kbb applied by the caller).
@@ -199,6 +208,39 @@ function _spectral_field_free(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
     return Ex, Ey
 end
 
+# Transverse density-overlap luminosity for one slice pair, mirroring the PIC
+# convention (CIC deposit of both slices on a shared grid, summed product times
+# klum / cell-area). The spectral and PIC luminosity therefore agree for the same
+# beams up to deposition detail, giving a direct cross-check.
+function _spectral_luminosity_pair(x1, y1, x2, y2, klum, nx, ny)
+    T = promote_type(eltype(x1), eltype(x2), typeof(klum))
+    xmin = min(minimum(x1), minimum(x2)); xmax = max(maximum(x1), maximum(x2))
+    ymin = min(minimum(y1), minimum(y2)); ymax = max(maximum(y1), maximum(y2))
+    width = max(T(xmax - xmin), eps(T)); height = max(T(ymax - ymin), eps(T))
+    tx = width / T(nx - 1.1); ty = height / T(ny - 1.1)
+    width += T(0.1) * tx; height += T(0.1) * ty
+    xmin -= T(0.05) * tx; ymin -= T(0.05) * ty
+    hx = width / (nx - 1); hy = height / (ny - 1)
+    q1 = zeros(T, nx, ny); q2 = zeros(T, nx, ny)
+    _spectral_cic_deposit!(q1, x1, y1, xmin, ymin, hx, hy)
+    _spectral_cic_deposit!(q2, x2, y2, xmin, ymin, hx, hy)
+    lum = zero(T)
+    @inbounds for k in eachindex(q1); lum += q1[k] * q2[k]; end
+    return lum * T(klum) / (hx * hy)
+end
+
+function _spectral_cic_deposit!(q, x, y, x0, y0, hx, hy)
+    nx, ny = size(q)
+    @inbounds for p in eachindex(x)
+        X = (x[p] - x0) / hx + 1; Y = (y[p] - y0) / hy + 1
+        i = floor(Int, X); j = floor(Int, Y); wx = X - i; wy = Y - j
+        for (ii, cx) in ((i, 1 - wx), (i + 1, wx)), (jj, cy) in ((j, 1 - wy), (j + 1, wy))
+            (1 <= ii <= nx && 1 <= jj <= ny) && (q[ii, jj] += cx * cy)
+        end
+    end
+    return q
+end
+
 _spectral_field(solver::SpectralPoissonSolver, sx, sy, fx, fy, Lx, Ly) =
     solver.method === :grid_free ?
         _spectral_field_free(sx, sy, fx, fy, Lx, Ly, solver.grid...) :
@@ -232,7 +274,11 @@ function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::B
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
     kbb1 = _spectral_kbb1(solver, beam1, beam2)
     kbb2 = _spectral_kbb2(solver, beam1, beam2)
-    klum1, klum2 = _strong_strong_luminosity_scales(solver, beam1, beam2)
+    # Density-overlap luminosity uses the PIC scale npart1*npart2/(nmacro1*nmacro2)
+    # (the Gaussian's klum divides by only nmacro1 because its per-particle kick sum
+    # supplies the other factor; a grid overlap needs both).
+    klum = _spectral_luminosity_scale(solver, beam1, beam2)
+    lnx, lny = solver.grid
     r1 = beam1.rep; r2 = beam2.rep
     luminosity = zero(eltype(r1.x))
     Lx, Ly = _spectral_box(solver, r1.x, r1.y, r2.x, r2.y)
@@ -253,9 +299,7 @@ function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::B
         @inbounds for (t, p) in enumerate(idx1)
             r1.px[p] += w2 * ex1[t]; r1.py[p] += w2 * ey1[t]
         end
-        # WIP placeholder luminosity (density-overlap integral not yet implemented);
-        # klum scale kept consistent with the Gaussian/PIC convention.
-        luminosity += slices1.weight[i] * slices2.weight[j] * klum1
+        luminosity += _spectral_luminosity_pair(sx1, sy1, sx2, sy2, klum, lnx, lny)
     end
     return luminosity
 end
