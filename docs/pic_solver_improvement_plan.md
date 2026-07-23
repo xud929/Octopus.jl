@@ -141,6 +141,19 @@ Evaluate additional 2D open-boundary Green functions:
 Any new variant should be selected by `green_type` and covered by validation
 sweeps over round and high-aspect-ratio beams.
 
+### 7. Spectral Sine-Series Poisson Solver
+
+An alternative to the zero-padded Green-function convolution: expand the
+potential and charge density in the double Fourier sine basis
+`sin(l*pi*x/a) sin(m*pi*y/b)` on a rectangular domain, which diagonalizes the
+Poisson operator into one division per mode,
+`phi_lm = -kbb * rho_lm / ((l*pi/a)^2 + (m*pi/b)^2)`. It uses homogeneous
+Dirichlet boundary conditions (approximate open BC on a large domain), has no
+singular zero mode, and needs no doubled grid. The full derivation, discrete
+DST/FFT form, CUDA notes, open-boundary discussion, circular/elliptical
+generalization, and correctness checks are in
+[`spectral_sine_poisson_solver.md`](spectral_sine_poisson_solver.md).
+
 ## Validation Requirements
 
 Every solver change should run:

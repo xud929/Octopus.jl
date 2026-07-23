@@ -60,6 +60,23 @@ has finite-particle, grid, deposition, and domain-truncation error, so the
 script reports the observed distribution and worst case without imposing one
 universal pass/fail tolerance.
 
+## Spectral Sine-Series Poisson Field
+
+`spectral_poisson_field_validation.jl` validates the spectral sine-series 2D
+Poisson solver (see `../docs/spectral_sine_poisson_solver.md`) against the exact
+Bassetti-Erskine field, for both the grid (DST) and grid-free variants, and
+records how accuracy scales with the domain size and the mode/grid resolution.
+It also runs the PIC solver on the same cases for a shape-accuracy comparison.
+
+```bash
+julia --project=. validation/spectral_poisson_field_validation.jl
+```
+
+Outputs `result/spectral_poisson_field_validation.tsv`. Like the PIC field study
+this is a characterization, not a fixed pass/fail gate; the measured domain-size
+and thin-direction scaling laws and the recommended parameter choices are
+summarized in the doc.
+
 ## Counter RNG
 
 `counter_rng_validation.jl` checks the Philox-based stateless counter RNG used
