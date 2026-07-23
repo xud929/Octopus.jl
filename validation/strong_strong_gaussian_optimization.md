@@ -185,25 +185,39 @@ post-compilation turn timings `0.03664` s and `0.04031` s.
 
 A production profile (RTX 4500 Ada, `examples/strong_strong_tracking.jl` beam
 parameters: 2,560,000 electron and 1,024,000 proton macroparticles, 15
-normal-quantile slices, mean of turns 100-200 over paired runs) showed the CUDA
-wavefront collision was host-synchronization- and launch-overhead-bound, not
-compute-bound: a fixed floor of about `0.06` s per collision, independent of
-particle count, dominated by per-wavefront host round-trips and roughly `900`
-tiny per-slice-pair kernel launches. Three changes removed most of it, each
-verified bit-identical by the CPU/CUDA consistency contract (coordinate
-residual `3.09e-17`, luminosity `1.35e-16`) and by matching 200-turn final RMS:
+normal-quantile slices, mean of turns 100-200 over paired interleaved runs)
+showed the CUDA wavefront collision was host-synchronization- and
+launch-overhead-bound, not compute-bound: a fixed floor of about `0.06` s per
+collision, independent of particle count, dominated by per-wavefront host
+round-trips and roughly `960` tiny per-slice-pair kernel launches (two moment
+and two kick launches per pair). A two-point fit `t = 0.061 + 5.4e-8 * N`
+placed the floor at about `70%` of the collision at the example size and about
+`95%` at 20,000 particles per beam. Three changes removed most of it, each
+verified bit-identical by the CPU/CUDA consistency contract in both coupling
+modes (coordinate residual `3.09e-17`, luminosity `1.35e-16`) and by matching
+200-turn final RMS:
 
 1. Defer the per-wavefront luminosity reduction to one device accumulation read
-   back once at the end.
+   back once at the end (`313f45c`).
 2. Build the per-column `StrongTransverseMoments` on the device and read them
    from device memory in the kick, removing the per-wavefront `device_sums`
-   host transfer and host-side moment construction.
-3. Store all slice indices in one contiguous permutation array (with host
-   offsets, so `indices[i]` is a view) and launch one fused moment kernel and
-   one fused kick kernel per wavefront, with `blockIdx().y` selecting the slice
-   column or directed kick segment. This collapses about `900` launches to
-   about `60` per collision. The contiguous storage is shared with the PIC path
-   and validated by `StrongStrongPICBackendConsistencyContract`.
+   host transfer and host-side moment construction (`313f45c`).
+3. Concatenate each beam's slice indices into one contiguous device permutation
+   inside the Gaussian wavefront collide (`_cuda_concat_slice_indices`), then
+   launch one fused moment kernel and one fused kick kernel per wavefront, with
+   `blockIdx().y` selecting the slice column or directed kick segment. The fused
+   moment kernel keeps each column's own block count so its reduction is
+   bit-identical; the per-particle kicks are independent, so their fused
+   ordering is bit-identical. Fusion is within each wavefront batch only, and
+   batches still run sequentially, so the collision-time ordering is unchanged.
+   This collapses about `960` launches to about `120` per collision (`315b55a`).
+
+The fusion is confined to the Gaussian path (`efbd3d2`):
+`_cuda_slices_from_boundaries` still returns per-slice index vectors, so the
+sequential Gaussian path and the PIC path are byte-for-byte unchanged. The PIC
+consistency contract passes, and PIC production throughput is unchanged
+(`0.31388` s/turn pre-optimization versus `0.31560` s/turn after, same case;
+the difference is within run-to-run variance).
 
 | stage | s/turn (mean, turns 100-200) | vs baseline |
 | --- | ---: | ---: |
@@ -212,8 +226,12 @@ residual `3.09e-17`, luminosity `1.35e-16`) and by matching 200-turn final RMS:
 | + device moments | `0.2564` | `-7.9%` |
 | + fused launches | `0.2280` | `-18.0%` |
 
-Turn-to-turn timing jitter also dropped sharply (roughly `0.274`-`0.306` s ->
-`0.227`-`0.229` s) once the host/device handshakes were removed.
+The fixed per-collision floor fell about `85%`, from about `0.061` s to about
+`0.009` s. The improvement is therefore largest in the launch-bound regime: a
+20,000-particle-per-beam isolated collision dropped from `0.0635` s to `0.0114`
+s (about `5.6x`). Turn-to-turn timing jitter also dropped sharply (roughly
+`0.274`-`0.306` s -> `0.227`-`0.229` s) once the host/device handshakes were
+removed.
 
 ## Soft-Gaussian versus PIC characterization
 
