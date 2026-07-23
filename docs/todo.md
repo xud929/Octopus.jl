@@ -9,29 +9,18 @@ solver integration.
 
 ### Open
 
-- Density-overlap luminosity: replace the placeholder in `_spectral_collide!`
-  (currently `sum_ij weight_i weight_j klum1`) with a real transverse
-  density-overlap integral, matching the PIC luminosity convention.
-- Caching (spectral analog of the PIC slice-pair Green cache, lighter; see
-  `docs/spectral_sine_poisson_solver.md` Section 17): cache FFTW DST/DCT plans per
-  `(Nx, Ny)` and the diagonal mode-Green array `G_lm = 1/(alpha_l^2 + beta_m^2)`
-  per domain. Basis is domain-independent at grid nodes; `G_lm` rescales by `s^2`
-  under uniform domain scaling and is an O(Nx*Ny) recompute otherwise. Prefer a
-  fixed domain over the run. No shifted Green function is needed (single box holds
-  both source and field; offsets are absorbed into deposition).
-- Implement CUDA `collide!` for the grid path: cuFFT DST (symmetric extension)
-  and the DCT cosine-derivative, batched over slice pairs following the Gaussian
-  and PIC wavefront pattern; no zero mode and no doubled grid. Grid-free CUDA is
-  optional (the recurrence-based mode sums are parallel but the mode count limits
-  it for flat beams).
-- Add `StrongStrongSpectralBackendConsistencyContract` (CPU/CUDA coordinate and
-  luminosity agreement) and wire it into `test/runtests.jl`. Add a single
-  high-energy-limit collision check against the soft-Gaussian solver, which must
-  match as it does for PIC/Gaussian.
-- Profile the spectral solver at production scale (2.56M/1.024M, 15 slices) on
-  CPU and CUDA. Compare **grid versus grid-free** complete-turn time head to head,
-  and both against PIC, then optimize; record the runs in a dated
-  `validation/strong_strong_spectral_optimization_history.md`.
+- Longitudinal synchro-beam kick: v1 is transverse-only (reads original positions,
+  accumulates px/py). Add the drift-to-collision-point and pz kick so the spectral
+  solver covers the full 6D map like the Gaussian/PIC paths. (This also constrains
+  the field-slice CPU parallelization, which currently relies on order-independent
+  transverse accumulation.)
+- Density-overlap luminosity refinement: the current integral agrees with PIC to
+  ~4%; drift the source slices to the collision midpoint (as PIC does) to close the
+  residual if exact agreement is wanted.
+- Optional CUDA throughput: batch the many small per-slice-pair FFTs across pairs
+  (currently sequential). Not pursued yet — the grid path is already ~4x faster
+  than PIC on GPU, so this is past the point of clear benefit; revisit if a much
+  larger slice count makes launch overhead dominate.
 - Optional precision refinement: TSC field interpolation (or a finer mesh) to
   close the round-beam gap between the interpolated on-mesh result (~2.7e-3) and
   the per-point analytic (~1.6e-3).
@@ -39,6 +28,28 @@ solver integration.
   `docs/spectral_sine_poisson_solver.md` Section 12.
 
 ### Completed
+
+- Density-overlap luminosity (CPU and CUDA): CIC-deposit both source slices on a
+  shared grid, sum the product, scale `npart1*npart2/(nmacro1*nmacro2)` over the
+  cell area. Matches `_pic_luminosity!` to machine precision on identical inputs and
+  agrees with PIC/Gaussian to ~4% on the production beams.
+- CPU caching + parallelism: reusable per-worker workspace pool (deposit/mode/
+  derivative buffers + FFTW plans, mode-Green recomputed only when the box changes),
+  cutting per-solve allocation ~18 MiB -> 105 KiB; collision parallelized over field
+  slices. 100k/beam, 15 slices, grid 128x1024: 9.7 -> 2.0 s/turn (~4.1x on 8
+  threads), bit-consistent across thread counts.
+- CUDA `collide!` for the grid path (`spectral_cuda.jl`): DST-I/DCT-I built from
+  complex cuFFT of symmetric extensions (verified to machine precision vs FFTW),
+  one in-place plan per dimension, cached workspace, custom deposit/interp-scatter/
+  luminosity kernels. Agrees with the CPU path to ~4e-16 (kicks) and ~9e-16
+  (luminosity); 0.62 s/turn at 2.56M/beam, ~4x faster than PIC CUDA at matched grid.
+- Validation tests in `test/runtests.jl`: spectral-vs-Gaussian accuracy (both
+  variants, round beam, <3%) and CPU/CUDA consistency (rtol 1e-9).
+- Production parameter selection: grid `(128, 1024)`, `domain_factor=16` for ~11:1
+  beams (grid-converged kick to ~1%, at the graininess floor). See the dated
+  `validation/strong_strong_spectral_optimization_history.md`.
+
+### Completed (solver core)
 
 - `SpectralPoissonSolver{T} <: AbstractPoissonSolver`
   (`src/tasks/strongstrong/spectral.jl`): auto-registered, structured option

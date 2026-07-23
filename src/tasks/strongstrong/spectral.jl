@@ -54,10 +54,18 @@ Spectral sine-series strong-strong collision solver on a rectangular domain with
 homogeneous Dirichlet boundaries (a large-box approximation to open boundary
 conditions). `grid=(Nx, Ny)` sets the mesh and mode counts; use an anisotropic
 grid for flat beams (`Ny ~ 5 * domain_factor * sigma_x/sigma_y`). `domain_factor`
-sets the box half-width as a multiple of the larger transverse rms. `method` is
-`:grid` (DST/DCT, the fast path) or `:grid_free` (mode sums straight from
-particles). `kbb1`/`kbb2` are the physical kick scales, same convention as
-`GaussianPoissonSolver` and `PICPoissonSolver`.
+sets the box half-width as a multiple of the larger transverse rms (the box is
+square — sized to the larger rms in both directions — because a flat beam's field
+extends on that scale in both). `method` is `:grid` (DST/DCT, the fast path, and
+the only CUDA-supported variant) or `:grid_free` (mode sums straight from
+particles; CPU only). `kbb1`/`kbb2` are the physical kick scales, same convention
+as `GaussianPoissonSolver` and `PICPoissonSolver`.
+
+For the production ~11:1 flat beams, `grid=(128, 1024)` with `domain_factor=16`
+reproduces the kick to ~1% (the transverse-kick graininess floor); see
+`validation/strong_strong_spectral_optimization_history.md`. Runs on both
+`CPUThreadsBackend` (parallel over field slices) and `CUDABackend`; the CUDA grid
+path is ~4x faster than PIC at matched resolution.
 """
 function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   luminosity_scale=nothing,
