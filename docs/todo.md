@@ -2,10 +2,23 @@
 
 ## Spectral Sine-Series Poisson Solver
 
-See `docs/spectral_sine_poisson_solver.md` for the method and measured accuracy,
-and `validation/spectral_poisson_field_validation.jl` for the reference field
-implementations. The algorithmic core is validated; the remaining work is the
-solver integration.
+**Status (2026-07-23): production-ready.** `SpectralPoissonSolver` is implemented,
+registered, validated, and optimized on both CPU and CUDA; the full test suite is
+green (including the new spectral accuracy and CPU/CUDA consistency tests). It is a
+documented (commented) option in `examples/strong_strong_tracking.jl`. Recommended
+production setting for the ~11:1 flat beams: `grid=(128, 1024)`, `domain_factor=16`,
+`method=:grid`. Headline numbers: kick matches the analytic soft-Gaussian solver to
+~0.2% (round) / ~0.4% (production flat); CPU 2.0 s/turn (100k/beam, 15 slices, 8
+threads); CUDA 0.62 s/turn at 2.56M/beam, ~4x faster than PIC on GPU.
+
+References: method + measured accuracy in `docs/spectral_sine_poisson_solver.md`;
+performance + validation history in
+`validation/strong_strong_spectral_optimization_history.md`; reference field
+implementations in `validation/spectral_poisson_field_validation.jl`. Code:
+`src/tasks/strongstrong/spectral.jl` (CPU) and `spectral_cuda.jl` (CUDA).
+
+The only substantive remaining work is the longitudinal synchro-beam kick (v1 is
+transverse-only); everything else Open is optional.
 
 ### Open
 
