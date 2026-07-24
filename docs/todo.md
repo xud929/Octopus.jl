@@ -85,13 +85,36 @@ had the same campaign and remains the top open performance item.
      cost, not scheduling.
    - Gate any change on complete-turn A/B timing plus the CPU accuracy-vs-PIC and
      CPU/CUDA parity tests (both already in `test/runtests.jl`).
-2. **Further CUDA 6D throughput (would close the remaining ~1.24x gap).** Two
-   larger, higher-risk transform rewrites were deferred: a Makhoul-style N-point
-   real transform (removes the `2(N+1)` extension, ~halving each transform) and L/R
-   complex-packing (halves the transform count). Either could bring 1e6/beam to
-   parity or below. Take them only with fair interleaved complete-turn A/B timing
-   and the CPU/CUDA 6D parity test.
-3. Adaptive spectral Dirichlet-box strategy: the current spectral kick solve uses
+2. **Wavefront FFT batching (CUDA, in progress).** The box is the same for every
+   field solve in a turn, so the FFT computation graph is fixed: all field solves in
+   a dependency-safe collision wavefront can be stacked along a batch dimension and
+   run as a few large batched rfft/build/extract calls instead of many small ones.
+   Measured: a batched rfft at `(127,383)` is ~1.64x more efficient than sequential
+   (saturating at batch >= ~30, which a 15-pair wavefront of up to 60 planes
+   reaches). Expected ~1.39x -> ~1.1-1.2x PIC. Does not change accuracy. Note it
+   does NOT make spectral beat PIC (see the FP64 ceiling below); it just narrows the
+   gap. Gate on beamline A/B timing + the CPU/CUDA 6D parity test.
+3. **Add FP32 to PIC as an optional flag too.** Spectral now has
+   `field_precision=:single` (Float32 field solve, ~1e-6 kick error, big win on
+   FP64-weak GPUs). For a fair single-precision comparison PIC should expose the same
+   option (a `field_precision`/`:single` flag that runs its deposit/FFT/Green/field
+   in Float32 while keeping coordinates in Float64). Not for production either;
+   purely so PIC-vs-spectral A/B tests can be run at matched precision.
+4. **FP64 ceiling (documented, likely fundamental).** At the fixed physics grid the
+   Dirichlet-box field solve does ~2.6x more FFT work per solve than PIC's
+   adaptive-box `(128,128)` (7 rfft of 256x768 vs ~2 FFT of 256x256), and PIC already
+   batches its FFTs. So at matched accuracy/precision spectral cannot beat PIC on raw
+   throughput; even wavefront batching (item 2) only reaches ~1.1-1.2x. A *fixed*
+   large Dirichlet box does not help here -- the box is already shared across a turn,
+   so the FFT graph is already fixed and batchable; a fixed-across-turns box would
+   only save the tiny per-turn `al/bm/G` recompute, not FFT work. The genuine
+   work-reduction lever is the adaptive box (item 5), which conflicts with holding
+   the grid fixed for resolution. The Makhoul N-point real transform (removes the
+   `2(N+1)` extension, ~halving each transform) is the one remaining lever that could
+   plausibly reach parity/below at fixed grid; deferred as a large, higher-risk
+   rewrite. The spectral solver's real advantage over PIC is accuracy (exact
+   derivative, better on flat beams), not speed.
+5. Adaptive spectral Dirichlet-box strategy: the current spectral kick solve uses
   one shared global square box for both source and field beams across all slice
   pairs. This is conservative and keeps DST/DCT plans and workspaces simple, but
   it can leave many empty cells/modes for individual slice-pair solves. Explore a
@@ -105,14 +128,14 @@ had the same campaign and remains the top open performance item.
   `grid=(Nx,Ny)` keeps transform plans reusable, while mode-Green arrays
   `1/(alpha_l^2+beta_m^2)` are cached by slice-pair or quantized box size with
   min-ratio/growth-style rebuild controls.
-4. Grid-free spectral performance campaign: keep the direct-mode solver as a
+6. Grid-free spectral performance campaign: keep the direct-mode solver as a
   serious optimized reference path, not just a correctness fallback. Profile and
   optimize the harmonic recurrence, dense mode products, allocation reuse, and
   slice-pair scheduling for representative mode counts such as `48x48`. Note that
   grid-free needs `~64x256` modes (not `48x48`) to resolve the ~11:1 flat beam's
   `pz` kick to ~1% of PIC, so the representative flat-beam reference is heavier
   than the round-beam case.
-5. Optional precision refinement: TSC field interpolation (or a finer mesh) to
+7. Optional precision refinement: TSC field interpolation (or a finer mesh) to
   close the round-beam gap between the interpolated on-mesh result (~2.7e-3) and
   the per-point analytic (~1.6e-3).
 
