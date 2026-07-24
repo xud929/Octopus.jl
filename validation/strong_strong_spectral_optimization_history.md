@@ -30,6 +30,14 @@ Follow-on to the CUDA campaign, benchmarked on the full example beamline (produc
   global-Dirichlet-box formulation, not implementation overhead. Spectral's advantage
   is accuracy (the exact spectral derivative beats PIC on flat beams), not throughput.
 
+- **Makhoul half-length transform -- tried and rejected.** The DST-I via a length-M
+  real FFT (NR `sinft`: pre-weight + rfft(M) + repack + prefix-sum) was verified
+  correct (matches a brute-force sine transform to 3e-13), but on GPU it is ~5.5x
+  *slower* than the 2M-extension transform (0.18x): the post-processing prefix-sum
+  scan plus the extra pre-weight/repack passes cost far more than halving the FFT.
+  The transform is memory/pass-bound, and Makhoul adds passes. No cuFFT-based lever
+  reduces the FP64 transform further.
+
 - **Wavefront FFT batching -- tried and rejected.** Implemented a full batched path
   (all field solves in a dependency-safe wavefront stacked along a batch dimension,
   3D build/extract kernels, per-batch-size rfft plans; parity 9e-15) and it was

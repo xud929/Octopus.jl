@@ -94,9 +94,16 @@ had the same campaign and remains the top open performance item.
    `2(N+1)` real extension), not the FFT compute (~25%). Batching only speeds the FFT
    fraction, and the batching overhead (3D grids, per-wavefront setup) outweighs it.
    This is also why `field_precision=:single` helps (it halves the extension *bytes*
-   and speeds the FFT) while batching does not. The remaining transform lever is the
-   Makhoul N-point real transform, which removes the `2(N+1)` extension entirely and
-   would cut the dominant build/extract cost; deferred as a large rewrite.
+   and speeds the FFT) while batching does not.
+   **Makhoul N-point transform -- also TRIED AND REJECTED.** The half-length DST-I
+   (NR `sinft`: pre-weight + length-`M` rfft + repack + prefix-sum) was verified
+   correct (matches a brute-force sine transform to 3e-13), but on GPU it is ~5.5x
+   *slower* than the current 2M-extension transform: the post-processing prefix-sum
+   scan (sequential per column, batched over Ny) plus the extra pre-weight/repack
+   passes cost far more than halving the FFT saves. Same lesson as batching -- the
+   transform is memory/pass-bound and Makhoul adds passes. No known cuFFT-based lever
+   reduces the FP64 transform cost further; spectral is ~1.39x PIC at production and
+   its advantage over PIC is accuracy, not speed.
 3. **Add FP32 to PIC as an optional flag too.** Spectral now has
    `field_precision=:single` (Float32 field solve, ~1e-6 kick error, big win on
    FP64-weak GPUs). For a fair single-precision comparison PIC should expose the same
@@ -121,10 +128,10 @@ had the same campaign and remains the top open performance item.
    so the FFT graph is already fixed and batchable; a fixed-across-turns box would
    only save the tiny per-turn `al/bm/G` recompute, not FFT work. The genuine
    work-reduction lever is the adaptive box (item 5), which conflicts with holding
-   the grid fixed for resolution. The Makhoul N-point real transform (removes the
-   `2(N+1)` extension, ~halving each transform) is the one remaining lever that could
-   plausibly reach parity/below at fixed grid; deferred as a large, higher-risk
-   rewrite. The spectral solver's real advantage over PIC is accuracy (exact
+   the grid fixed for resolution. The Makhoul N-point real transform was tried (item
+   2) and is ~5.5x slower on GPU (the prefix-sum scan dominates), so it is not a
+   lever either. Conclusion: at fixed grid and FP64, no cuFFT-based transform change
+   beats PIC; spectral is ~1.39x PIC and its real advantage is accuracy (exact
    derivative, better on flat beams), not speed.
 5. Adaptive spectral Dirichlet-box strategy: the current spectral kick solve uses
   one shared global square box for both source and field beams across all slice
