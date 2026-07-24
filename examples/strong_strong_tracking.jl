@@ -19,9 +19,14 @@ Select a CUDA device explicitly:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_DEVICE=1 julia --project=. examples/strong_strong_tracking.jl
 
-This example uses the PIC solver. The soft-Gaussian solver is available as a
-commented alternative: uncomment the `GaussianPoissonSolver(...)` block where the
-solver is constructed and comment out the `PICPoissonSolver(...)` construction.
+This example uses the PIC solver by default. Select the Poisson solver with
+OCTOPUS_SOLVER (pic | spectral); the spectral grid/box can be overridden with
+OCTOPUS_SPECTRAL_GRID="nx,ny" and OCTOPUS_SPECTRAL_DOMAIN_FACTOR for A/B timing:
+
+    OCTOPUS_USE_GPU=1 OCTOPUS_SOLVER=spectral OCTOPUS_N_MACRO_ELE=2560000 OCTOPUS_N_MACRO_PRO=1024000 OCTOPUS_RECORD_TURN_TIMES=1 julia --project=. examples/strong_strong_tracking.jl
+
+The soft-Gaussian solver is also available as a commented alternative below the
+solver construction.
 
 Run the high-energy weak-strong limiting case by making the electron beam
 effectively rigid. Energies are supplied in GeV for these convenience knobs:
@@ -362,8 +367,9 @@ cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 #
 # Recommended CUDA production setting for the ~11:1 flat beams: grid=(127, 383),
 # domain_factor=8. This matches the analytic/PIC kick to ~1% (both beams, all of
-# x/y/z) and is ~6x faster than grid=(128,1024)/16 on GPU, ~1.24x the PIC solver at
-# ~1e6 particles/beam (comparable). The odd sizes are deliberate: a grid dimension
+# x/y/z) and is ~6x faster than grid=(128,1024)/16 on GPU. Through the full example
+# beamline at the production case it is ~1.5x the PIC solver (0.46 vs 0.31 s/turn on
+# an RTX 4500 Ada), comparable but not at parity. The odd sizes are deliberate: a grid dimension
 # N gives a DST/DCT extension of length 2(N+1), so N = 2^k-1 (127, 383, 511, ...)
 # makes that a power of two and the CUDA real-FFT optimal. See the optimization
 # history for the CPU/CUDA performance campaign.
@@ -377,26 +383,46 @@ cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 #     longitudinal_kick = true,
 # )
 
-solver = PICPoissonSolver(;
-    slicing = slicing,
-    luminosity_scale = input.solver.luminosity_scale,
-    grid = input.solver.pic_grid,
-    deposit_method = input.solver.pic_deposit_method,
-    green_type = input.solver.pic_green_type,
-    green_cache = pic_green_cache,
-    slice_pair_green_min_ratio = pic_slice_pair_green_min_ratio,
-    slice_pair_green_growth = pic_slice_pair_green_growth,
-    longitudinal_kick = pic_longitudinal_kick,
-    batch_mode = pic_batch_mode,
-    cuda_async = cuda_pic_async,
-    cuda_batch_fft = cuda_pic_batch_fft,
-    cuda_wavefront_fft = cuda_pic_wavefront_fft,
-    cuda_indexed_wavefront = cuda_pic_indexed_wavefront,
-    luminosity_schedule = pic_luminosity_schedule,
-    luminosity_grid = pic_luminosity_grid,
-    luminosity_deposit_method = pic_luminosity_deposit_method,
-    backend_configurations = cuda_pic_backend_configurations,
-)
+# Solver selection via OCTOPUS_SOLVER (pic | spectral | gaussian); defaults to pic.
+# The spectral grid/domain_factor can be overridden with OCTOPUS_SPECTRAL_GRID
+# ("nx,ny") and OCTOPUS_SPECTRAL_DOMAIN_FACTOR for A/B benchmarking.
+solver_name = lowercase(get(ENV, "OCTOPUS_SOLVER", "pic"))
+spectral_grid = let v = get(ENV, "OCTOPUS_SPECTRAL_GRID", "127,383")
+    parts = parse.(Int, split(v, ',')); (parts[1], parts[2])
+end
+spectral_domain_factor = parse(Float64, get(ENV, "OCTOPUS_SPECTRAL_DOMAIN_FACTOR", "8.0"))
+
+solver = if solver_name == "spectral"
+    SpectralPoissonSolver(;
+        slicing = slicing,
+        luminosity_scale = input.solver.luminosity_scale,
+        grid = spectral_grid,
+        domain_factor = spectral_domain_factor,
+        method = :grid,
+        longitudinal_kick = pic_longitudinal_kick,
+    )
+else
+    PICPoissonSolver(;
+        slicing = slicing,
+        luminosity_scale = input.solver.luminosity_scale,
+        grid = input.solver.pic_grid,
+        deposit_method = input.solver.pic_deposit_method,
+        green_type = input.solver.pic_green_type,
+        green_cache = pic_green_cache,
+        slice_pair_green_min_ratio = pic_slice_pair_green_min_ratio,
+        slice_pair_green_growth = pic_slice_pair_green_growth,
+        longitudinal_kick = pic_longitudinal_kick,
+        batch_mode = pic_batch_mode,
+        cuda_async = cuda_pic_async,
+        cuda_batch_fft = cuda_pic_batch_fft,
+        cuda_wavefront_fft = cuda_pic_wavefront_fft,
+        cuda_indexed_wavefront = cuda_pic_indexed_wavefront,
+        luminosity_schedule = pic_luminosity_schedule,
+        luminosity_grid = pic_luminosity_grid,
+        luminosity_deposit_method = pic_luminosity_deposit_method,
+        backend_configurations = cuda_pic_backend_configurations,
+    )
+end
 
 electron_tccb2ip = Linear6DSpec{Float64}(;
     beta1 = ele.crab_beta,

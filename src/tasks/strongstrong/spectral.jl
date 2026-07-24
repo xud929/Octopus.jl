@@ -81,8 +81,8 @@ two and the CUDA real-FFT optimal. `(128, 1024)/16` also works but is heavily
 over-resolved and ~6x slower on GPU. See
 `validation/strong_strong_spectral_optimization_history.md`. Runs on both
 `CPUThreadsBackend` (parallel over field slices) and `CUDABackend`; the optimized
-CUDA 6D grid path is ~1.24x the PIC one-turn time at ~1e6 particles/beam (down from
-6x, comparable to PIC).
+CUDA 6D grid path is ~1.5x the PIC one-turn time at the production case (measured
+through the full example beamline; down from 6x, comparable to PIC).
 """
 function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   luminosity_scale=nothing,

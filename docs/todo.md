@@ -8,13 +8,14 @@ implemented, registered, validated, and optimized on both CPU and CUDA. It is a
 documented (commented) option in `examples/strong_strong_tracking.jl`. Recommended
 CUDA production setting for the ~11:1 flat beams: **`grid=(127, 383)`,
 `domain_factor=8`, `method=:grid`** (odd sizes are intentional: a grid dimension
-`N` gives a DST/DCT extension `2(N+1)`, so `N=2^k-1` is FFT-optimal). At this grid
-the 6D CUDA solver is ~1.28x PIC at the production case (2.56M e- / 1.024M p, 15
-slices, fair interleaved median on an RTX 4500 Ada), down from 6.05x slower at
-`(128,1024)/16` -- a ~5x speedup and comparable to PIC, with the kick matching PIC
-to ~1% on both beams in x/y/z and luminosity agreeing to 0.01% (~1.0e30). Absolute
-times are workstation-GPU (weak FP64) numbers; the ratio is the portable metric.
-See the optimization history for the campaign and measurement caveats.
+`N` gives a DST/DCT extension `2(N+1)`, so `N=2^k-1` is FFT-optimal). Measured on
+the **full example beamline** (the correct benchmark -- isolated collide-only loops
+inflate PIC because blown-up beams churn its adaptive green cache) at the production
+case (2.56M e- / 1.024M p, 15 slices, RTX 4500 Ada, steady state): PIC 0.310 s/turn,
+spectral 0.459 -> **~1.5x PIC**, down from 6.05x slower at `(128,1024)/16` -- a ~4x
+speedup, comparable to PIC but not at parity. Kick matches PIC to ~1% on both beams
+in x/y/z and luminosity to 0.01% (~1.0e30). Absolute times are workstation-GPU (weak
+FP64); the ratio is the portable metric. See the optimization history.
 
 **Correctness note (2026-07-23):** the grid-path longitudinal `pz` kick was found
 ~2x too large (the on-mesh potential reconstruction carried a factor 2 relative to
