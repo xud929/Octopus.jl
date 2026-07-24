@@ -95,6 +95,8 @@ julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consist
   soft-Gaussian longitudinal kicks, virtual drifts, and the slingshot effect.
 - `docs/registry_snapshot.md`: generated registry snapshot.
 - `docs/pic_solver_improvement_plan.md`: PIC solver optimization notes.
+- `docs/gaussian_subtracted_pic_solver.md`: `GaussianPICPoissonSolver` theory
+  (control-variate hybrid: analytic Gaussian + PIC residual).
 - `examples/`: runnable case-law examples.
 - `profiling/`: focused runtime profiling scripts.
 - `validation/`: numerical checks and backend consistency tests.

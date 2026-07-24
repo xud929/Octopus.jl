@@ -1907,7 +1907,8 @@ if _HAS_CUDA
         function _cuda_pic_solve_wavefront_fields_batched_fft!(solver::PICPoissonSolver,
                                                                valid, prep12, prep21,
                                                                green12, green21, wf,
-                                                               timing=nothing)
+                                                               timing=nothing;
+                                                               gpic_subtract=nothing)
             nx, ny = solver.grid
             npairs = length(valid)
             nplanes = 4 * npairs
@@ -1957,6 +1958,17 @@ if _HAS_CUDA
 
             copyto!(wf.hx, hx_host)
             copyto!(wf.hy, hy_host)
+
+            # GaussianPIC: subtract the erf-integrated Gaussian from each plane
+            # before the FFT (defined in gaussian_pic_cuda.jl). No-op for plain PIC.
+            if gpic_subtract !== nothing
+                sub_threads = _cuda_pic_threads(:deposition)
+                total = nx * ny * nplanes
+                CUDA.@cuda threads=sub_threads blocks=cld(total, sub_threads) stream=stream _cuda_gpic_subtract_kernel!(
+                    charge, gpic_subtract.gx, gpic_subtract.gy, gpic_subtract.amp,
+                    Int32(nx), Int32(ny), Int32(nplanes),
+                )
+            end
 
             green_spectral = nothing
             if green12 === nothing && green21 === nothing
@@ -2009,7 +2021,8 @@ if _HAS_CUDA
                                                                        valid, rep1, rep2,
                                                                        prep12, prep21,
                                                                        green12, green21, wf,
-                                                                       timing=nothing)
+                                                                       timing=nothing;
+                                                                       gpic_subtract=nothing)
             nx, ny = solver.grid
             npairs = length(valid)
             nplanes = 4 * npairs
@@ -2053,6 +2066,15 @@ if _HAS_CUDA
 
             copyto!(wf.hx, hx_host)
             copyto!(wf.hy, hy_host)
+
+            if gpic_subtract !== nothing
+                sub_threads = _cuda_pic_threads(:deposition)
+                total = nx * ny * nplanes
+                CUDA.@cuda threads=sub_threads blocks=cld(total, sub_threads) stream=stream _cuda_gpic_subtract_kernel!(
+                    charge, gpic_subtract.gx, gpic_subtract.gy, gpic_subtract.amp,
+                    Int32(nx), Int32(ny), Int32(nplanes),
+                )
+            end
 
             green_spectral = nothing
             if green12 === nothing && green21 === nothing

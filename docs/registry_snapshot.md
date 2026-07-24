@@ -114,6 +114,8 @@ constructor names remain the user-facing way to build those specs.
 
 ## Strong-Strong Solvers
 
+- `GaussianPICPoissonSolver`
+  - Construction metadata: `solver_option_schema`, `solver_help`
 - `GaussianPoissonSolver`
   - Construction metadata: `solver_option_schema`, `solver_help`
 - `PICPoissonSolver`

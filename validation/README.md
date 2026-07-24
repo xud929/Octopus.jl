@@ -60,6 +60,51 @@ has finite-particle, grid, deposition, and domain-truncation error, so the
 script reports the observed distribution and worst case without imposing one
 universal pass/fail tolerance.
 
+## Gaussian-Subtracted PIC Field
+
+`gaussian_pic_field_validation.jl` compares the `GaussianPICPoissonSolver`
+transverse field against Bassetti-Erskine and against plain PIC at a fixed grid,
+using a deterministic Gaussian quantile source (no shot noise) so the metric
+isolates the *systematic* grid-discretization error the subtraction removes.
+
+```bash
+julia --project=. validation/gaussian_pic_field_validation.jl
+```
+
+It sweeps aspect ratios (round to 25:1) and grids (48/64/128) and reports the
+normalized median/max kick error for both solvers plus the hybrid/PIC gain. The
+hybrid error is nearly grid-independent; at grid 48 it matches or beats plain PIC
+at grid 128 (median gain 9-20x at coarse grids, 2.6-4.1x at 128). Reference
+model `gaussian_beambeam_kick`; error normalized by `max_grid(|K_exact|)`. See
+`docs/gaussian_subtracted_pic_solver.md`.
+
+## Gaussian-Subtracted PIC Bi-Gaussian Fairness
+
+`gaussian_pic_bigaussian_validation.jl` is the fair, non-Gaussian test: a
+bi-Gaussian source (dominant + offset perturbation) with an exact analytic field
+(superposition of two Bassetti-Erskine kicks). The hybrid subtracts only a single
+Gaussian fitted to the combined moments, so the perturbation lands in the grid
+residual.
+
+```bash
+julia --project=. validation/gaussian_pic_bigaussian_validation.jl
+```
+
+The hybrid is never worse than plain PIC and beats it ~2-3x for near-Gaussian
+sources, degrading gracefully toward parity as the perturbation grows. The
+weakest gain is a diagonally offset perturbation (x-y coupling the uncoupled
+subtraction cannot remove), motivating the coupled/rotated subtraction branch.
+
+## Gaussian-Subtracted PIC Optimization History
+
+`strong_strong_gaussian_pic_optimization_history.md` is the dated developer log
+of the `GaussianPICPoissonSolver` CPU/CUDA implementation and the CUDA throughput
+campaign (sequential vs non-indexed vs indexed wavefront paths, the moment-
+reduction and Green-build fixes, and the CPU/CUDA bit-parity story). The CUDA
+indexed wavefront path reaches GaussianPIC@128 ~1.6x PIC and GaussianPIC@64 ~1.2x
+PIC@128 at equal-or-better accuracy. CPU/CUDA parity is guarded by the "CUDA
+GaussianPIC solver matches CPU" testset in `test/runtests.jl`.
+
 ## Spectral Sine-Series Poisson Field
 
 `spectral_poisson_field_validation.jl` validates the spectral sine-series 2D

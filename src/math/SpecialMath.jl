@@ -1,7 +1,7 @@
 export faddeeva_w, faddeeva_w_approx, faddeeva_w_approx_reim,
        faddeeva_w_upper_reim, inverse_erf
 
-using SpecialFunctions: erfcx, erfinv
+using SpecialFunctions: erfcx, erfinv, erf
 
 """
     faddeeva_w(z)
