@@ -85,25 +85,37 @@ had the same campaign and remains the top open performance item.
      cost, not scheduling.
    - Gate any change on complete-turn A/B timing plus the CPU accuracy-vs-PIC and
      CPU/CUDA parity tests (both already in `test/runtests.jl`).
-2. **Wavefront FFT batching (CUDA, in progress).** The box is the same for every
-   field solve in a turn, so the FFT computation graph is fixed: all field solves in
-   a dependency-safe collision wavefront can be stacked along a batch dimension and
-   run as a few large batched rfft/build/extract calls instead of many small ones.
-   Measured: a batched rfft at `(127,383)` is ~1.64x more efficient than sequential
-   (saturating at batch >= ~30, which a 15-pair wavefront of up to 60 planes
-   reaches). Expected ~1.39x -> ~1.1-1.2x PIC. Does not change accuracy. Note it
-   does NOT make spectral beat PIC (see the FP64 ceiling below); it just narrows the
-   gap. Gate on beamline A/B timing + the CPU/CUDA 6D parity test.
+2. **Wavefront FFT batching -- TRIED AND REJECTED (does not help).** Implemented a
+   full batched path (stack all field solves in a dependency-safe wavefront along a
+   batch dimension, 3D build/extract kernels, per-batch-size rfft plans, batched
+   solve; parity verified 9e-15). It was *slower* on the beamline (0.465 vs 0.431).
+   Reason: although a batched rfft is ~1.64x more efficient in isolation, the DST/DCT
+   transform is dominated (~75%) by the memory-bound extension build/extract (the
+   `2(N+1)` real extension), not the FFT compute (~25%). Batching only speeds the FFT
+   fraction, and the batching overhead (3D grids, per-wavefront setup) outweighs it.
+   This is also why `field_precision=:single` helps (it halves the extension *bytes*
+   and speeds the FFT) while batching does not. The remaining transform lever is the
+   Makhoul N-point real transform, which removes the `2(N+1)` extension entirely and
+   would cut the dominant build/extract cost; deferred as a large rewrite.
 3. **Add FP32 to PIC as an optional flag too.** Spectral now has
    `field_precision=:single` (Float32 field solve, ~1e-6 kick error, big win on
    FP64-weak GPUs). For a fair single-precision comparison PIC should expose the same
    option (a `field_precision`/`:single` flag that runs its deposit/FFT/Green/field
    in Float32 while keeping coordinates in Float64). Not for production either;
    purely so PIC-vs-spectral A/B tests can be run at matched precision.
-4. **FP64 ceiling (documented, likely fundamental).** At the fixed physics grid the
-   Dirichlet-box field solve does ~2.6x more FFT work per solve than PIC's
-   adaptive-box `(128,128)` (7 rfft of 256x768 vs ~2 FFT of 256x256), and PIC already
-   batches its FFTs. So at matched accuracy/precision spectral cannot beat PIC on raw
+4. **FP64 ceiling (documented, likely fundamental).** The field-solve transforms
+   are the wall. PIC does exactly **2 FFTs per solve**: `fft(charge)` -> multiply by a
+   cached Fourier Green function (the Poisson solve baked in) -> `ifft` -> phi, then
+   Ex/Ey by **finite difference** on phi (no FFT). The spectral method does **7
+   transforms per solve**: 2 forward DST (-> mode coefficients), the cached mode
+   divide, then 5 reconstruction transforms because it uses the **exact spectral
+   derivative** -- phi (sin*sin), Ex (cos*sin), Ey (sin*cos) each need a distinct 2D
+   DST/DCT (d/dx turns sin->cos), and each 2D transform is two 1-D rfft passes.
+   Spectral's extra transforms are exactly the price of the exact derivative that
+   makes it beat PIC on flat-beam accuracy; using PIC-style finite-difference
+   derivatives would drop it to ~4 transforms but forfeit that advantage. Combined
+   with the taller Dirichlet-box grid (768 vs 256 in the extension), spectral does
+   several times PIC's transform work at matched accuracy. So at matched accuracy/precision spectral cannot beat PIC on raw
    throughput; even wavefront batching (item 2) only reaches ~1.1-1.2x. A *fixed*
    large Dirichlet box does not help here -- the box is already shared across a turn,
    so the FFT graph is already fixed and batchable; a fixed-across-turns box would

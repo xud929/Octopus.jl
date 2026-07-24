@@ -30,6 +30,23 @@ Follow-on to the CUDA campaign, benchmarked on the full example beamline (produc
   global-Dirichlet-box formulation, not implementation overhead. Spectral's advantage
   is accuracy (the exact spectral derivative beats PIC on flat beams), not throughput.
 
+- **Wavefront FFT batching -- tried and rejected.** Implemented a full batched path
+  (all field solves in a dependency-safe wavefront stacked along a batch dimension,
+  3D build/extract kernels, per-batch-size rfft plans; parity 9e-15) and it was
+  *slower* (0.465 vs 0.431 on the beamline). A batched rfft is ~1.64x more efficient
+  in isolation, but the DST/DCT transform is dominated (~75%) by the memory-bound
+  `2(N+1)` extension build/extract, not the FFT compute (~25%); batching only speeds
+  the FFT fraction and its overhead outweighs the gain. Reverted.
+
+- **Why 7 transforms vs PIC's 2.** PIC: `fft(charge)` -> x cached Fourier Green
+  function -> `ifft` -> phi, then Ex/Ey by finite difference on phi (2 FFTs, no more).
+  Spectral: 2 forward DST -> cached mode divide -> 5 reconstruction transforms,
+  because the *exact spectral derivative* needs a distinct 2D DST/DCT for each of phi
+  (sin*sin), Ex (cos*sin), Ey (sin*cos), and each 2D transform is two 1-D rfft passes.
+  The 5 extra transforms are the price of the exact derivative -- the very thing that
+  makes spectral beat PIC on flat-beam accuracy. PIC-style finite-difference
+  derivatives would drop spectral to ~4 transforms but forfeit that accuracy edge.
+
 - **`field_precision=:single` (optional, non-production).** The field is smooth, so a
   Float32 field solve (coordinates stay Float64) matches the Float64 field to ~1e-7
   and the end-to-end kick to ~1e-6 -- far under the 1% floor. On this FP64-weak card
