@@ -4,6 +4,40 @@ Chronological record of the `SpectralPoissonSolver` build-out, with measured
 evidence. See `docs/spectral_sine_poisson_solver.md` for the method and
 `src/tasks/strongstrong/spectral.jl` / `spectral_cuda.jl` for the code.
 
+## 2026-07-23: index-based field solve, luminosity preallocation, and the FP64 wall
+
+Follow-on to the CUDA campaign, benchmarked on the full example beamline (production
+2.56M/1.024M, steady state, RTX 4500 Ada), PIC baseline `0.310 s/turn`:
+
+- **Work through slice indices (like PIC's indexed wavefront).** The field solve now
+  deposits the source straight from the beam rep via slice indices; only the one
+  source a direction overwrites (beam2) is snapshotted, once per pair with a fused
+  4-array kernel. Luminosity is computed before the second direction, into
+  preallocated Nx*Ny accumulators with the midpoint drift folded into the deposit and
+  a dot-product reduction. This removed most per-pair allocations. Result: spectral
+  `0.459 -> 0.431 s/turn` (~1.5x -> ~1.39x PIC). Parity preserved (9e-15).
+
+- **Phase profile of the FP64 turn (431 ms):** field-solve transforms ~257 ms (60%),
+  gather ~86 ms, luminosity ~88 ms (the last two overstated by the profiling sync
+  barriers; the real overlapped cost is lower, hence the ~6% real gain).
+
+- **The FP64 wall.** At matched ~1% accuracy the fixed physics grid `(127,383)` makes
+  the Dirichlet-box field solve do ~2.6x more FFT work per solve than PIC's
+  adaptive-box `(128,128)` (7 rfft of 256x768 vs ~2 FFT of 256x256), and PIC already
+  batches its FFTs. Batched rfft is only 1.64x more efficient than sequential, so
+  wavefront batching would bring spectral toward ~1.2x but not below PIC. At fixed
+  grid and FP64, spectral cannot beat PIC on raw speed -- this is fundamental to the
+  global-Dirichlet-box formulation, not implementation overhead. Spectral's advantage
+  is accuracy (the exact spectral derivative beats PIC on flat beams), not throughput.
+
+- **`field_precision=:single` (optional, non-production).** The field is smooth, so a
+  Float32 field solve (coordinates stay Float64) matches the Float64 field to ~1e-7
+  and the end-to-end kick to ~1e-6 -- far under the 1% floor. On this FP64-weak card
+  (1:64) it makes the FFTs ~24x faster and brings spectral to `~0.326 s/turn` (~1.05x
+  PIC, i.e. parity). But it is not a fair way to "beat" PIC (PIC could use Float32
+  too) and is not for production; it is exposed only as an opt-in flag. Default is
+  `:double` (bit-parity with the CPU path).
+
 ## 2026-07-23: CUDA 6D throughput campaign (grid path)
 
 Goal: bring the full 6D (`longitudinal_kick=true`) CUDA grid solver to PIC-level

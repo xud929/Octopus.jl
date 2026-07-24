@@ -761,6 +761,21 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             end
             @test lum_gpu ≈ lum_cpu rtol=1.0e-9
         end
+        # field_precision=:single runs the CUDA field solve in Float32: not
+        # bit-parity with the CPU Float64 path, but the smooth field keeps the kick
+        # accurate to ~1e-6 (well under the ~1% physics floor).
+        single = SpectralPoissonSolver(slicing=sl, method=:grid, grid=(64, 512),
+                                       domain_factor=16.0, longitudinal_kick=true,
+                                       field_precision=:single)
+        ecpu, pcpu = flat_pair(); egpu, pgpu = to_gpu(ecpu), to_gpu(pcpu)
+        collide!(single, ecpu, pcpu, CPUThreadsBackend)
+        collide!(single, egpu, pgpu, Octopus.CUDABackend); Octopus.CUDA.synchronize()
+        for (cpu_beam, gpu_beam) in ((ecpu, egpu), (pcpu, pgpu))
+            for (expected, actual) in zip(coordinate_arrays(cpu_beam),
+                                          coordinate_arrays(gpu_beam))
+                @test Array(actual) ≈ expected rtol=1.0e-5 atol=1.0e-16
+            end
+        end
         # grid-free is CPU-only on CUDA
         gf = SpectralPoissonSolver(slicing=sl, method=:grid_free, grid=(48, 48),
                                    longitudinal_kick=false)

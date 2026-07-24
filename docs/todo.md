@@ -12,10 +12,19 @@ CUDA production setting for the ~11:1 flat beams: **`grid=(127, 383)`,
 the **full example beamline** (the correct benchmark -- isolated collide-only loops
 inflate PIC because blown-up beams churn its adaptive green cache) at the production
 case (2.56M e- / 1.024M p, 15 slices, RTX 4500 Ada, steady state): PIC 0.310 s/turn,
-spectral 0.459 -> **~1.5x PIC**, down from 6.05x slower at `(128,1024)/16` -- a ~4x
-speedup, comparable to PIC but not at parity. Kick matches PIC to ~1% on both beams
-in x/y/z and luminosity to 0.01% (~1.0e30). Absolute times are workstation-GPU (weak
-FP64); the ratio is the portable metric. See the optimization history.
+spectral **0.431 -> ~1.39x PIC** (after the index-based field solve + luminosity
+preallocation), down from 6.05x slower at `(128,1024)/16`. Kick matches PIC to ~1%
+on both beams in x/y/z and luminosity to 0.01% (~1.0e30). Absolute times are
+workstation-GPU (weak FP64); the ratio is the portable metric.
+
+**FP64 speed ceiling (measured):** at the fixed physics grid, the Dirichlet-box
+field solve does ~2.6x more FFT work per solve than PIC's adaptive-box `(128,128)`,
+and PIC already batches its FFTs, so at matched accuracy/precision spectral cannot
+beat PIC on raw throughput -- wavefront FFT batching would reach ~1.2x, not below.
+The spectral solver's edge is accuracy (exact derivative, better on flat beams), not
+speed. An opt-in `field_precision=:single` reaches ~parity on FP64-weak GPUs but is
+not a fair comparison (PIC could use Float32 too) and is not for production. See the
+optimization history.
 
 **Correctness note (2026-07-23):** the grid-path longitudinal `pz` kick was found
 ~2x too large (the on-mesh potential reconstruction carried a factor 2 relative to

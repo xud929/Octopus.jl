@@ -40,6 +40,7 @@ struct SpectralPoissonSolver{T<:Real} <: AbstractPoissonSolver
     domain_factor::T
     method::Symbol
     longitudinal_kick::Bool
+    field_precision::Symbol
     slicing::LongitudinalSlicing
     slicing1::LongitudinalSlicing
     slicing2::LongitudinalSlicing
@@ -73,6 +74,14 @@ only). `kbb1`/`kbb2` are the physical kick scales, same convention as
 potential-difference `pz` kick. Set it to `false` for the original
 transverse-only spectral map.
 
+`field_precision` selects the CUDA field-solve precision: `:double` (default,
+bit-parity with the CPU path) or `:single`, which runs the deposit/transform/field
+reconstruction in `Float32` while keeping particle coordinates in `Float64`. The
+field is smooth, so `:single` keeps the kick accurate to ~1e-6 (far under the ~1%
+physics floor) and greatly speeds the FFTs on GPUs with weak `Float64` throughput;
+it is not bit-parity with the CPU path and is not intended for production. The CPU
+path always uses `Float64`.
+
 For the production ~11:1 flat beams the recommended grid is `grid=(127, 383)` with
 `domain_factor=8`, which reproduces the PIC/analytic kick to ~1% (the graininess
 floor) on both beams in x/y/z. The odd sizes are intentional: a grid dimension `N`
@@ -89,6 +98,7 @@ function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   grid=(128, 128), domain_factor=16.0,
                                   method::Symbol=:grid,
                                   longitudinal_kick::Bool=true,
+                                  field_precision::Symbol=:double,
                                   slicing::LongitudinalSlicing=LongitudinalSlicing(),
                                   slicing1=nothing, slicing2=nothing) where {T<:Real}
     s1 = slicing1 === nothing ? slicing : slicing1
@@ -97,10 +107,12 @@ function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
     (gx >= 8 && gy >= 8) || throw(ArgumentError("SpectralPoissonSolver grid dimensions must be at least 8; got $(grid)"))
     domain_factor > 0 || throw(ArgumentError("domain_factor must be positive; got $(domain_factor)"))
     method in (:grid, :grid_free) || throw(ArgumentError("method must be :grid or :grid_free; got $(repr(method))"))
+    field_precision in (:double, :single) ||
+        throw(ArgumentError("field_precision must be :double or :single; got $(repr(field_precision))"))
     return SpectralPoissonSolver{T}(
         _optional_solver_value(T, kbb1), _optional_solver_value(T, kbb2),
         _optional_solver_value(T, luminosity_scale), (gx, gy), T(domain_factor), method,
-        Bool(longitudinal_kick), slicing, s1, s2, slicing1, slicing2)
+        Bool(longitudinal_kick), field_precision, slicing, s1, s2, slicing1, slicing2)
 end
 
 SpectralPoissonSolver(; kwargs...) = SpectralPoissonSolver{Float64}(; kwargs...)
@@ -120,6 +132,8 @@ const _SPECTRAL_SOLVER_OPTION_SCHEMA = (
         "Field-solve variant; :grid (DST/DCT) or :grid_free (direct mode sums)."; category=:performance),
     longitudinal_kick = SolverOptionMeta(Bool, true,
         "Apply the synchro-beam virtual drift and potential-difference pz kick."; category=:physics),
+    field_precision = SolverOptionMeta(Symbol, :double,
+        "CUDA field-solve precision; :double (bit-parity) or :single (faster, ~1e-7 field error)."; category=:accuracy_performance),
     slicing = SolverOptionMeta(LongitudinalSlicing, LongitudinalSlicing(),
         "Shared longitudinal slicing configuration."; category=:physics),
     slicing1 = SolverOptionMeta(Union{Nothing,LongitudinalSlicing}, nothing,

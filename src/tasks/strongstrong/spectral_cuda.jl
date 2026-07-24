@@ -444,7 +444,7 @@ if _HAS_CUDA
             T = eltype(beam1.rep.x)
             r1 = beam1.rep; r2 = beam2.rep
             Nx, Ny = solver.grid
-            ws = _spectral_cuda_ws(T, Nx, Ny)
+            ws = _spectral_cuda_ws(solver.field_precision === :single ? Float32 : T, Nx, Ny)
             Lx, Ly = _cuda_spectral_box(solver, r1, r2)
             n1 = length(slices1.indices); n2 = length(slices2.indices)
             threads = 256
@@ -573,7 +573,7 @@ if _HAS_CUDA
             T = eltype(beam1.rep.x)
             r1 = beam1.rep; r2 = beam2.rep
             Nx, Ny = solver.grid
-            ws = _spectral_cuda_ws(T, Nx, Ny)
+            ws = _spectral_cuda_ws(solver.field_precision === :single ? Float32 : T, Nx, Ny)
             Lx, Ly = _cuda_spectral_box(solver, r1, r2)
             luminosity = zero(T)
             for (_, i, j) in _slice_collision_order(slices1, slices2)
