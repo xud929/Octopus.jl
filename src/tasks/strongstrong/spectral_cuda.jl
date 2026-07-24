@@ -133,6 +133,12 @@ if _HAS_CUDA
             # per-slice-pair field solves allocate nothing.
             PhigL::CUDA.CuMatrix{T}; ExgL::CUDA.CuMatrix{T}; EygL::CUDA.CuMatrix{T}
             PhigR::CUDA.CuMatrix{T}; ExgR::CUDA.CuMatrix{T}; EygR::CUDA.CuMatrix{T}
+            # Preallocated luminosity accumulators (fixed Nx×Ny) and a reusable
+            # snapshot of the one source slice that a direction modifies before the
+            # other direction/luminosity reads it (grown on demand).
+            qlum1::CUDA.CuMatrix{T}; qlum2::CUDA.CuMatrix{T}
+            snapx::CUDA.CuVector{T}; snappx::CUDA.CuVector{T}
+            snapy::CUDA.CuVector{T}; snappy::CUDA.CuVector{T}
             pr1::P1; pr2::P2
         end
 
@@ -144,12 +150,23 @@ if _HAS_CUDA
             pr1 = plan_rfft(er1, 1)
             pr2 = plan_rfft(er2, 2)
             zz() = CUDA.zeros(T, Nx, Ny)
+            zv() = CUDA.zeros(T, 0)
             return _SpectralCudaWS{T,typeof(pr1),typeof(pr2)}(
                 Nx, Ny, NaN, NaN,
                 CUDA.zeros(T, Nx, 1), CUDA.zeros(T, 1, Ny), zz(),
                 zz(), er1, c1, er2, c2,
                 zz(), zz(), zz(),
-                zz(), zz(), zz(), zz(), zz(), zz(), pr1, pr2)
+                zz(), zz(), zz(), zz(), zz(), zz(),
+                zz(), zz(), zv(), zv(), zv(), zv(), pr1, pr2)
+        end
+
+        # Grow the reusable source-snapshot buffers to at least length n.
+        function _cuda_spectral_ensure_snap!(ws::_SpectralCudaWS{T}, n::Int) where {T}
+            if length(ws.snapx) < n
+                ws.snapx = CUDA.zeros(T, n); ws.snappx = CUDA.zeros(T, n)
+                ws.snapy = CUDA.zeros(T, n); ws.snappy = CUDA.zeros(T, n)
+            end
+            return ws
         end
 
         const _SPECTRAL_CUDA_WS_CACHE = Dict{Tuple{DataType,Int,Int},Any}()
@@ -311,19 +328,44 @@ if _HAS_CUDA
             return nothing
         end
 
-        # Solve one directed field at a single drift plane, writing the potential and
-        # transverse fields into the caller-supplied buffers (Phig, Exg, Eyg). Uses 7
-        # transforms per solve (down from 8) by reusing DST_x(philm) for both the
-        # potential and Ey.
-        function _cuda_spectral_potential_solve!(ws::_SpectralCudaWS{T}, Phig, Exg, Eyg,
-                                                 sx, spx, sy, spy, drift, Lx, Ly) where {T}
+        # Same deposit but reading the source straight from the beam rep via slice
+        # indices `idx` (no compact gather), matching the PIC indexed-wavefront path.
+        function _cuda_spectral_deposit_idx_kernel!(rho, x, px, y, py, idx, drift,
+                                                    Lx, Ly, hx, hy, Nx, Ny)
+            t = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            t <= length(idx) || return nothing
+            @inbounds begin
+                p = idx[t]
+                X = (x[p] + px[p] * drift + Lx) / hx
+                Y = (y[p] + py[p] * drift + Ly) / hy
+                i = unsafe_trunc(Int, floor(X)); j = unsafe_trunc(Int, floor(Y))
+                wx = X - i; wy = Y - j
+                (1 <= i <= Nx   && 1 <= j <= Ny)   && CUDA.@atomic rho[i, j]         += (1 - wx) * (1 - wy)
+                (1 <= i + 1 <= Nx && 1 <= j <= Ny) && CUDA.@atomic rho[i + 1, j]     += wx * (1 - wy)
+                (1 <= i <= Nx   && 1 <= j + 1 <= Ny) && CUDA.@atomic rho[i, j + 1]   += (1 - wx) * wy
+                (1 <= i + 1 <= Nx && 1 <= j + 1 <= Ny) && CUDA.@atomic rho[i + 1, j + 1] += wx * wy
+            end
+            return nothing
+        end
+
+        # Snapshot four coordinate arrays of one slice into preallocated buffers in a
+        # single fused launch (used only for the one source a direction overwrites).
+        function _cuda_spectral_snap4_kernel!(sx, spx, sy, spy, x, px, y, py, idx)
+            t = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            t <= length(idx) || return nothing
+            @inbounds begin
+                p = idx[t]
+                sx[t] = x[p]; spx[t] = px[p]; sy[t] = y[p]; spy[t] = py[p]
+            end
+            return nothing
+        end
+
+        # Transforms + field reconstruction from an already-deposited ws.rho. Uses 7
+        # transforms per solve (down from 8) by reusing DST_x(philm) for the potential
+        # and Ey. `ns` is the source-particle count for the unit-charge normalization.
+        function _cuda_spectral_solve_from_rho!(ws::_SpectralCudaWS{T}, Phig, Exg, Eyg,
+                                                a, b, ns) where {T}
             Nx, Ny = ws.Nx, ws.Ny
-            a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1); ns = length(sx)
-            _spectral_cuda_setbox!(ws, Float64(a), Float64(b))
-            CUDA.fill!(ws.rho, 0)
-            threads = 256
-            CUDA.@cuda threads=threads blocks=cld(ns, threads) _cuda_spectral_deposit_drift_kernel!(
-                ws.rho, sx, spx, sy, spy, T(drift), T(Lx), T(Ly), T(hx), T(hy), Nx, Ny)
             _cuda_dst1!(ws.s2, ws, ws.rho)
             _cuda_dst2!(ws.s1, ws, ws.s2)
             invn = T(ns > 0 ? 1 / (a * b * ns) : 1 / (a * b))
@@ -344,6 +386,35 @@ if _HAS_CUDA
             _cuda_dst2!(ws.s2, ws, ws.s1)
             @. ws.s2 = ws.al * ws.s2
             _cuda_cosderiv1!(Exg, ws, ws.s2, -scale)
+            return nothing
+        end
+
+        # Deposit the source (contiguous snapshot arrays) drifted by `drift`, then
+        # solve the field into (Phig, Exg, Eyg). Returns (hx, hy).
+        function _cuda_spectral_potential_solve!(ws::_SpectralCudaWS{T}, Phig, Exg, Eyg,
+                                                 sx, spx, sy, spy, drift, Lx, Ly) where {T}
+            Nx, Ny = ws.Nx, ws.Ny
+            a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1); ns = length(sx)
+            _spectral_cuda_setbox!(ws, Float64(a), Float64(b))
+            CUDA.fill!(ws.rho, 0)
+            threads = 256
+            CUDA.@cuda threads=threads blocks=cld(ns, threads) _cuda_spectral_deposit_drift_kernel!(
+                ws.rho, sx, spx, sy, spy, T(drift), T(Lx), T(Ly), T(hx), T(hy), Nx, Ny)
+            _cuda_spectral_solve_from_rho!(ws, Phig, Exg, Eyg, a, b, ns)
+            return T(hx), T(hy)
+        end
+
+        # Same, reading the source from the beam rep via slice indices `idx`.
+        function _cuda_spectral_potential_solve_idx!(ws::_SpectralCudaWS{T}, Phig, Exg, Eyg,
+                                                     x, px, y, py, idx, drift, Lx, Ly) where {T}
+            Nx, Ny = ws.Nx, ws.Ny
+            a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1); ns = length(idx)
+            _spectral_cuda_setbox!(ws, Float64(a), Float64(b))
+            CUDA.fill!(ws.rho, 0)
+            threads = 256
+            CUDA.@cuda threads=threads blocks=cld(ns, threads) _cuda_spectral_deposit_idx_kernel!(
+                ws.rho, x, px, y, py, idx, T(drift), T(Lx), T(Ly), T(hx), T(hy), Nx, Ny)
+            _cuda_spectral_solve_from_rho!(ws, Phig, Exg, Eyg, a, b, ns)
             return T(hx), T(hy)
         end
 
@@ -431,6 +502,65 @@ if _HAS_CUDA
             return nothing
         end
 
+        # Same directed interaction, but the source is read from the beam rep via
+        # `source_idx` (no gather); the field is kicked in place via `field_idx`.
+        function _cuda_spectral_collision_direction_6d_idx!(
+                solver::SpectralPoissonSolver, ws::_SpectralCudaWS{T},
+                source_rep, source_idx, field_rep, field_idx,
+                param_source, param_field, kbb_slice, Lx, Ly) where {T}
+            sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
+            sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
+            hx, hy = _cuda_spectral_potential_solve_idx!(
+                ws, ws.PhigL, ws.ExgL, ws.EygL,
+                source_rep.x, source_rep.px, source_rep.y, source_rep.py, source_idx, sL, Lx, Ly)
+            _cuda_spectral_potential_solve_idx!(
+                ws, ws.PhigR, ws.ExgR, ws.EygR,
+                source_rep.x, source_rep.px, source_rep.y, source_rep.py, source_idx, sR, Lx, Ly)
+            Nx, Ny = solver.grid
+            threads = 256
+            CUDA.@cuda threads=threads blocks=cld(length(field_idx), threads) _cuda_spectral_interp_scatter_6d_kernel!(
+                field_rep.x, field_rep.px, field_rep.y, field_rep.py, field_rep.z, field_rep.pz,
+                field_idx, ws.PhigL, ws.ExgL, ws.EygL, ws.PhigR, ws.ExgR, ws.EygR,
+                T(param_source.center), T(param_field.lb), T(param_field.rb),
+                T(Lx), T(Ly), hx, hy, Nx, Ny, T(kbb_slice))
+            return nothing
+        end
+
+        # Midpoint density-overlap luminosity into preallocated ws.qlum1/qlum2, with
+        # the midpoint drift folded into the deposit. Source 1 is read from the rep via
+        # `idx1`; source 2 from the contiguous snapshot arrays sx2..spy2 (length n2).
+        function _cuda_spectral_luminosity_idx_snap!(ws::_SpectralCudaWS{T}, rep1, idx1, center1,
+                                                     sx2, spx2, sy2, spy2, n2, center2,
+                                                     klum, nx, ny) where {T}
+            s1 = T(0.5) * (T(center1) - T(center2))
+            s2 = T(0.5) * (T(center2) - T(center1))
+            v2x = @view sx2[1:n2]; v2px = @view spx2[1:n2]
+            v2y = @view sy2[1:n2]; v2py = @view spy2[1:n2]
+            # Drifted extrema. Beam 1 reduces over its index vector with the drift/gather
+            # applied inside (no materialized array); beam 2 uses a fused broadcast
+            # reduce over its snapshot views.
+            x1 = rep1.x; px1 = rep1.px; y1 = rep1.y; py1 = rep1.py
+            d1x(p) = x1[p] + px1[p] * s1
+            d1y(p) = y1[p] + py1[p] * s1
+            xmin = min(minimum(d1x, idx1), minimum(v2x .+ v2px .* s2))
+            xmax = max(maximum(d1x, idx1), maximum(v2x .+ v2px .* s2))
+            ymin = min(minimum(d1y, idx1), minimum(v2y .+ v2py .* s2))
+            ymax = max(maximum(d1y, idx1), maximum(v2y .+ v2py .* s2))
+            width = max(T(xmax - xmin), eps(T)); height = max(T(ymax - ymin), eps(T))
+            tx = width / T(nx - 1.1); ty = height / T(ny - 1.1)
+            width += T(0.1) * tx; height += T(0.1) * ty
+            xmin -= T(0.05) * tx; ymin -= T(0.05) * ty
+            hx = width / (nx - 1); hy = height / (ny - 1)
+            CUDA.fill!(ws.qlum1, 0); CUDA.fill!(ws.qlum2, 0)
+            threads = 256
+            CUDA.@cuda threads=threads blocks=cld(length(idx1), threads) _cuda_spectral_deposit_idx_kernel!(
+                ws.qlum1, x1, px1, y1, py1, idx1, T(s1), T(-xmin + hx), T(-ymin + hy), T(hx), T(hy), nx, ny)
+            CUDA.@cuda threads=threads blocks=cld(n2, threads) _cuda_spectral_deposit_drift_kernel!(
+                ws.qlum2, v2x, v2px, v2y, v2py, T(s2), T(-xmin + hx), T(-ymin + hy), T(hx), T(hy), nx, ny)
+            lum = dot(vec(ws.qlum1), vec(ws.qlum2))
+            return lum * T(klum) / (hx * hy)
+        end
+
         function _cuda_spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
             solver.method === :grid || throw(ArgumentError(
                 "CUDA SpectralPoissonSolver supports method=:grid only; got $(repr(solver.method))"))
@@ -453,21 +583,30 @@ if _HAS_CUDA
                           center=slices1.center[i], rb=slices1.boundary[i + 1])
                 param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
                           center=slices2.center[j], rb=slices2.boundary[j + 1])
-                # Snapshot both source slices before either direction runs (direction 1
-                # kicks beam2, direction 2 kicks beam1, so reading from the rep after a
-                # kick would corrupt the other direction's source and the luminosity).
-                # The drift to each collision plane is folded into the deposit kernel.
-                sx1 = r1.x[idx1]; spx1 = r1.px[idx1]; sy1 = r1.y[idx1]; spy1 = r1.py[idx1]
-                sx2 = r2.x[idx2]; spx2 = r2.px[idx2]; sy2 = r2.y[idx2]; spy2 = r2.py[idx2]
-                _cuda_spectral_collision_direction_6d!(
-                    solver, ws, sx1, spx1, sy1, spy1, r2, idx2, param1, param2,
+                # Work through slice indices like the PIC indexed-wavefront path: no
+                # compact gather. Direction 1 kicks beam2, so only beam2 (its source for
+                # direction 2 and the luminosity) needs a pre-collision snapshot; beam1
+                # stays unmodified until direction 2 and is read straight from the rep.
+                n2 = length(idx2)
+                _cuda_spectral_ensure_snap!(ws, n2)
+                CUDA.@cuda threads=256 blocks=cld(n2, 256) _cuda_spectral_snap4_kernel!(
+                    ws.snapx, ws.snappx, ws.snapy, ws.snappy, r2.x, r2.px, r2.y, r2.py, idx2)
+                # Direction 1: source beam1 (rep+idx1, unmodified) -> kick beam2.
+                _cuda_spectral_collision_direction_6d_idx!(
+                    solver, ws, r1, idx1, r2, idx2, param1, param2,
                     slices1.weight[i] * kbb2, Lx, Ly)
+                # Luminosity before direction 2 kicks beam1, so both sources are
+                # pre-collision: beam1 from the rep, beam2 from the snapshot.
+                luminosity += _cuda_spectral_luminosity_idx_snap!(
+                    ws, r1, idx1, param1.center,
+                    ws.snapx, ws.snappx, ws.snapy, ws.snappy, n2, param2.center,
+                    klum, lnx, lny)
+                # Direction 2: source beam2 (snapshot) -> kick beam1.
+                v2x = @view ws.snapx[1:n2]; v2px = @view ws.snappx[1:n2]
+                v2y = @view ws.snapy[1:n2]; v2py = @view ws.snappy[1:n2]
                 _cuda_spectral_collision_direction_6d!(
-                    solver, ws, sx2, spx2, sy2, spy2, r1, idx1, param2, param1,
+                    solver, ws, v2x, v2px, v2y, v2py, r1, idx1, param2, param1,
                     slices2.weight[j] * kbb1, Lx, Ly)
-                luminosity += _cuda_spectral_midpoint_luminosity_pair(
-                    sx1, spx1, sy1, spy1, param1.center,
-                    sx2, spx2, sy2, spy2, param2.center, klum, lnx, lny)
             end
             return luminosity
         end
