@@ -28,7 +28,10 @@ Follow-on to the CUDA campaign, benchmarked on the full example beamline (produc
   wavefront batching would bring spectral toward ~1.2x but not below PIC. At fixed
   grid and FP64, spectral cannot beat PIC on raw speed -- this is fundamental to the
   global-Dirichlet-box formulation, not implementation overhead. Spectral's advantage
-  is accuracy (the exact spectral derivative beats PIC on flat beams), not throughput.
+  (the exact spectral derivative) is field-level and mathematical; at production
+  macroparticle statistics/grid both solvers sit on the same ~1% CIC graininess floor,
+  so there is NO demonstrated production accuracy advantage -- spectral matches PIC and
+  analytic to ~1% (parity). Not throughput either.
 
 - **Makhoul half-length transform -- tried and rejected.** The DST-I via a length-M
   real FFT (NR `sinft`: pre-weight + rfft(M) + repack + prefix-sum) was verified
@@ -355,7 +358,10 @@ machine precision against FFTW. One in-place FFT plan per dimension serves both.
 
 Spectral is **~4x faster than PIC on GPU** at matched grid resolution (no
 zero-padding, no Green-function convolution — just DST + per-mode divide + DCT
-derivative), while also more accurate on flat beams. CPU/CUDA agreement is
+derivative). Note: the "more accurate on flat beams" claim is a field-level result
+vs the smooth Bassetti-Erskine formula; at production statistics/grid both solvers are
+at the same ~1% CIC graininess floor, so it is not a demonstrated production advantage.
+CPU/CUDA agreement is
 machine-precision (kicks 4e-16, luminosity 9e-16) since the algorithm and particle
 data match.
 

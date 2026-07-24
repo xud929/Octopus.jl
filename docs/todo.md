@@ -18,11 +18,19 @@ on both beams in x/y/z and luminosity to 0.01% (~1.0e30). Absolute times are
 workstation-GPU (weak FP64); the ratio is the portable metric.
 
 **FP64 speed ceiling (measured):** at the fixed physics grid, the Dirichlet-box
-field solve does ~2.6x more FFT work per solve than PIC's adaptive-box `(128,128)`,
-and PIC already batches its FFTs, so at matched accuracy/precision spectral cannot
-beat PIC on raw throughput -- wavefront FFT batching would reach ~1.2x, not below.
-The spectral solver's edge is accuracy (exact derivative, better on flat beams), not
-speed. An opt-in `field_precision=:single` reaches ~parity on FP64-weak GPUs but is
+field solve does several times more FFT work per solve than PIC's adaptive-box
+`(128,128)` (7 transforms with the exact derivative vs PIC's 2 FFTs + finite-
+difference derivatives), and PIC already batches its FFTs, so spectral cannot beat
+PIC on raw throughput -- wavefront FFT batching and the Makhoul transform were both
+tried and are slower. **Accuracy caveat:** at production settings both solvers sit on
+the same macroparticle/CIC graininess floor (~1% vs theory), so spectral shows NO
+demonstrated accuracy advantage here -- it matches PIC and analytic to ~1% (parity).
+Spectral's exact derivative is mathematically more accurate at the field level, but
+that is below the graininess floor at production statistics/grid and has not been
+shown to improve the kicks in this regime; it would need a dedicated high-statistics
+field-vs-analytic test to demonstrate. So at this production case spectral is ~1.4x
+slower with no proven accuracy gain. An opt-in `field_precision=:single` reaches
+~parity on FP64-weak GPUs but is
 not a fair comparison (PIC could use Float32 too) and is not for production. See the
 optimization history.
 
@@ -103,7 +111,9 @@ had the same campaign and remains the top open performance item.
    passes cost far more than halving the FFT saves. Same lesson as batching -- the
    transform is memory/pass-bound and Makhoul adds passes. No known cuFFT-based lever
    reduces the FP64 transform cost further; spectral is ~1.39x PIC at production and
-   its advantage over PIC is accuracy, not speed.
+   at production settings it shows no demonstrated accuracy advantage either (both
+   sit on the same ~1% macroparticle/CIC graininess floor); the exact-derivative edge
+   is a field-level property below that floor here.
 3. **Add FP32 to PIC as an optional flag too.** Spectral now has
    `field_precision=:single` (Float32 field solve, ~1e-6 kick error, big win on
    FP64-weak GPUs). For a fair single-precision comparison PIC should expose the same
@@ -131,8 +141,9 @@ had the same campaign and remains the top open performance item.
    the grid fixed for resolution. The Makhoul N-point real transform was tried (item
    2) and is ~5.5x slower on GPU (the prefix-sum scan dominates), so it is not a
    lever either. Conclusion: at fixed grid and FP64, no cuFFT-based transform change
-   beats PIC; spectral is ~1.39x PIC and its real advantage is accuracy (exact
-   derivative, better on flat beams), not speed.
+   beats PIC; spectral is ~1.39x PIC. Accuracy is at parity too at production
+   settings (~1% graininess floor for both), so its theoretical exact-derivative edge
+   is not a demonstrated production advantage. See the accuracy caveat in the status.
 5. Adaptive spectral Dirichlet-box strategy: the current spectral kick solve uses
   one shared global square box for both source and field beams across all slice
   pairs. This is conservative and keeps DST/DCT plans and workspaces simple, but
@@ -251,7 +262,12 @@ had the same campaign and remains the top open performance item.
   (grid/DST is 100-1000x faster than grid-free).
 - Exact spectral field derivative: 2-3x more accurate than finite differences;
   the solver beats PIC on flat beams (25:1 median ~30% lower, max ~3x better) and
-  ties on round.
+  ties on round. **Caveat: this is a FIELD-LEVEL result vs the smooth Bassetti-
+  Erskine formula (no macroparticle noise).** In a real strong-strong sim at
+  production statistics/grid, both solvers sit on the same ~1% CIC graininess floor,
+  so this field-level edge is NOT a demonstrated production accuracy advantage (see
+  the status accuracy caveat). It would only matter at very high macroparticle counts
+  with a coarse/anisotropic grid.
 - Fast on-mesh spectral-derivative field pipeline (O(Nx*Ny*log)) validated to
   retain the accuracy advantage at ~4x lower cost than PIC. The DST-I mesh cosine
   derivative equals a zero-padded DCT-I (verified to machine precision).
