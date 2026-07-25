@@ -34,11 +34,15 @@ for the measurements behind each of these.
    validated) is not the right figure of merit. This is the highest-value *physics*
    follow-up, and it is the measurement that would confirm or refute the hybrid
    solver's main selling point.
-3. **CPU indexed-slice path.** `_pic_extract_slice` + `_pic_copy_coords` are ~35%
-   of CPU PIC cost at `grid=(128,128)` and 53% at `(64,64)`. CUDA already avoids
-   this via `cuda_indexed_wavefront`; the CPU interaction has no equivalent.
-   Benefits PIC, GaussianPIC, and the spectral 6D path (all three call the same
-   helpers).
+3. ~~**CPU indexed-slice path.**~~ **CLOSED NEGATIVE (2026-07-25).** Implemented
+   as a `cpu_indexed_slices` flag, verified bit-identical, measured **4-8%
+   slower** at every size and grid, and reverted. Each slice's arrays are
+   traversed several times per interaction, so gathering pays one indirection and
+   then gets contiguous access, while views pay it on every access. CUDA benefits
+   (2.3x) because there the gather is a separate kernel launch and coalescing
+   dominates. The earlier "~23% of a CPU turn" estimate is withdrawn. See
+   Section 19 of
+   [`poisson_solver_review_2026_07_24.md`](history/poisson_solver_review_2026_07_24.md).
 4. ~~**Add `luminosity_schedule` to `SpectralPoissonSolver`.**~~ **DONE** (CPU +
    CUDA, with a 32-assertion effectiveness test at the consumer boundary).
    `GaussianPoissonSolver` was deliberately left without it: its luminosity is a

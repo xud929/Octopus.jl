@@ -1376,3 +1376,55 @@ over 1000 turns):
    PIC(128,128) and +0.89 points for PIC(64,64) -- i.e. **halving the mesh
    quadruples the artificial growth**, consistent with noise scaling as the
    inverse cell count.
+
+
+---
+
+## 19. CPU indexed slice path — implemented, measured, reverted (2026-07-25)
+
+Requested as a CPU counterpart to `cuda_indexed_wavefront`. Implemented, verified
+correct, measured, and then **reverted because it is slower**. Recorded here so
+the result is not rediscovered.
+
+**What was built.** A `cpu_indexed_slices` option on `PICPoissonSolver`. Within a
+slice pair neither beam's storage is written until a kick is applied, and
+direction 1 kicks beam 2, so only beam 2 needs a pre-collision snapshot (it is
+the source of direction 2). Beam 1 is read straight from the rep during direction
+1 and is still pristine when direction 2 kicks it. Both field slices become
+`view(rep.x, idx)` handles, so kicks write through to beam storage and the
+scatter disappears. Per slice pair this replaces 2 gathers + 2 copies + 2
+scatters with 1 gather.
+
+**Correctness.** Bit-identical to the gathered path — luminosity, electron and
+proton coordinates all matched exactly (max |diff| = 0.0), as the construction
+requires since neither arithmetic nor ordering changes.
+
+**Performance — one `collide!`, 15 slices, 8 threads:**
+
+| beams | grid | gathered | indexed | speedup |
+| --- | --- | ---: | ---: | ---: |
+| 256k / 102.4k | 64² | 4.363 s | 4.719 s | **0.92x** |
+| 256k / 102.4k | 128² | 8.423 s | 8.890 s | **0.95x** |
+| 2.56M / 1.024M | 64² | 36.98 s | 38.70 s | **0.96x** |
+| 2.56M / 1.024M | 128² | 41.18 s | 43.48 s | **0.95x** |
+
+Consistently **4-8% slower**, at every size and grid.
+
+**Why, and why CUDA is different.** The prediction of a ~23% saving counted the
+gather as a one-off cost. It is not: each slice's arrays are traversed several
+times per interaction — the source by the drifted bounds scan, by the deposit at
+both longitudinal boundaries, and by the midpoint luminosity coordinates; the
+field by the forward drift, the kick loop, and the reverse drift. Gathering pays
+an indirection once and then enjoys contiguous, prefetchable access on every
+subsequent pass. Views pay `parent[idx[i]]` on *every* access, and there are more
+accesses than the copies saved.
+
+On CUDA the trade is the opposite, which is why `cuda_indexed_wavefront` is worth
+2.3x there: the gather is a separate kernel launch with a full global-memory round
+trip, and coalescing — not indirection count — dominates.
+
+**Conclusion.** The gather is not the CPU bottleneck it appeared to be in the
+Section 4.2 phase table; it is the price of contiguity, and it is worth paying.
+The Section 17 estimate that eliminating the gather would save ~23% of a CPU turn
+is **withdrawn**. A CPU indexed path is not a promising optimization and the item
+is closed negative, rather than left open.
