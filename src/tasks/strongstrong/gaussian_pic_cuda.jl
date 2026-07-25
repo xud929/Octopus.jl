@@ -34,7 +34,20 @@ if _HAS_CUDA
             return _cuda_gpic_entry!(solver, beam1, beam2, ctx)
         end
 
+        # The coupled (rotated) subtraction of docs Section 7 exists on the CPU
+        # path only. Throw rather than silently running the uncoupled path, which
+        # would be a silently ignored non-default request (AGENTS.md).
+        function _cuda_gpic_require_uncoupled(solver)
+            isfinite(solver.coupling_tol) && throw(ArgumentError(
+                "GaussianPICPoissonSolver(coupling_tol=$(solver.coupling_tol)) selects the " *
+                "coupled (rotated) Gaussian subtraction, which is implemented on the CPU " *
+                "path only. Use coupling_tol=Inf on CUDA, or run this solver on " *
+                "CPUThreadsBackend."))
+            return nothing
+        end
+
         function _cuda_gpic_entry!(solver, beam1, beam2, ctx)
+            _cuda_gpic_require_uncoupled(solver)
             workspace = _cuda_pic_workspace(solver.pic, eltype(beam1.rep.x))
             return _cuda_gpic_collide!(solver, beam1, beam2, workspace, ctx)
         end
@@ -43,6 +56,7 @@ if _HAS_CUDA
                                          solver::GaussianPICPoissonSolver,
                                          beam1::Beam, beam2::Beam, ::Type{CUDABackend},
                                          ctx::TrackingContext)
+            _cuda_gpic_require_uncoupled(solver)
             T = eltype(beam1.rep.x)
             workspace = _cuda_pic_workspace!(task.runtime_cache, label, solver.pic, T)
             return Base.ScopedValues.with(_ACTIVE_PIC_TIMING_CONTEXT => (label=label, turn=ctx.turn)) do

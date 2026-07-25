@@ -683,6 +683,78 @@ end
     @test abs(needed_scale(exg, eyg) - 1) < abs(needed_scale(exg2, eyg2) - 1)
 end
 
+@testset "GaussianPIC coupled (rotated) subtraction" begin
+    # docs/theory Section 7. Three things must hold:
+    #  (a) coupling_tol=Inf (default) is bit-identical to before the branch existed
+    #  (b) a finite coupling_tol changes the result (reaches its consumer)
+    #  (c) the coupled deposition matches brute-force 2D quadrature of the tilted
+    #      Gaussian far better than the axis-aligned formula
+    sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
+    mk() = begin
+        set_global_rng!(seed=91, method=:philox)
+        e = Beam(3000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
+            alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        p = Beam(3000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
+            alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+        (e, p)
+    end
+    run(tol) = begin
+        e, p = mk()
+        lum = collide!(GaussianPICPoissonSolver(; slicing=sl, grid=(64, 64), coupling_tol=tol),
+                       e, p, CPUThreadsBackend)
+        (lum, vcat(coordinate_arrays(e)...))
+    end
+    l_inf, c_inf = run(Inf)
+    l_0, c_0 = run(0.0)                     # 0 forces the coupled path everywhere
+    @test isfinite(l_inf) && all(isfinite, c_inf)
+    @test all(isfinite, c_0)
+    @test c_inf != c_0                                        # (b)
+    @test isapprox(l_0, l_inf; rtol=5e-2)                     # same physics
+    @test_throws ArgumentError GaussianPICPoissonSolver(coupling_tol=-1.0)
+
+    # (c) node-level accuracy against brute-force 2D quadrature
+    Wcic(u, h) = abs(u) >= h ? 0.0 : 1 - abs(u) / h
+    function brute(xi, yj, hx, hy, mux, muy, a, b, d; n=400)
+        det = a * d - b * b; ia = d / det; ib = -b / det; id = a / det
+        nrm = 1 / (2pi * sqrt(det)); acc = 0.0
+        for pq in 0:n, qq in 0:n
+            x = xi - hx + 2hx * pq / n; y = yj - hy + 2hy * qq / n
+            wx = Wcic(x - xi, hx) * ((pq == 0 || pq == n) ? 0.5 : 1.0)
+            wy = Wcic(y - yj, hy) * ((qq == 0 || qq == n) ? 0.5 : 1.0)
+            (wx == 0 || wy == 0) && continue
+            dx = x - mux; dy = y - muy
+            acc += wx * wy * nrm * exp(-0.5 * (ia * dx * dx + 2ib * dx * dy + id * dy * dy))
+        end
+        return acc * (2hx / n) * (2hy / n)
+    end
+    sigx = 2.0e-3; sigy = 1.0e-3; mux = 1.0e-4; muy = -2.0e-4
+    for r in (0.05, 0.2)
+        a = sigx^2; d = sigy^2; b = r * sigx * sigy
+        hx = 0.55sigx; hy = 0.55sigy
+        lam = b / a; sc = sqrt(d - b * b / a)
+        worst_c = 0.0; worst_u = 0.0
+        for xi in (mux - 1.3sigx, mux + 0.9sigx), yj in (muy - 1.1sigy, muy + 0.3sigy)
+            bq = brute(xi, yj, hx, hy, mux, muy, a, b, d)
+            W0, W1, W2 = Octopus._gpic_weighted_moments(xi, hx, mux, sigx, :CIC)
+            dd = mux - xi
+            M0 = W0; M1 = W1 - dd * W0; M2 = W2 - 2dd * W1 + dd * dd * W0
+            g = zeros(1); Octopus._gpic_gaussian_profile!(g, yj, hy, muy, sc, :CIC)
+            dg, ddg = Octopus._gpic_profile_mean_derivs(yj, hy, muy, sc, :CIC)
+            cp = M0 * g[1] + lam * M1 * dg + 0.5 * lam^2 * M2 * ddg
+            gxv = zeros(1); gyv = zeros(1)
+            Octopus._gpic_gaussian_profile!(gxv, xi, hx, mux, sigx, :CIC)
+            Octopus._gpic_gaussian_profile!(gyv, yj, hy, muy, sigy, :CIC)
+            un = gxv[1] * gyv[1]
+            worst_c = max(worst_c, abs(cp - bq) / abs(bq))
+            worst_u = max(worst_u, abs(un - bq) / abs(bq))
+        end
+        @test worst_c < worst_u / 10        # at least 10x better than axis-aligned
+        @test worst_c < 0.02
+    end
+end
+
 @testset "Spectral 6D Dirichlet box contains the drifted source" begin
     # The 6D path deposits each source slice DRIFTED to the field-slice
     # boundaries, and _spectral_field_grid! silently drops particles outside the

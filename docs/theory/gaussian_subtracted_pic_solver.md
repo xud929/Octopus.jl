@@ -379,39 +379,187 @@ A modest margin plus neutralization is the recommended default.
 
 The separable `erf` integral of Section 5 assumes an axis-aligned Gaussian. A
 tilted slice ($\sigma_{xy}\neq0$) is not separable in the axis-aligned grid
-coordinates. The natural, scale-free control variable for how far the slice is
-from axis-aligned is the transverse **correlation coefficient**
+coordinates. The natural, scale-free control variable is the transverse
+**correlation coefficient**
 
 $$
-    r_{xy} = \frac{\sigma_{xy}}{\sigma_x\,\sigma_y}\in[-1,1]
+    r_{xy} = \frac{\sigma_{xy}}{\sigma_x\,\sigma_y}\in[-1,1].
 $$
 
-(the off-diagonal of the normalized covariance). The user threshold
-$r_{\text{tol}}$ is `coupling_tol` (default `Inf`); branch on $|r_{xy}|$:
+`coupling_tol` ($=r_{\text{tol}}$) branches on $|r_{xy}|$: at or below the
+threshold the axis-aligned subtraction of Section 5 is used and the residual grid
+absorbs the small coupling; above it the coupled construction below is used.
+`coupling_tol = Inf` (the default) always takes the uncoupled path.
 
-- **$|r_{xy}|\le r_{\text{tol}}$ — uncoupled subtraction (default hot path).**
-  Subtract an axis-aligned Gaussian using $\sigma_x,\sigma_y$ from the covariance
-  diagonal (drop $\sigma_{xy}$) and let the residual $\delta\rho$ carry the small
-  coupling; the grid solves it — exactly what PIC handles well when the
-  correction is small. The subtraction stays fully separable and `erf`-only, and
-  it matches the solver's existing uncoupled fast path.
-- **$|r_{xy}| > r_{\text{tol}}$ — coupled subtraction (NOT YET IMPLEMENTED).** Rotate to principal axes
-  $(u,v)$ by
-  $\theta=\tfrac12\arctan\!\big(2\sigma_{xy}/(\sigma_x^2-\sigma_y^2)\big)$. The
-  analytic Bassetti-Erskine field rotates exactly (evaluate with $\sigma_u,
-  \sigma_v$ in the rotated frame, rotate the kick back). The **gridded**
-  subtraction is no longer separable in $(x,y)$; build $Q^G$ by the separable
-  `erf` integral in the rotated frame resampled to the axis-aligned nodes, or by
-  a small fixed 2D quadrature of the rotated Gaussian over each node's assignment
-  footprint.
+### 7.1 Analytic part: exact at any tilt
 
-The threshold makes the behavior explicit at both ends:
-$r_{\text{tol}}\to\infty$ forces the uncoupled path always (PIC handles all
-coupling); $r_{\text{tol}}=0$ forces the coupled path at any tilt. A practical
-default is $r_{\text{tol}}\sim0.05$–$0.1$: below that the coupling is a
-per-mille-level field the residual grid absorbs cheaply. The first implementation
-ships the uncoupled path (equivalent to $r_{\text{tol}}=\infty$); the coupled
-branch is a documented extension gated by the same threshold.
+The analytic add-back needs no approximation. Diagonalise
+$A=\begin{pmatrix}a&b\\b&d\end{pmatrix}$ with
+$D=\sqrt{(a-d)^2+4b^2}$, $\lambda_{1,2}=(a+d\pm D)/2$,
+$\theta=\tfrac12\operatorname{atan2}(2b,\,a-d)$; rotate the relative coordinate
+into the principal frame, evaluate Bassetti-Erskine with
+$(\sqrt{\lambda_1},\sqrt{\lambda_2})$, and rotate the kick back. The longitudinal
+term must additionally carry the rotation derivative $\theta_u$ of
+[`beam_beam_longitudinal_kick.md`](beam_beam_longitudinal_kick.md) Section 5 —
+keeping only the transported eigenvalues is *not* equivalent.
+
+The implementation therefore delegates the whole analytic part to the
+soft-Gaussian `_cp_covariance_kick` on the coupled `StrongTransverseMoments`,
+which already implements the rotated kick together with the $\lambda_{1,u}$,
+$\lambda_{2,u}$ and $\theta_u$ contributions. Nothing new is derived here, and
+the coupled analytic field is exact to machine precision at any tilt.
+
+### 7.2 Gridded part: the conditional expansion
+
+Only the *deposited* reference Gaussian $Q^G$ needs work, because a tilted
+Gaussian is not a product of an $x$-function and a $y$-function. It is, however,
+separable **conditionally**:
+
+$$
+\boxed{\;
+  \rho_G(x,y) = G(x;\mu_x,\sigma_x)\;G\big(y;\;m(x),\,s\big),\qquad
+  m(x)=\mu_y+\lambda\,(x-\mu_x),\quad
+  \lambda=\frac{\sigma_{xy}}{\sigma_x^{2}},\quad
+  s^{2}=\sigma_y^{2}-\frac{\sigma_{xy}^{2}}{\sigma_x^{2}} .
+\;}
+$$
+
+The conditional variance $s^2$ is **exact**, not expanded. Substituting into the
+shape-consistency requirement of Section 4 and using the separability of the
+assignment function $W$,
+
+$$
+    \frac{Q^{G}_{ij}}{N_s}
+    = \int\!dx\;G(x;\mu_x,\sigma_x)\,W(x-x_i)\;
+      g\big(y_j;\,m(x),\,s\big),
+    \qquad
+    g(y_j;\mu,s)=\int\!dy\,G(y;\mu,s)\,W(y-y_j).
+$$
+
+The only obstruction to separability is that the inner profile is evaluated at an
+$x$-dependent mean. Expanding $g$ in that mean shift about $\mu_y$, with
+$u=x-\mu_x$,
+
+$$
+    g\big(y_j;\mu_y+\lambda u,s\big)
+      = g_j + \lambda u\,g'_j + \tfrac12\lambda^2u^2\,g''_j + O(\lambda^3u^3),
+    \qquad g'=\frac{\partial g}{\partial\mu},\;\;g''=\frac{\partial^2g}{\partial\mu^2},
+$$
+
+gives **three separable outer products**:
+
+$$
+\boxed{\;
+    \frac{Q^{G}_{ij}}{N_s}
+    = M^{(0)}_i\,g_j
+    \;+\;\lambda\,M^{(1)}_i\,g'_j
+    \;+\;\tfrac12\lambda^{2}\,M^{(2)}_i\,g''_j
+    \;+\;O(\lambda^{3}),
+\;}
+\qquad
+M^{(k)}_i=\int (x-\mu_x)^k\,G\,W(x-x_i)\,dx .
+$$
+
+The cost is therefore $O(N_x+N_y)$ to build and $O(N_xN_y)$ to subtract — the
+same order as the uncoupled path, with no 2D quadrature anywhere.
+
+### 7.3 The two ingredients in closed form
+
+**Assignment-weighted moments $M^{(k)}$.** Work with central moments of the
+normalised 1D Gaussian on a cell $[A,B]$,
+$c_k=\int_A^B (x-\mu)^k G\,dx$. One integration by parts using
+$(x-\mu)G=-\sigma^2G'$ gives the recursion
+
+$$
+\boxed{\;
+    c_k = -\sigma^{2}\Big[(x-\mu)^{k-1}G\Big]_A^B
+          + (k-1)\,\sigma^{2}\,c_{k-2},
+\;}
+\qquad
+c_0=\tfrac12\!\left[\operatorname{erf}\tfrac{B-\mu}{\sigma\sqrt2}-\operatorname{erf}\tfrac{A-\mu}{\sigma\sqrt2}\right],
+\quad c_1=-\sigma^2\Delta G,
+$$
+
+which yields $c_0\ldots c_4$ from two `erf` and two `exp` evaluations per cell.
+Node-centred moments follow by the binomial shift with $d=\mu-x_i$, and the
+assignment-weighted $W_k=\int (x-x_i)^kGW$ are fixed linear combinations of them
+over the support cells — for CIC,
+$W_k = m_k(L)+m_{k+1}(L)/h + m_k(R)-m_{k+1}(R)/h$, and analogously for TSC with
+the quadratic weights of Section 5. Finally
+$M^{(1)}=W_1-dW_0$ and $M^{(2)}=W_2-2dW_1+d^2W_0$.
+
+**Mean-derivatives $g'$, $g''$.** Since $\partial G/\partial\mu=-\partial G/\partial y$,
+integrating by parts moves the derivative onto the assignment function:
+
+$$
+\boxed{\;
+    g'=\int G\,W'\,dy,
+    \qquad
+    g''=\int G\,W''\,dy .
+\;}
+$$
+
+For CIC, $W'=\pm1/h$ on the two support cells and $W''$ is the distribution
+$\tfrac1h[\delta(u+h)-2\delta(u)+\delta(u-h)]$, so
+
+$$
+    g'_j=\frac{m_0(L_j)-m_0(R_j)}{h},
+    \qquad
+    g''_j=\frac{G(y_j-h)-2G(y_j)+G(y_j+h)}{h}.
+$$
+
+For TSC, $W_2'=-2u/h^2$ on the core and $\mp(\tfrac32\mp u/h)/h$ on the wings,
+while $W_2''=-2/h^2$ on the core and $+1/h^2$ on each wing, giving $g'$ as a
+combination of $c_0,c_1$ per cell and $g''$ as a pure `erf` difference. Both are
+closed form; no quadrature is used.
+
+### 7.4 Validity, and where it must not be used
+
+The expansion is truncated at second order. Writing the $\lambda^2$ term relative
+to the leading one,
+
+$$
+    \frac{\tfrac12\lambda^2M^{(2)}g''}{M^{(0)}g}
+    \;\sim\;
+    \tfrac12\,\frac{\lambda^2\sigma_x^2}{s^2}
+    \;=\;\frac{1}{2}\frac{r_{xy}^{2}}{1-r_{xy}^{2}} ,
+$$
+
+so **the expansion parameter is the correlation itself**, not $\lambda$: it is
+$0.005$ at $r_{xy}=0.1$, $0.05$ at $0.3$, and $0.28$ at $0.6$, where truncation is
+no longer small.
+
+Measured against brute-force 2D quadrature of the tilted Gaussian against the same
+assignment function (worst relative node error; "uncoupled" is the axis-aligned
+formula of Section 5):
+
+| $r_{xy}$ | uncoupled | coupled (CIC) | coupled (TSC) |
+| ---: | ---: | ---: | ---: |
+| 0.05 | 8.9e-2 | **7.7e-5** | **7.2e-5** |
+| 0.20 | 4.8e-1 | **4.6e-3** | **4.4e-3** |
+| 0.50 | 3.3e0 | 1.2e-1 | 1.1e-1 |
+
+**The consequence for the total field is aspect-ratio dependent, and the coupled
+branch is not universally better.** Measured end to end against the exact rotated
+Bassetti-Erskine field (median relative kick error, grid 128):
+
+| beams | $r_{xy}$ | uncoupled | coupled | gain |
+| --- | ---: | ---: | ---: | ---: |
+| 11:1 (production) | 0.1 | 2.6e-3 | 1.7e-3 | 1.53x |
+| 11:1 | 0.3 | 5.8e-3 | 2.0e-3 | **2.95x** |
+| 11:1 | 0.6 | 1.4e-2 | 8.6e-3 | 1.65x |
+| 2:1 | 0.1 | 1.9e-3 | 1.9e-3 | 1.00x |
+| 2:1 | 0.3 | 2.0e-3 | 2.8e-3 | 0.71x |
+| 2:1 | 0.6 | 2.2e-3 | 2.1e-2 | **0.10x** |
+
+For flat beams — the regime the hybrid targets — the coupled branch wins across
+the whole range. For near-round beams the *uncoupled* baseline is already at the
+grid floor, so the $O(r^3)$ truncation dominates and the coupled branch can be
+worse. **Recommended use: flat beams with $r_{\text{tol}}\sim0.05$-$0.1$.** Do not
+enable it for near-round slices with strong tilt.
+
+The branch is CPU-only; the CUDA path raises rather than silently running the
+uncoupled subtraction.
 
 ## 8. Longitudinal kick and the drift-to-boundary structure
 

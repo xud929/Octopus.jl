@@ -1257,3 +1257,122 @@ New numerical checks run in this pass, all passing:
 `gaussian_pic_cuda.jl` (825 lines). Claiming a line-by-line review of those would
 overstate what was done; the practical guard there is the CPU/CUDA parity suite,
 which covers every solver and now both `field_derivative` settings.
+
+
+---
+
+# Follow-up 2 — 2026-07-25 (test record)
+
+Test runs behind the second follow-up pass. Derivations for the features below
+live in `docs/theory/`: the coupled subtraction in
+[`gaussian_subtracted_pic_solver.md`](../theory/gaussian_subtracted_pic_solver.md)
+Section 7, and the gradient stencils plus the free-space kernels in the new
+[`pic_free_space_kernels.md`](../theory/pic_free_space_kernels.md).
+
+## 15. Coupled (rotated) Gaussian subtraction — implemented and tested
+
+Implemented on the CPU path (CUDA raises rather than silently running the
+uncoupled subtraction). Default `coupling_tol = Inf` is unchanged and
+bit-identical.
+
+**Test 15.1 — deposition against brute-force 2D quadrature.** Worst relative node
+error of the deposited reference Gaussian, against direct 2D integration of the
+tilted Gaussian times the same assignment function:
+
+| $r_{xy}$ | uncoupled | coupled CIC | coupled TSC |
+| ---: | ---: | ---: | ---: |
+| 0.05 | 8.9e-2 | **7.7e-5** | **7.2e-5** |
+| 0.20 | 4.8e-1 | **4.6e-3** | **4.4e-3** |
+| 0.50 | 3.3e0 | 1.2e-1 | 1.1e-1 |
+
+A first attempt had TSC *worse* than uncoupled (1.7e-1 against 8.5e-2). Component
+testing isolated the cause to a sign error in the TSC mean-derivative
+$g'=\int GW'$ — the assignment-weighted moments were already exact to 1e-15 and
+CIC was already correct. After the fix all four derivatives match numerical
+differentiation to ~1e-7 (finite-difference limited) for both methods.
+
+**Test 15.2 — total field against the exact rotated Bassetti-Erskine field.**
+Median relative kick error, grid 128, deterministic tilted source:
+
+| beams | $r_{xy}$ | uncoupled | coupled | gain |
+| --- | ---: | ---: | ---: | ---: |
+| 11:1 (production) | 0.1 | 2.6e-3 | 1.7e-3 | 1.53x |
+| 11:1 | 0.3 | 5.8e-3 | 2.0e-3 | **2.95x** |
+| 11:1 | 0.6 | 1.4e-2 | 8.6e-3 | 1.65x |
+| 2:1 | 0.1 | 1.9e-3 | 1.9e-3 | 1.00x |
+| 2:1 | 0.3 | 2.0e-3 | 2.8e-3 | 0.71x |
+| 2:1 | 0.6 | 2.2e-3 | 2.1e-2 | **0.10x** |
+
+**The coupled branch is not universally better**, and that is a derived property,
+not a bug: the expansion parameter is $\tfrac12 r_{xy}^2/(1-r_{xy}^2)$, so at
+large correlation the truncation error grows, and for near-round beams the
+uncoupled baseline is already at the grid floor. It wins across the whole range
+for flat beams, which is the regime the hybrid targets. Recommended use is flat
+beams with `coupling_tol` ~ 0.05-0.1.
+
+An intermediate result during this test showed ~100% error in the coupled branch;
+that was a factor-2 in the *test harness* (the analytic add-back returns
+$F=k_{bb}K$ with $k_{bb}=N_s$, so $K=F/N_s$, not $2F/N_s$), not in the solver.
+Recorded because the solver was briefly and wrongly suspected.
+
+## 16. Vico-Greengard-Ferrando: evaluated and rejected
+
+Derivation and numbers in
+[`pic_free_space_kernels.md`](../theory/pic_free_space_kernels.md) Section 3.3.
+Summary: the closed-form truncated-kernel transform was derived and verified to
+5e-13 against quadrature; a first implementation was 100x worse than the current
+kernel, which was traced to kernel aliasing (truncation radius exceeding half the
+padded period), not to the method. Working, it needs 3x padding (2.25x the FFT
+points in 2D) to buy 12% accuracy, and at equal 2x padding its tail error is 2.3x
+worse than the integrated kernel. Closed as *not recommended for this solver*.
+
+## 17. CPU slice-path cost, measured
+
+Before refactoring hot code, the assumed win was measured. Slice extraction and
+copying at production size (170k-particle slice):
+
+| operation | allocating | in-place (reuse) | ratio |
+| --- | ---: | ---: | ---: |
+| `_pic_extract_slice` | 5.22e-3 s | 4.28e-3 s | 1.22x |
+| `_pic_copy_coords` | 5.8e-4 s | 5.3e-4 s | 1.09x |
+| per slice pair | 1.16e-2 s | 9.62e-3 s | **17% saved** |
+
+17% of the extract/copy phase is ~4% of a turn, because the cost is the gather
+memcpy rather than the allocation. Buffer reuse is therefore **not** worth the
+regression risk. Eliminating the gather entirely (the CUDA
+`cuda_indexed_wavefront` equivalent) would save ~23% of a CPU turn but requires
+threading `(rep, idx)` through the deposit, bounds scan and kick. Still open, now
+with costed options rather than an assertion.
+
+## 18. Multi-turn emittance growth with error bars
+
+Section 11 was single-seed. Repeated at seeds 2222 and 3333 for the
+configurations the recommendation depends on (proton $\varepsilon_x$ total growth
+over 1000 turns):
+
+| config | seed 1 | seed 2222 | seed 3333 | mean +- spread |
+| --- | ---: | ---: | ---: | ---: |
+| no collision (control) | -0.000% | +0.000% | -0.000% | **0.000 +- 0.000** |
+| soft-Gaussian (analytic) | +0.405% | +0.40% | +0.41% | **0.405 +- 0.005** |
+| PIC (64,64) | +1.101% | +1.30% | +1.46% | **1.29 +- 0.18** |
+| PIC (128,128) | +0.637% | +0.61% | +0.65% | **0.632 +- 0.021** |
+| GaussianPIC (64,64) TSC | +0.639% | +0.67% | +0.65% | **0.653 +- 0.016** |
+
+**The Section 11 conclusions survive the error bars.**
+
+1. The control is flat to within 1e-3 points on every seed.
+2. The analytic reference is reproducible to +-0.005 points, confirming that the
+   +0.405% baseline is physical beam-beam response, not noise.
+3. **`grid=(64,64)` is separated from everything else by ~30 sigma** (1.29 +- 0.18
+   against 0.632 +- 0.021) and, uniquely, its scatter is an order of magnitude
+   larger than the others -- the signature of a run that has not settled. It is
+   the only configuration still rising at the end of the run.
+4. **PIC(128,128) and GaussianPIC(64,64) remain indistinguishable**
+   (0.632 +- 0.021 against 0.653 +- 0.016; the 0.02-point gap is within one
+   combined sigma). The recommendation in Section 12 to prefer PIC(128,128) on
+   cost therefore stands: the hybrid at 64 buys no dynamic advantage over plain
+   PIC at 128 while costing 2x on CUDA.
+5. The numerical excess over the analytic reference is +0.23 points for
+   PIC(128,128) and +0.89 points for PIC(64,64) -- i.e. **halving the mesh
+   quadruples the artificial growth**, consistent with noise scaling as the
+   inverse cell count.

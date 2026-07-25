@@ -34,6 +34,11 @@ reference material, not API docs; the implementing code links back to them.
 - [`spectral_sine_poisson_solver.md`](theory/spectral_sine_poisson_solver.md) —
   `SpectralPoissonSolver`: Dirichlet-box double sine-series Poisson solve, DST/DCT
   discrete form, CUDA notes, open-boundary discussion, and measured accuracy.
+- [`pic_free_space_kernels.md`](theory/pic_free_space_kernels.md) —
+  `PICPoissonSolver` field solve: the second- and fourth-order on-mesh gradient
+  stencils (`field_derivative`), the node-sampled vs cell-integrated free-space
+  kernels (`green_type`), and the Vico-Greengard-Ferrando truncated kernel —
+  derived, measured, and rejected for this solver.
 - [`gaussian_subtracted_pic_solver.md`](theory/gaussian_subtracted_pic_solver.md) —
   `GaussianPICPoissonSolver`: control-variate hybrid (analytic Gaussian + PIC
   residual), the `erf` deposition integrals, domain-margin sizing, the coupling

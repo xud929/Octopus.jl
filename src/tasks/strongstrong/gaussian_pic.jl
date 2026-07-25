@@ -79,13 +79,9 @@ function GaussianPICPoissonSolver{T}(; margin_sigma=5.0, neutralize::Bool=true,
         "margin_sigma must be non-negative; got $(margin_sigma)."))
     ct >= zero(T) || throw(ArgumentError(
         "coupling_tol must be non-negative; got $(coupling_tol)."))
-    # The coupled (rotated) subtraction of docs Section 7 is not implemented, so a
-    # finite threshold would silently do nothing. Reject it rather than accept a
-    # non-default request that has no runtime consumer.
-    isinf(ct) || throw(ArgumentError(
-        "coupling_tol=$(coupling_tol) requests the coupled (rotated) Gaussian " *
-        "subtraction, which is not implemented; only Inf (always-uncoupled) is " *
-        "currently supported. See docs/theory/gaussian_subtracted_pic_solver.md Section 7."))
+    # A finite coupling_tol selects the coupled (rotated) subtraction of docs
+    # Section 7. It is implemented on the CPU path only; the CUDA collide throws
+    # rather than silently running the uncoupled path.
     return GaussianPICPoissonSolver{T}(pic, ms, neutralize, ct)
 end
 
@@ -127,11 +123,12 @@ function configuration_report(solver::GaussianPICPoissonSolver;
         :resolved, "adaptive-box Gaussian containment margin in sigmas", :gaussian_pic_subtraction))
     push!(extras, ConfigurationEntry(:neutralize, solver.neutralize, solver.neutralize,
         :resolved, "discrete charge neutralization of the subtracted Gaussian", :gaussian_pic_subtraction))
-    # Only Inf is constructible today (the coupled branch is unimplemented), so the
-    # option is reported as an inactive dependency rather than a resolved value.
+    coupled_active = isfinite(solver.coupling_tol)
     push!(extras, ConfigurationEntry(:coupling_tol, solver.coupling_tol, solver.coupling_tol,
-        :inactive_dependency,
-        "always-uncoupled separable subtraction; the coupled (rotated) branch is not implemented",
+        coupled_active ? :resolved : :inactive_dependency,
+        coupled_active ?
+            "coupled (rotated) subtraction above the correlation threshold; CPU path only" :
+            "always-uncoupled separable subtraction",
         :gaussian_pic_subtraction))
     return (pic_entries..., Tuple(extras)...)
 end
@@ -181,6 +178,137 @@ function _gpic_gaussian_profile!(g::AbstractVector{T}, x0::T, h::T, mu::T, sigma
 end
 
 # ---------------------------------------------------------------------------
+# Coupled (rotated) shape-consistent deposition, docs Section 7.
+#
+# A tilted Gaussian is not separable in the axis-aligned grid coordinates, but it
+# IS separable *conditionally*:
+#
+#   rho(x,y) = G(x; mux, sigx) * G(y; m(x), s),
+#   m(x) = muy + lambda (x - mux),  lambda = sigxy / sigx^2,
+#   s^2  = sigy^2 - sigxy^2 / sigx^2      (exact conditional variance)
+#
+# so the node integral Q_ij = Ns * int G_x W(x-x_i) g(y_j; m(x), s) dx becomes,
+# after expanding g in the mean shift about muy,
+#
+#   Q_ij / Ns = M0_i g_j + lambda M1_i g'_j + (lambda^2/2) M2_i g''_j + O(lambda^3)
+#
+# with M_k the node-centred x-moments about mux and g', g'' the mean-derivatives
+# of the 1D profile. Both derivatives are available in closed form from the same
+# erf machinery: integrating by parts, g' = int G W' and g'' = int G W''; for the
+# CIC tent W' is +-1/h on the two support cells and W'' is a difference of three
+# delta functions, giving
+#
+#   g'_j  = [ m0(L_j) - m0(R_j) ] / h
+#   g''_j = [ G(y_j-h) - 2 G(y_j) + G(y_j+h) ] / h
+#
+# The result is three separable outer products -- O(Nx+Ny) to build and
+# O(Nx*Ny) to subtract, the same order as the uncoupled path -- and is exact
+# through second order in the correlation. Any residue is simply left on the grid
+# for the Poisson solve, exactly as the control-variate argument intends.
+# ---------------------------------------------------------------------------
+# Central moments (c_0..c_4) with c_k = int_A^B (x-mu)^k G(x) dx of the
+# normalised 1D Gaussian. One integration by parts using (x-mu)G = -s^2 G' gives
+#     c_k = -s^2 [ (x-mu)^{k-1} G ]_A^B + (k-1) s^2 c_{k-2},
+# seeded by c_0 (erf difference) and c_1 = -s^2 (G(B) - G(A)).
+@inline function _gpic_central_moments(A::T, B::T, mu::T, s::T) where {T}
+    invroot = inv(s * sqrt(T(2)))
+    norm = inv(s * sqrt(2 * T(pi)))
+    a = A - mu; b = B - mu
+    GA = norm * exp(-(a * a) / (2 * s * s))
+    GB = norm * exp(-(b * b) / (2 * s * s))
+    s2 = s * s
+    c0 = T(0.5) * (erf(b * invroot) - erf(a * invroot))
+    c1 = -s2 * (GB - GA)
+    c2 = -s2 * (b * GB - a * GA) + s2 * c0
+    c3 = -s2 * (b * b * GB - a * a * GA) + 2 * s2 * c1
+    c4 = -s2 * (b^3 * GB - a^3 * GA) + 3 * s2 * c2
+    return (c0, c1, c2, c3, c4)
+end
+
+# Node-centred moments m_k = int (x-xi)^k G over the same cell, from the central
+# moments by the binomial shift with d = mu - xi (so x - xi = (x-mu) + d).
+@inline function _gpic_shift_moments(c::NTuple{5,T}, d::T) where {T}
+    d2 = d * d; d3 = d2 * d; d4 = d3 * d
+    return (c[1],
+            c[2] + d * c[1],
+            c[3] + 2d * c[2] + d2 * c[1],
+            c[4] + 3d * c[3] + 3d2 * c[2] + d3 * c[1],
+            c[5] + 4d * c[4] + 6d2 * c[3] + 4d3 * c[2] + d4 * c[1])
+end
+
+# Assignment-weighted moments W_k = int (x-xi)^k G(x) W(x-xi) dx for k = 0,1,2.
+# W_0 reproduces the uncoupled profile of Section 5; W_1 and W_2 are what the
+# coupled expansion needs.
+function _gpic_weighted_moments(xi::T, h::T, mu::T, s::T, method::Symbol) where {T}
+    mom(A, B) = _gpic_shift_moments(_gpic_central_moments(A, B, mu, s), mu - xi)
+    if method === :CIC
+        L = mom(xi - h, xi); R = mom(xi, xi + h)
+        return ((L[1] + L[2] / h) + (R[1] - R[2] / h),
+                (L[2] + L[3] / h) + (R[2] - R[3] / h),
+                (L[3] + L[4] / h) + (R[3] - R[4] / h))
+    end
+    half = h / 2
+    C = mom(xi - half, xi + half)
+    Lw = mom(xi - 3half, xi - half)
+    Rw = mom(xi + half, xi + 3half)
+    core(M, k) = T(0.75) * M[k + 1] - M[k + 3] / (h * h)
+    wing(M, k, sgn) = T(1.125) * M[k + 1] + sgn * T(1.5) * M[k + 2] / h +
+                      T(0.5) * M[k + 3] / (h * h)
+    return (core(C, 0) + wing(Lw, 0, +1) + wing(Rw, 0, -1),
+            core(C, 1) + wing(Lw, 1, +1) + wing(Rw, 1, -1),
+            core(C, 2) + wing(Lw, 2, +1) + wing(Rw, 2, -1))
+end
+
+# Mean-derivatives of the 1D profile, g' = dg/dmu and g'' = d2g/dmu2. Since
+# dG/dmu = -dG/dy, integrating by parts gives g' = int G W' and g'' = int G W''.
+# CIC: W' = +-1/h on the two cells; W'' = [d(u+h) - 2d(u) + d(u-h)]/h.
+# TSC: W' = -2u/h^2 on the core and -+(3/2 - |u|/h)/h on the wings;
+#      W'' = -2/h^2 on the core and +1/h^2 on each wing.
+function _gpic_profile_mean_derivs(yj::T, h::T, mu::T, s::T, method::Symbol) where {T}
+    invroot = inv(s * sqrt(T(2)))
+    norm = inv(s * sqrt(2 * T(pi)))
+    pdf(y) = norm * exp(-((y - mu) * (y - mu)) / (2 * s * s))
+    m0(A, B) = T(0.5) * (erf((B - mu) * invroot) - erf((A - mu) * invroot))
+    if method === :CIC
+        dg = (m0(yj - h, yj) - m0(yj, yj + h)) / h
+        ddg = (pdf(yj - h) - 2 * pdf(yj) + pdf(yj + h)) / h
+        return dg, ddg
+    end
+    half = h / 2
+    mom(A, B) = _gpic_shift_moments(_gpic_central_moments(A, B, mu, s), mu - yj)
+    C = mom(yj - half, yj + half)
+    Lw = mom(yj - 3half, yj - half)
+    Rw = mom(yj + half, yj + 3half)
+    # dg/dmu = int G W'; W2' = -2u/h^2 on the core and -+(3/2 -+ u/h)/h on the wings
+    dg = -2 * C[2] / (h * h) +
+         (T(1.5) * Lw[1] + Lw[2] / h) / h +
+         (-T(1.5) * Rw[1] + Rw[2] / h) / h
+    ddg = (-2 * m0(yj - half, yj + half) +
+           m0(yj - 3half, yj - half) + m0(yj + half, yj + 3half)) / (h * h)
+    return dg, ddg
+end
+
+function _gpic_coupled_profiles!(gx, m1x, m2x, gy, dgy, ddgy,
+                                 x0::T, hx::T, mux::T, sigx::T,
+                                 y0::T, hy::T, muy::T, sigc::T,
+                                 method::Symbol) where {T}
+    @inbounds for i in eachindex(gx)
+        xi = x0 + (i - 1) * hx
+        W0, W1, W2 = _gpic_weighted_moments(xi, hx, mux, sigx, method)
+        d = mux - xi
+        gx[i] = W0
+        m1x[i] = W1 - d * W0
+        m2x[i] = W2 - 2 * d * W1 + d * d * W0
+    end
+    _gpic_gaussian_profile!(gy, y0, hy, muy, sigc, method)
+    @inbounds for j in eachindex(gy)
+        yj = y0 + (j - 1) * hy
+        dgy[j], ddgy[j] = _gpic_profile_mean_derivs(yj, hy, muy, sigc, method)
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
 # Raw transverse moments of the source slice, needed to build the drifted
 # reference Gaussian at each field-slice boundary.
 # ---------------------------------------------------------------------------
@@ -190,11 +318,14 @@ function _gpic_source_moments(source)
     sx = zero(T); spx = zero(T); sy = zero(T); spy = zero(T)
     sxx = zero(T); spxpx = zero(T); syy = zero(T); spypy = zero(T)
     sxpx = zero(T); sypy = zero(T)
+    # cross-plane sums, needed for the coupled (rotated) subtraction
+    sxy = zero(T); sxpy = zero(T); sypx = zero(T); spxpy = zero(T)
     @inbounds for i in 1:n
         xi = source.x[i]; pxi = source.px[i]; yi = source.y[i]; pyi = source.py[i]
         sx += xi; spx += pxi; sy += yi; spy += pyi
         sxx += xi * xi; spxpx += pxi * pxi; syy += yi * yi; spypy += pyi * pyi
         sxpx += xi * pxi; sypy += yi * pyi
+        sxy += xi * yi; sxpy += xi * pyi; sypx += yi * pxi; spxpy += pxi * pyi
     end
     invn = inv(T(n))
     mx = sx * invn; mpx = spx * invn; my = sy * invn; mpy = spy * invn
@@ -204,8 +335,39 @@ function _gpic_source_moments(source)
     varpx = max(spxpx * invn - mpx * mpx, zero(T))
     cypy = sypy * invn - my * mpy
     varpy = max(spypy * invn - mpy * mpy, zero(T))
+    cxy = sxy * invn - mx * my
+    cxpy = sxpy * invn - mx * mpy
+    cypx = sypx * invn - my * mpx
+    cpxpy = spxpy * invn - mpx * mpy
     return (n=n, mx=mx, mpx=mpx, varx=varx, cxpx=cxpx, varpx=varpx,
-            my=my, mpy=mpy, vary=vary, cypy=cypy, varpy=varpy)
+            my=my, mpy=mpy, vary=vary, cypy=cypy, varpy=varpy,
+            cxy=cxy, cxpy=cxpy, cypx=cypx, cpxpy=cpxpy)
+end
+
+# Full 4x4 transverse covariance of the source slice as StrongTransverseMoments,
+# so the coupled analytic add-back can reuse the validated soft-Gaussian
+# `_cp_covariance_kick` (rotated Bassetti-Erskine kick plus the principal-axis
+# and rotation-derivative pz terms of docs/theory Section 5).
+@inline function _gpic_coupled_moments(mom)
+    T = typeof(mom.mx)
+    return StrongTransverseMoments{T,true}(
+        mom.varx, mom.cxy, mom.vary,
+        mom.cxpx, mom.cxpy, mom.cypx, mom.cypy,
+        mom.varpx, mom.cpxpy, mom.varpy)
+end
+
+# Transported transverse covariance (a, b, d) = (sigma_x^2, sigma_xy, sigma_y^2)
+# of the source slice drifted by +s. `_transport_transverse_moments` uses the
+# field-particle convention S = -s, hence the sign.
+@inline function _gpic_drifted_covariance(mom, s)
+    return _transport_transverse_moments(_gpic_coupled_moments(mom), -s)
+end
+
+# Correlation coefficient of the drifted slice; the coupling switch of docs
+# Section 7 branches on |r_xy|.
+@inline function _gpic_correlation(a, b, d)
+    (a <= 0 || d <= 0) && return zero(a)
+    return b / sqrt(a * d)
 end
 
 # Analytic Gaussian longitudinal (covariance-transport) contribution, matching
@@ -284,6 +446,54 @@ function _gpic_solve_drifted_field!(field::_PICFieldWorkspace, pic::PICPoissonSo
     return phi, field.Ex, field.Ey
 end
 
+# Coupled variant of the drifted field solve: subtracts the tilted reference
+# Gaussian using the three separable outer products of the conditional expansion
+# (see _gpic_coupled_profiles!). lambda = sigma_xy/sigma_x^2 and sigc is the
+# exact conditional sigma_y.
+function _gpic_solve_drifted_field_coupled!(field::_PICFieldWorkspace, pic::PICPoissonSolver,
+                                            source, drift_s, source_grid, green_fft, workspace,
+                                            mux, muy, sigx, sigc, lambda, ns, neutralize,
+                                            gxbuf, m1xbuf, m2xbuf, gybuf, dgybuf, ddgybuf)
+    nx, ny = pic.grid
+    T = eltype(source.x)
+    hx = T(source_grid.width) / T(nx - 1)
+    hy = T(source_grid.height) / T(ny - 1)
+    charge = workspace.charge
+    fill!(charge, zero(T))
+    _pic_deposit_drifted!(charge, pic.deposit_method, source.x, source.px, source.y,
+                          source.py, T(drift_s), T(source_grid.x0), T(source_grid.y0),
+                          hx, hy, nx, ny, workspace)
+    _gpic_coupled_profiles!(gxbuf, m1xbuf, m2xbuf, gybuf, dgybuf, ddgybuf,
+                            T(source_grid.x0), hx, T(mux), T(sigx),
+                            T(source_grid.y0), hy, T(muy), T(sigc), pic.deposit_method)
+    qsum = zero(T)
+    @inbounds for j in 1:ny, i in 1:nx
+        qsum += charge[i, j]
+    end
+    lam = T(lambda); half_lam2 = T(0.5) * lam * lam
+    # total mass of the subtracted grid, for the neutralization rescale
+    sg = sum(gxbuf) * sum(gybuf) + lam * sum(m1xbuf) * sum(dgybuf) +
+         half_lam2 * sum(m2xbuf) * sum(ddgybuf)
+    amp = (neutralize && sg != 0) ? qsum / sg : T(ns)
+    @inbounds for j in 1:ny
+        gj = amp * gybuf[j]; dj = amp * lam * dgybuf[j]; ddj = amp * half_lam2 * ddgybuf[j]
+        for i in 1:nx
+            charge[i, j] -= gxbuf[i] * gj + m1xbuf[i] * dj + m2xbuf[i] * ddj
+        end
+    end
+    spectral = workspace.spectral
+    spectral .= charge
+    workspace.fft_plan * spectral
+    spectral .*= green_fft
+    workspace.ifft_plan * spectral
+    phi = field.phi
+    @inbounds for j in 1:ny, i in 1:nx
+        phi[i, j] = real(spectral[i, j])
+    end
+    _pic_field!(field.Ex, field.Ey, phi, hx, hy, _pic_fourth_order(pic))
+    return phi, field.Ex, field.Ey
+end
+
 # ---------------------------------------------------------------------------
 # One directed slice-pair interaction with Gaussian subtraction. Mirrors
 # _pic_interaction! and reuses its grid, Green-cache, and interpolation helpers.
@@ -303,6 +513,14 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
     mom = _gpic_source_moments(source)
     muxL, muyL, sigxL, sigyL = _gpic_drifted_gaussian(mom, sL)
     muxR, muyR, sigxR, sigyR = _gpic_drifted_gaussian(mom, sR)
+    # Coupling switch (docs Section 7): branch on the transported correlation
+    # coefficient of either boundary.
+    aL, bL, dL, _, _, _ = _gpic_drifted_covariance(mom, sL)
+    aR, bR, dR, _, _, _ = _gpic_drifted_covariance(mom, sR)
+    rL = _gpic_correlation(aL, bL, dL); rR = _gpic_correlation(aR, bR, dR)
+    use_coupled = isfinite(gsolver.coupling_tol) &&
+                  max(abs(rL), abs(rR)) > T(gsolver.coupling_tol) &&
+                  aL > 0 && dL > 0 && aR > 0 && dR > 0
     # Fall back to plain PIC for degenerate slices where the reference Gaussian
     # is undefined (single particle or zero transverse spread at a boundary).
     do_gauss = nsource >= 2 && sigxL > 0 && sigyL > 0 && sigxR > 0 && sigyR > 0
@@ -361,14 +579,29 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
 
     gxbuf = Vector{T}(undef, nx)
     gybuf = Vector{T}(undef, ny)
-    phiL, ExL, EyL = _gpic_solve_drifted_field!(
-        workspace.left, pic, source, sL, source_grid, green_fft, workspace,
-        muxL, muyL, sigxL, sigyL, nsource, gsolver.neutralize, gxbuf, gybuf,
-    )
-    phiR, ExR, EyR = _gpic_solve_drifted_field!(
-        workspace.right, pic, source, sR, source_grid, green_fft, workspace,
-        muxR, muyR, sigxR, sigyR, nsource, gsolver.neutralize, gxbuf, gybuf,
-    )
+    if use_coupled
+        m1x = Vector{T}(undef, nx); m2x = Vector{T}(undef, nx)
+        dgy = Vector{T}(undef, ny); ddgy = Vector{T}(undef, ny)
+        lamL = bL / aL; scL = sqrt(max(dL - bL * bL / aL, zero(T)))
+        lamR = bR / aR; scR = sqrt(max(dR - bR * bR / aR, zero(T)))
+        phiL, ExL, EyL = _gpic_solve_drifted_field_coupled!(
+            workspace.left, pic, source, sL, source_grid, green_fft, workspace,
+            muxL, muyL, sqrt(aL), scL, lamL, nsource, gsolver.neutralize,
+            gxbuf, m1x, m2x, gybuf, dgy, ddgy)
+        phiR, ExR, EyR = _gpic_solve_drifted_field_coupled!(
+            workspace.right, pic, source, sR, source_grid, green_fft, workspace,
+            muxR, muyR, sqrt(aR), scR, lamR, nsource, gsolver.neutralize,
+            gxbuf, m1x, m2x, gybuf, dgy, ddgy)
+    else
+        phiL, ExL, EyL = _gpic_solve_drifted_field!(
+            workspace.left, pic, source, sL, source_grid, green_fft, workspace,
+            muxL, muyL, sigxL, sigyL, nsource, gsolver.neutralize, gxbuf, gybuf,
+        )
+        phiR, ExR, EyR = _gpic_solve_drifted_field!(
+            workspace.right, pic, source, sR, source_grid, green_fft, workspace,
+            muxR, muyR, sigxR, sigyR, nsource, gsolver.neutralize, gxbuf, gybuf,
+        )
+    end
 
     kick_scale = T(2) * T(kbb)
     half_ns = T(0.5) * T(nsource)
@@ -378,6 +611,7 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
     # matching the +s deposition convention used to build the reference Gaussian.
     rxL = 2 * (mom.cxpx + sL * mom.varpx); ryL = 2 * (mom.cypy + sL * mom.varpy)
     rxR = 2 * (mom.cxpx + sR * mom.varpx); ryR = 2 * (mom.cypy + sR * mom.varpy)
+    cmom = _gpic_coupled_moments(mom)
     hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
     @inbounds for i in 1:nfield
         x = field.x[i]; y = field.y[i]
@@ -386,6 +620,26 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
         Kx_d, Ky_d, Kz_d = _pic_interpolate_kick(
             pic, field_grid, x, y, phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
         )
+        if use_coupled
+            # Rotated analytic add-back. Delegating to _cp_covariance_kick reuses
+            # the soft-Gaussian principal-axis kick together with its eigenvalue
+            # and rotation-derivative pz terms (docs Section 5), which is exactly
+            # the coupled longitudinal physics the uncoupled branch cannot form.
+            zpx = zero(T); zpy = zero(T); zpz = zero(T)
+            _, pxL, _, pyL, _, pzL, _ = _cp_covariance_kick(
+                cmom, kbb_eff, -sL, x - muxL, y - muyL, x, zpx, y, zpy, T(0), zpz)
+            _, pxR, _, pyR, _, pzR, _ = _cp_covariance_kick(
+                cmom, kbb_eff, -sR, x - muxR, y - muyR, x, zpx, y, zpy, T(0), zpz)
+            dpx_a = zL * pxL + zR * pxR
+            dpy_a = zL * pyL + zR * pyR
+            field.px[i] += kick_scale * Kx_d + dpx_a
+            field.py[i] += kick_scale * Ky_d + dpy_a
+            if pic.longitudinal_kick
+                field.pz[i] += kick_scale * Kz_d * hzi
+                field.pz[i] += zL * pzL + zR * pzR
+                field.pz[i] += T(0.5) * (dpx_a * mpx + dpy_a * mpy)
+            end
+        else
         beLx, beLy = gaussian_beambeam_kick(sigxL, sigyL, x - muxL, y - muyL)
         beRx, beRy = gaussian_beambeam_kick(sigxR, sigyR, x - muxR, y - muyR)
         Kx_a = half_ns * (zL * beLx + zR * beRx)
@@ -400,6 +654,7 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
             field.pz[i] += kick_scale * Kz_d * hzi
             field.pz[i] += zL * covL + zR * covR
             field.pz[i] += T(0.5) * (dpx_a * mpx + dpy_a * mpy)
+        end
         end
         s = T(0.5) * (T(param_source.center) - field.z[i])
         field.x[i] += s * field.px[i]
