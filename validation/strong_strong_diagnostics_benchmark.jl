@@ -33,7 +33,7 @@ timing_path = joinpath(result_dir, "pic_diagnostics_$(mode)_turn_times.tsv")
 
 defaults = Dict(
     "OCTOPUS_USE_GPU" => "1",
-    "OCTOPUS_POISSON_SOLVER" => "PIC",
+    "OCTOPUS_SOLVER" => "PIC",
     "OCTOPUS_TURNS" => string(turns),
     "OCTOPUS_N_MACRO_ELE" => "2560000",
     "OCTOPUS_N_MACRO_PRO" => "1000000",
@@ -56,7 +56,7 @@ for (key, value) in defaults
     haskey(ENV, key) || (ENV[key] = value)
 end
 
-include(joinpath(@__DIR__, "..", "examples", "strong_strong_tracking.jl"))
+include(joinpath(@__DIR__, "..", "test", "examples", "strong_strong_tracking.jl"))
 
 timings = turn_timings(task)
 sample = timings[(end - sample_turns + 1):end]

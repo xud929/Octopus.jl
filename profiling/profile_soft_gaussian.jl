@@ -122,7 +122,7 @@ end
 function run_full_tracking_profile()
     RUN_FULL_TRACKING || return nothing
     ENV["OCTOPUS_USE_GPU"] = get(ENV, "OCTOPUS_USE_GPU", "0")
-    ENV["OCTOPUS_POISSON_SOLVER"] = "gaussian"
+    ENV["OCTOPUS_SOLVER"] = "gaussian"
     ENV["OCTOPUS_TURNS"] = get(ENV, "OCTOPUS_TURNS", "3")
     ENV["OCTOPUS_N_MACRO"] = get(ENV, "OCTOPUS_N_MACRO", "20000")
     ENV["OCTOPUS_DISABLE_MOMENTS"] = get(ENV, "OCTOPUS_DISABLE_MOMENTS", "1")
@@ -130,7 +130,7 @@ function run_full_tracking_profile()
     ENV["OCTOPUS_RECORD_TURN_TIMES"] = get(ENV, "OCTOPUS_RECORD_TURN_TIMES", "1")
     println()
     println("Full strong-strong example timing")
-    return include(joinpath(@__DIR__, "..", "examples", "strong_strong_tracking.jl"))
+    return include(joinpath(@__DIR__, "..", "test", "examples", "strong_strong_tracking.jl"))
 end
 
 function print_profile_rows(rows)

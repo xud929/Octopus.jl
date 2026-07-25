@@ -14,7 +14,7 @@ Useful options:
     OCTOPUS_TURNS=3
     OCTOPUS_N_MACRO_ELE=2560000
     OCTOPUS_N_MACRO_PRO=1024000
-    OCTOPUS_POISSON_SOLVER=PIC
+    OCTOPUS_SOLVER=PIC
     OCTOPUS_PIC_GREEN_CACHE=slice_pair
     OCTOPUS_CUDA_MEMORY_LOG_EVERY=1
     OCTOPUS_CUDA_PIC_TIMING=1
@@ -34,7 +34,7 @@ For an Nsight Systems timeline, use for example:
 profile_mode = lowercase(get(ENV, "OCTOPUS_PROFILE_MODE", "cuda"))
 
 ENV["OCTOPUS_USE_GPU"] = get(ENV, "OCTOPUS_USE_GPU", "1")
-ENV["OCTOPUS_POISSON_SOLVER"] = get(ENV, "OCTOPUS_POISSON_SOLVER", "PIC")
+ENV["OCTOPUS_SOLVER"] = get(ENV, "OCTOPUS_SOLVER", "PIC")
 ENV["OCTOPUS_PIC_GREEN_CACHE"] = get(ENV, "OCTOPUS_PIC_GREEN_CACHE", "slice_pair")
 ENV["OCTOPUS_TURNS"] = get(ENV, "OCTOPUS_TURNS", "3")
 ENV["OCTOPUS_N_MACRO"] = get(ENV, "OCTOPUS_N_MACRO", "20000")
@@ -55,15 +55,15 @@ if profile_mode == "cuda"
     profile_trace = get(ENV, "OCTOPUS_PROFILE_TRACE", "0") in ("1", "true", "TRUE", "yes", "YES")
     if profile_trace
         CUDA.@profile trace=true begin
-            include(joinpath(@__DIR__, "..", "examples", "strong_strong_tracking.jl"))
+            include(joinpath(@__DIR__, "..", "test", "examples", "strong_strong_tracking.jl"))
         end
     else
         CUDA.@profile begin
-            include(joinpath(@__DIR__, "..", "examples", "strong_strong_tracking.jl"))
+            include(joinpath(@__DIR__, "..", "test", "examples", "strong_strong_tracking.jl"))
         end
     end
 elseif profile_mode == "none"
-    include(joinpath(@__DIR__, "..", "examples", "strong_strong_tracking.jl"))
+    include(joinpath(@__DIR__, "..", "test", "examples", "strong_strong_tracking.jl"))
 else
     error("unknown OCTOPUS_PROFILE_MODE=$(profile_mode); use cuda or none")
 end

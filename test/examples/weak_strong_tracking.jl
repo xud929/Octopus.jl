@@ -48,7 +48,7 @@ Outputs are written to `result/`:
 =#
 
 if !isdefined(Main, :Octopus)
-    include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+    include(joinpath(@__DIR__, "..", "..", "src", "Octopus.jl"))
 end
 using .Octopus
 

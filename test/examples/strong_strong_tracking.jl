@@ -27,7 +27,8 @@ Select a CUDA device explicitly:
     OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_DEVICE=1 julia --project=. test/examples/strong_strong_tracking.jl
 
 This example uses the PIC solver by default. Select the Poisson solver with
-OCTOPUS_SOLVER (pic | spectral); the spectral grid/box can be overridden with
+OCTOPUS_SOLVER (pic | spectral | gaussian | gaussian_pic); an unrecognized name
+is an error. The spectral grid/box can be overridden with
 OCTOPUS_SPECTRAL_GRID="nx,ny" and OCTOPUS_SPECTRAL_DOMAIN_FACTOR for A/B timing:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_SOLVER=spectral OCTOPUS_N_MACRO_ELE=2560000 OCTOPUS_N_MACRO_PRO=1024000 OCTOPUS_RECORD_TURN_TIMES=1 julia --project=. test/examples/strong_strong_tracking.jl
@@ -128,7 +129,7 @@ Output is written to:
 =#
 
 if !isdefined(Main, :Octopus)
-    include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+    include(joinpath(@__DIR__, "..", "..", "src", "Octopus.jl"))
 end
 using .Octopus
 
@@ -390,14 +391,22 @@ cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 #     longitudinal_kick = true,
 # )
 
-# Solver selection via OCTOPUS_SOLVER (pic | spectral | gaussian); defaults to pic.
+# Solver selection via OCTOPUS_SOLVER (pic | spectral | gaussian | gaussian_pic);
+# defaults to pic. An unrecognized name is an error rather than a silent fallback.
 # The spectral grid/domain_factor can be overridden with OCTOPUS_SPECTRAL_GRID
-# ("nx,ny") and OCTOPUS_SPECTRAL_DOMAIN_FACTOR for A/B benchmarking.
+# ("nx,ny") and OCTOPUS_SPECTRAL_DOMAIN_FACTOR for A/B benchmarking; the
+# Gaussian-subtracted PIC grid with OCTOPUS_GPIC_GRID ("nx,ny").
 solver_name = lowercase(get(ENV, "OCTOPUS_SOLVER", "pic"))
+solver_name in ("pic", "spectral", "gaussian", "gaussian_pic") || error(
+    "OCTOPUS_SOLVER must be one of pic, spectral, gaussian, gaussian_pic; got $(repr(solver_name))")
 spectral_grid = let v = get(ENV, "OCTOPUS_SPECTRAL_GRID", "127,383")
     parts = parse.(Int, split(v, ',')); (parts[1], parts[2])
 end
 spectral_domain_factor = parse(Float64, get(ENV, "OCTOPUS_SPECTRAL_DOMAIN_FACTOR", "8.0"))
+spectral_field_precision = Symbol(lowercase(get(ENV, "OCTOPUS_SPECTRAL_FIELD_PRECISION", "double")))
+gpic_grid = let v = get(ENV, "OCTOPUS_GPIC_GRID", "64,64")
+    parts = parse.(Int, split(v, ',')); (parts[1], parts[2])
+end
 
 solver = if solver_name == "spectral"
     SpectralPoissonSolver(;
@@ -406,7 +415,33 @@ solver = if solver_name == "spectral"
         grid = spectral_grid,
         domain_factor = spectral_domain_factor,
         method = :grid,
+        field_precision = spectral_field_precision,
         longitudinal_kick = pic_longitudinal_kick,
+    )
+elseif solver_name == "gaussian"
+    GaussianPoissonSolver(;
+        slicing = slicing,
+        min_sigma = input.solver.min_sigma,
+        luminosity_scale = input.solver.luminosity_scale,
+        longitudinal_kick = pic_longitudinal_kick,
+        batch_mode = pic_batch_mode,
+    )
+elseif solver_name == "gaussian_pic"
+    GaussianPICPoissonSolver(;
+        slicing = slicing,
+        luminosity_scale = input.solver.luminosity_scale,
+        grid = gpic_grid,
+        deposit_method = input.solver.pic_deposit_method,
+        green_type = input.solver.pic_green_type,
+        green_cache = pic_green_cache,
+        longitudinal_kick = pic_longitudinal_kick,
+        batch_mode = pic_batch_mode,
+        cuda_async = cuda_pic_async,
+        cuda_batch_fft = cuda_pic_batch_fft,
+        cuda_wavefront_fft = cuda_pic_wavefront_fft,
+        cuda_indexed_wavefront = cuda_pic_indexed_wavefront,
+        luminosity_schedule = pic_luminosity_schedule,
+        backend_configurations = cuda_pic_backend_configurations,
     )
 else
     PICPoissonSolver(;
