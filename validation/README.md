@@ -62,7 +62,7 @@ universal pass/fail tolerance.
 
 The implemented `PICPoissonSolver` optimizations (Green-FFT reuse, workspace
 buffers, slice-pair Green cache, CUDA overlap/compact/indexed paths) are recorded
-in `strong_strong_pic_optimization_history.md`; open items are in `docs/todo.md`.
+in `../docs/history/strong_strong_pic_optimization_history.md`; open items are in `docs/todo.md`.
 
 ## Gaussian-Subtracted PIC Field
 
@@ -80,7 +80,7 @@ normalized median/max kick error for both solvers plus the hybrid/PIC gain. The
 hybrid error is nearly grid-independent; at grid 48 it matches or beats plain PIC
 at grid 128 (median gain 9-20x at coarse grids, 2.6-4.1x at 128). Reference
 model `gaussian_beambeam_kick`; error normalized by `max_grid(|K_exact|)`. See
-`docs/gaussian_subtracted_pic_solver.md`.
+`docs/theory/gaussian_subtracted_pic_solver.md`.
 
 ## Gaussian-Subtracted PIC Bi-Gaussian Fairness
 
@@ -101,7 +101,7 @@ subtraction cannot remove), motivating the coupled/rotated subtraction branch.
 
 ## Gaussian-Subtracted PIC Optimization History
 
-`strong_strong_gaussian_pic_optimization_history.md` is the dated developer log
+`../docs/history/strong_strong_gaussian_pic_optimization_history.md` is the dated developer log
 of the `GaussianPICPoissonSolver` CPU/CUDA implementation and the CUDA throughput
 campaign (sequential vs non-indexed vs indexed wavefront paths, the moment-
 reduction and Green-build fixes, and the CPU/CUDA bit-parity story). The CUDA
@@ -112,7 +112,7 @@ GaussianPIC solver matches CPU" testset in `test/runtests.jl`.
 ## Spectral Sine-Series Poisson Field
 
 `spectral_poisson_field_validation.jl` validates the spectral sine-series 2D
-Poisson solver (see `../docs/spectral_sine_poisson_solver.md`) against the exact
+Poisson solver (see `../docs/theory/spectral_sine_poisson_solver.md`) against the exact
 Bassetti-Erskine field, for both the grid (DST) and grid-free variants, and
 records how accuracy scales with the domain size and the mode/grid resolution.
 It also runs the PIC solver on the same cases for a shape-accuracy comparison.
@@ -241,7 +241,7 @@ julia --project=. validation/tracking_task_turn_update.jl
 
 The coupled-covariance audit, limiting-case coverage, CPU/CUDA parity, and
 performance regression measurements are recorded in
-[`weak_strong_6d_model.md`](weak_strong_6d_model.md).
+[`weak_strong_6d_model_validation.md`](../docs/history/weak_strong_6d_model_validation.md).
 
 ## Beam Optics Interface Consistency
 
@@ -299,10 +299,10 @@ states and luminosity between the CPU and CUDA soft-Gaussian solvers.
 
 The implementation audit, public-code comparison, correctness findings, and
 CPU/CUDA performance measurements are recorded in
-[`strong_strong_gaussian_optimization.md`](strong_strong_gaussian_optimization.md).
+[`strong_strong_gaussian_optimization.md`](../docs/history/strong_strong_gaussian_optimization.md).
 Dated soft-Gaussian optimization experiments, including rejected and reverted
 attempts, are logged in
-[`strong_strong_gaussian_optimization_history.md`](strong_strong_gaussian_optimization_history.md).
+[`strong_strong_gaussian_optimization_history.md`](../docs/history/strong_strong_gaussian_optimization_history.md).
 
 ```bash
 julia --threads=4 --project=. validation/strong_strong_gaussian_backend_consistency.jl
@@ -375,7 +375,7 @@ julia --project=. validation/strong_strong_pic_extreme_benchmark.jl
 ```
 
 Tracked run-by-run results, commands, validation gates, and decisions are in
-`strong_strong_pic_extreme_benchmark_history.md`. Generated timing TSV files
+`../docs/history/strong_strong_pic_extreme_benchmark_history.md`. Generated timing TSV files
 under `result/` remain intentionally gitignored.
 
 ## Strong-Strong Diagnostic Output Benchmark
@@ -395,7 +395,7 @@ Select another measurement mode with
 of the fast package test suite.
 
 Tracked results, accuracy checks, and accepted/rejected experiments are in
-`strong_strong_diagnostics_benchmark_history.md`.
+`../docs/history/strong_strong_diagnostics_benchmark_history.md`.
 
 `moment_observer_backend_consistency.jl` directly compares every default
 first- and second-order moment produced by the CPU and CUDA reduction paths:

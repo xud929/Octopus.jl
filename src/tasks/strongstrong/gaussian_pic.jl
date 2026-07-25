@@ -11,7 +11,7 @@ exact Bassetti-Erskine field of that same Gaussian back at each field particle.
 The grid therefore carries only the small residual delta_rho, so the field error
 at a fixed grid falls sharply while the FFT cost is unchanged.
 
-See docs/gaussian_subtracted_pic_solver.md for the derivation (including the
+See docs/theory/gaussian_subtracted_pic_solver.md for the derivation (including the
 node-centered erf moment integrals for CIC/TSC deposition, the domain-margin and
 neutralization arguments, and the coupling switch). This is the CPU
 implementation; the CUDA path lives in pic_cuda.jl.
@@ -33,7 +33,7 @@ erf-integrated reference Gaussian (the slice's own drifted transverse moments)
 from the charge grid, solves the *residual* with the same integrated-log Green
 FFT as `PICPoissonSolver`, and adds the exact Bassetti-Erskine field back per
 field particle. This raises systematic field accuracy at a fixed grid; the hybrid
-error is nearly grid-independent. See `docs/gaussian_subtracted_pic_solver.md`.
+error is nearly grid-independent. See `docs/theory/gaussian_subtracted_pic_solver.md`.
 
 The solver composes a `PICPoissonSolver`: all PIC keywords (`grid`,
 `deposit_method`, `green_type`, `green_cache`, `longitudinal_kick`, `slicing`,

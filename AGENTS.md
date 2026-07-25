@@ -171,13 +171,21 @@ documented boundary that justifies the extra module layer.
   implementations may use task-owned subdirectories with a short entry file,
   but should not introduce a new Julia module boundary.
 - `src/constants/`: shared physical constants with units documented.
-- `docs/`: short entry-point, generated, or volatile-runtime notes. Detailed
-  API guidance belongs in docstrings.
+- `docs/`: documentation, indexed by `docs/README.md`. Detailed API guidance
+  belongs in docstrings, not here. Subfolders: `docs/theory/` holds
+  physics/method derivations (the Knowledge Layer) that implementing code links
+  back to; `docs/history/` holds dated records of implemented work (optimization
+  and benchmark histories, audits). Top-level `docs/` keeps entry-point,
+  generated, or volatile-runtime notes (`public_api.md`, `registry_snapshot.md`,
+  `current_runtime.md`) and the forward plan (`todo.md`). Add every new document
+  to the `docs/README.md` index. Not-yet-done items go in `todo.md`; once
+  implemented, move the record to `docs/history/`.
 - `examples/`: runnable workflow scripts. Each example is self-describing; do
   not create a separate markdown page for each example.
-- `validation/`: developer-facing numerical validation scripts. These may use
-  internal helpers and should state the reference model, error metric, output
-  files, and run command.
+- `validation/`: developer-facing numerical validation scripts plus their
+  `README.md`. These may use internal helpers and should state the reference
+  model, error metric, output files, and run command. Narrative records
+  (histories, audits) belong in `docs/history/`, not here.
 - `notebook/`: executable demonstrations and experiments.
 
 ## Updating Elements

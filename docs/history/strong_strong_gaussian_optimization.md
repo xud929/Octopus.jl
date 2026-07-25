@@ -32,7 +32,7 @@ Stable source links:
 
 The complete sign-convention and Hamiltonian derivation shared with the
 weak-strong map is documented in
-[`../docs/beam_beam_longitudinal_kick.md`](../docs/beam_beam_longitudinal_kick.md).
+[`../theory/beam_beam_longitudinal_kick.md`](../theory/beam_beam_longitudinal_kick.md).
 
 ## Correctness findings
 

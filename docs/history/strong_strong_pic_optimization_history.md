@@ -1,7 +1,7 @@
 # Strong-Strong PIC Solver — Optimization History
 
 Historical record of `PICPoissonSolver` optimizations. These were tracked as a
-roadmap in the former `docs/pic_solver_improvement_plan.md`; the items below are
+roadmap in the former `pic_solver_improvement_plan.md` (now removed); the items below are
 implemented and now recorded here (the source is the authority — this file only
 preserves the rationale and decisions). Open items that were never implemented
 moved to `docs/todo.md`. Benchmark decisions from the extreme-scale runs live in
@@ -55,7 +55,7 @@ by longitudinal position.
 - **Spectral sine-series alternative.** `SpectralPoissonSolver` (a Dirichlet-box
   DST/DCT solver, no doubled grid, no zero mode) was added as an alternative to
   the Green-function convolution; theory and measured accuracy are in
-  `docs/spectral_sine_poisson_solver.md`, history in
+  `docs/theory/spectral_sine_poisson_solver.md`, history in
   `strong_strong_spectral_optimization_history.md`.
 
 ## Validating PIC solver changes
@@ -74,4 +74,3 @@ OCTOPUS_USE_GPU=1 OCTOPUS_SOLVER=pic OCTOPUS_CUDA_PIC_ASYNC=0 \
 
 Track median / p95 / maximum normalized field error and representative CPU/CUDA
 wall time.
-</content>

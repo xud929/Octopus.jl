@@ -340,7 +340,7 @@ CPU path to machine precision (kicks ~4e-16, luminosity ~9e-16) and runs the
 production case (2.56M/beam, 15 slices, grid 128x1024) at ~0.62 s/turn — about 4x
 faster than the PIC CUDA path at matched grid resolution, since there is no
 zero-padding and no Green-function convolution. See
-`validation/strong_strong_spectral_optimization_history.md`.
+`docs/history/strong_strong_spectral_optimization_history.md`.
 
 Every stage maps to a strong GPU primitive, and the solve is embarrassingly
 parallel over modes:

@@ -1,7 +1,7 @@
 # Spectral Solver Optimization & Validation History
 
 Chronological record of the `SpectralPoissonSolver` build-out, with measured
-evidence. See `docs/spectral_sine_poisson_solver.md` for the method and
+evidence. See `docs/theory/spectral_sine_poisson_solver.md` for the method and
 `src/tasks/strongstrong/spectral.jl` / `spectral_cuda.jl` for the code.
 
 ## 2026-07-23: index-based field solve, luminosity preallocation, and the FP64 wall

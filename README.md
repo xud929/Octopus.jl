@@ -95,14 +95,13 @@ julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consist
 - `docs/current_runtime.md`: current runtime/backend behavior.
 - `docs/registry_snapshot.md`: generated registry snapshot.
 - `docs/todo.md`: forward-looking plan (open items per solver).
-- Theory notes: `docs/beam_beam_longitudinal_kick.md` (synchro-beam longitudinal
-  kick), `docs/weak_strong_6d_model.md` (weak-strong source model),
-  `docs/spectral_sine_poisson_solver.md` (`SpectralPoissonSolver`),
-  `docs/gaussian_subtracted_pic_solver.md` (`GaussianPICPoissonSolver`).
+- `docs/theory/`: physics/method theory notes (synchro-beam longitudinal kick,
+  weak-strong source model, spectral solver, Gaussian-subtracted PIC solver).
+- `docs/history/`: dated records of implemented work (optimization and benchmark
+  histories, audits).
 - `examples/`: runnable case-law examples.
 - `profiling/`: focused runtime profiling scripts.
-- `validation/`: numerical checks, backend-consistency tests, and
-  `*_optimization_history.md` records.
+- `validation/`: numerical-check scripts and backend-consistency tests.
 
 ## Notes
 

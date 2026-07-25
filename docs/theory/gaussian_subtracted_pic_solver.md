@@ -16,7 +16,7 @@ This note is a theory note. It states the decomposition, the analytic field, the
 consistent grid subtraction (the cell/shape integral of a Gaussian, which needs
 `erf`), the domain-sizing requirement, and the accuracy/cost argument. It does
 not describe code structure; see the implementation plan in
-[`todo.md`](todo.md).
+[`todo.md`](../todo.md).
 
 Related notes:
 

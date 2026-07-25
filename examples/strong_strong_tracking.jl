@@ -347,7 +347,7 @@ cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 # PIC is the default solver. To use the soft-Gaussian solver instead, comment
 # out the PICPoissonSolver construction below and uncomment this block. It
 # replaces the grid PIC field solve with sliced Gaussian moments and a
-# closed-form Bassetti-Erskine kick; see docs/beam_beam_longitudinal_kick.md.
+# closed-form Bassetti-Erskine kick; see docs/theory/beam_beam_longitudinal_kick.md.
 #
 # solver = GaussianPoissonSolver(;
 #     slicing = slicing,
@@ -361,7 +361,7 @@ cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 #
 # Or the spectral sine-series solver (Dirichlet box + DST/DCT field solve). The
 # grid follows N_thin ~ 5*domain_factor*sigma_x/sigma_y for flat beams (see
-# docs/spectral_sine_poisson_solver.md). With `longitudinal_kick=true` it applies
+# docs/theory/spectral_sine_poisson_solver.md). With `longitudinal_kick=true` it applies
 # the same synchro-beam drift and potential-difference pz structure as the PIC
 # path. CUDA supports method=:grid only; method=:grid_free is CPU-only.
 #

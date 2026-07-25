@@ -2,7 +2,7 @@
 
 Dated developer log of the `GaussianPICPoissonSolver` implementation and its CUDA
 performance campaign. Method and accuracy theory are in
-`docs/gaussian_subtracted_pic_solver.md`; accuracy validation is in
+`docs/theory/gaussian_subtracted_pic_solver.md`; accuracy validation is in
 `validation/gaussian_pic_field_validation.jl` and
 `validation/gaussian_pic_bigaussian_validation.jl`.
 
@@ -137,4 +137,3 @@ helper unusable.
   transform size; grid 64 is the recommended production point.
 - The coupled (rotated) subtraction branch (`coupling_tol < Inf`) is still
   unimplemented; the CUDA path is always-uncoupled like the CPU path.
-</content>

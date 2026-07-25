@@ -13,7 +13,7 @@ covariance-transport + centroid longitudinal add-back. The full `test/runtests.j
 suite passes with three added testsets; `validation/gaussian_pic_field_validation.jl`
 shows the systematic field-accuracy gain (hybrid at grid 48 matches/beats PIC at
 128; 9-20x median at coarse grids, 2.6-4.1x at 128). The method and formulas are
-in [`gaussian_subtracted_pic_solver.md`](gaussian_subtracted_pic_solver.md).
+in [`gaussian_subtracted_pic_solver.md`](theory/gaussian_subtracted_pic_solver.md).
 
 **CUDA path complete and optimized (2026-07-24).**
 `src/tasks/strongstrong/gaussian_pic_cuda.jl` implements the indexed wavefront
@@ -26,7 +26,7 @@ solver matches CPU" testset covers both wavefront paths and 6D on/off).
 Performance (512k/256k, RTX 4500 Ada): GaussianPIC@128 **0.37 s (1.6x PIC)**,
 GaussianPIC@64 **0.28 s (1.2x PIC@128) with equal-or-better accuracy** — since the
 hybrid's systematic accuracy is grid-independent (hybrid@64 ≈ PIC@128). See
-`validation/strong_strong_gaussian_pic_optimization_history.md`.
+`docs/history/strong_strong_gaussian_pic_optimization_history.md`.
 
 **Remaining:** the coupled (rotated) subtraction branch (`coupling_tol < Inf`) is
 still unimplemented (CPU and CUDA are always-uncoupled); optional further CUDA
@@ -81,7 +81,7 @@ helpers in `src/tasks/strongstrong/slicing.jl`.
 
 4. **Longitudinal kick by linearity (Section 8).** Split `pz` into (a) the
    analytic soft-Gaussian synchro-beam `pz` term from the drifted Gaussian moments
-   (reuse the moment formula used in `gaussian.jl` / `beam_beam_longitudinal_kick.md`)
+   (reuse the moment formula used in `gaussian.jl` / `docs/theory/beam_beam_longitudinal_kick.md`)
    and (b) the residual potential-difference term `phi_delta,L - phi_delta,R`
    already computed by `_pic_interpolate_kick` (Kz). Gate on the existing
    `longitudinal_kick` flag.
@@ -150,7 +150,7 @@ regime where the accuracy gain should be largest.
 - **V5 backend consistency.** CPU/CUDA agreement via
   `validation/strong_strong_pic_cache_backend_consistency.jl` and the
   `StrongStrongPICBackendConsistencyContract` extended to cover the hybrid mode.
-- Record results in a dated `validation/strong_strong_gaussian_subtracted_pic_history.md`
+- Record results in a dated `docs/history/strong_strong_gaussian_pic_optimization_history.md`
   and add a `test/runtests.jl` guard for V1 (normalization + off-path identity)
   and a small V2 accuracy-vs-PIC assertion.
 
@@ -177,7 +177,7 @@ regime where the accuracy gain should be largest.
 
 Open items carried over from the former `pic_solver_improvement_plan.md` (its
 implemented items are recorded in
-`validation/strong_strong_pic_optimization_history.md`).
+`docs/history/strong_strong_pic_optimization_history.md`).
 
 1. **Improve GPU deposition.** CUDA PIC deposition is correctness-oriented and
    uses atomics. Candidate replacements: sort/bin particles by cell then
@@ -238,9 +238,9 @@ s/turn at 2.56M/beam, ~4x faster than PIC on GPU. The default
 potential-difference `pz` kick on CPU and CUDA; see the dated optimization
 history for current 6D timing and solver-difference records.
 
-References: method + measured accuracy in `docs/spectral_sine_poisson_solver.md`;
+References: method + measured accuracy in `docs/theory/spectral_sine_poisson_solver.md`;
 performance + validation history in
-`validation/strong_strong_spectral_optimization_history.md`; reference field
+`docs/history/strong_strong_spectral_optimization_history.md`; reference field
 implementations in `validation/spectral_poisson_field_validation.jl`. Code:
 `src/tasks/strongstrong/spectral.jl` (CPU) and `spectral_cuda.jl` (CUDA).
 
@@ -412,7 +412,7 @@ had the same campaign and remains the top open performance item.
   variants, round beam, <3%) and CPU/CUDA consistency (rtol 1e-9).
 - Production parameter selection: grid `(128, 1024)`, `domain_factor=16` for ~11:1
   beams (grid-converged kick to ~1%, at the graininess floor). See the dated
-  `validation/strong_strong_spectral_optimization_history.md`.
+  `docs/history/strong_strong_spectral_optimization_history.md`.
 
 ### Completed (solver core)
 
@@ -466,7 +466,7 @@ had the same campaign and remains the top open performance item.
 
 - Soft-Gaussian CUDA optimization (host-sync removal, device moments, fused
   wavefront launches): 0.2778 -> 0.2280 s/turn, bit-identical. See
-  `validation/strong_strong_gaussian_optimization_history.md`.
+  `docs/history/strong_strong_gaussian_optimization_history.md`.
 - PIC `kbb1/kbb2` override switched to physical units, consistent across all
   solvers and frozen-beam elements.
 - Strong-strong example and task notebook default to the PIC solver with the
