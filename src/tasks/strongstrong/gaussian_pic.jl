@@ -48,8 +48,9 @@ are:
   deposited particles, removing the spurious open-boundary monopole.
 - `coupling_tol`: correlation-coefficient threshold
   `|sigma_xy/(sigma_x*sigma_y)|` above which the coupled (rotated) subtraction
-  would be used. The current implementation is always uncoupled (`Inf`); the
-  residual grid absorbs any transverse coupling.
+  would be used. The coupled branch is **not implemented**, so only the default
+  `Inf` (always uncoupled) is accepted; a finite value throws rather than being
+  silently ignored. The residual grid absorbs any transverse coupling.
 
 CPU and CUDA are supported and CPU/CUDA bit-parity; the CUDA path defaults to the
 indexed wavefront route (see `gaussian_pic_cuda.jl`).
@@ -70,6 +71,13 @@ function GaussianPICPoissonSolver{T}(; margin_sigma=5.0, neutralize::Bool=true,
         "margin_sigma must be non-negative; got $(margin_sigma)."))
     ct >= zero(T) || throw(ArgumentError(
         "coupling_tol must be non-negative; got $(coupling_tol)."))
+    # The coupled (rotated) subtraction of docs Section 7 is not implemented, so a
+    # finite threshold would silently do nothing. Reject it rather than accept a
+    # non-default request that has no runtime consumer.
+    isinf(ct) || throw(ArgumentError(
+        "coupling_tol=$(coupling_tol) requests the coupled (rotated) Gaussian " *
+        "subtraction, which is not implemented; only Inf (always-uncoupled) is " *
+        "currently supported. See docs/theory/gaussian_subtracted_pic_solver.md Section 7."))
     return GaussianPICPoissonSolver{T}(pic, ms, neutralize, ct)
 end
 
@@ -111,10 +119,11 @@ function configuration_report(solver::GaussianPICPoissonSolver;
         :resolved, "adaptive-box Gaussian containment margin in sigmas", :gaussian_pic_subtraction))
     push!(extras, ConfigurationEntry(:neutralize, solver.neutralize, solver.neutralize,
         :resolved, "discrete charge neutralization of the subtracted Gaussian", :gaussian_pic_subtraction))
+    # Only Inf is constructible today (the coupled branch is unimplemented), so the
+    # option is reported as an inactive dependency rather than a resolved value.
     push!(extras, ConfigurationEntry(:coupling_tol, solver.coupling_tol, solver.coupling_tol,
-        solver.coupling_tol == Inf ? :resolved : :resolved,
-        solver.coupling_tol == Inf ? "always-uncoupled separable subtraction" :
-                                     "coupled subtraction above the correlation threshold",
+        :inactive_dependency,
+        "always-uncoupled separable subtraction; the coupled (rotated) branch is not implemented",
         :gaussian_pic_subtraction))
     return (pic_entries..., Tuple(extras)...)
 end

@@ -48,7 +48,16 @@ Shared where the role applies:
   the soft-Gaussian solver is grid-free and has no `grid`.
 - `batch_mode::Symbol` — slice-pair scheduling, `:sequential` or `:wavefront`,
   for the solvers that offer both (`GaussianPoissonSolver`, `PICPoissonSolver`,
-  `GaussianPICPoissonSolver`).
+  `GaussianPICPoissonSolver`). CUDA-only; the CPU paths always use collision-time
+  order.
+- `luminosity_schedule` — evaluate luminosity only on scheduled turns, for the
+  solvers where luminosity is a separable cost (`PICPoissonSolver`,
+  `GaussianPICPoissonSolver`, `SpectralPoissonSolver`). Skipped turns still apply
+  the beam-beam kicks, return `NaN`, and are omitted from the task luminosity
+  file. `GaussianPoissonSolver` deliberately does **not** offer it: its luminosity
+  is a by-product of the per-particle kick (the Gaussian density factor is already
+  needed for the `pz` term), so scheduling it would save nothing — measured at
+  0% of the kick loop.
 
 Branch flags that select a numerical variant are named by their role and are
 solver-local, e.g. `deposit_method` (`:CIC`/`:TSC`), `green_type`
@@ -679,7 +688,8 @@ const _GAUSSIAN_SOLVER_OPTION_SCHEMA = (
     include_sigma_xy=SolverOptionMeta(Bool, false,
         "Include the full coupled transverse slice covariance."; category=:physics),
     batch_mode=SolverOptionMeta(Symbol, :wavefront,
-        "CUDA slice-pair scheduling mode (:sequential or :wavefront)."; category=:performance),
+        "CUDA slice-pair scheduling mode (:sequential or :wavefront); the CPU path ignores it.";
+        supported_backends=(CUDABackend,), category=:performance),
 )
 
 solver_option_schema(::Type{<:GaussianPoissonSolver}) = _GAUSSIAN_SOLVER_OPTION_SCHEMA
@@ -940,8 +950,10 @@ const _PIC_SOLVER_OPTION_SCHEMA = (
     longitudinal_kick = SolverOptionMeta(Bool, true,
         "Apply the Hirata-map potential-difference longitudinal kick."; category=:physics),
     batch_mode = SolverOptionMeta(Symbol, :wavefront,
-        "Slice-pair scheduling mode; :wavefront or :sequential.";
-        category=:execution, consumer=:cuda_pic_algorithm),
+        "CUDA slice-pair scheduling mode; :wavefront or :sequential. The CPU path only \
+validates it and always uses collision-time order, so a non-default value is inactive there.";
+        supported_backends=(CUDABackend,), category=:execution,
+        consumer=:cuda_pic_algorithm),
     cuda_async = SolverOptionMeta(Bool, true,
         "Overlap independent CUDA field work.";
         supported_backends=(CUDABackend,), category=:execution,
