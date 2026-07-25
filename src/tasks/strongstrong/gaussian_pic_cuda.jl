@@ -263,6 +263,9 @@ if _HAS_CUDA
                     my=my, mpy=mpy, vary=vary, cypy=cypy, varpy=varpy)
         end
 
+        # Deep copy of a device slice-coordinate NamedTuple (x,px,y,py,z[,pz]).
+        _cuda_gpic_copy_coords(c::NamedTuple) = map(copy, c)
+
         # Drifted-Gaussian boundary description (centroid, RMS, variance drift rates).
         @inline function _cuda_gpic_boundary(mom, s)
             mux, muy, sigx, sigy = _gpic_drifted_gaussian(mom, s)
@@ -622,13 +625,18 @@ if _HAS_CUDA
                 slice1 = _cuda_pic_extract_slice(beam1.rep, slices1.indices[i], pic.longitudinal_kick)
                 slice2 = _cuda_pic_extract_slice(beam2.rep, slices2.indices[j], pic.longitudinal_kick)
                 (slice1 === nothing || slice2 === nothing) && continue
-                _cuda_gpic_interaction!(gsolver, slice1.coords, p1, slice2.coords, p2, kbb2, workspace.charges[1])
-                _cuda_gpic_interaction!(gsolver, slice2.coords, p2, slice1.coords, p1, kbb1, workspace.charges[2])
+                # Separate source (pre-collision) and field (kicked) buffers so the
+                # second direction deposits the UNKICKED opposing slice, matching the
+                # CPU/wavefront two-direction semantics.
+                field1 = _cuda_gpic_copy_coords(slice1.coords)
+                field2 = _cuda_gpic_copy_coords(slice2.coords)
+                _cuda_gpic_interaction!(gsolver, slice1.coords, p1, field2, p2, kbb2, workspace.charges[1])
+                _cuda_gpic_interaction!(gsolver, slice2.coords, p2, field1, p1, kbb1, workspace.charges[2])
                 if compute_luminosity
                     luminosity += _cuda_pic_luminosity(pic, slice1.coords, p1, slice2.coords, p2, klum, workspace)
                 end
-                _cuda_pic_store_slice!(beam1.rep, slice1.idx, slice1.coords, pic.longitudinal_kick)
-                _cuda_pic_store_slice!(beam2.rep, slice2.idx, slice2.coords, pic.longitudinal_kick)
+                _cuda_pic_store_slice!(beam1.rep, slice1.idx, field1, pic.longitudinal_kick)
+                _cuda_pic_store_slice!(beam2.rep, slice2.idx, field2, pic.longitudinal_kick)
             end
             CUDA.synchronize(CUDA.stream())
             return luminosity

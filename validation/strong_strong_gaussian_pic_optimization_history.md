@@ -102,6 +102,29 @@ wavefront paths (indexed default, non-indexed fallback) are CPU/CUDA bit-parity
 and covered by the `test/runtests.jl` "CUDA GaussianPIC solver matches CPU"
 testset.
 
+### 2026-07-24 — sequential CUDA divergence root-caused and fixed
+
+The ~1e-3 CPU/CUDA divergence on the plain-sequential path (seen in both PIC and
+GaussianPIC) was root-caused to a real correctness bug, not float noise. The
+plain-sequential collide kicked direction 1's **field slice in place**, then used
+that already-kicked slice as direction 2's **source** for deposition (and stored
+/ took luminosity from post-kick coordinates). The CPU and batched CUDA paths
+preserve the two-direction semantics — both directed kicks read the *unkicked*
+opposing slice, because CPU uses `field = copy(coord)` and the batched paths
+deposit all sources before any kick. The plain-sequential path aliased source and
+field.
+
+Fix: give each direction a separate pre-collision source and kicked-field buffer
+(`_cuda_pic_copy_coords` / `_cuda_pic_write_coords!` in `pic_cuda.jl`, and the
+analogous copy in `gaussian_pic_cuda.jl`). After the fix the sequential path is
+**bit-parity** with CPU: PIC sequential 1.2e-15 (lum) / 1.2e-12 (coords),
+GaussianPIC sequential 2.1e-16 / 5.7e-13 — matching the wavefront paths.
+
+Separately fixed a pre-existing `UndefVarError: rep` in the validation-only
+helper `_cuda_pic_solve_field_with_green_fft` (referenced a nonexistent `rep`
+instead of the `x` argument), which had made the standalone CUDA field-solve
+helper unusable.
+
 ### Remaining levers (not yet pursued)
 
 - The grid-128 gap to PIC (0.14 s) is the host-side erf profile build

@@ -38,6 +38,16 @@ if _HAS_CUDA
                                         ctx::TrackingContext) =
             _strong_strong_collide!(task, label, solver, beam1, beam2, CUDABackend, ctx)
 
+        # Deep copy / in-place write of a device slice-coordinate NamedTuple. Used by
+        # the plain-sequential paths to keep the source pre-collision (both directed
+        # kicks must read the UNKICKED opposing slice; the batched paths deposit both
+        # sources before any kick and so do not need this).
+        _cuda_pic_copy_coords(c::NamedTuple) = map(copy, c)
+        function _cuda_pic_write_coords!(dst::NamedTuple{K}, src::NamedTuple{K}) where {K}
+            map((d, s) -> (d .= s), values(dst), values(src))
+            return dst
+        end
+
         function _cuda_pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam,
                                     workspace, green_cache, ctx=nothing)
             _validate_pic_solver(solver)
@@ -95,13 +105,17 @@ if _HAS_CUDA
                     )
                     compute_luminosity && (luminosity += lum)
                 else
-                    _cuda_pic_interaction!(solver, slice1.coords, p1, slice2.coords, p2, kbb2, green_cache, workspace.charges[1], timing)
-                    _cuda_pic_interaction!(solver, slice2.coords, p2, slice1.coords, p1, kbb1, green_cache, workspace.charges[2], timing)
+                    field1 = _cuda_pic_copy_coords(slice1.coords)
+                    field2 = _cuda_pic_copy_coords(slice2.coords)
+                    _cuda_pic_interaction!(solver, slice1.coords, p1, field2, p2, kbb2, green_cache, workspace.charges[1], timing)
+                    _cuda_pic_interaction!(solver, slice2.coords, p2, field1, p1, kbb1, green_cache, workspace.charges[2], timing)
                     if compute_luminosity
                         t_luminosity = time_ns()
                         luminosity += _cuda_pic_luminosity(solver, slice1.coords, p1, slice2.coords, p2, klum, workspace)
                         _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
                     end
+                    _cuda_pic_write_coords!(slice1.coords, field1)
+                    _cuda_pic_write_coords!(slice2.coords, field2)
                 end
                 _cuda_pic_add_time!(timing, :interaction, t_interaction)
                 _cuda_nvtx_pop(CUDABackend, pair_range)
@@ -231,12 +245,14 @@ if _HAS_CUDA
                             )
                             compute_luminosity && (luminosity += lum)
                         else
+                            field1 = _cuda_pic_copy_coords(item.slice1.coords)
+                            field2 = _cuda_pic_copy_coords(item.slice2.coords)
                             _cuda_pic_interaction!(
-                                solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
+                                solver, item.slice1.coords, item.p1, field2, item.p2,
                                 kbb2, green_cache, workspace.charges[1], timing,
                             )
                             _cuda_pic_interaction!(
-                                solver, item.slice2.coords, item.p2, item.slice1.coords, item.p1,
+                                solver, item.slice2.coords, item.p2, field1, item.p1,
                                 kbb1, green_cache, workspace.charges[2], timing,
                             )
                             if compute_luminosity
@@ -246,6 +262,8 @@ if _HAS_CUDA
                                 )
                                 _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
                             end
+                            _cuda_pic_write_coords!(item.slice1.coords, field1)
+                            _cuda_pic_write_coords!(item.slice2.coords, field2)
                         end
                         _cuda_pic_add_time!(timing, :interaction, t_interaction)
                         _cuda_nvtx_pop(CUDABackend, pair_range)
@@ -1747,7 +1765,7 @@ if _HAS_CUDA
                                                       source_grid, green_fft,
                                                       charge=nothing, timing=nothing)
             nx, ny = solver.grid
-            T = eltype(rep.x)
+            T = eltype(x)
             hx = T(source_grid.width) / T(nx - 1)
             hy = T(source_grid.height) / T(ny - 1)
             charge = charge === nothing ? CUDA.zeros(T, 2nx, 2ny) : charge
