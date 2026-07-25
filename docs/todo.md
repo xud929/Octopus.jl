@@ -102,12 +102,18 @@ time, not 1.2-1.6x. The accuracy claim (hybrid@64 ≈ or better than PIC@128) is
 independently confirmed. See
 [`poisson_solver_review_2026_07_24.md`](history/poisson_solver_review_2026_07_24.md).
 
-**Remaining (updated 2026-07-25):** the coupled (rotated) subtraction branch
-(`coupling_tol < Inf`) is **implemented and validated on the CPU path**; the CUDA
-path raises rather than silently running the uncoupled subtraction, so **CUDA
-support for the coupled branch is the open item**. Optional further CUDA tuning of
-the host-side erf profile build also remains. Steps 1-8 below are DONE (CPU +
-CUDA, uncoupled).
+**Status (updated 2026-07-25): complete.** The coupled (rotated) subtraction
+branch (`coupling_tol < Inf`) is implemented and validated on the CPU path **and
+on the default CUDA route** (`batch_mode=:wavefront`, `cuda_indexed_wavefront=true`),
+with CPU/CUDA parity at 3.5e-17; the two non-default CUDA routes raise rather than
+silently running the uncoupled subtraction. Steps 1-8 below are DONE.
+
+Also fixed in the same pass: GaussianPIC's CUDA routes silently ignored
+`green_cache`, so the CPU expanded each slice-pair grid by
+`1 + slice_pair_green_growth` and CUDA did not, costing backend reproducibility at
+the *default* settings. See Section 21.2 of the review. Optional further CUDA
+tuning of the host-side erf profile build remains, as does GaussianPIC CUDA phase
+timing (`pic_timing=true` yields an empty `pic_phase_timings`).
 
 Key files to touch (mirror the existing PIC structure):
 `src/tasks/strongstrong/interface.jl` (solver struct + option schema),

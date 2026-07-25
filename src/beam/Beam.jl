@@ -100,15 +100,7 @@ function _default_rng(::Type{CUDABackend})
 	return CUDA.default_rng()
 end
 
-function _rng_from_seed(::Type{CPUThreadsBackend}, seed)
-	return Random.MersenneTwister(seed)
-end
 
-function _rng_from_seed(::Type{CUDABackend}, seed)
-	rng = _default_rng(CUDABackend)
-	Random.seed!(rng, seed)
-	return rng
-end
 
 function _resolve_rng(::Type{BTAG}, rng, seed, rng_id) where {BTAG<:AbstractExecutionBackend}
 	if rng !== nothing
@@ -468,9 +460,6 @@ function _host_coordinate_arrays(rep::Phase6DRep)
 end
 
 _mean(v) = sum(v) / length(v)
-function _variance(v, μ)
-	return sum(x -> (x - μ) * (x - μ), v) / length(v)
-end
 function _covariance(a, μa, b, μb)
 	return sum(((x, y),) -> (x - μa) * (y - μb), zip(a, b)) / length(a)
 end

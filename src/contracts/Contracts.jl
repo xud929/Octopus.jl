@@ -878,9 +878,6 @@ function _strong_strong_contract_task(contract::StrongStrongPICBackendConsistenc
     return StrongStrongTask((ip,), (ip,); luminosity_path=luminosity_path)
 end
 
-function _strong_strong_contract_last_luminosity(path)
-    return last(_strong_strong_contract_luminosity_series(path))
-end
 
 function _strong_strong_contract_luminosity_series(path)
     lines = readlines(path)

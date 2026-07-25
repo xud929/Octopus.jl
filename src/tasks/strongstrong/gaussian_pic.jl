@@ -47,10 +47,16 @@ are:
 - `neutralize`: rescale the subtracted Gaussian grid so its total matches the
   deposited particles, removing the spurious open-boundary monopole.
 - `coupling_tol`: correlation-coefficient threshold
-  `|sigma_xy/(sigma_x*sigma_y)|` above which the coupled (rotated) subtraction
-  would be used. The coupled branch is **not implemented**, so only the default
-  `Inf` (always uncoupled) is accepted; a finite value throws rather than being
-  silently ignored. The residual grid absorbs any transverse coupling.
+  `|sigma_xy/(sigma_x*sigma_y)|` above which the coupled (rotated) subtraction is
+  used. The default `Inf` always takes the separable uncoupled path; a finite
+  value (`0` forces coupling everywhere) subtracts a *rotated* Gaussian built
+  from the slice's full transverse covariance, per Section 7 of
+  `docs/theory/gaussian_subtracted_pic_solver.md`. Available on the CPU path and
+  on the default CUDA route (`batch_mode=:wavefront` with
+  `cuda_indexed_wavefront=true`); the other two CUDA routes raise rather than
+  silently running the uncoupled subtraction. When uncoupled, the residual grid
+  absorbs any transverse coupling, so this is an accuracy refinement, not a
+  correctness fix.
 
 **Use `deposit_method=:TSC` with this solver.** TSC is consistently the more
 accurate deposition for the hybrid at nearly every grid and aspect ratio (e.g. at

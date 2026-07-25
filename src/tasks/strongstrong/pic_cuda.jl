@@ -546,9 +546,6 @@ if _HAS_CUDA
             return nothing
         end
 
-        function _cuda_pic_slice_mask(z, p)
-            return p.include_hi ? ((z .>= p.lb) .& (z .<= p.rb)) : ((z .>= p.lb) .& (z .< p.rb))
-        end
 
         function _cuda_pic_extract_slice(rep::Phase6DRep, idx, longitudinal_kick::Bool=false)
             n = length(idx)
@@ -1271,101 +1268,7 @@ if _HAS_CUDA
             )
         end
 
-        function _cuda_pic_prepare_interaction_indexed(solver::PICPoissonSolver,
-                                                       source, source_idx, param_source,
-                                                       field, field_idx, param_field,
-                                                       green_cache=nothing, timing=nothing)
-            T = eltype(source.x)
-            sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
-            sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
-            neutral_bounds = _cuda_pic_bounds_neutral(T)
-            t_source = time_ns()
-            source_bounds = mapreduce(
-                i -> _cuda_pic_source_bounds_value(source.x[i], source.px[i], source.y[i], source.py[i], sL, sR),
-                _cuda_pic_bounds_combine,
-                source_idx,
-                init=neutral_bounds,
-            )
-            source_xmin, source_xmax, source_ymin, source_ymax = T.(source_bounds)
-            _cuda_pic_add_time!(timing, :prepare_source, t_source)
 
-            t_field = time_ns()
-            source_center = T(param_source.center)
-            half = T(0.5)
-            field_bounds = mapreduce(
-                i -> _cuda_pic_field_bounds_value(field.x[i], field.px[i], field.y[i], field.py[i], field.z[i], source_center, half),
-                _cuda_pic_bounds_combine,
-                field_idx,
-                init=neutral_bounds,
-            )
-            field_xmin, field_xmax, field_ymin, field_ymax = T.(field_bounds)
-            _cuda_pic_add_time!(timing, :prepare_field, t_field)
-
-            return _cuda_pic_finish_interaction_indexed(
-                solver, T, sL, sR,
-                (source_xmin, source_xmax, source_ymin, source_ymax),
-                (field_xmin, field_xmax, field_ymin, field_ymax),
-                green_cache, timing,
-            )
-        end
-
-        function _cuda_pic_prepare_interaction_pair_indexed(
-            solver::PICPoissonSolver,
-            rep1, idx1, param1,
-            rep2, idx2, param2,
-            green_cache=nothing, timing=nothing,
-        )
-            T = eltype(rep1.x)
-            half = T(0.5)
-            sL12 = half * (T(param1.center) - T(param2.lb))
-            sR12 = half * (T(param1.center) - T(param2.rb))
-            sL21 = half * (T(param2.center) - T(param1.lb))
-            sR21 = half * (T(param2.center) - T(param1.rb))
-            center1 = T(param1.center)
-            center2 = T(param2.center)
-            neutral = _cuda_pic_bounds_pair_neutral(T)
-
-            t_bounds1 = time_ns()
-            bounds1 = mapreduce(
-                i -> _cuda_pic_source_field_bounds_value(
-                    rep1.x[i], rep1.px[i], rep1.y[i], rep1.py[i], rep1.z[i],
-                    sL12, sR12, center2, half,
-                ),
-                _cuda_pic_bounds_pair_combine,
-                idx1,
-                init=neutral,
-            )
-            elapsed1 = time_ns() - t_bounds1
-
-            t_bounds2 = time_ns()
-            bounds2 = mapreduce(
-                i -> _cuda_pic_source_field_bounds_value(
-                    rep2.x[i], rep2.px[i], rep2.y[i], rep2.py[i], rep2.z[i],
-                    sL21, sR21, center1, half,
-                ),
-                _cuda_pic_bounds_pair_combine,
-                idx2,
-                init=neutral,
-            )
-            elapsed2 = time_ns() - t_bounds2
-            # Source and field bounds are now measured together. Split only the
-            # diagnostic attribution; complete-turn timing remains authoritative.
-            total_bounds = elapsed1 + elapsed2
-            _cuda_pic_add_elapsed!(timing, :prepare_source, total_bounds ÷ 2)
-            _cuda_pic_add_elapsed!(timing, :prepare_field, total_bounds - total_bounds ÷ 2)
-
-            source12 = T.(bounds1[1:4])
-            field12 = T.(bounds2[5:8])
-            source21 = T.(bounds2[1:4])
-            field21 = T.(bounds1[5:8])
-            prep12 = _cuda_pic_finish_interaction_indexed(
-                solver, T, sL12, sR12, source12, field12, green_cache, timing,
-            )
-            prep21 = _cuda_pic_finish_interaction_indexed(
-                solver, T, sL21, sR21, source21, field21, green_cache, timing,
-            )
-            return prep12, prep21
-        end
 
         function _cuda_pic_prepare_interaction_wavefront_indexed!(
             solver::PICPoissonSolver, valid, rep1, rep2, green_cache, wf,
@@ -1524,37 +1427,6 @@ if _HAS_CUDA
             return nothing
         end
 
-        function _cuda_pic_launch_kick_indexed!(solver::PICPoissonSolver, rep, idx,
-                                                source_center, param_field,
-                                                kbb, field_grid,
-                                                phiL, ExL, EyL, phiR, ExR, EyR, stream)
-            T = eltype(rep.x)
-            threads = _cuda_pic_threads(:kick)
-            blocks = cld(length(idx), threads)
-            method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
-            nx, ny = solver.grid
-            hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
-            if solver.longitudinal_kick
-                CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_indexed_longitudinal_kernel!(
-                    rep.x, rep.px, rep.y, rep.py, rep.pz, rep.z, idx,
-                    phiL, ExL, EyL, phiR, ExR, EyR,
-                    T(field_grid.x0), T(field_grid.y0),
-                    T(field_grid.width) / T(nx - 1), T(field_grid.height) / T(ny - 1),
-                    Int32(nx), Int32(ny), method_code,
-                    T(source_center), hzi, zbias, T(kbb),
-                )
-            else
-                CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_indexed_kernel!(
-                    rep.x, rep.px, rep.y, rep.py, rep.z, idx,
-                    phiL, ExL, EyL, phiR, ExR, EyR,
-                    T(field_grid.x0), T(field_grid.y0),
-                    T(field_grid.width) / T(nx - 1), T(field_grid.height) / T(ny - 1),
-                    Int32(nx), Int32(ny), method_code,
-                    T(source_center), hzi, zbias, T(kbb),
-                )
-            end
-            return nothing
-        end
 
         function _cuda_pic_launch_kick_pair_indexed!(
             solver::PICPoissonSolver,
@@ -1604,13 +1476,6 @@ if _HAS_CUDA
             return nothing
         end
 
-        function _cuda_pic_solve_field(solver::PICPoissonSolver, x, y, source_grid, field_grid,
-                                       green_cache=nothing, charge=nothing, timing=nothing)
-            t_green = time_ns()
-            green_fft = _cuda_pic_green_fft(solver, eltype(x), source_grid, field_grid, green_cache, timing)
-            _cuda_pic_add_time!(timing, :field_green, t_green)
-            return _cuda_pic_solve_field_with_green_fft(solver, x, y, source_grid, green_fft, charge, timing)
-        end
 
         function _cuda_pic_cached_interaction_grids(solver::PICPoissonSolver, ::Type{T}, cache,
                                                     source_grid, field_grid,
@@ -2250,19 +2115,6 @@ if _HAS_CUDA
             return nothing
         end
 
-        function _cuda_pic_deposit_drifted_indexed_plane!(solver::PICPoissonSolver, charge, plane::Int32,
-                                                          source, idx, drift_s, source_grid,
-                                                          method_code::Int32, threads::Integer, stream)
-            nx, ny = solver.grid
-            T = eltype(source.x)
-            hx = T(source_grid.width) / T(nx - 1)
-            hy = T(source_grid.height) / T(ny - 1)
-            CUDA.@cuda threads=threads blocks=cld(length(idx), threads) stream=stream _cuda_pic_deposit_drifted_indexed_plane_kernel!(
-                charge, plane, source.x, source.px, source.y, source.py, idx, T(drift_s),
-                T(source_grid.x0), T(source_grid.y0), hx, hy, Int32(nx), Int32(ny), method_code,
-            )
-            return nothing
-        end
 
         function _cuda_pic_deposit_drifted_indexed_plane_pair!(
             solver::PICPoissonSolver, charge, planeL::Int32, planeR::Int32,
@@ -2705,44 +2557,6 @@ if _HAS_CUDA
                    _cuda_pic_atan_ratio(x, y) * y * y
         end
 
-        function _cuda_pic_deposit_kernel!(charge, x, y, mask, x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32)
-            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-            stride = CUDA.gridDim().x * CUDA.blockDim().x
-            hxi = inv(hx)
-            hyi = inv(hy)
-            while index <= length(x)
-                if mask[index]
-                    ux = (x[index] - x0) * hxi
-                    uy = (y[index] - y0) * hyi
-                    if method_code == 1
-                        ix, wx1, wx2 = _cuda_pic_cic_weights(ux, nx)
-                        iy, wy1, wy2 = _cuda_pic_cic_weights(uy, ny)
-                        @inbounds begin
-                            CUDA.@atomic charge[ix, iy] += wx1 * wy1
-                            CUDA.@atomic charge[ix + 1, iy] += wx2 * wy1
-                            CUDA.@atomic charge[ix, iy + 1] += wx1 * wy2
-                            CUDA.@atomic charge[ix + 1, iy + 1] += wx2 * wy2
-                        end
-                    else
-                        ix, wx1, wx2, wx3 = _cuda_pic_tsc_weights(ux, nx)
-                        iy, wy1, wy2, wy3 = _cuda_pic_tsc_weights(uy, ny)
-                        @inbounds begin
-                            CUDA.@atomic charge[ix, iy] += wx1 * wy1
-                            CUDA.@atomic charge[ix, iy + 1] += wx1 * wy2
-                            CUDA.@atomic charge[ix, iy + 2] += wx1 * wy3
-                            CUDA.@atomic charge[ix + 1, iy] += wx2 * wy1
-                            CUDA.@atomic charge[ix + 1, iy + 1] += wx2 * wy2
-                            CUDA.@atomic charge[ix + 1, iy + 2] += wx2 * wy3
-                            CUDA.@atomic charge[ix + 2, iy] += wx3 * wy1
-                            CUDA.@atomic charge[ix + 2, iy + 1] += wx3 * wy2
-                            CUDA.@atomic charge[ix + 2, iy + 2] += wx3 * wy3
-                        end
-                    end
-                end
-                index += stride
-            end
-            return nothing
-        end
 
         function _cuda_pic_deposit_nomask_kernel!(charge, x, y, x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32)
             index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
@@ -4226,55 +4040,6 @@ if _HAS_CUDA
             return nothing
         end
 
-        # Idea #1: kick kernel that reads its slice moments from device memory
-        # (kmoments[mcol], means[:, mcol]) instead of a host-built argument.
-        function _cuda_slice_kick_devmoments_kernel!(rep, idx, lum, kmoments, means, mcol,
-                                                     center2, kbb_slice, virtual_drift,
-                                                     longitudinal_kick::Val{LONGITUDINAL},
-                                                     ::Val{COMPUTE_LUMINOSITY}, lum_offset,
-                                                     lum_scale) where {LONGITUDINAL,COMPUTE_LUMINOSITY}
-            @inbounds mstruct = kmoments[mcol]
-            @inbounds mmx = means[1, mcol]
-            @inbounds mmpx = means[2, mcol]
-            @inbounds mmy = means[3, mcol]
-            @inbounds mmpy = means[4, mcol]
-            start_index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-            stride = CUDA.gridDim().x * CUDA.blockDim().x
-            position = start_index
-            while position <= length(idx)
-                @inbounds begin
-                    index = idx[position]
-                    x = rep.x[index]; px = rep.px[index]
-                    y = rep.y[index]; py = rep.py[index]
-                    z = rep.z[index]; pz = rep.pz[index]
-                    drift = _soft_gaussian_drift(virtual_drift, longitudinal_kick)
-                    x, px, y, py, z, pz, S = _forward_virtual_drift(
-                        drift, x, px, y, py, z, pz, center2)
-                    xx = x - mmx + mmpx * S
-                    yy = y - mmy + mmpy * S
-                    px0, py0, pz0 = px, py, pz
-                    x, px, y, py, z, pz, density = _cuda_cp_covariance_kick(
-                        mstruct, kbb_slice, S, xx, yy,
-                        x, px, y, py, z, pz)
-                    if LONGITUDINAL
-                        pz += 0.5 * ((px - px0) * mmpx +
-                                    (py - py0) * mmpy)
-                    else
-                        pz = pz0
-                    end
-                    x, px, y, py, z, pz = _reverse_virtual_drift(
-                        drift, x, px, y, py, z, pz, center2)
-                    rep.x[index] = x; rep.px[index] = px
-                    rep.y[index] = y; rep.py[index] = py
-                    rep.z[index] = z; rep.pz[index] = pz
-                    if COMPUTE_LUMINOSITY
-                        lum[lum_offset + position] = density * TWOPI * lum_scale
-                    end
-                end
-                position += stride
-            end
-            return nothing
-        end
 
         # Idea #2: one fused moment-partial kernel for a whole wavefront.
         # blockIdx().y selects the column (slice); blockIdx().x strides over that

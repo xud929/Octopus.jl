@@ -123,8 +123,6 @@ _element_tuple(element::AbstractElementSpec) = (element,)
 _element_tuple(elements::Tuple) = elements
 _element_tuple(elements::AbstractVector) = Tuple(elements)
 
-_first_element(element::AbstractElementSpec) = element
-_first_element(elements) = first(_element_tuple(elements))
 
 function _collect_contracts(elements)
     contracts = DataType[]
@@ -444,7 +442,3 @@ function _update_runtime_line!(runtime_elems::Tuple, ctx)
     return nothing
 end
 
-_hook_tuple_or_empty(hooks::Tuple) = hooks
-_hook_tuple_or_empty(hooks::AbstractVector) = Tuple(hooks)
-_hook_tuple_or_empty(::Nothing) = ()
-_hook_tuple_or_empty(hook) = (hook,)

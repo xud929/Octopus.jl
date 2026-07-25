@@ -597,11 +597,6 @@ function _spectral_field_potential_ws(solver::SpectralPoissonSolver, ws, sx, sy,
     return _spectral_field_grid_potential!(ws, sx, sy, fx, fy, Lx, Ly)
 end
 
-function _spectral_field(solver::SpectralPoissonSolver, sx, sy, fx, fy, Lx, Ly)
-    ws = solver.method === :grid_free ? nothing :
-         _spectral_grid_ws(solver.grid[1], solver.grid[2])
-    return _spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
-end
 
 function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2)
     rms(v) = begin m = sum(v) / length(v); sqrt(sum(abs2, v .- m) / length(v)) end

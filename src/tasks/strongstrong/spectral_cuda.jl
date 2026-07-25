@@ -471,18 +471,6 @@ if _HAS_CUDA
             return compute_luminosity ? luminosity : T(NaN)
         end
 
-        function _cuda_spectral_midpoint_luminosity_pair(sx1, spx1, sy1, spy1, center1,
-                                                         sx2, spx2, sy2, spy2, center2,
-                                                         klum, nx, ny)
-            T = eltype(sx1)
-            s1 = T(0.5) * (T(center1) - T(center2))
-            s2 = T(0.5) * (T(center2) - T(center1))
-            mx1 = sx1 .+ spx1 .* s1
-            my1 = sy1 .+ spy1 .* s1
-            mx2 = sx2 .+ spx2 .* s2
-            my2 = sy2 .+ spy2 .* s2
-            return _cuda_spectral_luminosity_pair(mx1, my1, mx2, my2, klum, nx, ny)
-        end
 
         function _cuda_spectral_collision_direction_6d!(
                 solver::SpectralPoissonSolver, ws::_SpectralCudaWS{T},
