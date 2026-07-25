@@ -170,6 +170,85 @@ almost nothing to the error for round and mild aspect ratios, **VGF is not
 recommended for this solver.** The item is closed on this measurement rather than
 on the literature claim.
 
+### 3.4 Lattice Green function: derivation and measurement
+
+`docs/todo.md` carried "add a lattice Green-function variant" as an open PIC-core
+item. Unlike the node-sampled and cell-integrated kernels, which discretize the
+*continuum* $-\ln r$, the lattice Green function inverts the **five-point discrete
+Laplacian exactly**, so the mesh solution satisfies the discrete Poisson equation
+with no kernel truncation error at all.
+
+**Construction.** Hockney's zero-padded convolution needs the *free-space* lattice
+Green function, so the periodic $k$-space inverse $1/\kappa^2$ is not sufficient on
+its own — it is the Green function of a torus and its zero mode diverges. Take the
+infinite-lattice limit of the periodic one in the gauge $G(0,0)=0$:
+
+$$
+    G(\mathbf r) = -\frac{1}{M^2}\sum_{\mathbf k\neq0}
+        \frac{\cos(\mathbf k\cdot\mathbf r)-1}{\kappa^2(\mathbf k)},
+    \qquad
+    \kappa^2 = \frac{2-2\cos\theta_x}{h_x^{2}} + \frac{2-2\cos\theta_y}{h_y^{2}},
+$$
+
+with $\theta=\mathbf k h$. The $(\cos-1)$ numerator removes the divergent zero mode and
+fixes the gauge; the result converges to the infinite-lattice kernel for
+$|m|,|n|\ll M$.
+
+**Normalization.** To reproduce $\phi=\sum_j q_j(-\ln r_{ij})$, the kernel must satisfy
+$L_h G = -2\pi\,\delta/(h_xh_y)$ — the Dirac delta discretizes to the Kronecker delta
+over the *cell area*. With $L_h$ eigenvalues $-\kappa^2$,
+
+$$
+\boxed{\;\widehat G = \frac{2\pi}{\kappa^{2}h_xh_y},\qquad G = \frac{2\pi}{h_xh_y}\,
+    \mathcal F^{-1}\!\left[\kappa^{-2}\right].\;}
+$$
+
+Verified against the continuum: at $h=10^{-4}$ the constructed kernel reproduces
+$-\ln r$ to $1.8\times10^{-15}$ at $r=h$, with a residual $4.5\times10^{-2}$ offset at
+larger $r$ that converges to a constant — the near-origin lattice correction, which
+does not affect the field.
+
+*A note on how this was nearly got wrong:* at $h_x=h_y=1$ the factor $2\pi/(h_xh_y)$
+and a bare $2\pi$ coincide, so an isotropic unit-spacing sanity check cannot
+distinguish them. The first version used the wrong power and produced a kernel
+$10^{8}$ times too small — which showed up as a field error of exactly $0.95$,
+*identical at every grid*, the signature of a computed field of zero.
+
+**Measured** (identical deposit/grid/interpolation, median relative field error
+against Bassetti-Erskine):
+
+| case | grid | `:standard` | `:integrated` | `:lattice` | lattice vs integrated |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| round | 64 | 7.79e-3 | **2.78e-3** | 3.03e-3 | 1.09x worse |
+| round | 128 | 1.69e-3 | **6.05e-4** | 1.69e-3 | 2.80x worse |
+| 11:1 (production) | 64 | 5.71e-2 | 6.53e-2 | **4.79e-2** | 1.36x better |
+| 11:1 (production) | 128 | 1.88e-2 | 1.99e-2 | **1.35e-2** | 1.48x better |
+| 25:1 | 64 | **8.55e-2** | 1.59e-1 | 1.35e-1 | 1.17x better |
+| 25:1 | 128 | 1.07e-1 | 7.02e-2 | **5.13e-2** | 1.37x better |
+
+**The result splits by aspect ratio.** The lattice kernel is *worse* for round
+beams — up to 2.8x at 128 — and *better* for flat ones, including ~1.4x at the
+11:1 production aspect ratio. This is consistent with Section 3.2: the kernel
+contributes essentially none of the round-beam error, so replacing it there only
+adds the lattice's own near-origin correction, while for flat beams the kernel is
+a real error source.
+
+**Recommendation: worth implementing, but not urgent, and not for dynamics.**
+Two caveats decide the priority:
+
+1. The gain is in *systematic* field error. The `:fourth` gradient bought a
+   comparable ~1.6x and was measured to **not** reduce multi-turn emittance
+   growth, which is shot-noise driven (Section 11 of the review). The same is
+   expected here. It is a field-accuracy improvement, not a dynamics one.
+2. Building it costs a large auxiliary FFT ($8\times$ the padded extent per axis).
+   That is only affordable because of a property worth recording: factoring
+   $h_x^{-2}$ out of $\kappa^2$ gives $G = 2\pi(h_x/h_y)\,\mathcal F^{-1}[f(\theta;h_x/h_y)]$,
+   so **the kernel depends only on the grid size and the aspect ratio $h_x/h_y$**,
+   not on the absolute spacing. It can therefore be built once per
+   (grid, aspect ratio) and reused across slice pairs and turns, exactly like the
+   slice-pair Green cache. Without that observation a per-pair rebuild would make
+   it far too slow to use.
+
 ## References
 
 1. R. W. Hockney and J. W. Eastwood, *Computer Simulation Using Particles*,

@@ -268,16 +268,28 @@ Open items carried over from the former `pic_solver_improvement_plan.md` (its
 implemented items are recorded in
 `docs/history/strong_strong_pic_optimization_history.md`).
 
-1. **Improve GPU deposition.** CUDA PIC deposition is correctness-oriented and
-   uses atomics. Candidate replacements: sort/bin particles by cell then
-   segmented reduce; per-block shared-memory tile accumulation then global
-   reduction; split dense slices into grid tiles to cut atomic contention. Each
-   must be checked against `validation/pic_gaussian_field_validation.jl` before
-   replacing the current path.
-2. **Add a lattice Green-function variant.** `green_type` currently supports
-   `:integrated` (default) and `:standard`. Evaluate a lattice Green function,
-   selected by `green_type`, and cover it with validation sweeps over round and
-   high-aspect-ratio beams.
+1. ~~**Improve GPU deposition.**~~ **CLOSED (2026-07-25).** CUDA PIC deposition
+   uses atomics throughout (all 79 accumulation sites). Three measurements close
+   this: deposition is **3.1%** of a CUDA turn, so the ceiling on any replacement
+   is 3%; two identical 1000-turn CUDA runs gave **identical** emittance growth
+   despite 3.6e-16 per-collide differences, so atomic nondeterminism does not
+   reach the physics observable; and the phase timing added in Section 22 shows
+   the kick, not deposition, is where the hybrid's time goes. Revisit only if a
+   future run uses enough macroparticles per cell for atomic contention to show up
+   in the deposition phase timing.
+2. ~~**Add a lattice Green-function variant.**~~ **EVALUATED (2026-07-25), not yet
+   implemented in the solver.** Derived, constructed and measured against
+   `:integrated` and `:standard` over round, 11:1 and 25:1 beams; see Section 3.4
+   of [`pic_free_space_kernels.md`](theory/pic_free_space_kernels.md). Result
+   splits by aspect ratio: **1.36-1.48x better at the 11:1 production aspect
+   ratio** and at 25:1, but up to **2.8x worse for round beams**, consistent with
+   the kernel contributing ~none of the round-beam error (Section 3.2).
+   Worth adding as a `green_type=:lattice` option, with two caveats recorded in
+   the derivation: the gain is in systematic field error, which the analogous
+   `:fourth` gradient showed does **not** reduce shot-noise-driven emittance
+   growth; and it is only affordable because the kernel depends solely on the grid
+   size and aspect ratio `hx/hy`, not the absolute spacing, so it can be cached
+   per (grid, aspect) like the slice-pair Green cache.
 
 ## Spectral Sine-Series Poisson Solver
 
