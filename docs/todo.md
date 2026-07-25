@@ -281,8 +281,19 @@ implemented items are recorded in
    the kick, not deposition, is where the hybrid's time goes. Revisit only if a
    future run uses enough macroparticles per cell for atomic contention to show up
    in the deposition phase timing.
-2. ~~**Add a lattice Green-function variant.**~~ **EVALUATED (2026-07-25), not yet
-   implemented in the solver.** Derived, constructed and measured against
+2. ~~**Add a lattice Green-function variant.**~~ **IMPLEMENTED (2026-07-25) as
+   `green_type=:lattice`, opt-in, NOT recommended for production.** CPU + all CUDA
+   routes, parity 1e-17. Accuracy is as evaluated (1.30x better than `:integrated`
+   at the 11:1 production aspect with the shipped 0.5% aspect quantization; worse
+   for round beams), but the cost is **1.74x runtime at grid 128 and ~645 MB**.
+   Implementing it refuted the affordability argument: production needs **306**
+   distinct aspect-ratio tables, not the ~18 a single-turn probe suggested, and
+   the quantization cannot be coarsened to shrink that because beyond ~2% aspect
+   error the kernel is *worse* than `:integrated`. The route to making it cheap
+   (small lattice patch + analytic far field) is recorded in Section 3.5 of
+   [`pic_free_space_kernels.md`](theory/pic_free_space_kernels.md); its
+   anisotropic part is underived and is the remaining open work.
+   **Superseded evaluation note:** Derived, constructed and measured against
    `:integrated` and `:standard` over round, 11:1 and 25:1 beams; see Section 3.4
    of [`pic_free_space_kernels.md`](theory/pic_free_space_kernels.md). Result
    splits by aspect ratio: **1.36-1.48x better at the 11:1 production aspect

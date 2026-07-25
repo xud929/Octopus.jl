@@ -2118,6 +2118,24 @@ if _HAS_CUDA
             copyto!(wf.green_hy, hy)
 
             t_build = time_ns()
+            if Symbol(solver.green_type) == :lattice
+                # Same host-table route as the per-pair build; the per-plane grid
+                # parameters were already gathered above.
+                hoststack = Array{T}(undef, 2nx, 2ny, ngreen)
+                plane = Matrix{T}(undef, 2nx, 2ny)
+                for n in 1:ngreen
+                    _pic_green_lattice!(plane, field_x0[n], field_y0[n],
+                                        source_x0[n], source_y0[n], hx[n], hy[n], nx, ny)
+                    @views hoststack[:, :, n] .= plane
+                end
+                copyto!(wf.greens, hoststack)
+                _cuda_pic_add_time!(timing, :green_build_kernel, t_build)
+                t_gfft = time_ns()
+                gs = fft(wf.greens, (1, 2))
+                _cuda_pic_add_time!(timing, :green_build_fft, t_gfft)
+                _cuda_pic_add_time!(timing, :field_green, t_green_total)
+                return gs
+            end
             green_code = Symbol(solver.green_type) == :integrated ? Int32(1) : Int32(2)
             CUDA.@cuda threads=threads blocks=cld(length(wf.greens), threads) stream=stream _cuda_pic_green_stack_kernel!(
                 wf.greens, wf.green_field_x0, wf.green_field_y0,
@@ -2197,6 +2215,20 @@ if _HAS_CUDA
             hx = T(source_grid.width) / T(nx - 1)
             hy = T(source_grid.height) / T(ny - 1)
             t_build = time_ns()
+            if Symbol(solver.green_type) == :lattice
+                # Built on the host from the cached lattice table (a table lookup, not
+                # an FFT -- see _pic_lattice_green_table) and uploaded, so the kernel
+                # VALUES are bit-identical to the CPU path.
+                hostg = Matrix{T}(undef, 2nx, 2ny)
+                _pic_green_lattice!(hostg, T(field_grid.x0), T(field_grid.y0),
+                                    T(source_grid.x0), T(source_grid.y0), hx, hy, nx, ny)
+                green_d = CUDA.CuArray(hostg)
+                _cuda_pic_add_time!(timing, :green_build_kernel, t_build)
+                t_fft_l = time_ns()
+                green_fft_l = fft(green_d)
+                _cuda_pic_add_time!(timing, :green_build_fft, t_fft_l)
+                return green_fft_l
+            end
             green = CUDA.zeros(T, 2nx, 2ny)
             green_code = Symbol(solver.green_type) == :integrated ? Int32(1) : Int32(2)
             threads = _cuda_pic_threads(:green)

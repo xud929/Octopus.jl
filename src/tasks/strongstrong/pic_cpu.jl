@@ -124,8 +124,8 @@ function _validate_pic_solver(solver::PICPoissonSolver)
     (luminosity_method == :CIC || luminosity_method == :TSC) ||
         throw(ArgumentError("PICPoissonSolver luminosity_deposit_method must resolve to :CIC or :TSC"))
     green = Symbol(solver.green_type)
-    (green == :integrated || green == :standard) ||
-        throw(ArgumentError("PICPoissonSolver green_type must be :integrated or :standard"))
+    (green == :integrated || green == :standard || green == :lattice) ||
+        throw(ArgumentError("PICPoissonSolver green_type must be :integrated, :standard or :lattice"))
     cache = Symbol(solver.green_cache)
     (cache == :none || cache == :slice_pair) ||
         throw(ArgumentError("PICPoissonSolver green_cache must be :none or :slice_pair"))
@@ -717,7 +717,119 @@ function _pic_green(green_type, field_x0, field_y0, source_x0, source_y0, hx, hy
     return green
 end
 
+# ---------------------------------------------------------------------------
+# Lattice Green function (green_type=:lattice)
+#
+# Inverts the five-point discrete Laplacian exactly instead of discretizing the
+# continuum -ln r. Derivation, normalization and measurements:
+# docs/theory/pic_free_space_kernels.md Section 3.4.
+#
+# Two properties make this affordable, both derived in that section:
+#   * G depends only on (nx, ny) and the ASPECT RATIO rho = hx/hy, never on the
+#     absolute spacing -- absolute h enters as an additive -ln(h) gauge constant.
+#   * That constant is invisible to the physics: transverse kicks use the mesh
+#     gradient, and the longitudinal kick uses the DIFFERENCE phiL - phiR (see
+#     _pic_interpolate_kick), so a uniform offset cancels exactly.
+# So one table per (nx, ny, quantized rho) serves every slice pair and every turn.
+#
+# The table is indexed by INTEGER lattice separation, which is legitimate because
+# _pic_align_grid_origins puts the source and field origins an exact integer
+# number of cells apart for every green_type except :standard (which deliberately
+# offsets by half a cell to dodge the singularity, and therefore cannot use this
+# kernel).
+const _PIC_LATTICE_GREEN_MULT = 8          # periodic box multiple of the padded extent
+# rho quantization. Measured sensitivity at the 11:1 production beams, grid 128
+# (:integrated reference 1.991e-2): exact rho 1.348e-2, 0.5% 1.529e-2, 2% 2.055e-2,
+# 5% 3.055e-2. Beyond ~2% the kernel is WORSE than the one it replaces, so this
+# cannot be coarsened to make the cache smaller.
+const _PIC_LATTICE_GREEN_RHO_TOL = 0.005
+# Hard cap. Production generates hundreds of distinct aspect ratios (306 in an
+# 18-turn 15-slice run) and each table is (4nx+1)x(4ny+1) Float64 -- 2.1 MB at
+# grid 128 -- so an uncapped cache reached ~645 MB. The cap bounds memory, but it
+# must be generous: at 64 the cache thrashes and the cost goes from 1.8x to 6.8x
+# a turn. This is the central reason :lattice is not recommended for production;
+# see docs/theory/pic_free_space_kernels.md Section 3.4.
+const _PIC_LATTICE_GREEN_CACHE_MAX = 384
+const _PIC_LATTICE_GREEN_CACHE = Dict{Tuple{Int,Int,Int},Matrix{Float64}}()
+const _PIC_LATTICE_GREEN_LOCK = ReentrantLock()
+
+_pic_lattice_rho_key(rho) = round(Int, log(rho) / log1p(_PIC_LATTICE_GREEN_RHO_TOL))
+_pic_lattice_rho_of_key(key) = exp(key * log1p(_PIC_LATTICE_GREEN_RHO_TOL))
+
+"""Free-space lattice Green function, tabulated by integer separation.
+
+Returned array is indexed `[sx + 2nx + 1, sy + 2ny + 1]` for
+`sx in -2nx:2nx`, `sy in -2ny:2ny`, in the `G_PIC = -ln r` convention with gauge
+`G(0,0) = 0`.
+"""
+function _pic_lattice_green_table(nx::Int, ny::Int, rho::Float64)
+    Mx = _PIC_LATTICE_GREEN_MULT * 2nx
+    My = _PIC_LATTICE_GREEN_MULT * 2ny
+    ghat = Matrix{Float64}(undef, Mx, My)
+    r2 = rho * rho
+    @inbounds for j in 1:My
+        ty = 2pi * (j - 1) / My
+        cy = r2 * (2 - 2cos(ty))
+        for i in 1:Mx
+            tx = 2pi * (i - 1) / Mx
+            kap = (2 - 2cos(tx)) + cy
+            ghat[i, j] = kap == 0 ? 0.0 : 1 / kap
+        end
+    end
+    g = real(ifft(ghat))
+    g0 = g[1, 1]
+    scale = 2pi * rho
+    tab = Matrix{Float64}(undef, 4nx + 1, 4ny + 1)
+    @inbounds for sy in -2ny:2ny
+        jj = mod(sy, My) + 1
+        for sx in -2nx:2nx
+            tab[sx + 2nx + 1, sy + 2ny + 1] = scale * (g[mod(sx, Mx) + 1, jj] - g0)
+        end
+    end
+    return tab
+end
+
+function _pic_lattice_green_cached(nx::Int, ny::Int, rho::Real)
+    key = (nx, ny, _pic_lattice_rho_key(Float64(rho)))
+    lock(_PIC_LATTICE_GREEN_LOCK) do
+        cached = get(_PIC_LATTICE_GREEN_CACHE, key, nothing)
+        cached === nothing || return cached
+        length(_PIC_LATTICE_GREEN_CACHE) >= _PIC_LATTICE_GREEN_CACHE_MAX &&
+            empty!(_PIC_LATTICE_GREEN_CACHE)
+        tab = _pic_lattice_green_table(nx, ny, _pic_lattice_rho_of_key(key[3]))
+        _PIC_LATTICE_GREEN_CACHE[key] = tab
+        return tab
+    end
+end
+
+function _pic_green_lattice!(green, field_x0, field_y0, source_x0, source_y0, hx, hy, nx, ny)
+    T = eltype(green)
+    tab = _pic_lattice_green_cached(nx, ny, hx / hy)
+    # Integer cell offset between the two grids (exact by construction; see above).
+    dx = round(Int, (field_x0 - source_x0) / hx)
+    dy = round(Int, (field_y0 - source_y0) / hy)
+    @inbounds for j in 0:(2ny - 1)
+        jj = j < ny ? j : j - 2ny
+        sy = dy + jj
+        (-2ny <= sy <= 2ny) || throw(ArgumentError(
+            "green_type=:lattice: field/source grids are offset by $(dy) cells in y, " *
+            "outside the tabulated range; this indicates unaligned interaction grids."))
+        row = sy + 2ny + 1
+        for i in 0:(2nx - 1)
+            ii = i < nx ? i : i - 2nx
+            sx = dx + ii
+            (-2nx <= sx <= 2nx) || throw(ArgumentError(
+                "green_type=:lattice: field/source grids are offset by $(dx) cells in x, " *
+                "outside the tabulated range; this indicates unaligned interaction grids."))
+            green[i + 1, j + 1] = T(tab[sx + 2nx + 1, row])
+        end
+    end
+    return green
+end
+
 function _pic_green!(green, green_type, field_x0, field_y0, source_x0, source_y0, hx, hy, nx, ny)
+    Symbol(green_type) == :lattice && return _pic_green_lattice!(
+        green, field_x0, field_y0, source_x0, source_y0, hx, hy, nx, ny)
     T = eltype(green)
     half_hx = hx / 2
     half_hy = hy / 2

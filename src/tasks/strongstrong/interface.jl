@@ -727,6 +727,16 @@ potential-difference longitudinal kick and the corresponding virtual-drift
 `pz` terms used by the Hirata-map branch of the reference PIC algorithm.
 This is the default. Set `longitudinal_kick=false` for a transverse-only map.
 
+`green_type=:lattice` inverts the five-point discrete Laplacian exactly instead
+of discretizing the continuum `-ln r` (derivation and measurements in
+`docs/theory/pic_free_space_kernels.md` Section 3.4). It is **better for flat
+beams and worse for round ones**: ~1.4x lower median field error at an 11:1
+aspect ratio and 1.37x at 25:1, but up to 2.8x worse for round beams, because
+the kernel contributes essentially none of the round-beam error. The gain is in
+*systematic* field error and is not expected to reduce shot-noise-driven
+emittance growth. Cost is one cached table per (grid, aspect ratio) -- 0.21 s at
+grid 128, then reused across every slice pair and turn.
+
 `deposit_method` may be `:CIC` or `:TSC`. `green_type` may be `:integrated`
 or `:standard`; the integrated Green function is the robust default and uses a
 cell-integrated logarithmic kernel. **`:standard` is unsuitable for flat beams**:
@@ -870,8 +880,8 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         "PICPoissonSolver grid dimensions must both be at least 5; got $(grid)."))
     deposit_method in (:CIC, :TSC) || throw(ArgumentError(
         "deposit_method must be :CIC or :TSC; got $(repr(deposit_method))."))
-    green_type in (:integrated, :standard) || throw(ArgumentError(
-        "green_type must be :integrated or :standard; got $(repr(green_type))."))
+    green_type in (:integrated, :standard, :lattice) || throw(ArgumentError(
+        "green_type must be :integrated, :standard or :lattice; got $(repr(green_type))."))
     green_cache in (:none, :slice_pair) || throw(ArgumentError(
         "green_cache must be :none or :slice_pair; got $(repr(green_cache))."))
     field_derivative in (:second, :fourth) || throw(ArgumentError(
@@ -954,7 +964,7 @@ const _PIC_SOLVER_OPTION_SCHEMA = (
     deposit_method = SolverOptionMeta(Symbol, :CIC,
         "Particle-to-grid deposition and field-interpolation method; :CIC or :TSC."),
     green_type = SolverOptionMeta(Symbol, :integrated,
-        "Open-boundary logarithmic Green kernel; :integrated or :standard."),
+        "Open-boundary Green kernel; :integrated (cell-averaged log), :standard (node-sampled log), or :lattice (exact inverse of the five-point discrete Laplacian: better for flat beams, worse for round)."),
     green_cache = SolverOptionMeta(Symbol, :slice_pair,
         "Persistent Green FFT caching mode; :slice_pair or :none."; category=:execution),
     field_derivative = SolverOptionMeta(Symbol, :second,

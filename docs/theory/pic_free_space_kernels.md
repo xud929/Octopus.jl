@@ -281,7 +281,63 @@ contributes essentially none of the round-beam error, so replacing it there only
 adds the lattice's own near-origin correction, while for flat beams the kernel is
 a real error source.
 
-**Recommendation: worth implementing, but not urgent, and not for dynamics.**
+### 3.5 Implemented as `green_type=:lattice` — and what implementing it revealed
+
+Implemented on CPU and all CUDA routes (2026-07-25). CPU/CUDA parity is **1e-17**,
+better than `:integrated`'s 1.3e-16, because the table is built once on the host
+and uploaded, so the kernel values are bit-identical across backends by
+construction.
+
+**The caching argument in Section 3.4 was wrong in practice, and measuring it is
+what showed that.** The claim was that because $G$ depends only on the grid and
+the aspect ratio $\rho=h_x/h_y$, one table per $(\text{grid},\rho)$ would serve every
+slice pair and turn. Two measurements refute the *affordability* half of it:
+
+1. **Production has hundreds of distinct aspect ratios, not a handful.** A
+   single-turn probe suggested ~18 at 1% quantization. An actual 18-turn,
+   15-slice run needs **306** distinct tables — 2.1 MB each at grid 128, so ~645 MB.
+2. **The quantization cannot be coarsened to fix that,** because accuracy is
+   sharply sensitive to $\rho$. At the 11:1 production beams, grid 128
+   (`:integrated` reference 1.991e-2):
+
+   | $\rho$ error | median field error | versus `:integrated` |
+   | ---: | ---: | --- |
+   | exact | 1.348e-2 | 1.48x better |
+   | 0.5% (as shipped) | 1.529e-2 | 1.30x better |
+   | **2%** | 2.055e-2 | **worse** |
+   | 5% | 3.055e-2 | 1.5x worse |
+
+   Beyond ~2% aspect error the lattice kernel is worse than the kernel it was
+   meant to replace. So the table must track $\rho$ closely, and the cache cannot
+   be made small.
+
+**Measured cost** (CUDA, 1.024M per beam, 15 slices, per turn):
+
+| grid | `:integrated` | `:lattice` | ratio |
+| ---: | ---: | ---: | ---: |
+| 64 | 0.191 | 0.249 | 1.30x |
+| 128 | 0.253 | 0.440 | 1.74x |
+
+The cache is capped at 384 entries to bound memory. The cap must be generous: at
+64 entries it thrashes and the cost rises from 1.8x to **6.8x** a turn.
+
+**Recommendation: opt-in for flat-beam field-accuracy work; do not use in
+production.** The honest trade at the production aspect ratio is 1.30x lower
+systematic field error for 1.74x runtime and ~645 MB. Since the gain is in
+systematic error, and the analogous `:fourth` gradient bought a comparable factor
+while measurably *not* reducing shot-noise-driven emittance growth, this is very
+unlikely to change a multi-turn dynamics result.
+
+**The concrete route to making it cheap**, if it is ever wanted in production: the
+lattice correction decays as $O(r^{-2})$, so a small lattice patch near the origin
+plus the analytic asymptotic $-(\ln r + C)$ beyond would cut the auxiliary FFT from
+$M=2048$ to $M\sim256$ and shrink the table by orders of magnitude. Measured decay
+for the isotropic case supports this directly (correction 4.6e-2 at $r=1$, 7.2e-4
+by $r=8$). The anisotropic case is the open part: at $\rho=11$ the correction is
+still ~5.9e-2 at $r=16$ in coarse-axis cells, so the patch radius and the
+anisotropic constant $C(\rho)$ both need deriving before this is safe.
+
+**Original recommendation (superseded by the measurements above):**
 Two caveats decide the priority:
 
 1. The gain is in *systematic* field error. The `:fourth` gradient bought a
