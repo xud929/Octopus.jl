@@ -88,6 +88,7 @@ if _HAS_CUDA
         function _cuda_gpic_collide_wavefront_indexed!(gsolver::GaussianPICPoissonSolver,
                                                        beam1::Beam, beam2::Beam, workspace, ctx)
             pic = gsolver.pic
+            t_slice = time_ns()
             slices1 = _cuda_longitudinal_slices(beam1.rep, pic.slicing1)
             slices2 = _cuda_longitudinal_slices(beam2.rep, pic.slicing2)
             batches = collision_pair_batches(slices1, slices2)
@@ -96,7 +97,13 @@ if _HAS_CUDA
             klum = _pic_luminosity_scale(pic, beam1, beam2)
             compute_luminosity = _pic_compute_luminosity(pic, ctx)
             luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
+            timing = _cuda_pic_timing_stats()
+            _cuda_pic_add_time!(timing, :slicing, t_slice)
+            pair_count = 0; batch_count = 0; max_batch = 0
             for batch in batches
+                batch_count += 1
+                pair_count += length(batch)
+                max_batch = max(max_batch, length(batch))
                 indexed = Vector{Any}(undef, length(batch))
                 for n in eachindex(batch)
                     pair = batch[n]
@@ -105,12 +112,17 @@ if _HAS_CUDA
                     p2 = (lb=slices2.boundary[j], center=slices2.center[j], rb=slices2.boundary[j + 1])
                     indexed[n] = (pair=pair, p1=p1, p2=p2, idx1=slices1.indices[i], idx2=slices2.indices[j])
                 end
+                t_int = time_ns()
                 lum = _cuda_gpic_interaction_wavefront_indexed_batched_fft!(
-                    gsolver, indexed, beam1.rep, beam2.rep, kbb1, kbb2, klum, workspace, compute_luminosity,
+                    gsolver, indexed, beam1.rep, beam2.rep, kbb1, kbb2, klum, workspace,
+                    compute_luminosity, timing,
                 )
+                _cuda_pic_add_time!(timing, :interaction, t_int)
                 compute_luminosity && (luminosity += lum)
             end
             CUDA.synchronize(CUDA.stream())
+            _cuda_pic_report_slice_pair_green_cache(workspace.slice_pair_green_cache)
+            _cuda_pic_report_wavefront_timing(timing, pair_count, batch_count, max_batch)
             return luminosity
         end
 
@@ -207,7 +219,7 @@ if _HAS_CUDA
 
         function _cuda_gpic_interaction_wavefront_indexed_batched_fft!(gsolver, indexed, rep1, rep2,
                                                                        kbb1, kbb2, klum, workspace,
-                                                                       compute_luminosity)
+                                                                       compute_luminosity, timing=nothing)
             pic = gsolver.pic
             valid = Any[item for item in indexed if length(item.idx1) > 0 && length(item.idx2) > 0]
             isempty(valid) && return zero(eltype(rep1.x))
@@ -216,11 +228,15 @@ if _HAS_CUDA
             T = eltype(rep1.x)
             wf = _cuda_pic_wavefront_workspace!(workspace, pic, T, nplanes)
 
+            t_prep = time_ns()
             prep12, prep21, luminosity_bounds = _cuda_pic_prepare_interaction_wavefront_indexed!(
-                pic, valid, rep1, rep2, nothing, wf, nothing, compute_luminosity,
+                pic, valid, rep1, rep2, nothing, wf, timing, compute_luminosity,
             )
+            _cuda_pic_add_time!(timing, :prepare, t_prep)
             want_coupled = isfinite(gsolver.coupling_tol)
+            t_mom = time_ns()
             sums_host, col_n = _cuda_gpic_batched_moments(valid, rep1, rep2, want_coupled)
+            _cuda_pic_add_time!(timing, :gpic_moments, t_mom)
             for n in 1:npairs
                 if want_coupled
                     m1 = _gpic_mom_from_coupled_sums(view(sums_host, :, 2n - 1), Int(col_n[2n - 1]))
@@ -248,17 +264,18 @@ if _HAS_CUDA
                     item = valid[n]
                     prep12[n] = _cuda_pic_slice_pair_cached_prep!(
                         pic, T, workspace.slice_pair_green_cache,
-                        (Int(item.pair.i), Int(item.pair.j), 1), prep12[n], nothing,
+                        (Int(item.pair.i), Int(item.pair.j), 1), prep12[n], timing,
                     )
                     prep21[n] = _cuda_pic_slice_pair_cached_prep!(
                         pic, T, workspace.slice_pair_green_cache,
-                        (Int(item.pair.i), Int(item.pair.j), 2), prep21[n], nothing,
+                        (Int(item.pair.i), Int(item.pair.j), 2), prep21[n], timing,
                     )
                 end
                 green12 = Any[prep12[n].green_fft for n in 1:npairs]
                 green21 = Any[prep21[n].green_fft for n in 1:npairs]
             end
 
+            t_prof = time_ns()
             gxh = Matrix{T}(undef, nx, nplanes); gyh = Matrix{T}(undef, ny, nplanes)
             amph = Vector{T}(undef, nplanes)
             gtmp_x = Vector{T}(undef, nx); gtmp_y = Vector{T}(undef, ny)
@@ -314,8 +331,11 @@ if _HAS_CUDA
                  dgy=CUDA.CuArray(dgyh), ddgy=CUDA.CuArray(ddgyh), lam=CUDA.CuArray(lamh)) :
                 (gx=gx_d, gy=gy_d, amp=amp_d)
 
+            _cuda_pic_add_time!(timing, :gpic_profiles, t_prof)
+
             luminosity = zero(T)
             luminosity_task = nothing
+            t_lum = time_ns()
             if compute_luminosity && _cuda_pic_async_luminosity_enabled()
                 lstream = workspace.luminosity_stream
                 luminosity_task = @async CUDA.stream!(lstream) do
@@ -325,11 +345,16 @@ if _HAS_CUDA
                 luminosity = _cuda_pic_wavefront_luminosity_indexed(pic, valid, rep1, rep2, klum, workspace, nothing, luminosity_bounds)
             end
 
+            _cuda_pic_add_time!(timing, :luminosity, t_lum)
+
+            t_fields = time_ns()
             phi_batch, Ex_batch, Ey_batch = _cuda_pic_solve_wavefront_fields_indexed_batched_fft!(
-                pic, valid, rep1, rep2, prep12, prep21, green12, green21, wf, nothing;
+                pic, valid, rep1, rep2, prep12, prep21, green12, green21, wf, timing;
                 gpic_subtract=gsub,
             )
+            _cuda_pic_add_time!(timing, :fields, t_fields)
 
+            t_kick = time_ns()
             stream = CUDA.stream()
             for n in 1:npairs
                 item = valid[n]; off = 4 * (n - 1)
@@ -345,9 +370,12 @@ if _HAS_CUDA
                 )
             end
             CUDA.synchronize(stream)
+            _cuda_pic_add_time!(timing, :kick, t_kick)
             if compute_luminosity && luminosity_task !== nothing
+                t_lwait = time_ns()
                 luminosity = fetch(luminosity_task)
                 CUDA.synchronize(workspace.luminosity_stream)
+                _cuda_pic_add_time!(timing, :luminosity, t_lwait)
             end
             return luminosity
         end

@@ -345,6 +345,8 @@ if _HAS_CUDA
             luminosity::UInt64
             scatter::UInt64
             reclaim::UInt64
+            gpic_moments::UInt64
+            gpic_profiles::UInt64
         end
 
         _cuda_pic_timing_enabled() = begin
@@ -379,7 +381,7 @@ if _HAS_CUDA
         function _cuda_pic_timing_stats()
             _cuda_pic_timing_enabled() || return nothing
             return _CUDAPICTimingStats(
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             )
         end
 
@@ -425,6 +427,12 @@ if _HAS_CUDA
             println("      deriv   = ", stats.field_derivative * scale, " s")
             println("    kick      = ", stats.kick * scale, " s")
             println("    luminosity= ", stats.luminosity * scale, " s")
+            if stats.gpic_moments > 0 || stats.gpic_profiles > 0
+                # GaussianPIC-only phases; both sit inside :interaction and so are
+                # deliberately excluded from measured_total.
+                println("    gpic_moments  = ", stats.gpic_moments * scale, " s")
+                println("    gpic_profiles = ", stats.gpic_profiles * scale, " s (host-side erf build)")
+            end
             println("  scatter     = ", stats.scatter * scale, " s")
             println("  reclaim     = ", stats.reclaim * scale, " s")
             println("  measured_total = ", total * scale, " s")

@@ -111,9 +111,11 @@ silently running the uncoupled subtraction. Steps 1-8 below are DONE.
 Also fixed in the same pass: GaussianPIC's CUDA routes silently ignored
 `green_cache`, so the CPU expanded each slice-pair grid by
 `1 + slice_pair_green_growth` and CUDA did not, costing backend reproducibility at
-the *default* settings. See Section 21.2 of the review. Optional further CUDA
-tuning of the host-side erf profile build remains, as does GaussianPIC CUDA phase
-timing (`pic_timing=true` yields an empty `pic_phase_timings`).
+the *default* settings. See Section 21.2 of the review. Both remaining sub-items are now closed:
+GaussianPIC CUDA phase timing is implemented (with `gpic_moments`/`gpic_profiles`
+counters), and it shows the host-side erf profile build is only **3.3%** of
+interaction time against the kick's 36%, so tuning it is not worthwhile. See
+Section 22 of the review.
 
 Key files to touch (mirror the existing PIC structure):
 `src/tasks/strongstrong/interface.jl` (solver struct + option schema),

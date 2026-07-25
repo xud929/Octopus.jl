@@ -1605,3 +1605,43 @@ weaker than stated: it still matters for bitwise regression testing and for exac
 reproduction of a published run, but it does **not** perturb the physics
 observable this review uses. Combined with deposition being 3.1% of a CUDA turn,
 neither the performance nor the physics case for removing atomics is strong.
+
+
+---
+
+## 22. GaussianPIC CUDA phase timing (2026-07-25)
+
+`pic_timing=true` previously yielded an **empty** `pic_phase_timings` for
+GaussianPIC: its three CUDA routes never built a timing object and passed
+`nothing` down every shared PIC helper, so the sink was never fed. Plain PIC was
+unaffected. The default indexed route now builds and reports one, with two new
+GaussianPIC-specific counters -- `gpic_moments` (the batched device moment
+reduction) and `gpic_profiles` (the host-side erf profile build). Both sit inside
+`:interaction` and are deliberately excluded from `measured_total`.
+
+Measured, CUDA, 512k per beam, 9 slices, grid 64, per turn:
+
+| phase | GaussianPIC | PIC | ratio |
+| --- | ---: | ---: | ---: |
+| interaction | 0.1901 | 0.0556 | 3.4x |
+| &nbsp;&nbsp;prepare | 0.0107 | 0.0136 | 0.8x |
+| &nbsp;&nbsp;fields | 0.0724 | 0.0285 | 2.5x |
+| &nbsp;&nbsp;**kick** | **0.0690** | **0.0085** | **8.1x** |
+| &nbsp;&nbsp;luminosity | 0.0054 | 0.0046 | 1.2x |
+| &nbsp;&nbsp;gpic_moments | 0.0030 | - | - |
+| &nbsp;&nbsp;gpic_profiles | 0.0064 | - | - |
+| measured_total | 0.1947 | 0.0587 | 3.3x |
+
+**This quantifies the hybrid's cost and closes an open item.**
+
+The kick is **8.1x** plain PIC's, and is 36% of the hybrid's interaction time.
+That is the per-field-particle Bassetti-Erskine add-back, and it confirms
+directly what Section 9 inferred from total runtime: the hybrid's extra cost
+scales with particle count while the grid work does not, so its disadvantage
+grows with beam size.
+
+**The host-side erf profile build is not worth optimizing.** `docs/todo.md`
+carried "optional further CUDA tuning of the host-side erf profile build" as a
+remaining item. It is **3.3% of interaction time** (0.0064 s of 0.1901 s).
+Moving it to the device could not return more than that, against the kick's 36%.
+The item is closed on this measurement, not deferred.
