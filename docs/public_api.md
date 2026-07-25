@@ -106,7 +106,9 @@ Use Julia help:
 ```
 
 Runnable examples live in `examples/` and are self-documenting at the top of
-each source file.
+each source file. They are clean precedents with a small top-of-file `config`
+block; the matching configurable developer harnesses (driven by `OCTOPUS_*`
+environment variables) live in `test/examples/`.
 
 `MomentObserver` writes HDF5 columnar moment files. Common access pattern:
 

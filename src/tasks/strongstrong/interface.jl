@@ -12,17 +12,51 @@ export AbstractPoissonSolver, LongitudinalSlicing, longitudinal_slices,
 """
     AbstractPoissonSolver
 
-Interface for live-beam beam-beam solvers used by `StrongStrongTask`.
-
-A solver advances two `Beam` objects at one collision point and returns a
-luminosity estimate:
+Interface for live-beam beam-beam solvers used by `StrongStrongTask`. A solver
+advances two `Beam` objects at one collision point and returns a luminosity
+estimate:
 
 ```julia
 collide!(solver, beam1, beam2, backend) -> luminosity
 ```
 
-The current concrete implementations are `GaussianPoissonSolver` and
-`PICPoissonSolver`.
+Concrete solvers: `GaussianPoissonSolver` (sliced soft-Gaussian / Bassetti-
+Erskine), `PICPoissonSolver` (grid particle-in-cell), `SpectralPoissonSolver`
+(Dirichlet-box sine series), and `GaussianPICPoissonSolver` (Gaussian-subtracted
+PIC hybrid). All support the CPU and, except where noted, the CUDA backend.
+
+# Unified constructor interface
+
+Every solver shares the same keyword for a given role, so a keyword means the
+same thing across solvers. Solver-specific numerics use their own keywords,
+documented on each solver's docstring and discoverable with `solver_help(T)`.
+
+Shared by **all** solvers:
+
+- `kbb1`, `kbb2`: optional physical beam-1/beam-2 kick-scale overrides (same
+  convention as `ThinStrongBeam`). `nothing` derives them from `BeamParams`.
+- `luminosity_scale`: optional luminosity-normalization override.
+- `slicing::LongitudinalSlicing` (and `slicing1` / `slicing2` per-beam
+  overrides): longitudinal slicing configuration.
+- `longitudinal_kick::Bool`: apply the synchro-beam potential-difference `pz`
+  kick and virtual-drift terms (`true`), or a transverse-only map (`false`).
+
+Shared where the role applies:
+
+- `grid::Tuple{Int,Int}` — transverse mesh `(Nx, Ny)`, for the mesh-based solvers
+  (`PICPoissonSolver`, `SpectralPoissonSolver`, `GaussianPICPoissonSolver`);
+  the soft-Gaussian solver is grid-free and has no `grid`.
+- `batch_mode::Symbol` — slice-pair scheduling, `:sequential` or `:wavefront`,
+  for the solvers that offer both (`GaussianPoissonSolver`, `PICPoissonSolver`,
+  `GaussianPICPoissonSolver`).
+
+Branch flags that select a numerical variant are named by their role and are
+solver-local, e.g. `deposit_method` (`:CIC`/`:TSC`), `green_type`
+(`:integrated`/`:standard`), and `green_cache` for PIC; `method`
+(`:grid`/`:grid_free`) and `field_precision` (`:double`/`:single`) for spectral.
+
+Inspect and compare any solver's resolved configuration with `solver_help`,
+`solver_option_schema`, and `solver_configuration`.
 """
 abstract type AbstractPoissonSolver <: AbstractOctopusObject end
 
