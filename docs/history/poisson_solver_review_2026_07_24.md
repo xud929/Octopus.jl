@@ -1072,3 +1072,188 @@ Qiang, Furman & Ryne 2004; Leunissen, Schmidt & Ripken 2000; Xu et al. 2024):
    (2023) — FFT Poisson solver with integrated Green functions, from
    PyHEADTAIL-PyPIC. <https://arxiv.org/pdf/2310.00317>,
    <https://xsuite.readthedocs.io/en/latest/beambeam.html>
+
+
+---
+
+# Follow-up — 2026-07-25
+
+Second pass: implement the accepted recommendations, close what can be closed,
+measure the multi-turn figure of merit the first pass left open, and re-read the
+source. Everything below is new work on top of the review above; where it
+supersedes an earlier number, that is stated.
+
+## 10. Changes made
+
+| change | kind | default behaviour |
+| --- | --- | --- |
+| `field_derivative=:second\|:fourth` on `PICPoissonSolver` | new option | `:second`, **bit-identical** to all earlier results |
+| `luminosity_schedule` on `SpectralPoissonSolver` (CPU + CUDA) | new option | `nothing`, every turn — unchanged |
+| `_spectral_box_drifted` for the spectral 6D box | bug fix | unchanged at the recommended `domain_factor=8` |
+| `coupling_tol` finite values now throw | bug fix | default `Inf` unchanged |
+| `batch_mode` declared CUDA-only | metadata fix | no numerical change |
+
+### 10.1 Fourth-order field gradient (opt-in)
+
+`_pic_field!` takes `E = -grad(phi)` on the mesh. The default two-point central
+stencil is `O(h^2)`; `field_derivative=:fourth` uses
+
+    E_x = [ (phi[i+2] - phi[i-2]) + 8*(phi[i-1] - phi[i+1]) ] / (12h)
+
+in the interior, falling back to the second-order form on the first ring inside
+the boundary and the existing one-sided formulas on the boundary itself. Verified
+`O(h^4)` (16x error reduction per halving against an analytic function, versus 4x
+for the current stencil).
+
+Implemented on CPU and in **all three** CUDA kernels (single, batched, wavefront),
+since the flag would otherwise be silently ignored on some execution paths.
+Inherited by `GaussianPICPoissonSolver` through composition.
+
+Measured static field error (round beam, +-2 sigma, median, deterministic source):
+
+| grid | `:second` | `:fourth` | gain |
+| --- | ---: | ---: | ---: |
+| 64² | 3.03e-3 | 1.83e-3 | 1.65x |
+| 128² | 7.50e-4 | 4.66e-4 | 1.61x |
+| 256² | 2.03e-4 | 1.69e-4 | 1.20x |
+
+Verified: default == `:second` bit-for-bit; `:fourth` changes the result (so the
+option reaches its consumer); CPU/CUDA agree to 7e-17 in coordinates and 1e-15 in
+luminosity for **both** settings.
+
+**It does not help multi-turn noise** — see Section 11. It improves the coherent
+field only, which is exactly what the theory predicts, and is therefore worth
+enabling for field-accuracy studies and not worth enabling for its own sake.
+
+## 11. Multi-turn artificial emittance growth
+
+The first pass called this the real production figure of merit and did not measure
+it. Now measured.
+
+**Method.** Full example beamline, CUDA, production statistics (2.56M e- /
+1.024M p), 15 slices. The electron radiation damping time is scaled from 4000 to
+**100 turns** and the run is **1000 turns = 10 damping times**, so the electron
+beam reaches its damping/excitation equilibrium. The **proton beam has no
+radiation element in this lattice**, so it is undamped and integrates whatever
+noise the solver injects — that is the sensitive channel. A no-collision control
+gives the pure-lattice baseline. Emittance is the rms
+`sqrt(<x^2><px^2> - <x px>^2)`, sampled every 25 turns.
+
+| config | proton eps_x total | proton eps_y total | electron eps_x equilibrium |
+| --- | ---: | ---: | ---: |
+| no collision (control) | **-0.000%** | +0.000% | 1.64e-07 |
+| soft-Gaussian (analytic) | **+0.405%** | +0.896% | 1.80e-08 |
+| PIC (64,64) | **+1.101%** | +4.276% | 2.04e-08 |
+| PIC (128,128) | +0.637% | +4.065% | 2.00e-08 |
+| PIC (128,128) `:fourth` | +0.689% | +4.154% | 2.00e-08 |
+| PIC (256,256) | +0.697% | +4.186% | 1.99e-08 |
+| GaussianPIC (64,64) TSC | +0.639% | +5.121% | 1.96e-08 |
+| GaussianPIC (128,128) | +0.617% | +4.473% | 1.98e-08 |
+| Spectral (127,383)/d8 | +0.748% | +3.631% | 2.00e-08 |
+
+**Findings.**
+
+1. **The control is flat to 1e-10 per turn.** The lattice, observers, and
+   emittance machinery contribute nothing, so the metric is clean.
+2. **The soft-Gaussian solver is the low-noise reference.** It computes the field
+   from slice moments, so it carries essentially no grid noise; its +0.405% is
+   the *physical* beam-beam response plus the settling transient. Every grid
+   solver's excess over it is the numerical contribution.
+3. **`grid=(64,64)` is measurably unsafe.** It is the only configuration whose
+   proton emittance is still *rising* at the end of the run (1.0046 -> 1.0053 ->
+   1.0070 -> 1.0110 over the last quarter) rather than plateauing. Every other
+   configuration flattens by turn ~300. This is the clearest practical result in
+   the review: **the static field error of a coarse grid understates its
+   multi-turn cost.**
+4. **At `grid >= 128` the solvers are indistinguishable on this metric.** PIC128,
+   PIC256, GaussianPIC64, GaussianPIC128 and spectral all land in +0.62-0.75%
+   (x). Refining beyond 128 buys nothing dynamically, which is a stronger
+   statement than the luminosity convergence in Section 5.2.
+5. **`field_derivative=:fourth` does not reduce noise growth** (+0.689% versus
+   +0.637%, i.e. no improvement, within scatter). Expected: the fourth-order
+   stencil removes systematic truncation error, and multi-turn growth is driven
+   by macroparticle shot noise, which it cannot touch. This is a useful negative
+   result — it means the option should not be sold as a dynamics improvement.
+6. **The hybrid at 64 matches plain PIC at 128** dynamically (+0.639% versus
+   +0.637%), reproducing in the dynamic metric the "coarser mesh at equal
+   quality" claim that Section 6 established statically.
+
+**Caveats, stated rather than buried.** These are single-seed runs with no error
+bars. The x-plane ordering among the `>= 128` configurations (0.617-0.748%) is
+**not resolvable** at one seed, and the y-plane spread (3.6-5.1%) is wider still
+and should not be used to rank solvers. Only two statements survive that
+limitation: the control is flat, and `grid=(64,64)` is worse and still growing.
+Repeating with 3-5 seeds per configuration would be needed to rank the rest.
+
+## 12. Recommendation: which PIC configuration to use
+
+For the production case (10 GeV e- x 275 GeV p, ~11:1 flat beams, 15 slices,
+CUDA, >= 1e5 macroparticles per slice):
+
+> **`PICPoissonSolver(grid=(128,128), deposit_method=:CIC,
+> green_type=:integrated, green_cache=:slice_pair)` with the CUDA execution
+> options at their defaults.**
+
+The reasoning, from the measurements rather than from preference:
+
+| criterion | why (128,128) wins |
+| --- | --- |
+| multi-turn noise (Section 11) | not measurably worse than anything else, including PIC256 and both hybrids; `(64,64)` **is** measurably worse |
+| luminosity convergence (5.2) | -0.1% against PIC(256,256); `(64,64)` is -0.5% |
+| cost (5.1) | 0.318 s/turn — 1.5x cheaper than PIC256, 2.0x cheaper than GaussianPIC64, 1.8x cheaper than spectral |
+| kernel choice (3.3, 6.2) | `:integrated` matters at 11:1 (1.5x better than `:standard`) and costs nothing |
+| deposition | CIC; TSC costs +25% and does not help plain PIC |
+
+**When to deviate:**
+
+- **`GaussianPICPoissonSolver(grid=(64,64), deposit_method=:TSC)`** if the
+  *coherent* field matters — low macroparticle counts, tune-shift or
+  field-quality studies. It is 3-4x more accurate statically (Section 6.2) at
+  equal dynamic quality. Cost: 2.0x on CUDA but only **1.25x on CPU**, so it is a
+  much easier trade on CPU.
+- **`field_derivative=:fourth`** for field-accuracy studies (1.6x lower median
+  field error, ~free). Not for dynamics.
+- **`SpectralPoissonSolver`** as an independent cross-check with completely
+  different discretization error — not as a production solver (least accurate
+  statically at production settings, 1.8x PIC's cost on CUDA).
+- **Never `green_type=:standard`** for flat beams (17x worse p95 at 25:1).
+- **Never `grid=(64,64)`** for long runs, on the evidence of Section 11.
+
+## 13. Open items after this pass
+
+| item | status |
+| --- | --- |
+| Fourth-order gradient | **done** (opt-in, CPU + 3 CUDA kernels, tested) |
+| `luminosity_schedule` on spectral | **done** (CPU + CUDA, tested) |
+| Spectral 6D box vs drifted source | **done** (guard + test) |
+| Multi-turn emittance growth | **done** — but single-seed; needs 3-5 seeds to rank the `>= 128` configurations |
+| `coupling_tol` / `batch_mode` silently ignored | **done** |
+| Coupled (rotated) Gaussian subtraction | **open** — a genuine feature, not a defect; Section 6.3 shows it is exactly the weakest hybrid case |
+| VGF Green kernel | **open, downgraded** — withdrawn for round/mild beams (Section 3.3); evaluate for flat beams only |
+| CPU indexed-slice path | **open** — ~35% of CPU PIC cost; deliberately not attempted here because it is a pure-performance refactor of hot code with real regression risk, and this pass prioritised correctness |
+| Emittance growth with error bars | **new open item** from Section 11 |
+
+## 14. Source review coverage
+
+Read in full and checked against the implementation: `interface.jl`, `pic_cpu.jl`,
+`gaussian.jl`, `gaussian_pic.jl`, `spectral.jl`, `strong_beam.jl`, `slicing.jl`,
+`SpecialMath.jl`, `radiation.jl`, `lorentz_boost.jl`, `crab_cavity.jl`, plus the
+field/kick/box regions of `pic_cuda.jl` and `spectral_cuda.jl`.
+
+New numerical checks run in this pass, all passing:
+
+| check | result |
+| --- | --- |
+| Lorentz boost forward∘reverse round trip | 3.7e-11 relative |
+| Boost Jacobian determinants | `sec^3` / `cos^3` as documented; product = 1 |
+| Faddeeva CUDA approximation vs exact `erfcx` over the beam-beam regime | worst **3.1e-13** |
+| `Linear6D` symplecticity | 1.1e-16 |
+| CIC/TSC assignment weights, partition of unity and node base index | exact |
+| Gaussian slice centres (conditional mean between quantiles) | formula correct |
+| `_longitudinal_slices_equal_area` interpolation | correct |
+| Crab cavity map derives from a single Hamiltonian | symplectic |
+
+**Not exhaustively read:** the bulk of `pic_cuda.jl` (4396 lines) and
+`gaussian_pic_cuda.jl` (825 lines). Claiming a line-by-line review of those would
+overstate what was done; the practical guard there is the CPU/CUDA parity suite,
+which covers every solver and now both `field_derivative` settings.

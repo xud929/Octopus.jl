@@ -5,11 +5,13 @@
 See [`docs/history/poisson_solver_review_2026_07_24.md`](history/poisson_solver_review_2026_07_24.md)
 for the measurements behind each of these.
 
-1. **Fourth-order gradient in `_pic_field!` (cheapest real accuracy win).**
-   Replacing the second-order central difference with a fourth-order stencil gives
-   ~1.6x lower median field error at production grids for ~10 lines, no new FFT,
-   and no change to the Green cache or the CUDA structure. Measured in Section 3.3
-   of the review.
+1. ~~**Fourth-order gradient in `_pic_field!`.**~~ **DONE (2026-07-25)** as the
+   opt-in `field_derivative=:second|:fourth`; `:second` is the default and is
+   bit-identical to all earlier results. CPU plus all three CUDA kernels, with
+   CPU/CUDA parity tests for both settings. Gives ~1.6x lower median field error.
+   **It does not reduce multi-turn emittance growth** (Section 11 of the review):
+   it removes systematic truncation error, not shot noise. Enable it for
+   field-accuracy work, not for dynamics.
    *(An earlier version of this list recommended a Vico-Greengard-Ferrando kernel
    here as the highest-value item. That is **withdrawn for round and mild-aspect
    beams**: swapping the integrated log kernel for a node-sampled one changes the
@@ -17,7 +19,16 @@ for the measurements behind each of these.
    remains worth evaluating for high-aspect-ratio beams, where the kernel does
    matter — 3.1x at 25:1 — but Octopus's integrated kernel already captures most
    of that gain. See Section 3.3.)*
-2. **Measure multi-turn artificial emittance growth per solver and per grid.**
+2. ~~**Measure multi-turn artificial emittance growth per solver and per grid.**~~
+   **DONE (2026-07-25)**, Section 11 of the review: 1000 turns = 10 electron
+   damping times at production statistics, with the undamped proton beam as the
+   noise integrator and a no-collision control. Headline: `grid=(64,64)` is the
+   only configuration still growing at the end of the run; everything at
+   `grid >= 128` is indistinguishable. **New open item:** the runs are
+   single-seed, so the ordering among the `>= 128` configurations is not
+   resolvable; 3-5 seeds per configuration are needed to rank them.
+   Original text follows.
+   Measure multi-turn artificial emittance growth per solver and per grid.
    The production case is many turns in a ring, where correlated PIC noise drives
    artificial emittance growth. Single-turn field error (the only thing currently
    validated) is not the right figure of merit. This is the highest-value *physics*
@@ -34,16 +45,21 @@ for the measurements behind each of these.
    by-product of the per-particle kick and costs 0%, so the knob would be a no-op.
    Documented as intentional in `?AbstractPoissonSolver`.
 
-5. **Document that TSC is the right deposition for the hybrid.** `gpic_TSC` beats
+5. ~~**Document that TSC is the right deposition for the hybrid.**~~ **DONE** in
+   the `GaussianPICPoissonSolver` docstring. Original text:
+   Document that TSC is the right deposition for the hybrid. `gpic_TSC` beats
    `gpic_CIC` at nearly every grid and aspect ratio, while `pic_TSC` never beats
    `pic_CIC`. Neither the docstring nor the theory note mentions this.
-6. **Strengthen the `green_type=:standard` warning.** At 25:1 aspect ratio its p95
+6. ~~**Strengthen the `green_type=:standard` warning.**~~ **DONE** in the
+   `PICPoissonSolver` docstring. Original text:
+   Strengthen the `green_type=:standard` warning. At 25:1 aspect ratio its p95
    field error is 17x worse than `:integrated`. The docstring currently only calls
    `:integrated` "the robust default".
-7. **Guard the spectral Dirichlet box against drifted sources.** `_spectral_box`
-   sizes the box from undrifted coordinates while `_spectral_field_grid!` deposits
-   drifted slices and silently drops out-of-box particles. Safe at production
-   settings, unguarded in general.
+7. ~~**Guard the spectral Dirichlet box against drifted sources.**~~ **DONE
+   (2026-07-25)**: `_spectral_box_drifted` bounds the drift by
+   `(max|z1| + max|z2|)/2` and is used by both the CPU and CUDA 6D paths. It can
+   only enlarge the box and is a no-op at the recommended `domain_factor=8`, so
+   the production configuration is unchanged. Covered by a test.
 
 ## Gaussian-Subtracted PIC Solver (Hybrid Analytic-PIC)
 

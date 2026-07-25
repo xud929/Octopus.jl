@@ -618,6 +618,28 @@ function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2)
     return L, L
 end
 
+# Box for the 6D path. The longitudinal map deposits each source slice DRIFTED to
+# the field-slice boundaries, so the box must contain the drifted extremes, not
+# the interaction-point ones -- `_spectral_field_grid!` silently drops any
+# particle that lands outside, which would lose charge. Bound the drift by
+# |s| <= (max|z1| + max|z2|)/2, the largest half-separation any slice pair can
+# produce. This can only enlarge the box relative to `_spectral_box`; at the
+# production settings the `d * sigma_max` term still dominates, so the box is
+# unchanged there and this is a guard for tighter `domain_factor` or longer
+# bunches rather than a change to the recommended configuration.
+function _spectral_box_drifted(solver::SpectralPoissonSolver, rep1, rep2)
+    rms(v) = begin m = sum(v) / length(v); sqrt(sum(abs2, v .- m) / length(v)) end
+    ext(v) = maximum(abs, v)
+    d = solver.domain_factor
+    sdrift = (ext(rep1.z) + ext(rep2.z)) / 2
+    extd(w, pw) = ext(w) + sdrift * ext(pw)
+    smax = max(rms(rep1.x), rms(rep2.x), rms(rep1.y), rms(rep2.y))
+    emax = max(extd(rep1.x, rep1.px), extd(rep2.x, rep2.px),
+               extd(rep1.y, rep1.py), extd(rep2.y, rep2.py))
+    L = max(d * smax, 1.05 * emax)
+    return L, L
+end
+
 function _spectral_drifted_source(source, drift_s, ::Type{T}) where {T}
     n = length(source.x)
     x = Vector{T}(undef, n)
@@ -773,7 +795,7 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
     klum = _spectral_luminosity_scale(solver, beam1, beam2)
     compute_luminosity = _spectral_compute_luminosity(solver, ctx)
     lnx, lny = solver.grid
-    Lx, Ly = _spectral_box(solver, beam1.rep.x, beam1.rep.y, beam2.rep.x, beam2.rep.y)
+    Lx, Ly = _spectral_box_drifted(solver, beam1.rep, beam2.rep)
     LT = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(klum))
     luminosity = zero(LT)
     grid = solver.method !== :grid_free

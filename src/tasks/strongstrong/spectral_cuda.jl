@@ -577,7 +577,7 @@ if _HAS_CUDA
             r1 = beam1.rep; r2 = beam2.rep
             Nx, Ny = solver.grid
             ws = _spectral_cuda_ws(solver.field_precision === :single ? Float32 : T, Nx, Ny)
-            Lx, Ly = _cuda_spectral_box(solver, r1, r2)
+            Lx, Ly = _cuda_spectral_box_drifted(solver, r1, r2)
             luminosity = zero(T)
             for (_, i, j) in _slice_collision_order(slices1, slices2)
                 idx1 = slices1.indices[i]; idx2 = slices2.indices[j]
@@ -620,6 +620,21 @@ if _HAS_CUDA
             d = solver.domain_factor
             smax = max(rms(r1.x), rms(r2.x), rms(r1.y), rms(r2.y))
             emax = max(ext(r1.x), ext(r2.x), ext(r1.y), ext(r2.y))
+            L = max(d * smax, 1.05 * emax)
+            return L, L
+        end
+
+        # 6D box: must contain the DRIFTED source extremes (see the CPU
+        # _spectral_box_drifted comment); out-of-box particles are dropped.
+        function _cuda_spectral_box_drifted(solver::SpectralPoissonSolver, r1, r2)
+            rms(v) = begin n = length(v); m = sum(v) / n; sqrt(sum(abs2, v .- m) / n) end
+            ext(v) = maximum(abs, v)
+            d = solver.domain_factor
+            sdrift = (ext(r1.z) + ext(r2.z)) / 2
+            extd(w, pw) = ext(w) + sdrift * ext(pw)
+            smax = max(rms(r1.x), rms(r2.x), rms(r1.y), rms(r2.y))
+            emax = max(extd(r1.x, r1.px), extd(r2.x, r2.px),
+                       extd(r1.y, r1.py), extd(r2.y, r2.py))
             L = max(d * smax, 1.05 * emax)
             return L, L
         end

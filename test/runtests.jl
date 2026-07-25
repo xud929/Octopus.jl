@@ -569,6 +569,73 @@ end
     end
 end
 
+@testset "PIC field_derivative flag" begin
+    # The option must (a) default to the historical second-order stencil
+    # bit-for-bit, (b) actually reach the runtime consumer when set to :fourth,
+    # and (c) reduce the field error against the exact Bassetti-Erskine kick.
+    mkpair() = begin
+        set_global_rng!(seed=77, method=:philox)
+        e = Beam(6000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.0),
+            alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        p = Beam(6000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
+            alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+        return e, p
+    end
+    sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
+    run(; kw...) = begin
+        e, p = mkpair()
+        lum = collide!(PICPoissonSolver(; slicing=sl, grid=(64, 64), kw...), e, p, CPUThreadsBackend)
+        (lum, vcat(coordinate_arrays(e)...), vcat(coordinate_arrays(p)...))
+    end
+    l_def, e_def, p_def = run()
+    l_2nd, e_2nd, p_2nd = run(field_derivative=:second)
+    l_4th, e_4th, p_4th = run(field_derivative=:fourth)
+    @test e_def == e_2nd && p_def == p_2nd && l_def == l_2nd   # (a) default unchanged
+    @test e_def != e_4th                                        # (b) reaches consumer
+    @test all(isfinite, e_4th) && all(isfinite, p_4th)
+    @test isapprox(l_4th, l_def; rtol=1e-3)                     # same physics, better derivative
+    @test PICPoissonSolver(field_derivative=:fourth).field_derivative === :fourth
+    @test_throws ArgumentError PICPoissonSolver(field_derivative=:sixth)
+    @test GaussianPICPoissonSolver(field_derivative=:fourth).pic.field_derivative === :fourth
+
+    # (c) accuracy: deterministic Gaussian quantile source, field vs exact BE.
+    sig = 2.0e-3; n = 200
+    u = ((1:n) .- 0.5) ./ n
+    q = sqrt(2.0) .* Octopus.inverse_erf.(2 .* u .- 1)
+    sx = Float64[]; sy = Float64[]
+    for a in q, b in q; push!(sx, sig * a); push!(sy, sig * b); end
+    xg = collect(range(-2sig, 2sig; length=41))
+    errs = Dict{Symbol,Float64}()
+    for fd in (:second, :fourth)
+        solver = PICPoissonSolver(; grid=(64, 64), deposit_method=:CIC,
+                                  green_type=:integrated, field_derivative=fd)
+        sg, fg = Octopus._pic_interaction_grids(solver,
+            minimum(sx), maximum(sx), minimum(sy), maximum(sy),
+            minimum(xg), maximum(xg), minimum(xg), maximum(xg))
+        hx = sg.width / 63; hy = sg.height / 63
+        Q = zeros(128, 128)
+        Octopus._pic_deposit!(Q, :CIC, sx, sy, sg.x0, sg.y0, hx, hy, 64, 64)
+        gf = Octopus._pic_green_fft(solver, Float64, sg, fg)
+        sp = ComplexF64.(Q); Octopus.FFTW.fft!(sp); sp .*= gf; Octopus.FFTW.ifft!(sp)
+        phi = real.(sp[1:64, 1:64])
+        Ex, Ey = Octopus._pic_field(phi, hx, hy, Octopus._pic_fourth_order(solver))
+        ns = length(sx); e = Float64[]; nrm = Float64[]
+        for y in xg, x in xg
+            ekx, eky = gaussian_beambeam_kick(sig, sig, x, y)
+            ax, ay, _ = Octopus._pic_interpolate_kick(solver, fg, x, y, phi, Ex, Ey, phi, Ex, Ey, 1.0, 0.0)
+            push!(e, hypot(2ax / ns - ekx, 2ay / ns - eky)); push!(nrm, hypot(ekx, eky))
+        end
+        sort!(e)
+        med = isodd(length(e)) ? e[(length(e) + 1) ÷ 2] :
+              0.5 * (e[length(e) ÷ 2] + e[length(e) ÷ 2 + 1])
+        errs[fd] = med / maximum(nrm)
+    end
+    @test errs[:fourth] < errs[:second]          # fourth order is more accurate
+    @test errs[:fourth] < 0.75 * errs[:second]   # measured gain is ~1.6x
+end
+
 @testset "Spectral field absolute normalization is derived, not fitted" begin
     # The spectral field scale must be the DERIVED constant (-2pi for :grid, +4pi
     # for :grid_free), so the beam-beam coupling does not depend on the mesh and
@@ -614,6 +681,38 @@ end
     # scale correction toward zero, never move it away from 1.
     exg2, eyg2 = Octopus._spectral_field_grid(sx, sy, fx, fy, L, L, 127, 127)
     @test abs(needed_scale(exg, eyg) - 1) < abs(needed_scale(exg2, eyg2) - 1)
+end
+
+@testset "Spectral 6D Dirichlet box contains the drifted source" begin
+    # The 6D path deposits each source slice DRIFTED to the field-slice
+    # boundaries, and _spectral_field_grid! silently drops particles outside the
+    # box. _spectral_box_drifted must therefore bound the drifted extremes, and
+    # must never shrink the box relative to the undrifted sizing.
+    set_global_rng!(seed=13, method=:philox)
+    e = Beam(4000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
+        alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+        rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+    p = Beam(4000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
+        alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+        rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+    for d in (2.0, 4.0, 8.0, 16.0)
+        solver = SpectralPoissonSolver(; grid=(32, 64), domain_factor=d)
+        L_plain = Octopus._spectral_box(solver, e.rep.x, e.rep.y, p.rep.x, p.rep.y)[1]
+        L_drift = Octopus._spectral_box_drifted(solver, e.rep, p.rep)[1]
+        @test L_drift >= L_plain                      # never shrinks
+        # it must cover the worst-case drifted extreme of both beams
+        sdrift = (maximum(abs, e.rep.z) + maximum(abs, p.rep.z)) / 2
+        worst = max(maximum(abs, e.rep.x) + sdrift * maximum(abs, e.rep.px),
+                    maximum(abs, e.rep.y) + sdrift * maximum(abs, e.rep.py),
+                    maximum(abs, p.rep.x) + sdrift * maximum(abs, p.rep.px),
+                    maximum(abs, p.rep.y) + sdrift * maximum(abs, p.rep.py))
+        @test L_drift >= worst
+    end
+    # at the recommended production domain_factor the d*sigma term dominates, so
+    # the guard must not perturb the recommended configuration
+    big = SpectralPoissonSolver(; grid=(127, 383), domain_factor=8.0)
+    @test Octopus._spectral_box_drifted(big, e.rep, p.rep)[1] ==
+          Octopus._spectral_box(big, e.rep.x, e.rep.y, p.rep.x, p.rep.y)[1]
 end
 
 @testset "Spectral luminosity_schedule reaches its runtime consumer" begin
@@ -900,6 +999,40 @@ include(joinpath(pkgdir(Octopus), "validation", "high_energy_weakstrong_limit.jl
 end
 
 if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+    @testset "CUDA PIC field_derivative matches CPU" begin
+        # The flag is consumed by three separate CUDA kernels (single, batched,
+        # wavefront). Check parity for BOTH settings so a divergence in any of
+        # them is caught, and check that :fourth actually changes the CUDA result.
+        mkpair(backend) = begin
+            set_global_rng!(seed=77, method=:philox)
+            e = Beam(6000, backend, Float64; beta=(0.55, 0.056, 12.0),
+                alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            p = Beam(6000, backend, Float64; beta=(0.8, 0.072, 90.0),
+                alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+                rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            return e, p
+        end
+        sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
+        flat(b) = vcat((Array(a) for a in coordinate_arrays(b))...)
+        results = Dict{Symbol,Any}()
+        for fd in (:second, :fourth), (name, backend, policy) in
+                ((:cpu, CPUThreadsBackend, CPUThreadsBackend), (:gpu, CUDABackend, CUDAExecutionPolicy()))
+            e, p = mkpair(policy)
+            lum = collide!(PICPoissonSolver(; slicing=sl, grid=(64, 64), field_derivative=fd),
+                           e, p, backend)
+            results[Symbol(fd, :_, name)] = (lum, flat(e), flat(p))
+        end
+        for fd in (:second, :fourth)
+            (lc, ec, pc) = results[Symbol(fd, :_cpu)]
+            (lg, eg, pg) = results[Symbol(fd, :_gpu)]
+            @test isapprox(ec, eg; rtol=1e-11, atol=1e-14)
+            @test isapprox(pc, pg; rtol=1e-11, atol=1e-14)
+            @test isapprox(lc, lg; rtol=1e-11)
+        end
+        @test results[:second_gpu][2] != results[:fourth_gpu][2]   # flag reaches CUDA
+    end
+
     function test_gpu_beam(x, y)
         n = length(x)
         rep = Phase6DRep(

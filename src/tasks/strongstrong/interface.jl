@@ -729,7 +729,18 @@ This is the default. Set `longitudinal_kick=false` for a transverse-only map.
 
 `deposit_method` may be `:CIC` or `:TSC`. `green_type` may be `:integrated`
 or `:standard`; the integrated Green function is the robust default and uses a
-cell-integrated logarithmic kernel.
+cell-integrated logarithmic kernel. **`:standard` is unsuitable for flat beams**:
+at 25:1 aspect ratio its p95 field error is ~17x the integrated kernel's (and
+~3x the median), while for round beams the two are indistinguishable.
+
+`field_derivative` selects the finite-difference order used to obtain
+`E = -grad(phi)` on the mesh. `:second` (default) is the two-point central
+stencil and is bit-compatible with all results recorded before this option
+existed. `:fourth` uses the four-point central stencil in the interior, which
+lowers the median field error by ~1.6x at production grids for negligible cost
+(the derivative is <1% of a turn). It does not reach the 4x a pure fourth-order
+step would suggest, because the CIC deposition and interpolation are themselves
+second order and dominate the remaining error.
 
 `green_cache` may be `:none` or `:slice_pair`. The slice-pair cache keeps two
 Green FFTs per slice-pair, one per beam-beam direction, and reuses each for the
@@ -802,6 +813,7 @@ struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     deposit_method::Symbol
     green_type::Symbol
     green_cache::Symbol
+    field_derivative::Symbol
     slice_pair_green_min_ratio::T
     slice_pair_green_growth::T
     longitudinal_kick::Bool
@@ -827,6 +839,7 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                              deposit_method::Symbol=:CIC,
                              green_type::Symbol=:integrated,
                              green_cache::Symbol=:slice_pair,
+                             field_derivative::Symbol=:second,
                              slice_pair_green_min_ratio=0.50,
                              slice_pair_green_growth=0.25,
                              longitudinal_kick::Bool=true,
@@ -861,6 +874,8 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         "green_type must be :integrated or :standard; got $(repr(green_type))."))
     green_cache in (:none, :slice_pair) || throw(ArgumentError(
         "green_cache must be :none or :slice_pair; got $(repr(green_cache))."))
+    field_derivative in (:second, :fourth) || throw(ArgumentError(
+        "field_derivative must be :second or :fourth; got $(repr(field_derivative))."))
     batch_mode in (:sequential, :wavefront) || throw(ArgumentError(
         "batch_mode must be :sequential or :wavefront; got $(repr(batch_mode))."))
     lum_grid = luminosity_grid === nothing ? nothing :
@@ -886,6 +901,7 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         deposit_method,
         green_type,
         green_cache,
+        field_derivative,
         min_ratio,
         growth,
         longitudinal_kick,
@@ -941,6 +957,10 @@ const _PIC_SOLVER_OPTION_SCHEMA = (
         "Open-boundary logarithmic Green kernel; :integrated or :standard."),
     green_cache = SolverOptionMeta(Symbol, :slice_pair,
         "Persistent Green FFT caching mode; :slice_pair or :none."; category=:execution),
+    field_derivative = SolverOptionMeta(Symbol, :second,
+        "Finite-difference order used to take E = -grad(phi) on the mesh; :second (default, \
+bit-compatible) or :fourth (~1.6x lower median field error for ~0 extra cost).";
+        category=:accuracy_performance),
     slice_pair_green_min_ratio = SolverOptionMeta(Real, 0.50,
         "Minimum requested-to-cached domain ratio before rebuilding a slice-pair Green entry.";
         category=:accuracy_performance, dependencies=(:green_cache,)),

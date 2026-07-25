@@ -1789,7 +1789,7 @@ if _HAS_CUDA
             field_threads = _cuda_pic_threads(:field)
             blocks_grid = cld(nx * ny, field_threads)
             t_derivative = time_ns()
-            CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, Int32(nx), Int32(ny))
+            CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, Int32(nx), Int32(ny), _pic_fourth_order(solver))
             _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
             return phi, Ex, Ey
         end
@@ -1823,7 +1823,7 @@ if _HAS_CUDA
             field_threads = _cuda_pic_threads(:field)
             blocks_grid = cld(nx * ny, field_threads)
             t_derivative = time_ns()
-            CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, Int32(nx), Int32(ny))
+            CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, Int32(nx), Int32(ny), _pic_fourth_order(solver))
             _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
             return phi, Ex, Ey
         end
@@ -1877,6 +1877,7 @@ if _HAS_CUDA
             hy21 = T(prep21.source_grid.height) / T(ny - 1)
             CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_batch_kernel!(
                 Ex, Ey, phi_batch, hx12, hy12, hx21, hy21, Int32(nx), Int32(ny),
+                _pic_fourth_order(solver),
             )
             _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
             return phi_batch, Ex, Ey
@@ -2030,6 +2031,7 @@ if _HAS_CUDA
             blocks_grid = cld(nx * ny * nplanes, field_threads)
             CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_wavefront_kernel!(
                 wf.Ex, wf.Ey, phi_batch, wf.hx, wf.hy, Int32(nx), Int32(ny), Int32(nplanes),
+                _pic_fourth_order(solver),
             )
             _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
             return phi_batch, wf.Ex, wf.Ey
@@ -2134,6 +2136,7 @@ if _HAS_CUDA
             blocks_grid = cld(nx * ny * nplanes, field_threads)
             CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_wavefront_kernel!(
                 wf.Ex, wf.Ey, phi_batch, wf.hx, wf.hy, Int32(nx), Int32(ny), Int32(nplanes),
+                _pic_fourth_order(solver),
             )
             _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
             return phi_batch, wf.Ex, wf.Ey
@@ -3223,7 +3226,7 @@ if _HAS_CUDA
             return nothing
         end
 
-        function _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, nx::Int32, ny::Int32)
+        function _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, nx::Int32, ny::Int32, fourth::Bool)
             linear = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
             hxi = inv(hx)
@@ -3237,6 +3240,9 @@ if _HAS_CUDA
                         Ey[i, j] = hyi * (typeof(hy)(1.5) * phi[i, j] - 2 * phi[i, j + 1] + typeof(hy)(0.5) * phi[i, j + 2])
                     elseif j == ny
                         Ey[i, j] = hyi * (-typeof(hy)(1.5) * phi[i, j] + 2 * phi[i, j - 1] - typeof(hy)(0.5) * phi[i, j - 2])
+                    elseif fourth && j >= Int32(3) && j <= ny - Int32(2)
+                        Ey[i, j] = typeof(hy)(1 / 12) * hyi *
+                            ((phi[i, j + 2] - phi[i, j - 2]) + 8 * (phi[i, j - 1] - phi[i, j + 1]))
                     else
                         Ey[i, j] = typeof(hy)(0.5) * hyi * (phi[i, j - 1] - phi[i, j + 1])
                     end
@@ -3244,6 +3250,9 @@ if _HAS_CUDA
                         Ex[i, j] = hxi * (typeof(hx)(1.5) * phi[i, j] - 2 * phi[i + 1, j] + typeof(hx)(0.5) * phi[i + 2, j])
                     elseif i == nx
                         Ex[i, j] = hxi * (-typeof(hx)(1.5) * phi[i, j] + 2 * phi[i - 1, j] - typeof(hx)(0.5) * phi[i - 2, j])
+                    elseif fourth && i >= Int32(3) && i <= nx - Int32(2)
+                        Ex[i, j] = typeof(hx)(1 / 12) * hxi *
+                            ((phi[i + 2, j] - phi[i - 2, j]) + 8 * (phi[i - 1, j] - phi[i + 1, j]))
                     else
                         Ex[i, j] = typeof(hx)(0.5) * hxi * (phi[i - 1, j] - phi[i + 1, j])
                     end
@@ -3254,7 +3263,7 @@ if _HAS_CUDA
         end
 
         function _cuda_pic_field_wavefront_kernel!(Ex, Ey, phi, hx, hy, nx::Int32, ny::Int32,
-                                                  nplanes::Int32)
+                                                  nplanes::Int32, fourth::Bool)
             linear = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
             total_plane = Int(nx) * Int(ny)
@@ -3274,6 +3283,9 @@ if _HAS_CUDA
                         Ey[i, j, plane] = hyi * (typeof(hy_plane)(1.5) * phi[i, j, plane] - 2 * phi[i, j + 1, plane] + typeof(hy_plane)(0.5) * phi[i, j + 2, plane])
                     elseif j == ny
                         Ey[i, j, plane] = hyi * (-typeof(hy_plane)(1.5) * phi[i, j, plane] + 2 * phi[i, j - 1, plane] - typeof(hy_plane)(0.5) * phi[i, j - 2, plane])
+                    elseif fourth && j >= Int32(3) && j <= ny - Int32(2)
+                        Ey[i, j, plane] = typeof(hy_plane)(1 / 12) * hyi *
+                            ((phi[i, j + 2, plane] - phi[i, j - 2, plane]) + 8 * (phi[i, j - 1, plane] - phi[i, j + 1, plane]))
                     else
                         Ey[i, j, plane] = typeof(hy_plane)(0.5) * hyi * (phi[i, j - 1, plane] - phi[i, j + 1, plane])
                     end
@@ -3281,6 +3293,9 @@ if _HAS_CUDA
                         Ex[i, j, plane] = hxi * (typeof(hx_plane)(1.5) * phi[i, j, plane] - 2 * phi[i + 1, j, plane] + typeof(hx_plane)(0.5) * phi[i + 2, j, plane])
                     elseif i == nx
                         Ex[i, j, plane] = hxi * (-typeof(hx_plane)(1.5) * phi[i, j, plane] + 2 * phi[i - 1, j, plane] - typeof(hx_plane)(0.5) * phi[i - 2, j, plane])
+                    elseif fourth && i >= Int32(3) && i <= nx - Int32(2)
+                        Ex[i, j, plane] = typeof(hx_plane)(1 / 12) * hxi *
+                            ((phi[i + 2, j, plane] - phi[i - 2, j, plane]) + 8 * (phi[i - 1, j, plane] - phi[i + 1, j, plane]))
                     else
                         Ex[i, j, plane] = typeof(hx_plane)(0.5) * hxi * (phi[i - 1, j, plane] - phi[i + 1, j, plane])
                     end
@@ -3291,7 +3306,7 @@ if _HAS_CUDA
         end
 
         function _cuda_pic_field_batch_kernel!(Ex, Ey, phi, hx12, hy12, hx21, hy21,
-                                              nx::Int32, ny::Int32)
+                                              nx::Int32, ny::Int32, fourth::Bool)
             linear = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
             total_plane = Int(nx) * Int(ny)
@@ -3311,6 +3326,9 @@ if _HAS_CUDA
                         Ey[i, j, plane] = hyi * (typeof(hy)(1.5) * phi[i, j, plane] - 2 * phi[i, j + 1, plane] + typeof(hy)(0.5) * phi[i, j + 2, plane])
                     elseif j == ny
                         Ey[i, j, plane] = hyi * (-typeof(hy)(1.5) * phi[i, j, plane] + 2 * phi[i, j - 1, plane] - typeof(hy)(0.5) * phi[i, j - 2, plane])
+                    elseif fourth && j >= Int32(3) && j <= ny - Int32(2)
+                        Ey[i, j, plane] = typeof(hy)(1 / 12) * hyi *
+                            ((phi[i, j + 2, plane] - phi[i, j - 2, plane]) + 8 * (phi[i, j - 1, plane] - phi[i, j + 1, plane]))
                     else
                         Ey[i, j, plane] = typeof(hy)(0.5) * hyi * (phi[i, j - 1, plane] - phi[i, j + 1, plane])
                     end
@@ -3318,6 +3336,9 @@ if _HAS_CUDA
                         Ex[i, j, plane] = hxi * (typeof(hx)(1.5) * phi[i, j, plane] - 2 * phi[i + 1, j, plane] + typeof(hx)(0.5) * phi[i + 2, j, plane])
                     elseif i == nx
                         Ex[i, j, plane] = hxi * (-typeof(hx)(1.5) * phi[i, j, plane] + 2 * phi[i - 1, j, plane] - typeof(hx)(0.5) * phi[i - 2, j, plane])
+                    elseif fourth && i >= Int32(3) && i <= nx - Int32(2)
+                        Ex[i, j, plane] = typeof(hx)(1 / 12) * hxi *
+                            ((phi[i + 2, j, plane] - phi[i - 2, j, plane]) + 8 * (phi[i - 1, j, plane] - phi[i + 1, j, plane]))
                     else
                         Ex[i, j, plane] = typeof(hx)(0.5) * hxi * (phi[i - 1, j, plane] - phi[i + 1, j, plane])
                     end

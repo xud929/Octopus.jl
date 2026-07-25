@@ -52,6 +52,14 @@ are:
   `Inf` (always uncoupled) is accepted; a finite value throws rather than being
   silently ignored. The residual grid absorbs any transverse coupling.
 
+**Use `deposit_method=:TSC` with this solver.** TSC is consistently the more
+accurate deposition for the hybrid at nearly every grid and aspect ratio (e.g. at
+the production 11:1 beams, grid 64: 1.7e-4 median field error with TSC against
+2.4e-4 with CIC; at 25:1, 1.6e-4 against 3.2e-4), while for *plain* PIC it is
+never better than CIC. The reason is that the subtraction removes the sharp
+Gaussian core, leaving a smooth residual that TSC's wider stencil represents well
+without the extra smoothing hurting. It costs ~25% more per interaction on CPU.
+
 CPU and CUDA are supported and CPU/CUDA bit-parity; the CUDA path defaults to the
 indexed wavefront route (see `gaussian_pic_cuda.jl`).
 """
@@ -272,7 +280,7 @@ function _gpic_solve_drifted_field!(field::_PICFieldWorkspace, pic::PICPoissonSo
     @inbounds for j in 1:ny, i in 1:nx
         phi[i, j] = real(spectral[i, j])
     end
-    _pic_field!(field.Ex, field.Ey, phi, hx, hy)
+    _pic_field!(field.Ex, field.Ey, phi, hx, hy, _pic_fourth_order(pic))
     return phi, field.Ex, field.Ey
 end
 

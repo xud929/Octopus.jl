@@ -132,6 +132,9 @@ function _validate_pic_solver(solver::PICPoissonSolver)
     batch_mode = Symbol(solver.batch_mode)
     (batch_mode == :sequential || batch_mode == :wavefront) ||
         throw(ArgumentError("PICPoissonSolver batch_mode must be :sequential or :wavefront"))
+    fd = Symbol(solver.field_derivative)
+    (fd == :second || fd == :fourth) ||
+        throw(ArgumentError("PICPoissonSolver field_derivative must be :second or :fourth"))
     return nothing
 end
 
@@ -494,7 +497,7 @@ function _pic_solve_field_with_green_fft!(field::_PICFieldWorkspace,
     for j in 1:ny, i in 1:nx
         @inbounds phi[i, j] = real(spectral[i, j])
     end
-    _pic_field!(field.Ex, field.Ey, phi, hx, hy)
+    _pic_field!(field.Ex, field.Ey, phi, hx, hy, _pic_fourth_order(solver))
     return phi, field.Ex, field.Ey
 end
 
@@ -521,7 +524,7 @@ function _pic_solve_drifted_field_with_green_fft!(field::_PICFieldWorkspace,
     for j in 1:ny, i in 1:nx
         @inbounds phi[i, j] = real(spectral[i, j])
     end
-    _pic_field!(field.Ex, field.Ey, phi, hx, hy)
+    _pic_field!(field.Ex, field.Ey, phi, hx, hy, _pic_fourth_order(solver))
     return phi, field.Ex, field.Ey
 end
 
@@ -738,35 +741,68 @@ function _pic_green!(green, green_type, field_x0, field_y0, source_x0, source_y0
     return green
 end
 
-function _pic_field(phi, hx, hy)
+function _pic_field(phi, hx, hy, fourth::Bool=false)
     nx, ny = size(phi)
     T = eltype(phi)
     Ex = Matrix{T}(undef, nx, ny)
     Ey = Matrix{T}(undef, nx, ny)
-    _pic_field!(Ex, Ey, phi, hx, hy)
+    _pic_field!(Ex, Ey, phi, hx, hy, fourth)
     return Ex, Ey
 end
 
-function _pic_field!(Ex, Ey, phi, hx, hy)
+# E = -grad(phi) on the mesh. `fourth=false` is the second-order central stencil
+# and is the default, bit-compatible with every result recorded before the option
+# existed. `fourth=true` uses the fourth-order central stencil
+#     -dphi/dx = [ (phi[i+2]-phi[i-2]) + 8*(phi[i-1]-phi[i+1]) ] / (12h)
+# in the interior, falling back to the second-order central form on the first
+# ring inside the boundary (where the wider stencil does not fit) and to the
+# existing one-sided formulas on the boundary itself. The adaptive box already
+# pads ~1.5 cells beyond the particles, so the fallback rings sit outside the
+# region that carries the physics.
+_pic_field!(Ex, Ey, phi, hx, hy) = _pic_field!(Ex, Ey, phi, hx, hy, false)
+
+function _pic_field!(Ex, Ey, phi, hx, hy, fourth::Bool)
     nx, ny = size(phi)
     T = eltype(phi)
     hxi = inv(hx); hyi = inv(hy)
+    c4 = T(1) / T(12)
     for i in 1:nx
         Ey[i, 1] = hyi * (T(1.5) * phi[i, 1] - 2 * phi[i, 2] + T(0.5) * phi[i, 3])
         Ey[i, ny] = hyi * (-T(1.5) * phi[i, ny] + 2 * phi[i, ny - 1] - T(0.5) * phi[i, ny - 2])
-        for j in 2:(ny - 1)
-            Ey[i, j] = T(0.5) * hyi * (phi[i, j - 1] - phi[i, j + 1])
+        if fourth && ny >= 5
+            Ey[i, 2] = T(0.5) * hyi * (phi[i, 1] - phi[i, 3])
+            Ey[i, ny - 1] = T(0.5) * hyi * (phi[i, ny - 2] - phi[i, ny])
+            @inbounds for j in 3:(ny - 2)
+                Ey[i, j] = c4 * hyi * ((phi[i, j + 2] - phi[i, j - 2]) +
+                                       8 * (phi[i, j - 1] - phi[i, j + 1]))
+            end
+        else
+            for j in 2:(ny - 1)
+                Ey[i, j] = T(0.5) * hyi * (phi[i, j - 1] - phi[i, j + 1])
+            end
         end
     end
     for j in 1:ny
         Ex[1, j] = hxi * (T(1.5) * phi[1, j] - 2 * phi[2, j] + T(0.5) * phi[3, j])
         Ex[nx, j] = hxi * (-T(1.5) * phi[nx, j] + 2 * phi[nx - 1, j] - T(0.5) * phi[nx - 2, j])
-        for i in 2:(nx - 1)
-            Ex[i, j] = T(0.5) * hxi * (phi[i - 1, j] - phi[i + 1, j])
+        if fourth && nx >= 5
+            Ex[2, j] = T(0.5) * hxi * (phi[1, j] - phi[3, j])
+            Ex[nx - 1, j] = T(0.5) * hxi * (phi[nx - 2, j] - phi[nx, j])
+            @inbounds for i in 3:(nx - 2)
+                Ex[i, j] = c4 * hxi * ((phi[i + 2, j] - phi[i - 2, j]) +
+                                       8 * (phi[i - 1, j] - phi[i + 1, j]))
+            end
+        else
+            for i in 2:(nx - 1)
+                Ex[i, j] = T(0.5) * hxi * (phi[i - 1, j] - phi[i + 1, j])
+            end
         end
     end
     return nothing
 end
+
+"""Return true when the solver requests the fourth-order field stencil."""
+_pic_fourth_order(solver::PICPoissonSolver) = solver.field_derivative === :fourth
 
 function _pic_interpolate_kick(solver, grid, x, y, phiL, ExL, EyL, phiR, ExR, EyR, zL, zR)
     nx, ny = solver.grid
