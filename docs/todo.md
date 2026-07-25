@@ -102,9 +102,12 @@ time, not 1.2-1.6x. The accuracy claim (hybrid@64 ≈ or better than PIC@128) is
 independently confirmed. See
 [`poisson_solver_review_2026_07_24.md`](history/poisson_solver_review_2026_07_24.md).
 
-**Remaining:** the coupled (rotated) subtraction branch (`coupling_tol < Inf`) is
-still unimplemented (CPU and CUDA are always-uncoupled); optional further CUDA
-tuning of the host-side erf profile build. Steps 1-8 below are DONE (CPU + CUDA).
+**Remaining (updated 2026-07-25):** the coupled (rotated) subtraction branch
+(`coupling_tol < Inf`) is **implemented and validated on the CPU path**; the CUDA
+path raises rather than silently running the uncoupled subtraction, so **CUDA
+support for the coupled branch is the open item**. Optional further CUDA tuning of
+the host-side erf profile build also remains. Steps 1-8 below are DONE (CPU +
+CUDA, uncoupled).
 
 Key files to touch (mirror the existing PIC structure):
 `src/tasks/strongstrong/interface.jl` (solver struct + option schema),

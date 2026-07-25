@@ -976,7 +976,7 @@ Flagged as requested, whether or not action is implied.
 | Multi-turn artificial emittance growth per solver | **not measured**; this is the real production figure of merit and the most valuable follow-up |
 | Fourth-order gradient in `_pic_field!` | recommended (~1.6x median field accuracy, ~10 lines, no new FFT); Section 3.3 |
 | VGF Green kernel as a third `green_type` | **downgraded** — withdrawn for round/mild beams (kernel contributes ~0% of the error there); evaluate for high aspect ratio only |
-| CPU indexed-slice path (no gather/copy) | recommended, not implemented; ~35% of CPU PIC cost |
+| CPU indexed-slice path (no gather/copy) | **superseded** — implemented and measured 4-8% *slower*, then reverted; see Section 19 |
 | `luminosity_schedule` on `SpectralPoissonSolver` | **IMPLEMENTED** (CPU + CUDA, 32-assertion effectiveness test). `GaussianPoissonSolver` deliberately left without it — measured 0% cost, see Section 4.3(2) |
 | PIC p95/max error saturating above grid 128 | **attribution retracted** (Section 3.3): partly a hard-edge/box-boundary artifact of the test, and the kernel is measurably not responsible |
 | `_spectral_box` sizes the Dirichlet box from **undrifted** beam coordinates, then deposits **drifted** slices; `_spectral_field_grid!` silently drops out-of-box particles | not triggered at production settings (drift adds ~90 um to a 619 um extent inside an 848 um half-box) but unguarded — a smaller `domain_factor` or longer bunch would silently lose charge |
@@ -1228,9 +1228,9 @@ The reasoning, from the measurements rather than from preference:
 | Spectral 6D box vs drifted source | **done** (guard + test) |
 | Multi-turn emittance growth | **done** — but single-seed; needs 3-5 seeds to rank the `>= 128` configurations |
 | `coupling_tol` / `batch_mode` silently ignored | **done** |
-| Coupled (rotated) Gaussian subtraction | **open** — a genuine feature, not a defect; Section 6.3 shows it is exactly the weakest hybrid case |
-| VGF Green kernel | **open, downgraded** — withdrawn for round/mild beams (Section 3.3); evaluate for flat beams only |
-| CPU indexed-slice path | **open** — ~35% of CPU PIC cost; deliberately not attempted here because it is a pure-performance refactor of hot code with real regression risk, and this pass prioritised correctness |
+| Coupled (rotated) Gaussian subtraction | **CLOSED on CPU** (Section 15); CUDA support remains open |
+| VGF Green kernel | **CLOSED negative** (Section 16): needs 3x padding for 12% accuracy; at equal padding its tail error is 2.3x worse |
+| CPU indexed-slice path | **CLOSED negative** (Section 19): built, bit-identical, but 4-8% slower; reverted |
 | Emittance growth with error bars | **new open item** from Section 11 |
 
 ## 14. Source review coverage
@@ -1341,8 +1341,10 @@ copying at production size (170k-particle slice):
 memcpy rather than the allocation. Buffer reuse is therefore **not** worth the
 regression risk. Eliminating the gather entirely (the CUDA
 `cuda_indexed_wavefront` equivalent) would save ~23% of a CPU turn but requires
-threading `(rep, idx)` through the deposit, bounds scan and kick. Still open, now
-with costed options rather than an assertion.
+threading `(rep, idx)` through the deposit, bounds scan and kick. **That was done
+in Section 19 and the ~23% estimate proved wrong** — the indexed path is 4-8%
+slower, because the gather buys contiguity that is re-used many times per
+interaction. Closed negative.
 
 ## 18. Multi-turn emittance growth with error bars
 
@@ -1428,3 +1430,44 @@ Section 4.2 phase table; it is the price of contiguity, and it is worth paying.
 The Section 17 estimate that eliminating the gather would save ~23% of a CPU turn
 is **withdrawn**. A CPU indexed path is not a promising optimization and the item
 is closed negative, rather than left open.
+
+
+---
+
+## 20. Consolidated open items (as of 2026-07-25)
+
+Everything the two review passes raised, with its final state. Items marked
+CLOSED need no further action; the rest are the actual backlog.
+
+### Closed
+
+| item | outcome |
+| --- | --- |
+| Spectral field normalization | fixed — derived constants, converges under refinement |
+| Broken harness/driver plumbing (4 scripts, 2 paths, 1 env var) | fixed |
+| `coupling_tol`, `batch_mode` silently ignored | fixed |
+| Fourth-order field gradient | implemented as `field_derivative=:fourth` |
+| `luminosity_schedule` on spectral | implemented (CPU + CUDA) |
+| Spectral 6D box vs drifted source | guarded |
+| Coupled (rotated) subtraction, CPU | implemented and validated (Section 15) |
+| Multi-turn emittance growth | measured, 3 seeds (Sections 11, 18) |
+| VGF Green kernel | closed negative (Section 16) |
+| CPU indexed-slice path | closed negative (Section 19) |
+| TSC guidance for the hybrid, `green_type=:standard` warning | documented |
+
+### Open
+
+| # | item | why it is open |
+| --- | --- | --- |
+| 1 | **CUDA support for the coupled subtraction** | the CPU branch is implemented and validated; CUDA currently raises. Needs the three separable outer products ported into the CUDA subtraction kernel. This is the only *feature gap* between backends. |
+| 2 | **Emittance growth beyond 1000 turns** | measured at 10 damping times; production runs are 1e5-1e6 turns. Nothing here says the plateau holds at that horizon, and `grid=(64,64)` was still rising at 1000. |
+| 3 | **Longer/repeated emittance runs for the `>= 128` ranking** | 3 seeds separate `(64,64)` cleanly but leave PIC(128), GaussianPIC(64/128), PIC(256) and spectral mutually indistinguishable. Ranking them needs more seeds or more turns. |
+| 4 | **CUDA PIC deposition without atomics** | pre-existing item: sort/bin then segmented reduce, or shared-memory tiling. Untouched by this review. |
+| 5 | **Lattice Green function variant** (`green_type`) | pre-existing item. Note Section 3.3 measured the kernel as irrelevant for round/mild beams, so the expected payoff is small except at high aspect ratio. |
+| 6 | **FP32 option for PIC** | so PIC-vs-spectral A/B can be run at matched precision; spectral already has `field_precision`. |
+| 7 | **Spectral adaptive Dirichlet box, grid-free performance, TSC field interpolation** | pre-existing spectral items. Section 12 recommends *not* investing further in spectral, so these are low priority. |
+| 8 | **`GaussianPICPoissonSolver` emits no CUDA phase records** | `pic_timing=true` yields turn times but an empty `pic_phase_timings`. Diagnostic-only, but it is an option that silently does nothing on that solver. |
+| 9 | **Exhaustive read of `pic_cuda.jl` / `gaussian_pic_cuda.jl`** | ~5200 lines not line-by-line reviewed; the CPU/CUDA parity suite is the practical guard. |
+
+Item 1 is the only one that is a genuine gap rather than a research direction or
+a nice-to-have. Items 2-3 are the highest-value *physics* follow-ups.
