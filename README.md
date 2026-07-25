@@ -30,35 +30,28 @@ element_help(:thin_crab_cavity)
 
 ## Examples
 
-Run a small CPU weak-strong example:
+The examples are clean, production-shaped precedents. Each has a small
+`config` block at the top (`use_gpu`, `turns`, macroparticle counts) that you
+edit — there are no environment variables. Run them from the project root:
 
 ```bash
-OCTOPUS_TURNS=1 OCTOPUS_N_MACRO=100 \
 julia --project=. examples/weak_strong_tracking.jl
-```
-
-Run a small CPU strong-strong PIC example:
-
-```bash
-OCTOPUS_TURNS=1 OCTOPUS_N_MACRO=100 OCTOPUS_POISSON_SOLVER=PIC \
 julia --project=. examples/strong_strong_tracking.jl
 ```
 
-Run the CUDA strong-strong PIC example:
+Set `use_gpu = true` in the `config` block to run on CUDA. The strong-strong
+example builds a `PICPoissonSolver` and shows the soft-Gaussian, spectral, and
+Gaussian-subtracted-PIC solvers as commented alternatives (they share the same
+interface — see `?AbstractPoissonSolver`).
+
+For developing or A/B-testing the solvers, `test/examples/` holds configurable
+harnesses of the same two cases that expose solver selection, CUDA launch
+tuning, per-phase timing, and diagnostic/output switches through `OCTOPUS_*`
+environment variables:
 
 ```bash
-OCTOPUS_USE_GPU=1 OCTOPUS_POISSON_SOLVER=PIC \
-julia --project=. examples/strong_strong_tracking.jl
-```
-
-Select a specific CUDA device by adding `OCTOPUS_CUDA_DEVICE=N`, for example
-`OCTOPUS_CUDA_DEVICE=1`.
-
-`PICPoissonSolver` uses the longitudinal/Hirata-style kick by default. Disable
-it for a transverse-only benchmark with:
-
-```bash
-OCTOPUS_PIC_LONGITUDINAL_KICK=0
+OCTOPUS_USE_GPU=1 OCTOPUS_SOLVER=pic OCTOPUS_TURNS=100 \
+julia --project=. test/examples/strong_strong_tracking.jl
 ```
 
 ## Validation
@@ -89,15 +82,19 @@ julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consist
 ## Documentation Map
 
 - `AGENTS.md`: development rules for human and AI collaborators.
+- `docs/README.md`: **index of every document in `docs/`** (categorized:
+  entry-point/generated, theory notes, planning) — start here.
 - `docs/public_api.md`: entry points to public docstrings and metadata queries.
 - `docs/current_runtime.md`: current runtime/backend behavior.
-- `docs/beam_beam_longitudinal_kick.md`: derivation of weak-strong and
-  soft-Gaussian longitudinal kicks, virtual drifts, and the slingshot effect.
 - `docs/registry_snapshot.md`: generated registry snapshot.
-- `docs/pic_solver_improvement_plan.md`: PIC solver optimization notes.
+- `docs/todo.md`: forward-looking plan (open items per solver).
+- `docs/theory/`: physics/method theory notes (synchro-beam longitudinal kick,
+  weak-strong source model, spectral solver, Gaussian-subtracted PIC solver).
+- `docs/history/`: dated records of implemented work (optimization and benchmark
+  histories, audits).
 - `examples/`: runnable case-law examples.
 - `profiling/`: focused runtime profiling scripts.
-- `validation/`: numerical checks and backend consistency tests.
+- `validation/`: numerical-check scripts and backend-consistency tests.
 
 ## Notes
 

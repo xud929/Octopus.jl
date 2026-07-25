@@ -79,6 +79,8 @@ Use Julia help:
 ?StrongStrongCollision
 ?GaussianPoissonSolver
 ?PICPoissonSolver
+?SpectralPoissonSolver
+?GaussianPICPoissonSolver
 ?SolverOptionMeta
 ?solver_option_schema
 ?solver_configuration
@@ -104,7 +106,9 @@ Use Julia help:
 ```
 
 Runnable examples live in `examples/` and are self-documenting at the top of
-each source file.
+each source file. They are clean precedents with a small top-of-file `config`
+block; the matching configurable developer harnesses (driven by `OCTOPUS_*`
+environment variables) live in `test/examples/`.
 
 `MomentObserver` writes HDF5 columnar moment files. Common access pattern:
 
@@ -142,8 +146,10 @@ seconds = read(moments, :elapsed_time)
 
 Developer-facing numerical checks live in `validation/`. They may use internal
 helpers and should not be treated as public API examples.
-For beam-beam longitudinal-kick formulas, virtual-drift conventions, and the
-slingshot term, start from `docs/beam_beam_longitudinal_kick.md`.
+For the physics/method theory behind the beam-beam solvers (longitudinal-kick
+formulas and virtual-drift conventions, the weak-strong source model, and the
+spectral and Gaussian-subtracted PIC solvers), see the theory notes indexed in
+`docs/README.md`, starting from `docs/theory/beam_beam_longitudinal_kick.md`.
 
 ## Beam And Runtime Helpers
 

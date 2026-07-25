@@ -1,5 +1,195 @@
 # TODO
 
+## Gaussian-Subtracted PIC Solver (Hybrid Analytic-PIC)
+
+**Status (2026-07-24): CPU implementation complete and validated; CUDA path is
+the remaining work.** `GaussianPICPoissonSolver{T} <: AbstractPoissonSolver`
+(`src/tasks/strongstrong/gaussian_pic.jl`) composes `PICPoissonSolver` plus
+`margin_sigma`, `neutralize`, `coupling_tol`, auto-registers, and reuses the PIC
+CPU leaf helpers (grid, integrated-log Green FFT + slice-pair cache,
+interpolation, luminosity). It implements the erf-integrated Gaussian subtraction
+(CIC + TSC), the exact Bassetti-Erskine transverse add-back, and the
+covariance-transport + centroid longitudinal add-back. The full `test/runtests.jl`
+suite passes with three added testsets; `validation/gaussian_pic_field_validation.jl`
+shows the systematic field-accuracy gain (hybrid at grid 48 matches/beats PIC at
+128; 9-20x median at coarse grids, 2.6-4.1x at 128). The method and formulas are
+in [`gaussian_subtracted_pic_solver.md`](theory/gaussian_subtracted_pic_solver.md).
+
+**CUDA path complete and optimized (2026-07-24).**
+`src/tasks/strongstrong/gaussian_pic_cuda.jl` implements the indexed wavefront
+path (default, no gather/scatter) plus a non-indexed wavefront fallback and a
+sequential reference path. It reuses the PIC batched-FFT solve (with an injected
+per-plane Gaussian subtraction), the soft-Gaussian batched device moment kernels,
+and the batched-bounds prepare; the kick adds the Bassetti-Erskine field per
+particle. **CPU/CUDA bit-parity** (lum ~2e-16, coords ~5e-13; a "CUDA GaussianPIC
+solver matches CPU" testset covers both wavefront paths and 6D on/off).
+Performance (512k/256k, RTX 4500 Ada): GaussianPIC@128 **0.37 s (1.6x PIC)**,
+GaussianPIC@64 **0.28 s (1.2x PIC@128) with equal-or-better accuracy** — since the
+hybrid's systematic accuracy is grid-independent (hybrid@64 ≈ PIC@128). See
+`docs/history/strong_strong_gaussian_pic_optimization_history.md`.
+
+**Remaining:** the coupled (rotated) subtraction branch (`coupling_tol < Inf`) is
+still unimplemented (CPU and CUDA are always-uncoupled); optional further CUDA
+tuning of the host-side erf profile build. Steps 1-8 below are DONE (CPU + CUDA).
+
+Key files to touch (mirror the existing PIC structure):
+`src/tasks/strongstrong/interface.jl` (solver struct + option schema),
+`src/tasks/strongstrong/pic_cpu.jl` (`_pic_interaction!`, deposition, field
+solve, interpolation), `src/tasks/strongstrong/pic_cuda.jl` (CUDA parity),
+reusing `gaussian_beambeam_kick` / `faddeeva_w`
+(`src/elements/strong_beam.jl`, `src/math/SpecialMath.jl`) and the slice-moment
+helpers in `src/tasks/strongstrong/slicing.jl`.
+
+### Implementation plan (priority order)
+
+1. **Expose the options, CPU-first.** Add a mode to `PICPoissonSolver` with these
+   public fields (all with explicit off/default so behavior is user-controlled):
+   - `gaussian_subtract::Bool=false` — master flag; `false` is bit-identical to
+     the current PIC path.
+   - `gaussian_subtract_margin_sigma::Real` — box margin $m$ of Section 6
+     (default ~5; `0` = off, i.e. keep the ordinary particle-wrapping box).
+   - `gaussian_subtract_neutralize::Bool` — discrete charge neutralization of
+     Section 6 (default `true`; `false` relies on the margin alone).
+   - `gaussian_subtract_coupling_tol::Real` — correlation-coefficient threshold
+     $r_{\text{tol}}$ of Section 7 (default `Inf` in the first cut = always
+     uncoupled; finite value enables the coupled branch once implemented).
+
+   Note this is a **fixed grid-point count** feature: `grid` ($N_x\times N_y$) is
+   unchanged; only the adaptive box grows, so the FFT cost is untouched. Register
+   each field in `_PIC_SOLVER_OPTION_SCHEMA` with a runtime consumer, add activity
+   rules in `_pic_option_active` (the subtraction options are inactive when
+   `gaussian_subtract=false`; `coupling_tol` is inactive until the coupled branch
+   exists), and default so the current path is bit-identical when off. Run
+   `validate_configuration_metadata()` and the public-configuration effectiveness
+   contract afterward (per `AGENTS.md`).
+
+2. **Shape-consistent Gaussian grid `Q_G` (the `erf` term).** Implement the
+   separable node arrays `g_x`, `g_y` from Section 5 for `:CIC` (needs `E0,E1`)
+   and `:TSC` (needs `E0,E1,E2`), using `SpecialFunctions.erf` (CPU) and a device
+   `erf` on CUDA. Build them from the slice's **drifted** moments at the left and
+   right field-slice boundaries (transport `mu, Sigma` by the drift `s`, matching
+   the drifted-source deposition already in `_pic_deposit_drifted!`). Subtract the
+   outer product `N_s * g_x ⊗ g_y` from the deposited particle grid *before* the
+   Green-FFT convolution in `_pic_solve_drifted_field_with_green_fft!`. Cost is
+   `O(Nx+Ny)` to build plus `O(Nx*Ny)` to subtract — negligible vs. the FFT.
+
+3. **Analytic add-back at the field particles.** In the field-particle kick loop
+   of `_pic_interaction!`, add `2*kbb * N_s * gaussian_beambeam_kick(sigx', sigy',
+   x-mux', y-muy')` (drifted moments, interpolated between L/R boundaries in `z`
+   the same way the grid field is) to the interpolated residual kick. Pin the
+   overall constant by the pure-Gaussian limit (step V1).
+
+4. **Longitudinal kick by linearity (Section 8).** Split `pz` into (a) the
+   analytic soft-Gaussian synchro-beam `pz` term from the drifted Gaussian moments
+   (reuse the moment formula used in `gaussian.jl` / `docs/theory/beam_beam_longitudinal_kick.md`)
+   and (b) the residual potential-difference term `phi_delta,L - phi_delta,R`
+   already computed by `_pic_interpolate_kick` (Kz). Gate on the existing
+   `longitudinal_kick` flag.
+
+5. **Domain sizing (Section 6), fixed `N_x,N_y`.** In `_pic_interaction_grids`,
+   when subtraction is on, enlarge the **adaptive box** (not the mesh-point count)
+   so the half-width is at least `max(particle_extent, margin_sigma * sigma)`
+   about the slice centroid; `margin_sigma = gaussian_subtract_margin_sigma`
+   (default ~5 → `erfc(5/sqrt2) ≈ 6e-7` leaked mass; `0` = off). Keep grid-origin
+   alignment (`_pic_align_grid_origins`) unchanged. When
+   `gaussian_subtract_neutralize=true`, rescale `Q_G` so
+   `sum(Q_G) = sum(Q_part)`, removing the spurious monopole and relaxing the
+   margin. Because the box tracks `sigma` (smoother than particle extrema), the
+   slice-pair Green cache stays reusable (see the Green-cache item below).
+
+6. **Coupled slices (Section 7), `gaussian_subtract_coupling_tol`.** Switch on the
+   correlation coefficient `r_xy = sigma_xy / (sigma_x*sigma_y)`: `|r_xy| <=
+   tol` uses the separable uncoupled subtraction (default), `|r_xy| > tol` uses
+   the principal-axis rotated subtraction. First cut ships the uncoupled path
+   (`tol = Inf`); implement the rotated Bassetti-Erskine add-back plus the rotated
+   `Q_G` (rotated-frame `erf` resampled to nodes, or a small 2D quadrature) as a
+   gated extension.
+
+7. **Green cache: reuse unchanged (Section 11).** No new cache work. The Green
+   kernel depends only on grid geometry, not on the deposited charge, so the
+   hybrid only swaps `Q -> delta_Q` in the convolution and the existing
+   `green_cache=:slice_pair` FFT cache applies as-is on CPU and CUDA. Confirm the
+   backend-consistency and cache-history contracts still pass with subtraction on.
+
+8. **CUDA parity (`pic_cuda.jl`).** Port `Q_G` (device `erf`, separable build),
+   the grid subtraction, and the per-particle `faddeeva_w` add-back
+   (`faddeeva_w_upper_reim` is already used in `strong_beam_track.jl`). Preserve
+   the wavefront/async/indexed paths and the Green cache. Gate under
+   `StrongStrongPICBackendConsistencyContract` for CPU/CUDA agreement.
+
+### Validation plan (use the strong-strong example parameters)
+
+The reference case is `examples/strong_strong_tracking.jl`: 10 GeV e- (2.56M
+macro, `sigma=(106,9.5,7000) um`) vs 275 GeV p (1.024M macro,
+`sigma=(95,8.5,60000) um`), 12.5 mrad crab crossing, 15 normal-quantile slices,
+`grid=(128,128)`, CIC, integrated Green. These are ~11:1 flat beams — the
+regime where the accuracy gain should be largest.
+
+- **V1 pure-Gaussian limit (pins normalization).** Deposit deterministic Gaussian
+  quantile macroparticles (as in `validation/pic_gaussian_field_validation.jl`)
+  with the example's transverse sigmas; the hybrid kick must reproduce
+  `GaussianPoissonSolver` / `gaussian_beambeam_kick` to ~1e-3 or better and the
+  residual grid must be ~0. Also assert the `gaussian_subtract=false` path is
+  bit-identical to current PIC.
+- **V2 field accuracy vs. Bassetti-Erskine (headline metric).** Extend
+  `validation/pic_gaussian_field_validation.jl` with a hybrid solver column and
+  report median / p95 / max normalized field error at the example's aspect ratios
+  (round, 5:1, ~11:1, 25:1) at a **fixed** `grid=(128,128)`. Expected: the hybrid
+  median/p95/max are well below pure PIC at the same grid; quantify the factor.
+  Sweep macroparticle count to separate shot-noise floor from grid error.
+- **V3 domain-margin sweep.** Vary `margin_sigma` (3,4,5,6) with and without
+  neutralization; confirm the residual net charge and the field error follow the
+  `erfc(m/sqrt2)` prediction of Section 6, and that neutralization removes the
+  monopole at small margin.
+- **V4 full-beamline tracking A/B.** Run
+  `OCTOPUS_TURNS=... examples/strong_strong_tracking.jl` with pure PIC vs. hybrid
+  at identical grid/seed; compare luminosity, RMS moments, and per-turn timing.
+  Also run the high-energy weak-strong limit
+  (`validation/high_energy_weakstrong_limit.jl`,
+  `OCTOPUS_WEAK_STRONG_LIMIT=1`) where the analytic answer is known.
+- **V5 backend consistency.** CPU/CUDA agreement via
+  `validation/strong_strong_pic_cache_backend_consistency.jl` and the
+  `StrongStrongPICBackendConsistencyContract` extended to cover the hybrid mode.
+- Record results in a dated `docs/history/strong_strong_gaussian_pic_optimization_history.md`
+  and add a `test/runtests.jl` guard for V1 (normalization + off-path identity)
+  and a small V2 accuracy-vs-PIC assertion.
+
+### Performance plan
+
+- **Confirm the fixed-grid claim.** A/B complete-turn timing (V4) must show the
+  hybrid within a few percent of pure PIC at the same grid on CPU and GPU. The
+  only new costs are the separable `erf` subtraction (`O(Nx+Ny)`, once per solve)
+  and one `faddeeva_w` per field particle. Budget the per-particle analytic term
+  against the grid interpolation it runs beside; if it dominates on GPU, fuse it
+  into the existing kick kernel rather than a separate pass.
+- **Reuse, do not duplicate.** Build `g_x,g_y` into the existing CPU workspace
+  buffers (extend `_PICCPUWorkspace`) and the CUDA slice buffers; avoid new
+  per-solve allocation. The subtraction is an in-place `charge .-= N_s .* gx *
+  gy'` on the already-zeroed deposit grid.
+- **Coarser-grid study (optional upside).** Because the residual is smooth, test
+  whether the hybrid at `grid=(64,64)` matches pure PIC at `(128,128)`; if so it
+  is a *speed* win on top of the accuracy win. Gate on V2/V4 before claiming it.
+- Follow the same "no silently ignored option" rule as the rest of the solver:
+  every new public field lands with its runtime consumer, an effectiveness test
+  that observes it at the consumer boundary, and metadata.
+
+## PIC Solver Core
+
+Open items carried over from the former `pic_solver_improvement_plan.md` (its
+implemented items are recorded in
+`docs/history/strong_strong_pic_optimization_history.md`).
+
+1. **Improve GPU deposition.** CUDA PIC deposition is correctness-oriented and
+   uses atomics. Candidate replacements: sort/bin particles by cell then
+   segmented reduce; per-block shared-memory tile accumulation then global
+   reduction; split dense slices into grid tiles to cut atomic contention. Each
+   must be checked against `validation/pic_gaussian_field_validation.jl` before
+   replacing the current path.
+2. **Add a lattice Green-function variant.** `green_type` currently supports
+   `:integrated` (default) and `:standard`. Evaluate a lattice Green function,
+   selected by `green_type`, and cover it with validation sweeps over round and
+   high-aspect-ratio beams.
+
 ## Spectral Sine-Series Poisson Solver
 
 **Status (2026-07-23): production-ready 6D solver, correctness-validated against
@@ -48,9 +238,9 @@ s/turn at 2.56M/beam, ~4x faster than PIC on GPU. The default
 potential-difference `pz` kick on CPU and CUDA; see the dated optimization
 history for current 6D timing and solver-difference records.
 
-References: method + measured accuracy in `docs/spectral_sine_poisson_solver.md`;
+References: method + measured accuracy in `docs/theory/spectral_sine_poisson_solver.md`;
 performance + validation history in
-`validation/strong_strong_spectral_optimization_history.md`; reference field
+`docs/history/strong_strong_spectral_optimization_history.md`; reference field
 implementations in `validation/spectral_poisson_field_validation.jl`. Code:
 `src/tasks/strongstrong/spectral.jl` (CPU) and `spectral_cuda.jl` (CUDA).
 
@@ -222,7 +412,7 @@ had the same campaign and remains the top open performance item.
   variants, round beam, <3%) and CPU/CUDA consistency (rtol 1e-9).
 - Production parameter selection: grid `(128, 1024)`, `domain_factor=16` for ~11:1
   beams (grid-converged kick to ~1%, at the graininess floor). See the dated
-  `validation/strong_strong_spectral_optimization_history.md`.
+  `docs/history/strong_strong_spectral_optimization_history.md`.
 
 ### Completed (solver core)
 
@@ -276,7 +466,7 @@ had the same campaign and remains the top open performance item.
 
 - Soft-Gaussian CUDA optimization (host-sync removal, device moments, fused
   wavefront launches): 0.2778 -> 0.2280 s/turn, bit-identical. See
-  `validation/strong_strong_gaussian_optimization_history.md`.
+  `docs/history/strong_strong_gaussian_optimization_history.md`.
 - PIC `kbb1/kbb2` override switched to physical units, consistent across all
   solvers and frozen-beam elements.
 - Strong-strong example and task notebook default to the PIC solver with the

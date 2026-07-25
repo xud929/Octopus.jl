@@ -19,7 +19,7 @@ related to the task.
 Before changing files, an agent must know its role. If the human has not
 specified one, ask which role applies:
 
-- **User agent**: may inspect files, run commands, execute examples/notebooks,
+- **User agent**: may inspect files, run commands, execute examples,
   and explain results. Must not edit source files or add new project files.
 - **Developer agent**: may add new files and generated artifacts when requested,
   but must not edit existing project files.
@@ -31,6 +31,7 @@ an elevated role before making file changes.
 
 ## How To Orient
 
+- For a categorized index of every document, read `docs/README.md`.
 - For current public objects, read `docs/registry_snapshot.md` or run
   `summarize_registry()`.
 - For stable API usage, read `docs/public_api.md`, then use Julia help on the
@@ -40,7 +41,7 @@ an elevated role before making file changes.
 - For developing a new accelerator element type, read `?ElementSpec`,
   `?@element_spec`, and existing element source files.
 - For executable workflow patterns, read `?TrackingTask`, `?ScheduledObserver`,
-  `?ScheduledAction`, examples, or the relevant notebook.
+  `?ScheduledAction`, or the examples.
 - For realistic simulation precedents, inspect the files in `examples/`.
   Each stable example should explain its purpose, structure, inputs, outputs,
   and run command in a concise top-of-file comment.
@@ -170,14 +171,27 @@ documented boundary that justifies the extra module layer.
   implementations may use task-owned subdirectories with a short entry file,
   but should not introduce a new Julia module boundary.
 - `src/constants/`: shared physical constants with units documented.
-- `docs/`: short entry-point, generated, or volatile-runtime notes. Detailed
-  API guidance belongs in docstrings.
-- `examples/`: runnable workflow scripts. Each example is self-describing; do
-  not create a separate markdown page for each example.
-- `validation/`: developer-facing numerical validation scripts. These may use
-  internal helpers and should state the reference model, error metric, output
-  files, and run command.
-- `notebook/`: executable demonstrations and experiments.
+- `docs/`: documentation, indexed by `docs/README.md`. Detailed API guidance
+  belongs in docstrings, not here. Subfolders: `docs/theory/` holds
+  physics/method derivations (the Knowledge Layer) that implementing code links
+  back to; `docs/history/` holds dated records of implemented work (optimization
+  and benchmark histories, audits). Top-level `docs/` keeps entry-point,
+  generated, or volatile-runtime notes (`public_api.md`, `registry_snapshot.md`,
+  `current_runtime.md`) and the forward plan (`todo.md`). Add every new document
+  to the `docs/README.md` index. Not-yet-done items go in `todo.md`; once
+  implemented, move the record to `docs/history/`.
+- `examples/`: clean, production-shaped workflow scripts — the precedents future
+  users imitate. Each has a small top-of-file `config` block (no environment
+  variables) and is self-describing; do not create a separate markdown page for
+  each example.
+- `test/examples/`: configurable developer harnesses of the same workflows,
+  exposing solver selection, launch tuning, and diagnostics through `OCTOPUS_*`
+  environment variables. Each cites its clean counterpart in `examples/` and
+  vice versa. Put exploratory solver A/B toggles here, not in `examples/`.
+- `validation/`: developer-facing numerical validation scripts plus their
+  `README.md`. These may use internal helpers and should state the reference
+  model, error metric, output files, and run command. Narrative records
+  (histories, audits) belong in `docs/history/`, not here.
 
 ## Updating Elements
 
@@ -221,7 +235,7 @@ When adding or changing an accelerator element:
 - Do not claim real contracts, analyses, policies, or keywords before the
   implementation exists. Omit contract metadata until a real contract exists;
   use placeholders only for explicitly unfinished analysis or policy concepts.
-- Generated docs, notebooks, and agent help should derive from the metadata
+- Generated docs and agent help should derive from the metadata
   registry whenever practical.
 
 ## Updating Tracking Methods
@@ -286,8 +300,10 @@ Examples are architectural precedents, not scratch work. Agents and human users
 should inspect example source files directly and read the top-of-file comment
 before reusing a pattern.
 
-- Put exploratory work in notebooks.
-- Promote stable examples into dedicated example files.
+- Put exploratory work and solver A/B toggles in the `test/examples/` harnesses,
+  driven by `OCTOPUS_*` environment variables.
+- Promote stable patterns into clean `examples/` files that carry a small
+  top-of-file `config` block instead of environment variables.
 - Keep reference examples small, executable, and tied to public APIs.
 - Put the example purpose, structure, input/output summary, and run command in a
   concise top-of-file comment.
@@ -327,5 +343,5 @@ From the project root:
 julia --startup-file=no --project=. -e 'include("src/Octopus.jl"); using .Octopus; println(summarize_registry())'
 ```
 
-Run a task or notebook relevant to the change. Use CUDA validation only when the
+Run a task or example relevant to the change. Use CUDA validation only when the
 task touches GPU execution and a GPU is visible to Julia.

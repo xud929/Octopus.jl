@@ -1,30 +1,50 @@
 using LinearAlgebra
 
 #=
-Weak-strong tracking example: a live weak proton beam colliding with a fixed
-soft-Gaussian strong beam, through a crab crossing.
+Weak-strong tracking example with crab crossing.
 
-This is the clean, production-shaped example. Edit the small `config` block
-below, then run from the project root:
+This is the CONFIGURABLE development/testing harness (run size and CUDA device
+via OCTOPUS_* environment variables). For the clean, production-shaped example
+meant as a user guideline (no environment variables), see
+examples/weak_strong_tracking.jl.
 
-    julia --project=. examples/weak_strong_tracking.jl
+Run from the Octopus project root:
 
-For a configurable development/testing harness of the same case with
-environment-variable toggles (run size, CUDA device selection), see
-test/examples/weak_strong_tracking.jl.
+    julia --project=. test/examples/weak_strong_tracking.jl
 
-The pattern this example follows:
+The default run is intentionally small: 2 turns and 10000 macroparticles. Use
+environment variables for larger runs without editing the physics input:
 
-1. Define one `input` named tuple: weak beam, optics, crab cavity, strong beam,
-   radiation, output.
-2. Build the weak `Beam` directly from the input (including any initial offset).
-3. Build element specs in tracking order and place observers where they matter.
-4. Build `TrackingTask(line)` and `execute!` it.
+    OCTOPUS_TURNS=1000 OCTOPUS_N_MACRO=1024000 julia --project=. test/examples/weak_strong_tracking.jl
 
-Outputs are written under `result/`:
+Run the same example with CUDA storage and CUDA tracking kernels:
 
-- `weak_strong.lum`         : turn and luminosity
-- `weak_strong_moments.h5`  : weak-beam moment history
+    OCTOPUS_USE_GPU=1 julia --project=. test/examples/weak_strong_tracking.jl
+
+Select a CUDA device explicitly:
+
+    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_DEVICE=1 julia --project=. test/examples/weak_strong_tracking.jl
+
+CUDA checks:
+
+    julia --project=. -e 'using CUDA; println(CUDA.functional()); println(CUDA.has_cuda_gpu())'
+    julia --project=. -e 'using CUDA; CUDA.versioninfo()'
+
+This file is meant to be a concise precedent for realistic weak-strong tracking:
+
+1. Define one `input` named tuple with beam, optics, element, and output
+   settings.
+2. Construct the weak beam directly from the input, including the initial
+   offset.
+3. Construct element specs in tracking order.
+4. Place observers/actions in the line when their location matters.
+5. Build `TrackingTask(line)` and execute it with `execute!`.
+
+Outputs are written to `result/`:
+
+- `weak_strong.lum`: turn and luminosity values.
+- `weak_strong_moments.h5`: scheduled first- and second-order moments written
+  by `MomentObserver`.
 =#
 
 if !isdefined(Main, :Octopus)
@@ -32,7 +52,9 @@ if !isdefined(Main, :Octopus)
 end
 using .Octopus
 
-# Physics input for this weak-proton crab-crossing case.
+# Input for this weak-proton crab-crossing case.
+# Set OCTOPUS_TURNS and OCTOPUS_N_MACRO in the shell to run a smaller or larger
+# job without editing the physics input below.
 input = (
     case_name = "weak_strong",
     result_dir = joinpath(@__DIR__, "..", "result"),
@@ -108,19 +130,25 @@ input = (
     ),
 )
 
-# Run configuration. Edit these; the physics `input` above is separate.
-config = (
-    use_gpu = false,     # true routes beam storage and tracking to CUDA
-    turns = 2,           # raise for a real run
-    n_macro = 10_000,    # ~1_024_000 for a production weak beam
-)
-turns = config.turns
-n_macro = config.n_macro
-if config.use_gpu
+turns = parse(Int, get(ENV, "OCTOPUS_TURNS", "2"))
+n_macro = parse(Int, get(ENV, "OCTOPUS_N_MACRO", "10000"))
+
+# Execution policy used for beam construction. Tasks infer the backend from the
+# beam storage at execution time.
+# CPU threads are the portable default. Set OCTOPUS_USE_GPU=1 to use CUDA.
+# Observers still write on the host and may synchronize GPU data when scheduled.
+use_gpu = get(ENV, "OCTOPUS_USE_GPU", "0") == "1"
+if use_gpu
     import CUDA
-    CUDA.functional(false) || error("config.use_gpu is true, but CUDA is not functional")
+    CUDA.functional(false) || error("OCTOPUS_USE_GPU=1 requested, but CUDA.functional(false) is false.")
 end
-policy = config.use_gpu ? CUDAExecutionPolicy() : CPUThreadsExecutionPolicy()
+policy = if use_gpu
+    cuda_device_env = get(ENV, "OCTOPUS_CUDA_DEVICE", "")
+    cuda_device = isempty(cuda_device_env) ? nothing : parse(Int, cuda_device_env)
+    CUDAExecutionPolicy(device = cuda_device)
+else
+    CPUThreadsExecutionPolicy()
+end
 set_global_rng!(seed = input.seed, method = :philox)
 
 wb = input.weak_beam

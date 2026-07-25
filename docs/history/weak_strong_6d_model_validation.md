@@ -2,9 +2,9 @@
 
 This record covers the coupled-covariance and six-dimensional Gaussian-source
 change relative to `HEAD` `d85f61e`. The mathematical model is documented in
-[`docs/weak_strong_6d_model.md`](../docs/weak_strong_6d_model.md), and the
+[`docs/theory/weak_strong_6d_model.md`](../theory/weak_strong_6d_model.md), and the
 longitudinal-kick limits are derived in
-[`docs/beam_beam_longitudinal_kick.md`](../docs/beam_beam_longitudinal_kick.md).
+[`docs/theory/beam_beam_longitudinal_kick.md`](../theory/beam_beam_longitudinal_kick.md).
 
 ## Correctness coverage
 

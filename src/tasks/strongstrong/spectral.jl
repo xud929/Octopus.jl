@@ -5,7 +5,7 @@ Spectral sine-series 2D Poisson strong-strong collision solver. The transverse
 potential of each source slice is expanded in the Dirichlet eigenfunctions
 sin(l*pi*x/a) sin(m*pi*y/b) on a rectangular box, so the Poisson solve is one
 division per mode, phi_lm = -kbb * rho_lm / (alpha_l^2 + beta_m^2). See
-docs/spectral_sine_poisson_solver.md.
+docs/theory/spectral_sine_poisson_solver.md.
 
 This is the CPU implementation. The grid variant deposits the source slice, takes
 a 2D DST, solves per mode, differentiates on the mesh with the exact spectral
@@ -88,7 +88,7 @@ floor) on both beams in x/y/z. The odd sizes are intentional: a grid dimension `
 gives a DST/DCT extension of length `2(N+1)`, so `N=2^k-1` makes that a power of
 two and the CUDA real-FFT optimal. `(128, 1024)/16` also works but is heavily
 over-resolved and ~6x slower on GPU. See
-`validation/strong_strong_spectral_optimization_history.md`. Runs on both
+`docs/history/strong_strong_spectral_optimization_history.md`. Runs on both
 `CPUThreadsBackend` (parallel over field slices) and `CUDABackend`; the optimized
 CUDA 6D grid path is ~1.5x the PIC one-turn time at the production case (measured
 through the full example beamline; down from 6x, comparable to PIC).
@@ -564,7 +564,7 @@ function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2)
     # BOTH directions, so the Dirichlet box must be square and sized to sigma_max.
     # An anisotropic box (Ly ~ d*sigma_y) clips the wide field and biases the
     # kick by ~10% at 5:1; the thin direction is resolved by the grid (Ny), not a
-    # smaller box. See docs/spectral_sine_poisson_solver.md.
+    # smaller box. See docs/theory/spectral_sine_poisson_solver.md.
     smax = max(rms(x1), rms(x2), rms(y1), rms(y2))
     emax = max(ext(x1), ext(x2), ext(y1), ext(y2))
     L = max(d * smax, 1.05 * emax)

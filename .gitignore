@@ -30,3 +30,6 @@ profiling/log
 *~
 *.swp
 *.swo
+
+# Jupyter notebooks are kept outside this repo
+*.ipynb

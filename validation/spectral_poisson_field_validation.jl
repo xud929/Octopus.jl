@@ -1,6 +1,6 @@
 #=
 Validate the spectral sine-series 2D Poisson field solver (see
-docs/spectral_sine_poisson_solver.md) against the exact Bassetti-Erskine
+docs/theory/spectral_sine_poisson_solver.md) against the exact Bassetti-Erskine
 Gaussian kick, and characterize how accuracy scales with the number of modes /
 grid resolution and the rectangular domain size.
 

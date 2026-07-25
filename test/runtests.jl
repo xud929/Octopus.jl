@@ -463,6 +463,82 @@ end
     @test all(a == b for (a, b) in zip(coordinate_arrays(p1.rep), coordinate_arrays(p2.rep)))
 end
 
+@testset "GaussianPIC solver construction and metadata" begin
+    s = GaussianPICPoissonSolver(grid=(64, 64))
+    @test s.margin_sigma == 5.0
+    @test s.neutralize
+    @test s.coupling_tol == Inf
+    @test s.pic isa PICPoissonSolver
+    sch = solver_option_schema(GaussianPICPoissonSolver)
+    @test :margin_sigma in keys(sch)
+    @test :neutralize in keys(sch)
+    @test :coupling_tol in keys(sch)
+    @test :grid in keys(sch)                       # PIC options are inherited
+    @test solver_configuration(s).margin_sigma == 5.0
+    @test GaussianPICPoissonSolver in build_registry().solvers
+    @test_throws ArgumentError GaussianPICPoissonSolver(margin_sigma=-1.0)
+    @test_throws ArgumentError GaussianPICPoissonSolver(coupling_tol=-1.0)
+    # invalid PIC options are still rejected through the embedded solver
+    @test_throws ArgumentError GaussianPICPoissonSolver(deposit_method=:BAD)
+end
+
+@testset "Zero-width GaussianPIC slice remains finite" begin
+    n = 16
+    x = collect(range(-1.0e-3, 1.0e-3; length=n))
+    y = reverse(copy(x))
+    beam1 = test_beam(Phase6DRep(copy(x), zeros(n), copy(y), zeros(n), zeros(n), zeros(n)))
+    beam2 = test_beam(Phase6DRep(copy(y), zeros(n), copy(x), zeros(n), zeros(n), zeros(n)))
+    solver = GaussianPICPoissonSolver(
+        kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+        grid=(16, 16), green_cache=:none, longitudinal_kick=true,
+        slicing=LongitudinalSlicing(nslices=1, method=:equal_count),
+    )
+    luminosity = collide!(solver, beam1, beam2, CPUThreadsBackend)
+    @test isfinite(luminosity)
+    @test all(array -> all(isfinite, array), coordinate_arrays(beam1))
+    @test all(array -> all(isfinite, array), coordinate_arrays(beam2))
+end
+
+@testset "GaussianPIC beats PIC toward the soft-Gaussian kick" begin
+    rms(v) = sqrt(sum(abs2, v) / length(v))
+    function round_pair()
+        set_global_rng!(seed=11, method=:philox)
+        e = Beam(8000, CPUThreadsBackend, Float64;
+            beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 1.0e-2),
+            cutoff=5.0, rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+            r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        p = Beam(8000, CPUThreadsBackend, Float64;
+            beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 1.0e-2),
+            cutoff=5.0, rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
+            r0=RE * ME0 / PMASS_EV, npart=1.7e11)
+        return e, p
+    end
+    sl = LongitudinalSlicing(nslices=1, method=:normal_quantile, center_position=:centroid)
+    e0, _ = round_pair()
+    px0 = copy(e0.rep.px)                       # identical initial px across solvers
+    # Analytic Bassetti-Erskine reference kick (soft-Gaussian solver).
+    eg, pg = round_pair()
+    collide!(GaussianPoissonSolver(slicing=sl, longitudinal_kick=false), eg, pg, CPUThreadsBackend)
+    kick_ref = eg.rep.px .- px0
+    coarse = (48, 48)
+    eh, ph = round_pair()
+    collide!(GaussianPICPoissonSolver(slicing=sl, grid=coarse, green_cache=:none,
+                                      longitudinal_kick=false), eh, ph, CPUThreadsBackend)
+    kick_h = eh.rep.px .- px0
+    ep, pp = round_pair()
+    collide!(PICPoissonSolver(slicing=sl, grid=coarse, green_cache=:none,
+                              longitudinal_kick=false), ep, pp, CPUThreadsBackend)
+    kick_p = ep.rep.px .- px0
+    err_h = rms(kick_h .- kick_ref) / rms(kick_ref)
+    err_p = rms(kick_p .- kick_ref) / rms(kick_ref)
+    # Hybrid reproduces the analytic kick to a few percent and, at a coarse grid,
+    # beats PIC. The per-particle margin is modest because macroparticle shot noise
+    # (identical for both) dominates the single-turn kick error; the large win is in
+    # the systematic/coherent field (see validation/gaussian_pic_field_validation.jl).
+    @test err_h < 0.03
+    @test err_h < 0.95 * err_p
+end
+
 @testset "Spectral solver reproduces soft-Gaussian kick" begin
     rms(v) = sqrt(sum(abs2, v) / length(v))
     function round_pair()
@@ -782,6 +858,47 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         ecpu, pcpu = flat_pair()
         egpu, pgpu = to_gpu(ecpu), to_gpu(pcpu)
         @test_throws ArgumentError collide!(gf, egpu, pgpu, Octopus.CUDABackend)
+    end
+
+    @testset "CUDA GaussianPIC solver matches CPU" begin
+        to_gpu(b) = begin
+            rep = Phase6DRep((Octopus.CUDA.CuArray(copy(a)) for a in coordinate_arrays(b.rep))...)
+            Beam{Octopus.CUDABackend,typeof(b.params),typeof(rep)}(b.params, rep)
+        end
+        function gp_pair()
+            set_global_rng!(seed=19, method=:philox)
+            e = Beam(6000, CPUThreadsBackend, Float64;
+                beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+                sigma=(106.0e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=1,
+                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            p = Beam(6000, CPUThreadsBackend, Float64;
+                beta=(0.8, 0.072, 90.0), alpha=(0.0, 0.0, 0.0),
+                sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
+                charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            return e, p
+        end
+        sl = LongitudinalSlicing(nslices=5, method=:normal_quantile, center_position=:centroid)
+        # Cover the transverse-only and full 6D map, and both CUDA wavefront paths
+        # (indexed default, and the non-indexed fallback).
+        for longitudinal_kick in (false, true), indexed in (true, false)
+            solver = GaussianPICPoissonSolver(slicing=sl, grid=(64, 64), green_cache=:none,
+                                              longitudinal_kick=longitudinal_kick,
+                                              cuda_indexed_wavefront=indexed)
+            ecpu, pcpu = gp_pair()
+            egpu, pgpu = to_gpu(ecpu), to_gpu(pcpu)
+            lum_cpu = collide!(solver, ecpu, pcpu, CPUThreadsBackend)
+            lum_gpu = collide!(solver, egpu, pgpu, Octopus.CUDABackend)
+            Octopus.CUDA.synchronize()
+            for (cpu_beam, gpu_beam) in ((ecpu, egpu), (pcpu, pgpu))
+                for (expected, actual) in zip(coordinate_arrays(cpu_beam),
+                                              coordinate_arrays(gpu_beam))
+                    # ~1e-13: the only backend difference is the parallel-reduction
+                    # order of the slice moments; well within the 1e-10 contract.
+                    @test Array(actual) ≈ expected rtol=1.0e-9 atol=1.0e-18
+                end
+            end
+            @test lum_gpu ≈ lum_cpu rtol=1.0e-9
+        end
     end
 
     @testset "CUDA coupled weak-strong parity" begin

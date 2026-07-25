@@ -98,7 +98,7 @@ accelerator coordinates their Jacobian determinants are respectively
 `sec(angle)^3` and `cos(angle)^3`. They are therefore tagged
 `:quasi_symplectic` and validated by their determinant and inverse relation,
 rather than by the standalone canonical-symplectic criterion. See
-`docs/beam_beam_longitudinal_kick.md` for the collision model and
+`docs/theory/beam_beam_longitudinal_kick.md` for the collision model and
 `validation/symplecticity_validation.jl` for the executable check.
 
 ## Current Backends
@@ -249,7 +249,7 @@ source moment at its own collision point. It does not use left/right
 field-slice boundary interpolation. The longitudinal kick, virtual-drift
 Hamiltonians, moving-centroid term, slingshot contribution, and coupled
 `sigma_xy` derivative are derived in
-`docs/beam_beam_longitudinal_kick.md`.
+`docs/theory/beam_beam_longitudinal_kick.md`.
 `GaussianPoissonSolver(batch_mode=:wavefront)` is the default CUDA scheduler.
 It groups dependency-ready non-overlapping slice pairs, reduces all active
 source moments in one wavefront, then launches independent slice kicks. Set
