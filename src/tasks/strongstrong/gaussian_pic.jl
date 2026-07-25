@@ -22,6 +22,38 @@ implementation; the CUDA path lives in pic_cuda.jl.
 # controls. All PIC options are forwarded to the embedded solver, so the PIC
 # leaf helpers are reused unchanged by passing `solver.pic`.
 # ---------------------------------------------------------------------------
+"""
+    GaussianPICPoissonSolver(; margin_sigma=5.0, neutralize=true,
+                             coupling_tol=Inf, kwargs...)
+
+Gaussian-subtracted PIC strong-strong collision solver: a control-variate
+("delta-f") hybrid of the analytic soft-Gaussian field and the grid PIC solver.
+For each directed slice interaction it deposits the source slice, subtracts the
+erf-integrated reference Gaussian (the slice's own drifted transverse moments)
+from the charge grid, solves the *residual* with the same integrated-log Green
+FFT as `PICPoissonSolver`, and adds the exact Bassetti-Erskine field back per
+field particle. This raises systematic field accuracy at a fixed grid; the hybrid
+error is nearly grid-independent. See `docs/gaussian_subtracted_pic_solver.md`.
+
+The solver composes a `PICPoissonSolver`: all PIC keywords (`grid`,
+`deposit_method`, `green_type`, `green_cache`, `longitudinal_kick`, `slicing`,
+`kbb1`/`kbb2`, `luminosity_scale`, the CUDA execution options, ...) are forwarded
+to it unchanged, so `?PICPoissonSolver` documents them. The additional options
+are:
+
+- `margin_sigma`: minimum adaptive-box half-width, in beam sigmas, for containing
+  the subtracted Gaussian (its tails extend beyond the particle cloud). `0`
+  keeps the ordinary particle-wrapping box.
+- `neutralize`: rescale the subtracted Gaussian grid so its total matches the
+  deposited particles, removing the spurious open-boundary monopole.
+- `coupling_tol`: correlation-coefficient threshold
+  `|sigma_xy/(sigma_x*sigma_y)|` above which the coupled (rotated) subtraction
+  would be used. The current implementation is always uncoupled (`Inf`); the
+  residual grid absorbs any transverse coupling.
+
+CPU and CUDA are supported and CPU/CUDA bit-parity; the CUDA path defaults to the
+indexed wavefront route (see `gaussian_pic_cuda.jl`).
+"""
 struct GaussianPICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     pic::PICPoissonSolver{T}
     margin_sigma::T

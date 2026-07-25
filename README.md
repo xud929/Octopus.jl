@@ -89,17 +89,20 @@ julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consist
 ## Documentation Map
 
 - `AGENTS.md`: development rules for human and AI collaborators.
+- `docs/README.md`: **index of every document in `docs/`** (categorized:
+  entry-point/generated, theory notes, planning) — start here.
 - `docs/public_api.md`: entry points to public docstrings and metadata queries.
 - `docs/current_runtime.md`: current runtime/backend behavior.
-- `docs/beam_beam_longitudinal_kick.md`: derivation of weak-strong and
-  soft-Gaussian longitudinal kicks, virtual drifts, and the slingshot effect.
 - `docs/registry_snapshot.md`: generated registry snapshot.
-- `docs/pic_solver_improvement_plan.md`: PIC solver optimization notes.
-- `docs/gaussian_subtracted_pic_solver.md`: `GaussianPICPoissonSolver` theory
-  (control-variate hybrid: analytic Gaussian + PIC residual).
+- `docs/todo.md`: forward-looking plan (open items per solver).
+- Theory notes: `docs/beam_beam_longitudinal_kick.md` (synchro-beam longitudinal
+  kick), `docs/weak_strong_6d_model.md` (weak-strong source model),
+  `docs/spectral_sine_poisson_solver.md` (`SpectralPoissonSolver`),
+  `docs/gaussian_subtracted_pic_solver.md` (`GaussianPICPoissonSolver`).
 - `examples/`: runnable case-law examples.
 - `profiling/`: focused runtime profiling scripts.
-- `validation/`: numerical checks and backend consistency tests.
+- `validation/`: numerical checks, backend-consistency tests, and
+  `*_optimization_history.md` records.
 
 ## Notes
 

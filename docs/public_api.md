@@ -79,6 +79,8 @@ Use Julia help:
 ?StrongStrongCollision
 ?GaussianPoissonSolver
 ?PICPoissonSolver
+?SpectralPoissonSolver
+?GaussianPICPoissonSolver
 ?SolverOptionMeta
 ?solver_option_schema
 ?solver_configuration
@@ -142,8 +144,10 @@ seconds = read(moments, :elapsed_time)
 
 Developer-facing numerical checks live in `validation/`. They may use internal
 helpers and should not be treated as public API examples.
-For beam-beam longitudinal-kick formulas, virtual-drift conventions, and the
-slingshot term, start from `docs/beam_beam_longitudinal_kick.md`.
+For the physics/method theory behind the beam-beam solvers (longitudinal-kick
+formulas and virtual-drift conventions, the weak-strong source model, and the
+spectral and Gaussian-subtracted PIC solvers), see the theory notes indexed in
+`docs/README.md`, starting from `docs/beam_beam_longitudinal_kick.md`.
 
 ## Beam And Runtime Helpers
 

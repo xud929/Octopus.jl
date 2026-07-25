@@ -31,6 +31,7 @@ an elevated role before making file changes.
 
 ## How To Orient
 
+- For a categorized index of every document, read `docs/README.md`.
 - For current public objects, read `docs/registry_snapshot.md` or run
   `summarize_registry()`.
 - For stable API usage, read `docs/public_api.md`, then use Julia help on the

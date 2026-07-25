@@ -60,6 +60,10 @@ has finite-particle, grid, deposition, and domain-truncation error, so the
 script reports the observed distribution and worst case without imposing one
 universal pass/fail tolerance.
 
+The implemented `PICPoissonSolver` optimizations (Green-FFT reuse, workspace
+buffers, slice-pair Green cache, CUDA overlap/compact/indexed paths) are recorded
+in `strong_strong_pic_optimization_history.md`; open items are in `docs/todo.md`.
+
 ## Gaussian-Subtracted PIC Field
 
 `gaussian_pic_field_validation.jl` compares the `GaussianPICPoissonSolver`

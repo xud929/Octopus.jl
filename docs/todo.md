@@ -173,6 +173,23 @@ regime where the accuracy gain should be largest.
   every new public field lands with its runtime consumer, an effectiveness test
   that observes it at the consumer boundary, and metadata.
 
+## PIC Solver Core
+
+Open items carried over from the former `pic_solver_improvement_plan.md` (its
+implemented items are recorded in
+`validation/strong_strong_pic_optimization_history.md`).
+
+1. **Improve GPU deposition.** CUDA PIC deposition is correctness-oriented and
+   uses atomics. Candidate replacements: sort/bin particles by cell then
+   segmented reduce; per-block shared-memory tile accumulation then global
+   reduction; split dense slices into grid tiles to cut atomic contention. Each
+   must be checked against `validation/pic_gaussian_field_validation.jl` before
+   replacing the current path.
+2. **Add a lattice Green-function variant.** `green_type` currently supports
+   `:integrated` (default) and `:standard`. Evaluate a lattice Green function,
+   selected by `green_type`, and cover it with validation sweeps over round and
+   high-aspect-ratio beams.
+
 ## Spectral Sine-Series Poisson Solver
 
 **Status (2026-07-23): production-ready 6D solver, correctness-validated against
