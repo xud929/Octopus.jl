@@ -336,11 +336,16 @@ $$
 
 A single in-place FFT plan per dimension serves both the DST and the cosine
 derivative (only the extension sign differs). The CUDA `collide!` agrees with the
-CPU path to machine precision (kicks ~4e-16, luminosity ~9e-16) and runs the
-production case (2.56M/beam, 15 slices, grid 128x1024) at ~0.62 s/turn — about 4x
-faster than the PIC CUDA path at matched grid resolution, since there is no
-zero-padding and no Green-function convolution. See
-`docs/history/strong_strong_spectral_optimization_history.md`.
+CPU path to machine precision (kicks ~4e-16, luminosity ~9e-16).
+
+**Throughput caveat (corrected).** An earlier version of this note claimed the
+CUDA spectral path is "about 4x faster than the PIC CUDA path at matched grid
+resolution". That number came from an isolated collide-only loop, which inflates
+PIC because the blown-up beams churn its adaptive Green cache. Measured through
+the **full example beamline** — the only fair benchmark — the spectral 6D grid
+path is *slower* than PIC at the production case, not faster. See
+`docs/history/strong_strong_spectral_optimization_history.md` and
+[`todo.md`](../todo.md) for the current measured ratio.
 
 Every stage maps to a strong GPU primitive, and the solve is embarrassingly
 parallel over modes:
@@ -483,10 +488,17 @@ bilinearly interpolated to the particles. This replaces both the slow per-point
 analytic evaluation ($O(N_f N_x N_y)$, used only to measure derivative-limited
 accuracy) and the finite-difference gradient.
 
-**Accuracy relative to PIC.** With the on-mesh spectral derivative the solver is
-at least as accurate as the Hockney PIC solver and **clearly better for flat
-beams**, the physically relevant beam-beam regime, at comparable or lower cost.
-Measured medians / maxima (interpolated field, $d=16$):
+**Accuracy relative to PIC — read the caveat.** The table below reports the
+*shape* error: the field-shape residual is normalized **after removing a
+least-squares constant**, so it deliberately excludes any error in the overall
+coupling. That was appropriate when the field scale was an empirically fitted
+constant (see Section 18), but it is not the error a production run experiences.
+Measured *without* the least-squares constant, and with the derived scale of
+Section 18, PIC is the more accurate solver at every aspect ratio tested; see
+Section 18 and the 2026-07-24 review in
+[`docs/history/`](../history/). Treat the table below as a
+derivative-quality comparison only. Measured medians / maxima (interpolated
+field, $d=16$, least-squares constant removed):
 
 | case | spectral on-mesh | PIC | spectral time | PIC time |
 | --- | ---: | ---: | ---: | ---: |
@@ -494,11 +506,13 @@ Measured medians / maxima (interpolated field, $d=16$):
 | 5:1 | 4.5e-3 / 2.3e-2 | 2.2e-3 / 2.8e-2 | 0.009 s | 0.039 s |
 | 25:1 | 6.8e-3 / **4.2e-2** | 9.4e-3 / **1.4e-1** | 0.042 s | 0.16 s |
 
-At $25{:}1$ the spectral median is $\sim 30\%$ lower than PIC and the maximum is
-$\sim 3\times$ better, at $\sim 4\times$ lower cost. Round beams tie on the median;
-the small round-beam gap versus the per-point analytic ($1.6\text{e-}3$) is
-bilinear field-interpolation error, recoverable with TSC interpolation or a finer
-mesh. The method also has no singular zero mode and no doubled grid.
+At $25{:}1$ the spectral *shape* median is $\sim 30\%$ lower than PIC and the
+shape maximum is $\sim 3\times$ better. Round beams tie on the median; the small
+round-beam gap versus the per-point analytic ($1.6\text{e-}3$) is bilinear
+field-interpolation error, recoverable with TSC interpolation or a finer mesh.
+The method also has no singular zero mode and no doubled grid. But once the
+overall constant is *not* fitted away, the Dirichlet-box truncation error enters
+the total, and the ranking reverses (Section 18).
 
 **Recommended defaults.**
 
@@ -575,6 +589,68 @@ $\sim 2\text{e-}13$ up to $l=2000$; re-anchor to an exact value every few hundre
 modes for very large $L$). This benefits **only the grid-free path**: the
 FFT-based grid path already exploits the same harmonic structure internally, so
 the recurrence gives it no additional speedup.
+
+## 18. Field normalization: derived, not fitted
+
+The mode solve returns $\phi_{lm}=-\rho_{lm}/(\alpha_l^2+\beta_m^2)$, i.e. the
+continuum coefficients of the potential solving $\nabla^2\phi=\rho$ for a source
+normalized to **unit total charge** (the deposit is divided by $N_s$ inside the
+field solve). The caller then applies the physical $k_{bb}\,w_{\text{slice}}$
+exactly as `GaussianPoissonSolver` does, so the reconstructed field must be
+returned in the **Bassetti-Erskine convention**: for unit population,
+$\mathbf K_{\text{BE}}\to 2\hat{\mathbf r}/r$ far from the source, while
+$\phi=\tfrac{1}{2\pi}\ln r$ gives $\mathbf E=-\nabla\phi=-\hat{\mathbf
+r}/(2\pi r)$. Hence
+
+$$
+\boxed{\;\mathbf K_{\text{BE}} = -4\pi\,\mathbf E .\;}
+$$
+
+Both implementation variants follow from this with **no free constant**:
+
+- **`:grid`.** FFTW's `RODFT00` and `REDFT00` each carry a factor $2$. The chain
+  `DST_y(philm)` $\to$ scale by $\alpha_l$ $\to$ padded `REDFT00` in $x$, with
+  the code's explicit $/2$, produces $2\,\partial_x\phi$ on the mesh, so the code's
+  `Exg` $=-\text{scale}\cdot2\,\partial_x\phi=2\,\text{scale}\,E_x$. Matching
+  $-4\pi E_x$ gives
+
+$$
+    \text{scale}_{\text{grid}} = -2\pi .
+$$
+
+- **`:grid_free`.** The direct mode sum gives `Ex` $=\text{scale}\cdot
+  \partial_x\phi = -\text{scale}\,E_x$, so
+
+$$
+    \text{scale}_{\text{free}} = +4\pi .
+$$
+
+- **Potential.** The 2D DST reconstruction of $\phi$ carries a factor $4$ while
+  each field component carries $2$, so the on-mesh potential needs an explicit
+  $\tfrac12$ to keep $\mathbf E=-\nabla\phi$ at the shared scale. With that
+  $\tfrac12$, $\Phi_g=2\,\text{scale}\,\phi=-2\ln r$ per unit charge, which is
+  exactly $\phi_{\text{PIC}}$ times $2$ — and the spectral $p_z$ kick uses
+  $k_{bb}w$ where PIC uses $2k_{bb}$, so the two longitudinal kicks agree.
+
+**History (2026-07-24).** These constants were previously *fitted*:
+`_SPECTRAL_FIELD_C0_GRID = -25.72` with a spurious
+$N_xN_y/[4(N_x{+}1)(N_y{+}1)]$ factor, and `_SPECTRAL_FIELD_C0_FREE = 12.518`.
+Two consequences were measured and are now fixed:
+
+1. The grid path's coupling **depended on the mesh**, so refining the grid did
+   not converge to the correct beam-beam force. The least-squares scale needed to
+   match Bassetti-Erskine went $+4.9\text{e-}2$ (64²), $+2.3\text{e-}3$ (128²),
+   $-1.3\text{e-}2$ (256²), $-1.9\text{e-}2$ (511²) — bottoming out and then
+   getting *worse* with refinement. With $\text{scale}=-2\pi$ the same sequence is
+   $+4.1\text{e-}2$, $+9.9\text{e-}3$, $+1.9\text{e-}3$, $-5.4\text{e-}5$:
+   monotone convergence to the exact normalization.
+2. The grid-free path carried a uniform $+0.34\%$ normalization bias
+   ($12.518$ vs $4\pi=12.5664$), now $-5\times10^{-4}$ (residual mode truncation).
+
+Because the fitted constant partially cancelled the discretization bias at the
+grids used for calibration, part of the previously reported "~1% agreement with
+PIC/analytic at production settings" was this normalization error rather than the
+macroparticle graininess floor it was attributed to.
 
 ## References
 

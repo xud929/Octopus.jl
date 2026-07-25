@@ -62,7 +62,11 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   [`strong_strong_diagnostics_benchmark_history.md`](history/strong_strong_diagnostics_benchmark_history.md).
 - Audits / change records:
   [`public_configuration_audit.md`](history/public_configuration_audit.md),
-  [`weak_strong_6d_model_validation.md`](history/weak_strong_6d_model_validation.md).
+  [`weak_strong_6d_model_validation.md`](history/weak_strong_6d_model_validation.md),
+  [`poisson_solver_review_2026_07_24.md`](history/poisson_solver_review_2026_07_24.md)
+  (full review of all four Poisson solvers: consistency audit, theory
+  re-derivation, open-source comparison, per-phase profiling, 200-turn production
+  runs, and error analysis).
 
 ## Where other documentation lives
 

@@ -30,17 +30,27 @@ Related notes:
 Work in the transverse plane $\mathbf r=(x,y)$ of one directed slice-pair
 interaction. The source slice has transverse charge density $\rho(\mathbf r)$
 (per unit area, in macroparticle-count units), and the beam-beam potential
-$\phi$ obeys the 2D Poisson equation
+$\phi$ obeys the 2D Poisson equation with **open (free-space) boundary
+conditions**.
+
+Two normalizations appear in the code and must be kept apart:
+
+- The **physical** potential solves $\nabla^2\phi=\rho$, so a unit point charge
+  gives $\phi=\tfrac{1}{2\pi}\ln r$ and $\mathbf E=-\nabla\phi=-\hat{\mathbf
+  r}/(2\pi r)$.
+- The **PIC grid** potential is built by convolving the deposited charge with the
+  integrated logarithmic Green function $G(\mathbf r)\sim-\tfrac12\ln r^2=-\ln
+  r$, i.e. $\phi_{\text{PIC}}=-2\pi\phi$, so a unit deposited macroparticle gives
+  $\mathbf E_{\text{PIC}}=-\nabla\phi_{\text{PIC}}=\hat{\mathbf r}/r$.
+
+The transverse kick applied by the PIC path is
 
 $$
-    \nabla^2\phi(\mathbf r) = k_{bb}\,\rho(\mathbf r),
-    \qquad
-    \Delta\mathbf p_\perp(\mathbf r) = -\nabla\phi(\mathbf r),
+    \Delta\mathbf p_\perp = 2k_{bb}\,\mathbf E_{\text{PIC}},
 $$
 
-with **open (free-space) boundary conditions**. Here $k_{bb}$ is the same
-physical coupling used by `GaussianPoissonSolver`, `PICPoissonSolver`,
-`SpectralPoissonSolver`, and `ThinStrongBeam`,
+where $k_{bb}$ is the same physical coupling used by `GaussianPoissonSolver`,
+`PICPoissonSolver`, `SpectralPoissonSolver`, and `ThinStrongBeam`,
 
 $$
     k_{bb}
@@ -48,11 +58,21 @@ $$
 $$
 
 carried per deposited source macroparticle in the PIC path (the physical scale
-divided by the source macroparticle count). The current PIC solver builds
-$\phi$ by depositing $\rho$ on a mesh and convolving with the integrated
-logarithmic Green function $G(\mathbf r)\sim-\tfrac12\ln r^2$ on a zero-padded
-grid (Hockney free-space method); the transverse kick uses
-$\Delta\mathbf p_\perp = 2k_{bb}\,\mathbf E$ with $\mathbf E=-\nabla\phi$.
+divided by the source macroparticle count). The factor $2$ is fixed by the
+Bassetti-Erskine convention of Section 3: a slice of $N_s$ deposited
+macroparticles gives $\mathbf E_{\text{PIC}}\to N_s\hat{\mathbf r}/r$ far from
+the source, while the unit-population analytic kick is $\mathbf
+K_{\text{BE}}\to2\hat{\mathbf r}/r$, so
+
+$$
+    \mathbf E_{\text{PIC}} = \tfrac12 N_s\,\mathbf K_{\text{BE}}
+    \quad\Longrightarrow\quad
+    \Delta\mathbf p_\perp = k_{bb} N_s \mathbf K_{\text{BE}},
+$$
+
+which is exactly the soft-Gaussian solver's $k_{bb}\,w_{\text{slice}}\,\mathbf
+K_{\text{BE}}$. Keeping this $\tfrac12 N_s$ (not $N_s$) is what makes the
+analytic add-back of Section 8 consistent with the grid term.
 
 ## 2. The control-variate decomposition
 
@@ -277,10 +297,11 @@ uses the Hockney open-boundary kernel, which returns the exact free-space field
 of **whatever net charge sits on the grid**. Charge conservation therefore
 governs the accuracy.
 
-The two knobs below are exposed as solver options
-(`gaussian_subtract_margin_sigma` for the box margin,
-`gaussian_subtract_neutralize` for discrete neutralization), each with an
-"off" setting so the behavior is user-controlled.
+The two knobs below are exposed as `GaussianPICPoissonSolver` options
+(`margin_sigma` for the box margin, `neutralize` for discrete neutralization),
+each with an "off" setting so the behavior is user-controlled. (The hybrid is a
+separate solver type composing a `PICPoissonSolver`, not a mode of it, so the
+option names carry no `gaussian_subtract_` prefix.)
 
 The deposited particles always sum to the full slice population,
 $\sum_{ij}Q^{\text{part}}_{ij}=N_s$ (assignment functions are a partition of
@@ -330,8 +351,7 @@ exponential tails that extend beyond the particle cloud, so the box must contain
 
 - **Do not shrink the box inside the particle extent**, and size it to at least
   $m\approx5$–$6\,\sigma$ about the slice centroid so the subtracted Gaussian is
-  contained to $\lesssim10^{-6}$. This is `gaussian_subtract_margin_sigma`
-  ($=m$).
+  contained to $\lesssim10^{-6}$. This is `margin_sigma` ($=m$; default 5).
 - If the beam is sampled with a small cutoff (e.g. particles only reach
   $3\sigma$), the current PIC box would wrap them at $3\sigma$ and leak
   $\sim3\times10^{-3}$ of the Gaussian; the box must then be **enlarged beyond
@@ -350,7 +370,7 @@ $$
 $$
 
 which forces $\sum_{ij}\delta Q_{ij}=0$ and kills the spurious monopole. This is
-the `gaussian_subtract_neutralize` flag; with it on, the method tolerates a
+the `neutralize` flag (default `true`); with it on, the method tolerates a
 tighter box and the margin only controls the residual's *dipole and higher*
 leakage, which is far weaker. With it off, accuracy relies on the margin alone.
 A modest margin plus neutralization is the recommended default.
@@ -366,8 +386,8 @@ $$
     r_{xy} = \frac{\sigma_{xy}}{\sigma_x\,\sigma_y}\in[-1,1]
 $$
 
-(the off-diagonal of the normalized covariance). Expose a user threshold
-$r_{\text{tol}}$ (`gaussian_subtract_coupling_tol`) and branch on $|r_{xy}|$:
+(the off-diagonal of the normalized covariance). The user threshold
+$r_{\text{tol}}$ is `coupling_tol` (default `Inf`); branch on $|r_{xy}|$:
 
 - **$|r_{xy}|\le r_{\text{tol}}$ — uncoupled subtraction (default hot path).**
   Subtract an axis-aligned Gaussian using $\sigma_x,\sigma_y$ from the covariance
@@ -375,7 +395,7 @@ $r_{\text{tol}}$ (`gaussian_subtract_coupling_tol`) and branch on $|r_{xy}|$:
   coupling; the grid solves it — exactly what PIC handles well when the
   correction is small. The subtraction stays fully separable and `erf`-only, and
   it matches the solver's existing uncoupled fast path.
-- **$|r_{xy}| > r_{\text{tol}}$ — coupled subtraction.** Rotate to principal axes
+- **$|r_{xy}| > r_{\text{tol}}$ — coupled subtraction (NOT YET IMPLEMENTED).** Rotate to principal axes
   $(u,v)$ by
   $\theta=\tfrac12\arctan\!\big(2\sigma_{xy}/(\sigma_x^2-\sigma_y^2)\big)$. The
   analytic Bassetti-Erskine field rotates exactly (evaluate with $\sigma_u,
@@ -408,17 +428,21 @@ map. The hybrid preserves this structure exactly:
   source moments. The subtraction $Q^{G}$ and the analytic Bassetti-Erskine
   field both use these drifted moments, so the analytic and residual parts share
   one geometry.
-- **Transverse kick.** By linearity,
+- **Transverse kick.** By linearity, using the $\mathbf E_{\text{PIC}}=\tfrac12
+  N_s\mathbf K_{\text{BE}}$ correspondence of Section 1,
 
 $$
     \Delta\mathbf p_\perp(\mathbf r)
-    = 2k_{bb}\Big[\,N_s\,\mathbf K_{\text{BE}}(\sigma',\mathbf r-\mu')
-       \;+\; \mathbf K_\delta(\mathbf r)\,\Big],
+    = 2k_{bb}\Big[\,\tfrac12 N_s\,\mathbf K_{\text{BE}}(\sigma',\mathbf r-\mu')
+       \;+\; \mathbf E_\delta(\mathbf r)\,\Big],
 $$
 
   where $\mathbf K_{\text{BE}}$ is the unit-population analytic field of
-  Section 3 and $\mathbf K_\delta$ is the interpolated residual grid field. The
-  overall constant is pinned by the pure-Gaussian limit (Section 10).
+  Section 3 and $\mathbf E_\delta$ is the interpolated residual grid field in the
+  same $\phi_{\text{PIC}}$ normalization. The $\tfrac12$ is **not** a free
+  constant: it is required for the analytic term to carry the same physical
+  weight as the grid term it replaces (Section 1), and it is what the
+  pure-Gaussian limit of Section 10 checks.
 
 - **Longitudinal kick.** The $p_z$ kick is linear in the potential,
   $\phi=\phi_G+\phi_\delta$, so it splits into the analytic soft-Gaussian
@@ -502,14 +526,32 @@ drivers, and the whole cost on GPU — are unchanged. The added work is:
 - the separable Gaussian subtraction $g_x,g_y$: $O(N_x+N_y)$ `erf`/`exp`
   evaluations per solve, plus an $O(N_xN_y)$ outer-product subtract, negligible
   beside the FFT;
-- one Bassetti-Erskine (`faddeeva_w`) evaluation per field particle, the same
-  per-particle cost the soft-Gaussian solver already pays and comparable to the
-  grid interpolation it runs alongside.
+- two Bassetti-Erskine (`faddeeva_w`) evaluations per field particle (one per
+  longitudinal boundary), the same per-particle cost the soft-Gaussian solver
+  already pays.
 
-So the FFT/grid scale is untouched and only a modest per-particle analytic term
-is added. Because the residual is smooth, the method also *enables* (but does not
-require) a coarser mesh for the same accuracy; the primary target here is higher
-accuracy at fixed grid and near-fixed speed.
+**Measured CPU cost (corrected 2026-07-24).** The earlier claim that the analytic
+add-back is "comparable to the grid interpolation it runs alongside" is wrong on
+CPU by an order of magnitude. Measured at the production case (2.56M e- /
+1.024M p, 15 slices, 8 threads), per directed slice-pair interaction:
+
+| term | time |
+| --- | ---: |
+| erf profile build $g_x,g_y$ | 2.8e-5 s |
+| grid subtraction $\text{amp}\cdot g_x\otimes g_y$ | 1.1e-5 s |
+| slice moments | 3.2e-4 s |
+| **Bassetti-Erskine add-back (2 per field particle)** | **2.68e-2 s** |
+| (comparison) PIC field interpolation + kick | 2.4e-3 s |
+| (comparison) whole PIC(128,128) interaction | 2.5e-2 s |
+
+The two $O(N_x{+}N_y)$ and $O(N_xN_y)$ terms are indeed negligible as claimed,
+but the per-particle `faddeeva_w` add-back is ~11x the grid interpolation and
+roughly **doubles** the CPU cost of the interaction. The FFT/grid scale is
+untouched, so the hybrid's speed argument survives only in the form "coarser mesh
+at equal accuracy": the hybrid at $64\times64$ matches or beats PIC at
+$128\times128$ systematically, and that is where the net win comes from. On CUDA
+the `faddeeva_w` evaluation is fused into the existing kick kernel and the
+measured penalty is much smaller (see the optimization history).
 
 ## 10. Correctness and limiting cases
 

@@ -223,9 +223,12 @@ on separate CUDA streams and synchronized before the next
 pre-collision tracking for the two beams may overlap, then the solver runs only
 after both beams reach the collision marker. CPU execution remains sequential.
 
-The implemented solvers are `GaussianPoissonSolver` and `PICPoissonSolver`.
-Both slice the beams longitudinally, order slice-pair collisions by collision
-time, apply kicks to both live beams, and return a luminosity estimate.
+The implemented solvers are `GaussianPoissonSolver`, `PICPoissonSolver`,
+`SpectralPoissonSolver`, and `GaussianPICPoissonSolver`. All slice the beams
+longitudinally, order slice-pair collisions by collision time, apply kicks to
+both live beams, and return a luminosity estimate. All four run on
+`CPUThreadsBackend` and `CUDABackend`, except `SpectralPoissonSolver`'s
+`method=:grid_free` variant, which is CPU-only.
 Use `LongitudinalSlicing(method=:normal_quantile, nslices=N)` for
 equal-probability normal-distribution quantile boundaries based on the current
 longitudinal mean/rms; this replaces manually constructing Gaussian

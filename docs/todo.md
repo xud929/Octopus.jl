@@ -1,9 +1,54 @@
 # TODO
 
+## New items from the 2026-07-24 Poisson-solver review
+
+See [`docs/history/poisson_solver_review_2026_07_24.md`](history/poisson_solver_review_2026_07_24.md)
+for the measurements behind each of these.
+
+1. **Fourth-order gradient in `_pic_field!` (cheapest real accuracy win).**
+   Replacing the second-order central difference with a fourth-order stencil gives
+   ~1.6x lower median field error at production grids for ~10 lines, no new FFT,
+   and no change to the Green cache or the CUDA structure. Measured in Section 3.3
+   of the review.
+   *(An earlier version of this list recommended a Vico-Greengard-Ferrando kernel
+   here as the highest-value item. That is **withdrawn for round and mild-aspect
+   beams**: swapping the integrated log kernel for a node-sampled one changes the
+   round-beam field error by 0%, so the kernel is not the bottleneck there. VGF
+   remains worth evaluating for high-aspect-ratio beams, where the kernel does
+   matter — 3.1x at 25:1 — but Octopus's integrated kernel already captures most
+   of that gain. See Section 3.3.)*
+2. **Measure multi-turn artificial emittance growth per solver and per grid.**
+   The production case is many turns in a ring, where correlated PIC noise drives
+   artificial emittance growth. Single-turn field error (the only thing currently
+   validated) is not the right figure of merit. This is the highest-value *physics*
+   follow-up, and it is the measurement that would confirm or refute the hybrid
+   solver's main selling point.
+3. **CPU indexed-slice path.** `_pic_extract_slice` + `_pic_copy_coords` are ~35%
+   of CPU PIC cost at `grid=(128,128)` and 53% at `(64,64)`. CUDA already avoids
+   this via `cuda_indexed_wavefront`; the CPU interaction has no equivalent.
+   Benefits PIC, GaussianPIC, and the spectral 6D path (all three call the same
+   helpers).
+4. ~~**Add `luminosity_schedule` to `SpectralPoissonSolver`.**~~ **DONE** (CPU +
+   CUDA, with a 32-assertion effectiveness test at the consumer boundary).
+   `GaussianPoissonSolver` was deliberately left without it: its luminosity is a
+   by-product of the per-particle kick and costs 0%, so the knob would be a no-op.
+   Documented as intentional in `?AbstractPoissonSolver`.
+
+5. **Document that TSC is the right deposition for the hybrid.** `gpic_TSC` beats
+   `gpic_CIC` at nearly every grid and aspect ratio, while `pic_TSC` never beats
+   `pic_CIC`. Neither the docstring nor the theory note mentions this.
+6. **Strengthen the `green_type=:standard` warning.** At 25:1 aspect ratio its p95
+   field error is 17x worse than `:integrated`. The docstring currently only calls
+   `:integrated` "the robust default".
+7. **Guard the spectral Dirichlet box against drifted sources.** `_spectral_box`
+   sizes the box from undrifted coordinates while `_spectral_field_grid!` deposits
+   drifted slices and silently drops out-of-box particles. Safe at production
+   settings, unguarded in general.
+
 ## Gaussian-Subtracted PIC Solver (Hybrid Analytic-PIC)
 
-**Status (2026-07-24): CPU implementation complete and validated; CUDA path is
-the remaining work.** `GaussianPICPoissonSolver{T} <: AbstractPoissonSolver`
+**Status (2026-07-24): CPU and CUDA both complete and validated.**
+`GaussianPICPoissonSolver{T} <: AbstractPoissonSolver`
 (`src/tasks/strongstrong/gaussian_pic.jl`) composes `PICPoissonSolver` plus
 `margin_sigma`, `neutralize`, `coupling_tol`, auto-registers, and reuses the PIC
 CPU leaf helpers (grid, integrated-log Green FFT + slice-pair cache,
@@ -28,6 +73,15 @@ GaussianPIC@64 **0.28 s (1.2x PIC@128) with equal-or-better accuracy** — since
 hybrid's systematic accuracy is grid-independent (hybrid@64 ≈ PIC@128). See
 `docs/history/strong_strong_gaussian_pic_optimization_history.md`.
 
+**Scaling caveat (2026-07-24 review).** Those ratios were measured at **512k/256k**
+macroparticles, one fifth of the production case. The hybrid's extra cost is the
+per-field-particle Bassetti-Erskine add-back, which scales with the particle count
+while the grid work does not, so the ratio degrades with beam size. Re-measured at
+the full production case (2.56M/1.024M) over 200 turns, the hybrid is ~2x the PIC
+time, not 1.2-1.6x. The accuracy claim (hybrid@64 ≈ or better than PIC@128) is
+independently confirmed. See
+[`poisson_solver_review_2026_07_24.md`](history/poisson_solver_review_2026_07_24.md).
+
 **Remaining:** the coupled (rotated) subtraction branch (`coupling_tol < Inf`) is
 still unimplemented (CPU and CUDA are always-uncoupled); optional further CUDA
 tuning of the host-side erf profile build. Steps 1-8 below are DONE (CPU + CUDA).
@@ -42,7 +96,11 @@ helpers in `src/tasks/strongstrong/slicing.jl`.
 
 ### Implementation plan (priority order)
 
-1. **Expose the options, CPU-first.** Add a mode to `PICPoissonSolver` with these
+1. **Expose the options, CPU-first.** *(Historical: this step describes an
+   abandoned design. The implementation is a separate `GaussianPICPoissonSolver`
+   type composing a `PICPoissonSolver`, with the shorter field names
+   `margin_sigma`, `neutralize`, `coupling_tol` — not a mode of `PICPoissonSolver`
+   with `gaussian_subtract_*` fields.)* Add a mode to `PICPoissonSolver` with these
    public fields (all with explicit off/default so behavior is user-controlled):
    - `gaussian_subtract::Bool=false` — master flag; `false` is bit-identical to
      the current PIC path.
@@ -257,7 +315,15 @@ campaign in the optimization history: rfft DST/DCT, fused build/extract kernels,
 right-sized FFT-friendly grid, drift-folded deposit). The **CPU** 6D path has not
 had the same campaign and remains the top open performance item.
 
-1. **CPU 6D performance campaign (top open item).** The CPU `longitudinal_kick=true`
+1. **CPU 6D performance campaign (DEMOTED, 2026-07-24 review).** Re-measured at the
+   *recommended* production grid `(127,383)/d=8` rather than the over-resolved
+   `(128,1024)/16`, the CPU spectral 6D path is **faster** than PIC(128,128), not
+   slower, so the premise of this item no longer holds. It is also the least
+   accurate solver at production settings once the coupling is not fitted away.
+   Keep spectral as an independent cross-check; do not invest further in its CPU
+   throughput. See
+   [`poisson_solver_review_2026_07_24.md`](history/poisson_solver_review_2026_07_24.md).
+   Original text follows. The CPU `longitudinal_kick=true`
    grid path never got the throughput campaign the CUDA path did. Measured baseline
    (20k/beam, 15 slices, `grid=(128,1024)/16`, 8 threads, one turn): spectral 6D
    `5.06 s/turn` vs PIC `4.23` and Gaussian `0.15` (see the 2026-07-23 6D-map entry
