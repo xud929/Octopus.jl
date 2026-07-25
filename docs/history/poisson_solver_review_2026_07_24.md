@@ -1501,39 +1501,91 @@ CPU/CUDA parity, `green_cache=:none`, both `longitudinal_kick` settings:
 
 The coupled branch is therefore at the same parity as the uncoupled one.
 
-### 21.2 Finding: the slice-pair Green cache breaks CPU/CUDA parity for GaussianPIC
+### 21.2 Bug: GaussianPIC silently ignored `green_cache` on CUDA (fixed)
 
-Discovered while writing the parity test, **present on committed code and
-unrelated to the coupled work**:
+**The mechanism given in the first draft of this section was wrong and is
+corrected here.** The first draft attributed the CPU/CUDA discrepancy to slice
+sigmas differing at ~1e-16 between a serial and a batched reduction, with the
+cache's discrete reuse/rebuild decision amplifying it. Two measurements killed
+that story:
 
-| solver | `green_cache` | CPU-CUDA max abs coordinate difference |
+- `margin_sigma=0` makes the source box come from particle extrema (exact
+  min/max, bitwise identical across backends) instead of sigma. The discrepancy
+  was unchanged: 3.125e-6 versus 3.184e-6. So a sigma-dependent box was not the
+  trigger.
+- The grid-origin alignment was probed directly against a relative perturbation
+  of the bounds. It is stable at 1e-16 and only moves at 1e-15, so there was no
+  1e-16 amplification available to begin with.
+
+**The actual cause is much simpler: none of GaussianPIC's three CUDA routes
+implemented `green_cache` at all.** `gaussian_pic_cuda.jl` contained zero
+references to it. The CPU expanded every slice-pair grid by
+`1 + slice_pair_green_growth` (default 1.25) and cached it; CUDA silently solved
+on the unexpanded grid. Two different, individually valid grids, differing at the
+discretization sensitivity. Plain PIC was unaffected because its CUDA routes do
+call `_cuda_pic_slice_pair_cached_prep!`.
+
+The decisive test: with `slice_pair_green_growth=0.0`, which makes the CPU
+expansion a no-op, parity was **5.193e-17 — bit-identical to `green_cache=:none`**.
+
+| configuration | CPU-CUDA max abs coordinate difference |
+| --- | ---: |
+| `:slice_pair`, growth 0.25 (default) | 3.184e-6 |
+| `:slice_pair`, growth 0.0 | 5.193e-17 |
+| `:none` | 5.193e-17 |
+
+This was a **silently ignored non-default option** — and worse, a silently
+ignored *default* option, since `green_cache=:slice_pair` is the default. That is
+exactly the failure mode `AGENTS.md` prohibits.
+
+**Fix.** All three CUDA routes now honour it: indexed wavefront (the default),
+non-indexed wavefront, and the sequential reference path. Two implementation
+points were not obvious:
+
+1. The cache must be applied **after** `_cuda_gpic_augment_prep`, which recomputes
+   the grid from the margin-enlarged source bounds. Caching before it would be
+   silently discarded — the same class of bug as the original.
+2. `_cuda_gpic_prepare_interaction` did not return `source_bounds`/`field_bounds`,
+   which the cache's usability check reads. Those are now part of the tuple.
+
+Parity after the fix, all routes:
+
+| route | `green_cache` | max abs difference |
 | --- | --- | ---: |
-| PIC | `:none` | 1.3e-16 |
-| PIC | `:slice_pair` | 8.1e-17 |
-| GaussianPIC | `:none` | 5.2e-17 |
-| **GaussianPIC** | **`:slice_pair` (default)** | **3.2e-6** |
+| indexed wavefront (default) | `:slice_pair` | 2.486e-17 |
+| indexed, `coupling_tol=0` (coupled) | `:slice_pair` | 3.509e-17 |
+| indexed, growth 0.5 | `:slice_pair` | 1.718e-17 |
+| non-indexed wavefront | `:slice_pair` | 2.525e-17 |
+| sequential | `:slice_pair` | 2.524e-17 |
 
-Eleven orders of magnitude, and only for GaussianPIC with the **default** cache.
-Plain PIC is unaffected.
+GaussianPIC is now reproducible across backends at its default settings.
 
-**Mechanism.** GaussianPIC enlarges the source box by `margin_sigma * sigma`
-before the grid is finished, and those sigmas come from the slice moments. The
-CPU computes them by a serial pass and CUDA by a batched device reduction, so
-they differ at ~1e-16. The slice-pair cache then makes a **discrete** decision —
-reuse the cached grid or rebuild it — from those bounds, and a 1e-16 difference
-can flip it. The two backends then solve on different (both valid) grids, and the
-grid-choice sensitivity is ~1e-6.
+### 21.2a Bug found in passing: the sequential CUDA route could not run
 
-**Why it was never seen:** the existing "CUDA GaussianPIC solver matches CPU"
-testset uses `green_cache=:none`, so it cannot observe this.
+Wiring the cache into the sequential route exposed that
+`_cuda_gpic_solve_drifted_field!` still called `_cuda_pic_field_kernel!` with the
+pre-`field_derivative` argument list. Adding the `fourth::Bool` parameter had
+missed this one call site, so `GaussianPICPoissonSolver` with
+`batch_mode=:sequential` on CUDA failed to compile its kernel — a hard error, not
+a wrong number. It was introduced by the `field_derivative` work in this same
+review pass and survived because no test exercised that combination. Fixed, and
+the new testset now covers the sequential route.
 
-It is not a correctness bug in the sense of a wrong answer — 3e-6 is far below
-the ~1% macroparticle floor, and both grids are legitimate — but it means
-GaussianPIC results are **not reproducible across backends** at the default
-settings, which matters for regression testing and for A/B comparisons. Recorded
-as an open item; the fix would be to make the cache decision depend only on
-quantities that are bitwise identical across backends (for example by quantising
-the enlarged bounds before the reuse test).
+### 21.2b The cache is a cross-turn optimization, and now pays off for GaussianPIC
+
+Measured on CUDA, 1.024M macroparticles per beam, 15 slices:
+
+| config | `:none` | `:slice_pair` | gain |
+| --- | ---: | ---: | ---: |
+| gpic64 | 0.507 | 0.468 | 1.08x |
+| gpic128 | 0.615 | 0.536 | 1.15x |
+| pic128 | 0.327 | 0.245 | 1.33x |
+
+Note this must be measured **through a multi-turn task**, not through repeated
+`collide!` calls. A bare `collide!` builds a fresh workspace, so every
+`(i, j, direction)` key is a miss and the cache is pure overhead — measured that
+way it looks 48-57% *slower*. Reuse only happens across turns, via the task
+runtime cache. Before the fix GaussianPIC on CUDA got none of this benefit.
 
 ### 21.3 Finding: atomic nondeterminism does not reach the emittance observable
 

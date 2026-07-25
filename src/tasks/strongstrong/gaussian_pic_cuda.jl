@@ -235,6 +235,30 @@ if _HAS_CUDA
                 prep21[n] = _cuda_gpic_augment_prep(gsolver, prep21[n], m2)
             end
 
+            # The slice-pair Green cache must be applied AFTER the augment above:
+            # augment recomputes the grid from the margin-enlarged source bounds,
+            # so a grid cached before it would simply be discarded. The erf
+            # profiles below are then built on the cached (expanded) grid, which
+            # is what makes this agree with the CPU.
+            use_slice_pair_green = _cuda_pic_slice_pair_green_cache_enabled(pic)
+            green12 = nothing
+            green21 = nothing
+            if use_slice_pair_green
+                for n in 1:npairs
+                    item = valid[n]
+                    prep12[n] = _cuda_pic_slice_pair_cached_prep!(
+                        pic, T, workspace.slice_pair_green_cache,
+                        (Int(item.pair.i), Int(item.pair.j), 1), prep12[n], nothing,
+                    )
+                    prep21[n] = _cuda_pic_slice_pair_cached_prep!(
+                        pic, T, workspace.slice_pair_green_cache,
+                        (Int(item.pair.i), Int(item.pair.j), 2), prep21[n], nothing,
+                    )
+                end
+                green12 = Any[prep12[n].green_fft for n in 1:npairs]
+                green21 = Any[prep21[n].green_fft for n in 1:npairs]
+            end
+
             gxh = Matrix{T}(undef, nx, nplanes); gyh = Matrix{T}(undef, ny, nplanes)
             amph = Vector{T}(undef, nplanes)
             gtmp_x = Vector{T}(undef, nx); gtmp_y = Vector{T}(undef, ny)
@@ -302,7 +326,7 @@ if _HAS_CUDA
             end
 
             phi_batch, Ex_batch, Ey_batch = _cuda_pic_solve_wavefront_fields_indexed_batched_fft!(
-                pic, valid, rep1, rep2, prep12, prep21, nothing, nothing, wf, nothing;
+                pic, valid, rep1, rep2, prep12, prep21, green12, green21, wf, nothing;
                 gpic_subtract=gsub,
             )
 
@@ -448,7 +472,9 @@ if _HAS_CUDA
             fymax = T(mapreduce((y, py, z) -> y + py * half * (z - center), max, field.y, field.py, field.z))
             source_grid, field_grid = _pic_interaction_grids(pic, sxmin, sxmax, symin, symax, fxmin, fxmax, fymin, fymax)
             return (sL=sL, sR=sR, source_grid=source_grid, field_grid=field_grid,
-                    green_fft=nothing, bL=bL, bR=bR, mom=mom, do_gauss=do_gauss)
+                    green_fft=nothing, bL=bL, bR=bR, mom=mom, do_gauss=do_gauss,
+                    source_bounds=(xmin=sxmin, xmax=sxmax, ymin=symin, ymax=symax),
+                    field_bounds=(xmin=fxmin, xmax=fxmax, ymin=fymin, ymax=fymax))
         end
 
         function _cuda_gpic_interaction_wavefront_batched_fft!(gsolver, gathered, kbb1, kbb2, klum,
@@ -468,6 +494,25 @@ if _HAS_CUDA
                 mom2[n] = _cuda_gpic_source_moments(item.slice2.coords)
                 prep12[n] = _cuda_gpic_prepare_interaction(gsolver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, mom1[n])
                 prep21[n] = _cuda_gpic_prepare_interaction(gsolver, item.slice2.coords, item.p2, item.slice1.coords, item.p1, mom2[n])
+            end
+
+            use_slice_pair_green = _cuda_pic_slice_pair_green_cache_enabled(pic)
+            green12 = nothing
+            green21 = nothing
+            if use_slice_pair_green
+                for n in 1:npairs
+                    item = valid[n]
+                    prep12[n] = _cuda_pic_slice_pair_cached_prep!(
+                        pic, T, workspace.slice_pair_green_cache,
+                        (Int(item.pair.i), Int(item.pair.j), 1), prep12[n], nothing,
+                    )
+                    prep21[n] = _cuda_pic_slice_pair_cached_prep!(
+                        pic, T, workspace.slice_pair_green_cache,
+                        (Int(item.pair.i), Int(item.pair.j), 2), prep21[n], nothing,
+                    )
+                end
+                green12 = Any[prep12[n].green_fft for n in 1:npairs]
+                green21 = Any[prep21[n].green_fft for n in 1:npairs]
             end
 
             # host-built erf profiles for the 4 planes of each pair, plus amplitudes
@@ -506,9 +551,10 @@ if _HAS_CUDA
 
             wf = _cuda_pic_wavefront_workspace!(workspace, pic, T, nplanes)
             # green12/green21 = nothing triggers the fused on-device batched Green
-            # build inside the solve (the fast PIC path); parity preserved.
+            # build inside the solve (the fast PIC path); parity preserved. With
+            # the slice-pair cache enabled they carry the cached per-pair Greens.
             phi_batch, Ex_batch, Ey_batch = _cuda_pic_solve_wavefront_fields_batched_fft!(
-                pic, valid, prep12, prep21, nothing, nothing, wf, nothing;
+                pic, valid, prep12, prep21, green12, green21, wf, nothing;
                 gpic_subtract=(gx=gx_d, gy=gy_d, amp=amp_d),
             )
 
@@ -793,8 +839,12 @@ if _HAS_CUDA
                 # CPU/wavefront two-direction semantics.
                 field1 = _cuda_gpic_copy_coords(slice1.coords)
                 field2 = _cuda_gpic_copy_coords(slice2.coords)
-                _cuda_gpic_interaction!(gsolver, slice1.coords, p1, field2, p2, kbb2, workspace.charges[1])
-                _cuda_gpic_interaction!(gsolver, slice2.coords, p2, field1, p1, kbb1, workspace.charges[2])
+                spc = _cuda_pic_slice_pair_green_cache_enabled(pic) ?
+                    workspace.slice_pair_green_cache : nothing
+                _cuda_gpic_interaction!(gsolver, slice1.coords, p1, field2, p2, kbb2, workspace.charges[1],
+                                        spc, (Int(i), Int(j), 1))
+                _cuda_gpic_interaction!(gsolver, slice2.coords, p2, field1, p1, kbb1, workspace.charges[2],
+                                        spc, (Int(i), Int(j), 2))
                 if compute_luminosity
                     luminosity += _cuda_pic_luminosity(pic, slice1.coords, p1, slice2.coords, p2, klum, workspace)
                 end
@@ -806,7 +856,8 @@ if _HAS_CUDA
         end
 
         function _cuda_gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_source,
-                                         field, param_field, kbb, charge)
+                                         field, param_field, kbb, charge,
+                                         slice_pair_cache=nothing, cache_key=nothing)
             pic = gsolver.pic
             T = eltype(source.x)
             nx, ny = pic.grid
@@ -815,9 +866,13 @@ if _HAS_CUDA
             if !prep.do_gauss
                 return _cuda_pic_interaction!(pic, source, param_source, field, param_field, kbb, nothing, charge, nothing)
             end
+            if slice_pair_cache !== nothing && cache_key !== nothing
+                prep = _cuda_pic_slice_pair_cached_prep!(pic, T, slice_pair_cache, cache_key, prep, nothing)
+            end
             sL = prep.sL; sR = prep.sR; bL = prep.bL; bR = prep.bR
             source_grid = prep.source_grid; field_grid = prep.field_grid
-            green_fft = _cuda_pic_green_fft(pic, T, source_grid, field_grid, nothing, nothing)
+            green_fft = prep.green_fft === nothing ?
+                _cuda_pic_green_fft(pic, T, source_grid, field_grid, nothing, nothing) : prep.green_fft
             hx = T(source_grid.width) / T(nx - 1); hy = T(source_grid.height) / T(ny - 1)
             gxL = Vector{T}(undef, nx); gyL = Vector{T}(undef, ny)
             gxR = Vector{T}(undef, nx); gyR = Vector{T}(undef, ny)
@@ -861,7 +916,7 @@ if _HAS_CUDA
             Ex = similar(phi); Ey = similar(phi)
             field_threads = _cuda_pic_threads(:field)
             blocks_grid = cld(nx * ny, field_threads)
-            CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, Int32(nx), Int32(ny))
+            CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, Int32(nx), Int32(ny), _pic_fourth_order(pic))
             return phi, Ex, Ey
         end
 
