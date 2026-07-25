@@ -194,6 +194,20 @@ with $\theta=\mathbf k h$. The $(\cos-1)$ numerator removes the divergent zero m
 fixes the gauge; the result converges to the infinite-lattice kernel for
 $|m|,|n|\ll M$.
 
+**Eigenvalues of the stencil.** Applying the five-point operator to a lattice plane
+wave $\psi_{mn}=e^{i(\theta_xm+\theta_yn)}$,
+
+$$
+    L_h\psi = \left[\frac{e^{i\theta_x}-2+e^{-i\theta_x}}{h_x^{2}}
+                  + \frac{e^{i\theta_y}-2+e^{-i\theta_y}}{h_y^{2}}\right]\psi
+            = -\left[\frac{2-2\cos\theta_x}{h_x^{2}}+\frac{2-2\cos\theta_y}{h_y^{2}}\right]\psi
+            \equiv -\kappa^2\psi ,
+$$
+
+so $L_h$ is diagonal in the DFT basis with eigenvalue $-\kappa^2$. (Expanding
+$2-2\cos\theta=\theta^2-\theta^4/12+\dots$ recovers $\kappa^2\to k^2$ as $h\to0$, which is
+the usual second-order consistency of the stencil.)
+
 **Normalization.** To reproduce $\phi=\sum_j q_j(-\ln r_{ij})$, the kernel must satisfy
 $L_h G = -2\pi\,\delta/(h_xh_y)$ — the Dirac delta discretizes to the Kronecker delta
 over the *cell area*. With $L_h$ eigenvalues $-\kappa^2$,
@@ -203,10 +217,44 @@ $$
     \mathcal F^{-1}\!\left[\kappa^{-2}\right].\;}
 $$
 
-Verified against the continuum: at $h=10^{-4}$ the constructed kernel reproduces
-$-\ln r$ to $1.8\times10^{-15}$ at $r=h$, with a residual $4.5\times10^{-2}$ offset at
-larger $r$ that converges to a constant — the near-origin lattice correction, which
-does not affect the field.
+**Asymptotics, and why the kernel is usable at all.** The construction is only
+legitimate if $G$ reproduces $-\ln r$ far from the origin. It does, and the constant
+is known in closed form. For the isotropic square lattice, Spitzer's potential
+kernel $a(\mathbf r)$ (gauge $a(0)=0$, $L a=\delta$) satisfies
+
+$$
+\boxed{\;a(\mathbf r) = \frac{1}{2\pi}\Big(\ln r + \gamma + \tfrac32\ln 2\Big) + O(r^{-2}),\;}
+$$
+
+with $\gamma$ the Euler-Mascheroni constant. Since $\widehat G\propto+\kappa^{-2}$ inverts
+$L_hg=-\delta$, the raw transform gives $g=-a$, so the scaled kernel obeys
+$G_{\text{PIC}}=2\pi g\to-(\ln r + C)$ with $C=\gamma+\tfrac32\ln2=1.6169364$. The additive
+$C$ is a gauge constant and does not affect the field.
+
+Three numerical confirmations, all against values fixed *before* the run:
+
+| quantity | computed | exact | agreement |
+| --- | ---: | ---: | ---: |
+| nearest neighbour $a(1,0)$ | 0.2499997616 | $1/4$ | 2.4e-7 |
+| asymptotic constant $C$ | 1.6162246 | $\gamma+\tfrac32\ln2$ | 7.1e-4 |
+| residual when anchored at $r=h$ | 4.47-4.54e-2 | $C-\pi/2$ = 0.046140 | matches |
+
+The nearest-neighbour value $a(1,0)=1/4$ is the exact lattice result behind the
+classic "infinite grid of $1\,\Omega$ resistors has $\tfrac12\,\Omega$ between adjacent
+nodes", since $R=2[a(1,0)-a(0,0)]$.
+
+The third row **derives** a number that was previously only observed. Verifying the
+kernel by anchoring it at $r=h$ forces exact agreement there, so the leftover offset
+at large $r$ must be exactly $C-2\pi a(1,0)=\gamma+\tfrac32\ln2-\pi/2=0.046140$. The
+measured $4.47$-$4.54\times10^{-2}$ is that quantity, not an error: it is the
+near-origin lattice correction, and being a constant it does not affect the field.
+
+**Validity window.** The infinite-lattice limit requires $|m|,|n|\ll M$. Measured
+convergence to $C$ at $M=1024$ is 6.2e-3 at $r=4$, best at 7.1e-4 at $r=16$, then
+*degrading* to 3.5e-3 by $r=48$ as periodic wraparound re-enters. That non-monotonic
+behaviour is the signature of the two competing errors — the $O(r^{-2})$ asymptotic
+tail and the finite-box contamination — and it is what sets the box multiplier: the
+padded extent must be a comfortable fraction of $M$, hence the $8\times$ used here.
 
 *A note on how this was nearly got wrong:* at $h_x=h_y=1$ the factor $2\pi/(h_xh_y)$
 and a bare $2\pi$ coincide, so an isotropic unit-spacing sanity check cannot
