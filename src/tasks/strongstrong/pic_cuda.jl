@@ -76,6 +76,8 @@ if _HAS_CUDA
                 detailed_timing=detailed_timing,
             ))
             reclaim_policy = _cuda_pic_reclaim_policy()
+            spc = green_cache === nothing && _cuda_pic_slice_pair_green_cache_enabled(solver) ?
+                workspace.slice_pair_green_cache : nothing
             pair_count = 0
             for (_, i, j) in _slice_collision_order(slices1, slices2)
                 pair_count += 1
@@ -95,20 +97,22 @@ if _HAS_CUDA
                 if use_batch_fft
                     lum = _cuda_pic_interaction_pair_batched_fft!(
                         solver, slice1.coords, p1, slice2.coords, p2, kbb1, kbb2, green_cache, klum,
-                        workspace, timing, compute_luminosity,
+                        workspace, timing, compute_luminosity, spc, (Int(i), Int(j)),
                     )
                     compute_luminosity && (luminosity += lum)
                 elseif use_async
                     lum = _cuda_pic_interaction_pair_async!(
                         solver, slice1.coords, p1, slice2.coords, p2, kbb1, kbb2, green_cache, klum,
-                        workspace, timing, compute_luminosity,
+                        workspace, timing, compute_luminosity, spc, (Int(i), Int(j)),
                     )
                     compute_luminosity && (luminosity += lum)
                 else
                     field1 = _cuda_pic_copy_coords(slice1.coords)
                     field2 = _cuda_pic_copy_coords(slice2.coords)
-                    _cuda_pic_interaction!(solver, slice1.coords, p1, field2, p2, kbb2, green_cache, workspace.charges[1], timing)
-                    _cuda_pic_interaction!(solver, slice2.coords, p2, field1, p1, kbb1, green_cache, workspace.charges[2], timing)
+                    _cuda_pic_interaction!(solver, slice1.coords, p1, field2, p2, kbb2, green_cache, workspace.charges[1], timing,
+                                           spc, (Int(i), Int(j), 1))
+                    _cuda_pic_interaction!(solver, slice2.coords, p2, field1, p1, kbb1, green_cache, workspace.charges[2], timing,
+                                           spc, (Int(i), Int(j), 2))
                     if compute_luminosity
                         t_luminosity = time_ns()
                         luminosity += _cuda_pic_luminosity(solver, slice1.coords, p1, slice2.coords, p2, klum, workspace)
@@ -157,6 +161,8 @@ if _HAS_CUDA
             use_batch_fft = use_async && _cuda_pic_batch_fft_enabled(solver)
             use_wavefront_fft = use_batch_fft && _cuda_pic_wavefront_fft_enabled(solver)
             reclaim_policy = _cuda_pic_reclaim_policy()
+            wspc = green_cache === nothing && _cuda_pic_slice_pair_green_cache_enabled(solver) ?
+                workspace.slice_pair_green_cache : nothing
             pair_count = 0
             batch_count = 0
             max_batch_size = 0
@@ -236,12 +242,14 @@ if _HAS_CUDA
                             lum = _cuda_pic_interaction_pair_batched_fft!(
                                 solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
                                 kbb1, kbb2, green_cache, klum, workspace, timing, compute_luminosity,
+                                wspc, (Int(item.pair.i), Int(item.pair.j)),
                             )
                             compute_luminosity && (luminosity += lum)
                         elseif use_async
                             lum = _cuda_pic_interaction_pair_async!(
                                 solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2,
                                 kbb1, kbb2, green_cache, klum, workspace, timing, compute_luminosity,
+                                wspc, (Int(item.pair.i), Int(item.pair.j)),
                             )
                             compute_luminosity && (luminosity += lum)
                         else
@@ -250,10 +258,12 @@ if _HAS_CUDA
                             _cuda_pic_interaction!(
                                 solver, item.slice1.coords, item.p1, field2, item.p2,
                                 kbb2, green_cache, workspace.charges[1], timing,
+                                wspc, (Int(item.pair.i), Int(item.pair.j), 1),
                             )
                             _cuda_pic_interaction!(
                                 solver, item.slice2.coords, item.p2, field1, item.p1,
                                 kbb1, green_cache, workspace.charges[2], timing,
+                                wspc, (Int(item.pair.i), Int(item.pair.j), 2),
                             )
                             if compute_luminosity
                                 t_luminosity = time_ns()
@@ -625,11 +635,18 @@ if _HAS_CUDA
                                                    kbb1, kbb2, green_cache, klum,
                                                    workspace::_CUDAPICWorkspace,
                                                    timing=nothing,
-                                                   compute_luminosity::Bool=true)
+                                                   compute_luminosity::Bool=true,
+                                                   slice_pair_cache=nothing, pair_ij=nothing)
             prepare_range = _cuda_nvtx_push(CUDABackend, "pic prepare interaction")
             t_prepare = time_ns()
             prep12 = _cuda_pic_prepare_interaction(solver, old1, p1, old2, p2, green_cache, timing)
             prep21 = _cuda_pic_prepare_interaction(solver, old2, p2, old1, p1, green_cache, timing)
+            if slice_pair_cache !== nothing && pair_ij !== nothing
+                prep12 = _cuda_pic_slice_pair_cached_prep!(
+                    solver, eltype(old1.x), slice_pair_cache, (pair_ij[1], pair_ij[2], 1), prep12, timing)
+                prep21 = _cuda_pic_slice_pair_cached_prep!(
+                    solver, eltype(old2.x), slice_pair_cache, (pair_ij[1], pair_ij[2], 2), prep21, timing)
+            end
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
             _cuda_nvtx_pop(CUDABackend, prepare_range)
 
@@ -688,6 +705,18 @@ if _HAS_CUDA
             foreach(CUDA.synchronize, streams)
             _cuda_pic_add_time!(timing, :fields, t_fields)
 
+            # The kicks below rewrite old1/old2 IN PLACE, and the luminosity must be
+            # evaluated on the pre-collision coordinates. Consume the async luminosity
+            # here rather than after the kicks: it is a real data dependency, not just
+            # a completion wait. It still overlaps the field solve, which is the cost.
+            luminosity = zero(eltype(old1.x))
+            if compute_luminosity
+                t_luminosity = time_ns()
+                luminosity = fetch(luminosity_task)
+                CUDA.synchronize(luminosity_stream)
+                _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+            end
+
             kick_range = _cuda_nvtx_push(CUDABackend, "pic kick")
             t_kick = time_ns()
             _cuda_pic_launch_kick!(
@@ -702,14 +731,7 @@ if _HAS_CUDA
             CUDA.synchronize(streams[3])
             _cuda_pic_add_time!(timing, :kick, t_kick)
             _cuda_nvtx_pop(CUDABackend, kick_range)
-            t_luminosity = time_ns()
-            if compute_luminosity
-                luminosity = fetch(luminosity_task)
-                CUDA.synchronize(luminosity_stream)
-                _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
-                return luminosity
-            end
-            return zero(eltype(old1.x))
+            return luminosity
         end
 
         function _cuda_pic_interaction_pair_batched_fft!(solver::PICPoissonSolver,
@@ -717,11 +739,18 @@ if _HAS_CUDA
                                                          kbb1, kbb2, green_cache, klum,
                                                          workspace::_CUDAPICWorkspace,
                                                          timing=nothing,
-                                                         compute_luminosity::Bool=true)
+                                                         compute_luminosity::Bool=true,
+                                                         slice_pair_cache=nothing, pair_ij=nothing)
             prepare_range = _cuda_nvtx_push(CUDABackend, "pic prepare interaction")
             t_prepare = time_ns()
             prep12 = _cuda_pic_prepare_interaction(solver, old1, p1, old2, p2, green_cache, timing)
             prep21 = _cuda_pic_prepare_interaction(solver, old2, p2, old1, p1, green_cache, timing)
+            if slice_pair_cache !== nothing && pair_ij !== nothing
+                prep12 = _cuda_pic_slice_pair_cached_prep!(
+                    solver, eltype(old1.x), slice_pair_cache, (pair_ij[1], pair_ij[2], 1), prep12, timing)
+                prep21 = _cuda_pic_slice_pair_cached_prep!(
+                    solver, eltype(old2.x), slice_pair_cache, (pair_ij[1], pair_ij[2], 2), prep21, timing)
+            end
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
             _cuda_nvtx_pop(CUDABackend, prepare_range)
 
@@ -759,6 +788,18 @@ if _HAS_CUDA
             _cuda_pic_add_time!(timing, :fields, t_fields)
             _cuda_nvtx_pop(CUDABackend, field_range)
 
+            # See _cuda_pic_interaction_pair_async!: the kicks rewrite old1/old2 in
+            # place, so the luminosity must consume the pre-collision coordinates. This
+            # path reached the kicks fastest and was measurably wrong (1.8e-4 relative)
+            # before the fetch was moved here.
+            luminosity = zero(eltype(old1.x))
+            if compute_luminosity
+                t_luminosity = time_ns()
+                luminosity = fetch(luminosity_task)
+                CUDA.synchronize(luminosity_stream)
+                _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
+            end
+
             kick_range = _cuda_nvtx_push(CUDABackend, "pic kick")
             t_kick = time_ns()
             stream = CUDA.stream()
@@ -786,14 +827,7 @@ if _HAS_CUDA
             _cuda_pic_add_time!(timing, :kick, t_kick)
             _cuda_nvtx_pop(CUDABackend, kick_range)
 
-            t_luminosity = time_ns()
-            if compute_luminosity
-                luminosity = fetch(luminosity_task)
-                CUDA.synchronize(luminosity_stream)
-                _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
-                return luminosity
-            end
-            return zero(eltype(old1.x))
+            return luminosity
         end
 
         function _cuda_pic_interaction_wavefront_batched_fft!(solver::PICPoissonSolver,
@@ -879,6 +913,15 @@ if _HAS_CUDA
             _cuda_pic_add_time!(timing, :fields, t_fields)
             _cuda_nvtx_pop(CUDABackend, field_range)
 
+            # Data dependency, not just a completion wait: the kicks below rewrite the
+            # slice coordinates in place and the luminosity must see the pre-collision
+            # ones. Consuming it here still overlaps the field solve, which is the cost.
+            if compute_luminosity && luminosity_task !== nothing
+                luminosity = fetch(luminosity_task)
+                CUDA.synchronize(workspace.luminosity_stream)
+                luminosity_task = nothing
+            end
+
             kick_range = _cuda_nvtx_push(CUDABackend, "pic wavefront kicks")
             t_kick = time_ns()
             stream = CUDA.stream()
@@ -912,10 +955,7 @@ if _HAS_CUDA
             CUDA.synchronize(stream)
             _cuda_pic_add_time!(timing, :kick, t_kick)
             _cuda_nvtx_pop(CUDABackend, kick_range)
-            if compute_luminosity && luminosity_task !== nothing
-                luminosity = fetch(luminosity_task)
-                CUDA.synchronize(workspace.luminosity_stream)
-            end
+
             return luminosity
         end
 
@@ -1201,9 +1241,14 @@ if _HAS_CUDA
 
         function _cuda_pic_interaction!(solver::PICPoissonSolver, source, param_source,
                                         field, param_field, kbb,
-                                        green_cache=nothing, charge=nothing, timing=nothing)
+                                        green_cache=nothing, charge=nothing, timing=nothing,
+                                        slice_pair_cache=nothing, cache_key=nothing)
             t_prepare = time_ns()
             prep = _cuda_pic_prepare_interaction(solver, source, param_source, field, param_field, green_cache, timing)
+            if slice_pair_cache !== nothing && cache_key !== nothing
+                prep = _cuda_pic_slice_pair_cached_prep!(
+                    solver, eltype(source.x), slice_pair_cache, cache_key, prep, timing)
+            end
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
             t_green = time_ns()
             green_fft = prep.green_fft === nothing ?

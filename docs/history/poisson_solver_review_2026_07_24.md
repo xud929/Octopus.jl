@@ -1645,3 +1645,74 @@ carried "optional further CUDA tuning of the host-side erf profile build" as a
 remaining item. It is **3.3% of interaction time** (0.0064 s of 0.1901 s).
 Moving it to the device could not return more than that, against the kick's 36%.
 The item is closed on this measurement, not deferred.
+
+
+---
+
+## 23. Two more CUDA bugs, found by sweeping the option space (2026-07-25)
+
+Section 21.2 fixed GaussianPIC ignoring `green_cache`. That raised an obvious
+question the earlier passes never asked: **is any other option silently dropped
+on some route?** Rather than read 5,200 lines of CUDA looking for it, all 45
+CPU/CUDA parity combinations were run as a sweep. Two failures, both real, both
+pre-existing, neither reachable through the default configuration.
+
+### 23.1 `green_cache` was applied by only two of PIC's five CUDA routes
+
+The same bug as GaussianPIC's, in plain PIC. Only
+`_cuda_pic_interaction_wavefront_batched_fft!` and its indexed variant called
+`_cuda_pic_slice_pair_cached_prep!`. The other three --
+`_cuda_pic_interaction_pair_async!`, `_cuda_pic_interaction_pair_batched_fft!`
+and the sequential `_cuda_pic_interaction!` -- solved on the unexpanded grid
+while the CPU expanded by `1 + slice_pair_green_growth`.
+
+| route | before | after |
+| --- | ---: | ---: |
+| `batch_mode=:sequential` | 4.737e-6 | 1.29e-16 |
+| `cuda_async=false` | 4.737e-6 | 1.56e-16 |
+| `cuda_wavefront_fft=false` | 4.737e-6 | 1.49e-16 |
+
+Same diagnostic as before: `slice_pair_green_growth=0.0` restored parity, proving
+the missing expansion rather than drift. This is why the default route was clean
+while three non-default ones were not, and why nobody saw it.
+
+### 23.2 The asynchronous luminosity read post-kick coordinates
+
+With the grids fixed, coordinates matched everywhere but **luminosity** was still
+off by 1.774e-4 on two routes.
+
+The luminosity is launched on its own stream, waiting on a `prep_done` event
+recorded after the prepare step. The kicks then rewrite the slice coordinates
+**in place** on the main stream. The luminosity must be evaluated on the
+*pre-collision* coordinates, so this is a genuine data dependency -- but the
+`fetch` sat *after* the kick launches, so nothing enforced it.
+
+`_cuda_pic_interaction_pair_batched_fft!` reaches its kicks fastest (one fused
+batched FFT, no per-field-stream synchronisation) and consistently lost the race,
+reading kicked coordinates. `_cuda_pic_interaction_pair_async!` has the identical
+structure but happens to call `foreach(CUDA.synchronize, streams)` before its
+kicks, which let the luminosity land first -- correct **by accident**, not by
+construction.
+
+Worth recording: the wrong value was **bit-identical across six runs**. Determinism
+is not evidence against a missing synchronisation; it only means the ordering is
+consistent on this hardware. The earlier reasoning in Section 21.3 -- that
+identical repeated results imply no ordering hazard -- does not hold in general,
+and that is exactly how this one survived.
+
+**Fix.** The `fetch` moved to before the kick launches in all five async-luminosity
+sites (two PIC pair routes, the PIC wavefront route, both GaussianPIC routes). The
+three that were previously correct-by-timing are now correct by construction.
+
+**Cost: none measurable.** The luminosity still overlaps the field solve, which is
+the expensive phase. Multi-turn CUDA, 1.024M per beam: pic128 0.2378 s/turn after
+versus 0.2452 before, gpic128 0.5236 versus 0.5357 -- unchanged within noise.
+
+### 23.3 What this says about the earlier benchmarks
+
+Section 4 reported the four CUDA execution options as "worth 2.3-3.3x with no
+physics change". The speed figures stand, but "no physics change" was measured
+only through coordinates, and `cuda_wavefront_fft=false` and
+`batch_mode=:sequential` were in fact reporting luminosity 1.8e-4 low at the time.
+The full sweep is now a test (`"CUDA PIC parity across every execution route"`),
+so the claim is enforced rather than asserted.

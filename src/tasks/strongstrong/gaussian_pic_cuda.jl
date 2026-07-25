@@ -354,6 +354,17 @@ if _HAS_CUDA
             )
             _cuda_pic_add_time!(timing, :fields, t_fields)
 
+            # Data dependency, not just a completion wait: the kicks below rewrite the
+            # slice coordinates in place and the luminosity must see the pre-collision
+            # ones. Consuming it here still overlaps the field solve, which is the cost.
+            if compute_luminosity && luminosity_task !== nothing
+                t_lwait = time_ns()
+                luminosity = fetch(luminosity_task)
+                CUDA.synchronize(workspace.luminosity_stream)
+                _cuda_pic_add_time!(timing, :luminosity, t_lwait)
+                luminosity_task = nothing
+            end
+
             t_kick = time_ns()
             stream = CUDA.stream()
             for n in 1:npairs
@@ -371,12 +382,6 @@ if _HAS_CUDA
             end
             CUDA.synchronize(stream)
             _cuda_pic_add_time!(timing, :kick, t_kick)
-            if compute_luminosity && luminosity_task !== nothing
-                t_lwait = time_ns()
-                luminosity = fetch(luminosity_task)
-                CUDA.synchronize(workspace.luminosity_stream)
-                _cuda_pic_add_time!(timing, :luminosity, t_lwait)
-            end
             return luminosity
         end
 
@@ -586,6 +591,15 @@ if _HAS_CUDA
                 gpic_subtract=(gx=gx_d, gy=gy_d, amp=amp_d),
             )
 
+            # Data dependency, not just a completion wait: the kicks below rewrite the
+            # slice coordinates in place and the luminosity must see the pre-collision
+            # ones. Consuming it here still overlaps the field solve, which is the cost.
+            if compute_luminosity && luminosity_task !== nothing
+                luminosity = fetch(luminosity_task)
+                CUDA.synchronize(workspace.luminosity_stream)
+                luminosity_task = nothing
+            end
+
             stream = CUDA.stream()
             for n in 1:npairs
                 item = valid[n]; off = 4 * (n - 1)
@@ -612,10 +626,6 @@ if _HAS_CUDA
                 )
             end
             CUDA.synchronize(stream)
-            if compute_luminosity && luminosity_task !== nothing
-                luminosity = fetch(luminosity_task)
-                CUDA.synchronize(workspace.luminosity_stream)
-            end
             return luminosity
         end
 
