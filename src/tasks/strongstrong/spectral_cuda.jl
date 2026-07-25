@@ -296,7 +296,7 @@ if _HAS_CUDA
             _cuda_dst2!(ws.s1, ws, ws.s2)
             invn = T(ns > 0 ? 1 / (a * b * ns) : 1 / (a * b))
             @. ws.s1 = -(ws.s1 * invn) * ws.G            # philm in s1
-            scale = T(_SPECTRAL_FIELD_C0_GRID) * Nx * Ny / (2 * (Nx + 1) * 2 * (Ny + 1))
+            scale = T(_SPECTRAL_FIELD_SCALE_GRID)
             # Exg = -scale * cosderiv1( al .* DST2(philm) )
             _cuda_dst2!(ws.s2, ws, ws.s1)
             @. ws.s2 = ws.al * ws.s2
@@ -370,7 +370,7 @@ if _HAS_CUDA
             _cuda_dst2!(ws.s1, ws, ws.s2)
             invn = T(ns > 0 ? 1 / (a * b * ns) : 1 / (a * b))
             @. ws.s1 = -(ws.s1 * invn) * ws.G            # philm in s1
-            scale = T(_SPECTRAL_FIELD_C0_GRID) * Nx * Ny / (2 * (Nx + 1) * 2 * (Ny + 1))
+            scale = T(_SPECTRAL_FIELD_SCALE_GRID)
 
             # Ux = DST_x(philm) in s3, shared by the potential and Ey.
             _cuda_dst1!(ws.s3, ws, ws.s1)
@@ -420,19 +420,19 @@ if _HAS_CUDA
 
         # --- collide! entry points --------------------------------------------
         collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend}) =
-            _cuda_spectral_collide!(solver, beam1, beam2)
-        collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend}, ::Nothing) =
-            _cuda_spectral_collide!(solver, beam1, beam2)
-        collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend}, ::TrackingContext) =
-            _cuda_spectral_collide!(solver, beam1, beam2)
+            _cuda_spectral_collide!(solver, beam1, beam2, nothing)
+        collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend}, ctx::Nothing) =
+            _cuda_spectral_collide!(solver, beam1, beam2, ctx)
+        collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend}, ctx::TrackingContext) =
+            _cuda_spectral_collide!(solver, beam1, beam2, ctx)
 
-        function _cuda_spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
+        function _cuda_spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing)
             return solver.longitudinal_kick ?
-                _cuda_spectral_collide_longitudinal!(solver, beam1, beam2) :
-                _cuda_spectral_collide_transverse!(solver, beam1, beam2)
+                _cuda_spectral_collide_longitudinal!(solver, beam1, beam2, ctx) :
+                _cuda_spectral_collide_transverse!(solver, beam1, beam2, ctx)
         end
 
-        function _cuda_spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
+        function _cuda_spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing)
             solver.method === :grid || throw(ArgumentError(
                 "CUDA SpectralPoissonSolver supports method=:grid only; got $(repr(solver.method))"))
             slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing1)
@@ -440,6 +440,7 @@ if _HAS_CUDA
             kbb1 = _spectral_kbb1(solver, beam1, beam2)
             kbb2 = _spectral_kbb2(solver, beam1, beam2)
             klum = _spectral_luminosity_scale(solver, beam1, beam2)
+            compute_luminosity = _spectral_compute_luminosity(solver, ctx)
             lnx, lny = solver.grid
             T = eltype(beam1.rep.x)
             r1 = beam1.rep; r2 = beam2.rep
@@ -464,9 +465,10 @@ if _HAS_CUDA
                 a2 = T(slices2.weight[j] * kbb1)
                 CUDA.@cuda threads=threads blocks=cld(length(idx1), threads) _cuda_spectral_interp_scatter_kernel!(
                     r1.px, r1.py, idx1, Exg2, Eyg2, sx1, sy1, T(Lx), T(Ly), hx2, hy2, Nx, Ny, a2)
-                luminosity += _cuda_spectral_luminosity_pair(sx1, sy1, sx2, sy2, klum, lnx, lny)
+                compute_luminosity &&
+                    (luminosity += _cuda_spectral_luminosity_pair(sx1, sy1, sx2, sy2, klum, lnx, lny))
             end
-            return luminosity
+            return compute_luminosity ? luminosity : T(NaN)
         end
 
         function _cuda_spectral_midpoint_luminosity_pair(sx1, spx1, sy1, spy1, center1,
@@ -561,7 +563,7 @@ if _HAS_CUDA
             return lum * T(klum) / (hx * hy)
         end
 
-        function _cuda_spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
+        function _cuda_spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing)
             solver.method === :grid || throw(ArgumentError(
                 "CUDA SpectralPoissonSolver supports method=:grid only; got $(repr(solver.method))"))
             slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing1)
@@ -569,6 +571,7 @@ if _HAS_CUDA
             kbb1 = _spectral_kbb1(solver, beam1, beam2)
             kbb2 = _spectral_kbb2(solver, beam1, beam2)
             klum = _spectral_luminosity_scale(solver, beam1, beam2)
+            compute_luminosity = _spectral_compute_luminosity(solver, ctx)
             lnx, lny = solver.grid
             T = eltype(beam1.rep.x)
             r1 = beam1.rep; r2 = beam2.rep
@@ -597,10 +600,10 @@ if _HAS_CUDA
                     slices1.weight[i] * kbb2, Lx, Ly)
                 # Luminosity before direction 2 kicks beam1, so both sources are
                 # pre-collision: beam1 from the rep, beam2 from the snapshot.
-                luminosity += _cuda_spectral_luminosity_idx_snap!(
+                compute_luminosity && (luminosity += _cuda_spectral_luminosity_idx_snap!(
                     ws, r1, idx1, param1.center,
                     ws.snapx, ws.snappx, ws.snapy, ws.snappy, n2, param2.center,
-                    klum, lnx, lny)
+                    klum, lnx, lny))
                 # Direction 2: source beam2 (snapshot) -> kick beam1.
                 v2x = @view ws.snapx[1:n2]; v2px = @view ws.snappx[1:n2]
                 v2y = @view ws.snapy[1:n2]; v2py = @view ws.snappy[1:n2]
@@ -608,7 +611,7 @@ if _HAS_CUDA
                     solver, ws, v2x, v2px, v2y, v2py, r1, idx1, param2, param1,
                     slices2.weight[j] * kbb1, Lx, Ly)
             end
-            return luminosity
+            return compute_luminosity ? luminosity : T(NaN)
         end
 
         function _cuda_spectral_box(solver::SpectralPoissonSolver, r1, r2)

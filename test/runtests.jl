@@ -569,6 +569,122 @@ end
     end
 end
 
+@testset "Spectral field absolute normalization is derived, not fitted" begin
+    # The spectral field scale must be the DERIVED constant (-2pi for :grid, +4pi
+    # for :grid_free), so the beam-beam coupling does not depend on the mesh and
+    # refining the grid converges to the correct force. Every other spectral check
+    # -- including validation/spectral_poisson_field_validation.jl -- normalizes the
+    # residual by a least-squares constant and is therefore BLIND to this error,
+    # which is how a fitted scale with a spurious Nx*Ny/((Nx+1)(Ny+1)) factor
+    # survived. This test deliberately does NOT remove any fitted constant.
+    sig = 1.0e-4
+    n1d = 240
+    u = ((1:n1d) .- 0.5) ./ n1d
+    q = sqrt(2.0) .* Octopus.inverse_erf.(2 .* u .- 1)
+    sx = Float64[]; sy = Float64[]
+    for a in q, b in q
+        push!(sx, a * sig); push!(sy, b * sig)
+    end
+    fx = Float64[]; fy = Float64[]
+    for k in 0:95, r in (0.25, 0.5, 0.75, 1.0)
+        th = 2pi * k / 96
+        push!(fx, r * sig * cos(th)); push!(fy, r * sig * sin(th))
+    end
+    exact = [gaussian_beambeam_kick(sig, sig, fx[i], fy[i]) for i in eachindex(fx)]
+    Kx = getindex.(exact, 1); Ky = getindex.(exact, 2)
+    # least-squares scale that the solver field WOULD need; must already be ~1.
+    function needed_scale(Ex, Ey)
+        num = sum(Ex .* Kx) + sum(Ey .* Ky)
+        den = sum(Ex .* Ex) + sum(Ey .* Ey)
+        return num / den
+    end
+    @test Octopus._SPECTRAL_FIELD_SCALE_GRID ≈ -2pi
+    @test Octopus._SPECTRAL_FIELD_SCALE_FREE ≈ 4pi
+
+    L = 16.0 * sig
+    # Well-resolved mesh: the required scale must already be 1 to sub-percent.
+    # (With the previous fitted constant this was 0.982 -- a 1.8% coupling error.)
+    exg, eyg = Octopus._spectral_field_grid(sx, sy, fx, fy, L, L, 511, 511)
+    @test isapprox(needed_scale(exg, eyg), 1.0; atol=0.005)
+
+    exf, eyf = Octopus._spectral_field_free(sx, sy, fx, fy, L, L, 48, 48)
+    @test isapprox(needed_scale(exf, eyf), 1.0; atol=0.002)
+
+    # The coupling must not depend on the mesh: refining must reduce the required
+    # scale correction toward zero, never move it away from 1.
+    exg2, eyg2 = Octopus._spectral_field_grid(sx, sy, fx, fy, L, L, 127, 127)
+    @test abs(needed_scale(exg, eyg) - 1) < abs(needed_scale(exg2, eyg2) - 1)
+end
+
+@testset "Spectral luminosity_schedule reaches its runtime consumer" begin
+    # Effectiveness test (AGENTS.md): observe the option at the consumer boundary,
+    # not just in the schema. Three things must hold on a skipped turn:
+    #   (a) luminosity is NaN (intentionally not computed, not silently zero),
+    #   (b) the beam-beam kicks are still applied -- identical coordinates,
+    #   (c) StrongStrongTask omits the skipped turns from the luminosity file.
+    mkbeams() = begin
+        set_global_rng!(seed=31, method=:philox)
+        e = Beam(2000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.0),
+            alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        p = Beam(2000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
+            alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+        return e, p
+    end
+    sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
+
+    for lk in (true, false)   # 6D and transverse-only variants both gate luminosity
+        ev, pv = mkbeams()                                   # no schedule: every turn
+        base = SpectralPoissonSolver(slicing=sl, method=:grid, grid=(32, 64),
+                                     domain_factor=16.0, longitudinal_kick=lk)
+        lum_every = collide!(base, ev, pv, CPUThreadsBackend, TrackingContext())
+
+        es, ps = mkbeams()                                   # schedule that does NOT run
+        sched = SpectralPoissonSolver(slicing=sl, method=:grid, grid=(32, 64),
+                                      domain_factor=16.0, longitudinal_kick=lk,
+                                      luminosity_schedule=AtTurns([7]))
+        lum_skip = collide!(sched, es, ps, CPUThreadsBackend, TrackingContext())
+
+        @test isfinite(lum_every)
+        @test isnan(lum_skip)                                       # (a)
+        for (a, b) in zip(coordinate_arrays(ev), coordinate_arrays(es))
+            @test a == b                                            # (b) kicks unchanged
+        end
+        for (a, b) in zip(coordinate_arrays(pv), coordinate_arrays(ps))
+            @test a == b
+        end
+        # a turn the schedule DOES run must recover the unscheduled value exactly
+        er, pr = mkbeams()
+        lum_run = collide!(SpectralPoissonSolver(slicing=sl, method=:grid, grid=(32, 64),
+                               domain_factor=16.0, longitudinal_kick=lk,
+                               luminosity_schedule=AtTurns([0])),
+                           er, pr, CPUThreadsBackend, TrackingContext())
+        @test lum_run == lum_every
+    end
+
+    # (c) the task-level luminosity file contains only evaluated turns
+    path = tempname()
+    try
+        e, p = mkbeams()
+        solver = SpectralPoissonSolver(slicing=sl, method=:grid, grid=(32, 64),
+                                       domain_factor=16.0,
+                                       luminosity_schedule=EveryNSteps(step=3))
+        ip = StrongStrongCollision(:ip; poisson_solver=solver)
+        task = StrongStrongTask((ip,), (ip,); luminosity_path=path)
+        execute!(task, e, p; turns=7)
+        turns = Int[]
+        for line in eachline(path)
+            parts = split(line, '\t')
+            t = tryparse(Int, parts[1]); t === nothing || push!(turns, t)
+        end
+        @test turns == [0, 3, 6]
+        @test all(l -> !occursin("NaN", l), readlines(path))
+    finally
+        isfile(path) && rm(path)
+    end
+end
+
 @testset "Spectral synchro-beam longitudinal map is finite" begin
     set_global_rng!(seed=17, method=:philox)
     e0 = Beam(1200, CPUThreadsBackend, Float64;

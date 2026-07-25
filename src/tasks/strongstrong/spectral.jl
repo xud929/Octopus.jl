@@ -20,17 +20,28 @@ transverse-only map for comparisons.
 # Field scale that turns the raw DST/DCT field into the per-unit-charge
 # Bassetti-Erskine field (the source deposit is normalized to unit total charge
 # in the field solve, so the caller applies the physical kbb * slice_weight
-# exactly as GaussianPoissonSolver does). The two variants have different scale
-# structure: the grid path assembles the field from the deposit/DST and its scale
-# grows with the mode count (folding in the DST inverse-normalization
-# 1/(4(Nx+1)(Ny+1))), while the grid-free path evaluates the already-converged
-# direct mode sum, whose scale is a mode-count-independent constant. Each carries
-# its own pinned constant, fixed by a least-squares fit of the field onto the
-# analytic normalized kick over a converged (large-count) round-beam sample; the
-# domain-independence of the per-mode basis makes both box-size independent (see
-# docs Section 17).
-const _SPECTRAL_FIELD_C0_GRID = -25.72
-const _SPECTRAL_FIELD_C0_FREE = 12.518
+# exactly as GaussianPoissonSolver does). Both constants are DERIVED, not fitted,
+# and are therefore exactly grid- and box-independent:
+#
+#   philm = -rho_lm / (al^2 + bm^2) is the continuum coefficient of the potential
+#   solving lap(phi) = rho for a unit-charge source, so phi = ln(r)/(2*pi) and
+#   E = -grad(phi) = -r_hat/(2*pi*r) far from the source. The Bassetti-Erskine
+#   kick this must reproduce is K = 2*r_hat/r per unit population, i.e. K = -4*pi*E.
+#
+#   :grid       FFTW RODFT00/REDFT00 each carry a factor 2, so the reconstructed
+#               Exg = -scale * (cosx/2) equals 2*scale*E; matching -4*pi*E gives
+#               scale = -2*pi.
+#   :grid_free  the direct mode sum yields Ex = scale * dphi/dx = -scale*E;
+#               matching -4*pi*E gives scale = +4*pi.
+#
+# Verified numerically: the least-squares scale needed to match the exact
+# Bassetti-Erskine field converges to these values as the mesh is refined and the
+# Dirichlet box is enlarged (-6.2869 at (1024,1024)/d=24 versus -2*pi = -6.28319).
+# The previous fitted constants (-25.72 and 12.518 with a spurious
+# Nx*Ny/((Nx+1)(Ny+1)) factor on the grid path) made the beam-beam coupling depend
+# on the mesh, so refining the grid did not converge to the correct force.
+const _SPECTRAL_FIELD_SCALE_GRID = -2 * pi
+const _SPECTRAL_FIELD_SCALE_FREE = 4 * pi
 
 struct SpectralPoissonSolver{T<:Real} <: AbstractPoissonSolver
     kbb1::Union{Nothing,T}
@@ -41,6 +52,7 @@ struct SpectralPoissonSolver{T<:Real} <: AbstractPoissonSolver
     method::Symbol
     longitudinal_kick::Bool
     field_precision::Symbol
+    luminosity_schedule::Union{Nothing,AbstractSchedule}
     slicing::LongitudinalSlicing
     slicing1::LongitudinalSlicing
     slicing2::LongitudinalSlicing
@@ -74,6 +86,16 @@ only). `kbb1`/`kbb2` are the physical kick scales, same convention as
 potential-difference `pz` kick. Set it to `false` for the original
 transverse-only spectral map.
 
+`luminosity_schedule` may be `nothing` or a schedule such as
+`EveryNSteps(step=10)` or `AtTurns([0, 100])`, with the same convention as
+`PICPoissonSolver`: `nothing` evaluates luminosity every turn; when the schedule
+does not run, the beam-beam kicks are still applied and the returned luminosity is
+`NaN` to mark that it was intentionally not computed, and `StrongStrongTask` omits
+those turns from its luminosity file. Luminosity is a separate density-overlap
+deposit for this solver (~11% of a turn at the recommended production grid), so
+scheduling it is a real saving, unlike for `GaussianPoissonSolver` where the
+luminosity is a by-product of the kick and costs nothing.
+
 `field_precision` selects the CUDA field-solve precision: `:double` (default,
 bit-parity with the CPU path) or `:single`, which runs the deposit/transform/field
 reconstruction in `Float32` while keeping particle coordinates in `Float64`. The
@@ -99,6 +121,7 @@ function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   method::Symbol=:grid,
                                   longitudinal_kick::Bool=true,
                                   field_precision::Symbol=:double,
+                                  luminosity_schedule::Union{Nothing,AbstractSchedule}=nothing,
                                   slicing::LongitudinalSlicing=LongitudinalSlicing(),
                                   slicing1=nothing, slicing2=nothing) where {T<:Real}
     s1 = slicing1 === nothing ? slicing : slicing1
@@ -112,7 +135,8 @@ function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
     return SpectralPoissonSolver{T}(
         _optional_solver_value(T, kbb1), _optional_solver_value(T, kbb2),
         _optional_solver_value(T, luminosity_scale), (gx, gy), T(domain_factor), method,
-        Bool(longitudinal_kick), field_precision, slicing, s1, s2, slicing1, slicing2)
+        Bool(longitudinal_kick), field_precision, luminosity_schedule,
+        slicing, s1, s2, slicing1, slicing2)
 end
 
 SpectralPoissonSolver(; kwargs...) = SpectralPoissonSolver{Float64}(; kwargs...)
@@ -134,6 +158,9 @@ const _SPECTRAL_SOLVER_OPTION_SCHEMA = (
         "Apply the synchro-beam virtual drift and potential-difference pz kick."; category=:physics),
     field_precision = SolverOptionMeta(Symbol, :double,
         "CUDA field-solve precision; :double (bit-parity) or :single (faster, ~1e-7 field error)."; category=:accuracy_performance),
+    luminosity_schedule = SolverOptionMeta(Union{Nothing,AbstractSchedule}, nothing,
+        "Schedule for luminosity evaluation; nothing evaluates every turn. Same convention as PICPoissonSolver: skipped turns return NaN and are omitted from the task luminosity file.";
+        category=:diagnostic),
     slicing = SolverOptionMeta(LongitudinalSlicing, LongitudinalSlicing(),
         "Shared longitudinal slicing configuration."; category=:physics),
     slicing1 = SolverOptionMeta(Union{Nothing,LongitudinalSlicing}, nothing,
@@ -166,6 +193,26 @@ function _spectral_luminosity_scale(solver, beam1, beam2)
     return beam1.params.npart * beam2.params.npart /
            (length(beam1.rep) * length(beam2.rep))
 end
+
+# Luminosity scheduling, same convention as PICPoissonSolver: when the schedule
+# does not run, the beam-beam kicks are still applied and the returned luminosity
+# is NaN to mark that it was intentionally not computed. `StrongStrongTask` omits
+# those turns from the luminosity file (see _strong_strong_luminosity_evaluated).
+_spectral_compute_luminosity(::SpectralPoissonSolver, ::Nothing) = true
+function _spectral_compute_luminosity(solver::SpectralPoissonSolver, ctx::TrackingContext)
+    schedule = solver.luminosity_schedule
+    evaluated = schedule === nothing || should_run(schedule, ctx)
+    active_policy = _ACTIVE_RESOLVED_POLICY[]
+    active_backend = active_policy isa AbstractResolvedExecutionPolicy ?
+        backend_type(active_policy) : :unknown
+    _record_execution!(:spectral_luminosity_schedule, active_backend,
+                       (turn=ctx.turn, evaluated=evaluated,
+                        schedule=schedule === nothing ? :every_turn : Symbol(nameof(typeof(schedule)))))
+    return evaluated
+end
+
+_strong_strong_luminosity_evaluated(solver::SpectralPoissonSolver, ctx::TrackingContext) =
+    _spectral_compute_luminosity(solver, ctx)
 
 # --- field solve for one directed interaction: source (sx,sy) -> field (fx,fy) ---
 # Returns per-field-particle (Ex, Ey) already scaled to the physical BE per-unit-
@@ -268,7 +315,7 @@ function _spectral_field_grid!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly)
     @inbounds for k in eachindex(ws.philm)
         ws.philm[k] = -(ws.rholm[k] * invn) * ws.G[k]
     end
-    scale = _SPECTRAL_FIELD_C0_GRID * Nx * Ny / (2 * (Nx + 1) * 2 * (Ny + 1))
+    scale = _SPECTRAL_FIELD_SCALE_GRID
     # Ex = -scale * ddx( DST_y(philm) ), spectral x-derivative via padded DCT-I
     mul!(ws.tmp, ws.prow, ws.philm)
     fill!(ws.padx, 0.0)
@@ -323,7 +370,7 @@ function _spectral_field_grid_potential!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx
     @inbounds for k in eachindex(ws.philm)
         ws.philm[k] = -(ws.rholm[k] * invn) * ws.G[k]
     end
-    scale = _SPECTRAL_FIELD_C0_GRID * Nx * Ny / (2 * (Nx + 1) * 2 * (Ny + 1))
+    scale = _SPECTRAL_FIELD_SCALE_GRID
 
     # Potential on the mesh (phi = 0 at the Dirichlet boundary). The 2D DST
     # reconstruction carries a factor 4 (FFTW RODFT00 is 2x per dimension), while
@@ -395,7 +442,7 @@ function _spectral_field_grid(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
     al = [l * pi / a for l in 1:Nx]; bm = [m * pi / b for m in 1:Ny]
     rholm = FFTW.r2r(rho, FFTW.RODFT00) ./ (a * b)
     philm = [-rholm[l, m] / (al[l]^2 + bm[m]^2) for l in 1:Nx, m in 1:Ny]
-    scale = _SPECTRAL_FIELD_C0_GRID * Nx * Ny / (2 * (Nx + 1) * 2 * (Ny + 1))
+    scale = _SPECTRAL_FIELD_SCALE_GRID
     Exg = -scale .* _spectral_cosderiv(al .* FFTW.r2r(philm, FFTW.RODFT00, 2), 1)
     Eyg = -scale .* _spectral_cosderiv(FFTW.r2r(philm, FFTW.RODFT00, 1) .* transpose(bm), 2)
     nf = length(fx); Ex = Vector{Float64}(undef, nf); Ey = Vector{Float64}(undef, nf)
@@ -464,7 +511,7 @@ function _spectral_field_free_potential(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
     Ex = Vector{Float64}(undef, nf)
     Ey = Vector{Float64}(undef, nf)
     tmp = fSinX * philm
-    scale = _SPECTRAL_FIELD_C0_FREE  # mode-count independent (direct sum is converged)
+    scale = _SPECTRAL_FIELD_SCALE_FREE  # derived, mode-count independent
     @inbounds for k in 1:nf
         phi = 0.0
         for m in 1:Ny
@@ -636,23 +683,23 @@ end
 function collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend})
     return collide!(solver, beam1, beam2, CPUThreadsBackend, nothing)
 end
-collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend}, ::Nothing) =
-    _spectral_collide!(solver, beam1, beam2)
-collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend}, ::TrackingContext) =
-    _spectral_collide!(solver, beam1, beam2)
+collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend}, ctx::Nothing) =
+    _spectral_collide!(solver, beam1, beam2, ctx)
+collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend}, ctx::TrackingContext) =
+    _spectral_collide!(solver, beam1, beam2, ctx)
 
 # The transverse-only collision reads original positions and only accumulates
 # px/py, so slice-pair order is irrelevant (addition is commutative). We therefore
 # parallelize over FIELD slices: each worker owns a disjoint set of field slices
 # and accumulates the kick from every source slice, so writes never collide.
 # Direction 1 (kick beam2) also accumulates the density-overlap luminosity.
-function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
+function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing)
     return solver.longitudinal_kick ?
-        _spectral_collide_longitudinal!(solver, beam1, beam2) :
-        _spectral_collide_transverse!(solver, beam1, beam2)
+        _spectral_collide_longitudinal!(solver, beam1, beam2, ctx) :
+        _spectral_collide_transverse!(solver, beam1, beam2, ctx)
 end
 
-function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
+function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing)
     slices1 = longitudinal_slices(beam1.rep, solver.slicing1)
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
     kbb1 = _spectral_kbb1(solver, beam1, beam2)
@@ -661,6 +708,7 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
     # (the Gaussian's klum divides by only nmacro1 because its per-particle kick sum
     # supplies the other factor; a grid overlap needs both).
     klum = _spectral_luminosity_scale(solver, beam1, beam2)
+    compute_luminosity = _spectral_compute_luminosity(solver, ctx)
     lnx, lny = solver.grid
     r1 = beam1.rep; r2 = beam2.rep
     T = eltype(r1.x)
@@ -689,7 +737,8 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
                 @inbounds for (t, p) in enumerate(jdx)
                     r2.px[p] += a * ex[t]; r2.py[p] += a * ey[t]
                 end
-                lp += _spectral_luminosity_pair(sx, sy, fx, fy, klum, lnx, lny)
+                compute_luminosity &&
+                    (lp += _spectral_luminosity_pair(sx, sy, fx, fy, klum, lnx, lny))
             end
         end
         lum_parts[chunk] = lp
@@ -713,18 +762,20 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
             end
         end
     end
-    return sum(lum_parts)
+    return compute_luminosity ? sum(lum_parts) : T(NaN)
 end
 
-function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam)
+function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing)
     slices1 = longitudinal_slices(beam1.rep, solver.slicing1)
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
     kbb1 = _spectral_kbb1(solver, beam1, beam2)
     kbb2 = _spectral_kbb2(solver, beam1, beam2)
     klum = _spectral_luminosity_scale(solver, beam1, beam2)
+    compute_luminosity = _spectral_compute_luminosity(solver, ctx)
     lnx, lny = solver.grid
     Lx, Ly = _spectral_box(solver, beam1.rep.x, beam1.rep.y, beam2.rep.x, beam2.rep.y)
-    luminosity = zero(promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(klum)))
+    LT = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(klum))
+    luminosity = zero(LT)
     grid = solver.method !== :grid_free
     batches = collision_pair_batches(slices1, slices2)
     max_workers = clamp(_cpu_worker_count(), 1, max(1, maximum(length, batches; init=1)))
@@ -757,11 +808,12 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
                     solver, coord2, param2, field1, param1, slices2.weight[j] * kbb1, ws, Lx, Ly)
                 _pic_store_slice!(beam1.rep, idx1, field1)
                 _pic_store_slice!(beam2.rep, idx2, field2)
-                local_lum += _spectral_luminosity_pair(vx1, vy1, vx2, vy2, klum, lnx, lny)
+                compute_luminosity &&
+                    (local_lum += _spectral_luminosity_pair(vx1, vy1, vx2, vy2, klum, lnx, lny))
             end
             lum_parts[chunk] = local_lum
         end
         luminosity += sum(lum_parts)
     end
-    return luminosity
+    return compute_luminosity ? luminosity : LT(NaN)
 end
