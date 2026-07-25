@@ -1226,7 +1226,7 @@ The reasoning, from the measurements rather than from preference:
 | Fourth-order gradient | **done** (opt-in, CPU + 3 CUDA kernels, tested) |
 | `luminosity_schedule` on spectral | **done** (CPU + CUDA, tested) |
 | Spectral 6D box vs drifted source | **done** (guard + test) |
-| Multi-turn emittance growth | **done** — but single-seed; needs 3-5 seeds to rank the `>= 128` configurations |
+| Multi-turn emittance growth | **done** — single-seed in Section 11, repeated at three seeds in Section 18; conclusions survive the error bars |
 | `coupling_tol` / `batch_mode` silently ignored | **done** |
 | Coupled (rotated) Gaussian subtraction | **CLOSED on CPU** (Section 15); CUDA support remains open |
 | VGF Green kernel | **CLOSED negative** (Section 16): needs 3x padding for 12% accuracy; at equal padding its tail error is 2.3x worse |

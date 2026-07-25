@@ -24,9 +24,13 @@ for the measurements behind each of these.
    damping times at production statistics, with the undamped proton beam as the
    noise integrator and a no-collision control. Headline: `grid=(64,64)` is the
    only configuration still growing at the end of the run; everything at
-   `grid >= 128` is indistinguishable. **New open item:** the runs are
-   single-seed, so the ordering among the `>= 128` configurations is not
-   resolvable; 3-5 seeds per configuration are needed to rank them.
+   `grid >= 128` is indistinguishable. **The single-seed caveat is now resolved:**
+   Section 18 repeated the configurations the recommendation depends on at three
+   seeds. The conclusions survive the error bars -- PIC(64,64) is separated by
+   ~30 sigma (1.29 +- 0.18 against 0.632 +- 0.021) and is the only run still
+   rising, while PIC(128,128) and GaussianPIC(64,64) remain indistinguishable
+   (0.632 +- 0.021 against 0.653 +- 0.016, within one combined sigma), so the
+   recommendation to prefer PIC(128,128) on cost stands.
    Original text follows.
    Measure multi-turn artificial emittance growth per solver and per grid.
    The production case is many turns in a ring, where correlated PIC noise drives
