@@ -1716,3 +1716,67 @@ only through coordinates, and `cuda_wavefront_fft=false` and
 `batch_mode=:sequential` were in fact reporting luminosity 1.8e-4 low at the time.
 The full sweep is now a test (`"CUDA PIC parity across every execution route"`),
 so the claim is enforced rather than asserted.
+
+
+---
+
+## 24. `green_type=:lattice` implemented and benchmarked (2026-07-25) — EXPERIMENTAL
+
+The lattice Green function evaluated in Section 3.4 of
+[`pic_free_space_kernels.md`](../theory/pic_free_space_kernels.md) is now
+implemented as `green_type=:lattice` on the CPU path and all five CUDA routes. It
+is **marked experimental**: flat-beam field-accuracy studies only, explicitly not
+a recommended production configuration.
+
+**Parity.** CPU/CUDA agreement is **1e-17** across every route (default indexed
+wavefront, `green_cache=:none`, non-indexed, `cuda_wavefront_fft=false`,
+sequential) — better than `:integrated`'s 1.3e-16, because the table is built once
+on the host and uploaded, so kernel values are bit-identical by construction
+rather than by agreeing arithmetic.
+
+**Accuracy** (median field error against Bassetti-Erskine, grid 128):
+
+| case | `:integrated` | `:lattice` | |
+| --- | ---: | ---: | --- |
+| 11:1 (production) | 1.991e-2 | 1.529e-2 | 1.30x better |
+| 25:1 | 7.02e-2 | 5.13e-2 | 1.37x better |
+| round | 6.05e-4 | 1.69e-3 | 2.80x worse |
+
+**Cost** (CUDA, 1.024M/beam, 15 slices, per turn):
+
+| grid | `:integrated` | `:lattice` | ratio |
+| ---: | ---: | ---: | ---: |
+| 64 | 0.191 | 0.249 | 1.30x |
+| 128 | 0.253 | 0.440 | 1.74x |
+
+**Why it is experimental, not production.** Implementing it refuted the
+affordability argument written into Section 3.4 before the implementation existed.
+That argument was that the kernel depends only on grid and aspect ratio, so one
+cached table per `(grid, aspect)` would serve every slice pair and turn. The
+dependence is real — two different absolute spacings with the same aspect ratio
+give bit-identical tables, and that is now a test — but the affordability is not:
+
+1. A production run needs **306** distinct aspect-ratio tables in 18 turns at 15
+   slices, not the ~18 a single-turn probe predicted. At 2.1 MB each (grid 128)
+   that is ~645 MB.
+2. The quantization cannot be coarsened to shrink the cache, because accuracy is
+   sharply aspect-sensitive: against `:integrated` at 1.991e-2, exact aspect gives
+   1.348e-2, 0.5% gives 1.529e-2, **2% gives 2.055e-2 — already worse than the
+   kernel it replaces** — and 5% gives 3.055e-2.
+3. Capping the cache to bound memory trades directly into time: at 64 entries it
+   thrashes and the cost rises from 1.8x to **6.8x** a turn. The shipped cap is 384.
+
+Since the gain is in *systematic* field error, and the `:fourth` gradient bought a
+comparable factor while measurably not reducing shot-noise-driven emittance growth
+(Section 11), this is very unlikely to change a multi-turn dynamics result. It is
+kept because it is a genuine accuracy/cost trade for field studies, unlike the CPU
+indexed-slice path (Section 3 of `docs/todo.md`), which was strictly worse and was
+reverted.
+
+**Route to making it production-viable**, if ever wanted: the lattice correction
+decays as `O(r^-2)`, so a small lattice patch near the origin plus the analytic
+far field `-(ln r + C)` would cut the auxiliary FFT from M=2048 to M~256 and shrink
+the table by orders of magnitude. Isotropic decay data supports this directly
+(correction 4.6e-2 at r=1, 7.2e-4 by r=8). The anisotropic case is the open part:
+at aspect 11 the correction is still ~5.9e-2 at r=16 in coarse-axis cells, so the
+patch radius and the anisotropic constant C(rho) both need deriving first.

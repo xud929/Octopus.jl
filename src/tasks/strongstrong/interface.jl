@@ -727,19 +727,41 @@ potential-difference longitudinal kick and the corresponding virtual-drift
 `pz` terms used by the Hirata-map branch of the reference PIC algorithm.
 This is the default. Set `longitudinal_kick=false` for a transverse-only map.
 
-`green_type=:lattice` inverts the five-point discrete Laplacian exactly instead
-of discretizing the continuum `-ln r` (derivation and measurements in
-`docs/theory/pic_free_space_kernels.md` Section 3.4). It is **better for flat
-beams and worse for round ones**: ~1.4x lower median field error at an 11:1
-aspect ratio and 1.37x at 25:1, but up to 2.8x worse for round beams, because
-the kernel contributes essentially none of the round-beam error. The gain is in
-*systematic* field error and is not expected to reduce shot-noise-driven
-emittance growth. Cost is one cached table per (grid, aspect ratio) -- 0.21 s at
-grid 128, then reused across every slice pair and turn.
+!!! warning "`green_type=:lattice` is EXPERIMENTAL"
+    `:lattice` is provided for **flat-beam field-accuracy studies only**. It is
+    **not recommended for production tracking**: it costs 1.74x runtime and
+    ~645 MB at `grid=(128,128)`, and its benefit is in *systematic* field error,
+    which is not expected to change shot-noise-driven multi-turn results. It is
+    correct and covered by CPU/CUDA parity tests, but it is not a supported
+    production configuration and its caching behaviour may change.
 
-`deposit_method` may be `:CIC` or `:TSC`. `green_type` may be `:integrated`
-or `:standard`; the integrated Green function is the robust default and uses a
-cell-integrated logarithmic kernel. **`:standard` is unsuitable for flat beams**:
+`green_type=:lattice` inverts the five-point discrete Laplacian exactly instead
+of discretizing the continuum `-ln r`. Derivation, measurements and the cost
+analysis are in `docs/theory/pic_free_space_kernels.md` Sections 3.4-3.5.
+
+It is **better for flat beams and worse for round ones**: at the 11:1 production
+aspect ratio the median field error is 1.30x lower than `:integrated` (1.48x if
+the aspect ratio is matched exactly) and 1.37x lower at 25:1, but up to 2.8x
+*worse* for round beams, because the kernel contributes essentially none of the
+round-beam error.
+
+The cost is the reason for the experimental label. The kernel depends on the
+aspect ratio `hx/hy` and is cached per `(grid, aspect)`, but production generates
+hundreds of distinct aspect ratios (306 in an 18-turn, 15-slice run), and the
+quantization cannot be coarsened to shrink that: beyond ~2% aspect error the
+lattice kernel is *worse* than `:integrated`. Measured on CUDA at 1.024M
+particles/beam, 15 slices: 0.191 -> 0.249 s/turn at grid 64 (1.30x) and
+0.253 -> 0.440 s/turn at grid 128 (1.74x). The table cache is capped to bound
+memory, and the cap must stay generous -- a small cap thrashes and the cost rises
+to 6.8x a turn.
+
+`:lattice` requires integer-aligned interaction grids and therefore cannot be
+combined with the half-cell offset that `:standard` uses; it throws rather than
+silently producing a wrong kernel.
+
+`deposit_method` may be `:CIC` or `:TSC`. `green_type` may be `:integrated`,
+`:standard`, or the experimental `:lattice` described above; the integrated Green
+function is the robust default and uses a cell-integrated logarithmic kernel. **`:standard` is unsuitable for flat beams**:
 at 25:1 aspect ratio its p95 field error is ~17x the integrated kernel's (and
 ~3x the median), while for round beams the two are indistinguishable.
 
@@ -964,7 +986,7 @@ const _PIC_SOLVER_OPTION_SCHEMA = (
     deposit_method = SolverOptionMeta(Symbol, :CIC,
         "Particle-to-grid deposition and field-interpolation method; :CIC or :TSC."),
     green_type = SolverOptionMeta(Symbol, :integrated,
-        "Open-boundary Green kernel; :integrated (cell-averaged log), :standard (node-sampled log), or :lattice (exact inverse of the five-point discrete Laplacian: better for flat beams, worse for round)."),
+        "Open-boundary Green kernel; :integrated (cell-averaged log), :standard (node-sampled log), or :lattice (EXPERIMENTAL: exact inverse of the five-point discrete Laplacian; better for flat beams, worse for round, 1.74x runtime -- field-accuracy studies only, not production)."),
     green_cache = SolverOptionMeta(Symbol, :slice_pair,
         "Persistent Green FFT caching mode; :slice_pair or :none."; category=:execution),
     field_derivative = SolverOptionMeta(Symbol, :second,

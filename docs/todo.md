@@ -282,7 +282,8 @@ implemented items are recorded in
    future run uses enough macroparticles per cell for atomic contention to show up
    in the deposition phase timing.
 2. ~~**Add a lattice Green-function variant.**~~ **IMPLEMENTED (2026-07-25) as
-   `green_type=:lattice`, opt-in, NOT recommended for production.** CPU + all CUDA
+   `green_type=:lattice`, marked EXPERIMENTAL: flat-beam field-accuracy studies
+   only, explicitly NOT a recommended production configuration.** CPU + all CUDA
    routes, parity 1e-17. Accuracy is as evaluated (1.30x better than `:integrated`
    at the 11:1 production aspect with the shipped 0.5% aspect quantization; worse
    for round beams), but the cost is **1.74x runtime at grid 128 and ~645 MB**.

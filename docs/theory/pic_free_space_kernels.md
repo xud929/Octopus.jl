@@ -81,6 +81,10 @@ growth, which is shot-noise driven.
 
 ## 3. Free-space convolution kernels
 
+Three kernels are available through `green_type`: `:integrated` (default,
+production), `:standard` (round beams only), and `:lattice` (**experimental**,
+flat-beam field-accuracy studies only — see Section 3.5 for its cost).
+
 ### 3.1 Node-sampled (`green_type=:standard`)
 
 $G$ evaluated at node separations, $G_{ij}=-\tfrac12\ln r_{ij}^2$, with the
@@ -281,7 +285,14 @@ contributes essentially none of the round-beam error, so replacing it there only
 adds the lattice's own near-origin correction, while for flat beams the kernel is
 a real error source.
 
-### 3.5 Implemented as `green_type=:lattice` — and what implementing it revealed
+### 3.5 Implemented as `green_type=:lattice` (EXPERIMENTAL) — and what implementing it revealed
+
+> **Status: EXPERIMENTAL.** `:lattice` is supported for **flat-beam
+> field-accuracy studies only**. It is correct and covered by CPU/CUDA parity
+> tests, but it is **not a recommended production configuration**: 1.74x runtime
+> and ~645 MB at grid 128, for a gain in *systematic* field error that is not
+> expected to change shot-noise-driven multi-turn results. Its caching behaviour
+> may change. `:integrated` remains the default and the production choice.
 
 Implemented on CPU and all CUDA routes (2026-07-25). CPU/CUDA parity is **1e-17**,
 better than `:integrated`'s 1.3e-16, because the table is built once on the host

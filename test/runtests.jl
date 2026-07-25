@@ -1639,6 +1639,11 @@ end
     # (d) rejected cleanly rather than silently ignored
     @test_throws ArgumentError PICPoissonSolver(green_type=:bogus)
 
+    # (d2) the EXPERIMENTAL label is part of the contract with users: :lattice is
+    #      1.74x slower and ~645 MB at grid 128, so the option metadata (which
+    #      solver_help renders) must keep saying so.
+    @test occursin("EXPERIMENTAL", solver_option_schema(PICPoissonSolver).green_type.meaning)
+
     # (e) CPU/CUDA parity on every execution route
     if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         flat(b) = vcat((Array(a) for a in coordinate_arrays(b))...)

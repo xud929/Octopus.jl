@@ -37,7 +37,9 @@ reference material, not API docs; the implementing code links back to them.
 - [`pic_free_space_kernels.md`](theory/pic_free_space_kernels.md) —
   `PICPoissonSolver` field solve: the second- and fourth-order on-mesh gradient
   stencils (`field_derivative`), the node-sampled vs cell-integrated free-space
-  kernels (`green_type`), and the Vico-Greengard-Ferrando truncated kernel —
+  kernels (`green_type`, including the **experimental** `:lattice` variant —
+  flat-beam field-accuracy studies only, not production), and the
+  Vico-Greengard-Ferrando truncated kernel —
   derived, measured, and rejected for this solver.
 - [`gaussian_subtracted_pic_solver.md`](theory/gaussian_subtracted_pic_solver.md) —
   `GaussianPICPoissonSolver`: control-variate hybrid (analytic Gaussian + PIC
