@@ -1983,10 +1983,20 @@ if _HAS_CUDA
             if gpic_subtract !== nothing
                 sub_threads = _cuda_pic_threads(:deposition)
                 total = nx * ny * nplanes
-                CUDA.@cuda threads=sub_threads blocks=cld(total, sub_threads) stream=stream _cuda_gpic_subtract_kernel!(
-                    charge, gpic_subtract.gx, gpic_subtract.gy, gpic_subtract.amp,
-                    Int32(nx), Int32(ny), Int32(nplanes),
-                )
+                if haskey(gpic_subtract, :lam)
+                    CUDA.@cuda threads=sub_threads blocks=cld(total, sub_threads) stream=stream _cuda_gpic_subtract_coupled_kernel!(
+                        charge, gpic_subtract.gx, gpic_subtract.gy,
+                        gpic_subtract.m1x, gpic_subtract.m2x,
+                        gpic_subtract.dgy, gpic_subtract.ddgy,
+                        gpic_subtract.amp, gpic_subtract.lam,
+                        Int32(nx), Int32(ny), Int32(nplanes),
+                    )
+                else
+                    CUDA.@cuda threads=sub_threads blocks=cld(total, sub_threads) stream=stream _cuda_gpic_subtract_kernel!(
+                        charge, gpic_subtract.gx, gpic_subtract.gy, gpic_subtract.amp,
+                        Int32(nx), Int32(ny), Int32(nplanes),
+                    )
+                end
             end
 
             green_spectral = nothing
@@ -2090,10 +2100,20 @@ if _HAS_CUDA
             if gpic_subtract !== nothing
                 sub_threads = _cuda_pic_threads(:deposition)
                 total = nx * ny * nplanes
-                CUDA.@cuda threads=sub_threads blocks=cld(total, sub_threads) stream=stream _cuda_gpic_subtract_kernel!(
-                    charge, gpic_subtract.gx, gpic_subtract.gy, gpic_subtract.amp,
-                    Int32(nx), Int32(ny), Int32(nplanes),
-                )
+                if haskey(gpic_subtract, :lam)
+                    CUDA.@cuda threads=sub_threads blocks=cld(total, sub_threads) stream=stream _cuda_gpic_subtract_coupled_kernel!(
+                        charge, gpic_subtract.gx, gpic_subtract.gy,
+                        gpic_subtract.m1x, gpic_subtract.m2x,
+                        gpic_subtract.dgy, gpic_subtract.ddgy,
+                        gpic_subtract.amp, gpic_subtract.lam,
+                        Int32(nx), Int32(ny), Int32(nplanes),
+                    )
+                else
+                    CUDA.@cuda threads=sub_threads blocks=cld(total, sub_threads) stream=stream _cuda_gpic_subtract_kernel!(
+                        charge, gpic_subtract.gx, gpic_subtract.gy, gpic_subtract.amp,
+                        Int32(nx), Int32(ny), Int32(nplanes),
+                    )
+                end
             end
 
             green_spectral = nothing

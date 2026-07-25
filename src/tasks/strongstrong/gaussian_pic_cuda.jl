@@ -40,14 +40,15 @@ if _HAS_CUDA
         function _cuda_gpic_require_uncoupled(solver)
             isfinite(solver.coupling_tol) && throw(ArgumentError(
                 "GaussianPICPoissonSolver(coupling_tol=$(solver.coupling_tol)) selects the " *
-                "coupled (rotated) Gaussian subtraction, which is implemented on the CPU " *
-                "path only. Use coupling_tol=Inf on CUDA, or run this solver on " *
-                "CPUThreadsBackend."))
+                "coupled (rotated) Gaussian subtraction. On CUDA this is implemented for " *
+                "the default indexed-wavefront route only; the non-indexed wavefront and " *
+                "sequential reference paths do not support it. Use the defaults " *
+                "(batch_mode=:wavefront, cuda_indexed_wavefront=true), set coupling_tol=Inf, " *
+                "or run on CPUThreadsBackend."))
             return nothing
         end
 
         function _cuda_gpic_entry!(solver, beam1, beam2, ctx)
-            _cuda_gpic_require_uncoupled(solver)
             workspace = _cuda_pic_workspace(solver.pic, eltype(beam1.rep.x))
             return _cuda_gpic_collide!(solver, beam1, beam2, workspace, ctx)
         end
@@ -56,7 +57,6 @@ if _HAS_CUDA
                                          solver::GaussianPICPoissonSolver,
                                          beam1::Beam, beam2::Beam, ::Type{CUDABackend},
                                          ctx::TrackingContext)
-            _cuda_gpic_require_uncoupled(solver)
             T = eltype(beam1.rep.x)
             workspace = _cuda_pic_workspace!(task.runtime_cache, label, solver.pic, T)
             return Base.ScopedValues.with(_ACTIVE_PIC_TIMING_CONTEXT => (label=label, turn=ctx.turn)) do
@@ -116,10 +116,10 @@ if _HAS_CUDA
 
         # Per-slice moments for a wavefront, batched on device (no gather), reusing
         # the soft-Gaussian moment kernels. Returns host sums (10 x 2npairs) and counts.
-        function _cuda_gpic_batched_moments(valid, rep1, rep2)
+        function _cuda_gpic_batched_moments(valid, rep1, rep2, coupled::Bool=false)
             T = eltype(rep1.x)
             npairs = length(valid); ncols = 2 * npairs
-            nstats = 10
+            nstats = coupled ? 14 : 10
             max_blocks = 1
             for n in 1:npairs
                 max_blocks = max(max_blocks,
@@ -131,8 +131,12 @@ if _HAS_CUDA
             col_n_host = Vector{Int32}(undef, ncols)
             for n in 1:npairs
                 item = valid[n]
-                nb1 = _cuda_launch_gaussian_moment_partials!(partials, 2n - 1, rep1, item.idx1, Val(false))
-                nb2 = _cuda_launch_gaussian_moment_partials!(partials, 2n, rep2, item.idx2, Val(false))
+                nb1 = coupled ?
+                    _cuda_launch_gaussian_moment_partials!(partials, 2n - 1, rep1, item.idx1, Val(true)) :
+                    _cuda_launch_gaussian_moment_partials!(partials, 2n - 1, rep1, item.idx1, Val(false))
+                nb2 = coupled ?
+                    _cuda_launch_gaussian_moment_partials!(partials, 2n, rep2, item.idx2, Val(true)) :
+                    _cuda_launch_gaussian_moment_partials!(partials, 2n, rep2, item.idx2, Val(false))
                 block_counts_host[2n - 1] = Int32(nb1); block_counts_host[2n] = Int32(nb2)
                 col_n_host[2n - 1] = Int32(length(item.idx1)); col_n_host[2n] = Int32(length(item.idx2))
             end
@@ -145,8 +149,37 @@ if _HAS_CUDA
         end
 
         @inline function _gpic_mom_from_gaussian(g, n)
+            z = zero(g.mx)
             return (n=n, mx=g.mx, mpx=g.mpx, varx=g.sx * g.sx, cxpx=g.covxpx, varpx=g.spx * g.spx,
-                    my=g.my, mpy=g.mpy, vary=g.sy * g.sy, cypy=g.covypy, varpy=g.spy * g.spy)
+                    my=g.my, mpy=g.mpy, vary=g.sy * g.sy, cypy=g.covypy, varpy=g.spy * g.spy,
+                    cxy=z, cxpy=z, cypx=z, cpxpy=z)
+        end
+
+        # Raw moments including the cross-plane terms, from the 14 coupled sums.
+        # Layout (see _cuda_gaussian_moment_partials_kernel!):
+        #   1..4  sum x, px, y, py      5..8  sum x^2, px^2, y^2, py^2
+        #   9,10  sum x*px, y*py        11..14 sum x*y, x*py, px*y, px*py
+        function _gpic_mom_from_coupled_sums(sums, n::Integer)
+            T = eltype(sums)
+            n == 0 && return (n=0, mx=zero(T), mpx=zero(T), varx=zero(T), cxpx=zero(T),
+                              varpx=zero(T), my=zero(T), mpy=zero(T), vary=zero(T),
+                              cypy=zero(T), varpy=zero(T), cxy=zero(T), cxpy=zero(T),
+                              cypx=zero(T), cpxpy=zero(T))
+            invn = inv(T(n))
+            mx = sums[1] * invn; mpx = sums[2] * invn
+            my = sums[3] * invn; mpy = sums[4] * invn
+            return (n=n, mx=mx, mpx=mpx,
+                    varx=max(sums[5] * invn - mx * mx, zero(T)),
+                    cxpx=sums[9] * invn - mx * mpx,
+                    varpx=max(sums[6] * invn - mpx * mpx, zero(T)),
+                    my=my, mpy=mpy,
+                    vary=max(sums[7] * invn - my * my, zero(T)),
+                    cypy=sums[10] * invn - my * mpy,
+                    varpy=max(sums[8] * invn - mpy * mpy, zero(T)),
+                    cxy=sums[11] * invn - mx * my,
+                    cxpy=sums[12] * invn - mx * mpy,
+                    cypx=sums[13] * invn - my * mpx,
+                    cpxpy=sums[14] * invn - mpx * mpy)
         end
 
         # Enlarge a base prep's source box by the Gaussian margin and re-finish grids.
@@ -186,33 +219,76 @@ if _HAS_CUDA
             prep12, prep21, luminosity_bounds = _cuda_pic_prepare_interaction_wavefront_indexed!(
                 pic, valid, rep1, rep2, nothing, wf, nothing, compute_luminosity,
             )
-            sums_host, col_n = _cuda_gpic_batched_moments(valid, rep1, rep2)
+            want_coupled = isfinite(gsolver.coupling_tol)
+            sums_host, col_n = _cuda_gpic_batched_moments(valid, rep1, rep2, want_coupled)
             for n in 1:npairs
-                g1 = _cuda_gaussian_moments_from_sums(view(sums_host, :, 2n - 1), Int(col_n[2n - 1]), false, zero(T), Val(false))
-                g2 = _cuda_gaussian_moments_from_sums(view(sums_host, :, 2n), Int(col_n[2n]), false, zero(T), Val(false))
-                prep12[n] = _cuda_gpic_augment_prep(gsolver, prep12[n], _gpic_mom_from_gaussian(g1, Int(col_n[2n - 1])))
-                prep21[n] = _cuda_gpic_augment_prep(gsolver, prep21[n], _gpic_mom_from_gaussian(g2, Int(col_n[2n])))
+                if want_coupled
+                    m1 = _gpic_mom_from_coupled_sums(view(sums_host, :, 2n - 1), Int(col_n[2n - 1]))
+                    m2 = _gpic_mom_from_coupled_sums(view(sums_host, :, 2n), Int(col_n[2n]))
+                else
+                    g1 = _cuda_gaussian_moments_from_sums(view(sums_host, :, 2n - 1), Int(col_n[2n - 1]), false, zero(T), Val(false))
+                    g2 = _cuda_gaussian_moments_from_sums(view(sums_host, :, 2n), Int(col_n[2n]), false, zero(T), Val(false))
+                    m1 = _gpic_mom_from_gaussian(g1, Int(col_n[2n - 1]))
+                    m2 = _gpic_mom_from_gaussian(g2, Int(col_n[2n]))
+                end
+                prep12[n] = _cuda_gpic_augment_prep(gsolver, prep12[n], m1)
+                prep21[n] = _cuda_gpic_augment_prep(gsolver, prep21[n], m2)
             end
 
             gxh = Matrix{T}(undef, nx, nplanes); gyh = Matrix{T}(undef, ny, nplanes)
             amph = Vector{T}(undef, nplanes)
             gtmp_x = Vector{T}(undef, nx); gtmp_y = Vector{T}(undef, ny)
             method = pic.deposit_method
+            # Coupled buffers; lamh[p] == 0 marks an uncoupled plane, so a wavefront
+            # may legitimately mix coupled and uncoupled slice pairs.
+            m1xh = want_coupled ? Matrix{T}(undef, nx, nplanes) : Matrix{T}(undef, 0, 0)
+            m2xh = want_coupled ? Matrix{T}(undef, nx, nplanes) : Matrix{T}(undef, 0, 0)
+            dgyh = want_coupled ? Matrix{T}(undef, ny, nplanes) : Matrix{T}(undef, 0, 0)
+            ddgyh = want_coupled ? Matrix{T}(undef, ny, nplanes) : Matrix{T}(undef, 0, 0)
+            lamh = want_coupled ? zeros(T, nplanes) : T[]
+            coupled_plane = falses(nplanes)
+            tol = T(gsolver.coupling_tol)
+            m1t = Vector{T}(undef, nx); m2t = Vector{T}(undef, nx)
+            dgt = Vector{T}(undef, ny); ddgt = Vector{T}(undef, ny)
             for n in 1:npairs
                 off = 4 * (n - 1)
                 for (k, prep, b) in ((1, prep12[n], prep12[n].bL), (2, prep12[n], prep12[n].bR),
                                      (3, prep21[n], prep21[n].bL), (4, prep21[n], prep21[n].bR))
                     x0 = T(prep.source_grid.x0); y0 = T(prep.source_grid.y0)
                     hx = T(prep.source_grid.width) / T(nx - 1); hy = T(prep.source_grid.height) / T(ny - 1)
-                    _cuda_gpic_fill_profile!(gtmp_x, gtmp_y, x0, y0, hx, hy, b, method, prep.do_gauss)
+                    nsrc = k <= 2 ? prep12[n].mom.n : prep21[n].mom.n
+                    pc = want_coupled && prep.do_gauss && abs(b.rxy) > tol &&
+                         b.a > 0 && b.d > 0 && b.sigc > 0
+                    coupled_plane[off + k] = pc
+                    if pc
+                        _gpic_coupled_profiles!(gtmp_x, m1t, m2t, gtmp_y, dgt, ddgt,
+                                                x0, hx, T(b.mux), T(sqrt(b.a)),
+                                                y0, hy, T(b.muy), T(b.sigc), method)
+                        @views m1xh[:, off + k] .= m1t; @views m2xh[:, off + k] .= m2t
+                        @views dgyh[:, off + k] .= dgt; @views ddgyh[:, off + k] .= ddgt
+                        lamh[off + k] = T(b.lam)
+                        sg = sum(gtmp_x) * sum(gtmp_y) + T(b.lam) * sum(m1t) * sum(dgt) +
+                             T(0.5) * T(b.lam)^2 * sum(m2t) * sum(ddgt)
+                        amph[off + k] = (gsolver.neutralize && sg != 0) ? T(nsrc) / sg : T(nsrc)
+                    else
+                        _cuda_gpic_fill_profile!(gtmp_x, gtmp_y, x0, y0, hx, hy, b, method, prep.do_gauss)
+                        if want_coupled
+                            @views m1xh[:, off + k] .= zero(T); @views m2xh[:, off + k] .= zero(T)
+                            @views dgyh[:, off + k] .= zero(T); @views ddgyh[:, off + k] .= zero(T)
+                            lamh[off + k] = zero(T)
+                        end
+                        amph[off + k] = (prep.do_gauss && gsolver.neutralize) ?
+                            T(nsrc) / (sum(gtmp_x) * sum(gtmp_y)) : (prep.do_gauss ? T(nsrc) : zero(T))
+                    end
                     @views gxh[:, off + k] .= gtmp_x
                     @views gyh[:, off + k] .= gtmp_y
-                    nsrc = k <= 2 ? prep12[n].mom.n : prep21[n].mom.n
-                    amph[off + k] = (prep.do_gauss && gsolver.neutralize) ?
-                        T(nsrc) / (sum(gtmp_x) * sum(gtmp_y)) : (prep.do_gauss ? T(nsrc) : zero(T))
                 end
             end
             gx_d = CUDA.CuArray(gxh); gy_d = CUDA.CuArray(gyh); amp_d = CUDA.CuArray(amph)
+            gsub = want_coupled ?
+                (gx=gx_d, gy=gy_d, amp=amp_d, m1x=CUDA.CuArray(m1xh), m2x=CUDA.CuArray(m2xh),
+                 dgy=CUDA.CuArray(dgyh), ddgy=CUDA.CuArray(ddgyh), lam=CUDA.CuArray(lamh)) :
+                (gx=gx_d, gy=gy_d, amp=amp_d)
 
             luminosity = zero(T)
             luminosity_task = nothing
@@ -227,7 +303,7 @@ if _HAS_CUDA
 
             phi_batch, Ex_batch, Ey_batch = _cuda_pic_solve_wavefront_fields_indexed_batched_fft!(
                 pic, valid, rep1, rep2, prep12, prep21, nothing, nothing, wf, nothing;
-                gpic_subtract=(gx=gx_d, gy=gy_d, amp=amp_d),
+                gpic_subtract=gsub,
             )
 
             stream = CUDA.stream()
@@ -241,7 +317,7 @@ if _HAS_CUDA
                     @view(phi_batch[1:nx, 1:ny, off + 2]), @view(Ex_batch[:, :, off + 2]), @view(Ey_batch[:, :, off + 2]),
                     @view(phi_batch[1:nx, 1:ny, off + 3]), @view(Ex_batch[:, :, off + 3]), @view(Ey_batch[:, :, off + 3]),
                     @view(phi_batch[1:nx, 1:ny, off + 4]), @view(Ex_batch[:, :, off + 4]), @view(Ey_batch[:, :, off + 4]),
-                    stream,
+                    stream, gsolver.coupling_tol,
                 )
             end
             CUDA.synchronize(stream)
@@ -285,7 +361,13 @@ if _HAS_CUDA
             mux, muy, sigx, sigy = _gpic_drifted_gaussian(mom, s)
             rx = 2 * (mom.cxpx + s * mom.varpx)
             ry = 2 * (mom.cypy + s * mom.varpy)
-            return (mux=mux, muy=muy, sigx=sigx, sigy=sigy, rx=rx, ry=ry)
+            # transported full covariance, for the coupling switch (docs Section 7)
+            a, b, d, _, _, _ = _gpic_drifted_covariance(mom, s)
+            rxy = _gpic_correlation(a, b, d)
+            lam = a > 0 ? b / a : zero(b)
+            sigc = sqrt(max(d - (a > 0 ? b * b / a : zero(b)), zero(d)))
+            return (mux=mux, muy=muy, sigx=sigx, sigy=sigy, rx=rx, ry=ry,
+                    a=a, b=b, d=d, rxy=rxy, lam=lam, sigc=sigc)
         end
 
         # Fill a host erf node profile for a boundary; zeros if the slice is degenerate.
@@ -304,6 +386,7 @@ if _HAS_CUDA
         function _cuda_gpic_collide_wavefront!(gsolver::GaussianPICPoissonSolver,
                                                beam1::Beam, beam2::Beam, workspace, ctx)
             pic = gsolver.pic
+            _cuda_gpic_require_uncoupled(gsolver)
             slices1 = _cuda_longitudinal_slices(beam1.rep, pic.slicing1)
             slices2 = _cuda_longitudinal_slices(beam2.rep, pic.slicing2)
             batches = collision_pair_batches(slices1, slices2)
@@ -463,20 +546,34 @@ if _HAS_CUDA
         end
 
         # Gaussian-parameter tuple for a prepared direction (isbits, kernel-passable).
-        @inline function _cuda_gpic_gtuple(::Type{T}, prep) where {T}
+        @inline function _cuda_gpic_gtuple(::Type{T}, prep, tol=T(Inf)) where {T}
+            # `coupled` is decided per boundary exactly as on the CPU. cmom is the
+            # full transverse covariance; the device kick transports it with
+            # S = -s and applies the rotated Bassetti-Erskine kick plus the coupled
+            # pz terms via _cuda_cp_covariance_kick.
+            cpl = isfinite(tol) && prep.do_gauss &&
+                  max(abs(prep.bL.rxy), abs(prep.bR.rxy)) > tol &&
+                  prep.bL.a > 0 && prep.bL.d > 0 && prep.bR.a > 0 && prep.bR.d > 0
+            m = prep.mom
+            cmom = StrongTransverseMoments{T,true}(
+                T(m.varx), T(m.cxy), T(m.vary),
+                T(m.cxpx), T(m.cxpy), T(m.cypx), T(m.cypy),
+                T(m.varpx), T(m.cpxpy), T(m.varpy))
             return (ns = prep.do_gauss ? T(prep.mom.n) : zero(T),
                     mpx=T(prep.mom.mpx), mpy=T(prep.mom.mpy),
                     sigxL=T(prep.bL.sigx), sigyL=T(prep.bL.sigy), muxL=T(prep.bL.mux), muyL=T(prep.bL.muy),
                     sigxR=T(prep.bR.sigx), sigyR=T(prep.bR.sigy), muxR=T(prep.bR.mux), muyR=T(prep.bR.muy),
-                    rxL=T(prep.bL.rx), ryL=T(prep.bL.ry), rxR=T(prep.bR.rx), ryR=T(prep.bR.ry))
+                    rxL=T(prep.bL.rx), ryL=T(prep.bL.ry), rxR=T(prep.bR.rx), ryR=T(prep.bR.ry),
+                    coupled=cpl, cmom=cmom, SL=T(-prep.sL), SR=T(-prep.sR))
         end
 
         function _cuda_gpic_launch_kick_pair_indexed!(
                 pic, rep1, idx1, sc1, pf1, kbb1, fg1, prep1,
                 rep2, idx2, sc2, pf2, kbb2, fg2, prep2,
                 phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R,
-                phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R, stream)
+                phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R, stream, gtol=Inf)
             T = eltype(rep1.x)
+            gtol = T(gtol)
             threads = _cuda_pic_threads(:kick)
             blocks = cld(max(length(idx1), length(idx2)), threads)
             method_code = Symbol(pic.deposit_method) == :CIC ? Int32(1) : Int32(2)
@@ -485,7 +582,7 @@ if _HAS_CUDA
             hzi2, zbias2 = _slice_interpolation_parameters(T(pf2.lb), T(pf2.rb))
             x01 = T(fg1.x0); y01 = T(fg1.y0); hx1 = T(fg1.width) / T(nx - 1); hy1 = T(fg1.height) / T(ny - 1)
             x02 = T(fg2.x0); y02 = T(fg2.y0); hx2 = T(fg2.width) / T(nx - 1); hy2 = T(fg2.height) / T(ny - 1)
-            g1 = _cuda_gpic_gtuple(T, prep1); g2 = _cuda_gpic_gtuple(T, prep2)
+            g1 = _cuda_gpic_gtuple(T, prep1, gtol); g2 = _cuda_gpic_gtuple(T, prep2, gtol)
             if pic.longitudinal_kick
                 CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_gpic_kick_pair_indexed_longitudinal_kernel!(
                     rep1.x, rep1.px, rep1.y, rep1.py, rep1.pz, rep1.z, idx1,
@@ -525,6 +622,18 @@ if _HAS_CUDA
             zL = min(max(zL, zero(zL)), one(zL)); zR = one(zL) - zL
             Kx, Ky, Kz = _cuda_pic_interpolate_kick(method_code, x, y, x0, y0, hxi, hyi, nx, ny,
                 phiL, ExL, EyL, phiR, ExR, EyR, zL, zR)
+            zt = zero(kbb)
+            if g.coupled
+                _, pxL, _, pyL, _, pzL, _ = _cuda_cp_covariance_kick(
+                    g.cmom, kbb_eff, g.SL, x - g.muxL, y - g.muyL, x, zt, y, zt, zt, zt)
+                _, pxR, _, pyR, _, pzR, _ = _cuda_cp_covariance_kick(
+                    g.cmom, kbb_eff, g.SR, x - g.muxR, y - g.muyR, x, zt, y, zt, zt, zt)
+                dpxa = zL * pxL + zR * pxR; dpya = zL * pyL + zR * pyR
+                newpx = oldpx + kick_scale * Kx + dpxa
+                newpy = oldpy + kick_scale * Ky + dpya
+                pz += kick_scale * Kz * field_hzi
+                pz += zL * pzL + zR * pzR
+            else
             beLx, beLy = _cuda_gaussian_beambeam_kick(g.sigxL, g.sigyL, x - g.muxL, y - g.muyL)
             beRx, beRy = _cuda_gaussian_beambeam_kick(g.sigxR, g.sigyR, x - g.muxR, y - g.muyR)
             Kxa = half_ns * (zL * beLx + zR * beRx); Kya = half_ns * (zL * beLy + zR * beRy)
@@ -535,6 +644,7 @@ if _HAS_CUDA
             covL = _gpic_cov_pz(kbb_eff, g.sigxL, g.sigyL, x - g.muxL, y - g.muyL, beLx, beLy, g.rxL, g.ryL)
             covR = _gpic_cov_pz(kbb_eff, g.sigxR, g.sigyR, x - g.muxR, y - g.muyR, beRx, beRy, g.rxR, g.ryR)
             pz += zL * covL + zR * covR
+            end
             pz += typeof(kbb)(0.5) * (dpxa * g.mpx + dpya * g.mpy)
             s2 = typeof(source_center)(0.5) * (source_center - oldz)
             xarr[particle] = x + s2 * newpx; yarr[particle] = y + s2 * newpy
@@ -557,10 +667,21 @@ if _HAS_CUDA
             zL = min(max(zL, zero(zL)), one(zL)); zR = one(zL) - zL
             Kx, Ky = _cuda_pic_interpolate_field(method_code, x, y, x0, y0, hxi, hyi, nx, ny,
                 phiL, ExL, EyL, phiR, ExR, EyR, zL, zR)
+            if g.coupled
+                zt = zero(kbb)
+                kbb_eff = 2 * kbb * half_ns
+                _, pxL, _, pyL, _, _, _ = _cuda_cp_covariance_kick(
+                    g.cmom, kbb_eff, g.SL, x - g.muxL, y - g.muyL, x, zt, y, zt, zt, zt)
+                _, pxR, _, pyR, _, _, _ = _cuda_cp_covariance_kick(
+                    g.cmom, kbb_eff, g.SR, x - g.muxR, y - g.muyR, x, zt, y, zt, zt, zt)
+                newpx = oldpx + 2 * kbb * Kx + (zL * pxL + zR * pxR)
+                newpy = oldpy + 2 * kbb * Ky + (zL * pyL + zR * pyR)
+            else
             beLx, beLy = _cuda_gaussian_beambeam_kick(g.sigxL, g.sigyL, x - g.muxL, y - g.muyL)
             beRx, beRy = _cuda_gaussian_beambeam_kick(g.sigxR, g.sigyR, x - g.muxR, y - g.muyR)
             Kxa = half_ns * (zL * beLx + zR * beRx); Kya = half_ns * (zL * beLy + zR * beRy)
             newpx = oldpx + 2 * kbb * (Kx + Kxa); newpy = oldpy + 2 * kbb * (Ky + Kya)
+            end
             s2 = typeof(source_center)(0.5) * (source_center - oldz)
             xarr[particle] = x + s2 * newpx; yarr[particle] = y + s2 * newpy
             pxarr[particle] = newpx; pyarr[particle] = newpy
@@ -607,7 +728,11 @@ if _HAS_CUDA
             return nothing
         end
 
-        # Batched subtraction: charge[i,j,p] -= amp[p] * gx[i,p] * gy[j,p].
+        # Batched subtraction.
+        #   uncoupled: charge[i,j,p] -= amp[p] * gx[i,p] * gy[j,p]
+        #   coupled  : plus the two conditional-expansion corrections of docs
+        #              Section 7.2, lam*M1x(x)dgy(y) and (lam^2/2)*M2x(x)ddgy(y).
+        # `lam[p] == 0` marks an uncoupled plane, so a mixed wavefront is fine.
         function _cuda_gpic_subtract_kernel!(charge, gx, gy, amp, nx::Int32, ny::Int32, nplanes::Int32)
             idx = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
@@ -622,11 +747,35 @@ if _HAS_CUDA
             return nothing
         end
 
+        function _cuda_gpic_subtract_coupled_kernel!(charge, gx, gy, m1x, m2x, dgy, ddgy,
+                                                     amp, lam, nx::Int32, ny::Int32, nplanes::Int32)
+            idx = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            total = Int(nx) * Int(ny) * Int(nplanes)
+            while idx <= total
+                i = (idx - 1) % Int(nx) + 1
+                j = ((idx - 1) ÷ Int(nx)) % Int(ny) + 1
+                p = (idx - 1) ÷ (Int(nx) * Int(ny)) + 1
+                @inbounds begin
+                    l = lam[p]
+                    acc = gx[i, p] * gy[j, p]
+                    if l != 0
+                        acc += l * m1x[i, p] * dgy[j, p] +
+                               typeof(l)(0.5) * l * l * m2x[i, p] * ddgy[j, p]
+                    end
+                    charge[i, j, p] -= amp[p] * acc
+                end
+                idx += stride
+            end
+            return nothing
+        end
+
         # -------- sequential (reference) path --------
 
         function _cuda_gpic_collide_sequential!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::Beam,
                                                 workspace, ctx)
             pic = gsolver.pic
+            _cuda_gpic_require_uncoupled(gsolver)
             slices1 = _cuda_longitudinal_slices(beam1.rep, pic.slicing1)
             slices2 = _cuda_longitudinal_slices(beam2.rep, pic.slicing2)
             kbb1 = _pic_kbb1(pic, beam1, beam2); kbb2 = _pic_kbb2(pic, beam1, beam2)

@@ -1471,3 +1471,85 @@ CLOSED need no further action; the rest are the actual backlog.
 
 Item 1 is the only one that is a genuine gap rather than a research direction or
 a nice-to-have. Items 2-3 are the highest-value *physics* follow-ups.
+
+
+---
+
+## 21. CUDA coupled subtraction, and two findings from testing it (2026-07-25)
+
+### 21.1 Feature: coupled subtraction on CUDA
+
+The coupled (rotated) subtraction now runs on the **default CUDA route**
+(`batch_mode=:wavefront`, `cuda_indexed_wavefront=true`). Implementation reuses
+what already existed: the soft-Gaussian coupled moment kernel (`Val(true)`, 14
+sums, giving the cross-plane covariances), and the device
+`_cuda_cp_covariance_kick` for the rotated analytic add-back with its coupled
+`pz` terms. New work was the three-outer-product subtraction kernel and the host
+profile build. A per-plane `lam[p] == 0` marks an uncoupled plane, so a wavefront
+may legitimately mix coupled and uncoupled slice pairs.
+
+The two CUDA routes that do **not** implement it (non-indexed wavefront,
+sequential reference) raise with a message naming the supported configuration,
+rather than silently running the uncoupled subtraction.
+
+CPU/CUDA parity, `green_cache=:none`, both `longitudinal_kick` settings:
+
+| `coupling_tol` | max abs coordinate difference |
+| --- | ---: |
+| `Inf` (uncoupled) | 5.2e-17 |
+| `0.0` (coupled everywhere) | 4.6e-17 |
+
+The coupled branch is therefore at the same parity as the uncoupled one.
+
+### 21.2 Finding: the slice-pair Green cache breaks CPU/CUDA parity for GaussianPIC
+
+Discovered while writing the parity test, **present on committed code and
+unrelated to the coupled work**:
+
+| solver | `green_cache` | CPU-CUDA max abs coordinate difference |
+| --- | --- | ---: |
+| PIC | `:none` | 1.3e-16 |
+| PIC | `:slice_pair` | 8.1e-17 |
+| GaussianPIC | `:none` | 5.2e-17 |
+| **GaussianPIC** | **`:slice_pair` (default)** | **3.2e-6** |
+
+Eleven orders of magnitude, and only for GaussianPIC with the **default** cache.
+Plain PIC is unaffected.
+
+**Mechanism.** GaussianPIC enlarges the source box by `margin_sigma * sigma`
+before the grid is finished, and those sigmas come from the slice moments. The
+CPU computes them by a serial pass and CUDA by a batched device reduction, so
+they differ at ~1e-16. The slice-pair cache then makes a **discrete** decision —
+reuse the cached grid or rebuild it — from those bounds, and a 1e-16 difference
+can flip it. The two backends then solve on different (both valid) grids, and the
+grid-choice sensitivity is ~1e-6.
+
+**Why it was never seen:** the existing "CUDA GaussianPIC solver matches CPU"
+testset uses `green_cache=:none`, so it cannot observe this.
+
+It is not a correctness bug in the sense of a wrong answer — 3e-6 is far below
+the ~1% macroparticle floor, and both grids are legitimate — but it means
+GaussianPIC results are **not reproducible across backends** at the default
+settings, which matters for regression testing and for A/B comparisons. Recorded
+as an open item; the fix would be to make the cache decision depend only on
+quantities that are bitwise identical across backends (for example by quantising
+the enlarged bounds before the reuse test).
+
+### 21.3 Finding: atomic nondeterminism does not reach the emittance observable
+
+Section 4 of this pass raised CUDA nondeterminism (atomic deposition) as the real
+motivation for a deterministic deposition path. Measured directly: two identical
+CUDA runs, same seed, same configuration, 1000 turns.
+
+| run | proton eps_x growth |
+| --- | ---: |
+| A | -5.138e-07 /turn (+0.39%) |
+| B | -5.138e-07 /turn (+0.39%) |
+
+**Identical to the printed precision.** So although single-collide coordinates
+differ at 3.6e-16 between runs, that does not amplify into the emittance metric
+over 1000 turns. The determinism argument for replacing atomics is therefore
+weaker than stated: it still matters for bitwise regression testing and for exact
+reproduction of a published run, but it does **not** perturb the physics
+observable this review uses. Combined with deposition being 3.1% of a CUDA turn,
+neither the performance nor the physics case for removing atomics is strong.

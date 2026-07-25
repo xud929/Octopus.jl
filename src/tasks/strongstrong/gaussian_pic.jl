@@ -348,12 +348,20 @@ end
 # so the coupled analytic add-back can reuse the validated soft-Gaussian
 # `_cp_covariance_kick` (rotated Bassetti-Erskine kick plus the principal-axis
 # and rotation-derivative pz terms of docs/theory Section 5).
+# Tolerant of moment tuples built without the cross-plane terms (the CUDA
+# non-indexed and sequential routes do not compute them, and do not support the
+# coupled branch); those degrade to the uncoupled covariance rather than erroring.
 @inline function _gpic_coupled_moments(mom)
     T = typeof(mom.mx)
+    z = zero(T)
+    cxy = hasproperty(mom, :cxy) ? T(mom.cxy) : z
+    cxpy = hasproperty(mom, :cxpy) ? T(mom.cxpy) : z
+    cypx = hasproperty(mom, :cypx) ? T(mom.cypx) : z
+    cpxpy = hasproperty(mom, :cpxpy) ? T(mom.cpxpy) : z
     return StrongTransverseMoments{T,true}(
-        mom.varx, mom.cxy, mom.vary,
-        mom.cxpx, mom.cxpy, mom.cypx, mom.cypy,
-        mom.varpx, mom.cpxpy, mom.varpy)
+        mom.varx, cxy, mom.vary,
+        mom.cxpx, cxpy, cypx, mom.cypy,
+        mom.varpx, cpxpy, mom.varpy)
 end
 
 # Transported transverse covariance (a, b, d) = (sigma_x^2, sigma_xy, sigma_y^2)
