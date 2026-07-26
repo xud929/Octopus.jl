@@ -2365,6 +2365,72 @@ if _HAS_CUDA
         end
 
 
+        # ---- node-indexed wavefront: 3 planes per slice-pair direction ---------
+        # Additive path. The existing 4-plane functions are untouched, so the
+        # production default cannot regress. Node mode needs 3 planes per
+        # direction (L and Z on the left node's mesh, R on the right node's), so
+        # `nplanes = 6 * npairs`, and the plane -> Green mapping is non-uniform.
+        # Rather than generalize the `plane0 / 2` arithmetic, the Green stack here
+        # carries **one entry per plane** (the left node's is duplicated into the
+        # L and Z slots), making the spectral multiply a 1:1 elementwise product.
+
+        """Elementwise spectral multiply with a per-plane Green stack."""
+        function _cuda_pic_multiply_spectral_perplane_kernel!(spectral, green_spectral)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            total = length(spectral)
+            while index <= total
+                @inbounds spectral[index] *= green_spectral[index]
+                index += stride
+            end
+            return nothing
+        end
+
+        """
+        Deposit **one** drifted source plane of an indexed slice.
+
+        A dedicated kernel rather than the plane-*pair* one with both slots set
+        equal: that kernel deposits unconditionally twice, so reusing it for a
+        single plane would double the charge.
+        """
+        function _cuda_pic_deposit_drifted_indexed_plane_kernel!(
+            charge, plane::Int32, x, px, y, py, idx, drift,
+            x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32,
+        )
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            hxi = inv(hx)
+            hyi = inv(hy)
+            while index <= length(idx)
+                particle = idx[index]
+                _cuda_pic_deposit_point!(
+                    charge, plane,
+                    x[particle] + px[particle] * drift,
+                    y[particle] + py[particle] * drift,
+                    x0, y0, hxi, hyi, nx, ny, method_code,
+                )
+                index += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_deposit_drifted_indexed_plane!(
+            solver::PICPoissonSolver, charge, plane::Int32,
+            source, idx, drift, source_grid,
+            method_code::Int32, threads::Integer, stream,
+        )
+            nx, ny = solver.grid
+            T = eltype(source.x)
+            hx = T(source_grid.width) / T(nx - 1)
+            hy = T(source_grid.height) / T(ny - 1)
+            CUDA.@cuda threads=threads blocks=cld(length(idx), threads) stream=stream _cuda_pic_deposit_drifted_indexed_plane_kernel!(
+                charge, plane, source.x, source.px, source.y, source.py, idx,
+                T(drift), T(source_grid.x0), T(source_grid.y0), hx, hy,
+                Int32(nx), Int32(ny), method_code,
+            )
+            return nothing
+        end
+
         function _cuda_pic_deposit_drifted_indexed_plane_pair!(
             solver::PICPoissonSolver, charge, planeL::Int32, planeR::Int32,
             source, idx, driftL, driftR, source_grid,

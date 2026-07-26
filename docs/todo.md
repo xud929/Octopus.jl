@@ -56,14 +56,61 @@ derivation: [`docs/theory/slice_longitudinal_interpolation.md`](theory/slice_lon
    All of a source slice's nodes are now built together from one state.
 
    **Remaining gap is the route** -- see 2b.
-2b. **Extend the CUDA wavefront route to carry per-node meshes and a third field
-   plane — now the highest-value remaining optimization.** Measured at the
-   production point (2.56M/1.024M, 15 slices, grid 128, CUDA indexed wavefront,
-   200 turns): base 0.3408 s/turn, `grid_quantize` 0.3379 (0.99x), `:TSC` 0.3668
-   (1.08x), but `:quadratic` **0.9310 (2.73x)**. The penalty is the *route*, not
-   the extra solve: `:quadratic` and `:node` are implemented only on the CUDA
-   sequential non-async path, which is itself ~2.5x the wavefront default. Until
-   the wavefront route supports them, neither is affordable in production on GPU.
+2b. **Port `:node` to the CUDA wavefront route — STARTED, primitives landed.**
+   This is the remaining 63% of `:node`'s gap at the production point: route
+   +0.4148 s/turn, against a total gap of 0.66 s (base 0.3408, `:node` 1.0026).
+   `:quadratic` needs the same work.
+
+   **Why it is blocked today.** The wavefront path hardcodes two planes per Green
+   FFT: `nplanes = 4 * npairs`, `green_plane = plane0 / 2 + 1` in
+   `_cuda_pic_multiply_spectral_stack_kernel!`, and `offset = 2 * (n - 1)` in
+   `_cuda_pic_copy_green_spectral_stack!`. Node mode needs **3 planes per
+   slice-pair direction** -- L and Z on the left node's mesh, R on the right
+   node's -- so `nplanes = 6 * npairs` with a *non-uniform* plane -> Green
+   grouping.
+
+   **Landed (additive, existing 4-plane path untouched, suite green):**
+
+   - `_cuda_pic_multiply_spectral_perplane_kernel!` -- 1:1 elementwise spectral
+     multiply. Sidesteps the `plane0 / 2` mapping entirely by having the Green
+     stack carry **one entry per plane**, duplicating the left node's Green into
+     the L and Z slots. Simpler than generalizing the arithmetic.
+   - `_cuda_pic_deposit_drifted_indexed_plane_kernel!` and its wrapper --
+     single-plane deposit. **Do not** reuse
+     `_cuda_pic_deposit_drifted_indexed_plane_pair_kernel!` with both plane slots
+     set equal: it deposits unconditionally twice and would silently double the
+     source charge. That trap cost a debug cycle; the dedicated kernel exists so
+     it cannot recur.
+
+   Both are currently unreferenced -- dead code until step 1 below wires them in.
+
+   **Remaining, in order:**
+
+   1. `_cuda_pic_prepare_interaction_wavefront_node_indexed!` -- per pair per
+      direction, produce **two** meshes (`gL`, `gR`) from
+      `_cuda_pic_build_node_grids!`, plus `sL`/`sR`, instead of the single mesh
+      the slice-pair prep returns.
+   2. `_cuda_pic_solve_wavefront_fields_node_indexed_batched_fft!` --
+      `nplanes = 6 * npairs`; per pair deposit L (drift `sL`, mesh `gL`), R
+      (`sR`, `gR`), Z (`sR`, `gL`) at offsets +1/+2/+3 for direction 1 and
+      +4/+5/+6 for direction 2; fill `wf.hx`/`wf.hy` per plane from the mesh that
+      plane actually used; build the per-plane Green stack and multiply with the
+      new kernel.
+   3. `_cuda_pic_launch_kick_pair_node_indexed!` -- six plane triples and **two**
+      field grids per direction, so the transverse blend reads each node plane on
+      its own mesh while the longitudinal difference reads L and Z on `gL`
+      (see Section 10.4.1 of the theory note for why that pairing is mandatory).
+   4. Workspace: `_cuda_pic_wavefront_workspace!` sized for `6 * npairs` planes,
+      and `green_spectral` sized one entry per plane rather than `nplanes / 2`.
+   5. Relax `_require_cuda_pic_options` to allow `:node` on the wavefront route,
+      and extend the CUDA parity testset to cover it.
+
+   **Acceptance:** CPU/CUDA parity at 1e-11, boundary jump still ~1e-9 in the
+   z-scan, full suite plus all contract gates, and a production re-measurement
+   (2.56M/1.024M, 15 slices, grid 128, 200 turns) against base 0.3408. Do not
+   quote any cost figure from a `collide!`-only benchmark -- every such claim in
+   this work was later inverted.
+
 2. ~~**CUDA `slice_interpolation=:quadratic`.**~~ **PARTIALLY DONE
    (2026-07-25)**: implemented on the CUDA sequential, non-batched-FFT route
    (`batch_mode=:sequential`, `cuda_async=false`) with 7.5e-16 CPU parity.
