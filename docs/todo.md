@@ -73,29 +73,40 @@ derivation: [`docs/theory/slice_longitudinal_interpolation.md`](theory/slice_lon
    The port is worth 25% (0.81 vs 1.08), and node's *interaction* is only 26%
    above base -- the 6-plane batching is efficient.
 
-2c. **Make the node-mesh prebuild cacheable across turns — the whole remaining
-   gap.** `outside` is 0.4185 s/turn for `:node` against 0.0128 s for base: the
-   turn-start prebuild rebuilds **480 Green FFTs of 256x256 every turn**
-   (15 source slices x 16 nodes x 2 directions), while the baseline's slice-pair
-   Green cache persists and costs ~0 after warmup. Everything else is close to
-   parity.
+2c. **The node prebuild is host-sync latency, not compute — the real remaining
+   gap.** `outside` the instrumented interaction is 0.4185 s/turn for `:node`
+   against 0.0128 s for base. Everything else is near parity (node interaction
+   0.3912 vs base 0.3110).
 
-   **Why a naive persistent cache fails**, and it was tried and measured slower:
-   node meshes are sized from a continuously drifting distribution, so they differ
-   every turn and the cache never hits. **`grid_quantize` is the missing half** --
-   it collapses 225 distinct meshes to 7, so quantized meshes repeat across turns
-   and become cacheable. The two options were designed independently and are
-   complementary; neither delivers this alone.
+   **Two hypotheses tested and refuted**, both by measurement:
 
-   Plan: store the node cache in the persistent workspace, key entries on the
-   quantized mesh geometry, and reuse the Green FFT on an exact geometry match
-   (not a coverage guard -- that was the earlier failed attempt). Expected to take
-   `:node` from 0.81 to near 0.40 s/turn. Verify: CPU/CUDA parity 1e-11, boundary
-   jump ~1e-9, and a 120-turn production measurement.
+   - *Green FFTs rebuilt every turn.* Tried a per-(source slice, node) persistent
+     cache: **slower** (1.4226 vs 1.1988). Then tried a memo keyed on mesh
+     *geometry*, which dedupes across nodes and turns, on the theory that
+     `grid_quantize` would make meshes repeat and the memo hit. Measured
+     1.0981 (q=0), 1.1312 (q=1/8), 1.0852 (q=1/4) against 1.1196 without it --
+     no gain, and quantization made it *worse*. Reverted. The Green FFT is not
+     the cost; `green_lookup` is only 0.018 s in the phase dump.
+   - *Luminosity gathering.* Switched to the indexed reduction: moved the number
+     by 0.002 s.
 
-   Secondary, 0.067 s: node's luminosity costs 0.0909 against base's 0.0243
-   because `_cuda_pic_wavefront_luminosity_indexed` is called without prepared
-   bounds and recomputes them. The standard path passes bounds from its prepare.
+   **What the arithmetic actually points at.** The prebuild issues, per turn,
+   2 directions x 15 source slices x (60 field + 64 source) `mapreduce` calls =
+   **3720 reductions**. Each returns a scalar to the host and so forces a
+   device-to-host sync. At ~110 us of launch+sync latency that is **0.41 s**,
+   against a measured 0.4185 s. This is synchronization latency, not compute --
+   which is exactly why every compute-side fix above did nothing.
+
+   **Plan:** replace the per-slice/per-node `mapreduce` calls with **one fused
+   kernel** that computes all node bounds into a device array, followed by a
+   single copy to host. That is 2 launches and 1 sync per turn instead of 3720.
+   Expected to take `:node` from ~1.10 to ~0.45-0.50 s/turn on the wavefront
+   route, close to base 0.3238.
+
+   **Do not** attempt another compute-side optimization here before confirming
+   the launch-count model -- e.g. by counting syncs, or by timing a run with the
+   bounds computation stubbed out. Four hypotheses formed by reading code have
+   now been refuted by measurement in this item alone.
 
 2. ~~**CUDA `slice_interpolation=:quadratic`.**~~ **PARTIALLY DONE
    (2026-07-25)**: implemented on the CUDA sequential, non-batched-FFT route
