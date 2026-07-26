@@ -697,6 +697,7 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
                         workspace::_PICCPUWorkspace, green_cache)
     pic = gsolver.pic
     _validate_pic_solver(pic)
+    _require_linear_slice_interpolation(pic, "GaussianPICPoissonSolver")
     slices1 = longitudinal_slices(beam1.rep, pic.slicing1)
     slices2 = longitudinal_slices(beam2.rep, pic.slicing2)
     kbb1 = _pic_kbb1(pic, beam1, beam2)

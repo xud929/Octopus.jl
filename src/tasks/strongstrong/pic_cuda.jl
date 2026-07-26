@@ -51,6 +51,7 @@ if _HAS_CUDA
         function _cuda_pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam,
                                     workspace, green_cache, ctx=nothing)
             _validate_pic_solver(solver)
+            _require_cuda_pic_options(solver)
             if Symbol(solver.batch_mode) == :wavefront
                 return _cuda_pic_collide_wavefront!(solver, beam1, beam2, workspace, green_cache, ctx)
             end
@@ -76,6 +77,8 @@ if _HAS_CUDA
                 detailed_timing=detailed_timing,
             ))
             reclaim_policy = _cuda_pic_reclaim_policy()
+            node_mode = _pic_node_grid_mode(solver)
+            node_cache = Dict{Tuple{Int,Int},Dict{Int,Any}}()
             spc = green_cache === nothing && _cuda_pic_slice_pair_green_cache_enabled(solver) ?
                 workspace.slice_pair_green_cache : nothing
             pair_count = 0
@@ -109,10 +112,32 @@ if _HAS_CUDA
                 else
                     field1 = _cuda_pic_copy_coords(slice1.coords)
                     field2 = _cuda_pic_copy_coords(slice2.coords)
+                    if node_mode
+                        Tc = eltype(slice1.coords.x)
+                        nc1 = get!(() -> Dict{Int,Any}(), node_cache, (Int(i), 1))
+                        nc2 = get!(() -> Dict{Int,Any}(), node_cache, (Int(j), 2))
+                        gL1 = _cuda_pic_node_grid!(nc1, solver, Tc, slice1.coords, p1.center,
+                            beam2.rep, slices2.indices, slices2.boundary, Int(j), solver.longitudinal_kick)
+                        gR1 = _cuda_pic_node_grid!(nc1, solver, Tc, slice1.coords, p1.center,
+                            beam2.rep, slices2.indices, slices2.boundary, Int(j) + 1, solver.longitudinal_kick)
+                        gL2 = _cuda_pic_node_grid!(nc2, solver, Tc, slice2.coords, p2.center,
+                            beam1.rep, slices1.indices, slices1.boundary, Int(i), solver.longitudinal_kick)
+                        gR2 = _cuda_pic_node_grid!(nc2, solver, Tc, slice2.coords, p2.center,
+                            beam1.rep, slices1.indices, slices1.boundary, Int(i) + 1, solver.longitudinal_kick)
+                        if gL1 === nothing || gR1 === nothing || gL2 === nothing || gR2 === nothing
+                            _cuda_nvtx_pop(CUDABackend, pair_range)
+                            continue
+                        end
+                        _cuda_pic_interaction_node!(solver, slice1.coords, p1, field2, p2, kbb2,
+                                                    gL1, gR1, workspace.charges[1], timing)
+                        _cuda_pic_interaction_node!(solver, slice2.coords, p2, field1, p1, kbb1,
+                                                    gL2, gR2, workspace.charges[2], timing)
+                    else
                     _cuda_pic_interaction!(solver, slice1.coords, p1, field2, p2, kbb2, green_cache, workspace.charges[1], timing,
                                            spc, (Int(i), Int(j), 1))
                     _cuda_pic_interaction!(solver, slice2.coords, p2, field1, p1, kbb1, green_cache, workspace.charges[2], timing,
                                            spc, (Int(i), Int(j), 2))
+                    end
                     if compute_luminosity
                         t_luminosity = time_ns()
                         luminosity += _cuda_pic_luminosity(solver, slice1.coords, p1, slice2.coords, p2, klum, workspace)
@@ -1264,6 +1289,22 @@ if _HAS_CUDA
                 solver, source, prep.sR,
                 prep.source_grid, green_fft, charge, timing,
             )
+            if _pic_quadratic_slice(solver)
+                # Third node at the field-slice midpoint. `x + px*s` is affine in
+                # `s`, so the sL/sR bounds already cover the midpoint plane.
+                sM = eltype(source.x)(0.5) * (prep.sL + prep.sR)
+                phiM, ExM, EyM = _cuda_pic_solve_drifted_field_with_green_fft(
+                    solver, source, sM, prep.source_grid, green_fft, charge, timing,
+                )
+                _cuda_pic_add_time!(timing, :fields, t_fields)
+                t_kick = time_ns()
+                _cuda_pic_launch_kick_quadratic!(
+                    solver, field, param_source.center, param_field, field, kbb, prep.field_grid,
+                    phiL, ExL, EyL, phiM, ExM, EyM, phiR, ExR, EyR, CUDA.stream(),
+                )
+                _cuda_pic_add_time!(timing, :kick, t_kick)
+                return nothing
+            end
             _cuda_pic_add_time!(timing, :fields, t_fields)
             t_kick = time_ns()
             _cuda_pic_launch_kick!(
@@ -1445,6 +1486,116 @@ if _HAS_CUDA
                 field_bounds=(xmin=field_xmin, xmax=field_xmax, ymin=field_ymin, ymax=field_ymax),
                 green_fft=green_fft,
             )
+        end
+
+        function _cuda_pic_launch_kick_node!(solver::PICPoissonSolver, field, source_center,
+                                             param_field, out, kbb, gL, gR,
+                                             phiL, ExL, EyL, ExR, EyR, phiZ, stream)
+            T = eltype(field.x)
+            threads = _cuda_pic_threads(:kick)
+            blocks = cld(length(field.x), threads)
+            method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
+            nx, ny = solver.grid
+            hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
+            CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_node_kernel!(
+                out.x, out.px, out.y, out.py, out.pz,
+                field.x, field.px, field.y, field.py, field.z, field.pz,
+                phiL, ExL, EyL, ExR, EyR, phiZ,
+                T(gL.field_grid.x0), T(gL.field_grid.y0),
+                T(gL.field_grid.width) / T(nx - 1), T(gL.field_grid.height) / T(ny - 1),
+                T(gR.field_grid.x0), T(gR.field_grid.y0),
+                T(gR.field_grid.width) / T(nx - 1), T(gR.field_grid.height) / T(ny - 1),
+                Int32(nx), Int32(ny), method_code,
+                T(source_center), hzi, zbias, T(kbb), solver.longitudinal_kick,
+            )
+            return nothing
+        end
+
+        """
+        Build (and memoize) the CUDA interaction mesh for interpolation node `b`.
+
+        Mirrors the CPU `_pic_node_grid!`: the source box covers node `b`'s drift
+        *and* node `b+1`'s (the longitudinal pair shares this mesh), and the field
+        box covers only the two slices adjacent to node `b`.
+        """
+        function _cuda_pic_node_grid!(cache::Dict, solver::PICPoissonSolver, ::Type{T},
+                                      source, center, rep, slice_indices, boundary,
+                                      b::Int, longitudinal::Bool) where {T}
+            haskey(cache, b) && return cache[b]
+            nb = length(boundary)
+            ns = nb - 1
+            c = T(center)
+            d0 = T(0.5) * (c - T(boundary[b]))
+            d1 = T(0.5) * (c - T(boundary[min(b + 1, nb)]))
+            sxmin = T(mapreduce((x, px) -> min(x + px * d0, x + px * d1), min, source.x, source.px))
+            sxmax = T(mapreduce((x, px) -> max(x + px * d0, x + px * d1), max, source.x, source.px))
+            symin = T(mapreduce((y, py) -> min(y + py * d0, y + py * d1), min, source.y, source.py))
+            symax = T(mapreduce((y, py) -> max(y + py * d0, y + py * d1), max, source.y, source.py))
+            half = T(0.5)
+            fxmin = T(Inf); fxmax = T(-Inf); fymin = T(Inf); fymax = T(-Inf)
+            for adj in (b - 1, b)
+                (1 <= adj <= ns) || continue
+                sl = _cuda_pic_extract_slice(rep, slice_indices[adj], longitudinal)
+                sl === nothing && continue
+                co = sl.coords
+                fxmin = min(fxmin, T(mapreduce((x, px, z) -> x + px * half * (z - c), min, co.x, co.px, co.z)))
+                fxmax = max(fxmax, T(mapreduce((x, px, z) -> x + px * half * (z - c), max, co.x, co.px, co.z)))
+                fymin = min(fymin, T(mapreduce((y, py, z) -> y + py * half * (z - c), min, co.y, co.py, co.z)))
+                fymax = max(fymax, T(mapreduce((y, py, z) -> y + py * half * (z - c), max, co.y, co.py, co.z)))
+            end
+            isfinite(fxmin) || return nothing
+            sg, fg = _pic_interaction_grids(solver, sxmin, sxmax, symin, symax,
+                                            fxmin, fxmax, fymin, fymax)
+            return cache[b] = (source_grid=sg, field_grid=fg,
+                               green_fft=_cuda_pic_green_fft(solver, T, sg, fg, nothing, nothing))
+        end
+
+        """Node-indexed CUDA interaction: three solves, two transverse meshes."""
+        function _cuda_pic_interaction_node!(solver::PICPoissonSolver, source, param_source,
+                                             field, param_field, kbb, gL, gR,
+                                             charge=nothing, timing=nothing)
+            T = eltype(source.x)
+            sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
+            sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
+            t_fields = time_ns()
+            phiL, ExL, EyL = _cuda_pic_solve_drifted_field_with_green_fft(
+                solver, source, sL, gL.source_grid, gL.green_fft, charge, timing)
+            _, ExR, EyR = _cuda_pic_solve_drifted_field_with_green_fft(
+                solver, source, sR, gR.source_grid, gR.green_fft, charge, timing)
+            phiZ = phiL
+            if solver.longitudinal_kick
+                phiZ, _, _ = _cuda_pic_solve_drifted_field_with_green_fft(
+                    solver, source, sR, gL.source_grid, gL.green_fft, charge, timing)
+            end
+            _cuda_pic_add_time!(timing, :fields, t_fields)
+            t_kick = time_ns()
+            _cuda_pic_launch_kick_node!(solver, field, param_source.center, param_field,
+                                        field, kbb, gL, gR, phiL, ExL, EyL, ExR, EyR,
+                                        phiZ, CUDA.stream())
+            _cuda_pic_add_time!(timing, :kick, t_kick)
+            return nothing
+        end
+
+        function _cuda_pic_launch_kick_quadratic!(solver::PICPoissonSolver, field, source_center,
+                                                  param_field, out, kbb, field_grid,
+                                                  phiL, ExL, EyL, phiM, ExM, EyM,
+                                                  phiR, ExR, EyR, stream)
+            T = eltype(field.x)
+            threads = _cuda_pic_threads(:kick)
+            blocks = cld(length(field.x), threads)
+            method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
+            nx, ny = solver.grid
+            hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
+            CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_quadratic_kernel!(
+                out.x, out.px, out.y, out.py, out.pz,
+                field.x, field.px, field.y, field.py, field.z, field.pz,
+                phiL, ExL, EyL, phiM, ExM, EyM, phiR, ExR, EyR,
+                T(field_grid.x0), T(field_grid.y0),
+                T(field_grid.width) / T(nx - 1), T(field_grid.height) / T(ny - 1),
+                Int32(nx), Int32(ny), method_code,
+                T(source_center), hzi, zbias, T(kbb), solver.longitudinal_kick,
+            )
+            return nothing
         end
 
         function _cuda_pic_launch_kick!(solver::PICPoissonSolver, field, source_center, param_field,
@@ -3010,7 +3161,16 @@ if _HAS_CUDA
             return nothing
         end
 
+        # Out-of-range or non-finite contributes nothing, matching the CPU
+        # contract. Previously the index was clamped while the weight was kept,
+        # so a stray particle smeared its full charge onto the boundary cell --
+        # and a NaN coordinate produced a NaN weight that poisoned the whole
+        # charge grid through the atomic add. Comparisons against NaN are false,
+        # so the guard catches non-finite input too.
         @inline function _cuda_pic_cic_weights(u, n::Int32)
+            if !(zero(u) <= u <= convert(typeof(u), n - Int32(1)))
+                return Int32(1), zero(u), zero(u)
+            end
             f0 = floor(u)
             base = Int32(f0) + Int32(1)
             base = max(Int32(1), min(base, n - Int32(1)))
@@ -3019,6 +3179,9 @@ if _HAS_CUDA
         end
 
         @inline function _cuda_pic_tsc_weights(u, n::Int32)
+            if !(zero(u) <= u <= convert(typeof(u), n - Int32(1)))
+                return Int32(1), zero(u), zero(u), zero(u)
+            end
             f0 = floor(u)
             ix = Int32(f0)
             f = u - f0
@@ -3591,6 +3754,151 @@ if _HAS_CUDA
                 end
             end
             return Kx, Ky
+        end
+
+        # ---- three-node (quadratic) longitudinal reconstruction --------------
+        # Mirrors the CPU `_pic_interpolate_kick_quadratic`. `t` is the normalized
+        # slice coordinate; transverse weights sum to 1 and longitudinal weights
+        # sum to 0, so the mesh potential's additive constant still cancels.
+        # See docs/theory/slice_longitudinal_interpolation.md Section 7.
+        # Node-indexed kick: the two transverse planes live on DIFFERENT meshes
+        # (their own nodes'), while the longitudinal pair shares the left node's
+        # mesh -- because `phi_L - phi_R` is a small difference of large numbers
+        # whose discretization error only cancels within one mesh.
+        # See docs/theory/slice_longitudinal_interpolation.md Section 10.4.1.
+        function _cuda_pic_kick_node_kernel!(outx, outpx, outy, outpy, outpz,
+                                             fx, fpx, fy, fpy, fz, fpz,
+                                             phiL, ExL, EyL, ExR, EyR, phiZ,
+                                             xL0, yL0, hxL, hyL, xR0, yR0, hxR, hyR,
+                                             nx::Int32, ny::Int32, method_code::Int32,
+                                             source_center, field_hzi, field_zbias, kbb,
+                                             longitudinal::Bool)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            hxLi = inv(hxL); hyLi = inv(hyL)
+            hxRi = inv(hxR); hyRi = inv(hyR)
+            kick_scale = 2 * kbb
+            while index <= length(fx)
+                oldpx = fpx[index]; oldpy = fpy[index]; oldz = fz[index]
+                s1 = typeof(source_center)(0.5) * (oldz - source_center)
+                x = fx[index] + oldpx * s1
+                y = fy[index] + oldpy * s1
+                zL = -oldz * field_hzi + field_zbias
+                zL = min(max(zL, zero(zL)), one(zL))
+                zR = one(zL) - zL
+                KxL, KyL = _cuda_pic_interpolate_field(
+                    method_code, x, y, xL0, yL0, hxLi, hyLi, nx, ny,
+                    phiL, ExL, EyL, phiL, ExL, EyL, one(zL), zero(zL))
+                KxR, KyR = _cuda_pic_interpolate_field(
+                    method_code, x, y, xR0, yR0, hxRi, hyRi, nx, ny,
+                    phiL, ExR, EyR, phiL, ExR, EyR, one(zL), zero(zL))
+                newpx = oldpx + kick_scale * (zL * KxL + zR * KxR)
+                newpy = oldpy + kick_scale * (zL * KyL + zR * KyR)
+                s2 = typeof(source_center)(0.5) * (source_center - oldz)
+                outx[index] = x + s2 * newpx
+                outy[index] = y + s2 * newpy
+                outpx[index] = newpx
+                outpy[index] = newpy
+                if longitudinal
+                    _, _, Kz = _cuda_pic_interpolate_kick(
+                        method_code, x, y, xL0, yL0, hxLi, hyLi, nx, ny,
+                        phiL, ExL, EyL, phiZ, ExL, EyL, one(zL), zero(zL))
+                    pz = fpz[index] - typeof(source_center)(0.25) * (oldpx * oldpx + oldpy * oldpy)
+                    pz += kick_scale * Kz * field_hzi
+                    outpz[index] = pz + typeof(source_center)(0.25) * (newpx * newpx + newpy * newpy)
+                end
+                index += stride
+            end
+            return nothing
+        end
+
+        @inline function _cuda_pic_interpolate_kick_quadratic(
+                method_code::Int32, x, y, x0, y0, hxi, hyi, nx::Int32, ny::Int32,
+                phiL, ExL, EyL, phiM, ExM, EyM, phiR, ExR, EyR, t)
+            ux = (x - x0) * hxi
+            uy = (y - y0) * hyi
+            t2 = t * t
+            aL = 2 * t2 - 3 * t + one(t)
+            aM = 4 * t - 4 * t2
+            aR = 2 * t2 - t
+            bL = 3 - 4 * t
+            bM = 8 * t - 4
+            bR = one(t) - 4 * t
+            Kx = zero(x); Ky = zero(x); Kz = zero(x)
+            if method_code == Int32(1)
+                ix, wx1, wx2 = _cuda_pic_cic_weights(ux, nx)
+                iy, wy1, wy2 = _cuda_pic_cic_weights(uy, ny)
+                wx = (wx1, wx2)
+                wy = (wy1, wy2)
+                for m in 1:2, n in 1:2
+                    @inbounds begin
+                        w = wx[m] * wy[n]
+                        ii = ix + Int32(m - 1)
+                        jj = iy + Int32(n - 1)
+                        Kx += w * (aL * ExL[ii, jj] + aM * ExM[ii, jj] + aR * ExR[ii, jj])
+                        Ky += w * (aL * EyL[ii, jj] + aM * EyM[ii, jj] + aR * EyR[ii, jj])
+                        Kz += w * (bL * phiL[ii, jj] + bM * phiM[ii, jj] + bR * phiR[ii, jj])
+                    end
+                end
+            else
+                ix, wx1, wx2, wx3 = _cuda_pic_tsc_weights(ux, nx)
+                iy, wy1, wy2, wy3 = _cuda_pic_tsc_weights(uy, ny)
+                wx = (wx1, wx2, wx3)
+                wy = (wy1, wy2, wy3)
+                for m in 1:3, n in 1:3
+                    @inbounds begin
+                        w = wx[m] * wy[n]
+                        ii = ix + Int32(m - 1)
+                        jj = iy + Int32(n - 1)
+                        Kx += w * (aL * ExL[ii, jj] + aM * ExM[ii, jj] + aR * ExR[ii, jj])
+                        Ky += w * (aL * EyL[ii, jj] + aM * EyM[ii, jj] + aR * EyR[ii, jj])
+                        Kz += w * (bL * phiL[ii, jj] + bM * phiM[ii, jj] + bR * phiR[ii, jj])
+                    end
+                end
+            end
+            return Kx, Ky, Kz
+        end
+
+        function _cuda_pic_kick_quadratic_kernel!(outx, outpx, outy, outpy, outpz,
+                                                  fx, fpx, fy, fpy, fz, fpz,
+                                                  phiL, ExL, EyL, phiM, ExM, EyM, phiR, ExR, EyR,
+                                                  x0, y0, hx, hy, nx::Int32, ny::Int32,
+                                                  method_code::Int32, source_center,
+                                                  field_hzi, field_zbias, kbb, longitudinal::Bool)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            hxi = inv(hx)
+            hyi = inv(hy)
+            kick_scale = 2 * kbb
+            while index <= length(fx)
+                oldpx = fpx[index]
+                oldpy = fpy[index]
+                oldz = fz[index]
+                s1 = typeof(source_center)(0.5) * (oldz - source_center)
+                x = fx[index] + oldpx * s1
+                y = fy[index] + oldpy * s1
+                zL = -oldz * field_hzi + field_zbias
+                zL = min(max(zL, zero(zL)), one(zL))
+                t = one(zL) - zL
+                Kx, Ky, Kz = _cuda_pic_interpolate_kick_quadratic(
+                    method_code, x, y, x0, y0, hxi, hyi, nx, ny,
+                    phiL, ExL, EyL, phiM, ExM, EyM, phiR, ExR, EyR, t,
+                )
+                newpx = oldpx + kick_scale * Kx
+                newpy = oldpy + kick_scale * Ky
+                s2 = typeof(source_center)(0.5) * (source_center - oldz)
+                outx[index] = x + s2 * newpx
+                outy[index] = y + s2 * newpy
+                outpx[index] = newpx
+                outpy[index] = newpy
+                if longitudinal
+                    pz = fpz[index] - typeof(source_center)(0.25) * (oldpx * oldpx + oldpy * oldpy)
+                    pz += kick_scale * Kz * field_hzi
+                    outpz[index] = pz + typeof(source_center)(0.25) * (newpx * newpx + newpy * newpy)
+                end
+                index += stride
+            end
+            return nothing
         end
 
         @inline function _cuda_pic_interpolate_kick(method_code::Int32, x, y, x0, y0, hxi, hyi,

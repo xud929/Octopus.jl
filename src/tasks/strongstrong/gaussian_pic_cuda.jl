@@ -74,6 +74,7 @@ if _HAS_CUDA
                                      workspace, ctx=nothing)
             pic = gsolver.pic
             _validate_pic_solver(pic)
+            _require_linear_slice_interpolation(pic, "the CUDA GaussianPICPoissonSolver backend")
             if Symbol(pic.batch_mode) == :wavefront
                 if _cuda_pic_indexed_wavefront_enabled(pic)
                     return _cuda_gpic_collide_wavefront_indexed!(gsolver, beam1, beam2, workspace, ctx)

@@ -47,6 +47,16 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     compute_luminosity = _pic_compute_luminosity(solver, ctx)
     T = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(kbb1), typeof(kbb2))
     luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : T(NaN)
+    share_grid = _pic_source_slice_grid(solver)
+    node_grid = _pic_node_grid_mode(solver)
+    # Node meshes are memoized per (source slice, direction); each is shared by
+    # the two field slices adjacent to that node, which is what restores exact
+    # continuity at their common boundary.
+    node_cache = Dict{Tuple{Int,Int},Dict{Int,Any}}()
+    # Under :source_slice the mesh is sized once per (source slice, direction)
+    # from the union over every field slice, so adjacent field slices reuse one
+    # mesh and the transverse kick no longer jumps at their shared boundary.
+    union_bounds = Dict{Tuple{Int,Int},Any}()
     for (_, i, j) in _slice_collision_order(slices1, slices2)
         idx1 = slices1.indices[i]
         idx2 = slices2.indices[j]
@@ -59,12 +69,36 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
         coord2 = _pic_extract_slice(beam2.rep, idx2)
         field1 = _pic_copy_coords(coord1)
         field2 = _pic_copy_coords(coord2)
+        if node_grid
+            nc1 = get!(() -> Dict{Int,Any}(), node_cache, (i, 1))
+            nc2 = get!(() -> Dict{Int,Any}(), node_cache, (j, 2))
+            gL1 = _pic_node_grid!(nc1, solver, T, coord1, param1.center, beam2.rep,
+                                  slices2.indices, slices2.boundary, j)
+            gR1 = _pic_node_grid!(nc1, solver, T, coord1, param1.center, beam2.rep,
+                                  slices2.indices, slices2.boundary, j + 1)
+            gL2 = _pic_node_grid!(nc2, solver, T, coord2, param2.center, beam1.rep,
+                                  slices1.indices, slices1.boundary, i)
+            gR2 = _pic_node_grid!(nc2, solver, T, coord2, param2.center, beam1.rep,
+                                  slices1.indices, slices1.boundary, i + 1)
+            (gL1 === nothing || gR1 === nothing || gL2 === nothing || gR2 === nothing) && continue
+            vx1, vy1 = _pic_interaction_node!(
+                solver, coord1, param1, field2, param2, kbb2, workspace, gL1, gR1)
+            vx2, vy2 = _pic_interaction_node!(
+                solver, coord2, param2, field1, param1, kbb1, workspace, gL2, gR2)
+        else
+        ov1 = share_grid ? get!(() -> _pic_union_bounds(coord1, param1.center, beam2.rep, slices2.indices),
+                                union_bounds, (i, 1)) : nothing
+        ov2 = share_grid ? get!(() -> _pic_union_bounds(coord2, param2.center, beam1.rep, slices1.indices),
+                                union_bounds, (j, 2)) : nothing
+        key1 = share_grid ? (i, 0, 1) : (i, j, 1)
+        key2 = share_grid ? (j, 0, 2) : (i, j, 2)
         vx1, vy1 = _pic_interaction!(
-            solver, coord1, param1, field2, param2, kbb2, workspace, green_cache, (i, j, 1),
+            solver, coord1, param1, field2, param2, kbb2, workspace, green_cache, key1, ov1,
         )
         vx2, vy2 = _pic_interaction!(
-            solver, coord2, param2, field1, param1, kbb1, workspace, green_cache, (i, j, 2),
+            solver, coord2, param2, field1, param1, kbb1, workspace, green_cache, key2, ov2,
         )
+        end
         _pic_store_slice!(beam1.rep, idx1, field1)
         _pic_store_slice!(beam2.rep, idx2, field2)
         if compute_luminosity
@@ -108,6 +142,7 @@ function _pic_green_cache!(runtime_cache::Dict, label::Symbol,
         Symbol(solver.green_cache),
         solver.slice_pair_green_min_ratio,
         solver.slice_pair_green_growth,
+        Symbol(solver.interaction_grid),
     )
     return get!(runtime_cache, key) do
         _pic_green_cache(solver, T)
@@ -135,6 +170,149 @@ function _validate_pic_solver(solver::PICPoissonSolver)
     fd = Symbol(solver.field_derivative)
     (fd == :second || fd == :fourth) ||
         throw(ArgumentError("PICPoissonSolver field_derivative must be :second or :fourth"))
+    si = Symbol(solver.slice_interpolation)
+    (si == :linear || si == :quadratic) ||
+        throw(ArgumentError("PICPoissonSolver slice_interpolation must be :linear or :quadratic"))
+    ig = Symbol(solver.interaction_grid)
+    (ig == :slice_pair || ig == :source_slice || ig == :node) ||
+        throw(ArgumentError(
+            "PICPoissonSolver interaction_grid must be :slice_pair, :source_slice or :node"))
+    return nothing
+end
+
+"""
+    _pic_mid_field!(workspace, nx, ny)
+
+Return the midpoint field plane used by `slice_interpolation = :quadratic`,
+allocating it on first use.
+
+The two-node default never calls this, so the third plane costs no memory unless
+the three-node scheme is actually selected. The size check also covers a
+workspace built for a different grid.
+"""
+function _pic_mid_field!(workspace::_PICCPUWorkspace{T}, nx::Integer, ny::Integer) where {T}
+    mid = workspace.mid[]
+    if mid isa _PICFieldWorkspace{T} && size(mid.phi) == (nx, ny)
+        return mid
+    end
+    fresh = _PICFieldWorkspace(zeros(T, nx, ny), zeros(T, nx, ny), zeros(T, nx, ny))
+    workspace.mid[] = fresh
+    return fresh
+end
+
+"""Return true when the solver requests the three-node longitudinal interpolation."""
+_pic_quadratic_slice(solver::PICPoissonSolver) = solver.slice_interpolation === :quadratic
+
+"""Return true when one interaction mesh is shared across a source slice's field slices."""
+_pic_source_slice_grid(solver::PICPoissonSolver) = solver.interaction_grid === :source_slice
+
+"""Return true when the interaction mesh is indexed by interpolation node."""
+_pic_node_grid_mode(solver::PICPoissonSolver) = solver.interaction_grid === :node
+
+"""
+    _pic_union_bounds(source, center, field_rep, field_indices)
+
+Transverse bounding boxes covering *every* field slice that will collide with one
+source slice: the source drifted across the field beam's full longitudinal range,
+and every field particle drifted to its own collision point.
+
+Used by `interaction_grid = :source_slice` to size one mesh per (source slice,
+direction). The drifted coordinate `x + px*s` is affine in `s`, so evaluating the
+source at the two extreme drifts bounds every intermediate one.
+
+These are grid-*sizing* bounds only. The per-slice actual bounds are still handed
+to the Green cache's coverage test, so a slice whose particles have since moved
+outside the shared mesh triggers a rebuild rather than being silently clipped.
+"""
+function _pic_union_bounds(source, center, rep, field_indices)
+    T = eltype(source.x)
+    c = T(center)
+    zmin = T(Inf); zmax = T(-Inf)
+    fxmin = T(Inf); fxmax = T(-Inf); fymin = T(Inf); fymax = T(-Inf)
+    for idx in field_indices, i in idx
+        @inbounds begin
+            zi = T(rep.z[i])
+            zmin = min(zmin, zi); zmax = max(zmax, zi)
+            s = T(0.5) * (zi - c)
+            xv = rep.x[i] + s * rep.px[i]
+            yv = rep.y[i] + s * rep.py[i]
+            fxmin = min(fxmin, xv); fxmax = max(fxmax, xv)
+            fymin = min(fymin, yv); fymax = max(fymax, yv)
+        end
+    end
+    isfinite(zmin) || return nothing
+    sA = T(0.5) * (c - zmax)
+    sB = T(0.5) * (c - zmin)
+    sxmin = T(Inf); sxmax = T(-Inf); symin = T(Inf); symax = T(-Inf)
+    for i in eachindex(source.x)
+        @inbounds begin
+            xa = source.x[i] + source.px[i] * sA; xb = source.x[i] + source.px[i] * sB
+            ya = source.y[i] + source.py[i] * sA; yb = source.y[i] + source.py[i] * sB
+            sxmin = min(sxmin, xa, xb); sxmax = max(sxmax, xa, xb)
+            symin = min(symin, ya, yb); symax = max(symax, ya, yb)
+        end
+    end
+    return ((xmin=sxmin, xmax=sxmax, ymin=symin, ymax=symax),
+            (xmin=fxmin, xmax=fxmax, ymin=fymin, ymax=fymax))
+end
+
+"""
+    _require_cuda_pic_options(solver)
+
+Route check for the CUDA PIC backend. `slice_interpolation = :quadratic` is
+implemented only on the CUDA *sequential, non-batched-FFT* route, reached with
+`batch_mode = :sequential` and `cuda_async = false`; the wavefront and batched-FFT
+routes pack exactly two field planes per slice-pair direction
+(`nplanes = 4 * npairs`) and would silently drop the midpoint plane.
+`interaction_grid = :source_slice` is CPU-only. Neither may be silently ignored.
+"""
+function _require_cuda_pic_options(solver::PICPoissonSolver)
+    if solver.slice_interpolation !== :linear
+        (Symbol(solver.batch_mode) === :sequential && !solver.cuda_async) || throw(ArgumentError(
+            "slice_interpolation = $(repr(solver.slice_interpolation)) on the CUDA PIC backend " *
+            "requires batch_mode = :sequential and cuda_async = false; the wavefront and " *
+            "batched-FFT routes carry only two field planes per slice-pair direction. Got " *
+            "batch_mode = $(repr(solver.batch_mode)), cuda_async = $(solver.cuda_async)."))
+    end
+    if solver.interaction_grid === :node
+        (Symbol(solver.batch_mode) === :sequential && !solver.cuda_async) || throw(ArgumentError(
+            "interaction_grid = :node on the CUDA PIC backend requires batch_mode = :sequential " *
+            "and cuda_async = false; the wavefront and batched-FFT routes assume one mesh per " *
+            "slice pair. Got batch_mode = $(repr(solver.batch_mode)), " *
+            "cuda_async = $(solver.cuda_async)."))
+    end
+    solver.grid_extent === :extrema || throw(ArgumentError(
+        "grid_extent = $(repr(solver.grid_extent)) is not implemented by the CUDA PIC " *
+        "backend: _cuda_pic_prepare_interaction computes its bounds by mapreduce and applies " *
+        "no estimator, so a non-default value would be silently ignored. Use the CPU backend, " *
+        "or set grid_extent = :extrema."))
+    if solver.interaction_grid !== :slice_pair && solver.interaction_grid !== :node
+        throw(ArgumentError(
+            "interaction_grid = $(repr(solver.interaction_grid)) is not implemented by the CUDA " *
+            "PIC backend; only the CPU PICPoissonSolver path supports :source_slice. " *
+            "Select the CPU backend, or set interaction_grid = :slice_pair."))
+    end
+    return nothing
+end
+
+"""
+    _require_linear_slice_interpolation(solver, path)
+
+Throw when a code path that implements only the two-node longitudinal
+reconstruction and per-slice-pair mesh sizing is handed
+`slice_interpolation = :quadratic` or `interaction_grid = :source_slice`. A
+non-default public configuration value must never be silently ignored; see
+`AGENTS.md`.
+"""
+function _require_linear_slice_interpolation(solver::PICPoissonSolver, path::AbstractString)
+    solver.slice_interpolation === :linear || throw(ArgumentError(
+        "slice_interpolation = $(repr(solver.slice_interpolation)) is not implemented by " *
+        "$path; only the CPU PICPoissonSolver path supports :quadratic. Select the CPU " *
+        "backend, or set slice_interpolation = :linear."))
+    solver.interaction_grid === :slice_pair || throw(ArgumentError(
+        "interaction_grid = $(repr(solver.interaction_grid)) is not implemented by " *
+        "$path; only the CPU PICPoissonSolver path supports :source_slice and :node. Select " *
+        "the CPU backend, or set interaction_grid = :slice_pair."))
     return nothing
 end
 
@@ -207,7 +385,8 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
 end
 
 function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field, param_field, kbb,
-                           workspace::_PICCPUWorkspace, green_cache, cache_key)
+                           workspace::_PICCPUWorkspace, green_cache, cache_key,
+                           bounds_override=nothing)
     nsource = length(source.x)
     nfield = length(field.x)
     T = promote_type(eltype(source.x), eltype(field.x), typeof(kbb))
@@ -222,7 +401,8 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
     source_xmax = max(source_xl, source_xr)
     source_ymin = min(source_yl, source_yr)
     source_ymax = max(source_yl, source_yr)
-    for i in 2:nsource
+    sxs = zero(T); sxs2 = zero(T); sys = zero(T); sys2 = zero(T)
+    for i in 1:nsource
         @inbounds begin
             xl = source.x[i] + source.px[i] * sL
             yl = source.y[i] + source.py[i] * sL
@@ -232,11 +412,20 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
             source_xmax = max(source_xmax, xl, xr)
             source_ymin = min(source_ymin, yl, yr)
             source_ymax = max(source_ymax, yl, yr)
+            sxs += xl + xr; sxs2 += xl * xl + xr * xr
+            sys += yl + yr; sys2 += yl * yl + yr * yr
         end
     end
+    ge = Symbol(solver.grid_extent)
+    kext = T(solver.grid_extent_sigma)
+    source_xmin, source_xmax = _pic_axis_extent(ge, source_xmin, source_xmax,
+                                                sxs, sxs2, 2 * nsource, kext)
+    source_ymin, source_ymax = _pic_axis_extent(ge, source_ymin, source_ymax,
+                                                sys, sys2, 2 * nsource, kext)
 
     field_xmin = field_xmax = field.x[1] + T(0.5) * (field.z[1] - T(param_source.center)) * field.px[1]
     field_ymin = field_ymax = field.y[1] + T(0.5) * (field.z[1] - T(param_source.center)) * field.py[1]
+    fxs = zero(T); fxs2 = zero(T); fys = zero(T); fys2 = zero(T)
     for i in 1:nfield
         @inbounds begin
             s = T(0.5) * (field.z[i] - T(param_source.center))
@@ -247,12 +436,35 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
             end
             field_xmin = min(field_xmin, field.x[i]); field_xmax = max(field_xmax, field.x[i])
             field_ymin = min(field_ymin, field.y[i]); field_ymax = max(field_ymax, field.y[i])
+            fxs += field.x[i]; fxs2 += field.x[i] * field.x[i]
+            fys += field.y[i]; fys2 += field.y[i] * field.y[i]
         end
     end
+    field_xmin, field_xmax = _pic_axis_extent(ge, field_xmin, field_xmax,
+                                              fxs, fxs2, nfield, kext)
+    field_ymin, field_ymax = _pic_axis_extent(ge, field_ymin, field_ymax,
+                                              fys, fys2, nfield, kext)
+    if ge !== :extrema
+        # :extrema covers every particle by construction; the robust estimators do
+        # not, so record what falls outside instead of letting it be dropped
+        # silently by the zero-weight branch in `_pic_cic_weights`.
+        workspace.dropped[] += _pic_count_outside(field.x, field_xmin, field_xmax) +
+                               _pic_count_outside(field.y, field_ymin, field_ymax)
+    end
 
+    # Grid sizing may come from the shared per-source-slice union
+    # (`interaction_grid = :source_slice`); the coverage bounds handed to the
+    # cache are always this slice's own, so a stale shared mesh still rebuilds.
+    if bounds_override === nothing
+        gsx0, gsx1, gsy0, gsy1 = source_xmin, source_xmax, source_ymin, source_ymax
+        gfx0, gfx1, gfy0, gfy1 = field_xmin, field_xmax, field_ymin, field_ymax
+    else
+        sb, fb = bounds_override
+        gsx0, gsx1, gsy0, gsy1 = sb.xmin, sb.xmax, sb.ymin, sb.ymax
+        gfx0, gfx1, gfy0, gfy1 = fb.xmin, fb.xmax, fb.ymin, fb.ymax
+    end
     source_grid0, field_grid0 = _pic_interaction_grids(
-        solver, source_xmin, source_xmax, source_ymin, source_ymax,
-        field_xmin, field_xmax, field_ymin, field_ymax,
+        solver, gsx0, gsx1, gsy0, gsy1, gfx0, gfx1, gfy0, gfy1,
     )
     source_bounds = (xmin=source_xmin, xmax=source_xmax, ymin=source_ymin, ymax=source_ymax)
     field_bounds = (xmin=field_xmin, xmax=field_xmax, ymin=field_ymin, ymax=field_ymax)
@@ -268,17 +480,197 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
 
     kick_scale = T(2) * T(kbb)
     hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
+    if _pic_quadratic_slice(solver)
+        # Third node at the field-slice midpoint. The drifted source coordinate
+        # x + px*s is affine in s, so the sL/sR bounding box already contains the
+        # midpoint plane and no grid resizing is needed.
+        sM = T(0.5) * (sL + sR)
+        phiM, ExM, EyM = _pic_solve_drifted_field_with_green_fft!(
+            _pic_mid_field!(workspace, solver.grid...), solver, source, sM,
+            source_grid, green_fft, workspace,
+        )
+        for i in 1:nfield
+            @inbounds begin
+                zL = clamp(-T(field.z[i]) * hzi + zbias, zero(T), one(T))
+                Kx, Ky, Kz = _pic_interpolate_kick_quadratic(
+                    solver, field_grid, field.x[i], field.y[i],
+                    phiL, ExL, EyL, phiM, ExM, EyM, phiR, ExR, EyR, one(T) - zL,
+                )
+                field.px[i] += kick_scale * Kx
+                field.py[i] += kick_scale * Ky
+                if solver.longitudinal_kick
+                    field.pz[i] += kick_scale * Kz * hzi
+                end
+                s = T(0.5) * (T(param_source.center) - field.z[i])
+                field.x[i] += s * field.px[i]
+                field.y[i] += s * field.py[i]
+                if solver.longitudinal_kick
+                    field.pz[i] += T(0.25) * (field.px[i] * field.px[i] + field.py[i] * field.py[i])
+                end
+            end
+        end
+    else
+        for i in 1:nfield
+            @inbounds begin
+                zL = clamp(-T(field.z[i]) * hzi + zbias, zero(T), one(T))
+                zR = one(T) - zL
+                Kx, Ky, Kz = _pic_interpolate_kick(
+                    solver, field_grid, field.x[i], field.y[i],
+                    phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
+                )
+                field.px[i] += kick_scale * Kx
+                field.py[i] += kick_scale * Ky
+                if solver.longitudinal_kick
+                    field.pz[i] += kick_scale * Kz * hzi
+                end
+                s = T(0.5) * (T(param_source.center) - field.z[i])
+                field.x[i] += s * field.px[i]
+                field.y[i] += s * field.py[i]
+                if solver.longitudinal_kick
+                    field.pz[i] += T(0.25) * (field.px[i] * field.px[i] + field.py[i] * field.py[i])
+                end
+            end
+        end
+    end
+
+    sM = T(0.5) * (T(param_source.center) - T(param_field.center))
+    vx = Vector{T}(undef, nsource)
+    vy = Vector{T}(undef, nsource)
+    for i in 1:nsource
+        @inbounds begin
+            vx[i] = source.x[i] + source.px[i] * sM
+            vy[i] = source.y[i] + source.py[i] * sM
+        end
+    end
+    return vx, vy
+end
+
+"""
+    _pic_node_grid!(cache, solver, T, source, center, rep, slice_indices, boundary, b)
+
+Build (and memoize) the interaction mesh belonging to interpolation **node** `b`
+of the field slicing, for one source slice.
+
+Node `b` sits at `boundary[b]` and is shared by the two slices adjacent to it, so
+both sides of that boundary read the same plane on the same mesh and the
+transverse kick is continuous there by construction (see
+`docs/theory/slice_longitudinal_interpolation.md` Section 10.4).
+
+Sizing:
+
+- **source** box covers the drifts of node `b` *and* node `b+1`, because slice
+  `b` also evaluates its longitudinal `phi` difference on this mesh (both planes
+  of a slice must share a grid, or the discretization error stops cancelling and
+  `phi_L - phi_R` becomes meaningless);
+- **field** box covers only the two slices adjacent to node `b`.
+
+Neither box involves a union over the whole field beam, so there is no hourglass
+blow-up: measured cell coarsening is 1.05-1.12x against per-slice-pair meshes.
+"""
+function _pic_node_grid!(cache::Dict, solver::PICPoissonSolver, ::Type{T}, source, center,
+                         rep, slice_indices, boundary, b::Int) where {T}
+    haskey(cache, b) && return cache[b]
+    nb = length(boundary)
+    ns = nb - 1
+    c = T(center)
+    d0 = T(0.5) * (c - T(boundary[b]))
+    d1 = T(0.5) * (c - T(boundary[min(b + 1, nb)]))
+    sxmin = T(Inf); sxmax = T(-Inf); symin = T(Inf); symax = T(-Inf)
+    for i in eachindex(source.x)
+        @inbounds begin
+            xa = source.x[i] + source.px[i] * d0; xb = source.x[i] + source.px[i] * d1
+            ya = source.y[i] + source.py[i] * d0; yb = source.y[i] + source.py[i] * d1
+            sxmin = min(sxmin, xa, xb); sxmax = max(sxmax, xa, xb)
+            symin = min(symin, ya, yb); symax = max(symax, ya, yb)
+        end
+    end
+    fxmin = T(Inf); fxmax = T(-Inf); fymin = T(Inf); fymax = T(-Inf)
+    for adj in (b - 1, b)
+        (1 <= adj <= ns) || continue
+        for i in slice_indices[adj]
+            @inbounds begin
+                sh = T(0.5) * (T(rep.z[i]) - c)
+                xv = rep.x[i] + sh * rep.px[i]
+                yv = rep.y[i] + sh * rep.py[i]
+                fxmin = min(fxmin, xv); fxmax = max(fxmax, xv)
+                fymin = min(fymin, yv); fymax = max(fymax, yv)
+            end
+        end
+    end
+    isfinite(fxmin) || return nothing
+    sg, fg = _pic_interaction_grids(solver, sxmin, sxmax, symin, symax,
+                                    fxmin, fxmax, fymin, fymax)
+    return cache[b] = (source_grid=sg, field_grid=fg,
+                       green_fft=_pic_green_fft(solver, T, sg, fg))
+end
+
+"""
+    _pic_interaction_node!(solver, source, param_source, field, param_field, kbb,
+                           workspace, gL, gR)
+
+Node-indexed variant of `_pic_interaction!`.
+
+Three field solves instead of two:
+
+1. `F_L` — node `s` at drift `sL`, on node `s`'s mesh `gL`;
+2. `F_R` — node `s+1` at drift `sR`, on node `s+1`'s mesh `gR`;
+3. `F_Z` — node `s+1` at drift `sR`, on **`gL`**.
+
+The transverse kick blends `F_L`/`F_R`, each read on its own mesh, so at a shared
+boundary both adjacent slices evaluate the same node plane on the same mesh and
+the kick is continuous. The longitudinal kick uses `F_L` and `F_Z`, which live on
+the *same* mesh — required, because `phi_L - phi_R` is a small difference of large
+numbers whose discretization error only cancels within one grid (measured: across
+grids the difference is wrong by 20-50%, and the discrepancy is not a constant, so
+no gauge fix exists).
+"""
+function _pic_interaction_node!(solver::PICPoissonSolver, source, param_source, field,
+                                param_field, kbb, workspace::_PICCPUWorkspace, gL, gR)
+    nsource = length(source.x)
+    nfield = length(field.x)
+    T = promote_type(eltype(source.x), eltype(field.x), typeof(kbb))
+    sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
+    sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
+
+    for i in 1:nfield
+        @inbounds begin
+            s = T(0.5) * (field.z[i] - T(param_source.center))
+            field.x[i] += s * field.px[i]
+            field.y[i] += s * field.py[i]
+            if solver.longitudinal_kick
+                field.pz[i] -= T(0.25) * (field.px[i] * field.px[i] + field.py[i] * field.py[i])
+            end
+        end
+    end
+
+    phiL, ExL, EyL = _pic_solve_drifted_field_with_green_fft!(
+        workspace.left, solver, source, sL, gL.source_grid, gL.green_fft, workspace)
+    phiR, ExR, EyR = _pic_solve_drifted_field_with_green_fft!(
+        workspace.right, solver, source, sR, gR.source_grid, gR.green_fft, workspace)
+    phiZ = nothing
+    if solver.longitudinal_kick
+        nx, ny = solver.grid
+        phiZ, _, _ = _pic_solve_drifted_field_with_green_fft!(
+            _pic_mid_field!(workspace, nx, ny), solver, source, sR,
+            gL.source_grid, gL.green_fft, workspace)
+    end
+
+    kick_scale = T(2) * T(kbb)
+    hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
     for i in 1:nfield
         @inbounds begin
             zL = clamp(-T(field.z[i]) * hzi + zbias, zero(T), one(T))
             zR = one(T) - zL
-            Kx, Ky, Kz = _pic_interpolate_kick(
-                solver, field_grid, field.x[i], field.y[i],
-                phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
-            )
-            field.px[i] += kick_scale * Kx
-            field.py[i] += kick_scale * Ky
+            x = field.x[i]; y = field.y[i]
+            KxL, KyL, phi_l = _pic_interpolate_kick(
+                solver, gL.field_grid, x, y, phiL, ExL, EyL, phiL, ExL, EyL, one(T), zero(T))
+            KxR, KyR, _ = _pic_interpolate_kick(
+                solver, gR.field_grid, x, y, phiR, ExR, EyR, phiR, ExR, EyR, one(T), zero(T))
+            field.px[i] += kick_scale * (zL * KxL + zR * KxR)
+            field.py[i] += kick_scale * (zL * KyL + zR * KyR)
             if solver.longitudinal_kick
+                _, _, Kz = _pic_interpolate_kick(
+                    solver, gL.field_grid, x, y, phiL, ExL, EyL, phiZ, ExL, EyL, one(T), zero(T))
                 field.pz[i] += kick_scale * Kz * hzi
             end
             s = T(0.5) * (T(param_source.center) - field.z[i])
@@ -312,6 +704,62 @@ end
     return hzi, T(rb) * hzi
 end
 
+"""
+    _pic_axis_extent(method, lo, hi, s, s2, n, k)
+
+Turn one axis' single-pass accumulators into a `(lo, hi)` mesh extent.
+
+- `:extrema` returns the sample min/max. Stable in the sense that it always
+  covers every particle, but `O(1)`-noisy: for `n` particles the maximum is
+  `sigma*sqrt(2 ln n)` with Gumbel fluctuation `sigma/sqrt(2 ln n)`, several
+  percent of the box, and it drifts systematically with slice population.
+- `:sigma` returns `mean +- k*sd`. Its noise is `O(1/sqrt(n))` instead: measured
+  4-8x stabler than `:extrema` both slice-to-slice and turn-to-turn. It does
+  **not** guarantee coverage, which is why `_pic_cic_weights` drops out-of-range
+  particles and the caller counts them.
+
+A `:quantile` estimator was implemented, measured and **removed**: at a coverage
+target tight enough to avoid charge loss the target rounds to *all* particles for
+realistic slice populations, so it degenerates to the extremum and adds histogram
+quantization noise on top -- measured *worse* than `:extrema`
+(`validation/pic_grid_extent_stability.jl`).
+
+Degenerate input (zero spread, `n < 2`) falls back to the extrema so a slice with
+identical coordinates still produces a usable mesh.
+"""
+@inline function _pic_axis_extent(method::Symbol, lo, hi, s, s2, n::Int, k)
+    method === :extrema && return lo, hi
+    n < 2 && return lo, hi
+    T = typeof(lo)
+    m = T(s) / T(n)
+    var = max(T(s2) / T(n) - m * m, zero(T))
+    sd = sqrt(var)
+    half = T(k) * sd
+    half > zero(T) || return lo, hi
+    return m - half, m + half
+end
+
+"""Count how many of `vals` fall outside `[lo, hi]`, or are non-finite."""
+function _pic_count_outside(vals, lo, hi)
+    c = 0
+    for v in vals
+        (isfinite(v) && lo <= v <= hi) || (c += 1)
+    end
+    return c
+end
+
+"""
+    _pic_quantize_extent(w, q)
+
+Round `w` up to the next power of `2^q`. With `q = 1/8` the ladder steps are ~9%,
+so meshes whose requested extents differ by less than that collapse onto the same
+value. Used by `grid_quantize`; `q = 0` disables it.
+"""
+@inline function _pic_quantize_extent(w, q)
+    (q > zero(q) && isfinite(w) && w > zero(w)) || return w
+    return exp2(ceil(log2(w) / q) * q)
+end
+
 function _pic_interaction_grids(solver::PICPoissonSolver, sxmin, sxmax, symin, symax,
                                 fxmin, fxmax, fymin, fymax)
     nx, ny = solver.grid
@@ -322,6 +770,27 @@ function _pic_interaction_grids(solver::PICPoissonSolver, sxmin, sxmax, symin, s
     ty = height / (ny - 4)
     width += 3 * tx
     height += 3 * ty
+    q = T(solver.grid_quantize)
+    if q > zero(T)
+        # Snap the extent to a geometric ladder and the origins to whole cells, so
+        # slices (and turns) whose distributions differ by less than one ladder
+        # step land on *exactly* the same mesh instead of a nearly-identical one.
+        # A nearly-identical mesh still produces a full-size discretization jump.
+        width = _pic_quantize_extent(width, q)
+        height = _pic_quantize_extent(height, q)
+        hx = width / (nx - 1)
+        hy = height / (ny - 1)
+        # Centre on the data, then snap to the nearest whole cell: rounding rather
+        # than flooring bounds the shift to half a cell, preserving margin.
+        sx0 = round((T(sxmin + sxmax) / 2 - width / 2) / hx) * hx
+        sy0 = round((T(symin + symax) / 2 - height / 2) / hy) * hy
+        fx0 = round((T(fxmin + fxmax) / 2 - width / 2) / hx) * hx
+        fy0 = round((T(fymin + fymax) / 2 - height / 2) / hy) * hy
+        sx0, fx0 = _pic_align_grid_origins(solver.green_type, sx0, fx0, hx)
+        sy0, fy0 = _pic_align_grid_origins(solver.green_type, sy0, fy0, hy)
+        return (x0=sx0, y0=sy0, width=width, height=height),
+               (x0=fx0, y0=fy0, width=width, height=height)
+    end
     sx0 = T(sxmin) - T(1.5) * tx
     sy0 = T(symin) - T(1.5) * ty
     fx0 = T(fxmin) - T(1.5) * tx
@@ -674,13 +1143,45 @@ function _pic_deposit_range!(charge, method, x, y, x0, y0, hx, hy, nx, ny, first
     return charge
 end
 
-function _pic_cic_weights(u, n)
+"""
+    _pic_cic_weights(u, n)
+
+CIC cell index and weights for normalized coordinate `u`.
+
+A coordinate outside `[0, n-1]`, or non-finite, returns **zero weights** so that it
+contributes nothing. Clamping the index while keeping the weight -- the previous
+behaviour -- smeared the particle's full charge onto the boundary cell, a spurious
+charge sheet strictly worse than dropping it; and `floor(Int, NaN)` threw an
+`InexactError` from deep inside the kernel while the CUDA path silently poisoned
+the whole charge grid. The `!(0 <= u <= n-1)` form is deliberate: every comparison
+against `NaN` is false, so non-finite input takes the zero-weight branch.
+
+With `grid_extent = :extrema` this branch is unreachable, because the mesh is sized
+from the particle extrema plus a 1.5-cell margin. It exists so that the robust
+estimators (`:sigma`, `:quantile`) cannot silently corrupt the field.
+"""
+@inline function _pic_cic_weights(u, n)
+    if !(zero(u) <= u <= u_of(n))
+        return 1, (zero(u), zero(u))
+    end
     base = clamp(floor(Int, u) + 1, 1, n - 1)
     f = clamp(u - floor(u), zero(u), one(u))
     return base, (one(f) - f, f)
 end
 
-function _pic_tsc_weights(u, n)
+"""Upper bound of the valid normalized coordinate range for an `n`-point axis."""
+@inline u_of(n) = float(n - 1)
+
+"""
+    _pic_tsc_weights(u, n)
+
+TSC cell index and weights. Same out-of-range contract as `_pic_cic_weights`:
+outside `[0, n-1]` or non-finite contributes nothing.
+"""
+@inline function _pic_tsc_weights(u, n)
+    if !(zero(u) <= u <= u_of(n))
+        return 1, (zero(u), zero(u), zero(u))
+    end
     ix = floor(Int, u)
     f = u - floor(u)
     if f < 0.5
@@ -936,6 +1437,67 @@ function _pic_interpolate_kick(solver, grid, x, y, phiL, ExL, EyL, phiR, ExR, Ey
             Kx += w * (zL * ExL[ii, jj] + zR * ExR[ii, jj])
             Ky += w * (zL * EyL[ii, jj] + zR * EyR[ii, jj])
             Kz += w * (phiL[ii, jj] - phiR[ii, jj])
+        end
+    end
+    return Kx, Ky, Kz
+end
+
+"""
+    _pic_interpolate_kick_quadratic(solver, grid, x, y, phiL, ExL, EyL, phiM, ExM, EyM,
+                                    phiR, ExR, EyR, t)
+
+Three-node longitudinal reconstruction of the slice kick at normalized slice
+coordinate `t = (z - lb) / (rb - lb)`, with nodes at the field-slice left
+boundary (`t=0`), midpoint (`t=1/2`) and right boundary (`t=1`).
+
+The transverse field uses the quadratic Lagrange basis on those nodes,
+
+    L_L = 2t^2 - 3t + 1,  L_M = 4t - 4t^2,  L_R = 2t^2 - t,
+
+which sums to 1 and collapses to `(1,0,0)` / `(0,0,1)` at the boundaries, so
+adjacent slices still agree exactly at a shared boundary.
+
+The longitudinal kick is the `z`-derivative of the same quadratic, returned
+without the `1/(rb - lb)` factor that the caller applies as `hzi`:
+
+    Kz = (3 - 4t) phiL + (8t - 4) phiM + (1 - 4t) phiR.
+
+Those weights sum to zero, so the arbitrary additive constant in the mesh
+potential cancels exactly, as it does in the two-node form. At `t = 1/2` they
+reduce to `phiL - phiR`, i.e. the two-node kick is this expression frozen at
+mid-slice.
+
+See `docs/theory/slice_longitudinal_interpolation.md` Section 7.
+"""
+function _pic_interpolate_kick_quadratic(solver, grid, x, y,
+                                         phiL, ExL, EyL, phiM, ExM, EyM, phiR, ExR, EyR, t)
+    nx, ny = solver.grid
+    hx = grid.width / (nx - 1)
+    hy = grid.height / (ny - 1)
+    if Symbol(solver.deposit_method) == :CIC
+        ix, wx = _pic_cic_weights((x - grid.x0) / hx, nx)
+        iy, wy = _pic_cic_weights((y - grid.y0) / hy, ny)
+    else
+        ix, wx = _pic_tsc_weights((x - grid.x0) / hx, nx)
+        iy, wy = _pic_tsc_weights((y - grid.y0) / hy, ny)
+    end
+    T = typeof(t)
+    t2 = t * t
+    aL = T(2) * t2 - T(3) * t + one(T)
+    aM = T(4) * t - T(4) * t2
+    aR = T(2) * t2 - t
+    bL = T(3) - T(4) * t
+    bM = T(8) * t - T(4)
+    bR = one(T) - T(4) * t
+    Kx = zero(x); Ky = zero(x); Kz = zero(x)
+    for m in eachindex(wx), n in eachindex(wy)
+        ii = ix + m - 1
+        jj = iy + n - 1
+        @inbounds begin
+            w = wx[m] * wy[n]
+            Kx += w * (aL * ExL[ii, jj] + aM * ExM[ii, jj] + aR * ExR[ii, jj])
+            Ky += w * (aL * EyL[ii, jj] + aM * EyM[ii, jj] + aR * EyR[ii, jj])
+            Kz += w * (bL * phiL[ii, jj] + bM * phiM[ii, jj] + bR * phiR[ii, jj])
         end
     end
     return Kx, Ky, Kz

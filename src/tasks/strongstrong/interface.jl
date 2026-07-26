@@ -408,6 +408,14 @@ struct _PICCPUWorkspace{T}
     local_charge::Vector{Matrix{T}}
     left::_PICFieldWorkspace{T}
     right::_PICFieldWorkspace{T}
+    # Third field plane, used only by slice_interpolation = :quadratic. Held
+    # behind a Ref so the two-node default never pays for it; see
+    # `_pic_mid_field!`.
+    mid::Base.RefValue{Union{Nothing,_PICFieldWorkspace{T}}}
+    # Particles that fell outside the mesh and were dropped by the zero-weight
+    # branch. Always zero under `grid_extent = :extrema`; non-zero means a robust
+    # estimator under-covered and the field lost charge. Never silent.
+    dropped::Base.RefValue{Int}
     luminosity_q1::Matrix{T}
     luminosity_q2::Matrix{T}
 end
@@ -437,9 +445,10 @@ function _pic_cpu_workspace(::Type{T}, nx::Integer, ny::Integer) where {T}
     local_charge = [similar(charge) for _ in 1:_cpu_worker_count()]
     left = _PICFieldWorkspace(zeros(T, nx, ny), zeros(T, nx, ny), zeros(T, nx, ny))
     right = _PICFieldWorkspace(zeros(T, nx, ny), zeros(T, nx, ny), zeros(T, nx, ny))
+    mid = Base.RefValue{Union{Nothing,_PICFieldWorkspace{T}}}(nothing)
     return _PICCPUWorkspace{T}(
-        charge, spectral, green, green_fft, fft_plan, ifft_plan, local_charge, left, right,
-        zeros(T, nx + 1, ny + 1), zeros(T, nx + 1, ny + 1),
+        charge, spectral, green, green_fft, fft_plan, ifft_plan, local_charge, left, right, mid,
+        Base.RefValue(0), zeros(T, nx + 1, ny + 1), zeros(T, nx + 1, ny + 1),
     )
 end
 
@@ -700,6 +709,8 @@ const StrongStrongGaussianPoissonSolver = GaussianPoissonSolver
     PICPoissonSolver(; kbb1=nothing, kbb2=nothing, luminosity_scale=nothing,
                       grid=(128, 128), deposit_method=:CIC,
                       green_type=:integrated,
+                      slice_interpolation=:linear,
+                      grid_extent=:extrema, grid_extent_sigma=6.0, grid_quantize=0.0,
                       green_cache=:slice_pair,
                       slice_pair_green_min_ratio=0.50,
                       slice_pair_green_growth=0.25,
@@ -774,6 +785,84 @@ lowers the median field error by ~1.6x at production grids for negligible cost
 step would suggest, because the CIC deposition and interpolation are themselves
 second order and dominate the remaining error.
 
+`slice_interpolation` selects how the source-slice field is reconstructed between
+longitudinal solve nodes. `:linear` (default) solves at the two field-slice
+boundaries and blends linearly; it is bit-compatible with all results recorded
+before this option existed. `:quadratic` adds a third solve at the slice midpoint
+and uses the quadratic Lagrange basis, which
+1. lowers the transverse interpolation error from `O(dz^2)` to `O(dz^3)`, and
+2. replaces the longitudinal kick's per-slice constant with a `z`-linear form,
+   cutting its slice-boundary discontinuity from `O(dz)` to `O(dz^3)`.
+
+Both nodes at the slice boundaries are retained, so the transverse kick stays
+continuous across slice boundaries in either mode. The cost is one extra field
+solve per slice pair per direction (~50% of the field-solve stage); the cached
+slice-pair Green FFT is reused by the third plane. Measured CPU turn-time
+penalty is 1.01x-1.14x and *falls* with particle count as deposition and the
+kick loop come to dominate: **+5%** at 1M particles/beam, 15 slices, grid 128. Point 2 is the main reason to
+enable it: with `:linear` the longitudinal kick is a discontinuous sawtooth in
+`z`, which synchrotron motion samples and which can drive artificial emittance
+growth. Derivation and error constants are in
+`docs/theory/slice_longitudinal_interpolation.md`; measure with
+`validation/slice_longitudinal_zscan.jl`.
+
+`interaction_grid` controls transverse mesh sizing. `:slice_pair` (default) sizes
+the mesh from each slice pair's own particle bounding box, which is bit-compatible
+with earlier results but makes the mesh — and therefore the PIC discretization
+error — differ between adjacent field slices, so the transverse kick jumps at every
+slice boundary (measured `~1e-3` relative, about 5x the longitudinal interpolation
+error beside it). `:source_slice` sizes one mesh from the union over all field
+slices sharing a source slice, so adjacent field slices reuse it and the jump
+disappears (measured `1e-3` -> `2e-9` relative). Cells coarsen by 11-36% in
+exchange, raising the smooth `O(h^2)` field error.
+
+`:source_slice` is also **faster**: it collapses the slice-pair Green cache from
+450 entries to 30 at 15 slices, lifting the hit rate from 0.68 to 0.97, which is
+worth 0.61x turn time at 100k particles/grid 64 and 0.90x at 1M/grid 128. In the
+multi-turn test it lowered artificial vertical emittance growth by 8% (electron)
+and 31% (proton), the only option resolved on both beams.
+
+!!! warning "Check BOTH collision directions before enabling"
+    The shared mesh must cover the source slice drifted across the field beam's
+    **entire** longitudinal range, and a drifted slice grows as
+    `sigma * sqrt(1 + (s/beta*)^2)`. The drift span is set by the *field* beam's
+    bunch length while the blow-up is evaluated on the *source* beam's optics, so
+    the governing ratio is `sigma_z,field / beta*,source` — and a collider runs
+    both directions every turn.
+
+    For EIC-like parameters (electron `sigma_z=7mm, beta*_y=56mm`; proton
+    `sigma_z=60mm, beta*_y=72mm`), measured `hy` coarsening against the
+    per-slice-pair mesh at 15 slices:
+
+        proton source -> electron field   ratio 0.10   hy 1.26-1.32
+        electron source -> proton field   ratio 1.07   hy 2.70
+
+    So even this "mild" case pays 2.7x vertical coarsening — roughly 7x worse
+    `O(h^2)` field error — in one of its two directions. Measured emittance growth
+    still fell (see the history record), so the discontinuity removal won on net
+    at `grid=(64,64)`; that balance is **not** verified at production grids, where
+    the systematic `h^2` term matters more relative to the discontinuity.
+
+    Rule of thumb: safe below `sigma_z,field/beta*,source ~ 0.5`, needs measuring
+    above ~1. The proper fix is to index the mesh by the interpolation *node*
+    rather than the slice, which restores exact continuity at every boundary
+    without any union over the field beam; see the grid-determination program in
+    `docs/todo.md`.
+
+`grid_extent` selects how a slice's mesh extent is estimated. `:extrema` (default)
+uses the sample min/max: it always covers every particle, but an extremum is
+`O(1)`-noisy (~5% jitter, measured), and that jitter is what makes adjacent slices
+and consecutive turns get different meshes. `:sigma` uses `centroid +-
+grid_extent_sigma * sd`, whose noise is `O(1/sqrt(n))` -- measured 4-8x stabler.
+`:sigma` does **not** guarantee coverage; particles outside the mesh are dropped
+by the zero-weight branch in the deposition stencil and counted, never silently
+smeared onto the boundary cell.
+
+`grid_quantize` snaps the mesh extent to a `2^q` ladder and origins to whole cells
+(`0` disables). A *nearly* identical mesh still produces a full-size
+discretization jump, so what matters is collapsing meshes onto exactly equal
+values: at `q = 0.125` with `:sigma`, 225 distinct slice-pair meshes become 7.
+
 `green_cache` may be `:none` or `:slice_pair`. The slice-pair cache keeps two
 Green FFTs per slice-pair, one per beam-beam direction, and reuses each for the
 left/right source-boundary charge planes when the current source and field
@@ -846,6 +935,11 @@ struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     green_type::Symbol
     green_cache::Symbol
     field_derivative::Symbol
+    slice_interpolation::Symbol
+    interaction_grid::Symbol
+    grid_extent::Symbol
+    grid_extent_sigma::T
+    grid_quantize::T
     slice_pair_green_min_ratio::T
     slice_pair_green_growth::T
     longitudinal_kick::Bool
@@ -872,6 +966,11 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                              green_type::Symbol=:integrated,
                              green_cache::Symbol=:slice_pair,
                              field_derivative::Symbol=:second,
+                             slice_interpolation::Symbol=:linear,
+                             interaction_grid::Symbol=:slice_pair,
+                             grid_extent::Symbol=:extrema,
+                             grid_extent_sigma=6.0,
+                             grid_quantize=0.0,
                              slice_pair_green_min_ratio=0.50,
                              slice_pair_green_growth=0.25,
                              longitudinal_kick::Bool=true,
@@ -908,6 +1007,16 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         "green_cache must be :none or :slice_pair; got $(repr(green_cache))."))
     field_derivative in (:second, :fourth) || throw(ArgumentError(
         "field_derivative must be :second or :fourth; got $(repr(field_derivative))."))
+    slice_interpolation in (:linear, :quadratic) || throw(ArgumentError(
+        "slice_interpolation must be :linear or :quadratic; got $(repr(slice_interpolation))."))
+    grid_extent in (:extrema, :sigma) || throw(ArgumentError(
+        "grid_extent must be :extrema or :sigma; got $(repr(grid_extent))."))
+    T(grid_extent_sigma) > zero(T) || throw(ArgumentError(
+        "grid_extent_sigma must be positive; got $(grid_extent_sigma)."))
+    T(grid_quantize) >= zero(T) || throw(ArgumentError(
+        "grid_quantize must be non-negative (0 disables); got $(grid_quantize)."))
+    interaction_grid in (:slice_pair, :source_slice, :node) || throw(ArgumentError(
+        "interaction_grid must be :slice_pair, :source_slice or :node; got $(repr(interaction_grid))."))
     batch_mode in (:sequential, :wavefront) || throw(ArgumentError(
         "batch_mode must be :sequential or :wavefront; got $(repr(batch_mode))."))
     lum_grid = luminosity_grid === nothing ? nothing :
@@ -934,6 +1043,11 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         green_type,
         green_cache,
         field_derivative,
+        slice_interpolation,
+        interaction_grid,
+        grid_extent,
+        T(grid_extent_sigma),
+        T(grid_quantize),
         min_ratio,
         growth,
         longitudinal_kick,
@@ -992,6 +1106,46 @@ const _PIC_SOLVER_OPTION_SCHEMA = (
     field_derivative = SolverOptionMeta(Symbol, :second,
         "Finite-difference order used to take E = -grad(phi) on the mesh; :second (default, \
 bit-compatible) or :fourth (~1.6x lower median field error for ~0 extra cost).";
+        category=:accuracy_performance),
+    slice_interpolation = SolverOptionMeta(Symbol, :linear,
+        "Longitudinal interpolation of the slice field between solve nodes; :linear \
+(default, bit-compatible: two solves at the field-slice boundaries) or :quadratic \
+(three solves adding the slice midpoint; transverse interpolation error drops from \
+O(dz^2) to O(dz^3) and the longitudinal kick becomes z-linear instead of a \
+discontinuous per-slice constant, for ~50% more field-solve work). See \
+docs/theory/slice_longitudinal_interpolation.md.";
+        category=:accuracy_performance),
+    interaction_grid = SolverOptionMeta(Symbol, :slice_pair,
+        "Transverse interaction-mesh sizing; :slice_pair (default, bit-compatible: \
+each source/field slice pair gets a mesh sized to its own particle bounding box), \
+:source_slice (all field slices sharing a source slice share one mesh sized to \
+their union -- removes the boundary discontinuity and is faster, but coarsens \
+cells by the field beam's hourglass factor, up to 2.7x on production EIC \
+parameters), or :node (one mesh per interpolation NODE, shared by the two slices \
+adjacent to it -- removes the discontinuity with only ~1.05-1.12x coarsening and \
+no hourglass sensitivity, at +50% field-solve work). See \
+docs/theory/slice_longitudinal_interpolation.md Sections 5, 10.2 and 10.4.";
+        category=:accuracy_performance),
+    grid_extent = SolverOptionMeta(Symbol, :extrema,
+        "How the transverse mesh extent is estimated from a slice's particles; \
+:extrema (default, bit-compatible: sample min/max, always covers every particle \
+but is O(1)-noisy -- measured ~5% slice-to-slice and turn-to-turn jitter) or \
+:sigma (centroid +- grid_extent_sigma * sd, O(1/sqrt(n)) noise, measured 4-8x \
+stabler; does not guarantee coverage, so out-of-range particles are dropped and \
+counted). A :quantile estimator was measured and removed as strictly worse. See \
+validation/pic_grid_extent_stability.jl.";
+        category=:accuracy_performance),
+    grid_extent_sigma = SolverOptionMeta(Real, 6.0,
+        "Half-width of the :sigma mesh extent in standard deviations. The default 6 \
+keeps dropped charge below ~1e-5 for a 5-sigma-cutoff beam; dropping a fraction f \
+of charge at radius R costs a field error ~ f*(sigma/R), so f must stay small.";
+        category=:accuracy_performance, dependencies=(:grid_extent,)),
+    grid_quantize = SolverOptionMeta(Real, 0.0,
+        "Snap the mesh extent to a 2^q ladder and origins to whole cells; 0 disables \
+(default, bit-compatible). Nearly-identical meshes still produce a full-size \
+discretization jump, so collapsing them onto exactly equal values is what removes \
+it. At q = 0.125 (~9% steps) with grid_extent = :sigma, 225 distinct slice-pair \
+meshes collapse to 7.";
         category=:accuracy_performance),
     slice_pair_green_min_ratio = SolverOptionMeta(Real, 0.50,
         "Minimum requested-to-cached domain ratio before rebuilding a slice-pair Green entry.";
