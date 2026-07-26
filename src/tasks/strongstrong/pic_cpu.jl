@@ -546,62 +546,95 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
 end
 
 """
-    _pic_node_grid!(cache, solver, T, source, center, rep, slice_indices, boundary, b)
+    _pic_build_node_grids!(cache, solver, T, source, center, rep, slice_indices, boundary)
 
-Build (and memoize) the interaction mesh belonging to interpolation **node** `b`
-of the field slicing, for one source slice.
+Build **every** node mesh for one (source slice, direction) in two passes.
+
+The obvious per-node implementation costs `nb` passes over the source slice (one
+per node drift) and scans every field slice twice (once for each node adjacent to
+it). Both loops are memory-bound, so that redundancy dominated: it measured
+0.268 s/turn of `:node`'s cost at the production point, 31% of its gap to the
+baseline.
+
+Here the source is read **once**, updating all `nb` drift accumulators per
+particle, and the field beam is read **once**, accumulating per-slice boxes that
+are then unioned pairwise. Same arithmetic, `nb`x and 2x fewer memory passes.
 
 Node `b` sits at `boundary[b]` and is shared by the two slices adjacent to it, so
 both sides of that boundary read the same plane on the same mesh and the
 transverse kick is continuous there by construction (see
 `docs/theory/slice_longitudinal_interpolation.md` Section 10.4).
 
-Sizing:
-
-- **source** box covers the drifts of node `b` *and* node `b+1`, because slice
-  `b` also evaluates its longitudinal `phi` difference on this mesh (both planes
-  of a slice must share a grid, or the discretization error stops cancelling and
-  `phi_L - phi_R` becomes meaningless);
-- **field** box covers only the two slices adjacent to node `b`.
-
-Neither box involves a union over the whole field beam, so there is no hourglass
-blow-up: measured cell coarsening is 1.05-1.12x against per-slice-pair meshes.
+Sizing: node `b`'s **source** box spans its own drift *and* node `b+1`'s, because
+slice `b` also evaluates its longitudinal `phi` difference on this mesh (both
+planes of a slice must share a grid, or the discretization error stops cancelling
+and `phi_L - phi_R` becomes meaningless); its **field** box covers only the two
+slices adjacent to it. Neither involves a union over the whole field beam, so
+there is no hourglass blow-up: measured cell coarsening is 1.05-1.12x against
+per-slice-pair meshes.
 """
-function _pic_node_grid!(cache::Dict, solver::PICPoissonSolver, ::Type{T}, source, center,
-                         rep, slice_indices, boundary, b::Int) where {T}
-    haskey(cache, b) && return cache[b]
+function _pic_build_node_grids!(cache::Dict, solver::PICPoissonSolver, ::Type{T},
+                                source, center, rep, slice_indices, boundary) where {T}
+    isempty(cache) || return cache
     nb = length(boundary)
     ns = nb - 1
     c = T(center)
-    d0 = T(0.5) * (c - T(boundary[b]))
-    d1 = T(0.5) * (c - T(boundary[min(b + 1, nb)]))
-    sxmin = T(Inf); sxmax = T(-Inf); symin = T(Inf); symax = T(-Inf)
+    drifts = Vector{T}(undef, nb)
+    for b in 1:nb
+        drifts[b] = T(0.5) * (c - T(boundary[b]))
+    end
+    sxlo = fill(T(Inf), nb); sxhi = fill(T(-Inf), nb)
+    sylo = fill(T(Inf), nb); syhi = fill(T(-Inf), nb)
     for i in eachindex(source.x)
         @inbounds begin
-            xa = source.x[i] + source.px[i] * d0; xb = source.x[i] + source.px[i] * d1
-            ya = source.y[i] + source.py[i] * d0; yb = source.y[i] + source.py[i] * d1
-            sxmin = min(sxmin, xa, xb); sxmax = max(sxmax, xa, xb)
-            symin = min(symin, ya, yb); symax = max(symax, ya, yb)
+            x = source.x[i]; px = source.px[i]
+            y = source.y[i]; py = source.py[i]
+            for b in 1:nb
+                d = drifts[b]
+                xv = x + px * d; yv = y + py * d
+                sxlo[b] = min(sxlo[b], xv); sxhi[b] = max(sxhi[b], xv)
+                sylo[b] = min(sylo[b], yv); syhi[b] = max(syhi[b], yv)
+            end
         end
     end
-    fxmin = T(Inf); fxmax = T(-Inf); fymin = T(Inf); fymax = T(-Inf)
-    for adj in (b - 1, b)
-        (1 <= adj <= ns) || continue
-        for i in slice_indices[adj]
+    fxlo = fill(T(Inf), ns); fxhi = fill(T(-Inf), ns)
+    fylo = fill(T(Inf), ns); fyhi = fill(T(-Inf), ns)
+    for sl in 1:ns
+        for i in slice_indices[sl]
             @inbounds begin
                 sh = T(0.5) * (T(rep.z[i]) - c)
                 xv = rep.x[i] + sh * rep.px[i]
                 yv = rep.y[i] + sh * rep.py[i]
-                fxmin = min(fxmin, xv); fxmax = max(fxmax, xv)
-                fymin = min(fymin, yv); fymax = max(fymax, yv)
+                fxlo[sl] = min(fxlo[sl], xv); fxhi[sl] = max(fxhi[sl], xv)
+                fylo[sl] = min(fylo[sl], yv); fyhi[sl] = max(fyhi[sl], yv)
             end
         end
     end
-    isfinite(fxmin) || return nothing
-    sg, fg = _pic_interaction_grids(solver, sxmin, sxmax, symin, symax,
-                                    fxmin, fxmax, fymin, fymax)
-    return cache[b] = (source_grid=sg, field_grid=fg,
-                       green_fft=_pic_green_fft(solver, T, sg, fg))
+    for b in 1:nb
+        bn = min(b + 1, nb)
+        sxmin = min(sxlo[b], sxlo[bn]); sxmax = max(sxhi[b], sxhi[bn])
+        symin = min(sylo[b], sylo[bn]); symax = max(syhi[b], syhi[bn])
+        fxmin = T(Inf); fxmax = T(-Inf); fymin = T(Inf); fymax = T(-Inf)
+        for adj in (b - 1, b)
+            (1 <= adj <= ns) || continue
+            isfinite(fxlo[adj]) || continue
+            fxmin = min(fxmin, fxlo[adj]); fxmax = max(fxmax, fxhi[adj])
+            fymin = min(fymin, fylo[adj]); fymax = max(fymax, fyhi[adj])
+        end
+        isfinite(fxmin) || continue
+        sg, fg = _pic_interaction_grids(solver, sxmin, sxmax, symin, symax,
+                                        fxmin, fxmax, fymin, fymax)
+        cache[b] = (source_grid=sg, field_grid=fg,
+                    green_fft=_pic_green_fft(solver, T, sg, fg))
+    end
+    return cache
+end
+
+"""Node mesh for node `b`, building the whole set on first use."""
+function _pic_node_grid!(cache::Dict, solver::PICPoissonSolver, ::Type{T}, source, center,
+                         rep, slice_indices, boundary, b::Int) where {T}
+    _pic_build_node_grids!(cache, solver, T, source, center, rep, slice_indices, boundary)
+    return get(cache, b, nothing)
 end
 
 """

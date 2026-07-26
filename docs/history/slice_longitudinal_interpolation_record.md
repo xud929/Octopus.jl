@@ -442,6 +442,65 @@ bounded and at the expected size. The clean demonstration is `node` vs `node_gpu
 a 1e-15 seed that has *not* grown visibly by turn 200, against a 1e-3 seed that
 saturates by turn ~100.
 
+## 4c. Optimizing `:node` (2026-07-26)
+
+`:node` measured 3.52x base at the production point. Profiling first -- after two
+wrong guesses -- gave a full decomposition, using `:slice_pair` and `:quadratic`
+run on the *same* sequential non-async route to separate the terms:
+
+| component | s/turn | share of gap |
+|---|---|---|
+| base (wavefront, indexed) | 0.3408 | - |
+| + CUDA sequential non-async route | +0.4148 | 48% |
+| + third field solve | +0.1754 | 20% |
+| + node mesh building | +0.2678 | 31% |
+| = `:node` | 1.1988 | |
+
+**Node mesh building fixed.** The builder ran one pass over the source *per node*
+(`nb` passes per source slice) and scanned each field slice *twice* (once per
+adjacent node). Both loops are memory-bound. Restructured so the source is read
+once with all `nb` drift accumulators updated per particle, and the field beam
+once into per-slice boxes that are unioned pairwise -- same arithmetic, `nb`x and
+2x fewer passes.
+
+| | before | after |
+|---|---|---|
+| CUDA, production point | 1.1988 | **1.0026** |
+| CPU, `collide!` only, 200k/grid64 | 1.23x base | **0.71x base** |
+
+**The "1.5x floor" claim is retired, but `:node` is *not* faster than the
+baseline -- and the 0.71x figure above is a microbenchmark artefact.** The
+`collide!`-only measurement at 200k/grid64 gave 0.71x; the same configuration
+with the full lattice at 50k/grid64 gives **1.18x**. This is the third time in
+this work that a `collide!`-only benchmark inverted a conclusion, and it should
+not have been reported before the full-lattice check.
+
+The two are not contradictory, they are at different particle counts. `:node`
+trades an N-fold reduction in bounds passes (the baseline recomputes source and
+field bounds for every *pair*, N^2 times; node does it once per *source slice*, N
+times) against 1.5x the field solves. Bounds cost scales with particle count,
+solves with grid size, so node gains as particles per slice rise and loses when
+they are low -- at 50k over 15 slices that is only ~3300 per slice, where the
+solve dominates. **Always measure with the full lattice, at the particle count
+that will actually be run.**
+
+**A correctness improvement fell out of it.** The CPU/CUDA parity test failed
+after the CPU restructure, for a substantive reason: building node meshes lazily
+sized them from *different source states*, because the source slice is kicked
+between its collisions with different field slices. Building the whole set at once
+pins one state for all of a source slice's nodes, which is what node indexing
+means. Ported to CUDA; parity, the full suite and the 1.1e-9 boundary jump all
+hold.
+
+**Remaining:** the route. `:node` still runs only on the CUDA sequential non-async
+path, which alone accounts for 0.4148 s/turn. Porting it to the wavefront route
+requires generalizing the fixed two-planes-per-Green arithmetic
+(`ngreen = nplanes / 2`, `green_plane = plane0 / 2 + 1`) to an explicit
+`green_of[plane]` lookup, since node mode groups planes non-uniformly (L and Z
+share the left node's mesh, R uses the right node's). The wavefront workspace
+already carries per-plane geometry (`wf.hx`, `wf.hy`), so the change is narrower
+than the plane-count arithmetic suggests.
+
 ## 5. What was implemented
 
 ### 5.1 `slice_interpolation = :linear | :quadratic`

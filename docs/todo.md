@@ -33,34 +33,26 @@ derivation: [`docs/theory/slice_longitudinal_interpolation.md`](theory/slice_lon
    every slice transition to every `G`-th, and node indexing (phase 4 below)
    removes it exactly at the same cost. Keep `:source_slice` as a
    weak-hourglass-only option until the program below lands.
-2a. **Why `:node` costs 3.52x at production — diagnosis corrected, first fix
-   rejected.** Measured at the production point: `:node` is **1.1988 s/turn,
-   3.52x base**, worse than `:quadratic`'s 2.73x on the same slow route.
+2a. ~~**Why `:node` costs 3.52x at production.**~~ **PROFILED AND PARTLY FIXED
+   (2026-07-26).** Decomposition (all at the production point, using
+   `:slice_pair` and `:quadratic` on the same slow route to separate terms):
+   route +0.4148 s/turn (48% of the gap), third solve +0.1754 (20%), node mesh
+   building +0.2678 (31%).
 
-   The first hypothesis was that `node_cache` being local to `_pic_collide!` /
-   `_cuda_pic_collide!` forced 480 Green FFTs of 256x256 to be rebuilt every turn,
-   where the baseline reuses `workspace.slice_pair_green_cache` across the run.
-   **That hypothesis was tested and refuted.** Making the node cache persistent,
-   with the same expand-and-cover guard the slice-pair cache uses, measured
-   **1.4226 s/turn — 19% slower**, and was reverted. The Green rebuild is not the
-   dominant cost.
+   Mesh building fixed: the builder made `nb` passes over the source (one per
+   node) and scanned each field slice twice. Now one pass each. CUDA production
+   **1.1988 -> 1.0026 s/turn**. CPU: `collide!`-only at 200k/grid64 gave 0.71x,
+   but the **full lattice at 50k/grid64 gives 1.18x** -- the microbenchmark was
+   an artefact and `:node` is *not* faster on CPU at that size. The mechanism is
+   real (baseline recomputes bounds per pair, N^2; node per source slice, N) but
+   it only wins when particles per slice are high enough for bounds to dominate
+   the solve. The "1.5x floor" claim is retired; so is "CPU node is faster".
 
-   **Remaining suspect, untested:** the per-node bounds computation.
-   `_cuda_pic_node_grid!` gathers the two adjacent field slices
-   (`_cuda_pic_extract_slice`) and runs ~12 `mapreduce` launches per node, giving
-   ~960 slice gathers of 10^5 particles and ~5760 reduction launches per turn.
-   The sizing rule (field box = union of the two slices adjacent to a node)
-   requires touching those slices, so reducing this means changing the rule --
-   e.g. deriving node bounds from per-slice bounds computed once per turn, rather
-   than re-gathering per node. Profile before implementing: the last guess was
-   wrong.
+   Also fixed a correctness issue found by the parity test: lazy per-node building
+   sized meshes from different source states (the source is kicked between pairs).
+   All of a source slice's nodes are now built together from one state.
 
-   Note this also retires the earlier "0.64x at 1M/grid128" figure, measured on
-   `collide!` in isolation where neither path had cross-turn reuse. `:node` is
-   **not** expected to be faster than the baseline in any case: per source slice
-   it builds `N+1` meshes against `N`, and does 3 field solves per slice pair
-   against 2, so ~1.5x work is the floor.
-
+   **Remaining gap is the route** -- see 2b.
 2b. **Extend the CUDA wavefront route to carry per-node meshes and a third field
    plane — now the highest-value remaining optimization.** Measured at the
    production point (2.56M/1.024M, 15 slices, grid 128, CUDA indexed wavefront,

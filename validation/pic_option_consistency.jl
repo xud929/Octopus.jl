@@ -76,6 +76,8 @@ config = (
     quantize    = _envf("OCTOPUS_OPT_QUANTIZE", 0.0),
     timing_from = _envi("OCTOPUS_OPT_TIMING_FROM", 100),
     backend     = _envs("OCTOPUS_OPT_BACKEND", :cpu),
+    batch_mode  = get(ENV, "OCTOPUS_OPT_BATCH_MODE", ""),
+    cuda_async  = get(ENV, "OCTOPUS_OPT_CUDA_ASYNC", ""),
     dump_turns  = [parse(Int, t) for t in split(get(ENV, "OCTOPUS_OPT_DUMP_TURNS", ""), ",") if !isempty(t)],
 )
 
@@ -114,9 +116,12 @@ solver = PICPoissonSolver(; slicing=slicing, grid=(config.grid, config.grid),
     longitudinal_kick=true, slice_interpolation=config.sinterp,
     interaction_grid=config.igrid, grid_extent=config.extent,
     grid_quantize=config.quantize,
-    batch_mode=(config.backend === :gpu && (config.igrid === :node || config.sinterp === :quadratic)) ?
-        :sequential : :wavefront,
-    cuda_async=!(config.backend === :gpu && (config.igrid === :node || config.sinterp === :quadratic)))
+    batch_mode=isempty(config.batch_mode) ?
+        ((config.backend === :gpu && (config.igrid === :node || config.sinterp === :quadratic)) ?
+            :sequential : :wavefront) : Symbol(config.batch_mode),
+    cuda_async=isempty(config.cuda_async) ?
+        !(config.backend === :gpu && (config.igrid === :node || config.sinterp === :quadratic)) :
+        parse(Bool, config.cuda_async))
 
 function ring(b, other_beta, fcrab, kx, tune, chrom, rad)
     t2ip = Linear6DSpec{Float64}(; beta1=other_beta, beta2=b.beta, alpha1=b.alpha,

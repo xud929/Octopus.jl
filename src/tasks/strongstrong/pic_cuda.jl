@@ -1512,42 +1512,69 @@ if _HAS_CUDA
         end
 
         """
-        Build (and memoize) the CUDA interaction mesh for interpolation node `b`.
+        Build **every** node mesh for one (source slice, direction) in one go,
+        mirroring the CPU `_pic_build_node_grids!`.
 
-        Mirrors the CPU `_pic_node_grid!`: the source box covers node `b`'s drift
-        *and* node `b+1`'s (the longitudinal pair shares this mesh), and the field
-        box covers only the two slices adjacent to node `b`.
+        Two reasons this is not lazy per node. First cost: the lazy form extracted
+        the two adjacent field slices *per node*, so each slice was gathered twice
+        and the source was reduced `nb` times -- measured 0.268 s/turn, 31% of
+        `:node`'s gap to the baseline. Here each field slice is gathered once.
+
+        Second, and more important, correctness: the source slice is kicked
+        between its collisions with different field slices, so building node
+        meshes lazily sized them from *different* source states. Building them
+        together pins one state for the whole set, which is what node indexing
+        means, and is required for CPU/CUDA parity.
         """
-        function _cuda_pic_node_grid!(cache::Dict, solver::PICPoissonSolver, ::Type{T},
-                                      source, center, rep, slice_indices, boundary,
-                                      b::Int, longitudinal::Bool) where {T}
-            haskey(cache, b) && return cache[b]
+        function _cuda_pic_build_node_grids!(cache::Dict, solver::PICPoissonSolver, ::Type{T},
+                                             source, center, rep, slice_indices, boundary,
+                                             longitudinal::Bool) where {T}
+            isempty(cache) || return cache
             nb = length(boundary)
             ns = nb - 1
             c = T(center)
-            d0 = T(0.5) * (c - T(boundary[b]))
-            d1 = T(0.5) * (c - T(boundary[min(b + 1, nb)]))
-            sxmin = T(mapreduce((x, px) -> min(x + px * d0, x + px * d1), min, source.x, source.px))
-            sxmax = T(mapreduce((x, px) -> max(x + px * d0, x + px * d1), max, source.x, source.px))
-            symin = T(mapreduce((y, py) -> min(y + py * d0, y + py * d1), min, source.y, source.py))
-            symax = T(mapreduce((y, py) -> max(y + py * d0, y + py * d1), max, source.y, source.py))
             half = T(0.5)
-            fxmin = T(Inf); fxmax = T(-Inf); fymin = T(Inf); fymax = T(-Inf)
-            for adj in (b - 1, b)
-                (1 <= adj <= ns) || continue
-                sl = _cuda_pic_extract_slice(rep, slice_indices[adj], longitudinal)
-                sl === nothing && continue
-                co = sl.coords
-                fxmin = min(fxmin, T(mapreduce((x, px, z) -> x + px * half * (z - c), min, co.x, co.px, co.z)))
-                fxmax = max(fxmax, T(mapreduce((x, px, z) -> x + px * half * (z - c), max, co.x, co.px, co.z)))
-                fymin = min(fymin, T(mapreduce((y, py, z) -> y + py * half * (z - c), min, co.y, co.py, co.z)))
-                fymax = max(fymax, T(mapreduce((y, py, z) -> y + py * half * (z - c), max, co.y, co.py, co.z)))
+            fxlo = fill(T(Inf), ns); fxhi = fill(T(-Inf), ns)
+            fylo = fill(T(Inf), ns); fyhi = fill(T(-Inf), ns)
+            for sl in 1:ns
+                item = _cuda_pic_extract_slice(rep, slice_indices[sl], longitudinal)
+                item === nothing && continue
+                co = item.coords
+                fxlo[sl] = T(mapreduce((x, px, z) -> x + px * half * (z - c), min, co.x, co.px, co.z))
+                fxhi[sl] = T(mapreduce((x, px, z) -> x + px * half * (z - c), max, co.x, co.px, co.z))
+                fylo[sl] = T(mapreduce((y, py, z) -> y + py * half * (z - c), min, co.y, co.py, co.z))
+                fyhi[sl] = T(mapreduce((y, py, z) -> y + py * half * (z - c), max, co.y, co.py, co.z))
             end
-            isfinite(fxmin) || return nothing
-            sg, fg = _pic_interaction_grids(solver, sxmin, sxmax, symin, symax,
-                                            fxmin, fxmax, fymin, fymax)
-            return cache[b] = (source_grid=sg, field_grid=fg,
-                               green_fft=_cuda_pic_green_fft(solver, T, sg, fg, nothing, nothing))
+            for b in 1:nb
+                d0 = half * (c - T(boundary[b]))
+                d1 = half * (c - T(boundary[min(b + 1, nb)]))
+                fxmin = T(Inf); fxmax = T(-Inf); fymin = T(Inf); fymax = T(-Inf)
+                for adj in (b - 1, b)
+                    (1 <= adj <= ns) || continue
+                    isfinite(fxlo[adj]) || continue
+                    fxmin = min(fxmin, fxlo[adj]); fxmax = max(fxmax, fxhi[adj])
+                    fymin = min(fymin, fylo[adj]); fymax = max(fymax, fyhi[adj])
+                end
+                isfinite(fxmin) || continue
+                sxmin = T(mapreduce((x, px) -> min(x + px * d0, x + px * d1), min, source.x, source.px))
+                sxmax = T(mapreduce((x, px) -> max(x + px * d0, x + px * d1), max, source.x, source.px))
+                symin = T(mapreduce((y, py) -> min(y + py * d0, y + py * d1), min, source.y, source.py))
+                symax = T(mapreduce((y, py) -> max(y + py * d0, y + py * d1), max, source.y, source.py))
+                sg, fg = _pic_interaction_grids(solver, sxmin, sxmax, symin, symax,
+                                                fxmin, fxmax, fymin, fymax)
+                cache[b] = (source_grid=sg, field_grid=fg,
+                            green_fft=_cuda_pic_green_fft(solver, T, sg, fg, nothing, nothing))
+            end
+            return cache
+        end
+
+        """Node mesh for node `b`, building the whole set on first use."""
+        function _cuda_pic_node_grid!(cache::Dict, solver::PICPoissonSolver, ::Type{T},
+                                      source, center, rep, slice_indices, boundary,
+                                      b::Int, longitudinal::Bool) where {T}
+            _cuda_pic_build_node_grids!(cache, solver, T, source, center, rep,
+                                        slice_indices, boundary, longitudinal)
+            return get(cache, b, nothing)
         end
 
         """Node-indexed CUDA interaction: three solves, two transverse meshes."""
