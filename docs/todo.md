@@ -73,40 +73,45 @@ derivation: [`docs/theory/slice_longitudinal_interpolation.md`](theory/slice_lon
    The port is worth 25% (0.81 vs 1.08), and node's *interaction* is only 26%
    above base -- the 6-plane batching is efficient.
 
-2c. **The node prebuild is host-sync latency, not compute — the real remaining
-   gap.** `outside` the instrumented interaction is 0.4185 s/turn for `:node`
-   against 0.0128 s for base. Everything else is near parity (node interaction
-   0.3912 vs base 0.3110).
+2c. ~~**Node prebuild: host-sync latency.**~~ **CONFIRMED AND PARTLY FIXED
+   (2026-07-26).** Component decomposition of the 0.3812 s/turn prebuild:
 
-   **Two hypotheses tested and refuted**, both by measurement:
+       component      count    each      total   share
+       mapreduce       3720  58.7 us   0.2185 s   57%
+       green FFT        480   191 us   0.0915 s   24%
+       slice gather      60  59.8 us   0.0036 s    1%
+       (unaccounted)                   0.0675 s   18%
 
-   - *Green FFTs rebuilt every turn.* Tried a per-(source slice, node) persistent
-     cache: **slower** (1.4226 vs 1.1988). Then tried a memo keyed on mesh
-     *geometry*, which dedupes across nodes and turns, on the theory that
-     `grid_quantize` would make meshes repeat and the memo hit. Measured
-     1.0981 (q=0), 1.1312 (q=1/8), 1.0852 (q=1/4) against 1.1196 without it --
-     no gain, and quantization made it *worse*. Reverted. The Green FFT is not
-     the cost; `green_lookup` is only 0.018 s in the phase dump.
-   - *Luminosity gathering.* Switched to the indexed reduction: moved the number
-     by 0.002 s.
+   Reductions confirmed dominant. Each `mapreduce` returns a scalar to the host
+   and forces a device-to-host sync; the prebuild issued 3720 per turn. Fixed by
+   broadcasting to a `K x n` matrix and reducing along the particle axis: 4
+   kernels and 4 syncs per slice regardless of `K`.
 
-   **What the arithmetic actually points at.** The prebuild issues, per turn,
-   2 directions x 15 source slices x (60 field + 64 source) `mapreduce` calls =
-   **3720 reductions**. Each returns a scalar to the host and so forces a
-   device-to-host sync. At ~110 us of launch+sync latency that is **0.41 s**,
-   against a measured 0.4185 s. This is synchronization latency, not compute --
-   which is exactly why every compute-side fix above did nothing.
+       prebuild   0.3812 -> 0.1944 s   (predicted saving 0.2185, measured 0.1868)
+       turn       1.1196 -> 1.0124 s
 
-   **Plan:** replace the per-slice/per-node `mapreduce` calls with **one fused
-   kernel** that computes all node bounds into a device array, followed by a
-   single copy to host. That is 2 launches and 1 sync per turn instead of 3720.
-   Expected to take `:node` from ~1.10 to ~0.45-0.50 s/turn on the wavefront
-   route, close to base 0.3238.
+   Note the earlier estimate of 110 us per reduction was 2x too high; the ranking
+   was right, the magnitude was not.
 
-   **Do not** attempt another compute-side optimization here before confirming
-   the launch-count model -- e.g. by counting syncs, or by timing a run with the
-   bounds computation stubbed out. Four hypotheses formed by reading code have
-   now been refuted by measurement in this item alone.
+2d. **Remaining CUDA node gap, and an honest ceiling.** `:node` is 1.0124 s/turn
+   against base 0.3238 (3.13x). What is left, in order:
+
+   1. **Green FFT, ~0.09 s.** 480 builds per turn where the baseline's slice-pair
+      cache persists. A geometry-keyed memo was tried and measured no gain even
+      with `grid_quantize` (1.0981 / 1.1312 / 1.0852 at q = 0 / 1/8 / 1/4 against
+      1.1196) -- the component measurement says the cost is real, so the memo
+      likely had a key-matching bug. Worth one careful retry with an assertion on
+      the hit rate.
+   2. **Interaction excess, ~0.08 s.** Node's interaction is 0.3912 against base's
+      0.3110 -- the third field solve.
+   3. **Unaccounted prebuild, ~0.07 s.**
+
+   **Parity with base is not reachable while `:node` does 3 field solves per
+   slice-pair direction against the baseline's 2.** Removing the third solve means
+   sharing each node's plane between its two adjacent slices (item 4e), which
+   freezes the source between those uses -- a *modelling* change, not an
+   optimization, and it should be decided on physics grounds rather than for the
+   benchmark. Realistic floor without it is roughly 1.5x base.
 
 2. ~~**CUDA `slice_interpolation=:quadratic`.**~~ **PARTIALLY DONE
    (2026-07-25)**: implemented on the CUDA sequential, non-batched-FFT route

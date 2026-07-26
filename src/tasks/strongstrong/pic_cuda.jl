@@ -1647,6 +1647,34 @@ if _HAS_CUDA
         end
 
         """
+        Bounds of one gathered slice at **many drifts at once**.
+
+        Returns `(xlo, xhi, ylo, yhi)` as host vectors of length `K`, where entry
+        `k` is over `coord + p * drifts[k]`.
+
+        The obvious form -- one `mapreduce` per drift -- issues `K` reductions,
+        each returning a scalar to the host and so forcing a device-to-host sync.
+        Measured at 58.7 us apiece, and the node prebuild made 3720 of them per
+        turn: 0.2185 s, 57% of the prebuild. Broadcasting to a `K x n` matrix and
+        reducing along the particle axis turns that into 4 kernels and 4 syncs per
+        slice regardless of `K`.
+        """
+        function _cuda_pic_slice_bounds_multi(co, drifts::AbstractVector{T},
+                                              longitudinal_drift::Bool, c::T) where {T}
+            d = CUDA.CuArray(drifts)
+            if longitudinal_drift
+                # field slice: per-particle drift 0.5*(z - c), one drift value
+                sx = co.x .+ (T(0.5) .* (co.z .- c)) .* co.px
+                sy = co.y .+ (T(0.5) .* (co.z .- c)) .* co.py
+                return ([minimum(sx)], [maximum(sx)], [minimum(sy)], [maximum(sy)])
+            end
+            X = reshape(co.x, 1, :) .+ d .* reshape(co.px, 1, :)
+            Y = reshape(co.y, 1, :) .+ d .* reshape(co.py, 1, :)
+            return (Array(vec(minimum(X, dims=2))), Array(vec(maximum(X, dims=2))),
+                    Array(vec(minimum(Y, dims=2))), Array(vec(maximum(Y, dims=2))))
+        end
+
+        """
         Build **every** node mesh for one (source slice, direction) in one go,
         mirroring the CPU `_pic_build_node_grids!`.
 
@@ -1679,14 +1707,14 @@ if _HAS_CUDA
                     field_slices[sl]
                 end
                 co === nothing && continue
-                fxlo[sl] = T(mapreduce((x, px, z) -> x + px * half * (z - c), min, co.x, co.px, co.z))
-                fxhi[sl] = T(mapreduce((x, px, z) -> x + px * half * (z - c), max, co.x, co.px, co.z))
-                fylo[sl] = T(mapreduce((y, py, z) -> y + py * half * (z - c), min, co.y, co.py, co.z))
-                fyhi[sl] = T(mapreduce((y, py, z) -> y + py * half * (z - c), max, co.y, co.py, co.z))
+                bx = _cuda_pic_slice_bounds_multi(co, T[zero(T)], true, c)
+                fxlo[sl] = T(bx[1][1]); fxhi[sl] = T(bx[2][1])
+                fylo[sl] = T(bx[3][1]); fyhi[sl] = T(bx[4][1])
             end
+            node_drifts = T[half * (c - T(boundary[b])) for b in 1:nb]
+            sxl, sxh, syl, syh = _cuda_pic_slice_bounds_multi(source, node_drifts, false, c)
             for b in 1:nb
-                d0 = half * (c - T(boundary[b]))
-                d1 = half * (c - T(boundary[min(b + 1, nb)]))
+                bn = min(b + 1, nb)
                 fxmin = T(Inf); fxmax = T(-Inf); fymin = T(Inf); fymax = T(-Inf)
                 for adj in (b - 1, b)
                     (1 <= adj <= ns) || continue
@@ -1695,10 +1723,8 @@ if _HAS_CUDA
                     fymin = min(fymin, fylo[adj]); fymax = max(fymax, fyhi[adj])
                 end
                 isfinite(fxmin) || continue
-                sxmin = T(mapreduce((x, px) -> min(x + px * d0, x + px * d1), min, source.x, source.px))
-                sxmax = T(mapreduce((x, px) -> max(x + px * d0, x + px * d1), max, source.x, source.px))
-                symin = T(mapreduce((y, py) -> min(y + py * d0, y + py * d1), min, source.y, source.py))
-                symax = T(mapreduce((y, py) -> max(y + py * d0, y + py * d1), max, source.y, source.py))
+                sxmin = min(T(sxl[b]), T(sxl[bn])); sxmax = max(T(sxh[b]), T(sxh[bn]))
+                symin = min(T(syl[b]), T(syl[bn])); symax = max(T(syh[b]), T(syh[bn]))
                 sg, fg = _pic_interaction_grids(solver, sxmin, sxmax, symin, symax,
                                                 fxmin, fxmax, fymin, fymax)
                 cache[b] = (source_grid=sg, field_grid=fg,
