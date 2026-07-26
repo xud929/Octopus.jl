@@ -41,12 +41,15 @@ derivation: [`docs/theory/slice_longitudinal_interpolation.md`](theory/slice_lon
 
    Mesh building fixed: the builder made `nb` passes over the source (one per
    node) and scanned each field slice twice. Now one pass each. CUDA production
-   **1.1988 -> 1.0026 s/turn**. CPU: `collide!`-only at 200k/grid64 gave 0.71x,
-   but the **full lattice at 50k/grid64 gives 1.18x** -- the microbenchmark was
-   an artefact and `:node` is *not* faster on CPU at that size. The mechanism is
-   real (baseline recomputes bounds per pair, N^2; node per source slice, N) but
-   it only wins when particles per slice are high enough for bounds to dominate
-   the solve. The "1.5x floor" claim is retired; so is "CPU node is faster".
+   **1.1988 -> 1.0026 s/turn**. CPU, full lattice: **1.18x at
+   50k/grid64 but 0.87x at 640k/256k/grid128** -- `:node` crosses over and becomes
+   *faster* than the baseline at production-scale particle counts, because the
+   baseline recomputes bounds per pair (N^2) while node does it per source slice
+   (N), and bounds cost scales with particle count while solves scale with grid.
+   **CPU has reached the goal.** The "1.5x floor" claim is retired. (An earlier
+   `collide!`-only figure of 0.71x was a microbenchmark artefact and should not
+   have been reported; all three cost claims in this work that came from
+   `collide!` in isolation were later inverted.)
 
    Also fixed a correctness issue found by the parity test: lazy per-node building
    sized meshes from different source states (the source is kicked between pairs).

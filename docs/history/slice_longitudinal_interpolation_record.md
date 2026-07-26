@@ -468,21 +468,21 @@ once into per-slice boxes that are unioned pairwise -- same arithmetic, `nb`x an
 | CUDA, production point | 1.1988 | **1.0026** |
 | CPU, `collide!` only, 200k/grid64 | 1.23x base | **0.71x base** |
 
-**The "1.5x floor" claim is retired, but `:node` is *not* faster than the
-baseline -- and the 0.71x figure above is a microbenchmark artefact.** The
-`collide!`-only measurement at 200k/grid64 gave 0.71x; the same configuration
-with the full lattice at 50k/grid64 gives **1.18x**. This is the third time in
-this work that a `collide!`-only benchmark inverted a conclusion, and it should
-not have been reported before the full-lattice check.
+**The "1.5x floor" claim is retired: `:node` crosses over and becomes faster than
+the baseline at production-scale particle counts.** It trades an N-fold reduction
+in bounds passes (the baseline recomputes source and field bounds for every
+*pair*, N^2 times; node does it once per *source slice*, N times) against 1.5x the
+field solves. Bounds cost scales with particle count, solves with grid size, so
+there is a crossover: at 50k over 15 slices (~3300 particles per slice) the solve
+dominates and node loses at 1.18x; at 640k/256k it wins at 0.87x.
 
-The two are not contradictory, they are at different particle counts. `:node`
-trades an N-fold reduction in bounds passes (the baseline recomputes source and
-field bounds for every *pair*, N^2 times; node does it once per *source slice*, N
-times) against 1.5x the field solves. Bounds cost scales with particle count,
-solves with grid size, so node gains as particles per slice rise and loses when
-they are low -- at 50k over 15 slices that is only ~3300 per slice, where the
-solve dominates. **Always measure with the full lattice, at the particle count
-that will actually be run.**
+**Methodological warning, learned the hard way three times here.** A
+`collide!`-only microbenchmark at 200k/grid64 reported 0.71x and was published
+before the full-lattice check, which then gave 1.18x at 50k. The final 0.87x is
+from a full-lattice run at production-shaped counts. Every cost claim in this work
+that came from `collide!` in isolation was later inverted -- the `:node` "0.64x",
+the Green-cache hypothesis, and this one. **Measure with the full lattice, at the
+particle count that will actually be run, or do not report the number.**
 
 **A correctness improvement fell out of it.** The CPU/CUDA parity test failed
 after the CPU restructure, for a substantive reason: building node meshes lazily
