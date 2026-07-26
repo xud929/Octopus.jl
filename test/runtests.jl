@@ -636,6 +636,320 @@ end
     @test errs[:fourth] < 0.75 * errs[:second]   # measured gain is ~1.6x
 end
 
+@testset "PIC slice_interpolation flag" begin
+    # Three-node longitudinal reconstruction. The option must (a) default to the
+    # historical two-node scheme bit-for-bit, (b) reach the runtime consumer when
+    # set to :quadratic, (c) preserve the physics, (d) satisfy the interpolation
+    # identities the derivation relies on, and (e) be refused rather than silently
+    # ignored by paths that do not implement it.
+    # Theory: docs/theory/slice_longitudinal_interpolation.md.
+    mkpair() = begin
+        set_global_rng!(seed=91, method=:philox)
+        e = Beam(6000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.0),
+            alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        p = Beam(6000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
+            alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+        return e, p
+    end
+    sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
+    run(; kw...) = begin
+        e, p = mkpair()
+        lum = collide!(PICPoissonSolver(; slicing=sl, grid=(64, 64), kw...), e, p, CPUThreadsBackend)
+        (lum, vcat(coordinate_arrays(e)...), vcat(coordinate_arrays(p)...))
+    end
+    l_def, e_def, p_def = run()
+    l_lin, e_lin, p_lin = run(slice_interpolation=:linear)
+    l_quad, e_quad, p_quad = run(slice_interpolation=:quadratic)
+    @test e_def == e_lin && p_def == p_lin && l_def == l_lin   # (a) default unchanged
+    @test e_def != e_quad && p_def != p_quad                    # (b) reaches consumer
+    @test all(isfinite, e_quad) && all(isfinite, p_quad)
+    @test isapprox(l_quad, l_def; rtol=1e-3)                    # (c) same physics
+    @test PICPoissonSolver(slice_interpolation=:quadratic).slice_interpolation === :quadratic
+    @test PICPoissonSolver().slice_interpolation === :linear
+    @test_throws ArgumentError PICPoissonSolver(slice_interpolation=:cubic)
+    @test GaussianPICPoissonSolver(slice_interpolation=:quadratic).pic.slice_interpolation === :quadratic
+
+    # (d) interpolation identities, observed at the kernel boundary.
+    solver = PICPoissonSolver(; grid=(8, 8), deposit_method=:CIC)
+    sg, fg = Octopus._pic_interaction_grids(solver, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0)
+    rng_vals(k) = [sin(k * i + 0.3 * j) for i in 1:8, j in 1:8]
+    phiL, ExL, EyL = rng_vals(1.0), rng_vals(1.1), rng_vals(1.2)
+    phiM, ExM, EyM = rng_vals(2.0), rng_vals(2.1), rng_vals(2.2)
+    phiR, ExR, EyR = rng_vals(3.0), rng_vals(3.1), rng_vals(3.2)
+    quad(t) = Octopus._pic_interpolate_kick_quadratic(solver, fg, 0.13, -0.07,
+        phiL, ExL, EyL, phiM, ExM, EyM, phiR, ExR, EyR, t)
+    lin(zL) = Octopus._pic_interpolate_kick(solver, fg, 0.13, -0.07,
+        phiL, ExL, EyL, phiR, ExR, EyR, zL, 1.0 - zL)
+
+    # Endpoint collapse: at t=0 and t=1 only the boundary node contributes, which
+    # is what keeps the transverse kick continuous across a shared slice boundary.
+    @test all(isapprox.(quad(0.0)[1:2], lin(1.0)[1:2]; rtol=1e-12))
+    @test all(isapprox.(quad(1.0)[1:2], lin(0.0)[1:2]; rtol=1e-12))
+    # Mid-slice: the quadratic longitudinal kick reduces to the two-node constant.
+    @test isapprox(quad(0.5)[3], lin(0.5)[3]; rtol=1e-12)
+    # Transverse weights sum to 1: a z-independent field is reproduced exactly.
+    flat = ones(8, 8)
+    for t in (0.0, 0.25, 0.5, 0.75, 1.0)
+        kx, ky, _ = Octopus._pic_interpolate_kick_quadratic(solver, fg, 0.13, -0.07,
+            flat, flat, flat, flat, flat, flat, flat, flat, flat, t)
+        @test isapprox(kx, 1.0; rtol=1e-12) && isapprox(ky, 1.0; rtol=1e-12)
+    end
+    # Longitudinal weights sum to 0: the arbitrary additive constant in the mesh
+    # potential must cancel exactly, as it does in the two-node form.
+    for t in (0.0, 0.25, 0.5, 0.75, 1.0)
+        shift = 17.0
+        _, _, kz0 = quad(t)
+        _, _, kz1 = Octopus._pic_interpolate_kick_quadratic(solver, fg, 0.13, -0.07,
+            phiL .+ shift, ExL, EyL, phiM .+ shift, ExM, EyM, phiR .+ shift, ExR, EyR, t)
+        @test isapprox(kz0, kz1; atol=1e-12)
+    end
+
+    # (e) paths without a three-node implementation must refuse the request.
+    let (e, p) = mkpair()
+        @test_throws ArgumentError collide!(
+            GaussianPICPoissonSolver(; slicing=sl, grid=(64, 64), slice_interpolation=:quadratic),
+            e, p, CPUThreadsBackend)
+    end
+
+    # (f) the third field plane is allocated lazily: the two-node default must
+    # never pay for it, and the three-node path must get a correctly sized one.
+    let ws = Octopus._pic_cpu_workspace(Float64, 64, 64)
+        @test ws.mid[] === nothing
+        gc = Octopus._pic_green_cache(PICPoissonSolver(; slicing=sl, grid=(64, 64)), Float64)
+        e, p = mkpair()
+        Octopus._pic_collide!(PICPoissonSolver(; slicing=sl, grid=(64, 64)),
+                              e, p, nothing, ws, gc)
+        @test ws.mid[] === nothing                      # :linear allocated nothing
+        e, p = mkpair()
+        Octopus._pic_collide!(PICPoissonSolver(; slicing=sl, grid=(64, 64),
+                                               slice_interpolation=:quadratic),
+                              e, p, nothing, ws, gc)
+        @test ws.mid[] isa Octopus._PICFieldWorkspace{Float64}
+        @test size(ws.mid[].phi) == (64, 64)
+        first_alloc = ws.mid[]
+        e, p = mkpair()
+        Octopus._pic_collide!(PICPoissonSolver(; slicing=sl, grid=(64, 64),
+                                               slice_interpolation=:quadratic),
+                              e, p, nothing, ws, gc)
+        @test ws.mid[] === first_alloc                  # reused, not reallocated
+        # A workspace sized for a different grid must be replaced, not reused.
+        @test size(Octopus._pic_mid_field!(ws, 32, 32).phi) == (32, 32)
+    end
+end
+
+@testset "PIC interaction_grid flag" begin
+    # Sharing one interaction mesh across the field slices of a source slice
+    # removes the transverse kick jump that per-slice-pair mesh sizing creates.
+    # Theory: docs/theory/slice_longitudinal_interpolation.md Section 5.
+    mkpair() = begin
+        set_global_rng!(seed=53, method=:philox)
+        e = Beam(6000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.0),
+            alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        p = Beam(6000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
+            alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+        return e, p
+    end
+    sl = LongitudinalSlicing(nslices=4, method=:normal_quantile, center_position=:centroid)
+    run(; kw...) = begin
+        e, p = mkpair()
+        lum = collide!(PICPoissonSolver(; slicing=sl, grid=(64, 64), kw...), e, p, CPUThreadsBackend)
+        (lum, vcat(coordinate_arrays(e)...), vcat(coordinate_arrays(p)...))
+    end
+    l_def, e_def, _ = run()
+    l_sp, e_sp, _ = run(interaction_grid=:slice_pair)
+    l_ss, e_ss, p_ss = run(interaction_grid=:source_slice)
+    @test e_def == e_sp && l_def == l_sp          # default unchanged, bit-for-bit
+    @test e_def != e_ss                            # reaches the consumer
+    @test all(isfinite, e_ss) && all(isfinite, p_ss)
+    @test isapprox(l_ss, l_def; rtol=1e-3)         # same physics
+    @test PICPoissonSolver(interaction_grid=:source_slice).interaction_grid === :source_slice
+    @test PICPoissonSolver().interaction_grid === :slice_pair
+    @test_throws ArgumentError PICPoissonSolver(interaction_grid=:global)
+
+    # The shared mesh must cover every field slice it serves: the union bounds
+    # must contain each individual slice's own drifted bounding box.
+    e, p = mkpair()
+    s1 = Octopus.longitudinal_slices(e.rep, sl)
+    s2 = Octopus.longitudinal_slices(p.rep, sl)
+    src = Octopus._pic_extract_slice(e.rep, s1.indices[2])
+    c = s1.center[2]
+    ub = Octopus._pic_union_bounds(src, c, p.rep, s2.indices)
+    @test ub !== nothing
+    _, fb = ub
+    for idx in s2.indices, i in idx
+        s = 0.5 * (p.rep.z[i] - c)
+        @test fb.xmin <= p.rep.x[i] + s * p.rep.px[i] <= fb.xmax
+        @test fb.ymin <= p.rep.y[i] + s * p.rep.py[i] <= fb.ymax
+    end
+
+    # Not implemented off the CPU PIC path; must throw rather than be ignored.
+    for mode in (:source_slice, :node)
+        e2, p2 = mkpair()
+        @test_throws ArgumentError collide!(
+            GaussianPICPoissonSolver(; slicing=sl, grid=(64, 64), interaction_grid=mode),
+            e2, p2, CPUThreadsBackend)
+    end
+
+    # --- :node ---------------------------------------------------------------
+    # One mesh per interpolation node, shared by the two slices adjacent to it.
+    l_nd, e_nd, p_nd = run(interaction_grid=:node)
+    @test e_def != e_nd                                   # reaches the consumer
+    @test all(isfinite, e_nd) && all(isfinite, p_nd)
+    @test isapprox(l_nd, l_def; rtol=1e-3)                # same physics
+    @test PICPoissonSolver(interaction_grid=:node).interaction_grid === :node
+
+    # The defining property: the mesh belonging to a shared node must be one and
+    # the same object for both adjacent slices, which is what makes the transverse
+    # kick continuous across their common boundary.
+    let e3, p3
+        e3, p3 = mkpair()
+        s1 = Octopus.longitudinal_slices(e3.rep, sl)
+        s2 = Octopus.longitudinal_slices(p3.rep, sl)
+        src = Octopus._pic_extract_slice(e3.rep, s1.indices[2])
+        cache = Dict{Int,Any}()
+        get_node(b) = Octopus._pic_node_grid!(cache, PICPoissonSolver(; slicing=sl, grid=(64, 64)),
+            Float64, src, s1.center[2], p3.rep, s2.indices, s2.boundary, b)
+        for b in 2:length(s2.boundary)-1
+            gb = get_node(b)
+            gb === nothing && continue
+            @test get_node(b) === gb                       # memoized, identical object
+            # node b's mesh must contain both adjacent slices' drifted particles
+            nx = 64
+            hx = gb.field_grid.width / (nx - 1)
+            hy = gb.field_grid.height / (nx - 1)
+            for adj in (b - 1, b), i in s2.indices[adj]
+                sh = 0.5 * (p3.rep.z[i] - s1.center[2])
+                xv = p3.rep.x[i] + sh * p3.rep.px[i]
+                yv = p3.rep.y[i] + sh * p3.rep.py[i]
+                @test gb.field_grid.x0 <= xv <= gb.field_grid.x0 + gb.field_grid.width
+                @test gb.field_grid.y0 <= yv <= gb.field_grid.y0 + gb.field_grid.height
+            end
+        end
+    end
+end
+
+@testset "PIC grid_extent, grid_quantize and out-of-range deposition" begin
+    # Phase 1-3 of the grid-determination program. Theory:
+    # docs/theory/slice_longitudinal_interpolation.md Section 5.
+    mkpair() = begin
+        set_global_rng!(seed=64, method=:philox)
+        e = Beam(6000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.0),
+            alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        p = Beam(6000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
+            alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+        return e, p
+    end
+    sl = LongitudinalSlicing(nslices=5, method=:normal_quantile)
+    run(; kw...) = begin
+        e, p = mkpair()
+        lum = collide!(PICPoissonSolver(; slicing=sl, grid=(64, 64), kw...), e, p, CPUThreadsBackend)
+        (lum, vcat(coordinate_arrays(e)...))
+    end
+
+    # (a) out-of-range and non-finite contribute NOTHING. Previously the index was
+    # clamped while the weight was kept, smearing full charge onto the boundary
+    # cell; and floor(Int, NaN) threw from inside the kernel.
+    for u in (-2.0, 70.0, NaN, Inf, -Inf)
+        _, wc = Octopus._pic_cic_weights(u, 64)
+        _, wt = Octopus._pic_tsc_weights(u, 64)
+        @test sum(wc) == 0.0
+        @test sum(wt) == 0.0
+    end
+    @test sum(Octopus._pic_cic_weights(5.3, 64)[2]) ≈ 1.0
+    @test sum(Octopus._pic_tsc_weights(5.3, 64)[2]) ≈ 1.0
+    let Q = zeros(128, 128)
+        # grid spans u in [0,63]: x in [-1e-3, -3.7e-4]. One of three is in range.
+        Octopus._pic_deposit!(Q, :CIC, [-5.0e-4, NaN, -6.0e-4], [-5.0e-4, -5.0e-4, NaN],
+                              -1.0e-3, -1.0e-3, 1.0e-5, 1.0e-5, 64, 64)
+        @test all(isfinite, Q)
+        @test isapprox(sum(Q), 1.0; atol=1e-12)     # NaN particles dropped, not smeared
+    end
+
+    # (b) defaults bit-compatible
+    l_def, e_def = run()
+    l_ex, e_ex = run(grid_extent=:extrema, grid_quantize=0.0)
+    @test e_def == e_ex && l_def == l_ex
+
+    # (c) both options reach the consumer and preserve the physics
+    for kw in ((; grid_extent=:sigma), (; grid_quantize=0.125),
+               (; grid_extent=:sigma, grid_quantize=0.125))
+        l, c = run(; kw...)
+        @test e_def != c
+        @test all(isfinite, c)
+        @test isapprox(l, l_def; rtol=5e-3)
+    end
+
+    # (d) validation
+    @test PICPoissonSolver(grid_extent=:sigma).grid_extent === :sigma
+    @test PICPoissonSolver().grid_extent === :extrema
+    @test PICPoissonSolver().grid_quantize == 0.0
+    @test_throws ArgumentError PICPoissonSolver(grid_extent=:quantile)
+    @test_throws ArgumentError PICPoissonSolver(grid_extent_sigma=-1.0)
+    @test_throws ArgumentError PICPoissonSolver(grid_quantize=-0.5)
+
+    # (e) :sigma is measurably stabler than :extrema, which is the whole point.
+    let e2, p2
+        e2, p2 = mkpair()
+        sls = Octopus.longitudinal_slices(p2.rep, sl)
+        widths(ge) = begin
+            w = Float64[]
+            for s in eachindex(sls.center)
+                idx = sls.indices[s]; isempty(idx) && continue
+                lo, hi = Inf, -Inf; a, b = 0.0, 0.0
+                for i in idx
+                    v = p2.rep.x[i]
+                    lo = min(lo, v); hi = max(hi, v); a += v; b += v * v
+                end
+                ax = Octopus._pic_axis_extent(ge, lo, hi, a, b, length(idx), 6.0)
+                push!(w, ax[2] - ax[1])
+            end
+            w
+        end
+        relvar(v) = begin
+            m = sum(v) / length(v)
+            sqrt(sum((v .- m) .^ 2) / length(v)) / m
+        end
+        @test relvar(widths(:sigma)) < relvar(widths(:extrema))
+    end
+
+    # (f) quantization collapses distinct meshes onto exactly equal values.
+    let solver_q, solver_p, e3, p3
+        e3, p3 = mkpair()
+        s1 = Octopus.longitudinal_slices(e3.rep, sl)
+        s2 = Octopus.longitudinal_slices(p3.rep, sl)
+        distinct(q) = begin
+            solver = PICPoissonSolver(; slicing=sl, grid=(64, 64), grid_extent=:sigma, grid_quantize=q)
+            seen = Set{Any}()
+            for i in eachindex(s1.center), j in eachindex(s2.center)
+                (isempty(s1.indices[i]) || isempty(s2.indices[j])) && continue
+                src = Octopus._pic_extract_slice(e3.rep, s1.indices[i]); c = s1.center[i]
+                d0 = 0.5 * (c - s2.boundary[j]); d1 = 0.5 * (c - s2.boundary[j + 1])
+                lo, hi = Inf, -Inf; a, b = 0.0, 0.0; n = 0
+                ylo, yhi = Inf, -Inf; ya, yb = 0.0, 0.0
+                for k in eachindex(src.x), d in (d0, d1)
+                    xv = src.x[k] + src.px[k] * d; yv = src.y[k] + src.py[k] * d
+                    lo = min(lo, xv); hi = max(hi, xv); a += xv; b += xv * xv
+                    ylo = min(ylo, yv); yhi = max(yhi, yv); ya += yv; yb += yv * yv
+                    n += 1
+                end
+                ax = Octopus._pic_axis_extent(:sigma, lo, hi, a, b, n, 6.0)
+                ay = Octopus._pic_axis_extent(:sigma, ylo, yhi, ya, yb, n, 6.0)
+                sg, _ = Octopus._pic_interaction_grids(solver, ax[1], ax[2], ay[1], ay[2],
+                                                       ax[1], ax[2], ay[1], ay[2])
+                push!(seen, (sg.width, sg.height))
+            end
+            length(seen)
+        end
+        @test distinct(0.125) < distinct(0.0)
+    end
+end
+
 @testset "Spectral field absolute normalization is derived, not fitted" begin
     # The spectral field scale must be the DERIVED constant (-2pi for :grid, +4pi
     # for :grid_free), so the beam-beam coupling does not depend on the mesh and
@@ -1147,6 +1461,76 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             @test isapprox(lc, lg; rtol=1e-11)
         end
         @test results[:second_gpu][2] != results[:fourth_gpu][2]   # flag reaches CUDA
+    end
+
+    @testset "CUDA PIC slice_interpolation matches CPU" begin
+        # :quadratic is implemented only on the CUDA sequential, non-batched-FFT
+        # route. Check parity there for both settings, that the flag changes the
+        # CUDA result, and that the routes which cannot carry a third field plane
+        # throw instead of silently dropping it.
+        mkpair(backend) = begin
+            set_global_rng!(seed=31, method=:philox)
+            e = Beam(4000, backend, Float64; beta=(0.55, 0.056, 12.0),
+                alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            p = Beam(4000, backend, Float64; beta=(0.8, 0.072, 90.0),
+                alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+                rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            return e, p
+        end
+        sl = LongitudinalSlicing(nslices=5, method=:normal_quantile, center_position=:centroid)
+        flat(b) = vcat((Array(a) for a in coordinate_arrays(b))...)
+        base = (; slicing=sl, grid=(32, 32), batch_mode=:sequential, cuda_async=false)
+        res = Dict{Symbol,Any}()
+        for si in (:linear, :quadratic), (name, backend, policy) in
+                ((:cpu, CPUThreadsBackend, CPUThreadsBackend), (:gpu, CUDABackend, CUDAExecutionPolicy()))
+            e, p = mkpair(policy)
+            lum = collide!(PICPoissonSolver(; base..., slice_interpolation=si), e, p, backend)
+            res[Symbol(si, :_, name)] = (lum, flat(e), flat(p))
+        end
+        for si in (:linear, :quadratic)
+            (lc, ec, pc) = res[Symbol(si, :_cpu)]
+            (lg, eg, pg) = res[Symbol(si, :_gpu)]
+            @test isapprox(ec, eg; rtol=1e-11, atol=1e-14)
+            @test isapprox(pc, pg; rtol=1e-11, atol=1e-14)
+            @test isapprox(lc, lg; rtol=1e-11)
+        end
+        @test res[:linear_gpu][2] != res[:quadratic_gpu][2]   # flag reaches CUDA
+
+        # Routes that pack two planes per slice-pair direction must refuse it.
+        for (bm, async) in ((:wavefront, false), (:wavefront, true), (:sequential, true))
+            e, p = mkpair(CUDAExecutionPolicy())
+            @test_throws ArgumentError collide!(
+                PICPoissonSolver(; slicing=sl, grid=(32, 32), slice_interpolation=:quadratic,
+                                 batch_mode=bm, cuda_async=async), e, p, CUDABackend)
+        end
+        # interaction_grid=:source_slice is CPU-only on every CUDA route.
+        let (e, p) = mkpair(CUDAExecutionPolicy())
+            @test_throws ArgumentError collide!(
+                PICPoissonSolver(; slicing=sl, grid=(32, 32), interaction_grid=:source_slice),
+                e, p, CUDABackend)
+        end
+
+        # interaction_grid=:node is implemented on the sequential non-async route.
+        nres = Dict{Symbol,Any}()
+        for (name, backend, policy) in
+                ((:cpu, CPUThreadsBackend, CPUThreadsBackend), (:gpu, CUDABackend, CUDAExecutionPolicy()))
+            e, p = mkpair(policy)
+            lum = collide!(PICPoissonSolver(; base..., interaction_grid=:node), e, p, backend)
+            nres[name] = (lum, flat(e), flat(p))
+        end
+        @test isapprox(nres[:cpu][2], nres[:gpu][2]; rtol=1e-11, atol=1e-14)
+        @test isapprox(nres[:cpu][3], nres[:gpu][3]; rtol=1e-11, atol=1e-14)
+        @test isapprox(nres[:cpu][1], nres[:gpu][1]; rtol=1e-11)
+        @test nres[:gpu][2] != res[:linear_gpu][2]      # reaches the CUDA consumer
+
+        # Routes that assume one mesh per slice pair must refuse :node.
+        for (bm, async) in ((:wavefront, false), (:wavefront, true), (:sequential, true))
+            e, p = mkpair(CUDAExecutionPolicy())
+            @test_throws ArgumentError collide!(
+                PICPoissonSolver(; slicing=sl, grid=(32, 32), interaction_grid=:node,
+                                 batch_mode=bm, cuda_async=async), e, p, CUDABackend)
+        end
     end
 
     function test_gpu_beam(x, y)

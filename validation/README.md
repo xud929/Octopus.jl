@@ -411,3 +411,130 @@ evaluated `NaN`, and that the header identifies collision columns:
 ```bash
 julia --project=. validation/strong_strong_luminosity_schedule_output.jl
 ```
+
+## Slice Longitudinal Interpolation z-Scan
+
+`slice_longitudinal_zscan.jl` measures how much error the *longitudinal*
+reconstruction of the slice field contributes to `Delta p_x`, `Delta p_y` and
+`Delta p_z`, and how discontinuous the kick is across a field-slice boundary.
+
+A source slice and a test particle's `(x, y, px, py)` are frozen; `z` is swept
+finely across several field slices. The reference is a per-particle exact solve
+at each sample's own collision point `sigma(z) = (c - z)/2`. The two-node
+(`slice_interpolation=:linear`) and three-node (`:quadratic`) schemes are
+compared against it on the **same** grid, deposition and Green kernel, so the
+transverse PIC error cancels and only the longitudinal interpolation error
+remains -- which is what separates it from the slicing error. A second pass
+repeats `:linear` with per-slice grids to measure the transverse jump that
+grid resizing introduces.
+
+For a flat beam `Delta p_y` is the observable that matters: `E_y` varies on the
+scale `sigma_y << sigma_x`, so its curvature in the drift variable is larger by
+roughly the aspect ratio.
+
+```bash
+julia --threads=4 --project=. validation/slice_longitudinal_zscan.jl
+```
+
+Outputs under `result/`: `slice_longitudinal_zscan.tsv` (per-sample curves,
+plot ready), `_summary.tsv` (per component and scheme), `_jumps.tsv`
+(per-boundary discontinuities).
+
+Derivation, error constants and the measured first-run results are in
+`../docs/theory/slice_longitudinal_interpolation.md`; the change record is in
+`../docs/history/slice_longitudinal_interpolation_record.md`.
+
+## Slice Interpolation Emittance Growth
+
+`slice_interpolation_emittance_growth.jl` decides whether the slice-boundary kick
+discontinuity measured by the z-scan actually moves a physics observable, or is a
+field-accuracy artefact with no dynamical consequence.
+
+The setup is built so that *all* vertical emittance growth is numerical: head-on
+collision, linear one-turn maps, no chromaticity, no dispersion, and **no
+radiation damping or excitation**, leaving the Poisson solver as the only
+non-symplectic element. Arms compare `slice_interpolation`, `deposit_method`,
+`interaction_grid`, and the "just add slices" alternative.
+
+Because shot noise alone drives growth, each arm runs at several seeds and an arm
+is judged different only when the seed means separate by more than the seed
+spread. `boundary_cross_fraction` is reported as a validity check: if particles do
+not change slice index between turns, the discontinuity is never sampled.
+
+One arm/seed:
+
+```bash
+OCTOPUS_EMIT_SCHEME=quadratic OCTOPUS_EMIT_SEED=1 \
+  julia --threads=8 --project=. validation/slice_interpolation_emittance_growth.jl
+```
+
+Overrides: `OCTOPUS_EMIT_SCHEME`, `OCTOPUS_EMIT_NSLICES`, `OCTOPUS_EMIT_DEPOSIT`,
+`OCTOPUS_EMIT_GRIDMODE`, `OCTOPUS_EMIT_SEED`, `OCTOPUS_EMIT_TURNS`,
+`OCTOPUS_EMIT_NPART`, `OCTOPUS_EMIT_GRID`, `OCTOPUS_EMIT_TAG`.
+
+Aggregate all completed arms (seed means, spreads, and separation from baseline):
+
+```bash
+julia --project=. validation/slice_interpolation_emittance_growth_summary.jl
+```
+
+Outputs under `result/`: `emittance_growth_<tag>.tsv` (per-turn emittances),
+`emittance_growth_<tag>.meta.tsv` (one summary row per run), and
+`emittance_growth_summary.tsv` (per-arm aggregate).
+
+## PIC Grid Extent Stability
+
+`pic_grid_extent_stability.jl` quantifies why the interaction mesh jitters. Under
+the default `grid_extent=:extrema` the mesh size is a *sample extremum*, which is
+`O(1)`-noisy; `:sigma` uses a second moment, whose noise is `O(1/sqrt(n))`. The
+metric is the relative variation of the box, both across slices within a turn and
+across turns for a fixed slice, since the mesh discontinuity is proportional to it.
+
+`dropped` must stay at zero for a production setting: dropping a fraction `f` of
+charge at radius `R` costs a field error `~ f*(sigma/R)`, so even `1e-3` is the
+same order as the discontinuity the estimators are meant to remove.
+
+```bash
+julia --threads=4 --project=. validation/pic_grid_extent_stability.jl
+```
+
+Outputs `result/pic_grid_extent_stability.tsv`.
+
+## PIC Option Consistency and Cost
+
+`pic_option_consistency.jl` runs the crab-crossing EIC case of
+`examples/strong_strong_tracking.jl` -- same beam parameters, crab cavities,
+Lorentz boost pair, one-turn optics, chromaticity and electron radiation -- for
+many turns under one PIC option set, and records enough to compare option sets
+against each other.
+
+The options change the discretization deliberately, so they are **not** expected
+to agree bit-for-bit. What is checked is that they agree to the accuracy the
+discretization implies and that none drifts away over many turns. Three levels of
+evidence, in increasing strictness:
+
+1. luminosity per turn (coarsest integral observable);
+2. beam moments per turn, which respond to per-particle errors that cancel in the
+   luminosity;
+3. per-particle coordinates at selected turns -- the strict check, which catches a
+   systematic per-particle bias hiding inside an unchanged luminosity. Use a small
+   `OCTOPUS_OPT_NPART` for this.
+
+Timing is the mean wall time over `OCTOPUS_OPT_TIMING_FROM..OCTOPUS_OPT_TURNS`,
+excluding early turns so compilation and cache warm-up are not counted.
+
+```bash
+OCTOPUS_OPT_TAG=node OCTOPUS_OPT_INTERACTION_GRID=node \
+  julia --threads=6 --project=. validation/pic_option_consistency.jl
+julia --project=. validation/pic_option_consistency_summary.jl
+```
+
+Overrides: `OCTOPUS_OPT_TAG`, `OCTOPUS_OPT_TURNS`, `OCTOPUS_OPT_NPART`,
+`OCTOPUS_OPT_GRID`, `OCTOPUS_OPT_NSLICES`, `OCTOPUS_OPT_INTERACTION_GRID`,
+`OCTOPUS_OPT_SLICE_INTERP`, `OCTOPUS_OPT_DEPOSIT`, `OCTOPUS_OPT_EXTENT`,
+`OCTOPUS_OPT_QUANTIZE`, `OCTOPUS_OPT_DUMP_TURNS`, `OCTOPUS_OPT_TIMING_FROM`,
+`OCTOPUS_OPT_BACKEND`.
+
+Outputs under `result/`: `pic_option_<tag>.tsv` (per-turn series),
+`.coords.tsv` (coordinate dumps), `.meta.tsv` (options and timing),
+`pic_option_consistency_summary.tsv` (cross-option comparison).

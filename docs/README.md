@@ -31,6 +31,13 @@ reference material, not API docs; the implementing code links back to them.
 - [`weak_strong_6d_model.md`](theory/weak_strong_6d_model.md) — the weak-strong source
   model: which source moments enter the kick formulas and how a continuous 6D
   Gaussian is sliced longitudinally.
+- [`slice_longitudinal_interpolation.md`](theory/slice_longitudinal_interpolation.md) —
+  smoothness of the sliced beam-beam kick (`slice_interpolation`,
+  `interaction_grid`): why the transverse kick is $C^0$ across slice boundaries
+  but the longitudinal kick is a discontinuous sawtooth, the implementation-level
+  continuity breakers, the separation of interpolation error from slicing error,
+  the three-node quadratic extension, and the measured finding that field
+  accuracy does **not** predict emittance growth here.
 - [`spectral_sine_poisson_solver.md`](theory/spectral_sine_poisson_solver.md) —
   `SpectralPoissonSolver`: Dirichlet-box double sine-series Poisson solve, DST/DCT
   discrete form, CUDA notes, open-boundary discussion, and measured accuracy.
@@ -49,7 +56,10 @@ reference material, not API docs; the implementing code links back to them.
 ## Planning
 
 - [`todo.md`](todo.md) — the single forward-looking plan (open items and
-  implementation/validation/performance plans per solver).
+  implementation/validation/performance plans per solver). Current programs:
+  the interaction-grid determination program (phases 0-4 complete: extent
+  estimation, out-of-range safety, quantization, node indexing) and non-finite
+  coordinate detection.
 
 ## Development history and records (`history/`)
 
@@ -68,6 +78,10 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   [`strong_strong_pic_extreme_benchmark_history.md`](history/strong_strong_pic_extreme_benchmark_history.md),
   [`strong_strong_diagnostics_benchmark_history.md`](history/strong_strong_diagnostics_benchmark_history.md).
 - Audits / change records:
+  [`slice_longitudinal_interpolation_record.md`](history/slice_longitudinal_interpolation_record.md)
+  (sliced beam-beam kick smoothness: derivation, frozen z-scan field accuracy,
+  multi-turn emittance-growth measurement, the `slice_interpolation` and
+  `interaction_grid` options, and why field accuracy did not predict dynamics),
   [`public_configuration_audit.md`](history/public_configuration_audit.md),
   [`weak_strong_6d_model_validation.md`](history/weak_strong_6d_model_validation.md),
   [`poisson_solver_review_2026_07_24.md`](history/poisson_solver_review_2026_07_24.md)

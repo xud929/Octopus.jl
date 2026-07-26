@@ -1,0 +1,228 @@
+"""
+Multi-turn consistency and cost of the PIC solver options.
+
+Runs the crab-crossing EIC case of `examples/strong_strong_tracking.jl` -- same
+beam parameters, crab cavities, Lorentz boost pair, one-turn optics, chromaticity
+and electron radiation -- for a configurable number of turns under one PIC option
+set, and records enough per turn to compare option sets against each other.
+
+The options are *not* expected to agree bit-for-bit: each changes the
+discretization deliberately. What is checked is that they agree to the accuracy the
+discretization implies, and that none of them drifts away or destabilizes over many
+turns. Three levels of evidence are recorded, in increasing strictness:
+
+1. **Luminosity per turn** -- the coarsest integral observable.
+2. **Beam moments per turn** -- `eps_x`, `eps_y`, `eps_z` and the centroid, which
+   respond to per-particle errors that cancel in the luminosity.
+3. **Per-particle coordinates at selected turns** -- the strictest check, and the
+   one that catches a systematic per-particle bias whose beam-averaged effect is
+   small. Run this with a small `OCTOPUS_OPT_NPART` so the dump stays manageable.
+
+Timing is the mean wall time over turns `timing_from`..`turns`, excluding the
+first turns so compilation and cache warm-up are not counted.
+
+Run
+---
+```bash
+OCTOPUS_OPT_TAG=base julia --threads=6 --project=. validation/pic_option_consistency.jl
+```
+
+Production reference point (from `examples/strong_strong_tracking.jl` and the
+2026-07-24 Poisson-solver review): 2_560_000 electrons, 1_024_000 protons, 15
+slices, grid (128,128), CUDA with the default indexed wavefront path -- about
+0.3 s/turn including luminosity and moment output. Benchmark there, not at a
+convenient small size: the cost ordering of the options is grid- and
+particle-count dependent.
+
+Overrides: `OCTOPUS_OPT_TAG`, `OCTOPUS_OPT_TURNS`, `OCTOPUS_OPT_NPART`
+(or `OCTOPUS_OPT_NPART_E` / `OCTOPUS_OPT_NPART_P` separately),
+`OCTOPUS_OPT_GRID`, `OCTOPUS_OPT_NSLICES`, `OCTOPUS_OPT_INTERACTION_GRID`,
+`OCTOPUS_OPT_SLICE_INTERP`, `OCTOPUS_OPT_DEPOSIT`, `OCTOPUS_OPT_EXTENT`,
+`OCTOPUS_OPT_QUANTIZE`, `OCTOPUS_OPT_DUMP_TURNS` (comma-separated),
+`OCTOPUS_OPT_TIMING_FROM`, `OCTOPUS_OPT_BACKEND` (`cpu`/`gpu`).
+
+Compare completed runs with
+`validation/pic_option_consistency_summary.jl`.
+
+Outputs (under `result/`)
+-------------------------
+- `pic_option_<tag>.tsv`        -- per-turn luminosity and moments
+- `pic_option_<tag>.coords.tsv` -- coordinates at the dump turns
+- `pic_option_<tag>.meta.tsv`   -- one row: options, timing, totals
+"""
+
+using Octopus
+using DelimitedFiles
+using Printf
+
+const O = Octopus
+
+_envi(k, d) = parse(Int, get(ENV, k, string(d)))
+_envf(k, d) = parse(Float64, get(ENV, k, string(d)))
+_envs(k, d) = Symbol(get(ENV, k, string(d)))
+
+config = (
+    tag         = get(ENV, "OCTOPUS_OPT_TAG", "base"),
+    turns       = _envi("OCTOPUS_OPT_TURNS", 200),
+    npart       = _envi("OCTOPUS_OPT_NPART", 50_000),
+    npart_e     = _envi("OCTOPUS_OPT_NPART_E", _envi("OCTOPUS_OPT_NPART", 50_000)),
+    npart_p     = _envi("OCTOPUS_OPT_NPART_P", _envi("OCTOPUS_OPT_NPART", 50_000)),
+    grid        = _envi("OCTOPUS_OPT_GRID", 64),
+    nslices     = _envi("OCTOPUS_OPT_NSLICES", 15),
+    igrid       = _envs("OCTOPUS_OPT_INTERACTION_GRID", :slice_pair),
+    sinterp     = _envs("OCTOPUS_OPT_SLICE_INTERP", :linear),
+    deposit     = _envs("OCTOPUS_OPT_DEPOSIT", :CIC),
+    extent      = _envs("OCTOPUS_OPT_EXTENT", :extrema),
+    quantize    = _envf("OCTOPUS_OPT_QUANTIZE", 0.0),
+    timing_from = _envi("OCTOPUS_OPT_TIMING_FROM", 100),
+    backend     = _envs("OCTOPUS_OPT_BACKEND", :cpu),
+    dump_turns  = [parse(Int, t) for t in split(get(ENV, "OCTOPUS_OPT_DUMP_TURNS", ""), ",") if !isempty(t)],
+)
+
+result_dir = normpath(joinpath(@__DIR__, "..", "result"))
+mkpath(result_dir)
+
+# --- physics: the strong-strong example's crab-crossing EIC case ---------------
+crossing = 12.5e-3
+ele = (charge=-1.0, mass=EMASS_EV, energy=10.0e9, n_particle=1.7203e11, cutoff=5.0,
+       sigma=(106.0e-6, 9.5e-6, 0.7e-2), beta=(0.55, 0.056, 0.7e-2 / 5.5e-4),
+       alpha=(0.0, 0.0, 0.0), crab_beta=(150.0, 30.0, 0.7e-2 / 5.5e-4),
+       tune=(0.08, 0.14, -0.069), chrom=(1.0, 1.0), fcrab=394.0e6,
+       kx=(tan(crossing) / sqrt(150.0 * 0.55), 0.0, 0.0), damp=(4000.0, 4000.0, 2000.0))
+pro = (charge=1.0, mass=PMASS_EV, energy=275.0e9, n_particle=0.6881e11, cutoff=5.0,
+       sigma=(95.0e-6, 8.5e-6, 6.0e-2), beta=(0.8, 0.072, 6.0e-2 / 6.6e-4),
+       alpha=(0.0, 0.0, 0.0), crab_beta=(1300.0, 30.0, 6.0e-2 / 6.6e-4),
+       tune=(0.228, 0.210, -0.01), chrom=(2.0, 2.0), fcrab=197.0e6,
+       kx=(tan(crossing) / sqrt(1300.0 * 0.8) * 4.0 / 3.0,
+           -tan(crossing) / sqrt(1300.0 * 0.8) / 3.0, 0.0))
+
+policy = config.backend === :gpu ? CUDAExecutionPolicy() : CPUThreadsExecutionPolicy()
+backend = config.backend === :gpu ? Octopus.CUDABackend : CPUThreadsBackend
+
+set_global_rng!(seed=123456789, method=:philox)
+beam_e = Beam(config.npart_e, policy, Float64; beta=ele.beta, alpha=ele.alpha,
+    sigma=ele.sigma, cutoff=ele.cutoff, rng_id=1, charge=ele.charge, mc2=ele.mass,
+    E0=ele.energy, r0=RE * ME0 / ele.mass, npart=ele.n_particle)
+beam_p = Beam(config.npart_p, policy, Float64; beta=pro.beta, alpha=pro.alpha,
+    sigma=pro.sigma, cutoff=pro.cutoff, rng_id=2, charge=pro.charge, mc2=pro.mass,
+    E0=pro.energy, r0=RE * ME0 / pro.mass, npart=pro.n_particle)
+
+slicing = LongitudinalSlicing(; method=:normal_quantile, nslices=config.nslices,
+                              center_position=:centroid)
+solver = PICPoissonSolver(; slicing=slicing, grid=(config.grid, config.grid),
+    deposit_method=config.deposit, green_type=:integrated, green_cache=:slice_pair,
+    longitudinal_kick=true, slice_interpolation=config.sinterp,
+    interaction_grid=config.igrid, grid_extent=config.extent,
+    grid_quantize=config.quantize,
+    batch_mode=(config.backend === :gpu && (config.igrid === :node || config.sinterp === :quadratic)) ?
+        :sequential : :wavefront,
+    cuda_async=!(config.backend === :gpu && (config.igrid === :node || config.sinterp === :quadratic)))
+
+function ring(b, other_beta, fcrab, kx, tune, chrom, rad)
+    t2ip = Linear6DSpec{Float64}(; beta1=other_beta, beta2=b.beta, alpha1=b.alpha,
+        alpha2=b.alpha, dmu=(pi / 2.0, 0.0, 0.0))
+    t2ip_inv = Linear6DSpec{Float64}(matrix=inv(Matrix(Linear6D(t2ip))))
+    ip2t = Linear6DSpec{Float64}(; beta1=b.beta, beta2=other_beta, alpha1=b.alpha,
+        alpha2=b.alpha, dmu=(pi / 2.0, 0.0, 0.0))
+    ip2t_inv = Linear6DSpec{Float64}(matrix=inv(Matrix(Linear6D(ip2t))))
+    cav = ThinCrabCavitySpec{3}(fcrab; strengthX=kx, strengthY=(0.0, 0.0, 0.0),
+                                phase=(0.0, 0.0, 0.0))
+    turn = Linear6DSpec{Float64}(; beta1=b.beta, beta2=b.beta, alpha1=b.alpha,
+        alpha2=b.alpha, dmu=2pi .* tune)
+    ch = ChromaticityKickSpec{Float64}(; xi=chrom, beta=b.beta, alpha=b.alpha)
+    return (t2ip_inv, cav, t2ip, ip2t, cav, ip2t_inv, turn, ch, rad)
+end
+
+ele_rad = LumpedRadSpec{Float64}(; damping_turns=ele.damp, beta=ele.beta,
+    alpha=ele.alpha, sigma=ele.sigma, is_damping=true, is_excitation=true, rng_id=3)
+lb = LorentzBoostSpec(crossing); rlb = RevLorentzBoostSpec(crossing)
+ip = StrongStrongCollision(:ip; poisson_solver=solver)
+
+re = ring(ele, ele.crab_beta, ele.fcrab, ele.kx, ele.tune, ele.chrom, ele_rad)
+rp = ring(pro, pro.crab_beta, pro.fcrab, pro.kx, pro.tune, pro.chrom, nothing)
+line_e = (re[1], re[2], re[3], lb, ip, rlb, re[4], re[5], re[6], re[7], re[8], ele_rad)
+line_p = (rp[1], rp[2], rp[3], lb, ip, rlb, rp[4], rp[5], rp[6], rp[7], rp[8])
+
+lum_path = joinpath(result_dir, "pic_option_$(config.tag).lum")
+isfile(lum_path) && rm(lum_path)
+task = StrongStrongTask(line_e, line_p; luminosity_path=lum_path)
+
+"""
+Read the single luminosity row the task just wrote.
+
+`execute!` opens `luminosity_path` with `"w"` per call, so a one-turn-per-call
+loop leaves exactly one data row; reading it immediately after each call is the
+supported way to get a per-turn series without buffering assumptions.
+"""
+function read_luminosity(path)
+    isfile(path) || return NaN
+    v = NaN
+    for ln in eachline(path)
+        (isempty(ln) || startswith(ln, "#")) && continue
+        f = split(ln)
+        length(f) >= 2 || continue
+        tryparse(Int, f[1]) === nothing && continue
+        p2 = tryparse(Float64, f[2])
+        p2 === nothing || (v = p2)
+    end
+    return v
+end
+
+host(a) = Array(a)
+function moments(beam)
+    r = beam.rep
+    x = host(r.x); px = host(r.px); y = host(r.y); py = host(r.py); z = host(r.z); pz = host(r.pz)
+    n = length(x)
+    emit(q, p) = begin
+        mq = sum(q) / n; mp = sum(p) / n
+        vqq = sum(abs2, q) / n - mq^2; vpp = sum(abs2, p) / n - mp^2
+        vqp = sum(q .* p) / n - mq * mp
+        sqrt(max(vqq * vpp - vqp^2, 0.0))
+    end
+    return (emit(x, px), emit(y, py), emit(z, pz), sum(x) / n, sum(y) / n, sum(z) / n)
+end
+
+rows = Vector{Any}()
+coord_rows = Vector{Any}()
+dump = Set(config.dump_turns)
+times = Float64[]
+
+for turn in 1:config.turns
+    t0 = time()
+    execute!(task, beam_e, beam_p; turns=1)
+    dt = time() - t0
+    turn >= config.timing_from && push!(times, dt)
+    lum = read_luminosity(lum_path)
+    me = moments(beam_e); mp = moments(beam_p)
+    push!(rows, [turn, lum, me..., mp...])
+    if turn in dump
+        for (bn, b) in ((1, beam_e), (2, beam_p))
+            r = b.rep
+            xs = host(r.x); pxs = host(r.px); ys = host(r.y)
+            pys = host(r.py); zs = host(r.z); pzs = host(r.pz)
+            for i in eachindex(xs)
+                push!(coord_rows, [turn, bn, i, xs[i], pxs[i], ys[i], pys[i], zs[i], pzs[i]])
+            end
+        end
+    end
+end
+
+mean_t = isempty(times) ? NaN : sum(times) / length(times)
+open(joinpath(result_dir, "pic_option_$(config.tag).tsv"), "w") do io
+    writedlm(io, ["turn" "luminosity" "e_ex" "e_ey" "e_ez" "e_mx" "e_my" "e_mz" "p_ex" "p_ey" "p_ez" "p_mx" "p_my" "p_mz"])
+    writedlm(io, permutedims(hcat(rows...)))
+end
+if !isempty(coord_rows)
+    open(joinpath(result_dir, "pic_option_$(config.tag).coords.tsv"), "w") do io
+        writedlm(io, ["turn" "beam" "particle" "x" "px" "y" "py" "z" "pz"])
+        writedlm(io, permutedims(hcat(coord_rows...)))
+    end
+end
+open(joinpath(result_dir, "pic_option_$(config.tag).meta.tsv"), "w") do io
+    writedlm(io, ["tag" "backend" "turns" "npart" "npart_e" "npart_p" "grid" "nslices" "interaction_grid" "slice_interpolation" "deposit" "grid_extent" "grid_quantize" "mean_turn_s" "timing_from"])
+    writedlm(io, [config.tag String(config.backend) config.turns config.npart config.npart_e config.npart_p config.grid config.nslices String(config.igrid) String(config.sinterp) String(config.deposit) String(config.extent) config.quantize mean_t config.timing_from])
+end
+
+@printf("%-16s turns=%d npart=%d/%d grid=%d nsl=%d  mean turn (%d-%d) = %.4f s\n",
+        config.tag, config.turns, config.npart_e, config.npart_p, config.grid,
+        config.nslices, config.timing_from, config.turns, mean_t)
