@@ -416,10 +416,6 @@ struct _PICCPUWorkspace{T}
     # branch. Always zero under `grid_extent = :extrema`; non-zero means a robust
     # estimator under-covered and the field lost charge. Never silent.
     dropped::Base.RefValue{Int}
-    # Node meshes, keyed (source slice, direction) -> node -> entry. Persistent
-    # across turns like the slice-pair Green cache, with a per-turn coverage check
-    # so a stale mesh is rebuilt rather than silently under-covering.
-    node_grids::Dict{Tuple{Int,Int},Dict{Int,Any}}
     luminosity_q1::Matrix{T}
     luminosity_q2::Matrix{T}
 end
@@ -452,8 +448,7 @@ function _pic_cpu_workspace(::Type{T}, nx::Integer, ny::Integer) where {T}
     mid = Base.RefValue{Union{Nothing,_PICFieldWorkspace{T}}}(nothing)
     return _PICCPUWorkspace{T}(
         charge, spectral, green, green_fft, fft_plan, ifft_plan, local_charge, left, right, mid,
-        Base.RefValue(0), Dict{Tuple{Int,Int},Dict{Int,Any}}(),
-        zeros(T, nx + 1, ny + 1), zeros(T, nx + 1, ny + 1),
+        Base.RefValue(0), zeros(T, nx + 1, ny + 1), zeros(T, nx + 1, ny + 1),
     )
 end
 

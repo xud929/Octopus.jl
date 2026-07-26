@@ -33,24 +33,34 @@ derivation: [`docs/theory/slice_longitudinal_interpolation.md`](theory/slice_lon
    every slice transition to every `G`-th, and node indexing (phase 4 below)
    removes it exactly at the same cost. Keep `:source_slice` as a
    weak-hourglass-only option until the program below lands.
-2a. **Persist node meshes across turns — `:node` currently rebuilds every Green
-   FFT every turn.** Measured at the production point: `:node` is **1.1988 s/turn,
-   3.52x base**, against `:quadratic`'s 2.73x on the same slow route. The extra
-   ~0.8x is a defect, not inherent: `node_cache` is a local Dict created inside
-   `_pic_collide!` (`pic_cpu.jl:55`) and `_cuda_pic_collide!` (`pic_cuda.jl:81`),
-   so it is discarded every turn, and `_cuda_pic_node_grid!` passes `nothing` for
-   the Green cache. That rebuilds 15 x 16 x 2 = **480 Green FFTs of 256x256 per
-   turn**, while the baseline reuses `workspace.slice_pair_green_cache` /
-   `task.runtime_cache` across all turns.
+2a. **Why `:node` costs 3.52x at production — diagnosis corrected, first fix
+   rejected.** Measured at the production point: `:node` is **1.1988 s/turn,
+   3.52x base**, worse than `:quadratic`'s 2.73x on the same slow route.
 
-   **Fix:** key node meshes into the persistent runtime cache, with the same
-   coverage/rebuild guard the slice-pair cache uses. Expected to remove most of
-   the gap, leaving only the route penalty.
+   The first hypothesis was that `node_cache` being local to `_pic_collide!` /
+   `_cuda_pic_collide!` forced 480 Green FFTs of 256x256 to be rebuilt every turn,
+   where the baseline reuses `workspace.slice_pair_green_cache` across the run.
+   **That hypothesis was tested and refuted.** Making the node cache persistent,
+   with the same expand-and-cover guard the slice-pair cache uses, measured
+   **1.4226 s/turn — 19% slower**, and was reverted. The Green rebuild is not the
+   dominant cost.
 
-   Note this also invalidates the earlier "0.64x at 1M/grid128" figure, which was
-   measured on `collide!` in isolation where *neither* path had cross-turn reuse,
-   so node's within-turn halving won. Multi-turn is the only meaningful
-   measurement for a cached path.
+   **Remaining suspect, untested:** the per-node bounds computation.
+   `_cuda_pic_node_grid!` gathers the two adjacent field slices
+   (`_cuda_pic_extract_slice`) and runs ~12 `mapreduce` launches per node, giving
+   ~960 slice gathers of 10^5 particles and ~5760 reduction launches per turn.
+   The sizing rule (field box = union of the two slices adjacent to a node)
+   requires touching those slices, so reducing this means changing the rule --
+   e.g. deriving node bounds from per-slice bounds computed once per turn, rather
+   than re-gathering per node. Profile before implementing: the last guess was
+   wrong.
+
+   Note this also retires the earlier "0.64x at 1M/grid128" figure, measured on
+   `collide!` in isolation where neither path had cross-turn reuse. `:node` is
+   **not** expected to be faster than the baseline in any case: per source slice
+   it builds `N+1` meshes against `N`, and does 3 field solves per slice pair
+   against 2, so ~1.5x work is the floor.
+
 2b. **Extend the CUDA wavefront route to carry per-node meshes and a third field
    plane — now the highest-value remaining optimization.** Measured at the
    production point (2.56M/1.024M, 15 slices, grid 128, CUDA indexed wavefront,

@@ -380,13 +380,20 @@ Two things this changes:
    2000 particles on CPU it looked like a 2.2x speedup. The quantization win is a
    Green-cache win, and the wavefront path already amortizes Green FFTs well, so
    the win shrinks as the field solve stops dominating.
-1b. **`:node`'s 3.52x is partly a defect, not inherent.** `node_cache` is local to
-   `_pic_collide!` / `_cuda_pic_collide!`, so it is discarded every turn, and the
-   node grid builder passes no Green cache -- rebuilding 480 Green FFTs of 256x256
-   per turn, where the baseline reuses its cache across all 200 turns. The earlier
-   "0.64x at 1M/grid128" figure was measured on `collide!` in isolation, where
-   neither path had cross-turn reuse; it does not describe a real run. Fix in
-   `todo.md` item 2a.
+1b. **`:node` is not expected to be faster, and the first explanation for its
+   3.52x was wrong.** Per source slice it builds `N+1` meshes against
+   `:slice_pair`'s `N`, and 3 field solves per slice pair against 2 -- ~1.5x work
+   is the floor, so the earlier "0.64x at 1M/grid128" figure (measured on
+   `collide!` in isolation, where neither path had cross-turn cache reuse) does
+   not describe a real run and is retracted.
+
+   The hypothesis that the remaining gap came from rebuilding 480 Green FFTs per
+   turn (the node cache being local to the collide call, where the baseline's
+   slice-pair cache persists) was **tested and refuted**: making it persistent
+   with the same expand-and-cover guard measured **1.4226 s/turn, 19% slower**,
+   and was reverted. The remaining suspect -- the ~960 per-node slice gathers and
+   ~5760 reduction launches per turn needed to size each node mesh -- is untested;
+   see `todo.md` item 2a. Profile before guessing again.
 2. **`:quadratic` and `:node` cost 2.7x or more**, not the ~1.1-1.2x the CPU table
    suggests -- because on CUDA they are only implemented on the sequential
    non-async route, which is itself ~2.5x the wavefront default. Their real price

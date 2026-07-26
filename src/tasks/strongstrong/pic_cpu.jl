@@ -52,7 +52,7 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # Node meshes are memoized per (source slice, direction); each is shared by
     # the two field slices adjacent to that node, which is what restores exact
     # continuity at their common boundary.
-    node_cache = workspace.node_grids
+    node_cache = Dict{Tuple{Int,Int},Dict{Int,Any}}()
     # Under :source_slice the mesh is sized once per (source slice, direction)
     # from the union over every field slice, so adjacent field slices reuse one
     # mesh and the transverse kick no longer jumps at their shared boundary.
@@ -569,6 +569,7 @@ blow-up: measured cell coarsening is 1.05-1.12x against per-slice-pair meshes.
 """
 function _pic_node_grid!(cache::Dict, solver::PICPoissonSolver, ::Type{T}, source, center,
                          rep, slice_indices, boundary, b::Int) where {T}
+    haskey(cache, b) && return cache[b]
     nb = length(boundary)
     ns = nb - 1
     c = T(center)
@@ -597,31 +598,10 @@ function _pic_node_grid!(cache::Dict, solver::PICPoissonSolver, ::Type{T}, sourc
         end
     end
     isfinite(fxmin) || return nothing
-    sbounds = (xmin=sxmin, xmax=sxmax, ymin=symin, ymax=symax)
-    fbounds = (xmin=fxmin, xmax=fxmax, ymin=fymin, ymax=fymax)
-    sg0, fg0 = _pic_interaction_grids(solver, sxmin, sxmax, symin, symax,
-                                      fxmin, fxmax, fymin, fymax)
-
-    # Reuse the cached mesh (and its Green FFT) across turns while it still covers
-    # this turn's particles, exactly as `_pic_slice_pair_green!` does. Without
-    # this the Green FFT is rebuilt every turn -- 480 of them per turn at 15
-    # slices -- while the baseline path reuses its cache for the whole run, which
-    # is what made `:node` measure 3.52x at the production point.
-    entry = get(cache, b, nothing)
-    if entry !== nothing &&
-       _pic_grid_size_usable(entry.source_grid, sg0, solver.slice_pair_green_min_ratio) &&
-       _pic_grid_size_usable(entry.field_grid, fg0, solver.slice_pair_green_min_ratio) &&
-       _pic_grid_covers_bounds(solver, entry.source_grid, sbounds) &&
-       _pic_grid_covers_bounds(solver, entry.field_grid, fbounds)
-        return entry
-    end
-    grow = one(T) + T(solver.slice_pair_green_growth)
-    esg = _pic_expand_grid_by(sg0, grow)
-    efg = _pic_expand_grid_by(fg0, grow)
-    fresh = (source_grid=esg, field_grid=efg,
-             green_fft=_pic_green_fft(solver, T, esg, efg))
-    cache[b] = fresh
-    return fresh
+    sg, fg = _pic_interaction_grids(solver, sxmin, sxmax, symin, symax,
+                                    fxmin, fxmax, fymin, fymax)
+    return cache[b] = (source_grid=sg, field_grid=fg,
+                       green_fft=_pic_green_fft(solver, T, sg, fg))
 end
 
 """

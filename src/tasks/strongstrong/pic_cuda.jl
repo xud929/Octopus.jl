@@ -48,12 +48,6 @@ if _HAS_CUDA
             return dst
         end
 
-        """Persistent node-mesh cache, so Green FFTs survive across turns."""
-        function _cuda_pic_node_grid_cache!(workspace)
-            store = getfield(workspace, :wavefront_cache)
-            return get!(() -> Dict{Tuple{Int,Int},Dict{Int,Any}}(), store, :node_grids)
-        end
-
         function _cuda_pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam,
                                     workspace, green_cache, ctx=nothing)
             _validate_pic_solver(solver)
@@ -84,7 +78,7 @@ if _HAS_CUDA
             ))
             reclaim_policy = _cuda_pic_reclaim_policy()
             node_mode = _pic_node_grid_mode(solver)
-            node_cache = _cuda_pic_node_grid_cache!(workspace)
+            node_cache = Dict{Tuple{Int,Int},Dict{Int,Any}}()
             spc = green_cache === nothing && _cuda_pic_slice_pair_green_cache_enabled(solver) ?
                 workspace.slice_pair_green_cache : nothing
             pair_count = 0
@@ -1527,6 +1521,7 @@ if _HAS_CUDA
         function _cuda_pic_node_grid!(cache::Dict, solver::PICPoissonSolver, ::Type{T},
                                       source, center, rep, slice_indices, boundary,
                                       b::Int, longitudinal::Bool) where {T}
+            haskey(cache, b) && return cache[b]
             nb = length(boundary)
             ns = nb - 1
             c = T(center)
@@ -1549,25 +1544,10 @@ if _HAS_CUDA
                 fymax = max(fymax, T(mapreduce((y, py, z) -> y + py * half * (z - c), max, co.y, co.py, co.z)))
             end
             isfinite(fxmin) || return nothing
-            sbounds = (xmin=sxmin, xmax=sxmax, ymin=symin, ymax=symax)
-            fbounds = (xmin=fxmin, xmax=fxmax, ymin=fymin, ymax=fymax)
-            sg0, fg0 = _pic_interaction_grids(solver, sxmin, sxmax, symin, symax,
-                                              fxmin, fxmax, fymin, fymax)
-            entry = get(cache, b, nothing)
-            if entry !== nothing &&
-               _pic_grid_size_usable(entry.source_grid, sg0, solver.slice_pair_green_min_ratio) &&
-               _pic_grid_size_usable(entry.field_grid, fg0, solver.slice_pair_green_min_ratio) &&
-               _pic_grid_covers_bounds(solver, entry.source_grid, sbounds) &&
-               _pic_grid_covers_bounds(solver, entry.field_grid, fbounds)
-                return entry
-            end
-            grow = one(T) + T(solver.slice_pair_green_growth)
-            esg = _pic_expand_grid_by(sg0, grow)
-            efg = _pic_expand_grid_by(fg0, grow)
-            fresh = (source_grid=esg, field_grid=efg,
-                     green_fft=_cuda_pic_green_fft(solver, T, esg, efg, nothing, nothing))
-            cache[b] = fresh
-            return fresh
+            sg, fg = _pic_interaction_grids(solver, sxmin, sxmax, symin, symax,
+                                            fxmin, fxmax, fymin, fymax)
+            return cache[b] = (source_grid=sg, field_grid=fg,
+                               green_fft=_cuda_pic_green_fft(solver, T, sg, fg, nothing, nothing))
         end
 
         """Node-indexed CUDA interaction: three solves, two transverse meshes."""
