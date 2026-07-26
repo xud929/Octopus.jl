@@ -53,6 +53,12 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # the two field slices adjacent to that node, which is what restores exact
     # continuity at their common boundary.
     node_cache = Dict{Tuple{Int,Int},Dict{Int,Any}}()
+    if node_grid
+        _pic_prebuild_node_caches!(node_cache, solver, T, beam1.rep, slices1,
+                                   beam2.rep, slices2, 1)
+        _pic_prebuild_node_caches!(node_cache, solver, T, beam2.rep, slices2,
+                                   beam1.rep, slices1, 2)
+    end
     # Under :source_slice the mesh is sized once per (source slice, direction)
     # from the union over every field slice, so adjacent field slices reuse one
     # mesh and the transverse kick no longer jumps at their shared boundary.
@@ -275,11 +281,16 @@ function _require_cuda_pic_options(solver::PICPoissonSolver)
             "batch_mode = $(repr(solver.batch_mode)), cuda_async = $(solver.cuda_async)."))
     end
     if solver.interaction_grid === :node
-        (Symbol(solver.batch_mode) === :sequential && !solver.cuda_async) || throw(ArgumentError(
-            "interaction_grid = :node on the CUDA PIC backend requires batch_mode = :sequential " *
-            "and cuda_async = false; the wavefront and batched-FFT routes assume one mesh per " *
-            "slice pair. Got batch_mode = $(repr(solver.batch_mode)), " *
-            "cuda_async = $(solver.cuda_async)."))
+        # :node runs on the indexed wavefront route (its own 6-plane path) and on
+        # the sequential non-async route. The batched-FFT sub-route of sequential
+        # mode still assumes one mesh per slice pair.
+        wavefront_ok = Symbol(solver.batch_mode) === :wavefront
+        sequential_ok = Symbol(solver.batch_mode) === :sequential && !solver.cuda_async
+        (wavefront_ok || sequential_ok) || throw(ArgumentError(
+            "interaction_grid = :node on the CUDA PIC backend requires batch_mode = :wavefront, " *
+            "or batch_mode = :sequential with cuda_async = false; the sequential batched-FFT " *
+            "route assumes one mesh per slice pair. Got batch_mode = " *
+            "$(repr(solver.batch_mode)), cuda_async = $(solver.cuda_async)."))
     end
     solver.grid_extent === :extrema || throw(ArgumentError(
         "grid_extent = $(repr(solver.grid_extent)) is not implemented by the CUDA PIC " *
@@ -628,6 +639,43 @@ function _pic_build_node_grids!(cache::Dict, solver::PICPoissonSolver, ::Type{T}
                     green_fft=_pic_green_fft(solver, T, sg, fg))
     end
     return cache
+end
+
+"""
+    _pic_prebuild_node_caches!(node_cache, solver, T, rep_src, slices_src, rep_fld, slices_fld, dir)
+
+Build every node mesh for every source slice of one direction, **at turn start**.
+
+Node meshes must not be built lazily at first use. A node mesh depends on *all*
+field slices (its field box comes from per-slice boxes), so it is sensitive to how
+much of the turn has already been applied when it is built -- and
+`collision_pair_batches` preserves per-slice ordering but not global ordering, so
+"first use" lands at a different beam state on the CUDA wavefront route than on
+the CPU's collision-time order. That made CPU/CUDA disagree by 3.8e-5.
+
+The baseline is immune because its grid depends only on the two slices of its own
+pair, whose relative order the batching *does* preserve.
+
+Building from the turn-start state makes the mesh a deterministic, schedule-
+independent function of the distribution, which is what a discretization choice
+should be. Particles move during the turn by far less than the 1.5-cell margin,
+and the zero-weight deposition guard counts any escapee rather than smearing it.
+"""
+function _pic_prebuild_node_caches!(node_cache::Dict, solver::PICPoissonSolver, ::Type{T},
+                                    rep_src, slices_src, rep_fld, slices_fld,
+                                    dir::Int) where {T}
+    for i in eachindex(slices_src.center)
+        idx = slices_src.indices[i]
+        isempty(idx) && continue
+        nc = get!(() -> Dict{Int,Any}(), node_cache, (i, dir))
+        isempty(nc) || continue
+        # CPU reads `rep_fld` directly by index, so there is no gather to hoist
+        # here; the per-source-slice field pass is a strided read, not a copy.
+        src = _pic_extract_slice(rep_src, idx)
+        _pic_build_node_grids!(nc, solver, T, src, slices_src.center[i], rep_fld,
+                               slices_fld.indices, slices_fld.boundary)
+    end
+    return node_cache
 end
 
 """Node mesh for node `b`, building the whole set on first use."""

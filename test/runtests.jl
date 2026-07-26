@@ -1524,12 +1524,27 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         @test isapprox(nres[:cpu][1], nres[:gpu][1]; rtol=1e-11)
         @test nres[:gpu][2] != res[:linear_gpu][2]      # reaches the CUDA consumer
 
-        # Routes that assume one mesh per slice pair must refuse :node.
-        for (bm, async) in ((:wavefront, false), (:wavefront, true), (:sequential, true))
-            e, p = mkpair(CUDAExecutionPolicy())
+        # :node runs on the indexed wavefront route via its own 6-plane path, and
+        # on the sequential non-async route. Both must match CPU.
+        let ref = nothing
+            e, p = mkpair(CPUThreadsBackend)
+            collide!(PICPoissonSolver(; slicing=sl, grid=(32, 32), interaction_grid=:node),
+                     e, p, CPUThreadsBackend)
+            ref = flat(e)
+            for kw in ((; batch_mode=:wavefront), (; batch_mode=:wavefront, cuda_async=true),
+                       (; batch_mode=:sequential, cuda_async=false))
+                eg, pg = mkpair(CUDAExecutionPolicy())
+                collide!(PICPoissonSolver(; slicing=sl, grid=(32, 32),
+                                          interaction_grid=:node, kw...), eg, pg, CUDABackend)
+                @test isapprox(ref, flat(eg); rtol=1e-11, atol=1e-14)
+            end
+        end
+        # The sequential batched-FFT sub-route still assumes one mesh per slice
+        # pair and must refuse :node rather than silently using the wrong mesh.
+        let (e, p) = mkpair(CUDAExecutionPolicy())
             @test_throws ArgumentError collide!(
                 PICPoissonSolver(; slicing=sl, grid=(32, 32), interaction_grid=:node,
-                                 batch_mode=bm, cuda_async=async), e, p, CUDABackend)
+                                 batch_mode=:sequential, cuda_async=true), e, p, CUDABackend)
         end
     end
 

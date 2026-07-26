@@ -79,6 +79,13 @@ if _HAS_CUDA
             reclaim_policy = _cuda_pic_reclaim_policy()
             node_mode = _pic_node_grid_mode(solver)
             node_cache = Dict{Tuple{Int,Int},Dict{Int,Any}}()
+            if node_mode
+                Tn = eltype(beam1.rep.x)
+                _cuda_pic_prebuild_node_caches!(node_cache, solver, Tn, beam1.rep, slices1,
+                                                beam2.rep, slices2, 1, solver.longitudinal_kick)
+                _cuda_pic_prebuild_node_caches!(node_cache, solver, Tn, beam2.rep, slices2,
+                                                beam1.rep, slices1, 2, solver.longitudinal_kick)
+            end
             spc = green_cache === nothing && _cuda_pic_slice_pair_green_cache_enabled(solver) ?
                 workspace.slice_pair_green_cache : nothing
             pair_count = 0
@@ -186,6 +193,15 @@ if _HAS_CUDA
             use_batch_fft = use_async && _cuda_pic_batch_fft_enabled(solver)
             use_wavefront_fft = use_batch_fft && _cuda_pic_wavefront_fft_enabled(solver)
             reclaim_policy = _cuda_pic_reclaim_policy()
+            node_mode = _pic_node_grid_mode(solver)
+            node_cache = Dict{Tuple{Int,Int},Dict{Int,Any}}()
+            if node_mode
+                Tn = eltype(beam1.rep.x)
+                _cuda_pic_prebuild_node_caches!(node_cache, solver, Tn, beam1.rep, slices1,
+                                                beam2.rep, slices2, 1, solver.longitudinal_kick)
+                _cuda_pic_prebuild_node_caches!(node_cache, solver, Tn, beam2.rep, slices2,
+                                                beam1.rep, slices1, 2, solver.longitudinal_kick)
+            end
             wspc = green_cache === nothing && _cuda_pic_slice_pair_green_cache_enabled(solver) ?
                 workspace.slice_pair_green_cache : nothing
             pair_count = 0
@@ -218,10 +234,15 @@ if _HAS_CUDA
                     pair_count += length(indexed)
                     pair_range = _cuda_nvtx_push(CUDABackend, "pic indexed wavefront interaction")
                     t_interaction = time_ns()
-                    lum = _cuda_pic_interaction_wavefront_indexed_batched_fft!(
-                        solver, indexed, beam1.rep, beam2.rep, kbb1, kbb2, green_cache, klum,
-                        workspace, timing, compute_luminosity,
-                    )
+                    lum = node_mode ?
+                        _cuda_pic_interaction_wavefront_node_indexed!(
+                            solver, indexed, beam1.rep, beam2.rep, slices1, slices2,
+                            kbb1, kbb2, klum, workspace, node_cache, timing, compute_luminosity,
+                        ) :
+                        _cuda_pic_interaction_wavefront_indexed_batched_fft!(
+                            solver, indexed, beam1.rep, beam2.rep, kbb1, kbb2, green_cache, klum,
+                            workspace, timing, compute_luminosity,
+                        )
                     compute_luminosity && (luminosity += lum)
                     _cuda_pic_add_time!(timing, :interaction, t_interaction)
                     _cuda_nvtx_pop(CUDABackend, pair_range)
@@ -1249,6 +1270,120 @@ if _HAS_CUDA
             return luminosity
         end
 
+        """
+        Node-indexed wavefront interaction: the `:node` counterpart of
+        `_cuda_pic_interaction_wavefront_indexed_batched_fft!`.
+
+        Node meshes are memoized per (source slice, direction) in `node_cache`;
+        the source slice is gathered only on a cache miss, so the build cost is
+        paid once per source slice per turn rather than per pair. Luminosity
+        reuses the standard wavefront workspace, leaving that path untouched.
+        """
+        function _cuda_pic_interaction_wavefront_node_indexed!(solver::PICPoissonSolver,
+                                                               indexed, rep1, rep2,
+                                                               slices1, slices2,
+                                                               kbb1, kbb2, klum,
+                                                               workspace::_CUDAPICWorkspace,
+                                                               node_cache, timing=nothing,
+                                                               compute_luminosity::Bool=true)
+            valid = Any[item for item in indexed if length(item.idx1) > 0 && length(item.idx2) > 0]
+            isempty(valid) && return zero(eltype(rep1.x))
+            npairs = length(valid)
+            T = eltype(rep1.x)
+            lon = solver.longitudinal_kick
+
+            t_prepare = time_ns()
+            nodes12 = Vector{Any}(undef, npairs)
+            nodes21 = Vector{Any}(undef, npairs)
+            keep = trues(npairs)
+            for n in 1:npairs
+                item = valid[n]
+                i = Int(item.pair.i); j = Int(item.pair.j)
+                nc1 = get!(() -> Dict{Int,Any}(), node_cache, (i, 1))
+                if isempty(nc1)
+                    src = _cuda_pic_extract_slice(rep1, slices1.indices[i], lon)
+                    src === nothing || _cuda_pic_build_node_grids!(
+                        nc1, solver, T, src.coords, slices1.center[i], rep2,
+                        slices2.indices, slices2.boundary, lon)
+                end
+                nc2 = get!(() -> Dict{Int,Any}(), node_cache, (j, 2))
+                if isempty(nc2)
+                    src = _cuda_pic_extract_slice(rep2, slices2.indices[j], lon)
+                    src === nothing || _cuda_pic_build_node_grids!(
+                        nc2, solver, T, src.coords, slices2.center[j], rep1,
+                        slices1.indices, slices1.boundary, lon)
+                end
+                gL1 = get(nc1, j, nothing); gR1 = get(nc1, j + 1, nothing)
+                gL2 = get(nc2, i, nothing); gR2 = get(nc2, i + 1, nothing)
+                if gL1 === nothing || gR1 === nothing || gL2 === nothing || gR2 === nothing
+                    keep[n] = false
+                    continue
+                end
+                c1 = T(item.p1.center); c2 = T(item.p2.center)
+                nodes12[n] = (gL=gL1, gR=gR1,
+                              sL=T(0.5) * (c1 - T(item.p2.lb)),
+                              sR=T(0.5) * (c1 - T(item.p2.rb)))
+                nodes21[n] = (gL=gL2, gR=gR2,
+                              sL=T(0.5) * (c2 - T(item.p1.lb)),
+                              sR=T(0.5) * (c2 - T(item.p1.rb)))
+            end
+            if !all(keep)
+                sel = findall(keep)
+                valid = valid[sel]; nodes12 = nodes12[sel]; nodes21 = nodes21[sel]
+                npairs = length(valid)
+                npairs == 0 && return zero(T)
+            end
+            _cuda_pic_add_time!(timing, :prepare, t_prepare)
+
+            # Reuse the indexed luminosity reduction: it works from slice indices
+            # and computes its own bounds when none are supplied, so no gather is
+            # needed. An earlier version here gathered both slices per pair --
+            # exactly what the indexed route exists to avoid -- and that cost more
+            # than the wavefront batching saved.
+            luminosity = compute_luminosity ?
+                _cuda_pic_wavefront_luminosity_indexed(
+                    solver, valid, rep1, rep2, klum, workspace, timing) :
+                zero(T)
+
+            wf = _cuda_pic_wavefront_node_workspace!(workspace, solver, T, 6 * npairs)
+            field_range = _cuda_nvtx_push(CUDABackend, "pic node wavefront field solve")
+            t_fields = time_ns()
+            phi_batch, Ex_batch, Ey_batch = _cuda_pic_solve_wavefront_fields_node_indexed!(
+                solver, valid, rep1, rep2, nodes12, nodes21, wf, timing,
+            )
+            _cuda_pic_add_time!(timing, :fields, t_fields)
+            _cuda_nvtx_pop(CUDABackend, field_range)
+
+            kick_range = _cuda_nvtx_push(CUDABackend, "pic node wavefront kicks")
+            t_kick = time_ns()
+            stream = CUDA.stream()
+            nx, ny = solver.grid
+            pv(A, k) = @view(A[:, :, k])
+            pp(k) = @view(phi_batch[1:nx, 1:ny, k])
+            for n in 1:npairs
+                item = valid[n]
+                o = 6 * (n - 1)
+                # direction 1: beam-1 slice is the source, beam-2 particles are kicked
+                _cuda_pic_launch_kick_node_indexed!(
+                    solver, rep2, item.idx2, item.p1.center, item.p2, kbb2,
+                    nodes12[n].gL, nodes12[n].gR,
+                    pp(o + 1), pv(Ex_batch, o + 1), pv(Ey_batch, o + 1),
+                    pv(Ex_batch, o + 2), pv(Ey_batch, o + 2), pp(o + 3), stream,
+                )
+                # direction 2
+                _cuda_pic_launch_kick_node_indexed!(
+                    solver, rep1, item.idx1, item.p2.center, item.p1, kbb1,
+                    nodes21[n].gL, nodes21[n].gR,
+                    pp(o + 4), pv(Ex_batch, o + 4), pv(Ey_batch, o + 4),
+                    pv(Ex_batch, o + 5), pv(Ey_batch, o + 5), pp(o + 6), stream,
+                )
+            end
+            CUDA.synchronize(stream)
+            _cuda_pic_add_time!(timing, :kick, t_kick)
+            _cuda_nvtx_pop(CUDABackend, kick_range)
+            return luminosity
+        end
+
         function _cuda_pic_field_task(solver::PICPoissonSolver, source, drift_s, source_grid, green_fft,
                                       charge, timing, stream, prep_done, label)
             return @async CUDA.stream!(stream) do
@@ -1528,7 +1663,7 @@ if _HAS_CUDA
         """
         function _cuda_pic_build_node_grids!(cache::Dict, solver::PICPoissonSolver, ::Type{T},
                                              source, center, rep, slice_indices, boundary,
-                                             longitudinal::Bool) where {T}
+                                             longitudinal::Bool, field_slices=nothing) where {T}
             isempty(cache) || return cache
             nb = length(boundary)
             ns = nb - 1
@@ -1537,9 +1672,13 @@ if _HAS_CUDA
             fxlo = fill(T(Inf), ns); fxhi = fill(T(-Inf), ns)
             fylo = fill(T(Inf), ns); fyhi = fill(T(-Inf), ns)
             for sl in 1:ns
-                item = _cuda_pic_extract_slice(rep, slice_indices[sl], longitudinal)
-                item === nothing && continue
-                co = item.coords
+                co = if field_slices === nothing
+                    item = _cuda_pic_extract_slice(rep, slice_indices[sl], longitudinal)
+                    item === nothing ? nothing : item.coords
+                else
+                    field_slices[sl]
+                end
+                co === nothing && continue
                 fxlo[sl] = T(mapreduce((x, px, z) -> x + px * half * (z - c), min, co.x, co.px, co.z))
                 fxhi[sl] = T(mapreduce((x, px, z) -> x + px * half * (z - c), max, co.x, co.px, co.z))
                 fylo[sl] = T(mapreduce((y, py, z) -> y + py * half * (z - c), min, co.y, co.py, co.z))
@@ -1566,6 +1705,40 @@ if _HAS_CUDA
                             green_fft=_cuda_pic_green_fft(solver, T, sg, fg, nothing, nothing))
             end
             return cache
+        end
+
+        """
+        Build every node mesh for every source slice of one direction, at turn
+        start. See the CPU `_pic_prebuild_node_caches!` for why this must not be
+        lazy: a node mesh depends on all field slices, so building it at "first
+        use" makes it depend on how much of the turn has been applied, which
+        differs between the wavefront batch order and the collision-time order.
+        """
+        function _cuda_pic_prebuild_node_caches!(node_cache::Dict, solver::PICPoissonSolver,
+                                                 ::Type{T}, rep_src, slices_src,
+                                                 rep_fld, slices_fld, dir::Int,
+                                                 longitudinal::Bool) where {T}
+            # Gather every field slice ONCE. The gather does not depend on the
+            # source centre -- only the drift used in the reduction does -- so
+            # gathering inside the per-source-slice loop repeated it N times over.
+            # That redundancy was ~0.77 s/turn at the production point, more than
+            # the entire instrumented interaction.
+            nf = length(slices_fld.center)
+            field_slices = Vector{Any}(undef, nf)
+            for sl in 1:nf
+                item = _cuda_pic_extract_slice(rep_fld, slices_fld.indices[sl], longitudinal)
+                field_slices[sl] = item === nothing ? nothing : item.coords
+            end
+            for i in eachindex(slices_src.center)
+                nc = get!(() -> Dict{Int,Any}(), node_cache, (i, dir))
+                isempty(nc) || continue
+                src = _cuda_pic_extract_slice(rep_src, slices_src.indices[i], longitudinal)
+                src === nothing && continue
+                _cuda_pic_build_node_grids!(nc, solver, T, src.coords, slices_src.center[i],
+                                            rep_fld, slices_fld.indices, slices_fld.boundary,
+                                            longitudinal, field_slices)
+            end
+            return node_cache
         end
 
         """Node mesh for node `b`, building the whole set on first use."""
@@ -1658,6 +1831,104 @@ if _HAS_CUDA
             return nothing
         end
 
+
+        """
+        Indexed node-mode kick for one direction.
+
+        The two transverse planes live on **different** meshes (their own nodes'),
+        while the longitudinal pair `phiL`/`phiZ` shares the left node's mesh --
+        `phi_L - phi_R` is a small difference of large numbers whose
+        discretization error only cancels within one mesh
+        (docs/theory/slice_longitudinal_interpolation.md Section 10.4.1).
+        """
+        @inline function _cuda_pic_apply_indexed_node_kick!(
+            xarr, pxarr, yarr, pyarr, pzarr, zarr, particle,
+            phiL, ExL, EyL, ExR, EyR, phiZ,
+            xL0, yL0, hxL, hyL, xR0, yR0, hxR, hyR,
+            nx::Int32, ny::Int32, method_code::Int32,
+            source_center, field_hzi, field_zbias, kbb, longitudinal::Bool,
+        )
+            hxLi = inv(hxL); hyLi = inv(hyL)
+            hxRi = inv(hxR); hyRi = inv(hyR)
+            kick_scale = 2 * kbb
+            oldpx = pxarr[particle]; oldpy = pyarr[particle]; oldz = zarr[particle]
+            s1 = typeof(source_center)(0.5) * (oldz - source_center)
+            x = xarr[particle] + oldpx * s1
+            y = yarr[particle] + oldpy * s1
+            zL = -oldz * field_hzi + field_zbias
+            zL = min(max(zL, zero(zL)), one(zL))
+            zR = one(zL) - zL
+            KxL, KyL = _cuda_pic_interpolate_field(
+                method_code, x, y, xL0, yL0, hxLi, hyLi, nx, ny,
+                phiL, ExL, EyL, phiL, ExL, EyL, one(zL), zero(zL))
+            KxR, KyR = _cuda_pic_interpolate_field(
+                method_code, x, y, xR0, yR0, hxRi, hyRi, nx, ny,
+                phiL, ExR, EyR, phiL, ExR, EyR, one(zL), zero(zL))
+            newpx = oldpx + kick_scale * (zL * KxL + zR * KxR)
+            newpy = oldpy + kick_scale * (zL * KyL + zR * KyR)
+            s2 = typeof(source_center)(0.5) * (source_center - oldz)
+            xarr[particle] = x + s2 * newpx
+            yarr[particle] = y + s2 * newpy
+            pxarr[particle] = newpx
+            pyarr[particle] = newpy
+            if longitudinal
+                _, _, Kz = _cuda_pic_interpolate_kick(
+                    method_code, x, y, xL0, yL0, hxLi, hyLi, nx, ny,
+                    phiL, ExL, EyL, phiZ, ExL, EyL, one(zL), zero(zL))
+                pz = pzarr[particle] -
+                     typeof(source_center)(0.25) * (oldpx * oldpx + oldpy * oldpy)
+                pz += kick_scale * Kz * field_hzi
+                pzarr[particle] = pz +
+                    typeof(source_center)(0.25) * (newpx * newpx + newpy * newpy)
+            end
+            return nothing
+        end
+
+        function _cuda_pic_kick_node_indexed_kernel!(
+            xarr, pxarr, yarr, pyarr, pzarr, zarr, idx,
+            phiL, ExL, EyL, ExR, EyR, phiZ,
+            xL0, yL0, hxL, hyL, xR0, yR0, hxR, hyR,
+            nx::Int32, ny::Int32, method_code::Int32,
+            source_center, field_hzi, field_zbias, kbb, longitudinal::Bool,
+        )
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            while index <= length(idx)
+                _cuda_pic_apply_indexed_node_kick!(
+                    xarr, pxarr, yarr, pyarr, pzarr, zarr, idx[index],
+                    phiL, ExL, EyL, ExR, EyR, phiZ,
+                    xL0, yL0, hxL, hyL, xR0, yR0, hxR, hyR,
+                    nx, ny, method_code, source_center, field_hzi, field_zbias,
+                    kbb, longitudinal,
+                )
+                index += stride
+            end
+            return nothing
+        end
+
+        function _cuda_pic_launch_kick_node_indexed!(
+            solver::PICPoissonSolver, rep, idx, source_center, param_field, kbb,
+            gL, gR, phiL, ExL, EyL, ExR, EyR, phiZ, stream,
+        )
+            length(idx) == 0 && return nothing
+            T = eltype(rep.x)
+            threads = _cuda_pic_threads(:kick)
+            blocks = cld(length(idx), threads)
+            method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
+            nx, ny = solver.grid
+            hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
+            CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_node_indexed_kernel!(
+                rep.x, rep.px, rep.y, rep.py, rep.pz, rep.z, idx,
+                phiL, ExL, EyL, ExR, EyR, phiZ,
+                T(gL.field_grid.x0), T(gL.field_grid.y0),
+                T(gL.field_grid.width) / T(nx - 1), T(gL.field_grid.height) / T(ny - 1),
+                T(gR.field_grid.x0), T(gR.field_grid.y0),
+                T(gR.field_grid.width) / T(nx - 1), T(gR.field_grid.height) / T(ny - 1),
+                Int32(nx), Int32(ny), method_code,
+                T(source_center), hzi, zbias, T(kbb), solver.longitudinal_kick,
+            )
+            return nothing
+        end
 
         function _cuda_pic_launch_kick_pair_indexed!(
             solver::PICPoissonSolver,
@@ -2017,6 +2288,126 @@ if _HAS_CUDA
                     bounds_host=Array{T}(undef, 12, 2 * max(1, nplanes ÷ 4)),
                 )
             end
+        end
+
+        """
+        Wavefront workspace for node mode: `nplanes = 6 * npairs`, and a Green
+        stack with **one entry per plane** rather than `nplanes / 2`.
+
+        Node mode groups planes non-uniformly -- L and Z share the left node's
+        mesh, R uses the right node's -- so the fixed two-planes-per-Green
+        arithmetic of the slice-pair workspace does not apply. Duplicating the
+        left node's Green into the L and Z slots makes the spectral multiply a
+        1:1 elementwise product and removes the mapping entirely. Its own cache
+        key, so the slice-pair workspace is never disturbed.
+
+        Luminosity arrays are deliberately absent: the node path reuses the
+        standard workspace for luminosity, leaving that code path untouched.
+        """
+        function _cuda_pic_wavefront_node_workspace!(workspace::_CUDAPICWorkspace,
+                                                     solver::PICPoissonSolver,
+                                                     ::Type{T}, nplanes::Integer) where {T}
+            nx, ny = solver.grid
+            return get!(workspace.wavefront_cache, (:node_planes, Int(nplanes))) do
+                (
+                    charges=CUDA.zeros(T, 2nx, 2ny, nplanes),
+                    Ex=CUDA.zeros(T, nx, ny, nplanes),
+                    Ey=CUDA.zeros(T, nx, ny, nplanes),
+                    hx=CUDA.zeros(T, nplanes),
+                    hy=CUDA.zeros(T, nplanes),
+                    green_spectral=CUDA.zeros(Complex{T}, 2nx, 2ny, nplanes),
+                )
+            end
+        end
+
+        """
+        Batched field solve for node mode: six planes per slice pair.
+
+        Layout per pair, `offset = 6 * (n - 1)`:
+
+            +1  dir 1  L  drift sL1  mesh gL1
+            +2  dir 1  R  drift sR1  mesh gR1
+            +3  dir 1  Z  drift sR1  mesh gL1   (longitudinal partner of +1)
+            +4  dir 2  L  drift sL2  mesh gL2
+            +5  dir 2  R  drift sR2  mesh gR2
+            +6  dir 2  Z  drift sR2  mesh gL2
+
+        `hx`/`hy` are filled per plane from the mesh that plane was actually
+        deposited on, and the Green stack likewise.
+        """
+        function _cuda_pic_solve_wavefront_fields_node_indexed!(solver::PICPoissonSolver,
+                                                                valid, rep1, rep2,
+                                                                nodes12, nodes21, wf,
+                                                                timing=nothing)
+            nx, ny = solver.grid
+            npairs = length(valid)
+            nplanes = 6 * npairs
+            T = eltype(rep1.x)
+            charge = wf.charges
+            fill!(charge, zero(T))
+            method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
+            deposit_threads = _cuda_pic_threads(:deposition)
+            stream = CUDA.stream()
+            hx_host = Vector{T}(undef, nplanes)
+            hy_host = Vector{T}(undef, nplanes)
+
+            t_deposit = time_ns()
+            for n in 1:npairs
+                item = valid[n]
+                offset = 6 * (n - 1)
+                d12 = nodes12[n]; d21 = nodes21[n]
+                specs = (
+                    (offset + 1, rep1, item.idx1, d12.sL, d12.gL),
+                    (offset + 2, rep1, item.idx1, d12.sR, d12.gR),
+                    (offset + 3, rep1, item.idx1, d12.sR, d12.gL),
+                    (offset + 4, rep2, item.idx2, d21.sL, d21.gL),
+                    (offset + 5, rep2, item.idx2, d21.sR, d21.gR),
+                    (offset + 6, rep2, item.idx2, d21.sR, d21.gL),
+                )
+                for (plane, rep, idx, drift, g) in specs
+                    _cuda_pic_deposit_drifted_indexed_plane!(
+                        solver, charge, Int32(plane), rep, idx, drift,
+                        g.source_grid, method_code, deposit_threads, stream,
+                    )
+                    hx_host[plane] = T(g.source_grid.width) / T(nx - 1)
+                    hy_host[plane] = T(g.source_grid.height) / T(ny - 1)
+                end
+            end
+            _cuda_pic_add_time!(timing, :field_deposit, t_deposit)
+            copyto!(wf.hx, hx_host)
+            copyto!(wf.hy, hy_host)
+
+            t_green = time_ns()
+            CUDA.stream!(stream) do
+                for n in 1:npairs
+                    offset = 6 * (n - 1)
+                    d12 = nodes12[n]; d21 = nodes21[n]
+                    for (plane, g) in ((offset + 1, d12.gL), (offset + 2, d12.gR),
+                                       (offset + 3, d12.gL), (offset + 4, d21.gL),
+                                       (offset + 5, d21.gR), (offset + 6, d21.gL))
+                        copyto!(@view(wf.green_spectral[:, :, plane]), g.green_fft)
+                    end
+                end
+            end
+            _cuda_pic_add_time!(timing, :green_lookup, t_green)
+
+            t_fft = time_ns()
+            spectral = fft(charge, (1, 2))
+            spectral_threads = _cuda_pic_threads(:spectral)
+            CUDA.@cuda threads=spectral_threads blocks=cld(length(spectral), spectral_threads) stream=stream _cuda_pic_multiply_spectral_perplane_kernel!(
+                spectral, wf.green_spectral,
+            )
+            phi_batch = real(ifft(spectral, (1, 2)))
+            _cuda_pic_add_time!(timing, :field_fft, t_fft)
+
+            t_derivative = time_ns()
+            field_threads = _cuda_pic_threads(:field)
+            CUDA.@cuda threads=field_threads blocks=cld(nx * ny * nplanes, field_threads) stream=stream _cuda_pic_field_wavefront_kernel!(
+                wf.Ex, wf.Ey, phi_batch, wf.hx, wf.hy, Int32(nx), Int32(ny), Int32(nplanes),
+                _pic_fourth_order(solver),
+            )
+            _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
+            return phi_batch, wf.Ex, wf.Ey
         end
 
         function _cuda_pic_solve_wavefront_fields_batched_fft!(solver::PICPoissonSolver,
@@ -2386,34 +2777,9 @@ if _HAS_CUDA
             return nothing
         end
 
-        """
-        Deposit **one** drifted source plane of an indexed slice.
-
-        A dedicated kernel rather than the plane-*pair* one with both slots set
-        equal: that kernel deposits unconditionally twice, so reusing it for a
-        single plane would double the charge.
-        """
-        function _cuda_pic_deposit_drifted_indexed_plane_kernel!(
-            charge, plane::Int32, x, px, y, py, idx, drift,
-            x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32,
-        )
-            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-            stride = CUDA.gridDim().x * CUDA.blockDim().x
-            hxi = inv(hx)
-            hyi = inv(hy)
-            while index <= length(idx)
-                particle = idx[index]
-                _cuda_pic_deposit_point!(
-                    charge, plane,
-                    x[particle] + px[particle] * drift,
-                    y[particle] + py[particle] * drift,
-                    x0, y0, hxi, hyi, nx, ny, method_code,
-                )
-                index += stride
-            end
-            return nothing
-        end
-
+        # NOTE: `_cuda_pic_deposit_drifted_indexed_plane_kernel!` already exists
+        # further down this file; this wrapper reuses it. Do not reuse the
+        # plane-*pair* kernel with both slots set equal -- it deposits twice.
         function _cuda_pic_deposit_drifted_indexed_plane!(
             solver::PICPoissonSolver, charge, plane::Int32,
             source, idx, drift, source_grid,

@@ -56,60 +56,46 @@ derivation: [`docs/theory/slice_longitudinal_interpolation.md`](theory/slice_lon
    All of a source slice's nodes are now built together from one state.
 
    **Remaining gap is the route** -- see 2b.
-2b. **Port `:node` to the CUDA wavefront route — STARTED, primitives landed.**
-   This is the remaining 63% of `:node`'s gap at the production point: route
-   +0.4148 s/turn, against a total gap of 0.66 s (base 0.3408, `:node` 1.0026).
-   `:quadratic` needs the same work.
+2b. ~~**Port `:node` to the CUDA wavefront route.**~~ **DONE (2026-07-26).**
+   `:node` now runs on the indexed wavefront route via its own 6-plane path
+   (`nplanes = 6 * npairs`, L/R/Z per direction), with a per-plane Green stack that
+   removes the fixed two-planes-per-Green arithmetic. All three CUDA routes match
+   CPU at ~6e-16; the sequential batched-FFT sub-route still assumes one mesh per
+   pair and correctly throws.
 
-   **Why it is blocked today.** The wavefront path hardcodes two planes per Green
-   FFT: `nplanes = 4 * npairs`, `green_plane = plane0 / 2 + 1` in
-   `_cuda_pic_multiply_spectral_stack_kernel!`, and `offset = 2 * (n - 1)` in
-   `_cuda_pic_copy_green_spectral_stack!`. Node mode needs **3 planes per
-   slice-pair direction** -- L and Z on the left node's mesh, R on the right
-   node's -- so `nplanes = 6 * npairs` with a *non-uniform* plane -> Green
-   grouping.
+   Measured at the production point, single process, same lattice:
 
-   **Landed (additive, existing 4-plane path untouched, suite green):**
+       config                wall/turn  interaction  fields   lum   outside
+       slice_pair wavefront     0.3238       0.3110  0.1471 0.0243   0.0128
+       node wavefront           0.8097       0.3912  0.2145 0.0909   0.4185
+       node sequential          1.0797       0.6377  0.4298 0.0966   0.4420
 
-   - `_cuda_pic_multiply_spectral_perplane_kernel!` -- 1:1 elementwise spectral
-     multiply. Sidesteps the `plane0 / 2` mapping entirely by having the Green
-     stack carry **one entry per plane**, duplicating the left node's Green into
-     the L and Z slots. Simpler than generalizing the arithmetic.
-   - `_cuda_pic_deposit_drifted_indexed_plane_kernel!` and its wrapper --
-     single-plane deposit. **Do not** reuse
-     `_cuda_pic_deposit_drifted_indexed_plane_pair_kernel!` with both plane slots
-     set equal: it deposits unconditionally twice and would silently double the
-     source charge. That trap cost a debug cycle; the dedicated kernel exists so
-     it cannot recur.
+   The port is worth 25% (0.81 vs 1.08), and node's *interaction* is only 26%
+   above base -- the 6-plane batching is efficient.
 
-   Both are currently unreferenced -- dead code until step 1 below wires them in.
+2c. **Make the node-mesh prebuild cacheable across turns — the whole remaining
+   gap.** `outside` is 0.4185 s/turn for `:node` against 0.0128 s for base: the
+   turn-start prebuild rebuilds **480 Green FFTs of 256x256 every turn**
+   (15 source slices x 16 nodes x 2 directions), while the baseline's slice-pair
+   Green cache persists and costs ~0 after warmup. Everything else is close to
+   parity.
 
-   **Remaining, in order:**
+   **Why a naive persistent cache fails**, and it was tried and measured slower:
+   node meshes are sized from a continuously drifting distribution, so they differ
+   every turn and the cache never hits. **`grid_quantize` is the missing half** --
+   it collapses 225 distinct meshes to 7, so quantized meshes repeat across turns
+   and become cacheable. The two options were designed independently and are
+   complementary; neither delivers this alone.
 
-   1. `_cuda_pic_prepare_interaction_wavefront_node_indexed!` -- per pair per
-      direction, produce **two** meshes (`gL`, `gR`) from
-      `_cuda_pic_build_node_grids!`, plus `sL`/`sR`, instead of the single mesh
-      the slice-pair prep returns.
-   2. `_cuda_pic_solve_wavefront_fields_node_indexed_batched_fft!` --
-      `nplanes = 6 * npairs`; per pair deposit L (drift `sL`, mesh `gL`), R
-      (`sR`, `gR`), Z (`sR`, `gL`) at offsets +1/+2/+3 for direction 1 and
-      +4/+5/+6 for direction 2; fill `wf.hx`/`wf.hy` per plane from the mesh that
-      plane actually used; build the per-plane Green stack and multiply with the
-      new kernel.
-   3. `_cuda_pic_launch_kick_pair_node_indexed!` -- six plane triples and **two**
-      field grids per direction, so the transverse blend reads each node plane on
-      its own mesh while the longitudinal difference reads L and Z on `gL`
-      (see Section 10.4.1 of the theory note for why that pairing is mandatory).
-   4. Workspace: `_cuda_pic_wavefront_workspace!` sized for `6 * npairs` planes,
-      and `green_spectral` sized one entry per plane rather than `nplanes / 2`.
-   5. Relax `_require_cuda_pic_options` to allow `:node` on the wavefront route,
-      and extend the CUDA parity testset to cover it.
+   Plan: store the node cache in the persistent workspace, key entries on the
+   quantized mesh geometry, and reuse the Green FFT on an exact geometry match
+   (not a coverage guard -- that was the earlier failed attempt). Expected to take
+   `:node` from 0.81 to near 0.40 s/turn. Verify: CPU/CUDA parity 1e-11, boundary
+   jump ~1e-9, and a 120-turn production measurement.
 
-   **Acceptance:** CPU/CUDA parity at 1e-11, boundary jump still ~1e-9 in the
-   z-scan, full suite plus all contract gates, and a production re-measurement
-   (2.56M/1.024M, 15 slices, grid 128, 200 turns) against base 0.3408. Do not
-   quote any cost figure from a `collide!`-only benchmark -- every such claim in
-   this work was later inverted.
+   Secondary, 0.067 s: node's luminosity costs 0.0909 against base's 0.0243
+   because `_cuda_pic_wavefront_luminosity_indexed` is called without prepared
+   bounds and recomputes them. The standard path passes bounds from its prepare.
 
 2. ~~**CUDA `slice_interpolation=:quadratic`.**~~ **PARTIALLY DONE
    (2026-07-25)**: implemented on the CUDA sequential, non-batched-FFT route
