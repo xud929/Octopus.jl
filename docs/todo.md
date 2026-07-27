@@ -106,12 +106,37 @@ derivation: [`docs/theory/slice_longitudinal_interpolation.md`](theory/slice_lon
       0.3110 -- the third field solve.
    3. **Unaccounted prebuild, ~0.07 s.**
 
-   **Parity with base is not reachable while `:node` does 3 field solves per
-   slice-pair direction against the baseline's 2.** Removing the third solve means
-   sharing each node's plane between its two adjacent slices (item 4e), which
-   freezes the source between those uses -- a *modelling* change, not an
-   optimization, and it should be decided on physics grounds rather than for the
-   benchmark. Realistic floor without it is roughly 1.5x base.
+   **Correction: parity IS reachable; the 1.5x floor was a mis-count.** Comparing
+   per-pair solve counts (3 vs 2) is the wrong accounting. Per source slice, over
+   all `N` field slices:
+
+       baseline                 2N planes
+       :node, algorithmically   (N+1) node planes + N longitudinal = 2N+1
+       :node, as implemented    3N
+
+   Node planes are **shared between adjacent slices**: `F_R` for slice `s` *is*
+   `F_L` for slice `s+1` -- same node, same drift, same mesh, same source. There
+   are only `N+1` distinct node planes, not `2N`. The implementation recomputes
+   each one twice. So the method needs **one extra solve per source slice** (~3%
+   at N=15), not 50%.
+
+   **Why the third solve exists at all:** node mode has two conflicting
+   requirements. Transverse continuity needs each node's plane read on *that
+   node's* mesh (so adjacent slices agree at their shared boundary); the
+   longitudinal `phi_L - phi_R` needs both values on *one* mesh or its
+   discretization error stops cancelling (measured 20-50% error, and the
+   discrepancy is not a constant -- relative spread 1.51 -- so no gauge fix). The
+   baseline never faces this because it puts every plane of a pair on one mesh,
+   which is exactly why it has the discontinuity.
+
+   **Blocker for sharing (item 4e):** `F_R` computed for slice `s` is one step
+   stale when slice `s+1` uses it, because the source is kicked in between. That
+   is continuity breaker #3, measured at 2.2e-5 (`Dpx`) / 8.1e-5 (`Dpy`) -- an
+   order of magnitude *below* the 1e-3 grid jump `:node` removes. Plausibly a good
+   trade, but it is a **modelling** change to strong-strong self-consistency and
+   should be decided on physics grounds, not for a benchmark. Note that pinning
+   node *meshes* to turn start is geometry and is not the same thing as freezing
+   the field.
 
 2. ~~**CUDA `slice_interpolation=:quadratic`.**~~ **PARTIALLY DONE
    (2026-07-25)**: implemented on the CUDA sequential, non-batched-FFT route

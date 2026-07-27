@@ -785,7 +785,36 @@ error cancellation and the longitudinal jump stays at its usual sawtooth value
 ($0.55-0.65$, i.e. unchanged) rather than being corrupted. That is also why each
 node mesh must cover the *next* node's drift as well as its own.
 
-#### 10.4.2 What is left
+#### 10.4.2 Why three planes, and how many are actually distinct
+
+Node mode has two requirements that conflict. Transverse continuity needs each
+node's plane read on *that node's* mesh, so adjacent slices evaluate their shared
+node identically. The longitudinal $\phi_L-\phi_R$ needs both values on *one*
+mesh, or its discretization error stops cancelling. `:slice_pair` never faces this
+because it puts every plane of a pair on one mesh — which is precisely why it has
+the boundary discontinuity.
+
+Resolving the conflict costs a third plane *per pair*, but not per crossing. Over
+all $N$ field slices of one source slice:
+
+| | planes |
+|---|---|
+| `:slice_pair` | $2N$ |
+| `:node`, distinct planes | $(N+1)$ node $+\;N$ longitudinal $=2N+1$ |
+
+Node planes are **shared between adjacent slices**: $F_R$ for slice $s$ *is* $F_L$
+for slice $s+1$ — same node, same drift, same mesh, same source. There are only
+$N+1$ distinct node planes. So the method costs **one extra solve per source
+slice**, about 3% at $N=15$; an implementation that recomputes each node plane
+twice pays $3N$ instead.
+
+Realizing the saving requires accepting that $F_R$ is one step stale when slice
+$s+1$ reuses it, since the source is kicked between the two pairs — continuity
+breaker #3 of Section 5, measured an order of magnitude below the grid jump node
+removes. That is a modelling choice about strong-strong self-consistency, not an
+optimization.
+
+#### 10.4.3 What is left
 
 With the mesh term removed, the residual discontinuity is continuity breaker #3 of
 Section 5 — the shared node is solved once per adjacent slice and the source is
