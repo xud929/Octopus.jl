@@ -565,6 +565,20 @@ Overrides: `OCTOPUS_CBB_TURNS`, `OCTOPUS_CBB_N_MACRO`, `OCTOPUS_CBB_SOLVERS`
 (comma list from `gaussian,pic,gaussian_pic`). Moment files are written under
 `result/` and overwritten on each run.
 
+**Cross-code anchor (BeamBeam3D).**
+`coherent_beam_beam_modes_beambeam3d.jl` analyzes the same physics case run
+through BeamBeam3D (Qiang, Furman, Ryne — the reference PIC strong-strong
+code, github.com/beam-beam/BeamBeam3D, built from source with gfortran +
+OpenMPI), using the identical spectral estimator on its `fort.24/25/34/35`
+centroid histories. First-run comparison at identical settings (8192 turns,
+100k macroparticles/beam, 128x128 grid, xi = 0.005):
+**BeamBeam3D Lambda = 1.197/1.210 (x/y)** against Octopus PIC 1.199/1.206 and
+GaussianPIC 1.200/1.207 — agreement to ~0.003 in Lambda (~1e-5 in tune, the
+resolution limit of the analysis), with the sigma mode at the bare tune to
+< 4e-6 in both codes. The input deck lives in the BeamBeam3D checkout under
+`coherent_modes/`; the script takes the run directory as an argument or via
+`OCTOPUS_BB3D_RUNDIR`.
+
 ## Gaussian-Subtracted PIC z-Scan
 
 `gaussian_pic_zscan.jl` completes docs/todo.md item 4a: the frozen longitudinal
