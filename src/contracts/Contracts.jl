@@ -3,7 +3,10 @@ export ContractResult, passed, validate,
        KnobEffectivenessContract,
        ElementTrackingBackendConsistencyContract,
        StrongStrongGaussianBackendConsistencyContract,
-       StrongStrongPICBackendConsistencyContract
+       StrongStrongPICBackendConsistencyContract,
+       SymplecticityContract,
+       HighEnergyWeakStrongLimitContract,
+       CoherentModePhysicsContract
 
 """
     ContractResult(passed, message; residual=nothing, metrics=Dict())
@@ -1033,4 +1036,434 @@ function _strong_strong_contract_cuda_cache_history(task)
     length(workspaces) == 1 || error("expected one CUDA PIC workspace")
     cache = only(workspaces).slice_pair_green_cache
     return (cache.hits, cache.misses, cache.rebuilds)
+end
+
+# ---------------------------------------------------------------------------
+# Physics contracts (concrete AbstractPhysicsContract implementations)
+# ---------------------------------------------------------------------------
+
+"""
+    SymplecticityContract(; step=3.0e-7, default_tolerance=5.0e-7, lorentz_angle=0.01)
+
+Finite-difference symplecticity of the six-dimensional runtime maps: for each
+checked element the Jacobian `J` of the map at a reference phase-space point
+must satisfy `norm(J' * S * J - S) <= tol`. Covers the `Symplectic6DMap`
+elements (`Linear6D`, `CrabDispersion`, `MomentumDispersion`, `XYCoupling`,
+`ThinCrabCavity`, `ChromaticityKick`) and the weak-strong beam-beam maps
+(`ThinStrongBeam`, `GaussianStrongBeam`, whose synchro-beam slingshot term
+exists precisely to keep the sliced 6D kick symplectic). Hirata's crossing
+Lorentz maps are checked separately as *quasi*-symplectic: exact inverse
+transformations with Jacobian determinants `sec(angle)^3` / `cos(angle)^3`,
+which must not be judged by `J' * S * J`. The stochastic radiation map is
+intentionally out of scope. Mirrors `validation/symplecticity_validation.jl`.
+
+Reading the residuals: linear maps sit at roundoff (~1e-13) because central
+differences are exact for them; the nonlinear beam-beam kicks sit at ~8e-8 at
+the default step, and a step scan shows that number scales exactly as
+`step^2` (7.9e-10 at 3e-8 through 7.9e-4 at 3e-5) — it is the finite
+difference's truncation error, not the map's defect, which is bounded below
+~1e-9.
+"""
+Base.@kwdef struct SymplecticityContract <: AbstractPhysicsContract
+    step::Float64 = 3.0e-7
+    default_tolerance::Float64 = 5.0e-7
+    lorentz_angle::Float64 = 0.01
+end
+
+description(::Type{SymplecticityContract}) =
+    "Checks finite-difference 6D symplecticity of the runtime maps, including the weak-strong beam-beam kicks."
+
+function _symplectic_form6()
+    S = zeros(Float64, 6, 6)
+    for coordinate in (1, 3, 5)
+        S[coordinate, coordinate + 1] = 1.0
+        S[coordinate + 1, coordinate] = -1.0
+    end
+    return S
+end
+
+function _contract_fd_jacobian6(map, q0, step)
+    q = collect(Float64, q0)
+    jacobian = Matrix{Float64}(undef, 6, 6)
+    for column in 1:6
+        h = step * max(abs(q[column]), 1.0)
+        dq = zeros(Float64, 6)
+        dq[column] = h
+        plus = collect(Float64, map(q .+ dq))
+        minus = collect(Float64, map(q .- dq))
+        jacobian[:, column] .= (plus .- minus) ./ (2h)
+    end
+    return jacobian
+end
+
+function _symplecticity_contract_cases()
+    linear = Linear6D(Linear6DSpec{Float64}(;
+        beta1=(0.8, 0.072, 90.0), beta2=(0.82, 0.075, 91.0),
+        alpha1=(0.0, 0.0, 0.0), alpha2=(0.01, -0.02, 0.0),
+        dmu=(0.08, 0.12, 0.02),
+        zeta1=(0.002, -0.001, 0.0, 0.0), eta1=(0.001, 0.0, -0.001, 0.0),
+        R1=(0.001, -0.0005, 0.0003, 0.0007),
+        zeta2=(0.001, 0.0005, -0.0003, 0.0002),
+        eta2=(-0.0004, 0.0001, 0.0002, -0.0001),
+        R2=(0.0006, 0.0002, -0.0001, 0.0005)))
+    covariance = [
+        1.21e-8   1.0e-9   2.4e-9  -3.0e-10
+        1.0e-9    4.0e-8   2.0e-10  1.5e-9
+        2.4e-9    2.0e-10  6.4e-9  -6.0e-10
+       -3.0e-10   1.5e-9  -6.0e-10  2.25e-8
+    ]
+    thin = ThinStrongBeam(ThinStrongBeamSpec{Float64}(;
+        kbb=1.0e-8, covariance=covariance, center=(2.0e-5, -1.0e-5, 3.0e-4),
+        angle=(3.0e-4, -2.0e-4, 0.0), virtual_drift=:hirata))
+    gaussian = GaussianStrongBeam(GaussianStrongBeamSpec{Float64}(;
+        thin=ThinStrongBeamSpec{Float64}(;
+            kbb=8.0e-9, covariance=covariance, center=(-1.0e-5, 2.0e-5, -2.0e-4),
+            angle=(2.0e-4, -1.0e-4, 0.0), virtual_drift=:hirata),
+        ns=3, sigz=7.0e-3, slice_method=:equal_area))
+    q0 = [4.0e-4, 1.0e-4, -2.0e-4, -1.5e-4, 1.2e-3, 2.0e-4]
+    return (
+        (name=:Linear6D, element=linear, q0=q0, tolerance=5.0e-8),
+        (name=:CrabDispersion,
+         element=CrabDispersion(CrabDispersionSpec{Float64}(
+             zeta1=0.02, zeta2=-0.01, zeta3=0.004, zeta4=0.002)),
+         q0=q0, tolerance=5.0e-8),
+        (name=:MomentumDispersion,
+         element=MomentumDispersion(MomentumDispersionSpec{Float64}(
+             eta1=0.03, eta2=-0.006, eta3=0.002, eta4=0.01)),
+         q0=q0, tolerance=5.0e-8),
+        (name=:XYCoupling, element=XYCoupling(0.01, -0.003, 0.002, 0.004),
+         q0=q0, tolerance=5.0e-8),
+        (name=:ThinCrabCavity,
+         element=ThinCrabCavity{2}(197.0e6; strengthX=(1.0e-5, -2.0e-6),
+             strengthY=(3.0e-6, 0.0), phase=(0.0, 0.2)),
+         q0=q0, tolerance=5.0e-7),
+        (name=:ChromaticityKick,
+         element=ChromaticityKick(ChromaticityKickSpec{Float64}(;
+             xi=(1.2, -0.8), beta=(0.82, 0.075), alpha=(0.01, -0.02),
+             zeta=(0.002, -0.001, 0.0, 0.0), eta=(0.001, 0.0, -0.001, 0.0),
+             R=(0.001, -0.0005, 0.0003, 0.0007))),
+         q0=q0, tolerance=5.0e-6),
+        (name=:ThinStrongBeam, element=thin, q0=q0, tolerance=5.0e-7),
+        (name=:GaussianStrongBeam, element=gaussian, q0=q0, tolerance=5.0e-7),
+    )
+end
+
+function validate(contract::SymplecticityContract; kwargs...)
+    metrics = Dict{Symbol,Any}()
+    S = _symplectic_form6()
+    worst_ratio = 0.0
+    all_passed = true
+    for case in _symplecticity_contract_cases()
+        J = _contract_fd_jacobian6(q -> case.element(q...), case.q0, contract.step)
+        residual = norm(transpose(J) * S * J - S, Inf)
+        tolerance = max(case.tolerance, contract.default_tolerance)
+        metrics[Symbol(case.name, :_residual)] = residual
+        worst_ratio = max(worst_ratio, residual / tolerance)
+        all_passed &= residual <= tolerance
+    end
+
+    # Hirata Lorentz crossing maps: quasi-symplectic pair.
+    q0 = [4.0e-4, 1.0e-4, -2.0e-4, -1.5e-4, 1.2e-3, 2.0e-4]
+    forward = LorentzBoost(contract.lorentz_angle)
+    reverse = RevLorentzBoost(contract.lorentz_angle)
+    forward_det = det(_contract_fd_jacobian6(q -> forward(q...), q0, contract.step))
+    reverse_det = det(_contract_fd_jacobian6(q -> reverse(q...), q0, contract.step))
+    inverse_residual = max(
+        norm(collect(reverse(forward(q0...)...)) .- q0, Inf),
+        norm(collect(forward(reverse(q0...)...)) .- q0, Inf))
+    determinant_error = max(abs(forward_det - sec(contract.lorentz_angle)^3),
+                            abs(reverse_det - cos(contract.lorentz_angle)^3))
+    metrics[:lorentz_inverse_residual] = inverse_residual
+    metrics[:lorentz_determinant_error] = determinant_error
+    lorentz_passed = inverse_residual <= 1.0e-10 && determinant_error <= 2.0e-7
+    all_passed &= lorentz_passed
+
+    message = all_passed ?
+        "All 6D runtime maps are finite-difference symplectic within tolerance; the Lorentz crossing pair is exact-inverse quasi-symplectic." :
+        "A runtime map failed the finite-difference symplecticity check."
+    return ContractResult(all_passed, message; residual=worst_ratio, metrics=metrics)
+end
+
+"""
+    HighEnergyWeakStrongLimitContract(; n_particles=20000, nslices=5, pic_grid=96,
+                                      electron_gev=1.0e100,
+                                      gaussian_atol=2.0e-14,
+                                      gaussian_luminosity_rtol=2.0e-12,
+                                      pic_luminosity_rtol=0.08, pic_size_rtol=0.08)
+
+Verify the high-energy weak-strong limit of the strong-strong collision: with
+the electron energy made effectively infinite, the electron beam must be
+unchanged and the proton beam must receive exactly the frozen-source
+weak-strong kick. The soft-Gaussian solver is held to machine-precision
+agreement with the analytic weak-strong reference (this is the sharp limit
+statement); PIC is held to explicit grid/model-convergence tolerances against
+the same reference. The spectral solvers' high-energy limit remains covered by
+`validation/high_energy_weakstrong_limit.jl`, which this contract mirrors.
+"""
+Base.@kwdef struct HighEnergyWeakStrongLimitContract <: AbstractPhysicsContract
+    n_particles::Int = 20000
+    nslices::Int = 5
+    pic_grid::Int = 96
+    electron_gev::Float64 = 1.0e100
+    gaussian_atol::Float64 = 2.0e-14
+    gaussian_luminosity_rtol::Float64 = 2.0e-12
+    pic_luminosity_rtol::Float64 = 0.08
+    pic_size_rtol::Float64 = 0.08
+end
+
+description(::Type{HighEnergyWeakStrongLimitContract}) =
+    "Checks that the strong-strong collision reduces to the frozen-source weak-strong kick at infinite source energy."
+
+function _wsl_clone_cpu_beam(beam)
+    rep = Phase6DRep((copy(Array(a)) for a in coordinate_arrays(beam.rep))...)
+    return Beam{CPUThreadsBackend,typeof(beam.params),typeof(rep)}(beam.params, rep)
+end
+
+_wsl_mean(values) = sum(values) / length(values)
+
+function _wsl_centered_rms(rep)
+    return [begin
+        center = _wsl_mean(a)
+        sqrt(_wsl_mean(abs2.(a .- center)))
+    end for a in coordinate_arrays(rep)]
+end
+
+_wsl_max_abs(rep_a, rep_b) =
+    maximum(maximum(abs.(Array(a) .- Array(b)))
+            for (a, b) in zip(coordinate_arrays(rep_a), coordinate_arrays(rep_b)))
+
+function _wsl_weakstrong_reference!(source, probe, solver)
+    slices_source = longitudinal_slices(source.rep, solver.slicing1)
+    slices_probe = longitudinal_slices(probe.rep, solver.slicing2)
+    kbb = _strong_strong_kbb2(solver, source, probe)
+    _, klum_probe = _strong_strong_luminosity_scales(solver, source, probe)
+    luminosity = zero(eltype(probe.rep.x))
+    for (_, i, j) in _slice_collision_order(slices_source, slices_probe)
+        moments = _slice_transverse_moments(
+            source.rep, slices_source.indices[i],
+            solver.ignore_centroid1, solver.min_sigma,
+            Val(solver.include_sigma_xy))
+        luminosity += _slice_slice_gaussian_kick!(
+            probe.rep, slices_probe.indices[j],
+            moments, slices_source.center[i],
+            slices_source.weight[i] * kbb,
+            slices_source.weight[i] * klum_probe,
+            solver.min_sigma, solver.virtual_drift,
+            Val(solver.longitudinal_kick), Val(true))
+    end
+    return luminosity
+end
+
+function validate(contract::HighEnergyWeakStrongLimitContract; kwargs...)
+    metrics = Dict{Symbol,Any}()
+    set_global_rng!(seed=0x123456789abcdef, method=:philox)
+    electron = Beam(contract.n_particles, CPUThreadsBackend, Float64;
+        beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0, 0.0),
+        sigma=(106e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=11,
+        charge=-1.0, mc2=EMASS_EV, E0=contract.electron_gev * 1.0e9,
+        r0=RE, npart=1.7203e11)
+    proton = Beam(contract.n_particles, CPUThreadsBackend, Float64;
+        beta=(0.8, 0.072, 6e-2 / 6.6e-4), alpha=(0.0, 0.0, 0.0),
+        sigma=(95e-6, 8.5e-6, 6e-2), cutoff=5.0, rng_id=12,
+        charge=1.0, mc2=PMASS_EV, E0=275e9,
+        r0=RE * ME0 / PMASS_EV, npart=0.6881e11)
+    slicing = LongitudinalSlicing(
+        method=:normal_quantile, nslices=contract.nslices, center_position=:centroid)
+    gaussian = GaussianPoissonSolver(
+        slicing=slicing, virtual_drift=:hirata, include_sigma_xy=false,
+        gaussian_when_luminosity=1, batch_mode=:wavefront)
+    pic = PICPoissonSolver(
+        slicing=slicing, grid=(contract.pic_grid, contract.pic_grid),
+        deposit_method=:CIC, green_type=:integrated, green_cache=:slice_pair,
+        longitudinal_kick=true, batch_mode=:wavefront)
+
+    reference_electron = _wsl_clone_cpu_beam(electron)
+    reference_proton = _wsl_clone_cpu_beam(proton)
+    reference_luminosity = _wsl_weakstrong_reference!(
+        reference_electron, reference_proton, gaussian)
+
+    gaussian_electron = _wsl_clone_cpu_beam(electron)
+    gaussian_proton = _wsl_clone_cpu_beam(proton)
+    gaussian_luminosity = collide!(gaussian, gaussian_electron, gaussian_proton,
+                                   CPUThreadsBackend)
+    pic_electron = _wsl_clone_cpu_beam(electron)
+    pic_proton = _wsl_clone_cpu_beam(proton)
+    pic_luminosity = collide!(pic, pic_electron, pic_proton, CPUThreadsBackend)
+
+    gaussian_proton_error = _wsl_max_abs(gaussian_proton.rep, reference_proton.rep)
+    gaussian_electron_change = _wsl_max_abs(gaussian_electron.rep, electron.rep)
+    gaussian_lum_rel = abs(gaussian_luminosity - reference_luminosity) /
+        max(abs(reference_luminosity), eps(Float64))
+    reference_rms = _wsl_centered_rms(reference_proton.rep)
+    pic_size_rel = maximum(abs.(_wsl_centered_rms(pic_proton.rep) .- reference_rms) ./
+                           max.(reference_rms, eps(Float64)))
+    pic_lum_rel = abs(pic_luminosity - reference_luminosity) /
+        max(abs(reference_luminosity), eps(Float64))
+
+    metrics[:gaussian_proton_max_abs_error] = gaussian_proton_error
+    metrics[:gaussian_electron_max_abs_change] = gaussian_electron_change
+    metrics[:gaussian_luminosity_relative_error] = gaussian_lum_rel
+    metrics[:pic_luminosity_relative_error] = pic_lum_rel
+    metrics[:pic_proton_size_relative_error] = pic_size_rel
+    metrics[:n_particles] = contract.n_particles
+
+    gaussian_passed = gaussian_proton_error <= contract.gaussian_atol &&
+                      gaussian_electron_change <= contract.gaussian_atol &&
+                      gaussian_lum_rel <= contract.gaussian_luminosity_rtol
+    pic_passed = pic_lum_rel <= contract.pic_luminosity_rtol &&
+                 pic_size_rel <= contract.pic_size_rtol
+    passed = gaussian_passed && pic_passed
+    message = passed ?
+        "Strong-strong collisions reduce to the frozen-source weak-strong kick at infinite source energy (soft-Gaussian exact; PIC within model tolerance)." :
+        "The high-energy weak-strong limit failed (soft-Gaussian exactness or PIC model tolerance)."
+    return ContractResult(passed, message;
+                          residual=max(gaussian_proton_error, pic_lum_rel),
+                          metrics=metrics)
+end
+
+"""
+    CoherentModePhysicsContract(; solver=:pic, turns=1024, n_macro=20000,
+                                grid=(64, 64), xi_target=0.005,
+                                offset_sigma=0.1, tune=(0.31, 0.32),
+                                lambda_band=(1.12, 1.30),
+                                sigma_mode_atol=2.0e-4)
+
+Coherent beam-beam mode physics for one solver: two identical round e+ e-
+beams collide at one IP (single slice, rigid linear lattice); beam 1 is
+launched with a small dipole offset; the sigma/pi mode tunes come from
+Hann-windowed FFTs of the sum/difference centroid signals. The contract states
+the *physics*, per plane:
+
+- the sigma mode sits at the bare tune (unshifted for identical beams);
+- the Yokoya factor `Lambda = (Q_pi - Q_sigma)/xi` falls inside the
+  self-consistent Vlasov band (1.2-1.3 at converged settings, round beams at
+  the low end; the default band is widened for the contract's reduced turn
+  count).
+
+`solver` selects what is judged against that physics: `:pic`
+(`PICPoissonSolver`), `:gaussian_pic` (`GaussianPICPoissonSolver`), or
+`:gaussian` (`GaussianPoissonSolver`). The PIC-based solvers pass. The
+soft-Gaussian solver **fails, and is expected to fail**: a moment closure
+cannot carry the pi mode beyond the rigid-bunch value (it measures
+Lambda ~ 1.10, below the Vlasov band) — the pi-mode excess is carried by
+distribution-shape feedback the closure does not represent. The regression
+suite asserts this failure as the documented model limitation; it is a
+statement about the model, not a defect in the solver implementation.
+
+Mirrors `validation/coherent_beam_beam_modes.jl` (full-resolution first run:
+PIC Lambda = 1.199/1.206 x/y, GaussianPIC 1.200/1.207, soft-Gaussian
+1.096/1.101, against the round-beam Vlasov value ~1.2 of Yokoya & Koiso and a
+BeamBeam3D cross-code run at 1.197/1.210). The symmetric configuration is
+essential: the Vlasov band applies to equal beams, tunes, and xi.
+"""
+Base.@kwdef struct CoherentModePhysicsContract <: AbstractPhysicsContract
+    solver::Symbol = :pic
+    turns::Int = 1024
+    n_macro::Int = 20000
+    grid::Tuple{Int,Int} = (64, 64)
+    xi_target::Float64 = 0.005
+    offset_sigma::Float64 = 0.1
+    tune::Tuple{Float64,Float64} = (0.31, 0.32)
+    lambda_band::Tuple{Float64,Float64} = (1.12, 1.30)
+    sigma_mode_atol::Float64 = 2.0e-4
+end
+
+description(::Type{CoherentModePhysicsContract}) =
+    "Checks that a strong-strong solver reproduces the Vlasov-band coherent-mode Yokoya factor (moment closures fail by design)."
+
+function _coherent_fractional_tune(signal)
+    n = length(signal)
+    center = _wsl_mean(signal)
+    w = [0.5 - 0.5 * cospi(2 * (i - 1) / n) for i in 1:n]
+    a = abs.(FFTW.rfft((signal .- center) .* w))
+    interior = 2:(length(a) - 1)
+    k = interior[argmax(view(a, interior))]
+    y1, y2, y3 = a[k - 1], a[k], a[k + 1]
+    denom = y1 - 2y2 + y3
+    delta = denom == 0 ? 0.0 : 0.5 * (y1 - y3) / denom
+    return (k - 1 + delta) / n
+end
+
+function _coherent_mode_lambdas(contract::CoherentModePhysicsContract, kind::Symbol)
+    set_global_rng!(seed=20260727, method=:philox)
+    policy = CPUThreadsExecutionPolicy()
+    beta = (0.55, 0.55, 0.7e-2 / 5.5e-4)
+    sigma = (106.0e-6, 106.0e-6, 0.7e-2)
+    energy = 10.0e9
+    gamma_rel = energy / EMASS_EV
+    r0 = RE * ME0 / EMASS_EV
+    npart = contract.xi_target * 4pi * gamma_rel * sigma[1]^2 / (r0 * beta[1])
+    xi = (npart * r0 * beta[1] / (4pi * gamma_rel * sigma[1]^2),
+          npart * r0 * beta[2] / (4pi * gamma_rel * sigma[2]^2))
+
+    offset1 = (contract.offset_sigma * sigma[1], 0.0,
+               contract.offset_sigma * sigma[2], 0.0, 0.0, 0.0)
+    beam1 = Beam(contract.n_macro, policy, Float64;
+        beta=beta, alpha=(0.0, 0.0, 0.0), sigma=sigma, cutoff=5.0, rng_id=1,
+        charge=-1.0, mc2=EMASS_EV, E0=energy, r0=r0, npart=npart,
+        initial_offset=offset1)
+    beam2 = Beam(contract.n_macro, policy, Float64;
+        beta=beta, alpha=(0.0, 0.0, 0.0), sigma=sigma, cutoff=5.0, rng_id=2,
+        charge=+1.0, mc2=EMASS_EV, E0=energy, r0=r0, npart=npart)
+
+    slicing = LongitudinalSlicing(; method=:normal_quantile, nslices=1,
+                                  center_position=:centroid)
+    solver = if kind === :gaussian
+        GaussianPoissonSolver(; slicing=slicing, longitudinal_kick=false)
+    elseif kind === :pic
+        PICPoissonSolver(; slicing=slicing, grid=contract.grid,
+            deposit_method=:CIC, green_type=:integrated,
+            green_cache=:slice_pair, longitudinal_kick=false)
+    elseif kind === :gaussian_pic
+        GaussianPICPoissonSolver(; slicing=slicing, grid=contract.grid,
+            longitudinal_kick=false)
+    else
+        throw(ArgumentError(
+            "CoherentModePhysicsContract solver must be :pic, :gaussian_pic, " *
+            "or :gaussian; got $(kind)"))
+    end
+    ip = StrongStrongCollision(:ip; poisson_solver=solver)
+    one_turn = Linear6DSpec{Float64}(;
+        beta1=beta, beta2=beta, alpha1=(0.0, 0.0, 0.0), alpha2=(0.0, 0.0, 0.0),
+        dmu=2pi .* (contract.tune[1], contract.tune[2], -0.01))
+    task = StrongStrongTask((ip, one_turn), (ip, one_turn); policy=policy)
+
+    n = contract.turns
+    x1 = Vector{Float64}(undef, n); x2 = Vector{Float64}(undef, n)
+    y1 = Vector{Float64}(undef, n); y2 = Vector{Float64}(undef, n)
+    for t in 1:n
+        execute!(task, beam1, beam2; turns=1)
+        x1[t] = _wsl_mean(beam1.rep.x); x2[t] = _wsl_mean(beam2.rep.x)
+        y1[t] = _wsl_mean(beam1.rep.y); y2[t] = _wsl_mean(beam2.rep.y)
+    end
+    out = Dict{Symbol,Any}()
+    for (plane, c1, c2, q0, xip) in ((:x, x1, x2, contract.tune[1], xi[1]),
+                                     (:y, y1, y2, contract.tune[2], xi[2]))
+        q_sigma = _coherent_fractional_tune(c1 .+ c2)
+        q_pi = _coherent_fractional_tune(c1 .- c2)
+        out[Symbol(plane, :_sigma_drift)] = q_sigma - q0
+        out[Symbol(plane, :_lambda)] = (q_pi - q_sigma) / xip
+    end
+    return out
+end
+
+function validate(contract::CoherentModePhysicsContract; kwargs...)
+    metrics = Dict{Symbol,Any}()
+    result = _coherent_mode_lambdas(contract, contract.solver)
+    metrics[:solver] = contract.solver
+    passed = true
+    worst_drift = 0.0
+    for plane in (:x, :y)
+        lambda = result[Symbol(plane, :_lambda)]
+        drift = result[Symbol(plane, :_sigma_drift)]
+        metrics[Symbol(:lambda_, plane)] = lambda
+        metrics[Symbol(:sigma_drift_, plane)] = drift
+        worst_drift = max(worst_drift, abs(drift))
+        passed &= contract.lambda_band[1] <= lambda <= contract.lambda_band[2]
+    end
+    passed &= worst_drift <= contract.sigma_mode_atol
+    message = passed ?
+        "The $(contract.solver) solver reproduces the Vlasov-band coherent-mode Yokoya factor with the sigma mode unshifted." :
+        "The $(contract.solver) solver does not reproduce the Vlasov-band Yokoya factor (expected for moment-closure solvers: the pi-mode excess over the rigid value requires distribution-shape feedback)."
+    return ContractResult(passed, message; residual=worst_drift, metrics=metrics)
 end

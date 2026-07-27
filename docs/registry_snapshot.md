@@ -141,6 +141,9 @@ constructor names remain the user-facing way to build those specs.
 - `KnobEffectivenessContract`
 - `PublicConfigurationEffectivenessContract`
 - `AbstractPhysicsContract`
+- `CoherentModePhysicsContract`
+- `HighEnergyWeakStrongLimitContract`
+- `SymplecticityContract`
 
 ## Analyses
 

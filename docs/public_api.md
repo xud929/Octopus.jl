@@ -246,6 +246,9 @@ Use Julia help:
 ?StrongStrongGaussianBackendConsistencyContract
 ?StrongStrongPICBackendConsistencyContract
 ?PublicConfigurationEffectivenessContract
+?SymplecticityContract
+?HighEnergyWeakStrongLimitContract
+?CoherentModePhysicsContract
 ?validate
 ?turn_timings
 ```

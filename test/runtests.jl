@@ -2081,6 +2081,30 @@ end
     end
 end
 
+@testset "Physics contracts" begin
+    sym = validate(SymplecticityContract())
+    @test sym.passed
+    @test sym.metrics[:GaussianStrongBeam_residual] <= 5.0e-7
+
+    wsl = validate(HighEnergyWeakStrongLimitContract())
+    @test wsl.passed
+    @test wsl.metrics[:gaussian_proton_max_abs_error] <= 2.0e-14
+    @test wsl.metrics[:pic_luminosity_relative_error] <= 0.08
+
+    # ~1 min: two 1024-turn strong-strong runs. The contract states the
+    # Vlasov-band Yokoya physics per solver: PIC must reproduce it, and the
+    # soft-Gaussian moment closure must FAIL it — that failure is the
+    # documented model limitation, asserted here on purpose (converged
+    # values: PIC 1.20, gaussian 1.10, Vlasov band 1.2-1.3).
+    coh = validate(CoherentModePhysicsContract())          # solver = :pic
+    @test coh.passed
+    gau = validate(CoherentModePhysicsContract(solver=:gaussian))
+    @test !gau.passed
+    @test gau.metrics[:lambda_x] < coh.metrics[:lambda_x]
+    @test gau.metrics[:lambda_y] < coh.metrics[:lambda_y]
+    @test abs(gau.metrics[:sigma_drift_x]) <= 2.0e-4   # closure still gets the sigma mode right
+end
+
 @testset "Strong-strong physical parameter validation" begin
     rep1 = Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0])
     rep2 = Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0])
