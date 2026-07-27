@@ -23,8 +23,12 @@ potential-difference longitudinal kick — `docs/theory/beam_beam_longitudinal_k
   `node_interaction_grid.md`).
 - Production CUDA path (indexed wavefront, batched FFTs): ≈0.3 s/turn at the
   production EIC-like case — 2.56M electron / 1.024M proton macroparticles,
-  15 slices, 128×128 grid — on a workstation RTX 4500 Ada
-  (`docs/history/strong_strong_pic_optimization_history.md`).
+  15 slices, 128×128 grid — on a workstation RTX 4500 Ada. Measured twice,
+  independently: 0.310 s/turn as the post-warm-up steady-state median over the
+  full example beamline
+  (`docs/history/strong_strong_spectral_optimization_history.md`) and
+  0.324 s/turn as the mean over turns 60–120 of a 120-turn run
+  (`docs/todo.md`, CUDA `:node` status).
 - CPU and CUDA agree to tolerance on coordinates, luminosity, and Green-cache
   history, enforced by `StrongStrongPICBackendConsistencyContract`; every
   public solver option is verified to reach its runtime consumer by
@@ -36,12 +40,42 @@ potential-difference longitudinal kick — `docs/theory/beam_beam_longitudinal_k
 - Non-finite coordinates fail fast at the solver chokepoints on both backends,
   with turn/slice/particle identification.
 
-Three further solvers share the same `collide!` interface and serve as
-cross-checks and accuracy tools: the sliced soft-Gaussian (Bassetti-Erskine)
-solver, the spectral sine-series solver (`docs/theory/spectral_sine_poisson_solver.md`),
-and the Gaussian-subtracted PIC hybrid, whose systematic field error at a
-48×48 grid matches plain PIC at 128×128
-(`docs/theory/gaussian_subtracted_pic_solver.md`).
+### Companion solvers
+
+All four strong-strong solvers share the `collide!` interface, the physical
+kick-scale and luminosity conventions, and the synchro-beam longitudinal map;
+`solver_help(SolverType)` lists each one's options. PIC is the production
+workhorse; the other three serve distinct roles:
+
+- **Soft-Gaussian** (`GaussianPoissonSolver`) — the moment-closure reference.
+  Each source slice is represented by its measured transverse Gaussian moments,
+  and each field particle evaluates the exact Bassetti-Erskine field of those
+  moments transported to its own collision point (no boundary-plane
+  interpolation). Three virtual-drift Hamiltonians (`:hirata`, `:chromatic`,
+  `:exact`); an optional fully coupled `σ_xy` branch adds the principal-axis
+  rotation and its longitudinal rotation-derivative term. The fastest solver
+  (fused CUDA wavefront keeps slice moments on the device; ≈0.23 s/turn at the
+  production point) and exact for Gaussian slices — but a moment closure, blind
+  to non-Gaussian intra-slice structure. Own CPU/CUDA contract
+  (`StrongStrongGaussianBackendConsistencyContract`).
+- **Spectral sine-series** (`SpectralPoissonSolver`) — the independent
+  cross-check with orthogonal numerics: a large square Dirichlet box, a double
+  sine-series mode solve, and the exact spectral derivative, with *derived*
+  (not fitted) field scales. `method=:grid` is the fast, CUDA-supported path;
+  `:grid_free` is a CPU-only direct-mode-sum reference. Matches PIC and the
+  analytic kick to ~1% at production settings (the shared macroparticle
+  graininess floor) at ~1.4× PIC cost; recommended flat-beam grid
+  `(127,383)` with `domain_factor=8`
+  (`docs/theory/spectral_sine_poisson_solver.md`).
+- **Gaussian-subtracted PIC hybrid** (`GaussianPICPoissonSolver`) — a
+  control-variate composition of the two approaches: the slice's
+  erf-integrated reference Gaussian is subtracted from the deposited grid, only
+  the residual is FFT-solved, and the exact Bassetti-Erskine field is added
+  back per particle (with an optional coupled/tilted subtraction for flat
+  beams). Its *systematic* field error is nearly grid-independent — the hybrid
+  at 48–64² matches plain PIC at 128² — but shot noise is unchanged, so the
+  gain lives in the coherent field
+  (`docs/theory/gaussian_subtracted_pic_solver.md`).
 
 ## Weak-strong tracking
 
