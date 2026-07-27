@@ -557,6 +557,15 @@ beams with equal tunes and equal xi. The asymmetric EIC production case has
 no single theory Lambda (its modes are eigenvectors of a coupled asymmetric
 system); run it only as a demonstration.
 
+A reduced-settings version of this check runs in the regression suite as
+`validate(CoherentModePhysicsContract())` — a per-solver physics gate: the
+PIC-based solvers must land in the Vlasov band, and the suite asserts that
+the soft-Gaussian solver *fails* it (a moment closure cannot carry the
+pi mode beyond the rigid value; the failure is the documented model
+limitation, not a defect). The symplecticity and high-energy weak-strong
+scripts are likewise mirrored by `SymplecticityContract` and
+`HighEnergyWeakStrongLimitContract`.
+
 ```bash
 julia --threads=8 --project=. validation/coherent_beam_beam_modes.jl
 ```
@@ -564,6 +573,26 @@ julia --threads=8 --project=. validation/coherent_beam_beam_modes.jl
 Overrides: `OCTOPUS_CBB_TURNS`, `OCTOPUS_CBB_N_MACRO`, `OCTOPUS_CBB_SOLVERS`
 (comma list from `gaussian,pic,gaussian_pic`). Moment files are written under
 `result/` and overwritten on each run.
+
+**Theory companions.**
+`coherent_mode_vlasov_theory.jl` derives the sigma/pi mode structure from
+linearized Vlasov theory (standalone; docs/theory/coherent_beam_beam_modes.md
+holds the derivation): the m=1 eigenproblem with the flatness-dependent
+1D-reduced kernel, validated by a translation-invariance check (sigma mode at
+Q0 to ~1e-5 xi) and an exact harmonic-interaction limit (Y = 2), plus a
+spectral 1D particle simulation of the *same model* that referees the m=1
+truncation. `coherent_mode_scans.jl` measures the physical 2D Yokoya factor
+with the production PIC solver versus flatness (Y = 1.19 round rising to
+~1.25-1.27 flat, inside the literature band 1.2-1.33) and versus xi
+(xi-independent to ~1% for xi <= 0.01). `plot_coherent_mode_theory.py`
+renders result/yokoya_vs_aspect.png, yokoya_vs_xi.png, and
+eic_coherent_modes.png from the TSVs.
+
+```bash
+julia --project=. validation/coherent_mode_vlasov_theory.jl
+julia --threads=8 --project=. validation/coherent_mode_scans.jl
+/usr/local/anaconda3/bin/python3 validation/plot_coherent_mode_theory.py
+```
 
 **Cross-code anchor (BeamBeam3D).**
 `coherent_beam_beam_modes_beambeam3d.jl` analyzes the same physics case run

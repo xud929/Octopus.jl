@@ -65,6 +65,13 @@ reference material, not API docs; the implementing code links back to them.
   `GaussianPICPoissonSolver`: control-variate hybrid (analytic Gaussian + PIC
   residual), the `erf` deposition integrals, domain-margin sizing, the coupling
   switch, and measured accuracy (incl. the bi-Gaussian fairness test).
+- [`coherent_beam_beam_modes.md`](theory/coherent_beam_beam_modes.md) — the
+  sigma/pi coherent dipole modes and the Yokoya factor: rigid model,
+  linearized-Vlasov m=1 eigenproblem with the flatness-dependent 1D-reduced
+  kernel (translation/harmonic-limit self-checks), an exact particle referee
+  of the same model that *measures* the truncation error, the measured 2D
+  Y-versus-flatness and Y-versus-xi scans, and the coupled asymmetric
+  (EIC-like) mode analysis.
 
 ## Planning
 
