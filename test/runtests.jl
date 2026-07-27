@@ -2028,6 +2028,29 @@ end
         @test run_once() == 1e-4 + knob_value("t_knob.k1") * 1e-3
         @test run_once() != x_before
 
+        # Element parameters as properties: read, schema-validated assignment,
+        # and post-construction knob binding that reaches an already-built
+        # task through the spec-epoch cache invalidation.
+        bind_spec = ElementSpec{:crab_dispersion}(;
+            zeta1=0.25, zeta2=0.0, zeta3=0.0, zeta4=0.0,
+            tracking_method=Symplectic6DMap())
+        @test bind_spec.zeta1 == 0.25
+        @test :zeta1 in propertynames(bind_spec)
+        @test_throws ArgumentError bind_spec.not_a_param
+        @test_throws ArgumentError (bind_spec.not_a_param = 1.0)
+        bind_task = TrackingTask((bind_spec,); policy=CPUThreadsExecutionPolicy(threads=1))
+        run_bind() = begin
+            rep = Phase6DRep([1e-4], [0.0], [0.0], [0.0], [1e-3], [0.0])
+            execute!(bind_task, rep; turns=1)
+            rep.x[1]
+        end
+        @test run_bind() == 1e-4 + 0.25 * 1e-3
+        bind_spec.zeta1 = @knob_expr(t_knob.k1)
+        @test bind_spec.zeta1 isa KnobRef
+        @test run_bind() == 1e-4 + knob_value("t_knob.k1") * 1e-3
+        bind_spec.zeta1 = 0.125            # plain value update, same route
+        @test run_bind() == 1e-4 + 0.125 * 1e-3
+
         # Native symbolic derivative: chained through the registry, and the
         # product/chain rules against a manual expression.
         d = knob_derivative("t_knob.k1", "t_knob.current")

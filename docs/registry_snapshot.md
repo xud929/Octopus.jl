@@ -171,6 +171,8 @@ constructor names remain the user-facing way to build those specs.
     `knob_dependents`
   - Symbolic layer: `knob_derivative`, `knob_to_expr`/`knob_expression`,
     `knob_symbolic`/`knob_from_symbolic` (optional Symbolics.jl adapter)
+  - Element binding: construction-time (`param=@knob_expr(...)`) or
+    post-construction (`spec.param = @knob_expr(...)`)
   - Runtime consumer: `compile_runtime` via `resolve_knobs`; verified by
     `KnobEffectivenessContract`
 

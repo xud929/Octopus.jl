@@ -636,8 +636,11 @@ Base.show(io::IO, ns::KnobNamespace) =
 """Bind `root` as a `KnobNamespace` constant in `mod` (idempotent); called by
 `@knob` for dotted paths so plain assignment works after declaration."""
 function _ensure_knob_root(root::Symbol, mod::Module)
-    if isdefined(mod, root)
-        b = getglobal(mod, root)
+    # The binding may have been created at runtime by an earlier @knob in the
+    # same function body, i.e. in a newer world than the running method; go
+    # through invokelatest for world-age-correct access (Julia >= 1.12).
+    if Base.invokelatest(isdefined, mod, root)
+        b = Base.invokelatest(getglobal, mod, root)
         b isa KnobNamespace || throw(ArgumentError(
             "cannot bind knob namespace $(root): $(mod).$(root) already names " *
             "a $(typeof(b)); pick a different knob root or rename that binding"))

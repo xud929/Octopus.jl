@@ -39,6 +39,16 @@ an `ElementSpec`; they should not carry arbitrary dictionaries.
 Use friendly constructors such as `ThinCrabCavitySpec(...)` for normal user
 code. Query `element_help(...)`, `parameter_schema(...)`, `example_spec(...)`,
 and `construction_help(...)` when constructing an unfamiliar element kind.
+
+Parameters are readable and assignable as properties: `spec.zeta1` reads a
+stored parameter, and `spec.zeta1 = value` updates it in place — the natural
+way to *bind an existing element to a knob* after construction
+(`spec.zeta1 = @knob_expr(HSR.arc_k1)`). Assignments are validated against the
+element's parameter schema when one is registered (unknown names are typos,
+rejected with the valid list); genuinely new metadata keys go through
+`spec.params[:key] = value`. Every in-place parameter mutation bumps a global
+spec epoch, so tasks already built from this spec recompile their runtime line
+at the next `execute!` — exactly like knob assignment.
 """
 struct ElementSpec{Kind} <: AbstractElementSpec
     params::Dict{Symbol,Any}
@@ -46,6 +56,45 @@ end
 
 ElementSpec{Kind}(; kwargs...) where {Kind} =
     ElementSpec{Kind}(Dict{Symbol,Any}(Symbol(k) => v for (k, v) in pairs(kwargs)))
+
+# Bumped by every in-place ElementSpec parameter mutation; task runtime caches
+# compare it (next to the knob epoch) so a post-construction binding reaches an
+# already-built task at its next execute!.
+const _SPEC_EPOCH = Ref{UInt64}(0)
+_spec_epoch() = _SPEC_EPOCH[]
+
+function Base.getproperty(spec::ElementSpec{Kind}, name::Symbol) where {Kind}
+    name === :params && return getfield(spec, :params)
+    p = getfield(spec, :params)
+    haskey(p, name) || throw(ArgumentError(
+        "ElementSpec{$(repr(Kind))} has no parameter $(name); stored parameters: " *
+        join(sort!(collect(keys(p)); by=string), ", ")))
+    return p[name]
+end
+
+function Base.setproperty!(spec::ElementSpec{Kind}, name::Symbol, value) where {Kind}
+    name === :params && throw(ArgumentError(
+        "params is the ElementSpec storage field; assign individual parameters " *
+        "(spec.zeta1 = ...) instead"))
+    p = getfield(spec, :params)
+    if !haskey(p, name)
+        meta = _element_meta_or_nothing(spec)
+        if meta !== nothing && !isempty(meta.parameters) &&
+           !haskey(meta.parameters, name)
+            throw(ArgumentError(
+                "element kind $(repr(Kind)) has no parameter $(name); valid " *
+                "parameters: " *
+                join(sort!(collect(propertynames(meta.parameters)); by=string), ", ") *
+                ". For a new metadata key, write spec.params[$(repr(name))] = value."))
+        end
+    end
+    p[name] = value
+    _SPEC_EPOCH[] += 1
+    return value
+end
+
+Base.propertynames(spec::ElementSpec, ::Bool=false) =
+    (sort!(collect(keys(getfield(spec, :params))); by=string)..., :params)
 
 """
     ParamMeta(; required=false, unit="", default=nothing, meaning="")

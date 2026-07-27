@@ -154,10 +154,12 @@ Verify that knob control reaches its runtime consumer (`compile_runtime` via
 `resolve_knobs`): a knob-expression element parameter produces identical
 tracking to the directly-parameterized element; assigning an independent input
 (through the `knobs` namespace) recompiles the *same task object* through the
-knob-epoch cache invalidation; a `:knob_resolution` audit receipt is emitted;
-and the definition-time guards fire (unset knob evaluation, dependency cycles,
-and assigning a dependent knob are all rejected). Uses a private
-`__knob_contract__` namespace and removes it afterwards.
+knob-epoch cache invalidation; binding a knob to an element *after
+construction* (`spec.zeta1 = @knob_expr(...)`) reaches an already-built task
+through the spec-epoch cache invalidation; a `:knob_resolution` audit receipt
+is emitted; and the definition-time guards fire (unset knob evaluation,
+dependency cycles, and assigning a dependent knob are all rejected). Uses a
+private `__knob_contract__` namespace and removes it afterwards.
 """
 Base.@kwdef struct KnobEffectivenessContract <: AbstractImplementationContract
     n_particles::Int = 64
@@ -236,6 +238,20 @@ function validate(contract::KnobEffectivenessContract; kwargs...)
         knobs.__knob_contract__.current = 400.0   # namespace assignment => set_knob!
         updated = _contract_coordinate_metrics(run_knob!(), run_reference!(expected(400.0)), 0.0, 0.0)
 
+        # Post-construction binding: a task built from a plainly-parameterized
+        # spec picks up a knob bound afterwards via property assignment (the
+        # spec epoch recompiles its runtime line at the next execute!).
+        bind_spec = ElementSpec{:crab_dispersion}(;
+            zeta1=0.0, zeta2=0.0, zeta3=0.0, zeta4=0.0,
+            tracking_method=Symplectic6DMap())
+        bind_task = TrackingTask((bind_spec,); policy=policy)
+        rep_bind0 = _contract_rep_for_backend(base, CPUThreadsBackend)
+        execute!(bind_task, rep_bind0; turns=1)
+        bind_spec.zeta1 = @knob_expr(__knob_contract__.k1)
+        rep_bind = _contract_rep_for_backend(base, CPUThreadsBackend)
+        execute!(bind_task, rep_bind; turns=1)
+        bound = _contract_coordinate_metrics(rep_bind, run_reference!(expected(400.0)), 0.0, 0.0)
+
         unset_rejected = try
             @knob __knob_contract__.unset
             compile_runtime(ElementSpec{:crab_dispersion}(;
@@ -261,6 +277,7 @@ function validate(contract::KnobEffectivenessContract; kwargs...)
 
         metrics[:initial_max_abs_error] = initial[:max_abs_error]
         metrics[:updated_max_abs_error] = updated[:max_abs_error]
+        metrics[:post_bind_max_abs_error] = bound[:max_abs_error]
         metrics[:knob_resolution_receipt] = receipt_emitted
         metrics[:unset_rejected] = unset_rejected
         metrics[:cycle_rejected] = cycle_rejected
@@ -268,12 +285,14 @@ function validate(contract::KnobEffectivenessContract; kwargs...)
         metrics[:n_particles] = contract.n_particles
 
         ok = initial[:max_abs_error] == 0.0 && updated[:max_abs_error] == 0.0 &&
+             bound[:max_abs_error] == 0.0 &&
              receipt_emitted && unset_rejected && cycle_rejected && dependent_set_rejected
         message = ok ?
-            "Knob expressions reach compiled runtime elements, knob changes recompile them, and definition-time guards fire." :
+            "Knob expressions reach compiled runtime elements, knob changes and post-construction bindings recompile them, and definition-time guards fire." :
             "Knob control did not reach its runtime consumer or a definition-time guard failed."
         return ContractResult(ok, message;
-                              residual=max(initial[:max_abs_error], updated[:max_abs_error]),
+                              residual=max(initial[:max_abs_error], updated[:max_abs_error],
+                                           bound[:max_abs_error]),
                               metrics=metrics)
     finally
         for path in contract_paths

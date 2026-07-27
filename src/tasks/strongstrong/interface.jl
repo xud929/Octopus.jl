@@ -1924,14 +1924,17 @@ function _strong_strong_runtime_blocks(task::StrongStrongTask, which::Integer)
     line = which == 1 ? task.line1 : task.line2
     cached = cache[]
     if cached !== nothing
-        blocks, knob_dependent, epoch = cached
-        # Knob-dependent lines recompile when the knob epoch has moved (see
+        blocks, knob_dependent, kepoch, sepoch = cached
+        # Knob-dependent lines recompile when the knob epoch has moved; any
+        # line recompiles when a spec parameter was mutated in place (see
         # _runtime_entries in Tasks.jl).
-        (!knob_dependent || epoch == knob_epoch()) && return blocks
+        ((!knob_dependent || kepoch == knob_epoch()) && sepoch == _spec_epoch()) &&
+            return blocks
     end
-    epoch = knob_epoch()
+    kepoch = knob_epoch()
+    sepoch = _spec_epoch()
     blocks = _split_strong_strong_line(line)
-    cache[] = (blocks, _has_knob_parameters(line), epoch)
+    cache[] = (blocks, _has_knob_parameters(line), kepoch, sepoch)
     empty!(which == 1 ? task.plan_cache1 : task.plan_cache2)
     return blocks
 end

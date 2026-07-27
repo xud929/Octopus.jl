@@ -85,9 +85,11 @@ pro_crab = ElementSpec{:thin_crab_cavity}(;
 focus = ElementSpec{:crab_dispersion}(;
     zeta1 = @knob_expr(HSR.arc_k1), zeta2 = 0.0, zeta3 = 0.0, zeta4 = 0.0,
     tracking_method = Symplectic6DMap())
+# The other direction also works: define the element first, bind afterwards.
 defocus = ElementSpec{:crab_dispersion}(;
-    zeta1 = @knob_expr(-HSR.arc_k1), zeta2 = 0.0, zeta3 = 0.0, zeta4 = 0.0,
+    zeta1 = 0.0, zeta2 = 0.0, zeta3 = 0.0, zeta4 = 0.0,
     tracking_method = Symplectic6DMap())
+defocus.zeta1 = @knob_expr(-HSR.arc_k1)
 
 # ---------------------------------------------------------------------------
 # Introspection: the registry knows the whole dependency graph statically.

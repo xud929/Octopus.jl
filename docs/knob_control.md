@@ -96,6 +96,25 @@ GPU-compatible, and the kernels are untouched. Each resolution emits a
 `:knob_resolution` execution-audit receipt naming the element kind, epoch, and
 resolved values.
 
+**Binding an existing element.** Element parameters are properties of the
+spec, so an element defined first can be bound to a knob afterwards:
+
+```julia
+q1 = ElementSpec{:crab_dispersion}(; zeta1 = 0.0, zeta2 = 0.0, zeta3 = 0.0,
+    zeta4 = 0.0, tracking_method = Symplectic6DMap())
+q1.zeta1 = @knob_expr(HSR.arc_k1)     # live binding
+```
+
+Property assignment is validated against the element's registered parameter
+schema (unknown names are typos and are rejected with the valid list; new
+metadata keys go through `spec.params[:key] = value`), and every in-place
+parameter mutation bumps a global *spec epoch* that task caches check next to
+the knob epoch — so a binding added after a task was built reaches that task
+at its next `execute!`, exactly like a knob assignment. One trap to know:
+`q1.zeta1 = HSR.arc_k1` (without `@knob_expr`) reads the knob's *current
+value* through the namespace and binds a constant snapshot; only
+`@knob_expr(...)` stores the live expression.
+
 Two consequences to know:
 
 - The **flexible form is required**. The friendly constructors
