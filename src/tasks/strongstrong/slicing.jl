@@ -325,6 +325,11 @@ function _chunk_bounds(n::Int, nchunks::Int, chunk::Int)
 end
 
 function _finish_longitudinal_slices(rep::Phase6DRep, slicing, indices, boundaries)
+    # Earliest non-finite chokepoint: a NaN/Inf z propagates into the boundary
+    # extrema/quantiles of every slicing method, so one O(nslices) check here
+    # covers them all (N1, docs/todo.md).
+    all(isfinite, boundaries) ||
+        _nonfinite_coordinate_error(:beam, (z=rep.z,); context="longitudinal slicing")
     z = _host_array(rep.z)
     T = eltype(z)
     total = length(z)

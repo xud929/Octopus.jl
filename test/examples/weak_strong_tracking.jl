@@ -40,7 +40,8 @@ This file is meant to be a concise precedent for realistic weak-strong tracking:
 4. Place observers/actions in the line when their location matters.
 5. Build `TrackingTask(line)` and execute it with `execute!`.
 
-Outputs are written to `result/`:
+Outputs are written to `test/result/` (this harness keeps its outputs beside
+the tests; the clean `examples/` counterpart writes to the repo-root `result/`):
 
 - `weak_strong.lum`: turn and luminosity values.
 - `weak_strong_moments.h5`: scheduled first- and second-order moments written

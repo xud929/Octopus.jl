@@ -14,7 +14,7 @@ relative_error = |K_pic - K_exact| / max_grid(|K_exact|)
 From the project root:
 
 ```bash
-/cfs/ad/dxu/packages/julias/julia-1.12.4/bin/julia --project=. validation/pic_gaussian_field_validation.jl
+julia --project=. validation/pic_gaussian_field_validation.jl
 ```
 
 Outputs are written under `result/`:

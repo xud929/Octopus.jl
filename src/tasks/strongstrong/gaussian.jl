@@ -30,6 +30,16 @@ function _cpu_gaussian_slice_pair!(solver::GaussianPoissonSolver{T,D,COUPLED,LON
     moments2 = _slice_transverse_moments(
         rep2, slices2.indices[j], solver.ignore_centroid2, solver.min_sigma,
         Val(COUPLED))
+    # Non-finite chokepoint (N1, docs/todo.md): the moment reduction already
+    # scanned every transverse coordinate; a NaN/Inf lands in these O(1) values.
+    _gaussian_moments_finite(moments1) ||
+        _nonfinite_coordinate_error(:source,
+            (x=rep1.x, px=rep1.px, y=rep1.y, py=rep1.py);
+            context="beam 1, slice $(i)")
+    _gaussian_moments_finite(moments2) ||
+        _nonfinite_coordinate_error(:source,
+            (x=rep2.x, px=rep2.px, y=rep2.y, py=rep2.py);
+            context="beam 2, slice $(j)")
     sample_beam1 = solver.gaussian_when_luminosity == 1
     lum2 = _slice_slice_gaussian_kick!(
         rep1, slices1.indices[i], moments2, slices2.center[j],
@@ -76,6 +86,13 @@ function _slice_slice_gaussian_kick!(rep::Phase6DRep, idx::Vector{Int}, moments2
         local_lum[chunk] = lum
     end
     return sum(local_lum) / TWOPI * klum_slice
+end
+
+"""Return whether a slice-moment NamedTuple carries only finite values."""
+@inline function _gaussian_moments_finite(m)
+    return isfinite(m.mx) && isfinite(m.mpx) && isfinite(m.my) && isfinite(m.mpy) &&
+           isfinite(m.sx) && isfinite(m.sy) && isfinite(m.spx) && isfinite(m.spy) &&
+           isfinite(m.covxpx) && isfinite(m.covypy)
 end
 
 @inline _soft_gaussian_covariance(moments) = moments.moments

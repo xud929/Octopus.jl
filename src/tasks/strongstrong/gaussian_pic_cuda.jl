@@ -504,6 +504,13 @@ if _HAS_CUDA
             fxmax = T(mapreduce((x, px, z) -> x + px * half * (z - center), max, field.x, field.px, field.z))
             fymin = T(mapreduce((y, py, z) -> y + py * half * (z - center), min, field.y, field.py, field.z))
             fymax = T(mapreduce((y, py, z) -> y + py * half * (z - center), max, field.y, field.py, field.z))
+            # Non-finite chokepoint (N1, docs/todo.md); see _cuda_pic_prepare_interaction.
+            all(isfinite, (sxmin, sxmax, symin, symax)) ||
+                _nonfinite_coordinate_error(:source,
+                    (x=source.x, px=source.px, y=source.y, py=source.py))
+            all(isfinite, (fxmin, fxmax, fymin, fymax)) ||
+                _nonfinite_coordinate_error(:field,
+                    (x=field.x, px=field.px, y=field.y, py=field.py, z=field.z))
             source_grid, field_grid = _pic_interaction_grids(pic, sxmin, sxmax, symin, symax, fxmin, fxmax, fymin, fymax)
             return (sL=sL, sR=sR, source_grid=source_grid, field_grid=field_grid,
                     green_fft=nothing, bL=bL, bR=bR, mom=mom, do_gauss=do_gauss,

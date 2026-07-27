@@ -609,6 +609,13 @@ if _HAS_CUDA
             smax = max(rms(r1.x), rms(r2.x), rms(r1.y), rms(r2.y))
             emax = max(ext(r1.x), ext(r2.x), ext(r1.y), ext(r2.y))
             L = max(d * smax, 1.05 * emax)
+            if !isfinite(L)
+                all(isfinite, (ext(r1.x), ext(r1.y))) ||
+                    _nonfinite_coordinate_error(:beam, (x=r1.x, y=r1.y);
+                                                context="spectral Dirichlet box, beam 1")
+                _nonfinite_coordinate_error(:beam, (x=r2.x, y=r2.y);
+                                            context="spectral Dirichlet box, beam 2")
+            end
             return L, L
         end
 
@@ -624,6 +631,15 @@ if _HAS_CUDA
             emax = max(extd(r1.x, r1.px), extd(r2.x, r2.px),
                        extd(r1.y, r1.py), extd(r2.y, r2.py))
             L = max(d * smax, 1.05 * emax)
+            if !isfinite(L)
+                all(isfinite, (extd(r1.x, r1.px), extd(r1.y, r1.py), ext(r1.z))) ||
+                    _nonfinite_coordinate_error(:beam,
+                        (x=r1.x, px=r1.px, y=r1.y, py=r1.py, z=r1.z);
+                        context="spectral drifted Dirichlet box, beam 1")
+                _nonfinite_coordinate_error(:beam,
+                    (x=r2.x, px=r2.px, y=r2.y, py=r2.py, z=r2.z);
+                    context="spectral drifted Dirichlet box, beam 2")
+            end
             return L, L
         end
 

@@ -429,6 +429,72 @@ end
     @test all(array -> all(isfinite, array), coordinate_arrays(beam2))
 end
 
+# Deterministic small beam with spread in every coordinate; optionally poison
+# one coordinate of particle 5 with a non-finite value.
+function nonfinite_test_rep(n; poison=nothing, value=NaN)
+    s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+    coords = Dict(
+        :x => s(1.0e-4, 0.0), :px => s(1.0e-5, 0.3),
+        :y => s(1.0e-4, 0.9), :py => s(1.0e-5, 1.2),
+        :z => s(1.0e-2, 2.0), :pz => s(1.0e-4, 2.5),
+    )
+    poison === nothing || (coords[poison][5] = value)
+    return Phase6DRep(coords[:x], coords[:px], coords[:y], coords[:py],
+                      coords[:z], coords[:pz])
+end
+
+function expect_nonfinite_error(f)
+    err = try
+        f()
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test err isa ArgumentError && occursin("non-finite", err.msg)
+    return nothing
+end
+
+@testset "Non-finite coordinates fail fast at solver chokepoints" begin
+    n = 32
+    sl = LongitudinalSlicing(nslices=2, method=:equal_count)
+    pic(; kwargs...) = PICPoissonSolver(; kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+        grid=(16, 16), green_cache=:none, slicing=sl, kwargs...)
+    clean() = test_beam(nonfinite_test_rep(n))
+    bad(field; value=NaN) = test_beam(nonfinite_test_rep(n; poison=field, value=value))
+
+    # PIC, both beams, NaN and Inf, both extent estimators, all interaction grids.
+    expect_nonfinite_error(() -> collide!(pic(), bad(:x), clean(), CPUThreadsBackend))
+    expect_nonfinite_error(() -> collide!(pic(), clean(), bad(:py; value=Inf), CPUThreadsBackend))
+    expect_nonfinite_error(() -> collide!(pic(grid_extent=:sigma), bad(:x), clean(), CPUThreadsBackend))
+    expect_nonfinite_error(() -> collide!(pic(interaction_grid=:node), bad(:px), clean(), CPUThreadsBackend))
+    expect_nonfinite_error(() -> collide!(pic(interaction_grid=:source_slice), clean(), bad(:y), CPUThreadsBackend))
+    # NaN z is caught at the slicing chokepoint, the earliest scan of z.
+    expect_nonfinite_error(() -> collide!(pic(), bad(:z), clean(), CPUThreadsBackend))
+    # Soft-Gaussian solver (moment chokepoint).
+    gaussian = GaussianPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0, slicing=sl)
+    expect_nonfinite_error(() -> collide!(gaussian, bad(:y), clean(), CPUThreadsBackend))
+    # Gaussian-subtracted PIC hybrid.
+    gpic = GaussianPICPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+        grid=(16, 16), green_cache=:none, slicing=sl)
+    expect_nonfinite_error(() -> collide!(gpic, bad(:x; value=Inf), clean(), CPUThreadsBackend))
+    # Spectral solver (Dirichlet-box chokepoint).
+    spectral = SpectralPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+        grid=(16, 16), slicing=sl)
+    expect_nonfinite_error(() -> collide!(spectral, bad(:x), clean(), CPUThreadsBackend))
+
+    # The luminosity-schedule NaN sentinel means "not evaluated this turn" and
+    # must NOT be mistaken for a numerical failure: a skipped turn still applies
+    # finite kicks and returns NaN without throwing.
+    sched = pic(luminosity_schedule=AtTurns([0]))
+    b1 = clean()
+    b2 = clean()
+    lum = collide!(sched, b1, b2, CPUThreadsBackend, TrackingContext(turn=1))
+    @test isnan(lum)
+    @test all(array -> all(isfinite, array), coordinate_arrays(b1))
+    @test all(array -> all(isfinite, array), coordinate_arrays(b2))
+end
+
 @testset "PIC kbb override uses physical units" begin
     function kbb_pair()
         set_global_rng!(seed=42, method=:philox)
@@ -1464,10 +1530,12 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
     end
 
     @testset "CUDA PIC slice_interpolation matches CPU" begin
-        # :quadratic is implemented only on the CUDA sequential, non-batched-FFT
-        # route. Check parity there for both settings, that the flag changes the
-        # CUDA result, and that the routes which cannot carry a third field plane
-        # throw instead of silently dropping it.
+        # :quadratic runs on the sequential non-async route and, via its own
+        # 6-planes-per-pair path, on the batched-FFT routes including the
+        # production indexed wavefront. Check parity for both settings on every
+        # supported route, that the flag changes the CUDA result, and that the
+        # one route which cannot carry a third field plane (non-batched async)
+        # throws instead of silently dropping it.
         mkpair(backend) = begin
             set_global_rng!(seed=31, method=:philox)
             e = Beam(4000, backend, Float64; beta=(0.55, 0.056, 12.0),
@@ -1497,12 +1565,34 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         end
         @test res[:linear_gpu][2] != res[:quadratic_gpu][2]   # flag reaches CUDA
 
-        # Routes that pack two planes per slice-pair direction must refuse it.
-        for (bm, async) in ((:wavefront, false), (:wavefront, true), (:sequential, true))
+        # The batched-FFT routes carry the midpoint plane via their own 6-plane
+        # path (planes L/M/R per direction with a per-plane Green stack). The
+        # production indexed wavefront, the gathered wavefront, and the
+        # sequential batched-FFT sub-route must all match the CPU :quadratic
+        # result.
+        let ref = res[:quadratic_cpu]
+            for kw in ((; batch_mode=:wavefront),
+                       (; batch_mode=:wavefront, cuda_indexed_wavefront=false),
+                       (; batch_mode=:sequential, cuda_async=true))
+                eg, pg = mkpair(CUDAExecutionPolicy())
+                lum = collide!(PICPoissonSolver(; slicing=sl, grid=(32, 32),
+                                                slice_interpolation=:quadratic, kw...),
+                               eg, pg, CUDABackend)
+                @test isapprox(ref[2], flat(eg); rtol=1e-11, atol=1e-14)
+                @test isapprox(ref[3], flat(pg); rtol=1e-11, atol=1e-14)
+                @test isapprox(ref[1], lum; rtol=1e-11)
+            end
+        end
+        # The non-batched async route still carries only two planes per
+        # direction and must refuse :quadratic, as must the non-async wavefront
+        # combination (which never had a third-plane path).
+        for kw in ((; batch_mode=:wavefront, cuda_async=false),
+                   (; batch_mode=:wavefront, cuda_batch_fft=false),
+                   (; batch_mode=:sequential, cuda_async=true, cuda_batch_fft=false))
             e, p = mkpair(CUDAExecutionPolicy())
             @test_throws ArgumentError collide!(
                 PICPoissonSolver(; slicing=sl, grid=(32, 32), slice_interpolation=:quadratic,
-                                 batch_mode=bm, cuda_async=async), e, p, CUDABackend)
+                                 kw...), e, p, CUDABackend)
         end
         # interaction_grid=:source_slice is CPU-only on every CUDA route.
         let (e, p) = mkpair(CUDAExecutionPolicy())
@@ -1787,6 +1877,52 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         @test gaussian_luminosity == 0.0
         @test all(array -> all(isfinite, Array(array)), coordinate_arrays(gaussian_beam1))
         @test all(array -> all(isfinite, Array(array)), coordinate_arrays(gaussian_beam2))
+    end
+
+    @testset "CUDA non-finite coordinates fail fast at solver chokepoints" begin
+        n = 32
+        gpu_rep(; kwargs...) = begin
+            host = nonfinite_test_rep(n; kwargs...)
+            rep = Phase6DRep((Octopus.CUDA.CuArray(a) for a in coordinate_arrays(host))...)
+            params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=n)
+            Beam{Octopus.CUDABackend,typeof(params),typeof(rep)}(params, rep)
+        end
+        sl = LongitudinalSlicing(nslices=2, method=:equal_count)
+        pic(; kwargs...) = PICPoissonSolver(; kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+            grid=(16, 16), green_cache=:none, slicing=sl, kwargs...)
+
+        # All three CUDA PIC routes detect a poisoned coordinate. Previously the
+        # NaN weight flowed into the atomic deposit and poisoned the whole grid.
+        for configuration in (
+                (batch_mode=:wavefront, cuda_indexed_wavefront=true),
+                (batch_mode=:wavefront, cuda_indexed_wavefront=false),
+                (batch_mode=:sequential, cuda_indexed_wavefront=true))
+            expect_nonfinite_error(() -> collide!(
+                pic(; configuration...), gpu_rep(poison=:x), gpu_rep(), Octopus.CUDABackend))
+        end
+        # Node interaction grid (wavefront route).
+        expect_nonfinite_error(() -> collide!(
+            pic(interaction_grid=:node), gpu_rep(poison=:px), gpu_rep(), Octopus.CUDABackend))
+        # NaN z is caught at the slicing chokepoint.
+        expect_nonfinite_error(() -> collide!(
+            pic(), gpu_rep(poison=:z), gpu_rep(), Octopus.CUDABackend))
+        # Soft-Gaussian fused wavefront and sequential routes (moment chokepoints).
+        for mode in (:wavefront, :sequential)
+            gaussian = GaussianPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4,
+                luminosity_scale=1.0, slicing=sl, batch_mode=mode)
+            expect_nonfinite_error(() -> collide!(
+                gaussian, gpu_rep(), gpu_rep(poison=:py, value=Inf), Octopus.CUDABackend))
+        end
+        # Gaussian-subtracted PIC hybrid (indexed wavefront route).
+        gpic = GaussianPICPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+            grid=(16, 16), green_cache=:none, slicing=sl)
+        expect_nonfinite_error(() -> collide!(
+            gpic, gpu_rep(poison=:px), gpu_rep(), Octopus.CUDABackend))
+        # Spectral solver (Dirichlet-box chokepoint).
+        spectral = SpectralPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+            grid=(16, 16), slicing=sl)
+        expect_nonfinite_error(() -> collide!(
+            spectral, gpu_rep(poison=:x), gpu_rep(), Octopus.CUDABackend))
     end
 end
 

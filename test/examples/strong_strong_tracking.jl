@@ -121,11 +121,12 @@ diagnosis:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_PIC_TIMING=1 OCTOPUS_CUDA_PIC_TIMING_DETAIL=1 julia --project=. test/examples/strong_strong_tracking.jl
 
-Output is written to:
+Output is written to `test/result/` (this harness keeps its outputs beside the
+tests; the clean `examples/` counterpart writes to the repo-root `result/`):
 
-- `result/pic_hcc.lum`
-- `result/pic_hcc.ele.h5`
-- `result/pic_hcc.pro.h5`
+- `test/result/pic_hcc.lum`
+- `test/result/pic_hcc.ele.h5`
+- `test/result/pic_hcc.pro.h5`
 =#
 
 if !isdefined(Main, :Octopus)
@@ -662,8 +663,13 @@ println("pic_luminosity_grid = ",
         pic_luminosity_grid === nothing ? input.solver.pic_grid : pic_luminosity_grid)
 println("pic_luminosity_deposit_method = ",
         pic_luminosity_deposit_method === nothing ? "inherit" : pic_luminosity_deposit_method)
-println("pic_luminosity_deposit_method_resolved = ",
-        solver_configuration(solver).resolved_luminosity_deposit_method)
+# Only the PIC-family solvers expose a resolved luminosity deposit method; the
+# spectral and soft-Gaussian configurations have no such field.
+let resolved = solver_configuration(solver)
+    hasproperty(resolved, :resolved_luminosity_deposit_method) &&
+        println("pic_luminosity_deposit_method_resolved = ",
+                resolved.resolved_luminosity_deposit_method)
+end
 println("luminosity = ", disable_luminosity_output ? "disabled" : luminosity_path)
 println("electron moments = ", disable_moments ? "disabled" : electron_moment_path)
 println("proton moments = ", disable_moments ? "disabled" : proton_moment_path)

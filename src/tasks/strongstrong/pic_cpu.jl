@@ -246,7 +246,13 @@ function _pic_union_bounds(source, center, rep, field_indices)
             fymin = min(fymin, yv); fymax = max(fymax, yv)
         end
     end
+    isnan(zmin) && _nonfinite_coordinate_error(:field, (z=rep.z,);
+                                               context="source-slice union bounds")
     isfinite(zmin) || return nothing
+    all(isfinite, (fxmin, fxmax, fymin, fymax)) ||
+        _nonfinite_coordinate_error(:field,
+            (x=rep.x, px=rep.px, y=rep.y, py=rep.py, z=rep.z);
+            context="source-slice union bounds")
     sA = T(0.5) * (c - zmax)
     sB = T(0.5) * (c - zmin)
     sxmin = T(Inf); sxmax = T(-Inf); symin = T(Inf); symax = T(-Inf)
@@ -258,6 +264,10 @@ function _pic_union_bounds(source, center, rep, field_indices)
             symin = min(symin, ya, yb); symax = max(symax, ya, yb)
         end
     end
+    all(isfinite, (sxmin, sxmax, symin, symax)) ||
+        _nonfinite_coordinate_error(:source,
+            (x=source.x, px=source.px, y=source.y, py=source.py);
+            context="source-slice union bounds")
     return ((xmin=sxmin, xmax=sxmax, ymin=symin, ymax=symax),
             (xmin=fxmin, xmax=fxmax, ymin=fymin, ymax=fymax))
 end
@@ -265,20 +275,26 @@ end
 """
     _require_cuda_pic_options(solver)
 
-Route check for the CUDA PIC backend. `slice_interpolation = :quadratic` is
-implemented only on the CUDA *sequential, non-batched-FFT* route, reached with
-`batch_mode = :sequential` and `cuda_async = false`; the wavefront and batched-FFT
-routes pack exactly two field planes per slice-pair direction
-(`nplanes = 4 * npairs`) and would silently drop the midpoint plane.
-`interaction_grid = :source_slice` is CPU-only. Neither may be silently ignored.
+Route check for the CUDA PIC backend. `slice_interpolation = :quadratic` runs on
+the sequential non-async route and on the batched-FFT routes (including the
+production indexed wavefront), which carry the midpoint plane through their own
+6-planes-per-pair path (`nplanes = 6 * npairs`, L/M/R per direction). The one
+unsupported combination is the non-batched *async* route (`cuda_async = true`
+with `cuda_batch_fft = false`), whose four fixed field streams carry exactly two
+planes per direction. `interaction_grid = :source_slice` is CPU-only. Neither
+may be silently ignored.
 """
 function _require_cuda_pic_options(solver::PICPoissonSolver)
     if solver.slice_interpolation !== :linear
-        (Symbol(solver.batch_mode) === :sequential && !solver.cuda_async) || throw(ArgumentError(
+        sequential_ok = Symbol(solver.batch_mode) === :sequential && !solver.cuda_async
+        batched_ok = solver.cuda_async && solver.cuda_batch_fft
+        (sequential_ok || batched_ok) || throw(ArgumentError(
             "slice_interpolation = $(repr(solver.slice_interpolation)) on the CUDA PIC backend " *
-            "requires batch_mode = :sequential and cuda_async = false; the wavefront and " *
-            "batched-FFT routes carry only two field planes per slice-pair direction. Got " *
-            "batch_mode = $(repr(solver.batch_mode)), cuda_async = $(solver.cuda_async)."))
+            "requires batch_mode = :sequential with cuda_async = false, or the batched-FFT " *
+            "routes (cuda_async = true with cuda_batch_fft = true); the non-batched async " *
+            "route carries only two field planes per slice-pair direction. Got " *
+            "batch_mode = $(repr(solver.batch_mode)), cuda_async = $(solver.cuda_async), " *
+            "cuda_batch_fft = $(solver.cuda_batch_fft)."))
     end
     if solver.interaction_grid === :node
         # :node runs on the indexed wavefront route (its own 6-plane path) and on
@@ -433,6 +449,12 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
                                                 sxs, sxs2, 2 * nsource, kext)
     source_ymin, source_ymax = _pic_axis_extent(ge, source_ymin, source_ymax,
                                                 sys, sys2, 2 * nsource, kext)
+    # Non-finite chokepoint (N1, docs/todo.md): a NaN/Inf coordinate propagates
+    # into these O(1) bound values, so this check costs nothing on the hot path.
+    all(isfinite, (source_xmin, source_xmax, source_ymin, source_ymax)) ||
+        _nonfinite_coordinate_error(:source,
+            (x=source.x, px=source.px, y=source.y, py=source.py);
+            context=_pic_slice_context(cache_key))
 
     field_xmin = field_xmax = field.x[1] + T(0.5) * (field.z[1] - T(param_source.center)) * field.px[1]
     field_ymin = field_ymax = field.y[1] + T(0.5) * (field.z[1] - T(param_source.center)) * field.py[1]
@@ -455,6 +477,10 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
                                               fxs, fxs2, nfield, kext)
     field_ymin, field_ymax = _pic_axis_extent(ge, field_ymin, field_ymax,
                                               fys, fys2, nfield, kext)
+    all(isfinite, (field_xmin, field_xmax, field_ymin, field_ymax)) ||
+        _nonfinite_coordinate_error(:field,
+            (x=field.x, px=field.px, y=field.y, py=field.py, z=field.z);
+            context=_pic_slice_context(cache_key))
     if ge !== :extrema
         # :extrema covers every particle by construction; the robust estimators do
         # not, so record what falls outside instead of letting it be dropped
@@ -621,6 +647,16 @@ function _pic_build_node_grids!(cache::Dict, solver::PICPoissonSolver, ::Type{T}
             end
         end
     end
+    # NaN in the node boxes means a non-finite coordinate; +-Inf means an empty
+    # slice (legitimate skip). Distinguish the two: fail fast on NaN.
+    any(v -> any(isnan, v), (sxlo, sxhi, sylo, syhi)) &&
+        _nonfinite_coordinate_error(:source,
+            (x=source.x, px=source.px, y=source.y, py=source.py);
+            context="node-mesh build")
+    any(v -> any(isnan, v), (fxlo, fxhi, fylo, fyhi)) &&
+        _nonfinite_coordinate_error(:field,
+            (x=rep.x, px=rep.px, y=rep.y, py=rep.py, z=rep.z);
+            context="node-mesh build")
     for b in 1:nb
         bn = min(b + 1, nb)
         sxmin = min(sxlo[b], sxlo[bn]); sxmax = max(sxhi[b], sxhi[bn])

@@ -8,7 +8,8 @@ The current code supports:
 - flexible accelerator element specs with constructor help and metadata queries;
 - 6D particle/beam tracking on CPU threads and CUDA;
 - weak-strong and strong-strong beam-beam examples;
-- Gaussian and PIC strong-strong Poisson solvers;
+- four strong-strong Poisson solvers: soft-Gaussian, PIC, spectral sine-series,
+  and the Gaussian-subtracted PIC hybrid;
 - counter-based random numbers for reproducible CPU/GPU tracking;
 - validation scripts for RNG, backend consistency, and PIC field accuracy.
 

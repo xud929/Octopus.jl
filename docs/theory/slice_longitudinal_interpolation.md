@@ -338,7 +338,7 @@ Two properties must be checked, and both hold:
 - The weights sum to zero, $(4t-3)+(4-8t)+(4t-1)=0$, so a uniform additive offset
   in $\phi$ cancels exactly. This is required — the mesh potential carries an
   arbitrary constant, and the existing two-node formula relies on the same
-  cancellation (`pic_cpu.jl:732`).
+  cancellation (`_pic_interpolate_kick` in `src/tasks/strongstrong/pic_cpu.jl`).
 - At $t=\tfrac12$ the weights are $(-1,0,+1)/\Delta$, reproducing
   $2k_{bb}(\phi_L-\phi_R)/\Delta$ exactly. **The current scheme is precisely the
   three-node formula frozen at mid-slice**, which independently confirms the

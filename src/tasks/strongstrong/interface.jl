@@ -382,6 +382,71 @@ solver_help(io::IO, solver) = solver_help(solver; io=io)
 collide!(solver::AbstractPoissonSolver, beam1::Beam, beam2::Beam, backend, ctx::TrackingContext) =
     collide!(solver, beam1, beam2, backend)
 
+"""
+    _nonfinite_coordinate_error(role, coords; context=nothing)
+
+Fail-fast guard for non-finite (`NaN`/`Inf`) particle coordinates in the
+strong-strong solvers.
+
+Detection is keyed on **coordinates**, never on reduction outputs such as the
+luminosity (`NaN` there is the legitimate "not evaluated this turn" schedule
+sentinel). The hot paths pay nothing: the existing grid-bound and moment
+reductions already scan every coordinate and propagate a non-finite value into
+their O(1) results, so callers check those results and reach this function only
+on failure. Here the offending slice is scanned once to identify how many
+particles are non-finite, the first offending index, and its coordinates, and an
+`ArgumentError` naming the collision label, turn, and slice context is thrown.
+
+Fail-fast is the deliberate policy. Quarantining (dropping) particles would be a
+lost-particle concept the solvers do not have: `_pic_kbb1`/`_pic_kbb2` normalize
+by the macroparticle count, so silently removing particles would change the kick
+scale and the luminosity normalization (see `docs/todo.md`).
+
+`coords` is a NamedTuple of same-length coordinate arrays (CPU or CUDA; CUDA
+arrays are copied to host here, on the failure path only). `context` is an
+optional string with slice/beam identification.
+"""
+function _nonfinite_coordinate_error(role::Symbol, coords::NamedTuple{K};
+                                     context=nothing) where {K}
+    host = map(a -> a isa Array ? a : Array(a), coords)
+    n = length(first(host))
+    bad = 0
+    first_index = 0
+    detail = ""
+    for i in 1:n
+        finite = true
+        for name in K
+            finite &= isfinite(host[name][i])
+        end
+        if !finite
+            bad += 1
+            if first_index == 0
+                first_index = i
+                detail = join(("$(name)=$(host[name][i])" for name in K), ", ")
+            end
+        end
+    end
+    ctx = _ACTIVE_PIC_TIMING_CONTEXT[]
+    where_parts = String[]
+    ctx === nothing || push!(where_parts, "collision=$(ctx.label)", "turn=$(ctx.turn)")
+    context === nothing || push!(where_parts, String(context))
+    where_str = isempty(where_parts) ? "" : " (" * join(where_parts, ", ") * ")"
+    throw(ArgumentError(
+        "non-finite particle coordinate(s) detected in the $(role) particles of a " *
+        "strong-strong collision$(where_str): $(bad) of $(n) macroparticles have a " *
+        "non-finite coordinate; first at index $(first_index) with $(detail). " *
+        "Non-finite coordinates cannot be represented on the interaction mesh " *
+        "(they previously poisoned the whole CUDA charge grid through the atomic " *
+        "deposit, or threw an unlocated InexactError on CPU), so the solver fails " *
+        "fast instead. Inspect upstream tracking for the source of the divergence."))
+end
+
+"""Format a slice-pair cache key `(i, j, direction)` as error context."""
+_pic_slice_context(::Nothing) = nothing
+_pic_slice_context(key::Tuple{Int,Int,Int}) =
+    "slice pair ($(key[1]), $(key[2])), direction $(key[3])"
+_pic_slice_context(key::Tuple{Int,Int}) = "slice pair ($(key[1]), $(key[2]))"
+
 # Internal performance thresholds. Below these slice sizes, serial CPU work is
 # usually cheaper than thread scheduling and per-thread reduction overhead.
 const _STRONG_STRONG_PARALLEL_MOMENT_MIN = 4096
@@ -805,6 +870,13 @@ enable it: with `:linear` the longitudinal kick is a discontinuous sawtooth in
 growth. Derivation and error constants are in
 `docs/theory/slice_longitudinal_interpolation.md`; measure with
 `validation/slice_longitudinal_zscan.jl`.
+
+On CUDA, `:quadratic` runs on the sequential non-async route and on the
+batched-FFT routes — including the production indexed wavefront — via a
+6-planes-per-pair path (L/M/R per direction with a per-plane Green stack,
+the same mechanism as `interaction_grid = :node`). The one unsupported CUDA
+combination is the non-batched async route (`cuda_async=true` with
+`cuda_batch_fft=false`), which throws rather than dropping the midpoint plane.
 
 `interaction_grid` controls transverse mesh sizing. `:slice_pair` (default) sizes
 the mesh from each slice pair's own particle bounding box, which is bit-compatible

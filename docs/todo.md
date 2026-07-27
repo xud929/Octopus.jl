@@ -151,16 +151,20 @@ derivation: [`docs/theory/slice_longitudinal_interpolation.md`](theory/slice_lon
    node *meshes* to turn start is geometry and is not the same thing as freezing
    the field.
 
-2. ~~**CUDA `slice_interpolation=:quadratic`.**~~ **PARTIALLY DONE
-   (2026-07-25)**: implemented on the CUDA sequential, non-batched-FFT route
-   (`batch_mode=:sequential`, `cuda_async=false`) with 7.5e-16 CPU parity.
-   **Still open: the wavefront and batched-FFT routes.** They pack two field
-   planes per slice-pair direction (`nplanes = 4 * npairs`, with `÷2`/`÷4` plane
-   arithmetic in the deposit, solve, Green and luminosity kernels) and would need
-   that indexing generalized to three. Until then CUDA `:quadratic` costs **2.87x**
-   the production wavefront default (the supported route is itself 2.48x), so a
-   CUDA user is better off on the CPU path (+5%). This is the main remaining
-   implementation gap.
+2. ~~**CUDA `slice_interpolation=:quadratic`.**~~ **DONE (2026-07-26).**
+   Ported to the batched-FFT routes — the production indexed wavefront, the
+   gathered wavefront, and the sequential batched-FFT sub-route — via an
+   additive 6-planes-per-pair path (L/M/R per direction with a per-plane Green
+   stack, the same mechanism as the `:node` port; the 4-plane functions are
+   untouched). CPU parity 2-4e-11 relative on coordinates and ~5e-16 on
+   luminosity on all three new routes; the sequential non-async route keeps its
+   earlier support. The one remaining unsupported combination is the non-batched
+   async route (`cuda_async=true, cuda_batch_fft=false`), which throws.
+   Measured cost on the indexed wavefront route (640k/256k, 15 slices, grid 128,
+   collision + one-turn maps, mean over turns 11-30): linear 0.137 s/turn,
+   quadratic 0.240 s/turn — **1.75x**, down from the 2.87x a CUDA user paid on
+   the old sequential-only support. The excess over the CPU's +5% is the third
+   solve on a route where field solves dominate the turn.
 3. ~~**Does `:TSC` gain more than `:CIC` from `:quadratic`?**~~ **ANSWERED
    (2026-07-25): emphatically yes, and the two are multiplicative.** `:quadratic`
    gains 5.2x with `:CIC` but **105-188x** with `:TSC`, and the longitudinal
@@ -175,15 +179,25 @@ derivation: [`docs/theory/slice_longitudinal_interpolation.md`](theory/slice_lon
    Conclusion: growth is driven by transverse field noise and mesh discontinuity,
    not by longitudinal reconstruction error. **This retires the premise behind
    the three-node work** — keep `:quadratic` as a field-accuracy tool only.
-5. **Per-turn re-slicing jitter.** Boundaries are rebuilt every turn from the
-   instantaneous distribution, and under `:equal_area` the outermost boundaries
-   are pinned to single extreme macroparticles. This converts a deterministic
-   interpolation error into a fluctuating one. Not yet quantified; the z-scan
-   freezes the slicing by construction and so cannot see it. Given that the two
-   options which *did* move emittance growth are both about field smoothness
-   rather than interpolation order, this is now the most promising untested
-   mechanism. Distinct from the grid-determination program below: that concerns
-   the *transverse* mesh, this concerns the *longitudinal* slice boundaries.
+5. ~~**Per-turn re-slicing jitter.**~~ **QUANTIFIED (2026-07-26)**,
+   `validation/pic_slice_boundary_jitter.jl` (example beams, PIC(64) collision +
+   one-turn maps, 100k macros, 15 slices, 64 turns; std over turns / `sigma_z`):
+
+       boundary set                     equal_area      normal_quantile
+       outermost (z extrema, shared)    0.13-0.17       0.13-0.17
+       internal, mean (electron)        0.0036          0.0022
+       internal, mean (proton)          0.0027          0.00022
+
+   The **extrema-pinned outermost boundaries dominate** by ~40x, exactly as
+   suspected — they modulate the outer slices' widths (and so the longitudinal
+   kick scale `1/(rb-lb)`) by ~15% of `sigma_z` every turn under *both* methods.
+   Internal boundaries: `:normal_quantile` is 1.6x (electron) to 13x (proton)
+   stabler than `:equal_area`. Remaining open question (new): whether pinning the
+   outer boundaries to a robust estimator (e.g. `mu +- k*sigma`, mirroring
+   `grid_extent=:sigma`) moves the emittance-growth measurement; that is an
+   emittance-growth-harness arm, not another jitter measurement. Distinct from
+   the grid-determination program below: that concerns the *transverse* mesh,
+   this concerns the *longitudinal* slice boundaries.
 6. **Duplicate boundary-plane solves** — folded into phase 4 of the
    grid-determination program below, which is what unlocks it.
 
@@ -346,12 +360,22 @@ replaced. **This is the next thing to attack.**
 
 Still open from this phase:
 
-- **4a. Z-scan the hybrid solver** — attempted and **inconclusive**: the quick
-  harness called the raw PIC solve path and never exercised
-  `GaussianPICPoissonSolver`'s control-variate subtraction, so it measured the PIC
-  jump twice. Needs to go through the hybrid's own solve path. The prediction
-  stands untested: the jump should scale with the PIC'd residual, so the hybrid
-  should already show a much smaller one.
+- ~~**4a. Z-scan the hybrid solver**~~ — **DONE (2026-07-26)**,
+  `validation/gaussian_pic_zscan.jl`, this time through the hybrid's own solve
+  path (`_gpic_solve_drifted_field!` + the analytic add-back with production
+  zL/zR blending). Two results. (1) On a **common grid** the hybrid's
+  longitudinal interpolation error and boundary jump **equal pure PIC's** — the
+  analytic term carries the total field's z-curvature, so the reconstruction
+  error is a property of the total field, not of what sits on the mesh.
+  (2) On **per-slice-pair meshes** (identical boxes for both solvers) the
+  mesh-resizing jump falls 2.8x in x but only **1.10x in y**, against the ~11x
+  the residual-fraction argument predicted (`||dQ||/||Q|| = 0.088` at 28k
+  macroparticles/slice). **The prediction is refuted for the flat-beam-critical
+  vertical component**: at these statistics the deposited residual is mostly
+  shot noise, whose mesh dependence does not scale with the smooth-residual
+  amplitude. Consistent with the recurring lesson that systematic field-accuracy
+  gains do not transfer to noise-driven quantities; `:node`/`grid_quantize`
+  remain the discontinuity fixes for the hybrid too.
 - ~~**4d. CUDA `:node`**~~ **DONE (2026-07-26)** on the sequential non-async route
   (`batch_mode=:sequential`, `cuda_async=false`), CPU parity 9.5e-16 and luminosity
   parity 2.7e-16. The wavefront and batched-FFT routes assume one mesh per slice
@@ -375,6 +399,38 @@ and confirm the field error did not degrade while the jump improved.
 
 ## Non-finite coordinate detection (independent task)
 
+**STATUS: DONE (2026-07-26).** N1 and N4 are implemented; N2 is decided
+(fail-fast, not configurable — see below); N3 is closed as redundant.
+
+- **N1 (chokepoint detection):** `isfinite` checks on the O(1) *results* of the
+  reductions that already scan every coordinate — the PIC grid-bound reductions
+  (CPU and every CUDA route, including the indexed-wavefront fused bounds and
+  the node-mesh builds), the slicing boundary extrema/quantiles (the earliest
+  scan of `z`, both backends), the soft-Gaussian slice moments (CPU, CUDA
+  sequential, and a device poison flag folded into the fused wavefront
+  moment-build kernel and read back with the once-per-turn luminosity
+  transfer), the hybrid's margin-box bounds, and the spectral Dirichlet box.
+  Zero hot-path cost; the offending slice is scanned for particle
+  identification only on the failure path. The error names the collision
+  label, turn, slice pair, particle index, and every coordinate of the first
+  offending particle (`_nonfinite_coordinate_error` in
+  `src/tasks/strongstrong/interface.jl`).
+- **N2 (policy):** fail-fast is the policy, deliberately **not** configurable.
+  Quarantine would introduce a lost-particle concept the solvers do not have:
+  `_pic_kbb1`/`_pic_kbb2` normalize by the macroparticle count, so silently
+  dropping particles would change the kick scale and luminosity normalization.
+  A single-value configuration option would be speculative surface (AGENTS.md).
+- **N3 (periodic sweep):** closed as redundant — the chokepoint checks already
+  run every turn for every coordinate that reaches a mesh (`x, px, y, py, z`).
+  The one gap is a non-finite `pz` with all other coordinates finite, which is
+  caught one turn later when the ring map propagates it into `z`.
+- **N4 (tests):** 21 CPU and 18 CUDA assertions in `test/runtests.jl`
+  ("Non-finite coordinates fail fast at solver chokepoints") cover every
+  solver, every CUDA route, `NaN` and `Inf`, both beams, and verify the
+  luminosity-schedule `NaN` sentinel is not mistaken for a failure.
+
+Original analysis retained below for the record.
+
 Nothing in tracking or the Poisson solvers checks for `NaN`/`Inf` coordinates, and
 the two backends disagree about what happens when one appears. This is a
 correctness-and-safety item in its own right, but it should land **with phase 1 of
@@ -382,7 +438,7 @@ the grid-determination program**, because both are the same question — what to
 with a particle that is not representable on the mesh — and both live in the same
 deposition code path.
 
-**What happens today**
+**What happens today (pre-fix)**
 
 - **CUDA silently poisons.** `_cuda_pic_cic_weights` clamps `base` into
   `[1, n-1]`, so there is no out-of-bounds write; but the weight

@@ -610,6 +610,16 @@ function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2)
     smax = max(rms(x1), rms(x2), rms(y1), rms(y2))
     emax = max(ext(x1), ext(x2), ext(y1), ext(y2))
     L = max(d * smax, 1.05 * emax)
+    # Non-finite chokepoint (N1, docs/todo.md): NaN/Inf coordinates propagate into
+    # the box size; out-of-box particles are silently dropped by the Dirichlet
+    # deposit, so fail fast here instead.
+    if !isfinite(L)
+        all(isfinite, (ext(x1), ext(y1))) ||
+            _nonfinite_coordinate_error(:beam, (x=x1, y=y1);
+                                        context="spectral Dirichlet box, beam 1")
+        _nonfinite_coordinate_error(:beam, (x=x2, y=y2);
+                                    context="spectral Dirichlet box, beam 2")
+    end
     return L, L
 end
 
@@ -632,6 +642,15 @@ function _spectral_box_drifted(solver::SpectralPoissonSolver, rep1, rep2)
     emax = max(extd(rep1.x, rep1.px), extd(rep2.x, rep2.px),
                extd(rep1.y, rep1.py), extd(rep2.y, rep2.py))
     L = max(d * smax, 1.05 * emax)
+    if !isfinite(L)
+        all(isfinite, (extd(rep1.x, rep1.px), extd(rep1.y, rep1.py), ext(rep1.z))) ||
+            _nonfinite_coordinate_error(:beam,
+                (x=rep1.x, px=rep1.px, y=rep1.y, py=rep1.py, z=rep1.z);
+                context="spectral drifted Dirichlet box, beam 1")
+        _nonfinite_coordinate_error(:beam,
+            (x=rep2.x, px=rep2.px, y=rep2.y, py=rep2.py, z=rep2.z);
+            context="spectral drifted Dirichlet box, beam 2")
+    end
     return L, L
 end
 

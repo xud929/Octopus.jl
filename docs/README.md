@@ -63,10 +63,11 @@ reference material, not API docs; the implementing code links back to them.
 ## Planning
 
 - [`todo.md`](todo.md) — the single forward-looking plan (open items and
-  implementation/validation/performance plans per solver). Current programs:
-  the interaction-grid determination program (phases 0-4 complete: extent
-  estimation, out-of-range safety, quantization, node indexing) and non-finite
-  coordinate detection.
+  implementation/validation/performance plans per solver). The interaction-grid
+  determination program (phases 0-4), non-finite coordinate detection, and the
+  CUDA `:quadratic` wavefront port are complete; the leading open threads are
+  the outer-boundary re-slicing jitter (now quantified) and the remaining CUDA
+  `:node` performance budget.
 
 ## Development history and records (`history/`)
 
@@ -94,7 +95,13 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   [`poisson_solver_review_2026_07_24.md`](history/poisson_solver_review_2026_07_24.md)
   (full review of all four Poisson solvers: consistency audit, theory
   re-derivation, open-source comparison, per-phase profiling, 200-turn production
-  runs, and error analysis).
+  runs, and error analysis),
+  [`full_review_2026_07_26.md`](history/full_review_2026_07_26.md)
+  (line-by-line source review of the whole tree, theory re-derivation of every
+  code-facing formula, cross-file consistency audit and fixes, full
+  contract/test run, plus four completed todo items: non-finite fail-fast
+  detection, the CUDA `:quadratic` batched-route port, the re-slicing jitter
+  quantification, and the corrected hybrid z-scan).
 
 ## Where other documentation lives
 

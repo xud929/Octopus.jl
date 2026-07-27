@@ -62,7 +62,7 @@ universal pass/fail tolerance.
 
 The implemented `PICPoissonSolver` optimizations (Green-FFT reuse, workspace
 buffers, slice-pair Green cache, CUDA overlap/compact/indexed paths) are recorded
-in `../docs/history/strong_strong_pic_optimization_history.md`; open items are in `docs/todo.md`.
+in `../docs/history/strong_strong_pic_optimization_history.md`; open items are in `../docs/todo.md`.
 
 ## Gaussian-Subtracted PIC Field
 
@@ -325,8 +325,10 @@ compares the soft-Gaussian strong-strong collision to an explicit frozen-source
 weak-strong reference, compares PIC to the same reference with grid/model
 tolerances, and verifies that spectral grid and grid-free strong-strong maps
 collapse to frozen-source spectral weak-strong references. The spectral grid
-default is the production flat-beam setting `(128,1024)`; the grid-free direct
-reference defaults to `(48,48)`. Set `OCTOPUS_HIGH_ENERGY_SPECTRAL_CUDA=1` to
+default is `(128,1024)` (the earlier flat-beam setting; the currently
+recommended production grid is `(127,383)` with `domain_factor=8`, see
+`?SpectralPoissonSolver`); the grid-free direct reference defaults to
+`(48,48)`. Set `OCTOPUS_HIGH_ENERGY_SPECTRAL_CUDA=1` to
 also check the CUDA spectral grid path when CUDA is functional.
 
 ```bash
@@ -499,6 +501,60 @@ julia --threads=4 --project=. validation/pic_grid_extent_stability.jl
 ```
 
 Outputs `result/pic_grid_extent_stability.tsv`.
+
+## PIC Slice Boundary Jitter
+
+`pic_slice_boundary_jitter.jl` quantifies the per-turn re-slicing jitter of the
+longitudinal slice boundaries (docs/todo.md, slice-interpolation item 5): the
+boundaries are rebuilt every turn from the instantaneous z distribution, so a
+deterministic interpolation error becomes a fluctuating one — a mechanism the
+frozen-slicing z-scan cannot see. The strong-strong example beams are tracked
+through a PIC collision plus one-turn maps, and every boundary/center is
+recorded each turn under both `:equal_area` and `:normal_quantile` slicing.
+
+The error metric is the standard deviation over turns divided by the beam z
+rms. First-run headline (100k macroparticles, 15 slices, 64 turns): the
+**outermost boundaries** — pinned to single extreme macroparticles — jitter at
+**0.13–0.17 sigma_z** turn-to-turn under both methods, while the internal
+boundaries jitter at ~0.003 sigma_z under `:equal_area` and 1.6x (electron
+beam) to 13x (proton beam) less under `:normal_quantile`.
+
+```bash
+julia --threads=8 --project=. validation/pic_slice_boundary_jitter.jl
+```
+
+Overrides: `OCTOPUS_JITTER_NPART`, `OCTOPUS_JITTER_TURNS`,
+`OCTOPUS_JITTER_NSLICES`, `OCTOPUS_JITTER_GRID`, `OCTOPUS_JITTER_SEED`.
+Outputs `result/pic_slice_boundary_jitter.tsv`.
+
+## Gaussian-Subtracted PIC z-Scan
+
+`gaussian_pic_zscan.jl` completes docs/todo.md item 4a: the frozen longitudinal
+z-scan through the hybrid solver's **own** solve path
+(`_gpic_solve_drifted_field!`: deposit, erf Gaussian subtraction, residual
+Green-FFT solve, plus the analytic Bassetti-Erskine add-back blended with the
+production zL/zR weights). The earlier attempt used the raw PIC path and never
+exercised the control variate.
+
+First-run results (grid 64, CIC, 7 slices, 200k macroparticles), transverse
+components: on one **common grid** the hybrid's longitudinal interpolation
+error and boundary jump equal pure PIC's — the analytic term carries the full
+field's z-curvature, so the reconstruction error is a property of the total
+field. On **per-slice-pair meshes** (identical boxes for both solvers,
+including the hybrid margin) the mesh-resizing jump falls by 2.8x in x but only
+**1.10x in y**, against the ~11x the residual-fraction argument predicted: the
+deposited residual (`||dQ||/||Q|| = 0.088` here) is mostly shot noise at these
+statistics, and the noise field's mesh dependence does not scale with the
+smooth-residual amplitude. The prediction is therefore **refuted for the
+flat-beam-critical vertical component**.
+
+```bash
+julia --threads=4 --project=. validation/gaussian_pic_zscan.jl
+```
+
+Overrides: `OCTOPUS_GPIC_ZSCAN_NPART`, `OCTOPUS_GPIC_ZSCAN_GRID`,
+`OCTOPUS_GPIC_ZSCAN_NSLICES`, `OCTOPUS_GPIC_ZSCAN_DEPOSIT`.
+Outputs `result/gaussian_pic_zscan_summary.tsv`.
 
 ## PIC Option Consistency and Cost
 

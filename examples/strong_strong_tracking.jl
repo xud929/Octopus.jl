@@ -149,8 +149,9 @@ slicing = LongitudinalSlicing(;
 )
 
 # ---------------------------------------------------------------------------
-# Poisson solver. All strong-strong solvers share the common keywords
-# (`slicing`, `longitudinal_kick`, `grid`, `kbb1`/`kbb2`, ...); see
+# Poisson solver. All strong-strong solvers share the common keywords where the
+# role applies (`slicing`, `longitudinal_kick`, `kbb1`/`kbb2`, and `grid` for
+# the mesh-based solvers; the soft-Gaussian solver is grid-free); see
 # `?AbstractPoissonSolver`. PIC is used here; alternatives are commented below.
 # ---------------------------------------------------------------------------
 solver = PICPoissonSolver(;

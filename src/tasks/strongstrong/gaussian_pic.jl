@@ -565,6 +565,11 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
         source_xmin = min(source_xmin, gxlo); source_xmax = max(source_xmax, gxhi)
         source_ymin = min(source_ymin, gylo); source_ymax = max(source_ymax, gyhi)
     end
+    # Non-finite chokepoint (N1, docs/todo.md); see _pic_interaction!.
+    all(isfinite, (source_xmin, source_xmax, source_ymin, source_ymax)) ||
+        _nonfinite_coordinate_error(:source,
+            (x=source.x, px=source.px, y=source.y, py=source.py);
+            context=_pic_slice_context(cache_key))
 
     # Field particles: drift to the collision point (identical to PIC).
     field_xmin = field_xmax = field.x[1] + T(0.5) * (field.z[1] - T(param_source.center)) * field.px[1]
@@ -579,6 +584,10 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
         field_xmin = min(field_xmin, field.x[i]); field_xmax = max(field_xmax, field.x[i])
         field_ymin = min(field_ymin, field.y[i]); field_ymax = max(field_ymax, field.y[i])
     end
+    all(isfinite, (field_xmin, field_xmax, field_ymin, field_ymax)) ||
+        _nonfinite_coordinate_error(:field,
+            (x=field.x, px=field.px, y=field.y, py=field.py, z=field.z);
+            context=_pic_slice_context(cache_key))
 
     source_grid0, field_grid0 = _pic_interaction_grids(
         pic, source_xmin, source_xmax, source_ymin, source_ymax,

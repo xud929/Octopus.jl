@@ -7,7 +7,8 @@ synchronization at each boundary. The first 20 of 30 turns are warm-up; the
 last 10 are the primary steady-state sample.
 
 Inputs are the fixed defaults below and may be overridden with the same
-environment variables accepted by `examples/strong_strong_tracking.jl`.
+environment variables accepted by `test/examples/strong_strong_tracking.jl`
+(the clean `examples/` counterpart reads no environment variables).
 Outputs are the printed physics summary and `result/pic_extreme_turn_times.tsv`.
 
 Run from the project root:

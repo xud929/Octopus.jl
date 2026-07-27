@@ -70,7 +70,8 @@ julia --project=. validation/slice_interpolation_emittance_growth_summary.jl
 ```
 
 Overrides: `OCTOPUS_EMIT_SCHEME` (`linear`/`quadratic`), `OCTOPUS_EMIT_NSLICES`,
-`OCTOPUS_EMIT_DEPOSIT` (`CIC`/`TSC`), `OCTOPUS_EMIT_SEED`, `OCTOPUS_EMIT_TURNS`,
+`OCTOPUS_EMIT_DEPOSIT` (`CIC`/`TSC`), `OCTOPUS_EMIT_GRIDMODE`
+(`slice_pair`/`source_slice`/`node`), `OCTOPUS_EMIT_SEED`, `OCTOPUS_EMIT_TURNS`,
 `OCTOPUS_EMIT_NPART`, `OCTOPUS_EMIT_GRID`, `OCTOPUS_EMIT_TAG`.
 
 Outputs (under `result/`)

@@ -272,7 +272,8 @@ By default PIC applies the transverse kick, the potential-difference
 longitudinal kick, and the matching virtual-drift `pz` terms used by the
 Hirata-map form of the PIC algorithm. Set
 `PICPoissonSolver(longitudinal_kick=false)`, or
-`OCTOPUS_PIC_LONGITUDINAL_KICK=0` in the strong-strong example, to use a
+`OCTOPUS_PIC_LONGITUDINAL_KICK=0` in the strong-strong test harness
+(`test/examples/strong_strong_tracking.jl`), to use a
 transverse-only map.
 `PICPoissonSolver(batch_mode=:wavefront)` is the default slice-pair schedule
 and groups ready, non-overlapping
@@ -287,7 +288,7 @@ luminosity only on scheduled turns while still applying beam-beam kicks every
 turn. Use `AtTurns(Int[])` to disable luminosity computation. Skipped
 luminosity evaluations return `NaN` internally, but `StrongStrongTask` omits
 those turns from its luminosity file. An evaluated result that is genuinely
-`NaN` is still written. In `examples/strong_strong_tracking.jl`, use
+`NaN` is still written. In `test/examples/strong_strong_tracking.jl`, use
 `OCTOPUS_PIC_LUMINOSITY_EVERY=N`; `0` disables luminosity computation.
 PIC luminosity deposits both slices at their common centroid plane and
 evaluates `sum(Q1 .* Q2) / (hx * hy)`. Set
@@ -371,7 +372,8 @@ reuse defaults are `slice_pair_green_min_ratio=0.50` and
 `slice_pair_green_growth=0.25`, matching the July 2026 long-run timing tests
 that kept rebuilds low. Define them directly in the solver, for example
 `PICPoissonSolver(green_cache=:slice_pair, slice_pair_green_min_ratio=0.50,
-slice_pair_green_growth=0.20)`. The strong-strong example also maps
+slice_pair_green_growth=0.20)`. The strong-strong test harness
+(`test/examples/strong_strong_tracking.jl`) also maps
 `OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO` and
 `OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH` into these constructor keywords for
 command-line convenience. Use
@@ -403,7 +405,7 @@ kernels and reuse fixed-size PIC grid work buffers within a collision.
 Stream/event ordering replaces the previous global synchronization before
 launching independent field solves. Set
 `PICPoissonSolver(cuda_async=false)` to use the sequential CUDA PIC path.
-Set `OCTOPUS_PIC_BATCH_MODE=wavefront` in the strong-strong example to run the
+Set `OCTOPUS_PIC_BATCH_MODE=wavefront` in the strong-strong test harness to run the
 CUDA PIC wavefront scheduler, or pass `batch_mode=:wavefront` directly to
 `PICPoissonSolver`.
 CUDA PIC performs adaptive CUDA memory-pool cleanup for temporary arrays. By
