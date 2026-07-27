@@ -527,6 +527,44 @@ Overrides: `OCTOPUS_JITTER_NPART`, `OCTOPUS_JITTER_TURNS`,
 `OCTOPUS_JITTER_NSLICES`, `OCTOPUS_JITTER_GRID`, `OCTOPUS_JITTER_SEED`.
 Outputs `result/pic_slice_boundary_jitter.tsv`.
 
+## Coherent Beam-Beam Modes (sigma/pi Split, Yokoya Factor)
+
+`coherent_beam_beam_modes.jl` is the community-standard physics acceptance
+test for strong-strong field solvers: two identical round e+e- beams collide
+at one IP (single slice, no crossing angle, rigid linear lattice), beam 1 is
+launched with a 0.1-sigma dipole offset, and the sigma/pi coherent mode tunes
+are extracted from 8192-turn centroid FFTs (sum and difference signals,
+Hann-windowed, interpolated peaks). The Yokoya factor
+`Lambda = (Q_pi - Q_sigma)/xi` discriminates how much self-consistent
+distribution dynamics the solver captures: rigid/moment-closure models
+underestimate it (rigid = 1), while the Vlasov value is 1.2-1.3 depending on
+the beam-size aspect ratio, with round beams at ~1.2 (Yokoya & Koiso, Part.
+Accel. 27 (1990) 181; Herr & Pieloni, arXiv:1601.05235; same method as the
+RHIC BeamBeam3D studies, arXiv:1410.5623).
+
+First-run headline (8192 turns, 100k macroparticles/beam, xi = 0.005,
+Qx/Qy = 0.31/0.32): the sigma mode sits at the bare tune to < 4e-6 in every
+run; the soft-Gaussian solver gives **Lambda = 1.096/1.101** (x/y, the
+moment-closure underestimate), while **PIC gives 1.199/1.206** and
+**Gaussian-subtracted PIC 1.200/1.207** — both inside the Vlasov band at the
+round-beam value, agreeing with each other to ~4e-6 in tune. This is the
+solver-family split the theory predicts: the pi-mode excess over the rigid
+value is carried entirely by distribution-shape feedback, which only the
+PIC-based solvers represent.
+
+The symmetric configuration is deliberate: the Vlasov band applies to equal
+beams with equal tunes and equal xi. The asymmetric EIC production case has
+no single theory Lambda (its modes are eigenvectors of a coupled asymmetric
+system); run it only as a demonstration.
+
+```bash
+julia --threads=8 --project=. validation/coherent_beam_beam_modes.jl
+```
+
+Overrides: `OCTOPUS_CBB_TURNS`, `OCTOPUS_CBB_N_MACRO`, `OCTOPUS_CBB_SOLVERS`
+(comma list from `gaussian,pic,gaussian_pic`). Moment files are written under
+`result/` and overwritten on each run.
+
 ## Gaussian-Subtracted PIC z-Scan
 
 `gaussian_pic_zscan.jl` completes docs/todo.md item 4a: the frozen longitudinal
