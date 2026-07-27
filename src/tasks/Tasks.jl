@@ -220,9 +220,15 @@ end
 
 function _runtime_entries(task::TrackingTask)
     cached = task.runtime_entries_cache[]
-    cached === nothing || return cached
+    if cached !== nothing
+        entries, knob_dependent, epoch = cached
+        # Knob-dependent lines recompile when the knob epoch has moved, so a
+        # set_knob!/@knob change reaches this task at its next execute!.
+        (!knob_dependent || epoch == knob_epoch()) && return entries
+    end
+    epoch = knob_epoch()
     entries = _runtime_line_entries(task.elements)
-    task.runtime_entries_cache[] = entries
+    task.runtime_entries_cache[] = (entries, _has_knob_parameters(task.elements), epoch)
     empty!(task.plan_cache)
     return entries
 end

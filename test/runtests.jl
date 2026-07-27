@@ -1926,6 +1926,138 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
     end
 end
 
+@testset "Knob control" begin
+    reset_knobs!()
+    try
+        @knob t_knob.brho = 81.1
+        @knob t_knob.xfer = 0.05
+        @knob t_knob.current = 1000.0
+        @knob t_knob.k1 = t_knob.current * t_knob.xfer / t_knob.brho
+        @knob t_knob.k1_alias = t_knob.k1
+
+        # Evaluation, aliasing, memoized invalidation.
+        @test knob_value("t_knob.k1") ≈ 1000.0 * 0.05 / 81.1
+        @test knob_value("t_knob.k1_alias") == knob_value("t_knob.k1")
+        set_knob!("t_knob.current", 400.0)
+        @test knob_value("t_knob.k1") ≈ 400.0 * 0.05 / 81.1
+        @test knob_value("t_knob.k1_alias") == knob_value("t_knob.k1")
+        @test Symbol("t_knob.k1") in knob_dependents("t_knob.current")
+        @test Symbol("t_knob.k1_alias") in knob_dependents("t_knob.current"; transitive=true)
+        @test knob_dependencies("t_knob.k1") ==
+              [Symbol("t_knob.brho"), Symbol("t_knob.current"), Symbol("t_knob.xfer")]
+
+        # Namespace objects: string-free reads and plain assignment. The
+        # `knobs` root is precompiled into Octopus, so it is usable from any
+        # scope; the per-root constants (`t_knob` in Main) are exercised by
+        # examples/knob_control.jl at top level.
+        ns = Octopus.knobs.t_knob
+        @test ns isa KnobNamespace
+        @test ns.current == 400.0
+        ns.current = 500.0
+        @test knob_value("t_knob.current") == 500.0
+        @test Octopus.knobs.t_knob.k1 ≈ 500.0 * 0.05 / 81.1
+        set_knob!("t_knob.current", 400.0)
+        @test_throws ArgumentError Octopus.knobs.t_knob.nonexistent
+        @test_throws ArgumentError (Octopus.knobs.t_knob.nonexistent = 1.0)
+        @test :current in propertynames(ns)
+        @test :t_knob in propertynames(Octopus.knobs)
+
+        # Typed knobs: declared type conversion, lossy-assignment rejection,
+        # Int knobs in arithmetic, non-Real knobs as plain values.
+        @knob t_knob.n_slices::Int = 15
+        @test knob_value("t_knob.n_slices") === 15
+        set_knob!("t_knob.n_slices", 21.0)          # exact conversion is fine
+        @test knob_value("t_knob.n_slices") === 21
+        @test_throws ArgumentError set_knob!("t_knob.n_slices", 1.5)
+        @knob t_knob.scaled = t_knob.n_slices * 2.0
+        @test knob_value("t_knob.scaled") === 42.0
+        @knob t_knob.mode::Symbol = :fast
+        @test knob_value("t_knob.mode") === :fast
+        @test Octopus.knobs.t_knob.mode === :fast
+        @knob t_knob.uses_mode = t_knob.mode + 1.0
+        @test_throws ArgumentError knob_value("t_knob.uses_mode")
+        @test_throws ArgumentError @knob(t_knob.bad_sym::Symbol = 3.0 * 2.0)
+
+        # Definition-time guards: unknown reference, cycle, dependent set,
+        # unset evaluation, non-whitelisted operator, eager conversion,
+        # namespace/leaf collision.
+        @test_throws ArgumentError Octopus._knob_define!(
+            Symbol("t_knob.bad"), Meta.parse("t_knob.missing * 2.0"))
+        @test_throws ArgumentError Octopus._knob_define!(
+            Symbol("t_knob.brho"), Meta.parse("t_knob.k1 * 2.0"))
+        @test_throws ArgumentError set_knob!("t_knob.k1", 1.0)
+        @knob t_knob.unset
+        @test_throws ArgumentError knob_value("t_knob.unset")
+        @test_throws ArgumentError knob_expression("rand() * t_knob.k1")
+        @test_throws ArgumentError CrabDispersionSpec{Float64}(
+            zeta1=@knob_expr(t_knob.k1))
+        @test_throws ArgumentError Octopus._knob_define!(
+            Symbol("t_knob.k1.sub"), Meta.parse("1.0"))
+        @test_throws ArgumentError Octopus._knob_define!(Symbol("t_knob"), nothing)
+
+        # Printing round-trips losslessly through the parser.
+        for s in ("t_knob.k1 * t_knob.xfer / t_knob.brho",
+                  "t_knob.brho - (t_knob.k1 - t_knob.xfer)",
+                  "-(t_knob.k1 * t_knob.brho)", "-t_knob.k1 ^ 2.0",
+                  "2.0 * sin(t_knob.k1) + t_knob.brho ^ 2.0",
+                  "atan(t_knob.k1, t_knob.brho) + max(t_knob.k1, 2.0, t_knob.brho)")
+            e = knob_expression(s)
+            @test knob_expression(string(e)) == e
+        end
+
+        # compile_runtime resolves scalar and tuple knob parameters, and a
+        # knob assignment recompiles an already-built task through the epoch
+        # cache.
+        spec = ElementSpec{:crab_dispersion}(;
+            zeta1=@knob_expr(t_knob.k1), zeta2=0.0, zeta3=0.0, zeta4=0.0,
+            tracking_method=Symplectic6DMap())
+        @test compile_runtime(spec).zeta1 == knob_value("t_knob.k1")
+        cavity = ElementSpec{:thin_crab_cavity}(; N=2, frequency=394.0e6,
+            strengthX=(@knob_expr(t_knob.k1 * 2.0), 0.0),
+            strengthY=(0.0, 0.0), phase=(0.0, 0.0),
+            tracking_method=Symplectic6DMap())
+        @test compile_runtime(cavity).strengthX[1] == 2.0 * knob_value("t_knob.k1")
+        knob_task = TrackingTask((spec,); policy=CPUThreadsExecutionPolicy(threads=1))
+        run_once() = begin
+            rep = Phase6DRep([1e-4], [0.0], [0.0], [0.0], [1e-3], [0.0])
+            execute!(knob_task, rep; turns=1)
+            rep.x[1]
+        end
+        x_before = run_once()
+        Octopus.knobs.t_knob.current = 800.0
+        @test run_once() == 1e-4 + knob_value("t_knob.k1") * 1e-3
+        @test run_once() != x_before
+
+        # Native symbolic derivative: chained through the registry, and the
+        # product/chain rules against a manual expression.
+        d = knob_derivative("t_knob.k1", "t_knob.current")
+        @test knob_value(d) ≈ 0.05 / 81.1
+        e2 = knob_expression("sin(t_knob.k1) * t_knob.k1 ^ 2.0")
+        k = knob_value("t_knob.k1")
+        @test knob_value(knob_derivative(e2, "t_knob.k1"; through_registry=false)) ≈
+              cos(k) * k^2 + sin(k) * 2k
+        @test_throws ArgumentError knob_derivative(
+            knob_expression("max(t_knob.k1, 2.0)"), "t_knob.k1")
+
+        # Julia-Expr bridge, and the Symbolics adapter when available.
+        e3 = knob_expression("t_knob.k1 / t_knob.brho + 2.0")
+        @test knob_expression(string(knob_to_expr(e3))) == e3
+        if Octopus._HAS_SYMBOLICS
+            e4 = knob_expression("t_knob.k1 * t_knob.brho + t_knob.k1")
+            @test knob_value(knob_from_symbolic(knob_symbolic(e4))) ≈ knob_value(e4)
+        else
+            @test_throws ArgumentError knob_symbolic(e3)
+        end
+
+        # The consumer-boundary contract.
+        result = validate(KnobEffectivenessContract())
+        @test result.passed
+        @test result.metrics[:knob_resolution_receipt]
+    finally
+        reset_knobs!()
+    end
+end
+
 @testset "Strong-strong physical parameter validation" begin
     rep1 = Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0])
     rep2 = Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0])

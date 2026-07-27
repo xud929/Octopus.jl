@@ -138,6 +138,7 @@ constructor names remain the user-facing way to build those specs.
 - `ElementTrackingBackendConsistencyContract`
 - `StrongStrongGaussianBackendConsistencyContract`
 - `StrongStrongPICBackendConsistencyContract`
+- `KnobEffectivenessContract`
 - `PublicConfigurationEffectivenessContract`
 - `AbstractPhysicsContract`
 
@@ -160,6 +161,18 @@ constructor names remain the user-facing way to build those specs.
 
 - `StrongStrongDiagnostics`
   - Construction metadata: `diagnostics_option_schema`, `diagnostics_help`
+
+## Knob Control
+
+- `@knob`, `@knob_expr`, `knobs`/`KnobNamespace` (plain-assignment access),
+  `set_knob!`, `knob_value` (deferred parameter expressions stored as
+  data; see `docs/knob_control.md`)
+  - Introspection: `list_knobs`, `knob_report`, `knob_dependencies`,
+    `knob_dependents`
+  - Symbolic layer: `knob_derivative`, `knob_to_expr`/`knob_expression`,
+    `knob_symbolic`/`knob_from_symbolic` (optional Symbolics.jl adapter)
+  - Runtime consumer: `compile_runtime` via `resolve_knobs`; verified by
+    `KnobEffectivenessContract`
 
 ## Runtime Objects
 

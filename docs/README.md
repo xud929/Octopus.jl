@@ -19,6 +19,11 @@ Categories:
 - [`current_runtime.md`](current_runtime.md) — **volatile** implementation details
   (particle representation, tracking-kernel interface) that are expected to
   evolve and are not permanent architecture.
+- [`knob_control.md`](knob_control.md) — design note for the knob subsystem
+  (`@knob`/`@knob_expr`): parameters as stored expression trees validated at
+  definition time, typed knobs and plain-assignment namespace access,
+  evaluation at `compile_runtime`, epoch-based task recompilation, the native
+  symbolic derivative, and the optional Symbolics.jl adapter.
 
 ## Theory / method notes (the physics "Knowledge Layer")
 

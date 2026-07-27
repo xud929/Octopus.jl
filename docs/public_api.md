@@ -151,6 +151,28 @@ formulas and virtual-drift conventions, the weak-strong source model, and the
 spectral and Gaussian-subtracted PIC solvers), see the theory notes indexed in
 `docs/README.md`, starting from `docs/theory/beam_beam_longitudinal_kick.md`.
 
+## Knob Control
+
+Deferred parameter expressions over named knobs; design note in
+`docs/knob_control.md`. Use Julia help:
+
+```julia
+?@knob
+?@knob_expr
+?knobs
+?KnobNamespace
+?set_knob!
+?knob_value
+?resolve_knobs
+?knob_report
+?knob_dependencies
+?knob_dependents
+?knob_derivative
+?knob_symbolic
+?knob_from_symbolic
+?KnobEffectivenessContract
+```
+
 ## Beam And Runtime Helpers
 
 Use Julia help:

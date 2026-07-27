@@ -1,5 +1,6 @@
 export ContractResult, passed, validate,
        PublicConfigurationEffectivenessContract,
+       KnobEffectivenessContract,
        ElementTrackingBackendConsistencyContract,
        StrongStrongGaussianBackendConsistencyContract,
        StrongStrongPICBackendConsistencyContract
@@ -147,6 +148,22 @@ Base.@kwdef struct PublicConfigurationEffectivenessContract <: AbstractImplement
 end
 
 """
+    KnobEffectivenessContract(; n_particles=64)
+
+Verify that knob control reaches its runtime consumer (`compile_runtime` via
+`resolve_knobs`): a knob-expression element parameter produces identical
+tracking to the directly-parameterized element; assigning an independent input
+(through the `knobs` namespace) recompiles the *same task object* through the
+knob-epoch cache invalidation; a `:knob_resolution` audit receipt is emitted;
+and the definition-time guards fire (unset knob evaluation, dependency cycles,
+and assigning a dependent knob are all rejected). Uses a private
+`__knob_contract__` namespace and removes it afterwards.
+"""
+Base.@kwdef struct KnobEffectivenessContract <: AbstractImplementationContract
+    n_particles::Int = 64
+end
+
+"""
     validate(contract, args...; kwargs...)
 
 Run a validation contract against the supplied objects. Concrete contracts should
@@ -168,6 +185,102 @@ description(::Type{StrongStrongPICBackendConsistencyContract}) =
 
 description(::Type{PublicConfigurationEffectivenessContract}) =
     "Checks that public configuration values reach their declared runtime consumers."
+
+description(::Type{KnobEffectivenessContract}) =
+    "Checks that knob expressions reach compiled runtime elements and that knob changes recompile them."
+
+function validate(contract::KnobEffectivenessContract; kwargs...)
+    metrics = Dict{Symbol,Any}()
+    contract_paths = (
+        Symbol("__knob_contract__.current"), Symbol("__knob_contract__.transfer"),
+        Symbol("__knob_contract__.brho"), Symbol("__knob_contract__.k1"),
+        Symbol("__knob_contract__.unset"),
+    )
+    try
+        @knob __knob_contract__.current = 1000.0
+        @knob __knob_contract__.transfer = 0.05
+        @knob __knob_contract__.brho = 81.1
+        @knob __knob_contract__.k1 =
+            __knob_contract__.current * __knob_contract__.transfer / __knob_contract__.brho
+        expected(current) = current * 0.05 / 81.1
+
+        base = _contract_default_initial_rep(contract.n_particles, Float64)
+        policy = CPUThreadsExecutionPolicy(threads=1)
+        # The flexible form requires every parameter the runtime constructor
+        # reads, exactly as the element's construction_help documents.
+        knob_spec = ElementSpec{:crab_dispersion}(;
+            zeta1=@knob_expr(__knob_contract__.k1),
+            zeta2=0.0, zeta3=0.0, zeta4=0.0,
+            tracking_method=Symplectic6DMap())
+        knob_task = TrackingTask((knob_spec,); policy=policy)
+        run_knob!() = begin
+            rep = _contract_rep_for_backend(base, CPUThreadsBackend)
+            execute!(knob_task, rep; turns=1)
+            rep
+        end
+        run_reference!(zeta1) = begin
+            rep = _contract_rep_for_backend(base, CPUThreadsBackend)
+            execute!(TrackingTask((CrabDispersionSpec{Float64}(zeta1=zeta1),);
+                                  policy=policy), rep; turns=1)
+            rep
+        end
+
+        audit = ExecutionAudit()
+        local rep_initial
+        with_execution_audit(audit) do
+            rep_initial = run_knob!()
+        end
+        initial = _contract_coordinate_metrics(rep_initial, run_reference!(expected(1000.0)), 0.0, 0.0)
+        receipt_emitted = any(r -> r.consumer === :knob_resolution, execution_receipts(audit))
+
+        knobs.__knob_contract__.current = 400.0   # namespace assignment => set_knob!
+        updated = _contract_coordinate_metrics(run_knob!(), run_reference!(expected(400.0)), 0.0, 0.0)
+
+        unset_rejected = try
+            @knob __knob_contract__.unset
+            compile_runtime(ElementSpec{:crab_dispersion}(;
+                zeta1=@knob_expr(__knob_contract__.unset),
+                tracking_method=Symplectic6DMap()))
+            false
+        catch err
+            err isa ArgumentError
+        end
+        cycle_rejected = try
+            _knob_define!(Symbol("__knob_contract__.brho"),
+                          Meta.parse("__knob_contract__.k1 * 2.0"))
+            false
+        catch err
+            err isa ArgumentError
+        end
+        dependent_set_rejected = try
+            set_knob!("__knob_contract__.k1", 1.0)
+            false
+        catch err
+            err isa ArgumentError
+        end
+
+        metrics[:initial_max_abs_error] = initial[:max_abs_error]
+        metrics[:updated_max_abs_error] = updated[:max_abs_error]
+        metrics[:knob_resolution_receipt] = receipt_emitted
+        metrics[:unset_rejected] = unset_rejected
+        metrics[:cycle_rejected] = cycle_rejected
+        metrics[:dependent_set_rejected] = dependent_set_rejected
+        metrics[:n_particles] = contract.n_particles
+
+        ok = initial[:max_abs_error] == 0.0 && updated[:max_abs_error] == 0.0 &&
+             receipt_emitted && unset_rejected && cycle_rejected && dependent_set_rejected
+        message = ok ?
+            "Knob expressions reach compiled runtime elements, knob changes recompile them, and definition-time guards fire." :
+            "Knob control did not reach its runtime consumer or a definition-time guard failed."
+        return ContractResult(ok, message;
+                              residual=max(initial[:max_abs_error], updated[:max_abs_error]),
+                              metrics=metrics)
+    finally
+        for path in contract_paths
+            _forget_knob!(path)
+        end
+    end
+end
 
 function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     metrics = Dict{Symbol,Any}()

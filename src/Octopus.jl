@@ -30,6 +30,11 @@ include("constants/Constants.jl")
 include("math/SpecialMath.jl")
 include("math/counter_rng.jl")
 
+# AST-based knob control: deferred parameter expressions resolved by
+# compile_runtime. See docs/knob_control.md.
+include("knobs/Knobs.jl")
+include("knobs/symbolic.jl")
+
 # Policies, validation, analysis, and example descriptors.
 include("policies/Policies.jl")
 include("contracts/Contracts.jl")

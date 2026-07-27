@@ -767,6 +767,11 @@ runtime_type(T::Type, method::AbstractTrackingMethod) = runtime_type(T, typeof(m
 Compile an `AbstractElementSpec` into the compact runtime object used by
 tracking kernels. The target type is resolved through `runtime_type` and must
 provide a constructor of the form `RuntimeType(spec, tracking_method)`.
+
+Knob-expression parameters (see `@knob_expr`) are evaluated here, through
+`resolve_knobs`, immediately before the runtime constructor runs — this is the
+single point where deferred knob expressions become numbers, so runtime
+tracking objects never carry knobs.
 """
 compile_runtime(spec::AbstractElementSpec) = compile_runtime(spec, tracking_method(spec))
 
@@ -774,5 +779,10 @@ function compile_runtime(spec::AbstractElementSpec, method)
     method_object = _tracking_method_object(method)
     T = runtime_type(spec, method_object)
     T === nothing && throw(MethodError(compile_runtime, (spec, method)))
-    return T(spec, method_object)
+    return T(resolve_knobs(spec), method_object)
 end
+
+# Generic fallback: specs without knob parameters pass through unchanged. The
+# `ElementSpec` method that evaluates knob expressions lives in
+# `src/knobs/Knobs.jl` (included after this file).
+resolve_knobs(spec) = spec

@@ -1921,11 +1921,17 @@ end
 
 function _strong_strong_runtime_blocks(task::StrongStrongTask, which::Integer)
     cache = which == 1 ? task.runtime_entries_cache1 : task.runtime_entries_cache2
-    cached = cache[]
-    cached === nothing || return cached
     line = which == 1 ? task.line1 : task.line2
+    cached = cache[]
+    if cached !== nothing
+        blocks, knob_dependent, epoch = cached
+        # Knob-dependent lines recompile when the knob epoch has moved (see
+        # _runtime_entries in Tasks.jl).
+        (!knob_dependent || epoch == knob_epoch()) && return blocks
+    end
+    epoch = knob_epoch()
     blocks = _split_strong_strong_line(line)
-    cache[] = blocks
+    cache[] = (blocks, _has_knob_parameters(line), epoch)
     empty!(which == 1 ? task.plan_cache1 : task.plan_cache2)
     return blocks
 end
