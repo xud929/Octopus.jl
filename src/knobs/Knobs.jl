@@ -464,6 +464,14 @@ result in the flexible `ElementSpec{kind}(; param=...)` constructor and
 `compile_runtime` resolves it when the tracking line is built. Referenced knobs
 must already be declared (typos fail here, at construction time).
 
+The result is a first-class value, usable outside element specs as well: it
+stays live against the registry, so `knob_value(e)` evaluates it against the
+*current* knob state wherever you hold it, and it is the input to
+`knob_dependencies`, `knob_derivative`, `knob_symbolic`, and the
+`string`/`knob_expression` serialization round trip. It is deliberately not a
+number — eager conversion raises a directed error; compose expressions
+syntactically, and call `knob_value` where the number is needed.
+
 ```julia
 q1 = ElementSpec{:crab_dispersion}(;
     zeta1 = @knob_expr(HSR.power_supply.arc_quad * HSR.current_transfer / HSR.B_rho),

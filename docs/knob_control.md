@@ -138,7 +138,49 @@ object; the audit receipt is emitted; and the unset/cycle/dependent-set guards
 fire. Knob entry points are listed in `docs/registry_snapshot.md` ("Knob
 Control").
 
-## 3. The symbolic layer
+## 3. Reading values; expressions outside element specs
+
+`@knob_expr` returns a first-class expression object — it is not tied to
+`ElementSpec`. Store it anywhere and evaluate it with `knob_value` when the
+number is needed; the expression stays *live* against the registry:
+
+```julia
+ip.half_crossing_angle                       # read a knob via its namespace
+knob_value(@knob_expr(ip.half_crossing_angle))   # the same, programmatic
+
+e = @knob_expr(tan(ip.half_crossing_angle) / sqrt(ele.crab_beta_x * ele.beta_x))
+knob_value(e)                    # 0.001376...  evaluated at 12.5 mrad
+ip.half_crossing_angle = 15.0e-3
+knob_value(e)                    # 0.001651...  same object, re-evaluated
+```
+
+Evaluation is memoized through the registry and invalidated by knob
+assignment, so repeated `knob_value` calls are cheap. A free-standing
+expression is also the input to every analysis and serialization entry point:
+`knob_dependencies(e)`, `knob_derivative(e, @knob_expr(path))`,
+`knob_symbolic(e)`, `knob_to_expr(e)`, and the lossless
+`string(e)`/`knob_expression(s)` round trip (validation against declared knobs
+happens at rebuild time). A practical pattern: hold an expression inside a
+`ScheduledAction` callback and call `knob_value` there, making a per-turn
+parameter follow a knob chain during a run.
+
+Two rules keep this safe:
+
+- **An expression is not a number.** `2 * e` and `Float64(e)` do not silently
+  evaluate — eager conversion raises a directed error. Compose syntactically
+  (`@knob_expr(2 * tan(ip.half_crossing_angle))`) or through
+  `knob_expression`, never by mixing expression objects into ordinary
+  arithmetic; that is what keeps every stored expression validated and
+  printable.
+- **Referenced knobs must already be declared** when the expression is built —
+  the typo check runs at `@knob_expr` time, not at first evaluation.
+
+Element-spec parameters remain the one place the *runtime* resolves
+expressions automatically (`compile_runtime` via `resolve_knobs`, §2). Any
+other framework object that should accept knob expressions directly would be
+routed through `resolve_knobs` the same way — a small, localized extension.
+
+## 4. The symbolic layer
 
 Two tiers, both consequences of the closed expression tree
 (`src/knobs/symbolic.jl`):
@@ -166,7 +208,7 @@ universal bridge `knob_to_expr`/`knob_expression` (expression tree ↔ Julia
 `Expr`/string) needs no packages at all and is the interface any other
 symbolic tool can target.
 
-## 4. Limitations and future work
+## 5. Limitations and future work
 
 - **Scalar-shaped values.** A knob holds one value of its declared type;
   expressions resolve scalar and tuple-of-scalar element parameters. No units,
@@ -189,7 +231,7 @@ symbolic tool can target.
   lattice needs its knob definitions re-declared (or a future
   `save_knobs`/`load_knobs` pair).
 
-## 5. Precedents
+## 6. Precedents
 
 MAD-X deferred expressions (`:=`), Bmad/Tao overlays and groups, and Xsuite
 `xdeps` (expression trees + dependency graph; the closest relative).

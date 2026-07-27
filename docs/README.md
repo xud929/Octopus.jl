@@ -22,6 +22,7 @@ Categories:
 - [`knob_control.md`](knob_control.md) — design note for the knob subsystem
   (`@knob`/`@knob_expr`): parameters as stored expression trees validated at
   definition time, typed knobs and plain-assignment namespace access,
+  reading knob/expression values (`knob_value`, live standalone expressions),
   evaluation at `compile_runtime`, epoch-based task recompilation, the native
   symbolic derivative, and the optional Symbolics.jl adapter.
 
