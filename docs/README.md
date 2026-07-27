@@ -31,6 +31,13 @@ reference material, not API docs; the implementing code links back to them.
 - [`weak_strong_6d_model.md`](theory/weak_strong_6d_model.md) — the weak-strong source
   model: which source moments enter the kick formulas and how a continuous 6D
   Gaussian is sliced longitudinally.
+- [`node_interaction_grid.md`](theory/node_interaction_grid.md) — what
+  `interaction_grid = :node` is for and why it works: the mesh is a step function
+  of `z` under per-slice-pair sizing, the algorithm is already `C^0` and only the
+  mesh spoils it, indexing by interpolation node restores it exactly, why the
+  longitudinal kick forces a third plane (averages tolerate independent errors,
+  differences do not), and why sharing node planes is rejected on
+  self-consistency grounds.
 - [`slice_longitudinal_interpolation.md`](theory/slice_longitudinal_interpolation.md) —
   smoothness of the sliced beam-beam kick (`slice_interpolation`,
   `interaction_grid`): why the transverse kick is $C^0$ across slice boundaries

@@ -129,7 +129,20 @@ derivation: [`docs/theory/slice_longitudinal_interpolation.md`](theory/slice_lon
    baseline never faces this because it puts every plane of a pair on one mesh,
    which is exactly why it has the discontinuity.
 
-   **Blocker for sharing (item 4e):** `F_R` computed for slice `s` is one step
+   **DECISION (2026-07-26): plane sharing is REJECTED. Do not implement it.**
+   `:node` exists to remove a *numerical* discontinuity. Sharing a node's plane
+   between its two adjacent slices would pay for that by freezing the source
+   between the two uses -- trading away *physical* strong-strong
+   self-consistency to fix a numerical artefact, which defeats the purpose of the
+   option. Self-consistency is not negotiable for a performance number. `3N`
+   solves stands; item 4e is closed, not deferred.
+
+   Consequently `:node`'s solve cost is inherently 1.5x the baseline's `2N`, which
+   shows up as the measured ~26% excess on the interaction stage (0.3912 vs
+   0.3110). **All remaining optimization must come from the prebuild and Green
+   FFTs, which are pure implementation and touch no physics.**
+
+   Original blocker note, retained for the record: `F_R` computed for slice `s` is one step
    stale when slice `s+1` uses it, because the source is kicked in between. That
    is continuity breaker #3, measured at 2.2e-5 (`Dpx`) / 8.1e-5 (`Dpy`) -- an
    order of magnitude *below* the 1e-3 grid jump `:node` removes. Plausibly a good
@@ -173,6 +186,64 @@ derivation: [`docs/theory/slice_longitudinal_interpolation.md`](theory/slice_lon
    the *transverse* mesh, this concerns the *longitudinal* slice boundaries.
 6. **Duplicate boundary-plane solves** — folded into phase 4 of the
    grid-determination program below, which is what unlocks it.
+
+## STATUS: CUDA `:node` optimization (2026-07-26)
+
+Design rationale: [`docs/theory/node_interaction_grid.md`](theory/node_interaction_grid.md).
+
+**Where it stands, production point** (2.56M e- / 1.024M p, 15 slices, grid 128,
+CUDA, 120 turns, mean over 60-120):
+
+    base (slice_pair, wavefront)   0.3238 s/turn
+    :node, wavefront               1.0124 s/turn   3.13x     <- current
+    :node, sequential non-async    1.0286 s/turn
+    (:node at session start)       1.1988 s/turn   3.52x
+
+CPU has **met** the goal: 0.87x base at 640k/256k, grid 128, full lattice.
+
+**Done this round**
+- Ported `:node` to the CUDA indexed wavefront route (own 6-plane path). All
+  three CUDA routes match CPU at ~6e-16.
+- Node meshes built at turn start, not lazily: lazy building made the mesh depend
+  on how much of the turn had been applied, which differs between routes and made
+  CPU/CUDA disagree by 3.8e-5.
+- Hoisted redundant field-slice gathers (225 -> 15 per direction per turn).
+- Batched the bounds reductions: 3720 host-syncing `mapreduce` calls per turn ->
+  240. Prebuild 0.3812 -> 0.1944 s.
+- Green memo **tried twice and reverted both times.** The kernel is
+  `G(r_field - r_source)`, so the first memo's absolute-origin key never repeated;
+  re-keying on the relative offset was correct but bought only 0.009 s (prebuild
+  0.1944 -> 0.1856, turn unchanged at 1.0124), and pairing it with
+  `grid_quantize=0.125` measured **worse** (1.0417). Each of the 480 node meshes
+  has a genuinely distinct relative offset, so there is nothing to reuse. The
+  0.0915 s of Green construction is real but **not cacheable** -- it would need
+  meshes to coincide, and node meshes are sized per node from distinct
+  bounding boxes by construction.
+
+**Remaining budget to base (0.3238)**
+
+    node interaction excess   ~0.08 s   inherent: 3N solves vs 2N (see below)
+    green FFT construction    ~0.09 s   480 builds/turn; NOT cacheable (see above)
+    prebuild, other           ~0.10 s   unaccounted portion of the 0.1944 s
+    (measured 1.0124 total; the above do not yet sum -- some is lattice/overlap)
+
+**Hard constraint, decided 2026-07-26: `:node` will not go below ~1.5x the
+baseline's solve count.** Only `2N+1` of its `3N` planes are distinct, but
+realizing that requires sharing a node's plane between its two adjacent slices,
+which freezes the source between the two uses. That trades *physical*
+self-consistency for a *numerical* fix and defeats the option's purpose. Rejected;
+item 4e is closed, not deferred.
+
+**Methodological note for whoever continues.** Six hypotheses formed by reading
+code were refuted by measurement in this work: persistent Green cache (slower),
+geometry-keyed memo v1 (no gain -- wrong key), geometry-keyed memo v2 with the
+correct key (0.009 s, and worse with quantization), luminosity gathering
+(0.002 s),
+"0.77 s outside instrumentation" (invalid cross-harness comparison), and a 2x-off
+per-reduction latency estimate. What worked every time was the per-phase
+instrumentation and component decomposition against call counts. **Profile, do not
+reason from the source.** And never quote a cost from a `collide!`-only
+microbenchmark -- every such number in this work was later inverted.
 
 ## Interaction-grid determination (the smoothness program)
 

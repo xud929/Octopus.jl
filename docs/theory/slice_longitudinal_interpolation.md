@@ -808,11 +808,15 @@ $N+1$ distinct node planes. So the method costs **one extra solve per source
 slice**, about 3% at $N=15$; an implementation that recomputes each node plane
 twice pays $3N$ instead.
 
-Realizing the saving requires accepting that $F_R$ is one step stale when slice
-$s+1$ reuses it, since the source is kicked between the two pairs — continuity
-breaker #3 of Section 5, measured an order of magnitude below the grid jump node
-removes. That is a modelling choice about strong-strong self-consistency, not an
-optimization.
+Realizing that saving would require accepting that $F_R$ is one step stale when
+slice $s+1$ reuses it, since the source is kicked between the two pairs.
+
+**This is rejected.** `:node` exists to remove a *numerical* discontinuity;
+paying for it by freezing the source between two uses would trade away *physical*
+strong-strong self-consistency, which defeats the option's purpose. The $3N$ cost
+is accepted, and `:node`'s solve count is inherently $1.5\times$ the baseline's
+$2N$. Remaining optimization must come from implementation overhead — mesh
+prebuild and Green-FFT construction — not from the solve count.
 
 #### 10.4.3 What is left
 
