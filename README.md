@@ -189,3 +189,7 @@ julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consist
 
 Generated simulation output is ignored by Git. Local results are written under
 `result/` by the examples.
+
+## License
+
+Octopus is released under the [MIT License](LICENSE).
