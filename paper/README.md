@@ -33,5 +33,10 @@ beam-beam simulation" (CPC submission).
   - Sec. 4.3 quadratic+TSC arm: `emittance_growth_quadratic_n15_tsc_s[1-4].tsv`.
   - Table 1 repeat scatter: `nf_seed_{11..66}.tsv` (six-seed repeats of the
     noise-floor table; deterministic rows are seed-independent).
+  - Sec. 4.3 production A/B + Sec. 6 timing: `production_ab_growth.tsv`
+    (CIC vs TSC, 3 shared seeds, 1000 turns, crab-crossing production
+    point) and `cpu_gpu_timing_summary.tsv` (thread sweep + observer A/B).
+  - Tune-estimator calibration: `../validation/tune_estimator_calibration.jl`
+    (500 synthetic two-tone trials).
 - Tables 2-4 values come from the runs recorded in the paper text and the
   validation logs; Table 1 numbers are exactly `flat_beam_noise_floor.tsv`.
