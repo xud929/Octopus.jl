@@ -49,5 +49,9 @@ beam-beam simulation" (CPC submission).
     `emittance_growth_hybrid_n15_cic_s[1-4].tsv`; 10^4-turn stationarity
     pair `stationarity_{pic,softg}_10k.tsv`; 15-slice convergence
     `multislice_centroids_octopus_kicked_n15.tsv`.
+  - Round-9 additions: 16384-turn sigma-resolution runs
+    `multislice_centroids_{octopus_kicked,bb3d}_16k.tsv` (both codes'
+    sigma shifts stable at 6e-5 bins -> the 0.05 xi inter-code
+    difference is a real slicing-convention systematic).
 - Tables 2-4 values come from the runs recorded in the paper text and the
   validation logs; Table 1 numbers are exactly `flat_beam_noise_floor.tsv`.

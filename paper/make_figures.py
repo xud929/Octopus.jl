@@ -274,6 +274,8 @@ def fig_error_vs_grid():
     fig.tight_layout(w_pad=1.0)
     for _ax in fig.axes:
         _ax.set_ylim(bottom=2.0e-5)
+        _ax.set_xticks([48, 64, 96, 128, 192, 256])
+        _ax.set_xticklabels(['48', '64', '96', '128', '192', '256'], fontsize=6.5)
     fig.savefig(os.path.join(OUT, "fig_error_vs_grid.pdf"))
     plt.close(fig)
 
@@ -386,7 +388,7 @@ def fig_coherent_fft():
                       else r"$\pi$ mode ($y_1{-}y_2$)")
         ax.set_yscale("log")
         ax.set_xlabel("fractional tune")
-        ax.set_title(f"${plane}$ plane:  $\\Lambda_{plane} = {lam:.3f}$",
+        ax.set_title(f"${plane}$ plane (seed 1 of 3):  $\\Lambda_{plane} = {lam:.3f}$",
                      color=INK, fontsize=8.5, pad=15)
         ax.text(qs, 2.3, r"$Q_\sigma$", color=INK2, fontsize=7.5, ha="center")
         ax.text(qp, 2.3, r"$Q_\pi$", color=INK2, fontsize=7.5, ha="center")
