@@ -56,5 +56,14 @@ beam-beam simulation" (CPC submission).
   - Round-10 additions: `weakstrong_limit_anchor_compensated.tsv`
     (400-turn reduction anchor at the compensated point) and
     `gpu_size_scaling.tsv` (macroparticle/mesh timing scans).
+  - Round-11 additions: `lambda_narrowplane.tsv` + `lambda_narrowplane.jl`
+    (narrow-plane Yokoya factor vs aspect ratio, single seed, scan
+    settings; Lambda_y in units of xi_y = xi_x/r - Fig. 6a open
+    diamonds); grid-free control arm
+    `emittance_growth_gaussctrl_n15_s[1-4].tsv` + `emit_gaussctrl.jl`
+    (soft-Gaussian solver on the ensemble seeds/protocol - the
+    "artificial by construction" control of Sec. 4.3);
+    `multislice_centroids_bb3d_n9.tsv` (BB3D 9-slice sigma-shift
+    convergence run, deck in `bb3d_decks/multislice9/`).
 - Tables 2-4 values come from the runs recorded in the paper text and the
   validation logs; Table 1 numbers are exactly `flat_beam_noise_floor.tsv`.

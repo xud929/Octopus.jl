@@ -195,6 +195,16 @@ def fig_yokoya_scans():
     ax1.errorbar(ms[:, 0], ms[:, 1], yerr=0.005, fmt="o", color=BLUE,
                  markersize=5, capsize=2, elinewidth=0.9,
                  label="2D strong--strong PIC", zorder=4)
+    _, npl = read_tsv(os.path.join(OCT, "lambda_narrowplane.tsv"))
+    ok = npl[:, 3] <= 0.06
+    ax1.plot(npl[ok, 0], npl[ok, 2], "D", color=AQUA, markersize=4.5,
+             markerfacecolor="none", markeredgewidth=1.2, zorder=4,
+             label=r"narrow plane $\Lambda_y$ (single seed)")
+    ax1.plot(npl[~ok, 0], npl[~ok, 2], "D", color=AQUA, markersize=4.5,
+             markerfacecolor="none", markeredgewidth=1.2, alpha=0.35, zorder=4)
+    ax1.annotate(r"$\xi_y{=}0.10$", xy=(npl[~ok, 0][0], npl[~ok, 2][0]),
+                 xytext=(6, -1), textcoords="offset points", fontsize=6.2,
+                 color=AQUA, va="center")
     ax1.set_xscale("log")
     ax1.set_xlabel(r"aspect ratio $r=\sigma_y/\sigma_x$")
     ax1.set_ylabel(r"Yokoya factor $\Lambda$")
@@ -262,6 +272,9 @@ def fig_error_vs_grid():
         fg = sorted(fl.keys())
         ax.plot(fg, [fl[g] for g in fg], "--", color=MUTED, linewidth=1.3,
                 label="PIC floor (analytic deposition)")
+        ax.axvline(128, color=MUTED, linewidth=0.8, linestyle=":", zorder=0)
+        ax.plot([128], [cases[case][128][0]], "D", color=BLUE, markersize=5.5,
+                markerfacecolor="none", markeredgewidth=1.2, zorder=5)
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xticks([48, 96, 192])
@@ -271,6 +284,9 @@ def fig_error_vs_grid():
         ax.set_xlabel("mesh $n$ ($n\\times n$)")
         style_axis(ax)
     axes[0].set_ylabel("median relative\nkick error")
+    axes[0].annotate("prod.\nmesh", xy=(128, axes[0].get_ylim()[1]),
+                     xytext=(0, -2), textcoords="offset points",
+                     ha="center", va="top", fontsize=6.0, color=MUTED)
     axes[3].legend(loc="lower left", fontsize=6.2, handlelength=1.3,
                    borderaxespad=0.2)
     fig.tight_layout(w_pad=1.0)
