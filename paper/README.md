@@ -65,5 +65,14 @@ beam-beam simulation" (CPC submission).
     "artificial by construction" control of Sec. 4.3);
     `multislice_centroids_bb3d_n9.tsv` (BB3D 9-slice sigma-shift
     convergence run, deck in `bb3d_decks/multislice9/`).
+  - Round-12 additions: `lambda_narrowplane_fixedxiy.tsv` +
+    `lambda_fixedxiy.jl` (narrow-plane control holding xi_y = 0.005 at
+    every aspect ratio - shows the narrow-plane Lambda_y branch is not a
+    xi_y artifact); `noise_floor_meshswap.tsv` + `noise_floor_meshswap.jl`
+    (single-kick noise floor with the meshes swapped: plain PIC at 64^2,
+    hybrid at 128^2 - the mesh-lever paragraph of Sec. 4.1);
+    `slice_longitudinal_zscan{,_tsc}_jumps.tsv` (per-boundary kick jumps
+    by interaction-grid mode and by deposition/interpolation pair -
+    Fig. 5).
 - Tables 2-4 values come from the runs recorded in the paper text and the
   validation logs; Table 1 numbers are exactly `flat_beam_noise_floor.tsv`.

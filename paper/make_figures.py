@@ -197,12 +197,13 @@ def fig_yokoya_scans():
                  label="2D strong--strong PIC", zorder=4)
     _, npl = read_tsv(os.path.join(OCT, "lambda_narrowplane.tsv"))
     ok = npl[:, 3] <= 0.06
-    ax1.plot(npl[ok, 0], npl[ok, 2], "D", color=AQUA, markersize=4.5,
-             markerfacecolor="none", markeredgewidth=1.2, zorder=4,
+    _off = 0.88   # drawn slightly offset in r for legibility (see caption)
+    ax1.plot(npl[ok, 0] * _off, npl[ok, 2], "^", color=AQUA, markersize=5.5,
+             markerfacecolor="white", markeredgewidth=1.3, zorder=6,
              label=r"narrow plane $\Lambda_y$ (single seed)")
-    ax1.plot(npl[~ok, 0], npl[~ok, 2], "D", color=AQUA, markersize=4.5,
-             markerfacecolor="none", markeredgewidth=1.2, alpha=0.35, zorder=4)
-    ax1.annotate(r"$\xi_y{=}0.10$", xy=(npl[~ok, 0][0], npl[~ok, 2][0]),
+    ax1.plot(npl[~ok, 0] * _off, npl[~ok, 2], "^", color=AQUA, markersize=5.5,
+             markerfacecolor="white", markeredgewidth=1.3, alpha=0.45, zorder=6)
+    ax1.annotate(r"$\xi_y{=}0.10$", xy=(npl[~ok, 0][0] * _off, npl[~ok, 2][0]),
                  xytext=(6, -1), textcoords="offset points", fontsize=6.2,
                  color=AQUA, va="center")
     ax1.set_xscale("log")
@@ -273,8 +274,8 @@ def fig_error_vs_grid():
         ax.plot(fg, [fl[g] for g in fg], "--", color=MUTED, linewidth=1.3,
                 label="PIC floor (analytic deposition)")
         ax.axvline(128, color=MUTED, linewidth=0.8, linestyle=":", zorder=0)
-        ax.plot([128], [cases[case][128][0]], "D", color=BLUE, markersize=5.5,
-                markerfacecolor="none", markeredgewidth=1.2, zorder=5)
+        ax.plot([128], [cases[case][128][0]], "D", color=BLUE, markersize=8.0,
+                markerfacecolor="white", markeredgewidth=1.4, zorder=6)
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xticks([48, 96, 192])
@@ -284,8 +285,7 @@ def fig_error_vs_grid():
         ax.set_xlabel("mesh $n$ ($n\\times n$)")
         style_axis(ax)
     axes[0].set_ylabel("median relative\nkick error")
-    axes[0].annotate("prod.\nmesh", xy=(128, axes[0].get_ylim()[1]),
-                     xytext=(0, -2), textcoords="offset points",
+    axes[0].annotate("prod.\nmesh", xy=(0.62, 0.93), xycoords="axes fraction",
                      ha="center", va="top", fontsize=6.0, color=MUTED)
     axes[3].legend(loc="lower left", fontsize=6.2, handlelength=1.3,
                    borderaxespad=0.2)
@@ -460,6 +460,67 @@ def fig_eic_modes():
 
 # ============================================================================
 # 8. Multi-slice cross-code benchmark: pi-mode synchro-betatron multiplet
+
+# ============================================================================
+# 9. Slice-boundary kick discontinuity: transverse by grid mode, longitudinal
+#    by deposition/interpolation pair (archived frozen-field z-scan)
+# ============================================================================
+def fig_boundary_jump():
+    def load(fn):
+        rows = [l.split("\t") for l in open(os.path.join(OCT, fn)).read().splitlines()[1:]]
+        d = {}
+        for r in rows:
+            d.setdefault(r[3], []).append([float(x) for x in r[4:]])
+        return d
+    cic = load("slice_longitudinal_zscan_jumps.tsv")
+    tsc = load("slice_longitudinal_zscan_tsc_jumps.tsv")
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6.3, 2.6))
+
+    modes = [("per_slice_grid", "per-slice-pair\n(production)"),
+             ("source_slice_grid", "shared\nsource mesh"),
+             ("common_grid", "common\nmesh"),
+             ("node_grid", "node-indexed")]
+    for i, (key, lab) in enumerate(modes):
+        a = np.array(cic[key])
+        ax1.plot([i - 0.12] * len(a), np.abs(a[:, 0]), "o", color=BLUE,
+                 markersize=4.5, markerfacecolor="none", markeredgewidth=1.1,
+                 label="horizontal" if i == 0 else None)
+        ax1.plot([i + 0.12] * len(a), np.abs(a[:, 1]), "s", color=ORANGE,
+                 markersize=4.5, markerfacecolor="none", markeredgewidth=1.1,
+                 label="vertical" if i == 0 else None)
+    ax1.set_yscale("log")
+    ax1.set_xticks(range(len(modes)))
+    ax1.set_xticklabels([m[1] for m in modes], fontsize=6.2)
+    ax1.set_ylabel("relative transverse\nkick jump at boundary")
+    ax1.legend(fontsize=6.5, handlelength=1.0, loc="center right")
+    style_axis(ax1)
+
+    pairs = [(cic, 2, "CIC\nlinear"), (cic, 5, "CIC\nquadratic"),
+             (tsc, 2, "TSC\nlinear"), (tsc, 5, "TSC\nquadratic")]
+    for i, (src, col, lab) in enumerate(pairs):
+        v = np.abs(np.array(src["common_grid"])[:, col])
+        ax2.plot([i] * len(v), v, "D", color=AQUA, markersize=4.5,
+                 markerfacecolor="none", markeredgewidth=1.1)
+        ax2.plot([i - 0.22, i + 0.22], [v.max()] * 2, "-", color=INK2, linewidth=1.2)
+    ax2.set_yscale("log")
+    ax2.set_xticks(range(len(pairs)))
+    ax2.set_xticklabels([p[2] for p in pairs], fontsize=6.5)
+    ax2.set_ylabel("longitudinal kick jump\n(fraction of peak)")
+    ax2.annotate("", xy=(3, 9.5e-4), xytext=(3, 0.55),
+                 arrowprops=dict(arrowstyle="<->", color=MUTED, linewidth=0.9))
+    ax2.text(2.88, 0.02, r"$\approx$580$\times$", fontsize=6.5, color=MUTED,
+             ha="right")
+    style_axis(ax2)
+    for ax, tag in [(ax1, "(a)"), (ax2, "(b)")]:
+        ax.text(0.02, 0.03, tag, transform=ax.transAxes, color=INK,
+                fontsize=9, fontweight="bold", va="bottom")
+        ax.set_xlim(-0.55, len(modes) - 0.45)
+    fig.tight_layout(w_pad=1.6)
+    fig.savefig(os.path.join(OUT, "fig_boundary_jump.pdf"))
+    plt.close(fig)
+
+
 # ============================================================================
 
 
@@ -513,6 +574,7 @@ def fig_multislice_spectra():
 
 if __name__ == "__main__":
     fig_noise_floor()
+    fig_boundary_jump()
     fig_yokoya_scans()
     fig_error_vs_grid()
     fig_error_vs_aspect()
