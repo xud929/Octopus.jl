@@ -40,5 +40,10 @@ beam-beam simulation" (CPC submission).
     (500 synthetic two-tone trials).
   - Sec. 5.1 tune-swap control: `lambda_tuneswap_control.tsv`; Sec. 4.1
     reference-noise bound: `softgauss_count_scan.tsv`.
+  - Sec. 5.4 crossing-angle dynamical cross-check:
+    `multislice_centroids_{octopus_kicked,bb3d}_crossing.tsv` (half angle
+    3.855e-4, Piwinski phi=1; BB3D deck note: the deck field labeled
+    "alpha" is the crossing-plane azimuth - PHI is the half angle);
+    9-slice convergence run `multislice_centroids_octopus_kicked_n9.tsv`.
 - Tables 2-4 values come from the runs recorded in the paper text and the
   validation logs; Table 1 numbers are exactly `flat_beam_noise_floor.tsv`.

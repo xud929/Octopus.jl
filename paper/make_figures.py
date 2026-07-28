@@ -218,6 +218,9 @@ def fig_yokoya_scans():
         ax.text(0.02, 0.965, tag, transform=ax.transAxes, color=INK,
                 fontsize=9, fontweight="bold", va="top")
     fig.tight_layout(w_pad=1.8)
+    ax2.plot([0.02], [1.196], marker="s", markersize=5.0, color=AQUA,
+             linestyle="none", zorder=4, label="$y$ control (off-resonance)")
+    ax2.legend(loc="lower left", handlelength=1.2, fontsize=6.8)
     fig.savefig(os.path.join(OUT, "fig_yokoya_scans.pdf"))
     plt.close(fig)
 
@@ -268,6 +271,8 @@ def fig_error_vs_grid():
     axes[3].legend(loc="lower left", fontsize=6.2, handlelength=1.3,
                    borderaxespad=0.2)
     fig.tight_layout(w_pad=1.0)
+    for _ax in fig.axes:
+        _ax.set_ylim(bottom=2.0e-5)
     fig.savefig(os.path.join(OUT, "fig_error_vs_grid.pdf"))
     plt.close(fig)
 
