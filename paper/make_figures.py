@@ -194,7 +194,7 @@ def fig_yokoya_scans():
              linestyle="none", zorder=5, label="converged $r=1$ (8192 turns)")
     ax1.errorbar(ms[:, 0], ms[:, 1], yerr=0.005, fmt="o", color=BLUE,
                  markersize=5, capsize=2, elinewidth=0.9,
-                 label="2D strong--strong PIC", zorder=4)
+                 label="2D strong–strong PIC", zorder=4)
     _, npl = read_tsv(os.path.join(OCT, "lambda_narrowplane.tsv"))
     ok = npl[:, 3] <= 0.06
     _off = 0.88   # drawn slightly offset in r for legibility (see caption)
@@ -221,8 +221,8 @@ def fig_yokoya_scans():
     yerrs = np.sqrt(seed_env**2 + (np.sqrt(2) * 1.8e-5 / xms[:, 0])**2)
     ax2.errorbar(xms[:, 0], xms[:, 1], yerr=yerrs, fmt="o", color=BLUE,
                  markersize=5, capsize=2, elinewidth=0.9,
-                 label="2D strong--strong PIC", zorder=4)
-    ax2.set_xlabel(r"beam--beam parameter $\xi$")
+                 label="2D strong–strong PIC", zorder=4)
+    ax2.set_xlabel(r"beam–beam parameter $\xi$")
     ax2.set_ylim(1.10, 1.36)
     ax2.set_xlim(0, 0.021)
     ax2.legend(loc="lower left", handlelength=1.7, borderaxespad=0.4)
