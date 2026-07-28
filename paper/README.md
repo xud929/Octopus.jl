@@ -53,5 +53,8 @@ beam-beam simulation" (CPC submission).
     `multislice_centroids_{octopus_kicked,bb3d}_16k.tsv` (both codes'
     sigma shifts stable at 6e-5 bins -> the 0.05 xi inter-code
     difference is a real slicing-convention systematic).
+  - Round-10 additions: `weakstrong_limit_anchor_compensated.tsv`
+    (400-turn reduction anchor at the compensated point) and
+    `gpu_size_scaling.tsv` (macroparticle/mesh timing scans).
 - Tables 2-4 values come from the runs recorded in the paper text and the
   validation logs; Table 1 numbers are exactly `flat_beam_noise_floor.tsv`.

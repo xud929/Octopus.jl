@@ -177,7 +177,7 @@ def fig_yokoya_scans():
 
     # --- (a) Lambda vs aspect ratio ---
     ax1.axhspan(1.2, 1.33, color=BAND, alpha=0.55, zorder=0)
-    ax1.text(0.021, 1.315, "self-consistent band 1.2–1.33", color="#104281",
+    ax1.text(0.021, 1.315, "literature range 1.2–1.33 (plane assignment\ndiffers; see text)", color="#104281",
              fontsize=7)
     ax1.axhline(1.0, color=MUTED, linewidth=0.9, linestyle=(0, (4, 3)))
     ax1.text(0.021, 1.02, r"rigid bunch ($\Lambda=1$)", color=MUTED, fontsize=7)
@@ -190,6 +190,8 @@ def fig_yokoya_scans():
              linestyle=(0, (2, 2)), label="exact 1D particle model")
     ax1.plot(th[~(th[:, 0] > 0.21), 0], th[~(th[:, 0] > 0.21), 2], color=INK2,
              linewidth=1.1, linestyle=(0, (2, 2)), alpha=0.30)
+    ax1.plot([1.0], [1.198], marker="D", markersize=5.0, color="#7a4fb8",
+             linestyle="none", zorder=5, label="converged $r=1$ (8192 turns)")
     ax1.errorbar(ms[:, 0], ms[:, 1], yerr=0.005, fmt="o", color=BLUE,
                  markersize=5, capsize=2, elinewidth=0.9,
                  label="2D strong--strong PIC", zorder=4)
