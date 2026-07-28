@@ -304,7 +304,10 @@ function simulate_1d_model(r; xi=XI, q0=Q0, n_macro=100_000, turns=4096,
     N0 = normalized_equilibrium(k, 1.0)
     dx = L / ngrid
     kfreq = 2pi .* FFTW.fftfreq(ngrid, 1 / dx)
-    Ghat = @. -im * pi * sign(kfreq) * exp(-s_t^2 * kfreq^2 / 2)
+    # FT of G(u) = <u/(u^2+v^2)>_{v~N(0,s)}: averaging exp(-|k||v|) over the
+    # half-normal gives the erfcx form (NOT a Gaussian suppression, which
+    # would correspond to smoothing along u instead of averaging over v).
+    Ghat = @. -im * pi * sign(kfreq) * erfcx_pos(s_t * abs(kfreq) / sqrt(2.0))
 
     # Deterministic Gaussian init (Box-Muller on a simple LCG).
     state = UInt64(seed)

@@ -103,7 +103,11 @@ the $\pi$ mode; $Y = (\Omega_\pi - Q_0)/\xi$.
 **Independent referee.** Because approximations enter the $m=1$ reduction,
 the *same 1D-reduced model* is also solved by direct particle simulation
 (`simulate_1d_model`): the averaged kernel has the exact Fourier transform
-$\tilde G(k) = -i\pi\,\mathrm{sign}(k)\,e^{-s^2k^2/2}$, so the beam-beam
+$\tilde G(k) = -i\pi\,\mathrm{sign}(k)\,e^{s^2k^2/2}\mathrm{erfc}(s|k|/\sqrt2)$
+(the half-normal average of $e^{-|k||v|}$; an earlier version of this note
+and script used a Gaussian suppression $e^{-s^2k^2/2}$ here, which is the
+transform of smoothing along $u$, not of averaging over $v$ — corrected
+2026-07-28 after external review), so the beam-beam
 force is a smoothed Hilbert transform of the opposing line density, evaluated
 spectrally each turn; two beams, rigid rotations, centroid FFTs — no code
 shared with the matrix solve. Agreement between the two isolates model error
@@ -132,10 +136,12 @@ Three conclusions, in decreasing order of certainty:
    macroparticles reproduces $Y = 1.266$ exactly — the scan is converged) —
    the aspect-ratio dependence of Yokoya & Koiso, bounded by the anchors
    $\sim1.2$ (round, LHC/RHIC usage) and $\sim1.33$ (flat, KEKB usage).
-2. **The m=1/diagonal truncation is not quantitatively reliable**: against
-   the exact particle solution *of the same 1D model* it errs by 10-25% with
-   an $r$-dependent sign. This is measured here, not assumed — most compact
-   treatments stop at m=1 and inherit this error silently.
+2. **The m=1/diagonal truncation is accurate within the 1D model**
+   (CORRECTED 2026-07-28: an earlier version claimed 10-25% truncation error,
+   which was entirely an incorrect spectral kernel in the particle referee —
+   see Section 2). With the correct kernel the matrix and the exact particle
+   solution of the same model agree to 1-2% wherever a discrete pi mode
+   exists ($r \gtrsim 0.2$).
 3. **The 1D reduction itself fails for flat beams**: the exact 1D-model
    solution loses the discrete $\pi$ mode below $r \approx 0.1$ (buried in
    the continuum), while the real 2D system measurably keeps a healthy

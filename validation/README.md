@@ -581,7 +581,10 @@ holds the derivation): the m=1 eigenproblem with the flatness-dependent
 1D-reduced kernel, validated by a translation-invariance check (sigma mode at
 Q0 to ~1e-5 xi) and an exact harmonic-interaction limit (Y = 2), plus a
 spectral 1D particle simulation of the *same model* that referees the m=1
-truncation. `coherent_mode_scans.jl` measures the physical 2D Yokoya factor
+truncation (with the corrected erfcx spectral kernel the two agree to 1-2%
+wherever a discrete pi mode exists; an earlier Gaussian-suppressed kernel
+was wrong and the "10-25% truncation error" once claimed here is
+retracted). `coherent_mode_scans.jl` measures the physical 2D Yokoya factor
 with the production PIC solver versus flatness (Y = 1.19 round rising to
 ~1.25-1.27 flat, inside the literature band 1.2-1.33) and versus xi
 (xi-independent to ~1% for xi <= 0.01). `plot_coherent_mode_theory.py`

@@ -142,7 +142,7 @@ cases = [
     ("production_e ~11:1", 106.0e-6, 9.5e-6),
     ("25:1", 2.0e-3, 0.08e-3),
 ]
-grids = (48, 64, 128)
+grids = Tuple(parse.(Int, split(get(ENV, "OCTOPUS_GPIC_GRIDS", "48,64,128"), ',')))
 
 rows = Any[]
 println("Gaussian-subtracted PIC field accuracy vs Bassetti-Erskine (deterministic source)")
