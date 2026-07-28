@@ -45,5 +45,9 @@ beam-beam simulation" (CPC submission).
     3.855e-4, Piwinski phi=1; BB3D deck note: the deck field labeled
     "alpha" is the crossing-plane azimuth - PHI is the half angle);
     9-slice convergence run `multislice_centroids_octopus_kicked_n9.tsv`.
+  - Round-8 additions: hybrid ensemble arm
+    `emittance_growth_hybrid_n15_cic_s[1-4].tsv`; 10^4-turn stationarity
+    pair `stationarity_{pic,softg}_10k.tsv`; 15-slice convergence
+    `multislice_centroids_octopus_kicked_n15.tsv`.
 - Tables 2-4 values come from the runs recorded in the paper text and the
   validation logs; Table 1 numbers are exactly `flat_beam_noise_floor.tsv`.

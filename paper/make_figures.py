@@ -204,7 +204,8 @@ def fig_yokoya_scans():
     ax2.axhspan(1.2, 1.33, color=BAND, alpha=0.55, zorder=0)
     ax2.plot(xth[:, 0], xth[:, 1], color=INK2, linewidth=1.3,
              label=r"$\Lambda_0{=}1.20$ + discrete-map correction")
-    yerrs = np.sqrt(0.004**2 + (np.sqrt(2) * 1.8e-5 / xms[:, 0])**2)
+    seed_env = np.maximum(0.005, 0.005 * 0.005 / xms[:, 0])
+    yerrs = np.sqrt(seed_env**2 + (np.sqrt(2) * 1.8e-5 / xms[:, 0])**2)
     ax2.errorbar(xms[:, 0], xms[:, 1], yerr=yerrs, fmt="o", color=BLUE,
                  markersize=5, capsize=2, elinewidth=0.9,
                  label="2D strong--strong PIC", zorder=4)
@@ -319,6 +320,7 @@ def fig_emittance_growth():
         ("emittance_growth_linear_n15_cic_srcgrid", "linear, CIC, source-slice mesh", YELLOW),
         ("emittance_growth_linear_n15_tsc", "linear, TSC", AQUA),
         ("emittance_growth_quadratic_n15_tsc", "quadratic, TSC", "#0e6e50"),
+        ("emittance_growth_hybrid_n15_cic", "hybrid $64^2$, CIC", "#7a4fb8"),
         ("emittance_growth_linear_n15_cic_node", "linear, CIC, node-indexed mesh", MUTED),
     ]
     fig, ax = plt.subplots(figsize=(4.9, 2.9))
@@ -459,10 +461,12 @@ def fig_multislice_spectra():
 
     xi = 0.005
     fig, axes = plt.subplots(1, 2, figsize=(6.3, 2.6), sharey=True)
+    qsig = {"x": 0.31046, "y": 0.32045}  # measured sigma modes (kicked run)
     for ax, plane, qbare in zip(axes, ["x", "y"], [0.31, 0.32]):
-        ax.axvspan(qbare, qbare + xi, color=BAND, alpha=0.55, linewidth=0,
+        qs = qsig[plane]
+        ax.axvspan(qs, qs + xi, color=BAND, alpha=0.55, linewidth=0,
                    zorder=0)
-        ax.axvline(qbare + 1.2 * xi, color=MUTED, linewidth=0.8,
+        ax.axvline(qs + 1.2 * xi, color=MUTED, linewidth=0.8,
                    linestyle=(0, (3, 3)))
         for data, color, lw, label in (
                 (oct_kick, BLUE, 1.2, "Octopus, $0.1\\sigma$ kick"),
@@ -476,7 +480,7 @@ def fig_multislice_spectra():
         ax.set_ylim(3e-3, 2.5)
         ax.set_xlabel("fractional tune")
         ax.set_title(f"${plane}$ plane", color=INK, fontsize=8.5)
-        ax.text(qbare + 1.2 * xi, 1.35, r"$Q + 1.2\,\xi$", color=INK2,
+        ax.text(qs + 1.2 * xi, 1.35, r"$Q_\sigma + 1.2\,\xi$", color=INK2,
                 fontsize=7.0, ha="center")
         style_axis(ax, ygrid=False)
     axes[0].set_ylabel("$\\pi$-mode amplitude\n(normalized)")
