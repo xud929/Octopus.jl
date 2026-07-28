@@ -83,6 +83,17 @@ def style_axis(ax, ygrid=True):
 # ============================================================================
 # 1. Noise floor: field error vs macroparticle number, round + flat 11:1
 # ============================================================================
+# measured six-seed repeat scatter of the median (relative), per family/N/solver
+REL_SCATTER = {
+    ("round", "1e4"): {"soft": 0.18, "pic": 0.10, "hyb": 0.12, "spec": 0.10},
+    ("round", "1e5"): {"soft": 0.22, "pic": 0.15, "hyb": 0.17, "spec": 0.10},
+    ("round", "1e6"): {"soft": 0.28, "pic": 0.16, "hyb": 0.18, "spec": 0.02},
+    ("flat", "1e4"): {"soft": 0.23, "pic": 0.14, "hyb": 0.20, "spec": 0.10},
+    ("flat", "1e5"): {"soft": 0.26, "pic": 0.05, "hyb": 0.13, "spec": 0.04},
+    ("flat", "1e6"): {"soft": 0.41, "pic": 0.05, "hyb": 0.20, "spec": 0.03},
+}
+
+
 def fig_noise_floor():
     path = os.path.join(SLIDES, "data", "flat_beam_noise_floor.tsv")
     families, current = {}, None
@@ -109,8 +120,13 @@ def fig_noise_floor():
             y = np.array([data["1e+04"][j], data["1e+05"][j], data["1e+06"][j]])
             floor = data["deterministic"][j]
             c = SOLVER_COLOR[s]
-            ax.plot(nmac, y, "-o", color=c, linewidth=1.6, markersize=4.5,
-                    label=SOLVER_LABEL[s], zorder=3)
+            short = {"soft_gaussian": "soft", "pic": "pic",
+                     "hybrid": "hyb", "spectral": "spec"}[s]
+            rel = np.array([REL_SCATTER[(fam, k)][short]
+                            for k in ("1e4", "1e5", "1e6")])
+            ax.errorbar(nmac, y, yerr=y * rel, fmt="-o", color=c,
+                        linewidth=1.6, markersize=4.5, capsize=2.0,
+                        elinewidth=0.8, label=SOLVER_LABEL[s], zorder=3)
             ax.hlines(floor, nmac[0], nmac[-1], color=c, linewidth=1.0,
                       linestyle=(0, (4, 3)), alpha=0.65, zorder=2)
         ax.set_xscale("log")

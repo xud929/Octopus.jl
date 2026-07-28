@@ -38,5 +38,7 @@ beam-beam simulation" (CPC submission).
     point) and `cpu_gpu_timing_summary.tsv` (thread sweep + observer A/B).
   - Tune-estimator calibration: `../validation/tune_estimator_calibration.jl`
     (500 synthetic two-tone trials).
+  - Sec. 5.1 tune-swap control: `lambda_tuneswap_control.tsv`; Sec. 4.1
+    reference-noise bound: `softgauss_count_scan.tsv`.
 - Tables 2-4 values come from the runs recorded in the paper text and the
   validation logs; Table 1 numbers are exactly `flat_beam_noise_floor.tsv`.
