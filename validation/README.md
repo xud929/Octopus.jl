@@ -594,6 +594,21 @@ julia --threads=8 --project=. validation/coherent_mode_scans.jl
 /usr/local/anaconda3/bin/python3 validation/plot_coherent_mode_theory.py
 ```
 
+**EIC comparison.**
+`coherent_mode_eic_comparison.jl` runs the EIC-like head-on equivalent
+(production constants, single slice, rigid lattice) through the real PIC
+solver and compares both beams' centroid spectra with the coupled Vlasov
+mode analysis. First run: x-plane responses confined to the two separated
+theory continua and Landau-damped (decoherence ~48/~112 turns for e/p);
+y-plane — where the electron continuum swallows the proton tune — both
+beams lock onto one narrow persistent line at the proton bare tune with no
+measurable decoherence over 4096 turns, the p-dominated collective mode the
+theory flagged as marginal. Overlay figure: `result/eic_mode_comparison.png`.
+
+```bash
+julia --threads=8 --project=. validation/coherent_mode_eic_comparison.jl
+```
+
 **Cross-code anchor (BeamBeam3D).**
 `coherent_beam_beam_modes_beambeam3d.jl` analyzes the same physics case run
 through BeamBeam3D (Qiang, Furman, Ryne — the reference PIC strong-strong

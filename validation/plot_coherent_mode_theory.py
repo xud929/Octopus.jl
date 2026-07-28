@@ -116,3 +116,36 @@ for ax, plane in zip(axes, ("x", "y")):
 fig.tight_layout()
 fig.savefig(os.path.join(RESULT, "eic_coherent_modes.png"), dpi=160)
 print("wrote result/eic_coherent_modes.png")
+
+# --- Figure 4: theory bands versus measured strong-strong spectra ----------
+try:
+    spec = read_tsv("eic_mode_spectra.tsv")
+except FileNotFoundError:
+    spec = None
+if spec is not None:
+    freq = fnum(spec, "freq")
+    fig, axes = plt.subplots(2, 1, figsize=(8.6, 6.4), sharex=True)
+    for ax, plane, col_e, col_p in ((axes[0], "x", "amp_e_x", "amp_p_x"),
+                                    (axes[1], "y", "amp_e_y", "amp_p_y")):
+        rows = [r for r in eic if r["plane"] == plane]
+        q_e = float(rows[0]["Q_e"]); xi_e = float(rows[0]["xi_e"])
+        q_p = float(rows[0]["Q_p"]); xi_p = float(rows[0]["xi_p"])
+        ax.axvspan(q_e, q_e + xi_e, color="tab:blue", alpha=0.15,
+                   label="theory: e continuum")
+        ax.axvspan(q_p, q_p + xi_p, color="tab:red", alpha=0.15,
+                   label="theory: p continuum")
+        ax.semilogy(freq, fnum(spec, col_e), color="tab:blue", lw=0.9,
+                    label="measured e-beam centroid spectrum")
+        ax.semilogy(freq, fnum(spec, col_p), color="tab:red", lw=0.9,
+                    label="measured p-beam centroid spectrum")
+        ax.set_ylabel(f"|FFT| ({plane})")
+        ax.grid(alpha=0.3)
+        if plane == "x":
+            ax.legend(fontsize=7, ncol=2)
+    axes[1].set_xlim(0.05, 0.27)   # covers both planes' bands (sharex)
+    axes[1].set_xlabel("fractional tune")
+    axes[0].set_title("EIC-like head-on: measured strong-strong spectra vs "
+                      "theory continua")
+    fig.tight_layout()
+    fig.savefig(os.path.join(RESULT, "eic_mode_comparison.png"), dpi=160)
+    print("wrote result/eic_mode_comparison.png")

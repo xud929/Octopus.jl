@@ -209,6 +209,31 @@ Yokoya number — is the actionable output for the asymmetric case, and it is
 why `CoherentModePhysicsContract` gates only the symmetric configuration
 while the EIC case is run as a demonstration.
 
+**Strong-strong simulation comparison**
+(`validation/coherent_mode_eic_comparison.jl`; figure
+`result/eic_mode_comparison.png`; 4096 turns, 20k macroparticles/beam, both
+beams kicked $0.1\sigma$ in both planes). The head-on equivalent run through
+the real 2D PIC solver confirms the theory's structure and sharpens the
+marginality into a measured effect:
+
+| plane | prediction | measurement |
+|---|---|---|
+| x | responses confined to the two separated continua, Landau-damped | e peak $0.0955 \in [0.080, 0.168]$, p peak $0.231 \in [0.228, 0.237]$; broad structures; centroid decoherence in $\sim48$ turns (e) and $\sim112$ turns (p) |
+| y | overlapping continua; top coupled mode *at* the e-continuum edge — marginal | **both beams lock onto one narrow persistent line at $0.2109$** (the proton bare tune, inside the band overlap), two decades above the rest of the spectrum, with **no measurable decoherence over 4096 turns** — while the same proton beam decoheres in 112 turns in x |
+
+The factor $\gtrsim 40$ persistence contrast between the proton's x and y
+centroids (equal $\xi_p$ in both planes) is a genuine collective effect: a
+p-dominated two-beam mode at the lower edge of the proton band, weakly
+damped despite lying inside the electron continuum — the electron content of
+the mode is too small for electron Landau damping to absorb it efficiently.
+In the real machine the electron radiation damping
+($\tau \sim 2000$-$4000$ turns) acts on the electron admixture only, and the
+proton beam has no damping of its own, so this is precisely the mode family
+that coherent beam-beam studies for the EIC must track — reproduced here
+from the production framework's own constants. (Caveats as above: head-on,
+single slice, no crabbing or synchro-betatron coupling; the line position
+and persistence, not growth rates, are the validated observables.)
+
 Caveats for the EIC application, in honesty: the theory model is head-on and
 single-slice (no crossing angle, crabbing, hourglass, or synchro-betatron
 sidebands), radiation damping of the electron beam ($\tau \sim 4000$ turns,
