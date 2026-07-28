@@ -414,6 +414,57 @@ def fig_eic_modes():
     plt.close(fig)
 
 
+# ============================================================================
+# 8. Multi-slice cross-code benchmark: pi-mode synchro-betatron multiplet
+# ============================================================================
+
+
+def fig_multislice_spectra():
+    def spectrum(path):
+        d = np.loadtxt(path, skiprows=1)
+        n = d.shape[0]
+        w = np.hanning(n)
+        q = np.fft.rfftfreq(n)
+        out = {}
+        for key, c1, c2 in (("x", 1, 2), ("y", 3, 4)):
+            s = d[:, c1] - d[:, c2]
+            out[key] = (q, np.abs(np.fft.rfft((s - s.mean()) * w)))
+        return out
+
+    oct_kick = spectrum(os.path.join(SLIDES, "data", "multislice_centroids_octopus_kicked.tsv"))
+    oct_noise = spectrum(os.path.join(SLIDES, "data", "multislice_centroids_octopus_noise.tsv"))
+    bb3d = spectrum(os.path.join(SLIDES, "data", "multislice_centroids_bb3d.tsv"))
+
+    xi = 0.005
+    fig, axes = plt.subplots(1, 2, figsize=(6.3, 2.6), sharey=True)
+    for ax, plane, qbare in zip(axes, ["x", "y"], [0.31, 0.32]):
+        ax.axvspan(qbare, qbare + xi, color=BAND, alpha=0.55, linewidth=0,
+                   zorder=0)
+        ax.axvline(qbare + 1.2 * xi, color=MUTED, linewidth=0.8,
+                   linestyle=(0, (3, 3)))
+        for data, color, lw, label in (
+                (oct_kick, BLUE, 1.2, "Octopus, $0.1\\sigma$ kick"),
+                (oct_noise, AQUA, 1.0, "Octopus, noise-excited"),
+                (bb3d, ORANGE, 1.0, "BeamBeam3D, noise-excited")):
+            q, a = data[plane]
+            sel = (q >= qbare - 0.004) & (q <= qbare + 0.010)
+            ax.plot(q[sel], a[sel] / a[sel].max(), color=color, linewidth=lw,
+                    label=label)
+        ax.set_yscale("log")
+        ax.set_ylim(3e-3, 2.5)
+        ax.set_xlabel("fractional tune")
+        ax.set_title(f"${plane}$ plane", color=INK, fontsize=8.5)
+        ax.text(qbare + 1.2 * xi, 1.35, r"$Q + 1.2\,\xi$", color=INK2,
+                fontsize=7.0, ha="center")
+        style_axis(ax, ygrid=False)
+    axes[0].set_ylabel("$\\pi$-mode amplitude\n(normalized)")
+    axes[0].legend(loc="lower left", handlelength=1.4, borderaxespad=0.3,
+                   fontsize=6.8)
+    fig.tight_layout(w_pad=1.4)
+    fig.savefig(os.path.join(OUT, "fig_multislice_spectra.pdf"))
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     fig_noise_floor()
     fig_yokoya_scans()
@@ -422,4 +473,5 @@ if __name__ == "__main__":
     fig_emittance_growth()
     fig_coherent_fft()
     fig_eic_modes()
+    fig_multislice_spectra()
     print("figures written to", OUT)
