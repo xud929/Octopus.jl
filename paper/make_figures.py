@@ -297,6 +297,7 @@ def fig_emittance_growth():
         ("emittance_growth_quadratic_n15_cic", "quadratic, CIC", ORANGE),
         ("emittance_growth_linear_n15_cic_srcgrid", "linear, CIC, source-slice mesh", YELLOW),
         ("emittance_growth_linear_n15_tsc", "linear, TSC", AQUA),
+        ("emittance_growth_quadratic_n15_tsc", "quadratic, TSC", "#0e6e50"),
         ("emittance_growth_linear_n15_cic_node", "linear, CIC, node-indexed mesh", MUTED),
     ]
     fig, ax = plt.subplots(figsize=(4.9, 2.9))

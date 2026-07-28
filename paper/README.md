@@ -25,5 +25,13 @@ beam-beam simulation" (CPC submission).
     `yokoya_vs_xi_{theory,measured}.tsv` (coherent_mode_vlasov_theory.jl
     with the corrected erfcx spectral kernel; coherent_mode_scans.jl).
   - Fig. 7: `eic_mode_spectra.tsv` (coherent_mode_eic_comparison.jl).
+  - Sec. 5.3 / Fig. 8: `multislice_centroids_{octopus_kicked,octopus_noise,bb3d}.tsv`
+    (5-slice cross-code benchmark; BB3D built from source, deck in
+    `../validation/` notes; identical Hann+parabolic tune estimator).
+  - Sec. 5.4: `crossing_lum_anchor.tsv`
+    (validation/crossing_luminosity_anchor.jl; analytic Piwinski anchor).
+  - Sec. 4.3 quadratic+TSC arm: `emittance_growth_quadratic_n15_tsc_s[1-4].tsv`.
+  - Table 1 repeat scatter: `nf_seed_{11..66}.tsv` (six-seed repeats of the
+    noise-floor table; deterministic rows are seed-independent).
 - Tables 2-4 values come from the runs recorded in the paper text and the
   validation logs; Table 1 numbers are exactly `flat_beam_noise_floor.tsv`.
