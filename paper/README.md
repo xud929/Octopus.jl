@@ -63,6 +63,17 @@ Numbered as in the manuscript.
   mesh trend in this file is the cache, not the mesh.
 - **Sec. 4.1, mesh-swap control.** `noise_floor_meshswap.tsv` +
   `noise_floor_meshswap.jl` (plain PIC at 64^2 against hybrid at 128^2).
+  NOTE this same driver also regenerates Table 1 (`flat_beam_noise_floor.tsv`)
+  bit-for-bit in all eight rows once `picgrid`/`hybgrid` are set to the
+  production assignment (128/64) -- verified. So Table 1 is re-executable, and
+  its per-entry structure is readable from the driver: the median over 5/5/3
+  independent draws at 1e4/1e5/1e6, taken per solver column, with the draws
+  shared across the four columns of a row.
+- **Sec. 4.1, both proton planes.** `mesh_study_both_planes.tsv` -- the mesh
+  study measured in both planes, seeds 1/2222/3333 at 64^2 and 256^2. Paired
+  64^2->256^2: eps_x +0.0342+-0.0105 pp (t=5.65, p=0.030), eps_y
+  +0.0426+-0.0045 pp (t=16.36, p=0.004). The manuscript quotes eps_x, the
+  conservative plane.
 - **Sec. 4.1, systematic/fluctuation decomposition.**
   `kick_decomposition_R100.tsv` + `kick_decomposition.jl`. Realization count
   from `OCTOPUS_KD_R` (default 100), bootstrap draws from `OCTOPUS_KD_NBOOT`
