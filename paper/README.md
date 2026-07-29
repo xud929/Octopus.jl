@@ -140,14 +140,14 @@ output. Round-beam Lambda: 1.40 before, 1.162 after, against a measured 2D
   `multislice_centroids_octopus_kicked_n{9,15}.tsv`,
   `multislice_centroids_bb3d_n9.tsv`, and the 16384-turn sigma-resolution pair
   `multislice_centroids_{octopus_kicked,bb3d}_16k.tsv`.
-- **Sec. 5.4, luminosity anchor.** `crossing_lum_anchor.tsv`
+- **Sec. 5.5, luminosity anchor.** `crossing_lum_anchor.tsv`
   (`../validation/crossing_luminosity_anchor.jl`; analytic Piwinski reference).
-- **Sec. 5.4, crossing-angle dynamical cross-check.**
+- **Sec. 5.5, crossing-angle dynamical cross-check.**
   `multislice_centroids_{octopus_kicked,bb3d}_crossing.tsv` (half angle
   3.855e-4, Piwinski phi = 1). Deck note: the BeamBeam3D field labeled `alpha`
   is the crossing-plane azimuth; `phi` is the half angle. Setting `alpha` alone
   silently runs head-on.
-- **Sec. 5.5, weak-strong reduction anchor.**
+- **Sec. 5.6, weak-strong reduction anchor.**
   `weakstrong_limit_anchor_compensated.tsv` (400 turns at the compensated
   point).
 - **Tune-estimator calibration.** `../validation/tune_estimator_calibration.jl`

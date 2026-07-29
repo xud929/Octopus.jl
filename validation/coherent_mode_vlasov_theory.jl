@@ -405,19 +405,33 @@ if get(ENV, "OCTOPUS_VLASOV_LIB_ONLY", "0") == "1"
     # Definitions only (for convergence experiments and external reuse).
 else
 
-println("Self-check 4 (normalization is analytic, not circular):")
-for r in (1.0, 5.0, 11.111)
-    s_t = sqrt(2.0) * r
-    kk = PlaneKernel(s_t, 1.05 * sqrt(2 * JMAX) * 2 + 6 * s_t)
-    sigma_o = s_t / sqrt(2.0)
-    n0_analytic = 1.0 / (1.0 * (1.0 + sigma_o))
-    u0 = detuning_u(kk, n0_analytic, 1.0, 1.0, 1e-6)
-    rigid = 2 * normalized_equilibrium(kk, sqrt(2.0)) / normalized_equilibrium(kk, 1.0)
-    ok = u0 < 0.999
-    println("  r=", rpad(r, 8), " u(0)=", round(u0; digits=4),
-            ok ? "  OK (not self-normalized)" : "  FAIL (circular normalization)",
-            "   rigid diagnostic=", round(rigid; digits=3))
+println("Self-check 4 (normalization + origin-region quadrature):")
+println("  The rigid-bunch limit is analytically 1: the coherent gradient")
+println("  1/[2(sigma_o+1)] over the physical normalizer 1/(1+sigma_o).  It")
+println("  therefore tests BOTH that the normalization is not circular AND that")
+println("  the origin-region quadrature in `normalized_equilibrium` has")
+println("  converged.  Tolerance 2e-2.")
+let failed = String[]
+    for r in (0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.85, 1.0, 5.0, 11.111)
+        s_t = sqrt(2.0) * r
+        kk = PlaneKernel(s_t, 1.05 * sqrt(2 * JMAX) * 2 + 6 * s_t)
+        n0phys = 1.0 / (1.0 + s_t / sqrt(2.0))
+        rigid = 2 * normalized_equilibrium(kk, sqrt(2.0)) / n0phys
+        u0 = detuning_u(kk, n0phys, 1.0, 1.0, 1e-6)
+        ok = abs(rigid - 1) < 2e-2
+        ok || push!(failed, string(r))
+        println("  r=", rpad(r, 7), " rigid=", rpad(round(rigid; digits=4), 9),
+                " u(0)=", rpad(round(u0; digits=4), 8),
+                ok ? "PASS" : "FAIL (quadrature unconverged at this s_t)")
+    end
+    if !isempty(failed)
+        @warn string("Self-check 4 FAILED at aspect ratios ", join(failed, ", "),
+                     ": `normalized_equilibrium`'s origin-region quadrature is ",
+                     "unconverged for s_t below ~1. Lambda from those rows is not ",
+                     "quantitative and must not be plotted or quoted.")
+    end
 end
+
 println()
 println("Self-checks (round beams, r=1, xi=$(XI), Q0=$(Q0)):")
 for s in (1.0, -1.0)

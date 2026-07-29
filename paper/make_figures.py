@@ -166,8 +166,19 @@ def read_tsv(path):
     return header, np.array(rows)
 
 
+# The reduced-Vlasov driver's origin-region quadrature is unconverged for
+# s_t = sqrt(2)*r below ~1, i.e. r <= 0.7: `normalized_equilibrium` there
+# exceeds the exact reduced-model gradient 1/(1+s_t) by 2% (r=0.5) to 2500%
+# (r=0.02), and the model's own self-check 4 hard-fails on exactly those rows.
+# Those Lambda values are numerics, not physics, so they are NOT plotted.  The
+# rows stay in the archived TSV; the mask is here so the figure cannot show
+# them.  See validation/coherent_mode_vlasov_theory.jl self-check 4.
+VLASOV_CONVERGED_MIN_R = 0.8
+
+
 def fig_yokoya_scans():
     _, th = read_tsv(os.path.join(OCT, "yokoya_vs_aspect.tsv"))
+    th = th[th[:, 0] >= VLASOV_CONVERGED_MIN_R]
     _, ms = read_tsv(os.path.join(OCT, "yokoya_vs_aspect_measured.tsv"))
     _, xth = read_tsv(os.path.join(OCT, "yokoya_vs_xi_theory.tsv"))
     _, xms = read_tsv(os.path.join(OCT, "yokoya_vs_xi_measured.tsv"))
