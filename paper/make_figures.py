@@ -166,8 +166,26 @@ def read_tsv(path):
     return header, np.array(rows)
 
 
+# The archived 1D-Vlasov theory curves carry a known normalization defect:
+# the reduction normalizes its kick to the kernel's averaged-plane curvature
+# rather than to the small-amplitude xi, so its Lambda is too large by
+# (sqrt(2)*r + 1)/(r + 1), where r is the averaged plane's width over the
+# modelled plane's.  The model diagnoses this itself -- its rigid-bunch limit
+# must return Lambda = 1 and returns 1.213 (round) to 1.412 (extreme flat).
+# The factor is r-dependent, so it changes the curve's shape, not just its
+# level.  We correct on read; the fix belongs in
+# validation/coherent_mode_vlasov_theory.jl and is recorded as a maintainer
+# action in the manuscript.
+def _vlasov_xi_correction(r):
+    import numpy as _np
+    return (_np.sqrt(2.0) * r + 1.0) / (r + 1.0)
+
+
 def fig_yokoya_scans():
     _, th = read_tsv(os.path.join(OCT, "yokoya_vs_aspect.tsv"))
+    _corr = _vlasov_xi_correction(th[:, 0])
+    th[:, 1] = th[:, 1] / _corr          # m=1 matrix
+    th[:, 2] = th[:, 2] / _corr          # exact 1D particle solution
     _, ms = read_tsv(os.path.join(OCT, "yokoya_vs_aspect_measured.tsv"))
     _, xth = read_tsv(os.path.join(OCT, "yokoya_vs_xi_theory.tsv"))
     _, xms = read_tsv(os.path.join(OCT, "yokoya_vs_xi_measured.tsv"))
@@ -176,7 +194,7 @@ def fig_yokoya_scans():
 
     # --- (a) Lambda vs aspect ratio ---
     ax1.axhspan(1.2, 1.33, color=BAND, alpha=0.55, zorder=0)
-    ax1.text(0.021, 1.315, "literature range 1.2–1.33 (plane assignment\ndiffers; see text)", color="#104281",
+    ax1.text(0.021, 1.315, "literature range 1.2–1.33\n(reproduced in neither plane; see text)", color="#104281",
              fontsize=7)
     ax1.axhline(1.0, color=MUTED, linewidth=0.9, linestyle=(0, (4, 3)))
     ax1.text(0.021, 1.02, r"rigid bunch ($\Lambda=1$)", color=MUTED, fontsize=7)

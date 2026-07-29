@@ -13,9 +13,18 @@ Gaussians at 1e4 / 1e5 / 1e6 macroparticles.
 Solvers, "as used" (no fitted constants), production-faithful moment usage
 (sampled moments feed the soft-Gaussian solver and the hybrid's subtraction):
   - soft-Gaussian     : Bassetti-Erskine of the measured sample moments
-  - PIC CIC 128^2     : integrated-log Green FFT (production config)
-  - hybrid CIC 64^2   : erf-integrated Gaussian subtraction + BE add-back
+  - PIC CIC 64^2      : integrated-log Green FFT
+  - hybrid CIC 128^2  : erf-integrated Gaussian subtraction + BE add-back
   - spectral :grid    : round (127,127)/d16, flat (127,383)/d8 (recommended)
+
+NOTE the mesh assignment above is the SWAPPED one -- plain PIC on the coarse
+mesh and the hybrid on the fine one -- which is the point of this control.
+Setting picgrid = 128, hybgrid = 64 in the two run_family calls below gives
+the PRODUCTION assignment, and in that configuration this same script
+regenerates Table 1 (data/flat_beam_noise_floor.tsv) bit-for-bit in all eight
+rows. That is the archived provenance of Table 1: each stochastic entry is
+the median over 5/5/3 independent draws at 1e4/1e5/1e6, taken per solver
+column, with the draws shared across the four columns of a row.
 
 The round-beam case is run first as a correctness gate against the review's
 recorded numbers; the flat case (sig_x/sig_y = 11) is the new result.
@@ -24,7 +33,8 @@ Run from this folder (CPU, ~2-4 min after compilation):
 
     julia --startup-file=no --project=. paper/noise_floor_meshswap.jl
 
-Output: data/flat_beam_noise_floor.tsv plus a printed table.
+Output: data/noise_floor_meshswap.tsv plus a printed table.
+        (With the production mesh assignment: data/flat_beam_noise_floor.tsv.)
 =#
 
 const OCTOPUS_ROOT = normpath(joinpath(@__DIR__, ".."))
