@@ -22,12 +22,12 @@ recorded numbers; the flat case (sig_x/sig_y = 11) is the new result.
 
 Run from this folder (CPU, ~2-4 min after compilation):
 
-    julia --startup-file=no --project=/cfs/ad/dxu/Library/Julia/Octopus flat_beam_noise_floor.jl
+    julia --startup-file=no --project=. paper/noise_floor_meshswap.jl
 
 Output: data/flat_beam_noise_floor.tsv plus a printed table.
 =#
 
-const OCTOPUS_ROOT = "/cfs/ad/dxu/Library/Julia/Octopus"
+const OCTOPUS_ROOT = normpath(joinpath(@__DIR__, ".."))
 
 if !isdefined(Main, :Octopus)
     include(joinpath(OCTOPUS_ROOT, "src", "Octopus.jl"))

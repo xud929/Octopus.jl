@@ -1,5 +1,5 @@
 # Sec 4.1 mesh/reference study RE-EXECUTED from released tag v0.1.11 with
-# archived driver (sst_mesh.jl). Production point, shortened electron damping
+# archived driver (mesh_study_driver.jl). Production point, shortened electron damping
 # (100 turns), 1000 turns, seeds 1/2222/3333, production macroparticle counts.
 # Proton horizontal emittance growth, percent.
 config	seed	pro_ex_growth_pct
