@@ -2,7 +2,7 @@
 # Same beam parameters as the coherent-mode benchmark deck; records the
 # per-turn geometric emittance of beam 1 so eps(turn) can be overlaid on
 # BeamBeam3D's fort.24 columns 7-8.
-include("/cfs/ad/dxu/Library/Julia/Octopus/src/Octopus.jl")
+include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
 using .Octopus
 using Statistics
 
@@ -43,7 +43,7 @@ function emit_series(; aspect, turns, n_macro, xi, seed, offset)
         (ex, ey)
     end
     tag = aspect == 1.0 ? "round" : "flat"
-    open("/home/cfsd/dxu/.claude/jobs/a218e0b7/tmp/emit_xcode_$(tag).tsv","w") do io
+    open(joinpath(@__DIR__, "data", "emit_xcode_$(tag).tsv"),"w") do io
         println(io, "# Octopus per-turn geometric emittance, aspect=$aspect xi=$xi")
         println(io, "turn\tex\tey")
         for t in 1:turns

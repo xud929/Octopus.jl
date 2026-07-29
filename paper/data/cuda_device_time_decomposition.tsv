@@ -1,0 +1,18 @@
+# CUDA.jl 6.2.1 in-process CUPTI profile, production point
+# 10 steady-state turns after 20 warm-up turns
+# uninstrumented_wall_s_per_turn	0.314136
+# profiler_trace_s	3.850
+# device_busy_s	2.420
+# device_busy_fraction_of_uninstrumented_turn	0.7704
+phase	percent_device_time	ms_per_turn	calls_per_turn
+PIC kick (incl. longitudinal)	30.67	74.233	225.0
+PIC deposition	20.16	48.816	900.0
+adaptive-extent bounds	16.84	40.750	479.0
+cuFFT transforms	11.12	26.887	157.6
+non-collision beamline	9.34	22.630	4.0
+framework broadcast/copy/reduce	8.08	19.582	1433.8
+spectral multiply	1.92	4.667	29.0
+Green function build	1.14	2.769	20.8
+field differences	0.48	1.151	29.0
+indexed wavefront bookkeeping	0.14	0.336	59.0
+luminosity accounting	0.11	0.251	29.0

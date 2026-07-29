@@ -233,7 +233,7 @@ function run_family(name, sigx, sigy; picgrid, hybgrid, spN, spdfac, seed, io)
 end
 
 
-out = "/home/cfsd/dxu/.claude/jobs/a218e0b7/tmp/noise_floor_meshswap.tsv"
+out = joinpath(@__DIR__, "data", "noise_floor_meshswap.tsv")
 open(out, "w") do io
     println(io, "# Median |K_num - K_exact| / max|K_exact|, 81x81 field grid +-4 sigma")
     println(io, "family_case\tsoft_gaussian\tpic\thybrid\tspectral")

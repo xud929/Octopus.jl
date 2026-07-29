@@ -1,4 +1,28 @@
 #=
+Device-time decomposition of the production CUDA turn (Table 6, Sec. 6.3).
+
+This is test/examples/strong_strong_tracking.jl with the single execute! call
+replaced by: warm-up turns, an uninstrumented steady-state window for the
+wall-clock reference, and the same window again under CUDA.jl's in-process
+CUPTI profiler (`CUDA.@profile`).  Protocol matches Sec. 6.1's solver-only
+benchmark: 20 warm-up turns discarded, 10 steady-state turns measured.
+
+The two execute! calls restart the task turn counter, which replays the
+stochastic stream in the profiled segment.  That changes the physics of those
+turns but not which kernels run or how long they take, and the profiled
+segment's physics is discarded.  (See paper/data/multiturn_deferred/README.md
+for why the restart matters when physics IS the output.)
+
+Run (production point):
+  OCTOPUS_USE_GPU=1 OCTOPUS_N_MACRO_ELE=2560000 OCTOPUS_N_MACRO_PRO=1024000 \
+  OCTOPUS_DISABLE_MOMENTS=1 OCTOPUS_DISABLE_LUMINOSITY_OUTPUT=1 \
+  PROF_WARMUP=20 PROF_TURNS=10 \
+  julia --startup-file=no --project=. paper/cuda_device_profile.jl
+
+Do not run this while another job is using the GPU.
+=#
+
+#=
 Strong-strong tracking example with two live beams.
 
 This is the CONFIGURABLE development/testing harness: it exposes the solver
@@ -131,13 +155,14 @@ tests; the clean `examples/` counterpart writes to the repo-root `result/`):
 
 if !isdefined(Main, :Octopus)
     include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+using CUDA
 end
 using .Octopus
 
 input = (
     case_name = "pic_hcc",
     result_dir = joinpath(@__DIR__, "..", "result"),
-    seed = parse(Int, get(ENV, "SST_SEED", "1")),
+    seed = 123456789,
     total_turns = 50000,
     default_demo_macroparticles = 200,
     crossing_angle = 12.5e-3,
@@ -159,8 +184,7 @@ input = (
         crab_strength_x = (tan(12.5e-3) / sqrt(150.0 * 0.55), 0.0, 0.0),
         crab_strength_y = (0.0, 0.0, 0.0),
         crab_phase = (0.0, 0.0, 0.0),
-        radiation_damping_turns = (parse(Float64, get(ENV, "SST_DAMP", "100.0")),
-                                   parse(Float64, get(ENV, "SST_DAMP", "100.0")), parse(Float64, get(ENV, "SST_DAMPZ", "2000.0"))),
+        radiation_damping_turns = (4000.0, 4000.0, 2000.0),
     ),
 
     proton = (
@@ -192,7 +216,7 @@ input = (
     ),
 
     solver = (
-        pic_grid = (parse(Int, get(ENV, "SST_GRID", "128")), parse(Int, get(ENV, "SST_GRID", "128"))),
+        pic_grid = (128, 128),
         pic_deposit_method = :CIC,
         pic_luminosity_deposit_method = nothing,
         pic_green_type = :integrated,
@@ -623,27 +647,59 @@ task = StrongStrongTask(line_ele, line_pro;
     luminosity_path = disable_luminosity_output ? nothing : luminosity_path,
     diagnostics,
 )
-function _emit(b)
-    x = Array(b.rep.x); px = Array(b.rep.px)
-    y = Array(b.rep.y); py = Array(b.rep.py)
-    cx = x .- sum(x)/length(x); cpx = px .- sum(px)/length(px)
-    cy = y .- sum(y)/length(y); cpy = py .- sum(py)/length(py)
-    n = length(x)
-    ex = sqrt(max(0.0, (sum(cx.^2)/n)*(sum(cpx.^2)/n) - (sum(cx.*cpx)/n)^2))
-    ey = sqrt(max(0.0, (sum(cy.^2)/n)*(sum(cpy.^2)/n) - (sum(cy.*cpy)/n)^2))
-    return (ex, ey)
+# --- device-time decomposition (CUDA.jl in-process CUPTI profiler) ---
+# Protocol mirrors Sec 6.1's solver-only benchmark: discard warm-up turns,
+# profile the steady-state turns.  The two calls restart the task turn counter,
+# which replays the stochastic stream in the profiled segment; that changes the
+# physics of those turns but not which kernels run or how long they take, and
+# the profiled segment's physics is discarded.
+let warm = parse(Int, get(ENV, "PROF_WARMUP", "20")),
+    nprof = parse(Int, get(ENV, "PROF_TURNS", "10"))
+
+    execute!(task, beam_ele, beam_pro; turns = warm)
+
+    # wall-clock reference for the same steady-state window, uninstrumented
+    CUDA.synchronize()
+    t0 = time_ns()
+    execute!(task, beam_ele, beam_pro; turns = nprof)
+    CUDA.synchronize()
+    wall = (time_ns() - t0) / 1e9
+    println("PROFILE_WALL_UNINSTRUMENTED_S_PER_TURN = ", wall / nprof)
+
+    prof = CUDA.@profile trace=true execute!(task, beam_ele, beam_pro; turns = nprof)
+    println("PROFILE_TURNS = ", nprof)
+
+    # Full-precision per-activity records.  The PRINTED trace table rounds the
+    # start column far coarser than a typical kernel duration, so a union of
+    # busy intervals can only be computed from these vectors, not from the
+    # printed table.  CUDA.jl's own "GPU was busy" figure is sum(stop-start),
+    # which over-counts wherever activities on different streams overlap.
+    d = prof.device
+    open(get(ENV, "PROF_DEVICE_TSV",
+             joinpath(@__DIR__, "data", "cuda_device_activities.tsv")), "w") do io
+        println(io, "start_s\tstop_s\tstream\tname")
+        for i in eachindex(d.start)
+            println(io, d.start[i], '\t', d.stop[i], '\t', d.stream[i], '\t', d.name[i])
+        end
+    end
+    total = sum(d.stop .- d.start)
+    ord = sortperm(d.start)
+    union_s = 0.0; cs = d.start[ord[1]]; ce = d.stop[ord[1]]
+    for i in ord[2:end]
+        if d.start[i] > ce
+            union_s += ce - cs; cs = d.start[i]; ce = d.stop[i]
+        else
+            ce = max(ce, d.stop[i])
+        end
+    end
+    union_s += ce - cs
+    println("DEVICE_SUM_S = ", total)
+    println("DEVICE_UNION_S = ", union_s)
+    println("DEVICE_OVERCOUNT_FRAC = ", total / union_s - 1)
+    println("N_ACTIVITIES = ", length(d.start))
+    println("N_STREAMS = ", length(unique(d.stream)))
 end
-_e0 = _emit(beam_pro)
-_ele0 = _emit(beam_ele)
-execute!(task, beam_ele, beam_pro; turns = turns)
-_e1 = _emit(beam_pro)
-_ele1 = _emit(beam_ele)
-println("MESHSCAN seed=", input.seed, " grid=", get(ENV, "SST_GRID", "128"),
-        " damp=", get(ENV, "SST_DAMP", "100.0"), " turns=", turns,
-        " pro_ex_growth_pct=", 100*(_e1[1]/_e0[1] - 1),
-        " pro_ey_growth_pct=", 100*(_e1[2]/_e0[2] - 1),
-        " ele_ex_growth_pct=", 100*(_ele1[1]/_ele0[1] - 1),
-        " ele_ey_growth_pct=", 100*(_ele1[2]/_ele0[2] - 1))
+
 
 if record_turn_times
     timings = turn_timings(task)

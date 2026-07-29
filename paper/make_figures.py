@@ -7,7 +7,6 @@ Data sources (read-only):
     <octopus>/result/yokoya_vs_xi_{theory,measured}.tsv -> fig_yokoya_scans.pdf
   - <octopus>/result/gaussian_pic_field_validation_summary.tsv -> fig_error_vs_grid.pdf
   - <octopus>/result/pic_gaussian_field_validation_random_summary.tsv -> fig_error_vs_aspect.pdf
-  - <octopus>/result/emittance_growth_*_s*.tsv     -> fig_emittance_growth.pdf
   - <octopus>/result/eic_mode_spectra.tsv          -> fig_eic_modes.pdf
 
 Output: figs/*.pdf (vector, single-column friendly).
@@ -331,45 +330,6 @@ def fig_error_vs_aspect():
 
 
 # ============================================================================
-# 5. Artificial emittance growth vs turn, four PIC configurations, seed bands
-# ============================================================================
-def fig_emittance_growth():
-    arms = [
-        ("emittance_growth_linear_n15_cic", "linear, CIC (baseline)", BLUE),
-        ("emittance_growth_quadratic_n15_cic", "quadratic, CIC", ORANGE),
-        ("emittance_growth_linear_n15_cic_srcgrid", "linear, CIC, source-slice mesh", YELLOW),
-        ("emittance_growth_linear_n15_tsc", "linear, TSC", AQUA),
-        ("emittance_growth_quadratic_n15_tsc", "quadratic, TSC", "#0e6e50"),
-        ("emittance_growth_hybrid_n15_cic", "hybrid $64^2$, CIC", "#7a4fb8"),
-        ("emittance_growth_linear_n15_cic_node", "linear, CIC, node-indexed mesh", MUTED),
-    ]
-    fig, ax = plt.subplots(figsize=(4.9, 2.9))
-    for stem, label, color in arms:
-        series = []
-        for path in sorted(glob.glob(os.path.join(OCT, stem + "_s[0-9].tsv"))):
-            d = np.loadtxt(path, skiprows=1)
-            series.append(d[:, 2] / d[0, 2] - 1.0)  # ele_ey relative growth
-        series = np.array(series) * 100.0
-        turns = np.arange(series.shape[1])
-        mean = series.mean(axis=0)
-        lo, hi = series.min(axis=0), series.max(axis=0)
-        step = 4  # light downsampling for a compact vector file
-        ax.fill_between(turns[::step], lo[::step], hi[::step], color=color,
-                        alpha=0.16, linewidth=0)
-        ax.plot(turns[::step], mean[::step], color=color, linewidth=1.5,
-                label=label)
-    ax.set_xlabel("turn")
-    ax.set_ylabel(r"electron $\Delta\epsilon_y/\epsilon_y$  [%]")
-    ax.set_xlim(0, 800)
-    ax.set_ylim(bottom=0)
-    ax.legend(loc="upper left", handlelength=1.6, borderaxespad=0.2)
-    style_axis(ax)
-    fig.tight_layout()
-    fig.savefig(os.path.join(OUT, "fig_emittance_growth.pdf"))
-    plt.close(fig)
-
-
-# ============================================================================
 # 5b. Coherent sigma/pi mode spectra (round-beam Yokoya benchmark)
 # ============================================================================
 def fig_coherent_fft():
@@ -572,14 +532,62 @@ def fig_multislice_spectra():
     plt.close(fig)
 
 
+# ============================================================================
+# 9. EIC cross-code emittance benchmark (Octopus vs BeamBeam3D, 15 slices)
+# ============================================================================
+# Design geometric emittances sigma^2/beta, identical in both codes' decks.
+# Both curves are referenced to these rather than to each code's own turn-0
+# sample: the two codes draw their initial distributions independently and
+# record the first sample at different points in the turn.
+EIC_DESIGN = {
+    "ele_ex": 106.0e-6 ** 2 / 0.55,
+    "ele_ey": 9.5e-6 ** 2 / 0.056,
+    "pro_ex": 95.0e-6 ** 2 / 0.8,
+    "pro_ey": 8.5e-6 ** 2 / 0.072,
+}
+
+
+def fig_eic_emittance():
+    o = np.genfromtxt(os.path.join(OCT, "eic_emittance_octopus.tsv"),
+                      names=True, delimiter="\t")
+    b = np.genfromtxt(os.path.join(OCT, "eic_emittance_bb3d.tsv"),
+                      names=True, delimiter="\t")
+    fig, axes = plt.subplots(1, 2, figsize=(6.6, 2.7))
+    panels = [
+        ("(a) electron, damped ($\\tau=400$ turns)", ["ele_ex", "ele_ey"]),
+        ("(b) proton, undamped", ["pro_ex", "pro_ey"]),
+    ]
+    for k, (ax, (title, cols)) in enumerate(zip(axes, panels)):
+        for col, ls in zip(cols, ["-", "--"]):
+            lab = "$x$" if col.endswith("ex") else "$y$"
+            d = EIC_DESIGN[col]
+            ax.plot(o["turn"], 100 * (o[col] / d - 1), ls, color=BLUE,
+                    linewidth=1.3, label=f"Octopus {lab}")
+            ax.plot(b["turn"], 100 * (b[col] / d - 1), ls, color=ORANGE,
+                    linewidth=1.3, alpha=0.85, label=f"BeamBeam3D {lab}")
+        ax.set_title(title, loc="left")
+        ax.set_xlabel("turn")
+        ax.set_xlim(0, max(o["turn"].max(), b["turn"].max()))
+        ax.set_ylim(bottom=0)
+        if k == 0:
+            ax.legend(loc="lower center", handlelength=1.6,
+                      borderaxespad=0.3, fontsize=6.2, ncol=2,
+                      columnspacing=1.1, framealpha=0.92)
+        style_axis(ax)
+    axes[0].set_ylabel(r"$\epsilon/\epsilon_{\rm design}-1$  [%]")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT, "fig_eic_emittance.pdf"))
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     fig_noise_floor()
     fig_boundary_jump()
     fig_yokoya_scans()
     fig_error_vs_grid()
     fig_error_vs_aspect()
-    fig_emittance_growth()
     fig_coherent_fft()
     fig_eic_modes()
     fig_multislice_spectra()
+    fig_eic_emittance()
     print("figures written to", OUT)

@@ -221,25 +221,34 @@ function decompose(sigx, sigy; grid, method, n, R, seed)
     bias = [hypot(sum(@view ex[k, :]) / R, sum(@view ey[k, :]) / R) for k in eachindex(xf)]
     fluc = [hypot(std(@view ex[k, :]), std(@view ey[k, :])) for k in eachindex(xf)]
     tot  = [median([hypot(ex[k, r], ey[k, r]) for r in 1:R]) for k in eachindex(xf)]
-    return median(bias) / gnorm, median(fluc) / gnorm, median(tot) / gnorm
+    b, f = median(bias) / gnorm, median(fluc) / gnorm
+    # Sampling-noise floor of the BIAS statistic.  `bias` is the magnitude of a
+    # 2-D mean vector, so under the null (no true systematic) it is Rayleigh
+    # with scale a = (fluc/sqrt(2))/sqrt(R); its MEDIAN is a*sqrt(2 ln 2).
+    # Hence median_null = fluc*sqrt(ln 2 / R).  Note this is NOT fluc/sqrt(R),
+    # and NOT the 1-D constant 0.6745*fluc/sqrt(R): both were used in earlier
+    # versions of this measurement and both are wrong for a vector magnitude.
+    floor = f * sqrt(log(2) / R)
+    return b, f, median(tot) / gnorm, floor
 end
 
-const OUT2 = "/home/cfsd/dxu/.claude/jobs/a218e0b7/tmp/kick_decomposition.tsv"
+const OUT2 = joinpath(@__DIR__, "data", "kick_decomposition_R100.tsv")
 open(OUT2, "w") do io
     println(io, "# Kick-error systematic/fluctuation split, 81x81 field grid +-4 sigma,")
     println(io, "# median over field points, normalized by peak exact kick.")
     println(io, "# R independent source realizations per row.")
-    println(io, "family\tgrid\tdeposit\tn_macro\tR\tbias\tfluctuation\ttotal_median")
+    println(io, "family\tgrid\tdeposit\tn_macro\tR\tbias\tfluctuation\ttotal_median\tbias_floor")
     for (fam, sx, sy) in (("round", 2.0e-3, 2.0e-3), ("flat11", 2.0e-3, 2.0e-3 / 11))
         for grid in (64, 128)
             for method in (:CIC, :TSC)
-                n = 100_000; R = 12
-                b, f, t = decompose(sx, sy; grid = grid, method = method,
-                                    n = n, R = R, seed = 20260728)
+                n = 100_000
+                R = parse(Int, get(ENV, "OCTOPUS_KD_R", "100"))
+                b, f, t, fl = decompose(sx, sy; grid = grid, method = method,
+                                        n = n, R = R, seed = 20260728)
                 @printf("%-7s %4d^2 %s n=%.0e  bias=%.3e  fluct=%.3e  total=%.3e\n",
                         fam, grid, method, n, b, f, t)
                 println(io, fam, "\t", grid, "\t", method, "\t", n, "\t", R,
-                        "\t", b, "\t", f, "\t", t)
+                        "\t", b, "\t", f, "\t", t, "\t", fl)
                 flush(io)
             end
         end

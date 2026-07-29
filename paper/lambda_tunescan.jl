@@ -2,7 +2,7 @@
 # Reuses the measurement pattern of validation/coherent_mode_scans.jl with a
 # variable RNG seed. Converged settings (8192 turns, 1e5/beam) x 3 seeds for
 # PIC and soft-Gaussian; scan settings (2048 turns, 2e4/beam) x 5 seeds for PIC.
-include("/cfs/ad/dxu/Library/Julia/Octopus/src/Octopus.jl")
+include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
 using .Octopus
 using Statistics
 import FFTW
