@@ -13,6 +13,7 @@ SRC = "/cfs/ad/dxu/Work/Daily/20260727_Octopus_paper/main.tex"
 flat = re.sub(r"\s+", " ", open(SRC).read())
 
 MUST_BE_ABSENT = [
+    "$1.158$",
     "ships with the driver that produced it",
     "Everything else in the package",
     "plane assignment differs from the wide-plane scan",
@@ -46,7 +47,7 @@ MUST_BE_PRESENT = [
     "$L=42$",
     "1.213",
     "rigid-bunch limit",
-    "$1.158$",
+    "$1.162$",
     "smallest difference this design could have detected",
     "$14.4\\times$",
     "$1.17\\times$",

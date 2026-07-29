@@ -19,7 +19,7 @@ Numbered as in the manuscript.
 | 3 | `fig_error_vs_aspect.pdf` | 4.1 | `pic_gaussian_field_validation_random_summary.tsv` |
 | 4 | `fig_boundary_jump.pdf` | 4.2 | `slice_longitudinal_zscan_jumps.tsv`, `slice_longitudinal_zscan_tsc_jumps.tsv` |
 | 5 | `fig_coherent_fft.pdf` | 5.1 | `coherent_spectrum_pic_{x,y}.tsv` |
-| 6 | `fig_yokoya_scans.pdf` | 5.1 | `yokoya_vs_aspect{,_measured}.tsv`, `yokoya_vs_xi_{theory,measured}.tsv`, `lambda_narrowplane.tsv` |
+| 6 | `fig_yokoya_scans.pdf` | 5.1 | `yokoya_vs_aspect{,_measured}.tsv`, `yokoya_vs_xi_{theory,measured}.tsv`, `lambda_narrowplane.tsv` (see note) |
 | 7 | `fig_multislice_spectra.pdf` | 5.3 | `multislice_centroids_{octopus_kicked,octopus_noise,bb3d}.tsv` |
 | 8 | `fig_eic_emittance.pdf` | 5.4 | `eic_emittance_{octopus,bb3d}.tsv` |
 | 9 | `fig_eic_modes.pdf` | 5.6 | `eic_mode_spectra.tsv` |
@@ -54,6 +54,17 @@ Numbered as in the manuscript.
   packing and cuBLAS scaling that exist only to feed them -- their launch
   counts are integer multiples of the transform counts with zero residual.
   The full pipeline is 37.7 ms/turn, 15.6% of device time.
+
+**Note on Fig. 6's theory curves.** `yokoya_vs_aspect.tsv` was regenerated
+after a normalization defect was found in
+`../validation/coherent_mode_vlasov_theory.jl`: the reduction normalized its
+kick to its own averaged curvature rather than to the analytic on-axis
+gradient that defines xi, which forces u(0) = 1 whatever the kernel does and
+inflates Lambda by (sqrt2 r + 1)/(r + 1). The driver is fixed (both the m=1
+matrix and the independent particle solver), carries a self-check that fails
+if the circular normalization returns, and the archived TSV is the corrected
+output. Round-beam Lambda: 1.40 before, 1.162 after, against a measured 2D
+1.206. The two solvers agree to 1.2-1.6% wherever a discrete mode exists.
 
 ## Section-level supporting data
 

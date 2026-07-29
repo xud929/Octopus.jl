@@ -37,7 +37,22 @@ eigenproblem. Self-checks built in:
 3. the discrete pi mode must sit above the incoherent continuum
    [Q0, Q0 + xi], and Y = (Omega_pi - Q0)/xi must be xi-independent
    (leading-order theory), reproducing the literature anchors
-   (~1.2 round, ~1.33 flat) and our measured strong-strong values.
+   (~1.2 round, ~1.33 flat) and our measured strong-strong values;
+4. the normalizing curvature must be the ANALYTIC on-axis gradient, not the
+   reduction's own averaged curvature.  Normalizing by the latter is circular
+   -- it forces u(0) = 1 whatever the kernel does -- and inflates Lambda by
+   (sqrt(2) r + 1)/(r + 1).  The check below reports u(0), which after the fix
+   is the ratio of the reduction's averaged curvature to the physical one and
+   must therefore be BELOW 1 and aspect-dependent; a value of exactly 1 means
+   the circular normalization has returned.
+
+   A residual inconsistency of the averaged kernel survives this fix and is
+   reported rather than hidden: the rigid-bunch diagnostic
+   2*normalized_equilibrium(k,sqrt2)/normalized_equilibrium(k,1), which would
+   be 1 for a kernel whose relative-displacement response matched its on-axis
+   gradient, runs 1.21 (round) to 1.41 (extreme flat).  The reduction is
+   therefore not a quantitative instrument at the few-percent level; see the
+   manuscript's Sec. 5.1.
 
 Outputs (TSV under result/): yokoya_vs_aspect.tsv, yokoya_vs_xi_theory.tsv,
 eic_coherent_modes.tsv. Plots: validation/plot_coherent_mode_theory.py.
@@ -237,8 +252,21 @@ function coupled_modes(; Q1, xi1, scale1, Q2, xi2, scale2, s_t, sign_kernel)
     # Normalization in each witness's own dimensionless coordinate: the
     # potential must satisfy Vhat0''(0) = 1 with respect to x-hat = x/scale_w,
     # so the raw curvature N0 (per meter^2 in kernel units) carries scale_w^2.
-    N01 = normalized_equilibrium(k, scale2) * scale1^2   # beam 1 kicked by 2
-    N02 = normalized_equilibrium(k, scale1) * scale2^2
+    #
+    # The normalizing curvature must be the PHYSICAL on-axis gradient that
+    # defines xi, 1/[sigma_i (sigma_i + sigma_o)] with the SOURCE's sizes, and
+    # NOT the reduction's own averaged curvature `normalized_equilibrium`.
+    # Using the latter self-normalizes: u(0) is then 1 by construction whatever
+    # the kernel does, and the resulting Lambda is too large by
+    # (sqrt(2) r + 1)/(r + 1).  The model diagnoses this itself -- with the
+    # averaged curvature its rigid-bunch limit returns 1.213 (round) to 1.412
+    # (extreme flat) where it must return exactly 1 (self-check 4 below).
+    # `s_t` is the summed other-plane spread of both beams, so one beam's is
+    # s_t/sqrt(2).
+    sigma_o = s_t / sqrt(2.0)
+    analytic_gradient(s_src) = 1.0 / (s_src * (s_src + sigma_o))
+    N01 = analytic_gradient(scale2) * scale1^2   # beam 1 kicked by 2
+    N02 = analytic_gradient(scale1) * scale2^2
     u1 = [detuning_u(k, N01, scale1, scale2, Jv) for Jv in J]
     u2 = [detuning_u(k, N02, scale2, scale1, Jv) for Jv in J]
     K12 = kernel_matrix(k, N01, scale1, scale2, J, J)
@@ -301,7 +329,11 @@ function simulate_1d_model(r; xi=XI, q0=Q0, n_macro=100_000, turns=4096,
                            ngrid=4096, L=24.0, offset=0.1, seed=1234567)
     s_t = sqrt(2.0) * r
     k = PlaneKernel(s_t, 1.05 * sqrt(2 * JMAX) * 2 + 6 * s_t)
-    N0 = normalized_equilibrium(k, 1.0)
+    # Same normalization fix as coupled_modes: divide by the PHYSICAL on-axis
+    # gradient 1/[sigma_i (sigma_i + sigma_o)], not by the reduction's own
+    # averaged curvature. Both solvers must use the same xi or their agreement
+    # is meaningless. sigma_o = s_t/sqrt(2) is one beam's other-plane spread.
+    N0 = 1.0 / (1.0 * (1.0 + s_t / sqrt(2.0)))
     dx = L / ngrid
     kfreq = 2pi .* FFTW.fftfreq(ngrid, 1 / dx)
     # FT of G(u) = <u/(u^2+v^2)>_{v~N(0,s)}: averaging exp(-|k||v|) over the
@@ -373,6 +405,20 @@ if get(ENV, "OCTOPUS_VLASOV_LIB_ONLY", "0") == "1"
     # Definitions only (for convergence experiments and external reuse).
 else
 
+println("Self-check 4 (normalization is analytic, not circular):")
+for r in (1.0, 5.0, 11.111)
+    s_t = sqrt(2.0) * r
+    kk = PlaneKernel(s_t, 1.05 * sqrt(2 * JMAX) * 2 + 6 * s_t)
+    sigma_o = s_t / sqrt(2.0)
+    n0_analytic = 1.0 / (1.0 * (1.0 + sigma_o))
+    u0 = detuning_u(kk, n0_analytic, 1.0, 1.0, 1e-6)
+    rigid = 2 * normalized_equilibrium(kk, sqrt(2.0)) / normalized_equilibrium(kk, 1.0)
+    ok = u0 < 0.999
+    println("  r=", rpad(r, 8), " u(0)=", round(u0; digits=4),
+            ok ? "  OK (not self-normalized)" : "  FAIL (circular normalization)",
+            "   rigid diagnostic=", round(rigid; digits=3))
+end
+println()
 println("Self-checks (round beams, r=1, xi=$(XI), Q0=$(Q0)):")
 for s in (1.0, -1.0)
     chk = symmetric_Y(1.0; sign_kernel=s)

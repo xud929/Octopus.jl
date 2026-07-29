@@ -626,6 +626,15 @@ resolution limit of the analysis), with the sigma mode at the bare tune to
 `coherent_modes/`; the script takes the run directory as an argument or via
 `OCTOPUS_BB3D_RUNDIR`.
 
+  NOTE (2026-07): the xi normalization was corrected. The reduction had been
+  normalizing its kick to its OWN averaged curvature, which forces u(0)=1
+  whatever the kernel does and inflates Lambda by (sqrt2 r + 1)/(r + 1)
+  (1.21 at round beams). It now normalizes to the analytic on-axis gradient
+  1/[sigma_i(sigma_i+sigma_o)] that defines xi, in BOTH the matrix solve and
+  the particle solver. Self-check 4 reports u(0) and fails if the circular
+  normalization returns. Round-beam Lambda: 1.40 before, 1.162 after, against
+  a measured 2D 1.206.
+
 ## Gaussian-Subtracted PIC z-Scan
 
 `gaussian_pic_zscan.jl` completes docs/todo.md item 4a: the frozen longitudinal
