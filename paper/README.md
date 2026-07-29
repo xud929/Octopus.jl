@@ -28,11 +28,18 @@ Numbered as in the manuscript.
 
 - **Table 1** (single-kick error budget, Sec. 4.1) is exactly
   `flat_beam_noise_floor.tsv`. Six-seed repeat scatter: `nf_seed_{11..66}.tsv`.
-- **Table 2** (Yokoya factors, Sec. 5.1) comes from the runs recorded in the
-  section text; the BeamBeam3D entry uses the deck in `data/bb3d_decks/`.
+- **Table 2** (Yokoya factors, Sec. 5.1): the PIC row is
+  `lambda_round_converged.tsv`, an independent three-seed re-measurement from
+  `lambda_flat_converged.jl` (aspect 1.0) that reproduces the printed entries;
+  the BeamBeam3D entry uses the deck in `data/bb3d_decks/`.
 - **Table 3** (cross-code emittance benchmark, Sec. 5.4) is computed from
-  `eic_emittance_{octopus,bb3d}.tsv` as the mean over the final 2048 turns,
-  relative to the design emittance sigma*^2/beta*.
+  `eic_emittance_{octopus,bb3d}.tsv` as the mean over the final 2048 turns.
+  NOTE the two beams use different baselines, deliberately: the DAMPED electron
+  is referenced to the design emittance sigma*^2/beta* (damping erases its
+  initial sample), while the UNDAMPED proton is referenced to each code's own
+  initial value. Referencing the proton to design would permanently import the
+  two codes' initial sampling difference (-0.28 and +0.42 pp in x and y),
+  which is larger than the growth differences being compared.
 - **Tables 4 and 5** (CUDA waterfall and ablation, Sec. 6.2) are wall-clock A/B
   measurements recorded in the paper text; `cpu_gpu_timing_summary.tsv` and
   `gpu_size_scaling.tsv` hold the thread sweep, observer A/B and size scans.
@@ -46,21 +53,28 @@ Numbered as in the manuscript.
 ## Section-level supporting data
 
 - **Sec. 4.1, mesh study (the measurement that carries the section).**
-  `mesh_study_reexecution.tsv` + `mesh_study_driver.jl` --- three seeds at each
-  of 64^2, 128^2, 256^2 plus the grid-free soft-Gaussian reference, re-executed
+  `mesh_study_reexecution.tsv` + `mesh_study_driver.jl` --- seeds 1/2222/3333 at
+  64^2, 256^2 and the grid-free soft-Gaussian reference, and seeds 1/2222 at
+  128^2 (the coverage is uneven; the third seed is the largest wherever it
+  exists, so the 128^2 mean is the one most likely biased low). Re-executed
   from the released tag with the driver archived. This supersedes an earlier
   unarchived study; see "Code and data availability" in the manuscript.
+  See also the Green-cache confound control below: about half the apparent
+  mesh trend in this file is the cache, not the mesh.
 - **Sec. 4.1, mesh-swap control.** `noise_floor_meshswap.tsv` +
   `noise_floor_meshswap.jl` (plain PIC at 64^2 against hybrid at 128^2).
 - **Sec. 4.1, systematic/fluctuation decomposition.**
   `kick_decomposition_R100.tsv` + `kick_decomposition.jl`. Realization count
-  from `OCTOPUS_KD_R` (default 100); the script writes the archived file
-  directly. The `bias_floor` column is the sampling-noise floor of the bias
-  statistic. Note that `bias` is the magnitude of a 2-D mean vector, so its
-  null is Rayleigh and the median floor is `fluct*sqrt(ln 2 / R)`, i.e.
-  0.833*fluct/sqrt(R) -- neither `fluct/sqrt(R)` nor the 1-D constant
-  0.6745*fluct/sqrt(R), both of which appeared in earlier versions of this
-  measurement and are wrong for a vector magnitude.
+  from `OCTOPUS_KD_R` (default 100), bootstrap draws from `OCTOPUS_KD_NBOOT`
+  (default 200); the script writes the archived file directly.
+  `bias_floor_bootstrap` is the sampling-noise floor of the bias statistic
+  MEASURED by a sign-flip (Rademacher) bootstrap: flipping each realization's
+  sign preserves the per-point fluctuation structure and destroys any true
+  systematic, so the flipped ensemble's median |mean| is the floor, with no
+  distributional assumption. `bias_floor_rayleigh` is the Gaussian-isotropic
+  closed form `fluct*sqrt(ln 2 / R)` for comparison only -- it agrees with the
+  measured floor to just -15%/+18% across the eight configurations, which is
+  why the manuscript uses the bootstrap.
 - **Sec. 4.1, reference-noise bound.** `softgauss_count_scan.tsv`.
 - **Sec. 5.1, tune-swap control.** `lambda_tuneswap_control.tsv`.
 - **Sec. 5.1, narrow-plane xi control.** `lambda_narrowplane_fixedxiy.tsv` +
@@ -68,6 +82,16 @@ Numbered as in the manuscript.
   narrow-plane branch is not a xi_y artifact).
 - **Sec. 5.1, flat-beam robustness.** `lambda_flatxi.jl`, `lambda_tunescan.jl`
   (Lambda against xi and against working point).
+- **Sec. 4.1, Green-cache confound control.** `mesh_study_cache_none.tsv` --
+  the identical mesh study re-run with `OCTOPUS_PIC_GREEN_CACHE=none`, three
+  seeds at each of 64^2/128^2/256^2. The cache's tight-fit penalty is
+  mesh-dependent (+5.4% at 64^2 against +0.4%/+0.3% at 128^2/256^2), so it
+  contributes about half the apparent mesh trend; the paper reports the trend
+  both with and without it. This arm also carries the full three-seed coverage
+  at 128^2 that the cached study lacks.
+- **Sec. 5.1, Table 2 re-measurement.** `lambda_round_converged.tsv` +
+  `lambda_flat_converged.jl` (aspect 1.0) -- the round-beam PIC row of Table 2
+  re-measured from an archived driver at three fresh seeds.
 - **Sec. 5.1, converged flat-beam point.** `lambda_flat_converged.tsv` +
   `lambda_flat_converged.jl` -- the r = 0.09 point re-measured at the converged
   settings of Table 2 (8192 turns, 1e5 macroparticles/beam, three seeds),
@@ -111,9 +135,14 @@ correctness constraint worth reading before extending them.
 
 - Scripts in this directory use paths relative to their own location, so the
   package is self-contained.
-- One documented gap: the driver for the *original* mesh/reference
-  decomposition of Sec. 4.1 was not archived, and that study is not
-  re-executable from the release. `mesh_study_driver.jl` is the archived
-  re-execution that carries the section's conclusions.
+- Documented gaps, of two kinds. (a) The driver for the *original*
+  mesh/reference decomposition of Sec. 4.1 was not archived, and that study is
+  not re-executable; `mesh_study_driver.jl` is the archived re-execution that
+  carries the section's conclusions, and the original's claim is withdrawn in
+  the manuscript. (b) A few datasets are frozen without their generating
+  driver -- `flat_beam_noise_floor.tsv` and its `nf_seed_*` repeats,
+  `pic_analytic_floor.tsv`, and the `slice_longitudinal_zscan*` files. These
+  are checkable and re-plottable but not re-executable, and the manuscript
+  rests no conclusion on any of them alone.
 - Pin turn counts explicitly when re-running validation ensembles; at least one
   script's default drifted during development.
