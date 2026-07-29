@@ -33,3 +33,7 @@ profiling/log
 
 # Jupyter notebooks are kept outside this repo
 *.ipynb
+
+# Python bytecode from paper/ helper scripts
+__pycache__/
+*.pyc

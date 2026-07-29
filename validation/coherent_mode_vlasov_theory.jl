@@ -46,6 +46,13 @@ eigenproblem. Self-checks built in:
    must therefore be BELOW 1 and aspect-dependent; a value of exactly 1 means
    the circular normalization has returned.
 
+5. a HARMONIC interaction must give Lambda = 2 exactly.  For V(u) = u^2/2 the
+   detuning vanishes (u(J) = 1) and the m=1 projection has the closed form
+   K(J,J') = -sqrt(J J')/2, which puts the sigma mode at Q0 and the pi mode at
+   Q0 + 2 xi.  This checks every assembly constant -- the phi/phi' quadrature
+   weights, the 1/(2 pi^2) projection factor and the 2 xi e^{-J} w' weighting --
+   against a closed form, independently of the Coulomb kernel and of check 4.
+
    A residual inconsistency of the averaged kernel survives this fix and is
    reported rather than hidden: the rigid-bunch diagnostic
    2*normalized_equilibrium(k,sqrt2)/normalized_equilibrium(k,1), which would
@@ -54,8 +61,8 @@ eigenproblem. Self-checks built in:
    therefore not a quantitative instrument at the few-percent level; see the
    manuscript's Sec. 5.1.
 
-Outputs (TSV under result/): yokoya_vs_aspect.tsv, yokoya_vs_xi_theory.tsv,
-eic_coherent_modes.tsv. Plots: validation/plot_coherent_mode_theory.py.
+Outputs (TSV under result/): yokoya_vs_aspect.tsv, yokoya_vs_aspect_narrow.tsv,
+yokoya_box_convergence.tsv, yokoya_vs_xi_theory.tsv, eic_coherent_modes.tsv. Plots: validation/plot_coherent_mode_theory.py.
 
 Run:  julia --project=. validation/coherent_mode_vlasov_theory.jl
 (standalone: needs only LinearAlgebra; ~1-2 min at default resolution)
@@ -300,6 +307,69 @@ function best_match(res, target; block=:both)
 end
 
 # ---------------------------------------------------------------------------
+# Exact check: a HARMONIC interaction must give Lambda = 2.
+#
+# For the pairwise potential V(u) = u^2/2 the source average is x^2/2 +
+# s_src^2/2, whose on-axis curvature is 1, so N0 = 1 and
+# u(J) = 2 d<V>_phi/dJ = 1 at every action: a linear force detunes nothing.
+# The m=1 projection keeps only the cross term -x x', so analytically
+#
+#   K(J,J') = -(1/2pi^2) sqrt(2J) sqrt(2J') Int_0^2pi cos^2 phi dphi
+#                                           Int_0^pi  cos^2 phi' dphi'
+#           = -sqrt(J J')/2,
+#
+# and acting on the rigid translation g = sqrt(2J) e^{-J},
+#
+#   (C g)(J) = 2 xi e^{-J} Int K(J,J') g(J') dJ' = -xi g(J),
+#
+# so the sigma mode (g1 = g2) sits at Q0 + xi - xi = Q0 and the pi mode
+# (g1 = -g2) at Q0 + xi + xi = Q0 + 2 xi.  Hence Lambda = 2 exactly.
+#
+# This exercises every assembly constant -- the phi and phi' quadrature
+# weights, the 1/(2 pi^2) projection factor, and the 2 xi e^{-J} w' weighting
+# -- against a closed form, independently of the Coulomb kernel and of the
+# normalization fix that self-check 4 guards.
+# ---------------------------------------------------------------------------
+function harmonic_Y(; Q=Q0, xi=XI)
+    Jn, Jw = gauss_legendre(NJ)
+    J = (Jn .+ 1.0) .* (JMAX / 2)
+    w = Jw .* (JMAX / 2)
+    nphi = NPHI
+    nphi2 = NPHI ÷ 2
+    phi = ((0:(nphi - 1)) .+ 0.5) .* (2pi / nphi)
+    phi2 = ((0:(nphi2 - 1)) .+ 0.5) .* (pi / nphi2)
+    cw = cos.(phi); cs = cos.(phi2)
+    K = Matrix{Float64}(undef, length(J), length(J))
+    for (jj, Jp) in enumerate(J)
+        xs = sqrt(2Jp) .* cs
+        for (ii, Jv) in enumerate(J)
+            xw = sqrt(2Jv) .* cw
+            acc = 0.0
+            @inbounds for a in 1:nphi, b in 1:nphi2
+                u = xw[a] - xs[b]
+                acc += cw[a] * cs[b] * (u * u / 2)
+            end
+            # Identical assembly constants to `kernel_matrix`, with N0 = 1.
+            K[ii, jj] = acc * (2pi / nphi) * (pi / nphi2) / (2 * pi^2)
+        end
+    end
+    # Largest relative departure of the assembled kernel from the closed form.
+    kerr = maximum(abs(K[i, j] + sqrt(J[i] * J[j]) / 2) /
+                   (sqrt(J[i] * J[j]) / 2) for i in eachindex(J), j in eachindex(J))
+    E = exp.(-J)
+    A = Diagonal(Q .+ xi .* ones(length(J)))      # u(J) = 1 exactly
+    C = 2 .* xi .* (E .* K) .* w'
+    M = [Matrix(A) C; C Matrix(A)]
+    ev = eigen(M)
+    res = (J=J, values=ev.values, vectors=ev.vectors)
+    g = sqrt.(2 .* J) .* E
+    q_sigma, o_s = best_match(res, g; block=:both)
+    q_pi, o_p = best_match(res, g; block=:diff)
+    return (Y=(q_pi - q_sigma) / xi, q_sigma=q_sigma, q_pi=q_pi,
+            kernel_err=kerr, overlap_sigma=o_s, overlap_pi=o_p)
+end
+
+# ---------------------------------------------------------------------------
 # 1. Symmetric case: self-checks and Y versus aspect ratio.
 # ---------------------------------------------------------------------------
 mkpath(RESULT_DIR)
@@ -418,10 +488,19 @@ let failed = String[]
         n0phys = 1.0 / (1.0 + s_t / sqrt(2.0))
         rigid = 2 * normalized_equilibrium(kk, sqrt(2.0)) / n0phys
         u0 = detuning_u(kk, n0phys, 1.0, 1.0, 1e-6)
-        ok = abs(rigid - 1) < 2e-2
+        # PRIMARY test, and deliberately not substitutable: u(0) must equal
+        # the exact ratio of the reduction's own gradient 1/(1+s_t) to the
+        # physical normalizer 1/(1+sigma_o), i.e. (1+r)/(1+sqrt2 r).  This
+        # exercises `averaged_potential`'s quadrature directly.  The rigid
+        # diagnostic below tests `normalized_equilibrium` only, and would be
+        # silently satisfied if a later maintainer substituted the analytic
+        # gradient there while leaving the potential quadrature broken.
+        u0_exact = (1.0 + r) / (1.0 + sqrt(2.0) * r)
+        ok = abs(u0 - u0_exact) < 2e-2
         ok || push!(failed, string(r))
-        println("  r=", rpad(r, 7), " rigid=", rpad(round(rigid; digits=4), 9),
-                " u(0)=", rpad(round(u0; digits=4), 8),
+        println("  r=", rpad(r, 7), " u(0)=", rpad(round(u0; digits=4), 8),
+                " exact=", rpad(round(u0_exact; digits=4), 8),
+                " rigid=", rpad(round(rigid; digits=4), 9),
                 ok ? "PASS" : "FAIL (quadrature unconverged at this s_t)")
     end
     if !isempty(failed)
@@ -429,6 +508,27 @@ let failed = String[]
                      ": `normalized_equilibrium`'s origin-region quadrature is ",
                      "unconverged for s_t below ~1. Lambda from those rows is not ",
                      "quantitative and must not be plotted or quoted.")
+    end
+end
+
+println()
+println("Self-check 5 (harmonic interaction must give Lambda = 2 exactly):")
+let h = harmonic_Y()
+    println("  assembled kernel vs closed form -sqrt(J J')/2: max rel. err = ",
+            round(h.kernel_err; sigdigits=3))
+    println("  q_sigma - Q0 = ", round(h.q_sigma - Q0; sigdigits=3),
+            " (must be 0; rigid-vector overlap ", round(h.overlap_sigma; digits=4), ")")
+    println("  (q_pi - Q0)/xi = ", round((h.q_pi - Q0) / XI; digits=6),
+            " (must be 2; overlap ", round(h.overlap_pi; digits=4), ")")
+    println("  Lambda = ", round(h.Y; digits=6),
+            abs(h.Y - 2.0) < 1e-3 && h.kernel_err < 1e-6 ? "  PASS" : "  FAIL")
+    if !(abs(h.Y - 2.0) < 1e-3 && h.kernel_err < 1e-6)
+        @warn string("Self-check 5 FAILED: harmonic interaction gives Lambda = ",
+                     h.Y, " (exact 2) with kernel error ", h.kernel_err,
+                     ". An assembly constant in `kernel_matrix` -- a quadrature ",
+                     "weight, the 1/(2 pi^2) projection or the 2 xi e^{-J} w' ",
+                     "weighting -- is wrong; every Lambda below is then wrong ",
+                     "by the same factor.")
     end
 end
 
@@ -456,8 +556,9 @@ println("xi-independence of Y (leading order): Y(xi)=",
 
 println()
 println("Yokoya factor versus flatness r = sigma_other/sigma_plane")
-println("(m=1 matrix and exact 1D-model simulation; the difference measures the")
-println(" m=1/diagonal truncation error — see docs/theory/coherent_beam_beam_modes.md;")
+println("(m=1 matrix and exact 1D-model simulation; the difference here is dominated")
+println(" by the particle solver's PERIODIC BOX, not by m=1 truncation — see")
+println(" yokoya_box_convergence.tsv and docs/theory/coherent_beam_beam_modes.md;")
 println(" the physical 2D values come from validation/coherent_mode_scans.jl):")
 aspects = [0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.85, 1.0]   # 0.02 ~ flat limit
 open(joinpath(RESULT_DIR, "yokoya_vs_aspect.tsv"), "w") do io
@@ -470,6 +571,60 @@ open(joinpath(RESULT_DIR, "yokoya_vs_aspect.tsv"), "w") do io
                 rpad(round(out.Y; digits=3), 6),
                 "  Y(exact 1D sim) = ", rpad(round(sim.Y; digits=3), 6),
                 "  (sigma drift/xi = ", round(out.sigma_drift; sigdigits=2), ")")
+    end
+end
+
+# The scan above covers r <= 1, i.e. the WIDE plane of a flat source.  The
+# NARROW plane of the same source is the reciprocal aspect ratio (r = 11.111
+# for our sigma_x/sigma_y = 11.111 point), which self-check 4 above shows is on
+# the CONVERGED side of the quadrature -- unlike its wide-plane partner
+# r = 0.09.  Archive it so the narrow-plane numbers quoted in the paper are
+# reproducible.  Lambda is taken from the m=1 matrix, which has no box.
+println()
+println("Narrow plane (reciprocal aspect ratio, r >= 1; converged side):")
+open(joinpath(RESULT_DIR, "yokoya_vs_aspect_narrow.tsv"), "w") do io
+    println(io, "# Narrow-plane branch of the 1D reduction: r = sigma_wide/sigma_narrow >= 1.")
+    println(io, "# Self-check 4 passes throughout this range (it fails only for r <= 0.3).")
+    println(io, "# Y_1d_sim here uses the DEFAULT periodic box L=24, which is NOT converged")
+    println(io, "# at large r -- see yokoya_box_convergence.tsv.  Quote Y_m1_matrix.")
+    println(io, "aspect_ratio\tY_m1_matrix\tY_1d_sim_L24\tspread_percent_L24")
+    for r in [1.0, 1.5, 2.0, 3.0, 5.0, 11.111, 20.0, 50.0, 100.0, 500.0]
+        out = symmetric_Y(r; sign_kernel=SIGN_KERNEL)
+        sim = simulate_1d_model(r)
+        spread = 100 * abs(sim.Y / out.Y - 1)
+        println(io, r, '\t', out.Y, '\t', sim.Y, '\t', spread)
+        println("  r = ", rpad(r, 7), "  Y(m=1) = ", rpad(round(out.Y; digits=4), 7),
+                "  Y(sim,L=24) = ", rpad(round(sim.Y; digits=4), 7),
+                "  spread = ", round(spread; digits=2), "%")
+    end
+end
+
+# Box-convergence of the particle solver.  The apparent m=1/exact "truncation
+# spread" -- 1.7% at round beams growing to 12.5% when flat -- is NOT truncation:
+# it is the particle solver's periodic box.  The kernel's range is set by the
+# OTHER plane's width sigma_o = s_t/sqrt(2) = r, so at r = 50 the default
+# L = 24 box is narrower than the kernel itself.  Widening it at fixed dx drives
+# the particle solution onto the matrix result at every aspect ratio, which
+# establishes that the m=1/diagonal truncation error is negligible and that the
+# two solvers are one consistent model.
+println()
+println("Periodic-box convergence of the particle solver (dx held fixed):")
+open(joinpath(RESULT_DIR, "yokoya_box_convergence.tsv"), "w") do io
+    println(io, "# Widening the particle solver's periodic box at fixed dx = L/ngrid.")
+    println(io, "# Demonstrates the m=1-vs-exact difference is a box artifact, not truncation.")
+    println(io, "aspect_ratio\tL\tngrid\tY_1d_sim\tY_m1_matrix\tspread_percent")
+    for r in [0.2, 0.5, 1.0, 11.111, 50.0]
+        mat = symmetric_Y(r; sign_kernel=SIGN_KERNEL).Y
+        for L in [24.0, 48.0, 96.0, 192.0]
+            ng = round(Int, 4096 * L / 24)
+            sim = simulate_1d_model(r; L=L, ngrid=ng).Y
+            spread = 100 * abs(mat / sim - 1)
+            println(io, r, '\t', L, '\t', ng, '\t', sim, '\t', mat, '\t', spread)
+            println("  r = ", rpad(r, 7), " L = ", rpad(L, 6),
+                    " Y(sim) = ", rpad(round(sim; digits=4), 7),
+                    " Y(m=1) = ", rpad(round(mat; digits=4), 7),
+                    " spread = ", round(spread; digits=2), "%")
+        end
     end
 end
 

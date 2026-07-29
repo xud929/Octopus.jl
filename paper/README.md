@@ -19,7 +19,7 @@ Numbered as in the manuscript.
 | 3 | `fig_error_vs_aspect.pdf` | 4.1 | `pic_gaussian_field_validation_random_summary.tsv` |
 | 4 | `fig_boundary_jump.pdf` | 4.2 | `slice_longitudinal_zscan_jumps.tsv`, `slice_longitudinal_zscan_tsc_jumps.tsv` |
 | 5 | `fig_coherent_fft.pdf` | 5.1 | `coherent_spectrum_pic_{x,y}.tsv` |
-| 6 | `fig_yokoya_scans.pdf` | 5.1 | `yokoya_vs_aspect{,_measured}.tsv`, `yokoya_vs_xi_{theory,measured}.tsv`, `lambda_narrowplane.tsv` (see note) |
+| 6 | `fig_yokoya_scans.pdf` | 5.1 | `yokoya_vs_aspect{,_narrow,_measured}.tsv`, `yokoya_vs_xi_{theory,measured}.tsv`, `yokoya_box_convergence.tsv`, `lambda_narrowplane.tsv` (see note) |
 | 7 | `fig_multislice_spectra.pdf` | 5.3 | `multislice_centroids_{octopus_kicked,octopus_noise,bb3d}.tsv` |
 | 8 | `fig_eic_emittance.pdf` | 5.4 | `eic_emittance_{octopus,bb3d}.tsv` |
 | 9 | `fig_eic_modes.pdf` | 5.6 | `eic_mode_spectra.tsv` |
@@ -64,7 +64,40 @@ inflates Lambda by (sqrt2 r + 1)/(r + 1). The driver is fixed (both the m=1
 matrix and the independent particle solver), carries a self-check that fails
 if the circular normalization returns, and the archived TSV is the corrected
 output. Round-beam Lambda: 1.40 before, 1.162 after, against a measured 2D
-1.206. The two solvers agree to 1.2-1.6% wherever a discrete mode exists.
+1.206.
+
+The two solvers' residual difference is NOT m=1 truncation, as an earlier
+version of this note said: it is the particle solver's periodic box. The
+kernel's range is set by the *other* plane's width sigma_o = r, so the
+default L = 24 box is narrower than the kernel itself once r is large.
+Holding dx fixed and widening the box collapses the difference
+(`yokoya_box_convergence.tsv`):
+
+| r | L=24 | L=48 | L=96 | L=192 |
+|---|---|---|---|---|
+| 0.2 | 1.16% | 0.64% | 0.50% | 0.46% |
+| 0.5 | 1.35% | 0.45% | 0.27% | 0.22% |
+| 1.0 | 1.68% | 0.53% | 0.22% | 0.12% |
+| 11.111 | 8.11% | 2.39% | 0.39% | 0.03% |
+| 50 | 12.52% | 4.85% | 1.70% | 0.20% |
+
+So the m=1 closure is accurate to a few parts in 1e3, and the curve plotted
+in Fig. 6 (drawn at the default L=24) sits 1.1% below its converged value at
+r=0.5 and 1.5% at r=1 --- stated in the figure caption so the visible gap
+between the two curves is not read as a difference of model.
+
+`yokoya_vs_aspect.tsv` covers r <= 1, the WIDE plane of a flat source. The
+NARROW plane is the reciprocal aspect ratio, archived separately in
+`yokoya_vs_aspect_narrow.tsv` (r = 11.111 -> 1.0824, asymptote -> 1.0708 in
+the m=1 matrix): these are the narrow-plane values quoted in Sec. 5.1, which
+previously appeared in no archived file.
+
+The driver's self-check 4 FAILS only for r <= 0.3 and passes at r = 0.5, 0.7,
+0.85, 1.0, 5.0, 11.111 --- so the figure mask is r >= 0.5, not the earlier
+and over-conservative r >= 0.8. Self-check 5 is an exact check on the
+assembly constants: a harmonic interaction V(u) = u^2/2 has the closed form
+K(J,J') = -sqrt(J J')/2 and must give Lambda = 2. Measured: kernel matches
+the closed form to 1.2e-14, q_sigma - Q0 = 1.2e-7, (q_pi - Q0)/xi = 1.999988.
 
 ## Section-level supporting data
 

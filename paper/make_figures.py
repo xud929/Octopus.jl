@@ -166,14 +166,19 @@ def read_tsv(path):
     return header, np.array(rows)
 
 
-# The reduced-Vlasov driver's origin-region quadrature is unconverged for
-# s_t = sqrt(2)*r below ~1, i.e. r <= 0.7: `normalized_equilibrium` there
-# exceeds the exact reduced-model gradient 1/(1+s_t) by 2% (r=0.5) to 2500%
-# (r=0.02), and the model's own self-check 4 hard-fails on exactly those rows.
-# Those Lambda values are numerics, not physics, so they are NOT plotted.  The
-# rows stay in the archived TSV; the mask is here so the figure cannot show
-# them.  See validation/coherent_mode_vlasov_theory.jl self-check 4.
-VLASOV_CONVERGED_MIN_R = 0.8
+# The reduced-Vlasov driver's origin-region quadrature is unconverged at small
+# s_t = sqrt(2)*r, where `normalized_equilibrium` departs from the exact
+# reduced-model gradient.  Those Lambda values are numerics, not physics, so
+# they are NOT plotted; the rows stay in the archived TSV and the mask is here
+# so the figure cannot show them.  The threshold is the driver's own
+# self-check 4 (validation/coherent_mode_vlasov_theory.jl), which FAILS only
+# for r <= 0.3 and PASSES at r = 0.5, 0.7, 0.85, 1.0 -- and on the
+# narrow-plane side at r = 5 and 11.111.  0.5 is therefore the first archived
+# row the primary check supports.  An earlier version of this comment said the
+# check fails for r <= 0.7 and masked at 0.8; both were wrong -- the mask was
+# conservative past the data, on the strength of a false statement about the
+# model's own validity range.
+VLASOV_CONVERGED_MIN_R = 0.5
 
 
 def fig_yokoya_scans():
