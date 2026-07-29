@@ -11,7 +11,8 @@ force deposition	11.36	27.491	450.0
 cuFFT transforms	11.12	26.900	157.6
 non-collision beamline	9.35	22.618	4.0
 luminosity deposition	8.75	21.175	450.0
-framework broadcast/copy/reduce	8.10	19.593	1433.9
+transform staging and normalization	4.48	10.842	157.6
+framework broadcast/copy/reduce	3.62	8.751	1276.3
 spectral multiply	1.93	4.672	29.0
 Green function build	1.14	2.769	20.8
 field differences	0.47	1.147	29.0

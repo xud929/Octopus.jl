@@ -46,9 +46,14 @@ Numbered as in the manuscript.
 - **Table 6** (device-time decomposition, Sec. 6.3) is
   `cuda_device_time_decomposition.tsv`, produced by CUDA.jl 6.2.1's in-process
   CUPTI profiler (`CUDA.@profile`) over 10 steady-state turns after 20 warm-up
-  turns at the production point. The file header records the uninstrumented
-  wall-clock per turn, the profiler's own inflation factor, and the device-busy
-  fraction of the turn.
+  turns at the production point. The file header records the summed and the
+  UNION device-busy time (they agree to 0.54%, because the production collision
+  path is single-stream). Note the transform pipeline is split across two rows:
+  `cuFFT transforms` (26.9 ms/turn) is the transform kernels, and
+  `transform staging and normalization` (10.8 ms/turn) is the real<->complex
+  packing and cuBLAS scaling that exist only to feed them -- their launch
+  counts are integer multiples of the transform counts with zero residual.
+  The full pipeline is 37.7 ms/turn, 15.6% of device time.
 
 ## Section-level supporting data
 
