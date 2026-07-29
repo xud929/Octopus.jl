@@ -68,13 +68,15 @@ Numbered as in the manuscript.
   from `OCTOPUS_KD_R` (default 100), bootstrap draws from `OCTOPUS_KD_NBOOT`
   (default 200); the script writes the archived file directly.
   `bias_floor_bootstrap` is the sampling-noise floor of the bias statistic
-  MEASURED by a sign-flip (Rademacher) bootstrap: flipping each realization's
-  sign preserves the per-point fluctuation structure and destroys any true
+  MEASURED by a sign-flip (Rademacher) bootstrap on the CENTRED residuals:
+  flipping preserves the per-point fluctuation structure and destroys the
   systematic, so the flipped ensemble's median |mean| is the floor, with no
-  distributional assumption. `bias_floor_rayleigh` is the Gaussian-isotropic
-  closed form `fluct*sqrt(ln 2 / R)` for comparison only -- it agrees with the
-  measured floor to just -15%/+18% across the eight configurations, which is
-  why the manuscript uses the bootstrap.
+  distributional assumption. Centring matters -- `bias_floor_bootstrap_uncentered`
+  is the same statistic without it, and it runs 13-42% high on the high-bias
+  rows because flipping raw errors leaves mu*(1/R)sum(s_r), a residual of the
+  systematic of scale |mu|/sqrt(R). `bias_floor_rayleigh` is the
+  Gaussian-isotropic closed form `fluct*sqrt(ln 2 / R)`, which sits 6-18% above
+  the measured floor throughout.
 - **Sec. 4.1, reference-noise bound.** `softgauss_count_scan.tsv`.
 - **Sec. 5.1, tune-swap control.** `lambda_tuneswap_control.tsv`.
 - **Sec. 5.1, narrow-plane xi control.** `lambda_narrowplane_fixedxiy.tsv` +

@@ -560,10 +560,16 @@ def fig_eic_emittance():
     for k, (ax, (title, cols)) in enumerate(zip(axes, panels)):
         for col, ls in zip(cols, ["-", "--"]):
             lab = "$x$" if col.endswith("ex") else "$y$"
-            d = EIC_DESIGN[col]
-            ax.plot(o["turn"], 100 * (o[col] / d - 1), ls, color=BLUE,
+            # Damped electron: refer to the design emittance -- damping erases
+            # the initial sample.  Undamped proton: refer to each code's OWN
+            # initial value, because the initial-sample difference between the
+            # codes persists undiminished and would otherwise be read as a
+            # difference in growth.  This matches Table 3.
+            do_, db_ = (EIC_DESIGN[col], EIC_DESIGN[col]) if col.startswith("ele") \
+                       else (o[col][0], b[col][0])
+            ax.plot(o["turn"], 100 * (o[col] / do_ - 1), ls, color=BLUE,
                     linewidth=1.3, label=f"Octopus {lab}")
-            ax.plot(b["turn"], 100 * (b[col] / d - 1), ls, color=ORANGE,
+            ax.plot(b["turn"], 100 * (b[col] / db_ - 1), ls, color=ORANGE,
                     linewidth=1.3, alpha=0.85, label=f"BeamBeam3D {lab}")
         ax.set_title(title, loc="left")
         ax.set_xlabel("turn")
@@ -575,6 +581,7 @@ def fig_eic_emittance():
                       columnspacing=1.1, framealpha=0.92)
         style_axis(ax)
     axes[0].set_ylabel(r"$\epsilon/\epsilon_{\rm design}-1$  [%]")
+    axes[1].set_ylabel(r"$\epsilon/\epsilon(0)-1$  [%]")
     fig.tight_layout()
     fig.savefig(os.path.join(OUT, "fig_eic_emittance.pdf"))
     plt.close(fig)

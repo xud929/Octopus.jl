@@ -231,23 +231,37 @@ function decompose(sigx, sigy; grid, method, n, R, seed)
     # fluctuation structure untouched while destroying any true systematic, so
     # the resulting median |mean| IS the floor, with no distributional
     # assumption.  We report the median over bootstrap draws.
+    # The flips must be applied to the CENTERED residuals.  Flipping the raw
+    # errors leaves mu*(1/R)sum(s_r), a residual of the true systematic itself
+    # of scale |mu|/sqrt(R), which inflates the null wherever the systematic is
+    # large -- exactly the rows where the floor matters least, but it biases the
+    # comparison.  Centering first removes the systematic exactly, leaving a
+    # pure fluctuation null.
     nboot = parse(Int, get(ENV, "OCTOPUS_KD_NBOOT", "200"))
     brng = MersenneTwister(seed + 991)
+    mx = [sum(@view ex[k, :]) / R for k in eachindex(xf)]
+    my = [sum(@view ey[k, :]) / R for k in eachindex(xf)]
     nulls = Vector{Float64}(undef, nboot)
+    nulls_raw = Vector{Float64}(undef, nboot)
     sgn = Vector{Float64}(undef, R)
     for t in 1:nboot
         for r in 1:R
             sgn[r] = rand(brng, Bool) ? 1.0 : -1.0
         end
         nulls[t] = median([
+            hypot(sum((ex[k, r] - mx[k]) * sgn[r] for r in 1:R) / R,
+                  sum((ey[k, r] - my[k]) * sgn[r] for r in 1:R) / R)
+            for k in eachindex(xf)]) / gnorm
+        nulls_raw[t] = median([
             hypot(sum(ex[k, r] * sgn[r] for r in 1:R) / R,
                   sum(ey[k, r] * sgn[r] for r in 1:R) / R)
             for k in eachindex(xf)]) / gnorm
     end
     floor_boot = median(nulls)
+    floor_boot_uncentered = median(nulls_raw)
     # Analytic comparators, for the record only.
     floor_rayleigh = f * sqrt(log(2) / R)
-    return b, f, median(tot) / gnorm, floor_boot, floor_rayleigh
+    return b, f, median(tot) / gnorm, floor_boot, floor_rayleigh, floor_boot_uncentered
 end
 
 const OUT2 = joinpath(@__DIR__, "data", "kick_decomposition_R100.tsv")
@@ -255,18 +269,18 @@ open(OUT2, "w") do io
     println(io, "# Kick-error systematic/fluctuation split, 81x81 field grid +-4 sigma,")
     println(io, "# median over field points, normalized by peak exact kick.")
     println(io, "# R independent source realizations per row.")
-    println(io, "family\tgrid\tdeposit\tn_macro\tR\tbias\tfluctuation\ttotal_median\tbias_floor_bootstrap\tbias_floor_rayleigh")
+    println(io, "family\tgrid\tdeposit\tn_macro\tR\tbias\tfluctuation\ttotal_median\tbias_floor_bootstrap\tbias_floor_rayleigh\tbias_floor_bootstrap_uncentered")
     for (fam, sx, sy) in (("round", 2.0e-3, 2.0e-3), ("flat11", 2.0e-3, 2.0e-3 / 11))
         for grid in (64, 128)
             for method in (:CIC, :TSC)
                 n = 100_000
                 R = parse(Int, get(ENV, "OCTOPUS_KD_R", "100"))
-                b, f, t, fl, flr = decompose(sx, sy; grid = grid, method = method,
-                                             n = n, R = R, seed = 20260728)
+                b, f, t, fl, flr, flu = decompose(sx, sy; grid = grid, method = method,
+                                                  n = n, R = R, seed = 20260728)
                 @printf("%-7s %4d^2 %s n=%.0e  bias=%.3e  fluct=%.3e  total=%.3e\n",
                         fam, grid, method, n, b, f, t)
                 println(io, fam, "\t", grid, "\t", method, "\t", n, "\t", R,
-                        "\t", b, "\t", f, "\t", t, "\t", fl, "\t", flr)
+                        "\t", b, "\t", f, "\t", t, "\t", fl, "\t", flr, "\t", flu)
                 flush(io)
             end
         end
