@@ -271,7 +271,7 @@ open(OUT2, "w") do io
     println(io, "# R independent source realizations per row.")
     println(io, "family\tgrid\tdeposit\tn_macro\tR\tbias\tfluctuation\ttotal_median\tbias_floor_bootstrap\tbias_floor_rayleigh\tbias_floor_bootstrap_uncentered")
     for (fam, sx, sy) in (("round", 2.0e-3, 2.0e-3), ("flat11", 2.0e-3, 2.0e-3 / 11))
-        for grid in (64, 128)
+        for grid in (64, 128, 256)
             for method in (:CIC, :TSC)
                 n = 100_000
                 R = parse(Int, get(ENV, "OCTOPUS_KD_R", "100"))
