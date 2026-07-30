@@ -352,7 +352,7 @@ end
 		if rr == 0
 			return zero(x), zero(y)
 		end
-		temp = 2 * (1 - exp(-rr / (2 * msize * msize))) / rr
+		temp = _round_gaussian_force_scale(rr, msize * msize)
 		Kx = temp * x
 		Ky = temp * y
 	else

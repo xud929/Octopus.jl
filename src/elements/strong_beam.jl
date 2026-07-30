@@ -615,6 +615,12 @@ end
     return Hxx, Hyy
 end
 
+@inline function _round_gaussian_force_scale(r2, sigma2)
+    u = r2 / (2 * sigma2)
+    phi = u == zero(u) ? one(u) : -expm1(-u) / u
+    return phi / sigma2
+end
+
 @inline function _round_gaussian_hessian(kbb, sigma, x, y, expterm)
     r2 = x * x + y * y
     sigma2 = sigma * sigma
@@ -622,8 +628,41 @@ end
         h = -kbb / sigma2
         return h, zero(h), h
     end
-    f = 2 * (1 - expterm) / r2
-    fp = 2 * (expterm * r2 / (2 * sigma2) - (1 - expterm)) / (r2 * r2)
+    u = r2 / (2 * sigma2)
+    if u < oftype(u, 1.0e-2)
+        # For phi(u) = (1-exp(-u))/u, both phi and phi' need their series:
+        # the direct phi' numerator cancels to second order as u approaches zero.
+        oneu = one(u)
+        phi = oneu + u * (
+            -oneu / 2 + u * (
+                oneu / 6 + u * (
+                    -oneu / 24 + u * (
+                        oneu / 120 + u * (
+                            -oneu / 720 + u * (oneu / 5040)
+                        )
+                    )
+                )
+            )
+        )
+        dphi = -oneu / 2 + u * (
+            oneu / 3 + u * (
+                -oneu / 8 + u * (
+                    oneu / 30 + u * (
+                        -oneu / 144 + u * (
+                            oneu / 840 - u * (oneu / 5760)
+                        )
+                    )
+                )
+            )
+        )
+        invsigma2 = inv(sigma2)
+        f = phi * invsigma2
+        fp = dphi * invsigma2 * invsigma2 / 2
+    else
+        one_minus_expterm = 1 - expterm
+        f = 2 * one_minus_expterm / r2
+        fp = 2 * (expterm * u - one_minus_expterm) / (r2 * r2)
+    end
     Hxx = -kbb * (f + 2 * x * x * fp)
     Hxy = -kbb * (2 * x * y * fp)
     Hyy = -kbb * (f + 2 * y * y * fp)
@@ -643,7 +682,7 @@ function gaussian_beambeam_kick(sigx, sigy, x, y)
         if rr == 0
             return zero(x), zero(y)
         end
-        temp = 2 * (1 - exp(-rr / (2 * msize * msize))) / rr
+        temp = _round_gaussian_force_scale(rr, msize * msize)
         Kx = temp * x
         Ky = temp * y
     else

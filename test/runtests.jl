@@ -165,6 +165,66 @@ end
     @test_throws MethodError UnsafeVirtualDrift(HirataParaxialDrift())
 end
 
+@testset "Round Gaussian near-axis stability" begin
+    function round_reference(T, sigma, x, y)
+        setprecision(BigFloat, 256) do
+            sb, xb, yb = BigFloat(sigma), BigFloat(x), BigFloat(y)
+            r2 = xb * xb + yb * yb
+            u = r2 / (2 * sb * sb)
+            phi = iszero(u) ? one(u) : -expm1(-u) / u
+            scale = phi / (sb * sb)
+            return T(scale * xb), T(scale * yb)
+        end
+    end
+
+    function round_hessian_reference(T, kbb, sigma, x, y)
+        setprecision(BigFloat, 256) do
+            kb, sb = BigFloat(kbb), BigFloat(sigma)
+            xb, yb = BigFloat(x), BigFloat(y)
+            r2 = xb * xb + yb * yb
+            u = r2 / (2 * sb * sb)
+            if iszero(u)
+                h = -kb / (sb * sb)
+                return T(h), zero(T), T(h)
+            end
+            phi = -expm1(-u) / u
+            dphi = ((one(u) + u) * exp(-u) - one(u)) / (u * u)
+            invsigma2 = inv(sb * sb)
+            f = phi * invsigma2
+            fp = dphi * invsigma2 * invsigma2 / 2
+            return (
+                T(-kb * (f + 2 * xb * xb * fp)),
+                T(-kb * (2 * xb * yb * fp)),
+                T(-kb * (f + 2 * yb * yb * fp)),
+            )
+        end
+    end
+
+    for (T, near_axis) in ((Float32, 1.0f-4), (Float64, 1.0e-8))
+        sigma = one(T)
+        for (x, y) in (
+                (T(near_axis), T(-near_axis / 2)),
+                (T(0.1), T(-0.05)),
+                (T(0.2), T(-0.1)),
+                (T(2), T(-1)))
+            expected = round_reference(T, sigma, x, y)
+            actual = gaussian_beambeam_kick(sigma, sigma, x, y)
+            @test collect(actual) ≈ collect(expected) rtol=16eps(T) atol=zero(T)
+
+            expterm = exp(-(x * x + y * y) / (2 * sigma * sigma))
+            expected_hessian = round_hessian_reference(T, one(T), sigma, x, y)
+            actual_hessian =
+                Octopus._round_gaussian_hessian(one(T), sigma, x, y, expterm)
+            @test collect(actual_hessian) ≈ collect(expected_hessian) rtol=32eps(T) atol=32eps(T)
+        end
+        @test gaussian_beambeam_kick(sigma, sigma, zero(T), zero(T)) ==
+              (zero(T), zero(T))
+        @test Octopus._round_gaussian_hessian(
+            one(T), sigma, zero(T), zero(T), one(T)) ==
+            (-one(T), zero(T), -one(T))
+    end
+end
+
 @testset "Weak-strong coupled covariance and longitudinal limits" begin
     uncoupled = transverse_covariance(;
         beta=(0.8, 1.2), alpha=(0.3, -0.2), sigma=(1.1, 0.7))
@@ -1495,6 +1555,41 @@ include(joinpath(pkgdir(Octopus), "validation", "high_energy_weakstrong_limit.jl
 end
 
 if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+    function cuda_round_gaussian_near_axis_kernel!(output, sigma, x, y)
+        kx, ky = Octopus._cuda_gaussian_beambeam_kick(sigma, sigma, x, y)
+        r2 = x * x + y * y
+        expterm = exp(-r2 / (2 * sigma * sigma))
+        hxx, hxy, hyy =
+            Octopus._round_gaussian_hessian(one(sigma), sigma, x, y, expterm)
+        output[1] = kx
+        output[2] = ky
+        output[3] = hxx
+        output[4] = hxy
+        output[5] = hyy
+        return nothing
+    end
+
+    @testset "CUDA round Gaussian near-axis stability" begin
+        for (T, x, y) in (
+                (Float32, 1.0f-4, -5.0f-5),
+                (Float64, 1.0e-8, -5.0e-9))
+            sigma = one(T)
+            expected_kick = gaussian_beambeam_kick(sigma, sigma, x, y)
+            expterm = exp(-(x * x + y * y) / (2 * sigma * sigma))
+            expected_hessian =
+                Octopus._round_gaussian_hessian(one(T), sigma, x, y, expterm)
+            output = Octopus.CUDA.zeros(T, 5)
+            Octopus.CUDA.@cuda threads=1 blocks=1 cuda_round_gaussian_near_axis_kernel!(
+                output, sigma, x, y)
+            Octopus.CUDA.synchronize()
+            actual = Array(output)
+            expected = T[expected_kick..., expected_hessian...]
+            @test actual ≈ expected rtol=16eps(T) atol=16eps(T)
+            @test actual[1] != zero(T)
+            @test actual[2] != zero(T)
+        end
+    end
+
     @testset "CUDA PIC field_derivative matches CPU" begin
         # The flag is consumed by three separate CUDA kernels (single, batched,
         # wavefront). Check parity for BOTH settings so a divergence in any of
