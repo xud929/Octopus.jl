@@ -348,6 +348,56 @@ end
     @test norm(residual, Inf) < 2.0e-8
 end
 
+@testset "Near-round precision support and tracking consumers" begin
+    for T in (Float16, BigFloat)
+        error = try
+            Octopus._near_round_eta_bounds(zero(T))
+            nothing
+        catch caught
+            caught
+        end
+        @test error isa ArgumentError
+        @test occursin(
+            "supports only Float32 and Float64", sprint(showerror, error))
+    end
+
+    for T in (Float32, Float64)
+        inner, outer = Octopus._near_round_eta_bounds(zero(T))
+        for eta in (inner / T(2), T(0.75) * outer, T(1.2) * outer)
+            sigx = sqrt(one(T) + eta)
+            sigy = sqrt(one(T) - eta)
+            kbb = T(-2.0e-3)
+            covariance = Matrix(Diagonal(T[
+                sigx * sigx, sigx * sigx,
+                sigy * sigy, sigy * sigy,
+            ]))
+            weak_strong = ThinStrongBeam(ThinStrongBeamSpec{T}(;
+                kbb=kbb, covariance=covariance))
+            initial = (
+                T(0.4), T(1.0e-4), T(-0.2),
+                T(-1.5e-4), zero(T), T(2.0e-4),
+            )
+            weak_result = collect(weak_strong(initial...))
+
+            soft_rep = Phase6DRep(([value] for value in initial)...)
+            soft_source = (
+                mx=zero(T), sx=sigx, mpx=zero(T), spx=sigx,
+                covxpx=zero(T),
+                my=zero(T), sy=sigy, mpy=zero(T), spy=sigy,
+                covypy=zero(T),
+            )
+            Octopus._apply_slice_kick_one!(
+                soft_rep, 1, soft_source, zero(T), kbb, zero(T), true, false)
+            soft_result = collect(soft_rep[1])
+
+            tolerance = T(32) * eps(T)
+            @test all(isfinite, weak_result)
+            @test all(isfinite, soft_result)
+            @test soft_result ≈ weak_result rtol=tolerance atol=tolerance
+        end
+    end
+end
+
 @testset "Weak-strong coupled covariance and longitudinal limits" begin
     uncoupled = transverse_covariance(;
         beta=(0.8, 1.2), alpha=(0.3, -0.2), sigma=(1.1, 0.7))

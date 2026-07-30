@@ -1013,7 +1013,10 @@ The shared procedure is consumed by weak-strong tracking, the soft-Gaussian
 strong-strong solver, and the analytic Gaussian add-back in both CPU and CUDA
 GaussianPIC kernels. The GaussianPIC longitudinal path requests force and
 covariance response from one call so its two components cannot select
-different transition branches.
+different transition branches. Other `AbstractFloat` types raise an
+`ArgumentError` at the transition calibration boundary until their exact
+elliptical evaluator, series order, and conditioning factor have been
+implemented and validated.
 
 ## 10. Validation and numerical experiment
 

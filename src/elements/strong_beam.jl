@@ -675,7 +675,10 @@ end
 # Float32. The inner boundary starts a quintic potential-level blend at eta_*/2.
 @inline _near_round_conditioning_factor(::Type{Float64}) = 64.0
 @inline _near_round_conditioning_factor(::Type{Float32}) = 8.0f0
-@inline _near_round_conditioning_factor(::Type{T}) where {T<:AbstractFloat} = one(T)
+function _near_round_conditioning_factor(::Type{T}) where {T<:AbstractFloat}
+    throw(ArgumentError(
+        "near-round Gaussian evaluation supports only Float32 and Float64; got $T"))
+end
 
 @inline function _near_round_eta_bounds(eta::T) where {T<:AbstractFloat}
     conditioning = _near_round_conditioning_factor(T)
