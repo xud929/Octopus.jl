@@ -37,6 +37,11 @@ reference material, not API docs; the implementing code links back to them.
 - [`weak_strong_6d_model.md`](theory/weak_strong_6d_model.md) — the weak-strong source
   model: which source moments enter the kick formulas and how a continuous 6D
   Gaussian is sliced longitudinally.
+- [`near_round_bassetti_erskine_switch.md`](theory/near_round_bassetti_erskine_switch.md)
+  — near-round analytic Gaussian evaluation: invariant anisotropy, the
+  fixed-interval field integral and expansion, round-model versus
+  conditioning-error balance, precision-aware switch estimates, and the
+  potential-level requirements for a smooth 6D transition.
 - [`node_interaction_grid.md`](theory/node_interaction_grid.md) — what
   `interaction_grid = :node` is for and why it works: the mesh is a step function
   of `z` under per-slice-pair sizing, the algorithm is already `C^0` and only the
