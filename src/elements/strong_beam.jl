@@ -5,8 +5,6 @@ export ThinStrongBeamSpec, GaussianStrongBeamSpec,
        StrongTransverseMoments, transverse_covariance,
        gaussian_strong_beam_covariance, gaussian_beambeam_kick
 
-const ROUND_BEAM_THRESHOLD = 1.0e-10
-
 abstract type ThinStrongBeamSpec{T} end
 abstract type GaussianStrongBeamSpec{T} end
 
@@ -534,19 +532,12 @@ end
     a, _, d, au, _, du = _transport_transverse_moments(m, S)
     (a <= 0 || d <= 0) && return x, px, y, py, z, pz, zero(x)
     sigx, sigy = sqrt(a), sqrt(d)
-    Kx, Ky = gaussian_beambeam_kick(sigx, sigy, xx, yy)
+    Kx, Ky, Hxx, Hyy =
+        _gaussian_beambeam_kick_response(kbb, sigx, sigy, xx, yy)
     expterm = exp(-0.5 * (xx * xx / (sigx * sigx) + yy * yy / (sigy * sigy)))
     Fx, Fy = Kx * kbb, Ky * kbb
     px += Fx
     py += Fy
-    dsize = abs(sigx - sigy) / 2
-    msize = (sigx + sigy) / 2
-    if dsize / msize < ROUND_BEAM_THRESHOLD
-        Hxx, _, Hyy = _round_gaussian_hessian(kbb, msize, xx, yy, expterm)
-    else
-        Hxx, Hyy = _elliptic_gaussian_hessian_diagonal(
-            kbb, sigx, sigy, xx, yy, Kx, Ky, expterm)
-    end
     pz += 0.25 * (Hxx * au + Hyy * du)
     return x, px, y, py, z, pz, expterm / TWOPI / sigx / sigy
 end
@@ -556,8 +547,9 @@ end
     a, b, d, au, bu, du = _transport_transverse_moments(m, S)
     detA = a * d - b * b
     (a <= 0 || d <= 0 || detA <= 0) && return x, px, y, py, z, pz, zero(x)
-    D = sqrt((a - d) * (a - d) + 4 * b * b)
-    if D <= ROUND_BEAM_THRESHOLD * (a + d)
+    adiff = a - d
+    D = hypot(adiff, 2 * b)
+    if D == zero(D)
         sigma = sqrt((a + d) / 2)
         Kx, Ky = gaussian_beambeam_kick(sigma, sigma, xx, yy)
         expterm = exp(-0.5 * (xx * xx + yy * yy) / (sigma * sigma))
@@ -576,7 +568,16 @@ end
     sig1, sig2 = sqrt(lambda1), sqrt(lambda2)
     xh = c * xx + s * yy
     yh = -s * xx + c * yy
-    Kxh, Kyh = gaussian_beambeam_kick(sig1, sig2, xh, yh)
+    eta = D / (a + d)
+    inner, _ = _near_round_eta_bounds(eta)
+    if eta <= inner
+        Kxh, Kyh, H11, H22, L_over_D =
+            _near_round_series_response(kbb, (a + d) / 2, eta, xh, yh)
+    else
+        Kxh, Kyh, H11, H22, L_over_D =
+            _gaussian_beambeam_kick_response_principal(
+                kbb, sig1, sig2, xh, yh)
+    end
     expterm = exp(-0.5 * (xh * xh / lambda1 + yh * yh / lambda2))
     Fxh, Fyh = kbb * Kxh, kbb * Kyh
     Fx = c * Fxh - s * Fyh
@@ -584,14 +585,11 @@ end
     px += Fx
     py += Fy
 
-    H11, H22 = _elliptic_gaussian_hessian_diagonal(
-        kbb, sig1, sig2, xh, yh, Kxh, Kyh, expterm)
-    Du = ((a - d) * (au - du) + 4 * b * bu) / D
-    lambda1u = (au + du + Du) / 2
-    lambda2u = (au + du - Du) / 2
-    thetau = ((a - d) * bu - b * (au - du)) / (D * D)
-    pz += 0.25 * (H11 * lambda1u + H22 * lambda2u)
-    pz -= 0.5 * thetau * (Fxh * yh - Fyh * xh)
+    Du = (adiff * (au - du) + 4 * b * bu) / D
+    traceu = au + du
+    pz += 0.125 * ((H11 + H22) * traceu + (H11 - H22) * Du)
+    rotation_projection = (adiff * bu - b * (au - du)) / D
+    pz -= 0.5 * kbb * rotation_projection * L_over_D
     return x, px, y, py, z, pz, expterm / (TWOPI * sig1 * sig2)
 end
 
@@ -669,43 +667,359 @@ end
     return Hxx, Hxy, Hyy
 end
 
-function gaussian_beambeam_kick(sigx, sigy, x, y)
-    (sigx == 0 || sigy == 0) && return zero(x), zero(y)
-    dsize = abs((sigx - sigy) / 2)
-    msize = sigx - (sigx - sigy) / 2
+# The derivation, error balance, and validation procedure for these helpers are
+# in docs/theory/near_round_bassetti_erskine_switch.md.  The outer boundary is
+# eta_* = (8 C_BE(T) eps(T) / 3)^(1/4), obtained by balancing the leading
+# covariance-response remainder (3/8)eta^3 against C_BE(T)eps(T)/eta.  The
+# calibrated conditioning factor is sixty-four for Float64 and eight for
+# Float32. The inner boundary starts a quintic potential-level blend at eta_*/2.
+@inline _near_round_conditioning_factor(::Type{Float64}) = 64.0
+@inline _near_round_conditioning_factor(::Type{Float32}) = 8.0f0
+@inline _near_round_conditioning_factor(::Type{T}) where {T<:AbstractFloat} = one(T)
+
+@inline function _near_round_eta_bounds(eta::T) where {T<:AbstractFloat}
+    conditioning = _near_round_conditioning_factor(T)
+    outer = sqrt(sqrt((T(8) / T(3)) * conditioning * eps(T)))
+    return outer / T(2), outer
+end
+
+@inline function _near_round_blend(eta::T) where {T<:AbstractFloat}
+    inner, outer = _near_round_eta_bounds(eta)
+    if eta <= inner
+        return zero(T), zero(T)
+    elseif eta >= outer
+        return one(T), zero(T)
+    end
+    invwidth = inv(outer - inner)
+    t = (eta - inner) * invwidth
+    w = t * t * t * (T(10) + t * (T(-15) + T(6) * t))
+    dw = T(30) * t * t * (t - one(T)) * (t - one(T)) * invwidth
+    return w, dw
+end
+
+@inline function _near_round_moments_0_6(q::T) where {T<:AbstractFloat}
+    if q <= T(2)
+        m0 = zero(T)
+        m1 = zero(T)
+        m2 = zero(T)
+        m3 = zero(T)
+        m4 = zero(T)
+        m5 = zero(T)
+        m6 = zero(T)
+        term = one(T)
+        # Seventeen terms reach the Float32 rounding floor at q = 2; Float64
+        # needs twenty-five. The type test is compile-time constant.
+        last_order = T === Float32 ? 16 : 24
+        for k in 0:last_order
+            m0 += term / T(k + 1)
+            m1 += term / T(k + 2)
+            m2 += term / T(k + 3)
+            m3 += term / T(k + 4)
+            m4 += term / T(k + 5)
+            m5 += term / T(k + 6)
+            m6 += term / T(k + 7)
+            term *= -q / T(k + 1)
+        end
+        return m0, m1, m2, m3, m4, m5, m6
+    end
+    eq = exp(-q)
+    m0 = -expm1(-q) / q
+    m1 = (m0 - eq) / q
+    m2 = (T(2) * m1 - eq) / q
+    m3 = (T(3) * m2 - eq) / q
+    m4 = (T(4) * m3 - eq) / q
+    m5 = (T(5) * m4 - eq) / q
+    m6 = (T(6) * m5 - eq) / q
+    return m0, m1, m2, m3, m4, m5, m6
+end
+
+@inline function _near_round_moments_3_11(q::T) where {T<:AbstractFloat}
+    if q <= T(2)
+        m3 = zero(T)
+        m4 = zero(T)
+        m5 = zero(T)
+        m6 = zero(T)
+        m7 = zero(T)
+        m8 = zero(T)
+        m9 = zero(T)
+        m10 = zero(T)
+        m11 = zero(T)
+        term = one(T)
+        last_order = T === Float32 ? 16 : 24
+        for k in 0:last_order
+            m3 += term / T(k + 4)
+            m4 += term / T(k + 5)
+            m5 += term / T(k + 6)
+            m6 += term / T(k + 7)
+            m7 += term / T(k + 8)
+            m8 += term / T(k + 9)
+            m9 += term / T(k + 10)
+            m10 += term / T(k + 11)
+            m11 += term / T(k + 12)
+            term *= -q / T(k + 1)
+        end
+        return m3, m4, m5, m6, m7, m8, m9, m10, m11
+    end
+    eq = exp(-q)
+    m0 = -expm1(-q) / q
+    m1 = (m0 - eq) / q
+    m2 = (T(2) * m1 - eq) / q
+    m3 = (T(3) * m2 - eq) / q
+    m4 = (T(4) * m3 - eq) / q
+    m5 = (T(5) * m4 - eq) / q
+    m6 = (T(6) * m5 - eq) / q
+    m7 = (T(7) * m6 - eq) / q
+    m8 = (T(8) * m7 - eq) / q
+    m9 = (T(9) * m8 - eq) / q
+    m10 = (T(10) * m9 - eq) / q
+    m11 = (T(11) * m10 - eq) / q
+    return m3, m4, m5, m6, m7, m8, m9, m10, m11
+end
+
+@inline function _near_round_series_kick(v, eta, x, y)
+    q = (x * x + y * y) / (2 * v)
+    dr = (x * x - y * y) / (2 * v)
+    m0, m1, m2, m3, m4, m5, m6 = _near_round_moments_0_6(q)
+    eta2 = eta * eta
+    eta3 = eta2 * eta
+    c1x = dr * m2 - m1
+    c1y = dr * m2 + m1
+    T = typeof(q)
+    c2x = T(1.5) * m2 + (-dr - q) * m3 + (dr * dr / T(2)) * m4
+    c2y = T(1.5) * m2 + ( dr - q) * m3 + (dr * dr / T(2)) * m4
+    c3x = -T(1.5) * m3 + (T(2.5) * dr + q) * m4 +
+          (-dr * q - dr * dr / T(2)) * m5 + dr * dr * dr / T(6) * m6
+    c3y =  T(1.5) * m3 + (T(2.5) * dr - q) * m4 +
+          (-dr * q + dr * dr / T(2)) * m5 + dr * dr * dr / T(6) * m6
+    return x / v * (m0 + eta * c1x + eta2 * c2x + eta3 * c3x),
+           y / v * (m0 + eta * c1y + eta2 * c2y + eta3 * c3y)
+end
+
+@inline function _near_round_series_response(kbb, v, eta, x, y)
+    T = typeof(v)
+    q = (x * x + y * y) / (T(2) * v)
+    dr = (x * x - y * y) / (T(2) * v)
+    m0, m1, m2, m3, m4, m5, m6 = _near_round_moments_0_6(q)
+    eta2 = eta * eta
+    eta3 = eta2 * eta
+
+    u1 = dr * m1
+    u2 = m1 / T(2) - q * m2 + (dr * dr / T(2)) * m3
+    u3 = T(1.5) * dr * m3 - dr * q * m4 + dr * dr * dr / T(6) * m5
+    v1 = dr * (q * m2 - m1)
+    v2 = T(1.5) * q * m2 - (q * q + dr * dr) * m3 +
+         (q * dr * dr / T(2)) * m4
+    v3 = -T(1.5) * dr * m3 + T(3.5) * dr * q * m4 -
+         (dr * q * q + dr * dr * dr / T(2)) * m5 +
+         dr * dr * dr * q / T(6) * m6
+
+    c1x = dr * m2 - m1
+    c1y = dr * m2 + m1
+    c2x = T(1.5) * m2 + (-dr - q) * m3 + (dr * dr / T(2)) * m4
+    c2y = T(1.5) * m2 + ( dr - q) * m3 + (dr * dr / T(2)) * m4
+    c3x = -T(1.5) * m3 + (T(2.5) * dr + q) * m4 +
+          (-dr * q - dr * dr / T(2)) * m5 + dr * dr * dr / T(6) * m6
+    c3y =  T(1.5) * m3 + (T(2.5) * dr - q) * m4 +
+          (-dr * q + dr * dr / T(2)) * m5 + dr * dr * dr / T(6) * m6
+    Kx = x / v * (m0 + eta * c1x + eta2 * c2x + eta3 * c3x)
+    Ky = y / v * (m0 + eta * c1y + eta2 * c2y + eta3 * c3y)
+
+    uv = -exp(-q) + eta * v1 + eta2 * v2 + eta3 * v3
+    ueta = u1 + T(2) * eta * u2 + T(3) * eta2 * u3
+    H1 = kbb / v * (uv + (one(T) - eta) * ueta)
+    H2 = kbb / v * (uv - (one(T) + eta) * ueta)
+    L_over_D = -x * y / (v * v) * (
+        m1 + eta * dr * m3 +
+        eta2 * (T(1.5) * m3 - q * m4 + dr * dr / T(2) * m5))
+    return Kx, Ky, H1, H2, L_over_D
+end
+
+# U_exact - U_series through eta^6.  Only the blend chain term needs this
+# gauge-independent residual; eta^7 is below the balanced transition error for
+# both Float32 and Float64 over the validated field domain.
+@inline function _near_round_potential_residual(v, eta, x, y)
+    T = typeof(v)
+    q = (x * x + y * y) / (T(2) * v)
+    dr = (x * x - y * y) / (T(2) * v)
+    m3, m4, m5, m6, m7, m8, m9, m10, m11 =
+        _near_round_moments_3_11(q)
+    dr2 = dr * dr
+    q2 = q * q
+    u4 = T(3) / T(8) * m3 - T(1.5) * q * m4 +
+         (T(5) * dr2 + T(2) * q2) / T(4) * m5 -
+         dr2 * q / T(2) * m6 + dr2 * dr2 / T(24) * m7
+    u5 = T(15) / T(8) * dr * m5 - T(2.5) * dr * q * m6 +
+         dr * (T(7) * dr2 + T(6) * q2) / T(12) * m7 -
+         dr * dr2 * q / T(6) * m8 + dr * dr2 * dr2 / T(120) * m9
+    u6 = T(5) / T(16) * m5 - T(15) / T(8) * q * m6 +
+         T(5) * (T(7) * dr2 + T(4) * q2) / T(16) * m7 -
+         q * (T(21) * dr2 + T(2) * q2) / T(12) * m8 +
+         dr2 * (T(3) * dr2 + T(4) * q2) / T(16) * m9 -
+         dr2 * dr2 * q / T(24) * m10 +
+         dr2 * dr2 * dr2 / T(720) * m11
+    return eta * eta * eta * eta * (u4 + eta * (u5 + eta * u6))
+end
+
+@inline function _use_elliptic_near_axis(sig1, sig2, x, y, eta)
+    T = typeof(sig1)
+    rho2 = x * x / (sig1 * sig1) + y * y / (sig2 * sig2)
+    # The fifth-degree radial series has O(rho^6) relative truncation error,
+    # while Faddeeva subtraction has O(eps/(rho*sqrt(eta))) relative error.
+    # Compare rho^7 directly to avoid a fractional power in GPU kernels.
+    return rho2 * rho2 * rho2 * sqrt(rho2) <= eps(T) / sqrt(eta)
+end
+
+@inline function _elliptic_gaussian_axis_component(
+        kbb, sigx, sigy, x, y)
+    T = typeof(sigx)
+    s = sigx + sigy
+    sx2 = sigx * sigx
+    sx3 = sx2 * sigx
+    sx5 = sx3 * sx2
+    sy2 = sigy * sigy
+    sy3 = sy2 * sigy
+    s2 = s * s
+    s3 = s2 * s
+
+    j00 = T(2) / (sigx * s)
+    j10 = T(2) * (T(2) * sigx + sigy) / (T(3) * sx3 * s2)
+    j01 = T(2) / (sigx * sigy * s2)
+    j20 = T(2) * (T(8) * sx2 + T(9) * sigx * sigy + T(3) * sy2) /
+          (T(15) * sx5 * s3)
+    j11 = T(2) * (T(3) * sigx + sigy) /
+          (T(3) * sx3 * sigy * s3)
+    j02 = T(2) * (sigx + T(3) * sigy) /
+          (T(3) * sigx * sy3 * s3)
+
+    x2 = x * x
+    y2 = y * y
+    x4 = x2 * x2
+    y4 = y2 * y2
+    x2y2 = x2 * y2
+    scale = j00 - (x2 * j10 + y2 * j01) / T(2) +
+            x4 * j20 / T(8) + x2y2 * j11 / T(4) + y4 * j02 / T(8)
+    derivative = j00 - T(1.5) * x2 * j10 - y2 * j01 / T(2) +
+                 T(0.625) * x4 * j20 + T(0.75) * x2y2 * j11 +
+                 y4 * j02 / T(8)
+    return x * scale, -kbb * derivative
+end
+
+@inline function _elliptic_gaussian_near_axis_response(
+        kbb, sig1, sig2, x, y)
+    Kx, H1 = _elliptic_gaussian_axis_component(kbb, sig1, sig2, x, y)
+    Ky, H2 = _elliptic_gaussian_axis_component(kbb, sig2, sig1, y, x)
+    return Kx, Ky, H1, H2
+end
+
+@inline function _elliptic_gaussian_kick_principal(sig1, sig2, x, y)
+    T = typeof(sig1)
+    v = (sig1 * sig1 + sig2 * sig2) / 2
+    eta = (sig1 * sig1 - sig2 * sig2) / (2 * v)
+    if _use_elliptic_near_axis(sig1, sig2, x, y, eta)
+        Kx, Ky, _, _ = _elliptic_gaussian_near_axis_response(
+            zero(sig1), sig1, sig2, x, y)
+        return Kx, Ky
+    end
     negx = x < 0
     negy = y < 0
     x = abs(x)
     y = abs(y)
-    if dsize / msize < ROUND_BEAM_THRESHOLD
-        rr = x * x + y * y
-        if rr == 0
-            return zero(x), zero(y)
-        end
-        temp = _round_gaussian_force_scale(rr, msize * msize)
-        Kx = temp * x
-        Ky = temp * y
-    else
-        if sigx > sigy
-            sig1, sig2, x1, x2 = sigx, sigy, x, y
-        else
-            sig1, sig2, x1, x2 = sigy, sigx, y, x
-        end
-        denominator = SQRT2 * sqrt(sig1 * sig1 - sig2 * sig2)
-        z1 = complex(x1 / denominator, x2 / denominator)
-        z2 = complex(sig2 / sig1 * x1 / denominator, sig1 / sig2 * x2 / denominator)
-        A = 2 * SQRTPI / denominator
-        B = exp(-x1 * x1 / (2 * sig1 * sig1) - x2 * x2 / (2 * sig2 * sig2))
-        ret = A * (faddeeva_w(z1) - B * faddeeva_w(z2))
-        if sigx > sigy
-            Ky = real(ret)
-            Kx = imag(ret)
-        else
-            Ky = imag(ret)
-            Kx = real(ret)
-        end
-    end
+    denominator = T(SQRT2) * sqrt(sig1 * sig1 - sig2 * sig2)
+    z1 = complex(x / denominator, y / denominator)
+    z2 = complex(sig2 / sig1 * x / denominator, sig1 / sig2 * y / denominator)
+    A = T(2) * T(SQRTPI) / denominator
+    B = exp(-x * x / (2 * sig1 * sig1) - y * y / (2 * sig2 * sig2))
+    ret = A * (faddeeva_w(z1) - B * faddeeva_w(z2))
+    Kx = imag(ret)
+    Ky = real(ret)
     return negx ? -Kx : Kx, negy ? -Ky : Ky
+end
+
+@inline function _gaussian_beambeam_kick_principal(sig1, sig2, x, y)
+    v = (sig1 * sig1 + sig2 * sig2) / 2
+    eta = (sig1 * sig1 - sig2 * sig2) / (2 * v)
+    if eta == zero(eta)
+        r2 = x * x + y * y
+        scale = _round_gaussian_force_scale(r2, v)
+        return scale * x, scale * y
+    end
+    inner, outer = _near_round_eta_bounds(eta)
+    if eta <= inner
+        return _near_round_series_kick(v, eta, x, y)
+    end
+    Kex, Key = _elliptic_gaussian_kick_principal(sig1, sig2, x, y)
+    if eta >= outer
+        return Kex, Key
+    end
+    w, _ = _near_round_blend(eta)
+    Ksx, Ksy = _near_round_series_kick(v, eta, x, y)
+    return Ksx + w * (Kex - Ksx), Ksy + w * (Key - Ksy)
+end
+
+@inline function _gaussian_beambeam_kick_response_principal(
+        kbb, sig1, sig2, x, y)
+    T = typeof(sig1)
+    v = (sig1 * sig1 + sig2 * sig2) / T(2)
+    eta = (sig1 * sig1 - sig2 * sig2) / (T(2) * v)
+    if eta == zero(eta)
+        r2 = x * x + y * y
+        scale = _round_gaussian_force_scale(r2, v)
+        expterm = exp(-r2 / (T(2) * v))
+        H1, _, H2 = _round_gaussian_hessian(kbb, sqrt(v), x, y, expterm)
+        return scale * x, scale * y, H1, H2, zero(T)
+    end
+
+    inner, outer = _near_round_eta_bounds(eta)
+    if eta <= inner
+        return _near_round_series_response(kbb, v, eta, x, y)
+    end
+
+    Kex, Key = _elliptic_gaussian_kick_principal(sig1, sig2, x, y)
+    expterm = exp(-T(0.5) * (x * x / (sig1 * sig1) + y * y / (sig2 * sig2)))
+    if _use_elliptic_near_axis(sig1, sig2, x, y, eta)
+        _, _, He1, He2 = _elliptic_gaussian_near_axis_response(
+            kbb, sig1, sig2, x, y)
+    else
+        He1, He2 = _elliptic_gaussian_hessian_diagonal(
+            kbb, sig1, sig2, x, y, Kex, Key, expterm)
+    end
+    D = T(2) * v * eta
+    Le_over_D = (Kex * y - Key * x) / D
+    if eta >= outer
+        return Kex, Key, He1, He2, Le_over_D
+    end
+
+    w, dw = _near_round_blend(eta)
+    Ksx, Ksy, Hs1, Hs2, Ls_over_D =
+        _near_round_series_response(kbb, v, eta, x, y)
+    deltaU = _near_round_potential_residual(v, eta, x, y)
+    chain = kbb * dw * deltaU / v
+    Kx = Ksx + w * (Kex - Ksx)
+    Ky = Ksy + w * (Key - Ksy)
+    H1 = Hs1 + w * (He1 - Hs1) + (one(T) - eta) * chain
+    H2 = Hs2 + w * (He2 - Hs2) - (one(T) + eta) * chain
+    L_over_D = Ls_over_D + w * (Le_over_D - Ls_over_D)
+    return Kx, Ky, H1, H2, L_over_D
+end
+
+@inline function _gaussian_beambeam_kick_response(kbb, sigx, sigy, x, y)
+    if sigx >= sigy
+        Kx, Ky, Hx, Hy, _ = _gaussian_beambeam_kick_response_principal(
+            kbb, sigx, sigy, x, y)
+    else
+        Ky, Kx, Hy, Hx, _ = _gaussian_beambeam_kick_response_principal(
+            kbb, sigy, sigx, y, x)
+    end
+    return Kx, Ky, Hx, Hy
+end
+
+function gaussian_beambeam_kick(sigx, sigy, x, y)
+    (sigx == 0 || sigy == 0) && return zero(x), zero(y)
+    if sigx >= sigy
+        return _gaussian_beambeam_kick_principal(sigx, sigy, x, y)
+    end
+    Ky, Kx = _gaussian_beambeam_kick_principal(sigy, sigx, y, x)
+    return Kx, Ky
 end
 
 """

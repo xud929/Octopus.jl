@@ -225,6 +225,129 @@ end
     end
 end
 
+@testset "Near-round Gaussian transition" begin
+    beta = [k / sqrt(4k^2 - 1) for k in 1:95]
+    quadrature = eigen(SymTridiagonal(zeros(96), beta))
+    nodes = (quadrature.values .+ 1) ./ 2
+    weights = quadrature.vectors[1, :] .^ 2
+
+    function transition_reference(sig1, sig2, x, y)
+        v = (Float64(sig1)^2 + Float64(sig2)^2) / 2
+        eta = (Float64(sig1)^2 - Float64(sig2)^2) / (2v)
+        xb, yb = Float64(x), Float64(y)
+        X, Y = xb / sqrt(v), yb / sqrt(v)
+        ix = iy = jx = jy = 0.0
+        for (z, weight) in zip(nodes, weights)
+            density = exp(-z / 2 * (
+                X^2 / (1 + eta * z) + Y^2 / (1 - eta * z)))
+            fx = density / ((1 + eta * z)^1.5 * (1 - eta * z)^0.5)
+            fy = density / ((1 + eta * z)^0.5 * (1 - eta * z)^1.5)
+            ix += weight * fx
+            iy += weight * fy
+            jx += weight * z / (1 + eta * z) * fx
+            jy += weight * z / (1 - eta * z) * fy
+        end
+        return (
+            xb / v * ix,
+            yb / v * iy,
+            -(ix / v - xb^2 / v^2 * jx),
+            -(iy / v - yb^2 / v^2 * jy),
+        )
+    end
+
+    for T in (Float32, Float64)
+        inner, outer = Octopus._near_round_eta_bounds(zero(T))
+        @test inner == outer / T(2)
+        @test Octopus._near_round_blend(inner) == (zero(T), zero(T))
+        @test Octopus._near_round_blend(outer) == (one(T), zero(T))
+        midpoint_weight, midpoint_derivative =
+            Octopus._near_round_blend((inner + outer) / T(2))
+        @test midpoint_weight ≈ T(0.5) rtol=4eps(T)
+        @test midpoint_derivative > zero(T)
+
+        moment_tolerance = T === Float32 ? 5.0e-6 : 1.0e-12
+        for q in (prevfloat(T(2)), T(2), nextfloat(T(2)))
+            actual_moments = Octopus._near_round_moments_0_6(q)
+            reference_moments = setprecision(BigFloat, 256) do
+                qb = BigFloat(q)
+                eq = exp(-qb)
+                moment = -expm1(-qb) / qb
+                values = BigFloat[moment]
+                for order in 1:6
+                    moment = (order * moment - eq) / qb
+                    push!(values, moment)
+                end
+                values
+            end
+            @test collect(Float64, actual_moments) ≈
+                  Float64.(reference_moments) rtol=moment_tolerance
+        end
+
+        force_tolerance = T === Float32 ? 3.0e-5 : 5.0e-11
+        response_tolerance = T === Float32 ? 3.0e-5 : 5.0e-11
+        for eta in (zero(T), inner, T(0.75) * outer, outer, T(1.2) * outer)
+            sig1, sig2 = sqrt(one(T) + eta), sqrt(one(T) - eta)
+            for (x, y) in (
+                    (T(1.0e-6), T(-5.0e-7)),
+                    (T(0.2), T(-0.1)),
+                    (T(1.3), T(0.7)),
+                    (sqrt(T(0.0625)) * cos(T(pi / 16)),
+                     sqrt(T(0.0625)) * sin(T(pi / 16))),
+                    (sqrt(T(5)) * cos(T(15pi / 32)),
+                     sqrt(T(5)) * sin(T(15pi / 32))))
+                actual = Octopus._gaussian_beambeam_kick_response(
+                    one(T), sig1, sig2, x, y)
+                reference = transition_reference(sig1, sig2, x, y)
+                force_error = hypot(
+                    Float64(actual[1]) - reference[1],
+                    Float64(actual[2]) - reference[2]) /
+                    hypot(reference[1], reference[2])
+                response_error = hypot(
+                    Float64(actual[3]) - reference[3],
+                    Float64(actual[4]) - reference[4]) /
+                    hypot(reference[3], reference[4])
+                @test force_error < force_tolerance
+                @test response_error < response_tolerance
+            end
+        end
+
+        core_coordinate = T === Float32 ? T(1.0e-4) : T(1.0e-8)
+        for eta in (outer, T(0.001), T(0.1), T(0.9))
+            sig1, sig2 = sqrt(one(T) + eta), sqrt(one(T) - eta)
+            Kx, _ = gaussian_beambeam_kick(
+                sig1, sig2, core_coordinate, zero(T))
+            _, Ky = gaussian_beambeam_kick(
+                sig1, sig2, zero(T), core_coordinate)
+            gx = T(2) / (sig1 * (sig1 + sig2))
+            gy = T(2) / (sig2 * (sig1 + sig2))
+            @test Kx / core_coordinate ≈ gx rtol=32eps(T)
+            @test Ky / core_coordinate ≈ gy rtol=32eps(T)
+        end
+    end
+
+    _, outer = Octopus._near_round_eta_bounds(0.0)
+    eta = 0.75 * outer
+    A = Matrix(Diagonal([1 + eta, 1 - eta]))
+    B = Matrix(Diagonal([0.03, -0.02]))
+    Q = transpose(B) * (A \ B) + 0.3I
+    transition_element = ThinStrongBeam(ThinStrongBeamSpec(;
+        kbb=0.7, covariance=covariance_xpxypy(A, B, Matrix(Q))))
+    q0 = [0.4, 1.0e-4, -0.2, -1.5e-4, 0.0, 2.0e-4]
+    mapq(q) = collect(transition_element(q...))
+    h = 1.0e-5
+    jacobian = hcat([(
+        mapq(q0 .+ (collect(1:6) .== column) .* h) -
+        mapq(q0 .- (collect(1:6) .== column) .* h)
+    ) / (2h) for column in 1:6]...)
+    symplectic_form = zeros(6, 6)
+    for coordinate in (1, 3, 5)
+        symplectic_form[coordinate, coordinate + 1] = 1
+        symplectic_form[coordinate + 1, coordinate] = -1
+    end
+    residual = transpose(jacobian) * symplectic_form * jacobian - symplectic_form
+    @test norm(residual, Inf) < 2.0e-8
+end
+
 @testset "Weak-strong coupled covariance and longitudinal limits" begin
     uncoupled = transverse_covariance(;
         beta=(0.8, 1.2), alpha=(0.3, -0.2), sigma=(1.1, 0.7))
@@ -1569,6 +1692,16 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         return nothing
     end
 
+    function cuda_near_round_gaussian_kernel!(output, sig1, sig2, x, y)
+        Kx, Ky, H1, H2 = Octopus._cuda_gaussian_beambeam_kick_response(
+            one(sig1), sig1, sig2, x, y)
+        output[1] = Kx
+        output[2] = Ky
+        output[3] = H1
+        output[4] = H2
+        return nothing
+    end
+
     @testset "CUDA round Gaussian near-axis stability" begin
         for (T, x, y) in (
                 (Float32, 1.0f-4, -5.0f-5),
@@ -1587,6 +1720,32 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             @test actual ≈ expected rtol=16eps(T) atol=16eps(T)
             @test actual[1] != zero(T)
             @test actual[2] != zero(T)
+        end
+    end
+
+    @testset "CUDA near-round Gaussian transition matches CPU" begin
+        for T in (Float32, Float64)
+            inner, outer = Octopus._near_round_eta_bounds(zero(T))
+            tolerance = T === Float32 ? 3.0e-5 : 3.0e-11
+            for eta in (inner, T(0.75) * outer, outer, T(1.2) * outer, T(0.1))
+                sig1, sig2 = sqrt(one(T) + eta), sqrt(one(T) - eta)
+                for (x, y) in (
+                        (T(1.0e-6), T(-5.0e-7)),
+                        (T(0.2), T(-0.1)),
+                        (T(1.3), T(0.7)),
+                        (sqrt(T(0.0625)) * cos(T(pi / 16)),
+                         sqrt(T(0.0625)) * sin(T(pi / 16))),
+                        (sqrt(T(5)) * cos(T(15pi / 32)),
+                         sqrt(T(5)) * sin(T(15pi / 32))))
+                    expected = Octopus._gaussian_beambeam_kick_response(
+                        one(T), sig1, sig2, x, y)
+                    output = Octopus.CUDA.zeros(T, 4)
+                    Octopus.CUDA.@cuda threads=1 blocks=1 cuda_near_round_gaussian_kernel!(
+                        output, sig1, sig2, x, y)
+                    Octopus.CUDA.synchronize()
+                    @test Array(output) ≈ collect(expected) rtol=tolerance atol=tolerance
+                end
+            end
         end
     end
 

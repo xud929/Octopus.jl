@@ -11,6 +11,23 @@ validations and benchmarks:
 julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
+## Near-Round Gaussian Transition
+
+`near_round_gaussian_transition.jl` validates the precision-scaled smooth
+transition between the near-round potential expansion and the elliptical
+Bassetti-Erskine evaluator. It compares force and principal covariance
+response with the fixed-interval Gaussian integral, checks exact flat-beam core
+gradients, estimates value and first-derivative gaps at both blend endpoints,
+measures six-dimensional symplecticity, and reports CPU/CUDA parity when CUDA
+is available.
+
+```bash
+julia --project=. validation/near_round_gaussian_transition.jl
+```
+
+The derivation, implementation constants, and recorded reference run are in
+`../docs/theory/near_round_bassetti_erskine_switch.md`.
+
 ## Public Configuration Effectiveness
 
 `public_configuration_effectiveness.jl` checks that registered public

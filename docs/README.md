@@ -39,9 +39,9 @@ reference material, not API docs; the implementing code links back to them.
   Gaussian is sliced longitudinally.
 - [`near_round_bassetti_erskine_switch.md`](theory/near_round_bassetti_erskine_switch.md)
   — near-round analytic Gaussian evaluation: invariant anisotropy, the
-  fixed-interval field integral and expansion, round-model versus
-  conditioning-error balance, precision-aware switch estimates, and the
-  potential-level requirements for a smooth 6D transition.
+  fixed-interval field integral and third-order potential expansion,
+  precision-scaled smooth blending, the stable near-axis evaluator, and the
+  recorded CPU/CUDA continuity experiment.
 - [`node_interaction_grid.md`](theory/node_interaction_grid.md) — what
   `interaction_grid = :node` is for and why it works: the mesh is a step function
   of `z` under per-slice-pair sizing, the algorithm is already `C^0` and only the

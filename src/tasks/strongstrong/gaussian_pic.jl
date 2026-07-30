@@ -388,15 +388,7 @@ end
 # the soft-Gaussian _cp_covariance_kick pz term. `rx`, `ry` are the drift
 # derivatives d(sigma^2)/ds of the source variances at this boundary; `kbb` is
 # the slice-population kick scale (kbb * n_slice).
-@inline function _gpic_cov_pz(kbb, sigx, sigy, xx, yy, Kx, Ky, rx, ry)
-    expterm = exp(-(xx * xx / (sigx * sigx) + yy * yy / (sigy * sigy)) / 2)
-    dsize = abs(sigx - sigy) / 2
-    msize = (sigx + sigy) / 2
-    if dsize / msize < ROUND_BEAM_THRESHOLD
-        Hxx, _, Hyy = _round_gaussian_hessian(kbb, msize, xx, yy, expterm)
-    else
-        Hxx, Hyy = _elliptic_gaussian_hessian_diagonal(kbb, sigx, sigy, xx, yy, Kx, Ky, expterm)
-    end
+@inline function _gpic_cov_pz(Hxx, Hyy, rx, ry)
     return (Hxx * rx + Hyy * ry) / 4
 end
 
@@ -663,21 +655,30 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
                 field.pz[i] += T(0.5) * (dpx_a * mpx + dpy_a * mpy)
             end
         else
-        beLx, beLy = gaussian_beambeam_kick(sigxL, sigyL, x - muxL, y - muyL)
-        beRx, beRy = gaussian_beambeam_kick(sigxR, sigyR, x - muxR, y - muyR)
-        Kx_a = half_ns * (zL * beLx + zR * beRx)
-        Ky_a = half_ns * (zL * beLy + zR * beRy)
-        dpx_a = kick_scale * Kx_a
-        dpy_a = kick_scale * Ky_a
-        field.px[i] += kick_scale * Kx_d + dpx_a
-        field.py[i] += kick_scale * Ky_d + dpy_a
-        if pic.longitudinal_kick
-            covL = _gpic_cov_pz(kbb_eff, sigxL, sigyL, x - muxL, y - muyL, beLx, beLy, rxL, ryL)
-            covR = _gpic_cov_pz(kbb_eff, sigxR, sigyR, x - muxR, y - muyR, beRx, beRy, rxR, ryR)
-            field.pz[i] += kick_scale * Kz_d * hzi
-            field.pz[i] += zL * covL + zR * covR
-            field.pz[i] += T(0.5) * (dpx_a * mpx + dpy_a * mpy)
-        end
+            if pic.longitudinal_kick
+                beLx, beLy, HxxL, HyyL = _gaussian_beambeam_kick_response(
+                    kbb_eff, sigxL, sigyL, x - muxL, y - muyL)
+                beRx, beRy, HxxR, HyyR = _gaussian_beambeam_kick_response(
+                    kbb_eff, sigxR, sigyR, x - muxR, y - muyR)
+            else
+                beLx, beLy = gaussian_beambeam_kick(
+                    sigxL, sigyL, x - muxL, y - muyL)
+                beRx, beRy = gaussian_beambeam_kick(
+                    sigxR, sigyR, x - muxR, y - muyR)
+            end
+            Kx_a = half_ns * (zL * beLx + zR * beRx)
+            Ky_a = half_ns * (zL * beLy + zR * beRy)
+            dpx_a = kick_scale * Kx_a
+            dpy_a = kick_scale * Ky_a
+            field.px[i] += kick_scale * Kx_d + dpx_a
+            field.py[i] += kick_scale * Ky_d + dpy_a
+            if pic.longitudinal_kick
+                covL = _gpic_cov_pz(HxxL, HyyL, rxL, ryL)
+                covR = _gpic_cov_pz(HxxR, HyyR, rxR, ryR)
+                field.pz[i] += kick_scale * Kz_d * hzi
+                field.pz[i] += zL * covL + zR * covR
+                field.pz[i] += T(0.5) * (dpx_a * mpx + dpy_a * mpy)
+            end
         end
         s = T(0.5) * (T(param_source.center) - field.z[i])
         field.x[i] += s * field.px[i]

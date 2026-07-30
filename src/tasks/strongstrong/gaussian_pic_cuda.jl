@@ -726,16 +726,20 @@ if _HAS_CUDA
                 pz += kick_scale * Kz * field_hzi
                 pz += zL * pzL + zR * pzR
             else
-            beLx, beLy = _cuda_gaussian_beambeam_kick(g.sigxL, g.sigyL, x - g.muxL, y - g.muyL)
-            beRx, beRy = _cuda_gaussian_beambeam_kick(g.sigxR, g.sigyR, x - g.muxR, y - g.muyR)
-            Kxa = half_ns * (zL * beLx + zR * beRx); Kya = half_ns * (zL * beLy + zR * beRy)
-            dpxa = kick_scale * Kxa; dpya = kick_scale * Kya
-            newpx = oldpx + kick_scale * Kx + dpxa
-            newpy = oldpy + kick_scale * Ky + dpya
-            pz += kick_scale * Kz * field_hzi
-            covL = _gpic_cov_pz(kbb_eff, g.sigxL, g.sigyL, x - g.muxL, y - g.muyL, beLx, beLy, g.rxL, g.ryL)
-            covR = _gpic_cov_pz(kbb_eff, g.sigxR, g.sigyR, x - g.muxR, y - g.muyR, beRx, beRy, g.rxR, g.ryR)
-            pz += zL * covL + zR * covR
+                beLx, beLy, HxxL, HyyL = _cuda_gaussian_beambeam_kick_response(
+                    kbb_eff, g.sigxL, g.sigyL, x - g.muxL, y - g.muyL)
+                beRx, beRy, HxxR, HyyR = _cuda_gaussian_beambeam_kick_response(
+                    kbb_eff, g.sigxR, g.sigyR, x - g.muxR, y - g.muyR)
+                Kxa = half_ns * (zL * beLx + zR * beRx)
+                Kya = half_ns * (zL * beLy + zR * beRy)
+                dpxa = kick_scale * Kxa
+                dpya = kick_scale * Kya
+                newpx = oldpx + kick_scale * Kx + dpxa
+                newpy = oldpy + kick_scale * Ky + dpya
+                pz += kick_scale * Kz * field_hzi
+                covL = _gpic_cov_pz(HxxL, HyyL, g.rxL, g.ryL)
+                covR = _gpic_cov_pz(HxxR, HyyR, g.rxR, g.ryR)
+                pz += zL * covL + zR * covR
             end
             pz += typeof(kbb)(0.5) * (dpxa * g.mpx + dpya * g.mpy)
             s2 = typeof(source_center)(0.5) * (source_center - oldz)
@@ -1021,8 +1025,10 @@ if _HAS_CUDA
                     method_code, x, y, x0, y0, hxi, hyi, nx, ny,
                     phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
                 )
-                beLx, beLy = _cuda_gaussian_beambeam_kick(sigxL, sigyL, x - muxL, y - muyL)
-                beRx, beRy = _cuda_gaussian_beambeam_kick(sigxR, sigyR, x - muxR, y - muyR)
+                beLx, beLy = _cuda_gaussian_beambeam_kick(
+                    sigxL, sigyL, x - muxL, y - muyL)
+                beRx, beRy = _cuda_gaussian_beambeam_kick(
+                    sigxR, sigyR, x - muxR, y - muyR)
                 Kxa = half_ns * (zL * beLx + zR * beRx)
                 Kya = half_ns * (zL * beLy + zR * beRy)
                 newpx = fpx[index] + 2 * kbb * (Kx + Kxa)
@@ -1063,16 +1069,18 @@ if _HAS_CUDA
                     method_code, x, y, x0, y0, hxi, hyi, nx, ny,
                     phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
                 )
-                beLx, beLy = _cuda_gaussian_beambeam_kick(sigxL, sigyL, x - muxL, y - muyL)
-                beRx, beRy = _cuda_gaussian_beambeam_kick(sigxR, sigyR, x - muxR, y - muyR)
+                beLx, beLy, HxxL, HyyL = _cuda_gaussian_beambeam_kick_response(
+                    kbb_eff, sigxL, sigyL, x - muxL, y - muyL)
+                beRx, beRy, HxxR, HyyR = _cuda_gaussian_beambeam_kick_response(
+                    kbb_eff, sigxR, sigyR, x - muxR, y - muyR)
                 Kxa = half_ns * (zL * beLx + zR * beRx)
                 Kya = half_ns * (zL * beLy + zR * beRy)
                 dpxa = kick_scale * Kxa; dpya = kick_scale * Kya
                 newpx = oldpx + kick_scale * Kx + dpxa
                 newpy = oldpy + kick_scale * Ky + dpya
                 pz += kick_scale * Kz * field_hzi
-                covL = _gpic_cov_pz(kbb_eff, sigxL, sigyL, x - muxL, y - muyL, beLx, beLy, rxL, ryL)
-                covR = _gpic_cov_pz(kbb_eff, sigxR, sigyR, x - muxR, y - muyR, beRx, beRy, rxR, ryR)
+                covL = _gpic_cov_pz(HxxL, HyyL, rxL, ryL)
+                covR = _gpic_cov_pz(HxxR, HyyR, rxR, ryR)
                 pz += zL * covL + zR * covR
                 pz += typeof(kbb)(0.5) * (dpxa * mpx + dpya * mpy)
                 s2 = typeof(source_center)(0.5) * (source_center - fz[index])

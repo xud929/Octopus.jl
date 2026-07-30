@@ -283,18 +283,11 @@ end
 	a, _, d, au, _, du = _transport_transverse_moments(m, S)
 	(a <= 0 || d <= 0) && return x, px, y, py, z, pz, zero(x)
 	sigx, sigy = sqrt(a), sqrt(d)
-	Kx, Ky = _cuda_gaussian_beambeam_kick(sigx, sigy, xx, yy)
+	Kx, Ky, Hxx, Hyy =
+		_cuda_gaussian_beambeam_kick_response(kbb, sigx, sigy, xx, yy)
 	expterm = exp(-0.5 * (xx * xx / a + yy * yy / d))
 	px += kbb * Kx
 	py += kbb * Ky
-	dsize = abs(sigx - sigy) / 2
-	msize = (sigx + sigy) / 2
-	if dsize / msize < ROUND_BEAM_THRESHOLD
-		Hxx, _, Hyy = _round_gaussian_hessian(kbb, msize, xx, yy, expterm)
-	else
-		Hxx, Hyy = _elliptic_gaussian_hessian_diagonal(
-			kbb, sigx, sigy, xx, yy, Kx, Ky, expterm)
-	end
 	pz += 0.25 * (Hxx * au + Hyy * du)
 	return x, px, y, py, z, pz, expterm / (TWOPI * sigx * sigy)
 end
@@ -304,8 +297,9 @@ end
 	a, b, d, au, bu, du = _transport_transverse_moments(m, S)
 	detA = a * d - b * b
 	(a <= 0 || d <= 0 || detA <= 0) && return x, px, y, py, z, pz, zero(x)
-	D = sqrt((a - d) * (a - d) + 4 * b * b)
-	if D <= ROUND_BEAM_THRESHOLD * (a + d)
+	adiff = a - d
+	D = hypot(adiff, 2 * b)
+	if D == zero(D)
 		sigma = sqrt((a + d) / 2)
 		Kx, Ky = _cuda_gaussian_beambeam_kick(sigma, sigma, xx, yy)
 		expterm = exp(-0.5 * (xx * xx + yy * yy) / (sigma * sigma))
@@ -323,62 +317,140 @@ end
 	sig1, sig2 = sqrt(lambda1), sqrt(lambda2)
 	xh = c * xx + s * yy
 	yh = -s * xx + c * yy
-	Kxh, Kyh = _cuda_gaussian_beambeam_kick(sig1, sig2, xh, yh)
+	eta = D / (a + d)
+	inner, _ = _near_round_eta_bounds(eta)
+	if eta <= inner
+		Kxh, Kyh, H11, H22, L_over_D =
+			_near_round_series_response(kbb, (a + d) / 2, eta, xh, yh)
+	else
+		Kxh, Kyh, H11, H22, L_over_D =
+			_cuda_gaussian_beambeam_kick_response_principal(
+				kbb, sig1, sig2, xh, yh)
+	end
 	expterm = exp(-0.5 * (xh * xh / lambda1 + yh * yh / lambda2))
 	Fxh, Fyh = kbb * Kxh, kbb * Kyh
 	px += c * Fxh - s * Fyh
 	py += s * Fxh + c * Fyh
-	H11, H22 = _elliptic_gaussian_hessian_diagonal(
-		kbb, sig1, sig2, xh, yh, Kxh, Kyh, expterm)
-	Du = ((a - d) * (au - du) + 4 * b * bu) / D
-	lambda1u = (au + du + Du) / 2
-	lambda2u = (au + du - Du) / 2
-	thetau = ((a - d) * bu - b * (au - du)) / (D * D)
-	pz += 0.25 * (H11 * lambda1u + H22 * lambda2u)
-	pz -= 0.5 * thetau * (Fxh * yh - Fyh * xh)
+	Du = (adiff * (au - du) + 4 * b * bu) / D
+	traceu = au + du
+	pz += 0.125 * ((H11 + H22) * traceu + (H11 - H22) * Du)
+	rotation_projection = (adiff * bu - b * (au - du)) / D
+	pz -= 0.5 * kbb * rotation_projection * L_over_D
 	return x, px, y, py, z, pz, expterm / (TWOPI * sig1 * sig2)
 end
 
-@inline function _cuda_gaussian_beambeam_kick(sigx, sigy, x, y)
-	(sigx == 0 || sigy == 0) && return zero(x), zero(y)
-	dsize = abs((sigx - sigy) / 2)
-	msize = sigx - (sigx - sigy) / 2
+@inline function _cuda_elliptic_gaussian_kick_principal(sig1, sig2, x, y)
+	T = typeof(sig1)
+	v = (sig1 * sig1 + sig2 * sig2) / 2
+	eta = (sig1 * sig1 - sig2 * sig2) / (2 * v)
+	if _use_elliptic_near_axis(sig1, sig2, x, y, eta)
+		Kx, Ky, _, _ = _elliptic_gaussian_near_axis_response(
+			zero(sig1), sig1, sig2, x, y)
+		return Kx, Ky
+	end
 	negx = x < 0
 	negy = y < 0
 	x = abs(x)
 	y = abs(y)
-	if dsize / msize < ROUND_BEAM_THRESHOLD
-		rr = x * x + y * y
-		if rr == 0
-			return zero(x), zero(y)
-		end
-		temp = _round_gaussian_force_scale(rr, msize * msize)
-		Kx = temp * x
-		Ky = temp * y
-	else
-		if sigx > sigy
-			sig1, sig2, x1, x2 = sigx, sigy, x, y
-		else
-			sig1, sig2, x1, x2 = sigy, sigx, y, x
-		end
-		denominator = SQRT2 * sqrt(sig1 * sig1 - sig2 * sig2)
-		z1r = x1 / denominator
-		z1i = x2 / denominator
-		z2r = sig2 / sig1 * x1 / denominator
-		z2i = sig1 / sig2 * x2 / denominator
-		w1r, w1i = faddeeva_w_upper_reim(z1r, z1i)
-		w2r, w2i = faddeeva_w_upper_reim(z2r, z2i)
-		A = 2 * SQRTPI / denominator
-		B = exp(-x1 * x1 / (2 * sig1 * sig1) - x2 * x2 / (2 * sig2 * sig2))
-		retr = A * (w1r - B * w2r)
-		reti = A * (w1i - B * w2i)
-		if sigx > sigy
-			Ky = retr
-			Kx = reti
-		else
-			Ky = reti
-			Kx = retr
-		end
-	end
+	denominator = T(SQRT2) * sqrt(sig1 * sig1 - sig2 * sig2)
+	z1r = x / denominator
+	z1i = y / denominator
+	z2r = sig2 / sig1 * x / denominator
+	z2i = sig1 / sig2 * y / denominator
+	w1r, w1i = faddeeva_w_upper_reim(z1r, z1i)
+	w2r, w2i = faddeeva_w_upper_reim(z2r, z2i)
+	A = T(2) * T(SQRTPI) / denominator
+	B = exp(-x * x / (2 * sig1 * sig1) - y * y / (2 * sig2 * sig2))
+	retr = A * (w1r - B * w2r)
+	reti = A * (w1i - B * w2i)
+	Kx = reti
+	Ky = retr
 	return negx ? -Kx : Kx, negy ? -Ky : Ky
+end
+
+@inline function _cuda_gaussian_beambeam_kick_principal(sig1, sig2, x, y)
+	v = (sig1 * sig1 + sig2 * sig2) / 2
+	eta = (sig1 * sig1 - sig2 * sig2) / (2 * v)
+	if eta == zero(eta)
+		r2 = x * x + y * y
+		scale = _round_gaussian_force_scale(r2, v)
+		return scale * x, scale * y
+	end
+	inner, outer = _near_round_eta_bounds(eta)
+	if eta <= inner
+		return _near_round_series_kick(v, eta, x, y)
+	end
+	Kex, Key = _cuda_elliptic_gaussian_kick_principal(sig1, sig2, x, y)
+	if eta >= outer
+		return Kex, Key
+	end
+	w, _ = _near_round_blend(eta)
+	Ksx, Ksy = _near_round_series_kick(v, eta, x, y)
+	return Ksx + w * (Kex - Ksx), Ksy + w * (Key - Ksy)
+end
+
+@inline function _cuda_gaussian_beambeam_kick_response_principal(
+		kbb, sig1, sig2, x, y)
+	T = typeof(sig1)
+	v = (sig1 * sig1 + sig2 * sig2) / T(2)
+	eta = (sig1 * sig1 - sig2 * sig2) / (T(2) * v)
+	if eta == zero(eta)
+		r2 = x * x + y * y
+		scale = _round_gaussian_force_scale(r2, v)
+		expterm = exp(-r2 / (T(2) * v))
+		H1, _, H2 = _round_gaussian_hessian(kbb, sqrt(v), x, y, expterm)
+		return scale * x, scale * y, H1, H2, zero(T)
+	end
+
+	inner, outer = _near_round_eta_bounds(eta)
+	if eta <= inner
+		return _near_round_series_response(kbb, v, eta, x, y)
+	end
+
+	Kex, Key = _cuda_elliptic_gaussian_kick_principal(sig1, sig2, x, y)
+	expterm = exp(-T(0.5) * (x * x / (sig1 * sig1) + y * y / (sig2 * sig2)))
+	if _use_elliptic_near_axis(sig1, sig2, x, y, eta)
+		_, _, He1, He2 = _elliptic_gaussian_near_axis_response(
+			kbb, sig1, sig2, x, y)
+	else
+		He1, He2 = _elliptic_gaussian_hessian_diagonal(
+			kbb, sig1, sig2, x, y, Kex, Key, expterm)
+	end
+	D = T(2) * v * eta
+	Le_over_D = (Kex * y - Key * x) / D
+	if eta >= outer
+		return Kex, Key, He1, He2, Le_over_D
+	end
+
+	w, dw = _near_round_blend(eta)
+	Ksx, Ksy, Hs1, Hs2, Ls_over_D =
+		_near_round_series_response(kbb, v, eta, x, y)
+	deltaU = _near_round_potential_residual(v, eta, x, y)
+	chain = kbb * dw * deltaU / v
+	Kx = Ksx + w * (Kex - Ksx)
+	Ky = Ksy + w * (Key - Ksy)
+	H1 = Hs1 + w * (He1 - Hs1) + (one(T) - eta) * chain
+	H2 = Hs2 + w * (He2 - Hs2) - (one(T) + eta) * chain
+	L_over_D = Ls_over_D + w * (Le_over_D - Ls_over_D)
+	return Kx, Ky, H1, H2, L_over_D
+end
+
+@inline function _cuda_gaussian_beambeam_kick_response(kbb, sigx, sigy, x, y)
+	if sigx >= sigy
+		Kx, Ky, Hx, Hy, _ = _cuda_gaussian_beambeam_kick_response_principal(
+			kbb, sigx, sigy, x, y)
+	else
+		Ky, Kx, Hy, Hx, _ = _cuda_gaussian_beambeam_kick_response_principal(
+			kbb, sigy, sigx, y, x)
+	end
+	return Kx, Ky, Hx, Hy
+end
+
+@inline function _cuda_gaussian_beambeam_kick(sigx, sigy, x, y)
+	(sigx == 0 || sigy == 0) && return zero(x), zero(y)
+	if sigx >= sigy
+		return _cuda_gaussian_beambeam_kick_principal(sigx, sigy, x, y)
+	end
+	Ky, Kx = _cuda_gaussian_beambeam_kick_principal(sigy, sigx, y, x)
+	return Kx, Ky
 end
