@@ -15,6 +15,16 @@ flat = re.sub(r"\s+", " ", open(SRC).read())
 
 MUST_BE_ABSENT = [
     "$1.158$",
+    # round 25: single-ensemble numbers, shown non-representative by replication
+    "in all six matched pairs",
+    "by a factor $4.7$--$7.4$",
+    "it rises by $9.7$--$15.6\\%$",
+    "more than $16\\%$ in either direction",
+    "at least $4.7\\times$",
+    "$4.2\\pm0.7$",
+    "$18.5\\pm1.6\\%$",
+    "all $54$ matched",
+    "nine independent ensembles",
     "ships with the driver that produced it",
     "Everything else in the package",
     "plane assignment differs from the wide-plane scan",
@@ -72,13 +82,18 @@ MUST_BE_PRESENT = [
     "Every other use of it in this paper is flagged at the",
     "$0.22\\%$ or better at every",
     "reciprocal} aspect ratio $r=11.1$",
-    "in all six matched pairs",
     # round 23: R1 showed "pooling" does not yield 2.1 sigma -- adopting the
     # x-plane scatter does (2.05); a literal pooled SD gives 2.26.  Assert the
     # operation is named, so the number and the wording cannot drift apart.
     "\\emph{adopt} the $x$-plane scatter",
     "neither is the\nbetter determined",
     "a factor $8$ low and the outlier",
+    # round 25: replicated over nine ensembles, with spread
+    "nineteen independent ensembles",
+    "$18.5\\pm1.3\\%$",
+    "$(4.69\\pm0.14)\\times10^{-4}$",
+    "all $114$ matched",
+    "one-sided bounds, not",
     "quoted as $2.1$--$2.6\\sigma$",
 ]
 
@@ -198,12 +213,26 @@ def check_axis_limits():
                     # float noise for a point sitting exactly on the limit.
                     # Continuous curves keep the 5% pad, where it earns its
                     # place by not reporting deliberate clipping.
-                    pad = (1e-9 if strict else 0.05) * (hi - lo)
+                    # One tight tolerance for every series: the 5% pad on
+                    # marker-less series was itself swallowing hidden points
+                    # (Fig. 8(a)'s turn-0 point at -0.269 against a ylim of 0).
+                    # The fraction test below does the discriminating instead.
+                    pad = 1e-9 * (hi - lo)
                     outside = (v > hi + pad) | (v < lo - pad)
-                    if outside.all() or (strict and outside.any()):
+                    frac = outside.sum() / outside.size
+                    # Keying strictness off the marker alone left every
+                    # marker-less DATA series unchecked (R5 hid 23 of 513 points
+                    # in Fig. 8(a) and the harness passed).  Discriminate by how
+                    # MUCH is outside instead: a handful of points beyond the
+                    # axis is hidden data, whichever way it was drawn, while a
+                    # dense curve running past the frame -- a spectrum's noise
+                    # floor below a log axis, a theory curve over a wider range
+                    # -- is deliberate range selection.
+                    hidden_points = 0.0 < frac <= 0.10
+                    if outside.all() or hidden_points or (strict and outside.any()):
                         problems.append(
                             f"OFF-AXIS     : {name} ax{i} {kind} {axis} "
-                            f"{'has a point' if strict else 'lies entirely'} "
+                            f"{'lies entirely' if outside.all() else 'has hidden point(s)'} "
                             f"outside {axis}lim ({lo:.4g}, {hi:.4g}); series "
                             f"spans [{v.min():.4g}, {v.max():.4g}]")
         return orig_savefig(self, *a, **k)

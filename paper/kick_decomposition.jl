@@ -264,7 +264,12 @@ function decompose(sigx, sigy; grid, method, n, R, seed)
     return b, f, median(tot) / gnorm, floor_boot, floor_rayleigh, floor_boot_uncentered
 end
 
-const OUT2 = joinpath(@__DIR__, "data", "kick_decomposition_R100.tsv")
+# Replicate ensembles must not overwrite the archived draw: only the default
+# seed writes kick_decomposition_R100.tsv.
+const KD_SEED = parse(Int, get(ENV, "OCTOPUS_KD_SEED", "20260728"))
+const OUT2 = joinpath(@__DIR__, "data",
+                      KD_SEED == 20260728 ? "kick_decomposition_R100.tsv" :
+                      "kick_decomposition_R100_seed$(KD_SEED).tsv")
 open(OUT2, "w") do io
     println(io, "# Kick-error systematic/fluctuation split, 81x81 field grid +-4 sigma,")
     println(io, "# median over field points, normalized by peak exact kick.")
@@ -275,8 +280,15 @@ open(OUT2, "w") do io
             for method in (:CIC, :TSC)
                 n = 100_000
                 R = parse(Int, get(ENV, "OCTOPUS_KD_R", "100"))
+                # The ensemble seed was hardcoded, so every archived row came
+                # from ONE source-realization draw and carried no uncertainty.
+                # Referee replication showed that draw is not representative:
+                # the flat 64^2->256^2 fluctuation rise reads +15.6% here and
+                # +16.9..+19.3% over six fresh ensembles.  Parameterized so the
+                # spread across ensembles can be measured and quoted; the
+                # default reproduces the archived file bit-for-bit.
                 b, f, t, fl, flr, flu = decompose(sx, sy; grid = grid, method = method,
-                                                  n = n, R = R, seed = 20260728)
+                                                  n = n, R = R, seed = KD_SEED)
                 @printf("%-7s %4d^2 %s n=%.0e  bias=%.3e  fluct=%.3e  total=%.3e\n",
                         fam, grid, method, n, b, f, t)
                 println(io, fam, "\t", grid, "\t", method, "\t", n, "\t", R,

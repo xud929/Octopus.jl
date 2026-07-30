@@ -196,15 +196,10 @@ def fig_yokoya_scans():
              fontsize=7)
     ax1.axhline(1.0, color=MUTED, linewidth=0.9, linestyle=(0, (4, 3)))
     ax1.text(0.021, 1.02, r"rigid bunch ($\Lambda=1$)", color=MUTED, fontsize=7)
-    hasmode = th[:, 0] >= 0.19
-    ax1.plot(th[hasmode, 0], th[hasmode, 1], color=INK2, linewidth=1.3,
-             label=r"$m{=}1$ Vlasov matrix (1D)")
-    ax1.plot(th[~(th[:, 0] > 0.21), 0], th[~(th[:, 0] > 0.21), 1], color=INK2,
-             linewidth=1.3, alpha=0.30)
-    ax1.plot(th[hasmode, 0], th[hasmode, 2], color=INK2, linewidth=1.1,
-             linestyle=(0, (2, 2)), label="exact 1D particle model")
-    ax1.plot(th[~(th[:, 0] > 0.21), 0], th[~(th[:, 0] > 0.21), 2], color=INK2,
-             linewidth=1.1, linestyle=(0, (2, 2)), alpha=0.30)
+    # The two 1D reduced-model curves are NOT drawn: the manuscript does not
+    # discuss them, and the driver that produces them states they are not a
+    # quantitative instrument at the few-percent level.  Panel (a) shows the
+    # measurement against the literature band only.
     ax1.plot([1.0], [1.198], marker="D", markersize=5.0, color="#7a4fb8",
              linestyle="none", zorder=5, label="converged $r=1$ (8192 turns)")
     ax1.errorbar(ms[:, 0], ms[:, 1], yerr=0.005, fmt="o", color=BLUE,
@@ -386,7 +381,9 @@ def fig_coherent_fft():
                      color=INK, fontsize=8.5, pad=15)
         ax.text(qs, 2.3, r"$Q_\sigma$", color=INK2, fontsize=7.5, ha="center")
         ax.text(qp, 2.3, r"$Q_\pi$", color=INK2, fontsize=7.5, ha="center")
-        ax.set_ylim(2e-7, 2.0)
+        # 1e-7, not 2e-7: the measured spectra bottom out at 1.08e-7 and the
+        # tighter limit clipped their noise floor out of the frame.
+        ax.set_ylim(1e-7, 2.0)
         ax.legend(loc="upper right", handlelength=1.5, borderaxespad=0.2)
         style_axis(ax, ygrid=False)
     axes[0].set_ylabel("dipole amplitude\n(normalized)")
@@ -590,7 +587,10 @@ def fig_eic_emittance():
         ax.set_title(title, loc="left")
         ax.set_xlabel("turn")
         ax.set_xlim(0, max(o["turn"].max(), b["turn"].max()))
-        ax.set_ylim(bottom=0)
+        # Not bottom=0: the two codes' turn-0 points sit at -0.27 and -0.42 pp
+        # (their initial sampling difference) and were drawn outside the frame,
+        # invisible.  Let the data set the bottom.
+        ax.set_ylim(bottom=min(-0.6, ax.get_ylim()[0]))
         if k == 0:
             ax.legend(loc="lower center", handlelength=1.6,
                       borderaxespad=0.3, fontsize=6.2, ncol=2,
