@@ -721,3 +721,34 @@ Overrides: `OCTOPUS_OPT_TAG`, `OCTOPUS_OPT_TURNS`, `OCTOPUS_OPT_NPART`,
 Outputs under `result/`: `pic_option_<tag>.tsv` (per-turn series),
 `.coords.tsv` (coordinate dumps), `.meta.tsv` (options and timing),
 `pic_option_consistency_summary.tsv` (cross-option comparison).
+
+## Gaussian Longitudinal Slicing Convergence
+
+`gaussian_slicing_convergence.jl` ranks every `slice_method` of
+`GaussianStrongBeamSpec` at EIC weak-strong parameters and simultaneously
+verifies the implementations: a rule that is wrong does not converge to the same
+limit as the others, so agreement at large `ns` is the check.
+
+It reports Furman's `Q` (Eq. 10 of LBL-37680) against an `ns = 601` reference —
+Ref. [1]'s own "algorithm #4 at 300 kicks" reference is circular, scoring every
+rule against the asymptote of its own family. The reference is qualified by its
+**own** residual, estimated by Richardson extrapolation from three solves at
+`ns/2`, `ns` and `2*ns`; that residual is the resolution floor. A cross-family
+comparison is printed for context but is not the floor — at `ns = 601` it is
+dominated by the comparison rule's own residual. Alongside `Q` it reports
+the tracking-free second-moment deficit and its tail/interior split, because
+comparing the two fitted orders is what decides whether the binding error is
+node placement or the splitting.
+
+Both collision directions are run; the governing hourglass ratio
+`sigma_z,strong / beta*_weak` differs by an order of magnitude between them.
+
+```bash
+julia --project=. validation/gaussian_slicing_convergence.jl
+```
+
+Outputs under `result/`: `gaussian_slicing_convergence.tsv` (Q and moment
+deficit per rule/ns/direction), `gaussian_slicing_tail_split.tsv`.
+
+Derivation: `../docs/theory/gaussian_longitudinal_slicing.md`. Recorded run and
+conclusions: `../docs/history/gaussian_slicing_convergence_2026_07_31.md`.

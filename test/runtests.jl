@@ -770,6 +770,146 @@ end
     @test !isdefined(Octopus, :LinearTurnSignal)
 end
 
+@testset "Gaussian longitudinal slicing rules" begin
+    # Reference values: Table 1 of Furman, Zholents, Chen and Shatilov
+    # (PEP-II/AP 95.39, LBL-37680, CBP Note-152, 1995) at ns = 5, sigz = 1.
+    # Derivations: docs/theory/gaussian_longitudinal_slicing.md.
+    # NOTE the published w_2 for algorithm #4 is 0.17350, which makes that row
+    # sum to 1.072 and violate normalization; the self-consistent value is
+    # 0.137503 (Section 4 of the note). This test pins the corrected value.
+    table1 = Dict(
+        :equal_spacing_density =>
+            ([-1.166667, -0.5833333, 0.0, 0.5833333, 1.166667],
+             [0.1368561, 0.2280002, 0.2702873, 0.2280002, 0.1368561]),
+        :equal_area =>
+            ([-1.281552, -0.5244005, 0.0, 0.5244005, 1.281552], fill(0.2, 5)),
+        :equal_area_centroid =>
+            ([-1.399809, -0.5319032, 0.0, 0.5319032, 1.399809], fill(0.2, 5)),
+        :sqrt_density =>
+            ([-1.59898, -0.67872, 0.0, 0.67872, 1.59898],
+             [0.137503, 0.232216, 0.260561, 0.232216, 0.137503]),
+        :min_cdf_area =>
+            ([-1.44156, -0.63623, 0.0, 0.63623, 1.44156],
+             [0.14943, 0.22577, 0.24960, 0.22577, 0.14943]),
+    )
+    # Element-wise, because Table 1 is printed to five decimals: the agreement
+    # bound is per entry, not on the vector norm.
+    for (method, (centers, weights)) in table1
+        z, w = Octopus._gaussian_slices(Float64, 5, nothing, nothing, 1.0, method, nothing)
+        @test maximum(abs, collect(z) .- centers) < 5.0e-6
+        @test maximum(abs, collect(w) .- weights) < 5.0e-6
+    end
+
+    # :equal_area is Furman #2 in closed form; guard the shipped default.
+    for ns in (3, 5, 7, 15)
+        z, w = Octopus._gaussian_slices(Float64, ns, nothing, nothing, 1.0, :equal_area, nothing)
+        half = (ns - 1) ÷ 2
+        @test collect(z) ≈ [Octopus.SQRT2 * Octopus.inverse_erf(2k / ns) for k in -half:half]
+        @test collect(w) == fill(1 / ns, ns)
+    end
+
+    # Gauss-Hermite is defined by moment exactness, not by Ref. [1]: an ns-point
+    # rule reproduces every standard-normal moment through order 2*ns-1.
+    for ns in (3, 5, 15)
+        z, w = Octopus._gaussian_slices(Float64, ns, nothing, nothing, 1.0, :gauss_hermite, nothing)
+        for order in 0:(2ns - 1)
+            scale = prod(max(order - 1, 1):-2:1; init=1.0)     # (order-1)!!
+            exact = iseven(order) ? scale : 0.0
+            @test sum(collect(w) .* collect(z) .^ order) ≈ exact atol=1.0e-8 * scale
+        end
+    end
+
+    # Structural invariants every rule must satisfy.
+    for method in Octopus.SLICE_METHODS, ns in (1, 2, 3, 5, 8, 15, 32)
+        width = method === :equal_width ? 2.0e-3 : nothing
+        z, w = Octopus._gaussian_slices(Float64, ns, nothing, nothing, 7.0e-3, method, width)
+        @test sum(collect(w)) ≈ 1.0
+        @test all(>=(0), collect(w))
+        @test all(isfinite, collect(z))
+        @test issorted(collect(z))
+        @test collect(z) ≈ -reverse(collect(z)) atol=1.0e-14
+        @test collect(w) ≈ reverse(collect(w)) atol=1.0e-13
+    end
+
+    # Effectiveness at the consumer boundary: slice_method must reach the
+    # compiled runtime AND change the tracked kick, not merely be stored.
+    thin = ThinStrongBeamSpec(; kbb=1.0e-4,
+        covariance=transverse_covariance(; beta=(0.5, 0.05), sigma=(1.0e-4, 1.0e-5)))
+    coords = (2.0e-4, 1.0e-5, 3.0e-5, -2.0e-6, 5.0e-3, 1.0e-4)
+    centers_seen = Vector{Float64}[]
+    kicks_seen = Vector{Float64}[]
+    for method in Octopus.SLICE_METHODS
+        element = compile_runtime(GaussianStrongBeamSpec(;
+            thin=thin, ns=7, sigz=7.0e-3, slice_method=method,
+            slice_width=(method === :equal_width ? 2.0e-3 : nothing)))
+        @test sum(element.slice_weight) ≈ 1.0
+        out = track_particle(WeakStrongBeamBeamMap(), element, coords...)
+        @test all(isfinite, out)
+        push!(centers_seen, collect(element.slice_center))
+        # Isolate the kick: x, y are unchanged by a thin lens and would otherwise
+        # dominate the comparison.
+        push!(kicks_seen, [out[2] - coords[2], out[4] - coords[4], out[6] - coords[6]])
+    end
+    for i in eachindex(centers_seen), j in (i + 1):length(centers_seen)
+        @test !isapprox(centers_seen[i], centers_seen[j])
+        @test !isapprox(kicks_seen[i], kicks_seen[j])
+    end
+
+    # slice_width is consumed only by :equal_width; the others must ignore it
+    # rather than silently changing behaviour.
+    for method in Octopus.SLICE_METHODS
+        method === :equal_width && continue
+        with_width = Octopus._gaussian_slices(
+            Float64, 7, nothing, nothing, 7.0e-3, method, 5.0e-3)
+        without = Octopus._gaussian_slices(
+            Float64, 7, nothing, nothing, 7.0e-3, method, nothing)
+        @test collect(with_width[1]) == collect(without[1])
+        @test collect(with_width[2]) == collect(without[2])
+    end
+
+    # Invalid and inactive input.
+    @test_throws ArgumentError compile_runtime(GaussianStrongBeamSpec(;
+        thin=thin, ns=5, sigz=7.0e-3, slice_method=:not_a_rule))
+    @test_throws ArgumentError Octopus._gaussian_slices(
+        Float64, 5, nothing, nothing, -1.0, :equal_area, nothing)
+    @test_throws ArgumentError Octopus._gaussian_slices(
+        Float64, 0, nothing, nothing, 7.0e-3, :equal_area, nothing)
+
+    # The shipped default is :sqrt_density (changed from :equal_area on
+    # 2026-07-31; see docs/history/gaussian_slicing_convergence_2026_07_31.md).
+    # Pinned here because changing it silently changes every user's results.
+    default_spec = GaussianStrongBeamSpec(; thin=thin, ns=7, sigz=7.0e-3)
+    @test getparam(default_spec, :slice_method, nothing) === :sqrt_density
+    explicit_default = compile_runtime(GaussianStrongBeamSpec(;
+        thin=thin, ns=7, sigz=7.0e-3, slice_method=:sqrt_density))
+    @test collect(compile_runtime(default_spec).slice_center) ==
+          collect(explicit_default.slice_center)
+    # A raw ElementSpec with no slice_method must take the same default.
+    raw_default = compile_runtime(ElementSpec{:gaussian_strong_beam}(;
+        thin=thin, ns=7, sigz=7.0e-3))
+    @test collect(raw_default.slice_center) == collect(explicit_default.slice_center)
+
+    # Explicit centers and weights bypass slice_method entirely.
+    explicit = compile_runtime(GaussianStrongBeamSpec(;
+        thin=thin, ns=3, sigz=7.0e-3, slice_method=:gauss_hermite,
+        slice_center=(-1.0e-3, 0.0, 1.0e-3), slice_weight=(0.25, 0.5, 0.25)))
+    @test collect(explicit.slice_center) == [-1.0e-3, 0.0, 1.0e-3]
+    @test collect(explicit.slice_weight) == [0.25, 0.5, 0.25]
+
+    # The measured ranking of Section 5.1: within the equal-charge family the
+    # centroid node beats the median, and the rules that push weight outward
+    # beat both. Second-moment deficit, lower is better.
+    deficit(method, ns) = begin
+        z, w = Octopus._gaussian_slices(Float64, ns, nothing, nothing, 1.0, method, nothing)
+        abs(1 - sum(collect(w) .* collect(z) .^ 2))
+    end
+    for ns in (15, 31)
+        @test deficit(:gauss_hermite, ns) < deficit(:sqrt_density, ns)
+        @test deficit(:sqrt_density, ns) < deficit(:equal_area_centroid, ns)
+        @test deficit(:equal_area_centroid, ns) < deficit(:equal_area, ns)
+    end
+end
+
 @testset "Configuration rejection" begin
     @test_throws ArgumentError CPUThreadsExecutionPolicy(threads=0)
     @test_throws ArgumentError CUDALaunchConfig(threads=0)

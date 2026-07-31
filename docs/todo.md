@@ -1076,6 +1076,95 @@ had the same campaign and remains the top open performance item.
   retain the accuracy advantage at ~4x lower cost than PIC. The DST-I mesh cosine
   derivative equals a zero-padded DCT-I (verified to machine precision).
 
+## Gaussian longitudinal slicing rules (weak-strong)
+
+**Phases 1 and 2 are DONE (2026-07-31).** All five Furman rules plus
+Gauss-Hermite are implemented in `GaussianStrongBeamSpec`, verified against
+Table 1 of Ref. [1], and ranked at EIC weak-strong parameters. Full record:
+[`docs/history/gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md).
+Derivation: [`docs/theory/gaussian_longitudinal_slicing.md`](theory/gaussian_longitudinal_slicing.md).
+Measurement: `validation/gaussian_slicing_convergence.jl`.
+
+Two results from that study close or change what follows:
+
+- **`:sqrt_density` (#4) wins decisively** — 10.6x more accurate than the shipped
+  default at `ns=15`, 20x at `ns=31`, same cost, and it is Xsuite's default.
+- **Gauss-Hermite loses** despite moment exactness (order 1.0, 11x worse than #4
+  at `ns=61`). Moment fidelity is the wrong objective for this integrand.
+- **The tail mechanism carries over to `Q`**, so the binding error is quadrature.
+
+### DONE: default changed to `:sqrt_density` (2026-07-31)
+
+Changed from `:equal_area` after the measurement. Pinned by `test/runtests.jl`
+so it cannot drift silently; `slice_method = :equal_area` reproduces earlier
+results. Metadata, docstring and `construction_help` updated together.
+
+### Open: is `HirataParaxialDrift` the right default?
+
+The slicing work surfaced this and it now matters more than the slice count. At
+converged slicing the default paraxial virtual drift contributes **2.9e-4** to
+`Q` on the electron side and **3.9e-5** on the hadron side, because it drops the
+`delta` dependence entirely and so produces no path lengthening at all.
+`ChromaticDrift` reduces that to 2.8e-8 / 1.4e-9 for essentially no cost (no
+`sqrt`; `1/(1+pz)` recomputed after each kick).
+
+Consequences already measured: with the paraxial default, hadron-side slicing
+stops being the leading error at `ns = 4`, and under an upper-bound diffusion
+conversion the drift model alone would consume ~9% relative emittance growth over
+1e9 turns -- more than any slice count can recover. Same argument as the default
+change above: strictly better at negligible cost, but it silently changes
+existing results, so it is a release decision. Note `:hirata` is also the default
+for the strong-strong solvers (`GaussianPoissonSolver` and friends), so the
+change is wider than one element.
+
+### Phase 3a -- high-order composition: CLOSED, not deferred
+
+The gate was whether the tail mechanism survived in `Q`. It does (theory note
+Section 5.1), so the binding error is node placement and composition -- which
+raises the order of the *splitting* -- has nothing to fix. Retired.
+
+The supporting results stand on their own and are recorded in theory note
+Section 6: the telescoped inter-slice map is an exact one-parameter group to
+round-off for all three virtual-drift models, and Section 6.3 lists what a
+composition scheme would require (negative weights, `slice_weight` split into
+physical charge vs kick coefficient, telescoped drifts, chromatic or exact
+drift). Reopen only if a different motivation appears.
+
+### Phase 3b -- implicit symplectic integrator as a reference oracle
+
+Independent of 3a and still worth doing. Not a production tracker: per-particle
+Newton iteration diverges across a CUDA warp, and truncating the iteration
+destroys the exact symplecticity it was chosen for. Its value is validating the
+6D longitudinal and energy terms by integrating the continuous Hamiltonian
+rather than assembling them term by term. Cost stops mattering when it runs once
+per parameter point instead of 1e9 times.
+
+Note the convergence study no longer *needs* it for a reference: the circularity
+in Ref. [1]'s "algorithm #4 at 300 kicks" is already removed by qualifying the
+`ns=601` reference with a self-convergence and a cross-family agreement figure
+(4.0e-7 and 1.6e-5 respectively, electron on proton).
+
+### Phase 3c -- observable-matched nodes (open question, one experiment)
+
+Every rule implemented so far approximates the *source*. Minimizing `Q` (or a
+luminosity-weighted error) directly over `{z_k, w_k}` at fixed `ns` would give
+the true lower bound to score the others against. The Gauss-Hermite result makes
+this more interesting, not less: it is direct evidence that source-fidelity
+objectives and kick accuracy come apart. Result is per-machine, not universal --
+acceptable for a fixed design point. Hypothesis, not established practice.
+
+### Follow-ups left open by the study
+
+- The hadron-side stopping criterion is still unresolved. Furman's
+  `Q ~ 4/sqrt(tau)` applies to the electron ring (`6.3e-2` at `tau=4000`, cleared
+  by `ns=5` for every rule but #1); the proton ring has no comparable `tau`, so
+  nothing masks its residual. Pick a long-term emittance-growth rate or diffusion
+  coefficient instead.
+- `:equal_width` keeps a second convergence parameter (`slice_width`). The
+  validation script ties it to Furman #1's growing span so `ns` alone drives it;
+  a user who fixes the width will see convergence stall. Consider either deriving
+  the width from `ns` by default or rejecting a fixed width above some `ns`.
+
 ## Earlier Completed
 
 - Soft-Gaussian CUDA optimization (host-sync removal, device moments, fused

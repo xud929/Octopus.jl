@@ -6,6 +6,10 @@ beam–beam tracking. The canonical longitudinal-kick derivation is given in
 note specifies which source moments enter those formulas and how a continuous
 six-dimensional Gaussian is converted into thin longitudinal slices.
 
+It defines *what one slice is*. The complementary question — where to place the
+slices and what charge to give them — is derived in
+[Longitudinal Slicing of a Gaussian Source Bunch](gaussian_longitudinal_slicing.md).
+
 ## 1. One thin source slice
 
 A thin slice has one longitudinal coordinate and a four-dimensional

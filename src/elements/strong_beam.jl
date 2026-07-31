@@ -206,7 +206,7 @@ end
                                       sigz=nothing,
                                       mean=nothing,
                                       covariance=nothing,
-                                      slice_method=:equal_area,
+                                      slice_method=:sqrt_density,
                                       slice_width=nothing,
                                       hvoffset=nothing,
                                       tracking_method=WeakStrongBeamBeamMap(),
@@ -221,6 +221,40 @@ from the conditional transverse Gaussian at its slice coordinate. Therefore
 linear crab dispersion changes slice centroids, while momentum dispersion is
 retained in the conditional within-slice covariance. `mean` defaults to the
 centroid and angle stored in `thin`.
+
+`slice_method` selects how the `ns` slice positions and weights are built from
+the Gaussian line density. The `#n` labels are the algorithm numbers of Furman,
+Zholents, Chen and Shatilov (LBL-37680, 1995):
+
+- `:equal_area` (**#2**): equal-charge slices (`w = 1/ns`) with each
+  kick at the point bisecting its slice's area,
+  `z_k/sigz = sqrt(2) * erfinv(2k/ns)`.
+- `:equal_area_centroid` (**#3**): same edges and weights, kick at the slice's
+  centre of charge `ns * (phi(l_k) - phi(l_k+1))`. Same cost as `:equal_area`
+  and strictly more accurate.
+- `:sqrt_density` (**default**, **#4**): weights proportional to `sqrt(rho)`
+  with centre-of-charge nodes, solved by fixed-point iteration. Furman's
+  recommended rule and Xsuite's default (`TempSlicer(mode="shatilov")`). At EIC
+  parameters it is 10.6x more accurate than `:equal_area` at `ns = 15` and 20x at
+  `ns = 31`, for identical cost. **Changed from `:equal_area` on 2026-07-31**;
+  pass `slice_method = :equal_area` explicitly to reproduce earlier results.
+- `:min_cdf_area` (**#5**): minimises the area between the exact and
+  discretized cumulative distributions.
+- `:equal_spacing_density` (**#1**): uniform nodes with pointwise-density
+  weights and the built-in half-span `1 + (ns-3)/12`.
+- `:gauss_hermite`: Gauss-Hermite quadrature, exact for every moment through
+  order `2*ns-1`. Not in Furman's set.
+- `:equal_width`: uniform nodes `slice_width` apart, weighted by the exact
+  integrated Gaussian charge of each bin, truncated at `+/- ns*slice_width/2`
+  and renormalized. Related to #1 but not identical to it.
+
+`slice_width` is consumed only by `:equal_width`. Supplying both `slice_center`
+and `slice_weight` bypasses `slice_method` entirely and uses the given values.
+
+Derivations, reference values, and the measured convergence ranking (the
+equal-charge family is tail-limited to first order; `:gauss_hermite` and
+`:sqrt_density` attack that) are in
+`docs/theory/gaussian_longitudinal_slicing.md`.
 """
 GaussianStrongBeamSpec(; kwargs...) = GaussianStrongBeamSpec{Float64}(; kwargs...)
 function (::Type{GaussianStrongBeamSpec{T}})(; thin,
@@ -234,7 +268,7 @@ function (::Type{GaussianStrongBeamSpec{T}})(; thin,
                                             sigz=nothing,
                                             mean=nothing,
                                             covariance=nothing,
-                                            slice_method=:equal_area,
+                                            slice_method=:sqrt_density,
                                             slice_width=nothing,
                                             hvoffset=nothing,
                                             tracking_method=WeakStrongBeamBeamMap(),
@@ -301,7 +335,7 @@ function GaussianStrongBeam(spec::ElementSpec{:gaussian_strong_beam},
         getparam(spec, :slice_center, nothing),
         getparam(spec, :slice_weight, nothing),
         sigz,
-        getparam(spec, :slice_method, :equal_area),
+        getparam(spec, :slice_method, :sqrt_density),
         getparam(spec, :slice_width, nothing),
     )
     hoff_tuple = getparam(spec, :slice_hoffset, nothing)
@@ -1164,14 +1198,179 @@ function _thin_with_distribution(base::ThinStrongBeam{M,T}, covariance4, mean6) 
         base.virtual_drift, zero(T))
 end
 
+"""
+Longitudinal slicing rules for a frozen Gaussian source bunch.
+
+Each entry maps a public `slice_method` value to the prescription it implements.
+Derivations, reference values, and the measured convergence ranking are in
+`docs/theory/gaussian_longitudinal_slicing.md`; the `#n` labels are the
+algorithm numbers of Furman, Zholents, Chen and Shatilov (LBL-37680, 1995).
+"""
+const SLICE_METHODS = (:equal_area, :equal_width, :equal_area_centroid,
+                       :sqrt_density, :gauss_hermite, :equal_spacing_density,
+                       :min_cdf_area)
+
 function _gaussian_slices(::Type{T}, ns::Int, slice_center, slice_weight, sigz, method, width) where {T}
     if slice_center !== nothing && slice_weight !== nothing
         return _strong_tuple(slice_center, ns, T), _strong_tuple(slice_weight, ns, T)
     end
     sigz === nothing && throw(ArgumentError("GaussianStrongBeamSpec requires sigz unless slice_center and slice_weight are supplied"))
+    ns > 0 || throw(ArgumentError("ns must be positive, got $ns"))
+    T(sigz) > zero(T) || throw(ArgumentError("sigz must be positive, got $sigz"))
     method == :equal_area && return _equal_area_slices(T, ns, T(sigz))
     method == :equal_width && return _equal_width_slices(T, ns, T(sigz), T(width))
-    throw(ArgumentError("unknown slice_method $method"))
+    method == :equal_area_centroid && return _equal_area_centroid_slices(T, ns, T(sigz))
+    method == :sqrt_density && return _sqrt_density_slices(T, ns, T(sigz))
+    method == :gauss_hermite && return _gauss_hermite_slices(T, ns, T(sigz))
+    method == :equal_spacing_density && return _equal_spacing_density_slices(T, ns, T(sigz))
+    method == :min_cdf_area && return _min_cdf_area_slices(T, ns, T(sigz))
+    throw(ArgumentError("unknown slice_method $(repr(method)); expected one of $(SLICE_METHODS)"))
+end
+
+# Standard-normal helpers shared by the slicing rules. Nodes are built in units
+# of sigma_z and scaled once at the end.
+@inline _snorm_pdf(x::T) where {T} = exp(-x * x / 2) / T(SQRT2PI)
+@inline _snorm_cdf(x::T) where {T} = (one(T) + erf(x / T(SQRT2))) / 2
+@inline _snorm_quantile(p::T) where {T} = T(SQRT2) * inverse_erf(2p - one(T))
+@inline _snorm_pdf_at(x::T) where {T} = isinf(x) ? zero(T) : _snorm_pdf(x)
+
+# Equal-charge slice edges: bin j spans cumulative [(j-1)/ns, j/ns].
+@inline function _equal_charge_edge(::Type{T}, j::Int, ns::Int) where {T}
+    j <= 0 && return T(-Inf)
+    j >= ns && return T(Inf)
+    return _snorm_quantile(T(j) / T(ns))
+end
+
+"""
+Furman algorithm #3: equal-charge slices with the kick at each slice's centre of
+charge, `z_k/sigz = ns * (phi(l_k) - phi(l_k+1))`. Same edges and weights as
+`:equal_area`; only the node differs, and the conditional mean is preserved.
+"""
+function _equal_area_centroid_slices(::Type{T}, ns::Int, sigz::T) where {T}
+    weights = fill(inv(T(ns)), ns)
+    centers = Vector{T}(undef, ns)
+    for j in 1:ns
+        a = _equal_charge_edge(T, j - 1, ns)
+        b = _equal_charge_edge(T, j, ns)
+        centers[j] = sigz * T(ns) * (_snorm_pdf_at(a) - _snorm_pdf_at(b))
+    end
+    return Tuple(centers), Tuple(weights)
+end
+
+"""
+Furman algorithm #4: weights proportional to `sqrt(rho)` with centre-of-charge
+nodes, the edges chosen so slice `k` carries exactly `w_k`. The node and weight
+relations are mutually coupled and solved by fixed-point iteration from equal
+charge. This is the rule Furman recommends and the one Xsuite's
+`TempSlicer(mode="shatilov")` implements.
+"""
+function _sqrt_density_slices(::Type{T}, ns::Int, sigz::T;
+                              iters::Int=500, tol::Real=eps(T)) where {T}
+    ns == 1 && return (zero(T),), (one(T),)
+    w = fill(inv(T(ns)), ns)
+    centers = zeros(T, ns)
+    edges = Vector{T}(undef, ns + 1)
+    for _ in 1:iters
+        edges[1] = T(-Inf)
+        edges[ns + 1] = T(Inf)
+        cum = zero(T)
+        for j in 1:(ns - 1)
+            cum += w[j]
+            edges[j + 1] = _snorm_quantile(clamp(cum, eps(T), one(T) - eps(T)))
+        end
+        for j in 1:ns
+            centers[j] = (_snorm_pdf_at(edges[j]) - _snorm_pdf_at(edges[j + 1])) / w[j]
+        end
+        total = zero(T)
+        change = zero(T)
+        for j in 1:ns
+            wj = sqrt(_snorm_pdf(centers[j]))
+            change = max(change, abs(wj - w[j]))
+            w[j] = wj
+            total += wj
+        end
+        w ./= total
+        change / total <= tol && break
+    end
+    return Tuple(centers .* sigz), Tuple(w)
+end
+
+"""
+Gauss-Hermite quadrature (not in Furman's set): nodes at the roots of the
+probabilists' Hermite polynomial `He_ns`, obtained without root finding by the
+Golub-Welsch construction. Reproduces every moment through order `2*ns-1`
+exactly, so it is the only rule here that preserves `sigz` itself.
+"""
+function _gauss_hermite_slices(::Type{T}, ns::Int, sigz::T) where {T}
+    ns == 1 && return (zero(T),), (one(T),)
+    # Solve in Float64 for conditioning, then convert.
+    jacobi = SymTridiagonal(zeros(Float64, ns), [sqrt(Float64(k)) for k in 1:(ns - 1)])
+    decomposition = eigen(jacobi)
+    nodes = decomposition.values
+    weights = abs2.(decomposition.vectors[1, :])
+    weights ./= sum(weights)
+    order = sortperm(nodes)
+    return Tuple(T(sigz * nodes[i]) for i in order), Tuple(T(weights[i]) for i in order)
+end
+
+"""
+Furman algorithm #1: uniformly spaced nodes with weights sampled from the
+density *at the node*, `z_L/sigz = 1 + (ns-3)/12`. The half-span is part of the
+rule and grows linearly with `ns`, so this carries its own truncation policy.
+Distinct from `:equal_width`, which integrates the charge of each bin instead.
+"""
+function _equal_spacing_density_slices(::Type{T}, ns::Int, sigz::T) where {T}
+    ns == 1 && return (zero(T),), (one(T),)
+    span = one(T) + (T(ns) - 3) / 12
+    centers = Vector{T}(undef, ns)
+    weights = Vector{T}(undef, ns)
+    total = zero(T)
+    for j in 1:ns
+        scaled = span * T(2j - ns - 1) / T(ns - 1)
+        centers[j] = sigz * scaled
+        weights[j] = _snorm_pdf(scaled)
+        total += weights[j]
+    end
+    weights ./= total
+    return Tuple(centers), Tuple(weights)
+end
+
+"""
+Furman algorithm #5: minimise the area enclosed between the exact and
+discretized cumulative distributions. Both stationarity conditions are closed
+form — each node sits at the cumulative midpoint of its own jump, and each
+level crosses the exact CDF at the arithmetic midpoint of its interval — so the
+rule reduces to a fixed-point iteration rather than the optimizer Ref. [1]
+describes.
+"""
+function _min_cdf_area_slices(::Type{T}, ns::Int, sigz::T;
+                              iters::Int=500, tol::Real=eps(T)) where {T}
+    ns == 1 && return (zero(T),), (one(T),)
+    half = ns ÷ 2
+    odd = isodd(ns)
+    # Start from algorithm #2 (parity-aware equal-charge medians).
+    nodes = [_snorm_quantile(T(0.5) + (odd ? T(k) / T(ns) : T(2k - 1) / T(2ns)))
+             for k in 1:half]
+    levels = zeros(T, half + 1)
+    for _ in 1:iters
+        levels[1] = odd ? _snorm_cdf(nodes[1] / 2) - T(0.5) : zero(T)
+        for k in 1:(half - 1)
+            levels[k + 1] = _snorm_cdf((nodes[k] + nodes[k + 1]) / 2) - T(0.5)
+        end
+        levels[half + 1] = T(0.5)
+        change = zero(T)
+        for k in 1:half
+            updated = _snorm_quantile(T(0.5) + (levels[k] + levels[k + 1]) / 2)
+            change = max(change, abs(updated - nodes[k]))
+            nodes[k] = updated
+        end
+        change <= tol && break
+    end
+    weights = [levels[k + 1] - levels[k] for k in 1:half]
+    centers = odd ? vcat(-reverse(nodes), zero(T), nodes) : vcat(-reverse(nodes), nodes)
+    allweights = odd ? vcat(reverse(weights), 2 * levels[1], weights) :
+                       vcat(reverse(weights), weights)
+    return Tuple(centers .* sigz), Tuple(allweights)
 end
 
 function _equal_area_slices(::Type{T}, ns::Int, sigz::T) where {T}
@@ -1299,13 +1498,13 @@ end
         sigz=ParamMeta(meaning="strong-beam longitudinal rms size; required unless explicit slice_center and slice_weight are supplied"),
         mean=ParamMeta(meaning="optional 6D Gaussian mean in (x, px, y, py, z, pz) order"),
         covariance=ParamMeta(meaning="optional 6 x 6 Gaussian covariance; slices use conditional transverse moments"),
-        slice_method=ParamMeta(default=:equal_area, meaning=":equal_area or :equal_width"),
-        slice_width=ParamMeta(meaning="slice width for :equal_width"),
+        slice_method=ParamMeta(default=:sqrt_density, meaning="longitudinal slicing rule: :sqrt_density (default, Furman #4), :equal_area (#2), :equal_area_centroid (#3), :min_cdf_area (#5), :equal_spacing_density (#1), :gauss_hermite, or :equal_width; see docs/theory/gaussian_longitudinal_slicing.md"),
+        slice_width=ParamMeta(meaning="slice width for :equal_width; unused by every other slice_method"),
         hvoffset=ParamMeta(meaning="optional Dict with dim, coef, frequency, harmonics"),
         tracking_method=ParamMeta(default=WeakStrongBeamBeamMap(), meaning="per-element tracking method"),
     )
     example = GaussianStrongBeamSpec{Float64}(thin=ThinStrongBeamSpec{Float64}(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3)), ns=3, sigz=0.01)
-    construction_help = "Friendly constructor: GaussianStrongBeamSpec{T}(; thin, ns, sigz=nothing, mean=nothing, covariance=nothing, slice_method=:equal_area, slice_width=nothing, slice_center=nothing, slice_weight=nothing, slice_hoffset=nothing, slice_voffset=nothing, slice_pxoffset=nothing, slice_pyoffset=nothing, hvoffset=nothing, tracking_method=WeakStrongBeamBeamMap(), kwargs...). A 6 x 6 covariance is conditioned on each longitudinal slice."
+    construction_help = "Friendly constructor: GaussianStrongBeamSpec{T}(; thin, ns, sigz=nothing, mean=nothing, covariance=nothing, slice_method=:sqrt_density, slice_width=nothing, slice_center=nothing, slice_weight=nothing, slice_hoffset=nothing, slice_voffset=nothing, slice_pxoffset=nothing, slice_pyoffset=nothing, hvoffset=nothing, tracking_method=WeakStrongBeamBeamMap(), kwargs...). A 6 x 6 covariance is conditioned on each longitudinal slice."
 end
 
 default_method(::Type{ElementSpec{:thin_strong_beam}}) = WeakStrongBeamBeamMap()
