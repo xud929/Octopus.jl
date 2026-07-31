@@ -848,6 +848,55 @@ end
     @test all(array -> all(isfinite, array), coordinate_arrays(beam2))
 end
 
+@testset "Rank-deficient GaussianPIC reference falls back to PIC" begin
+    # A line distribution has positive RMS in both x and y, so marginal-width
+    # checks alone accept it, but its conditional Gaussian has zero variance.
+    # The precision-derived rank test must reject both exact and numerically
+    # unresolved conditional covariances.
+    for T in (Float32, Float64)
+        @test !Octopus._gpic_coupled_covariance_resolved(
+            one(T), one(T), one(T))
+        @test !Octopus._gpic_coupled_covariance_resolved(
+            one(T), prevfloat(one(T)), one(T))
+        resolved_rho = one(T) - T(2) * sqrt(eps(T))
+        @test Octopus._gpic_coupled_covariance_resolved(
+            one(T), resolved_rho, one(T))
+    end
+
+    n = 64
+    x1 = collect(range(-1.0e-3, 1.0e-3; length=n))
+    x2 = reverse(copy(x1))
+    line_beam(x, slope) = test_beam(Phase6DRep(
+        copy(x), zeros(n), slope .* x, zeros(n), zeros(n), zeros(n)))
+    initial1 = line_beam(x1, 0.75)
+    initial2 = line_beam(x2, -1.25)
+    slicing = LongitudinalSlicing(nslices=1, method=:equal_count)
+    common = (
+        kbb1=1.0e-4, kbb2=-8.0e-5, luminosity_scale=1.0,
+        grid=(16, 16), green_cache=:none, longitudinal_kick=true,
+        slicing=slicing,
+    )
+    pic1, pic2 = deepcopy(initial1), deepcopy(initial2)
+    gpic1, gpic2 = deepcopy(initial1), deepcopy(initial2)
+    luminosity_pic = collide!(
+        PICPoissonSolver(; common...), pic1, pic2, CPUThreadsBackend)
+    luminosity_gpic = collide!(
+        GaussianPICPoissonSolver(; common..., coupling_tol=0.0),
+        gpic1, gpic2, CPUThreadsBackend)
+
+    # CPU fallback directly invokes the embedded ordinary-PIC interaction, so
+    # equality here also verifies the longitudinal-kick route.
+    @test luminosity_gpic == luminosity_pic
+    for (expected, actual) in zip(
+            coordinate_arrays(pic1), coordinate_arrays(gpic1))
+        @test actual == expected
+    end
+    for (expected, actual) in zip(
+            coordinate_arrays(pic2), coordinate_arrays(gpic2))
+        @test actual == expected
+    end
+end
+
 @testset "GaussianPIC beats PIC toward the soft-Gaussian kick" begin
     rms(v) = sqrt(sum(abs2, v) / length(v))
     function round_pair()
@@ -2410,6 +2459,69 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         @test gaussian_luminosity == 0.0
         @test all(array -> all(isfinite, Array(array)), coordinate_arrays(gaussian_beam1))
         @test all(array -> all(isfinite, Array(array)), coordinate_arrays(gaussian_beam2))
+    end
+
+    @testset "CUDA GaussianPIC singular-reference fallback matches PIC" begin
+        n = 64
+        x1 = collect(range(-1.0e-3, 1.0e-3; length=n))
+        x2 = reverse(copy(x1))
+        slicing = LongitudinalSlicing(nslices=1, method=:equal_count)
+        common = (
+            kbb1=1.0e-4, kbb2=-8.0e-5, luminosity_scale=1.0,
+            grid=(16, 16), green_cache=:none, longitudinal_kick=true,
+            slicing=slicing,
+        )
+        gpu_pair(y1, y2) =
+            (test_gpu_beam(x1, y1), test_gpu_beam(x2, y2))
+        host_arrays(beam) = map(Array, coordinate_arrays(beam))
+
+        # Positive marginal widths but rank-one covariance exercises the default
+        # indexed-wavefront mode selected by a finite coupling tolerance.
+        pic1, pic2 = gpu_pair(0.75 .* x1, -1.25 .* x2)
+        gpic1, gpic2 = gpu_pair(0.75 .* x1, -1.25 .* x2)
+        luminosity_pic = collide!(
+            PICPoissonSolver(; common...), pic1, pic2, Octopus.CUDABackend)
+        luminosity_gpic = collide!(
+            GaussianPICPoissonSolver(; common..., coupling_tol=0.0),
+            gpic1, gpic2, Octopus.CUDABackend)
+        Octopus.CUDA.synchronize()
+        @test luminosity_gpic ≈ luminosity_pic rtol=2.0e-12
+        for (expected, actual) in zip(host_arrays(pic1), host_arrays(gpic1))
+            @test actual ≈ expected rtol=2.0e-12 atol=2.0e-18
+        end
+        for (expected, actual) in zip(host_arrays(pic2), host_arrays(gpic2))
+            @test actual ≈ expected rtol=2.0e-12 atol=2.0e-18
+        end
+
+        # A zero marginal width takes the ordinary-PIC fallback on all CUDA
+        # routes. The sequential case also verifies that the slice-pair Green
+        # cache is forwarded through the fallback.
+        route_configs = (
+            (batch_mode=:wavefront, cuda_indexed_wavefront=true),
+            (batch_mode=:wavefront, cuda_indexed_wavefront=false),
+            (batch_mode=:sequential, cuda_indexed_wavefront=true),
+        )
+        for route in route_configs
+            route_common = merge(common, (
+                green_cache=:slice_pair,
+                min_transverse_extent=(2.0e-3, 2.0e-3),
+            ), route)
+            pic1, pic2 = gpu_pair(zeros(n), zeros(n))
+            gpic1, gpic2 = gpu_pair(zeros(n), zeros(n))
+            collide!(
+                PICPoissonSolver(; route_common...), pic1, pic2,
+                Octopus.CUDABackend)
+            collide!(
+                GaussianPICPoissonSolver(; route_common...),
+                gpic1, gpic2, Octopus.CUDABackend)
+            Octopus.CUDA.synchronize()
+            for (expected, actual) in zip(host_arrays(pic1), host_arrays(gpic1))
+                @test actual ≈ expected rtol=2.0e-12 atol=2.0e-18
+            end
+            for (expected, actual) in zip(host_arrays(pic2), host_arrays(gpic2))
+                @test actual ≈ expected rtol=2.0e-12 atol=2.0e-18
+            end
+        end
     end
 
     @testset "CUDA non-finite coordinates fail fast at solver chokepoints" begin

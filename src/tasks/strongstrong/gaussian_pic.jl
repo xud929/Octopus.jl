@@ -49,14 +49,21 @@ are:
 - `coupling_tol`: correlation-coefficient threshold
   `|sigma_xy/(sigma_x*sigma_y)|` above which the coupled (rotated) subtraction is
   used. The default `Inf` always takes the separable uncoupled path; a finite
-  value (`0` forces coupling everywhere) subtracts a *rotated* Gaussian built
-  from the slice's full transverse covariance, per Section 7 of
+  value (`0` forces coupling wherever the covariance is numerically full rank)
+  subtracts a *rotated* Gaussian built from the slice's full transverse covariance,
+  per Section 7 of
   `docs/theory/gaussian_subtracted_pic_solver.md`. Available on the CPU path and
   on the default CUDA route (`batch_mode=:wavefront` with
   `cuda_indexed_wavefront=true`); the other two CUDA routes raise rather than
   silently running the uncoupled subtraction. When uncoupled, the residual grid
   absorbs any transverse coupling, so this is an accuracy refinement, not a
   correctness fix.
+
+If a requested reference Gaussian is undefined (too few particles, a zero
+marginal RMS, or a numerically rank-deficient coupled covariance), the entire
+directed interaction falls back to the embedded ordinary PIC algorithm. The
+rank test is dimensionless and precision-derived; no physical beam-size cutoff
+is imposed.
 
 **Use `deposit_method=:TSC` with this solver.** TSC is consistently the more
 accurate deposition for the hybrid at nearly every grid and aspect ratio (e.g. at
@@ -104,7 +111,7 @@ const _GAUSSIAN_PIC_EXTRA_OPTION_SCHEMA = (
         "Rescale the subtracted Gaussian grid so its total matches the deposited particles, removing the spurious open-boundary monopole.";
         category=:accuracy_performance, consumer=:gaussian_pic_subtraction),
     coupling_tol = SolverOptionMeta(Real, Inf,
-        "Correlation-coefficient threshold |sigma_xy/(sigma_x*sigma_y)| above which the coupled (rotated) subtraction is used; Inf always uses the separable uncoupled subtraction.";
+        "Correlation-coefficient threshold |sigma_xy/(sigma_x*sigma_y)| above which the coupled (rotated) subtraction is used; Inf always uses the separable uncoupled subtraction, and numerically rank-deficient coupled references fall back to ordinary PIC.";
         category=:physics, consumer=:gaussian_pic_subtraction),
 )
 
@@ -387,7 +394,17 @@ end
 # Section 7 branches on |r_xy|.
 @inline function _gpic_correlation(a, b, d)
     (a <= 0 || d <= 0) && return zero(a)
-    return b / sqrt(a * d)
+    return (b / sqrt(a)) / sqrt(d)
+end
+
+@inline function _gpic_coupled_covariance_resolved(a, b, d)
+    T = promote_type(typeof(a), typeof(b), typeof(d))
+    isfinite(a) && isfinite(b) && isfinite(d) &&
+        a > zero(T) && d > zero(T) || return false
+    rho = T(_gpic_correlation(a, b, d))
+    isfinite(rho) || return false
+    relative_conditional_variance = muladd(-rho, rho, one(T))
+    return relative_conditional_variance > sqrt(eps(T))
 end
 
 # Analytic Gaussian longitudinal (covariance-transport) contribution, matching
@@ -408,6 +425,35 @@ end
     sigx = sqrt(max(varx, zero(T)))
     sigy = sqrt(max(vary, zero(T)))
     return mux, muy, sigx, sigy
+end
+
+@inline function _gpic_boundary(mom, s)
+    mux, muy, sigx, sigy = _gpic_drifted_gaussian(mom, s)
+    rx = 2 * (mom.cxpx + s * mom.varpx)
+    ry = 2 * (mom.cypy + s * mom.varpy)
+    a, b, d, _, _, _ = _gpic_drifted_covariance(mom, s)
+    rxy = _gpic_correlation(a, b, d)
+    resolved = _gpic_coupled_covariance_resolved(a, b, d)
+    lam = resolved ? b / a : zero(b)
+    relative_conditional_variance =
+        resolved ? max(muladd(-rxy, rxy, one(rxy)), zero(rxy)) : zero(rxy)
+    sigc = resolved ? sqrt(d * relative_conditional_variance) : zero(d)
+    return (mux=mux, muy=muy, sigx=sigx, sigy=sigy, rx=rx, ry=ry,
+            a=a, b=b, d=d, rxy=rxy, lam=lam, sigc=sigc,
+            coupled_resolved=resolved)
+end
+
+@inline function _gpic_control_variate_mode(n::Integer, coupling_tol, bL, bR)
+    marginal_resolved =
+        n >= 2 &&
+        isfinite(bL.sigx) && isfinite(bL.sigy) &&
+        isfinite(bR.sigx) && isfinite(bR.sigy) &&
+        bL.sigx > 0 && bL.sigy > 0 && bR.sigx > 0 && bR.sigy > 0
+    marginal_resolved || return :pic
+    coupled_requested = isfinite(coupling_tol) &&
+        max(abs(bL.rxy), abs(bR.rxy)) > coupling_tol
+    coupled_requested || return :uncoupled
+    return bL.coupled_resolved && bR.coupled_resolved ? :coupled : :pic
 end
 
 # ---------------------------------------------------------------------------
@@ -523,21 +569,16 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
     sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
 
     mom = _gpic_source_moments(source)
-    muxL, muyL, sigxL, sigyL = _gpic_drifted_gaussian(mom, sL)
-    muxR, muyR, sigxR, sigyR = _gpic_drifted_gaussian(mom, sR)
-    # Coupling switch (docs Section 7): branch on the transported correlation
-    # coefficient of either boundary.
-    aL, bL, dL, _, _, _ = _gpic_drifted_covariance(mom, sL)
-    aR, bR, dR, _, _, _ = _gpic_drifted_covariance(mom, sR)
-    rL = _gpic_correlation(aL, bL, dL); rR = _gpic_correlation(aR, bR, dR)
-    use_coupled = isfinite(gsolver.coupling_tol) &&
-                  max(abs(rL), abs(rR)) > T(gsolver.coupling_tol) &&
-                  aL > 0 && dL > 0 && aR > 0 && dR > 0
-    # Fall back to plain PIC for degenerate slices where the reference Gaussian
-    # is undefined (single particle or zero transverse spread at a boundary).
-    do_gauss = nsource >= 2 && sigxL > 0 && sigyL > 0 && sigxR > 0 && sigyR > 0
-    do_gauss || return _pic_interaction!(pic, source, param_source, field, param_field,
-                                         kbb, workspace, green_cache, cache_key)
+    bL = _gpic_boundary(mom, sL)
+    bR = _gpic_boundary(mom, sR)
+    muxL, muyL, sigxL, sigyL = bL.mux, bL.muy, bL.sigx, bL.sigy
+    muxR, muyR, sigxR, sigyR = bR.mux, bR.muy, bR.sigx, bR.sigy
+    mode = _gpic_control_variate_mode(
+        nsource, T(gsolver.coupling_tol), bL, bR)
+    mode === :pic &&
+        return _pic_interaction!(pic, source, param_source, field, param_field,
+                                 kbb, workspace, green_cache, cache_key)
+    use_coupled = mode === :coupled
 
     margin = T(gsolver.margin_sigma)
     # Source extent: union of drifted particle extrema and the Gaussian margin.
@@ -603,15 +644,13 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
     if use_coupled
         m1x = Vector{T}(undef, nx); m2x = Vector{T}(undef, nx)
         dgy = Vector{T}(undef, ny); ddgy = Vector{T}(undef, ny)
-        lamL = bL / aL; scL = sqrt(max(dL - bL * bL / aL, zero(T)))
-        lamR = bR / aR; scR = sqrt(max(dR - bR * bR / aR, zero(T)))
         phiL, ExL, EyL = _gpic_solve_drifted_field_coupled!(
             workspace.left, pic, source, sL, source_grid, green_fft, workspace,
-            muxL, muyL, sqrt(aL), scL, lamL, nsource, gsolver.neutralize,
+            muxL, muyL, sqrt(bL.a), bL.sigc, bL.lam, nsource, gsolver.neutralize,
             gxbuf, m1x, m2x, gybuf, dgy, ddgy)
         phiR, ExR, EyR = _gpic_solve_drifted_field_coupled!(
             workspace.right, pic, source, sR, source_grid, green_fft, workspace,
-            muxR, muyR, sqrt(aR), scR, lamR, nsource, gsolver.neutralize,
+            muxR, muyR, sqrt(bR.a), bR.sigc, bR.lam, nsource, gsolver.neutralize,
             gxbuf, m1x, m2x, gybuf, dgy, ddgy)
     else
         phiL, ExL, EyL = _gpic_solve_drifted_field!(

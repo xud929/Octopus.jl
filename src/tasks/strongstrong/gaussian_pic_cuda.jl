@@ -35,8 +35,9 @@ if _HAS_CUDA
         end
 
         # The coupled (rotated) subtraction of docs Section 7 exists on the CPU
-        # path only. Throw rather than silently running the uncoupled path, which
-        # would be a silently ignored non-default request (AGENTS.md).
+        # and default indexed-wavefront paths. Throw rather than silently running
+        # uncoupled on either CUDA reference path, which would ignore a
+        # non-default request (AGENTS.md).
         function _cuda_gpic_require_uncoupled(solver)
             isfinite(solver.coupling_tol) && throw(ArgumentError(
                 "GaussianPICPoissonSolver(coupling_tol=$(solver.coupling_tol)) selects the " *
@@ -210,7 +211,9 @@ if _HAS_CUDA
             T = typeof(prep.sL)
             bL = _cuda_gpic_boundary(mom, prep.sL)
             bR = _cuda_gpic_boundary(mom, prep.sR)
-            do_gauss = mom.n >= 2 && bL.sigx > 0 && bL.sigy > 0 && bR.sigx > 0 && bR.sigy > 0
+            mode = _gpic_control_variate_mode(
+                mom.n, T(gsolver.coupling_tol), bL, bR)
+            do_gauss = mode !== :pic
             margin = T(gsolver.margin_sigma)
             sb = prep.source_bounds
             sxmin = sb.xmin; sxmax = sb.xmax; symin = sb.ymin; symax = sb.ymax
@@ -224,7 +227,8 @@ if _HAS_CUDA
             newprep = _cuda_pic_finish_interaction_indexed(
                 pic, T, prep.sL, prep.sR, (sxmin, sxmax, symin, symax),
                 (fb.xmin, fb.xmax, fb.ymin, fb.ymax), nothing, nothing)
-            return merge(newprep, (bL=bL, bR=bR, mom=mom, do_gauss=do_gauss))
+            return merge(newprep, (
+                bL=bL, bR=bR, mom=mom, mode=mode, do_gauss=do_gauss))
         end
 
         function _cuda_gpic_interaction_wavefront_indexed_batched_fft!(gsolver, indexed, rep1, rep2,
@@ -290,15 +294,13 @@ if _HAS_CUDA
             amph = Vector{T}(undef, nplanes)
             gtmp_x = Vector{T}(undef, nx); gtmp_y = Vector{T}(undef, ny)
             method = pic.deposit_method
-            # Coupled buffers; lamh[p] == 0 marks an uncoupled plane, so a wavefront
-            # may legitimately mix coupled and uncoupled slice pairs.
+            # Coupled buffers; a wavefront may legitimately mix coupled,
+            # uncoupled, and ordinary-PIC slice pairs.
             m1xh = want_coupled ? Matrix{T}(undef, nx, nplanes) : Matrix{T}(undef, 0, 0)
             m2xh = want_coupled ? Matrix{T}(undef, nx, nplanes) : Matrix{T}(undef, 0, 0)
             dgyh = want_coupled ? Matrix{T}(undef, ny, nplanes) : Matrix{T}(undef, 0, 0)
             ddgyh = want_coupled ? Matrix{T}(undef, ny, nplanes) : Matrix{T}(undef, 0, 0)
             lamh = want_coupled ? zeros(T, nplanes) : T[]
-            coupled_plane = falses(nplanes)
-            tol = T(gsolver.coupling_tol)
             m1t = Vector{T}(undef, nx); m2t = Vector{T}(undef, nx)
             dgt = Vector{T}(undef, ny); ddgt = Vector{T}(undef, ny)
             for n in 1:npairs
@@ -308,9 +310,7 @@ if _HAS_CUDA
                     x0 = T(prep.source_grid.x0); y0 = T(prep.source_grid.y0)
                     hx = T(prep.source_grid.width) / T(nx - 1); hy = T(prep.source_grid.height) / T(ny - 1)
                     nsrc = k <= 2 ? prep12[n].mom.n : prep21[n].mom.n
-                    pc = want_coupled && prep.do_gauss && abs(b.rxy) > tol &&
-                         b.a > 0 && b.d > 0 && b.sigc > 0
-                    coupled_plane[off + k] = pc
+                    pc = prep.mode === :coupled
                     if pc
                         _gpic_coupled_profiles!(gtmp_x, m1t, m2t, gtmp_y, dgt, ddgt,
                                                 x0, hx, T(b.mux), T(sqrt(b.a)),
@@ -387,7 +387,7 @@ if _HAS_CUDA
                     @view(phi_batch[1:nx, 1:ny, off + 2]), @view(Ex_batch[:, :, off + 2]), @view(Ey_batch[:, :, off + 2]),
                     @view(phi_batch[1:nx, 1:ny, off + 3]), @view(Ex_batch[:, :, off + 3]), @view(Ey_batch[:, :, off + 3]),
                     @view(phi_batch[1:nx, 1:ny, off + 4]), @view(Ex_batch[:, :, off + 4]), @view(Ey_batch[:, :, off + 4]),
-                    stream, gsolver.coupling_tol,
+                    stream,
                 )
             end
             CUDA.synchronize(stream)
@@ -439,19 +439,9 @@ if _HAS_CUDA
         # Deep copy of a device slice-coordinate NamedTuple (x,px,y,py,z[,pz]).
         _cuda_gpic_copy_coords(c::NamedTuple) = map(copy, c)
 
-        # Drifted-Gaussian boundary description (centroid, RMS, variance drift rates).
-        @inline function _cuda_gpic_boundary(mom, s)
-            mux, muy, sigx, sigy = _gpic_drifted_gaussian(mom, s)
-            rx = 2 * (mom.cxpx + s * mom.varpx)
-            ry = 2 * (mom.cypy + s * mom.varpy)
-            # transported full covariance, for the coupling switch (docs Section 7)
-            a, b, d, _, _, _ = _gpic_drifted_covariance(mom, s)
-            rxy = _gpic_correlation(a, b, d)
-            lam = a > 0 ? b / a : zero(b)
-            sigc = sqrt(max(d - (a > 0 ? b * b / a : zero(b)), zero(d)))
-            return (mux=mux, muy=muy, sigx=sigx, sigy=sigy, rx=rx, ry=ry,
-                    a=a, b=b, d=d, rxy=rxy, lam=lam, sigc=sigc)
-        end
+        # Shared CPU/CUDA host decision; keeping one boundary representation is
+        # what makes the singular-reference fallback route-independent.
+        @inline _cuda_gpic_boundary(mom, s) = _gpic_boundary(mom, s)
 
         # Fill a host erf node profile for a boundary; zeros if the slice is degenerate.
         function _cuda_gpic_fill_profile!(gx, gy, x0, y0, hx, hy, b, method, ok)
@@ -512,7 +502,9 @@ if _HAS_CUDA
             sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
             bL = _cuda_gpic_boundary(mom, sL)
             bR = _cuda_gpic_boundary(mom, sR)
-            do_gauss = mom.n >= 2 && bL.sigx > 0 && bL.sigy > 0 && bR.sigx > 0 && bR.sigy > 0
+            mode = _gpic_control_variate_mode(
+                mom.n, T(gsolver.coupling_tol), bL, bR)
+            do_gauss = mode !== :pic
             sxmin = T(mapreduce((x, px) -> min(x + px * sL, x + px * sR), min, source.x, source.px))
             sxmax = T(mapreduce((x, px) -> max(x + px * sL, x + px * sR), max, source.x, source.px))
             symin = T(mapreduce((y, py) -> min(y + py * sL, y + py * sR), min, source.y, source.py))
@@ -538,7 +530,8 @@ if _HAS_CUDA
                     (x=field.x, px=field.px, y=field.y, py=field.py, z=field.z))
             source_grid, field_grid = _pic_interaction_grids(pic, sxmin, sxmax, symin, symax, fxmin, fxmax, fymin, fymax)
             return (sL=sL, sR=sR, source_grid=source_grid, field_grid=field_grid,
-                    green_fft=nothing, bL=bL, bR=bR, mom=mom, do_gauss=do_gauss,
+                    green_fft=nothing, bL=bL, bR=bR, mom=mom, mode=mode,
+                    do_gauss=do_gauss,
                     source_bounds=(xmin=sxmin, xmax=sxmax, ymin=symin, ymax=symax),
                     field_bounds=(xmin=fxmin, xmax=fxmax, ymin=fymin, ymax=fymax))
         end
@@ -663,14 +656,12 @@ if _HAS_CUDA
         end
 
         # Gaussian-parameter tuple for a prepared direction (isbits, kernel-passable).
-        @inline function _cuda_gpic_gtuple(::Type{T}, prep, tol=T(Inf)) where {T}
-            # `coupled` is decided per boundary exactly as on the CPU. cmom is the
-            # full transverse covariance; the device kick transports it with
-            # S = -s and applies the rotated Bassetti-Erskine kick plus the coupled
-            # pz terms via _cuda_cp_covariance_kick.
-            cpl = isfinite(tol) && prep.do_gauss &&
-                  max(abs(prep.bL.rxy), abs(prep.bR.rxy)) > tol &&
-                  prep.bL.a > 0 && prep.bL.d > 0 && prep.bR.a > 0 && prep.bR.d > 0
+        @inline function _cuda_gpic_gtuple(::Type{T}, prep) where {T}
+            # `coupled` is decided once per directed interaction exactly as on
+            # the CPU. cmom is the full transverse covariance; the device kick
+            # transports it with S = -s and applies the rotated Bassetti-Erskine
+            # kick plus the coupled pz terms via _cuda_cp_covariance_kick.
+            cpl = prep.mode === :coupled
             m = prep.mom
             cmom = StrongTransverseMoments{T,true}(
                 T(m.varx), T(m.cxy), T(m.vary),
@@ -688,9 +679,8 @@ if _HAS_CUDA
                 pic, rep1, idx1, sc1, pf1, kbb1, fg1, prep1,
                 rep2, idx2, sc2, pf2, kbb2, fg2, prep2,
                 phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R,
-                phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R, stream, gtol=Inf)
+                phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R, stream)
             T = eltype(rep1.x)
-            gtol = T(gtol)
             threads = _cuda_pic_threads(:kick)
             blocks = cld(max(length(idx1), length(idx2)), threads)
             method_code = Symbol(pic.deposit_method) == :CIC ? Int32(1) : Int32(2)
@@ -699,7 +689,7 @@ if _HAS_CUDA
             hzi2, zbias2 = _slice_interpolation_parameters(T(pf2.lb), T(pf2.rb))
             x01 = T(fg1.x0); y01 = T(fg1.y0); hx1 = T(fg1.width) / T(nx - 1); hy1 = T(fg1.height) / T(ny - 1)
             x02 = T(fg2.x0); y02 = T(fg2.y0); hx2 = T(fg2.width) / T(nx - 1); hy2 = T(fg2.height) / T(ny - 1)
-            g1 = _cuda_gpic_gtuple(T, prep1, gtol); g2 = _cuda_gpic_gtuple(T, prep2, gtol)
+            g1 = _cuda_gpic_gtuple(T, prep1); g2 = _cuda_gpic_gtuple(T, prep2)
             if pic.longitudinal_kick
                 CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_gpic_kick_pair_indexed_longitudinal_kernel!(
                     rep1.x, rep1.px, rep1.y, rep1.py, rep1.pz, rep1.z, idx1,
@@ -739,6 +729,19 @@ if _HAS_CUDA
             zL = min(max(zL, zero(zL)), one(zL)); zR = one(zL) - zL
             Kx, Ky, Kz = _cuda_pic_interpolate_kick(method_code, x, y, x0, y0, hxi, hyi, nx, ny,
                 phiL, ExL, EyL, phiR, ExR, EyR, zL, zR)
+            if iszero(g.ns)
+                newpx = oldpx + kick_scale * Kx
+                newpy = oldpy + kick_scale * Ky
+                pz += kick_scale * Kz * field_hzi
+                s2 = typeof(source_center)(0.5) * (source_center - oldz)
+                xarr[particle] = x + s2 * newpx
+                yarr[particle] = y + s2 * newpy
+                pxarr[particle] = newpx
+                pyarr[particle] = newpy
+                pzarr[particle] =
+                    pz + typeof(source_center)(0.25) * (newpx * newpx + newpy * newpy)
+                return nothing
+            end
             zt = zero(kbb)
             if g.coupled
                 _, pxL, _, pyL, _, pzL, _ = _cuda_cp_covariance_kick(
@@ -788,6 +791,16 @@ if _HAS_CUDA
             zL = min(max(zL, zero(zL)), one(zL)); zR = one(zL) - zL
             Kx, Ky = _cuda_pic_interpolate_field(method_code, x, y, x0, y0, hxi, hyi, nx, ny,
                 phiL, ExL, EyL, phiR, ExR, EyR, zL, zR)
+            if iszero(g.ns)
+                newpx = oldpx + 2 * kbb * Kx
+                newpy = oldpy + 2 * kbb * Ky
+                s2 = typeof(source_center)(0.5) * (source_center - oldz)
+                xarr[particle] = x + s2 * newpx
+                yarr[particle] = y + s2 * newpy
+                pxarr[particle] = newpx
+                pyarr[particle] = newpy
+                return nothing
+            end
             if g.coupled
                 zt = zero(kbb)
                 kbb_eff = 2 * kbb * half_ns
@@ -939,7 +952,9 @@ if _HAS_CUDA
             mom = _cuda_gpic_source_moments(source)
             prep = _cuda_gpic_prepare_interaction(gsolver, source, param_source, field, param_field, mom)
             if !prep.do_gauss
-                return _cuda_pic_interaction!(pic, source, param_source, field, param_field, kbb, nothing, charge, nothing)
+                return _cuda_pic_interaction!(
+                    pic, source, param_source, field, param_field, kbb,
+                    nothing, charge, nothing, slice_pair_cache, cache_key)
             end
             if slice_pair_cache !== nothing && cache_key !== nothing
                 prep = _cuda_pic_slice_pair_cached_prep!(pic, T, slice_pair_cache, cache_key, prep, nothing)
@@ -1050,14 +1065,19 @@ if _HAS_CUDA
                     method_code, x, y, x0, y0, hxi, hyi, nx, ny,
                     phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
                 )
-                beLx, beLy = _cuda_gaussian_beambeam_kick(
-                    sigxL, sigyL, x - muxL, y - muyL)
-                beRx, beRy = _cuda_gaussian_beambeam_kick(
-                    sigxR, sigyR, x - muxR, y - muyR)
-                Kxa = half_ns * (zL * beLx + zR * beRx)
-                Kya = half_ns * (zL * beLy + zR * beRy)
-                newpx = fpx[index] + 2 * kbb * (Kx + Kxa)
-                newpy = fpy[index] + 2 * kbb * (Ky + Kya)
+                if iszero(ns)
+                    newpx = fpx[index] + 2 * kbb * Kx
+                    newpy = fpy[index] + 2 * kbb * Ky
+                else
+                    beLx, beLy = _cuda_gaussian_beambeam_kick(
+                        sigxL, sigyL, x - muxL, y - muyL)
+                    beRx, beRy = _cuda_gaussian_beambeam_kick(
+                        sigxR, sigyR, x - muxR, y - muyR)
+                    Kxa = half_ns * (zL * beLx + zR * beRx)
+                    Kya = half_ns * (zL * beLy + zR * beRy)
+                    newpx = fpx[index] + 2 * kbb * (Kx + Kxa)
+                    newpy = fpy[index] + 2 * kbb * (Ky + Kya)
+                end
                 s2 = typeof(source_center)(0.5) * (source_center - fz[index])
                 outx[index] = x + s2 * newpx
                 outy[index] = y + s2 * newpy
@@ -1094,20 +1114,26 @@ if _HAS_CUDA
                     method_code, x, y, x0, y0, hxi, hyi, nx, ny,
                     phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
                 )
-                beLx, beLy, HxxL, HyyL = _cuda_gaussian_beambeam_kick_response(
-                    kbb_eff, sigxL, sigyL, x - muxL, y - muyL)
-                beRx, beRy, HxxR, HyyR = _cuda_gaussian_beambeam_kick_response(
-                    kbb_eff, sigxR, sigyR, x - muxR, y - muyR)
-                Kxa = half_ns * (zL * beLx + zR * beRx)
-                Kya = half_ns * (zL * beLy + zR * beRy)
-                dpxa = kick_scale * Kxa; dpya = kick_scale * Kya
-                newpx = oldpx + kick_scale * Kx + dpxa
-                newpy = oldpy + kick_scale * Ky + dpya
-                pz += kick_scale * Kz * field_hzi
-                covL = _gpic_cov_pz(HxxL, HyyL, rxL, ryL)
-                covR = _gpic_cov_pz(HxxR, HyyR, rxR, ryR)
-                pz += zL * covL + zR * covR
-                pz += typeof(kbb)(0.5) * (dpxa * mpx + dpya * mpy)
+                if iszero(ns)
+                    newpx = oldpx + kick_scale * Kx
+                    newpy = oldpy + kick_scale * Ky
+                    pz += kick_scale * Kz * field_hzi
+                else
+                    beLx, beLy, HxxL, HyyL = _cuda_gaussian_beambeam_kick_response(
+                        kbb_eff, sigxL, sigyL, x - muxL, y - muyL)
+                    beRx, beRy, HxxR, HyyR = _cuda_gaussian_beambeam_kick_response(
+                        kbb_eff, sigxR, sigyR, x - muxR, y - muyR)
+                    Kxa = half_ns * (zL * beLx + zR * beRx)
+                    Kya = half_ns * (zL * beLy + zR * beRy)
+                    dpxa = kick_scale * Kxa; dpya = kick_scale * Kya
+                    newpx = oldpx + kick_scale * Kx + dpxa
+                    newpy = oldpy + kick_scale * Ky + dpya
+                    pz += kick_scale * Kz * field_hzi
+                    covL = _gpic_cov_pz(HxxL, HyyL, rxL, ryL)
+                    covR = _gpic_cov_pz(HxxR, HyyR, rxR, ryR)
+                    pz += zL * covL + zR * covR
+                    pz += typeof(kbb)(0.5) * (dpxa * mpx + dpya * mpy)
+                end
                 s2 = typeof(source_center)(0.5) * (source_center - fz[index])
                 outx[index] = x + s2 * newpx
                 outy[index] = y + s2 * newpy

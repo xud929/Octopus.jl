@@ -463,7 +463,41 @@ $$
 The cost is therefore $O(N_x+N_y)$ to build and $O(N_xN_y)$ to subtract — the
 same order as the uncoupled path, with no 2D quadrature anywhere.
 
-### 7.3 The two ingredients in closed form
+### 7.3 Numerical rank and the ordinary-PIC fallback
+
+The conditional representation exists only for a positive-definite covariance.
+Writing
+
+$$
+  \eta = \frac{s^2}{\sigma_y^2} = 1-r_{xy}^2,
+$$
+
+shows why checking only $\sigma_x>0$ and $\sigma_y>0$ is insufficient: a line
+distribution can have two positive marginal RMS values while $\eta=0$. In
+floating-point arithmetic, evaluating $\eta$ has an absolute uncertainty of
+order $\epsilon$, and its relative uncertainty is therefore
+$O(\epsilon/\eta)$. The implementation requires
+
+$$
+\boxed{\eta > \sqrt{\epsilon}},
+$$
+
+which limits the conditional-variance relative uncertainty to
+$O(\sqrt{\epsilon})$. The test uses a fused multiply-add for
+$1-r_{xy}^{2}$ where the hardware and numeric type provide one. Equivalently,
+the accepted conditional RMS satisfies
+$s/\sigma_y>\epsilon^{1/4}$: approximately $1.22\times10^{-4}$ for `Float64`
+and $1.86\times10^{-2}$ for `Float32`.
+
+When a coupled reference fails this dimensionless rank test, or when either
+marginal RMS is zero or non-finite, the whole directed slice interaction uses
+the embedded ordinary-PIC algorithm. Subtracting an artificial narrow Gaussian
+would put unresolved high-frequency structure on the grid and then add back a
+singular analytic field; ordinary PIC is the well-defined limiting algorithm.
+The fallback uses no physical length threshold, is identical on CPU and CUDA,
+and leaves well-conditioned GaussianPIC interactions unchanged.
+
+### 7.4 The two ingredients in closed form
 
 **Assignment-weighted moments $M^{(k)}$.** Work with central moments of the
 normalised 1D Gaussian on a cell $[A,B]$,
@@ -513,7 +547,7 @@ while $W_2''=-2/h^2$ on the core and $+1/h^2$ on each wing, giving $g'$ as a
 combination of $c_0,c_1$ per cell and $g''$ as a pure `erf` difference. Both are
 closed form; no quadrature is used.
 
-### 7.4 Validity, and where it must not be used
+### 7.5 Validity, and where it must not be used
 
 The expansion is truncated at second order. Writing the $\lambda^2$ term relative
 to the leading one,
