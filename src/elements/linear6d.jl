@@ -12,7 +12,9 @@ abstract type Linear6DSpec{T} end
 
 Create an `ElementSpec{:linear6d}` for a six-dimensional linear transfer map.
 The runtime stores the 6x6 matrix as a flat tuple for GPU-compatible callable
-tracking.
+tracking. An explicit matrix must satisfy `transpose(M) * J * M = J` in the
+canonical `(x, px, y, py, z, pz)` ordering. Validation uses a
+precision-derived, magnitude-aware floating-point error bound.
 """
 Linear6DSpec(; kwargs...) = Linear6DSpec{Float64}(; kwargs...)
 function (::Type{Linear6DSpec{T}})(; matrix=nothing,
@@ -31,7 +33,9 @@ function (::Type{Linear6DSpec{T}})(; matrix=nothing,
                                   kwargs...) where {T}
     params = _spec_params(; tracking_method=tracking_method, kwargs...)
     if matrix !== nothing
-        params[:matrix] = _matrix66_tuple(matrix, T)
+        typed_matrix = _matrix66_tuple(matrix, T)
+        _validate_linear6d_symplectic(typed_matrix; source="Linear6DSpec matrix")
+        params[:matrix] = typed_matrix
     else
         beta1 === nothing && throw(ArgumentError("Linear6DSpec requires either matrix or beta1"))
         dmu === nothing && throw(ArgumentError("Linear6DSpec requires either matrix or dmu"))
@@ -53,6 +57,11 @@ end
 struct Linear6D{M<:AbstractTrackingMethod,T<:AbstractFloat} <: AbstractTrackOp
     method::M
     matrix::NTuple{36,T}
+    function Linear6D(method::M, matrix::NTuple{36,T}) where {
+            M<:AbstractTrackingMethod,T<:AbstractFloat}
+        _validate_linear6d_symplectic(matrix; source="Linear6D runtime matrix")
+        return new{M,T}(method, matrix)
+    end
 end
 
 Base.Matrix(elem::Linear6D{M,T}) where {M,T} =
@@ -62,7 +71,9 @@ function Linear6D(spec::ElementSpec{:linear6d},
                   method::AbstractTrackingMethod=tracking_method(spec))
     matrix = hasparam(spec, :matrix) ? param(spec, :matrix) : _linear6d_matrix_from_optics(spec)
     T = promote_type(map(typeof, matrix)...)
-    return Linear6D(method, ntuple(i -> T(matrix[i]), 36))
+    T <: AbstractFloat || throw(ArgumentError(
+        "Linear6D matrix entries must promote to an AbstractFloat type; got $(T)"))
+    return Linear6D(method, _matrix66_tuple(matrix, T))
 end
 
 @inline function track_particle(::Symplectic6DMap, elem::Linear6D, x, px, y, py, z, pz)
@@ -101,6 +112,65 @@ _identity66(::Type{T}) where {T} =
     ntuple(k -> ((k - 1) ÷ 6 == (k - 1) % 6 ? one(T) : zero(T)), 36)
 
 @inline _mget(m, i, j) = m[(i - 1) * 6 + j]
+
+function _linear6d_symplectic_error(matrix::NTuple{36,T}) where {T<:AbstractFloat}
+    all(isfinite, matrix) ||
+        return (residual=typemax(T), tolerance=zero(T), ratio=typemax(T))
+    max_residual = zero(T)
+    max_tolerance = zero(T)
+    max_ratio = zero(T)
+    # Each entry of M'JM contains three signed 2x2 determinants. The row scale
+    # is a componentwise forward-error bound, unlike ||M||^2, which becomes
+    # unusably loose for large reciprocal canonical scalings.
+    for i in 1:6
+        row_residual = zero(T)
+        row_scale = zero(T)
+        for j in 1:6
+            value = zero(T)
+            product_scale = zero(T)
+            for coordinate in (1, 3, 5)
+                positive = _mget(matrix, coordinate, i) *
+                           _mget(matrix, coordinate + 1, j)
+                negative = _mget(matrix, coordinate + 1, i) *
+                           _mget(matrix, coordinate, j)
+                isfinite(positive) && isfinite(negative) ||
+                    return (residual=typemax(T), tolerance=zero(T),
+                            ratio=typemax(T))
+                value = (value + positive) - negative
+                product_scale += abs(positive) + abs(negative)
+            end
+            target = isodd(i) && j == i + 1 ? one(T) :
+                     iseven(i) && j == i - 1 ? -one(T) : zero(T)
+            row_residual += abs(value - target)
+            row_scale += max(abs(target), product_scale)
+        end
+        # Six products and additions form each entry. A factor of 64 leaves a
+        # conservative margin over the first-order rounding bound while still
+        # rejecting Float64 relative defects above roughly 1e-14.
+        row_tolerance = T(64) * eps(T) * max(one(T), row_scale)
+        isfinite(row_residual) && isfinite(row_tolerance) ||
+            return (residual=typemax(T), tolerance=zero(T), ratio=typemax(T))
+        ratio = row_tolerance > zero(T) ?
+            row_residual / row_tolerance :
+            (iszero(row_residual) ? zero(T) : typemax(T))
+        if ratio > max_ratio
+            max_ratio = ratio
+            max_residual = row_residual
+            max_tolerance = row_tolerance
+        end
+    end
+    return (residual=max_residual, tolerance=max_tolerance, ratio=max_ratio)
+end
+
+function _validate_linear6d_symplectic(
+        matrix::NTuple{36,T}; source="Linear6D matrix") where {T<:AbstractFloat}
+    error = _linear6d_symplectic_error(matrix)
+    error.ratio <= one(T) && return matrix
+    throw(ArgumentError(
+        "$(source) must be finite and canonical symplectic in " *
+        "(x, px, y, py, z, pz) order: worst row residual=$(error.residual), " *
+        "floating-point tolerance=$(error.tolerance), ratio=$(error.ratio)."))
+end
 
 function _mmul66(A::NTuple{36,T}, B::NTuple{36,T}) where {T}
     return ntuple(36) do k
@@ -205,13 +275,13 @@ end
     spec_type = ElementSpec{:linear6d}
     friendly_constructor = Linear6DSpec
     runtime_type = Linear6D
-    description = "Flexible six-dimensional linear map specification."
+    description = "Flexible canonical-symplectic six-dimensional linear map specification."
     keywords = [:coordinate_transform]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
-        matrix=ParamMeta(meaning="explicit 6x6 transfer matrix, or length-36 row-major collection"),
+        matrix=ParamMeta(meaning="explicit canonical-symplectic 6x6 transfer matrix, or length-36 row-major collection"),
         beta1=ParamMeta(meaning="initial beta functions for optics construction"),
         beta2=ParamMeta(meaning="final beta functions for optics construction; defaults to beta1"),
         alpha1=ParamMeta(default=(0, 0, 0), meaning="initial alpha functions"),
@@ -226,5 +296,5 @@ end
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
     )
     example = Linear6DSpec{Float64}(matrix=Matrix{Float64}(I, 6, 6))
-    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...) or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), zeta2=zeta1, eta2=eta1, R2=R1, tracking_method=Symplectic6DMap(), kwargs...)."
+    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...), where matrix must be canonical symplectic, or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), zeta2=zeta1, eta2=eta1, R2=R1, tracking_method=Symplectic6DMap(), kwargs...)."
 end

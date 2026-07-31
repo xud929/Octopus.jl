@@ -32,6 +32,67 @@ end
         LorentzBoostSpec(0.01; tracking_method=Symplectic6DMap()))
 end
 
+@testset "Linear6D rejects non-symplectic matrices" begin
+    for T in (Float32, Float64)
+        identity_map = Matrix{T}(I, 6, 6)
+        @test compile_runtime(Linear6DSpec{T}(matrix=identity_map)) isa Linear6D
+
+        # Reciprocal scaling is symplectic even when its coordinate magnitudes
+        # differ strongly; a global ||M||^2 tolerance would be far too loose.
+        scaled = Matrix{T}(I, 6, 6)
+        scale = T === Float32 ? T(1.0e3) : T(1.0e8)
+        scaled[1, 1] = scale
+        scaled[2, 2] = inv(scale)
+        @test compile_runtime(Linear6DSpec{T}(matrix=scaled)) isa Linear6D
+
+        canonical_shear = Matrix{T}(I, 6, 6)
+        canonical_shear[1, 2] = T(0.3)
+        @test compile_runtime(
+            Linear6DSpec{T}(matrix=canonical_shear)) isa Linear6D
+        raw_shear = ElementSpec{:linear6d}(
+            matrix=canonical_shear, tracking_method=Symplectic6DMap())
+        @test Matrix(compile_runtime(raw_shear)) == canonical_shear
+
+        # This cross-plane shear has determinant one but omits the conjugate
+        # py update, so determinant-only validation would incorrectly accept it.
+        nonsymplectic = Matrix{T}(I, 6, 6)
+        nonsymplectic[1, 3] = T(0.3)
+        @test det(nonsymplectic) == one(T)
+        @test_throws ArgumentError Linear6DSpec{T}(matrix=nonsymplectic)
+
+        nonfinite = Matrix{T}(I, 6, 6)
+        nonfinite[1, 1] = T(Inf)
+        @test_throws ArgumentError Linear6DSpec{T}(matrix=nonfinite)
+    end
+
+    # Flexible specs and direct runtime construction must not bypass the same
+    # invariant enforced by the friendly constructor.
+    nonsymplectic = Matrix{Float64}(I, 6, 6)
+    nonsymplectic[1, 1] = 1.001
+    raw = ElementSpec{:linear6d}(
+        matrix=Tuple(vec(transpose(nonsymplectic))),
+        tracking_method=Symplectic6DMap(),
+    )
+    @test_throws ArgumentError compile_runtime(raw)
+    tuple_matrix = Octopus._matrix66_tuple(nonsymplectic, Float64)
+    @test_throws ArgumentError Linear6D(Symplectic6DMap(), tuple_matrix)
+
+    optics = Linear6DSpec{Float64}(
+        beta1=(0.55, 0.056, 12.7),
+        beta2=(0.8, 0.072, 90.9),
+        alpha1=(0.08, 0.14, -0.069),
+        alpha2=(0.0, 0.0, 0.0),
+        dmu=(0.3, 0.4, 0.2),
+        zeta1=(0.01, -0.02, 0.03, -0.01),
+        eta1=(0.02, 0.01, -0.01, 0.04),
+        R1=(0.01, -0.02, 0.015, 0.005),
+        zeta2=(-0.01, 0.01, 0.02, 0.03),
+        eta2=(0.01, -0.03, 0.02, -0.01),
+        R2=(-0.005, 0.01, -0.015, 0.02),
+    )
+    @test compile_runtime(optics) isa Linear6D
+end
+
 @testset "Counter RNG smoke tests" begin
     philox1 = [counter_normal(0x12345678, 3, 9, i, 1, Float64) for i in 1:1000]
     philox2 = [counter_normal(0x12345678, 3, 9, i, 1, Float64) for i in 1:1000]

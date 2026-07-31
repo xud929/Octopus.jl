@@ -101,6 +101,12 @@ rather than by the standalone canonical-symplectic criterion. See
 `docs/theory/beam_beam_longitudinal_kick.md` for the collision model and
 `validation/symplecticity_validation.jl` for the executable check.
 
+`Linear6DSpec(matrix=M)` is reserved for canonical-symplectic maps. Both the
+public spec constructor and the compact `Linear6D` runtime constructor verify
+`transpose(M) * J * M = J` in `(x, px, y, py, z, pz)` order. The tolerance is
+derived from the numeric precision and the componentwise magnitude of the
+products in each residual row; it is not a fixed physical threshold.
+
 ## Current Backends
 
 The current backend tags are:
