@@ -11,7 +11,10 @@ abstract type LumpedRadSpec{T} end
                               kwargs...)
 
 Create an `ElementSpec{:lumped_radiation}` for a lumped damping and stochastic
-excitation element.
+excitation element. `Radiation6DMap()` permits both components,
+`Damping6DMap()` permits damping only, and `Diffusion6DMap()` permits
+excitation only. `is_damping` and `is_excitation` enable or disable the
+component permitted by the selected method.
 """
 LumpedRadSpec(; kwargs...) = LumpedRadSpec{Float64}(; kwargs...)
 function (::Type{LumpedRadSpec{T}})(;
@@ -68,27 +71,85 @@ function LumpedRad(spec::ElementSpec{:lumped_radiation},
     zeta = param(spec, :zeta)
     eta = param(spec, :eta)
     R = param(spec, :R)
-    T = promote_type(map(typeof, (turns..., beta..., alpha..., sigma..., zeta..., eta..., R...))...)
+    T = float(promote_type(
+        map(typeof, (turns..., beta..., alpha..., sigma..., zeta..., eta..., R...))...,
+    ))
+    T <: AbstractFloat ||
+        throw(ArgumentError("lumped radiation parameters must be real floating-point values"))
     turns_t = _fixed_tuple(turns, 3, T)
     beta_t = _fixed_tuple(beta, 3, T)
     alpha_t = _fixed_tuple(alpha, 3, T)
     sigma_t = _fixed_tuple(sigma, 3, T)
-    valid_turns = all(t -> t > zero(T), turns_t)
-    damping = ntuple(i -> valid_turns ? exp(-one(T) / turns_t[i]) : one(T), 3)
-    excitation = _radiation_excitation(damping, beta_t, alpha_t, sigma_t)
-    valid_excitation = all(i -> excitation[3 * i - 2] >= zero(T) &&
-                                excitation[3 * i - 1] >= zero(T), 1:3)
+    zeta_t = _fixed_tuple(zeta, 4, T)
+    eta_t = _fixed_tuple(eta, 4, T)
+    R_t = _fixed_tuple(R, 4, T)
+    excitation_available = _validate_lumped_rad_parameters(
+        turns_t, beta_t, alpha_t, sigma_t, zeta_t, eta_t, R_t,
+    )
+    damping = ntuple(i -> exp(-one(T) / turns_t[i]), 3)
+    # 1 - exp(-2/tau) loses all significant bits for large tau, especially in
+    # Float32. The excitation variance is evaluated directly from expm1.
+    excitation_scale = ntuple(
+        i -> sqrt(-expm1(-T(2) / turns_t[i])),
+        3,
+    )
+    excitation = _radiation_excitation(excitation_scale, beta_t, alpha_t, sigma_t)
+    is_damping, is_excitation = _lumped_rad_effective_components(
+        method,
+        Bool(getparam(spec, :is_damping, true)),
+        Bool(getparam(spec, :is_excitation, true)) && excitation_available,
+    )
     return LumpedRad(
         method,
-        Bool(getparam(spec, :is_damping, true)) && valid_turns,
-        Bool(getparam(spec, :is_excitation, true)) && valid_turns && valid_excitation,
+        is_damping,
+        is_excitation,
         damping,
         excitation,
-        CrabDispersion(Symplectic6DMap(), _fixed_tuple(zeta, 4, T)...),
-        MomentumDispersion(Symplectic6DMap(), _fixed_tuple(eta, 4, T)...),
-        XYCoupling(_fixed_tuple(R, 4, T)..., XY_MODEA),
+        CrabDispersion(Symplectic6DMap(), zeta_t...),
+        MomentumDispersion(Symplectic6DMap(), eta_t...),
+        XYCoupling(R_t..., XY_MODEA),
         UInt64(getparam(spec, :rng_id, 0)),
     )
+end
+
+function _validate_lumped_rad_parameters(
+        turns::NTuple{3,T}, beta::NTuple{3,T}, alpha::NTuple{3,T},
+        sigma::NTuple{3,T}, zeta::NTuple{4,T}, eta::NTuple{4,T},
+        R::NTuple{4,T}) where {T}
+    for (i, value) in pairs(turns)
+        value > zero(T) ||
+            throw(ArgumentError("damping_turns[$i] must be positive, got $value"))
+    end
+    for (name, values) in (
+            (:beta, beta), (:alpha, alpha), (:sigma, sigma),
+            (:zeta, zeta), (:eta, eta), (:R, R))
+        for (i, value) in pairs(values)
+            isfinite(value) ||
+                throw(ArgumentError("$name[$i] must be finite, got $value"))
+        end
+    end
+    for (i, value) in pairs(beta)
+        value > zero(T) ||
+            throw(ArgumentError("beta[$i] must be positive, got $value"))
+    end
+    enabled = all(value -> value >= zero(T), sigma)
+    disabled = all(value -> value < zero(T), sigma)
+    enabled || disabled || throw(ArgumentError(
+        "sigma must be nonnegative in all three planes to enable excitation " *
+        "or negative in all three planes to disable it",
+    ))
+    return enabled
+end
+
+function _lumped_rad_effective_components(
+        method::AbstractTrackingMethod, is_damping::Bool, is_excitation::Bool)
+    method isa Radiation6DMap && return is_damping, is_excitation
+    method isa Damping6DMap && return is_damping, false
+    method isa Diffusion6DMap && return false, is_excitation
+    throw(ArgumentError(
+        "LumpedRad supports Radiation6DMap, Damping6DMap, or Diffusion6DMap; " *
+        "got $(typeof(method))",
+    ))
 end
 
 @inline function track_particle(::Radiation6DMap, elem::LumpedRad, x, px, y, py, z, pz)
@@ -103,7 +164,7 @@ end
 @inline function track_particle(::Damping6DMap, elem::LumpedRad, x, px, y, py, z, pz)
     return _track_lumped_rad_particle(elem, x, px, y, py, z, pz,
                                       false, false, false, false, false, false,
-                                      true, false)
+                                      elem.is_damping, false)
 end
 
 @inline function track_particle(::Diffusion6DMap, elem::LumpedRad, x, px, y, py, z, pz)
@@ -124,7 +185,7 @@ end
 @inline function _track_lumped_rad_particle(elem::LumpedRad, x, px, y, py, z, pz,
                                             nx, npx, ny, npy, nz, npz,
                                             apply_damping::Bool, apply_excitation::Bool)
-    (elem.is_damping || elem.is_excitation) || return x, px, y, py, z, pz
+    (apply_damping || apply_excitation) || return x, px, y, py, z, pz
     x, px, y, py, z, pz = _inverse(elem.zeta, x, px, y, py, z, pz)
     x, px, y, py, z, pz = _inverse(elem.eta, x, px, y, py, z, pz)
     x, px, y, py, z, pz = _inverse(elem.coupling, x, px, y, py, z, pz)
@@ -180,7 +241,7 @@ end
                                            x, px, y, py, z, pz)
     return _track_lumped_rad_particle(elem, x, px, y, py, z, pz,
                                       false, false, false, false, false, false,
-                                      true, false)
+                                      elem.is_damping, false)
 end
 
 @inline function _track_lumped_rad_context(::Diffusion6DMap, elem::LumpedRad,
@@ -204,15 +265,13 @@ function _fixed_tuple(values, n::Int, ::Type{T}) where {T}
     return ntuple(i -> T(values[i]), n)
 end
 
-function _radiation_excitation(damping::NTuple{3,T}, beta::NTuple{3,T},
+function _radiation_excitation(scale::NTuple{3,T}, beta::NTuple{3,T},
                                alpha::NTuple{3,T}, sigma::NTuple{3,T}) where {T}
     values = ntuple(Val(9)) do j
         i = (j - 1) ÷ 3 + 1
         k = (j - 1) % 3 + 1
-        if sigma[i] < zero(T) || beta[i] <= zero(T)
-            return -one(T)
-        end
-        amp = sigma[i] * sqrt(max(zero(T), one(T) - damping[i] * damping[i]))
+        sigma[i] < zero(T) && return zero(T)
+        amp = sigma[i] * scale[i]
         slope = amp / beta[i]
         k == 1 && return amp
         k == 2 && return slope

@@ -194,6 +194,73 @@ end
     end
 end
 
+@testset "Lumped radiation method and flag semantics" begin
+    function radiation_spec(; kwargs...)
+        return LumpedRadSpec{Float64}(;
+            damping_turns=(10.0, 20.0, 30.0),
+            beta=(0.7, 0.9, 1.1),
+            alpha=(0.2, -0.1, 0.05),
+            sigma=(1.2e-3, 0.8e-3, 2.0e-3),
+            zeta=(0.01, -0.02, 0.03, -0.04),
+            eta=(0.05, -0.06, 0.07, -0.08),
+            R=(0.01, 0.02, -0.015, 0.005),
+            rng_id=0x4567,
+            kwargs...,
+        )
+    end
+
+    coords = (1.0e-3, -2.0e-4, 0.7e-3, 1.0e-4, -2.0e-3, 3.0e-4)
+    ctx = TrackingContext(turn=17, seed=0x12345678, rng_method=:philox)
+    both = radiation_spec(is_damping=true, is_excitation=true)
+    damping = compile_runtime(both, Damping6DMap())
+    diffusion = compile_runtime(both, Diffusion6DMap())
+    damping_reference = compile_runtime(
+        radiation_spec(is_damping=true, is_excitation=false), Radiation6DMap())
+    diffusion_reference = compile_runtime(
+        radiation_spec(is_damping=false, is_excitation=true), Radiation6DMap())
+
+    @test damping.is_damping
+    @test !damping.is_excitation
+    @test !diffusion.is_damping
+    @test diffusion.is_excitation
+    @test damping(ctx, 11, coords...) == damping_reference(ctx, 11, coords...)
+    @test diffusion(ctx, 11, coords...) == diffusion_reference(ctx, 11, coords...)
+
+    damping_disabled = compile_runtime(
+        radiation_spec(is_damping=false, is_excitation=true), Damping6DMap())
+    diffusion_disabled = compile_runtime(
+        radiation_spec(is_damping=true, is_excitation=false), Diffusion6DMap())
+    @test damping_disabled(ctx, 11, coords...) == coords
+    @test diffusion_disabled(ctx, 11, coords...) == coords
+
+    long_turn = compile_runtime(LumpedRadSpec{Float32}(;
+        damping_turns=(1.0f8, 1.0f8, 1.0f8),
+        beta=(1.0f0, 1.0f0, 1.0f0),
+        sigma=(1.0f0, 1.0f0, 1.0f0),
+        rng_id=1,
+    ))
+    @test long_turn.damping[1] == 1.0f0
+    @test long_turn.excitation[1] == sqrt(-expm1(-2.0f0 / 1.0f8))
+    @test long_turn.excitation[1] > 0.0f0
+
+    infinite_turn = compile_runtime(LumpedRadSpec(;
+        damping_turns=(Inf, Inf, Inf), sigma=(1.0, 1.0, 1.0), rng_id=1,
+    ))
+    @test infinite_turn.damping == (1.0, 1.0, 1.0)
+    @test infinite_turn.excitation == ntuple(_ -> 0.0, 9)
+
+    @test_throws ArgumentError compile_runtime(
+        LumpedRadSpec(damping_turns=(10.0, 0.0, 30.0)))
+    @test_throws ArgumentError compile_runtime(
+        LumpedRadSpec(damping_turns=(10.0, NaN, 30.0)))
+    @test_throws ArgumentError compile_runtime(
+        LumpedRadSpec(damping_turns=(10.0, 20.0, 30.0), beta=(1.0, 0.0, 1.0)))
+    @test_throws ArgumentError compile_runtime(
+        LumpedRadSpec(damping_turns=(10.0, 20.0, 30.0), sigma=(1.0, -1.0, 1.0)))
+    @test_throws ArgumentError compile_runtime(
+        LumpedRadSpec(damping_turns=(10.0, 20.0, 30.0), sigma=(1.0, Inf, 1.0)))
+end
+
 function covariance_xpxypy(A, B, Q)
     covariance_rp = [A B; transpose(B) Q]
     permutation = (1, 3, 2, 4)

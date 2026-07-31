@@ -66,6 +66,17 @@ callable method. `LumpedRad` uses this context-aware path for stochastic
 excitation with `ctx.seed`, `ctx.turn`, its element `rng_id`, and
 `particle_id`, allowing task-driven CPU and CUDA tracking to share one
 counter-RNG interface.
+Its tracking method is a strict component mask: `Radiation6DMap()` permits
+damping and excitation, `Damping6DMap()` permits damping only, and
+`Diffusion6DMap()` permits excitation only. Within that mask, `is_damping` and
+`is_excitation` remain explicit enable switches. Damping turns must be positive
+(`Inf` is allowed for an exact no-damping limit), optics must be finite with
+positive beta, and `sigma` must be nonnegative in all planes to enable
+excitation or negative in all planes to disable it. Invalid combinations are
+rejected during runtime compilation rather than silently disabling radiation.
+The excitation variance uses `-expm1(-2/damping_turns)` so long damping times
+remain representable in `Float32` even when the stored damping multiplier
+rounds to one.
 
 Line-level observers/actions are compiled into the task runtime line. Active
 plans are cached by scheduled hook activity, so inactive hooks do not break
