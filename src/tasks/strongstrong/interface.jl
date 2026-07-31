@@ -1590,6 +1590,7 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     diagnostics::StrongStrongDiagnostics
     turn_times::Vector{Float64}
     pic_phase_times::Vector{Any}
+    next_turn::Base.RefValue{Int64}
     runtime_entries_cache1::Base.RefValue{Any}
     runtime_entries_cache2::Base.RefValue{Any}
     plan_cache1::Dict{Any,Any}
@@ -1656,6 +1657,7 @@ function StrongStrongTask(line1, line2;
         diagnostics,
         Float64[],
         Any[],
+        Ref{Int64}(0),
         Ref{Any}(nothing),
         Ref{Any}(nothing),
         Dict{Any,Any}(),
@@ -1676,20 +1678,33 @@ diagnostic_summary(task::StrongStrongTask) = (
 )
 
 """
-    execute!(task::StrongStrongTask, beam1, beam2; turns=1)
+    execute!(task::StrongStrongTask, beam1, beam2; turns=1, start_turn=nothing)
 
-Execute a strong-strong task in place. Returns `(beam1, beam2)`.
+Execute a strong-strong task in place. Successful calls continue from the
+task's next absolute turn so schedules, stochastic elements, diagnostics, and
+luminosity output retain global turn numbering across chunked runs. Set
+`start_turn` to a non-negative integer to explicitly reposition the task before
+the call. A failed call does not advance the stored turn.
+
+Returns `(beam1, beam2)`.
 """
-function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam; turns::Integer=1)
+function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam;
+                  turns::Integer=1, start_turn=nothing)
+    nturns, first_turn, next_turn =
+        _task_execution_window(task.next_turn[], turns, start_turn)
     empty!(task.turn_times)
     empty!(task.pic_phase_times)
     policy = _resolve_strong_strong_policy(task, beam1, beam2)
-    return _with_execution_policy(policy) do
-        _execute_strong_strong_task!(task, beam1, beam2, Int(turns), policy)
+    result = _with_execution_policy(policy) do
+        _execute_strong_strong_task!(
+            task, beam1, beam2, nturns, first_turn, policy)
     end
+    task.next_turn[] = next_turn
+    return result
 end
 
-function _execute_strong_strong_task!(task, beam1, beam2, turns::Int, policy)
+function _execute_strong_strong_task!(
+        task, beam1, beam2, turns::Int, first_turn::Int64, policy)
     _warn_inactive_diagnostics(task.diagnostics, backend_type(policy))
     _record_execution!(:strong_strong_diagnostics, backend_type(policy), (
         record_turn_times=task.diagnostics.record_turn_times,
@@ -1712,11 +1727,15 @@ function _execute_strong_strong_task!(task, beam1, beam2, turns::Int, policy)
         Base.ScopedValues.with(_ACTIVE_STRONG_STRONG_DIAGNOSTICS => task.diagnostics,
                                _ACTIVE_PIC_PHASE_TIMING_SINK => task.pic_phase_times) do
             if task.luminosity_path === nothing
-                _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, policy, ctx, turns, nothing)
+                _execute_strong_strong_turns!(
+                    task, beam1, beam2, blocks1, blocks2, policy, ctx,
+                    turns, first_turn, nothing)
             else
                 open(task.luminosity_path, "w") do io
                     _write_strong_strong_luminosity_header(io, blocks1)
-                    _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, policy, ctx, turns, io)
+                    _execute_strong_strong_turns!(
+                        task, beam1, beam2, blocks1, blocks2, policy, ctx,
+                        turns, first_turn, io)
                 end
             end
         end
@@ -1782,11 +1801,14 @@ function _resolve_strong_strong_policy(task::StrongStrongTask,
     return policy1
 end
 
-function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, policy, ctx, turns::Int, io)
+function _execute_strong_strong_turns!(
+        task, beam1, beam2, blocks1, blocks2, policy, ctx,
+        turns::Int, first_turn::Int64, io)
     backend = backend_type(policy)
     streams = _strong_strong_segment_streams(policy)
     memory_log_every = _strong_strong_cuda_memory_log_every(backend)
-    for turn in 0:(turns - 1)
+    for offset in 0:(turns - 1)
+        turn = first_turn + offset
         turn_t0 = task.diagnostics.record_turn_times ? time_ns() : UInt64(0)
         ctx = with_turn(ctx, turn)
         luminosities = io === nothing ? nothing : Float64[]
@@ -1814,13 +1836,13 @@ function _execute_strong_strong_turns!(task, beam1, beam2, blocks1, blocks2, pol
         end
         _cuda_nvtx_pop(backend, turn_range)
         if luminosities !== nothing && !isempty(luminosities) && all(luminosity_evaluated)
-            print(io, turn)
+            print(io, ctx.turn)
             for lum in luminosities
                 print(io, '\t', lum)
             end
             println(io)
         end
-        _strong_strong_maybe_log_cuda_memory(backend, turn, memory_log_every)
+        _strong_strong_maybe_log_cuda_memory(backend, ctx.turn, memory_log_every)
         if task.diagnostics.record_turn_times
             backend === CUDABackend && CUDA.synchronize()
             push!(task.turn_times, (time_ns() - turn_t0) * 1.0e-9)

@@ -153,7 +153,11 @@ track!(rep, runtime_line, turns; policy=policy, context=TrackingContext())
 `TrackingContext` carries turn and counter-RNG state. It does not select an
 execution backend or launch geometry. `TrackingTask` and `StrongStrongTask`
 resolve one policy at execution entry and propagate it through fused,
-isolated, two-stream, and collision execution.
+isolated, two-stream, and collision execution. A task also retains its next
+absolute turn across successful `execute!` calls, so chunked execution is
+equivalent to one continuous call for schedules, turn-dependent elements, and
+counter-based stochastic tracking. Pass `start_turn=N` to `execute!` only when
+an explicit reposition is required, such as restoring a checkpoint.
 
 Use `configuration_report` to inspect requested and resolved policy, solver,
 task, schedule, observer, and diagnostic settings. Reports distinguish

@@ -58,6 +58,13 @@ end
 struct TestNoopObserver <: Octopus.AbstractBeamObserver end
 Octopus.observe!(::TestNoopObserver, ctx::Octopus.TrackingContext, rep) = nothing
 
+mutable struct TestTurnObserver <: Octopus.AbstractBeamObserver
+    turns::Vector{Int}
+end
+Octopus.observe!(
+    observer::TestTurnObserver, ctx::Octopus.TrackingContext, rep) =
+    push!(observer.turns, Int(ctx.turn))
+
 function run_tracking_smoke(hooks)
     spec = ThinStrongBeamSpec(;
         kbb=1.0e-4,
@@ -76,6 +83,54 @@ end
 
     @test fast == planned
     @test fast != initial
+end
+
+@testset "TrackingTask absolute turns survive chunked execution" begin
+    observer = TestTurnObserver(Int[])
+    task = TrackingTask((); hooks=(observer,))
+    rep = Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0])
+    execute!(task, rep; turns=2)
+    execute!(task, rep; turns=3)
+    @test observer.turns == collect(0:4)
+
+    execute!(task, rep; turns=1, start_turn=9)
+    @test observer.turns[end] == 9
+    execute!(task, rep; turns=1)
+    @test observer.turns[end] == 10
+    @test_throws ArgumentError execute!(task, rep; turns=-1)
+    @test_throws ArgumentError execute!(task, rep; turns=1, start_turn=-1)
+    @test_throws ArgumentError execute!(task, rep; turns=1, start_turn=1.5)
+
+    # Counter-based radiation must be bit-identical whether turns are executed
+    # in one call or in chunks.
+    radiation = LumpedRadSpec(
+        damping_turns=(20.0, 25.0, 30.0),
+        beta=(0.7, 0.9, 1.1),
+        alpha=(0.2, -0.1, 0.05),
+        sigma=(1.2e-3, 0.8e-3, 2.0e-3),
+        rng_id=0x1234,
+    )
+    n = 128
+    initial = Phase6DRep(
+        collect(range(-1.0e-3, 1.0e-3; length=n)),
+        collect(range(2.0e-4, -2.0e-4; length=n)),
+        collect(range(0.7e-3, -0.7e-3; length=n)),
+        collect(range(-1.0e-4, 1.0e-4; length=n)),
+        collect(range(-2.0e-3, 2.0e-3; length=n)),
+        collect(range(3.0e-4, -3.0e-4; length=n)),
+    )
+    continuous = deepcopy(initial)
+    chunked = deepcopy(initial)
+    set_global_rng!(seed=0x5eed, method=:philox)
+    execute!(TrackingTask((radiation,)), continuous; turns=7)
+    set_global_rng!(seed=0x5eed, method=:philox)
+    chunked_task = TrackingTask((radiation,))
+    execute!(chunked_task, chunked; turns=3)
+    execute!(chunked_task, chunked; turns=4)
+    for (expected, actual) in zip(
+            coordinate_arrays(continuous), coordinate_arrays(chunked))
+        @test actual == expected
+    end
 end
 
 function covariance_xpxypy(A, B, Q)
@@ -642,6 +697,55 @@ function test_beam(rep)
         charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=length(rep),
     )
     return Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+end
+
+@testset "StrongStrongTask chunking preserves stochastic physics" begin
+    n = 128
+    phase = range(0.0, 2pi; length=n + 1)[1:n]
+    rep1 = Phase6DRep(
+        1.0e-3 .* sin.(phase), 2.0e-4 .* cos.(phase),
+        0.7e-3 .* cos.(phase), 1.0e-4 .* sin.(2 .* phase),
+        collect(range(-2.0e-3, 2.0e-3; length=n)),
+        3.0e-4 .* cos.(2 .* phase),
+    )
+    rep2 = Phase6DRep(
+        reverse(copy(rep1.x)), reverse(copy(rep1.px)),
+        reverse(copy(rep1.y)), reverse(copy(rep1.py)),
+        reverse(copy(rep1.z)), reverse(copy(rep1.pz)),
+    )
+    initial1, initial2 = test_beam(rep1), test_beam(rep2)
+    radiation1 = LumpedRadSpec(
+        damping_turns=(30.0, 35.0, 40.0),
+        beta=(0.8, 1.1, 1.2), sigma=(1.0e-3, 0.8e-3, 2.0e-3),
+        rng_id=0x201,
+    )
+    radiation2 = LumpedRadSpec(
+        damping_turns=(32.0, 37.0, 42.0),
+        beta=(0.9, 1.0, 1.3), sigma=(0.9e-3, 0.7e-3, 2.2e-3),
+        rng_id=0x202,
+    )
+    solver = GaussianPoissonSolver(
+        kbb1=1.0e-5, kbb2=-8.0e-6, luminosity_scale=1.0,
+        slicing=LongitudinalSlicing(nslices=1, method=:equal_count),
+    )
+    ip = StrongStrongCollision(:ip; poisson_solver=solver)
+    task() = StrongStrongTask((radiation1, ip), (radiation2, ip))
+
+    continuous1, continuous2 = deepcopy(initial1), deepcopy(initial2)
+    chunked1, chunked2 = deepcopy(initial1), deepcopy(initial2)
+    set_global_rng!(seed=0x51a7, method=:philox)
+    execute!(task(), continuous1, continuous2; turns=6)
+    set_global_rng!(seed=0x51a7, method=:philox)
+    chunked_task = task()
+    execute!(chunked_task, chunked1, chunked2; turns=2)
+    execute!(chunked_task, chunked1, chunked2; turns=4)
+    for (expected_beam, actual_beam) in (
+            (continuous1, chunked1), (continuous2, chunked2))
+        for (expected, actual) in zip(
+                coordinate_arrays(expected_beam), coordinate_arrays(actual_beam))
+            @test actual == expected
+        end
+    end
 end
 
 @testset "Zero-width PIC slice remains finite" begin
@@ -1615,6 +1719,16 @@ end
         end
         @test turns == [0, 3, 6]
         @test all(l -> !occursin("NaN", l), readlines(path))
+
+        # A second call continues at turns 7:9. The output file represents the
+        # most recent call, so only scheduled absolute turn 9 is present.
+        execute!(task, e, p; turns=3)
+        empty!(turns)
+        for line in eachline(path)
+            parts = split(line, '\t')
+            t = tryparse(Int, parts[1]); t === nothing || push!(turns, t)
+        end
+        @test turns == [9]
     finally
         isfile(path) && rm(path)
     end

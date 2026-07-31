@@ -49,6 +49,7 @@ struct TrackingTask <: AbstractTask
     observers::Tuple
     contracts::Vector{DataType}
     analyses::Vector{DataType}
+    next_turn::Base.RefValue{Int64}
     runtime_entries_cache::Base.RefValue{Any}
     plan_cache::Dict{Any,Any}
 end
@@ -116,7 +117,7 @@ function TrackingTask(elements;
     seed !== nothing && @warn "TrackingTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
     action_tuple, observer_tuple = classify_task_hooks(hooks, actions, observers)
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
-                        Ref{Any}(nothing), Dict{Any,Any}())
+                        Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}())
 end
 
 _element_tuple(element::AbstractElementSpec) = (element,)
@@ -141,39 +142,52 @@ function _collect_analyses(elements)
 end
 
 """
-    execute!(task::TrackingTask, rep; turns=1)
-    execute!(task::TrackingTask, beam::Beam; turns=1)
+    execute!(task::TrackingTask, rep; turns=1, start_turn=nothing)
+    execute!(task::TrackingTask, beam::Beam; turns=1, start_turn=nothing)
 
 Execute a tracking task on an existing phase-space representation. Each element
 spec in `task.elements` is compiled with `compile_runtime`, one execution
 policy is resolved and checked against representation storage, and particles
 are tracked through the resulting runtime element sequence in place.
 
+Successful calls continue from the task's next absolute turn, so splitting a
+run across multiple `execute!` calls preserves schedules, turn-dependent
+updates, and counter-based random streams. Set `start_turn` to a non-negative
+integer to explicitly reposition the task before that call, for example when
+restoring a checkpoint. A failed call does not advance the stored turn.
+
 Returns `rep`.
 """
-execute!(task::TrackingTask, beam::Beam; turns::Integer=1) =
-    (execute!(task, beam.rep; turns=turns); beam)
+execute!(task::TrackingTask, beam::Beam; turns::Integer=1, start_turn=nothing) =
+    (execute!(task, beam.rep; turns=turns, start_turn=start_turn); beam)
 
-function execute!(task::TrackingTask, rep; turns::Integer=1)
+function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
+    nturns, first_turn, next_turn =
+        _task_execution_window(task.next_turn[], turns, start_turn)
     runtime_entries = _runtime_entries(task)
     runtime_elems = _physics_line(runtime_entries)
     policy = _resolve_execution_policy(task.policy, rep)
-    return _with_execution_policy(policy) do
-        _execute_tracking_task!(task, rep, runtime_entries, runtime_elems, Int(turns), policy)
+    result = _with_execution_policy(policy) do
+        _execute_tracking_task!(
+            task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy)
     end
+    task.next_turn[] = next_turn
+    return result
 end
 
 function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
-                                 turns::Int, policy)
+                                 turns::Int, first_turn::Int64, policy)
     if isempty(task.actions) && isempty(task.observers) && !_has_line_hooks(runtime_entries)
-        _execute_fast_tracking_turns!(rep, runtime_elems, turns, policy, TrackingContext())
+        _execute_fast_tracking_turns!(
+            rep, runtime_elems, turns, first_turn, policy, TrackingContext())
         return rep
     end
     prepare_observers!(task.observers, runtime_elems; turns=turns)
     prepare_line_observers!(runtime_entries; turns=turns)
     try
         base_ctx = TrackingContext()
-        for turn in 0:(turns - 1)
+        for offset in 0:(turns - 1)
+            turn = first_turn + offset
             ctx = with_turn(base_ctx, turn)
             run_actions!(task.actions, ctx, rep)
             task_diagnostics = requires_elementwise_tracking(task.observers, ctx)
@@ -191,14 +205,49 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     return rep
 end
 
-function _execute_fast_tracking_turns!(rep, runtime_elems, turns::Int, policy,
+function _execute_fast_tracking_turns!(rep, runtime_elems, turns::Int,
+                                       first_turn::Int64, policy,
                                        base_ctx::TrackingContext)
-    for turn in 0:(turns - 1)
+    for offset in 0:(turns - 1)
+        turn = first_turn + offset
         ctx = with_turn(base_ctx, turn)
         _update_runtime_line!(runtime_elems, ctx)
         track!(rep, runtime_elems, 1, policy, ctx)
     end
     return nothing
+end
+
+function _task_execution_window(stored_turn::Int64, turns::Integer, start_turn)
+    turns >= 0 || throw(ArgumentError("turns must be non-negative; got $(turns)"))
+    nturns = try
+        Int(turns)
+    catch error
+        error isa InexactError || rethrow()
+        throw(ArgumentError("turns must fit in Int; got $(turns)"))
+    end
+    first_turn = if start_turn === nothing
+        stored_turn
+    elseif start_turn isa Integer
+        start_turn >= 0 || throw(ArgumentError(
+            "start_turn must be non-negative; got $(start_turn)"))
+        try
+            Int64(start_turn)
+        catch error
+            error isa InexactError || rethrow()
+            throw(ArgumentError("start_turn must fit in Int64; got $(start_turn)"))
+        end
+    else
+        throw(ArgumentError(
+            "start_turn must be nothing or an integer; got $(repr(start_turn))"))
+    end
+    next_turn = try
+        Base.Checked.checked_add(first_turn, Int64(nturns))
+    catch error
+        error isa OverflowError || rethrow()
+        throw(ArgumentError(
+            "turn window overflows Int64: start_turn=$(first_turn), turns=$(nturns)"))
+    end
+    return nturns, first_turn, next_turn
 end
 
 _runtime_or_existing(element::AbstractElementSpec) = compile_runtime(element)
@@ -452,4 +501,3 @@ function _update_runtime_line!(runtime_elems::Tuple, ctx)
     end
     return nothing
 end
-
