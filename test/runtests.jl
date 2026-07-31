@@ -762,6 +762,56 @@ end
     @test all(a == b for (a, b) in zip(coordinate_arrays(p1.rep), coordinate_arrays(p2.rep)))
 end
 
+@testset "Strong-strong shifted moments preserve small spreads" begin
+    for T in (Float32, Float64), n in (8, 8192)
+        offset = T === Float32 ? T(1.0e4) : T(1.0e8)
+        xdev = repeat(T[-1, 1, -1, 1], n ÷ 4)
+        pxdev = repeat(T[2, -2, 2, -2], n ÷ 4)
+        ydev = repeat(T[-3, 3, -3, 3], n ÷ 4)
+        pydev = repeat(T[4, -4, 4, -4], n ÷ 4)
+        x = offset .+ xdev
+        px = -T(2) * offset .+ pxdev
+        y = T(3) * offset .+ ydev
+        py = -T(4) * offset .+ pydev
+        z = zeros(T, n)
+        rep = Phase6DRep(x, px, y, py, z, copy(z))
+
+        slice = Octopus._slice_transverse_moments(
+            rep, collect(1:n), false, zero(T), Val(true))
+        @test slice.mx ≈ offset
+        @test slice.mpx ≈ -T(2) * offset
+        @test slice.my ≈ T(3) * offset
+        @test slice.mpy ≈ -T(4) * offset
+        @test slice.moments.a0 ≈ T(1)
+        @test slice.moments.b0 ≈ T(3)
+        @test slice.moments.d0 ≈ T(9)
+        @test slice.moments.bxx ≈ -T(2)
+        @test slice.moments.bxpy ≈ -T(4)
+        @test slice.moments.bypx ≈ -T(6)
+        @test slice.moments.bypy ≈ -T(12)
+        @test slice.moments.qxx ≈ T(4)
+        @test slice.moments.qxy ≈ T(8)
+        @test slice.moments.qyy ≈ T(16)
+
+        gpic = Octopus._gpic_source_moments((x=x, px=px, y=y, py=py))
+        @test gpic.mx ≈ offset
+        @test gpic.varx ≈ T(1)
+        @test gpic.cxpx ≈ -T(2)
+        @test gpic.vary ≈ T(9)
+        @test gpic.cxy ≈ T(3)
+        @test gpic.cxpy ≈ -T(4)
+        @test gpic.cypx ≈ -T(6)
+        @test gpic.cpxpy ≈ T(8)
+
+        origin = x[1]
+        dx = x .- origin
+        extent = Octopus._pic_axis_extent(
+            :sigma, minimum(x), maximum(x), origin, sum(dx), sum(abs2, dx), n, T(2))
+        @test extent[1] ≈ offset - T(2)
+        @test extent[2] ≈ offset + T(2)
+    end
+end
+
 @testset "GaussianPIC solver construction and metadata" begin
     s = GaussianPICPoissonSolver(grid=(64, 64))
     @test s.margin_sigma == 5.0
@@ -1200,12 +1250,15 @@ end
             w = Float64[]
             for s in eachindex(sls.center)
                 idx = sls.indices[s]; isempty(idx) && continue
+                origin = p2.rep.x[idx[1]]
                 lo, hi = Inf, -Inf; a, b = 0.0, 0.0
                 for i in idx
                     v = p2.rep.x[i]
-                    lo = min(lo, v); hi = max(hi, v); a += v; b += v * v
+                    d = v - origin
+                    lo = min(lo, v); hi = max(hi, v); a += d; b += d * d
                 end
-                ax = Octopus._pic_axis_extent(ge, lo, hi, a, b, length(idx), 6.0)
+                ax = Octopus._pic_axis_extent(
+                    ge, lo, hi, origin, a, b, length(idx), 6.0)
                 push!(w, ax[2] - ax[1])
             end
             w
@@ -1229,16 +1282,21 @@ end
                 (isempty(s1.indices[i]) || isempty(s2.indices[j])) && continue
                 src = Octopus._pic_extract_slice(e3.rep, s1.indices[i]); c = s1.center[i]
                 d0 = 0.5 * (c - s2.boundary[j]); d1 = 0.5 * (c - s2.boundary[j + 1])
+                xorigin = src.x[1] + src.px[1] * d0
+                yorigin = src.y[1] + src.py[1] * d0
                 lo, hi = Inf, -Inf; a, b = 0.0, 0.0; n = 0
                 ylo, yhi = Inf, -Inf; ya, yb = 0.0, 0.0
                 for k in eachindex(src.x), d in (d0, d1)
                     xv = src.x[k] + src.px[k] * d; yv = src.y[k] + src.py[k] * d
-                    lo = min(lo, xv); hi = max(hi, xv); a += xv; b += xv * xv
-                    ylo = min(ylo, yv); yhi = max(yhi, yv); ya += yv; yb += yv * yv
+                    dx = xv - xorigin; dy = yv - yorigin
+                    lo = min(lo, xv); hi = max(hi, xv); a += dx; b += dx * dx
+                    ylo = min(ylo, yv); yhi = max(yhi, yv); ya += dy; yb += dy * dy
                     n += 1
                 end
-                ax = Octopus._pic_axis_extent(:sigma, lo, hi, a, b, n, 6.0)
-                ay = Octopus._pic_axis_extent(:sigma, ylo, yhi, ya, yb, n, 6.0)
+                ax = Octopus._pic_axis_extent(
+                    :sigma, lo, hi, xorigin, a, b, n, 6.0)
+                ay = Octopus._pic_axis_extent(
+                    :sigma, ylo, yhi, yorigin, ya, yb, n, 6.0)
                 sg, _ = Octopus._pic_interaction_grids(solver, ax[1], ax[2], ay[1], ay[2],
                                                        ax[1], ax[2], ay[1], ay[2])
                 push!(seen, (sg.width, sg.height))
@@ -1797,6 +1855,84 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
                 end
             end
         end
+    end
+
+    @testset "CUDA strong-strong shifted moments preserve small spreads" begin
+        for T in (Float32, Float64)
+            n = 8192
+            offset = T === Float32 ? T(1.0e4) : T(1.0e8)
+            x = offset .+ repeat(T[-1, 1, -1, 1], n ÷ 4)
+            px = -T(2) * offset .+ repeat(T[2, -2, 2, -2], n ÷ 4)
+            y = T(3) * offset .+ repeat(T[-3, 3, -3, 3], n ÷ 4)
+            py = -T(4) * offset .+ repeat(T[4, -4, 4, -4], n ÷ 4)
+            z = zeros(T, n)
+            rep = Phase6DRep(
+                Octopus.CUDA.CuArray(x), Octopus.CUDA.CuArray(px),
+                Octopus.CUDA.CuArray(y), Octopus.CUDA.CuArray(py),
+                Octopus.CUDA.CuArray(z), Octopus.CUDA.CuArray(z))
+            idx = Octopus.CUDA.CuArray(collect(1:n))
+            launch = Octopus._cuda_gaussian_moment_launch(n)
+
+            for coupled in (false, true)
+                coupling = Val(coupled)
+                partials = Octopus.CUDA.CuArray{T}(undef,
+                    Octopus._cuda_gaussian_moment_nstats(coupling),
+                    launch.blocks, 1)
+                moments = Octopus._cuda_slice_transverse_moments(
+                    rep, idx, partials, false, zero(T), coupling)
+                @test moments.mx ≈ offset
+                @test moments.moments.a0 ≈ T(1)
+                @test moments.moments.d0 ≈ T(9)
+                @test moments.moments.bxx ≈ -T(2)
+                @test moments.moments.bypy ≈ -T(12)
+                @test moments.moments.qxx ≈ T(4)
+                @test moments.moments.qyy ≈ T(16)
+                if coupled
+                    @test moments.moments.b0 ≈ T(3)
+                    @test moments.moments.bxpy ≈ -T(4)
+                    @test moments.moments.bypx ≈ -T(6)
+                    @test moments.moments.qxy ≈ T(8)
+                end
+            end
+
+            gpic = Octopus._cuda_gpic_source_moments(
+                (x=rep.x, px=rep.px, y=rep.y, py=rep.py))
+            @test gpic.mx ≈ offset
+            @test gpic.varx ≈ T(1)
+            @test gpic.cxpx ≈ -T(2)
+            @test gpic.vary ≈ T(9)
+            @test gpic.cypy ≈ -T(12)
+        end
+
+        # Exercise the separate fused wavefront moment kernel through its solver.
+        n = 1024
+        offset = 1.0e8
+        x = offset .+ repeat([-1.0, -1.0, 1.0, 1.0], n ÷ 4)
+        px = 2offset .+ repeat([-3.0, 3.0, -3.0, 3.0], n ÷ 4)
+        y = -offset .+ repeat([-2.0, 2.0, -2.0, 2.0], n ÷ 4)
+        py = -2offset .+ repeat([4.0, 4.0, -4.0, -4.0], n ÷ 4)
+        z = zeros(n)
+        host_rep() = Phase6DRep(
+            copy(x), copy(px), copy(y), copy(py), copy(z), copy(z))
+        gpu_rep() = Phase6DRep(
+            (Octopus.CUDA.CuArray(a) for a in coordinate_arrays(host_rep()))...)
+        params = BeamParams{Float64}(
+            charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=n)
+        cpu_beam(rep) =
+            Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+        gpu_beam(rep) =
+            Beam{Octopus.CUDABackend,typeof(params),typeof(rep)}(params, rep)
+        solver = GaussianPoissonSolver(
+            kbb1=0.0, kbb2=0.0, luminosity_scale=1.0,
+            slicing=LongitudinalSlicing(nslices=1, method=:equal_count),
+            longitudinal_kick=false, batch_mode=:wavefront)
+        cpu1 = cpu_beam(host_rep()); cpu2 = cpu_beam(host_rep())
+        gpu1 = gpu_beam(gpu_rep()); gpu2 = gpu_beam(gpu_rep())
+        cpu_luminosity = collide!(solver, cpu1, cpu2, CPUThreadsBackend)
+        gpu_luminosity = collide!(solver, gpu1, gpu2, Octopus.CUDABackend)
+        Octopus.CUDA.synchronize()
+        @test isfinite(cpu_luminosity)
+        @test gpu_luminosity ≈ cpu_luminosity rtol=2.0e-12
     end
 
     @testset "CUDA PIC field_derivative matches CPU" begin

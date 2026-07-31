@@ -1044,7 +1044,8 @@ if _HAS_CUDA
                 idx -> _cuda_gaussian_moment_launch(length(idx)).blocks,
                 all_indices; init=1)
             max_batch = maximum(length, batches; init=1)
-            nstats = COUPLED ? 14 : 10
+            nstats = _cuda_gaussian_moment_nstats(Val(COUPLED))
+            centered_nstats = _cuda_gaussian_centered_nstats(Val(COUPLED))
             partials = CUDA.zeros(T, nstats, max_moment_blocks, 2 * max_batch)
             device_sums = CUDA.CuArray{T}(undef, nstats, 2 * max_batch)
             block_counts = CUDA.CuArray{Int32}(undef, 2 * max_batch)
@@ -1089,7 +1090,7 @@ if _HAS_CUDA
             perm1, offsets1 = _cuda_concat_slice_indices(slices1.indices)
             perm2, offsets2 = _cuda_concat_slice_indices(slices2.indices)
             moment_threads = _cuda_gaussian_moment_launch(1).threads
-            moment_shmem = nstats * moment_threads * sizeof(T)
+            moment_shmem = centered_nstats * moment_threads * sizeof(T)
             max_lum = maximum(batches; init=0) do batch
                 sum(pair -> sample_beam1 ? length(slices2.indices[pair.j]) :
                                            length(slices1.indices[pair.i]), batch)
@@ -4945,7 +4946,7 @@ if _HAS_CUDA
             all_indices = Iterators.flatten((slices1.indices, slices2.indices))
             max_moment_blocks = maximum(
                 idx -> _cuda_gaussian_moment_launch(length(idx)).blocks, all_indices; init=1)
-            nstats = COUPLED ? 14 : 10
+            nstats = _cuda_gaussian_moment_nstats(Val(COUPLED))
             moment_partials = CUDA.CuArray{T}(undef, nstats, max_moment_blocks, 1)
             luminosity = zero(T)
             for (_, i, j) in _slice_collision_order(slices1, slices2)
@@ -5187,7 +5188,8 @@ if _HAS_CUDA
             T = eltype(rep.x)
             n = length(idx)
             n == 0 && return _cuda_gaussian_moments_from_sums(
-                zeros(T, COUPLED ? 14 : 10), n, ignore_centroid, min_sigma, coupled)
+                zeros(T, _cuda_gaussian_moment_nstats(coupled)),
+                n, ignore_centroid, min_sigma, coupled)
             blocks = _cuda_launch_gaussian_moment_partials!(
                 partials, 1, rep, idx, coupled)
             host_partials = Array(@view partials[:, 1:blocks, 1])
@@ -5210,25 +5212,36 @@ if _HAS_CUDA
                         my=zz, sy=T(min_sigma), mpy=zz, spy=zz, covypy=zz,
                         moments=moments)
             end
-            sx, spx, sy, spy = sums[1], sums[2], sums[3], sums[4]
-            sx2sum, spx2sum = sums[5], sums[6]
-            sy2sum, spy2sum = sums[7], sums[8]
-            sxpxsum, sypysum = sums[9], sums[10]
+            sdx, sdpx, sdy, sdpy = sums[1], sums[2], sums[3], sums[4]
+            sdx2, sdpx2 = sums[5], sums[6]
+            sdy2, sdpy2 = sums[7], sums[8]
+            sdxpx, sdypy = sums[9], sums[10]
+            centered_nstats = _cuda_gaussian_centered_nstats(Val(COUPLED))
+            x0 = sums[centered_nstats + 1]
+            px0 = sums[centered_nstats + 2]
+            y0 = sums[centered_nstats + 3]
+            py0 = sums[centered_nstats + 4]
             invn = inv(T(n))
-            mx = T(sx * invn)
-            mpx = T(spx * invn)
-            my = T(sy * invn)
-            mpy = T(spy * invn)
-            sx2 = T(sx2sum * invn - mx * mx)
-            spx2 = T(spx2sum * invn - mpx * mpx)
-            sy2 = T(sy2sum * invn - my * my)
-            spy2 = T(spy2sum * invn - mpy * mpy)
-            covxpx = T(sxpxsum * invn - mx * mpx)
-            covypy = T(sypysum * invn - my * mpy)
-            covxy = COUPLED ? T(sums[11] * invn - mx * my) : zero(T)
-            covxpy = COUPLED ? T(sums[12] * invn - mx * mpy) : zero(T)
-            covpxy = COUPLED ? T(sums[13] * invn - mpx * my) : zero(T)
-            covpxpy = COUPLED ? T(sums[14] * invn - mpx * mpy) : zero(T)
+            dmx = T(sdx * invn); dmpx = T(sdpx * invn)
+            dmy = T(sdy * invn); dmpy = T(sdpy * invn)
+            mx = T(x0 + dmx)
+            mpx = T(px0 + dmpx)
+            my = T(y0 + dmy)
+            mpy = T(py0 + dmpy)
+            sx2 = T(_shifted_second_moment(sdx2, dmx, invn))
+            spx2 = T(_shifted_second_moment(sdpx2, dmpx, invn))
+            sy2 = T(_shifted_second_moment(sdy2, dmy, invn))
+            spy2 = T(_shifted_second_moment(sdpy2, dmpy, invn))
+            covxpx = T(_shifted_cross_moment(sdxpx, dmx, dmpx, invn))
+            covypy = T(_shifted_cross_moment(sdypy, dmy, dmpy, invn))
+            covxy = COUPLED ?
+                T(_shifted_cross_moment(sums[11], dmx, dmy, invn)) : zero(T)
+            covxpy = COUPLED ?
+                T(_shifted_cross_moment(sums[12], dmx, dmpy, invn)) : zero(T)
+            covpxy = COUPLED ?
+                T(_shifted_cross_moment(sums[13], dmpx, dmy, invn)) : zero(T)
+            covpxpy = COUPLED ?
+                T(_shifted_cross_moment(sums[14], dmpx, dmpy, invn)) : zero(T)
             floor2 = T(min_sigma) * T(min_sigma)
             varx = max(sx2, floor2)
             vary = max(sy2, floor2)
@@ -5251,13 +5264,19 @@ if _HAS_CUDA
                 partials, column::Integer, rep::Phase6DRep, idx,
                 ::Val{COUPLED}) where {COUPLED}
             launch = _cuda_gaussian_moment_launch(length(idx))
-            nstats = COUPLED ? 14 : 10
-            shmem = nstats * launch.threads * sizeof(eltype(partials))
+            centered_nstats = _cuda_gaussian_centered_nstats(Val(COUPLED))
+            shmem = centered_nstats * launch.threads * sizeof(eltype(partials))
             CUDA.@cuda threads=launch.threads blocks=launch.blocks shmem=shmem _cuda_gaussian_moment_partials_kernel!(
                     partials, rep.x, rep.px, rep.y, rep.py, idx, column,
                     Val(COUPLED))
             return launch.blocks
         end
+
+        @inline _cuda_gaussian_centered_nstats(::Val{COUPLED}) where {COUPLED} =
+            COUPLED ? 14 : 10
+
+        @inline _cuda_gaussian_moment_nstats(coupled::Val) =
+            _cuda_gaussian_centered_nstats(coupled) + 4
 
         function _cuda_gaussian_moment_launch(n::Integer)
             requested = _active_cuda_launch(n)
@@ -5273,40 +5292,45 @@ if _HAS_CUDA
                                                         idx, column,
                                                         ::Val{COUPLED}) where {COUPLED}
             T = eltype(partials)
-            nstats = COUPLED ? 14 : 10
-            values = ntuple(_ -> zero(T), Val(nstats))
+            centered_nstats = _cuda_gaussian_centered_nstats(Val(COUPLED))
+            values = ntuple(_ -> zero(T), Val(centered_nstats))
+            @inbounds anchor_particle = idx[1]
+            @inbounds begin
+                x0 = x[anchor_particle]; px0 = px[anchor_particle]
+                y0 = y[anchor_particle]; py0 = py[anchor_particle]
+            end
             position = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
             while position <= length(idx)
                 @inbounds begin
                     particle = idx[position]
-                    xi = x[particle]; pxi = px[particle]
-                    yi = y[particle]; pyi = py[particle]
+                    dx = x[particle] - x0; dpx = px[particle] - px0
+                    dy = y[particle] - y0; dpy = py[particle] - py0
                     if COUPLED
                         values = (
-                            values[1] + xi, values[2] + pxi,
-                            values[3] + yi, values[4] + pyi,
-                            values[5] + xi * xi, values[6] + pxi * pxi,
-                            values[7] + yi * yi, values[8] + pyi * pyi,
-                            values[9] + xi * pxi, values[10] + yi * pyi,
-                            values[11] + xi * yi, values[12] + xi * pyi,
-                            values[13] + pxi * yi, values[14] + pxi * pyi,
+                            values[1] + dx, values[2] + dpx,
+                            values[3] + dy, values[4] + dpy,
+                            values[5] + dx * dx, values[6] + dpx * dpx,
+                            values[7] + dy * dy, values[8] + dpy * dpy,
+                            values[9] + dx * dpx, values[10] + dy * dpy,
+                            values[11] + dx * dy, values[12] + dx * dpy,
+                            values[13] + dpx * dy, values[14] + dpx * dpy,
                         )
                     else
                         values = (
-                            values[1] + xi, values[2] + pxi,
-                            values[3] + yi, values[4] + pyi,
-                            values[5] + xi * xi, values[6] + pxi * pxi,
-                            values[7] + yi * yi, values[8] + pyi * pyi,
-                            values[9] + xi * pxi, values[10] + yi * pyi,
+                            values[1] + dx, values[2] + dpx,
+                            values[3] + dy, values[4] + dpy,
+                            values[5] + dx * dx, values[6] + dpx * dpx,
+                            values[7] + dy * dy, values[8] + dpy * dpy,
+                            values[9] + dx * dpx, values[10] + dy * dpy,
                         )
                     end
                 end
                 position += stride
             end
-            shared = CUDA.CuDynamicSharedArray(T, nstats * CUDA.blockDim().x)
-            base = nstats * (CUDA.threadIdx().x - 1)
-            for stat in 1:nstats
+            shared = CUDA.CuDynamicSharedArray(T, centered_nstats * CUDA.blockDim().x)
+            base = centered_nstats * (CUDA.threadIdx().x - 1)
+            for stat in 1:centered_nstats
                 @inbounds shared[base + stat] = values[stat]
             end
             CUDA.sync_threads()
@@ -5314,8 +5338,8 @@ if _HAS_CUDA
             while active > 1
                 offset = (active + 1) ÷ 2
                 if CUDA.threadIdx().x <= active ÷ 2
-                    other = nstats * (CUDA.threadIdx().x + offset - 1)
-                    for stat in 1:nstats
+                    other = centered_nstats * (CUDA.threadIdx().x + offset - 1)
+                    for stat in 1:centered_nstats
                         @inbounds shared[base + stat] += shared[other + stat]
                     end
                 end
@@ -5323,8 +5347,15 @@ if _HAS_CUDA
                 active = offset
             end
             if CUDA.threadIdx().x == 1
-                for stat in 1:nstats
+                for stat in 1:centered_nstats
                     @inbounds partials[stat, CUDA.blockIdx().x, column] = shared[stat]
+                end
+                anchor_scale = CUDA.blockIdx().x == 1 ? one(T) : zero(T)
+                @inbounds begin
+                    partials[centered_nstats + 1, CUDA.blockIdx().x, column] = anchor_scale * x0
+                    partials[centered_nstats + 2, CUDA.blockIdx().x, column] = anchor_scale * px0
+                    partials[centered_nstats + 3, CUDA.blockIdx().x, column] = anchor_scale * y0
+                    partials[centered_nstats + 4, CUDA.blockIdx().x, column] = anchor_scale * py0
                 end
             end
             return nothing
@@ -5437,46 +5468,56 @@ if _HAS_CUDA
             bx = CUDA.blockIdx().x
             bx > nb && return nothing
             T = eltype(partials)
-            nstats = COUPLED ? 14 : 10
+            centered_nstats = _cuda_gaussian_centered_nstats(Val(COUPLED))
             @inbounds len = col_len[col]
             @inbounds off = col_off[col]
             @inbounds beam1 = col_beam[col] == Int32(1)
-            values = ntuple(_ -> zero(T), Val(nstats))
+            values = ntuple(_ -> zero(T), Val(centered_nstats))
+            x0 = zero(T); px0 = zero(T); y0 = zero(T); py0 = zero(T)
+            if len > 0
+                @inbounds anchor_particle = beam1 ? perm1[off + 1] : perm2[off + 1]
+                @inbounds begin
+                    x0 = beam1 ? x1[anchor_particle] : x2[anchor_particle]
+                    px0 = beam1 ? px1[anchor_particle] : px2[anchor_particle]
+                    y0 = beam1 ? y1[anchor_particle] : y2[anchor_particle]
+                    py0 = beam1 ? py1[anchor_particle] : py2[anchor_particle]
+                end
+            end
             threads = CUDA.blockDim().x
             position = (bx - 1) * threads + CUDA.threadIdx().x
             stride = nb * threads
             while position <= len
                 @inbounds begin
                     particle = beam1 ? perm1[off + position] : perm2[off + position]
-                    xi = beam1 ? x1[particle] : x2[particle]
-                    pxi = beam1 ? px1[particle] : px2[particle]
-                    yi = beam1 ? y1[particle] : y2[particle]
-                    pyi = beam1 ? py1[particle] : py2[particle]
+                    dx = (beam1 ? x1[particle] : x2[particle]) - x0
+                    dpx = (beam1 ? px1[particle] : px2[particle]) - px0
+                    dy = (beam1 ? y1[particle] : y2[particle]) - y0
+                    dpy = (beam1 ? py1[particle] : py2[particle]) - py0
                     if COUPLED
                         values = (
-                            values[1] + xi, values[2] + pxi,
-                            values[3] + yi, values[4] + pyi,
-                            values[5] + xi * xi, values[6] + pxi * pxi,
-                            values[7] + yi * yi, values[8] + pyi * pyi,
-                            values[9] + xi * pxi, values[10] + yi * pyi,
-                            values[11] + xi * yi, values[12] + xi * pyi,
-                            values[13] + pxi * yi, values[14] + pxi * pyi,
+                            values[1] + dx, values[2] + dpx,
+                            values[3] + dy, values[4] + dpy,
+                            values[5] + dx * dx, values[6] + dpx * dpx,
+                            values[7] + dy * dy, values[8] + dpy * dpy,
+                            values[9] + dx * dpx, values[10] + dy * dpy,
+                            values[11] + dx * dy, values[12] + dx * dpy,
+                            values[13] + dpx * dy, values[14] + dpx * dpy,
                         )
                     else
                         values = (
-                            values[1] + xi, values[2] + pxi,
-                            values[3] + yi, values[4] + pyi,
-                            values[5] + xi * xi, values[6] + pxi * pxi,
-                            values[7] + yi * yi, values[8] + pyi * pyi,
-                            values[9] + xi * pxi, values[10] + yi * pyi,
+                            values[1] + dx, values[2] + dpx,
+                            values[3] + dy, values[4] + dpy,
+                            values[5] + dx * dx, values[6] + dpx * dpx,
+                            values[7] + dy * dy, values[8] + dpy * dpy,
+                            values[9] + dx * dpx, values[10] + dy * dpy,
                         )
                     end
                 end
                 position += stride
             end
-            shared = CUDA.CuDynamicSharedArray(T, nstats * CUDA.blockDim().x)
-            base = nstats * (CUDA.threadIdx().x - 1)
-            for stat in 1:nstats
+            shared = CUDA.CuDynamicSharedArray(T, centered_nstats * CUDA.blockDim().x)
+            base = centered_nstats * (CUDA.threadIdx().x - 1)
+            for stat in 1:centered_nstats
                 @inbounds shared[base + stat] = values[stat]
             end
             CUDA.sync_threads()
@@ -5484,8 +5525,8 @@ if _HAS_CUDA
             while active > 1
                 offset = (active + 1) ÷ 2
                 if CUDA.threadIdx().x <= active ÷ 2
-                    other = nstats * (CUDA.threadIdx().x + offset - 1)
-                    for stat in 1:nstats
+                    other = centered_nstats * (CUDA.threadIdx().x + offset - 1)
+                    for stat in 1:centered_nstats
                         @inbounds shared[base + stat] += shared[other + stat]
                     end
                 end
@@ -5493,8 +5534,15 @@ if _HAS_CUDA
                 active = offset
             end
             if CUDA.threadIdx().x == 1
-                for stat in 1:nstats
+                for stat in 1:centered_nstats
                     @inbounds partials[stat, bx, col] = shared[stat]
+                end
+                anchor_scale = bx == 1 ? one(T) : zero(T)
+                @inbounds begin
+                    partials[centered_nstats + 1, bx, col] = anchor_scale * x0
+                    partials[centered_nstats + 2, bx, col] = anchor_scale * px0
+                    partials[centered_nstats + 3, bx, col] = anchor_scale * y0
+                    partials[centered_nstats + 4, bx, col] = anchor_scale * py0
                 end
             end
             return nothing

@@ -321,30 +321,36 @@ end
 function _gpic_source_moments(source)
     T = eltype(source.x)
     n = length(source.x)
+    x0 = source.x[1]; px0 = source.px[1]
+    y0 = source.y[1]; py0 = source.py[1]
     sx = zero(T); spx = zero(T); sy = zero(T); spy = zero(T)
     sxx = zero(T); spxpx = zero(T); syy = zero(T); spypy = zero(T)
     sxpx = zero(T); sypy = zero(T)
     # cross-plane sums, needed for the coupled (rotated) subtraction
     sxy = zero(T); sxpy = zero(T); sypx = zero(T); spxpy = zero(T)
     @inbounds for i in 1:n
-        xi = source.x[i]; pxi = source.px[i]; yi = source.y[i]; pyi = source.py[i]
-        sx += xi; spx += pxi; sy += yi; spy += pyi
-        sxx += xi * xi; spxpx += pxi * pxi; syy += yi * yi; spypy += pyi * pyi
-        sxpx += xi * pxi; sypy += yi * pyi
-        sxy += xi * yi; sxpy += xi * pyi; sypx += yi * pxi; spxpy += pxi * pyi
+        dx = source.x[i] - x0; dpx = source.px[i] - px0
+        dy = source.y[i] - y0; dpy = source.py[i] - py0
+        sx += dx; spx += dpx; sy += dy; spy += dpy
+        sxx += dx * dx; spxpx += dpx * dpx
+        syy += dy * dy; spypy += dpy * dpy
+        sxpx += dx * dpx; sypy += dy * dpy
+        sxy += dx * dy; sxpy += dx * dpy
+        sypx += dy * dpx; spxpy += dpx * dpy
     end
     invn = inv(T(n))
-    mx = sx * invn; mpx = spx * invn; my = sy * invn; mpy = spy * invn
-    varx = max(sxx * invn - mx * mx, zero(T))
-    vary = max(syy * invn - my * my, zero(T))
-    cxpx = sxpx * invn - mx * mpx
-    varpx = max(spxpx * invn - mpx * mpx, zero(T))
-    cypy = sypy * invn - my * mpy
-    varpy = max(spypy * invn - mpy * mpy, zero(T))
-    cxy = sxy * invn - mx * my
-    cxpy = sxpy * invn - mx * mpy
-    cypx = sypx * invn - my * mpx
-    cpxpy = spxpy * invn - mpx * mpy
+    dmx = sx * invn; dmpx = spx * invn; dmy = sy * invn; dmpy = spy * invn
+    mx = x0 + dmx; mpx = px0 + dmpx; my = y0 + dmy; mpy = py0 + dmpy
+    varx = max(_shifted_second_moment(sxx, dmx, invn), zero(T))
+    vary = max(_shifted_second_moment(syy, dmy, invn), zero(T))
+    cxpx = _shifted_cross_moment(sxpx, dmx, dmpx, invn)
+    varpx = max(_shifted_second_moment(spxpx, dmpx, invn), zero(T))
+    cypy = _shifted_cross_moment(sypy, dmy, dmpy, invn)
+    varpy = max(_shifted_second_moment(spypy, dmpy, invn), zero(T))
+    cxy = _shifted_cross_moment(sxy, dmx, dmy, invn)
+    cxpy = _shifted_cross_moment(sxpy, dmx, dmpy, invn)
+    cypx = _shifted_cross_moment(sypx, dmy, dmpx, invn)
+    cpxpy = _shifted_cross_moment(spxpy, dmpx, dmpy, invn)
     return (n=n, mx=mx, mpx=mpx, varx=varx, cxpx=cxpx, varpx=varpx,
             my=my, mpy=mpy, vary=vary, cypy=cypy, varpy=varpy,
             cxy=cxy, cxpy=cxpy, cypx=cypx, cpxpy=cpxpy)

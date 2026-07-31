@@ -410,8 +410,10 @@ julia --project=. validation/strong_strong_diagnostics_benchmark.jl
 
 Select another measurement mode with
 `OCTOPUS_DIAGNOSTIC_BENCHMARK_MODE=luminosity`, `luminosity_io`, `moments`, or
-`both`. Production-size diagnostic benchmarks are manual runs and are not part
-of the fast package test suite.
+`both`. Set `OCTOPUS_SOLVER=gaussian` to benchmark the soft-Gaussian source
+moment path with the same tracking and diagnostic workload. Production-size
+diagnostic benchmarks are manual runs and are not part of the fast package
+test suite.
 
 Tracked results, accuracy checks, and accepted/rejected experiments are in
 `../docs/history/strong_strong_diagnostics_benchmark_history.md`.

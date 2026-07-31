@@ -15,6 +15,8 @@ Run from the project root, for example:
 
   OCTOPUS_DIAGNOSTIC_BENCHMARK_MODE=baseline \
     julia --project=. validation/strong_strong_diagnostics_benchmark.jl
+
+Set OCTOPUS_SOLVER=gaussian to exercise the soft-Gaussian source-moment path.
 =#
 
 mode = Symbol(lowercase(get(ENV, "OCTOPUS_DIAGNOSTIC_BENCHMARK_MODE", "baseline")))
@@ -85,6 +87,7 @@ summary_path = joinpath(result_dir, "pic_diagnostics_$(mode)_summary.tsv")
 configuration_rows = Pair{String,Any}[
     "git_commit" => readchomp(`git rev-parse HEAD`),
     "mode" => mode,
+    "solver" => nameof(typeof(solver)),
     "turns" => turns,
     "sample_turns" => sample_turns,
     "sample_mean_seconds" => sample_mean,
@@ -104,7 +107,9 @@ if policy isa CUDAExecutionPolicy
     config_entries = configuration_report(solver; policy=policy, backend=CUDABackend)
     for family in (:gather_scatter, :deposition, :kick, :field, :spectral, :green, :luminosity)
         option = Symbol(:cuda_pic_, family, :_threads)
-        entry = only(filter(item -> item.name === option, config_entries))
+        matches = filter(item -> item.name === option, config_entries)
+        isempty(matches) && continue
+        entry = only(matches)
         push!(configuration_rows, string(option, "_requested") => entry.requested)
         push!(configuration_rows, string(option, "_resolved") => entry.resolved)
     end

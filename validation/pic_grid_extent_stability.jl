@@ -92,18 +92,20 @@ function slice_boxes(solver, beam, sl)
         idx = slices.indices[s]
         isempty(idx) && continue
         xlo = T(Inf); xhi = T(-Inf); ylo = T(Inf); yhi = T(-Inf)
+        xorigin = beam.rep.x[idx[1]]; yorigin = beam.rep.y[idx[1]]
         xs = zero(T); xs2 = zero(T); ys = zero(T); ys2 = zero(T)
         for i in idx
             @inbounds begin
                 xv = beam.rep.x[i]; yv = beam.rep.y[i]
+                dx = xv - xorigin; dy = yv - yorigin
                 xlo = min(xlo, xv); xhi = max(xhi, xv)
                 ylo = min(ylo, yv); yhi = max(yhi, yv)
-                xs += xv; xs2 += xv * xv; ys += yv; ys2 += yv * yv
+                xs += dx; xs2 += dx * dx; ys += dy; ys2 += dy * dy
             end
         end
         n = length(idx)
-        ax = O._pic_axis_extent(ge, xlo, xhi, xs, xs2, n, k)
-        ay = O._pic_axis_extent(ge, ylo, yhi, ys, ys2, n, k)
+        ax = O._pic_axis_extent(ge, xlo, xhi, xorigin, xs, xs2, n, k)
+        ay = O._pic_axis_extent(ge, ylo, yhi, yorigin, ys, ys2, n, k)
         drop += count(i -> !(ax[1] <= beam.rep.x[i] <= ax[2]), idx) +
                 count(i -> !(ay[1] <= beam.rep.y[i] <= ay[2]), idx)
         push!(wx, ax[2] - ax[1]); push!(wy, ay[2] - ay[1])

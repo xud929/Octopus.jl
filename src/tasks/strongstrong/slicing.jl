@@ -454,6 +454,12 @@ _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
                           ignore_centroid::Bool, min_sigma) =
     _slice_transverse_moments(rep, idx, ignore_centroid, min_sigma, Val(false))
 
+@inline _shifted_second_moment(sum2, mean_offset, invn) =
+    muladd(-mean_offset, mean_offset, sum2 * invn)
+
+@inline _shifted_cross_moment(sum12, mean_offset1, mean_offset2, invn) =
+    muladd(-mean_offset1, mean_offset2, sum12 * invn)
+
 function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
                                    ignore_centroid::Bool, min_sigma,
                                    ::Val{COUPLED}) where {COUPLED}
@@ -469,22 +475,28 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
                 my=z, sy=T(min_sigma), mpy=z, spy=z, covypy=z,
                 moments=moments)
     end
-    sx = zero(T); spx = zero(T); sy = zero(T); spy = zero(T)
-    sx2sum = zero(T); spx2sum = zero(T); sy2sum = zero(T); spy2sum = zero(T)
-    sxpxsum = zero(T); sypysum = zero(T)
-    sxysum = zero(T); sxpysum = zero(T); spxysum = zero(T); spxpysum = zero(T)
+    first_particle = idx[1]
+    @inbounds begin
+        x0 = T(x[first_particle]); px0 = T(px[first_particle])
+        y0 = T(y[first_particle]); py0 = T(py[first_particle])
+    end
+    sdx = zero(T); sdpx = zero(T); sdy = zero(T); sdpy = zero(T)
+    sdx2 = zero(T); sdpx2 = zero(T); sdy2 = zero(T); sdpy2 = zero(T)
+    sdxpx = zero(T); sdypy = zero(T)
+    sdxy = zero(T); sdxpy = zero(T); sdpxy = zero(T); sdpxpy = zero(T)
     nchunks = _cpu_worker_count()
     if nchunks == 1 || n < _STRONG_STRONG_PARALLEL_MOMENT_MIN
         for i in idx
             @inbounds begin
-                xi = x[i]; pxi = px[i]; yi = y[i]; pyi = py[i]
-                sx += xi; spx += pxi; sy += yi; spy += pyi
-                sx2sum += xi * xi; spx2sum += pxi * pxi
-                sy2sum += yi * yi; spy2sum += pyi * pyi
-                sxpxsum += xi * pxi; sypysum += yi * pyi
+                dx = T(x[i]) - x0; dpx = T(px[i]) - px0
+                dy = T(y[i]) - y0; dpy = T(py[i]) - py0
+                sdx += dx; sdpx += dpx; sdy += dy; sdpy += dpy
+                sdx2 += dx * dx; sdpx2 += dpx * dpx
+                sdy2 += dy * dy; sdpy2 += dpy * dpy
+                sdxpx += dx * dpx; sdypy += dy * dpy
                 if COUPLED
-                    sxysum += xi * yi; sxpysum += xi * pyi
-                    spxysum += pxi * yi; spxpysum += pxi * pyi
+                    sdxy += dx * dy; sdxpy += dx * dpy
+                    sdpxy += dpx * dy; sdpxpy += dpx * dpy
                 end
             end
         end
@@ -496,44 +508,46 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
             for pos in first_i:last_i
                 @inbounds begin
                     i = idx[pos]
-                    xi = x[i]; pxi = px[i]; yi = y[i]; pyi = py[i]
-                    sums[1] += xi; sums[2] += pxi; sums[3] += yi; sums[4] += pyi
-                    sums[5] += xi * xi; sums[6] += pxi * pxi
-                    sums[7] += yi * yi; sums[8] += pyi * pyi
-                    sums[9] += xi * pxi; sums[10] += yi * pyi
+                    dx = T(x[i]) - x0; dpx = T(px[i]) - px0
+                    dy = T(y[i]) - y0; dpy = T(py[i]) - py0
+                    sums[1] += dx; sums[2] += dpx
+                    sums[3] += dy; sums[4] += dpy
+                    sums[5] += dx * dx; sums[6] += dpx * dpx
+                    sums[7] += dy * dy; sums[8] += dpy * dpy
+                    sums[9] += dx * dpx; sums[10] += dy * dpy
                     if COUPLED
-                        sums[11] += xi * yi; sums[12] += xi * pyi
-                        sums[13] += pxi * yi; sums[14] += pxi * pyi
+                        sums[11] += dx * dy; sums[12] += dx * dpy
+                        sums[13] += dpx * dy; sums[14] += dpx * dpy
                     end
                 end
             end
         end
         for sums in local_sums
-            sx += sums[1]; spx += sums[2]; sy += sums[3]; spy += sums[4]
-            sx2sum += sums[5]; spx2sum += sums[6]
-            sy2sum += sums[7]; spy2sum += sums[8]
-            sxpxsum += sums[9]; sypysum += sums[10]
+            sdx += sums[1]; sdpx += sums[2]; sdy += sums[3]; sdpy += sums[4]
+            sdx2 += sums[5]; sdpx2 += sums[6]
+            sdy2 += sums[7]; sdpy2 += sums[8]
+            sdxpx += sums[9]; sdypy += sums[10]
             if COUPLED
-                sxysum += sums[11]; sxpysum += sums[12]
-                spxysum += sums[13]; spxpysum += sums[14]
+                sdxy += sums[11]; sdxpy += sums[12]
+                sdpxy += sums[13]; sdpxpy += sums[14]
             end
         end
     end
     invn = inv(T(n))
-    mx = sx * invn
-    mpx = spx * invn
-    my = sy * invn
-    mpy = spy * invn
-    sx2 = sx2sum * invn - mx * mx
-    spx2 = spx2sum * invn - mpx * mpx
-    sy2 = sy2sum * invn - my * my
-    spy2 = spy2sum * invn - mpy * mpy
-    covxpx = sxpxsum * invn - mx * mpx
-    covypy = sypysum * invn - my * mpy
-    covxy = COUPLED ? sxysum * invn - mx * my : zero(T)
-    covxpy = COUPLED ? sxpysum * invn - mx * mpy : zero(T)
-    covpxy = COUPLED ? spxysum * invn - mpx * my : zero(T)
-    covpxpy = COUPLED ? spxpysum * invn - mpx * mpy : zero(T)
+    dmx = sdx * invn; dmpx = sdpx * invn
+    dmy = sdy * invn; dmpy = sdpy * invn
+    mx = x0 + dmx; mpx = px0 + dmpx
+    my = y0 + dmy; mpy = py0 + dmpy
+    sx2 = _shifted_second_moment(sdx2, dmx, invn)
+    spx2 = _shifted_second_moment(sdpx2, dmpx, invn)
+    sy2 = _shifted_second_moment(sdy2, dmy, invn)
+    spy2 = _shifted_second_moment(sdpy2, dmpy, invn)
+    covxpx = _shifted_cross_moment(sdxpx, dmx, dmpx, invn)
+    covypy = _shifted_cross_moment(sdypy, dmy, dmpy, invn)
+    covxy = COUPLED ? _shifted_cross_moment(sdxy, dmx, dmy, invn) : zero(T)
+    covxpy = COUPLED ? _shifted_cross_moment(sdxpy, dmx, dmpy, invn) : zero(T)
+    covpxy = COUPLED ? _shifted_cross_moment(sdpxy, dmpx, dmy, invn) : zero(T)
+    covpxpy = COUPLED ? _shifted_cross_moment(sdpxpy, dmpx, dmpy, invn) : zero(T)
     floor2 = T(min_sigma) * T(min_sigma)
     varx = max(T(sx2), floor2)
     vary = max(T(sy2), floor2)

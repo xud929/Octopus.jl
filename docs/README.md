@@ -108,6 +108,9 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   (sliced beam-beam kick smoothness: derivation, frozen z-scan field accuracy,
   multi-turn emittance-growth measurement, the `slice_interpolation` and
   `interaction_grid` options, and why field accuracy did not predict dynamics),
+  [`stable_strong_strong_moments_2026_07_30.md`](history/stable_strong_strong_moments_2026_07_30.md)
+  (stable shifted CPU/CUDA variance and covariance reductions, cancellation
+  regression coverage, and 200-turn production performance measurements),
   [`public_configuration_audit.md`](history/public_configuration_audit.md),
   [`weak_strong_6d_model_validation.md`](history/weak_strong_6d_model_validation.md),
   [`poisson_solver_review_2026_07_24.md`](history/poisson_solver_review_2026_07_24.md)

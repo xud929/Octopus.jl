@@ -128,11 +128,15 @@ if _HAS_CUDA
         end
 
         # Per-slice moments for a wavefront, batched on device (no gather), reusing
-        # the soft-Gaussian moment kernels. Returns host sums (10 x 2npairs) and counts.
+        # the soft-Gaussian shifted-moment kernels. The four final rows carry the
+        # in-slice anchors used to reconstruct centroids without raw-square
+        # cancellation.
         function _cuda_gpic_batched_moments(valid, rep1, rep2, coupled::Bool=false)
             T = eltype(rep1.x)
             npairs = length(valid); ncols = 2 * npairs
-            nstats = coupled ? 14 : 10
+            nstats = coupled ?
+                _cuda_gaussian_moment_nstats(Val(true)) :
+                _cuda_gaussian_moment_nstats(Val(false))
             max_blocks = 1
             for n in 1:npairs
                 max_blocks = max(max_blocks,
@@ -168,10 +172,13 @@ if _HAS_CUDA
                     cxy=z, cxpy=z, cypx=z, cpxpy=z)
         end
 
-        # Raw moments including the cross-plane terms, from the 14 coupled sums.
+        # Shifted moments including the cross-plane terms. Rows 1..14 contain
+        # sums formed from coordinates relative to the anchor in rows 15..18.
         # Layout (see _cuda_gaussian_moment_partials_kernel!):
-        #   1..4  sum x, px, y, py      5..8  sum x^2, px^2, y^2, py^2
-        #   9,10  sum x*px, y*py        11..14 sum x*y, x*py, px*y, px*py
+        #   1..4  sum dx, dpx, dy, dpy
+        #   5..8  sum dx^2, dpx^2, dy^2, dpy^2
+        #   9,10  sum dx*dpx, dy*dpy
+        #   11..14 sum dx*dy, dx*dpy, dpx*dy, dpx*dpy
         function _gpic_mom_from_coupled_sums(sums, n::Integer)
             T = eltype(sums)
             n == 0 && return (n=0, mx=zero(T), mpx=zero(T), varx=zero(T), cxpx=zero(T),
@@ -179,20 +186,22 @@ if _HAS_CUDA
                               cypy=zero(T), varpy=zero(T), cxy=zero(T), cxpy=zero(T),
                               cypx=zero(T), cpxpy=zero(T))
             invn = inv(T(n))
-            mx = sums[1] * invn; mpx = sums[2] * invn
-            my = sums[3] * invn; mpy = sums[4] * invn
+            dmx = sums[1] * invn; dmpx = sums[2] * invn
+            dmy = sums[3] * invn; dmpy = sums[4] * invn
+            mx = sums[15] + dmx; mpx = sums[16] + dmpx
+            my = sums[17] + dmy; mpy = sums[18] + dmpy
             return (n=n, mx=mx, mpx=mpx,
-                    varx=max(sums[5] * invn - mx * mx, zero(T)),
-                    cxpx=sums[9] * invn - mx * mpx,
-                    varpx=max(sums[6] * invn - mpx * mpx, zero(T)),
+                    varx=max(_shifted_second_moment(sums[5], dmx, invn), zero(T)),
+                    cxpx=_shifted_cross_moment(sums[9], dmx, dmpx, invn),
+                    varpx=max(_shifted_second_moment(sums[6], dmpx, invn), zero(T)),
                     my=my, mpy=mpy,
-                    vary=max(sums[7] * invn - my * my, zero(T)),
-                    cypy=sums[10] * invn - my * mpy,
-                    varpy=max(sums[8] * invn - mpy * mpy, zero(T)),
-                    cxy=sums[11] * invn - mx * my,
-                    cxpy=sums[12] * invn - mx * mpy,
-                    cypx=sums[13] * invn - my * mpx,
-                    cpxpy=sums[14] * invn - mpx * mpy)
+                    vary=max(_shifted_second_moment(sums[7], dmy, invn), zero(T)),
+                    cypy=_shifted_cross_moment(sums[10], dmy, dmpy, invn),
+                    varpy=max(_shifted_second_moment(sums[8], dmpy, invn), zero(T)),
+                    cxy=_shifted_cross_moment(sums[11], dmx, dmy, invn),
+                    cxpy=_shifted_cross_moment(sums[12], dmx, dmpy, invn),
+                    cypx=_shifted_cross_moment(sums[13], dmpx, dmy, invn),
+                    cpxpy=_shifted_cross_moment(sums[14], dmpx, dmpy, invn))
         end
 
         # Enlarge a base prep's source box by the Gaussian margin and re-finish grids.
@@ -394,19 +403,35 @@ if _HAS_CUDA
             (a[1] + b[1], a[2] + b[2], a[3] + b[3], a[4] + b[4], a[5] + b[5],
              a[6] + b[6], a[7] + b[7], a[8] + b[8], a[9] + b[9], a[10] + b[10])
 
-        # Slice transverse moments in a single fused device reduction (one sync).
+        # Select one in-slice anchor, then reduce shifted products. This keeps both
+        # reductions simple and avoids the E[x^2]-E[x]^2 cancellation.
         function _cuda_gpic_source_moments(source)
             T = eltype(source.x)
             n = length(source.x)
             z = zero(T)
-            f = (x, px, y, py) -> (x, px, y, py, x * x, px * px, y * y, py * py, x * px, y * py)
+            pick = (x, px, y, py) -> (true, x, px, y, py)
+            choose = (a, b) -> a[1] ? a : b
+            anchor = mapreduce(pick, choose, source.x, source.px, source.y, source.py;
+                               init=(false, z, z, z, z))
+            x0, px0, y0, py0 = anchor[2], anchor[3], anchor[4], anchor[5]
+            f = (x, px, y, py) -> begin
+                dx = x - x0; dpx = px - px0; dy = y - y0; dpy = py - py0
+                (dx, dpx, dy, dpy,
+                 dx * dx, dpx * dpx, dy * dy, dpy * dpy,
+                 dx * dpx, dy * dpy)
+            end
             s = mapreduce(f, _gpic_addt, source.x, source.px, source.y, source.py;
                           init=(z, z, z, z, z, z, z, z, z, z))
             invn = inv(T(n))
-            mx = s[1] * invn; mpx = s[2] * invn; my = s[3] * invn; mpy = s[4] * invn
-            varx = max(s[5] * invn - mx * mx, z); varpx = max(s[6] * invn - mpx * mpx, z)
-            vary = max(s[7] * invn - my * my, z); varpy = max(s[8] * invn - mpy * mpy, z)
-            cxpx = s[9] * invn - mx * mpx; cypy = s[10] * invn - my * mpy
+            dmx = s[1] * invn; dmpx = s[2] * invn
+            dmy = s[3] * invn; dmpy = s[4] * invn
+            mx = x0 + dmx; mpx = px0 + dmpx; my = y0 + dmy; mpy = py0 + dmpy
+            varx = max(_shifted_second_moment(s[5], dmx, invn), z)
+            varpx = max(_shifted_second_moment(s[6], dmpx, invn), z)
+            vary = max(_shifted_second_moment(s[7], dmy, invn), z)
+            varpy = max(_shifted_second_moment(s[8], dmpy, invn), z)
+            cxpx = _shifted_cross_moment(s[9], dmx, dmpx, invn)
+            cypy = _shifted_cross_moment(s[10], dmy, dmpy, invn)
             return (n=n, mx=mx, mpx=mpx, varx=varx, cxpx=cxpx, varpx=varpx,
                     my=my, mpy=mpy, vary=vary, cypy=cypy, varpy=varpy)
         end

@@ -428,6 +428,9 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
     source_xmax = max(source_xl, source_xr)
     source_ymin = min(source_yl, source_yr)
     source_ymax = max(source_yl, source_yr)
+    ge = Symbol(solver.grid_extent)
+    source_x0 = source_xl
+    source_y0 = source_yl
     sxs = zero(T); sxs2 = zero(T); sys = zero(T); sys2 = zero(T)
     for i in 1:nsource
         @inbounds begin
@@ -439,16 +442,19 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
             source_xmax = max(source_xmax, xl, xr)
             source_ymin = min(source_ymin, yl, yr)
             source_ymax = max(source_ymax, yl, yr)
-            sxs += xl + xr; sxs2 += xl * xl + xr * xr
-            sys += yl + yr; sys2 += yl * yl + yr * yr
+            if ge !== :extrema
+                dxl = xl - source_x0; dxr = xr - source_x0
+                dyl = yl - source_y0; dyr = yr - source_y0
+                sxs += dxl + dxr; sxs2 += dxl * dxl + dxr * dxr
+                sys += dyl + dyr; sys2 += dyl * dyl + dyr * dyr
+            end
         end
     end
-    ge = Symbol(solver.grid_extent)
     kext = T(solver.grid_extent_sigma)
     source_xmin, source_xmax = _pic_axis_extent(ge, source_xmin, source_xmax,
-                                                sxs, sxs2, 2 * nsource, kext)
+                                                source_x0, sxs, sxs2, 2 * nsource, kext)
     source_ymin, source_ymax = _pic_axis_extent(ge, source_ymin, source_ymax,
-                                                sys, sys2, 2 * nsource, kext)
+                                                source_y0, sys, sys2, 2 * nsource, kext)
     # Non-finite chokepoint (N1, docs/todo.md): a NaN/Inf coordinate propagates
     # into these O(1) bound values, so this check costs nothing on the hot path.
     all(isfinite, (source_xmin, source_xmax, source_ymin, source_ymax)) ||
@@ -458,6 +464,8 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
 
     field_xmin = field_xmax = field.x[1] + T(0.5) * (field.z[1] - T(param_source.center)) * field.px[1]
     field_ymin = field_ymax = field.y[1] + T(0.5) * (field.z[1] - T(param_source.center)) * field.py[1]
+    field_x0 = field_xmin
+    field_y0 = field_ymin
     fxs = zero(T); fxs2 = zero(T); fys = zero(T); fys2 = zero(T)
     for i in 1:nfield
         @inbounds begin
@@ -469,14 +477,18 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
             end
             field_xmin = min(field_xmin, field.x[i]); field_xmax = max(field_xmax, field.x[i])
             field_ymin = min(field_ymin, field.y[i]); field_ymax = max(field_ymax, field.y[i])
-            fxs += field.x[i]; fxs2 += field.x[i] * field.x[i]
-            fys += field.y[i]; fys2 += field.y[i] * field.y[i]
+            if ge !== :extrema
+                dx = field.x[i] - field_x0
+                dy = field.y[i] - field_y0
+                fxs += dx; fxs2 += dx * dx
+                fys += dy; fys2 += dy * dy
+            end
         end
     end
     field_xmin, field_xmax = _pic_axis_extent(ge, field_xmin, field_xmax,
-                                              fxs, fxs2, nfield, kext)
+                                              field_x0, fxs, fxs2, nfield, kext)
     field_ymin, field_ymax = _pic_axis_extent(ge, field_ymin, field_ymax,
-                                              fys, fys2, nfield, kext)
+                                              field_y0, fys, fys2, nfield, kext)
     all(isfinite, (field_xmin, field_xmax, field_ymin, field_ymax)) ||
         _nonfinite_coordinate_error(:field,
             (x=field.x, px=field.px, y=field.y, py=field.py, z=field.z);
@@ -822,9 +834,10 @@ end
 end
 
 """
-    _pic_axis_extent(method, lo, hi, s, s2, n, k)
+    _pic_axis_extent(method, lo, hi, origin, ds, ds2, n, k)
 
-Turn one axis' single-pass accumulators into a `(lo, hi)` mesh extent.
+Turn one axis' shifted single-pass accumulators into a `(lo, hi)` mesh extent.
+`ds` and `ds2` are the sums of `x-origin` and `(x-origin)^2`.
 
 - `:extrema` returns the sample min/max. Stable in the sense that it always
   covers every particle, but `O(1)`-noisy: for `n` particles the maximum is
@@ -844,12 +857,14 @@ quantization noise on top -- measured *worse* than `:extrema`
 Degenerate input (zero spread, `n < 2`) falls back to the extrema so a slice with
 identical coordinates still produces a usable mesh.
 """
-@inline function _pic_axis_extent(method::Symbol, lo, hi, s, s2, n::Int, k)
+@inline function _pic_axis_extent(method::Symbol, lo, hi, origin, ds, ds2, n::Int, k)
     method === :extrema && return lo, hi
     n < 2 && return lo, hi
     T = typeof(lo)
-    m = T(s) / T(n)
-    var = max(T(s2) / T(n) - m * m, zero(T))
+    invn = inv(T(n))
+    mean_offset = T(ds) * invn
+    m = T(origin) + mean_offset
+    var = max(_shifted_second_moment(T(ds2), mean_offset, invn), zero(T))
     sd = sqrt(var)
     half = T(k) * sd
     half > zero(T) || return lo, hi
