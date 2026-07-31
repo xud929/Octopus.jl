@@ -108,6 +108,11 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   (sliced beam-beam kick smoothness: derivation, frozen z-scan field accuracy,
   multi-turn emittance-growth measurement, the `slice_interpolation` and
   `interaction_grid` options, and why field accuracy did not predict dynamics),
+  [`major_release_review_remediation_2026_07_30.md`](history/major_release_review_remediation_2026_07_30.md)
+  (complete pre-release finding disposition: analytic Gaussian stability,
+  moment reductions, physical scale handling, GaussianPIC rank fallback,
+  absolute turn state, symplectic matrix validation, concurrent workspaces,
+  CUDA memory retention, radiation semantics, and final validation results),
   [`stable_strong_strong_moments_2026_07_30.md`](history/stable_strong_strong_moments_2026_07_30.md)
   (stable shifted CPU/CUDA variance and covariance reductions, cancellation
   regression coverage, and 200-turn production performance measurements),
