@@ -558,9 +558,11 @@ if _HAS_CUDA
 
         function _cuda_pic_workspace!(cache::Dict, label::Symbol,
                                       solver::PICPoissonSolver, ::Type{T}) where {T}
+            device = Int(CUDA.deviceid(CUDA.device()))
             key = (
                 :cuda_pic_workspace,
                 label,
+                device,
                 T,
                 solver.grid,
                 _pic_luminosity_grid(solver),

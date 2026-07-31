@@ -1132,6 +1132,61 @@ end
     end
 end
 
+@testset "Spectral CPU workspaces are reentrant" begin
+    lease1 = Octopus._acquire_spectral_grid_ws_pool(16, 24, 2)
+    lease2 = Octopus._acquire_spectral_grid_ws_pool(16, 24, 2)
+    try
+        @test lease1 !== lease2
+        @test all(lease1.workspaces[i] !== lease2.workspaces[i] for i in 1:2)
+    finally
+        Octopus._release_spectral_grid_ws_pool!(lease1)
+        Octopus._release_spectral_grid_ws_pool!(lease2)
+    end
+    @test Octopus._spectral_grid_ws(8, 12) !==
+          Octopus._spectral_grid_ws(8, 12)
+
+    n = 768
+    phase = range(0.0, 2pi; length=n + 1)[1:n]
+    arrays1 = (
+        1.0e-4 .* sin.(phase), 1.3e-4 .* cos.(2 .* phase),
+        0.8e-4 .* cos.(phase), 1.1e-4 .* sin.(2 .* phase),
+        collect(range(-7.0e-3, 7.0e-3; length=n)),
+        4.0e-4 .* cos.(3 .* phase),
+    )
+    arrays2 = Tuple(reverse(copy(array)) for array in arrays1)
+    pair() = (
+        test_beam(Phase6DRep((copy(array) for array in arrays1)...)),
+        test_beam(Phase6DRep((copy(array) for array in arrays2)...)),
+    )
+    solver = SpectralPoissonSolver(
+        kbb1=1.0e-7, kbb2=-8.0e-8, luminosity_scale=1.0,
+        grid=(24, 40), domain_factor=12.0, longitudinal_kick=true,
+        slicing=LongitudinalSlicing(nslices=3, method=:equal_count),
+    )
+    expected1, expected2 = pair()
+    expected_luminosity = collide!(
+        solver, expected1, expected2, CPUThreadsBackend)
+    actual1a, actual1b = pair()
+    actual2a, actual2b = pair()
+    task1 = Threads.@spawn collide!(
+        solver, actual1a, actual1b, CPUThreadsBackend)
+    task2 = Threads.@spawn collide!(
+        solver, actual2a, actual2b, CPUThreadsBackend)
+    luminosity1, luminosity2 = fetch(task1), fetch(task2)
+    for (actual_a, actual_b) in (
+            (actual1a, actual1b), (actual2a, actual2b))
+        for (expected, actual) in (
+                (expected1, actual_a), (expected2, actual_b))
+            for (reference, candidate) in zip(
+                    coordinate_arrays(expected), coordinate_arrays(actual))
+                @test candidate ≈ reference rtol=2.0e-13 atol=2.0e-18
+            end
+        end
+    end
+    @test luminosity1 ≈ expected_luminosity rtol=2.0e-13
+    @test luminosity2 ≈ expected_luminosity rtol=2.0e-13
+end
+
 @testset "PIC field_derivative flag" begin
     # The option must (a) default to the historical second-order stencil
     # bit-for-bit, (b) actually reach the runtime consumer when set to :fourth,
@@ -2406,6 +2461,35 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=n,
         )
         return Beam{Octopus.CUDABackend,typeof(params),typeof(rep)}(params, rep)
+    end
+
+    @testset "CUDA solver workspaces are exclusive and device-aware" begin
+        device = Int(Octopus.CUDA.deviceid(Octopus.CUDA.device()))
+        @test Octopus._spectral_cuda_cache_key(
+            Float64, 16, 24, device) !=
+              Octopus._spectral_cuda_cache_key(
+                  Float64, 16, 24, device + 1)
+        lease1 = Octopus._acquire_spectral_cuda_ws(Float64, 16, 24)
+        lease2 = Octopus._acquire_spectral_cuda_ws(Float64, 16, 24)
+        try
+            @test lease1 !== lease2
+            @test lease1.workspace !== lease2.workspace
+            @test lease1.device == device
+            @test lease2.device == device
+            @test Int(Octopus.CUDA.deviceid(
+                Octopus.CUDA.device(lease1.workspace.rho))) == device
+        finally
+            Octopus._release_spectral_cuda_ws!(lease1)
+            Octopus._release_spectral_cuda_ws!(lease2)
+        end
+
+        cache = Dict{Any,Any}()
+        pic = PICPoissonSolver(grid=(16, 16))
+        Octopus._cuda_pic_workspace!(
+            cache, :device_key_test, pic, Float64)
+        key = only(keys(cache))
+        @test key[1] === :cuda_pic_workspace
+        @test key[3] == device
     end
 
     @testset "CUDA spectral solver matches CPU" begin

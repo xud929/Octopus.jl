@@ -377,6 +377,9 @@ The CUDA PIC
 workspace reuses its field streams, luminosity stream, synchronization event,
 charge grids, batched charge/field arrays, wavefront charge/field-array cache,
 and luminosity grids through the `StrongStrongTask` runtime cache across turns.
+Its runtime-cache identity includes the CUDA device, so reusing a task after an
+explicit device change allocates device-local state instead of retaining arrays
+and streams from the previous device.
 `green_cache=:slice_pair` is the only persistent PIC Green FFT cache mode. Its
 reuse defaults are `slice_pair_green_min_ratio=0.50` and
 `slice_pair_green_growth=0.25`, matching the July 2026 long-run timing tests
@@ -438,7 +441,11 @@ For `method=:grid`, FFTW/cuFFT plans are reusable across slice pairs because the
 DST/DCT transforms depend only on `(Nx, Ny)`. The spectral mode-Green array
 `1/(alpha_l^2 + beta_m^2)` depends on the shared adaptive box and is reused
 until that box changes. The CPU grid path uses a per-worker workspace pool; the
-CUDA grid path uses one cached workspace for the current grid and scalar type.
+CUDA grid path caches workspaces by CUDA device, grid, and scalar type. Both
+caches hand out exclusive leases: concurrent collisions receive independent
+mutable FFT buffers, while sequential calls reuse the same plans and arrays.
+CUDA lease reuse is ordered with a stream event, without a host-side device
+synchronization.
 `method=:grid_free` is CPU-only and uses direct mode coefficients as a
 deposition-error-free reference path; it is not intended for production flat
 beams at `grid=(128, 1024)`.

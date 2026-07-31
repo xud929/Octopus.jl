@@ -169,10 +169,66 @@ if _HAS_CUDA
             return ws
         end
 
-        const _SPECTRAL_CUDA_WS_CACHE = Dict{Tuple{DataType,Int,Int},Any}()
+        mutable struct _SpectralCudaWSLease
+            workspace::Any
+            ready::Any
+            device::Int
+            in_use::Bool
+            has_ready_event::Bool
+        end
 
-        function _spectral_cuda_ws(::Type{T}, Nx::Int, Ny::Int) where {T}
-            get!(() -> _SpectralCudaWS(T, Nx, Ny), _SPECTRAL_CUDA_WS_CACHE, (T, Nx, Ny))::_SpectralCudaWS
+        const _SPECTRAL_CUDA_WS_CACHE =
+            Dict{Tuple{Int,DataType,Int,Int},Vector{_SpectralCudaWSLease}}()
+        const _SPECTRAL_CUDA_WS_LOCK = ReentrantLock()
+
+        _spectral_cuda_device_id() =
+            Int(CUDA.deviceid(CUDA.device()))
+        _spectral_cuda_cache_key(::Type{T}, Nx::Int, Ny::Int,
+                                 device::Int=_spectral_cuda_device_id()) where {T} =
+            (device, T, Nx, Ny)
+
+        function _acquire_spectral_cuda_ws(
+                ::Type{T}, Nx::Int, Ny::Int) where {T}
+            device = _spectral_cuda_device_id()
+            key = _spectral_cuda_cache_key(T, Nx, Ny, device)
+            lease, wait_for_ready = lock(_SPECTRAL_CUDA_WS_LOCK) do
+                leases = get!(
+                    () -> _SpectralCudaWSLease[],
+                    _SPECTRAL_CUDA_WS_CACHE, key)
+                for candidate in leases
+                    candidate.in_use && continue
+                    candidate.in_use = true
+                    return candidate, candidate.has_ready_event
+                end
+                candidate = _SpectralCudaWSLease(
+                    _SpectralCudaWS(T, Nx, Ny),
+                    CUDA.CuEvent(CUDA.EVENT_DISABLE_TIMING),
+                    device, true, false)
+                push!(leases, candidate)
+                return candidate, false
+            end
+            # A prior borrower may have returned before its task-local CUDA
+            # stream completed. A device-side wait preserves asynchrony without
+            # exposing its scratch arrays to concurrent kernels.
+            wait_for_ready && CUDA.wait(lease.ready, CUDA.stream())
+            return lease
+        end
+
+        function _release_spectral_cuda_ws!(lease::_SpectralCudaWSLease)
+            current_device = _spectral_cuda_device_id()
+            current_device == lease.device || error(
+                "spectral CUDA workspace acquired on device $(lease.device) " *
+                "but released on device $(current_device)")
+            # Record before publishing the lease as free. A subsequent borrower
+            # waits on this event in its own stream.
+            CUDA.record(lease.ready, CUDA.stream())
+            lock(_SPECTRAL_CUDA_WS_LOCK) do
+                lease.in_use || error(
+                    "spectral CUDA workspace lease was released twice")
+                lease.has_ready_event = true
+                lease.in_use = false
+            end
+            return nothing
         end
 
         function _spectral_cuda_setbox!(ws::_SpectralCudaWS{T}, a::Float64, b::Float64) where {T}
@@ -445,31 +501,41 @@ if _HAS_CUDA
             T = eltype(beam1.rep.x)
             r1 = beam1.rep; r2 = beam2.rep
             Nx, Ny = solver.grid
-            ws = _spectral_cuda_ws(solver.field_precision === :single ? Float32 : T, Nx, Ny)
-            Lx, Ly = _cuda_spectral_box(solver, r1, r2)
-            n1 = length(slices1.indices); n2 = length(slices2.indices)
-            threads = 256
-            luminosity = zero(T)
-            for (_, i, j) in _slice_collision_order(slices1, slices2)
-                idx1 = slices1.indices[i]; idx2 = slices2.indices[j]
-                (length(idx1) == 0 || length(idx2) == 0) && continue
-                sx1 = r1.x[idx1]; sy1 = r1.y[idx1]
-                sx2 = r2.x[idx2]; sy2 = r2.y[idx2]
-                # beam1 -> beam2
-                Exg, Eyg, hx, hy = _cuda_spectral_field!(ws, sx1, sy1, Lx, Ly)
-                a1 = T(slices1.weight[i] * kbb2)
-                CUDA.@cuda threads=threads blocks=cld(length(idx2), threads) _cuda_spectral_interp_scatter_kernel!(
-                    r2.px, r2.py, idx2, Exg, Eyg, sx2, sy2, T(Lx), T(Ly), hx, hy, Nx, Ny, a1)
-                # beam2 -> beam1
-                Exg2, Eyg2, hx2, hy2 = _cuda_spectral_field!(ws, sx2, sy2, Lx, Ly)
-                a2 = T(slices2.weight[j] * kbb1)
-                CUDA.@cuda threads=threads blocks=cld(length(idx1), threads) _cuda_spectral_interp_scatter_kernel!(
-                    r1.px, r1.py, idx1, Exg2, Eyg2, sx1, sy1, T(Lx), T(Ly), hx2, hy2, Nx, Ny, a2)
-                compute_luminosity &&
-                    (luminosity += _cuda_spectral_luminosity_pair(
-                        solver, sx1, sy1, sx2, sy2, klum, lnx, lny))
+            W = solver.field_precision === :single ? Float32 : T
+            lease = _acquire_spectral_cuda_ws(W, Nx, Ny)
+            ws = lease.workspace::_SpectralCudaWS
+            try
+                Lx, Ly = _cuda_spectral_box(solver, r1, r2)
+                n1 = length(slices1.indices); n2 = length(slices2.indices)
+                threads = 256
+                luminosity = zero(T)
+                for (_, i, j) in _slice_collision_order(slices1, slices2)
+                    idx1 = slices1.indices[i]; idx2 = slices2.indices[j]
+                    (length(idx1) == 0 || length(idx2) == 0) && continue
+                    sx1 = r1.x[idx1]; sy1 = r1.y[idx1]
+                    sx2 = r2.x[idx2]; sy2 = r2.y[idx2]
+                    # beam1 -> beam2
+                    Exg, Eyg, hx, hy =
+                        _cuda_spectral_field!(ws, sx1, sy1, Lx, Ly)
+                    a1 = T(slices1.weight[i] * kbb2)
+                    CUDA.@cuda threads=threads blocks=cld(length(idx2), threads) _cuda_spectral_interp_scatter_kernel!(
+                        r2.px, r2.py, idx2, Exg, Eyg, sx2, sy2,
+                        T(Lx), T(Ly), hx, hy, Nx, Ny, a1)
+                    # beam2 -> beam1
+                    Exg2, Eyg2, hx2, hy2 =
+                        _cuda_spectral_field!(ws, sx2, sy2, Lx, Ly)
+                    a2 = T(slices2.weight[j] * kbb1)
+                    CUDA.@cuda threads=threads blocks=cld(length(idx1), threads) _cuda_spectral_interp_scatter_kernel!(
+                        r1.px, r1.py, idx1, Exg2, Eyg2, sx1, sy1,
+                        T(Lx), T(Ly), hx2, hy2, Nx, Ny, a2)
+                    compute_luminosity &&
+                        (luminosity += _cuda_spectral_luminosity_pair(
+                            solver, sx1, sy1, sx2, sy2, klum, lnx, lny))
+                end
+                return compute_luminosity ? luminosity : T(NaN)
+            finally
+                _release_spectral_cuda_ws!(lease)
             end
-            return compute_luminosity ? luminosity : T(NaN)
         end
 
 
@@ -568,42 +634,53 @@ if _HAS_CUDA
             T = eltype(beam1.rep.x)
             r1 = beam1.rep; r2 = beam2.rep
             Nx, Ny = solver.grid
-            ws = _spectral_cuda_ws(solver.field_precision === :single ? Float32 : T, Nx, Ny)
-            Lx, Ly = _cuda_spectral_box_drifted(solver, r1, r2)
-            luminosity = zero(T)
-            for (_, i, j) in _slice_collision_order(slices1, slices2)
-                idx1 = slices1.indices[i]; idx2 = slices2.indices[j]
-                (length(idx1) == 0 || length(idx2) == 0) && continue
-                param1 = (weight=slices1.weight[i], lb=slices1.boundary[i],
-                          center=slices1.center[i], rb=slices1.boundary[i + 1])
-                param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
-                          center=slices2.center[j], rb=slices2.boundary[j + 1])
-                # Work through slice indices like the PIC indexed-wavefront path: no
-                # compact gather. Direction 1 kicks beam2, so only beam2 (its source for
-                # direction 2 and the luminosity) needs a pre-collision snapshot; beam1
-                # stays unmodified until direction 2 and is read straight from the rep.
-                n2 = length(idx2)
-                _cuda_spectral_ensure_snap!(ws, n2)
-                CUDA.@cuda threads=256 blocks=cld(n2, 256) _cuda_spectral_snap4_kernel!(
-                    ws.snapx, ws.snappx, ws.snapy, ws.snappy, r2.x, r2.px, r2.y, r2.py, idx2)
-                # Direction 1: source beam1 (rep+idx1, unmodified) -> kick beam2.
-                _cuda_spectral_collision_direction_6d_idx!(
-                    solver, ws, r1, idx1, r2, idx2, param1, param2,
-                    slices1.weight[i] * kbb2, Lx, Ly)
-                # Luminosity before direction 2 kicks beam1, so both sources are
-                # pre-collision: beam1 from the rep, beam2 from the snapshot.
-                compute_luminosity && (luminosity += _cuda_spectral_luminosity_idx_snap!(
-                    solver, ws, r1, idx1, param1.center,
-                    ws.snapx, ws.snappx, ws.snapy, ws.snappy, n2, param2.center,
-                    klum, lnx, lny))
-                # Direction 2: source beam2 (snapshot) -> kick beam1.
-                v2x = @view ws.snapx[1:n2]; v2px = @view ws.snappx[1:n2]
-                v2y = @view ws.snapy[1:n2]; v2py = @view ws.snappy[1:n2]
-                _cuda_spectral_collision_direction_6d!(
-                    solver, ws, v2x, v2px, v2y, v2py, r1, idx1, param2, param1,
-                    slices2.weight[j] * kbb1, Lx, Ly)
+            W = solver.field_precision === :single ? Float32 : T
+            lease = _acquire_spectral_cuda_ws(W, Nx, Ny)
+            ws = lease.workspace::_SpectralCudaWS
+            try
+                Lx, Ly = _cuda_spectral_box_drifted(solver, r1, r2)
+                luminosity = zero(T)
+                for (_, i, j) in _slice_collision_order(slices1, slices2)
+                    idx1 = slices1.indices[i]; idx2 = slices2.indices[j]
+                    (length(idx1) == 0 || length(idx2) == 0) && continue
+                    param1 = (weight=slices1.weight[i],
+                              lb=slices1.boundary[i],
+                              center=slices1.center[i],
+                              rb=slices1.boundary[i + 1])
+                    param2 = (weight=slices2.weight[j],
+                              lb=slices2.boundary[j],
+                              center=slices2.center[j],
+                              rb=slices2.boundary[j + 1])
+                    # Work through slice indices like the PIC indexed-wavefront
+                    # path: no compact gather. Beam2 is snapshotted because
+                    # direction 1 modifies it before direction 2 reads it.
+                    n2 = length(idx2)
+                    _cuda_spectral_ensure_snap!(ws, n2)
+                    CUDA.@cuda threads=256 blocks=cld(n2, 256) _cuda_spectral_snap4_kernel!(
+                        ws.snapx, ws.snappx, ws.snapy, ws.snappy,
+                        r2.x, r2.px, r2.y, r2.py, idx2)
+                    _cuda_spectral_collision_direction_6d_idx!(
+                        solver, ws, r1, idx1, r2, idx2, param1, param2,
+                        slices1.weight[i] * kbb2, Lx, Ly)
+                    compute_luminosity &&
+                        (luminosity +=
+                            _cuda_spectral_luminosity_idx_snap!(
+                                solver, ws, r1, idx1, param1.center,
+                                ws.snapx, ws.snappx, ws.snapy, ws.snappy,
+                                n2, param2.center, klum, lnx, lny))
+                    v2x = @view ws.snapx[1:n2]
+                    v2px = @view ws.snappx[1:n2]
+                    v2y = @view ws.snapy[1:n2]
+                    v2py = @view ws.snappy[1:n2]
+                    _cuda_spectral_collision_direction_6d!(
+                        solver, ws, v2x, v2px, v2y, v2py,
+                        r1, idx1, param2, param1,
+                        slices2.weight[j] * kbb1, Lx, Ly)
+                end
+                return compute_luminosity ? luminosity : T(NaN)
+            finally
+                _release_spectral_cuda_ws!(lease)
             end
-            return compute_luminosity ? luminosity : T(NaN)
         end
 
         function _cuda_spectral_box(solver::SpectralPoissonSolver, r1, r2)

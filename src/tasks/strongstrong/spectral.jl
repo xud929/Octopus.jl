@@ -304,23 +304,54 @@ function _SpectralGridWS(Nx::Int, Ny::Int)
         prho, prow, pcol, pcosx, pcosy)
 end
 
-# Per-worker workspace pool: the collision parallelizes over field slices, so each
-# logical worker needs its own buffers/plans. Cached by (Nx, Ny) and grown to the
-# requested worker count on demand.
-const _SPECTRAL_WS_CACHE = Dict{Tuple{Int,Int},Vector{_SpectralGridWS}}()
+# A collision parallelizes over field slices, so each logical worker needs its
+# own buffers/plans. Cache exclusive leases rather than raw workspaces: separate
+# concurrent collisions must never mutate the same FFT buffers.
+mutable struct _SpectralGridWSLease
+    workspaces::Vector{_SpectralGridWS}
+    in_use::Bool
+end
+
+const _SPECTRAL_WS_CACHE =
+    Dict{Tuple{Int,Int},Vector{_SpectralGridWSLease}}()
 const _SPECTRAL_WS_LOCK = ReentrantLock()
 
-function _spectral_grid_ws_pool(Nx::Int, Ny::Int, nworkers::Int)
+function _acquire_spectral_grid_ws_pool(Nx::Int, Ny::Int, nworkers::Int)
+    nworkers >= 1 || throw(ArgumentError(
+        "spectral workspace requires at least one worker; got $(nworkers)"))
     lock(_SPECTRAL_WS_LOCK) do
-        pool = get!(() -> _SpectralGridWS[], _SPECTRAL_WS_CACHE, (Nx, Ny))
-        while length(pool) < nworkers
-            push!(pool, _SpectralGridWS(Nx, Ny))
+        leases = get!(() -> _SpectralGridWSLease[], _SPECTRAL_WS_CACHE, (Nx, Ny))
+        for lease in leases
+            lease.in_use && continue
+            while length(lease.workspaces) < nworkers
+                push!(lease.workspaces, _SpectralGridWS(Nx, Ny))
+            end
+            lease.in_use = true
+            return lease
         end
-        return pool
+        lease = _SpectralGridWSLease(
+            [_SpectralGridWS(Nx, Ny) for _ in 1:nworkers], true)
+        push!(leases, lease)
+        return lease
     end
 end
 
-_spectral_grid_ws(Nx::Int, Ny::Int) = _spectral_grid_ws_pool(Nx, Ny, 1)[1]
+function _release_spectral_grid_ws_pool!(lease::_SpectralGridWSLease)
+    lock(_SPECTRAL_WS_LOCK) do
+        lease.in_use || error("spectral workspace lease was released twice")
+        lease.in_use = false
+    end
+    return nothing
+end
+
+# Internal one-off validation callers own this workspace directly. Production
+# collisions use the exclusive lease pool above. FFTW planning remains under
+# the same lock because concurrent plan construction is not generally safe.
+function _spectral_grid_ws(Nx::Int, Ny::Int)
+    return lock(_SPECTRAL_WS_LOCK) do
+        _SpectralGridWS(Nx, Ny)
+    end
+end
 
 # Refresh mode arrays / mode-Green only when the box changed.
 function _spectral_ws_setbox!(ws::_SpectralGridWS, a::Float64, b::Float64)
@@ -821,52 +852,59 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
     Lx, Ly = _spectral_box(solver, r1.x, r1.y, r2.x, r2.y)
     grid = solver.method !== :grid_free
     nchunks = clamp(_cpu_worker_count(), 1, max(n1, n2))
-    pool = grid ? _spectral_grid_ws_pool(solver.grid[1], solver.grid[2], nchunks) : nothing
+    lease = grid ?
+        _acquire_spectral_grid_ws_pool(solver.grid[1], solver.grid[2], nchunks) :
+        nothing
+    pool = grid ? lease.workspaces : nothing
 
-    # Direction 1: beam1 sources -> kick beam2 field slices (parallel over j).
-    lum_parts = zeros(T, nchunks)
-    _run_logical_workers(nchunks) do chunk, _
-        ws = grid ? pool[chunk] : nothing
-        jlo, jhi = _chunk_bounds(n2, nchunks, chunk)
-        lp = zero(T)
-        for j in jlo:jhi
-            jdx = idx2[j]; isempty(jdx) && continue
-            fx = @view r2.x[jdx]; fy = @view r2.y[jdx]
-            for i in 1:n1
-                sdx = idx1[i]; isempty(sdx) && continue
-                sx = @view r1.x[sdx]; sy = @view r1.y[sdx]
-                ex, ey = _spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
-                a = w1[i] * kbb2
-                @inbounds for (t, p) in enumerate(jdx)
-                    r2.px[p] += a * ex[t]; r2.py[p] += a * ey[t]
-                end
-                compute_luminosity &&
-                    (lp += _spectral_luminosity_pair(
-                        solver, sx, sy, fx, fy, klum, lnx, lny))
-            end
-        end
-        lum_parts[chunk] = lp
-    end
-
-    # Direction 2: beam2 sources -> kick beam1 field slices (parallel over i).
-    _run_logical_workers(nchunks) do chunk, _
-        ws = grid ? pool[chunk] : nothing
-        ilo, ihi = _chunk_bounds(n1, nchunks, chunk)
-        for i in ilo:ihi
-            fdx = idx1[i]; isempty(fdx) && continue
-            fx = @view r1.x[fdx]; fy = @view r1.y[fdx]
-            for j in 1:n2
-                sdx = idx2[j]; isempty(sdx) && continue
-                sx = @view r2.x[sdx]; sy = @view r2.y[sdx]
-                ex, ey = _spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
-                a = w2[j] * kbb1
-                @inbounds for (t, p) in enumerate(fdx)
-                    r1.px[p] += a * ex[t]; r1.py[p] += a * ey[t]
+    try
+        # Direction 1: beam1 sources -> kick beam2 field slices (parallel over j).
+        lum_parts = zeros(T, nchunks)
+        _run_logical_workers(nchunks) do chunk, _
+            ws = grid ? pool[chunk] : nothing
+            jlo, jhi = _chunk_bounds(n2, nchunks, chunk)
+            lp = zero(T)
+            for j in jlo:jhi
+                jdx = idx2[j]; isempty(jdx) && continue
+                fx = @view r2.x[jdx]; fy = @view r2.y[jdx]
+                for i in 1:n1
+                    sdx = idx1[i]; isempty(sdx) && continue
+                    sx = @view r1.x[sdx]; sy = @view r1.y[sdx]
+                    ex, ey = _spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
+                    a = w1[i] * kbb2
+                    @inbounds for (t, p) in enumerate(jdx)
+                        r2.px[p] += a * ex[t]; r2.py[p] += a * ey[t]
+                    end
+                    compute_luminosity &&
+                        (lp += _spectral_luminosity_pair(
+                            solver, sx, sy, fx, fy, klum, lnx, lny))
                 end
             end
+            lum_parts[chunk] = lp
         end
+
+        # Direction 2: beam2 sources -> kick beam1 field slices (parallel over i).
+        _run_logical_workers(nchunks) do chunk, _
+            ws = grid ? pool[chunk] : nothing
+            ilo, ihi = _chunk_bounds(n1, nchunks, chunk)
+            for i in ilo:ihi
+                fdx = idx1[i]; isempty(fdx) && continue
+                fx = @view r1.x[fdx]; fy = @view r1.y[fdx]
+                for j in 1:n2
+                    sdx = idx2[j]; isempty(sdx) && continue
+                    sx = @view r2.x[sdx]; sy = @view r2.y[sdx]
+                    ex, ey = _spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
+                    a = w2[j] * kbb1
+                    @inbounds for (t, p) in enumerate(fdx)
+                        r1.px[p] += a * ex[t]; r1.py[p] += a * ey[t]
+                    end
+                end
+            end
+        end
+        return compute_luminosity ? sum(lum_parts) : T(NaN)
+    finally
+        lease === nothing || _release_spectral_grid_ws_pool!(lease)
     end
-    return compute_luminosity ? sum(lum_parts) : T(NaN)
 end
 
 function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing)
@@ -883,42 +921,52 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
     grid = solver.method !== :grid_free
     batches = collision_pair_batches(slices1, slices2)
     max_workers = clamp(_cpu_worker_count(), 1, max(1, maximum(length, batches; init=1)))
-    pool = grid ? _spectral_grid_ws_pool(solver.grid[1], solver.grid[2], max_workers) : nothing
+    lease = grid ?
+        _acquire_spectral_grid_ws_pool(
+            solver.grid[1], solver.grid[2], max_workers) :
+        nothing
+    pool = grid ? lease.workspaces : nothing
 
-    for batch in batches
-        nworkers = clamp(max_workers, 1, length(batch))
-        lum_parts = zeros(typeof(luminosity), nworkers)
-        _run_logical_workers(nworkers) do chunk, _
-            ws = grid ? pool[chunk] : nothing
-            lo, hi = _chunk_bounds(length(batch), nworkers, chunk)
-            local_lum = zero(typeof(luminosity))
-            for pos in lo:hi
-                pair = batch[pos]
-                i = pair.i; j = pair.j
-                idx1 = slices1.indices[i]
-                idx2 = slices2.indices[j]
-                (isempty(idx1) || isempty(idx2)) && continue
-                param1 = (weight=slices1.weight[i], lb=slices1.boundary[i],
-                          center=slices1.center[i], rb=slices1.boundary[i + 1])
-                param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
-                          center=slices2.center[j], rb=slices2.boundary[j + 1])
-                coord1 = _pic_extract_slice(beam1.rep, idx1)
-                coord2 = _pic_extract_slice(beam2.rep, idx2)
-                field1 = _pic_copy_coords(coord1)
-                field2 = _pic_copy_coords(coord2)
-                vx1, vy1 = _spectral_interaction!(
-                    solver, coord1, param1, field2, param2, slices1.weight[i] * kbb2, ws, Lx, Ly)
-                vx2, vy2 = _spectral_interaction!(
-                    solver, coord2, param2, field1, param1, slices2.weight[j] * kbb1, ws, Lx, Ly)
-                _pic_store_slice!(beam1.rep, idx1, field1)
-                _pic_store_slice!(beam2.rep, idx2, field2)
-                compute_luminosity &&
-                    (local_lum += _spectral_luminosity_pair(
-                        solver, vx1, vy1, vx2, vy2, klum, lnx, lny))
+    try
+        for batch in batches
+            nworkers = clamp(max_workers, 1, length(batch))
+            lum_parts = zeros(typeof(luminosity), nworkers)
+            _run_logical_workers(nworkers) do chunk, _
+                ws = grid ? pool[chunk] : nothing
+                lo, hi = _chunk_bounds(length(batch), nworkers, chunk)
+                local_lum = zero(typeof(luminosity))
+                for pos in lo:hi
+                    pair = batch[pos]
+                    i = pair.i; j = pair.j
+                    idx1 = slices1.indices[i]
+                    idx2 = slices2.indices[j]
+                    (isempty(idx1) || isempty(idx2)) && continue
+                    param1 = (weight=slices1.weight[i], lb=slices1.boundary[i],
+                              center=slices1.center[i], rb=slices1.boundary[i + 1])
+                    param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
+                              center=slices2.center[j], rb=slices2.boundary[j + 1])
+                    coord1 = _pic_extract_slice(beam1.rep, idx1)
+                    coord2 = _pic_extract_slice(beam2.rep, idx2)
+                    field1 = _pic_copy_coords(coord1)
+                    field2 = _pic_copy_coords(coord2)
+                    vx1, vy1 = _spectral_interaction!(
+                        solver, coord1, param1, field2, param2,
+                        slices1.weight[i] * kbb2, ws, Lx, Ly)
+                    vx2, vy2 = _spectral_interaction!(
+                        solver, coord2, param2, field1, param1,
+                        slices2.weight[j] * kbb1, ws, Lx, Ly)
+                    _pic_store_slice!(beam1.rep, idx1, field1)
+                    _pic_store_slice!(beam2.rep, idx2, field2)
+                    compute_luminosity &&
+                        (local_lum += _spectral_luminosity_pair(
+                            solver, vx1, vy1, vx2, vy2, klum, lnx, lny))
+                end
+                lum_parts[chunk] = local_lum
             end
-            lum_parts[chunk] = local_lum
+            luminosity += sum(lum_parts)
         end
-        luminosity += sum(lum_parts)
+        return compute_luminosity ? luminosity : LT(NaN)
+    finally
+        lease === nothing || _release_spectral_grid_ws_pool!(lease)
     end
-    return compute_luminosity ? luminosity : LT(NaN)
 end
