@@ -51,6 +51,17 @@ reference material, not API docs; the implementing code links back to them.
   slices" criterion and why it does not transfer to weakly damped hadron rings,
   rules outside that set (Gauss–Hermite, the Xsuite modes, observable-matched
   quadrature), and the measured EIC ranking of every implemented rule.
+- [`lattice_hamiltonian_and_conventions.md`](theory/lattice_hamiltonian_and_conventions.md) —
+  reference for lattice-magnet tracking: the curvilinear Hamiltonian, the four
+  longitudinal conventions (MAD-X/PTC, SixTrack, Forest/PTC `TIME=FALSE`, Bmad)
+  with the exact conversions and which code uses which, the multipole strength
+  definitions ($n!$ expansion, $K_n$ versus relative $b_n$/$a_n$), the verified
+  exact drift and exact sector bend with independent frame curvature $h$ and
+  dipole strength $b_0$, the removable singularities that force small-parameter
+  branches, **the fringe-field maps decoded from the PTC source** (three
+  independent mechanisms, the Forest–Milutinović multipole fringe as an exact
+  point transformation, the six-component dipole face, the SAD cubic most codes
+  omit), and the PTC flag set a benchmark contract must pin.
 - [`near_round_bassetti_erskine_switch.md`](theory/near_round_bassetti_erskine_switch.md)
   — near-round analytic Gaussian evaluation: invariant anisotropy, the
   fixed-interval field integral and third-order potential expansion,
