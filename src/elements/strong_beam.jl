@@ -119,6 +119,36 @@ a symmetric `4 x 4` covariance in `(x, px, y, py)` order. `coupling` may be an
 `XYCouplingSpec`, an `XYCoupling`, or a `4 x 4` linear matrix; it transforms
 the uncoupled covariance before compilation.
 
+`virtual_drift` selects **which Hamiltonian** the drift to and from the
+collision point integrates. It is a physics-model choice, not a numerical
+knob, so the default is the canonical published map rather than the most
+accurate one:
+
+- `:hirata` (default): `HirataParaxialDrift`, the exact flow of
+  `(px^2 + py^2)/2`. This is Hirata's synchro-beam map as published and as
+  assumed by cross-code comparisons. It has **no `pz` dependence**, hence no
+  path lengthening at all.
+- `:chromatic`: `ChromaticDrift`, the exact flow of `(px^2 + py^2)/2(1 + pz)`.
+  Restores the leading chromatic term and path lengthening.
+- `:exact`: `ExactHamiltonianDrift`, the full square root.
+
+All three are exact flows of their own Hamiltonian, so all three are symplectic
+and telescope exactly across slices. **The choice is a floor on accuracy that no
+slice count removes.** Measured at EIC parameters with converged slicing
+(`validation/gaussian_slicing_convergence.jl`), as a contribution to Furman's
+`Q`:
+
+    direction              |hirata - exact|   |chromatic - exact|
+    electron on proton          2.9e-4              2.8e-8
+    proton on electron          3.9e-5              1.4e-9
+
+On the hadron side that puts the paraxial floor level with the slicing error at
+`ns = 4`; past that, more slices refine a term that is no longer leading. Set
+`virtual_drift = :chromatic` when the study needs accuracy below that floor --
+it costs no `sqrt`, only `1/(1 + pz)`. Keep `:hirata` when reproducing published
+synchro-beam results. See `docs/theory/gaussian_longitudinal_slicing.md`
+Section 7.1.
+
 Turn-dependent modulation is deliberately not part of this element. It belongs
 in a scheduled task action, keeping the runtime element a compact description
 of collision physics.
@@ -1469,7 +1499,7 @@ end
         center=ParamMeta(default=(0, 0, 0), meaning="strong-beam closed orbit center"),
         angle=ParamMeta(default=(0, 0, 0), meaning="strong-beam closed orbit angle"),
         curvature=ParamMeta(default=(0, 0, 0), meaning="strong-beam closed orbit curvature"),
-        virtual_drift=ParamMeta(default=:hirata, meaning="named virtual-drift Hamiltonian or strategy"),
+        virtual_drift=ParamMeta(default=:hirata, meaning="virtual-drift Hamiltonian: :hirata (default, paraxial, the canonical published synchro-beam map; no path lengthening), :chromatic, or :exact. A model choice, not a numerical knob: it sets an accuracy floor no slice count removes (measured 2.9e-4 / 3.9e-5 in Furman Q at EIC parameters). See docs/theory/gaussian_longitudinal_slicing.md Section 7.1"),
         tracking_method=ParamMeta(default=WeakStrongBeamBeamMap(), meaning="per-element tracking method"),
     )
     example = ThinStrongBeamSpec{Float64}(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3))

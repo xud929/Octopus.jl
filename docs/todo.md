@@ -1099,23 +1099,36 @@ Changed from `:equal_area` after the measurement. Pinned by `test/runtests.jl`
 so it cannot drift silently; `slice_method = :equal_area` reproduces earlier
 results. Metadata, docstring and `construction_help` updated together.
 
-### Open: is `HirataParaxialDrift` the right default?
+### DECIDED: keep `:hirata` as the `virtual_drift` default (2026-07-31)
 
-The slicing work surfaced this and it now matters more than the slice count. At
-converged slicing the default paraxial virtual drift contributes **2.9e-4** to
-`Q` on the electron side and **3.9e-5** on the hadron side, because it drops the
-`delta` dependence entirely and so produces no path lengthening at all.
-`ChromaticDrift` reduces that to 2.8e-8 / 1.4e-9 for essentially no cost (no
-`sqrt`; `1/(1+pz)` recomputed after each kick).
+The slicing study made the paraxial drift the dominant remaining error, so
+changing this default was proposed and **declined**. The reason is a real
+distinction, not just user-selectability:
 
-Consequences already measured: with the paraxial default, hadron-side slicing
-stops being the leading error at `ns = 4`, and under an upper-bound diffusion
-conversion the drift model alone would consume ~9% relative emittance growth over
-1e9 turns -- more than any slice count can recover. Same argument as the default
-change above: strictly better at negligible cost, but it silently changes
-existing results, so it is a release decision. Note `:hirata` is also the default
-for the strong-strong solvers (`GaussianPoissonSolver` and friends), so the
-change is wider than one element.
+- `slice_method` is a **numerical discretization** of a fixed model. "More
+  accurate at the same cost" is uncontroversial -- everyone wants the same
+  physics computed better, so its default was moved to `:sqrt_density`.
+- `virtual_drift` selects **which Hamiltonian is integrated**. Hirata's paraxial
+  map is the canonical published synchro-beam map and what cross-code
+  comparisons assume, so defaulting to it is a reproducibility position. It is
+  exposed, documented, and one symbol to change.
+
+What was done instead: the measured cost is now stated where a user meets the
+option -- the `ThinStrongBeamSpec` docstring and the `virtual_drift` `ParamMeta`
+both carry the numbers and say plainly that the choice is an accuracy floor no
+slice count removes.
+
+Measurements, for anyone revisiting this. Contribution to Furman `Q` at
+converged slicing (`ns = 601`):
+
+    direction              |hirata - exact|   |chromatic - exact|
+    electron on proton          2.9e-4              2.8e-8
+    proton on electron          3.9e-5              1.4e-9
+
+`ChromaticDrift` is the exact flow of `(px^2+py^2)/2(1+pz)`; it costs no `sqrt`,
+only `1/(1+pz)` recomputed after each kick. Note `:hirata` is also the default
+for the strong-strong solvers (`GaussianPoissonSolver` and friends), so any
+future change is wider than one element.
 
 ### Phase 3a -- high-order composition: CLOSED, not deferred
 
