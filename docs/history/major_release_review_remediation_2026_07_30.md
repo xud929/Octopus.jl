@@ -10,7 +10,7 @@ Generated result data were treated as evidence, not as source implementation.
 No MPI or OpenMP implementation is present in the reviewed source tree; the
 parallel review therefore covered Julia threading, task concurrency, and CUDA.
 
-**Recommendation before remediation: Major Revision Required.**
+**Engineering status before remediation: Release-blocking defects present.**
 
 The initial tree contained silent scientific-correctness failures in analytic
 Gaussian fields and moment reductions, dimensionally invalid numerical
@@ -18,15 +18,15 @@ fallbacks, a singular GaussianPIC reference path, lost absolute turn state,
 unchecked non-symplectic linear maps, shared mutable solver workspaces, excessive
 CUDA workspace retention, and inconsistent radiation controls.
 
-**Recommendation after remediation: Accept with Minor Revision.**
+**Engineering status after remediation: Ready for controlled production
+research use.**
 
 All identified implementation issues were fixed, tested, committed separately,
 and pushed to `main`. The final tree passes the complete package suite and the
-targeted scientific validation matrix listed below. "Minor Revision" is retained
-because publication-grade use still requires study-specific convergence,
+targeted scientific validation matrix listed below. Study-specific convergence,
 independent external-code comparison, and hardware coverage beyond the one
-available NVIDIA GPU. Those are validation scope limits, not known open defects
-in the remediated code.
+available NVIDIA GPU remain necessary where relevant. Those are validation
+scope limits, not known open defects in the remediated code.
 
 | Assessment | Before | After |
 | --- | ---: | ---: |
@@ -610,10 +610,10 @@ passed.
 - **Estimated technical debt:** Medium.
 - **Estimated production readiness:** 86%.
 - **Estimated scientific reproducibility:** 89%.
-- **Suitability for high-impact accelerator-physics research:** Suitable as a
-  validated research engine when each study supplies solver convergence,
-  macroparticle/statistical uncertainty, and independent model checks. It should
-  not be treated as a parameter-free source of publication truth.
+- **Suitability for accelerator-physics studies:** Suitable as a validated
+  scientific-computation engine when each study supplies solver convergence,
+  macroparticle/statistical uncertainty, and independent model checks. Package
+  validation does not replace study-specific uncertainty analysis.
 - **Overall confidence in this review:** High (94%). Confidence is limited
   primarily by single-GPU hardware access and the absence of an external-code
   replication in this session.
