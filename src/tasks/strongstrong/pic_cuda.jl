@@ -224,6 +224,12 @@ if _HAS_CUDA
                 cuda_indexed_wavefront=use_indexed_wavefront,
                 detailed_timing=detailed_timing,
             ))
+            if use_wavefront_fft
+                _cuda_pic_reserve_wavefront_workspaces!(
+                    workspace, solver, eltype(beam1.rep.x), batches;
+                    node=node_mode || _pic_quadratic_slice(solver),
+                )
+            end
             for batch in batches
                 batch_count += 1
                 max_batch_size = max(max_batch_size, length(batch))
@@ -1612,7 +1618,7 @@ if _HAS_CUDA
                     wf.bounds, wf.bounds_partials,
                 )
             end
-            copyto!(wf.bounds_host, wf.bounds)
+            copyto!(wf.bounds_host, 1, wf.bounds, 1, length(wf.bounds))
             elapsed = time_ns() - t_bounds
             _cuda_pic_add_elapsed!(timing, :prepare_source, elapsed ÷ 2)
             _cuda_pic_add_elapsed!(timing, :prepare_field, elapsed - elapsed ÷ 2)
@@ -2359,44 +2365,108 @@ if _HAS_CUDA
             return phi_batch, Ex, Ey
         end
 
+        function _cuda_pic_allocate_wavefront_workspace(
+                solver::PICPoissonSolver, ::Type{T}, nplanes::Int,
+                luminosity_threads::Int) where {T}
+            nx, ny = solver.grid
+            lnx, lny = _pic_luminosity_grid(solver)
+            npairs = nplanes ÷ 4
+            ngreen = nplanes ÷ 2
+            return (
+                charges=CUDA.zeros(T, 2nx, 2ny, nplanes),
+                greens=CUDA.zeros(T, 2nx, 2ny, ngreen),
+                Ex=CUDA.zeros(T, nx, ny, nplanes),
+                Ey=CUDA.zeros(T, nx, ny, nplanes),
+                luminosity_q1=CUDA.zeros(T, lnx + 1, lny + 1, npairs),
+                luminosity_q2=CUDA.zeros(T, lnx + 1, lny + 1, npairs),
+                luminosity_scale=CUDA.zeros(T, npairs),
+                luminosity_accum=CUDA.zeros(T, 1),
+                luminosity_overlap_partials=CUDA.zeros(
+                    T, cld(lnx * lny, luminosity_threads) * npairs,
+                ),
+                hx=CUDA.zeros(T, nplanes),
+                hy=CUDA.zeros(T, nplanes),
+                green_field_x0=CUDA.zeros(T, ngreen),
+                green_field_y0=CUDA.zeros(T, ngreen),
+                green_source_x0=CUDA.zeros(T, ngreen),
+                green_source_y0=CUDA.zeros(T, ngreen),
+                green_hx=CUDA.zeros(T, ngreen),
+                green_hy=CUDA.zeros(T, ngreen),
+                green_spectral=CUDA.zeros(Complex{T}, 2nx, 2ny, ngreen),
+                bounds=CUDA.zeros(T, 12, 2 * npairs),
+                bounds_partials=CUDA.zeros(
+                    T, 12, _CUDA_PIC_BOUNDS_PARTIAL_BLOCKS, 2 * npairs,
+                ),
+                bounds_host=Array{T}(undef, 12, 2 * npairs),
+            )
+        end
+
         function _cuda_pic_wavefront_workspace!(workspace::_CUDAPICWorkspace,
                                                 solver::PICPoissonSolver,
                                                 ::Type{T}, nplanes::Integer) where {T}
-            nx, ny = solver.grid
-            lnx, lny = _pic_luminosity_grid(solver)
-            ngreen = max(1, Int(nplanes) ÷ 2)
+            requested = Int(nplanes)
+            requested > 0 && requested % 4 == 0 ||
+                throw(ArgumentError("CUDA PIC wavefront planes must be a positive multiple of 4"))
             luminosity_threads = _cuda_pic_threads(:luminosity)
-            return get!(workspace.wavefront_cache, (Int(nplanes), luminosity_threads)) do
-                (
-                    charges=CUDA.zeros(T, 2nx, 2ny, nplanes),
-                    greens=CUDA.zeros(T, 2nx, 2ny, ngreen),
-                    Ex=CUDA.zeros(T, nx, ny, nplanes),
-                    Ey=CUDA.zeros(T, nx, ny, nplanes),
-                    luminosity_q1=CUDA.zeros(T, lnx + 1, lny + 1, max(1, nplanes ÷ 4)),
-                    luminosity_q2=CUDA.zeros(T, lnx + 1, lny + 1, max(1, nplanes ÷ 4)),
-                    luminosity_scale=CUDA.zeros(T, max(1, nplanes ÷ 4)),
-                    luminosity_accum=CUDA.zeros(T, 1),
-                    luminosity_overlap_partials=CUDA.zeros(
-                        T,
-                        cld(lnx * lny, luminosity_threads) * max(1, nplanes ÷ 4),
+            entry = get(workspace.wavefront_cache, :standard, nothing)
+            if entry === nothing || entry.capacity < requested ||
+                    entry.luminosity_threads != luminosity_threads
+                if entry !== nothing
+                    # Capacity changes occur between complete wavefronts. Wait before
+                    # dropping the sole owner of buffers used by queued kernels.
+                    CUDA.synchronize(CUDA.stream())
+                end
+                entry = (
+                    capacity=requested,
+                    luminosity_threads=luminosity_threads,
+                    arrays=_cuda_pic_allocate_wavefront_workspace(
+                        solver, T, requested, luminosity_threads,
                     ),
-                    hx=CUDA.zeros(T, nplanes),
-                    hy=CUDA.zeros(T, nplanes),
-                    green_field_x0=CUDA.zeros(T, ngreen),
-                    green_field_y0=CUDA.zeros(T, ngreen),
-                    green_source_x0=CUDA.zeros(T, ngreen),
-                    green_source_y0=CUDA.zeros(T, ngreen),
-                    green_hx=CUDA.zeros(T, ngreen),
-                    green_hy=CUDA.zeros(T, ngreen),
-                    green_spectral=CUDA.zeros(Complex{T}, 2nx, 2ny, ngreen),
-                    bounds=CUDA.zeros(T, 12, 2 * max(1, nplanes ÷ 4)),
-                    bounds_partials=CUDA.zeros(
-                        T, 12, _CUDA_PIC_BOUNDS_PARTIAL_BLOCKS,
-                        2 * max(1, nplanes ÷ 4),
-                    ),
-                    bounds_host=Array{T}(undef, 12, 2 * max(1, nplanes ÷ 4)),
                 )
+                workspace.wavefront_cache[:standard] = entry
             end
+
+            base = entry.arrays
+            npairs = requested ÷ 4
+            ngreen = requested ÷ 2
+            overlap_length = cld(prod(_pic_luminosity_grid(solver)), luminosity_threads) * npairs
+            return (
+                charges=@view(base.charges[:, :, 1:requested]),
+                greens=@view(base.greens[:, :, 1:ngreen]),
+                Ex=@view(base.Ex[:, :, 1:requested]),
+                Ey=@view(base.Ey[:, :, 1:requested]),
+                luminosity_q1=@view(base.luminosity_q1[:, :, 1:npairs]),
+                luminosity_q2=@view(base.luminosity_q2[:, :, 1:npairs]),
+                luminosity_scale=@view(base.luminosity_scale[1:npairs]),
+                luminosity_accum=base.luminosity_accum,
+                luminosity_overlap_partials=@view(
+                    base.luminosity_overlap_partials[1:overlap_length]
+                ),
+                hx=@view(base.hx[1:requested]),
+                hy=@view(base.hy[1:requested]),
+                green_field_x0=@view(base.green_field_x0[1:ngreen]),
+                green_field_y0=@view(base.green_field_y0[1:ngreen]),
+                green_source_x0=@view(base.green_source_x0[1:ngreen]),
+                green_source_y0=@view(base.green_source_y0[1:ngreen]),
+                green_hx=@view(base.green_hx[1:ngreen]),
+                green_hy=@view(base.green_hy[1:ngreen]),
+                green_spectral=@view(base.green_spectral[:, :, 1:ngreen]),
+                bounds=@view(base.bounds[:, 1:(2 * npairs)]),
+                bounds_partials=@view(base.bounds_partials[:, :, 1:(2 * npairs)]),
+                bounds_host=base.bounds_host,
+            )
+        end
+
+        function _cuda_pic_reserve_wavefront_workspaces!(
+                workspace::_CUDAPICWorkspace, solver::PICPoissonSolver,
+                ::Type{T}, batches; node::Bool=false) where {T}
+            max_pairs = maximum(length, batches; init=0)
+            max_pairs == 0 && return nothing
+            _cuda_pic_wavefront_workspace!(workspace, solver, T, 4 * max_pairs)
+            node && _cuda_pic_wavefront_node_workspace!(
+                workspace, solver, T, 6 * max_pairs,
+            )
+            return nothing
         end
 
         """
@@ -2407,8 +2477,9 @@ if _HAS_CUDA
         mesh, R uses the right node's -- so the fixed two-planes-per-Green
         arithmetic of the slice-pair workspace does not apply. Duplicating the
         left node's Green into the L and Z slots makes the spectral multiply a
-        1:1 elementwise product and removes the mapping entirely. Its own cache
-        key, so the slice-pair workspace is never disturbed.
+        1:1 elementwise product and removes the mapping entirely. It uses a
+        separate maximum-capacity cache entry, so the slice-pair workspace is
+        never disturbed.
 
         Luminosity arrays are deliberately absent: the node path reuses the
         standard workspace for luminosity, leaving that code path untouched.
@@ -2416,17 +2487,37 @@ if _HAS_CUDA
         function _cuda_pic_wavefront_node_workspace!(workspace::_CUDAPICWorkspace,
                                                      solver::PICPoissonSolver,
                                                      ::Type{T}, nplanes::Integer) where {T}
+            requested = Int(nplanes)
+            requested > 0 && requested % 6 == 0 ||
+                throw(ArgumentError("CUDA PIC node wavefront planes must be a positive multiple of 6"))
             nx, ny = solver.grid
-            return get!(workspace.wavefront_cache, (:node_planes, Int(nplanes))) do
-                (
-                    charges=CUDA.zeros(T, 2nx, 2ny, nplanes),
-                    Ex=CUDA.zeros(T, nx, ny, nplanes),
-                    Ey=CUDA.zeros(T, nx, ny, nplanes),
-                    hx=CUDA.zeros(T, nplanes),
-                    hy=CUDA.zeros(T, nplanes),
-                    green_spectral=CUDA.zeros(Complex{T}, 2nx, 2ny, nplanes),
+            entry = get(workspace.wavefront_cache, :node, nothing)
+            if entry === nothing || entry.capacity < requested
+                if entry !== nothing
+                    CUDA.synchronize(CUDA.stream())
+                end
+                entry = (
+                    capacity=requested,
+                    arrays=(
+                        charges=CUDA.zeros(T, 2nx, 2ny, requested),
+                        Ex=CUDA.zeros(T, nx, ny, requested),
+                        Ey=CUDA.zeros(T, nx, ny, requested),
+                        hx=CUDA.zeros(T, requested),
+                        hy=CUDA.zeros(T, requested),
+                        green_spectral=CUDA.zeros(Complex{T}, 2nx, 2ny, requested),
+                    ),
                 )
+                workspace.wavefront_cache[:node] = entry
             end
+            base = entry.arrays
+            return (
+                charges=@view(base.charges[:, :, 1:requested]),
+                Ex=@view(base.Ex[:, :, 1:requested]),
+                Ey=@view(base.Ey[:, :, 1:requested]),
+                hx=@view(base.hx[1:requested]),
+                hy=@view(base.hy[1:requested]),
+                green_spectral=@view(base.green_spectral[:, :, 1:requested]),
+            )
         end
 
         """

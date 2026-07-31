@@ -375,8 +375,14 @@ Use `PICPoissonSolver(cuda_indexed_wavefront=false)` to keep the compact path
 as a production comparison switch.
 The CUDA PIC
 workspace reuses its field streams, luminosity stream, synchronization event,
-charge grids, batched charge/field arrays, wavefront charge/field-array cache,
-and luminosity grids through the `StrongStrongTask` runtime cache across turns.
+charge grids, batched charge/field arrays, wavefront charge/field arrays, and
+luminosity grids through the `StrongStrongTask` runtime cache across turns.
+Wavefront storage is reserved once at the largest dependency frontier and
+smaller frontiers use exact-shape prefix views. The runtime cache therefore
+retains one standard maximum-capacity workspace, plus one separate node
+workspace only when node or quadratic interpolation needs it; retained device
+storage scales with the largest frontier rather than the sum of all frontier
+sizes.
 Its runtime-cache identity includes the CUDA device, so reusing a task after an
 explicit device change allocates device-local state instead of retaining arrays
 and streams from the previous device.

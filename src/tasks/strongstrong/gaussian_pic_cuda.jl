@@ -102,6 +102,9 @@ if _HAS_CUDA
             timing = _cuda_pic_timing_stats()
             _cuda_pic_add_time!(timing, :slicing, t_slice)
             pair_count = 0; batch_count = 0; max_batch = 0
+            _cuda_pic_reserve_wavefront_workspaces!(
+                workspace, pic, eltype(beam1.rep.x), batches,
+            )
             for batch in batches
                 batch_count += 1
                 pair_count += length(batch)
@@ -468,6 +471,9 @@ if _HAS_CUDA
             klum = _pic_luminosity_scale(pic, beam1, beam2)
             compute_luminosity = _pic_compute_luminosity(pic, ctx)
             luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
+            _cuda_pic_reserve_wavefront_workspaces!(
+                workspace, pic, eltype(beam1.rep.x), batches,
+            )
             for batch in batches
                 gathered = Vector{Any}(undef, length(batch))
                 for n in eachindex(batch)

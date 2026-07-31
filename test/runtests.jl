@@ -2492,6 +2492,47 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         @test key[3] == device
     end
 
+    @testset "CUDA PIC wavefront workspace cache is capacity bounded" begin
+        solver = PICPoissonSolver(grid=(16, 24))
+        workspace = Octopus._cuda_pic_workspace(solver, Float64)
+        batches = [collect(1:n) for n in (1, 3, 2)]
+
+        Octopus._cuda_pic_reserve_wavefront_workspaces!(
+            workspace, solver, Float64, batches,
+        )
+        @test collect(keys(workspace.wavefront_cache)) == [:standard]
+        standard = workspace.wavefront_cache[:standard]
+        @test standard.capacity == 12
+        @test size(standard.arrays.charges) == (32, 48, 12)
+
+        small = Octopus._cuda_pic_wavefront_workspace!(
+            workspace, solver, Float64, 4,
+        )
+        @test size(small.charges) == (32, 48, 4)
+        @test size(small.green_spectral) == (32, 48, 2)
+        @test pointer(small.charges) == pointer(standard.arrays.charges)
+        @test workspace.wavefront_cache[:standard] === standard
+        @test length(workspace.wavefront_cache) == 1
+
+        Octopus._cuda_pic_reserve_wavefront_workspaces!(
+            workspace, solver, Float64, batches; node=true,
+        )
+        @test Set(keys(workspace.wavefront_cache)) == Set((:standard, :node))
+        node = workspace.wavefront_cache[:node]
+        @test node.capacity == 18
+        node_small = Octopus._cuda_pic_wavefront_node_workspace!(
+            workspace, solver, Float64, 6,
+        )
+        @test size(node_small.charges) == (32, 48, 6)
+        @test pointer(node_small.charges) == pointer(node.arrays.charges)
+        @test_throws ArgumentError Octopus._cuda_pic_wavefront_workspace!(
+            workspace, solver, Float64, 6,
+        )
+        @test_throws ArgumentError Octopus._cuda_pic_wavefront_node_workspace!(
+            workspace, solver, Float64, 4,
+        )
+    end
+
     @testset "CUDA spectral solver matches CPU" begin
         function to_gpu(b)
             rep = Phase6DRep(
