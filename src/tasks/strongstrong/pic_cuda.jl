@@ -3422,8 +3422,9 @@ if _HAS_CUDA
                 xmax = max(T(maximum(x1)), T(maximum(x2)))
                 ymin = min(T(minimum(y1)), T(minimum(y2)))
                 ymax = max(T(maximum(y1)), T(maximum(y2)))
-                width = max(T(xmax - xmin), eps(T))
-                height = max(T(ymax - ymin), eps(T))
+                width, height = _pic_resolve_transverse_extent(
+                    solver, T(xmax - xmin), T(ymax - ymin),
+                    "CUDA PIC batched luminosity grid")
                 tx = width / T(nx - 1.1)
                 ty = height / T(ny - 1.1)
                 width += T(0.1) * tx
@@ -3496,8 +3497,9 @@ if _HAS_CUDA
                 xmax = max(T(bounds1[2]), T(bounds2[2]))
                 ymin = min(T(bounds1[3]), T(bounds2[3]))
                 ymax = max(T(bounds1[4]), T(bounds2[4]))
-                width = max(xmax - xmin, eps(T))
-                height = max(ymax - ymin, eps(T))
+                width, height = _pic_resolve_transverse_extent(
+                    solver, xmax - xmin, ymax - ymin,
+                    "CUDA PIC indexed luminosity grid")
                 tx = width / T(nx - 1.1)
                 ty = height / T(ny - 1.1)
                 width += T(0.1) * tx
@@ -3563,8 +3565,9 @@ if _HAS_CUDA
             xmax = max(T(maximum(x1)), T(maximum(x2)))
             ymin = min(T(minimum(y1)), T(minimum(y2)))
             ymax = max(T(maximum(y1)), T(maximum(y2)))
-            width = max(T(xmax - xmin), eps(T))
-            height = max(T(ymax - ymin), eps(T))
+            width, height = _pic_resolve_transverse_extent(
+                solver, T(xmax - xmin), T(ymax - ymin),
+                "CUDA PIC luminosity grid")
             tx = width / T(nx - 1.1)
             ty = height / T(ny - 1.1)
             width += T(0.1) * tx
@@ -3700,8 +3703,17 @@ if _HAS_CUDA
                         val -= _cuda_pic_kernel_integral(x - half_hx, y + half_hy)
                         green[i0 + Int32(1), j0 + Int32(1)] = hxihyi * val
                     else
-                        r2 = max(x * x + y * y, eps(typeof(x)))
-                        green[i0 + Int32(1), j0 + Int32(1)] = typeof(x)(-0.5) * log(r2)
+                        r2 = x * x + y * y
+                        if iszero(r2)
+                            val = _cuda_pic_kernel_integral(x + half_hx, y + half_hy)
+                            val += _cuda_pic_kernel_integral(x - half_hx, y - half_hy)
+                            val -= _cuda_pic_kernel_integral(x + half_hx, y - half_hy)
+                            val -= _cuda_pic_kernel_integral(x - half_hx, y + half_hy)
+                            green[i0 + Int32(1), j0 + Int32(1)] = hxihyi * val
+                        else
+                            green[i0 + Int32(1), j0 + Int32(1)] =
+                                typeof(x)(-0.5) * log(r2)
+                        end
                     end
                 end
                 index += stride
@@ -3741,8 +3753,17 @@ if _HAS_CUDA
                         val -= _cuda_pic_kernel_integral(x - half_hx, y + half_hy)
                         green[i0 + Int32(1), j0 + Int32(1), plane] = hxihyi * val
                     else
-                        r2 = max(x * x + y * y, eps(typeof(x)))
-                        green[i0 + Int32(1), j0 + Int32(1), plane] = typeof(x)(-0.5) * log(r2)
+                        r2 = x * x + y * y
+                        if iszero(r2)
+                            val = _cuda_pic_kernel_integral(x + half_hx, y + half_hy)
+                            val += _cuda_pic_kernel_integral(x - half_hx, y - half_hy)
+                            val -= _cuda_pic_kernel_integral(x + half_hx, y - half_hy)
+                            val -= _cuda_pic_kernel_integral(x - half_hx, y + half_hy)
+                            green[i0 + Int32(1), j0 + Int32(1), plane] = hxihyi * val
+                        else
+                            green[i0 + Int32(1), j0 + Int32(1), plane] =
+                                typeof(x)(-0.5) * log(r2)
+                        end
                     end
                 end
                 index += stride
@@ -3760,7 +3781,7 @@ if _HAS_CUDA
 
         @inline function _cuda_pic_kernel_integral(x, y)
             r2 = x * x + y * y
-            r2 = max(r2, eps(typeof(r2)))
+            iszero(r2) && return zero(r2)
             return (log(r2) - 3) * x * y +
                    _cuda_pic_atan_ratio(y, x) * x * x +
                    _cuda_pic_atan_ratio(x, y) * y * y

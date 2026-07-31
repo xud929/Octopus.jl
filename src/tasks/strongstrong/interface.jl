@@ -611,7 +611,7 @@ end
                            luminosity_scale=nothing,
                            slicing=LongitudinalSlicing(),
                            slicing1=nothing, slicing2=nothing,
-                           min_sigma=eps(Float64),
+                           min_sigma=0.0,
                            gaussian_when_luminosity=2,
                            ignore_centroid1=false,
                            ignore_centroid2=false,
@@ -655,6 +655,11 @@ kbb2 = beam1.charge * beam2.charge * beam2.r0 * beam1.npart * beam2.mc2 / beam2.
 normalization for the beam sampled by the luminosity estimate. This solver is a
 sliced moment-based Poisson approximation, not a grid PIC solver.
 
+`min_sigma` is an optional physical lower bound on each transverse slice RMS,
+in the same length units as the particle coordinates. Its default `0` applies no
+artificial floor and leaves every nonzero RMS data-derived. Supply a positive
+value only when a physical minimum source size is part of the model.
+
 `slicing` applies the same longitudinal slicing to both beams. Use `slicing1`
 and `slicing2` to specify different slicing configurations for beam 1 and beam
 2.
@@ -686,7 +691,7 @@ function GaussianPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   slicing::LongitudinalSlicing=LongitudinalSlicing(),
                                   slicing1=nothing,
                                   slicing2=nothing,
-                                  min_sigma=eps(T),
+                                  min_sigma=zero(T),
                                   gaussian_when_luminosity::Integer=2,
                                   ignore_centroid1::Bool=false,
                                   ignore_centroid2::Bool=false,
@@ -696,7 +701,9 @@ function GaussianPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   batch_mode::Symbol=:wavefront) where {T<:Real}
     s1 = slicing1 === nothing ? slicing : slicing1
     s2 = slicing2 === nothing ? slicing : slicing2
-    min_sigma >= 0 || throw(ArgumentError("min_sigma must be nonnegative"))
+    sigma_floor = T(min_sigma)
+    isfinite(sigma_floor) && sigma_floor >= zero(T) || throw(ArgumentError(
+        "min_sigma must be finite and nonnegative; got $(min_sigma)."))
     gaussian_when_luminosity in (1, 2) || throw(ArgumentError(
         "gaussian_when_luminosity must be 1 or 2"))
     batch_mode in (:sequential, :wavefront) || throw(ArgumentError(
@@ -711,7 +718,7 @@ function GaussianPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         s2,
         slicing1,
         slicing2,
-        T(min_sigma),
+        sigma_floor,
         Int(gaussian_when_luminosity),
         ignore_centroid1,
         ignore_centroid2,
@@ -747,8 +754,9 @@ const _GAUSSIAN_SOLVER_OPTION_SCHEMA = (
         "Optional beam-1 slicing override."; category=:physics, dependencies=(:slicing,)),
     slicing2=SolverOptionMeta(Union{Nothing,LongitudinalSlicing}, nothing,
         "Optional beam-2 slicing override."; category=:physics, dependencies=(:slicing,)),
-    min_sigma=SolverOptionMeta(Real, eps(Float64),
-        "Lower transverse RMS bound used by Gaussian moments."; category=:numerical),
+    min_sigma=SolverOptionMeta(Real, 0.0,
+        "Optional physical lower transverse RMS bound in particle-coordinate length units; 0 applies no artificial floor.";
+        category=:numerical),
     gaussian_when_luminosity=SolverOptionMeta(Int, 2,
         "Select beam 1 or beam 2 macroparticle sampling for luminosity."; category=:numerical),
     ignore_centroid1=SolverOptionMeta(Bool, false,
@@ -770,12 +778,29 @@ solver_option_schema(::Type{<:GaussianPoissonSolver}) = _GAUSSIAN_SOLVER_OPTION_
 
 const StrongStrongGaussianPoissonSolver = GaussianPoissonSolver
 
+function _solver_transverse_extent(::Type{T}, value) where {T<:Real}
+    requested = if value isa Real
+        (value, value)
+    elseif value isa Tuple && length(value) == 2 &&
+           value[1] isa Real && value[2] isa Real
+        value
+    else
+        throw(ArgumentError(
+            "min_transverse_extent must be a real scalar or a two-real tuple; got $(repr(value))."))
+    end
+    extent = (T(requested[1]), T(requested[2]))
+    all(isfinite, extent) && all(>=(zero(T)), extent) || throw(ArgumentError(
+        "min_transverse_extent values must be finite and nonnegative; got $(repr(value))."))
+    return extent
+end
+
 """
     PICPoissonSolver(; kbb1=nothing, kbb2=nothing, luminosity_scale=nothing,
                       grid=(128, 128), deposit_method=:CIC,
                       green_type=:integrated,
                       slice_interpolation=:linear,
-                      grid_extent=:extrema, grid_extent_sigma=6.0, grid_quantize=0.0,
+                      grid_extent=:extrema, grid_extent_sigma=6.0,
+                      min_transverse_extent=(0.0, 0.0), grid_quantize=0.0,
                       green_cache=:slice_pair,
                       slice_pair_green_min_ratio=0.50,
                       slice_pair_green_growth=0.25,
@@ -994,6 +1019,12 @@ therefore means the same physical quantity as it does for `GaussianPoissonSolver
 `beam1.npart * beam2.npart / (n_macro1 * n_macro2)`; it differs in form from the
 soft-Gaussian sampled estimator because PIC deposits both beams onto grids.
 
+`min_transverse_extent` is a physical lower bound on the unpadded interaction
+mesh width in `(x, y)`, in the same length units as the particle coordinates. A
+scalar applies to both axes. The default `(0, 0)` leaves every nonzero extent
+data-derived. A zero-width axis is not a well-defined 2D PIC problem and is
+rejected unless a positive bound is supplied for that axis.
+
 `slicing` applies the same longitudinal slicing to both beams. Use `slicing1`
 and `slicing2` to specify different slicing configurations for beam 1 and beam
 2.
@@ -1011,6 +1042,7 @@ struct PICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     interaction_grid::Symbol
     grid_extent::Symbol
     grid_extent_sigma::T
+    min_transverse_extent::Tuple{T,T}
     grid_quantize::T
     slice_pair_green_min_ratio::T
     slice_pair_green_growth::T
@@ -1042,6 +1074,7 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                              interaction_grid::Symbol=:slice_pair,
                              grid_extent::Symbol=:extrema,
                              grid_extent_sigma=6.0,
+                             min_transverse_extent=(0.0, 0.0),
                              grid_quantize=0.0,
                              slice_pair_green_min_ratio=0.50,
                              slice_pair_green_growth=0.25,
@@ -1085,6 +1118,7 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         "grid_extent must be :extrema or :sigma; got $(repr(grid_extent))."))
     T(grid_extent_sigma) > zero(T) || throw(ArgumentError(
         "grid_extent_sigma must be positive; got $(grid_extent_sigma)."))
+    extent_floor = _solver_transverse_extent(T, min_transverse_extent)
     T(grid_quantize) >= zero(T) || throw(ArgumentError(
         "grid_quantize must be non-negative (0 disables); got $(grid_quantize)."))
     interaction_grid in (:slice_pair, :source_slice, :node) || throw(ArgumentError(
@@ -1119,6 +1153,7 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         interaction_grid,
         grid_extent,
         T(grid_extent_sigma),
+        extent_floor,
         T(grid_quantize),
         min_ratio,
         growth,
@@ -1212,6 +1247,9 @@ validation/pic_grid_extent_stability.jl.";
 keeps dropped charge below ~1e-5 for a 5-sigma-cutoff beam; dropping a fraction f \
 of charge at radius R costs a field error ~ f*(sigma/R), so f must stay small.";
         category=:accuracy_performance, dependencies=(:grid_extent,)),
+    min_transverse_extent = SolverOptionMeta(Union{Real,Tuple{Real,Real}}, (0.0, 0.0),
+        "Physical lower bound on the unpadded PIC mesh width in (x,y), in particle-coordinate length units; a scalar applies to both axes and (0,0) keeps nonzero extents data-derived.";
+        category=:numerical),
     grid_quantize = SolverOptionMeta(Real, 0.0,
         "Snap the mesh extent to a 2^q ladder and origins to whole cells; 0 disables \
 (default, bit-compatible). Nearly-identical meshes still produce a full-size \

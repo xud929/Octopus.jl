@@ -274,6 +274,14 @@ chosen several to ten times the beam size; the required size is larger than for
 the exact Hockney method because of the 2D logarithm. The domain size $a,b$ is a
 convergence parameter that must be validated per beam aspect ratio.
 
+The implementation derives the square half-width from the measured RMS and
+particle extrema. A distribution collapsed at the coordinate origin makes both
+scales exactly zero, so no physical domain can be inferred from the data. It is
+an error to substitute machine epsilon here: epsilon is dimensionless and its
+numeric value depends on floating-point precision rather than beam physics.
+`min_domain_halfwidth` supplies an explicit lower half-width in particle
+coordinate units for this case; its default zero adds no artificial scale.
+
 ## 11. Comparison to the integrated-Green-function (Hockney) solver
 
 | | Sine-series (this note) | Zero-padded Green FFT (current `PICPoissonSolver`) |

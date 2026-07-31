@@ -49,6 +49,7 @@ struct SpectralPoissonSolver{T<:Real} <: AbstractPoissonSolver
     luminosity_scale::Union{Nothing,T}
     grid::Tuple{Int,Int}
     domain_factor::T
+    min_domain_halfwidth::T
     method::Symbol
     longitudinal_kick::Bool
     field_precision::Symbol
@@ -62,7 +63,8 @@ end
 
 """
     SpectralPoissonSolver(; kbb1=nothing, kbb2=nothing, luminosity_scale=nothing,
-                           grid=(128, 128), domain_factor=16.0, method=:grid,
+                           grid=(128, 128), domain_factor=16.0,
+                           min_domain_halfwidth=0.0, method=:grid,
                            longitudinal_kick=true,
                            slicing=LongitudinalSlicing(), slicing1=nothing,
                            slicing2=nothing)
@@ -77,9 +79,13 @@ Use an anisotropic `grid` for flat beams
 (`Ny ~ 5 * domain_factor * sigma_x/sigma_y`). `domain_factor` sets the box
 half-width as a multiple of the larger transverse rms (the box is square — sized
 to the larger rms in both directions — because a flat beam's field extends on
-that scale in both). `method` is `:grid` (DST/DCT, the fast path, and the only
-CUDA-supported variant) or `:grid_free` (mode sums straight from particles; CPU
-only). `kbb1`/`kbb2` are the physical kick scales, same convention as
+that scale in both). `min_domain_halfwidth` is an optional physical lower bound
+on that square half-width, in the same length units as the particle coordinates.
+Its default `0` leaves every nonzero domain data-derived. A beam collapsed at the
+origin has no inferable physical scale and is rejected unless this bound is
+positive. `method` is `:grid` (DST/DCT, the fast path, and the only CUDA-supported
+variant) or `:grid_free` (mode sums straight from particles; CPU only).
+`kbb1`/`kbb2` are the physical kick scales, same convention as
 `GaussianPoissonSolver` and `PICPoissonSolver`.
 
 `longitudinal_kick=true` applies the Hirata-map synchro-beam drift and
@@ -118,6 +124,7 @@ through the full example beamline; down from 6x, comparable to PIC).
 function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   luminosity_scale=nothing,
                                   grid=(128, 128), domain_factor=16.0,
+                                  min_domain_halfwidth=0.0,
                                   method::Symbol=:grid,
                                   longitudinal_kick::Bool=true,
                                   field_precision::Symbol=:double,
@@ -129,12 +136,16 @@ function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
     gx, gy = Int(grid[1]), Int(grid[2])
     (gx >= 8 && gy >= 8) || throw(ArgumentError("SpectralPoissonSolver grid dimensions must be at least 8; got $(grid)"))
     domain_factor > 0 || throw(ArgumentError("domain_factor must be positive; got $(domain_factor)"))
+    min_halfwidth = T(min_domain_halfwidth)
+    isfinite(min_halfwidth) && min_halfwidth >= zero(T) || throw(ArgumentError(
+        "min_domain_halfwidth must be finite and nonnegative; got $(min_domain_halfwidth)."))
     method in (:grid, :grid_free) || throw(ArgumentError("method must be :grid or :grid_free; got $(repr(method))"))
     field_precision in (:double, :single) ||
         throw(ArgumentError("field_precision must be :double or :single; got $(repr(field_precision))"))
     return SpectralPoissonSolver{T}(
         _optional_solver_value(T, kbb1), _optional_solver_value(T, kbb2),
-        _optional_solver_value(T, luminosity_scale), (gx, gy), T(domain_factor), method,
+        _optional_solver_value(T, luminosity_scale), (gx, gy), T(domain_factor),
+        min_halfwidth, method,
         Bool(longitudinal_kick), field_precision, luminosity_schedule,
         slicing, s1, s2, slicing1, slicing2)
 end
@@ -152,6 +163,9 @@ const _SPECTRAL_SOLVER_OPTION_SCHEMA = (
         "Transverse shape (Nx, Ny): grid nodes and modes for :grid, modes only for :grid_free."),
     domain_factor = SolverOptionMeta(Real, 16.0,
         "Box half-width as a multiple of the larger transverse rms."; category=:accuracy_performance),
+    min_domain_halfwidth = SolverOptionMeta(Real, 0.0,
+        "Optional physical lower bound on the square Dirichlet-domain half-width in particle-coordinate length units; 0 keeps nonzero domains data-derived.";
+        category=:numerical),
     method = SolverOptionMeta(Symbol, :grid,
         "Field-solve variant; :grid (DST/DCT) or :grid_free (direct mode sums)."; category=:performance),
     longitudinal_kick = SolverOptionMeta(Bool, true,
@@ -176,6 +190,31 @@ function solver_configuration(solver::SpectralPoissonSolver)
         slicing1=solver.requested_slicing1, slicing2=solver.requested_slicing2,
         resolved_slicing1=solver.slicing1, resolved_slicing2=solver.slicing2,
     ))
+end
+
+function configuration_report(solver::SpectralPoissonSolver;
+                              policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
+                              backend=nothing)
+    selected_backend = backend === nothing ?
+        (policy === nothing ? nothing : backend_type(policy)) : backend
+    configured = solver_configuration(solver)
+    entries = ConfigurationEntry[]
+    for (name, meta) in pairs(solver_option_schema(solver))
+        requested = getproperty(configured, name)
+        resolved = name === :slicing1 ? configured.resolved_slicing1 :
+                   name === :slicing2 ? configured.resolved_slicing2 : requested
+        if selected_backend !== nothing && !(selected_backend in meta.supported_backends)
+            push!(entries, ConfigurationEntry(name, requested, resolved, :inactive_backend,
+                "option does not apply to $(selected_backend)", meta.consumer))
+        else
+            status = requested === nothing && resolved !== nothing ? :inherited : :resolved
+            push!(entries, ConfigurationEntry(name, requested, resolved, status,
+                status === :inherited ? "inherited from shared slicing" :
+                                        "validated spectral solver configuration",
+                meta.consumer))
+        end
+    end
+    return Tuple(entries)
 end
 
 # Physical kbb / luminosity, identical convention to GaussianPoissonSolver. The
@@ -554,11 +593,29 @@ end
 # convention (CIC deposit of both slices on a shared grid, summed product times
 # klum / cell-area). The spectral and PIC luminosity therefore agree for the same
 # beams up to deposition detail, giving a direct cross-check.
-function _spectral_luminosity_pair(x1, y1, x2, y2, klum, nx, ny)
+@inline function _spectral_luminosity_extents(solver::SpectralPoissonSolver,
+                                               xspan, yspan, ::Type{T}) where {T}
+    minimum_width = T(2) * T(solver.min_domain_halfwidth)
+    width = max(T(xspan), minimum_width)
+    height = max(T(yspan), minimum_width)
+    if !(isfinite(width) && isfinite(height) &&
+         width > zero(T) && height > zero(T))
+        throw(ArgumentError(
+            "Spectral luminosity requires finite, positive transverse extents; " *
+            "observed (x=$(xspan), y=$(yspan)) with min_domain_halfwidth=" *
+            "$(solver.min_domain_halfwidth). Supply a positive physical bound " *
+            "for a degenerate axis."))
+    end
+    return width, height
+end
+
+function _spectral_luminosity_pair(solver::SpectralPoissonSolver,
+                                   x1, y1, x2, y2, klum, nx, ny)
     T = promote_type(eltype(x1), eltype(x2), typeof(klum))
     xmin = min(minimum(x1), minimum(x2)); xmax = max(maximum(x1), maximum(x2))
     ymin = min(minimum(y1), minimum(y2)); ymax = max(maximum(y1), maximum(y2))
-    width = max(T(xmax - xmin), eps(T)); height = max(T(ymax - ymin), eps(T))
+    width, height = _spectral_luminosity_extents(
+        solver, xmax - xmin, ymax - ymin, T)
     tx = width / T(nx - 1.1); ty = height / T(ny - 1.1)
     width += T(0.1) * tx; height += T(0.1) * ty
     xmin -= T(0.05) * tx; ymin -= T(0.05) * ty
@@ -620,6 +677,11 @@ function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2)
         _nonfinite_coordinate_error(:beam, (x=x2, y=y2);
                                     context="spectral Dirichlet box, beam 2")
     end
+    L = max(L, typeof(L)(solver.min_domain_halfwidth))
+    L > zero(L) || throw(ArgumentError(
+        "Spectral Dirichlet box has zero half-width. Supply a positive " *
+        "min_domain_halfwidth in particle-coordinate length units for a beam " *
+        "collapsed at the origin."))
     return L, L
 end
 
@@ -651,6 +713,11 @@ function _spectral_box_drifted(solver::SpectralPoissonSolver, rep1, rep2)
             (x=rep2.x, px=rep2.px, y=rep2.y, py=rep2.py, z=rep2.z);
             context="spectral drifted Dirichlet box, beam 2")
     end
+    L = max(L, typeof(L)(solver.min_domain_halfwidth))
+    L > zero(L) || throw(ArgumentError(
+        "Spectral drifted Dirichlet box has zero half-width. Supply a positive " *
+        "min_domain_halfwidth in particle-coordinate length units for a beam " *
+        "collapsed at the origin."))
     return L, L
 end
 
@@ -774,7 +841,8 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
                     r2.px[p] += a * ex[t]; r2.py[p] += a * ey[t]
                 end
                 compute_luminosity &&
-                    (lp += _spectral_luminosity_pair(sx, sy, fx, fy, klum, lnx, lny))
+                    (lp += _spectral_luminosity_pair(
+                        solver, sx, sy, fx, fy, klum, lnx, lny))
             end
         end
         lum_parts[chunk] = lp
@@ -845,7 +913,8 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
                 _pic_store_slice!(beam1.rep, idx1, field1)
                 _pic_store_slice!(beam2.rep, idx2, field2)
                 compute_luminosity &&
-                    (local_lum += _spectral_luminosity_pair(vx1, vy1, vx2, vy2, klum, lnx, lny))
+                    (local_lum += _spectral_luminosity_pair(
+                        solver, vx1, vy1, vx2, vy2, klum, lnx, lny))
             end
             lum_parts[chunk] = local_lum
         end

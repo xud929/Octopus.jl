@@ -167,7 +167,7 @@ function spectral_weakstrong_limit_reference!(source, probe, solver)
                 coord_probe, param_probe, param_source, T)
             Octopus._pic_store_slice!(probe.rep, idx_probe, field_probe)
             luminosity += Octopus._spectral_luminosity_pair(
-                vx_source, vy_source, vx_probe, vy_probe, klum, lnx, lny)
+                solver, vx_source, vy_source, vx_probe, vy_probe, klum, lnx, lny)
         else
             ex, ey = Octopus._spectral_field_ws(
                 solver, ws, coord_source.x, coord_source.y,
@@ -178,7 +178,7 @@ function spectral_weakstrong_limit_reference!(source, probe, solver)
                 probe.rep.py[p] += kick_scale * ey[t]
             end
             luminosity += Octopus._spectral_luminosity_pair(
-                coord_source.x, coord_source.y, coord_probe.x, coord_probe.y,
+                solver, coord_source.x, coord_source.y, coord_probe.x, coord_probe.y,
                 klum, lnx, lny)
         end
     end

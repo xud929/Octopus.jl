@@ -1755,6 +1755,99 @@ end
     @test all(array -> all(isfinite, array), coordinate_arrays(beam2))
 end
 
+@testset "Physical transverse scale controls" begin
+    @test GaussianPoissonSolver().min_sigma == 0.0
+    @test_throws ArgumentError GaussianPoissonSolver(min_sigma=-1.0)
+    @test_throws ArgumentError GaussianPoissonSolver(min_sigma=Inf)
+    @test_throws ArgumentError GaussianPoissonSolver(min_sigma=NaN)
+
+    @test PICPoissonSolver().min_transverse_extent == (0.0, 0.0)
+    @test PICPoissonSolver(min_transverse_extent=2.0e-4).min_transverse_extent ==
+          (2.0e-4, 2.0e-4)
+    @test_throws ArgumentError PICPoissonSolver(min_transverse_extent=(-1.0, 1.0))
+    @test_throws ArgumentError PICPoissonSolver(min_transverse_extent=(1.0,))
+    @test_throws ArgumentError PICPoissonSolver(min_transverse_extent=(1.0, Inf))
+    @test_throws ArgumentError PICPoissonSolver(min_transverse_extent="1e-4")
+
+    for T in (Float32, Float64)
+        floor_x = T(2.0e-4)
+        floor_y = T(4.0e-4)
+        pic = PICPoissonSolver{T}(;
+            grid=(16, 16), min_transverse_extent=(floor_x, floor_y))
+        @test pic.min_transverse_extent isa Tuple{T,T}
+        source_grid, field_grid = Octopus._pic_interaction_grids(
+            pic, zero(T), zero(T), zero(T), zero(T),
+            zero(T), zero(T), zero(T), zero(T))
+        @test source_grid.width ≈ floor_x * T(1.25)
+        @test source_grid.height ≈ floor_y * T(1.25)
+        @test field_grid.width == source_grid.width
+        @test field_grid.height == source_grid.height
+
+        z = zeros(T, 8)
+        luminosity = Octopus._pic_luminosity(pic, z, z, z, z, one(T))
+        @test isfinite(luminosity)
+        @test luminosity > zero(T)
+
+        spectral = SpectralPoissonSolver{T}(;
+            grid=(16, 16), min_domain_halfwidth=T(3.0e-4))
+        @test spectral.min_domain_halfwidth isa T
+        @test Octopus._spectral_box(spectral, z, z, z, z) ==
+              (T(3.0e-4), T(3.0e-4))
+        spectral_luminosity = Octopus._spectral_luminosity_pair(
+            spectral, z, z, z, z, one(T), 16, 16)
+        @test isfinite(spectral_luminosity)
+        @test spectral_luminosity > zero(T)
+
+        hx = T(2.5e-4)
+        hy = T(4.0e-4)
+        standard = Octopus._pic_green(
+            :standard, zero(T), zero(T), zero(T), zero(T), hx, hy, 8, 8)
+        integrated = Octopus._pic_green(
+            :integrated, zero(T), zero(T), zero(T), zero(T), hx, hy, 8, 8)
+        @test standard[1, 1] == integrated[1, 1]
+        @test isfinite(standard[1, 1])
+        @test Octopus._pic_kernel_integral(zero(T), zero(T)) == zero(T)
+    end
+
+    zero64 = zeros(8)
+    @test_throws ArgumentError Octopus._pic_interaction_grids(
+        PICPoissonSolver(grid=(16, 16)),
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    @test_throws ArgumentError Octopus._pic_luminosity(
+        PICPoissonSolver(grid=(16, 16)), zero64, zero64, zero64, zero64, 1.0)
+    @test_throws ArgumentError Octopus._spectral_box(
+        SpectralPoissonSolver(grid=(16, 16)), zero64, zero64, zero64, zero64)
+    @test_throws ArgumentError Octopus._spectral_luminosity_pair(
+        SpectralPoissonSolver(grid=(16, 16)),
+        zero64, zero64, zero64, zero64, 1.0, 16, 16)
+    @test_throws ArgumentError SpectralPoissonSolver(min_domain_halfwidth=-1.0)
+    @test_throws ArgumentError SpectralPoissonSolver(min_domain_halfwidth=Inf)
+    @test_throws ArgumentError SpectralPoissonSolver(min_domain_halfwidth=NaN)
+
+    scale = 1.0e3
+    pic1 = PICPoissonSolver(
+        grid=(16, 16), min_transverse_extent=(2.0e-4, 4.0e-4))
+    pic2 = PICPoissonSolver(
+        grid=(16, 16), min_transverse_extent=scale .* (2.0e-4, 4.0e-4))
+    grids1 = Octopus._pic_interaction_grids(
+        pic1, -1.0e-4, 1.0e-4, -1.0e-4, 1.0e-4,
+        -5.0e-5, 5.0e-5, -5.0e-5, 5.0e-5)
+    grids2 = Octopus._pic_interaction_grids(
+        pic2, -scale * 1.0e-4, scale * 1.0e-4,
+        -scale * 1.0e-4, scale * 1.0e-4,
+        -scale * 5.0e-5, scale * 5.0e-5,
+        -scale * 5.0e-5, scale * 5.0e-5)
+    for (grid1, grid2) in zip(grids1, grids2), name in (:x0, :y0, :width, :height)
+        @test getproperty(grid2, name) ≈ scale * getproperty(grid1, name)
+    end
+
+    spectral_report = configuration_report(
+        SpectralPoissonSolver(min_domain_halfwidth=1.0e-4);
+        policy=CPUThreadsExecutionPolicy(threads=1), backend=CPUThreadsBackend)
+    report_by_name = Dict(entry.name => entry for entry in spectral_report)
+    @test report_by_name[:min_domain_halfwidth].resolved == 1.0e-4
+end
+
 include(joinpath(pkgdir(Octopus), "validation", "symplecticity_validation.jl"))
 
 @testset "Finite-difference 6D symplecticity validation" begin

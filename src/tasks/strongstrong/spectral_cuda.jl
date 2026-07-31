@@ -466,7 +466,8 @@ if _HAS_CUDA
                 CUDA.@cuda threads=threads blocks=cld(length(idx1), threads) _cuda_spectral_interp_scatter_kernel!(
                     r1.px, r1.py, idx1, Exg2, Eyg2, sx1, sy1, T(Lx), T(Ly), hx2, hy2, Nx, Ny, a2)
                 compute_luminosity &&
-                    (luminosity += _cuda_spectral_luminosity_pair(sx1, sy1, sx2, sy2, klum, lnx, lny))
+                    (luminosity += _cuda_spectral_luminosity_pair(
+                        solver, sx1, sy1, sx2, sy2, klum, lnx, lny))
             end
             return compute_luminosity ? luminosity : T(NaN)
         end
@@ -519,7 +520,9 @@ if _HAS_CUDA
         # Midpoint density-overlap luminosity into preallocated ws.qlum1/qlum2, with
         # the midpoint drift folded into the deposit. Source 1 is read from the rep via
         # `idx1`; source 2 from the contiguous snapshot arrays sx2..spy2 (length n2).
-        function _cuda_spectral_luminosity_idx_snap!(ws::_SpectralCudaWS{T}, rep1, idx1, center1,
+        function _cuda_spectral_luminosity_idx_snap!(solver::SpectralPoissonSolver,
+                                                     ws::_SpectralCudaWS{T},
+                                                     rep1, idx1, center1,
                                                      sx2, spx2, sy2, spy2, n2, center2,
                                                      klum, nx, ny) where {T}
             s1 = T(0.5) * (T(center1) - T(center2))
@@ -536,7 +539,8 @@ if _HAS_CUDA
             xmax = max(maximum(d1x, idx1), maximum(v2x .+ v2px .* s2))
             ymin = min(minimum(d1y, idx1), minimum(v2y .+ v2py .* s2))
             ymax = max(maximum(d1y, idx1), maximum(v2y .+ v2py .* s2))
-            width = max(T(xmax - xmin), eps(T)); height = max(T(ymax - ymin), eps(T))
+            width, height = _spectral_luminosity_extents(
+                solver, xmax - xmin, ymax - ymin, T)
             tx = width / T(nx - 1.1); ty = height / T(ny - 1.1)
             width += T(0.1) * tx; height += T(0.1) * ty
             xmin -= T(0.05) * tx; ymin -= T(0.05) * ty
@@ -589,7 +593,7 @@ if _HAS_CUDA
                 # Luminosity before direction 2 kicks beam1, so both sources are
                 # pre-collision: beam1 from the rep, beam2 from the snapshot.
                 compute_luminosity && (luminosity += _cuda_spectral_luminosity_idx_snap!(
-                    ws, r1, idx1, param1.center,
+                    solver, ws, r1, idx1, param1.center,
                     ws.snapx, ws.snappx, ws.snapy, ws.snappy, n2, param2.center,
                     klum, lnx, lny))
                 # Direction 2: source beam2 (snapshot) -> kick beam1.
@@ -616,6 +620,11 @@ if _HAS_CUDA
                 _nonfinite_coordinate_error(:beam, (x=r2.x, y=r2.y);
                                             context="spectral Dirichlet box, beam 2")
             end
+            L = max(L, typeof(L)(solver.min_domain_halfwidth))
+            L > zero(L) || throw(ArgumentError(
+                "CUDA spectral Dirichlet box has zero half-width. Supply a positive " *
+                "min_domain_halfwidth in particle-coordinate length units for a " *
+                "beam collapsed at the origin."))
             return L, L
         end
 
@@ -640,15 +649,22 @@ if _HAS_CUDA
                     (x=r2.x, px=r2.px, y=r2.y, py=r2.py, z=r2.z);
                     context="spectral drifted Dirichlet box, beam 2")
             end
+            L = max(L, typeof(L)(solver.min_domain_halfwidth))
+            L > zero(L) || throw(ArgumentError(
+                "CUDA spectral drifted Dirichlet box has zero half-width. Supply " *
+                "a positive min_domain_halfwidth in particle-coordinate length " *
+                "units for a beam collapsed at the origin."))
             return L, L
         end
 
         # Density-overlap luminosity on a shared grid (matches the CPU convention).
-        function _cuda_spectral_luminosity_pair(x1, y1, x2, y2, klum, nx, ny)
+        function _cuda_spectral_luminosity_pair(solver::SpectralPoissonSolver,
+                                                x1, y1, x2, y2, klum, nx, ny)
             T = eltype(x1)
             xmin = min(minimum(x1), minimum(x2)); xmax = max(maximum(x1), maximum(x2))
             ymin = min(minimum(y1), minimum(y2)); ymax = max(maximum(y1), maximum(y2))
-            width = max(T(xmax - xmin), eps(T)); height = max(T(ymax - ymin), eps(T))
+            width, height = _spectral_luminosity_extents(
+                solver, xmax - xmin, ymax - ymin, T)
             tx = width / T(nx - 1.1); ty = height / T(ny - 1.1)
             width += T(0.1) * tx; height += T(0.1) * ty
             xmin -= T(0.05) * tx; ymin -= T(0.05) * ty

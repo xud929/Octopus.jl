@@ -28,6 +28,13 @@ is $\Delta\mathbf p_\perp = 2k_{bb}\mathbf E_{\text{PIC}}$, which reproduces the
 Bassetti-Erskine convention $\mathbf K_{\text{BE}}\to2\hat{\mathbf r}/r$ per unit
 population (Section 1 of the hybrid note).
 
+The adaptive mesh width is normally derived from particle extrema or RMS. If an
+axis is exactly degenerate, that data-derived width is zero and a two-dimensional
+cell area cannot be formed. `min_transverse_extent` supplies an explicit
+physical width in particle-coordinate units for such an axis; its default
+`(0,0)` adds no artificial scale. Machine epsilon is not a valid replacement
+because it is dimensionless and changes with floating-point precision.
+
 ## 2. On-mesh field gradient
 
 `_pic_field!` forms $\mathbf E=-\nabla\phi$ on the mesh. Two stencils are
@@ -88,9 +95,13 @@ flat-beam field-accuracy studies only — see Section 3.5 for its cost).
 ### 3.1 Node-sampled (`green_type=:standard`)
 
 $G$ evaluated at node separations, $G_{ij}=-\tfrac12\ln r_{ij}^2$, with the
-singular self-term floored. Cheapest to build and adequate for round beams, but
-it samples a function with a logarithmic singularity, so its accuracy degrades as
-cells become anisotropic.
+singular self-term replaced by the analytic average over its finite source cell.
+This avoids introducing a machine-epsilon value with the dimensions of
+$r^2$. The normal interaction-grid alignment offsets source and field nodes by
+half a cell, so the replacement is only exercised by an exactly coincident
+source/field grid. This kernel is cheapest to build and adequate for round beams,
+but it samples a function with a logarithmic singularity away from that one cell,
+so its accuracy degrades as cells become anisotropic.
 
 ### 3.2 Cell-integrated (`green_type=:integrated`, default)
 

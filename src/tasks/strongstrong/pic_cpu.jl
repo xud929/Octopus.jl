@@ -892,12 +892,35 @@ value. Used by `grid_quantize`; `q = 0` disables it.
     return exp2(ceil(log2(w) / q) * q)
 end
 
+@inline function _pic_resolve_transverse_extent(solver::PICPoissonSolver,
+                                                xspan, yspan, context::AbstractString)
+    T = promote_type(typeof(xspan), typeof(yspan), eltype(solver.min_transverse_extent))
+    floor_x = T(solver.min_transverse_extent[1])
+    floor_y = T(solver.min_transverse_extent[2])
+    width = max(T(xspan), floor_x)
+    height = max(T(yspan), floor_y)
+    if !(isfinite(width) && isfinite(height) &&
+         width > zero(T) && height > zero(T))
+        throw(ArgumentError(
+            "$(context) requires finite, positive transverse extents; observed " *
+            "(x=$(xspan), y=$(yspan)) with min_transverse_extent=" *
+            "$(solver.min_transverse_extent). Supply a positive physical bound " *
+            "for every degenerate axis."))
+    end
+    return width, height
+end
+
 function _pic_interaction_grids(solver::PICPoissonSolver, sxmin, sxmax, symin, symax,
                                 fxmin, fxmax, fymin, fymax)
     nx, ny = solver.grid
-    T = promote_type(typeof(sxmin), typeof(fxmin))
-    width = max(T(sxmax - sxmin), T(fxmax - fxmin), eps(T))
-    height = max(T(symax - symin), T(fymax - fymin), eps(T))
+    T = promote_type(typeof(sxmin), typeof(fxmin),
+                     eltype(solver.min_transverse_extent))
+    width, height = _pic_resolve_transverse_extent(
+        solver,
+        max(T(sxmax - sxmin), T(fxmax - fxmin)),
+        max(T(symax - symin), T(fymax - fymin)),
+        "PIC interaction grid",
+    )
     tx = width / (nx - 4)
     ty = height / (ny - 4)
     width += 3 * tx
@@ -1339,7 +1362,7 @@ end
 
 @inline function _pic_kernel_integral(x, y)
     r2 = x * x + y * y
-    r2 = max(r2, eps(typeof(r2)))
+    iszero(r2) && return zero(r2)
     return (log(r2) - 3) * x * y + _pic_atan_ratio(y, x) * x * x + _pic_atan_ratio(x, y) * y * y
 end
 
@@ -1479,8 +1502,16 @@ function _pic_green!(green, green_type, field_x0, field_y0, source_x0, source_y0
             val -= _pic_kernel_integral(x - half_hx, y + half_hy)
             green[i + 1, j + 1] = hxihyi * val
         else
-            r2 = max(x * x + y * y, eps(T))
-            green[i + 1, j + 1] = T(-0.5) * log(r2)
+            r2 = x * x + y * y
+            if iszero(r2)
+                val = _pic_kernel_integral(x + half_hx, y + half_hy)
+                val += _pic_kernel_integral(x - half_hx, y - half_hy)
+                val -= _pic_kernel_integral(x + half_hx, y - half_hy)
+                val -= _pic_kernel_integral(x - half_hx, y + half_hy)
+                green[i + 1, j + 1] = hxihyi * val
+            else
+                green[i + 1, j + 1] = T(-0.5) * log(r2)
+            end
         end
     end
     return green
@@ -1660,8 +1691,8 @@ function _pic_luminosity!(solver::PICPoissonSolver, x1, y1, x2, y2, klum, q1, q2
     xmax = max(maximum(x1), maximum(x2))
     ymin = min(minimum(y1), minimum(y2))
     ymax = max(maximum(y1), maximum(y2))
-    width = max(T(xmax - xmin), eps(T))
-    height = max(T(ymax - ymin), eps(T))
+    width, height = _pic_resolve_transverse_extent(
+        solver, T(xmax - xmin), T(ymax - ymin), "PIC luminosity grid")
     tx = width / T(nx - 1.1)
     ty = height / T(ny - 1.1)
     width += T(0.1) * tx
