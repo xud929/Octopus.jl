@@ -129,6 +129,78 @@ and it costs no change to the particle representation, because the record lives
 in the element, not in the beam. NaN then does only the one job it is good at:
 marking the particle dead so every subsequent map leaves it alone.
 
+### Logging exactly once: detect the transition, not the condition
+
+A particle killed at turn `n` stays NaN, and will meet every aperture element on
+every later turn. It must be logged once, not every time.
+
+The naive check re-logs forever, and for a subtle reason: every comparison with
+NaN is false, so `x^2 + y^2 < r^2` is false for a dead particle and it reads as
+"outside the aperture" again. The same property supplies the fix, because a dead
+particle also fails `isfinite`. Testing both identifies the *edge* rather than
+the state:
+
+```julia
+was_alive  = isfinite(x) & isfinite(y)      # a dead particle is already NaN
+inside     = predicate(x, y, ...)
+newly_lost = was_alive & !inside            # true exactly once, ever
+```
+
+This is branch-free, needs no memory and no per-particle flag, and is exactly
+idempotent: once a particle is NaN, `was_alive` is false at this aperture and at
+every other one, on this turn and every later turn. It is the same `isfinite`
+test the reductions need anyway, so it costs nothing new.
+
+### What to log: the coordinates, not a verdict
+
+Recording the six coordinates *before* they are overwritten lets the reader infer
+why a particle was lost, rather than trusting the element to have classified it.
+The element knows the shape; only the coordinates say how far outside, in which
+plane, and with what angle — and those distinguish a genuine aperture loss from
+a particle that was already diverging.
+
+Because a particle is lost **at most once**, one record per particle suffices for
+an entire run, shared across every aperture in the lattice:
+
+    turn, element id, x, px, y, py, z, pz      per particle, written once
+
+That storage has the property GPU logging usually lacks: **no atomics and no
+counter**. Each particle writes its own slot, `newly_lost` guarantees exactly one
+write, and there is no contention because no two particles share a slot. The cost
+is proportional to the beam rather than the losses -- roughly `64 N` bytes -- which
+is the trade already identified as preferable at low loss fractions, and it also
+recovers *which element* for aperture losses, since the element stamps its own
+id.
+
+### Should lost particles be compacted?
+
+Xsuite moves lost particles to the tail so kernels can run over a shorter active
+range. Whether that pays here is a different question from whether it pays there,
+and for this codebase there is a specific obstacle.
+
+Against compaction:
+
+- **It breaks the counter-RNG determinism.** Stochastic samples here are keyed by
+  particle *index* (`Contracts.jl:60`: "samples are keyed by particle index,
+  turn, seed, and `rng_id`"), which is what makes CPU and CUDA bit-identical and
+  results reproducible. Moving a particle to a different slot changes its key and
+  therefore its noise history, unless the particle carries its original id --
+  which is precisely the phase-space representation change being deferred.
+- **Dead particles do not diverge.** They execute the same branch-free arithmetic
+  as everyone else, so the waste is idle FLOPs, not warp divergence. At a few
+  percent loss this is far below noise.
+- The reorganize is itself an `O(N)` partition with data movement, so it only
+  pays once the saved work exceeds it.
+
+For compaction, at high loss fractions: a study that loses most of the beam
+spends most of its time tracking corpses, and there the argument reverses.
+
+**Recommendation: do not compact.** Keep lost particles in place, which the
+determinism story requires anyway, and revisit only if a measurement shows loss
+fraction dominating runtime. It is a performance optimization with a correctness
+coupling, and it should be driven by a measurement rather than by symmetry with
+another code.
+
 ### What this still cannot do, and why
 
 Attributing a loss to an **arbitrary element** — a particle that leaves the
@@ -198,15 +270,14 @@ Three caveats decide whether it is a good idea:
 
 ## 5. Open questions
 
-- **What shape should the loss log take?** A per-element growable buffer is the
-  simplest, but it has to work on the GPU, where appending from a kernel needs
-  either an atomic counter or a preallocated per-particle slot written once.
-  The second is a fixed cost proportional to the beam, not the losses, which may
-  be the better trade at low loss fractions.
-- **Does a lost particle stay in the beam?** NaN implies yes, at full cost, for
-  the rest of the run. Elegant compacts precisely to avoid tracking dead weight.
-  At large loss fractions this is the difference between a cheap and an
-  expensive study.
+- **Where does the shared loss record live?** It is per beam, not per element,
+  since a particle is lost once. That makes it a property of the tracking task
+  rather than of any aperture, so the element needs a handle to it -- the same
+  question a `ScheduledObserver` already answers, and the place to copy from.
+- **Does `isfinite` on two coordinates suffice for `was_alive`?** Killing sets
+  all six to NaN, so testing `x` and `y` is enough *if* nothing else can produce
+  a partially non-finite particle. If a solver can, the test should cover all
+  six, at negligible extra cost.
 - **Where is the aperture checked?** Bmad's `aperture_at` exists because
   entrance-only is wrong for a long magnet. A separate element checks at a point;
   a wrapped one could check both faces.
