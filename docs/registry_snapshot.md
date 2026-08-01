@@ -187,6 +187,7 @@ constructor names remain the user-facing way to build those specs.
 - `StrongStrongGaussianBackendConsistencyContract`
 - `StrongStrongPICBackendConsistencyContract`
 - `KnobEffectivenessContract`
+- `PTCConsistencyContract`
 - `PublicConfigurationEffectivenessContract`
 - `AbstractPhysicsContract`
 - `CoherentModePhysicsContract`

@@ -63,7 +63,10 @@ reference material, not API docs; the implementing code links back to them.
   decoded from the PTC source** (three
   independent mechanisms, the Forest–Milutinović multipole fringe as an exact
   point transformation, the six-component dipole face, the SAD cubic most codes
-  omit), and the PTC flag set a benchmark contract must pin.
+  omit), and the PTC flag set a benchmark contract must pin. Implemented by
+  the `:drift`/`:quadrupole`/`:sextupole`/`:octupole`/`:multipole`/`:sbend`
+  elements and checked by `PTCConsistencyContract` against a committed MAD-X
+  reference table.
 - [`near_round_bassetti_erskine_switch.md`](theory/near_round_bassetti_erskine_switch.md)
   — near-round analytic Gaussian evaluation: invariant anisotropy, the
   fixed-interval field integral and third-order potential expansion,

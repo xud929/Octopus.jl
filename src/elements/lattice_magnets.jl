@@ -101,7 +101,7 @@ dipole (Section 4.1 indexing, not PTC's). From Section 4.5,
 with **no** `1/(1+pz)` factor: in the exact Hamiltonian the chromatic
 dependence lives in the drift, and adding it here would double-count.
 """
-@inline function _lattice_kick(kn::NTuple{N,T}, ks::NTuple{N,T}, L::T,
+@inline function _lattice_kick(kn::NTuple{N,T}, ks::NTuple{N,T}, h::T, L::T,
                                x, px, y, py, z, pz) where {N,T}
     # Real recurrence rather than Complex: keeps the kernel GPU-friendly and
     # lets the map be complex-step differentiated in tests.
@@ -112,7 +112,11 @@ dependence lives in the drift, and adding it here would double-count.
         ai += kn[n] * ti + ks[n] * tr
         tr, ti = (tr * x - ti * y) / n, (tr * y + ti * x) / n
     end
-    return x, px - L * ar, y, py + L * ai, z, pz
+    # Section 4.5: dpx = -L (1+hx) By, dpy = +L (1+hx) Bx. Only a dipole may
+    # have h != 0 here (combined-function bends are refused), and the curved
+    # dipole field is exactly K0, so this factor is exact rather than truncated.
+    g = 1 + h * x
+    return x, px - L * g * ar, y, py + L * g * ai, z, pz
 end
 
 # ---------------------------------------------------------------------------
@@ -350,7 +354,7 @@ end
             d = hstep / 2
             @inbounds for _ in 1:elem.nst
                 x, px, y, py, z, pz = _body_step(elem, d, x, px, y, py, z, pz)
-                x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ks, hstep, x, px, y, py, z, pz)
+                x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ks, elem.h, hstep, x, px, y, py, z, pz)
                 x, px, y, py, z, pz = _body_step(elem, d, x, px, y, py, z, pz)
             end
         else
@@ -358,11 +362,11 @@ end
             k1 = T(_FR_K1) * hstep; k2 = T(_FR_K2) * hstep
             @inbounds for _ in 1:elem.nst
                 x, px, y, py, z, pz = _body_step(elem, d1, x, px, y, py, z, pz)
-                x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ks, k1, x, px, y, py, z, pz)
+                x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ks, elem.h, k1, x, px, y, py, z, pz)
                 x, px, y, py, z, pz = _body_step(elem, d2, x, px, y, py, z, pz)
-                x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ks, k2, x, px, y, py, z, pz)
+                x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ks, elem.h, k2, x, px, y, py, z, pz)
                 x, px, y, py, z, pz = _body_step(elem, d2, x, px, y, py, z, pz)
-                x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ks, k1, x, px, y, py, z, pz)
+                x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ks, elem.h, k1, x, px, y, py, z, pz)
                 x, px, y, py, z, pz = _body_step(elem, d1, x, px, y, py, z, pz)
             end
         end
@@ -413,7 +417,23 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
         "integrator_order must be one of $(LATTICE_INTEGRATOR_ORDERS); got $order"))
     h = T(getparam(spec, :h, zero(T)))
     b0 = T(getparam(spec, :b0, zero(T)))
-    kn, ks = _strength_tuples(T, getparam(spec, :kn, ()), getparam(spec, :ks, ()))
+    knraw = collect(T, getparam(spec, :kn, ()))
+    ksraw = collect(T, getparam(spec, :ks, ()))
+    # bend_model decides which side of the splitting carries the dipole.
+    #   :exact      -- b0 goes in the integrable map. No splitting error at all
+    #                  for a pure bend, and exact at nst = 1.
+    #   :drift_kick -- b0 goes in the kick, leaving a curved drift as the
+    #                  integrable part. This is PTC's MODEL=1 arrangement and is
+    #                  what a PTC comparison at finite nst requires.
+    model = Symbol(getparam(spec, :bend_model, :exact))
+    model in (:exact, :drift_kick) || throw(ArgumentError(
+        "bend_model must be :exact or :drift_kick; got \$(repr(model))"))
+    if model === :drift_kick && b0 != 0
+        isempty(knraw) && (knraw = T[zero(T)])
+        knraw[1] += b0
+        b0 = zero(T)
+    end
+    kn, ks = _strength_tuples(T, knraw, ksraw)
     # Stage 1 covers straight multipoles and pure (or curved-frame) dipoles. A
     # curved frame changes the multipole potential itself (Section 4.4), so a
     # combined-function bend needs the curved kick and is refused rather than
@@ -606,11 +626,12 @@ end
         hface1=ParamMeta(default=0, meaning="entrance pole-face curvature"),
         hface2=ParamMeta(default=0, meaning="exit pole-face curvature"),
         bend_fringe=ParamMeta(default=false, meaning="enable the pole-face maps (rotation, curvature, FINT/HGAP, wedge)"),
+        bend_model=ParamMeta(default=:exact, meaning="where the dipole sits in the splitting: :exact puts it in the integrable map (no splitting error, exact at nst=1); :drift_kick puts it in the kick, reproducing PTC MODEL=1 at finite nst"),
         nst=_COMMON_PARAMS.nst,
         integrator_order=_COMMON_PARAMS.integrator_order,
         fringe=_COMMON_PARAMS.fringe,
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
     example = SBendSpec(L=1.0, h=0.05, b0=0.05)
-    construction_help = "Friendly constructor: SBendSpec(; L, h=0, b0=0, e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=false, nst=1, integrator_order=2, fringe=:none, tracking_method=Symplectic6DMap()). h is the frame curvature and b0 the field; they need not agree. Combined-function bends are not yet supported."
+    construction_help = "Friendly constructor: SBendSpec(; L, h=0, b0=0, e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=false, bend_model=:exact, nst=1, integrator_order=2, fringe=:none, tracking_method=Symplectic6DMap()). h is the frame curvature and b0 the field; they need not agree. Combined-function bends are not yet supported."
 end

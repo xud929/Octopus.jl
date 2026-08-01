@@ -1178,6 +1178,44 @@ acceptable for a fixed design point. Hypothesis, not established practice.
   a user who fixes the width will see convergence stall. Consider either deriving
   the width from `ns` by default or rejecting a fixed width above some `ns`.
 
+## Lattice magnets: remaining work
+
+Implemented and validated (2026-07-31): drift, quadrupole, sextupole, octupole,
+multipole and sector bend with exact maps, PTC fringe fields, Strang and
+Forest-Ruth integrators. `PTCConsistencyContract` matches MAD-X 5.03.06 to
+~5e-13 on straight elements. FODO/DBA/TBA cells are symplectic to ~1e-15 and
+bit-identical on CPU and CUDA. Derivations:
+[`docs/theory/lattice_hamiltonian_and_conventions.md`](theory/lattice_hamiltonian_and_conventions.md).
+
+1. **Combined-function bends.** Currently refused rather than approximated. A
+   curved frame changes the multipole potential itself, so the curved kick of
+   Section 4.4 is required -- the recursion is derived and verified, only the
+   runtime evaluation is missing. This is the largest remaining gap: real rings
+   have gradient dipoles.
+
+2. **The bend's 5.7e-7 residual against PTC.** Straight elements agree to
+   ~5e-13; the bend agrees only to 5.7e-7 even with `bend_model = :drift_kick`,
+   which is PTC's MODEL=1 arrangement. Confirmed *not* to be the drift (`Sprot`
+   equals our curved drift to 4.4e-16) and *not* the kick's `(1+hx)` factor
+   (dropping it is 2000x worse). Remaining suspects: PTC's design length `LD`,
+   which enters `Sprot`'s longitudinal term separately from the arc length `L`,
+   and what `GETMAGNETIC` returns for a curved frame. Not round-off, so it is a
+   model detail worth finding before anyone trusts bend tracking at that level.
+
+3. **`wedge_coeff`** still has no default assignment found in the PTC sources.
+   Needed before any combined-function bend benchmark.
+
+4. **Cavity map.** Convention #1 chosen (Section 3), map not derived. Needed to
+   close a ring, not for magnets.
+
+5. **Misalignments and magnet errors.** Deferred by decision. Field errors are
+   already free -- add entries to `kn`/`ks`. Misalignment maps are designed as
+   entry/exit conjugations but not derived.
+
+6. **`VA`/`VS` extraction** from a measured gradient profile: evaluate the first
+   and second moments `J1`, `J2` numerically. Small utility, ships with the
+   element.
+
 ## Earlier Completed
 
 - Soft-Gaussian CUDA optimization (host-sync removal, device moments, fused

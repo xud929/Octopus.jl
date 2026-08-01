@@ -752,3 +752,32 @@ deficit per rule/ns/direction), `gaussian_slicing_tail_split.tsv`.
 
 Derivation: `../docs/theory/gaussian_longitudinal_slicing.md`. Recorded run and
 conclusions: `../docs/history/gaussian_slicing_convergence_2026_07_31.md`.
+
+## PTC Reference and Lattice Cells
+
+`generate_ptc_reference.jl` drives MAD-X/PTC to produce the table that
+`PTCConsistencyContract` checks against. It needs MAD-X on `PATH`; the contract
+does not, because the table is committed. The PTC flag set is pinned
+(`TIME=false`, `EXACT=true`, `MODEL=1`, plus `METHOD`/`NST` per case) --
+`EXACT=false` is MAD-X's default and silently selects the expanded Hamiltonian,
+which would validate the wrong model. PTC's `T` column is negated on write,
+because its longitudinal variable is conjugate to `delta` with the opposite
+orientation.
+
+```bash
+julia --project=. validation/generate_ptc_reference.jl
+```
+
+`lattice_cells.jl` builds FODO, DBA and TBA cells from those magnets and checks
+that they compose into working lattices: one-turn symplecticity by complex step,
+linear stability in both planes, Courant-Snyder invariant drift measured on
+momentum, and CPU/CUDA tracking consistency. Quadrupole strengths are found by a
+stability scan rather than hand-tuned, and the chosen working point is reported.
+
+```bash
+julia --project=. validation/lattice_cells.jl
+```
+
+Overrides: `OCTOPUS_LATTICE_N`, `OCTOPUS_LATTICE_TURNS`, `OCTOPUS_LATTICE_LONG`.
+Outputs `result/lattice_cells.tsv`. Derivations for every map:
+`../docs/theory/lattice_hamiltonian_and_conventions.md`.

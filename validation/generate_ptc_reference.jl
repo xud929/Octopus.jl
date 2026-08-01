@@ -1,0 +1,167 @@
+"""
+Generate the PTC reference table that `PTCConsistencyContract` checks against.
+
+This script needs MAD-X on `PATH`; the *contract* does not, because the table it
+produces is committed. Regenerate only when the case list changes, and record
+the MAD-X version in the table header when you do.
+
+Reference model
+---------------
+PTC as distributed with MAD-X, driven through `ptc_create_layout` with the flag
+set pinned in `docs/theory/lattice_hamiltonian_and_conventions.md` Section 7:
+
+    TIME  = false     convention #3, delta = dP/P0 (what Octopus tracks)
+    EXACT = true      exact Hamiltonian, NOT MAD-X's expanded default
+    MODEL = 1         drift-kick-drift, matching our splitting
+    METHOD, NST       integrator order and step count, varied per case
+
+`EXACT=false` is the PTC default and silently selects the expanded Hamiltonian,
+so leaving it out would validate the wrong model.
+
+Coordinate mapping
+------------------
+PTC's `T` column is conjugate to `delta` with the opposite orientation to the
+transverse pairs (Section 5.3, confirmed four ways plus directly against MAD-X
+output), so
+
+    Octopus (x, px, y, py, z, pz)  <->  PTC (X, PX, Y, PY, -T, PT)
+
+Outputs
+-------
+`validation/reference/ptc_madx_<version>.tsv` -- one row per (case, particle),
+carrying both the initial and final coordinates so the contract needs nothing
+but the table.
+
+Run
+---
+    julia --project=. validation/generate_ptc_reference.jl
+"""
+
+using Printf
+
+const HERE = @__DIR__
+const OUTDIR = joinpath(HERE, "reference")
+const WORK = mktempdir()
+
+# Test particles: on-axis, off-momentum, and large-amplitude in each plane.
+const PARTICLES = [
+    (0.0,     0.0,     0.0,     0.0,     0.0),
+    (1.3e-3,  3.0e-4, -0.9e-3, -2.2e-4,  1.1e-3),
+    (-2.1e-3, -5.0e-4, 1.7e-3,  4.0e-4, -8.0e-4),
+    (4.0e-3,  9.0e-4,  3.0e-3,  7.0e-4,  2.5e-3),
+    (0.0,     0.0,     0.0,     0.0,     3.0e-3),
+]
+
+"""
+One reference case: a MAD-X element definition plus the PTC integrator setting.
+`octopus` names the spec keywords the contract will build from.
+"""
+struct Case
+    name::String
+    madx::String          # element definition body, e.g. "quadrupole, l=0.4, k1=1.7"
+    L::Float64
+    method::Int
+    nst::Int
+    octopus::Dict{Symbol,Any}
+end
+
+const CASES = Case[
+    Case("drift", "drift, l=0.7", 0.7, 2, 1,
+         Dict(:kind => :drift, :L => 0.7)),
+    Case("quadrupole_m2_n1", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 1,
+         Dict(:kind => :quadrupole, :L => 0.4, :kn => (0.0, 1.7), :nst => 1, :integrator_order => 2)),
+    Case("quadrupole_m2_n8", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 8,
+         Dict(:kind => :quadrupole, :L => 0.4, :kn => (0.0, 1.7), :nst => 8, :integrator_order => 2)),
+    Case("quadrupole_m4_n3", "quadrupole, l=0.4, k1=1.7", 0.4, 4, 3,
+         Dict(:kind => :quadrupole, :L => 0.4, :kn => (0.0, 1.7), :nst => 3, :integrator_order => 4)),
+    Case("quadrupole_skew", "quadrupole, l=0.4, k1s=0.9", 0.4, 2, 4,
+         Dict(:kind => :quadrupole, :L => 0.4, :ks => (0.0, 0.9), :nst => 4, :integrator_order => 2)),
+    Case("sextupole_m2_n4", "sextupole, l=0.25, k2=14.0", 0.25, 2, 4,
+         Dict(:kind => :sextupole, :L => 0.25, :kn => (0.0, 0.0, 14.0), :nst => 4, :integrator_order => 2)),
+    Case("sextupole_m4_n2", "sextupole, l=0.25, k2=14.0", 0.25, 4, 2,
+         Dict(:kind => :sextupole, :L => 0.25, :kn => (0.0, 0.0, 14.0), :nst => 2, :integrator_order => 4)),
+    Case("octupole_m2_n4", "octupole, l=0.15, k3=220.0", 0.15, 2, 4,
+         Dict(:kind => :octupole, :L => 0.15, :kn => (0.0, 0.0, 0.0, 220.0), :nst => 4, :integrator_order => 2)),
+    Case("sbend_m2_n1", "sbend, l=1.1, angle=0.198", 1.1, 2, 1,
+         Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 1)),
+    Case("sbend_m2_n4", "sbend, l=1.1, angle=0.198", 1.1, 2, 4,
+         Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 4)),
+]
+
+function madx_version()
+    out = read(pipeline(`sh -c "printf 'stop;\n' > $WORK/v.madx && madx $WORK/v.madx"`), String)
+    m = match(r"MAD-X\s+([0-9.]+)", out)
+    m === nothing && error("could not determine the MAD-X version")
+    return m.captures[1]
+end
+
+function run_case(case::Case)
+    job = "job.madx"
+    out = "out"          # MAD-X writes relative to its working directory
+    starts = join(("ptc_start, x=$(p[1]), px=$(p[2]), y=$(p[3]), py=$(p[4]), pt=$(p[5]);"
+                   for p in PARTICLES), "\n")
+    open(joinpath(WORK, job), "w") do io
+        print(io, """
+        option, -echo, -info, -warn;
+        beam, particle=proton, energy=10.0, sequence=lat;
+        el: $(case.madx);
+        lat: sequence, l=$(case.L);
+          el, at=$(case.L / 2);
+        endsequence;
+        use, sequence=lat;
+        ptc_create_universe;
+        ptc_create_layout, model=1, method=$(case.method), nst=$(case.nst),
+                           exact=true, time=false;
+        $starts
+        ptc_track, icase=6, closed_orbit=false, turns=1, element_by_element,
+                   onetable, dump, file=$out;
+        ptc_track_end;
+        ptc_end;
+        stop;
+        """)
+    end
+    run(pipeline(Cmd(`madx $job`; dir=WORK), devnull))
+    rows = Dict{Int,NTuple{6,Float64}}()
+    seen_end = false
+    for line in eachline(joinpath(WORK, out * "one"))
+        if startswith(line, "#segment")
+            seen_end = occursin("end", line)
+            continue
+        end
+        (startswith(line, "@") || startswith(line, "*") || startswith(line, "\$")) && continue
+        seen_end || continue
+        f = split(strip(line))
+        length(f) < 8 && continue
+        id = parse(Int, f[1])
+        rows[id] = (parse(Float64, f[3]), parse(Float64, f[4]), parse(Float64, f[5]),
+                    parse(Float64, f[6]), parse(Float64, f[7]), parse(Float64, f[8]))
+    end
+    length(rows) == length(PARTICLES) ||
+        error("case $(case.name): expected $(length(PARTICLES)) tracked particles, got $(length(rows))")
+    return rows
+end
+
+version = madx_version()
+mkpath(OUTDIR)
+path = joinpath(OUTDIR, "ptc_madx_$(version).tsv")
+open(path, "w") do io
+    println(io, "# PTC reference for PTCConsistencyContract")
+    println(io, "# MAD-X version: $version")
+    println(io, "# flags: model=1 (drift-kick-drift), exact=true, time=false")
+    println(io, "# columns hold OCTOPUS coordinates: PTC's T is negated on write,")
+    println(io, "# because its longitudinal variable is conjugate to delta with the")
+    println(io, "# opposite orientation (theory note Section 5.3).")
+    println(io, join(["case", "particle", "x0", "px0", "y0", "py0", "z0", "pz0",
+                      "x1", "px1", "y1", "py1", "z1", "pz1"], "\t"))
+    for case in CASES
+        rows = run_case(case)
+        for (i, p) in enumerate(PARTICLES)
+            f = rows[i]
+            @printf(io, "%s\t%d\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\t%.17g\n",
+                    case.name, i, p[1], p[2], p[3], p[4], 0.0, p[5],
+                    f[1], f[2], f[3], f[4], -f[5], f[6])
+        end
+        println("  $(case.name): ok")
+    end
+end
+println("\nMAD-X $version -> $path")

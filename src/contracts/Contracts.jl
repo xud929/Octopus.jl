@@ -6,6 +6,7 @@ export ContractResult, passed, validate,
        StrongStrongPICBackendConsistencyContract,
        SymplecticityContract,
        HighEnergyWeakStrongLimitContract,
+       PTCConsistencyContract,
        CoherentModePhysicsContract
 
 """
@@ -1466,4 +1467,116 @@ function validate(contract::CoherentModePhysicsContract; kwargs...)
         "The $(contract.solver) solver reproduces the Vlasov-band coherent-mode Yokoya factor with the sigma mode unshifted." :
         "The $(contract.solver) solver does not reproduce the Vlasov-band Yokoya factor (expected for moment-closure solvers: the pi-mode excess over the rigid value requires distribution-shape feedback)."
     return ContractResult(passed, message; residual=worst_drift, metrics=metrics)
+end
+
+"""
+    PTCConsistencyContract(; path=nothing, atol=Dict(), default_atol=1e-11)
+
+Compare `LatticeMagnet` tracking against a committed PTC reference table.
+
+PTC is Forest's code, distributed inside MAD-X, and it uses convention #3
+natively under `TIME=FALSE` -- the same longitudinal pair Octopus tracks -- so a
+comparison needs no coordinate conversion and cannot hide a convention error
+inside one. The reference is generated once by
+`validation/generate_ptc_reference.jl` and committed, so this contract runs
+without MAD-X installed.
+
+The table stores Octopus coordinates: PTC's `T` column is negated on write,
+because its longitudinal variable is conjugate to `delta` with the opposite
+orientation (theory note Sections 2.1, 5.3, 6.4).
+
+`atol` overrides the tolerance per case name. Agreement is not uniform across
+elements and the differences are physical, not numerical -- see
+`docs/theory/lattice_hamiltonian_and_conventions.md` and the per-case defaults
+below.
+"""
+Base.@kwdef struct PTCConsistencyContract <: AbstractImplementationContract
+    path::Union{Nothing,String} = nothing
+    default_atol::Float64 = 1e-11
+    atol::Dict{String,Float64} = Dict{String,Float64}()
+end
+
+"Specs matching the cases in the committed PTC reference table."
+function _ptc_reference_specs()
+    return Dict{String,Any}(
+        "drift" => DriftSpec(L=0.7),
+        "quadrupole_m2_n1" => QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=1, integrator_order=2),
+        "quadrupole_m2_n8" => QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=8, integrator_order=2),
+        "quadrupole_m4_n3" => QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=3, integrator_order=4),
+        "quadrupole_skew" => QuadrupoleSpec(L=0.4, ks=(0.0, 0.9), nst=4, integrator_order=2),
+        "sextupole_m2_n4" => SextupoleSpec(L=0.25, kn=(0.0, 0.0, 14.0), nst=4, integrator_order=2),
+        "sextupole_m4_n2" => SextupoleSpec(L=0.25, kn=(0.0, 0.0, 14.0), nst=2, integrator_order=4),
+        "octupole_m2_n4" => OctupoleSpec(L=0.15, kn=(0.0, 0.0, 0.0, 220.0), nst=4, integrator_order=2),
+        # PTC MODEL=1 splits a bend into curved drift plus dipole kick, so the
+        # comparison must use the matching bend_model. The residual is a known
+        # open item, not round-off; see the theory note.
+        "sbend_m2_n1" => SBendSpec(L=1.1, h=0.18, b0=0.18, nst=1, bend_model=:drift_kick),
+        "sbend_m2_n4" => SBendSpec(L=1.1, h=0.18, b0=0.18, nst=4, bend_model=:drift_kick),
+    )
+end
+
+const _PTC_DEFAULT_ATOL = Dict{String,Float64}(
+    "sbend_m2_n1" => 1.0e-6,
+    "sbend_m2_n4" => 1.0e-6,
+)
+
+function _ptc_reference_path(contract::PTCConsistencyContract)
+    contract.path !== nothing && return contract.path
+    # @__DIR__ rather than pkgdir, so the contract resolves whether Octopus was
+    # loaded as a package or by include.
+    dir = normpath(joinpath(@__DIR__, "..", "..", "validation", "reference"))
+    isdir(dir) || return nothing
+    files = filter(f -> startswith(f, "ptc_madx_") && endswith(f, ".tsv"), readdir(dir))
+    isempty(files) && return nothing
+    return joinpath(dir, last(sort(files)))
+end
+
+function validate(contract::PTCConsistencyContract; kwargs...)
+    path = _ptc_reference_path(contract)
+    if path === nothing || !isfile(path)
+        return ContractResult(:skipped,
+            "no committed PTC reference table found; regenerate with " *
+            "validation/generate_ptc_reference.jl on a machine with MAD-X")
+    end
+    specs = _ptc_reference_specs()
+    version = "unknown"
+    worst = Dict{String,Float64}()
+    rows = 0
+    for line in eachline(path)
+        if startswith(line, "#")
+            m = match(r"MAD-X version:\s*(\S+)", line)
+            m === nothing || (version = m.captures[1])
+            continue
+        end
+        startswith(line, "case") && continue
+        isempty(strip(line)) && continue
+        f = split(line, '\t')
+        length(f) == 14 || continue
+        name = f[1]
+        haskey(specs, name) || continue
+        v = parse.(Float64, f[3:14])
+        out = collect(compile_runtime(specs[name])(v[1], v[2], v[3], v[4], v[5], v[6]))
+        worst[name] = max(get(worst, name, 0.0), maximum(abs, out .- v[7:12]))
+        rows += 1
+    end
+    rows == 0 && return ContractResult(false, "PTC reference table $(path) had no usable rows")
+
+    failures = String[]
+    for (name, d) in worst
+        tol = get(contract.atol, name, get(_PTC_DEFAULT_ATOL, name, contract.default_atol))
+        d <= tol || push!(failures, "$(name): $(d) > $(tol)")
+    end
+    metrics = Dict{Symbol,Any}(:madx_version => version, :rows => rows,
+                               :cases => length(worst),
+                               :max_deviation => maximum(values(worst)))
+    for (name, d) in worst
+        metrics[Symbol("dev_", name)] = d
+    end
+    isempty(failures) && return ContractResult(true,
+        "matches PTC (MAD-X $(version)) across $(length(worst)) cases, " *
+        "worst deviation $(round(maximum(values(worst)); sigdigits=3))";
+        residual=maximum(values(worst)), metrics=metrics)
+    return ContractResult(false,
+        "PTC comparison (MAD-X $(version)) failed: " * join(failures, "; ");
+        residual=maximum(values(worst)), metrics=metrics)
 end

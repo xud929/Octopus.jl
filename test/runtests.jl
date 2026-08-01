@@ -1016,6 +1016,82 @@ end
     end
 end
 
+@testset "PTC consistency" begin
+    # Compares LatticeMagnet against a committed PTC reference table generated
+    # by validation/generate_ptc_reference.jl. Skips cleanly when the table is
+    # absent; MAD-X is never needed at test time.
+    result = validate(PTCConsistencyContract())
+    @test result.status in (:passed, :skipped)
+    if result.status === :passed
+        @test result.metrics[:cases] >= 8
+        @test haskey(result.metrics, :madx_version)
+        # Straight elements should agree to MAD-X's printed precision. The bend
+        # is looser and deliberately so -- see the contract docstring.
+        for k in (:dev_drift, :dev_quadrupole_m2_n1, :dev_quadrupole_m4_n3,
+                  :dev_sextupole_m4_n2, :dev_octupole_m2_n4)
+            @test result.metrics[k] < 1.0e-11
+        end
+    end
+end
+
+@testset "Lattice cells track and stay symplectic" begin
+    S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
+    track(cell, u) = foldl((c, e) -> e(c...), cell; init=u)
+    function jac(cell, u0)
+        J = zeros(6, 6)
+        for j in 1:6
+            u = ComplexF64[u0...]
+            u[j] += 1e-30im
+            J[:, j] = imag.(collect(track(cell, Tuple(u)))) ./ 1e-30
+        end
+        return J
+    end
+    q(k, L=0.3) = compile_runtime(QuadrupoleSpec(L=L, kn=(0.0, k), nst=4, integrator_order=4))
+    d(L) = compile_runtime(DriftSpec(L=L))
+    b(L, ang) = compile_runtime(SBendSpec(L=L, h=ang / L, b0=ang / L, nst=4, integrator_order=4))
+    sx(k2) = compile_runtime(SextupoleSpec(L=0.2, kn=(0.0, 0.0, k2), nst=4, integrator_order=4))
+
+    fodo = (q(1.6), d(1.2), q(-1.6), d(1.2))
+    dba = (q(-1.1, 0.25), d(0.6), b(1.0, 0.20), d(0.6), q(1.5, 0.35),
+           d(0.6), b(1.0, 0.20), d(0.6), q(-1.1, 0.25))
+    tba = (q(-1.0, 0.25), d(0.5), b(0.9, 0.14), d(0.5), q(0.9), d(0.5), b(0.9, 0.14),
+           d(0.5), q(0.9), d(0.5), b(0.9, 0.14), d(0.5), q(-1.0, 0.25))
+
+    u0 = (1.0e-4, 2.0e-5, -0.8e-4, -1.5e-5, 0.0, 0.0)
+    for (name, cell) in (("FODO", fodo), ("DBA", dba), ("TBA", tba),
+                         ("FODO+sext", (fodo..., sx(8.0))),
+                         ("DBA+sext", (dba..., sx(8.0))),
+                         ("TBA+sext", (tba..., sx(8.0))))
+        J = jac(cell, u0)
+        @test maximum(abs, J' * S6 * J - S6) < 1.0e-12
+        # Linearly stable in both planes, i.e. a usable cell rather than an
+        # arbitrary sequence of elements.
+        @test abs(J[1, 1] + J[2, 2]) < 2
+        @test abs(J[3, 3] + J[4, 4]) < 2
+        # Bounded over many turns.
+        u = u0
+        for _ in 1:200
+            u = track(cell, u)
+        end
+        @test all(isfinite, u)
+        @test maximum(abs, collect(u)[1:4]) < 1.0e-2
+    end
+
+    # Composed lines must be backend-consistent, not just single elements.
+    for (name, cell) in (("FODO", fodo), ("DBA+sext", (dba..., sx(8.0))))
+        r = validate(ElementTrackingBackendConsistencyContract(;
+            line=cell, n_particles=512, turns=2,
+            backend_a=CPUThreadsBackend, backend_b=CPUThreadsBackend,
+            atol=1.0e-12, rtol=1.0e-12))
+        @test passed(r)
+        gpu = validate(ElementTrackingBackendConsistencyContract(;
+            line=cell, n_particles=512, turns=2,
+            backend_a=CPUThreadsBackend, backend_b=CUDABackend,
+            atol=1.0e-10, rtol=1.0e-10))
+        @test gpu.status in (:passed, :skipped)
+    end
+end
+
 @testset "Configuration rejection" begin
     @test_throws ArgumentError CPUThreadsExecutionPolicy(threads=0)
     @test_throws ArgumentError CUDALaunchConfig(threads=0)
