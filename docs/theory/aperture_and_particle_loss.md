@@ -151,6 +151,42 @@ idempotent: once a particle is NaN, `was_alive` is false at this aperture and at
 every other one, on this turn and every later turn. It is the same `isfinite`
 test the reductions need anyway, so it costs nothing new.
 
+**Test all six coordinates, not just `x` and `y`.** Tracking itself can produce a
+non-finite particle -- an exact drift takes `sqrt((1+pz)^2 - px^2 - py^2)`, which
+goes imaginary once the transverse momentum exceeds the total, and overflow can
+give `Inf` -- and such a particle may arrive with, say, `px` non-finite while `x`
+is still finite. A two-coordinate test would call it alive, log it as an aperture
+loss, and attribute a numerical blowup to whatever aperture happened to be
+downstream. All six is the honest test and costs four more comparisons.
+
+That gives the right behaviour for a particle that died inside a magnet: it
+reaches the aperture already non-finite, `was_alive` is false, and **the aperture
+does not log it**. It should not -- it did not lose that particle. The aperture
+logs only what it stopped.
+
+Two consequences of that follow, and both are worth building in rather than
+discovering later.
+
+**Unattributed deaths must stay visible.** A particle lost to a numerical blowup
+is logged by nobody, so the aperture logs under-report the dead:
+
+    dead at end of run  -  logged at apertures  =  lost elsewhere, unattributed
+
+That difference is not noise, it is a diagnostic. Non-finite coordinates have so
+far meant a *bug* in this codebase, and the whole point of overloading NaN is
+that they now sometimes mean *lost*; a run where the two counts disagree is
+telling you the old meaning still applies somewhere. A task-level summary should
+report both numbers so the gap is visible instead of silently reducing the
+survivor count.
+
+**Do not canonicalize `Inf` to `NaN`.** It is tempting to have the aperture
+normalize any non-finite particle to all-NaN so "dead" has one representation and
+every downstream mask is a single test. That would erase information: `Inf`
+signals an overflow, `NaN` an invalid operation such as the imaginary square root
+above, and a deliberate kill is also `NaN`. Keeping them distinct is what lets
+someone tell a diverging trajectory from a particle that hit a collimator.
+Reductions should therefore mask on `!isfinite`, not on `isnan`.
+
 ### What to log: the coordinates, not a verdict
 
 Recording the six coordinates *before* they are overwritten lets the reader infer
@@ -274,10 +310,9 @@ Three caveats decide whether it is a good idea:
   since a particle is lost once. That makes it a property of the tracking task
   rather than of any aperture, so the element needs a handle to it -- the same
   question a `ScheduledObserver` already answers, and the place to copy from.
-- **Does `isfinite` on two coordinates suffice for `was_alive`?** Killing sets
-  all six to NaN, so testing `x` and `y` is enough *if* nothing else can produce
-  a partially non-finite particle. If a solver can, the test should cover all
-  six, at negligible extra cost.
+- **Where should the dead-versus-logged reconciliation be reported?** It belongs
+  with whatever summarizes a run, not with the aperture, since no single aperture
+  can know the total. The natural home is the task's own diagnostics.
 - **Where is the aperture checked?** Bmad's `aperture_at` exists because
   entrance-only is wrong for a long magnet. A separate element checks at a point;
   a wrapped one could check both faces.
