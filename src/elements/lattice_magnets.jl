@@ -409,22 +409,11 @@ of `y_new = y + B y_new^2 / 2`, written cancellation-free.
     return x, px, y, py, z, pz
 end
 
-"""
-Linear pole-face focusing with the fringe-field-integral correction
-(Section 6.3.2), plus the cubic term inherited from SAD that most codes omit.
-"""
-@inline function _dipole_edge(b1::T, e::T, fint::T, hgap::T, σ,
-                              x, px, y, py, z, pz) where {T}
-    b1 == 0 && return x, px, y, py, z, pz
-    ψ = fint * hgap == 0 ? zero(T) :
-        2 * σ * fint * hgap * b1 * (1 + sin(e)^2) / cos(e)
-    px += tan(e) * σ * b1 * x
-    py -= tan(e - ψ) * σ * b1 * y
-    if fint * hgap != 0
-        py -= b1 * b1 / (18 * fint * hgap) * y^3
-    end
-    return x, px, y, py, z, pz
-end
+# The linear pole-face focusing map of Section 6.3.2 used to live here and has
+# been removed: PTC has no separate linear edge-focusing map, because the exact
+# `FRINGE_dipole` together with `WEDGE` already does that work, and keeping a
+# second uncalled edge map invited the reader to believe edge focusing was
+# applied somewhere it was not. The derivation stays in the theory note.
 
 """
 Quadrupole-in-wedge kick, PTC's `MAD8_WEDGE` term.
@@ -500,6 +489,7 @@ struct LatticeMagnet{M<:AbstractTrackingMethod,T<:AbstractFloat,N,ORDER,FRINGE,M
     va::T; vs::T
     wc1::T; wc2::T           # PTC MAD8_WEDGE coefficients
     hf::Int                  # multipole-fringe order cap; 0 means uncapped
+    kill1::Bool; kill2::Bool # PTC KILL_ENT_FRINGE / KILL_EXI_FRINGE
 end
 
 @inline _has(::LatticeMagnet{M,T,N,O,F,MC,NC}, bit) where {M,T,N,O,F,MC,NC} = (F & bit) != 0
@@ -521,15 +511,18 @@ the same field either way.
     end
     # The hard-edge dipole fringe runs regardless of the pole-face angle: it is
     # Maxwell-required, not an edge-angle effect (see _fringe_dipole_exact).
-    if F & FRINGE_BEND != 0
+    # kill1 suppresses the three fringe mechanisms at this face, as PTC's
+    # KILL_ENT_FRINGE does; it deliberately does NOT suppress ROT_XZ, FACE or
+    # WEDGE, which are geometry rather than fringe and which PTC leaves running.
+    if F & FRINGE_BEND != 0 && !elem.kill1
         x, px, y, py, z, pz = _fringe_dipole_exact(b1, elem.fint1, elem.hgap1,
                                                    one(T), x, px, y, py, z, pz)
     end
-    if F & FRINGE_MULTIPOLE != 0
+    if F & FRINGE_MULTIPOLE != 0 && !elem.kill1
         x, px, y, py, z, pz = _multipole_fringe(elem.kn, elem.ks, one(T), elem.hf,
                                                 F & FRINGE_BEND != 0, x, px, y, py, z, pz)
     end
-    if F & FRINGE_SOFT_QUAD != 0 && N >= 2
+    if F & FRINGE_SOFT_QUAD != 0 && N >= 2 && !elem.kill1
         x, px, y, py, z, pz = _soft_quad_fringe(elem.kn[2], elem.ks[2], elem.va, elem.vs,
                                                 one(T), x, px, y, py, z, pz)
     end
@@ -551,15 +544,15 @@ end
         N >= 2 && ((x, px, y, py, z, pz) =
             _wedge_quad(elem.e2, elem.kn[2], elem.wc1, elem.wc2, x, px, y, py, z, pz))
     end
-    if F & FRINGE_SOFT_QUAD != 0 && N >= 2
+    if F & FRINGE_SOFT_QUAD != 0 && N >= 2 && !elem.kill2
         x, px, y, py, z, pz = _soft_quad_fringe(elem.kn[2], elem.ks[2], elem.va, elem.vs,
                                                 -one(T), x, px, y, py, z, pz)
     end
-    if F & FRINGE_MULTIPOLE != 0
+    if F & FRINGE_MULTIPOLE != 0 && !elem.kill2
         x, px, y, py, z, pz = _multipole_fringe(elem.kn, elem.ks, -one(T), elem.hf,
                                                 F & FRINGE_BEND != 0, x, px, y, py, z, pz)
     end
-    if F & FRINGE_BEND != 0
+    if F & FRINGE_BEND != 0 && !elem.kill2
         x, px, y, py, z, pz = _fringe_dipole_exact(b1, elem.fint2, elem.hgap2,
                                                    -one(T), x, px, y, py, z, pz)
     end
@@ -702,7 +695,9 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
         T(getparam(spec, :hgap1, zero(T))), T(getparam(spec, :hgap2, zero(T))),
         T(getparam(spec, :hface1, zero(T))), T(getparam(spec, :hface2, zero(T))),
         T(getparam(spec, :va, zero(T))), T(getparam(spec, :vs, zero(T))),
-        T(wc[1]), T(wc[2]), hf)
+        T(wc[1]), T(wc[2]), hf,
+        Bool(getparam(spec, :kill_ent_fringe, false)),
+        Bool(getparam(spec, :kill_exi_fringe, false)))
 end
 
 LatticeMagnet(spec::ElementSpec, method::AbstractTrackingMethod=tracking_method(spec)) =
@@ -716,6 +711,8 @@ const _COMMON_PARAMS = (
     va=ParamMeta(default=0, meaning="soft-edge quadrupole fringe: equivalent linear-ramp length; signed"),
     vs=ParamMeta(default=0, meaning="soft-edge quadrupole fringe: second-moment parameter"),
     highest_fringe=ParamMeta(default=0, meaning="cap on the order included in the hard-edge multipole fringe, matching PTC's HIGHEST_FRINGE. 0 means every order the magnet carries, which is this code's default because enabling a sextupole's fringe and silently getting nothing back would be worse; PTC's own default is 2 (dipole and quadrupole only), so set 2 to reproduce PTC. Inactive unless fringe includes :multipole"),
+    kill_ent_fringe=ParamMeta(default=false, meaning="suppress all three fringe mechanisms at the entrance face, matching PTC's KILL_ENT_FRINGE. Geometry maps (pole-face rotation, face curvature, wedge) still run, as they do in PTC. MAD-X sets the exit equivalent automatically when FINTX=0"),
+    kill_exi_fringe=ParamMeta(default=false, meaning="suppress all three fringe mechanisms at the exit face, matching PTC's KILL_EXI_FRINGE"),
     tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
 )
 
@@ -864,10 +861,12 @@ end
         va=_COMMON_PARAMS.va,
         vs=_COMMON_PARAMS.vs,
         highest_fringe=_COMMON_PARAMS.highest_fringe,
+        kill_ent_fringe=_COMMON_PARAMS.kill_ent_fringe,
+        kill_exi_fringe=_COMMON_PARAMS.kill_exi_fringe,
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
     example = QuadrupoleSpec(L=0.3, k1=1.2)
-    construction_help = "Friendly constructor: QuadrupoleSpec(; L, k1=0, k1s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, tracking_method=Symplectic6DMap()). Normal use is k1, with k1s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[2] is K1, and setting both k1 and a nonzero kn[2] throws."
+    construction_help = "Friendly constructor: QuadrupoleSpec(; L, k1=0, k1s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, tracking_method=Symplectic6DMap()). Normal use is k1, with k1s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[2] is K1, and setting both k1 and a nonzero kn[2] throws."
 end
 
 @element_spec begin
@@ -892,10 +891,12 @@ end
         va=_COMMON_PARAMS.va,
         vs=_COMMON_PARAMS.vs,
         highest_fringe=_COMMON_PARAMS.highest_fringe,
+        kill_ent_fringe=_COMMON_PARAMS.kill_ent_fringe,
+        kill_exi_fringe=_COMMON_PARAMS.kill_exi_fringe,
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
     example = SextupoleSpec(L=0.2, k2=12.0)
-    construction_help = "Friendly constructor: SextupoleSpec(; L, k2=0, k2s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, tracking_method=Symplectic6DMap()). Normal use is k2, with k2s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[3] is K2, and setting both k2 and a nonzero kn[3] throws."
+    construction_help = "Friendly constructor: SextupoleSpec(; L, k2=0, k2s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, tracking_method=Symplectic6DMap()). Normal use is k2, with k2s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[3] is K2, and setting both k2 and a nonzero kn[3] throws."
 end
 
 @element_spec begin
@@ -920,10 +921,12 @@ end
         va=_COMMON_PARAMS.va,
         vs=_COMMON_PARAMS.vs,
         highest_fringe=_COMMON_PARAMS.highest_fringe,
+        kill_ent_fringe=_COMMON_PARAMS.kill_ent_fringe,
+        kill_exi_fringe=_COMMON_PARAMS.kill_exi_fringe,
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
     example = OctupoleSpec(L=0.1, k3=300.0)
-    construction_help = "Friendly constructor: OctupoleSpec(; L, k3=0, k3s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, tracking_method=Symplectic6DMap()). Normal use is k3, with k3s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[4] is K3, and setting both k3 and a nonzero kn[4] throws."
+    construction_help = "Friendly constructor: OctupoleSpec(; L, k3=0, k3s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, tracking_method=Symplectic6DMap()). Normal use is k3, with k3s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[4] is K3, and setting both k3 and a nonzero kn[4] throws."
 end
 
 @element_spec begin
@@ -958,10 +961,12 @@ end
         va=_COMMON_PARAMS.va,
         vs=_COMMON_PARAMS.vs,
         highest_fringe=_COMMON_PARAMS.highest_fringe,
+        kill_ent_fringe=_COMMON_PARAMS.kill_ent_fringe,
+        kill_exi_fringe=_COMMON_PARAMS.kill_exi_fringe,
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
     example = MultipoleSpec(L=0.2, k1=1.0, k2=5.0)
-    construction_help = "Friendly constructor: MultipoleSpec(; L, k0=0, k0s=0, k1=0, k1s=0, k2=0, k2s=0, k3=0, k3s=0, k4=0, k4s=0, k5=0, k5s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, tracking_method=Symplectic6DMap()). Named strengths run K0 (dipole corrector) through K5 (dodecapole), each folded into kn/ks at construction, so a decapole is k4 rather than four leading zeros. Orders beyond K5 and field errors use the positional tuples, where kn[i] is K_{i-1}. Setting a named strength and the matching nonzero kn entry together throws."
+    construction_help = "Friendly constructor: MultipoleSpec(; L, k0=0, k0s=0, k1=0, k1s=0, k2=0, k2s=0, k3=0, k3s=0, k4=0, k4s=0, k5=0, k5s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, tracking_method=Symplectic6DMap()). Named strengths run K0 (dipole corrector) through K5 (dodecapole), each folded into kn/ks at construction, so a decapole is k4 rather than four leading zeros. Orders beyond K5 and field errors use the positional tuples, where kn[i] is K_{i-1}. Setting a named strength and the matching nonzero kn entry together throws."
 end
 
 @element_spec begin
@@ -1001,8 +1006,10 @@ end
         integrator_order=_COMMON_PARAMS.integrator_order,
         fringe=_COMMON_PARAMS.fringe,
         highest_fringe=_COMMON_PARAMS.highest_fringe,
+        kill_ent_fringe=_COMMON_PARAMS.kill_ent_fringe,
+        kill_exi_fringe=_COMMON_PARAMS.kill_exi_fringe,
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
     example = SBendSpec(L=1.0, angle=0.05)
-    construction_help = "Friendly constructor: SBendSpec(; L, angle=0, h=0, b0=0, k1=0, k1s=0, k2=0, k2s=0, kn=(), ks=(), e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=true, bend_model=:exact, curved_order=8, wedge_coeff=(1,2), nst=1, integrator_order=2, fringe=:none, highest_fringe=0, tracking_method=Symplectic6DMap()). Normal use is angle, which sets h = b0 = angle / L; give h and b0 directly when the frame curvature and the field differ, but not alongside angle. Combined-function bends take k1/k2 (k1s/k2s skew), with kn/ks for higher orders and field errors."
+    construction_help = "Friendly constructor: SBendSpec(; L, angle=0, h=0, b0=0, k1=0, k1s=0, k2=0, k2s=0, kn=(), ks=(), e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=true, bend_model=:exact, curved_order=8, wedge_coeff=(1,2), nst=1, integrator_order=2, fringe=:none, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, tracking_method=Symplectic6DMap()). Normal use is angle, which sets h = b0 = angle / L; give h and b0 directly when the frame curvature and the field differ, but not alongside angle. Combined-function bends take k1/k2 (k1s/k2s skew), with kn/ks for higher orders and field errors."
 end

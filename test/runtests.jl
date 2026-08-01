@@ -1257,6 +1257,27 @@ end
     @test_throws ArgumentError compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, highest_fringe=-1))
     @test_throws ArgumentError compile_runtime(SBendSpec(L=1.1, angle=0.198, wedge_coeff=(1,)))
 
+    # KILL_ENT_FRINGE / KILL_EXI_FRINGE suppress the three fringe mechanisms at
+    # one face. They must reach the runtime and must actually change the map.
+    let base = QuadrupoleSpec(L=0.4, k1=1.7, nst=4, fringe=:multipole),
+        k1 = QuadrupoleSpec(L=0.4, k1=1.7, nst=4, fringe=:multipole, kill_ent_fringe=true),
+        k2 = QuadrupoleSpec(L=0.4, k1=1.7, nst=4, fringe=:multipole, kill_exi_fringe=true),
+        kb = QuadrupoleSpec(L=0.4, k1=1.7, nst=4, fringe=:multipole,
+                            kill_ent_fringe=true, kill_exi_fringe=true),
+        off = QuadrupoleSpec(L=0.4, k1=1.7, nst=4)
+
+        @test compile_runtime(k1).kill1 && !compile_runtime(k1).kill2
+        @test !compile_runtime(k2).kill1 && compile_runtime(k2).kill2
+        @test !compile_runtime(base).kill1 && !compile_runtime(base).kill2
+        for s in (k1, k2)
+            @test collect(compile_runtime(s)(u...)) != collect(compile_runtime(base)(u...))
+            @test collect(compile_runtime(s)(u...)) != collect(compile_runtime(off)(u...))
+        end
+        # Killing both faces of a magnet whose only fringe is the multipole one
+        # leaves exactly the no-fringe magnet.
+        @test collect(compile_runtime(kb)(u...)) == collect(compile_runtime(off)(u...))
+    end
+
     # The wedge term changes the map, so an angled combined-function bend is not
     # the same magnet with and without it.
     let a = compile_runtime(SBendSpec(L=1.1, angle=0.198, k1=0.6, e1=0.1, e2=0.1, nst=4,

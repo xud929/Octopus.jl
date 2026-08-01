@@ -67,6 +67,17 @@ reference material, not API docs; the implementing code links back to them.
   the `:drift`/`:quadrupole`/`:sextupole`/`:octupole`/`:multipole`/`:sbend`
   elements and checked by `PTCConsistencyContract` against a committed MAD-X
   reference table.
+- [`misalignment_and_patch_maps.md`](theory/misalignment_and_patch_maps.md) —
+  design note for misalignments, rotations and the patch element, comparing
+  PTC's factorization (four exact one-parameter Euclidean maps, `ROT_YZ`/
+  `ROT_XZ`/`ROT_XY`/`TRANS`, with entry and exit patches computed independently
+  from surveyed frames) against Bmad's (one $3\times3$ rotation applied to
+  position and momentum plus a single exact drift onto the displaced plane,
+  referenced to the element centre, with `bend_shift` for curved frames). States
+  why the exit patch is **not** the inverse of the entry patch for a bend --
+  invisible on a straight magnet, wrong at first order on every bend in a ring --
+  and recommends Bmad's factorization with PTC's bookkeeping. Design only; no
+  implementation yet.
 - [`near_round_bassetti_erskine_switch.md`](theory/near_round_bassetti_erskine_switch.md)
   — near-round analytic Gaussian evaluation: invariant anisotropy, the
   fixed-interval field integral and third-order potential expansion,

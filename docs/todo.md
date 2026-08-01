@@ -1183,8 +1183,9 @@ acceptable for a fixed design point. Hypothesis, not established practice.
 Implemented and validated (2026-07-31): drift, quadrupole, sextupole, octupole,
 multipole, sector bend and **combined-function bend**, with exact maps, PTC
 fringe fields, and Strang/Forest-Ruth integrators. `PTCConsistencyContract`
-matches MAD-X 5.03.06 to **~5e-13 across all 15 cases**, uniform over every
-element type. FODO/DBA/TBA cells are symplectic to ~1e-15 and bit-identical on
+matches MAD-X 5.03.06 to **~5e-13 across all 22 cases**, uniform over every
+element type, and since 2026-08-01 that includes the pole-face and hard-edge
+multipole-fringe paths rather than only the bodies. FODO/DBA/TBA cells are symplectic to ~1e-15 and bit-identical on
 CPU and CUDA. Derivations:
 [`docs/theory/lattice_hamiltonian_and_conventions.md`](theory/lattice_hamiltonian_and_conventions.md).
 
@@ -1236,9 +1237,28 @@ Remaining:
 3. **Cavity map.** Convention #1 chosen (Section 3), map not derived. Needed to
    close a ring, not for magnets.
 
-4. **Misalignments.** Deferred by decision. Field errors are already free -- add
-   entries to `kn`/`ks`. Misalignment maps are designed as entry/exit
-   conjugations but not derived.
+4. **Misalignments — designed, not implemented (2026-08-01).** The comparison of
+   PTC and Bmad is written up in
+   [`docs/theory/misalignment_and_patch_maps.md`](theory/misalignment_and_patch_maps.md),
+   including the primitive maps from both codes and the recommended design:
+   Bmad's factorization (one rotation matrix applied to position and momentum,
+   then a single exact drift onto the displaced plane, referenced to the element
+   centre) with PTC's bookkeeping (entry and exit transforms stored and computed
+   independently). Field errors remain free via `kn`/`ks`.
+
+   The load-bearing result: **for a bend the exit transform is not the inverse of
+   the entry transform**, because the body rotates the reference frame by the
+   bend angle. PTC sidesteps this by computing both patches from surveyed frames;
+   Bmad handles it with an explicit `bend_shift` along the arc plus a `ref_tilt`
+   conjugation. Getting it wrong is invisible on a straight magnet and wrong at
+   first order on every bend in a ring, so a FODO test would not catch it.
+
+   Still open before implementing: pinning the rotation order and signs against a
+   reference case (PTC applies x-pitch, y-pitch, roll; Bmad forms
+   `R_y(theta) R_x(-phi) R_z(psi)`, and the two are not obviously the same
+   composition at second order in the angles), and settling `ref_tilt` versus
+   `tilt` for bends -- rolling the design orbit is not the same as rolling the
+   magnet, and the distinction only exists for bends.
 
 5. **`VA`/`VS` extraction** from a measured gradient profile: evaluate the first
    and second moments `J1`, `J2` numerically. Small utility.
@@ -1283,13 +1303,25 @@ Remaining:
    The tell was a `z` error of `L·pt·(1/beta0² − 1)` on a particle with no
    transverse coordinates, which no fringe map can produce.
 
-9. **Not modelled from PTC:** `KILL_ENT_FRINGE`/`KILL_EXI_FRINGE` (per-face
-   fringe suppression), the `CHARGE`/`DIR` factors in `B1 = DIR*CHARGE*BN(1)`
-   (we assume `+1` for both), and `METHOD=6` (Yoshida 6th order, `MAKE_YOSHIDA`
-   in `a_scratch_size.f90`; we support orders 2 and 4). Also `_dipole_edge` is
-   defined but never called — PTC has no separate linear edge-focusing map, the
-   exact `FRINGE_dipole` plus `WEDGE` do that work — so it is dead code and
-   should be removed or given a caller.
+9. **Gaps against PTC, mostly closed (2026-08-01).**
+   - ~~`KILL_ENT_FRINGE`/`KILL_EXI_FRINGE`~~ **DONE**: `kill_ent_fringe` and
+     `kill_exi_fringe` suppress all three fringe mechanisms at one face, and
+     deliberately leave the geometry maps (pole-face rotation, face curvature,
+     wedge) running, which is what PTC does. This was more than cosmetic: MAD-X
+     sets the exit flag automatically when `FINTX=0`, so a lattice with
+     asymmetric fringe integrals would silently have disagreed.
+   - ~~`CHARGE`~~ **RESOLVED, no action needed**: tracking the same
+     combined-function bend with `beam, particle=electron` and
+     `particle=proton` gives bit-identical PTC output, because the strengths are
+     already normalized by the reference rigidity, so the charge is absorbed.
+     Our `+1` assumption cannot be observed through anything MAD-X can express.
+   - `DIR` is still unmodelled, but it is reversed-direction propagation --
+     tracking a fibre backwards -- which Octopus does not support at all. That
+     is a feature we do not have, not a defect in the maps we do have.
+   - ~~`_dipole_edge` dead code~~ **REMOVED**.
+   - `METHOD=6` (Yoshida 6th order, `MAKE_YOSHIDA` in `a_scratch_size.f90`)
+     remains unimplemented; we support orders 2 and 4. Speculative until asked
+     for.
 
 10. **PTC validation stops at K3, and cannot easily go higher.** MAD-X's thick
    elements top out at the octupole term -- `sbend, l=.., angle=0, k3=..` is how
