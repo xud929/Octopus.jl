@@ -103,6 +103,54 @@ constructor names remain the user-facing way to build those specs.
   - Runtime mappings: `WeakStrongBeamBeamMap => GaussianStrongBeam`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
+- `ElementSpec{:drift}` via `DriftSpec`
+  - Physics keywords: `:lattice_magnet`, `:thick_element`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => LatticeMagnet`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
+- `ElementSpec{:quadrupole}` via `QuadrupoleSpec`
+  - Physics keywords: `:lattice_magnet`, `:thick_element`, `:nonlinear_interaction`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => LatticeMagnet`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
+- `ElementSpec{:sextupole}` via `SextupoleSpec`
+  - Physics keywords: `:lattice_magnet`, `:thick_element`, `:nonlinear_interaction`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => LatticeMagnet`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
+- `ElementSpec{:octupole}` via `OctupoleSpec`
+  - Physics keywords: `:lattice_magnet`, `:thick_element`, `:nonlinear_interaction`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => LatticeMagnet`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
+- `ElementSpec{:multipole}` via `MultipoleSpec`
+  - Physics keywords: `:lattice_magnet`, `:thick_element`, `:nonlinear_interaction`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => LatticeMagnet`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
+- `ElementSpec{:sbend}` via `SBendSpec`
+  - Physics keywords: `:lattice_magnet`, `:thick_element`, `:coordinate_transform`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => LatticeMagnet`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
 ## Tracking Methods
 
 - `Damping6DMap`
@@ -195,6 +243,7 @@ live under `src/track/`.
 - `LumpedRad`
 - `ThinStrongBeam`
 - `GaussianStrongBeam`
+- `LatticeMagnet`
 - `BeamParams`
 - `Phase6DRep`
 - `Beam`

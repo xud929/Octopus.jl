@@ -186,6 +186,8 @@ const ALLOWED_PHYSICS_KEYWORDS = Set{Symbol}([
     :radiation,
     :beam_beam,
     :nonlinear_interaction,
+    :lattice_magnet,
+    :thick_element,
 ])
 
 """Return the current controlled physics-keyword set."""

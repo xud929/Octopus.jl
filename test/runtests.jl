@@ -910,6 +910,112 @@ end
     end
 end
 
+@testset "Lattice magnets" begin
+    S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
+    u0 = (1.3e-3, 3.0e-4, -0.9e-3, -2.2e-4, 2.0e-3, 1.1e-3)
+    function cs_jacobian(elem)
+        J = zeros(6, 6)
+        for j in 1:6
+            u = ComplexF64[u0...]
+            u[j] += 1e-30im
+            J[:, j] = imag.(collect(elem(u...))) ./ 1e-30
+        end
+        return J
+    end
+
+    # Every magnet must be symplectic to round-off, including a bend whose
+    # frame curvature differs from its field and one with the full pole face.
+    for (name, spec) in (
+            ("drift", DriftSpec(L=0.7)),
+            ("curved drift", DriftSpec(L=0.7, h=0.21)),
+            ("quadrupole", QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=2)),
+            ("quadrupole order 4", QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=3, integrator_order=4)),
+            ("sextupole with fringes", SextupoleSpec(L=0.25, kn=(0.0, 0.0, 14.0), nst=2,
+                                                     fringe=:all, va=0.03, vs=1.0e-4)),
+            ("octupole", OctupoleSpec(L=0.15, kn=(0.0, 0.0, 0.0, 220.0), nst=2)),
+            ("sector bend", SBendSpec(L=1.1, h=0.18, b0=0.18, nst=2)),
+            ("bend with h != b0", SBendSpec(L=1.1, h=0.18, b0=0.23, nst=2)),
+            ("bend with pole face", SBendSpec(L=1.1, h=0.18, b0=0.18, e1=0.09, e2=0.09,
+                                              fint1=0.5, fint2=0.5, hgap1=0.03, hgap2=0.03,
+                                              bend_fringe=true, nst=2)))
+        J = cs_jacobian(compile_runtime(spec))
+        @test maximum(abs, J' * S6 * J - S6) < 1.0e-13
+    end
+
+    # The curved drift must reproduce the closed form verified in
+    # docs/theory/lattice_hamiltonian_and_conventions.md Section 5.
+    let h = 0.21, L = 0.7, (x0, px0, y0, py0, z0, pz) = u0
+        ps0 = sqrt((1 + pz)^2 - px0^2 - py0^2)
+        c, sa = cos(h * L), sin(h * L)
+        px = px0 * c + ps0 * sa
+        ps = -px0 * sa + ps0 * c
+        x = ((1 + h * x0) * ps0 - ps) / (h * ps)
+        Δ = ((1 + h * x) * px - (1 + h * x0) * px0) / (h * ((1 + pz)^2 - py0^2))
+        out = compile_runtime(DriftSpec(L=L, h=h))(u0...)
+        @test collect(out) ≈ [x, px, y0 + py0 * Δ, py0, z0 + L - (1 + pz) * Δ, pz] atol=1.0e-14
+    end
+
+    # Section 5.2: 1/h is a removable singularity. The guarded form must
+    # approach the straight drift linearly in h rather than losing digits.
+    let straight = collect(compile_runtime(DriftSpec(L=0.7))(u0...))
+        previous = Inf
+        for h in (1.0e-3, 1.0e-6, 1.0e-9)
+            d = maximum(abs, collect(compile_runtime(DriftSpec(L=0.7, h=h))(u0...)) .- straight)
+            @test d < previous
+            previous = d
+        end
+        @test previous < 1.0e-8
+        @test collect(compile_runtime(DriftSpec(L=0.7, h=0.0))(u0...)) == straight
+    end
+
+    # nst is a runtime consumer, and integrator_order selects PTC's
+    # Forest-Ruth coefficients: order 2 must converge as nst^-2 and order 4 as
+    # nst^-4. This is the effectiveness test for both keywords.
+    let reference = collect(compile_runtime(
+            QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=4096, integrator_order=4))(u0...))
+        err(order, nst) = maximum(abs, collect(compile_runtime(
+            QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=nst, integrator_order=order))(u0...)) .- reference)
+        @test err(2, 4) / err(2, 8) > 3.5          # ~4
+        @test err(4, 4) / err(4, 8) > 12.0         # ~16
+        @test err(4, 8) < err(2, 8)
+    end
+
+    # fringe reaches the tracked coordinates, and each mode differs.
+    let base = QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=2)
+        outs = [collect(compile_runtime(QuadrupoleSpec(
+                    L=0.4, kn=(0.0, 1.7), nst=2, fringe=m, va=0.03, vs=1.0e-4))(u0...))
+                for m in (:none, :multipole, :soft_quad, :all)]
+        for i in eachindex(outs), j in (i + 1):length(outs)
+            @test !isapprox(outs[i], outs[j])
+        end
+        @test outs[1] == collect(compile_runtime(base)(u0...))
+    end
+
+    # A drift is exact, so nst and integrator_order are documented as inactive:
+    # they must not change the result rather than being silently applied.
+    let a = collect(compile_runtime(DriftSpec(L=0.7, h=0.21))(u0...))
+        @test collect(compile_runtime(DriftSpec(L=0.7, h=0.21, nst=17))(u0...)) == a
+        @test collect(compile_runtime(DriftSpec(L=0.7, h=0.21, integrator_order=4))(u0...)) == a
+    end
+
+    # A curved frame changes the multipole potential itself, so a
+    # combined-function bend must be refused rather than tracked with the
+    # straight-frame kick.
+    @test_throws ArgumentError compile_runtime(
+        SBendSpec(L=1.0, h=0.1, b0=0.1, kn=(0.0, 0.5)))
+    @test_throws ArgumentError compile_runtime(QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=0))
+    @test_throws ArgumentError compile_runtime(
+        QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), integrator_order=3))
+    @test_throws ArgumentError compile_runtime(
+        QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), fringe=:nope))
+
+    # Six element kinds share one runtime type and one tracking method.
+    for spec in (DriftSpec(L=0.1), QuadrupoleSpec(L=0.1), SextupoleSpec(L=0.1),
+                 OctupoleSpec(L=0.1), MultipoleSpec(L=0.1), SBendSpec(L=0.1))
+        @test compile_runtime(spec) isa LatticeMagnet
+    end
+end
+
 @testset "Configuration rejection" begin
     @test_throws ArgumentError CPUThreadsExecutionPolicy(threads=0)
     @test_throws ArgumentError CUDALaunchConfig(threads=0)
