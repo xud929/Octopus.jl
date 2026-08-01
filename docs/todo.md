@@ -1279,7 +1279,116 @@ than leaving it to the caller.
 `DEFAULT_ELEMENT_PARAM_PROBES`, and the `alive` predicate needs an entry in
 `DEFAULT_INACTIVE_ELEMENT_PARAMS` because a function has no meaningful
 perturbation. The predicate must be a **type parameter** on the runtime, not an
-`Any` field, or it will not compile for the GPU.
+`Any` field, or it will not compile for the GPU. `Marker{M}` is the precedent but
+is parameterized on the tracking method only, so this needs `Aperture{F,M}`.
+
+Sequenced like step 2, and for the same reason: a half-built loss record reports
+plausible numbers and looks finished. **Do not start a later sub-step before the
+earlier one is green.**
+
+### Decisions taken up front
+
+The four questions left open in the design note are answered here, because (Q1)
+and (Q3) determine the element's signature and are awkward to retrofit.
+
+**Q3 -- where the check happens: at the element, one point, no `aperture_at`.**
+An aperture checks where you place it; two faces means two elements. This is the
+Xsuite/Elegant bargain the design note already accepted, and entrance/exit/both
+only becomes meaningful when an aperture *wraps* a magnet, which is deferred.
+
+**Q4 -- misalignment: the aperture carries its own `dx`/`dy` offset.** As a
+separate element a displaced magnet's aperture is nominally the user's problem,
+but making them re-derive an offset invites silent error, and an offset is two
+subtractions. It is checked in the aperture's own frame. It does **not** go
+through `_misalign_frames`: an aperture has no body to tilt through, and a
+rotation of a transverse limit is a shape change, not a frame change. Document
+that a rotated collimator needs the predicate.
+
+**Q1 -- the record is per beam, owned by the task, handed to the element.** It
+cannot be per element: the per-particle slot below is `O(N)`, so a hundred
+apertures would be a hundred copies. The task allocates one `LossRecord` per
+beam and injects it at `compile_runtime`, the same way a `ScheduledObserver` is
+handed its buffer. A particle is lost at most once, so one shared record across
+every aperture in the lattice is exactly right.
+
+**Q2 -- reconciliation is reported by the task, not the aperture.** No single
+aperture can know the total. See sub-step 3e.
+
+**Q5 in the design note is already answered** by step 2 and can be struck: a NaN
+particle no longer occupies a slice or a grid cell, under all five slicing
+methods, verified bit-exact.
+
+### Storage and output are different decisions
+
+The design note runs these together -- it argues for one record per particle at
+`~64 N` bytes, which is about how to *write* without contention, not about what
+lands in the file. Separated:
+
+**In memory: one slot per particle**, written at most once, no atomics. Two
+reasons, and neither is the one the note gives. The note says an atomic "would
+fire for every particle"; that is wrong, since the atomic would sit inside the
+rare `newly_lost` branch -- the same argument the note itself uses to accept an
+atomic for the counter. The real reasons are:
+
+- **Determinism.** Slot `i` is always particle `i`, so CPU and CUDA produce
+  byte-identical logs. An atomic append orders records by thread scheduling, and
+  this codebase enforces CPU/CUDA identity by contract.
+- **It cannot overflow.** A particle is lost at most once, so `N` slots is an
+  exact bound. A compact append buffer has to guess a capacity and either
+  over-allocate or drop records.
+
+The cost is `~60 N` bytes per beam (`6` coordinates + turn + element id), and it
+is paid **only when a log path is given**. At `1e6` particles that is 60 MB and
+fine; at `1e8` it is 6 GB and not. Record that crossover: past roughly `1e7`
+particles, switch to an atomic append sized at the expected loss fraction and
+sort by particle index before writing, which restores deterministic *output*
+while giving up deterministic *layout*.
+
+**On disk: only the particles that were actually lost.** `element_id == 0` is the
+never-lost sentinel, so the flush is a filter on that column. A run losing 1% of
+`1e6` particles writes ~10k rows, not `1e6`.
+
+**Format: HDF5, matching `MomentObserver`.** The record is exactly the table that
+observer already writes, so it reuses the preallocate/buffer/`record_count`
+pattern and the same reader tooling. Columns:
+
+    turn, element_id, x, px, y, py, z, pz
+
+**No path, no output, and no allocation.** `loss_log=nothing` is the default and
+means the aperture kills and counts and nothing else -- a dynamic-aperture scan
+needs survival counts, not per-particle forensics, and that path must cost no
+memory. Giving a path is what allocates the record.
+
+### Sub-steps
+
+**3a -- the element, kill only.** `ApertureSpec` with `:rectangle`, `:ellipse`,
+`:rectellipse`, `x_limit`/`y_limit`, `dx`/`dy`, and an `alive` predicate for the
+rest; `Aperture{F,M}` runtime. `newly_lost = was_alive & !inside` with
+`was_alive` testing all six coordinates. Enables `allow_lost_particles` for
+itself. Green when: a particle outside is all-NaN afterwards and one inside is
+bit-unchanged; the kill is idempotent across turns; the predicate path and the
+equivalent analytic shape agree; CPU and CUDA produce identical survivors; and a
+particle that arrives already non-finite is **not** attributed to the aperture.
+
+**3b -- the survival counter.** `O(1)` per loss on the `newly_lost` transition.
+Green when the counter equals the number of particles the aperture actually
+killed, across turns and across several apertures, on both backends.
+
+**3c -- the shared record.** `LossRecord` allocated by the task, one per beam,
+injected through `compile_runtime`; per-particle slot; written once. Green when
+every killed particle has exactly one row with the **pre-kill** coordinates, no
+row is overwritten by a later aperture or a later turn, and CPU and CUDA records
+are byte-identical.
+
+**3d -- HDF5 output.** Filtered flush, lost particles only. Green when the file
+contains exactly the killed particles, the coordinates round-trip, and
+`loss_log=nothing` creates no file and allocates no record.
+
+**3e -- the reconciliation diagnostic.** Task-level summary reporting both
+`count_dead` and the aperture-logged total, so the gap -- particles lost to
+numerical blowup, which no aperture can claim -- stays visible rather than
+silently reducing the survivor count. Green when an injected non-finite particle
+that never meets an aperture shows up in the gap and not in the log.
 
 **Step 4 -- the acceptance test. DONE for the reduction half (2026-08-01),
 pending the aperture.** The reduction-level acceptance is in place: the moment

@@ -377,7 +377,29 @@ Three caveats decide whether it is a good idea:
   coordinates is wrong for a misaligned element by exactly the offset. If the
   aperture is a separate element this is the user's problem; if it wraps, it
   should sit inside the misalignment frames rather than outside.
-- **Strong-strong.** A NaN particle interacts with nothing, but it still occupies
-  a slice and a grid cell. Slicing and deposition need to agree that it does not
-  contribute, which is the reduction-masking point again, in a place where it is
-  easy to miss.
+- ~~**Strong-strong.** A NaN particle interacts with nothing, but it still
+  occupies a slice and a grid cell.~~ **ANSWERED (2026-08-01) by the step-2
+  masking.** A dead particle now joins no slice under any of the five slicing
+  methods and therefore reaches no grid cell, verified bit-exact against a beam
+  that omits it. It was indeed easy to miss: the boundary reductions were
+  unmasked, and each slicing method dropped or misfiled the dead differently.
+
+The remaining four are answered in `docs/todo.md` under step 3, since two of them
+fix the element's signature.
+
+## 6. Storage is not output
+
+Section 2 argues for one record per particle at `~64 N` bytes. That is a claim
+about how to **write** without contention on a GPU; it is not a claim about what
+belongs in the file, and the two should not be read together. The file should
+carry only the particles that were actually lost -- a run losing 1% writes 1% of
+`N` rows.
+
+The justification given there for private slots over an atomic append is also
+wrong as stated: an atomic "would fire for every particle" only if it sat outside
+the `newly_lost` branch, and it does not. Inside that branch it fires once per
+loss, which is the same rarity argument used to accept an atomic for the survival
+counter. The defensible reasons for private slots are **determinism** -- slot `i`
+is always particle `i`, so CPU and CUDA logs are byte-identical, which this
+codebase enforces by contract -- and that `N` slots is an exact bound no run can
+overflow. Both are good reasons; neither is the one originally given.
