@@ -673,6 +673,14 @@ const _QUAD_NAMED = ((:k1, :k1s, 1),)
 const _SEXT_NAMED = ((:k2, :k2s, 2),)
 const _OCT_NAMED = ((:k3, :k3s, 3),)
 const _BEND_NAMED = ((:k1, :k1s, 1), (:k2, :k2s, 2))
+# The general multipole covers every order it is likely to be built from: K0
+# (a dipole corrector) through K5 (dodecapole). Nothing about order 4 and up is
+# special to the kick -- `_lattice_kick` is generic in N and symplectic to
+# round-off at any order -- so a decapole is `k4`, not four leading zeros.
+# Orders beyond K5 stay in the positional tuple, where they are rare enough
+# that spelling the tuple out is honest rather than clumsy.
+const _MULTIPOLE_NAMED = ((:k0, :k0s, 0), (:k1, :k1s, 1), (:k2, :k2s, 2),
+                          (:k3, :k3s, 3), (:k4, :k4s, 4), (:k5, :k5s, 5))
 
 """
     _fold_named_strengths(named, kwargs)
@@ -718,7 +726,7 @@ for (kind, ctor, named) in ((:drift, :DriftSpec, :_NO_NAMED),
                             (:quadrupole, :QuadrupoleSpec, :_QUAD_NAMED),
                             (:sextupole, :SextupoleSpec, :_SEXT_NAMED),
                             (:octupole, :OctupoleSpec, :_OCT_NAMED),
-                            (:multipole, :MultipoleSpec, :_NO_NAMED))
+                            (:multipole, :MultipoleSpec, :_MULTIPOLE_NAMED))
     @eval begin
         abstract type $ctor end
         $ctor(; kwargs...) = ElementSpec{$(QuoteNode(kind))}(
@@ -860,8 +868,20 @@ end
     analyses = [PlaceholderAnalysis]
     parameters = (
         L=_COMMON_PARAMS.L,
-        kn=ParamMeta(default=(0,), meaning="normal strengths of any length; index i holds K_{i-1}"),
-        ks=ParamMeta(default=(0,), meaning="skew partners of kn"),
+        k0=ParamMeta(default=0, meaning="normal dipole strength K0, i.e. a corrector kick; folded into kn[1] at construction"),
+        k0s=ParamMeta(default=0, meaning="skew dipole strength; folded into ks[1] at construction"),
+        k1=ParamMeta(default=0, meaning="normal quadrupole strength K1; folded into kn[2] at construction"),
+        k1s=ParamMeta(default=0, meaning="skew quadrupole strength; folded into ks[2] at construction"),
+        k2=ParamMeta(default=0, meaning="normal sextupole strength K2; folded into kn[3] at construction"),
+        k2s=ParamMeta(default=0, meaning="skew sextupole strength; folded into ks[3] at construction"),
+        k3=ParamMeta(default=0, meaning="normal octupole strength K3; folded into kn[4] at construction"),
+        k3s=ParamMeta(default=0, meaning="skew octupole strength; folded into ks[4] at construction"),
+        k4=ParamMeta(default=0, meaning="normal decapole strength K4; folded into kn[5] at construction"),
+        k4s=ParamMeta(default=0, meaning="skew decapole strength; folded into ks[5] at construction"),
+        k5=ParamMeta(default=0, meaning="normal dodecapole strength K5; folded into kn[6] at construction"),
+        k5s=ParamMeta(default=0, meaning="skew dodecapole strength; folded into ks[6] at construction"),
+        kn=ParamMeta(default=(), meaning="normal strengths of any length as a positional tuple; index i holds K_{i-1}. Use it for orders beyond K5 and for measured field errors. Setting a named strength and the matching nonzero kn entry together throws"),
+        ks=ParamMeta(default=(), meaning="skew partners of kn"),
         nst=_COMMON_PARAMS.nst,
         integrator_order=_COMMON_PARAMS.integrator_order,
         fringe=_COMMON_PARAMS.fringe,
@@ -869,8 +889,8 @@ end
         vs=_COMMON_PARAMS.vs,
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
-    example = MultipoleSpec(L=0.2, kn=(0.0, 1.0, 5.0))
-    construction_help = "Friendly constructor: MultipoleSpec(; L, kn, ks, nst=1, integrator_order=2, fringe=:none, va=0, vs=0, tracking_method=Symplectic6DMap()). Field errors cost nothing structurally: add entries to kn/ks."
+    example = MultipoleSpec(L=0.2, k1=1.0, k2=5.0)
+    construction_help = "Friendly constructor: MultipoleSpec(; L, k0=0, k0s=0, k1=0, k1s=0, k2=0, k2s=0, k3=0, k3s=0, k4=0, k4s=0, k5=0, k5s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, tracking_method=Symplectic6DMap()). Named strengths run K0 (dipole corrector) through K5 (dodecapole), each folded into kn/ks at construction, so a decapole is k4 rather than four leading zeros. Orders beyond K5 and field errors use the positional tuples, where kn[i] is K_{i-1}. Setting a named strength and the matching nonzero kn entry together throws."
 end
 
 @element_spec begin

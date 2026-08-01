@@ -1254,7 +1254,21 @@ Remaining:
    for a gradient dipole. A measured default at a realistic aperture and
    multipole content would be better than a safe guess.
 
-8. **`element_help` shows the folded example.** `SextupoleSpec(L=0.2, k2=12.0)`
+8. **PTC validation stops at K3, and cannot easily go higher.** MAD-X's thick
+   elements top out at the octupole term -- `sbend, l=.., angle=0, k3=..` is how
+   `generate_ptc_reference.jl` builds its thick multipole cases, and adding `k4`
+   is rejected outright (`+=+=+= fatal: illegal keyword: k4`). MAD-X's own
+   `multipole` element is thin, so it would check the kick coefficients but not
+   the thick integration. Orders K4 and up are therefore validated *by
+   construction* rather than against a reference: `_lattice_kick` is generic in
+   `N`, and K4-K9 measure symplectic to 2e-16..7e-15 straight, skew, with the
+   hard-edge fringe, and inside a combined-function bend (see the "Named magnet
+   strength keywords" testset). That is weaker than a measured comparison and
+   should be read as such. A real check needs a reference code with thick
+   higher-order multipoles, or driving PTC directly rather than through MAD-X's
+   element keywords.
+
+9. **`element_help` shows the folded example.** `SextupoleSpec(L=0.2, k2=12.0)`
    displays as `ElementSpec{:sextupole}(; L=0.2, kn=(0.0, 0.0, 12.0))`, because
    the spec stores only the folded `kn`. That is the honest content of the
    object and `construction_help` directly above it shows the `k2` spelling, so

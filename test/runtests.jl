@@ -1147,12 +1147,61 @@ end
     @test_throws ArgumentError SBendSpec(angle=0.198)
     @test_throws ArgumentError SBendSpec(L=0.0, angle=0.198)
 
+    # MultipoleSpec takes K0 (corrector) through K5 (dodecapole) by name, so a
+    # decapole does not need four leading zeros. Nothing about order 4 and up is
+    # special to the kick: _lattice_kick is generic in N.
+    @test compile_runtime(MultipoleSpec(L=0.15, k0=0.02)).kn == (0.02,)
+    @test compile_runtime(MultipoleSpec(L=0.15, k4=1.0e5)).kn == (0.0, 0.0, 0.0, 0.0, 1.0e5)
+    @test compile_runtime(MultipoleSpec(L=0.15, k5s=1.0e7)).ks ==
+          (0.0, 0.0, 0.0, 0.0, 0.0, 1.0e7)
+    @test same(MultipoleSpec(L=0.15, k4=1.0e5, nst=4),
+               MultipoleSpec(L=0.15, kn=(0.0, 0.0, 0.0, 0.0, 1.0e5), nst=4))
+    @test same(MultipoleSpec(L=0.2, k1=1.0, k2=5.0, nst=2),
+               MultipoleSpec(L=0.2, kn=(0.0, 1.0, 5.0), nst=2))
+    # Named and positional mix: K0..K5 by name, higher orders in the tuple.
+    @test same(MultipoleSpec(L=0.15, k4=1.0e5, kn=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0e9), nst=2),
+               MultipoleSpec(L=0.15, kn=(0.0, 0.0, 0.0, 0.0, 1.0e5, 0.0, 1.0e9), nst=2))
+    @test_throws ArgumentError MultipoleSpec(L=0.15, k4=1.0e5, kn=(0.0, 0.0, 0.0, 0.0, 2.0e5))
+
+    # Orders past octupole are already tracked and symplectic to round-off, in a
+    # straight frame, with the hard-edge fringe, and in a curved frame. This is
+    # why no DecapoleSpec/DodecapoleSpec kinds exist: there is no new physics to
+    # carry, only a longer tuple.
+    let S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0]),
+        ua = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
+
+        function jac(elem)
+            J = zeros(6, 6)
+            for j in 1:6
+                u = ComplexF64[ua...]
+                u[j] += 1e-30im
+                J[:, j] = imag.(collect(elem(u...))) ./ 1e-30
+            end
+            return J
+        end
+        for spec in (MultipoleSpec(L=0.15, k4=1.0e5, nst=4),
+                     MultipoleSpec(L=0.15, k5=1.0e7, nst=4),
+                     MultipoleSpec(L=0.15, k4s=1.0e5, nst=4),
+                     MultipoleSpec(L=0.15, k4=1.0e5, nst=4, fringe=:multipole),
+                     MultipoleSpec(L=0.15, kn=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0e9), nst=4),
+                     SBendSpec(L=1.1, angle=0.198, k1=0.6, kn=(0.0, 0.0, 0.0, 0.0, 1.0e5), nst=4))
+            elem = compile_runtime(spec)
+            J = jac(elem)
+            @test maximum(abs, J' * S6 * J - S6) < 1.0e-13
+            # and the high order actually acts, rather than compiling away
+            @test collect(elem(ua...))[2] != ua[2]
+        end
+    end
+
     # The new keywords are declared metadata, so element_help and
     # parameter_schema show them rather than leaving users to read the source.
     @test haskey(parameter_schema(ElementSpec{:quadrupole}), :k1)
     @test haskey(parameter_schema(ElementSpec{:sextupole}), :k2)
     @test haskey(parameter_schema(ElementSpec{:octupole}), :k3)
     @test haskey(parameter_schema(ElementSpec{:sbend}), :angle)
+    for key in (:k0, :k1, :k2, :k3, :k4, :k5, :k0s, :k5s)
+        @test haskey(parameter_schema(ElementSpec{:multipole}), key)
+    end
 end
 
 @testset "PTC consistency" begin
