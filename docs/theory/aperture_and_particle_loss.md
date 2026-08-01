@@ -208,6 +208,49 @@ is the trade already identified as preferable at low loss fractions, and it also
 recovers *which element* for aperture losses, since the element stamps its own
 id.
 
+### Reporting survival: wanted, but not worth a reduction
+
+A loss log that has to be post-processed to answer "how many are left after turn
+`n`" is a log nobody uses. Survival versus turn is the output of a
+dynamic-aperture or lifetime study, so the count belongs in the record.
+
+The cost has to be looked at, though, because "reduce the beam whenever the log
+is written" is more expensive than it sounds. A beam-wide `isfinite` count is
+`O(N)`; doing it per aperture per turn costs
+
+    O(N) x n_apertures x n_turns
+
+which for `1e5` particles, 100 apertures and `1e5` turns is `1e12` operations --
+enough to dominate the run. A per-particle kernel also cannot perform a beam-wide
+reduction, so it would have to be a separate pass, per aperture, per turn.
+
+The number can be had for nothing instead. Each aperture already knows exactly
+when it kills a particle, so a **running counter** incremented on the
+`newly_lost` transition gives the same information at `O(1)` per loss rather than
+`O(N)` per turn:
+
+    alive = N - cumulative_killed
+
+Losses are rare relative to particles, so even an atomic increment is negligible
+here -- the opposite of the per-particle record, where an atomic would fire for
+every particle and a private slot was cheaper. The two mechanisms differ because
+their frequencies differ.
+
+One honest limit: a counter only knows about aperture losses. Particles that go
+non-finite inside a magnet are counted by no aperture, so `N - cumulative_killed`
+overstates the survivors by exactly the unattributed deaths of the previous
+section. The recommendation is therefore both, at their natural rates:
+
+| quantity | how | when |
+|---|---|---|
+| killed at apertures | running counter, `O(1)` per loss | every turn, free |
+| true alive count | beam-wide `!isfinite` reduction, `O(N)` | on the observer schedule |
+
+Reporting both is what makes the gap between them visible, which is the
+diagnostic the previous section argues for. Running the full reduction on the
+existing observer cadence rather than on every aperture crossing keeps it off the
+per-turn critical path while still giving a curve dense enough to plot.
+
 ### Should lost particles be compacted?
 
 Xsuite moves lost particles to the tail so kernels can run over a shorter active
