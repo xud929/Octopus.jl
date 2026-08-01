@@ -58,31 +58,19 @@ Being zero length, the map has no drift and no chromatic denominator: in the
 exact Hamiltonian the chromatic dependence lives in the drift, and there is none
 here. It is exactly symplectic, being a kick from a potential.
 """
-struct ThinMultipole{M<:AbstractTrackingMethod,T<:AbstractFloat,N,MIS} <: AbstractTrackOp
+struct ThinMultipole{M<:AbstractTrackingMethod,T<:AbstractFloat,N} <: AbstractTrackOp
     method::M
     knl::NTuple{N,T}
     ksl::NTuple{N,T}
     hkick::T
     vkick::T
-    qin::NTuple{9,T}; oin::NTuple{3,T}
-    qout::NTuple{9,T}; oout::NTuple{3,T}
 end
 
-@inline function track_particle(::Symplectic6DMap, elem::ThinMultipole{M,T,N,MIS},
-                                x, px, y, py, z, pz) where {M,T,N,MIS}
-    # Same structure as a thick magnet: the misalignment wraps the map. `MIS` is
-    # a type parameter, so an aligned element compiles to exactly the kick.
-    if MIS
-        x, px, y, py, z, pz = _frame_change(elem.qin, elem.oin, x, px, y, py, z, pz)
-    end
+@inline function track_particle(::Symplectic6DMap, elem::ThinMultipole{M,T,N},
+                                x, px, y, py, z, pz) where {M,T,N}
     x, px, y, py, z, pz =
         _lattice_kick(elem.knl, elem.ksl, zero(T), one(T), x, px, y, py, z, pz)
-    px += elem.hkick
-    py += elem.vkick
-    if MIS
-        x, px, y, py, z, pz = _frame_change(elem.qout, elem.oout, x, px, y, py, z, pz)
-    end
-    return x, px, y, py, z, pz
+    return x, px + elem.hkick, y, py + elem.vkick, z, pz
 end
 
 @inline (elem::ThinMultipole)(x, px, y, py, z, pz) =
@@ -94,31 +82,9 @@ function ThinMultipole(spec::ElementSpec,
     knraw = collect(T, getparam(spec, :knl, ()))
     ksraw = collect(T, getparam(spec, :ksl, ()))
     knl, ksl = _strength_tuples(T, knraw, ksraw)
-    dx = T(getparam(spec, :x_offset, zero(T)))
-    dy = T(getparam(spec, :y_offset, zero(T)))
-    dz = T(getparam(spec, :z_offset, zero(T)))
-    xp = T(getparam(spec, :x_pitch, zero(T)))
-    yp = T(getparam(spec, :y_pitch, zero(T)))
-    tl = T(getparam(spec, :tilt, zero(T)))
-    mis = !(dx == 0 && dy == 0 && dz == 0 && xp == 0 && yp == 0 && tl == 0)
-    conv = Symbol(getparam(spec, :misalign_convention, :bmad))
-    conv in (:bmad, :madx) || throw(ArgumentError(
-        "misalign_convention must be :bmad or :madx; got $(repr(conv))"))
-    ident = (one(T), zero(T), zero(T), zero(T), one(T), zero(T),
-             zero(T), zero(T), one(T))
-    zero3 = (zero(T), zero(T), zero(T))
-    # At zero length the entrance, centre and exit coincide, so the reference
-    # point cannot matter and the two conventions differ only in the order the
-    # rotations compose. The frames still come from `_misalign_frames`, so a
-    # thin element and a thick one cannot drift apart in convention.
-    qin, oin, qout, oout = mis ?
-        _misalign_frames(T, _misalign_matrix(T, xp, yp, tl, conv === :madx),
-                         (dx, dy, dz), zero(T), zero(T), zero(T)) :
-        (ident, zero3, ident, zero3)
-    return ThinMultipole{typeof(method),T,length(knl),mis}(
+    return ThinMultipole{typeof(method),T,length(knl)}(
         method, knl, ksl,
-        T(getparam(spec, :hkick, zero(T))), T(getparam(spec, :vkick, zero(T))),
-        qin, oin, qout, oout)
+        T(getparam(spec, :hkick, zero(T))), T(getparam(spec, :vkick, zero(T))))
 end
 
 # Named integrated strengths, folded into knl/ksl the same way the thick magnets

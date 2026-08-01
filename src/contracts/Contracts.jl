@@ -7,6 +7,7 @@ export ContractResult, passed, validate,
        SymplecticityContract,
        HighEnergyWeakStrongLimitContract,
        PTCConsistencyContract,
+       ElementParameterEffectivenessContract,
        CoherentModePhysicsContract
 
 """
@@ -1666,4 +1667,131 @@ function validate(contract::PTCConsistencyContract; kwargs...)
     return ContractResult(false,
         "PTC comparison (MAD-X $(version)) failed: " * join(failures, "; ");
         residual=maximum(values(worst)), metrics=metrics)
+end
+
+
+"""
+    ElementParameterEffectivenessContract(; probes=DEFAULT_ELEMENT_PARAM_PROBES,
+                                          inactive=DEFAULT_INACTIVE_ELEMENT_PARAMS,
+                                          atol=0.0)
+
+Check that every declared element parameter reaches the compiled map.
+
+For each element kind with a probe, this builds a representative element
+**through its friendly constructor**, perturbs one declared parameter at a time,
+compiles, and tracks a test particle. A parameter whose perturbation leaves the
+coordinates bitwise identical is declared but not consumed -- the failure mode
+AGENTS.md calls a silently ignored non-default request, and exactly what let
+thin elements accept `x_offset` and drop it while `validate_element_metadata`
+still passed. Metadata validation checks that a parameter is declared and
+documented, not that anything reads it; this closes that gap mechanically.
+
+Construction goes through the friendly constructor on purpose. Several
+parameters are construction-time sugar -- `k1` folds into `kn`, `angle` into
+`h`/`b0` -- and setting them on a raw `ElementSpec` correctly does nothing, so a
+raw probe would report a design property as a defect.
+
+`probes` gives the base keywords per kind, chosen so conditional parameters are
+in a configuration where they can act: `va` needs a soft-edge fringe enabled,
+`wedge_coeff` needs both a pole-face angle and a quadrupole component. A kind
+with no probe is skipped and counted, rather than silently passing.
+
+`inactive` lists `(kind, parameter)` pairs that are genuinely inert and must say
+why -- a drift's `nst` is the honest example, since an exact map has no steps.
+"""
+const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
+    :drift => (L=0.7, h=0.05),
+    :quadrupole => (L=0.4, k1=1.7, nst=2, fringe=:all, va=0.03, vs=1.0e-4,
+                    highest_fringe=1, x_offset=1.0e-3),
+    :sextupole => (L=0.25, kn=(0.0, 1.2, 14.0), nst=2, fringe=:all, va=0.03, vs=1.0e-4,
+                   highest_fringe=1, x_offset=1.0e-3),
+    :octupole => (L=0.15, kn=(0.0, 1.2, 0.0, 220.0), nst=2, fringe=:all, va=0.03, vs=1.0e-4,
+                  highest_fringe=1, x_offset=1.0e-3),
+    :multipole => (L=0.3, k1=1.2, k2=8.0, nst=2, fringe=:all, va=0.03, vs=1.0e-4,
+                   highest_fringe=1, x_offset=1.0e-3),
+    :sbend => (L=1.1, angle=0.198, k1=0.6, k2=5.0, nst=2, e1=0.1, e2=0.1,
+               fint1=0.5, fint2=0.5, hgap1=0.03, hgap2=0.03, hface1=0.02,
+               hface2=0.02, fringe=:all, highest_fringe=1, curved_order=3,
+               x_offset=1.0e-3),
+    :marker => NamedTuple(),
+    :thin_multipole => (k1l=0.05, k2l=1.2, x_offset=1.0e-3),
+    :thin_dipole => (k0l=1.0e-3, x_offset=1.0e-3),
+    :thin_quadrupole => (k1l=0.05, x_offset=1.0e-3),
+    :thin_sextupole => (k2l=1.2, x_offset=1.0e-3),
+    :hkicker => (hkick=1.0e-4, x_offset=1.0e-3),
+    :vkicker => (vkick=1.0e-4, x_offset=1.0e-3),
+    :kicker => (hkick=1.0e-4, vkick=-5.0e-5, x_offset=1.0e-3),
+)
+const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
+    (:drift, :nst) => "the drift is exact, so there are no integration steps",
+    (:drift, :integrator_order) => "the drift is exact, so there is nothing to split",
+    (:marker, :tracking_method) => "a marker is the identity under every method",
+)
+
+Base.@kwdef struct ElementParameterEffectivenessContract <: AbstractImplementationContract
+    probes::Dict{Symbol,Any} = DEFAULT_ELEMENT_PARAM_PROBES
+    inactive::Dict{Tuple{Symbol,Symbol},String} = DEFAULT_INACTIVE_ELEMENT_PARAMS
+    atol::Float64 = 0.0
+end
+
+# Perturbation for a declared parameter, chosen to be small but unmistakable and
+# valid for the parameter's type. Returns `nothing` when the parameter is not
+# something this contract can vary (a tracking method, a symbol enum).
+function _perturb_param(key::Symbol, current)
+    key === :tracking_method && return nothing
+    current isa Bool && return !current
+    current isa Symbol && return nothing
+    if current isa Tuple
+        isempty(current) && return (0.0, 0.31)
+        return ntuple(i -> Float64(current[i]) + 0.17 * i, length(current))
+    end
+    current isa Integer && return Int(current) + 1
+    current isa Real && return Float64(current) + 0.13
+    return nothing
+end
+
+function validate(contract::ElementParameterEffectivenessContract; kwargs...)
+    u = (2.3e-3, 4.1e-4, -1.7e-3, -3.2e-4, 1.5e-3, 9.0e-4)
+    ignored = String[]
+    checked = 0
+    skipped = Symbol[]
+    for T in registered_element_specs()
+        meta = _element_meta_or_nothing(T)
+        meta === nothing && continue
+        ctor = meta.friendly_constructor
+        if ctor === nothing || !haskey(contract.probes, meta.kind)
+            push!(skipped, meta.kind)
+            continue
+        end
+        probe = Dict{Symbol,Any}(pairs(contract.probes[meta.kind]))
+        baseline = try
+            collect(compile_runtime(ctor(; probe...))(u...))
+        catch err
+            push!(skipped, meta.kind)
+            continue
+        end
+        for (key, pmeta) in pairs(parameter_schema(T))
+            pmeta isa ParamMeta || continue
+            haskey(contract.inactive, (meta.kind, key)) && continue
+            current = get(probe, key, pmeta.default === nothing ? 0.0 : pmeta.default)
+            new = _perturb_param(key, current)
+            new === nothing && continue
+            moved = try
+                collect(compile_runtime(ctor(; merge(probe,
+                    Dict{Symbol,Any}(key => new))...))(u...))
+            catch
+                continue          # a rejected value is consumed by definition
+            end
+            checked += 1
+            maximum(abs, moved .- baseline) <= contract.atol &&
+                push!(ignored, "$(meta.kind).$(key)")
+        end
+    end
+    metrics = Dict{Symbol,Any}(:checked => checked, :ignored => length(ignored),
+                               :skipped_kinds => length(skipped))
+    isempty(ignored) && return ContractResult(true,
+        "every declared element parameter reached the map ($(checked) checked, " *
+        "$(length(skipped)) kinds without a probe)"; metrics=metrics)
+    return ContractResult(false,
+        "declared but not consumed: " * join(sort(ignored), ", "); metrics=metrics)
 end

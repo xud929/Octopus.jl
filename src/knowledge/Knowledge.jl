@@ -831,7 +831,13 @@ function compile_runtime(spec::AbstractElementSpec, method)
     method_object = _tracking_method_object(method)
     T = runtime_type(spec, method_object)
     T === nothing && throw(MethodError(compile_runtime, (spec, method)))
-    return T(resolve_knobs(spec), method_object)
+    resolved = resolve_knobs(spec)
+    # A misalignment is a property of where an element sits, not of how it
+    # tracks, so it wraps the runtime here rather than being reimplemented
+    # inside each element. `_misalignment_wrap` returns its argument untouched
+    # when the spec carries no displacement, so an aligned element is exactly
+    # what it was. Defined in `src/elements/misalignment.jl`.
+    return _misalignment_wrap(resolved, T(resolved, method_object))
 end
 
 # Generic fallback: specs without knob parameters pass through unchanged. The

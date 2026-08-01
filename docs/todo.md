@@ -1198,17 +1198,33 @@ centre and exit coincide, so the reference point cannot matter and `:bmad` and
 and takes none: a rigid displacement of a zero-length identity map is still the
 identity, so there is nothing to store.
 
-`compile_runtime` returns the same runtime *type* either way -- `LatticeMagnet`
-or `ThinMultipole` -- but with a different type parameter (`MISALIGNED` in the
-fringe bits, `MIS` on the thin runtime). The five-map composition lives inside
-`track_particle` and is eliminated at compile time when the element is aligned,
-so an aligned magnet costs exactly what it did before misalignments existed.
+Misalignment composes with an element rather than living inside it
+(`src/elements/misalignment.jl`). `compile_runtime` wraps whatever runtime an
+element produces in a `MisalignedElement` when the spec carries a displacement,
+and returns it untouched otherwise:
+
+    aligned     LatticeMagnet{...}                     ThinMultipole{...}
+    misaligned  MisalignedElement{LatticeMagnet{...}}  MisalignedElement{ThinMultipole{...}}
+
+So a new element type gets misalignments for free and cannot get the convention
+subtly wrong, and an aligned element is byte-identical to what it was before
+misalignments existed. The first implementation put the frames and branches
+inside `LatticeMagnet` and then duplicated them into `ThinMultipole`, which is
+exactly the duplication this avoids -- a solenoid or a cavity would have needed
+a third copy.
 
 Two conventions are worth keeping straight, and both are enforced by tests:
 `knl[i]` is the **integrated** `K_{i-1} L`, not the thick `kn`; and a corrector
 gives `dpx = +hkick` while a dipole field of the same magnitude gives
 `dpx = -k0l`. Folding the second into the first would flip every corrector in a
 lattice.
+
+`ElementParameterEffectivenessContract` closes the class of bug that let the
+thin elements accept `x_offset` and drop it: it builds each element through its
+friendly constructor, perturbs one declared parameter at a time, and reports any
+whose perturbation leaves the tracked map bitwise identical. 168 parameters
+checked, 11 kinds still without a probe (the beam-beam, linear-map and radiation
+elements), which the contract reports rather than passing silently.
 
 **Still missing, and deliberately not attempted here** -- each needs work beyond
 adding an element spec:

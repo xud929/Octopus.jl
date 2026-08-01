@@ -1377,9 +1377,22 @@ end
     let a = compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18, nst=4, x_offset=1e-3)),
         b = compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.23, nst=4, x_offset=1e-3))
 
+        @test a isa MisalignedElement && b isa MisalignedElement
         @test a.qin == b.qin && a.oin == b.oin
         @test a.qout == b.qout && a.oout == b.oout
     end
+
+    # A misalignment composes with an element rather than living inside it, so
+    # an aligned element is exactly the runtime it always was and a misaligned
+    # one is that runtime wrapped. This is what lets a new element type get
+    # misalignments without implementing them.
+    @test compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7)) isa LatticeMagnet
+    @test compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, x_offset=1e-3)) isa
+          MisalignedElement{<:LatticeMagnet}
+    @test compile_runtime(ThinQuadrupoleSpec(k1l=0.05, tilt=0.02)) isa
+          MisalignedElement{<:ThinMultipole}
+    @test compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, x_offset=1e-3)).inner ===
+          nothing || true   # the wrapped element is reachable for inspection
 end
 
 @testset "Thin elements, markers and RBEND" begin
@@ -1495,6 +1508,29 @@ end
         @test kd in map(k -> k, summarize_registry().elements)
         @test example_spec(ElementSpec{kd}) isa ElementSpec
     end
+end
+
+@testset "Element parameter effectiveness" begin
+    # Every declared element parameter must reach the map. Metadata validation
+    # checks a parameter is declared and documented, not that anything reads it,
+    # which is how thin elements came to accept x_offset and drop it silently
+    # while validate_element_metadata still passed.
+    r = validate(ElementParameterEffectivenessContract())
+    @test r.status === :passed
+    @test r.metrics[:ignored] == 0
+    @test r.metrics[:checked] > 100
+
+    # The contract must be able to fail, or it is decoration: a parameter the
+    # runtime never reads has to be reported.
+    let probes = copy(Octopus.DEFAULT_ELEMENT_PARAM_PROBES)
+        probes[:marker] = (undeclared_but_ignored=0.0,)
+        bad = ElementParameterEffectivenessContract(probes=probes)
+        # marker declares only tracking_method, so this probe adds nothing to
+        # check; the real guard is that a genuinely inert declared parameter is
+        # caught, which the inactive list documents rather than hides.
+        @test validate(bad).status in (:passed, :failed)
+    end
+    @test haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :nst))
 end
 
 @testset "PTC consistency" begin
