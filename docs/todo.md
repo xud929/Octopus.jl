@@ -1222,9 +1222,21 @@ lattice.
 `ElementParameterEffectivenessContract` closes the class of bug that let the
 thin elements accept `x_offset` and drop it: it builds each element through its
 friendly constructor, perturbs one declared parameter at a time, and reports any
-whose perturbation leaves the tracked map bitwise identical. 168 parameters
-checked, 11 kinds still without a probe (the beam-beam, linear-map and radiation
-elements), which the contract reports rather than passing silently.
+whose perturbation leaves the tracked map bitwise identical. **208 parameters
+across every element kind with a friendly constructor**; kinds without an
+explicit probe fall back to their own curated `example_spec`.
+
+Two lessons from getting it green, both recorded in the source. First, probing
+must go through the friendly constructor: `Linear6D` uses a stored `matrix` when
+there is one, so probing its example -- which stores the folded matrix -- reports
+every optics input as ignored, exactly as a raw probe reports `k1` as ignored
+because it folds into `kn`. Second, "declared but not consumed" and "consumed
+somewhere this probe cannot see" are different findings and the `inactive` list
+says which: `thin_strong_beam.klum` reaches the runtime but feeds the luminosity
+diagnostic rather than the coordinate map, and the `lumped_radiation` excitation
+parameters are on the stochastic path a single deterministic call never takes.
+Those are limits of a map-based probe, not inert parameters, and closing them
+needs a diagnostic-boundary and a stochastic check respectively.
 
 **Still missing, and deliberately not attempted here** -- each needs work beyond
 adding an element spec:

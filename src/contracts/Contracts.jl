@@ -1713,6 +1713,15 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
                fint1=0.5, fint2=0.5, hgap1=0.03, hgap2=0.03, hface1=0.02,
                hface2=0.02, fringe=:all, highest_fringe=1, curved_order=3,
                x_offset=1.0e-3),
+    # The optics form, deliberately without `matrix`: Linear6D uses a stored
+    # matrix when there is one, so probing the example (which stores the folded
+    # matrix) would report every optics input as ignored.
+    :linear6d => (beta1=(3.0, 5.0, 90.0), beta2=(3.2, 4.7, 88.0),
+                  alpha1=(0.1, -0.2, 0.0), alpha2=(0.05, -0.15, 0.0),
+                  dmu=(0.31, 0.27, 0.011), eta1=(0.4, 0.02, 0.0, 0.0),
+                  eta2=(0.38, 0.03, 0.0, 0.0), zeta1=(0.01, 0.0, 0.0, 0.0),
+                  zeta2=(0.012, 0.0, 0.0, 0.0), R1=(0.02, 0.01, 0.0, 0.0),
+                  R2=(0.021, 0.011, 0.0, 0.0)),
     :marker => NamedTuple(),
     :thin_multipole => (k1l=0.05, k2l=1.2, x_offset=1.0e-3),
     :thin_dipole => (k0l=1.0e-3, x_offset=1.0e-3),
@@ -1726,6 +1735,17 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:drift, :nst) => "the drift is exact, so there are no integration steps",
     (:drift, :integrator_order) => "the drift is exact, so there is nothing to split",
     (:marker, :tracking_method) => "a marker is the identity under every method",
+    # These are consumed, but not through the single deterministic
+    # coordinate map this contract measures. The distinction matters: they are
+    # not inert, they are invisible to this probe, and a stronger check would
+    # need a stochastic path and a diagnostic boundary rather than one call.
+    (:lumped_radiation, :sigma) => "feeds the stochastic excitation, which one deterministic call does not exercise",
+    (:lumped_radiation, :is_excitation) => "gates the stochastic excitation path, not the damping map probed here",
+    (:lumped_radiation, :rng_id) => "selects a counter-RNG stream, observable only through stochastic samples",
+    (:lumped_radiation, :alpha) => "optics input used to build the damping/excitation moments, folded before the map",
+    (:lumped_radiation, :beta) => "optics input folded before the map, as alpha is",
+    (:thin_strong_beam, :klum) => "reaches the runtime but feeds the luminosity diagnostic, not the coordinate map",
+    (:thin_strong_beam, :alpha) => "used only when the strong beam is given through beta/alpha optics rather than kbb, which this probe does not do",
 )
 
 Base.@kwdef struct ElementParameterEffectivenessContract <: AbstractImplementationContract
@@ -1759,11 +1779,24 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
         meta = _element_meta_or_nothing(T)
         meta === nothing && continue
         ctor = meta.friendly_constructor
-        if ctor === nothing || !haskey(contract.probes, meta.kind)
+        if ctor === nothing
             push!(skipped, meta.kind)
             continue
         end
-        probe = Dict{Symbol,Any}(pairs(contract.probes[meta.kind]))
+        # Without an explicit probe, fall back to the kind's own curated
+        # example: it is already the representative element, and for elements
+        # with no construction-time sugar its stored parameters are exactly the
+        # constructor keywords.
+        probe = if haskey(contract.probes, meta.kind)
+            Dict{Symbol,Any}(pairs(contract.probes[meta.kind]))
+        else
+            ex = example_spec(T)
+            ex isa ElementSpec ? Dict{Symbol,Any}(params(ex)) : nothing
+        end
+        if probe === nothing
+            push!(skipped, meta.kind)
+            continue
+        end
         baseline = try
             collect(compile_runtime(ctor(; probe...))(u...))
         catch err

@@ -1518,7 +1518,10 @@ end
     r = validate(ElementParameterEffectivenessContract())
     @test r.status === :passed
     @test r.metrics[:ignored] == 0
-    @test r.metrics[:checked] > 100
+    @test r.metrics[:checked] > 200
+    # Every element kind that has a friendly constructor is now probed, either
+    # explicitly or through its own curated example.
+    @test r.metrics[:skipped_kinds] <= 3
 
     # The contract must be able to fail, or it is decoration: a parameter the
     # runtime never reads has to be reported.
