@@ -998,16 +998,93 @@ end
         @test collect(compile_runtime(DriftSpec(L=0.7, h=0.21, integrator_order=4))(u0...)) == a
     end
 
-    # A curved frame changes the multipole potential itself, so a
-    # combined-function bend must be refused rather than tracked with the
-    # straight-frame kick.
-    @test_throws ArgumentError compile_runtime(
-        SBendSpec(L=1.0, h=0.1, b0=0.1, kn=(0.0, 0.5)))
+    # Combined-function bends: a curved frame changes the multipole potential
+    # itself, so these route through the tabulated curved potential
+    # (Section 4.4) rather than the straight kick.
+    for ord in (2, 4), M in (4, 8)
+        cf = compile_runtime(SBendSpec(L=1.0, h=0.18, b0=0.18, kn=(0.0, 0.6, 5.0),
+                                       nst=4, integrator_order=ord, curved_order=M))
+        J = cs_jacobian(cf)
+        # The potential is tabulated rather than the field: differentiating one
+        # truncated polynomial keeps the kick an exact gradient, so truncation
+        # costs accuracy but never symplecticity.
+        @test maximum(abs, J' * S6 * J - S6) < 1.0e-12
+    end
+    # curved_order is a convergence parameter and must converge.
+    let ref = collect(compile_runtime(SBendSpec(L=1.0, h=0.18, b0=0.18, kn=(0.0, 0.6),
+                                                nst=4, curved_order=16))(u0...))
+        err(M) = maximum(abs, collect(compile_runtime(
+            SBendSpec(L=1.0, h=0.18, b0=0.18, kn=(0.0, 0.6), nst=4, curved_order=M))(u0...)) .- ref)
+        @test err(2) > err(6)
+        @test err(6) < 1.0e-13
+    end
+    # A curved multipole must reduce to the straight one as h -> 0.
+    let straight = collect(compile_runtime(QuadrupoleSpec(L=0.5, kn=(0.0, 1.7), nst=4))(u0...))
+        previous = Inf
+        for h in (1.0e-2, 1.0e-4, 1.0e-6)
+            d = maximum(abs, collect(compile_runtime(
+                SBendSpec(L=0.5, h=h, b0=0.0, kn=(0.0, 1.7), nst=4))(u0...)) .- straight)
+            @test d < previous
+            previous = d
+        end
+        @test previous < 1.0e-5
+    end
+    # A pure dipole stays on the exact single-step path: no multipole content
+    # (N = 0) and no curved-potential table (NC = 0), so the body is integrable
+    # in one step whatever nst says.
+    let e = compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18, nst=9))
+        @test e isa LatticeMagnet{Symplectic6DMap,Float64,0}
+        @test typeof(e).parameters[7] == 0                # NC
+        @test collect(e(u0...)) ==
+              collect(compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18, nst=1))(u0...))
+    end
+
     @test_throws ArgumentError compile_runtime(QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=0))
     @test_throws ArgumentError compile_runtime(
         QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), integrator_order=3))
     @test_throws ArgumentError compile_runtime(
         QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), fringe=:nope))
+
+    # Fringe defaults, measured rather than assumed. The hard-edge multipole
+    # fringe is purely nonlinear, so it is off by default and can be enabled per
+    # magnet (a final-focus quadrupole, say) without perturbing the optics
+    # elsewhere. The bend fringe defaults ON because it is first-order optics
+    # whenever a pole-face angle is present.
+    let lin(e) = begin
+            J = zeros(6, 6)
+            for j in 1:6
+                v = ComplexF64[0, 0, 0, 0, 0, 0]
+                v[j] += 1e-30im
+                J[:, j] = imag.(collect(e(v...))) ./ 1e-30
+            end
+            J
+        end
+        qn = lin(compile_runtime(QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=4, fringe=:none)))
+        qm = lin(compile_runtime(QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=4, fringe=:multipole)))
+        @test qn == qm                                   # nonlinear only
+        qs = lin(compile_runtime(QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=4,
+                                                fringe=:soft_quad, va=0.05, vs=1.0e-3)))
+        @test !isapprox(qn, qs)                          # soft edge IS linear
+        # Bend: no linear effect with perpendicular faces, first-order with an angle.
+        b0 = lin(compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18, nst=4, bend_fringe=false)))
+        b1 = lin(compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18, nst=4, bend_fringe=true)))
+        @test b0 == b1
+        e0 = lin(compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18, e1=0.1, e2=0.1,
+                                           nst=4, bend_fringe=false)))
+        e1 = lin(compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18, e1=0.1, e2=0.1,
+                                           nst=4, bend_fringe=true)))
+        @test maximum(abs, e0 - e1) > 1.0e-3
+        @test abs(e1[4, 3]) > 1.0e-3 && e0[4, 3] == 0
+        # and the default is ON
+        d = lin(compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18, e1=0.1, e2=0.1, nst=4)))
+        @test d == e1
+    end
+
+    # Every kind declares the PTC contract, and every kind has a literal
+    # reference case behind that claim.
+    for kd in (:drift, :quadrupole, :sextupole, :octupole, :multipole, :sbend)
+        @test PTCConsistencyContract in required_contracts(ElementSpec{kd})
+    end
 
     # Six element kinds share one runtime type and one tracking method.
     for spec in (DriftSpec(L=0.1), QuadrupoleSpec(L=0.1), SextupoleSpec(L=0.1),
@@ -1023,12 +1100,17 @@ end
     result = validate(PTCConsistencyContract())
     @test result.status in (:passed, :skipped)
     if result.status === :passed
-        @test result.metrics[:cases] >= 8
+        @test result.metrics[:cases] >= 15
         @test haskey(result.metrics, :madx_version)
         # Straight elements should agree to MAD-X's printed precision. The bend
         # is looser and deliberately so -- see the contract docstring.
+        # Every element type, including combined-function bends, agrees with
+        # PTC to MAD-X's printed precision.
+        @test result.metrics[:max_deviation] < 1.0e-11
         for k in (:dev_drift, :dev_quadrupole_m2_n1, :dev_quadrupole_m4_n3,
-                  :dev_sextupole_m4_n2, :dev_octupole_m2_n4)
+                  :dev_sextupole_m4_n2, :dev_octupole_m2_n4,
+                  :dev_sbend_m2_n4, :dev_cfbend_m2_n4, :dev_cfbend_m4_n2,
+                  :dev_multipole_m2_n4, :dev_multipole_m4_n2)
             @test result.metrics[k] < 1.0e-11
         end
     end

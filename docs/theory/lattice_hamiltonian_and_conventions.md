@@ -308,6 +308,21 @@ $$
    so a curved drift costs nothing beyond the exact drift map of Section 5. This
    is what makes $h$ safe to carry on every element rather than only on bends.
 
+> **Implementation note: tabulate $\Psi$, not the field.** The kick needs
+> $\partial_x\Psi$ and $\partial_y\Psi$, and it is tempting to tabulate
+> $\hat B_x,\hat B_y$ instead, since the same recursion runs on the field. Do
+> not. Truncating the *field* breaks the cross-derivative symmetry that makes
+> the kick a gradient, and the map stops being symplectic at the truncation
+> level — measured $1.5\times10^{-4}$ for a gradient dipole. Differentiating one
+> truncated *potential* keeps the kick an exact gradient at any order, so
+> truncation costs accuracy but never symplecticity ($7\times10^{-15}$).
+>
+> Relatedly, the straight closed form of Section 4.5 carrying a $(1+hx)$ factor
+> is valid **only for a pure dipole** when $h\neq0$: for any other field
+> $\partial_y\!\left[-(1+hx)\hat B_y\right]$ and
+> $\partial_x\!\left[(1+hx)\hat B_x\right]$ differ by $h\hat B_x$, so it is not
+> a gradient either.
+
 **Verification.** The dipole solution reproduces Section 5's $\hat a_s$ to
 $0$ ulp; the quadrupole PDE residual falls as $y^{k_{\max}}$ with truncation
 order ($y^2$ and $y^4$ scaling confirmed, higher orders reaching the
@@ -748,6 +763,15 @@ implicitly rather than explicitly; the relation
 $y_{\rm new}=y+\tfrac{B}{2}y_{\rm new}^2$ is that implicit statement. Taking its
 exact root — rather than iterating or truncating — is what makes the map
 symplectic to machine precision.
+
+> **Not gated by the pole-face angle.** PTC applies this map at both faces of an
+> exact bend whenever `EXACT` and `BEND_FRINGE` are set — *including when
+> $e_1=e_2=0$ and $\mathrm{FINT}=\mathrm{HGAP}=0$*, because $\Phi_0$ then reduces
+> to $\arctan\!\big(x'/(1+y'^2)\big)$, nonzero for any non-parallel trajectory.
+> It is the dipole's share of the Maxwell-required hard-edge fringe of Section
+> 6.2, not an edge-angle effect. Omitting it leaves a bend exact on axis at any
+> momentum but wrong at transverse amplitude: measured $5.7\times10^{-7}$
+> against PTC, falling to $4.8\times10^{-13}$ once included.
 
 Two details worth copying verbatim:
 

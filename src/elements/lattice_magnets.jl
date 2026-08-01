@@ -24,7 +24,8 @@ const _FR_K2 = (_FR_A - 1) * _FR_K1
 const FRINGE_NONE = 0
 const FRINGE_MULTIPOLE = 1      # hard-edge multipole fringe (Forest-Milutinovic)
 const FRINGE_SOFT_QUAD = 2      # soft-edge quadrupole fringe (VA, VS)
-const FRINGE_DIPOLE_EDGE = 4    # pole face: rotation, curvature, FINT/HGAP
+const FRINGE_DIPOLE_EDGE = 4    # pole face: rotation, curvature, wedge
+const FRINGE_BEND = 8           # exact hard-edge dipole fringe (Maxwell-required)
 
 # ---------------------------------------------------------------------------
 # Small-argument-safe curvature helpers.
@@ -113,10 +114,118 @@ dependence lives in the drift, and adding it here would double-count.
         tr, ti = (tr * x - ti * y) / n, (tr * y + ti * x) / n
     end
     # Section 4.5: dpx = -L (1+hx) By, dpy = +L (1+hx) Bx. Only a dipole may
-    # have h != 0 here (combined-function bends are refused), and the curved
-    # dipole field is exactly K0, so this factor is exact rather than truncated.
+    # have h != 0 on this path with a PURE DIPOLE (a combined-function magnet
+    # routes to _curved_kick), and the curved dipole field is exactly K0, so the
+    # factor is exact rather than truncated.
+    #
+    # This restriction is not cosmetic. For a non-dipole field the map above is
+    # not a gradient when h != 0 -- d/dy[-(1+hx)By] and d/dx[(1+hx)Bx] differ by
+    # h*Bx -- so it would not be symplectic. Routing combined-function magnets
+    # through the tabulated potential is what keeps the kick a gradient.
     g = 1 + h * x
     return x, px - L * g * ar, y, py + L * g * ai, z, pz
+end
+
+"""
+    _curved_potential_coeffs(T, kn, ks, h, M)
+
+Two-dimensional Taylor coefficients of `Psi = (1+hx) a_s` in a curved frame, to
+order `M`, for a combined-function magnet.
+
+The straight expansion of Section 4.1 is not a solution when `h != 0`, so a
+gradient dipole needs the curved potential. Section 4.4 derives it as an exact
+recursion in the `y` order,
+
+    Psi_{k+2}(x) = -Psi_k''(x) + h/(1+hx) Psi_k'(x)
+
+seeded on the midplane by the field definition: `Psi_0` integrates
+`dPsi/dx = -(1+hx) By(x,0)`, and `Psi_1 = (1+hx) Bx(x,0)`. Only the dipole
+terminates, which is why `M` is a convergence parameter rather than a fixed
+choice.
+
+**The potential is tabulated rather than the field, deliberately.** Truncating
+the field breaks the cross-derivative symmetry that makes the kick a gradient,
+and the map then fails to be symplectic at the truncation level (measured
+1.5e-4). Differentiating one truncated potential keeps the kick an exact
+gradient at any `M`, so truncation costs accuracy but never symplecticity.
+
+Returns a row-major flat tuple of length `(M+1)^2`, index `k*(M+1)+j+1` holding
+the coefficient of `x^j y^k`.
+"""
+function _curved_potential_coeffs(::Type{T}, kn, ks, h, M::Int) where {T}
+    np = M + 1
+    Ψ = [zeros(T, np) for _ in 0:M]
+    # Psi_0: integrate -(1+hx) By(x,0) with By(x,0) = sum K_n x^n/n!
+    fac = one(T)
+    for n in 0:(length(kn) - 1)
+        n > 0 && (fac *= n)
+        c = T(kn[n + 1]) / fac
+        n + 1 <= M && (Ψ[1][n + 2] -= c / (n + 1))
+        n + 2 <= M && (Ψ[1][n + 3] -= c * h / (n + 2))
+    end
+    # Psi_1 = (1+hx) Bx(x,0) with Bx(x,0) = sum Ks_n x^n/n!
+    if M >= 1
+        fac = one(T)
+        for n in 0:(length(ks) - 1)
+            n > 0 && (fac *= n)
+            c = T(ks[n + 1]) / fac
+            n <= M && (Ψ[2][n + 1] += c)
+            n + 1 <= M && (Ψ[2][n + 2] += c * h)
+        end
+    end
+    g = T[(-1)^j * h^(j + 1) for j in 0:M]        # series of h/(1+hx)
+    derivative(p) = T[j <= np - 1 ? j * p[j + 1] : zero(T) for j in 1:np]
+    function truncated_product(a, b)
+        c = zeros(T, np)
+        for i in 1:np, j in 1:(np - i + 1)
+            c[i + j - 1] += a[i] * b[j]
+        end
+        return c
+    end
+    for k in 0:(M - 2)
+        d1 = derivative(Ψ[k + 1])
+        Ψ[k + 3] = -derivative(d1) .+ truncated_product(g, d1)
+    end
+    kfac = one(T)
+    coeffs = zeros(T, np * np)
+    for k in 0:M
+        k > 0 && (kfac *= k)
+        for j in 0:M
+            coeffs[k * np + j + 1] = Ψ[k + 1][j + 1] / kfac
+        end
+    end
+    return Tuple(coeffs)
+end
+
+"""
+Multipole kick in a curved frame. Section 4.5 with `H_kick = -Psi`:
+
+    dpx = L dPsi/dx ,      dpy = L dPsi/dy
+
+Both derivatives are taken from the *same* tabulated polynomial, so the kick is
+an exact gradient and the map is symplectic to round-off at any truncation
+order.
+"""
+@inline function _curved_kick(ψ::NTuple{NC,T}, ::Val{M}, L::T,
+                              x, px, y, py, z, pz) where {NC,T,M}
+    np = M + 1
+    dx = zero(x); dy = zero(x)
+    ypow = one(x)          # y^k
+    yprev = zero(x)        # y^(k-1)
+    @inbounds for k in 0:M
+        rx = zero(x); r = zero(x)
+        for j in M:-1:1
+            rx = rx * x + j * ψ[k * np + j + 1]
+        end
+        for j in M:-1:0
+            r = r * x + ψ[k * np + j + 1]
+        end
+        dx += rx * ypow
+        k >= 1 && (dy += k * r * yprev)
+        yprev = ypow
+        ypow *= y
+    end
+    return x, px + L * dx, y, py + L * dy, z, pz
 end
 
 # ---------------------------------------------------------------------------
@@ -232,6 +341,54 @@ limit `L -> 0`, `h -> inf`, `A = hL` fixed. Degenerates to `_rot_xz` at `b1 = 0`
 end
 
 """
+Exact hard-edge dipole fringe, Section 6.3.1.
+
+**Not optional, and not the same thing as `FINT`/`HGAP`.** With
+`fint = hgap = 0` the generalized entrance angle is still
+`Phi0 = atan(x'/(1+y'^2))`, nonzero whenever the trajectory is not parallel to
+the axis. It is the dipole's share of the fringe Maxwell forces on any hard edge
+(Section 6.2): a step-function dipole field cannot be curl-free without it. PTC
+applies it at both faces of an exact bend regardless of the pole-face angle.
+
+Works in slopes and keeps them exactly. The `y` update is the closed-form root
+of `y_new = y + B y_new^2 / 2`, written cancellation-free.
+"""
+@inline function _fringe_dipole_exact(b1::T, fint::T, hgap::T, σ,
+                                      x, px, y, py, z, pz) where {T}
+    b1 == 0 && return x, px, y, py, z, pz
+    b = σ * b1
+    p = 1 + pz
+    ps = sqrt(p * p - px * px - py * py)
+    xp = px / ps
+    yp = py / ps
+    fg = fint * hgap
+    d11 = (1 + xp * xp) / ps;   d21 = xp * yp / ps;      d31 = -xp
+    d12 = xp * yp / ps;         d22 = (1 + yp * yp) / ps; d32 = -yp
+    d13 = -p * xp / (ps * ps);  d23 = -p * yp / (ps * ps); d33 = p / ps
+    u = xp / (1 + yp * yp)
+    Φ = atan(u) - 2 * b * fg * (1 + xp * xp * (2 + yp * yp)) * ps
+    co2 = b / cos(Φ)^2
+    co1 = co2 / (1 + u * u)
+    f1 = co1 / (1 + yp * yp) - co2 * 2 * b * fg * (2 * xp * (2 + yp * yp) * ps)
+    f2 = -co1 * 2 * xp * yp / (1 + yp * yp)^2 - co2 * 2 * b * fg * (2 * xp * xp * yp) * ps
+    f3 = -co2 * 2 * b * fg * (1 + xp * xp * (2 + yp * yp))
+    tanΦ = b * tan(Φ)
+    B = f1 * d12 + f2 * d22 + f3 * d32
+    y = 2y / (1 + sqrt(1 - 2 * B * y))
+    py -= tanΦ * y
+    B = f1 * d11 + f2 * d21 + f3 * d31
+    x += B * y * y / 2
+    B = f1 * d13 + f2 * d23 + f3 * d33
+    z += B * y * y / 2                # sign flipped from PTC (Section 2.1)
+    if fg != 0
+        c3 = b * b / (72 * fg) / p
+        py -= 4 * c3 * y^3
+        z -= c3 * y^4 / p
+    end
+    return x, px, y, py, z, pz
+end
+
+"""
 Linear pole-face focusing with the fringe-field-integral correction
 (Section 6.3.2), plus the cubic term inherited from SAD that most codes omit.
 """
@@ -277,13 +434,14 @@ runtime data, so a convergence study over step count does not recompile.
 
 Derivations: `docs/theory/lattice_hamiltonian_and_conventions.md`.
 """
-struct LatticeMagnet{M<:AbstractTrackingMethod,T<:AbstractFloat,N,ORDER,FRINGE} <: AbstractTrackOp
+struct LatticeMagnet{M<:AbstractTrackingMethod,T<:AbstractFloat,N,ORDER,FRINGE,MC,NC} <: AbstractTrackOp
     method::M
     L::T
     h::T                     # reference-frame curvature
     b0::T                    # dipole strength carried by the exact map
     kn::NTuple{N,T}          # kn[i] = K_{i-1}, normal, kicked
     ks::NTuple{N,T}          # skew partners
+    psi::NTuple{NC,T}        # curved-frame potential table; empty unless combined-function
     nst::Int
     e1::T; e2::T             # pole-face angles
     fint1::T; fint2::T
@@ -292,15 +450,28 @@ struct LatticeMagnet{M<:AbstractTrackingMethod,T<:AbstractFloat,N,ORDER,FRINGE} 
     va::T; vs::T
 end
 
-@inline _has(::LatticeMagnet{M,T,N,O,F}, bit) where {M,T,N,O,F} = (F & bit) != 0
+@inline _has(::LatticeMagnet{M,T,N,O,F,MC,NC}, bit) where {M,T,N,O,F,MC,NC} = (F & bit) != 0
 
-@inline function _entrance(elem::LatticeMagnet{M,T,N,O,F},
-                           x, px, y, py, z, pz) where {M,T,N,O,F}
+"""
+Dipole strength as the face maps see it. `bend_model` decides whether the dipole
+sits in the integrable map (`b0`) or in the kick (`kn[1]`); the faces must see
+the same field either way.
+"""
+@inline _bend_strength(elem::LatticeMagnet{M,T,N}) where {M,T,N} =
+    elem.b0 != 0 ? elem.b0 : (N >= 1 ? elem.kn[1] : zero(T))
+
+@inline function _entrance(elem::LatticeMagnet{M,T,N,O,F,MC,NC},
+                           x, px, y, py, z, pz) where {M,T,N,O,F,MC,NC}
+    b1 = _bend_strength(elem)
     if F & FRINGE_DIPOLE_EDGE != 0
         x, px, y, py, z, pz = _rot_xz(elem.e1, x, px, y, py, z, pz)
-        x, px, y, py, z, pz = _face(elem.b0, elem.hface1, elem.e1, one(T), x, px, y, py, z, pz)
-        x, px, y, py, z, pz = _dipole_edge(elem.b0, elem.e1, elem.fint1, elem.hgap1,
-                                           one(T), x, px, y, py, z, pz)
+        x, px, y, py, z, pz = _face(b1, elem.hface1, elem.e1, one(T), x, px, y, py, z, pz)
+    end
+    # The hard-edge dipole fringe runs regardless of the pole-face angle: it is
+    # Maxwell-required, not an edge-angle effect (see _fringe_dipole_exact).
+    if F & FRINGE_BEND != 0
+        x, px, y, py, z, pz = _fringe_dipole_exact(b1, elem.fint1, elem.hgap1,
+                                                   one(T), x, px, y, py, z, pz)
     end
     if F & FRINGE_MULTIPOLE != 0
         x, px, y, py, z, pz = _multipole_fringe(elem.kn, elem.ks, one(T), x, px, y, py, z, pz)
@@ -310,15 +481,16 @@ end
                                                 one(T), x, px, y, py, z, pz)
     end
     if F & FRINGE_DIPOLE_EDGE != 0
-        x, px, y, py, z, pz = _wedge(-elem.e1, elem.b0, x, px, y, py, z, pz)
+        x, px, y, py, z, pz = _wedge(-elem.e1, b1, x, px, y, py, z, pz)
     end
     return x, px, y, py, z, pz
 end
 
-@inline function _exit(elem::LatticeMagnet{M,T,N,O,F},
-                       x, px, y, py, z, pz) where {M,T,N,O,F}
+@inline function _exit(elem::LatticeMagnet{M,T,N,O,F,MC,NC},
+                       x, px, y, py, z, pz) where {M,T,N,O,F,MC,NC}
+    b1 = _bend_strength(elem)
     if F & FRINGE_DIPOLE_EDGE != 0
-        x, px, y, py, z, pz = _wedge(-elem.e2, elem.b0, x, px, y, py, z, pz)
+        x, px, y, py, z, pz = _wedge(-elem.e2, b1, x, px, y, py, z, pz)
     end
     if F & FRINGE_SOFT_QUAD != 0 && N >= 2
         x, px, y, py, z, pz = _soft_quad_fringe(elem.kn[2], elem.ks[2], elem.va, elem.vs,
@@ -327,23 +499,34 @@ end
     if F & FRINGE_MULTIPOLE != 0
         x, px, y, py, z, pz = _multipole_fringe(elem.kn, elem.ks, -one(T), x, px, y, py, z, pz)
     end
+    if F & FRINGE_BEND != 0
+        x, px, y, py, z, pz = _fringe_dipole_exact(b1, elem.fint2, elem.hgap2,
+                                                   -one(T), x, px, y, py, z, pz)
+    end
     if F & FRINGE_DIPOLE_EDGE != 0
-        x, px, y, py, z, pz = _dipole_edge(elem.b0, elem.e2, elem.fint2, elem.hgap2,
-                                           -one(T), x, px, y, py, z, pz)
-        x, px, y, py, z, pz = _face(elem.b0, elem.hface2, elem.e2, -one(T), x, px, y, py, z, pz)
+        x, px, y, py, z, pz = _face(b1, elem.hface2, elem.e2, -one(T), x, px, y, py, z, pz)
         x, px, y, py, z, pz = _rot_xz(elem.e2, x, px, y, py, z, pz)
     end
     return x, px, y, py, z, pz
 end
 
+"""
+Kick for one sub-step. Uses the tabulated curved-frame field when the frame is
+curved and the magnet carries multipoles beyond the dipole; otherwise the
+straight closed form of Section 4.5, which is exact and cheaper.
+"""
+@inline _step_kick(elem::LatticeMagnet{M,T,N,O,F,MC,NC}, d, x, px, y, py, z, pz) where {M,T,N,O,F,MC,NC} =
+    NC == 0 ? _lattice_kick(elem.kn, elem.ks, elem.h, d, x, px, y, py, z, pz) :
+              _curved_kick(elem.psi, Val(MC), d, x, px, y, py, z, pz)
+
 @inline _body_step(elem::LatticeMagnet, d, x, px, y, py, z, pz) =
     elem.b0 == 0 ? _lattice_drift(elem.h, d, x, px, y, py, z, pz) :
                    _lattice_bend(elem.h, elem.b0, d, x, px, y, py, z, pz)
 
-@inline function track_particle(::Symplectic6DMap, elem::LatticeMagnet{M,T,N,ORDER,F},
-                                x, px, y, py, z, pz) where {M,T,N,ORDER,F}
+@inline function track_particle(::Symplectic6DMap, elem::LatticeMagnet{M,T,N,ORDER,F,MC,NC},
+                                x, px, y, py, z, pz) where {M,T,N,ORDER,F,MC,NC}
     x, px, y, py, z, pz = _entrance(elem, x, px, y, py, z, pz)
-    if N == 0
+    if N == 0 && NC == 0
         # No multipole content: the body is integrable in one exact step, so
         # nst and integrator_order are genuinely inactive rather than merely
         # harmless. This is also the fast path for drifts and pure bends.
@@ -354,7 +537,7 @@ end
             d = hstep / 2
             @inbounds for _ in 1:elem.nst
                 x, px, y, py, z, pz = _body_step(elem, d, x, px, y, py, z, pz)
-                x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ks, elem.h, hstep, x, px, y, py, z, pz)
+                x, px, y, py, z, pz = _step_kick(elem, hstep, x, px, y, py, z, pz)
                 x, px, y, py, z, pz = _body_step(elem, d, x, px, y, py, z, pz)
             end
         else
@@ -362,11 +545,11 @@ end
             k1 = T(_FR_K1) * hstep; k2 = T(_FR_K2) * hstep
             @inbounds for _ in 1:elem.nst
                 x, px, y, py, z, pz = _body_step(elem, d1, x, px, y, py, z, pz)
-                x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ks, elem.h, k1, x, px, y, py, z, pz)
+                x, px, y, py, z, pz = _step_kick(elem, k1, x, px, y, py, z, pz)
                 x, px, y, py, z, pz = _body_step(elem, d2, x, px, y, py, z, pz)
-                x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ks, elem.h, k2, x, px, y, py, z, pz)
+                x, px, y, py, z, pz = _step_kick(elem, k2, x, px, y, py, z, pz)
                 x, px, y, py, z, pz = _body_step(elem, d2, x, px, y, py, z, pz)
-                x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ks, elem.h, k1, x, px, y, py, z, pz)
+                x, px, y, py, z, pz = _step_kick(elem, k1, x, px, y, py, z, pz)
                 x, px, y, py, z, pz = _body_step(elem, d1, x, px, y, py, z, pz)
             end
         end
@@ -391,7 +574,9 @@ function _fringe_bits(mode::Symbol, edge::Bool)
     bits = 0
     (mode === :multipole || mode === :all) && (bits |= FRINGE_MULTIPOLE)
     (mode === :soft_quad || mode === :all) && (bits |= FRINGE_SOFT_QUAD)
-    edge && (bits |= FRINGE_DIPOLE_EDGE)
+    # The hard-edge dipole fringe is Maxwell-required rather than an edge-angle
+    # effect, so it follows the same switch instead of being a separate opt-in.
+    edge && (bits |= FRINGE_DIPOLE_EDGE | FRINGE_BEND)
     return bits
 end
 
@@ -434,21 +619,19 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
         b0 = zero(T)
     end
     kn, ks = _strength_tuples(T, knraw, ksraw)
-    # Stage 1 covers straight multipoles and pure (or curved-frame) dipoles. A
-    # curved frame changes the multipole potential itself (Section 4.4), so a
-    # combined-function bend needs the curved kick and is refused rather than
-    # silently tracked with the straight one.
-    if h != 0 && any(i -> i >= 2 && (kn[i] != 0 || ks[i] != 0), eachindex(kn))
-        throw(ArgumentError(
-            "combined-function bends (h != 0 with multipole order >= 1) are not yet " *
-            "implemented: the curved-frame multipole kick of " *
-            "docs/theory/lattice_hamiltonian_and_conventions.md Section 4.4 is required. " *
-            "Use h = 0 for a straight multipole, or drop the higher multipoles."))
-    end
-    edge = Bool(getparam(spec, :bend_fringe, false))
+    # A curved frame changes the multipole potential itself (Section 4.4), so a
+    # combined-function magnet needs the curved field table. A pure dipole is
+    # exempt: its curved potential terminates, so the straight form is already
+    # exact for it once the (1+hx) factor is applied.
+    combined = h != 0 && any(i -> i >= 2 && (kn[i] != 0 || ks[i] != 0), eachindex(kn))
+    curved_order = Int(getparam(spec, :curved_order, 8))
+    curved_order >= 1 || throw(ArgumentError("curved_order must be positive, got \$curved_order"))
+    psi = combined ? _curved_potential_coeffs(T, kn, ks, h, curved_order) : ()
+    mc = combined ? curved_order : 0
+    edge = Bool(getparam(spec, :bend_fringe, true))
     bits = _fringe_bits(Symbol(getparam(spec, :fringe, :none)), edge)
-    return LatticeMagnet{typeof(method),T,length(kn),order,bits}(
-        method, L, h, b0, kn, ks, nst,
+    return LatticeMagnet{typeof(method),T,length(kn),order,bits,mc,length(psi)}(
+        method, L, h, b0, kn, ks, psi, nst,
         T(getparam(spec, :e1, zero(T))), T(getparam(spec, :e2, zero(T))),
         T(getparam(spec, :fint1, zero(T))), T(getparam(spec, :fint2, zero(T))),
         T(getparam(spec, :hgap1, zero(T))), T(getparam(spec, :hgap2, zero(T))),
@@ -463,7 +646,7 @@ const _COMMON_PARAMS = (
     L=ParamMeta(required=true, meaning="arc length in metres"),
     nst=ParamMeta(default=1, meaning="integration steps; runtime data, so a convergence study over it does not recompile"),
     integrator_order=ParamMeta(default=2, meaning="2 (Strang) or 4 (Forest-Ruth, PTC METHOD=4 coefficients)"),
-    fringe=ParamMeta(default=:none, meaning="fringe selection: :none, :multipole (hard-edge Forest-Milutinovic), :soft_quad (VA/VS), or :all"),
+    fringe=ParamMeta(default=:none, meaning="per-magnet fringe selection: :none, :multipole (hard-edge Forest-Milutinovic), :soft_quad (VA/VS), or :all. Defaults off because the hard-edge multipole fringe is purely nonlinear -- it leaves the linear map unchanged to 0 ulp -- so it can be enabled on the few magnets that need it, such as a final-focus quadrupole, without perturbing the optics elsewhere. :soft_quad is different: it IS a linear map and does move the tune"),
     va=ParamMeta(default=0, meaning="soft-edge quadrupole fringe: equivalent linear-ramp length; signed"),
     vs=ParamMeta(default=0, meaning="soft-edge quadrupole fringe: second-moment parameter"),
     tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
@@ -490,7 +673,7 @@ end
     description = "Exact field-free drift; the reference frame may be curved."
     keywords = [:lattice_magnet, :thick_element]
     tracking_methods = [Symplectic6DMap]
-    contracts = [ElementTrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         L=ParamMeta(required=true, meaning="arc length in metres"),
@@ -511,7 +694,7 @@ end
     description = "Thick quadrupole: exact drift interleaved with multipole kicks."
     keywords = [:lattice_magnet, :thick_element, :nonlinear_interaction]
     tracking_methods = [Symplectic6DMap]
-    contracts = [ElementTrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         L=_COMMON_PARAMS.L,
@@ -536,7 +719,7 @@ end
     description = "Thick sextupole: exact drift interleaved with multipole kicks."
     keywords = [:lattice_magnet, :thick_element, :nonlinear_interaction]
     tracking_methods = [Symplectic6DMap]
-    contracts = [ElementTrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         L=_COMMON_PARAMS.L,
@@ -561,7 +744,7 @@ end
     description = "Thick octupole: exact drift interleaved with multipole kicks."
     keywords = [:lattice_magnet, :thick_element, :nonlinear_interaction]
     tracking_methods = [Symplectic6DMap]
-    contracts = [ElementTrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         L=_COMMON_PARAMS.L,
@@ -586,7 +769,7 @@ end
     description = "Thick general multipole: exact drift interleaved with multipole kicks."
     keywords = [:lattice_magnet, :thick_element, :nonlinear_interaction]
     tracking_methods = [Symplectic6DMap]
-    contracts = [ElementTrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         L=_COMMON_PARAMS.L,
@@ -611,12 +794,14 @@ end
     description = "Exact sector bend with independent frame curvature and dipole strength."
     keywords = [:lattice_magnet, :thick_element, :coordinate_transform]
     tracking_methods = [Symplectic6DMap]
-    contracts = [ElementTrackingBackendConsistencyContract]
+    contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
         L=_COMMON_PARAMS.L,
         h=ParamMeta(default=0, meaning="reference-frame curvature 1/rho; need not equal b0"),
         b0=ParamMeta(default=0, meaning="dipole strength q B0 / P0; independent of h"),
+        kn=ParamMeta(default=(), meaning="normal multipole strengths for a combined-function bend; index i holds K_{i-1}"),
+        ks=ParamMeta(default=(), meaning="skew partners of kn"),
         e1=ParamMeta(default=0, meaning="entrance pole-face angle"),
         e2=ParamMeta(default=0, meaning="exit pole-face angle"),
         fint1=ParamMeta(default=0, meaning="entrance fringe-field integral"),
@@ -625,7 +810,8 @@ end
         hgap2=ParamMeta(default=0, meaning="exit half gap"),
         hface1=ParamMeta(default=0, meaning="entrance pole-face curvature"),
         hface2=ParamMeta(default=0, meaning="exit pole-face curvature"),
-        bend_fringe=ParamMeta(default=false, meaning="enable the pole-face maps (rotation, curvature, FINT/HGAP, wedge)"),
+        bend_fringe=ParamMeta(default=true, meaning="pole-face maps (exact rotation, face curvature, FINT/HGAP, wedge) and the Maxwell-required hard-edge dipole fringe. Defaults ON because it is first-order optics whenever e1 or e2 is nonzero: measured J[4,3] moves from 0 to -0.036 at e1=e2=0.1. With perpendicular faces it is purely nonlinear (linear map identical to 0 ulp), but it is still what PTC does and what Maxwell requires. Set false only to obtain the bare integrable map"),
+        curved_order=ParamMeta(default=8, meaning="truncation order of the curved-frame field expansion used by combined-function bends (Section 4.4); a convergence parameter, unused when h == 0 or the magnet is a pure dipole"),
         bend_model=ParamMeta(default=:exact, meaning="where the dipole sits in the splitting: :exact puts it in the integrable map (no splitting error, exact at nst=1); :drift_kick puts it in the kick, reproducing PTC MODEL=1 at finite nst"),
         nst=_COMMON_PARAMS.nst,
         integrator_order=_COMMON_PARAMS.integrator_order,
@@ -633,5 +819,5 @@ end
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
     example = SBendSpec(L=1.0, h=0.05, b0=0.05)
-    construction_help = "Friendly constructor: SBendSpec(; L, h=0, b0=0, e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=false, bend_model=:exact, nst=1, integrator_order=2, fringe=:none, tracking_method=Symplectic6DMap()). h is the frame curvature and b0 the field; they need not agree. Combined-function bends are not yet supported."
+    construction_help = "Friendly constructor: SBendSpec(; L, h=0, b0=0, e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=true, bend_model=:exact, curved_order=8, nst=1, integrator_order=2, fringe=:none, kn=(), ks=(), tracking_method=Symplectic6DMap()). h is the frame curvature and b0 the field; they need not agree. Combined-function bends are supported: give kn/ks alongside h."
 end

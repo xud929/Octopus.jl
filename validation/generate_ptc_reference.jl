@@ -86,6 +86,19 @@ const CASES = Case[
          Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 1)),
     Case("sbend_m2_n4", "sbend, l=1.1, angle=0.198", 1.1, 2, 4,
          Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 4)),
+    Case("sbend_m4_n2", "sbend, l=1.1, angle=0.198", 1.1, 4, 2,
+         Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 2)),
+    # angle=0 makes a MAD-X sbend a straight combined magnet, which is exactly
+    # a thick general multipole -- MAD-X's own MULTIPOLE element is thin.
+    Case("multipole_m2_n4", "sbend, l=0.3, angle=0, k1=1.2, k2=8.0", 0.3, 2, 4,
+         Dict(:kind => :multipole, :L => 0.3)),
+    Case("multipole_m4_n2", "sbend, l=0.3, angle=0, k1=1.2, k2=8.0, k3=90.0", 0.3, 4, 2,
+         Dict(:kind => :multipole, :L => 0.3)),
+    # Combined-function bends: the curved-frame multipole kick of Section 4.4.
+    Case("cfbend_m2_n4", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4,
+         Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 4)),
+    Case("cfbend_m4_n2", "sbend, l=1.1, angle=0.198, k1=0.6, k2=5.0", 1.1, 4, 2,
+         Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 2)),
 ]
 
 function madx_version()

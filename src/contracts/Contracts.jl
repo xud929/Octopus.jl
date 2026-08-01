@@ -1507,18 +1507,31 @@ function _ptc_reference_specs()
         "sextupole_m2_n4" => SextupoleSpec(L=0.25, kn=(0.0, 0.0, 14.0), nst=4, integrator_order=2),
         "sextupole_m4_n2" => SextupoleSpec(L=0.25, kn=(0.0, 0.0, 14.0), nst=2, integrator_order=4),
         "octupole_m2_n4" => OctupoleSpec(L=0.15, kn=(0.0, 0.0, 0.0, 220.0), nst=4, integrator_order=2),
-        # PTC MODEL=1 splits a bend into curved drift plus dipole kick, so the
-        # comparison must use the matching bend_model. The residual is a known
-        # open item, not round-off; see the theory note.
-        "sbend_m2_n1" => SBendSpec(L=1.1, h=0.18, b0=0.18, nst=1, bend_model=:drift_kick),
-        "sbend_m2_n4" => SBendSpec(L=1.1, h=0.18, b0=0.18, nst=4, bend_model=:drift_kick),
+        "multipole_m2_n4" => MultipoleSpec(L=0.3, kn=(0.0, 1.2, 8.0), nst=4,
+                                           integrator_order=2),
+        "multipole_m4_n2" => MultipoleSpec(L=0.3, kn=(0.0, 1.2, 8.0, 90.0), nst=2,
+                                           integrator_order=4),
+        # Two settings are required for a bend to match PTC, and both are
+        # physics rather than tuning. MODEL=1 splits a bend into curved drift
+        # plus dipole kick, so bend_model must match. And PTC applies the
+        # hard-edge dipole fringe at both faces of an exact bend regardless of
+        # the pole-face angle -- it is Maxwell-required, and omitting it leaves
+        # a bend exact on axis but wrong at transverse amplitude.
+        "sbend_m2_n1" => SBendSpec(L=1.1, h=0.18, b0=0.18, nst=1,
+                                   bend_model=:drift_kick, bend_fringe=true),
+        "sbend_m2_n4" => SBendSpec(L=1.1, h=0.18, b0=0.18, nst=4,
+                                   bend_model=:drift_kick, bend_fringe=true),
+        "sbend_m4_n2" => SBendSpec(L=1.1, h=0.18, b0=0.18, nst=2, integrator_order=4,
+                                   bend_model=:drift_kick, bend_fringe=true),
+        "cfbend_m2_n4" => SBendSpec(L=1.1, h=0.18, b0=0.18, kn=(0.0, 0.6), nst=4,
+                                    bend_model=:drift_kick, bend_fringe=true),
+        "cfbend_m4_n2" => SBendSpec(L=1.1, h=0.18, b0=0.18, kn=(0.0, 0.6, 5.0), nst=2,
+                                    integrator_order=4,
+                                    bend_model=:drift_kick, bend_fringe=true),
     )
 end
 
-const _PTC_DEFAULT_ATOL = Dict{String,Float64}(
-    "sbend_m2_n1" => 1.0e-6,
-    "sbend_m2_n4" => 1.0e-6,
-)
+const _PTC_DEFAULT_ATOL = Dict{String,Float64}()
 
 function _ptc_reference_path(contract::PTCConsistencyContract)
     contract.path !== nothing && return contract.path

@@ -1181,40 +1181,61 @@ acceptable for a fixed design point. Hypothesis, not established practice.
 ## Lattice magnets: remaining work
 
 Implemented and validated (2026-07-31): drift, quadrupole, sextupole, octupole,
-multipole and sector bend with exact maps, PTC fringe fields, Strang and
-Forest-Ruth integrators. `PTCConsistencyContract` matches MAD-X 5.03.06 to
-~5e-13 on straight elements. FODO/DBA/TBA cells are symplectic to ~1e-15 and
-bit-identical on CPU and CUDA. Derivations:
+multipole, sector bend and **combined-function bend**, with exact maps, PTC
+fringe fields, and Strang/Forest-Ruth integrators. `PTCConsistencyContract`
+matches MAD-X 5.03.06 to **~5e-13 across all 13 cases**, uniform over every
+element type. FODO/DBA/TBA cells are symplectic to ~1e-15 and bit-identical on
+CPU and CUDA. Derivations:
 [`docs/theory/lattice_hamiltonian_and_conventions.md`](theory/lattice_hamiltonian_and_conventions.md).
 
-1. **Combined-function bends.** Currently refused rather than approximated. A
-   curved frame changes the multipole potential itself, so the curved kick of
-   Section 4.4 is required -- the recursion is derived and verified, only the
-   runtime evaluation is missing. This is the largest remaining gap: real rings
-   have gradient dipoles.
+Two findings from getting the bend to agree, both recorded in the theory note:
 
-2. **The bend's 5.7e-7 residual against PTC.** Straight elements agree to
-   ~5e-13; the bend agrees only to 5.7e-7 even with `bend_model = :drift_kick`,
-   which is PTC's MODEL=1 arrangement. Confirmed *not* to be the drift (`Sprot`
-   equals our curved drift to 4.4e-16) and *not* the kick's `(1+hx)` factor
-   (dropping it is 2000x worse). Remaining suspects: PTC's design length `LD`,
-   which enters `Sprot`'s longitudinal term separately from the arc length `L`,
-   and what `GETMAGNETIC` returns for a curved frame. Not round-off, so it is a
-   model detail worth finding before anyone trusts bend tracking at that level.
+- **The hard-edge dipole fringe is not optional.** PTC applies it at both faces
+  of an exact bend regardless of the pole-face angle; with `FINT = HGAP = 0` the
+  generalized entrance angle is still `atan(x'/(1+y'^2))`. Omitting it leaves a
+  bend exact on axis at any momentum but wrong at transverse amplitude -- the
+  original 5.7e-7 residual. `bend_fringe = true` enables it.
+- **Tabulate the potential, not the field.** Truncating the curved-frame *field*
+  breaks the cross-derivative symmetry that makes the kick a gradient, and the
+  map stops being symplectic at the truncation level (measured 1.5e-4).
+  Differentiating one truncated *potential* keeps the kick an exact gradient at
+  any `curved_order`, so truncation costs accuracy but never symplecticity.
 
-3. **`wedge_coeff`** still has no default assignment found in the PTC sources.
-   Needed before any combined-function bend benchmark.
+Remaining:
 
-4. **Cavity map.** Convention #1 chosen (Section 3), map not derived. Needed to
+1. **`wedge_coeff`** still has no default assignment found in the PTC sources.
+   Needed before benchmarking a bend with nonzero pole-face angles and a
+   quadrupole component, where PTC's combined-function wedge term applies.
+
+2. **Pole-face angles are implemented but not benchmarked.** `e1`/`e2`,
+   `FINT`/`HGAP`, `hface`, `WEDGE` and `ROT_XZ` all exist and are symplectic,
+   but no PTC reference case exercises them. Add RBEND and nonzero-`E1`/`E2`
+   cases to `validation/generate_ptc_reference.jl`; this is the next thing to do
+   and it depends on item 1.
+
+3. **Cavity map.** Convention #1 chosen (Section 3), map not derived. Needed to
    close a ring, not for magnets.
 
-5. **Misalignments and magnet errors.** Deferred by decision. Field errors are
-   already free -- add entries to `kn`/`ks`. Misalignment maps are designed as
-   entry/exit conjugations but not derived.
+4. **Misalignments.** Deferred by decision. Field errors are already free -- add
+   entries to `kn`/`ks`. Misalignment maps are designed as entry/exit
+   conjugations but not derived.
 
-6. **`VA`/`VS` extraction** from a measured gradient profile: evaluate the first
-   and second moments `J1`, `J2` numerically. Small utility, ships with the
-   element.
+5. **`VA`/`VS` extraction** from a measured gradient profile: evaluate the first
+   and second moments `J1`, `J2` numerically. Small utility.
+
+6. **Fringe defaults are measured, not assumed** (2026-07-31). The hard-edge
+   *multipole* fringe is purely nonlinear -- it leaves the linear map unchanged
+   to 0 ulp -- so `fringe` defaults off and can be enabled per magnet, which is
+   what a final-focus quadrupole study wants. `:soft_quad` is different: it is a
+   linear map and does move the tune. The *bend* fringe now defaults ON: with
+   perpendicular faces it too is purely nonlinear, but at `e1 = e2 = 0.1` it
+   moves `J[4,3]` from 0 to -0.036, i.e. first-order optics. Open question: what
+   the analogous default should be once misalignments exist, since a rolled
+   magnet turns a "perpendicular" face into an angled one.
+
+7. **`curved_order` default.** Currently 8, which converges to round-off by 4
+   for a gradient dipole. A measured default at a realistic aperture and
+   multipole content would be better than a safe guess.
 
 ## Earlier Completed
 
