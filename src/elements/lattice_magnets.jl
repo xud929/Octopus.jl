@@ -652,17 +652,98 @@ const _COMMON_PARAMS = (
     tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
 )
 
+# ---------------------------------------------------------------------------
+# Named strength keywords.
+#
+# `kn`/`ks` are positional: index i holds K_{i-1}. That is the right storage for
+# a general multipole, but it makes the common case clumsy and, worse, silently
+# wrong -- `kn = (0, 12.0)` in a `SextupoleSpec` is a quadrupole, and nothing
+# says so. Each named kind therefore also accepts the strength that defines it
+# (`k1` for a quadrupole, `k2` for a sextupole, `k3` for an octupole, with skew
+# partners), folded into the tuple at construction.
+#
+# Both spellings are kept deliberately. The named keyword is how a magnet of
+# that kind is normally built; the tuple is how measured field errors and
+# feed-down are added on top of it, without giving up the descriptive kind. A
+# real sextupole with a K3 error is still a sextupole, not a multipole.
+# ---------------------------------------------------------------------------
+
+const _NO_NAMED = ()
+const _QUAD_NAMED = ((:k1, :k1s, 1),)
+const _SEXT_NAMED = ((:k2, :k2s, 2),)
+const _OCT_NAMED = ((:k3, :k3s, 3),)
+const _BEND_NAMED = ((:k1, :k1s, 1), (:k2, :k2s, 2))
+
+"""
+    _fold_named_strengths(named, kwargs)
+
+Fold named strength keywords into the positional `kn`/`ks` tuples that
+`_lattice_magnet` reads.
+
+`named` lists `(normal, skew, order)` triples, where `order` is the `n` of
+`K_n` and therefore lands at index `n+1` (Section 4.1 indexing). Setting the
+same order both ways is contradictory rather than merely redundant, so it
+throws instead of letting one spelling silently win.
+"""
+function _fold_named_strengths(named, kwargs)
+    d = Dict{Symbol,Any}(kwargs)
+    kn = Float64[float(v) for v in get(d, :kn, ())]
+    ks = Float64[float(v) for v in get(d, :ks, ())]
+    for (nsym, ssym, order) in named,
+        (sym, vec, which) in ((nsym, kn, "kn"), (ssym, ks, "ks"))
+
+        haskey(d, sym) || continue
+        i = order + 1
+        if i <= length(vec) && vec[i] != 0
+            throw(ArgumentError(
+                "$(sym) and a nonzero $(which)[$(i)] both set the same strength; " *
+                "give one or the other"))
+        end
+        while length(vec) < i
+            push!(vec, 0.0)
+        end
+        vec[i] = float(d[sym])
+        delete!(d, sym)
+    end
+    isempty(kn) || (d[:kn] = Tuple(kn))
+    isempty(ks) || (d[:ks] = Tuple(ks))
+    return d
+end
+
 # Friendly constructors follow the house pattern: an abstract type carrying a
 # keyword constructor, so metadata queries such as `parameter_schema` dispatch
 # on the type. `compile_runtime` needs no methods here -- it routes through
 # `runtime_type`, which every kind maps to `LatticeMagnet`.
-for (kind, ctor) in ((:drift, :DriftSpec), (:quadrupole, :QuadrupoleSpec),
-                     (:sextupole, :SextupoleSpec), (:octupole, :OctupoleSpec),
-                     (:multipole, :MultipoleSpec), (:sbend, :SBendSpec))
+for (kind, ctor, named) in ((:drift, :DriftSpec, :_NO_NAMED),
+                            (:quadrupole, :QuadrupoleSpec, :_QUAD_NAMED),
+                            (:sextupole, :SextupoleSpec, :_SEXT_NAMED),
+                            (:octupole, :OctupoleSpec, :_OCT_NAMED),
+                            (:multipole, :MultipoleSpec, :_NO_NAMED))
     @eval begin
         abstract type $ctor end
-        $ctor(; kwargs...) = ElementSpec{$(QuoteNode(kind))}(_spec_params(; kwargs...))
+        $ctor(; kwargs...) = ElementSpec{$(QuoteNode(kind))}(
+            _spec_params(; _fold_named_strengths($named, kwargs)...))
     end
+end
+
+abstract type SBendSpec end
+
+# `angle` is the design-orbit spelling: one number sets both the frame curvature
+# and the field, h = b0 = angle / L, which is what a lattice file means by a
+# bend angle. Giving h and b0 directly stays available for the case they differ
+# (a bend off its design orbit), but giving both spellings is contradictory.
+function SBendSpec(; kwargs...)
+    d = _fold_named_strengths(_BEND_NAMED, kwargs)
+    if haskey(d, :angle)
+        (haskey(d, :h) || haskey(d, :b0)) && throw(ArgumentError(
+            "angle and h/b0 both set the bend geometry; give one or the other"))
+        haskey(d, :L) || throw(ArgumentError("angle needs L, to give h = b0 = angle / L"))
+        L = float(d[:L])
+        L == 0 && throw(ArgumentError("angle needs a nonzero L"))
+        d[:b0] = d[:h] = float(d[:angle]) / L
+        delete!(d, :angle)
+    end
+    return ElementSpec{:sbend}(_spec_params(; d...))
 end
 
 @element_spec begin
@@ -698,8 +779,10 @@ end
     analyses = [PlaceholderAnalysis]
     parameters = (
         L=_COMMON_PARAMS.L,
-        kn=ParamMeta(default=(0, 0), meaning="normal strengths; index i holds K_{i-1}, so kn[2] is K1"),
-        ks=ParamMeta(default=(0, 0), meaning="skew partners of kn"),
+        k1=ParamMeta(default=0, meaning="normal quadrupole strength K1; the normal way to build a quadrupole. Folded into kn[2] at construction"),
+        k1s=ParamMeta(default=0, meaning="skew quadrupole strength; folded into ks[2] at construction"),
+        kn=ParamMeta(default=(), meaning="normal strengths as a positional tuple; index i holds K_{i-1}, so kn[2] is K1. Use it for measured field errors on top of k1. Setting k1 and a nonzero kn[2] together throws"),
+        ks=ParamMeta(default=(), meaning="skew partners of kn"),
         nst=_COMMON_PARAMS.nst,
         integrator_order=_COMMON_PARAMS.integrator_order,
         fringe=_COMMON_PARAMS.fringe,
@@ -707,8 +790,8 @@ end
         vs=_COMMON_PARAMS.vs,
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
-    example = QuadrupoleSpec(L=0.3, kn=(0.0, 1.2))
-    construction_help = "Friendly constructor: QuadrupoleSpec(; L, kn=(0,K1), ks=(0,0), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, tracking_method=Symplectic6DMap()). kn[i] is K_{i-1}."
+    example = QuadrupoleSpec(L=0.3, k1=1.2)
+    construction_help = "Friendly constructor: QuadrupoleSpec(; L, k1=0, k1s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, tracking_method=Symplectic6DMap()). Normal use is k1, with k1s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[2] is K1, and setting both k1 and a nonzero kn[2] throws."
 end
 
 @element_spec begin
@@ -723,8 +806,10 @@ end
     analyses = [PlaceholderAnalysis]
     parameters = (
         L=_COMMON_PARAMS.L,
-        kn=ParamMeta(default=(0, 0, 0), meaning="normal strengths; kn[3] is K2"),
-        ks=ParamMeta(default=(0, 0, 0), meaning="skew partners of kn"),
+        k2=ParamMeta(default=0, meaning="normal sextupole strength K2; the normal way to build a sextupole. Folded into kn[3] at construction"),
+        k2s=ParamMeta(default=0, meaning="skew sextupole strength; folded into ks[3] at construction"),
+        kn=ParamMeta(default=(), meaning="normal strengths as a positional tuple; index i holds K_{i-1}, so kn[3] is K2. Use it for measured field errors on top of k2. Setting k2 and a nonzero kn[3] together throws"),
+        ks=ParamMeta(default=(), meaning="skew partners of kn"),
         nst=_COMMON_PARAMS.nst,
         integrator_order=_COMMON_PARAMS.integrator_order,
         fringe=_COMMON_PARAMS.fringe,
@@ -732,8 +817,8 @@ end
         vs=_COMMON_PARAMS.vs,
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
-    example = SextupoleSpec(L=0.2, kn=(0.0, 0.0, 12.0))
-    construction_help = "Friendly constructor: SextupoleSpec(; L, kn=(0,0,K2), ks=(0,0,0), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, tracking_method=Symplectic6DMap())."
+    example = SextupoleSpec(L=0.2, k2=12.0)
+    construction_help = "Friendly constructor: SextupoleSpec(; L, k2=0, k2s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, tracking_method=Symplectic6DMap()). Normal use is k2, with k2s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[3] is K2, and setting both k2 and a nonzero kn[3] throws."
 end
 
 @element_spec begin
@@ -748,8 +833,10 @@ end
     analyses = [PlaceholderAnalysis]
     parameters = (
         L=_COMMON_PARAMS.L,
-        kn=ParamMeta(default=(0, 0, 0, 0), meaning="normal strengths; kn[4] is K3"),
-        ks=ParamMeta(default=(0, 0, 0, 0), meaning="skew partners of kn"),
+        k3=ParamMeta(default=0, meaning="normal octupole strength K3; the normal way to build an octupole. Folded into kn[4] at construction"),
+        k3s=ParamMeta(default=0, meaning="skew octupole strength; folded into ks[4] at construction"),
+        kn=ParamMeta(default=(), meaning="normal strengths as a positional tuple; index i holds K_{i-1}, so kn[4] is K3. Use it for measured field errors on top of k3. Setting k3 and a nonzero kn[4] together throws"),
+        ks=ParamMeta(default=(), meaning="skew partners of kn"),
         nst=_COMMON_PARAMS.nst,
         integrator_order=_COMMON_PARAMS.integrator_order,
         fringe=_COMMON_PARAMS.fringe,
@@ -757,8 +844,8 @@ end
         vs=_COMMON_PARAMS.vs,
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
-    example = OctupoleSpec(L=0.1, kn=(0.0, 0.0, 0.0, 300.0))
-    construction_help = "Friendly constructor: OctupoleSpec(; L, kn=(0,0,0,K3), ks=(0,0,0,0), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, tracking_method=Symplectic6DMap())."
+    example = OctupoleSpec(L=0.1, k3=300.0)
+    construction_help = "Friendly constructor: OctupoleSpec(; L, k3=0, k3s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, tracking_method=Symplectic6DMap()). Normal use is k3, with k3s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[4] is K3, and setting both k3 and a nonzero kn[4] throws."
 end
 
 @element_spec begin
@@ -798,9 +885,14 @@ end
     analyses = [PlaceholderAnalysis]
     parameters = (
         L=_COMMON_PARAMS.L,
-        h=ParamMeta(default=0, meaning="reference-frame curvature 1/rho; need not equal b0"),
+        angle=ParamMeta(default=0, meaning="design-orbit bend angle in radians; sets h = b0 = angle / L at construction. The normal way to build a bend. Contradicts h/b0, so giving both throws"),
+        h=ParamMeta(default=0, meaning="reference-frame curvature 1/rho; need not equal b0. Give h and b0 instead of angle when they differ"),
         b0=ParamMeta(default=0, meaning="dipole strength q B0 / P0; independent of h"),
-        kn=ParamMeta(default=(), meaning="normal multipole strengths for a combined-function bend; index i holds K_{i-1}"),
+        k1=ParamMeta(default=0, meaning="normal quadrupole component of a combined-function bend; folded into kn[2] at construction"),
+        k1s=ParamMeta(default=0, meaning="skew quadrupole component; folded into ks[2] at construction"),
+        k2=ParamMeta(default=0, meaning="normal sextupole component of a combined-function bend; folded into kn[3] at construction"),
+        k2s=ParamMeta(default=0, meaning="skew sextupole component; folded into ks[3] at construction"),
+        kn=ParamMeta(default=(), meaning="normal multipole strengths as a positional tuple; index i holds K_{i-1}. Use it for orders beyond k2 and for field errors. Setting k1/k2 and the matching nonzero kn entry together throws"),
         ks=ParamMeta(default=(), meaning="skew partners of kn"),
         e1=ParamMeta(default=0, meaning="entrance pole-face angle"),
         e2=ParamMeta(default=0, meaning="exit pole-face angle"),
@@ -818,6 +910,6 @@ end
         fringe=_COMMON_PARAMS.fringe,
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
-    example = SBendSpec(L=1.0, h=0.05, b0=0.05)
-    construction_help = "Friendly constructor: SBendSpec(; L, h=0, b0=0, e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=true, bend_model=:exact, curved_order=8, nst=1, integrator_order=2, fringe=:none, kn=(), ks=(), tracking_method=Symplectic6DMap()). h is the frame curvature and b0 the field; they need not agree. Combined-function bends are supported: give kn/ks alongside h."
+    example = SBendSpec(L=1.0, angle=0.05)
+    construction_help = "Friendly constructor: SBendSpec(; L, angle=0, h=0, b0=0, k1=0, k1s=0, k2=0, k2s=0, kn=(), ks=(), e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=true, bend_model=:exact, curved_order=8, nst=1, integrator_order=2, fringe=:none, tracking_method=Symplectic6DMap()). Normal use is angle, which sets h = b0 = angle / L; give h and b0 directly when the frame curvature and the field differ, but not alongside angle. Combined-function bends take k1/k2 (k1s/k2s skew), with kn/ks for higher orders and field errors."
 end

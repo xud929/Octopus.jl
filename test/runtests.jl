@@ -1093,6 +1093,68 @@ end
     end
 end
 
+@testset "Named magnet strength keywords" begin
+    u0 = (1.3e-3, 3.0e-4, -0.9e-3, -2.2e-4, 2.0e-3, 1.1e-3)
+    same(a, b) = collect(compile_runtime(a)(u0...)) == collect(compile_runtime(b)(u0...))
+
+    # Effectiveness at the consumer boundary: the named keyword must reach the
+    # compiled runtime's kn/ks, not merely be stored on the spec. A keyword that
+    # were silently ignored would leave kn empty and track as a drift.
+    @test compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7)).kn == (0.0, 1.7)
+    @test compile_runtime(QuadrupoleSpec(L=0.4, k1s=0.9)).ks == (0.0, 0.9)
+    @test compile_runtime(SextupoleSpec(L=0.25, k2=14.0)).kn == (0.0, 0.0, 14.0)
+    @test compile_runtime(SextupoleSpec(L=0.25, k2s=3.0)).ks == (0.0, 0.0, 3.0)
+    @test compile_runtime(OctupoleSpec(L=0.15, k3=220.0)).kn == (0.0, 0.0, 0.0, 220.0)
+    @test compile_runtime(OctupoleSpec(L=0.15, k3s=7.0)).ks == (0.0, 0.0, 0.0, 7.0)
+
+    # The named spelling and the positional one must be the same magnet, not
+    # merely a close one: identical tracked coordinates, bit for bit.
+    @test same(QuadrupoleSpec(L=0.4, k1=1.7, nst=2), QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=2))
+    @test same(QuadrupoleSpec(L=0.4, k1s=0.9, nst=2), QuadrupoleSpec(L=0.4, ks=(0.0, 0.9), nst=2))
+    @test same(SextupoleSpec(L=0.25, k2=14.0, nst=2), SextupoleSpec(L=0.25, kn=(0.0, 0.0, 14.0), nst=2))
+    @test same(OctupoleSpec(L=0.15, k3=220.0, nst=2), OctupoleSpec(L=0.15, kn=(0.0, 0.0, 0.0, 220.0), nst=2))
+
+    # The point of keeping both spellings: a sextupole with a measured K3 error
+    # is still a sextupole, and must equal the general multipole that spells the
+    # whole tuple out.
+    @test same(SextupoleSpec(L=0.25, k2=14.0, kn=(0.0, 0.0, 0.0, 90.0), nst=2),
+               MultipoleSpec(L=0.25, kn=(0.0, 0.0, 14.0, 90.0), nst=2))
+    @test kind(SextupoleSpec(L=0.25, k2=14.0, kn=(0.0, 0.0, 0.0, 90.0))) === :sextupole
+
+    # Contradiction throws rather than letting one spelling silently win.
+    @test_throws ArgumentError SextupoleSpec(L=0.25, k2=14.0, kn=(0.0, 0.0, 12.0))
+    @test_throws ArgumentError QuadrupoleSpec(L=0.4, k1=1.7, kn=(0.0, 1.2))
+    @test_throws ArgumentError QuadrupoleSpec(L=0.4, k1s=0.9, ks=(0.0, 0.5))
+    @test_throws ArgumentError OctupoleSpec(L=0.15, k3=220.0, kn=(0.0, 0.0, 0.0, 1.0))
+    # A zero in the same slot is not a contradiction: nothing is overwritten.
+    @test compile_runtime(SextupoleSpec(L=0.25, k2=14.0, kn=(0.0, 0.0, 0.0))).kn ==
+          (0.0, 0.0, 14.0)
+
+    # angle is the design-orbit spelling of h = b0 = angle / L.
+    @test same(SBendSpec(L=1.1, angle=0.198, nst=2),
+               SBendSpec(L=1.1, h=0.198 / 1.1, b0=0.198 / 1.1, nst=2))
+    @test compile_runtime(SBendSpec(L=1.1, angle=0.198)).h ≈ 0.198 / 1.1
+    @test compile_runtime(SBendSpec(L=1.1, angle=0.198)).b0 ≈ 0.198 / 1.1
+    # Combined-function bends take k1/k2 alongside angle.
+    @test same(SBendSpec(L=1.1, angle=0.198, k1=0.6, nst=2),
+               SBendSpec(L=1.1, h=0.198 / 1.1, b0=0.198 / 1.1, kn=(0.0, 0.6), nst=2))
+    @test same(SBendSpec(L=1.1, angle=0.198, k1=0.6, k2=5.0, nst=2),
+               SBendSpec(L=1.1, h=0.198 / 1.1, b0=0.198 / 1.1, kn=(0.0, 0.6, 5.0), nst=2))
+    # h/b0 stay available for a bend off its design orbit, but not with angle.
+    @test compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.23)).b0 == 0.23
+    @test_throws ArgumentError SBendSpec(L=1.1, angle=0.198, h=0.18)
+    @test_throws ArgumentError SBendSpec(L=1.1, angle=0.198, b0=0.18)
+    @test_throws ArgumentError SBendSpec(angle=0.198)
+    @test_throws ArgumentError SBendSpec(L=0.0, angle=0.198)
+
+    # The new keywords are declared metadata, so element_help and
+    # parameter_schema show them rather than leaving users to read the source.
+    @test haskey(parameter_schema(ElementSpec{:quadrupole}), :k1)
+    @test haskey(parameter_schema(ElementSpec{:sextupole}), :k2)
+    @test haskey(parameter_schema(ElementSpec{:octupole}), :k3)
+    @test haskey(parameter_schema(ElementSpec{:sbend}), :angle)
+end
+
 @testset "PTC consistency" begin
     # Compares LatticeMagnet against a committed PTC reference table generated
     # by validation/generate_ptc_reference.jl. Skips cleanly when the table is

@@ -1183,10 +1183,27 @@ acceptable for a fixed design point. Hypothesis, not established practice.
 Implemented and validated (2026-07-31): drift, quadrupole, sextupole, octupole,
 multipole, sector bend and **combined-function bend**, with exact maps, PTC
 fringe fields, and Strang/Forest-Ruth integrators. `PTCConsistencyContract`
-matches MAD-X 5.03.06 to **~5e-13 across all 13 cases**, uniform over every
+matches MAD-X 5.03.06 to **~5e-13 across all 15 cases**, uniform over every
 element type. FODO/DBA/TBA cells are symplectic to ~1e-15 and bit-identical on
 CPU and CUDA. Derivations:
 [`docs/theory/lattice_hamiltonian_and_conventions.md`](theory/lattice_hamiltonian_and_conventions.md).
+
+That `~5e-13` is the *reference table's* resolution, not a measured error: MAD-X
+prints 10 significant digits, so a coordinate of order `1e-3` carries a rounding
+quantum of `5e-13`, and every case sits just under it. Re-running the contract
+against an independently generated table (different initial conditions, 6 mm and
+`8e-3` amplitudes against the committed table's 4 mm and `3e-3`) gives the same
+`4.97e-13`, so the agreement is at the floor the comparison can resolve rather
+than tuned to the stored points. Going finer needs more digits out of MAD-X.
+
+Construction (2026-08-01): each named kind takes the strength that defines it --
+`k1` on a quadrupole, `k2` on a sextupole, `k3` on an octupole, with `k1s`,
+`k2s`, `k3s` skew partners -- and `SBendSpec` takes `angle`, which sets
+`h = b0 = angle / L`, plus `k1`/`k2` for combined-function bends. The positional
+`kn`/`ks` tuples stay available for measured field errors and feed-down, so a
+sextupole with a K3 error keeps its descriptive kind instead of having to become
+a `MultipoleSpec`. Setting the same order both ways throws rather than letting
+one spelling win silently.
 
 Two findings from getting the bend to agree, both recorded in the theory note:
 
@@ -1236,6 +1253,15 @@ Remaining:
 7. **`curved_order` default.** Currently 8, which converges to round-off by 4
    for a gradient dipole. A measured default at a realistic aperture and
    multipole content would be better than a safe guess.
+
+8. **`element_help` shows the folded example.** `SextupoleSpec(L=0.2, k2=12.0)`
+   displays as `ElementSpec{:sextupole}(; L=0.2, kn=(0.0, 0.0, 12.0))`, because
+   the spec stores only the folded `kn`. That is the honest content of the
+   object and `construction_help` directly above it shows the `k2` spelling, so
+   this is cosmetic -- but it does show the positional form to a user being told
+   to use the named one. Fixing it means keeping the original keyword alongside
+   the folded tuple, i.e. redundant state the runtime never reads, which is
+   worse. Revisit only if it confuses someone.
 
 ## Earlier Completed
 
