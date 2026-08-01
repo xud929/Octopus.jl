@@ -686,10 +686,19 @@ function validate(contract::StrongStrongGaussianBackendConsistencyContract; kwar
                             Bool(beam2_metrics[:passed_tolerance])
             max_abs = max(beam1_metrics[:max_abs_error], beam2_metrics[:max_abs_error])
             max_ratio = max(beam1_metrics[:max_allowed_ratio], beam2_metrics[:max_allowed_ratio])
-            max_component_rel = max(
-                beam1_metrics[:max_component_rel_error],
-                beam2_metrics[:max_component_rel_error],
-            )
+            # The pointwise ratio is a diagnostic, not the criterion: it is
+            # divided by each component's own magnitude, so a near-zero
+            # coordinate inflates it without any disagreement. `global_rel` is
+            # the one to read -- the same difference against the beam scale --
+            # and `max_component_rel_scale` says what the pointwise ratio was
+            # divided by. The pass/fail test is `max_allowed_ratio <= 1`.
+            worst_beam = beam1_metrics[:max_component_rel_error] >=
+                         beam2_metrics[:max_component_rel_error] ?
+                         beam1_metrics : beam2_metrics
+            max_component_rel = worst_beam[:max_component_rel_error]
+            max_component_rel_scale = worst_beam[:max_component_rel_scale]
+            global_rel = max(beam1_metrics[:global_rel_error],
+                             beam2_metrics[:global_rel_error])
 
             cpu_luminosity_series = _strong_strong_contract_luminosity_series(cpu_path)
             gpu_luminosity_series = _strong_strong_contract_luminosity_series(gpu_path)
@@ -710,7 +719,9 @@ function validate(contract::StrongStrongGaussianBackendConsistencyContract; kwar
                 :nslices => contract.nslices,
                 :max_abs_error => max_abs,
                 :max_allowed_ratio => max_ratio,
+                :global_rel_error => global_rel,
                 :max_component_rel_error => max_component_rel,
+                :max_component_rel_scale => max_component_rel_scale,
                 :coordinate_passed_tolerance => coordinate_ok,
                 :cpu_luminosity => cpu_luminosity,
                 :gpu_luminosity => gpu_luminosity,
@@ -790,10 +801,19 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
                             Bool(beam2_metrics[:passed_tolerance])
             max_abs = max(beam1_metrics[:max_abs_error], beam2_metrics[:max_abs_error])
             max_ratio = max(beam1_metrics[:max_allowed_ratio], beam2_metrics[:max_allowed_ratio])
-            max_component_rel = max(
-                beam1_metrics[:max_component_rel_error],
-                beam2_metrics[:max_component_rel_error],
-            )
+            # The pointwise ratio is a diagnostic, not the criterion: it is
+            # divided by each component's own magnitude, so a near-zero
+            # coordinate inflates it without any disagreement. `global_rel` is
+            # the one to read -- the same difference against the beam scale --
+            # and `max_component_rel_scale` says what the pointwise ratio was
+            # divided by. The pass/fail test is `max_allowed_ratio <= 1`.
+            worst_beam = beam1_metrics[:max_component_rel_error] >=
+                         beam2_metrics[:max_component_rel_error] ?
+                         beam1_metrics : beam2_metrics
+            max_component_rel = worst_beam[:max_component_rel_error]
+            max_component_rel_scale = worst_beam[:max_component_rel_scale]
+            global_rel = max(beam1_metrics[:global_rel_error],
+                             beam2_metrics[:global_rel_error])
 
             cpu_luminosity_series = _strong_strong_contract_luminosity_series(cpu_path)
             gpu_luminosity_series = _strong_strong_contract_luminosity_series(gpu_path)
@@ -841,7 +861,9 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
                 :batch_mode => contract.batch_mode,
                 :max_abs_error => max_abs,
                 :max_allowed_ratio => max_ratio,
+                :global_rel_error => global_rel,
                 :max_component_rel_error => max_component_rel,
+                :max_component_rel_scale => max_component_rel_scale,
                 :coordinate_passed_tolerance => coordinate_ok,
                 :cpu_luminosity => cpu_luminosity,
                 :gpu_luminosity => gpu_luminosity,
@@ -925,6 +947,7 @@ function _contract_coordinate_metrics(rep_a, rep_b, atol, rtol)
     max_abs = 0.0
     max_scale = 0.0
     max_component_rel = 0.0
+    max_component_rel_scale = 0.0
     max_allowed_ratio = 0.0
     for dim in 1:6
         a = Array(arrays_a[dim])
@@ -938,7 +961,15 @@ function _contract_coordinate_metrics(rep_a, rep_b, atol, rtol)
             allowed = Float64(atol) + Float64(rtol) * scale
             max_abs = max(max_abs, diff)
             max_scale = max(max_scale, scale)
-            max_component_rel = max(max_component_rel, diff / max(scale, eps(Float64)))
+            component_rel = diff / max(scale, eps(Float64))
+            if component_rel > max_component_rel
+                max_component_rel = component_rel
+                # Keep the magnitude this ratio was divided by. Without it the
+                # ratio is uninterpretable: a round-off difference on a
+                # coordinate near a zero crossing produces a large number that
+                # says nothing about agreement.
+                max_component_rel_scale = scale
+            end
             max_allowed_ratio = max(max_allowed_ratio, diff / max(allowed, eps(Float64)))
         end
     end
@@ -947,6 +978,7 @@ function _contract_coordinate_metrics(rep_a, rep_b, atol, rtol)
         :max_abs_error => max_abs,
         :global_rel_error => global_rel,
         :max_component_rel_error => max_component_rel,
+        :max_component_rel_scale => max_component_rel_scale,
         :max_allowed_ratio => max_allowed_ratio,
         :atol => Float64(atol),
         :rtol => Float64(rtol),

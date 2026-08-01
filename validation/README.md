@@ -314,6 +314,23 @@ julia --project=. validation/pic_gaussian_luminosity_validation.jl
 `StrongStrongGaussianBackendConsistencyContract`. It compares both final beam
 states and luminosity between the CPU and CUDA soft-Gaussian solvers.
 
+**Which number to read.** `max_component_rel_error` is a *pointwise* ratio:
+each particle-coordinate difference divided by that component's own magnitude.
+A coordinate near a zero crossing therefore inflates it without any
+disagreement, which is why `max_component_rel_scale` is reported alongside --
+the magnitude the ratio was divided by. A representative CPU/CUDA run gives
+
+    max_abs_error           1.5e-17     round-off on coordinates of order 1e-3
+    global_rel_error        6.5e-16     the same difference against the beam scale
+    max_component_rel_error 2.8e-10     pointwise ratio, and
+    max_component_rel_scale 4.9e-10       what it was divided by
+    max_allowed_ratio       1.5e-7      the actual pass/fail test, must be <= 1
+
+`global_rel_error` is the honest summary and `max_allowed_ratio <= 1` is the
+criterion (`diff <= atol + rtol * scale`, so the absolute floor governs near
+zero). CPU and GPU reduce beam moments in different orders, so exact bitwise
+agreement is not expected here as it is for the elementwise fused tracking path.
+
 The implementation audit, public-code comparison, correctness findings, and
 CPU/CUDA performance measurements are recorded in
 [`strong_strong_gaussian_optimization.md`](../docs/history/strong_strong_gaussian_optimization.md).
