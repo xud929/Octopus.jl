@@ -18,6 +18,18 @@ set pinned in `docs/theory/lattice_hamiltonian_and_conventions.md` Section 7:
 `EXACT=false` is the PTC default and silently selects the expanded Hamiltonian,
 so leaving it out would validate the wrong model.
 
+The hard-edge multipole fringe is switched on **per element**, with
+`permfringe=true`, and deliberately not with `ptc_setswitch, fringe=true`. The
+global switch cannot be placed anywhere that works: `ptc_setfringe` ends with
+`default = intstate; call update_states` (`madx_ptc_intstate.f90`), so calling it
+*after* `ptc_create_layout` overwrites the state the layout established and
+silently reverts `TIME` to true -- changing the longitudinal variable itself,
+with the giveaway being a `z` error of `L * pt * (1/beta0^2 - 1)` on a particle
+that has no transverse coordinates at all, which no fringe map could produce.
+Calling it *before* `ptc_create_layout` keeps `TIME=false`, but the layout then
+resets the state and the fringe never runs. The per-element attribute is set at
+element construction and survives both.
+
 Coordinate mapping
 ------------------
 PTC's `T` column is conjugate to `delta` with the opposite orientation to the
@@ -62,8 +74,13 @@ struct Case
     L::Float64
     method::Int
     nst::Int
+    fringe::Bool          # per-element permfringe -- turns on MULTIPOLE_FRINGE
     octopus::Dict{Symbol,Any}
 end
+
+# Fringe defaults off, so the cases that predate the fringe comparison keep
+# generating byte-identical rows: the switch is only emitted when it is on.
+Case(name, madx, L, method, nst, octopus) = Case(name, madx, L, method, nst, false, octopus)
 
 const CASES = Case[
     Case("drift", "drift, l=0.7", 0.7, 2, 1,
@@ -99,6 +116,37 @@ const CASES = Case[
          Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 4)),
     Case("cfbend_m4_n2", "sbend, l=1.1, angle=0.198, k1=0.6, k2=5.0", 1.1, 4, 2,
          Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 2)),
+    # ---------------------------------------------------------------------
+    # Hard-edge multipole fringe, via ptc_setswitch. Each case pins one branch
+    # of PTC's MULTIPOLE_FRINGER that a source comparison turned up:
+    #   quadrupole_fringe  the ordinary J=2 term
+    #   multipole_fringe   HIGHEST_FRINGE=2 caps the loop, so K2 is excluded
+    #   sbend_fringe       NMUL<=1 skips the multipole fringe outright
+    #   cfbend_fringe      J==1 with BEND_FRINGE drops BN(1), which would
+    #                      otherwise double-count the exact dipole fringe
+    # ---------------------------------------------------------------------
+    Case("quadrupole_fringe", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, true,
+         Dict(:kind => :quadrupole, :L => 0.4)),
+    Case("multipole_fringe", "sbend, l=0.3, angle=0, k1=1.2, k2=8.0", 0.3, 2, 4, true,
+         Dict(:kind => :multipole, :L => 0.3)),
+    Case("sbend_fringe", "sbend, l=1.1, angle=0.198", 1.1, 2, 4, true,
+         Dict(:kind => :sbend, :L => 1.1)),
+    Case("cfbend_fringe", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4, true,
+         Dict(:kind => :sbend, :L => 1.1)),
+    # ---------------------------------------------------------------------
+    # Pole-face angles. Fringes stay off here, which is what selects PTC's
+    # MAD8_WEDGE branch: the quadrupole-in-wedge kick with its coefficients
+    # hardcoded to (1,2). cfbend_edge is the only case that exercises it,
+    # because the term needs both a nonzero edge angle and a quadrupole
+    # component. sbend_fint adds the FINT/HGAP terms of FRINGE_dipole.
+    # ---------------------------------------------------------------------
+    Case("sbend_edge", "sbend, l=1.1, angle=0.198, e1=0.1, e2=0.1", 1.1, 2, 4,
+         Dict(:kind => :sbend, :L => 1.1)),
+    Case("cfbend_edge", "sbend, l=1.1, angle=0.198, k1=0.6, e1=0.1, e2=0.1", 1.1, 2, 4,
+         Dict(:kind => :sbend, :L => 1.1)),
+    Case("sbend_fint",
+         "sbend, l=1.1, angle=0.198, e1=0.1, e2=0.1, fint=0.5, fintx=0.5, hgap=0.03",
+         1.1, 2, 4, Dict(:kind => :sbend, :L => 1.1)),
 ]
 
 function madx_version()
@@ -117,7 +165,7 @@ function run_case(case::Case)
         print(io, """
         option, -echo, -info, -warn;
         beam, particle=proton, energy=10.0, sequence=lat;
-        el: $(case.madx);
+        el: $(case.madx)$(case.fringe ? ", permfringe=true" : "");
         lat: sequence, l=$(case.L);
           el, at=$(case.L / 2);
         endsequence;

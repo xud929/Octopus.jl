@@ -1220,15 +1220,18 @@ Two findings from getting the bend to agree, both recorded in the theory note:
 
 Remaining:
 
-1. **`wedge_coeff`** still has no default assignment found in the PTC sources.
-   Needed before benchmarking a bend with nonzero pole-face angles and a
-   quadrupole component, where PTC's combined-function wedge term applies.
+1. ~~**`wedge_coeff`**~~ **RESOLVED (2026-08-01)** by reading PTC 5.03.06. The
+   declaration really does carry no initializer (`Sh_def_kind.f90:124`), but the
+   variable is only reachable on the fringes-on branch; with fringes off, control
+   falls to `ELSEIF(MAD8_WEDGE)`, which hardcodes the same expression at
+   `(w1,w2) = (1,2)`. Implemented as `_wedge_quad` with `wedge_coeff` defaulting
+   to `(1,2)`; `(0,0)` reproduces the other branch.
 
-2. **Pole-face angles are implemented but not benchmarked.** `e1`/`e2`,
-   `FINT`/`HGAP`, `hface`, `WEDGE` and `ROT_XZ` all exist and are symplectic,
-   but no PTC reference case exercises them. Add RBEND and nonzero-`E1`/`E2`
-   cases to `validation/generate_ptc_reference.jl`; this is the next thing to do
-   and it depends on item 1.
+2. ~~**Pole-face angles implemented but not benchmarked.**~~ **DONE
+   (2026-08-01)**: `sbend_edge`, `cfbend_edge` and `sbend_fint` reference cases
+   added, all agreeing to ~5e-13. `cfbend_edge` is the only one that exercises
+   the wedge term, which needs a nonzero edge angle *and* a quadrupole
+   component. RBEND is still not covered.
 
 3. **Cavity map.** Convention #1 chosen (Section 3), map not derived. Needed to
    close a ring, not for magnets.
@@ -1254,7 +1257,41 @@ Remaining:
    for a gradient dipole. A measured default at a realistic aperture and
    multipole content would be better than a safe guess.
 
-8. **PTC validation stops at K3, and cannot easily go higher.** MAD-X's thick
+8. **The hard-edge multipole fringe is now benchmarked (2026-08-01), and three
+   PTC behaviours had to be reproduced to get there.** All found by reading
+   `MULTIPOLE_FRINGER`; the first two were outright defects, and the theory note
+   had already described both without the code following.
+   - `IF(EL%NMUL<=1) RETURN`: a pure dipole gets no multipole fringe, because
+     `FRINGE_dipole` already handles it exactly. We computed one.
+   - `IF(J==1.AND.EL%BEND_FRINGE)` drops the normal dipole from the sum, keeping
+     the skew. We included it, so `bend_model = :drift_kick` — which folds the
+     dipole into `kn[1]`, and is exactly the PTC-matching configuration —
+     double-counted the dipole fringe. Worth 2.1e-6, i.e. seven orders above
+     tolerance.
+   - `MIN(EL%NMUL, HIGHEST_FRINGE)` with `HIGHEST_FRINGE = 2` truncates at the
+     quadrupole. Exposed as `highest_fringe`, but **defaulting to uncapped**,
+     deliberately: enabling a sextupole's fringe and silently getting nothing
+     back is the worse failure. Reference cases set 2 to match PTC; uncapped
+     costs 4.2e-10 there, so the cap is load-bearing, not cosmetic.
+
+   A trap worth remembering, since it cost a full debugging cycle: the fringe
+   must be enabled per element with `permfringe=true`, **not** with
+   `ptc_setswitch, fringe=true`. The global switch ends with
+   `default = intstate; call update_states`, so after `ptc_create_layout` it
+   silently reverts `TIME` to true and changes the longitudinal variable itself;
+   before `ptc_create_layout` the layout resets it and the fringe never runs.
+   The tell was a `z` error of `L·pt·(1/beta0² − 1)` on a particle with no
+   transverse coordinates, which no fringe map can produce.
+
+9. **Not modelled from PTC:** `KILL_ENT_FRINGE`/`KILL_EXI_FRINGE` (per-face
+   fringe suppression), the `CHARGE`/`DIR` factors in `B1 = DIR*CHARGE*BN(1)`
+   (we assume `+1` for both), and `METHOD=6` (Yoshida 6th order, `MAKE_YOSHIDA`
+   in `a_scratch_size.f90`; we support orders 2 and 4). Also `_dipole_edge` is
+   defined but never called — PTC has no separate linear edge-focusing map, the
+   exact `FRINGE_dipole` plus `WEDGE` do that work — so it is dead code and
+   should be removed or given a caller.
+
+10. **PTC validation stops at K3, and cannot easily go higher.** MAD-X's thick
    elements top out at the octupole term -- `sbend, l=.., angle=0, k3=..` is how
    `generate_ptc_reference.jl` builds its thick multipole cases, and adding `k4`
    is rejected outright (`+=+=+= fatal: illegal keyword: k4`). MAD-X's own
@@ -1268,7 +1305,7 @@ Remaining:
    higher-order multipoles, or driving PTC directly rather than through MAD-X's
    element keywords.
 
-9. **`element_help` shows the folded example.** `SextupoleSpec(L=0.2, k2=12.0)`
+11. **`element_help` shows the folded example.** `SextupoleSpec(L=0.2, k2=12.0)`
    displays as `ElementSpec{:sextupole}(; L=0.2, kn=(0.0, 0.0, 12.0))`, because
    the spec stores only the folded `kn`. That is the honest content of the
    object and `construction_help` directly above it shows the `k2` spelling, so

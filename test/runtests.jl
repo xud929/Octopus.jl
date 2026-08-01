@@ -1204,6 +1204,70 @@ end
     end
 end
 
+@testset "PTC fringe and wedge conventions" begin
+    u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
+    O = Octopus
+    id = collect(u)
+
+    # PTC returns from MULTIPOLE_FRINGER when NMUL <= 1: a pure dipole gets no
+    # multipole fringe, because its fringe is already handled exactly by
+    # FRINGE_dipole. Ours must agree, or a drift_kick bend double-counts it.
+    @test collect(O._multipole_fringe((0.18,), (0.0,), 1.0, 0, false, u...)) == id
+
+    # The BN(1) drop keeps the skew dipole and removes only the normal one,
+    # matching PTC's IF(J==1.AND.EL%BEND_FRINGE) branch.
+    kn = (0.18, 0.6); ks = (0.05, 0.0); zk = (0.0, 0.6)
+    @test collect(O._multipole_fringe(kn, ks, 1.0, 0, true, u...)) ==
+          collect(O._multipole_fringe(zk, ks, 1.0, 0, false, u...))
+    @test collect(O._multipole_fringe(kn, ks, 1.0, 0, true, u...)) !=
+          collect(O._multipole_fringe(kn, ks, 1.0, 0, false, u...))
+
+    # The order cap reproduces PTC's MIN(NMUL, HIGHEST_FRINGE); 0 means uncapped.
+    k3 = (0.0, 1.2, 8.0)
+    z3 = (0.0, 1.2, 0.0)
+    @test collect(O._multipole_fringe(k3, (0.0, 0.0, 0.0), 1.0, 2, false, u...)) ==
+          collect(O._multipole_fringe(z3, (0.0, 0.0, 0.0), 1.0, 0, false, u...))
+    @test collect(O._multipole_fringe(k3, (0.0, 0.0, 0.0), 1.0, 0, false, u...)) !=
+          collect(O._multipole_fringe(k3, (0.0, 0.0, 0.0), 1.0, 2, false, u...))
+
+    # The wedge kick is a gradient, so it must be exactly symplectic, and it must
+    # vanish without both an edge angle and a quadrupole component.
+    @test collect(O._wedge_quad(0.0, 0.6, 1.0, 2.0, u...)) == id
+    @test collect(O._wedge_quad(0.1, 0.0, 1.0, 2.0, u...)) == id
+    @test collect(O._wedge_quad(0.1, 0.6, 0.0, 0.0, u...)) == id      # PTC's other branch
+    let S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0]),
+        J = zeros(6, 6)
+
+        for j in 1:6
+            v = ComplexF64[u...]
+            v[j] += 1e-30im
+            J[:, j] = imag.(collect(O._wedge_quad(0.1, 0.6, 1.0, 2.0, v...))) ./ 1e-30
+        end
+        @test maximum(abs, J' * S6 * J - S6) < 1.0e-14
+    end
+
+    # wedge_coeff and highest_fringe must reach the compiled runtime, not just
+    # sit on the spec: a stored-but-unread option is what the PTC comparison
+    # would silently absorb.
+    @test compile_runtime(SBendSpec(L=1.1, angle=0.198, k1=0.6, e1=0.1)).wc1 == 1.0
+    @test compile_runtime(SBendSpec(L=1.1, angle=0.198, k1=0.6, e1=0.1)).wc2 == 2.0
+    @test compile_runtime(SBendSpec(L=1.1, angle=0.198, wedge_coeff=(0, 0))).wc1 == 0.0
+    @test compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, highest_fringe=2)).hf == 2
+    @test compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7)).hf == 0
+    @test_throws ArgumentError compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, highest_fringe=-1))
+    @test_throws ArgumentError compile_runtime(SBendSpec(L=1.1, angle=0.198, wedge_coeff=(1,)))
+
+    # The wedge term changes the map, so an angled combined-function bend is not
+    # the same magnet with and without it.
+    let a = compile_runtime(SBendSpec(L=1.1, angle=0.198, k1=0.6, e1=0.1, e2=0.1, nst=4,
+                                      bend_model=:drift_kick)),
+        b = compile_runtime(SBendSpec(L=1.1, angle=0.198, k1=0.6, e1=0.1, e2=0.1, nst=4,
+                                      bend_model=:drift_kick, wedge_coeff=(0, 0)))
+
+        @test collect(a(u...)) != collect(b(u...))
+    end
+end
+
 @testset "PTC consistency" begin
     # Compares LatticeMagnet against a committed PTC reference table generated
     # by validation/generate_ptc_reference.jl. Skips cleanly when the table is
@@ -1211,8 +1275,16 @@ end
     result = validate(PTCConsistencyContract())
     @test result.status in (:passed, :skipped)
     if result.status === :passed
-        @test result.metrics[:cases] >= 15
+        @test result.metrics[:cases] >= 22
         @test haskey(result.metrics, :madx_version)
+        # Fringe and pole-face cases. These are what pin the PTC behaviours a
+        # source comparison turned up: the MAD8 quadrupole-in-wedge kick
+        # (cfbend_edge), the HIGHEST_FRINGE=2 cap (multipole_fringe), the
+        # NMUL<=1 skip (sbend_fringe) and the BN(1) drop (cfbend_fringe).
+        for k in (:dev_quadrupole_fringe, :dev_multipole_fringe, :dev_sbend_fringe,
+                  :dev_cfbend_fringe, :dev_sbend_edge, :dev_cfbend_edge, :dev_sbend_fint)
+            @test result.metrics[k] < 1.0e-11
+        end
         # Straight elements should agree to MAD-X's printed precision. The bend
         # is looser and deliberately so -- see the contract docstring.
         # Every element type, including combined-function bends, agrees with

@@ -1528,6 +1528,31 @@ function _ptc_reference_specs()
         "cfbend_m4_n2" => SBendSpec(L=1.1, h=0.18, b0=0.18, kn=(0.0, 0.6, 5.0), nst=2,
                                     integrator_order=4,
                                     bend_model=:drift_kick, bend_fringe=true),
+        # Hard-edge multipole fringe. `highest_fringe=2` is PTC's own
+        # HIGHEST_FRINGE default, not a tuning knob: without it the comparison
+        # would include sextupole and higher fringe terms that PTC truncates.
+        "quadrupole_fringe" => QuadrupoleSpec(L=0.4, k1=1.7, nst=4,
+                                              fringe=:multipole, highest_fringe=2),
+        "multipole_fringe" => MultipoleSpec(L=0.3, k1=1.2, k2=8.0, nst=4,
+                                            fringe=:multipole, highest_fringe=2),
+        # A pure dipole has one multipole order, so PTC skips the multipole
+        # fringe entirely (NMUL<=1); with bend_model=:drift_kick the dipole sits
+        # in kn[1], which is exactly the case that used to be double-counted.
+        "sbend_fringe" => SBendSpec(L=1.1, angle=0.198, nst=4,
+                                    bend_model=:drift_kick, bend_fringe=true,
+                                    fringe=:multipole, highest_fringe=2),
+        "cfbend_fringe" => SBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4,
+                                     bend_model=:drift_kick, bend_fringe=true,
+                                     fringe=:multipole, highest_fringe=2),
+        # Pole-face angles. Fringes off, which selects PTC's MAD8_WEDGE branch,
+        # so wedge_coeff keeps its (1,2) default.
+        "sbend_edge" => SBendSpec(L=1.1, angle=0.198, e1=0.1, e2=0.1, nst=4,
+                                  bend_model=:drift_kick, bend_fringe=true),
+        "cfbend_edge" => SBendSpec(L=1.1, angle=0.198, k1=0.6, e1=0.1, e2=0.1, nst=4,
+                                   bend_model=:drift_kick, bend_fringe=true),
+        "sbend_fint" => SBendSpec(L=1.1, angle=0.198, e1=0.1, e2=0.1,
+                                  fint1=0.5, fint2=0.5, hgap1=0.03, hgap2=0.03, nst=4,
+                                  bend_model=:drift_kick, bend_fringe=true),
     )
 end
 

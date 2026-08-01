@@ -934,13 +934,23 @@ Beyond the flags in Section 7, fringe comparisons additionally require:
 | `HIGHEST_FRINGE` | truncates the multipole fringe sum |
 | `KILL_ENT_FRINGE`, `KILL_EXI_FRINGE` | disable a face |
 | `MAD8_WEDGE` | switches the combined-function wedge form; defaults `.TRUE.` |
-| `wedge_coeff(1:2)` | **has no default assignment** in the sources read here; it is exposed as the settable pointer `c_%wedge_coeff`. Set it explicitly or the combined-function wedge is whatever the compiler left in memory. |
+| `wedge_coeff(1:2)` | **has no default assignment** — confirmed in `Sh_def_kind.f90:124` of 5.03.06, where the declaration carries no initializer while its neighbours (`phase0`, `MAD8_WEDGE`) do. It is exposed as the settable pointer `c_%wedge_coeff`. |
 | `VA`, `VS` | soft-edge quadrupole fringe parameters |
 | `FINT`, `HGAP` | per-face arrays `FINT(1:2)`, `HGAP(1:2)` — entrance and exit may differ |
 
-`wedge_coeff` is the one to verify first against your own MAD-X build: it is a
-mutable global that changes a bend's nonlinear content whenever fringes are
-enabled on a combined-function magnet.
+**Resolved (2026-08-01).** The missing default does not mean the term is absent,
+because `wedge_coeff` is only *reachable* on the fringes-on branch. With fringes
+off — PTC's default — control falls to `ELSEIF(MAD8_WEDGE)`, which hardcodes
+
+$$\Delta p_x = e\,b_2\,(x^2-y^2),\qquad \Delta p_y = -e\,b_2\,(2xy),$$
+
+identical to the `wedge_coeff` form at $(w_1,w_2)=(1,2)$. So the effective
+default is $(1,2)$, and the uninitialized global only bites when fringes are
+enabled on a combined-function magnet with an angled face. Octopus implements
+the MAD8 form with `wedge_coeff` defaulting to `(1,2)`; set `(0,0)` to reproduce
+the other branch. Validated by the `cfbend_edge` reference case, which agrees
+with PTC to 4.9e-13 and is the only case where the term is active — it needs a
+nonzero edge angle *and* a quadrupole component.
 
 ## 7. Benchmarking against PTC
 

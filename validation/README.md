@@ -764,6 +764,22 @@ which would validate the wrong model. PTC's `T` column is negated on write,
 because its longitudinal variable is conjugate to `delta` with the opposite
 orientation.
 
+The 22 cases cover drift, quadrupole (normal and skew), sextupole, octupole,
+general multipole, sector bend and combined-function bend at both integrator
+orders, plus pole-face angles (`sbend_edge`, `cfbend_edge`, `sbend_fint`) and the
+hard-edge multipole fringe (`quadrupole_fringe`, `multipole_fringe`,
+`sbend_fringe`, `cfbend_fringe`).
+
+Two traps are pinned in the script's header comment and are worth repeating.
+The fringe is enabled **per element** with `permfringe=true`, never with
+`ptc_setswitch, fringe=true`: the global switch ends with
+`default = intstate; call update_states`, so after `ptc_create_layout` it
+silently reverts `TIME` to true and changes the longitudinal variable, while
+before `ptc_create_layout` the layout resets it and the fringe never runs. And
+the fringe cases must set `highest_fringe=2` on the Octopus side, because that
+is PTC's `HIGHEST_FRINGE` default and Octopus deliberately does not cap by
+default.
+
 ```bash
 julia --project=. validation/generate_ptc_reference.jl
 ```
