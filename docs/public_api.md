@@ -191,6 +191,21 @@ Use Julia help:
 ?with_turn
 ```
 
+## Particle Loss
+
+A non-finite coordinate means a **bug** by default, and every solver chokepoint
+fails fast on one. `allow_lost_particles` is the scoped opt-out that reinterprets
+it as a *lost particle*: reductions skip the particle and divide by the live
+count instead of stopping the run. A particle is live only when all six
+coordinates are finite.
+
+```julia
+?allow_lost_particles
+?is_live
+?count_live
+?count_dead
+```
+
 ## Numerical Math Helpers
 
 Use Julia help:

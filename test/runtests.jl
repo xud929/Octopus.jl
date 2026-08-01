@@ -1821,6 +1821,243 @@ end
     @test all(array -> all(isfinite, array), coordinate_arrays(b2))
 end
 
+# Deterministic beam of `n` particles, with `dead` marked non-finite in a
+# rotating choice of coordinate. Poisoning different coordinates matters: a
+# particle killed through `py` keeps a perfectly ordinary `x` and `z`, so a mask
+# that tested only the coordinates a given reduction reads would keep it.
+function loss_test_coords(n)
+    s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+    return Dict(:x => s(1.0e-4, 0.0), :px => s(1.0e-5, 0.3),
+                :y => s(1.0e-4, 0.9), :py => s(1.0e-5, 1.2),
+                :z => s(1.0e-2, 2.0), :pz => s(1.0e-4, 2.5))
+end
+
+const _LOSS_FIELDS = (:x, :pz, :py, :z, :px, :y)
+
+function loss_test_rep(n, dead; values=nothing)
+    c = loss_test_coords(n)
+    for (k, d) in enumerate(dead)
+        field = _LOSS_FIELDS[mod1(k, 6)]
+        c[field][d] = values === nothing ? (isodd(k) ? NaN : Inf) : values
+    end
+    return Phase6DRep(c[:x], c[:px], c[:y], c[:py], c[:z], c[:pz])
+end
+
+function loss_survivor_rep(n, dead)
+    c = loss_test_coords(n)
+    keep = setdiff(1:n, dead)
+    return Phase6DRep((c[k][keep] for k in (:x, :px, :y, :py, :z, :pz))...)
+end
+
+@testset "allow_lost_particles is off by default and scoped" begin
+    @test allow_lost_particles() == false
+    @test allow_lost_particles(() -> allow_lost_particles()) == true
+    @test allow_lost_particles(() -> allow_lost_particles(); enabled=false) == false
+    # The scope must not leak, including out of a throwing body.
+    @test_throws ErrorException allow_lost_particles(() -> error("boom"))
+    @test allow_lost_particles() == false
+
+    # A particle is live only when all six coordinates are finite. Testing fewer
+    # would call a particle that died in momentum alive.
+    @test is_live(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+    for slot in 1:6, bad in (NaN, Inf, -Inf)
+        coords = Any[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        coords[slot] = bad
+        @test !is_live(coords...)
+    end
+    rep = loss_test_rep(20, [3, 11])
+    @test count_live(rep) == 18
+    @test count_dead(rep) == 2
+end
+
+@testset "Lost particles are excluded from every reduction" begin
+    n = 200
+    dead = [5, 77, 133]
+    poisoned = loss_test_rep(n, dead)
+    survivors = loss_survivor_rep(n, dead)
+
+    # Beam statistics: masked over the full beam must equal the same statistics
+    # computed on a beam that simply does not contain the dead particles, and
+    # `n` must report the denominator actually used.
+    masked = allow_lost_particles() do
+        beam_statistics(poisoned; diagonal_fourth=true)
+    end
+    reference = beam_statistics(survivors; diagonal_fourth=true)
+    @test masked.n == n - length(dead)
+    @test masked.mean ≈ reference.mean atol=1e-18
+    @test masked.covariance ≈ reference.covariance atol=1e-24
+    @test masked.emittance ≈ reference.emittance atol=1e-24
+    @test masked.diagonal_fourth_central ≈ reference.diagonal_fourth_central atol=1e-30
+    # Without the flag the same beam still poisons the statistics, which is the
+    # signal that a non-finite coordinate is a bug when losses are not expected.
+    @test !isfinite(beam_statistics(poisoned).mean[1])
+
+    # Moment observer rows, the reduction the todo names first.
+    ms = (Moment((1, 0, 0, 0, 0, 0)), Moment((0, 0, 1, 0, 0, 0)),
+          Moment((2, 0, 0, 0, 0, 0)), Moment((1, 1, 0, 0, 0, 0)),
+          Moment((0, 0, 0, 0, 2, 0)))
+    ctx = TrackingContext(turn=7)
+    row_masked = allow_lost_particles() do
+        Octopus._moment_observer_row(ctx, poisoned, ms)
+    end
+    row_reference = Octopus._moment_observer_row(ctx, survivors, ms)
+    @test row_masked == row_reference
+    @test row_masked[1] == 7.0
+    # One dead particle takes out every moment, not just its own coordinate,
+    # because all six means feed every central moment.
+    @test any(!isfinite, Octopus._moment_observer_row(ctx, poisoned, ms)[2:end])
+
+    # An all-dead beam has no moments. NaN is the honest answer and the turn
+    # column must survive so the record still says when it happened.
+    all_dead = loss_test_rep(8, 1:8)
+    row_dead = allow_lost_particles() do
+        Octopus._moment_observer_row(ctx, all_dead, ms)
+    end
+    @test row_dead[1] == 7.0
+    @test all(isnan, row_dead[2:end])
+end
+
+@testset "Lost particles cannot influence a strong-strong collision" begin
+    n = 4000
+    dead = [5, 137, 2011]
+    sl = LongitudinalSlicing(nslices=3, method=:equal_count)
+    solvers = (
+        ("PIC", PICPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+             grid=(64, 64), green_cache=:none, slicing=sl)),
+        ("PIC sigma", PICPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+             grid=(64, 64), green_cache=:none, slicing=sl, grid_extent=:sigma)),
+        ("Gaussian", GaussianPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4,
+             luminosity_scale=1.0, slicing=sl)),
+        ("GaussianPIC", GaussianPICPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4,
+             luminosity_scale=1.0, grid=(64, 64), green_cache=:none, slicing=sl)),
+        ("Spectral", SpectralPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4,
+             luminosity_scale=1.0, grid=(64, 64), slicing=sl)),
+    )
+    clean_rep() = Phase6DRep((loss_test_coords(n)[k]
+                              for k in (:x, :px, :y, :py, :z, :pz))...)
+    # The same particles are dead in all three, but their corpses differ wildly:
+    # rotating NaN/Inf coordinates, then all six NaN, then non-finite alongside
+    # finite transverse values seven orders of magnitude outside the beam. If a
+    # corpse leaked into a grid extent or a moment, the third would move the
+    # answer by orders of magnitude.
+    function corpse(variant)
+        variant == 1 && return loss_test_rep(n, dead)
+        variant == 2 && return loss_test_rep(n, dead; values=NaN)
+        c = loss_test_coords(n)
+        for d in dead
+            c[:pz][d] = Inf; c[:x][d] = 1.0e3; c[:y][d] = -1.0e3
+        end
+        return Phase6DRep(c[:x], c[:px], c[:y], c[:py], c[:z], c[:pz])
+    end
+    for (name, solver) in solvers
+        values = allow_lost_particles() do
+            [collide!(solver, test_beam(corpse(v)), test_beam(clean_rep()),
+                      CPUThreadsBackend) for v in 1:3]
+        end
+        @test all(isfinite, values)
+        @test values[1] == values[2] == values[3]
+        # Without the flag the deliberate loss is still reported as a failure.
+        @test_throws ArgumentError collide!(solver, test_beam(corpse(1)),
+                                            test_beam(clean_rep()), CPUThreadsBackend)
+    end
+end
+
+@testset "Lost particles are dropped from every slicing method" begin
+    n = 400
+    dead = [5, 137, 201]
+    poisoned = loss_test_rep(n, dead)
+    survivors = loss_survivor_rep(n, dead)
+    keep = setdiff(1:n, dead)
+    remap = Dict(orig => k for (k, orig) in enumerate(keep))
+    z_poisoned = begin
+        c = loss_test_coords(n)
+        c[:z][5] = NaN
+        Phase6DRep(c[:x], c[:px], c[:y], c[:py], c[:z], c[:pz])
+    end
+    for method in (:equal_area, :equal_count, :equal_width, :gaussian, :specified)
+        sl = method === :specified ?
+            LongitudinalSlicing(nslices=4, method=method, positions=[-0.6, 0.0, 0.6]) :
+            LongitudinalSlicing(nslices=4, method=method)
+        masked = allow_lost_particles() do
+            Octopus.longitudinal_slices(poisoned, sl)
+        end
+        reference = Octopus.longitudinal_slices(survivors, sl)
+        @test masked.center ≈ reference.center atol=1e-18
+        @test masked.weight ≈ reference.weight atol=1e-15
+        @test masked.boundary ≈ reference.boundary atol=1e-18
+        # Weights are a fraction of the live beam, so they still sum to one.
+        @test sum(masked.weight) ≈ 1.0
+        # No dead particle joins any slice, under any method.
+        @test sum(length, masked.indices) == n - length(dead)
+        for s in 1:4
+            @test sort([remap[i] for i in masked.indices[s]]) == sort(reference.indices[s])
+        end
+        # Without the flag, a non-finite z is still a hard failure. Slicing reads
+        # only z, so that is the coordinate it can fail on; a particle that died
+        # in x or py carries an ordinary z, passes through here, and is caught
+        # by a downstream chokepoint instead.
+        @test_throws ArgumentError Octopus.longitudinal_slices(z_poisoned, sl)
+        @test Octopus.longitudinal_slices(poisoned, sl) isa Any
+    end
+    # A beam with nothing left alive cannot be sliced, and says so plainly
+    # rather than surfacing as a non-finite boundary.
+    all_dead = loss_test_rep(8, 1:8)
+    err = try
+        allow_lost_particles() do
+            Octopus.longitudinal_slices(all_dead, LongitudinalSlicing(nslices=2))
+        end
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("at least one live particle", err.msg)
+end
+
+@testset "Lost-particle masking agrees between CPU and CUDA" begin
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        n = 500
+        dead = [5, 77, 133]
+        host = loss_test_rep(n, dead)
+        survivors = loss_survivor_rep(n, dead)
+        device = Phase6DRep((Octopus.CUDA.CuArray(a)
+                             for a in coordinate_arrays(host))...)
+
+        ms = (Moment((1, 0, 0, 0, 0, 0)), Moment((0, 0, 1, 0, 0, 0)),
+              Moment((2, 0, 0, 0, 0, 0)), Moment((1, 1, 0, 0, 0, 0)),
+              Moment((0, 0, 0, 0, 2, 0)), Moment((0, 0, 0, 0, 0, 2)))
+        ctx = TrackingContext(turn=3)
+        observer = MomentObserver(tempname() * ".h5"; orders=2, capacity=4)
+
+        cuda_masked = allow_lost_particles() do
+            Octopus._moment_observer_row(ctx, device, ms, observer)
+        end
+        reference = Octopus._moment_observer_row(ctx, survivors, ms)
+        @test cuda_masked ≈ reference atol=1e-18
+        @test cuda_masked[1] == 3.0
+        # Unmasked, the CUDA reduction is poisoned just like the CPU one.
+        @test any(!isfinite,
+                  Octopus._moment_observer_row(ctx, device, ms, observer)[2:end])
+
+        # Slicing: the device path drops the dead under every method, and the
+        # broadcast comparisons alone would not have -- Inf survives `z <= rb`
+        # when rb is itself infinite, and a particle killed through px or py
+        # carries an ordinary z.
+        for method in (:equal_area, :equal_count, :equal_width, :gaussian)
+            sl = LongitudinalSlicing(nslices=4, method=method)
+            cuda_slices = allow_lost_particles() do
+                Octopus._cuda_longitudinal_slices(device, sl)
+            end
+            cpu_slices = Octopus.longitudinal_slices(survivors, sl)
+            @test cuda_slices.center ≈ cpu_slices.center atol=1e-15
+            @test cuda_slices.weight ≈ cpu_slices.weight atol=1e-15
+            @test sum(length, cuda_slices.indices) == n - length(dead)
+            @test sum(cuda_slices.weight) ≈ 1.0
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 @testset "PIC kbb override uses physical units" begin
     function kbb_pair()
         set_global_rng!(seed=42, method=:philox)

@@ -341,6 +341,19 @@ Three caveats decide whether it is a good idea:
    consequences handled in the same change rather than deferred: reductions mask
    non-finite particles, and the existing fail-fast guards are restated so a
    deliberately-killed particle is not read as a solver bug.
+
+   **Implemented 2026-08-01** as `allow_lost_particles`, off by default. The
+   rule is not applied unconditionally, because the aperture that makes a NaN
+   legitimate does not exist yet: switching the meaning globally now would
+   surrender bug detection with nothing able to produce a deliberate loss. Off,
+   non-finite still means bug everywhere; on, it means lost. See `docs/todo.md`
+   for what was masked.
+
+   With the flag **on** the masking is complete over all six coordinates. With it
+   **off**, fail-fast detection is not: a chokepoint only sees coordinates some
+   reduction reads, and nothing reads `pz`. That gap is pre-existing, is logged
+   as its own item in `docs/todo.md`, and was deliberately left open on the
+   grounds that production runs will have the flag on.
 5. **The aperture logs `(particle, turn)` through the tracking context**, like
    an observer, so NaN marks the particle dead and the element records the
    event. Per-element loss attribution is explicitly out of scope and needs a

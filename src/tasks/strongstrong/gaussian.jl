@@ -88,7 +88,22 @@ function _slice_slice_gaussian_kick!(rep::Phase6DRep, idx::Vector{Int}, moments2
     return sum(local_lum) / TWOPI * klum_slice
 end
 
-"""Return whether a slice-moment NamedTuple carries only finite values."""
+"""
+Return whether a slice-moment NamedTuple carries only finite values.
+
+This is a "no **unexpected** NaN" test, not a "no NaN" test, and the difference
+is what makes it survive `allow_lost_particles`. A dead particle never reaches
+these moments: slicing drops it, so it is absent from `slices.indices` and
+contributes to no sum. Anything non-finite that arrives here therefore came from
+*live* input -- a genuine overflow or invalid operation in the reduction -- which
+is exactly the failure this guard was written to catch, and it still throws.
+
+The restatement is in what the guard is allowed to conclude, not in its test:
+before, a non-finite moment meant "some particle is non-finite"; now it means
+"some **live** particle is non-finite". The mask upstream is what makes the
+second statement true, which is why that mask and this guard have to land
+together rather than in either order.
+"""
 @inline function _gaussian_moments_finite(m)
     return isfinite(m.mx) && isfinite(m.mpx) && isfinite(m.my) && isfinite(m.mpy) &&
            isfinite(m.sx) && isfinite(m.sy) && isfinite(m.spx) && isfinite(m.spy) &&

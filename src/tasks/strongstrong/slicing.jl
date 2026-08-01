@@ -52,16 +52,23 @@ function longitudinal_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
     slicing.nslices > 0 || throw(ArgumentError("nslices must be positive"))
     isempty(rep.z) && throw(ArgumentError("longitudinal slicing requires at least one particle"))
     method = slicing.method
+    flags = _live_flags(rep, active_live_mask())
+    # Every method below divides by the live count and sizes boundaries from
+    # live extrema, so an all-dead beam has to be rejected here rather than
+    # surfacing downstream as a non-finite boundary.
+    flags === nothing || count(flags) > 0 || throw(ArgumentError(
+        "longitudinal slicing requires at least one live particle; " *
+        "all $(length(rep.z)) are non-finite"))
     if method == :equal_area
-        return _longitudinal_slices_equal_area(rep, slicing)
+        return _longitudinal_slices_equal_area(rep, slicing, flags)
     elseif method == :equal_count
-        return _longitudinal_slices_equal_count(rep, slicing)
+        return _longitudinal_slices_equal_count(rep, slicing, flags)
     elseif method == :equal_width || method == :equal_spaced
-        return _longitudinal_slices_equal_width(rep, slicing)
+        return _longitudinal_slices_equal_width(rep, slicing, flags)
     elseif method == :normal_quantile || method == :gaussian || method == :Gaussian
-        return _longitudinal_slices_gaussian(rep, slicing)
+        return _longitudinal_slices_gaussian(rep, slicing, flags)
     elseif method == :specified
-        return _longitudinal_slices_specified(rep, slicing)
+        return _longitudinal_slices_specified(rep, slicing, flags)
     else
         throw(ArgumentError("unknown longitudinal slicing method $method"))
     end
@@ -94,23 +101,26 @@ function _strong_strong_luminosity_scales(solver, beam1, beam2)
            p1.npart * p2.npart / length(beam2.rep)
 end
 
-function _longitudinal_slices_equal_area(rep::Phase6DRep, slicing::LongitudinalSlicing)
+function _longitudinal_slices_equal_area(rep::Phase6DRep, slicing::LongitudinalSlicing, flags)
     slicing.resolution > 0 || throw(ArgumentError("resolution must be positive"))
     z = _host_array(rep.z)
     T = eltype(z)
     ns = slicing.nslices
     bins = ns * slicing.resolution
-    zmin = minimum(z)
-    zmax = maximum(z)
+    stats = _live_z_stats(z, flags)
+    zmin = stats.zmin
+    zmax = stats.zmax
     if zmin == zmax
         boundaries = fill(T(zmin), ns + 1)
         indices = [Int[] for _ in 1:ns]
-        append!(indices[1], eachindex(z))
-        return _finish_longitudinal_slices(rep, slicing, indices, boundaries)
+        for i in eachindex(z)
+            _flag_live(flags, i) && push!(indices[1], i)
+        end
+        return _finish_longitudinal_slices(rep, slicing, indices, boundaries, flags)
     end
     width = (zmax - zmin) / bins
-    counts = _threaded_histogram(z, zmin, width, bins)
-    cumulative = cumsum(counts) ./ length(z)
+    counts = _threaded_histogram(z, zmin, width, bins, flags)
+    cumulative = cumsum(counts) ./ max(stats.n_live, 1)
     cumulative[end] = one(T)
     centers = [T(zmin + (i - 0.5) * width) for i in 1:bins]
     boundaries = Vector{T}(undef, ns + 1)
@@ -142,7 +152,7 @@ function _longitudinal_slices_equal_area(rep::Phase6DRep, slicing::LongitudinalS
                             x2 * (target - y1) / (y2 - y1) +
                             x1 * (target - y2) / (y1 - y2)
     end
-    return _slices_from_boundaries(rep, slicing, boundaries)
+    return _slices_from_boundaries(rep, slicing, boundaries, flags)
 end
 
 """
@@ -165,12 +175,77 @@ where a dead particle stops contributing to slicing rather than crashing it.
     return clamp(floor(Int, d) + 1, 1, bins)
 end
 
-function _threaded_histogram(z, zmin, width, bins::Int)
+"""
+    _live_flags(rep, mask)
+
+Per-particle liveness for one slicing call, or `nothing` when the mask is off.
+
+Slicing walks the representation several times -- extrema, then a histogram or
+sort, then the index assignment -- so liveness is derived once here rather than
+recomputed per pass. On CUDA storage that also collapses what would otherwise be
+several device-to-host copies of all six coordinates into one.
+
+`nothing` is the off state rather than a vector of `true`, so `_flag_live`
+constant-folds to `true` and the unmasked passes keep their original cost.
+"""
+_live_flags(rep::Phase6DRep, ::LiveMask{false}) = nothing
+
+function _live_flags(rep::Phase6DRep, ::LiveMask{true})
+    x, px, y, py, z, pz = _host_coordinate_arrays(rep)
+    flags = Vector{Bool}(undef, length(z))
+    @inbounds for i in eachindex(z)
+        flags[i] = is_live(x[i], px[i], y[i], py[i], z[i], pz[i])
+    end
+    return flags
+end
+
+@inline _flag_live(::Nothing, i) = true
+@inline _flag_live(flags::Vector{Bool}, i) = @inbounds flags[i]
+
+_live_count(::Nothing, n::Integer) = Int(n)
+_live_count(flags::Vector{Bool}, n::Integer) = count(flags)
+
+"""
+    _live_z_stats(z, flags)
+
+Longitudinal extrema, mean, standard deviation and live count in one pass.
+
+Every slicing method sizes its boundaries from some subset of these five
+numbers, so masking them here is what stops a dead particle from moving a
+boundary. With `flags === nothing` the loop is the unmasked reduction and keeps
+the old NaN-propagating behaviour on purpose: `min`/`max` propagate `NaN` in
+Julia, so a non-finite `z` still reaches `_finish_longitudinal_slices` as a
+non-finite boundary and trips the chokepoint there, exactly as before.
+"""
+function _live_z_stats(z::AbstractVector, flags)
+    T = eltype(z)
+    zmin = T(Inf); zmax = T(-Inf)
+    s1 = zero(T); n_live = 0
+    @inbounds for i in eachindex(z)
+        _flag_live(flags, i) || continue
+        zi = z[i]
+        zmin = min(zmin, zi); zmax = max(zmax, zi)
+        s1 += zi; n_live += 1
+    end
+    n_live == 0 && return (n_live=0, zmin=T(NaN), zmax=T(NaN), mean=T(NaN), sigma=T(NaN))
+    μ = s1 / n_live
+    s2 = zero(T)
+    @inbounds for i in eachindex(z)
+        _flag_live(flags, i) || continue
+        d = z[i] - μ
+        s2 += d * d
+    end
+    return (n_live=n_live, zmin=zmin, zmax=zmax, mean=μ,
+            sigma=sqrt(max(s2 / n_live, zero(T))))
+end
+
+function _threaded_histogram(z, zmin, width, bins::Int, flags=nothing)
     nchunks = _cpu_worker_count()
     if nchunks == 1
         counts = zeros(Int, bins)
-        for zi in z
-            bin = _slice_bin(zi, zmin, width, bins)
+        for i in eachindex(z)
+            _flag_live(flags, i) || continue
+            bin = _slice_bin(z[i], zmin, width, bins)
             bin == 0 || (counts[bin] += 1)
         end
         return counts
@@ -180,6 +255,7 @@ function _threaded_histogram(z, zmin, width, bins::Int)
         first_i, last_i = _chunk_bounds(length(z), nchunks, chunk)
         counts = local_counts[chunk]
         for i in first_i:last_i
+            _flag_live(flags, i) || continue
             zi = z[i]
             bin = _slice_bin(zi, zmin, width, bins)
             bin == 0 || (counts[bin] += 1)
@@ -192,12 +268,17 @@ function _threaded_histogram(z, zmin, width, bins::Int)
     return counts
 end
 
-function _longitudinal_slices_equal_count(rep::Phase6DRep, slicing::LongitudinalSlicing)
+function _longitudinal_slices_equal_count(rep::Phase6DRep, slicing::LongitudinalSlicing, flags)
     z = _host_array(rep.z)
     T = eltype(z)
-    n = length(z)
     ns = slicing.nslices
-    order = sortperm(z)
+    # Rank the live particles only. `sortperm` orders `NaN` above every finite
+    # value, so sorting the whole array would pack the dead into the last
+    # slices rather than dropping them -- equal-count is the one method where a
+    # dead particle displaces a live one instead of merely shifting a boundary.
+    order = flags === nothing ? sortperm(z) :
+            sort!(findall(flags); by = i -> z[i])
+    n = length(order)
     indices = [Int[] for _ in 1:ns]
     for s in 1:ns
         first_pos = floor(Int, (s - 1) * n / ns) + 1
@@ -207,9 +288,10 @@ function _longitudinal_slices_equal_count(rep::Phase6DRep, slicing::Longitudinal
         end
     end
     sorted_z = z[order]
+    stats = _live_z_stats(z, flags)
     boundaries = Vector{T}(undef, ns + 1)
-    boundaries[1] = minimum(z)
-    boundaries[end] = maximum(z)
+    boundaries[1] = stats.zmin
+    boundaries[end] = stats.zmax
     for s in 1:(ns - 1)
         pos = floor(Int, s * n / ns)
         boundaries[s + 1] = if pos == 0
@@ -220,57 +302,60 @@ function _longitudinal_slices_equal_count(rep::Phase6DRep, slicing::Longitudinal
             (sorted_z[pos] + sorted_z[pos + 1]) / 2
         end
     end
-    return _finish_longitudinal_slices(rep, slicing, indices, boundaries)
+    return _finish_longitudinal_slices(rep, slicing, indices, boundaries, flags)
 end
 
-function _longitudinal_slices_equal_width(rep::Phase6DRep, slicing::LongitudinalSlicing)
+function _longitudinal_slices_equal_width(rep::Phase6DRep, slicing::LongitudinalSlicing, flags)
     z = _host_array(rep.z)
     T = eltype(z)
     ns = slicing.nslices
-    zmin = minimum(z)
-    zmax = maximum(z)
+    stats = _live_z_stats(z, flags)
+    zmin = stats.zmin
+    zmax = stats.zmax
     boundaries = collect(range(zmin, zmax; length=ns + 1))
     if zmin == zmax
         indices = [Int[] for _ in 1:ns]
-        append!(indices[1], eachindex(z))
-        return _finish_longitudinal_slices(rep, slicing, indices, boundaries)
+        for i in eachindex(z)
+            _flag_live(flags, i) && push!(indices[1], i)
+        end
+        return _finish_longitudinal_slices(rep, slicing, indices, boundaries, flags)
     end
     width = (zmax - zmin) / ns
-    indices = _threaded_indices_by_function(z, ns) do zi
+    indices = _threaded_indices_by_function(z, ns, flags) do zi
         return _slice_bin(zi, zmin, width, ns)
     end
-    return _finish_longitudinal_slices(rep, slicing, indices, boundaries)
+    return _finish_longitudinal_slices(rep, slicing, indices, boundaries, flags)
 end
 
-function _longitudinal_slices_specified(rep::Phase6DRep, slicing::LongitudinalSlicing)
+function _longitudinal_slices_specified(rep::Phase6DRep, slicing::LongitudinalSlicing, flags)
     z = _host_array(rep.z)
     T = eltype(z)
-    n = length(z)
-    μ = sum(z) / n
-    σ = sqrt(max(sum(zi -> (zi - μ)^2, z) / n, zero(T)))
+    stats = _live_z_stats(z, flags)
+    μ = stats.mean
+    σ = stats.sigma
     internal = sort([T(μ + p * σ) for p in slicing.positions])
     boundaries = Vector{T}(undef, length(internal) + 2)
-    boundaries[1] = minimum(z)
-    boundaries[end] = maximum(z)
+    boundaries[1] = stats.zmin
+    boundaries[end] = stats.zmax
     for (i, b) in enumerate(internal)
         boundaries[i + 1] = clamp(b, boundaries[1], boundaries[end])
     end
-    return _slices_from_boundaries(rep, slicing, boundaries)
+    return _slices_from_boundaries(rep, slicing, boundaries, flags)
 end
 
-function _longitudinal_slices_gaussian(rep::Phase6DRep, slicing::LongitudinalSlicing)
+function _longitudinal_slices_gaussian(rep::Phase6DRep, slicing::LongitudinalSlicing, flags)
     z = _host_array(rep.z)
     T = eltype(z)
-    n = length(z)
     ns = slicing.nslices
-    μ = sum(z) / n
-    σ = sqrt(max(sum(zi -> (zi - μ)^2, z) / n, zero(T)))
+    stats = _live_z_stats(z, flags)
+    μ = stats.mean
+    σ = stats.sigma
     if σ == zero(T)
         boundaries = fill(T(μ), ns + 1)
-        return _slices_from_boundaries(rep, slicing, boundaries)
+        return _slices_from_boundaries(rep, slicing, boundaries, flags)
     end
-    boundaries = _gaussian_slice_boundaries(T, ns, μ, σ, minimum(z), maximum(z))
-    return _slices_from_boundaries(rep, slicing, boundaries)
+    boundaries = _gaussian_slice_boundaries(T, ns, μ, σ, stats.zmin, stats.zmax)
+    return _slices_from_boundaries(rep, slicing, boundaries, flags)
 end
 
 function _gaussian_slice_boundaries(::Type{T}, ns::Integer, μ, σ, zmin, zmax) where {T}
@@ -284,17 +369,23 @@ function _gaussian_slice_boundaries(::Type{T}, ns::Integer, μ, σ, zmin, zmax) 
     return boundaries
 end
 
-function _slices_from_boundaries(rep::Phase6DRep, slicing, boundaries)
+function _slices_from_boundaries(rep::Phase6DRep, slicing, boundaries, flags=nothing)
     z = _host_array(rep.z)
     ns = length(boundaries) - 1
-    indices = _threaded_indices_by_function(z, ns) do zi
+    indices = _threaded_indices_by_function(z, ns, flags) do zi
         s = searchsortedlast(boundaries, zi)
         return clamp(s, 1, ns)
     end
-    return _finish_longitudinal_slices(rep, slicing, indices, boundaries)
+    return _finish_longitudinal_slices(rep, slicing, indices, boundaries, flags)
 end
 
-function _threaded_indices_by_function(slice_index, z, ns::Int)
+function _threaded_indices_by_function(slice_index, z, ns::Int, flags=nothing)
+    # A dead particle joins no slice. `_slice_bin` already returns `0` for a
+    # non-finite coordinate, but the boundary-search callers do not:
+    # `searchsortedlast` orders `NaN` above every boundary and would file it
+    # into the last slice. Consulting `flags` first makes the drop uniform
+    # across every slicing method rather than a property of one index function.
+    @inline live_index(i) = _flag_live(flags, i) ? slice_index(z[i]) : 0
     nchunks = _cpu_worker_count()
     if nchunks == 1
         indices = [Int[] for _ in 1:ns]
@@ -302,7 +393,7 @@ function _threaded_indices_by_function(slice_index, z, ns::Int)
             # `0` means the coordinate has no bin -- non-finite, e.g. a particle
             # an aperture killed. It joins no slice and so contributes to no
             # interaction, which is what a dead particle should do.
-            si = slice_index(z[i])
+            si = live_index(i)
             si == 0 || push!(indices[si], i)
         end
         return indices
@@ -312,7 +403,7 @@ function _threaded_indices_by_function(slice_index, z, ns::Int)
         first_i, last_i = _chunk_bounds(length(z), nchunks, chunk)
         counts = local_counts[chunk]
         for i in first_i:last_i
-            s = slice_index(z[i])
+            s = live_index(i)
             s == 0 || (counts[s] += 1)
         end
     end
@@ -323,7 +414,7 @@ function _threaded_indices_by_function(slice_index, z, ns::Int)
         offsets = local_offsets[chunk]
         chunk_indices = local_indices[chunk]
         for i in first_i:last_i
-            s = slice_index(z[i])
+            s = live_index(i)
             s == 0 && continue
             offsets[s] += 1
             chunk_indices[s][offsets[s]] = i
@@ -349,15 +440,24 @@ function _chunk_bounds(n::Int, nchunks::Int, chunk::Int)
     return first_i, last_i
 end
 
-function _finish_longitudinal_slices(rep::Phase6DRep, slicing, indices, boundaries)
+function _finish_longitudinal_slices(rep::Phase6DRep, slicing, indices, boundaries, flags=nothing)
     # Earliest non-finite chokepoint: a NaN/Inf z propagates into the boundary
     # extrema/quantiles of every slicing method, so one O(nslices) check here
     # covers them all (N1, docs/todo.md).
+    #
+    # Under `allow_lost_particles` the boundaries were built from live particles
+    # only, so a dead one can no longer reach them and this no longer fires for
+    # a killed particle. What it still catches is the case it was written for: a
+    # boundary that came out non-finite from *live* input, which is a solver bug
+    # either way. That is the "no unexpected NaN" restatement, not a weakening.
     all(isfinite, boundaries) ||
         _nonfinite_coordinate_error(:beam, (z=rep.z,); context="longitudinal slicing")
     z = _host_array(rep.z)
     T = eltype(z)
-    total = length(z)
+    # Weights are a fraction of the *live* beam, so they still sum to one when
+    # part of the beam is dead. Dividing by the full length would silently scale
+    # every slice weight -- and therefore every kick -- by the survival ratio.
+    total = _live_count(flags, length(z))
     ns = length(indices)
     centers = Vector{T}(undef, ns)
     weights = Vector{T}(undef, ns)

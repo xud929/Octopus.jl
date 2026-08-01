@@ -397,10 +397,16 @@ on failure. Here the offending slice is scanned once to identify how many
 particles are non-finite, the first offending index, and its coordinates, and an
 `ArgumentError` naming the collision label, turn, and slice context is thrown.
 
-Fail-fast is the deliberate policy. Quarantining (dropping) particles would be a
-lost-particle concept the solvers do not have: `_pic_kbb1`/`_pic_kbb2` normalize
-by the macroparticle count, so silently removing particles would change the kick
-scale and the luminosity normalization (see `docs/todo.md`).
+Fail-fast is the default policy, and `allow_lost_particles` is the one way to
+opt out of it. With that flag on, a non-finite particle means *lost* rather than
+*broken*: the reductions upstream of every caller skip it, so it never reaches
+this function, and what does reach it came from live input and is still a bug.
+
+The flag does not change the kick scale. `_pic_kbb1`/`_pic_kbb2` keep dividing by
+the full macroparticle count, so a lost particle simply stops depositing and the
+bunch carries proportionally less charge -- which is what losing a particle
+physically means. Renormalizing by the survivor count instead would hold the
+bunch charge fixed while particles disappear, and that is the wrong physics.
 
 `coords` is a NamedTuple of same-length coordinate arrays (CPU or CUDA; CUDA
 arrays are copied to host here, on the failure path only). `context` is an
@@ -438,7 +444,10 @@ function _nonfinite_coordinate_error(role::Symbol, coords::NamedTuple{K};
         "Non-finite coordinates cannot be represented on the interaction mesh " *
         "(they previously poisoned the whole CUDA charge grid through the atomic " *
         "deposit, or threw an unlocated InexactError on CPU), so the solver fails " *
-        "fast instead. Inspect upstream tracking for the source of the divergence."))
+        "fast instead. Inspect upstream tracking for the source of the divergence. " *
+        "If these particles were deliberately lost rather than broken, run inside " *
+        "`allow_lost_particles() do ... end`, which excludes them from every " *
+        "reduction instead of failing."))
 end
 
 """Format a slice-pair cache key `(i, j, direction)` as error context."""

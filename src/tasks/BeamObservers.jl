@@ -966,14 +966,56 @@ function _flush_moment_observer!(observer::MomentObserver)
     return nothing
 end
 
+"""
+    _moment_live_flags(arrays)
+
+Per-particle liveness for a moment reduction, or `nothing` when the mask is off.
+
+One `NaN` in any coordinate makes its mean `NaN`, and every central moment is
+built from all six means -- so a single dead particle takes out the entire
+moment row, not just the coordinate it died in. That coupling is why the mask
+has to be computed once from all six arrays and then shared by the mean pass and
+every moment pass, rather than applied per coordinate.
+"""
+function _moment_live_flags(arrays)
+    allow_lost_particles() || return nothing
+    x, px, y, py, z, pz = arrays
+    flags = Vector{Bool}(undef, length(x))
+    @inbounds for i in eachindex(x)
+        flags[i] = is_live(x[i], px[i], y[i], py[i], z[i], pz[i])
+    end
+    return flags
+end
+
+@inline _moment_live(::Nothing, i) = true
+@inline _moment_live(flags::Vector{Bool}, i) = @inbounds flags[i]
+
+_moment_denominator(::Nothing, n::Integer) = Int(n)
+_moment_denominator(flags::Vector{Bool}, n::Integer) = count(flags)
+
 function _moment_observer_row(ctx::TrackingContext, rep, moments::Tuple, observer=nothing)
     row = Vector{Float64}(undef, length(moments) + 1)
     row[1] = Float64(ctx.turn)
     isempty(moments) && return row
     arrays = map(collect, coordinate_arrays(rep))
-    means = ntuple(i -> Float64(sum(arrays[i]) / length(arrays[i])), 6)
+    flags = _moment_live_flags(arrays)
+    nlive = _moment_denominator(flags, length(arrays[1]))
+    # An all-dead beam has no moments to report. `NaN` is the honest value, and
+    # the turn column stays intact so the record still says *when* that happened.
+    if nlive == 0
+        fill!(view(row, 2:length(row)), NaN)
+        return row
+    end
+    means = ntuple(6) do i
+        a = arrays[i]
+        s = 0.0
+        @inbounds for k in eachindex(a)
+            _moment_live(flags, k) && (s += a[k])
+        end
+        Float64(s / nlive)
+    end
     for (j, moment) in enumerate(moments)
-        row[j + 1] = _compute_moment(arrays, means, moment)
+        row[j + 1] = _compute_moment(arrays, means, moment, flags, nlive)
     end
     return row
 end
@@ -988,19 +1030,34 @@ if _HAS_CUDA
             isempty(moments) && return row
             arrays = coordinate_arrays(rep)
             n = length(arrays[1])
-            means = ntuple(i -> Float64(sum(arrays[i]) / n), 6)
+            # `nothing` when the mask is off, so the reductions below stay the
+            # plain device reductions they were.
+            flags = allow_lost_particles() ?
+                is_live.(arrays[1], arrays[2], arrays[3], arrays[4], arrays[5], arrays[6]) :
+                nothing
+            nlive = flags === nothing ? n : Int(sum(flags))
+            if nlive == 0
+                fill!(view(row, 2:length(row)), NaN)
+                return row
+            end
+            means = ntuple(6) do i
+                a = flags === nothing ? arrays[i] :
+                    ifelse.(flags, arrays[i], zero(eltype(arrays[i])))
+                Float64(sum(a) / nlive)
+            end
             scratch = observer.reduction_scratch
             if !(scratch isa CUDA.CuArray) || length(scratch) != n || eltype(scratch) != eltype(arrays[1])
                 scratch = similar(arrays[1])
                 observer.reduction_scratch = scratch
             end
             for (j, moment) in enumerate(moments)
-                row[j + 1] = _cuda_compute_moment!(scratch, arrays, means, moment)
+                row[j + 1] = _cuda_compute_moment!(scratch, arrays, means, moment, flags, nlive)
             end
             return row
         end
 
-        function _cuda_compute_moment!(scratch, arrays, means, moment::Moment)
+        function _cuda_compute_moment!(scratch, arrays, means, moment::Moment,
+                                       flags=nothing, nlive=length(scratch))
             powers = moment.powers
             order = sum(powers)
             order == 1 && return means[findfirst(!=(0), powers)]
@@ -1016,18 +1073,22 @@ if _HAS_CUDA
                     scratch .= scratch .* (arrays[d] .- means[d]) .^ p
                 end
             end
-            return Float64(sum(scratch) / length(scratch))
+            # Zero the dead *after* the product: their coordinates are non-finite,
+            # so masking each factor would still leave NaN in the accumulator.
+            flags === nothing || (scratch .= ifelse.(flags, scratch, zero(eltype(scratch))))
+            return Float64(sum(scratch) / nlive)
         end
     end
 end
 
-function _compute_moment(arrays, means, moment::Moment)
+function _compute_moment(arrays, means, moment::Moment, flags=nothing, nlive=length(arrays[1]))
     powers = moment.powers
     order = sum(powers)
     order == 1 && return means[findfirst(!=(0), powers)]
     n = length(arrays[1])
     acc = 0.0
     @inbounds for i in 1:n
+        _moment_live(flags, i) || continue
         term = 1.0
         for d in 1:6
             p = powers[d]
@@ -1036,7 +1097,7 @@ function _compute_moment(arrays, means, moment::Moment)
         end
         acc += term
     end
-    return acc / n
+    return acc / nlive
 end
 
 function _jld2_moment_column_names()

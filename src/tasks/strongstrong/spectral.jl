@@ -706,23 +706,74 @@ function _spectral_field_potential_ws(solver::SpectralPoissonSolver, ws, sx, sy,
 end
 
 
-function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2)
-    rms(v) = begin m = sum(v) / length(v); sqrt(sum(abs2, v .- m) / length(v)) end
+"""
+    _masked_rms(v, flags), _masked_ext(v, flags)
+
+Root-mean-square and maximum absolute value over live entries.
+
+The Dirichlet box is sized from these, and unlike the PIC meshes it is built
+from whole coordinate arrays rather than from slice membership -- so the mask
+that slicing applies for free does not reach here and has to be explicit.
+`flags === nothing` restores the plain reduction, `NaN` propagation included, so
+the box still comes out non-finite and trips the chokepoint below when
+`allow_lost_particles` is off.
+"""
+function _masked_rms(v, flags)
+    T = eltype(v)
+    flags === nothing && (m = sum(v) / length(v); return sqrt(sum(abs2, v .- m) / length(v)))
+    s = zero(T); n = 0
+    @inbounds for i in eachindex(v)
+        _flag_live(flags, i) || continue
+        s += v[i]; n += 1
+    end
+    n == 0 && return T(NaN)
+    m = s / n
+    s2 = zero(T)
+    @inbounds for i in eachindex(v)
+        _flag_live(flags, i) || continue
+        d = v[i] - m
+        s2 += d * d
+    end
+    return sqrt(s2 / n)
+end
+
+function _masked_ext(v, flags)
+    T = eltype(v)
+    flags === nothing && return maximum(abs, v)
+    e = T(-Inf)
+    @inbounds for i in eachindex(v)
+        _flag_live(flags, i) || continue
+        e = max(e, abs(v[i]))
+    end
+    return isfinite(e) ? e : T(NaN)
+end
+
+_spectral_box(solver::SpectralPoissonSolver, rep1::Phase6DRep, rep2::Phase6DRep) =
+    _spectral_box(solver, rep1.x, rep1.y, rep2.x, rep2.y,
+                  _live_flags(rep1, active_live_mask()),
+                  _live_flags(rep2, active_live_mask()))
+
+function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2,
+                       flags1=nothing, flags2=nothing)
     d = solver.domain_factor
-    ext(v) = maximum(abs, v)
     # A flat beam's transverse field extends on the scale of the LARGER rms in
     # BOTH directions, so the Dirichlet box must be square and sized to sigma_max.
     # An anisotropic box (Ly ~ d*sigma_y) clips the wide field and biases the
     # kick by ~10% at 5:1; the thin direction is resolved by the grid (Ny), not a
     # smaller box. See docs/theory/spectral_sine_poisson_solver.md.
-    smax = max(rms(x1), rms(x2), rms(y1), rms(y2))
-    emax = max(ext(x1), ext(x2), ext(y1), ext(y2))
+    smax = max(_masked_rms(x1, flags1), _masked_rms(x2, flags2),
+               _masked_rms(y1, flags1), _masked_rms(y2, flags2))
+    ext_x1 = _masked_ext(x1, flags1); ext_y1 = _masked_ext(y1, flags1)
+    ext_x2 = _masked_ext(x2, flags2); ext_y2 = _masked_ext(y2, flags2)
+    emax = max(ext_x1, ext_x2, ext_y1, ext_y2)
     L = max(d * smax, 1.05 * emax)
     # Non-finite chokepoint (N1, docs/todo.md): NaN/Inf coordinates propagate into
     # the box size; out-of-box particles are silently dropped by the Dirichlet
-    # deposit, so fail fast here instead.
+    # deposit, so fail fast here instead. Under `allow_lost_particles` the
+    # extrema skipped the dead, so reaching this means live input produced a
+    # non-finite box -- still the bug this was written for.
     if !isfinite(L)
-        all(isfinite, (ext(x1), ext(y1))) ||
+        all(isfinite, (ext_x1, ext_y1)) ||
             _nonfinite_coordinate_error(:beam, (x=x1, y=y1);
                                         context="spectral Dirichlet box, beam 1")
         _nonfinite_coordinate_error(:beam, (x=x2, y=y2);
@@ -746,17 +797,19 @@ end
 # unchanged there and this is a guard for tighter `domain_factor` or longer
 # bunches rather than a change to the recommended configuration.
 function _spectral_box_drifted(solver::SpectralPoissonSolver, rep1, rep2)
-    rms(v) = begin m = sum(v) / length(v); sqrt(sum(abs2, v .- m) / length(v)) end
-    ext(v) = maximum(abs, v)
+    mask = active_live_mask()
+    f1 = _live_flags(rep1, mask); f2 = _live_flags(rep2, mask)
     d = solver.domain_factor
-    sdrift = (ext(rep1.z) + ext(rep2.z)) / 2
-    extd(w, pw) = ext(w) + sdrift * ext(pw)
-    smax = max(rms(rep1.x), rms(rep2.x), rms(rep1.y), rms(rep2.y))
-    emax = max(extd(rep1.x, rep1.px), extd(rep2.x, rep2.px),
-               extd(rep1.y, rep1.py), extd(rep2.y, rep2.py))
+    sdrift = (_masked_ext(rep1.z, f1) + _masked_ext(rep2.z, f2)) / 2
+    extd(w, pw, f) = _masked_ext(w, f) + sdrift * _masked_ext(pw, f)
+    smax = max(_masked_rms(rep1.x, f1), _masked_rms(rep2.x, f2),
+               _masked_rms(rep1.y, f1), _masked_rms(rep2.y, f2))
+    ext1x = extd(rep1.x, rep1.px, f1); ext1y = extd(rep1.y, rep1.py, f1)
+    emax = max(ext1x, extd(rep2.x, rep2.px, f2),
+               ext1y, extd(rep2.y, rep2.py, f2))
     L = max(d * smax, 1.05 * emax)
     if !isfinite(L)
-        all(isfinite, (extd(rep1.x, rep1.px), extd(rep1.y, rep1.py), ext(rep1.z))) ||
+        all(isfinite, (ext1x, ext1y, _masked_ext(rep1.z, f1))) ||
             _nonfinite_coordinate_error(:beam,
                 (x=rep1.x, px=rep1.px, y=rep1.y, py=rep1.py, z=rep1.z);
                 context="spectral drifted Dirichlet box, beam 1")
@@ -869,7 +922,7 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
     idx1 = slices1.indices; idx2 = slices2.indices
     w1 = slices1.weight; w2 = slices2.weight
     n1 = length(idx1); n2 = length(idx2)
-    Lx, Ly = _spectral_box(solver, r1.x, r1.y, r2.x, r2.y)
+    Lx, Ly = _spectral_box(solver, r1, r2)
     grid = solver.method !== :grid_free
     nchunks = clamp(_cpu_worker_count(), 1, max(n1, n2))
     lease = grid ?

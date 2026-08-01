@@ -1,5 +1,6 @@
 export BeamParams, Phase6DRep, Beam,
        coordinate_arrays, coordinate_array, add_offset!, beam_statistics,
+       is_live, count_live, count_dead, allow_lost_particles,
        write_beam_coordinates,
        read_beam_coordinates
 
@@ -186,6 +187,119 @@ coordinate_arrays(rep::Phase6DRep) = (rep.x, rep.px, rep.y, rep.py, rep.z, rep.p
 
 """Return coordinate array `dim`, where `dim` is 1-based: `1=>x`, ..., `6=>pz`."""
 coordinate_array(rep::Phase6DRep, dim::Integer) = coordinate_arrays(rep)[Int(dim)]
+
+"""
+    is_live(x, px, y, py, z, pz)
+
+Whether a particle is still being tracked. A particle is live when **all six**
+coordinates are finite, and dead otherwise.
+
+Six coordinates, not two. Tracking itself can produce a non-finite particle --
+an exact drift takes `sqrt((1+pz)^2 - px^2 - py^2)`, which goes imaginary once
+the transverse momentum exceeds the total -- so a particle can arrive with `px`
+non-finite while `x` is still finite. Testing only the transverse positions
+would call that particle live and let it poison every reduction it enters.
+
+The test is `isfinite`, never `isnan`: `Inf` means overflow and `NaN` an invalid
+operation, and keeping them distinct is what separates a diverging trajectory
+from a particle that hit a collimator. Both are dead; only the cause differs.
+
+See [`allow_lost_particles`](@ref) for when a dead particle is tolerated rather
+than reported as a numerical failure.
+"""
+@inline is_live(x, px, y, py, z, pz) =
+	isfinite(x) & isfinite(px) & isfinite(y) & isfinite(py) & isfinite(z) & isfinite(pz)
+
+@inline is_live(rep::Phase6DRep, i::Integer) =
+	@inbounds is_live(rep.x[i], rep.px[i], rep.y[i], rep.py[i], rep.z[i], rep.pz[i])
+
+"""
+    LiveMask{ON}
+
+Compile-time switch selecting whether a reduction skips dead particles.
+
+`LiveMask{false}` is the default and reports every particle live, so the
+surrounding loop constant-folds to the unmasked reduction it was before this
+existed -- no branch, no extra load, no cost. `LiveMask{true}` applies
+[`is_live`](@ref) and the caller must use the live count as its denominator.
+
+Carrying the switch in the type rather than in a `Bool` field is what keeps the
+default path free and lets the masked kernels compile for the GPU.
+"""
+struct LiveMask{ON} end
+
+LiveMask(on::Bool) = LiveMask{on}()
+
+@inline live(::LiveMask{false}, x, px, y, py, z, pz) = true
+@inline live(::LiveMask{true}, x, px, y, py, z, pz) = is_live(x, px, y, py, z, pz)
+
+@inline live(::LiveMask{false}, rep::Phase6DRep, i::Integer) = true
+@inline live(::LiveMask{true}, rep::Phase6DRep, i::Integer) = is_live(rep, i)
+
+"""Count live particles in `rep`. `O(N)`; see `allow_lost_particles` for cadence."""
+function count_live(rep::Phase6DRep)
+	x, px, y, py, z, pz = _host_coordinate_arrays(rep)
+	n = 0
+	@inbounds for i in eachindex(x)
+		n += is_live(x[i], px[i], y[i], py[i], z[i], pz[i])
+	end
+	return n
+end
+
+"""Count dead (non-finite) particles in `rep`. See [`count_live`](@ref)."""
+count_dead(rep::Phase6DRep) = length(rep) - count_live(rep)
+
+count_live(beam) = count_live(beam.rep)
+count_dead(beam) = count_dead(beam.rep)
+
+const _ALLOW_LOST_PARTICLES = Base.ScopedValues.ScopedValue{Bool}(false)
+
+"""
+    allow_lost_particles() -> Bool
+    allow_lost_particles(f)
+
+Whether non-finite coordinates are treated as *lost particles* rather than as a
+numerical failure, and the scoped entry point that turns that on.
+
+Octopus has historically treated a non-finite coordinate as a **bug**: solver
+chokepoints scan for one and throw, which is what catches a diverging trajectory
+early instead of letting it silently NaN a whole beam. Marking a deliberately
+killed particle with NaN overloads that value, so the two meanings have to be
+told apart by something. That something is this flag, and it is off by default:
+
+- **off** (default) -- a non-finite coordinate is a bug. Every chokepoint fails
+  fast exactly as before, and reductions run unmasked at full speed.
+- **on** -- a non-finite coordinate means the particle is dead. Reductions skip
+  it and divide by the live count; the chokepoints still fire for anything
+  non-finite that survives the mask, because that is the bug they were written
+  for.
+
+```julia
+allow_lost_particles() do
+    collide!(solver, beam1, beam2, CPUThreadsBackend)
+end
+```
+
+Turning this on does not by itself lose any particle -- nothing in Octopus
+produces a NaN deliberately yet. It states that if something does, the run
+should continue over the survivors instead of stopping.
+
+One honest limit: the flag is beam-wide and cause-blind. It cannot distinguish a
+particle stopped by a collimator from one that overflowed in a magnet, so a run
+with it on will not tell you that a numerical blowup happened. Compare
+[`count_dead`](@ref) against the losses your lattice can account for; a gap
+means the old meaning still applies somewhere.
+"""
+allow_lost_particles() = _ALLOW_LOST_PARTICLES[]
+
+function allow_lost_particles(f::F; enabled::Bool=true) where {F}
+	return Base.ScopedValues.with(_ALLOW_LOST_PARTICLES => enabled) do
+		f()
+	end
+end
+
+"""Compile-time live mask matching the current `allow_lost_particles` state."""
+@inline active_live_mask() = LiveMask(allow_lost_particles())
 
 function _infer_backend(rep::Phase6DRep)
 	if _HAS_CUDA && rep.x isa CUDA.CuArray
@@ -467,6 +581,38 @@ function _fourth_central(v, μ)
 	return sum(x -> (x - μ)^4, v) / length(v)
 end
 
+# Masked counterparts, used when `allow_lost_particles` is on. `flags === nothing`
+# routes back to the plain reductions above so the default path is untouched.
+_stat_live(::Nothing, i) = true
+_stat_live(flags::Vector{Bool}, i) = @inbounds flags[i]
+
+function _mean(v, flags, nlive)
+	flags === nothing && return _mean(v)
+	s = zero(eltype(v))
+	@inbounds for i in eachindex(v)
+		_stat_live(flags, i) && (s += v[i])
+	end
+	return s / nlive
+end
+
+function _covariance(a, μa, b, μb, flags, nlive)
+	flags === nothing && return _covariance(a, μa, b, μb)
+	s = zero(promote_type(eltype(a), eltype(b)))
+	@inbounds for i in eachindex(a)
+		_stat_live(flags, i) && (s += (a[i] - μa) * (b[i] - μb))
+	end
+	return s / nlive
+end
+
+function _fourth_central(v, μ, flags, nlive)
+	flags === nothing && return _fourth_central(v, μ)
+	s = zero(eltype(v))
+	@inbounds for i in eachindex(v)
+		_stat_live(flags, i) && (s += (v[i] - μ)^4)
+	end
+	return s / nlive
+end
+
 """
     beam_statistics(rep_or_beam; diagonal_fourth=false)
 
@@ -489,10 +635,12 @@ The return value contains:
 function beam_statistics(rep::Phase6DRep; diagonal_fourth::Bool=false)
 	coords = _host_coordinate_arrays(rep)
 	T = promote_type(map(eltype, coords)...)
-	means = collect(T, map(_mean, coords))
+	flags = _live_stat_flags(coords)
+	nlive = flags === nothing ? length(rep) : count(flags)
+	means = collect(T, (_mean(coords[i], flags, nlive) for i in 1:6))
 	cov = Matrix{T}(undef, 6, 6)
 	for i in 1:6, j in 1:6
-		cov[i, j] = _covariance(coords[i], means[i], coords[j], means[j])
+		cov[i, j] = _covariance(coords[i], means[i], coords[j], means[j], flags, nlive)
 	end
 	rms = [sqrt(max(cov[i, i], zero(T))) for i in 1:6]
 	emit = Vector{T}(undef, 3)
@@ -501,10 +649,14 @@ function beam_statistics(rep::Phase6DRep; diagonal_fourth::Bool=false)
 		j = i + 1
 		emit[plane + 1] = sqrt(max(cov[i, i] * cov[j, j] - cov[i, j] * cov[j, i], zero(T)))
 	end
-	fourth = diagonal_fourth ? [_fourth_central(coords[i], means[i]) for i in 1:6] : nothing
+	fourth = diagonal_fourth ?
+		[_fourth_central(coords[i], means[i], flags, nlive) for i in 1:6] : nothing
 	return (
 		labels = (:x, :px, :y, :py, :z, :pz),
-		n = length(rep),
+		# `n` is what every moment above was divided by. Under
+		# `allow_lost_particles` that is the live count, not the array length,
+		# so a caller recomputing a moment from `n` gets the same answer.
+		n = nlive,
 		mean = means,
 		covariance = cov,
 		rms = rms,
@@ -513,6 +665,16 @@ function beam_statistics(rep::Phase6DRep; diagonal_fourth::Bool=false)
 		yz_covariance = cov[3, 5],
 		diagonal_fourth_central = fourth,
 	)
+end
+
+function _live_stat_flags(coords)
+	allow_lost_particles() || return nothing
+	x, px, y, py, z, pz = coords
+	flags = Vector{Bool}(undef, length(x))
+	@inbounds for i in eachindex(x)
+		flags[i] = is_live(x[i], px[i], y[i], py[i], z[i], pz[i])
+	end
+	return flags
 end
 beam_statistics(beam::Beam; kwargs...) = beam_statistics(beam.rep; kwargs...)
 

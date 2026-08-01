@@ -5109,45 +5109,92 @@ if _HAS_CUDA
             return luminosity
         end
 
+        """
+            _cuda_live_flags(rep, mask)
+
+        Device-side liveness for one slicing call, or `nothing` when off.
+
+        The CUDA slicing path assigns particles with broadcast comparisons, and
+        those already drop `NaN` because every comparison against it is false.
+        They do **not** drop the other two cases: `Inf` passes `z <= rb` when
+        `rb` is itself the (infinite) maximum, and a particle killed through
+        `px` or `y` still carries a perfectly ordinary `z`. So the mask has to
+        be explicit here rather than inherited from comparison semantics.
+        """
+        _cuda_live_flags(rep::Phase6DRep, ::LiveMask{false}) = nothing
+
+        _cuda_live_flags(rep::Phase6DRep, ::LiveMask{true}) =
+            is_live.(rep.x, rep.px, rep.y, rep.py, rep.z, rep.pz)
+
+        _cuda_live_count(::Nothing, n::Integer) = Int(n)
+        _cuda_live_count(flags, n::Integer) = Int(sum(flags))
+
+        """Longitudinal extrema, mean, sigma and live count, reduced on device."""
+        function _cuda_live_z_stats(z, flags)
+            T = eltype(z)
+            if flags === nothing
+                n = length(z)
+                μ = T(sum(z) / n)
+                σ = sqrt(max(T(sum((z .- μ) .* (z .- μ)) / n), zero(T)))
+                return (n_live=n, zmin=T(minimum(z)), zmax=T(maximum(z)),
+                        mean=μ, sigma=σ)
+            end
+            n_live = Int(sum(flags))
+            n_live == 0 && return (n_live=0, zmin=T(NaN), zmax=T(NaN),
+                                   mean=T(NaN), sigma=T(NaN))
+            zmin = T(minimum(ifelse.(flags, z, T(Inf))))
+            zmax = T(maximum(ifelse.(flags, z, T(-Inf))))
+            μ = T(sum(ifelse.(flags, z, zero(T))) / n_live)
+            d = ifelse.(flags, z .- μ, zero(T))
+            σ = sqrt(max(T(sum(d .* d) / n_live), zero(T)))
+            return (n_live=n_live, zmin=zmin, zmax=zmax, mean=μ, sigma=σ)
+        end
+
         function _cuda_longitudinal_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
             slicing.nslices > 0 || throw(ArgumentError("nslices must be positive"))
             isempty(rep.z) && throw(ArgumentError("longitudinal slicing requires at least one particle"))
             method = slicing.method
+            flags = _cuda_live_flags(rep, active_live_mask())
+            flags === nothing || sum(flags) > 0 || throw(ArgumentError(
+                "longitudinal slicing requires at least one live particle; " *
+                "all $(length(rep.z)) are non-finite"))
             if method == :equal_width || method == :equal_spaced
-                return _cuda_equal_width_slices(rep, slicing)
+                return _cuda_equal_width_slices(rep, slicing, flags)
             elseif method == :equal_area
-                return _cuda_equal_area_slices(rep, slicing)
+                return _cuda_equal_area_slices(rep, slicing, flags)
             elseif method == :normal_quantile || method == :gaussian || method == :Gaussian
-                return _cuda_gaussian_slices(rep, slicing)
+                return _cuda_gaussian_slices(rep, slicing, flags)
             elseif method == :specified
-                return _cuda_specified_slices(rep, slicing)
+                return _cuda_specified_slices(rep, slicing, flags)
             elseif method == :equal_count
-                return _cuda_equal_count_slices(rep, slicing)
+                return _cuda_equal_count_slices(rep, slicing, flags)
             else
                 throw(ArgumentError("unknown longitudinal slicing method $method"))
             end
         end
 
-        function _cuda_equal_width_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
+        function _cuda_equal_width_slices(rep::Phase6DRep, slicing::LongitudinalSlicing, flags=nothing)
             z = rep.z
             T = eltype(z)
             ns = slicing.nslices
-            zmin = T(minimum(z))
-            zmax = T(maximum(z))
+            stats = _cuda_live_z_stats(z, flags)
+            zmin = stats.zmin
+            zmax = stats.zmax
             boundaries = collect(range(zmin, zmax; length=ns + 1))
-            return _cuda_slices_from_boundaries(rep, slicing, boundaries)
+            return _cuda_slices_from_boundaries(rep, slicing, boundaries, flags)
         end
 
-        function _cuda_equal_area_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
+        function _cuda_equal_area_slices(rep::Phase6DRep, slicing::LongitudinalSlicing, flags=nothing)
             slicing.resolution > 0 || throw(ArgumentError("resolution must be positive"))
             z = rep.z
             T = eltype(z)
             ns = slicing.nslices
             bins = ns * slicing.resolution
-            zmin = T(minimum(z))
-            zmax = T(maximum(z))
+            stats = _cuda_live_z_stats(z, flags)
+            zmin = stats.zmin
+            zmax = stats.zmax
             if zmin == zmax
-                return _cuda_slices_from_boundaries(rep, slicing, fill(T(zmin), ns + 1))
+                return _cuda_slices_from_boundaries(rep, slicing, fill(T(zmin), ns + 1), flags)
             end
             width = (zmax - zmin) / bins
             counts = Vector{Int}(undef, bins)
@@ -5155,9 +5202,10 @@ if _HAS_CUDA
                 lb = T(zmin + (b - 1) * width)
                 rb = T(zmin + b * width)
                 mask = b == bins ? ((z .>= lb) .& (z .<= rb)) : ((z .>= lb) .& (z .< rb))
+                flags === nothing || (mask = mask .& flags)
                 counts[b] = Int(sum(mask))
             end
-            cumulative = cumsum(counts) ./ length(z)
+            cumulative = cumsum(counts) ./ max(stats.n_live, 1)
             cumulative[end] = one(T)
             centers = [T(zmin + (i - 0.5) * width) for i in 1:bins]
             boundaries = Vector{T}(undef, ns + 1)
@@ -5189,17 +5237,17 @@ if _HAS_CUDA
                                     x2 * (target - y1) / (y2 - y1) +
                                     x1 * (target - y2) / (y1 - y2)
             end
-            return _cuda_slices_from_boundaries(rep, slicing, boundaries)
+            return _cuda_slices_from_boundaries(rep, slicing, boundaries, flags)
         end
 
-        function _cuda_specified_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
+        function _cuda_specified_slices(rep::Phase6DRep, slicing::LongitudinalSlicing, flags=nothing)
             z = rep.z
             T = eltype(z)
-            zmin = T(minimum(z))
-            zmax = T(maximum(z))
-            n = T(length(rep))
-            μ = T(sum(z) / n)
-            σ = sqrt(max(T(sum((z .- μ) .* (z .- μ)) / n), zero(T)))
+            stats = _cuda_live_z_stats(z, flags)
+            zmin = stats.zmin
+            zmax = stats.zmax
+            μ = stats.mean
+            σ = stats.sigma
             internal = sort([T(μ + p * σ) for p in slicing.positions])
             boundaries = Vector{T}(undef, length(internal) + 2)
             boundaries[1] = zmin
@@ -5207,35 +5255,40 @@ if _HAS_CUDA
             for (i, b) in enumerate(internal)
                 boundaries[i + 1] = clamp(b, zmin, zmax)
             end
-            return _cuda_slices_from_boundaries(rep, slicing, boundaries)
+            return _cuda_slices_from_boundaries(rep, slicing, boundaries, flags)
         end
 
-        function _cuda_gaussian_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
+        function _cuda_gaussian_slices(rep::Phase6DRep, slicing::LongitudinalSlicing, flags=nothing)
             z = rep.z
             T = eltype(z)
             ns = slicing.nslices
-            zmin = T(minimum(z))
-            zmax = T(maximum(z))
-            n = T(length(rep))
-            μ = T(sum(z) / n)
-            σ = sqrt(max(T(sum((z .- μ) .* (z .- μ)) / n), zero(T)))
+            stats = _cuda_live_z_stats(z, flags)
+            zmin = stats.zmin
+            zmax = stats.zmax
+            μ = stats.mean
+            σ = stats.sigma
             if σ == zero(T)
-                return _cuda_slices_from_boundaries(rep, slicing, fill(T(μ), ns + 1))
+                return _cuda_slices_from_boundaries(rep, slicing, fill(T(μ), ns + 1), flags)
             end
             boundaries = _gaussian_slice_boundaries(T, ns, μ, σ, zmin, zmax)
-            return _cuda_slices_from_boundaries(rep, slicing, boundaries)
+            return _cuda_slices_from_boundaries(rep, slicing, boundaries, flags)
         end
 
-        function _cuda_equal_count_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
+        function _cuda_equal_count_slices(rep::Phase6DRep, slicing::LongitudinalSlicing, flags=nothing)
             z_host = Array(rep.z)
             T = eltype(z_host)
-            n = length(z_host)
             ns = slicing.nslices
-            order = sortperm(z_host)
+            # Rank live particles only: `sortperm` orders `NaN` above every
+            # finite value, so an unfiltered sort would pack the dead into the
+            # last slices instead of dropping them.
+            order = flags === nothing ? sortperm(z_host) :
+                    sort!(findall(Array(flags)); by = i -> z_host[i])
+            n = length(order)
             sorted_z = z_host[order]
+            stats = _cuda_live_z_stats(rep.z, flags)
             boundaries = Vector{T}(undef, ns + 1)
-            boundaries[1] = minimum(z_host)
-            boundaries[end] = maximum(z_host)
+            boundaries[1] = stats.zmin
+            boundaries[end] = stats.zmax
             for s in 1:(ns - 1)
                 pos = floor(Int, s * n / ns)
                 boundaries[s + 1] = if pos == 0
@@ -5246,17 +5299,26 @@ if _HAS_CUDA
                     (sorted_z[pos] + sorted_z[pos + 1]) / 2
                 end
             end
-            return _cuda_slices_from_boundaries(rep, slicing, boundaries)
+            return _cuda_slices_from_boundaries(rep, slicing, boundaries, flags)
         end
 
-        function _cuda_slices_from_boundaries(rep::Phase6DRep, slicing::LongitudinalSlicing, boundaries)
+        function _cuda_slices_from_boundaries(rep::Phase6DRep, slicing::LongitudinalSlicing,
+                                              boundaries, flags=nothing)
             # Earliest non-finite chokepoint (N1, docs/todo.md): a NaN/Inf z lands
             # in the boundary extrema/quantiles of every slicing method.
+            #
+            # Under `allow_lost_particles` the boundaries came from live
+            # particles only, so this no longer fires for a killed particle. It
+            # still fires for a boundary that came out non-finite from live
+            # input, which is the bug it was written for.
             all(isfinite, boundaries) ||
                 _nonfinite_coordinate_error(:beam, (z=rep.z,); context="longitudinal slicing")
             z = rep.z
             T = eltype(z)
             ns = length(boundaries) - 1
+            # Fraction of the *live* beam, so weights still sum to one when part
+            # of the beam is dead.
+            total = T(_cuda_live_count(flags, length(rep)))
             centers = Vector{T}(undef, ns)
             weights = Vector{T}(undef, ns)
             indices = Vector{Any}(undef, ns)
@@ -5265,10 +5327,11 @@ if _HAS_CUDA
                 rb = boundaries[s + 1]
                 include_hi = s == ns
                 mask = include_hi ? ((z .>= lb) .& (z .<= rb)) : ((z .>= lb) .& (z .< rb))
+                flags === nothing || (mask = mask .& flags)
                 idx = _cuda_indices_from_mask(mask)
                 count = length(idx)
                 indices[s] = idx
-                weights[s] = T(count) / T(length(rep))
+                weights[s] = T(count) / total
                 if slicing.center_position == :centroid
                     centers[s] = count == 0 ? (lb + rb) / 2 : T(sum(ifelse.(mask, z, zero(T))) / count)
                 elseif slicing.center_position == :midpoint

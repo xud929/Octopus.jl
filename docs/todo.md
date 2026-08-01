@@ -1198,25 +1198,81 @@ deposition was already safe and documented; slicing (3 sites) and `spectral.jl`
 through `_slice_bin`/`_grid_floor`, which reject non-finite input using the
 `!(lo <= u <= hi)` idiom `_pic_cic_weights` established.
 
-**Step 2 -- reductions. NOT STARTED.** One shared live-mask helper (all six
-coordinates finite) with `n_live` as the denominator, applied at:
+**Step 2 -- reductions. DONE (2026-08-01).** `is_live` (all six coordinates
+finite) plus `allow_lost_particles`, a `Base.ScopedValues` flag that is **off by
+default**. Off, every chokepoint fails fast exactly as before and the reductions
+run unmasked; on, dead particles are skipped and `n_live` is the denominator.
 
-- `src/tasks/BeamObservers.jl:974` -- `means = ntuple(i -> Float64(sum(arrays[i])
-  / length(arrays[i])), 6)`. Plain `sum`, plain `length`: one NaN makes all six
-  means NaN and therefore every moment NaN. The CUDA twin just below it is
-  identical, and `_compute_moment` / `_cuda_compute_moment!` downstream are
-  unmasked too.
-- `src/track/strong_beam_track.jl:23, 51, 189, 235` -- `sum(local_lum)` and
-  `sum(Array(lum))`.
-- `src/tasks/strongstrong/gaussian.jl:93` -- `_finite_moments` currently *rejects*
-  non-finite slice moments, so today a NaN particle halts a strong-strong run.
-  It has to be restated from "no NaN" to "no **unexpected** NaN": dead particles
-  are excluded upstream by the mask, and anything non-finite that survives that
-  is still the bug the guard was written for.
+The flag exists because the aperture that makes a NaN legitimate does not land
+until step 3. Masking unconditionally now would have surrendered NaN-means-bug
+detection for a whole step with nothing yet able to produce a deliberate loss.
 
-Mask on `!isfinite`, never on `isnan`: `Inf` means overflow and `NaN` an invalid
-operation, and keeping them distinct is what separates a diverging trajectory
-from a particle that hit a collimator.
+The mask is a compile-time switch (`LiveMask{ON}`, or `flags === nothing` where a
+call makes several passes), so the default path constant-folds back to the
+original loop -- measured at 0.595 vs 0.597 ms on a 1e6-element reduction, i.e.
+no cost. The masked path costs ~3.4x there, all of it from loading six arrays
+instead of one, which the all-six rule requires.
+
+Masked on `!isfinite`, never on `isnan`, so `Inf` (overflow) stays
+distinguishable from `NaN` (invalid operation, and deliberate kill).
+
+Sites, beyond the three the plan listed:
+
+- `BeamObservers.jl` moment rows, CPU and CUDA, plus `_compute_moment` /
+  `_cuda_compute_moment!`. Also `beam_statistics`, same family, and its `n`
+  field now reports the denominator actually used.
+- `strong_beam_track.jl` luminosity, all four sums. Liveness is judged on the
+  coordinates the map *returned*, not the ones it consumed: a particle that goes
+  non-finite mid-turn yields a NaN contribution, and testing the input would let
+  that into the sum.
+- `gaussian.jl` `_gaussian_moments_finite` -- guard body unchanged, meaning
+  restated. Dead particles never reach it because slicing drops them, so a
+  non-finite moment now means a *live* particle produced one, still a bug.
+- **Slicing, which the plan did not list and which gated the rest.** Step 1
+  fixed the index conversion; the boundary reductions (`minimum`/`maximum`/`sum`
+  over `z`, 11 sites plus 5 CUDA twins) were still unmasked, and each of the
+  five methods failed differently and silently: equal-width got NaN boundaries
+  so `_slice_bin` dropped *every* particle; `_slices_from_boundaries` sent NaN to
+  `searchsortedlast`, which orders it above every boundary and filed it into the
+  *last* slice; equal-count's `sortperm` piled the dead there too. Slice weights
+  are now a fraction of the live beam, so they still sum to one.
+- Spectral Dirichlet box (`_spectral_box`, `_spectral_box_drifted`). Unlike the
+  PIC meshes, it is built from whole coordinate arrays rather than from slice
+  membership, so the mask slicing applies for free does not reach it.
+
+Masking slicing turned out to cover `_slice_transverse_moments` for free: it only
+ever sees `slices.indices[i]`, so pre-filtered membership excludes the dead
+without touching the moment kernels. Verified bit-exact against a survivor-only
+beam rather than assumed.
+
+**`_pic_kbb1`/`_pic_kbb2` were deliberately left dividing by the full
+macroparticle count.** A lost particle stops depositing, so the bunch carries
+proportionally less charge -- which is what losing a particle physically means.
+Renormalizing by the survivor count would hold bunch charge fixed while particles
+disappear. The `_nonfinite_coordinate_error` docstring, which asserted the
+solvers have no lost-particle concept, was updated to say this.
+
+Verification: masked results are bit-exact against a beam that simply omits the
+dead particles (slicing under all five methods, slice moments, `beam_statistics`,
+moment observer rows), and all five solvers return bit-identical luminosity
+across three wildly different corpse states -- including one where the dead carry
+finite transverse coordinates of ±1e3, seven orders of magnitude outside the
+beam. 127 assertions in five new testsets; the original fail-fast testset passes
+unchanged.
+
+One testing trap worth keeping, found while writing the acceptance test: **PIC
+luminosity at small N is dominated by discretization noise**, enough to make
+"masked vs survivor beam" useless as a correctness test there. At n=32 with a
+64x64 grid, dropping particle 5 versus particle 9 changes the answer by 46%. The
+test therefore uses n=4000 and asserts corpse-state invariance instead, which is
+the property actually wanted. This is a property of PIC, not a defect.
+
+The gap that fail-fast still has is its own item below.
+
+Step 3 should turn `allow_lost_particles` on for itself: an aperture in the
+lattice is exactly the evidence that a NaN can be deliberate, so the element (or
+the task holding the loss record) is the natural thing to enable the scope rather
+than leaving it to the caller.
 
 **Step 3 -- the aperture element. NOT STARTED.** Non-symplectic, so it declares
 `NonSymplectic6DMap` rather than `Symplectic6DMap`; needs a probe in
@@ -1225,10 +1281,64 @@ from a particle that hit a collimator.
 perturbation. The predicate must be a **type parameter** on the runtime, not an
 `Any` field, or it will not compile for the GPU.
 
-**Step 4 -- the acceptance test. NOT STARTED.** Launch a beam, inject NaN into
-some particles' coordinates, and confirm the moment observer, luminosity, the
-soft-Gaussian solver and the PIC solver all still produce correct finite output
-over the surviving particles.
+**Step 4 -- the acceptance test. DONE for the reduction half (2026-08-01),
+pending the aperture.** The reduction-level acceptance is in place: the moment
+observer, `beam_statistics`, luminosity, and all five solvers produce correct
+finite output over survivors, checked against a survivor-only beam. What remains
+is the end-to-end version -- a beam tracked through a lattice containing a real
+aperture element, where the losses are produced by the aperture rather than
+injected by hand, and where the loss log and the `count_dead` reconciliation are
+checked against each other.
+
+## Fail-fast does not cover every coordinate (logged, not fixed, 2026-08-01)
+
+Pre-existing, found while doing the step-2 reduction masking above, and
+**deliberately left open** -- see the decision at the end.
+
+**The gap.** A chokepoint only detects a non-finite value in a coordinate some
+reduction actually reads. Slicing reads `z`; the transverse moments read
+`x, px, y, py`. Nothing reads `pz`. So with `allow_lost_particles` **off**, a
+particle that goes non-finite in `pz` alone passes every guard and is silently
+included:
+
+    NaN pz, flag off:  luminosity 2.604e8   (correct value 2.573e8, 1.2% wrong)
+
+It does not throw, and the number it returns looks perfectly ordinary. The same
+shape appears in any reduction that reads a subset of the six: the `mean_y` of a
+beam whose particles died in `py` comes back finite and **2x wrong**, because `y`
+itself is fine and the corpse is still in the average. The existing fail-fast
+testset never poisoned `pz`, which is why this survived.
+
+**Not a regression, and not what the mask fixed.** With the flag **on** this is
+already correct: liveness tests all six coordinates, so a `pz`-dead particle is
+excluded from every reduction exactly like an `x`-dead one -- verified by
+poisoning each of the six in turn and getting bit-identical luminosity. The gap
+exists only on the fail-fast path, which is untouched by that work.
+
+**Step 3 does not close it either.** The aperture element adds a place where a
+NaN is *created*, not detection coverage on the flag-off path. What Step 3 does
+add is the unattributed-death reconciliation (`count_dead` minus what the
+apertures logged), which tests all six coordinates and would therefore surface a
+`pz` blowup as a death no aperture claims -- but as a post-hoc count, not as a
+fail-fast throw, and only when the flag is on.
+
+**What closing it would cost.** A real liveness scan at solver entry: one O(N)
+pass over six arrays per collide per turn. That is precisely the cost the current
+chokepoint design avoids by piggybacking on reductions that were happening
+anyway, so it is a performance-versus-safety trade rather than a patch.
+
+**Decision (2026-08-01): log it, do not fix it.** Production runs are expected to
+have the flag on, where the gap does not apply. Revisit if that assumption
+changes -- specifically if any of these become true:
+
+- A workflow runs with the flag **off** on a beam that can diverge numerically,
+  where a silently-wrong result is worse than a stopped run.
+- The unattributed-death count from step 3 starts being used as the *primary*
+  divergence signal, at which point post-hoc counting may not be prompt enough.
+- The measured cost of an entry scan turns out to be negligible against the
+  solve, which is plausible: masking measured 0.99x on a 20k-particle PIC collide
+  because the FFTs dominate. That number is for the mask, not for an entry scan,
+  but it suggests the trade may be cheaper than the design assumed.
 
 ## Lattice magnets: remaining work
 

@@ -6,7 +6,42 @@ function track!(rep, elem::ThinStrongBeam, turns, ::Type{CPUThreadsBackend})
 	end
 end
 
+"""
+Accumulate a per-particle luminosity contribution unless the particle is dead.
+
+Liveness is judged on the coordinates the map *returned*, not the ones it
+consumed. A particle that goes non-finite partway through the turn produces a
+`NaN` contribution, and testing the input would let that `NaN` into the sum and
+take the whole beam's luminosity with it. The output test drops exactly the
+contributions that carry no information.
+
+Under `LiveMask{false}` this is `value + lum` with no test, so the default path
+is the sum it was before -- including staying `NaN` when a coordinate is
+non-finite, which is what makes the failure visible when losses are not expected.
+"""
+@inline _add_luminosity(::LiveMask{false}, value, lum, x, px, y, py, z, pz) = value + lum
+
+@inline _add_luminosity(mask::LiveMask{true}, value, lum, x, px, y, py, z, pz) =
+	live(mask, x, px, y, py, z, pz) ? value + lum : value
+
+"""
+Total the CUDA per-particle luminosity array, dropping dead particles.
+
+The kernel has already run, so liveness is read from the post-kernel
+representation -- the same "judge the output" rule as the CPU accumulator, and
+for the same reason. With the mask off this is the plain `sum` it replaced.
+"""
+function _cuda_luminosity_total(lum, rep)
+	allow_lost_particles() || return sum(Array(lum))
+	flags = is_live.(rep.x, rep.px, rep.y, rep.py, rep.z, rep.pz)
+	return sum(Array(ifelse.(flags, lum, zero(eltype(lum)))))
+end
+
 function track!(rep, elem::ThinStrongBeam, turns, policy::ResolvedCPUExecutionPolicy)
+	return _track_thin_strong_beam!(rep, elem, turns, policy, active_live_mask())
+end
+
+function _track_thin_strong_beam!(rep, elem::ThinStrongBeam, turns, policy, mask)
 	for _ in 1:turns
 		local_lum = zeros(eltype(rep.x), policy.threads)
 		_run_logical_workers(policy.threads) do worker, nworkers
@@ -15,7 +50,7 @@ function track!(rep, elem::ThinStrongBeam, turns, policy::ResolvedCPUExecutionPo
 				@inbounds begin
 					x, px, y, py, z, pz, lum = _thin_strong_beam_track(elem, rep[index]...)
 					rep[index] = (x, px, y, py, z, pz)
-					value += lum
+					value = _add_luminosity(mask, value, lum, x, px, y, py, z, pz)
 				end
 			end
 			local_lum[worker] = value
@@ -34,6 +69,10 @@ function track!(rep, elem::GaussianStrongBeam, turns, ::Type{CPUThreadsBackend})
 end
 
 function track!(rep, elem::GaussianStrongBeam, turns, policy::ResolvedCPUExecutionPolicy)
+	return _track_gaussian_strong_beam!(rep, elem, turns, policy, active_live_mask())
+end
+
+function _track_gaussian_strong_beam!(rep, elem::GaussianStrongBeam, turns, policy, mask)
 	for _ in 1:turns
 		local_lum = zeros(eltype(rep.x), policy.threads)
 		_run_logical_workers(policy.threads) do worker, nworkers
@@ -43,7 +82,7 @@ function track!(rep, elem::GaussianStrongBeam, turns, policy::ResolvedCPUExecuti
 					x, px, y, py, z, pz, lum =
 						_track_gaussian_strong_beam_with_luminosity(elem, rep[index]...)
 					rep[index] = (x, px, y, py, z, pz)
-					value += lum
+					value = _add_luminosity(mask, value, lum, x, px, y, py, z, pz)
 				end
 			end
 			local_lum[worker] = value
@@ -186,7 +225,7 @@ function track!(rep, elem::ThinStrongBeam, turns, ::Type{CUDABackend}; threads=2
 		)
 		CUDA.synchronize(stream)
 	end
-	elem.last_luminosity = sum(Array(lum))
+	elem.last_luminosity = _cuda_luminosity_total(lum, rep)
 	return nothing
 end
 
@@ -232,7 +271,7 @@ function track!(rep, elem::GaussianStrongBeam, turns, ::Type{CUDABackend}; threa
 		)
 		CUDA.synchronize(stream)
 	end
-	elem.last_luminosity = sum(Array(lum))
+	elem.last_luminosity = _cuda_luminosity_total(lum, rep)
 	return nothing
 end
 
