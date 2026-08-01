@@ -236,6 +236,65 @@ possible failure mode, since a FODO test would pass.
 
 Both are exact and symplectic. They are the same map, factored differently.
 
+## 6a. The reference point: MAD-X and Bmad disagree (measured)
+
+Section 4 noted that Bmad references a misalignment to the element **centre**.
+MAD-X does not. `MAD_MISALIGN_FIBRE` (`Sl_family.f90:1051`), which is what
+`ptc_align` calls to transfer an `EALIGN` error into PTC, ends with
+
+```fortran
+ENT = S2%CHART%F%ent      ! the fibre's ENTRANCE basis
+T   = S2%CHART%F%A        ! the fibre's ENTRANCE point
+call MISALIGN_SIAMESE(S2, MIS, T, ENT)
+```
+
+so the displacement is referenced to the **entrance frame**, with the offset
+components taken in entrance axes. The angle mapping in the same routine is
+
+```fortran
+MAD_ANGLE(1) = -S1(4)     ! -DPHI     about x, applied second
+MAD_ANGLE(2) = -S1(5)     ! -DTHETA   about y, applied third
+MAD_ANGLE(3) =  S1(6)     !  DPSI     about s, applied first
+```
+
+The two conventions agree for a pure translation of a straight element and
+disagree for everything else — including a *translation* of a bend, whose centre
+axes are turned by $hL/2$ from its entrance axes. Octopus therefore exposes
+`misalign_reference`, defaulting to `:center` (Bmad, and what survey data means)
+with `:entrance` available to reproduce MAD-X.
+
+Measured against `EALIGN` + `ptc_align`, with `misalign_reference = :entrance`,
+one degree of freedom at a time on a quadrupole:
+
+| MAD-X | Octopus | agreement |
+|---|---|---|
+| `DX`, `DY`, `DS` | `x_offset`, `y_offset`, `z_offset` | 4.1e-13, 4.1e-13, 4.4e-13 |
+| `DTHETA` | `x_pitch` | 4.9e-13 |
+| `DPHI` | `y_pitch` | 4.8e-13 |
+| `DPSI` | `tilt` | 5.0e-13 |
+
+all at the reference table's print-precision floor. These are committed as the
+`quad_mis_*` and `sext_mis_*` cases.
+
+**Unresolved: composing several rotations.** With all six degrees of freedom set
+at once the agreement degrades to 2.7e-6 — second order in the angles, and far
+above the floor. Each rotation is individually correct, so the discrepancy is in
+the order the three are composed: MAD-X rotates the frame by `DPSI`, then
+`DPHI`, then `DTHETA`, and if those `GEO_ROT` calls compose in the opposite
+matrix order to Bmad's $W = R_y R_x R_z$ the two agree at first order and differ
+at second. This has not been settled, so no multi-rotation case is committed —
+a tuned one would only hide it.
+
+**Also unresolved: the bend.** A misaligned bend is implemented through the
+survey of Section 5 and is internally consistent — symplectic to 1e-15, exactly
+the identity at zero misalignment, and correct under a rigid displacement of a
+whole line — but it does **not** yet reproduce `EALIGN` on a bend. The survey
+sign convention itself is confirmed against MAD-X's own `SURVEY`, which gives
+$X_\text{exit} = -\rho(1-\cos\theta) = -0.108545$ for `angle=0.198, l=1.1`,
+matching the $-(1-\cos hs)/h$ used here. The remaining disagreement is most
+likely the same rotation-composition question, since MAD-X's bend misalignment
+routes through the same `MAD_MISALIGN_FIBRE`.
+
 ## 7. Recommended design for Octopus
 
 1. **Take Bmad's factorization, PTC's bookkeeping.** Form $W$ once and apply a

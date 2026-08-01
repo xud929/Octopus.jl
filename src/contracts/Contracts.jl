@@ -1553,6 +1553,26 @@ function _ptc_reference_specs()
         "sbend_fint" => SBendSpec(L=1.1, angle=0.198, e1=0.1, e2=0.1,
                                   fint1=0.5, fint2=0.5, hgap1=0.03, hgap2=0.03, nst=4,
                                   bend_model=:drift_kick, bend_fringe=true),
+        # Misalignments, one degree of freedom each. MAD-X references a
+        # misalignment to the ENTRANCE frame (MAD_MISALIGN_FIBRE), not the
+        # centre, so these pin misalign_reference = :entrance along with the
+        # keyword mapping. Combinations of several rotations are deliberately
+        # absent: MAD-X composes the three in the opposite matrix order to
+        # Bmad, whose convention this code follows, and that is unresolved.
+        "quad_mis_dx" => QuadrupoleSpec(L=0.4, k1=1.7, nst=4,
+                                        misalign_reference=:entrance, x_offset=1.0e-3),
+        "quad_mis_dy" => QuadrupoleSpec(L=0.4, k1=1.7, nst=4,
+                                        misalign_reference=:entrance, y_offset=-8.0e-4),
+        "quad_mis_ds" => QuadrupoleSpec(L=0.4, k1=1.7, nst=4,
+                                        misalign_reference=:entrance, z_offset=2.0e-3),
+        "quad_mis_dtheta" => QuadrupoleSpec(L=0.4, k1=1.7, nst=4,
+                                            misalign_reference=:entrance, x_pitch=3.0e-3),
+        "quad_mis_dphi" => QuadrupoleSpec(L=0.4, k1=1.7, nst=4,
+                                          misalign_reference=:entrance, y_pitch=3.0e-3),
+        "quad_mis_dpsi" => QuadrupoleSpec(L=0.4, k1=1.7, nst=4,
+                                          misalign_reference=:entrance, tilt=0.03),
+        "sext_mis_dx" => SextupoleSpec(L=0.25, k2=14.0, nst=4,
+                                       misalign_reference=:entrance, x_offset=1.0e-3),
     )
 end
 

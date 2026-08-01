@@ -75,12 +75,15 @@ struct Case
     method::Int
     nst::Int
     fringe::Bool          # per-element permfringe -- turns on MULTIPOLE_FRINGE
+    ealign::String        # EALIGN body, applied through ptc_align; "" for none
     octopus::Dict{Symbol,Any}
 end
+Case(name, madx, L, method, nst, fringe::Bool, octopus) =
+    Case(name, madx, L, method, nst, fringe, "", octopus)
 
 # Fringe defaults off, so the cases that predate the fringe comparison keep
 # generating byte-identical rows: the switch is only emitted when it is on.
-Case(name, madx, L, method, nst, octopus) = Case(name, madx, L, method, nst, false, octopus)
+Case(name, madx, L, method, nst, octopus) = Case(name, madx, L, method, nst, false, "", octopus)
 
 const CASES = Case[
     Case("drift", "drift, l=0.7", 0.7, 2, 1,
@@ -147,6 +150,32 @@ const CASES = Case[
     Case("sbend_fint",
          "sbend, l=1.1, angle=0.198, e1=0.1, e2=0.1, fint=0.5, fintx=0.5, hgap=0.03",
          1.1, 2, 4, Dict(:kind => :sbend, :L => 1.1)),
+    # ---------------------------------------------------------------------
+    # Misalignments, through EALIGN + ptc_align. One degree of freedom each:
+    # MAD-X references a misalignment to the ENTRANCE frame (see
+    # MAD_MISALIGN_FIBRE), so these pin misalign_reference = :entrance, and they
+    # pin the keyword mapping dx/dy/ds -> x/y/z_offset and
+    # dtheta/dphi/dpsi -> x_pitch/y_pitch/tilt.
+    #
+    # Deliberately one at a time: combining several rotations does NOT agree,
+    # because MAD-X composes the three in the opposite matrix order to Bmad,
+    # whose convention this code follows. That is unresolved and recorded in
+    # docs/todo.md rather than papered over with a tuned case.
+    # ---------------------------------------------------------------------
+    Case("quad_mis_dx", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
+         "dx=1.0e-3", Dict(:kind => :quadrupole, :L => 0.4)),
+    Case("quad_mis_dy", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
+         "dy=-8.0e-4", Dict(:kind => :quadrupole, :L => 0.4)),
+    Case("quad_mis_ds", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
+         "ds=2.0e-3", Dict(:kind => :quadrupole, :L => 0.4)),
+    Case("quad_mis_dtheta", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
+         "dtheta=3.0e-3", Dict(:kind => :quadrupole, :L => 0.4)),
+    Case("quad_mis_dphi", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
+         "dphi=3.0e-3", Dict(:kind => :quadrupole, :L => 0.4)),
+    Case("quad_mis_dpsi", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
+         "dpsi=0.03", Dict(:kind => :quadrupole, :L => 0.4)),
+    Case("sext_mis_dx", "sextupole, l=0.25, k2=14.0", 0.25, 2, 4, false,
+         "dx=1.0e-3", Dict(:kind => :sextupole, :L => 0.25)),
 ]
 
 function madx_version()
@@ -170,9 +199,12 @@ function run_case(case::Case)
           el, at=$(case.L / 2);
         endsequence;
         use, sequence=lat;
+        $(isempty(case.ealign) ? "" :
+          "select, flag=error, clear;\n        select, flag=error, range=el;\n        ealign, " * case.ealign * ";")
         ptc_create_universe;
         ptc_create_layout, model=1, method=$(case.method), nst=$(case.nst),
                            exact=true, time=false;
+        $(isempty(case.ealign) ? "" : "ptc_align;")
         $starts
         ptc_track, icase=6, closed_orbit=false, turns=1, element_by_element,
                    onetable, dump, file=$out;

@@ -768,7 +768,14 @@ The 22 cases cover drift, quadrupole (normal and skew), sextupole, octupole,
 general multipole, sector bend and combined-function bend at both integrator
 orders, plus pole-face angles (`sbend_edge`, `cfbend_edge`, `sbend_fint`) and the
 hard-edge multipole fringe (`quadrupole_fringe`, `multipole_fringe`,
-`sbend_fringe`, `cfbend_fringe`).
+`sbend_fringe`, `cfbend_fringe`) and misalignments through `EALIGN` +
+`ptc_align` (`quad_mis_*`, `sext_mis_dx`).
+
+The misalignment cases set one degree of freedom each and require
+`misalign_reference=:entrance`, because MAD-X references a misalignment to the
+entrance frame while Octopus defaults to the centre. Combinations of several
+rotations are deliberately absent: they disagree at second order in the angles
+and the composition order is unresolved.
 
 Two traps are pinned in the script's header comment and are worth repeating.
 The fringe is enabled **per element** with `permfringe=true`, never with

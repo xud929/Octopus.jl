@@ -1237,7 +1237,41 @@ Remaining:
 3. **Cavity map.** Convention #1 chosen (Section 3), map not derived. Needed to
    close a ring, not for magnets.
 
-4. **Misalignments — designed, not implemented (2026-08-01).** The comparison of
+4. **Misalignments — implemented, partly validated (2026-08-01).** Six keywords
+   on every magnet kind (`x_offset`, `y_offset`, `z_offset`, `x_pitch`,
+   `y_pitch`, `tilt`) plus `misalign_reference`. One kernel, `_frame_change`,
+   moves the particle between frames and drifts it onto the new face; everything
+   that distinguishes entrance from exit, or straight from curved, is in the
+   `(Q, o)` pairs `_misalign_frames` computes from the survey at compile time.
+   A magnet with no misalignment compiles to exactly the code it had before.
+
+   **The survey uses `h` and never `b0`**, so a bend off its design orbit
+   (`h != b0`) gets the geometry its frame actually has; there is a test that
+   two bends differing only in `b0` receive identical misalignment frames.
+
+   Validated: seven PTC cases (`quad_mis_*`, `sext_mis_dx`) agree to ~5e-13, one
+   degree of freedom at a time, pinning the MAD-X keyword mapping. Internally:
+   symplectic to 1e-15 across nine configurations including bends with pole
+   faces and fringes; exactly the identity at zero misalignment; a rolled
+   upright quadrupole reproduces the equivalent skew magnet to 3.5e-18; a rigid
+   displacement of a whole cell cancels to 1e-19.
+
+   **Two things are open and neither should be treated as working:**
+   - *Composing several rotations.* All six degrees of freedom at once disagrees
+     with MAD-X at 2.7e-6, second order in the angles. Each rotation is right
+     individually, so it is the composition order: MAD-X rotates by `DPSI`,
+     `DPHI`, `DTHETA` in that sequence and its `GEO_ROT` calls appear to compose
+     in the opposite matrix order to Bmad's `R_y R_x R_z`. No multi-rotation
+     reference case is committed, because a tuned one would hide this.
+   - *Bends.* Implemented through the survey and internally consistent, but not
+     yet reproducing `EALIGN` on a bend. The survey sign is confirmed against
+     MAD-X `SURVEY` (`X_exit = -rho(1-cos theta) = -0.108545` for
+     `angle=0.198, l=1.1`), so the geometry is right and the discrepancy is
+     most likely the same composition question.
+
+   Superseded design note, still the reference for the derivation:
+
+5. ~~**Misalignments — designed, not implemented.**~~ The comparison of
    PTC and Bmad is written up in
    [`docs/theory/misalignment_and_patch_maps.md`](theory/misalignment_and_patch_maps.md),
    including the primitive maps from both codes and the recommended design:
@@ -1260,10 +1294,10 @@ Remaining:
    `tilt` for bends -- rolling the design orbit is not the same as rolling the
    magnet, and the distinction only exists for bends.
 
-5. **`VA`/`VS` extraction** from a measured gradient profile: evaluate the first
+6. **`VA`/`VS` extraction** from a measured gradient profile: evaluate the first
    and second moments `J1`, `J2` numerically. Small utility.
 
-6. **Fringe defaults are measured, not assumed** (2026-07-31). The hard-edge
+7. **Fringe defaults are measured, not assumed** (2026-07-31). The hard-edge
    *multipole* fringe is purely nonlinear -- it leaves the linear map unchanged
    to 0 ulp -- so `fringe` defaults off and can be enabled per magnet, which is
    what a final-focus quadrupole study wants. `:soft_quad` is different: it is a
@@ -1273,11 +1307,11 @@ Remaining:
    the analogous default should be once misalignments exist, since a rolled
    magnet turns a "perpendicular" face into an angled one.
 
-7. **`curved_order` default.** Currently 8, which converges to round-off by 4
+8. **`curved_order` default.** Currently 8, which converges to round-off by 4
    for a gradient dipole. A measured default at a realistic aperture and
    multipole content would be better than a safe guess.
 
-8. **The hard-edge multipole fringe is now benchmarked (2026-08-01), and three
+9. **The hard-edge multipole fringe is now benchmarked (2026-08-01), and three
    PTC behaviours had to be reproduced to get there.** All found by reading
    `MULTIPOLE_FRINGER`; the first two were outright defects, and the theory note
    had already described both without the code following.
@@ -1303,7 +1337,7 @@ Remaining:
    The tell was a `z` error of `L·pt·(1/beta0² − 1)` on a particle with no
    transverse coordinates, which no fringe map can produce.
 
-9. **Gaps against PTC, mostly closed (2026-08-01).**
+10. **Gaps against PTC, mostly closed (2026-08-01).**
    - ~~`KILL_ENT_FRINGE`/`KILL_EXI_FRINGE`~~ **DONE**: `kill_ent_fringe` and
      `kill_exi_fringe` suppress all three fringe mechanisms at one face, and
      deliberately leave the geometry maps (pole-face rotation, face curvature,
@@ -1323,7 +1357,7 @@ Remaining:
      remains unimplemented; we support orders 2 and 4. Speculative until asked
      for.
 
-10. **PTC validation stops at K3, and cannot easily go higher.** MAD-X's thick
+11. **PTC validation stops at K3, and cannot easily go higher.** MAD-X's thick
    elements top out at the octupole term -- `sbend, l=.., angle=0, k3=..` is how
    `generate_ptc_reference.jl` builds its thick multipole cases, and adding `k4`
    is rejected outright (`+=+=+= fatal: illegal keyword: k4`). MAD-X's own
@@ -1337,7 +1371,7 @@ Remaining:
    higher-order multipoles, or driving PTC directly rather than through MAD-X's
    element keywords.
 
-11. **`element_help` shows the folded example.** `SextupoleSpec(L=0.2, k2=12.0)`
+12. **`element_help` shows the folded example.** `SextupoleSpec(L=0.2, k2=12.0)`
    displays as `ElementSpec{:sextupole}(; L=0.2, kn=(0.0, 0.0, 12.0))`, because
    the spec stores only the folded `kn`. That is the honest content of the
    object and `construction_help` directly above it shows the `k2` spelling, so

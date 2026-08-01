@@ -1289,6 +1289,99 @@ end
     end
 end
 
+@testset "Misalignment maps" begin
+    u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
+    S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
+    function jac(e)
+        J = zeros(6, 6)
+        for j in 1:6
+            v = ComplexF64[u...]
+            v[j] += 1e-30im
+            J[:, j] = imag.(collect(e(v...))) ./ 1e-30
+        end
+        return J
+    end
+
+    # A magnet with no misalignment must compile to exactly the magnet it was,
+    # bit for bit, straight or curved. The type-parameter bit is what makes this
+    # possible, and it is what keeps the GPU kernel unchanged.
+    for (a, b) in ((QuadrupoleSpec(L=0.4, k1=1.7, nst=4),
+                    QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_offset=0.0, tilt=0.0)),
+                   (SBendSpec(L=1.1, angle=0.198, nst=4),
+                    SBendSpec(L=1.1, angle=0.198, nst=4, x_offset=0.0, y_pitch=0.0)),
+                   (SBendSpec(L=1.1, h=0.18, b0=0.23, k1=0.6, nst=4),
+                    SBendSpec(L=1.1, h=0.18, b0=0.23, k1=0.6, nst=4, z_offset=0.0)))
+        @test collect(compile_runtime(a)(u...)) == collect(compile_runtime(b)(u...))
+    end
+
+    # Each M is a canonical transformation, so the composition stays symplectic
+    # -- including for a bend, where the entrance and exit maps are genuinely
+    # different transforms rather than inverses.
+    for s in (QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_offset=1.0e-3),
+              QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_pitch=1.0e-3, y_pitch=-7.0e-4),
+              QuadrupoleSpec(L=0.4, k1=1.7, nst=4, tilt=0.03),
+              QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_offset=1e-3, y_offset=-8e-4,
+                             z_offset=2e-3, x_pitch=1e-3, y_pitch=-7e-4, tilt=0.02),
+              SextupoleSpec(L=0.25, k2=14.0, nst=4, x_offset=1e-3, tilt=0.02),
+              SBendSpec(L=1.1, angle=0.198, nst=4, x_offset=1.0e-3),
+              SBendSpec(L=1.1, angle=0.198, nst=4, x_offset=1e-3, y_offset=-8e-4,
+                        z_offset=2e-3, x_pitch=1e-3, y_pitch=-7e-4, tilt=0.02),
+              SBendSpec(L=1.1, h=0.18, b0=0.23, k1=0.6, nst=4, x_offset=1e-3, tilt=0.02),
+              SBendSpec(L=1.1, angle=0.198, k1=0.6, e1=0.1, e2=0.1, nst=4,
+                        fringe=:multipole, x_offset=1e-3, y_pitch=-7e-4, tilt=0.02))
+        J = jac(compile_runtime(s))
+        @test maximum(abs, J' * S6 * J - S6) < 1.0e-13
+    end
+
+    # Physics check: rolling an upright quadrupole by phi is the same magnet as
+    # the skew combination k1*cos(2phi), -k1*sin(2phi) with no roll.
+    let φ = 0.037, k1 = 1.7
+        a = compile_runtime(QuadrupoleSpec(L=0.4, k1=k1, nst=8, tilt=φ))
+        b = compile_runtime(QuadrupoleSpec(L=0.4, kn=(0.0, k1 * cos(2φ)),
+                                           ks=(0.0, -k1 * sin(2φ)), nst=8))
+        @test maximum(abs, collect(a(u...)) .- collect(b(u...))) < 1.0e-15
+    end
+
+    # A rigid displacement of an entire line is a change of frame, not of
+    # physics: displace every element and the beam alike, and the map is
+    # unchanged. This is the check that would catch a wrong exit patch.
+    let dx = 2.0e-4
+        aligned = [QuadrupoleSpec(L=0.4, k1=1.7, nst=4), DriftSpec(L=0.6),
+                   QuadrupoleSpec(L=0.4, k1=-1.7, nst=4), DriftSpec(L=0.6)]
+        moved = [QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_offset=dx), DriftSpec(L=0.6),
+                 QuadrupoleSpec(L=0.4, k1=-1.7, nst=4, x_offset=dx), DriftSpec(L=0.6)]
+        trk(line, v) = foldl((c, s) -> compile_runtime(s)(c...), line; init=v)
+        o1 = collect(trk(aligned, u))
+        o2 = collect(trk(moved, (u[1] + dx, u[2], u[3], u[4], u[5], u[6])))
+        o2[1] -= dx
+        @test maximum(abs, o1 .- o2) < 1.0e-15
+    end
+
+    # The reference point is a real convention choice, not a detail: centre and
+    # entrance agree for a pure translation of a straight element and disagree
+    # for a rotation, and for a translation of a bend.
+    let c = (misalign_reference=:center,), e = (misalign_reference=:entrance,)
+        @test collect(compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_offset=1e-3; c...))(u...)) ==
+              collect(compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_offset=1e-3; e...))(u...))
+        @test collect(compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_pitch=1e-3; c...))(u...)) !=
+              collect(compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_pitch=1e-3; e...))(u...))
+        @test collect(compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4, x_offset=1e-3; c...))(u...)) !=
+              collect(compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4, x_offset=1e-3; e...))(u...))
+    end
+    @test_throws ArgumentError compile_runtime(
+        QuadrupoleSpec(L=0.4, k1=1.7, x_offset=1e-3, misalign_reference=:middle))
+
+    # The survey follows h, the frame curvature, and never b0, the field. Two
+    # bends with the same h and different b0 must get the same misalignment
+    # frames, which is what makes h != b0 meaningful.
+    let a = compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18, nst=4, x_offset=1e-3)),
+        b = compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.23, nst=4, x_offset=1e-3))
+
+        @test a.qin == b.qin && a.oin == b.oin
+        @test a.qout == b.qout && a.oout == b.oout
+    end
+end
+
 @testset "PTC consistency" begin
     # Compares LatticeMagnet against a committed PTC reference table generated
     # by validation/generate_ptc_reference.jl. Skips cleanly when the table is
@@ -1296,14 +1389,17 @@ end
     result = validate(PTCConsistencyContract())
     @test result.status in (:passed, :skipped)
     if result.status === :passed
-        @test result.metrics[:cases] >= 22
+        @test result.metrics[:cases] >= 29
         @test haskey(result.metrics, :madx_version)
         # Fringe and pole-face cases. These are what pin the PTC behaviours a
         # source comparison turned up: the MAD8 quadrupole-in-wedge kick
         # (cfbend_edge), the HIGHEST_FRINGE=2 cap (multipole_fringe), the
         # NMUL<=1 skip (sbend_fringe) and the BN(1) drop (cfbend_fringe).
         for k in (:dev_quadrupole_fringe, :dev_multipole_fringe, :dev_sbend_fringe,
-                  :dev_cfbend_fringe, :dev_sbend_edge, :dev_cfbend_edge, :dev_sbend_fint)
+                  :dev_cfbend_fringe, :dev_sbend_edge, :dev_cfbend_edge, :dev_sbend_fint,
+                  :dev_quad_mis_dx, :dev_quad_mis_dy, :dev_quad_mis_ds,
+                  :dev_quad_mis_dtheta, :dev_quad_mis_dphi, :dev_quad_mis_dpsi,
+                  :dev_sext_mis_dx)
             @test result.metrics[k] < 1.0e-11
         end
         # Straight elements should agree to MAD-X's printed precision. The bend
