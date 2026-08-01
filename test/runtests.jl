@@ -1382,6 +1382,90 @@ end
     end
 end
 
+@testset "Thin elements, markers and RBEND" begin
+    u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
+    S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
+    function jac(e)
+        J = zeros(6, 6)
+        for j in 1:6
+            v = ComplexF64[u...]
+            v[j] += 1e-30im
+            J[:, j] = imag.(collect(e(v...))) ./ 1e-30
+        end
+        return J
+    end
+
+    # A marker is the identity, exactly.
+    @test collect(compile_runtime(MarkerSpec())(u...)) == collect(u)
+    @test compile_runtime(MarkerSpec()) isa Marker
+
+    # Thin kicks are analytic, so they can be checked against the closed form
+    # rather than only against each other.
+    @test collect(compile_runtime(ThinQuadrupoleSpec(k1l=0.05))(u...))[2] ≈ u[2] - 0.05 * u[1]
+    @test collect(compile_runtime(ThinQuadrupoleSpec(k1l=0.05))(u...))[4] ≈ u[4] + 0.05 * u[3]
+    @test collect(compile_runtime(ThinSextupoleSpec(k2l=1.2))(u...))[2] ≈
+          u[2] - 1.2 * (u[1]^2 - u[3]^2) / 2
+    @test collect(compile_runtime(ThinDipoleSpec(k0l=1.0e-3))(u...))[2] ≈ u[2] - 1.0e-3
+
+    # A corrector is the opposite sign to a dipole field of the same magnitude.
+    # Getting this backwards would flip every corrector in a lattice.
+    @test collect(compile_runtime(HKickerSpec(hkick=1.0e-3))(u...))[2] ≈ u[2] + 1.0e-3
+    @test collect(compile_runtime(VKickerSpec(vkick=1.0e-3))(u...))[4] ≈ u[4] + 1.0e-3
+    let k = compile_runtime(KickerSpec(hkick=1.0e-4, vkick=-5.0e-5))(u...)
+        @test collect(k)[2] ≈ u[2] + 1.0e-4
+        @test collect(k)[4] ≈ u[4] - 5.0e-5
+    end
+    # Thin elements change no position and no energy.
+    for s in (ThinQuadrupoleSpec(k1l=0.05), ThinSextupoleSpec(k2l=1.2),
+              KickerSpec(hkick=1e-4, vkick=-5e-5), MarkerSpec())
+        o = collect(compile_runtime(s)(u...))
+        @test o[1] == u[1] && o[3] == u[3] && o[5] == u[5] && o[6] == u[6]
+    end
+
+    # Named integrated strengths land in knl/ksl, and the named kinds agree with
+    # the general one, exactly as for the thick magnets.
+    @test compile_runtime(ThinQuadrupoleSpec(k1l=0.05)).knl == (0.0, 0.05)
+    @test compile_runtime(ThinSextupoleSpec(k2sl=0.8)).ksl == (0.0, 0.0, 0.8)
+    @test collect(compile_runtime(ThinMultipoleSpec(k1l=0.05, k2l=1.2))(u...)) ==
+          collect(compile_runtime(ThinMultipoleSpec(knl=(0.0, 0.05, 1.2)))(u...))
+    @test_throws ArgumentError ThinMultipoleSpec(k1l=0.05, knl=(0.0, 0.07))
+
+    # All of them are symplectic, being kicks from a potential.
+    for s in (ThinMultipoleSpec(knl=(0.0, 0.05, 1.2), ksl=(0.0, 0.0, 0.8)),
+              ThinQuadrupoleSpec(k1l=0.05), ThinSextupoleSpec(k2l=1.2),
+              ThinDipoleSpec(k0l=1e-3), KickerSpec(hkick=1e-4, vkick=-5e-5),
+              MarkerSpec())
+        J = jac(compile_runtime(s))
+        @test maximum(abs, J' * S6 * J - S6) < 1.0e-14
+    end
+
+    # RBEND is the sector bend with angle/2 added to each face, which is how
+    # MAD-X converts it, so it must equal the SBend spelled out that way.
+    let ang = 0.198
+        a = compile_runtime(RBendSpec(L=1.1, angle=ang, k1=0.6, nst=4))
+        b = compile_runtime(SBendSpec(L=1.1, angle=ang, k1=0.6, nst=4,
+                                      e1=ang / 2, e2=ang / 2))
+        @test collect(a(u...)) == collect(b(u...))
+        # e1/e2 are additional face angles on top of the half angle.
+        c = compile_runtime(RBendSpec(L=1.1, angle=ang, e1=0.01, nst=4))
+        d = compile_runtime(SBendSpec(L=1.1, angle=ang, nst=4,
+                                      e1=ang / 2 + 0.01, e2=ang / 2))
+        @test collect(c(u...)) == collect(d(u...))
+        @test compile_runtime(RBendSpec(L=1.1, angle=ang)) isa LatticeMagnet
+        J = jac(compile_runtime(RBendSpec(L=1.1, angle=ang, k1=0.6, nst=4)))
+        @test maximum(abs, J' * S6 * J - S6) < 1.0e-13
+    end
+    @test_throws ArgumentError RBendSpec(L=1.1)
+    @test_throws ArgumentError RBendSpec(angle=0.198)
+
+    # Every new kind is registered and discoverable.
+    for kd in (:marker, :thin_multipole, :thin_dipole, :thin_quadrupole,
+               :thin_sextupole, :hkicker, :vkicker, :kicker)
+        @test kd in map(k -> k, summarize_registry().elements)
+        @test example_spec(ElementSpec{kd}) isa ElementSpec
+    end
+end
+
 @testset "PTC consistency" begin
     # Compares LatticeMagnet against a committed PTC reference table generated
     # by validation/generate_ptc_reference.jl. Skips cleanly when the table is
@@ -1389,7 +1473,7 @@ end
     result = validate(PTCConsistencyContract())
     @test result.status in (:passed, :skipped)
     if result.status === :passed
-        @test result.metrics[:cases] >= 32
+        @test result.metrics[:cases] >= 36
         @test haskey(result.metrics, :madx_version)
         # Fringe and pole-face cases. These are what pin the PTC behaviours a
         # source comparison turned up: the MAD8 quadrupole-in-wedge kick
@@ -1400,7 +1484,9 @@ end
                   :dev_quad_mis_dx, :dev_quad_mis_dy, :dev_quad_mis_ds,
                   :dev_quad_mis_dtheta, :dev_quad_mis_dphi, :dev_quad_mis_dpsi,
                   :dev_sext_mis_dx, :dev_quad_mis_all,
-                  :dev_cfbend_mis_dx, :dev_cfbend_mis_all)
+                  :dev_cfbend_mis_dx, :dev_cfbend_mis_all,
+                  :dev_rbend, :dev_rbend_k1, :dev_thin_multipole,
+                  :dev_thin_multipole_skew)
             @test result.metrics[k] < 1.0e-11
         end
         # Straight elements should agree to MAD-X's printed precision. The bend

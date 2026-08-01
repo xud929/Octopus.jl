@@ -55,6 +55,11 @@ const HERE = @__DIR__
 const OUTDIR = joinpath(HERE, "reference")
 const WORK = mktempdir()
 
+# MAD-X refuses a zero-length sequence, so a thin element is tracked as itself
+# followed by a drift. The contract composes the same two-element line, which is
+# why a reference case may name a list of specs rather than one.
+const THIN_SEQ_L = 0.2
+
 # Test particles: on-axis, off-momentum, and large-amplitude in each plane.
 const PARTICLES = [
     (0.0,     0.0,     0.0,     0.0,     0.0),
@@ -190,6 +195,20 @@ const CASES = Case[
     Case("cfbend_mis_all", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4, false,
          "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02",
          Dict(:kind => :sbend, :L => 1.1)),
+    # RBEND: a sector bend with angle/2 added to each face. `option, rbarc=false`
+    # above matters -- by default MAD-X treats an RBEND's l as the CHORD and
+    # converts to arc, while Octopus's L is the arc, so without it the two
+    # magnets differ in length.
+    Case("rbend", "rbend, l=1.1, angle=0.198", 1.1, 2, 4,
+         Dict(:kind => :rbend, :L => 1.1)),
+    Case("rbend_k1", "rbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4,
+         Dict(:kind => :rbend, :L => 1.1)),
+    # Thin multipole: MAD-X's MULTIPOLE is zero length with integrated KNL/KSL,
+    # which is exactly what ThinMultipoleSpec means.
+    Case("thin_multipole", "multipole, knl={0.0, 0.05, 1.2}", 0.0, 2, 1,
+         Dict(:kind => :thin_multipole)),
+    Case("thin_multipole_skew", "multipole, knl={0.0, 0.05}, ksl={0.0, 0.0, 0.8}", 0.0, 2, 1,
+         Dict(:kind => :thin_multipole)),
 ]
 
 function madx_version()
@@ -207,10 +226,11 @@ function run_case(case::Case)
     open(joinpath(WORK, job), "w") do io
         print(io, """
         option, -echo, -info, -warn;
+        option, rbarc=false;   // RBEND l is the ARC length, as Octopus means it
         beam, particle=proton, energy=10.0, sequence=lat;
         el: $(case.madx)$(case.fringe ? ", permfringe=true" : "");
-        lat: sequence, l=$(case.L);
-          el, at=$(case.L / 2);
+        lat: sequence, l=$(case.L == 0 ? THIN_SEQ_L : case.L);
+          el, at=$(case.L == 0 ? 0.0 : case.L / 2);
         endsequence;
         use, sequence=lat;
         $(isempty(case.ealign) ? "" :

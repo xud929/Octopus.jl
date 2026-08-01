@@ -1588,6 +1588,14 @@ function _ptc_reference_specs()
                                       misalign_convention=:madx,
                                       x_offset=1.0e-3, y_offset=-8.0e-4, z_offset=2.0e-3,
                                       x_pitch=1.0e-3, y_pitch=-7.0e-4, tilt=0.02),
+        # RBEND is the sector-bend map with angle/2 on each face.
+        "rbend" => RBendSpec(L=1.1, angle=0.198, nst=4,
+                             bend_model=:drift_kick, bend_fringe=true),
+        "rbend_k1" => RBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4,
+                                bend_model=:drift_kick, bend_fringe=true),
+        # Thin elements: MAD-X MULTIPOLE, integrated strengths.
+        "thin_multipole" => [ThinMultipoleSpec(knl=(0.0, 0.05, 1.2)), DriftSpec(L=0.2)],
+        "thin_multipole_skew" => [ThinMultipoleSpec(knl=(0.0, 0.05), ksl=(0.0, 0.0, 0.8)), DriftSpec(L=0.2)],
     )
 end
 
@@ -1628,7 +1636,13 @@ function validate(contract::PTCConsistencyContract; kwargs...)
         name = f[1]
         haskey(specs, name) || continue
         v = parse.(Float64, f[3:14])
-        out = collect(compile_runtime(specs[name])(v[1], v[2], v[3], v[4], v[5], v[6]))
+        # A case may name one spec or a short line: MAD-X cannot hold a
+        # zero-length sequence, so a thin element is referenced as itself
+        # followed by a drift.
+        entry = specs[name]
+        line = entry isa AbstractVector ? entry : (entry,)
+        out = collect(foldl((c, s) -> compile_runtime(s)(c...), line;
+                            init=(v[1], v[2], v[3], v[4], v[5], v[6])))
         worst[name] = max(get(worst, name, 0.0), maximum(abs, out .- v[7:12]))
         rows += 1
     end

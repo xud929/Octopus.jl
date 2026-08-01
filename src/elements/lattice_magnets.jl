@@ -1,5 +1,5 @@
 export DriftSpec, QuadrupoleSpec, SextupoleSpec, OctupoleSpec, MultipoleSpec,
-       SBendSpec, LatticeMagnet, LATTICE_INTEGRATOR_ORDERS
+       SBendSpec, RBendSpec, LatticeMagnet, LATTICE_INTEGRATOR_ORDERS
 
 """
 Supported integrator orders for `LatticeMagnet`.
@@ -983,12 +983,12 @@ Fold named strength keywords into the positional `kn`/`ks` tuples that
 same order both ways is contradictory rather than merely redundant, so it
 throws instead of letting one spelling silently win.
 """
-function _fold_named_strengths(named, kwargs)
+function _fold_named_strengths(named, kwargs; nkey::Symbol=:kn, skey::Symbol=:ks)
     d = Dict{Symbol,Any}(kwargs)
-    kn = Float64[float(v) for v in get(d, :kn, ())]
-    ks = Float64[float(v) for v in get(d, :ks, ())]
+    kn = Float64[float(v) for v in get(d, nkey, ())]
+    ks = Float64[float(v) for v in get(d, skey, ())]
     for (nsym, ssym, order) in named,
-        (sym, vec, which) in ((nsym, kn, "kn"), (ssym, ks, "ks"))
+        (sym, vec, which) in ((nsym, kn, String(nkey)), (ssym, ks, String(skey)))
 
         haskey(d, sym) || continue
         i = order + 1
@@ -1003,8 +1003,8 @@ function _fold_named_strengths(named, kwargs)
         vec[i] = float(d[sym])
         delete!(d, sym)
     end
-    isempty(kn) || (d[:kn] = Tuple(kn))
-    isempty(ks) || (d[:ks] = Tuple(ks))
+    isempty(kn) || (d[nkey] = Tuple(kn))
+    isempty(ks) || (d[skey] = Tuple(ks))
     return d
 end
 
@@ -1025,6 +1025,23 @@ for (kind, ctor, named) in ((:drift, :DriftSpec, :_NO_NAMED),
 end
 
 abstract type SBendSpec end
+abstract type RBendSpec end
+
+# An RBEND is a sector bend whose faces are parallel to each other rather than
+# perpendicular to the design orbit, which is the same magnet with `angle/2`
+# added to each pole-face angle. MAD-X converts it exactly this way, so RBEND
+# stays a construction convenience over the validated sector-bend map rather
+# than a second bend implementation. `e1`/`e2` remain available and are taken as
+# *additional* face angles on top of the half-angle, matching MAD-X.
+function RBendSpec(; kwargs...)
+    d = Dict{Symbol,Any}(kwargs)
+    haskey(d, :angle) || throw(ArgumentError("RBendSpec needs angle"))
+    haskey(d, :L) || throw(ArgumentError("RBendSpec needs L"))
+    half = float(d[:angle]) / 2
+    d[:e1] = float(get(d, :e1, 0.0)) + half
+    d[:e2] = float(get(d, :e2, 0.0)) + half
+    return SBendSpec(; (Symbol(k) => v for (k, v) in d)...)
+end
 
 # `angle` is the design-orbit spelling: one number sets both the frame curvature
 # and the field, h = b0 = angle / L, which is what a lattice file means by a

@@ -151,6 +151,70 @@ constructor names remain the user-facing way to build those specs.
   - Runtime mappings: `Symplectic6DMap => LatticeMagnet`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
+- `ElementSpec{:marker}` via `MarkerSpec`
+  - Physics keywords: `:thin_element`, `:placeholder`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => Marker`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
+- `ElementSpec{:thin_multipole}` via `ThinMultipoleSpec`
+  - Physics keywords: `:lattice_magnet`, `:thin_element`, `:nonlinear_interaction`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => ThinMultipole`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
+- `ElementSpec{:thin_dipole}` via `ThinDipoleSpec`
+  - Physics keywords: `:lattice_magnet`, `:thin_element`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => ThinMultipole`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
+- `ElementSpec{:thin_quadrupole}` via `ThinQuadrupoleSpec`
+  - Physics keywords: `:lattice_magnet`, `:thin_element`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => ThinMultipole`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
+- `ElementSpec{:thin_sextupole}` via `ThinSextupoleSpec`
+  - Physics keywords: `:lattice_magnet`, `:thin_element`, `:nonlinear_interaction`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => ThinMultipole`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
+- `ElementSpec{:hkicker}` via `HKickerSpec`
+  - Physics keywords: `:lattice_magnet`, `:thin_element`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => ThinMultipole`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
+- `ElementSpec{:vkicker}` via `VKickerSpec`
+  - Physics keywords: `:lattice_magnet`, `:thin_element`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => ThinMultipole`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
+- `ElementSpec{:kicker}` via `KickerSpec`
+  - Physics keywords: `:lattice_magnet`, `:thin_element`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => ThinMultipole`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
 ## Tracking Methods
 
 - `Damping6DMap`
@@ -245,6 +309,8 @@ live under `src/track/`.
 - `ThinStrongBeam`
 - `GaussianStrongBeam`
 - `LatticeMagnet`
+- `Marker`
+- `ThinMultipole`
 - `BeamParams`
 - `Phase6DRep`
 - `Beam`

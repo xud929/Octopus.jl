@@ -1180,6 +1180,42 @@ acceptable for a fixed design point. Hypothesis, not established practice.
 
 ## Lattice magnets: remaining work
 
+### Element coverage (2026-08-01)
+
+Added: `marker` (identity placeholder), `rbend`, `thin_multipole`,
+`thin_dipole`, `thin_quadrupole`, `thin_sextupole`, `hkicker`, `vkicker`,
+`kicker`. All nine share existing machinery -- RBEND is the sector-bend map with
+`angle/2` on each face, exactly MAD-X's conversion, and the thin family is one
+`ThinMultipole` runtime. Four new PTC cases (`rbend`, `rbend_k1`,
+`thin_multipole`, `thin_multipole_skew`) agree to 5e-13; the contract now covers
+36 cases.
+
+Two conventions are worth keeping straight, and both are enforced by tests:
+`knl[i]` is the **integrated** `K_{i-1} L`, not the thick `kn`; and a corrector
+gives `dpx = +hkick` while a dipole field of the same magnitude gives
+`dpx = -k0l`. Folding the second into the first would flip every corrector in a
+lattice.
+
+**Still missing, and deliberately not attempted here** -- each needs work beyond
+adding an element spec:
+
+- **Solenoid.** Needs its own map and its own validation. The usual linear
+  solenoid matrix is paraxial, so dropping it into an otherwise
+  exact-Hamiltonian code would silently mix models -- a solenoid with `ks = 0`
+  would not reduce to the exact drift the rest of the code uses. Worth deriving
+  the exact map from the same Hamiltonian, then benchmarking against PTC as the
+  bends were.
+- **Aperture and particle loss.** Not an element at all: it needs a lost/alive
+  state in the particle representation and a policy for what the kernels do with
+  a dead particle. Nothing in the tracking layer carries that today, so it is a
+  runtime-representation change first and an element second.
+- **BPM monitors.** Also not an element in the tracking sense: a monitor records
+  a beam moment rather than transforming a particle. Octopus already has an
+  observation layer (`ScheduledObserver`, `MomentObserver`), so the question is
+  whether a BPM is an element that happens to observe, or an observer bound to a
+  position. That is an architecture decision, not a map.
+
+
 Implemented and validated (2026-07-31): drift, quadrupole, sextupole, octupole,
 multipole, sector bend and **combined-function bend**, with exact maps, PTC
 fringe fields, and Strang/Forest-Ruth integrators. `PTCConsistencyContract`
