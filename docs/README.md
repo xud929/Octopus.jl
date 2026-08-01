@@ -76,8 +76,12 @@ reference material, not API docs; the implementing code links back to them.
   rather than kills). Assesses NaN-as-loss-marker honestly -- it propagates for
   free and needs no new array, but erases where and why, poisons every
   reduction, and collides with the existing non-finite guards that currently
-  mean "bug". Confirms a predicate can live in `ElementSpec.params` and states
-  what it must be for the GPU. Design only; no implementation yet.
+  mean "bug". Resolves that objection by having the aperture *log* `(particle, turn)` through
+  `TrackingContext` like an observer, so NaN only marks the particle dead, and
+  records why per-element loss attribution stays out of reach without a
+  different phase-space representation. Confirms a predicate can live in
+  `ElementSpec.params` and states what it must be for the GPU. Design only; no
+  implementation yet.
 - [`misalignment_and_patch_maps.md`](theory/misalignment_and_patch_maps.md) —
   design note for misalignments, rotations and the patch element, comparing
   PTC's factorization (four exact one-parameter Euclidean maps, `ROT_YZ`/

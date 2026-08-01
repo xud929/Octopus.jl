@@ -106,11 +106,50 @@ than "no NaN". That is a change to the meaning of a value that several
 subsystems already interpret, so it should be a deliberate, documented decision
 rather than a side effect of adding an element.
 
-A middle option preserving the no-new-array constraint: NaN marks *dead*, and
-the loss `s` is recorded by the aperture element into a diagnostic buffer it
-owns, rather than per particle. That keeps the particle representation untouched
-while retaining the one piece of information NaN throws away, at the cost of the
-buffer being per-element rather than per-particle.
+### The resolution: the aperture logs, like an observer
+
+The objection in (1) is answered by making the aperture element *record* rather
+than making the particle *carry*. Tracking already has a context —
+`TrackingContext` in `src/track/Track.jl` holds `turn`, and the context-aware
+path already reaches per-particle identity, which is how counter-RNG keys a
+stochastic sample on particle index, turn, seed and stream. An aperture element
+can therefore log `(particle, turn)` into a buffer it owns at the moment it kills
+a particle, exactly as a `ScheduledObserver` logs a moment.
+
+That recovers everything NaN erased **for losses at an aperture**:
+
+| what | where it comes from |
+|---|---|
+| which particle | the index the context-aware kernel already carries |
+| which turn | `TrackingContext.turn` |
+| which aperture, so which `s` | the element doing the logging *is* the location |
+| why | the element's own shape, and the fact that it was this element |
+
+and it costs no change to the particle representation, because the record lives
+in the element, not in the beam. NaN then does only the one job it is good at:
+marking the particle dead so every subsequent map leaves it alone.
+
+### What this still cannot do, and why
+
+Attributing a loss to an **arbitrary element** — a particle that leaves the
+aperture inside an ordinary quadrupole, with no aperture element there — is out
+of reach in this design, and not by oversight. Nothing per-particle records
+provenance, so there is no way to ask "which element lost this one" unless every
+element checks and logs, which is the same as saying every element is an
+aperture. Answering that question properly needs a different phase-space
+representation: one carrying, per particle, at least a loss flag and an element
+or `s` identifier.
+
+The practical consequence is worth stating plainly, because it decides how
+lattices are built rather than how the element is coded: **loss position is
+resolved only to where you place aperture elements.** That is exactly the
+bargain Xsuite and Elegant make — `LimitRect` and `RCOL` are things you insert —
+and it is why MAD-X and Bmad, which hang an aperture on *every* element, get
+finer resolution at the cost of every element carrying aperture state.
+
+Deferring the representation change is the right call now: it is a large,
+cross-cutting change to every kernel signature, and inserted aperture elements
+answer the question most studies actually ask.
 
 ## 3. Can a function live in `ElementSpec.params`?
 
@@ -151,13 +190,19 @@ Three caveats decide whether it is a good idea:
    consequences handled in the same change rather than deferred: reductions mask
    non-finite particles, and the existing fail-fast guards are restated so a
    deliberately-killed particle is not read as a solver bug.
-5. **Decide what is kept about a loss before implementing**, not after. If the
-   answer is "only the count", NaN alone is enough. If it is ever "where", that
-   has to be designed now, because NaN erases it irreversibly and no later
-   element can reconstruct it.
+5. **The aperture logs `(particle, turn)` through the tracking context**, like
+   an observer, so NaN marks the particle dead and the element records the
+   event. Per-element loss attribution is explicitly out of scope and needs a
+   different phase-space representation; loss position is resolved to where
+   aperture elements are placed.
 
 ## 5. Open questions
 
+- **What shape should the loss log take?** A per-element growable buffer is the
+  simplest, but it has to work on the GPU, where appending from a kernel needs
+  either an atomic counter or a preallocated per-particle slot written once.
+  The second is a fixed cost proportional to the beam, not the losses, which may
+  be the better trade at low loss fractions.
 - **Does a lost particle stay in the beam?** NaN implies yes, at full cost, for
   the rest of the run. Elegant compacts precisely to avoid tracking dead weight.
   At large loss fractions this is the difference between a cheap and an
