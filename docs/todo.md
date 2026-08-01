@@ -1190,6 +1190,20 @@ Added: `marker` (identity placeholder), `rbend`, `thin_multipole`,
 `thin_multipole`, `thin_multipole_skew`) agree to 5e-13; the contract now covers
 36 cases.
 
+Every one of them that is a magnet takes misalignments through the same
+`_misalign_frames`/`_frame_change` path the thick magnets use, so a thin element
+and a thick one cannot drift apart in convention. At zero length the entrance,
+centre and exit coincide, so the reference point cannot matter and `:bmad` and
+`:madx` differ only in the rotation composition order. `marker` is the exception
+and takes none: a rigid displacement of a zero-length identity map is still the
+identity, so there is nothing to store.
+
+`compile_runtime` returns the same runtime *type* either way -- `LatticeMagnet`
+or `ThinMultipole` -- but with a different type parameter (`MISALIGNED` in the
+fringe bits, `MIS` on the thin runtime). The five-map composition lives inside
+`track_particle` and is eliminated at compile time when the element is aligned,
+so an aligned magnet costs exactly what it did before misalignments existed.
+
 Two conventions are worth keeping straight, and both are enforced by tests:
 `knl[i]` is the **integrated** `K_{i-1} L`, not the thick `kn`; and a corrector
 gives `dpx = +hkick` while a dipole field of the same magnitude gives

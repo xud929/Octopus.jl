@@ -58,19 +58,31 @@ Being zero length, the map has no drift and no chromatic denominator: in the
 exact Hamiltonian the chromatic dependence lives in the drift, and there is none
 here. It is exactly symplectic, being a kick from a potential.
 """
-struct ThinMultipole{M<:AbstractTrackingMethod,T<:AbstractFloat,N} <: AbstractTrackOp
+struct ThinMultipole{M<:AbstractTrackingMethod,T<:AbstractFloat,N,MIS} <: AbstractTrackOp
     method::M
     knl::NTuple{N,T}
     ksl::NTuple{N,T}
     hkick::T
     vkick::T
+    qin::NTuple{9,T}; oin::NTuple{3,T}
+    qout::NTuple{9,T}; oout::NTuple{3,T}
 end
 
-@inline function track_particle(::Symplectic6DMap, elem::ThinMultipole{M,T,N},
-                                x, px, y, py, z, pz) where {M,T,N}
+@inline function track_particle(::Symplectic6DMap, elem::ThinMultipole{M,T,N,MIS},
+                                x, px, y, py, z, pz) where {M,T,N,MIS}
+    # Same structure as a thick magnet: the misalignment wraps the map. `MIS` is
+    # a type parameter, so an aligned element compiles to exactly the kick.
+    if MIS
+        x, px, y, py, z, pz = _frame_change(elem.qin, elem.oin, x, px, y, py, z, pz)
+    end
     x, px, y, py, z, pz =
         _lattice_kick(elem.knl, elem.ksl, zero(T), one(T), x, px, y, py, z, pz)
-    return x, px + elem.hkick, y, py + elem.vkick, z, pz
+    px += elem.hkick
+    py += elem.vkick
+    if MIS
+        x, px, y, py, z, pz = _frame_change(elem.qout, elem.oout, x, px, y, py, z, pz)
+    end
+    return x, px, y, py, z, pz
 end
 
 @inline (elem::ThinMultipole)(x, px, y, py, z, pz) =
@@ -82,9 +94,31 @@ function ThinMultipole(spec::ElementSpec,
     knraw = collect(T, getparam(spec, :knl, ()))
     ksraw = collect(T, getparam(spec, :ksl, ()))
     knl, ksl = _strength_tuples(T, knraw, ksraw)
-    return ThinMultipole{typeof(method),T,length(knl)}(
+    dx = T(getparam(spec, :x_offset, zero(T)))
+    dy = T(getparam(spec, :y_offset, zero(T)))
+    dz = T(getparam(spec, :z_offset, zero(T)))
+    xp = T(getparam(spec, :x_pitch, zero(T)))
+    yp = T(getparam(spec, :y_pitch, zero(T)))
+    tl = T(getparam(spec, :tilt, zero(T)))
+    mis = !(dx == 0 && dy == 0 && dz == 0 && xp == 0 && yp == 0 && tl == 0)
+    conv = Symbol(getparam(spec, :misalign_convention, :bmad))
+    conv in (:bmad, :madx) || throw(ArgumentError(
+        "misalign_convention must be :bmad or :madx; got $(repr(conv))"))
+    ident = (one(T), zero(T), zero(T), zero(T), one(T), zero(T),
+             zero(T), zero(T), one(T))
+    zero3 = (zero(T), zero(T), zero(T))
+    # At zero length the entrance, centre and exit coincide, so the reference
+    # point cannot matter and the two conventions differ only in the order the
+    # rotations compose. The frames still come from `_misalign_frames`, so a
+    # thin element and a thick one cannot drift apart in convention.
+    qin, oin, qout, oout = mis ?
+        _misalign_frames(T, _misalign_matrix(T, xp, yp, tl, conv === :madx),
+                         (dx, dy, dz), zero(T), zero(T), zero(T)) :
+        (ident, zero3, ident, zero3)
+    return ThinMultipole{typeof(method),T,length(knl),mis}(
         method, knl, ksl,
-        T(getparam(spec, :hkick, zero(T))), T(getparam(spec, :vkick, zero(T))))
+        T(getparam(spec, :hkick, zero(T))), T(getparam(spec, :vkick, zero(T))),
+        qin, oin, qout, oout)
 end
 
 # Named integrated strengths, folded into knl/ksl the same way the thick magnets
@@ -117,6 +151,13 @@ end
 const _THIN_COMMON = (
     knl=ParamMeta(default=(), meaning="integrated normal strengths; index i holds K_{i-1} L, so knl[2] is K1 L. Integrated, not the thick kn: a thin element is the L -> 0 limit at fixed K L"),
     ksl=ParamMeta(default=(), meaning="skew partners of knl"),
+    x_offset=ParamMeta(default=0, meaning="misalignment: horizontal displacement of the element"),
+    y_offset=ParamMeta(default=0, meaning="misalignment: vertical displacement"),
+    z_offset=ParamMeta(default=0, meaning="misalignment: longitudinal displacement. At zero length this is a pure drift of the kick location and has no effect on the transverse map"),
+    x_pitch=ParamMeta(default=0, meaning="misalignment: rotation about the y axis, in radians"),
+    y_pitch=ParamMeta(default=0, meaning="misalignment: rotation about the x axis, in radians"),
+    tilt=ParamMeta(default=0, meaning="misalignment: roll about the longitudinal axis, in radians. Geometric, and distinct from building a skew element through ksl"),
+    misalign_convention=ParamMeta(default=:bmad, meaning="which code's misalignment convention to follow, :bmad or :madx. At zero length the reference point cannot matter, so the two differ only in the order the rotations compose"),
     tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
 )
 
@@ -162,10 +203,17 @@ end
         k4sl=ParamMeta(default=0, meaning="skew partner of k4l"),
         k5l=ParamMeta(default=0, meaning="integrated dodecapole strength K5 L; folded into knl[6]"),
         k5sl=ParamMeta(default=0, meaning="skew partner of k5l"),
+        x_offset=_THIN_COMMON.x_offset,
+        y_offset=_THIN_COMMON.y_offset,
+        z_offset=_THIN_COMMON.z_offset,
+        x_pitch=_THIN_COMMON.x_pitch,
+        y_pitch=_THIN_COMMON.y_pitch,
+        tilt=_THIN_COMMON.tilt,
+        misalign_convention=_THIN_COMMON.misalign_convention,
         tracking_method=_THIN_COMMON.tracking_method,
     )
     example = ThinMultipoleSpec(k1l=0.05, k2l=1.2)
-    construction_help = "Friendly constructor: ThinMultipoleSpec(; knl=(), ksl=(), k0l=0, k0sl=0, k1l=0, k1sl=0, k2l=0, k2sl=0, k3l=0, k3sl=0, k4l=0, k4sl=0, k5l=0, k5sl=0, tracking_method=Symplectic6DMap()). Strengths are integrated: knl[i] is K_{i-1} L. This is MAD-X's MULTIPOLE. For a steering kick use HKickerSpec/VKickerSpec/KickerSpec, whose sign convention is the opposite one."
+    construction_help = "Friendly constructor: ThinMultipoleSpec(; knl=(), ksl=(), k0l=0, k0sl=0, k1l=0, k1sl=0, k2l=0, k2sl=0, k3l=0, k3sl=0, k4l=0, k4sl=0, k5l=0, k5sl=0, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). Strengths are integrated: knl[i] is K_{i-1} L. This is MAD-X's MULTIPOLE. For a steering kick use HKickerSpec/VKickerSpec/KickerSpec, whose sign convention is the opposite one."
 end
 
 @element_spec begin
@@ -183,10 +231,17 @@ end
         k0sl=ParamMeta(default=0, meaning="skew partner of k0l, giving dpy = +Ks0 L"),
         knl=_THIN_COMMON.knl,
         ksl=_THIN_COMMON.ksl,
+        x_offset=_THIN_COMMON.x_offset,
+        y_offset=_THIN_COMMON.y_offset,
+        z_offset=_THIN_COMMON.z_offset,
+        x_pitch=_THIN_COMMON.x_pitch,
+        y_pitch=_THIN_COMMON.y_pitch,
+        tilt=_THIN_COMMON.tilt,
+        misalign_convention=_THIN_COMMON.misalign_convention,
         tracking_method=_THIN_COMMON.tracking_method,
     )
     example = ThinDipoleSpec(k0l=1.0e-3)
-    construction_help = "Friendly constructor: ThinDipoleSpec(; k0l=0, k0sl=0, knl=(), ksl=(), tracking_method=Symplectic6DMap()). A field, so dpx = -k0l. For a steering corrector, whose sign is the other way, use HKickerSpec."
+    construction_help = "Friendly constructor: ThinDipoleSpec(; k0l=0, k0sl=0, knl=(), ksl=(), x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). A field, so dpx = -k0l. For a steering corrector, whose sign is the other way, use HKickerSpec."
 end
 
 @element_spec begin
@@ -204,10 +259,17 @@ end
         k1sl=ParamMeta(default=0, meaning="skew partner of k1l"),
         knl=_THIN_COMMON.knl,
         ksl=_THIN_COMMON.ksl,
+        x_offset=_THIN_COMMON.x_offset,
+        y_offset=_THIN_COMMON.y_offset,
+        z_offset=_THIN_COMMON.z_offset,
+        x_pitch=_THIN_COMMON.x_pitch,
+        y_pitch=_THIN_COMMON.y_pitch,
+        tilt=_THIN_COMMON.tilt,
+        misalign_convention=_THIN_COMMON.misalign_convention,
         tracking_method=_THIN_COMMON.tracking_method,
     )
     example = ThinQuadrupoleSpec(k1l=0.05)
-    construction_help = "Friendly constructor: ThinQuadrupoleSpec(; k1l=0, k1sl=0, knl=(), ksl=(), tracking_method=Symplectic6DMap()). The thin-lens quadrupole, focal length 1/k1l."
+    construction_help = "Friendly constructor: ThinQuadrupoleSpec(; k1l=0, k1sl=0, knl=(), ksl=(), x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The thin-lens quadrupole, focal length 1/k1l."
 end
 
 @element_spec begin
@@ -225,10 +287,17 @@ end
         k2sl=ParamMeta(default=0, meaning="skew partner of k2l"),
         knl=_THIN_COMMON.knl,
         ksl=_THIN_COMMON.ksl,
+        x_offset=_THIN_COMMON.x_offset,
+        y_offset=_THIN_COMMON.y_offset,
+        z_offset=_THIN_COMMON.z_offset,
+        x_pitch=_THIN_COMMON.x_pitch,
+        y_pitch=_THIN_COMMON.y_pitch,
+        tilt=_THIN_COMMON.tilt,
+        misalign_convention=_THIN_COMMON.misalign_convention,
         tracking_method=_THIN_COMMON.tracking_method,
     )
     example = ThinSextupoleSpec(k2l=1.2)
-    construction_help = "Friendly constructor: ThinSextupoleSpec(; k2l=0, k2sl=0, knl=(), ksl=(), tracking_method=Symplectic6DMap()). The thin-lens sextupole used for chromaticity correction."
+    construction_help = "Friendly constructor: ThinSextupoleSpec(; k2l=0, k2sl=0, knl=(), ksl=(), x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The thin-lens sextupole used for chromaticity correction."
 end
 
 @element_spec begin
@@ -243,10 +312,17 @@ end
     analyses = [PlaceholderAnalysis]
     parameters = (
         hkick=ParamMeta(default=0, meaning="horizontal steering kick, dpx = +hkick. This is the corrector sign convention, opposite to a dipole field of the same magnitude"),
+        x_offset=_THIN_COMMON.x_offset,
+        y_offset=_THIN_COMMON.y_offset,
+        z_offset=_THIN_COMMON.z_offset,
+        x_pitch=_THIN_COMMON.x_pitch,
+        y_pitch=_THIN_COMMON.y_pitch,
+        tilt=_THIN_COMMON.tilt,
+        misalign_convention=_THIN_COMMON.misalign_convention,
         tracking_method=_THIN_COMMON.tracking_method,
     )
     example = HKickerSpec(hkick=1.0e-4)
-    construction_help = "Friendly constructor: HKickerSpec(; hkick=0, tracking_method=Symplectic6DMap()). dpx = +hkick, the steering convention; a ThinDipoleSpec of strength k0l gives dpx = -k0l instead."
+    construction_help = "Friendly constructor: HKickerSpec(; hkick=0, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). dpx = +hkick, the steering convention; a ThinDipoleSpec of strength k0l gives dpx = -k0l instead."
 end
 
 @element_spec begin
@@ -261,10 +337,17 @@ end
     analyses = [PlaceholderAnalysis]
     parameters = (
         vkick=ParamMeta(default=0, meaning="vertical steering kick, dpy = +vkick"),
+        x_offset=_THIN_COMMON.x_offset,
+        y_offset=_THIN_COMMON.y_offset,
+        z_offset=_THIN_COMMON.z_offset,
+        x_pitch=_THIN_COMMON.x_pitch,
+        y_pitch=_THIN_COMMON.y_pitch,
+        tilt=_THIN_COMMON.tilt,
+        misalign_convention=_THIN_COMMON.misalign_convention,
         tracking_method=_THIN_COMMON.tracking_method,
     )
     example = VKickerSpec(vkick=1.0e-4)
-    construction_help = "Friendly constructor: VKickerSpec(; vkick=0, tracking_method=Symplectic6DMap()). dpy = +vkick."
+    construction_help = "Friendly constructor: VKickerSpec(; vkick=0, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). dpy = +vkick."
 end
 
 @element_spec begin
@@ -280,8 +363,15 @@ end
     parameters = (
         hkick=ParamMeta(default=0, meaning="horizontal steering kick, dpx = +hkick"),
         vkick=ParamMeta(default=0, meaning="vertical steering kick, dpy = +vkick"),
+        x_offset=_THIN_COMMON.x_offset,
+        y_offset=_THIN_COMMON.y_offset,
+        z_offset=_THIN_COMMON.z_offset,
+        x_pitch=_THIN_COMMON.x_pitch,
+        y_pitch=_THIN_COMMON.y_pitch,
+        tilt=_THIN_COMMON.tilt,
+        misalign_convention=_THIN_COMMON.misalign_convention,
         tracking_method=_THIN_COMMON.tracking_method,
     )
     example = KickerSpec(hkick=1.0e-4, vkick=-5.0e-5)
-    construction_help = "Friendly constructor: KickerSpec(; hkick=0, vkick=0, tracking_method=Symplectic6DMap()). dpx = +hkick and dpy = +vkick."
+    construction_help = "Friendly constructor: KickerSpec(; hkick=0, vkick=0, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). dpx = +hkick and dpy = +vkick."
 end

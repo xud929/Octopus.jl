@@ -1458,6 +1458,37 @@ end
     @test_throws ArgumentError RBendSpec(L=1.1)
     @test_throws ArgumentError RBendSpec(angle=0.198)
 
+    # Thin elements take misalignments too, through the same frames the thick
+    # magnets use. A displaced thin quadrupole feeds down to a dipole kick of
+    # exactly k1l*dx, which is the analytic check.
+    let dx = 1.0e-3, k1l = 0.05
+        a = compile_runtime(ThinQuadrupoleSpec(k1l=k1l))
+        b = compile_runtime(ThinQuadrupoleSpec(k1l=k1l, x_offset=dx))
+        @test collect(b(u...))[2] - collect(a(u...))[2] ≈ k1l * dx
+        @test collect(b(u...))[1] ≈ u[1]                      # still zero length
+        J = jac(b)
+        @test maximum(abs, J' * S6 * J - S6) < 1.0e-14
+    end
+    # A misalignment must not be silently ignored: it has to reach the map.
+    for (aligned, moved) in ((ThinQuadrupoleSpec(k1l=0.05),
+                              ThinQuadrupoleSpec(k1l=0.05, y_offset=1e-3)),
+                             (ThinSextupoleSpec(k2l=1.2),
+                              ThinSextupoleSpec(k2l=1.2, tilt=0.3)),
+                             (KickerSpec(hkick=1e-4),
+                              KickerSpec(hkick=1e-4, tilt=0.3)),
+                             (ThinMultipoleSpec(knl=(0.0, 0.05)),
+                              ThinMultipoleSpec(knl=(0.0, 0.05), x_pitch=1e-3)))
+        @test collect(compile_runtime(moved)(u...)) != collect(compile_runtime(aligned)(u...))
+    end
+    # Zero misalignment compiles to the bare kick, bit for bit, and the flag is
+    # a type parameter so the aligned element carries no runtime branch.
+    @test collect(compile_runtime(ThinQuadrupoleSpec(k1l=0.05, x_offset=0.0))(u...)) ==
+          collect(compile_runtime(ThinQuadrupoleSpec(k1l=0.05))(u...))
+    @test typeof(compile_runtime(ThinQuadrupoleSpec(k1l=0.05))) !=
+          typeof(compile_runtime(ThinQuadrupoleSpec(k1l=0.05, x_offset=1e-3)))
+    @test_throws ArgumentError compile_runtime(
+        ThinQuadrupoleSpec(k1l=0.05, x_offset=1e-3, misalign_convention=:middle))
+
     # Every new kind is registered and discoverable.
     for kd in (:marker, :thin_multipole, :thin_dipole, :thin_quadrupole,
                :thin_sextupole, :hkicker, :vkicker, :kicker)
