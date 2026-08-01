@@ -1315,9 +1315,9 @@ Remaining:
 3. **Cavity map.** Convention #1 chosen (Section 3), map not derived. Needed to
    close a ring, not for magnets.
 
-4. **Misalignments — implemented, partly validated (2026-08-01).** Six keywords
-   on every magnet kind (`x_offset`, `y_offset`, `z_offset`, `x_pitch`,
-   `y_pitch`, `tilt`) plus `misalign_reference`. One kernel, `_frame_change`,
+4. **Misalignments — implemented and validated (2026-08-01).** Six keywords
+   on every element kind (`x_offset`, `y_offset`, `z_offset`, `x_pitch`,
+   `y_pitch`, `tilt`) plus `misalign_convention`. One kernel, `_frame_change`,
    moves the particle between frames and drifts it onto the new face; everything
    that distinguishes entrance from exit, or straight from curved, is in the
    `(Q, o)` pairs `_misalign_frames` computes from the survey at compile time.
