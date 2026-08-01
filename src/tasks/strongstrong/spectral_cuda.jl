@@ -17,7 +17,7 @@ if _HAS_CUDA
             p = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             p <= length(sx) || return nothing
             X = (sx[p] + Lx) / hx; Y = (sy[p] + Ly) / hy
-            i = unsafe_trunc(Int, floor(X)); j = unsafe_trunc(Int, floor(Y))
+            i = _grid_floor(X); j = _grid_floor(Y)
             wx = X - i; wy = Y - j
             @inbounds begin
                 (1 <= i <= Nx   && 1 <= j <= Ny)   && CUDA.@atomic rho[i, j]     += (1 - wx) * (1 - wy)
@@ -33,7 +33,7 @@ if _HAS_CUDA
             k = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             k <= length(fx) || return nothing
             X = (fx[k] + Lx) / hx; Y = (fy[k] + Ly) / hy
-            i = unsafe_trunc(Int, floor(X)); j = unsafe_trunc(Int, floor(Y))
+            i = _grid_floor(X); j = _grid_floor(Y)
             wx = X - i; wy = Y - j
             ex = zero(eltype(px)); ey = zero(eltype(py))
             @inbounds begin
@@ -67,8 +67,8 @@ if _HAS_CUDA
 
                 X = (xd + Lx) / hx
                 Y = (yd + Ly) / hy
-                i = unsafe_trunc(Int, floor(X))
-                j = unsafe_trunc(Int, floor(Y))
+                i = _grid_floor(X)
+                j = _grid_floor(Y)
                 wx = X - i
                 wy = Y - j
                 phiL = zero(eltype(x)); exL = zero(eltype(x)); eyL = zero(eltype(x))
@@ -374,7 +374,7 @@ if _HAS_CUDA
             @inbounds begin
                 X = (sx[t] + spx[t] * drift + Lx) / hx
                 Y = (sy[t] + spy[t] * drift + Ly) / hy
-                i = unsafe_trunc(Int, floor(X)); j = unsafe_trunc(Int, floor(Y))
+                i = _grid_floor(X); j = _grid_floor(Y)
                 wx = X - i; wy = Y - j
                 (1 <= i <= Nx   && 1 <= j <= Ny)   && CUDA.@atomic rho[i, j]         += (1 - wx) * (1 - wy)
                 (1 <= i + 1 <= Nx && 1 <= j <= Ny) && CUDA.@atomic rho[i + 1, j]     += wx * (1 - wy)
@@ -394,7 +394,7 @@ if _HAS_CUDA
                 p = idx[t]
                 X = (x[p] + px[p] * drift + Lx) / hx
                 Y = (y[p] + py[p] * drift + Ly) / hy
-                i = unsafe_trunc(Int, floor(X)); j = unsafe_trunc(Int, floor(Y))
+                i = _grid_floor(X); j = _grid_floor(Y)
                 wx = X - i; wy = Y - j
                 (1 <= i <= Nx   && 1 <= j <= Ny)   && CUDA.@atomic rho[i, j]         += (1 - wx) * (1 - wy)
                 (1 <= i + 1 <= Nx && 1 <= j <= Ny) && CUDA.@atomic rho[i + 1, j]     += wx * (1 - wy)

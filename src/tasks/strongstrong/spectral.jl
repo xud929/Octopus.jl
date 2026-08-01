@@ -1,3 +1,23 @@
+"""
+    _grid_floor(X)
+
+Floor a normalized grid coordinate to an index, or return an index guaranteed to
+fail every bounds check.
+
+`floor(Int, X)` throws an `InexactError` for a non-finite `X`, and overflows for
+a finite one large enough to leave `Int` range -- and the conversion happens
+*before* the `1 <= i <= Nx` guards below it, so those guards cannot save it. The
+range test is written so that `NaN` takes the reject branch, every comparison
+against it being false, and `_GRID_REJECT` is far enough from `typemin` that
+`i + 1` and `i + 2` cannot overflow.
+
+This is the same contract `_pic_cic_weights` states for deposition: a particle
+with no valid cell contributes nothing rather than crashing the solver. It is
+what lets an aperture write NaN without taking the spectral path down with it.
+"""
+const _GRID_REJECT = typemin(Int) >> 2
+@inline _grid_floor(X) = (-1e15 < X < 1e15) ? floor(Int, X) : _GRID_REJECT
+
 export SpectralPoissonSolver
 
 #=
@@ -374,7 +394,7 @@ function _spectral_field_grid!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly)
     rho = ws.rho; fill!(rho, 0.0)
     @inbounds for p in eachindex(sx)
         X = (sx[p] + Lx) / hx; Y = (sy[p] + Ly) / hy
-        i = floor(Int, X); j = floor(Int, Y); wx = X - i; wy = Y - j
+        i = _grid_floor(X); j = _grid_floor(Y); wx = X - i; wy = Y - j
         for (ii, cx) in ((i, 1 - wx), (i + 1, wx)), (jj, cy) in ((j, 1 - wy), (j + 1, wy))
             (1 <= ii <= Nx && 1 <= jj <= Ny) && (rho[ii, jj] += cx * cy)
         end
@@ -410,7 +430,7 @@ function _spectral_field_grid!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly)
     Exg = ws.Exg; Eyg = ws.Eyg
     @inbounds for k in 1:nf
         X = (fx[k] + Lx) / hx; Y = (fy[k] + Ly) / hy
-        i = floor(Int, X); j = floor(Int, Y); wx = X - i; wy = Y - j
+        i = _grid_floor(X); j = _grid_floor(Y); wx = X - i; wy = Y - j
         ex = 0.0; ey = 0.0
         for (ii, cx) in ((i, 1 - wx), (i + 1, wx)), (jj, cy) in ((j, 1 - wy), (j + 1, wy))
             if 1 <= ii <= Nx && 1 <= jj <= Ny
@@ -430,7 +450,7 @@ function _spectral_field_grid_potential!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx
     rho = ws.rho; fill!(rho, 0.0)
     @inbounds for p in eachindex(sx)
         X = (sx[p] + Lx) / hx; Y = (sy[p] + Ly) / hy
-        i = floor(Int, X); j = floor(Int, Y); wx = X - i; wy = Y - j
+        i = _grid_floor(X); j = _grid_floor(Y); wx = X - i; wy = Y - j
         for (ii, cx) in ((i, 1 - wx), (i + 1, wx)), (jj, cy) in ((j, 1 - wy), (j + 1, wy))
             (1 <= ii <= Nx && 1 <= jj <= Ny) && (rho[ii, jj] += cx * cy)
         end
@@ -479,7 +499,7 @@ function _spectral_field_grid_potential!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx
     Phig = ws.Phig; Exg = ws.Exg; Eyg = ws.Eyg
     @inbounds for k in 1:nf
         X = (fx[k] + Lx) / hx; Y = (fy[k] + Ly) / hy
-        i = floor(Int, X); j = floor(Int, Y); wx = X - i; wy = Y - j
+        i = _grid_floor(X); j = _grid_floor(Y); wx = X - i; wy = Y - j
         phi = 0.0; ex = 0.0; ey = 0.0
         for (ii, cx) in ((i, 1 - wx), (i + 1, wx)), (jj, cy) in ((j, 1 - wy), (j + 1, wy))
             if 1 <= ii <= Nx && 1 <= jj <= Ny
@@ -500,7 +520,7 @@ function _spectral_field_grid(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
     rho = zeros(Nx, Ny)
     @inbounds for p in eachindex(sx)
         X = (sx[p] + Lx) / hx; Y = (sy[p] + Ly) / hy
-        i = floor(Int, X); j = floor(Int, Y); wx = X - i; wy = Y - j
+        i = _grid_floor(X); j = _grid_floor(Y); wx = X - i; wy = Y - j
         for (ii, cx) in ((i, 1 - wx), (i + 1, wx)), (jj, cy) in ((j, 1 - wy), (j + 1, wy))
             (1 <= ii <= Nx && 1 <= jj <= Ny) && (rho[ii, jj] += cx * cy)
         end
@@ -518,7 +538,7 @@ function _spectral_field_grid(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
     nf = length(fx); Ex = Vector{Float64}(undef, nf); Ey = Vector{Float64}(undef, nf)
     @inbounds for k in 1:nf
         X = (fx[k] + Lx) / hx; Y = (fy[k] + Ly) / hy
-        i = floor(Int, X); j = floor(Int, Y); wx = X - i; wy = Y - j
+        i = _grid_floor(X); j = _grid_floor(Y); wx = X - i; wy = Y - j
         ex = 0.0; ey = 0.0
         for (ii, cx) in ((i, 1 - wx), (i + 1, wx)), (jj, cy) in ((j, 1 - wy), (j + 1, wy))
             if 1 <= ii <= Nx && 1 <= jj <= Ny
@@ -663,7 +683,7 @@ function _spectral_cic_deposit!(q, x, y, x0, y0, hx, hy)
     nx, ny = size(q)
     @inbounds for p in eachindex(x)
         X = (x[p] - x0) / hx + 1; Y = (y[p] - y0) / hy + 1
-        i = floor(Int, X); j = floor(Int, Y); wx = X - i; wy = Y - j
+        i = _grid_floor(X); j = _grid_floor(Y); wx = X - i; wy = Y - j
         for (ii, cx) in ((i, 1 - wx), (i + 1, wx)), (jj, cy) in ((j, 1 - wy), (j + 1, wy))
             (1 <= ii <= nx && 1 <= jj <= ny) && (q[ii, jj] += cx * cy)
         end
