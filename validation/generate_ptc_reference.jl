@@ -176,6 +176,20 @@ const CASES = Case[
          "dpsi=0.03", Dict(:kind => :quadrupole, :L => 0.4)),
     Case("sext_mis_dx", "sextupole, l=0.25, k2=14.0", 0.25, 2, 4, false,
          "dx=1.0e-3", Dict(:kind => :sextupole, :L => 0.25)),
+    # All six at once. These are what distinguish the two rotation-composition
+    # conventions: MAD-X composes intrinsically as R_z R_x R_y, Bmad about fixed
+    # axes as R_y R_x R_z, and the two agree for any single rotation, so only a
+    # multi-rotation case can tell them apart.
+    Case("quad_mis_all", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
+         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02",
+         Dict(:kind => :quadrupole, :L => 0.4)),
+    # Misaligned bends, which exercise the survey: the exit transform is built
+    # from the exit geometry, and the design frame has turned by hL in between.
+    Case("cfbend_mis_dx", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4, false,
+         "dx=1.0e-3", Dict(:kind => :sbend, :L => 1.1)),
+    Case("cfbend_mis_all", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4, false,
+         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02",
+         Dict(:kind => :sbend, :L => 1.1)),
 ]
 
 function madx_version()

@@ -1256,18 +1256,25 @@ Remaining:
    upright quadrupole reproduces the equivalent skew magnet to 3.5e-18; a rigid
    displacement of a whole cell cancels to 1e-19.
 
-   **Two things are open and neither should be treated as working:**
-   - *Composing several rotations.* All six degrees of freedom at once disagrees
-     with MAD-X at 2.7e-6, second order in the angles. Each rotation is right
-     individually, so it is the composition order: MAD-X rotates by `DPSI`,
-     `DPHI`, `DTHETA` in that sequence and its `GEO_ROT` calls appear to compose
-     in the opposite matrix order to Bmad's `R_y R_x R_z`. No multi-rotation
-     reference case is committed, because a tuned one would hide this.
-   - *Bends.* Implemented through the survey and internally consistent, but not
-     yet reproducing `EALIGN` on a bend. The survey sign is confirmed against
-     MAD-X `SURVEY` (`X_exit = -rho(1-cos theta) = -0.108545` for
-     `angle=0.198, l=1.1`), so the geometry is right and the discrepancy is
-     most likely the same composition question.
+   **Both open items are now resolved (2026-08-01).**
+   - *Rotation composition.* `GEO_ROTB` builds
+     `basis^-1 R_z(a3) R_y(a2) R_x(a1) basis`, and `MAD_MISALIGN_FIBRE` calls it
+     three times with `ent1 = ent2 = ent` reset each time, so the rotations are
+     **intrinsic** -- each about the already-rotated axes -- giving
+     `W = R_z R_x R_y`, the reverse of Bmad's fixed-axis `R_y R_x R_z`. Same
+     elementary rotations, same signs, opposite order; identical for any single
+     rotation, different at second order for two. Both are implemented and
+     selected by `misalign_convention` (`:bmad` default, `:madx`), which carries
+     the reference point too, since the halves of a convention are not
+     independently meaningful. All six degrees of freedom now agree to 4.96e-13.
+   - *Bends.* They were never wrong. The comparison was: it omitted
+     `bend_model = :drift_kick`, so an exact-splitting bend was being checked
+     against PTC's `MODEL=1`, giving an O(1e-3) residual that scaled with the
+     bend angle and looked exactly like a bad exit patch. With the right
+     splitting, misaligned bends agree to 4.5e-13 for a pure translation and for
+     all six at once.
+
+   The contract now covers 32 cases, eleven of them misalignments.
 
    Superseded design note, still the reference for the derivation:
 

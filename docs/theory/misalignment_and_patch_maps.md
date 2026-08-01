@@ -276,24 +276,48 @@ one degree of freedom at a time on a quadrupole:
 all at the reference table's print-precision floor. These are committed as the
 `quad_mis_*` and `sext_mis_*` cases.
 
-**Unresolved: composing several rotations.** With all six degrees of freedom set
-at once the agreement degrades to 2.7e-6 — second order in the angles, and far
-above the floor. Each rotation is individually correct, so the discrepancy is in
-the order the three are composed: MAD-X rotates the frame by `DPSI`, then
-`DPHI`, then `DTHETA`, and if those `GEO_ROT` calls compose in the opposite
-matrix order to Bmad's $W = R_y R_x R_z$ the two agree at first order and differ
-at second. This has not been settled, so no multi-rotation case is committed —
-a tuned one would only hide it.
+### The rotation composition order
 
-**Also unresolved: the bend.** A misaligned bend is implemented through the
-survey of Section 5 and is internally consistent — symplectic to 1e-15, exactly
-the identity at zero misalignment, and correct under a rigid displacement of a
-whole line — but it does **not** yet reproduce `EALIGN` on a bend. The survey
-sign convention itself is confirmed against MAD-X's own `SURVEY`, which gives
+A single rotation cannot distinguish the two codes, so the table above pins the
+keyword mapping and nothing more. Setting all six at once initially disagreed at
+2.7e-6 — second order in the angles. The cause is in `GEO_ROTB`
+(`Sd_frame.f90:629`), which builds
+
+```
+basis^-1 · R_z(ANG(3)) · R_y(ANG(2)) · R_x(ANG(1)) · basis
+```
+
+and in how `MAD_MISALIGN_FIBRE` calls it: three times, with `ent1 = ent2 = ent`
+reset before each, so each rotation is taken about the **already rotated** axes.
+That is an intrinsic sequence $z$, then $x$, then $y$, which composes as
+
+$$W_\text{MAD-X} = R_z(\psi)\,R_x(-\phi)\,R_y(\theta),$$
+
+the reverse of Bmad's fixed-axis
+
+$$W_\text{Bmad} = R_y(\theta)\,R_x(-\phi)\,R_z(\psi).$$
+
+The elementary rotations and their signs are the same; only the order differs.
+The two therefore agree exactly for any single rotation and differ at second
+order once two are nonzero. Octopus implements both, selected by
+`misalign_convention` (`:bmad` default, `:madx`), which also carries the
+reference point — the two halves of a convention are not independently
+meaningful. With `:madx` the all-six case agrees to **4.96e-13**.
+
+### Bends
+
+Misaligned bends agree with `EALIGN` to **4.5e-13**, both for a pure translation
+and for all six degrees of freedom, using the survey of Section 5. The survey
+sign is independently confirmed against MAD-X's own `SURVEY`, which gives
 $X_\text{exit} = -\rho(1-\cos\theta) = -0.108545$ for `angle=0.198, l=1.1`,
-matching the $-(1-\cos hs)/h$ used here. The remaining disagreement is most
-likely the same rotation-composition question, since MAD-X's bend misalignment
-routes through the same `MAD_MISALIGN_FIBRE`.
+matching the $-(1-\cos hs)/h$ used here.
+
+One trap, recorded because it cost a debugging cycle and looked exactly like a
+geometry error: a misaligned-bend comparison must also set
+`bend_model = :drift_kick`, since PTC runs `MODEL=1`. Comparing an
+exact-splitting bend against PTC's drift-kick one produces an O(1e-3) residual
+that has nothing to do with the misalignment, and which scales with the bend
+angle in a way that mimics a wrong exit patch.
 
 ## 7. Recommended design for Octopus
 

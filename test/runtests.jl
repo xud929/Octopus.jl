@@ -1360,7 +1360,7 @@ end
     # The reference point is a real convention choice, not a detail: centre and
     # entrance agree for a pure translation of a straight element and disagree
     # for a rotation, and for a translation of a bend.
-    let c = (misalign_reference=:center,), e = (misalign_reference=:entrance,)
+    let c = (misalign_convention=:bmad,), e = (misalign_convention=:madx,)
         @test collect(compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_offset=1e-3; c...))(u...)) ==
               collect(compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_offset=1e-3; e...))(u...))
         @test collect(compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_pitch=1e-3; c...))(u...)) !=
@@ -1369,7 +1369,7 @@ end
               collect(compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4, x_offset=1e-3; e...))(u...))
     end
     @test_throws ArgumentError compile_runtime(
-        QuadrupoleSpec(L=0.4, k1=1.7, x_offset=1e-3, misalign_reference=:middle))
+        QuadrupoleSpec(L=0.4, k1=1.7, x_offset=1e-3, misalign_convention=:middle))
 
     # The survey follows h, the frame curvature, and never b0, the field. Two
     # bends with the same h and different b0 must get the same misalignment
@@ -1389,7 +1389,7 @@ end
     result = validate(PTCConsistencyContract())
     @test result.status in (:passed, :skipped)
     if result.status === :passed
-        @test result.metrics[:cases] >= 29
+        @test result.metrics[:cases] >= 32
         @test haskey(result.metrics, :madx_version)
         # Fringe and pole-face cases. These are what pin the PTC behaviours a
         # source comparison turned up: the MAD8 quadrupole-in-wedge kick
@@ -1399,7 +1399,8 @@ end
                   :dev_cfbend_fringe, :dev_sbend_edge, :dev_cfbend_edge, :dev_sbend_fint,
                   :dev_quad_mis_dx, :dev_quad_mis_dy, :dev_quad_mis_ds,
                   :dev_quad_mis_dtheta, :dev_quad_mis_dphi, :dev_quad_mis_dpsi,
-                  :dev_sext_mis_dx)
+                  :dev_sext_mis_dx, :dev_quad_mis_all,
+                  :dev_cfbend_mis_dx, :dev_cfbend_mis_all)
             @test result.metrics[k] < 1.0e-11
         end
         # Straight elements should agree to MAD-X's printed precision. The bend

@@ -771,11 +771,14 @@ hard-edge multipole fringe (`quadrupole_fringe`, `multipole_fringe`,
 `sbend_fringe`, `cfbend_fringe`) and misalignments through `EALIGN` +
 `ptc_align` (`quad_mis_*`, `sext_mis_dx`).
 
-The misalignment cases set one degree of freedom each and require
-`misalign_reference=:entrance`, because MAD-X references a misalignment to the
-entrance frame while Octopus defaults to the centre. Combinations of several
-rotations are deliberately absent: they disagree at second order in the angles
-and the composition order is unresolved.
+The misalignment cases require `misalign_convention=:madx`: MAD-X references a
+misalignment to the entrance frame and composes the three rotations
+intrinsically as `R_z R_x R_y`, while Octopus defaults to Bmad's centre
+reference and fixed-axis `R_y R_x R_z`. A single rotation cannot tell the two
+apart, so `quad_mis_all` and `cfbend_mis_all` set all six degrees of freedom at
+once, which is what pins the order. The misaligned-bend cases must also set
+`bend_model=:drift_kick`, since PTC runs `MODEL=1`; comparing an exact-splitting
+bend produces an O(1e-3) residual that mimics a wrong exit patch.
 
 Two traps are pinned in the script's header comment and are worth repeating.
 The fringe is enabled **per element** with `permfringe=true`, never with
