@@ -1178,6 +1178,58 @@ acceptable for a fixed design point. Hypothesis, not established practice.
   a user who fixes the width will see convergence stall. Consider either deriving
   the width from `ns` by default or rejecting a fixed width above some `ns`.
 
+## Aperture and particle loss: in progress (2026-08-01)
+
+Design is settled and written up in
+[`docs/theory/aperture_and_particle_loss.md`](theory/aperture_and_particle_loss.md):
+a separate aperture element, regular shapes as parameters plus an `alive`
+predicate for the rest, NaN marking a dead particle, log-once by detecting the
+`newly_lost` transition, one per-particle record holding turn, element id and the
+six pre-kill coordinates, and no compaction.
+
+Sequenced deliberately, because a partly-applied NaN mask is silently wrong and
+looks finished. **Do not start a later step before the earlier one is green.**
+
+**Step 1 -- coordinate-to-index safety. DONE** (`7df88fc`, `5779e6c`). This gated
+everything else: `floor(Int, NaN)` throws and `unsafe_trunc` returns an undefined
+index, both *before* the bounds checks that would otherwise have caught them. PIC
+deposition was already safe and documented; slicing (3 sites) and `spectral.jl`
+(7) threw; `spectral_cuda.jl` (5) was correct only by accident. All now route
+through `_slice_bin`/`_grid_floor`, which reject non-finite input using the
+`!(lo <= u <= hi)` idiom `_pic_cic_weights` established.
+
+**Step 2 -- reductions. NOT STARTED.** One shared live-mask helper (all six
+coordinates finite) with `n_live` as the denominator, applied at:
+
+- `src/tasks/BeamObservers.jl:974` -- `means = ntuple(i -> Float64(sum(arrays[i])
+  / length(arrays[i])), 6)`. Plain `sum`, plain `length`: one NaN makes all six
+  means NaN and therefore every moment NaN. The CUDA twin just below it is
+  identical, and `_compute_moment` / `_cuda_compute_moment!` downstream are
+  unmasked too.
+- `src/track/strong_beam_track.jl:23, 51, 189, 235` -- `sum(local_lum)` and
+  `sum(Array(lum))`.
+- `src/tasks/strongstrong/gaussian.jl:93` -- `_finite_moments` currently *rejects*
+  non-finite slice moments, so today a NaN particle halts a strong-strong run.
+  It has to be restated from "no NaN" to "no **unexpected** NaN": dead particles
+  are excluded upstream by the mask, and anything non-finite that survives that
+  is still the bug the guard was written for.
+
+Mask on `!isfinite`, never on `isnan`: `Inf` means overflow and `NaN` an invalid
+operation, and keeping them distinct is what separates a diverging trajectory
+from a particle that hit a collimator.
+
+**Step 3 -- the aperture element. NOT STARTED.** Non-symplectic, so it declares
+`NonSymplectic6DMap` rather than `Symplectic6DMap`; needs a probe in
+`DEFAULT_ELEMENT_PARAM_PROBES`, and the `alive` predicate needs an entry in
+`DEFAULT_INACTIVE_ELEMENT_PARAMS` because a function has no meaningful
+perturbation. The predicate must be a **type parameter** on the runtime, not an
+`Any` field, or it will not compile for the GPU.
+
+**Step 4 -- the acceptance test. NOT STARTED.** Launch a beam, inject NaN into
+some particles' coordinates, and confirm the moment observer, luminosity, the
+soft-Gaussian solver and the PIC solver all still produce correct finite output
+over the surviving particles.
+
 ## Lattice magnets: remaining work
 
 ### Element coverage (2026-08-01)
