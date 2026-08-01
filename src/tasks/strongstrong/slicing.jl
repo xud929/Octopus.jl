@@ -145,13 +145,33 @@ function _longitudinal_slices_equal_area(rep::Phase6DRep, slicing::LongitudinalS
     return _slices_from_boundaries(rep, slicing, boundaries)
 end
 
+"""
+    _slice_bin(zi, zmin, width, bins)
+
+Longitudinal bin index for `zi`, or `0` for a coordinate that has none.
+
+`floor(Int, NaN)` throws an `InexactError` from inside the kernel, so a
+non-finite coordinate cannot be converted and must be rejected before the
+conversion. The `!(...)` form is deliberate and matches `_pic_cic_weights`:
+every comparison against `NaN` is false, so non-finite input takes the reject
+branch without a separate `isfinite` call.
+
+A particle killed by an aperture is NaN by construction, so this is the point
+where a dead particle stops contributing to slicing rather than crashing it.
+"""
+@inline function _slice_bin(zi, zmin, width, bins::Int)
+    d = (zi - zmin) / width
+    !(d > -Inf && d < Inf) && return 0
+    return clamp(floor(Int, d) + 1, 1, bins)
+end
+
 function _threaded_histogram(z, zmin, width, bins::Int)
     nchunks = _cpu_worker_count()
     if nchunks == 1
         counts = zeros(Int, bins)
         for zi in z
-            bin = floor(Int, (zi - zmin) / width) + 1
-            counts[clamp(bin, 1, bins)] += 1
+            bin = _slice_bin(zi, zmin, width, bins)
+            bin == 0 || (counts[bin] += 1)
         end
         return counts
     end
@@ -161,8 +181,8 @@ function _threaded_histogram(z, zmin, width, bins::Int)
         counts = local_counts[chunk]
         for i in first_i:last_i
             zi = z[i]
-            bin = floor(Int, (zi - zmin) / width) + 1
-            counts[clamp(bin, 1, bins)] += 1
+            bin = _slice_bin(zi, zmin, width, bins)
+            bin == 0 || (counts[bin] += 1)
         end
     end
     counts = local_counts[1]
@@ -217,7 +237,7 @@ function _longitudinal_slices_equal_width(rep::Phase6DRep, slicing::Longitudinal
     end
     width = (zmax - zmin) / ns
     indices = _threaded_indices_by_function(z, ns) do zi
-        return clamp(floor(Int, (zi - zmin) / width) + 1, 1, ns)
+        return _slice_bin(zi, zmin, width, ns)
     end
     return _finish_longitudinal_slices(rep, slicing, indices, boundaries)
 end
@@ -279,7 +299,11 @@ function _threaded_indices_by_function(slice_index, z, ns::Int)
     if nchunks == 1
         indices = [Int[] for _ in 1:ns]
         for i in eachindex(z)
-            push!(indices[slice_index(z[i])], i)
+            # `0` means the coordinate has no bin -- non-finite, e.g. a particle
+            # an aperture killed. It joins no slice and so contributes to no
+            # interaction, which is what a dead particle should do.
+            si = slice_index(z[i])
+            si == 0 || push!(indices[si], i)
         end
         return indices
     end
@@ -289,7 +313,7 @@ function _threaded_indices_by_function(slice_index, z, ns::Int)
         counts = local_counts[chunk]
         for i in first_i:last_i
             s = slice_index(z[i])
-            counts[s] += 1
+            s == 0 || (counts[s] += 1)
         end
     end
     local_indices = [[Vector{Int}(undef, local_counts[chunk][s]) for s in 1:ns] for chunk in 1:nchunks]
@@ -300,6 +324,7 @@ function _threaded_indices_by_function(slice_index, z, ns::Int)
         chunk_indices = local_indices[chunk]
         for i in first_i:last_i
             s = slice_index(z[i])
+            s == 0 && continue
             offsets[s] += 1
             chunk_indices[s][offsets[s]] = i
         end
