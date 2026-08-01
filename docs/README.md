@@ -58,7 +58,9 @@ reference material, not API docs; the implementing code links back to them.
   definitions ($n!$ expansion, $K_n$ versus relative $b_n$/$a_n$), the verified
   exact drift and exact sector bend with independent frame curvature $h$ and
   dipole strength $b_0$, the removable singularities that force small-parameter
-  branches, **the fringe-field maps decoded from the PTC source** (three
+  branches, the pole-face geometry (`ROT_XZ` derived as a frame rotation,
+  `WEDGE` as the thin-sliver limit of the exact bend), **the fringe-field maps
+  decoded from the PTC source** (three
   independent mechanisms, the Forest–Milutinović multipole fringe as an exact
   point transformation, the six-component dipole face, the SAD cubic most codes
   omit), and the PTC flag set a benchmark contract must pin.

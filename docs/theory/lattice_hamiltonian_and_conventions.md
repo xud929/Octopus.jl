@@ -93,7 +93,10 @@ Two traps follow directly.
 
 > **PTC's `TIME=FALSE` variable is $-\ell$, not $s-\ell$.** Same dynamics —
 > they differ by the parameter $s$ — but different printed numbers. The offset
-> has to be pinned when comparing element-by-element output.
+> has to be pinned when comparing element-by-element output. It also carries an
+> **orientation**: PTC's maps are symplectic with respect to $S_{56}=-1$, so a
+> port to $z=s-\ell$ with the usual $S_{56}=+1$ must flip the sign of every
+> longitudinal update. Measured in Section 6.4.
 
 ### 2.2 Conversions
 
@@ -406,6 +409,128 @@ that never forms $1/h$), with the crossover chosen from the measured error, not
 guessed. This is a correctness requirement, not an optimization: a lattice with
 one nearly-straight bend will otherwise produce silent garbage.
 
+### 5.3 Pole-face geometry: `ROT_XZ` and `WEDGE`
+
+These two maps are what give a bend its pole-face angles, and therefore what
+distinguishes a rectangular bend from a sector bend. They are **geometry, not
+imperfections** — the angles are chosen by the magnet designer. They share
+machinery with misalignments (both are Euclidean transformations), which is why
+they live in PTC's `Sc_euclidean.f90`, but the role is different.
+
+Without them: only a sector bend with faces perpendicular to the trajectory.
+An RBEND *is* a sector body plus wedges at $e_1=e_2=\alpha/2$.
+
+#### `ROT_XZ` — the field-free rotation
+
+A rotation of the reference frame by $A$ about $\mathbf e_y$. Taking
+
+$$
+    \mathbf e_x'=\cos A\,\mathbf e_x+\sin A\,\mathbf e_s,
+    \qquad
+    \mathbf e_s'=-\sin A\,\mathbf e_x+\cos A\,\mathbf e_s,
+$$
+
+the momentum rotates as a vector, $p_x'=p_x\cos A+p_s\sin A$. The coordinates
+are harder, because the new reference plane $s'=0$ is a *different plane in
+space*: the particle must be drifted onto it. Along a field-free trajectory
+$\mathbf r(s)=\bigl(x+\tfrac{p_x}{p_s}s,\;y+\tfrac{p_y}{p_s}s,\;s\bigr)$, the
+condition $s'=\mathbf r\cdot\mathbf e_s'=0$ gives the crossing point
+
+$$
+    s^\ast=\frac{x\tan A}{P_T},
+    \qquad
+    P_T\equiv1-\frac{p_x\tan A}{p_s} .
+$$
+
+Evaluating there and projecting onto the new axes,
+
+$$
+    \boxed{\;x'=\frac{x}{\cos A\;P_T},\qquad
+           p_x'=p_x\cos A+p_s\sin A,\qquad
+           y'=y+\frac{p_y}{p_s}s^\ast,\qquad
+           \Delta z=-\frac{(1+\delta)}{p_s}s^\ast\;}
+$$
+
+the last being minus the extra path length, since $z=s-\ell$ and the reference
+does not advance during a rotation at a point.
+
+*Verified:* reproduces PTC's `ROT_XZ` on $(x,p_x,y,p_y)$ to $2\times10^{-19}$,
+and the longitudinal term to the same precision **with the opposite sign** —
+the fourth independent sighting of PTC's longitudinal orientation
+(Sections 2.1 and 6.4).
+
+A useful consistency check: the curved drift of Section 5 has
+$p_x=p_{x,0}\cos(hs)+p_{s,0}\sin(hs)$, which is this same rotation at $A=hs$. A
+curved drift *is* a continuous sequence of frame rotations.
+
+#### `WEDGE` — the rotation with the field on
+
+Tilting a pole face adds or removes a wedge of dipole field. Two derivations,
+which agree.
+
+**From the vector potential.** Under the frame rotation the potential
+$\hat{\mathbf a}=\hat a_s\mathbf e_s$ acquires a transverse component in the new
+frame, $\hat a_{x'}=\hat a_s(\mathbf e_s\cdot\mathbf e_x')=\hat a_s\sin A$. With
+the straight-frame dipole $\hat a_s=-b_1x$ (Section 4.4 at $h=0$), the *kinetic*
+momentum rotates as a vector while the *canonical* one picks up the gauge term:
+
+$$
+    p_x'=\underbrace{p_x\cos A+p_s\sin A}_{\text{kinetic rotation}}
+        \;\underbrace{-\,b_1x\sin A}_{\hat a_{x'}}
+    =p_x\cos A+\left(p_s-b_1x\right)\sin A .
+$$
+
+So the *only* change from `ROT_XZ` in the momentum line is $p_s\to p_s-b_1x$,
+which is exactly what the implementation shows.
+
+**As a limit of the exact bend.** More powerfully, the whole map is the exact
+sector bend of Section 5 in the limit
+
+$$
+    L\to0,\qquad h\to\infty,\qquad A=hL\ \text{fixed},
+$$
+
+an infinitesimally thin sliver subtending a finite angle — which is what a wedge
+*is*. Every term follows. The bend's
+$p_x=p_{x,0}\cos(hL)+\frac{\sin(hL)}{h}\left[-b_0(1+hx_0)+hp_{s,0}\right]$ tends
+to $p_{x,0}\cos A+\sin A\,(p_{s,0}-b_0x_0)$ as $b_0/h\to0$; and the bend's
+shared quantity becomes
+
+$$
+    \Delta=\frac{A+\arcsin\!\frac{p_{x,0}}{w}-\arcsin\!\frac{p_x}{w}}{b_1},
+    \qquad w=\sqrt{(1+\delta)^2-p_y^2},
+$$
+
+feeding the same $y=y_0+p_y\Delta$ and $z=z_0-(1+\delta)\Delta$ as the bend.
+
+*Verified:* the wedge map matches the exact bend at $L=A/h$ with error falling
+as $1/h$ — $4.6\times10^{-5}$, $10^{-6}$, $10^{-7}$, $10^{-8}$ at
+$h=10^3\ldots10^6$ — confirming the limit rather than an approximation to it.
+And $b_1\to0$ recovers `ROT_XZ` with error $\propto b_1$
+($1.9\times10^{-8}$ at $b_1=10^{-4}$), which the implementation also short-circuits
+explicitly.
+
+**The transverse position uses a cancellation-free form.** The bend's
+$x=-\tfrac1h+\tfrac{p_s}{b_0}-\tfrac{1}{b_0h}\tfrac{\mathrm dp_x}{\mathrm ds}$
+is $\infty-\infty$ in this limit, so it is rearranged to
+
+$$
+    x'=x\cos A+\frac{x\,p_x\sin2A+\sin^2\!A\left(2xp_s-b_1x^2\right)}
+                    {p_s'+p_s\cos A-p_x\sin A},
+    \qquad p_s'=\sqrt{(1+\delta)^2-p_x'^2-p_y^2},
+$$
+
+which is finite term by term. This is the same discipline Section 5.2 requires
+of the bend itself, and it is worth copying rather than re-deriving.
+
+Both maps are exactly symplectic — $1.4\times10^{-17}$ and $1.1\times10^{-16}$
+under PTC's orientation, against $0.22$ under the other one.
+
+**One more flag to pin:** `n_wedge`. At $0$ the closed form above is used; at
+nonzero values PTC instead *integrates* the wedge with its own Yoshida
+composition (`wyosh`, `wyoshik`, `wyoshid`), which gives different numbers at
+finite step count. Same class of switch as `MODEL` and `METHOD`.
+
 ## 6. Fringe fields, as PTC implements them
 
 Decoded from the PTC source shipped inside MAD-X
@@ -568,7 +693,8 @@ design reached from the field side.
 At the entrance of a sector bend (`fringe_TEAPOTr`, `DIR=1`, `EDGE(1)≠0`), in
 order:
 
-1. **`ROT_XZ(e)`** — an exact coordinate rotation through the pole-face angle.
+1. **`ROT_XZ(e)`** — an exact coordinate rotation through the pole-face
+   angle (Section 5.3).
 2. **`FACE(H)`** — pole-face curvature $H$ ( `H1`/`H2` ):
    $$\Delta p_x=\frac{\sigma b_1H}{2}\left(x^2-\frac{y^2}{\cos^3e}\right),
      \qquad \Delta p_y=-\frac{\sigma b_1H}{\cos^3e}\,xy .$$
@@ -582,7 +708,7 @@ order:
    with `wedge_coeff` $=(w_1,w_2)$, **or**, if fringes are off and
    `MAD8_WEDGE` is set, the MAD8 form $\Delta p_x=e\,b_2(x^2-y^2)$,
    $\Delta p_y=-2e\,b_2xy$.
-7. **`WEDGE(-e)`** — the exact geometric wedge.
+7. **`WEDGE(-e)`** — the exact geometric wedge (Section 5.3).
 
 The exit repeats all seven in reverse. Steps 1, 2, 6 and 7 have no analogue in
 a straight magnet; a "dipole edge" implemented as pole-face focusing alone
@@ -653,9 +779,101 @@ is a structurally different map. Benchmarks must state which one they target.
 
 ### 6.4 Soft-edge quadrupole fringe (`FRINGE2QUAD`)
 
-Independent of everything above and gated only by `permfringe∈{2,3}`. It
-rotates into the principal axes of a possibly-skew quadrupole, applies a linear
-map, and rotates back:
+Independent of everything above and gated only by `permfringe∈{2,3}`. Where
+Section 6.2 models a *hard* edge — the residue of a delta function that Maxwell
+forces — this one models a **soft** edge: a gradient that ramps over a finite
+length rather than stepping.
+
+**Derivation.** Write the true profile as a hard edge plus a localized
+deviation, $k(s)=k_0\theta(s)+\Delta k(s)$, and perturb the transfer map about
+the hard-edge solution. Near the edge $M_{\rm hard}\simeq\bigl(\begin{smallmatrix}1&s\\0&1\end{smallmatrix}\bigr)$,
+so with $\delta A=\bigl(\begin{smallmatrix}0&0\\-\Delta k&0\end{smallmatrix}\bigr)$,
+
+$$
+    M_{\rm hard}^{-1}\,\delta A\,M_{\rm hard}
+    =\begin{pmatrix}s\,\Delta k& s^2\Delta k\\-\Delta k&-s\,\Delta k\end{pmatrix}
+    \;\Longrightarrow\;
+    \int\!\mathrm ds=\begin{pmatrix}J_1&J_2\\-J_0&-J_1\end{pmatrix},
+$$
+
+with the moments $J_m=\int s^m\,\Delta k(s)\,\mathrm ds$. Defining the effective
+length so that $J_0=0$ — which is what "effective length" *means* — this
+exponentiates to
+
+$$
+    \boxed{\;\begin{pmatrix}x\\x'\end{pmatrix}\to
+      \begin{pmatrix}e^{J_1}&J_2\\0&e^{-J_1}\end{pmatrix}
+      \begin{pmatrix}x\\x'\end{pmatrix}\;}
+$$
+
+and in $y$ the gradient reverses, so $J_1\to-J_1$, $J_2\to-J_2$. That is exactly
+the implemented map, and it identifies the two parameters:
+
+$$
+    f_1=J_1=\int s\,\Delta k\,\mathrm ds
+    \qquad\text{(first moment, dimensionless)},
+$$
+$$
+    f_2=J_2=\int s^2\,\Delta k\,\mathrm ds
+    \qquad\text{(second moment, a length)} .
+$$
+
+**Where the $1/24$ comes from.** For a linear ramp of length $L$ centred on the
+effective edge, direct integration gives $J_0=0$ and
+
+$$
+    J_1=-\frac{k_0L^2}{24},\qquad J_2=0 .
+$$
+
+Comparing with $f_1=-\sigma\,\mathcal F\lvert\mathcal F\rvert\,b/(24p_z)$ and
+$k_0=b/p_z$ identifies
+
+$$
+    \boxed{\;\mathcal F=\texttt{VA}=\text{the equivalent linear-ramp length}\;}
+$$
+
+The **signed square** $\mathcal F\lvert\mathcal F\rvert$ now makes sense: $J_1$ is
+a first moment and may take either sign depending on which way the profile
+leans, while a length squared cannot — so the sign is carried by $\mathcal F$
+itself. Squaring it instead of signed-squaring it would silently lose that.
+
+And because $J_2$ **vanishes** for a symmetric ramp, $\mathcal G=\texttt{VS}$ is
+genuinely independent: it carries profile asymmetry, not the same information at
+higher order. The two parameters are not redundant.
+
+**The skew rotation.** An order-$n$ multipole rotates at $n$ times the geometric
+angle, so a quadrupole $b_2+ia_2$ is a normal quadrupole in a frame turned by
+$\tfrac12\arg(b_2+ia_2)$. Hence $\alpha=-\tfrac12\arctan(a_2,b_2)$ and
+$b=\lvert b_2+ia_2\rvert$: rotate to principal axes, apply the normal-quadrupole
+fringe, rotate back.
+
+**The longitudinal update is the symplectic completion.** The transverse map
+depends on $\delta$ through $p_z$, so $z$ must move. Expressing the map by the
+mixed-variable generating function
+
+$$
+    \tilde F=\left(e^{f_1}-1\right)xP_x+e^{f_1}\frac{f_2}{2p_z}P_x^2
+            +\left(e^{-f_1}-1\right)yP_y-e^{-f_1}\frac{f_2}{2p_z}P_y^2
+$$
+
+(with $P_x,P_y$ the **new** momenta, held fixed under $\partial/\partial\delta$)
+reproduces the implemented $z$ update exactly — verified to $8\times10^{-9}$,
+the differencing floor. Under `TIME=TRUE` the extra `time_fac` factor is nothing
+but $\mathrm d\delta/\mathrm dp_t=1/\beta$, the chain rule for the convention
+change of Section 2.2.
+
+> **Port-critical sign.** The implemented map is exactly symplectic — but with
+> respect to $S_{56}=-1$, i.e. with $(z_{\rm PTC},\delta)$ conjugate in the
+> *opposite* orientation to $(x,p_x)$. Measured: $1.5\times10^{-18}$ with
+> $S_{56}=-1$ against $1.3\times10^{-5}$ with $S_{56}=+1$. The same holds for
+> `MULTIPOLE_FRINGE` ($4\times10^{-16}$ versus $2\times10^{-7}$), so this is
+> PTC's global longitudinal orientation, not a quirk of one routine.
+> **An implementation using $z=s-\ell$ with the usual $S_{56}=+1$ must flip the
+> sign of every longitudinal fringe update taken from this source.** Flipping it
+> restores exact symplecticity under the standard $S$ (verified to the same
+> $1.5\times10^{-18}$).
+
+The implemented map, for reference:
 
 $$
     \alpha=-\tfrac12\arctan\!\left(a_2,b_2\right),
@@ -757,9 +975,10 @@ Two practical points for the contract:
 
 ## 8. Open items
 
-- The `FRINGE2QUAD` map (Section 6.4) is transcribed and checked for
-  symplecticity but not *derived*; its `VA`/`VS` parameters need a physical
-  definition tied to a measured field profile.
+- `VA` and `VS` now have physical meaning (Section 6.4) but no measurement
+  recipe: extracting them from a measured or simulated gradient profile
+  $k(s)$ means evaluating $J_1$ and $J_2$ numerically, which is a small utility
+  worth providing alongside the element.
 - Whether $b_1$ in the multipole array may represent a bend, or whether bending
   lives only in the dipole element with an explicit $h$. Section 4.4 makes this
   concrete: $h$ and $K_0$ are independent inputs to the same potential, so a
