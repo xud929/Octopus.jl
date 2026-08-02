@@ -356,7 +356,9 @@ must cover the next node's drift as well as its own.
 **Residual, now the leading term:** continuity breaker #3 — the shared node is
 solved once per adjacent slice with the source kicked in between. Measured `Dpx`
 2.2e-5, `Dpy` 7.6-8.1e-5, i.e. a `~1e-4` floor roughly 40x below the mesh jump it
-replaced. **This is the next thing to attack.**
+replaced. ~~**This is the next thing to attack.**~~ **Attacked and closed
+negative (2026-08-01)** -- the obvious fix, node-solve caching, removes this
+discontinuity but introduces a larger systematic error in its place. See 4e.
 
 Still open from this phase:
 
@@ -380,9 +382,63 @@ Still open from this phase:
   (`batch_mode=:sequential`, `cuda_async=false`), CPU parity 9.5e-16 and luminosity
   parity 2.7e-16. The wavefront and batched-FFT routes assume one mesh per slice
   pair and throw. Extending them is the same reindexing job as CUDA `:quadratic`.
-- **4e. Node-solve caching** — with node indexing in place, caching a node's solve
-  for both adjacent slices would make `C^0` exact including the source state *and*
-  cut solves. Gated on the residual above proving worth removing.
+- ~~**4e. Node-solve caching**~~ — **CLOSED NEGATIVE (2026-08-01).** Implemented,
+  measured, and reverted. Both halves of the promise held: a one-slot rolling
+  cache per (source slice, direction) made the shared boundary `C^0` exact
+  including the source state, and cut solves from 324 to 180 (`0.556x`, exactly
+  `n/2 + one cold start per source slice`). One slot suffices because
+  `_slice_collision_order` visits a fixed source slice's field slices
+  monotonically, so ~12 MB at 15 slices and grid 128 rather than the ~190 MB a
+  full per-node cache would need.
+
+  **It is still the wrong trade, because reuse *is* staleness.** The second
+  slice sees the source as it was before the intervening kick, and that kick is
+  real physics: the source slice genuinely is deflected by field slice `j`
+  before it meets `j+1`, so the fresh solve is correct and the cached one is
+  behind. Measured against kick strength, 40k macroparticles, 9 slices, grid 64:
+
+      kick/divergence   luminosity diff   relative dpy error introduced
+      33.4              7.5e-3            0.229
+      0.447             4.7e-6            3.0e-3
+      0.045             4.9e-8            3.0e-4
+      0.0045            5.0e-10           3.0e-5
+
+  The introduced error scales as the kick (luminosity as its square), while the
+  discontinuity being removed is fixed at `Dpy 8.1e-5`. **At a production-like
+  kick (`~0.05` of the divergence) caching introduces `3.0e-4`, roughly 3.7x
+  more error than the `8.1e-5` it removes** -- and introduces it as a systematic
+  field bias everywhere rather than as a jump at one boundary. The two only
+  cross over near `kick/divergence ~ 0.005`, which is not a collision anyone
+  runs.
+
+  The first attempt measured `7.5e-3` on luminosity and looked catastrophic;
+  that run had `rms px` going 0.002 -> 0.066, i.e. **33x the beam divergence**,
+  which is a stress test rather than a collision and maximally penalizes
+  staleness. The scaling table is the honest version, and the conclusion
+  survives it.
+
+  Not gated on the emittance-growth run, deliberately: confirming that a change
+  which introduces more error than it removes also fails to help dynamics is not
+  worth the compute. Reverted rather than kept behind a flag -- a knob nobody
+  should turn is a maintenance cost, and the measurement lives here instead.
+
+**With 4e closed, the `~1e-4` node floor is the accuracy limit of the node route,
+and removing it needs a different idea than reusing a solve** -- something that
+keeps the source fresh *and* the boundary continuous, e.g. re-solving both
+adjacent slices from a common interpolated source state rather than from either
+endpoint. Not designed, and not obviously worth it: see the dynamics evidence
+below.
+
+**The dynamics case for attacking this floor at all is weak**, and that should be
+weighed before anyone spends more on it.
+[`docs/history/slice_longitudinal_interpolation_record.md`](history/slice_longitudinal_interpolation_record.md)
+Section 4 measured that artificial vertical emittance growth here is driven by
+*transverse field noise and mesh discontinuity*, not by longitudinal
+reconstruction error: `:TSC` deposition moved it 12.7%, a continuous mesh moved
+it 7.4%/30%, while more nodes, more slices, and both together moved it not at
+all. The jump that bought those gains was `~1e-3`; this residual is `2.2e-5` to
+`8.1e-5`, 12-45x smaller. Expect any dynamics payoff to sit below the noise floor
+of that measurement.
 
 ### Metrics and acceptance (all phases)
 
