@@ -209,6 +209,17 @@ const CASES = Case[
          Dict(:kind => :thin_multipole)),
     Case("thin_multipole_skew", "multipole, knl={0.0, 0.05}, ksl={0.0, 0.0, 0.8}", 0.0, 2, 1,
          Dict(:kind => :thin_multipole)),
+    # Solenoid. Both polarities, deliberately: the sign of ks follows the charge
+    # convention and the field direction, so agreement at one polarity proves
+    # nothing about the other, and a sign error is invisible in any quantity
+    # that is even in ks. Two strengths so the ks-dependence is exercised, not
+    # just one working point.
+    Case("solenoid_pos", "solenoid, l=1.3, ks=0.35", 1.3, 2, 1,
+         Dict(:kind => :solenoid, :L => 1.3, :ks => 0.35)),
+    Case("solenoid_neg", "solenoid, l=1.3, ks=-0.35", 1.3, 2, 1,
+         Dict(:kind => :solenoid, :L => 1.3, :ks => -0.35)),
+    Case("solenoid_strong", "solenoid, l=2.0, ks=1.7", 2.0, 2, 1,
+         Dict(:kind => :solenoid, :L => 2.0, :ks => 1.7)),
 ]
 
 function madx_version()

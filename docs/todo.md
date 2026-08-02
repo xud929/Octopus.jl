@@ -1763,12 +1763,37 @@ needs a diagnostic-boundary and a stochastic check respectively.
 **Still missing, and deliberately not attempted here** -- each needs work beyond
 adding an element spec:
 
-- **Solenoid.** Needs its own map and its own validation. The usual linear
-  solenoid matrix is paraxial, so dropping it into an otherwise
-  exact-Hamiltonian code would silently mix models -- a solenoid with `ks = 0`
-  would not reduce to the exact drift the rest of the code uses. Worth deriving
-  the exact map from the same Hamiltonian, then benchmarking against PTC as the
-  bends were.
+- ~~**Solenoid.**~~ **DONE (2026-08-01)**, `src/elements/solenoid.jl`, derived
+  first in [`docs/theory/solenoid.md`](theory/solenoid.md). The exact map from
+  the same Hamiltonian, benchmarked against PTC as the bends were:
+  **4.9e-13 across three cases including both polarities**, and the contract now
+  covers 39 cases. The concern that motivated the entry is answered directly --
+  `ks = 0` reproduces `_lattice_drift(h=0)` to **8.7e-17**, i.e. roundoff rather
+  than a tolerance, so a switched-off solenoid is the same drift the rest of the
+  lattice uses.
+
+  The physics that made this element different from every other one: a
+  longitudinal field has a *transverse* vector potential, so inside a solenoid
+  the stored canonical `px`/`py` are **not** the particle's transverse momenta.
+  Everything else follows from that -- most usefully, the textbook entrance and
+  exit fringe kicks turn out not to be a separate model at all but the
+  canonical-to-kinetic conversion forced by `a` jumping at a hard edge, so they
+  are included by construction and cannot be switched off or given inconsistent
+  signs at the two faces.
+
+  Because `p_s` is conserved the map is closed-form, and because `kappa`
+  depends on `p_s` the chromatic and amplitude dependence come out with no extra
+  terms. `2 sin(kappa L/2)/kappa` is `sin(uL)/u` at `u = kappa/2`, so the
+  existing `_curv_sin` small-argument branch is reused rather than a second
+  series written.
+
+  Two consequences recorded in the note rather than discovered later: **do not
+  split a solenoid** (a split point sits where the vector potential is non-zero,
+  so the halves would have to exchange kinetic rather than canonical momenta),
+  and coordinates read inside a solenoid are canonical, which only becomes
+  reachable if one is split. Deferred: soft fringe, solenoid in a curved frame,
+  combined solenoid + multipole (Strang splitting, no longer exact), and MAD-X's
+  thin solenoid, which holds `ks*L` fixed and is a genuinely different element.
 - ~~**Aperture and particle loss.** Not an element at all: it needs a lost/alive
   state in the particle representation.~~ **DONE (2026-08-01)**, and the premise
   was wrong. No representation change was needed: `NaN` in all six coordinates

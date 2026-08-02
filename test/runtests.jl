@@ -2291,6 +2291,114 @@ end
     end
 end
 
+@testset "Exact solenoid map" begin
+    u0 = (1.2e-3, 3.1e-4, -0.8e-3, -1.7e-4, 2.0e-3, 4.0e-3)
+    sol(ks, L) = compile_runtime(SolenoidSpec(L=L, ks=ks))
+
+    @test isbits(sol(1.7, 1.3))          # must compile for the GPU
+
+    # The requirement that forced an exact derivation instead of the paraxial
+    # matrix: a switched-off solenoid must be the SAME drift the rest of the
+    # lattice uses, to roundoff rather than to a tolerance.
+    drift = collect(Octopus._lattice_drift(0.0, 1.3, u0...))
+    @test collect(sol(0.0, 1.3)(u0...)) ≈ drift atol=1e-15
+    @test collect(sol(1.0e-12, 1.3)(u0...)) ≈ drift atol=1e-14
+    @test collect(sol(0.0, 1.3)(u0...)) ≈ collect(compile_runtime(DriftSpec(L=1.3))(u0...)) atol=1e-15
+
+    # Zero length is the identity for any strength: the two edge conversions are
+    # evaluated at the same x,y and cancel term by term. Not the same thing as a
+    # MAD-X thin solenoid, which holds ks*L fixed instead.
+    @test collect(sol(1.7, 0.0)(u0...)) == collect(u0)
+
+    # The closed form must solve Hamilton's equations, not merely look like it.
+    # RK4 on the equations of motion from the theory note, Section 4.1.
+    function rk4_solenoid(ks, L, u0; n=100_000)
+        k = ks / 2
+        f(u) = begin
+            x, px, y, py, z, pz = u
+            Px = px + k * y; Py = py - k * x
+            ps = sqrt((1 + pz)^2 - Px^2 - Py^2)
+            (Px / ps, k * Py / ps, Py / ps, -k * Px / ps, 1 - (1 + pz) / ps, 0.0)
+        end
+        u = u0; h = L / n
+        for _ in 1:n
+            a = f(u); b = f(u .+ h / 2 .* a); c = f(u .+ h / 2 .* b); d = f(u .+ h .* c)
+            u = u .+ (h / 6) .* (a .+ 2 .* b .+ 2 .* c .+ d)
+        end
+        return u
+    end
+    for ks in (0.35, 1.7, -0.9)
+        @test collect(sol(ks, 1.3)(u0...)) ≈ collect(rk4_solenoid(ks, 1.3, u0)) atol=1e-12
+    end
+
+    # A solenoid is axisymmetric, so the map commutes with a rotation about s.
+    # Catches any implementation that treats x and y asymmetrically.
+    function rot(u, t)
+        c, s = cos(t), sin(t)
+        (c*u[1]-s*u[3], c*u[2]-s*u[4], s*u[1]+c*u[3], s*u[2]+c*u[4], u[5], u[6])
+    end
+    @test collect(sol(1.7, 1.3)(rot(u0, 0.7)...)) ≈ collect(rot(sol(1.7, 1.3)(u0...), 0.7)) atol=1e-15
+
+    # The Larmor half-angle. The displacement runs along HALF the momentum
+    # rotation; if the half disappears a factor of two is wrong in the potential.
+    on_axis = (0.0, 1.0e-4, 0.0, 0.0, 0.0, 0.0)
+    ks, L = 1.7, 1.3
+    m = sol(ks, L)(on_axis...)
+    ps = sqrt(1.0 - 1.0e-8)
+    @test atan(m[3], m[1]) ≈ -ks * L / (2 * ps) rtol=1e-8
+
+    # p_s is a constant of the motion, so the transverse kinetic momentum has
+    # constant magnitude: the solenoid rotates it and does no work.
+    kin(u, ks) = begin
+        k = ks / 2
+        (u[2] + k * u[3])^2 + (u[4] - k * u[1])^2
+    end
+    @test kin(sol(1.7, 1.3)(u0...), 1.7) ≈ kin(u0, 1.7) rtol=1e-14
+
+    # Reversing sign and length returns the particle: the map is invertible and
+    # the two edge conversions are consistent with each other.
+    back = sol(1.7, -1.3)(sol(1.7, 1.3)(u0...)...)
+    @test collect(back) ≈ collect(u0) atol=1e-15
+
+    # Chromaticity is present, not added: kappa depends on p_s hence on delta.
+    off = (u0[1], u0[2], u0[3], u0[4], u0[5], 0.02)
+    on = (u0[1], u0[2], u0[3], u0[4], u0[5], 0.0)
+    @test sol(1.7, 1.3)(off...)[1] != sol(1.7, 1.3)(on...)[1]
+
+    # Over-momentum throws, exactly as the drift does. Recorded as a property
+    # rather than a feature: see docs/theory/solenoid.md Section 9.1.
+    @test_throws DomainError sol(1.7, 1.3)(0.0, 1.5, 0.0, 0.0, 0.0, 0.0)
+    # A dead particle stays dead and does not resurrect.
+    @test all(isnan, collect(sol(1.7, 1.3)(NaN, NaN, NaN, NaN, NaN, NaN)))
+end
+
+@testset "Solenoid agrees on CPU and CUDA" begin
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        n = 5000
+        mk() = begin
+            set_global_rng!(seed=11, method=:philox)
+            Beam(n, CPUThreadsBackend, Float64; beta=(0.5, 0.5, 10.0), alpha=(0.0, 0.0, 0.0),
+                 sigma=(1.0e-3, 1.0e-3, 1.0e-2), cutoff=4.0, rng_id=1,
+                 charge=-1.0, mc2=EMASS_EV, E0=1.0e10, r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+        end
+        line = (compile_runtime(SolenoidSpec(L=1.3, ks=1.7)),
+                compile_runtime(ThinQuadrupoleSpec(k1l=0.05)),
+                compile_runtime(SolenoidSpec(L=0.8, ks=-0.9)))
+        cpu = mk(); track!(cpu.rep, line, 20; policy=CPUThreadsExecutionPolicy())
+        host = mk()
+        device = Phase6DRep((Octopus.CUDA.CuArray(a)
+                             for a in coordinate_arrays(host.rep))...)
+        track!(device, line, 20; policy=CUDAExecutionPolicy())
+        scale = maximum(maximum(abs.(a)) for a in coordinate_arrays(cpu.rep))
+        diff = maximum(maximum(abs.(Array(x) .- y))
+                       for (x, y) in zip(coordinate_arrays(device), coordinate_arrays(cpu.rep)))
+        @test diff / scale < 1.0e-13
+        @test all(all(isfinite, a) for a in coordinate_arrays(cpu.rep))
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 @testset "TrackingTask owns the loss record" begin
     n = 400
     specs = (DriftSpec(L=0.5),

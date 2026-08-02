@@ -215,6 +215,14 @@ constructor names remain the user-facing way to build those specs.
   - Runtime mappings: `Symplectic6DMap => ThinMultipole`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
+- `ElementSpec{:solenoid}` via `SolenoidSpec`
+  - Physics keywords: `:lattice_magnet`, `:thick_element`, `:coordinate_transform`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`, `SymplecticityContract`, `PTCConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => Solenoid`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
 - `ElementSpec{:aperture}` via `ApertureSpec`
   - Physics keywords: `:thin_element`, `:collimation`, `:particle_loss`
   - Supported tracking methods: `NonSymplectic6DMap`
@@ -320,6 +328,7 @@ live under `src/track/`.
 - `LatticeMagnet`
 - `Marker`
 - `ThinMultipole`
+- `Solenoid`
 - `Aperture`
 - `BeamParams`
 - `Phase6DRep`

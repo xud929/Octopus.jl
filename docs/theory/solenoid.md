@@ -352,6 +352,44 @@ small amplitude because the two agree to first order in $k$.
 no `nst`: the map is exact, so splitting it into steps would add error rather
 than remove it.
 
+### 9.1 Degenerate and boundary cases
+
+Four cases the implementation meets and which the map above already answers, so
+none of them needs a special branch.
+
+**$L=0$ is the identity, for any $k_s$.** With $L=0$ the body does nothing
+($W$ rotates by $-\kappa\cdot0$, $w$ is unchanged), so the exit conversion is
+evaluated at the same $x,y$ as the entrance one and they cancel term by term:
+
+$$
+    p_x^{\text{out}} = P_x - ky = (p_x + ky) - ky = p_x .
+$$
+
+A zero-length solenoid is therefore a no-op rather than a fringe pair, which is
+correct: two coincident faces with equal and opposite $\hat a$ jumps have no net
+effect. **This is not the thin solenoid** of MAD-X, which holds
+$k_s L=\texttt{KSI}$ fixed as $L\to0$ and is a genuinely different, non-identity
+element. That is out of scope here; it needs its own limit taken with $\kappa L$
+held constant, not $L\to0$ at fixed $k_s$.
+
+**$k_s=0$ at finite $L$** is the exact drift, Section 6.
+
+**Over-momentum particles throw, matching the drift.** If
+$P_x^2+P_y^2>(1+\delta)^2$ the particle is moving transversely faster than its
+total momentum allows and $p_s$ is imaginary. `_lattice_drift` raises a
+`DomainError` in exactly this situation, so the solenoid does too and the
+behaviour is uniform across the lattice. Worth recording rather than fixing
+here: with the aperture work in place a particle that goes over-momentum through
+a numerical blowup now *crashes the run* instead of being marked non-finite and
+counted as a loss. That is a pre-existing property of every exact map in the
+code, not something the solenoid introduces, and closing it would be a decision
+about `sqrt` guards across all of `src/elements/`.
+
+**Dead particles propagate.** A particle already carrying `NaN` produces `NaN`
+throughout — every operation in the map is arithmetic on the incoming values,
+with no comparison that could resurrect it — so a solenoid downstream of an
+aperture leaves losses dead, as every other element does.
+
 ## 10. Validation plan
 
 Following the bends, which reached $5\times10^{-13}$ against PTC:

@@ -1533,6 +1533,11 @@ end
 function _ptc_reference_specs()
     return Dict{String,Any}(
         "drift" => DriftSpec(L=0.7),
+        # Both polarities: a solenoid sign error is invisible in anything even
+        # in ks, so one working point proves nothing. See docs/theory/solenoid.md.
+        "solenoid_pos" => SolenoidSpec(L=1.3, ks=0.35),
+        "solenoid_neg" => SolenoidSpec(L=1.3, ks=-0.35),
+        "solenoid_strong" => SolenoidSpec(L=2.0, ks=1.7),
         "quadrupole_m2_n1" => QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=1, integrator_order=2),
         "quadrupole_m2_n8" => QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=8, integrator_order=2),
         "quadrupole_m4_n3" => QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=3, integrator_order=4),
@@ -1767,6 +1772,7 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     # every probe unchanged and report all four as ignored.
     :aperture => (shape=:ellipse, x_limit=1.0e-4, y_limit=2.0e-4,
                   dx=1.0e-5, dy=2.0e-5),
+    :solenoid => (L=1.3, ks=0.35),
 )
 const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:drift, :nst) => "the drift is exact, so there are no integration steps",
