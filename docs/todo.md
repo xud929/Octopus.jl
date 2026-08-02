@@ -1958,6 +1958,43 @@ One prerequisite either way: the hard-edge map should stay wrappable, so a fring
 model composes with it rather than being interleaved into the body integrator.
 That is how it is written today.
 
+## `ref_tilt` for bends: NOT STARTED (2026-08-02)
+
+Octopus can misalign a bend but **cannot express a vertical one**, and the two
+are different things that a single `tilt` keyword currently conflates.
+
+**The mapping between the codes, read from source:**
+
+| meaning | Bmad | MAD-X | Octopus |
+|---|---|---|---|
+| roll the magnet **body**; design orbit unchanged, field rotated — an *error* | `roll` | `EALIGN, dpsi` | `tilt` (misalignment) ✅ |
+| roll the **design orbit plane**; the reference trajectory itself bends elsewhere — a *design choice* | `ref_tilt` | `sbend, tilt=` | **missing** ❌ |
+
+So MAD-X's `tilt` **on a bend** is Bmad's `ref_tilt`, not Octopus's `tilt`, and
+that is the trap: the same word means the error in one place and the design in
+another. A vertical bend is a horizontal bend with `ref_tilt = pi/2`, and today
+that is inexpressible.
+
+**Why it is not simply another misalignment.** `ref_tilt` changes the *survey* —
+where the lattice goes in space — and Octopus has no geometry layer (the
+misalignment note's Section 8 says so). Bmad threads it through `bend_shift`,
+i.e. through the geometry, not the body map.
+
+**What is implementable now, and what is not.** Locally, `ref_tilt` on one bend
+is a conjugation: rotate `(x, px, y, py)` by `-ref_tilt`, track the bend, rotate
+back. That is small, and directly checkable against `sbend, l=..., angle=...,
+tilt=...` in the existing PTC harness. What that does *not* give is the
+downstream geometric consequence — after a vertical bend the whole lattice is in
+a different plane — which needs the survey Octopus does not have. The same
+limitation the patch already carries.
+
+**Ordering matters and must be pinned:** `ref_tilt` is design geometry, so it
+composes **outside** the misalignment frames, not inside them. A rolled *and*
+misaligned bend gets `ref_tilt` applied to the design orbit first, then the body
+error relative to that. Getting this inverted is invisible unless both are
+nonzero — the same second-order trap the rotation convention just turned out to
+be, so it needs a two-parameter PTC case rather than a one-parameter one.
+
 ## Element names, fleet-wide (2026-08-01)
 
 Split out of the step-3 aperture work, which needs a name for **one** element and
