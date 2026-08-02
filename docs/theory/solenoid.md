@@ -783,6 +783,26 @@ curvature, accepted deliberately for consistency with the rest of the lattice.
 $g(x)=\frac{2}{h}\ln(1+hx)-x$ carries a removable $1/h$, handled by the same
 small-argument branching the curvature helpers already use.
 
+### 15.4a Straight or curved is a *type*, not a field test
+
+`Solenoid{M,T,N,CURVED}` carries the choice as a type parameter, decided once in
+`compile_runtime` from `!iszero(h)`. It was first written as a runtime
+`elem.h == 0` inside the tracking kernel, which was wrong in a way worth
+recording: `h` is a field, so the comparison could not be constant-folded, and
+**every kernel compiled both paths** -- the 16-sweep implicit-midpoint loop
+included -- then paid a branch per particle to answer a question that is settled
+when the lattice is built. Moving it into the type means a straight solenoid's
+kernel does not contain the integrator at all, which matters most on the GPU
+where the dead path costs registers and instruction cache.
+
+It also makes curvature consistent with the multipole axis, which was already
+dispatched on `N`: the element had one compile-time switch and one runtime
+switch for two questions of exactly the same character.
+
+On CPU the straight-path timing is unchanged within run-to-run noise (~170
+ns/particle either way); the branch was predictable and cheap. The gain is in
+what gets compiled, not in the branch itself.
+
 ### 15.5 Validation
 
 Nothing external implements a curved solenoid — PTC's `SOL5` carries no

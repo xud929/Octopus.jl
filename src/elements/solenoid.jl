@@ -30,7 +30,7 @@ disagree with the same lattice with the solenoid removed. This map reduces to
 No `nst` and no integrator order: the map is the exact flow, so subdividing it
 would add error rather than remove it.
 """
-struct Solenoid{M<:AbstractTrackingMethod,T<:AbstractFloat,N} <: AbstractTrackOp
+struct Solenoid{M<:AbstractTrackingMethod,T<:AbstractFloat,N,CURVED} <: AbstractTrackOp
     method::M
     L::T
     ks::T
@@ -218,13 +218,23 @@ is what makes this closed-form rather than an expansion.
     return xn, pxn, yn, pyn, z + L * (1 - (1 + pz) / ps), pz
 end
 
-# Pure solenoid: N == 0. Straight frame takes the exact closed form; a curved
-# frame has none (Section 15.3) and falls to the implicit-midpoint integrator.
-@inline track_particle(::Symplectic6DMap, elem::Solenoid{M,T,0},
+# Pure solenoid, N == 0. Straight frame takes the exact closed form; a curved
+# frame has none (Section 15.3) and uses the implicit-midpoint integrator.
+#
+# The choice is a TYPE parameter, not a field test. `h` is a runtime value, so
+# `elem.h == 0` could not be constant-folded: every kernel compiled both paths,
+# including the 16-sweep integrator loop, and paid a branch per particle for a
+# question that is settled once when the lattice is built. Deciding it at
+# `compile_runtime` means a straight solenoid's kernel does not contain the
+# integrator at all. This also makes curvature consistent with the multipole
+# axis, which was already dispatched on `N`.
+@inline track_particle(::Symplectic6DMap, elem::Solenoid{M,T,0,false},
                        x, px, y, py, z, pz) where {M,T} =
-    elem.h == 0 ?
-        _solenoid_map(elem.ks, elem.L, x, px, y, py, z, pz) :
-        _solenoid_curved_map(elem.h, elem.ks, elem.L, elem.nst, x, px, y, py, z, pz)
+    _solenoid_map(elem.ks, elem.L, x, px, y, py, z, pz)
+
+@inline track_particle(::Symplectic6DMap, elem::Solenoid{M,T,0,true},
+                       x, px, y, py, z, pz) where {M,T} =
+    _solenoid_curved_map(elem.h, elem.ks, elem.L, elem.nst, x, px, y, py, z, pz)
 
 """
 Solenoid with superimposed multipoles, by Strang splitting.
@@ -245,8 +255,8 @@ Strengths are **thick** `K_n`, not the thin family's integrated `K_n L`: a
 solenoid has a length, so it follows `QuadrupoleSpec`'s convention and takes
 `kn`/`k1`/`k2`, never `knl`/`k1l`. Confusing the two is a factor of `L`.
 """
-@inline function track_particle(::Symplectic6DMap, elem::Solenoid{M,T,N},
-                                x, px, y, py, z, pz) where {M,T,N}
+@inline function track_particle(::Symplectic6DMap, elem::Solenoid{M,T,N,CURVED},
+                                x, px, y, py, z, pz) where {M,T,N,CURVED}
     nst = elem.nst
     d = elem.L / nst
     dh = d / 2
@@ -259,12 +269,12 @@ solenoid has a length, so it follows `QuadrupoleSpec`'s convention and takes
     return x, px, y, py, z, pz
 end
 
-# One solenoid sub-step of the Strang loop: exact when straight, one
-# implicit-midpoint step when curved.
-@inline _sol_body(elem::Solenoid, d, x, px, y, py, z, pz) =
-    elem.h == 0 ?
-        _solenoid_map(elem.ks, d, x, px, y, py, z, pz) :
-        _solenoid_curved_map(elem.h, elem.ks, d, 1, x, px, y, py, z, pz)
+# One solenoid sub-step of the Strang loop, selected by type as above.
+@inline _sol_body(elem::Solenoid{M,T,N,false}, d, x, px, y, py, z, pz) where {M,T,N} =
+    _solenoid_map(elem.ks, d, x, px, y, py, z, pz)
+
+@inline _sol_body(elem::Solenoid{M,T,N,true}, d, x, px, y, py, z, pz) where {M,T,N} =
+    _solenoid_curved_map(elem.h, elem.ks, d, 1, x, px, y, py, z, pz)
 
 @inline (elem::Solenoid)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
@@ -324,6 +334,8 @@ function Solenoid(spec::ElementSpec,
     # against coordinates of 1e-3). Defaulting to 1 in that case would let
     # `SolenoidSpec(L=..., ks=..., h=...)` silently return nonsense.
     nst = Int(getparam(spec, :nst, h == 0 ? 1 : 16))
+    # Settled here, once, and carried in the type from now on.
+    curved = !iszero(h)
     nst >= 1 || throw(ArgumentError("solenoid nst must be at least 1; got $(nst)"))
     n = max(length(kn_raw), length(ksk_raw))
     T = float(promote_type(typeof(L), typeof(ks), typeof(h), Float64))
@@ -333,9 +345,11 @@ function Solenoid(spec::ElementSpec,
     # no splitting, no steps, and bit-identical to what it was before multipoles
     # existed.
     if all(iszero, kn) && all(iszero, ksk)
-        return Solenoid{typeof(method),T,0}(method, T(L), T(ks), T(h), (), (), nst)
+        return Solenoid{typeof(method),T,0,curved}(
+            method, T(L), T(ks), T(h), (), (), nst)
     end
-    return Solenoid{typeof(method),T,n}(method, T(L), T(ks), T(h), kn, ksk, nst)
+    return Solenoid{typeof(method),T,n,curved}(
+        method, T(L), T(ks), T(h), kn, ksk, nst)
 end
 
 @element_spec begin
