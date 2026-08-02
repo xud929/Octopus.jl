@@ -2523,6 +2523,29 @@ end
         @test maximum(abs.(M' * J * M .- J)) < 1.0e-7
     end
 
+    # `curved` overrides the frame-derived default, and both directions matter.
+    @test compile_runtime(SolenoidSpec(L=1.3, ks=1.7)) isa Octopus.Solenoid{<:Any,<:Any,0,false}
+    @test compile_runtime(SolenoidSpec(L=1.3, ks=1.7, h=0.18)) isa Octopus.Solenoid{<:Any,<:Any,0,true}
+    @test compile_runtime(SolenoidSpec(L=1.3, ks=1.7, curved=true)) isa Octopus.Solenoid{<:Any,<:Any,0,true}
+
+    # curved = true at h = 0 is the strongest check the integrator gets: it runs
+    # against the EXACT closed form on the same frame, so this is a direct
+    # validation rather than an h -> 0 limit, and the reference has no error of
+    # its own to hide behind.
+    straight = collect(sol(L=1.3, ks=1.7)(u0...))
+    ierr(n) = maximum(abs.(collect(sol(L=1.3, ks=1.7, curved=true, nst=n)(u0...)) .- straight))
+    @test ierr(512) < 1.0e-8
+    for (coarse, fine) in ((8, 32), (32, 128), (128, 512))
+        @test 12.0 < ierr(coarse) / ierr(fine) < 20.0
+    end
+
+    # curved = false with h != 0 is a legitimate approximation, but never a
+    # silent one: it warns, and then tracks as a straight solenoid.
+    @test_logs (:warn,) compile_runtime(SolenoidSpec(L=1.3, ks=1.7, curved=false, h=0.18))
+    ignored = (@test_logs (:warn,) compile_runtime(
+        SolenoidSpec(L=1.3, ks=1.7, curved=false, h=0.18)))(u0...)
+    @test collect(ignored) == straight
+
     # Curvature composes with superimposed multipoles.
     @test isbits(sol(L=1.3, ks=1.7, h=0.18, k1=0.6, nst=8))
     @test all(isfinite, collect(sol(L=1.3, ks=1.7, h=0.18, k1=0.6, nst=8)(u0...)))

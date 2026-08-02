@@ -1614,6 +1614,44 @@ Remaining, and deliberately not done here:
   ergonomic finish; the mechanism it would use is already here.
 - **Element names fleet-wide**, its own item below.
 
+## `curved` keyword for every magnet: solenoid DONE, rest NOT STARTED (2026-08-02)
+
+`SolenoidSpec(; curved)` selects the tracking path explicitly instead of the
+path being inferred from `h != 0`. `nothing` (default) lets the frame decide;
+`true` and `false` override it. Both overrides earn their place:
+
+- **`curved = true, h = 0`** runs the integrator on a straight frame, where the
+  exact closed form *also* exists. That is a **direct** validation of the
+  integrator against a reference with no error of its own, rather than an
+  `h -> 0` limit where the two disagree at `O(hL)` for physical reasons and the
+  integration error has to be disentangled from the physics. Measured: second
+  order against the exact map, `8.0e-6 / 5.1e-7 / 3.2e-8 / 2.0e-9` at
+  `nst = 8/32/128/512`, ratios 15.8/16.0/16.0. This is a strictly better test
+  than the limit it replaces and is the reason the keyword exists.
+- **`curved = false, h != 0`** ignores the curvature and tracks straight — a
+  legitimate approximation to ask for, and it **warns** rather than doing it
+  silently.
+
+**Remaining: the same keyword on every other magnet.** `DriftSpec`,
+`QuadrupoleSpec`, `SextupoleSpec`, `OctupoleSpec`, `MultipoleSpec` and
+`SBendSpec` all take `h` already, and all branch on `h == 0` at *runtime* inside
+`_lattice_drift`/`_lattice_bend`. Two things to weigh before doing it, because
+they cut in opposite directions:
+
+- **Lower payoff than the solenoid.** For those elements *both* branches are
+  exact, so `curved = true, h = 0` validates a code path but not an
+  approximation — there is no integrator whose convergence needs proving. The
+  test value that motivated the keyword is largely specific to the solenoid.
+- **Higher cost.** Their curvature branch lives inside the shared
+  `_lattice_drift`/`_lattice_bend` kernels rather than at dispatch, so making it
+  a type parameter means threading `CURVED` through `LatticeMagnet{...}` and its
+  helpers — a change to the most heavily validated element in the codebase,
+  currently at 5e-13 against PTC across 41 cases.
+
+Worth doing for interface uniformity, which is the stated reason, but it should
+be a deliberate refactor with the PTC contract re-run rather than a ride-along.
+Do it when something else already requires touching `LatticeMagnet`.
+
 ## Patch element: DONE (2026-08-01), `src/elements/patch.jl`
 
 Implemented per the specification below. Translate the origin, rotate the axes,

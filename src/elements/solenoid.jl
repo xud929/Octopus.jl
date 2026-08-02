@@ -333,9 +333,25 @@ function Solenoid(spec::ElementSpec,
     # implicit stage does not converge and the result is garbage (error 1.09
     # against coordinates of 1e-3). Defaulting to 1 in that case would let
     # `SolenoidSpec(L=..., ks=..., h=...)` silently return nonsense.
-    nst = Int(getparam(spec, :nst, h == 0 ? 1 : 16))
-    # Settled here, once, and carried in the type from now on.
-    curved = !iszero(h)
+    # `curved` selects the tracking path and is settled here, once, then carried
+    # in the type. It defaults to `!iszero(h)` -- the frame decides -- but is
+    # deliberately overridable, because the two overrides are both useful:
+    #
+    #   curved = true,  h = 0    run the integrator on a straight frame, where
+    #                            the exact closed form is also available. This
+    #                            is a *direct* validation of the integrator
+    #                            rather than an h -> 0 limit, and is why the
+    #                            keyword exists rather than keying on `h` alone.
+    #   curved = false, h != 0   ignore the curvature and track straight. A
+    #                            legitimate approximation to ask for, but never
+    #                            silently: it warns.
+    requested = getparam(spec, :curved, nothing)
+    curved = requested === nothing ? !iszero(h) : Bool(requested)
+    if !curved && !iszero(h)
+        @warn "solenoid has curved = false with h != 0; the frame curvature is \
+               ignored and the element tracks as a straight solenoid" h
+    end
+    nst = Int(getparam(spec, :nst, curved ? 16 : 1))
     nst >= 1 || throw(ArgumentError("solenoid nst must be at least 1; got $(nst)"))
     n = max(length(kn_raw), length(ksk_raw))
     T = float(promote_type(typeof(L), typeof(ks), typeof(h), Float64))
@@ -368,10 +384,11 @@ end
         ks=ParamMeta(default=0, meaning="normalized longitudinal field B_s/(B*rho), MAD-X's KS. Sign follows charge and field direction; both polarities are checked against PTC. Note this is the SOLENOID strength, not the skew multipole tuple other magnets spell `ks`"),
         kn=ParamMeta(default=(), meaning="normal multipole strengths superimposed on the solenoid; kn[i] = K_{i-1}. THICK strengths as for QuadrupoleSpec, not the thin family's integrated K_n L"),
         kskew=ParamMeta(default=(), meaning="skew partners of kn. Spelled `kskew` rather than `ks` because the solenoid needs `ks` for its own strength; usually set through the named k0s/k1s/k2s keywords instead"),
+        curved=ParamMeta(default=nothing, meaning="force the curved (implicit-midpoint) or straight (exact) tracking path. `nothing` lets the frame decide, i.e. curved when h != 0. `true` with h = 0 runs the integrator where the exact map is also available, which validates it directly rather than as a limit; `false` with h != 0 ignores the curvature and warns"),
         h=ParamMeta(default=0, meaning="reference-frame curvature. h=0 is the exact closed-form map; h!=0 has no closed form and no exact splitting either, so it integrates with implicit midpoint over nst steps"),
         nst=ParamMeta(default=1, meaning="integration steps. Used when multipoles are present, or when h != 0; a straight pure solenoid is exact and ignores it. The default is 1 straight but 16 curved, because nst=1 does not converge at production curvature. Measure convergence for production work rather than trusting the default"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
     )
     example = SolenoidSpec(L=2.0, ks=0.35)
-    construction_help = "Friendly constructor: SolenoidSpec(; L, ks, kn=(), kskew=(), nst=1, tracking_method=Symplectic6DMap()), plus named k0/k1/k2... and skew k0s/k1s/k2s... exactly as QuadrupoleSpec takes them. ks = B_s/(B*rho) is MAD-X's KS and is the SOLENOID strength; because that name is taken, skew multipoles fold into `kskew` rather than the `ks` other magnets use. Multipole strengths are THICK K_n, not the thin family's integrated K_n L. A pure solenoid is the exact flow and ignores nst; ks=0 reproduces the exact drift and ks=0 with k1 reproduces QuadrupoleSpec, both to roundoff. With multipoles the map is a second-order Strang splitting over nst steps and is no longer exact, because the solenoid rotates the frame the multipole kicks in. Entrance and exit fringes are included and cannot be disabled: they are the canonical-to-kinetic momentum conversion a transverse vector potential forces, not an optional model. Do not split a solenoid -- a split point lies where the vector potential is non-zero. Derivation: docs/theory/solenoid.md."
+    construction_help = "Friendly constructor: SolenoidSpec(; L, ks, h=0, curved=nothing, kn=(), kskew=(), nst=1, tracking_method=Symplectic6DMap()), plus named k0/k1/k2... and skew k0s/k1s/k2s... exactly as QuadrupoleSpec takes them. ks = B_s/(B*rho) is MAD-X's KS and is the SOLENOID strength; because that name is taken, skew multipoles fold into `kskew` rather than the `ks` other magnets use. Multipole strengths are THICK K_n, not the thin family's integrated K_n L. h is the reference-frame curvature and `curved` selects the tracking path, defaulting to curved when h != 0; curved=true at h=0 runs the integrator where the exact map also exists, which validates it directly, and curved=false at h!=0 ignores the curvature and warns. A straight pure solenoid is the exact flow and ignores nst; ks=0 reproduces the exact drift and ks=0 with k1 reproduces QuadrupoleSpec, both to roundoff. With multipoles the map is a second-order Strang splitting over nst steps and is no longer exact, because the solenoid rotates the frame the multipole kicks in. Entrance and exit fringes are included and cannot be disabled: they are the canonical-to-kinetic momentum conversion a transverse vector potential forces, not an optional model. Do not split a solenoid -- a split point lies where the vector potential is non-zero. Derivation: docs/theory/solenoid.md."
 end
