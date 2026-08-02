@@ -49,6 +49,13 @@ include("elements/Elements.jl")
 
 # Particle/beam representations and backend tracking kernels.
 include("beam/Beam.jl")
+
+# The aperture is an element, but it is the only one that owns beam-scale
+# storage: its loss record is sized by particle count and allocated on the
+# beam's backend. So it loads after `Beam.jl` rather than with the other
+# elements, which need nothing beyond the spec layer.
+include("elements/aperture.jl")
+
 include("track/phase6d_track.jl")
 include("track/radiation_track.jl")
 include("track/strong_beam_track.jl")

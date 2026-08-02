@@ -2058,6 +2058,239 @@ end
     end
 end
 
+aperture_beam(n; seed=7) = begin
+    set_global_rng!(seed=seed, method=:philox)
+    Beam(n, CPUThreadsBackend, Float64; beta=(0.5, 0.5, 10.0), alpha=(0.0, 0.0, 0.0),
+         sigma=(1.0e-3, 1.0e-3, 1.0e-2), cutoff=4.0, rng_id=1,
+         charge=-1.0, mc2=EMASS_EV, E0=1.0e10, r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+end
+
+# `===` elementwise, so NaN compares equal to NaN. Ordinary `==` would call two
+# identically-dead beams different. Both sides are pulled to host first: `===`
+# cannot be broadcast across a device and a host array.
+coords_identical(a, b) = all(all(Array(x) .=== Array(y))
+                             for (x, y) in zip(coordinate_arrays(a), coordinate_arrays(b)))
+
+wide_aperture() = compile_runtime(ApertureSpec(x_limit=1.0, y_limit=1.0, name="WIDE"))
+
+@testset "Aperture kills what is outside and nothing else" begin
+    a = compile_runtime(ApertureSpec(shape=:rectangle, x_limit=1.0e-3, y_limit=2.0e-3,
+                                     name="COLL"))
+    @test a isa Aperture
+    @test isbits(a)                       # must compile for the GPU
+    @test tracking_method(ApertureSpec()) isa NonSymplectic6DMap
+
+    # Inside passes through bit-unchanged; outside becomes NaN in all six.
+    @test a(5.0e-4, 1.0, 1.0e-3, 2.0, 3.0, 4.0) === (5.0e-4, 1.0, 1.0e-3, 2.0, 3.0, 4.0)
+    @test all(isnan, a(2.0e-3, 1.0, 0.0, 2.0, 3.0, 4.0))
+
+    # A particle that arrives already dead is NOT re-killed and NOT attributed
+    # here: `was_alive` is false, so this is not the transition. Tested through
+    # a non-transverse coordinate too, since that is the case a two-coordinate
+    # test would get wrong.
+    @test a(NaN, 1.0, 0.0, 2.0, 3.0, 4.0)[2] === 1.0
+    @test a(0.0, NaN, 0.0, 2.0, 3.0, 4.0)[1] === 0.0
+    @test a(0.0, 1.0, 0.0, 2.0, 3.0, Inf)[1] === 0.0
+
+    # Killing is idempotent: applying the aperture again changes nothing.
+    once = a(2.0e-3, 1.0, 0.0, 2.0, 3.0, 4.0)
+    @test all(isnan, a(once...))
+
+    # Shapes. The rectellipse is the intersection, so a point inside the
+    # rectangle but outside the ellipse is rejected.
+    rect = compile_runtime(ApertureSpec(shape=:rectangle, x_limit=1.0e-3, y_limit=1.0e-3))
+    ell = compile_runtime(ApertureSpec(shape=:ellipse, x_limit=1.0e-3, y_limit=1.0e-3))
+    rel = compile_runtime(ApertureSpec(shape=:rectellipse, x_limit=1.0e-3, y_limit=1.0e-3))
+    corner = (0.9e-3, 0.0, 0.9e-3, 0.0, 0.0, 0.0)   # in the rectangle, outside the circle
+    @test !isnan(rect(corner...)[1])
+    @test isnan(ell(corner...)[1])
+    @test isnan(rel(corner...)[1])
+
+    # A predicate reproduces an analytic shape exactly, and stays isbits.
+    pred = compile_runtime(ApertureSpec(
+        alive=(x, px, y, py, z, pz) -> (x / 1.0e-3)^2 + (y / 1.0e-3)^2 <= 1.0))
+    @test isbits(pred)
+    for (px_, py_) in ((0.5e-3, 0.5e-3), (0.9e-3, 0.9e-3), (0.0, 1.5e-3))
+        probe = (px_, 0.0, py_, 0.0, 0.0, 0.0)
+        @test isnan(pred(probe...)[1]) == isnan(ell(probe...)[1])
+    end
+    # A predicate can depend on coordinates a transverse shape cannot see.
+    zcol = compile_runtime(ApertureSpec(alive=(x, px, y, py, z, pz) -> abs(z) < 0.1))
+    @test !isnan(zcol(0.0, 0.0, 0.0, 0.0, 0.05, 0.0)[1])
+    @test isnan(zcol(0.0, 0.0, 0.0, 0.0, 0.5, 0.0)[1])
+
+    # Offsets move the acceptance with the magnet body.
+    off = compile_runtime(ApertureSpec(shape=:rectangle, x_limit=1.0e-3, y_limit=1.0e-3,
+                                       dx=5.0e-3))
+    @test isnan(off(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)[1])
+    @test !isnan(off(5.0e-3, 0.0, 0.0, 0.0, 0.0, 0.0)[1])
+
+    @test_throws ArgumentError ApertureSpec(shape=:hexagon, x_limit=1.0, y_limit=1.0) |> compile_runtime
+    @test_throws ArgumentError ApertureSpec(x_limit=-1.0, y_limit=1.0) |> compile_runtime
+end
+
+@testset "An aperture that kills nothing changes nothing" begin
+    # The load-bearing guarantee: inserting apertures must not perturb any other
+    # physics. Bit-identical, not merely close.
+    line = (compile_runtime(DriftSpec(L=0.5)),
+            compile_runtime(ThinQuadrupoleSpec(k1l=0.05)))
+    b1 = aperture_beam(2000)
+    track!(b1.rep, line, 10; policy=CPUThreadsExecutionPolicy())
+    b2 = aperture_beam(2000)
+    track!(b2.rep, (line[1], wide_aperture(), line[2], wide_aperture()), 10;
+           policy=CPUThreadsExecutionPolicy())
+    @test coords_identical(b1.rep, b2.rep)
+    @test count_dead(b2.rep) == 0
+
+    # Weak-strong: coordinates and the luminosity diagnostic both unchanged.
+    mkws() = compile_runtime(ThinStrongBeamSpec(kbb=1.0e-3, sigma=(1.0e-3, 1.0e-3),
+                                                klum=1.0, beta=(0.5, 0.5)))
+    ws1 = mkws(); w1 = aperture_beam(2000; seed=11)
+    track!(w1.rep, (ws1,), 5; policy=CPUThreadsExecutionPolicy())
+    ws2 = mkws(); w2 = aperture_beam(2000; seed=11)
+    track!(w2.rep, (wide_aperture(), ws2, wide_aperture()), 5;
+           policy=CPUThreadsExecutionPolicy())
+    @test coords_identical(w1.rep, w2.rep)
+    @test ws1.last_luminosity === ws2.last_luminosity
+
+    # Strong-strong: every solver, luminosity and both beams unchanged.
+    sl = LongitudinalSlicing(nslices=3, method=:equal_count)
+    solvers = (
+        PICPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+                         grid=(32, 32), green_cache=:none, slicing=sl),
+        GaussianPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0, slicing=sl),
+        SpectralPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+                              grid=(32, 32), slicing=sl),
+        GaussianPICPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+                                 grid=(32, 32), green_cache=:none, slicing=sl),
+    )
+    for solver in solvers
+        x1, y1 = aperture_beam(2000; seed=11), aperture_beam(2000; seed=11)
+        plain = collide!(solver, x1, y1, CPUThreadsBackend)
+        x2, y2 = aperture_beam(2000; seed=11), aperture_beam(2000; seed=11)
+        track!(x2.rep, (wide_aperture(),), 1; policy=CPUThreadsExecutionPolicy())
+        track!(y2.rep, (wide_aperture(),), 1; policy=CPUThreadsExecutionPolicy())
+        with_aperture = collide!(solver, x2, y2, CPUThreadsBackend)
+        @test plain === with_aperture
+        @test coords_identical(x1.rep, x2.rep)
+        @test coords_identical(y1.rep, y2.rep)
+    end
+end
+
+@testset "Aperture loss record, counter and output" begin
+    n = 500
+    beam = aperture_beam(n)
+    record = LossRecord(["COLL_A", "COLL_B"], n, beam.rep)
+    line = (compile_runtime(DriftSpec(L=0.5)),
+            compile_runtime(ApertureSpec(shape=:rectangle, x_limit=2.0e-3, y_limit=1.0,
+                                         name="COLL_A", element_id=1, loss_record=record)),
+            compile_runtime(ThinQuadrupoleSpec(k1l=0.05)),
+            compile_runtime(ApertureSpec(shape=:ellipse, x_limit=3.0e-3, y_limit=1.5e-3,
+                                         name="COLL_B", element_id=2, loss_record=record)))
+
+    # A recording aperture cannot run on the context-free path, and must say so
+    # rather than produce a correct run with a silently empty log.
+    @test Octopus._requires_tracking_context(line)
+    @test_throws ArgumentError track!(beam.rep, line, 1,
+                                      Octopus.ResolvedCPUExecutionPolicy(1))
+
+    track!(beam.rep, line, 5; policy=CPUThreadsExecutionPolicy())
+    losses = loss_records(record)
+    dead = count_dead(beam.rep)
+    @test dead > 0
+    # Exactly one record per dead particle: no double-logging across turns or
+    # across the two apertures, and no loss missed.
+    @test length(losses.particle_id) == dead
+    @test length(unique(losses.particle_id)) == dead
+    @test sum(loss_counts(record)) == dead
+    # The counter agrees with the records aperture by aperture, not just in total.
+    for id in 1:2
+        @test count(==(id), losses.element_id) == loss_counts(record)[id]
+    end
+    # Coordinates are the pre-kill ones. Recording after the kill would store NaN
+    # and lose exactly the information the log exists for.
+    @test all(isfinite, losses.x) && all(isfinite, losses.pz)
+    @test all(0 .<= losses.turn .< 5)
+
+    # Output carries only the losses, and names them.
+    path = tempname() * ".h5"
+    written = write_loss_record(path, record; s=[12.5, 47.0])
+    @test written == dead
+    @test written < n
+    back = read_loss_record(path)
+    @test back.particle_id == losses.particle_id
+    @test back.turn == losses.turn && back.element_id == losses.element_id
+    @test all(back[k] == losses[k] for k in (:x, :px, :y, :py, :z, :pz))
+    @test back.aperture_names == ["COLL_A", "COLL_B"]
+    @test back.aperture_counts == Int64.(loss_counts(record))
+    @test back.aperture_s == [12.5, 47.0]
+
+    # No log requested: counters only, no per-particle allocation, no file.
+    counters = LossRecord(["A"], n, beam.rep; log=false)
+    @test counters.slots === nothing
+    @test_throws ArgumentError loss_records(counters)
+end
+
+@testset "Aperture reconciliation exposes unattributed deaths" begin
+    n = 500
+    beam = aperture_beam(n)
+    # Kill three by hand before tracking: numerical deaths no aperture can claim.
+    # Two of them die in coordinates the aperture does not even read.
+    hand_killed = (3, 9, 17)
+    beam.rep.x[3] = NaN; beam.rep.pz[9] = NaN; beam.rep.py[17] = NaN
+    record = LossRecord(["COLL_A"], n, beam.rep)
+    line = (compile_runtime(DriftSpec(L=0.5)),
+            compile_runtime(ApertureSpec(shape=:rectangle, x_limit=2.0e-3, y_limit=1.0,
+                                         name="COLL_A", element_id=1, loss_record=record)))
+    track!(beam.rep, line, 5; policy=CPUThreadsExecutionPolicy())
+
+    summary = loss_summary(beam, record)
+    @test summary.particles == n
+    @test summary.live + summary.dead == n
+    @test summary.dead == summary.logged + summary.unattributed
+    # The gap is the diagnostic: exactly the three that no aperture stopped.
+    @test summary.unattributed == length(hand_killed)
+    # And they are absent from the log, because the aperture did not lose them.
+    losses = loss_records(record)
+    @test !any(in(losses.particle_id), hand_killed)
+end
+
+@testset "Aperture losses are identical on CPU and CUDA" begin
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        n = 500
+        mkline(rec) = (
+            compile_runtime(DriftSpec(L=0.5)),
+            compile_runtime(ApertureSpec(shape=:rectangle, x_limit=2.0e-3, y_limit=1.0,
+                                         name="A", element_id=1, loss_record=rec)),
+            compile_runtime(ThinQuadrupoleSpec(k1l=0.05)),
+            compile_runtime(ApertureSpec(shape=:ellipse, x_limit=3.0e-3, y_limit=1.5e-3,
+                                         name="B", element_id=2, loss_record=rec)))
+
+        cpu = aperture_beam(n)
+        cpu_record = LossRecord(["A", "B"], n, cpu.rep)
+        track!(cpu.rep, mkline(cpu_record), 5; policy=CPUThreadsExecutionPolicy())
+
+        host = aperture_beam(n)
+        device = Phase6DRep((Octopus.CUDA.CuArray(a)
+                             for a in coordinate_arrays(host.rep))...)
+        gpu_record = LossRecord(["A", "B"], n, device)
+        track!(device, mkline(gpu_record), 5; policy=CUDAExecutionPolicy())
+
+        @test loss_counts(gpu_record) == loss_counts(cpu_record)
+        c, g = loss_records(cpu_record), loss_records(gpu_record)
+        # Byte-identical, which is what the private-slot layout buys over an
+        # atomic append: slot i is particle i on both backends, so there is no
+        # scheduling-dependent ordering to reconcile.
+        @test g.particle_id == c.particle_id
+        @test g.turn == c.turn
+        @test g.element_id == c.element_id
+        @test all(g[k] == c[k] for k in (:x, :px, :y, :py, :z, :pz))
+        @test coords_identical(device, cpu.rep)
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 @testset "PIC kbb override uses physical units" begin
     function kbb_pair()
         set_global_rng!(seed=42, method=:philox)

@@ -206,6 +206,27 @@ coordinates are finite.
 ?count_dead
 ```
 
+An `ApertureSpec` is the element that loses particles deliberately: it kills what
+is outside its acceptance by marking all six coordinates non-finite, counts what
+it killed, and — when given a record — logs the pre-kill coordinates so a loss is
+still interpretable after the particle is gone. Loss position is resolved only to
+where you place apertures, so guard both faces of a magnet with two of them.
+
+`loss_summary` reports the beam-wide dead count and the aperture-attributed total
+separately. The gap between them is particles that went non-finite with no
+aperture responsible, which is the diagnostic that keeps a numerical blowup
+distinguishable from collimation.
+
+```julia
+?ApertureSpec
+?LossRecord
+?loss_records
+?loss_counts
+?loss_summary
+?write_loss_record
+?read_loss_record
+```
+
 ## Numerical Math Helpers
 
 Use Julia help:

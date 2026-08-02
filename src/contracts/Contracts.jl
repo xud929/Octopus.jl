@@ -1762,6 +1762,11 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     :hkicker => (hkick=1.0e-4, x_offset=1.0e-3),
     :vkicker => (vkick=1.0e-4, x_offset=1.0e-3),
     :kicker => (hkick=1.0e-4, vkick=-5.0e-5, x_offset=1.0e-3),
+    # Limits tight enough that the probe particle sits outside and is killed, so
+    # perturbing any of them changes the map. A generous aperture would pass
+    # every probe unchanged and report all four as ignored.
+    :aperture => (shape=:ellipse, x_limit=1.0e-4, y_limit=2.0e-4,
+                  dx=1.0e-5, dy=2.0e-5),
 )
 const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:drift, :nst) => "the drift is exact, so there are no integration steps",
@@ -1778,6 +1783,14 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:lumped_radiation, :beta) => "optics input folded before the map, as alpha is",
     (:thin_strong_beam, :klum) => "reaches the runtime but feeds the luminosity diagnostic, not the coordinate map",
     (:thin_strong_beam, :alpha) => "used only when the strong beam is given through beta/alpha optics rather than kbb, which this probe does not do",
+    # A function, a string and an output handle have no meaningful perturbation:
+    # there is no "slightly different" predicate or label whose effect this
+    # contract could measure. They are declared inert here rather than left to
+    # look ignored, which is the distinction the contract exists to draw.
+    (:aperture, :alive) => "a predicate has no perturbation this contract can form; its effect is covered by the shape-versus-predicate equivalence test",
+    (:aperture, :name) => "a label carried into the loss log, not into the coordinate map",
+    (:aperture, :element_id) => "stamped into loss records by the task; does not enter the coordinate map",
+    (:aperture, :loss_record) => "an output handle written on the loss transition, not an input to the map",
 )
 
 Base.@kwdef struct ElementParameterEffectivenessContract <: AbstractImplementationContract

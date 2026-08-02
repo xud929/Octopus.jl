@@ -36,6 +36,7 @@ function track!(rep, elems, turns, policy::ResolvedCPUExecutionPolicy,
 end
 
 function track!(rep, elems, turns, policy::ResolvedCPUExecutionPolicy)
+	_reject_contextless_tracking(elems)
 	for turn in 1:turns
 		_run_logical_workers(policy.threads) do worker, nworkers
 			for index in worker:nworkers:length(rep)
@@ -44,6 +45,25 @@ function track!(rep, elems, turns, policy::ResolvedCPUExecutionPolicy)
 		end
 	end
 	return nothing
+end
+
+"""
+Refuse a context-free `track!` for a line that cannot run without a context.
+
+A recording aperture needs the turn and the particle index, and this path has
+neither. Silently tracking would give a physically correct run whose loss log is
+empty, which reads as "nothing was lost" rather than "nothing was recorded" --
+the failure mode this whole design is trying to avoid. Checked once per call on
+the host; `_requires_tracking_context` folds to a constant over the tuple.
+"""
+function _reject_contextless_tracking(elems)
+	_requires_tracking_context(elems) || return nothing
+	throw(ArgumentError(
+		"this line contains an aperture with a loss record attached, which needs " *
+		"the turn and particle index that only context-aware tracking carries. " *
+		"Pass a context (`track!(rep, elems, turns, policy, ctx)`) or run through " *
+		"a TrackingTask, which always does. Tracking without one would produce a " *
+		"correct run with a silently empty loss log."))
 end
 
 function track!(rep, elems, turns, ::Type{CPUThreadsBackend})

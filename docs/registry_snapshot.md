@@ -215,6 +215,14 @@ constructor names remain the user-facing way to build those specs.
   - Runtime mappings: `Symplectic6DMap => ThinMultipole`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
+- `ElementSpec{:aperture}` via `ApertureSpec`
+  - Physics keywords: `:thin_element`, `:collimation`, `:particle_loss`
+  - Supported tracking methods: `NonSymplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `NonSymplectic6DMap => Aperture`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
 ## Tracking Methods
 
 - `Damping6DMap`
@@ -312,6 +320,7 @@ live under `src/track/`.
 - `LatticeMagnet`
 - `Marker`
 - `ThinMultipole`
+- `Aperture`
 - `BeamParams`
 - `Phase6DRep`
 - `Beam`

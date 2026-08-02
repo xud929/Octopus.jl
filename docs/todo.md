@@ -1417,7 +1417,39 @@ means the aperture kills and counts and nothing else -- a dynamic-aperture scan
 needs survival counts, not per-particle forensics, and that path must cost no
 memory. Giving a path is what allocates the record.
 
-### Sub-steps
+### Sub-steps -- ALL DONE (2026-08-01), `src/elements/aperture.jl`
+
+Every green condition below was met. What the plan did not anticipate:
+
+- **The aperture loads after `Beam.jl`, not with the other elements.** It is the
+  only element owning beam-scale storage -- its record is sized by particle count
+  and allocated on the beam's backend -- so it needs `Phase6DRep` and the CUDA
+  flags, which the spec layer does not. The file stays in `src/elements/`; only
+  the include position moved.
+- **`Adapt` needed hand-writing, not `@adapt_structure`.** The record's `names`
+  is a `Vector{String}` with no device representation, so the adapt rule *drops*
+  it rather than converting: the kernel writes an integer id and turning that
+  back into "COLL_IP6_H" is the host's job at flush. `Aperture` itself also
+  needed adapting, or its record reached the kernel as a host `CuArray`.
+- **The public `track!` already carries a context**, so logging works through the
+  normal API without the caller doing anything. Only the bare positional
+  `track!(rep, elems, turns, policy)` lacks one, and that now throws rather than
+  producing a correct run with a silently empty log
+  (`_reject_contextless_tracking`).
+- **`allow_lost_particles` is not enabled by the element.** The aperture kills
+  and records without it; the flag governs *reductions*, so it belongs where a
+  reduction runs. Turning it on globally because a lattice contains an aperture
+  would change strong-strong behaviour as a side effect of lattice composition,
+  which is exactly the coupling the non-interference requirement forbids.
+
+**Non-interference is the load-bearing guarantee** and is now a test: an aperture
+that kills nothing leaves coordinates *bit-identical* under plain tracking, under
+weak-strong (coordinates **and** the luminosity diagnostic), and under all four
+strong-strong solvers (luminosity and both beams). Not "close" -- identical.
+
+69 assertions across five testsets; 85 testsets pass overall. Backend consistency
+0.0 and 9.4e-16. Registry, element metadata, configuration metadata, and both
+effectiveness contracts pass.
 
 **3a -- the element, kill only.** `ApertureSpec` with `:rectangle`, `:ellipse`,
 `:rectellipse`, `x_limit`/`y_limit`, `dx`/`dy`, and an `alive` predicate for the
@@ -1448,14 +1480,24 @@ numerical blowup, which no aperture can claim -- stays visible rather than
 silently reducing the survivor count. Green when an injected non-finite particle
 that never meets an aperture shows up in the gap and not in the log.
 
-**Step 4 -- the acceptance test. DONE for the reduction half (2026-08-01),
-pending the aperture.** The reduction-level acceptance is in place: the moment
-observer, `beam_statistics`, luminosity, and all five solvers produce correct
-finite output over survivors, checked against a survivor-only beam. What remains
-is the end-to-end version -- a beam tracked through a lattice containing a real
-aperture element, where the losses are produced by the aperture rather than
-injected by hand, and where the loss log and the `count_dead` reconciliation are
-checked against each other.
+**Step 4 -- the acceptance test. DONE (2026-08-01).** Both halves are in place.
+The reduction half: the moment observer, `beam_statistics`, luminosity and all
+five solvers produce correct finite output over survivors, checked against a
+survivor-only beam. The end-to-end half: a beam tracked through a lattice with
+real aperture elements, losses produced by the apertures rather than injected,
+and the loss log reconciled against `count_dead` -- including hand-killed
+particles that no aperture can claim showing up in the gap and *not* in the log.
+
+Remaining, and deliberately not done here:
+
+- **Wiring `loss_summary` into `TrackingTask`'s automatic diagnostics.** It is a
+  public function today and the task can call it; making it fire on the observer
+  schedule without being asked is a task-diagnostics change, not an aperture one.
+- **A task-owned record.** The record is allocated by the caller and passed to
+  `ApertureSpec(loss_record=...)`, with `element_id` assigned by hand. Having the
+  task allocate one per beam and stamp ids from lattice position is the
+  ergonomic finish; the mechanism it would use is already here.
+- **Element names fleet-wide**, its own item below.
 
 ## Element names, fleet-wide (2026-08-01)
 
