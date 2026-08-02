@@ -196,6 +196,11 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   [`stable_strong_strong_moments_2026_07_30.md`](history/stable_strong_strong_moments_2026_07_30.md)
   (stable shifted CPU/CUDA variance and covariance reductions, cancellation
   regression coverage, and 200-turn production performance measurements),
+  [`ref_tilt_2026_08_02.md`](history/ref_tilt_2026_08_02.md)
+  (rolling a bend's design orbit plane, so a vertical bend becomes expressible:
+  the conjugation map, why it is tracking-complete without a survey, the five
+  PTC cases, and the measurement that overturned the predicted composition
+  order — MAD-X quotes an alignment error in the *unrolled* frame),
   [`public_configuration_audit.md`](history/public_configuration_audit.md),
   [`weak_strong_6d_model_validation.md`](history/weak_strong_6d_model_validation.md),
   [`poisson_solver_review_2026_07_24.md`](history/poisson_solver_review_2026_07_24.md)

@@ -9,11 +9,11 @@
 >
 > | item | state | notes |
 > |---|---|---|
-> | **`ref_tilt` for bends** | **ready to start** | Fully scoped; every piece exists and the map is tracking-complete. **Start here.** The ordering trap (`ref_tilt` outside the misalignment frames) needs a *two-parameter* PTC case — single-parameter cases cannot see it. |
-> | `loss_summary` into `TrackingTask` diagnostics | small wiring | All mechanisms exist; it is a public function the task can already call, just not fired automatically. |
+> | `loss_summary` into `TrackingTask` diagnostics | small wiring | All mechanisms exist; it is a public function the task can already call, just not fired automatically. **Start here.** |
 > | `b0 == 0` runtime branch in `_body_step` | small | The one curvature-adjacent test still resolved during tracking. Same principle as the `curved` refactor; deliberately left because it is a different question and doubles specializations. |
 > | Element names fleet-wide | waiting | A chore, not a design problem. Worth doing when a *second* consumer appears; the aperture-only version serves the one that exists. |
 > | BPM monitors | needs a decision | Element that observes, or observer bound to a position? Architecture call before any code. |
+> | Bmad reference cases for `misalign_convention=:bmad` | blocked on a tool | The **default** convention has no reference case: its reference point, rotation order, and now the frame a misalignment is quoted in against a `ref_tilt` are all read from Bmad source, never measured. `:madx` is pinned at ~5e-13 throughout. Needs Bmad in the validation path; one comparison would close all three. |
 >
 > ## Decided, deliberately not being done
 >
@@ -1993,7 +1993,30 @@ One prerequisite either way: the hard-edge map should stay wrappable, so a fring
 model composes with it rather than being interleaved into the body integrator.
 That is how it is written today.
 
-## `ref_tilt` for bends: NOT STARTED (2026-08-02)
+## `ref_tilt` for bends: DONE (2026-08-02)
+
+Implemented as `src/elements/ref_tilt.jl` and pinned against PTC by five new
+reference cases. Record, with the measurements and the one prediction below that
+turned out to be wrong:
+[`docs/history/ref_tilt_2026_08_02.md`](history/ref_tilt_2026_08_02.md).
+Derivation: [`docs/theory/misalignment_and_patch_maps.md`](theory/misalignment_and_patch_maps.md)
+Sections 6a and 6b.
+
+**The scoping below was right about everything except the ordering, and the
+ordering was the only part that needed a measurement.** It is kept unedited
+under the correction, in the habit this file has earned.
+
+> **Correction (2026-08-02, after running the comparison):** the claim that
+> `ref_tilt` "composes **outside** the misalignment frames" is true of the maps
+> and does not settle what it was invoked to settle. The open question is which
+> frame the alignment *error* is quoted in, and MAD-X quotes it in the
+> **unrolled** design frame — the roll composed inside, not outside. Bmad quotes
+> it in the rolled frame, so both readings are real and the split now rides on
+> the existing `misalign_convention`. Wrong choice: 2.0e-4 / 3.5e-4 from PTC.
+> Right one: 2.8e-13 / 4.5e-13. The prediction that a two-parameter case would
+> be needed to see any of this was exactly right.
+
+## `ref_tilt` for bends: original scoping (2026-08-02)
 
 Octopus can misalign a bend but **cannot express a vertical one**, and the two
 are different things that a single `tilt` keyword currently conflates.

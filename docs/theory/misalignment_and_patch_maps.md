@@ -319,6 +319,70 @@ exact-splitting bend against PTC's drift-kick one produces an O(1e-3) residual
 that has nothing to do with the misalignment, and which scales with the bend
 angle in a way that mimics a wrong exit patch.
 
+### Which frame the error is quoted in, when the design orbit is rolled
+
+A third convention split hides behind the same `misalign_convention` switch, and
+it appears only once a bend carries a `ref_tilt` (Section 6b) *and* a
+misalignment. Both codes displace the same magnet — the rolled one. They differ
+over the axes the displacement and pitches are **measured along**:
+
+| | frame the `EALIGN`/offset vector lives in | source |
+|---|---|---|
+| Bmad | the **rolled** frame — the element's own axes, which `ref_tilt` has turned | `track_a_bend` rotates by `ref_tilt`, then calls `offset_particle` inside it |
+| MAD-X | the **unrolled** design frame — `dx` stays horizontal whatever the roll | `EALIGN` is survey data about the machine |
+
+Octopus keeps `ref_tilt` as the outer map in both and resolves the split by
+conjugating the rigid transform for `:madx`:
+
+$$W \mapsto R_z(-\psi)\,W\,R_z(\psi), \qquad d \mapsto R_z(-\psi)\,d .$$
+
+Measured, at `ref_tilt = 0.3` on a combined-function bend:
+
+| model | `dx` only | all six |
+|---|---|---|
+| error quoted in the rolled frame | 2.0e-4 | 3.5e-4 |
+| error quoted in the unrolled frame (`:madx`) | **2.8e-13** | **4.5e-13** |
+
+Both parts of the transform must move together: rotating the offset but leaving
+$W$ alone still leaves 1.2e-4 on the all-six case.
+
+This overturned the prediction recorded in `docs/todo.md`, which reasoned that a
+design choice must compose outside an error and concluded the roll wraps the
+misalignment in every convention. That is true of the *maps* and false of the
+*frame the error is stated in*, which is the thing the comparison actually
+measures. The prediction about the trap was right: at one nonzero parameter every
+model above agrees, so none of the one-at-a-time cases that pin the rest of this
+note could have caught it.
+
+## 6b. `ref_tilt`: rolling the design orbit
+
+`ref_tilt` rolls the design orbit plane; `tilt` rolls the magnet body. The first
+is geometry the lattice designer chose, the second is an error. MAD-X spells the
+first as the bend's own `tilt=` keyword and the second through `EALIGN, dpsi`,
+so **MAD-X's bend `tilt` is Bmad's `ref_tilt`, not Octopus's `tilt`** — the same
+word for both meanings, which is the trap.
+
+The map is a conjugation,
+
+$$M_\text{rolled} = R(\psi) \, M \, R(-\psi),$$
+
+with $R$ rotating $(x,p_x)$ against $(y,p_y)$. It is complete for tracking, and
+that is worth stating because an earlier draft of this note said otherwise. A
+roll about $s$ maps the $s=0$ plane to itself, so unlike a misalignment there is
+no drift onto a displaced face and no path-length term; $z$ and $p_z$ pass
+through untouched. Octopus's lattice is a sequence of maps in local curvilinear
+frames, a bend already turns its frame by $hL$, and conjugating it makes the
+frame turn in a rolled plane — after which the next element simply receives
+coordinates in the new frame. Nothing absolute is needed. A vertical bend is
+$\psi = \pi/2$.
+
+What the conjugation does *not* give is where the magnet sits in the building.
+Reporting that is a survey question and still needs the geometry layer Section 8
+asks for; tracking through it does not.
+
+Agreement with PTC, driven through `sbend, tilt=`: **3.5e-13** for a pure dipole,
+**4.1e-13** at $\psi=\pi/2$, **4.6e-13** for a combined-function bend.
+
 ## 7. Recommended design for Octopus
 
 1. **Take Bmad's factorization, PTC's bookkeeping.** Form $W$ once and apply a
@@ -356,15 +420,19 @@ angle in a way that mimics a wrong exit patch.
 
 ## 8. Open questions
 
-- **Sign and order conventions must be pinned against a reference case before
-  the maps are trusted.** PTC's order is $x$-pitch, $y$-pitch, roll; Bmad's $W$
-  is $R_y R_x R_z$ with a sign flip on $\phi$. These are not obviously the same
-  composition, and the difference is second order in the angles — small enough
-  to hide in a symplecticity test and large enough to matter at $10^{-4}$ rad.
-- **`ref_tilt` versus `tilt`.** Bmad distinguishes rolling the *design orbit* of
-  a bend from rolling the *magnet*. Octopus has neither yet, and the distinction
-  only exists for bends. It needs to be settled before bends get misalignments,
-  not after.
+- ~~**Sign and order conventions must be pinned against a reference case before
+  the maps are trusted.**~~ **Done**: both compositions are implemented and
+  selected by `misalign_convention`, and the `:madx` branch is pinned by
+  `quad_mis_all` and `cfbend_mis_all` at 4.96e-13 (Section 6a). The warning that
+  the difference is second order — too small for a symplecticity test to see,
+  large enough to matter at $10^{-4}$ rad — held, and is why those cases set all
+  six degrees of freedom at once.
+- ~~**`ref_tilt` versus `tilt`.**~~ **Done as of 2026-08-02**: Section 6b. The
+  concern that it should be settled *before* bends get misalignments rather than
+  after turned out to be well placed but not blocking — the two interact, and
+  resolving the interaction late meant it was resolved by measurement rather
+  than by assumption. The assumption on record was wrong (Section 6a, last
+  subsection).
 - ~~**Aperture.** Octopus has no aperture model at all.~~ **Stale as of
   2026-08-01**: `ApertureSpec` exists, with per-particle loss records
   ([`aperture_and_particle_loss.md`](aperture_and_particle_loss.md)). The point
