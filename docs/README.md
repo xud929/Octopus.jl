@@ -126,8 +126,7 @@ reference material, not API docs; the implementing code links back to them.
   provenance than by a live tree; one XPath-shaped selector instead of a family
   of lookup functions; and why a line is an `ElementSpec` rather than a new core
   object — which makes assembly misalignment fall out of `_misalignment_wrap`
-  for free. **Implemented** as `src/elements/beam_line.jl`; the metadata
-  registration is the one piece still outstanding.
+  for free. **Implemented** as `src/elements/beam_line.jl`.
 - [`bpm_measurement_model.md`](theory/bpm_measurement_model.md) — what a beam
   position monitor *reads* as opposed to what the beam *is*: the error model
   (body offset, roll, gain, readout bias, resolution noise) read from AT,

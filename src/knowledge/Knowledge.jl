@@ -191,6 +191,10 @@ const ALLOWED_PHYSICS_KEYWORDS = Set{Symbol}([
     :placeholder,
     :collimation,
     :particle_loss,
+    # A composite of other elements. One word rather than mislabelling a line
+    # as something it is not; the vocabulary is controlled precisely so that
+    # additions are deliberate.
+    :beam_line,
 ])
 
 """Return the current controlled physics-keyword set."""

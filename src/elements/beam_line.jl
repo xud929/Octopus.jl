@@ -172,6 +172,11 @@ end
 # Construction
 # ---------------------------------------------------------------------------
 
+# An abstract type rather than a bare function, matching PatchSpec and
+# SBendSpec: the metadata registry keys friendly constructors by type, so a
+# function cannot be one.
+abstract type BeamLine end
+
 """
     BeamLine(name, children...; tags=(), kwargs...)
 
@@ -296,6 +301,22 @@ function _entry_label(child)
         return uppercase(String(kind(child)))
     end
     return uppercase(String(nameof(typeof(child))))
+end
+
+"""
+    BeamLine(; name="", entries=LineEntry[], kwargs...)
+
+Rebuild a line from placements that already exist, skipping expansion.
+
+This is how a slice becomes a line — `BeamLine(; name="HEAD", entries=arc[1:5])` —
+and it is the form reflection introspection uses, since every element kind must
+be constructible from its parameters by keyword alone.
+"""
+function BeamLine(; name::AbstractString="", entries=LineEntry[], kwargs...)
+    params = Dict{Symbol,Any}(kwargs)
+    params[:name] = String(name)
+    params[:entries] = collect(LineEntry, entries)
+    return ElementSpec{:line}(params)
 end
 
 """The placements of a line, in order."""
@@ -513,4 +534,28 @@ function compile_runtime(spec::ElementSpec{:line}, args...)
     geom = ElementSpec{:line}(merge(getfield(resolved, :params),
                                     Dict{Symbol,Any}(:L => total_length(resolved))))
     return _ref_tilt_wrap(geom, _misalignment_wrap(geom, CompositeLine(ops)))
+end
+
+@element_spec begin
+    kind = :line
+    spec_type = ElementSpec{:line}
+    friendly_constructor = BeamLine
+    description = "A sequence of elements, expanded flat with per-placement provenance."
+    keywords = [:beam_line, :thick_element]
+    tracking_methods = DataType[]
+    contracts = DataType[]
+    analyses = [PlaceholderAnalysis]
+    parameters = (
+        name=ParamMeta(default="", meaning="line name; becomes the leading path segment of every placement it contains"),
+        entries=ParamMeta(default=(), meaning="the expanded placements. Built by BeamLine(name, children...) from nested children; the keyword form takes them ready-made, which is how a slice becomes a line"),
+        x_offset=ParamMeta(default=0, meaning="misalignment of the WHOLE LINE, which is what makes a girder or cryostat: a line carrying one does not dissolve into its parent, it stays a single placement and moves its contents rigidly"),
+        y_offset=ParamMeta(default=0, meaning="vertical misalignment of the whole line"),
+        z_offset=ParamMeta(default=0, meaning="longitudinal misalignment of the whole line"),
+        x_pitch=ParamMeta(default=0, meaning="rotation of the whole line about the y axis, in radians"),
+        y_pitch=ParamMeta(default=0, meaning="rotation of the whole line about the x axis, in radians"),
+        tilt=ParamMeta(default=0, meaning="roll of the whole line about the longitudinal axis, in radians"),
+        misalign_convention=_COMMON_PARAMS.misalign_convention,
+    )
+    example = BeamLine("CELL", QuadrupoleSpec(L=0.4, k1=1.7, nst=2))
+    construction_help = "Friendly constructor: BeamLine(name, children...; tags=(), kwargs...); children may be element specs, other lines, in-line hooks, or vectors/tuples of those. Nesting, reverse (reflection -- ORDER ONLY, it does not swap e1/e2) and repeat are construction syntax and expand away, with provenance kept per placement so ARC1/CQS[3] stays addressable. A line given a misalignment does NOT dissolve: it stays one placement and moves its contents rigidly, which is how a cryostat or girder is expressed. Select with find_entries(line, sel\"ARC1/CQS[3]\"), which also takes a Regex, a tag Symbol, a Type or a predicate. Keyword form BeamLine(; name, entries) rebuilds a line from existing placements. The misalignment keywords x_offset, y_offset, z_offset, x_pitch, y_pitch and tilt displace the WHOLE line rigidly and are what make it a girder, with misalign_convention choosing the reference point and rotation order exactly as it does for a single magnet. Design: docs/theory/beam_line_composition.md."
 end

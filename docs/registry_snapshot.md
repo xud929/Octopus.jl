@@ -231,6 +231,14 @@ constructor names remain the user-facing way to build those specs.
   - Runtime mappings: `NonSymplectic6DMap => Patch`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
+- `ElementSpec{:line}` via `BeamLine`
+  - Physics keywords: `:beam_line`, `:thick_element`
+  - Supported tracking methods: `[]`
+  - Required contracts: `[]`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `[]`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
 - `ElementSpec{:aperture}` via `ApertureSpec`
   - Physics keywords: `:thin_element`, `:collimation`, `:particle_loss`
   - Supported tracking methods: `NonSymplectic6DMap`

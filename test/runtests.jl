@@ -1788,6 +1788,20 @@ end
     @test length(repeat(BeamLine("CELL", qf, dr, qd), 3)) == 9
     @test_throws ArgumentError repeat(BeamLine("CELL", qf), 0)
 
+    # Registered like any other element kind, which is the point of a line
+    # being an ElementSpec rather than a new core object.
+    @test :line in summarize_registry().elements
+    @test validate_element_metadata().passed
+    @test haskey(parameter_schema(ElementSpec{:line}), :x_offset)
+    @test example_spec(ElementSpec{:line}) isa ElementSpec{:line}
+    # The keyword form is what reflection needs and what turns a slice into a
+    # line; it takes placements ready-made instead of expanding children.
+    let arc = BeamLine("ARC1", qf, dr, qd, dr)
+        head = BeamLine(; name="HEAD", entries=arc[1:2])
+        @test length(head) == 2
+        @test [entry_path(e) for e in head] == ["ARC1/QF", "ARC1/DR"]
+    end
+
     # A line carrying state of its own does not dissolve: it is a cryostat, and
     # misaligning it moves its contents RIGIDLY. This is the design note's claim
     # that assembly misalignment falls out of _misalignment_wrap for free.
