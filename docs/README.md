@@ -110,9 +110,21 @@ reference material, not API docs; the implementing code links back to them.
   and recommends Bmad's factorization with PTC's bookkeeping. The **patch** half
   is now implemented as `PatchSpec` (`src/elements/patch.jl`) -- a *deliberate*
   frame change, distinct from a misalignment in that the new frame persists
-  instead of being restored. Misalignments themselves are implemented;
-  the rotation *order* is still unpinned against a reference and blocks bend
-  misalignments.
+  instead of being restored. Misalignments themselves are implemented, and the
+  rotation *order* is now pinned: both compositions are selected by
+  `misalign_convention`, with `:madx` agreeing with PTC at 4.96e-13 on the
+  all-six case, so bend misalignments are no longer blocked. Sections 6a and 6b
+  add the design-orbit roll `ref_tilt` -- a vertical bend is `ref_tilt = pi/2` --
+  and the third face of the same convention split, which frame an alignment
+  error is quoted in once the orbit is rolled.
+- [`bpm_measurement_model.md`](theory/bpm_measurement_model.md) — what a beam
+  position monitor *reads* as opposed to what the beam *is*: the error model
+  (body offset, roll, gain, readout bias, resolution noise) read from AT,
+  MAD-X and Bmad source, why the reading reduces exactly to MAD-X's
+  `(1+MSCAL)x + MRE`, and the measurement that settles the architecture — a
+  misaligned zero-length element returns its input bit for bit, so a BPM offset
+  cannot live in a tracking map and a BPM is an observer bound to a position
+  rather than an element.
 - [`near_round_bassetti_erskine_switch.md`](theory/near_round_bassetti_erskine_switch.md)
   — near-round analytic Gaussian evaluation: invariant anisotropy, the
   fixed-interval field integral and third-order potential expansion,
