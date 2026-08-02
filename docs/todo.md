@@ -1783,6 +1783,19 @@ would have passed every accuracy test while quietly not being symplectic. Set to
 a coarse `nst` now gives a less accurate but still symplectic map, which is what
 a ring needs. That is the cost accepted deliberately.
 
+**`nst` defaults to 1 straight but 16 curved**, and that asymmetry is a
+correctness fix rather than a convenience. A straight solenoid is the exact flow
+and ignores `nst`; a curved one is integrated, and `nst = 1` there does not
+merely lose accuracy -- at `h = 0.18` over `L = 1.3` the implicit stage fails to
+converge and returns an error of **1.09 against coordinates of 1e-3**. A single
+shared default of 1 would have let `SolenoidSpec(L=..., ks=..., h=...)` silently
+return nonsense. An explicit `nst = 1` is still honoured.
+
+Cost, measured: **165 ns/particle straight against 5524 ns at `h != 0`,
+`nst = 8`** -- 33x. That is 16 fixed-point sweeps over 8 steps, so ~136
+derivative evaluations against one closed-form map; 33x is the price of
+curvature here and is better than the naive count suggests.
+
 Verification: `ks=0` reproduces `_lattice_drift(h, L, ...)`; `h -> 0` converges
 to the exact straight map at second order; the residual at finite `h` is linear
 in `h`, which is the curvature doing its job rather than an error; second-order

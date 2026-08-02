@@ -34,7 +34,27 @@ struct Solenoid{M<:AbstractTrackingMethod,T<:AbstractFloat,N} <: AbstractTrackOp
     method::M
     L::T
     ks::T
-    h::T                     # reference-frame curvature; 0 selects the exact map
+    # Reference-frame curvature. `h == 0` selects the exact closed-form map and
+    # anything else the implicit-midpoint integrator.
+    #
+    # The comparison is exact rather than tolerant, deliberately. It is stable:
+    # IEEE equality is deterministic and `-0.0 == 0.0`, so both signed zeros take
+    # the straight path. A tolerance would be worse -- it would silently discard
+    # curvature a caller explicitly asked for, and any epsilon would be arbitrary.
+    #
+    # What it does create, and what `_lattice_drift` does NOT, is a cliff in
+    # *accuracy*: both of the drift's branches are exact, while these two differ
+    # in kind. Measured at L=1.3, ks=1.7 against the exact straight map:
+    #
+    #     h = 0.0, -0.0        exact path     0.0
+    #     h = 1e-300 .. 1e-8   curved path    2.03e-6   (integrator truncation)
+    #
+    # So h = 1/rho with a very large rho pays integration error it does not need.
+    # The curved path is numerically safe there -- no 1/h exists anywhere, and
+    # nothing blows up down to 1e-300 -- it is simply approximate where the exact
+    # map would be exact. Pass exactly 0 when the frame is straight, which is the
+    # default.
+    h::T
     kn::NTuple{N,T}          # kn[i] = K_{i-1}, normal, THICK (not integrated)
     ksk::NTuple{N,T}         # skew partners
     nst::Int
@@ -296,7 +316,14 @@ function Solenoid(spec::ElementSpec,
     kn_raw = getparam(spec, :kn, ())
     ksk_raw = getparam(spec, :kskew, ())
     h = getparam(spec, :h, 0)
-    nst = Int(getparam(spec, :nst, 1))
+    # The default step count depends on the frame, because the two paths need
+    # utterly different things from it. A straight solenoid is the exact flow
+    # and ignores `nst` entirely, so 1 is right. A curved one is integrated, and
+    # `nst = 1` there is not merely inaccurate: at h = 0.18 over L = 1.3 the
+    # implicit stage does not converge and the result is garbage (error 1.09
+    # against coordinates of 1e-3). Defaulting to 1 in that case would let
+    # `SolenoidSpec(L=..., ks=..., h=...)` silently return nonsense.
+    nst = Int(getparam(spec, :nst, h == 0 ? 1 : 16))
     nst >= 1 || throw(ArgumentError("solenoid nst must be at least 1; got $(nst)"))
     n = max(length(kn_raw), length(ksk_raw))
     T = float(promote_type(typeof(L), typeof(ks), typeof(h), Float64))
@@ -328,7 +355,7 @@ end
         kn=ParamMeta(default=(), meaning="normal multipole strengths superimposed on the solenoid; kn[i] = K_{i-1}. THICK strengths as for QuadrupoleSpec, not the thin family's integrated K_n L"),
         kskew=ParamMeta(default=(), meaning="skew partners of kn. Spelled `kskew` rather than `ks` because the solenoid needs `ks` for its own strength; usually set through the named k0s/k1s/k2s keywords instead"),
         h=ParamMeta(default=0, meaning="reference-frame curvature. h=0 is the exact closed-form map; h!=0 has no closed form and no exact splitting either, so it integrates with implicit midpoint over nst steps"),
-        nst=ParamMeta(default=1, meaning="integration steps. Used when multipoles are present, or when h != 0. A straight pure solenoid is exact and ignores this"),
+        nst=ParamMeta(default=1, meaning="integration steps. Used when multipoles are present, or when h != 0; a straight pure solenoid is exact and ignores it. The default is 1 straight but 16 curved, because nst=1 does not converge at production curvature. Measure convergence for production work rather than trusting the default"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
     )
     example = SolenoidSpec(L=2.0, ks=0.35)
