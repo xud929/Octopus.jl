@@ -411,14 +411,16 @@ Following the bends, which reached $5\times10^{-13}$ against PTC:
 
 ## 11. Open questions
 
-- **Soft fringe — nobody implements one.** See Section 12: PTC, Bmad and MAD-X
-  are all hard-edge, and Bmad's source says the solenoid fringe *must always* be
-  applied. A real solenoid does have a finite transition over which $B_s$ rises,
-  and there the radial field does work in a way the impulsive conversion does not
-  capture at large radius, so a soft model is physically meaningful — it is just
-  not a thing any of the three benchmark codes would let us check against.
-  Deferred, and if it is ever built it should wrap the hard-edge map rather than
-  interleave with it.
+- **Soft fringe — one of four codes has anything, and it is a field map.** See
+  Section 12: PTC, Bmad, MAD-X and Elegant's `SOLE` are all hard edge, and
+  Bmad's source says the solenoid fringe *must always* be applied. Only
+  Elegant's `MAPSOLENOID` is soft, and it gets there by numerically integrating
+  a measured $(B_z,B_r)$ map rather than by an analytic soft-edge model. A soft
+  model is physically meaningful — the radial field acts over a finite distance
+  rather than as an impulse, and the difference grows with radius — but there is
+  no closed form in these codes to port or check against. Scoped as its own todo
+  item with the two possible shapes costed. The hard-edge map is written to be
+  wrappable so a fringe model composes with it rather than interleaving.
 - **Solenoid inside a bend.** The derivation above assumes $h=0$. A solenoid in
   a curved frame needs the $(1+hx)$ factor carried through, and the closed form
   above does not survive it unchanged. Out of scope; worth stating so nobody
@@ -489,3 +491,31 @@ branch at all.
    as out of scope for Octopus; it is worth recording that a validated precedent
    exists and what shape it takes, so the work is a port rather than a design if
    it is ever wanted.
+
+**Elegant** (`elegant/src/track_data.c`). Two solenoid elements, and this is the
+one code of the four that has something soft — though not in the form the
+question implies.
+
+`SOLE` is the plain one, and its own description is *"A solenoid implemented as
+a **matrix, up to 2nd order**"* — the paraxial form Section 7 rejects, carried to
+second order. Its parameter list is `L, KS, B, DX, DY, DZ, ORDER` with **no
+fringe parameter at all**, which is conspicuous next to Elegant's own `HCOR`,
+which does carry an `EDGE_EFFECTS` switch. So Elegant's ordinary solenoid has no
+fringe control and a less accurate body than ours.
+
+> **Trap — Elegant's `KS` has the opposite sign.** Its parameter table defines
+> `KS` as *"geometric strength, $-B_s/(B\rho)$"*, against MAD-X's
+> $+B_s/(B\rho)$. Octopus follows MAD-X, which is what the PTC benchmark pins.
+> Anyone cross-checking a lattice against Elegant must flip the sign, and the
+> error is invisible in every quantity even in $k_s$.
+
+`MAPSOLENOID` is the soft one: *"A numerically-integrated solenoid specified as
+a map of $(B_z, B_r)$ vs $(z, r)$."* It reads an SDDS field map and integrates
+it with Runge–Kutta, Bulirsch–Stoer, non-adaptive Runge–Kutta or modified
+midpoint, under an `ACCURACY` tolerance, with misalignments and an optional
+superimposed uniform field.
+
+**So a real fringe exists in exactly one of the four codes, and it is a field-map
+integrator rather than an analytic soft-edge map.** That distinction decides what
+"add a soft fringe" would mean for Octopus, and it is why the todo entry lists
+two different pieces of work rather than one.

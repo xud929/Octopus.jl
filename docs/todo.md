@@ -1614,6 +1614,60 @@ Remaining, and deliberately not done here:
   ergonomic finish; the mechanism it would use is already here.
 - **Element names fleet-wide**, its own item below.
 
+## Soft-fringe solenoid (2026-08-01)
+
+The exact solenoid ([`docs/theory/solenoid.md`](theory/solenoid.md)) is
+**hard edge**: $B_s$ is constant on $[0,L]$ and zero outside, so the entrance and
+exit fringes collapse to the impulsive canonical-to-kinetic conversion. A real
+solenoid's $B_s$ rises over a finite length, and in that transition the radial
+field $B_r=-\tfrac{r}{2}\,\mathrm dB_s/\mathrm ds$ acts over a finite distance
+rather than as an impulse — a difference that grows with radius and is therefore
+worst exactly where a final-focus solenoid matters.
+
+**Survey of the four benchmark codes, read from source (2026-08-01), because the
+answer decides whether this is portable work or original work:**
+
+| code | element | fringe |
+|---|---|---|
+| PTC | `SOL5`/`kind5` | hard edge, buried in `KICK_SOL`; **no fringe routine exists** |
+| Bmad | solenoid | hard edge, and **mandatory** — *"must always apply the fringe kick due to the longitudinal field"* |
+| MAD-X | `SOLENOID` | hard edge (dispatches to PTC) |
+| Elegant | `SOLE` | hard edge, 2nd-order **matrix**, no fringe parameter at all |
+| Elegant | `MAPSOLENOID` | **numerically integrated $(B_z,B_r)$ field map** |
+
+So exactly one of the four has anything soft, and it is a **field-map
+integrator, not an analytic soft-edge map**. There is no closed-form soft
+solenoid fringe in the literature these codes implement that we could port and
+benchmark against. That splits the work in two, and they are not the same size:
+
+**(a) An analytic soft-edge model.** Pick a profile — Enge, `tanh`, or Bmad's
+higher-order edge treatment — and derive the map for it. Cheap to implement and
+it stays symplectic, but **nothing to validate against**: none of the four codes
+has the same model, so the only check would be against (b) or against a field map
+built to match the chosen profile. Expect to spend the effort on validation
+design rather than on the map.
+
+**(b) A field-map solenoid, matching `MAPSOLENOID`.** Read $(B_r,B_z)$ vs
+$(r,z)$, integrate numerically. Directly benchmarkable against Elegant, which is
+its main attraction. But it is a much larger piece: field-map I/O, off-axis
+interpolation (or on-axis expansion when only $r=0$ data is given, as Elegant
+supports), an adaptive integrator, and an accuracy tolerance — and the result is
+**not symplectic**, so it would be the first non-symplectic magnet in Octopus and
+would need `NonSymplectic6DMap` plus a story about what that costs over many
+turns.
+
+**Recommendation: do neither until a study needs it.** The hard-edge map is
+exact, symplectic, and matches PTC to $4.9\times10^{-13}$; it is the same model
+three of the four codes ship as their only option. Revisit if a detector-region
+or final-focus study cares about the fringe region at large radius, and prefer
+**(b)** when that happens — being able to check against Elegant is worth more
+than the symplecticity given the model is an approximation of a measured field
+anyway.
+
+One prerequisite either way: the hard-edge map should stay wrappable, so a fringe
+model composes with it rather than being interleaved into the body integrator.
+That is how it is written today.
+
 ## Element names, fleet-wide (2026-08-01)
 
 Split out of the step-3 aperture work, which needs a name for **one** element and
