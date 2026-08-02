@@ -393,8 +393,21 @@ Still open from this phase:
   recomputes bounds per pair. Quoting the CPU crossover as though it held on GPU
   is a mistake that has now been made once; on CUDA the 7.4%/30% emittance gain
   costs 2.5x wall time and is a trade, not a free win.
-- ~~**4e. Node-solve caching**~~ — **CLOSED NEGATIVE (2026-08-01).** Implemented,
-  measured, and reverted. Both halves of the promise held: a one-slot rolling
+- ~~**4e. Node-solve caching**~~ — **CLOSED NEGATIVE (2026-08-01), and it had
+  already been closed on principle by 2d on 2026-07-26** ("plane sharing is
+  REJECTED... item 4e is closed, not deferred"). This entry still read "gated on
+  the residual proving worth removing", so the document contradicted itself and
+  the stale half got implemented before the decision was found. The measurement
+  below is therefore redundant as a *decision* and useful only as the number 2d
+  asserted without one: 2d rejected sharing because it trades physical
+  self-consistency for a numerical artefact; the measurement says how much --
+  `3.0e-4` introduced against `8.1e-5` removed at a production kick.
+
+  **Lesson for the reader: check the decision items (2b-2d) before implementing
+  a phase-4 sub-item.** The phase list is older than the decisions taken during
+  the CUDA optimization, and where they disagree the decision wins.
+
+  Implemented, measured, and reverted. Both halves of the promise held: a one-slot rolling
   cache per (source slice, direction) made the shared boundary `C^0` exact
   including the source state, and cut solves from 324 to 180 (`0.556x`, exactly
   `n/2 + one cold start per source slice`). One slot suffices because
