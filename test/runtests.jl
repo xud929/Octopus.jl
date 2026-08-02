@@ -1700,6 +1700,109 @@ end
     @test haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :nst))
 end
 
+@testset "Loss accounting reports itself" begin
+    # Drained on a task so a full pipe buffer cannot deadlock the capture.
+    function capture_stdout(f)
+        original = stdout
+        rd, wr = redirect_stdout()
+        reader = @async read(rd, String)
+        try
+            f()
+        finally
+            redirect_stdout(original)
+            close(wr)
+        end
+        return fetch(reader)
+    end
+
+    line = (DriftSpec(L=1.0), ApertureSpec(x_limit=2.0e-3, name="COLL_A"),
+            DriftSpec(L=2.5), ApertureSpec(y_limit=1.0e-3, name="COLL_B"),
+            DriftSpec(L=0.5))
+    mk() = Phase6DRep([1.0e-3, 5.0e-3, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0],
+                      [0.0, 0.0, 4.0e-3, 0.0], [0.0, 0.0, 0.0, 0.0],
+                      zeros(4), zeros(4))
+
+    # Arc position: the summed L ahead of each aperture, in the same order as
+    # aperture_names and aperture_counts so a reader can zip the three.
+    @test Octopus._aperture_s_positions(line) == [1.0, 3.5]
+    @test Octopus._aperture_s_positions((MarkerSpec(), DriftSpec(L=0.4),
+                                         ApertureSpec(x_limit=1.0))) == [0.4]
+    # Zero-length entries advance nothing, including an in-line observer.
+    @test Octopus._aperture_s_positions(
+        (DriftSpec(L=1.0), ScheduledObserver(BPMObserver("b")),
+         ApertureSpec(x_limit=1.0))) == [1.0]
+
+    allow_lost_particles(; enabled=true) do
+        # Silent when nothing was lost: this is what keeps an automatic
+        # diagnostic usable in a test suite and a validation sweep.
+        quiet = capture_stdout() do
+            execute!(TrackingTask((DriftSpec(L=1.0),
+                                   ApertureSpec(x_limit=1.0, name="WIDE"))), mk(); turns=1)
+        end
+        @test isempty(quiet)
+
+        # Lossy run with no file: the summary goes to stdout, per collimator.
+        out = capture_stdout() do
+            execute!(TrackingTask(line), mk(); turns=1)
+        end
+        @test occursin("2 of 4 particles lost", out)
+        @test occursin("COLL_A", out) && occursin("COLL_B", out)
+
+        # ... and the off-switch works, or a library that chatters cannot be used.
+        @test isempty(capture_stdout() do
+            execute!(TrackingTask(line; loss_report=false), mk(); turns=1)
+        end)
+
+        # The switch skips the O(N) reduction rather than suppressing its
+        # output, which is the point of having it -- so it also switches off the
+        # detection. No warning on a non-finite particle, and no summary in the
+        # file. Pinned because it is a trade a caller should not discover.
+        @test Octopus._task_loss_summary(TrackingTask(line; loss_report=false),
+                                         mk()) === nothing
+        @test Octopus._task_loss_summary(TrackingTask(line), mk()) !== nothing
+        silent = tempname() * ".h5"
+        execute!(TrackingTask(line; loss_log=silent, loss_report=false), mk(); turns=1)
+        Octopus.HDF5.h5open(silent) do f
+            @test !haskey(f, "summary_dead")     # detection off, records still written
+            @test read(f["aperture_s"]) == [1.0, 3.5]
+        end
+        rm(silent; force=true)
+
+        # A file was asked for, so the console stays quiet and the numbers land
+        # in the artifact instead -- including the arc positions, which the
+        # writer has always accepted and nothing ever supplied.
+        path = tempname() * ".h5"
+        @test isempty(capture_stdout() do
+            execute!(TrackingTask(line; loss_log=path), mk(); turns=1)
+        end)
+        Octopus.HDF5.h5open(path) do f
+            @test read(f["aperture_s"]) == [1.0, 3.5]
+            @test read(f["aperture_names"]) == ["COLL_A", "COLL_B"]
+            @test read(f["summary_particles"]) == 4
+            @test read(f["summary_dead"]) == 2
+            @test read(f["summary_logged"]) == 2
+            @test read(f["summary_unattributed"]) == 0
+            @test read(f["summary_live"]) == 2
+        end
+        rm(path; force=true)
+
+        # `unattributed` is the whole reason the summary exists: a particle that
+        # went non-finite with no aperture responsible. It must warn, and it
+        # must do so even when the line has no aperture at all -- which is
+        # exactly the case where nothing else would notice.
+        nan_rep() = Phase6DRep([1.0e-3, NaN], [0.0, 0.0], [0.0, 0.0],
+                               [0.0, 0.0], zeros(2), zeros(2))
+        @test_logs (:warn,) match_mode = :any execute!(
+            TrackingTask((DriftSpec(L=1.0), ApertureSpec(x_limit=1.0, name="WIDE"))),
+            nan_rep(); turns=1)
+        @test_logs (:warn,) match_mode = :any execute!(
+            TrackingTask((DriftSpec(L=1.0),)), nan_rep(); turns=1)
+        # ... and with the reduction skipped there is nothing left to warn from.
+        @test_logs execute!(TrackingTask((DriftSpec(L=1.0),); loss_report=false),
+                            nan_rep(); turns=1)
+    end
+end
+
 @testset "BPM reads a device number, not the truth" begin
     line = (QuadrupoleSpec(L=0.4, k1=1.7, nst=4), DriftSpec(L=0.6),
             QuadrupoleSpec(L=0.4, k1=-1.7, nst=4), DriftSpec(L=0.6))

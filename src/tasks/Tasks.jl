@@ -53,6 +53,7 @@ struct TrackingTask <: AbstractTask
     runtime_entries_cache::Base.RefValue{Any}
     plan_cache::Dict{Any,Any}
     loss_log::Union{Nothing,String}
+    loss_report::Bool
     loss_record::Base.RefValue{Any}
 end
 
@@ -106,6 +107,29 @@ turn-dependent updates mutate the cached runtime objects in place.
 
 The older `actions` and `observers` keywords remain accepted as compatibility
 aliases and are merged into `hooks`.
+
+# Loss accounting
+
+Every `execute!` reconciles two independent counts of how many particles are
+gone (see [`loss_summary`](@ref)) and reports the result, because a diagnostic
+nobody fires is not a diagnostic — and the number that matters,
+`unattributed`, is one no user thinks to ask for.
+
+- **Nothing lost**: silent. A clean run prints nothing.
+- **`loss_log` given**: the accounting goes into that HDF5, next to the
+  per-aperture names, counts and arc positions, and the console stays quiet —
+  a run that asked for an artifact should not also chatter.
+- **Otherwise**: a short summary on `stdout`, broken down per collimator.
+- **`unattributed != 0`**: warns either way. It means a coordinate went
+  non-finite where nothing was collimating, and that should not be reachable
+  only by opening a file afterwards.
+
+The reconciliation costs one `O(N)` non-finite reduction per `execute!` call,
+not per turn. `loss_report = false` skips that reduction rather than merely
+silencing it, so a caller stepping one turn at a time pays nothing — but it
+switches off the **detection** along with the printing: no `unattributed`
+warning, and no summary written into `loss_log`. The per-particle loss records
+are unaffected.
 """
 function TrackingTask(elements;
                       policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
@@ -115,14 +139,15 @@ function TrackingTask(elements;
                       observers=(),
                       contracts::Vector{DataType}=_collect_contracts(elements),
                       analyses::Vector{DataType}=_collect_analyses(elements),
-                      loss_log::Union{Nothing,AbstractString}=nothing)
+                      loss_log::Union{Nothing,AbstractString}=nothing,
+                      loss_report::Bool=true)
     element_tuple = _element_tuple(elements)
     seed !== nothing && @warn "TrackingTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
     action_tuple, observer_tuple = classify_task_hooks(hooks, actions, observers)
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
                         Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),
                         loss_log === nothing ? nothing : String(loss_log),
-                        Ref{Any}(nothing))
+                        loss_report, Ref{Any}(nothing))
 end
 
 """
@@ -151,6 +176,37 @@ _collect_aperture_specs!(out, elements::Tuple) =
     (foreach(e -> _collect_aperture_specs!(out, e), elements); out)
 _collect_aperture_specs!(out, element::ElementSpec{:aperture}) = (push!(out, element); out)
 _collect_aperture_specs!(out, element) = out
+
+"""
+Arc position of each aperture, in the order `_aperture_specs` returns them, so
+the two line up entry for entry with `aperture_names` and `aperture_counts`.
+
+`s` is the summed `L` of everything ahead of the aperture: the design arc length
+a collimator sits at, which is how MAD-X and elegant report one and what makes a
+loss file readable without the script that produced it. Zero-length entries --
+markers, thin multipoles, in-line observers, the apertures themselves -- advance
+nothing.
+
+Two honest limits. A `PatchSpec` carries its path length in `dz` rather than
+`L`, so a line containing one reports arc length that omits it; folding `dz` in
+would be wrong as often as right, because a patch displaces a frame in a
+direction that need not lie along the design orbit. And this is arc length only
+-- where a magnet sits in *space* still needs the geometry layer that
+`docs/theory/misalignment_and_patch_maps.md` Section 8 asks for.
+"""
+function _aperture_s_positions(elements)
+    out = Float64[]
+    _collect_aperture_s!(out, elements, Ref(0.0))
+    return out
+end
+
+_collect_aperture_s!(out, elements::Tuple, s) =
+    (foreach(e -> _collect_aperture_s!(out, e, s), elements); out)
+_collect_aperture_s!(out, element::ElementSpec{:aperture}, s) = (push!(out, s[]); out)
+function _collect_aperture_s!(out, element, s)
+    element isa AbstractElementSpec && (s[] += Float64(getparam(element, :L, 0.0)))
+    return out
+end
 
 """
 Attach the shared record and the lattice-order id to every aperture in the line.
@@ -218,7 +274,9 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
             task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy)
     end
     task.next_turn[] = next_turn
-    _write_task_loss_log(task)
+    summary = _task_loss_summary(task, rep)
+    wrote_file = _write_task_loss_log(task, summary)
+    _report_losses(task, rep, summary, wrote_file)
     return result
 end
 
@@ -230,13 +288,74 @@ lost at most once, so the file after `n` turns is a superset of the file after
 `n-1`. That makes the write idempotent and makes a run split across several
 `execute!` calls produce the same file as one long call.
 """
-function _write_task_loss_log(task::TrackingTask)
-    task.loss_log === nothing && return nothing
+function _write_task_loss_log(task::TrackingTask, summary)
+    task.loss_log === nothing && return false
     record = task.loss_record[]
-    record === nothing && return nothing
-    record.slots === nothing && return nothing
-    write_loss_record(task.loss_log, record)
+    record === nothing && return false
+    record.slots === nothing && return false
+    write_loss_record(task.loss_log, record;
+                      s=_aperture_s_positions(task.elements), summary=summary)
+    return true
+end
+
+"""
+Report the loss accounting at the end of a run.
+
+A diagnostic nobody fires is not a diagnostic. `loss_summary` reconciles two
+independent counts of how many particles are gone, and its whole point is
+`unattributed` -- particles that went non-finite with no aperture responsible --
+which is a signal the user did not ask for and therefore will not think to
+query. So it is emitted automatically.
+
+**Silent when nothing was lost.** A clean run prints nothing, which is what
+keeps this usable in a test suite and a validation sweep. When a file was
+requested the numbers go there instead, because a run that asked for an artifact
+should not also chatter at the console.
+
+`unattributed != 0` warns in either case. It means a particle died somewhere
+there is no collimator -- a numerical blowup, an imaginary square root -- and
+that should not be reachable only by opening an HDF5 file afterwards.
+"""
+function _report_losses(task::TrackingTask, rep, summary, wrote_file::Bool)
+    summary === nothing && return nothing
+    if summary.unattributed != 0
+        @warn "particles were lost with no aperture responsible; a coordinate went \
+               non-finite where nothing was collimating" unattributed = summary.unattributed dead = summary.dead logged = summary.logged
+    end
+    # `loss_report` was already honoured upstream, by not computing `summary` at
+    # all; reaching here with one means reporting was asked for.
+    (wrote_file || summary.dead == 0) && return nothing
+    io = stdout
+    println(io, "loss summary: ", summary.dead, " of ", summary.particles,
+            " particles lost (", summary.live, " live)")
+    if !isempty(summary.names)
+        for (name, count) in zip(summary.names, summary.by_aperture)
+            count == 0 && continue
+            println(io, "  ", rpad(name, 24), count)
+        end
+    end
+    summary.unattributed == 0 ||
+        println(io, "  ", rpad("(unattributed)", 24), summary.unattributed)
     return nothing
+end
+
+"""
+The task's loss accounting, or `nothing` when it was switched off.
+
+Costs one `O(N)` non-finite reduction per `execute!` call -- not per turn -- and
+runs even with no aperture in the line, because that is exactly the case where a
+particle can go non-finite with nothing to blame.
+
+`loss_report = false` skips the reduction itself rather than merely silencing
+its output, which is the point of the switch: a caller stepping one turn at a
+time pays the `O(N)` per call otherwise. **It therefore switches off the
+detection, not just the printing** -- no `unattributed` warning, and no summary
+in the loss file. That is a real trade and is why the default is on.
+"""
+function _task_loss_summary(task::TrackingTask, rep)
+    task.loss_report || return nothing
+    rep === nothing && return nothing
+    return loss_summary(rep, task.loss_record[])
 end
 
 function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,

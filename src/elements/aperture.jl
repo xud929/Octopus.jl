@@ -438,10 +438,17 @@ Datasets written:
   Element specs carry no names of their own in Octopus, so without this the ids
   are only interpretable next to the script that produced them.
 - `aperture_s` -- longitudinal positions, when the caller can supply them
+- `summary_*` -- the [`loss_summary`](@ref) reconciliation, when the caller can
+  supply it. It is task-level and cannot be otherwise: `dead` is a beam-wide
+  reduction and `unattributed` is by definition the losses *no* aperture
+  claimed, so neither belongs to any one collimator's entry. Storing it here
+  keeps a run's accounting in one artifact instead of a file plus a number the
+  user had to remember to print.
 
 The format matches `MomentObserver`, so the same tooling reads both.
 """
-function write_loss_record(path::AbstractString, record::LossRecord; s=nothing)
+function write_loss_record(path::AbstractString, record::LossRecord;
+                           s=nothing, summary=nothing)
     r = loss_records(record)
     n = length(r.particle_id)
     data = Matrix{Float64}(undef, n, length(LOSS_RECORD_COLUMNS))
@@ -459,6 +466,13 @@ function write_loss_record(path::AbstractString, record::LossRecord; s=nothing)
         file["aperture_names"] = names
         file["aperture_counts"] = Int64.(loss_counts(record))
         s === nothing || (file["aperture_s"] = collect(Float64, s))
+        if summary !== nothing
+            file["summary_particles"] = Int64(summary.particles)
+            file["summary_live"] = Int64(summary.live)
+            file["summary_dead"] = Int64(summary.dead)
+            file["summary_logged"] = Int64(summary.logged)
+            file["summary_unattributed"] = Int64(summary.unattributed)
+        end
         HDF5.flush(file)
     end
     return n
