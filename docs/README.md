@@ -67,6 +67,18 @@ reference material, not API docs; the implementing code links back to them.
   the `:drift`/`:quadrupole`/`:sextupole`/`:octupole`/`:multipole`/`:sbend`
   elements and checked by `PTCConsistencyContract` against a committed MAD-X
   reference table.
+- [`solenoid.md`](theory/solenoid.md) — the exact solenoid map, derived before
+  implementation. The first Octopus element whose **transverse canonical momenta
+  stop being the physical ones inside the magnet**, because a longitudinal field
+  has a transverse vector potential. Shows the textbook entrance/exit fringe
+  kicks are not a separate model but the canonical$\leftrightarrow$kinetic
+  conversion forced by $\hat a$ jumping at a hard edge; derives the closed-form
+  map from the conserved $p_s$ (rotation of the kinetic momentum by $k_s L/p_s$,
+  displacement along the Larmor *half*-angle — the factor-of-two trap); shows it
+  reduces to Octopus's own exact drift at $k_s=0$ **to roundoff**, which is why
+  the paraxial matrix is rejected rather than reused. Includes the numerical
+  verification of every claim, and the consequences for splitting, diagnostics
+  and misalignment. Not yet implemented; validation plan in Section 10.
 - [`aperture_and_particle_loss.md`](theory/aperture_and_particle_loss.md) —
   design note for aperture and particle loss, surveying MAD-X, Bmad, Xsuite and
   Elegant from source: the shapes all four converge on, whether the aperture is
