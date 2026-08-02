@@ -40,36 +40,35 @@ struct Patch{M<:AbstractTrackingMethod,T<:AbstractFloat} <: AbstractTrackOp
     angle_y::T
     angle_s::T
     t_offset::T
+    madx::Bool               # composition order; false = :bmad, as for misalignments
 end
 
 """
-    _patch_rotation(angle_x, angle_y, angle_s)
+    _patch_rotation(T, angle_x, angle_y, angle_s, madx)
 
-Frame matrix `W` taking old-frame components to new-frame components.
+Frame matrix for a patch, built by the **same** routine misalignments use.
 
-Composed as `R_z(angle_s) * R_x(angle_x) * R_y(angle_y)`, i.e. the *inverse* of the
-rotation that carries the old axes onto the new ones -- a vector's components in
-the new frame are `W` times its components in the old. Getting this inverted is
-the classic patch error and is invisible on a pure translation, which is why
-`_patch_roundtrip` in the tests composes a patch with its inverse.
+This delegates to `_misalign_matrix` rather than composing its own rotation, and
+that is the whole point: the composition order and the sign on the x-rotation are
+a genuine convention split that PTC and Bmad resolve differently, they agree for
+any single rotation and disagree at second order once two are nonzero, and they
+are already **pinned against PTC** by the `quad_mis_all` and `cfbend_mis_all`
+reference cases (all three angles, agreement 5e-13). A patch composing its own
+matrix would be unvalidated and free to drift away from the magnets it sits
+between.
+
+The mapping is by *axis*, which is what the patch's parameter names say:
+
+    angle_y  ->  theta   (R_y, MAD-X's x_pitch)
+    angle_x  -> -phi     (R_x, MAD-X's y_pitch, which carries the sign flip)
+    angle_s  ->  psi     (R_z, tilt)
+
+The negation on `angle_x` is not a correction; it is what makes
+`angle_x = +eps` a positive rotation about the x axis given that
+`_misalign_matrix` builds `R_x(-phi)`.
 """
-@inline function _patch_rotation(ax::T, ay::T, as::T) where {T}
-    cx, sx = cos(ax), sin(ax)
-    cy, sy = cos(ay), sin(ay)
-    cz, sz = cos(as), sin(as)
-    # R_y(ay) then R_x(ax) then R_z(as), all active on the frame; W is the
-    # transpose of that product because components transform oppositely.
-    r11 = cy * cz + sy * sx * sz
-    r12 = cx * sz
-    r13 = -sy * cz + cy * sx * sz
-    r21 = -cy * sz + sy * sx * cz
-    r22 = cx * cz
-    r23 = sy * sz + cy * sx * cz
-    r31 = sy * cx
-    r32 = -sx
-    r33 = cy * cx
-    return (r11, r12, r13, r21, r22, r23, r31, r32, r33)
-end
+@inline _patch_rotation(::Type{T}, ax, ay, as, madx::Bool) where {T} =
+    _misalign_matrix(T, ay, -ax, as, madx)
 
 @inline function _patch_apply(W, a1, a2, a3)
     r11, r12, r13, r21, r22, r23, r31, r32, r33 = W
@@ -97,7 +96,7 @@ Exact patch map. Three steps, following Bmad's `track_a_patch`:
 """
 @inline function _patch_map(elem::Patch{M,T}, x, px, y, py, z, pz) where {M,T}
     ps = sqrt((1 + pz)^2 - px * px - py * py)
-    W = _patch_rotation(elem.angle_x, elem.angle_y, elem.angle_s)
+    W = _patch_rotation(T, elem.angle_x, elem.angle_y, elem.angle_s, elem.madx)
     # Position relative to the new origin, and the full three-momentum.
     r1, r2, r3 = _patch_apply(W, x - elem.dx, y - elem.dy, -elem.dz)
     q1, q2, q3 = _patch_apply(W, px, py, ps)
@@ -171,10 +170,13 @@ function Patch(spec::ElementSpec,
     ay = getparam(spec, :angle_y, 0)
     as = getparam(spec, :angle_s, 0)
     dt = getparam(spec, :t_offset, 0)
+    conv = Symbol(getparam(spec, :convention, :bmad))
+    conv in (:bmad, :madx) || throw(ArgumentError(
+        "patch convention must be :bmad or :madx; got $(repr(conv))"))
     T = float(promote_type(typeof(dx), typeof(dy), typeof(dz),
                            typeof(ax), typeof(ay), typeof(as), typeof(dt), Float64))
     return Patch{typeof(method),T}(method, T(dx), T(dy), T(dz),
-                                   T(ax), T(ay), T(as), T(dt))
+                                   T(ax), T(ay), T(as), T(dt), conv === :madx)
 end
 
 @element_spec begin
@@ -194,9 +196,10 @@ end
         angle_x=ParamMeta(default=0, meaning="rotation of the new frame about the x axis, in radians"),
         angle_y=ParamMeta(default=0, meaning="rotation about the y axis, in radians"),
         angle_s=ParamMeta(default=0, meaning="roll of the new frame about the longitudinal axis, in radians"),
+        convention=ParamMeta(default=:bmad, meaning="rotation composition order when more than one angle is nonzero, :bmad or :madx. The same split the misalignments carry, and the same default; single-axis rotations agree either way"),
         t_offset=ParamMeta(default=0, meaning="reference arrival-time offset, in the same units as z. Lets a patch express a path-length difference between two branches rather than only a geometric one"),
         tracking_method=ParamMeta(default=NonSymplectic6DMap(), meaning="per-element tracking method"),
     )
     example = PatchSpec(angle_x=12.5e-3)
-    construction_help = "Friendly constructor: PatchSpec(; dx=0, dy=0, dz=0, angle_x=0, angle_y=0, angle_s=0, t_offset=0, tracking_method=NonSymplectic6DMap()). A DELIBERATE frame change -- a crossing angle, a beamline junction, a spectrometer arm -- not a misalignment: the new frame persists downstream instead of being restored. The map is exact in delta and amplitude because it is geometry, and composing a patch with its inverse is the identity. Derivation: docs/theory/misalignment_and_patch_maps.md Section 7.5."
+    construction_help = "Friendly constructor: PatchSpec(; dx=0, dy=0, dz=0, angle_x=0, angle_y=0, angle_s=0, t_offset=0, convention=:bmad, tracking_method=NonSymplectic6DMap()). A DELIBERATE frame change -- a crossing angle, a beamline junction, a spectrometer arm -- not a misalignment: the new frame persists downstream instead of being restored. The map is exact in delta and amplitude because it is geometry, and composing a patch with its inverse is the identity. Derivation: docs/theory/misalignment_and_patch_maps.md Section 7.5."
 end

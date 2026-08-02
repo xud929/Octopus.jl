@@ -2362,6 +2362,35 @@ end
     @test !isapprox(pitched, ref; atol=1e-6)
     @test maximum(abs.(pitched .- ref)) ≈ 1.5 * 5.0e-3 rtol=0.2
 
+    # The patch composes its rotation with the SAME routine misalignments use,
+    # which is what stops the two from drifting apart. That routine's order and
+    # signs are pinned against PTC by quad_mis_all / cfbend_mis_all (all three
+    # angles, 5e-13), so the patch inherits a validated convention rather than
+    # carrying an unvalidated one of its own.
+    @test Octopus._patch_rotation(Float64, 0.012, -0.008, 0.3, false) ==
+          Octopus._misalign_matrix(Float64, -0.008, -0.012, 0.3, false)
+
+    # A single rotation is order-independent, so the two conventions must agree
+    # exactly -- which is precisely why one-axis reference cases cannot pin the
+    # convention and why the multi-axis PTC cases are the ones that matter.
+    for one in ((angle_x=0.012,), (angle_y=-0.008,), (angle_s=0.3,))
+        @test collect(p(; one...)(u0...)) == collect(p(; one..., convention=:madx)(u0...))
+    end
+    # With two angles they differ, and the size is the point: the discrepancy is
+    # the PRODUCT of the angles, and it lands at full second-order magnitude
+    # because the rotation acts on the three-momentum whose longitudinal
+    # component is ~1. At angle_x = 0.012 and angle_s = 0.3 that is 3.6e-3 in
+    # the transverse momenta, which are themselves ~3e-4 -- an order of
+    # magnitude larger than the quantity it perturbs. This is why picking the
+    # convention by guess is not survivable, and why single-axis reference cases
+    # cannot catch it.
+    two = (angle_x=0.012, angle_s=0.3)
+    diff = maximum(abs.(collect(p(; two...)(u0...)) .-
+                        collect(p(; two..., convention=:madx)(u0...))))
+    @test collect(p(; two...)(u0...)) != collect(p(; two..., convention=:madx)(u0...))
+    @test diff ≈ 0.012 * 0.3 rtol=0.05
+    @test_throws ArgumentError compile_runtime(PatchSpec(angle_x=0.01, convention=:bogus))
+
     # Symplectic: a rigid frame change is a canonical transformation.
     J = Float64[0 1 0 0 0 0; -1 0 0 0 0 0; 0 0 0 1 0 0; 0 0 -1 0 0 0; 0 0 0 0 0 1; 0 0 0 0 -1 0]
     el = p(dx=1.0e-3, dy=-2.0e-3, dz=0.05, angle_x=0.012, angle_y=-0.008, angle_s=0.3)
