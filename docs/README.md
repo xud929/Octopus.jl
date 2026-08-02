@@ -117,6 +117,16 @@ reference material, not API docs; the implementing code links back to them.
   add the design-orbit roll `ref_tilt` -- a vertical bend is `ref_tilt = pi/2` --
   and the third face of the same convention split, which frame an alignment
   error is quoted in once the orbit is rolled.
+- [`beam_line_composition.md`](theory/beam_line_composition.md) — design report
+  for a beam line, read against MAD-X, Bmad, elegant, Accelerator Toolbox and
+  JuAcc. Why every one of them separates the composition *language* from the
+  flat expanded lattice; why reflection is order-only and is **not** element
+  reversal; why physical assemblies (a RHIC CQS module, a cryostat) are the real
+  requirement behind nested sequences and are better served by per-placement
+  provenance than by a live tree; one XPath-shaped selector instead of a family
+  of lookup functions; and why a line is an `ElementSpec` rather than a new core
+  object — which makes assembly misalignment fall out of `_misalignment_wrap`
+  for free. Design only; not implemented.
 - [`bpm_measurement_model.md`](theory/bpm_measurement_model.md) — what a beam
   position monitor *reads* as opposed to what the beam *is*: the error model
   (body offset, roll, gain, readout bias, resolution noise) read from AT,
