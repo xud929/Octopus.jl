@@ -2372,6 +2372,53 @@ end
     @test all(isnan, collect(sol(1.7, 1.3)(NaN, NaN, NaN, NaN, NaN, NaN)))
 end
 
+@testset "Solenoid with superimposed multipoles" begin
+    u0 = (1.2e-3, 3.1e-4, -0.8e-3, -1.7e-4, 2.0e-3, 4.0e-3)
+    pure = compile_runtime(SolenoidSpec(L=1.3, ks=1.7))
+    comb = compile_runtime(SolenoidSpec(L=1.3, ks=1.7, k1=0.6, nst=8))
+    @test isbits(comb)
+
+    # A pure solenoid drops to the exact single-map path and is bit-identical to
+    # what it was before multipoles existed -- adding the capability must not
+    # perturb the element that does not use it.
+    @test collect(compile_runtime(SolenoidSpec(L=1.3, ks=1.7, k1=0.0))(u0...)) ==
+          collect(pure(u0...))
+
+    # ks = 0 with a quadrupole component must reproduce the actual quadrupole:
+    # the splitting reduces to the thing it is splitting.
+    @test collect(compile_runtime(SolenoidSpec(L=1.3, ks=0.0, k1=0.6, nst=64))(u0...)) ≈
+          collect(compile_runtime(QuadrupoleSpec(L=1.3, k1=0.6, nst=64))(u0...)) atol=1e-15
+
+    # Named strengths fold exactly as they do for the thick magnets, and the
+    # skew partner lands in `kskew` because `ks` is taken by the solenoid.
+    @test haskey(SolenoidSpec(L=1.0, ks=0.1, k1s=0.3).params, :kskew)
+    @test collect(compile_runtime(SolenoidSpec(L=1.3, ks=0.5, kn=(0.0, 0.6), nst=8))(u0...)) ==
+          collect(compile_runtime(SolenoidSpec(L=1.3, ks=0.5, k1=0.6, nst=8))(u0...))
+    # Setting the same order twice is contradictory, not merely redundant.
+    @test_throws ArgumentError SolenoidSpec(L=1.3, ks=0.5, k1=0.6, kn=(0.0, 0.9))
+    @test_throws ArgumentError compile_runtime(SolenoidSpec(L=1.3, ks=0.5, k1=0.6, nst=0))
+
+    # Second-order Strang: quadrupling the steps must cut the error ~16x. This
+    # is what says the splitting is what it claims to be rather than merely
+    # convergent to something.
+    ref = collect(compile_runtime(SolenoidSpec(L=1.3, ks=1.7, k1=0.6, k2=8.0, nst=4096))(u0...))
+    err(nst) = maximum(abs.(collect(
+        compile_runtime(SolenoidSpec(L=1.3, ks=1.7, k1=0.6, k2=8.0, nst=nst))(u0...)) .- ref))
+    for (coarse, fine) in ((4, 16), (16, 64), (64, 256))
+        @test 12.0 < err(coarse) / err(fine) < 20.0
+    end
+
+    # The combined map stays symplectic: Strang splitting of two symplectic maps
+    # is symplectic at every step count, exact or not.
+    J = Float64[0 1 0 0 0 0; -1 0 0 0 0 0; 0 0 0 1 0 0; 0 0 -1 0 0 0; 0 0 0 0 0 1; 0 0 0 0 -1 0]
+    h = 1.0e-7; M = zeros(6, 6)
+    for j in 1:6
+        up = collect(u0); dn = collect(u0); up[j] += h; dn[j] -= h
+        M[:, j] = (collect(comb(up...)) .- collect(comb(dn...))) ./ (2h)
+    end
+    @test maximum(abs.(M' * J * M .- J)) < 1.0e-8
+end
+
 @testset "Solenoid agrees on CPU and CUDA" begin
     if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         n = 5000

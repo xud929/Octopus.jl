@@ -30,10 +30,13 @@ disagree with the same lattice with the solenoid removed. This map reduces to
 No `nst` and no integrator order: the map is the exact flow, so subdividing it
 would add error rather than remove it.
 """
-struct Solenoid{M<:AbstractTrackingMethod,T<:AbstractFloat} <: AbstractTrackOp
+struct Solenoid{M<:AbstractTrackingMethod,T<:AbstractFloat,N} <: AbstractTrackOp
     method::M
     L::T
     ks::T
+    kn::NTuple{N,T}          # kn[i] = K_{i-1}, normal, THICK (not integrated)
+    ksk::NTuple{N,T}         # skew partners
+    nst::Int
 end
 
 """
@@ -86,8 +89,43 @@ is what makes this closed-form rather than an expansion.
     return xn, pxn, yn, pyn, z + L * (1 - (1 + pz) / ps), pz
 end
 
-@inline track_particle(::Symplectic6DMap, elem::Solenoid, x, px, y, py, z, pz) =
+# Pure solenoid: N == 0, one exact map, no splitting and no steps.
+@inline track_particle(::Symplectic6DMap, elem::Solenoid{M,T,0},
+                       x, px, y, py, z, pz) where {M,T} =
     _solenoid_map(elem.ks, elem.L, x, px, y, py, z, pz)
+
+"""
+Solenoid with superimposed multipoles, by Strang splitting.
+
+The two pieces do not commute -- the solenoid rotates the frame the multipole
+kicks in -- so a combined solenoid-multipole is **not** exactly integrable and
+this is the one place the element stops being exact. Second-order Strang:
+
+    S(d/2) K(d) S(d/2)   repeated `nst` times,
+
+with `S` the exact solenoid map of `_solenoid_map` and `K` the same
+`_lattice_kick` every thick magnet uses. This is structurally what PTC does in
+`INTER_SOL5`, which interleaves `KICK_SOL` with `KICKMUL` at Yoshida orders 2, 4
+and 6; the difference is that PTC's `S` is its rotating-frame decomposition and
+ours is the closed form, which agree to 4.9e-13.
+
+Strengths are **thick** `K_n`, not the thin family's integrated `K_n L`: a
+solenoid has a length, so it follows `QuadrupoleSpec`'s convention and takes
+`kn`/`k1`/`k2`, never `knl`/`k1l`. Confusing the two is a factor of `L`.
+"""
+@inline function track_particle(::Symplectic6DMap, elem::Solenoid{M,T,N},
+                                x, px, y, py, z, pz) where {M,T,N}
+    nst = elem.nst
+    d = elem.L / nst
+    dh = d / 2
+    @inbounds for _ in 1:nst
+        x, px, y, py, z, pz = _solenoid_map(elem.ks, dh, x, px, y, py, z, pz)
+        x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ksk, zero(T), d,
+                                            x, px, y, py, z, pz)
+        x, px, y, py, z, pz = _solenoid_map(elem.ks, dh, x, px, y, py, z, pz)
+    end
+    return x, px, y, py, z, pz
+end
 
 @inline (elem::Solenoid)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
@@ -122,14 +160,35 @@ Two consequences worth knowing, both from `docs/theory/solenoid.md`:
 """
 abstract type SolenoidSpec end
 
-SolenoidSpec(; kwargs...) = ElementSpec{:solenoid}(_spec_params(; kwargs...))
+# `ks` is the SOLENOID strength here, following MAD-X's `KS`. Every other thick
+# magnet in Octopus uses `ks` for the *skew multipole tuple*, so the solenoid --
+# and only the solenoid -- folds its skew strengths into `kskew` instead. The
+# collision is real and one of the two spellings had to move; the solenoid's
+# defining parameter keeps the name the rest of the world uses for it, and the
+# skew tuple is the one users almost always reach through `k1s`/`k2s` anyway.
+SolenoidSpec(; kwargs...) = ElementSpec{:solenoid}(
+    _spec_params(; _fold_named_strengths(_MULTIPOLE_NAMED, kwargs;
+                                         nkey=:kn, skey=:kskew)...))
 
 function Solenoid(spec::ElementSpec,
                   method::AbstractTrackingMethod=Symplectic6DMap())
     L = getparam(spec, :L, 0)
     ks = getparam(spec, :ks, 0)
-    T = float(promote_type(typeof(L), typeof(ks)))
-    return Solenoid{typeof(method),T}(method, T(L), T(ks))
+    kn_raw = getparam(spec, :kn, ())
+    ksk_raw = getparam(spec, :kskew, ())
+    nst = Int(getparam(spec, :nst, 1))
+    nst >= 1 || throw(ArgumentError("solenoid nst must be at least 1; got $(nst)"))
+    n = max(length(kn_raw), length(ksk_raw))
+    T = float(promote_type(typeof(L), typeof(ks), Float64))
+    kn = ntuple(i -> i <= length(kn_raw) ? T(kn_raw[i]) : zero(T), n)
+    ksk = ntuple(i -> i <= length(ksk_raw) ? T(ksk_raw[i]) : zero(T), n)
+    # A pure solenoid drops to N = 0, which selects the exact single-map method:
+    # no splitting, no steps, and bit-identical to what it was before multipoles
+    # existed.
+    if all(iszero, kn) && all(iszero, ksk)
+        return Solenoid{typeof(method),T,0}(method, T(L), T(ks), (), (), 1)
+    end
+    return Solenoid{typeof(method),T,n}(method, T(L), T(ks), kn, ksk, nst)
 end
 
 @element_spec begin
@@ -145,9 +204,12 @@ end
     analyses = [PlaceholderAnalysis]
     parameters = (
         L=ParamMeta(default=0, meaning="magnetic length in metres"),
-        ks=ParamMeta(default=0, meaning="normalized longitudinal field B_s/(B*rho), MAD-X's KS. Sign follows charge and field direction; both polarities are checked against PTC"),
+        ks=ParamMeta(default=0, meaning="normalized longitudinal field B_s/(B*rho), MAD-X's KS. Sign follows charge and field direction; both polarities are checked against PTC. Note this is the SOLENOID strength, not the skew multipole tuple other magnets spell `ks`"),
+        kn=ParamMeta(default=(), meaning="normal multipole strengths superimposed on the solenoid; kn[i] = K_{i-1}. THICK strengths as for QuadrupoleSpec, not the thin family's integrated K_n L"),
+        kskew=ParamMeta(default=(), meaning="skew partners of kn. Spelled `kskew` rather than `ks` because the solenoid needs `ks` for its own strength; usually set through the named k0s/k1s/k2s keywords instead"),
+        nst=ParamMeta(default=1, meaning="Strang steps used only when multipoles are present. A pure solenoid is exact and ignores this"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
     )
     example = SolenoidSpec(L=2.0, ks=0.35)
-    construction_help = "Friendly constructor: SolenoidSpec(; L, ks, tracking_method=Symplectic6DMap()). ks = B_s/(B*rho) is MAD-X's KS. The map is the exact flow, so there is no nst and no integrator order, and ks=0 reproduces the exact drift to roundoff. Entrance and exit fringes are included and cannot be disabled: they are the canonical-to-kinetic momentum conversion a transverse vector potential forces, not an optional model. Do not split a solenoid -- a split point lies where the vector potential is non-zero. Derivation: docs/theory/solenoid.md."
+    construction_help = "Friendly constructor: SolenoidSpec(; L, ks, kn=(), kskew=(), nst=1, tracking_method=Symplectic6DMap()), plus named k0/k1/k2... and skew k0s/k1s/k2s... exactly as QuadrupoleSpec takes them. ks = B_s/(B*rho) is MAD-X's KS and is the SOLENOID strength; because that name is taken, skew multipoles fold into `kskew` rather than the `ks` other magnets use. Multipole strengths are THICK K_n, not the thin family's integrated K_n L. A pure solenoid is the exact flow and ignores nst; ks=0 reproduces the exact drift and ks=0 with k1 reproduces QuadrupoleSpec, both to roundoff. With multipoles the map is a second-order Strang splitting over nst steps and is no longer exact, because the solenoid rotates the frame the multipole kicks in. Entrance and exit fringes are included and cannot be disabled: they are the canonical-to-kinetic momentum conversion a transverse vector potential forces, not an optional model. Do not split a solenoid -- a split point lies where the vector potential is non-zero. Derivation: docs/theory/solenoid.md."
 end

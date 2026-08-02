@@ -220,6 +220,19 @@ const CASES = Case[
          Dict(:kind => :solenoid, :L => 1.3, :ks => -0.35)),
     Case("solenoid_strong", "solenoid, l=2.0, ks=1.7", 2.0, 2, 1,
          Dict(:kind => :solenoid, :L => 2.0, :ks => 1.7)),
+    # Solenoid with a superimposed multipole. PTC's SOL5 carries AN/BN natively
+    # and interleaves KICK_SOL with KICKMUL, so this exercises our Strang
+    # splitting against PTC's -- the two pieces do not commute, so agreement
+    # here tests the splitting and not just the solenoid.
+    # MAD-X's solenoid takes the INTEGRATED knl/ksl, not the thick k1 its
+    # quadrupole takes -- `solenoid, k1=...` is rejected outright as an illegal
+    # keyword. So the body is written with knl = k1*L = 0.6*1.3 = 0.78 while our
+    # spec carries the thick k1 = 0.6, matching how every other thick magnet in
+    # Octopus is spelled. Getting this conversion backwards is a factor of L.
+    Case("solenoid_k1_n8", "solenoid, l=1.3, ks=0.35, knl={0.0, 0.78}", 1.3, 2, 8,
+         Dict(:kind => :solenoid, :L => 1.3, :ks => 0.35, :kn => (0.0, 0.6), :nst => 8)),
+    Case("solenoid_k1_n32", "solenoid, l=1.3, ks=0.35, knl={0.0, 0.78}", 1.3, 2, 32,
+         Dict(:kind => :solenoid, :L => 1.3, :ks => 0.35, :kn => (0.0, 0.6), :nst => 32)),
 ]
 
 function madx_version()

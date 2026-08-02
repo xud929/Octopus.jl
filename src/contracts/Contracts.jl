@@ -1538,6 +1538,11 @@ function _ptc_reference_specs()
         "solenoid_pos" => SolenoidSpec(L=1.3, ks=0.35),
         "solenoid_neg" => SolenoidSpec(L=1.3, ks=-0.35),
         "solenoid_strong" => SolenoidSpec(L=2.0, ks=1.7),
+        # Strang splitting against PTC's KICK_SOL/KICKMUL interleave. Two step
+        # counts, so the comparison tests convergence rather than one lucky
+        # working point.
+        "solenoid_k1_n8" => SolenoidSpec(L=1.3, ks=0.35, k1=0.6, nst=8),
+        "solenoid_k1_n32" => SolenoidSpec(L=1.3, ks=0.35, k1=0.6, nst=32),
         "quadrupole_m2_n1" => QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=1, integrator_order=2),
         "quadrupole_m2_n8" => QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=8, integrator_order=2),
         "quadrupole_m4_n3" => QuadrupoleSpec(L=0.4, kn=(0.0, 1.7), nst=3, integrator_order=4),
@@ -1772,7 +1777,10 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     # every probe unchanged and report all four as ignored.
     :aperture => (shape=:ellipse, x_limit=1.0e-4, y_limit=2.0e-4,
                   dx=1.0e-5, dy=2.0e-5),
-    :solenoid => (L=1.3, ks=0.35),
+    # Multipoles must be present for `nst` to do anything: a pure solenoid is
+    # the exact flow and ignores the step count, so probing it without them
+    # would report `nst` ignored when it is only inapplicable.
+    :solenoid => (L=1.3, ks=0.35, kn=(0.0, 0.6), kskew=(0.0, 0.2), nst=2),
 )
 const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:drift, :nst) => "the drift is exact, so there are no integration steps",

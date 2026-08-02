@@ -519,3 +519,157 @@ superimposed uniform field.
 integrator rather than an analytic soft-edge map.** That distinction decides what
 "add a soft fringe" would mean for Octopus, and it is why the todo entry lists
 two different pieces of work rather than one.
+
+## 13. The curved frame: a solenoid with $h\neq0$ is not what it sounds like
+
+Every other Octopus lattice element takes a frame curvature $h$, and the
+conventions note is emphatic that **$h$ is a property of the frame, not of the
+magnet**. So the natural next step is a solenoid with $h\neq0$. It does not work,
+and the reason is physics rather than algebra.
+
+### 13.1 Constant $B_s$ in a curved frame is not a vacuum field
+
+Take the field to be longitudinal in the curved frame, $\mathbf B=B_s\hat e_s$,
+with $B_s$ constant — the obvious reading of "a solenoid in a curved frame".
+Work in cylindrical coordinates about the bend centre, where $\hat e_s=\hat
+e_\varphi$ and $R=\rho+x=(1+hx)/h$:
+
+$$
+    (\nabla\times\mathbf B)_Y=\frac{1}{R}\frac{\partial\left(R\,B_\varphi\right)}{\partial R} .
+$$
+
+For constant $B_s$ this is $B_s/R\neq0$. **The field requires a current density
+throughout the beam pipe, so it is not a vacuum field and no magnet produces
+it.** Verified numerically at $\rho=2$, $x=0.3$: $|\nabla\times\mathbf B|=0.4348$
+against the predicted $B_s/R=1/2.3=0.4348$, while $\nabla\cdot\mathbf B=0$
+exactly — so it is the curl, not the divergence, that fails.
+
+### 13.2 What *is* consistent is a toroidal field, which is a different magnet
+
+$(\nabla\times\mathbf B)_Y=0$ forces $R\,B_\varphi=\text{const}$, i.e.
+
+$$
+    B_s=\frac{B_0}{1+hx} .
+$$
+
+Numerically curl-free to $2.5\times10^{-11}$, and divergence-free for the same
+reason as before. But this is the field of a **current filament along the bend
+axis** — a toroidal field, the thing that fills a tokamak, not a solenoid. Its
+magnitude falls across the aperture as $1/R$ and it has no straight-solenoid
+limit at fixed $B_0$ other than $h\to0$.
+
+So "add $h$ to the solenoid" does not generalize the solenoid. It builds a
+toroidal magnet, and calling it a solenoid would be exactly the silent
+model-mixing that Section 7 rejects the paraxial matrix for.
+
+### 13.3 A real solenoid traversed by a curved orbit is a different problem again
+
+The physically common case — a detector solenoid with a crossing angle, the one
+that motivates asking — is a **straight** solenoid whose axis does not coincide
+with a curved reference orbit. Its field is still $B_s\hat e_z$ about *its own*
+straight axis; it is the *frame* that curves relative to it. Expanded in the
+curved frame that field is not longitudinal at all: it acquires $x$ and $s$
+components that vary along the element.
+
+That is a misalignment problem, not a curvature problem, and Octopus already has
+the machinery for it — `MisalignedElement` and the patch maps of
+[`misalignment_and_patch_maps.md`](misalignment_and_patch_maps.md). A straight
+solenoid entered at an angle is a patch, a straight-frame solenoid, and a patch
+back. Adding $h$ to `Solenoid` would not describe this case and would not help
+it.
+
+### 13.4 If the toroidal element is wanted anyway
+
+It is a legitimate magnet, just not a solenoid, and it would need its own
+element. Two things make it much harder than the straight case, and both should
+be priced before starting:
+
+**No closed form.** The vector potential of $B_s=B_0/(1+hx)$ satisfies
+$\partial_x\hat a_y-\partial_y\hat a_x=k_s/(1+hx)$, giving for instance
+$\hat a_y=(k_s/h)\ln(1+hx)$. That logarithm enters the Hamiltonian's square root,
+so the kinetic momentum no longer rotates rigidly and $p_s$ no longer closes the
+system in the way Section 4 relies on. The map would need an integrator with
+`nst` and an integrator order, like the bends, rather than being exact like the
+straight solenoid.
+
+**Nothing validates it.** PTC's `SOL5` carries no curvature — its type holds
+`L`, `B_SOL`, `AN`/`BN`, fringe fudges and offsets, and `GETMULB_SOL` evaluates a
+straight multipole field with no $(1+hx)$ anywhere. Bmad, MAD-X and Elegant are
+likewise straight-frame only. The only available check is the one this project
+already uses for unvalidatable cases: **agreement with the $h=0$ map as
+$h\to0$**, which tests the limit and the implementation but not the curved
+physics itself.
+
+**Recommendation: do not add `h` to `Solenoid`.** It would name a toroidal magnet
+after a solenoid. If a curved-orbit solenoid study appears, reach for the patch
+maps first, which describe the real geometry; and if a genuine toroidal element
+is ever needed, give it its own name, its own integrator, and this section as the
+statement of what it is.
+
+## 14. Superimposed multipoles
+
+A detector-region final focus superimposes quadrupole (and higher) fields on the
+solenoid, and PTC's `SOL5` carries `AN`/`BN` for exactly that. Implemented as
+`SolenoidSpec(; kn, kskew, nst)` plus the named `k0/k1/k2…` and `k0s/k1s/k2s…`
+the thick magnets already take.
+
+**This is the one place the solenoid stops being exact.** The solenoid rotates
+the frame the multipole kicks in, so the two pieces do not commute and no closed
+form exists. Second-order Strang over `nst` steps:
+
+$$
+    \left[\;S(d/2)\;K(d)\;S(d/2)\;\right]^{n_{\rm st}},\qquad d=L/n_{\rm st},
+$$
+
+with $S$ the exact map of Section 4 and $K$ the same `_lattice_kick` every thick
+magnet uses. Structurally this is what PTC's `INTER_SOL5` does, interleaving
+`KICK_SOL` with `KICKMUL` at Yoshida orders 2, 4 and 6; ours is order 2 only.
+
+**The interior fringes cancel, and they must.** Each $S$ applies an entrance and
+an exit conversion, so a naive reading would have $2n_{\rm st}$ fringes. They
+cancel in pairs because $K$ changes momenta but **not** positions, so the exit
+conversion of one step and the entrance conversion of the next are evaluated at
+the same $x,y$ and undo each other exactly. What survives is one entrance
+conversion and one exit conversion, which is the physical content. The same
+argument shows the kick may be applied to canonical or kinetic momenta
+indifferently: a multipole's own potential is longitudinal, so it shifts both by
+the same amount.
+
+### 14.1 Strengths are thick, and `ks` had to move
+
+Multipole strengths follow `QuadrupoleSpec`: **thick** $K_n$, not the thin
+family's integrated $K_nL$. A solenoid has a length, so this is the consistent
+choice, and confusing the two is a factor of $L$.
+
+That forced a naming decision, and **MAD-X made the same one**. Its solenoid
+dictionary reads
+
+```c
+"ksi = [r, 0],  " /* was: ksl, but that clashes with naming conventions of multipoles */
+```
+
+so MAD-X renamed the solenoid's *integrated* strength away from `ksl` for
+precisely the clash we hit: `ks` cannot simultaneously mean the solenoid
+strength and the skew multipole tuple. Octopus keeps `ks` for the solenoid — the
+name the rest of the world uses for it, and what the PTC benchmark pins — and
+spells the skew tuple `kskew`. Users normally reach it through `k1s`/`k2s` and
+never see the difference.
+
+One asymmetry worth knowing when writing MAD-X input: **MAD-X's solenoid takes
+the integrated `knl`/`ksl`, not the thick `k1` its quadrupole takes.**
+`solenoid, k1=0.6` is rejected as an illegal keyword. The benchmark cases
+therefore carry `knl = k1*L` in the MAD-X body against `k1` in the Octopus spec.
+
+### 14.2 Verification
+
+- **PTC**: $4.7\times10^{-13}$ at `nst=8` and $3.6\times10^{-13}$ at `nst=32`,
+  against `solenoid, l=1.3, ks=0.35, knl={0.0, 0.78}`. Two step counts, so the
+  comparison tests convergence and not one working point. Contract now 41 cases.
+- **Reduces to a quadrupole**: `ks=0` with `k1` reproduces `QuadrupoleSpec` to
+  $7\times10^{-18}$ — the splitting collapses to the thing it splits.
+- **Reduces to the exact solenoid**: any all-zero multipole set returns the
+  `N = 0` runtime and is bit-identical to the pure element.
+- **Order two**: quadrupling `nst` cuts the error by $16.0$–$16.5$, measured
+  across three decades.
+- **Symplectic** at every step count, as a Strang product of symplectic maps
+  must be.

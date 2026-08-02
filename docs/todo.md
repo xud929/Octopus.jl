@@ -1614,6 +1614,46 @@ Remaining, and deliberately not done here:
   ergonomic finish; the mechanism it would use is already here.
 - **Element names fleet-wide**, its own item below.
 
+## Solenoid in a curved frame: do not add `h` (2026-08-01)
+
+Asked for on the grounds that every other lattice element takes a frame
+curvature and the conventions note says $h$ belongs to the frame rather than the
+magnet. Derived in [`docs/theory/solenoid.md`](theory/solenoid.md) Section 13,
+and the answer is that **a solenoid with $h\neq0$ is not a solenoid.**
+
+**Constant $B_s$ in a curved frame is not a vacuum field.** In cylindrical
+coordinates about the bend centre,
+$(\nabla\times\mathbf B)_Y = \tfrac{1}{R}\partial_R(R\,B_\varphi)$, which for
+constant $B_s$ is $B_s/R\neq0$ — it needs a current density throughout the beam
+pipe. Verified numerically at $\rho=2$, $x=0.3$: $|\nabla\times\mathbf B|=0.4348$
+against the predicted $B_s/R=0.4348$, with $\nabla\cdot\mathbf B=0$ exactly, so
+it is the curl that fails and not the divergence.
+
+**What is consistent is $B_s = B_0/(1+hx)$** — curl-free to $2.5\times10^{-11}$
+numerically — but that is a **toroidal** field, the field of a current filament
+along the bend axis. Adding `h` to `Solenoid` would build a tokamak magnet and
+call it a solenoid, which is the same silent model-mixing that got the paraxial
+matrix rejected.
+
+**The case that actually motivates the request is different again.** A detector
+solenoid with a crossing angle is a *straight* solenoid whose axis does not
+follow a curved reference orbit. Its field is longitudinal about *its own* axis;
+expanded in the curved frame it is not longitudinal at all. That is a
+misalignment problem and Octopus already has the machinery —
+`MisalignedElement` and the patch maps. A patch, a straight solenoid, a patch
+back.
+
+If a genuine toroidal element is ever wanted it needs its own name and its own
+integrator: the potential $\hat a_y=(k_s/h)\ln(1+hx)$ puts a logarithm inside
+the Hamiltonian's square root, so $p_s$ no longer closes the system and the map
+is not exact. And nothing validates it — PTC's `SOL5` carries no curvature at
+all (`GETMULB_SOL` has no $(1+hx)$ anywhere), and Bmad, MAD-X and Elegant are
+straight-frame only, so the only check is agreement with the $h=0$ map as
+$h\to0$.
+
+**Recommendation: closed. Do not add `h` to `Solenoid`.** Reach for the patch
+maps if a curved-orbit solenoid study appears.
+
 ## Soft-fringe solenoid (2026-08-01)
 
 The exact solenoid ([`docs/theory/solenoid.md`](theory/solenoid.md)) is
@@ -1845,9 +1885,27 @@ adding an element spec:
   split a solenoid** (a split point sits where the vector potential is non-zero,
   so the halves would have to exchange kinetic rather than canonical momenta),
   and coordinates read inside a solenoid are canonical, which only becomes
-  reachable if one is split. Deferred: soft fringe, solenoid in a curved frame,
-  combined solenoid + multipole (Strang splitting, no longer exact), and MAD-X's
-  thin solenoid, which holds `ks*L` fixed and is a genuinely different element.
+  reachable if one is split.
+
+  **Superimposed multipoles are also done (2026-08-01)**, matching PTC's
+  `SOL5`, which carries `AN`/`BN` natively. Second-order Strang over `nst`
+  steps, since the solenoid rotates the frame the multipole kicks in and the two
+  do not commute — the one place the element is not exact. PTC agreement
+  **4.7e-13 at `nst=8` and 3.6e-13 at `nst=32`** (41 cases now); `ks=0` with
+  `k1` reproduces `QuadrupoleSpec` to 7e-18; the interior fringes cancel in
+  pairs because the kick moves momenta and not positions.
+
+  Strengths are thick `K_n` with named `k0/k1/k2…`, aligned with
+  `QuadrupoleSpec`. That forced a rename — `ks` cannot mean both the solenoid
+  strength and the skew tuple — and **MAD-X hit the identical clash**, its
+  dictionary carrying the comment *"was: ksl, but that clashes with naming
+  conventions of multipoles"*. Octopus keeps `ks` for the solenoid and spells
+  the skew tuple `kskew`. Note MAD-X's solenoid takes the **integrated**
+  `knl`/`ksl` and rejects `k1` outright, so benchmark bodies carry `knl = k1*L`.
+
+  Still deferred: soft fringe (own item below), curved frame (own item below,
+  closed), and MAD-X's thin solenoid, which holds `ks*L` fixed and is a
+  genuinely different element.
 - ~~**Aperture and particle loss.** Not an element at all: it needs a lost/alive
   state in the particle representation.~~ **DONE (2026-08-01)**, and the premise
   was wrong. No representation change was needed: `NaN` in all six coordinates
