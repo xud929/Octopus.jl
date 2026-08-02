@@ -1980,13 +1980,22 @@ where the lattice goes in space — and Octopus has no geometry layer (the
 misalignment note's Section 8 says so). Bmad threads it through `bend_shift`,
 i.e. through the geometry, not the body map.
 
-**What is implementable now, and what is not.** Locally, `ref_tilt` on one bend
-is a conjugation: rotate `(x, px, y, py)` by `-ref_tilt`, track the bend, rotate
-back. That is small, and directly checkable against `sbend, l=..., angle=...,
-tilt=...` in the existing PTC harness. What that does *not* give is the
-downstream geometric consequence — after a vertical bend the whole lattice is in
-a different plane — which needs the survey Octopus does not have. The same
-limitation the patch already carries.
+**Everything needed is already in place, and the conjugation is
+tracking-complete.** `ref_tilt` on one bend is: rotate `(x, px, y, py)` by
+`-ref_tilt`, track the bend, rotate back. Four lines of rotation --
+`_misalign_matrix` already contains the `R_z` factor and `PatchSpec(angle_s=)`
+is exactly this rotation -- and directly checkable against
+`sbend, l=..., angle=..., tilt=...`, verified to track through MAD-X/PTC.
+
+> **Correction (2026-08-02):** an earlier draft of this entry said the
+> downstream geometric consequence "needs the survey Octopus does not have".
+> That is true for *reporting* where a magnet sits in space, and **false for
+> tracking**. Octopus's lattice is a sequence of maps in local curvilinear
+> frames; a bend already turns the frame by `hL`, and conjugating it with an
+> `s`-roll makes it turn in a rotated plane, after which the next element simply
+> receives coordinates in the new frame. Nothing absolute is required. So this
+> is a complete implementation for tracking purposes, not a partial one, and it
+> is more attractive than the original scoping suggested.
 
 **Ordering matters and must be pinned:** `ref_tilt` is design geometry, so it
 composes **outside** the misalignment frames, not inside them. A rolled *and*
