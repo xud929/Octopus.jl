@@ -1654,7 +1654,15 @@ end
                   :dev_sext_mis_dx, :dev_quad_mis_all,
                   :dev_cfbend_mis_dx, :dev_cfbend_mis_all,
                   :dev_rbend, :dev_rbend_k1, :dev_thin_multipole,
-                  :dev_thin_multipole_skew)
+                  :dev_thin_multipole_skew,
+                  # ref_tilt: the design-orbit roll MAD-X spells `tilt` on the
+                  # bend itself. The last two carry a roll AND a misalignment,
+                  # which is the only way the frame the error is quoted in
+                  # becomes observable -- with the wrong choice they land at
+                  # 2.0e-4 and 3.5e-4 rather than here.
+                  :dev_sbend_reftilt, :dev_sbend_reftilt_vertical,
+                  :dev_cfbend_reftilt, :dev_cfbend_reftilt_mis_dx,
+                  :dev_cfbend_reftilt_mis_all)
             @test result.metrics[k] < 1.0e-11
         end
         # Straight elements should agree to MAD-X's printed precision. The bend

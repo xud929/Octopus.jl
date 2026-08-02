@@ -158,14 +158,14 @@ const CASES = Case[
     # ---------------------------------------------------------------------
     # Misalignments, through EALIGN + ptc_align. One degree of freedom each:
     # MAD-X references a misalignment to the ENTRANCE frame (see
-    # MAD_MISALIGN_FIBRE), so these pin misalign_reference = :entrance, and they
+    # MAD_MISALIGN_FIBRE), so these pin misalign_convention = :madx, and they
     # pin the keyword mapping dx/dy/ds -> x/y/z_offset and
     # dtheta/dphi/dpsi -> x_pitch/y_pitch/tilt.
     #
-    # Deliberately one at a time: combining several rotations does NOT agree,
-    # because MAD-X composes the three in the opposite matrix order to Bmad,
-    # whose convention this code follows. That is unresolved and recorded in
-    # docs/todo.md rather than papered over with a tuned case.
+    # One at a time first, because a single rotation cannot distinguish the two
+    # composition orders -- MAD-X composes intrinsically as R_z R_x R_y, Bmad
+    # about fixed axes as R_y R_x R_z, and they agree for any one of them. The
+    # multi-rotation cases that DO separate them follow below.
     # ---------------------------------------------------------------------
     Case("quad_mis_dx", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
          "dx=1.0e-3", Dict(:kind => :quadrupole, :L => 0.4)),
@@ -193,6 +193,38 @@ const CASES = Case[
     Case("cfbend_mis_dx", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4, false,
          "dx=1.0e-3", Dict(:kind => :sbend, :L => 1.1)),
     Case("cfbend_mis_all", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4, false,
+         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02",
+         Dict(:kind => :sbend, :L => 1.1)),
+    # ---------------------------------------------------------------------
+    # ref_tilt: the roll of the DESIGN ORBIT plane, which MAD-X spells `tilt`
+    # on the element itself rather than through EALIGN. This is the keyword
+    # trap the whole feature exists for -- MAD-X's bend `tilt` is Bmad's
+    # `ref_tilt` and NOT Octopus's `tilt`, which is the body roll EALIGN sets
+    # with dpsi -- so these cases pin the meaning, not just the arithmetic.
+    #
+    # `reftilt_vertical` is a literal pi/2: a vertical bend, which is the case
+    # that was inexpressible before and the one a sign error cannot survive,
+    # since it puts the entire dispersion in the other plane.
+    #
+    # The last two are the ORDERING cases and are the reason this is not a
+    # one-parameter comparison. `ref_tilt` is design geometry and a
+    # misalignment is an error measured against that design, so the roll must
+    # compose OUTSIDE the misalignment frames: MAD_MISALIGN_FIBRE displaces a
+    # fibre whose frames already carry the element tilt. Getting it inverted is
+    # invisible unless both are nonzero, exactly as the rotation-composition
+    # convention was, so a single-parameter case cannot see it.
+    # ---------------------------------------------------------------------
+    Case("sbend_reftilt", "sbend, l=1.1, angle=0.198, tilt=0.3", 1.1, 2, 4,
+         Dict(:kind => :sbend, :L => 1.1)),
+    Case("sbend_reftilt_vertical",
+         "sbend, l=1.1, angle=0.198, tilt=1.5707963267948966", 1.1, 2, 4,
+         Dict(:kind => :sbend, :L => 1.1)),
+    Case("cfbend_reftilt", "sbend, l=1.1, angle=0.198, k1=0.6, tilt=0.3", 1.1, 2, 4,
+         Dict(:kind => :sbend, :L => 1.1)),
+    Case("cfbend_reftilt_mis_dx", "sbend, l=1.1, angle=0.198, k1=0.6, tilt=0.3",
+         1.1, 2, 4, false, "dx=1.0e-3", Dict(:kind => :sbend, :L => 1.1)),
+    Case("cfbend_reftilt_mis_all", "sbend, l=1.1, angle=0.198, k1=0.6, tilt=0.3",
+         1.1, 2, 4, false,
          "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02",
          Dict(:kind => :sbend, :L => 1.1)),
     # RBEND: a sector bend with angle/2 added to each face. `option, rbarc=false`

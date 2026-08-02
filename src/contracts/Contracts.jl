@@ -1598,10 +1598,10 @@ function _ptc_reference_specs()
                                   bend_model=:drift_kick, bend_fringe=true),
         # Misalignments, one degree of freedom each. MAD-X references a
         # misalignment to the ENTRANCE frame (MAD_MISALIGN_FIBRE), not the
-        # centre, so these pin misalign_convention = :entrance along with the
-        # keyword mapping. Combinations of several rotations are deliberately
-        # absent: MAD-X composes the three in the opposite matrix order to
-        # Bmad, whose convention this code follows, and that is unresolved.
+        # centre, so these pin misalign_convention = :madx along with the
+        # keyword mapping. One rotation at a time cannot distinguish the two
+        # composition orders, which agree there; the cases that separate them
+        # are quad_mis_all and cfbend_mis_all below.
         "quad_mis_dx" => QuadrupoleSpec(L=0.4, k1=1.7, nst=4,
                                         misalign_convention=:madx, x_offset=1.0e-3),
         "quad_mis_dy" => QuadrupoleSpec(L=0.4, k1=1.7, nst=4,
@@ -1631,6 +1631,36 @@ function _ptc_reference_specs()
                                       misalign_convention=:madx,
                                       x_offset=1.0e-3, y_offset=-8.0e-4, z_offset=2.0e-3,
                                       x_pitch=1.0e-3, y_pitch=-7.0e-4, tilt=0.02),
+        # ref_tilt: the design-orbit roll, which MAD-X spells as the bend's own
+        # `tilt` keyword. Note what these specs do NOT say -- `tilt=0.3` would
+        # be a body roll and a different magnet. Getting that mapping backwards
+        # is the whole reason these cases exist.
+        "sbend_reftilt" => SBendSpec(L=1.1, angle=0.198, nst=4,
+                                     bend_model=:drift_kick, bend_fringe=true,
+                                     ref_tilt=0.3),
+        # A vertical bend: inexpressible before ref_tilt existed, and the case
+        # a sign error cannot survive, since the dispersion moves plane.
+        "sbend_reftilt_vertical" => SBendSpec(L=1.1, angle=0.198, nst=4,
+                                              bend_model=:drift_kick, bend_fringe=true,
+                                              ref_tilt=pi / 2),
+        "cfbend_reftilt" => SBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4,
+                                      bend_model=:drift_kick, bend_fringe=true,
+                                      ref_tilt=0.3),
+        # The ordering cases. `ref_tilt` composes OUTSIDE the misalignment, so
+        # the body error is taken relative to the already-rolled design orbit;
+        # MAD_MISALIGN_FIBRE displaces a fibre whose frames already carry the
+        # tilt. Both parameters must be nonzero for the composition order to be
+        # observable at all, which is why there is no one-parameter version.
+        "cfbend_reftilt_mis_dx" => SBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4,
+                                             bend_model=:drift_kick, bend_fringe=true,
+                                             ref_tilt=0.3,
+                                             misalign_convention=:madx, x_offset=1.0e-3),
+        "cfbend_reftilt_mis_all" => SBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4,
+                                              bend_model=:drift_kick, bend_fringe=true,
+                                              ref_tilt=0.3, misalign_convention=:madx,
+                                              x_offset=1.0e-3, y_offset=-8.0e-4,
+                                              z_offset=2.0e-3, x_pitch=1.0e-3,
+                                              y_pitch=-7.0e-4, tilt=0.02),
         # RBEND is the sector-bend map with angle/2 on each face.
         "rbend" => RBendSpec(L=1.1, angle=0.198, nst=4,
                              bend_model=:drift_kick, bend_fringe=true),
