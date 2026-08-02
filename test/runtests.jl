@@ -1395,6 +1395,104 @@ end
           nothing || true   # the wrapped element is reachable for inspection
 end
 
+@testset "ref_tilt rolls the design orbit" begin
+    u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
+    S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
+    function jac(e)
+        J = zeros(6, 6)
+        for j in 1:6
+            v = ComplexF64[u...]
+            v[j] += 1e-30im
+            J[:, j] = imag.(collect(e(v...))) ./ 1e-30
+        end
+        return J
+    end
+
+    # Like a misalignment, a roll that is not asked for must leave the runtime
+    # exactly what it was, so an ordinary bend keeps its type and its bits.
+    @test compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4)) isa LatticeMagnet
+    @test collect(compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4))(u...)) ==
+          collect(compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4, ref_tilt=0.0))(u...))
+
+    # The nesting is the physics and is visible in the type: the roll is the
+    # OUTER wrapper, so a rolled misaligned bend is a RefTilted of a
+    # MisalignedElement and never the other way round.
+    @test compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4, ref_tilt=0.3)) isa
+          RefTilted{<:LatticeMagnet}
+    @test compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4, ref_tilt=0.3,
+                                    x_offset=1e-3)) isa
+          RefTilted{<:MisalignedElement}
+
+    # A conjugation by a rotation inherits symplecticity from what it wraps.
+    for s in (SBendSpec(L=1.1, angle=0.198, nst=4, ref_tilt=0.3),
+              SBendSpec(L=1.1, angle=0.198, nst=4, ref_tilt=pi / 2),
+              SBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4, ref_tilt=0.3),
+              SBendSpec(L=1.1, angle=0.198, k1=0.6, e1=0.1, e2=0.1, nst=4,
+                        ref_tilt=0.3, x_offset=1e-3, tilt=0.02,
+                        misalign_convention=:madx))
+        J = jac(compile_runtime(s))
+        @test maximum(abs, J' * S6 * J - S6) < 1.0e-13
+    end
+
+    # On a STRAIGHT element the two meanings of "tilt" coincide exactly: with no
+    # design orbit to roll, rolling the plane is rolling the body. Bit for bit,
+    # because both go through the same pinned R_z -- this is the check that
+    # would catch a sign or a transpose in the new rotation.
+    for spec in ((L=0.3, k1=1.2, k2=8.0), (L=0.3, k1s=0.9,))
+        a = compile_runtime(SBendSpec(; spec..., angle=0, nst=4, ref_tilt=0.37))
+        b = compile_runtime(SBendSpec(; spec..., angle=0, nst=4, tilt=0.37))
+        @test collect(a(u...)) == collect(b(u...))
+    end
+
+    # A rotationally symmetric element cannot notice the roll at all. This also
+    # exercises the wrap on an element that does not declare ref_tilt: it is
+    # applied wherever it is set, so it is never silently dropped.
+    for s in (DriftSpec(L=0.7), SolenoidSpec(L=1.3, ks=0.35))
+        rolled = compile_runtime(typeof(s)(; params(s)..., ref_tilt=0.41))
+        @test maximum(abs, collect(rolled(u...)) .- collect(compile_runtime(s)(u...))) < 1.0e-15
+    end
+
+    # A vertical bend is a horizontal bend with ref_tilt = pi/2, which is the
+    # case that was inexpressible before. Two ways of saying it: the dispersion
+    # moves plane, and the map is the horizontal one with the axes exchanged.
+    let off = (0.0, 0.0, 0.0, 0.0, 0.0, 3.0e-3),
+        h = compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4)),
+        v = compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4, ref_tilt=pi / 2))
+
+        @test abs(v(off...)[1]) < 1.0e-15
+        @test v(off...)[3] ≈ h(off...)[1] atol = 1.0e-15
+        @test abs(h(off...)[3]) < 1.0e-15
+
+        x, px, y, py, z, pz = u
+        X, PX, Y, PY, Z, PZ = h(y, py, -x, -px, z, pz)
+        @test maximum(abs, collect(v(u...)) .- (-Y, -PY, X, PX, Z, PZ)) < 1.0e-15
+    end
+
+    # Which frame an alignment error is quoted in is a convention split, exactly
+    # as the reference point and the composition order already were. With no
+    # misalignment there is nothing to quote, so the two must agree; with one,
+    # they must not -- and that difference is the whole reason the PTC
+    # comparison needs a two-parameter case.
+    let b = (ref_tilt=0.3, misalign_convention=:bmad),
+        m = (ref_tilt=0.3, misalign_convention=:madx)
+
+        @test collect(compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4; b...))(u...)) ==
+              collect(compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4; m...))(u...))
+        @test collect(compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4, x_offset=1e-3; b...))(u...)) !=
+              collect(compile_runtime(SBendSpec(L=1.1, angle=0.198, nst=4, x_offset=1e-3; m...))(u...))
+    end
+
+    # The roll reaches the map, and it is not a relabelling of the body roll:
+    # on a BENT element ref_tilt and tilt are different magnets.
+    let bare = compile_runtime(SBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4)),
+        roll = compile_runtime(SBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4, ref_tilt=0.3)),
+        body = compile_runtime(SBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4, tilt=0.3))
+
+        @test maximum(abs, collect(roll(u...)) .- collect(bare(u...))) > 1.0e-6
+        @test maximum(abs, collect(roll(u...)) .- collect(body(u...))) > 1.0e-6
+    end
+end
+
 @testset "Thin elements, markers and RBEND" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
     S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])

@@ -217,6 +217,39 @@ The survey geometry comes from `L` and `h` on the spec: the frame curvature,
 never the field, because a misalignment is a statement about geometry. An
 element that declares neither is treated as zero length and straight, which is
 what a thin element is.
+
+# Misalignment against a rolled design orbit
+
+When the element also carries a `ref_tilt`, the two codes disagree again, and in
+the same style as `sref`: about **which frame the alignment error is stated in**.
+
+    :bmad   the ROLLED frame. `track_a_bend` rotates by `ref_tilt` first and
+            calls `offset_particle` inside that, so the offsets are the element's
+            own transverse axes -- which the roll has turned.
+    :madx   the UNROLLED design frame. `EALIGN` is survey data about where the
+            magnet sits in the machine, so `dx` stays horizontal no matter how
+            the design orbit is rolled.
+
+Only the axes the error is *measured in* differ; the magnet being displaced is
+the rolled one either way. So the `:madx` branch conjugates the rigid transform
+into the rolled frame, `W -> R_z(-psi) W R_z(psi)` and `d -> R_z(-psi) d`, and
+`ref_tilt` stays the outer wrapper in both.
+
+This overturns what `docs/todo.md` predicted before the comparison was run. That
+entry reasoned that a design choice must compose outside an error, and concluded
+the roll wraps the misalignment in every convention. For MAD-X it is the other
+way round: the error is stated in the unrolled frame, which is the roll composed
+*inside*. The entry was right about the trap, though -- the difference is
+invisible until both parameters are nonzero, and the one-at-a-time cases that
+pin every other misalignment cannot see it. `cfbend_reftilt_mis_dx` and
+`cfbend_reftilt_mis_all` are the cases that can: at `ref_tilt = 0.3` the wrong
+choice lands 2.0e-4 and 3.5e-4 away from PTC, against 2.8e-13 and 4.5e-13 for
+the right one.
+
+The `:bmad` branch is Bmad's documented behaviour read from `track_a_bend`, and
+unlike the `:madx` branch it is **not** pinned by a reference case here -- there
+is no Bmad in this repository's validation path, the same position the `:bmad`
+rotation-composition order is already in.
 """
 function _misalignment_wrap(spec, inner)
     T = Float64
@@ -234,7 +267,17 @@ function _misalignment_wrap(spec, inner)
     L = T(getparam(spec, :L, zero(T)))
     h = T(getparam(spec, :h, zero(T)))
     sref = madx ? zero(T) : L / 2          # MAD-X references the entrance
-    qin, oin, qout, oout = _misalign_frames(
-        T, _misalign_matrix(T, xp, yp, tl, madx), (dx, dy, dz), h, L, sref)
+    W = _misalign_matrix(T, xp, yp, tl, madx)
+    d = (dx, dy, dz)
+    psi = T(getparam(spec, :ref_tilt, zero(T)))
+    if madx && psi != 0
+        # Carry an error stated in the unrolled design frame into the rolled one
+        # the body lives in. R_z comes from `_misalign_matrix` rather than being
+        # written out here, for the reason the patch does the same.
+        R = _misalign_matrix(T, zero(T), zero(T), psi, false)
+        W = _m3(_m3t(R, W), R)
+        d = _m3tv(R, d)
+    end
+    qin, oin, qout, oout = _misalign_frames(T, W, d, h, L, sref)
     return MisalignedElement(inner, qin, oin, qout, oout)
 end

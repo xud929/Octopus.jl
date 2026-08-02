@@ -839,7 +839,15 @@ function compile_runtime(spec::AbstractElementSpec, method)
     # inside each element. `_misalignment_wrap` returns its argument untouched
     # when the spec carries no displacement, so an aligned element is exactly
     # what it was. Defined in `src/elements/misalignment.jl`.
-    return _misalignment_wrap(resolved, T(resolved, method_object))
+    #
+    # `ref_tilt` wraps OUTSIDE the misalignment, and the nesting is the physics:
+    # the roll is design geometry, the misalignment is an error measured against
+    # that design, so the design orbit rolls first and the body error is taken
+    # relative to the rolled magnet. Both wrappers pass their argument through
+    # untouched when the spec asks for nothing, so an ordinary element compiles
+    # to exactly the runtime object it always did.
+    return _ref_tilt_wrap(resolved,
+                          _misalignment_wrap(resolved, T(resolved, method_object)))
 end
 
 # Generic fallback: specs without knob parameters pass through unchanged. The
