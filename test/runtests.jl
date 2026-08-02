@@ -1395,6 +1395,64 @@ end
           nothing || true   # the wrapped element is reachable for inspection
 end
 
+@testset "The bend map is cancellation-free as b0 goes to zero" begin
+    lb(h, b0, L, v) = collect(Octopus._lattice_bend(h, b0, L, v...))
+    ld(h, L, v) = collect(Octopus._lattice_drift(h, L, v...))
+    u = (1.3e-3, 3.0e-4, -0.9e-3, -2.2e-4, 0.0, 1.1e-3)
+    big = (7.0e-3, 2.0e-3, -5.0e-3, -1.5e-3, 1.0e-3, -2.0e-3)
+
+    # The defect this replaced: `_lattice_bend` formed 1/b0, so the map's error
+    # grew as ~1.5e-16/b0 and passed 1e-12 once b0 fell below ~1.5e-4. Only
+    # b0 EXACTLY zero was safe, because it took the drift branch instead. The
+    # difference from the drift limit must now fall linearly in b0 with no
+    # floor -- at b0 = 1e-15 the old map was off by 0.16.
+    #
+    # The tolerance widens as b0 shrinks, and that is the floating-point floor
+    # rather than slack: the quantity being resolved is a b0-sized change in
+    # momenta of order one, so at b0 = 1e-15 it is about ten ulp and agreeing to
+    # 1% is as well as double precision can do. The defect this catches is not
+    # subtle at that scale -- the old map was wrong by a factor of 1.5e14 there.
+    let h = 0.18, L = 1.1, ref = ld(h, L, u)
+        slope = maximum(abs, lb(h, 1.0e-3, L, u) .- ref) / 1.0e-3
+        for (b0, rtol) in ((1.0e-5, 1.0e-8), (1.0e-7, 1.0e-8), (1.0e-9, 1.0e-7),
+                           (1.0e-11, 1.0e-5), (1.0e-13, 1.0e-3), (1.0e-15, 0.05))
+            @test maximum(abs, lb(h, b0, L, u) .- ref) ≈ slope * b0 rtol = rtol
+        end
+    end
+
+    # The two paths now meet at the seam. `_body_step` still sends b0 = 0 to the
+    # drift -- it is the fast path for every quadrupole, sextupole, octupole,
+    # multipole and drift -- but that is now a speed choice rather than the only
+    # defined option, and the bend agrees there instead of dividing by zero.
+    for (h, L) in ((0.18, 1.1), (0.0, 0.8), (0.5, 1.0), (-0.4, 1.3))
+        for v in (u, big)
+            @test maximum(abs, lb(h, 0.0, L, v) .- ld(h, L, v)) < 1.0e-15
+        end
+    end
+
+    # Beyond a quarter turn in one step the b0 -> 0 state runs backwards through
+    # the rotated frame, so the rewrite hands back to the direct form. Those
+    # bends must still track, and stay symplectic.
+    let S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
+        for (h, b0, L) in ((0.18, 0.18, 1.1), (0.18, 1.0e-6, 1.1), (0.0, 0.35, 0.8),
+                           (2.5, 2.5, 1.0), (-2.5, -2.5, 1.0), (0.5, 0.1, 2.0))
+            J = zeros(6, 6)
+            for j in 1:6
+                v = ComplexF64[u...]
+                v[j] += 1e-30im
+                J[:, j] = imag.(collect(Octopus._lattice_bend(h, b0, L, v...))) ./ 1e-30
+            end
+            @test maximum(abs, J' * S6 * J - S6) < 1.0e-13
+        end
+    end
+
+    # atan(u)/u is 1 at the origin and continuous across the series crossover.
+    @test Octopus._atan_over(0.0) == 1.0
+    @test Octopus._atan_over(1.0e-5) ≈ 1.0 - 1.0e-10 / 3 rtol = 1.0e-12
+    @test Octopus._atan_over(1.0e-4 + eps()) ≈ Octopus._atan_over(1.0e-4 - eps()) rtol = 1.0e-14
+    @test Octopus._atan_over(0.7) ≈ atan(0.7) / 0.7
+end
+
 @testset "ref_tilt rolls the design orbit" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
     S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])

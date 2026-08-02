@@ -49,6 +49,24 @@ end
 end
 
 """
+`atan(u)/u`, smooth at `u = 0`, where it is 1.
+
+The bend's `1/b0` is removed the same way its `1/h` was, and this is the helper
+that finishes the job: the angle the dipole turns the momentum through comes out
+as `atan(b0 * G)`, and dividing that by `b0` is a `0/0` exactly as
+`sin(hL)/h` was.
+
+Unlike the two curvature helpers, this one is handed a *coordinate*-dependent
+argument, so it is reached with a complex value under complex-step
+differentiation. The crossover therefore compares against `real(T)` -- `T(1e-4)`
+would be a complex threshold and would not order.
+"""
+@inline function _atan_over(u::T) where {T}
+    abs(u) < real(T)(1e-4) && return one(T) - u * u / 3 * (one(T) - 3 * u * u / 5)
+    return atan(u) / u
+end
+
+"""
 Exact drift in a frame of curvature `h`, in the `z = s - l` convention.
 
 Both `y` and `z` follow from one shared quantity, the second from the first by
@@ -85,16 +103,46 @@ sector bend on its design orbit.
 """
 @inline function _lattice_bend(h::T, b0::T, L::T, x, px, y, py, z, pz) where {T}
     ps0 = sqrt((1 + pz)^2 - px * px - py * py)
-    w = sqrt((1 + pz)^2 - py * py)
-    dpx0 = -b0 * (1 + h * x) + h * ps0
+    w2 = (1 + pz)^2 - py * py
     C1 = _curv_sin(h, L)
     C2 = _curv_vers(h, L)
     c, s = cos(h * L), sin(h * L)
-    pxn = px * c + dpx0 * C1
-    psn = sqrt((1 + pz)^2 - pxn * pxn - py * py)
-    # x - x0 written without 1/h (Section 5.2)
-    xn = x + ((psn - ps0) + px * s + dpx0 * C2) / b0
-    Δ = (h * L - (asin(pxn / w) - asin(px / w))) / b0
+    q = 1 + h * x
+    # The b0 = 0 state: the frame turns by hL and the momentum turns with it.
+    # Everything below is a departure from it, which is what makes the factor of
+    # b0 explicit instead of hiding it inside a 0/0.
+    pxr = px * c + ps0 * s
+    psr = ps0 * c - px * s
+    pxn = pxr - b0 * q * C1                 # identically px*c + dpx0*C1
+    psn = sqrt(w2 - pxn * pxn)
+    den = psn + psr
+    U = psn * s - pxn * c
+    V = pxn * s + psn * c
+    D = ps0 * V - px * U                    # -> w2 as b0 -> 0
+    # `real` so the test survives complex-step differentiation: the imaginary
+    # perturbation is infinitesimal and cannot move the map across this
+    # boundary, so deciding on the real part keeps one branch for the value and
+    # its derivative -- which is also what makes the derivative meaningful.
+    if abs(h * L) < T(pi) / 2 && real(den) > 0 && real(D) > 0
+        # Cancellation-free. `psn - psr` is rationalised through
+        # psn^2 - psr^2 = pxr^2 - pxn^2 = (b0 q C1)(pxr + pxn), and the angle
+        # the dipole turns the momentum through comes out as atan(b0 G), so
+        # both 1/b0 factors cancel analytically rather than numerically.
+        R = (pxn + pxr) / den
+        xn = x + q * (C1 * R - C2)
+        G = q * C1 * (pxr * R + psr) / D
+        Δ = G * _atan_over(b0 * G)
+    else
+        # Beyond a quarter turn of frame rotation in one step the b0 -> 0 state
+        # runs backwards through the rotated frame, so there is no small-b0
+        # limit to protect and nothing cancels; the direct forms of Section 5.2
+        # are well conditioned there. `b0 != 0` holds by construction --
+        # `_body_step` sends b0 = 0 to the drift.
+        dpx0 = -b0 * q + h * ps0
+        w = sqrt(w2)
+        xn = x + ((psn - ps0) + px * s + dpx0 * C2) / b0
+        Δ = (h * L - (asin(pxn / w) - asin(px / w))) / b0
+    end
     return xn, pxn, y + py * Δ, py, z + L - (1 + pz) * Δ, pz
 end
 
@@ -580,9 +628,19 @@ straight closed form of Section 4.5, which is exact and cheaper.
               _curved_kick(elem.psi, Val(MC), d, x, px, y, py, z, pz)
 
 # The frame is straight or curved by TYPE, decided in `compile_runtime`, so the
-# kernel contains only the branch it needs. `b0 == 0` remains a field test: it
-# selects dipole versus no dipole, which is a different question from curvature
-# and is tracked separately in docs/todo.md.
+# kernel contains only the branch it needs.
+#
+# `b0 == 0` remains a field test, and it is a FAST PATH rather than a guard.
+# Every quadrupole, sextupole, octupole, multipole and drift has b0 = 0, and so
+# does every bend running `bend_model = :drift_kick`, which is what a PTC
+# comparison requires -- so this branch is the common case, not the exception,
+# and it is what keeps their integrable step at a handful of flops instead of
+# routing it through the bend's trigonometry and two square roots.
+#
+# It used to be a division-by-zero guard as well, because `_lattice_bend` formed
+# 1/b0. It no longer is: that map is cancellation-free and its own b0 -> 0 limit
+# is finite, so the two paths now agree at b0 = 0 rather than one of them being
+# undefined there. Deleting the test would be correct and slow.
 @inline _body_step(elem::LatticeMagnet{M,T,N,O,F,MC,NC,C}, d, x, px, y, py, z, pz) where {M,T,N,O,F,MC,NC,C} =
     elem.b0 == 0 ? _lattice_drift(Val(C), elem.h, d, x, px, y, py, z, pz) :
                    _lattice_bend(elem.h, elem.b0, d, x, px, y, py, z, pz)

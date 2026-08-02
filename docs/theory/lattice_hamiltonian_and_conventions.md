@@ -424,6 +424,46 @@ that never forms $1/h$), with the crossover chosen from the measured error, not
 guessed. This is a correctness requirement, not an optimization: a lattice with
 one nearly-straight bend will otherwise produce silent garbage.
 
+**Resolved, both halves (2026-08-02).** The $1/h$ half was done first, through
+`_curv_sin` and `_curv_vers`. The $1/b_0$ half was not, and the prediction above
+was exact: measured against the curved-drift limit, the error was
+$1.0\times10^{-7}$ at $b_0=10^{-9}$, growing as $\approx1.5\times10^{-16}/b_0$
+until at $b_0=10^{-15}$ the map returned $x=-0.0507$ where the answer is
+$+0.1124$. Only $b_0$ *exactly* zero was safe, because `_body_step` sends it to
+the drift; a weak thick dipole exceeded this note's own $10^{-12}$ working
+tolerance below $b_0\approx1.5\times10^{-4}$, and nothing in the reference suite
+could see it because every PTC case runs $b_0=0.18$.
+
+`_lattice_bend` is now written as a departure from the $b_0=0$ state — the frame
+turns by $hL$ and the momentum turns with it — which makes the factor of $b_0$
+explicit instead of implicit in a $0/0$:
+
+$$p_{x,r}=p_x\cos hL+p_{s,0}\sin hL,\qquad p_{s,r}=p_{s,0}\cos hL-p_x\sin hL,$$
+$$p_{x,n}=p_{x,r}-b_0(1+hx)C_1,\qquad R=\frac{p_{x,n}+p_{x,r}}{p_{s,n}+p_{s,r}},$$
+$$x'=x+(1+hx)\left(C_1R-C_2\right),\qquad \Delta=G\,\frac{\arctan b_0G}{b_0G},$$
+
+with $G=(1+hx)C_1(p_{x,r}R+p_{s,r})/D$. The first follows from rationalising
+$p_{s,n}-p_{s,r}$ through $p_{s,n}^2-p_{s,r}^2=p_{x,r}^2-p_{x,n}^2=b_0(1+hx)C_1(p_{x,r}+p_{x,n})$;
+the second because the angle the dipole turns the momentum through is
+$\arctan b_0G$, so $\arctan(u)/u$ finishes the job that $\sin(hL)/h$ started.
+Error now falls linearly in $b_0$ with no floor, to $10^{-15}$ and the limit of
+double precision. PTC agreement is unchanged at $5.0\times10^{-13}$.
+
+Beyond $|hL|>\pi/2$ in one step the $b_0=0$ state runs *backwards* through the
+rotated frame, so $p_{s,n}+p_{s,r}$ can vanish and the $\arctan$ difference
+wraps. There is also nothing to protect there — no small-$b_0$ limit exists,
+because such an element is unphysical without a field — so the direct forms are
+kept for that case and are well conditioned in it.
+
+**The `b0 == 0` test in `_body_step` stays, and is now purely a fast path.**
+It had been read as a division-by-zero guard; it is not, and it never was only
+that. Every quadrupole, sextupole, octupole, multipole and drift carries
+$b_0=0$, as does every bend under `bend_model = :drift_kick` — which is what a
+PTC comparison requires — so it is the common path, and it is what keeps their
+integrable step at a few flops rather than the bend's trigonometry and two
+square roots. With the rewrite the two paths agree at $b_0=0$ instead of one
+being undefined there, so removing the test would now be correct, and slow.
+
 ### 5.3 Pole-face geometry: `ROT_XZ` and `WEDGE`
 
 These two maps are what give a bend its pole-face angles, and therefore what
