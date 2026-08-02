@@ -2472,6 +2472,62 @@ end
     @test maximum(abs.(M' * J * M .- J)) < 1.0e-8
 end
 
+@testset "Solenoid in a curved frame" begin
+    u0 = (1.2e-3, 3.1e-4, -0.8e-3, -1.7e-4, 2.0e-3, 4.0e-3)
+    sol(; kw...) = compile_runtime(SolenoidSpec(; kw...))
+    @test isbits(sol(L=1.3, ks=1.7, h=0.18, nst=8))
+
+    # h = 0 must still take the exact closed form, untouched by curvature
+    # support existing.
+    @test collect(sol(L=1.3, ks=1.7, h=0.0, nst=8)(u0...)) ==
+          collect(sol(L=1.3, ks=1.7)(u0...))
+
+    # ks = 0 in a curved frame must reproduce the exact curved drift -- the
+    # element reduces to the thing the rest of the lattice already uses.
+    for h in (0.05, 0.18)
+        @test collect(sol(L=1.3, ks=0.0, h=h, nst=400)(u0...)) ≈
+              collect(Octopus._lattice_drift(h, 1.3, u0...)) atol=1e-7
+    end
+
+    # The integrator converges to the exact straight map as the frame flattens.
+    # Taken at h = 1e-12 so the physical O(h*L) difference is negligible and
+    # what is left is the integration error alone.
+    exact = collect(sol(L=1.3, ks=1.7)(u0...))
+    flat(n) = maximum(abs.(collect(sol(L=1.3, ks=1.7, h=1.0e-12, nst=n)(u0...)) .- exact))
+    @test flat(128) < 1.0e-7
+    @test flat(8) / flat(32) > 8.0        # second order
+
+    # And the physical limit: at finite h the curved map differs from the
+    # straight one at first order in h, which is the frame curvature doing what
+    # it should rather than an error.
+    dev(h) = maximum(abs.(collect(sol(L=1.3, ks=1.7, h=h, nst=200)(u0...)) .- exact))
+    @test dev(1.0e-3) / dev(1.0e-4) ≈ 10.0 rtol=0.1
+
+    # Second-order convergence in nst at production curvature.
+    ref = collect(sol(L=1.3, ks=1.7, h=0.18, nst=8192)(u0...))
+    err(n) = maximum(abs.(collect(sol(L=1.3, ks=1.7, h=0.18, nst=n)(u0...)) .- ref))
+    for (coarse, fine) in ((8, 32), (32, 128), (128, 512))
+        @test 12.0 < err(coarse) / err(fine) < 20.0
+    end
+
+    # Symplectic at EVERY step count, including a coarse one. This is what the
+    # 16 fixed-point sweeps buy: a truncated implicit solve converges but is not
+    # symplectic, and would pass every test above while failing this one.
+    J = Float64[0 1 0 0 0 0; -1 0 0 0 0 0; 0 0 0 1 0 0; 0 0 -1 0 0 0; 0 0 0 0 0 1; 0 0 0 0 -1 0]
+    for n in (4, 16, 64)
+        el = sol(L=1.3, ks=1.7, h=0.18, nst=n); hh = 1.0e-7; M = zeros(6, 6)
+        for j in 1:6
+            up = collect(u0); dn = collect(u0); up[j] += hh; dn[j] -= hh
+            M[:, j] = (collect(el(up...)) .- collect(el(dn...))) ./ (2hh)
+        end
+        @test maximum(abs.(M' * J * M .- J)) < 1.0e-7
+    end
+
+    # Curvature composes with superimposed multipoles.
+    @test isbits(sol(L=1.3, ks=1.7, h=0.18, k1=0.6, nst=8))
+    @test all(isfinite, collect(sol(L=1.3, ks=1.7, h=0.18, k1=0.6, nst=8)(u0...)))
+end
+
 @testset "Solenoid agrees on CPU and CUDA" begin
     if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         n = 5000

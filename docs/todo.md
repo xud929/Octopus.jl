@@ -1749,9 +1749,45 @@ What remains true, and is cost rather than obstruction:
   **agreement with the `h=0` map as `h -> 0`**, plus symplecticity and the
   curl-free check on whatever field the potential implies.
 
-Not yet implemented. The correction is recorded here rather than the work being
-done, because it changes what should be built and that deserved saying before
-building it.
+**IMPLEMENTED (2026-08-02)**, `src/elements/solenoid.jl`, derived in Section 15
+of the theory note. `SolenoidSpec(; h, nst)`; `h = 0` still takes the exact
+closed form untouched.
+
+The obstruction turned out to be sharper than "no closed form": **`H` does not
+split into two exactly-solvable pieces either.** Every other curved element in
+Octopus splits as (exact curved drift) + (kick from `a_s`), which works because a
+multipole's potential is purely longitudinal. A solenoid's is transverse, sits
+inside the square root, and no gauge moves it out. Composing the exact curved
+drift with the exact straight solenoid -- the tempting shortcut -- converges to
+the **wrong Hamiltonian**, since those two carry two square roots where `H` has
+one. So a *general* symplectic integrator was needed, not a splitting one.
+
+Implemented with **implicit midpoint**: symplectic for any Hamiltonian, second
+order, time-reversible. The gauge was chosen so `g(x) -> x` as `h -> 0`, which
+makes the flat limit the *same* map as the exact straight one rather than merely
+a close one.
+
+**The fixed-point sweep count is a correctness parameter, not a tuning knob**, and
+this was nearly shipped wrong. Implicit midpoint is symplectic only when the
+implicit stage is solved to convergence; a truncated solve is a convergent
+explicit method wearing the name. Measured `|M'JM - J|`:
+
+    sweeps    nst=4      nst=16     nst=64
+    4         4.2e-3     4.5e-6     4.3e-9
+    8         2.6e-5     5.1e-10    4.9e-10
+    16        1.4e-9     3.0e-10    5.2e-10
+
+At 4 and 8 sweeps the symplectic error tracks the *truncation* error, so it
+would have passed every accuracy test while quietly not being symplectic. Set to
+16, where it sits on the finite-difference noise floor at every step count --
+a coarse `nst` now gives a less accurate but still symplectic map, which is what
+a ring needs. That is the cost accepted deliberately.
+
+Verification: `ks=0` reproduces `_lattice_drift(h, L, ...)`; `h -> 0` converges
+to the exact straight map at second order; the residual at finite `h` is linear
+in `h`, which is the curvature doing its job rather than an error; second-order
+convergence in `nst` measured at 15.8/16.0/16.1; symplectic at `nst` 4, 16 and
+64; and curvature composes with the superimposed multipoles. 15 assertions.
 
 ## Solenoid in a curved frame: withdrawn closure, retained for the record (2026-08-01)
 

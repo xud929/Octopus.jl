@@ -34,9 +34,118 @@ struct Solenoid{M<:AbstractTrackingMethod,T<:AbstractFloat,N} <: AbstractTrackOp
     method::M
     L::T
     ks::T
+    h::T                     # reference-frame curvature; 0 selects the exact map
     kn::NTuple{N,T}          # kn[i] = K_{i-1}, normal, THICK (not integrated)
     ksk::NTuple{N,T}         # skew partners
     nst::Int
+end
+
+"""
+    _sol_log_over_h(h, x)
+
+`ln(1+hx)/h`, smooth at `h = 0` where it is the removable limit `x`.
+
+Same removable-singularity problem the curvature helpers solve, and handled the
+same way: the closed form loses digits to cancellation near `h = 0`, so small
+arguments take a series instead.
+"""
+@inline function _sol_log_over_h(h::T, x::T) where {T}
+    u = h * x
+    abs(u) < T(1e-4) && return x * (one(T) - u / 2 * (one(T) - 2u / 3))
+    return log1p(u) / h
+end
+
+"""
+    _sol_g(h, x), _sol_gp(h, x)
+
+The curved-frame gauge function `g(x) = 2 ln(1+hx)/h - x` and its derivative
+`g'(x) = 2/(1+hx) - 1`, from `docs/theory/solenoid.md` Section 15.1.
+
+Chosen so that `g(x) -> x` as `h -> 0`, which makes the potential reduce to the
+straight symmetric gauge and therefore makes the curved element's flat limit the
+*same* map as the exact straight one -- not merely a numerically close one.
+"""
+@inline _sol_g(h::T, x) where {T} = 2 * _sol_log_over_h(h, x) - x
+@inline _sol_gp(h::T, x) where {T} = 2 / (one(T) + h * x) - one(T)
+
+"""
+Right-hand side of the curved-frame solenoid equations of motion, Section 15.2.
+
+`p_s` is **not** conserved here -- the frame rotation feeds `P_x` into it -- which
+is exactly why the straight map's closed form does not survive `h != 0`.
+"""
+@inline function _sol_curved_deriv(h::T, ks::T, x, px, y, py, pz) where {T}
+    k = ks / 2
+    Px = px + k * y
+    Py = py - k * _sol_g(h, x)
+    ps = sqrt((1 + pz)^2 - Px * Px - Py * Py)
+    hx = one(T) + h * x
+    gp = _sol_gp(h, x)
+    return (hx * Px / ps,                       # x'
+            h * ps + hx * k * gp * Py / ps,     # px'
+            hx * Py / ps,                       # y'
+            -hx * k * Px / ps,                  # py'
+            one(T) - hx * (1 + pz) / ps,        # z'
+            zero(T))                            # pz'
+end
+
+# Fixed-point sweeps for the implicit stage.
+#
+# This count is what makes the integrator symplectic, and it is not a tuning
+# knob. Implicit midpoint is symplectic only when the implicit stage is solved
+# to convergence; a truncated solve is merely a convergent explicit method
+# wearing its name. Measured |M'JM - J| against the sweep count, L=1.3, ks=1.7,
+# h=0.18:
+#
+#     sweeps    nst=4      nst=16     nst=64
+#     4         4.2e-3     4.5e-6     4.3e-9
+#     8         2.6e-5     5.1e-10    4.9e-10
+#     16        1.4e-9     3.0e-10    5.2e-10
+#
+# At 4 and 8 sweeps the symplectic error tracks the *truncation* error, i.e. it
+# is the unconverged solve rather than the method. At 16 it sits on the
+# finite-difference noise floor for every step count, so a coarse `nst` gives a
+# less accurate but still symplectic map -- which is the property a ring needs.
+# A fixed count also keeps the kernel branch-free for the GPU.
+const _SOL_MIDPOINT_ITERS = 16
+
+"""
+Curved-frame solenoid by the **implicit midpoint rule**.
+
+A general symplectic integrator is required rather than a splitting one, because
+`H` does not separate into two exactly-solvable pieces: a solenoid's potential is
+transverse, so it lives inside the square root and no gauge moves it out. See
+Section 15.3 -- composing the exact curved drift with the exact straight solenoid
+converges to the *wrong* Hamiltonian, not merely slowly, so that tempting
+shortcut is wrong rather than inaccurate.
+
+Implicit midpoint is symplectic for any Hamiltonian, second order, and
+time-reversible. The price is the fixed-point solve, several derivative
+evaluations per step where a split integrator needs one. That cost is what
+curvature costs here.
+"""
+@inline function _solenoid_curved_map(h::T, ks::T, L::T, nst::Int,
+                                      x, px, y, py, z, pz) where {T}
+    d = L / nst
+    @inbounds for _ in 1:nst
+        # Fixed-point iterate the midpoint state, starting from the current one.
+        mx, mpx, my, mpy, mz = x, px, y, py, z
+        for _ in 1:_SOL_MIDPOINT_ITERS
+            fx, fpx, fy, fpy, fz, _ = _sol_curved_deriv(h, ks, mx, mpx, my, mpy, pz)
+            mx = x + d / 2 * fx
+            mpx = px + d / 2 * fpx
+            my = y + d / 2 * fy
+            mpy = py + d / 2 * fpy
+            mz = z + d / 2 * fz
+        end
+        fx, fpx, fy, fpy, fz, _ = _sol_curved_deriv(h, ks, mx, mpx, my, mpy, pz)
+        x += d * fx
+        px += d * fpx
+        y += d * fy
+        py += d * fpy
+        z += d * fz
+    end
+    return x, px, y, py, z, pz
 end
 
 """
@@ -89,10 +198,13 @@ is what makes this closed-form rather than an expansion.
     return xn, pxn, yn, pyn, z + L * (1 - (1 + pz) / ps), pz
 end
 
-# Pure solenoid: N == 0, one exact map, no splitting and no steps.
+# Pure solenoid: N == 0. Straight frame takes the exact closed form; a curved
+# frame has none (Section 15.3) and falls to the implicit-midpoint integrator.
 @inline track_particle(::Symplectic6DMap, elem::Solenoid{M,T,0},
                        x, px, y, py, z, pz) where {M,T} =
-    _solenoid_map(elem.ks, elem.L, x, px, y, py, z, pz)
+    elem.h == 0 ?
+        _solenoid_map(elem.ks, elem.L, x, px, y, py, z, pz) :
+        _solenoid_curved_map(elem.h, elem.ks, elem.L, elem.nst, x, px, y, py, z, pz)
 
 """
 Solenoid with superimposed multipoles, by Strang splitting.
@@ -119,13 +231,20 @@ solenoid has a length, so it follows `QuadrupoleSpec`'s convention and takes
     d = elem.L / nst
     dh = d / 2
     @inbounds for _ in 1:nst
-        x, px, y, py, z, pz = _solenoid_map(elem.ks, dh, x, px, y, py, z, pz)
-        x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ksk, zero(T), d,
+        x, px, y, py, z, pz = _sol_body(elem, dh, x, px, y, py, z, pz)
+        x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ksk, elem.h, d,
                                             x, px, y, py, z, pz)
-        x, px, y, py, z, pz = _solenoid_map(elem.ks, dh, x, px, y, py, z, pz)
+        x, px, y, py, z, pz = _sol_body(elem, dh, x, px, y, py, z, pz)
     end
     return x, px, y, py, z, pz
 end
+
+# One solenoid sub-step of the Strang loop: exact when straight, one
+# implicit-midpoint step when curved.
+@inline _sol_body(elem::Solenoid, d, x, px, y, py, z, pz) =
+    elem.h == 0 ?
+        _solenoid_map(elem.ks, d, x, px, y, py, z, pz) :
+        _solenoid_curved_map(elem.h, elem.ks, d, 1, x, px, y, py, z, pz)
 
 @inline (elem::Solenoid)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
@@ -176,19 +295,20 @@ function Solenoid(spec::ElementSpec,
     ks = getparam(spec, :ks, 0)
     kn_raw = getparam(spec, :kn, ())
     ksk_raw = getparam(spec, :kskew, ())
+    h = getparam(spec, :h, 0)
     nst = Int(getparam(spec, :nst, 1))
     nst >= 1 || throw(ArgumentError("solenoid nst must be at least 1; got $(nst)"))
     n = max(length(kn_raw), length(ksk_raw))
-    T = float(promote_type(typeof(L), typeof(ks), Float64))
+    T = float(promote_type(typeof(L), typeof(ks), typeof(h), Float64))
     kn = ntuple(i -> i <= length(kn_raw) ? T(kn_raw[i]) : zero(T), n)
     ksk = ntuple(i -> i <= length(ksk_raw) ? T(ksk_raw[i]) : zero(T), n)
     # A pure solenoid drops to N = 0, which selects the exact single-map method:
     # no splitting, no steps, and bit-identical to what it was before multipoles
     # existed.
     if all(iszero, kn) && all(iszero, ksk)
-        return Solenoid{typeof(method),T,0}(method, T(L), T(ks), (), (), 1)
+        return Solenoid{typeof(method),T,0}(method, T(L), T(ks), T(h), (), (), nst)
     end
-    return Solenoid{typeof(method),T,n}(method, T(L), T(ks), kn, ksk, nst)
+    return Solenoid{typeof(method),T,n}(method, T(L), T(ks), T(h), kn, ksk, nst)
 end
 
 @element_spec begin
@@ -207,7 +327,8 @@ end
         ks=ParamMeta(default=0, meaning="normalized longitudinal field B_s/(B*rho), MAD-X's KS. Sign follows charge and field direction; both polarities are checked against PTC. Note this is the SOLENOID strength, not the skew multipole tuple other magnets spell `ks`"),
         kn=ParamMeta(default=(), meaning="normal multipole strengths superimposed on the solenoid; kn[i] = K_{i-1}. THICK strengths as for QuadrupoleSpec, not the thin family's integrated K_n L"),
         kskew=ParamMeta(default=(), meaning="skew partners of kn. Spelled `kskew` rather than `ks` because the solenoid needs `ks` for its own strength; usually set through the named k0s/k1s/k2s keywords instead"),
-        nst=ParamMeta(default=1, meaning="Strang steps used only when multipoles are present. A pure solenoid is exact and ignores this"),
+        h=ParamMeta(default=0, meaning="reference-frame curvature. h=0 is the exact closed-form map; h!=0 has no closed form and no exact splitting either, so it integrates with implicit midpoint over nst steps"),
+        nst=ParamMeta(default=1, meaning="integration steps. Used when multipoles are present, or when h != 0. A straight pure solenoid is exact and ignores this"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
     )
     example = SolenoidSpec(L=2.0, ks=0.35)

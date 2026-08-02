@@ -690,3 +690,109 @@ therefore carry `knl = k1*L` in the MAD-X body against `k1` in the Octopus spec.
   across three decades.
 - **Symplectic** at every step count, as a Strang product of symplectic maps
   must be.
+
+## 15. The curved frame, done properly (2026-08-02)
+
+Section 13's *analysis* was right and its *conclusion* was wrong (see the
+correction box there). This section supplies what a curved solenoid actually
+needs.
+
+### 15.1 Potential, chosen to reduce to the symmetric gauge
+
+The Maxwell-consistent field is $B_s=B_0/(1+hx)$ (Section 13.2). Its potential is
+fixed only up to a gauge, and the gauge is not free to choose casually: it sets
+what the canonical momenta *mean*, so it must reduce to Section 2's symmetric
+gauge as $h\to0$ or the flat limit will not match the existing implementation.
+Take
+
+$$
+    \hat a_x=-k\,y ,\qquad
+    \hat a_y=k\,g(x) ,\qquad
+    g(x)=\frac{2}{h}\ln(1+hx)-x ,\qquad k=\tfrac{k_s}{2} .
+$$
+
+Check the field: $\partial_x\hat a_y-\partial_y\hat a_x = k\,g'(x)+k$ with
+$g'(x)=\frac{2}{1+hx}-1$, giving $k\cdot\frac{2}{1+hx}=\frac{k_s}{1+hx}$. ✓
+And $g(x)\to x$ as $h\to0$, so $\hat a\to(-ky,\,kx)$, the symmetric gauge. ✓
+
+### 15.2 Equations of motion
+
+With $P_x=p_x-\hat a_x=p_x+ky$, $P_y=p_y-\hat a_y=p_y-k\,g(x)$ and
+$p_s=\sqrt{(1+\delta)^2-P_x^2-P_y^2}$, the curved-frame Hamiltonian
+$H=\delta-(1+hx)\,p_s$ gives
+
+$$
+\begin{aligned}
+    x' &= (1+hx)\,\frac{P_x}{p_s}, &\qquad
+    y' &= (1+hx)\,\frac{P_y}{p_s},\\
+    p_x' &= h\,p_s+(1+hx)\,k\,g'(x)\,\frac{P_y}{p_s}, &\qquad
+    p_y' &= -(1+hx)\,k\,\frac{P_x}{p_s},\\
+    z' &= 1-(1+hx)\,\frac{1+\delta}{p_s}, &\qquad
+    \delta' &= 0 .
+\end{aligned}
+$$
+
+Written in the kinetic momenta these collapse, using $k(g'+1)=k_s/(1+hx)$:
+
+$$
+    P_x'=h\,p_s+\frac{k_s}{p_s}P_y,\qquad
+    P_y'=-\frac{k_s}{p_s}P_x,\qquad
+    p_s'=-h\,P_x .
+$$
+
+**Two rotations at once**: the solenoid mixes $P_x$ with $P_y$ at rate
+$\kappa=k_s/p_s$, while the frame curvature mixes $P_x$ with $p_s$ at rate $h$.
+Setting $h=0$ recovers Section 4 exactly (and $p_s$ becomes conserved again);
+setting $k_s=0$ recovers the curved drift.
+
+### 15.3 Why there is no closed form, and no exact splitting either
+
+$p_s$ is **not** conserved when $h\neq0$ — the frame rotation feeds $P_x$ into
+$p_s$ — so the mechanism that made Section 4 solvable is gone. That alone would
+be survivable; what rules out the usual accelerator remedy is that
+**$H$ does not split into two exactly-solvable pieces.**
+
+Every other curved element in Octopus splits as
+*(exact curved drift)* $+$ *(kick from $\hat a_s$)*, which works because a
+multipole's potential is purely longitudinal and therefore position-only. A
+solenoid's potential is **transverse**, so it sits inside the square root and no
+gauge transformation can move it out: $\hat a_x=\hat a_y=0$ would give
+$B_s=0$. Writing $H_A$ for the curved drift and $H_B$ for the straight solenoid,
+$H_A+H_B$ carries two square roots where $H$ has one, so composing those two
+exact maps converges to the wrong Hamiltonian rather than merely slowly.
+
+That is the real reason no code implements this, and it is worth stating so the
+obvious "just Strang-split the two maps we already have" is not attempted.
+
+### 15.4 What is implemented: implicit midpoint
+
+A **general** symplectic integrator is therefore required rather than a splitting
+one. `Solenoid` with $h\neq0$ uses the **implicit midpoint rule**,
+
+$$
+    u_{n+1}=u_n+\Delta\,f\!\left(\tfrac{u_n+u_{n+1}}{2}\right),
+$$
+
+over `nst` steps, with the implicit stage solved by a fixed number of fixed-point
+iterations. Implicit midpoint is symplectic for *any* Hamiltonian, second-order
+accurate, and time-reversible, which is what makes it the right tool once
+splitting is unavailable. The cost is the iteration — several evaluations of $f$
+per step where a split integrator needs one — and that cost is the price of
+curvature, accepted deliberately for consistency with the rest of the lattice.
+
+$g(x)=\frac{2}{h}\ln(1+hx)-x$ carries a removable $1/h$, handled by the same
+small-argument branching the curvature helpers already use.
+
+### 15.5 Validation
+
+Nothing external implements a curved solenoid — PTC's `SOL5` carries no
+curvature and neither do Bmad, MAD-X or Elegant — so the checks are internal and
+were chosen to pin different failure modes:
+
+- **$h\to0$ against the exact straight map.** The integrator must converge to
+  Section 4's closed form, which is the check the whole request was premised on.
+- **$k_s\to0$ against the exact curved drift** `_lattice_drift(h, L, …)`.
+- **Second-order convergence** in `nst`, against a finely-integrated reference.
+- **Symplecticity** at coarse `nst`, which a non-symplectic integrator such as
+  RK4 would fail while still converging — this is the check that says the
+  integrator is the one claimed.
