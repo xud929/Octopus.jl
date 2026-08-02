@@ -1292,9 +1292,23 @@ The four questions left open in the design note are answered here, because (Q1)
 and (Q3) determine the element's signature and are awkward to retrofit.
 
 **Q3 -- where the check happens: at the element, one point, no `aperture_at`.**
-An aperture checks where you place it; two faces means two elements. This is the
-Xsuite/Elegant bargain the design note already accepted, and entrance/exit/both
-only becomes meaningful when an aperture *wraps* a magnet, which is deferred.
+The aperture is **thin** and checks where you place it. A magnet or drift that
+needs both faces guarded gets two aperture elements, one on each side. This is
+the Xsuite/Elegant bargain the design note already accepted, and
+entrance/exit/both only becomes meaningful when an aperture *wraps* a magnet,
+which is deferred.
+
+Two consequences, both improvements over a single element carrying an
+`aperture_at` flag. The two apertures are **distinct elements with distinct
+ids**, so the log already distinguishes an entrance loss from an exit loss
+without any extra field -- Bmad needs `aperture_at` precisely because its
+aperture is one element and cannot. And a thin element composes: it can be
+dropped between any two elements without knowing what they are.
+
+The limit is unchanged and worth restating: a particle that leaves the aperture
+*inside* the magnet body is not caught until the exit element, so it is logged at
+the exit `s` rather than where it actually left. Resolution is where you place
+apertures. Narrowing it means placing more of them.
 
 **Q4 -- misalignment: the aperture carries its own `dx`/`dy` offset.** As a
 separate element a displaced magnet's aperture is nominally the user's problem,
@@ -1352,7 +1366,31 @@ never-lost sentinel, so the flush is a filter on that column. A run losing 1% of
 observer already writes, so it reuses the preallocate/buffer/`record_count`
 pattern and the same reader tooling. Columns:
 
-    turn, element_id, x, px, y, py, z, pz
+    particle_id, turn, element_id, x, px, y, py, z, pz
+
+`particle_id` is a column **because** the output is filtered. In memory it is
+implicit -- slot `i` is particle `i` -- but the flush drops the never-lost rows,
+so row `k` is no longer particle `k` and the identity would be lost with it. The
+in-memory layout therefore stores 8 values per slot and the file carries 9.
+Keeping the slot free of the id is not a micro-optimization: it is what makes the
+slot writable without reading anything back.
+
+`particle_id` and `element_id` answer different questions and both are needed --
+which particle was lost, and which aperture stopped it, hence at which `s`.
+
+**Where `element_id` comes from, given that elements are anonymous.** There is no
+name, label, or id field on any element spec in this codebase today; a lattice is
+a tuple identified only by position. So `element_id` is the aperture's **index in
+the compiled line**, assigned by the task when it builds the lattice: automatic,
+unique, and collision-free without touching any other element type.
+
+The cost is that the log says "aperture 7" rather than "COLL_IP6_H". The task
+should therefore write a companion dataset alongside the records mapping
+`element_id` to at least the lattice index and element kind, and to `s` if it can
+accumulate lengths, so the file is self-describing rather than only interpretable
+next to the script that produced it. Giving element specs real names would be
+better and is a broader change; it is **not** required for step 3 and should not
+be smuggled into it.
 
 **No path, no output, and no allocation.** `loss_log=nothing` is the default and
 means the aperture kills and counts and nothing else -- a dynamic-aperture scan
