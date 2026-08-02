@@ -1274,7 +1274,10 @@ lattice is exactly the evidence that a NaN can be deliberate, so the element (or
 the task holding the loss record) is the natural thing to enable the scope rather
 than leaving it to the caller.
 
-**Step 3 -- the aperture element. NOT STARTED.** Non-symplectic, so it declares
+**Step 3 -- the aperture element. DONE (2026-08-01)**, `src/elements/aperture.jl`;
+see the sub-step record below for what the plan did not anticipate. The
+constraints it was planned against, all of which held: non-symplectic, so it
+declares
 `NonSymplectic6DMap` rather than `Symplectic6DMap`; needs a probe in
 `DEFAULT_ELEMENT_PARAM_PROBES`, and the `alive` predicate needs an entry in
 `DEFAULT_INACTIVE_ELEMENT_PARAMS` because a function has no meaningful
@@ -1654,10 +1657,14 @@ adding an element spec:
   would not reduce to the exact drift the rest of the code uses. Worth deriving
   the exact map from the same Hamiltonian, then benchmarking against PTC as the
   bends were.
-- **Aperture and particle loss.** Not an element at all: it needs a lost/alive
-  state in the particle representation and a policy for what the kernels do with
-  a dead particle. Nothing in the tracking layer carries that today, so it is a
-  runtime-representation change first and an element second.
+- ~~**Aperture and particle loss.** Not an element at all: it needs a lost/alive
+  state in the particle representation.~~ **DONE (2026-08-01)**, and the premise
+  was wrong. No representation change was needed: `NaN` in all six coordinates
+  marks a dead particle, every downstream map absorbs it for free, and the
+  reductions were taught to skip it (step 2 of the aperture work). What did have
+  to be built was the *reduction* masking, not the representation -- the cost of
+  overloading `NaN` lands on every sum, not on the particle. See
+  `docs/theory/aperture_and_particle_loss.md` and the aperture section above.
 - **BPM monitors.** Also not an element in the tracking sense: a monitor records
   a beam moment rather than transforming a particle. Octopus already has an
   observation layer (`ScheduledObserver`, `MomentObserver`), so the question is
