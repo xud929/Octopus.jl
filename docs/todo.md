@@ -380,8 +380,11 @@ Still open from this phase:
   remain the discontinuity fixes for the hybrid too.
 - ~~**4d. CUDA `:node`**~~ **DONE (2026-07-26)** on the sequential non-async route
   (`batch_mode=:sequential`, `cuda_async=false`), CPU parity 9.5e-16 and luminosity
-  parity 2.7e-16. The wavefront and batched-FFT routes assume one mesh per slice
-  pair and throw. Extending them is the same reindexing job as CUDA `:quadratic`.
+  parity 2.7e-16. ~~The wavefront and batched-FFT routes assume one mesh per slice
+  pair and throw.~~ **Stale as of 2b (2026-07-26), re-verified 2026-08-01:**
+  `:node` runs on wavefront-async, wavefront-sync and sequential-sync alike. No
+  CUDA route now blocks it, which removes the standing objection to making it the
+  default.
 - ~~**4e. Node-solve caching**~~ — **CLOSED NEGATIVE (2026-08-01).** Implemented,
   measured, and reverted. Both halves of the promise held: a one-slot rolling
   cache per (source slice, direction) made the shared boundary `C^0` exact
@@ -391,11 +394,23 @@ Still open from this phase:
   monotonically, so ~12 MB at 15 slices and grid 128 rather than the ~190 MB a
   full per-node cache would need.
 
-  **It is still the wrong trade, because reuse *is* staleness.** The second
-  slice sees the source as it was before the intervening kick, and that kick is
-  real physics: the source slice genuinely is deflected by field slice `j`
-  before it meets `j+1`, so the fresh solve is correct and the cached one is
-  behind. Measured against kick strength, 40k macroparticles, 9 slices, grid 64:
+  **It is still wrong, and the reason is sharper than "staleness": caching
+  deletes a real effect rather than smoothing it.**
+
+  The source evolution between adjacent field slices **is physics.** The source
+  slice really is deflected by field slice `j` before it meets `j+1`. What is
+  *not* physics is the shape: two field particles an infinitesimal distance
+  either side of a slice boundary meet the source at collision points differing
+  by `eps/2`, so the true variation across that boundary is `O(eps)` and
+  continuous. Slicing concentrates it into a finite step. **The effect is real;
+  the step is the discretization.**
+
+  That distinction decides the fix. Re-solving gets the right *amount* of
+  evolution in the wrong (stepped) distribution. Caching gets **too little** --
+  the second slice never sees the intervening kick at all -- so it does not
+  smooth the step, it removes the physics that produces it. Which is why it cost
+  `3.0e-4` instead of being roughly neutral. Measured against kick strength, 40k
+  macroparticles, 9 slices, grid 64:
 
       kick/divergence   luminosity diff   relative dpy error introduced
       33.4              7.5e-3            0.229
@@ -423,11 +438,20 @@ Still open from this phase:
   should turn is a maintenance cost, and the measurement lives here instead.
 
 **With 4e closed, the `~1e-4` node floor is the accuracy limit of the node route,
-and removing it needs a different idea than reusing a solve** -- something that
-keeps the source fresh *and* the boundary continuous, e.g. re-solving both
-adjacent slices from a common interpolated source state rather than from either
-endpoint. Not designed, and not obviously worth it: see the dynamics evidence
-below.
+and the framing above says what a real fix would have to do: distribute the
+source evolution rather than delete it.** Reusing a solve removes the effect;
+re-solving steps it. The continuous version is to interpolate the *source state*
+across the node -- solve the shared node from a source drifted/kicked to the
+boundary rather than from either adjacent slice's endpoint state -- so the
+`O(eps)` physical variation is represented as `O(eps)` instead of as a step. Not
+designed, not costed, and gated on the dynamics evidence below, which says the
+payoff is likely unmeasurable.
+
+A consistency check that supports leaving it alone: if the jump is the
+discretization of a real effect, more slices means a smaller kick per slice and
+therefore a smaller jump. The record measured doubling the slice count and found
+**no** emittance improvement (t = +1.56, marginally worse), which is what you
+would expect if the effect is real but small.
 
 **The dynamics case for attacking this floor at all is weak**, and that should be
 weighed before anyone spends more on it.
