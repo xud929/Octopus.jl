@@ -1384,13 +1384,33 @@ a tuple identified only by position. So `element_id` is the aperture's **index i
 the compiled line**, assigned by the task when it builds the lattice: automatic,
 unique, and collision-free without touching any other element type.
 
-The cost is that the log says "aperture 7" rather than "COLL_IP6_H". The task
-should therefore write a companion dataset alongside the records mapping
-`element_id` to at least the lattice index and element kind, and to `s` if it can
-accumulate lengths, so the file is self-describing rather than only interpretable
-next to the script that produced it. Giving element specs real names would be
-better and is a broader change; it is **not** required for step 3 and should not
-be smuggled into it.
+A bare index makes the log say "aperture 7" rather than "COLL_IP6_H", so the
+aperture also takes a **`name`**, and the task writes a companion dataset mapping
+`element_id` to that name, the lattice index, the element kind, and `s` if it can
+accumulate lengths. The file is then self-describing instead of interpretable
+only next to the script that produced it.
+
+Nothing blocks this. `ElementSpec{Kind}` is a `Dict{Symbol,Any}`, so
+`ElementSpec{:drift}(L=0.5, name="COLL_IP6_H")` already constructs today and
+`validate_element_metadata()` passes with an undeclared `name` present. The name
+also cannot leak into execution: `compile_runtime` on such a spec returns the
+usual `isbits` runtime with no name field, which is the two-layer split doing its
+job -- **the spec carries the name, the runtime carries only the integer id.**
+
+Two details make it work rather than half-work:
+
+- Declaring `name` in the aperture's `@element_spec` block is what makes
+  `spec.name` and post-construction `spec.name = ...` legal. Undeclared, it is
+  readable only as `getparam(spec, :name, "")`, because `setproperty!` rejects
+  keys absent from the metadata.
+- It needs an entry in `DEFAULT_INACTIVE_ELEMENT_PARAMS`, for the same reason the
+  `alive` predicate does: perturbing a string produces no observable change, so
+  `ElementParameterEffectivenessContract` cannot probe it and must be told so.
+
+**Scope: the aperture only.** Naming every element kind is a fleet-wide change
+(~25 metadata blocks, plus a schema row each) and genuinely useful beyond
+apertures, but it is not required here and must not be smuggled into an aperture
+commit. Its own item is below.
 
 **No path, no output, and no allocation.** `loss_log=nothing` is the default and
 means the aperture kills and counts and nothing else -- a dynamic-aperture scan
@@ -1436,6 +1456,42 @@ is the end-to-end version -- a beam tracked through a lattice containing a real
 aperture element, where the losses are produced by the aperture rather than
 injected by hand, and where the loss log and the `count_dead` reconciliation are
 checked against each other.
+
+## Element names, fleet-wide (2026-08-01)
+
+Split out of the step-3 aperture work, which needs a name for **one** element and
+should not drag the other twenty-five along.
+
+Today a lattice is anonymous: no element spec has a name, label, or id field, so
+an element is identified only by its position in the tuple. Every diagnostic that
+wants to say *where* something happened is therefore reduced to an index --
+the aperture loss log is just the first place this has bitten.
+
+Nothing structural is in the way, which is why this is a chore rather than a
+design problem. `ElementSpec{Kind}` wraps a `Dict{Symbol,Any}`, so a name already
+constructs and stores, `validate_element_metadata()` already passes with one
+present, and `compile_runtime` already drops it -- the runtime stays `isbits` and
+GPU-safe because the two-layer split keeps descriptive fields in the spec layer.
+Verified on `:drift`.
+
+What it actually costs:
+
+- A `name` entry in each element's `@element_spec` block, which is what makes
+  `spec.name` readable and `spec.name = ...` assignable. Undeclared it is still
+  reachable as `getparam(spec, :name, "")`, so this buys ergonomics and schema
+  visibility, not capability.
+- One `DEFAULT_INACTIVE_ELEMENT_PARAMS` entry per element: a string has no
+  meaningful perturbation, so the effectiveness contract has to be told not to
+  probe it. Same treatment as the aperture's `alive` predicate.
+- A row per element in `parameter_schema` and the registry snapshot.
+
+Not needed: a change to any constructor. Absent-means-unnamed via `getparam`
+covers every existing call site, so no element's signature has to move.
+
+Worth doing when a second consumer appears -- lattice serialization, a survey
+listing, or any diagnostic that reports a position. One consumer (the loss log)
+is served adequately by the aperture-only version, and doing it fleet-wide on
+that evidence alone would be speculative.
 
 ## Fail-fast does not cover every coordinate (logged, not fixed, 2026-08-01)
 
