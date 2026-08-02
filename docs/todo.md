@@ -1632,7 +1632,30 @@ path being inferred from `h != 0`. `nothing` (default) lets the frame decide;
   legitimate approximation to ask for, and it **warns** rather than doing it
   silently.
 
-**Remaining: the same keyword on every other magnet.** `DriftSpec`,
+**DONE for the lattice magnets too (2026-08-02).** `LatticeMagnet{...,CURVED}`
+carries the choice, resolved in `compile_runtime`, and `_lattice_drift` split
+into `Val{false}`/`Val{true}` methods. The runtime `h == 0` test that lived
+inside the drift kernel is gone: nothing about curvature is decided during
+tracking. `DriftSpec` and `SBendSpec` (hence quadrupole, sextupole, octupole and
+multipole, which share the runtime) take `curved`.
+
+Behaviour-preserving, which was the risk: **PTC still passes at 5e-13 across all
+41 cases**, backend consistency unchanged, and `curved = true` at `h = 0` agrees
+with the straight closed form to 1.1e-16 for drift, quadrupole and sextupole.
+That last one is the check the keyword buys here -- both paths are exact for
+these elements, so it validates the code path rather than an approximation, and
+it would have caught the curved branch silently disagreeing.
+
+A value-dispatched `_lattice_drift(h, L, ...)` shim remains for callers holding
+`h` as a number (tests, the solenoid's drift-limit check).
+
+**Still a runtime branch, and deliberately left:** `_body_step` tests
+`elem.b0 == 0` to choose drift versus bend. That is a different question from
+curvature -- dipole or not, rather than which frame -- and folding it into the
+type would double the specializations again. Worth doing under the same
+principle if a measurement ever justifies it.
+
+~~**Remaining: the same keyword on every other magnet.**~~ Superseded: `DriftSpec`,
 `QuadrupoleSpec`, `SextupoleSpec`, `OctupoleSpec`, `MultipoleSpec` and
 `SBendSpec` all take `h` already, and all branch on `h == 0` at *runtime* inside
 `_lattice_drift`/`_lattice_bend`. Two things to weigh before doing it, because

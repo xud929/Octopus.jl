@@ -2291,6 +2291,38 @@ end
     end
 end
 
+@testset "Curvature is resolved before tracking, not inside the kernel" begin
+    u0 = (1.2e-3, 3.1e-4, -0.8e-3, -1.7e-4, 2.0e-3, 4.0e-3)
+    # The frame decides by default, and the choice lands in the TYPE so no
+    # curvature test survives into the tracking kernel.
+    @test compile_runtime(DriftSpec(L=0.7)) isa
+          Octopus.LatticeMagnet{<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,false}
+    @test compile_runtime(DriftSpec(L=0.7, h=0.05)) isa
+          Octopus.LatticeMagnet{<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,true}
+    @test compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18)) isa
+          Octopus.LatticeMagnet{<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,true}
+
+    # curved = true at h = 0 runs the curved closed form where the straight one
+    # also applies. Both are exact here, so this validates the path rather than
+    # an approximation -- and it must agree to roundoff.
+    for spec in (DriftSpec(L=0.7), QuadrupoleSpec(L=0.4, k1=1.7, nst=4),
+                 SextupoleSpec(L=0.25, k2=14.0, nst=4))
+        straight = compile_runtime(spec)
+        forced = compile_runtime(typeof(spec)(; spec.params..., curved=true))
+        @test forced isa Octopus.LatticeMagnet{<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,true}
+        @test collect(forced(u0...)) ≈ collect(straight(u0...)) atol=1e-15
+    end
+
+    # curved = false with h != 0 ignores the curvature and says so.
+    @test_logs (:warn,) compile_runtime(DriftSpec(L=0.7, h=0.05, curved=false))
+    ignored = (@test_logs (:warn,) compile_runtime(DriftSpec(L=0.7, h=0.05, curved=false)))
+    @test collect(ignored(u0...)) == collect(compile_runtime(DriftSpec(L=0.7))(u0...))
+
+    # And a curved drift still equals the exact curved map it always did.
+    @test collect(compile_runtime(DriftSpec(L=0.7, h=0.05))(u0...)) ==
+          collect(Octopus._lattice_drift(0.05, 0.7, u0...))
+end
+
 @testset "Patch: deliberate change of reference frame" begin
     u0 = (1.2e-3, 3.1e-4, -0.8e-3, -1.7e-4, 2.0e-3, 4.0e-3)
     p(; kw...) = compile_runtime(PatchSpec(; kw...))

@@ -54,21 +54,28 @@ Exact drift in a frame of curvature `h`, in the `z = s - l` convention.
 Both `y` and `z` follow from one shared quantity, the second from the first by
 `p_y -> -(1 + p_z)` (Section 5). Written so that no `1/h` is ever formed.
 """
-@inline function _lattice_drift(h::T, L::T, x, px, y, py, z, pz) where {T}
+@inline function _lattice_drift(::Val{false}, h::T, L::T, x, px, y, py, z, pz) where {T}
     ps0 = sqrt((1 + pz)^2 - px * px - py * py)
-    if h == 0
-        xn = x + px / ps0 * L
-        return xn, px, y + py / ps0 * L, py, z + L - (1 + pz) / ps0 * L, pz
-    end
+    return x + px / ps0 * L, px, y + py / ps0 * L, py, z + L - (1 + pz) / ps0 * L, pz
+end
+
+@inline function _lattice_drift(::Val{true}, h::T, L::T, x, px, y, py, z, pz) where {T}
+    ps0 = sqrt((1 + pz)^2 - px * px - py * py)
     c, s = cos(h * L), sin(h * L)
     C1 = _curv_sin(h, L)
     C2 = _curv_vers(h, L)
     pxn = px * c + ps0 * s
     psn = -px * s + ps0 * c
     xn = (ps0 * C2 + px * C1 + x * ps0) / psn
-    Δ = (-px * C2 + ps0 * C1 + xn * pxn - x * px) / ((1 + pz)^2 - py * py)
-    return xn, pxn, y + py * Δ, py, z + L - (1 + pz) * Δ, pz
+    Delta = (-px * C2 + ps0 * C1 + xn * pxn - x * px) / ((1 + pz)^2 - py * py)
+    return xn, pxn, y + py * Delta, py, z + L - (1 + pz) * Delta, pz
 end
+
+# Value-dispatched shim for callers outside the tracking path (tests, the
+# solenoid's drift-limit check) that hold `h` as a number rather than a type.
+@inline _lattice_drift(h::T, L::T, x, px, y, py, z, pz) where {T} =
+    iszero(h) ? _lattice_drift(Val(false), h, L, x, px, y, py, z, pz) :
+                _lattice_drift(Val(true), h, L, x, px, y, py, z, pz)
 
 """
 Exact sector bend: frame curvature `h`, dipole strength `b0`, independent.
@@ -473,7 +480,7 @@ runtime data, so a convergence study over step count does not recompile.
 
 Derivations: `docs/theory/lattice_hamiltonian_and_conventions.md`.
 """
-struct LatticeMagnet{M<:AbstractTrackingMethod,T<:AbstractFloat,N,ORDER,FRINGE,MC,NC} <: AbstractTrackOp
+struct LatticeMagnet{M<:AbstractTrackingMethod,T<:AbstractFloat,N,ORDER,FRINGE,MC,NC,CURVED} <: AbstractTrackOp
     method::M
     L::T
     h::T                     # reference-frame curvature
@@ -492,7 +499,7 @@ struct LatticeMagnet{M<:AbstractTrackingMethod,T<:AbstractFloat,N,ORDER,FRINGE,M
     kill1::Bool; kill2::Bool # PTC KILL_ENT_FRINGE / KILL_EXI_FRINGE
 end
 
-@inline _has(::LatticeMagnet{M,T,N,O,F,MC,NC}, bit) where {M,T,N,O,F,MC,NC} = (F & bit) != 0
+@inline _has(::LatticeMagnet{M,T,N,O,F,MC,NC,C}, bit) where {M,T,N,O,F,MC,NC,C} = (F & bit) != 0
 
 """
 Dipole strength as the face maps see it. `bend_model` decides whether the dipole
@@ -502,8 +509,8 @@ the same field either way.
 @inline _bend_strength(elem::LatticeMagnet{M,T,N}) where {M,T,N} =
     elem.b0 != 0 ? elem.b0 : (N >= 1 ? elem.kn[1] : zero(T))
 
-@inline function _entrance(elem::LatticeMagnet{M,T,N,O,F,MC,NC},
-                           x, px, y, py, z, pz) where {M,T,N,O,F,MC,NC}
+@inline function _entrance(elem::LatticeMagnet{M,T,N,O,F,MC,NC,C},
+                           x, px, y, py, z, pz) where {M,T,N,O,F,MC,NC,C}
     b1 = _bend_strength(elem)
     if F & FRINGE_DIPOLE_EDGE != 0
         x, px, y, py, z, pz = _rot_xz(elem.e1, x, px, y, py, z, pz)
@@ -536,8 +543,8 @@ the same field either way.
     return x, px, y, py, z, pz
 end
 
-@inline function _exit(elem::LatticeMagnet{M,T,N,O,F,MC,NC},
-                       x, px, y, py, z, pz) where {M,T,N,O,F,MC,NC}
+@inline function _exit(elem::LatticeMagnet{M,T,N,O,F,MC,NC,C},
+                       x, px, y, py, z, pz) where {M,T,N,O,F,MC,NC,C}
     b1 = _bend_strength(elem)
     if F & FRINGE_DIPOLE_EDGE != 0
         x, px, y, py, z, pz = _wedge(-elem.e2, b1, x, px, y, py, z, pz)
@@ -568,16 +575,20 @@ Kick for one sub-step. Uses the tabulated curved-frame field when the frame is
 curved and the magnet carries multipoles beyond the dipole; otherwise the
 straight closed form of Section 4.5, which is exact and cheaper.
 """
-@inline _step_kick(elem::LatticeMagnet{M,T,N,O,F,MC,NC}, d, x, px, y, py, z, pz) where {M,T,N,O,F,MC,NC} =
+@inline _step_kick(elem::LatticeMagnet{M,T,N,O,F,MC,NC,C}, d, x, px, y, py, z, pz) where {M,T,N,O,F,MC,NC,C} =
     NC == 0 ? _lattice_kick(elem.kn, elem.ks, elem.h, d, x, px, y, py, z, pz) :
               _curved_kick(elem.psi, Val(MC), d, x, px, y, py, z, pz)
 
-@inline _body_step(elem::LatticeMagnet, d, x, px, y, py, z, pz) =
-    elem.b0 == 0 ? _lattice_drift(elem.h, d, x, px, y, py, z, pz) :
+# The frame is straight or curved by TYPE, decided in `compile_runtime`, so the
+# kernel contains only the branch it needs. `b0 == 0` remains a field test: it
+# selects dipole versus no dipole, which is a different question from curvature
+# and is tracked separately in docs/todo.md.
+@inline _body_step(elem::LatticeMagnet{M,T,N,O,F,MC,NC,C}, d, x, px, y, py, z, pz) where {M,T,N,O,F,MC,NC,C} =
+    elem.b0 == 0 ? _lattice_drift(Val(C), elem.h, d, x, px, y, py, z, pz) :
                    _lattice_bend(elem.h, elem.b0, d, x, px, y, py, z, pz)
 
-@inline function track_particle(::Symplectic6DMap, elem::LatticeMagnet{M,T,N,ORDER,F,MC,NC},
-                                x, px, y, py, z, pz) where {M,T,N,ORDER,F,MC,NC}
+@inline function track_particle(::Symplectic6DMap, elem::LatticeMagnet{M,T,N,ORDER,F,MC,NC,C},
+                                x, px, y, py, z, pz) where {M,T,N,ORDER,F,MC,NC,C}
     x, px, y, py, z, pz = _entrance(elem, x, px, y, py, z, pz)
     if N == 0 && NC == 0
         # No multipole content: the body is integrable in one exact step, so
@@ -688,7 +699,19 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
     wc = getparam(spec, :wedge_coeff, (1, 2))
     length(wc) == 2 || throw(ArgumentError(
         "wedge_coeff must hold two values, got $(length(wc))"))
-    return LatticeMagnet{typeof(method),T,length(kn),order,bits,mc,length(psi)}(
+    # `curved` selects the frame's tracking path and is resolved HERE, once, then
+    # carried in the type -- nothing about curvature is decided inside a kernel.
+    # Defaults to `!iszero(h)`; `true` at h = 0 exercises the curved closed form
+    # where the straight one also applies (both are exact here, so it validates
+    # the path rather than an approximation), and `false` at h != 0 ignores the
+    # curvature and warns rather than doing so silently.
+    requested_curved = getparam(spec, :curved, nothing)
+    curved = requested_curved === nothing ? !iszero(h) : Bool(requested_curved)
+    if !curved && !iszero(h)
+        @warn "element has curved = false with h != 0; the frame curvature is \
+               ignored and the body tracks in a straight frame" h
+    end
+    return LatticeMagnet{typeof(method),T,length(kn),order,bits,mc,length(psi),curved}(
         method, L, h, b0, kn, ks, psi, nst,
         T(getparam(spec, :e1, zero(T))), T(getparam(spec, :e2, zero(T))),
         T(getparam(spec, :fint1, zero(T))), T(getparam(spec, :fint2, zero(T))),
@@ -855,12 +878,13 @@ end
     parameters = (
         L=ParamMeta(required=true, meaning="arc length in metres"),
         h=ParamMeta(default=0, meaning="reference-frame curvature 1/rho; a drift may be curved"),
+        curved=ParamMeta(default=nothing, meaning="force the curved or straight body path. `nothing` lets the frame decide, i.e. curved when h != 0. Resolved at compile_runtime and carried in the type, so no curvature test happens inside the tracking kernel. `true` at h = 0 exercises the curved closed form where the straight one also applies; `false` at h != 0 ignores the curvature and warns"),
         nst=ParamMeta(default=1, meaning="integration steps; unused because the drift is exact"),
         integrator_order=ParamMeta(default=2, meaning="unused because the drift is exact"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
     )
     example = DriftSpec(L=0.5)
-    construction_help = "Friendly constructor: DriftSpec(; L, h=0, nst=1, integrator_order=2, tracking_method=Symplectic6DMap()). Exact in (1+delta); h != 0 gives a curved drift. nst and integrator_order are accepted for interface uniformity and unused, because the drift is exact."
+    construction_help = "Friendly constructor: DriftSpec(; L, h=0, curved=nothing, nst=1, integrator_order=2, tracking_method=Symplectic6DMap()). Exact in (1+delta); h != 0 gives a curved drift. nst and integrator_order are accepted for interface uniformity and unused, because the drift is exact."
 end
 
 @element_spec begin
@@ -1035,6 +1059,7 @@ end
         L=_COMMON_PARAMS.L,
         angle=ParamMeta(default=0, meaning="design-orbit bend angle in radians; sets h = b0 = angle / L at construction. The normal way to build a bend. Contradicts h/b0, so giving both throws"),
         h=ParamMeta(default=0, meaning="reference-frame curvature 1/rho; need not equal b0. Give h and b0 instead of angle when they differ"),
+        curved=ParamMeta(default=nothing, meaning="force the curved or straight body path. `nothing` lets the frame decide, i.e. curved when h != 0. Resolved at compile_runtime and carried in the type, so no curvature test happens inside the tracking kernel. `true` at h = 0 exercises the curved closed form where the straight one also applies; `false` at h != 0 ignores the curvature and warns"),
         b0=ParamMeta(default=0, meaning="dipole strength q B0 / P0; independent of h"),
         k1=ParamMeta(default=0, meaning="normal quadrupole component of a combined-function bend; folded into kn[2] at construction"),
         k1s=ParamMeta(default=0, meaning="skew quadrupole component; folded into ks[2] at construction"),
