@@ -12,7 +12,7 @@
 > | `loss_summary` into `TrackingTask` diagnostics | small wiring | All mechanisms exist; it is a public function the task can already call, just not fired automatically. **Start here.** |
 > | `b0 == 0` runtime branch in `_body_step` | small | The one curvature-adjacent test still resolved during tracking. Same principle as the `curved` refactor; deliberately left because it is a different question and doubles specializations. |
 > | Element names fleet-wide | waiting | A chore, not a design problem. Worth doing when a *second* consumer appears; the aperture-only version serves the one that exists. |
-> | BPM monitors | needs a decision | Element that observes, or observer bound to a position? Architecture call before any code. |
+> | BPM monitors | **decided and implemented (2026-08-02)** | An observer bound to a position, not an element — a misaligned zero-length element returns its input bit for bit, so the offset has nowhere to live in a map. `BPMObserver`, [`docs/theory/bpm_measurement_model.md`](theory/bpm_measurement_model.md). Deferred within it: crunch, Bmad's error/calibration pairing, single-plane monitors, `n_sample`, and an identity scheme for observers. |
 > | Bmad reference cases for `misalign_convention=:bmad` | blocked on a tool | The **default** convention has no reference case: its reference point, rotation order, and now the frame a misalignment is quoted in against a `ref_tilt` are all read from Bmad source, never measured. `:madx` is pinned at ~5e-13 throughout. Needs Bmad in the validation path; one comparison would close all three. |
 >
 > ## Decided, deliberately not being done

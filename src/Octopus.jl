@@ -63,6 +63,7 @@ include("track/strong_beam_track.jl")
 # Workflow composition, schedules, observers, and actions.
 include("tasks/Tasks.jl")
 include("tasks/BeamObservers.jl")
+include("tasks/BPMObserver.jl")
 include("tasks/StrongStrong.jl")
 
 # Generated registry/introspection helpers. Keep this last.

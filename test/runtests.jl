@@ -1642,6 +1642,98 @@ end
     @test haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :nst))
 end
 
+@testset "BPM reads a device number, not the truth" begin
+    line = (QuadrupoleSpec(L=0.4, k1=1.7, nst=4), DriftSpec(L=0.6),
+            QuadrupoleSpec(L=0.4, k1=-1.7, nst=4), DriftSpec(L=0.6))
+    mkrep() = Phase6DRep([1.0e-3, 2.0e-3, -1.0e-3], [1.0e-4, -2.0e-4, 0.5e-4],
+                         [0.5e-3, -1.5e-3, 2.0e-3], [2.0e-4, 1.0e-4, -1.0e-4],
+                         [0.0, 0.0, 0.0], [1.0e-3, -1.0e-3, 0.0])
+
+    # The reason a BPM is an observer and not an element: a zero-length element
+    # cannot carry a reading offset. The entrance and exit frames cancel, so a
+    # misaligned marker is the identity -- the machinery runs and the map is
+    # bit-identical. Documented in docs/theory/bpm_measurement_model.md Sec. 2.
+    let u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
+        plain = compile_runtime(MarkerSpec())
+        moved = compile_runtime(MarkerSpec(x_offset=1.0e-3, y_offset=-8.0e-4))
+        @test moved isa MisalignedElement          # the wrap really is applied
+        @test collect(moved(u...)) == collect(plain(u...))   # and does nothing
+    end
+
+    # Zero errors must return the centroid itself, which is what ties the new
+    # readout path to the already-validated moment reduction.
+    let bpm = BPMObserver("b1"), rep = mkrep()
+        execute!(TrackingTask(line; hooks=(ScheduledObserver(bpm),)), rep; turns=3)
+        turns, xs, ys = readings(bpm)
+        st = beam_statistics(rep)
+        @test turns == [0, 1, 2]
+        @test xs[end] == st.mean[1]
+        @test ys[end] == st.mean[3]
+    end
+
+    # A BPM is passive: tracking must be bit-identical with and without one.
+    let r1 = mkrep(), r2 = mkrep()
+        execute!(TrackingTask(line), r1; turns=3)
+        execute!(TrackingTask(line; hooks=(ScheduledObserver(BPMObserver("b2")),)), r2; turns=3)
+        @test collect(r1[1]) == collect(r2[1])
+    end
+
+    # The model reduces exactly to MAD-X's `reading = (1+MSCAL)*true + MRE`.
+    let m = BPMObserver("madx"; x_gain=0.5, x_readout=1.0e-4, y_gain=-0.3, y_readout=-2.0e-5)
+        rx, ry = bpm_reading(m, 2.0e-3, 1.0e-3, 0)
+        @test rx == 1.5 * 2.0e-3 + 1.0e-4
+        @test ry == 0.7 * 1.0e-3 - 2.0e-5
+    end
+
+    # Signs and geometry. The offset is a body position and SUBTRACTS (Bmad),
+    # unlike MAD-X's MREX which is a reading bias and is x_readout here.
+    @test bpm_reading(BPMObserver("o"; x_offset=1.0e-3), 0.0, 0.0, 0)[1] == -1.0e-3
+    @test bpm_reading(BPMObserver("b"; x_readout=1.0e-3), 0.0, 0.0, 0)[1] == +1.0e-3
+    let (rx, ry) = bpm_reading(BPMObserver("r"; tilt=pi / 2), 1.0e-3, 0.0, 0)
+        @test abs(rx) < 1.0e-18
+        @test ry ≈ -1.0e-3 atol = 1.0e-18
+    end
+
+    # Every error term has to reach the reading, in the spirit of the element
+    # parameter effectiveness contract -- the misaligned marker above is the
+    # cautionary tale for what a silently-inert parameter looks like.
+    for kw in (:x_offset, :y_offset, :tilt, :x_gain, :y_gain,
+               :x_readout, :y_readout, :x_noise, :y_noise)
+        base = bpm_reading(BPMObserver("z"), 1.3e-3, -0.7e-3, 1)
+        moved = bpm_reading(BPMObserver("z"; (kw => 3.7e-3,)...), 1.3e-3, -0.7e-3, 1)
+        @test moved != base
+    end
+
+    # Noise is a counter-RNG draw keyed by turn and rng_id, so it reproduces
+    # across chunked execution -- the invariant the tracking RNG already holds.
+    let
+        set_global_rng!(seed=999)
+        a = BPMObserver("c"; x_noise=1.0e-5, rng_id=42)
+        ra = mkrep()
+        execute!(TrackingTask(line; hooks=(ScheduledObserver(a),)), ra; turns=4)
+        set_global_rng!(seed=999)
+        b = BPMObserver("c"; x_noise=1.0e-5, rng_id=42)
+        rb = mkrep()
+        task = TrackingTask(line; hooks=(ScheduledObserver(b),))
+        execute!(task, rb; turns=2)
+        execute!(task, rb; turns=2)
+        @test readings(b)[1] == [0, 1, 2, 3]
+        @test readings(a)[2] == readings(b)[2]
+    end
+
+    # Noise of the requested width, and two BPMs must not share a stream.
+    let bpm = BPMObserver("n"; x_noise=2.0e-5, rng_id=5)
+        s = [bpm_reading(bpm, 0.0, 0.0, t)[1] for t in 1:4000]
+        @test abs(sum(s) / length(s)) < 3.0e-6
+        @test 1.8e-5 < sqrt(sum(abs2, s) / length(s)) < 2.2e-5
+        other = BPMObserver("n2"; x_noise=2.0e-5, rng_id=6)
+        @test bpm_reading(bpm, 0.0, 0.0, 1)[1] != bpm_reading(other, 0.0, 0.0, 1)[1]
+    end
+
+    @test_throws ArgumentError BPMObserver("bad"; x_noise=-1.0)
+    @test_throws ArgumentError BPMObserver("bad"; y_noise=-1.0)
+end
+
 @testset "PTC consistency" begin
     # Compares LatticeMagnet against a committed PTC reference table generated
     # by validation/generate_ptc_reference.jl. Skips cleanly when the table is
