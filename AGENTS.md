@@ -31,6 +31,10 @@ an elevated role before making file changes.
 
 ## How To Orient
 
+- **To find out what is currently being worked on, read `docs/todo.md` first.**
+  Its header lists what is open, what is deliberately closed and why, and which
+  item to start next. The rest of that file is a record of completed work kept
+  for its measurements and its wrong turns, so do not read it front to back.
 - For a categorized index of every document, read `docs/README.md`.
 - For current public objects, read `docs/registry_snapshot.md` or run
   `summarize_registry()`.

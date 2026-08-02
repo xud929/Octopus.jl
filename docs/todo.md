@@ -1,5 +1,40 @@
 # TODO
 
+> **Read this first.** Most of this file is a record of *completed* work kept for
+> its measurements and its wrong turns — it is closer to a lab notebook than a
+> backlog. Scanning headings will not separate open from closed, because most
+> sections describe finished programs. What is actually open is listed here.
+>
+> ## Open work, most actionable first
+>
+> | item | state | notes |
+> |---|---|---|
+> | **`ref_tilt` for bends** | **ready to start** | Fully scoped; every piece exists and the map is tracking-complete. **Start here.** The ordering trap (`ref_tilt` outside the misalignment frames) needs a *two-parameter* PTC case — single-parameter cases cannot see it. |
+> | `loss_summary` into `TrackingTask` diagnostics | small wiring | All mechanisms exist; it is a public function the task can already call, just not fired automatically. |
+> | `b0 == 0` runtime branch in `_body_step` | small | The one curvature-adjacent test still resolved during tracking. Same principle as the `curved` refactor; deliberately left because it is a different question and doubles specializations. |
+> | Element names fleet-wide | waiting | A chore, not a design problem. Worth doing when a *second* consumer appears; the aperture-only version serves the one that exists. |
+> | BPM monitors | needs a decision | Element that observes, or observer bound to a position? Architecture call before any code. |
+>
+> ## Decided, deliberately not being done
+>
+> These are closed with reasons; reopen only if the stated condition changes.
+>
+> - **Soft-fringe solenoid** — only Elegant has one and it is a field-map
+>   integrator, not a portable analytic model. Revisit if a fringe-region study
+>   appears.
+> - **`pz` fail-fast gap** — accepted on the grounds that production runs use
+>   `allow_lost_particles`. Conditions that would reverse it are recorded.
+> - **Node-solve caching / the `~1e-4` interpolation floor** — closed negative,
+>   twice: it introduces more error than it removes.
+> - **Curved-frame solenoid** — was closed on a wrong argument, then reopened and
+>   **implemented**. The withdrawn closure is retained so the mistake is visible.
+>
+> Two habits this file has earned the hard way: **check the decision items
+> (2b–2d) before implementing a phase-4 sub-item**, since the phase list predates
+> them and the decision wins; and **a claim recorded here can be wrong** — several
+> below were, and the corrections are kept next to the originals rather than
+> replacing them.
+
 ## Slice longitudinal interpolation (from the 2026-07-25 z-scan)
 
 Measurements and rationale:
