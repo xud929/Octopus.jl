@@ -203,8 +203,11 @@ end
     return _frame_change(elem.qout, elem.oout, x, px, y, py, z, pz)
 end
 
+# `_inner_method` rather than `elem.inner.method`: the wrapped op need not be a
+# single magnet. A misaligned beam line wraps a `CompositeLine`, which is what
+# makes a cryostat work, and it carries no method of its own.
 @inline (elem::MisalignedElement)(x, px, y, py, z, pz) =
-    track_particle(elem.inner.method, elem, x, px, y, py, z, pz)
+    track_particle(_inner_method(elem.inner), elem, x, px, y, py, z, pz)
 
 """
     _misalignment_wrap(spec, inner)

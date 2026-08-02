@@ -1700,6 +1700,118 @@ end
     @test haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :nst))
 end
 
+@testset "BeamLine composes, addresses and tracks" begin
+    u = (1.0e-3, 1.0e-4, -0.5e-3, 2.0e-4, 0.0, 1.0e-3)
+    qf = QuadrupoleSpec(L=0.4, k1=1.7, nst=4, name="QF")
+    qd = QuadrupoleSpec(L=0.4, k1=-1.7, nst=4, name="QD")
+    dr = DriftSpec(L=0.6, name="DR")
+
+    # Nesting is construction syntax: it expands away, leaving provenance.
+    fodo = BeamLine("FODO", qf, dr, qd, dr)
+    ring = BeamLine("RING", fodo, fodo)
+    @test length(fodo) == 4 && length(ring) == 8
+    @test entry_path(ring[1]) == "RING/FODO/QF"
+    @test entry_path(ring[5]) == "RING/FODO[2]/QF"
+    @test entry_path(ring[4]) == "RING/FODO/DR[2]"
+    @test s_positions(ring) == [0.0, 0.4, 1.0, 1.4, 2.0, 2.4, 3.0, 3.4]
+
+    # A line tracks exactly as the equivalent bare tuple. This is the check that
+    # the container is a construction convenience and not a physics change.
+    mk() = Phase6DRep([1.0e-3, 2.0e-3], [0.0, 1.0e-4], [0.5e-3, -1.0e-3],
+                      [0.0, -1.0e-4], [0.0, 0.0], [1.0e-3, 0.0])
+    let a = mk(), b = mk()
+        execute!(TrackingTask(ring), a; turns=3)
+        execute!(TrackingTask((qf, dr, qd, dr, qf, dr, qd, dr)), b; turns=3)
+        @test collect(a[1]) == collect(b[1]) && collect(a[2]) == collect(b[2])
+    end
+    # ... including a weak-strong line, which is a different tracking method.
+    let ip = ThinStrongBeamSpec(kbb=1.0e-4, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3))
+        a = Phase6DRep([1.0e-3], [0.0], [2.0e-3], [0.0], [0.0], [0.0])
+        b = Phase6DRep([1.0e-3], [0.0], [2.0e-3], [0.0], [0.0], [0.0])
+        execute!(TrackingTask(BeamLine("IR", ip, DriftSpec(L=0.5))), a; turns=2)
+        execute!(TrackingTask((ip, DriftSpec(L=0.5))), b; turns=2)
+        @test collect(a[1]) == collect(b[1])
+    end
+
+    # Selection: one entry point, XPath-shaped, instead of a family of lookups.
+    let cqs = BeamLine("CQS", qf, qd), arc = BeamLine("ARC1", cqs, dr, cqs, dr)
+        @test find_entries(arc, sel"ARC1/CQS[2]") == [4, 5]
+        @test find_entries(arc, sel"ARC1//QF") == [1, 4]
+        @test find_entries(arc, sel"ARC1/CQS[*]/QD") == [2, 5]
+        @test find_entries(arc, sel"*/CQS[1]/QF") == [1]
+        @test find_entries(arc, r"ARC1/DR") == [3, 6]
+        @test find_entries(arc, e -> getparam(e, :L, 0.0) > 0.5) == [3, 6]
+        @test find_entries(arc, ElementSpec{:drift}) == [3, 6]
+        # Selecting an assembly selects everything in it, not a node standing
+        # for it, which is why matching is against a path PREFIX.
+        @test length(find_entries(arc, sel"ARC1")) == length(arc)
+        @test isempty(find_entries(arc, sel"NOPE"))
+    end
+    @test_throws ArgumentError Octopus._parse_selector("")
+    @test_throws ArgumentError Octopus._parse_selector("A[0]")
+    @test_throws ArgumentError Octopus._parse_selector("A[x]")
+
+    # Cross-cutting tags: a magnet is in a cryostat AND on a power supply, and
+    # those do not nest. A set, not a second path.
+    let l = BeamLine("PS", BeamLine("M", qf; tags=(:cryo,)); tags=(:ps7,))
+        @test entry_tags(l[1]) == Set([:cryo, :ps7])
+        @test find_entries(l, :cryo) == [1] && find_entries(l, :ps7) == [1]
+    end
+
+    # Shared spec, private placement. Both occurrences follow qf until one is
+    # overridden, after which it is detached -- the behaviour a trim supply
+    # would NOT want, which is what knob expressions are for.
+    let line = BeamLine("L", qf, dr, qf)
+        base = collect(compile_runtime(line[3])(u...))
+        line[3].x_offset = 1.0e-3
+        @test collect(compile_runtime(line[1])(u...)) == base   # sibling untouched
+        @test collect(compile_runtime(line[3])(u...)) != base   # this one moved
+        for (k, v) in ((:kn, (0.0, 1.9)), (:nst, 16), (:tilt, 0.02))
+            e = Octopus.LineEntry(qf, [("QF", 1)], Set{Symbol}(), Dict{Symbol,Any}(k => v))
+            @test collect(compile_runtime(e)(u...)) != base
+        end
+    end
+    # A named strength is folded into kn at construction, so an override naming
+    # it would be written, reported, and never read. Rejected where it is
+    # written rather than silently ignored.
+    let line = BeamLine("L", qf, dr)
+        @test_throws ArgumentError line[1].k1 = 1.9
+        @test_throws ArgumentError line[1].spec = qd
+        line[1].kn = (0.0, 1.9)
+        @test getparam(line[1], :kn) == (0.0, 1.9)
+    end
+
+    # Reflection is ORDER ONLY, as MAD-X and Bmad both define it.
+    let rev = reverse(BeamLine("CELL", qf, dr, qd))
+        @test [entry_path(e) for e in rev] == ["CELL/QD", "CELL/DR", "CELL/QF"]
+    end
+    @test length(repeat(BeamLine("CELL", qf, dr, qd), 3)) == 9
+    @test_throws ArgumentError repeat(BeamLine("CELL", qf), 0)
+
+    # A line carrying state of its own does not dissolve: it is a cryostat, and
+    # misaligning it moves its contents RIGIDLY. This is the design note's claim
+    # that assembly misalignment falls out of _misalignment_wrap for free.
+    let q1 = QuadrupoleSpec(L=0.4, k1=1.2, nst=4, name="Q1"),
+        q2 = QuadrupoleSpec(L=0.4, k1=-1.2, nst=4, name="Q2"),
+        d = 2.0e-4
+
+        aligned = BeamLine("CRYO", q1, DriftSpec(L=0.3), q2)
+        cryo = BeamLine("CRYO", q1, DriftSpec(L=0.3), q2; x_offset=d)
+        lat = BeamLine("LAT", DriftSpec(L=0.2, name="A"), cryo)
+        @test length(lat) == 2                       # the cryostat stays whole
+        @test compile_runtime(cryo) isa MisalignedElement
+        @test compile_runtime(aligned) isa Octopus.CompositeLine
+
+        ra = collect(compile_runtime(aligned)(u...))
+        @test maximum(abs, collect(compile_runtime(cryo)(u...)) .- ra) > 1.0e-6
+        # Rigidity: displace the girder and the beam together and nothing
+        # changes. Every magnet inside must have moved by the same amount.
+        shifted = collect(compile_runtime(cryo)(u[1] + d, u[2], u[3], u[4], u[5], u[6]))
+        shifted[1] -= d
+        @test maximum(abs, shifted .- ra) < 1.0e-15
+    end
+end
+
 @testset "Loss accounting reports itself" begin
     # Drained on a task so a full pipe buffer cannot deadlock the capture.
     function capture_stdout(f)

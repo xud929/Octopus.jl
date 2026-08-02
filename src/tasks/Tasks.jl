@@ -175,6 +175,8 @@ end
 _collect_aperture_specs!(out, elements::Tuple) =
     (foreach(e -> _collect_aperture_specs!(out, e), elements); out)
 _collect_aperture_specs!(out, element::ElementSpec{:aperture}) = (push!(out, element); out)
+_collect_aperture_specs!(out, entry::LineEntry) =
+    _collect_aperture_specs!(out, getfield(entry, :spec))
 _collect_aperture_specs!(out, element) = out
 
 """
@@ -203,6 +205,12 @@ end
 _collect_aperture_s!(out, elements::Tuple, s) =
     (foreach(e -> _collect_aperture_s!(out, e, s), elements); out)
 _collect_aperture_s!(out, element::ElementSpec{:aperture}, s) = (push!(out, s[]); out)
+function _collect_aperture_s!(out, entry::LineEntry, s)
+    spec = getfield(entry, :spec)
+    spec isa ElementSpec{:aperture} && return (push!(out, s[]); out)
+    s[] += Float64(getparam(entry, :L, 0.0))
+    return out
+end
 function _collect_aperture_s!(out, element, s)
     element isa AbstractElementSpec && (s[] += Float64(getparam(element, :L, 0.0)))
     return out
@@ -223,6 +231,10 @@ function _attach_loss_record(elem::Aperture{F,M,R,T}, record, id) where {F,M,R,T
 end
 
 _element_tuple(element::AbstractElementSpec) = (element,)
+# A line hands the task its placements. One carrying state of its own -- a
+# misaligned cryostat -- stays whole, because the wrap has to enclose it.
+_element_tuple(line::ElementSpec{:line}) =
+    _line_has_own_state(line) ? (line,) : Tuple(line_entries(line))
 _element_tuple(elements::Tuple) = elements
 _element_tuple(elements::AbstractVector) = Tuple(elements)
 
@@ -434,6 +446,7 @@ function _task_execution_window(stored_turn::Int64, turns::Integer, start_turn)
 end
 
 _runtime_or_existing(element::AbstractElementSpec) = compile_runtime(element)
+_runtime_or_existing(entry::LineEntry) = compile_runtime(entry)
 _runtime_or_existing(element) = element
 
 struct PhysicsEntry{E}
@@ -532,6 +545,16 @@ function _append_runtime_line!(out, element::AbstractVector, hook_counter)
     for item in element
         _append_runtime_line!(out, item, hook_counter)
     end
+    return out
+end
+
+function _append_runtime_line!(out, entry::LineEntry, hook_counter)
+    spec = getfield(entry, :spec)
+    # An in-line observer placed in a line is still an in-line observer; only a
+    # physical element goes through the placement's parameter merge.
+    spec isa AbstractElementSpec ||
+        return _append_runtime_line!(out, spec, hook_counter)
+    push!(out, PhysicsEntry(compile_runtime(entry)))
     return out
 end
 
