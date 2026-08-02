@@ -1614,6 +1614,57 @@ Remaining, and deliberately not done here:
   ergonomic finish; the mechanism it would use is already here.
 - **Element names fleet-wide**, its own item below.
 
+## Patch element: NOT STARTED (2026-08-01)
+
+Recommended by Section 7.5 of
+[`misalignment_and_patch_maps.md`](theory/misalignment_and_patch_maps.md) and
+never built. Confirmed absent: nothing in `src/` implements it, the registry has
+no `:patch`, and the only occurrence of the word is a doc-reference comment in
+`misalignment.jl`.
+
+**A patch is not a misalignment, and `MisalignedElement` cannot stand in for
+one.** The distinction is what the element *means*, not how it is coded:
+
+| | misalignment | patch |
+|---|---|---|
+| intent | an **error**: the magnet is not where it was meant to be | **deliberate**: the reference frame genuinely changes here |
+| attaches to | one element, referenced to its centre | nothing — it is its own element |
+| afterwards | the frame is **restored**; the error is local | the new frame **persists** downstream |
+| carries a time offset | no | yes (Bmad's `t_offset`) |
+| survey meaning | a deviation from the design geometry | *is* the design geometry |
+
+Using a misalignment to express a crossing angle would be wrong in both
+directions: it would restore the frame at the element exit when the geometry says
+it should not, and it would record a deliberate design choice as a machine error
+in anything that reports alignment.
+
+**What it is for:** crossing angles, beamline junctions, spectrometer arms,
+injection/extraction geometry — and, concretely today, the straight solenoid
+traversed by a curved orbit that the curved-frame item below has no other way to
+express.
+
+**Specification exists and is complete.** Bmad's `track_a_patch`
+(`bmad/low_level/track_a_patch.f90`) is the reference:
+
+- parameters `x_offset, y_offset, z_offset`, `x_pitch, y_pitch, tilt`,
+  `t_offset`, plus upstream/downstream direction flags;
+- form the full 3-momentum
+  `p_vec = [px, py, sqrt((1+delta)^2 - px^2 - py^2)]` and the offset position
+  `r_vec`, rotate **both** by the frame matrix `W` from
+  `floor_angles_to_w_mat`, then drift to the exit face;
+- the drift-to-exit is what gives a patch an effective length and makes
+  `z_offset` change path length rather than merely relabel.
+
+Notes for whoever builds it. `_rot_xz` in `lattice_magnets.jl` already matches
+PTC bit for bit and should be reused rather than re-derived (Section 7.3 of the
+note). The rotation order and signs must be pinned against a reference case
+first — the same open question that still blocks bend misalignments, since PTC
+composes x-pitch, y-pitch, roll while Bmad forms `R_y R_x R_z` with a sign flip,
+and the two differ at second order in the angles. And Section 7.6's contract is
+the right validation and needs no external reference: **misalign an entire cell
+by one rigid transform, apply the inverse patch at both ends, and the aligned map
+must come back to roundoff.**
+
 ## Solenoid in a curved frame: do not add `h` (2026-08-01)
 
 Asked for on the grounds that every other lattice element takes a frame
@@ -1638,10 +1689,11 @@ matrix rejected.
 **The case that actually motivates the request is different again.** A detector
 solenoid with a crossing angle is a *straight* solenoid whose axis does not
 follow a curved reference orbit. Its field is longitudinal about *its own* axis;
-expanded in the curved frame it is not longitudinal at all. That is a
-misalignment problem and Octopus already has the machinery —
-`MisalignedElement` and the patch maps. A patch, a straight solenoid, a patch
-back.
+expanded in the curved frame it is not longitudinal at all. The clean expression
+is a **patch, a straight solenoid, a patch back** — and the patch element does
+**not exist yet**; see the item below. `MisalignedElement` is not a substitute,
+for the reason given there. So this case currently has no clean expression in
+Octopus, which argues for building the patch rather than for adding `h`.
 
 If a genuine toroidal element is ever wanted it needs its own name and its own
 integrator: the potential $\hat a_y=(k_s/h)\ln(1+hx)$ puts a logarithm inside

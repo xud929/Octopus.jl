@@ -571,12 +571,18 @@ straight axis; it is the *frame* that curves relative to it. Expanded in the
 curved frame that field is not longitudinal at all: it acquires $x$ and $s$
 components that vary along the element.
 
-That is a misalignment problem, not a curvature problem, and Octopus already has
-the machinery for it — `MisalignedElement` and the patch maps of
-[`misalignment_and_patch_maps.md`](misalignment_and_patch_maps.md). A straight
-solenoid entered at an angle is a patch, a straight-frame solenoid, and a patch
-back. Adding $h$ to `Solenoid` would not describe this case and would not help
-it.
+That is a frame problem, not a curvature problem: a straight solenoid entered at
+an angle is a **patch, a straight-frame solenoid, and a patch back**. Adding $h$
+to `Solenoid` would not describe this case and would not help it.
+
+> **A patch element does not exist yet.** `MisalignedElement` is not a
+> substitute: a misalignment is an *error* in where one magnet sits, restoring
+> the frame afterwards, while a patch is a *deliberate* transition to a new
+> reference frame that persists. Section 7.5 of
+> [`misalignment_and_patch_maps.md`](misalignment_and_patch_maps.md) already
+> recommends building one; see the `patch` item in `docs/todo.md`. Until then
+> the crossing-angle solenoid has no clean expression — which is a reason to
+> build the patch, not a reason to add $h$ to the solenoid.
 
 ### 13.4 If the toroidal element is wanted anyway
 

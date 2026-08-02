@@ -365,9 +365,12 @@ angle in a way that mimics a wrong exit patch.
   a bend from rolling the *magnet*. Octopus has neither yet, and the distinction
   only exists for bends. It needs to be settled before bends get misalignments,
   not after.
-- **Aperture.** A misaligned magnet is the main reason a particle hits one, and
-  Octopus has no aperture model at all. The two features are worth designing
-  together.
+- ~~**Aperture.** Octopus has no aperture model at all.~~ **Stale as of
+  2026-08-01**: `ApertureSpec` exists, with per-particle loss records
+  ([`aperture_and_particle_loss.md`](aperture_and_particle_loss.md)). The point
+  that a misaligned magnet is the main reason a particle hits an aperture still
+  stands, and the aperture deliberately carries its own `dx`/`dy` rather than
+  routing through the misalignment frames — see that note's Section 4.
 - **Survey.** PTC's approach presumes a survey exists. Octopus has no geometry
   layer, so the centre-referenced parameterization is the only workable one for
   now; a survey would be needed for a machine described by measured frames.
