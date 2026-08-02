@@ -2291,6 +2291,78 @@ end
     end
 end
 
+@testset "TrackingTask owns the loss record" begin
+    n = 400
+    specs = (DriftSpec(L=0.5),
+             ApertureSpec(shape=:rectangle, x_limit=2.0e-3, y_limit=1.0, name="H"),
+             ThinQuadrupoleSpec(k1l=0.05),
+             ApertureSpec(shape=:ellipse, x_limit=3.0e-3, y_limit=1.5e-3, name="V"))
+
+    # The ergonomic point: no hand-assigned element_id, no hand-built record.
+    path = tempname() * ".h5"
+    task = TrackingTask(specs; loss_log=path)
+    beam = aperture_beam(n)
+    execute!(task, beam; turns=5)
+    record = loss_record(task)
+    @test record !== nothing
+    # Ids come from lattice order, names from the specs.
+    @test aperture_names(record) == ["H", "V"]
+    summary = loss_summary(beam, task)
+    @test summary.dead == summary.logged
+    @test summary.unattributed == 0
+    @test summary.by_aperture == Int.(loss_counts(record))
+
+    # The file is written without being asked, and holds only losses.
+    written = read_loss_record(path)
+    @test length(written.particle_id) == summary.dead
+    @test length(written.particle_id) < n
+    @test written.aperture_names == ["H", "V"]
+
+    # A run split across execute! calls produces the same file as one long run.
+    # The record is cumulative and a particle is lost at most once, so rewriting
+    # whole is idempotent.
+    split_path = tempname() * ".h5"
+    split_task = TrackingTask(specs; loss_log=split_path)
+    split_beam = aperture_beam(n)
+    execute!(split_task, split_beam; turns=2)
+    execute!(split_task, split_beam; turns=3)
+    split = read_loss_record(split_path)
+    @test split.particle_id == written.particle_id
+    @test split.turn == written.turn
+    @test split.element_id == written.element_id
+    @test split.x == written.x
+
+    # The same specs on two beams must get two independent records: a spec is a
+    # description, not a place to accumulate state.
+    a, b = TrackingTask(specs), TrackingTask(specs)
+    execute!(a, aperture_beam(n); turns=5)
+    execute!(b, aperture_beam(n; seed=99); turns=5)
+    @test loss_record(a) !== loss_record(b)
+    @test loss_counts(loss_record(a)) != loss_counts(loss_record(b))
+
+    # Re-running a task on a differently sized beam reallocates, because the
+    # slots are indexed by particle.
+    resized = TrackingTask(specs; loss_log=tempname() * ".h5")
+    execute!(resized, aperture_beam(n); turns=2)
+    first_record = loss_record(resized)
+    execute!(resized, aperture_beam(900); turns=2)
+    @test loss_record(resized) !== first_record
+    @test size(loss_record(resized).slots, 2) == 900
+
+    # No log path: counters only, no per-particle allocation.
+    counters = TrackingTask(specs)
+    execute!(counters, aperture_beam(n); turns=3)
+    @test loss_record(counters).slots === nothing
+    @test sum(loss_counts(loss_record(counters))) > 0
+
+    # A line with no aperture allocates nothing and is otherwise untouched.
+    plain = TrackingTask((DriftSpec(L=0.5), ThinQuadrupoleSpec(k1l=0.05)))
+    plain_beam = aperture_beam(n)
+    execute!(plain, plain_beam; turns=5)
+    @test loss_record(plain) === nothing
+    @test count_dead(plain_beam) == 0
+end
+
 @testset "PIC kbb override uses physical units" begin
     function kbb_pair()
         set_global_rng!(seed=42, method=:philox)

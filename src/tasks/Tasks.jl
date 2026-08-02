@@ -1,4 +1,4 @@
-export TrackingContext, TrackingTask, execute!, update!, luminosity
+export TrackingContext, TrackingTask, execute!, update!, luminosity, loss_record
 
 """
     update!(elem, ctx)
@@ -52,6 +52,8 @@ struct TrackingTask <: AbstractTask
     next_turn::Base.RefValue{Int64}
     runtime_entries_cache::Base.RefValue{Any}
     plan_cache::Dict{Any,Any}
+    loss_log::Union{Nothing,String}
+    loss_record::Base.RefValue{Any}
 end
 
 function configuration_report(task::TrackingTask, rep::Phase6DRep)
@@ -112,12 +114,56 @@ function TrackingTask(elements;
                       actions=(),
                       observers=(),
                       contracts::Vector{DataType}=_collect_contracts(elements),
-                      analyses::Vector{DataType}=_collect_analyses(elements))
+                      analyses::Vector{DataType}=_collect_analyses(elements),
+                      loss_log::Union{Nothing,AbstractString}=nothing)
     element_tuple = _element_tuple(elements)
     seed !== nothing && @warn "TrackingTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
     action_tuple, observer_tuple = classify_task_hooks(hooks, actions, observers)
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
-                        Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}())
+                        Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),
+                        loss_log === nothing ? nothing : String(loss_log),
+                        Ref{Any}(nothing))
+end
+
+"""
+    loss_record(task) -> LossRecord or nothing
+
+The task's loss record, or `nothing` if the line has no aperture or the task has
+not run yet. Allocated on the first `execute!`, sized and placed to match the
+representation it is given.
+"""
+loss_record(task::TrackingTask) = task.loss_record[]
+
+loss_summary(rep_or_beam, task::TrackingTask) = loss_summary(rep_or_beam, task.loss_record[])
+
+"""
+Aperture specs in the line, in lattice order. Their position **is** their
+identity: Octopus element specs carry no id of their own, so `element_id` is the
+index of the aperture in the compiled line, assigned here.
+"""
+function _aperture_specs(elements::Tuple)
+    out = ElementSpec{:aperture}[]
+    _collect_aperture_specs!(out, elements)
+    return out
+end
+
+_collect_aperture_specs!(out, elements::Tuple) =
+    (foreach(e -> _collect_aperture_specs!(out, e), elements); out)
+_collect_aperture_specs!(out, element::ElementSpec{:aperture}) = (push!(out, element); out)
+_collect_aperture_specs!(out, element) = out
+
+"""
+Attach the shared record and the lattice-order id to every aperture in the line.
+
+The record depends on the representation -- its size and its backend -- while the
+compiled line does not, so this runs at `execute!` rather than at compile time.
+Rebuilding the runtime rather than mutating the spec keeps the user's specs
+reusable across beams: two tasks over two beams get two records from one spec.
+"""
+function _attach_loss_record(elem::Aperture{F,M,R,T}, record, id) where {F,M,R,T}
+    return Aperture{F,M,typeof(record),T}(
+        elem.method, elem.shape, elem.x_limit, elem.y_limit, elem.dx, elem.dy,
+        elem.alive, record, Int32(id))
 end
 
 _element_tuple(element::AbstractElementSpec) = (element,)
@@ -164,7 +210,7 @@ execute!(task::TrackingTask, beam::Beam; turns::Integer=1, start_turn=nothing) =
 function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     nturns, first_turn, next_turn =
         _task_execution_window(task.next_turn[], turns, start_turn)
-    runtime_entries = _runtime_entries(task)
+    runtime_entries = _runtime_entries(task, rep)
     runtime_elems = _physics_line(runtime_entries)
     policy = _resolve_execution_policy(task.policy, rep)
     result = _with_execution_policy(policy) do
@@ -172,7 +218,25 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
             task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy)
     end
     task.next_turn[] = next_turn
+    _write_task_loss_log(task)
     return result
+end
+
+"""
+Rewrite the loss file after a run, when a path was given.
+
+Rewritten whole rather than appended: the record is cumulative and a particle is
+lost at most once, so the file after `n` turns is a superset of the file after
+`n-1`. That makes the write idempotent and makes a run split across several
+`execute!` calls produce the same file as one long call.
+"""
+function _write_task_loss_log(task::TrackingTask)
+    task.loss_log === nothing && return nothing
+    record = task.loss_record[]
+    record === nothing && return nothing
+    record.slots === nothing && return nothing
+    write_loss_record(task.loss_log, record)
+    return nothing
 end
 
 function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
@@ -267,25 +331,69 @@ struct LineActionEntry{A}
     hook_index::Int
 end
 
-function _runtime_entries(task::TrackingTask)
+function _runtime_entries(task::TrackingTask, rep=nothing)
+    # The loss record is sized and placed by the representation, so a task
+    # re-run on a different beam needs a different record and therefore a
+    # recompiled line. Keying the cache on the record identity is what makes
+    # that automatic rather than a footgun.
+    record = _ensure_loss_record!(task, rep)
     cached = task.runtime_entries_cache[]
     if cached !== nothing
-        entries, knob_dependent, kepoch, sepoch = cached
+        entries, knob_dependent, kepoch, sepoch, crecord = cached
         # Knob-dependent lines recompile when the knob epoch has moved, and any
         # line recompiles when a spec parameter was mutated in place
         # (post-construction knob binding), so both kinds of change reach this
         # task at its next execute!.
-        ((!knob_dependent || kepoch == knob_epoch()) && sepoch == _spec_epoch()) &&
-            return entries
+        ((!knob_dependent || kepoch == knob_epoch()) && sepoch == _spec_epoch() &&
+         crecord === record) && return entries
     end
     kepoch = knob_epoch()
     sepoch = _spec_epoch()
     entries = _runtime_line_entries(task.elements)
+    entries = _bind_apertures(entries, record)
     task.runtime_entries_cache[] =
-        (entries, _has_knob_parameters(task.elements), kepoch, sepoch)
+        (entries, _has_knob_parameters(task.elements), kepoch, sepoch, record)
     empty!(task.plan_cache)
     return entries
 end
+
+"""
+Allocate the task's loss record on first use, or return the existing one.
+
+Reallocated when the representation changes shape or backend, because the
+per-particle slots are indexed by particle and live on the beam's device.
+"""
+function _ensure_loss_record!(task::TrackingTask, rep)
+    rep === nothing && return task.loss_record[]
+    specs = _aperture_specs(task.elements)
+    isempty(specs) && return nothing
+    existing = task.loss_record[]
+    want_slots = task.loss_log !== nothing
+    if existing !== nothing
+        fits = length(loss_counts(existing)) == length(specs) &&
+               (existing.slots === nothing) == !want_slots &&
+               (existing.slots === nothing || size(existing.slots, 2) == length(rep))
+        fits && return existing
+    end
+    names = [String(getparam(spec, :name, "")) for spec in specs]
+    for (i, name) in enumerate(names)
+        isempty(name) && (names[i] = "aperture_$(i)")
+    end
+    record = LossRecord(names, length(rep), rep; log=want_slots)
+    task.loss_record[] = record
+    return record
+end
+
+_bind_apertures(entries::Tuple, ::Nothing) = entries
+
+function _bind_apertures(entries::Tuple, record)
+    id = Ref(0)
+    return map(entry -> _bind_aperture_entry(entry, record, id), entries)
+end
+
+_bind_aperture_entry(entry::PhysicsEntry{<:Aperture}, record, id) =
+    PhysicsEntry(_attach_loss_record(entry.element, record, id[] += 1))
+_bind_aperture_entry(entry, record, id) = entry
 
 function _runtime_line_entries(elements)
     out = Any[]
