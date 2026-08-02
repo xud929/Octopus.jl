@@ -382,9 +382,17 @@ Still open from this phase:
   (`batch_mode=:sequential`, `cuda_async=false`), CPU parity 9.5e-16 and luminosity
   parity 2.7e-16. ~~The wavefront and batched-FFT routes assume one mesh per slice
   pair and throw.~~ **Stale as of 2b (2026-07-26), re-verified 2026-08-01:**
-  `:node` runs on wavefront-async, wavefront-sync and sequential-sync alike. No
-  CUDA route now blocks it, which removes the standing objection to making it the
-  default.
+  `:node` runs on wavefront-async, wavefront-sync and sequential-sync alike, so
+  no CUDA route *errors* on it.
+
+  **That does not make it a default candidate on CUDA, and it is worth being
+  explicit because the CPU and CUDA answers point opposite ways.** Per 2b at the
+  production point, `slice_pair` wavefront is `0.3238 s/turn` against `:node`
+  wavefront at `0.8097` -- **2.5x slower**. The "36% faster" result is CPU only
+  (1M/beam, 15 slices, grid 128), where `:node` crosses over because the baseline
+  recomputes bounds per pair. Quoting the CPU crossover as though it held on GPU
+  is a mistake that has now been made once; on CUDA the 7.4%/30% emittance gain
+  costs 2.5x wall time and is a trade, not a free win.
 - ~~**4e. Node-solve caching**~~ — **CLOSED NEGATIVE (2026-08-01).** Implemented,
   measured, and reverted. Both halves of the promise held: a one-slot rolling
   cache per (source slice, direction) made the shared boundary `C^0` exact
@@ -393,6 +401,17 @@ Still open from this phase:
   `_slice_collision_order` visits a fixed source slice's field slices
   monotonically, so ~12 MB at 15 slices and grid 128 rather than the ~190 MB a
   full per-node cache would need.
+
+  **Caching the *solve* is a different thing from the caching already in place,
+  and only the former touches physics.** `_pic_build_node_grids!` already stores
+  `(source_grid, field_grid, green_fft)` per node -- the same contract
+  `green_cache` has for `:slice_pair`. That is physics-neutral **because the
+  charge is re-deposited from the current source on every pair**, so a kicked
+  source is fully accounted for; only the mesh geometry and the Green kernel are
+  reused, and neither depends on the source state. 4e asked to cache the solved
+  field (`phi, Ex, Ey`) instead, which skips the re-deposition -- and skipping
+  the re-deposition *is* freezing the source. The safe caching was already done;
+  what 4e proposed was precisely the part that is not safe to cache.
 
   **It is still wrong, and the reason is sharper than "staleness": caching
   deletes a real effect rather than smoothing it.**
