@@ -1423,10 +1423,18 @@ end
                                     x_offset=1e-3)) isa
           RefTilted{<:MisalignedElement}
 
+    # An RBEND reaches the sector map by adding angle/2 to each pole face, and
+    # forwards its keywords through that conversion, so it takes a roll too.
+    @test compile_runtime(RBendSpec(L=1.1, angle=0.198, nst=4, ref_tilt=0.3)) isa
+          RefTilted{<:LatticeMagnet}
+
     # A conjugation by a rotation inherits symplecticity from what it wraps.
     for s in (SBendSpec(L=1.1, angle=0.198, nst=4, ref_tilt=0.3),
               SBendSpec(L=1.1, angle=0.198, nst=4, ref_tilt=pi / 2),
               SBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4, ref_tilt=0.3),
+              RBendSpec(L=1.1, angle=0.198, nst=4, ref_tilt=pi / 2),
+              RBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4, ref_tilt=0.3,
+                        x_offset=1e-3, misalign_convention=:madx),
               SBendSpec(L=1.1, angle=0.198, k1=0.6, e1=0.1, e2=0.1, nst=4,
                         ref_tilt=0.3, x_offset=1e-3, tilt=0.02,
                         misalign_convention=:madx))
@@ -1662,7 +1670,21 @@ end
                   # 2.0e-4 and 3.5e-4 rather than here.
                   :dev_sbend_reftilt, :dev_sbend_reftilt_vertical,
                   :dev_cfbend_reftilt, :dev_cfbend_reftilt_mis_dx,
-                  :dev_cfbend_reftilt_mis_all)
+                  :dev_cfbend_reftilt_mis_all,
+                  # The same through RBEND, which reaches the sector map via
+                  # the angle/2 face conversion the roll has to survive.
+                  :dev_rbend_reftilt, :dev_rbend_reftilt_vertical,
+                  :dev_rbend_k1_reftilt_mis_all,
+                  # A spread of roll angles: negative, cos = sin, cos < 0, the
+                  # full flip, and the near-identity regime. Our map has no
+                  # quadrant logic, so these mostly pin that MAD-X has none
+                  # either -- it neither normalises nor special-cases `tilt`.
+                  :dev_sbend_reftilt_neg, :dev_cfbend_reftilt_quarter,
+                  :dev_sbend_reftilt_obtuse, :dev_sbend_reftilt_pi,
+                  :dev_sbend_reftilt_small,
+                  # The ordering case at a NEGATIVE roll: a sign slip in the
+                  # R_z(-psi) conjugation survives every positive-angle case.
+                  :dev_cfbend_reftilt_neg_mis_all)
             @test result.metrics[k] < 1.0e-11
         end
         # Straight elements should agree to MAD-X's printed precision. The bend

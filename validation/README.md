@@ -781,13 +781,15 @@ which would validate the wrong model. PTC's `T` column is negated on write,
 because its longitudinal variable is conjugate to `delta` with the opposite
 orientation.
 
-The 46 cases cover drift, quadrupole (normal and skew), sextupole, octupole,
+The 55 cases cover drift, quadrupole (normal and skew), sextupole, octupole,
 general multipole, sector bend and combined-function bend at both integrator
 orders, RBEND, thin multipoles and solenoids, plus pole-face angles
 (`sbend_edge`, `cfbend_edge`, `sbend_fint`), the hard-edge multipole fringe
 (`quadrupole_fringe`, `multipole_fringe`, `sbend_fringe`, `cfbend_fringe`),
 misalignments through `EALIGN` + `ptc_align` (`quad_mis_*`, `sext_mis_dx`,
-`cfbend_mis_*`) and the design-orbit roll (`sbend_reftilt*`, `cfbend_reftilt*`).
+`cfbend_mis_*`) and the design-orbit roll (`sbend_reftilt*`, `cfbend_reftilt*`,
+`rbend_reftilt*`), the last of these swept over a spread of roll angles from
+1e-3 through pi, both signs and both quadrants.
 
 The misalignment cases require `misalign_convention=:madx`: MAD-X references a
 misalignment to the entrance frame and composes the three rotations
@@ -805,8 +807,10 @@ literal `pi/2` — a vertical bend. The last two carry a roll *and* a
 misalignment, which is the only configuration in which the frame an alignment
 error is quoted in becomes observable; every candidate convention agrees when
 just one of the two is nonzero, and all of them are symplectic, so neither the
-one-at-a-time cases nor a symplecticity check can substitute. See
-`docs/history/ref_tilt_2026_08_02.md`.
+one-at-a-time cases nor a symplecticity check can substitute. The `rbend_reftilt*`
+cases repeat this through the RBEND path, which reaches the sector map by adding
+`angle/2` to each pole face — a conversion the roll has to survive rather than be
+assumed to. See `docs/history/ref_tilt_2026_08_02.md`.
 
 Two traps are pinned in the script's header comment and are worth repeating.
 The fringe is enabled **per element** with `permfringe=true`, never with

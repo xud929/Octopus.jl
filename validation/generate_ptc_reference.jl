@@ -227,6 +227,36 @@ const CASES = Case[
          1.1, 2, 4, false,
          "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02",
          Dict(:kind => :sbend, :L => 1.1)),
+    # A spread of roll angles. Octopus cannot be quadrant-sensitive -- the map
+    # is two sincos values and four multiply-adds, with no branch and no atan --
+    # so these are really a check on MAD-X, which is free to normalise, wrap, or
+    # special-case `tilt` in ways no amount of reading our own source reveals.
+    #
+    #   neg      negative roll, and a different magnitude from 0.3
+    #   quarter  cos = sin, the one angle where swapping them is invisible;
+    #            useless alone, worth having alongside the others
+    #   obtuse   cos < 0, the second quadrant
+    #   pi       the full flip -- a horizontal bend deflecting the other way
+    #   small    1e-3, the near-identity regime real design rolls live in
+    #
+    # `neg_mis_all` repeats the ordering case at a negative roll, because the
+    # `:madx` fix conjugates by R_z(-psi) and a sign slip there would survive
+    # every positive-angle case.
+    Case("sbend_reftilt_neg", "sbend, l=1.1, angle=0.198, tilt=-0.7", 1.1, 2, 4,
+         Dict(:kind => :sbend, :L => 1.1)),
+    Case("cfbend_reftilt_quarter",
+         "sbend, l=1.1, angle=0.198, k1=0.6, tilt=0.7853981633974483", 1.1, 2, 4,
+         Dict(:kind => :sbend, :L => 1.1)),
+    Case("sbend_reftilt_obtuse", "sbend, l=1.1, angle=0.198, tilt=2.4", 1.1, 2, 4,
+         Dict(:kind => :sbend, :L => 1.1)),
+    Case("sbend_reftilt_pi", "sbend, l=1.1, angle=0.198, tilt=3.141592653589793",
+         1.1, 2, 4, Dict(:kind => :sbend, :L => 1.1)),
+    Case("sbend_reftilt_small", "sbend, l=1.1, angle=0.198, tilt=1.0e-3", 1.1, 2, 4,
+         Dict(:kind => :sbend, :L => 1.1)),
+    Case("cfbend_reftilt_neg_mis_all", "sbend, l=1.1, angle=0.198, k1=0.6, tilt=-0.7",
+         1.1, 2, 4, false,
+         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02",
+         Dict(:kind => :sbend, :L => 1.1)),
     # RBEND: a sector bend with angle/2 added to each face. `option, rbarc=false`
     # above matters -- by default MAD-X treats an RBEND's l as the CHORD and
     # converts to arc, while Octopus's L is the arc, so without it the two
@@ -234,6 +264,22 @@ const CASES = Case[
     Case("rbend", "rbend, l=1.1, angle=0.198", 1.1, 2, 4,
          Dict(:kind => :rbend, :L => 1.1)),
     Case("rbend_k1", "rbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4,
+         Dict(:kind => :rbend, :L => 1.1)),
+    # A rolled RBEND. Worth its own cases rather than inheriting the SBEND
+    # ones: an RBEND reaches the sector-bend map through a conversion that adds
+    # angle/2 to each pole face, and `ref_tilt` has to survive that conversion
+    # and compose with the resulting face angles. The vertical case is the one
+    # a real lattice wants -- a vertical RBEND -- and the last one carries the
+    # roll and a misalignment together, so the RBEND path is held to the same
+    # two-parameter ordering test as the sector bend.
+    Case("rbend_reftilt", "rbend, l=1.1, angle=0.198, tilt=0.3", 1.1, 2, 4,
+         Dict(:kind => :rbend, :L => 1.1)),
+    Case("rbend_reftilt_vertical",
+         "rbend, l=1.1, angle=0.198, tilt=1.5707963267948966", 1.1, 2, 4,
+         Dict(:kind => :rbend, :L => 1.1)),
+    Case("rbend_k1_reftilt_mis_all", "rbend, l=1.1, angle=0.198, k1=0.6, tilt=0.3",
+         1.1, 2, 4, false,
+         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02",
          Dict(:kind => :rbend, :L => 1.1)),
     # Thin multipole: MAD-X's MULTIPOLE is zero length with integrated KNL/KSL,
     # which is exactly what ThinMultipoleSpec means.

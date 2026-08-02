@@ -1661,11 +1661,53 @@ function _ptc_reference_specs()
                                               x_offset=1.0e-3, y_offset=-8.0e-4,
                                               z_offset=2.0e-3, x_pitch=1.0e-3,
                                               y_pitch=-7.0e-4, tilt=0.02),
+        # A spread of roll angles. The map has no branch and no quadrant logic,
+        # so these test MAD-X's freedom to normalise or special-case `tilt` more
+        # than they test ours. `quarter` is the angle where cos = sin and a swap
+        # of the two would hide; `neg_mis_all` repeats the ordering case at a
+        # negative roll, where a sign slip in the R_z(-psi) conjugation would
+        # survive every positive-angle case above.
+        "sbend_reftilt_neg" => SBendSpec(L=1.1, angle=0.198, nst=4,
+                                         bend_model=:drift_kick, bend_fringe=true,
+                                         ref_tilt=-0.7),
+        "cfbend_reftilt_quarter" => SBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4,
+                                              bend_model=:drift_kick, bend_fringe=true,
+                                              ref_tilt=pi / 4),
+        "sbend_reftilt_obtuse" => SBendSpec(L=1.1, angle=0.198, nst=4,
+                                            bend_model=:drift_kick, bend_fringe=true,
+                                            ref_tilt=2.4),
+        "sbend_reftilt_pi" => SBendSpec(L=1.1, angle=0.198, nst=4,
+                                        bend_model=:drift_kick, bend_fringe=true,
+                                        ref_tilt=pi),
+        "sbend_reftilt_small" => SBendSpec(L=1.1, angle=0.198, nst=4,
+                                           bend_model=:drift_kick, bend_fringe=true,
+                                           ref_tilt=1.0e-3),
+        "cfbend_reftilt_neg_mis_all" => SBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4,
+                                                  bend_model=:drift_kick, bend_fringe=true,
+                                                  ref_tilt=-0.7, misalign_convention=:madx,
+                                                  x_offset=1.0e-3, y_offset=-8.0e-4,
+                                                  z_offset=2.0e-3, x_pitch=1.0e-3,
+                                                  y_pitch=-7.0e-4, tilt=0.02),
         # RBEND is the sector-bend map with angle/2 on each face.
         "rbend" => RBendSpec(L=1.1, angle=0.198, nst=4,
                              bend_model=:drift_kick, bend_fringe=true),
         "rbend_k1" => RBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4,
                                 bend_model=:drift_kick, bend_fringe=true),
+        # A rolled RBEND reaches the sector map through the angle/2 face
+        # conversion, so the roll has to survive that and compose with the
+        # resulting pole faces. Tested rather than inherited from the SBEND.
+        "rbend_reftilt" => RBendSpec(L=1.1, angle=0.198, nst=4,
+                                     bend_model=:drift_kick, bend_fringe=true,
+                                     ref_tilt=0.3),
+        "rbend_reftilt_vertical" => RBendSpec(L=1.1, angle=0.198, nst=4,
+                                              bend_model=:drift_kick, bend_fringe=true,
+                                              ref_tilt=pi / 2),
+        "rbend_k1_reftilt_mis_all" => RBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4,
+                                                bend_model=:drift_kick, bend_fringe=true,
+                                                ref_tilt=0.3, misalign_convention=:madx,
+                                                x_offset=1.0e-3, y_offset=-8.0e-4,
+                                                z_offset=2.0e-3, x_pitch=1.0e-3,
+                                                y_pitch=-7.0e-4, tilt=0.02),
         # Thin elements: MAD-X MULTIPOLE, integrated strengths.
         "thin_multipole" => [ThinMultipoleSpec(knl=(0.0, 0.05, 1.2)), DriftSpec(L=0.2)],
         "thin_multipole_skew" => [ThinMultipoleSpec(knl=(0.0, 0.05), ksl=(0.0, 0.0, 0.8)), DriftSpec(L=0.2)],
