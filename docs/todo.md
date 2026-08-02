@@ -1614,7 +1614,7 @@ Remaining, and deliberately not done here:
   ergonomic finish; the mechanism it would use is already here.
 - **Element names fleet-wide**, its own item below.
 
-## `curved` keyword for every magnet: solenoid DONE, rest NOT STARTED (2026-08-02)
+## `curved` keyword for every magnet: DONE (2026-08-02)
 
 `SolenoidSpec(; curved)` selects the tracking path explicitly instead of the
 path being inferred from `h != 0`. `nothing` (default) lets the frame decide;
@@ -1773,7 +1773,7 @@ the right validation and needs no external reference: **misalign an entire cell
 by one rigid transform, apply the inverse patch at both ends, and the aligned map
 must come back to roundoff.**
 
-## Solenoid in a curved frame: REOPENED (2026-08-02)
+## Solenoid in a curved frame: REOPENED then DONE (2026-08-02)
 
 **The 2026-08-01 closure below was wrong on its central claim and is
 withdrawn.** It said adding `h` "would build a tokamak magnet and call it a
