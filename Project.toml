@@ -1,7 +1,7 @@
 name = "Octopus"
 uuid = "badbaa64-7004-4ad4-8ce5-525483dccda7"
 version = "0.1.0"
-authors = ["De-xuan Xu <xud929@gmail.com>"]
+authors = ["Derong Xu <xud929@gmail.com>"]
 
 [deps]
 Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
