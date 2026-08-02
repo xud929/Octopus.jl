@@ -411,12 +411,14 @@ Following the bends, which reached $5\times10^{-13}$ against PTC:
 
 ## 11. Open questions
 
-- **Soft fringe.** The hard edge is a model. A real solenoid has a finite
-  transition over which $B_s$ rises, and there the radial field does work in a
-  way the impulsive conversion does not capture at large radius. MAD-X and PTC
-  both offer hard-edge solenoids only; Bmad has a soft option. Deferred, but the
-  hard-edge map should be written so a fringe model can wrap it rather than be
-  interleaved.
+- **Soft fringe — nobody implements one.** See Section 12: PTC, Bmad and MAD-X
+  are all hard-edge, and Bmad's source says the solenoid fringe *must always* be
+  applied. A real solenoid does have a finite transition over which $B_s$ rises,
+  and there the radial field does work in a way the impulsive conversion does not
+  capture at large radius, so a soft model is physically meaningful — it is just
+  not a thing any of the three benchmark codes would let us check against.
+  Deferred, and if it is ever built it should wrap the hard-edge map rather than
+  interleave with it.
 - **Solenoid inside a bend.** The derivation above assumes $h=0$. A solenoid in
   a curved frame needs the $(1+hx)$ factor carried through, and the closed form
   above does not survive it unchanged. Out of scope; worth stating so nobody
@@ -426,3 +428,64 @@ Following the bends, which reached $5\times10^{-13}$ against PTC:
   would be a Strang splitting of the exact solenoid with the existing multipole
   kick — feasible, but no longer an exact map, and the splitting error would
   need its own convergence study.
+
+## 12. What the other codes do (read from source, 2026-08-01)
+
+Checked against the trees in `Library/AcceleratorCodes/` rather than from
+memory, because an earlier draft of Section 11 asserted that Bmad offered a soft
+solenoid fringe and that is **wrong**.
+
+**PTC** (`madx-5.03.06/libs/ptc/src/Sh_def_kind.f90`). The solenoid is `SOL5`
+(`kind5`), tracked by `INTER_SOL5` as a Strang/Yoshida splitting of `KICK_SOL`
+with `KICKMUL` at integrator methods 2, 4 and 6. `KICK_SOLR` opens with
+
+```fortran
+bsol = EL%B_SOL*EL%P%CHARGE
+xp   = x(2) + bsol*x(3)/2.0_dp
+yp   = x(4) - bsol*x(1)/2.0_dp
+```
+
+which is `_solenoid_edge` **including the signs** — PTC forms the kinetic
+momentum exactly as Section 5 derives it. With `EL%p%exact` it then builds
+`h = sqrt((1+x(5))^2 - xp^2 - yp^2)`, our $p_s$; without it, `h = 1 + x(5)`, the
+paraxial form Section 7 rejects. The body is a Larmor rotation by
+`ANG = yh*bsol/2` — the **half** angle — composed with a focusing advance, which
+is the rotating-frame decomposition rather than our direct closed form. The two
+are algebraically equivalent and agree to $4.9\times10^{-13}$, so each
+cross-checks the other.
+
+**PTC has no solenoid fringe routine.** Its entire fringe inventory is
+`FRINGE_CAV_TRAV` (travelling-wave cavity), `FRINGE__MULTI` (the
+Forest–Milutinović multipole fringe) and `fringe_helr` (helical dipole, whose
+body is wrapped in `if(.false.)` and is dead code). The solenoid's fringe is the
+hard-edge conversion inside `KICK_SOL` and nothing else.
+
+**Bmad** (`bmad/low_level/apply_element_edge_kick.f90`). `apply_this_sol_fringe`
+applies
+
+```fortran
+ks4 = at_sign * charge * bs_field * c_light / (4*p0c)
+orb%vec(2) = orb%vec(2) + ks4 * xy_orb(2)
+orb%vec(4) = orb%vec(4) - ks4 * xy_orb(1)
+```
+
+i.e. $k_s/4$ applied symmetrically about the spin kick, $k_s/2$ in total — our
+$k$, with our signs. It is **hard edge and mandatory**: the source comment reads
+*"With a solenoid must always apply the fringe kick due to the longitudinal
+field."* Bmad's `soft_edge_only` / `full` / `sad_full` `fringe_type` values exist
+for the multipole and SAD fringes; `apply_this_sol_fringe` has no `fringe_type`
+branch at all.
+
+**Three consequences worth carrying.**
+
+1. **Three independent codes agree on the sign and magnitude** of the edge
+   conversion, which is the strongest available check on Section 5 short of the
+   PTC benchmark itself.
+2. **The fringe being mandatory is not an Octopus opinion.** Bmad says it in a
+   comment, PTC enforces it structurally by burying the conversion inside the
+   body integrator. `SolenoidSpec` having no switch to disable it matches both.
+3. **PTC already does combined solenoid + multipole**, through the
+   `KICK_SOL`/`KICKMUL` splitting, at Yoshida orders 2/4/6. Section 11 lists that
+   as out of scope for Octopus; it is worth recording that a validated precedent
+   exists and what shape it takes, so the work is a port rather than a design if
+   it is ever wanted.
