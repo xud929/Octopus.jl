@@ -1781,6 +1781,8 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     # the exact flow and ignores the step count, so probing it without them
     # would report `nst` ignored when it is only inapplicable.
     :solenoid => (L=1.3, ks=0.35, kn=(0.0, 0.6), kskew=(0.0, 0.2), nst=2),
+    :patch => (dx=1.0e-3, dy=-2.0e-3, dz=0.05,
+               angle_x=1.2e-2, angle_y=-0.8e-2, angle_s=0.3, t_offset=2.0e-3),
 )
 const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:drift, :nst) => "the drift is exact, so there are no integration steps",

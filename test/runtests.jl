@@ -2291,6 +2291,59 @@ end
     end
 end
 
+@testset "Patch: deliberate change of reference frame" begin
+    u0 = (1.2e-3, 3.1e-4, -0.8e-3, -1.7e-4, 2.0e-3, 4.0e-3)
+    p(; kw...) = compile_runtime(PatchSpec(; kw...))
+
+    @test isbits(p(angle_x=0.01))
+    @test p(angle_x=0.01) isa Patch          # must NOT be wrapped as a misalignment
+    @test collect(p()(u0...)) == collect(u0)  # no parameters is the identity
+
+    # A patch composed with its inverse is the identity. This is the cheapest
+    # check that the frame rotation is composed in the right direction: an
+    # inverted W passes almost everything else.
+    for (fwd, inv) in ((( dx=1.0e-3, dy=-2.0e-3, dz=0.05), (dx=-1.0e-3, dy=2.0e-3, dz=-0.05)),
+                       ((angle_x=0.012,),  (angle_x=-0.012,)),
+                       ((angle_y=-0.008,), (angle_y=0.008,)),
+                       ((angle_s=0.3,),    (angle_s=-0.3,)),
+                       ((t_offset=0.02,),  (t_offset=-0.02,)))
+        @test collect(p(; inv...)(p(; fwd...)(u0...)...)) ≈ collect(u0) atol=1e-16
+    end
+
+    # A purely longitudinal patch IS a drift: the drift-to-the-new-face step is
+    # what gives a patch an effective length, so dz must reproduce DriftSpec
+    # exactly rather than merely relabel s.
+    @test collect(p(dz=0.4)(u0...)) == collect(compile_runtime(DriftSpec(L=0.4))(u0...))
+
+    # Which frame changes a drift is invariant under, and which it is not.
+    # Free propagation is invariant under a transverse shift and under a roll,
+    # because it is translation- and axially-symmetric. It is NOT invariant
+    # under a pitch, which tilts the propagation axis -- the endpoint moves by
+    # about L*theta. Getting this backwards would mean the position was not
+    # being rotated along with the momentum.
+    drift = compile_runtime(DriftSpec(L=1.5))
+    ref = collect(drift(u0...))
+    sandwich(tr, inv) = collect(p(; inv...)(drift(p(; tr...)(u0...)...)...))
+    @test sandwich((dx=3.0e-3, dy=-2.0e-3), (dx=-3.0e-3, dy=2.0e-3)) ≈ ref atol=1e-16
+    @test sandwich((angle_s=0.2,), (angle_s=-0.2,)) ≈ ref atol=1e-16
+    pitched = sandwich((angle_x=5.0e-3,), (angle_x=-5.0e-3,))
+    @test !isapprox(pitched, ref; atol=1e-6)
+    @test maximum(abs.(pitched .- ref)) ≈ 1.5 * 5.0e-3 rtol=0.2
+
+    # Symplectic: a rigid frame change is a canonical transformation.
+    J = Float64[0 1 0 0 0 0; -1 0 0 0 0 0; 0 0 0 1 0 0; 0 0 -1 0 0 0; 0 0 0 0 0 1; 0 0 0 0 -1 0]
+    el = p(dx=1.0e-3, dy=-2.0e-3, dz=0.05, angle_x=0.012, angle_y=-0.008, angle_s=0.3)
+    h = 1.0e-7; M = zeros(6, 6)
+    for j in 1:6
+        up = collect(u0); dn = collect(u0); up[j] += h; dn[j] -= h
+        M[:, j] = (collect(el(up...)) .- collect(el(dn...))) ./ (2h)
+    end
+    @test maximum(abs.(M' * J * M .- J)) < 1.0e-8
+
+    # A dead particle stays dead.
+    @test all(isnan, collect(el(NaN, NaN, NaN, NaN, NaN, NaN)))
+end
+
 @testset "Exact solenoid map" begin
     u0 = (1.2e-3, 3.1e-4, -0.8e-3, -1.7e-4, 2.0e-3, 4.0e-3)
     sol(ks, L) = compile_runtime(SolenoidSpec(L=L, ks=ks))

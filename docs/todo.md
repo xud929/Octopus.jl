@@ -1614,7 +1614,54 @@ Remaining, and deliberately not done here:
   ergonomic finish; the mechanism it would use is already here.
 - **Element names fleet-wide**, its own item below.
 
-## Patch element: NOT STARTED (2026-08-01)
+## Patch element: DONE (2026-08-01), `src/elements/patch.jl`
+
+Implemented per the specification below. Translate the origin, rotate the axes,
+drift to the new entrance face — exact in `(1+delta)` and in amplitude, because
+it is geometry rather than an expansion.
+
+**A naming collision had to be resolved, and it was a real bug first.** The
+obvious spellings `x_pitch`/`y_pitch`/`tilt` are **misalignment** parameter
+names, so `compile_runtime` silently wrapped the patch in a `MisalignedElement`
+and applied the rotation twice. Renamed to `angle_x`/`angle_y`/`angle_s`, which
+is unambiguous and also matches MAD-X's `patch_ang = {θx, θy, θs}`. Worth
+knowing generally: any new element whose parameters collide with the
+misalignment set will be silently wrapped rather than rejected.
+
+Verification, all self-contained:
+
+- **Patch ∘ patch⁻¹ = identity** to `1e-18` for each of translation, `angle_x`,
+  `angle_y`, `angle_s` and `t_offset`. This is the check that catches an
+  inverted `W`, which passes almost everything else.
+- **A pure `dz` patch is bit-identical to `DriftSpec(L=dz)`.** The
+  drift-to-the-face step is what gives a patch an effective length, so this
+  fails if `dz` merely relabels `s`.
+- **Which frame changes a drift is invariant under, and which it is not.** A
+  transverse shift and a roll leave a drift unchanged (`1e-16` and `2e-19`);
+  a *pitch* does not, and moves the endpoint by `L*theta` — measured
+  `7.5e-3` against `1.5 * 5e-3`. Getting this backwards is what happens if the
+  position is not rotated along with the momentum, which the round-trip test
+  alone would not catch.
+- Symplectic to `1e-8` (finite-difference Jacobian), effectiveness and
+  metadata contracts pass, dead particles stay dead.
+
+**MAD-X validation was attempted and does not work.** MAD-X has `changeref`
+with `patch_ang`/`patch_trans`, which is the right element, but it aborts with
+*"memory access outside program range, fatal"* in the PTC tracking harness. Not
+pursued: the self-contained checks above are stronger than a single reference
+orbit would be, and the round-trip and drift-equivalence tests need no external
+code. Worth one retry if a MAD-X version that survives `changeref` appears.
+
+Still open, inherited from the misalignment note's Section 8: the rotation
+**order** is `R_z R_x R_y` here, and PTC composes x-pitch, y-pitch, roll while
+Bmad forms `R_y R_x R_z` with a sign flip. Single-axis rotations agree by
+construction; the three-axis composition differs at second order in the angles
+and is **not** pinned against a reference. That is the same open question that
+blocks bend misalignments, and it should be settled once for both.
+
+### Original specification, retained
+
+## Patch element: original scoping (2026-08-01)
 
 Recommended by Section 7.5 of
 [`misalignment_and_patch_maps.md`](theory/misalignment_and_patch_maps.md) and
@@ -1665,7 +1712,48 @@ the right validation and needs no external reference: **misalign an entire cell
 by one rigid transform, apply the inverse patch at both ends, and the aligned map
 must come back to roundoff.**
 
-## Solenoid in a curved frame: do not add `h` (2026-08-01)
+## Solenoid in a curved frame: REOPENED (2026-08-02)
+
+**The 2026-08-01 closure below was wrong on its central claim and is
+withdrawn.** It said adding `h` "would build a tokamak magnet and call it a
+solenoid". That is not model-mixing: **a solenoid bent around an arc *is* a
+toroidal field.** The 1/R falloff is what bending a solenoid physically does,
+not a different magnet substituted for it.
+
+The physics the closure got right still stands and is worth keeping: constant
+`B_s` in a curved frame is not a vacuum field (curl `= B_s/R`, measured 0.4348
+against the predicted 0.4348), and the Maxwell-consistent field is
+`B_s = B_0/(1+hx)`, curl-free to 2.5e-11. What the closure got wrong was calling
+that the wrong object. It is the *right* object, and by exactly the construction
+Octopus already uses for curved multipoles: a field that satisfies Maxwell **in
+the curved frame** and reduces to the intended straight field on the reference
+orbit (`x=0`, where `B_s = B_0`) and as `h -> 0`. That is what the `psi`
+curved-frame potential table is for, and there is no reason the solenoid should
+be exempt.
+
+So the standing request — **nonzero `h` for every element**, matching the
+existing nonzero-`h` drift and bend — is correct, and the solenoid is not a
+counterexample.
+
+What remains true, and is cost rather than obstruction:
+
+- **No closed form.** `a_y = (k_s/h) ln(1+hx)` puts a logarithm inside the
+  Hamiltonian's square root, so `p_s` no longer closes the system the way
+  Section 4 of the theory note relies on. The curved solenoid needs an
+  integrator with `nst` and an integrator order, exactly as the curved
+  multipoles do. It stops being exact; that is the same trade the curved
+  multipoles already made.
+- **Nothing external validates it.** PTC's `SOL5` carries no curvature at all
+  and `GETMULB_SOL` has no `(1+hx)`; Bmad, MAD-X and Elegant are straight-frame
+  only. The validation is therefore the one the request already names:
+  **agreement with the `h=0` map as `h -> 0`**, plus symplecticity and the
+  curl-free check on whatever field the potential implies.
+
+Not yet implemented. The correction is recorded here rather than the work being
+done, because it changes what should be built and that deserved saying before
+building it.
+
+## Solenoid in a curved frame: withdrawn closure, retained for the record (2026-08-01)
 
 Asked for on the grounds that every other lattice element takes a frame
 curvature and the conventions note says $h$ belongs to the frame rather than the

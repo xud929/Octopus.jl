@@ -606,7 +606,18 @@ already uses for unvalidatable cases: **agreement with the $h=0$ map as
 $h\to0$**, which tests the limit and the implementation but not the curved
 physics itself.
 
-**Recommendation: do not add `h` to `Solenoid`.** It would name a toroidal magnet
+> **Correction (2026-08-02): the recommendation below was wrong and is
+> withdrawn.** Calling the curved field "a toroidal magnet, not a solenoid" was
+> a false distinction -- **a solenoid bent around an arc *is* a toroidal
+> field**, and the `1/R` falloff is what bending one physically does. The
+> Maxwell analysis above stands; the conclusion drawn from it did not.
+> `B_s = B_0/(1+hx)` satisfies Maxwell in the curved frame and reduces to `B_0`
+> on the reference orbit and as `h -> 0`, which is exactly the construction the
+> `psi` table already uses for curved multipoles. A curved solenoid is
+> therefore well posed; it is simply not closed-form, and needs an integrator as
+> the curved multipoles do. See `docs/todo.md`.
+
+**Superseded recommendation: do not add `h` to `Solenoid`.** It would name a toroidal magnet
 after a solenoid. If a curved-orbit solenoid study appears, reach for the patch
 maps first, which describe the real geometry; and if a genuine toroidal element
 is ever needed, give it its own name, its own integrator, and this section as the

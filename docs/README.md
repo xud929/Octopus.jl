@@ -67,7 +67,7 @@ reference material, not API docs; the implementing code links back to them.
   the `:drift`/`:quadrupole`/`:sextupole`/`:octupole`/`:multipole`/`:sbend`
   elements and checked by `PTCConsistencyContract` against a committed MAD-X
   reference table.
-- [`solenoid.md`](theory/solenoid.md) — the exact solenoid map, derived before
+- [`solenoid.md`](theory/solenoid.md) — the exact solenoid map plus superimposed multipoles, derived before
   implementation. The first Octopus element whose **transverse canonical momenta
   stop being the physical ones inside the magnet**, because a longitudinal field
   has a transverse vector potential. Shows the textbook entrance/exit fringe
@@ -78,7 +78,11 @@ reference material, not API docs; the implementing code links back to them.
   reduces to Octopus's own exact drift at $k_s=0$ **to roundoff**, which is why
   the paraxial matrix is rejected rather than reused. Includes the numerical
   verification of every claim, and the consequences for splitting, diagnostics
-  and misalignment. Not yet implemented; validation plan in Section 10.
+  and misalignment. Implemented as `SolenoidSpec`, PTC-validated to 4.9e-13
+  including both polarities and the Strang-split multipole variant. Section 12
+  surveys what PTC, Bmad and Elegant actually do (all hard-edge; only Elegant's
+  `MAPSOLENOID` is soft, and it is a field-map integrator). Section 13's
+  curved-frame closure is **withdrawn** -- see `todo.md`.
 - [`aperture_and_particle_loss.md`](theory/aperture_and_particle_loss.md) —
   design note for aperture and particle loss, surveying MAD-X, Bmad, Xsuite and
   Elegant from source: the shapes all four converge on, whether the aperture is
@@ -103,8 +107,12 @@ reference material, not API docs; the implementing code links back to them.
   referenced to the element centre, with `bend_shift` for curved frames). States
   why the exit patch is **not** the inverse of the entry patch for a bend --
   invisible on a straight magnet, wrong at first order on every bend in a ring --
-  and recommends Bmad's factorization with PTC's bookkeeping. Design only; no
-  implementation yet.
+  and recommends Bmad's factorization with PTC's bookkeeping. The **patch** half
+  is now implemented as `PatchSpec` (`src/elements/patch.jl`) -- a *deliberate*
+  frame change, distinct from a misalignment in that the new frame persists
+  instead of being restored. Misalignments themselves are implemented;
+  the rotation *order* is still unpinned against a reference and blocks bend
+  misalignments.
 - [`near_round_bassetti_erskine_switch.md`](theory/near_round_bassetti_erskine_switch.md)
   — near-round analytic Gaussian evaluation: invariant anisotropy, the
   fixed-interval field integral and third-order potential expansion,
