@@ -5,7 +5,7 @@ export AbstractOctopusObject,
        name, physics_keywords, supported_tracking_methods, tracking_method,
        supported_analyses,
        required_contracts, runtime_type, description, compile_runtime,
-       ElementSpec, kind, params, param, getparam, hasparam,
+       ElementSpec, kind, params, param, getparam, hasparam, numeric_type,
        ParamMeta, ElementMeta, element_meta, register_element_meta!, @element_spec,
        register_element_spec!, registered_element_specs,
        parameter_schema, example_spec, construction_help, element_help,
@@ -391,6 +391,31 @@ param(spec::ElementSpec, key::Symbol) = spec.params[key]
 
 """Return an optional parameter from an `ElementSpec`."""
 getparam(spec::ElementSpec, key::Symbol, default=nothing) = get(spec.params, key, default)
+
+"""
+    numeric_type(spec, default=Float64)
+
+The number type a spec's runtime should be built in, promoted over its numeric
+parameters.
+
+`Float64` for an ordinary element, and the promoted type when a parameter is a
+dual number or a truncated power series — which is what lets a derivative be
+taken with respect to a *parameter* (a strength, a length, an alignment error)
+rather than only with respect to a coordinate. Coordinate derivatives need none
+of this: the coordinates promote against `Float64` fields on their own.
+
+Non-numeric parameters are ignored, and so are unresolved knob expressions —
+they are numbers by the time `compile_runtime` reaches a runtime constructor,
+and ignoring them here means an unresolved spec still reports a usable type.
+"""
+numeric_type(spec::ElementSpec, default::Type=Float64) =
+    foldl(_promote_param_type, values(getfield(spec, :params)); init=default)
+numeric_type(x, default::Type=Float64) = default
+
+_promote_param_type(T::Type, v::Number) = promote_type(T, typeof(v))
+_promote_param_type(T::Type, v::Union{Tuple,AbstractArray}) =
+    foldl(_promote_param_type, v; init=T)
+_promote_param_type(T::Type, v) = T
 
 """Return whether an `ElementSpec` contains a parameter key."""
 hasparam(spec::ElementSpec, key::Symbol) = haskey(spec.params, key)

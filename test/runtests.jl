@@ -1700,6 +1700,57 @@ end
     @test haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :nst))
 end
 
+@testset "Element parameters carry their own number type" begin
+    u = (1.0e-3, 1.0e-4, -0.5e-3, 2.0e-4, 0.0, 1.0e-3)
+
+    # An ordinary element is still Float64, which is the thing that must not
+    # change: the GPU kernels and every measured result depend on it.
+    @test typeof(compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, nst=4))).parameters[2] === Float64
+    @test typeof(compile_runtime(SBendSpec(L=1.1, angle=0.198, k1=0.6, nst=4))).parameters[2] === Float64
+    @test numeric_type(QuadrupoleSpec(L=0.4, k1=1.7)) === Float64
+
+    # The runtime numeric type is promoted from the SPEC rather than pinned, so
+    # a parameter given in another precision survives instead of being silently
+    # downcast. `_fold_named_strengths` used to force Float64 here.
+    @test numeric_type(QuadrupoleSpec(L=big"0.4", k1=big"1.7")) === BigFloat
+    @test typeof(compile_runtime(QuadrupoleSpec(L=big"0.4", k1=big"1.7", nst=4))).parameters[2] === BigFloat
+    @test eltype(getparam(QuadrupoleSpec(L=0.4, k1=big"1.7"), :kn)) === BigFloat
+
+    # And the bound is `Number`, not `AbstractFloat`, which is what lets a dual
+    # number or a truncated power series be a magnet strength. Complex-step
+    # exercises exactly that path with nothing extra: seed the imaginary part of
+    # a PARAMETER and the imaginary part of the output is the derivative with
+    # respect to it -- the same trick the symplecticity tests use on
+    # coordinates, now available for strengths, lengths and misalignments.
+    let h = 1e-30
+        dk1(v) = [imag(x) / h for x in compile_runtime(
+            QuadrupoleSpec(L=0.4, k1=complex(v, h), nst=4))(u...)]
+        ref(k) = collect(compile_runtime(QuadrupoleSpec(L=0.4, k1=k, nst=4))(u...))
+        @test maximum(abs, dk1(1.7) .- (ref(1.7 + 1e-6) .- ref(1.7 - 1e-6)) ./ 2e-6) < 1.0e-9
+
+        # A misalignment derivative, which is what beam-based alignment needs,
+        # and which required the wrappers to stop pinning Float64 too.
+        dx(v) = [imag(x) / h for x in compile_runtime(
+            QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_offset=complex(v, h)))(u...)]
+        refx(d) = collect(compile_runtime(
+            QuadrupoleSpec(L=0.4, k1=1.7, nst=4, x_offset=d))(u...))
+        @test maximum(abs, dx(1.0e-3) .-
+                           (refx(1.0e-3 + 1e-8) .- refx(1.0e-3 - 1e-8)) ./ 2e-8) < 1.0e-8
+
+        # ... and through a bend, where the curvature enters the survey, the
+        # pole faces and the curved-frame kick.
+        dh(v) = [imag(x) / h for x in compile_runtime(
+            SBendSpec(L=1.1, h=complex(v, h), b0=0.18, k1=0.6, e1=0.05, nst=4))(u...)]
+        refh(g) = collect(compile_runtime(
+            SBendSpec(L=1.1, h=g, b0=0.18, k1=0.6, e1=0.05, nst=4))(u...))
+        @test maximum(abs, dh(0.18) .- (refh(0.18 + 1e-6) .- refh(0.18 - 1e-6)) ./ 2e-6) < 1.0e-8
+    end
+
+    # Non-numeric parameters must not disturb the promotion.
+    @test numeric_type(QuadrupoleSpec(L=0.4, k1=1.7, nst=4, fringe=:all,
+                                      misalign_convention=:madx)) === Float64
+end
+
 @testset "BeamLine composes, addresses and tracks" begin
     u = (1.0e-3, 1.0e-4, -0.5e-3, 2.0e-4, 0.0, 1.0e-3)
     qf = QuadrupoleSpec(L=0.4, k1=1.7, nst=4, name="QF")

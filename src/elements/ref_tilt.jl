@@ -47,7 +47,11 @@ inner element is, and it leaves `z` and `pz` untouched: a roll about `s` maps
 the `s = 0` plane to itself, so unlike a misalignment there is no drift onto a
 displaced face and no path-length term.
 """
-struct RefTilted{E,T<:AbstractFloat} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: the same widening the magnet
+# needed, and for the same reason -- a dual number is `<:Real` and a truncated
+# power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative. Float64 still satisfies it, so ordinary elements are unchanged.
+struct RefTilted{E,T<:Number} <: AbstractTrackOp
     inner::E
     c::T
     s::T
@@ -111,7 +115,10 @@ an orbit that does not bend is the same as rolling the body -- so a `ref_tilt`
 there is redundant rather than ignored, and the equality is a test.
 """
 function _ref_tilt_wrap(spec, inner)
-    T = Float64
+    # Promoted from the spec, so seeding an alignment parameter with a dual
+    # gives a derivative of the orbit with respect to the misalignment --
+    # what beam-based alignment and orbit correction need.
+    T = numeric_type(spec)
     psi = T(getparam(spec, :ref_tilt, zero(T)))
     psi == 0 && return inner
     W = _misalign_matrix(T, zero(T), zero(T), psi, false)

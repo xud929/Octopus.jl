@@ -38,13 +38,19 @@ const FRINGE_BEND = 8           # exact hard-edge dipole fringe (Maxwell-require
 # ---------------------------------------------------------------------------
 @inline function _curv_sin(h::T, L::T) where {T}
     u = h * L
-    abs(u) < T(1e-4) && return L * (one(T) - u * u / 6 * (one(T) - u * u / 20))
+    # `real(T)` for the crossover, not `T`: element parameters may now be dual
+    # numbers or complex (a parameter derivative), and a complex threshold does
+    # not order. Same reason `_atan_over` does it.
+    abs(u) < real(T)(1e-4) && return L * (one(T) - u * u / 6 * (one(T) - u * u / 20))
     return sin(u) / h
 end
 
 @inline function _curv_vers(h::T, L::T) where {T}
     u = h * L
-    abs(u) < T(1e-4) && return h * L * L / 2 * (one(T) - u * u / 12 * (one(T) - u * u / 30))
+    # `real(T)` for the crossover, not `T`: element parameters may now be dual
+    # numbers or complex (a parameter derivative), and a complex threshold does
+    # not order. Same reason `_atan_over` does it.
+    abs(u) < real(T)(1e-4) && return h * L * L / 2 * (one(T) - u * u / 12 * (one(T) - u * u / 30))
     return (one(T) - cos(u)) / h
 end
 
@@ -123,7 +129,7 @@ sector bend on its design orbit.
     # perturbation is infinitesimal and cannot move the map across this
     # boundary, so deciding on the real part keeps one branch for the value and
     # its derivative -- which is also what makes the derivative meaningful.
-    if abs(h * L) < T(pi) / 2 && real(den) > 0 && real(D) > 0
+    if abs(h * L) < real(T)(pi) / 2 && real(den) > 0 && real(D) > 0
         # Cancellation-free. `psn - psr` is rationalised through
         # psn^2 - psr^2 = pxr^2 - pxn^2 = (b0 q C1)(pxr + pxn), and the angle
         # the dipole turns the momentum through comes out as atan(b0 G), so
@@ -528,7 +534,10 @@ runtime data, so a convergence study over step count does not recompile.
 
 Derivations: `docs/theory/lattice_hamiltonian_and_conventions.md`.
 """
-struct LatticeMagnet{M<:AbstractTrackingMethod,T<:AbstractFloat,N,ORDER,FRINGE,MC,NC,CURVED} <: AbstractTrackOp
+# `T<:Number`, not `T<:AbstractFloat`: a dual number is `<:Real` and a truncated
+# power series is `<:Number`, so the tighter bound would refuse both and with them
+# every parameter derivative. Ordinary magnets are still built at Float64.
+struct LatticeMagnet{M<:AbstractTrackingMethod,T<:Number,N,ORDER,FRINGE,MC,NC,CURVED} <: AbstractTrackOp
     method::M
     L::T
     h::T                     # reference-frame curvature
@@ -781,8 +790,10 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
         Bool(getparam(spec, :kill_exi_fringe, false)))
 end
 
+# `_lattice_magnet` has always been generic in `T`; this was the only caller and
+# it pinned Float64, which is what kept parameter derivatives out.
 LatticeMagnet(spec::ElementSpec, method::AbstractTrackingMethod=tracking_method(spec)) =
-    _lattice_magnet(spec, method, Float64)
+    _lattice_magnet(spec, method, numeric_type(spec))
 
 const _COMMON_PARAMS = (
     L=ParamMeta(required=true, meaning="arc length in metres"),
@@ -835,6 +846,27 @@ const _MULTIPOLE_NAMED = ((:k0, :k0s, 0), (:k1, :k1s, 1), (:k2, :k2s, 2),
                           (:k3, :k3s, 3), (:k4, :k4s, 4), (:k5, :k5s, 5))
 
 """
+Element type of the folded strength tuples, promoted over **both** spellings
+before either is read.
+
+Computed up front rather than growing the vector's type as it goes: `k1` and
+`kn` fold into one tuple, and a differentiable strength must survive whichever
+way it was written. `Float64[...]` here is what silently discarded a dual and
+made `QuadrupoleSpec(kn=(0.0, dual))` come back as a plain magnet.
+"""
+function _strength_eltype(named, d, nkey, skey)
+    T = Float64
+    for key in (nkey, skey), v in get(d, key, ())
+        T = promote_type(T, typeof(float(v)))
+    end
+    for (nsym, ssym, _) in named, sym in (nsym, ssym)
+        haskey(d, sym) && (T = promote_type(T, typeof(float(d[sym]))))
+    end
+    return T
+end
+
+
+"""
     _fold_named_strengths(named, kwargs)
 
 Fold named strength keywords into the positional `kn`/`ks` tuples that
@@ -847,8 +879,9 @@ throws instead of letting one spelling silently win.
 """
 function _fold_named_strengths(named, kwargs; nkey::Symbol=:kn, skey::Symbol=:ks)
     d = Dict{Symbol,Any}(kwargs)
-    kn = Float64[float(v) for v in get(d, nkey, ())]
-    ks = Float64[float(v) for v in get(d, skey, ())]
+    T = _strength_eltype(named, d, nkey, skey)
+    kn = T[T(float(v)) for v in get(d, nkey, ())]
+    ks = T[T(float(v)) for v in get(d, skey, ())]
     for (nsym, ssym, order) in named,
         (sym, vec, which) in ((nsym, kn, String(nkey)), (ssym, ks, String(skey)))
 
@@ -860,9 +893,9 @@ function _fold_named_strengths(named, kwargs; nkey::Symbol=:kn, skey::Symbol=:ks
                 "give one or the other"))
         end
         while length(vec) < i
-            push!(vec, 0.0)
+            push!(vec, zero(T))
         end
-        vec[i] = float(d[sym])
+        vec[i] = T(float(d[sym]))
         delete!(d, sym)
     end
     isempty(kn) || (d[nkey] = Tuple(kn))

@@ -190,7 +190,11 @@ composition of canonical maps with a symplectic one, it is symplectic whenever
 the inner element is, and it is agnostic about what the inner element does --
 magnet, cavity, or anything added later.
 """
-struct MisalignedElement{E,T<:AbstractFloat} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: the same widening the magnet
+# needed, and for the same reason -- a dual number is `<:Real` and a truncated
+# power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative. Float64 still satisfies it, so ordinary elements are unchanged.
+struct MisalignedElement{E,T<:Number} <: AbstractTrackOp
     inner::E
     qin::NTuple{9,T}; oin::NTuple{3,T}
     qout::NTuple{9,T}; oout::NTuple{3,T}
@@ -255,7 +259,10 @@ is no Bmad in this repository's validation path, the same position the `:bmad`
 rotation-composition order is already in.
 """
 function _misalignment_wrap(spec, inner)
-    T = Float64
+    # Promoted from the spec, so seeding an alignment parameter with a dual
+    # gives a derivative of the orbit with respect to the misalignment --
+    # what beam-based alignment and orbit correction need.
+    T = numeric_type(spec)
     dx = T(getparam(spec, :x_offset, zero(T)))
     dy = T(getparam(spec, :y_offset, zero(T)))
     dz = T(getparam(spec, :z_offset, zero(T)))

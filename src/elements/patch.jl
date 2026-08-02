@@ -31,7 +31,11 @@ transformation.
 what lets a patch describe a path-length difference between two branches rather
 than only a geometric one.
 """
-struct Patch{M<:AbstractTrackingMethod,T<:AbstractFloat} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: the same widening the magnet
+# needed, and for the same reason -- a dual number is `<:Real` and a truncated
+# power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative. Float64 still satisfies it, so ordinary elements are unchanged.
+struct Patch{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     dx::T
     dy::T
