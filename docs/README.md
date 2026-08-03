@@ -224,7 +224,7 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   [`strong_strong_diagnostics_benchmark_history.md`](history/strong_strong_diagnostics_benchmark_history.md).
 - Audits / change records:
   [`comprehensive_audit_2026_08_03.md`](history/comprehensive_audit_2026_08_03.md)
-  (repository audit against the Phase 0-18 protocol: **five confirmed defects
+  (repository audit against the Phase 0-18 protocol: **seven confirmed defects
   fixed**, every one of them with a passing test asserting the right invariant.
   Three are concurrency bugs invisible to a single-threaded suite — the aperture
   loss counter under-reporting by 53% at eight workers, and **two instances of
@@ -252,7 +252,8 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   while `configuration_report` reported the discarded value as `resolved`. Read
   §1 for the sibling rule to part 1's — audit for values that are *declared and
   never read* — and §13.3 for the missing `SolverOptionEffectivenessContract`
-  that would have caught two of the five mechanically. Also: all three named
+  that would have caught two of the first five mechanically -- it was then built
+  in that same session, and finding the rest is what took the count to thirteen. Also: all three named
   virtual drifts measured symplectic with an unsafe-drift negative control, the
   Bassetti-Erskine kick verified against brute-force integration across all four
   branches at ~5e-14, and `beam_statistics` measured and made 39.8% faster

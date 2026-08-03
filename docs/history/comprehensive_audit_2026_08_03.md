@@ -1,10 +1,10 @@
 # Comprehensive Audit — 2026-08-03
 
 A repository-wide audit run against the protocol in
-[`docs/comprehensive_audit.md`](../comprehensive_audit.md). **Five confirmed
+[`docs/comprehensive_audit.md`](../comprehensive_audit.md). **Seven confirmed
 defects, all fixed**, every one of them in code whose tests were passing.
 
-Two of the five are the same Julia closure-capture bug in two different files,
+Two of the seven are the same Julia closure-capture bug in two different files,
 and it is the most consequential thing in this document: **the default
 longitudinal slicing method and the strong-strong luminosity accumulator were
 both silently wrong, and irreproducible, on more than one CPU thread.** Neither
@@ -410,6 +410,15 @@ Recorded beside the conclusions, as the Absolute Rules require.
    invalidated the F2/F3 magnet fix, it takes minutes, and a fix to magnet
    tracking should not be recorded before it has been run. It passes at
    4.995e-13.
+6. **This document miscounted its own findings, and said so for months.** The
+   headline read "Five confirmed defects" while the summary table below it
+   listed seven — F7 and F4 were found and fixed after the opening paragraph
+   was written, and the count was never brought forward. Corrected to seven on
+   2026-08-03 by the part 2 session, which found it while curating the
+   `docs/README.md` index. Recorded here rather than silently replaced,
+   because a document whose headline disagrees with its own table is exactly
+   the kind of internal inconsistency this protocol exists to catch, and it
+   survived one full re-reading of this file.
 
 ## 8. Areas checked and found sound
 
