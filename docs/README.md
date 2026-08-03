@@ -117,6 +117,17 @@ reference material, not API docs; the implementing code links back to them.
   add the design-orbit roll `ref_tilt` -- a vertical bend is `ref_tilt = pi/2` --
   and the third face of the same convention split, which frame an alignment
   error is quoted in once the orbit is rolled.
+- [`rf_cavity_and_reference_energy.md`](theory/rf_cavity_and_reference_energy.md) —
+  design note for the RF cavity, and the prior question of whether Octopus needs
+  a reference particle. It does not: the reference is bookkeeping, not a tracked
+  object, because the coordinates are *defined against* it. What acceleration
+  needs instead is a reference-energy profile along the line — the energy survey,
+  structurally the same object as `s_positions`. Reads Bmad, MAD-X, elegant and
+  AT: why Bmad's `rfcavity`/`lcavity` split is not redundancy (the two use
+  different trig functions, so `phi0 = 0` means "no acceleration" in one and "on
+  crest" in the other), the four mutually incompatible phase conventions, and why
+  an energy kick needs a beta factor to become a `pz` kick in our convention.
+  Design only; not implemented.
 - [`beam_line_composition.md`](theory/beam_line_composition.md) — design report
   for a beam line, read against MAD-X, Bmad, elegant, Accelerator Toolbox and
   JuAcc. Why every one of them separates the composition *language* from the
