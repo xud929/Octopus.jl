@@ -310,6 +310,17 @@ Recorded beside the conclusions, as the Absolute Rules require.
    text-based scan reported six collisions that were not (variables assigned
    inside `for` bodies, which scope) and missed one that was. The `Core.Box`
    test replaced it.
+4. **I asserted something about CUDA I had not checked.** The first pass said
+   the closure-capture class "cannot occur there in the same way" while also
+   listing every CUDA path as uninspected. Both cannot be true. Section 9a
+   checks it; the claim happens to hold, but it was an assumption stated as a
+   result, which is the thing the Absolute Rules forbid.
+5. **The first pass shipped without running a single contract.** They were
+   listed as "not run, therefore not claimed", which is honest but was the
+   wrong trade: `PTCConsistencyContract` is the check that could have
+   invalidated the F2/F3 magnet fix, it takes minutes, and a fix to magnet
+   tracking should not be recorded before it has been run. It passes at
+   4.995e-13.
 
 ## 8. Areas checked and found sound
 
@@ -362,12 +373,89 @@ RTX 4500 Ada (24 GB, driver 580.119.02), 128 CPUs, Julia 1.12.4.
   touch the element layer.
 - 0 of 15 `_run_logical_workers` sites carry a mutable shared box.
 
-Not run, and therefore not claimed: `PTCConsistencyContract`,
-`ElementTrackingBackendConsistencyContract`, the strong-strong backend
-consistency contracts, every script in `validation/`, and any end-to-end
-luminosity comparison for F6 — that fix rests on the `Core.Box` evidence, code
-inspection, and the fact that the identical mechanism was empirically proven to
-corrupt in F5.
+### Contracts — run in a second pass
+
+The first pass of this audit did **not** run the contracts, which was the
+largest hole in it. They were run afterwards; all pass.
+
+| contract | result | residual |
+|---|---|---|
+| `PTCConsistencyContract` | **PASS** | 4.995e-13 over **55 cases**, worst 5.0e-13 |
+| `ElementTrackingBackendConsistencyContract`, audit-touched line, CPU/CUDA | **PASS** | 1.998e-15 |
+| `ElementTrackingBackendConsistencyContract`, reference line, CPU/CUDA | **PASS** | 1.665e-16 |
+| `StrongStrongGaussianBackendConsistencyContract` | **PASS** | 1.794e-17 |
+| `StrongStrongPICBackendConsistencyContract` CIC/wavefront | **PASS** | 5.220e-17 |
+| `StrongStrongPICBackendConsistencyContract` TSC/sequential | **PASS** | 5.112e-17 |
+| `SymplecticityContract` | **PASS** | — |
+| `ElementParameterEffectivenessContract` | **PASS** | 238 parameters checked |
+| `KnobEffectivenessContract` | **PASS** | 0.0 |
+| `HighEnergyWeakStrongLimitContract` | **PASS** | — |
+| `PublicConfigurationEffectivenessContract` | **PASS** | 0.0 |
+
+**What the PTC pass does and does not establish.** It is a *regression* result,
+not validation of the fixed paths. No PTC case exercises either configuration
+F2 or F3 changed, and this was checked rather than assumed:
+
+- `solenoid_k1_n8`/`_n32` are `SolenoidSpec(L=1.3, ks=0.35, k1=0.6, nst=…)` —
+  **no `h`**, so a straight frame, which F3 does not touch.
+- every `cfbend_*` case carries `k1` or `kn=(0.0, 0.6, …)` — normal orders only,
+  never `ks[1]`.
+- `quadrupole_skew` is `ks=(0.0, 0.9)`, a skew *quadrupole* in a straight frame.
+
+Nor could such a case exist: PTC's `SOL5` carries no curvature, which
+`solenoid.md` §15.5 already states. So the fixed configurations have **no
+external reference**, and the evidence that they are now right is internal —
+the derivation, the symplectic residual falling from 2.5e-3 / 9.6e-4 / 3.2e-2
+to ~5e-11, and every control staying bit-identical. Per the protocol's
+principle 13 the repository's own convention governs where the external codes
+are silent, and here they are silent.
+
+The `ElementTrackingBackendConsistencyContract` on a line built from exactly the
+F2/F3 configurations is what establishes that the fix reaches the **device**:
+`fusedTrack` is backend-agnostic and dispatches to the same `track_particle`, so
+there is no second copy of the element physics to fix, and CPU and CUDA agree at
+1.998e-15.
+
+Still not run: every script in `validation/`, and any end-to-end luminosity
+comparison for F6 — that fix rests on the `Core.Box` evidence, code inspection,
+and the fact that the identical mechanism was empirically proven to corrupt in
+F5.
+
+## 9a. The CUDA path
+
+The first pass asserted that the F5/F6 bug class "cannot occur there in the same
+way" without checking. That was unverified, and it is now checked.
+
+**Found sound:**
+
+- **Deposition is atomic.** Every charge-deposition write in `pic_cuda.jl`
+  (CIC and TSC) and `spectral_cuda.jl` uses `CUDA.@atomic`, so the F1 class does
+  not arise on device. The aperture's own device counter already used
+  `CUDA.@atomic` and needed no change.
+- **The closure-capture class is absent by construction.** The device path has
+  no `_run_logical_workers` and no host closure carrying a mutable accumulator;
+  per-thread state lives in registers and shared memory.
+- **The two shared-memory reduction shapes are both correct, for different
+  reasons, and the difference is deliberate.** `_cuda_pic_luminosity_overlap_partials_kernel!`
+  (l. 4366) halves with `step = blockDim ÷ 2`, which **requires a power-of-two
+  block** — at 100 threads element 25 would be orphaned. It is fed by
+  `_cuda_pic_threads(:luminosity)`, and `interface.jl:112` and `:185` validate
+  that family with `ispow2` at both construction and inheritance resolution,
+  with an error message naming the tree reduction. The general moment reduction
+  (l. 5514) instead uses the size-agnostic ceiling form `offset = (active+1)÷2`
+  with thread `tid` absorbing element `tid+offset`; traced at 100 threads it
+  steps 100 → 50 → 25 → 13 → 7 → 4 → 2 → 1 with nothing dropped.
+- **Barriers.** All seven `sync_threads` sit outside their guarding `if`, as
+  they must.
+- **CPU/CUDA agreement** across the element layer and all three strong-strong
+  solvers, at 1e-15 to 5e-17 (table above).
+
+**Not inspected**, and so not claimed: the bulk of `pic_cuda.jl` (5807 lines) —
+the wavefront scheduler, Green-function cache, workspace pooling and stream
+management — `gaussian_pic_cuda.jl` (1154) and `spectral_cuda.jl` (760) beyond
+their deposition kernels. The consistency contracts exercise these paths
+end-to-end and pass, which is real evidence, but it is behavioural agreement on
+one configuration each rather than a reading.
 
 ## 10. Performance
 
@@ -387,8 +475,14 @@ where `MisalignedElement` precomputes the equivalent at `compile_runtime`.
 
 ## 11. Remaining risks
 
-1. **81% of `src/` was not read**, including all CUDA kernels and most of the
-   beam-beam solver stack.
+1. **~80% of `src/` was not read**, including most of `pic_cuda.jl` and the
+   beam-beam solver stack. Section 9a covers the CUDA concurrency primitives and
+   the contracts cover CPU/GPU agreement end to end, but neither is a reading of
+   the wavefront scheduler, the Green cache or the workspace pooling.
+1a. **The F2/F3 configurations have no external reference** and cannot get one
+   from PTC. If a curved solenoid with superimposed multipoles, or a bend with a
+   skew dipole, ever matters in production, it needs a reference from somewhere
+   else — a field-map integrator, or an independent implementation.
 2. **Threading is under-tested, not just untested.** F1 and F5 were both
    invisible to a single-threaded suite, and F5 was found only as a side effect
    of fixing F1. CI now runs `--threads=4`, but the GPU paths and the remaining
