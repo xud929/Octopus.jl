@@ -323,6 +323,45 @@ Refining `nst` did **not** remove it (16 → 64 → 256: 9.58e-4 → 9.62e-4 →
 9.62e-4), which is what distinguishes a structural non-gradient from integrator
 truncation.
 
+### Could the fix be symplectic but WRONG?
+
+Symplecticity plus unchanged controls does not exclude it: a different but
+canonical map satisfies both. Since nothing external implements a curved
+solenoid, the falsifying check is the **limit**.
+
+**h → 0 must reproduce the straight map**, which PTC validates (solenoid + k1
+at 4.7e-13). Convergence should be *first order* in h — a curved frame really
+does differ from a straight one at O(h) — so what would indicate a wrong map is
+convergence to a different limit, or none at all. Measured, `nst = 1024`:
+
+| h | curved − straight (`k0s`) | ratio |
+|---|---|---|
+| 1e-3 | 8.7702e-4 | — |
+| 1e-4 | 8.7703e-5 | 10.0 |
+| 1e-5 | 8.7693e-6 | 10.0 |
+| 1e-6 | 8.7599e-7 | 10.01 |
+
+Clean O(h), and the same for `k1` and `k2` and for the F2 bend cases.
+
+**ks → 0 with k1 must reproduce a curved-frame quadrupole**, which
+`LatticeMagnet` builds through an entirely different path — exact curved drift
+plus `_curved_kick`, no implicit midpoint anywhere. Two independent
+implementations agree to **6.79e-10** at `nst = 1024`, converging at 16× per 4×
+in `nst`. This is the strongest evidence available for a configuration with no
+external reference.
+
+**An anomaly that was chased rather than waved away.** At `nst = 64` the `k0s`
+h-scan stalled at ratio 2.55 instead of 10, and the first explanation offered —
+integrator truncation — was **wrong**: refining `nst` did not clear it as
+`nst⁻²` (ratios 4.95, then 1.31). The correct explanation is that the residual
+is the genuine O(h) physical difference, which no `nst` removes, and that the
+*anomaly* was the Strang splitting error at coarse `nst` masking the h-scaling.
+That predicts the scan recovers ratio 10 at fine `nst`, and it does — 10.0,
+10.0, 10.01. The prediction was tested rather than assumed, which is the only
+reason the first explanation's being wrong did not survive into this document.
+
+Both limits are now permanent tests in `runtests.jl`.
+
 **This was not a known limitation.** `docs/theory/solenoid.md` §14 covers
 multipoles in a straight frame and claims "Symplectic at every step count"; §15
 covers curvature for a pure solenoid. The cross-product is never discussed, yet
@@ -619,7 +658,85 @@ where `MisalignedElement` precomputes the equivalent at `compile_runtime`.
    `(turn, rng_id)`, so one observer placed twice draws the same noise at both.
    Unverified; recorded rather than fixed.
 
-## 12. Change log
+## 12. Handoff — where the next session starts
+
+This audit ran out of **context window**, not out of access or permission.
+Every file is readable; what does not fit is ~68 000 lines of source plus the
+reasoning about them in one session's working memory. Reading a 5 800-line file
+spends capacity that is then unavailable for analysing it. Full line-by-line
+coverage is therefore reachable, but across several sessions, each scoped to one
+subsystem. This section is what makes that resumable.
+
+### Done — do not redo
+
+| area | state |
+|---|---|
+| Element layer (`src/elements/`) | **read in full**, except `strong_beam.jl` |
+| `track/longitudinal.jl`, `fused_track.jl`, `Track.jl`, `radiation_track.jl` | read in full |
+| `math/counter_rng.jl`, `math/SpecialMath.jl`, `constants/` | read in full, Philox checked against Random123 |
+| `tasks/BPMObserver.jl` | read in full |
+| `beam/Beam.jl` | read to l. 370 and `beam_statistics` |
+| Closure-capture (`Core.Box`) class | **100% of the module swept**, 7 boxes, all cleared |
+| Contracts | **all 11 run and passing** |
+| `validation/` | **42 scripts run**; 36 pass, 1 fixed (F7), 2 over a 420 s cap, 4 benchmarks skipped |
+| Public surface | all 30 kinds: `element_help` by symbol and type, `parameter_schema`, `construction_help`, example-compile — 0 failures |
+
+### Next, in priority order
+
+1. **`src/tasks/strongstrong/interface.jl` (2093)** — the public configuration
+   surface for every solver, and the place `AGENTS.md`'s "no silently ignored
+   non-default request" rule is most likely to be violated. Highest value per
+   line read.
+2. **`src/contracts/Contracts.jl` (1963)** — the contracts are the evidence
+   everything else leans on, and nothing audits *them*. A contract that passes
+   vacuously is worse than no contract.
+3. **`src/elements/strong_beam.jl` (1547)** — the only element file unread, and
+   the beam-beam kick is the physics this code exists for.
+4. **`src/tasks/BeamObservers.jl` (1446)** — the moment reductions that produce
+   every published number. Note the shifted-variance work of 2026-07-30 lives
+   here.
+5. **`src/knobs/Knobs.jl` (896) + `symbolic.jl` (285)** — a public subsystem
+   with a lock and an epoch counter; check the epoch/recompile handshake.
+6. **`src/tasks/strongstrong/pic_cuda.jl` (5807)** — largest, but the
+   consistency contracts already exercise it end to end and the concurrency
+   primitives are checked (§9a). Read the wavefront scheduler and Green cache;
+   the kernels are lower risk.
+7. Remaining: `Knowledge.jl` (read to l. 130), `Registry.jl`, `Policies.jl`
+   (fan-out read), `Tasks.jl` (read to l. 140), `gaussian_pic*.jl`,
+   `spectral*.jl`, `pic_cpu.jl`, and `test/runtests.jl` itself.
+
+### Techniques that actually found things — use these first
+
+Four of the seven findings came from **mechanical sweeps and execution**, not
+from reading:
+
+- **`Core.Box` census over lowered code** found F5 and F6. A text/grep sweep for
+  the same thing gave six false positives and missed a real case. Always use the
+  lowered-code test.
+- **Running the suite with `--threads`** found F1 and exposed F5. Anything
+  shared between workers is invisible at one thread, because
+  `_run_logical_workers` has a `nworkers == 1` fast path that never spawns.
+- **Running `validation/`** found F7. Nothing in CI runs that tree.
+- **Limit tests** (`h → 0`, `k → 0`) are what distinguishes *symplectic* from
+  *correct* where no external reference exists. Symplecticity alone cannot.
+
+And the meta-pattern, four for four: **F1, F5, F7 were all checks that existed,
+were correct, and were never executed.** Audit for unexecuted checks before
+auditing for missing ones.
+
+### Open, not started
+
+- The two `validation/` scripts that exceeded the 420 s cap, re-run with a
+  longer one.
+- `AbstractGPUExecutionPolicy` and `ElementParameterEffectivenessContract` are
+  the only two public registry objects without docstrings, against `AGENTS.md`'s
+  "public architecture APIs need docstrings".
+- The `beam_statistics` covariance loop computes all 36 entries of a symmetric
+  matrix (15 redundant `O(N)` passes, per turn). Unmeasured, so a hypothesis.
+- `Patch._patch_map` recomputes its rotation per particle per turn where
+  `MisalignedElement` precomputes. Unmeasured.
+
+## 13. Change log
 
 | file | change | finding |
 |---|---|---|
