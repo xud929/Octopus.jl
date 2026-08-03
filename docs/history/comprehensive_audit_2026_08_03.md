@@ -42,8 +42,14 @@ all.
 
 ## 2. Declared scope and coverage ledger
 
-Requested: whole repository, deepest depth. Delivered: **~5,900 of 30,899 source
-lines read line by line (~19%)**, plus the executable verification in Section 6.
+Requested: whole repository, deepest depth. Delivered: **~7,800 of 30,899
+source lines read line by line (~25%)**, plus two whole-repository mechanical
+sweeps (§8a) that do cover all 30,899 lines for one specific bug class, plus the
+contracts and validation runs of §6.
+
+The distinction matters and is not a way of inflating the number: a `Core.Box`
+census over 1,792 methods genuinely inspects every file for *one* property. It
+says nothing about whether the physics in those files is right.
 
 The concern was raised before starting and the boundary was set by the session
 ending, not by the work being complete. This ledger is what makes the claim
@@ -60,6 +66,29 @@ checkable.
 `elements/aperture.jl` (540), `elements/crab_cavity.jl` (182),
 `elements/lorentz_boost.jl` (163), `elements/Elements.jl` (15),
 `tasks/BPMObserver.jl` (241), plus `Project.toml` and `.github/workflows/ci.yml`.
+
+Added in the second pass: `math/counter_rng.jl` (336, in full),
+`elements/linear_maps.jl` (237), `elements/radiation.jl` (314),
+`track/fused_track.jl` (78).
+
+**Verified in the second pass.** `counter_rng.jl`'s `_philox4x32_round` returns
+`(hi1⊻c1⊻k0, lo1, hi0⊻c3⊻k1, lo0)` — bit-for-bit the Random123 reference round,
+with M0/M1/W0/W1 correct and the key bumped after each round so round 1 uses the
+unbumped key. `_uniform_open01` is provably strictly inside `(0,1)` with an exact
+`+0.5` (52 and 23 source bits), which is what keeps `log(u1)` finite in
+Box–Muller. `LumpedRad`'s damping/excitation pair gives stationary variance
+`σ²s²/(1−d²) = σ²` exactly for `d = e^{−1/τ}`, `s = √(1−e^{−2/τ})`, and
+`_radiation_excitation` reproduces the Twiss ellipse
+(`⟨x·px⟩/⟨x²⟩ = −α/β`, `⟨px²⟩ = σ²s²(1+α²)/β²`).
+
+**Two observations, neither promoted to a finding.** `next_rng_id!`
+(`counter_rng.jl:47`) is a non-atomic `Ref` increment — the same class as F1, but
+it runs at host-side construction, not on a tracking path, so two concurrently
+constructed observers would need to race for it to matter. And `cutoff` means
+*reject and redraw* in `_alloc_randn(CPUThreadsBackend, …)` but *clip* in the
+CUDA method; the default counter-RNG path clips on both backends and so stays
+CPU/GPU-identical, which is why the consistency contracts do not see it. The
+divergence is reachable only by passing an explicit `rng`.
 
 ### Read in part, in pursuit of F5/F6
 
@@ -420,6 +449,47 @@ Still not run: every script in `validation/`, and any end-to-end luminosity
 comparison for F6 — that fix rests on the `Core.Box` evidence, code inspection,
 and the fact that the identical mechanism was empirically proven to corrupt in
 F5.
+
+### Validation scripts
+
+- `validation/tracking_backend_consistency.jl` — **passed**. `AGENTS.md`
+  requires this one after changing an element implementation, which F2/F3 did,
+  and the first pass had not run it. CPU vs CUDA over 10 000 particles, 2 turns:
+  `max_abs_error = 2.07e-17`, `global_rel_error = 9.42e-16`.
+- `validation/symplecticity_validation.jl` — **passed** for every element:
+  Linear6D 1.50e-13, CrabDispersion 1.32e-13, MomentumDispersion 1.81e-13,
+  XYCoupling 1.32e-13, ThinCrabCavity 1.32e-13, ChromaticityKick 4.16e-13,
+  ThinStrongBeam 7.91e-8, GaussianStrongBeam 4.24e-8, against tolerances of
+  5e-7/5e-6. The Hirata boost pair reproduces `sec³`/`cos³` analytically
+  (inverse residual 8.27e-19, determinant error 4.13e-13).
+
+The remaining 41 `validation/` scripts were not run.
+
+## 8a. Repo-wide census for the closure-capture class
+
+The mechanical test that found F5 and F6 was applied to the **whole module**,
+which covers every file including those never read by hand.
+
+Scanned: **1 189 functions, 1 792 Octopus methods**. Methods containing a
+`Core.Box`: **7**.
+
+| method | file | verdict |
+|---|---|---|
+| `_spectral_collide_longitudinal!` | `spectral.jl:983` | benign — closure only *reads* `luminosity`; the write is after `@sync` |
+| `_contract_default_initial_rep` | `Contracts.jl:919` | host-side contract setup, no fan-out |
+| `read_beam_coordinates` | `Beam.jl:713` | file I/O, no fan-out |
+| `validate(::KnobEffectivenessContract)` | `Contracts.jl:199` | host-side, no fan-out |
+| `_initialize_moment_file!` | `BeamObservers.jl:827` | file I/O, no fan-out |
+| two `#s107#` entries | `none:0` | `@generated` generator bodies, run at compile time |
+
+None of the six non-spectral entries contains `_run_logical_workers`,
+`Threads.@spawn`, `@async` or `@sync`. **The class is eliminated repository
+wide**, and this is a whole-repository result rather than a sampled one.
+
+It also confirms the earlier warning about method: the text sweep had flagged
+`local_grid` in `_pic_deposit_threaded!` (`pic_cpu.jl:1217`) as a collision. It
+is not — the reduction's `for local_grid in local_charge` is a loop variable,
+and `for` scopes. The box census clears it correctly.
 
 ## 9a. The CUDA path
 
