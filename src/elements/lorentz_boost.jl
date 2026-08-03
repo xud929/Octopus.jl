@@ -15,7 +15,7 @@ Create an `ElementSpec{:lorentz_boost}` for a zero-length Lorentz boost
 coordinate transformation. `angle` is in radians. Extra keyword arguments are
 stored as descriptive spec metadata.
 """
-LorentzBoostSpec(angle::Real; tracking_method=NonSymplectic6DMap(), kwargs...) =
+LorentzBoostSpec(angle::Number; tracking_method=NonSymplectic6DMap(), kwargs...) =
     ElementSpec{:lorentz_boost}(_spec_params(; angle=float(angle), tracking_method=tracking_method, kwargs...))
 
 """
@@ -25,7 +25,7 @@ Create an `ElementSpec{:rev_lorentz_boost}` for the reverse zero-length Lorentz
 boost coordinate transformation. `angle` is in radians. Extra keyword arguments
 are stored as descriptive spec metadata.
 """
-RevLorentzBoostSpec(angle::Real; tracking_method=NonSymplectic6DMap(), kwargs...) =
+RevLorentzBoostSpec(angle::Number; tracking_method=NonSymplectic6DMap(), kwargs...) =
     ElementSpec{:rev_lorentz_boost}(_spec_params(; angle=float(angle), tracking_method=tracking_method, kwargs...))
 
 """
@@ -37,7 +37,10 @@ accelerator variables used here it is quasi-symplectic (Jacobian determinant
 `sec(angle)^3`), not a canonical symplectic map by itself; the reverse map
 restores the phase-space volume factor.
 """
-struct LorentzBoost{M<:AbstractTrackingMethod,T<:AbstractFloat} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
+struct LorentzBoost{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     angle::T
     cos_ang::T
@@ -71,7 +74,10 @@ applies the exact inverse of Hirata's nonlinear crossing-angle map. Its
 accelerator-coordinate Jacobian determinant is `cos(angle)^3`, so it is
 likewise quasi-symplectic rather than canonical in isolation.
 """
-struct RevLorentzBoost{M<:AbstractTrackingMethod,T<:AbstractFloat} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
+struct RevLorentzBoost{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     angle::T
     cos_ang::T
@@ -97,8 +103,8 @@ end
     construction_help = "Friendly constructor: RevLorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:rev_lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata."
 end
 
-LorentzBoost(angle::Real) = _lorentz_boost(LorentzBoost, angle, NonSymplectic6DMap())
-RevLorentzBoost(angle::Real) = _lorentz_boost(RevLorentzBoost, angle, NonSymplectic6DMap())
+LorentzBoost(angle::Number) = _lorentz_boost(LorentzBoost, angle, NonSymplectic6DMap())
+RevLorentzBoost(angle::Number) = _lorentz_boost(RevLorentzBoost, angle, NonSymplectic6DMap())
 
 LorentzBoost(spec::ElementSpec{:lorentz_boost}, method::AbstractTrackingMethod=tracking_method(spec)) =
     _lorentz_boost(LorentzBoost, param(spec, :angle), method)
@@ -146,7 +152,9 @@ end
 @inline (boost::RevLorentzBoost)(x0, px0, y0, py0, z0, pz0) =
     track_particle(boost.method, boost, x0, px0, y0, py0, z0, pz0)
 
-function _lorentz_boost(::Type{B}, angle::Real, method::AbstractTrackingMethod) where {B}
+# `Number`, not `Real`: a crossing angle is a legitimate thing to differentiate
+# with respect to, and a dual number or a complex step is not a `Real`.
+function _lorentz_boost(::Type{B}, angle::Number, method::AbstractTrackingMethod) where {B}
     T = typeof(float(angle))
     θ = T(angle)
     c = cos(θ)

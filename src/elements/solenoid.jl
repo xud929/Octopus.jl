@@ -30,7 +30,10 @@ disagree with the same lattice with the solenoid removed. This map reduces to
 No `nst` and no integrator order: the map is the exact flow, so subdividing it
 would add error rather than remove it.
 """
-struct Solenoid{M<:AbstractTrackingMethod,T<:AbstractFloat,N,CURVED} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
+struct Solenoid{M<:AbstractTrackingMethod,T<:Number,N,CURVED} <: AbstractTrackOp
     method::M
     L::T
     ks::T
@@ -71,7 +74,9 @@ arguments take a series instead.
 """
 @inline function _sol_log_over_h(h::T, x::T) where {T}
     u = h * x
-    abs(u) < T(1e-4) && return x * (one(T) - u / 2 * (one(T) - 2u / 3))
+    # `real(T)`: element parameters may be dual or complex now, and a complex
+    # crossover threshold does not order. Same rule as the curvature helpers.
+    abs(u) < real(T)(1e-4) && return x * (one(T) - u / 2 * (one(T) - 2u / 3))
     return log1p(u) / h
 end
 

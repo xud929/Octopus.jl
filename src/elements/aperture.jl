@@ -153,7 +153,10 @@ The three type parameters are all load-bearing:
 An aperture is **not** symplectic: it is a projection, not a map, so it declares
 `NonSymplectic6DMap`.
 """
-struct Aperture{F,M<:AbstractTrackingMethod,R,T<:AbstractFloat} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
+struct Aperture{F,M<:AbstractTrackingMethod,R,T<:Number} <: AbstractTrackOp
     method::M
     shape::UInt8        # 1 = rectangle, 2 = ellipse, 3 = rectellipse
     x_limit::T

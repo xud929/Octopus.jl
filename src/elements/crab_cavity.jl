@@ -49,7 +49,10 @@ pz -= (strengthX[i]*x + strengthY[i]*y) * cos(i*kcc*z + phase[i])
 
 for `i = 1:N`, leaving `x`, `y`, and `z` unchanged.
 """
-struct ThinCrabCavity{N,M<:AbstractTrackingMethod,T<:AbstractFloat} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
+struct ThinCrabCavity{N,M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     kcc::T
     strengthX::NTuple{N,T}

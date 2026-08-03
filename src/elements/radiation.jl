@@ -50,7 +50,10 @@ function (::Type{LumpedRadSpec{T}})(;
     )
 end
 
-struct LumpedRad{M<:AbstractTrackingMethod,T<:AbstractFloat} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
+struct LumpedRad{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     is_damping::Bool
     is_excitation::Bool

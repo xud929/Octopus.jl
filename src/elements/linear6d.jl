@@ -54,11 +54,14 @@ function (::Type{Linear6DSpec{T}})(; matrix=nothing,
     return ElementSpec{:linear6d}(params)
 end
 
-struct Linear6D{M<:AbstractTrackingMethod,T<:AbstractFloat} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
+struct Linear6D{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     matrix::NTuple{36,T}
     function Linear6D(method::M, matrix::NTuple{36,T}) where {
-            M<:AbstractTrackingMethod,T<:AbstractFloat}
+            M<:AbstractTrackingMethod,T<:Number}
         _validate_linear6d_symplectic(matrix; source="Linear6D runtime matrix")
         return new{M,T}(method, matrix)
     end
@@ -70,9 +73,12 @@ Base.Matrix(elem::Linear6D{M,T}) where {M,T} =
 function Linear6D(spec::ElementSpec{:linear6d},
                   method::AbstractTrackingMethod=tracking_method(spec))
     matrix = hasparam(spec, :matrix) ? param(spec, :matrix) : _linear6d_matrix_from_optics(spec)
-    T = promote_type(map(typeof, matrix)...)
-    T <: AbstractFloat || throw(ArgumentError(
-        "Linear6D matrix entries must promote to an AbstractFloat type; got $(T)"))
+    # `float(promote_type(...))` rather than a bare promote plus a rejection: an
+    # integer matrix still becomes Float64, and a dual number or a truncated
+    # power series passes through instead of being refused.
+    T = float(promote_type(map(typeof, matrix)...))
+    T <: Number || throw(ArgumentError(
+        "Linear6D matrix entries must promote to a Number type; got $(T)"))
     return Linear6D(method, _matrix66_tuple(matrix, T))
 end
 
@@ -113,7 +119,7 @@ _identity66(::Type{T}) where {T} =
 
 @inline _mget(m, i, j) = m[(i - 1) * 6 + j]
 
-function _linear6d_symplectic_error(matrix::NTuple{36,T}) where {T<:AbstractFloat}
+function _linear6d_symplectic_error(matrix::NTuple{36,T}) where {T<:Number}
     all(isfinite, matrix) ||
         return (residual=typemax(T), tolerance=zero(T), ratio=typemax(T))
     max_residual = zero(T)
@@ -163,7 +169,7 @@ function _linear6d_symplectic_error(matrix::NTuple{36,T}) where {T<:AbstractFloa
 end
 
 function _validate_linear6d_symplectic(
-        matrix::NTuple{36,T}; source="Linear6D matrix") where {T<:AbstractFloat}
+        matrix::NTuple{36,T}; source="Linear6D matrix") where {T<:Number}
     error = _linear6d_symplectic_error(matrix)
     error.ratio <= one(T) && return matrix
     throw(ArgumentError(

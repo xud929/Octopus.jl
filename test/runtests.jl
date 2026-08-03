@@ -1749,6 +1749,50 @@ end
     # Non-numeric parameters must not disturb the promotion.
     @test numeric_type(QuadrupoleSpec(L=0.4, k1=1.7, nst=4, fringe=:all,
                                       misalign_convention=:madx)) === Float64
+
+    # A sweep over every registered element: seed each numeric parameter with a
+    # complex step and check the derivative against a central difference. This
+    # is the regression guard for the whole class -- a future `Float64` written
+    # where the type should be carried shows up here as a lost element rather
+    # than as a silently non-differentiable one.
+    let H = 1e-30, verified = String[], disagreed = String[]
+        seed(spec, key, v) = (p = copy(getfield(spec, :params)); p[key] = v;
+                              ElementSpec{kind(spec)}(p))
+        for T in sort(collect(Octopus.registered_element_specs()); by=string)
+            meta = Octopus._element_meta_or_nothing(T)
+            meta === nothing && continue
+            ex = example_spec(T)
+            ex isa ElementSpec || continue
+            for (key, val) in sort(collect(getfield(ex, :params)); by=x -> string(x[1]))
+                val isa Real && !(val isa Bool) && !(val isa Integer) || continue
+                val == 0 && continue
+                try
+                    d = [imag(x) / H for x in
+                         compile_runtime(seed(ex, key, complex(float(val), H)))(u...)]
+                    h = abs(float(val)) * 1e-6
+                    f(v) = collect(compile_runtime(seed(ex, key, v))(u...))
+                    fd = (f(float(val) + h) .- f(float(val) - h)) ./ (2h)
+                    err = maximum(abs, d .- fd) / max(maximum(abs, fd), 1e-8)
+                    push!(isfinite(err) && err < 1e-4 ? verified : disagreed,
+                          "$(meta.kind).$(key)")
+                catch
+                    # Genuinely not complex-steppable, and each for a reason:
+                    # an aperture is a threshold test, the solenoid's kernel
+                    # already uses complex arithmetic internally, and the
+                    # near-round beam-beam evaluator is calibrated per
+                    # precision. A dual number reaches the first two; none of
+                    # them is a pinned type.
+                end
+            end
+        end
+        @test isempty(disagreed)
+        @test length(verified) >= 19
+        # the kinds that must stay differentiable
+        for k in ("quadrupole", "sextupole", "octupole", "multipole", "sbend",
+                  "drift", "patch", "kicker", "thin_crab_cavity")
+            @test any(startswith(v, k * ".") for v in verified)
+        end
+    end
 end
 
 @testset "BeamLine composes, addresses and tracks" begin

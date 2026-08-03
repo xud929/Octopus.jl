@@ -57,7 +57,7 @@ Return `(real(w), imag(w))` for the Faddeeva function using a fixed-order
 Weideman rational approximation. This path uses scalar arithmetic only and is
 intended for CUDA kernels.
 """
-@inline function faddeeva_w_approx_reim(zr::T, zi::T) where {T<:AbstractFloat}
+@inline function faddeeva_w_approx_reim(zr::T, zi::T) where {T<:Real}
     if zi < zero(T)
         wr, wi = faddeeva_w_upper_reim(-zr, -zi)
         er, ei = _cexp_reim(-zr * zr + zi * zi, -2 * zr * zi)
@@ -74,7 +74,7 @@ Branch-light Faddeeva `w(z)` approximation for `imag(z) >= 0`, returned as
 calls only upper-half-plane arguments after taking absolute transverse
 coordinates.
 """
-@inline function faddeeva_w_upper_reim(zr::T, zi::T) where {T<:AbstractFloat}
+@inline function faddeeva_w_upper_reim(zr::T, zi::T) where {T<:Real}
     x = abs(zr)
     y = zi
 
@@ -102,7 +102,7 @@ coordinates.
     return tr + ir, ti + ii
 end
 
-@inline function _faddeeva_w_cf_reim(zr::T, zi::T) where {T<:AbstractFloat}
+@inline function _faddeeva_w_cf_reim(zr::T, zi::T) where {T<:Real}
     ispi = T(FADDEEVA_WEIDEMAN_INVSQRTPI)
     x = abs(zr)
     y = zi
@@ -140,7 +140,7 @@ end
     return invden * wi, invden * wr
 end
 
-@inline faddeeva_w_approx(z::Complex{T}) where {T<:AbstractFloat} =
+@inline faddeeva_w_approx(z::Complex{T}) where {T<:Real} =
     complex(faddeeva_w_approx_reim(real(z), imag(z))...)
 
 @inline function _cmul_reim(ar, ai, br, bi)

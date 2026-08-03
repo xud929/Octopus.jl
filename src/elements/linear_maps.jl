@@ -33,7 +33,10 @@ function (::Type{CrabDispersionSpec{T}})(; zeta1=zero(T), zeta2=zero(T),
     )
 end
 
-struct CrabDispersion{M<:AbstractTrackingMethod,FloatT <: AbstractFloat} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
+struct CrabDispersion{M<:AbstractTrackingMethod,FloatT <: Number} <: AbstractTrackOp
     method::M
     zeta1::FloatT
     zeta2::FloatT
@@ -41,7 +44,7 @@ struct CrabDispersion{M<:AbstractTrackingMethod,FloatT <: AbstractFloat} <: Abst
     zeta4::FloatT
 end
 
-CrabDispersion{T}(zeta1, zeta2, zeta3, zeta4) where {T<:AbstractFloat} =
+CrabDispersion{T}(zeta1, zeta2, zeta3, zeta4) where {T<:Number} =
     CrabDispersion(Symplectic6DMap(), T(zeta1), T(zeta2), T(zeta3), T(zeta4))
 
 @element_spec begin
@@ -98,7 +101,10 @@ function (::Type{MomentumDispersionSpec{T}})(; eta1=zero(T), eta2=zero(T),
     )
 end
 
-struct MomentumDispersion{M<:AbstractTrackingMethod,FloatT <: AbstractFloat} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
+struct MomentumDispersion{M<:AbstractTrackingMethod,FloatT <: Number} <: AbstractTrackOp
     method::M
     eta1::FloatT
     eta2::FloatT
@@ -106,7 +112,7 @@ struct MomentumDispersion{M<:AbstractTrackingMethod,FloatT <: AbstractFloat} <: 
     eta4::FloatT
 end
 
-MomentumDispersion{T}(eta1, eta2, eta3, eta4) where {T<:AbstractFloat} =
+MomentumDispersion{T}(eta1, eta2, eta3, eta4) where {T<:Number} =
     MomentumDispersion(Symplectic6DMap(), T(eta1), T(eta2), T(eta3), T(eta4))
 
 @element_spec begin
@@ -165,7 +171,10 @@ function (::Type{XYCouplingSpec{T}})(; r1=zero(T), r2=zero(T), r3=zero(T),
     )
 end
 
-struct XYCoupling{M<:AbstractTrackingMethod,FloatT <: AbstractFloat} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
+struct XYCoupling{M<:AbstractTrackingMethod,FloatT <: Number} <: AbstractTrackOp
     method::M
     r1::FloatT
     r2::FloatT
@@ -196,9 +205,9 @@ end
     construction_help = "Friendly constructor: XYCouplingSpec{T}(; r1, r2, r3, r4, mode=XY_MODEA, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:xy_coupling}(; r1=r1, r2=r2, r3=r3, r4=r4, mode=mode, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata."
 end
 
-XYCoupling(r1::T, r2::T, r3::T, r4::T) where {T<:AbstractFloat} =
+XYCoupling(r1::T, r2::T, r3::T, r4::T) where {T<:Number} =
     XYCoupling{Symplectic6DMap,T}(Symplectic6DMap(), r1, r2, r3, r4, XY_MODEA)
-XYCoupling(r1::T, r2::T, r3::T, r4::T, mode::XYCouplingMode) where {T<:AbstractFloat} =
+XYCoupling(r1::T, r2::T, r3::T, r4::T, mode::XYCouplingMode) where {T<:Number} =
     XYCoupling{Symplectic6DMap,T}(Symplectic6DMap(), r1, r2, r3, r4, mode)
 XYCoupling(spec::ElementSpec{:xy_coupling}, method::AbstractTrackingMethod=tracking_method(spec)) =
     XYCoupling(method, _float_params(spec, :r1, :r2, :r3, :r4)..., getparam(spec, :mode, XY_MODEA))

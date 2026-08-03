@@ -185,7 +185,10 @@ function (::Type{ThinStrongBeamSpec{T}})(; kbb,
     )
 end
 
-mutable struct ThinStrongBeam{M<:AbstractTrackingMethod,T<:AbstractFloat,
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
+mutable struct ThinStrongBeam{M<:AbstractTrackingMethod,T<:Number,
                               P<:StrongTransverseMoments,D<:AbstractVirtualDrift} <: AbstractTrackOp
     method::M
     moments::P
@@ -325,7 +328,10 @@ function (::Type{GaussianStrongBeamSpec{T}})(; thin,
     )
 end
 
-mutable struct GaussianStrongBeam{M<:AbstractTrackingMethod,T<:AbstractFloat,
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
+mutable struct GaussianStrongBeam{M<:AbstractTrackingMethod,T<:Number,
                                   P<:StrongTransverseMoments,
                                   D<:AbstractVirtualDrift,SliceAngles} <: AbstractTrackOp
     method::M
@@ -739,18 +745,18 @@ end
 # Float32. The inner boundary starts a quintic potential-level blend at eta_*/2.
 @inline _near_round_conditioning_factor(::Type{Float64}) = 64.0
 @inline _near_round_conditioning_factor(::Type{Float32}) = 8.0f0
-function _near_round_conditioning_factor(::Type{T}) where {T<:AbstractFloat}
+function _near_round_conditioning_factor(::Type{T}) where {T<:Real}
     throw(ArgumentError(
         "near-round Gaussian evaluation supports only Float32 and Float64; got $T"))
 end
 
-@inline function _near_round_eta_bounds(eta::T) where {T<:AbstractFloat}
+@inline function _near_round_eta_bounds(eta::T) where {T<:Real}
     conditioning = _near_round_conditioning_factor(T)
     outer = sqrt(sqrt((T(8) / T(3)) * conditioning * eps(T)))
     return outer / T(2), outer
 end
 
-@inline function _near_round_blend(eta::T) where {T<:AbstractFloat}
+@inline function _near_round_blend(eta::T) where {T<:Real}
     inner, outer = _near_round_eta_bounds(eta)
     if eta <= inner
         return zero(T), zero(T)
@@ -764,7 +770,7 @@ end
     return w, dw
 end
 
-@inline function _near_round_moments_0_6(q::T) where {T<:AbstractFloat}
+@inline function _near_round_moments_0_6(q::T) where {T<:Real}
     if q <= T(2)
         m0 = zero(T)
         m1 = zero(T)
@@ -800,7 +806,7 @@ end
     return m0, m1, m2, m3, m4, m5, m6
 end
 
-@inline function _near_round_moments_3_11(q::T) where {T<:AbstractFloat}
+@inline function _near_round_moments_3_11(q::T) where {T<:Real}
     if q <= T(2)
         m3 = zero(T)
         m4 = zero(T)

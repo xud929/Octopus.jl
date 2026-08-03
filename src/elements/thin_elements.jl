@@ -58,7 +58,10 @@ Being zero length, the map has no drift and no chromatic denominator: in the
 exact Hamiltonian the chromatic dependence lives in the drift, and there is none
 here. It is exactly symplectic, being a kick from a potential.
 """
-struct ThinMultipole{M<:AbstractTrackingMethod,T<:AbstractFloat,N} <: AbstractTrackOp
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
+struct ThinMultipole{M<:AbstractTrackingMethod,T<:Number,N} <: AbstractTrackOp
     method::M
     knl::NTuple{N,T}
     ksl::NTuple{N,T}
@@ -78,7 +81,7 @@ end
 
 function ThinMultipole(spec::ElementSpec,
                        method::AbstractTrackingMethod=tracking_method(spec))
-    T = Float64
+    T = numeric_type(spec)
     knraw = collect(T, getparam(spec, :knl, ()))
     ksraw = collect(T, getparam(spec, :ksl, ()))
     knl, ksl = _strength_tuples(T, knraw, ksraw)
