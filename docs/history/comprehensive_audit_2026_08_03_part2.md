@@ -1,9 +1,31 @@
 # Comprehensive Audit — 2026-08-03, part 2
 
+> ## Start here
+>
+> **Do not read this front to back, and do not read part 1 front to back.**
+> Between them they are ~1,600 lines, about what `pic_cpu.jl` costs to read —
+> and that context is what the next session actually needs.
+>
+> | read | why |
+> |---|---|
+> | **§14** of this file | the handoff: what is done, what is next, and what the solver-option contract does *not* prove |
+> | **§2** of this file | the coverage ledger, so you do not re-read what is already covered |
+> | **§3 of [part 1](comprehensive_audit_2026_08_03.md)** | the Julia closure-capture trap. Load-bearing for the next file: `pic_cpu.jl` has three `_run_logical_workers` sites. The census is clean today, so this is about reading those loops correctly and not reintroducing it — and about the fact that a text sweep gave six false positives and missed a real case, so the check must be on lowered code |
+>
+> Skip until the session that needs them: part 1 §4–6 (aperture loss counter,
+> the curved-frame `Im f ≡ 0` gradient condition) are element-layer and closed;
+> part 1 §9a (CUDA concurrency primitives) belongs to the eventual
+> `pic_cuda.jl` session.
+>
+> §9 and §15.7 are the corrected wrong turns. They are worth more than the
+> conclusions if you are deciding how much to trust a measurement here.
+
 A second pass against the protocol in
 [`docs/comprehensive_audit.md`](../comprehensive_audit.md), resuming from the
 handoff in [part 1](comprehensive_audit_2026_08_03.md) §12 and following its
-priority order. **Five confirmed defects, all fixed.**
+priority order. **Thirteen confirmed defects, all fixed** — five in the first
+pass over the declared scope, and eight more surfaced by building the
+solver-option contract the first pass had identified as missing (§15).
 
 The theme differs from part 1. That session found races — code that was wrong
 whenever more than one thread ran. This one found **configuration that was
@@ -29,6 +51,8 @@ the question `AGENTS.md` cares most about, and the one part 1 did not ask.
 | S9 | Minor | `collide!` was ambiguous for `GaussianPICPoissonSolver` with a `TrackingContext` | fixed, verified |
 | S10 | Minor | `loss_summary(rep, task)` was ambiguous — a public API `MethodError` | fixed, verified |
 | S11 | Minor | `green_cache` and the spectral `method` were declared pure execution/performance but change results | fixed, measured |
+| S12 | Moderate | the CUDA `GaussianPIC` route emitted no `:cuda_pic_algorithm` receipt, the consumer its five algorithm options declare | fixed, verified (§15.9) |
+| S13 | Moderate | the CUDA `GaussianPIC` route reads `batch_mode` and `cuda_indexed_wavefront` only; `cuda_async`, `cuda_batch_fft` and `cuda_wavefront_fft` were accepted and dropped | fixed (now rejects), verified (§15.9) |
 
 **The pattern worth taking away.** Part 1's lesson was "audit for checks that
 exist and are never executed." This pass suggests the sibling rule: **audit for

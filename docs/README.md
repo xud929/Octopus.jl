@@ -239,8 +239,12 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   recording that only ~19% of `src/` was read line by line and that every CUDA
   path is unaudited),
   [`comprehensive_audit_2026_08_03_part2.md`](history/comprehensive_audit_2026_08_03_part2.md)
-  (second pass, resuming that handoff's priority order: **five confirmed defects
-  fixed**, none of them a physics error. Where part 1 found code that was wrong
+  (second pass, resuming that handoff's priority order: **thirteen confirmed
+  defects fixed**, none of them a physics error -- five over the declared scope,
+  eight more surfaced by building the solver-option contract the first pass had
+  identified as missing. **It opens with a "Start here" block naming the three
+  sections a new session should read and the ones to skip; follow it rather than
+  reading either audit front to back.** Where part 1 found code that was wrong
   under threads, this pass found **configuration that was accepted, reported as
   active, and never used** — `GaussianPICPoissonSolver` silently discarded every
   CUDA launch override *and* the policy thread count, because it composes a
