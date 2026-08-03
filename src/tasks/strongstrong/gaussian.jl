@@ -75,15 +75,26 @@ function _slice_slice_gaussian_kick!(rep::Phase6DRep, idx::Vector{Int}, moments2
         return lum / TWOPI * klum_slice
     end
     local_lum = zeros(T, nchunks)
+    # `chunk_lum`, NOT `lum`. The do-block is a CLOSURE and `lum` is also
+    # assigned in the serial branch above, which is function scope -- `if` does
+    # not open a scope in Julia, only `for`/`let`/`function` do. Reusing the
+    # name therefore does not give each worker its own accumulator: every
+    # spawned worker resets and accumulates the SAME captured box, so
+    # `local_lum[chunk]` receives whatever happened to be in it. The kicks
+    # themselves were unaffected -- `_apply_slice_kick_one!` writes per particle
+    # -- but the luminosity this returns was silently wrong and irreproducible
+    # on more than one thread. Same defect, same cause, as `_threaded_histogram`
+    # in `slicing.jl`; both were found by looking for `Core.Box` in the lowered
+    # code of every `_run_logical_workers` caller.
     _run_logical_workers(nchunks) do chunk, _
         first_i, last_i = _chunk_bounds(n, nchunks, chunk)
-        lum = zero(T)
+        chunk_lum = zero(T)
         for pos in first_i:last_i
-            @inbounds lum += _apply_slice_kick_one!(
+            @inbounds chunk_lum += _apply_slice_kick_one!(
                 rep, idx[pos], moments2, center2, kbb_slice, min_sigma,
                 virtual_drift, longitudinal_kick, compute_luminosity)
         end
-        local_lum[chunk] = lum
+        local_lum[chunk] = chunk_lum
     end
     return sum(local_lum) / TWOPI * klum_slice
 end

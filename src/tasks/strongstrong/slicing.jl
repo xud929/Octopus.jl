@@ -251,14 +251,24 @@ function _threaded_histogram(z, zmin, width, bins::Int, flags=nothing)
         return counts
     end
     local_counts = [zeros(Int, bins) for _ in 1:nchunks]
+    # `chunk_counts`, NOT `counts`. The do-block is a CLOSURE, and `counts` is
+    # also assigned at function scope -- in the `nchunks == 1` branch above and
+    # in the reduction below. Assigning it inside the closure therefore does not
+    # create a per-worker local: it writes the one shared captured box, so all
+    # workers end up incrementing whichever array was stored there last. The
+    # result was a histogram that was silently wrong and different on every run
+    # (totals of 392-399 where the answer is 397, bins both gaining and losing
+    # counts), which propagated into the slice boundaries of the DEFAULT
+    # `:equal_area` method for any run on more than one thread. A distinct name
+    # is the whole fix; the name collision was the entire bug.
     _run_logical_workers(nchunks) do chunk, _
         first_i, last_i = _chunk_bounds(length(z), nchunks, chunk)
-        counts = local_counts[chunk]
+        chunk_counts = local_counts[chunk]
         for i in first_i:last_i
             _flag_live(flags, i) || continue
             zi = z[i]
             bin = _slice_bin(zi, zmin, width, bins)
-            bin == 0 || (counts[bin] += 1)
+            bin == 0 || (chunk_counts[bin] += 1)
         end
     end
     counts = local_counts[1]
