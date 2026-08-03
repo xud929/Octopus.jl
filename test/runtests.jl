@@ -1828,6 +1828,113 @@ end
     end
 end
 
+@testset "RF cavity closes the longitudinal plane" begin
+    # docs/theory/rf_cavity_and_reference_energy.md. A cavity WITHOUT
+    # acceleration -- Bmad's rfcavity, not its lcavity -- so the reference
+    # energy is constant and phase = 0 is no net acceleration.
+    u = (1.0e-3, 1.0e-4, -0.5e-3, 2.0e-4, 0.2, 8.0e-4)
+    S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
+    cav(; kw...) = compile_runtime(RFCavitySpec(400.8e6; e0=275e9, mc2=PMASS_EV, kw...))
+
+    # registered like any other element
+    @test :rf_cavity in summarize_registry().elements
+    @test validate_element_metadata().passed
+
+    # A switched-off cavity is exactly nothing, not nothing to round-off.
+    @test collect(cav(voltage=0.0)(u...)) == collect(u)
+    # ... and with a length it is a drift, to the round-off of splitting one
+    # drift into two halves -- a few ulp on a z of 0.2, not a physics difference.
+    @test maximum(abs, collect(cav(voltage=0.0, L=2.0)(u...)) .-
+                       collect(compile_runtime(DriftSpec(L=2.0))(u...))) < 1.0e-15
+
+    # thin is the exact L -> 0 limit of drift-kick-drift, converging linearly
+    let thin = collect(cav(voltage=12e6)(u...))
+        prev = Inf
+        for L in (1.0e-3, 1.0e-5, 1.0e-7)
+            e = maximum(abs, collect(cav(voltage=12e6, L=L)(u...)) .- thin)
+            @test e < prev
+            prev = e
+        end
+        @test prev < 1.0e-10
+    end
+
+    # symplectic, which is the composition claim: two canonical wrappers around
+    # a kick that changes only the momentum by a function of the coordinate
+    for (L, ph) in ((0.0, pi / 2), (0.0, 0.3), (2.0, 0.3), (2.0, 0.0))
+        e = cav(voltage=12e6, L=L, phase=ph)
+        J = zeros(6, 6)
+        for j in 1:6
+            v = ComplexF64[u...]
+            v[j] += 1e-30im
+            J[:, j] = imag.(collect(e(v...))) ./ 1e-30
+        end
+        @test maximum(abs, J' * S6 * J - S6) < 1.0e-14
+    end
+
+    # The kick is exactly qV sin(theta)/(P0 c), measured in p_t where it is
+    # stated -- not in pz, where it would pick up the beta factor and hide it.
+    let e0 = 275e9, V = 12e6, f = 400.8e6, ph = 0.3, z = 0.2, pz = 8.0e-4
+        b0, g0 = reference_beta_gamma(e0, PMASS_EV)
+        o = cav(voltage=V, phase=ph)(0.0, 0.0, 0.0, 0.0, z, pz)
+        z1, pin = convert_longitudinal(PATHLENGTH_DELTA => TIME_ENERGY, z, pz; beta0=b0, gamma0=g0)
+        _, pout = convert_longitudinal(PATHLENGTH_DELTA => TIME_ENERGY, o[5], o[6]; beta0=b0, gamma0=g0)
+        @test pout - pin ≈ V / (b0 * e0) * sin(2pi * f / CLIGHT * z1 + ph) atol = 1.0e-16
+    end
+
+    # THE BETA FACTOR. dδ/dp_t must be 1/beta, not 1. This is the check that a
+    # formula lifted from a code with another longitudinal convention fails,
+    # and it is invisible for an electron ring.
+    for (e0, mc2) in ((10e9, PMASS_EV), (275e9, PMASS_EV), (10e9, EMASS_EV))
+        b0, g0 = reference_beta_gamma(e0, mc2)
+        e = compile_runtime(RFCavitySpec(400.8e6; voltage=1.0e6, e0=e0, mc2=mc2, phase=pi / 2))
+        o = e(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        _, pin = convert_longitudinal(PATHLENGTH_DELTA => TIME_ENERGY, 0.0, 0.0; beta0=b0, gamma0=g0)
+        _, pout = convert_longitudinal(PATHLENGTH_DELTA => TIME_ENERGY, o[5], o[6]; beta0=b0, gamma0=g0)
+        @test o[6] / (pout - pin) ≈ 1 / particle_beta(PATHLENGTH_DELTA, 0.0; beta0=b0, gamma0=g0) rtol = 1.0e-5
+    end
+    # and it is genuinely a proton-versus-electron difference, not a rounding one
+    @test 1 / reference_beta(10e9, PMASS_EV) - 1 > 1.0e-3
+    @test 1 / reference_beta(10e9, EMASS_EV) - 1 < 1.0e-8
+
+    # Synchrotron motion in a toy ring: stable, area-preserving, and nu_s
+    # scaling as sqrt(V), which is the signature of a harmonic bucket.
+    ring(V) = begin
+        M = Matrix{Float64}(I, 6, 6)
+        M[5, 6] = -1.0e-3                     # a pure longitudinal slip
+        [compile_runtime(RFCavitySpec(400.8e6; voltage=V, e0=275e9, mc2=PMASS_EV)),
+         compile_runtime(Linear6DSpec(; matrix=Tuple(vec(permutedims(M)))))]
+    end
+    nus = map((2e6, 8e6, 32e6)) do V
+        ops = ring(V)
+        J = zeros(2, 2)
+        for j in 1:2
+            v = ComplexF64[0, 0, 0, 0, 0, 0]
+            v[4 + j] += 1e-30im
+            o = foldl((c, op) -> op(c...), ops; init=Tuple(v))
+            J[:, j] = [imag(o[5]), imag(o[6])] ./ 1e-30
+        end
+        @test abs(J[1, 1] * J[2, 2] - J[1, 2] * J[2, 1] - 1) < 1.0e-12   # area preserved
+        @test abs(J[1, 1] + J[2, 2]) < 2                                  # stable
+        acos((J[1, 1] + J[2, 2]) / 2) / 2pi
+    end
+    @test nus[2] / nus[1] ≈ 2 rtol = 1.0e-6      # quadrupling V doubles nu_s
+    @test nus[3] / nus[2] ≈ 2 rtol = 1.0e-6
+
+    # construction errors, each naming the fix
+    @test_throws ArgumentError RFCavitySpec(400.8e6; voltage=1e6)                    # no e0/mc2
+    @test_throws ArgumentError RFCavitySpec(400.8e6; strength=1e-5)                  # no beta0
+    @test_throws ArgumentError RFCavitySpec(400.8e6)                                 # nothing at all
+    @test_throws ArgumentError RFCavitySpec(-1.0; voltage=1e6, e0=275e9, mc2=PMASS_EV)
+    @test_throws ArgumentError RFCavitySpec(400.8e6; voltage=1e6, e0=275e9,
+                                            mc2=PMASS_EV, strength=1e-5)             # both
+
+    # Units match ThinCrabCavity deliberately: one meaning of `phase` per lattice.
+    @test parameter_schema(ElementSpec{:rf_cavity}).frequency.unit ==
+          parameter_schema(ElementSpec{:thin_crab_cavity}).frequency.unit == "Hz"
+    @test parameter_schema(ElementSpec{:rf_cavity}).phase.unit ==
+          parameter_schema(ElementSpec{:thin_crab_cavity}).phase.unit == "rad"
+end
+
 @testset "Longitudinal conventions convert exactly" begin
     # docs/theory/lattice_hamiltonian_and_conventions.md Section 2, implemented.
     # The claim being tested is not "accurate" but EXACT: all four pairs come

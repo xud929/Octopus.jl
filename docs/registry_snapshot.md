@@ -231,6 +231,14 @@ constructor names remain the user-facing way to build those specs.
   - Runtime mappings: `NonSymplectic6DMap => Patch`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
+- `ElementSpec{:rf_cavity}` via `RFCavitySpec`
+  - Physics keywords: `:harmonic`, `:thick_element`
+  - Supported tracking methods: `Symplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `Symplectic6DMap => RFCavity`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
 - `ElementSpec{:line}` via `BeamLine`
   - Physics keywords: `:beam_line`, `:thick_element`
   - Supported tracking methods: `[]`
@@ -346,6 +354,7 @@ live under `src/track/`.
 - `ThinMultipole`
 - `Solenoid`
 - `Patch`
+- `RFCavity`
 - `Aperture`
 - `BeamParams`
 - `Phase6DRep`
