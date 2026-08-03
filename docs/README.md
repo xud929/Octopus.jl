@@ -223,6 +223,21 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   [`strong_strong_pic_extreme_benchmark_history.md`](history/strong_strong_pic_extreme_benchmark_history.md),
   [`strong_strong_diagnostics_benchmark_history.md`](history/strong_strong_diagnostics_benchmark_history.md).
 - Audits / change records:
+  [`comprehensive_audit_2026_08_03.md`](history/comprehensive_audit_2026_08_03.md)
+  (repository audit against the Phase 0-18 protocol: **five confirmed defects
+  fixed**, every one of them with a passing test asserting the right invariant.
+  Three are concurrency bugs invisible to a single-threaded suite — the aperture
+  loss counter under-reporting by 53% at eight workers, and **two instances of
+  one Julia closure-capture trap** that silently corrupted the DEFAULT
+  `:equal_area` slice boundaries and the strong-strong luminosity accumulator on
+  any multi-threaded run. Read §3 for the mechanism (`if` does not open a scope
+  in Julia, `for` does, so a name shared between a `do` block and its enclosing
+  function is one `Core.Box` shared by every spawned worker) and for why the
+  sweep must search lowered code rather than text. The other two are
+  curved-frame kicks that are not gradients, governed by the Cauchy-Riemann
+  condition `Im f == 0` derived there. Carries an explicit coverage ledger
+  recording that only ~19% of `src/` was read line by line and that every CUDA
+  path is unaudited),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite

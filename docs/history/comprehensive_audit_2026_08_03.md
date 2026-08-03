@@ -1,0 +1,419 @@
+# Comprehensive Audit — 2026-08-03
+
+A repository-wide audit run against the protocol in
+[`docs/comprehensive_audit.md`](../comprehensive_audit.md). **Five confirmed
+defects, all fixed**, every one of them in code whose tests were passing.
+
+Two of the five are the same Julia closure-capture bug in two different files,
+and it is the most consequential thing in this document: **the default
+longitudinal slicing method and the strong-strong luminosity accumulator were
+both silently wrong, and irreproducible, on more than one CPU thread.** Neither
+had anything to do with the physics; both were a variable name reused between a
+`do` block and its enclosing function.
+
+The scope requested was the whole repository at full depth. It was not achieved,
+and Section 2 says exactly how far it got.
+
+## 1. Executive summary
+
+| # | severity | area | state |
+|---|---|---|---|
+| F1 | **Critical** | aperture loss counter races under CPU threads | fixed, verified |
+| F5 | **Critical** | `_threaded_histogram` closure capture → default `:equal_area` slicing silently wrong under threads | fixed, verified |
+| F6 | **Critical** | `_slice_slice_gaussian_kick!` closure capture → strong-strong luminosity accumulator corrupted under threads | fixed, verified |
+| F2 | **Major** | skew dipole in a curved frame is not symplectic | fixed, verified |
+| F3 | **Major** | curved solenoid + multipoles is not symplectic | fixed, verified |
+| F4 | Minor | two error messages print their own source text | fixed |
+
+**The pattern worth taking away.** Every one of these had a test asserting the
+right invariant, and every test passed:
+
+- F1's invariant (`sum(loss_counts) == dead`) was asserted and *could not* fail,
+  because CI ran single-threaded and the worker fan-out has a `nworkers == 1`
+  fast path that never spawns.
+- F5 was caught only because CI was changed to run threaded as part of fixing
+  F1. It had been wrong on every multi-threaded run.
+- F2 and F3 sat in configurations whose tests checked `isfinite` and `isbits`
+  but never symplecticity.
+
+This is a Phase 9 result, not a Phase 8 one. The suite was green throughout, and
+the reason it was green is that it was not exercising the concurrent paths at
+all.
+
+## 2. Declared scope and coverage ledger
+
+Requested: whole repository, deepest depth. Delivered: **~5,900 of 30,899 source
+lines read line by line (~19%)**, plus the executable verification in Section 6.
+
+The concern was raised before starting and the boundary was set by the session
+ending, not by the work being complete. This ledger is what makes the claim
+checkable.
+
+### Read in full, line by line
+
+`src/Octopus.jl` (76), `constants/Constants.jl` (32), `math/SpecialMath.jl`
+(161), `knowledge/Methods.jl` (75), `track/longitudinal.jl` (232),
+`elements/lattice_magnets.jl` (1192), `elements/solenoid.jl` (399),
+`elements/misalignment.jl` (293), `elements/ref_tilt.jl` (126),
+`elements/patch.jl` (209), `elements/rf_cavity.jl` (223),
+`elements/thin_elements.jl` (347), `elements/beam_line.jl` (561),
+`elements/aperture.jl` (540), `elements/crab_cavity.jl` (182),
+`elements/lorentz_boost.jl` (163), `elements/Elements.jl` (15),
+`tasks/BPMObserver.jl` (241), plus `Project.toml` and `.github/workflows/ci.yml`.
+
+### Read in part, in pursuit of F5/F6
+
+- `tasks/strongstrong/slicing.jl` — `_longitudinal_slices_equal_area`,
+  `_threaded_histogram`, `_threaded_indices_by_function`, `_slice_bin`,
+  `_live_z_stats`, `_live_flags`, `_chunk_bounds`, `_slices_from_boundaries`.
+- `tasks/strongstrong/gaussian.jl` — `_slice_slice_gaussian_kick!`.
+- `tasks/strongstrong/spectral.jl` — `_spectral_collide_longitudinal!`.
+- `policies/Policies.jl` — the worker fan-out (l. 205–254).
+- `track/phase6d_track.jl` — l. 55–124.
+- `docs/theory/solenoid.md` §13–15; `docs/todo.md` header.
+
+### Not inspected at all
+
+`Knowledge.jl` (885), `Contracts.jl` (1963), `Beam.jl` (721), `Knobs.jl` (896),
+`symbolic.jl` (285), `counter_rng.jl` (336), `Registry.jl` (209), `Tasks.jl`
+(753), `BeamObservers.jl` (1446), `strong_beam.jl` (1547), `linear6d.jl`,
+`linear_maps.jl`, `chromaticity_kick.jl`, `radiation.jl`, and the bulk of
+`src/tasks/strongstrong/` — `pic_cuda.jl` (5807), `interface.jl` (2093),
+`pic_cpu.jl` (1715), `gaussian_pic_cuda.jl` (1154), and the CUDA ports. Also
+untouched: all 43 files of `validation/`, `examples/`, and nine of eleven
+`docs/theory/` notes.
+
+**Every CUDA path is unaudited.** F5 and F6 are CPU-threading defects; the
+corresponding GPU kernels were not examined, and the same class of bug cannot
+occur there in the same way, but nothing here establishes that they are correct.
+
+### Equations independently derived
+
+1. All four longitudinal conventions and the six conversions between them —
+   `p_t = √((1+δ)² + 1/(β₀γ₀)²) − 1/β₀`, its exact inverse, `dδ/dp_t = 1/β`, and
+   `z₃ = βz₁ − s(β/β₀ − 1)` from `z₃ = s − βct`. Symplecticity shown exactly.
+2. The exact solenoid displacement `Δ(x+iy) = (W₀/p_s)(1−e^{−iκL})/(iκ)`,
+   reducing to the Larmor half-angle form.
+3. The curved-frame solenoid equations of motion from `H = −(1+hx)p_s`.
+4. The gradient condition for a multipole kick in a curved frame — the
+   derivation that produced F2 and F3.
+5. The crab-cavity kick as `∇V`.
+6. `_misalign_matrix` composition orders, `_survey_frame`, `_frame_change`,
+   `_patch_reference_length`.
+7. Faddeeva reflection, continued fraction, both asymptotic branches.
+8. `rf_strength = qV/(β₀E₀) = qV/(P₀c)`, `k = 2πf/c`.
+
+All physical constants checked against CODATA 2022.
+
+## 3. The closure-capture defect (F5, F6)
+
+### Mechanism
+
+In Julia a `do` block is a closure, and **`if` does not open a scope while
+`for`, `let` and `function` do**. So a name assigned at the top level of a `do`
+block, which is *also* assigned anywhere in the enclosing function body outside a
+`for`, is not a per-invocation local: it is one shared `Core.Box` captured by the
+closure. When that closure is handed to `Threads.@spawn` once per worker, every
+worker reads and writes the same box.
+
+`_threaded_histogram` had exactly this shape:
+
+```julia
+if nchunks == 1
+    counts = zeros(Int, bins)        # function scope: `if` does not scope
+    ...
+    return counts
+end
+local_counts = [zeros(Int, bins) for _ in 1:nchunks]
+_run_logical_workers(nchunks) do chunk, _
+    counts = local_counts[chunk]     # SAME variable, shared by all 8 workers
+    ...
+    counts[bin] += 1                 # increments whoever's array is in the box
+end
+counts = local_counts[1]             # function scope again
+```
+
+The per-chunk buffers were allocated correctly and the fan-out was correct. The
+bug was purely that `counts` did not mean what it looks like it means.
+
+### Evidence
+
+Everything downstream was eliminated first, which is what made the diagnosis
+certain rather than plausible:
+
+- `_run_logical_workers` **joins correctly**: 0/200 trials returned before a
+  worker finished, per-chunk buffers were 8 distinct objects, and the chunk
+  indices seen were exactly `[1..8]`.
+- `_chunk_bounds` covers `1:400` exactly once (`min = max = 1`).
+- `_live_z_stats` and the liveness flags were **stable** across 12 repeats
+  (`n_live = 397`, identical `zmin`/`zmax`).
+- `_threaded_histogram` was **not**: 12 identical calls returned 12 distinct
+  vectors, with totals of 392, 393, 394, 395, 396, 397 and **399** where the
+  answer is 397. Individual bins both gained and lost counts (`+3`, `−2`, `+1`,
+  `−1` at scattered indices). *Over*counting rules out a plain lost update and
+  points at shared mutable state.
+- A byte-for-byte replica of the function body in a separate file, reusing the
+  same name, **reproduced the corruption**; two replicas differing only in
+  using distinct names (`c`/`out`) were exact over 200 repeats. That is the
+  controlled pair.
+- After the rename, the library function was exact 10/10 while the unfixed
+  replica still corrupted — the same pair, the other way round.
+
+### Consequence
+
+`LongitudinalSlicing` defaults to `method = :equal_area`
+(`interface.jl:568`), and the histogram sets its slice boundaries. Measured
+against the same beam sliced without lost particles, the boundaries and weights
+disagreed by whole particles — weights differing by exact multiples of `1/397`,
+e.g. `[99,99,99,100]/397` against the correct `[99,98,99,101]/397` — and
+differently on every run. On the pristine tree the check failed **5 of 6 runs**
+at 8 threads and passed at 1 and 2.
+
+This affects any multi-threaded strong-strong run using the default slicing with
+more than one slice. It does not affect `nslices = 1` (the boundary loop is
+empty) and it did not affect the other four slicing methods.
+
+F6 is the same defect in `_slice_slice_gaussian_kick!`, where the shared box was
+the luminosity accumulator `lum`. The kicks themselves were unaffected —
+`_apply_slice_kick_one!` writes per particle — but the returned luminosity was
+corrupted. Luminosity is a headline observable of a beam-beam code.
+
+### Sweep
+
+Because the mechanism is a naming accident rather than a physics mistake, it was
+swept for mechanically rather than by eye: every `_run_logical_workers` caller
+(15 sites) had the lowered code of its enclosing function searched for
+`Core.Box`. Two carried one — `_slice_slice_gaussian_kick!` and
+`_spectral_collide_longitudinal!` — and a first, cruder text-based sweep produced
+six false positives, all of them variables assigned inside a `for` body, which
+*does* scope. The text sweep also **missed** `_spectral_collide_longitudinal!`.
+Use the `Core.Box` test, not a grep.
+
+`_spectral_collide_longitudinal!`'s box is **benign and was left alone**: the
+closure only *reads* `luminosity` (through `typeof`), and the write at
+`spectral.jl:1039` happens after `@sync` has joined. It is a type-instability
+smell, not a race. Recording it rather than "fixing" it, because changing it
+would be an unrelated refactor.
+
+After both fixes, 0 of 15 fan-out sites carry a mutable shared box.
+
+## 4. F1 — the aperture loss counter races under CPU threads
+
+`aperture.jl` incremented a shared counter non-atomically while
+`_run_logical_workers` fanned particles out over `Threads.@spawn`:
+
+| workers | real losses | counter | error |
+|---|---|---|---|
+| 1 | 187 889 | 187 889 | 0 |
+| 2 | 187 889 | 173 752 | −7.5% |
+| 4 | 187 889 | 127 629 | −32% |
+| 8 | 187 889 | **89 151** | **−53%** |
+
+Nondeterministic across identical repeats at 8 workers (87 845 / 94 335 /
+93 524 / 95 718 / 92 714 / 90 390). The per-particle `slots` were exact in every
+run, which confirms the private-slot design and localises the bug to one cell.
+
+Three compounding consequences:
+
+1. `log=false` — counters only — is the default when no log path is requested,
+   and is what a dynamic-aperture scan uses. There the counter is the *only*
+   output.
+2. `loss_summary` returns `unattributed = dead − logged`, documented to mean "a
+   particle died where you put no collimator". Since `logged` is the racing
+   quantity, **the diagnostic inverts**: an ordinary threaded run reports tens
+   of thousands of phantom unattributed deaths and warns about them.
+3. The per-collimator distribution — the primary collimation observable — was
+   wrong aperture by aperture, not merely in total.
+
+**Fixed** with a `Threads.SpinLock` around the increment: a lock rather than an
+atomic because `counts` must stay a plain `Array` (`loss_counts`, `Adapt` and
+the CUDA branch all depend on it) and Julia 1.12 needs an `AtomicMemory` for
+atomic element access. It is entered once per *loss*, not per particle.
+**Verified** exact and deterministic at 1/2/4/8 workers over six repeats.
+
+## 5. F2, F3 — curved-frame kicks that are not gradients
+
+Writing the kick sum as the analytic `f(w) = Σ(Kₙ + iKsₙ)wⁿ/n!`, `w = x + iy`,
+`_lattice_kick` applies `dpx = −L(1+hx)·Re f`, `dpy = +L(1+hx)·Im f`, so by
+Cauchy–Riemann
+
+```
+∂(dpx)/∂y − ∂(dpy)/∂x = −L·h·Im f .
+```
+
+The kick is a gradient — and the map symplectic — **iff `h·Im f ≡ 0`**, i.e. iff
+the content is a pure *normal* dipole.
+
+**F2**: `lattice_magnets.jl` tested `i >= 2`, exempting the whole dipole order.
+True for the normal dipole (`Ψ₂ = K₀h − hK₀ = 0`), false for the skew one
+(`Ψ₁ = Ks₀(1+hx)` seeds `Ψ₃ = h²Ks₀/(1+hx)`).
+
+| `L=1, h=b0=0.05` | before | after |
+|---|---|---|
+| bend, no multipoles | 2.51e-10 | 2.51e-10 |
+| **+ skew dipole** | **2.4990e-3** | **4.67e-11** |
+| + skew quadrupole | 9.16e-11 | 9.16e-11 |
+| + normal dipole error | 6.77e-11 | 6.77e-11 |
+| straight frame + skew dipole | 2.66e-11 | 2.66e-11 |
+
+Residual exactly linear in `ks[1]` and in `h`; predicted `L·h·Ks₀ = 2.5e-3`
+against measured `2.4990e-3` — four significant figures.
+
+**F3**: `solenoid.jl` passed `elem.h` into `_lattice_kick` with no routing at
+all, so *every* order was affected.
+
+| `L=1.3, ks=1.7, h=0.18` | before | after |
+|---|---|---|
+| pure solenoid | 4.38e-11 | 4.38e-11 |
+| + normal dipole | 2.39e-11 | 2.39e-11 |
+| **+ normal quadrupole** | **9.58e-4** | **5.13e-11** |
+| **+ skew dipole** | **3.18e-2** | **5.38e-11** |
+
+Refining `nst` did **not** remove it (16 → 64 → 256: 9.58e-4 → 9.62e-4 →
+9.62e-4), which is what distinguishes a structural non-gradient from integrator
+truncation.
+
+**This was not a known limitation.** `docs/theory/solenoid.md` §14 covers
+multipoles in a straight frame and claims "Symplectic at every step count"; §15
+covers curvature for a pure solenoid. The cross-product is never discussed, yet
+both keywords are accepted together and the element declares
+`SymplecticityContract`.
+
+Both fixed by routing through `_curved_potential_coeffs` via a shared predicate
+`_needs_curved_potential`. `Solenoid` gained a `psi` table and `MC`/`NC` type
+parameters mirroring `LatticeMagnet`; the kick is selected on `NC`, a type
+parameter, so the straight path keeps its kernel unchanged.
+
+## 6. F4 — two error messages interpolate nothing
+
+`lattice_magnets.jl:746` and `:759` escaped the interpolation
+(`"...got \$(repr(model))"`), printing the literal source text. Confirmed by
+grep to be the only two occurrences in `src/`. Fixed.
+
+## 7. Corrections to this audit's own analysis
+
+Recorded beside the conclusions, as the Absolute Rules require.
+
+1. **The first "finding" was mine, not the repository's.** The baseline run
+   failed with `Package ForwardDiff not found`, which looked like a suite that
+   could not run from a clean checkout. `Project.toml:34-40` declares it
+   correctly under `[extras]`/`[targets]`; running `test/runtests.jl` directly
+   under `--project=.` bypasses the test environment that `Pkg.test()` builds.
+   No defect.
+2. **I nearly misattributed F5 to my own fixes.** The threaded suite failed at
+   `runtests.jl:2904` after my element-layer changes, and a single run on the
+   stashed, pristine tree *passed* — which looked like a regression I had
+   introduced. It was luck: six repeats on the pristine tree failed five times.
+   A one-shot comparison against a nondeterministic bug is worthless, and I
+   almost drew a conclusion from one.
+3. **My first sweep for the closure bug was wrong in both directions.** A
+   text-based scan reported six collisions that were not (variables assigned
+   inside `for` bodies, which scope) and missed one that was. The `Core.Box`
+   test replaced it.
+
+## 8. Areas checked and found sound
+
+- **`track/longitudinal.jl`** — all four conventions and every conversion
+  independently derived; "exactly symplectic" verified as exact, not to order.
+- **`_solenoid_map`** — closed form, edge conversion, Larmor half-angle; `ks=0`
+  reduces to the exact drift.
+- **`misalignment.jl`** — both composition orders match their docstrings;
+  `_survey_frame` depends on `h` and never `b0`; the exit pair is built from
+  exit geometry rather than by inverting the entrance.
+- **`crab_cavity.jl`** — kick verified to be an exact gradient.
+- **`rf_cavity.jl`** — `TIME_ENERGY` sandwich symplectic by construction;
+  `strength = qV/(P₀c)` dimensionally correct; `phase = 0` gives no acceleration.
+- **`Constants.jl`** — CODATA 2022 to the digit; four irrationals to 40 places.
+- **`SpecialMath.jl`** — reflection, continued fraction, both asymptotics.
+- **`beam_line.jl`** — dissolve/retain, provenance, selector grammar, girder path.
+- **`BPMObserver.jl`** — rotation convention consistent with `_misalign_matrix`
+  and AT; noise keyed by turn and `rng_id`.
+- **`_run_logical_workers`, `_chunk_bounds`, `_threaded_indices_by_function`,
+  `_pic_deposit_threaded!`, `_slice_transverse_moments`,
+  `_spectral_collide_transverse!`** — checked for the F5 defect and clean.
+
+## 9. Test, contract and validation report
+
+RTX 4500 Ada (24 GB, driver 580.119.02), 128 CPUs, Julia 1.12.4.
+
+- `Pkg.test()` **baseline, single-threaded, before any change: passed**, exit 0.
+- `Pkg.test(julia_args=["--threads=8"])` **before the slicing fixes: FAILED** at
+  `runtests.jl:2904-2912` — which is how F5 surfaced.
+- `Pkg.test(julia_args=["--threads=8"])` **after all five fixes: passed**,
+  exit 0, 101 testsets, no failures and no errors. Per-testset counts against
+  the single-threaded baseline, showing the new assertions are live rather than
+  merely added:
+
+  | testset | baseline | final |
+  |---|---|---|
+  | Lattice magnets | 61 | 64 |
+  | Solenoid in a curved frame | 25 | 35 |
+  | Aperture loss record, counter and output | 20 | 21 |
+  | Lost particles are dropped from every slicing method | 56 | 56 |
+
+  The last row is the important one: the same 56 assertions, failing at 8
+  threads before F5 and passing after.
+- `validate_element_metadata()`, `validate_configuration_metadata()`: pass.
+- `registry_snapshot_markdown() == docs/registry_snapshot.md`: true.
+- Behavioural fingerprint, 40 element configurations × 3 phase-space points plus
+  all 16 ordered convention pairs: after F2/F3 **only the two
+  `sbend_skewdipole` rows moved**, bit-identical elsewhere; after F5/F6 the
+  fingerprint was **byte-identical** again, confirming the slicing fixes do not
+  touch the element layer.
+- 0 of 15 `_run_logical_workers` sites carry a mutable shared box.
+
+Not run, and therefore not claimed: `PTCConsistencyContract`,
+`ElementTrackingBackendConsistencyContract`, the strong-strong backend
+consistency contracts, every script in `validation/`, and any end-to-end
+luminosity comparison for F6 — that fix rests on the `Core.Box` evidence, code
+inspection, and the fact that the identical mechanism was empirically proven to
+corrupt in F5.
+
+## 10. Performance
+
+No hot path was slowed.
+
+- F2/F3 move affected magnets onto the tabulated-potential kick, the route
+  combined-function bends already took; unaffected magnets keep the closed form,
+  selected by a type parameter that folds to one branch.
+- F1 adds one uncontended spin-lock acquisition **per loss**, not per particle.
+- F5/F6 are renames. They also *remove* a `Core.Box`, so if anything the
+  affected loops get faster — untyped box loads become plain locals.
+
+One observation, measured **not** at all and therefore a hypothesis:
+`Patch._patch_map` (`patch.jl:103`) calls `_patch_rotation` inside the tracking
+kernel, recomputing three `sincos` and two 3×3 products per particle per turn,
+where `MisalignedElement` precomputes the equivalent at `compile_runtime`.
+
+## 11. Remaining risks
+
+1. **81% of `src/` was not read**, including all CUDA kernels and most of the
+   beam-beam solver stack.
+2. **Threading is under-tested, not just untested.** F1 and F5 were both
+   invisible to a single-threaded suite, and F5 was found only as a side effect
+   of fixing F1. CI now runs `--threads=4`, but the GPU paths and the remaining
+   solver stack have never been run under a concurrency-aware test.
+3. **The `h ≠ 0` × transverse-field cross-product should be swept generally**
+   against the `Im f ≡ 0` condition. F2 and F3 were the same bug in two files.
+4. **Contracts and `validation/` were not run** — the thinnest evidence here.
+5. **`_SOL_CURVED_ORDER` is not a public knob.** A production curved solenoid
+   with strong superimposed multipoles would need a convergence study and a
+   declared parameter.
+6. **BPM noise repeats within a turn** — `bpm_reading` keys the RNG on
+   `(turn, rng_id)`, so one observer placed twice draws the same noise at both.
+   Unverified; recorded rather than fixed.
+
+## 12. Change log
+
+| file | change | finding |
+|---|---|---|
+| `src/tasks/strongstrong/slicing.jl` | rename the closure's shared accumulator to `chunk_counts` | F5 |
+| `src/tasks/strongstrong/gaussian.jl` | rename the closure's shared accumulator to `chunk_lum` | F6 |
+| `src/elements/aperture.jl` | spin-lock around the CPU loss counter | F1 |
+| `.github/workflows/ci.yml` | run tests with `--threads=4` | F1 |
+| `test/runtests.jl` | note + single-thread skip marker on the counter invariant | F1 |
+| `src/elements/lattice_magnets.jl` | `_needs_curved_potential`; `combined` uses it; corrected the `_lattice_kick` derivation comment | F2 |
+| `test/runtests.jl` | three curved-frame bend cases in the symplecticity sweep | F2 |
+| `src/elements/solenoid.jl` | `psi` table, `MC`/`NC` type parameters, `_sol_kick` | F3 |
+| `test/runtests.jl` | symplecticity across five multipole kinds × two `nst`, replacing an `isfinite` check | F3 |
+| `src/elements/lattice_magnets.jl` | two error messages un-escaped | F4 |
