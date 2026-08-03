@@ -8,7 +8,8 @@ export ContractResult, passed, validate,
        HighEnergyWeakStrongLimitContract,
        PTCConsistencyContract,
        ElementParameterEffectivenessContract,
-       CoherentModePhysicsContract
+       CoherentModePhysicsContract,
+       SolverOptionEffectivenessContract
 
 """
     ContractResult(passed, message; residual=nothing, metrics=Dict())
@@ -1976,4 +1977,397 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
         "$(length(skipped)) kinds without a probe)"; metrics=metrics)
     return ContractResult(false,
         "declared but not consumed: " * join(sort(ignored), ", "); metrics=metrics)
+end
+
+# ---------------------------------------------------------------------------
+# Solver option effectiveness
+# ---------------------------------------------------------------------------
+
+"""
+Base keywords per solver, chosen so conditional options sit in a configuration
+where they can act: `grid_extent_sigma` needs `grid_extent = :sigma`, the
+slice-pair Green ratios need `green_cache = :slice_pair`, and every slicing
+option needs more than one slice.
+"""
+_default_solver_option_probes() = Dict{Symbol,Any}(
+    :GaussianPoissonSolver => (
+        slicing=LongitudinalSlicing(nslices=3, method=:normal_quantile),),
+    :PICPoissonSolver => (
+        grid=(24, 24), green_cache=:slice_pair, grid_extent=:sigma,
+        slicing=LongitudinalSlicing(nslices=3, method=:normal_quantile)),
+    # No `grid_extent = :sigma` here: the hybrid rejects it outright, since it
+    # sizes its own box. The PIC probe keeps it so `grid_extent_sigma` can act.
+    :GaussianPICPoissonSolver => (
+        grid=(24, 24), green_cache=:slice_pair, deposit_method=:TSC,
+        slicing=LongitudinalSlicing(nslices=3, method=:normal_quantile)),
+    :SpectralPoissonSolver => (
+        grid=(24, 24),
+        slicing=LongitudinalSlicing(nslices=3, method=:normal_quantile)),
+)
+
+"""
+A valid non-default value for each declared solver option.
+
+There is no generic perturbation for a solver option the way there is for a
+numeric element parameter: most are `Symbol` enumerations whose alternatives are
+constrained by the constructor. The table is explicit for that reason, and the
+contract **fails** when an option has neither an entry here nor a stated reason
+in `DEFAULT_INACTIVE_SOLVER_OPTIONS`, so it cannot silently fall behind the
+schema.
+"""
+_pic_family_alternatives() = Dict{Symbol,Any}(
+    :kbb1 => 2.0e-8, :kbb2 => 2.0e-8, :luminosity_scale => 3.0e7,
+    :grid => (32, 32),
+    :deposit_method => :TSC,
+    :green_type => :standard,
+    :green_cache => :none,
+    :field_derivative => :fourth,
+    :slice_interpolation => :quadratic,
+    :interaction_grid => :source_slice,
+    :grid_extent => :extrema,
+    :grid_extent_sigma => 4.0,
+    :min_transverse_extent => (2.0e-3, 2.0e-3),
+    :grid_quantize => 0.125,
+    :slice_pair_green_min_ratio => 0.9,
+    :slice_pair_green_growth => 0.6,
+    :longitudinal_kick => false,
+    :batch_mode => :sequential,
+    :cuda_async => false,
+    :cuda_batch_fft => false,
+    :cuda_wavefront_fft => false,
+    :cuda_indexed_wavefront => false,
+    :luminosity_grid => (32, 32),
+    :luminosity_deposit_method => :TSC,
+    :luminosity_schedule => EveryNSteps(step=2),
+    :slicing => LongitudinalSlicing(nslices=4, method=:equal_count),
+    :slicing1 => LongitudinalSlicing(nslices=5, method=:equal_width),
+    :slicing2 => LongitudinalSlicing(nslices=5, method=:equal_width),
+    :backend_configurations => (CUDAPICLaunchConfig(kick_threads=64),),
+)
+
+_default_solver_option_alternatives() = Dict{Symbol,Any}(
+    :GaussianPoissonSolver => Dict{Symbol,Any}(
+        :kbb1 => 2.0e-8, :kbb2 => 2.0e-8, :luminosity_scale => 3.0e7,
+        :slicing => LongitudinalSlicing(nslices=4, method=:equal_count),
+        :slicing1 => LongitudinalSlicing(nslices=5, method=:equal_width),
+        :slicing2 => LongitudinalSlicing(nslices=5, method=:equal_width),
+        :min_sigma => 1.0e-3,
+        :gaussian_when_luminosity => 1,
+        :ignore_centroid1 => true, :ignore_centroid2 => true,
+        :longitudinal_kick => false,
+        :virtual_drift => :chromatic,
+        :include_sigma_xy => true,
+        :batch_mode => :sequential,
+    ),
+    :PICPoissonSolver => _pic_family_alternatives(),
+    :GaussianPICPoissonSolver => merge(_pic_family_alternatives(), Dict{Symbol,Any}(
+        :margin_sigma => 2.0, :neutralize => false, :coupling_tol => 0.0,
+        # The probe sets :TSC (the docstring recommends it for the hybrid), so
+        # these alternatives have to move away from the probe, not from the
+        # schema default -- luminosity_deposit_method inherits deposit_method,
+        # so :TSC would have resolved to the probe's own value.
+        :deposit_method => :CIC,
+        :luminosity_deposit_method => :CIC,
+    )),
+    :SpectralPoissonSolver => Dict{Symbol,Any}(
+        :kbb1 => 2.0e-8, :kbb2 => 2.0e-8, :luminosity_scale => 3.0e7,
+        :grid => (32, 32),
+        :domain_factor => 8.0,
+        :min_domain_halfwidth => 2.0e-3,
+        :method => :grid_free,
+        :longitudinal_kick => false,
+        :field_precision => :single,
+        :luminosity_schedule => EveryNSteps(step=2),
+        :slicing => LongitudinalSlicing(nslices=4, method=:equal_count),
+        :slicing1 => LongitudinalSlicing(nslices=5, method=:equal_width),
+        :slicing2 => LongitudinalSlicing(nslices=5, method=:equal_width),
+    ),
+)
+
+"""
+`(solver, option)` pairs that cannot be judged by this contract, each with the
+reason. Being listed here is a claim that the option is covered elsewhere or has
+no observable this contract can form -- not that it is inert.
+"""
+const DEFAULT_INACTIVE_SOLVER_OPTIONS = Dict{Tuple{Symbol,Symbol},String}(
+    (:SpectralPoissonSolver, :field_precision) =>
+        "CUDA field-solve precision; the CPU path is always double, and CPU/CUDA parity covers it",
+    # Both are rejected outright by the hybrid with a message naming the
+    # supported paths, which is the correct handling of an unsupported request
+    # and leaves nothing for this contract to observe.
+    (:GaussianPICPoissonSolver, :interaction_grid) =>
+        "GaussianPICPoissonSolver throws for :source_slice and :node; only the CPU PIC path implements them",
+    (:GaussianPICPoissonSolver, :slice_interpolation) =>
+        "GaussianPICPoissonSolver throws for :quadratic; only the CPU PIC path implements it",
+    (:GaussianPICPoissonSolver, :grid_extent) =>
+        "GaussianPICPoissonSolver sizes its box from margin_sigma and now throws rather than dropping a non-default estimator",
+    (:GaussianPICPoissonSolver, :grid_extent_sigma) =>
+        "half-width of an estimator GaussianPICPoissonSolver does not use; rejected with grid_extent itself",
+    # Both ratios steer when a cached Green entry is rebuilt. Their effect is on
+    # the cache hit/miss/rebuild history rather than on one collision's output,
+    # and StrongStrongPICBackendConsistencyContract already compares that history
+    # between CPU and CUDA and requires at least one reuse.
+    (:PICPoissonSolver, :slice_pair_green_min_ratio) =>
+        "steers Green-cache rebuild decisions; observable in the cache history, which StrongStrongPICBackendConsistencyContract compares",
+    (:GaussianPICPoissonSolver, :slice_pair_green_min_ratio) =>
+        "steers Green-cache rebuild decisions; observable in the cache history, which StrongStrongPICBackendConsistencyContract compares",
+)
+
+"""
+    SolverOptionEffectivenessContract(; n_particles=256, probes=..., alternatives=...,
+                                      inactive=..., cuda_threads=64)
+
+Check that every declared strong-strong solver option reaches a runtime
+consumer — the solver-level analogue of
+[`ElementParameterEffectivenessContract`](@ref).
+
+For each solver and each option in its `solver_option_schema`, the option is set
+to a declared non-default value and one collision is run against a baseline:
+
+- **Physics and numerical categories** (`:physics`, `:numerical`,
+  `:physics_override`, `:accuracy_performance`, `:diagnostic`) must change the
+  observable — the six coordinate arrays of both beams *or* the returned
+  luminosity. Luminosity is part of the observable because
+  `gaussian_when_luminosity`, `luminosity_grid` and `luminosity_deposit_method`
+  are meant to move it and nothing else.
+- **Execution categories** (`:execution`, `:performance`) must *not* change the
+  observable — that is what makes them execution choices — but must appear in an
+  execution receipt named by the option's declared `consumer`.
+
+The execution half is the part that matters. `GaussianPICPoissonSolver`
+discarded every `CUDAPICLaunchConfig` and the inherited policy thread count
+while `configuration_report` called them resolved, because the installer tested
+`isa` against a solver that *composes* `PICPoissonSolver` rather than subtyping
+it; and a CUDA-only `batch_mode` on the soft-Gaussian solver was inactive on CPU
+with no warning anywhere. Neither is visible to a coordinate comparison, and
+`validate_configuration_metadata()` passed throughout — it checks that a
+consumer is named, not that it runs.
+
+An option with neither an alternative nor a stated reason **fails** the
+contract, so the tables cannot fall behind the schema.
+
+CUDA-only options are checked on CUDA; if no device is visible the contract
+returns `status=:skipped` rather than reporting an unrun check as passed.
+"""
+Base.@kwdef struct SolverOptionEffectivenessContract <: AbstractImplementationContract
+    n_particles::Int = 256
+    seed::UInt64 = UInt64(123456789)
+    probes::Dict{Symbol,Any} = _default_solver_option_probes()
+    alternatives::Dict{Symbol,Any} = _default_solver_option_alternatives()
+    inactive::Dict{Tuple{Symbol,Symbol},String} = DEFAULT_INACTIVE_SOLVER_OPTIONS
+    cuda_threads::Int = 64
+end
+
+description(::Type{SolverOptionEffectivenessContract}) =
+    "Checks that every declared strong-strong solver option reaches a runtime consumer."
+
+_solver_contract_types() = (GaussianPoissonSolver, PICPoissonSolver,
+                            GaussianPICPoissonSolver, SpectralPoissonSolver)
+
+_solver_option_is_execution(meta) = meta.category in (:execution, :performance)
+
+"""
+Run two consecutive collisions and return `(coordinates, luminosities, receipts)`.
+
+Two, not one, and through the `TrackingContext` method rather than the bare
+`collide!`, because a single context-free collision cannot see two whole classes
+of option. `luminosity_schedule` is evaluated against a context, and the
+context-free path passes `nothing`, which means "every turn"; and the slice-pair
+Green cache has nothing to reuse until a second collision, so
+`slice_pair_green_min_ratio` and `slice_pair_green_growth` never bind. Both
+looked like ignored options until the probe was fixed rather than the code.
+"""
+function _solver_contract_observable(solver, base1, base2, backend)
+    beam1 = _strong_strong_contract_beam(base1, backend)
+    beam2 = _strong_strong_contract_beam(base2, backend)
+    audit = ExecutionAudit()
+    luminosities = Float64[]
+    with_execution_audit(audit) do
+        base_ctx = TrackingContext()
+        for turn in 0:1
+            push!(luminosities,
+                  Float64(collide!(solver, beam1, beam2, backend,
+                                   with_turn(base_ctx, turn))))
+        end
+    end
+    coords = vcat((Array(a) for a in coordinate_arrays(beam1.rep))...,
+                  (Array(a) for a in coordinate_arrays(beam2.rep))...)
+    return coords, luminosities, execution_receipts(audit)
+end
+
+_solver_contract_moved(a, b) =
+    a[1] != b[1] || !isequal(a[2], b[2])
+
+# Did a receipt named by the option's declared consumer carry the requested
+# value? For :solver_runtime the whole configuration travels in the receipt; the
+# specialised consumers publish their own fields.
+function _solver_contract_receipt_carries(receipts, consumer::Symbol,
+                                          name::Symbol, value)
+    for r in receipts
+        r.consumer === consumer || continue
+        if haskey(r.values, :configuration)
+            cfg = r.values.configuration
+            haskey(cfg, name) && isequal(getproperty(cfg, name), value) && return true
+        end
+        haskey(r.values, name) && isequal(getproperty(r.values, name), value) && return true
+        # cuda_pic_launch publishes one receipt per family rather than per option
+        consumer === :cuda_pic_launch && haskey(r.values, :threads) && return true
+    end
+    return false
+end
+
+function validate(contract::SolverOptionEffectivenessContract; kwargs...)
+    old_seed = global_rng_seed()
+    old_method = global_rng_method()
+    try
+        return _validate_solver_options(contract)
+    finally
+        set_global_rng!(seed=old_seed, method=old_method)
+    end
+end
+
+function _validate_solver_options(contract::SolverOptionEffectivenessContract)
+    metrics = Dict{Symbol,Any}()
+    failures = String[]
+    checked = 0
+    deferred_cuda = Tuple{Symbol,Symbol}[]
+    # Pin the RNG, as every other strong-strong contract does. Without this the
+    # probe beams depend on whatever global state the caller left behind: this
+    # contract passed standalone and failed inside the test suite, where earlier
+    # testsets had moved the global seed. A contract whose result depends on its
+    # caller is not a contract.
+    set_global_rng!(seed=contract.seed, method=:philox)
+    base1, base2 = _strong_strong_contract_base_beams(
+        StrongStrongPICBackendConsistencyContract(n_particles=contract.n_particles))
+
+    for T in _solver_contract_types()
+        kind = nameof(T)
+        probe = get(contract.probes, kind, NamedTuple())
+        alternatives = get(contract.alternatives, kind, Dict{Symbol,Any}())
+        baseline_solver = T(; probe...)
+        baseline = _solver_contract_observable(baseline_solver, base1, base2,
+                                               CPUThreadsBackend)
+        for (name, meta) in pairs(solver_option_schema(T))
+            haskey(contract.inactive, (kind, name)) && continue
+            if !haskey(alternatives, name)
+                push!(failures,
+                      "$(kind).$(name) has no declared alternative and no stated reason")
+                continue
+            end
+            if !(CPUThreadsBackend in meta.supported_backends)
+                push!(deferred_cuda, (kind, name))
+                continue
+            end
+            if haskey(NamedTuple(probe), name) &&
+               isequal(getproperty(NamedTuple(probe), name), alternatives[name])
+                push!(failures,
+                      "$(kind).$(name) declares an alternative equal to its own probe value")
+                continue
+            end
+            solver = try
+                T(; merge(NamedTuple(probe), NamedTuple((name => alternatives[name],)))...)
+            catch err
+                push!(failures, "$(kind).$(name) rejected its declared alternative: " *
+                                first(split(sprint(showerror, err), '\n')))
+                continue
+            end
+            observed = try
+                _solver_contract_observable(solver, base1, base2, CPUThreadsBackend)
+            catch err
+                push!(failures, "$(kind).$(name) threw during collision: " *
+                                first(split(sprint(showerror, err), '\n')))
+                continue
+            end
+            checked += 1
+            moved = _solver_contract_moved(baseline, observed)
+            if _solver_option_is_execution(meta)
+                moved && push!(failures,
+                    "$(kind).$(name) is declared $(meta.category) but changed the collision result")
+                _solver_contract_receipt_carries(observed[3], meta.consumer, name,
+                                                 alternatives[name]) ||
+                    push!(failures,
+                        "$(kind).$(name) reached no receipt named by its consumer $(meta.consumer)")
+            else
+                moved || push!(failures,
+                    "$(kind).$(name) is declared $(meta.category) but changed nothing " *
+                    "(coordinates and luminosity both identical)")
+            end
+        end
+    end
+
+    metrics[:cpu_options_checked] = checked
+    metrics[:cuda_only_options] = length(deferred_cuda)
+
+    available, reason = _contract_backends_available(CUDABackend)
+    if !available
+        metrics[:cuda_status] = :skipped
+        isempty(failures) || return ContractResult(false,
+            "solver options did not reach their consumers: " * join(sort(failures), "; ");
+            metrics=metrics)
+        return ContractResult(:skipped,
+            "$(checked) CPU-visible solver options reached a consumer; " *
+            "$(length(deferred_cuda)) CUDA-only options were skipped: $(reason)";
+            metrics=metrics)
+    end
+
+    # The CUDA half: a launch configuration must reach the launch families, for
+    # every solver that has a launch surface. This is the S1 regression.
+    cuda_checked = 0
+    for T in _solver_contract_types()
+        kind = nameof(T)
+        probe = get(contract.probes, kind, NamedTuple())
+        # Decide what to test from the SCHEMA, never from `_pic_launch_solver`.
+        # Asking the installer which solvers have a launch surface makes the
+        # check circular: the defect this contract exists to catch is precisely
+        # that the installer failed to recognise a solver, and a first version
+        # written that way silently skipped GaussianPICPoissonSolver instead of
+        # failing it. The declaration is the obligation.
+        haskey(solver_option_schema(T), :backend_configurations) || continue
+        config = CUDAPICLaunchConfig(
+            gather_scatter_threads=contract.cuda_threads,
+            deposition_threads=contract.cuda_threads,
+            kick_threads=contract.cuda_threads,
+            field_threads=contract.cuda_threads,
+            spectral_threads=contract.cuda_threads,
+            green_threads=contract.cuda_threads,
+            luminosity_threads=contract.cuda_threads)
+        # The CPU probe sets `grid_extent = :sigma` so `grid_extent_sigma` can
+        # act; the CUDA PIC backend rejects it outright rather than ignoring it
+        # silently, which is the behaviour this whole contract is about. Use the
+        # CUDA-supported estimator here -- the launch families are what is under
+        # test, and they do not depend on it.
+        solver = T(; merge(NamedTuple(probe),
+                           (grid_extent=:extrema, backend_configurations=(config,)))...)
+        ip = StrongStrongCollision(:solver_option; poisson_solver=solver)
+        beam1 = _strong_strong_contract_beam(base1, CUDABackend)
+        beam2 = _strong_strong_contract_beam(base2, CUDABackend)
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            execute!(StrongStrongTask((ip,), (ip,);
+                policy=CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=256))),
+                beam1, beam2; turns=1)
+            CUDA.synchronize()
+        end
+        receipts = filter(r -> r.consumer === :cuda_pic_launch,
+                          execution_receipts(audit))
+        cuda_checked += 1
+        if isempty(receipts)
+            push!(failures,
+                "$(kind) emitted no :cuda_pic_launch receipt, so its CUDAPICLaunchConfig " *
+                "never reached a launch family")
+        elseif !all(r -> r.values.threads == contract.cuda_threads, receipts)
+            push!(failures,
+                "$(kind) launched with thread counts other than the requested " *
+                "$(contract.cuda_threads)")
+        end
+    end
+    metrics[:cuda_launch_solvers_checked] = cuda_checked
+
+    isempty(failures) || return ContractResult(false,
+        "solver options did not reach their consumers: " * join(sort(failures), "; ");
+        metrics=metrics)
+    return ContractResult(true,
+        "every declared solver option reached a runtime consumer " *
+        "($(checked) checked on CPU, $(cuda_checked) launch surfaces on CUDA)";
+        metrics=metrics)
 end
