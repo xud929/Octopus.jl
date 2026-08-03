@@ -939,7 +939,16 @@ end
             ("bend with h != b0", SBendSpec(L=1.1, h=0.18, b0=0.23, nst=2)),
             ("bend with pole face", SBendSpec(L=1.1, h=0.18, b0=0.18, e1=0.09, e2=0.09,
                                               fint1=0.5, fint2=0.5, hgap1=0.03, hgap2=0.03,
-                                              bend_fringe=true, nst=2)))
+                                              bend_fringe=true, nst=2)),
+            # A curved frame makes the straight multipole kick a non-gradient
+            # unless the content is a PURE NORMAL dipole: by Cauchy-Riemann,
+            # d(dpx)/dy - d(dpy)/dx = -L h Im f. The skew dipole is the case
+            # that looks exempt and is not -- its curved potential does not
+            # terminate, Psi_1 = Ks0 (1+hx) seeding Psi_3 = h^2 Ks0/(1+hx) --
+            # and tracking it straight cost L h Ks0, measured 2.5e-3.
+            ("bend with skew dipole", SBendSpec(L=1.1, h=0.18, b0=0.18, ks=(0.05,), nst=2)),
+            ("bend with skew quadrupole", SBendSpec(L=1.1, h=0.18, b0=0.18, k1s=0.4, nst=2)),
+            ("bend with normal dipole error", SBendSpec(L=1.1, h=0.18, b0=0.18, kn=(0.05,), nst=2)))
         J = cs_jacobian(compile_runtime(spec))
         @test maximum(abs, J' * S6 * J - S6) < 1.0e-13
     end
@@ -3108,6 +3117,14 @@ end
     losses = loss_records(record)
     dead = count_dead(beam.rep)
     @test dead > 0
+    # NOTE: `sum(loss_counts(record)) == dead` below is a CONCURRENCY assertion
+    # as much as a bookkeeping one, and it only bites when this process has more
+    # than one thread -- `_run_logical_workers` never spawns for a single
+    # worker. It passed for months against a counter that lost 53% of its
+    # increments at 8 workers. CI now runs `--threads=4` so that this line means
+    # something; if you are running it by hand, use `julia -t` or it proves
+    # nothing about the shared counter.
+    @test Threads.nthreads(:default) > 1 skip = (Threads.nthreads(:default) == 1)
     # Exactly one record per dead particle: no double-logging across turns or
     # across the two apertures, and no loss missed.
     @test length(losses.particle_id) == dead
@@ -3520,6 +3537,28 @@ end
     # Curvature composes with superimposed multipoles.
     @test isbits(sol(L=1.3, ks=1.7, h=0.18, k1=0.6, nst=8))
     @test all(isfinite, collect(sol(L=1.3, ks=1.7, h=0.18, k1=0.6, nst=8)(u0...)))
+
+    # ...and it must stay SYMPLECTIC while doing so, which `isfinite` never
+    # checked. A curved frame makes the straight multipole kick a non-gradient
+    # for everything except a pure normal dipole -- by Cauchy-Riemann,
+    # d(dpx)/dy - d(dpy)/dx = -L h Im f -- so the kick has to differentiate the
+    # tabulated curved potential instead. Tracked straight it cost 9.6e-4 with
+    # k1 and 3.2e-2 with k0s, neither of which `nst` removes, because it is a
+    # structural error and not truncation. The pure normal dipole is the one
+    # exemption and is included to pin that it stays on the cheap path.
+    for (name, kw) in (("normal quad", (k1=0.6,)), ("skew quad", (k1s=0.6,)),
+                       ("skew dipole", (k0s=0.2,)), ("normal dipole", (k0=0.2,)),
+                       ("sextupole", (k2=3.0,)))
+        for n in (8, 32)
+            el = sol(; L=1.3, ks=1.7, h=0.18, nst=n, kw...)
+            hh = 1.0e-7; M = zeros(6, 6)
+            for j in 1:6
+                up = collect(u0); dn = collect(u0); up[j] += hh; dn[j] -= hh
+                M[:, j] = (collect(el(up...)) .- collect(el(dn...))) ./ (2hh)
+            end
+            @test maximum(abs.(M' * J * M .- J)) < 1.0e-7
+        end
+    end
 end
 
 @testset "Solenoid agrees on CPU and CUDA" begin
