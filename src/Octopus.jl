@@ -43,6 +43,10 @@ include("examples/Examples.jl")
 
 # Generic tracking interface.
 include("track/Track.jl")
+# Longitudinal conventions and the exact conversions between them (theory note
+# Section 2). Before the elements, because a map may be written in whichever
+# pair makes it simplest and conjugated back into the tracking one.
+include("track/longitudinal.jl")
 
 # Element specs, runtime maps, and element-local tracking implementations.
 include("elements/Elements.jl")

@@ -128,6 +128,36 @@ and ours is not AT's $ct$ nor MAD-X's $t$.
 
 ## 6. Proposed design
 
+**Step 0 — the coordinate conversions. DONE.**
+
+The sandwich the cavity needs is
+[`lattice_hamiltonian_and_conventions.md`](lattice_hamiltonian_and_conventions.md)
+§2.2, which had already specified it exactly and even anticipated this use:
+*"Applied once per cavity rather than once per magnet, that is free."* It is now
+implemented in `src/track/longitudinal.jl`:
+
+```julia
+z1, pt = convert_longitudinal(PATHLENGTH_DELTA => TIME_ENERGY, z, δ;
+                              beta0, gamma0)
+```
+
+Written as a `Pair` so the direction is unmistakable at the call site. All four
+pairs are named singletons carrying the note's numbering, `beta0`/`gamma0` come
+from `reference_beta_gamma(E0, mc2)`, and `s` enters only for
+`PATHLENGTH_DELTA`, isolating the PTC `TIME=FALSE` offset trap.
+
+Verified: round trip over every ordered pair at three energies and two arc
+positions to 4.4e-16; **exactly symplectic**, `|det J - 1| ≤ 4.4e-16`, which is
+the note's generating-function claim confirmed numerically rather than assumed;
+every identity of §2.2 term by term.
+
+This settles the sandwich question. The cavity body lives in `TIME_ENERGY` —
+which *is* the $(t, E)$ pair, $z_1 = -c\Delta t$ and $p_t = \Delta E/(P_0c)$ —
+so the body is `pt += strength * sin(k*z1 + phase)` with no $\beta$ factor in
+it at all. Every $\beta$ lives in the two wrappers, where §2.2 put them, and
+Scope B becomes an **asymmetric** sandwich: same body, exit wrapper at a
+different $P_0$.
+
 **Scope A — `RFCavitySpec`, constant reference energy. Do this now.**
 
 It closes the longitudinal plane, gives synchrotron motion and the bucket,
@@ -137,6 +167,11 @@ unblocks Twiss, and needs no reference machinery whatsoever.
 RFCavitySpec(; voltage, frequency | harmon, phase=0, L=0, e0)
 ```
 
+- **Body in `TIME_ENERGY`, conjugated by §2.2**, per Step 0 above.
+- **Two dimensionless numbers, not one**: a strength and $\beta_0$ (equivalently
+  $\gamma_0$). An earlier draft said one; that is the ultrarelativistic
+  approximation, fine for an electron ring and not for RHIC. Both are
+  dimensionless and derived at setup, so §6a's principle is untouched.
 - **Thick cavity by drift–kick–drift**, as AT does: half drift, longitudinal
   kick, half drift. `L = 0` is the thin limit and should be exact, not a
   special case bolted on.

@@ -1828,6 +1828,85 @@ end
     end
 end
 
+@testset "Longitudinal conventions convert exactly" begin
+    # docs/theory/lattice_hamiltonian_and_conventions.md Section 2, implemented.
+    # The claim being tested is not "accurate" but EXACT: all four pairs come
+    # from one (q_t, p_t) by generating functions, so every conversion is
+    # symplectic at any amplitude, not to first order in delta.
+    convs = (TIME_ENERGY, SIGMA_PSIGMA, PATHLENGTH_DELTA, TIME_DELTA)
+    cases = (reference_beta_gamma(275e9, PMASS_EV),      # proton, beta0 < 1 visibly
+             reference_beta_gamma(24e9, PMASS_EV),       # proton, lower
+             reference_beta_gamma(10e9, EMASS_EV))       # electron, ultrarelativistic
+
+    @test convention_number.(convs) == (1, 2, 3, 4)
+    @test tracking_convention() === PATHLENGTH_DELTA     # Octopus tracks #3
+
+    # round trip, every ordered pair, with and without an arc offset
+    for (b0, g0) in cases, s in (0.0, 37.0), a in convs, b in convs
+        z1, p1 = convert_longitudinal(PATHLENGTH_DELTA => a, 1.3e-3, 8.0e-4;
+                                      beta0=b0, gamma0=g0, s=s)
+        z2, p2 = convert_longitudinal(a => b, z1, p1; beta0=b0, gamma0=g0, s=s)
+        z3, p3 = convert_longitudinal(b => a, z2, p2; beta0=b0, gamma0=g0, s=s)
+        @test max(abs(z3 - z1), abs(p3 - p1)) < 1.0e-15
+    end
+
+    # exactly symplectic: the 2x2 longitudinal Jacobian has unit determinant
+    for (b0, g0) in cases, a in convs, b in convs
+        a === b && continue
+        J = zeros(2, 2)
+        for j in 1:2
+            zc = complex(1.3e-3, j == 1 ? 1e-30 : 0.0)
+            pc = complex(8.0e-4, j == 2 ? 1e-30 : 0.0)
+            o = convert_longitudinal(a => b, zc, pc; beta0=b0, gamma0=g0, s=37.0)
+            J[:, j] = [imag(o[1]), imag(o[2])] ./ 1e-30
+        end
+        @test abs(J[1, 1] * J[2, 2] - J[1, 2] * J[2, 1] - 1) < 1.0e-14
+    end
+
+    # the note's own identities, term by term
+    let (b0, g0) = reference_beta_gamma(24e9, PMASS_EV), z = 1.3e-3, pz = 8.0e-4
+        z1, pt = convert_longitudinal(PATHLENGTH_DELTA => TIME_ENERGY, z, pz; beta0=b0, gamma0=g0)
+        z2, ps = convert_longitudinal(PATHLENGTH_DELTA => SIGMA_PSIGMA, z, pz; beta0=b0, gamma0=g0)
+        z4, d4 = convert_longitudinal(PATHLENGTH_DELTA => TIME_DELTA, z, pz; beta0=b0, gamma0=g0)
+        beta = particle_beta(PATHLENGTH_DELTA, pz; beta0=b0, gamma0=g0)
+        @test z2 ≈ b0 * z1 atol = 1.0e-18
+        @test z4 ≈ beta * z1 atol = 1.0e-18
+        @test ps ≈ pt / b0 atol = 1.0e-18
+        @test d4 ≈ pz atol = 1.0e-15               # #3 and #4 share a momentum
+        @test beta ≈ (1 + pz) / (1 / b0 + pt) atol = 1.0e-15
+        # an on-momentum particle travels at the reference velocity, exactly
+        @test particle_beta(PATHLENGTH_DELTA, 0.0; beta0=b0, gamma0=g0) == b0
+    end
+
+    # `s` shifts ONLY PathLengthDelta -- its coordinate is s - l rather than a
+    # pure time. That is the PTC `TIME=FALSE` offset the note flags, isolated
+    # here so a comparison cannot pick it up by accident.
+    let (b0, g0) = reference_beta_gamma(24e9, PMASS_EV)
+        for c in convs
+            a = convert_longitudinal(TIME_ENERGY => c, 1.3e-3, 8.0e-4; beta0=b0, gamma0=g0, s=0.0)
+            b = convert_longitudinal(TIME_ENERGY => c, 1.3e-3, 8.0e-4; beta0=b0, gamma0=g0, s=37.0)
+            if c === PATHLENGTH_DELTA
+                @test abs(b[1] - a[1]) > 1.0e-6
+            else
+                @test b[1] == a[1]
+            end
+        end
+    end
+
+    # reference kinematics, and the error a kinetic energy would produce
+    @test reference_gamma(275e9, PMASS_EV) ≈ 275e9 / PMASS_EV
+    @test reference_beta(10e9, EMASS_EV) < 1
+    @test reference_beta(1e12, EMASS_EV) > reference_beta(10e9, EMASS_EV)
+    @test_throws ArgumentError reference_beta(0.5 * PMASS_EV, PMASS_EV)
+
+    # differentiable, like every other map: dz1/dz = 1/beta for #3 -> #1
+    let (b0, g0) = reference_beta_gamma(24e9, PMASS_EV), h = 1e-30, pz = 8.0e-4
+        o = convert_longitudinal(PATHLENGTH_DELTA => TIME_ENERGY, complex(1.3e-3, h), pz;
+                                 beta0=b0, gamma0=g0)
+        @test imag(o[1]) / h ≈ 1 / particle_beta(PATHLENGTH_DELTA, pz; beta0=b0, gamma0=g0) rtol = 1e-12
+    end
+end
+
 @testset "ForwardDiff differentiates the lattice" begin
     # Octopus takes NO runtime dependency on ForwardDiff. It works because the
     # element layer is generic in its number type, so this testset is here to
