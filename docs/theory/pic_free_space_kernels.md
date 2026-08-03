@@ -310,6 +310,22 @@ better than `:integrated`'s 1.3e-16, because the table is built once on the host
 and uploaded, so the kernel values are bit-identical across backends by
 construction.
 
+> **Correction (2026-08-03, audit part 3).** "Correct and covered by CPU/CUDA
+> parity tests" was **false in the default cache configuration**, and the parity
+> test is exactly why it went unnoticed. The table is indexed by integer cell
+> separation. `_pic_expand_grid_by` — applied by the default
+> `green_cache = :slice_pair` — scales the mesh width with the node count fixed,
+> so the cell size grows while the origin separation does not, and an exact
+> 22.000000-cell separation became 17.600000. `_pic_green_lattice!` rounded that
+> to 18 without checking, making the cached kernel the kernel of a source
+> **displaced by 0.400 cells** (measured directly: a single macroparticle at a
+> known source node appeared at `-0.400` cells from it). Both backends expanded
+> identically, so CPU and CUDA agreed on the displaced field to 1e-13. The one
+> place the kernel is scored against an analytic reference,
+> `validation/pic_gaussian_field_validation.jl`, calls `_pic_solve_field`, which
+> bypasses the cache. Fixed by `_pic_realign_expanded_grids`; the parity and
+> alignment invariants are now both tested.
+
 **The caching argument in Section 3.4 was wrong in practice, and measuring it is
 what showed that.** The claim was that because $G$ depends only on the grid and
 the aspect ratio $\rho=h_x/h_y$, one table per $(\text{grid},\rho)$ would serve every

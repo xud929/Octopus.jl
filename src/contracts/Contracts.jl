@@ -2033,7 +2033,12 @@ _pic_family_alternatives() = Dict{Symbol,Any}(
     :green_cache => :none,
     :field_derivative => :fourth,
     :slice_interpolation => :quadratic,
-    :interaction_grid => :source_slice,
+    # A NamedTuple alternative carries a companion setting: `:source_slice` sizes
+    # its mesh from `_pic_union_bounds`, which applies no extent estimator, so it
+    # now rejects the probe's `grid_extent = :sigma` instead of dropping it
+    # silently. The companion is applied to the *baseline* too, so the check still
+    # isolates `interaction_grid`.
+    :interaction_grid => (interaction_grid=:source_slice, grid_extent=:extrema),
     :grid_extent => :extrema,
     :grid_extent_sigma => 4.0,
     :min_transverse_extent => (2.0e-3, 2.0e-3),
@@ -2185,6 +2190,17 @@ _solver_contract_types() = (GaussianPoissonSolver, PICPoissonSolver,
 
 _solver_option_is_execution(meta) = meta.category in (:execution, :performance)
 
+# A declared alternative is normally the bare non-default value. It may instead be
+# a `NamedTuple` when that value is only legal alongside a companion setting --
+# `interaction_grid = :source_slice` requires `grid_extent = :extrema`, because
+# that mode applies no extent estimator and now rejects a non-default rather than
+# ignoring it. The companion is folded into the option's baseline as well, so the
+# comparison still isolates the option under test.
+# A plain `Tuple` (`grid = (32, 32)`) is a value, not a settings bundle.
+_solver_alternative_value(name::Symbol, alt) = alt isa NamedTuple ? getproperty(alt, name) : alt
+_solver_alternative_companions(name::Symbol, alt) =
+    alt isa NamedTuple ? Base.structdiff(alt, NamedTuple((name => nothing,))) : NamedTuple()
+
 """
 Run two consecutive collisions and return `(coordinates, luminosities, receipts)`.
 
@@ -2323,16 +2339,30 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
                 push!(deferred_cuda, (kind, name))
                 continue
             end
-            if haskey(NamedTuple(probe), name) &&
-               isequal(getproperty(NamedTuple(probe), name), alternatives[name])
+            alt_value = _solver_alternative_value(name, alternatives[name])
+            companions = _solver_alternative_companions(name, alternatives[name])
+            option_probe = merge(NamedTuple(probe), companions)
+            if haskey(option_probe, name) &&
+               isequal(getproperty(option_probe, name), alt_value)
                 push!(failures,
                       "$(kind).$(name) declares an alternative equal to its own probe value")
                 continue
             end
             solver = try
-                T(; merge(NamedTuple(probe), NamedTuple((name => alternatives[name],)))...)
+                T(; merge(option_probe, NamedTuple((name => alt_value,)))...)
             catch err
                 push!(failures, "$(kind).$(name) rejected its declared alternative: " *
+                                first(split(sprint(showerror, err), '\n')))
+                continue
+            end
+            # With a companion setting the baseline has to move with it, or the
+            # comparison would measure the companion rather than the option.
+            option_baseline = try
+                isempty(companions) ? baseline :
+                    _solver_contract_observable(T(; option_probe...), base1, base2,
+                                                CPUThreadsBackend)
+            catch err
+                push!(failures, "$(kind).$(name) companion baseline threw: " *
                                 first(split(sprint(showerror, err), '\n')))
                 continue
             end
@@ -2344,12 +2374,12 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
                 continue
             end
             checked += 1
-            moved = _solver_contract_moved(baseline, observed)
+            moved = _solver_contract_moved(option_baseline, observed)
             if _solver_option_is_execution(meta)
                 moved && push!(failures,
                     "$(kind).$(name) is declared $(meta.category) but changed the collision result")
                 _solver_contract_receipt_carries(observed[3], meta.consumer, name,
-                                                 alternatives[name]) ||
+                                                 alt_value) ||
                     push!(failures,
                         "$(kind).$(name) reached no receipt named by its consumer $(meta.consumer)")
             else
@@ -2424,8 +2454,11 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
             end
             if cuda_baseline !== nothing
                 for (name, meta) in cuda_only
+                    cuda_alt = _solver_alternative_value(name, alternatives[name])
                     solver = try
-                        T(; merge(cuda_probe, NamedTuple((name => alternatives[name],)))...)
+                        T(; merge(cuda_probe,
+                                  _solver_alternative_companions(name, alternatives[name]),
+                                  NamedTuple((name => cuda_alt,)))...)
                     catch err
                         push!(failures, "$(kind).$(name) rejected its alternative: " *
                                         first(split(sprint(showerror, err), '\n')))
@@ -2445,7 +2478,7 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
                         "result by $(round(spread; sigdigits=3)), above this solver's own " *
                         "repeat spread of $(round(cuda_floor; sigdigits=3))")
                     _solver_contract_receipt_carries(observed[3], meta.consumer, name,
-                                                     alternatives[name]) ||
+                                                     cuda_alt) ||
                         push!(failures,
                             "$(kind).$(name) reached no receipt named by its consumer " *
                             "$(meta.consumer) on CUDA")

@@ -52,6 +52,7 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # Node meshes are memoized per (source slice, direction); each is shared by
     # the two field slices adjacent to that node, which is what restores exact
     # continuity at their common boundary.
+    workspace.dropped[] = 0
     node_cache = Dict{Tuple{Int,Int},Dict{Int,Any}}()
     if node_grid
         _pic_prebuild_node_caches!(node_cache, solver, T, beam1.rep, slices1,
@@ -118,7 +119,36 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
         end
     end
     _pic_report_green_cache(green_cache)
+    _pic_report_dropped(workspace)
     return luminosity
+end
+
+"""
+    _pic_report_dropped(workspace)
+
+Surface the count of field particles that fell outside the interaction mesh and
+were dropped by the zero-weight branch in `_pic_cic_weights` / `_pic_tsc_weights`.
+
+`_PICCPUWorkspace.dropped` documents itself as "Never silent", `grid_extent`'s
+option metadata (`interface.jl`) promises out-of-range particles are "dropped and
+counted", and `validation/README.md` says the count "must stay at zero for a
+production setting". None of that was true: the counter was incremented in
+`_pic_interaction!` and **read by nothing in the repository** — the one validation
+script that prints a `dropped` column recomputes its own from
+`_pic_axis_extent` rather than reading this one.
+
+Dropped charge is a correctness event, not a tuning statistic — dropping a
+fraction `f` at radius `R` costs a field error `~ f*(sigma/R)` — so this warns
+rather than printing only under the diagnostics flag. It is silent at zero, which
+is every run with the default `grid_extent = :extrema`.
+"""
+function _pic_report_dropped(workspace::_PICCPUWorkspace)
+    n = workspace.dropped[]
+    n == 0 && return nothing
+    @warn "PIC interaction mesh dropped particles: the transverse extent estimator \
+under-covered the beam, so these particles received no kick and their charge is \
+missing from the field. Use grid_extent = :extrema, or raise grid_extent_sigma." dropped = n
+    return nothing
 end
 
 function _pic_cpu_scalar_type(solver::PICPoissonSolver, beam1::Beam, beam2::Beam)
@@ -183,6 +213,21 @@ function _validate_pic_solver(solver::PICPoissonSolver)
     (ig == :slice_pair || ig == :source_slice || ig == :node) ||
         throw(ArgumentError(
             "PICPoissonSolver interaction_grid must be :slice_pair, :source_slice or :node"))
+    # `grid_extent` is consumed by `_pic_axis_extent`, which only the per-slice-pair
+    # sizing path calls. `:source_slice` sizes from `_pic_union_bounds` and `:node`
+    # from `_pic_build_node_grids!`; both take plain min/max over their own particle
+    # sets and never consult the estimator, so a non-default `grid_extent` was
+    # accepted and dropped — measured bit-identical results for :extrema, :sigma and
+    # :sigma with grid_extent_sigma = 2.0. Reject rather than silently ignore, as
+    # the CUDA PIC and Gaussian-PIC paths already do for this same option.
+    if ig != :slice_pair && Symbol(solver.grid_extent) != :extrema
+        throw(ArgumentError(
+            "grid_extent = $(repr(solver.grid_extent)) is not implemented for " *
+            "interaction_grid = $(repr(solver.interaction_grid)): that mode sizes its mesh " *
+            "from the union/per-node extrema of its own particle sets and applies no extent " *
+            "estimator, so a non-default value would be silently ignored. Use " *
+            "interaction_grid = :slice_pair, or set grid_extent = :extrema."))
+    end
     return nothing
 end
 
@@ -504,14 +549,6 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
         _nonfinite_coordinate_error(:field,
             (x=field.x, px=field.px, y=field.y, py=field.py, z=field.z);
             context=_pic_slice_context(cache_key))
-    if ge !== :extrema
-        # :extrema covers every particle by construction; the robust estimators do
-        # not, so record what falls outside instead of letting it be dropped
-        # silently by the zero-weight branch in `_pic_cic_weights`.
-        workspace.dropped[] += _pic_count_outside(field.x, field_xmin, field_xmax) +
-                               _pic_count_outside(field.y, field_ymin, field_ymax)
-    end
-
     # Grid sizing may come from the shared per-source-slice union
     # (`interaction_grid = :source_slice`); the coverage bounds handed to the
     # cache are always this slice's own, so a stale shared mesh still rebuilds.
@@ -531,6 +568,22 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
     source_grid, field_grid, green_fft = _pic_slice_pair_green!(
         workspace, solver, T, green_cache, cache_key, source_grid0, field_grid0, source_bounds, field_bounds,
     )
+    if ge !== :extrema
+        # :extrema covers every particle by construction; the robust estimators do
+        # not, so record what falls outside instead of letting it be dropped
+        # silently by the zero-weight branch in `_pic_cic_weights`.
+        #
+        # Counted against `field_grid`, which is the mesh the interpolation
+        # actually reads, and only once it is final: the Green cache may return a
+        # larger grid than `_pic_interaction_grids` asked for. Counting against
+        # the *estimator* box instead — as this did — over-reported, because the
+        # mesh carries 1.5 cells of margin beyond that box and a particle sitting
+        # in the margin is interpolated correctly rather than dropped.
+        workspace.dropped[] += _pic_count_outside(
+                                   field.x, field_grid.x0, field_grid.x0 + field_grid.width) +
+                               _pic_count_outside(
+                                   field.y, field_grid.y0, field_grid.y0 + field_grid.height)
+    end
     phiL, ExL, EyL = _pic_solve_drifted_field_with_green_fft!(
         workspace.left, solver, source, sL, source_grid, green_fft, workspace,
     )
@@ -987,6 +1040,8 @@ function _pic_slice_pair_green!(workspace::_PICCPUWorkspace, solver::PICPoissonS
         end
         expanded_source = _pic_expand_grid_by(source_grid, T(1) + T(solver.slice_pair_green_growth))
         expanded_field = _pic_expand_grid_by(field_grid, T(1) + T(solver.slice_pair_green_growth))
+        expanded_source, expanded_field = _pic_realign_expanded_grids(
+            solver.green_type, expanded_source, expanded_field, solver.grid...)
         green_fft = copy(_pic_green_fft!(workspace, solver, T, expanded_source, expanded_field))
         if entry === nothing
             cache.misses += 1
@@ -1042,6 +1097,43 @@ function _pic_expand_grid_by(grid, factor)
         width=new_width,
         height=new_height,
     )
+end
+
+"""
+    _pic_realign_expanded_grids(green_type, source_grid, field_grid, nx, ny)
+
+Restore the source/field origin alignment that `_pic_interaction_grids` establishes
+and `_pic_expand_grid_by` destroys.
+
+The expansion scales `width` with the node count fixed, so the cell size grows by
+the same factor while the origin separation does not: a separation of exactly `k`
+cells becomes `k / (1 + slice_pair_green_growth)` cells, which is not an integer.
+At the default growth of 0.25 a measured 22.000000-cell separation became
+17.600000.
+
+That matters for the two kernels whose value depends on where the two grids sit
+relative to each other:
+
+- `:lattice` is tabulated by **integer** cell separation, and `_pic_green_lattice!`
+  rounded without checking. The cached Green function was therefore that of a
+  source displaced by the rounding residual — measured 0.400 cells.
+- `:standard` relies on the deliberate half-cell offset to stay off its own
+  singularity; the expansion maps `k + 1/2` to `0.8k + 0.4`, which is an integer
+  whenever `k ≡ 2 (mod 5)`, putting a node exactly on `r = 0`.
+
+`:integrated` evaluates its kernel at real coordinates and does not depend on the
+alignment, so it is deliberately left untouched: re-aligning it would move the
+default mesh and change results that carry no defect.
+"""
+function _pic_realign_expanded_grids(green_type, source_grid, field_grid,
+                                     nx::Integer, ny::Integer)
+    Symbol(green_type) === :integrated && return source_grid, field_grid
+    hx = source_grid.width / (nx - 1)
+    hy = source_grid.height / (ny - 1)
+    sx0, fx0 = _pic_align_grid_origins(green_type, source_grid.x0, field_grid.x0, hx)
+    sy0, fy0 = _pic_align_grid_origins(green_type, source_grid.y0, field_grid.y0, hy)
+    return ((x0=sx0, y0=sy0, width=source_grid.width, height=source_grid.height),
+            (x0=fx0, y0=fy0, width=field_grid.width, height=field_grid.height))
 end
 
 function _pic_report_green_cache(cache)
@@ -1343,6 +1435,23 @@ end
 
 TSC cell index and weights. Same out-of-range contract as `_pic_cic_weights`:
 outside `[0, n-1]` or non-finite contributes nothing.
+
+**Inside** the range the two differ, and the difference is deliberate rather than
+an oversight. The three-cell stencil does not fit within half a cell of either
+end, so `base` is clamped into `[1, n-2]`; a particle at `u < 1/2` or
+`u > n - 3/2` therefore has its whole stencil displaced by exactly one cell
+(measured: charge centre of mass at `u + 1.000`), which is the index-clamping
+behaviour `_pic_cic_weights` documents as worse than dropping. Widening the
+stencil check to drop those particles instead would lose their charge entirely,
+which is not better.
+
+It does not arise on an interaction mesh: `:extrema` sizing puts every particle
+in `u ∈ [1.5, n-2.5]` (measured `[1.591, 61.591]` at `n = 64`). It does arise on
+the luminosity mesh, whose 0.05-cell margin is sized for CIC — measured 2 to 3
+particles of 200,000. Widening that margin was measured and is **worse**: at a
+fixed cell count a larger margin means coarser cells over the beam, and the
+overlap integral moved from `-5.5e-3` to `-6.3e-3` against the analytic Gaussian
+result. The margin stays as it is.
 """
 @inline function _pic_tsc_weights(u, n)
     if !(zero(u) <= u <= u_of(n))
@@ -1423,6 +1532,10 @@ const _PIC_LATTICE_GREEN_RHO_TOL = 0.005
 # a turn. This is the central reason :lattice is not recommended for production;
 # see docs/theory/pic_free_space_kernels.md Section 3.4.
 const _PIC_LATTICE_GREEN_CACHE_MAX = 384
+# Alignment is exact up to floating-point rounding of the origins; the measured
+# residual on an aligned pair is ~4e-15 cells, against 0.400 for a misaligned one,
+# so this threshold separates the two by nine orders of magnitude.
+const _PIC_LATTICE_ALIGNMENT_TOL = 1.0e-6
 const _PIC_LATTICE_GREEN_CACHE = Dict{Tuple{Int,Int,Int},Matrix{Float64}}()
 const _PIC_LATTICE_GREEN_LOCK = ReentrantLock()
 
@@ -1479,8 +1592,20 @@ function _pic_green_lattice!(green, field_x0, field_y0, source_x0, source_y0, hx
     T = eltype(green)
     tab = _pic_lattice_green_cached(nx, ny, hx / hy)
     # Integer cell offset between the two grids (exact by construction; see above).
-    dx = round(Int, (field_x0 - source_x0) / hx)
-    dy = round(Int, (field_y0 - source_y0) / hy)
+    # Check it rather than trusting it: a fractional separation is not a rounding
+    # error in the kernel value, it is the kernel of a source *displaced* by the
+    # residual, and rounding it silently is what let the Green cache's grid
+    # expansion go unnoticed. The measured residual was 0.400 cells.
+    fx = (field_x0 - source_x0) / hx
+    fy = (field_y0 - source_y0) / hy
+    dx = round(Int, fx)
+    dy = round(Int, fy)
+    tol = _PIC_LATTICE_ALIGNMENT_TOL
+    (abs(fx - dx) <= tol && abs(fy - dy) <= tol) || throw(ArgumentError(
+        "green_type=:lattice requires the field and source grids to be an integer " *
+        "number of cells apart; got ($(fx), $(fy)) cells. The table is indexed by " *
+        "integer separation, so a fractional offset silently returns the field of a " *
+        "source displaced by the residual."))
     @inbounds for j in 0:(2ny - 1)
         jj = j < ny ? j : j - 2ny
         sy = dy + jj
@@ -1559,20 +1684,28 @@ function _pic_field!(Ex, Ey, phi, hx, hy, fourth::Bool)
     T = eltype(phi)
     hxi = inv(hx); hyi = inv(hy)
     c4 = T(1) / T(12)
-    for i in 1:nx
+    # `phi`, `Ex` and `Ey` are column-major, so the FIRST index must be the inner
+    # loop. The Ex pass below already runs that way; this one ran `i` outer and
+    # walked each row with stride `nx`. Same arithmetic, same order of operations
+    # per element, bit-identical output — measured 42.8 -> 4.8 us at grid 128 from
+    # the loop order alone, and 3.0 us with @inbounds (14.3x total). `_validate_pic_grid`
+    # guarantees nx, ny >= 5, which is what makes the boundary indices safe.
+    @inbounds for i in 1:nx
         Ey[i, 1] = hyi * (T(1.5) * phi[i, 1] - 2 * phi[i, 2] + T(0.5) * phi[i, 3])
         Ey[i, ny] = hyi * (-T(1.5) * phi[i, ny] + 2 * phi[i, ny - 1] - T(0.5) * phi[i, ny - 2])
-        if fourth && ny >= 5
+    end
+    if fourth && ny >= 5
+        @inbounds for i in 1:nx
             Ey[i, 2] = T(0.5) * hyi * (phi[i, 1] - phi[i, 3])
             Ey[i, ny - 1] = T(0.5) * hyi * (phi[i, ny - 2] - phi[i, ny])
-            @inbounds for j in 3:(ny - 2)
-                Ey[i, j] = c4 * hyi * ((phi[i, j + 2] - phi[i, j - 2]) +
-                                       8 * (phi[i, j - 1] - phi[i, j + 1]))
-            end
-        else
-            for j in 2:(ny - 1)
-                Ey[i, j] = T(0.5) * hyi * (phi[i, j - 1] - phi[i, j + 1])
-            end
+        end
+        @inbounds for j in 3:(ny - 2), i in 1:nx
+            Ey[i, j] = c4 * hyi * ((phi[i, j + 2] - phi[i, j - 2]) +
+                                   8 * (phi[i, j - 1] - phi[i, j + 1]))
+        end
+    else
+        @inbounds for j in 2:(ny - 1), i in 1:nx
+            Ey[i, j] = T(0.5) * hyi * (phi[i, j - 1] - phi[i, j + 1])
         end
     end
     for j in 1:ny

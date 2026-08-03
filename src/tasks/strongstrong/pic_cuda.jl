@@ -2122,6 +2122,12 @@ if _HAS_CUDA
 
             source_grid = _cuda_pic_expand_grid_by(prep.source_grid, T(1) + T(solver.slice_pair_green_growth))
             field_grid = _cuda_pic_expand_grid_by(prep.field_grid, T(1) + T(solver.slice_pair_green_growth))
+            # Same host-side arithmetic as the CPU reference: the expansion changes
+            # the cell size and so destroys the integer-cell alignment :lattice is
+            # tabulated by. Both backends expanded identically, so the parity test
+            # agreed on the displaced field. See _pic_realign_expanded_grids.
+            source_grid, field_grid = _pic_realign_expanded_grids(
+                solver.green_type, source_grid, field_grid, solver.grid...)
             t_green = time_ns()
             green_fft = _cuda_pic_build_green_fft(solver, T, source_grid, field_grid, timing)
             _cuda_pic_add_time!(timing, :field_green, t_green)

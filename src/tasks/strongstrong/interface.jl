@@ -1148,6 +1148,19 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         "grid_quantize must be non-negative (0 disables); got $(grid_quantize)."))
     interaction_grid in (:slice_pair, :source_slice, :node) || throw(ArgumentError(
         "interaction_grid must be :slice_pair, :source_slice or :node; got $(repr(interaction_grid))."))
+    # `grid_extent` is consumed by `_pic_axis_extent`, which only the per-slice-pair
+    # sizing path calls: `:source_slice` sizes from `_pic_union_bounds` and `:node`
+    # from `_pic_build_node_grids!`, both plain min/max. A non-default value here
+    # was accepted and produced bit-identical results. Caught at construction
+    # because the incompatibility is static, unlike the backend/route checks in
+    # `_require_cuda_pic_options`; `_validate_pic_solver` repeats it at collide
+    # time, as it does for every other option validated here.
+    (interaction_grid === :slice_pair || grid_extent === :extrema) || throw(ArgumentError(
+        "grid_extent = $(repr(grid_extent)) is not implemented for interaction_grid = " *
+        "$(repr(interaction_grid)): that mode sizes its mesh from the union/per-node " *
+        "extrema of its own particle sets and applies no extent estimator, so a " *
+        "non-default value would be silently ignored. Use interaction_grid = " *
+        ":slice_pair, or set grid_extent = :extrema."))
     batch_mode in (:sequential, :wavefront) || throw(ArgumentError(
         "batch_mode must be :sequential or :wavefront; got $(repr(batch_mode))."))
     lum_grid = luminosity_grid === nothing ? nothing :

@@ -259,6 +259,24 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   branches at ~5e-14, and `beam_statistics` measured and made 39.8% faster
   bit-identically. Coverage ledger: ~21% of `src/` this session, ~46% across
   both),
+  [`comprehensive_audit_2026_08_03_part3.md`](history/comprehensive_audit_2026_08_03_part3.md)
+  (third pass, scoped to `src/tasks/strongstrong/pic_cpu.jl` read in full —
+  the CPU reference every parity contract validates the CUDA paths against.
+  **Three confirmed defects fixed, and the headline one is the scenario that
+  scoping warned about**: the default Green cache expands the mesh with the node
+  count fixed, which changes the cell size and destroys the integer-cell
+  alignment `green_type = :lattice` is tabulated by, so the kernel was that of a
+  source **displaced by 0.400 cells** — and both backends expanded identically,
+  so CPU/CUDA parity passed at 1e-13 on the displaced field while the only
+  analytic field validation bypasses the cache entirely. Read §1 for the third
+  rule in the series, after part 1's "checks never executed" and part 2's "values
+  never read": **audit for invariants one function establishes and another
+  quietly breaks.** Also: a `dropped`-particle counter written by one line and
+  read by nothing under a "Never silent" comment, and `grid_extent` accepted and
+  bit-identically ignored under two of three mesh modes. §7 keeps two hypotheses
+  this pass raised and its own measurements refuted, including a loop-order
+  "optimization" that measured 0.99x. The luminosity path is verified against the
+  closed-form Gaussian overlap with clean second-order convergence),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite

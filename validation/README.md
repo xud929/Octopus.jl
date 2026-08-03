@@ -532,6 +532,12 @@ across turns for a fixed slice, since the mesh discontinuity is proportional to 
 charge at radius `R` costs a field error `~ f*(sigma/R)`, so even `1e-3` is the
 same order as the discontinuity the estimators are meant to remove.
 
+Note that this script computes its own `dropped` column from `_pic_axis_extent`;
+it does **not** read `_PICCPUWorkspace.dropped`. Until the 2026-08-03 part-3
+audit that runtime counter was written and read by nothing, so a run that lost
+charge said so nowhere. `collide!` now warns whenever it is non-zero, which is
+the signal to trust in an ordinary run.
+
 ```bash
 julia --threads=4 --project=. validation/pic_grid_extent_stability.jl
 ```
