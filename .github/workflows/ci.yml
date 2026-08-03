@@ -17,5 +17,12 @@ jobs:
       - uses: julia-actions/cache@v2
       - name: Instantiate project
         run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+      # Threaded, deliberately. `CPUThreadsExecutionPolicy` fans particles out
+      # over `Threads.@spawn`, and `_run_logical_workers` takes a single-worker
+      # fast path that never spawns -- so a single-threaded run exercises the
+      # concurrent code paths not at all. The aperture loss counter raced for
+      # exactly that reason: the invariant `sum(loss_counts) == dead` was
+      # already asserted and already passing, because CI only ever ran it with
+      # one worker. Anything shared between workers needs more than one.
       - name: Run fast package tests
-        run: julia --project=. -e 'using Pkg; Pkg.test()'
+        run: julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'

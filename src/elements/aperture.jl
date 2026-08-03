@@ -293,8 +293,36 @@ end
 # The counter is the one place an atomic is warranted: it fires once per loss,
 # not once per particle. The private-slot argument that rules atomics out for
 # the record does not apply to a single shared cell.
+#
+# On CPU that has to be enforced, because `_run_logical_workers` fans particles
+# out over `Threads.@spawn` (src/policies/Policies.jl) and every worker bumps
+# the SAME cell. A plain `counts[id] += 1` is a read-modify-write and loses
+# updates: measured at 200k particles over 5 turns, the counter reported
+#
+#     1 worker  187889 / 187889     exact
+#     2         173752 / 187889     -7.5%
+#     4         127629 / 187889     -32%
+#     8          89151 / 187889     -53%, and different on every run
+#
+# while the per-particle slots stayed exact throughout -- which is the private
+# slot design working, and the reason only this line needed fixing. It mattered
+# most for `log=false`, the default for a dynamic-aperture scan, where the
+# counter is the only output and nothing else can contradict it.
+#
+# A lock rather than an atomic because `counts` must stay a plain `Array`:
+# `loss_counts`, the `Adapt` path and the CUDA branch below all rely on that,
+# and atomic element access in Julia 1.12 needs an `AtomicMemory`, which an
+# `Array` does not carry. The critical section is one increment with no yield
+# point, so a spin lock is the right shape, and it is entered once per loss.
+const _LOSS_COUNT_LOCK = Threads.SpinLock()
+
 @inline function _aperture_bump!(counts::Array, id)
-    @inbounds counts[id] += 1
+    lock(_LOSS_COUNT_LOCK)
+    try
+        @inbounds counts[id] += 1
+    finally
+        unlock(_LOSS_COUNT_LOCK)
+    end
     return nothing
 end
 
