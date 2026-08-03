@@ -563,7 +563,13 @@ function _eval_knob_node(n::KnobCall, active::Set{Symbol})
             "$(repr(v))::$(typeof(v)); only Real-typed knobs can appear inside " *
             "arithmetic expressions"))
     end
-    return Float64(f(vals...))
+    # NOT `Float64(...)`: a knob may hold a dual number or a truncated power
+    # series, and casting here would evaluate the expression correctly and then
+    # throw the derivative away -- silently, since the value would be right.
+    # A knob is a machine control, so differentiating with respect to one is the
+    # most useful derivative there is; `bus` feeding a whole magnet family gives
+    # the family's response in a single pass.
+    return f(vals...)
 end
 
 # ---------------------------------------------------------------------------

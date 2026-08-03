@@ -1750,6 +1750,37 @@ end
     @test numeric_type(QuadrupoleSpec(L=0.4, k1=1.7, nst=4, fringe=:all,
                                       misalign_convention=:madx)) === Float64
 
+    # A knob is a machine control -- one supply feeding a whole magnet family --
+    # so differentiating with respect to one is the most useful derivative
+    # there is. That needs the knob to hold the seeded type and, crucially, the
+    # COMPOUND expression evaluator not to cast its result: `Float64(f(vals...))`
+    # would have computed the right value and thrown the derivative away
+    # silently. BigFloat stands in for a dual here so the test needs no AD
+    # dependency; both are simply "not Float64".
+    let
+        @knob adsweep_a::Real
+        @knob adsweep_b::Real
+        set_knob!(:adsweep_a, big"1.7")
+        set_knob!(:adsweep_b, big"0.05")
+        @test knob_value(:adsweep_a) isa BigFloat
+        @test knob_value(@knob_expr adsweep_a) isa BigFloat
+        @test knob_value(@knob_expr -(adsweep_a + adsweep_b)) isa BigFloat   # compound
+        spec = ElementSpec{:quadrupole}(; L=0.4, nst=4,
+                                        kn=(0.0, @knob_expr -(adsweep_a + adsweep_b)))
+        @test numeric_type(Octopus.resolve_knobs(spec)) === BigFloat
+        @test typeof(compile_runtime(spec)).parameters[2] === BigFloat
+        # a Float64 knob still yields a Float64 element, unchanged
+        set_knob!(:adsweep_a, 1.7); set_knob!(:adsweep_b, 0.05)
+        @test typeof(compile_runtime(spec)).parameters[2] === Float64
+        # A knob declared ::Float64 still narrows to Float64, which is the point
+        # of declaring it -- and is exactly why an AD seed needs a wider
+        # declaration. BigFloat narrows silently because the conversion exists;
+        # a dual number has no conversion at all and is rejected outright.
+        @knob adsweep_strict::Float64 = 1.7
+        set_knob!(:adsweep_strict, big"1.9")
+        @test knob_value(:adsweep_strict) isa Float64
+    end
+
     # A sweep over every registered element: seed each numeric parameter with a
     # complex step and check the derivative against a central difference. This
     # is the regression guard for the whole class -- a future `Float64` written
