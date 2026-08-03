@@ -187,7 +187,7 @@ const _SPECTRAL_SOLVER_OPTION_SCHEMA = (
         "Optional physical lower bound on the square Dirichlet-domain half-width in particle-coordinate length units; 0 keeps nonzero domains data-derived.";
         category=:numerical),
     method = SolverOptionMeta(Symbol, :grid,
-        "Field-solve variant; :grid (DST/DCT) or :grid_free (direct mode sums)."; category=:performance),
+        "Field-solve variant; :grid (DST/DCT) or :grid_free (direct mode sums)."; category=:accuracy_performance),
     longitudinal_kick = SolverOptionMeta(Bool, true,
         "Apply the synchro-beam virtual drift and potential-difference pz kick."; category=:physics),
     field_precision = SolverOptionMeta(Symbol, :double,

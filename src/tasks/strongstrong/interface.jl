@@ -1236,7 +1236,12 @@ const _PIC_SOLVER_OPTION_SCHEMA = (
     green_type = SolverOptionMeta(Symbol, :integrated,
         "Open-boundary Green kernel; :integrated (cell-averaged log), :standard (node-sampled log), or :lattice (EXPERIMENTAL: exact inverse of the five-point discrete Laplacian; better for flat beams, worse for round, 1.74x runtime -- field-accuracy studies only, not production)."),
     green_cache = SolverOptionMeta(Symbol, :slice_pair,
-        "Persistent Green FFT caching mode; :slice_pair or :none."; category=:execution),
+        "Persistent Green FFT caching mode; :slice_pair or :none. NOT a pure execution \
+choice: a cached entry is built `slice_pair_green_growth` larger than the request and \
+reused, so the Green function is evaluated on a different domain than :none would use. \
+Measured 1.96e-3 relative coordinate difference at the default growth of 0.25, and \
+exactly 0.0 with growth = 0.";
+        category=:accuracy_performance),
     field_derivative = SolverOptionMeta(Symbol, :second,
         "Finite-difference order used to take E = -grad(phi) on the mesh; :second (default, \
 bit-compatible) or :fourth (~1.6x lower median field error for ~0 extra cost).";
@@ -1331,7 +1336,11 @@ validates it and always uses collision-time order, so a non-default value is ina
         "Optional beam-2 slicing override."; category=:physics, dependencies=(:slicing,)),
     backend_configurations = SolverOptionMeta(Tuple, (),
         "Optional backend-specific implementation configuration, currently CUDAPICLaunchConfig.";
-        supported_backends=(CUDABackend,), category=:execution),
+        supported_backends=(CUDABackend,), category=:execution,
+        # Its consumer is the launch-family resolution, not the generic solver
+        # runtime. It defaulted to :solver_runtime, which named a consumer that
+        # never reads it -- the metadata equivalent of the defect above.
+        consumer=:cuda_pic_launch),
 )
 
 solver_option_schema(::Type{<:PICPoissonSolver}) = _PIC_SOLVER_OPTION_SCHEMA
@@ -1895,27 +1904,39 @@ function _execute_strong_strong_turns!(
     return nothing
 end
 
+"""
+    _record_solver_configuration!(solver, backend)
+
+Emit one `:solver_runtime` receipt carrying the solver's whole resolved
+configuration, for **every** solver rather than only `PICPoissonSolver`.
+
+Two things were wrong with the hand-written NamedTuple this replaces. It named
+eleven of `PICPoissonSolver`'s twenty-nine options, so adding an option silently
+left it unobservable; and it sat behind `solver isa PICPoissonSolver`, so the
+soft-Gaussian, spectral and Gaussian-PIC solvers emitted nothing at all — 59 of
+the 88 declared solver options across the four solvers, every one of them
+declaring `consumer = :solver_runtime` by default, a consumer that never fired
+for them. `validate_configuration_metadata()` did not notice, because it checks
+that a consumer is *named*, not that it ever runs.
+
+Deriving the receipt from `solver_option_schema`/`solver_configuration` keeps it
+complete by construction. Costs nothing unless an `ExecutionAudit` is active.
+"""
+function _record_solver_configuration!(solver::AbstractPoissonSolver, backend)
+    _record_execution!(:solver_runtime, backend, (
+        solver=Symbol(nameof(typeof(solver))),
+        configuration=solver_configuration(solver),
+    ))
+    return nothing
+end
+
 function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
                                  solver::AbstractPoissonSolver,
                                  beam1::Beam, beam2::Beam, policy, ctx::TrackingContext)
     return Base.ScopedValues.with(_ACTIVE_PIC_TIMING_CONTEXT => (label=label, turn=ctx.turn)) do
         _record_execution!(:strong_strong_collision, backend_type(policy),
                            (solver=Symbol(nameof(typeof(solver))), turn=ctx.turn))
-        if solver isa PICPoissonSolver
-            _record_execution!(:solver_runtime, backend_type(policy), (
-                deposit_method=solver.deposit_method,
-                green_type=solver.green_type,
-                green_cache=solver.green_cache,
-                longitudinal_kick=solver.longitudinal_kick,
-                batch_mode=solver.batch_mode,
-                cuda_async=solver.cuda_async,
-                cuda_batch_fft=solver.cuda_batch_fft,
-                cuda_wavefront_fft=solver.cuda_wavefront_fft,
-                cuda_indexed_wavefront=solver.cuda_indexed_wavefront,
-                luminosity_grid=_pic_luminosity_grid(solver),
-                luminosity_deposit_method=_pic_luminosity_deposit_method(solver),
-            ))
-        end
+        _record_solver_configuration!(solver, backend_type(policy))
         _with_solver_execution_configuration(solver, policy) do
             _strong_strong_collide_backend!(
                 task, label, solver, beam1, beam2, backend_type(policy), ctx,
