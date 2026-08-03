@@ -26,7 +26,13 @@ using .Octopus
 using LinearAlgebra
 
 const DEFAULT_STEP = parse(Float64, get(ENV, "OCTOPUS_SYMPLECTICITY_STEP", "3e-7"))
-const DEFAULT_TOL = parse(Float64, get(ENV, "OCTOPUS_SYMPLECTICITY_TOL", "5e-7"))
+# A floor, applied as `max(case.tolerance, default_tolerance)` below, so raising
+# it relaxes every case at once. It must sit at or below the tightest per-case
+# tolerance or that case's declared value never binds: at the former 5e-7 the
+# four 5e-8 linear-map cases were judged ten times looser than they declare,
+# against measured residuals of ~1.5e-13. Kept equal to the
+# SymplecticityContract floor so the two stay mirrors of each other.
+const DEFAULT_TOL = parse(Float64, get(ENV, "OCTOPUS_SYMPLECTICITY_TOL", "5e-8"))
 
 function symplectic_form6(::Type{T}=Float64) where {T}
     S = zeros(T, 6, 6)

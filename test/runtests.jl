@@ -708,6 +708,56 @@ end
     @test norm(residual, Inf) < 2.0e-8
 end
 
+@testset "Virtual drifts: the named three are symplectic, the unsafe two are not" begin
+    # ThinStrongBeamSpec claims all three named drifts are exact flows of their
+    # own Hamiltonian and therefore symplectic. Only :hirata was checked.
+    #
+    # The step scan is what makes this a proof rather than a threshold: a
+    # symplectic map's finite-difference residual is truncation error and falls
+    # as step^2, while a structurally non-symplectic map's residual is flat.
+    # The two UnsafeVirtualDrift models are the negative control -- without
+    # them a passing tolerance says nothing about discriminating power.
+    covariance = [
+        1.21e-8   1.0e-9   2.4e-9  -3.0e-10
+        1.0e-9    4.0e-8   2.0e-10  1.5e-9
+        2.4e-9    2.0e-10  6.4e-9  -6.0e-10
+       -3.0e-10   1.5e-9  -6.0e-10  2.25e-8
+    ]
+    q0 = [4.0e-4, 1.0e-4, -2.0e-4, -1.5e-4, 1.2e-3, 2.0e-4]
+    form = zeros(6, 6)
+    for coordinate in (1, 3, 5)
+        form[coordinate, coordinate + 1] = 1
+        form[coordinate + 1, coordinate] = -1
+    end
+    drift_residual(drift, step) = begin
+        element = ThinStrongBeam(ThinStrongBeamSpec{Float64}(;
+            kbb=1.0e-8, covariance=covariance, center=(2.0e-5, -1.0e-5, 3.0e-4),
+            angle=(3.0e-4, -2.0e-4, 0.0), virtual_drift=drift))
+        jacobian = hcat([(
+            collect(element((q0 .+ (collect(1:6) .== column) .* step)...)) -
+            collect(element((q0 .- (collect(1:6) .== column) .* step)...))
+        ) / (2step) for column in 1:6]...)
+        norm(transpose(jacobian) * form * jacobian - form, Inf)
+    end
+
+    for drift in (:hirata, :chromatic, :exact)
+        fine = drift_residual(drift, 3.0e-7)
+        coarse = drift_residual(drift, 3.0e-6)
+        @test fine < 5.0e-7
+        # step^2: a decade coarser must cost about two decades of residual.
+        @test 50 < coarse / fine < 200
+    end
+
+    for drift in (UnsafeVirtualDrift(:chromatic_frozen_energy),
+                  UnsafeVirtualDrift(:paraxial_frozen_longitudinal))
+        fine = drift_residual(drift, 3.0e-7)
+        coarse = drift_residual(drift, 3.0e-6)
+        @test fine > 1.0e-5
+        # Flat under refinement: the violation is structural, not truncation.
+        @test isapprox(coarse, fine; rtol=0.05)
+    end
+end
+
 @testset "Conditional 6D Gaussian strong-beam slicing" begin
     transverse = transverse_covariance(;
         beta=(0.7, 0.9), alpha=(0.1, -0.2), sigma=(1.2e-3, 0.8e-3))

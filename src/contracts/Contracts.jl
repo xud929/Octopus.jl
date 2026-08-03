@@ -1100,7 +1100,12 @@ difference's truncation error, not the map's defect, which is bounded below
 """
 Base.@kwdef struct SymplecticityContract <: AbstractPhysicsContract
     step::Float64 = 3.0e-7
-    default_tolerance::Float64 = 5.0e-7
+    # A floor, applied as `max(case.tolerance, default_tolerance)`, so raising
+    # it relaxes every case at once. It must therefore sit at or below the
+    # tightest per-case tolerance, or that case's declared value never binds:
+    # at the former 5.0e-7 the four 5.0e-8 linear-map cases were judged ten
+    # times looser than they declare, against measured residuals of ~1.5e-13.
+    default_tolerance::Float64 = 5.0e-8
     lorentz_angle::Float64 = 0.01
 end
 
@@ -1146,9 +1151,16 @@ function _symplecticity_contract_cases()
         2.4e-9    2.0e-10  6.4e-9  -6.0e-10
        -3.0e-10   1.5e-9  -6.0e-10  2.25e-8
     ]
-    thin = ThinStrongBeam(ThinStrongBeamSpec{Float64}(;
+    # One builder, three drifts: `ThinStrongBeamSpec` documents all three named
+    # virtual drifts as "exact flows of their own Hamiltonian, so all three are
+    # symplectic", and only `:hirata` was ever checked. Measured residuals are
+    # identical across the three (7.908e-8 at step 3e-7, scaling as step^2), so
+    # the shared Gaussian kick sets the truncation floor and the drift choice
+    # adds nothing to it.
+    thin_with(drift) = ThinStrongBeam(ThinStrongBeamSpec{Float64}(;
         kbb=1.0e-8, covariance=covariance, center=(2.0e-5, -1.0e-5, 3.0e-4),
-        angle=(3.0e-4, -2.0e-4, 0.0), virtual_drift=:hirata))
+        angle=(3.0e-4, -2.0e-4, 0.0), virtual_drift=drift))
+    thin = thin_with(:hirata)
     gaussian = GaussianStrongBeam(GaussianStrongBeamSpec{Float64}(;
         thin=ThinStrongBeamSpec{Float64}(;
             kbb=8.0e-9, covariance=covariance, center=(-1.0e-5, 2.0e-5, -2.0e-4),
@@ -1178,6 +1190,10 @@ function _symplecticity_contract_cases()
              R=(0.001, -0.0005, 0.0003, 0.0007))),
          q0=q0, tolerance=5.0e-6),
         (name=:ThinStrongBeam, element=thin, q0=q0, tolerance=5.0e-7),
+        (name=:ThinStrongBeamChromatic, element=thin_with(:chromatic), q0=q0,
+         tolerance=5.0e-7),
+        (name=:ThinStrongBeamExact, element=thin_with(:exact), q0=q0,
+         tolerance=5.0e-7),
         (name=:GaussianStrongBeam, element=gaussian, q0=q0, tolerance=5.0e-7),
     )
 end
