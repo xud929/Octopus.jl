@@ -1779,6 +1779,16 @@ function validate(contract::PTCConsistencyContract; kwargs...)
         rows += 1
     end
     rows == 0 && return ContractResult(false, "PTC reference table $(path) had no usable rows")
+    # Every declared spec must have been compared. The row loop skips a name the
+    # table does not carry (`haskey(specs, name) || continue`), which is right
+    # for a stale row but silently narrows coverage when a spec is added and the
+    # table is not regenerated -- and the contract would still report PASS on
+    # the cases that remain. Coverage was 55 of 55 when this was added.
+    untested = sort!(collect(setdiff(keys(specs), keys(worst))))
+    isempty(untested) || return ContractResult(false,
+        "PTC reference table $(path) has no rows for $(length(untested)) declared " *
+        "case(s): " * join(untested, ", ") * ". Regenerate it with " *
+        "validation/generate_ptc_reference.jl on a machine with MAD-X.")
 
     failures = String[]
     for (name, d) in worst

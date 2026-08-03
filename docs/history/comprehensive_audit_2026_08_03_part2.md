@@ -528,12 +528,13 @@ directly related to the changed surfaces were run.
    control identifying deposition as the cause. This is inherent rather than a
    defect, but it is not stated anywhere in the docs, and a reproducibility-
    sensitive user would want to know.
-5. **`PTCConsistencyContract` can silently narrow.** `haskey(specs, name) ||
-   continue` (`Contracts.jl:1752`) skips any spec absent from the committed
-   table, and nothing asserts that the 55 specs and 55 rows correspond. Coverage
-   is complete today; a spec added without regenerating the table would reduce
-   it with the contract still reporting PASS. A one-line count assertion closes
-   it.
+5. ~~**`PTCConsistencyContract` can silently narrow.**~~ **Closed.** The row
+   loop still skips a name the table does not carry, which is right for a stale
+   row, but the contract now fails when a *declared* spec has no rows, naming
+   the missing cases and pointing at `validation/generate_ptc_reference.jl`.
+   Coverage asserted at 55 of 55, and the guard has a negative control: a copy
+   of the table with one case's rows removed makes the contract fail naming that
+   case rather than pass on the remaining fifty-four.
 6. **`GaussianStrongBeamSpec`'s `:equal_area` docstring formula**,
    `z_k/sigz = sqrt(2)*erfinv(2k/ns)`, is the odd-`ns` form; the even-`ns` branch
    correctly uses `(2i−1)/ns`. The code is right, the formula as written covers
@@ -554,24 +555,38 @@ directly related to the changed surfaces were run.
 | `src/elements/strong_beam.jl` | **read in full**; beam-beam kick independently verified against numerical integration |
 | Virtual drifts | all five measured for symplecticity, three now permanently tested |
 | `Core.Box` class | swept again over 2,110 methods (up from 1,792); still eliminated |
-| Contracts | all 11 run and passing |
+| Contracts | all **12** run and passing, including the new solver-option contract |
 | `beam_statistics` | measured and optimized, bit-identical |
+| Solver options | `SolverOptionEffectivenessContract` built (§15): 68 on CPU, 10 CUDA-only on device, 2 launch surfaces, 10 exempted with reasons, **0 deferred** |
+| `isa` against a concrete solver type | **class eliminated in `src/`** — it was the root cause of S1, S2 and S7; the only remaining textual hit is a docstring describing the fix |
+| Method ambiguities | `Test.detect_ambiguities(Octopus)` swept and now **0** |
 
 ### Next, in priority order
 
-1. **A solver-option effectiveness contract** (risk 3). The pattern to copy is
-   `ElementParameterEffectivenessContract`: build each solver through its
-   constructor, perturb one declared option at a time, and assert the change is
-   observable at its declared `consumer` — via execution receipts for execution
-   options, coordinates for numerical ones. S1 and S2 are the proof it is
-   needed.
-2. `src/tasks/strongstrong/pic_cpu.jl` (1,715) — the CPU reference the CUDA
-   paths are validated against; if it is wrong, every parity contract agrees on
-   the wrong answer.
-3. `src/tasks/BeamObservers.jl` (1,446) — only l. 700–1030 read.
-4. `src/knobs/Knobs.jl` (896) + `symbolic.jl` (285) — only the epoch handshake read.
-5. `src/tasks/strongstrong/pic_cuda.jl` (5,807) — the wavefront scheduler and
+*Item 1 of the original list — the solver-option effectiveness contract — was
+built in this same session; see §15. What follows is the list with that removed.*
+
+1. **`src/tasks/strongstrong/pic_cpu.jl` (1,715)** — the CPU reference every
+   parity contract validates the CUDA paths against: if it is wrong, the
+   contracts agree on the wrong answer. Its prior is now higher than when this
+   list was first written. §15.2 found a reachable `UndefVarError` crash in it,
+   in the **default** Green kernel, that the test suite, all twelve contracts
+   and all forty-two validation scripts had never executed. That file has
+   demonstrated it holds defects nothing exercises.
+2. `src/tasks/BeamObservers.jl` (1,446) — only l. 700–1030 read.
+3. `src/knobs/Knobs.jl` (896) + `symbolic.jl` (285) — only the epoch handshake
+   was read, and `symbolic.jl` was declared in scope and never reached.
+4. `src/tasks/strongstrong/pic_cuda.jl` (5,807) — the wavefront scheduler and
    Green cache; kernels are lower risk per part 1 §9a.
+
+### What the new contract does *not* prove
+
+It establishes that every declared solver option **reaches a consumer**. It says
+nothing about whether that consumer is correct: `deposit_method = :TSC`
+provably changes the result, and nothing in the contract claims TSC is
+implemented right. That remains the job of the physics contracts and
+`validation/`, and it is why item 1 above matters more than further contract
+work.
 
 ### Techniques that found things this session
 

@@ -1761,6 +1761,31 @@ end
     @test haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :nst))
 end
 
+@testset "PTC coverage cannot narrow silently" begin
+    r = validate(PTCConsistencyContract())
+    @test r.status === :passed
+    # Every declared spec must have been compared, not just the ones the
+    # committed table happens to carry.
+    @test r.metrics[:cases] == length(Octopus._ptc_reference_specs())
+
+    # The guard must be able to fire, or it is decoration: drop one case's rows
+    # from a copy of the table and the contract has to fail naming it rather
+    # than pass on the remaining cases.
+    source = Octopus._ptc_reference_path(PTCConsistencyContract())
+    mktempdir() do dir
+        truncated = joinpath(dir, "ptc_madx_truncated.tsv")
+        open(truncated, "w") do io
+            for line in eachline(source)
+                startswith(line, "drift\t") && continue
+                println(io, line)
+            end
+        end
+        narrowed = validate(PTCConsistencyContract(path=truncated))
+        @test narrowed.status === :failed
+        @test occursin("drift", narrowed.message)
+    end
+end
+
 @testset "Integrated Green kernel on the axes" begin
     # `_pic_atan_ratio` referenced a name this module never defines, so every
     # on-axis node of the DEFAULT :integrated Green kernel raised
