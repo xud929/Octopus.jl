@@ -196,6 +196,16 @@ reference material, not API docs; the implementing code links back to them.
   the outer-boundary re-slicing jitter (now quantified) and the remaining CUDA
   `:node` performance budget.
 
+## Review process
+
+- [`comprehensive_audit.md`](comprehensive_audit.md) — the protocol for a
+  repository-wide audit: declare a scope and keep a coverage ledger (phase 0),
+  then work through architecture, traceability, source, derivations,
+  contracts, tests, validation and performance. The Absolute Rules at the end
+  are the part that matters: a file is not reviewed until it is inspected, a
+  contract is not satisfied because its tests passed, and an area found sound
+  is a result worth recording.
+
 ## Development history and records (`history/`)
 
 Dated records of implemented work — optimization campaigns, benchmark decisions,
