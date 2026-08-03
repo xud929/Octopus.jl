@@ -153,12 +153,22 @@ function field_microbenchmark(solver, base1, base2)
     fx = @view base2.rep.x[slices2.indices[j]]
     fy = @view base2.rep.y[slices2.indices[j]]
     Lx, Ly = Octopus._spectral_box(solver, base1.rep.x, base1.rep.y, base2.rep.x, base2.rep.y)
-    Octopus._spectral_field(solver, sx, sy, fx, fy, Lx, Ly)
+    # `_spectral_field` was the allocating one-shot entry point; `ec86c34`
+    # ("isolate solver workspaces across executions") replaced it with
+    # `_spectral_field_ws`, which takes a caller-owned workspace and ignores it
+    # for `:grid_free`. This script was written before that and has not run
+    # since. The workspace is built OUTSIDE the timed block on purpose, so
+    # `@allocated` still measures the field solve rather than the setup;
+    # `_spectral_grid_ws` documents this exact caller ("internal one-off
+    # validation callers own this workspace directly").
+    ws = solver.method === :grid_free ? nothing :
+         Octopus._spectral_grid_ws(solver.grid...)
+    Octopus._spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
     GC.gc()
     elapsed = Ref(0.0)
     bytes = @allocated begin
         t0 = time_ns()
-        Octopus._spectral_field(solver, sx, sy, fx, fy, Lx, Ly)
+        Octopus._spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
         elapsed[] = (time_ns() - t0) * 1.0e-9
     end
     return (seconds=elapsed[], bytes=bytes, ns=length(sx), nf=length(fx), Lx=Lx, Ly=Ly)

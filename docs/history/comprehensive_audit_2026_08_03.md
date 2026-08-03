@@ -23,6 +23,7 @@ and Section 2 says exactly how far it got.
 | F6 | **Critical** | `_slice_slice_gaussian_kick!` closure capture → strong-strong luminosity accumulator corrupted under threads | fixed, verified |
 | F2 | **Major** | skew dipole in a curved frame is not symplectic | fixed, verified |
 | F3 | **Major** | curved solenoid + multipoles is not symplectic | fixed, verified |
+| F7 | Moderate | `validation/strong_strong_spectral_comparison.jl` unrunnable since ~2026-07-30 | fixed, verified |
 | F4 | Minor | two error messages print their own source text | fixed |
 
 **The pattern worth taking away.** Every one of these had a test asserting the
@@ -483,7 +484,38 @@ F5.
   5e-7/5e-6. The Hirata boost pair reproduces `sec³`/`cos³` analytically
   (inverse residual 8.27e-19, determinant error 4.13e-13).
 
-The remaining 41 `validation/` scripts were not run.
+**The whole `validation/` tree was then run** — 42 scripts, one at a time, with
+a 420 s cap each:
+
+| result | count | note |
+|---|---|---|
+| PASS | 36 | including the one repaired below |
+| TIMEOUT | 2 | `coherent_beam_beam_modes`, `slice_interpolation_emittance_growth` — long physics studies that exceeded **my** cap, not failures |
+| skipped | 4 | benchmarks, skipped deliberately |
+| **FAIL** | **1** | `strong_strong_spectral_comparison` — see F7 |
+
+### F7 — a validation script that had not run since ~2026-07-30
+
+`validation/strong_strong_spectral_comparison.jl:156` called
+`Octopus._spectral_field`, which does not exist. The bare name is absent from
+`src/` at the pre-audit commit `3fd3a52` too, so this predates the audit. The
+script was last touched 2026-07-23; `ec86c34` *("isolate solver workspaces
+across executions")*, part of the 2026-07-30 remediation, replaced the
+allocating one-shot entry point with `_spectral_field_ws`, which takes a
+caller-owned workspace. The script has been dead since.
+
+**Fixed** by building the workspace outside the timed block — so `@allocated`
+still measures the field solve and not the setup — and calling
+`_spectral_field_ws`, which is what `_spectral_grid_ws`'s own comment
+("internal one-off validation callers own this workspace directly") describes.
+It now runs to completion and produces all five output files; the four solvers
+agree on final luminosity to ~0.3% (Gaussian 1.046e30, PIC 1.045e30,
+spectral-grid 1.043e30), with the coarse 48×48 grid-free variant 4.9% low.
+
+**The meta-pattern, for the third time.** F1 was invisible because CI never ran
+threaded; F5 because of the same; F7 because nothing runs `validation/` at all.
+Every one of these is a check that existed and was not being executed. That is
+a more productive thing to audit for in this repository than a missing check.
 
 ## 8a. Repo-wide census for the closure-capture class
 
