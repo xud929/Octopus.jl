@@ -276,7 +276,14 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   bit-identically ignored under two of three mesh modes. §7 keeps two hypotheses
   this pass raised and its own measurements refuted, including a loop-order
   "optimization" that measured 0.99x. The luminosity path is verified against the
-  closed-form Gaussian overlap with clean second-order convergence),
+  closed-form Gaussian overlap with clean second-order convergence.
+  **§10 is a same-day follow-up** that closed the one question the handoff left
+  open and found a fourth, larger defect doing it: the lattice Green function's
+  periodic box was sized in *index* units, so at the 11:1 production aspect ratio
+  `:lattice` was **10.3x worse** than the default kernel it exists to improve on,
+  and got *worse* with grid refinement. Read §10.6 — the same blind spot, a check
+  that cannot distinguish anything at aspect ratio 1, has now produced two
+  separate defects in this one file),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite

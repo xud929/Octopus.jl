@@ -1520,6 +1520,42 @@ end
 # offsets by half a cell to dodge the singularity, and therefore cannot use this
 # kernel).
 const _PIC_LATTICE_GREEN_MULT = 8          # periodic box multiple of the padded extent
+# ...but applied per axis, scaled by the aspect ratio. The free-space limit needs
+# the periodic box to be large **in physical units** in both directions. A flat
+# multiple of the padded extent is an INDEX-unit criterion: at `rho = hx/hy = 11`
+# the box is `Mx*hx` by `My*hy`, i.e. eleven times flatter than it is wide, while
+# the separations the table must cover span `+-2nx` cells in x and `+-2ny` in y --
+# also eleven times wider than tall in physical units. So the y-images sit an
+# order of magnitude closer than the x-images and contaminate every separation far
+# along x. Measured directly on the table (spread of `G + ln r`, which is zero for
+# a true `-ln r + const`): 8.7e-3 at rho=1, but 2.7e-1 at rho=11 and 8.9e-1 at
+# rho=25, and the x-axis part of that vanishes when the box grows while the y-axis
+# part -- the genuine near-origin lattice correction -- does not.
+#
+# End to end this defeated the option's entire purpose. Median relative field
+# error against Bassetti-Erskine at grid 64, versus the `:integrated` default:
+#
+#     aspect    :integrated    :lattice (mult 8)    :lattice (aspect-aware)
+#     round       9.60e-04           1.74e-03              1.48e-03
+#     5:1         2.33e-03           6.76e-03              1.92e-03
+#     11:1        3.10e-03           3.21e-02              2.64e-03
+#     25:1        3.70e-03           1.54e-01              3.18e-03
+#
+# `:lattice` exists for "flat-beam field-accuracy studies only", and at the 11:1
+# production aspect ratio it was **10.3x worse** than the kernel it replaces. With
+# the aspect-aware box it is 1.18x better, which is the direction
+# docs/theory/pic_free_space_kernels.md Section 3.4 claims.
+#
+# The cap bounds the auxiliary FFT: `8*rho` would reach 200 at rho=25, and the FFT
+# is `Mx*My`. Measured adequate through rho=25 at the cap (the 3.18e-3 above is at
+# multy=64, where 8*rho would have asked for 200); beyond that it is unmeasured.
+const _PIC_LATTICE_GREEN_MULT_MAX = 64
+_pic_lattice_box_mult(rho) = (
+    clamp(round(Int, _PIC_LATTICE_GREEN_MULT * max(one(rho), inv(rho))),
+          _PIC_LATTICE_GREEN_MULT, _PIC_LATTICE_GREEN_MULT_MAX),
+    clamp(round(Int, _PIC_LATTICE_GREEN_MULT * max(one(rho), rho)),
+          _PIC_LATTICE_GREEN_MULT, _PIC_LATTICE_GREEN_MULT_MAX),
+)
 # rho quantization. Measured sensitivity at the 11:1 production beams, grid 128
 # (:integrated reference 1.991e-2): exact rho 1.348e-2, 0.5% 1.529e-2, 2% 2.055e-2,
 # 5% 3.055e-2. Beyond ~2% the kernel is WORSE than the one it replaces, so this
@@ -1549,8 +1585,9 @@ Returned array is indexed `[sx + 2nx + 1, sy + 2ny + 1]` for
 `G(0,0) = 0`.
 """
 function _pic_lattice_green_table(nx::Int, ny::Int, rho::Float64)
-    Mx = _PIC_LATTICE_GREEN_MULT * 2nx
-    My = _PIC_LATTICE_GREEN_MULT * 2ny
+    multx, multy = _pic_lattice_box_mult(rho)
+    Mx = multx * 2nx
+    My = multy * 2ny
     ghat = Matrix{Float64}(undef, Mx, My)
     r2 = rho * rho
     @inbounds for j in 1:My

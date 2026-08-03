@@ -271,6 +271,25 @@ behaviour is the signature of the two competing errors — the $O(r^{-2})$ asymp
 tail and the finite-box contamination — and it is what sets the box multiplier: the
 padded extent must be a comfortable fraction of $M$, hence the $8\times$ used here.
 
+> **Correction (2026-08-03, audit part 3).** The criterion stated above,
+> $|m|,|n|\ll M$, is in **index** units, and that is the wrong criterion for an
+> anisotropic grid. The periodic box is $M_x h_x$ by $M_y h_y$; the separations
+> the table must cover span $\pm 2n_x$ cells in $x$ and $\pm 2n_y$ in $y$, which
+> at $\rho = h_x/h_y = 11$ is eleven times wider than tall *in physical units*,
+> while a flat $8\times$ makes the box eleven times **flatter** than it is wide.
+> The $y$-images therefore sit an order of magnitude closer than the $x$-images
+> and contaminate every separation far along $x$.
+>
+> Measured on the table itself, as the spread of $G+\ln r$ (zero for a true
+> $-\ln r + \text{const}$): 8.7e-3 at $\rho=1$, but **2.7e-1 at $\rho=11$** and
+> 8.9e-1 at $\rho=25$. Enlarging the box removes the $x$-axis part and leaves the
+> $y$-axis part, which is the genuine near-origin correction — the two are
+> separable, and only the first was a defect.
+>
+> The box multiplier is now applied **per axis, scaled by $\rho$**, capped at 64
+> to bound the auxiliary FFT. The cost is real: one table at grid 128, $\rho=11$
+> goes from 0.26 s to 3.6 s.
+
 *A note on how this was nearly got wrong:* at $h_x=h_y=1$ the factor $2\pi/(h_xh_y)$
 and a bare $2\pi$ coincide, so an isotropic unit-spacing sanity check cannot
 distinguish them. The first version used the wrong power and produced a kernel
@@ -295,6 +314,38 @@ beams — up to 2.8x at 128 — and *better* for flat ones, including ~1.4x at t
 contributes essentially none of the round-beam error, so replacing it there only
 adds the lattice's own near-origin correction, while for flat beams the kernel is
 a real error source.
+
+> **Correction (2026-08-03, audit part 3).** The table above is retained as
+> recorded, but **no harness for it was ever committed** (`e3818be` changed only
+> two markdown files), so its absolute numbers are not reproducible and the
+> `:integrated` column in particular could not be re-obtained — it is ~20x larger
+> than the same quantity measured through
+> `validation/pic_gaussian_field_validation.jl`'s methodology.
+>
+> Re-measured with that documented harness (deterministic 320² quantile source,
+> 161² field points over ±4σ, TSC, median relative error against
+> Bassetti–Erskine), the *conclusion* above survives but **the shipped code did
+> not deliver it** until the box fix in this section's Validity-window
+> correction:
+>
+> | case | grid | `:integrated` | `:lattice` before | `:lattice` after |
+> | --- | ---: | ---: | ---: | ---: |
+> | round | 64 | **9.60e-4** | 1.74e-3 (1.81x worse) | 1.74e-3 (1.81x worse) |
+> | round | 128 | **5.51e-4** | 1.51e-3 (2.74x worse) | 1.51e-3 (2.74x worse) |
+> | 5:1 | 64 | 2.33e-3 | 6.76e-3 (2.90x worse) | **1.93e-3 (1.20x better)** |
+> | 11:1 | 64 | 3.10e-3 | 3.21e-2 (**10.3x worse**) | **2.63e-3 (1.18x better)** |
+> | 25:1 | 64 | 3.70e-3 | 1.54e-1 (**41.5x worse**) | **3.18e-3 (1.17x better)** |
+>
+> So "worse for round, better for flat" is right, and the round-beam figure
+> (2.74x worse at 128) reproduces the original 2.80x almost exactly. But before
+> the fix the flat-beam case — the only case `:lattice` exists to serve — was an
+> order of magnitude *worse* than the default kernel, and got worse with grid
+> refinement, which is the signature of an error that is not discretization.
+>
+> **Still open:** at grid 128 the aspect cap binds (ρ=11 wants a 88× box and gets
+> 64×), and `:lattice` comes out at par with `:integrated` (1.18e-3 vs 1.16e-3)
+> rather than the 1.48x better claimed above. Raising the cap is bounded by the
+> auxiliary FFT cost, not by anything conceptual.
 
 ### 3.5 Implemented as `green_type=:lattice` (EXPERIMENTAL) — and what implementing it revealed
 

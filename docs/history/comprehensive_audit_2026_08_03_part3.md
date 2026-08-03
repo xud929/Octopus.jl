@@ -7,12 +7,16 @@
 >
 > | read | why |
 > |---|---|
-> | **§9** | the handoff: what is now covered, what is next, and the two things this pass could *not* settle |
-> | **§1** | the three defects, one sentence each |
-> | **§7** | the wrong turns — two hypotheses this pass raised and its own measurements killed |
+> | **§9** | the handoff: what is now covered and what is next |
+> | **§1** and **§10** | the four defects. §10 is a same-day follow-up that closed the one open question §9 left, and found the largest accuracy defect of the pass doing it |
+> | **§7** and **§10.2** | the wrong turns — three hypotheses this pass raised and its own measurements killed or corrected |
 >
-> §2 is the coverage ledger. §5 is the areas checked and found sound, which is
+> §2 is the coverage ledger. §6 is the areas checked and found sound, which is
 > most of the file and is the point of the exercise.
+>
+> If you read only one paragraph, read **§10.6**: the same blind spot — a check
+> that cannot distinguish anything at `ρ = 1` — has now produced two separate
+> defects in this one file.
 
 A third pass against the protocol in
 [`docs/comprehensive_audit.md`](../comprehensive_audit.md), resuming from
@@ -25,8 +29,10 @@ CUDA paths against, so if it is wrong the contracts agree on the wrong answer.
 computed for a source displaced by four tenths of a cell, with the CPU/CUDA
 parity test passing at 1e-13 throughout.
 
-Three confirmed defects, all fixed. Two audit hypotheses raised and refuted by
-measurement, recorded in §7 rather than deleted.
+**Four** confirmed defects, all fixed — three in the pass proper and a fourth
+(§10) found by closing the one question the handoff left open. Three audit
+hypotheses raised and then refuted or corrected by measurement, recorded in §7
+and §10.2 rather than deleted.
 
 ## 1. Executive summary
 
@@ -35,6 +41,7 @@ measurement, recorded in §7 rather than deleted.
 | S14 | **Moderate** | the Green cache's grid expansion destroys the integer-cell alignment `green_type = :lattice` is tabulated by; `_pic_green_lattice!` rounded silently, giving the field of a source displaced by 0.400 cells. Both backends, so parity agreed. | fixed, verified |
 | S15 | Moderate | `_PICCPUWorkspace.dropped` was incremented and **read by nothing in the repository**, while its own comment said "Never silent", `grid_extent`'s metadata promised "dropped and counted", and `validation/README.md` said the count "must stay at zero" | fixed, verified |
 | S16 | Minor | `grid_extent` is accepted and **bit-identically ignored** under `interaction_grid ∈ {:node, :source_slice}` | fixed (now rejects), verified |
+| S17 | **Moderate** | the lattice Green function's periodic box is sized in *index* units, so at high aspect ratio it is physically far too flat; `:lattice` measured **10.3x worse** than the default kernel at the production aspect ratio, defeating the option's only stated purpose. Found by closing §9's open question — see **§10** | fixed, verified |
 | P1 | performance | `_pic_field!`'s `Ey` pass walked a column-major array in row-major order — 42.8 µs → 3.0 µs at grid 128, bit-identical | fixed, measured |
 
 **The pattern worth taking away.** Part 1's rule was "audit for checks that exist
@@ -487,17 +494,8 @@ total. No regression anywhere: the fingerprint above is unchanged.
 
 ### Two things this pass could not settle
 
-- **`:lattice` accuracy against the theory note.** §7.2's fixed-grid measurement
-  put `:lattice`'s median field error at 3.0e-2 against `:integrated`'s 1.4e-3
-  at the 11:1 beams, grid 128 — i.e. `:lattice` 20x *worse*, where
-  [`pic_free_space_kernels.md`](../theory/pic_free_space_kernels.md) §3.4 records
-  it as 1.48x *better* (1.348e-2 against 1.991e-2). The setups differ
-  substantially (this pass used a 40,000-point noiseless quantile grid and
-  sampled within ±3σ; the note's field-point set is not stated), so **this is not
-  a claimed contradiction** — the absolute numbers are not comparable. But the
-  ordering is inverted, and reconciling them needs the note's exact measurement
-  reproduced. Worth doing before anyone trusts `:lattice` for the flat-beam
-  field-accuracy work it is recommended for.
+- ~~**`:lattice` accuracy against the theory note.**~~ **Closed in a follow-up the
+  same day, and it was a real defect — see §10.**
 - **The `:node` path has no dropped-particle accounting.** `_pic_interaction_node!`
   never counts, so `dropped` is structurally zero there. It does not matter today
   because S16 now forbids `grid_extent ≠ :extrema` under `:node`, and `:extrema`
@@ -525,3 +523,143 @@ total. No regression anywhere: the fingerprint above is unchanged.
 - **A negative control in the regression test.** The alignment test asserts the
   expansion *breaks* the invariant before asserting the fix restores it —
   otherwise it would pass just as happily against a no-op.
+
+---
+
+# 10. Follow-up — S17, the `:lattice` question closed, and it was a defect
+
+§9 left the `:lattice` accuracy discrepancy open as "probably a harness
+mismatch, not a claimed contradiction". It was neither. It was a fourth defect in
+this file, and the caution in §9 was the right instinct applied to the wrong
+conclusion.
+
+| # | severity | area | state |
+|---|---|---|---|
+| S17 | **Moderate** | the lattice Green function's periodic box is sized in *index* units, so at high aspect ratio it is physically far too flat; `:lattice` measured **10.3x worse** than the default kernel at the production aspect ratio, defeating the option's only stated purpose | fixed, verified |
+
+## 10.1 Ruling out the harness first
+
+No harness for the theory note's table was ever committed — `e3818be`, the commit
+that added Section 3.4, touched `pic_free_space_kernels.md` and `todo.md` and
+nothing else. So the note's numbers cannot be reproduced by construction, and the
+only way forward was to re-measure with the repository's own documented
+methodology: `validation/pic_gaussian_field_validation.jl`'s harness defaults
+(deterministic 320² quantile source, 161² field points over ±4σ, TSC deposition,
+median relative error against Bassetti–Erskine).
+
+That reproduction is what turned a suspicion into a finding, because of one row:
+
+| case | grid | note's `:lattice` vs `:integrated` | re-measured |
+|---|---|---|---|
+| round | 128 | 2.80x worse | **2.74x worse** |
+| 11:1 | 128 | 1.48x **better** | **30.0x worse** |
+| 25:1 | 128 | 1.37x **better** | **120x worse** |
+
+The round-beam case reproduces almost exactly. Only the anisotropic cases
+diverge, and they diverge by two orders of magnitude. A harness mismatch does not
+behave like that.
+
+The decisive observation was in the grid refinement: `:lattice` at 11:1 went
+**3.21e-2 at grid 64 → 3.47e-2 at grid 128**, and at 25:1 1.54e-1 → 1.64e-1. It
+got *worse* with refinement. Discretization error does not do that; a kernel that
+is simply wrong does.
+
+## 10.2 The mechanism
+
+`_PIC_LATTICE_GREEN_MULT = 8` sets `Mx = 8·2nx`, `My = 8·2ny` — a multiple of the
+padded extent **in index units**. The free-space limit needs the periodic box to
+be large in **physical** units in every direction. The box is `Mx·hx` by `My·hy`,
+so at `ρ = hx/hy = 11` it is eleven times flatter than it is wide; the
+separations the table must cover span `±2nx` cells in x and `±2ny` in y, which is
+eleven times *wider* than tall physically. The y-images therefore sit an order of
+magnitude closer than the x-images and contaminate every separation far along x.
+
+Measured on the table itself, as the spread of `G + ln r` (identically zero for a
+true `−ln r + const`), over 24 separations:
+
+| ρ | mult 8 (shipped) | 16 | 32 | 64 |
+|---:|---:|---:|---:|---:|
+| 1 | 8.744e-3 | 8.762e-3 | 8.766e-3 | 8.768e-3 |
+| 5 | 1.325e-1 | 1.141e-1 | 1.105e-1 | 1.105e-1 |
+| 11 | **2.663e-1** | 1.524e-1 | 1.227e-1 | 1.152e-1 |
+| 25 | **8.917e-1** | 4.368e-1 | 4.367e-1 | 4.367e-1 |
+
+**That table also contains this pass's own wrong turn.** It does not converge to
+zero, and the first reading of it — "the kernel is broken at high ρ" — was too
+strong. Decomposing by axis separates two different things:
+
+| separation | mult 8 | mult 64 |
+|---|---:|---:|
+| (m=16, n=0) | −2.921e-2 | **3.986e-6** |
+| (m=32, n=0) | −1.430e-1 | **−1.758e-3** |
+| (m=0, n=8) | 1.234e-1 | 1.134e-1 |
+| (m=0, n=16) | 7.650e-2 | 6.625e-2 |
+
+The **x-axis** residuals vanish when the box grows: that is box contamination and
+it is the defect. The **y-axis** residuals do not move at all: at ρ=11 a
+separation of n cells is n/11 x-cells, so those points are inside the near-origin
+region, and this is the *intended* anisotropic lattice correction the note
+already documents ("at ρ=11 the correction is still ~5.9e-2 at r=16 in coarse-axis
+cells" — measured here as 7.65e-2). Only the first of the two was ever wrong.
+
+## 10.3 Fixed, and what it costs
+
+The multiplier is now applied per axis and scaled by the aspect ratio,
+`_pic_lattice_box_mult(ρ)`, enlarging the box on the fine-spacing axis and capped
+at 64 to bound the auxiliary FFT. Symmetric in `ρ ↔ 1/ρ`, since
+`_pic_interaction_grids` produces both.
+
+Median relative field error, grid 64, before and after:
+
+| aspect | `:integrated` | `:lattice` before | `:lattice` after |
+|---|---:|---:|---:|
+| round | **9.60e-4** | 1.74e-3 (1.81x worse) | 1.74e-3 (1.81x worse) |
+| 5:1 | 2.33e-3 | 6.76e-3 (2.90x worse) | **1.93e-3 (1.20x better)** |
+| 11:1 | 3.10e-3 | 3.21e-2 (**10.3x worse**) | **2.63e-3 (1.18x better)** |
+| 25:1 | 3.70e-3 | 1.54e-1 (**41.5x worse**) | **3.18e-3 (1.17x better)** |
+
+The qualitative claim in the theory note — worse for round beams, better for flat
+ones — is now what the code actually does. It was not before.
+
+**The cost is real and is not hidden.** One table at grid 128, ρ=11 goes from
+0.26 s to 3.63 s. The note already records that a production run needs ~306
+distinct tables, so that is ~18 minutes of table building per run. This
+strengthens rather than weakens the existing "do not use in production"
+recommendation; `:lattice` exists for field-accuracy studies, and a kernel that is
+fast and an order of magnitude wrong is worth nothing to that purpose.
+
+Round beams (ρ=1) get `(8, 8)` exactly as before, so every previously recorded
+isotropic result stands unchanged — including the `a(1,0) = 1/4` check.
+
+## 10.4 What remains open
+
+At grid 128 the cap binds: ρ=11 wants an 88× box and gets 64×, leaving the
+physical y-extent at 5.8× the region rather than 8×. `:lattice` there lands at par
+with `:integrated` (1.18e-3 against 1.16e-3) rather than the 1.48x better the note
+claims. That gap is bounded by the auxiliary FFT cost, not by anything
+conceptual, and the note's own "concrete route to making it cheap" — a small
+lattice patch near the origin plus the analytic asymptotic beyond — would remove
+the constraint entirely.
+
+## 10.5 Verification
+
+Full suite passing at `--threads=4` including every CUDA testset; the `:lattice`
+CPU/CUDA parity check still holds at `< 1e-13` (the table is built on the host and
+uploaded, so one fix covers both backends). One testset added, *The lattice Green
+box is sized in physical units, not index units* (14 assertions): the multiplier
+is aspect-scaled, symmetric under `ρ ↔ 1/ρ`, and capped; the coarse-axis residual
+— the part box contamination destroys, as opposed to the fine-axis near-origin
+correction, which is expected to remain — is bounded at 1e-2, against a pre-fix
+value of 1.4e-1 at ρ=11.
+
+## 10.6 The lesson worth keeping
+
+**A dimensionless criterion needs its units named.** "The box must be a
+comfortable multiple of the padded extent" is true and was implemented faithfully;
+it is simply not the same statement in index units and in physical units, and the
+two coincide exactly when ρ = 1 — which is the only aspect ratio the shipped test
+ever checked. That is the same failure shape as the note's own recorded near-miss
+on the normalization, where `2π/(h_x h_y)` and a bare `2π` coincide at
+`h_x = h_y = 1` and an isotropic sanity check could not separate them. The same
+blind spot, in the same file, caught twice by the same question: **what does this
+check fail to distinguish at ρ = 1?**
