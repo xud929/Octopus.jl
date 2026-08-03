@@ -23,6 +23,12 @@ the question `AGENTS.md` cares most about, and the one part 1 did not ask.
 | S3 | Minor | `SymplecticityContract` and `validation/symplecticity_validation.jl` never enforced their four tightest declared tolerances | fixed, verified |
 | S4 | Minor | the documented symplecticity of `:chromatic` and `:exact` virtual drifts was untested | fixed, verified |
 | S5 | Minor (performance) | `beam_statistics` computed all 36 entries of a symmetric covariance | fixed, measured, bit-identical |
+| S6 | **Major** | `UndefVarError: PI` in the **default** integrated Green kernel, on any node lying exactly on an axis | fixed, verified |
+| S7 | Moderate | the `:solver_runtime` receipt was PIC-only, leaving 59 of 88 declared solver options with no observable consumer | fixed, verified |
+| S8 | Moderate | `GaussianPICPoissonSolver` silently ignored `grid_extent` / `grid_extent_sigma` | fixed (now rejects), verified |
+| S9 | Minor | `collide!` was ambiguous for `GaussianPICPoissonSolver` with a `TrackingContext` | fixed, verified |
+| S10 | Minor | `loss_summary(rep, task)` was ambiguous — a public API `MethodError` | fixed, verified |
+| S11 | Minor | `green_cache` and the spectral `method` were declared pure execution/performance but change results | fixed, measured |
 
 **The pattern worth taking away.** Part 1's lesson was "audit for checks that
 exist and are never executed." This pass suggests the sibling rule: **audit for
@@ -585,3 +591,172 @@ directly related to the changed surfaces were run.
 - **Grep for the consumer, not the declaration.** Every finding here was found
   by asking "what reads this?" and following it to a runtime site — which is how
   `_cuda_pic_threads`'s hardcoded `return 256` surfaced.
+
+
+---
+
+# 15. Second phase — building the contract, and what it found
+
+§13.3 recorded "no solver-option equivalent of
+`ElementParameterEffectivenessContract`" as the highest-value next item. It was
+built in the same session. Writing it surfaced six further defects, five of them
+in code the contract had to touch before it could run at all.
+
+## 15.1 `SolverOptionEffectivenessContract`
+
+For each of the four solvers and each option in its `solver_option_schema`, the
+option is set to a declared non-default value and one probe is run against a
+baseline:
+
+- **physics / numerical / accuracy categories** must change the observable —
+  the twelve coordinate arrays *or* the returned luminosity. Luminosity is part
+  of it because `gaussian_when_luminosity`, `luminosity_grid` and
+  `luminosity_deposit_method` are meant to move that and nothing else.
+- **execution categories** must *not* change the observable — that is what makes
+  them execution choices — but must appear in a receipt named by the option's
+  declared `consumer`.
+
+An option with neither a declared alternative nor a stated reason **fails**, so
+the tables cannot fall behind the schema. Result: 68 options checked on CPU, 2
+launch surfaces on CUDA, 13 CUDA-only options deferred, 7 exempted with reasons.
+
+**It has demonstrated discriminating power.** With S1 reintroduced by disabling
+one method, the contract fails with
+`GaussianPICPoissonSolver emitted no :cuda_pic_launch receipt`; with it restored,
+it passes. That pair was run, not assumed.
+
+## 15.2 S6 — `UndefVarError: PI` in the default Green kernel
+
+`pic_cpu.jl:1369`, inside `_pic_atan_ratio`:
+
+```julia
+return copysign(oftype(num / one(den), PI / 2), num)
+```
+
+`PI` is not a name this module defines — `Constants.jl` exports `TWOPI`,
+`SQRTPI`, `SQRT2PI` and `SQRT2`, never `PI`. The branch runs whenever
+`den == 0` and `num != 0`, which for `_pic_kernel_integral(x, y)` means **any
+Green-kernel node lying exactly on an axis**, under the default
+`green_type = :integrated`.
+
+Measured before the fix:
+
+    _pic_kernel_integral(0.0, 1.0)  -> UndefVarError: `PI`
+    _pic_kernel_integral(1.0, 0.0)  -> UndefVarError: `PI`
+    _pic_kernel_integral(0.5, 0.25) -> -0.33528515411337795
+
+**No working result can move.** `_pic_kernel_integral` multiplies the half-pi by
+the coordinate that is zero on that branch, so the correct value there is `0.0`
+and the fix only converts a crash into it — confirmed, both cases return exactly
+`0.0` afterwards.
+
+Graded Major on outcome, narrow on reachability, and the two should not be
+confused: it is an unconditional crash in the default kernel, but only when a
+mesh places a node at exactly zero, which ordinary extents do not. Nothing in
+the suite, the contracts or `validation/` had ever hit it. It was found by
+running the new contract against a caller that had moved the global RNG — a
+different beam gave a different mesh, and the mesh put a node on the axis.
+
+## 15.3 S7 — 59 of 88 options had no observable consumer
+
+`interface.jl` emitted its `:solver_runtime` receipt behind
+`if solver isa PICPoissonSolver`, and listed eleven of `PICPoissonSolver`'s
+twenty-nine options by hand. Measured, one turn each:
+
+| solver | declared options | `:solver_runtime` receipts |
+|---|---|---|
+| `GaussianPoissonSolver` | 14 | **0** |
+| `PICPoissonSolver` | 29 | 1 |
+| `GaussianPICPoissonSolver` | 32 | **0** |
+| `SpectralPoissonSolver` | 13 | **0** |
+
+Because `consumer` defaults to `:solver_runtime` in the `SolverOptionMeta`
+constructor, most of those options *declared* a consumer that never fired for
+them, and `validate_configuration_metadata()` passed throughout — it checks that
+a consumer is named, not that it runs. Replaced with a receipt derived from
+`solver_option_schema`/`solver_configuration`, complete by construction. Also
+corrected `backend_configurations`, which declared `:solver_runtime` while its
+real consumer is `:cuda_pic_launch`.
+
+## 15.4 S8 — the hybrid dropped a mesh-extent estimator
+
+`grid_extent` and `grid_extent_sigma` appear **nowhere** in `gaussian_pic.jl`:
+the hybrid sizes its interaction box from `margin_sigma` and the subtracted
+Gaussian's moments. Measured `:extrema` against `:sigma`, max relative
+coordinate difference **0.0 at `margin_sigma = 5.0` and 0.0 at
+`margin_sigma = 0.0`** — so the first hypothesis, that the adaptive box merely
+masked the estimator, was wrong; the option is simply never read.
+
+Fixed by **rejecting** rather than implementing, which is what the CUDA PIC
+backend already does for this same option (`pic_cpu.jl:311`, "so a non-default
+value would be silently ignored"). Following the established precedent rather
+than inventing a third behaviour.
+
+## 15.5 S9, S10 — two method ambiguities, one of them public
+
+A module-wide `Test.detect_ambiguities` sweep — the same style of mechanical
+whole-repository check as the `Core.Box` census — found two:
+
+- `collide!(::GaussianPICPoissonSolver, …, ctx)` left `ctx` untyped, so it tied
+  with the generic `collide!(::AbstractPoissonSolver, …, ::TrackingContext)`.
+  `pic_cpu.jl` and `spectral.jl` both split `::Nothing` / `::TrackingContext`;
+  the hybrid was the odd one out. The task path dispatches through
+  `_strong_strong_collide_backend!` and never reached it.
+- **`loss_summary(rep::Phase6DRep, task::TrackingTask)` was a `MethodError`** —
+  a public API, for exactly the argument `execute!(task, rep; turns=…)` hands
+  back. Passing a `Beam` worked, because its method is untyped in both
+  positions, which is why nobody noticed. Verified before and after:
+
+      loss_summary(rep, task)   FAILS: MethodError ... is ambiguous
+      loss_summary(Beam, task)  OK  dead=0 logged=0
+
+`detect_ambiguities` now reports **0** for the module.
+
+## 15.6 S11 — two options declared as free that are not
+
+The contract flagged both as "declared execution/performance but changed the
+collision result", and both were confirmed by measurement rather than argued:
+
+- `green_cache`: `:slice_pair` against `:none` differs by **1.96e-3** relative
+  at the default `slice_pair_green_growth = 0.25`, and by **exactly 0.0** at
+  `growth = 0`. That control proves the mechanism — a cached entry is built
+  enlarged and reused, so the Green function is evaluated on a different domain.
+  Recategorized `:execution` → `:accuracy_performance`.
+- `SpectralPoissonSolver.method`: `:grid` against `:grid_free` differs by
+  **5.3e-3** in coordinates and ~1% in luminosity, consistent with part 1's note
+  that the coarse grid-free variant ran 4.9% low. Recategorized `:performance` →
+  `:accuracy_performance`.
+
+## 15.7 Corrections to this phase's own analysis
+
+1. **The first version of the contract could not catch the defect it was written
+   for.** It decided which solvers to test with
+   `_pic_launch_solver(solver) === nothing && continue` — the very function S1
+   broke. With S1 reintroduced it reported `1 launch surfaces` instead of 2 and
+   **passed**, silently skipping `GaussianPICPoissonSolver` rather than failing
+   it. The negative control is the only reason this was caught. Fixed by taking
+   the obligation from the schema (`haskey(schema, :backend_configurations)`),
+   never from the installer. A contract that asks the suspect whether to
+   investigate is not a contract.
+2. **The contract's result depended on its caller.** It passed standalone and
+   failed inside the test suite, where earlier testsets had moved the global
+   RNG. Every other strong-strong contract pins and restores the seed; this one
+   did not. Fixed — and the dirty-caller run is what then exposed S6.
+3. **The first probe could not see two whole classes of option.** A bare
+   `collide!` passes `ctx = nothing`, which means "every turn", so
+   `luminosity_schedule` looked ignored; and a single collision leaves the
+   slice-pair Green cache with nothing to reuse, so the rebuild ratios looked
+   ignored. Both were fixed in the probe, not blamed on the code.
+4. **The `margin_sigma` hypothesis for S8 was wrong.** I expected the adaptive
+   box to mask the estimator at the default margin and to reveal it at
+   `margin_sigma = 0`. Measured 0.0 at both; the option is never read at all.
+
+## 15.8 Verification for this phase
+
+- `Pkg.test(julia_args=["--threads=8"])`: **passed**, exit 0, **104 testsets**
+  (101 at the session baseline), with two new ones — the on-axis Green kernel
+  and solver-option effectiveness, the latter carrying two negative controls of
+  its own.
+- **All 12 contracts pass**, `PTCConsistencyContract` still at 4.995e-13.
+- Behavioural fingerprint: every deterministic case byte-identical.
+- `Test.detect_ambiguities(Octopus)`: 0.
