@@ -140,15 +140,46 @@ RFCavitySpec(; voltage, frequency | harmon, phase=0, L=0, e0)
 - **Thick cavity by drift–kick–drift**, as AT does: half drift, longitudinal
   kick, half drift. `L = 0` is the thin limit and should be exact, not a
   special case bolted on.
-- **`e0` is an element parameter**, following AT, whose cavity struct carries
-  `Energy` as a field. This is forced by Octopus's own architecture rather than
-  chosen: `track_particle(method, elem, x, px, y, py, z, pz)` never sees the
-  beam, so anything an element needs must be baked in at `compile_runtime`.
+- **The cavity does NOT carry a reference energy.** AT stores `Energy` on its
+  cavity, but Octopus's own precedent is stronger and is the one to follow —
+  see §6a. The spec takes a **normalized strength**, not a voltage plus an
+  energy.
 - **`harmon` needs the circumference**, since $f = h f_0$ and
   $f_0 = \beta_0 c / C$. The line knows $C$ — `total_length` already exists —
   which makes this the third real consumer of `BeamLine` after assemblies and
   aperture positions. Supplying `harmon` without a line to resolve it against
   must throw rather than guess.
+
+### 6a. Why the cavity must not hold an energy
+
+`BeamParams` already has an `E0`. If the cavity also held one, a lattice could
+declare two different reference energies and nothing would notice. The codebase
+has already met this problem and answered it, twice:
+
+- **`ThinCrabCavity` takes `strengthX`/`strengthY`** — already-normalized kicks.
+  It carries no energy at all, because a normalized strength does not need one.
+- **The strong-beam `kbb` is derived from `E0` at setup**,
+  `kbb = q_1 q_2 r_0 N \, mc^2 / E_0`, and may also be supplied directly. The
+  energy is used to *compute a number* and is then out of the picture.
+
+And the architecture enforces it: `execute!(task, beam::Beam)` calls
+`execute!(task, beam.rep)`, **dropping the parameters entirely**. Tracking never
+sees `E0`, so an element that stored one would be storing something the
+tracking layer cannot corroborate.
+
+> **Elements carry normalized strengths. `E0` is a beam property, used at setup
+> to derive them, and never enters tracking.**
+
+So the mismatch cannot occur, because there is only ever one number: the
+element holds a ratio, not two quantities that could disagree. Following the
+beam-beam ergonomics, a user may give the normalized strength directly, or
+derive it from a beam with a helper — and the helper is the single place `E0`
+is read, which is the place to validate it.
+
+The cost is stated plainly: **a normalized cavity cannot self-consistently
+accelerate**, because the normalization is what changes. That is not a gap in
+this design, it is the boundary of Scope A. Scope B needs the $P_0(s)$ channel
+regardless, and that channel is exactly what would renormalize.
 
 **Scope B — an accelerating cavity. Defer, and follow Bmad.**
 
@@ -199,8 +230,9 @@ ambiguity.
    Hz, phase in radians, argument $kz + \varphi$ (§4). The codebase had already
    chosen, and two RF elements in one lattice must not mean two different things
    by `phase`.
-2. Does `RFCavitySpec` take `e0` directly, or should the line supply it? Taking
-   it directly works today and matches AT; having the line supply it is the
-   right long-term shape and is the same channel Scope B needs.
+2. ~~Does `RFCavitySpec` take `e0`?~~ **Settled: neither — it takes a
+   normalized strength and no energy at all** (§6a). `BeamParams.E0` is the one
+   source of truth, it is read only at setup to derive the strength, and
+   tracking never sees it. Two energies could disagree; a ratio cannot.
 3. Is a `harmon` that cannot be resolved without a line an error, or should the
    cavity simply require `frequency` until lines carry a circumference?
