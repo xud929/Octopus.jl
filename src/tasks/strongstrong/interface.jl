@@ -195,14 +195,30 @@ function _resolve_cuda_pic_configuration(solver, policy::ResolvedCUDAExecutionPo
     return resolved
 end
 
+"""
+    _pic_launch_solver(solver) -> PICPoissonSolver or nothing
+
+The PIC solver that owns `backend_configurations` for `solver`, or `nothing`
+when the solver has no CUDA PIC launch surface.
+
+Dispatch, not `isa`: a solver may *compose* a `PICPoissonSolver` rather than
+subtype it, and `GaussianPICPoissonSolver` does exactly that while reaching the
+same `_cuda_pic_threads` consumers in `gaussian_pic_cuda.jl`. An `isa` test here
+silently dropped its launch configuration and its inherited policy thread count.
+The composing method is defined beside the composing type in `gaussian_pic.jl`,
+and the `PICPoissonSolver` method below its own definition.
+"""
+_pic_launch_solver(::AbstractPoissonSolver) = nothing
+
 function _with_solver_execution_configuration(f::F, solver, policy) where {F}
-    if solver isa PICPoissonSolver && policy isa ResolvedCUDAExecutionPolicy
-        resolved = _resolve_cuda_pic_configuration(solver, policy)
+    launch_solver = _pic_launch_solver(solver)
+    if launch_solver !== nothing && policy isa ResolvedCUDAExecutionPolicy
+        resolved = _resolve_cuda_pic_configuration(launch_solver, policy)
         return Base.ScopedValues.with(_ACTIVE_CUDA_PIC_LAUNCH_CONFIG => resolved) do
             f()
         end
     end
-    if solver isa PICPoissonSolver && !isempty(solver.backend_configurations)
+    if launch_solver !== nothing && !isempty(launch_solver.backend_configurations)
         _record_execution!(:cuda_pic_configuration, backend_type(policy),
                            (status=:inactive_backend,))
     end
@@ -1186,6 +1202,8 @@ end
 
 PICPoissonSolver(; kwargs...) = PICPoissonSolver{Float64}(; kwargs...)
 
+_pic_launch_solver(solver::PICPoissonSolver) = solver
+
 _pic_luminosity_grid(solver::PICPoissonSolver) =
     solver.luminosity_grid === nothing ? solver.grid : solver.luminosity_grid
 
@@ -1378,10 +1396,21 @@ end
 function configuration_report(solver::GaussianPoissonSolver;
                               policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
                               backend=nothing)
+    # `backend` was accepted and then ignored, so `batch_mode` -- CUDA-only, and
+    # consumed at pic_cuda.jl:5041 -- was reported `:resolved` on CPU, where the
+    # collision-time order is fixed. The PIC report already made this
+    # distinction; both now answer the question the caller asked.
+    selected_backend = backend === nothing ?
+        (policy === nothing ? nothing : backend_type(policy)) : backend
     configured = solver_configuration(solver)
     entries = ConfigurationEntry[]
     for (name, meta) in pairs(solver_option_schema(solver))
         requested = getproperty(configured, name)
+        if selected_backend !== nothing && !(selected_backend in meta.supported_backends)
+            push!(entries, ConfigurationEntry(name, requested, requested, :inactive_backend,
+                "option does not apply to $(selected_backend)", meta.consumer))
+            continue
+        end
         resolved = name === :slicing1 ? configured.resolved_slicing1 :
                    name === :slicing2 ? configured.resolved_slicing2 : requested
         status = requested === nothing && resolved !== nothing ? :inherited : :resolved
@@ -1760,18 +1789,24 @@ function _preflight_solver_configurations!(task, blocks1, blocks2, policy)
     for (block1, block2) in zip(blocks1, blocks2)
         block1.collision === nothing && continue
         solver = _collision_solver(task, block1.collision, block2.collision)
-        solver isa PICPoissonSolver || continue
         if policy isa ResolvedCUDAExecutionPolicy
-            _resolve_cuda_pic_configuration(solver, policy)
+            launch_solver = _pic_launch_solver(solver)
+            launch_solver === nothing ||
+                _resolve_cuda_pic_configuration(launch_solver, policy)
         else
+            # Every solver, not only PIC: a CUDA-only option carries the same
+            # obligation wherever it is declared, and the soft-Gaussian
+            # `batch_mode` (consumed at pic_cuda.jl:5041) was silently ignored
+            # on CPU because this loop skipped non-PIC solvers.
+            configured = solver_configuration(solver)
             for (name, meta) in pairs(solver_option_schema(solver))
                 CPUThreadsBackend in meta.supported_backends && continue
-                requested = getproperty(solver_configuration(solver), name)
-                isequal(requested, meta.default) || push!(inactive, name)
+                isequal(getproperty(configured, name), meta.default) ||
+                    push!(inactive, name)
             end
         end
     end
-    isempty(inactive) || @warn "non-default CUDA PIC options are inactive on CPU storage" options=sort!(collect(inactive))
+    isempty(inactive) || @warn "non-default CUDA-only solver options are inactive on CPU storage" options=sort!(collect(inactive))
     return nothing
 end
 

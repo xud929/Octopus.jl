@@ -146,6 +146,11 @@ function configuration_report(solver::GaussianPICPoissonSolver;
     return (pic_entries..., Tuple(extras)...)
 end
 
+# The embedded PIC solver owns backend_configurations, and gaussian_pic_cuda.jl
+# reaches the same _cuda_pic_threads consumers as pic_cuda.jl, so the launch
+# configuration must resolve through it.
+_pic_launch_solver(solver::GaussianPICPoissonSolver) = solver.pic
+
 # Luminosity scheduling and kbb/luminosity scales all reuse the PIC logic.
 _pic_compute_luminosity(solver::GaussianPICPoissonSolver, ctx) =
     _pic_compute_luminosity(solver.pic, ctx)
