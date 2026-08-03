@@ -1834,10 +1834,10 @@ end
     # energy is constant and phase = 0 is no net acceleration.
     u = (1.0e-3, 1.0e-4, -0.5e-3, 2.0e-4, 0.2, 8.0e-4)
     S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
-    cav(; kw...) = compile_runtime(RFCavitySpec(400.8e6; e0=275e9, mc2=PMASS_EV, kw...))
+    cav(; kw...) = compile_runtime(ThinRFCavitySpec(400.8e6; e0=275e9, mc2=PMASS_EV, kw...))
 
     # registered like any other element
-    @test :rf_cavity in summarize_registry().elements
+    @test :thin_rf_cavity in summarize_registry().elements
     @test validate_element_metadata().passed
 
     # A switched-off cavity is exactly nothing, not nothing to round-off.
@@ -1886,7 +1886,7 @@ end
     # and it is invisible for an electron ring.
     for (e0, mc2) in ((10e9, PMASS_EV), (275e9, PMASS_EV), (10e9, EMASS_EV))
         b0, g0 = reference_beta_gamma(e0, mc2)
-        e = compile_runtime(RFCavitySpec(400.8e6; voltage=1.0e6, e0=e0, mc2=mc2, phase=pi / 2))
+        e = compile_runtime(ThinRFCavitySpec(400.8e6; voltage=1.0e6, e0=e0, mc2=mc2, phase=pi / 2))
         o = e(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         _, pin = convert_longitudinal(PATHLENGTH_DELTA => TIME_ENERGY, 0.0, 0.0; beta0=b0, gamma0=g0)
         _, pout = convert_longitudinal(PATHLENGTH_DELTA => TIME_ENERGY, o[5], o[6]; beta0=b0, gamma0=g0)
@@ -1901,7 +1901,7 @@ end
     ring(V) = begin
         M = Matrix{Float64}(I, 6, 6)
         M[5, 6] = -1.0e-3                     # a pure longitudinal slip
-        [compile_runtime(RFCavitySpec(400.8e6; voltage=V, e0=275e9, mc2=PMASS_EV)),
+        [compile_runtime(ThinRFCavitySpec(400.8e6; voltage=V, e0=275e9, mc2=PMASS_EV)),
          compile_runtime(Linear6DSpec(; matrix=Tuple(vec(permutedims(M)))))]
     end
     nus = map((2e6, 8e6, 32e6)) do V
@@ -1921,17 +1921,17 @@ end
     @test nus[3] / nus[2] ≈ 2 rtol = 1.0e-6
 
     # construction errors, each naming the fix
-    @test_throws ArgumentError RFCavitySpec(400.8e6; voltage=1e6)                    # no e0/mc2
-    @test_throws ArgumentError RFCavitySpec(400.8e6; strength=1e-5)                  # no beta0
-    @test_throws ArgumentError RFCavitySpec(400.8e6)                                 # nothing at all
-    @test_throws ArgumentError RFCavitySpec(-1.0; voltage=1e6, e0=275e9, mc2=PMASS_EV)
-    @test_throws ArgumentError RFCavitySpec(400.8e6; voltage=1e6, e0=275e9,
+    @test_throws ArgumentError ThinRFCavitySpec(400.8e6; voltage=1e6)                    # no e0/mc2
+    @test_throws ArgumentError ThinRFCavitySpec(400.8e6; strength=1e-5)                  # no beta0
+    @test_throws ArgumentError ThinRFCavitySpec(400.8e6)                                 # nothing at all
+    @test_throws ArgumentError ThinRFCavitySpec(-1.0; voltage=1e6, e0=275e9, mc2=PMASS_EV)
+    @test_throws ArgumentError ThinRFCavitySpec(400.8e6; voltage=1e6, e0=275e9,
                                             mc2=PMASS_EV, strength=1e-5)             # both
 
     # Units match ThinCrabCavity deliberately: one meaning of `phase` per lattice.
-    @test parameter_schema(ElementSpec{:rf_cavity}).frequency.unit ==
+    @test parameter_schema(ElementSpec{:thin_rf_cavity}).frequency.unit ==
           parameter_schema(ElementSpec{:thin_crab_cavity}).frequency.unit == "Hz"
-    @test parameter_schema(ElementSpec{:rf_cavity}).phase.unit ==
+    @test parameter_schema(ElementSpec{:thin_rf_cavity}).phase.unit ==
           parameter_schema(ElementSpec{:thin_crab_cavity}).phase.unit == "rad"
 end
 

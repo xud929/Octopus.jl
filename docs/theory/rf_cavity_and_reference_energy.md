@@ -158,13 +158,17 @@ it at all. Every $\beta$ lives in the two wrappers, where §2.2 put them, and
 Scope B becomes an **asymmetric** sandwich: same body, exit wrapper at a
 different $P_0$.
 
-**Scope A — `RFCavitySpec`, constant reference energy. Do this now.**
+**Scope A — `ThinRFCavitySpec`, constant reference energy. Do this now.**
+
+**Thin**, matching `ThinCrabCavity` and `ThinMultipole`: one localised kick, with
+`L` buying drift space so the arc length is right. No transit-time factor and no
+RF focusing — named so the boundary of the model is visible from the call site.
 
 It closes the longitudinal plane, gives synchrotron motion and the bucket,
 unblocks Twiss, and needs no reference machinery whatsoever.
 
 ```
-RFCavitySpec(; voltage, frequency | harmon, phase=0, L=0, e0)
+ThinRFCavitySpec(frequency; voltage, e0, mc2, phase=0, L=0)
 ```
 
 - **Body in `TIME_ENERGY`, conjugated by §2.2**, per Step 0 above.

@@ -1,7 +1,24 @@
-export RFCavitySpec, RFCavity, rf_strength
+export ThinRFCavitySpec, ThinRFCavity, rf_strength
 
 # ---------------------------------------------------------------------------
-# RF cavity, without acceleration.
+# THIN RF cavity, without acceleration.
+#
+# "Thin" is a claim about the physics, not just a name. The model is ONE
+# localised energy kick. `L` buys drift space so the cavity occupies its proper
+# length in a lattice -- which matters now that a BeamLine computes arc
+# positions from `L` -- but the kick still happens at a point, exactly as AT's
+# CavityPass does. What that leaves out, stated so nobody has to discover it:
+#
+#   * no transit-time factor: the particle is not tracked through the field
+#     while the field oscillates, so a cavity long compared with the RF
+#     wavelength is not modelled;
+#   * no RF focusing: a real cavity's transverse fields defocus, and here the
+#     transverse coordinates are untouched by the kick;
+#   * no distributed field, so no field map and no cell structure.
+#
+# It is the same standing as `ThinCrabCavity` next door, and the same standing
+# as `ThinMultipole` against a thick magnet: correct for what it models, and
+# named so the boundary is visible from the call site.
 #
 # Design, the four-code comparison, and why there is no reference particle:
 # `docs/theory/rf_cavity_and_reference_energy.md`.
@@ -22,7 +39,7 @@ export RFCavitySpec, RFCavity, rf_strength
 # ---------------------------------------------------------------------------
 
 """
-    RFCavity{M,T}
+    ThinRFCavity{M,T}
 
 Runtime RF cavity: a longitudinal kick between two half drifts.
 
@@ -31,7 +48,7 @@ Holds only **dimensionless** numbers. There is deliberately no energy here —
 that stored a second copy could disagree with it. Same discipline as the
 strong-beam `kbb` and the crab cavity's `strength`.
 """
-struct RFCavity{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
+struct ThinRFCavity{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     strength::T      # qV/(P0 c), the kick in p_t per unit sin
     k::T             # 2*pi*frequency/c
@@ -54,7 +71,7 @@ Changing only the momentum by a function of the coordinate is a canonical
 transformation, so the kick is symplectic, and the two wrappers are symplectic
 by construction (Section 2). The composition therefore is.
 """
-@inline function _rf_kick(elem::RFCavity, x, px, y, py, z, pz)
+@inline function _rf_kick(elem::ThinRFCavity, x, px, y, py, z, pz)
     # A cavity with no voltage is exactly nothing, not nothing to round-off.
     # The conversion round trip is only exact to ~4e-16, so without this a
     # switched-off cavity would perturb a lattice in the last bits -- and
@@ -69,7 +86,7 @@ by construction (Section 2). The composition therefore is.
     return x, px, y, py, zn, pzn
 end
 
-@inline function track_particle(::Symplectic6DMap, elem::RFCavity{M,T},
+@inline function track_particle(::Symplectic6DMap, elem::ThinRFCavity{M,T},
                                 x, px, y, py, z, pz) where {M,T}
     if iszero(elem.L)
         return _rf_kick(elem, x, px, y, py, z, pz)
@@ -82,7 +99,7 @@ end
     return _lattice_drift(Val(false), zero(T), half, x, px, y, py, z, pz)
 end
 
-@inline (elem::RFCavity)(x, px, y, py, z, pz) =
+@inline (elem::ThinRFCavity)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
 
 """
@@ -102,13 +119,15 @@ rf_strength(; voltage, e0, charge=1, beta0) = charge * voltage / (beta0 * e0)
 
 # An abstract type rather than a bare function, matching PatchSpec, SBendSpec
 # and BeamLine: the metadata registry keys friendly constructors by type.
-abstract type RFCavitySpec end
+abstract type ThinRFCavitySpec end
 
 """
-    RFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0)
-    RFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0)
+    ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0)
+    ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0)
 
-An RF cavity **without acceleration** — Bmad's `rfcavity`, not its `lcavity`.
+A **thin** RF cavity **without acceleration** — Bmad's `rfcavity`, not its
+`lcavity`, and a single localised kick rather than a field integrated along the
+cavity.
 The reference energy is constant through it, which is what a storage ring wants
 and what closes the longitudinal plane so there is a synchrotron tune to speak
 of.
@@ -127,20 +146,20 @@ a field** — nothing here can drift out of step with `BeamParams.E0`, because
 nothing here remembers it.
 
 ```julia
-RFCavitySpec(400.8e6; voltage = 12e6, e0 = 275e9, mc2 = PMASS_EV)
+ThinRFCavitySpec(400.8e6; voltage = 12e6, e0 = 275e9, mc2 = PMASS_EV)
 ```
 
 Importing from another code? The phase conversions are in
 `docs/theory/rf_cavity_and_reference_energy.md` §4. MAD-X's `LAG` and Bmad's
 `phi0` differ by half a turn from each other before any unit change.
 """
-function RFCavitySpec(frequency;
+function ThinRFCavitySpec(frequency;
                       strength=nothing, beta0=nothing, gamma0=nothing,
                       voltage=nothing, e0=nothing, mc2=nothing, charge=1,
                       phase=0, L=0, tracking_method=Symplectic6DMap(), kwargs...)
     if voltage !== nothing
         (e0 === nothing || mc2 === nothing) && throw(ArgumentError(
-            "RFCavitySpec with `voltage` also needs `e0` and `mc2`, so the \
+            "ThinRFCavitySpec with `voltage` also needs `e0` and `mc2`, so the \
              dimensionless strength and beta0 can be derived; or give \
              `strength`, `beta0` and `gamma0` directly"))
         strength === nothing || throw(ArgumentError(
@@ -149,43 +168,43 @@ function RFCavitySpec(frequency;
         strength = rf_strength(; voltage=voltage, e0=e0, charge=charge, beta0=beta0)
     end
     strength === nothing && throw(ArgumentError(
-        "RFCavitySpec needs either `voltage` with `e0` and `mc2`, or `strength` \
+        "ThinRFCavitySpec needs either `voltage` with `e0` and `mc2`, or `strength` \
          with `beta0` and `gamma0`"))
     (beta0 === nothing || gamma0 === nothing) && throw(ArgumentError(
-        "RFCavitySpec needs `beta0` and `gamma0`; derive them with \
+        "ThinRFCavitySpec needs `beta0` and `gamma0`; derive them with \
          reference_beta_gamma(e0, mc2)"))
     frequency > 0 || throw(ArgumentError("frequency must be positive, got $frequency"))
     T = float(promote_type(typeof(strength), typeof(frequency), typeof(phase),
                            typeof(L), typeof(beta0), typeof(gamma0)))
-    return ElementSpec{:rf_cavity}(_spec_params(;
+    return ElementSpec{:thin_rf_cavity}(_spec_params(;
         frequency=T(frequency), strength=T(strength), phase=T(phase), L=T(L),
         beta0=T(beta0), gamma0=T(gamma0), tracking_method=tracking_method, kwargs...))
 end
 
 """
-    RFCavitySpec(; frequency, ...)
+    ThinRFCavitySpec(; frequency, ...)
 
 Keyword form. Same element; exists because reflection builds every kind by
 keyword alone, and because a spec rebuilt from `parameter_schema` should round
 trip.
 """
-RFCavitySpec(; frequency, kwargs...) = RFCavitySpec(frequency; kwargs...)
+ThinRFCavitySpec(; frequency, kwargs...) = ThinRFCavitySpec(frequency; kwargs...)
 
-function RFCavity(spec::ElementSpec{:rf_cavity},
+function ThinRFCavity(spec::ElementSpec{:thin_rf_cavity},
                   method::AbstractTrackingMethod=tracking_method(spec))
     T = numeric_type(spec)
     k = T(2) * T(pi) * T(param(spec, :frequency)) / T(CLIGHT)
-    return RFCavity{typeof(method),T}(
+    return ThinRFCavity{typeof(method),T}(
         method, T(param(spec, :strength)), k, T(getparam(spec, :phase, 0)),
         T(getparam(spec, :L, 0)), T(param(spec, :beta0)), T(param(spec, :gamma0)))
 end
 
 @element_spec begin
-    kind = :rf_cavity
-    spec_type = ElementSpec{:rf_cavity}
-    friendly_constructor = RFCavitySpec
-    runtime_type = RFCavity
-    description = "RF cavity without acceleration: a longitudinal kick between two half drifts."
+    kind = :thin_rf_cavity
+    spec_type = ElementSpec{:thin_rf_cavity}
+    friendly_constructor = ThinRFCavitySpec
+    runtime_type = ThinRFCavity
+    description = "Thin RF cavity without acceleration: one localised longitudinal kick between two half drifts."
     keywords = [:harmonic, :thick_element]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract]
@@ -196,9 +215,9 @@ end
         phase=ParamMeta(default=0, unit="rad", meaning="RF phase in radians, entering as the additive `k*z + phase` exactly as ThinCrabCavity does. phase = 0 gives no net acceleration, which is a ring's natural zero; an accelerating cavity is a different element with a different zero"),
         beta0=ParamMeta(required=true, meaning="reference velocity, dimensionless. Needed by the coordinate conversions and by the energy-to-momentum factor; it is what distinguishes a proton ring from an electron ring and what the ultrarelativistic approximation throws away"),
         gamma0=ParamMeta(required=true, meaning="reference Lorentz factor, dimensionless. With beta0, fixes the exact conversion between longitudinal conventions"),
-        L=ParamMeta(default=0, unit="m", meaning="cavity length. Nonzero gives drift-kick-drift as AT's CavityPass does; L = 0 is the exact thin limit of it rather than a separate model"),
+        L=ParamMeta(default=0, unit="m", meaning="cavity length, which buys DRIFT SPACE only: the kick stays a single localised impulse at the centre, as AT's CavityPass does, so a lattice gets the right arc positions without the element pretending to integrate the field. L = 0 is the exact limit of that rather than a separate model. No transit-time factor and no RF focusing -- see the element docstring"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
     )
-    example = RFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV)
-    construction_help = "Friendly constructor: RFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or RFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=Symplectic6DMap()). An RF cavity WITHOUT acceleration -- Bmad's rfcavity, not its lcavity -- so the reference energy is constant through it and phase = 0 is no net acceleration. Frequency in Hz and phase in radians, matching ThinCrabCavity so that `phase` means one thing across every RF element. The energy is an ARGUMENT and not a field: voltage and e0 are reduced to a dimensionless strength at construction, so nothing on the element can disagree with BeamParams.E0. The body is written in the TIME_ENERGY convention and conjugated back by convert_longitudinal, which is why there is no beta factor in it. Design: docs/theory/rf_cavity_and_reference_energy.md."
+    example = ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV)
+    construction_help = "Friendly constructor: ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=Symplectic6DMap()). A THIN RF cavity WITHOUT acceleration -- Bmad's rfcavity, not its lcavity -- so the reference energy is constant through it and phase = 0 is no net acceleration. Thin means ONE localised kick: L buys drift space so the cavity occupies its proper arc length, but there is no transit-time factor and no RF focusing, the same standing as ThinCrabCavity and ThinMultipole. Frequency in Hz and phase in radians, matching ThinCrabCavity so that `phase` means one thing across every RF element. The energy is an ARGUMENT and not a field: voltage and e0 are reduced to a dimensionless strength at construction, so nothing on the element can disagree with BeamParams.E0. The body is written in the TIME_ENERGY convention and conjugated back by convert_longitudinal, which is why there is no beta factor in it. Design: docs/theory/rf_cavity_and_reference_energy.md."
 end
