@@ -71,8 +71,40 @@ implementation:
 
 Any importer that maps one code's phase onto another's without the offset
 produces a cavity that tracks, looks plausible, and sits on the wrong side of
-the bucket. Octopus should pick one convention, state it in the docstring next
-to the conversions, and pin it with a reference case.
+the bucket.
+
+**Octopus does not get to pick freely, because it already picked.**
+`ThinCrabCavity` is an RF element that exists and is validated, and its
+convention is the house one:
+
+```julia
+kcc = 2π * frequency / CLIGHT      # frequency in Hz
+θ   = i * kcc * z + phase[i]       # phase in RADIANS, additive
+```
+
+- `frequency` in **Hz**, not MAD-X's MHz;
+- `phase` in **radians**, not MAD-X's units of $2\pi$, not Bmad's rad/$2\pi$,
+  not elegant's degrees;
+- the argument is $k z + \varphi$, **additive**, taken against Octopus's own
+  longitudinal coordinate rather than a time or a $ct$;
+- harmonics are tuples, so a multi-harmonic cavity is native rather than an
+  extension.
+
+The accelerating cavity must match this, and the reason is stronger than tidiness:
+a user who sets `phase` on a crab cavity and `phase` on an RF cavity in the same
+lattice must not be writing two different quantities. Internal consistency beats
+matching any one external code, and the conversions to all four belong in the
+docstring so an importer has them in one place:
+
+| from | to Octopus `phase` [rad] |
+|---|---|
+| MAD-X `LAG` [units of $2\pi$] | $2\pi\,\mathrm{LAG}$, plus the sine/cosine and sign reconciliation of §3 |
+| Bmad `phi0` [rad/$2\pi$] | $2\pi\,\phi_0$, and recall $\phi_0 = \mathrm{LAG} + 0.5$ |
+| elegant `PHASE` [deg] | $\pi\,\mathrm{PHASE}/180$ |
+| AT `TimeLag` [m], `PhaseLag` | $-k\,\mathrm{TimeLag} - \varphi_\mathrm{lag}$ |
+
+These conversions are stated from the definitions above and are **not yet
+verified numerically**; the reference case of §8 is what would pin them.
 
 ## 5. What the map must respect in *our* convention
 
@@ -163,9 +195,10 @@ ambiguity.
 
 ## 9. Open questions for the human
 
-1. Phase convention: adopt MAD-X's `LAG` (units of $2\pi$), Bmad's `phi0`
-   (offset by a half turn), or degrees? Whichever is chosen, the other three
-   conversions belong in the docstring.
+1. ~~Phase convention?~~ **Settled: follow `ThinCrabCavity`** — frequency in
+   Hz, phase in radians, argument $kz + \varphi$ (§4). The codebase had already
+   chosen, and two RF elements in one lattice must not mean two different things
+   by `phase`.
 2. Does `RFCavitySpec` take `e0` directly, or should the line supply it? Taking
    it directly works today and matches AT; having the line supply it is the
    right long-term shape and is the same channel Scope B needs.
