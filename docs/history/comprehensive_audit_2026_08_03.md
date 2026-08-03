@@ -273,6 +273,26 @@ Cauchy–Riemann
 The kick is a gradient — and the map symplectic — **iff `h·Im f ≡ 0`**, i.e. iff
 the content is a pure *normal* dipole.
 
+**A note on "skew dipole", and on how much F2 actually matters.** `ks[1]` is
+the skew partner of the dipole order: index 1 is `n = 0`, so `kn[1] = K₀` is a
+normal dipole (`B_y` on the midplane, `dpx = −L·K₀`, a horizontal bend) and
+`ks[1] = Ks₀` is that magnet rolled 90° about `s` (`B_x` on the midplane,
+`dpy = +L·Ks₀`, a *vertical* bend). It is a vertical bending field written as a
+multipole coefficient instead of as rolled geometry.
+
+It is reachable — `SBendSpec(…, ks=(0.05,))`, `MultipoleSpec(k0s=…)`,
+`SolenoidSpec(k0s=…)` — and named in the metadata. But nobody would build a
+vertical bend that way: `ref_tilt = pi/2` is the documented spelling, and
+vertical steering is `VKickerSpec` or `k0sl`. **F2 is graded Major on the size
+of the violation, not on the likelihood of the configuration**, and the two
+should not be confused.
+
+**F3 is the one with real exposure.** A solenoid with a superimposed
+quadrupole is a detector-region final focus, which is exactly what §14 of the
+solenoid note was written for, and *every* multipole order triggered it —
+including a plain normal `k1`, the ordinary case. If only one of these two
+findings is ever going to bite a production run, it is F3.
+
 **F2**: `lattice_magnets.jl` tested `i >= 2`, exempting the whole dipole order.
 True for the normal dipole (`Ψ₂ = K₀h − hK₀ = 0`), false for the skew one
 (`Ψ₁ = Ks₀(1+hx)` seeds `Ψ₃ = h²Ks₀/(1+hx)`).
