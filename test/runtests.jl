@@ -1,6 +1,8 @@
 using Test
 using Octopus
 using LinearAlgebra
+# Test-only: Octopus takes no runtime dependency on any AD package.
+using ForwardDiff
 
 @testset "Architecture integrity" begin
     metadata = validate_element_metadata(; throw_on_error=true)
@@ -1823,6 +1825,95 @@ end
                   "drift", "patch", "kicker", "thin_crab_cavity")
             @test any(startswith(v, k * ".") for v in verified)
         end
+    end
+end
+
+@testset "ForwardDiff differentiates the lattice" begin
+    # Octopus takes NO runtime dependency on ForwardDiff. It works because the
+    # element layer is generic in its number type, so this testset is here to
+    # keep it that way -- and to reach two things complex-step cannot:
+    # second derivatives, and the solenoid, whose kernel already uses complex
+    # arithmetic internally so the complex-step trick cannot nest inside it.
+    u = [1.0e-3, 1.0e-4, -0.5e-3, 2.0e-4, 0.0, 1.0e-3]
+    S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
+    qf = QuadrupoleSpec(L=0.4, k1=1.7, nst=4)
+    qd = QuadrupoleSpec(L=0.4, k1=-1.7, nst=4)
+    dr = DriftSpec(L=0.6)
+    bend = SBendSpec(L=1.1, angle=0.198, k1=0.3, e1=0.05, e2=0.05, nst=4)
+    ops = [compile_runtime(e) for e in BeamLine("CELL", qf, dr, bend, dr, qd, dr)]
+    track(v) = collect(foldl((c, o) -> o(c...), ops; init=Tuple(v)))
+
+    # 1. the transfer matrix, against the complex step the suite already trusts
+    J = ForwardDiff.jacobian(track, u)
+    Jcs = zeros(6, 6)
+    for j in 1:6
+        v = ComplexF64.(u)
+        v[j] += 1e-30im
+        Jcs[:, j] = imag.(collect(foldl((c, o) -> o(c...), ops; init=Tuple(v)))) ./ 1e-30
+    end
+    @test maximum(abs, J .- Jcs) < 1.0e-13
+    @test maximum(abs, J' * S6 * J - S6) < 1.0e-13
+
+    # 2. derivatives with respect to PARAMETERS, which is what the number-type
+    #    sweep bought and what a transfer matrix alone cannot give.
+    obj(p) = begin
+        line = BeamLine("CELL",
+            QuadrupoleSpec(L=0.4, k1=p[1], nst=4), DriftSpec(L=0.6),
+            SBendSpec(L=1.1, h=p[2], b0=p[2], k1=0.3, e1=0.05, e2=0.05, nst=4),
+            DriftSpec(L=0.6), QuadrupoleSpec(L=0.4, k1=-p[1], nst=4, x_offset=p[3]),
+            DriftSpec(L=0.6))
+        o = foldl((c, e) -> compile_runtime(e)(c...), line; init=Tuple(eltype(p).(u)))
+        return o[1]^2 + o[3]^2
+    end
+    p0 = [1.7, 0.18, 1.0e-4]
+    g = ForwardDiff.gradient(obj, p0)
+    for (i, h) in ((1, 1e-6), (2, 1e-6), (3, 1e-8))
+        e = zeros(3); e[i] = h
+        @test g[i] ≈ (obj(p0 .+ e) - obj(p0 .- e)) / 2h rtol = 1.0e-5
+    end
+
+    # 3. a Hessian. Complex-step is first order only and cannot check this at
+    #    all, so nesting is genuinely new coverage -- it also exercises
+    #    ForwardDiff's tag machinery, which is what stops an inner perturbation
+    #    leaking into the outer one.
+    H = ForwardDiff.hessian(obj, p0)
+    @test maximum(abs, H .- H') == 0.0
+    @test all(isfinite, H)
+
+    # 4. the solenoid, invisible to complex-step because its own kernel builds
+    #    `complex(a, b)` internally. A dual reaches it, so this is the only
+    #    guard that a Float64 pin there would trip.
+    for (mk, v, h) in ((L -> SolenoidSpec(L=L, ks=0.35), 1.3, 1e-7),
+                       (k -> SolenoidSpec(L=1.3, ks=k), 0.35, 1e-7))
+        d = ForwardDiff.derivative(x -> collect(compile_runtime(mk(x))(u...)), v)
+        fd = (collect(compile_runtime(mk(v + h))(u...)) .-
+              collect(compile_runtime(mk(v - h))(u...))) ./ 2h
+        @test maximum(abs, d .- fd) / max(maximum(abs, fd), 1e-8) < 1.0e-5
+    end
+
+    # 5. several knobs at once. Each must land in its OWN partial slot; seeding
+    #    two knobs with a scalar partial silently sums their derivatives into
+    #    one, and `gradient` is what makes that impossible.
+    let
+        @knob fd_qa::Real
+        @knob fd_qb::Real
+        run() = foldl((c, e) -> compile_runtime(e)(c...),
+                      (ElementSpec{:quadrupole}(; L=0.4, nst=4, kn=(0.0, @knob_expr fd_qa)),
+                       DriftSpec(L=0.6),
+                       ElementSpec{:quadrupole}(; L=0.4, nst=4, kn=(0.0, @knob_expr -fd_qb)),
+                       DriftSpec(L=0.6)); init=Tuple(u))[1]
+        gk = ForwardDiff.gradient(p -> (set_knob!(:fd_qa, p[1]);
+                                        set_knob!(:fd_qb, p[2]); run()), [1.7, 1.5])
+        set_knob!(:fd_qa, 1.7); set_knob!(:fd_qb, 1.5)
+        one(i, h) = (e = zeros(2); e[i] = h; e)
+        f2(p) = (set_knob!(:fd_qa, p[1]); set_knob!(:fd_qb, p[2]); r = run();
+                 set_knob!(:fd_qa, 1.7); set_knob!(:fd_qb, 1.5); r)
+        for i in 1:2
+            e = one(i, 1e-6)
+            @test gk[i] ≈ (f2([1.7, 1.5] .+ e) - f2([1.7, 1.5] .- e)) / 2e-6 rtol = 1.0e-5
+        end
+        # the two are genuinely independent, not a directional derivative
+        @test gk[1] != gk[2]
     end
 end
 
