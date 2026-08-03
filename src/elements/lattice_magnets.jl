@@ -174,18 +174,43 @@ dependence lives in the drift, and adding it here would double-count.
         ai += kn[n] * ti + ks[n] * tr
         tr, ti = (tr * x - ti * y) / n, (tr * y + ti * x) / n
     end
-    # Section 4.5: dpx = -L (1+hx) By, dpy = +L (1+hx) Bx. Only a dipole may
-    # have h != 0 on this path with a PURE DIPOLE (a combined-function magnet
-    # routes to _curved_kick), and the curved dipole field is exactly K0, so the
-    # factor is exact rather than truncated.
+    # Section 4.5: dpx = -L (1+hx) By, dpy = +L (1+hx) Bx. The only content that
+    # may take this path with h != 0 is a PURE NORMAL DIPOLE (anything else
+    # routes to _curved_kick, see `_needs_curved_potential`), and the curved
+    # dipole field is exactly K0, so the factor is exact rather than truncated.
     #
-    # This restriction is not cosmetic. For a non-dipole field the map above is
-    # not a gradient when h != 0 -- d/dy[-(1+hx)By] and d/dx[(1+hx)Bx] differ by
-    # h*Bx -- so it would not be symplectic. Routing combined-function magnets
-    # through the tabulated potential is what keeps the kick a gradient.
+    # This restriction is not cosmetic, and it is exactly a pure NORMAL dipole
+    # rather than "a dipole". Writing the sum as the analytic
+    # f(w) = sum (K_n + i Ks_n) w^n / n!, w = x + iy, this map is
+    # dpx = -L(1+hx) Re f and dpy = +L(1+hx) Im f, so by Cauchy-Riemann
+    #
+    #     d(dpx)/dy - d(dpy)/dx = -L h Im f .
+    #
+    # It is a gradient -- and hence symplectic -- iff h Im f vanishes
+    # identically, i.e. iff every order above the normal dipole is zero. The
+    # SKEW dipole is not exempt: its curved potential does not terminate
+    # (Psi_1 = Ks0 (1+hx) seeds Psi_3 = h^2 Ks0/(1+hx)). Routing it here anyway
+    # cost O(L h Ks0) of symplecticity -- measured 2.5e-3 at L=1, h=Ks0=0.05.
     g = 1 + h * x
     return x, px - L * g * ar, y, py + L * g * ai, z, pz
 end
+
+"""
+    _needs_curved_potential(kn, ks, h) -> Bool
+
+Does a curved frame force this magnet's kick through the tabulated potential?
+
+`_lattice_kick` is a gradient in a curved frame **iff** the content is a pure
+normal dipole (see the derivation in that function). So the exemption is exactly
+index 1 of `kn`, and everything else -- every order from the quadrupole up,
+normal or skew, **and the skew dipole** -- needs `_curved_potential_coeffs`.
+
+Shared with the solenoid, which Strang-splits against the same `_lattice_kick`
+and therefore inherits the same condition.
+"""
+@inline _needs_curved_potential(kn, ks, h) =
+    h != 0 && any(i -> (i >= 2 && (kn[i] != 0 || ks[i] != 0)) ||
+                       (i == 1 && ks[i] != 0), eachindex(kn))
 
 """
     _curved_potential_coeffs(T, kn, ks, h, M)
@@ -743,7 +768,7 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
     #                  what a PTC comparison at finite nst requires.
     model = Symbol(getparam(spec, :bend_model, :exact))
     model in (:exact, :drift_kick) || throw(ArgumentError(
-        "bend_model must be :exact or :drift_kick; got \$(repr(model))"))
+        "bend_model must be :exact or :drift_kick; got $(repr(model))"))
     if model === :drift_kick && b0 != 0
         isempty(knraw) && (knraw = T[zero(T)])
         knraw[1] += b0
@@ -751,12 +776,13 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
     end
     kn, ks = _strength_tuples(T, knraw, ksraw)
     # A curved frame changes the multipole potential itself (Section 4.4), so a
-    # combined-function magnet needs the curved field table. A pure dipole is
-    # exempt: its curved potential terminates, so the straight form is already
-    # exact for it once the (1+hx) factor is applied.
-    combined = h != 0 && any(i -> i >= 2 && (kn[i] != 0 || ks[i] != 0), eachindex(kn))
+    # combined-function magnet needs the curved field table. A pure NORMAL
+    # dipole is exempt: its curved potential terminates (Psi_2 = 0), so the
+    # straight form is already exact for it once the (1+hx) factor is applied.
+    # The skew dipole is NOT exempt -- see `_needs_curved_potential`.
+    combined = _needs_curved_potential(kn, ks, h)
     curved_order = Int(getparam(spec, :curved_order, 8))
-    curved_order >= 1 || throw(ArgumentError("curved_order must be positive, got \$curved_order"))
+    curved_order >= 1 || throw(ArgumentError("curved_order must be positive, got $curved_order"))
     psi = combined ? _curved_potential_coeffs(T, kn, ks, h, curved_order) : ()
     mc = combined ? curved_order : 0
     edge = Bool(getparam(spec, :bend_fringe, true))

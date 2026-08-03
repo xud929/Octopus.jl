@@ -33,7 +33,7 @@ would add error rather than remove it.
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
 # truncated power series is `<:Number`, so the tighter bound refuses a parameter
 # derivative outright. Float64 still satisfies it, so nothing else changes.
-struct Solenoid{M<:AbstractTrackingMethod,T<:Number,N,CURVED} <: AbstractTrackOp
+struct Solenoid{M<:AbstractTrackingMethod,T<:Number,N,CURVED,MC,NC} <: AbstractTrackOp
     method::M
     L::T
     ks::T
@@ -60,8 +60,22 @@ struct Solenoid{M<:AbstractTrackingMethod,T<:Number,N,CURVED} <: AbstractTrackOp
     h::T
     kn::NTuple{N,T}          # kn[i] = K_{i-1}, normal, THICK (not integrated)
     ksk::NTuple{N,T}         # skew partners
+    # Curved-frame multipole potential table, empty unless the frame is curved
+    # AND the superimposed content needs it (`_needs_curved_potential`). The
+    # kick the Strang split uses is `_lattice_kick`, which is a gradient in a
+    # curved frame only for a pure normal dipole, so a curved solenoid carrying
+    # anything else must differentiate one tabulated potential exactly as a
+    # combined-function bend does.
+    psi::NTuple{NC,T}
     nst::Int
 end
+
+# Truncation order of that table. Held as a constant rather than a public
+# keyword: it matches `SBendSpec`'s `curved_order` default, and a curved
+# solenoid with superimposed multipoles is exotic enough that adding a knob
+# ahead of a demand for one would be speculative. Raise it here if a
+# convergence study ever needs more.
+const _SOL_CURVED_ORDER = 8
 
 """
     _sol_log_over_h(h, x)
@@ -267,12 +281,20 @@ solenoid has a length, so it follows `QuadrupoleSpec`'s convention and takes
     dh = d / 2
     @inbounds for _ in 1:nst
         x, px, y, py, z, pz = _sol_body(elem, dh, x, px, y, py, z, pz)
-        x, px, y, py, z, pz = _lattice_kick(elem.kn, elem.ksk, elem.h, d,
-                                            x, px, y, py, z, pz)
+        x, px, y, py, z, pz = _sol_kick(elem, d, x, px, y, py, z, pz)
         x, px, y, py, z, pz = _sol_body(elem, dh, x, px, y, py, z, pz)
     end
     return x, px, y, py, z, pz
 end
+
+# The multipole half of the Strang step. Straight frames -- and the pure normal
+# dipole, whose curved potential terminates -- take the closed form, which is
+# exact and cheaper. Everything else in a curved frame differentiates the
+# tabulated potential, so the kick stays an exact gradient and the product stays
+# symplectic. `NC` is a type parameter, so this folds to one branch.
+@inline _sol_kick(elem::Solenoid{M,T,N,C,MC,NC}, d, x, px, y, py, z, pz) where {M,T,N,C,MC,NC} =
+    NC == 0 ? _lattice_kick(elem.kn, elem.ksk, elem.h, d, x, px, y, py, z, pz) :
+              _curved_kick(elem.psi, Val(MC), d, x, px, y, py, z, pz)
 
 # One solenoid sub-step of the Strang loop, selected by type as above.
 @inline _sol_body(elem::Solenoid{M,T,N,false}, d, x, px, y, py, z, pz) where {M,T,N} =
@@ -366,11 +388,20 @@ function Solenoid(spec::ElementSpec,
     # no splitting, no steps, and bit-identical to what it was before multipoles
     # existed.
     if all(iszero, kn) && all(iszero, ksk)
-        return Solenoid{typeof(method),T,0,curved}(
-            method, T(L), T(ks), T(h), (), (), nst)
+        return Solenoid{typeof(method),T,0,curved,0,0}(
+            method, T(L), T(ks), T(h), (), (), (), nst)
     end
-    return Solenoid{typeof(method),T,n,curved}(
-        method, T(L), T(ks), T(h), kn, ksk, nst)
+    # A curved frame makes `_lattice_kick` a non-gradient for everything except a
+    # pure normal dipole, so the same tabulated potential a combined-function
+    # bend uses is built here. `curved`, not `h != 0`: a caller who asked to
+    # ignore the curvature tracks a straight solenoid, and a straight frame
+    # needs no table.
+    hc = curved ? T(h) : zero(T)
+    needs = _needs_curved_potential(kn, ksk, hc)
+    psi = needs ? _curved_potential_coeffs(T, kn, ksk, hc, _SOL_CURVED_ORDER) : ()
+    mc = needs ? _SOL_CURVED_ORDER : 0
+    return Solenoid{typeof(method),T,n,curved,mc,length(psi)}(
+        method, T(L), T(ks), T(h), kn, ksk, psi, nst)
 end
 
 @element_spec begin
