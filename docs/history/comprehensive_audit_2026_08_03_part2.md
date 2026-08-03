@@ -760,3 +760,50 @@ collision result", and both were confirmed by measurement rather than argued:
 - **All 12 contracts pass**, `PTCConsistencyContract` still at 4.995e-13.
 - Behavioural fingerprint: every deterministic case byte-identical.
 - `Test.detect_ambiguities(Octopus)`: 0.
+
+
+## 15.9 The CUDA-only options, checked rather than deferred
+
+§15.1 deferred 13 CUDA-only options. They are now checked on the device, and
+doing so found two more defects in `GaussianPICPoissonSolver` — both the same
+class as S7 and S8, both invisible from the CPU.
+
+`_cuda_gpic_collide!` (`gaussian_pic_cuda.jl:74`) selects its route from
+`batch_mode` and `cuda_indexed_wavefront` **only**. It never reads
+`cuda_async`, `cuda_batch_fft` or `cuda_wavefront_fft`, and it emitted no
+`:cuda_pic_algorithm` receipt at all — the consumer all five of those options
+declare, and which the plain PIC routes do emit at `pic_cuda.jl:71` and `:219`.
+So on the hybrid, two options were consumed but unobservable and three were
+accepted and dropped. The contract reported exactly that asymmetry: the same
+five options passed for `PICPoissonSolver` and failed for the hybrid.
+
+Fixed the same way as S8 — emit the receipt for the two the route reads, reject
+the three it does not, matching how this backend already handles
+`slice_interpolation` and `interaction_grid`.
+
+Final coverage: **68 options on CPU, 10 CUDA-only on the device, 2 launch
+surfaces**, 10 exempted with stated reasons, 0 deferred.
+
+**A calibration problem worth recording.** The first CUDA comparison used exact
+inequality and reported that *every* PIC option changed the result — because the
+CUDA grid solvers are not run-to-run bitwise reproducible (§8), a fact this same
+document had already established and which I nonetheless walked straight into.
+The loop now runs each baseline twice and takes the spread as a noise floor,
+subject to a minimum of `1e-10` — the tolerance the strong-strong
+backend-consistency contracts already use for "the same result" across routes.
+A route change reorders float atomic sums by ~6.5e-12 here; a genuine
+algorithmic difference is seven orders above that (`green_cache` moved the CPU
+result by 2e-3, the spectral `method` switch by 5e-3).
+
+Both halves have negative controls, run rather than assumed: disabling
+`_pic_launch_solver` for the hybrid makes the contract report
+`emitted no :cuda_pic_launch receipt`, and suppressing the new
+`:cuda_pic_algorithm` receipt makes it report
+`batch_mode reached no receipt named by its consumer`.
+
+**And a process error, since the rules apply to how the audit is run too.** One
+suite run failed and I first read it as a regression; it was not. I had launched
+the test suite in the background and then run the source-mutating negative
+controls against the same working tree, so the suite compiled a half-disabled
+library. Nothing was wrong with the code. Re-run on a quiet tree: exit 0, 104
+testsets, 0 failures.

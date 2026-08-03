@@ -2099,6 +2099,15 @@ const DEFAULT_INACTIVE_SOLVER_OPTIONS = Dict{Tuple{Symbol,Symbol},String}(
         "GaussianPICPoissonSolver throws for :source_slice and :node; only the CPU PIC path implements them",
     (:GaussianPICPoissonSolver, :slice_interpolation) =>
         "GaussianPICPoissonSolver throws for :quadratic; only the CPU PIC path implements it",
+    # Read by the plain PIC CUDA routes only; the hybrid picks its route from
+    # batch_mode and cuda_indexed_wavefront and now rejects the rest rather than
+    # dropping them, so there is nothing left for this contract to observe.
+    (:GaussianPICPoissonSolver, :cuda_async) =>
+        "the CUDA GaussianPIC route is chosen by batch_mode and cuda_indexed_wavefront; it rejects a non-default value",
+    (:GaussianPICPoissonSolver, :cuda_batch_fft) =>
+        "the CUDA GaussianPIC route is chosen by batch_mode and cuda_indexed_wavefront; it rejects a non-default value",
+    (:GaussianPICPoissonSolver, :cuda_wavefront_fft) =>
+        "the CUDA GaussianPIC route is chosen by batch_mode and cuda_indexed_wavefront; it rejects a non-default value",
     (:GaussianPICPoissonSolver, :grid_extent) =>
         "GaussianPICPoissonSolver sizes its box from margin_sigma and now throws rather than dropping a non-default estimator",
     (:GaussianPICPoissonSolver, :grid_extent_sigma) =>
@@ -2189,6 +2198,52 @@ function _solver_contract_observable(solver, base1, base2, backend)
                   Float64(collide!(solver, beam1, beam2, backend,
                                    with_turn(base_ctx, turn))))
         end
+    end
+    coords = vcat((Array(a) for a in coordinate_arrays(beam1.rep))...,
+                  (Array(a) for a in coordinate_arrays(beam2.rep))...)
+    return coords, luminosities, execution_receipts(audit)
+end
+
+"""
+Largest relative difference between two observables, over coordinates and
+luminosities together. Used instead of an exact comparison wherever float atomic
+reordering makes bitwise equality unavailable.
+"""
+function _solver_contract_spread(a, b)
+    worst = 0.0
+    for (x, y) in zip(a[1], b[1])
+        worst = max(worst, abs(x - y) / max(abs(x), abs(y), eps()))
+    end
+    for (x, y) in zip(a[2], b[2])
+        (isnan(x) && isnan(y)) && continue
+        worst = max(worst, abs(x - y) / max(abs(x), abs(y), eps()))
+    end
+    return worst
+end
+
+"""
+Run one CUDA turn through a `StrongStrongTask` and return
+`(coordinates, luminosities, receipts)`.
+
+A task rather than a bare `collide!`, because the scoped launch configuration
+and the resolved policy are installed by `execute!`; calling the solver directly
+would test a configuration the device never sees.
+"""
+function _solver_contract_cuda_observable(solver, base1, base2)
+    beam1 = _strong_strong_contract_beam(base1, CUDABackend)
+    beam2 = _strong_strong_contract_beam(base2, CUDABackend)
+    ip = StrongStrongCollision(:solver_option; poisson_solver=solver)
+    audit = ExecutionAudit()
+    luminosities = Float64[]
+    mktempdir() do dir
+        path = joinpath(dir, "lum.tsv")
+        with_execution_audit(audit) do
+            execute!(StrongStrongTask((ip,), (ip,);
+                policy=CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=256)),
+                luminosity_path=path), beam1, beam2; turns=1)
+            CUDA.synchronize()
+        end
+        append!(luminosities, _strong_strong_contract_luminosity_series(path))
     end
     coords = vcat((Array(a) for a in coordinate_arrays(beam1.rep))...,
                   (Array(a) for a in coordinate_arrays(beam2.rep))...)
@@ -2313,9 +2368,80 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
     # The CUDA half: a launch configuration must reach the launch families, for
     # every solver that has a launch surface. This is the S1 regression.
     cuda_checked = 0
+    cuda_options_checked = 0
     for T in _solver_contract_types()
         kind = nameof(T)
         probe = get(contract.probes, kind, NamedTuple())
+        alternatives = get(contract.alternatives, kind, Dict{Symbol,Any}())
+        # Every CUDA-only option, on the device. These are execution and
+        # performance categories, so the assertion is the mirror of the CPU
+        # half: the result must NOT move, and the value must appear in a
+        # receipt named by the option's declared consumer.
+        # `grid_extent` only where the solver declares it -- the soft-Gaussian
+        # solver has no such keyword and rejected it.
+        cuda_probe = haskey(solver_option_schema(T), :grid_extent) ?
+            merge(NamedTuple(probe), (grid_extent=:extrema,)) : NamedTuple(probe)
+        cuda_only = [(name, meta) for (name, meta) in pairs(solver_option_schema(T))
+                     if !(CPUThreadsBackend in meta.supported_backends) &&
+                        !haskey(contract.inactive, (kind, name)) &&
+                        haskey(alternatives, name)]
+        if !isempty(cuda_only)
+            # Run the baseline TWICE and take the spread as the noise floor.
+            # The CUDA grid solvers are not bitwise reproducible run to run --
+            # float atomic deposition reorders -- so an exact comparison calls
+            # every option a change, which is exactly what a first version of
+            # this loop reported. Calibrating against the solver's own repeat
+            # spread separates a reordered sum from an algorithmic difference
+            # without hard-coding a tolerance.
+            cuda_baseline, cuda_floor = try
+                a = _solver_contract_cuda_observable(T(; cuda_probe...), base1, base2)
+                b = _solver_contract_cuda_observable(T(; cuda_probe...), base1, base2)
+                # Floor at the tolerance the strong-strong backend-consistency
+                # contracts already use for "the same result" across routes
+                # (rtol = 1e-10); self-calibration can only raise it if the
+                # hardware is noisier than that. A route change reorders float
+                # atomic sums, and the repository's own convention -- quoted
+                # throughout the optimization histories as "bit-parity
+                # (~1e-15)" with coordinate residuals ~1e-12 -- is that such a
+                # difference is not a change. A genuine algorithmic difference
+                # sits seven or more orders above it: green_cache moved the CPU
+                # result by 2e-3 and the spectral method switch by 5e-3.
+                a, max(_solver_contract_spread(a, b) * 100, 1.0e-10)
+            catch err
+                push!(failures, "$(kind) CUDA baseline threw: " *
+                                first(split(sprint(showerror, err), '\n')))
+                nothing, 0.0
+            end
+            if cuda_baseline !== nothing
+                for (name, meta) in cuda_only
+                    solver = try
+                        T(; merge(cuda_probe, NamedTuple((name => alternatives[name],)))...)
+                    catch err
+                        push!(failures, "$(kind).$(name) rejected its alternative: " *
+                                        first(split(sprint(showerror, err), '\n')))
+                        continue
+                    end
+                    observed = try
+                        _solver_contract_cuda_observable(solver, base1, base2)
+                    catch err
+                        push!(failures, "$(kind).$(name) threw on CUDA: " *
+                                        first(split(sprint(showerror, err), '\n')))
+                        continue
+                    end
+                    cuda_options_checked += 1
+                    spread = _solver_contract_spread(cuda_baseline, observed)
+                    spread > cuda_floor && push!(failures,
+                        "$(kind).$(name) is declared $(meta.category) but moved the CUDA " *
+                        "result by $(round(spread; sigdigits=3)), above this solver's own " *
+                        "repeat spread of $(round(cuda_floor; sigdigits=3))")
+                    _solver_contract_receipt_carries(observed[3], meta.consumer, name,
+                                                     alternatives[name]) ||
+                        push!(failures,
+                            "$(kind).$(name) reached no receipt named by its consumer " *
+                            "$(meta.consumer) on CUDA")
+                end
+            end
+        end
         # Decide what to test from the SCHEMA, never from `_pic_launch_solver`.
         # Asking the installer which solvers have a launch surface makes the
         # check circular: the defect this contract exists to catch is precisely
@@ -2362,12 +2488,14 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
         end
     end
     metrics[:cuda_launch_solvers_checked] = cuda_checked
+    metrics[:cuda_options_checked] = cuda_options_checked
 
     isempty(failures) || return ContractResult(false,
         "solver options did not reach their consumers: " * join(sort(failures), "; ");
         metrics=metrics)
     return ContractResult(true,
         "every declared solver option reached a runtime consumer " *
-        "($(checked) checked on CPU, $(cuda_checked) launch surfaces on CUDA)";
+        "($(checked) on CPU, $(cuda_options_checked) CUDA-only options, " *
+        "$(cuda_checked) launch surfaces)";
         metrics=metrics)
 end

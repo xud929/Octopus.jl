@@ -76,6 +76,31 @@ if _HAS_CUDA
             pic = gsolver.pic
             _validate_pic_solver(pic)
             _require_linear_slice_interpolation(pic, "the CUDA GaussianPICPoissonSolver backend")
+            # This route selects on batch_mode and cuda_indexed_wavefront only.
+            # cuda_async, cuda_batch_fft and cuda_wavefront_fft steer the plain
+            # PIC CUDA routes and are never read here, so a non-default value
+            # was accepted and dropped. Rejecting matches how this backend
+            # already handles slice_interpolation and interaction_grid.
+            for (name, value) in ((:cuda_async, pic.cuda_async),
+                                  (:cuda_batch_fft, pic.cuda_batch_fft),
+                                  (:cuda_wavefront_fft, pic.cuda_wavefront_fft))
+                value || throw(ArgumentError(
+                    "$(name) = false is not implemented by the CUDA " *
+                    "GaussianPICPoissonSolver backend: its route is chosen by batch_mode " *
+                    "and cuda_indexed_wavefront alone, so a non-default value would be " *
+                    "silently ignored. Use PICPoissonSolver, or leave $(name) at true."))
+            end
+            wavefront = Symbol(pic.batch_mode) == :wavefront
+            indexed = wavefront && _cuda_pic_indexed_wavefront_enabled(pic)
+            # The two options this route does read must be observable at their
+            # declared consumer, as they are for the plain PIC routes.
+            _record_execution!(:cuda_pic_algorithm, CUDABackend, (
+                batch_mode=wavefront ? :wavefront : :sequential,
+                cuda_async=pic.cuda_async,
+                cuda_batch_fft=pic.cuda_batch_fft,
+                cuda_wavefront_fft=pic.cuda_wavefront_fft,
+                cuda_indexed_wavefront=indexed,
+            ))
             if Symbol(pic.batch_mode) == :wavefront
                 if _cuda_pic_indexed_wavefront_enabled(pic)
                     return _cuda_gpic_collide_wavefront_indexed!(gsolver, beam1, beam2, workspace, ctx)
