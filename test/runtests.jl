@@ -3546,6 +3546,35 @@ end
     # k1 and 3.2e-2 with k0s, neither of which `nst` removes, because it is a
     # structural error and not truncation. The pure normal dipole is the one
     # exemption and is included to pin that it stays on the cheap path.
+    # Symplecticity alone cannot catch a map that is canonical but WRONG, and
+    # nothing external implements a curved solenoid, so the falsifying check is
+    # the limit. Two of them:
+    #
+    #   h -> 0   must converge to the STRAIGHT solenoid, which PTC validates at
+    #            4.7e-13. Convergence is first order in h, because a curved
+    #            frame really does differ from a straight one at O(h); what
+    #            would indicate a wrong map is convergence to a different limit,
+    #            or none. Measured ratios 10.0 / 10.0 / 10.01 per decade at
+    #            nst = 1024. At coarse nst the Strang splitting error masks it
+    #            below h ~ 1e-5, which is why this uses a fine nst.
+    #
+    #   ks -> 0  with k1 must reproduce a curved-frame QUADRUPOLE, which
+    #            `LatticeMagnet` builds through a completely different path
+    #            (exact curved drift plus `_curved_kick`, no implicit midpoint).
+    #            Two independent implementations agreeing is the strongest
+    #            evidence available here; measured 6.8e-10 at nst = 1024.
+    let u = u0, ferr = (a, b) -> maximum(abs, collect(a) .- collect(b))
+        for (nm, kw) in (("k1", (k1=0.6,)), ("k0s", (k0s=0.2,)))
+            ref = sol(; L=1.3, ks=1.7, nst=256, kw...)(u...)
+            e4 = ferr(sol(; L=1.3, ks=1.7, h=1.0e-4, nst=256, kw...)(u...), ref)
+            e5 = ferr(sol(; L=1.3, ks=1.7, h=1.0e-5, nst=256, kw...)(u...), ref)
+            @test 8.0 < e4 / e5 < 12.0        # first order in h, not something else
+        end
+        qref = compile_runtime(SBendSpec(L=1.3, h=0.18, b0=0.0, k1=0.6,
+                                         bend_fringe=false, nst=256))(u...)
+        @test ferr(sol(L=1.3, ks=0.0, h=0.18, k1=0.6, nst=256)(u...), qref) < 1.0e-6
+    end
+
     for (name, kw) in (("normal quad", (k1=0.6,)), ("skew quad", (k1s=0.6,)),
                        ("skew dipole", (k0s=0.2,)), ("normal dipole", (k0=0.2,)),
                        ("sextupole", (k2=3.0,)))
