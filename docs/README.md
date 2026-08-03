@@ -238,6 +238,22 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   condition `Im f == 0` derived there. Carries an explicit coverage ledger
   recording that only ~19% of `src/` was read line by line and that every CUDA
   path is unaudited),
+  [`comprehensive_audit_2026_08_03_part2.md`](history/comprehensive_audit_2026_08_03_part2.md)
+  (second pass, resuming that handoff's priority order: **five confirmed defects
+  fixed**, none of them a physics error. Where part 1 found code that was wrong
+  under threads, this pass found **configuration that was accepted, reported as
+  active, and never used** — `GaussianPICPoissonSolver` silently discarded every
+  CUDA launch override *and* the policy thread count, because it composes a
+  `PICPoissonSolver` rather than subtyping it and the installer tested `isa`,
+  while `configuration_report` reported the discarded value as `resolved`. Read
+  §1 for the sibling rule to part 1's — audit for values that are *declared and
+  never read* — and §13.3 for the missing `SolverOptionEffectivenessContract`
+  that would have caught two of the five mechanically. Also: all three named
+  virtual drifts measured symplectic with an unsafe-drift negative control, the
+  Bassetti-Erskine kick verified against brute-force integration across all four
+  branches at ~5e-14, and `beam_statistics` measured and made 39.8% faster
+  bit-identically. Coverage ledger: ~21% of `src/` this session, ~46% across
+  both),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite
