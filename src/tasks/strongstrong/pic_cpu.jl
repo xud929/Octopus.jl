@@ -340,6 +340,17 @@ function _require_linear_slice_interpolation(solver::PICPoissonSolver, path::Abs
         "interaction_grid = $(repr(solver.interaction_grid)) is not implemented by " *
         "$path; only the CPU PICPoissonSolver path supports :source_slice and :node. Select " *
         "the CPU backend, or set interaction_grid = :slice_pair."))
+    # The Gaussian-subtracted path sizes its own adaptive box from margin_sigma
+    # and the reference Gaussian's moments; it never consults the mesh-extent
+    # estimator, so a non-default value here was accepted and dropped. Measured
+    # identical results for :extrema and :sigma at margin_sigma 5.0 and 0.0.
+    # Rejecting matches how the CUDA PIC backend already handles this same
+    # option rather than silently ignoring it.
+    solver.grid_extent === :extrema || throw(ArgumentError(
+        "grid_extent = $(repr(solver.grid_extent)) is not implemented by $path; it sizes " *
+        "its interaction box from margin_sigma and the subtracted Gaussian's moments and " *
+        "applies no extent estimator, so a non-default value would be silently ignored. " *
+        "Use PICPoissonSolver, or set grid_extent = :extrema."))
     return nothing
 end
 
@@ -1355,7 +1366,13 @@ end
 @inline function _pic_atan_ratio(num, den)
     if den == 0
         num == 0 && return zero(promote_type(typeof(num), typeof(den)))
-        return copysign(oftype(num / one(den), PI / 2), num)
+        # `PI` is not a name this module defines -- Constants.jl exports TWOPI,
+        # SQRTPI, SQRT2PI and SQRT2, never PI -- so this branch raised
+        # UndefVarError for every on-axis node of the default :integrated Green
+        # kernel. The value itself never mattered: `_pic_kernel_integral`
+        # multiplies it by the coordinate that is zero on that branch, so the
+        # correct result is 0.0 either way and no working result can move.
+        return copysign(oftype(num / one(den), pi / 2), num)
     end
     return atan(num / den)
 end

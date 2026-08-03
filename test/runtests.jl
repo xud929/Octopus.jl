@@ -1761,6 +1761,52 @@ end
     @test haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :nst))
 end
 
+@testset "Integrated Green kernel on the axes" begin
+    # `_pic_atan_ratio` referenced a name this module never defines, so every
+    # on-axis node of the DEFAULT :integrated Green kernel raised
+    # UndefVarError. Reached only when a mesh puts a node exactly on an axis,
+    # which is why it survived: found by running the solver-option contract
+    # against a caller that had moved the global RNG.
+    for (x, y) in ((0.0, 1.0), (1.0, 0.0), (0.0, 2.5), (-3.0, 0.0))
+        # The half-pi is multiplied by the coordinate that is zero on that
+        # branch, so the kernel is exactly zero there rather than merely finite.
+        @test Octopus._pic_kernel_integral(x, y) == 0.0
+    end
+    @test Octopus._pic_atan_ratio(1.0, 0.0) ≈ pi / 2
+    @test Octopus._pic_atan_ratio(-1.0, 0.0) ≈ -pi / 2
+    @test Octopus._pic_atan_ratio(0.0, 0.0) == 0.0
+    @test Octopus._pic_atan_ratio(1.0, 1.0) ≈ pi / 4
+end
+
+@testset "Solver option effectiveness" begin
+    # The solver-level analogue. Element parameters had a mechanical sweep and
+    # solver options did not, which is how GaussianPICPoissonSolver came to
+    # discard every CUDAPICLaunchConfig and the inherited policy thread count
+    # while configuration_report called them resolved.
+    r = validate(SolverOptionEffectivenessContract())
+    @test r.status in (:passed, :skipped)      # :skipped when no CUDA device
+    @test r.metrics[:cpu_options_checked] > 60
+
+    # Every declared option must be judged or exempted with a reason; an option
+    # with neither fails, so the tables cannot fall behind the schema.
+    let alts = copy(Octopus._default_solver_option_alternatives())
+        alts[:SpectralPoissonSolver] = Dict{Symbol,Any}()
+        bad = validate(SolverOptionEffectivenessContract(alternatives=alts))
+        @test bad.status === :failed
+        @test occursin("no declared alternative", bad.message)
+    end
+
+    # An alternative equal to the probe's own value would compare a solver
+    # against itself and pass vacuously.
+    let alts = copy(Octopus._default_solver_option_alternatives())
+        alts[:GaussianPICPoissonSolver] =
+            merge(alts[:GaussianPICPoissonSolver], Dict{Symbol,Any}(:deposit_method => :TSC))
+        bad = validate(SolverOptionEffectivenessContract(alternatives=alts))
+        @test bad.status === :failed
+        @test occursin("equal to its own probe value", bad.message)
+    end
+end
+
 @testset "Element parameters carry their own number type" begin
     u = (1.0e-3, 1.0e-4, -0.5e-3, 2.0e-4, 0.0, 1.0e-3)
 
