@@ -805,8 +805,25 @@ function collide!(solver::GaussianPICPoissonSolver, beam1::Beam, beam2::Beam,
     return collide!(solver, beam1, beam2, CPUThreadsBackend, nothing)
 end
 
+# Split on the context type rather than leaving it untyped, as pic_cpu.jl and
+# spectral.jl already do. An untyped `ctx` here was ambiguous against the
+# generic `collide!(::AbstractPoissonSolver, ..., ::TrackingContext)` in
+# interface.jl -- this method is more specific in the solver and backend, that
+# one in the context, so neither dominates. The task path dispatches through
+# `_strong_strong_collide_backend!` and never reached it, so the ambiguity sat
+# unexercised until a caller used the documented five-argument form directly.
 function collide!(solver::GaussianPICPoissonSolver, beam1::Beam, beam2::Beam,
-                  ::Type{CPUThreadsBackend}, ctx)
+                  backend::Type{CPUThreadsBackend}, ctx::Nothing)
+    return _gpic_collide_fresh!(solver, beam1, beam2, ctx)
+end
+
+function collide!(solver::GaussianPICPoissonSolver, beam1::Beam, beam2::Beam,
+                  backend::Type{CPUThreadsBackend}, ctx::TrackingContext)
+    return _gpic_collide_fresh!(solver, beam1, beam2, ctx)
+end
+
+function _gpic_collide_fresh!(solver::GaussianPICPoissonSolver, beam1::Beam,
+                              beam2::Beam, ctx)
     T = _pic_cpu_scalar_type(solver.pic, beam1, beam2)
     nx, ny = solver.pic.grid
     workspace = _pic_cpu_workspace(T, nx, ny)

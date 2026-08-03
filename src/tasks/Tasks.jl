@@ -160,6 +160,12 @@ representation it is given.
 loss_record(task::TrackingTask) = task.loss_record[]
 
 loss_summary(rep_or_beam, task::TrackingTask) = loss_summary(rep_or_beam, task.loss_record[])
+# Disambiguation, not convenience. `loss_summary(::Phase6DRep, record)` is more
+# specific in the first argument and the method above is more specific in the
+# second, so neither dominates and the call was a MethodError -- for exactly the
+# argument `execute!(task, rep; turns=...)` hands the caller. Passing a `Beam`
+# happened to work, because its method is untyped in both positions.
+loss_summary(rep::Phase6DRep, task::TrackingTask) = loss_summary(rep, task.loss_record[])
 
 """
 Aperture specs in the line, in lattice order. Their position **is** their
