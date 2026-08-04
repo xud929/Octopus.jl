@@ -2886,6 +2886,131 @@ end
         gf, strong(256), strong(256), CPUThreadsBackend)
 end
 
+@testset "No method grows a Core.Box outside the argued allowlist" begin
+    # The concurrency sweep (docs/todo.md): two of the three 2026-08-03
+    # threading defects were one Julia trap -- a name assigned both in a `do`
+    # block and its enclosing function is one shared Core.Box across every
+    # worker. The sweep is on LOWERED code because a text sweep gave six
+    # false positives and missed a real one. Every current box is serial
+    # except one, argued below; a NEW box anywhere fails this test and must
+    # either be fixed or argued onto the list.
+    expr_has_box(x) = x isa GlobalRef ? (x.mod === Core && x.name === :Box) :
+                      x isa Expr ? any(expr_has_box, x.args) : false
+    clean_name(m) = begin
+        s = String(m.name)
+        startswith(s, "#") || return s
+        parts = split(s, '#'; keepempty=false)
+        isempty(parts) ? s : String(parts[1])
+    end
+    allowed = Set([
+        # serial file I/O and initialisation
+        ("read_beam_coordinates", "Beam.jl"),
+        ("_initialize_moment_file!", "BeamObservers.jl"),
+        # serial contract validation helpers
+        ("validate", "Contracts.jl"),
+        ("_contract_default_initial_rep", "Contracts.jl"),
+        # serial constructor (branch-reassigned locals captured by ntuple lambdas)
+        ("GaussianStrongBeam", "strong_beam.jl"),
+        # one-shot adapter activation; self-recursive local closures
+        ("_activate_symbolics_adapter!", "symbolic.jl"),
+        # THE one concurrent-closure box, confirmed benign in audit parts 1
+        # and 6: the worker closure only READS `luminosity` (through typeof),
+        # the write is outside the do block, and the workers are @sync-joined.
+        # The natural refactor `luminosity += local_lum` INSIDE the closure
+        # would reproduce the _threaded_histogram defect exactly -- which is
+        # what this test exists to catch.
+        ("_spectral_collide_longitudinal!", "spectral.jl"),
+    ])
+    offenders = String[]
+    nmethods = 0
+    seen = Set{Method}()
+    for name in names(Octopus; all=true, imported=false)
+        isdefined(Octopus, name) || continue
+        f = try
+            getfield(Octopus, name)
+        catch
+            continue
+        end
+        f isa Union{Function,Type} || continue
+        f isa Core.Builtin && continue
+        ms = try
+            methods(f)
+        catch
+            continue
+        end
+        for m in ms
+            m.module === Octopus || continue
+            m in seen && continue
+            push!(seen, m)
+            nmethods += 1
+            ci = try
+                Base.uncompressed_ir(m)
+            catch
+                continue
+            end
+            ci === nothing && continue
+            any(expr_has_box, ci.code) || continue
+            file = basename(String(m.file))
+            file == "none" && continue          # @generated bodies: compile-time, serial
+            (clean_name(m), file) in allowed && continue
+            push!(offenders, "$(m.name) @ $(file):$(m.line)")
+        end
+    end
+    @test nmethods > 2000              # the sweep actually swept
+    @test isempty(offenders)
+    isempty(offenders) || foreach(o -> @info("new Core.Box: " * o), offenders)
+end
+
+@testset "CPU solver stack is thread-count invariant" begin
+    # Identical inputs at 1 and 4 logical workers: COORDINATES must be
+    # bit-identical (kicks are chunk-local, so no cross-worker reduction
+    # touches them). The spectral LUMINOSITY total is the one legitimate
+    # cross-chunk reduction -- its parts are summed per worker partition, and
+    # the fold order moves it by exactly 1 ulp between nchunks=1 and
+    # nchunks>1 (measured: -0.0625 on a 4.75e14 total, with every nchunks>=2
+    # bit-identical to each other) -- so it gets a few-ulp tolerance rather
+    # than equality. Worker count is a policy knob, so both counts are real
+    # even on a single-threaded test run.
+    mkr(n) = begin
+        s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+        z = [2.0e-2 * sin(0.7 * i + 2.0) + 1.0e-3 * sin(3.1 * i) for i in 1:n]
+        Phase6DRep(s(1.0e-4, 0.0), s(1.0e-5, 0.3), s(1.0e-4, 0.9),
+                   s(1.0e-5, 1.2), z, s(1.0e-4, 2.5))
+    end
+    mkb(n) = begin
+        rep = mkr(n)
+        params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0e-9, npart=n)
+        Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+    end
+    workers(f, k, rep) = Octopus._with_execution_policy(f,
+        Octopus._resolve_execution_policy(CPUThreadsExecutionPolicy(threads=k), rep))
+    slc = LongitudinalSlicing(nslices=3, method=:equal_count)
+    for (label, solver) in (
+            ("pic", PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                grid=(16, 16), green_cache=:none, slicing=slc)),
+            ("gpic", GaussianPICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6,
+                luminosity_scale=1.0, grid=(16, 16), green_cache=:none, slicing=slc)),
+            ("spectral_t", SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6,
+                luminosity_scale=1.0, grid=(32, 32), longitudinal_kick=false, slicing=slc)),
+            ("spectral_l", SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6,
+                luminosity_scale=1.0, grid=(32, 32), slicing=slc)))
+        outs = map((1, 4)) do k
+            b1, b2 = mkb(1500), mkb(1500)
+            lum = workers(k, b1.rep) do
+                collide!(solver, b1, b2, CPUThreadsBackend)
+            end
+            (lum, map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)))
+        end
+        if startswith(label, "spectral")
+            @test isapprox(outs[1][1], outs[2][1]; rtol=8 * eps(Float64))
+        else
+            @test outs[1][1] == outs[2][1]
+        end
+        @test all(a == b for (a, b) in zip(outs[1][2], outs[2][2]))
+        @test all(a == b for (a, b) in zip(outs[1][3], outs[2][3]))
+    end
+end
+
 @testset "CUDA equal_area histogram matches the per-bin-mask oracle" begin
     # R8 (part 6): the histogram is now one atomic kernel pass instead of a
     # device broadcast + reduction PER BIN (57.8 ms -> 3.2 ms at n=1e6,

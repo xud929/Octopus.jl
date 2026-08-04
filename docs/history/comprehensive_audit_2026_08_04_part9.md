@@ -172,6 +172,47 @@ The list as it stood before that follow-up:
 - **R12** — `_spectral_collide_transverse!` does `n1·n2` field solves where
   `n1+n2` suffice (the source mesh is identical for every field slice).
   Same category.
+
+## 8. The concurrency sweep — the non-CUDA half, closed
+
+The open `docs/todo.md` item asked for the sweep the 2026-08-03 audit
+prescribed: lowered code, not grep. Done module-wide, and made permanent.
+
+**The Box sweep.** All **2,175 methods** defined by the module were swept for
+`Core.Box` allocations in their lowered code. **Nine** carry boxes. Cross-
+referenced against the complete concurrency surface — **17
+`_run_logical_workers` call sites, all funnelling through the single
+`Threads.@spawn` in `Policies.jl`, and no raw `@async` outside the CUDA
+files — exactly **one** boxed method contains concurrent closures:
+`_spectral_collide_longitudinal!`, the luminosity box parts 1 and 6 already
+confirmed benign (the workers only read it, through `typeof`; the write is
+outside the `do`; the spawn is `@sync`-joined). The other eight are serial:
+a constructor with branch-reassigned locals, two file-I/O helpers, two
+contract helpers, the one-shot Symbolics adapter activation, and the two
+`fusedTrack` `@generated` generator bodies (compile-time by construction).
+
+**Made permanent.** The sweep is now a suite testset with an argued
+allowlist — each entry carries its benign-ness argument, and generator
+bodies are allowed by the `file == "none"` predicate rather than by name.
+Discriminating power verified by injection: a deliberate
+assigned-in-closure-and-function variable in a `_run_logical_workers` caller
+is caught by name and line, and the clean tree reports zero offenders. This
+is the guard part 6 §4 said did not exist: the natural refactor
+`luminosity += local_lum` inside the closure now fails the suite instead of
+silently reproducing the `_threaded_histogram` defect.
+
+**Thread-count invariance.** Identical inputs at 1, 4 and 8 logical workers
+across **14 configurations** — the five CPU solvers (PIC, Gaussian-PIC
+hybrid, soft-Gaussian, spectral transverse and longitudinal), all four
+slicing methods with and without z ties, and aperture loss accounting at
+20k particles: **coordinates and counts bit-identical everywhere**. One
+1-ulp exception, measured and then understood rather than papered over: the
+spectral luminosity total is assembled from per-worker partials, and the
+fold order moves it by exactly one ulp of a 4.75e14 total between
+`nchunks = 1` and `nchunks > 1` — every `nchunks ≥ 2` is bit-identical to
+every other. Coordinates cannot reassociate (kicks are chunk-local), and
+the permanent invariance testset asserts exactly that split: coordinates
+`==`, spectral luminosity to a few ulp.
 - From part 7, unchanged: nothing — T1–T11, G1–G4, C1–C3, K1–K8 are all now
   settled.
 - The CUDA spectral deposit has no tripwire (the CPU one is new); the
