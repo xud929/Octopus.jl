@@ -94,29 +94,45 @@ Maintain, and include in the final report:
 "Never claim a file was reviewed unless it was actually inspected" is only
 enforceable against a record. The ledger is that record.
 
-## Context budget and session handoffs
+## Context budget: one driving session, delegated bandwidth, disk as memory
 
-An agent's context is finite, and a repository of tens of thousands of lines
-will not fit into one session. **The audit is a series of sessions, and the
-protocol treats that as the normal case, not a failure.** The 2026-08 audit
-of this repository took nine sessions
-([`docs/history/comprehensive_audit_2026_08_04.md`](history/comprehensive_audit_2026_08_04.md));
-what made the series converge was the handoff discipline, so it is required:
+An agent's context is finite; a repository of tens of thousands of lines is
+not. The resolution is **not** to split the audit into human-relaunched
+sessions — it is to run **one driving session that delegates the
+context-heavy work to sub-agents and drives to the Phase 16 halt without
+stopping to ask**. (The 2026-08 audit of this repository took nine
+human-launched sessions,
+[`docs/history/comprehensive_audit_2026_08_04.md`](history/comprehensive_audit_2026_08_04.md);
+the handoff discipline that made that series converge is retained below,
+repurposed: a long-running orchestrator's context gets compacted as it
+works, so its own future self is the next reader of its records.)
 
-- Scope **one session** in Phase 0, not the whole audit. A narrow verified
-  slice plus an honest ledger beats a broad slice that exhausts the context
-  mid-verification and hands off unverified state.
-- End every session with a written record containing: a "start here" table
-  naming the two or three sections the next session must read; the open
-  queue with a **reproduction recipe per item** (a queue item without a
-  reproduction costs the next session a re-discovery); the coverage ledger
-  delta; and corrections recorded beside the claims they correct.
-- Fixing should happen in the session that verified the finding, while the
-  reproduction is live in context. Batching fixes across a session boundary
-  carries unverified state through a handoff, which is where it rots.
-- Keep the forward plan (`docs/todo.md`) current in the same commit as the
-  work: a stale row costs a future session the time to rediscover that it
-  is stale — measured twice in this repository's own series.
+- **Phase 0 scopes the whole audit** as a plan of delegable units: one
+  reading brief per modular region sized to a sub-agent's context, the seam
+  cross-check passes, the verification batches, the phases that stay with
+  the orchestrator. Declare the plan, then execute it.
+- **The orchestrator spends its own context only on judgement**: briefs
+  out; verdicts, numbers, and reproduction scripts back in; re-running a
+  delivered reproduction is one cheap command. Reading at scale,
+  reproduction-building, and enumeration sweeps are delegated (see
+  Sub-Agents). Verification gating and every fix stay with the
+  orchestrator.
+- **Checkpoint to disk continuously, not at the end.** The coverage ledger
+  (with provenance), the open queue with a reproduction recipe per item,
+  corrections beside the claims they correct, and the `docs/todo.md` rows
+  are updated in the same commit as the work that changes them. Context
+  compaction must never be able to lose audit state: anything that matters
+  is re-readable from the repository. A stale row costs the compacted
+  orchestrator the same rediscovery it would cost a fresh session —
+  measured twice in this repository's own series.
+- **Fix while the reproduction is live.** Verify, fix, negative-control,
+  and record each finding in one stretch; batching fixes for later carries
+  unverified state across compaction boundaries, which is where it rots.
+- **Do not stop to ask the human to continue.** The audit ends at the
+  Phase 16 halt: complete, or honestly blocked with the remainder priced.
+  Interrupt the human only for what is genuinely theirs — destructive or
+  irreversible actions, real scope changes, or external resources the
+  audit cannot obtain itself (a missing reference code, credentials).
 
 ---
 
