@@ -380,7 +380,11 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   caught **83% of a slice silently discarded** under strong kicks -- with the
   same overflow reaching `:grid_free` as a silent -1x mirror, now guarded.
   Section 6 records this session's own errors, including a `git checkout`
-  that destroyed uncommitted fixes. Open: R8 and R12, performance-only),
+  that destroyed uncommitted fixes. A same-day follow-up in Section 7
+  closed R8 and R12 as well -- the CUDA :equal_area histogram 18x faster
+  via one atomic kernel pass, bit-identical to a per-bin-mask oracle, and
+  the transverse spectral path down from 2*n1*n2 to n1+n2 solves with
+  kicks captured bit-identical -- so the parts 6-7 queue is fully closed),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite

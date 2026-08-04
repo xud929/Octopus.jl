@@ -2886,6 +2886,75 @@ end
         gf, strong(256), strong(256), CPUThreadsBackend)
 end
 
+@testset "CUDA equal_area histogram matches the per-bin-mask oracle" begin
+    # R8 (part 6): the histogram is now one atomic kernel pass instead of a
+    # device broadcast + reduction PER BIN (57.8 ms -> 3.2 ms at n=1e6,
+    # ns=15). The kernel must reproduce the mask semantics bit for bit --
+    # candidate-bin division corrected against the exact edge expressions,
+    # last bin closed, ties on an edge landing identically.
+    if CUDA_TESTS_ACTIVE
+        oracle(z_h, flags_h, zmin, width, bins) = begin
+            T = eltype(z_h)
+            counts = zeros(Int, bins)
+            for b in 1:bins
+                lb = T(zmin + (b - 1) * width)
+                rb = T(zmin + b * width)
+                for (i, zi) in enumerate(z_h)
+                    flags_h === nothing || flags_h[i] || continue
+                    inbin = b == bins ? (zi >= lb && zi <= rb) : (zi >= lb && zi < rb)
+                    inbin && (counts[b] += 1)
+                end
+            end
+            counts
+        end
+        kernel_counts(z_d, flags_d, zmin, width, bins) = begin
+            counts_d = Octopus.CUDA.zeros(Int32, bins)
+            threads = 256
+            Octopus.CUDA.@cuda threads=threads blocks=cld(length(z_d), threads) Octopus._cuda_equal_area_histogram_kernel!(
+                counts_d, z_d, flags_d, zmin, width, bins)
+            Int.(Array(counts_d))
+        end
+        for (n, bins, quantize) in ((2000, 45, true), (2000, 45, false),
+                                    (777, 10, true), (1000, 7, false))
+            z_h = [2.0e-2 * sin(0.7 * i + 2.0) + 1.0e-3 * sin(3.1 * i) for i in 1:n]
+            quantize && (z_h = round.(z_h; digits=3))
+            flags_h = [i % 5 != 0 for i in 1:n]         # some dead
+            zmin, zmax = extrema(z_h[flags_h])
+            width = (zmax - zmin) / bins
+            z_d = Octopus.CUDA.CuArray(z_h)
+            flags_d = Octopus.CUDA.CuArray(flags_h)
+            @test kernel_counts(z_d, flags_d, zmin, width, bins) ==
+                  oracle(z_h, flags_h, zmin, width, bins)
+            zmin2, zmax2 = extrema(z_h)
+            width2 = (zmax2 - zmin2) / bins
+            @test kernel_counts(z_d, nothing, zmin2, width2, bins) ==
+                  oracle(z_h, nothing, zmin2, width2, bins)
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
+@testset "Spectral solve/eval split is exact" begin
+    # R12 (part 6): the transverse path now solves each source once and
+    # evaluates the stored mesh per field slice. This pins the seam: a stored
+    # mesh must evaluate bit-identically to the monolithic solve-and-eval.
+    # (At the change itself, full transverse collides were captured pre- and
+    # post-refactor and diffed bit-identical at 4 threads, ns=8.)
+    mkc(scale, phase, n) = [scale * sin(0.7 * i + phase) for i in 1:n]
+    sx, sy = mkc(1.0e-4, 0.0, 500), mkc(1.0e-4, 0.9, 500)
+    fx, fy = mkc(8.0e-5, 0.4, 300), mkc(8.0e-5, 1.3, 300)
+    L = 2.0e-4
+    ws1 = Octopus._SpectralGridWS(32, 32)
+    ws2 = Octopus._SpectralGridWS(32, 32)
+    Ex0, Ey0 = Octopus._spectral_field_grid!(ws1, sx, sy, fx, fy, L, L)
+    Octopus._spectral_field_grid_solve!(ws2, sx, sy, L, L)
+    Ex1, Ey1 = Octopus._spectral_field_grid_eval(copy(ws2.Exg), copy(ws2.Eyg),
+                                                 32, 32, fx, fy, L, L)
+    @test Ex1 == Ex0
+    @test Ey1 == Ey0
+end
+
 @testset "The module precompiles without overwriting its own methods" begin
     # Part 6 §8.7: a same-signature method silently overwrote another, PASSED
     # the full suite (both methods behaved identically), and was caught only

@@ -5209,6 +5209,40 @@ if _HAS_CUDA
             return _cuda_slices_from_boundaries(rep, slicing, boundaries, flags)
         end
 
+        # Single-pass histogram for :equal_area. One thread per particle,
+        # atomically bumping its bin -- the previous implementation built a
+        # full-length device mask and reduced it PER BIN (`bins` broadcasts +
+        # reductions over n), which measured 57.8 ms against 0.6 ms at n=1e6,
+        # ns=15 (audit part 6, R8). Bin membership reproduces the mask
+        # semantics exactly: the candidate index from division is corrected
+        # against the same `zmin + b*width` edge expressions the masks
+        # compared with, the last bin closes on the right, and a value no
+        # interval accepts (possible at the extremes under rounding, which the
+        # old version silently under-counted too) is dropped identically.
+        function _cuda_equal_area_histogram_kernel!(counts, z, flags, zmin, width, bins)
+            i = (CUDA.blockIdx().x - Int32(1)) * CUDA.blockDim().x + CUDA.threadIdx().x
+            i > length(z) && return nothing
+            if flags !== nothing
+                @inbounds flags[i] || return nothing
+            end
+            @inbounds zi = z[i]
+            isfinite(zi) || return nothing
+            T = typeof(zi)
+            lo(bb) = T(zmin + (bb - 1) * width)
+            hi(bb) = T(zmin + bb * width)
+            b = clamp(unsafe_trunc(Int, floor((zi - zmin) / width)) + 1, 1, Int(bins))
+            while b > 1 && zi < lo(b)
+                b -= 1
+            end
+            while b < Int(bins) && zi >= hi(b)
+                b += 1
+            end
+            inside = zi >= lo(b) && (b == Int(bins) ? zi <= hi(b) : zi < hi(b))
+            inside || return nothing
+            CUDA.@atomic counts[b] += Int32(1)
+            return nothing
+        end
+
         function _cuda_equal_area_slices(rep::Phase6DRep, slicing::LongitudinalSlicing, flags=nothing)
             slicing.resolution > 0 || throw(ArgumentError("resolution must be positive"))
             z = rep.z
@@ -5221,15 +5255,21 @@ if _HAS_CUDA
             if zmin == zmax
                 return _cuda_slices_from_boundaries(rep, slicing, fill(T(zmin), ns + 1), flags)
             end
-            width = (zmax - zmin) / bins
-            counts = Vector{Int}(undef, bins)
-            for b in 1:bins
-                lb = T(zmin + (b - 1) * width)
-                rb = T(zmin + b * width)
-                mask = b == bins ? ((z .>= lb) .& (z .<= rb)) : ((z .>= lb) .& (z .< rb))
-                flags === nothing || (mask = mask .& flags)
-                counts[b] = Int(sum(mask))
+            # At the default nslices = 1 the boundary loop below is empty, so
+            # the histogram's only consumer is nothing at all -- skip it
+            # rather than discard its cost per beam per collision (audit
+            # part 6, R8). The boundaries are the same [zmin, zmax] the full
+            # computation produced.
+            if ns == 1
+                return _cuda_slices_from_boundaries(rep, slicing, T[zmin, zmax], flags)
             end
+            width = (zmax - zmin) / bins
+            counts_d = CUDA.zeros(Int32, bins)
+            threads = _cuda_pic_threads(:gather_scatter)
+            CUDA.@cuda threads=threads blocks=cld(length(z), threads) _cuda_equal_area_histogram_kernel!(
+                counts_d, z, flags, zmin, width, bins,
+            )
+            counts = Int.(Array(counts_d))
             cumulative = cumsum(counts) ./ max(stats.n_live, 1)
             cumulative[end] = one(T)
             centers = [T(zmin + (i - 0.5) * width) for i in 1:bins]

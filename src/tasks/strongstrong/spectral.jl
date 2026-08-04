@@ -410,7 +410,16 @@ function _spectral_deposit_tripwire(rho, ns, Lx, Ly)
     return nothing
 end
 
-function _spectral_field_grid!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly)
+_spectral_field_grid!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly) =
+    (_spectral_field_grid_solve!(ws, sx, sy, Lx, Ly);
+     _spectral_field_grid_eval(ws.Exg, ws.Eyg, ws.Nx, ws.Ny, fx, fy, Lx, Ly))
+
+"""
+Deposit `sx, sy` and solve, leaving `Exg`/`Eyg` on the workspace mesh. The
+source-only half of `_spectral_field_grid!` (see `_spectral_field_grid_eval`
+for why it is split -- audit part 6, R12).
+"""
+function _spectral_field_grid_solve!(ws::_SpectralGridWS, sx, sy, Lx, Ly)
     Nx, Ny = ws.Nx, ws.Ny
     a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1)
     ns = length(sx)
@@ -451,8 +460,20 @@ function _spectral_field_grid!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly)
     @inbounds for m in 1:Ny, l in 1:Nx
         ws.Eyg[l, m] = -scale * (ws.cosy[l, m + 1] / 2)
     end
+    return nothing
+end
+
+"""
+Interpolate mesh fields at the field-particle positions. Split from the
+deposit-and-solve half so the transverse path can solve each SOURCE slice once
+and evaluate it against every field slice -- the mesh depends only on the
+source, and recomputing it inside the field loop cost `n1*n2` solves where
+`n1+n2` suffice (audit part 6, R12). Takes the mesh arrays rather than the
+workspace so a stored copy evaluates identically to a live one.
+"""
+function _spectral_field_grid_eval(Exg, Eyg, Nx, Ny, fx, fy, Lx, Ly)
+    a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1)
     nf = length(fx); Ex = Vector{Float64}(undef, nf); Ey = Vector{Float64}(undef, nf)
-    Exg = ws.Exg; Eyg = ws.Eyg
     @inbounds for k in 1:nf
         X = (fx[k] + Lx) / hx; Y = (fy[k] + Ly) / hy
         i = _grid_floor(X); j = _grid_floor(Y); wx = X - i; wy = Y - j
@@ -979,6 +1000,40 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
     pool = grid ? lease.workspaces : nothing
 
     try
+        # R12 (audit part 6): the source mesh depends only on the source
+        # slice, but it was recomputed inside the field loop -- n1*n2 solves
+        # per direction where n1+n2 suffice for the whole collision. Solve
+        # every source ONCE up front (positions are never mutated in this
+        # path, so both beams' solves are valid for both directions) and
+        # store the mesh fields; the kick loops below evaluate the stored
+        # meshes in the exact order they used to solve in, so the kick
+        # accumulation is unchanged term for term. :grid_free keeps its
+        # per-pair mode sums.
+        meshes1 = Vector{Union{Nothing,Tuple{Matrix{Float64},Matrix{Float64}}}}(nothing, n1)
+        meshes2 = Vector{Union{Nothing,Tuple{Matrix{Float64},Matrix{Float64}}}}(nothing, n2)
+        if grid
+            _run_logical_workers(nchunks) do chunk, _
+                ws = pool[chunk]
+                lo1, hi1 = _chunk_bounds(n1, nchunks, chunk)
+                for i in lo1:hi1
+                    sdx = idx1[i]; isempty(sdx) && continue
+                    _spectral_field_grid_solve!(ws, (@view r1.x[sdx]), (@view r1.y[sdx]), Lx, Ly)
+                    meshes1[i] = (copy(ws.Exg), copy(ws.Eyg))
+                end
+                lo2, hi2 = _chunk_bounds(n2, nchunks, chunk)
+                for j in lo2:hi2
+                    sdx = idx2[j]; isempty(sdx) && continue
+                    _spectral_field_grid_solve!(ws, (@view r2.x[sdx]), (@view r2.y[sdx]), Lx, Ly)
+                    meshes2[j] = (copy(ws.Exg), copy(ws.Eyg))
+                end
+            end
+        end
+        gnx = grid ? pool[1].Nx : 0
+        gny = grid ? pool[1].Ny : 0
+        field_for(meshes, i, ws, sx, sy, fx, fy) = grid ?
+            _spectral_field_grid_eval(meshes[i][1], meshes[i][2], gnx, gny, fx, fy, Lx, Ly) :
+            _spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
+
         # Direction 1: beam1 sources -> kick beam2 field slices (parallel over j).
         lum_parts = zeros(T, nchunks)
         _run_logical_workers(nchunks) do chunk, _
@@ -991,7 +1046,7 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
                 for i in 1:n1
                     sdx = idx1[i]; isempty(sdx) && continue
                     sx = @view r1.x[sdx]; sy = @view r1.y[sdx]
-                    ex, ey = _spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
+                    ex, ey = field_for(meshes1, i, ws, sx, sy, fx, fy)
                     a = w1[i] * kbb2
                     @inbounds for (t, p) in enumerate(jdx)
                         r2.px[p] += a * ex[t]; r2.py[p] += a * ey[t]
@@ -1014,7 +1069,7 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
                 for j in 1:n2
                     sdx = idx2[j]; isempty(sdx) && continue
                     sx = @view r2.x[sdx]; sy = @view r2.y[sdx]
-                    ex, ey = _spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
+                    ex, ey = field_for(meshes2, j, ws, sx, sy, fx, fy)
                     a = w2[j] * kbb1
                     @inbounds for (t, p) in enumerate(fdx)
                         r1.px[p] += a * ex[t]; r1.py[p] += a * ey[t]

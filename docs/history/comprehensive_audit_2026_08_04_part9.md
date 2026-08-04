@@ -137,6 +137,35 @@ verification changed its scope in the middle of the check.
 
 ## 7. What remains open
 
+> **Follow-up (2026-08-04, same day): R8 and R12 are now closed too.** Both
+> measured before and after, both bit-identical.
+>
+> **R8**: the per-bin device broadcasts were replaced with one atomic
+> histogram kernel whose bin membership is corrected against the exact
+> per-bin edge expressions the masks compared with — ties, the closed last
+> bin, and the rounding-dropped extremes land identically. Measured at
+> n=1e6: **57.8 → 3.2 ms at ns=15** (18×), and the default `nslices=1` now
+> skips the histogram whose only consumer was an empty loop: **3.9 →
+> 0.32 ms**. Slice counts, boundaries, weights and centers bit-identical
+> across five configurations including quantized ties; a per-bin-mask oracle
+> pins the kernel in the suite.
+>
+> **R12**: `_spectral_field_grid!` split into a source-only solve and a
+> mesh eval; the transverse path pre-solves every source once (positions are
+> never mutated there, so both directions' solves are valid up front) and the
+> kick loops evaluate stored meshes in the exact order they used to solve in.
+> Full transverse collides captured pre/post at 4 threads, ns=8:
+> **kicks and luminosity bit-identical**. Solve count per collision:
+> `2·n1·n2 → n1+n2`. Wall time with luminosity scheduled off, n=20k,
+> grid 64: **75.5 → 39.0 ms at ns=16** — the removed ~36 ms matches the 480
+> deleted solves; the remainder is the per-pair eval/kick work the pair
+> structure requires. With the default per-pair luminosity on, the gain is
+> smaller (86 → 56 ms) because those pair-dependent overlap deposits — which
+> cannot be hoisted without changing numbers — now dominate; recorded, not
+> chased. `:grid_free` keeps per-pair mode sums, noted in the code.
+
+The list as it stood before that follow-up:
+
 - **R8** — the CUDA `:equal_area` histogram costs 10–20× more than needed,
   and at the default `nslices=1` its only consumer is an empty loop. Pure
   performance; needs the benchmark discipline this session had no room for.
