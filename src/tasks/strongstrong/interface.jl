@@ -1689,7 +1689,7 @@ StrongStrongCollision(label; poisson_solver=nothing) =
 """
     StrongStrongTask(line1, line2; policy=nothing,
                      default_poisson_solver=GaussianPoissonSolver(),
-                     luminosity_path=nothing)
+                     luminosity_path=nothing, luminosity_append=false)
 
 Track two live beams through ordinary tracking lines containing matching
 `StrongStrongCollision` markers.
@@ -1711,6 +1711,16 @@ task = StrongStrongTask(line1, line2)
 execute!(task, beam1, beam2; turns=10)
 ```
 
+`luminosity_path` writes one row per evaluated turn: the absolute turn number
+followed by the per-collision luminosities. With the default
+`luminosity_append = false`, each `execute!` rewrites the file. With
+`luminosity_append = true` the file is CONTINUED across `execute!` calls,
+tasks sharing the path, and process restarts — one file with continuous
+absolute turns, matching `MomentObserver(append=true)`. Replayed turn windows
+(a failed `execute!`'s retry, an explicit `start_turn` rewind) drop their
+stale rows first, and a file whose header does not match this task's
+collision layout is refused.
+
 Pass `diagnostics=StrongStrongDiagnostics(record_turn_times=true)` to
 synchronize once at each turn boundary and record complete-turn wall time.
 Retrieve structured results with `diagnostic_summary(task)`. The legacy
@@ -1727,6 +1737,7 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     policy::Union{Nothing,AbstractExecutionPolicy}
     default_poisson_solver::S
     luminosity_path::Union{Nothing,String}
+    luminosity_append::Bool
     diagnostics::StrongStrongDiagnostics
     turn_times::Vector{Float64}
     pic_phase_times::Vector{Any}
@@ -1756,6 +1767,14 @@ function configuration_report(task::StrongStrongTask, beam1::Beam, beam2::Beam)
             task.luminosity_path === nothing ? :inactive_dependency : :resolved,
             task.luminosity_path === nothing ? "luminosity file output disabled" :
                                                "active task-level luminosity output path",
+            :strong_strong_output),
+            ConfigurationEntry(:luminosity_append, task.luminosity_append,
+            task.luminosity_append,
+            task.luminosity_path === nothing ? :inactive_dependency : :resolved,
+            task.luminosity_path === nothing ? "no luminosity path to append to" :
+            task.luminosity_append ?
+                "continues one luminosity file across executions and restarts" :
+                "each execution rewrites the luminosity file (replace mode)",
             :strong_strong_output),),
         diagnostics=configuration_report(task.diagnostics; backend=backend_type(policy)),
         solvers=Tuple(configuration_report(solver; policy=public_policy,
@@ -1776,6 +1795,7 @@ function StrongStrongTask(line1, line2;
                           default_poisson_solver::AbstractPoissonSolver=GaussianPoissonSolver(),
                           poisson_solver::Union{Nothing,AbstractPoissonSolver}=nothing,
                           luminosity_path::Union{Nothing,AbstractString}=nothing,
+                          luminosity_append::Bool=false,
                           diagnostics::StrongStrongDiagnostics=StrongStrongDiagnostics(),
                           record_turn_times::Union{Nothing,Bool}=nothing)
     line_tuple1 = _element_tuple(line1)
@@ -1794,6 +1814,7 @@ function StrongStrongTask(line1, line2;
         policy,
         solver,
         luminosity_path === nothing ? nothing : String(luminosity_path),
+        Bool(luminosity_append),
         diagnostics,
         Float64[],
         Any[],
@@ -1874,8 +1895,11 @@ function _execute_strong_strong_task!(
                     task, beam1, beam2, blocks1, blocks2, policy, ctx,
                     turns, first_turn, nothing)
             else
-                open(task.luminosity_path, "w") do io
-                    _write_strong_strong_luminosity_header(io, blocks1)
+                # The prepare step owns the header and the replace/append
+                # decision, so the run body always streams rows in append
+                # mode from here.
+                _prepare_strong_strong_luminosity_file!(task, blocks1, Int(first_turn))
+                open(task.luminosity_path, "a") do io
                     _execute_strong_strong_turns!(
                         task, beam1, beam2, blocks1, blocks2, policy, ctx,
                         turns, first_turn, io)
@@ -1931,6 +1955,47 @@ function _write_strong_strong_luminosity_header(io, blocks)
         block.collision === nothing || print(io, '\t', block.collision.label)
     end
     println(io)
+    return nothing
+end
+
+"""
+Leave the luminosity file containing its header plus, in append mode, every
+existing row before `first_turn`.
+
+With the default `luminosity_append = false` this rewrites header-only, which
+is the historical replace-per-execution behaviour. With `luminosity_append =
+true` the file is CONTINUED: a run split across `execute!` calls, an
+injection swap-out, or a process restart all extend one file with continuous
+absolute turns. Rows at or beyond `first_turn` are dropped first — the same
+idempotence rule the appending observers follow, because a replayed window (a
+failed `execute!`'s retry, an explicit `start_turn` rewind) rewrites the
+timeline from `first_turn` on, and a file carrying two rows for one turn is
+corrupt for every reader. A header that does not match this task's collision
+layout is refused rather than silently mixed.
+"""
+function _prepare_strong_strong_luminosity_file!(task::StrongStrongTask, blocks1,
+                                                 first_turn::Int)
+    path = task.luminosity_path
+    header = sprint(io -> _write_strong_strong_luminosity_header(io, blocks1))
+    if !task.luminosity_append || !isfile(path) || filesize(path) == 0
+        open(path, "w") do io
+            print(io, header)
+        end
+        return nothing
+    end
+    lines = readlines(path)
+    lines[1] * "\n" == header || throw(ArgumentError(
+        "StrongStrongTask(luminosity_append=true): the header at $(path) does not " *
+        "match this task's collision layout ($(repr(lines[1])) vs " *
+        "$(repr(chomp(header)))). Use a new path."))
+    kept = [line for line in lines[2:end]
+            if !isempty(strip(line)) && parse(Int, first(split(line))) < first_turn]
+    open(path, "w") do io
+        print(io, header)
+        for line in kept
+            println(io, line)
+        end
+    end
     return nothing
 end
 

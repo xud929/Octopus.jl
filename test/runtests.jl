@@ -3270,6 +3270,61 @@ end
     @test validate_element_metadata().passed      # registry restored
 end
 
+@testset "StrongStrongTask luminosity_append continues one file" begin
+    # Companion to MomentObserver append: with the default the .lum file is
+    # rewritten per execute!; with luminosity_append=true it is continued,
+    # replayed windows drop their stale rows, and a mismatched header is
+    # refused. Together they make the injection swap-out workflow (a new
+    # beam passed to the same task) produce continuous single files with no
+    # driver-side stitching.
+    mkb(rng_id, charge, mc2, E0) = begin
+        set_global_rng!(seed=5, method=:philox)
+        Beam(300, CPUThreadsExecutionPolicy(), Float64;
+            beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+            sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+            charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+    end
+    beams() = (mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9))
+    L6s(b, t) = Linear6DSpec{Float64}(; beta1=b, beta2=b, alpha1=(0.0, 0.0, 0.0),
+                                      alpha2=(0.0, 0.0, 0.0), dmu=2pi .* t)
+    ip = StrongStrongCollision(:ip)
+    lines() = ((ip, L6s((0.55, 0.056, 12.7), (0.08, 0.14, -0.069))),
+               (ip, L6s((0.8, 0.072, 90.9), (0.228, 0.210, -0.01))))
+    lum_turns(path) = [parse(Int, first(split(l))) for l in readlines(path)[2:end]]
+
+    # default: replaced per execute! (historical behaviour, pinned)
+    p1 = tempname() * ".lum"
+    l1, l2 = lines()
+    t1 = StrongStrongTask(l1, l2; luminosity_path=p1)
+    b1, b2 = beams(); execute!(t1, b1, b2; turns=3)
+    b1, b2 = beams(); execute!(t1, b1, b2; turns=3)
+    @test lum_turns(p1) == [3, 4, 5]
+
+    # append: continued across execute! calls and across a beam swap
+    p2 = tempname() * ".lum"
+    t2 = StrongStrongTask(l1, l2; luminosity_path=p2, luminosity_append=true)
+    b1, b2 = beams(); execute!(t2, b1, b2; turns=3)
+    b1new, b2same = beams(); execute!(t2, b1new, b2same; turns=4)
+    @test lum_turns(p2) == collect(0:6)
+    @test count(l -> startswith(l, "turn"), readlines(p2)) == 1     # one header
+
+    # rewind idempotence: replaying from turn 3 drops the stale rows
+    b1, b2 = beams(); execute!(t2, b1, b2; turns=2, start_turn=3)
+    @test lum_turns(p2) == collect(0:4)
+
+    # a mismatched header is refused, not silently mixed
+    p3 = tempname() * ".lum"
+    open(p3, "w") do io
+        println(io, "turn\tother_ip")
+        println(io, "0\t1.0")
+    end
+    t3 = StrongStrongTask(l1, l2; luminosity_path=p3, luminosity_append=true)
+    b1, b2 = beams()
+    @test_throws ArgumentError execute!(t3, b1, b2; turns=1)
+
+    foreach(p -> rm(p; force=true), (p1, p2, p3))
+end
+
 @testset "MomentObserver append mode continues one table across executions" begin
     # append=false is the documented replace-per-execution behaviour (pinned
     # first); append=true creates a chunked/extendible HDF5 table whose
