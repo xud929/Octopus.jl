@@ -366,6 +366,21 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   hit every non-Float64 rep, not only mixed precision. §5 records two defects
   in the session's own probes — a closure that silently swallowed the very
   `BoundsError` the probe existed to catch is the one to remember),
+  [`comprehensive_audit_2026_08_04_part9.md`](history/comprehensive_audit_2026_08_04_part9.md)
+  (ninth pass: everything left in the queue except two performance items --
+  24 findings from parts 6 and 7 verified and settled. T6's crashed-`execute!`
+  now delivers its loss artifacts and retries without duplicate turn labels;
+  T2's backend-blind loss record reallocates; the BPM noise key is pure and
+  per-reading; the metadata validator now compiles every example to a declared
+  runtime type, and the injected liar that once validated clean fails on three
+  counts; the Symbolics adapter finally activates in package mode via a
+  `[weakdeps]` extension. Sections 3-4 are the pass's own discovery: the
+  spectral Dirichlet box is sized pre-collision while deposits happen after
+  intra-collision kicks, and the new dropped-charge tripwire immediately
+  caught **83% of a slice silently discarded** under strong kicks -- with the
+  same overflow reaching `:grid_free` as a silent -1x mirror, now guarded.
+  Section 6 records this session's own errors, including a `git checkout`
+  that destroyed uncommitted fixes. Open: R8 and R12, performance-only),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite

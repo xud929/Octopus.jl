@@ -152,6 +152,11 @@ class this series keeps finding in the library.
 
 ## 6. What remains open
 
+> **Follow-up (2026-08-04, same day):**
+> [part 9](comprehensive_audit_2026_08_04_part9.md) settled everything below
+> except R8 and R12, which remain open as performance-only items. The list is
+> kept as written.
+
 - From part 7: **T2, T6–T11** (Tasks.jl), **G2–G4** (gaussian_pic), **C1–C3**
   (gaussian_pic_cuda), **K2–K8** (Knowledge/Registry — including the two
   validator gaps in the todo table, which K1's fix does not close).
