@@ -266,3 +266,44 @@ strict-signature class as part 7's G1, invisible to the parameter-derivative
 sweep (spec-level duals make both arguments dual). Fixed by promotion
 through `u = h*x`; the permanent sweep testset now exercises exactly that
 Jacobian, so the regression cannot return silently.
+
+## 10. The reading program: provenance upgraded where it was weakest
+
+Parts 6–7 completed line coverage of `src/`, but ~10,000 lines carried
+agent-only provenance. This session upgraded the highest-risk regions to a
+direct human read, and reconciled the stale ledger rows.
+
+**`spectral_cuda.jl` — now human-read in full (806 lines), and clean.** The
+comparative read against the now-well-verified CPU reference confirms: the
+6D interp-scatter kernel is a line-for-line transcription of the CPU
+sequence (same degenerate-slice guard, same drift-back with new momenta,
+same pz restore); S20's masked boxes are in place on both variants with the
+fail-fast preserved for the unmasked case; the snapshot dance gives
+direction 2 and the luminosity both beams' PRE-kick states, matching the
+CPU's copy semantics; and the DST/DCT-from-rfft pipeline matches the CPU
+plan structure transform for transform, including the potential's ½ factor
+and the shared-transform saving. Load-bearing check: CPU/CUDA parity through
+the 6D path measured at **5.7e-15 on kicks and 2e-16 on luminosity**, with
+and without an S20-shaped dead particle. Three ledger notes, none
+defect-grade: the CUDA transverse path still solves per pair (R12's hoist is
+CPU-only; the path is doubly non-default), it allocates `Exg`/`Eyg` per pair
+against its own comment's claim of buffer reuse, and the R9 dropped-charge
+tripwire remains CPU-only (recorded in §7).
+
+**`pic_cuda.jl` tail — the agent-read remainder is now mostly human-read.**
+The CUDA slicing block (dispatcher, live stats, all five methods, both
+finishers) and the soft-Gaussian sequential collide were read directly:
+R1's rank-membership fix reads exactly as recorded and mirrors the CPU;
+the sequential collide freezes both beams' moments before either kick, so
+the direction order cannot leak state; exactly one kick kernel samples the
+luminosity buffer. Still agent-only: the ~450 lines of Gaussian moment and
+kick kernels (l. ~5490–5960), which part 6 verified for the tree-reduction
+safe-halving form and which the backend-consistency contracts exercise
+continuously — kept on the ledger as agent-read, not claimed.
+
+**Ledger corrections.** The `todo.md` strong-strong row predated parts 6–7
+and still listed ~6,500 lines as unread; the `spectral.jl` row still said
+"completely unaudited" although part 6's own history note records that its
+agent resumed and finished. Both rows now state the actual provenance:
+every line read by someone; auditor-direct coverage now spanning parts 1–5
+plus this session's upgrades; the enumerated agent-only remainder above.
