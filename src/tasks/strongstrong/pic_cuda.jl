@@ -52,6 +52,7 @@ if _HAS_CUDA
                                     workspace, green_cache, ctx=nothing)
             _validate_pic_solver(solver)
             _require_cuda_pic_options(solver)
+            _warn_inactive_pic_launch_config(solver)
             if Symbol(solver.batch_mode) == :wavefront
                 return _cuda_pic_collide_wavefront!(solver, beam1, beam2, workspace, green_cache, ctx)
             end

@@ -1834,6 +1834,106 @@ end
     @test Octopus._pic_atan_ratio(1.0, 1.0) ≈ pi / 4
 end
 
+@testset "The luminosity tree reduction's power-of-two guard is enforced" begin
+    # `_cuda_pic_luminosity_overlap_partials_kernel!` reduces with a tree that
+    # ORPHANS elements unless the thread count is a power of two, so a bad count
+    # silently corrupts luminosity -- a headline observable. Two validations guard
+    # it: the `CUDAPICLaunchConfig` constructor (interface.jl, `ispow2(lum)`) and
+    # `_resolve_cuda_pic_configuration`, which catches a non-power-of-two
+    # INHERITED from the generic policy thread count.
+    #
+    # Neither was exercised by any test. Both could have been deleted and nothing
+    # would have noticed -- the part 1 pattern, "a check that exists and is never
+    # executed", guarding the one number a beam-beam code is judged on.
+    #
+    # Measured reachability before writing this: bare `collide!` falls back to 256;
+    # power-of-two policy counts are inherited unchanged; 96/192/320/100/224 are
+    # all rejected at resolution; an explicit power-of-two override rescues a
+    # non-power-of-two policy. No non-power-of-two value reaches the kernel.
+
+    # (a) constructor guard -- host-side, needs no device
+    for bad in (96, 192, 320, 100, 224, 3)
+        @test_throws ArgumentError CUDAPICLaunchConfig(luminosity_threads=bad)
+    end
+    for good in (32, 64, 128, 256, 512, 1024)
+        @test CUDAPICLaunchConfig(luminosity_threads=good).luminosity_threads == good
+    end
+    # the guard is specific to luminosity: the other families use no tree reduction
+    @test CUDAPICLaunchConfig(kick_threads=96).kick_threads == 96
+
+    # (b) the inherited path, and the override that rescues it
+    if CUDA_TESTS_ACTIVE
+        set_global_rng!(seed=7, method=:philox)
+        b = Beam(256, CUDAExecutionPolicy(), Float64; beta=(0.55, 0.056, 12.7),
+                 alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-5, 1.0e-2), cutoff=5.0,
+                 rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+                 r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+        resolved(t) = Octopus._resolve_execution_policy(
+            CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=t)), b.rep)
+        threads(pol, solver) = Octopus._with_solver_execution_configuration(solver, pol) do
+            Octopus._cuda_pic_threads(:luminosity)
+        end
+        plain = PICPoissonSolver(; grid=(32, 32))
+        for t in (32, 64, 128, 256)
+            @test ispow2(threads(resolved(t), plain))
+        end
+        for t in (96, 192, 320, 100, 224)
+            @test_throws ArgumentError threads(resolved(t), plain)
+        end
+        override = PICPoissonSolver(; grid=(32, 32),
+            backend_configurations=(CUDAPICLaunchConfig(luminosity_threads=64),))
+        @test threads(resolved(96), override) == 64
+    else
+        @test_skip "CUDA device not available"
+    end
+    # (c) the fallback a bare `collide!` uses when no configuration is installed
+    @test ispow2(Octopus._cuda_pic_threads(:luminosity))
+end
+
+@testset "A launch config a bare collide! cannot apply is not discarded silently" begin
+    # `_with_solver_execution_configuration` installs the resolved launch config as
+    # a scoped value, and its only caller is the StrongStrongTask path. A bare
+    # `collide!(solver, beam1, beam2, CUDABackend)` installs nothing, so every PIC
+    # launch family falls back to a fixed thread count and the device
+    # MAX_THREADS_PER_BLOCK validation never runs.
+    #
+    # Measured before this test existed: a solver carrying
+    # CUDAPICLaunchConfig(kick=64, deposition=64, field=64) produced 0
+    # :cuda_pic_launch receipts through a bare collide! and 12 (threads {64,128})
+    # through a task. Same class as audit part 2's S1 -- a public tuning surface
+    # that silently does nothing -- so it must at least be loud.
+    cfg = CUDAPICLaunchConfig(kick_threads=64, deposition_threads=64, field_threads=64)
+    s = PICPoissonSolver(; grid=(32, 32), backend_configurations=(cfg,))
+    plain = PICPoissonSolver(; grid=(32, 32))
+
+    # host-side predicate: fires only when a config exists AND cannot be applied
+    @test_logs (:warn,) Octopus._warn_inactive_pic_launch_config(s)
+    @test_logs Octopus._warn_inactive_pic_launch_config(plain)          # nothing to warn about
+    @test Octopus._warn_inactive_pic_launch_config(GaussianPoissonSolver()) === nothing
+
+    # the composed hybrid must unwrap to the same predicate -- this is the S1 shape,
+    # where an `isa` test against the concrete solver missed the composing type
+    let g = GaussianPICPoissonSolver(; grid=(32, 32), backend_configurations=(cfg,))
+        @test_logs (:warn,) Octopus._warn_inactive_pic_launch_config(g)
+    end
+
+    # and it must stay silent on the path that DOES apply the configuration
+    if CUDA_TESTS_ACTIVE
+        set_global_rng!(seed=7, method=:philox)
+        b = Beam(64, CUDAExecutionPolicy(), Float64; beta=(0.55, 0.056, 12.7),
+                 alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-5, 1.0e-2), cutoff=5.0,
+                 rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+                 r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+        pol = Octopus._resolve_execution_policy(
+            CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=128)), b.rep)
+        @test_logs Octopus._with_solver_execution_configuration(s, pol) do
+            Octopus._warn_inactive_pic_launch_config(s)
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 @testset "Solver option effectiveness" begin
     # The solver-level analogue. Element parameters had a mechanical sweep and
     # solver options did not, which is how GaussianPICPoissonSolver came to

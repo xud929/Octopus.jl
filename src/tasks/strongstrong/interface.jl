@@ -83,6 +83,16 @@ Optional CUDA-only PIC launch overrides. `nothing` inherits the thread count
 from `CUDAExecutionPolicy`. PIC block counts remain derived from the particle,
 grid, spectral, or reduction topology. Luminosity threads must be a power of
 two because the current overlap kernel uses a tree reduction.
+
+**Applies only through a `StrongStrongTask`.** The resolved configuration is
+installed as a scoped value by `execute!`; a bare
+`collide!(solver, beam1, beam2, CUDABackend)` installs nothing, so
+`_cuda_pic_threads` falls back to a fixed 256 for every family and this whole
+object is inert on that path. That is a property of where the resolution happens,
+not a bug, but it was silent until the 2026-08-03 part 5 audit — attaching a
+config and calling `collide!` directly produced **zero** `:cuda_pic_launch`
+receipts while the same solver through a task produced twelve. `collide!` now
+warns rather than discarding it quietly.
 """
 struct CUDAPICLaunchConfig <: AbstractOctopusObject
     gather_scatter_threads::Union{Nothing,Int}
@@ -223,6 +233,46 @@ function _with_solver_execution_configuration(f::F, solver, policy) where {F}
                            (status=:inactive_backend,))
     end
     return f()
+end
+
+"""
+    _warn_inactive_pic_launch_config(solver)
+
+Warn when a solver carries a `CUDAPICLaunchConfig` on a code path that cannot
+install it.
+
+`_with_solver_execution_configuration` installs the resolved configuration as a
+scoped value, and its only caller is the `StrongStrongTask` path. A bare
+`collide!(solver, beam1, beam2, CUDABackend)` therefore never installs anything,
+and `_cuda_pic_threads` returns its fixed fallback for every family — so the
+user's launch overrides, *and* the device `MAX_THREADS_PER_BLOCK` validation that
+`_resolve_cuda_pic_configuration` performs, are both skipped.
+
+Measured: a solver carrying `CUDAPICLaunchConfig(kick_threads=64,
+deposition_threads=64, field_threads=64)` produced **0** `:cuda_pic_launch`
+receipts through a bare `collide!` and **12** (threads {64, 128}) through a task.
+
+This is the same class as audit part 2's S1 — a public tuning surface that
+silently does nothing — and `AGENTS.md` is explicit that a silently ignored
+non-default request is not acceptable. The path cannot simply honour the
+configuration, because resolution needs a `ResolvedCUDAExecutionPolicy` to
+inherit from and a bare `collide!` has no policy at all; inventing a default
+would be a design change, not an audit fix. So it is made loud instead, matching
+how `_with_solver_execution_configuration` already records `:inactive_backend`
+for the mirror case.
+"""
+function _warn_inactive_pic_launch_config(solver)
+    launch_solver = _pic_launch_solver(solver)
+    launch_solver === nothing && return nothing
+    isempty(launch_solver.backend_configurations) && return nothing
+    _ACTIVE_CUDA_PIC_LAUNCH_CONFIG[] isa ResolvedCUDAPICLaunchConfig && return nothing
+    _record_execution!(:cuda_pic_configuration, CUDABackend, (status=:inactive_path,))
+    @warn """
+    CUDAPICLaunchConfig ignored: a bare `collide!` cannot install a resolved launch \
+    configuration, so every PIC launch family falls back to its default thread count \
+    and the device max-threads validation is skipped. Run through a StrongStrongTask \
+    (`execute!`) for the configuration to take effect.""" maxlog = 1
+    return nothing
 end
 
 function _cuda_pic_threads(family::Symbol)

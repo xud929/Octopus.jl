@@ -308,6 +308,22 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   result resting on something unstated: an invariant the field derivative depends
   on that no test asserted, and a suite that reports green while silently skipping
   every GPU test on a GPU-less CI),
+  [`comprehensive_audit_2026_08_03_part5.md`](history/comprehensive_audit_2026_08_03_part5.md)
+  (fifth pass, the CUDA **device kernels** l. 3470-5040, taking `pic_cuda.jl` to
+  ~87% covered. **One confirmed defect, S18 — and it is part 2's S1 all over
+  again**: `CUDAPICLaunchConfig` is completely inert on a bare `collide!`,
+  measured at **0** `:cuda_pic_launch` receipts against **12** for the identical
+  solver through a `StrongStrongTask`, with the device max-threads validation
+  skipped alongside. Unlike S1 it is not a bug in any function -- the
+  configuration is inert because of *where resolution lives*, and nothing on the
+  `collide!` path was obliged to notice. Read §4 for the tree-reduction analysis:
+  at 100 threads the luminosity reduction silently drops 36 of 100 elements, the
+  two `ispow2` guards that prevent it were **exercised by no test at all**, and on
+  the bare path the invariant is held only by an unasserted literal sitting in a
+  different function from both guards. §6 corrects part 1's record, which named
+  two of the three exits from `_cuda_pic_threads` and omitted the one S18 lives
+  in. §2 is candid that most of this region was read by sub-agents rather than by
+  me, and which conclusions rest on measurement instead),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite

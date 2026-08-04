@@ -76,6 +76,9 @@ if _HAS_CUDA
             pic = gsolver.pic
             _validate_pic_solver(pic)
             _require_linear_slice_interpolation(pic, "the CUDA GaussianPICPoissonSolver backend")
+            # Same bare-`collide!` gap as the plain PIC route. `_pic_launch_solver`
+            # unwraps the composed `pic`, which is the S1 fix from audit part 2.
+            _warn_inactive_pic_launch_config(gsolver)
             # This route selects on batch_mode and cuda_indexed_wavefront only.
             # cuda_async, cuda_batch_fft and cuda_wavefront_fft steer the plain
             # PIC CUDA routes and are never read here, so a non-default value
