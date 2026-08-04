@@ -384,3 +384,4 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   scripts themselves live in `validation/`).
 - **Runnable precedents** → self-documenting top-of-file comments in `examples/`.
 - **Development rules for humans and AI agents** → `AGENTS.md`.
+
