@@ -1852,8 +1852,11 @@ function _execute_strong_strong_task!(
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
     _preflight_solver_configurations!(task, blocks1, blocks2, policy)
-    prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1); turns=Int(turns))
-    prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2); turns=Int(turns))
+    # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
+    prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1);
+                       turns=Int(turns), first_turn=Int(first_turn))
+    prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2);
+                       turns=Int(turns), first_turn=Int(first_turn))
     try
         ctx = TrackingContext()
         Base.ScopedValues.with(_ACTIVE_STRONG_STRONG_DIAGNOSTICS => task.diagnostics,

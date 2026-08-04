@@ -5324,7 +5324,71 @@ if _HAS_CUDA
                     (sorted_z[pos] + sorted_z[pos + 1]) / 2
                 end
             end
-            return _cuda_slices_from_boundaries(rep, slicing, boundaries, flags)
+            # Assign from the RANK ORDER, not by comparing against the boundaries.
+            #
+            # This function already had `order`; it used to discard it and hand the
+            # boundaries to `_cuda_slices_from_boundaries`, which re-derives
+            # membership from `z .>= lb .& z .< rb`. A comparison cannot split a
+            # TIE: when several particles share a z value the boundary lands on
+            # that value and all of them fall the same side, so the populations
+            # stop being equal. The CPU never had this because it slices the
+            # permutation directly (`slicing.jl`, `_longitudinal_slices_equal_count`).
+            #
+            # Measured, 2000 particles quantised to 64 distinct z values:
+            #   ns=5  CPU [400,400,400,400,400]  CUDA [400,337,460,394,409]  15.8%
+            #   ns=9  CPU [222,222,222,222,223,...]  CUDA [211,189,255,...]  27.8%
+            # in the slice WEIGHT, which multiplies `kbb` directly.
+            #
+            # Ties are measure-zero for continuous Float64 z, which is why this
+            # survived — but they are routine for a Float32 beam, for z loaded at
+            # limited precision, and for any initial condition that sets z on a
+            # grid.
+            host_indices = [Int[] for _ in 1:ns]
+            for s in 1:ns
+                first_pos = floor(Int, (s - 1) * n / ns) + 1
+                last_pos = floor(Int, s * n / ns)
+                first_pos <= last_pos || continue
+                append!(host_indices[s], @view order[first_pos:last_pos])
+            end
+            return _cuda_slices_from_indices(rep, slicing, boundaries, host_indices, flags)
+        end
+
+        """
+        Finish a slicing whose membership is already decided, mirroring the tail of
+        `_cuda_slices_from_boundaries` but taking the index sets directly.
+
+        Used by `:equal_count`, the one method whose populations are defined by rank
+        rather than by position, so re-deriving them from the boundaries would
+        change the answer whenever z has ties.
+        """
+        function _cuda_slices_from_indices(rep::Phase6DRep, slicing::LongitudinalSlicing,
+                                           boundaries, host_indices, flags=nothing)
+            all(isfinite, boundaries) ||
+                _nonfinite_coordinate_error(:beam, (z=rep.z,); context="longitudinal slicing")
+            z_host = Array(rep.z)
+            T = eltype(z_host)
+            ns = length(boundaries) - 1
+            total = T(_cuda_live_count(flags, length(rep)))
+            centers = Vector{T}(undef, ns)
+            weights = Vector{T}(undef, ns)
+            indices = Vector{Any}(undef, ns)
+            for s in 1:ns
+                lb = boundaries[s]
+                rb = boundaries[s + 1]
+                hidx = host_indices[s]
+                count = length(hidx)
+                indices[s] = CUDA.CuArray{Int}(hidx)
+                weights[s] = T(count) / total
+                if slicing.center_position == :centroid
+                    centers[s] = count == 0 ? (lb + rb) / 2 :
+                        T(sum(@view(z_host[hidx])) / count)
+                elseif slicing.center_position == :midpoint
+                    centers[s] = (lb + rb) / 2
+                else
+                    throw(ArgumentError("unknown slice center_position $(slicing.center_position)"))
+                end
+            end
+            return LongitudinalSlices(centers, weights, boundaries, indices)
         end
 
         function _cuda_slices_from_boundaries(rep::Phase6DRep, slicing::LongitudinalSlicing,

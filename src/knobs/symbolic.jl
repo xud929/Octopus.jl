@@ -14,11 +14,27 @@ Two tiers, both consequences of the expression tree being closed:
 
 2. A `Symbolics.jl` adapter (`knob_symbolic` / `knob_from_symbolic`) — the
    knob tree maps 1:1 onto Symbolics expression trees, enabling simplification, general
-   calculus, and code generation. Symbolics is an OPTIONAL dependency, loaded
-   with the same pattern as CUDA in `src/beam/Beam.jl`: install it in an
-   environment on your load path (`import Pkg; Pkg.add("Symbolics")`) and the
-   adapter activates; without it, the two functions raise a directed error and
-   everything else works.
+   calculus, and code generation. Symbolics is an OPTIONAL dependency.
+
+   **The activation gate is broken, and the comment that used to sit here was
+   wrong about why.** It claimed "the same pattern as CUDA in
+   `src/beam/Beam.jl`" -- but CUDA is a *declared dependency* in
+   `Project.toml`, and Symbolics is in no section of it. A module can only
+   `import` its declared dependencies, so the `try` below succeeds only when
+   Octopus is loaded as a *script* (`include("src/Octopus.jl")`, which resolves
+   against the active project) and fails whenever it is loaded as a *package*.
+   Measured on a machine where Symbolics is installed and on the load path:
+
+       include("src/Octopus.jl")  ->  _HAS_SYMBOLICS = true
+       using Octopus              ->  _HAS_SYMBOLICS = false
+
+   The second is how `test/runtests.jl` and every user load it, so the adapter
+   is dead for them; the first is what `AGENTS.md` tells developers to run,
+   which is why nobody noticed. The proper fix is a package extension
+   (`[weakdeps]` + an `ext/` module); a plain `[deps]` entry would contradict
+   this project's deliberate choice to take no runtime dependency on an AD
+   package. Until then the two entry points raise a directed error and
+   everything else -- including `knob_derivative` -- works.
 =#
 
 const _HAS_SYMBOLICS = try
@@ -231,10 +247,15 @@ system works without it. Convert back with [`knob_from_symbolic`](@ref).
 """
 function knob_symbolic(x)
     _HAS_SYMBOLICS || throw(ArgumentError(
-        "the Symbolics adapter requires the Symbolics package; install it with " *
-        "`import Pkg; Pkg.add(\"Symbolics\")` in an environment on your load " *
-        "path. The knob system itself (including knob_derivative) has no such " *
-        "dependency."))
+        "the Symbolics adapter is unavailable. NOTE: installing Symbolics does " *
+        "not by itself help, and the previous version of this message wrongly " *
+        "said it would. Symbolics is not a declared dependency of Octopus, so " *
+        "the optional `import` inside the module only resolves when Octopus is " *
+        "loaded as a script (`include(\"src/Octopus.jl\")`), not when it is " *
+        "loaded as a package (`using Octopus`). Use the script form, or see " *
+        "src/knobs/symbolic.jl for the package-extension fix this needs. The " *
+        "knob system itself, including knob_derivative, has no such dependency " *
+        "and is unaffected."))
     node = x isa AbstractKnobExpression ? x : lock(_KNOB_LOCK) do
         entry = get(_KNOB_TABLE, _knob_path(x), nothing)
         entry === nothing && throw(ArgumentError("unknown knob $(_knob_path(x))"))
@@ -254,8 +275,9 @@ declared. Round trip: `knob_from_symbolic(knob_symbolic(e))` is equivalent to
 """
 function knob_from_symbolic(x)
     _HAS_SYMBOLICS || throw(ArgumentError(
-        "the Symbolics adapter requires the Symbolics package; install it with " *
-        "`import Pkg; Pkg.add(\"Symbolics\")`."))
+        "the Symbolics adapter is unavailable; installing Symbolics does not by " *
+        "itself help. See `knob_symbolic` for why, and src/knobs/symbolic.jl for " *
+        "the package-extension fix this needs."))
     return _knob_from_symbolic(x)
 end
 

@@ -2952,6 +2952,62 @@ function expect_nonfinite_error(f)
     return nothing
 end
 
+@testset "CUDA :equal_count is equal-count even when z has ties" begin
+    # The CPU slices the sort PERMUTATION, so populations are exact by
+    # construction. CUDA computed boundaries and then re-derived membership from
+    # `z .>= lb .& z .< rb` -- and a comparison cannot split a tie: when several
+    # particles share a z value the boundary lands on that value and they all fall
+    # the same side.
+    #
+    # Measured before the fix, 2000 particles quantised to 64 distinct z:
+    #   ns=5  CPU [400,400,400,400,400]      CUDA [400,337,460,394,409]   15.8%
+    #   ns=9  CPU [222,222,222,222,223,...]  CUDA [211,189,255,...]       27.8%
+    # in the slice WEIGHT, which multiplies kbb directly.
+    #
+    # Ties are measure-zero for continuous Float64 z, which is why this survived
+    # every existing test -- but routine for a Float32 beam, for z loaded at
+    # limited precision, and for any initial condition that puts z on a grid.
+    if CUDA_TESTS_ACTIVE
+        n = 2000
+        mkb(pol) = begin
+            set_global_rng!(seed=5, method=:philox)
+            Beam(n, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+                 sigma=(1.0e-4, 1.0e-5, 1.0e-2), cutoff=5.0, rng_id=1, charge=-1.0,
+                 mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+        end
+        b = mkb(CPUThreadsBackend); g = mkb(CUDAExecutionPolicy())
+        z = round.(Array(b.rep.z) ./ 1.0e-3) .* 1.0e-3       # deliberate ties
+        copyto!(b.rep.z, z); copyto!(g.rep.z, z)
+        @test length(unique(z)) < n ÷ 10                      # the premise holds
+        for ns in (5, 9)
+            sl = LongitudinalSlicing(nslices=ns, method=:equal_count)
+            sc = Octopus.longitudinal_slices(b.rep, sl)
+            sg = Octopus._cuda_longitudinal_slices(g.rep, sl)
+            # exact equal-count on BOTH backends, as the docstring promises
+            cc = [length(i) for i in sc.indices]
+            cg = [length(i) for i in sg.indices]
+            @test maximum(cc) - minimum(cc) <= 1
+            @test cg == cc
+            # and the same particles, not merely the same counts
+            @test [sort(Array(i)) for i in sg.indices] == [sort(Array(i)) for i in sc.indices]
+            @test Array(sg.weight) == Array(sc.weight)
+            @test Array(sg.center) == Array(sc.center)
+        end
+        # continuous z (no ties) must be untouched by the change
+        b2 = mkb(CPUThreadsBackend); g2 = mkb(CUDAExecutionPolicy())
+        for ns in (1, 4, 15)
+            sl = LongitudinalSlicing(nslices=ns, method=:equal_count)
+            sc = Octopus.longitudinal_slices(b2.rep, sl)
+            sg = Octopus._cuda_longitudinal_slices(g2.rep, sl)
+            @test [sort(Array(i)) for i in sg.indices] == [sort(Array(i)) for i in sc.indices]
+            @test Array(sg.weight) == Array(sc.weight)
+            @test Array(sg.boundary) == Array(sc.boundary)
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 @testset "The CUDA spectral Dirichlet box honours allow_lost_particles" begin
     # The box is sized from WHOLE coordinate arrays, not from slice membership, so
     # the live mask that slicing applies for free does not reach it and has to be

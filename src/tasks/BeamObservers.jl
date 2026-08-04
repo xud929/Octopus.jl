@@ -124,10 +124,10 @@ function run_observers!(observers, ctx::TrackingContext, rep)
     return nothing
 end
 
-function prepare_observers!(observers, runtime_elems; turns=nothing)
+function prepare_observers!(observers, runtime_elems; turns=nothing, first_turn=0)
     for raw in _hook_tuple(observers)
         item = _as_scheduled_observer(raw)
-        prepare_observer!(item.observer, runtime_elems, item.schedule, turns)
+        prepare_observer!(item.observer, runtime_elems, item.schedule, turns, first_turn)
     end
     return nothing
 end
@@ -135,11 +135,13 @@ end
 prepare_observer!(observer::AbstractBeamObserver, runtime_elems) = nothing
 prepare_observer!(observer::AbstractBeamObserver, runtime_elems, schedule, turns) =
     prepare_observer!(observer, runtime_elems)
+prepare_observer!(observer::AbstractBeamObserver, runtime_elems, schedule, turns,
+                  first_turn) = prepare_observer!(observer, runtime_elems, schedule, turns)
 
-function prepare_line_observers!(entries::Tuple; turns=nothing)
+function prepare_line_observers!(entries::Tuple; turns=nothing, first_turn=0)
     for entry in entries
         if entry isa LineObserverEntry
-            prepare_line_observer!(entry.observer, turns)
+            prepare_line_observer!(entry.observer, turns, first_turn)
         end
     end
     return nothing
@@ -147,7 +149,12 @@ end
 
 prepare_line_observer!(observer::ScheduledObserver, turns) =
     prepare_line_observer!(observer.observer, observer.schedule, turns)
+prepare_line_observer!(observer::ScheduledObserver, turns, first_turn) =
+    prepare_line_observer!(observer.observer, observer.schedule, turns, first_turn)
 prepare_line_observer!(observer::AbstractBeamObserver, schedule, turns) = nothing
+prepare_line_observer!(observer::AbstractBeamObserver, schedule, turns, first_turn) =
+    prepare_line_observer!(observer, schedule, turns)
+prepare_line_observer!(observer::AbstractBeamObserver, turns, first_turn) = nothing
 
 function finalize_observers!(observers)
     for raw in _hook_tuple(observers)
@@ -791,13 +798,14 @@ function prepare_observer!(observer::LuminosityObserver, runtime_elems)
     return nothing
 end
 
-function prepare_observer!(observer::MomentObserver, runtime_elems, schedule, turns)
-    _prepare_moment_observer!(observer, schedule, turns)
+function prepare_observer!(observer::MomentObserver, runtime_elems, schedule, turns,
+                          first_turn=0)
+    _prepare_moment_observer!(observer, schedule, turns, first_turn)
     return nothing
 end
 
-function prepare_line_observer!(observer::MomentObserver, schedule, turns)
-    _prepare_moment_observer!(observer, schedule, turns)
+function prepare_line_observer!(observer::MomentObserver, schedule, turns, first_turn=0)
+    _prepare_moment_observer!(observer, schedule, turns, first_turn)
     return nothing
 end
 
@@ -904,9 +912,10 @@ function finalize_observer!(observer::MomentObserver)
     return nothing
 end
 
-function _prepare_moment_observer!(observer::MomentObserver, schedule, turns)
+function _prepare_moment_observer!(observer::MomentObserver, schedule, turns,
+                                  first_turn::Integer=0)
     observer.buffer_capacity == 0 && return nothing
-    planned_turns = _scheduled_turns(schedule, turns)
+    planned_turns = _scheduled_turns(schedule, turns, first_turn)
     planned_turns === nothing && throw(ArgumentError(
         "MomentObserver requires a predictable schedule: use AlwaysSchedule, EveryNSteps, or AtTurns with known task turns."
     ))
@@ -919,24 +928,44 @@ function _prepare_moment_observer!(observer::MomentObserver, schedule, turns)
     return nothing
 end
 
-function _scheduled_turns(::AlwaysSchedule, turns)
+# The planner must filter against the ABSOLUTE turn window `execute!` will run,
+# `first_turn : first_turn + turns - 1`, because `should_run` is handed
+# `ctx.turn = first_turn + offset` (Tasks.jl). Filtering against `0:turns-1`
+# instead -- which is what these did -- makes the plan disagree with the
+# predicate whenever `first_turn != 0`:
+#
+#   _scheduled_turns(AtTurns([100,101]), 3)  ->  Int64[]
+#   while execute!(turns=3, start_turn=100) fires the observer twice
+#     -> MomentObserver over-runs its preallocated table and throws
+#
+#   _scheduled_turns(EveryNSteps(start=0,stop=6,step=2), 3)  ->  [0,2]
+#   on a SECOND execute!(turns=3), which runs turns 3,4,5 and fires once at 4
+#     -> plan says 2 records, one is written, no error, silently wrong header
+#
+# `first_turn != 0` is not exotic: it is every second `execute!` on the same
+# task, which Tasks.jl documents as a supported way to split a run.
+function _scheduled_turns(::AlwaysSchedule, turns, first_turn::Integer=0)
     turns === nothing && return nothing
-    return collect(0:(Int(turns) - 1))
+    return collect(Int(first_turn):(Int(first_turn) + Int(turns) - 1))
 end
 
-function _scheduled_turns(schedule::EveryNSteps, turns)
+function _scheduled_turns(schedule::EveryNSteps, turns, first_turn::Integer=0)
     turns === nothing && return nothing
-    stop = min(schedule.stop, Int(turns))
+    lo = Int(first_turn)
+    hi = lo + Int(turns)                      # exclusive
+    stop = min(schedule.stop, hi)
     schedule.start >= stop && return Int[]
-    return [turn for turn in schedule.start:schedule.step:(stop - 1) if 0 <= turn < Int(turns)]
+    return [turn for turn in schedule.start:schedule.step:(stop - 1) if lo <= turn < hi]
 end
 
-function _scheduled_turns(schedule::AtTurns, turns)
+function _scheduled_turns(schedule::AtTurns, turns, first_turn::Integer=0)
     turns === nothing && return nothing
-    return sort!([turn for turn in schedule.turns if 0 <= turn < Int(turns)])
+    lo = Int(first_turn)
+    hi = lo + Int(turns)
+    return sort!([turn for turn in schedule.turns if lo <= turn < hi])
 end
 
-_scheduled_turns(schedule::PredicateSchedule, turns) = nothing
+_scheduled_turns(schedule::PredicateSchedule, turns, first_turn::Integer=0) = nothing
 
 function _initialize_hdf5_moment_file!(observer::MomentObserver)
     HDF5.h5open(observer.path, "w") do file

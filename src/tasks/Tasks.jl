@@ -383,8 +383,11 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             rep, runtime_elems, turns, first_turn, policy, TrackingContext())
         return rep
     end
-    prepare_observers!(task.observers, runtime_elems; turns=turns)
-    prepare_line_observers!(runtime_entries; turns=turns)
+    # `first_turn`, not just the count: `should_run` is handed the ABSOLUTE turn
+    # (`first_turn + offset` below), so a planner filtering against `0:turns-1`
+    # disagrees with it on every execute! after the first.
+    prepare_observers!(task.observers, runtime_elems; turns=turns, first_turn=first_turn)
+    prepare_line_observers!(runtime_entries; turns=turns, first_turn=first_turn)
     try
         base_ctx = TrackingContext()
         for offset in 0:(turns - 1)

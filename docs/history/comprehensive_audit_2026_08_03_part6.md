@@ -11,6 +11,7 @@
 > | **§1** | the ledger: two fixed, twelve recorded, and why the line falls there |
 > | **§2** | S20 — a CUDA/CPU divergence of a **factor of 100** under a supported mode |
 > | **§5** | the twelve recorded findings, each with its reproduction, for the next session to verify and fix |
+> | **§8** | the follow-up: four of the twelve settled in-session — one fixed, one rejected, one whose stated reason was wrong |
 > | **§6** | provenance and the agent hit rate — roughly 60%, which is why §5 is not presented as settled |
 
 Sixth pass against [`docs/comprehensive_audit.md`](../comprehensive_audit.md),
@@ -250,3 +251,117 @@ the most were the two whose hypothesis matched a defect class this codebase has
 already produced.
 
 **Then verify the crux yourself.** S20's factor of 100 was measured, not read.
+
+---
+
+# 8. Follow-up — four of the twelve settled
+
+Worked the §5 queue in the same session, in the order §7 recommended. Each was
+verified before being touched, and the verification changed the outcome in two
+of the four.
+
+| # | outcome |
+|---|---|
+| **R1** | **CONFIRMED and FIXED** — physics |
+| **R3** | **CONFIRMED, but the agent's reason was wrong**; partially fixed |
+| **R5** | **REJECTED** — documented behaviour, the agent over-read a contradiction |
+| **R6** | **CONFIRMED and FIXED** |
+
+## 8.1 R1 — CUDA `:equal_count` was not equal-count under ties
+
+Reproduced: 2000 particles quantised to 64 distinct z values.
+
+| ns | CPU counts | CUDA counts, before | max relative weight error |
+|---|---|---|---|
+| 5 | `[400,400,400,400,400]` | `[400,337,460,394,409]` | **15.8%** |
+| 9 | `[222,222,222,222,223,…]` | `[211,189,255,219,161,…]` | **27.8%** |
+
+The slice weight multiplies `kbb` directly, so this is a physics error, not a
+bookkeeping one.
+
+**Cause.** `_cuda_equal_count_slices` already computed the sort permutation —
+and then discarded it, handing the boundaries to `_cuda_slices_from_boundaries`,
+which re-derives membership from `z .>= lb .& z .< rb`. **A comparison cannot
+split a tie**: when several particles share a z value the boundary lands on that
+value and they all fall the same side. The CPU never had this because it slices
+the permutation directly.
+
+**Fixed** by assigning from the rank order, via a new
+`_cuda_slices_from_indices` that mirrors the finishing logic of
+`_cuda_slices_from_boundaries` but takes the index sets as given. Post-fix the
+**index sets are identical** between backends, not merely the counts, with
+weights and centers agreeing to exactly 0.0; the no-tie case is unchanged.
+
+**Why it survived.** Ties are measure-zero for continuous `Float64` z. They are
+routine for a **`Float32` beam**, for z loaded at limited precision, and for any
+initial condition that puts z on a grid.
+
+## 8.2 R3 — the agent's conclusion held, its reason did not
+
+Reported as "`_HAS_SYMBOLICS` is permanently `false`". Measured:
+
+| load mode | `_HAS_SYMBOLICS` |
+|---|---|
+| `include("src/Octopus.jl")` — what `AGENTS.md` prescribes for verification | **`true`** |
+| `using Octopus` — package mode, `test/runtests.jl` and every user | **`false`** |
+
+So it is not permanent: the optional `import` resolves against the *active
+project* when Octopus is included as a script, and against Octopus's *declared
+dependencies* when it is loaded as a package. That asymmetry is the actual
+finding, and it explains the survival — developers exercise the working path and
+users get the dead one.
+
+**Partially fixed.** The correct repair is a package extension (`[weakdeps]` plus
+an `ext/` module); a plain `[deps]` entry would contradict this project's
+deliberate choice to take no runtime dependency on an AD package, and the
+refactor was judged too large to attempt safely at the end of this session. What
+was fixed is the part that actively misled: the error told users to
+`Pkg.add("Symbolics")` — which they may already have done, to no effect. It now
+states the real constraint, names the working load mode, and points at the
+extension work. The stale comment claiming "the same pattern as CUDA in
+`Beam.jl`" is corrected too: CUDA *is* a declared dependency, so the pattern
+never transferred.
+
+**Still open:** the extension itself.
+
+## 8.3 R5 — rejected
+
+Reported as `MomentObserver` truncating its output on every `execute!`,
+contradicting `Tasks.jl`. It does truncate — and its own docstring says so:
+*"Re-executing a task prepares a fresh table at `path`; output from the previous
+[execution is replaced]"*. `Tasks.jl` claims that splitting a run preserves
+"schedules, turn-dependent updates, and counter-based random streams" — it never
+claims observer output is preserved. There is no contradiction. Documented
+behaviour, left alone.
+
+## 8.4 R6 — the planner and the predicate disagreed on what a turn is
+
+`_scheduled_turns` filtered against `0:turns-1` while `should_run` is handed the
+**absolute** `ctx.turn = first_turn + offset`. Reproduced:
+
+| case | before | after |
+|---|---|---|
+| `AtTurns([100,101])`, turns=3, first=100 | `Int64[]` — plans nothing, observer fires twice, over-runs its preallocated table and throws | `[100, 101]` |
+| `EveryNSteps(0,6,2)`, turns=3, first=3 | `[0,2]` — plans two records; the observer fires once, at turn 4. No error, silently wrong header | `[4]` |
+| any schedule, `first_turn = 0` | — | unchanged |
+
+`first_turn ≠ 0` is not exotic: it is **every second `execute!` on the same
+task**, which `Tasks.jl` documents as a supported way to split a run.
+
+**Fixed** by threading the absolute window through `prepare_observers!` /
+`prepare_line_observers!` to the four `_scheduled_turns` methods, from both
+`Tasks.jl` and the strong-strong executor. The `first_turn` argument defaults to
+0 throughout, so every existing call keeps its behaviour.
+
+## 8.5 The running tally on agent claims
+
+Across parts 4–6 and this follow-up: confirmed as reported, confirmed with a
+wrong reason, rejected outright, and one *broader* than reported. The hit rate
+sits near 60%, and every one of the four outcomes above required measurement to
+tell apart. That is the case for the verify-then-fix gate, stated with numbers
+rather than as a principle.
+
+### Still open from §5
+
+R2, R4, R7–R12, plus the Symbolics package extension from R3. R4 (the knob epoch
+staleness) is the highest-value remainder.
