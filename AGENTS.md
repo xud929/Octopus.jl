@@ -35,6 +35,14 @@ an elevated role before making file changes.
   Its header lists what is open, what is deliberately closed and why, and which
   item to start next. The rest of that file is a record of completed work kept
   for its measurements and its wrong turns, so do not read it front to back.
+- **For an audit, a verification pass, or any repository-wide correctness
+  review, follow [`docs/comprehensive_audit.md`](docs/comprehensive_audit.md).**
+  It is the protocol, not a suggestion: how to scope the whole audit in one
+  driving session, what to delegate to sub-agents and what never to (a
+  sub-agent's claim is a lead, not a finding — measured survival ~60%), the
+  seam map, negative controls, and the evidence rules. The completed 2026-08
+  audit ([`docs/history/comprehensive_audit_2026_08_04.md`](docs/history/comprehensive_audit_2026_08_04.md))
+  is the worked precedent, including its own recorded mistakes.
 - For a categorized index of every document, read `docs/README.md`.
 - For current public objects, read `docs/registry_snapshot.md` or run
   `summarize_registry()`.
