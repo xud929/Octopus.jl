@@ -87,9 +87,82 @@ Maintain, and include in the final report:
 - Every equation independently derived.
 - Every contract checked, and how.
 - Everything deliberately skipped, with the reason.
+- **Who** inspected each region: the auditor directly, or a sub-agent. The
+  two are different strengths of evidence and must not be blended — a
+  coverage claim that hides its provenance is not checkable.
 
 "Never claim a file was reviewed unless it was actually inspected" is only
 enforceable against a record. The ledger is that record.
+
+## Context budget and session handoffs
+
+An agent's context is finite, and a repository of tens of thousands of lines
+will not fit into one session. **The audit is a series of sessions, and the
+protocol treats that as the normal case, not a failure.** The 2026-08 audit
+of this repository took nine sessions
+([`docs/history/comprehensive_audit_2026_08_04.md`](history/comprehensive_audit_2026_08_04.md));
+what made the series converge was the handoff discipline, so it is required:
+
+- Scope **one session** in Phase 0, not the whole audit. A narrow verified
+  slice plus an honest ledger beats a broad slice that exhausts the context
+  mid-verification and hands off unverified state.
+- End every session with a written record containing: a "start here" table
+  naming the two or three sections the next session must read; the open
+  queue with a **reproduction recipe per item** (a queue item without a
+  reproduction costs the next session a re-discovery); the coverage ledger
+  delta; and corrections recorded beside the claims they correct.
+- Fixing should happen in the session that verified the finding, while the
+  reproduction is live in context. Batching fixes across a session boundary
+  carries unverified state through a handoff, which is where it rots.
+- Keep the forward plan (`docs/todo.md`) current in the same commit as the
+  work: a stale row costs a future session the time to rediscover that it
+  is stale — measured twice in this repository's own series.
+
+---
+
+# Sub-Agents
+
+Sub-agents multiply reading bandwidth, not judgement. The series' measured
+hit rate for agent-confirmed findings is **roughly 60%**, and the misses came
+in four distinct shapes: right as stated; right with the stated *reason*
+wrong (and the reason determines the fix); wrong outright; and narrower than
+the truth. Every one of the four occurred, and only measurement told them
+apart. The rules that follow are those numbers turned into procedure.
+
+**What to delegate.**
+
+- Parallel line-by-line reading of *disjoint, modular* regions — one agent
+  per region, sized to an agent's context.
+- Verification reproductions: build the repro, run it, report the numbers.
+  This produces something checkable.
+- Hypothesis-driven sweeps over an enumerable grid.
+
+**How to brief.** Give each reading agent a **distinct hypothesis** drawn
+from the defect classes the audit has already established, the known-good
+reference implementation to compare against, and a requirement that every
+claim carry a `file:line` and a reproduction. In this repository's series,
+the agents that found the most were those whose hypothesis matched a defect
+class the codebase had already produced; an unbriefed "find bugs" agent
+mostly reports style.
+
+**What never to delegate.**
+
+- **Fixing.** A sub-agent's fix removes the verification gate the ~60%
+  number exists to justify. The auditor reproduces, then fixes.
+- **Trust.** Agent output enters the record as a *lead with a reproduction*,
+  never as a finding. Label it so explicitly.
+- **Cross-module invariants.** Each reading agent sees one region; the
+  seams between regions are the auditor's job (below).
+
+**Cross-check the seams.** After modular reads, run a deliberate
+cross-cutting pass over the seam classes, because that is where this
+repository's defects actually clustered (see the seam tally in the history
+record): CPU↔CUDA twin implementations held together only by parity tests;
+several independent walkers over one shared structure; producer↔consumer
+protocol pairs (an epoch bumped in one module, gated in another); declared
+schemas versus the runtime that consumes them. Assign one pass per **seam
+class**, not per file — a per-file read structurally cannot see a
+disagreement between files.
 
 ---
 
@@ -164,6 +237,22 @@ Scientific Requirement → Technical Note → Equation → Implementation → Do
 Every important feature should be fully traceable.
 
 Report missing links.
+
+## The seam map
+
+Alongside the matrix, produce an explicit inventory of the **implicit
+cross-module contracts** — the places where correctness depends on two or
+more pieces of code agreeing without a shared abstraction enforcing it:
+
+- twin implementations (CPU↔GPU, reference↔optimized) bound only by parity;
+- multiple independent traversals of one shared structure;
+- producer↔consumer protocol pairs (epochs, caches, invalidation);
+- declared schemas/metadata versus their runtime consumers.
+
+Each seam entry names every participant with `file:line`. This inventory is
+what the seam cross-check passes (see Sub-Agents) run against, and in this
+repository's audit history the majority of confirmed defects sat on a seam
+rather than inside a module.
 
 ---
 
@@ -305,7 +394,16 @@ Evaluate coverage of:
 - MPI agreement
 - Precision changes
 
-Replace circular tests with independent validation whenever practical.
+Replace circular tests with independent validation whenever practical. A
+check that consults the very artifact it validates — a validator asking
+whether a list's elements are in itself — proves nothing; this repository's
+element-metadata validator caught 1 of 13 injected defects before that
+circularity was removed.
+
+**Every new regression test needs a negative control**: run it against the
+broken code (stash the fix, or inject the defect with a removable marker)
+and record that it fails there. A test that has never failed on the defect
+it guards proves only that it runs.
 
 ---
 
@@ -354,6 +452,13 @@ Measure rather than speculate.
 # Phase 12 — Independent Verification
 
 Whenever practical, independently verify important results using symbolic algebra, brute-force computation, finite differences, manufactured solutions, convergence studies, high-precision arithmetic, independent reference implementations, or randomized verification.
+
+**Validate the instrument before trusting a clean sweep.** Feed the metric a
+known defect — ideally the recorded one, at its recorded magnitude — and
+check it reports it. A sweep whose instrument has never seen the disease
+proves nothing about health; the h≠0 sweep in this repository's history
+reproduced its recorded pre-fix violation to fifteen digits before its
+clean grid was believed.
 
 ---
 
@@ -427,6 +532,14 @@ findings that remain open, work that remains undone, and what it would take to
 close each. An audit that halts honestly is finished; one that loops until it
 can claim completeness is not.
 
+**When a sweep closes clean, make it permanent.** A one-time clean result
+decays as the code changes; leave it behind as a suite test with an argued
+allowlist (each exception carries its benign-ness reason) and
+injection-verified discriminating power. This repository's lowered-code
+`Core.Box` guard, thread-invariance pin, overwrite guard, and h≠0
+symplecticity sweep are the pattern: the defect class that motivated the
+sweep now fails CI instead of waiting for the next audit.
+
 ---
 
 # Phase 17 — Severity Classification
@@ -485,3 +598,7 @@ Include:
   claim beside the correction rather than quietly replacing it. A wrong turn
   that is visible is worth more than a clean story.
 - Every modification must trace to a confirmed finding.
+- A sub-agent's claim is a lead, not a finding, until the auditor has
+  reproduced it; a sub-agent never applies a fix.
+- A regression test that has never been shown to fail on the defect it
+  guards proves nothing about that defect.
