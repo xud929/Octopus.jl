@@ -5405,6 +5405,14 @@ if _HAS_CUDA
             z = rep.z
             T = eltype(z)
             ns = length(boundaries) - 1
+            # A zero-width distribution collapses every boundary to one value;
+            # comparison assignment then files everything into the LAST slice
+            # (only its interval is closed), while the CPU's equal-width and
+            # equal-area paths deliberately use the FIRST. One convention,
+            # slice 1, on both backends (audit part 6, R7).
+            if ns > 0 && boundaries[1] == boundaries[end]
+                return _cuda_degenerate_slices(rep, slicing, boundaries, flags)
+            end
             # Fraction of the *live* beam, so weights still sum to one when part
             # of the beam is dead.
             total = T(_cuda_live_count(flags, length(rep)))
@@ -5428,6 +5436,28 @@ if _HAS_CUDA
                 else
                     throw(ArgumentError("unknown slice center_position $(slicing.center_position)"))
                 end
+            end
+            return LongitudinalSlices(centers, weights, boundaries, indices)
+        end
+
+        # Zero-width distribution: every live particle in slice 1, matching the
+        # CPU convention (audit part 6, R7). Empty slices keep zero weight and
+        # the collapsed boundary value as their center.
+        function _cuda_degenerate_slices(rep::Phase6DRep, slicing::LongitudinalSlicing,
+                                         boundaries, flags)
+            z = rep.z
+            T = eltype(z)
+            ns = length(boundaries) - 1
+            mask = flags === nothing ? isfinite.(z) : copy(flags)
+            idx1 = _cuda_indices_from_mask(mask)
+            total = T(max(length(idx1), 1))
+            centers = fill(T(boundaries[1]), ns)
+            weights = zeros(T, ns)
+            indices = Vector{Any}(undef, ns)
+            indices[1] = idx1
+            weights[1] = T(length(idx1)) / total
+            for s in 2:ns
+                indices[s] = CUDA.CuArray{Int}(undef, 0)
             end
             return LongitudinalSlices(centers, weights, boundaries, indices)
         end

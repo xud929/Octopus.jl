@@ -102,6 +102,21 @@ function LossRecord(names::Vector{String}, nparticles::Integer, rep::Phase6DRep;
 end
 
 """
+True when `record`'s arrays live where `LossRecord(names, n, rep)` would place
+them, with the eltype its slots would carry. The task-level `fits` test uses
+this so a task re-run on the other backend reallocates instead of handing host
+arrays to a CUDA kernel (a `KernelError`) or device arrays to the CPU bump (a
+`MethodError`) -- the docstring always promised reallocation on a backend
+change, but the check compared only shape (audit part 7, T2).
+"""
+function _loss_record_matches_rep(record::LossRecord, rep::Phase6DRep)
+    rep_on_cuda = _HAS_CUDA && rep.x isa CUDA.CuArray
+    record_on_cuda = !(record.counts isa Array)
+    rep_on_cuda == record_on_cuda || return false
+    return record.slots === nothing || eltype(record.slots) == eltype(rep.x)
+end
+
+"""
     loss_records(record) -> NamedTuple of vectors
 
 The losses actually recorded, one entry per **lost** particle, in particle

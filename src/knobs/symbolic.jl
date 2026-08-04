@@ -14,34 +14,44 @@ Two tiers, both consequences of the expression tree being closed:
 
 2. A `Symbolics.jl` adapter (`knob_symbolic` / `knob_from_symbolic`) — the
    knob tree maps 1:1 onto Symbolics expression trees, enabling simplification, general
-   calculus, and code generation. Symbolics is an OPTIONAL dependency.
+   calculus, and code generation. Symbolics is an OPTIONAL dependency,
+   declared under `[weakdeps]`: loading Symbolics next to Octopus activates
+   the `OctopusSymbolicsExt` package extension, which registers the adapter
+   implementation through `_register_symbolic_adapter!` below.
 
-   **The activation gate is broken, and the comment that used to sit here was
-   wrong about why.** It claimed "the same pattern as CUDA in
-   `src/beam/Beam.jl`" -- but CUDA is a *declared dependency* in
-   `Project.toml`, and Symbolics is in no section of it. A module can only
-   `import` its declared dependencies, so the `try` below succeeds only when
-   Octopus is loaded as a *script* (`include("src/Octopus.jl")`, which resolves
-   against the active project) and fails whenever it is loaded as a *package*.
-   Measured on a machine where Symbolics is installed and on the load path:
-
-       include("src/Octopus.jl")  ->  _HAS_SYMBOLICS = true
-       using Octopus              ->  _HAS_SYMBOLICS = false
-
-   The second is how `test/runtests.jl` and every user load it, so the adapter
-   is dead for them; the first is what `AGENTS.md` tells developers to run,
-   which is why nobody noticed. The proper fix is a package extension
-   (`[weakdeps]` + an `ext/` module); a plain `[deps]` entry would contradict
-   this project's deliberate choice to take no runtime dependency on an AD
-   package. Until then the two entry points raise a directed error and
-   everything else -- including `knob_derivative` -- works.
+   History, kept because the failure was subtle (audit part 6, R3): the gate
+   used to be a bare `import Symbolics` in a `try` here, which resolves
+   against the *active project* in script mode (`include("src/Octopus.jl")`)
+   and against Octopus's *declared dependencies* in package mode
+   (`using Octopus`) — so the adapter worked for developers, who load the
+   script form `AGENTS.md` prescribes, and was permanently dead for users and
+   for `test/runtests.jl`, with an error message telling them to install a
+   package they may already have had. The extension serves package mode; the
+   script-mode `include` at the bottom of this file serves developers, since
+   the extension loader never runs for a module built by `include`.
 =#
 
-const _HAS_SYMBOLICS = try
-    @eval import Symbolics
-    true
-catch
-    false
+# The adapter implementation, registered by `ext/OctopusSymbolicsExt.jl`
+# (package mode) or the script-mode include at the bottom of this file. A Ref
+# rather than overridable methods, so neither activation route can collide
+# with a method defined here (the overwrite trap of audit part 6 §8.7).
+const _SYMBOLIC_ADAPTER = Ref{Any}(nothing)
+_register_symbolic_adapter!(to, from) =
+    (_SYMBOLIC_ADAPTER[] = (to=to, from=from); nothing)
+"""True when the Symbolics adapter is active in this session."""
+_symbolics_adapter_active() = _SYMBOLIC_ADAPTER[] !== nothing
+function _symbolic_adapter()
+    impl = _SYMBOLIC_ADAPTER[]
+    impl === nothing && throw(ArgumentError(
+        "the Symbolics adapter is not active. Load Symbolics in this session " *
+        "(`using Symbolics`, installing it first if needed): Octopus declares " *
+        "it as a weak dependency, so the OctopusSymbolicsExt extension then " *
+        "activates automatically. In script mode " *
+        "(`include(\"src/Octopus.jl\")`) the adapter instead activates during " *
+        "the include when Symbolics is importable from the active project. " *
+        "The knob system itself, including knob_derivative, has no such " *
+        "dependency and is unaffected."))
+    return impl
 end
 
 # Reverse operator map (function object -> whitelist symbol), used when lowering
@@ -246,22 +256,13 @@ environment (`import Pkg; Pkg.add("Symbolics")`); everything else in the knob
 system works without it. Convert back with [`knob_from_symbolic`](@ref).
 """
 function knob_symbolic(x)
-    _HAS_SYMBOLICS || throw(ArgumentError(
-        "the Symbolics adapter is unavailable. NOTE: installing Symbolics does " *
-        "not by itself help, and the previous version of this message wrongly " *
-        "said it would. Symbolics is not a declared dependency of Octopus, so " *
-        "the optional `import` inside the module only resolves when Octopus is " *
-        "loaded as a script (`include(\"src/Octopus.jl\")`), not when it is " *
-        "loaded as a package (`using Octopus`). Use the script form, or see " *
-        "src/knobs/symbolic.jl for the package-extension fix this needs. The " *
-        "knob system itself, including knob_derivative, has no such dependency " *
-        "and is unaffected."))
+    adapter = _symbolic_adapter()
     node = x isa AbstractKnobExpression ? x : lock(_KNOB_LOCK) do
         entry = get(_KNOB_TABLE, _knob_path(x), nothing)
         entry === nothing && throw(ArgumentError("unknown knob $(_knob_path(x))"))
         entry.expression === nothing ? KnobRef(_knob_path(x)) : entry.expression
     end
-    return _knob_to_symbolic(node)
+    return adapter.to(node)
 end
 
 """
@@ -273,35 +274,46 @@ knob paths (as produced by [`knob_symbolic`](@ref)); referenced knobs must be
 declared. Round trip: `knob_from_symbolic(knob_symbolic(e))` is equivalent to
 `e` up to algebraic normalization by Symbolics.
 """
-function knob_from_symbolic(x)
-    _HAS_SYMBOLICS || throw(ArgumentError(
-        "the Symbolics adapter is unavailable; installing Symbolics does not by " *
-        "itself help. See `knob_symbolic` for why, and src/knobs/symbolic.jl for " *
-        "the package-extension fix this needs."))
-    return _knob_from_symbolic(x)
-end
+knob_from_symbolic(x) = _symbolic_adapter().from(x)
 
-if _HAS_SYMBOLICS
-    @eval begin
-        _knob_to_symbolic(n::KnobConst) = n.value
-        _knob_to_symbolic(n::KnobRef) = Symbolics.variable(n.path)
-        function _knob_to_symbolic(n::KnobCall)
-            f = _KNOB_OPERATORS[n.op][1]
-            return f((_knob_to_symbolic(a) for a in n.args)...)
-        end
+"""
+Build and register the adapter against a loaded `Symbolics` module.
 
-        function _knob_from_symbolic(x)
-            # Symbolics.Num is <: Real, so unwrap it before the literal branch.
-            x isa Symbolics.Num && return _knob_from_symbolic(Symbolics.toexpr(x))
-            x isa Real && return KnobConst(Float64(x))
-            node = _lower_knob(x)
-            lock(_KNOB_LOCK) do
-                _validate_refs_locked(node)
-            end
-            return node
+Called from `OctopusSymbolicsExt.__init__` in package mode -- at `__init__`
+and not at the extension's top level, because a top-level registration runs
+during PRECOMPILATION and its mutation of `_SYMBOLIC_ADAPTER` is discarded
+with the precompile process -- and from the script-mode activation below.
+Closures over the module argument rather than methods dispatching on
+Symbolics types, so both routes share one implementation and neither can
+overwrite a method defined here (audit part 6 §8.7).
+"""
+function _activate_symbolics_adapter!(S::Module)
+    to(n) = n isa KnobConst ? n.value :
+            n isa KnobRef ? S.variable(n.path) :
+            n isa KnobCall ? _KNOB_OPERATORS[n.op][1]((to(a) for a in n.args)...) :
+            throw(ArgumentError("unexpected knob expression node $(typeof(n))"))
+    function from(x)
+        # Symbolics.Num is <: Real, so unwrap it before the literal branch.
+        x isa S.Num && return from(S.toexpr(x))
+        x isa Real && return KnobConst(Float64(x))
+        node = _lower_knob(x)
+        lock(_KNOB_LOCK) do
+            _validate_refs_locked(node)
         end
+        return node
     end
-else
-    _knob_to_symbolic(x) = error("unreachable: Symbolics not loaded")
-    _knob_from_symbolic(x) = error("unreachable: Symbolics not loaded")
+    _register_symbolic_adapter!(to, from)
+    return nothing
 end
+
+# Script mode: a module built by `include("src/Octopus.jl")` never triggers
+# the package-extension loader, so activate the adapter here when Symbolics is
+# importable from the active project. In package mode this `import` throws
+# (Symbolics is a weak, not strong, dependency) and the extension takes over.
+const _HAS_SYMBOLICS_SCRIPT_MODE = try
+    @eval import Symbolics
+    true
+catch
+    false
+end
+_HAS_SYMBOLICS_SCRIPT_MODE && _activate_symbolics_adapter!(Symbolics)

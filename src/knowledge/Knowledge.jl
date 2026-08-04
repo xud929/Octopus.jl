@@ -463,12 +463,12 @@ locate related implementations and examples.
 """
 function physics_keywords(T::Type{<:AbstractElementSpec})
     meta = _element_meta_or_nothing(T)
-    return meta === nothing ? Symbol[] : meta.keywords
+    return meta === nothing ? Symbol[] : copy(meta.keywords)
 end
 physics_keywords(x::AbstractElementSpec) = physics_keywords(typeof(x))
 function physics_keywords(T::Type)
     meta = _element_meta_or_nothing(T)
-    return meta === nothing ? Symbol[] : meta.keywords
+    return meta === nothing ? Symbol[] : copy(meta.keywords)
 end
 
 """
@@ -479,12 +479,12 @@ extend this to advertise valid numerical algorithms.
 """
 function supported_tracking_methods(T::Type{<:AbstractElementSpec})
     meta = _element_meta_or_nothing(T)
-    return meta === nothing ? Type{<:AbstractTrackingMethod}[] : meta.tracking_methods
+    return meta === nothing ? Type{<:AbstractTrackingMethod}[] : copy(meta.tracking_methods)
 end
 supported_tracking_methods(x::AbstractElementSpec) = supported_tracking_methods(typeof(x))
 function supported_tracking_methods(T::Type)
     meta = _element_meta_or_nothing(T)
-    return meta === nothing ? Type{<:AbstractTrackingMethod}[] : meta.tracking_methods
+    return meta === nothing ? Type{<:AbstractTrackingMethod}[] : copy(meta.tracking_methods)
 end
 
 """
@@ -494,12 +494,12 @@ Return analysis types that are meaningful for an element spec.
 """
 function supported_analyses(T::Type{<:AbstractElementSpec})
     meta = _element_meta_or_nothing(T)
-    return meta === nothing ? Type{<:AbstractAnalysis}[] : meta.analyses
+    return meta === nothing ? Type{<:AbstractAnalysis}[] : copy(meta.analyses)
 end
 supported_analyses(x::AbstractElementSpec) = supported_analyses(typeof(x))
 function supported_analyses(T::Type)
     meta = _element_meta_or_nothing(T)
-    return meta === nothing ? Type{<:AbstractAnalysis}[] : meta.analyses
+    return meta === nothing ? Type{<:AbstractAnalysis}[] : copy(meta.analyses)
 end
 
 """
@@ -507,15 +507,22 @@ end
 
 Return contract types that should validate an implementation of the
 given element spec.
+
+This and the other list-returning queries (`physics_keywords`,
+`supported_tracking_methods`, `supported_analyses`) return a **copy**: the
+lists are the registry's own state, and handing them out live meant
+`push!(required_contracts(ElementSpec{:sbend}), Int64)` permanently corrupted
+the registry in-process while validation still passed (audit part 7, K5) --
+inconsistent with the copy discipline `registered_element_specs` follows.
 """
 function required_contracts(T::Type{<:AbstractElementSpec})
     meta = _element_meta_or_nothing(T)
-    return meta === nothing ? Type{<:AbstractContract}[] : meta.contracts
+    return meta === nothing ? Type{<:AbstractContract}[] : copy(meta.contracts)
 end
 required_contracts(x::AbstractElementSpec) = required_contracts(typeof(x))
 function required_contracts(T::Type)
     meta = _element_meta_or_nothing(T)
-    return meta === nothing ? Type{<:AbstractContract}[] : meta.contracts
+    return meta === nothing ? Type{<:AbstractContract}[] : copy(meta.contracts)
 end
 
 """
@@ -726,6 +733,9 @@ function _indent_lines(text::AbstractString, prefix::AbstractString)
     return join((prefix * line for line in split(text, '\n')), "\n")
 end
 
+"""Whether a compiled example is (or wraps) an instance of a declared runtime type."""
+_compiled_matches_runtime(compiled, rt::Type) = compiled isa rt
+
 """
     validate_element_metadata(; throw_on_error=false)
 
@@ -739,6 +749,10 @@ Checks include:
 - no parameter is both required and given a default
 - every declared tracking method resolves to a runtime type
 - friendly constructor metadata agrees with the raw `ElementSpec{kind}` type
+- declared tracking methods, contracts, and analyses are subtypes of their
+  architectural roots, and the example actually compiles to a declared
+  runtime type -- the non-circular consumer checks added after the injected-
+  defect measurement (audit part 7, K3: 1 of 13 lies caught before them)
 """
 function validate_element_metadata(; throw_on_error::Bool=false)
     errors = String[]
@@ -787,11 +801,50 @@ function validate_element_metadata(; throw_on_error::Bool=false)
             end
         end
 
-        for tracking_method in supported_tracking_methods(T)
-            tracking_method in meta.tracking_methods ||
-                push!(errors, "ElementMeta $(meta.kind) tracking method $(nameof(tracking_method)) is not registered in metadata")
+        # These checks run against the DECLARATIONS, not against query
+        # functions that merely return them: the previous loop iterated
+        # `supported_tracking_methods(T)` -- which returns
+        # `meta.tracking_methods` -- and then asked whether each element was in
+        # `meta.tracking_methods`, a tautology that let a fabricated method
+        # list validate clean (audit part 7, K3). Injected-defect measurement
+        # before this rewrite: 1 of 13 metadata lies caught.
+        for tracking_method in meta.tracking_methods
+            (tracking_method isa Type && tracking_method <: AbstractTrackingMethod) ||
+                push!(errors, "ElementMeta $(meta.kind) declares tracking method $(tracking_method), which is not an AbstractTrackingMethod")
             haskey(meta.runtime_types, tracking_method) ||
-                push!(errors, "ElementMeta $(meta.kind) has no runtime type for $(nameof(tracking_method))")
+                push!(errors, "ElementMeta $(meta.kind) has no runtime type for $(tracking_method)")
+        end
+        for contract in meta.contracts
+            (contract isa Type && contract <: AbstractContract) ||
+                push!(errors, "ElementMeta $(meta.kind) declares contract $(contract), which is not an AbstractContract")
+        end
+        for analysis in meta.analyses
+            (analysis isa Type && analysis <: AbstractAnalysis) ||
+                push!(errors, "ElementMeta $(meta.kind) declares analysis $(analysis), which is not an AbstractAnalysis")
+        end
+        # `runtime_type` (singular) is stored for display but the queries read
+        # the per-method map, so the two could silently disagree (audit
+        # part 7, K4).
+        if meta.runtime_type !== nothing && !isempty(meta.runtime_types)
+            meta.runtime_type in values(meta.runtime_types) ||
+                push!(errors, "ElementMeta $(meta.kind) runtime_type $(meta.runtime_type) is not in its runtime_types map")
+        end
+        # The non-circular consumer check: the example must actually compile,
+        # and to a declared runtime type. This is the check that catches a
+        # metadata list the implementation cannot honour, which the tautology
+        # above never could.
+        if example isa ElementSpec && !isempty(meta.runtime_types)
+            compiled = try
+                compile_runtime(example)
+            catch err
+                push!(errors, "ElementMeta $(meta.kind) example does not compile: $(sprint(showerror, err))")
+                nothing
+            end
+            if compiled !== nothing
+                any(rt -> rt isa Type && _compiled_matches_runtime(compiled, rt),
+                    values(meta.runtime_types)) ||
+                    push!(errors, "ElementMeta $(meta.kind) example compiles to $(typeof(compiled)), which is not a declared runtime type")
+            end
         end
 
         friendly = meta.friendly_constructor

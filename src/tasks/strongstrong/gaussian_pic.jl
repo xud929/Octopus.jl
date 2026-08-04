@@ -35,11 +35,14 @@ FFT as `PICPoissonSolver`, and adds the exact Bassetti-Erskine field back per
 field particle. This raises systematic field accuracy at a fixed grid; the hybrid
 error is nearly grid-independent. See `docs/theory/gaussian_subtracted_pic_solver.md`.
 
-The solver composes a `PICPoissonSolver`: all PIC keywords (`grid`,
-`deposit_method`, `green_type`, `green_cache`, `longitudinal_kick`, `slicing`,
-`kbb1`/`kbb2`, `luminosity_scale`, the CUDA execution options, ...) are forwarded
-to it unchanged, so `?PICPoissonSolver` documents them. The additional options
-are:
+The solver composes a `PICPoissonSolver`: every PIC keyword is accepted by the
+constructor and stored on the embedded solver, so `?PICPoissonSolver` documents
+them. Six of them select machinery the hybrid does not implement and are
+REJECTED at collide time rather than silently ignored: `interaction_grid`,
+non-`:linear` `slice_interpolation`, and `grid_extent = :sigma` on either
+backend, and `cuda_async = false`, `cuda_batch_fft = false`, or
+`cuda_wavefront_fft = false` on CUDA, whose hybrid route is chosen by
+`batch_mode` and `cuda_indexed_wavefront` alone. The additional options are:
 
 - `margin_sigma`: minimum adaptive-box half-width, in beam sigmas, for containing
   the subtracted Gaussian (its tails extend beyond the particle cloud). `0`
@@ -73,8 +76,13 @@ never better than CIC. The reason is that the subtraction removes the sharp
 Gaussian core, leaving a smooth residual that TSC's wider stencil represents well
 without the extra smoothing hurting. It costs ~25% more per interaction on CPU.
 
-CPU and CUDA are supported and CPU/CUDA bit-parity; the CUDA path defaults to the
-indexed wavefront route (see `gaussian_pic_cuda.jl`).
+CPU and CUDA are supported and agree to rounding -- measured ~1e-13 relative on
+the kicks at grid 16 -- not bit for bit: the two backends deposit and reduce in
+different orders, and with the default `neutralize = true` they additionally
+normalise the subtracted Gaussian to slightly different quantities (the CPU to
+the deposited grid total, CUDA to the slice particle count, equal to ~1e-16
+whenever no deposit clips). The CUDA path defaults to the indexed wavefront
+route (see `gaussian_pic_cuda.jl`).
 """
 struct GaussianPICPoissonSolver{T<:Real} <: AbstractPoissonSolver
     pic::PICPoissonSolver{T}
@@ -93,8 +101,11 @@ function GaussianPICPoissonSolver{T}(; margin_sigma=5.0, neutralize::Bool=true,
     ct >= zero(T) || throw(ArgumentError(
         "coupling_tol must be non-negative; got $(coupling_tol)."))
     # A finite coupling_tol selects the coupled (rotated) subtraction of docs
-    # Section 7. It is implemented on the CPU path only; the CUDA collide throws
-    # rather than silently running the uncoupled path.
+    # Section 7, implemented on the CPU path and on the default CUDA route
+    # (indexed wavefront); the other two CUDA routes throw rather than
+    # silently running the uncoupled subtraction. (An earlier version of this
+    # comment said "CPU path only", which the CUDA route contradicted --
+    # audit part 7, G3.)
     return GaussianPICPoissonSolver{T}(pic, ms, neutralize, ct)
 end
 
@@ -140,7 +151,7 @@ function configuration_report(solver::GaussianPICPoissonSolver;
     push!(extras, ConfigurationEntry(:coupling_tol, solver.coupling_tol, solver.coupling_tol,
         coupled_active ? :resolved : :inactive_dependency,
         coupled_active ?
-            "coupled (rotated) subtraction above the correlation threshold; CPU path only" :
+            "coupled (rotated) subtraction above the correlation threshold; CPU and the default CUDA indexed-wavefront route" :
             "always-uncoupled separable subtraction",
         :gaussian_pic_subtraction))
     return (pic_entries..., Tuple(extras)...)

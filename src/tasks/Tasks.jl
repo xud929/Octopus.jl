@@ -309,9 +309,22 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     runtime_entries = _runtime_entries(task, rep)
     runtime_elems = _physics_line(runtime_entries)
     policy = _resolve_execution_policy(task.policy, rep)
-    result = _with_execution_policy(policy) do
-        _execute_tracking_task!(
-            task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy)
+    result = try
+        _with_execution_policy(policy) do
+            _execute_tracking_task!(
+                task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy)
+        end
+    catch
+        # A crashed run still flushes the loss accounting recorded so far: the
+        # per-particle slots were written during tracking, and the file is the
+        # artifact wanted most after a crash -- before this ran only on
+        # success, so a blown-up run left no loss file at all (audit part 7,
+        # T6). The stored turn is deliberately NOT advanced, matching the
+        # docstring above.
+        summary = _task_loss_summary(task, rep)
+        wrote_file = _write_task_loss_log(task, summary)
+        _report_losses(task, rep, summary, wrote_file)
+        rethrow()
     end
     task.next_turn[] = next_turn
     summary = _task_loss_summary(task, rep)
@@ -425,8 +438,14 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             run_observers!(task.observers, ctx, rep)
         end
     finally
-        finalize_observers!(task.observers)
-        _finalize_line_observers!(runtime_entries)
+        # Nested so the line observers are finalized even when a task-level
+        # finalizer throws; each helper already finishes its own list before
+        # rethrowing its first error (audit part 7, T7).
+        try
+            finalize_observers!(task.observers)
+        finally
+            _finalize_line_observers!(runtime_entries)
+        end
     end
     return rep
 end
@@ -534,6 +553,7 @@ function _ensure_loss_record!(task::TrackingTask, rep)
     want_slots = task.loss_log !== nothing
     if existing !== nothing
         fits = length(loss_counts(existing)) == length(specs) &&
+               _loss_record_matches_rep(existing, rep) &&
                (existing.slots === nothing) == !want_slots &&
                (existing.slots === nothing || size(existing.slots, 2) == length(rep))
         fits && return existing
@@ -775,10 +795,20 @@ function _synchronize_segment_stream(stream)
     return nothing
 end
 
+# Same contract as finalize_observers!: every in-line observer is finalized
+# even when an earlier one throws, and the first error surfaces afterwards
+# (audit part 7, T7).
 function _finalize_line_observers!(entries::Tuple)
+    first_error = nothing
     for entry in entries
-        entry isa LineObserverEntry && finalize_observer!(entry.observer.observer)
+        entry isa LineObserverEntry || continue
+        try
+            finalize_observer!(entry.observer.observer)
+        catch e
+            first_error === nothing && (first_error = e)
+        end
     end
+    first_error === nothing || throw(first_error)
     return nothing
 end
 
@@ -792,3 +822,6 @@ function _update_runtime_line!(runtime_elems::Tuple, ctx)
     end
     return nothing
 end
+
+
+

@@ -3,6 +3,11 @@ using Octopus
 using LinearAlgebra
 # Test-only: Octopus takes no runtime dependency on any AD package.
 using ForwardDiff
+# Test-only: loading Symbolics activates the OctopusSymbolicsExt weak-dep
+# extension, so the suite exercises the adapter the way a user reaches it.
+# Before the extension existed the adapter was dead in package mode and the
+# round-trip test silently took its unavailable branch forever (part 6, R3).
+using Symbolics
 
 # Whether the CUDA half of this suite ran at all must be visible in the summary,
 # not inferable only by noticing that some testsets printed fewer assertions.
@@ -2665,6 +2670,343 @@ end
     @test TrackingTask(BeamLine("Q", qspec)).contracts == tuple_task.contracts
     @test TrackingTask(BeamLine("Q", qspec)).analyses == tuple_task.analyses
     @test TrackingTask((DriftSpec(L=1.0), [qspec])).contracts == tuple_task.contracts
+end
+
+# Deliberate mid-run failure for the crashed-execute! tests below.
+struct FailAtTurnAction <: Octopus.AbstractBeamAction
+    at::Int64
+end
+Octopus.apply_action!(a::FailAtTurnAction, ctx, rep) =
+    (ctx.turn == a.at && error("deliberate failure at turn $(ctx.turn)"); nothing)
+
+# Observer pair for the stranded-finalizer test (part 7, T7).
+mutable struct FinalizeFlagObserver <: Octopus.AbstractBeamObserver
+    finalized::Bool
+end
+Octopus.observe!(o::FinalizeFlagObserver, ctx, rep) = nothing
+Octopus.finalize_observer!(o::FinalizeFlagObserver) = (o.finalized = true; nothing)
+struct ThrowingFinalizeObserver <: Octopus.AbstractBeamObserver end
+Octopus.observe!(::ThrowingFinalizeObserver, ctx, rep) = nothing
+Octopus.finalize_observer!(::ThrowingFinalizeObserver) = error("finalize failure")
+# Mid-run reseed for the noise-snapshot test (part 7, T8).
+struct ReseedGlobalRNGAction <: Octopus.AbstractBeamAction end
+Octopus.apply_action!(::ReseedGlobalRNGAction, ctx, rep) =
+    (set_global_rng!(seed=999); nothing)
+
+@testset "Observer finalizers, BPM noise keys, and the schedule planner" begin
+    # T7: one throwing finalizer must not strand the others -- a finalizer is
+    # where buffered measurements reach disk. The first error still surfaces.
+    flag_task = FinalizeFlagObserver(false)
+    flag_line = FinalizeFlagObserver(false)
+    t7 = TrackingTask((DriftSpec(L=1.0), ScheduledObserver(flag_line));
+                      hooks=(ScheduledObserver(ThrowingFinalizeObserver()),
+                             ScheduledObserver(flag_task)))
+    @test_throws ErrorException execute!(
+        t7, Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0]); turns=1)
+    @test flag_task.finalized
+    @test flag_line.finalized
+
+    # T8: the noise draw is a function of the execute-time RNG snapshot, as
+    # stochastic tracking is -- a mid-run set_global_rng! must not
+    # retroactively change a reading.
+    seed_a = UInt64(424242)
+    set_global_rng!(seed=seed_a)
+    method_a = global_rng_method()
+    bpm8 = BPMObserver("t8"; x_noise=1.0)
+    t8 = TrackingTask((DriftSpec(L=1.0),);
+                      hooks=(ScheduledAction(ReseedGlobalRNGAction()),
+                             ScheduledObserver(bpm8)))
+    execute!(t8, Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0]); turns=1)
+    @test readings(bpm8)[2][1] ==
+          Octopus.octopus_normal(seed_a, method_a, 0, bpm8.rng_id, 0, 1, Float64)
+    set_global_rng!(seed=seed_a)
+
+    # T9: x_noise is per-reading, so a BPM read twice in one turn draws twice;
+    # occurrence 0 keeps the exact pre-existing stream.
+    bpm9 = BPMObserver("t9"; x_noise=1.0)
+    t9 = TrackingTask((DriftSpec(L=1.0),);
+                      hooks=(ScheduledObserver(bpm9), ScheduledObserver(bpm9)))
+    execute!(t9, Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0]); turns=1)
+    let (turns9, x9, _) = readings(bpm9)
+        @test turns9 == [0, 0]
+        @test x9[1] != x9[2]
+        @test x9[1] ==
+              Octopus.octopus_normal(seed_a, method_a, 0, bpm9.rng_id, 0, 1, Float64)
+        @test x9[2] ==
+              Octopus.octopus_normal(seed_a, method_a, 0, bpm9.rng_id, 1, 1, Float64)
+    end
+
+    # T10: the EveryNSteps planner must not enumerate from the schedule start
+    # -- its cost was proportional to the ABSOLUTE turn (29.5 ms at 1e8,
+    # penalising exactly the chunked long run first_turn serves). Equivalence
+    # against the enumerate-and-filter oracle, then a generous cost ceiling.
+    oracle(s, turns, first) = begin
+        lo = Int(first); hi = lo + Int(turns)
+        stop = min(s.stop, hi)
+        s.start >= stop ? Int[] :
+            [t for t in s.start:s.step:(stop - 1) if lo <= t < hi]
+    end
+    for start in 0:3, step in 1:4, stop in (0, 1, 5, 17, 100), turns in 0:4,
+        first in (0, 1, 3, 7, 50)
+
+        s = EveryNSteps(start, stop, step)
+        @test Octopus._scheduled_turns(s, turns, first) == oracle(s, turns, first)
+    end
+    let s = EveryNSteps(start=0, stop=typemax(Int), step=1)
+        Octopus._scheduled_turns(s, 5, 10^8)          # warm up
+        @test @elapsed(Octopus._scheduled_turns(s, 5, 10^8)) < 0.005
+        @test Octopus._scheduled_turns(s, 5, 10^8) == collect(10^8:(10^8 + 4))
+    end
+
+    # T11: rng_id is the one field deciding whether two BPMs share a noise
+    # stream, and it must appear in the configuration report.
+    let entries = configuration_report(BPMObserver("t11"; x_noise=1.0))
+        @test any(e -> e.name === :rng_id, entries)
+    end
+end
+
+@testset "A crashed execute! still delivers its loss artifacts" begin
+    # Audit part 7, T6. The stored turn deliberately does not advance on
+    # failure (documented retry semantics), so the retry replays the same
+    # absolute window -- which means (a) the loss file must be flushed on the
+    # failure path, since a crashed run is exactly when it is wanted, and
+    # (b) an observer must not keep the failed window's partial readings, or
+    # the retry appends duplicate turn labels and the table is corrupt for
+    # every downstream reader.
+    path = tempname() * ".h5"
+    bpm = BPMObserver("b")
+    line = (DriftSpec(L=1.0), ApertureSpec(x_limit=2.0e-3, name="COLL"),
+            DriftSpec(L=0.5))
+    task = TrackingTask(line;
+                        hooks=(ScheduledObserver(bpm),
+                               ScheduledAction(FailAtTurnAction(3))),
+                        loss_log=path)
+    rep = Phase6DRep([1.0e-3, 5.0e-3, 0.0, 0.0], zeros(4),
+                     [0.0, 0.0, 1.0e-4, 0.0], zeros(4), zeros(4), zeros(4))
+    allow_lost_particles(; enabled=true) do
+        @test_throws ErrorException execute!(task, rep; turns=5)
+    end
+    @test task.next_turn[] == 0                # documented: no advance on failure
+    @test isfile(path)                         # T6a: the artifact exists after a crash
+    Octopus.HDF5.h5open(path) do f
+        @test read(f["aperture_counts"]) == [1]
+        @test read(f["summary_dead"]) == 1
+    end
+    @test readings(bpm)[1] == [0, 1, 2]
+    allow_lost_particles(; enabled=true) do
+        @test_throws ErrorException execute!(task, rep; turns=5)
+    end
+    @test readings(bpm)[1] == [0, 1, 2]        # T6b: retry does not duplicate labels
+    rm(path; force=true)
+
+    # The discard is a no-op for an ordinary chunked run: two successful
+    # chunks still append distinct turns.
+    bpm2 = BPMObserver("b2")
+    chunked = TrackingTask((DriftSpec(L=1.0),); hooks=(ScheduledObserver(bpm2),))
+    r2 = Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+    execute!(chunked, r2; turns=3)
+    execute!(chunked, r2; turns=3)
+    @test readings(bpm2)[1] == [0, 1, 2, 3, 4, 5]
+end
+
+@testset "Slicing degenerate conventions and the spectral charge tripwire" begin
+    # R7 (part 6): a zero-width z distribution used to land in slice 1 on the
+    # CPU equal-width/equal-area paths and in slice `ns` everywhere a
+    # boundary-comparison assignment ran (the CUDA routes, and the CPU
+    # boundary-search methods) -- same beam, different slice, per backend.
+    # One convention now: slice 1.
+    whichslice(s) = [k for k in 1:length(s.indices) if !isempty(s.indices[k])]
+    rep0() = Phase6DRep(zeros(8), zeros(8), zeros(8), zeros(8),
+                        fill(1.5e-3, 8), zeros(8))
+    for method in (:equal_area, :equal_width, :normal_quantile)
+        sl = LongitudinalSlicing(nslices=4, method=method)
+        @test whichslice(longitudinal_slices(rep0(), sl)) == [1]
+    end
+    if CUDA_TESTS_ACTIVE
+        for method in (:equal_area, :equal_width)
+            sl = LongitudinalSlicing(nslices=4, method=method)
+            drep = Phase6DRep((Octopus.CUDA.CuArray(a)
+                               for a in coordinate_arrays(rep0()))...)
+            @test whichslice(Octopus._cuda_longitudinal_slices(drep, sl)) == [1]
+        end
+    end
+
+    # R2 (part 6): :equal_count membership is by RANK. For continuous z the
+    # reported boundaries and the index sets agree exactly; under ties the tie
+    # group splits across slices and a tied particle sits exactly ON its
+    # boundary -- documented behaviour, pinned here so the contract is tested
+    # rather than assumed.
+    sl9 = LongitudinalSlicing(nslices=9, method=:equal_count)
+    violations(rep) = begin
+        s = longitudinal_slices(rep, sl9)
+        bad = Tuple{Int,Int}[]
+        for k in 1:length(s.indices), i in s.indices[k]
+            lb, rb = s.boundary[k], s.boundary[k + 1]
+            inside = k == length(s.indices) ? (lb <= rep.z[i] <= rb) : (lb <= rep.z[i] < rb)
+            inside || push!(bad, (k, i))
+        end
+        (s, bad)
+    end
+    zc = [2.0e-2 * sin(0.7 * i + 2.0) for i in 1:2000]
+    _, bad_c = violations(Phase6DRep(zeros(2000), zeros(2000), zeros(2000),
+                                     zeros(2000), zc, zeros(2000)))
+    @test isempty(bad_c)
+    zq = [round(2.0e-2 * sin(0.7 * i + 2.0); digits=3) for i in 1:2000]
+    sq, bad_q = violations(Phase6DRep(zeros(2000), zeros(2000), zeros(2000),
+                                      zeros(2000), zq, zeros(2000)))
+    @test !isempty(bad_q)                       # ties DO split; that is the contract
+    @test all(zq[i] == sq.boundary[k + 1] for (k, i) in bad_q)   # each sits ON its boundary
+
+    # R9 (part 6): the spectral deposit clips silently at the Dirichlet wall,
+    # and the box is sized ONCE from pre-collision coordinates -- so a strong
+    # enough intra-collision kick pushes later slice-pair deposits out of the
+    # box. The tripwire makes that a warning instead of silent charge loss;
+    # measured on this exact configuration: 83% of a slice's charge was being
+    # dropped with no signal at all.
+    strong(n) = begin
+        s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+        x = s(1.0e-4, 0.0); x[1] = 8.0e-4
+        rep = Phase6DRep(x, s(1.0e-5, 0.3), s(1.0e-4, 0.9), s(1.0e-5, 1.2),
+                         s(1.0e-2, 2.0), s(1.0e-4, 2.5))
+        params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=n)
+        Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+    end
+    sp64 = SpectralPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+        grid=(64, 64), slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+    @test_logs (:warn, r"clipped charge at the Dirichlet wall") match_mode = :any collide!(
+        sp64, strong(256), strong(256), CPUThreadsBackend)
+
+    # R10 (part 6): the same overflow through :grid_free does not clip -- the
+    # odd periodic extension mirrors the source back inside at exactly -1x,
+    # silently. The guard turns that into a directed warning.
+    gf = SpectralPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+        grid=(16, 16), method=:grid_free,
+        slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+    @test_logs (:warn, r"grid_free source outside the Dirichlet box") match_mode = :any collide!(
+        gf, strong(256), strong(256), CPUThreadsBackend)
+end
+
+@testset "The module precompiles without overwriting its own methods" begin
+    # Part 6 §8.7: a same-signature method silently overwrote another, PASSED
+    # the full suite (both methods behaved identically), and was caught only
+    # by accident when an unrelated verification happened to load the package
+    # in a fresh process. This guard makes that check deliberate. Two
+    # subtleties bought by measurement: a plain runtime `include` is SILENT
+    # about overwrites on this Julia, so the guard must force an actual
+    # precompile (`Base.compilecache` is unconditional); and the driver can
+    # exit 0 even when the worker reports the collision, so the assertion is
+    # on the message, not the exit code. Costs one full precompile (~1 min).
+    prog = "Base.compilecache(Base.identify_package(\"Octopus\"))"
+    err = IOBuffer()
+    p = run(pipeline(`$(Base.julia_cmd()) --startup-file=no --project=$(dirname(@__DIR__)) -e $prog`,
+                     stderr=err, stdout=devnull); wait=false)
+    wait(p)
+    text = String(take!(err))
+    @test success(p)
+    @test !occursin("Method overwriting is not permitted", text)
+    @test !occursin(r"Method definition .* overwritten", text)
+end
+
+@testset "Metadata queries and the validator check declarations, not themselves" begin
+    # Audit part 7, K2/K3/K5/K6/K8.
+
+    # K2: the three named-strength thin constructors build bit-identical
+    # runtimes to the PTC-validated ThinMultipoleSpec spellings, which is what
+    # justifies their PTCConsistencyContract declaration transitively -- the
+    # PTC table exercises thin_multipole, and these are the same runtime.
+    same(x, y) = typeof(x) == typeof(y) &&
+        all(getfield(x, f) == getfield(y, f) for f in fieldnames(typeof(x)))
+    let a = 0.037
+        @test same(compile_runtime(ThinDipoleSpec(k0l=a)),
+                   compile_runtime(ThinMultipoleSpec(knl=(a,))))
+        @test same(compile_runtime(ThinDipoleSpec(k0sl=a)),
+                   compile_runtime(ThinMultipoleSpec(ksl=(a,))))
+        @test same(compile_runtime(ThinQuadrupoleSpec(k1l=a)),
+                   compile_runtime(ThinMultipoleSpec(knl=(0.0, a))))
+        @test same(compile_runtime(ThinQuadrupoleSpec(k1sl=a)),
+                   compile_runtime(ThinMultipoleSpec(ksl=(0.0, a))))
+        @test same(compile_runtime(ThinSextupoleSpec(k2l=a)),
+                   compile_runtime(ThinMultipoleSpec(knl=(0.0, 0.0, a))))
+        @test same(compile_runtime(ThinSextupoleSpec(k2sl=a)),
+                   compile_runtime(ThinMultipoleSpec(ksl=(0.0, 0.0, a))))
+    end
+
+    # K5: list-returning queries hand out copies; mutating one must not
+    # corrupt the registry.
+    let c = required_contracts(ElementSpec{:sbend})
+        push!(c, Int64)
+        @test !(Int64 in required_contracts(ElementSpec{:sbend}))
+        @test validate_element_metadata().passed
+    end
+
+    # K8: a line has no tracking method of its own; an explicit request is
+    # rejected rather than silently discarded.
+    let line = BeamLine("L", DriftSpec(L=1.0))
+        @test compile_runtime(line) isa Octopus.CompositeLine
+        @test_throws ArgumentError compile_runtime(line, Symplectic6DMap())
+    end
+
+    # K3/K6: probe metas registered temporarily, removed afterwards so the
+    # snapshot test still sees only the real registry.
+    try
+        # K6: friendly_constructor = nothing is permitted metadata and must
+        # be reported, not crash snapshot generation.
+        Octopus.register_element_meta!(Octopus.ElementMeta(;
+            kind=:k6_probe, spec_type=ElementSpec{:k6_probe},
+            friendly_constructor=nothing,
+            example=ElementSpec{:k6_probe}(Dict{Symbol,Any}())))
+        @test occursin("(no friendly constructor)", registry_snapshot_markdown())
+
+        # K3: the injected-defect scenario that used to validate clean -- a
+        # meta whose contract is not a contract, whose analysis is not an
+        # analysis, and whose example cannot compile -- must now FAIL.
+        Octopus.register_element_meta!(Octopus.ElementMeta(;
+            kind=:k3_liar, spec_type=ElementSpec{:k3_liar},
+            tracking_methods=[Symplectic6DMap], runtime_type=Octopus.LatticeMagnet,
+            contracts=[Int64], analyses=[String],
+            example=ElementSpec{:k3_liar}(Dict{Symbol,Any}())))
+        r = validate_element_metadata()
+        @test !r.passed
+        @test any(e -> occursin("k3_liar", e) && occursin("not an AbstractContract", e), r.errors)
+        @test any(e -> occursin("k3_liar", e) && occursin("not an AbstractAnalysis", e), r.errors)
+        @test any(e -> occursin("k3_liar", e) && occursin("does not compile", e), r.errors)
+    finally
+        for k in (:k6_probe, :k3_liar)
+            delete!(Octopus.ELEMENT_META_BY_KIND, k)
+            T = ElementSpec{k}
+            delete!(Octopus.ELEMENT_META_BY_SPEC_TYPE, T)
+            filter!(t -> t !== T, Octopus.REGISTERED_ELEMENT_SPECS)
+        end
+    end
+    @test validate_element_metadata().passed      # registry restored
+end
+
+@testset "A task re-run on the other backend reallocates its loss record" begin
+    # Audit part 7, T2: the `fits` test compared shape only, against its own
+    # docstring's "shape or backend" -- a CPU-built record handed to a CUDA
+    # kernel is a KernelError, and a device record handed to the CPU bump is a
+    # MethodError.
+    if CUDA_TESTS_ACTIVE
+        line = (DriftSpec(L=1.0), ApertureSpec(x_limit=2.0e-3, name="C"),
+                DriftSpec(L=0.5))
+        mk() = Phase6DRep([1.0e-3, 5.0e-3, 0.0, 0.0], zeros(4),
+                          [0.0, 0.0, 1.0e-4, 0.0], zeros(4), zeros(4), zeros(4))
+        task = TrackingTask(line)
+        allow_lost_particles(; enabled=true) do
+            execute!(task, mk(); turns=1)
+            @test loss_counts(loss_record(task)) == [1]
+            device = Phase6DRep((Octopus.CUDA.CuArray(a)
+                                 for a in coordinate_arrays(mk()))...)
+            execute!(task, device; turns=1)
+            @test loss_record(task).counts isa Octopus.CUDA.CuArray
+            @test loss_counts(loss_record(task)) == [1]
+            execute!(task, mk(); turns=1)      # and back
+            @test loss_record(task).counts isa Array
+            @test loss_counts(loss_record(task)) == [1]
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
 end
 
 @testset "BPM reads a device number, not the truth" begin
@@ -6317,15 +6659,15 @@ end
         @test_throws ArgumentError knob_derivative(
             knob_expression("max(t_knob.k1, 2.0)"), "t_knob.k1")
 
-        # Julia-Expr bridge, and the Symbolics adapter when available.
+        # Julia-Expr bridge, and the Symbolics adapter -- unconditional: the
+        # suite loads Symbolics, so the weak-dep extension MUST have
+        # activated. The previous version branched on availability and took
+        # the unavailable branch on every package-mode run (part 6, R3).
         e3 = knob_expression("t_knob.k1 / t_knob.brho + 2.0")
         @test knob_expression(string(knob_to_expr(e3))) == e3
-        if Octopus._HAS_SYMBOLICS
-            e4 = knob_expression("t_knob.k1 * t_knob.brho + t_knob.k1")
-            @test knob_value(knob_from_symbolic(knob_symbolic(e4))) ≈ knob_value(e4)
-        else
-            @test_throws ArgumentError knob_symbolic(e3)
-        end
+        @test Octopus._symbolics_adapter_active()
+        e4 = knob_expression("t_knob.k1 * t_knob.brho + t_knob.k1")
+        @test knob_value(knob_from_symbolic(knob_symbolic(e4))) ≈ knob_value(e4)
 
         # The consumer-boundary contract.
         result = validate(KnobEffectivenessContract())

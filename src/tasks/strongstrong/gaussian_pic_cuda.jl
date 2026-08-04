@@ -359,8 +359,13 @@ if _HAS_CUDA
                             @views dgyh[:, off + k] .= zero(T); @views ddgyh[:, off + k] .= zero(T)
                             lamh[off + k] = zero(T)
                         end
-                        amph[off + k] = (prep.do_gauss && gsolver.neutralize) ?
-                            T(nsrc) / (sum(gtmp_x) * sum(gtmp_y)) : (prep.do_gauss ? T(nsrc) : zero(T))
+                        # Guarded like the CPU path (`sgx * sgy > 0`) and the
+                        # coupled branch above: a degenerate profile must fall
+                        # back to the unscaled amplitude, not divide to Inf and
+                        # poison the charge plane (audit part 7, C1).
+                        sgp = sum(gtmp_x) * sum(gtmp_y)
+                        amph[off + k] = (prep.do_gauss && gsolver.neutralize && sgp > zero(T)) ?
+                            T(nsrc) / sgp : (prep.do_gauss ? T(nsrc) : zero(T))
                     end
                     @views gxh[:, off + k] .= gtmp_x
                     @views gyh[:, off + k] .= gtmp_y
@@ -436,15 +441,22 @@ if _HAS_CUDA
 
         # Select one in-slice anchor, then reduce shifted products. This keeps both
         # reductions simple and avoids the E[x^2]-E[x]^2 cancellation.
+        #
+        # The anchor is the lexicographic minimum of the coordinate tuples --
+        # `min` on tuples is commutative and associative, which CUDA.jl's
+        # `mapreduce` requires. The previous `a[1] ? a : b` selector was not
+        # commutative, so the anchor was whichever element the reduction tree
+        # happened to reach first: an unspecified choice that could move by a
+        # roundoff-sized amount between launches (audit part 7, C2). Any
+        # in-slice element is a mathematically valid anchor; what matters is
+        # that it is the SAME one every time.
         function _cuda_gpic_source_moments(source)
             T = eltype(source.x)
             n = length(source.x)
             z = zero(T)
-            pick = (x, px, y, py) -> (true, x, px, y, py)
-            choose = (a, b) -> a[1] ? a : b
-            anchor = mapreduce(pick, choose, source.x, source.px, source.y, source.py;
-                               init=(false, z, z, z, z))
-            x0, px0, y0, py0 = anchor[2], anchor[3], anchor[4], anchor[5]
+            anchor = mapreduce(tuple, min, source.x, source.px, source.y, source.py;
+                               init=(T(Inf), T(Inf), T(Inf), T(Inf)))
+            x0, px0, y0, py0 = anchor[1], anchor[2], anchor[3], anchor[4]
             f = (x, px, y, py) -> begin
                 dx = x - x0; dpx = px - px0; dy = y - y0; dpy = py - py0
                 (dx, dpx, dy, dpy,
@@ -491,6 +503,10 @@ if _HAS_CUDA
                                                beam1::Beam, beam2::Beam, workspace, ctx)
             pic = gsolver.pic
             _cuda_gpic_require_uncoupled(gsolver)
+            # Coarse phase timing, as the indexed route reports it: a timing
+            # request on this route was previously accepted and silently
+            # dropped (audit part 7, C3).
+            t_slice = time_ns()
             slices1 = _cuda_longitudinal_slices(beam1.rep, pic.slicing1)
             slices2 = _cuda_longitudinal_slices(beam2.rep, pic.slicing2)
             batches = collision_pair_batches(slices1, slices2)
@@ -499,10 +515,17 @@ if _HAS_CUDA
             klum = _pic_luminosity_scale(pic, beam1, beam2)
             compute_luminosity = _pic_compute_luminosity(pic, ctx)
             luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
+            timing = _cuda_pic_timing_stats()
+            _cuda_pic_add_time!(timing, :slicing, t_slice)
+            pair_count = 0; batch_count = 0; max_batch = 0
             _cuda_pic_reserve_wavefront_workspaces!(
                 workspace, pic, eltype(beam1.rep.x), batches,
             )
             for batch in batches
+                batch_count += 1
+                pair_count += length(batch)
+                max_batch = max(max_batch, length(batch))
+                t_gather = time_ns()
                 gathered = Vector{Any}(undef, length(batch))
                 for n in eachindex(batch)
                     pair = batch[n]
@@ -513,17 +536,23 @@ if _HAS_CUDA
                     slice2 = _cuda_pic_extract_slice(beam2.rep, slices2.indices[j], pic.longitudinal_kick)
                     gathered[n] = (pair=pair, p1=p1, p2=p2, slice1=slice1, slice2=slice2)
                 end
+                _cuda_pic_add_time!(timing, :scatter, t_gather)
+                t_int = time_ns()
                 lum = _cuda_gpic_interaction_wavefront_batched_fft!(
                     gsolver, gathered, kbb1, kbb2, klum, workspace, compute_luminosity,
                 )
+                _cuda_pic_add_time!(timing, :interaction, t_int)
                 compute_luminosity && (luminosity += lum)
+                t_store = time_ns()
                 for item in gathered
                     (item.slice1 === nothing || item.slice2 === nothing) && continue
                     _cuda_pic_store_slice!(beam1.rep, item.slice1.idx, item.slice1.coords, pic.longitudinal_kick)
                     _cuda_pic_store_slice!(beam2.rep, item.slice2.idx, item.slice2.coords, pic.longitudinal_kick)
                 end
+                _cuda_pic_add_time!(timing, :scatter, t_store)
             end
             CUDA.synchronize(CUDA.stream())
+            _cuda_pic_report_wavefront_timing(timing, pair_count, batch_count, max_batch)
             return luminosity
         end
 
@@ -623,8 +652,11 @@ if _HAS_CUDA
                     @views gxh[:, off + k] .= gtmp_x
                     @views gyh[:, off + k] .= gtmp_y
                     nsrc = (k <= 2 ? prep12[n].mom.n : prep21[n].mom.n)
-                    amph[off + k] = (prep.do_gauss && gsolver.neutralize) ?
-                        T(nsrc) / (sum(gtmp_x) * sum(gtmp_y)) :
+                    # Same degenerate-profile guard as the indexed route and
+                    # the CPU path (audit part 7, C1).
+                    sgp = sum(gtmp_x) * sum(gtmp_y)
+                    amph[off + k] = (prep.do_gauss && gsolver.neutralize && sgp > zero(T)) ?
+                        T(nsrc) / sgp :
                         (prep.do_gauss ? T(nsrc) : zero(T))
                 end
             end
@@ -944,13 +976,23 @@ if _HAS_CUDA
                                                 workspace, ctx)
             pic = gsolver.pic
             _cuda_gpic_require_uncoupled(gsolver)
+            # Coarse phase timing and the green-cache report, as the indexed
+            # route emits them: this route used the cache but never reported
+            # it, and a timing request was accepted and silently dropped
+            # (audit part 7, C3).
+            t_slice = time_ns()
             slices1 = _cuda_longitudinal_slices(beam1.rep, pic.slicing1)
             slices2 = _cuda_longitudinal_slices(beam2.rep, pic.slicing2)
             kbb1 = _pic_kbb1(pic, beam1, beam2); kbb2 = _pic_kbb2(pic, beam1, beam2)
             klum = _pic_luminosity_scale(pic, beam1, beam2)
             compute_luminosity = _pic_compute_luminosity(pic, ctx)
             luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
+            timing = _cuda_pic_timing_stats()
+            _cuda_pic_add_time!(timing, :slicing, t_slice)
+            pair_count = 0
             for (_, i, j) in _slice_collision_order(slices1, slices2)
+                pair_count += 1
+                t_int = time_ns()
                 p1 = (lb=slices1.boundary[i], center=slices1.center[i], rb=slices1.boundary[i + 1])
                 p2 = (lb=slices2.boundary[j], center=slices2.center[j], rb=slices2.boundary[j + 1])
                 slice1 = _cuda_pic_extract_slice(beam1.rep, slices1.indices[i], pic.longitudinal_kick)
@@ -972,8 +1014,13 @@ if _HAS_CUDA
                 end
                 _cuda_pic_store_slice!(beam1.rep, slice1.idx, field1, pic.longitudinal_kick)
                 _cuda_pic_store_slice!(beam2.rep, slice2.idx, field2, pic.longitudinal_kick)
+                _cuda_pic_add_time!(timing, :interaction, t_int)
             end
             CUDA.synchronize(CUDA.stream())
+            if _cuda_pic_slice_pair_green_cache_enabled(pic)
+                _cuda_pic_report_slice_pair_green_cache(workspace.slice_pair_green_cache)
+            end
+            _cuda_pic_report_wavefront_timing(timing, pair_count, pair_count, 1)
             return luminosity
         end
 
@@ -1004,8 +1051,11 @@ if _HAS_CUDA
             _gpic_gaussian_profile!(gyL, T(source_grid.y0), hy, T(bL.muy), T(bL.sigy), pic.deposit_method)
             _gpic_gaussian_profile!(gxR, T(source_grid.x0), hx, T(bR.mux), T(bR.sigx), pic.deposit_method)
             _gpic_gaussian_profile!(gyR, T(source_grid.y0), hy, T(bR.muy), T(bR.sigy), pic.deposit_method)
-            ampL = gsolver.neutralize ? T(mom.n) / (sum(gxL) * sum(gyL)) : T(mom.n)
-            ampR = gsolver.neutralize ? T(mom.n) / (sum(gxR) * sum(gyR)) : T(mom.n)
+            # Same degenerate-profile guard as the CPU path (audit part 7, C1).
+            sgL = sum(gxL) * sum(gyL)
+            sgR = sum(gxR) * sum(gyR)
+            ampL = (gsolver.neutralize && sgL > zero(T)) ? T(mom.n) / sgL : T(mom.n)
+            ampR = (gsolver.neutralize && sgR > zero(T)) ? T(mom.n) / sgR : T(mom.n)
             gxLd = CUDA.CuArray(gxL); gyLd = CUDA.CuArray(gyL)
             gxRd = CUDA.CuArray(gxR); gyRd = CUDA.CuArray(gyR)
             phiL, ExL, EyL = _cuda_gpic_solve_drifted_field!(pic, source, sL, source_grid, green_fft, gxLd, gyLd, ampL, charge)

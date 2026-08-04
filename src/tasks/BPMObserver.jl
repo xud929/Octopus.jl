@@ -93,6 +93,13 @@ mutable struct BPMObserver <: AbstractBeamObserver
     y::Vector{Float64}
     path::Union{Nothing,String}
     initialized::Bool
+    # Occurrence bookkeeping for the noise key: which turn was last drawn for,
+    # and how many readings that turn has taken so far. `x_noise` is
+    # per-reading, so a BPM read twice in one turn must draw twice (audit
+    # part 7, T9); the first reading of a turn keeps occurrence 0 and
+    # therefore the exact pre-existing stream.
+    noise_turn::Int64
+    noise_uses::Int
 end
 
 function BPMObserver(name::AbstractString="bpm";
@@ -113,17 +120,23 @@ function BPMObserver(name::AbstractString="bpm";
                        Float64(x_readout), Float64(y_readout),
                        Float64(x_noise), Float64(y_noise), id,
                        Int[], Float64[], Float64[],
-                       path === nothing ? nothing : String(path), false)
+                       path === nothing ? nothing : String(path), false,
+                       Int64(-1), 0)
 end
 
 """
+    bpm_reading(bpm, xbar, ybar, ctx::TrackingContext)
     bpm_reading(bpm, xbar, ybar, turn)
 
 Apply the device model to a centroid and return `(x_read, y_read)`.
 
 Separated from `observe!` because it is the whole physics of the element and is
-worth testing without a beam. Pure apart from the noise draw, which is a
-function of `turn` and the BPM's `rng_id` rather than of any mutable state.
+worth testing without a beam. The noise draw is a function of the context's
+RNG snapshot, the turn, the BPM's `rng_id`, and the reading's occurrence index
+within the turn -- so a run's readings are fixed at `execute!` time exactly as
+stochastic tracking is, and a mid-run `set_global_rng!` cannot retroactively
+change them (audit part 7, T8). The convenience `turn` method snapshots the
+globals at the call, which is the interactive behaviour it always had.
 
 The rotation reuses `_misalign_matrix`, the routine the misalignments, the
 patch and `ref_tilt` all go through, so `tilt = psi` means one thing everywhere
@@ -132,7 +145,7 @@ check on the convention rather than a coincidence -- but note that this is a
 rotation of *measurement axes* applied to positions only, not a canonical frame
 change, so it shares the convention and nothing else.
 """
-function bpm_reading(bpm::BPMObserver, xbar::Real, ybar::Real, turn::Integer)
+function bpm_reading(bpm::BPMObserver, xbar::Real, ybar::Real, ctx::TrackingContext)
     dx = Float64(xbar) - bpm.x_offset
     dy = Float64(ybar) - bpm.y_offset
     W = _misalign_matrix(Float64, 0.0, 0.0, bpm.tilt, false)
@@ -142,15 +155,35 @@ function bpm_reading(bpm::BPMObserver, xbar::Real, ybar::Real, turn::Integer)
     rx = (1 + bpm.x_gain) * ux + bpm.x_readout
     ry = (1 + bpm.y_gain) * uy + bpm.y_readout
     if bpm.x_noise != 0 || bpm.y_noise != 0
-        seed = global_rng_seed()
-        method = global_rng_method()
-        # particle_index 0: a BPM reads the beam, not a particle.
-        n1 = octopus_normal(seed, method, turn, bpm.rng_id, 0, 1, Float64)
-        n2 = octopus_normal(seed, method, turn, bpm.rng_id, 0, 2, Float64)
+        occurrence = _bpm_noise_occurrence!(bpm, ctx.turn)
+        # The occurrence rides in the particle slot: a BPM reads the beam, not
+        # a particle, so the slot is free -- and occurrence 0 reproduces the
+        # stream from before readings were counted.
+        n1 = octopus_normal(ctx.seed, ctx.rng_method, ctx.turn, bpm.rng_id, occurrence, 1, Float64)
+        n2 = octopus_normal(ctx.seed, ctx.rng_method, ctx.turn, bpm.rng_id, occurrence, 2, Float64)
         rx += bpm.x_noise * n1
         ry += bpm.y_noise * n2
     end
     return rx, ry
+end
+
+bpm_reading(bpm::BPMObserver, xbar::Real, ybar::Real, turn::Integer) =
+    bpm_reading(bpm, xbar, ybar, TrackingContext(turn=turn))
+
+"""
+The reading's occurrence index within `turn`, counted per BPM. Deterministic
+given the schedule: the n-th reading of a turn is occurrence n-1 on every run,
+which is what keeps noisy readings reproducible and chunk-invariant while
+still giving repeated readings of one turn independent draws.
+"""
+function _bpm_noise_occurrence!(bpm::BPMObserver, turn::Integer)
+    if bpm.noise_turn != Int64(turn)
+        bpm.noise_turn = Int64(turn)
+        bpm.noise_uses = 0
+    end
+    occurrence = bpm.noise_uses
+    bpm.noise_uses += 1
+    return occurrence
 end
 
 """
@@ -175,7 +208,7 @@ function observe!(bpm::BPMObserver, ctx::TrackingContext, rep)
     _record_execution!(:observer_output, _observer_backend(),
         (observer=:BPMObserver, name=Symbol(bpm.name), turn=ctx.turn))
     xbar, ybar = _bpm_centroid(rep)
-    rx, ry = bpm_reading(bpm, xbar, ybar, ctx.turn)
+    rx, ry = bpm_reading(bpm, xbar, ybar, ctx)
     push!(bpm.turns, ctx.turn)
     push!(bpm.x, rx)
     push!(bpm.y, ry)
@@ -196,6 +229,52 @@ The accumulated readings as `(turns, x, y)`. Returns the observer's own arrays,
 so copy them if the run continues and a stable snapshot is wanted.
 """
 readings(bpm::BPMObserver) = (bpm.turns, bpm.x, bpm.y)
+
+"""
+Discard readings at or beyond `first_turn`, so re-running a turn window is
+idempotent instead of appending duplicate turn labels.
+
+Readings ahead of the window can exist for exactly two reasons: a previous
+`execute!` failed mid-window (its stored turn deliberately does not advance,
+so the retry replays the same absolute turns -- audit part 7, T6), or the
+caller rewound with `start_turn` to replay from a checkpoint. In both cases
+the timeline from `first_turn` on is being rewritten, and a table carrying two
+rows labelled with the same turn is corrupt for every downstream reader. For
+an ordinary chunked run every stored turn is below `first_turn` and this is a
+no-op. The TSV mirror is rewritten from memory when anything was dropped,
+since an append-only file cannot take anything back.
+"""
+function _bpm_discard_window!(bpm::BPMObserver, first_turn)
+    # The replayed window must also redraw the same noise, so the occurrence
+    # counter forgets the failed pass along with its readings.
+    bpm.noise_turn = Int64(-1)
+    bpm.noise_uses = 0
+    isempty(bpm.turns) && return nothing
+    any(t -> t >= first_turn, bpm.turns) || return nothing
+    keep = findall(t -> t < first_turn, bpm.turns)
+    keepat!(bpm.turns, keep)
+    keepat!(bpm.x, keep)
+    keepat!(bpm.y, keep)
+    if bpm.path !== nothing
+        open(bpm.path, "w") do io
+            println(io, "turn\tx\ty")
+            for (t, x, y) in zip(bpm.turns, bpm.x, bpm.y)
+                println(io, t, '\t', x, '\t', y)
+            end
+        end
+        bpm.initialized = true
+    end
+    return nothing
+end
+
+# Typed on BPMObserver, so neither method can collide with the
+# AbstractBeamObserver fallbacks in BeamObservers.jl (see the NOTE there about
+# the overwrite trap). One method per preparation chain: task-level hooks and
+# in-line placements.
+prepare_observer!(bpm::BPMObserver, runtime_elems, schedule, turns, first_turn) =
+    (_bpm_discard_window!(bpm, first_turn); nothing)
+prepare_line_observer!(bpm::BPMObserver, schedule, turns, first_turn) =
+    (_bpm_discard_window!(bpm, first_turn); nothing)
 
 const _BPM_OBSERVER_OPTION_SCHEMA = (
     name=ConfigurationOptionMeta(String, "bpm", "Monitor identity, carried into readings and execution records.";
@@ -218,6 +297,8 @@ const _BPM_OBSERVER_OPTION_SCHEMA = (
         category=:diagnostic, consumer=:bpm_reading),
     y_noise=ConfigurationOptionMeta(Float64, 0.0, "Vertical reading resolution, one standard deviation.";
         category=:diagnostic, consumer=:bpm_reading),
+    rng_id=ConfigurationOptionMeta(Int, 0, "Noise-stream identity. Auto-assigned unique at construction; two BPMs given the same id read the same noise stream, so it is the one field deciding whether monitors share noise (audit part 7, T11).";
+        category=:diagnostic, consumer=:bpm_reading),
     path=ConfigurationOptionMeta(Union{Nothing,String}, nothing, "Optional TSV output path; readings are always kept in memory.";
         category=:output, consumer=:observer_output),
 )
@@ -228,8 +309,11 @@ function configuration_report(bpm::BPMObserver)
     entries = ConfigurationEntry[]
     for (field, meta) in pairs(_BPM_OBSERVER_OPTION_SCHEMA)
         value = getproperty(bpm, field)
+        # `rng_id` is always shown: its value is auto-assigned and unique, so
+        # comparing against a schema default would mark it active by accident
+        # of the counter rather than by intent.
         active = field === :path ? value !== nothing :
-                 field === :name ? true : value != meta.default
+                 (field === :name || field === :rng_id) ? true : value != meta.default
         push!(entries, ConfigurationEntry(field, value, value,
             active ? :resolved : :inactive_dependency,
             active ? "active BPM reading configuration" :

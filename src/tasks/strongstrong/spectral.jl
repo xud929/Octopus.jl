@@ -190,8 +190,12 @@ const _SPECTRAL_SOLVER_OPTION_SCHEMA = (
         "Field-solve variant; :grid (DST/DCT) or :grid_free (direct mode sums)."; category=:accuracy_performance),
     longitudinal_kick = SolverOptionMeta(Bool, true,
         "Apply the synchro-beam virtual drift and potential-difference pz kick."; category=:physics),
+    # supported_backends marks this :inactive_backend on CPU, which provably
+    # ignores it -- the CPU path is always Float64 (audit part 6, R11). The
+    # same machinery PIC's cuda_* options use one file over.
     field_precision = SolverOptionMeta(Symbol, :double,
-        "CUDA field-solve precision; :double (bit-parity) or :single (faster, ~1e-7 field error)."; category=:accuracy_performance),
+        "CUDA field-solve precision; :double (bit-parity) or :single (faster, ~1e-7 field error)."; category=:accuracy_performance,
+        supported_backends=(CUDABackend,)),
     luminosity_schedule = SolverOptionMeta(Union{Nothing,AbstractSchedule}, nothing,
         "Schedule for luminosity evaluation; nothing evaluates every turn. Same convention as PICPoissonSolver: skipped turns return NaN and are omitted from the task luminosity file.";
         category=:diagnostic),
@@ -386,6 +390,26 @@ function _spectral_ws_setbox!(ws::_SpectralGridWS, a::Float64, b::Float64)
     return ws
 end
 
+"""
+Dropped-charge tripwire (audit part 6, R9). The box sizing covers every live
+drifted coordinate by construction (1.05x the masked extremum plus the drift
+bound), so nothing should ever deposit outside -- but the CIC loops clip
+silently, and PIC learned that dropped charge is a correctness event, not a
+tuning statistic. CIC weights sum to one per fully-in-box particle, so any
+deficit in the grid total is exactly the clipped fraction. The known
+reachable corner is small grids (Nx < ~41), where the 5% headroom is thinner
+than one cell and an extreme particle's stencil brushes the wall.
+"""
+function _spectral_deposit_tripwire(rho, ns, Lx, Ly)
+    ns > 0 || return nothing
+    deficit = ns - sum(rho)
+    if deficit > 1.0e-9 * ns
+        @warn "spectral deposit clipped charge at the Dirichlet wall; the box \
+               no longer covers the whole beam" dropped_fraction = deficit / ns nsource = ns box = (Lx, Ly) maxlog = 8
+    end
+    return nothing
+end
+
 function _spectral_field_grid!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly)
     Nx, Ny = ws.Nx, ws.Ny
     a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1)
@@ -399,6 +423,7 @@ function _spectral_field_grid!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly)
             (1 <= ii <= Nx && 1 <= jj <= Ny) && (rho[ii, jj] += cx * cy)
         end
     end
+    _spectral_deposit_tripwire(rho, ns, Lx, Ly)
     # rholm = DST(rho) / (a*b*ns); philm = -rholm * G
     mul!(ws.rholm, ws.prho, rho)
     invn = ns > 0 ? 1.0 / (a * b * ns) : 1.0 / (a * b)
@@ -455,6 +480,7 @@ function _spectral_field_grid_potential!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx
             (1 <= ii <= Nx && 1 <= jj <= Ny) && (rho[ii, jj] += cx * cy)
         end
     end
+    _spectral_deposit_tripwire(rho, ns, Lx, Ly)
     mul!(ws.rholm, ws.prho, rho)
     invn = ns > 0 ? 1.0 / (a * b * ns) : 1.0 / (a * b)
     @inbounds for k in eachindex(ws.philm)
@@ -579,7 +605,29 @@ function _spectral_mode_sincos(coords, Lbox, Nmodes; need_cos::Bool)
     return S, C
 end
 
+"""
+Out-of-box guard for the direct mode sums (audit part 6, R10). A `:grid`
+source outside the Dirichlet box is CLIPPED (and the deposit tripwire warns);
+a `:grid_free` source outside it is worse -- the odd periodic extension
+mirrors it back inside with the SIGN FLIPPED, a measured exactly -1x field
+with no signal at all. The box covers every pre-collision drifted coordinate
+by construction, but the deposits happen after earlier slice pairs' kicks, so
+a strong enough kick makes this reachable (the same mechanism the deposit
+tripwire catches on the :grid path).
+"""
+function _spectral_mode_sum_guard(sx, sy, Lx, Ly)
+    isempty(sx) && return nothing
+    mx = maximum(abs, sx)
+    my = maximum(abs, sy)
+    if mx > Lx || my > Ly
+        @warn "spectral :grid_free source outside the Dirichlet box; the odd \
+               periodic extension mirrors it back with the sign flipped" max_abs_x = mx max_abs_y = my box = (Lx, Ly) maxlog = 8
+    end
+    return nothing
+end
+
 function _spectral_field_free_potential(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
+    _spectral_mode_sum_guard(sx, sy, Lx, Ly)
     a = 2Lx; b = 2Ly; ns = length(sx)
     al = [l * pi / a for l in 1:Nx]
     bm = [m * pi / b for m in 1:Ny]

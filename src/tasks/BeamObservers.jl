@@ -161,11 +161,21 @@ prepare_line_observer!(observer::AbstractBeamObserver, schedule, turns) = nothin
 prepare_line_observer!(observer::AbstractBeamObserver, schedule, turns, first_turn) =
     prepare_line_observer!(observer, schedule, turns)
 
+# Every observer gets its finalize even when an earlier one throws: a
+# finalizer is where buffered measurements reach disk, and one broken observer
+# must not silently discard every later observer's output (audit part 7, T7).
+# The first error is rethrown once the rest have run.
 function finalize_observers!(observers)
+    first_error = nothing
     for raw in _hook_tuple(observers)
         item = _as_scheduled_observer(raw)
-        finalize_observer!(item.observer)
+        try
+            finalize_observer!(item.observer)
+        catch e
+            first_error === nothing && (first_error = e)
+        end
     end
+    first_error === nothing || throw(first_error)
     return nothing
 end
 
@@ -960,7 +970,15 @@ function _scheduled_turns(schedule::EveryNSteps, turns, first_turn::Integer=0)
     hi = lo + Int(turns)                      # exclusive
     stop = min(schedule.stop, hi)
     schedule.start >= stop && return Int[]
-    return [turn for turn in schedule.start:schedule.step:(stop - 1) if lo <= turn < hi]
+    # Enumerate from the first schedule point at or after `lo` rather than
+    # from `schedule.start`: enumerating from the start makes planning cost
+    # proportional to the ABSOLUTE turn -- measured 0.009 ms at first_turn=0
+    # vs 29.5 ms at 1e8 -- penalising exactly the chunked long run
+    # `first_turn` exists to serve (audit part 7, T10). Everything in
+    # `from:step:stop-1` already lies inside `[lo, hi)`, so no filter remains.
+    from = schedule.start >= lo ? schedule.start :
+           schedule.start + cld(lo - schedule.start, schedule.step) * schedule.step
+    return collect(from:schedule.step:(stop - 1))
 end
 
 function _scheduled_turns(schedule::AtTurns, turns, first_turn::Integer=0)

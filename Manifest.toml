@@ -2,7 +2,7 @@
 
 julia_version = "1.12.4"
 manifest_format = "2.0"
-project_hash = "372b03735fe301e1a4b3d09fc51c9551b7e163ef"
+project_hash = "0a0f1f3f42cb2adf44bcc7a3fbbb71a12f8a4998"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -542,6 +542,12 @@ deps = ["Adapt", "CUDA", "FFTW", "HDF5", "InteractiveUtils", "JLD2", "LinearAlge
 path = "."
 uuid = "badbaa64-7004-4ad4-8ce5-525483dccda7"
 version = "0.1.0"
+
+    [deps.Octopus.extensions]
+    OctopusSymbolicsExt = "Symbolics"
+
+    [deps.Octopus.weakdeps]
+    Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"
 
 [[deps.OpenBLAS_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]

@@ -625,7 +625,15 @@ Supported methods:
 - `:equal_area`: choose slice boundaries so each slice has nearly equal
   macroparticle count using a histogram/interpolation estimate.
 - `:equal_count`: choose exact empirical equal-count slices by sorting the
-  current macroparticles by longitudinal coordinate.
+  current macroparticles by longitudinal coordinate. Membership is by RANK,
+  not by interval: when several particles share one z value (routine for a
+  Float32 beam or z loaded at limited precision), the tie group is split
+  across slices to keep the counts exact, so a tied particle can sit exactly
+  ON its slice's reported `boundary` and outside the half-open interval
+  `[lb, rb)` -- measured at 238 of 2000 particles for z quantized to 64
+  levels, and zero for continuous z (audit part 6, R2). The reported
+  boundaries are still the correct slice extents to within one tie width,
+  which is what the PIC and spectral consumers use them for.
 - `:equal_width`: choose uniformly spaced boundaries between the current
   minimum and maximum longitudinal coordinates.
 - `:normal_quantile`: choose equal-probability normal-distribution quantile

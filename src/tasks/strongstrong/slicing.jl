@@ -382,6 +382,17 @@ end
 function _slices_from_boundaries(rep::Phase6DRep, slicing, boundaries, flags=nothing)
     z = _host_array(rep.z)
     ns = length(boundaries) - 1
+    # A zero-width distribution collapses every boundary to one value, and
+    # `searchsortedlast` + clamp then filed everything into slice `ns` -- while
+    # the equal-width and equal-area paths deliberately use slice 1 for the
+    # same beam. One convention, slice 1, everywhere (audit part 6, R7).
+    if ns > 0 && boundaries[1] == boundaries[end]
+        indices = [Int[] for _ in 1:ns]
+        for i in eachindex(z)
+            _flag_live(flags, i) && push!(indices[1], i)
+        end
+        return _finish_longitudinal_slices(rep, slicing, indices, boundaries, flags)
+    end
     indices = _threaded_indices_by_function(z, ns, flags) do zi
         s = searchsortedlast(boundaries, zi)
         return clamp(s, 1, ns)

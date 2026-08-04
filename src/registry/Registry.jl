@@ -7,8 +7,12 @@ using InteractiveUtils: subtypes
     OctopusRegistry
 
 Reflection-generated registry of architectural types currently loaded in the
-Octopus module. The registry is derived from Julia's type graph rather than
-edited as external metadata.
+Octopus module. The type lists are derived from Julia's type graph rather than
+edited as external metadata; three short index sections of the generated
+snapshot -- Task Diagnostics, Knob Control, and the Runtime Objects preamble --
+are maintained by hand inside `registry_snapshot_markdown`, because they index
+macros and workflows that are not types (audit part 7, K7 corrected the
+previous claim that everything here was derived).
 """
 struct OctopusRegistry
     elements::Vector{Any}
@@ -98,7 +102,12 @@ function registry_snapshot_markdown(reg::OctopusRegistry=build_registry())
     println(io)
     for T in reg.elements
         meta = element_meta(T)
-        println(io, "- `", _type_string(meta.spec_type), "` via `", nameof(meta.friendly_constructor), "`")
+        # `friendly_constructor = nothing` is explicitly permitted by
+        # ElementMeta; the snapshot must report it, not crash on `nameof`
+        # (audit part 7, K6).
+        friendly = meta.friendly_constructor === nothing ?
+            "(no friendly constructor)" : "`" * string(nameof(meta.friendly_constructor)) * "`"
+        println(io, "- `", _type_string(meta.spec_type), "` via ", friendly)
         println(io, "  - Physics keywords: ", _markdown_type_list(meta.keywords; symbol=true))
         println(io, "  - Supported tracking methods: ", _markdown_type_list(meta.tracking_methods))
         println(io, "  - Required contracts: ", _markdown_type_list(meta.contracts))

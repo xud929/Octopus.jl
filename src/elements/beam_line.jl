@@ -544,6 +544,15 @@ total_length(spec::ElementSpec{:line}) =
     sum(e -> Float64(getparam(e, :L, 0.0)), line_entries(spec); init=0.0)
 
 function compile_runtime(spec::ElementSpec{:line}, args...)
+    # A line has no tracking method of its own -- each placement compiles with
+    # its own -- and the metadata advertises none. Accepting and discarding an
+    # explicit request here made the line silently "support" every method
+    # (audit part 7, K8), against the rule that a non-default request must be
+    # honoured or rejected.
+    isempty(args) || throw(ArgumentError(
+        "a line has no tracking method of its own; each placement compiles " *
+        "with its spec's tracking_method. Set tracking_method on the " *
+        "placements instead of passing one to compile_runtime for the line."))
     resolved = resolve_knobs(spec)
     ops = Tuple(compile_runtime(e) for e in line_entries(resolved))
     # The survey needs the line's length, which is derived rather than stored --

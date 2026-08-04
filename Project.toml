@@ -15,6 +15,12 @@ NVTX = "5da4648a-3479-48b8-97b9-01cb529c0a1f"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 
+[weakdeps]
+Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"
+
+[extensions]
+OctopusSymbolicsExt = "Symbolics"
+
 [compat]
 Adapt = "4.7.0"
 CUDA = "6.2.1"
@@ -29,12 +35,16 @@ SpecialFunctions = "2"
 # Test-only. AD needs no runtime dependency: ForwardDiff works on generic code,
 # so this exists purely so CI proves the element layer stays differentiable.
 ForwardDiff = "1"
+# Weak dependency: the knob tree's Symbolics adapter lives in
+# OctopusSymbolicsExt and activates only when the user loads Symbolics.
+Symbolics = "7"
 julia = "1.12"
 
 [extras]
 CUDA_Runtime_jll = "76a88914-d11a-5bdc-97e0-2f5a05c973a2"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test", "ForwardDiff"]
+test = ["Test", "ForwardDiff", "Symbolics"]
