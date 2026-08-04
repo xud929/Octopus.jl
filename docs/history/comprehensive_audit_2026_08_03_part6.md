@@ -266,6 +266,8 @@ of the four.
 | **R3** | **CONFIRMED, but the agent's reason was wrong**; partially fixed |
 | **R5** | **REJECTED** — documented behaviour, the agent over-read a contradiction |
 | **R6** | **CONFIRMED and FIXED** |
+| **R4** | **CONFIRMED and FIXED** — see §8.6 |
+| — | **§8.7 records a defect this audit itself introduced, and how it evaded the suite** |
 
 ## 8.1 R1 — CUDA `:equal_count` was not equal-count under ties
 
@@ -353,6 +355,59 @@ task**, which `Tasks.jl` documents as a supported way to split a run.
 `Tasks.jl` and the strong-strong executor. The `first_turn` argument defaults to
 0 throughout, so every existing call keeps its behaviour.
 
+## 8.6 R4 — a retype that silently staled everything downstream
+
+`@knob p::T` on an existing knob looks like a pure annotation. It is not:
+`_resolve_knob_type_locked!` **converts the stored value**, so it is a value
+mutation. The bare-declaration branch of `_knob_define!` then returned without
+invalidating dependents or bumping the epoch — the epoch that `Tasks.jl` and the
+strong-strong executor gate recompilation on.
+
+Reproduced:
+
+    @knob a = 0.1 ; @knob b = a * 1.0        # knob_value(:b) == 0.1
+    @knob a::Float32
+      knob_value(:a) -> 0.1f0  (0.10000000149011612 as Float64)
+      knob_value(:b) -> 0.1                   <- STALE
+      epoch          -> unchanged             <- nothing recompiles
+
+`knob_value` reports the new number while every dependent cache and every
+compiled runtime keeps the old one. `set_knob!` has always invalidated *and*
+bumped; this path did neither.
+
+**Fixed** by capturing the stored value before the type resolution and, in the
+bare-declaration branch, invalidating and bumping when the conversion actually
+changed it. Post-fix `knob_value(:b)` tracks `:a` exactly and the epoch moves.
+Deliberately conditional on the value changing: a `Float64 -> Float64`
+re-declaration, and `0.5 -> Float32` where the value is exact, both correctly
+leave the epoch alone. Verified in all three cases.
+
+## 8.7 A defect this audit introduced, and why the suite did not see it
+
+The R6 fix added
+
+    prepare_line_observer!(observer::AbstractBeamObserver, turns, first_turn) = nothing
+
+which lowers to `(::AbstractBeamObserver, ::Any, ::Any)` — the **same signature**
+as the existing `(observer, schedule, turns)` method three lines above. It
+silently overwrote it and made the module fail to precompile.
+
+Two things about this matter more than the fix.
+
+**It passed the full suite.** Both methods returned `nothing`, so behaviour was
+identical, and nothing in `test/runtests.jl` detects a method overwrite. The
+suite proved the code still worked; it could not prove the code still *existed*
+as written. That is a verification gap of exactly the kind this series keeps
+finding in the library — recorded here against the audit's own work.
+
+**It was caught by accident.** The R4 verification happened to load the package
+in a fresh process, which printed the precompilation warning. Nothing in the
+process looked for it. A guard is recorded as open work rather than improvised
+at the end of a long session.
+
+A comment now sits at the site naming the collision, because the natural next
+edit reintroduces it.
+
 ## 8.5 The running tally on agent claims
 
 Across parts 4–6 and this follow-up: confirmed as reported, confirmed with a
@@ -363,5 +418,6 @@ rather than as a principle.
 
 ### Still open from §5
 
-R2, R4, R7–R12, plus the Symbolics package extension from R3. R4 (the knob epoch
-staleness) is the highest-value remainder.
+R2, R7–R12, plus the Symbolics package extension from R3, and a guard against
+method overwrites (§8.7). R9/R10 — the spectral dropped-charge counter and the
+`:grid_free` aliasing at −1× — are the highest-value remainders.

@@ -151,10 +151,15 @@ prepare_line_observer!(observer::ScheduledObserver, turns) =
     prepare_line_observer!(observer.observer, observer.schedule, turns)
 prepare_line_observer!(observer::ScheduledObserver, turns, first_turn) =
     prepare_line_observer!(observer.observer, observer.schedule, turns, first_turn)
+# NOTE: do not add a `(::AbstractBeamObserver, turns, first_turn)` method here.
+# It has the same signature as the `(observer, schedule, turns)` one above --
+# both lower to `(::AbstractBeamObserver, ::Any, ::Any)` -- so it silently
+# OVERWRITES it and makes the module fail to precompile. The three-argument call
+# from `prepare_line_observers!` lands on this method for any non-scheduled
+# observer and correctly returns nothing.
 prepare_line_observer!(observer::AbstractBeamObserver, schedule, turns) = nothing
 prepare_line_observer!(observer::AbstractBeamObserver, schedule, turns, first_turn) =
     prepare_line_observer!(observer, schedule, turns)
-prepare_line_observer!(observer::AbstractBeamObserver, turns, first_turn) = nothing
 
 function finalize_observers!(observers)
     for raw in _hook_tuple(observers)

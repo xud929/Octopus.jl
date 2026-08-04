@@ -348,6 +348,12 @@ non-`Real` declared types, where the expression tree does not apply.
 """
 function _knob_define!(path::Symbol, T::Union{Nothing,Type}, rhs, rhs_thunk)
     lock(_KNOB_LOCK) do
+        # `_resolve_knob_type_locked!` CONVERTS the stored value when the declared
+        # type changes, so `@knob p::T` on an existing knob is a value mutation
+        # even though it looks like a pure annotation. Capture the value first so
+        # the bare-declaration branch below can tell.
+        _pre_entry = get(_KNOB_TABLE, path, nothing)
+        _pre_value = _pre_entry === nothing ? nothing : _pre_entry.value
         Tdecl = _resolve_knob_type_locked!(path, T)
         if rhs === nothing
             entry = get(_KNOB_TABLE, path, nothing)
@@ -360,6 +366,20 @@ function _knob_define!(path::Symbol, T::Union{Nothing,Type}, rhs, rhs_thunk)
                     "knob $(path) is already defined by the expression " *
                     "$(_knob_expr_string(entry.expression)); redefine it explicitly " *
                     "with @knob $(path) = <expression or value>"))
+            elseif _pre_value !== nothing && entry.value !== nothing &&
+                   !isequal(_pre_value, entry.value)
+                # The retype changed the number. Everything downstream is now
+                # stale, and without this the staleness is SILENT: `knob_value`
+                # reports the new value while dependent caches and every compiled
+                # runtime keep the old one, because nothing bumps the epoch that
+                # `Tasks.jl` and the strong-strong executor gate recompilation on.
+                #
+                # Measured before this: `@knob a = 0.1; @knob b = a * 1.0` then
+                # `@knob a::Float32` left `knob_value(:a) == 0.1f0` (0.10000000149011612)
+                # while `knob_value(:b)` stayed 0.1, with the epoch unmoved.
+                # `set_knob!` has always done both of these; this path did neither.
+                _invalidate_dependents_locked!(path)
+                _KNOB_EPOCH[] += 1
             end
             return KnobRef(path)
         end
