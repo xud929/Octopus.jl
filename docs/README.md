@@ -324,6 +324,24 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   two of the three exits from `_cuda_pic_threads` and omitted the one S18 lives
   in. §2 is candid that most of this region was read by sub-agents rather than by
   me, and which conclusions rest on measurement instead),
+  [`comprehensive_audit_2026_08_03_part6.md`](history/comprehensive_audit_2026_08_03_part6.md)
+  (sixth pass, ~5,000 lines across `slicing.jl`, the CUDA slicing and Gaussian
+  sequential paths, `BeamObservers.jl`, `Knobs.jl`+`symbolic.jl` and
+  `spectral_cuda.jl`, read by five sub-agents on disjoint regions.
+  **This pass found more than the previous three combined, and most of it is
+  deliberately NOT fixed.** Two were reproduced and fixed: **S20**, the CUDA
+  spectral Dirichlet box ignoring `allow_lost_particles` and sizing itself
+  **100x** too large from dead particles — every slice pair then saw a different
+  mesh — and S19, a diagnostic that reported "0 of N macroparticles have a
+  non-finite coordinate", asserting what its own scan had just disproved. Eight
+  more (§5) are recorded with reproductions and left unverified, headed by CUDA
+  `:equal_count` slicing that is not equal-count when z has ties (27% error in a
+  slice weight, and slice weights multiply `kbb` directly). Read **§6** for why
+  the line falls there: agent output is a lead, not a finding, and this session's
+  measured hit rate is ~60% — several agent claims dissolved on checking, and one
+  was *broader* than reported, which is the argument for re-deriving rather than
+  trusting. The ledger is explicit that `spectral.jl` remains **completely
+  unaudited** after its agent was stopped mid-read),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite

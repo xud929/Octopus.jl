@@ -2952,6 +2952,109 @@ function expect_nonfinite_error(f)
     return nothing
 end
 
+@testset "The CUDA spectral Dirichlet box honours allow_lost_particles" begin
+    # The box is sized from WHOLE coordinate arrays, not from slice membership, so
+    # the live mask that slicing applies for free does not reach it and has to be
+    # explicit. The CPU does that (`_masked_rms`/`_masked_ext`); the CUDA
+    # re-implementation was written with unconditional reductions.
+    #
+    # Measured before the fix, four dead particles parked at |x| = 1e-1:
+    #   CPU  half-width 1.5894818e-3
+    #   CUDA half-width 1.5920522e-1     -- a factor of 100
+    # Every slice pair then sees a different mesh, so every kick differs.
+    #
+    # Invisible to the existing tests because the CPU lost-particle test covers
+    # SpectralPoissonSolver but the CUDA one covers only moments and slicing, and
+    # the CPU/CUDA spectral parity test never enters allow_lost_particles. The
+    # cross-product of two supported features, which is the shape this audit
+    # series keeps finding.
+    if CUDA_TESTS_ACTIVE
+        mkpair(pol; poison=false) = begin
+            set_global_rng!(seed=31, method=:philox)
+            e = Beam(400, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+                sigma=(1.0e-4, 1.0e-5, 1.0e-2), cutoff=5.0, rng_id=1, charge=-1.0,
+                mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+            p = Beam(400, pol, Float64; beta=(0.8, 0.072, 90.9), alpha=(0.0, 0.0, 0.0),
+                sigma=(9.0e-5, 8.0e-6, 6.0e-2), cutoff=5.0, rng_id=2, charge=1.0,
+                mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=7.0e10)
+            if poison
+                x = Array(e.rep.x); y = Array(e.rep.y); pz = Array(e.rep.pz)
+                for i in 1:4
+                    x[i] = 1.0e-1; y[i] = -1.0e-1; pz[i] = NaN
+                end
+                copyto!(e.rep.x, x); copyto!(e.rep.y, y); copyto!(e.rep.pz, pz)
+            end
+            (e, p)
+        end
+        s = SpectralPoissonSolver()
+        for poison in (false, true)
+            ec, pc = mkpair(CPUThreadsBackend; poison=poison)
+            eg, pg = mkpair(CUDAExecutionPolicy(); poison=poison)
+            bc = allow_lost_particles() do; Octopus._spectral_box(s, ec.rep, pc.rep) end
+            bg = allow_lost_particles() do; Octopus._cuda_spectral_box(s, eg.rep, pg.rep) end
+            bcd = allow_lost_particles() do; Octopus._spectral_box_drifted(s, ec.rep, pc.rep) end
+            bgd = allow_lost_particles() do; Octopus._cuda_spectral_box_drifted(s, eg.rep, pg.rep) end
+            @test isapprox(collect(bg), collect(bc); rtol=1e-12)
+            @test isapprox(collect(bgd), collect(bcd); rtol=1e-12)
+        end
+        # fail-fast must survive: a NaN in a coordinate the box reduces, with the
+        # flag OFF, still has to trip the chokepoint rather than be masked away
+        let (e, p) = mkpair(CUDAExecutionPolicy())
+            x = Array(e.rep.x); x[3] = NaN; copyto!(e.rep.x, x)
+            @test_throws ArgumentError Octopus._cuda_spectral_box(s, e.rep, p.rep)
+            # and with the flag ON and that particle marked dead, it is excluded
+            pz = Array(e.rep.pz); pz[3] = NaN; copyto!(e.rep.pz, pz)
+            box = allow_lost_particles() do; Octopus._cuda_spectral_box(s, e.rep, p.rep) end
+            @test all(isfinite, collect(box))
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
+@testset "The non-finite reporter does not assert what its own scan disproved" begin
+    # `_nonfinite_coordinate_error` is called when a caller detects a non-finite
+    # DERIVED quantity, and then scans the raw coordinates to name the culprit.
+    # When the scan finds nothing it used to report
+    #     "0 of N macroparticles have a non-finite coordinate; first at index 0 with ."
+    # -- an error asserting a fact it had just disproved, with an empty detail and
+    # a nonsense index, sending the reader to the particle array when the fault is
+    # upstream of it.
+    #
+    # Reachable on BOTH backends, for two different reasons: a drifted position
+    # `x + px*s` can overflow to +-Inf from finite `x` and `px` when the drift is
+    # large; and on the CUDA fused wavefront route the flag is raised by a slice
+    # MOMENT whose beam need not be the beam scanned, because the kick crosses
+    # beams.
+    finite = (x=[1.0, 2.0, 3.0], px=[0.0, 0.0, 0.0])
+    err = try
+        Octopus._nonfinite_coordinate_error(:beam2, finite; context="probe")
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    # it must NOT claim a count it did not find, nor point at index 0
+    @test !occursin("0 of 3 macroparticles", err.msg)
+    @test !occursin("index 0", err.msg)
+    # it must say what it actually knows: coordinates clean, fault is derived
+    @test occursin("are\nfinite", err.msg) || occursin("are finite", err.msg)
+    @test occursin("DERIVED", err.msg)
+    @test occursin("non-finite", err.msg)          # the shared marker other tests match on
+
+    # the genuine case still reports precisely
+    poisoned = (x=[1.0, NaN, 3.0], px=[0.0, 0.0, 0.0])
+    err2 = try
+        Octopus._nonfinite_coordinate_error(:beam1, poisoned)
+        nothing
+    catch e
+        e
+    end
+    @test err2 isa ArgumentError
+    @test occursin("1 of 3 macroparticles", err2.msg)
+    @test occursin("index 2", err2.msg)
+end
+
 @testset "Non-finite coordinates fail fast at solver chokepoints" begin
     n = 32
     sl = LongitudinalSlicing(nslices=2, method=:equal_count)

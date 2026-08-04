@@ -683,15 +683,58 @@ if _HAS_CUDA
             end
         end
 
+        """
+        Device masked rms/extremum for the Dirichlet box.
+
+        The CPU twins are `_masked_rms` / `_masked_ext` in `spectral.jl`, and their
+        docstring states the reason they exist: the box is built from **whole
+        coordinate arrays** rather than from slice membership, so the live mask that
+        slicing applies for free does not reach here and has to be explicit. The
+        CUDA re-implementation was written without it and reduced unconditionally.
+
+        Measured divergence under `allow_lost_particles()` with four dead particles
+        parked at `|x| = 1e-1`: CPU half-width 1.5894818e-3, CUDA 1.5920522e-1 — a
+        factor of **100**. Every slice pair then sees a different mesh, so every
+        kick differs. `flags === nothing` restores the plain reduction, NaN
+        propagation included, so the box still comes out non-finite and trips the
+        chokepoint when `allow_lost_particles` is off.
+
+        Uses the same `ifelse.` masking idiom as `_cuda_live_z_stats` in
+        `pic_cuda.jl`: a dead entry contributes the reduction's neutral element, so
+        a NaN it carries can never reach the accumulator.
+        """
+        function _cuda_masked_ext(v, flags)
+            T = eltype(v)
+            flags === nothing && return maximum(abs, v)
+            e = T(maximum(ifelse.(flags, abs.(v), T(-Inf))))
+            return isfinite(e) ? e : T(NaN)
+        end
+
+        function _cuda_masked_rms(v, flags)
+            T = eltype(v)
+            if flags === nothing
+                n = length(v)
+                m = sum(v) / n
+                return sqrt(sum(abs2, v .- m) / n)
+            end
+            n = Int(sum(flags))
+            n == 0 && return T(NaN)
+            m = T(sum(ifelse.(flags, v, zero(T))) / n)
+            d = ifelse.(flags, v .- m, zero(T))
+            return sqrt(max(T(sum(d .* d) / n), zero(T)))
+        end
+
         function _cuda_spectral_box(solver::SpectralPoissonSolver, r1, r2)
-            rms(v) = begin n = length(v); m = sum(v) / n; sqrt(sum(abs2, v .- m) / n) end
-            ext(v) = maximum(abs, v)
+            f1 = _cuda_live_flags(r1, active_live_mask())
+            f2 = _cuda_live_flags(r2, active_live_mask())
+            rms(v, f) = _cuda_masked_rms(v, f)
+            ext(v, f) = _cuda_masked_ext(v, f)
             d = solver.domain_factor
-            smax = max(rms(r1.x), rms(r2.x), rms(r1.y), rms(r2.y))
-            emax = max(ext(r1.x), ext(r2.x), ext(r1.y), ext(r2.y))
+            smax = max(rms(r1.x, f1), rms(r2.x, f2), rms(r1.y, f1), rms(r2.y, f2))
+            emax = max(ext(r1.x, f1), ext(r2.x, f2), ext(r1.y, f1), ext(r2.y, f2))
             L = max(d * smax, 1.05 * emax)
             if !isfinite(L)
-                all(isfinite, (ext(r1.x), ext(r1.y))) ||
+                all(isfinite, (ext(r1.x, f1), ext(r1.y, f1))) ||
                     _nonfinite_coordinate_error(:beam, (x=r1.x, y=r1.y);
                                                 context="spectral Dirichlet box, beam 1")
                 _nonfinite_coordinate_error(:beam, (x=r2.x, y=r2.y);
@@ -708,17 +751,20 @@ if _HAS_CUDA
         # 6D box: must contain the DRIFTED source extremes (see the CPU
         # _spectral_box_drifted comment); out-of-box particles are dropped.
         function _cuda_spectral_box_drifted(solver::SpectralPoissonSolver, r1, r2)
-            rms(v) = begin n = length(v); m = sum(v) / n; sqrt(sum(abs2, v .- m) / n) end
-            ext(v) = maximum(abs, v)
+            # Same live-mask omission as `_cuda_spectral_box`; see its docstring.
+            f1 = _cuda_live_flags(r1, active_live_mask())
+            f2 = _cuda_live_flags(r2, active_live_mask())
+            rms(v, f) = _cuda_masked_rms(v, f)
+            ext(v, f) = _cuda_masked_ext(v, f)
             d = solver.domain_factor
-            sdrift = (ext(r1.z) + ext(r2.z)) / 2
-            extd(w, pw) = ext(w) + sdrift * ext(pw)
-            smax = max(rms(r1.x), rms(r2.x), rms(r1.y), rms(r2.y))
-            emax = max(extd(r1.x, r1.px), extd(r2.x, r2.px),
-                       extd(r1.y, r1.py), extd(r2.y, r2.py))
+            sdrift = (ext(r1.z, f1) + ext(r2.z, f2)) / 2
+            extd(w, pw, f) = ext(w, f) + sdrift * ext(pw, f)
+            smax = max(rms(r1.x, f1), rms(r2.x, f2), rms(r1.y, f1), rms(r2.y, f2))
+            emax = max(extd(r1.x, r1.px, f1), extd(r2.x, r2.px, f2),
+                       extd(r1.y, r1.py, f1), extd(r2.y, r2.py, f2))
             L = max(d * smax, 1.05 * emax)
             if !isfinite(L)
-                all(isfinite, (extd(r1.x, r1.px), extd(r1.y, r1.py), ext(r1.z))) ||
+                all(isfinite, (extd(r1.x, r1.px, f1), extd(r1.y, r1.py, f1), ext(r1.z, f1))) ||
                     _nonfinite_coordinate_error(:beam,
                         (x=r1.x, px=r1.px, y=r1.y, py=r1.py, z=r1.z);
                         context="spectral drifted Dirichlet box, beam 1")

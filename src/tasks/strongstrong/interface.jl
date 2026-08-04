@@ -503,6 +503,28 @@ function _nonfinite_coordinate_error(role::Symbol, coords::NamedTuple{K};
     ctx === nothing || push!(where_parts, "collision=$(ctx.label)", "turn=$(ctx.turn)")
     context === nothing || push!(where_parts, String(context))
     where_str = isempty(where_parts) ? "" : " (" * join(where_parts, ", ") * ")"
+    if bad == 0
+        # The caller detected a non-finite DERIVED quantity and asked this to name
+        # the culprit, but every scanned coordinate is finite. Two ways that
+        # happens, and the old message described neither: a drifted position
+        # `x + px*s` can overflow to +-Inf from finite `x` and `px` when the drift
+        # is large, and on the CUDA fused wavefront path the flag is raised by a
+        # slice MOMENT, whose beam need not be the beam scanned here (the kick
+        # crosses beams, so beam 1's coordinates are poisoned by beam 2's moments).
+        #
+        # Reporting "0 of N macroparticles have a non-finite coordinate; first at
+        # index 0 with ." asserted something this scan had just disproved and sent
+        # the reader to the particles when the fault is upstream of them.
+        throw(ArgumentError(
+            "non-finite value detected during a strong-strong collision$(where_str), " *
+            "but all $(n) $(role) macroparticle coordinates ($(join(K, ", "))) are " *
+            "finite. The non-finite value is therefore in a DERIVED quantity, not in " *
+            "the coordinates: either a drifted position `x + px*s` that overflowed " *
+            "from finite inputs because the drift distance is large, or a slice " *
+            "moment. On the CUDA fused wavefront route the raising beam need not be " *
+            "the beam named here, because the kick crosses beams. Inspect the slice " *
+            "separation and the slice moments rather than the particle array."))
+    end
     throw(ArgumentError(
         "non-finite particle coordinate(s) detected in the $(role) particles of a " *
         "strong-strong collision$(where_str): $(bad) of $(n) macroparticles have a " *
