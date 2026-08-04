@@ -284,6 +284,21 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   and got *worse* with grid refinement. Read §10.6 — the same blind spot, a check
   that cannot distinguish anything at aspect ratio 1, has now produced two
   separate defects in this one file),
+  [`comprehensive_audit_2026_08_03_part4.md`](history/comprehensive_audit_2026_08_03_part4.md)
+  (fourth pass, `pic_cuda.jl` l. 1-2260 read in full plus three whole-file sweeps.
+  **Zero defects, and that is the result** — the pass tested a specific hypothesis
+  carried over from part 3, that the CUDA path had inherited more of the CPU's
+  defects the way it inherited S14, and the hypothesis failed. Read §1 for the
+  map it followed: parity is *strong* wherever the two backends compute something
+  independently and *blind* wherever they share a mistake, so every check that
+  could be anchored to an external reference was — the CUDA luminosity against the
+  closed-form Gaussian overlap at three aspect ratios, the duplicated device
+  weight functions against their CPU twins over 200,000 randomised samples. Also
+  closes the standing `todo.md` item on CUDA concurrency: a `Core.Box` census over
+  288 methods, clean. §4 is the most useful section — three claims this pass made
+  and then withdrew, including a beam-swap that came within one step of being
+  filed as a Major finding on the production route and was simply a misreading of
+  an argument list ordered by two opposite conventions),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite

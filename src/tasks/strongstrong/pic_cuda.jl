@@ -2045,6 +2045,24 @@ if _HAS_CUDA
             return nothing
         end
 
+        """
+        Both directed kicks of one slice pair in a single launch.
+
+        **The two argument groups are ordered by opposite conventions, so read the
+        pairing before changing a call site.** The `rep`/`idx` groups name the
+        *recipient* beam; the plane groups are named for the beam that *produced*
+        the field (`phi12` = the field beam 1 makes, which kicks beam 2). So the
+        first beam group pairs with the SECOND plane group:
+
+            rep1/idx1  <-  phi21*  on field_grid1  (beam 1 kicked by beam 2)
+            rep2/idx2  <-  phi12*  on field_grid2  (beam 2 kicked by beam 1)
+
+        `_cuda_pic_kick_pair_indexed_kernel!` is where that pairing is actually
+        made; the call site in `_cuda_pic_interaction_wavefront_indexed_batched_fft!`
+        passes planes in solver order (`offset+1..4`), which is `phi12` then
+        `phi21`. Getting this backwards swaps the two beams' fields — a physics
+        error that nothing but the CPU/CUDA parity test would catch.
+        """
         function _cuda_pic_launch_kick_pair_indexed!(
             solver::PICPoissonSolver,
             rep1, idx1, source_center1, param_field1, kbb1, field_grid1,
