@@ -86,8 +86,14 @@ Same removable-singularity problem the curvature helpers solve, and handled the
 same way: the closed form loses digits to cancellation near `h = 0`, so small
 arguments take a series instead.
 """
-@inline function _sol_log_over_h(h::T, x::T) where {T}
+@inline function _sol_log_over_h(h, x)
+    # No `(::T, ::T)` constraint: a coordinate Jacobian differentiates x with
+    # the element's h still Float64, and the strict same-type signature made
+    # that a MethodError -- found by the h != 0 cross-product sweep, the same
+    # strict-signature class as audit part 7's G1. `u = h * x` carries the
+    # promoted type.
     u = h * x
+    T = typeof(u)
     # `real(T)`: element parameters may be dual or complex now, and a complex
     # crossover threshold does not order. Same rule as the curvature helpers.
     abs(u) < real(T)(1e-4) && return x * (one(T) - u / 2 * (one(T) - 2u / 3))

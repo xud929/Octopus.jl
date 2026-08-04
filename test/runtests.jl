@@ -2886,6 +2886,72 @@ end
         gf, strong(256), strong(256), CPUThreadsBackend)
 end
 
+@testset "Curved frame x transverse field: every routing is a gradient" begin
+    # The h != 0 cross-product sweep (docs/todo.md). A straight multipole
+    # kick in a curved frame is a gradient iff h*Im f == 0 -- pure normal
+    # dipole content only; everything else must route through the curved
+    # potential. The 2026-08-03 audit found the routing missing twice
+    # (2.5e-3 .. 3.2e-2 of symplecticity); this pins the whole content grid
+    # on the only two kinds whose schemas offer both curvature and field
+    # (derived, not assumed: no other registered kind carries both), plus the
+    # undeclared-h channel through the shared LatticeMagnet compile.
+    S6 = zeros(6, 6)
+    for (q, p) in ((1, 2), (3, 4), (5, 6))
+        S6[q, p] = 1.0
+        S6[p, q] = -1.0
+    end
+    u0 = [1.0e-3, 1.0e-4, -0.5e-3, 2.0e-4, 1.0e-3, 1.0e-4]
+    residual(mapf) = begin
+        J = ForwardDiff.jacobian(u -> collect(mapf(u...)), u0)
+        maximum(abs, J' * S6 * J - S6)
+    end
+
+    # Instrument self-check, and the sweep's negative control: the straight
+    # kick fed skew-dipole content at h != 0 is the recorded defect, and the
+    # residual must reproduce its analytic magnitude L*h*Ks0 -- measured to
+    # 15 digits when this was built.
+    let bad = (x, px, y, py, z, pz) ->
+            Octopus._lattice_kick((0.0,), (0.05,), 0.05, 1.0, x, px, y, py, z, pz)
+        @test isapprox(residual(bad), 2.5e-3; rtol=1.0e-6)
+    end
+
+    contents = [NamedTuple(), (kn=(0.02,),), (ks=(0.05,),), (kn=(0.0, 0.6),),
+                (ks=(0.0, 0.6),), (kn=(0.0, 0.0, 2.0),), (ks=(0.0, 0.0, 2.0),),
+                (kn=(0.0, 0.0, 0.0, 12.0),), (ks=(0.0, 0.0, 0.0, 12.0),),
+                (kn=(0.0, 0.6, 1.0), ks=(0.03, 0.2))]
+    for kw in contents
+        @test residual(compile_runtime(SBendSpec(; L=1.1, h=0.05, b0=0.05, nst=2, kw...))) < 1.0e-12
+    end
+    for kw in [(nst=1,), (nst=8,), (nst=2, integrator_order=4),
+               (nst=2, bend_model=:drift_kick), (nst=2, e1=0.1, e2=0.1),
+               (nst=2, bend_fringe=false), (nst=2, fringe=:multipole)]
+        @test residual(compile_runtime(SBendSpec(; L=1.1, h=0.05, b0=0.05,
+                                                 ks=(0.05, 0.4), kw...))) < 1.0e-12
+    end
+    @test residual(compile_runtime(SBendSpec(; L=1.1, h=0.05, b0=0.03, nst=2,
+                                             ks=(0.05, 0.4)))) < 1.0e-12
+    # Solenoid: skew multipoles are spelled kskew there. This grid also
+    # regression-covers the coordinate Jacobian itself -- `_sol_log_over_h`
+    # used a strict `(::T, ::T)` signature and the curved solenoid was a
+    # MethodError under ForwardDiff with Float64 elements until this sweep
+    # was built (same strict-signature class as part 7's G1).
+    sol_kw(kw) = NamedTuple(k === :ks ? :kskew => v : k => v for (k, v) in pairs(kw))
+    for kw in contents
+        @test residual(compile_runtime(SolenoidSpec(; L=1.3, ks=1.7, h=0.18,
+                                                    nst=4, sol_kw(kw)...))) < 1.0e-12
+    end
+    # The pure curved solenoid takes the implicit-midpoint path, whose fixed
+    # 16-sweep solve has a DOCUMENTED convergence floor at coarse nst
+    # (1.1e-9 at nst=4, machine epsilon by nst=16, per the table beside
+    # _SOL_MIDPOINT_ITERS) -- convergent with nst, unlike the structural
+    # non-gradient this sweep exists to catch, which nst does not remove.
+    @test residual(compile_runtime(SolenoidSpec(L=1.3, ks=1.7, h=0.18, nst=4))) < 1.0e-8
+    @test residual(compile_runtime(SolenoidSpec(L=1.3, ks=1.7, h=0.18, nst=16))) < 1.0e-12
+    # Undeclared h on a raw spec still routes through the shared gate.
+    @test residual(compile_runtime(ElementSpec{:quadrupole}(;
+        L=0.7, nst=2, kn=(0.0, 1.1), ks=(0.04,), h=0.05))) < 1.0e-12
+end
+
 @testset "No method grows a Core.Box outside the argued allowlist" begin
     # The concurrency sweep (docs/todo.md): two of the three 2026-08-03
     # threading defects were one Julia trap -- a name assigned both in a `do`

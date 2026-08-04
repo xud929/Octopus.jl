@@ -220,3 +220,49 @@ the permanent invariance testset asserts exactly that split: coordinates
 - The `fits`/backend interplay for a line kept whole (aperture inside a
   composite runtime is never bound to a loss record) — recorded in part 8 §4,
   still open.
+
+## 9. The h ≠ 0 × transverse-field cross-product sweep — clean, with one incidental find
+
+The last open sweep from `docs/todo.md`: any element accepting a curvature
+AND a transverse field must route non-normal-dipole content through the
+curved potential, because the straight kick is a gradient iff `h·Im f ≡ 0` —
+the condition the 2026-03-08 audit found violated twice (2.5e-3 .. 3.2e-2 of
+symplecticity).
+
+**The element list is derived, not assumed.** Enumerating every registered
+kind's parameter schema for curvature keys (`h`, `angle`) crossed with field
+keys: exactly two kinds carry both — `:sbend` and `:solenoid`. The straight
+magnets do not offer `h` at all (combined-function content goes through
+`SBendSpec` by design), and the only non-schema channel — the shared
+`LatticeMagnet` compile reads `:h` with a default for every kind — was swept
+explicitly by compiling a raw quadrupole spec with an undeclared `h` and
+skew content: it routes through the same `_needs_curved_potential` gate,
+residual 5.6e-16.
+
+**The instrument, validated against the recorded defect.** Symplecticity
+residual `max|JᵀSJ − S|` from an exact ForwardDiff Jacobian. Fed the
+pre-fix configuration deliberately — the straight `_lattice_kick` with skew
+dipole at `h = 0.05` — it reports **2.5000e-3 against the analytic
+prediction `L·h·Ks₀ = 2.5e-3`, ratio 1.0000000000000002**. The suite keeps
+that self-check as the sweep's permanent negative control.
+
+**The grid: 29 configurations, all clean.** Ten content cases (every order,
+normal and skew, alone and combined) on the sbend at machine epsilon
+(2e-16 .. 3e-15), through eight structural variants (`nst` 1/2/8, integrator
+order 4, `:drift_kick`, fringes on/off/multipole, `h ≠ b0`); the same ten
+contents on the curved solenoid at ~9e-15; the undeclared-`h` quadrupole.
+The one number above epsilon is the **pure** curved solenoid at `nst=4`:
+1.11e-9 — which is the *documented* fixed-point convergence floor of the
+16-sweep implicit midpoint (the committed table beside
+`_SOL_MIDPOINT_ITERS` says 1.4e-9 there), and it collapses to 1.1e-16 at
+`nst=16`. Convergent with `nst` is precisely the opposite of the structural
+signature this sweep hunts, where refinement changes nothing.
+
+**The incidental find.** The sweep's instrument would not run at first: the
+curved solenoid was a `MethodError` under a coordinate Jacobian with
+`Float64` elements, because `_sol_log_over_h(::T, ::T)` demanded matching
+types and a Dual coordinate meets a Float64 curvature there — the same
+strict-signature class as part 7's G1, invisible to the parameter-derivative
+sweep (spec-level duals make both arguments dual). Fixed by promotion
+through `u = h*x`; the permanent sweep testset now exercises exactly that
+Jacobian, so the regression cannot return silently.
