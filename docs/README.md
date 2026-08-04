@@ -223,7 +223,7 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   [`strong_strong_pic_extreme_benchmark_history.md`](history/strong_strong_pic_extreme_benchmark_history.md),
   [`strong_strong_diagnostics_benchmark_history.md`](history/strong_strong_diagnostics_benchmark_history.md).
 - Audits / change records:
-  [`comprehensive_audit_2026_08.md` part 1](history/comprehensive_audit_2026_08.md#part-1)
+  [`comprehensive_audit_2026_08_03_04.md` part 1](history/comprehensive_audit_2026_08_03_04.md#part-1)
   (repository audit against the Phase 0-18 protocol: **seven confirmed defects
   fixed**, every one of them with a passing test asserting the right invariant.
   Three are concurrency bugs invisible to a single-threaded suite — the aperture
@@ -238,7 +238,7 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   condition `Im f == 0` derived there. Carries an explicit coverage ledger
   recording that only ~19% of `src/` was read line by line and that every CUDA
   path is unaudited),
-  [`comprehensive_audit_2026_08.md` part 2](history/comprehensive_audit_2026_08.md#part-2)
+  [`comprehensive_audit_2026_08_03_04.md` part 2](history/comprehensive_audit_2026_08_03_04.md#part-2)
   (second pass, resuming that handoff's priority order: **thirteen confirmed
   defects fixed**, none of them a physics error -- five over the declared scope,
   eight more surfaced by building the solver-option contract the first pass had
@@ -259,7 +259,7 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   branches at ~5e-14, and `beam_statistics` measured and made 39.8% faster
   bit-identically. Coverage ledger: ~21% of `src/` this session, ~46% across
   both),
-  [`comprehensive_audit_2026_08.md` part 3](history/comprehensive_audit_2026_08.md#part-3)
+  [`comprehensive_audit_2026_08_03_04.md` part 3](history/comprehensive_audit_2026_08_03_04.md#part-3)
   (third pass, scoped to `src/tasks/strongstrong/pic_cpu.jl` read in full —
   the CPU reference every parity contract validates the CUDA paths against.
   **Three confirmed defects fixed, and the headline one is the scenario that
@@ -284,7 +284,7 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   and got *worse* with grid refinement. Read §10.6 — the same blind spot, a check
   that cannot distinguish anything at aspect ratio 1, has now produced two
   separate defects in this one file),
-  [`comprehensive_audit_2026_08.md` part 4](history/comprehensive_audit_2026_08.md#part-4)
+  [`comprehensive_audit_2026_08_03_04.md` part 4](history/comprehensive_audit_2026_08_03_04.md#part-4)
   (fourth pass, `pic_cuda.jl` l. 1-2260 read in full plus three whole-file sweeps.
   **Zero defects, and that is the result** — the pass tested a specific hypothesis
   carried over from part 3, that the CUDA path had inherited more of the CPU's
@@ -308,7 +308,7 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   result resting on something unstated: an invariant the field derivative depends
   on that no test asserted, and a suite that reports green while silently skipping
   every GPU test on a GPU-less CI),
-  [`comprehensive_audit_2026_08.md` part 5](history/comprehensive_audit_2026_08.md#part-5)
+  [`comprehensive_audit_2026_08_03_04.md` part 5](history/comprehensive_audit_2026_08_03_04.md#part-5)
   (fifth pass, the CUDA **device kernels** l. 3470-5040, taking `pic_cuda.jl` to
   ~87% covered. **One confirmed defect, S18 — and it is part 2's S1 all over
   again**: `CUDAPICLaunchConfig` is completely inert on a bare `collide!`,
@@ -324,7 +324,7 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   two of the three exits from `_cuda_pic_threads` and omitted the one S18 lives
   in. §2 is candid that most of this region was read by sub-agents rather than by
   me, and which conclusions rest on measurement instead),
-  [`comprehensive_audit_2026_08.md` part 6](history/comprehensive_audit_2026_08.md#part-6)
+  [`comprehensive_audit_2026_08_03_04.md` part 6](history/comprehensive_audit_2026_08_03_04.md#part-6)
   (sixth pass, ~5,000 lines across `slicing.jl`, the CUDA slicing and Gaussian
   sequential paths, `BeamObservers.jl`, `Knobs.jl`+`symbolic.jl` and
   `spectral_cuda.jl`, read by five sub-agents on disjoint regions.
@@ -343,7 +343,7 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   trusting. The ledger is explicit that `spectral.jl` remains **completely
   unaudited** after its agent was stopped mid-read — a claim §0's own history
   note then corrects: the agent resumed and finished, so the file IS covered),
-  [`comprehensive_audit_2026_08.md` part 7](history/comprehensive_audit_2026_08.md#part-7)
+  [`comprehensive_audit_2026_08_03_04.md` part 7](history/comprehensive_audit_2026_08_03_04.md#part-7)
   (seventh pass, the last ~4,100 unaudited lines — `gaussian_pic.jl`,
   `gaussian_pic_cuda.jl`, `Tasks.jl`+`BPMObserver.jl`, `Knowledge.jl`+
   `Registry.jl` — read by four sub-agents; **with this pass every line of
@@ -356,7 +356,7 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   defects**, and `RBendSpec` — exported, PTC-validated — had no `ElementMeta`
   at all, so `element_help` confidently reported no contracts and an invented
   kind),
-  [`comprehensive_audit_2026_08.md` part 8](history/comprehensive_audit_2026_08.md#part-8)
+  [`comprehensive_audit_2026_08_03_04.md` part 8](history/comprehensive_audit_2026_08_03_04.md#part-8)
   (eighth pass: the verify-and-fix phase part 7's queue was written for.
   **T1, T3, T4, T5, K1, G1 all reproduced and fixed**, each with a negative
   control showing the new test fails on the pre-fix source, under a
@@ -366,7 +366,7 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   hit every non-Float64 rep, not only mixed precision. §5 records two defects
   in the session's own probes — a closure that silently swallowed the very
   `BoundsError` the probe existed to catch is the one to remember),
-  [`comprehensive_audit_2026_08.md` part 9](history/comprehensive_audit_2026_08.md#part-9)
+  [`comprehensive_audit_2026_08_03_04.md` part 9](history/comprehensive_audit_2026_08_03_04.md#part-9)
   (ninth pass: everything left in the queue except two performance items --
   24 findings from parts 6 and 7 verified and settled. T6's crashed-`execute!`
   now delivers its loss artifacts and retries without duplicate turn labels;
