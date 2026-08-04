@@ -12,6 +12,14 @@
 > | **§2** | the two items to take first — one is memory corruption, one is the consumer-side twin of a defect fixed in part 6 |
 > | **§1** | the full list, by file |
 > | **§4** | what "confirmed by an agent" has empirically meant in this series: ~60% survive verification |
+>
+> **Follow-up (2026-08-04):**
+> [part 8](comprehensive_audit_2026_08_04_part8.md) verified and fixed
+> **T1, T3, T4, T5, K1 and G1**. All six survived verification — but §2's
+> "one root cause" framing below was wrong (it is two mechanisms: nested
+> vectors for T3/T4, `LineEntry` for T1/T5), and G1 was narrower than the
+> truth (*any* non-Float64 rep threw, not only mixed precision). The original
+> text is kept unedited below, per this series' rule.
 
 Seventh pass. Regions: `gaussian_pic.jl` (850), `gaussian_pic_cuda.jl` (1,182),
 `Tasks.jl` (762) + `BPMObserver.jl` (240), `Knowledge.jl` (885) +

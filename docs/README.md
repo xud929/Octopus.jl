@@ -341,7 +341,31 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   measured hit rate is ~60% — several agent claims dissolved on checking, and one
   was *broader* than reported, which is the argument for re-deriving rather than
   trusting. The ledger is explicit that `spectral.jl` remains **completely
-  unaudited** after its agent was stopped mid-read),
+  unaudited** after its agent was stopped mid-read — a claim §0's own history
+  note then corrects: the agent resumed and finished, so the file IS covered),
+  [`comprehensive_audit_2026_08_03_part7.md`](history/comprehensive_audit_2026_08_03_part7.md)
+  (seventh pass, the last ~4,100 unaudited lines — `gaussian_pic.jl`,
+  `gaussian_pic_cuda.jl`, `Tasks.jl`+`BPMObserver.jl`, `Knowledge.jl`+
+  `Registry.jl` — read by four sub-agents; **with this pass every line of
+  `src/` has been read by someone**, with provenance kept explicit. 26 claimed
+  findings, deliberately recorded as a QUEUE rather than a findings list
+  because none was independently verified, headed by an unchecked
+  `@inbounds`/`CUDA.@atomic` write past the end of a loss-count vector and a
+  knob epoch that never fires for `BeamLine` tasks. The metadata-lie
+  hypothesis landed hardest: the element validator caught **1 of 13 injected
+  defects**, and `RBendSpec` — exported, PTC-validated — had no `ElementMeta`
+  at all, so `element_help` confidently reported no contracts and an invented
+  kind),
+  [`comprehensive_audit_2026_08_04_part8.md`](history/comprehensive_audit_2026_08_04_part8.md)
+  (eighth pass: the verify-and-fix phase part 7's queue was written for.
+  **T1, T3, T4, T5, K1, G1 all reproduced and fixed**, each with a negative
+  control showing the new test fails on the pre-fix source, under a
+  behavioural fingerprint that is bit-identical except the intended
+  `element_help(RBendSpec)` change. Two corrections to the queue's own
+  analysis: the T-items' "one root cause" was really two mechanisms, and G1
+  hit every non-Float64 rep, not only mixed precision. §5 records two defects
+  in the session's own probes — a closure that silently swallowed the very
+  `BoundsError` the probe existed to catch is the one to remember),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite
