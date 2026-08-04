@@ -1178,6 +1178,22 @@ end
         @test PTCConsistencyContract in required_contracts(ElementSpec{kd})
     end
 
+    # Audit part 7, K1: RBendSpec is exported, user-facing and PTC-validated,
+    # and constructs an ElementSpec{:sbend} -- so type-level queries must
+    # resolve to the sbend metadata rather than silently missing the registry
+    # and reporting a confident empty answer about a validated element. Before
+    # the friendly-alias registration, required_contracts(RBendSpec) was [] and
+    # element_help(RBendSpec) printed an invented kind :RBendSpec.
+    @test required_contracts(RBendSpec) == required_contracts(SBendSpec)
+    @test PTCConsistencyContract in required_contracts(RBendSpec)
+    @test supported_tracking_methods(RBendSpec) == supported_tracking_methods(SBendSpec)
+    @test !isempty(keys(parameter_schema(RBendSpec)))
+    let help = sprint(io -> element_help(io, RBendSpec))
+        @test occursin("Element kind: :sbend", help)
+        @test !occursin(":RBendSpec", help)
+        @test occursin("PTCConsistencyContract", help)
+    end
+
     # Six element kinds share one runtime type and one tracking method.
     for spec in (DriftSpec(L=0.1), QuadrupoleSpec(L=0.1), SextupoleSpec(L=0.1),
                  OctupoleSpec(L=0.1), MultipoleSpec(L=0.1), SBendSpec(L=0.1))
@@ -2591,6 +2607,64 @@ end
         @test_logs execute!(TrackingTask((DriftSpec(L=1.0),); loss_report=false),
                             nan_rep(); turns=1)
     end
+end
+
+@testset "Every walker over the line agrees on what a container is" begin
+    # Audit part 7, T1/T3/T4/T5: `_append_runtime_line!` walked nested vectors
+    # and `LineEntry` placements while the sizing, arc-length, knob and
+    # contract walks each missed one of them. The worst consequence was T3: an
+    # aperture inside a nested vector was bound with a lattice-order id but not
+    # counted when sizing `counts`, so its kill was an unchecked write past the
+    # end of the vector -- and the summary reported the collimation as
+    # `unattributed`. Each assertion below fails on the pre-fix code.
+
+    # T3: the sizing walk sees a vector-nested aperture.
+    nested = (DriftSpec(L=1.0), ApertureSpec(x_limit=2.0e-3, name="TOP"),
+              [DriftSpec(L=2.5), ApertureSpec(y_limit=1.0e-3, name="NESTED")],
+              DriftSpec(L=0.5))
+    task = TrackingTask(nested)
+    @test length(Octopus._aperture_specs(task.elements)) == 2
+    rep = Phase6DRep([1.0e-3, 5.0e-3, 0.0, 0.0], zeros(4),
+                     [0.0, 0.0, 4.0e-3, 0.0], zeros(4), zeros(4), zeros(4))
+    allow_lost_particles(; enabled=true) do
+        execute!(task, rep; turns=1)
+    end
+    @test loss_counts(loss_record(task)) == [1, 1]
+    let s = loss_summary(rep, task)
+        @test s.unattributed == 0
+        @test s.names == ["TOP", "NESTED"]
+        @test s.by_aperture == [1, 1]
+    end
+
+    # T4: elements inside the vector advance arc length.
+    @test Octopus._aperture_s_positions(nested) == [1.0, 3.5]
+
+    # T1: a knob assignment reaches a task built from a BeamLine. The tuple
+    # twin of this test lives in the knob testset; before the fix the tuple
+    # task recompiled and this one silently kept tracking the old value.
+    @knob walker_knob = 0.25
+    kspec = ElementSpec{:crab_dispersion}(; zeta1=@knob_expr(walker_knob),
+        zeta2=0.0, zeta3=0.0, zeta4=0.0, tracking_method=Symplectic6DMap())
+    bl_task = TrackingTask(BeamLine("KNOBLINE", kspec);
+                           policy=CPUThreadsExecutionPolicy(threads=1))
+    @test Octopus._has_knob_parameters(bl_task.elements)
+    runbl() = (r = Phase6DRep([1e-4], [0.0], [0.0], [0.0], [1e-3], [0.0]);
+               execute!(bl_task, r; turns=1); r.x[1])
+    @test runbl() == 1e-4 + 0.25 * 1e-3
+    set_knob!(:walker_knob, 0.5)
+    @test runbl() == 1e-4 + 0.5 * 1e-3
+    # A line kept whole (own state) is knob-dependent through its placements;
+    # a knob-free line is not, or every line task would recompile every turn.
+    @test Octopus._has_knob_parameters(BeamLine("CRYO", kspec; x_offset=1.0e-4))
+    @test !Octopus._has_knob_parameters(BeamLine("PLAIN", DriftSpec(L=1.0)))
+
+    # T5: contracts and analyses reach a BeamLine task and a nested vector.
+    qspec = ElementSpec{:quadrupole}(; L=0.4, nst=4, kn=(0.0, 0.1))
+    tuple_task = TrackingTask((qspec,))
+    @test !isempty(tuple_task.contracts)
+    @test TrackingTask(BeamLine("Q", qspec)).contracts == tuple_task.contracts
+    @test TrackingTask(BeamLine("Q", qspec)).analyses == tuple_task.analyses
+    @test TrackingTask((DriftSpec(L=1.0), [qspec])).contracts == tuple_task.contracts
 end
 
 @testset "BPM reads a device number, not the truth" begin
@@ -4132,6 +4206,35 @@ end
     @test lum_derived == lum_override
     @test all(a == b for (a, b) in zip(coordinate_arrays(e1.rep), coordinate_arrays(e2.rep)))
     @test all(a == b for (a, b) in zip(coordinate_arrays(p1.rep), coordinate_arrays(p2.rep)))
+end
+
+@testset "GaussianPIC hybrid accepts non-Float64 beams" begin
+    # Audit part 7, G1 -- broader than reported: ANY non-Float64 rep threw a
+    # MethodError, not only mixed-precision ones. The profile buffers are
+    # allocated in the workspace's promoted scalar type (rep1, rep2, kbb1,
+    # kbb2) while the drifted-solve helpers converted their scalars with
+    # eltype(source.x), and _gpic_gaussian_profile! requires the two to agree.
+    # The plain PIC solver survives the same beams because its deposit helpers
+    # are generically typed. A Float32 rep is routine: it is what a Float32
+    # beam loads at, and the solver's own kbb is Float64 by construction.
+    mkbeam(T) = begin
+        s(scale, phase) = T[T(scale * sin(0.7 * i + phase)) for i in 1:64]
+        rep = Phase6DRep(s(1.0e-4, 0.0), s(1.0e-5, 0.3), s(1.0e-4, 0.9),
+                         s(1.0e-5, 1.2), s(1.0e-2, 2.0), s(1.0e-4, 2.5))
+        params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=64)
+        Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+    end
+    sl = LongitudinalSlicing(nslices=2, method=:equal_count)
+    mkgpic() = GaussianPICPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4,
+        luminosity_scale=1.0, grid=(16, 16), green_cache=:none, slicing=sl)
+    b32a, b32b = mkbeam(Float32), mkbeam(Float32)
+    lum32 = collide!(mkgpic(), b32a, b32b, CPUThreadsBackend)
+    b64a, b64b = mkbeam(Float64), mkbeam(Float64)
+    lum64 = collide!(mkgpic(), b64a, b64b, CPUThreadsBackend)
+    @test isfinite(lum32)
+    @test isapprox(lum32, lum64; rtol=1.0e-5)      # Float32 inputs, not a new physics
+    @test all(all(isfinite, a) for a in coordinate_arrays(b32a.rep))
+    @test all(all(isfinite, a) for a in coordinate_arrays(b32b.rep))
 end
 
 @testset "Strong-strong shifted moments preserve small spreads" begin

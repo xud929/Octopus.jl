@@ -7,7 +7,7 @@ export AbstractOctopusObject,
        required_contracts, runtime_type, description, compile_runtime,
        ElementSpec, kind, params, param, getparam, hasparam, numeric_type,
        ParamMeta, ElementMeta, element_meta, register_element_meta!, @element_spec,
-       register_element_spec!, registered_element_specs,
+       register_element_spec!, register_friendly_alias!, registered_element_specs,
        parameter_schema, example_spec, construction_help, element_help,
        validate_element_metadata, allowed_physics_keywords
 
@@ -221,6 +221,23 @@ function register_element_meta!(meta::ElementMeta)
     meta.friendly_constructor === nothing ||
         (ELEMENT_META_BY_FRIENDLY_TYPE[meta.friendly_constructor] = meta)
     ELEMENT_META_BY_KIND[meta.kind] = meta
+    return meta
+end
+
+"""
+    register_friendly_alias!(T, query)
+
+Register an additional friendly constructor type for an existing
+`ElementMeta`, for a constructor that builds another kind's spec —
+`RBendSpec`, which constructs an `ElementSpec{:sbend}` with parallel pole
+faces. Without the alias, type-level queries (`element_help(RBendSpec)`,
+`required_contracts(RBendSpec)`) silently miss the registry and report an
+empty, confident answer about a validated element (audit part 7, K1); the
+*instance* always resolved correctly through its kind.
+"""
+function register_friendly_alias!(T, query)
+    meta = element_meta(query)
+    ELEMENT_META_BY_FRIENDLY_TYPE[T] = meta
     return meta
 end
 

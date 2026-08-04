@@ -471,7 +471,14 @@ function _gpic_solve_drifted_field!(field::_PICFieldWorkspace, pic::PICPoissonSo
                                     mux, muy, sigx, sigy, ns, neutralize,
                                     gxbuf, gybuf)
     nx, ny = pic.grid
-    T = eltype(source.x)
+    # The grid-side scalar type is the workspace's, not the coordinates': the
+    # caller allocates the profile buffers and `workspace.charge` in
+    # `promote_type(rep1, rep2, kbb1, kbb2)`, and `_gpic_gaussian_profile!`
+    # requires its buffer and scalars to agree. Deriving this from
+    # `eltype(source.x)` made every non-Float64 rep a MethodError -- the plain
+    # PIC path survives the same beams only because its deposit helpers are
+    # generically typed (audit part 7, G1).
+    T = eltype(gxbuf)
     hx = T(source_grid.width) / T(nx - 1)
     hy = T(source_grid.height) / T(ny - 1)
     charge = workspace.charge
@@ -518,7 +525,8 @@ function _gpic_solve_drifted_field_coupled!(field::_PICFieldWorkspace, pic::PICP
                                             mux, muy, sigx, sigc, lambda, ns, neutralize,
                                             gxbuf, m1xbuf, m2xbuf, gybuf, dgybuf, ddgybuf)
     nx, ny = pic.grid
-    T = eltype(source.x)
+    # Workspace scalar type, for the same reason as _gpic_solve_drifted_field!.
+    T = eltype(gxbuf)
     hx = T(source_grid.width) / T(nx - 1)
     hy = T(source_grid.height) / T(ny - 1)
     charge = workspace.charge

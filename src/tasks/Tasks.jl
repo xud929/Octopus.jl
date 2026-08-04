@@ -180,6 +180,13 @@ end
 
 _collect_aperture_specs!(out, elements::Tuple) =
     (foreach(e -> _collect_aperture_specs!(out, e), elements); out)
+# Every container `_append_runtime_line!` walks must be walked here identically:
+# this collector sizes the loss record's `counts` while `_bind_apertures`
+# assigns an id to every runtime aperture, and a container seen by one walker
+# and not the other leaves `counts` undersized under an unchecked
+# `counts[id] += 1` (audit part 7, T3).
+_collect_aperture_specs!(out, elements::AbstractVector) =
+    (foreach(e -> _collect_aperture_specs!(out, e), elements); out)
 _collect_aperture_specs!(out, element::ElementSpec{:aperture}) = (push!(out, element); out)
 _collect_aperture_specs!(out, entry::LineEntry) =
     _collect_aperture_specs!(out, getfield(entry, :spec))
@@ -209,6 +216,8 @@ function _aperture_s_positions(elements)
 end
 
 _collect_aperture_s!(out, elements::Tuple, s) =
+    (foreach(e -> _collect_aperture_s!(out, e, s), elements); out)
+_collect_aperture_s!(out, elements::AbstractVector, s) =
     (foreach(e -> _collect_aperture_s!(out, e, s), elements); out)
 _collect_aperture_s!(out, element::ElementSpec{:aperture}, s) = (push!(out, s[]); out)
 function _collect_aperture_s!(out, entry::LineEntry, s)
@@ -245,21 +254,34 @@ _element_tuple(elements::Tuple) = elements
 _element_tuple(elements::AbstractVector) = Tuple(elements)
 
 
+# Contracts and analyses walk the same containers the runtime line walk does:
+# a placement contributes its spec's declarations, and a nested vector or line
+# is seen through rather than skipped. Before part 7's T5 fix, a task built
+# from a `BeamLine` declared no contracts and no analyses, because a
+# `LineEntry` is not an `AbstractElementSpec` and the walk tested only that.
 function _collect_contracts(elements)
     contracts = DataType[]
-    for element in _element_tuple(elements)
-        element isa AbstractElementSpec && append!(contracts, required_contracts(element))
-    end
+    _collect_declared!(contracts, _element_tuple(elements), required_contracts)
     return unique(contracts)
 end
 
 function _collect_analyses(elements)
     analyses = DataType[]
-    for element in _element_tuple(elements)
-        element isa AbstractElementSpec && append!(analyses, supported_analyses(element))
-    end
+    _collect_declared!(analyses, _element_tuple(elements), supported_analyses)
     return unique(analyses)
 end
+
+_collect_declared!(out, elements::Union{Tuple,AbstractVector}, getter) =
+    (foreach(e -> _collect_declared!(out, e, getter), elements); out)
+_collect_declared!(out, entry::LineEntry, getter) =
+    _collect_declared!(out, getfield(entry, :spec), getter)
+# A line kept whole (one carrying state of its own) still tracks through its
+# placements, so their declarations apply to the task.
+_collect_declared!(out, line::ElementSpec{:line}, getter) =
+    (append!(out, getter(line)); _collect_declared!(out, line_entries(line), getter))
+_collect_declared!(out, element::AbstractElementSpec, getter) =
+    (append!(out, getter(element)); out)
+_collect_declared!(out, element, getter) = out
 
 """
     execute!(task::TrackingTask, rep; turns=1, start_turn=nothing)
@@ -529,7 +551,17 @@ _bind_apertures(entries::Tuple, ::Nothing) = entries
 
 function _bind_apertures(entries::Tuple, record)
     id = Ref(0)
-    return map(entry -> _bind_aperture_entry(entry, record, id), entries)
+    bound = map(entry -> _bind_aperture_entry(entry, record, id), entries)
+    # `counts` was sized by `_aperture_specs` over the user's element structure;
+    # the ids were just assigned over the compiled runtime line. If the two
+    # walkers ever disagree again on what a container is, fail here on the
+    # host, loudly -- the alternative is an unchecked `counts[id]` write past
+    # the end of the vector inside the tracking kernel (audit part 7, T3).
+    id[] == length(record.counts) || error(
+        "loss record sized for $(length(record.counts)) apertures but the " *
+        "compiled line contains $(id[]); an element container is being walked " *
+        "by _append_runtime_line! but not by _aperture_specs")
+    return bound
 end
 
 _bind_aperture_entry(entry::PhysicsEntry{<:Aperture}, record, id) =

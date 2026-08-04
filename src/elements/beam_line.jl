@@ -139,6 +139,23 @@ getparam(entry::LineEntry, key::Symbol, default=nothing) =
     get(_merged_params(entry), key, default)
 param(entry::LineEntry, key::Symbol) = _merged_params(entry)[key]
 
+# The task epoch gate asks `_has_knob_parameters(task.elements)` to decide
+# whether a knob assignment must recompile the line. A `BeamLine` hands the
+# task a tuple of placements, not of specs, so without these two methods every
+# placement fell through to the `false` fallback and no knob change ever
+# reached a task built from a line -- `set_knob!` changed nothing while
+# `knob_value` reported the new number (audit part 7, T1). A knob can sit in
+# the placement's spec or in its overrides; either makes the compiled runtime
+# knob-dependent. A line kept whole (one carrying state of its own) resolves
+# its placements' knobs when its composite runtime is compiled, so it is
+# knob-dependent whenever its own parameters or any placement is.
+_has_knob_parameters(entry::LineEntry) =
+    _has_knob_parameters(getfield(entry, :spec)) ||
+    any(_param_has_knob, values(getfield(entry, :overrides)))
+_has_knob_parameters(line::ElementSpec{:line}) =
+    any(_param_has_knob, values(params(line))) ||
+    _has_knob_parameters(line_entries(line))
+
 """Rendered provenance, e.g. `ARC1/CQS[3]/QF[1]`."""
 entry_path(entry::LineEntry) =
     join((o == 1 ? n : "$(n)[$(o)]" for (n, o) in getfield(entry, :path)), "/")
