@@ -3270,6 +3270,62 @@ end
     @test validate_element_metadata().passed      # registry restored
 end
 
+@testset "MomentObserver append mode continues one table across executions" begin
+    # append=false is the documented replace-per-execution behaviour (pinned
+    # first); append=true creates a chunked/extendible HDF5 table whose
+    # continuation state lives in the FILE, so chunked runs, injection
+    # swap-outs, path-sharing tasks, and process restarts all produce one
+    # table with continuous absolute turns. Replayed windows drop their stale
+    # rows (the BPM idempotence rule), and a replace-mode file refuses to be
+    # continued rather than corrupt.
+    turns_in(path) = Octopus.HDF5.h5open(path) do f
+        n = Int(read(f["record_count"])[1])
+        Int.(f["data"][1:n, 1])
+    end
+    mk1() = Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+    dline = (DriftSpec(L=1.0),)
+
+    p1 = tempname() * ".h5"
+    t1 = TrackingTask(dline; hooks=(ScheduledObserver(MomentObserver(p1; capacity=2)),))
+    execute!(t1, mk1(); turns=3)
+    execute!(t1, mk1(); turns=3)
+    @test turns_in(p1) == [3, 4, 5]                    # replace default, as documented
+
+    p2 = tempname() * ".h5"
+    obs = MomentObserver(p2; capacity=2, append=true)
+    t2 = TrackingTask(dline; hooks=(ScheduledObserver(obs),))
+    execute!(t2, mk1(); turns=3)
+    execute!(t2, mk1(); turns=3)
+    @test turns_in(p2) == collect(0:5)                 # one file, contiguous
+
+    obs_restart = MomentObserver(p2; capacity=2, append=true)
+    t3 = TrackingTask(dline; hooks=(ScheduledObserver(obs_restart),))
+    execute!(t3, mk1(); turns=2, start_turn=6)
+    @test turns_in(p2) == collect(0:7)                 # fresh object, same file: restart works
+
+    p3 = tempname() * ".h5"
+    obs3 = MomentObserver(p3; capacity=1, append=true)
+    t4 = TrackingTask(dline; hooks=(ScheduledObserver(obs3),
+                                    ScheduledAction(FailAtTurnAction(3))))
+    @test_throws ErrorException execute!(t4, mk1(); turns=5)
+    @test turns_in(p3) == [0, 1, 2]
+    t5 = TrackingTask(dline; hooks=(ScheduledObserver(obs3),))
+    execute!(t5, mk1(); turns=5)
+    @test turns_in(p3) == collect(0:4)                 # retry replays without duplicates
+
+    p4 = tempname() * ".h5"
+    t6 = TrackingTask(dline; hooks=(ScheduledObserver(MomentObserver(p4; capacity=2)),))
+    execute!(t6, mk1(); turns=2)
+    t7 = TrackingTask(dline; hooks=(ScheduledObserver(MomentObserver(p4; capacity=2, append=true)),))
+    @test_throws ArgumentError execute!(t7, mk1(); turns=2)   # fixed-size file refused
+
+    t8 = TrackingTask(dline; hooks=(ScheduledObserver(
+        MomentObserver(p2; capacity=2, append=true, orders=1:1)),))
+    @test_throws ArgumentError execute!(t8, mk1(); turns=2)   # column mismatch refused
+
+    foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
+end
+
 @testset "A task re-run on the other backend reallocates its loss record" begin
     # Audit part 7, T2: the `fits` test compared shape only, against its own
     # docstring's "shape or backend" -- a CPU-built record handed to a CUDA

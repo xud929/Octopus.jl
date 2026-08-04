@@ -491,6 +491,7 @@ mutable struct MomentObserver <: AbstractBeamObserver
     planned_records::Int
     start_time_ns::UInt64
     initialized::Bool
+    append::Bool
     reduction_scratch::Any
 end
 
@@ -516,9 +517,22 @@ function JLD2BeamMomentObserver(path::AbstractString; capacity::Integer=1)
 end
 
 """
-    MomentObserver(path; orders=1:2, extra=(), exclude=(), capacity=1024)
+    MomentObserver(path; orders=1:2, extra=(), exclude=(), capacity=1024, append=false)
 
 Write selected beam moments to an HDF5 table.
+
+With the default `append=false`, re-executing a task prepares a **fresh**
+table at `path`: output from the previous execution is replaced. With
+`append=true` the table is created chunked/extendible and every execution
+**continues** it — a run split across `execute!` calls, an injection
+swap-out passing a new beam to the same task, a second task sharing the
+path, or a fresh process restarting a chunked run all produce one file with
+continuous absolute turns. Replayed turn windows (a failed `execute!`'s
+retry, an explicit `start_turn` rewind) drop their stale rows first, so the
+table never carries two rows for one turn. The two modes' files differ in
+HDF5 layout (contiguous vs chunked); an `append=true` observer refuses to
+continue a replace-mode file rather than corrupt it. `/elapsed_time` always
+reports the current execution's wall time.
 
 `MomentObserver` is a scheduled observer. Put it in a task line or task hooks
 through `ScheduledObserver`. The observer writes one row per scheduled
@@ -611,12 +625,14 @@ The observer requires a predictable schedule (`AlwaysSchedule`,
 Re-executing a task prepares a fresh table at `path`; output from the previous
 execution is replaced.
 """
-function MomentObserver(path::AbstractString; orders=1:2, extra=(), exclude=(), capacity::Integer=1024)
+function MomentObserver(path::AbstractString; orders=1:2, extra=(), exclude=(),
+                        capacity::Integer=1024, append::Bool=false)
     capacity >= 0 || throw(ArgumentError("capacity must be nonnegative"))
     moments = _selected_moments(orders=orders, extra=extra, exclude=exclude)
     names = ["turn"; collect(name.(moments))]
     buffer = Matrix{Float64}(undef, max(Int(capacity), 1), length(names))
-    return MomentObserver(String(path), moments, names, Int(capacity), buffer, 0, 0, 0, UInt64(0), false, nothing)
+    return MomentObserver(String(path), moments, names, Int(capacity), buffer, 0, 0, 0,
+                          UInt64(0), false, Bool(append), nothing)
 end
 
 mutable struct CoordinateSnapshotObserver <: AbstractBeamObserver
@@ -671,6 +687,8 @@ observer_option_schema(::Type{MomentObserver}) = (
         category=:diagnostic, consumer=:moment_reduction),
     capacity=ConfigurationOptionMeta(Int, 1024, "Observed rows buffered before an HDF5 flush.";
         category=:output, consumer=:observer_output),
+    append=ConfigurationOptionMeta(Bool, false, "Continue an existing appendable moment file across executions, tasks, and process restarts instead of preparing a fresh table; replayed turn windows drop their stale rows first.";
+        category=:output, consumer=:observer_output),
 )
 observer_option_schema(::MomentObserver) = observer_option_schema(MomentObserver)
 observer_option_schema(::Type{CoordinateSnapshotObserver}) = (
@@ -710,6 +728,11 @@ function configuration_report(observer::MomentObserver)
             observer.buffer_capacity == 0 ? :inactive_dependency : :resolved,
             observer.buffer_capacity == 0 ? "zero capacity disables output" :
                                             "active HDF5 buffer capacity",
+            :observer_output),
+        ConfigurationEntry(:append, observer.append, observer.append, :resolved,
+            observer.append ?
+                "continues one extendible table across executions and restarts" :
+                "each execution prepares a fresh table (replace mode)",
             :observer_output),
     )
 end
@@ -934,13 +957,60 @@ function _prepare_moment_observer!(observer::MomentObserver, schedule, turns,
     planned_turns === nothing && throw(ArgumentError(
         "MomentObserver requires a predictable schedule: use AlwaysSchedule, EveryNSteps, or AtTurns with known task turns."
     ))
-    observer.planned_records = length(planned_turns)
-    observer.record_count = 0
     observer.buffer_length = 0
     observer.start_time_ns = time_ns()
-    _initialize_hdf5_moment_file!(observer)
+    if observer.append && isfile(observer.path)
+        # Continue the existing table. The continuation state lives in the
+        # FILE, not the observer object, so a second task sharing the path, or
+        # a fresh process restarting a chunked run, both pick up where the
+        # file ends.
+        kept = _moment_append_continue!(observer, Int(first_turn), length(planned_turns))
+        observer.record_count = kept
+        observer.planned_records = kept + length(planned_turns)
+    else
+        observer.planned_records = length(planned_turns)
+        observer.record_count = 0
+        _initialize_hdf5_moment_file!(observer)
+    end
     observer.initialized = true
     return nothing
+end
+
+"""
+Open an existing appendable moment file, drop any rows at or beyond
+`first_turn`, and grow the table's extent for the upcoming window.
+
+Dropping the replayed window is the same idempotence rule the BPM observer
+follows: rows there can only exist from a failed `execute!` whose retry
+replays the same absolute turns, or from an explicit `start_turn` rewind —
+either way the timeline from `first_turn` on is being rewritten, and a table
+with two rows for one turn is corrupt for every reader. Rows are in ascending
+turn order (schedules plan forward and rewinds drop), so the cutoff is a
+binary search on the turn column.
+"""
+function _moment_append_continue!(observer::MomentObserver, first_turn::Int, nplanned::Int)
+    return HDF5.h5open(observer.path, "r+") do file
+        (haskey(file, "data") && haskey(file, "record_count") &&
+         haskey(file, "column_names")) || throw(ArgumentError(
+            "MomentObserver(append=true): $(observer.path) exists but is not a moment file. Use a new path."))
+        dset = file["data"]
+        haskey(HDF5.attributes(dset), "appendable") || throw(ArgumentError(
+            "MomentObserver(append=true): $(observer.path) was created without append=true, " *
+            "so its HDF5 table is fixed-size and cannot grow. Use a new path or delete it."))
+        read(file["column_names"]) == observer.column_names || throw(ArgumentError(
+            "MomentObserver(append=true): the moment selection differs from the existing " *
+            "file at $(observer.path); matching columns are required to continue it."))
+        written = Int(read(file["record_count"])[1])
+        kept = written
+        if written > 0
+            turn_col = dset[1:written, 1]
+            kept = searchsortedfirst(turn_col, Float64(first_turn)) - 1
+        end
+        HDF5.set_extent_dims(dset, (kept + nplanned, length(observer.column_names)))
+        file["record_count"][1] = Int64(kept)
+        HDF5.flush(file)
+        return kept
+    end
 end
 
 # The planner must filter against the ABSOLUTE turn window `execute!` will run,
@@ -992,7 +1062,21 @@ _scheduled_turns(schedule::PredicateSchedule, turns, first_turn::Integer=0) = no
 
 function _initialize_hdf5_moment_file!(observer::MomentObserver)
     HDF5.h5open(observer.path, "w") do file
-        file["data"] = zeros(Float64, observer.planned_records, length(observer.column_names))
+        ncols = length(observer.column_names)
+        if observer.append
+            # Chunked with an unlimited row dimension: a contiguous HDF5
+            # dataset (the replace-mode layout below) can never grow, which
+            # is the structural reason append needed more than a mode flag.
+            # Chunked datasets read back identically; unwritten rows are the
+            # 0.0 fill value, matching the replace-mode zeros.
+            chunk_rows = clamp(observer.planned_records, 1, 1024)
+            dset = HDF5.create_dataset(file, "data", HDF5.datatype(Float64),
+                HDF5.dataspace((observer.planned_records, ncols); max_dims=(-1, ncols));
+                chunk=(chunk_rows, ncols))
+            HDF5.attributes(dset)["appendable"] = Int8(1)
+        else
+            file["data"] = zeros(Float64, observer.planned_records, ncols)
+        end
         file["column_names"] = observer.column_names
         file["record_count"] = Int64[0]
         file["elapsed_time"] = Float64[0.0]
