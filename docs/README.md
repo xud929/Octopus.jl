@@ -298,7 +298,16 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   288 methods, clean. §4 is the most useful section — three claims this pass made
   and then withdrew, including a beam-swap that came within one step of being
   filed as a Major finding on the production route and was simply a misreading of
-  an argument list ordered by two opposite conventions),
+  an argument list ordered by two opposite conventions.
+  **§7-8 extend the pass to the field solvers**, taking `pic_cuda.jl` to 60%
+  covered and still zero defects. That region was settled by *measurement* rather
+  than by reading a plane layout: the layout is CUDA-only, so parity is decisive
+  there, and it measures 1e-15 against a 1e-5 signal — 10 orders of discriminating
+  power where the suite asserts only 1e-11. §8 adds two non-defect findings, both
+  fixed and both of the shape every confirmed defect in parts 3-4 had — a correct
+  result resting on something unstated: an invariant the field derivative depends
+  on that no test asserted, and a suite that reports green while silently skipping
+  every GPU test on a GPU-less CI),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite

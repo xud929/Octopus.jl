@@ -4,6 +4,37 @@ using LinearAlgebra
 # Test-only: Octopus takes no runtime dependency on any AD package.
 using ForwardDiff
 
+# Whether the CUDA half of this suite ran at all must be visible in the summary,
+# not inferable only by noticing that some testsets printed fewer assertions.
+#
+# Nine testsets are gated behind `_HAS_CUDA && CUDA.functional()`; three carry an
+# `else @test_skip` and six are silent. CI (`.github/workflows/ci.yml`) runs on
+# `ubuntu-latest` with no GPU, so on CI **every** CUDA test is skipped while the
+# run still reports "Testing Octopus tests passed".
+#
+# That matters more than it looks. The correctness argument for `pic_cuda.jl`
+# rests almost entirely on CPU/CUDA parity: the CPU side is independently
+# verified (hand-derived kernels, analytic references), the CUDA plane layout has
+# no CPU counterpart to be verified against, and the measured parity residual is
+# ~1e-15 against a ~1e-5 signal for any plane-level error. Take the parity tests
+# away and that argument evaporates -- silently. `AGENTS.md` states the rule for
+# contracts ("do not report an unrun check as passed"); this is the same rule for
+# the suite.
+const CUDA_TESTS_ACTIVE = Octopus._HAS_CUDA && Octopus.CUDA.functional()
+
+@testset "CUDA coverage status" begin
+    if CUDA_TESTS_ACTIVE
+        @test Octopus.CUDA.functional()
+    else
+        @info """
+        NO CUDA DEVICE: the GPU half of this suite did NOT run.
+        Nine CUDA-gated testsets were skipped, including every CPU/CUDA parity
+        check. A green run here says nothing about pic_cuda.jl, gaussian_pic_cuda.jl
+        or spectral_cuda.jl. Run on a GPU host before trusting a CUDA change."""
+        @test_skip "CUDA device not available -- GPU half of the suite skipped"
+    end
+end
+
 @testset "Architecture integrity" begin
     metadata = validate_element_metadata(; throw_on_error=true)
     @test metadata.passed
@@ -6291,6 +6322,64 @@ end
     @test Octopus._pic_lattice_box_mult(1.0) == (8, 8)
     let tab = Octopus._pic_lattice_green_table(32, 32, 1.0)
         @test isapprox(abs(tab[1 + 2 * 32 + 1, 2 * 32 + 1]), pi / 2; rtol=1e-5)
+    end
+end
+
+@testset "Source and field grids keep equal extent, which the field derivative assumes" begin
+    # `E = -grad(phi)` is differenced with a cell size taken from the SOURCE grid
+    # (pic_cpu.jl `_pic_solve_drifted_field_with_green_fft!` passes
+    # `source_grid.width/(nx-1)` into `_pic_field!`), while `phi` is interpolated on
+    # the FIELD grid (`_pic_interpolate_kick` uses `grid.width/(nx-1)`). Those agree
+    # only because `_pic_interaction_grids` returns the same width/height for both
+    # grids, differing in origin alone.
+    #
+    # That is an unstated invariant of exactly the shape audit part 3's S14 turned
+    # out to be: established by one function, silently depended on by another. And
+    # it is worse than S14 in one respect -- BOTH backends take the spacing from the
+    # source grid, so a divergence would make them wrong identically and CPU/CUDA
+    # parity could not see it. Hence a direct test of the invariant rather than of
+    # any output.
+    # Deterministic sweep rather than a seeded RNG: the claim is about an
+    # invariant, so exhausting the option cross-product is both reproducible and
+    # more pointed than sampling. Boxes are deliberately asymmetric between the
+    # source and field beams, which is the case where equal extents are least
+    # obvious -- `_pic_interaction_grids` takes the max span per axis.
+    boxes = (
+        (-1.0e-3, 1.0e-3, -1.0e-4, 1.0e-4, -2.0e-3, 2.0e-3, -3.0e-4, 3.0e-4),
+        (-3.0e-4, 2.5e-4, -2.0e-5, 3.0e-5, -1.0e-4, 4.0e-4, -4.0e-5, 1.0e-5),
+        (0.0, 5.0e-3, 0.0, 1.0e-5, -5.0e-3, 0.0, -1.0e-5, 0.0),
+        (-7.0e-6, 7.0e-6, -9.0e-3, 9.0e-3, -1.0e-6, 1.0e-6, -1.0e-2, 1.0e-2),
+    )
+    for gt in (:integrated, :standard, :lattice),
+        q in (0.0, 0.125),
+        mte in ((0.0, 0.0), (2.0e-3, 2.0e-4)),
+        b in boxes
+
+        s = PICPoissonSolver(; grid=(64, 64), green_type=gt,
+                               grid_quantize=q, min_transverse_extent=mte)
+        sxmin, sxmax, symin, symax, fxmin, fxmax, fymin, fymax = b
+        sg, fg = Octopus._pic_interaction_grids(s, sxmin, sxmax, symin, symax,
+                                                   fxmin, fxmax, fymin, fymax)
+        # (a) as produced
+        @test sg.width == fg.width
+        @test sg.height == fg.height
+        # (b) after the Green cache's expansion, which scales both by one factor
+        es = Octopus._pic_expand_grid_by(sg, 1.25)
+        ef = Octopus._pic_expand_grid_by(fg, 1.25)
+        @test es.width == ef.width
+        @test es.height == ef.height
+        # (c) after the part-3 realignment, which must move origins only
+        ra, rb = Octopus._pic_realign_expanded_grids(gt, es, ef, 64, 64)
+        @test ra.width == rb.width
+        @test ra.height == rb.height
+        @test ra.width == es.width && rb.width == ef.width
+    end
+    # negative control: the equality is a real constraint, not trivially true
+    let s = PICPoissonSolver(; grid=(64, 64))
+        sg, fg = Octopus._pic_interaction_grids(s, -1e-3, 1e-3, -1e-4, 1e-4,
+                                                   -2e-3, 2e-3, -3e-4, 3e-4)
+        @test sg.width == fg.width
+        @test sg.width != fg.width * 1.01
     end
 end
 
