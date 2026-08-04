@@ -12,6 +12,7 @@
 > | **§3** | what was checked and found sound — this is the substance |
 > | **§4** | three claims this pass made and then had to withdraw or correct, including one that nearly became a false finding |
 > | **§5** | remaining risks, and §6 the handoff |
+> | **§7.3** | **if you are the next session, start here** — the field-solver extension was begun and stopped mid-region, with an exact resume line and the specific question to carry in |
 >
 > §2 is the coverage ledger. Read it before trusting any coverage claim here.
 
@@ -272,10 +273,14 @@ dead thing is the tuple copy, which is cosmetic and left alone.
 | `Core.Box` class on CUDA | **swept, 288 methods, clean** — closes the `todo.md` item |
 | The `ρ = 1` blind spot | tested against an analytic reference at three aspect ratios |
 | CUDA luminosity | verified against the closed-form Gaussian overlap |
+| The field-solver extension, **partially** | see §7 — ~400 of 1,220 lines, with an exact resume point |
 
 ### Next, in priority order
 
-1. **`src/tasks/strongstrong/pic_cuda.jl` l. 2252–3470** — the field solvers,
+1. **`src/tasks/strongstrong/pic_cuda.jl` l. 3038–3430 — the quadratic routes.**
+   *(This item was started; see §7 for what is already covered and §7.3 for the
+   exact resume point and the question to carry in.)* Originally scoped as
+   l. 2252–3470 — the field solvers,
    wavefront workspaces and Green stack builders. Phase 0 named this as the
    extension target if the sweeps came back quiet, and they did. It is also where
    the batched FFT plane bookkeeping lives, which §4.2 shows is the most
@@ -299,3 +304,116 @@ dead thing is the tuple copy, which is cosmetic and left alone.
 - **A clean sweep is a deliverable.** The `Core.Box` census closing a standing
   `todo.md` item is worth as much as a defect would have been, and it is only
   worth anything because it is recorded with its method count.
+
+---
+
+# 7. Extension in progress — the field solvers (l. 2252–3470)
+
+§6 named this region as the next target. It was **started, not finished**, and
+this section exists so the next session resumes at a line number rather than
+re-deriving where the boundary fell.
+
+**Nothing found. ~400 of ~1,220 lines.** No source changes.
+
+## 7.1 The hypothesis being tested
+
+§4.2 identified the batched-FFT **plane bookkeeping** as the most error-prone
+thing in this file to read: which plane index holds which field, and whether the
+deposit, the Green stack, the per-plane cell size and the kick all agree on it.
+
+It is a good hypothesis because it is the one class a parity test is weak
+against. A plane mix-up that is *symmetric* between the two backends would agree
+at 1e-13 while being wrong — exactly S14's shape. And unlike S14 there is no
+shared helper to anchor on: each backend lays out its planes independently.
+
+## 7.2 Covered, and what makes it right
+
+| lines | function | verdict |
+|---|---|---|
+| 2252–2337 | `solve_field_with_green_fft`, `solve_drifted_…` | sound (read in the part-4 pass) |
+| 2337–2392 | `solve_pair_fields_batched_fft!` | sound |
+| 2392–2427 | `allocate_wavefront_workspace` | sound |
+| 2428–2483 | `wavefront_workspace!` | sound |
+| 2484–2495 | `reserve_wavefront_workspaces!` | sound |
+| 2496–2546 | `wavefront_node_workspace!` | sound |
+| 2547–2625 | `solve_wavefront_fields_node_indexed!` | sound |
+| 2858–2952 | `copy_green_spectral_stack!`, `build_wavefront_green_fft!`, `green_plane_params!` | sound |
+
+**The node route is the model to compare the rest against.** It documents its
+layout and then drives both the deposit and the Green copy from the *same* tuple,
+so the two cannot drift apart:
+
+    +1 dir1 L  sL1 gL1    +4 dir2 L  sL2 gL2
+    +2 dir1 R  sR1 gR1    +5 dir2 R  sR2 gR2
+    +3 dir1 Z  sR1 gL1    +6 dir2 Z  sR2 gL2
+
+- Deposit `specs` (l. 2583–2590) and Green-stack copy (l. 2609–2611) carry
+  identical `(plane, mesh)` pairings.
+- `hx_host[plane]` comes from the mesh that plane was *actually* deposited on
+  (l. 2596–2597), so the field derivative uses the matching cell size per plane.
+- Plane +3 (Z) sits on **gL**, same as +1 (L) — the physics requirement, since
+  `φ_L − φ_Z` is a small difference of large numbers whose discretisation error
+  cancels only within one mesh.
+- The kick call (l. 1416–1428) reads `+1,+1,+1,+2,+2,+3` as
+  `phiL, ExL, EyL, ExR, EyR, phiZ` — matching the layout exactly.
+
+**The design decision that removes the risk**, per the workspace docstring
+(l. 2496–2509): node mode allocates **one Green per plane** and duplicates gL
+into the L and Z slots, so the spectral multiply is a 1:1 elementwise product
+with no mapping to get wrong. Where the mapping *is* non-uniform — the 4-plane
+route, 4 charge planes over 2 Greens — the caller passes the correct Green
+explicitly per plane (l. 2855–2859) rather than deriving it arithmetically.
+
+**Guarded, not assumed**: `wavefront_workspace!` hard-validates
+`nplanes % 4 == 0` and the node one `% 6 == 0`. A 6-plane request against the
+4-plane allocator throws rather than silently mis-sizing `npairs = nplanes ÷ 4`.
+That was the first suspicion of this stretch and it is explicitly defended.
+
+**S14/S17 cross-check**: the `:lattice` branch of `build_wavefront_green_fft!`
+(l. 2914–2931) calls `_pic_green_lattice!` per plane on host grids arriving
+either straight from `_pic_interaction_grids` or through the realigned
+`_cuda_pic_slice_pair_cached_prep!`. Both are aligned, which is why part 3's new
+integrality guard does not fire here; the `:lattice` testset exercises both.
+
+## 7.3 Resume here
+
+Unread, in the order a next session should take them:
+
+| lines | function | why it matters |
+|---|---|---|
+| **3038–3430** | `copy_green_spectral_stack_quadratic!`, the two quadratic solvers, the two quadratic interaction routes, `apply_indexed_quadratic_kick!` + kernel + launcher | **Start here.** This is `slice_interpolation = :quadratic`, and it is the one layout that has *not* been checked against the discipline in §7.2 |
+| 2743–2858 | `solve_wavefront_fields_indexed_batched_fft!` | the production route's solver body; only its plane-fill loop has been seen, via grep |
+| 2625–2743 | tail of the node solve, `solve_wavefront_fields_batched_fft!` | same, plane-fill loop seen only via grep |
+| 2952–3038 | `apply_green_plane!`, the three `deposit_drifted_*_plane*` helpers, `multiply_spectral_perplane_kernel!` | the primitives all of the above call |
+| 3430–3470 | `green_fft`, `build_green_fft` | small |
+
+### The specific question to carry into the quadratic routes
+
+Quadratic uses **6 planes per pair** (L/M/R per direction) and borrows the
+**node** workspace — which allocates one Green per plane. But unlike node mode,
+all three planes of a quadratic direction share **one** `source_grid`: the
+docstring in `pic_cpu.jl` justifies this by noting the drifted coordinate
+`x + px·s` is affine in `s`, so the sL/sR bounding box already contains the
+midpoint plane and no resizing is needed.
+
+So the duplication factor is **3, not 2**, and the borrowed workspace was sized
+for a different grouping. The questions are:
+
+1. Does `copy_green_spectral_stack_quadratic!` (l. 3038) duplicate each
+   direction's Green into all three of its slots?
+2. Are `wf.hx[plane]`/`hy[plane]` filled for all six planes, given all three of a
+   direction share one mesh?
+3. Does the kick (`apply_indexed_quadratic_kick!`, l. 3355) read planes in the
+   order the solver filled them?
+
+Compare against §7.2's node layout, which is the known-good pattern.
+
+### What would make this cheap to settle
+
+The CPU has an independent quadratic implementation
+(`_pic_interpolate_kick_quadratic`, verified by hand in part 3 §2.6: basis
+`2t²−3t+1, 4t−4t², 2t²−t` summing to 1, derivative weights summing to zero). The
+parity test covers `slice_interpolation = :quadratic`, so a plane mix-up that is
+*asymmetric* between backends is already excluded. What remains to check by
+reading is a mix-up that is symmetric — which, per §7.1, is the only kind that
+survives parity, and is precisely what S14 was.
