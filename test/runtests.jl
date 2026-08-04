@@ -3146,6 +3146,35 @@ end
     @test Ey1 == Ey0
 end
 
+@testset "Every example script runs against the current interface" begin
+    # Examples are the precedents agents and users imitate (AGENTS.md), and
+    # none was executed by this suite -- which is how a refactor that renamed
+    # an internal broke examples/knob_control.jl silently through six green
+    # suite runs. Each script runs in a subprocess at its small config
+    # defaults (2 turns, 10k macroparticles, CPU policy), so this also
+    # enforces "update examples when public APIs change". Costs one package
+    # load per script; exit 0 is the assertion, with the output tail
+    # surfaced on failure.
+    root = dirname(@__DIR__)
+    scripts = vcat(
+        [joinpath(root, "examples", f) for f in
+         ("knob_control.jl", "weak_strong_tracking.jl", "strong_strong_tracking.jl")],
+        [joinpath(root, "test", "examples", f) for f in
+         ("weak_strong_tracking.jl", "strong_strong_tracking.jl")])
+    for script in scripts
+        buf = IOBuffer()
+        p = run(pipeline(`$(Base.julia_cmd()) --startup-file=no --project=$(root) $(script)`,
+                         stdout=buf, stderr=buf); wait=false)
+        wait(p)
+        ok = success(p)
+        if !ok
+            text = String(take!(buf))
+            @info "example script failed" script last(text, 2000)
+        end
+        @test ok
+    end
+end
+
 @testset "The module precompiles without overwriting its own methods" begin
     # Part 6 §8.7: a same-signature method silently overwrote another, PASSED
     # the full suite (both methods behaved identically), and was caught only
