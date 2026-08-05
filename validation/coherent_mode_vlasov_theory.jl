@@ -28,7 +28,16 @@ u_a(0) = 1, and the symmetric kernel
             cos(phi) cos(phi') Vhat(x(J,phi) - x'(J',phi')).
 
 Discretizing J on Gauss-Legendre nodes turns this into a 2N x 2N matrix
-eigenproblem. Self-checks built in:
+eigenproblem.
+
+This is a CHARACTERIZATION script: it writes tables and prints diagnostics,
+and only one condition stops it (the kernel-sign criterion below — a broken
+kernel assembly poisons every table). The numbered self-checks print
+PASS/FAIL and escalate to a warning naming which downstream rows are
+unusable, but do not exit nonzero — a failing check in one regime still
+leaves the other tables worth writing, and the reader of a quoted band is
+expected to have read the warning (2026-08-05 audit, U19-4/9). Self-checks
+built in:
 
 1. u(0) = 1 (normalization of the incoherent tune shift);
 2. the co-moving (sigma) mode must appear at exactly Q0 with the rigid
@@ -543,10 +552,25 @@ for s in (1.0, -1.0)
             "   max eigenvalue -> Y = ", round(chk.Y; digits=4))
 end
 
-# The physical sign is the one that puts the co-moving translation mode at Q0.
+# The physical sign is the one that puts the co-moving translation mode at
+# Q0 — the theory note's structural check 1, used here as the selector
+# because the note fixes the eigenproblem's sign convention while the
+# assembled kernel's sign depends on quadrature bookkeeping this script owns.
+# Turning the check into a selector costs it its power to fail on sign, so
+# the selected sign must still SATISFY the criterion: the note's measured
+# floor is |drift|/xi ~ 1e-5, and if neither sign lands within 10x of that
+# the kernel assembly is broken and every Lambda below would be wrong —
+# stopping is honest, silently adopting the less-bad sign was not
+# (2026-08-05 audit, U19-10).
 chk_p = symmetric_Y(1.0; sign_kernel=1.0)
 chk_m = symmetric_Y(1.0; sign_kernel=-1.0)
 const SIGN_KERNEL = abs(chk_p.sigma_drift) < abs(chk_m.sigma_drift) ? 1.0 : -1.0
+let best = min(abs(chk_p.sigma_drift), abs(chk_m.sigma_drift))
+    best <= 1.0e-4 || error(
+        "neither kernel sign puts the co-moving translation mode at Q0 " *
+        "(best |sigma drift|/xi = $(best), criterion 1e-4): the kernel " *
+        "assembly is broken, not merely signed the other way")
+end
 println("selected sign_kernel = ", SIGN_KERNEL)
 
 y1 = symmetric_Y(1.0; xi=XI, sign_kernel=SIGN_KERNEL)

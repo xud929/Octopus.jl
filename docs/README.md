@@ -398,7 +398,11 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   fix priced), context-dropping element wrappers, and a Philox
   implementation nothing pinned (now KAT-gated). Carries the full coverage
   ledger with per-unit provenance, the seam map, corrections to the audit's
-  own analysis, and a ~40-item priced open queue),
+  own analysis, and a ~40-item priced open queue; the 21 per-unit agent
+  reports the queue's file:line details live in are archived beside it under
+  [`comprehensive_audit_2026_08_05_unit_reports/`](history/comprehensive_audit_2026_08_05_unit_reports/)
+  — they were session-scratch until the post-campaign queue session found
+  the queue unactionable without them),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite

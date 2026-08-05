@@ -99,6 +99,13 @@ at grid 128 (median gain 9-20x at coarse grids, 2.6-4.1x at 128). Reference
 model `gaussian_beambeam_kick`; error normalized by `max_grid(|K_exact|)`. See
 `docs/theory/gaussian_subtracted_pic_solver.md`.
 
+Characterization, not a gate: it reports the error tables and exits zero
+regardless. Its "hybrid" is also a **local reimplementation** of the
+subtraction — `PICPoissonSolver` plus the integrated-log Green convolution
+and hand-coded erf moments, never a `GaussianPICPoissonSolver` object — so
+it validates the algorithm, not the production wiring; the z-scan below is
+the study that drives the production internals (2026-08-05 audit, U20).
+
 ## Gaussian-Subtracted PIC Bi-Gaussian Fairness
 
 `gaussian_pic_bigaussian_validation.jl` is the fair, non-Gaussian test: a
@@ -115,6 +122,11 @@ The hybrid is never worse than plain PIC and beats it ~2-3x for near-Gaussian
 sources, degrading gracefully toward parity as the perturbation grows. The
 weakest gain is a diagonally offset perturbation (x-y coupling the uncoupled
 subtraction cannot remove), motivating the coupled/rotated subtraction branch.
+
+Characterization, not a gate, and the same local-reimplementation caveat as
+the field study above: the "hybrid" here is assembled from `PICPoissonSolver`
+and hand-coded moments, not the production `GaussianPICPoissonSolver`
+(2026-08-05 audit, U20).
 
 ## Gaussian-Subtracted PIC Optimization History
 
@@ -542,7 +554,11 @@ the signal to trust in an ordinary run.
 julia --threads=4 --project=. validation/pic_grid_extent_stability.jl
 ```
 
-Outputs `result/pic_grid_extent_stability.tsv`.
+Outputs `result/pic_grid_extent_stability.tsv`. Characterization, not a
+gate: the script writes the table and exits zero — the "must stay at zero"
+expectation above is enforced at runtime by `collide!`'s dropped-charge
+warning and by the suite's dropped-charge testsets, not by this script
+(2026-08-05 audit, U20).
 
 ## PIC Slice Boundary Jitter
 
@@ -567,7 +583,8 @@ julia --threads=8 --project=. validation/pic_slice_boundary_jitter.jl
 
 Overrides: `OCTOPUS_JITTER_NPART`, `OCTOPUS_JITTER_TURNS`,
 `OCTOPUS_JITTER_NSLICES`, `OCTOPUS_JITTER_GRID`, `OCTOPUS_JITTER_SEED`.
-Outputs `result/pic_slice_boundary_jitter.tsv`.
+Outputs `result/pic_slice_boundary_jitter.tsv`. Characterization, not a
+gate: the jitter is quantified, not bounded (2026-08-05 audit, U20).
 
 ## Coherent Beam-Beam Modes (sigma/pi Split, Yokoya Factor)
 
@@ -599,14 +616,16 @@ beams with equal tunes and equal xi. The asymmetric EIC production case has
 no single theory Lambda (its modes are eigenvectors of a coupled asymmetric
 system); run it only as a demonstration.
 
-A reduced-settings version of this check runs in the regression suite as
+The script itself CHARACTERIZES — it prints Lambda per solver and exits
+zero without comparing to the literature band; the gate lives in the suite:
+a reduced-settings version of this check runs there as
 `validate(CoherentModePhysicsContract())` — a per-solver physics gate: the
 PIC-based solvers must land in the Vlasov band, and the suite asserts that
 the soft-Gaussian solver *fails* it (a moment closure cannot carry the
 pi mode beyond the rigid value; the failure is the documented model
 limitation, not a defect). The symplecticity and high-energy weak-strong
 scripts are likewise mirrored by `SymplecticityContract` and
-`HighEnergyWeakStrongLimitContract`.
+`HighEnergyWeakStrongLimitContract` (2026-08-05 audit, U19-4).
 
 ```bash
 julia --threads=8 --project=. validation/coherent_beam_beam_modes.jl
@@ -632,6 +651,14 @@ with the production PIC solver versus flatness (Y = 1.19 round rising to
 (xi-independent to ~1% for xi <= 0.01). `plot_coherent_mode_theory.py`
 renders result/yokoya_vs_aspect.png, yokoya_vs_xi.png, and
 eic_coherent_modes.png from the TSVs.
+
+All four coherent-mode scripts on this page (the simulation driver above,
+the two theory companions, the EIC comparison and the BeamBeam3D anchor)
+characterize: they write tables and print diagnostics without exiting
+nonzero on a physics disagreement. The Vlasov script's numbered self-checks
+print PASS/FAIL and warn which rows are then unusable; its one hard stop is
+the kernel-sign criterion, whose failure poisons every table (2026-08-05
+audit, U19-4/9/10).
 
 ```bash
 julia --project=. validation/coherent_mode_vlasov_theory.jl
@@ -704,7 +731,11 @@ julia --threads=4 --project=. validation/gaussian_pic_zscan.jl
 
 Overrides: `OCTOPUS_GPIC_ZSCAN_NPART`, `OCTOPUS_GPIC_ZSCAN_GRID`,
 `OCTOPUS_GPIC_ZSCAN_NSLICES`, `OCTOPUS_GPIC_ZSCAN_DEPOSIT`.
-Outputs `result/gaussian_pic_zscan_summary.tsv`.
+Outputs `result/gaussian_pic_zscan_summary.tsv`. Characterization, not a
+gate — but unlike the two hybrid field studies above, this one drives the
+production GaussianPIC internals (`_gpic_solve_drifted_field!`,
+`_gpic_source_moments`) rather than a local reimplementation (2026-08-05
+audit, U20).
 
 ## PIC Option Consistency and Cost
 
