@@ -542,6 +542,18 @@ reproduction → fix → verification (numbers in the commit messages):
   ~7e-16 absolute, inside the widened `_curv_vers` series window, with the
   PTC contract unchanged at 55/55, worst 5.0e-13.
 
+**Campaign gate:** final full suite at the closing commit — **147
+top-level testsets, zero failures, CUDA half active** (137 pre-campaign).
+The shakeout getting there is itself part of the record: five in-suite
+failures, every one either a strengthened check catching a campaign change
+(the `:line` survey-`L` correctly flagged as never reaching the tracking
+map → documented-inactive; the nested-Hessian bit-exact symmetry broken at
+4.3e-19 by the higher-order series → principled tolerance) or a
+campaign-test defect (worker counts above the suite pool; a log-kwarg
+regex; and the type-tree guards flagging the suite's own Main-defined
+scaffolding types — now scoped to Octopus-defined types,
+hostile-subtype-verified).
+
 **Still open after the campaign, priced:** U9-1 (port the R9 dropped-charge
 tripwire to the three CUDA spectral deposits — GPU kernel work), U9-2 (R12
 transverse pre-solve hoist on CUDA — perf only, doubly non-default),
