@@ -198,11 +198,19 @@ hypothesis, and its reference):
 >   probes and measurements — running a reproduction strengthens a lead
 >   from claim to measurement, and is encouraged; probe scripts go in
 >   session scratch, never the repository.
-> - Every claim is a LEAD, not a finding, and is labeled so. Each lead
->   reports: an id, `file:line`, the claim in one sentence, the mechanism
->   (why the code does the wrong thing, not just that it looks wrong), a
->   severity guess, a concrete reproduction recipe (the command and the
->   number it should produce), and your confidence.
+> - Every claim is a LEAD, not a finding, and is labeled so. Each lead is
+>   one block in this exact greppable shape (the archived 2026-08-05 unit
+>   reports used per-unit heading styles, and extracting items from them
+>   later meant per-unit archaeology):
+>
+>       ### LEAD <unit>-<n> [<severity guess>, confidence <low|med|high>] <file>:<line>
+>       Claim: <one sentence>
+>       Mechanism: <why the code does the wrong thing, not just that it looks wrong>
+>       Repro: <the command to run and the number it should produce>
+>
+>   `file:line` is a pointer that rots as the code moves; the Repro line is
+>   the durable identity of the lead — write it so it still works after the
+>   line numbers have drifted.
 > - Anchor to the hypothesis you were briefed with, but report
 >   out-of-hypothesis defects too, marked as such. If all you have is
 >   style, say so.
