@@ -4,6 +4,72 @@
 requires ("Checkpoint to disk continuously, not at the end"). Sections below
 are filled as they are established; anything not yet established says so.
 
+## 1a. Executive summary
+
+Second full re-read at the owner's direction, uniform depth, one day after the
+first closed. **Its justification is the 63 commits and +9,125/−775 lines that
+had landed since the prior pass's declared commit** — that delta *is* the prior
+audit's own fix campaign and queue-closure session, i.e. the code written in
+response to findings, which no audit had since read. Measured Lesson 2 says a
+fix's blast radius includes dimensions nothing measures; this pass is that
+lesson applied to a whole campaign, and it paid.
+
+26 briefed reading units plus auditor-direct seam passes over 53,472 Julia
+lines. **Four findings confirmed by auditor reproduction, two of them fixed and
+negative-controlled:**
+
+- **F2 [Major, FIXED]** — an `execute!` that threw during observer preparation
+  **destroyed luminosity history it had never written to**: 3 rows → 0 in
+  replace mode, 5 → 2 in append. The prior audit's U4-4 fix had moved the
+  `.lum` prepare *ahead* of the observers, which only reversed the truncation
+  window. Now planned-then-committed with the observers validating in between:
+  3 → 3 and 5 → 5.
+- **F4 [Major, FIXED]** — the curved solenoid's implicit-midpoint stage had no
+  convergence check. At its **own default `nst`**, an ordinary detector
+  solenoid (`ks = 20 m⁻¹`, `L = 5 m`) gave symplectic residual **7.197 — or
+  NaN — in silence**. The 16-sweep count had been argued sufficient "for every
+  step count" from a table measured at a single point; the fixed-point map
+  contracts at rate `q = L·ks/2nst`, so that argument was always about `q`, not
+  `nst`. Now throws with a concrete `nst` at `q ≥ 1` and warns above 0.1,
+  silent and bit-unchanged in the documented regime.
+- **F1 [Major, open]** — the per-pair luminosity trace is populated on **1 of 6
+  CUDA PIC routes** (CPU: all of them), while the scalar luminosity agrees to
+  ~1e-15 everywhere, which is why nothing caught it. The consuming contract
+  gates on `batch_mode == :wavefront`, so under `:sequential` it reports
+  `passed` with `records_compared = 0` — **a contract passing by comparing an
+  empty set**. Found independently by two units reading disjoint regions.
+- **A-1 [Moderate, open]** — auditor-direct: a `StrongStrongTask` has no loss
+  accounting at all. The same aperture that makes a `TrackingTask` print a
+  per-collimator summary kills 3,793 of 4,000 particles here with only
+  `count_dead` available, which makes `allow_lost_particles`' own documented
+  cross-check impossible to perform.
+
+**A correction against the audit itself (C-1)** is recorded beside the finding
+it corrects: the seam pass began from a "strong-strong kills silently"
+hypothesis that measurement refuted — the solver fails fast with a detailed,
+actionable diagnostic. Filing it would have been a Major against correct code.
+
+**Clean is a result, and most of the repository is.** The physics core held
+again, this time against references built fresh rather than inherited: Philox
+against KAT vectors fetched this session and an independently written
+implementation using the *upstream* key schedule; Faddeeva against 4096-bit
+BigFloat (worst 3.09e-13); beam moments against BigFloat (means exact to 0.0);
+the Hirata boost against an independent transcription (≤5.42e-20); 124
+symplecticity configurations at ≤9e-15; the spectral solve against an
+independent continuum mode sum (≤2.3e-15); CPU↔CUDA parity across a full 64/64
+sub-route matrix at 8.99e-17. `_needs_curved_potential` was shown to be
+*exactly* the Cauchy-Riemann condition by total enumeration. The prior pass's
+U11-1 walker split is genuinely fixed — 13 independent walkers agree on a
+three-deep nested line.
+
+**The honest remainder** is a priced queue of ~90 agent leads with
+reproductions (§7), 7 of them Major candidates, none auditor-verified. Its
+header says so in terms, because the series' measured agent survival rate is
+~60% in four distinct miss shapes. The single most alarming candidate: the
+CUDA spectral dropped-charge tripwire appears to report **exactly zero in the
+blow-up regime it exists for**, through a float cancellation — an instrument
+that has never been shown the disease at full strength.
+
 - Commit under audit: `7de4d8132111c902f823da47323aaa496d674201` (clean tree at start).
 - Protocol: [`docs/comprehensive_audit.md`](../comprehensive_audit.md).
 - Role: maintainer agent, at the owner's direction.
