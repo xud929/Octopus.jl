@@ -594,6 +594,14 @@ if _HAS_CUDA
                 Symbol(solver.green_type),
                 Bool(solver.longitudinal_kick),
                 Symbol(solver.batch_mode),
+                # The embedded slice-pair Green cache depends on these three;
+                # the CPU key carries them and this one did not, so a solver
+                # differing only here reused a workspace built for the other
+                # (reproducibility drift, no correctness impact — coverage
+                # checks re-validate entries per use; 2026-08-05 audit, U1-3).
+                Symbol(solver.green_cache),
+                solver.slice_pair_green_min_ratio,
+                solver.slice_pair_green_growth,
             )
             return get!(cache, key) do
                 _cuda_pic_workspace(solver, T)

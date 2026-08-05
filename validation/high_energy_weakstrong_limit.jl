@@ -417,4 +417,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     result.gaussian_passed || error("soft-Gaussian weak-strong limit failed")
     result.pic_passed || error("PIC weak-strong limit tolerance failed")
     result.spectral_limit_passed || error("spectral high-energy weak-strong limit failed")
+    # Computed since the spectral arm landed, asserted never — the env-tuned
+    # RTOL knobs existed for a gate nothing enforced (2026-08-05 audit, U21-2).
+    result.spectral_model_passed || error("spectral weak-strong MODEL tolerance failed")
 end

@@ -233,3 +233,12 @@ open(joinpath(resultdir, "lattice_cells.tsv"), "w") do io
     end
 end
 println("\nTSV written to result/lattice_cells.tsv")
+
+# Gate, not just print (2026-08-05 audit, U21-3): a :failed backend contract
+# or a non-symplectic cell exited 0 and looked green in any driver.
+for (r, b) in zip(rows, backend_rows)
+    r[3] <= 5.0e-7 || error("cell $(r[1]) symplecticity residual $(r[3]) exceeds 5e-7")
+    b[2] == "passed" || error("cell $(r[1]) CPU/CPU backend contract: $(b[2])")
+    b[3] in ("passed", "skipped") || error("cell $(r[1]) CPU/CUDA backend contract: $(b[3])")
+end
+println("all cells gated: symplectic and backend-consistent")
