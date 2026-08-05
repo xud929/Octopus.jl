@@ -3624,7 +3624,9 @@ end
     # params-Dict write skips.
     @test_logs (:warn, r"unknown parameter") match_mode = :any QuadrupoleSpec(
         L=0.3, k1=1.2, this_keyword_does_not_exist=1.0)
-    @test_logs (:warn, r"bogus") match_mode = :any ElementSpec{:quadrupole}(; bogus=2.0)
+    # The offending key travels in the structured kwargs, which @test_logs
+    # regexes do not inspect — match the message and check the kwarg below.
+    @test_logs (:warn, r"unknown parameter") match_mode = :any ElementSpec{:quadrupole}(; bogus=2.0)
     @test_logs DriftSpec(L=0.5, x_offset=1.0e-3)          # placement: silent
     d = DriftSpec(L=0.5)
     d.x_offset = 1.0e-3
