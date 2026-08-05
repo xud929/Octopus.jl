@@ -1,8 +1,53 @@
 # Comprehensive Audit — 2026-08-05 (full re-read)
 
-**Status: IN PROGRESS.** This is the live working ledger of a full-repository
-line-by-line audit under [`docs/comprehensive_audit.md`](../comprehensive_audit.md),
-running as one driving session. It becomes the final report at the Phase 16 halt.
+**Status: COMPLETE** (Phase 16 halt; final suite result in §6). One driving
+session under [`docs/comprehensive_audit.md`](../comprehensive_audit.md).
+
+## 1a. Executive summary
+
+Full 50,330-line re-read at the owner's direction, one day after the
+2026-08-03/04 audit closed. Every line of `src/`, `test/`, `examples/`,
+`validation/`, and `ext/` was read — 21 briefed sub-agent units plus
+auditor-direct reads, provenance ledgered per unit — and **20 findings were
+confirmed, fixed, negative-controlled, and committed (F1–F20)**, none
+Critical, four Major:
+
+- **F2**: the h≠0 sweep asserted 1e-12 on its own documented 1.1e-9 floor,
+  failing deterministically and **aborting every full-suite run since
+  `baf0255`** — ~4,660 test lines (the CUDA half, examples, append
+  testsets) had not executed in any full run, and the interim "full suite
+  green" claims were false. The prior audit's first rule — correct checks,
+  never executed — reproduced at HEAD within a day.
+- **F11**: `interaction_grid=:node` silently degraded to `:slice_pair` on
+  every non-indexed CUDA wavefront sub-route (1.2e-2 coordinate shift), and
+  `pic_timing_detail=true` alone rerouted execution — a diagnostic changing
+  physics by 8.9e-3. Now refused statically and at runtime.
+- **F16**: the RF cavity's slip factor is `α_c` alone — the `−1/γ₀²`
+  velocity-slip term structurally cannot enter a path-length-convention
+  ring anywhere but the cavity's conversion, which omits it (1.84× ν_s
+  error at 2.5 GeV proton, wrong transition side when `α_c < 1/γ₀²`). A
+  Knowledge-Layer defect faithfully implemented; boundary documented, fix
+  priced with Scope B's survey channel.
+- **F17**: every straight solenoid was un-differentiable (complex-typed
+  body), and `curved=false` tracked a silent non-gradient kick at 2.5e-3 on
+  the solenoid while the LatticeMagnet kept the curvature its own warning
+  said was ignored. Real-arithmetic transcription verified bit-identical;
+  `curved=false` now equals `h=0` exactly.
+
+The other sixteen: the append/restart protocol rebuilt against torn writes,
+silent wipes, non-atomic rewrites, and ordering (F1/F3–F9); the gathered
+CUDA routes' missing-pz crash (F10); two RNG-leaking contracts (F12);
+context-dropping element wrappers, correlated radiation streams, and a
+silent out-of-bounds loss-counter write (F13–F15); `:node`+`:quadratic`
+silent ignore (F18); a Philox implementation nothing pinned, now KAT-gated
+(F19); and CUDA test gates that reported green on CPU (F20).
+
+Clean results are results: the Bassetti-Erskine/synchro-beam physics core,
+the spectral twins, the GaussianPIC twins, the registry/metadata layer, the
+knob engine, Philox, the constants, the examples layer, and the PTC
+provenance chain all audited sound, most with independent-reference
+measurements recorded in §7a/unit reports. A ~40-item priced open queue
+(§7) and four new `todo.md` rows carry the honest remainder.
 
 - Commit under audit: `6a3f39ab71a2f076e2c0964a8c014d8e4140b88b` (clean tree).
 - Environment: Linux 5.14.0-570.21.1.el9_6, Julia 1.12.4, 128 cores, 503 GB RAM,
@@ -62,7 +107,7 @@ disposed of every lead from that unit).
 | unit | files (lines) | reader | status |
 |---|---|---|---|
 | U1 | `src/tasks/strongstrong/pic_cuda.jl` 1–3000 | agent | reported (3 leads; U1-1→F11 fixed, U1-2 open, U1-3 open) |
-| U2 | `src/tasks/strongstrong/pic_cuda.jl` 3000–5966 | agent (+auditor for 5490–5966) | agent reported (3 leads; §7); auditor read of 5490–5966 owed |
+| U2 | `src/tasks/strongstrong/pic_cuda.jl` 3000–5966 | agent | reported (3 leads; U2-1→F10 fixed). Auditor provenance, honestly: the launch/extract/scatter/route regions (~250 lines) were auditor-read during the F10/F11 fixes; the 5490–5966 moment/kick kernel bodies remain agent-read, backed by U2's bit-reproduction checks and the auditor's measured CPU parity (7.2e-15..1.4e-14) |
 | U3 | `src/contracts/Contracts.jl` (2,544) | agent | reported (10 leads; §7) |
 | U4 | `src/tasks/strongstrong/interface.jl` (2,310) | agent (+auditor for the `luminosity_append` delta) | reported (4 leads, 2 observations; §7) |
 | U5 | `src/tasks/strongstrong/pic_cpu.jl` (1,902) + `slicing.jl` (715) | agent | reported (8 leads; §7) |
@@ -83,7 +128,7 @@ disposed of every lead from that unit).
 | U20 | `validation/` field cluster | agent | reported (8 leads, print-only/header-drift class; no bitrot, no circularity, all recorded numbers reproduce) |
 | U21 | `validation/` remainder | agent | reported (13 leads incl. print-only gates and the lexicographic PTC-table pick; PTC provenance chain verified intact 55==55==55) |
 | U22 | Post-audit delta: the four commits after `f55cf82` (diffs in `BeamObservers.jl`, `interface.jl`, `test/runtests.jl`, `examples/knob_control.jl`) | **auditor** | all four diffs read + flush/prepare context; produced F1, A-1, A-4, A-5 |
-| U23 | Seam-class passes over the seam map (§3) | **auditor** | pending |
+| U23 | Seam-class passes over the seam map (§3) | **auditor** | done — §3 records each seam class, its coverage, and the defects found on it |
 
 ## 1. Inherited open queue (from the prior audit, to disposition this pass)
 
