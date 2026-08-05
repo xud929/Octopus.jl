@@ -342,16 +342,27 @@ function _require_cuda_pic_options(solver::PICPoissonSolver)
             "cuda_batch_fft = $(solver.cuda_batch_fft)."))
     end
     if solver.interaction_grid === :node
-        # :node runs on the indexed wavefront route (its own 6-plane path) and on
-        # the sequential non-async route. The batched-FFT sub-route of sequential
-        # mode still assumes one mesh per slice pair.
-        wavefront_ok = Symbol(solver.batch_mode) === :wavefront
+        # :node runs on the FULLY-INDEXED wavefront route (its own 6-plane
+        # path) and on the sequential non-async route. Every other route —
+        # the sequential batched-FFT sub-route AND every non-indexed
+        # wavefront sub-route — assumes one mesh per slice pair and never
+        # reads the node caches: the 2026-08-05 audit (F11) measured :node
+        # silently degrading to :slice_pair there (1.2e-2 coordinate shift
+        # against the honored route), so the full indexed flag set is
+        # required rather than assumed.
+        wavefront_ok = Symbol(solver.batch_mode) === :wavefront &&
+            solver.cuda_indexed_wavefront && solver.cuda_wavefront_fft &&
+            solver.cuda_batch_fft && solver.cuda_async
         sequential_ok = Symbol(solver.batch_mode) === :sequential && !solver.cuda_async
         (wavefront_ok || sequential_ok) || throw(ArgumentError(
-            "interaction_grid = :node on the CUDA PIC backend requires batch_mode = :wavefront, " *
-            "or batch_mode = :sequential with cuda_async = false; the sequential batched-FFT " *
-            "route assumes one mesh per slice pair. Got batch_mode = " *
-            "$(repr(solver.batch_mode)), cuda_async = $(solver.cuda_async)."))
+            "interaction_grid = :node on the CUDA PIC backend requires the fully-indexed " *
+            "wavefront route (batch_mode = :wavefront with cuda_indexed_wavefront, " *
+            "cuda_wavefront_fft, cuda_batch_fft and cuda_async all true), or " *
+            "batch_mode = :sequential with cuda_async = false; every other route assumes " *
+            "one mesh per slice pair and would silently drop :node. Got batch_mode = " *
+            "$(repr(solver.batch_mode)), cuda_async = $(solver.cuda_async), cuda_batch_fft = " *
+            "$(solver.cuda_batch_fft), cuda_wavefront_fft = $(solver.cuda_wavefront_fft), " *
+            "cuda_indexed_wavefront = $(solver.cuda_indexed_wavefront)."))
     end
     solver.grid_extent === :extrema || throw(ArgumentError(
         "grid_extent = $(repr(solver.grid_extent)) is not implemented by the CUDA PIC " *

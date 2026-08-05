@@ -217,6 +217,22 @@ if _HAS_CUDA
             max_batch_size = 0
             use_indexed_wavefront = _cuda_pic_indexed_wavefront_enabled(solver) &&
                 use_wavefront_fft
+            if node_mode && !use_indexed_wavefront
+                # The non-indexed wavefront sub-routes assume one mesh per
+                # slice pair and never read the node caches, so running them
+                # under :node silently degraded it to :slice_pair (F11,
+                # 2026-08-05 audit). The static gate in
+                # `_require_cuda_pic_options` keeps the flag combinations
+                # out; what reaches here is detailed PIC timing disabling the
+                # async route at runtime — and a diagnostic must not silently
+                # change tracking results (measured 8.9e-3 coordinate shift).
+                throw(ArgumentError(
+                    "interaction_grid = :node on the CUDA wavefront route requires the " *
+                    "fully-indexed sub-route, which detailed PIC timing " *
+                    "(pic_timing_detail = true) disables. Profile :node with " *
+                    "batch_mode = :sequential and cuda_async = false instead, or drop " *
+                    "pic_timing_detail."))
+            end
             _record_execution!(:cuda_pic_algorithm, CUDABackend, (
                 batch_mode=:wavefront,
                 cuda_async=use_async,
@@ -647,34 +663,27 @@ if _HAS_CUDA
             n = length(idx)
             n == 0 && return nothing
             T = eltype(rep.x)
-            coords = longitudinal_kick ?
-                (
-                    x=CUDA.CuArray{T}(undef, n),
-                    px=CUDA.CuArray{T}(undef, n),
-                    y=CUDA.CuArray{T}(undef, n),
-                    py=CUDA.CuArray{T}(undef, n),
-                    z=CUDA.CuArray{T}(undef, n),
-                    pz=CUDA.CuArray{T}(undef, n),
-                ) :
-                (
-                    x=CUDA.CuArray{T}(undef, n),
-                    px=CUDA.CuArray{T}(undef, n),
-                    y=CUDA.CuArray{T}(undef, n),
-                    py=CUDA.CuArray{T}(undef, n),
-                    z=CUDA.CuArray{T}(undef, n),
-                )
+            # Always gather all six coordinates. The quadratic and node kick
+            # launchers marshal `.pz` unconditionally (their KERNELS guard the
+            # pz write by the longitudinal_kick flag), so the former 5-field
+            # variant crashed every gathered route that accepts
+            # longitudinal_kick = false at argument marshalling with
+            # "type NamedTuple has no field pz" (2026-08-05 audit, F10). The
+            # store path still scatters pz back only when the longitudinal
+            # kick is active, so the extra gathered plane is read-only.
+            coords = (
+                x=CUDA.CuArray{T}(undef, n),
+                px=CUDA.CuArray{T}(undef, n),
+                y=CUDA.CuArray{T}(undef, n),
+                py=CUDA.CuArray{T}(undef, n),
+                z=CUDA.CuArray{T}(undef, n),
+                pz=CUDA.CuArray{T}(undef, n),
+            )
             threads = _cuda_pic_threads(:gather_scatter)
-            if longitudinal_kick
-                CUDA.@cuda threads=threads blocks=cld(n, threads) _cuda_pic_gather_slice_longitudinal_kernel!(
-                    coords.x, coords.px, coords.y, coords.py, coords.z, coords.pz,
-                    rep.x, rep.px, rep.y, rep.py, rep.z, rep.pz, idx,
-                )
-            else
-                CUDA.@cuda threads=threads blocks=cld(n, threads) _cuda_pic_gather_slice_kernel!(
-                    coords.x, coords.px, coords.y, coords.py, coords.z,
-                    rep.x, rep.px, rep.y, rep.py, rep.z, idx,
-                )
-            end
+            CUDA.@cuda threads=threads blocks=cld(n, threads) _cuda_pic_gather_slice_longitudinal_kernel!(
+                coords.x, coords.px, coords.y, coords.py, coords.z, coords.pz,
+                rep.x, rep.px, rep.y, rep.py, rep.z, rep.pz, idx,
+            )
             return (idx=idx, coords=coords)
         end
 

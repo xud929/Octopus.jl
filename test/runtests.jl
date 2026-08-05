@@ -4291,6 +4291,72 @@ end
     end
 end
 
+@testset "Gathered CUDA PIC routes carry pz; :node refuses silent degradation" begin
+    # 2026-08-05 audit F10/F11. F10: `_cuda_pic_extract_slice` built 5-field
+    # slices when longitudinal_kick=false while the quadratic/node kick
+    # launchers marshal `.pz` unconditionally — every gathered route crashed
+    # with "type NamedTuple has no field pz" on a validated configuration the
+    # CPU handles (the kernels themselves guard the pz WRITE by the flag).
+    # F11: the non-indexed wavefront sub-routes never read the node caches,
+    # so interaction_grid=:node silently degraded to :slice_pair there
+    # (measured 1.2e-2 coordinate shift vs the honored route), including when
+    # pic_timing_detail=true knocked the route off the async path at runtime
+    # — a diagnostic changing physics. Now the gathered routes gather all six
+    # coordinates (CPU parity measured 7.2e-15..1.4e-14, pinned at 1e-13) and
+    # both the static gate and the runtime route guard refuse the
+    # silently-degrading combinations.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        mkbp(policy, rng_id) = begin
+            set_global_rng!(seed=5, method=:philox)
+            Beam(512, policy, Float64;
+                beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+                sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+                charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV,
+                npart=1.0e10)
+        end
+        allc(b) = map(a -> Array(a), (b.rep.x, b.rep.px, b.rep.y, b.rep.py, b.rep.z, b.rep.pz))
+        mdiff(c1, c2) = maximum(maximum(abs.(a .- b)) for (a, b) in zip(c1, c2))
+        base = (kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(32, 32),
+                slicing=LongitudinalSlicing(nslices=3, method=:equal_area))
+        for mk in (
+            () -> PICPoissonSolver(; base..., slice_interpolation=:quadratic,
+                                   longitudinal_kick=false, cuda_indexed_wavefront=false),
+            () -> PICPoissonSolver(; base..., slice_interpolation=:quadratic,
+                                   longitudinal_kick=false, batch_mode=:sequential,
+                                   cuda_async=false),
+            () -> PICPoissonSolver(; base..., interaction_grid=:node,
+                                   longitudinal_kick=false, batch_mode=:sequential,
+                                   cuda_async=false),
+        )
+            bg1, bg2 = mkbp(CUDAExecutionPolicy(), 1), mkbp(CUDAExecutionPolicy(), 2)
+            collide!(mk(), bg1, bg2, CUDABackend)
+            bc1, bc2 = mkbp(CPUThreadsExecutionPolicy(), 1), mkbp(CPUThreadsExecutionPolicy(), 2)
+            collide!(mk(), bc1, bc2, CPUThreadsBackend)
+            @test mdiff(allc(bg1), allc(bc1)) < 1.0e-13
+            @test mdiff(allc(bg2), allc(bc2)) < 1.0e-13
+        end
+        for kw in ((cuda_indexed_wavefront=false,), (cuda_wavefront_fft=false,),
+                   (cuda_batch_fft=false,), (cuda_async=false,))
+            s = PICPoissonSolver(; base..., interaction_grid=:node,
+                                 batch_mode=:wavefront, kw...)
+            @test_throws ArgumentError collide!(
+                s, mkbp(CUDAExecutionPolicy(), 1), mkbp(CUDAExecutionPolicy(), 2),
+                CUDABackend)
+        end
+        sND = PICPoissonSolver(; base..., interaction_grid=:node, batch_mode=:wavefront)
+        ipc = StrongStrongCollision(:ip)
+        L6c = Linear6DSpec{Float64}(; beta1=(0.55, 0.056, 12.7),
+            beta2=(0.55, 0.056, 12.7), alpha1=(0.0, 0.0, 0.0),
+            alpha2=(0.0, 0.0, 0.0), dmu=2pi .* (0.08, 0.14, -0.069))
+        tD = StrongStrongTask((ipc, L6c), (ipc, L6c); poisson_solver=sND,
+            diagnostics=StrongStrongDiagnostics(pic_timing_detail=true))
+        @test_throws ArgumentError execute!(
+            tD, mkbp(CUDAExecutionPolicy(), 1), mkbp(CUDAExecutionPolicy(), 2); turns=1)
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 aperture_beam(n; seed=7) = begin
     set_global_rng!(seed=seed, method=:philox)
     Beam(n, CPUThreadsBackend, Float64; beta=(0.5, 0.5, 10.0), alpha=(0.0, 0.0, 0.0),

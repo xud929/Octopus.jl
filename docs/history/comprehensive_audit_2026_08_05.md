@@ -61,14 +61,14 @@ disposed of every lead from that unit).
 
 | unit | files (lines) | reader | status |
 |---|---|---|---|
-| U1 | `src/tasks/strongstrong/pic_cuda.jl` 1–3000 | agent | reported (3 leads; §7) |
+| U1 | `src/tasks/strongstrong/pic_cuda.jl` 1–3000 | agent | reported (3 leads; U1-1→F11 fixed, U1-2 open, U1-3 open) |
 | U2 | `src/tasks/strongstrong/pic_cuda.jl` 3000–5966 | agent (+auditor for 5490–5966) | agent reported (3 leads; §7); auditor read of 5490–5966 owed |
 | U3 | `src/contracts/Contracts.jl` (2,544) | agent | reported (10 leads; §7) |
 | U4 | `src/tasks/strongstrong/interface.jl` (2,310) | agent (+auditor for the `luminosity_append` delta) | reported (4 leads, 2 observations; §7) |
 | U5 | `src/tasks/strongstrong/pic_cpu.jl` (1,902) + `slicing.jl` (715) | agent | reported (8 leads; §7) |
 | U6 | `src/tasks/BeamObservers.jl` (1,582) + `BPMObserver.jl` (324) + `Tasks.jl` (827) | agent (+auditor for the `append` delta) | reported (6 leads; §7) |
-| U7 | `src/elements/strong_beam.jl` (1,547) + `src/track/strong_beam_track.jl` (495) + `src/tasks/strongstrong/gaussian.jl` (195) | agent | reading |
-| U8 | `src/tasks/strongstrong/gaussian_pic.jl` (869) + `gaussian_pic_cuda.jl` (1,232) — twin pair, parity brief | agent | reading |
+| U7 | `src/elements/strong_beam.jl` (1,547) + `src/track/strong_beam_track.jl` (495) + `src/tasks/strongstrong/gaussian.jl` (195) | agent | reported (5 leads; §7) |
+| U8 | `src/tasks/strongstrong/gaussian_pic.jl` (869) + `gaussian_pic_cuda.jl` (1,232) — twin pair, parity brief | agent | reported (1 doc lead; clean) |
 | U9 | `src/tasks/strongstrong/spectral.jl` (1,148) + `spectral_cuda.jl` (806) — twin pair, parity brief | agent | reading |
 | U10 | `src/elements/lattice_magnets.jl` (1,222) + `solenoid.jl` (436) + `linear6d.jl` (306) + `linear_maps.jl` (236) | agent | reading |
 | U11 | `src/elements/beam_line.jl` (587) + `aperture.jl` (583) + `thin_elements.jl` (346) + `radiation.jl` (313) + `misalignment.jl` (293) | agent | pending |
@@ -179,6 +179,36 @@ a crash are overwritten by the next flush, and the on-disk count never
 exceeds the rows on disk. U6-4's stale closing docstring paragraph fixed in
 the same file.
 
+**F10 (Moderate, auditor-reproduced from U2-1, FIXED).**
+`pic_cuda.jl` `_cuda_pic_extract_slice` built 5-field slices when
+`longitudinal_kick=false` while the quadratic/node kick launchers marshal
+`.pz` unconditionally (their kernels guard the pz WRITE by the flag): every
+gathered CUDA route crashed at argument marshalling — reproduced as
+`FieldError: type NamedTuple has no field pz` on
+`cuda_indexed_wavefront=false` + `:quadratic` + `longitudinal_kick=false`,
+a configuration that passes validation and runs clean on CPU. (The agent's
+claimed `cuda_async=false` variant was in fact guarded by the existing
+`:quadratic` gate — narrower than claimed, the classic pattern.) Fix: the
+extractor always gathers all six coordinates; the store path still scatters
+pz only when the longitudinal kick is active, so the extra plane is
+read-only. Verified post-fix: all three formerly-crashing routes run with
+CPU parity 7.2e-15..1.4e-14; indexed-route regression guards unchanged.
+Pinned by a new CUDA testset at 1e-13.
+
+**F11 (Major, auditor-reproduced from U1-1, FIXED).** `interaction_grid=:node`
+silently degraded to `:slice_pair` on every non-indexed CUDA wavefront
+sub-route (node caches prebuilt, never read there): off-route node-vs-slice_pair
+maxdiff 2.5e-15 (pure ordering noise — node dropped) vs 1.2e-2 on the honored
+route; and `pic_timing_detail=true` alone knocked the route off the async
+path, moving physics by 8.9e-3 under `:node` (2e-15 under `:slice_pair`) — a
+diagnostic changing tracking results, against `interface.jl`'s own rule. Fix:
+the static gate (`_require_cuda_pic_options`) now requires the full indexed
+flag set for `:node`+`:wavefront`, and a runtime guard at route resolution
+refuses the detailed-timing degradation with a directed message naming the
+sequential alternative. All four flag combos + the runtime case refuse with
+`ArgumentError`; the honored routes are regression-guarded. Pinned by the
+same CUDA testset.
+
 **F1 (Moderate, auditor-confirmed, FIXED in package 2).**
 `src/tasks/strongstrong/interface.jl:1991-1992`
 (`_prepare_strong_strong_luminosity_file!`): a torn last line from a
@@ -211,6 +241,13 @@ MomentObserver twin is crash-safe here by `record_count` ordering
   coordinate sums, both beams), `beam_statistics`. Two runs **bit-identical**;
   sha256 `d6ab7170f3a2c62d83bcbadbd3476019829b3ddab28f1a90e22b47586cfb3520`.
   Captured before the first source modification of this audit.
+- **Suite run 2** (Phase 8, at `13c2733`): full `Pkg.test` `--threads=4`,
+  GPU active: **132 top-level testsets, zero failures, exit 0** — the first
+  complete suite run since `baf0255`; the CUDA half, examples testset, and
+  both append testsets all executed.
+- **GPU verifications** (`scratchpad/gpu_verify_u21_u11.jl`,
+  `gpu_fixverify_f10_f11.jl`): pre-fix U2-1 FieldError and U1-1 node-drop
+  measurements; post-fix parity and refusal matrix (see F10/F11).
 
 ## 7. Lead queue
 
@@ -294,6 +331,28 @@ From U6 (observers + Tasks.jl):
   ([0,1,2,0,1,2,3,4,5]); a fresh process truncates. The append/idempotence
   protocol exists only for `MomentObserver` and the .lum path.
 
+From U7 (strong-beam stack; **the physics core audits clean** — term-for-term
+theory mapping, 200k-point quadrature at ≤2.5e-14, Furman erratum verified):
+
+- **U7-1 (Medium).** ForwardDiff Dual through any elliptical (η≠0)
+  Bassetti-Erskine kick throws in `_near_round_conditioning_factor`
+  (`strong_beam.jl:746-757`), contradicting the T<:Number AD design comment
+  at :188-191.
+- U7-2 (Low-Med): CUDA weak-strong kernels SUM luminosity over turns while
+  CPU stores the final turn — `last_luminosity` diverges ~N× for turns>1;
+  the backend contract compares coordinates only.
+- U7-3 (Low): `slice_center` without `slice_weight` silently discarded.
+  U7-4 (Low): `:equal_width` without `slice_width` throws
+  `MethodError(Float64(::Nothing))`. U7-5 (Low): slicing theory note still
+  documents `:equal_area` as default; code default is `:sqrt_density`.
+
+From U8 (GaussianPIC twins; **clean** — S1 verified end-to-end, all 27
+options traced across the composition seam, erf profiles ≤3.9e-14 vs
+quadrature, neutralization exact):
+
+- U8-1 (Low, doc): theory note §7.5 claims the coupled branch is CPU-only;
+  the CUDA indexed route implements it (solver docstring is correct).
+
 From U4 (reported; agent report at `scratchpad/reports/U4_report.md`):
 
 - **U4-1 (HIGH, unverified by auditor).** `interface.jl:1717-1722,1854-1855,
@@ -342,3 +401,6 @@ luminosity schedule dispatch is specialized by all three grid solvers.
 | `src/tasks/strongstrong/interface.jl` | `_prepare_strong_strong_luminosity_file!`: torn-last-line drop with warning, mid-file corruption refusal, total-wipe warning, atomic tmp+mv rewrite, corrected docstring; prepare hoisted above `prepare_observers!` | F1, F3, F4, F5 |
 | `src/tasks/BeamObservers.jl` | append docstrings corrected (+stale closing paragraph), total-wipe warning in `_moment_append_continue!`, zero-byte file initializes fresh, `error(...)` instead of `BoundsError`, `BeamSwapAction` docstring attached, binary flush writes rows before count at counted offset | F3, F6, F7, F8, F9 |
 | `test/runtests.jl` | new testset: torn writes dropped, corruption refused, wipes loud, zero-byte fresh-init (negative control: five behaviors fail with the two source files stashed) | F1, F3, F7 |
+| `src/tasks/strongstrong/pic_cuda.jl` | `_cuda_pic_extract_slice` always gathers all six coordinates; runtime route guard refuses `:node` off the indexed wavefront sub-route | F10, F11 |
+| `src/tasks/strongstrong/pic_cpu.jl` | `_require_cuda_pic_options` `:node` gate requires the full indexed wavefront flag set | F11 |
+| `test/runtests.jl` | CUDA testset: gathered routes carry pz (parity pinned at 1e-13; measured 7.2e-15..1.4e-14), `:node` degradation refused statically and at runtime | F10, F11 |
