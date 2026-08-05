@@ -2356,8 +2356,17 @@ function _solver_contract_receipt_carries(receipts, consumer::Symbol,
             haskey(cfg, name) && isequal(getproperty(cfg, name), value) && return true
         end
         haskey(r.values, name) && isequal(getproperty(r.values, name), value) && return true
-        # cuda_pic_launch publishes one receipt per family rather than per option
-        consumer === :cuda_pic_launch && haskey(r.values, :threads) && return true
+        # cuda_pic_launch publishes one receipt per family rather than per
+        # option, so this generic path checks the requested VALUE landed in
+        # the receipt rather than merely that a threads field exists — the
+        # bare haskey form was satisfiable by any receipt at all (2026-08-05
+        # audit, U3-8; the dedicated launch-surface check below remains the
+        # strong gate).
+        if consumer === :cuda_pic_launch && haskey(r.values, :threads)
+            (name === :threads || name === :blocks) || return true
+            isequal(getproperty(r.values, name), value) && return true
+            continue
+        end
     end
     return false
 end

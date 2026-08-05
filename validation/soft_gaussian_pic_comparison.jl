@@ -1,6 +1,7 @@
 #=
 Characterize one identical live-beam collision with the soft-Gaussian and PIC
-solvers. The two models are not expected to agree particle by particle: the
+solvers. REQUIRES a CUDA device (both solvers run on the GPU; there is no CPU
+fallback in this script — 2026-08-05 audit, U20-8). The two models are not expected to agree particle by particle: the
 soft solver replaces each live slice by its measured Gaussian covariance,
 whereas PIC retains sampled non-Gaussian structure on a finite mesh.
 

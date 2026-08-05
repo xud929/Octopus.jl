@@ -845,3 +845,14 @@ julia --project=. validation/lattice_cells.jl
 Overrides: `OCTOPUS_LATTICE_N`, `OCTOPUS_LATTICE_TURNS`, `OCTOPUS_LATTICE_LONG`.
 Outputs `result/lattice_cells.tsv`. Derivations for every map:
 `../docs/theory/lattice_hamiltonian_and_conventions.md`.
+
+- `crossing_luminosity_anchor.jl` — anchors the crossing-angle luminosity
+  reduction against the closed-form geometric factor through the Lorentz
+  boost pair; paper-cited (`paper/data/crossing_lum_anchor.tsv` is the
+  hand-transcribed copy). Run:
+  `julia --startup-file=no --project=. validation/crossing_luminosity_anchor.jl`
+- `tune_estimator_calibration.jl` — calibrates the coherent-mode tune
+  estimator's peak interpolation on synthetic spectra with known tunes.
+  Run: `julia --startup-file=no --project=. validation/tune_estimator_calibration.jl`
+  (Both were committed and paper-cited with no README entry until the
+  2026-08-05 audit, U21-1.)

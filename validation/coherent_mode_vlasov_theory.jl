@@ -65,7 +65,7 @@ Outputs (TSV under result/): yokoya_vs_aspect.tsv, yokoya_vs_aspect_narrow.tsv,
 yokoya_box_convergence.tsv, yokoya_vs_xi_theory.tsv, eic_coherent_modes.tsv. Plots: validation/plot_coherent_mode_theory.py.
 
 Run:  julia --project=. validation/coherent_mode_vlasov_theory.jl
-(standalone: needs only LinearAlgebra; ~1-2 min at default resolution)
+(standalone: needs LinearAlgebra and FFTW (the exact referee); about 8-10 minutes warm (39 simulations) at default resolution)
 
 Controls: OCTOPUS_VLASOV_NJ (default 72), OCTOPUS_VLASOV_NPHI (128).
 =#

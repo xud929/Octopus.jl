@@ -360,3 +360,6 @@ live under `src/track/`.
 - `BeamParams`
 - `Phase6DRep`
 - `Beam`
+- `MisalignedElement`
+- `RefTilted`
+- `CompositeLine`

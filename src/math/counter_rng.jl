@@ -19,7 +19,7 @@ const PHILOX4X32_ROUNDS = 10
 
 const _GLOBAL_RNG_SEED = Ref{UInt64}(0)
 const _GLOBAL_RNG_METHOD = Ref{UInt8}(RNG_PHILOX)
-const _GLOBAL_RNG_ID_COUNTER = Ref{UInt64}(0)
+const _GLOBAL_RNG_ID_COUNTER = Threads.Atomic{UInt64}(0)
 
 """
     set_global_rng!(; seed=global_rng_seed(), method=global_rng_method())
@@ -45,8 +45,10 @@ global_rng_method_code() = _GLOBAL_RNG_METHOD[]
 
 """Return the next automatically assigned stochastic consumer stream id."""
 function next_rng_id!()
-    _GLOBAL_RNG_ID_COUNTER[] += UInt64(1)
-    return _GLOBAL_RNG_ID_COUNTER[]
+    # Atomic: two beams or radiation specs constructed concurrently must not
+    # draw the same stream id, which would mean identical noise (2026-08-05
+    # audit, U15-5).
+    return Threads.atomic_add!(_GLOBAL_RNG_ID_COUNTER, UInt64(1)) + UInt64(1)
 end
 
 """Reset the automatic stochastic consumer stream-id counter."""
@@ -78,7 +80,11 @@ Return a deterministic `UInt64` using the selected Octopus counter RNG method.
     elseif method_code == RNG_SPLITMIX
         return splitmix_uint64(seed, turn, rng_id, particle_index, component)
     else
-        return counter_uint64(seed, turn, rng_id, particle_index, component)
+        # An unknown method code is a wiring bug, not a preference for
+        # Philox: falling through silently produced valid-looking numbers
+        # from the wrong stream (2026-08-05 audit, U15-4);
+        # rng_method_symbol already throws for the same code.
+        throw(ArgumentError("unknown RNG method code $(method_code)"))
     end
 end
 
@@ -151,6 +157,12 @@ separates independent stochastic elements or streams.
     c2 = _counter_rng_low32(turn64)
     c3 = _counter_rng_high32(turn64)
 
+    # Accepted limitation, recorded (2026-08-05 audit, U15-2): the XOR of
+    # three splitmix hashes admits closed-form full-stream collisions — e.g.
+    # the (seed, rng_id) pair swapped against (rng_id + G, seed − G) yields
+    # an identical key. The colliding partners sit ~1e19 apart, unreachable
+    # from the sequential ids this codebase assigns, so the mix is kept for
+    # its speed; changing it would re-seed every recorded run.
     key = _counter_rng_splitmix64(UInt64(seed)) ⊻
           _counter_rng_splitmix64(UInt64(rng_id) + 0x9e3779b97f4a7c15) ⊻
           _counter_rng_splitmix64(UInt64(component) + 0xbf58476d1ce4e5b9)

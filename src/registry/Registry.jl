@@ -213,6 +213,13 @@ function _runtime_object_types(reg::OctopusRegistry)
         meta = element_meta(T)
         append!(out, values(meta.runtime_types))
     end
-    append!(out, Any[BeamParams, Phase6DRep, Beam])
+    # Hand-appended, deliberately: these are runtime objects with no owning
+    # element meta. BeamParams/Phase6DRep/Beam are the beam layer; the three
+    # wrappers are what any misaligned/rolled/kept-whole placement compiles
+    # THROUGH, and were missing from the snapshot entirely (2026-08-05
+    # audit, U13-6 — the file header once claimed only meta-derived content
+    # here).
+    append!(out, Any[BeamParams, Phase6DRep, Beam,
+                     MisalignedElement, RefTilted, CompositeLine])
     return unique(out)
 end

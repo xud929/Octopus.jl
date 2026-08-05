@@ -50,9 +50,13 @@ function (::Type{LumpedRadSpec{T}})(;
     )
 end
 
-# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
-# truncated power series is `<:Number`, so the tighter bound refuses a parameter
-# derivative outright. Float64 still satisfies it, so nothing else changes.
+# The struct bound is `T<:Number`, but the CONSTRUCTOR requires
+# `T<:AbstractFloat` (below): the stochastic excitation draws through the
+# counter RNG, which needs a concrete float type, so parameter duals are
+# refused at construction today. The wide struct bound is headroom for a
+# future deterministic-damping dual path, not a promise — this comment once
+# claimed duals were admitted, which the constructor contradicted
+# (2026-08-05 audit, U11-12).
 struct LumpedRad{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     is_damping::Bool

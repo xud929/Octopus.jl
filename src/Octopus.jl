@@ -10,10 +10,22 @@ using NVTX
 export AbstractExecutionBackend, CPUThreadsBackend, CUDABackend,
        AbstractPhaseRep, track!
 
+"""
+Root of the execution-backend TAG types. A backend tag names WHERE compute
+runs and dispatches the kernel implementations; the policy types in
+`src/policies/` say HOW (threads, launch shapes, devices).
+"""
 abstract type AbstractExecutionBackend end
+"""CPU tag: multithreaded kernels over the Julia thread pool."""
 struct CPUThreadsBackend <: AbstractExecutionBackend end
+"""CUDA tag: device kernels; requires CUDA.jl and a functional device."""
 struct CUDABackend <: AbstractExecutionBackend end
 
+"""
+Root of phase-space representations. `Phase6DRep` is the current concrete
+one; runtime representations are implementation details (AGENTS.md) and may
+change.
+"""
 abstract type AbstractPhaseRep end
 
 function track! end

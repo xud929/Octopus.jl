@@ -66,7 +66,10 @@ function ChromaticityKick(spec::ElementSpec{:chromaticity_kick},
     xi = param(spec, :xi)
     beta = param(spec, :beta)
     alpha = param(spec, :alpha)
-    T = promote_type(map(typeof, (xi..., beta..., alpha...))...)
+    # `float` so integer tuples through the flexible spec form promote to a
+    # tracking type instead of dying in a Float64-vs-Int64 conversion
+    # (2026-08-05 audit, U12-5).
+    T = float(promote_type(map(typeof, (xi..., beta..., alpha...))...))
     betx, bety = T(beta[1]), T(beta[2])
     alfx, alfy = T(alpha[1]), T(alpha[2])
     return ChromaticityKick(

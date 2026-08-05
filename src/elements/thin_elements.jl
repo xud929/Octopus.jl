@@ -122,7 +122,7 @@ const _THIN_COMMON = (
     ksl=ParamMeta(default=(), meaning="skew partners of knl"),
     x_offset=ParamMeta(default=0, meaning="misalignment: horizontal displacement of the element"),
     y_offset=ParamMeta(default=0, meaning="misalignment: vertical displacement"),
-    z_offset=ParamMeta(default=0, meaning="misalignment: longitudinal displacement. At zero length this is a pure drift of the kick location and has no effect on the transverse map"),
+    z_offset=ParamMeta(default=0, unit="m", meaning="longitudinal placement offset: the kick is applied after a drift of z_offset and undone by the matching negative drift, so it DOES move the transverse coordinates a thin kick is evaluated at (measured dx = 5.0e-6 at z_offset = 1e-2; 2026-08-05 audit, U11-10)"),
     x_pitch=ParamMeta(default=0, meaning="misalignment: rotation about the y axis, in radians"),
     y_pitch=ParamMeta(default=0, meaning="misalignment: rotation about the x axis, in radians"),
     tilt=ParamMeta(default=0, meaning="misalignment: roll about the longitudinal axis, in radians. Geometric, and distinct from building a skew element through ksl"),

@@ -435,6 +435,13 @@ If `rng_id == 0`, a stream id is assigned with `next_rng_id!()`. Passing an
 explicit `rng` uses that RNG as a convenience override and ignores `rng_id`.
 """
 function Beam(N::Integer, policy::AbstractExecutionPolicy, FloatT::Type{RT}=Float64; kwargs...) where {RT<:Real}
+    # Directed refusal instead of a deep MethodError: sampling draws through
+    # octopus_normal, which needs a concrete AbstractFloat — a Dual or exotic
+    # Real died inside the RNG with no hint (2026-08-05 audit, U15-7).
+    RT <: AbstractFloat || throw(ArgumentError(
+        "Beam sampling requires an AbstractFloat coordinate type (the counter " *
+        "RNG draws concrete floats); got $(RT). Build a Phase6DRep directly " *
+        "for exotic number types."))
 	activate_policy!(policy)
 	return Beam(Int(N), backend_type(policy), RT; execution_policy=policy, kwargs...)
 end
@@ -687,10 +694,16 @@ end
 beam_statistics(beam::Beam; kwargs...) = beam_statistics(beam.rep; kwargs...)
 
 """
-    write_beam_coordinates(io_or_path, rep_or_beam; npart=length(rep))
+    write_beam_coordinates(io_or_path, rep_or_beam; npart=length(rep), append=true)
 
 Write the Octopus compact coordinate record format: `UInt32(npart)` followed
 by six contiguous `Float64` coordinate arrays.
+
+The path form APPENDS by default (`append=true`), adding one record per
+call; `read_beam_coordinates(path; record=i)` selects among them and
+`record=0` is the FIRST record ever written, not the latest (2026-08-05
+audit, U15-6 — this default was undocumented, and a write-twice-read-once
+sequence silently returned the stale first record).
 """
 function write_beam_coordinates(io::IO, rep::Phase6DRep; npart=length(rep))
 	n = min(Int(npart), length(rep))

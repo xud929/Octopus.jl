@@ -63,6 +63,13 @@ ExecutionAudit() = ExecutionAudit(ExecutionAuditReceipt[])
 const _ACTIVE_EXECUTION_AUDIT = Base.ScopedValues.ScopedValue{Any}(nothing)
 const _ACTIVE_RESOLVED_POLICY = Base.ScopedValues.ScopedValue{Any}(nothing)
 
+"""
+    execution_receipts(audit) -> Vector
+
+The receipts recorded inside a `with_execution_audit` block: one entry per
+consumer-boundary `_record_execution!`, which is how the effectiveness
+contracts prove a configuration value was READ rather than merely stored.
+"""
 execution_receipts(audit::ExecutionAudit) = copy(audit.receipts)
 
 """Run `f()` while recording actual configuration consumers into `audit`."""
@@ -121,6 +128,13 @@ struct CPUThreadsExecutionPolicy <: AbstractExecutionPolicy
 end
 CPUThreadsExecutionPolicy(; threads=:auto) = CPUThreadsExecutionPolicy(threads)
 
+"""
+Root of GPU execution policies (`CUDAExecutionPolicy` and the legacy
+`GPUExecutionPolicy`), so GPU-generic code can dispatch on the family
+without naming a vendor. (Docstring added by the 2026-08-05 audit; this and
+`ElementParameterEffectivenessContract` were the two public registry
+objects without one since part 1 of the prior audit.)
+"""
 abstract type AbstractGPUExecutionPolicy <: AbstractExecutionPolicy end
 
 """
@@ -205,6 +219,12 @@ struct ResolvedCUDAExecutionPolicy <: AbstractResolvedExecutionPolicy
     blocks::Union{Int,Symbol}
 end
 
+"""
+    backend_type(policy) -> Type{<:AbstractExecutionBackend}
+
+The backend TAG a policy executes on — the bridge from the HOW (policy) to
+the WHERE (backend dispatch).
+"""
 backend_type(::CPUThreadsExecutionPolicy) = CPUThreadsBackend
 backend_type(::CUDAExecutionPolicy) = CUDABackend
 backend_type(::GPUExecutionPolicy) = CUDABackend
@@ -290,6 +310,14 @@ const _LEGACY_GPU_POLICY_OPTION_SCHEMA = (
         consumer=:cuda_fused_launch),
 )
 
+"""
+    policy_option_schema(policy_or_type) -> NamedTuple
+
+Declared metadata (`ConfigurationOptionMeta`) for a policy's public options:
+type, default, meaning, category, and the runtime consumer each option must
+reach. `validate_configuration_metadata()` pins these against the
+constructors.
+"""
 policy_option_schema(::Type{CPUThreadsExecutionPolicy}) = _CPU_POLICY_OPTION_SCHEMA
 policy_option_schema(::CPUThreadsExecutionPolicy) = _CPU_POLICY_OPTION_SCHEMA
 policy_option_schema(::Type{CUDAExecutionPolicy}) = _CUDA_POLICY_OPTION_SCHEMA

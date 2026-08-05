@@ -3240,7 +3240,9 @@ end
     # none was executed by this suite -- which is how a refactor that renamed
     # an internal broke examples/knob_control.jl silently through six green
     # suite runs. Each script runs in a subprocess at its small config
-    # defaults (2 turns, 10k macroparticles, CPU policy), so this also
+    # defaults (the weak-strong pair at 2 turns / 10k macroparticles;
+    # knob_control at 1 turn / 4 particles; strong-strong at 200/beam —
+    # all CPU policy), so this also
     # enforces "update examples when public APIs change". Costs one package
     # load per script; exit 0 is the assertion, with the output tail
     # surfaced on failure.

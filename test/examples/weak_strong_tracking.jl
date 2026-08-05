@@ -30,7 +30,7 @@ CUDA checks:
     julia --project=. -e 'using CUDA; println(CUDA.functional()); println(CUDA.has_cuda_gpu())'
     julia --project=. -e 'using CUDA; CUDA.versioninfo()'
 
-This file is meant to be a concise precedent for realistic weak-strong tracking:
+This file is meant to be the developer harness (the concise precedent is examples/weak_strong_tracking.jl) for realistic weak-strong tracking:
 
 1. Define one `input` named tuple with beam, optics, element, and output
    settings.

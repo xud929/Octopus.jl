@@ -165,7 +165,7 @@ PatchSpec(; kwargs...) = ElementSpec{:patch}(_spec_params(; kwargs...))
 
 default_method(::Type{ElementSpec{:patch}}) = NonSymplectic6DMap()
 
-function Patch(spec::ElementSpec,
+function Patch(spec::ElementSpec{:patch},
                method::AbstractTrackingMethod=NonSymplectic6DMap())
     dx = getparam(spec, :dx, 0)
     dy = getparam(spec, :dy, 0)

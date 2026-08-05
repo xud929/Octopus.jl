@@ -27,6 +27,15 @@ Select a CUDA device explicitly:
     OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_DEVICE=1 julia --project=. test/examples/strong_strong_tracking.jl
 
 This example uses the PIC solver by default. Select the Poisson solver with
+Further switches this header once omitted (2026-08-05 audit, U18-2), all
+read below with the defaults shown at their read sites:
+OCTOPUS_CPU_THREADS, OCTOPUS_N_MACRO, OCTOPUS_PROTON_ENERGY_GEV,
+OCTOPUS_CUDA_NVTX, OCTOPUS_DISABLE_MOMENTS,
+OCTOPUS_DISABLE_LUMINOSITY_OUTPUT, OCTOPUS_MOMENT_CAPACITY,
+OCTOPUS_SPECTRAL_FIELD_PRECISION, OCTOPUS_GPIC_GRID, OCTOPUS_TURN_TIMING_PATH
+(cwd-relative), the CUDA_PIC_SLICE_PAIR green-cache aliases, and the
+per-kernel CUDA_PIC_*_THREADS overrides.
+
 OCTOPUS_SOLVER (pic | spectral | gaussian | gaussian_pic); an unrecognized name
 is an error. The spectral grid/box can be overridden with
 OCTOPUS_SPECTRAL_GRID="nx,ny" and OCTOPUS_SPECTRAL_DOMAIN_FACTOR for A/B timing:
@@ -353,8 +362,11 @@ cuda_pic_launch = CUDAPICLaunchConfig(
     luminosity_threads = optional_cuda_pic_threads("OCTOPUS_CUDA_PIC_LUMINOSITY_THREADS"),
 )
 cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
-# PIC is the default solver. To use the soft-Gaussian solver instead, comment
-# out the PICPoissonSolver construction below and uncomment this block. It
+# NOTE (2026-08-05 audit, U18-1): solver selection moved to the
+# OCTOPUS_SOLVER environment switch further down, which OVERRIDES anything
+# assembled here — uncommenting this block alone is dead code. Use
+# OCTOPUS_SOLVER=gaussian instead; this block stays as the reference for
+# what that switch builds. It
 # replaces the grid PIC field solve with sliced Gaussian moments and a
 # closed-form Bassetti-Erskine kick; see docs/theory/beam_beam_longitudinal_kick.md.
 #

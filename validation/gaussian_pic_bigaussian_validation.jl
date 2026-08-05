@@ -26,7 +26,7 @@ coupling the uncoupled subtraction cannot remove -- motivating the coupled
 (rotated) subtraction branch gated by `coupling_tol`.
 
 Outputs (under result/):
-- gaussian_pic_bigaussian_validation_summary.tsv
+- gaussian_pic_bigaussian_validation.md (this header once promised a _summary.tsv nothing wrote; U20-3)
 
 Run from the project root:
 

@@ -92,7 +92,10 @@ ok = abs(mean_normal) < 5e-3 &&
      repro_ok && stream_sep && turn_sep
 
 if write_csv
-    out = joinpath(@__DIR__, "counter_rng_validation_summary.csv")
+    # result/, not the tracked validation/ tree (AGENTS.md output discipline;
+    # 2026-08-05 audit, U19-8).
+    out = joinpath(@__DIR__, "..", "result", "counter_rng_validation_summary.csv")
+    mkpath(dirname(out))
     open(out, "w") do io
         println(io, "metric,value")
         println(io, "N,$N")

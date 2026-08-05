@@ -260,10 +260,10 @@ MAD_ANGLE(3) =  S1(6)     !  DPSI     about s, applied first
 The two conventions agree for a pure translation of a straight element and
 disagree for everything else — including a *translation* of a bend, whose centre
 axes are turned by $hL/2$ from its entrance axes. Octopus therefore exposes
-`misalign_reference`, defaulting to `:center` (Bmad, and what survey data means)
+`misalign_convention`, defaulting to `:center` (Bmad, and what survey data means)
 with `:entrance` available to reproduce MAD-X.
 
-Measured against `EALIGN` + `ptc_align`, with `misalign_reference = :entrance`,
+Measured against `EALIGN` + `ptc_align`, with `misalign_convention = :entrance`,
 one degree of freedom at a time on a quadrupole:
 
 | MAD-X | Octopus | agreement |

@@ -337,8 +337,9 @@ if _HAS_CUDA
             return out
         end
 
-        # Field of one directed interaction; writes Exg/Eyg into ws.s1/ws.s2 not
-        # used, returns (Exg, Eyg) as fresh device matrices reused via ws buffers.
+        # Field of one directed interaction; allocates fresh Exg/Eyg device
+        # matrices per call (this comment once claimed ws-buffer reuse the
+        # code does not perform — 2026-08-05 audit, U9-3).
         function _cuda_spectral_field!(ws::_SpectralCudaWS{T}, sx, sy, Lx, Ly) where {T}
             Nx, Ny = ws.Nx, ws.Ny
             a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1); ns = length(sx)
