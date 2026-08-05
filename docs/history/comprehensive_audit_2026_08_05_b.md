@@ -7,6 +7,8 @@ reports are archived beside this file. Three did not return before the halt
 cluster, U24 `validation/` remainder A) — those regions are therefore **read
 but unreported**, and §0b marks them so rather than claiming coverage. What it
 would take to close them: re-run those three briefs, roughly one session.
+(U25 returned *after* the halt was written; its material is folded into §7 and
+its report archived, but it did not inform the fixes.)
 
 The gate itself passed: **151 top-level testsets, exit 0, 23 CUDA testsets on
 the device, zero skips** (§6), and the pre-modification behavioural fingerprint
@@ -74,7 +76,7 @@ sub-route matrix at 8.99e-17. `_needs_curved_potential` was shown to be
 U11-1 walker split is genuinely fixed — 13 independent walkers agree on a
 three-deep nested line.
 
-**The honest remainder** is a priced queue of ~90 agent leads with
+**The honest remainder** is a priced queue of ~105 agent leads with
 reproductions (§7), 7 of them Major candidates, none auditor-verified. Its
 header says so in terms, because the series' measured agent survival rate is
 ~60% in four distinct miss shapes. The single most alarming candidate: the
@@ -598,6 +600,54 @@ Recorded in full in the unit reports; the headline of each:
 - **U15** (elements): a misaligned line containing a bend is surveyed as **straight**, so its exit patch is wrong at first order (measured exactly `dx·θ`, 1.9864e-4 at θ=0.198); `reverse` now **aliases** placements, so an override on the reversed line moves the source; the context-free call path borrows the *first* op's tracking method for every op, so a mixed-method assembly throws where the context path tracks fine; the task loss record is reused for any rep of the same size and backend, giving `unattributed = -1` and a false warning.
 - **U16** (small elements/examples): `_patch_reference_length` returns the projected displacement while the on-axis particle traverses the unprojected one, so a patch with both `dz` and a transverse rotation breaks its own documented exact-inverse identity by `dz·(cos θ − 1)` (measured −1.943472629195586e-5 vs predicted −1.9434726291969184e-5); patch and misalignment apply the shared rotation matrix in **opposite senses**; theory note §4/§9 still assert the phase identity the element now disclaims.
 - **U17/U19** (test suite): a `_curv_vers` seam bound sits **1.7× from red** on sub-ulp `cos` rounding, and a failure there drops ~7,150 later lines; the only `else`-less CUDA gate in its region reports `Total 0` on a GPU-free host — neither pass nor skip; the lost-particle charge-semantics pin covers 2 of 5 solver configurations, omitting the two a reader would most likely guess wrong; the Spectral arm of the corpse testset runs with 21–100% of source charge clipped and **exhausts the process-wide `maxlog=8` budget of the R9 tripwire**, silencing it for the rest of the run.
+
+### U25 — returned after the halt, added for completeness
+
+Its **headline is a clean result on the class the protocol most warns about.**
+Measured Lesson 1 names "a validation script's GPU leg never run on a GPU
+machine" as one of three instances of the dominant failure class. U25 forced
+every gate on by its real name and ran all twelve GPU-capable scripts in this
+region: **none fails, errors, or silently reports success without running** —
+`tracking_backend_consistency` 29 kinds at `max_abs_error = 1.665e-16`, PIC
+cache 9.43e-17, Gaussian 1.52e-7, moment observer 1.63e-13 vs `rtol = 5e-12`,
+full-pipeline CPU/GPU PIC parity at 4.2e-15 σx. The U21-5 coverage extension
+compiles and agrees on device, and its declaration↔coverage tripwire **fires as
+designed** (removing `MarkerSpec()` from the line exits 1 before either
+contract is constructed, naming `marker`).
+
+Its leads, still unverified:
+
+- **U25-2 [Medium]** — `counter_rng_validation.jl`'s gate is a *statistics*
+  test, not a *generator* test. Measured: it **accepts a Philox4x32 with the
+  Weyl key bump removed** (`corr_neighbor` 4.15e-4, passes) and **accepts a
+  3-round Philox** (−3.36e-3, passes). The file presenting itself as "the
+  counter RNG validation" cannot detect the regression class it appears to
+  cover; the real anchor is the KAT testset at `runtests.jl:3873`, which
+  neither the script nor the README points at. This is precisely the
+  instrument-never-shown-the-disease pattern.
+- **U25-3 [Medium]** — the same gate's tolerances are fixed absolute constants
+  while the statistics scale as `1/√N`, so at the `N = 200000` the README
+  recommends a **healthy** generator fails: measured 3/12 seeds for philox and
+  3/12 for splitmix at N=1e5, 1/12 at 2e5. A flaky gate on a correct RNG.
+- **U25-4 [Medium]** — `:aperture` satisfies the 29-kind tripwire **by name
+  only and cannot be covered properly**: the committed limits are `1.0` against
+  a `|x| ≤ 1e-4` probe (identity map), and realistic limits do not work either
+  because `_aperture_kill` writes `NaN` to all six coordinates and the
+  comparator's `abs(NaN − NaN)` makes `passed_tolerance` false even when both
+  backends agree exactly. Measured: a 5e-5 m aperture loses 7,487/10,000
+  identically on both CPU runs and still reports `status = failed`,
+  `max_abs_error = NaN`.
+- **U25-1 [Medium]** — on GPU, `interaction_grid=:node` or
+  `slice_interpolation=:quadratic` silently *also* forces `batch_mode=:sequential`
+  and `cuda_async=false`, and `meta.tsv` records neither — so the per-turn cost
+  attributed to the option is confounded. Measured 0.0252 → 0.0617 s/turn, a
+  2.4× "cost of `:node`" that also contains sequential + async-off. The
+  downgrade is not required: the indexed wavefront route supports `:node`.
+- **U25-5 [Minor]** — a pre-set `OCTOPUS_TURNS` destroys the diagnostics
+  benchmark with a `BoundsError` *after* the entire measured workload, because
+  the guard checks `turns` rather than `length(timings)`.
+- Plus README drift on ten entries (U25-7/8/9/10/12/13) and two hand-copied
+  CUDA launch-family lists with no new-member tripwire (U25-6).
 
 ### Inherited items, dispositioned
 
