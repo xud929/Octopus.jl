@@ -3521,6 +3521,60 @@ end
     foreach(p -> rm(p; force=true), (p1, p2, p3))
 end
 
+@testset "Mixed-IP schedule rows drop loudly; solver equality is by configuration" begin
+    # Two U4 observations (2026-08-05 audit §7). (1) A .lum row must carry
+    # one value per collision column, and NaN already means "evaluated and
+    # failed", so a turn where per-IP luminosity schedules disagree cannot
+    # be written without corrupting one meaning or the other — the row is
+    # dropped whole, and that loss is now loud. (2) _collision_solver
+    # compared the two lines' solvers by identity, refusing structurally
+    # identical objects built independently; solvers are immutable
+    # configuration records, so equality is by type + resolved configuration.
+    mkb(rng_id, charge, mc2, E0) = begin
+        set_global_rng!(seed=5, method=:philox)
+        Beam(300, CPUThreadsExecutionPolicy(), Float64;
+            beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+            sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+            charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+    end
+    beams() = (mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9))
+    L6s(b, t) = Linear6DSpec{Float64}(; beta1=b, beta2=b, alpha1=(0.0, 0.0, 0.0),
+                                      alpha2=(0.0, 0.0, 0.0), dmu=2pi .* t)
+    l6a = L6s((0.55, 0.056, 12.7), (0.08, 0.14, -0.069))
+    l6b = L6s((0.8, 0.072, 90.9), (0.228, 0.210, -0.01))
+    mkpic(; kw...) = PICPoissonSolver(; kbb1=1.0e-6, kbb2=1.0e-6,
+        luminosity_scale=1.0, grid=(16, 16),
+        slicing=LongitudinalSlicing(nslices=2, method=:equal_count), kw...)
+
+    # (2) same configuration, distinct objects: accepted (threw
+    # "different Poisson solver objects" before); a genuinely different
+    # configuration still throws.
+    t_eq = StrongStrongTask(
+        (StrongStrongCollision(:ip; poisson_solver=mkpic()), l6a),
+        (StrongStrongCollision(:ip; poisson_solver=mkpic()), l6b))
+    b1, b2 = beams()
+    @test (execute!(t_eq, b1, b2; turns=1); true)
+    t_ne = StrongStrongTask(
+        (StrongStrongCollision(:ip; poisson_solver=mkpic()), l6a),
+        (StrongStrongCollision(:ip; poisson_solver=mkpic(grid=(24, 24))), l6b))
+    b1, b2 = beams()
+    @test_throws ArgumentError execute!(t_ne, b1, b2; turns=1)
+
+    # (1) IP2 evaluates luminosity only at turn 0: turn 0 writes a complete
+    # row, turn 1 is partial — dropped whole, loudly, and the file carries
+    # exactly the complete rows.
+    p = tempname() * ".lum"
+    ip1 = StrongStrongCollision(:ip1; poisson_solver=mkpic())
+    ip2 = StrongStrongCollision(:ip2;
+        poisson_solver=mkpic(luminosity_schedule=AtTurns([0])))
+    t = StrongStrongTask((ip1, l6a, ip2), (ip1, l6b, ip2); luminosity_path=p)
+    b1, b2 = beams()
+    @test_logs (:warn, r"luminosity row dropped") match_mode = :any execute!(
+        t, b1, b2; turns=2)
+    @test [parse(Int, first(split(l))) for l in readlines(p)[2:end]] == [0]
+    rm(p; force=true)
+end
+
 @testset "MomentObserver append mode continues one table across executions" begin
     # append=false is the documented replace-per-execution behaviour (pinned
     # first); append=true creates a chunked/extendible HDF5 table whose
@@ -7511,6 +7565,24 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             grid=(64, 64), slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
         @test_logs (:warn, r"clipped charge at the Dirichlet wall") match_mode = :any collide!(
             sp64, strong_gpu(256), strong_gpu(256), Octopus.CUDABackend)
+    end
+
+    @testset "TSC weights are bit-identical across backends (U2-3)" begin
+        # The CUDA kernel once derived w3 = 1 - w1 - w2 while the CPU uses
+        # the closed form — a 1-ulp backend divergence in a deposit both
+        # sides must agree on. The kernel helper is pure arithmetic, so it
+        # is compared on the host, both branches and the edges included.
+        mismatches = 0
+        for n in (16, 33)
+            for u in vcat(collect(range(0.0, n - 1.0; length=257)),
+                          [0.5, 1.5, 7.25, 7.5, 7.75, n - 1.5, n - 1.0])
+                base_cpu, w_cpu = Octopus._pic_tsc_weights(u, n)
+                base_gpu, w1, w2, w3 = Octopus._cuda_pic_tsc_weights(u, Int32(n))
+                (Int(base_gpu) == base_cpu && (w1, w2, w3) === w_cpu) ||
+                    (mismatches += 1)
+            end
+        end
+        @test mismatches == 0
     end
 
     @testset "CUDA GaussianPIC solver matches CPU" begin
