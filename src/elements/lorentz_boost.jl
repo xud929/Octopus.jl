@@ -18,6 +18,12 @@ stored as descriptive spec metadata.
 LorentzBoostSpec(angle::Number; tracking_method=NonSymplectic6DMap(), kwargs...) =
     ElementSpec{:lorentz_boost}(_spec_params(; angle=float(angle), tracking_method=tracking_method, kwargs...))
 
+# Keyword form: reflection builds every kind by keyword alone, and a spec
+# rebuilt from `parameter_schema` must round trip — this kind's probe
+# baseline threw as a silent skip until the parameter contract learned to
+# report broken kinds (2026-08-05 audit, U3-7).
+LorentzBoostSpec(; angle, kwargs...) = LorentzBoostSpec(angle; kwargs...)
+
 """
     RevLorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...)
 
@@ -27,6 +33,9 @@ are stored as descriptive spec metadata.
 """
 RevLorentzBoostSpec(angle::Number; tracking_method=NonSymplectic6DMap(), kwargs...) =
     ElementSpec{:rev_lorentz_boost}(_spec_params(; angle=float(angle), tracking_method=tracking_method, kwargs...))
+
+# Keyword form — same round-trip rule as LorentzBoostSpec above.
+RevLorentzBoostSpec(; angle, kwargs...) = RevLorentzBoostSpec(angle; kwargs...)
 
 """
     LorentzBoost(angle)

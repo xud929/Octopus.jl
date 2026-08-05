@@ -734,7 +734,17 @@ function _indent_lines(text::AbstractString, prefix::AbstractString)
 end
 
 """Whether a compiled example is (or wraps) an instance of a declared runtime type."""
-_compiled_matches_runtime(compiled, rt::Type) = compiled isa rt
+# "Is (or wraps)": a spec carrying a misalignment or a ref_tilt compiles to
+# a wrapper around the declared runtime, and the bare `isa` falsely rejected
+# any such example (2026-08-05 audit, U13-4). The wrapper types are defined
+# later in the include order; the names resolve at call time.
+function _compiled_matches_runtime(compiled, rt::Type)
+    compiled isa rt && return true
+    if compiled isa MisalignedElement || compiled isa RefTilted
+        return _compiled_matches_runtime(compiled.inner, rt)
+    end
+    return false
+end
 
 """
     validate_element_metadata(; throw_on_error=false)
@@ -833,14 +843,23 @@ function validate_element_metadata(; throw_on_error::Bool=false)
         # and to a declared runtime type. This is the check that catches a
         # metadata list the implementation cannot honour, which the tautology
         # above never could.
-        if example isa ElementSpec && !isempty(meta.runtime_types)
+        # No `!isempty(meta.runtime_types)` gate on COMPILING: an empty
+        # tracking-methods list once disabled this check entirely, so a kind
+        # like `:line` shipped an example nothing ever compiled (2026-08-05
+        # audit, U13-3). Only the declared-runtime MATCH needs the map.
+        if example isa ElementSpec
             compiled = try
                 compile_runtime(example)
             catch err
                 push!(errors, "ElementMeta $(meta.kind) example does not compile: $(sprint(showerror, err))")
                 nothing
             end
-            if compiled !== nothing
+            if compiled !== nothing && isempty(meta.runtime_types) &&
+               meta.runtime_type isa Type
+                _compiled_matches_runtime(compiled, meta.runtime_type) || push!(errors,
+                    "ElementMeta $(meta.kind) example compiles to $(typeof(compiled)), not its declared runtime_type")
+            end
+            if compiled !== nothing && !isempty(meta.runtime_types)
                 any(rt -> rt isa Type && _compiled_matches_runtime(compiled, rt),
                     values(meta.runtime_types)) ||
                     push!(errors, "ElementMeta $(meta.kind) example compiles to $(typeof(compiled)), which is not a declared runtime type")

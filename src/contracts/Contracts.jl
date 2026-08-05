@@ -1196,6 +1196,16 @@ function _symplecticity_contract_cases()
         (name=:ThinStrongBeamExact, element=thin_with(:exact), q0=q0,
          tolerance=5.0e-7),
         (name=:GaussianStrongBeam, element=gaussian, q0=q0, tolerance=5.0e-7),
+        # The solenoid DECLARES this contract in its metadata; the tripwire in
+        # `validate` fails when a declaring kind is missing from this list —
+        # the declaration existed with no case and nothing noticed
+        # (2026-08-05 audit, U3-3).
+        (name=:Solenoid,
+         element=Solenoid(SolenoidSpec(L=1.3, ks=1.7, nst=1)), q0=q0,
+         tolerance=5.0e-7),
+        (name=:SolenoidCurvedMultipole,
+         element=Solenoid(SolenoidSpec(L=1.3, ks=1.7, h=0.18, kskew=(0.05,),
+                                       nst=8)), q0=q0, tolerance=5.0e-7),
     )
 end
 
@@ -1204,7 +1214,8 @@ function validate(contract::SymplecticityContract; kwargs...)
     S = _symplectic_form6()
     worst_ratio = 0.0
     all_passed = true
-    for case in _symplecticity_contract_cases()
+    cases = _symplecticity_contract_cases()
+    for case in cases
         J = _contract_fd_jacobian6(q -> case.element(q...), case.q0, contract.step)
         residual = norm(transpose(J) * S * J - S, Inf)
         tolerance = max(case.tolerance, contract.default_tolerance)
@@ -1229,9 +1240,30 @@ function validate(contract::SymplecticityContract; kwargs...)
     lorentz_passed = inverse_residual <= 1.0e-10 && determinant_error <= 2.0e-7
     all_passed &= lorentz_passed
 
-    message = all_passed ?
-        "All 6D runtime maps are finite-difference symplectic within tolerance; the Lorentz crossing pair is exact-inverse quasi-symplectic." :
+    # Declaration↔case tripwire (2026-08-05 audit, U3-3): every registered
+    # kind whose metadata declares this contract must be represented above by
+    # an element of its runtime type, or the hand-built list silently falls
+    # behind the registry.
+    uncovered = Symbol[]
+    for T in registered_element_specs()
+        meta = _element_meta_or_nothing(T)
+        meta === nothing && continue
+        any(C -> C === SymplecticityContract, meta.contracts) || continue
+        RT = meta.runtime_type
+        (RT !== nothing && any(case -> case.element isa RT, cases)) ||
+            push!(uncovered, meta.kind)
+    end
+    metrics[:kinds_declaring_without_case] = length(uncovered)
+    all_passed &= isempty(uncovered)
+
+    message = if !isempty(uncovered)
+        "kinds declare SymplecticityContract but have no case in the contract's list: " *
+        join(sort(uncovered), ", ")
+    elseif all_passed
+        "All 6D runtime maps are finite-difference symplectic within tolerance; the Lorentz crossing pair is exact-inverse quasi-symplectic."
+    else
         "A runtime map failed the finite-difference symplecticity check."
+    end
     return ContractResult(all_passed, message; residual=worst_ratio, metrics=metrics)
 end
 
@@ -1553,10 +1585,12 @@ The table stores Octopus coordinates: PTC's `T` column is negated on write,
 because its longitudinal variable is conjugate to `delta` with the opposite
 orientation (theory note Sections 2.1, 5.3, 6.4).
 
-`atol` overrides the tolerance per case name. Agreement is not uniform across
-elements and the differences are physical, not numerical -- see
-`docs/theory/lattice_hamiltonian_and_conventions.md` and the per-case defaults
-below.
+`atol` overrides the tolerance per case name; `_PTC_DEFAULT_ATOL` is the
+hook for future per-case defaults and is currently EMPTY, so every case runs
+at `default_atol = 1e-11` unless overridden (this docstring once pointed at
+"per-case defaults below" that never existed; 2026-08-05 audit, U3-9).
+Agreement is not uniform across elements and the differences are physical,
+not numerical -- see `docs/theory/lattice_hamiltonian_and_conventions.md`.
 """
 Base.@kwdef struct PTCConsistencyContract <: AbstractImplementationContract
     path::Union{Nothing,String} = nothing
@@ -1759,7 +1793,11 @@ function _ptc_reference_path(contract::PTCConsistencyContract)
     isdir(dir) || return nothing
     files = filter(f -> startswith(f, "ptc_madx_") && endswith(f, ".tsv"), readdir(dir))
     isempty(files) && return nothing
-    return joinpath(dir, last(sort(files)))
+    # Newest by NUMERIC version fields, not lexicographic: as strings,
+    # "5.10" sorts before "5.09" and a newer table would be silently
+    # shadowed (2026-08-05 audit, U21-7).
+    natkey(f) = [something(tryparse(Int, m.match), 0) for m in eachmatch(r"\d+", f)]
+    return joinpath(dir, last(sort(files; by=natkey)))
 end
 
 function validate(contract::PTCConsistencyContract; kwargs...)
@@ -1951,6 +1989,7 @@ end
 function validate(contract::ElementParameterEffectivenessContract; kwargs...)
     u = (2.3e-3, 4.1e-4, -1.7e-3, -3.2e-4, 1.5e-3, 9.0e-4)
     ignored = String[]
+    broken = String[]
     checked = 0
     skipped = Symbol[]
     for T in registered_element_specs()
@@ -1978,7 +2017,11 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
         baseline = try
             collect(compile_runtime(ctor(; probe...))(u...))
         catch err
-            push!(skipped, meta.kind)
+            # A throwing baseline is a BROKEN kind, not an unprobeable one:
+            # silently skipping it converted a defect on the probe path into
+            # lost coverage under a passing report, guarded only by the
+            # zero-headroom skipped-count pin (2026-08-05 audit, U3-7).
+            push!(broken, "$(meta.kind): $(sprint(showerror, err))")
             continue
         end
         for (key, pmeta) in pairs(parameter_schema(T))
@@ -1999,7 +2042,11 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
         end
     end
     metrics = Dict{Symbol,Any}(:checked => checked, :ignored => length(ignored),
-                               :skipped_kinds => length(skipped))
+                               :skipped_kinds => length(skipped),
+                               :broken_kinds => length(broken))
+    isempty(broken) || return ContractResult(false,
+        "probe baselines threw (a broken kind, not a missing probe): " *
+        join(sort(broken), "; "); metrics=metrics)
     isempty(ignored) && return ContractResult(true,
         "every declared element parameter reached the map ($(checked) checked, " *
         "$(length(skipped)) kinds without a probe)"; metrics=metrics)
@@ -2316,6 +2363,17 @@ function _solver_contract_receipt_carries(receipts, consumer::Symbol,
 end
 
 function validate(contract::SolverOptionEffectivenessContract; kwargs...)
+    # Solver enumeration guard (2026-08-05 audit, U3-4's sibling): every
+    # concrete Poisson solver must carry a probe entry, or a NEW solver is
+    # silently outside the sweep — the staleness mode the contract otherwise
+    # only guards per-option.
+    for T in subtypes(AbstractPoissonSolver)
+        # Parametric solver/observer types are UnionAlls, for which
+        # `isconcretetype` is false — gate on abstractness instead.
+        isabstracttype(T) && continue
+        haskey(contract.probes, nameof(T)) || return ContractResult(false,
+            "$(nameof(T)) has no solver-option probe entry; the sweep would silently skip it")
+    end
     old_seed = global_rng_seed()
     old_method = global_rng_method()
     try

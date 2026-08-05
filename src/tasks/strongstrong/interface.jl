@@ -1552,6 +1552,24 @@ function configuration_report(diagnostics::StrongStrongDiagnostics; backend=noth
     return Tuple(entries)
 end
 
+"""
+Declared metadata for `StrongStrongTask`'s own public options.
+
+Added by the 2026-08-05 audit (U3-5): `luminosity_append` landed with a
+configuration-report entry but no schema, so nothing mechanical paired its
+documented default with the constructor.
+"""
+strong_strong_task_option_schema() = (
+    luminosity_path=ConfigurationOptionMeta(Union{Nothing,String}, nothing,
+        "Path of the task-level luminosity file; `nothing` disables the output.";
+        category=:output, consumer=:strong_strong_output),
+    luminosity_append=ConfigurationOptionMeta(Bool, false,
+        "Continue one luminosity file across executions, tasks, and restarts " *
+        "instead of rewriting it per execute!; replayed windows drop their " *
+        "stale rows first.";
+        category=:output, consumer=:strong_strong_output),
+)
+
 function validate_configuration_metadata()
     errors = String[]
     for policy_type in (CPUThreadsExecutionPolicy, CUDAExecutionPolicy, GPUExecutionPolicy)
@@ -1628,6 +1646,44 @@ function validate_configuration_metadata()
         isequal(getproperty(default_spectral, name), meta.default) || push!(errors,
             "SpectralPoissonSolver.$(name) metadata default disagrees with constructor")
     end
+
+    # GaussianPICPoissonSolver (2026-08-05 audit, U3-4: this solver was
+    # absent from the function entirely, so margin_sigma / neutralize /
+    # coupling_tol had no default or consumer checks). Its schema is the
+    # composed view — the inner PIC solver's options plus its own three — so
+    # the structural check is that its OWN fields are all schema-covered.
+    gpic_schema = solver_option_schema(GaussianPICPoissonSolver)
+    issubset(setdiff(Set(fieldnames(GaussianPICPoissonSolver)), Set((:pic,))),
+             Set(keys(gpic_schema))) || push!(errors,
+        "GaussianPICPoissonSolver own fields missing from solver_option_schema")
+    default_gpic = solver_configuration(GaussianPICPoissonSolver())
+    for (name, meta) in pairs(gpic_schema)
+        meta.consumer === :unspecified && push!(errors,
+            "GaussianPICPoissonSolver.$(name) has no runtime consumer")
+        isequal(getproperty(default_gpic, name), meta.default) || push!(errors,
+            "GaussianPICPoissonSolver.$(name) metadata default disagrees with constructor")
+    end
+
+    # Completeness by TYPE TREE, not hand list (U3-4): a new concrete solver
+    # fails here until it gets its block, instead of going unchecked until
+    # someone edits an enumeration.
+    for T in subtypes(AbstractPoissonSolver)
+        # Parametric solver/observer types are UnionAlls, for which
+        # `isconcretetype` is false — gate on abstractness instead.
+        isabstracttype(T) && continue
+        T in (PICPoissonSolver, GaussianPoissonSolver, SpectralPoissonSolver,
+              GaussianPICPoissonSolver) || push!(errors,
+            "$(T) is a concrete AbstractPoissonSolver with no validate_configuration_metadata block")
+    end
+
+    # StrongStrongTask's own options (U3-5).
+    task_defaults = (luminosity_path=nothing, luminosity_append=false)
+    for (name, meta) in pairs(strong_strong_task_option_schema())
+        meta.consumer === :unspecified && push!(errors,
+            "StrongStrongTask.$(name) has no runtime consumer")
+        isequal(getproperty(task_defaults, name), meta.default) || push!(errors,
+            "StrongStrongTask.$(name) metadata default disagrees with constructor")
+    end
     Set(keys(diagnostics_option_schema())) == Set(fieldnames(StrongStrongDiagnostics)) ||
         push!(errors, "StrongStrongDiagnostics fields and metadata keys disagree")
     default_diagnostics = StrongStrongDiagnostics()
@@ -1658,9 +1714,19 @@ function validate_configuration_metadata()
         MomentObserver("metadata.h5"),
         CoordinateSnapshotObserver("metadata.coord"),
         LuminosityObserver("metadata.lum"),
+        BPMObserver(),
     )
+    # BPMObserver was absent from these lists (U3-4); the tree guard below
+    # keeps the next observer from repeating that.
+    for T in subtypes(AbstractBeamObserver)
+        # Parametric solver/observer types are UnionAlls, for which
+        # `isconcretetype` is false — gate on abstractness instead.
+        isabstracttype(T) && continue
+        any(o -> o isa T, observer_instances) || push!(errors,
+            "$(T) is a concrete AbstractBeamObserver with no validate_configuration_metadata coverage")
+    end
     for observer_type in (BeamMomentObserver, JLD2BeamMomentObserver, MomentObserver,
-                          CoordinateSnapshotObserver, LuminosityObserver)
+                          CoordinateSnapshotObserver, LuminosityObserver, BPMObserver)
         for (name, meta) in pairs(observer_option_schema(observer_type))
             meta.consumer === :unspecified && push!(errors,
                 "$(observer_type).$(name) has no runtime consumer")

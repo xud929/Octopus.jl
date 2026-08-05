@@ -2,6 +2,12 @@ export ThinCrabCavitySpec, ThinCrabCavity
 
 abstract type ThinCrabCavitySpec{N} end
 
+# Keyword form: reflection builds every kind by keyword alone (the N harmonic
+# count arrives as an ordinary keyword there), and a spec rebuilt from
+# `parameter_schema` must round trip (2026-08-05 audit, U3-7).
+ThinCrabCavitySpec(; frequency, N, kwargs...) =
+    ThinCrabCavitySpec{Int(N)}(frequency; kwargs...)
+
 """
     ThinCrabCavitySpec{N}(frequency; strengthX=(), strengthY=(), phase=(),
                           tracking_method=Symplectic6DMap(), kwargs...)

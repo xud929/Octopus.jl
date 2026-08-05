@@ -1801,17 +1801,23 @@ end
     @test r.metrics[:checked] > 200
     # Every element kind that has a friendly constructor is now probed, either
     # explicitly or through its own curated example.
-    @test r.metrics[:skipped_kinds] <= 3
+    # Tightened from <= 3 (2026-08-05 audit): the three kinds this pin was
+    # giving headroom to were BROKEN probe baselines (no keyword constructor
+    # form), silently skipped; they now have keyword forms, the contract
+    # reports broken kinds as failures, and the honest count is zero.
+    @test r.metrics[:skipped_kinds] == 0
+    @test r.metrics[:broken_kinds] == 0
 
-    # The contract must be able to fail, or it is decoration: a parameter the
-    # runtime never reads has to be reported.
-    let probes = copy(Octopus.DEFAULT_ELEMENT_PARAM_PROBES)
-        probes[:marker] = (undeclared_but_ignored=0.0,)
-        bad = ElementParameterEffectivenessContract(probes=probes)
-        # marker declares only tracking_method, so this probe adds nothing to
-        # check; the real guard is that a genuinely inert declared parameter is
-        # caught, which the inactive list documents rather than hides.
-        @test validate(bad).status in (:passed, :failed)
+    # The contract must be able to fail, or it is decoration. The original
+    # control here asserted `status in (:passed, :failed)`, which cannot
+    # fail (2026-08-05 audit, U16-2); the real control empties the
+    # documented-inactive allowlist, so the drift's genuinely inert `nst`
+    # must be REPORTED as a failure naming drift.nst.
+    let bad = ElementParameterEffectivenessContract(
+            inactive=empty(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS))
+        r = validate(bad)
+        @test r.status === :failed
+        @test occursin("drift.nst", r.message)
     end
     @test haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :nst))
 end
@@ -3462,6 +3468,66 @@ end
     @test_throws ArgumentError execute!(t8, mk1(); turns=2)   # column mismatch refused
 
     foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
+end
+
+@testset "Contract coverage guards: declared kinds, solver tree, broken baselines, unrun contracts" begin
+    # 2026-08-05 audit open-queue items U3-3/4/6/7. The symplecticity case
+    # list now carries the solenoid (the one kind that DECLARES the
+    # contract) and a declaration↔case tripwire; the configuration-metadata
+    # validator derives solver/observer completeness from the type trees;
+    # the effectiveness contract fails a probe-less solver; a throwing
+    # baseline is a reported failure, not a silent skip; and the contracts
+    # nothing used to execute run here.
+    r = validate(SymplecticityContract())
+    @test r.passed
+    @test r.metrics[:kinds_declaring_without_case] == 0
+    @test haskey(r.metrics, :Solenoid_residual)
+    @test haskey(r.metrics, :SolenoidCurvedMultipole_residual)
+
+    # Tripwire control: a temporarily registered kind declaring the contract
+    # with an uncovered runtime type must FAIL the contract by name.
+    try
+        Octopus.register_element_meta!(Octopus.ElementMeta(;
+            kind=:symp_liar, spec_type=ElementSpec{:symp_liar},
+            contracts=[SymplecticityContract], runtime_type=Base.RefValue))
+        rl = validate(SymplecticityContract())
+        @test !rl.passed
+        @test occursin("symp_liar", rl.message)
+    finally
+        delete!(Octopus.ELEMENT_META_BY_KIND, :symp_liar)
+        delete!(Octopus.ELEMENT_META_BY_SPEC_TYPE, ElementSpec{:symp_liar})
+        filter!(t -> t !== ElementSpec{:symp_liar}, Octopus.REGISTERED_ELEMENT_SPECS)
+    end
+    @test validate(SymplecticityContract()).passed        # registry restored
+
+    # Broken-baseline control (U3-7): a probe whose baseline throws must fail
+    # the parameter contract naming the kind, not vanish into the skip count.
+    let probes = copy(Octopus.DEFAULT_ELEMENT_PARAM_PROBES)
+        probes[:quadrupole] = (L="not a length",)
+        rb = validate(ElementParameterEffectivenessContract(probes=probes))
+        @test rb.status === :failed
+        @test occursin("quadrupole", rb.message)
+        @test rb.metrics[:broken_kinds] == 1
+    end
+
+    # Probe-less-solver control (U3-4 sibling): the sweep must refuse to run
+    # with a solver missing from its probe table.
+    let probes = copy(Octopus._default_solver_option_probes())
+        delete!(probes, :SpectralPoissonSolver)
+        rs = validate(SolverOptionEffectivenessContract(probes=probes))
+        @test rs.status === :failed
+        @test occursin("SpectralPoissonSolver", rs.message)
+    end
+
+    # U3-6/U21-13: these contracts were executed by no test and no CI.
+    rp = validate(PublicConfigurationEffectivenessContract())
+    @test rp.status === :passed || (rp.status === :skipped && !CUDA_TESTS_ACTIVE)
+    if CUDA_TESTS_ACTIVE
+        @test validate(StrongStrongPICBackendConsistencyContract()).passed
+        @test validate(StrongStrongGaussianBackendConsistencyContract()).passed
+    else
+        @test_skip "CUDA device not available"
+    end
 end
 
 @testset "The elliptical strong-beam kick differentiates" begin
