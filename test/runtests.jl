@@ -2442,7 +2442,13 @@ end
     #    ForwardDiff's tag machinery, which is what stops an inner perturbation
     #    leaking into the outer one.
     H = ForwardDiff.hessian(obj, p0)
-    @test maximum(abs, H .- H') == 0.0
+    # Near-exact, not bit-exact: nested-dual Hessians are not guaranteed
+    # bit-symmetric, and the u^8 series terms the 2026-08-05 campaign added
+    # to the curvature helpers (U10-5/6) round one ij/ji pair differently at
+    # 4.3e-19 — one ulp at this scale. The old `== 0.0` held only by
+    # arithmetic accident; the FD value pins below carry the discriminating
+    # power.
+    @test maximum(abs, H .- H') <= 8 * eps() * max(1.0, maximum(abs, H))
     @test all(isfinite, H)
     #    Symmetric and finite alone cannot see a wrong-but-finite value, so pin
     #    every column against a central finite difference of the gradient --
