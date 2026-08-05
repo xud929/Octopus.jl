@@ -2012,17 +2012,34 @@ function _execute_strong_strong_task!(
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
     _preflight_solver_configurations!(task, blocks1, blocks2, policy)
-    # The luminosity prepare owns the header and the replace/append decision,
-    # and it runs BEFORE observer preparation so its append-mode refusals
-    # (mismatched header, corrupt file) fire before any companion output has
-    # been truncated (2026-08-05 audit, U4-4).
-    task.luminosity_path === nothing ||
-        _prepare_strong_strong_luminosity_file!(task, blocks1, Int(first_turn))
+    # Validate every output preparer BEFORE any of them commits, then commit.
+    #
+    # Ordering alone cannot fix this and the history shows why: the 2026-08-05
+    # audit (U4-4) moved the luminosity prepare ahead of `prepare_observers!`
+    # so a `.lum` refusal could not leave a truncated moment table — which
+    # merely reversed the window, so an observer refusal destroyed the `.lum`
+    # instead. Measured at 3 rows -> 0 in replace mode and 5 -> 2 in append,
+    # by an `execute!` that then tracked nothing (2026-08-05_b audit, F2).
+    #
+    # So: the luminosity planner does all of its reading, header matching and
+    # corruption refusal without writing; `prepare_observers!` then does its
+    # own validation-and-commit; and only then is the luminosity file written.
+    # A refusal on either side now leaves BOTH outputs as they were.
+    #
+    # Residual, recorded honestly: `prepare_observers!` still validates and
+    # commits together (its five observer types would each need splitting), so
+    # a failure of the luminosity COMMIT itself — a full disk, a read-only
+    # directory — can still land after the observers have committed. That
+    # window is narrower than either single-ordering window it replaces, and
+    # closing it needs a real two-phase commit across both subsystems.
+    lum_plan = task.luminosity_path === nothing ? nothing :
+        _plan_strong_strong_luminosity_file(task, blocks1, Int(first_turn))
     # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
     prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1);
                        turns=Int(turns), first_turn=Int(first_turn))
     prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2);
                        turns=Int(turns), first_turn=Int(first_turn))
+    lum_plan === nothing || _commit_strong_strong_luminosity_file!(task, lum_plan)
     try
         ctx = TrackingContext()
         Base.ScopedValues.with(_ACTIVE_STRONG_STRONG_DIAGNOSTICS => task.diagnostics,
@@ -2126,15 +2143,12 @@ only a luminosity VALUE to a shorter valid float in a single-collision layout
 has the right field count and survives; it is removed by any retry that
 replays its window, which is the documented crash protocol.
 """
-function _prepare_strong_strong_luminosity_file!(task::StrongStrongTask, blocks1,
-                                                 first_turn::Int)
+function _plan_strong_strong_luminosity_file(task::StrongStrongTask, blocks1,
+                                             first_turn::Int)
     path = task.luminosity_path
     header = sprint(io -> _write_strong_strong_luminosity_header(io, blocks1))
     if !task.luminosity_append || !isfile(path) || filesize(path) == 0
-        open(path, "w") do io
-            print(io, header)
-        end
-        return nothing
+        return (header=header, kept=String[], replace=true, torn=nothing, dropped=0)
     end
     lines = readlines(path)
     lines[1] * "\n" == header || throw(ArgumentError(
@@ -2147,9 +2161,9 @@ function _prepare_strong_strong_luminosity_file!(task::StrongStrongTask, blocks1
         parts = split(line, '\t')
         length(parts) == nfields && tryparse(Int, parts[1]) !== nothing
     end
+    torn = nothing
     if !isempty(rows) && !wellformed(rows[end])
-        @warn "luminosity_append: dropping a torn partial last line (an interrupted " *
-              "write) before continuing $(path)" line = rows[end]
+        torn = rows[end]
         rows = rows[1:(end - 1)]
     end
     bad = findfirst(!wellformed, rows)
@@ -2158,16 +2172,41 @@ function _prepare_strong_strong_luminosity_file!(task::StrongStrongTask, blocks1
         "malformed ($(repr(rows[bad]))), which cannot come from a torn final " *
         "write; refusing to continue a corrupt file. Use a new path."))
     kept = [line for line in rows if parse(Int, first(split(line, '\t'))) < first_turn]
-    if isempty(kept) && !isempty(rows)
+    return (header=header, kept=kept, replace=false, torn=torn, dropped=length(rows))
+end
+
+"""
+Write the luminosity file the plan describes. Separated from planning so that
+nothing is destroyed until every preparer has validated (2026-08-05_b audit,
+F2).
+
+The warnings live here rather than in the planner because a warning that
+announces a replacement which then does not happen — because a later preparer
+threw — is worse than no warning: it describes a file state that does not
+exist.
+"""
+function _commit_strong_strong_luminosity_file!(task::StrongStrongTask, plan)
+    path = task.luminosity_path
+    if plan.torn !== nothing
+        @warn "luminosity_append: dropping a torn partial last line (an interrupted " *
+              "write) before continuing $(path)" line = plan.torn
+    end
+    if isempty(plan.kept) && plan.dropped > 0
         @warn "luminosity_append=true is replacing the entire existing luminosity " *
-              "history at $(path): execution starts at turn $(first_turn), at or " *
-              "before every recorded row. Pass the matching absolute start_turn " *
-              "to execute! to continue the file instead." dropped_rows = length(rows)
+              "history at $(path): execution starts at or before every recorded " *
+              "row. Pass the matching absolute start_turn " *
+              "to execute! to continue the file instead." dropped_rows = plan.dropped
+    end
+    if plan.replace
+        open(path, "w") do io
+            print(io, plan.header)
+        end
+        return nothing
     end
     tmp = path * ".prepare.tmp"
     open(tmp, "w") do io
-        print(io, header)
-        for line in kept
+        print(io, plan.header)
+        for line in plan.kept
             println(io, line)
         end
     end

@@ -165,6 +165,15 @@ end
 # A fixed count also keeps the kernel branch-free for the GPU.
 const _SOL_MIDPOINT_ITERS = 16
 
+# The contraction factor `q = |L*ks| / (2*nst)` at or below which
+# `_SOL_MIDPOINT_ITERS` sweeps converge to machine precision. The fixed-point
+# map contracts at rate ~q, so the residual after 16 sweeps is ~q^16, and
+# q = 0.1 gives 1e-16 -- which is why the table above bottoms out at the one
+# point it was measured at (q = 0.069) and degrades smoothly above it:
+# q = 0.27 -> 1.8e-9, q = 0.78 -> 0.73, q >= 1 -> divergence or NaN.
+# Enforced at construction by `Solenoid` (2026-08-05_b audit, U9-1).
+const _SOL_MIDPOINT_CONTRACTION = 0.1
+
 """
 Curved-frame solenoid by the **implicit midpoint rule**.
 
@@ -410,6 +419,46 @@ function Solenoid(spec::ElementSpec,
     end
     nst = Int(getparam(spec, :nst, curved ? 16 : 1))
     nst >= 1 || throw(ArgumentError("solenoid nst must be at least 1; got $(nst)"))
+    # Guard the implicit stage's CONVERGENCE, not just the step count.
+    #
+    # `_SOL_MIDPOINT_ITERS` is a fixed 16 sweeps with no residual test, and the
+    # comment above it argues that 16 is enough "for every step count" from a
+    # table measured at the single point L=1.3, ks=1.7, h=0.18. That point has
+    # q = L*ks/(2*nst) = 0.069. The fixed-point map m <- u + (d/2)*f(m)
+    # contracts at rate ~q, so 16 sweeps leave a residual ~q^16 and the whole
+    # argument is a statement about q, not about nst. Outside that regime the
+    # element returned a badly non-symplectic map, or NaN, in silence
+    # (2026-08-05_b audit, U9-1). Measured |J'SJ - S| at the DEFAULT nst=16:
+    #
+    #     L     ks     h     q       residual
+    #     1.3   1.7    0.18  0.069   1.11e-16   <- the regime the table covers
+    #     5.0   1.7    0.1   0.266   1.77e-9
+    #     5.0   5.0    0.1   0.781   0.730
+    #     1.3   20.0   0.1   0.813   7.197
+    #     5.0   20.0   0.1   3.125   NaN
+    #
+    # ks = 20 m^-1 over L = 5 m is an ordinary detector solenoid, and the
+    # ParamMeta text invites users to vary `nst`, so this was reachable by
+    # following the documentation. Measured Lesson 5: a pin quoted outside the
+    # regime it was measured in.
+    #
+    # Construction-time only: costs nothing per particle and leaves the kernel
+    # branch-free for the GPU, which is why `_SOL_MIDPOINT_ITERS` is fixed.
+    if curved
+        q = abs(L * ks) / (2 * nst)
+        nst_ok = ceil(Int, abs(L * ks) / (2 * _SOL_MIDPOINT_CONTRACTION))
+        q < 1 || throw(ArgumentError(
+            "curved solenoid: the implicit-midpoint stage cannot converge with " *
+            "nst = $(nst). The fixed-point contraction factor L*ks/(2*nst) is " *
+            "$(q), which is >= 1, so the $(_SOL_MIDPOINT_ITERS) fixed-point " *
+            "sweeps diverge and the map is not symplectic (it may be NaN). " *
+            "Use nst >= $(nst_ok)."))
+        q <= _SOL_MIDPOINT_CONTRACTION || @warn(
+            "curved solenoid: the implicit-midpoint stage is not converged at " *
+            "nst = $(nst); the map is symplectic only to about q^$(_SOL_MIDPOINT_ITERS). " *
+            "Increase nst to $(nst_ok) for a machine-precision map.",
+            contraction_factor = q, nst = nst, suggested_nst = nst_ok)
+    end
     n = max(length(kn_raw), length(ksk_raw))
     # Promote over the multipole strengths too, not only (L, ks, h): a dual
     # k1 through `numeric_type`-blind conversion was a `Float64(::Dual)`
