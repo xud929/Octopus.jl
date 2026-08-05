@@ -79,6 +79,12 @@ function drift(a, b)
 end
 
 rows = Vector{Any}()
+# Loud, not silent (2026-08-05 audit, U21-9): a run whose baseline tag is
+# absent used to vanish from the table without a word.
+let missing_base = sort([t for t in keys(runs) if !haskey(runs, baseline_for(t))])
+    isempty(missing_base) ||
+        println("SKIPPED (no baseline run found): ", join(missing_base, ", "))
+end
 @printf("%-10s %6s %9s %11s %11s %11s %11s %10s\n",
         "tag", "npart", "turn_s", "lum_mean", "lum_worst", "epsy_mean", "epsx_mean", "lum_drift")
 for tag in sort(collect(keys(runs)))
@@ -105,26 +111,34 @@ if length(coord_tags) >= 2
     key(d, i) = (Int(d[i, bcols["turn"]]), Int(d[i, bcols["beam"]]), Int(d[i, bcols["particle"]]))
     bidx = Dict(key(bd, i) => i for i in axes(bd, 1))
     @printf("coordinate baseline = %s\n\n", cbase)
-    @printf("%-10s %6s %14s %14s %14s\n", "tag", "turn", "rms_dx/sigx", "rms_dy/sigy", "max_dy/sigy")
-    sigx, sigy = 106.0e-6, 9.5e-6
+    @printf("%-10s %6s %5s %14s %14s %14s\n",
+            "tag", "turn", "beam", "rms_dx/sigx", "rms_dy/sigy", "max_dy/sigy")
+    # Per-beam grouping and normalization (2026-08-05 audit, U21-9): the
+    # comparison used to pool both beams into one per-turn vector and
+    # normalize everything by the electron sigmas, so the advertised
+    # per-particle bias metric was beam-blind and mis-scaled for the proton
+    # rows. Sigmas match the run script's beams (pic_option_consistency.jl:
+    # beam 1 electron 106/9.5 um, beam 2 proton 95/8.5 um).
+    sig = Dict(1 => (106.0e-6, 9.5e-6), 2 => (95.0e-6, 8.5e-6))
     for tag in coord_tags
         tag == cbase && continue
         d, h = runs[tag]["coords"]
         cols = Dict(String(c) => i for (i, c) in enumerate(vec(h)))
-        byturn = Dict{Int,Vector{Tuple{Float64,Float64}}}()
+        byturn = Dict{Tuple{Int,Int},Vector{Tuple{Float64,Float64}}}()
         for i in axes(d, 1)
             k = (Int(d[i, cols["turn"]]), Int(d[i, cols["beam"]]), Int(d[i, cols["particle"]]))
             j = get(bidx, k, nothing)
             j === nothing && continue
-            push!(get!(() -> Tuple{Float64,Float64}[], byturn, k[1]),
+            push!(get!(() -> Tuple{Float64,Float64}[], byturn, (k[1], k[2])),
                   (d[i, cols["x"]] - bd[j, bcols["x"]], d[i, cols["y"]] - bd[j, bcols["y"]]))
         end
-        for t in sort(collect(keys(byturn)))
-            v = byturn[t]
+        for tb in sort(collect(keys(byturn)))
+            v = byturn[tb]
+            sigx, sigy = sig[tb[2]]
             rx = sqrt(mean(abs2(a[1]) for a in v)) / sigx
             ry = sqrt(mean(abs2(a[2]) for a in v)) / sigy
             my = maximum(abs(a[2]) for a in v) / sigy
-            @printf("%-10s %6d %14.3e %14.3e %14.3e\n", tag, t, rx, ry, my)
+            @printf("%-10s %6d %5d %14.3e %14.3e %14.3e\n", tag, tb[1], tb[2], rx, ry, my)
         end
     end
 end

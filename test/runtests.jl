@@ -3382,6 +3382,16 @@ end
         end
         @test ok
     end
+    # The clean examples write into repo-root result/ by their documented
+    # config (gitignored, but every Pkg.test left the artifacts behind;
+    # 2026-08-05 audit, U18-3). Remove exactly the files these runs create,
+    # in both output directories, and leave anything else in result/ alone.
+    for dir in (joinpath(root, "result"), joinpath(root, "test", "result")),
+        name in ("weak_strong.lum", "weak_strong_moments.h5",
+                 "pic_hcc.lum", "pic_hcc.ele.h5", "pic_hcc.pro.h5")
+
+        rm(joinpath(dir, name); force=true)
+    end
 end
 
 @testset "The module precompiles without overwriting its own methods" begin

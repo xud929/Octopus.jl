@@ -174,7 +174,12 @@ the closed form to 1.2e-14, q_sigma - Q0 = 1.2e-7, (q_pi - Q0)/xi = 1.999988.
   `multislice_centroids_bb3d_n9.tsv`, and the 16384-turn sigma-resolution pair
   `multislice_centroids_{octopus_kicked,bb3d}_16k.tsv`.
 - **Sec. 5.5, luminosity anchor.** `crossing_lum_anchor.tsv`
-  (`../validation/crossing_luminosity_anchor.jl`; analytic Piwinski reference).
+  (`../validation/crossing_luminosity_anchor.jl`; analytic Piwinski
+  reference). Provenance caveat: the script prints the R values and writes
+  only `.lum` files under `result/lum_anchor/` — this TSV was assembled BY
+  HAND from that output, so there is no machine-reproducible path from
+  script to artifact; re-deriving it means re-running the script and
+  re-transcribing (2026-08-05 audit, U21-12).
 - **Sec. 5.5, crossing-angle dynamical cross-check.**
   `multislice_centroids_{octopus_kicked,bb3d}_crossing.tsv` (half angle
   3.855e-4, Piwinski phi = 1). Deck note: the BeamBeam3D field labeled `alpha`

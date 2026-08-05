@@ -641,6 +641,13 @@ if record_turn_times
     println("turn_timings_seconds = ", join(timings, ','))
     timing_path = get(ENV, "OCTOPUS_TURN_TIMING_PATH", "")
     if !isempty(timing_path)
+        # A relative path resolves against this harness's own result
+        # directory, not the caller's cwd: the header's documented example
+        # (result/pic_turn_times.tsv) used to land in repo-root result/,
+        # contradicting the same header's claim that this harness keeps its
+        # outputs beside the tests (2026-08-05 audit, U18-5).
+        isabspath(timing_path) ||
+            (timing_path = joinpath(@__DIR__, "..", timing_path))
         mkpath(dirname(timing_path))
         open(timing_path, "w") do io
             println(io, "turn\tseconds")

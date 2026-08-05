@@ -4,6 +4,12 @@ Convergence of the Gaussian longitudinal slicing rules at EIC weak-strong parame
 This is simultaneously the correctness check for the `slice_method` implementations
 and the study that ranks them: a rule that is implemented wrongly does not converge
 to the same limit as the others, so agreement at large `ns` is the verification.
+That check is PRINT-ONLY — the script writes its tables and exits zero, and
+"agreement at large ns" is read from the printed convergence columns by a
+human, not asserted (2026-08-05 audit, U21-11). Note also the test bunch is
+drawn with `Random.Xoshiro`, not the project counter RNG, so recorded
+per-sample values are Julia-version-dependent; the converged limits and
+rankings are not.
 
 Reference model
 ---------------
@@ -85,7 +91,6 @@ config = (
     n_particles    = 4000,
     ns_list        = [3, 5, 7, 9, 15, 21, 31, 45, 61],
     ns_reference   = 601,
-    ns_crosscheck  = 61,          # gauss_hermite ceiling: weights underflow beyond ~100
     rules          = collect(O.SLICE_METHODS),
     # :equal_width has TWO convergence parameters. Its bin width is tied here to
     # Furman #1's growing half-span 1+(ns-3)/12 so that ns alone drives it; at a

@@ -70,6 +70,9 @@ Outputs (under `result/`)
 - `slice_longitudinal_zscan.tsv`         -- per-sample curves, plot ready
 - `slice_longitudinal_zscan_summary.tsv` -- one row per (case, scheme, component)
 - `slice_longitudinal_zscan_jumps.tsv`   -- per-boundary discontinuities
+- `slice_longitudinal_zscan_cells.tsv`   -- per-source-slice mesh cell sizes,
+  per-slice-pair vs shared, with the worst width/height ratios (this fourth
+  file went undocumented here and in the README; 2026-08-05 audit, U21-8)
 """
 
 include("../src/Octopus.jl")
@@ -137,9 +140,6 @@ ws = O._pic_cpu_workspace(T, nx, ny)
 newfield() = O._PICFieldWorkspace(zeros(T, nx, ny), zeros(T, nx, ny), zeros(T, nx, ny))
 
 # ------------------------------------------------------------- utilities -----
-"""Quadratic Lagrange weights on the equispaced nodes t = 0, 1/2, 1."""
-lagrange3(t) = (2t^2 - 3t + 1, 4t - 4t^2, 2t^2 - t)
-
 """Solve the drifted source field on a fixed grid and return a field workspace."""
 function solve_at(src, drift, sg, green_fft)
     fw = newfield()

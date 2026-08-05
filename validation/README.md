@@ -488,7 +488,8 @@ julia --threads=4 --project=. validation/slice_longitudinal_zscan.jl
 
 Outputs under `result/`: `slice_longitudinal_zscan.tsv` (per-sample curves,
 plot ready), `_summary.tsv` (per component and scheme), `_jumps.tsv`
-(per-boundary discontinuities).
+(per-boundary discontinuities), `_cells.tsv` (per-source-slice mesh cell
+sizes, per-slice-pair vs shared, with worst width/height ratios).
 
 Derivation, error constants and the measured first-run results are in
 `../docs/theory/slice_longitudinal_interpolation.md`; the change record is in
