@@ -1,5 +1,10 @@
 # Comprehensive Scientific Software Audit, Verification, Validation, and Performance Review
 
+Invocable as the `/comprehensive-audit` skill
+(`.claude/skills/comprehensive-audit/SKILL.md`), which loads this document
+as binding and takes an optional scope argument. The skill is a thin entry
+point; this document stays the single authoritative protocol.
+
 ## Mission
 
 Perform a rigorous, repository-wide audit of this project.
@@ -159,7 +164,9 @@ reference implementation to compare against, and a requirement that every
 claim carry a `file:line` and a reproduction. In this repository's series,
 the agents that found the most were those whose hypothesis matched a defect
 class the codebase had already produced; an unbriefed "find bugs" agent
-mostly reports style.
+mostly reports style. The checked-in `audit-reader` agent definition
+(`.claude/agents/audit-reader.md`) carries these rules and the lead format,
+so a brief only needs to add the region, the hypothesis, and the reference.
 
 **What never to delegate.**
 
