@@ -115,16 +115,29 @@ from solver error.
 
 ## 3. Results: the Vlasov band (symmetric beams)
 
-First-run numbers (`result/yokoya_vs_aspect.tsv`,
-`yokoya_vs_aspect_measured.tsv`; figure `result/yokoya_vs_aspect.png`):
+Current numbers (`result/yokoya_vs_aspect.tsv`, regenerated 2026-08-05;
+measured 2D column from `yokoya_vs_aspect_measured.tsv`; figure
+`result/yokoya_vs_aspect.png`):
 
 | $r=\sigma_y/\sigma_x$ | 1D model, m=1 matrix | 1D model, exact (sim) | full 2D PIC (measured) |
 |---|---|---|---|
-| 0.02–0.05 | 0.86–0.91 (buried) | no discrete mode | 1.25 |
-| 0.09–0.1  | 0.89 | 0.66 | **1.27** |
-| 0.2–0.3   | 1.10–1.26 | 1.29–1.50 | 1.24 |
-| 0.5       | 1.35 | 1.55 | 1.20 |
-| 1.0 (round) | 1.40 | 1.25 | **1.19** |
+| 0.02–0.05 † | 23.2 / 5.51 | 1.297 / 1.289 | 1.25 |
+| 0.1  | 1.923 | 1.274 | **1.27** |
+| 0.2–0.3   | 1.261 / 1.238 | 1.246 / 1.223 | 1.24 |
+| 0.5       | 1.206 | 1.190 | 1.20 |
+| 0.7       | 1.184 | 1.167 | — |
+| 1.0 (round) | 1.162 | 1.143 | **1.19** |
+
+† Outside the validated regime: self-check 4 bounds the 1D reduction's
+trustworthy range, and at these aspect ratios the radial detuning
+$u(J)$ exceeds its physical maximum of 1 (measured max $u \approx 1.8$ at
+NJ=40 growing to $\approx 2.9$ at NJ=72 — grid-dependent, i.e. an artifact),
+so the matrix numbers in this row characterize the truncation, not the
+physics. The 2026-08-05 audit found the table's PREVIOUS numbers
+(0.86–1.40 matrix, "no discrete mode"–1.55 sim) were pre-normalization-fix
+data the code no longer produces, contradicting conclusion 2 below; the
+audit's fix campaign regenerated every row from current code and added this
+regime flag (audit queue U19-1/U19-3).
 
 Three conclusions, in decreasing order of certainty:
 
@@ -195,25 +208,27 @@ $\sigma_p = (95, 8.5)\,\mu$m, tunes $e\,(0.08, 0.14)$, $p\,(0.228, 0.210)$):
   is **smaller than $\xi_e$** — the electron continuum overlaps the proton
   tune. This is the structurally interesting plane.
 
-First-run coupled eigen-solve (`result/eic_coherent_modes.tsv`, figure
-`result/eic_coherent_modes.png`):
+Current coupled eigen-solve (`result/eic_coherent_modes.tsv`, regenerated
+2026-08-05; figure `result/eic_coherent_modes.png`):
 
 | plane | e continuum | p continuum | discrete modes outside both |
 |---|---|---|---|
-| x | $[0.080,\ 0.155]$ | $[0.228,\ 0.236]$ | none |
-| y | $[0.140,\ 0.240]$ | $[0.210,\ 0.219]$ (inside e band) | none; top eigenvalue $0.2415$, i.e. at the e-continuum edge, $(Q-Q_e)/\xi_e = 1.01$ |
+| x | $[0.080,\ 0.2549]$ | $[0.228,\ 0.2509]$ | none (top mode $0.25488$, at the e-continuum edge, $(Q-Q_e)/\xi_e = 1.98$) |
+| y | $[0.140,\ 0.2126]$ | $[0.210,\ 0.2168]$ | **one: $0.22432$**, above BOTH continua, $(Q-Q_e)/\xi_e = 0.84$, $(Q-Q_p)/\xi_p = 1.52$ |
 
-The physics conclusion mirrors the RHIC/LHC experience with split tunes
-(White et al.): with the working points separated by more than the
-proton's $\xi_p$, no coherent dipole mode detaches from the incoherent
-continua in either plane — every mode remains Landau-dampable. The $y$ plane
-is the marginal case: the electron continuum swallows the proton tune, and
-the topmost coupled mode sits *at* the electron continuum edge rather than
-clearly above it, so modest parameter changes (higher $\xi_e$, smaller tune
-split, weaker damping) could detach it. That marginality — not a single
-Yokoya number — is the actionable output for the asymmetric case, and it is
-why `CoherentModePhysicsContract` gates only the symmetric configuration
-while the EIC case is run as a demonstration.
+> **Correction (2026-08-05 audit, U19-2).** This section previously
+> concluded "no coherent dipole mode detaches from the incoherent continua
+> in either plane — every mode remains Landau-dampable", with the y-plane
+> "marginal" (top eigenvalue at the e-continuum edge). The current
+> eigen-solve — after the normalization fix the previous table predated —
+> puts a discrete y-plane mode OUTSIDE both continua. The x-plane
+> conclusion stands; the y-plane one does not: in this model that mode has
+> no continuum to Landau-damp it, and the earlier "marginality" was
+> understated. The caveats stand too: the y-plane sits in the coupled
+> regime the 1D reduction is least trusted in, so this is a model
+> prediction to check against strong-strong simulation, not a machine
+> statement. `CoherentModePhysicsContract` continues to gate only the
+> symmetric configuration while the EIC case is run as a demonstration.
 
 **Strong-strong simulation comparison**
 (`validation/coherent_mode_eic_comparison.jl`; figure

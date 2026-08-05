@@ -6,10 +6,14 @@ coupled Vlasov mode analysis of validation/coherent_mode_vlasov_theory.jl
 The theory predicts, for the head-on equivalent of the strong-strong example
 constants (xi_e = 0.088/0.100 in x/y, xi_p = 0.0094):
 
-- NO coherent dipole mode detaches from the incoherent continua in either
-  plane (x: bands well separated by the 0.148 tune split; y: the electron
-  continuum [0.14, 0.24] swallows the proton tune, top mode exactly at the
-  electron continuum edge);
+- x plane: no coherent dipole mode detaches from the incoherent continua
+  (bands separated by the 0.148 tune split; top mode 0.25488 at the
+  electron-continuum edge);
+- y plane: ONE discrete mode detaches ABOVE both continua (0.22432;
+  (Q-Q_e)/xi_e = 0.84, (Q-Q_p)/xi_p = 1.52) — this header previously
+  claimed no detachment in either plane, which was pre-normalization-fix
+  output the eigen-solve no longer produces (2026-08-05 audit, U19-2; see
+  the correction block in the theory note, section 4);
 - therefore both beams' centroid responses should be Landau-damped: broad
   spectral structure confined to the predicted continua, with no persistent
   narrow lines outside them.
