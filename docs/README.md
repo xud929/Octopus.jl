@@ -403,6 +403,17 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   [`comprehensive_audit_2026_08_05_unit_reports/`](history/comprehensive_audit_2026_08_05_unit_reports/)
   — they were session-scratch until the post-campaign queue session found
   the queue unactionable without them),
+  [`comprehensive_audit_2026_08_05_b.md`](history/comprehensive_audit_2026_08_05_b.md)
+  (second full re-read the same day, at `7de4d81`, uniform depth at the
+  owner's direction. Its reason for existing: the prior pass declared commit
+  `6a3f39ab`, and HEAD was **63 commits and +9,125/−775 lines** beyond it —
+  the prior audit's own fix campaign and queue-closure session, i.e. the code
+  written *in response to* findings, which no audit had since read, with the
+  largest deltas in `test/runtests.jl` (+1,294), `BeamObservers.jl` (+331),
+  `interface.jl` (+247) and an entirely new `test/nightly_suite.sh`.
+  Per-unit agent reports and the pre-modification behavioural fingerprint
+  harness plus its baseline are archived beside it under
+  [`comprehensive_audit_2026_08_05_b_unit_reports/`](history/comprehensive_audit_2026_08_05_b_unit_reports/)),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite
