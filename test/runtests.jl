@@ -2937,6 +2937,13 @@ end
     # was built (same strict-signature class as part 7's G1).
     sol_kw(kw) = NamedTuple(k === :ks ? :kskew => v : k => v for (k, v) in pairs(kw))
     for kw in contents
+        # The empty content is the pure curved solenoid, which takes the
+        # implicit-midpoint path and sits at its 1.1e-9 nst=4 floor -- it is
+        # asserted at the right tolerances by the dedicated pair below, not
+        # here. The 2026-08-05 audit found this loop asserting 1e-12 on it,
+        # which failed (deterministically) every full-suite run since the
+        # sweep landed and aborted the suite at this testset.
+        isempty(pairs(kw)) && continue
         @test residual(compile_runtime(SolenoidSpec(; L=1.3, ks=1.7, h=0.18,
                                                     nst=4, sol_kw(kw)...))) < 1.0e-12
     end

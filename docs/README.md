@@ -385,6 +385,10 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   via one atomic kernel pass, bit-identical to a per-bin-mask oracle, and
   the transverse spectral path down from 2*n1*n2 to n1+n2 solves with
   kicks captured bit-identical -- so the parts 6-7 queue is fully closed),
+  [`comprehensive_audit_2026_08_05.md`](history/comprehensive_audit_2026_08_05.md)
+  (**in progress**: full 50k-line re-read at `6a3f39a` — every `src/`, `test/`,
+  `examples/`, `validation/` line regardless of prior coverage, with the live
+  coverage ledger, seam map, lead queue and change log in the file itself),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite
