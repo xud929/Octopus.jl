@@ -570,6 +570,22 @@ U2-3 (1-ulp TSC w3 note), and the two U4 observations (mixed-IP schedule
 row semantics; `_collision_solver` identity comparison). None is
 correctness-critical; each carries its file:line in the unit reports.
 
+### Post-campaign closures (2026-08-05, audit-queue session)
+
+- **U9-1** R9 dropped-charge tripwire ported to all three CUDA spectral
+  deposit kernels (`9f5accf`). Clipped weight is counted inside the deposit
+  kernels (a subset-sum difference in matching term order -- exactly 0.0
+  with no atomic when nothing clips) because a per-solve grid total would
+  synchronize the stream; one aggregate warning per collision, flushed from
+  a one-element device accumulator. Verified: 1.0 exactly per fully-out
+  particle through each kernel, all-inside control exactly 0.0, the CPU R9
+  configuration warns through the CUDA 6D path (aggregate fraction 0.097
+  vs CPU per-solve 0.83/0.34), parity unchanged (coords <= 6.2e-18, lum
+  2.1e-16), cost within noise at 200k/15 slices/grid 128. The transverse
+  path cannot clip -- it never moves x/y inside a collision -- which is
+  why the CPU R9 suite case (and the new CUDA one) fires only through the
+  6D map.
+
 
 
 Every item below survived to the end of this pass unfixed, with its severity
