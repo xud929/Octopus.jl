@@ -70,9 +70,10 @@ end
     parameters = (
         angle=ParamMeta(required=true, unit="rad", meaning="boost crossing angle"),
         tracking_method=ParamMeta(default=NonSymplectic6DMap(), meaning="per-element tracking method"),
+        _PLACEMENT_PARAMS...,
     )
     example = LorentzBoostSpec(0.03)
-    construction_help = "Friendly constructor: LorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata."
+    construction_help = "Friendly constructor: LorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 """
@@ -107,9 +108,10 @@ end
     parameters = (
         angle=ParamMeta(required=true, unit="rad", meaning="reverse boost crossing angle"),
         tracking_method=ParamMeta(default=NonSymplectic6DMap(), meaning="per-element tracking method"),
+        _PLACEMENT_PARAMS...,
     )
     example = RevLorentzBoostSpec(0.03)
-    construction_help = "Friendly constructor: RevLorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:rev_lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata."
+    construction_help = "Friendly constructor: RevLorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:rev_lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 LorentzBoost(angle::Number) = _lorentz_boost(LorentzBoost, angle, NonSymplectic6DMap())

@@ -300,7 +300,8 @@ end
         eta2=ParamMeta(default=(0, 0, 0, 0), meaning="final momentum dispersion coefficients"),
         R2=ParamMeta(default=(0, 0, 0, 0), meaning="final x-y coupling coefficients"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
+        _PLACEMENT_PARAMS...,
     )
     example = Linear6DSpec{Float64}(matrix=Matrix{Float64}(I, 6, 6))
-    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...), where matrix must be canonical symplectic, or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), zeta2=zeta1, eta2=eta1, R2=R1, tracking_method=Symplectic6DMap(), kwargs...)."
+    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...), where matrix must be canonical symplectic, or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), zeta2=zeta1, eta2=eta1, R2=R1, tracking_method=Symplectic6DMap(), kwargs...). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end

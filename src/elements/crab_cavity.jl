@@ -153,9 +153,10 @@ end
         strengthY=ParamMeta(default=(), meaning="vertical kick strength tuple of length N"),
         phase=ParamMeta(unit="rad", default=(), meaning="phase tuple of length N"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
+        _PLACEMENT_PARAMS...,
     )
     example = ThinCrabCavitySpec{2}(1.0e8; strengthX=(1.0, 0.5), strengthY=(0.25, 0.125), phase=(0.0, 0.1))
-    construction_help = "Friendly constructor: ThinCrabCavitySpec{N}(frequency; strengthX, strengthY, phase, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:thin_crab_cavity}(; N=N, frequency=frequency, strengthX=strengthX, strengthY=strengthY, phase=phase, tracking_method=tracking_method, kwargs...). Harmonic tuples must have length N; omitted tuples are filled with zeros."
+    construction_help = "Friendly constructor: ThinCrabCavitySpec{N}(frequency; strengthX, strengthY, phase, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:thin_crab_cavity}(; N=N, frequency=frequency, strengthX=strengthX, strengthY=strengthY, phase=phase, tracking_method=tracking_method, kwargs...). Harmonic tuples must have length N; omitted tuples are filled with zeros. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 @inline function _cavity_get(cavity, row::Integer, harmonic::Integer)

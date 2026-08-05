@@ -461,9 +461,10 @@ end
         element_id=ParamMeta(default=0, meaning="identifier stamped into each loss record; assigned by the task from the aperture's position in the compiled line"),
         loss_record=ParamMeta(default=nothing, meaning="per-beam loss record this aperture writes into; supplied by the task, `nothing` means kill and count without recording"),
         tracking_method=ParamMeta(default=NonSymplectic6DMap(), meaning="per-element tracking method"),
+        _PLACEMENT_PARAMS...,
     )
     example = ApertureSpec(shape=:rectellipse, x_limit=2.0e-2, y_limit=5.0e-3, name="COLL_H")
-    construction_help = "Friendly constructor: ApertureSpec(; shape=:rectangle, x_limit, y_limit, dx=0, dy=0, alive=nothing, name=\"\", tracking_method=NonSymplectic6DMap()). Regular shapes are :rectangle, :ellipse and :rectellipse; anything else goes through `alive`, a pure scalar predicate on all six coordinates. Killed particles become NaN in every coordinate. Loss position resolves only to where you place apertures, so guard both faces of a magnet with two of them. The task supplies element_id and loss_record when it builds the lattice; set neither by hand."
+    construction_help = "Friendly constructor: ApertureSpec(; shape=:rectangle, x_limit, y_limit, dx=0, dy=0, alive=nothing, name=\"\", tracking_method=NonSymplectic6DMap()). Regular shapes are :rectangle, :ellipse and :rectellipse; anything else goes through `alive`, a pure scalar predicate on all six coordinates. Killed particles become NaN in every coordinate. Loss position resolves only to where you place apertures, so guard both faces of a magnet with two of them. The task supplies element_id and loss_record when it builds the lattice; set neither by hand. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 const LOSS_RECORD_COLUMNS =

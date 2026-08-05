@@ -309,9 +309,10 @@ end
         is_excitation=ParamMeta(default=true, meaning="enable stochastic excitation when sigma and beta are valid"),
         tracking_method=ParamMeta(default=Radiation6DMap(), meaning="per-element tracking method; use Damping6DMap() for damping only or Diffusion6DMap() for diffusion only"),
         rng_id=ParamMeta(default=0, meaning="counter-RNG stream id for stochastic excitation; 0 auto-assigns a unique id"),
+        _PLACEMENT_PARAMS...,
     )
     example = LumpedRadSpec{Float64}(damping_turns=(1000.0, 1000.0, 500.0), rng_id=1)
-    construction_help = "Friendly constructor: LumpedRadSpec{T}(; damping_turns, beta=(1,1,1), alpha=(0,0,0), sigma=(-1,-1,-1), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), is_damping=true, is_excitation=true, tracking_method=Radiation6DMap(), rng_id=0, kwargs...)."
+    construction_help = "Friendly constructor: LumpedRadSpec{T}(; damping_turns, beta=(1,1,1), alpha=(0,0,0), sigma=(-1,-1,-1), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), is_damping=true, is_excitation=true, tracking_method=Radiation6DMap(), rng_id=0, kwargs...). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 default_method(::Type{ElementSpec{:lumped_radiation}}) = Radiation6DMap()

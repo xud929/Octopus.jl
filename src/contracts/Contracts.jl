@@ -1938,6 +1938,18 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     :solenoid => (L=1.3, ks=0.35, kn=(0.0, 0.6), kskew=(0.0, 0.2), nst=2),
     :patch => (dx=1.0e-3, dy=-2.0e-3, dz=0.05,
                angle_x=1.2e-2, angle_y=-0.8e-2, angle_s=0.3, t_offset=2.0e-3),
+    # All four coefficients nonzero, unlike the one-coefficient curated
+    # examples: a placement offset acts on these linear maps only through the
+    # coordinates the map READS (a zeta2/eta2/r-coefficient channel), so the
+    # single-coefficient examples leave most placement conjugations exactly
+    # inert when the physics is not (2026-08-05 audit, U13-2 completion).
+    :crab_dispersion => (zeta1=0.1, zeta2=0.07, zeta3=-0.06, zeta4=0.05),
+    :momentum_dispersion => (eta1=0.4, eta2=0.02, eta3=0.05, eta4=-0.01),
+    :xy_coupling => (r1=0.01, r2=0.02, r3=-0.015, r4=0.012),
+    # Unequal transverse damping rates: the curated example damps x and y
+    # equally, and an isotropic transverse map commutes with a roll about s,
+    # so `tilt` would read as inert when it is only unprobeable there.
+    :lumped_radiation => (damping_turns=(1000.0, 800.0, 500.0), rng_id=1),
 )
 const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:drift, :nst) => "the drift is exact, so there are no integration steps",
@@ -1963,6 +1975,32 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:aperture, :name) => "a label carried into the loss log, not into the coordinate map",
     (:aperture, :element_id) => "stamped into loss records by the task; does not enter the coordinate map",
     (:aperture, :loss_record) => "an output handle written on the loss transition, not an input to the map",
+    # Placement parameters (declared for every kind since the schemas learned
+    # to carry them; 2026-08-05 audit, U13-2 completion). These entries are
+    # derived from MAP STRUCTURE, not from a bitwise sweep: a mathematically
+    # inert conjugation can still move the last bit through the (v - d) + d
+    # frame round trip, so a sweep splits hairs the physics does not.
+    (:marker, :x_offset) => "the identity map commutes with every rigid placement: the exit frame change undoes the entrance one exactly",
+    (:marker, :y_offset) => "identity map; see marker.x_offset",
+    (:marker, :z_offset) => "identity map; see marker.x_offset",
+    (:marker, :x_pitch) => "identity map; the rotation conjugation cancels to roundoff",
+    (:marker, :y_pitch) => "identity map; the rotation conjugation cancels to roundoff",
+    (:marker, :tilt) => "identity map; the rotation conjugation cancels to roundoff",
+    (:marker, :ref_tilt) => "identity map; the design-roll conjugation cancels to roundoff",
+    (:thin_dipole, :x_offset) => "a constant kick commutes with transverse displacements: shift in, kick by the same constant, shift back",
+    (:thin_dipole, :y_offset) => "constant kick; see thin_dipole.x_offset",
+    (:hkicker, :x_offset) => "constant kick; see thin_dipole.x_offset",
+    (:hkicker, :y_offset) => "constant kick; see thin_dipole.x_offset",
+    (:vkicker, :x_offset) => "constant kick; see thin_dipole.x_offset",
+    (:vkicker, :y_offset) => "constant kick; see thin_dipole.x_offset",
+    (:kicker, :x_offset) => "constant kick; see thin_dipole.x_offset",
+    (:kicker, :y_offset) => "constant kick; see thin_dipole.x_offset",
+    (:thin_rf_cavity, :x_offset) => "the thin RF kick reads z and writes pt only, so a transverse displacement conjugates to exactly nothing",
+    (:thin_rf_cavity, :y_offset) => "reads z, writes pt; see thin_rf_cavity.x_offset",
+    (:thin_rf_cavity, :tilt) => "the map is independent of the transverse coordinates, so a roll about s commutes (cancels to roundoff)",
+    (:thin_rf_cavity, :ref_tilt) => "transverse-independent map; a design roll commutes like tilt does",
+    (:lorentz_boost, :y_offset) => "the horizontal-crossing boost writes y without reading it, so a vertical displacement conjugates to exactly nothing",
+    (:rev_lorentz_boost, :y_offset) => "writes y without reading it, as the forward boost does; the sweep sees roundoff here, not physics",
 )
 
 Base.@kwdef struct ElementParameterEffectivenessContract <: AbstractImplementationContract

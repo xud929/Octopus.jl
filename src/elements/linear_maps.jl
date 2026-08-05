@@ -63,9 +63,10 @@ CrabDispersion{T}(zeta1, zeta2, zeta3, zeta4) where {T<:Number} =
         zeta3=ParamMeta(default=0, meaning="y-z crab dispersion coefficient"),
         zeta4=ParamMeta(default=0, meaning="py-z crab dispersion coefficient"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
+        _PLACEMENT_PARAMS...,
     )
     example = CrabDispersionSpec{Float64}(zeta1=0.1)
-    construction_help = "Friendly constructor: CrabDispersionSpec{T}(; zeta1, zeta2, zeta3, zeta4, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:crab_dispersion}(; zeta1=zeta1, zeta2=zeta2, zeta3=zeta3, zeta4=zeta4, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata."
+    construction_help = "Friendly constructor: CrabDispersionSpec{T}(; zeta1, zeta2, zeta3, zeta4, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:crab_dispersion}(; zeta1=zeta1, zeta2=zeta2, zeta3=zeta3, zeta4=zeta4, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 CrabDispersion(spec::ElementSpec{:crab_dispersion}, method::AbstractTrackingMethod=tracking_method(spec)) =
@@ -131,9 +132,10 @@ MomentumDispersion{T}(eta1, eta2, eta3, eta4) where {T<:Number} =
         eta3=ParamMeta(default=0, meaning="y-pz momentum dispersion coefficient"),
         eta4=ParamMeta(default=0, meaning="py-pz momentum dispersion coefficient"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
+        _PLACEMENT_PARAMS...,
     )
     example = MomentumDispersionSpec{Float64}(eta1=0.2)
-    construction_help = "Friendly constructor: MomentumDispersionSpec{T}(; eta1, eta2, eta3, eta4, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:momentum_dispersion}(; eta1=eta1, eta2=eta2, eta3=eta3, eta4=eta4, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata."
+    construction_help = "Friendly constructor: MomentumDispersionSpec{T}(; eta1, eta2, eta3, eta4, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:momentum_dispersion}(; eta1=eta1, eta2=eta2, eta3=eta3, eta4=eta4, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 MomentumDispersion(spec::ElementSpec{:momentum_dispersion}, method::AbstractTrackingMethod=tracking_method(spec)) =
@@ -200,9 +202,10 @@ end
         r4=ParamMeta(default=0, meaning="coupling coefficient r4"),
         mode=ParamMeta(default=XY_MODEA, meaning="coupling convention"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
+        _PLACEMENT_PARAMS...,
     )
     example = XYCouplingSpec{Float64}(r1=0.01)
-    construction_help = "Friendly constructor: XYCouplingSpec{T}(; r1, r2, r3, r4, mode=XY_MODEA, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:xy_coupling}(; r1=r1, r2=r2, r3=r3, r4=r4, mode=mode, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata."
+    construction_help = "Friendly constructor: XYCouplingSpec{T}(; r1, r2, r3, r4, mode=XY_MODEA, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:xy_coupling}(; r1=r1, r2=r2, r3=r3, r4=r4, mode=mode, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 XYCoupling(r1::T, r2::T, r3::T, r4::T) where {T<:Number} =

@@ -1047,9 +1047,10 @@ end
         nst=ParamMeta(default=1, meaning="integration steps; unused because the drift is exact"),
         integrator_order=ParamMeta(default=2, meaning="unused because the drift is exact"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
+        _PLACEMENT_PARAMS...,
     )
     example = DriftSpec(L=0.5)
-    construction_help = "Friendly constructor: DriftSpec(; L, h=0, curved=nothing, nst=1, integrator_order=2, tracking_method=Symplectic6DMap()). Exact in (1+delta); h != 0 gives a curved drift. nst and integrator_order are accepted for interface uniformity and unused, because the drift is exact."
+    construction_help = "Friendly constructor: DriftSpec(; L, h=0, curved=nothing, nst=1, integrator_order=2, tracking_method=Symplectic6DMap()). Exact in (1+delta); h != 0 gives a curved drift. nst and integrator_order are accepted for interface uniformity and unused, because the drift is exact. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 @element_spec begin
@@ -1084,9 +1085,10 @@ end
         tilt=_COMMON_PARAMS.tilt,
         misalign_convention=_COMMON_PARAMS.misalign_convention,
         tracking_method=_COMMON_PARAMS.tracking_method,
+        ref_tilt=_PLACEMENT_PARAMS.ref_tilt,
     )
     example = QuadrupoleSpec(L=0.3, k1=1.2)
-    construction_help = "Friendly constructor: QuadrupoleSpec(; L, k1=0, k1s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k1, with k1s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[2] is K1, and setting both k1 and a nonzero kn[2] throws."
+    construction_help = "Friendly constructor: QuadrupoleSpec(; L, k1=0, k1s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k1, with k1s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[2] is K1, and setting both k1 and a nonzero kn[2] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 @element_spec begin
@@ -1121,9 +1123,10 @@ end
         tilt=_COMMON_PARAMS.tilt,
         misalign_convention=_COMMON_PARAMS.misalign_convention,
         tracking_method=_COMMON_PARAMS.tracking_method,
+        ref_tilt=_PLACEMENT_PARAMS.ref_tilt,
     )
     example = SextupoleSpec(L=0.2, k2=12.0)
-    construction_help = "Friendly constructor: SextupoleSpec(; L, k2=0, k2s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k2, with k2s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[3] is K2, and setting both k2 and a nonzero kn[3] throws."
+    construction_help = "Friendly constructor: SextupoleSpec(; L, k2=0, k2s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k2, with k2s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[3] is K2, and setting both k2 and a nonzero kn[3] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 @element_spec begin
@@ -1158,9 +1161,10 @@ end
         tilt=_COMMON_PARAMS.tilt,
         misalign_convention=_COMMON_PARAMS.misalign_convention,
         tracking_method=_COMMON_PARAMS.tracking_method,
+        ref_tilt=_PLACEMENT_PARAMS.ref_tilt,
     )
     example = OctupoleSpec(L=0.1, k3=300.0)
-    construction_help = "Friendly constructor: OctupoleSpec(; L, k3=0, k3s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k3, with k3s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[4] is K3, and setting both k3 and a nonzero kn[4] throws."
+    construction_help = "Friendly constructor: OctupoleSpec(; L, k3=0, k3s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k3, with k3s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[4] is K3, and setting both k3 and a nonzero kn[4] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 @element_spec begin
@@ -1205,9 +1209,10 @@ end
         tilt=_COMMON_PARAMS.tilt,
         misalign_convention=_COMMON_PARAMS.misalign_convention,
         tracking_method=_COMMON_PARAMS.tracking_method,
+        ref_tilt=_PLACEMENT_PARAMS.ref_tilt,
     )
     example = MultipoleSpec(L=0.2, k1=1.0, k2=5.0)
-    construction_help = "Friendly constructor: MultipoleSpec(; L, k0=0, k0s=0, k1=0, k1s=0, k2=0, k2s=0, k3=0, k3s=0, k4=0, k4s=0, k5=0, k5s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Named strengths run K0 (dipole corrector) through K5 (dodecapole), each folded into kn/ks at construction, so a decapole is k4 rather than four leading zeros. Orders beyond K5 and field errors use the positional tuples, where kn[i] is K_{i-1}. Setting a named strength and the matching nonzero kn entry together throws."
+    construction_help = "Friendly constructor: MultipoleSpec(; L, k0=0, k0s=0, k1=0, k1s=0, k2=0, k2s=0, k3=0, k3s=0, k4=0, k4s=0, k5=0, k5s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Named strengths run K0 (dipole corrector) through K5 (dodecapole), each folded into kn/ks at construction, so a decapole is k4 rather than four leading zeros. Orders beyond K5 and field errors use the positional tuples, where kn[i] is K_{i-1}. Setting a named strength and the matching nonzero kn entry together throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 @element_spec begin
@@ -1261,7 +1266,7 @@ end
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
     example = SBendSpec(L=1.0, angle=0.05)
-    construction_help = "Friendly constructor: SBendSpec(; L, angle=0, h=0, b0=0, k1=0, k1s=0, k2=0, k2s=0, kn=(), ks=(), e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=true, bend_model=:exact, curved_order=8, wedge_coeff=(1,2), nst=1, integrator_order=2, fringe=:none, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, ref_tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is angle, which sets h = b0 = angle / L; give h and b0 directly when the frame curvature and the field differ, but not alongside angle. Combined-function bends take k1/k2 (k1s/k2s skew), with kn/ks for higher orders and field errors. TILT VERSUS REF_TILT: tilt rolls the magnet body and is an error (Bmad roll, MAD-X EALIGN dpsi); ref_tilt rolls the design orbit plane and is a design choice (Bmad ref_tilt, MAD-X `sbend, tilt=`). A vertical bend is ref_tilt=pi/2. Translating a MAD-X bend tilt into Octopus tilt is the common mistake and gives a machine error where the lattice meant geometry. RBendSpec(; L, angle, ...) builds this same kind with parallel pole faces: it adds angle/2 to each of e1/e2 (the MAD-X RBEND conversion) and forwards everything else to SBendSpec, so every contract and parameter here applies to it."
+    construction_help = "Friendly constructor: SBendSpec(; L, angle=0, h=0, b0=0, k1=0, k1s=0, k2=0, k2s=0, kn=(), ks=(), e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=true, bend_model=:exact, curved_order=8, wedge_coeff=(1,2), nst=1, integrator_order=2, fringe=:none, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, ref_tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is angle, which sets h = b0 = angle / L; give h and b0 directly when the frame curvature and the field differ, but not alongside angle. Combined-function bends take k1/k2 (k1s/k2s skew), with kn/ks for higher orders and field errors. TILT VERSUS REF_TILT: tilt rolls the magnet body and is an error (Bmad roll, MAD-X EALIGN dpsi); ref_tilt rolls the design orbit plane and is a design choice (Bmad ref_tilt, MAD-X `sbend, tilt=`). A vertical bend is ref_tilt=pi/2. Translating a MAD-X bend tilt into Octopus tilt is the common mistake and gives a machine error where the lattice meant geometry. RBendSpec(; L, angle, ...) builds this same kind with parallel pole faces: it adds angle/2 to each of e1/e2 (the MAD-X RBEND conversion) and forwards everything else to SBendSpec, so every contract and parameter here applies to it. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 # RBendSpec constructs an ElementSpec{:sbend}, so its metadata IS the sector

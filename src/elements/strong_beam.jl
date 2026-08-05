@@ -1507,9 +1507,10 @@ end
         curvature=ParamMeta(default=(0, 0, 0), meaning="strong-beam closed orbit curvature"),
         virtual_drift=ParamMeta(default=:hirata, meaning="virtual-drift Hamiltonian: :hirata (default, paraxial, the canonical published synchro-beam map; no path lengthening), :chromatic, or :exact. A model choice, not a numerical knob: it sets an accuracy floor no slice count removes (measured 2.9e-4 / 3.9e-5 in Furman Q at EIC parameters). See docs/theory/gaussian_longitudinal_slicing.md Section 7.1"),
         tracking_method=ParamMeta(default=WeakStrongBeamBeamMap(), meaning="per-element tracking method"),
+        _PLACEMENT_PARAMS...,
     )
     example = ThinStrongBeamSpec{Float64}(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3))
-    construction_help = "Friendly constructor: ThinStrongBeamSpec{T}(; kbb, klum=1, beta=nothing, alpha=(0,0), sigma=nothing, covariance=nothing, coupling=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, tracking_method=WeakStrongBeamBeamMap(), kwargs...). Supply beta/sigma or covariance; coupling transforms the uncoupled covariance."
+    construction_help = "Friendly constructor: ThinStrongBeamSpec{T}(; kbb, klum=1, beta=nothing, alpha=(0,0), sigma=nothing, covariance=nothing, coupling=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, tracking_method=WeakStrongBeamBeamMap(), kwargs...). Supply beta/sigma or covariance; coupling transforms the uncoupled covariance. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 @element_spec begin
@@ -1538,9 +1539,10 @@ end
         slice_width=ParamMeta(meaning="slice width for :equal_width; unused by every other slice_method"),
         hvoffset=ParamMeta(meaning="optional Dict with dim, coef, frequency, harmonics"),
         tracking_method=ParamMeta(default=WeakStrongBeamBeamMap(), meaning="per-element tracking method"),
+        _PLACEMENT_PARAMS...,
     )
     example = GaussianStrongBeamSpec{Float64}(thin=ThinStrongBeamSpec{Float64}(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3)), ns=3, sigz=0.01)
-    construction_help = "Friendly constructor: GaussianStrongBeamSpec{T}(; thin, ns, sigz=nothing, mean=nothing, covariance=nothing, slice_method=:sqrt_density, slice_width=nothing, slice_center=nothing, slice_weight=nothing, slice_hoffset=nothing, slice_voffset=nothing, slice_pxoffset=nothing, slice_pyoffset=nothing, hvoffset=nothing, tracking_method=WeakStrongBeamBeamMap(), kwargs...). A 6 x 6 covariance is conditioned on each longitudinal slice."
+    construction_help = "Friendly constructor: GaussianStrongBeamSpec{T}(; thin, ns, sigz=nothing, mean=nothing, covariance=nothing, slice_method=:sqrt_density, slice_width=nothing, slice_center=nothing, slice_weight=nothing, slice_hoffset=nothing, slice_voffset=nothing, slice_pxoffset=nothing, slice_pyoffset=nothing, hvoffset=nothing, tracking_method=WeakStrongBeamBeamMap(), kwargs...). A 6 x 6 covariance is conditioned on each longitudinal slice. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
 default_method(::Type{ElementSpec{:thin_strong_beam}}) = WeakStrongBeamBeamMap()

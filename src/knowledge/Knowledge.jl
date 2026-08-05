@@ -75,7 +75,9 @@ ElementSpec{Kind}(; kwargs...) where {Kind} =
 # them and the unknown-key warning below exempts them. Before this list, the
 # documented binding path rejected physically meaningful input on 17 of 30
 # kinds (`DriftSpec(L=0.5, x_offset=1e-3)` compiled to a MisalignedElement
-# while `d.x_offset = 1e-3` threw; 2026-08-05 audit, U13-2).
+# while `d.x_offset = 1e-3` threw; 2026-08-05 audit, U13-2). Registered kinds
+# now also declare them per-kind through `_PLACEMENT_PARAMS` below; this list
+# keeps the acceptance working for kinds registered without it.
 const _PLACEMENT_PARAM_KEYS = (:x_offset, :y_offset, :z_offset, :x_pitch,
                                :y_pitch, :tilt, :misalign_convention, :ref_tilt)
 
@@ -176,6 +178,35 @@ struct ParamMeta
 end
 ParamMeta(; required::Bool=false, unit="", default=nothing, meaning="") =
     ParamMeta(required, String(unit), default, String(meaning))
+
+# Schema entries for the placement keys, spliced into every registered kind's
+# `parameters` declaration (`_PLACEMENT_PARAMS...`) so `parameter_schema`,
+# `element_help`, and the parameter-effectiveness contract see what the
+# compile wraps consume for every kind — before this, the schemas
+# under-declared what `compile_runtime` reads (2026-08-05 audit, U13-2
+# completion). Kinds where a placement parameter conjugates to exactly
+# nothing (an identity map, a constant kick) say why in
+# `DEFAULT_INACTIVE_ELEMENT_PARAMS`; the reasons are map structure, not
+# sweep output, because a mathematically inert conjugation can still move
+# the last bit through the (v - d) + d round trip.
+const _PLACEMENT_PARAMS = (
+    x_offset=ParamMeta(default=0, unit="m",
+        meaning="horizontal displacement of the element body, a placement error consumed by the generic misalignment wrap at compile_runtime, not by the element kernel; see src/elements/misalignment.jl"),
+    y_offset=ParamMeta(default=0, unit="m",
+        meaning="vertical displacement of the element body; see x_offset"),
+    z_offset=ParamMeta(default=0, unit="m",
+        meaning="longitudinal displacement of the element body along the local reference direction; see x_offset"),
+    x_pitch=ParamMeta(default=0, unit="rad",
+        meaning="rotation of the body in the x-s plane (about the vertical axis); see x_offset"),
+    y_pitch=ParamMeta(default=0, unit="rad",
+        meaning="rotation of the body in the y-s plane (about the horizontal transverse axis); see x_offset"),
+    tilt=ParamMeta(default=0, unit="rad",
+        meaning="roll of the body about s, an alignment ERROR measured against the design orbit; the design roll is ref_tilt"),
+    misalign_convention=ParamMeta(default=:bmad,
+        meaning="which code's misalignment convention to follow, :bmad or :madx; they differ in rotation-composition order, the arc point the displacement anchors at, and the frame an error is stated in against a ref_tilt"),
+    ref_tilt=ParamMeta(default=0, unit="rad",
+        meaning="DESIGN roll of the element about s — geometry, not an error; wraps outside the misalignment, and a :madx alignment error against it is stated in the unrolled design frame"),
+)
 
 """
     ElementMeta(; kind, spec_type, friendly_constructor, runtime_type, runtime_types,

@@ -203,7 +203,8 @@ end
         convention=ParamMeta(default=:bmad, meaning="rotation composition order when more than one angle is nonzero, :bmad or :madx. The same split the misalignments carry, and the same default; single-axis rotations agree either way"),
         t_offset=ParamMeta(default=0, meaning="reference arrival-time offset, in the same units as z. Lets a patch express a path-length difference between two branches rather than only a geometric one"),
         tracking_method=ParamMeta(default=NonSymplectic6DMap(), meaning="per-element tracking method"),
+        _PLACEMENT_PARAMS...,
     )
     example = PatchSpec(angle_x=12.5e-3)
-    construction_help = "Friendly constructor: PatchSpec(; dx=0, dy=0, dz=0, angle_x=0, angle_y=0, angle_s=0, t_offset=0, convention=:bmad, tracking_method=NonSymplectic6DMap()). A DELIBERATE frame change -- a crossing angle, a beamline junction, a spectrometer arm -- not a misalignment: the new frame persists downstream instead of being restored. The map is exact in delta and amplitude because it is geometry, and composing a patch with its inverse is the identity. Derivation: docs/theory/misalignment_and_patch_maps.md Section 7.5."
+    construction_help = "Friendly constructor: PatchSpec(; dx=0, dy=0, dz=0, angle_x=0, angle_y=0, angle_s=0, t_offset=0, convention=:bmad, tracking_method=NonSymplectic6DMap()). A DELIBERATE frame change -- a crossing angle, a beamline junction, a spectrometer arm -- not a misalignment: the new frame persists downstream instead of being restored. The map is exact in delta and amplitude because it is geometry, and composing a patch with its inverse is the identity. Derivation: docs/theory/misalignment_and_patch_maps.md Section 7.5. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
