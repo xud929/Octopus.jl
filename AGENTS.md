@@ -36,8 +36,7 @@ an elevated role before making file changes.
   item to start next. The rest of that file is a record of completed work kept
   for its measurements and its wrong turns, so do not read it front to back.
 - **For an audit, a verification pass, or any repository-wide correctness
-  review, follow [`docs/comprehensive_audit.md`](docs/comprehensive_audit.md)**
-  (invocable as the `/comprehensive-audit` skill, with an optional scope).
+  review, follow [`docs/comprehensive_audit.md`](docs/comprehensive_audit.md).**
   It is the protocol, not a suggestion: how to scope the whole audit in one
   driving session, what to delegate to sub-agents and what never to (a
   sub-agent's claim is a lead, not a finding — measured survival ~60%), the

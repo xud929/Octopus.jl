@@ -37,9 +37,7 @@ profiling/log
 # Python bytecode from paper/ helper scripts
 __pycache__/
 *.pyc
-# Session-local Claude state stays out; the checked-in skill and agent
-# definitions are part of the repository (an audit entry point a fresh
-# clone should have).
-.claude/*
-!.claude/skills/
-!.claude/agents/
+# Agent-tool session state (any assistant's local config) stays out of the
+# repository: agent instructions live in AGENTS.md and docs/, so the repo
+# stays independent of any one agent tool.
+.claude/

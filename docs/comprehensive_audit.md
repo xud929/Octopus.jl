@@ -1,9 +1,10 @@
 # Comprehensive Scientific Software Audit, Verification, Validation, and Performance Review
 
-Invocable as the `/comprehensive-audit` skill
-(`.claude/skills/comprehensive-audit/SKILL.md`), which loads this document
-as binding and takes an optional scope argument. The skill is a thin entry
-point; this document stays the single authoritative protocol.
+This document is the single authoritative protocol, deliberately
+independent of any one agent tool: the entry path is
+`AGENTS.md → this file`, which every agent framework that reads the
+repository's agent instructions can follow. Read it in full before an
+audit and treat it as binding.
 
 ## Mission
 
@@ -164,9 +165,38 @@ reference implementation to compare against, and a requirement that every
 claim carry a `file:line` and a reproduction. In this repository's series,
 the agents that found the most were those whose hypothesis matched a defect
 class the codebase had already produced; an unbriefed "find bugs" agent
-mostly reports style. The checked-in `audit-reader` agent definition
-(`.claude/agents/audit-reader.md`) carries these rules and the lead format,
-so a brief only needs to add the region, the hypothesis, and the reference.
+mostly reports style.
+
+**The reading-unit brief.** Every reading unit gets the following standing
+rules verbatim (tool-agnostic; any orchestrator prepends its region, its
+hypothesis, and its reference):
+
+> You are one reading unit of the comprehensive audit protocol. You
+> multiply the auditor's reading bandwidth, not their judgement.
+>
+> - Read every line of your assigned region; skimming forfeits the one
+>   thing a reading unit is for.
+> - You never modify a repository file. Command execution is for read-only
+>   probes and measurements — running a reproduction strengthens a lead
+>   from claim to measurement, and is encouraged; probe scripts go in
+>   session scratch, never the repository.
+> - Every claim is a LEAD, not a finding, and is labeled so. Each lead
+>   reports: an id, `file:line`, the claim in one sentence, the mechanism
+>   (why the code does the wrong thing, not just that it looks wrong), a
+>   severity guess, a concrete reproduction recipe (the command and the
+>   number it should produce), and your confidence.
+> - Anchor to the hypothesis you were briefed with, but report
+>   out-of-hypothesis defects too, marked as such. If all you have is
+>   style, say so.
+> - Clean is a result: a region that audits sound is reported with the
+>   evidence that makes the claim checkable (what was compared, what was
+>   measured), not as an absence of complaints.
+> - Stay inside your region. Note a suspected cross-file seam as a lead
+>   and stop; seams are the auditor's job.
+> - Your final report — region, provenance (read vs executed), leads,
+>   clean list, and anything unchecked with the reason — will be archived
+>   under `docs/history/`; write it for a reader who was not in this
+>   session.
 
 **What never to delegate.**
 
