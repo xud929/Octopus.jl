@@ -28,6 +28,15 @@ using Symbolics
 # away and that argument evaporates -- silently. `AGENTS.md` states the rule for
 # contracts ("do not report an unrun check as passed"); this is the same rule for
 # the suite.
+#
+# Ordering caveat (2026-08-05 audit, U17-7): this file aborts at the first
+# failing testset, and the tightest physics backstops -- the symplecticity
+# validation, the 8% high-energy weak-strong limit, the Yokoya coherent-mode
+# contract with its executed negative control -- run at the very END, after
+# the whole CUDA block. An abort anywhere earlier silently drops the only
+# tests with real discriminating power on absolute beam-beam physics, so a
+# red run's summary says nothing about them: fix the first failure and rerun
+# before drawing any physics conclusion from what did pass.
 const CUDA_TESTS_ACTIVE = Octopus._HAS_CUDA && Octopus.CUDA.functional()
 
 @testset "CUDA coverage status" begin
@@ -2941,6 +2950,10 @@ end
                                for a in coordinate_arrays(rep0()))...)
             @test whichslice(Octopus._cuda_longitudinal_slices(drep, sl)) == [1]
         end
+    else
+        # The R7 degenerate-slice CUDA convention was the last silent gate in
+        # the file's own header count (2026-08-05 audit, U16-6).
+        @test_skip "CUDA device not available"
     end
 
     # R2 (part 6): :equal_count membership is by RANK. For continuous z the
@@ -6024,6 +6037,10 @@ end
         solver, expected1, expected2, CPUThreadsBackend)
     actual1a, actual1b = pair()
     actual2a, actual2b = pair()
+    # Best-effort overlap: the spawned pair exercises concurrent leases only
+    # if the scheduler interleaves them — at nthreads() == 1 they serialize
+    # and would pass with a shared-workspace defect present (2026-08-05
+    # audit, U17-6). The deterministic variant below carries the claim.
     task1 = Threads.@spawn collide!(
         solver, actual1a, actual1b, CPUThreadsBackend)
     task2 = Threads.@spawn collide!(
@@ -6041,6 +6058,24 @@ end
     end
     @test luminosity1 ≈ expected_luminosity rtol=2.0e-13
     @test luminosity2 ≈ expected_luminosity rtol=2.0e-13
+
+    # Deterministic reentrancy: hold a lease of the same workspace size for
+    # the whole collide, forcing it onto a SECOND pool workspace on every
+    # schedule, single-threaded included — no scheduler cooperation needed.
+    held_lease = Octopus._acquire_spectral_grid_ws_pool(24, 40, 1)
+    try
+        held1, held2 = pair()
+        held_luminosity = collide!(solver, held1, held2, CPUThreadsBackend)
+        for (expected, actual) in ((expected1, held1), (expected2, held2))
+            for (reference, candidate) in zip(
+                    coordinate_arrays(expected), coordinate_arrays(actual))
+                @test candidate ≈ reference rtol=2.0e-13 atol=2.0e-18
+            end
+        end
+        @test held_luminosity ≈ expected_luminosity rtol=2.0e-13
+    finally
+        Octopus._release_spectral_grid_ws_pool!(held_lease)
+    end
 end
 
 @testset "PIC field_derivative flag" begin
@@ -8511,12 +8546,21 @@ end
         @test ra.height == rb.height
         @test ra.width == es.width && rb.width == ef.width
     end
-    # negative control: the equality is a real constraint, not trivially true
+    # negative control: the equality is a real constraint, not trivially
+    # true. The old form asserted sg.width != fg.width * 1.01, which only
+    # excludes width == 0 (2026-08-05 audit, U17-8). The real control: the
+    # two beams' raw spans genuinely differ, so equal produced widths mean
+    # the shared max-span rule did the work, not identical inputs.
     let s = PICPoissonSolver(; grid=(64, 64))
-        sg, fg = Octopus._pic_interaction_grids(s, -1e-3, 1e-3, -1e-4, 1e-4,
-                                                   -2e-3, 2e-3, -3e-4, 3e-4)
+        sxmin, sxmax, symin, symax = -1e-3, 1e-3, -1e-4, 1e-4
+        fxmin, fxmax, fymin, fymax = -2e-3, 2e-3, -3e-4, 3e-4
+        @test (sxmax - sxmin) != (fxmax - fxmin)
+        @test (symax - symin) != (fymax - fymin)
+        sg, fg = Octopus._pic_interaction_grids(s, sxmin, sxmax, symin, symax,
+                                                   fxmin, fxmax, fymin, fymax)
         @test sg.width == fg.width
-        @test sg.width != fg.width * 1.01
+        @test sg.height == fg.height
+        @test sg.width > 0 && sg.height > 0
     end
 end
 
@@ -8636,8 +8680,17 @@ end
     # the default covers every particle by construction, so it must stay silent
     @test_logs run()
     @test_logs run(grid_extent=:extrema)
-    # a deliberately under-covering estimator must not be silent
-    @test_logs (:warn,) run(grid_extent=:sigma, grid_extent_sigma=1.5)
+    # a deliberately under-covering estimator must not be silent, and the
+    # count it reports must be a real one — the bare (:warn,) pin passed
+    # with any message carrying any count (2026-08-05 audit, U17-8)
+    dropped_logs, _ = Test.collect_test_logs() do
+        run(grid_extent=:sigma, grid_extent_sigma=1.5)
+    end
+    dropped_warns = [l for l in dropped_logs
+                     if occursin("dropped particles", string(l.message))]
+    @test !isempty(dropped_warns)
+    @test all(l -> l.kwargs[:dropped] isa Integer && l.kwargs[:dropped] > 0,
+              dropped_warns)
 
     # and the count is against the MESH, not the estimator box: the mesh carries
     # 1.5 cells of margin, so a particle in the margin is interpolated, not dropped
