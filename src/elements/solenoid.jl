@@ -96,7 +96,18 @@ arguments take a series instead.
     T = typeof(u)
     # `real(T)`: element parameters may be dual or complex now, and a complex
     # crossover threshold does not order. Same rule as the curvature helpers.
-    abs(u) < real(T)(1e-4) && return x * (one(T) - u / 2 * (one(T) - 2u / 3))
+    #
+    # The series runs through the u^7 term and switches at 1e-2, not the old
+    # O(u^2)-at-1e-4 pair: the truncated series was 2.5e-13 relative in VALUE
+    # and 1.5e-8 in d/dh at its boundary, and moving the boundary alone cannot
+    # close the derivative — differentiating `log1p(u)/h` through AD cancels as
+    # ~2*eps/u, so the closed side only reaches 1e-13 derivative accuracy for
+    # u >~ 4e-3. At u = 1e-2 both branches measure <= 5e-14 in d/dh
+    # (series 1.8e-14 bound, closed ~4e-14) and <= 2e-16 in value vs BigFloat
+    # (2026-08-05 audit, U10-6).
+    abs(u) < real(T)(1e-2) && return x *
+        (one(T) - u / 2 * (one(T) - 2u / 3 * (one(T) - 3u / 4 * (one(T) - 4u / 5 *
+        (one(T) - 5u / 6 * (one(T) - 6u / 7 * (one(T) - 7u / 8)))))))
     return log1p(u) / h
 end
 
