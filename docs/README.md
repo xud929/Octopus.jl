@@ -96,8 +96,15 @@ reference material, not API docs; the implementing code links back to them.
   `TrackingContext` like an observer, so NaN only marks the particle dead, and
   records why per-element loss attribution stays out of reach without a
   different phase-space representation. Confirms a predicate can live in
-  `ElementSpec.params` and states what it must be for the GPU. Design only; no
-  implementation yet.
+  `ElementSpec.params` and states what it must be for the GPU. **Implemented**
+  as `ApertureSpec` + `LossRecord` (`src/elements/aperture.jl`): the loss
+  summary fires automatically at the end of every `execute!`, per-collimator,
+  and warns whenever `unattributed != 0` — including for a line with no
+  aperture at all. Public surface `loss_records`, `loss_counts`,
+  `loss_summary`, `write_loss_record`, `read_loss_record`; see
+  `docs/public_api.md` §Particle Loss. (Status corrected by the 2026-08-05_b
+  audit, U26-3 — the note itself was never updated after the element shipped,
+  and this index is what an agent orients from.)
 - [`misalignment_and_patch_maps.md`](theory/misalignment_and_patch_maps.md) —
   design note for misalignments, rotations and the patch element, comparing
   PTC's factorization (four exact one-parameter Euclidean maps, `ROT_YZ`/
@@ -127,7 +134,15 @@ reference material, not API docs; the implementing code links back to them.
   different trig functions, so `phi0 = 0` means "no acceleration" in one and "on
   crest" in the other), the four mutually incompatible phase conventions, and why
   an energy kick needs a beta factor to become a `pz` kick in our convention.
-  Design only; not implemented.
+  **Scope A implemented** as `ThinRFCavitySpec` (`src/elements/rf_cavity.jl`,
+  kind `:thin_rf_cavity`, in the registry snapshot): thin, one localised kick,
+  non-accelerating, `L` buying drift space only. **Scope B (accelerating)
+  remains design only** — it needs `P0(s)` and the survey channel. One model
+  boundary is open and documented at both ends: the slip factor is `alpha_c`
+  alone, missing `-1/gamma0^2`, because a runtime element has no channel to its
+  accumulated reference path (audit F16; 1.84x nu_s error at 2.5 GeV proton /
+  alpha_c = 0.2, negligible at EIC-class gamma0). (Status corrected by the
+  2026-08-05_b audit, U26-3.)
 - [`beam_line_composition.md`](theory/beam_line_composition.md) — design report
   for a beam line, read against MAD-X, Bmad, elegant, Accelerator Toolbox and
   JuAcc. Why every one of them separates the composition *language* from the

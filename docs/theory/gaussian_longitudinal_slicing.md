@@ -849,15 +849,25 @@ $5.3\times10^{-7}$, so every entry below is resolved by $100\times$ or more:
 | `:equal_area_centroid` | 1.15e-2 | 1.89e-3 | 6.84e-4 | 1.29 |
 | `:gauss_hermite` | 1.49e-2 | 2.57e-3 | 1.23e-3 | 1.00 |
 | `:min_cdf_area` | 3.51e-2 | 6.05e-3 | 1.74e-3 | 1.48 |
-| `:equal_area` (default) | 4.03e-2 | 1.06e-2 | 4.54e-3 | 1.15 |
+| `:equal_area` | 4.03e-2 | 1.06e-2 | 4.54e-3 | 1.15 |
 | `:equal_spacing_density` | 1.17e-1 | 3.51e-2 | 1.04e-3 | non-uniform |
 | `:equal_width` | 1.71e-1 | 4.61e-2 | 6.43e-4 | non-uniform |
 
-`:sqrt_density` is the rule to use: $10.6\times$ more accurate than the shipped
-default at $N_s=15$ and $20\times$ at $N_s=31$, for identical cost, and it is
-also Xsuite's default. **The default is still `:equal_area`**, because changing
-it is a behaviour change for existing users rather than a physics decision;
-`docs/todo.md` records that as an open call.
+`:sqrt_density` is the rule to use: $10.6\times$ more accurate than
+`:equal_area` at $N_s=15$ and $20\times$ at $N_s=31$, for identical cost, and it
+is also Xsuite's default.
+
+**Correction (2026-08-05_b audit, U26-1).** This paragraph previously read "The
+default is still `:equal_area` … `docs/todo.md` records that as an open call",
+and the table above marked `:equal_area` as the default. Both were stale:
+**`:sqrt_density` has been the shipped default since 2026-07-31**
+(`ParamMeta(default=:sqrt_density)` at `src/elements/strong_beam.jl`, and the
+`GaussianStrongBeamSpec` constructors), and `docs/todo.md` records the change as
+done. The original text is kept here rather than deleted because the
+contradiction it created was live: §10 forty lines above already annotated the
+change, so the note asserted both, and a reader taking this paragraph at face
+value believed production ran the rule this table ranks fifth. Pass
+`slice_method = :equal_area` explicitly to reproduce pre-2026-07-31 results.
 
 Reproduce with `validation/gaussian_slicing_convergence.jl`. Full study:
 [`gaussian_slicing_convergence_2026_07_31.md`](../history/gaussian_slicing_convergence_2026_07_31.md).
