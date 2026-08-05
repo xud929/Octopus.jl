@@ -583,29 +583,48 @@ if _HAS_CUDA
                 luminosity = zero(T)
                 CUDA.fill!(ws.dropped, 0.0)
                 ndep = 0
+                # R12 hoist (CPU twin in `_spectral_collide_transverse!`): the
+                # mesh depends only on the source slice, and this path never
+                # mutates x/y, so gather each slice's coordinates and solve its
+                # field ONCE -- n1+n2 gathers and solves where the pair loop
+                # used to do 2*n1*n2. The pair loop below scatters the stored
+                # meshes in the unchanged pair order, so the kick accumulation
+                # is unchanged term for term (deposit atomics keep CUDA runs
+                # reproducible only to roundoff, as before).
+                xs1 = Vector{typeof(r1.x)}(undef, n1); ys1 = Vector{typeof(r1.y)}(undef, n1)
+                xs2 = Vector{typeof(r2.x)}(undef, n2); ys2 = Vector{typeof(r2.y)}(undef, n2)
+                Ex1 = Vector{typeof(ws.rho)}(undef, n1); Ey1 = Vector{typeof(ws.rho)}(undef, n1)
+                Ex2 = Vector{typeof(ws.rho)}(undef, n2); Ey2 = Vector{typeof(ws.rho)}(undef, n2)
+                for i in 1:n1
+                    sdx = slices1.indices[i]; length(sdx) == 0 && continue
+                    xs1[i] = r1.x[sdx]; ys1[i] = r1.y[sdx]
+                    Ex1[i], Ey1[i], _, _ = _cuda_spectral_field!(ws, xs1[i], ys1[i], Lx, Ly)
+                    ndep += length(sdx)
+                end
+                for j in 1:n2
+                    sdx = slices2.indices[j]; length(sdx) == 0 && continue
+                    xs2[j] = r2.x[sdx]; ys2[j] = r2.y[sdx]
+                    Ex2[j], Ey2[j], _, _ = _cuda_spectral_field!(ws, xs2[j], ys2[j], Lx, Ly)
+                    ndep += length(sdx)
+                end
+                W = eltype(ws.rho)
+                hx = W(2Lx / (Nx + 1)); hy = W(2Ly / (Ny + 1))
                 for (_, i, j) in _slice_collision_order(slices1, slices2)
                     idx1 = slices1.indices[i]; idx2 = slices2.indices[j]
                     (length(idx1) == 0 || length(idx2) == 0) && continue
-                    sx1 = r1.x[idx1]; sy1 = r1.y[idx1]
-                    sx2 = r2.x[idx2]; sy2 = r2.y[idx2]
-                    ndep += length(idx1) + length(idx2)
                     # beam1 -> beam2
-                    Exg, Eyg, hx, hy =
-                        _cuda_spectral_field!(ws, sx1, sy1, Lx, Ly)
                     a1 = T(slices1.weight[i] * kbb2)
                     CUDA.@cuda threads=threads blocks=cld(length(idx2), threads) _cuda_spectral_interp_scatter_kernel!(
-                        r2.px, r2.py, idx2, Exg, Eyg, sx2, sy2,
+                        r2.px, r2.py, idx2, Ex1[i], Ey1[i], xs2[j], ys2[j],
                         T(Lx), T(Ly), hx, hy, Nx, Ny, a1)
                     # beam2 -> beam1
-                    Exg2, Eyg2, hx2, hy2 =
-                        _cuda_spectral_field!(ws, sx2, sy2, Lx, Ly)
                     a2 = T(slices2.weight[j] * kbb1)
                     CUDA.@cuda threads=threads blocks=cld(length(idx1), threads) _cuda_spectral_interp_scatter_kernel!(
-                        r1.px, r1.py, idx1, Exg2, Eyg2, sx1, sy1,
-                        T(Lx), T(Ly), hx2, hy2, Nx, Ny, a2)
+                        r1.px, r1.py, idx1, Ex2[j], Ey2[j], xs1[i], ys1[i],
+                        T(Lx), T(Ly), hx, hy, Nx, Ny, a2)
                     if compute_luminosity
                         luminosity += _cuda_spectral_luminosity_pair(
-                            solver, sx1, sy1, sx2, sy2, klum, lnx, lny, ws.dropped)
+                            solver, xs1[i], ys1[i], xs2[j], ys2[j], klum, lnx, lny, ws.dropped)
                         ndep += length(idx1) + length(idx2)
                     end
                 end
