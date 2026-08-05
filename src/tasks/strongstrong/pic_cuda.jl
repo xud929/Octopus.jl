@@ -2424,7 +2424,9 @@ if _HAS_CUDA
                 luminosity_scale=CUDA.zeros(T, npairs),
                 luminosity_accum=CUDA.zeros(T, 1),
                 luminosity_overlap_partials=CUDA.zeros(
-                    T, cld(lnx * lny, luminosity_threads) * npairs,
+                    # Sized for the full (lnx+1) x (lny+1) node plane the
+                    # overlap kernels now sweep (2026-08-05 audit, U5-8).
+                    T, cld((lnx + 1) * (lny + 1), luminosity_threads) * npairs,
                 ),
                 hx=CUDA.zeros(T, nplanes),
                 hy=CUDA.zeros(T, nplanes),
@@ -2471,7 +2473,7 @@ if _HAS_CUDA
             base = entry.arrays
             npairs = requested ÷ 4
             ngreen = requested ÷ 2
-            overlap_length = cld(prod(_pic_luminosity_grid(solver)), luminosity_threads) * npairs
+            overlap_length = cld(prod(_pic_luminosity_grid(solver) .+ 1), luminosity_threads) * npairs
             return (
                 charges=@view(base.charges[:, :, 1:requested]),
                 greens=@view(base.greens[:, :, 1:ngreen]),
@@ -3579,9 +3581,11 @@ if _HAS_CUDA
                 )
             end
             copyto!(scale, scale_host)
-            blocks_grid = cld(nx * ny * npairs, threads)
+            # Node counts, not cell counts: the overlap must cover the full
+            # (nx+1) x (ny+1) deposit extent (2026-08-05 audit, U5-8).
+            blocks_grid = cld((nx + 1) * (ny + 1) * npairs, threads)
             CUDA.@cuda threads=threads blocks=blocks_grid stream=stream _cuda_pic_luminosity_wavefront_kernel!(
-                accum, q1, q2, scale, Int32(nx), Int32(ny), Int32(npairs),
+                accum, q1, q2, scale, Int32(nx + 1), Int32(ny + 1), Int32(npairs),
             )
             CUDA.synchronize(stream)
             _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
@@ -3654,11 +3658,15 @@ if _HAS_CUDA
                 )
             end
             copyto!(wf.luminosity_scale, scale_host)
-            blocks_per_pair = cld(nx * ny, threads)
+            # Node counts, not cell counts: the overlap must cover the full
+            # (nx+1) x (ny+1) deposit extent (2026-08-05 audit, U5-8). The
+            # partials buffer is sized for this in
+            # `_cuda_pic_allocate_wavefront_workspace`.
+            blocks_per_pair = cld((nx + 1) * (ny + 1), threads)
             overlap_blocks = blocks_per_pair * npairs
             CUDA.@cuda threads=threads blocks=overlap_blocks shmem=threads*sizeof(T) stream=stream _cuda_pic_luminosity_overlap_partials_kernel!(
                 wf.luminosity_overlap_partials, q1, q2, wf.luminosity_scale,
-                Int32(nx), Int32(ny), Int32(blocks_per_pair), Int32(npairs),
+                Int32(nx + 1), Int32(ny + 1), Int32(blocks_per_pair), Int32(npairs),
             )
             luminosity = sum(wf.luminosity_overlap_partials)
             sink = _ACTIVE_PIC_LUMINOSITY_PAIR_SINK[]
@@ -3724,7 +3732,13 @@ if _HAS_CUDA
             CUDA.@cuda threads=threads blocks=cld(length(x2), threads) stream=stream _cuda_pic_deposit_nomask_kernel!(
                 q2, x2, y2, xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), method_code,
             )
-            lum = sum(q1[1:nx, 1:ny] .* q2[1:nx, 1:ny])
+            # Full (nx+1) x (ny+1) deposit extent, in step with the CPU
+            # `_pic_luminosity!`: TSC's top-edge stencil deposits into row
+            # nx+1 / col ny+1, which the old 1:nx, 1:ny sum excluded; CIC
+            # never reaches them, so CIC is bit-identical
+            # (2026-08-05 audit, U5-8). Both q1 branches above are exactly
+            # (nx+1, ny+1).
+            lum = sum(q1 .* q2)
             return T(lum) * T(klum) / (hx * hy)
         end
 
@@ -4303,7 +4317,12 @@ if _HAS_CUDA
             f0 = floor(u)
             base = Int32(f0) + Int32(1)
             base = max(Int32(1), min(base, n - Int32(1)))
-            f = min(max(u - f0, zero(u)), one(u))
+            # Fraction measured from the CLAMPED base, exactly as the CPU
+            # `_pic_cic_weights` does: at u == n-1 the old `u - f0 == 0` put
+            # the full charge one cell inward of the boundary node; interior
+            # values are bit-identical because base - 1 == f0 there
+            # (2026-08-05 audit, U5-7 — keep the two implementations in step).
+            f = min(max(u - convert(typeof(u), base - Int32(1)), zero(u)), one(u))
             return base, one(f) - f, f
         end
 
@@ -4386,6 +4405,9 @@ if _HAS_CUDA
             return nothing
         end
 
+        # `nx`/`ny` here are the NODE counts of the deposit planes (grid+1 on
+        # each axis), so the sweep covers the full deposit extent including the
+        # top-edge row/column TSC reaches (2026-08-05 audit, U5-8).
         function _cuda_pic_luminosity_overlap_partials_kernel!(
             partials, q1, q2, scale, nx::Int32, ny::Int32,
             blocks_per_pair::Int32, npairs::Int32,
@@ -4419,6 +4441,8 @@ if _HAS_CUDA
             return nothing
         end
 
+        # `nx`/`ny` are NODE counts (grid+1 per axis) — see the partials kernel
+        # above (2026-08-05 audit, U5-8).
         function _cuda_pic_luminosity_wavefront_kernel!(accum, q1, q2, scale,
                                                         nx::Int32, ny::Int32, npairs::Int32)
             linear = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x

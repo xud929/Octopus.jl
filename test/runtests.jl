@@ -1574,6 +1574,80 @@ end
     @test Octopus._atan_over(0.7) ≈ atan(0.7) / 0.7
 end
 
+@testset "Series helpers hold full precision across their crossovers" begin
+    # 2026-08-05 audit, U10-5/U10-6/U10-7. The removable-singularity helpers
+    # guard |u| < crossover with a series, but the defects sat just OUTSIDE the
+    # old windows (closed-branch cancellation) or in a truncated series.
+    relerr(v, ref) = Float64(abs((big(v) - ref) / ref))
+
+    # U10-5: (1 - cos u)/h cancels as ~eps/u^2, so at the old 1e-4 boundary the
+    # closed branch was 5.86e-9 relative while the series held 5.2e-17 — an
+    # 8-digit cliff one ulp wide. The crossover now sits at 0.125 with the
+    # series extended through u^8; both sides must hold <= 1e-14.
+    vers_ref(h) = (1 - cos(big(h))) / big(h)
+    @test relerr(Octopus._curv_vers(1.001e-4, 1.0), vers_ref(1.001e-4)) < 1.0e-15
+    @test relerr(Octopus._curv_vers(1.0e-2, 1.0), vers_ref(1.0e-2)) < 1.0e-15
+    for h in (prevfloat(0.125), nextfloat(0.125), 0.13, 0.15)
+        @test relerr(Octopus._curv_vers(h, 1.0), vers_ref(h)) < 1.0e-14
+    end
+
+    # U10-6: _sol_log_over_h truncated its series at O(u^2) for a 1e-4
+    # crossover: 2.5e-13 value jump and 1.5e-8 d/dh error at the boundary. The
+    # series now runs through u^7 and switches at 1e-2 (the AD derivative of
+    # log1p(u)/h cancels as ~2eps/u, so the closed side only supports the
+    # 1e-13 derivative target for u >~ 4e-3). Value AND first derivative must
+    # be continuous to <= 1e-13 on both sides.
+    log_ref(h) = log1p(big(h)) / big(h)
+    dlog_ref(h) = (1 / (1 + big(h)) / big(h)) - log1p(big(h)) / big(h)^2
+    g(h) = Octopus._sol_log_over_h(h, 1.0)
+    for h in (1.001e-4, prevfloat(1.0e-2), nextfloat(1.0e-2), 2.0e-2)
+        @test relerr(g(h), log_ref(h)) < 1.0e-15
+        @test relerr(ForwardDiff.derivative(g, h), dlog_ref(h)) < 1.0e-13
+    end
+    @test abs(g(prevfloat(1e-2)) - g(nextfloat(1e-2))) / abs(g(1e-2)) < 1.0e-15
+
+    # U10-7: _wedge formed Delta = (A + asin(px/w) - asin(pxn/w))/b1, an O(b1)
+    # angle from O(A) terms — error grew as ~eps*A/b1 (measured 2.8e-10 on z at
+    # b1 = 1e-8). Rationalised like `_lattice_bend`; vs BigFloat (the original
+    # closed formulas) the error must sit at the representation floor for small
+    # b1, and the b1 -> 0 limit must still reach _rot_xz linearly.
+    let A = 0.1, x = 1e-3, px = 2e-3, y = -1.5e-3, py = 1.2e-3, z = 5e-4, pz = 1e-3
+        function wedge_big(b1)
+            Ab, b1b, xb, pxb, yb, pyb, zb, pzb = big.((A, b1, x, px, y, py, z, pz))
+            ps = sqrt((1 + pzb)^2 - pxb^2 - pyb^2)
+            pxn = pxb * cos(Ab) + (ps - b1b * xb) * sin(Ab)
+            w = sqrt((1 + pzb)^2 - pyb^2)
+            psn = sqrt((1 + pzb)^2 - pxn^2 - pyb^2)
+            xn = xb * cos(Ab) + (xb * pxb * sin(2Ab) + sin(Ab)^2 * (2xb * ps - b1b * xb^2)) /
+                                (psn + ps * cos(Ab) - pxb * sin(Ab))
+            D = (Ab + asin(pxb / w) - asin(pxn / w)) / b1b
+            return xn, pxn, yb + pyb * D, pyb, zb - D * (1 + pzb), pzb
+        end
+        for b1 in (1e-6, 1e-8, 1e-10)
+            o = Octopus._wedge(A, b1, x, px, y, py, z, pz)
+            @test maximum(abs.(big.(collect(o)) .- collect(wedge_big(b1)))) < 1.0e-16
+        end
+        r = collect(Octopus._rot_xz(A, x, px, y, py, z, pz))
+        slope = maximum(abs.(collect(Octopus._wedge(A, 1e-3, x, px, y, py, z, pz)) .- r)) / 1e-3
+        for b1 in (1e-5, 1e-7, 1e-9)
+            @test maximum(abs.(collect(Octopus._wedge(A, b1, x, px, y, py, z, pz)) .- r)) ≈
+                  slope * b1 rtol = 1.0e-3
+        end
+        # exactly reached, and still symplectic, at b1 == 0 and at moderate b1
+        @test collect(Octopus._wedge(A, 0.0, x, px, y, py, z, pz)) == r
+        S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
+        for b1 in (0.3, 1e-8)
+            J = zeros(6, 6)
+            for j in 1:6
+                v = ComplexF64[x, px, y, py, z, pz]
+                v[j] += 1e-30im
+                J[:, j] = imag.(collect(Octopus._wedge(A, b1, v...))) ./ 1e-30
+            end
+            @test maximum(abs, J' * S6 * J - S6) < 1.0e-13
+        end
+    end
+end
+
 @testset "ref_tilt rolls the design orbit" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
     S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
@@ -6185,6 +6259,24 @@ end
         @test isapprox(sum(Q), 1.0; atol=1e-12)     # NaN particles dropped, not smeared
     end
 
+    # (a') the in-range top edge u == n-1 keeps its charge ON the boundary node.
+    # The clamp used to move base inward while f was still computed from
+    # floor(u), giving weights (1, 0) one cell inward — measured charge centre
+    # of mass 3.0 for a particle AT u = 4 on a 5-node axis. The fraction is now
+    # measured from the clamped base: weights (0, 1), centre of mass 4.0, and
+    # interior weights are bit-identical (2026-08-05 audit, U5-7; the CUDA
+    # `_cuda_pic_cic_weights` carries the same fix).
+    for n in (5, 16, 64)
+        @test Octopus._pic_cic_weights(float(n - 1), n) == (n - 1, (0.0, 1.0))
+    end
+    let Q = zeros(5, 5)
+        Octopus._pic_deposit_serial!(Q, :CIC, [4.0], [4.0], 0.0, 0.0, 1.0, 1.0, 5, 5)
+        @test sum(Q) == 1.0
+        @test sum(Q[i, j] * (i - 1) for i in 1:5, j in 1:5) == 4.0
+        @test Q[5, 5] == 1.0
+    end
+    @test Octopus._pic_cic_weights(2.25, 5) == (3, (0.75, 0.25))  # interior unchanged
+
     # (b) defaults bit-compatible
     l_def, e_def = run()
     l_ex, e_ex = run(grid_extent=:extrema, grid_quantize=0.0)
@@ -6270,6 +6362,46 @@ end
         end
         @test distinct(0.125) < distinct(0.0)
     end
+end
+
+@testset "PIC luminosity overlap sums the full deposit extent" begin
+    # `_pic_luminosity!` deposits onto (nx+1) x (ny+1) NODE arrays but the
+    # overlap sum used to run 1:nx, 1:ny. The luminosity mesh puts particles at
+    # u in [0.05, nx-1.05], so a TSC deposit's top-edge stencil reaches node
+    # nx+1 (base = floor(u)+1 clamped, stencil base..base+2): that charge was
+    # deposited and then excluded — measured 0.26% of a uniform beam's charge,
+    # an 8.0e-5 relative luminosity deficit. CIC's stencil never passes node
+    # nx, so CIC is bit-identical (2026-08-05 audit, U5-8; the three CUDA
+    # overlap sums cover the same full extent).
+    n = 200
+    x1 = [1.0e-4 * (i - 1) / (n - 1) for i in 1:n]        # uniform: edge-heavy
+    y1 = [1.0e-4 * ((i * 7) % n) / n for i in 1:n]
+    x2 = copy(x1); y2 = reverse(y1)
+    results = Dict{Symbol,Any}()
+    for method in (:CIC, :TSC)
+        solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, grid=(16, 16),
+                                  deposit_method=method)
+        nx, ny = Octopus._pic_luminosity_grid(solver)
+        q1 = zeros(nx + 1, ny + 1); q2 = zeros(nx + 1, ny + 1)
+        lum = Octopus._pic_luminosity!(solver, x1, y1, x2, y2, 1.0, q1, q2)
+        excluded = sum(q1[nx + 1, :]) + sum(q1[:, ny + 1]) - q1[nx + 1, ny + 1]
+        full = sum(q1 .* q2)
+        truncated = full - (sum(q1[nx + 1, :] .* q2[nx + 1, :]) +
+                            sum(q1[:, ny + 1] .* q2[:, ny + 1]) -
+                            q1[nx + 1, ny + 1] * q2[nx + 1, ny + 1])
+        results[method] = (lum=lum, full=full, truncated=truncated, excluded=excluded)
+    end
+    # CIC provably never reaches the top row/column; TSC measurably does.
+    @test results[:CIC].excluded == 0.0
+    @test results[:TSC].excluded > 0.4                     # ~0.51 of 200 charges
+    # The returned luminosity is built from the FULL overlap sum on both
+    # methods: the mesh (hence the hx*hy scale) depends only on the particles,
+    # so lum/full must agree across methods — it cannot if either still
+    # truncates (the TSC truncation was 8.0e-5 relative, far above this rtol).
+    @test isapprox(results[:CIC].lum / results[:CIC].full,
+                   results[:TSC].lum / results[:TSC].full; rtol=1e-12)
+    # and the recovered TSC charge is the measured 8.0e-5-relative deficit
+    @test (results[:TSC].full - results[:TSC].truncated) / results[:TSC].full > 5e-5
 end
 
 @testset "Spectral field absolute normalization is derived, not fitted" begin
@@ -8348,6 +8480,42 @@ end
 
     # and the count is against the MESH, not the estimator box: the mesh carries
     # 1.5 cells of margin, so a particle in the margin is interpolated, not dropped
-    @test Octopus._pic_count_outside([0.5, 1.5, 2.5], 1.0, 2.0) == 2
-    @test Octopus._pic_count_outside([1.0, NaN, 2.0], 1.0, 2.0) == 1
+    @test Octopus._pic_count_outside_box([0.5, 1.5, 2.5], [1.5, 1.5, 1.5],
+                                         1.0, 2.0, 1.0, 2.0) == 2
+    @test Octopus._pic_count_outside_box([1.0, NaN, 2.0], [1.5, 1.5, 1.5],
+                                         1.0, 2.0, 1.0, 2.0) == 1
+    # per PARTICLE, not per axis: a corner escapee — outside in both x and y —
+    # used to increment the counter by 2 (2026-08-05 audit, U5-6)
+    @test Octopus._pic_count_outside_box([5.0], [5.0], 1.0, 2.0, 1.0, 2.0) == 1
+    # the drifted variant counts each source particle once, however many of the
+    # sL/sR deposit planes (or axes) miss the box (2026-08-05 audit, U5-5/U5-6)
+    @test Octopus._pic_count_outside_box_drifted(
+        [1.5], [10.0], [1.5], [10.0], 0.1, -0.1, 1.0, 2.0, 1.0, 2.0) == 1
+
+    # SOURCE-side drops are counted too: under grid_extent = :sigma a source
+    # outlier's charge is dropped by the deposit's zero-weight branch, and that
+    # used to leave dropped == 0 with ~1 particle-charge silently missing from
+    # the field (2026-08-05 audit, U5-5).
+    let nx = 32, ny = 32
+        solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, grid=(nx, ny),
+                                  green_cache=:none, grid_extent=:sigma,
+                                  grid_extent_sigma=2.0)
+        nsrc = 4001
+        sx = [i <= 2000 ? -1.0e-4 : 1.0e-4 for i in 1:4000]
+        push!(sx, 3.0e-3)                        # one source outlier at ~30 sigma
+        sy = [isodd(i) ? -1.0e-4 : 1.0e-4 for i in 1:nsrc]
+        source = (x=sx, px=zeros(nsrc), y=sy, py=zeros(nsrc),
+                  z=zeros(nsrc), pz=zeros(nsrc))
+        nf = 1000
+        fx = [isodd(i) ? -1.0e-4 : 1.0e-4 for i in 1:nf]
+        fy = [i % 4 < 2 ? -1.0e-4 : 1.0e-4 for i in 1:nf]
+        field = (x=fx, px=zeros(nf), y=fy, py=zeros(nf), z=zeros(nf), pz=zeros(nf))
+        param = (weight=1.0, lb=-1.0e-3, center=0.0, rb=1.0e-3)
+        ws = Octopus._pic_cpu_workspace(Float64, nx, ny)
+        ws.dropped[] = 0
+        Octopus._pic_interaction!(solver, source, param, field, param, 1.0e-6,
+                                  ws, nothing, nothing)
+        @test ws.dropped[] == 1                          # was 0
+        @test isapprox(nsrc - sum(ws.charge), 1.0; atol=1e-9)  # the missing charge
+    end
 end

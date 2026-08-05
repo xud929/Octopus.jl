@@ -126,8 +126,15 @@ end
 """
     _pic_report_dropped(workspace)
 
-Surface the count of field particles that fell outside the interaction mesh and
-were dropped by the zero-weight branch in `_pic_cic_weights` / `_pic_tsc_weights`.
+Surface the count of particles that fell outside an interaction mesh and were
+dropped by the zero-weight branch in `_pic_cic_weights` / `_pic_tsc_weights` —
+field particles against the mesh the kick interpolation reads, AND source
+particles against the mesh their charge is deposited on. The source half used to
+be uncounted: under `grid_extent = :sigma` an out-of-box source particle's
+charge vanished from the field with `dropped == 0` and no warning, which is
+exactly the "missing from the field" case the warning below claims to cover
+(2026-08-05 audit, U5-5). The count is per particle, not per axis or per
+deposit plane (U5-6).
 
 `_PICCPUWorkspace.dropped` documents itself as "Never silent", `grid_extent`'s
 option metadata (`interface.jl`) promises out-of-range particles are "dropped and
@@ -146,8 +153,9 @@ function _pic_report_dropped(workspace::_PICCPUWorkspace)
     n = workspace.dropped[]
     n == 0 && return nothing
     @warn "PIC interaction mesh dropped particles: the transverse extent estimator \
-under-covered the beam, so these particles received no kick and their charge is \
-missing from the field. Use grid_extent = :extrema, or raise grid_extent_sigma." dropped = n
+under-covered a beam, so these particles received no kick, or their charge is \
+missing from the field they source, or both. Use grid_extent = :extrema, or raise \
+grid_extent_sigma." dropped = n
     return nothing
 end
 
@@ -608,10 +616,23 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
         # the *estimator* box instead — as this did — over-reported, because the
         # mesh carries 1.5 cells of margin beyond that box and a particle sitting
         # in the margin is interpolated correctly rather than dropped.
-        workspace.dropped[] += _pic_count_outside(
-                                   field.x, field_grid.x0, field_grid.x0 + field_grid.width) +
-                               _pic_count_outside(
-                                   field.y, field_grid.y0, field_grid.y0 + field_grid.height)
+        workspace.dropped[] += _pic_count_outside_box(
+            field.x, field.y,
+            field_grid.x0, field_grid.x0 + field_grid.width,
+            field_grid.y0, field_grid.y0 + field_grid.height)
+        # SOURCE-side charge is subject to the same estimator: the deposits at
+        # sL/sR below drop out-of-box source particles through the same
+        # zero-weight branch, and that half went UNCOUNTED — measured 1.0
+        # particle-charge missing from the field with dropped == 0 and no
+        # warning (2026-08-05 audit, U5-5). Counted against `source_grid`, the
+        # mesh those deposits write, at the drifted positions they use; the
+        # quadratic path's extra sM plane needs no extra check because the
+        # drifted coordinate is affine in s, so in-box at sL and sR implies
+        # in-box at their midpoint.
+        workspace.dropped[] += _pic_count_outside_box_drifted(
+            source.x, source.px, source.y, source.py, sL, sR,
+            source_grid.x0, source_grid.x0 + source_grid.width,
+            source_grid.y0, source_grid.y0 + source_grid.height)
     end
     phiL, ExL, EyL = _pic_solve_drifted_field_with_green_fft!(
         workspace.left, solver, source, sL, source_grid, green_fft, workspace,
@@ -964,11 +985,41 @@ identical coordinates still produces a usable mesh.
     return m - half, m + half
 end
 
-"""Count how many of `vals` fall outside `[lo, hi]`, or are non-finite."""
-function _pic_count_outside(vals, lo, hi)
+"""
+Count PARTICLES outside the mesh box `[xlo, xhi] x [ylo, yhi]`, or non-finite.
+
+Per particle, not per axis: the old per-axis pair of counts reported a corner
+escapee — outside in both x and y — as 2, though the docstring and the warning
+present the number as a count of particles (2026-08-05 audit, U5-6).
+"""
+function _pic_count_outside_box(xs, ys, xlo, xhi, ylo, yhi)
     c = 0
-    for v in vals
-        (isfinite(v) && lo <= v <= hi) || (c += 1)
+    for i in eachindex(xs, ys)
+        @inbounds x = xs[i]
+        @inbounds y = ys[i]
+        (isfinite(x) && xlo <= x <= xhi &&
+         isfinite(y) && ylo <= y <= yhi) || (c += 1)
+    end
+    return c
+end
+
+"""
+Count source particles whose drifted deposit position — `x + px*s` at either
+interaction plane `s = sL` or `s = sR`, the coordinates `_pic_deposit_drifted!`
+actually bins — falls outside the source mesh box. One count per particle even
+when both planes (or both axes) miss (2026-08-05 audit, U5-5/U5-6).
+"""
+function _pic_count_outside_box_drifted(xs, pxs, ys, pys, sL, sR, xlo, xhi, ylo, yhi)
+    c = 0
+    for i in eachindex(xs, pxs, ys, pys)
+        @inbounds begin
+            xl = xs[i] + pxs[i] * sL
+            yl = ys[i] + pys[i] * sL
+            xr = xs[i] + pxs[i] * sR
+            yr = ys[i] + pys[i] * sR
+        end
+        (isfinite(xl) && xlo <= xl <= xhi && isfinite(yl) && ylo <= yl <= yhi &&
+         isfinite(xr) && xlo <= xr <= xhi && isfinite(yr) && ylo <= yr <= yhi) || (c += 1)
     end
     return c
 end
@@ -1459,7 +1510,15 @@ estimators (`:sigma`, `:quantile`) cannot silently corrupt the field.
         return 1, (zero(u), zero(u))
     end
     base = clamp(floor(Int, u) + 1, 1, n - 1)
-    f = clamp(u - floor(u), zero(u), one(u))
+    # The fraction is measured from the CLAMPED base, not from floor(u): at
+    # u == n-1 — in range by the guard above — the clamp moves base one cell
+    # inward while `u - floor(u) == 0` still produced weights (1, 0), putting
+    # the full charge one cell INWARD of the particle (measured: charge centre
+    # of mass 3.0 for a particle at u = 4, n = 5). `u - (base - 1)` gives
+    # weights (0, 1) there, so the boundary node keeps the charge; everywhere
+    # else base - 1 == floor(u) and the value is bit-identical
+    # (2026-08-05 audit, U5-7).
+    f = clamp(u - (base - 1), zero(u), one(u))
     return base, (one(f) - f, f)
 end
 
@@ -1930,8 +1989,16 @@ function _pic_luminosity!(solver::PICPoissonSolver, x1, y1, x2, y2, klum, q1, q2
     method = _pic_luminosity_deposit_method(solver)
     _pic_deposit!(q1, method, x1, y1, xmin, ymin, hx, hy, nx + 1, ny + 1)
     _pic_deposit!(q2, method, x2, y2, xmin, ymin, hx, hy, nx + 1, ny + 1)
+    # The overlap sum covers the FULL (nx+1) x (ny+1) deposit extent. It used
+    # to stop at nx x ny, and with a TSC luminosity deposit the topmost
+    # particles' third stencil cell lands exactly in the excluded row/column
+    # (u_max = nx - 1.05, stencil reach floor(u)+2 = nx+1): measured 0.26% of
+    # the charge deposited there, an 8.0e-5 relative luminosity deficit. CIC
+    # never reaches past node nx (stencil reach floor(nx-1.05)+1 = nx), so CIC
+    # results are bit-identical (2026-08-05 audit, U5-8). The CUDA overlap sums
+    # cover the same full extent — keep them in step.
     lum = zero(T)
-    for j in 1:ny, i in 1:nx
+    for j in 1:(ny + 1), i in 1:(nx + 1)
         @inbounds lum += q1[i, j] * q2[i, j]
     end
     return lum * T(klum) * hxi * hyi

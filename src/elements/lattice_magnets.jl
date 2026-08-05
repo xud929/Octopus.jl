@@ -56,7 +56,19 @@ end
     u = h * L
     T = typeof(u)
     # `real(T)` for the crossover, not `T` — see `_curv_sin`.
-    abs(u) < real(T)(1e-4) && return h * L * L / 2 * (one(T) - u * u / 12 * (one(T) - u * u / 30))
+    #
+    # The crossover is 0.125, not the 1e-4 the family uses elsewhere: the
+    # `(1 - cos u)/h` cancellation does not stop at the guard, it decays as
+    # ~eps/u^2, so at the old boundary the closed branch was 5.86e-9 relative
+    # (measured vs BigFloat) against the series' 5.2e-17 — an 8-digit cliff one
+    # ulp wide. The series therefore runs out to where the closed form has
+    # recovered: measured vs BigFloat across the seam, the closed branch holds
+    # <= 5.9e-15 for u in [0.125, 0.5] and the series (extended by the u^6 and
+    # u^8 terms below, alternating so the truncation is bounded by the first
+    # omitted term u^10/239500800 ~ 4e-18) holds <= 8.5e-17 — both sides now
+    # <= 1e-14, seam jump 6.0e-15 (2026-08-05 audit, U10-5).
+    abs(u) < real(T)(0.125) && return h * L * L / 2 *
+        (one(T) - u * u / 12 * (one(T) - u * u / 30 * (one(T) - u * u / 56 * (one(T) - u * u / 90))))
     return (one(T) - cos(u)) / h
 end
 
@@ -445,11 +457,37 @@ limit `L -> 0`, `h -> inf`, `A = hL` fixed. Degenerates to `_rot_xz` at `b1 = 0`
     A == 0 && return x, px, y, py, z, pz
     ps = sqrt((1 + pz)^2 - px * px - py * py)
     pxn = px * cos(A) + (ps - b1 * x) * sin(A)
-    w = sqrt((1 + pz)^2 - py * py)
     psn = sqrt((1 + pz)^2 - pxn * pxn - py * py)
     xn = x * cos(A) + (x * px * sin(2A) + sin(A)^2 * (2 * x * ps - b1 * x * x)) /
                       (psn + ps * cos(A) - px * sin(A))
-    Δ = (A + asin(px / w) - asin(pxn / w)) / b1
+    # Δ = (A + asin(px/w) - asin(pxn/w)) / b1 is an O(b1) angle assembled from
+    # O(A) terms, the identical 1/b0 cancellation `_lattice_bend` was rewritten
+    # to remove (its error grew as ~eps*A/b1: measured 2.8e-10 on z at
+    # b1 = 1e-8). Rationalised the same way. With phi = asin(px/w) + A the
+    # rotated momentum is pxr = w*sin(phi), psr = w*cos(phi), and
+    #     sin(phi - asin(pxn/w)) = (pxr*psn - psr*pxn) / w^2
+    #                            = b1*x*sin(A) * (pxn*(pxr+pxn)/(psn+psr) + psn) / w^2 ,
+    #     cos(phi - asin(pxn/w)) = (psr*psn + pxr*pxn) / w^2 ,
+    # where psn - psr was rationalised through psn^2 - psr^2 = pxr^2 - pxn^2
+    # = (b1*x*sin(A))*(pxr + pxn), so the factor of b1 is explicit and the
+    # angle comes out as atan(b1*G) with both 1/b1 cancelling analytically —
+    # the b1 -> 0 limit G -> x*sin(A)/psr is exactly `_rot_xz`'s
+    # sstar/ps = x*tan(A)/(ps - px*tan(A)) (2026-08-05 audit, U10-7).
+    psr = ps * cos(A) - px * sin(A)
+    pxr = px * cos(A) + ps * sin(A)
+    den = psn + psr
+    Dc = psr * psn + pxr * pxn
+    # `real` for the same complex-step reason as `_lattice_bend`. Outside this
+    # branch |phi - asin(pxn/w)| >= pi/2: a wedge turning the momentum by more
+    # than a quarter turn, which is not a small-b1 state — nothing cancels and
+    # the direct form is well conditioned there.
+    if real(den) > 0 && real(Dc) > 0
+        G = x * sin(A) * (pxn * (pxr + pxn) / den + psn) / Dc
+        Δ = G * _atan_over(b1 * G)
+    else
+        w = sqrt((1 + pz)^2 - py * py)
+        Δ = (A + asin(px / w) - asin(pxn / w)) / b1
+    end
     return xn, pxn, y + py * Δ, py, z - Δ * (1 + pz), pz
 end
 
