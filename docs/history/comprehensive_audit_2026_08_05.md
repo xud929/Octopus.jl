@@ -531,8 +531,16 @@ reproduction → fix → verification (numbers in the commit messages):
   refusals; U12-4/5; U3-8; and the doc-drift batch U9-3, U11-10/11/12,
   U13-5 (named)/6, U18-1/2/4/6, U19-6/8, U20-3/8, U21-1; U15-2/3 recorded
   as accepted limitations at their sites.
-- **U5-5/6/7/8, U10-5/6/7** deposit-edge and series numerics (worktree
-  merge; see below).
+- **U5-5/6/7/8, U10-5/6/7** deposit-edge and series numerics (merge
+  `0de6b87`): source-side drop counting, per-particle escapee counting, CIC
+  boundary-node weights (both backends, transcription-swept 0 mismatches),
+  full-extent luminosity sums (TSC deficit 8.0e-5 → 4e-16), and the three
+  series/cancellation rewrites verified against BigFloat (`_curv_vers`
+  5.9e-9 → 1.5e-17 at the old seam; `_sol_log_over_h` d/dh 1.5e-8 →
+  ≤3.2e-14; `_wedge` 2.8e-10 → 2.5e-20 at b1=1e-8). Campaign fingerprint:
+  bit-identical except the one intended line — the `:sbend` example moved
+  ~7e-16 absolute, inside the widened `_curv_vers` series window, with the
+  PTC contract unchanged at 55/55, worst 5.0e-13.
 
 **Still open after the campaign, priced:** U9-1 (port the R9 dropped-charge
 tripwire to the three CUDA spectral deposits — GPU kernel work), U9-2 (R12
