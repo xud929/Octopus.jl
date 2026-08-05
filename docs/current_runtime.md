@@ -499,3 +499,16 @@ coordinate array in the tracked representation.
 - `Phase6DRep` is the only implemented particle representation.
 - Strong-strong CUDA equal-count slicing currently constructs boundaries with
   a host-side sort.
+
+## Nightly Full-Suite Gate (GPU machines)
+
+CI has no GPU, so the CUDA half of the suite executes only where someone
+runs it — the repository's dominant recorded failure class ("correct
+check, never executed"). GPU machines therefore run the exact CI gate
+nightly via `test/nightly_suite.sh` from the user crontab
+(`47 2 * * * .../test/nightly_suite.sh`), which appends one
+date/commit/testsets/verdict/exit row per run to
+`~/.octopus_nightly/status.tsv` and keeps the last 14 logs beside it.
+Before trusting a "the suite is green" claim on a GPU machine, check
+`column -t ~/.octopus_nightly/status.tsv | tail` — a FAIL row or a stale
+date is the signal. Installed on the RTX 4500 Ada machine on 2026-08-05.
