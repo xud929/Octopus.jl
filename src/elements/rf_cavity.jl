@@ -62,10 +62,25 @@ end
 Longitudinal kick, in convention #1 where it is one line.
 
 `p_t = dE/(P0 c)`, so an energy gain `qV sin(theta)` is `strength * sin(theta)`
-with `strength = qV/(P0 c)` and nothing else. `z1 = -c dt` exactly, so the phase
-a particle sees is `k*z1 + phase` with no approximation — this is where the
-sandwich earns itself, since the same expression written against the tracking
-coordinate would carry a stray `beta`.
+with `strength = qV/(P0 c)` and nothing else, and the phase a particle sees is
+`k*z1 + phase` — this is where the sandwich earns itself, since the same
+expression written against the tracking coordinate would carry a stray `beta`.
+
+**Model boundary (2026-08-05 audit, F16): the conversion is called with its
+arc position `s` at the default 0**, because a runtime element has no channel
+to its accumulated reference path (`turn*C + s_elem` — the same missing
+survey channel as Scope B's `P0(s)`). The `z1` used here is therefore
+`z/beta`, not the full `-c dt = z/beta + s*(1/beta0 - 1/beta)`: the
+velocity-slip term is absent, so the slip factor a ring built from
+convention-#3 maps and this cavity sees is `alpha_c` alone, missing the
+`-1/gamma0^2` term — convention-#3 lattice maps carry no velocity term by
+construction, and this conversion was the one place it could have entered.
+Negligible when `gamma0^2 * alpha_c >> 1` (the validated EIC-class cases:
+electron 10 GeV has 1/gamma0^2 = 2.6e-9); WRONG physics for moderate-energy
+hadron rings — measured 1.84x synchrotron-tune error at 2.5 GeV proton with
+alpha_c = 0.2, and the wrong side of transition whenever
+`alpha_c < 1/gamma0^2`. The open `docs/todo.md` row tracks the fix, which
+needs the arc-position channel.
 
 Changing only the momentum by a function of the coordinate is a canonical
 transformation, so the kick is symplectic, and the two wrappers are symplectic
@@ -138,7 +153,16 @@ thing across every RF element in a lattice:
 - `frequency` in **Hz** (not MAD-X's MHz),
 - `phase` in **radians** (not MAD-X's units of 2π, Bmad's rad/2π, or elegant's
   degrees),
-- the argument is `k*z + phase`, **additive**.
+- the argument is `k*z₁ + phase`, **additive**, with `z₁` the TIME_ENERGY
+  coordinate (`z/β` in the tracked convention) — this coincides with
+  `ThinCrabCavity`'s `k*z` only at `β = 1`; at 2.5 GeV proton and `z = 7 mm`
+  the two differ by 4.6e-3 rad.
+
+Two model boundaries, stated so they are visible from the call site: no
+transit-time factor and no RF focusing (see `L`), and **no velocity-slip
+term** — the slip factor this cavity closes the ring with is `alpha_c`
+alone, missing `-1/gamma0²` (see `_rf_kick`; negligible for
+ultrarelativistic beams, wrong for moderate-energy hadron rings).
 
 The second form is the friendly one: give a voltage and the beam's `e0`/`mc2`
 and the spec stores the dimensionless results. **The energy is an argument, not
@@ -164,6 +188,10 @@ function ThinRFCavitySpec(frequency;
              `strength`, `beta0` and `gamma0` directly"))
         strength === nothing || throw(ArgumentError(
             "give either `voltage` (with e0, mc2) or `strength`, not both"))
+        (beta0 === nothing && gamma0 === nothing) || throw(ArgumentError(
+            "give either `voltage` (with e0, mc2 — beta0 and gamma0 are derived " *
+            "from them) or `strength` with explicit `beta0`/`gamma0`, not a mix; " *
+            "explicit values here were previously overwritten silently"))
         beta0, gamma0 = reference_beta_gamma(e0, mc2)
         strength = rf_strength(; voltage=voltage, e0=e0, charge=charge, beta0=beta0)
     end
@@ -212,7 +240,7 @@ end
     parameters = (
         frequency=ParamMeta(required=true, unit="Hz", meaning="RF frequency, in Hz as ThinCrabCavity takes it and not MAD-X's MHz"),
         strength=ParamMeta(required=true, meaning="dimensionless kick qV/(P0 c): the change in p_t per unit sin. Derived from voltage and e0 by the friendly constructor, so no absolute energy is stored on the element and nothing can disagree with BeamParams.E0"),
-        phase=ParamMeta(default=0, unit="rad", meaning="RF phase in radians, entering as the additive `k*z + phase` exactly as ThinCrabCavity does. phase = 0 gives no net acceleration, which is a ring's natural zero; an accelerating cavity is a different element with a different zero"),
+        phase=ParamMeta(default=0, unit="rad", meaning="RF phase in radians, entering as the additive `k*z1 + phase` with z1 the TIME_ENERGY coordinate (z/beta in the tracked convention; coincides with ThinCrabCavity's k*z only at beta = 1). phase = 0 gives no net acceleration, which is a ring's natural zero; an accelerating cavity is a different element with a different zero"),
         beta0=ParamMeta(required=true, meaning="reference velocity, dimensionless. Needed by the coordinate conversions and by the energy-to-momentum factor; it is what distinguishes a proton ring from an electron ring and what the ultrarelativistic approximation throws away"),
         gamma0=ParamMeta(required=true, meaning="reference Lorentz factor, dimensionless. With beta0, fixes the exact conversion between longitudinal conventions"),
         L=ParamMeta(default=0, unit="m", meaning="cavity length, which buys DRIFT SPACE only: the kick stays a single localised impulse at the centre, as AT's CavityPass does, so a lattice gets the right arc positions without the element pretending to integrate the field. L = 0 is the exact limit of that rather than a separate model. No transit-time factor and no RF focusing -- see the element docstring"),

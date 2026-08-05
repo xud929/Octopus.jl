@@ -75,7 +75,7 @@ disposed of every lead from that unit).
 | U12 | small elements + `src/track/` | agent | reported (5 leads incl. the RF slip-factor Major; longitudinal conversions verified to 3.9e-17; refuted inherited perf item 4 with numbers) |
 | U13 | knowledge/registry/policies | agent | reported (6 leads; registry snapshot byte-fresh, all policy fields consumed) |
 | U14 | knobs + Symbolics ext | agent | reported (7 leads; epochs verified on all 11 mutation paths, derivative verified on 9 shapes) |
-| U15 | `src/beam/Beam.jl` (729) + `src/math/counter_rng.jl` (336) + `SpecialMath.jl` (161) + `src/constants/Constants.jl` (32) | agent | pending |
+| U15 | Beam/math/constants | agent | reported (7 leads; Philox bit-exact vs all 3 official KAT vectors, constants ≤0.47 ulp vs CODATA-2022, beam_statistics 4.8e-14 vs BigFloat) |
 | U16 | `test/runtests.jl` 1–3800 | agent | reported (6 leads; 60 testsets audited, 10 strong-tests verified) |
 | U17 | `test/runtests.jl` 3800–EOF | agent | reported (8 leads; 75 testsets audited, 10 strong-tests verified) |
 | U18 | `test/examples/` + `examples/` | agent | reported (6 leads; all five scripts executed clean, pair-consistency verified bit-identical) |
@@ -93,8 +93,9 @@ disposed of every lead from that unit).
    lack docstrings (AGENTS.md requires them).
 3. `beam_statistics` covariance loop computes all 36 entries of a symmetric
    matrix — unmeasured performance hypothesis.
-4. `Patch._patch_map` recomputes its rotation per particle per turn —
-   unmeasured performance hypothesis.
+4. `Patch._patch_map` rotation recompute — **REFUTED with numbers by U12**:
+   11.059 vs 11.057 ns/particle hoisted (ratio 1.0002 over 1e7 iterations);
+   LLVM hoists the pure computation. Closed, no fix warranted.
 5. Metadata validator remainder: defaults-vs-constructor, declared-parameter-
    is-read, and `validate_configuration_metadata`'s hardcoded type enumeration.
 
@@ -253,6 +254,32 @@ unattributed warning. The negative control is inherently unobservable (the
 pre-fix behavior was undefined memory writes that happened to leave the
 same visible state), recorded as such; the guard is justified by the
 mechanism, and the new test pins the now-defined behavior.
+
+**F16 (Major, auditor-derived and reproduced from U12-1; model boundary
+documented, code fix priced on `todo.md`).** The RF cavity's conversion to
+TIME_ENERGY is called with arc position `s = 0` — `_rf_kick` has no channel
+to its accumulated reference path — so its `z1` is `z/β`, not the full
+`-cΔt = z/β + s(1/β₀ − 1/β)`. The auditor re-derived the conversion from
+first principles (it matches `longitudinal.jl:179` exactly) and confirmed
+the omitted term is the velocity slip, which in convention #3 can enter
+ONLY here: a ring closed by this cavity has slip factor `α_c`, missing
+`−1/γ₀²`. Reproduced: ν_s matches the `η=α_c` analytic at ratio 1.0007 and
+misses the true-η value by 1.8403× (2.5 GeV proton, α_c=0.2); the missing
+phase slope equals `k·C/(β₀γ₀²)` to 15 digits; the transition side is wrong
+whenever `α_c < 1/γ₀²`. Negligible at the ultrarelativistic parameters all
+committed checks ran at — which is why they passed; the theory note's own
+§7 criterion (ν_s against the FULL η) was the missing check, and **the
+note's own Step-0 example makes the same `s=0` call while flagging the `s`
+trap a paragraph later** — a Knowledge-Layer defect faithfully implemented.
+Disposition (Phase 15): the honest fix needs the arc/survey channel Scope B
+already needs for `P0(s)` — priced as a new `todo.md` row; the false "no
+approximation" docstring claim is corrected, the model boundary is now
+stated on the element (docstring + construction_help + ParamMeta) and in
+the note (correction block beside the original). Fixed alongside: U12-2
+(the `k*z + phase` docstring claim — actual argument is `k*z₁ + phase`,
+coinciding with ThinCrabCavity only at β=1) and U12-3 (`voltage` +
+explicit `beta0`/`gamma0` silently overwrote the explicit values — now a
+directed refusal, verified).
 
 **F1 (Moderate, auditor-confirmed, FIXED in package 2).**
 `src/tasks/strongstrong/interface.jl:1991-1992`
@@ -531,3 +558,6 @@ luminosity schedule dispatch is specialized by all three grid solvers.
 | `src/tasks/Tasks.jl` | `_warn_duplicate_radiation_streams` at task construction (walks nested `:line` specs) | F14 |
 | `src/elements/aperture.jl` | bounds guard in both `_aperture_bump!` methods | F15 |
 | `test/runtests.jl` | testset: wrapper ctx repeatability, duplicate-stream warning, unbound-aperture defined behavior | F13, F14, F15 |
+| `src/elements/rf_cavity.jl` | model boundary documented (`_rf_kick`, spec docstring, ParamMeta, construction_help); voltage+explicit-beta0 refusal | F16, U12-2, U12-3 |
+| `docs/theory/rf_cavity_and_reference_energy.md` | F16 correction block beside the Step-0 example that carried the defect | F16 |
+| `docs/todo.md` | new open row: RF velocity-slip term, folded into the Scope-B survey channel | F16 |
