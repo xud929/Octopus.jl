@@ -303,9 +303,28 @@ if _HAS_CUDA
 
 		function track!(rep, elems, turns, policy::ResolvedCUDAExecutionPolicy;
 						stream=nothing)
+			_reject_contextless_tracking(elems)
 			if _requires_cuda_elementwise(elems)
-				for _ in 1:turns
-					_track_cuda_policy_elementwise!(rep, elems, policy, TrackingContext(), stream)
+				# Build the context ONCE and advance its turn, exactly as the
+				# ctx-taking sibling below does. Constructing `TrackingContext()`
+				# inside the loop pinned every turn to turn 0, and the counter RNG
+				# is keyed on the turn, so a stochastic element replayed one draw
+				# for the whole run: 16 turns produced 16x the SAME kick rather
+				# than a random walk (2026-08-05_b audit). Measured at 16 turns,
+				# 20,000 particles, damping off:
+				#
+				#            var(16)/var(1)   corr(x16,x1)   max|x16 - 16*x1|
+				#   CPU          15.60           0.00048         9.76e-8
+				#   CUDA (pre)  256.00 = 16^2    1.0             2.6e-23
+				#
+				# i.e. the excitation was perfectly coherent and its variance too
+				# large by a factor of `turns`. The CPU sibling never had this: its
+				# contextless path calls the context-free `fusedTrack`, which draws
+				# from a stateful RNG, so its turns differ by construction.
+				base_ctx = TrackingContext()
+				for turn in 1:turns
+					turn_ctx = with_turn(base_ctx, base_ctx.turn + Int64(turn - 1))
+					_track_cuda_policy_elementwise!(rep, elems, policy, turn_ctx, stream)
 				end
 			else
 				_cuda_launch_track_policy!(rep, elems, turns, policy, nothing; stream=stream)
