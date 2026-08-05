@@ -618,3 +618,101 @@ Include:
   reproduced it; a sub-agent never applies a fix.
 - A regression test that has never been shown to fail on the defect it
   guards proves nothing about that defect.
+
+---
+
+# Measured Lessons
+
+These are not principles someone thought sounded right; each was paid for in
+a recorded session and carries its receipt. The full stories are in the
+dated records under `docs/history/` — chiefly
+[`comprehensive_audit_2026_08_04.md`](history/comprehensive_audit_2026_08_04.md),
+[`comprehensive_audit_2026_08_05.md`](history/comprehensive_audit_2026_08_05.md)
+(whose §7 "Post-campaign closures" block records the queue-closing session),
+and the per-unit reports archived beside them.
+
+1. **"Correct check, never executed" is the dominant failure class, and it
+   regenerates.** The 2026-08-04 audit named it as its first rule; F2
+   reproduced it at HEAD within a day (one wrong tolerance aborted every
+   full-suite run since `baf0255` — ~4,660 test lines unexecuted under
+   "full suite green" claims). The queue session found it twice more: a
+   validation script's GPU leg never run on a GPU machine (hiding a real
+   compile regression), and contracts with no runner at all (U3-6).
+   Therefore: Phase 8 must record which testsets actually RAN, CUDA gates
+   skip visibly, and coverage that can narrow silently needs its own
+   tripwire.
+
+2. **A fix's blast radius includes dimensions nothing measures.** A
+   correctness fix (throw on unknown RNG codes, U15-4) broke a different
+   axis entirely — device compilability — because GPU kernel compilation
+   compiles every branch, throws included, and no gate compiled a
+   stochastic element on device. The fix that retired solver-identity
+   comparison then broke the contract still probing the old rejection —
+   caught only by the final full-suite gate. Therefore: when a change
+   alters acceptance/rejection semantics, grep for everything that probes
+   the OLD behavior before calling it done; and a throw reachable from
+   device code carries a static message, never an interpolated one.
+
+3. **Totalizing a check pays immediately.** Extending the
+   backend-consistency line from 11 hand-picked kinds to all 30 caught a
+   real regression on its first GPU run; the R9 dropped-charge tripwire's
+   first activation caught 83% of a slice silently discarded; building the
+   solver-option effectiveness contract surfaced six defects. Treat
+   coverage extension as a bug-finding instrument with near-immediate
+   payback, not as hygiene.
+
+4. **Hand-copied knowledge always drifts; derive, plus a tripwire.** The
+   symplecticity script's copy of the contract's case list sat at 8 of 12
+   while both sides claimed mirror status; the PTC generator carried a
+   dead spec table that had drifted to an unregistered kind; the
+   configuration validator's hardcoded solver enumeration went stale twice.
+   The repair is always the same shape: one authoritative source, consumers
+   derive from it, and a declaration-to-coverage tripwire that fails when a
+   new member is not covered.
+
+5. **Argue from structure first, then measure — and record a pin's
+   envelope.** The thread-invariance pin was "bit-identical at 1/4/8
+   workers" only below the parallel thresholds its configurations never
+   crossed. A bitwise inactivity sweep read the `(v-d)+d` frame round
+   trip's last-bit motion as "parameter consumed" and exact cancellation as
+   "inert" — the placement-parameter inactive table had to be argued from
+   map structure and only then confirmed by measurement. A pin that does
+   not state the regime it was measured in will eventually be quoted
+   outside it.
+
+6. **Session artifacts are part of the scientific record.** The audit's 21
+   per-unit reports — the open queue's file:line ground truth — lived in a
+   session scratchpad and were one `/tmp` cleanup away from making the
+   whole priced queue unactionable (they are archived under
+   `docs/history/comprehensive_audit_2026_08_05_unit_reports/` now). The
+   `:lattice` theory note's original table has no committed harness and its
+   absolute numbers remain unreproducible. Reports, harnesses, and
+   provenance land in the repository, in the same commit as the claims
+   they support.
+
+7. **The physics core holds; the defects live at the seams.** Two full
+   line-by-line passes found the Bassetti-Erskine/synchro-beam core, both
+   solver twin pairs, Philox (against official KAT vectors), and the
+   constants sound, most with independent-reference measurements — while
+   every Major finding and the entire Low queue lived in protocol code
+   (append/restart), configuration plumbing, backend seams, test shape,
+   and documentation. Spend verification effort disproportionately at
+   seams, contracts, and observability; the kernels with theory notes and
+   independent derivations are the strong part of the codebase.
+
+8. **Loud beats silent, uniformly.** Nearly every queue item reduced to the
+   same repair: silent charge clipping, silent row drops, silent skips,
+   silently ignored configuration, silently vanishing summary rows — each
+   became a warning, an error, or an honestly documented limitation.
+   AGENTS.md's contract rule ("do not report an unrun check as passed")
+   generalizes: data and coverage never disappear without a signal.
+
+9. **Finish through the full gate, especially when confident.** Twice in
+   one session the final full suite caught what targeted verification had
+   cleared. The gate invocation this repository's claims are calibrated
+   against is CI's:
+   `julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'`
+   — plain `julia test/runtests.jl` lacks the test dependencies, a
+   single-threaded run aborts the thread-invariance testset, and a trailing
+   pipe (`... | tail`) eats the failing exit code, so append the exit code
+   to the log rather than trusting the last command's status.

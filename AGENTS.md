@@ -80,6 +80,34 @@ Validated Scientific Software
 
 AI models will change. The knowledge architecture should remain useful.
 
+## Hard-Won Rules
+
+Each of these was paid for in a recorded session. The full versions, with
+their evidence, are in
+[`docs/comprehensive_audit.md`](docs/comprehensive_audit.md) ("Measured
+Lessons"); the receipts are the dated records in `docs/history/`.
+
+- A check only counts while it executes. Gate skips must be visible, and
+  "the suite is green" is a claim about which testsets actually ran.
+- A fix has a blast radius in dimensions you did not measure. Changing
+  acceptance/rejection semantics means finding every contract and test that
+  probes the old behavior; touching code reachable from CUDA kernels means
+  every branch must compile as device IR — throws included, so their
+  messages stay static.
+- Do not hand-copy knowledge (case lists, solver enumerations, spec
+  tables). Derive from the one authoritative source and add a coverage
+  tripwire; extending a check to cover everything tends to find a real bug
+  immediately.
+- Loud beats silent: dropped charge, dropped rows, skipped checks, and
+  ignored configuration must warn, throw, or be documented as inert —
+  never vanish.
+- Commit what a future session needs. Reports, harnesses, and provenance
+  belong in the repository, in the same commit as the claims they support —
+  not in a session scratchpad.
+- Finish through the full-suite gate at CI settings
+  (`julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'`);
+  it has caught what targeted verification cleared.
+
 ## Architectural Rules
 
 - Element specs describe physics meaning and metadata.
