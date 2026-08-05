@@ -3438,6 +3438,28 @@ end
     foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
 end
 
+@testset "The elliptical strong-beam kick differentiates" begin
+    # 2026-08-05 audit open-queue U7-1: the η≠0 Bassetti-Erskine kick threw
+    # under ForwardDiff — the near-round precision calibration rejected dual
+    # number types outright, and the exact CPU Faddeeva route had no dual
+    # method. The OctopusForwardDiffExt rules (shared verbatim with script
+    # mode) supply the holomorphic Faddeeva derivative w′(z) = −2zw(z) + 2i/√π
+    # and the calibration pass-through. Correctness is pinned by the
+    # symplecticity of the dual-computed Jacobian, which needs every entry
+    # jointly right (central-difference cross-check at build: 6.8e-5, the FD
+    # floor); pre-fix this testset errors instead of failing a tolerance.
+    el = compile_runtime(ThinStrongBeamSpec{Float64}(kbb=1.0e-4, beta=(1.0, 1.0),
+                                                     sigma=(106.0e-6, 9.5e-6)))
+    u0 = [0.8e-4, 1.0e-5, 0.4e-4, -2.0e-5, 1.0e-3, 1.0e-4]
+    J = ForwardDiff.jacobian(u -> collect(el(u...)), u0)
+    S6 = zeros(6, 6)
+    for (q, p) in ((1, 2), (3, 4), (5, 6))
+        S6[q, p] = 1.0
+        S6[p, q] = -1.0
+    end
+    @test maximum(abs, J' * S6 * J - S6) < 1.0e-10
+end
+
 @testset "Every continuing observer drops its replayed window" begin
     # 2026-08-05 audit open-queue U6-2: only MomentObserver and the task-level
     # .lum path followed the drop-at-first_turn idempotence rule; the

@@ -73,4 +73,20 @@ include("tasks/StrongStrong.jl")
 # Generated registry/introspection helpers. Keep this last.
 include("registry/Registry.jl")
 
+# Script mode: a module built by `include("src/Octopus.jl")` never triggers
+# the package-extension loader, so the ForwardDiff derivative rules (the
+# OctopusForwardDiffExt weakdep extension, audit U7-1) are included here when
+# ForwardDiff is importable from the active project — the same arrangement as
+# the Symbolics adapter (src/knobs/symbolic.jl). Both routes include one
+# shared rules file, so neither can drift from the other. In package mode
+# this `import` throws (ForwardDiff is a weak, not strong, dependency) and
+# the extension takes over.
+const _HAS_FORWARDDIFF_SCRIPT_MODE = try
+    @eval import ForwardDiff
+    true
+catch
+    false
+end
+_HAS_FORWARDDIFF_SCRIPT_MODE && include("../ext/OctopusForwardDiffRules.jl")
+
 end # module Octopus

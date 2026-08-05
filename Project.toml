@@ -16,9 +16,11 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 
 [weakdeps]
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"
 
 [extensions]
+OctopusForwardDiffExt = "ForwardDiff"
 OctopusSymbolicsExt = "Symbolics"
 
 [compat]
@@ -32,8 +34,10 @@ LinearAlgebra = "1.12"
 NVTX = "1"
 Random = "1.11"
 SpecialFunctions = "2"
-# Test-only. AD needs no runtime dependency: ForwardDiff works on generic code,
-# so this exists purely so CI proves the element layer stays differentiable.
+# Weak dependency (and test dep): ForwardDiff works on the generic code
+# unaided almost everywhere; the OctopusForwardDiffExt extension supplies the
+# two derivative rules generic code cannot express (the Faddeeva holomorphic
+# rule and the near-round precision calibration pass-through, audit U7-1).
 ForwardDiff = "1"
 # Weak dependency: the knob tree's Symbolics adapter lives in
 # OctopusSymbolicsExt and activates only when the user loads Symbolics.
