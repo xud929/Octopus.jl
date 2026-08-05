@@ -3388,6 +3388,50 @@ end
     foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
 end
 
+@testset "Wrapped stochastic elements keep their context, shared streams warn, unbound apertures cannot corrupt" begin
+    # 2026-08-05 audit F13/F14/F15. F13: MisalignedElement/RefTilted/
+    # CompositeLine defined no context-aware call, so the generic
+    # AbstractTrackOp fallback dropped ctx and a wrapped LumpedRad fell back
+    # to its stateful contextless RNG — measured |dx| = 1.4e-4 between two
+    # identical executions. F14: LumpedRadSpec auto-assigns one rng_id per
+    # spec OBJECT, so placing one spec twice draws identical noise at both
+    # placements (two kicks measured exactly 2x one; variance 4x not 2x) —
+    # now warned at task construction. F15: a loss_record bump with an
+    # unbound element_id=0 was a silent @inbounds out-of-bounds write.
+    rad = LumpedRadSpec(
+        damping_turns=(20.0, 25.0, 30.0),
+        beta=(0.7, 0.9, 1.1),
+        alpha=(0.2, -0.1, 0.05),
+        sigma=(1.2e-3, 0.8e-3, 2.0e-3),
+        rng_id=0x77,
+        x_offset=1.0e-4)
+    mk() = Phase6DRep([1.0e-3], [1.0e-4], [-0.5e-3], [2.0e-4], [1.0e-3], [1.0e-4])
+    run_once() = begin
+        set_global_rng!(seed=99, method=:philox)
+        rep = mk()
+        execute!(TrackingTask((rad,)), rep; turns=3)
+        collect(coordinate_arrays(rep)[1])
+    end
+    @test compile_runtime(rad) isa Octopus.MisalignedElement
+    @test run_once() == run_once()          # F13: bit-repeatable through the wrapper
+
+    plain = LumpedRadSpec(damping_turns=(20.0, 25.0, 30.0), beta=(0.7, 0.9, 1.1),
+                          alpha=(0.2, -0.1, 0.05), sigma=(1.2e-3, 0.8e-3, 2.0e-3),
+                          rng_id=0x78)
+    @test_logs (:warn, r"share an rng_id") match_mode = :any TrackingTask(
+        (plain, DriftSpec(L=1.0), plain))   # F14: duplicate placement warns
+    @test_logs TrackingTask((plain, DriftSpec(L=1.0)))  # single placement silent
+
+    # F15: an unbound (element_id=0) recording aperture kills the particle but
+    # leaves counts untouched and the loss unattributed — defined behavior,
+    # where the unguarded write was memory corruption.
+    counts = zeros(Int32, 1)
+    Octopus._aperture_bump!(counts, 0)
+    Octopus._aperture_bump!(counts, 2)
+    Octopus._aperture_bump!(counts, 1)
+    @test counts == Int32[1]
+end
+
 @testset "Append continuation: torn writes dropped, corruption refused, wipes loud" begin
     # 2026-08-05 audit (F1, U4-1/U4-2, U6-1, A-5): a hard-killed run leaves a
     # partial last line whose truncated turn field ("1" of "12") parses under

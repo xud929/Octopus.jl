@@ -213,6 +213,18 @@ end
 @inline (elem::MisalignedElement)(x, px, y, py, z, pz) =
     track_particle(_inner_method(elem.inner), elem, x, px, y, py, z, pz)
 
+# Forward the tracking context through the frame change. Without this method
+# the generic AbstractTrackOp fallback (Track.jl) dropped ctx, so a wrapped
+# stochastic element (LumpedRad) silently fell back to its contextless
+# stateful RNG — non-repeatable draws and no CPU/CUDA identity (2026-08-05
+# audit, F13; measured |dx| = 1.4e-4 between two identical ctx calls).
+@inline function (elem::MisalignedElement)(ctx::TrackingContext, particle_id,
+                                           x, px, y, py, z, pz)
+    x, px, y, py, z, pz = _frame_change(elem.qin, elem.oin, x, px, y, py, z, pz)
+    x, px, y, py, z, pz = elem.inner(ctx, particle_id, x, px, y, py, z, pz)
+    return _frame_change(elem.qout, elem.oout, x, px, y, py, z, pz)
+end
+
 """
     _misalignment_wrap(spec, inner)
 

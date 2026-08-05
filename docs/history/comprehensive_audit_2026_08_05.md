@@ -72,13 +72,13 @@ disposed of every lead from that unit).
 | U9 | `src/tasks/strongstrong/spectral.jl` (1,148) + `spectral_cuda.jl` (806) — twin pair, parity brief | agent | reported (clean; 4 minor/known items) |
 | U10 | `src/elements/lattice_magnets.jl` (1,222) + `solenoid.jl` (436) + `linear6d.jl` (306) + `linear_maps.jl` (236) | agent | reported (11 leads; §7) |
 | U11 | `src/elements/beam_line.jl` (587) + `aperture.jl` (583) + `thin_elements.jl` (346) + `radiation.jl` (313) + `misalignment.jl` (293) | agent | reported (12 leads; §7) |
-| U12 | `src/elements/rf_cavity.jl` (223) + `patch.jl` (209) + `chromaticity_kick.jl` (192) + `crab_cavity.jl` (181) + `lorentz_boost.jl` (163) + `ref_tilt.jl` (126) + `Elements.jl` (15) + `src/track/phase6d_track.jl` (359) + `longitudinal.jl` (232) + `fused_track.jl` (77) + `radiation_track.jl` (67) + `Track.jl` (64) | agent | pending |
-| U13 | `src/knowledge/Knowledge.jl` (955) + `Methods.jl` (75) + `src/registry/Registry.jl` (218) + `src/examples/Examples.jl` (35) + `src/Octopus.jl` (76) + `src/policies/Policies.jl` (352) | agent | pending |
-| U14 | `src/knobs/Knobs.jl` (916) + `symbolic.jl` (319) + `ext/OctopusSymbolicsExt.jl` (19) | agent | pending |
+| U12 | small elements + `src/track/` | agent | reported (5 leads incl. the RF slip-factor Major; longitudinal conversions verified to 3.9e-17; refuted inherited perf item 4 with numbers) |
+| U13 | knowledge/registry/policies | agent | reported (6 leads; registry snapshot byte-fresh, all policy fields consumed) |
+| U14 | knobs + Symbolics ext | agent | reported (7 leads; epochs verified on all 11 mutation paths, derivative verified on 9 shapes) |
 | U15 | `src/beam/Beam.jl` (729) + `src/math/counter_rng.jl` (336) + `SpecialMath.jl` (161) + `src/constants/Constants.jl` (32) | agent | pending |
-| U16 | `test/runtests.jl` 1–3800 | agent | pending |
-| U17 | `test/runtests.jl` 3800–7613 | agent | pending |
-| U18 | `test/examples/` (995) + `examples/` (712) | agent | pending |
+| U16 | `test/runtests.jl` 1–3800 | agent | reported (6 leads; 60 testsets audited, 10 strong-tests verified) |
+| U17 | `test/runtests.jl` 3800–EOF | agent | reported (8 leads; 75 testsets audited, 10 strong-tests verified) |
+| U18 | `test/examples/` + `examples/` | agent | reported (6 leads; all five scripts executed clean, pair-consistency verified bit-identical) |
 | U19 | `validation/` coherent-modes cluster: `coherent_mode_vlasov_theory.jl` (713), `coherent_beam_beam_modes.jl` (215), `coherent_mode_eic_comparison.jl` (171), `coherent_mode_scans.jl` (114), `coherent_beam_beam_modes_beambeam3d.jl` (68), `counter_rng_validation.jl` (118) | agent | pending |
 | U20 | `validation/` field cluster: `pic_gaussian_field_validation.jl` (430), `near_round_gaussian_transition.jl` (412), `gaussian_pic_zscan.jl` (363), `spectral_poisson_field_validation.jl` (300), `gaussian_pic_bigaussian_validation.jl` (196), `gaussian_pic_field_validation.jl` (167), `pic_grid_extent_stability.jl` (157), `pic_slice_boundary_jitter.jl` (129), `soft_gaussian_pic_comparison.jl` (116), `pic_gaussian_luminosity_validation.jl` (158) | agent | pending |
 | U21 | `validation/` remainder: `slice_longitudinal_zscan.jl` (618), `high_energy_weakstrong_limit.jl` (420), `generate_ptc_reference.jl` (396), `gaussian_slicing_convergence.jl` (286), `strong_strong_spectral_comparison.jl` (276), `slice_interpolation_emittance_growth.jl` (239) + `_summary` (116), `lattice_cells.jl` (235), `pic_option_consistency.jl` (233) + `_summary` (137), `symplecticity_validation.jl` (196), `tracking_backend_consistency.jl` (168), + all remaining small scripts | agent | pending |
@@ -219,6 +219,40 @@ file's own `try/finally` restore idiom; probe re-run shows LEAKED=false for
 both. U3-2 fixed alongside: the symplecticity docstring advertised
 `default_tolerance=5.0e-7` while the struct default is `5.0e-8` (the fix
 had landed in code only).
+
+**F13 (Moderate, auditor-reproduced from U11-5, FIXED).**
+`MisalignedElement`, `RefTilted`, and `CompositeLine` defined no
+context-aware call, so the generic `AbstractTrackOp` fallback (Track.jl)
+dropped the `TrackingContext` and a wrapped `LumpedRad` silently fell back
+to its stateful contextless RNG — measured |dx| = 1.4e-4 between two
+identical executions; determinism and CPU/CUDA identity lost for any
+misaligned/rolled/composite-wrapped stochastic element. All three wrappers
+now forward ctx (frame changes and roll conjugation preserved around the
+inner ctx call); post-fix bit-repeatable (|dx| = 0.0). Negative control:
+FAILs with the sources stashed.
+
+**F14 (Moderate, auditor-reproduced from U11-6, mitigated as a loud
+warning).** The radiation RNG key is (seed, method, turn, `elem.rng_id`,
+particle, component) and `LumpedRadSpec` auto-assigns one `rng_id` per spec
+OBJECT — so placing one spec twice (unavoidable syntax under `BeamLine`
+repetition) draws identical noise at both placements: two kicks measured
+exactly 2× one; excitation variance grows quadratically, not linearly.
+Full fix needs per-placement identity, which intersects the owner-deferred
+observer-identity scheme (`todo.md`) — so the audit action is a
+task-construction warning (walks tuples, vectors, `LineEntry`s, and nested
+`:line` specs) naming the remedy, plus the todo pointer. Negative control:
+FAILs pre-fix.
+
+**F15 (Moderate, auditor-reproduced from U11-7, FIXED).** `_aperture_bump!`
+indexed `counts[id]` under `@inbounds` with the unbound-placement default
+`element_id = 0` — a silent out-of-bounds write (reproduced: particle
+killed, counts unmoved, loss invisible to `loss_records`). Both backend
+methods now guard `1 <= id <= length(counts)` and skip the bump — the kill
+stands and the loss surfaces through the existing dead-vs-logged
+unattributed warning. The negative control is inherently unobservable (the
+pre-fix behavior was undefined memory writes that happened to leave the
+same visible state), recorded as such; the guard is justified by the
+mechanism, and the new test pins the now-defined behavior.
 
 **F1 (Moderate, auditor-confirmed, FIXED in package 2).**
 `src/tasks/strongstrong/interface.jl:1991-1992`
@@ -407,6 +441,40 @@ From U11 (aperture/beam_line/thin/radiation/misalignment):
   post-construction `setproperty!` stored-never-read. U11-8 (Low-Med):
   composite-line aperture losses unattributed. U11-9..12 (Low/doc).
 
+From U12/U13/U14/U16/U17/U18 (wave 3; full lists in the unit reports):
+
+- **U12-1 (Major, physics).** `_rf_kick` omits the path-length `s` term in
+  both longitudinal conversions: the RF slip factor becomes `alpha_c`
+  instead of `eta = alpha_c − 1/gamma0²` — measured 1.84× tune error at
+  2.5 GeV proton, wrong transition side when `alpha_c < 1/gamma0²`.
+  Auditor derivation pending (the stated reason must be checked, not just
+  the discrepancy).
+- **U17-1 (Medium).** CUDA gating in the suite's back half reports green
+  on CPU (`else @test true` at three sites; 14 testsets vanish without a
+  skip marker) — the honest-skip rule broken. **U17-2 (Med-High).**
+  The spectral-vs-BE kick testset passes with the kick zeroed, doubled, or
+  sign-flipped on the proton side (rms of final momenta, atol 0.03 vs a
+  4.8% signal). U17-3 (Med): corpse-handling semantics differ between
+  Gaussian (renormalizes to live charge) and PIC (reduces charge), 2.6%
+  luminosity, pinned nowhere.
+- **U16-3 (Med-High)** = U5-1/2 third source: the thread-invariance pin
+  (n=1500) sits below both 4096 parallel thresholds; at n=15000 the pinned
+  invariant is false. U16-2: a "contract must be able to fail" control
+  that cannot fail.
+- U13-2 (Med): params read by `compile_runtime` (x_offset in 17/30 kinds,
+  ref_tilt in 29/30) are rejected by the documented `spec.param=` binding
+  path, and the recommended `spec.params[:key]=` escape hatch skips the
+  `_SPEC_EPOCH` bump. U13-1 (Med): unknown keywords accepted by all 32
+  friendly constructors (mechanism + choke point characterized). U13-3
+  (Med): empty `tracking_methods` silently disables three validator checks
+  (`:line` is the live instance). U13-4/5/6 (Low).
+- U14-1 (Med): `@knob dep::T` retypes and converts a cached value BEFORE
+  its own rejection throw (no epoch bump). U14-2 (Med): left-nested `^`
+  breaks the string↔expression round-trip (64 vs 512). U14-3..7 (Low).
+- U18-1 (Med): the strong-strong harness's solver-swap instructions are
+  stale (uncommenting yields dead code). U18-2..6 (Low): env-var header
+  omissions, repo-root `result/` writes from the suite, comment drift.
+
 From U4 (reported; agent report at `scratchpad/reports/U4_report.md`):
 
 - **U4-1 (HIGH, unverified by auditor).** `interface.jl:1717-1722,1854-1855,
@@ -459,3 +527,7 @@ luminosity schedule dispatch is specialized by all three grid solvers.
 | `src/tasks/strongstrong/pic_cpu.jl` | `_require_cuda_pic_options` `:node` gate requires the full indexed wavefront flag set | F11 |
 | `test/runtests.jl` | CUDA testset: gathered routes carry pz (parity pinned at 1e-13; measured 7.2e-15..1.4e-14), `:node` degradation refused statically and at runtime | F10, F11 |
 | `src/contracts/Contracts.jl` | RNG save/restore in the two leaking validates; docstring tolerance 5.0e-7 → 5.0e-8 | F12 |
+| `src/elements/misalignment.jl`, `ref_tilt.jl`, `beam_line.jl` | ctx-forwarding call operators on the three wrappers | F13 |
+| `src/tasks/Tasks.jl` | `_warn_duplicate_radiation_streams` at task construction (walks nested `:line` specs) | F14 |
+| `src/elements/aperture.jl` | bounds guard in both `_aperture_bump!` methods | F15 |
+| `test/runtests.jl` | testset: wrapper ctx repeatability, duplicate-stream warning, unbound-aperture defined behavior | F13, F14, F15 |

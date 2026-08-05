@@ -534,6 +534,17 @@ end
 @inline (elem::CompositeLine)(x, px, y, py, z, pz) =
     track_particle(_inner_method(elem), elem, x, px, y, py, z, pz)
 
+# Forward the tracking context to every member op (F13, 2026-08-05 audit):
+# a stochastic element inside a composite line must see the same ctx it
+# would see placed directly in the task line.
+@inline function (elem::CompositeLine)(ctx::TrackingContext, particle_id,
+                                       x, px, y, py, z, pz)
+    for op in elem.ops
+        x, px, y, py, z, pz = op(ctx, particle_id, x, px, y, py, z, pz)
+    end
+    return x, px, y, py, z, pz
+end
+
 # A composite has no method of its own; it borrows its first element's, which is
 # what the wrappers ask for when a misaligned line is tracked directly.
 _inner_method(elem::CompositeLine) =

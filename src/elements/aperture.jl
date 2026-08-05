@@ -332,6 +332,13 @@ end
 const _LOSS_COUNT_LOCK = Threads.SpinLock()
 
 @inline function _aperture_bump!(counts::Array, id)
+    # An id outside 1:length(counts) means this aperture was never bound to a
+    # line placement (a raw compile_runtime aperture handed a shared record,
+    # or a placement the binder does not reach): there is no counts row to
+    # attribute the loss to, and the unguarded @inbounds write was silent
+    # memory corruption (2026-08-05 audit, F15). The kill itself stands, and
+    # the loss still surfaces through the dead-vs-logged unattributed warning.
+    1 <= id <= length(counts) || return nothing
     lock(_LOSS_COUNT_LOCK)
     try
         @inbounds counts[id] += 1
@@ -343,6 +350,8 @@ end
 
 if _HAS_CUDA
     @eval @inline function _aperture_bump!(counts::CUDA.CuDeviceArray, id)
+        # Same unbound-placement guard as the CPU method (F15).
+        1 <= id <= length(counts) || return nothing
         CUDA.@atomic counts[id] += Int32(1)
         return nothing
     end

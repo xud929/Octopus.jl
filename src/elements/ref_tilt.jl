@@ -81,6 +81,17 @@ end
 @inline (elem::RefTilted)(x, px, y, py, z, pz) =
     track_particle(_inner_method(elem.inner), elem, x, px, y, py, z, pz)
 
+# Forward the tracking context through the roll conjugation (F13, 2026-08-05
+# audit — same reason as MisalignedElement).
+@inline function (elem::RefTilted)(ctx::TrackingContext, particle_id,
+                                   x, px, y, py, z, pz)
+    c, s = elem.c, elem.s
+    x, px, y, py = _s_rotate(c, s, x, px, y, py)
+    x, px, y, py, z, pz = elem.inner(ctx, particle_id, x, px, y, py, z, pz)
+    x, px, y, py = _s_rotate(c, -s, x, px, y, py)
+    return x, px, y, py, z, pz
+end
+
 _inner_method(inner) = inner.method
 _inner_method(inner::MisalignedElement) = _inner_method(inner.inner)
 

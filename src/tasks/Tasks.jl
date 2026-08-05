@@ -143,6 +143,7 @@ function TrackingTask(elements;
                       loss_report::Bool=true)
     element_tuple = _element_tuple(elements)
     seed !== nothing && @warn "TrackingTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
+    _warn_duplicate_radiation_streams(element_tuple)
     action_tuple, observer_tuple = classify_task_hooks(hooks, actions, observers)
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
                         Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),
@@ -166,6 +167,44 @@ loss_summary(rep_or_beam, task::TrackingTask) = loss_summary(rep_or_beam, task.l
 # argument `execute!(task, rep; turns=...)` hands the caller. Passing a `Beam`
 # happened to work, because its method is untyped in both positions.
 loss_summary(rep::Phase6DRep, task::TrackingTask) = loss_summary(rep, task.loss_record[])
+
+"""
+Warn when two radiation placements in a line share an RNG stream.
+
+`LumpedRadSpec` auto-assigns a fresh `rng_id` per spec OBJECT, so placing one
+spec object twice — repeating a `BeamLine` cell is the natural way — makes
+every placement draw the SAME noise for a given (turn, particle):
+perfectly correlated kicks, and excitation variance scaling with the square
+of the placement count instead of linearly (2026-08-05 audit, F14; measured
+two kicks = exactly 2× one). Until line placements carry an identity of
+their own (the deferred observer-identity scheme in `docs/todo.md`),
+distinct specs — or explicit distinct `rng_id`s — are the remedy, and this
+warning is what keeps the trap from being silent.
+"""
+function _warn_duplicate_radiation_streams(elements::Tuple)
+    ids = UInt64[]
+    _collect_radiation_ids!(ids, elements)
+    length(ids) == length(unique(ids)) && return nothing
+    dup = [id for id in unique(ids) if count(==(id), ids) > 1]
+    @warn "multiple stochastic radiation placements share an rng_id: their " *
+          "excitation draws are identical (correlated kicks; variance grows " *
+          "with the square of the placement count, not linearly). Give each " *
+          "placement its own LumpedRadSpec or an explicit distinct rng_id." rng_ids = dup
+    return nothing
+end
+_collect_radiation_ids!(ids, elements::Tuple) =
+    (foreach(e -> _collect_radiation_ids!(ids, e), elements); ids)
+_collect_radiation_ids!(ids, elements::AbstractVector) =
+    (foreach(e -> _collect_radiation_ids!(ids, e), elements); ids)
+_collect_radiation_ids!(ids, entry::LineEntry) =
+    _collect_radiation_ids!(ids, getfield(entry, :spec))
+function _collect_radiation_ids!(ids, element::ElementSpec{:line})
+    foreach(e -> _collect_radiation_ids!(ids, e), line_entries(element))
+    return ids
+end
+_collect_radiation_ids!(ids, element::ElementSpec{:lumped_radiation}) =
+    (push!(ids, UInt64(getparam(element, :rng_id, 0))); ids)
+_collect_radiation_ids!(ids, element) = ids
 
 """
 Aperture specs in the line, in lattice order. Their position **is** their
