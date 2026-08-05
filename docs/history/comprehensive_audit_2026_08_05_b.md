@@ -1,8 +1,20 @@
 # Comprehensive Audit — 2026-08-05_b (second full re-read, same day)
 
-**Status: IN PROGRESS.** This file is written incrementally, as the protocol
-requires ("Checkpoint to disk continuously, not at the end"). Sections below
-are filled as they are established; anything not yet established says so.
+**Status: HALTED HONESTLY at the Phase 16 gate.** The declared scope was
+whole-repository uniform depth; **23 of 26 reading units returned** and their
+reports are archived beside this file. Three did not return before the halt
+(U21 `test/examples/` + `nightly_suite.sh`, U22 `validation/` coherent-mode
+cluster, U24 `validation/` remainder A) — those regions are therefore **read
+but unreported**, and §0b marks them so rather than claiming coverage. What it
+would take to close them: re-run those three briefs, roughly one session.
+
+The gate itself passed: **151 top-level testsets, exit 0, 23 CUDA testsets on
+the device, zero skips** (§6), and the pre-modification behavioural fingerprint
+is byte-identical afterwards.
+
+This file was written incrementally, as the protocol requires ("Checkpoint to
+disk continuously, not at the end"); every section landed in the same commit as
+the work it describes.
 
 ## 1a. Executive summary
 
@@ -158,34 +170,34 @@ of every lead from that unit).
 
 | unit | region (lines) | reader | hypothesis briefed | status |
 |---|---|---|---|---|
-| U1 | `pic_cuda.jl` 1–2000 | agent | twin divergence; device-IR compilability; kernel indexing/launch | reading |
-| U2 | `pic_cuda.jl` 2000–4000 | agent | silent option degradation (F11 class); silent charge loss; equal_area membership drift | reading |
-| U3 | `pic_cuda.jl` 4000–6009 | agent | moment/kick kernel numerics (**the prior pass's honest remainder, 5490–5966**); reduction-order dependence | reading |
-| U4 | `Contracts.jl` (2,715) | agent | circular checks; hand-copied enumerations vs derived; contracts with no runner; skipped-reported-as-passed | reading |
-| U5 | `interface.jl` (2,509) | agent | declared-schema ↔ runtime-consumer; unknown-kwarg acceptance; declared-but-unread options | reading |
-| U6 | `pic_cpu.jl` + `slicing.jl` (2,724) | agent | thread/chunk-count invariance **above** the parallel thresholds; dropped charge; slicing edge cases | reading |
-| U7 | `BeamObservers.jl` + `BPMObserver.jl` (2,185) | agent | append/restart protocol; four-format replay-discard by crash-retry probe; torn writes; silent row loss | reading |
-| U8 | `strong_beam.jl` + `strong_beam_track.jl` + `gaussian.jl` (2,279) | agent | Bassetti-Erskine branch-boundary continuity; differentiability (U7-1); luminosity accumulation (U7-2) | reading |
-| U9 | `lattice_magnets.jl` + `solenoid.jl` + `linear6d.jl` + `linear_maps.jl` (2,389) | agent | measured symplecticity sweep; cancellation-free small-argument helpers; type genericity; F17 bit-identity | reading |
-| U10 | `gaussian_pic.jl` + `gaussian_pic_cuda.jl` (2,101) | agent | twin pair, parity brief; subtracted-model consistency; **prior pass's agent-only remainder** | reading |
-| U11 | `spectral.jl` + `spectral_cuda.jl` (2,064) | agent | twin pair; the **unaudited** R9 tripwire and R12 hoist CUDA ports; independent mode-sum check | reading |
-| U12 | knowledge/registry/policies/`Octopus.jl`/constants (1,977) | agent | metadata-validator blind spots by **injection**; CODATA constants; snapshot freshness; unconsumed policy fields | reading |
-| U13 | `Knobs.jl` + `symbolic.jl` + `Tasks.jl` + `ext/` (2,302) | agent | epoch invalidation on every mutation path; both weakdep load modes; swallowed hook exceptions | reading |
-| U14 | `Beam.jl` + `math/` + `track/` (2,083) | agent | Philox vs official KAT; RNG stream independence; Faddeeva accuracy; longitudinal round trips | reading |
-| U15 | `beam_line.jl` + `aperture.jl` + `thin_elements.jl` + `radiation.jl` + `misalignment.jl` (2,282) | agent | **multiple walkers over one structure** on a nested line (U11-1/U11-8); loss attribution; wrapper→context forwarding | reading |
-| U16 | small elements + `examples/` (1,885) | agent | F16 slip-factor boundary honesty + independent 1.84× reproduction; boost invertibility; identity limits; examples executed | reading |
-| U17 | `test/runtests.jl` 1–2200 | agent | checks that never execute; circular tests; tests that never failed on their defect | reading |
-| U18 | `test/runtests.jl` 2200–4400 | agent | same, plus the permanent sweep testsets' derived-vs-copied case lists and injection-verified power | reading |
-| U19 | `test/runtests.jl` 4400–6600 | agent | same, plus **CUDA gates run for real** and verified to report skipped (not passed) without a GPU | reading |
-| U20 | `test/runtests.jl` 6600–8759 | agent | same; this is the region that went dark under F2, and holds the campaign's new testsets | reading |
-| U21 | `test/examples/` + `nightly_suite.sh` (1,085) | agent | harness↔example bit-identity; every `OCTOPUS_*` toggle effective; **nightly gate's exit-code and FAIL-row behaviour** | queued |
-| U22 | `validation/` coherent-mode cluster (1,309) | agent | reference independence vs local reimplementation; regenerated table reproduces; independent Yokoya check | queued |
-| U23 | `validation/` field cluster (2,183) | agent | instrument validation by injection; **enforced vs print-only thresholds**; header drift | queued |
-| U24 | `validation/` remainder A (2,719) | agent | PTC provenance chain; symplecticity case list derived-vs-copied; print-only gates | queued |
-| U25 | `validation/` remainder B (2,013) + README | agent | **GPU legs forced on** (the recorded never-run class); coverage tripwires; README accuracy | queued |
-| U26 | `docs/` as claims about the code | agent | note↔implementation consistency; orphan numbers with no committed harness; index completeness; snapshot byte-diff | queued |
-| U27 | Seam-class cross-check passes (§3) | **auditor** | never delegated | pending |
-| U28 | Phase 7 contract execution, Phase 8 full gate, Phase 10 examples | **auditor** | never delegated | pending |
+| U1 | `pic_cuda.jl` 1–2000 | agent | twin divergence; device-IR compilability; kernel indexing/launch | reported, leads dispositioned in §7 |
+| U2 | `pic_cuda.jl` 2000–4000 | agent | silent option degradation (F11 class); silent charge loss; equal_area membership drift | reported, leads dispositioned in §7 |
+| U3 | `pic_cuda.jl` 4000–6009 | agent | moment/kick kernel numerics (**the prior pass's honest remainder, 5490–5966**); reduction-order dependence | reported, leads dispositioned in §7 |
+| U4 | `Contracts.jl` (2,715) | agent | circular checks; hand-copied enumerations vs derived; contracts with no runner; skipped-reported-as-passed | reported, leads dispositioned in §7 |
+| U5 | `interface.jl` (2,509) | agent | declared-schema ↔ runtime-consumer; unknown-kwarg acceptance; declared-but-unread options | reported, leads dispositioned in §7 |
+| U6 | `pic_cpu.jl` + `slicing.jl` (2,724) | agent | thread/chunk-count invariance **above** the parallel thresholds; dropped charge; slicing edge cases | reported, leads dispositioned in §7 |
+| U7 | `BeamObservers.jl` + `BPMObserver.jl` (2,185) | agent | append/restart protocol; four-format replay-discard by crash-retry probe; torn writes; silent row loss | reported, leads dispositioned in §7 |
+| U8 | `strong_beam.jl` + `strong_beam_track.jl` + `gaussian.jl` (2,279) | agent | Bassetti-Erskine branch-boundary continuity; differentiability (U7-1); luminosity accumulation (U7-2) | reported, leads dispositioned in §7 |
+| U9 | `lattice_magnets.jl` + `solenoid.jl` + `linear6d.jl` + `linear_maps.jl` (2,389) | agent | measured symplecticity sweep; cancellation-free small-argument helpers; type genericity; F17 bit-identity | reported, leads dispositioned in §7 |
+| U10 | `gaussian_pic.jl` + `gaussian_pic_cuda.jl` (2,101) | agent | twin pair, parity brief; subtracted-model consistency; **prior pass's agent-only remainder** | reported, leads dispositioned in §7 |
+| U11 | `spectral.jl` + `spectral_cuda.jl` (2,064) | agent | twin pair; the **unaudited** R9 tripwire and R12 hoist CUDA ports; independent mode-sum check | reported, leads dispositioned in §7 |
+| U12 | knowledge/registry/policies/`Octopus.jl`/constants (1,977) | agent | metadata-validator blind spots by **injection**; CODATA constants; snapshot freshness; unconsumed policy fields | reported, leads dispositioned in §7 |
+| U13 | `Knobs.jl` + `symbolic.jl` + `Tasks.jl` + `ext/` (2,302) | agent | epoch invalidation on every mutation path; both weakdep load modes; swallowed hook exceptions | reported, leads dispositioned in §7 |
+| U14 | `Beam.jl` + `math/` + `track/` (2,083) | agent | Philox vs official KAT; RNG stream independence; Faddeeva accuracy; longitudinal round trips | reported, leads dispositioned in §7 |
+| U15 | `beam_line.jl` + `aperture.jl` + `thin_elements.jl` + `radiation.jl` + `misalignment.jl` (2,282) | agent | **multiple walkers over one structure** on a nested line (U11-1/U11-8); loss attribution; wrapper→context forwarding | reported, leads dispositioned in §7 |
+| U16 | small elements + `examples/` (1,885) | agent | F16 slip-factor boundary honesty + independent 1.84× reproduction; boost invertibility; identity limits; examples executed | reported, leads dispositioned in §7 |
+| U17 | `test/runtests.jl` 1–2200 | agent | checks that never execute; circular tests; tests that never failed on their defect | reported, leads dispositioned in §7 |
+| U18 | `test/runtests.jl` 2200–4400 | agent | same, plus the permanent sweep testsets' derived-vs-copied case lists and injection-verified power | reported, leads dispositioned in §7 |
+| U19 | `test/runtests.jl` 4400–6600 | agent | same, plus **CUDA gates run for real** and verified to report skipped (not passed) without a GPU | reported, leads dispositioned in §7 |
+| U20 | `test/runtests.jl` 6600–8759 | agent | same; this is the region that went dark under F2, and holds the campaign's new testsets | reported, leads dispositioned in §7 |
+| U21 | `test/examples/` + `nightly_suite.sh` (1,085) | agent | harness↔example bit-identity; every `OCTOPUS_*` toggle effective; **nightly gate's exit-code and FAIL-row behaviour** | **DID NOT RETURN before the halt — region unreported** |
+| U22 | `validation/` coherent-mode cluster (1,309) | agent | reference independence vs local reimplementation; regenerated table reproduces; independent Yokoya check | **DID NOT RETURN before the halt — region unreported** |
+| U23 | `validation/` field cluster (2,183) | agent | instrument validation by injection; **enforced vs print-only thresholds**; header drift | reported (14 leads; 8/8 scripts executed) |
+| U24 | `validation/` remainder A (2,719) | agent | PTC provenance chain; symplecticity case list derived-vs-copied; print-only gates | **DID NOT RETURN before the halt — region unreported** |
+| U25 | `validation/` remainder B (2,013) + README | agent | **GPU legs forced on** (the recorded never-run class); coverage tripwires; README accuracy | reported |
+| U26 | `docs/` as claims about the code | agent | note↔implementation consistency; orphan numbers with no committed harness; index completeness; snapshot byte-diff | reported (15 leads; 3 Major **verified and fixed** by the auditor) |
+| U27 | Seam-class cross-check passes (§3) | **auditor** | never delegated | done — §3; produced A-1 and correction C-1 |
+| U28 | Phase 7 contract execution, Phase 8 full gate, Phase 10 examples | **auditor** | never delegated | done — §6; gate passed, 151 testsets, exit 0 |
 
 ## 0c. Behavioural fingerprint (captured before the first modification)
 
@@ -464,7 +476,87 @@ Major against correct code.
 
 ## 6. Test, contract, validation, and execution log
 
-*Pending.*
+Environment: Linux 5.14.0-570.21.1.el9_6, Julia 1.12.4, 128 cores, 503 GB RAM,
+NVIDIA RTX 4500 Ada (24 GB, driver 580.119.02, CUDA 13.0). **GPU checks ran for
+real, not skipped.**
+
+### Phase 8 — the full gate, at CI settings
+
+```
+julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+```
+
+**`EXITCODE=0`, "Octopus tests passed", 151 top-level testsets.** The exit code
+was *appended to the log*, not inferred from a pipeline — Measured Lesson 9
+records that a trailing pipe eats the failing status.
+
+**Which testsets actually RAN** (Measured Lesson 1: "the suite is green" is a
+claim about what executed): **23 CUDA-named testsets ran on the device**, none
+skipped — `CUDA spectral solver matches CPU` 39/39, `CUDA GaussianPIC solver
+matches CPU` 52/52, `CUDA near-round Gaussian transition` 50/50, `CUDA
+strong-strong shifted moments` 48/48, `CUDA GaussianPIC singular-reference
+fallback` 49/49, `CUDA spectral deposit tripwire (R9)` 5/5, `CUDA PIC
+slice_interpolation` 28/28, and 16 more. **Zero `Broken`/`@test_skip` entries in
+the whole run.** The F2 abort class has not regenerated: the run reached the
+end of the file, and the testsets that went dark under F2 (the CUDA half, the
+examples, the append protocol) all executed.
+
+The testsets covering the two fixed regions passed: `Straight solenoids
+differentiate, and curved=false means straight` 9/9, `Exact solenoid map`
+15/15, `Solenoid with superimposed multipoles` 11/11, `StrongStrongTask
+luminosity_append continues one file` 5/5.
+
+Log archived beside this report as `fullsuite_after_fixes.log`.
+
+### Phase 13 — behavioural fingerprint, after the fixes
+
+Re-ran `fingerprint.jl` at the fixed tree and diffed against the baseline
+captured before the first modification: **byte-identical, all 1,495
+full-precision values unchanged.**
+
+Stated precisely, because the distinction matters: this proves *no unrelated
+behaviour moved*. It does **not** prove the fixes work — the fingerprint's
+canonical line uses a **straight** solenoid (`SolenoidSpec(L=0.8, ks=0.3,
+kn=(0.0,0.2), nst=2)`, no `h`), so the F4 guard is not on its path, and it
+writes no `.lum`, so F2 is not either. That the fingerprint is unchanged is
+exactly the expected result for two fixes that are supposed to be inert
+outside their trigger conditions. The fixes' *intended* changes are evidenced
+separately by their own reproductions (§4 F2, F4) and their negative controls.
+
+### Phase 7 — contracts, run and checked
+
+At HEAD before any modification, on this GPU box:
+
+| contract | result |
+|---|---|
+| `validate_element_metadata()` | `(passed = true, errors = String[])` |
+| `validate_configuration_metadata()` | `true` |
+| `PublicConfigurationEffectivenessContract` | **passed** — "reached CPU, fused CUDA, and CUDA PIC consumers"; `cuda_status = passed`, 7 CUDA PIC families observed, invalid launch/device/solver mismatches all rejected *and* coordinates unchanged |
+| `SolverOptionEffectivenessContract` | **passed** — 68 CPU options, 10 CUDA-only, 2 launch surfaces |
+
+Every concrete contract has a runner (the prior pass's "three contracts with no
+runner" is closed). U4 additionally executed all 12 contract configurations
+with a `0xDEADBEEF` sentinel around each: **zero RNG leaks**. `PTCConsistencyContract`
+55/55 cases, worst deviation 5.0e-13.
+
+### Phase 10 — examples
+
+All three `examples/` scripts executed to completion out of the repository
+tree, exit 0, **zero warnings**: `knob_control.jl` 33.4 s, `weak_strong_tracking.jl`
+39.5 s, `strong_strong_tracking.jl` 53.7 s; both tracking examples bit-identical
+on re-run. Zero `ENV` reads in all three, as AGENTS.md requires of `examples/`.
+
+### Validation scripts
+
+The `validation/` field cluster (8 scripts, 2,183 lines) executed end-to-end at
+committed defaults, exit 0, **none exceeding the 420 s cap** (73/61/54/30/29/29/25 s).
+69 recorded numbers across five documents plus the paper's frozen data
+reproduced, several to 12 significant digits. Five *narrative* claims did not
+reproduce and are filed (U23-5, U23-12, U23-14).
+
+**Not run:** the two `validation/` scripts historically over the 420 s cap were
+not re-timed this pass; the GPU-leg sweep of the `validation/` remainder (U25)
+did not return before the halt. Both are recorded in §7 rather than claimed.
 
 ## 7. Open queue — dispositioned, priced, with reproductions
 
@@ -521,3 +613,34 @@ Recorded in full in the unit reports; the headline of each:
 | F4 | `src/elements/solenoid.jl` | `_SOL_MIDPOINT_CONTRACTION` added; `Solenoid` now throws at contraction factor ≥ 1 with a concrete `nst` and warns above 0.1; construction-time only, kernel unchanged |
 | — | `docs/history/…_b.md`, `…_b_unit_reports/` | this report, the fingerprint harness and baseline, every unit report, every probe script |
 | — | `docs/README.md` | index entry |
+| U26-3 | `docs/README.md` | two implemented subsystems (aperture+loss accounting, `ThinRFCavitySpec`) were described as "Design only; not implemented" in the index every agent orients from; corrected, with RF Scope B and the F16 boundary stated |
+| U26-1 | `docs/theory/gaussian_longitudinal_slicing.md` | "The default is still `:equal_area`" corrected to `:sqrt_density` (shipped default since 2026-07-31); the note contradicted itself 40 lines apart and told a reader production used the rule its own table ranks fifth. Original text kept beside the correction |
+
+## 9. Remaining risks
+
+1. **Three regions are read but unreported** (U21, U22, U24 — `test/examples/`
+   + the new `nightly_suite.sh`, the coherent-mode validation cluster, and
+   `validation/` remainder A including the PTC provenance chain and the
+   symplecticity case list). The declared scope is therefore **not fully
+   covered**, and this is the honest boundary of the pass. `nightly_suite.sh`
+   is the one that most deserves the re-run: it is 71 entirely new lines whose
+   whole job is to detect a failing suite, and Measured Lesson 9 records that
+   a trailing pipe eats exactly that signal.
+2. **~90 leads remain unverified.** At the series' measured ~60% survival that
+   is roughly 35 real defects still in the tree, in four miss shapes — and the
+   shape that matters most is "right, but the stated *reason* is wrong", since
+   the reason determines the fix.
+3. **F1 and A-1 are confirmed and unfixed.** F1 leaves a contract that can pass
+   by comparing an empty set; A-1 leaves strong-strong loss accounting absent.
+   Neither is a wrong number today; both are observability defects, which is
+   the class this repository's history says regenerates.
+4. **The instruments are weaker than the code.** Repeatedly this pass, the
+   thing found wanting was a check rather than a kernel: 112 element parameters
+   dropped from a "completeness" count, an aperture probe that cannot fail, a
+   `Core.Box` sweep catching 3 of 7, a TSC parity test whose grid is entirely
+   dyadic, five validation scripts with no assertion of any kind, and a
+   dropped-charge tripwire that may report zero in the blow-up regime it exists
+   for. Phase 12's rule — validate the instrument before trusting a clean
+   sweep — is the single highest-yield thing the next pass can spend time on.
+5. **Bmad reference cases** remain blocked on an external tool; the default
+   misalignment convention is still validated only against itself.
