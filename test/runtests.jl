@@ -3688,6 +3688,8 @@ end
 
     # U3-6/U21-13: these contracts were executed by no test and no CI.
     rp = validate(PublicConfigurationEffectivenessContract())
+    rp.status === :passed ||
+        @info "public-configuration contract result" rp.status rp.message rp.metrics
     @test rp.status === :passed || (rp.status === :skipped && !CUDA_TESTS_ACTIVE)
     if CUDA_TESTS_ACTIVE
         @test validate(StrongStrongPICBackendConsistencyContract()).passed
