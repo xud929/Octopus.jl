@@ -120,6 +120,12 @@ function Base.setproperty!(spec::ElementSpec{Kind}, name::Symbol, value) where {
     name === :params && throw(ArgumentError(
         "params is the ElementSpec storage field; assign individual parameters " *
         "(spec.zeta1 = ...) instead"))
+    # Folded construction sugar (k1, k2l, angle, ...) is read only at
+    # construction; the runtime reads the folded tuples, so a
+    # post-construction assignment to the sugar name was stored and never
+    # read (2026-08-05 audit, U11-4). The line-placement guard owns the
+    # table and throws with the right remedy for both paths.
+    _reject_folded_override(spec, name)
     p = getfield(spec, :params)
     if !haskey(p, name) && !(name in _PLACEMENT_PARAM_KEYS)
         meta = _element_meta_or_nothing(spec)

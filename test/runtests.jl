@@ -3470,6 +3470,39 @@ end
     foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
 end
 
+@testset "Nested lines have length, reflection keeps state, folded sugar is rejected everywhere" begin
+    # 2026-08-05 audit open-queue U11-1/2/3/4/8. An own-state sub-line
+    # (cryostat) counted as ZERO length in every arc-length walker;
+    # reverse() rebuilt positionally and dropped the line's own state; the
+    # folded-strength override guard missed every thin kind; the same sugar
+    # was assignable (stored-never-read) at spec level; and an aperture
+    # inside a kept-whole line silently vanished from loss accounting.
+    cryo = BeamLine("CRYO", QuadrupoleSpec(L=0.4, k1=1.0, nst=2),
+                    DriftSpec(L=1.0); x_offset=2.0e-4)
+    arc = BeamLine("ARC", cryo, DriftSpec(L=1.0))
+    @test s_positions(arc) == [0.0, 1.4]
+    @test Octopus.total_length(arc) == 2.4
+    @test Octopus._aperture_s_positions(
+        (cryo, DriftSpec(L=1.0), ApertureSpec(x_limit=1.0e-3, name="END"))) == [2.4]
+
+    rev = reverse(cryo)
+    @test getparam(rev, :x_offset, nothing) == 2.0e-4
+    @test getparam(reverse(rev), :x_offset, nothing) == 2.0e-4
+
+    tq = ThinQuadrupoleSpec(k1l=0.05)
+    entry = line_entries(BeamLine("L", tq, DriftSpec(L=1.0)))[1]
+    @test_throws ArgumentError entry.k1l = 999.0
+    q = QuadrupoleSpec(L=0.3, k1=1.2, nst=2)
+    @test_throws ArgumentError q.k1 = 999.0
+
+    hidden = BeamLine("CRYO2", ApertureSpec(x_limit=1.0e-3, name="HIDDEN"),
+                      DriftSpec(L=0.5); x_offset=1.0e-4)
+    @test_logs (:warn, r"outside loss accounting") match_mode = :any TrackingTask(
+        (hidden, DriftSpec(L=1.0)))
+    @test_logs TrackingTask((ApertureSpec(x_limit=1.0e-3, name="OPEN"),
+                             DriftSpec(L=1.0)))
+end
+
 @testset "Unknown spec keys warn, placement keys bind, set_param! bumps the epoch" begin
     # 2026-08-05 audit open-queue U3-10/U13-1/U13-2. Every friendly
     # constructor documents open keyword storage, so unknown keys stay LEGAL

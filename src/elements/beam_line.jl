@@ -105,14 +105,15 @@ function _reject_folded_override(spec, name::Symbol)
     end
     named = get(_FOLDED_NAMED_STRENGTHS, k, nothing)
     named === nothing && return nothing
+    nk, sk = get(_FOLDED_TUPLE_KEYS, k, (:kn, :ks))
     for (nkey, skey, idx) in named
         if name === nkey || name === skey
-            tuple_name = name === nkey ? "kn" : "ks"
+            tuple_name = String(name === nkey ? nk : sk)
             throw(ArgumentError(
                 "`$(name)` is folded into `$(tuple_name)[$(idx + 1)]` when the element \
-                 is constructed, so a placement override named `$(name)` would never \
-                 be read. Override `$(tuple_name)` instead, e.g. \
-                 `entry.$(tuple_name) = $(ntuple(i -> i == idx + 1 ? :value : 0.0, idx + 1))`."))
+                 is constructed, so an override or assignment named `$(name)` would \
+                 never be read. Assign `$(tuple_name)` instead, e.g. \
+                 `$(tuple_name) = $(ntuple(i -> i == idx + 1 ? :value : 0.0, idx + 1))`."))
         end
     end
     return nothing
@@ -124,6 +125,21 @@ const _FOLDED_NAMED_STRENGTHS = Dict{Symbol,Any}(
     :octupole => _OCT_NAMED,
     :sbend => _BEND_NAMED,
     :multipole => _MULTIPOLE_NAMED,
+    # The thin kinds fold k0l..k5sl into knl/ksl the same way and were
+    # missing from this table, so `entry.k1l = 999` was the exact
+    # written-reported-never-read no-op the guard exists to catch
+    # (2026-08-05 audit, U11-3).
+    :thin_multipole => _THIN_MULTI_NAMED,
+    :thin_dipole => _THIN_DIP_NAMED,
+    :thin_quadrupole => _THIN_QUAD_NAMED,
+    :thin_sextupole => _THIN_SEXT_NAMED,
+)
+
+# Which tuple pair a kind folds into: thick kinds use kn/ks, thin kinds
+# knl/ksl. The rejection message points at the right one.
+const _FOLDED_TUPLE_KEYS = Dict{Symbol,Tuple{Symbol,Symbol}}(
+    :thin_multipole => (:knl, :ksl), :thin_dipole => (:knl, :ksl),
+    :thin_quadrupole => (:knl, :ksl), :thin_sextupole => (:knl, :ksl),
 )
 
 """Spec parameters with this placement's overrides applied on top."""
@@ -291,8 +307,17 @@ not swap `e1`/`e2` or any other end-specific parameter, so a reflected arc of
 asymmetric bends still enters through the faces it entered before. Going
 backwards *through* elements is a separate feature and is not implemented.
 """
-Base.reverse(spec::ElementSpec{:line}) =
-    BeamLine(line_name(spec), reverse(line_entries(spec))...)
+function Base.reverse(spec::ElementSpec{:line})
+    # Rebuild through the params Dict, not the positional constructor: the
+    # positional rebuild dropped every OWN parameter (x_offset, tilt,
+    # misalign_convention, ...), so a reflected cryostat silently lost its
+    # rigidity and dissolved (2026-08-05 audit, U11-2). Reflection is order
+    # only, over this line's placements; a kept-whole sub-line placement is
+    # one unit and its interior order is its own.
+    p = copy(getfield(spec, :params))
+    p[:entries] = Tuple(reverse(collect(line_entries(spec))))
+    return ElementSpec{:line}(p)
+end
 
 """Repetition: `repeat(cell, 8)` is eight placements of the cell's contents."""
 Base.repeat(spec::ElementSpec{:line}, n::Integer) =
@@ -349,6 +374,23 @@ Base.firstindex(spec::ElementSpec{:line}) = 1
 Base.lastindex(spec::ElementSpec{:line}) = length(spec)
 
 """
+Physical length of one placement. An own-state (non-dissolved) sub-line
+stores no `:L` of its own, so every arc-length walker counted a nested
+cryostat as ZERO — `s_positions`, `total_length`, the loss file's
+`aperture_s`, and a misaligned parent's survey were all short by the
+assembly's length (2026-08-05 audit, U11-1). The length of such a placement
+is its contents'.
+"""
+_placement_length(e) = Float64(getparam(e, :L, 0.0))
+function _placement_length(entry::LineEntry)
+    spec = getfield(entry, :spec)
+    spec isa ElementSpec{:line} && !hasparam(spec, :L) && return total_length(spec)
+    return Float64(getparam(entry, :L, 0.0))
+end
+_placement_length(spec::ElementSpec{:line}) =
+    hasparam(spec, :L) ? Float64(param(spec, :L)) : total_length(spec)
+
+"""
     s_positions(line)
 
 Arc position of every placement: the summed `L` of everything ahead of it.
@@ -364,7 +406,7 @@ function s_positions(spec::ElementSpec{:line})
     s = 0.0
     for (i, e) in enumerate(entries)
         out[i] = s
-        s += Float64(getparam(e, :L, 0.0))
+        s += _placement_length(e)
     end
     return out
 end
@@ -552,7 +594,7 @@ _inner_method(elem::CompositeLine) =
 
 """Total arc length of a line, used for the survey when it is misaligned."""
 total_length(spec::ElementSpec{:line}) =
-    sum(e -> Float64(getparam(e, :L, 0.0)), line_entries(spec); init=0.0)
+    sum(_placement_length, line_entries(spec); init=0.0)
 
 function compile_runtime(spec::ElementSpec{:line}, args...)
     # A line has no tracking method of its own -- each placement compiles with

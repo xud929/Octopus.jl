@@ -144,6 +144,7 @@ function TrackingTask(elements;
     element_tuple = _element_tuple(elements)
     seed !== nothing && @warn "TrackingTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
     _warn_duplicate_radiation_streams(element_tuple)
+    _warn_hidden_apertures(element_tuple)
     action_tuple, observer_tuple = classify_task_hooks(hooks, actions, observers)
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
                         Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),
@@ -167,6 +168,41 @@ loss_summary(rep_or_beam, task::TrackingTask) = loss_summary(rep_or_beam, task.l
 # argument `execute!(task, rep; turns=...)` hands the caller. Passing a `Beam`
 # happened to work, because its method is untyped in both positions.
 loss_summary(rep::Phase6DRep, task::TrackingTask) = loss_summary(rep, task.loss_record[])
+
+"""
+Warn when an aperture sits inside an own-state (kept-whole) sub-line.
+
+A kept-whole line compiles to ONE runtime op, so the aperture binder cannot
+reach an aperture inside it: the kill still happens, but with no element id,
+no counts row, and no name — the loss surfaces only as the unattributed
+warning (2026-08-05 audit, U11-8). Until the binder learns to thread ids
+through composite lines, the honest behavior is to say so at construction.
+"""
+function _warn_hidden_apertures(elements::Tuple)
+    hidden = Symbol[]
+    _collect_hidden_apertures!(hidden, elements, false)
+    isempty(hidden) || @warn "aperture(s) inside a kept-whole (own-state) line are " *
+        "outside loss accounting: they still kill particles, but the losses " *
+        "surface only as unattributed. Dissolve the line or place the " *
+        "aperture at task level for per-aperture attribution." apertures = hidden
+    return nothing
+end
+_collect_hidden_apertures!(out, elements::Tuple, inside) =
+    (foreach(e -> _collect_hidden_apertures!(out, e, inside), elements); out)
+_collect_hidden_apertures!(out, elements::AbstractVector, inside) =
+    (foreach(e -> _collect_hidden_apertures!(out, e, inside), elements); out)
+_collect_hidden_apertures!(out, entry::LineEntry, inside) =
+    _collect_hidden_apertures!(out, getfield(entry, :spec), inside)
+function _collect_hidden_apertures!(out, element::ElementSpec{:line}, inside)
+    # Entering an own-state line: everything below compiles to one op.
+    own = _line_has_own_state(element)
+    foreach(e -> _collect_hidden_apertures!(out, e, inside || own),
+            line_entries(element))
+    return out
+end
+_collect_hidden_apertures!(out, element::ElementSpec{:aperture}, inside) =
+    (inside && push!(out, Symbol(getparam(element, :name, :unnamed))); out)
+_collect_hidden_apertures!(out, element, inside) = out
 
 """
 Warn when two radiation placements in a line share an RNG stream.
@@ -262,11 +298,15 @@ _collect_aperture_s!(out, element::ElementSpec{:aperture}, s) = (push!(out, s[])
 function _collect_aperture_s!(out, entry::LineEntry, s)
     spec = getfield(entry, :spec)
     spec isa ElementSpec{:aperture} && return (push!(out, s[]); out)
-    s[] += Float64(getparam(entry, :L, 0.0))
+    # `_placement_length`, not a raw `:L` read: a nested own-state line
+    # counted as zero length here, shifting every later aperture_s (U11-1).
+    s[] += _placement_length(entry)
     return out
 end
 function _collect_aperture_s!(out, element, s)
-    element isa AbstractElementSpec && (s[] += Float64(getparam(element, :L, 0.0)))
+    # `_placement_length` so a bare own-state line spec in a task tuple
+    # contributes its contents' length, not zero (U11-1).
+    element isa AbstractElementSpec && (s[] += _placement_length(element))
     return out
 end
 
