@@ -46,6 +46,16 @@ end
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
 # truncated power series is `<:Number`, so the tighter bound refuses a parameter
 # derivative outright. Float64 still satisfies it, so nothing else changes.
+"""
+    ChromaticityKick{M,T}
+
+Compiled runtime (`compile_runtime`) for `ElementSpec{:chromaticity_kick}`,
+built by `ChromaticityKickSpec`. Inside the inverse of its `zeta`/`eta`/`R`
+transforms, it rotates each transverse plane by the chromatic phase advance
+`2pi * xi * pz` in Twiss-parameterized coordinates and advances `z` by
+`2pi * (xi_x J_x + xi_y J_y)`, which closes the six-dimensional symplectic map.
+The runtime layer is an implementation detail (AGENTS.md) and may change.
+"""
 struct ChromaticityKick{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     xix::T

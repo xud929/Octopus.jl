@@ -3394,6 +3394,20 @@ end
     end
 end
 
+@testset "Every export is documented" begin
+    # 76 of 335 exports lacked documentation when the 2026-08-05 audit swept
+    # them (U13-5); the sweep also found ten exports whose complete
+    # docstrings had silently DETACHED because a comment line sat between
+    # the docstring and the definition — on this Julia that attaches the
+    # docs to nothing, with no warning. This keeps both classes closed: a
+    # new undocumented export and a docstring detached by a later comment
+    # both land here by name.
+    undocumented = [n for n in names(Octopus)
+                    if n !== :Octopus && occursin("No documentation found",
+                        string(Base.Docs.doc(Base.Docs.Binding(Octopus, n))))]
+    @test isempty(undocumented)
+end
+
 @testset "The module precompiles without overwriting its own methods" begin
     # Part 6 §8.7: a same-signature method silently overwrote another, PASSED
     # the full suite (both methods behaved identically), and was caught only

@@ -32,6 +32,10 @@ export RefTilted
 # in space, which is a different question from tracking through it.
 # ---------------------------------------------------------------------------
 
+# `T<:Number` rather than `T<:AbstractFloat`: the same widening the magnet
+# needed, and for the same reason -- a dual number is `<:Real` and a truncated
+# power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative. Float64 still satisfies it, so ordinary elements are unchanged.
 """
     RefTilted(inner, c, s)
 
@@ -47,10 +51,6 @@ inner element is, and it leaves `z` and `pz` untouched: a roll about `s` maps
 the `s = 0` plane to itself, so unlike a misalignment there is no drift onto a
 displaced face and no path-length term.
 """
-# `T<:Number` rather than `T<:AbstractFloat`: the same widening the magnet
-# needed, and for the same reason -- a dual number is `<:Real` and a truncated
-# power series is `<:Number`, so the tighter bound refuses a parameter
-# derivative. Float64 still satisfies it, so ordinary elements are unchanged.
 struct RefTilted{E,T<:Number} <: AbstractTrackOp
     inner::E
     c::T

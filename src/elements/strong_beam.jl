@@ -188,6 +188,14 @@ end
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
 # truncated power series is `<:Number`, so the tighter bound refuses a parameter
 # derivative outright. Float64 still satisfies it, so nothing else changes.
+"""
+Runtime weak-strong beam-beam element: one thin strong-beam slice, compiled
+from `ThinStrongBeamSpec` (kind `:thin_strong_beam`). The map carries the
+particle to the slice collision plane through the selected virtual-drift
+model, applies the Bassetti-Erskine kick of the slice's transverse Gaussian
+moments, and returns, accumulating luminosity when `klum` is set. Runtime
+representations are implementation details and may change (AGENTS.md).
+"""
 mutable struct ThinStrongBeam{M<:AbstractTrackingMethod,T<:Number,
                               P<:StrongTransverseMoments,D<:AbstractVirtualDrift} <: AbstractTrackOp
     method::M
@@ -331,6 +339,17 @@ end
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
 # truncated power series is `<:Number`, so the tighter bound refuses a parameter
 # derivative outright. Float64 still satisfies it, so nothing else changes.
+"""
+    GaussianStrongBeam{M,T}
+
+Compiled runtime (`compile_runtime`) for `ElementSpec{:gaussian_strong_beam}`,
+built by `GaussianStrongBeamSpec`. A longitudinally sliced Gaussian strong
+beam: the map applies the wrapped `ThinStrongBeam` beam-beam kick once per
+slice, each slice at its own center and transverse offsets with its weight
+scaling the kick; the beam-level tracking kernels store the summed slice
+luminosity in `last_luminosity`. The runtime layer is an implementation detail
+(AGENTS.md) and may change.
+"""
 mutable struct GaussianStrongBeam{M<:AbstractTrackingMethod,T<:Number,
                                   P<:StrongTransverseMoments,
                                   D<:AbstractVirtualDrift,SliceAngles} <: AbstractTrackOp
@@ -1086,6 +1105,15 @@ end
     return Kx, Ky, Hx, Hy
 end
 
+"""
+    gaussian_beambeam_kick(sigx, sigy, x, y) -> (Kx, Ky)
+
+Normalized Bassetti-Erskine kick of a transverse Gaussian charge distribution
+with RMS sizes `(sigx, sigy)`, evaluated at `(x, y)`. Callers multiply by the
+beam-beam strength `kbb` to get the momentum kick; for a round beam
+`Kx = 2x * (1 - exp(-r^2/(2 sigma^2))) / r^2`. Either size being zero returns
+`(0, 0)`.
+"""
 function gaussian_beambeam_kick(sigx, sigy, x, y)
     (sigx == 0 || sigy == 0) && return zero(x), zero(y)
     if sigx >= sigy

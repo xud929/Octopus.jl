@@ -180,6 +180,10 @@ function _misalign_frames(::Type{T}, W::NTuple{9,T}, d::NTuple{3,T},
 end
 
 
+# `T<:Number` rather than `T<:AbstractFloat`: the same widening the magnet
+# needed, and for the same reason -- a dual number is `<:Real` and a truncated
+# power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative. Float64 still satisfies it, so ordinary elements are unchanged.
 """
     MisalignedElement(inner, qin, oin, qout, oout)
 
@@ -190,10 +194,6 @@ composition of canonical maps with a symplectic one, it is symplectic whenever
 the inner element is, and it is agnostic about what the inner element does --
 magnet, cavity, or anything added later.
 """
-# `T<:Number` rather than `T<:AbstractFloat`: the same widening the magnet
-# needed, and for the same reason -- a dual number is `<:Real` and a truncated
-# power series is `<:Number`, so the tighter bound refuses a parameter
-# derivative. Float64 still satisfies it, so ordinary elements are unchanged.
 struct MisalignedElement{E,T<:Number} <: AbstractTrackOp
     inner::E
     qin::NTuple{9,T}; oin::NTuple{3,T}

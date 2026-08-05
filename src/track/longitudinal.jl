@@ -54,9 +54,16 @@ struct PathLengthDelta <: LongitudinalConvention end
 """#4: `(-βcΔt, ΔP/P₀)`. Bmad `z`, `pz`; Xsuite `ξ`, `delta`."""
 struct TimeDelta <: LongitudinalConvention end
 
+"""Convention #1 singleton, [`TimeEnergy`](@ref): `(-cΔt, ΔE/(P₀c))`."""
 const TIME_ENERGY = TimeEnergy()
+
+"""Convention #2 singleton, [`SigmaPsigma`](@ref): `(-β₀cΔt, ΔE/(β₀P₀c))`."""
 const SIGMA_PSIGMA = SigmaPsigma()
+
+"""Convention #3 singleton, [`PathLengthDelta`](@ref): `(s-ℓ, ΔP/P₀)` — what Octopus tracks."""
 const PATHLENGTH_DELTA = PathLengthDelta()
+
+"""Convention #4 singleton, [`TimeDelta`](@ref): `(-βcΔt, ΔP/P₀)`."""
 const TIME_DELTA = TimeDelta()
 
 """Section number in the theory note's table, so code and note can be matched."""

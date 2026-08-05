@@ -1,5 +1,11 @@
 export ThinCrabCavitySpec, ThinCrabCavity
 
+"""
+Friendly constructor for `ElementSpec{:thin_crab_cavity}`: a zero-length
+two-dimensional crab cavity with `N` harmonics, each carrying a horizontal
+strength, a vertical strength, and a phase. See
+`element_help(:thin_crab_cavity)` for the parameter schema.
+"""
 abstract type ThinCrabCavitySpec{N} end
 
 # Keyword form: reflection builds every kind by keyword alone (the N harmonic
@@ -38,6 +44,9 @@ function (::Type{ThinCrabCavitySpec{N}})(frequency::Real;
     )
 end
 
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
 """
     ThinCrabCavity{N}(frequency; strengthX, strengthY, phase)
 
@@ -55,9 +64,6 @@ pz -= (strengthX[i]*x + strengthY[i]*y) * cos(i*kcc*z + phase[i])
 
 for `i = 1:N`, leaving `x`, `y`, and `z` unchanged.
 """
-# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
-# truncated power series is `<:Number`, so the tighter bound refuses a parameter
-# derivative outright. Float64 still satisfies it, so nothing else changes.
 struct ThinCrabCavity{N,M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     kcc::T

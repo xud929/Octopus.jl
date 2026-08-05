@@ -37,6 +37,9 @@ Marker(::ElementSpec, method::AbstractTrackingMethod=Symplectic6DMap()) = Marker
 @inline (elem::Marker)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
 
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
 """
     ThinMultipole{M,T,N}
 
@@ -58,9 +61,6 @@ Being zero length, the map has no drift and no chromatic denominator: in the
 exact Hamiltonian the chromatic dependence lives in the drift, and there is none
 here. It is exactly symplectic, being a kick from a potential.
 """
-# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
-# truncated power series is `<:Number`, so the tighter bound refuses a parameter
-# derivative outright. Float64 still satisfies it, so nothing else changes.
 struct ThinMultipole{M<:AbstractTrackingMethod,T<:Number,N} <: AbstractTrackOp
     method::M
     knl::NTuple{N,T}
@@ -109,6 +109,36 @@ for (kind, ctor, named) in ((:thin_multipole, :ThinMultipoleSpec, :_THIN_MULTI_N
     end
 end
 
+"""
+Friendly constructor for `ElementSpec{:thin_multipole}`: a zero-length
+multipole kick with integrated strengths `knl`/`ksl` (`knl[i] = K_{i-1} L`),
+MAD-X's MULTIPOLE. See `element_help(:thin_multipole)` for the parameter
+schema.
+"""
+ThinMultipoleSpec
+
+"""
+Friendly constructor for `ElementSpec{:thin_dipole}`: a zero-length dipole
+kick of integrated field strength `k0l`, so `dpx = -k0l`; for a steering
+corrector with the opposite sign convention use `HKickerSpec`. See
+`element_help(:thin_dipole)` for the parameter schema.
+"""
+ThinDipoleSpec
+
+"""
+Friendly constructor for `ElementSpec{:thin_quadrupole}`: the thin-lens
+quadrupole with integrated strength `k1l`, focal length `1/k1l`. See
+`element_help(:thin_quadrupole)` for the parameter schema.
+"""
+ThinQuadrupoleSpec
+
+"""
+Friendly constructor for `ElementSpec{:thin_sextupole}`: the thin-lens
+sextupole with integrated strength `k2l`, the workhorse of chromaticity
+correction. See `element_help(:thin_sextupole)` for the parameter schema.
+"""
+ThinSextupoleSpec
+
 for (kind, ctor) in ((:marker, :MarkerSpec), (:hkicker, :HKickerSpec),
                      (:vkicker, :VKickerSpec), (:kicker, :KickerSpec))
     @eval begin
@@ -116,6 +146,35 @@ for (kind, ctor) in ((:marker, :MarkerSpec), (:hkicker, :HKickerSpec),
         $ctor(; kwargs...) = ElementSpec{$(QuoteNode(kind))}(_spec_params(; kwargs...))
     end
 end
+
+"""
+Friendly constructor for `ElementSpec{:marker}`: the identity map, kept as a
+real element so a lattice can name a position. See `element_help(:marker)` for
+the parameter schema.
+"""
+MarkerSpec
+
+"""
+Friendly constructor for `ElementSpec{:hkicker}`: a zero-length horizontal
+steering corrector, `dpx = +hkick` -- the steering sign convention, opposite a
+`ThinDipoleSpec` field of the same strength. See `element_help(:hkicker)` for
+the parameter schema.
+"""
+HKickerSpec
+
+"""
+Friendly constructor for `ElementSpec{:vkicker}`: a zero-length vertical
+steering corrector, `dpy = +vkick`. See `element_help(:vkicker)` for the
+parameter schema.
+"""
+VKickerSpec
+
+"""
+Friendly constructor for `ElementSpec{:kicker}`: a zero-length combined
+steering corrector, `dpx = +hkick` and `dpy = +vkick`. See
+`element_help(:kicker)` for the parameter schema.
+"""
+KickerSpec
 
 const _THIN_COMMON = (
     knl=ParamMeta(default=(), meaning="integrated normal strengths; index i holds K_{i-1} L, so knl[2] is K1 L. Integrated, not the thick kn: a thin element is the L -> 0 limit at fixed K L"),

@@ -589,6 +589,9 @@ end
 # Runtime element
 # ---------------------------------------------------------------------------
 
+# `T<:Number`, not `T<:AbstractFloat`: a dual number is `<:Real` and a truncated
+# power series is `<:Number`, so the tighter bound would refuse both and with them
+# every parameter derivative. Ordinary magnets are still built at Float64.
 """
     LatticeMagnet{M,T,N,ORDER,FRINGE}
 
@@ -603,9 +606,6 @@ runtime data, so a convergence study over step count does not recompile.
 
 Derivations: `docs/theory/lattice_hamiltonian_and_conventions.md`.
 """
-# `T<:Number`, not `T<:AbstractFloat`: a dual number is `<:Real` and a truncated
-# power series is `<:Number`, so the tighter bound would refuse both and with them
-# every parameter derivative. Ordinary magnets are still built at Float64.
 struct LatticeMagnet{M<:AbstractTrackingMethod,T<:Number,N,ORDER,FRINGE,MC,NC,CURVED} <: AbstractTrackOp
     method::M
     L::T
@@ -993,7 +993,56 @@ for (kind, ctor, named) in ((:drift, :DriftSpec, :_NO_NAMED),
     end
 end
 
+"""
+Friendly constructor for `ElementSpec{:drift}`: a field-free drift of length
+`L`, exact in `(1+delta)`; the reference frame may be curved. See
+`element_help(:drift)` for the parameter schema.
+"""
+DriftSpec
+
+"""
+Friendly constructor for `ElementSpec{:quadrupole}`: a thick quadrupole of
+length `L` and strength `k1`, tracked as exact drifts interleaved with
+multipole kicks. See `element_help(:quadrupole)` for the parameter schema.
+"""
+QuadrupoleSpec
+
+"""
+Friendly constructor for `ElementSpec{:sextupole}`: a thick sextupole of
+length `L` and strength `k2`, tracked as exact drifts interleaved with
+multipole kicks. See `element_help(:sextupole)` for the parameter schema.
+"""
+SextupoleSpec
+
+"""
+Friendly constructor for `ElementSpec{:octupole}`: a thick octupole of length
+`L` and strength `k3`, tracked as exact drifts interleaved with multipole
+kicks. See `element_help(:octupole)` for the parameter schema.
+"""
+OctupoleSpec
+
+"""
+Friendly constructor for `ElementSpec{:multipole}`: a thick general multipole
+with strengths `kn`/`ks` (`kn[i] = K_{i-1}`, thick strengths, not the thin
+family's integrated `K_n L`). See `element_help(:multipole)` for the parameter
+schema.
+"""
+MultipoleSpec
+
+"""
+Friendly constructor for `ElementSpec{:sbend}`: an exact sector bend, where
+`angle` sets both the frame curvature and the dipole field, `h = b0 =
+angle / L`, with pole-face angles and fringe fields available. See
+`element_help(:sbend)` for the parameter schema.
+"""
 abstract type SBendSpec end
+
+"""
+Friendly constructor for a rectangular bend, built as an `ElementSpec{:sbend}`
+with `angle/2` added to each pole-face angle -- MAD-X's exact RBEND conversion,
+a construction convenience over the validated sector-bend map. See
+`element_help(:sbend)` for the parameter schema.
+"""
 abstract type RBendSpec end
 
 # An RBEND is a sector bend whose faces are parallel to each other rather than

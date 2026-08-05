@@ -140,6 +140,13 @@ end
     return invden * wi, invden * wr
 end
 
+"""
+    faddeeva_w_approx(z)
+
+Return the Faddeeva function `w(z)` using the fixed-order Weideman rational
+approximation. Complex-argument wrapper around
+[`faddeeva_w_approx_reim`](@ref).
+"""
 @inline faddeeva_w_approx(z::Complex{T}) where {T<:Real} =
     complex(faddeeva_w_approx_reim(real(z), imag(z))...)
 

@@ -2003,6 +2003,19 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:rev_lorentz_boost, :y_offset) => "writes y without reading it, as the forward boost does; the sweep sees roundoff here, not physics",
 )
 
+"""
+    ElementParameterEffectivenessContract <: AbstractImplementationContract
+
+Contract checking that every declared element parameter reaches the compiled
+map. `validate(contract)` builds each probed kind through its friendly
+constructor, perturbs one declared parameter at a time, and tracks a test
+particle through the compiled runtime; a perturbation that moves no
+coordinate by more than `atol` (default `0.0`, i.e. bitwise identical) is
+reported as declared-but-ignored unless its `(kind, parameter)` pair is
+listed in `inactive` with a reason. The probe keywords and default inactive
+list, and why probing goes through the friendly constructor, are documented
+on [`DEFAULT_ELEMENT_PARAM_PROBES`](@ref).
+"""
 Base.@kwdef struct ElementParameterEffectivenessContract <: AbstractImplementationContract
     probes::Dict{Symbol,Any} = DEFAULT_ELEMENT_PARAM_PROBES
     inactive::Dict{Tuple{Symbol,Symbol},String} = DEFAULT_INACTIVE_ELEMENT_PARAMS

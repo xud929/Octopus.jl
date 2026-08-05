@@ -36,6 +36,15 @@ end
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
 # truncated power series is `<:Number`, so the tighter bound refuses a parameter
 # derivative outright. Float64 still satisfies it, so nothing else changes.
+"""
+    CrabDispersion{M,FloatT}
+
+Compiled runtime (`compile_runtime`) for `ElementSpec{:crab_dispersion}`, built
+by `CrabDispersionSpec`. Zero-length symplectic map coupling the transverse
+plane to `z`: each transverse coordinate gains its `zeta` coefficient times
+`z`, and `pz` absorbs the conjugate combination. The runtime layer is an
+implementation detail (AGENTS.md) and may change.
+"""
 struct CrabDispersion{M<:AbstractTrackingMethod,FloatT <: Number} <: AbstractTrackOp
     method::M
     zeta1::FloatT
@@ -105,6 +114,15 @@ end
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
 # truncated power series is `<:Number`, so the tighter bound refuses a parameter
 # derivative outright. Float64 still satisfies it, so nothing else changes.
+"""
+    MomentumDispersion{M,FloatT}
+
+Compiled runtime (`compile_runtime`) for `ElementSpec{:momentum_dispersion}`,
+built by `MomentumDispersionSpec`. Zero-length symplectic map coupling the
+transverse plane to `pz`: each transverse coordinate gains its `eta`
+coefficient times `pz`, and `z` absorbs the conjugate combination. The runtime
+layer is an implementation detail (AGENTS.md) and may change.
+"""
 struct MomentumDispersion{M<:AbstractTrackingMethod,FloatT <: Number} <: AbstractTrackOp
     method::M
     eta1::FloatT
@@ -155,6 +173,18 @@ end
 
 @enum XYCouplingMode::UInt8 XY_UNDEF=0 XY_MODEA=1 XY_MODEB=2
 
+"""Convention selector for the `XYCoupling` map: which of its two coupling branches `track_particle` applies, or none."""
+XYCouplingMode
+
+"""`XYCoupling` mode under which the map is the identity."""
+XY_UNDEF
+
+"""`XYCoupling` mode selecting the first coupling branch of the map (the default)."""
+XY_MODEA
+
+"""`XYCoupling` mode selecting the second coupling branch, with the roles of the `(x, px)` and `(y, py)` blocks swapped relative to `XY_MODEA`."""
+XY_MODEB
+
 """
     XYCouplingSpec{T=Float64}(; r1=0, r2=0, r3=0, r4=0, mode=XY_MODEA,
                               tracking_method=Symplectic6DMap(), kwargs...)
@@ -176,6 +206,16 @@ end
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
 # truncated power series is `<:Number`, so the tighter bound refuses a parameter
 # derivative outright. Float64 still satisfies it, so nothing else changes.
+"""
+    XYCoupling{M,FloatT}
+
+Compiled runtime (`compile_runtime`) for `ElementSpec{:xy_coupling}`, built by
+`XYCouplingSpec`. Zero-length linear map mixing `(x, px)` with `(y, py)`
+through the coefficients `r1..r4`, normalized by
+`1/sqrt(1 + r1*r4 - r2*r3)`; `mode` selects which of the two coupling branches
+applies (`XY_UNDEF` makes it the identity), and `z`, `pz` are untouched. The
+runtime layer is an implementation detail (AGENTS.md) and may change.
+"""
 struct XYCoupling{M<:AbstractTrackingMethod,FloatT <: Number} <: AbstractTrackOp
     method::M
     r1::FloatT

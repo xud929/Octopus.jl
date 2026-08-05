@@ -57,6 +57,17 @@ end
 # future deterministic-damping dual path, not a promise — this comment once
 # claimed duals were admitted, which the constructor contradicted
 # (2026-08-05 audit, U11-12).
+"""
+    LumpedRad{M,T}
+
+Compiled runtime (`compile_runtime`) for `ElementSpec{:lumped_radiation}`,
+built by `LumpedRadSpec`. In the frame reached by inverting its
+`zeta`/`eta`/`R` transforms it applies per-plane damping factors
+`exp(-1/damping_turns)` and Gaussian stochastic excitation scaled to the
+equilibrium optics; the tracking method (`Radiation6DMap`, `Damping6DMap`,
+`Diffusion6DMap`) selects which of the two components runs. The runtime layer
+is an implementation detail (AGENTS.md) and may change.
+"""
 struct LumpedRad{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     is_damping::Bool

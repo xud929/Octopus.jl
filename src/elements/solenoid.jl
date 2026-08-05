@@ -12,6 +12,9 @@ export SolenoidSpec, Solenoid
 # element in Octopus has a_x = a_y = 0 and has never had to distinguish them.
 # ---------------------------------------------------------------------------
 
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
 """
     Solenoid{M,T}
 
@@ -30,9 +33,6 @@ disagree with the same lattice with the solenoid removed. This map reduces to
 No `nst` and no integrator order: the map is the exact flow, so subdividing it
 would add error rather than remove it.
 """
-# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
-# truncated power series is `<:Number`, so the tighter bound refuses a parameter
-# derivative outright. Float64 still satisfies it, so nothing else changes.
 struct Solenoid{M<:AbstractTrackingMethod,T<:Number,N,CURVED,MC,NC} <: AbstractTrackOp
     method::M
     L::T

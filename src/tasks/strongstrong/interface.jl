@@ -158,6 +158,15 @@ const _CUDA_PIC_LAUNCH_OPTION_SCHEMA = (
         supported_backends=(CUDABackend,), consumer=:cuda_pic_launch),
 )
 
+"""
+    cuda_pic_launch_option_schema([config_or_type])
+
+The `CUDAPICLaunchConfig` fields as a `NamedTuple` of
+`ConfigurationOptionMeta`. Consumed by `configuration_report` and checked by
+`validate_configuration_metadata()`.
+"""
+function cuda_pic_launch_option_schema end
+
 cuda_pic_launch_option_schema(::Type{CUDAPICLaunchConfig}=CUDAPICLaunchConfig) =
     _CUDA_PIC_LAUNCH_OPTION_SCHEMA
 cuda_pic_launch_option_schema(::CUDAPICLaunchConfig) = _CUDA_PIC_LAUNCH_OPTION_SCHEMA
@@ -405,6 +414,14 @@ function _solver_configured_values(solver::AbstractPoissonSolver)
     schema = solver_option_schema(solver)
     return (; (name => getproperty(solver, name) for name in keys(schema))...)
 end
+"""
+    solver_configuration(solver::AbstractPoissonSolver)
+
+Current values of the solver's public option fields (the keys of its
+`solver_option_schema`), plus solver-specific resolved values, as a
+`NamedTuple`. `validate_configuration_metadata()` compares a default-built
+solver's values against the schema defaults.
+"""
 solver_configuration(solver::AbstractPoissonSolver) = _solver_configured_values(solver)
 
 """Print structured solver configuration help."""
@@ -708,6 +725,15 @@ const _LONGITUDINAL_SLICING_OPTION_SCHEMA = (
         "Internal boundaries for :specified slicing.";
         category=:physics, dependencies=(:method,), consumer=:longitudinal_slicing),
 )
+"""
+    slicing_option_schema([slicing_or_type])
+
+The `LongitudinalSlicing` fields as a `NamedTuple` of
+`ConfigurationOptionMeta`. Consumed by `configuration_report` and checked by
+`validate_configuration_metadata()`.
+"""
+function slicing_option_schema end
+
 slicing_option_schema(::Type{LongitudinalSlicing}=LongitudinalSlicing) =
     _LONGITUDINAL_SLICING_OPTION_SCHEMA
 slicing_option_schema(::LongitudinalSlicing) = _LONGITUDINAL_SLICING_OPTION_SCHEMA
@@ -894,6 +920,10 @@ const _GAUSSIAN_SOLVER_OPTION_SCHEMA = (
 
 solver_option_schema(::Type{<:GaussianPoissonSolver}) = _GAUSSIAN_SOLVER_OPTION_SCHEMA
 
+"""
+Alias for `GaussianPoissonSolver`, the sliced soft-Gaussian strong-strong
+collision solver; see that type's docstring for the option set.
+"""
 const StrongStrongGaussianPoissonSolver = GaussianPoissonSolver
 
 function _solver_transverse_extent(::Type{T}, value) where {T<:Real}
@@ -1570,6 +1600,18 @@ strong_strong_task_option_schema() = (
         category=:output, consumer=:strong_strong_output),
 )
 
+"""
+    validate_configuration_metadata() -> Bool
+
+Cross-check every public configuration schema against its constructor:
+execution policies, `LongitudinalSlicing`, `CUDAPICLaunchConfig`, the Poisson
+solvers, `StrongStrongTask` options, diagnostics, schedules, and observers.
+Checks that schema keys match public fields, metadata defaults match
+constructor defaults, every option names a runtime consumer, and every
+concrete solver/observer defined in Octopus is covered. Throws an
+`ArgumentError` listing every violation; returns `true` when clean. Run by
+`validate(::PublicConfigurationEffectivenessContract)`.
+"""
 function validate_configuration_metadata()
     errors = String[]
     for policy_type in (CPUThreadsExecutionPolicy, CUDAExecutionPolicy, GPUExecutionPolicy)

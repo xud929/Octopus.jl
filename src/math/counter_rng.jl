@@ -6,7 +6,10 @@ export RNG_PHILOX, RNG_SPLITMIX,
        counter_normal_pair, counter_normal,
        splitmix_uint64, splitmix_uniform01, splitmix_normal_pair, splitmix_normal
 
+"""Counter-RNG method code selecting the Philox4x32 generator (`:philox`)."""
 const RNG_PHILOX = UInt8(1)
+
+"""Counter-RNG method code selecting the SplitMix64-hash generator (`:splitmix`)."""
 const RNG_SPLITMIX = UInt8(2)
 const COUNTER_RNG_TWO_NEG_23 = 1.1920928955078125f-7
 const COUNTER_RNG_TWO_NEG_52 = 2.220446049250313e-16

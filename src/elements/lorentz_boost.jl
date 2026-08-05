@@ -37,6 +37,9 @@ RevLorentzBoostSpec(angle::Number; tracking_method=NonSymplectic6DMap(), kwargs.
 # Keyword form — same round-trip rule as LorentzBoostSpec above.
 RevLorentzBoostSpec(; angle, kwargs...) = RevLorentzBoostSpec(angle; kwargs...)
 
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
 """
     LorentzBoost(angle)
 
@@ -46,9 +49,6 @@ accelerator variables used here it is quasi-symplectic (Jacobian determinant
 `sec(angle)^3`), not a canonical symplectic map by itself; the reverse map
 restores the phase-space volume factor.
 """
-# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
-# truncated power series is `<:Number`, so the tighter bound refuses a parameter
-# derivative outright. Float64 still satisfies it, so nothing else changes.
 struct LorentzBoost{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     angle::T
@@ -76,6 +76,9 @@ end
     construction_help = "Friendly constructor: LorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
 
+# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
+# truncated power series is `<:Number`, so the tighter bound refuses a parameter
+# derivative outright. Float64 still satisfies it, so nothing else changes.
 """
     RevLorentzBoost(angle)
 
@@ -84,9 +87,6 @@ applies the exact inverse of Hirata's nonlinear crossing-angle map. Its
 accelerator-coordinate Jacobian determinant is `cos(angle)^3`, so it is
 likewise quasi-symplectic rather than canonical in isolation.
 """
-# `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
-# truncated power series is `<:Number`, so the tighter bound refuses a parameter
-# derivative outright. Float64 still satisfies it, so nothing else changes.
 struct RevLorentzBoost{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     angle::T

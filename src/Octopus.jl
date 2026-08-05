@@ -85,6 +85,25 @@ include("tasks/StrongStrong.jl")
 # Generated registry/introspection helpers. Keep this last.
 include("registry/Registry.jl")
 
+# Binding docstrings for two exported beam-line accessors defined in
+# src/elements/beam_line.jl. Attached here because the 2026-08-05 U13-5
+# docstring pass could not edit that file (a concurrent audit pass owned it);
+# fold them onto the definitions at the next beam_line.jl edit.
+@doc """
+    entry_tags(entry::LineEntry)
+
+The placement's cross-cutting tag labels, as a `Set{Symbol}`. Tags accumulate
+from every enclosing `BeamLine(...; tags=...)` during expansion, and a
+`Symbol` selector matches entries by them.
+""" entry_tags
+
+@doc """
+    line_name(spec)
+
+The `:line` spec's `name` parameter as a `String`; empty when the line is
+unnamed.
+""" line_name
+
 # Script mode: a module built by `include("src/Octopus.jl")` never triggers
 # the package-extension loader, so the ForwardDiff derivative rules (the
 # OctopusForwardDiffExt weakdep extension, audit U7-1) are included here when

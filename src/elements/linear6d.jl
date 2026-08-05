@@ -57,6 +57,15 @@ end
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
 # truncated power series is `<:Number`, so the tighter bound refuses a parameter
 # derivative outright. Float64 still satisfies it, so nothing else changes.
+"""
+    Linear6D{M,T}
+
+Compiled runtime (`compile_runtime`) for `ElementSpec{:linear6d}`, built by
+`Linear6DSpec`. Applies a constant linear map to `(x, px, y, py, z, pz)`: the
+6x6 matrix, stored as a flat 36-tuple for GPU-compatible tracking, is validated
+symplectic at construction. The runtime layer is an implementation detail
+(AGENTS.md) and may change.
+"""
 struct Linear6D{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     matrix::NTuple{36,T}

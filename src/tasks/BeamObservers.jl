@@ -12,8 +12,27 @@ export AbstractSchedule, AbstractBeamObserver, AbstractBeamAction,
        finalize_observers!, requires_elementwise_tracking,
        MomentOutputFile, OutputFile, MomentFile, read_moment
 
+"""
+Turn gate for a scheduled observer or action. A subtype implements
+`should_run(schedule, ctx::TrackingContext) -> Bool`; one with configurable
+fields also provides `schedule_option_schema`.
+"""
 abstract type AbstractSchedule end
+
+"""
+Read-only tracking hook. A subtype must implement
+`observe!(observer, ctx::TrackingContext, rep)`; it may also extend the no-op
+lifecycle fallbacks `prepare_observer!`, `prepare_line_observer!`,
+`finalize_observer!`, and `requires_elementwise_tracking`, and provide
+`observer_option_schema` / `configuration_report` for the configuration
+metadata checks.
+"""
 abstract type AbstractBeamObserver end
+
+"""
+State-mutating tracking hook. A subtype must implement
+`apply_action!(action, ctx::TrackingContext, rep)`.
+"""
 abstract type AbstractBeamAction end
 
 """Run on every turn."""
@@ -45,6 +64,15 @@ struct PredicateSchedule{F} <: AbstractSchedule
     predicate::F
 end
 
+"""
+    should_run(schedule, ctx::TrackingContext) -> Bool
+
+Whether a scheduled hook is active on the absolute turn in `ctx`. Implemented
+by every `AbstractSchedule` subtype; `run_observers!` and `run_actions!`
+consult it before running each hook.
+"""
+function should_run end
+
 should_run(::AlwaysSchedule, ctx::TrackingContext) = true
 should_run(schedule::EveryNSteps, ctx::TrackingContext) =
     ctx.turn >= schedule.start &&
@@ -52,6 +80,15 @@ should_run(schedule::EveryNSteps, ctx::TrackingContext) =
     (ctx.turn - schedule.start) % schedule.step == 0
 should_run(schedule::AtTurns, ctx::TrackingContext) = ctx.turn in schedule.turns
 should_run(schedule::PredicateSchedule, ctx::TrackingContext) = Bool(schedule.predicate(ctx))
+
+"""
+    schedule_option_schema(schedule_or_type)
+
+The schedule type's configurable fields as a `NamedTuple` of
+`ConfigurationOptionMeta`. Consumed by `configuration_report` and checked by
+`validate_configuration_metadata()`.
+"""
+function schedule_option_schema end
 
 schedule_option_schema(::Type{AlwaysSchedule}) = NamedTuple()
 schedule_option_schema(::AlwaysSchedule) = NamedTuple()
@@ -108,6 +145,32 @@ end
 ScheduledAction(action::AbstractBeamAction) =
     ScheduledAction(action, AlwaysSchedule())
 
+"""
+    observe!(observer, ctx::TrackingContext, rep)
+
+Record one measurement of the particle representation `rep`. The one method
+every `AbstractBeamObserver` subtype must implement. Called through
+`run_observers!` when the observer's schedule is active: after the turn for
+task-level observers, at the observer's line position for in-line placements.
+"""
+function observe! end
+
+"""
+    apply_action!(action, ctx::TrackingContext, rep)
+
+Mutate the particle representation `rep`. The one method every
+`AbstractBeamAction` subtype must implement. Called through `run_actions!`
+when the action's schedule is active.
+"""
+function apply_action! end
+
+"""
+    run_observers!(observers, ctx::TrackingContext, rep)
+
+Call `observe!` for every observer whose schedule is active on `ctx.turn`.
+`execute!` runs this after each tracked turn; each hook's active/inactive
+decision is logged as a `:hook_schedule` execution record.
+"""
 function run_observers!(observers, ctx::TrackingContext, rep)
     for raw in _hook_tuple(observers)
         item = _as_scheduled_observer(raw)
@@ -124,6 +187,13 @@ function run_observers!(observers, ctx::TrackingContext, rep)
     return nothing
 end
 
+"""
+    prepare_observers!(observers, runtime_elems; turns=nothing, first_turn=0)
+
+Call `prepare_observer!` for every task-level observer. `execute!` runs this
+before the turn loop; `first_turn` is the absolute turn the coming window
+starts at, which lets an observer discard readings from a replayed window.
+"""
 function prepare_observers!(observers, runtime_elems; turns=nothing, first_turn=0)
     for raw in _hook_tuple(observers)
         item = _as_scheduled_observer(raw)
@@ -138,6 +208,12 @@ prepare_observer!(observer::AbstractBeamObserver, runtime_elems, schedule, turns
 prepare_observer!(observer::AbstractBeamObserver, runtime_elems, schedule, turns,
                   first_turn) = prepare_observer!(observer, runtime_elems, schedule, turns)
 
+"""
+    prepare_line_observers!(entries::Tuple; turns=nothing, first_turn=0)
+
+Call `prepare_line_observer!` for every in-line observer entry. `execute!`
+runs this next to `prepare_observers!`, before the turn loop.
+"""
 function prepare_line_observers!(entries::Tuple; turns=nothing, first_turn=0)
     for entry in entries
         if entry isa LineObserverEntry
@@ -165,6 +241,14 @@ prepare_line_observer!(observer::AbstractBeamObserver, schedule, turns, first_tu
 # finalizer is where buffered measurements reach disk, and one broken observer
 # must not silently discard every later observer's output (audit part 7, T7).
 # The first error is rethrown once the rest have run.
+"""
+    finalize_observers!(observers)
+
+Call `finalize_observer!` on every task-level observer. `execute!` runs this
+once the turn loop ends, including when it throws. Every observer is
+finalized even when an earlier finalizer fails; the first error is rethrown
+once the rest have run.
+"""
 function finalize_observers!(observers)
     first_error = nothing
     for raw in _hook_tuple(observers)
@@ -181,6 +265,15 @@ end
 
 finalize_observer!(observer::AbstractBeamObserver) = nothing
 
+"""
+    requires_elementwise_tracking(observer_or_observers[, ctx])
+
+Whether tracking must keep per-element boundaries instead of fusing the line.
+The single-observer fallback is `false`; an observer that needs per-element
+diagnostics (e.g. `LuminosityObserver`) returns `true`. The `ctx` form only
+counts observers whose schedule is active on `ctx.turn`, and `execute!` uses
+it to pick each turn's tracking plan.
+"""
 function requires_elementwise_tracking(observers)
     for raw in _hook_tuple(observers)
         item = _as_scheduled_observer(raw)
@@ -200,6 +293,14 @@ end
 
 requires_elementwise_tracking(observer::AbstractBeamObserver) = false
 
+"""
+    run_actions!(actions, ctx::TrackingContext, rep)
+
+Call `apply_action!` for every action whose schedule is active on `ctx.turn`.
+`execute!` runs this before each tracked turn, so an action sees the beam as
+the turn starts; each hook's active/inactive decision is logged as a
+`:hook_schedule` execution record.
+"""
 function run_actions!(actions, ctx::TrackingContext, rep)
     for raw in _hook_tuple(actions)
         item = _as_scheduled_action(raw)
@@ -688,6 +789,15 @@ const _BUFFERED_OBSERVER_OPTION_SCHEMA = (
     capacity=ConfigurationOptionMeta(Int, 1, "Number of observed rows buffered before a flush.";
         category=:output, consumer=:observer_output),
 )
+"""
+    observer_option_schema(observer_or_type)
+
+The observer type's configurable fields as a `NamedTuple` of
+`ConfigurationOptionMeta`. Consumed by `configuration_report` and checked per
+concrete observer by `validate_configuration_metadata()`.
+"""
+function observer_option_schema end
+
 observer_option_schema(::Type{BeamMomentObserver}) = _BUFFERED_OBSERVER_OPTION_SCHEMA
 observer_option_schema(::BeamMomentObserver) = _BUFFERED_OBSERVER_OPTION_SCHEMA
 observer_option_schema(::Type{JLD2BeamMomentObserver}) = _BUFFERED_OBSERVER_OPTION_SCHEMA
