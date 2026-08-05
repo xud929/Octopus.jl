@@ -2183,12 +2183,25 @@ function _execute_strong_strong_turns!(
             end
         end
         _cuda_nvtx_pop(backend, turn_range)
-        if luminosities !== nothing && !isempty(luminosities) && all(luminosity_evaluated)
-            print(io, ctx.turn)
-            for lum in luminosities
-                print(io, '\t', lum)
+        if luminosities !== nothing && !isempty(luminosities)
+            if all(luminosity_evaluated)
+                print(io, ctx.turn)
+                for lum in luminosities
+                    print(io, '\t', lum)
+                end
+                println(io)
+            elseif any(luminosity_evaluated)
+                # A row must carry one value per collision column, and NaN
+                # already means "evaluated and failed" (kept visible on
+                # purpose), so a turn where per-IP luminosity schedules
+                # disagree cannot be written without corrupting one meaning
+                # or the other. The row is dropped WHOLE — including the
+                # sibling IPs' evaluated values — and that loss is loud
+                # rather than silent (2026-08-05 audit, U4 observation).
+                @warn "luminosity row dropped: per-IP luminosity schedules disagree " *
+                      "on this turn, so evaluated sibling values are not written; " *
+                      "align luminosity_schedule across collisions sharing one file" turn = ctx.turn maxlog = 4
             end
-            println(io)
         end
         _strong_strong_maybe_log_cuda_memory(backend, ctx.turn, memory_log_every)
         if task.diagnostics.record_turn_times
@@ -2413,7 +2426,17 @@ function _collision_solver(task::StrongStrongTask, c1::StrongStrongCollision, c2
     s1 = c1.poisson_solver
     s2 = c2.poisson_solver
     if s1 !== nothing && s2 !== nothing && s1 !== s2
-        throw(ArgumentError("collision $(c1.label) specifies different Poisson solver objects in line1 and line2"))
+        # Solvers are immutable configuration records — workspaces and caches
+        # key on size/precision, never on solver identity — so two objects of
+        # the same type and resolved configuration are the same solver in
+        # every observable way. Comparing by identity refused a caller who
+        # built the two lines independently (2026-08-05 audit, U4
+        # observation); a genuine configuration mismatch still throws.
+        typeof(s1) === typeof(s2) &&
+            solver_configuration(s1) == solver_configuration(s2) ||
+            throw(ArgumentError(
+                "collision $(c1.label) specifies different Poisson solver " *
+                "configurations in line1 and line2"))
     end
     s1 !== nothing && return s1
     s2 !== nothing && return s2
