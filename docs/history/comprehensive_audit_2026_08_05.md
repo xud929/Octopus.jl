@@ -1,6 +1,6 @@
 # Comprehensive Audit — 2026-08-05 (full re-read)
 
-**Status: COMPLETE** (Phase 16 halt; final suite result in §6). One driving
+**Status: COMPLETE.** Phase 16 halt reached: final full suite at the closing commit — **137 top-level testsets, zero failures, CUDA half active**, all five new audit testsets green (solenoid 9/9, Philox KAT 4/4, wrappers/streams/apertures 5/5, append protocol 8/8, CUDA pz/:node 11/11). One driving
 session under [`docs/comprehensive_audit.md`](../comprehensive_audit.md).
 
 ## 1a. Executive summary
@@ -474,6 +474,13 @@ MomentObserver twin is crash-safe here by `record_count` ordering
   GPU active: **132 top-level testsets, zero failures, exit 0** — the first
   complete suite run since `baf0255`; the CUDA half, examples testset, and
   both append testsets all executed.
+- **Final suite run** (Phase 14/16 gate, at the closing tree): full
+  `Pkg.test` `--threads=4`, GPU active — **137 top-level testsets, zero
+  failures, exit 0**; the five testsets this audit added all ran and passed.
+- **Fix-package probe log**: packages 2–8 each verified by a standalone
+  probe on the fixed tree and (where observable) a stash-based negative
+  control on the pre-fix tree; fingerprint re-diffed bit-identical after
+  packages 2, 5 (implied by 7's run), and 7.
 - **GPU verifications** (`scratchpad/gpu_verify_u21_u11.jl`,
   `gpu_fixverify_f10_f11.jl`): pre-fix U2-1 FieldError and U1-1 node-drop
   measurements; post-fix parity and refusal matrix (see F10/F11).
