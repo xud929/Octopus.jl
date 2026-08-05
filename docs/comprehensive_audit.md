@@ -6,6 +6,24 @@ independent of any one agent tool: the entry path is
 repository's agent instructions can follow. Read it in full before an
 audit and treat it as binding.
 
+## Worked precedents, and how much of them to read
+
+The dated records under `docs/history/` are executed instances of this
+protocol, kept with their measurements and their recorded mistakes — the
+mistakes are the instructive part. They are long by design; do **not**
+read them front to back. The budget that works:
+
+- Before starting: the **newest** `comprehensive_audit_*.md` record's
+  executive summary and open-queue sections, plus the Measured Lessons at
+  the end of this document. At the time of writing the newest is
+  [`comprehensive_audit_2026_08_05.md`](history/comprehensive_audit_2026_08_05.md);
+  check `docs/history/` for anything later.
+- During the audit: consult a record's deeper sections, or the archived
+  per-unit reports beside it, only when a lead touches the region they
+  cover.
+- Never treat a dated record as current state — it describes the commit it
+  audited. Claims about behavior are re-verified against the code at hand.
+
 ## Mission
 
 Perform a rigorous, repository-wide audit of this project.
