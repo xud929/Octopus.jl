@@ -167,11 +167,68 @@ From `docs/todo.md` and the prior report's §7:
 
 ## 2. Traceability matrix
 
-*Pending — built once unit reports land.*
+Requirement → note → equation → implementation → test → validation, with the
+strongest link named and the number that anchors it. Chains **re-verified by
+independent computation this pass**, not inherited:
+
+| feature | anchor measured this pass |
+|---|---|
+| Philox counter RNG | KAT vectors **fetched this session** from the DEShaw repository and an independent implementation written with the *upstream* key schedule (bump before rounds 2..R) — textually different from Octopus's — agreeing on all three official vectors, then 20,004 tuples with 0 mismatches. Round-count sensitivity proves 10 means 10 (R=8/9/11/12 all differ). |
+| Bassetti-Erskine / Faddeeva | vs `Complex{BigFloat}` at 4096 bits, cross-validated to 1.09e-96: **global worst 3.09e-13**. The 32 Weideman coefficients regenerated from the FFT construction: worst difference 7.79e-15, and using exact coefficients moves `w` by ≤1.05e-14, 30× below the method's own error. |
+| beam statistics | vs BigFloat on the same 10⁶ points: means **0.0 absolute**, covariance 6.46e-14, emittance 5.51e-14, fourth central 2.20e-16, `rms == sqrt(diag(cov))` bitwise. Population (`/n`) convention confirmed uniform across all 12 other moment sites. |
+| lattice magnets | 124 symplecticity configurations × 2 amplitudes by exact ForwardDiff: every residual ≤9e-15 except the curved solenoid's, which falls monotonically with `nst`. `_needs_curved_potential` shown to be **exactly** the Cauchy-Riemann condition by total enumeration of orders 0–6 normal+skew, with a measured non-gradient behind every `true` and 0.0 behind the one `false`. Forest-Ruth coefficients exact; measured convergence 2.00 and 4.00. |
+| solenoid | F17's real-arithmetic transcription verified bitwise against the complex predecessor across **200,175 comparisons, 0 mismatches**, so the PTC validation is preserved rather than re-established. `curved=false ≡ h=0` exactly, not to a tolerance. |
+| longitudinal conventions | all eight conversion methods re-derived from `Δt = ℓ/(βc) − s/(β₀c)`; 12 ordered pairs × 3 energies × 2 arc positions at ≤4.8e-16. |
+| Lorentz boost | independent transcription of the published Hirata map reproduces the code to **≤5.42e-20**; `det J(fwd)·det J(rev) − 1 ≤ 4.44e-16`. |
+| chromaticity kick | matches an independent Hamiltonian-flow derivation **bit for bit** (time-1 flow of `h = 2πξ p_z J`); action preserved exactly (0.0). |
+| CPU↔CUDA PIC | 48-cell option matrix at ≤1.6e-16 relative, plus a full **64/64** sub-route matrix at 8.99e-17. |
+| small-argument helpers | vs 400-bit BigFloat: `_curv_sin`, `_curv_vers`, `_atan_over`, `_sol_log_over_h` all ≤9.4e-17 across h = 1e-1…0. Both recorded 1/x cancellations measurably gone (`_wedge` flat in `b1` to 1e-14; `_lattice_bend` linear to the floor). |
+
+**Broken links found this pass:** the RF cavity note still asserts in §4/§9 the
+cross-element phase identity its element now disclaims (U16-2) and its F16
+correction cites the wrong section (U16-1); the `SymplecticityContract`
+declaration↔coverage tripwire can see exactly **one** kind, `:solenoid`, so it
+is a near-tautology (U16-9); the lattice-magnet schemas under-declare what the
+compile actually reads, so the consumed⇒declared direction has no tripwire
+anywhere (U9-2).
 
 ## 3. Seam map
 
-*Pending — auditor passes (U27).*
+Participants and who covered each class. Defect clustering held again: **every
+§4 finding sits on a seam**, none inside a kernel.
+
+- **CPU↔CUDA twins** (`pic_cpu`↔`pic_cuda`, `gaussian_pic`↔`_cuda`,
+  `spectral`↔`_cuda`, host↔device moment reductions). Covered by U1/U2/U3
+  (parity-briefed) plus the auditor's F1 reproduction. Defects on this seam:
+  **F1** (per-pair trace on 1 of 6 routes); U3-1 (moments depend on launch
+  grid where the CPU twin was rewritten to forbid exactly that); U3-3 (CIC
+  hand-unrolled in transposed nesting — 22.5% of interpolations differ in the
+  last bits); U3-4 and U6-6 (`Float32` beams: the twins pick their working
+  type differently); U6-7 (slice boundaries/centres differ by up to 48,247
+  ulps although membership is identical everywhere).
+- **Producer↔consumer protocols** (`.lum` and moment append/restart; knob and
+  spec epochs; loss-record lifecycle). Covered auditor-direct plus U5/U7/U13.
+  Defects: **F2**, **F3**, U7-1/U7-2, U13-1 (epoch not bumped on a type-only
+  change), U15-5 (loss record reused across beams).
+- **Declared schema ↔ runtime consumer.** Covered by U5/U9/U12. Defects: U5-3,
+  U5-4 (no key-completeness tripwire for the task schema), U5-5, **U9-2**.
+- **Multiple walkers over one structure** (line expansion, survey, aperture
+  binding, observer collection). Covered by U15, which enumerated all of them
+  and ran a three-deep nested line: **13 walkers agree** — U11-1 refuted at
+  HEAD, i.e. genuinely fixed. Residual: U15-6 (declaring `L` on `:line`
+  re-opens the split for a user-set value), U15-2 (a misaligned line
+  containing a bend is surveyed straight).
+- **Element wrappers ↔ context path.** `grep "inner::"` returns exactly two
+  wrappers repo-wide plus `CompositeLine`; **all three forward context**, so
+  F13 is closed for every wrapper that exists. New defect on the same seam:
+  U15-4 (the context-*free* path borrows one method for every op) and U15-1
+  (the same loop is not device-compilable).
+- **Task-type asymmetry** (a seam this pass ADDS to the map): machinery that
+  exists for `TrackingTask` and simply has no counterpart on
+  `StrongStrongTask`. **A-1** is the instance — apertures compile and kill in
+  a strong-strong line, with no loss record, no summary, and a `loss_summary`
+  that fails from deep inside. Worth a sweep: anything `Tasks.jl` does at
+  `execute!` boundaries that `interface.jl` does not.
 
 ## 4. Findings
 
@@ -345,8 +402,56 @@ Major against correct code.
 
 ## 7. Open queue — dispositioned, priced, with reproductions
 
-*Pending.*
+**Read this header before using the queue.** Every row below is an
+**agent-reported LEAD with a reproduction, not an auditor-verified finding**.
+The series' measured survival rate for agent leads is ~60%, in four distinct
+miss shapes (right as stated; right with the *reason* wrong, and the reason
+determines the fix; wrong outright; narrower than the truth). Only the items
+in §4 have been reproduced by the auditor. Treat a row as "worth one
+reproduction", not as a defect.
+
+The `file:line` in each row rots; the Repro line in the archived unit report
+is the durable identity. Full mechanisms, measurements and repro commands are
+in `comprehensive_audit_2026_08_05_b_unit_reports/U<k>_report.md`.
+
+### Major-severity leads (reproduce these first)
+
+| id | region | claim, with the number that makes it checkable |
+|---|---|---|
+| U6-1 | `pic_cpu.jl:608` | Under `interaction_grid = :node` and `:source_slice` the dropped-charge tripwire is **structurally unreachable**: both counting calls sit inside `if ge !== :extrema`, and `_validate_pic_solver` *rejects* any non-`:extrema` extent for exactly those two modes. Measured on an EIC-like flat pair: 2 of 1,800,000 source deposits outside the turn-start mesh, 2.0 particle-charges lost, `workspace.dropped[] == 0`, no warning. Negative control in the same run: 0 outside a mesh rebuilt at collision — so the escape is intra-turn motion, the R9 mechanism exactly. Synthetic sweep reaches 47% of deposits once the excursion exceeds the 1.5-cell margin. |
+| U6-2 | `pic_cpu.jl:1338`, constants at `interface.jl:568` | **Performance regression from the thread-invariance fix.** With the worker-count gate removed, `length(x) >= 4096` alone routes to the fixed 16-chunk deposit, whose cost has a grid-sized, n-independent term. Measured: grid 128, n=4096 → serial 0.048 ms vs threaded 1.599 ms (**33×** slower), at 1 *and* 8 workers. End-to-end, a **5% increase in particle count** buys 1.078 → 1.614 s/turn (**1.50×**) at grid 64 and 4.252 → 6.463 s/turn at grid 128. Break-even is ~40k/slice at grid 32 and >200k at grid 128; the threshold is 4,096 everywhere. |
+| U13-2 | `Tasks.jl:391` | An exception raised inside `execute!`'s failure-path loss report **replaces the original tracking exception**; `rethrow()` is never reached. Measured: real error `"REAL_TRACKING_ERROR"` surfaces as `HDF5.API.H5Error`, `occursin("REAL_TRACKING_ERROR", msg) == false`. |
+| U13-3 | `Tasks.jl:519` | Same shape via `finally`: an exception from `finalize_observers!` replaces the in-flight tracking exception, so a broken observer finalizer hides the physics error that stopped the run. Measured: `FINALIZER_ERROR` surfaces, the real error does not. |
+| U14-1 | `phase6d_track.jl:304` | The contextless CUDA `track!` builds a fresh `TrackingContext()` **inside** its own turn loop, so every turn of a stochastic element draws at turn 0. Measured at 16 turns: `var(x) = 0.502832` vs correct `0.031669` (**15.73×**), `max|x₁₆ − 16·x₁| = 8.88e-16`, `corr(x₁₆, x₁) = 1.0000000000`. The F14/U7-2 shape on the turn axis; the CPU sibling does not have it and no shipped test exercises it. |
+| U14-2 | `counter_rng.jl` / `Beam.jl` | Explicit `rng_id`s never advance the atomic auto counter, and beams, radiation and BPMs share one `(seed, turn, rng_id, particle, component)` lattice. Measured: `Beam(...; rng_id=1)` plus an auto-assigned `LumpedRadSpec` in a fresh session → auto id = 1, draws **bitwise identical for all 20,000 particles**, corr = 1.000000. `_warn_duplicate_radiation_streams` sees only radiation-vs-radiation. Shipped configs are disjoint by hand, not by construction. |
+| U15-1 | `beam_line.jl:568` | A kept-whole line (girder/cryostat) — this file's flagship feature — **fails to compile for CUDA** whenever its member runtimes are not all one concrete type, i.e. every realistic assembly. Both `CompositeLine` call methods walk `elem.ops` with a runtime `for`, which lowers to `ijl_get_nth_field_checked` and has no device implementation. Measured: `InvalidIRError`; a homogeneous ops tuple runs and is bit-identical to CPU (0.0). |
+
+### Moderate and Low leads, by region
+
+Recorded in full in the unit reports; the headline of each:
+
+- **U1** (`pic_cuda.jl` 1–2000): workspace cache key still omits `interaction_grid` where the CPU key carries it (inert today); one hardcoded `threads = 256` bypassing `CUDAPICLaunchConfig` and its receipts — the only such launch in 6,009 lines; a dead `longitudinal_kick` parameter and an unreachable kernel left by the F10 fix; CUDA per-pair records stamped `turn = -1`.
+- **U2** (2000–4000): node-indexed wavefront solves the two longitudinal planes even when `longitudinal_kick=false` (measured 4.8% recoverable where sibling routes recover ~37%).
+- **U5** (`interface.jl`): `luminosity_append` declares a consumer whose receipt does not carry it; the task schema has **no key-completeness tripwire** (6 of 8 public keywords have no schema entry); `grid_extent_sigma` reported `:resolved` where it is provably inert; a differently-configured user solver silently accepted and discarded; mixed-schedule dropped-row warning capped at `maxlog=4` while the drops continue; partial `.lum` truncation warns only when *every* row goes.
+- **U7** (`BeamObservers.jl`): **JLD2 flush is `delete!`-then-write** — a deterministic mid-window death leaves a readable file with no `/data` key, the entire history gone (binary and HDF5 survive the same test); JLD2 file size quadratic (2,000 turns → 961 MB / 19.5 s vs binary 544 KB / 0.043 s); `MomentOutputFile` dispatches on *extension*, fabricating rows with duplicate turn labels from an HDF5 written to `m.dat`; `_discard_replayed_snapshots!` truncates to preserve foreign records then reopens `"w"` and destroys them; `BPMObserver` copies all six CUDA arrays to host per reading (76.8 ms vs 0.456 ms, **168×**) against a docstring premising hundreds of BPMs per turn.
+- **U9** (lattice magnets): the per-kind schemas **under-declare what `_lattice_magnet` reads** (21 keys for drift, 15 for quad/sext/oct/multipole, 2 for sbend), so the new unknown-parameter warning tells users a key "is NOT being tracked" about keys that change tracking by up to **5.79e-2**. `ElementParameterEffectivenessContract` checks declared⇒consumed; the reverse has no tripwire. Also `Linear6D`'s symplecticity validator orders on `T` rather than `real(T)` (Complex dies), and `nst` ParamMeta declares default 1 where the curved compile default is 16.
+- **U13** (knobs): `@knob p::T` whose converted value is `isequal` to the old one changes the declared type without bumping the epoch, so live tasks keep compiling at the old numeric type; `knob_expression(string(e)) == e` fails for 6 of 50 nestings, 4 of them turning finite values into `Inf`; a knob-valued `:L` makes every `execute!` with a `loss_log` throw *after* tracking completes.
+- **U14** (`Beam`/math/track): `_delta_from_pt`'s `sqrt` throws `DomainError` for a sub-rest-energy particle, unmaskable by `allow_lost_particles`, and on CUDA kills the whole launch.
+- **U15** (elements): a misaligned line containing a bend is surveyed as **straight**, so its exit patch is wrong at first order (measured exactly `dx·θ`, 1.9864e-4 at θ=0.198); `reverse` now **aliases** placements, so an override on the reversed line moves the source; the context-free call path borrows the *first* op's tracking method for every op, so a mixed-method assembly throws where the context path tracks fine; the task loss record is reused for any rep of the same size and backend, giving `unattributed = -1` and a false warning.
+- **U16** (small elements/examples): `_patch_reference_length` returns the projected displacement while the on-axis particle traverses the unprojected one, so a patch with both `dz` and a transverse rotation breaks its own documented exact-inverse identity by `dz·(cos θ − 1)` (measured −1.943472629195586e-5 vs predicted −1.9434726291969184e-5); patch and misalignment apply the shared rotation matrix in **opposite senses**; theory note §4/§9 still assert the phase identity the element now disclaims.
+- **U17/U19** (test suite): a `_curv_vers` seam bound sits **1.7× from red** on sub-ulp `cos` rounding, and a failure there drops ~7,150 later lines; the only `else`-less CUDA gate in its region reports `Total 0` on a GPU-free host — neither pass nor skip; the lost-particle charge-semantics pin covers 2 of 5 solver configurations, omitting the two a reader would most likely guess wrong; the Spectral arm of the corpse testset runs with 21–100% of source charge clipped and **exhausts the process-wide `maxlog=8` budget of the R9 tripwire**, silencing it for the rest of the run.
+
+### Inherited items, dispositioned
+
+- **F16 RF velocity slip** — remains open by design. **Independently reproduced this pass** (U16, from a from-scratch ring and a ForwardDiff one-turn eigenvalue, no FFT): `map / analytic(true η) = 1.8402652626158156` against the recorded 1.84×, and the wrong-transition-side case reproduces at `α_c = 0.05 < 1/γ₀²`. Documented at both ends; three documentation gaps filed (U16-1/2/3). Nothing silently relies on the wrong behaviour, but the one check that would catch it is blind by construction — its toy ring uses a free hand-chosen `M[5,6]`, never derived from `α_c` and `γ₀`.
+- **Bmad reference cases** — still blocked on an external tool. Code↔note internal consistency verified clean this pass (`max|W_bmad − R_y R_x R_z| = 0.0`).
+- **Metadata validator remainder** — U9-2 gives it a sharp new instance (consumed⇒declared has no tripwire anywhere).
 
 ## 8. Change log
 
-*Pending.*
+| finding | file | change |
+|---|---|---|
+| F2 | `src/tasks/strongstrong/interface.jl` | `_prepare_strong_strong_luminosity_file!` split into `_plan_strong_strong_luminosity_file` (validate, no writes) and `_commit_strong_strong_luminosity_file!`, with `prepare_observers!` between them; warnings moved to the committer so they cannot describe a state that does not exist; residual window documented |
+| F4 | `src/elements/solenoid.jl` | `_SOL_MIDPOINT_CONTRACTION` added; `Solenoid` now throws at contraction factor ≥ 1 with a concrete `nst` and warns above 0.1; construction-time only, kernel unchanged |
+| — | `docs/history/…_b.md`, `…_b_unit_reports/` | this report, the fingerprint harness and baseline, every unit report, every probe script |
+| — | `docs/README.md` | index entry |
