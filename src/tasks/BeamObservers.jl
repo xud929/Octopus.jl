@@ -524,15 +524,21 @@ Write selected beam moments to an HDF5 table.
 With the default `append=false`, re-executing a task prepares a **fresh**
 table at `path`: output from the previous execution is replaced. With
 `append=true` the table is created chunked/extendible and every execution
-**continues** it — a run split across `execute!` calls, an injection
-swap-out passing a new beam to the same task, a second task sharing the
-path, or a fresh process restarting a chunked run all produce one file with
-continuous absolute turns. Replayed turn windows (a failed `execute!`'s
-retry, an explicit `start_turn` rewind) drop their stale rows first, so the
-table never carries two rows for one turn. The two modes' files differ in
-HDF5 layout (contiguous vs chunked); an `append=true` observer refuses to
-continue a replace-mode file rather than corrupt it. `/elapsed_time` always
-reports the current execution's wall time.
+**continues** it — a run split across `execute!` calls on one task object,
+or an injection swap-out passing a new beam to that same task, produces one
+file with continuous absolute turns automatically; a second task sharing the
+path or a fresh process restarting a chunked run continues it **when
+`execute!` is given the matching absolute `start_turn`** (the file keeps the
+rows, but the resume point is the caller's — a fresh task with no
+`start_turn` executes from absolute turn 0 and therefore replaces the
+recorded timeline, with one warning naming the `start_turn` remedy).
+Replayed turn windows (a failed `execute!`'s retry, an explicit `start_turn`
+rewind) drop their stale rows first, so the table never carries two rows for
+one turn. The two modes' files differ in HDF5 layout (contiguous vs
+chunked); an `append=true` observer refuses to continue a replace-mode file
+rather than corrupt it, and replaces a zero-byte leftover (a crash at create
+time) fresh. `/elapsed_time` always reports the current execution's wall
+time.
 
 `MomentObserver` is a scheduled observer. Put it in a task line or task hooks
 through `ScheduledObserver`. The observer writes one row per scheduled
@@ -622,8 +628,10 @@ seconds = read(out, :elapsed_time)
 
 The observer requires a predictable schedule (`AlwaysSchedule`,
 `EveryNSteps`, or `AtTurns`) so the HDF5 data matrix can be preallocated.
-Re-executing a task prepares a fresh table at `path`; output from the previous
-execution is replaced.
+With `append=false` (the default), re-executing a task prepares a fresh table
+at `path`: output from the previous execution is replaced. With `append=true`
+the table is continued instead; see the paragraph above for exactly which
+continuation cases need an explicit `start_turn`.
 """
 function MomentObserver(path::AbstractString; orders=1:2, extra=(), exclude=(),
                         capacity::Integer=1024, append::Bool=false)
@@ -757,10 +765,6 @@ function _observer_backend()
     return policy isa AbstractResolvedExecutionPolicy ? backend_type(policy) : :unknown
 end
 
-struct BeamSwapAction{F} <: AbstractBeamAction
-    provider::F
-end
-
 """
     BeamSwapAction(provider)
 
@@ -768,6 +772,9 @@ Replace the current representation with the `Phase6DRep` or `Beam` returned by
 `provider(ctx)`. If `provider` accepts no arguments, it is called as
 `provider()`.
 """
+struct BeamSwapAction{F} <: AbstractBeamAction
+    provider::F
+end
 
 function observe!(observer::BeamMomentObserver, ctx::TrackingContext, rep)
     observer.buffer_capacity == 0 && return nothing
@@ -893,14 +900,23 @@ end
 function _flush_moment_buffer!(observer::BeamMomentObserver)
     isempty(observer.buffer) && return nothing
     open(observer.path, "r+") do io
-        observer.record_count += length(observer.buffer)
-        seekstart(io)
-        write(io, Int32(observer.record_count))
-        seekend(io)
+        # Rows land at the offset the on-disk count implies, and the count is
+        # updated only after they are written — in that order, so a crash
+        # between the two leaves orphan bytes past the counted region that
+        # the next flush overwrites, never a count exceeding the rows on
+        # disk (the HDF5 observer makes the same ordering promise;
+        # 2026-08-05 audit, U6-6).
+        seek(io, 4)
+        fmtlen = Int(read(io, Int32))
+        rowbytes = (1 + length(first(observer.buffer))) * sizeof(Float64)
+        seek(io, 8 + fmtlen + observer.record_count * rowbytes)
         for (turn, row) in zip(observer.buffer_turns, observer.buffer)
             write(io, Float64(turn))
             write(io, Float64.(row))
         end
+        observer.record_count += length(observer.buffer)
+        seekstart(io)
+        write(io, Int32(observer.record_count))
     end
     empty!(observer.buffer_turns)
     empty!(observer.buffer)
@@ -959,11 +975,14 @@ function _prepare_moment_observer!(observer::MomentObserver, schedule, turns,
     ))
     observer.buffer_length = 0
     observer.start_time_ns = time_ns()
-    if observer.append && isfile(observer.path)
-        # Continue the existing table. The continuation state lives in the
-        # FILE, not the observer object, so a second task sharing the path, or
-        # a fresh process restarting a chunked run, both pick up where the
-        # file ends.
+    if observer.append && isfile(observer.path) && filesize(observer.path) > 0
+        # Continue the existing table (a zero-byte leftover from a crash at
+        # create time is not a table; it is replaced fresh, matching the
+        # .lum twin). The kept rows live in the FILE, but the resume POINT is
+        # the caller's: a fresh task or process continues the table only when
+        # execute! is given the matching absolute start_turn — without it,
+        # execution starts at turn 0 and replaces the recorded timeline
+        # (loudly; see _moment_append_continue!).
         kept = _moment_append_continue!(observer, Int(first_turn), length(planned_turns))
         observer.record_count = kept
         observer.planned_records = kept + length(planned_turns)
@@ -1005,6 +1024,13 @@ function _moment_append_continue!(observer::MomentObserver, first_turn::Int, npl
         if written > 0
             turn_col = dset[1:written, 1]
             kept = searchsortedfirst(turn_col, Float64(first_turn)) - 1
+        end
+        if written > 0 && kept == 0
+            @warn "MomentObserver(append=true) is replacing the entire existing " *
+                  "moment table at $(observer.path): execution starts at turn " *
+                  "$(first_turn), at or before every recorded row. Pass the " *
+                  "matching absolute start_turn to execute! to continue the " *
+                  "file instead." dropped_rows = written
         end
         HDF5.set_extent_dims(dset, (kept + nplanned, length(observer.column_names)))
         file["record_count"][1] = Int64(kept)
@@ -1089,7 +1115,8 @@ function _flush_moment_observer!(observer::MomentObserver)
     observer.buffer_length == 0 && return nothing
     row1 = observer.record_count + 1
     row2 = observer.record_count + observer.buffer_length
-    row2 <= observer.planned_records || throw(BoundsError("MomentObserver received more records than planned"))
+    row2 <= observer.planned_records || error(
+        "MomentObserver received more records ($(row2)) than planned ($(observer.planned_records))")
     HDF5.h5open(observer.path, "r+") do file
         file["data"][row1:row2, :] = observer.buffer[1:observer.buffer_length, :]
         file["record_count"][1] = Int64(row2)

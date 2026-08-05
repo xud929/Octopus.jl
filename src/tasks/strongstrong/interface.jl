@@ -1881,6 +1881,12 @@ function _execute_strong_strong_task!(
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
     _preflight_solver_configurations!(task, blocks1, blocks2, policy)
+    # The luminosity prepare owns the header and the replace/append decision,
+    # and it runs BEFORE observer preparation so its append-mode refusals
+    # (mismatched header, corrupt file) fire before any companion output has
+    # been truncated (2026-08-05 audit, U4-4).
+    task.luminosity_path === nothing ||
+        _prepare_strong_strong_luminosity_file!(task, blocks1, Int(first_turn))
     # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
     prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1);
                        turns=Int(turns), first_turn=Int(first_turn))
@@ -1895,10 +1901,9 @@ function _execute_strong_strong_task!(
                     task, beam1, beam2, blocks1, blocks2, policy, ctx,
                     turns, first_turn, nothing)
             else
-                # The prepare step owns the header and the replace/append
-                # decision, so the run body always streams rows in append
-                # mode from here.
-                _prepare_strong_strong_luminosity_file!(task, blocks1, Int(first_turn))
+                # The prepare step above owned the header and the
+                # replace/append decision, so the run body always streams
+                # rows in append mode from here.
                 open(task.luminosity_path, "a") do io
                     _execute_strong_strong_turns!(
                         task, beam1, beam2, blocks1, blocks2, policy, ctx,
@@ -1960,18 +1965,35 @@ end
 
 """
 Leave the luminosity file containing its header plus, in append mode, every
-existing row before `first_turn`.
+well-formed existing row before `first_turn`.
 
 With the default `luminosity_append = false` this rewrites header-only, which
 is the historical replace-per-execution behaviour. With `luminosity_append =
-true` the file is CONTINUED: a run split across `execute!` calls, an
-injection swap-out, or a process restart all extend one file with continuous
-absolute turns. Rows at or beyond `first_turn` are dropped first — the same
-idempotence rule the appending observers follow, because a replayed window (a
-failed `execute!`'s retry, an explicit `start_turn` rewind) rewrites the
-timeline from `first_turn` on, and a file carrying two rows for one turn is
-corrupt for every reader. A header that does not match this task's collision
-layout is refused rather than silently mixed.
+true` the file is CONTINUED: a run split across `execute!` calls on one task
+object extends one file with continuous absolute turns, and a fresh task or
+process does the same **when `execute!` is given the matching absolute
+`start_turn`** — the file keeps the rows, but the resume point comes from the
+caller. A fresh task with no `start_turn` executes from absolute turn 0, and
+under the idempotence rule below that REPLACES the recorded timeline; that
+replacement is deliberate-or-mistaken, so it is loud (one warning naming the
+`start_turn` remedy) rather than silent. Rows at or beyond `first_turn` are
+dropped first, because a replayed window (a failed `execute!`'s retry, an
+explicit `start_turn` rewind) rewrites the timeline from `first_turn` on, and
+a file carrying two rows for one turn is corrupt for every reader. A header
+that does not match this task's collision layout is refused rather than
+silently mixed.
+
+Torn writes (2026-08-05 audit, F1): a hard-killed run can leave a partial
+last line whose truncated turn field parses as a smaller turn and would slip
+under the drop rule, surviving the retry as a duplicate turn label. A
+malformed LAST line — wrong field count, or an unparseable turn — can only
+come from a torn final append, so it is dropped with a warning; a malformed
+line anywhere else cannot, and is refused as corruption. The rewrite goes
+through a temporary file and `mv`, so a kill during prepare itself cannot
+lose the history (U4-2). Residual risk, recorded: a torn line that truncates
+only a luminosity VALUE to a shorter valid float in a single-collision layout
+has the right field count and survives; it is removed by any retry that
+replays its window, which is the documented crash protocol.
 """
 function _prepare_strong_strong_luminosity_file!(task::StrongStrongTask, blocks1,
                                                  first_turn::Int)
@@ -1988,14 +2010,37 @@ function _prepare_strong_strong_luminosity_file!(task::StrongStrongTask, blocks1
         "StrongStrongTask(luminosity_append=true): the header at $(path) does not " *
         "match this task's collision layout ($(repr(lines[1])) vs " *
         "$(repr(chomp(header)))). Use a new path."))
-    kept = [line for line in lines[2:end]
-            if !isempty(strip(line)) && parse(Int, first(split(line))) < first_turn]
-    open(path, "w") do io
+    nfields = length(split(chomp(header), '\t'))
+    rows = [line for line in lines[2:end] if !isempty(strip(line))]
+    wellformed(line) = begin
+        parts = split(line, '\t')
+        length(parts) == nfields && tryparse(Int, parts[1]) !== nothing
+    end
+    if !isempty(rows) && !wellformed(rows[end])
+        @warn "luminosity_append: dropping a torn partial last line (an interrupted " *
+              "write) before continuing $(path)" line = rows[end]
+        rows = rows[1:(end - 1)]
+    end
+    bad = findfirst(!wellformed, rows)
+    bad === nothing || throw(ArgumentError(
+        "StrongStrongTask(luminosity_append=true): data row $(bad) of $(path) is " *
+        "malformed ($(repr(rows[bad]))), which cannot come from a torn final " *
+        "write; refusing to continue a corrupt file. Use a new path."))
+    kept = [line for line in rows if parse(Int, first(split(line, '\t'))) < first_turn]
+    if isempty(kept) && !isempty(rows)
+        @warn "luminosity_append=true is replacing the entire existing luminosity " *
+              "history at $(path): execution starts at turn $(first_turn), at or " *
+              "before every recorded row. Pass the matching absolute start_turn " *
+              "to execute! to continue the file instead." dropped_rows = length(rows)
+    end
+    tmp = path * ".prepare.tmp"
+    open(tmp, "w") do io
         print(io, header)
         for line in kept
             println(io, line)
         end
     end
+    mv(tmp, path; force=true)
     return nothing
 end
 

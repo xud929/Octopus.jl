@@ -61,16 +61,16 @@ disposed of every lead from that unit).
 
 | unit | files (lines) | reader | status |
 |---|---|---|---|
-| U1 | `src/tasks/strongstrong/pic_cuda.jl` 1–3000 | agent | pending |
-| U2 | `src/tasks/strongstrong/pic_cuda.jl` 3000–5966 | agent (+auditor for 5490–5966) | pending |
-| U3 | `src/contracts/Contracts.jl` (2,544) | agent | pending |
+| U1 | `src/tasks/strongstrong/pic_cuda.jl` 1–3000 | agent | reported (3 leads; §7) |
+| U2 | `src/tasks/strongstrong/pic_cuda.jl` 3000–5966 | agent (+auditor for 5490–5966) | agent reported (3 leads; §7); auditor read of 5490–5966 owed |
+| U3 | `src/contracts/Contracts.jl` (2,544) | agent | reported (10 leads; §7) |
 | U4 | `src/tasks/strongstrong/interface.jl` (2,310) | agent (+auditor for the `luminosity_append` delta) | reported (4 leads, 2 observations; §7) |
-| U5 | `src/tasks/strongstrong/pic_cpu.jl` (1,902) + `slicing.jl` (715) | agent | pending |
-| U6 | `src/tasks/BeamObservers.jl` (1,582) + `BPMObserver.jl` (324) + `Tasks.jl` (827) | agent (+auditor for the `append` delta) | pending |
-| U7 | `src/elements/strong_beam.jl` (1,547) + `src/track/strong_beam_track.jl` (495) + `src/tasks/strongstrong/gaussian.jl` (195) | agent | pending |
-| U8 | `src/tasks/strongstrong/gaussian_pic.jl` (869) + `gaussian_pic_cuda.jl` (1,232) — twin pair, parity brief | agent | pending |
-| U9 | `src/tasks/strongstrong/spectral.jl` (1,148) + `spectral_cuda.jl` (806) — twin pair, parity brief | agent | pending |
-| U10 | `src/elements/lattice_magnets.jl` (1,222) + `solenoid.jl` (436) + `linear6d.jl` (306) + `linear_maps.jl` (236) | agent | pending |
+| U5 | `src/tasks/strongstrong/pic_cpu.jl` (1,902) + `slicing.jl` (715) | agent | reported (8 leads; §7) |
+| U6 | `src/tasks/BeamObservers.jl` (1,582) + `BPMObserver.jl` (324) + `Tasks.jl` (827) | agent (+auditor for the `append` delta) | reported (6 leads; §7) |
+| U7 | `src/elements/strong_beam.jl` (1,547) + `src/track/strong_beam_track.jl` (495) + `src/tasks/strongstrong/gaussian.jl` (195) | agent | reading |
+| U8 | `src/tasks/strongstrong/gaussian_pic.jl` (869) + `gaussian_pic_cuda.jl` (1,232) — twin pair, parity brief | agent | reading |
+| U9 | `src/tasks/strongstrong/spectral.jl` (1,148) + `spectral_cuda.jl` (806) — twin pair, parity brief | agent | reading |
+| U10 | `src/elements/lattice_magnets.jl` (1,222) + `solenoid.jl` (436) + `linear6d.jl` (306) + `linear_maps.jl` (236) | agent | reading |
 | U11 | `src/elements/beam_line.jl` (587) + `aperture.jl` (583) + `thin_elements.jl` (346) + `radiation.jl` (313) + `misalignment.jl` (293) | agent | pending |
 | U12 | `src/elements/rf_cavity.jl` (223) + `patch.jl` (209) + `chromaticity_kick.jl` (192) + `crab_cavity.jl` (181) + `lorentz_boost.jl` (163) + `ref_tilt.jl` (126) + `Elements.jl` (15) + `src/track/phase6d_track.jl` (359) + `longitudinal.jl` (232) + `fused_track.jl` (77) + `radiation_track.jl` (67) + `Track.jl` (64) | agent | pending |
 | U13 | `src/knowledge/Knowledge.jl` (955) + `Methods.jl` (75) + `src/registry/Registry.jl` (218) + `src/examples/Examples.jl` (35) + `src/Octopus.jl` (76) + `src/policies/Policies.jl` (352) | agent | pending |
@@ -129,7 +129,57 @@ empty content (asserted by the dedicated pair); coverage lost: none. The
 sweep's discriminating power is unchanged (instrument negative control at
 `runtests.jl:2915` still reproduces the recorded 2.5e-3 defect).
 
-**F1 (Moderate, auditor-confirmed, fix pending with U4-1/U4-2).**
+**Fix package 2 (F1, F3–F9), verified:** all seven new behaviors PASS on the
+fixed tree (`scratchpad/fixpkg_probe.jl`); negative control (both source
+files stashed, tests kept): the five new behaviors FAIL pre-fix — the two
+pre-fix PASSes are expected (mid-file corruption already threw an accidental
+`ArgumentError` from `parse`; the wipe *result* is deliberately unchanged,
+only made loud). Fingerprint after the package: **bit-identical** to the
+baseline.
+
+**F3 (Moderate, auditor-reproduced from U4-1/U6-1, fixed as docs+warning).**
+`luminosity_append`/`MomentObserver(append=true)` promised "a second task
+sharing the path and a process restart pick up where the file ends"; in fact
+the resume point is the caller's `start_turn`, and a fresh task without it
+executes from turn 0 — which, under the (correct) idempotence rule, silently
+destroyed the entire file (reproduced: 3 rows destroyed; a `turns=0` no-op
+wiped a 10-row file to header-only). Disposition: the idempotence rule and
+the replace behavior are kept (auto-resume would silently mislabel physics
+for a fresh-beam user — worse than loud replacement); both docstrings now
+state the `start_turn` requirement, and a total replacement warns once,
+naming the remedy. Chose Phase-15 conservatism over a semantics change.
+
+**F4 (Moderate, from U4-2, fixed).** The append-mode .lum prepare rewrote the
+file in place after `readlines` — a kill in the window lost the whole
+history. Now writes to `path * ".prepare.tmp"` and `mv`s over.
+
+**F5 (Low, from U4-4, fixed).** The .lum prepare (with its append-mode
+refusals) ran *after* `prepare_observers!`, so a refused header left
+companion moment tables already truncated. Hoisted above observer
+preparation in `_execute_strong_strong_task!`.
+
+**F6 (Minor, A-4, fixed).** `BeamObservers.jl:1092` threw
+`BoundsError("<message>")` — the message string becomes the "accessed
+object". Now a directed `error(...)` with both counts.
+
+**F7 (Minor, A-5, fixed).** `MomentObserver(append=true)` onto a zero-byte
+leftover file died with "unable to determine if ... is accessible in the
+HDF5 format" (captured pre-fix). Now `filesize > 0` gates continuation, so
+the leftover is replaced fresh, matching the .lum twin.
+
+**F8 (Minor, U6-3, fixed).** The `BeamSwapAction(provider)` docstring sat
+detached between the struct and an unrelated `observe!` method. Moved onto
+the struct.
+
+**F9 (Low, U6-6, fixed).** The binary `BeamMomentObserver` flush wrote the
+incremented record count *before* the rows (a crash left count > rows; and a
+count-last variant with `seekend` would strand orphans mid-file). Rows now
+land at the offset the count implies, then the count updates — orphans from
+a crash are overwritten by the next flush, and the on-disk count never
+exceeds the rows on disk. U6-4's stale closing docstring paragraph fixed in
+the same file.
+
+**F1 (Moderate, auditor-confirmed, FIXED in package 2).**
 `src/tasks/strongstrong/interface.jl:1991-1992`
 (`_prepare_strong_strong_luminosity_file!`): a torn last line from a
 hard-killed writer whose turn field is a prefix of the true turn ("1" from
@@ -163,6 +213,86 @@ MomentObserver twin is crash-safe here by `record_count` ordering
   Captured before the first source modification of this audit.
 
 ## 7. Lead queue
+
+Wave 1 is fully reported (U1–U6; full agent reports under
+`scratchpad/reports/`). Open leads by unit, severity-ordered; ✔ marks
+auditor-reproduced items promoted to Findings.
+
+From U1 (pic_cuda.jl 1–3000):
+
+- **U1-1 (HIGH).** `interaction_grid=:node` silently falls back to
+  per-slice-pair meshes on every CUDA wavefront sub-route except the
+  fully-indexed one; with all-default flags,
+  `StrongStrongDiagnostics(pic_timing_detail=true)` flips `use_async` off
+  and thereby **changes tracking results** — a diagnostic changing physics,
+  against `interface.jl:293-296`'s own rule. CPU-side gate confirmed by
+  agent run (9/10 accepted combos drop `:node`); GPU half needs the card.
+- **U1-2 (Medium)** = U5-3: `slice_interpolation=:quadratic` accepted and
+  bit-identically ignored under `interaction_grid=:node` on BOTH backends
+  (double-sourced by two independent agents; parity shares the mistake).
+- U1-3 (Low): `_cuda_pic_workspace!` cache key omits
+  green_cache/min_ratio/growth (CPU keys them) — reproducibility drift only.
+
+From U2 (pic_cuda.jl 3000–5966; the 5490–5966 Gaussian kernels read):
+
+- **U2-1 (Medium).** Gathered CUDA kick launchers marshal `out.pz`
+  unconditionally while `_cuda_pic_extract_slice` omits `pz` when
+  `longitudinal_kick=false`: every gathered route should crash with "type
+  NamedTuple has no field pz" on a documented config. GPU verify queued.
+- U2-2 (Low): `:equal_area` bin membership CPU (division+clamp) vs CUDA
+  (edge comparisons): 0.82% different-bin + dropped orphans on quantized z.
+- U2-3 (info): TSC `w3 = 1-w1-w2` vs closed form, 1 ulp.
+
+From U3 (Contracts.jl):
+
+- **U3-1 (Medium).** `HighEnergyWeakStrongLimitContract` and
+  `CoherentModePhysicsContract` set the global RNG and never restore
+  (the other four RNG-touching contracts save/restore).
+- **U3-3 (Medium).** Solenoid declares `SymplecticityContract` but the
+  contract's hand-enumerated case list has no solenoid; no
+  declaration↔case tripwire.
+- **U3-4 (Medium).** `validate_configuration_metadata` hardcoded lists
+  stale: `GaussianPICPoissonSolver` absent (margin_sigma/neutralize/
+  coupling_tol unchecked), `BPMObserver` absent, no task-level schema
+  (`luminosity_append` has NO schema entry), and `Contracts.jl:2188` is a
+  second hand-copy of the solver list. Extends inherited item 5.
+- **U3-6 (Medium).** `PublicConfigurationEffectivenessContract` and both
+  strong-strong backend-consistency contracts are executed by no test and
+  no CI — the "correct check, never executed" class at contract level.
+- **U3-10 (Medium).** Friendly constructors accept unknown keywords and
+  wrong types silently end-to-end (`QuadrupoleSpec(this_keyword_does_not_exist=1.0)`
+  constructs, compiles, tracks) — a typo'd physics parameter is silently
+  ignored. Mechanism is in the element layer; handed to U10's territory.
+- U3-5 (Low-Med): `append`/`luminosity_append` outside every effectiveness
+  contract (mitigated by direct unit tests). U3-7 (Med-Low): element
+  parameter contract turns a throwing baseline into a silent skip, guarded
+  only by a zero-headroom count pin. U3-2/U3-8/U3-9 (Low): docstring
+  tolerance mismatch 5e-7 vs 5e-8; vacuous `:cuda_pic_launch` receipt
+  check; `_PTC_DEFAULT_ATOL` permanently empty vs docstring.
+
+From U5 (pic_cpu.jl + slicing.jl):
+
+- **U5-1/U5-2 (Medium).** Thread-count invariance fails above
+  `_PIC_PARALLEL_DEPOSIT_MIN=4096` (chunk-ordered deposit and
+  transverse-moment reductions): 74,882/90,000 coordinate values differ
+  1-vs-4 workers (max 2.5e-15), moments to 131,072 ulps; the part-9
+  "bit-identical everywhere" pin used 500/slice and never entered this
+  regime — **the recorded claim was true only below the threshold.**
+- U5-5 (Med-Low): under `grid_extent=:sigma`, source particles dropped by
+  the deposit are uncounted (1.0 particle-charge missing, `dropped==0`,
+  no warning) — the "Never silent" contract is half-covered. U5-6 (Low):
+  both-axes escapee counted twice. U5-7 (Low): CIC weight at in-range
+  `u==n-1` puts full charge one cell inward (CPU and CUDA identical —
+  parity-invisible). U5-8 (Low): TSC top-edge deposit excluded from the
+  luminosity overlap sum, 8.0e-5 relative deficit.
+
+From U6 (observers + Tasks.jl):
+
+- **U6-2 (Medium).** `LuminosityObserver`/`JLD2BeamMomentObserver`/
+  `BeamMomentObserver`/`CoordinateSnapshotObserver` have no replayed-window
+  discard: a crashed `execute!` retry yields duplicated turn labels
+  ([0,1,2,0,1,2,3,4,5]); a fresh process truncates. The append/idempotence
+  protocol exists only for `MomentObserver` and the .lum path.
 
 From U4 (reported; agent report at `scratchpad/reports/U4_report.md`):
 
@@ -209,3 +339,6 @@ luminosity schedule dispatch is specialized by all three grid solvers.
 | file | change | finding |
 |---|---|---|
 | `test/runtests.jl` | h≠0 solenoid loop skips the empty content (pure case asserted by its dedicated pair) | F2 |
+| `src/tasks/strongstrong/interface.jl` | `_prepare_strong_strong_luminosity_file!`: torn-last-line drop with warning, mid-file corruption refusal, total-wipe warning, atomic tmp+mv rewrite, corrected docstring; prepare hoisted above `prepare_observers!` | F1, F3, F4, F5 |
+| `src/tasks/BeamObservers.jl` | append docstrings corrected (+stale closing paragraph), total-wipe warning in `_moment_append_continue!`, zero-byte file initializes fresh, `error(...)` instead of `BoundsError`, `BeamSwapAction` docstring attached, binary flush writes rows before count at counted offset | F3, F6, F7, F8, F9 |
+| `test/runtests.jl` | new testset: torn writes dropped, corruption refused, wipes loud, zero-byte fresh-init (negative control: five behaviors fail with the two source files stashed) | F1, F3, F7 |

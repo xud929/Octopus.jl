@@ -3388,6 +3388,86 @@ end
     foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
 end
 
+@testset "Append continuation: torn writes dropped, corruption refused, wipes loud" begin
+    # 2026-08-05 audit (F1, U4-1/U4-2, U6-1, A-5): a hard-killed run leaves a
+    # partial last line whose truncated turn field ("1" of "12") parses under
+    # the idempotence drop rule and used to survive the retry as a duplicate
+    # turn label; a fresh task with no start_turn used to wipe the whole
+    # append file silently; a zero-byte HDF5 leftover used to fail with a raw
+    # HDF5 open error. Now: torn last lines are dropped with a warning,
+    # mid-file corruption is refused, total replacement warns naming the
+    # start_turn remedy, and the zero-byte leftover initializes fresh.
+    mkb(rng_id, charge, mc2, E0) = begin
+        set_global_rng!(seed=5, method=:philox)
+        Beam(300, CPUThreadsExecutionPolicy(), Float64;
+            beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+            sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+            charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+    end
+    beams() = (mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9))
+    L6s(b, t) = Linear6DSpec{Float64}(; beta1=b, beta2=b, alpha1=(0.0, 0.0, 0.0),
+                                      alpha2=(0.0, 0.0, 0.0), dmu=2pi .* t)
+    ip = StrongStrongCollision(:ip)
+    l1 = (ip, L6s((0.55, 0.056, 12.7), (0.08, 0.14, -0.069)))
+    l2 = (ip, L6s((0.8, 0.072, 90.9), (0.228, 0.210, -0.01)))
+    lum_turns(path) = [parse(Int, first(split(l, '\t'))) for l in readlines(path)[2:end]]
+
+    # A torn last line is dropped with a warning and cannot become a
+    # duplicate turn label on the retry.
+    p1 = tempname() * ".lum"
+    t1 = StrongStrongTask(l1, l2; luminosity_path=p1, luminosity_append=true)
+    b1, b2 = beams(); execute!(t1, b1, b2; turns=3)
+    open(io -> print(io, "1"), p1, "a")            # torn first byte of a "12..." row
+    t1b = StrongStrongTask(l1, l2; luminosity_path=p1, luminosity_append=true)
+    b1, b2 = beams()
+    @test_logs (:warn, r"torn partial last line") match_mode = :any execute!(
+        t1b, b1, b2; turns=1, start_turn=3)
+    @test lum_turns(p1) == [0, 1, 2, 3]
+
+    # A malformed row that is NOT last cannot come from a torn final write:
+    # refused, and refused BEFORE any companion observer is truncated (U4-4).
+    open(p1, "a") do io
+        println(io, "garbage\trow")
+        println(io, "9\t1.0")
+    end
+    t1c = StrongStrongTask(l1, l2; luminosity_path=p1, luminosity_append=true)
+    b1, b2 = beams()
+    @test_throws ArgumentError execute!(t1c, b1, b2; turns=1, start_turn=10)
+
+    # Total replacement (fresh task, no start_turn) is loud, naming the remedy.
+    p2 = tempname() * ".lum"
+    t2 = StrongStrongTask(l1, l2; luminosity_path=p2, luminosity_append=true)
+    b1, b2 = beams(); execute!(t2, b1, b2; turns=3)
+    t2b = StrongStrongTask(l1, l2; luminosity_path=p2, luminosity_append=true)
+    b1, b2 = beams()
+    @test_logs (:warn, r"replacing the entire existing luminosity") match_mode = :any execute!(
+        t2b, b1, b2; turns=2)
+    @test lum_turns(p2) == [0, 1]
+
+    # MomentObserver twin: loud wipe, and a zero-byte leftover initializes fresh.
+    turns_in(path) = Octopus.HDF5.h5open(path) do f
+        n = Int(read(f["record_count"])[1])
+        Int.(f["data"][1:n, 1])
+    end
+    mk1() = Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+    dline = (DriftSpec(L=1.0),)
+    p3 = tempname() * ".h5"
+    t3 = TrackingTask(dline; hooks=(ScheduledObserver(MomentObserver(p3; capacity=2, append=true)),))
+    execute!(t3, mk1(); turns=3)
+    t3b = TrackingTask(dline; hooks=(ScheduledObserver(MomentObserver(p3; capacity=2, append=true)),))
+    @test_logs (:warn, r"replacing the entire existing moment table") match_mode = :any execute!(
+        t3b, mk1(); turns=2)
+    @test turns_in(p3) == [0, 1]
+
+    p4 = tempname() * ".h5"
+    touch(p4)                                      # crash-at-create leftover
+    t4 = TrackingTask(dline; hooks=(ScheduledObserver(MomentObserver(p4; capacity=2, append=true)),))
+    execute!(t4, mk1(); turns=2)
+    @test turns_in(p4) == [0, 1]
+
+    foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
+end
+
 @testset "A task re-run on the other backend reallocates its loss record" begin
     # Audit part 7, T2: the `fits` test compared shape only, against its own
     # docstring's "shape or backend" -- a CPU-built record handed to a CUDA
