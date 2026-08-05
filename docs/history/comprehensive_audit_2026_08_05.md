@@ -487,6 +487,71 @@ MomentObserver twin is crash-safe here by `record_count` ordering
 
 ## 7. Open queue — dispositioned, priced, with reproductions
 
+### Fix campaign disposition (2026-08-05, follow-on session)
+
+The owner directed a fix campaign over this queue. Closed, each with
+reproduction → fix → verification (numbers in the commit messages):
+
+- **U7-2** CUDA weak-strong luminosity per-turn reset (`e4fc840`; parity
+  0.0/1.2e-16 at turns=3, CUDA-gated pin).
+- **U6-2** replay-discard for all four remaining observer formats
+  (`ef31a61`; four-format testset).
+- **U5-1/2 + U16-3** count-invariant reductions: fixed chunk grids, path
+  choice by data size only (`95334bf`; 1/4/8 workers bit-identical incl.
+  spectral luminosity at 0 ulp, zero measured cost, pin extended above the
+  thresholds).
+- **U7-1** OctopusForwardDiffExt: Faddeeva holomorphic rule + calibration
+  pass-through (`1e58d43`; FD agreement 6.8e-5, dual-Jacobian symplectic to
+  4.5e-12).
+- **U3-3/4/5/6/7/9, U13-3/4, U16-2, U21-7** contract-coverage package
+  (`e6ea0f2`; solenoid symplecticity cases + declaration tripwire
+  (injection-verified), type-tree completeness guards, GaussianPIC/BPM/task
+  schemas, broken-baseline reporting — which immediately exposed and fixed
+  three kinds with no keyword constructor form; sweep now 244/0/0).
+- **U3-10/U13-1/U13-2** unknown-key warning at the construction choke
+  point, placement keys bind everywhere, epoch-carrying `set_param!`
+  (`a477f7d`).
+- **U11-1/2/3/4/8** nested-line length in every walker, state-preserving
+  reverse, thin-kind folded-sugar rejection on both paths, hidden-aperture
+  warning (`2d7cff9`).
+- **U19-1/2/3** coherent-modes tables regenerated from current code; the
+  detached y-mode conclusion corrected beside the original; u>1 regime
+  flagged (`22c97e7`).
+- **U14-1..7 + A-1** knob package (merge `a5c3e27`: registry atomicity on
+  every throw path, total string round-trip incl. NaN/Inf and left-nested
+  `^`, named-constant knob names refused, widened directed errors, public
+  `knob_symbolics_available()`).
+- **U17-2/3/5, U16-1/4/5, U2-2** test-quality package (merge `bbd9247`:
+  kick-level spectral-vs-BE assertions that fail zero/double/flip on both
+  beams, per-family corpse-semantics pins, CUDA histogram membership
+  unified to the CPU rule — 2138/260000 divergent bins → 0).
+- **U1-3, U21-2, U21-3** CUDA workspace key completeness; two validation
+  scripts gain their gates (`9c2f2fd` neighborhood).
+- **Hygiene sweep** (`a5d8609`): U15-4/5/6/7 RNG oddments and directed
+  refusals; U12-4/5; U3-8; and the doc-drift batch U9-3, U11-10/11/12,
+  U13-5 (named)/6, U18-1/2/4/6, U19-6/8, U20-3/8, U21-1; U15-2/3 recorded
+  as accepted limitations at their sites.
+- **U5-5/6/7/8, U10-5/6/7** deposit-edge and series numerics (worktree
+  merge; see below).
+
+**Still open after the campaign, priced:** U9-1 (port the R9 dropped-charge
+tripwire to the three CUDA spectral deposits — GPU kernel work), U9-2 (R12
+transverse pre-solve hoist on CUDA — perf only, doubly non-default),
+U13-2-completion (declare placement params per-kind in schemas, with the
+per-kind inactive entries that zero-length elements then need),
+U13-5-full (the 76/335 undocumented-exports sweep beyond the named ones),
+U17-6/7/8 and U16-6 (minor test-shape items), U19-4/9/10 (print-only
+gates in characterization scripts documented as such; SIGN_KERNEL
+auto-selection), U20-1/2/4/5/6/7 (validation scripts that characterize
+rather than gate — README frames them so), U21-4/5/6 (symplecticity script
+mirror, backend-consistency element-list refresh, PTC generate-path dead
+field), U21-8/9/11/12 and U18-3/5 (small doc/output-discipline items),
+U2-3 (1-ulp TSC w3 note), and the two U4 observations (mixed-IP schedule
+row semantics; `_collision_solver` identity comparison). None is
+correctness-critical; each carries its file:line in the unit reports.
+
+
+
 Every item below survived to the end of this pass unfixed, with its severity
 and what closing it takes. Items marked ✔ were auditor-reproduced; the rest
 are agent leads with recorded reproductions.
