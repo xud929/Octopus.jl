@@ -386,9 +386,19 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   the transverse spectral path down from 2*n1*n2 to n1+n2 solves with
   kicks captured bit-identical -- so the parts 6-7 queue is fully closed),
   [`comprehensive_audit_2026_08_05.md`](history/comprehensive_audit_2026_08_05.md)
-  (**in progress**: full 50k-line re-read at `6a3f39a` — every `src/`, `test/`,
-  `examples/`, `validation/` line regardless of prior coverage, with the live
-  coverage ledger, seam map, lead queue and change log in the file itself),
+  (full 50,330-line re-read at `6a3f39a`, one driving session: every `src/`,
+  `test/`, `examples/`, `validation/` line read (21 briefed agent units +
+  auditor-direct reads, provenance ledgered), **20 findings fixed (F1–F20)**
+  — headed by a test tolerance that had aborted every full-suite run since
+  `baf0255` (masking the CUDA half, examples, and append testsets), a torn-
+  write/append protocol rebuilt against crash cases, `interaction_grid=:node`
+  silently degrading on CUDA with a diagnostic flag changing physics, the
+  straight solenoid un-differentiable and `curved=false` non-gradient, the
+  RF cavity's slip factor missing `-1/γ₀²` (model boundary now documented,
+  fix priced), context-dropping element wrappers, and a Philox
+  implementation nothing pinned (now KAT-gated). Carries the full coverage
+  ledger with per-unit provenance, the seam map, corrections to the audit's
+  own analysis, and a ~40-item priced open queue),
   [`gaussian_slicing_convergence_2026_07_31.md`](history/gaussian_slicing_convergence_2026_07_31.md)
   (all five Furman slicing rules plus Gauss-Hermite implemented and ranked at EIC
   weak-strong parameters; algorithm #5 shown to need no optimizer; Gauss-Hermite
