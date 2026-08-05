@@ -175,12 +175,169 @@ From `docs/todo.md` and the prior report's §7:
 
 ## 4. Findings
 
-*Pending — no lead has been verified yet. Nothing enters this section until the
-auditor has reproduced it.*
+Nothing enters this section until the auditor has reproduced it. Each finding
+records the reproduction command and the numbers it produced on this machine.
+
+### F1 [Major] Per-pair luminosity trace is empty on 5 of 6 CUDA PIC routes, and the contract that consumes it is disarmed by construction
+
+**Independently found by two units reading disjoint regions** (U1-1 over
+`pic_cuda.jl` 1–2000, U2-1 over 2000–4000), then reproduced by the auditor.
+
+`_ACTIVE_PIC_LUMINOSITY_PAIR_SINK` is pushed to on the CPU side from the single
+generic pair loop (`pic_cpu.jl:114–119`), so every CPU route populates it by
+construction. On CUDA the only `push!` lives in
+`_cuda_pic_wavefront_luminosity_indexed` (`pic_cuda.jl:3672–3686`), reachable
+only from the fully-indexed wavefront sub-route.
+
+Auditor reproduction (4 slices ⇒ 16 pairs), `probe_sink.jl`:
+
+| route | scalar luminosity | sink records |
+|---|---|---|
+| CPU sequential | 5.756043461949609e14 | **16** |
+| CPU wavefront | 5.756043461949609e14 | **16** |
+| CUDA sequential `cuda_async=false` | 5.756043461949634e14 | **0** |
+| CUDA sequential `cuda_async=true` | 5.756043461949622e14 | **0** |
+| CUDA wavefront, full indexed (default) | 5.756043461949619e14 | **16** |
+| CUDA wavefront `cuda_indexed_wavefront=false` | 5.756043461949624e14 | **0** |
+| CUDA wavefront `cuda_wavefront_fft=false` | 5.756043461949621e14 | **0** |
+| CUDA wavefront `cuda_async=false` | 5.756043461949621e14 | **0** |
+
+The **scalar luminosity is correct on every route** (agreement to ~1e-15), so
+this is an observability and contract-coverage defect, not a physics one — which
+is precisely why nothing caught it.
+
+Two aggravating factors, both from U2-1:
+
+- `pic_timing_detail = true` — a *pure diagnostic* — forces `use_async=false`
+  and hence `use_indexed_wavefront=false`, so enabling one diagnostic silently
+  deletes a different diagnostic's entire output, on the default route. This is
+  the F11 family (a diagnostic changing execution) in observability form; the
+  F11 fix throws for `interaction_grid=:node` under the same cascade but leaves
+  default `:slice_pair` to lose its trace in silence.
+- `StrongStrongPICBackendConsistencyContract` gates the whole per-pair
+  comparison on `batch_mode == :wavefront` (`Contracts.jl:867–876`), so under
+  `:sequential` it reports `records_compared = 0` and `passed = true` **having
+  compared nothing** — a contract that passes by comparing an empty set. The
+  suite's only invocation (`test/runtests.jl:3786`) uses default flags, so the
+  per-pair check has never covered any route but the indexed one.
+
+This is Measured Lesson 1 ("a correct check that never executes") and Lesson 8
+("loud beats silent") in one defect, on the CPU↔CUDA twin seam.
+
+### F2 [Major] An `execute!` that fails during observer preparation destroys the luminosity history it never wrote to
+
+`interface.jl:2015–2025`. Found by U5-1, reproduced by the auditor with
+`u5_p3_ordering.jl`.
+
+The prior audit's U4-4 fix moved `_prepare_strong_strong_luminosity_file!`
+*before* `prepare_observers!` to stop a `.lum` refusal leaving a truncated
+moment table. That reversed the truncation window rather than closing it: both
+preparers commit destructively before either has validated, so
+`_moment_append_continue!` (`BeamObservers.jl:1265–1271`) refusing a mismatched
+moment selection now happens *after* the `.lum` has already been rewritten.
+
+Measured:
+
+- **replace mode** (the default): 3 rows of real luminosity history before →
+  `execute!` throws `ArgumentError` → **0 rows after**. The entire history is
+  gone, destroyed by a run that tracked nothing.
+- **append mode**, `start_turn=2`: 5 rows before → throws → **2 rows after**.
+
+No ordering closes this; it needs a validate-all-then-commit-all split. The
+suite pins only the one direction (`runtests.jl:3983–3987`), which is why the
+reversal read as a fix.
+
+### F3 [Moderate] The luminosity schedule is evaluated twice per collision per turn, so a stateful predicate makes every written row `NaN`
+
+`interface.jl:2217–2218`. Found by U5-2, reproduced by the auditor with
+`u5_p4_schedule.jl`.
+
+The file-writing gate calls `_strong_strong_luminosity_evaluated(solver, ctx)`
+→ `should_run`; the collide path then calls `_pic_compute_luminosity(solver,
+ctx)` which calls `should_run` again. Nothing shares the first answer with the
+second. `should_run(::PredicateSchedule, ctx)` is `Bool(schedule.predicate(ctx))`
+— an arbitrary public user function.
+
+Measured, 4 turns / 1 collision: **8 predicate invocations** where one per turn
+would be 4; and every written row is `NaN`:
+
+```
+turn	ip
+0	NaN
+1	NaN
+2	NaN
+3	NaN
+```
+
+The gate says "evaluated" while the solver returns `NaN`, producing exactly the
+confusion `interface.jl:1130–1137` says must not happen — `NaN` is reserved
+there for "evaluated and numerically failed".
+
+### A-1 [Moderate] A `StrongStrongTask` has no loss accounting at all, and `loss_summary` on one fails from deep inside
+
+**Auditor-direct** (seam pass U27), not from any unit — it is a disagreement
+*between* files, which a per-file read structurally cannot see.
+
+`Tasks.jl:614` binds apertures to a per-beam `LossRecord` and `execute!`
+reconciles two independent loss counts, warning whenever `unattributed != 0`.
+`_bind_apertures` has exactly one call site in the repository, and the
+strong-strong path is not it: `_strong_strong_runtime_blocks`
+(`interface.jl:2397–2415`) builds blocks with no record, and
+`interface.jl` mentions neither `aperture` nor `loss_record` anywhere.
+
+Measured (`seam_aperture_ss.jl`, `seam_aperture_ss2.jl`), same aperture, same
+beam, 4,000 particles:
+
+| | strong-strong | tracking (control) |
+|---|---|---|
+| particles killed | 3,793 | 3,399 |
+| automatic summary on `execute!` | **none** | `loss summary: 3399 of 4000 particles lost (601 live)` / `tight_collimator 3399` |
+| per-collimator attribution | **none** — `aperture_names`: no method | yes |
+| `loss_summary(rep, task)` | `MethodError` for `loss_counts(::StrongStrongTask)` | works |
+| total available | `count_dead(rep)` = 3793 | yes |
+
+Only the *total* is recoverable. `loss_summary(rep, ::StrongStrongTask)`
+dispatches through the `::Any` fallback at `aperture.jl:593` — treating the task
+as a loss record — and then fails on an inner `loss_counts` `MethodError`
+rather than saying the operation is unsupported.
+
+This matters specifically because `allow_lost_particles`' own docstring
+prescribes the cross-check "Compare `count_dead` against the losses your lattice
+can account for; a gap means the old meaning still applies somewhere" — and for
+a `StrongStrongTask` the lattice-accountable losses are exactly what is
+unavailable, so the documented procedure cannot be performed. No test in the
+suite places an aperture in a strong-strong line (0 testsets mention both).
+
+Scope note: the *physics* is correct and separately verified — a dead particle
+joins no slice under any of the five slicing methods and reaches no grid cell,
+"verified bit-exact against a beam that omits it"
+(`docs/theory/aperture_and_particle_loss.md:380–385`). The defect is
+observability, not the beam-beam result.
 
 ## 5. Corrections to this audit's own analysis
 
-*Pending.*
+Recorded beside the original claim, never over it, per the Absolute Rules.
+
+### C-1 — The auditor's "strong-strong kills silently" hypothesis was wrong, and measurement said so
+
+**Original claim** (auditor, seam pass U27): since `interface.jl` never binds a
+`LossRecord` and `Aperture{Nothing}` "kills without recording", a strong-strong
+line containing an aperture would kill particles silently — the "loud beats
+silent" class.
+
+**Refuted by measurement.** The first probe never reached a silent kill: the
+solver threw before any mutation, with a diagnostic naming the collision, the
+turn, the count (`3399 of 4000`), the first offending index, the *mechanism*
+("they previously poisoned the whole CUDA charge grid through the atomic
+deposit, or threw an unlocated InexactError on CPU"), and the supported remedy
+(`allow_lost_particles`). That is the fail-fast rule working exactly as
+designed. A second probe error — my own beams had `E0 = 0.0` — was likewise
+caught precisely rather than absorbed.
+
+What survived is narrower and different in kind: not a silent kill, but a
+**missing accounting path** once the user has explicitly opted into
+`allow_lost_particles` (finding A-1). The original framing would have filed a
+Major against correct code.
 
 ## 6. Test, contract, validation, and execution log
 
