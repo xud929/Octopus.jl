@@ -1943,6 +1943,7 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:drift, :nst) => "the drift is exact, so there are no integration steps",
     (:drift, :integrator_order) => "the drift is exact, so there is nothing to split",
     (:marker, :tracking_method) => "a marker is the identity under every method",
+    (:line, :L) => "survey metadata, not tracking input: consumed by the arc-length walkers (s_positions, total_length, aperture_s and the misaligned-parent survey), not by the coordinate map this contract measures — declared by the 2026-08-05 campaign so nested own-state lines survey at their real length",
     # These are consumed, but not through the single deterministic
     # coordinate map this contract measures. The distinction matters: they are
     # not inert, they are invisible to this probe, and a stronger check would
