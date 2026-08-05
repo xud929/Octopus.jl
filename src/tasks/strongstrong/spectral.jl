@@ -399,6 +399,10 @@ tuning statistic. CIC weights sum to one per fully-in-box particle, so any
 deficit in the grid total is exactly the clipped fraction. The known
 reachable corner is small grids (Nx < ~41), where the 5% headroom is thinner
 than one cell and an extreme particle's stencil brushes the wall.
+
+The CUDA twin counts the clipped weight inside the deposit kernels (a grid
+total per solve would synchronize the stream) and flushes one aggregate
+warning per collision through `_cuda_spectral_deposit_tripwire_flush!`.
 """
 function _spectral_deposit_tripwire(rho, ns, Lx, Ly)
     ns > 0 || return nothing

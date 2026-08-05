@@ -7439,6 +7439,63 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         @test_throws ArgumentError collide!(gf, egpu, pgpu, Octopus.CUDABackend)
     end
 
+    @testset "CUDA spectral deposit tripwire (R9, U9-1)" begin
+        # Kernel-level: one fully-out-of-box particle among in-box ones leaves
+        # exactly its unit charge in ws.dropped, for each of the three deposit
+        # kernels. The negative control must be exactly 0.0, not merely small:
+        # the clipped weight is a subset-sum difference in matching term
+        # order, so a fully-deposited particle contributes nothing at all.
+        lease = Octopus._acquire_spectral_cuda_ws(Float64, 16, 16)
+        ws = lease.workspace
+        try
+            n = 64
+            sx = Octopus.CUDA.CuArray([fill(1.0e-4, n - 1); 5.0e-3])
+            sy = Octopus.CUDA.zeros(Float64, n)
+            spx = Octopus.CUDA.zeros(Float64, n)
+            spy = Octopus.CUDA.zeros(Float64, n)
+            Lx = Ly = 1.0e-3
+            dropped() = Array(ws.dropped)[1]
+            Octopus.CUDA.fill!(ws.dropped, 0.0)
+            Octopus._cuda_spectral_field!(ws, sx, sy, Lx, Ly)
+            @test dropped() ≈ 1.0 atol = 1.0e-12
+            Octopus.CUDA.fill!(ws.dropped, 0.0)
+            Octopus._cuda_spectral_potential_solve!(
+                ws, ws.PhigL, ws.ExgL, ws.EygL, sx, spx, sy, spy, 0.0, Lx, Ly)
+            @test dropped() ≈ 1.0 atol = 1.0e-12
+            idx = Octopus.CUDA.CuArray(collect(1:n))
+            Octopus.CUDA.fill!(ws.dropped, 0.0)
+            Octopus._cuda_spectral_potential_solve_idx!(
+                ws, ws.PhigL, ws.ExgL, ws.EygL, sx, spx, sy, spy, idx, 0.0, Lx, Ly)
+            @test dropped() ≈ 1.0 atol = 1.0e-12
+            inside = Octopus.CUDA.CuArray(fill(1.0e-4, n))
+            Octopus.CUDA.fill!(ws.dropped, 0.0)
+            Octopus._cuda_spectral_field!(ws, inside, sy, Lx, Ly)
+            @test dropped() == 0.0
+        finally
+            Octopus._release_spectral_cuda_ws!(lease)
+        end
+
+        # Collide-level: the CPU R9 configuration (box sized once from
+        # pre-collision coordinates, strong intra-collision kick; the CPU
+        # twin of this assert is in the slicing testset) warns through the
+        # CUDA 6D path too -- one aggregate warning per collision where the
+        # CPU path warns per solve. No transverse-path assert: that map never
+        # moves x/y inside the collision, so its deposits cannot clip.
+        strong_gpu(n) = begin
+            s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+            x = s(1.0e-4, 0.0); x[1] = 8.0e-4
+            rep = Phase6DRep((Octopus.CUDA.CuArray(a) for a in
+                (x, s(1.0e-5, 0.3), s(1.0e-4, 0.9), s(1.0e-5, 1.2),
+                 s(1.0e-2, 2.0), s(1.0e-4, 2.5)))...)
+            params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=n)
+            Beam{Octopus.CUDABackend,typeof(params),typeof(rep)}(params, rep)
+        end
+        sp64 = SpectralPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+            grid=(64, 64), slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+        @test_logs (:warn, r"clipped charge at the Dirichlet wall") match_mode = :any collide!(
+            sp64, strong_gpu(256), strong_gpu(256), Octopus.CUDABackend)
+    end
+
     @testset "CUDA GaussianPIC solver matches CPU" begin
         to_gpu(b) = begin
             rep = Phase6DRep((Octopus.CUDA.CuArray(copy(a)) for a in coordinate_arrays(b.rep))...)

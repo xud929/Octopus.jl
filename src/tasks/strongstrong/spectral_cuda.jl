@@ -13,17 +13,41 @@ if _HAS_CUDA
     @eval begin
 
         # --- deposit / interpolate / scatter kernels ---------------------------
-        function _cuda_spectral_deposit_kernel!(rho, sx, sy, Lx, Ly, hx, hy, Nx, Ny)
+        # All three deposit kernels count the charge their CIC stencils clip at
+        # the Dirichlet wall into `dropped`, a one-element Float64 device
+        # accumulator on the workspace (R9 tripwire, CPU twin
+        # `_spectral_deposit_tripwire`). The CPU path warns from the grid-total
+        # deficit per solve, but a per-solve device sum would synchronize the
+        # stream, so here each thread accumulates the stencil weight it skipped:
+        # written charge is summed in the same term order as the full stencil
+        # total, so the difference is exactly 0.0 when every node lands in the
+        # box, and no atomic fires in that common case. The collide entry
+        # points zero the accumulator, and flush one aggregate warning per
+        # collision (audit 2026-08-05, U9-1).
+        function _cuda_spectral_deposit_kernel!(rho, sx, sy, Lx, Ly, hx, hy, Nx, Ny, dropped)
             p = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             p <= length(sx) || return nothing
             X = (sx[p] + Lx) / hx; Y = (sy[p] + Ly) / hy
             i = _grid_floor(X); j = _grid_floor(Y)
             wx = X - i; wy = Y - j
             @inbounds begin
-                (1 <= i <= Nx   && 1 <= j <= Ny)   && CUDA.@atomic rho[i, j]     += (1 - wx) * (1 - wy)
-                (1 <= i + 1 <= Nx && 1 <= j <= Ny) && CUDA.@atomic rho[i + 1, j] += wx * (1 - wy)
-                (1 <= i <= Nx   && 1 <= j + 1 <= Ny) && CUDA.@atomic rho[i, j + 1]   += (1 - wx) * wy
-                (1 <= i + 1 <= Nx && 1 <= j + 1 <= Ny) && CUDA.@atomic rho[i + 1, j + 1] += wx * wy
+                w11 = (1 - wx) * (1 - wy); w21 = wx * (1 - wy)
+                w12 = (1 - wx) * wy;       w22 = wx * wy
+                written = zero(w11)
+                if 1 <= i <= Nx && 1 <= j <= Ny
+                    CUDA.@atomic rho[i, j] += w11; written += w11
+                end
+                if 1 <= i + 1 <= Nx && 1 <= j <= Ny
+                    CUDA.@atomic rho[i + 1, j] += w21; written += w21
+                end
+                if 1 <= i <= Nx && 1 <= j + 1 <= Ny
+                    CUDA.@atomic rho[i, j + 1] += w12; written += w12
+                end
+                if 1 <= i + 1 <= Nx && 1 <= j + 1 <= Ny
+                    CUDA.@atomic rho[i + 1, j + 1] += w22; written += w22
+                end
+                clipped = w11 + w21 + w12 + w22 - written
+                clipped > 0 && CUDA.@atomic dropped[1] += Float64(clipped)
             end
             return nothing
         end
@@ -139,6 +163,9 @@ if _HAS_CUDA
             qlum1::CUDA.CuMatrix{T}; qlum2::CUDA.CuMatrix{T}
             snapx::CUDA.CuVector{T}; snappx::CUDA.CuVector{T}
             snapy::CUDA.CuVector{T}; snappy::CUDA.CuVector{T}
+            # One-element accumulator for charge the deposit kernels clip at the
+            # Dirichlet wall (R9 tripwire; zeroed and flushed per collision).
+            dropped::CUDA.CuVector{Float64}
             pr1::P1; pr2::P2
         end
 
@@ -157,7 +184,8 @@ if _HAS_CUDA
                 zz(), er1, c1, er2, c2,
                 zz(), zz(), zz(),
                 zz(), zz(), zz(), zz(), zz(), zz(),
-                zz(), zz(), zv(), zv(), zv(), zv(), pr1, pr2)
+                zz(), zz(), zv(), zv(), zv(), zv(),
+                CUDA.zeros(Float64, 1), pr1, pr2)
         end
 
         # Grow the reusable source-snapshot buffers to at least length n.
@@ -239,6 +267,23 @@ if _HAS_CUDA
             ws.G .= 1 ./ (ws.al .^ 2 .+ ws.bm .^ 2)
             ws.a = a; ws.b = b
             return ws
+        end
+
+        # Host half of the R9 deposit tripwire: read the clipped-charge
+        # accumulator the deposit kernels fill and warn with the CPU tripwire's
+        # message. `ndep` is the collision's total deposit count (source
+        # particles summed over every deposit launched), so the reported
+        # fraction is relative to all deposited charge. One aggregate warning
+        # per collision -- the CPU path warns per solve -- because a per-solve
+        # readback would synchronize the stream the solves pipeline on.
+        function _cuda_spectral_deposit_tripwire_flush!(ws::_SpectralCudaWS, ndep::Int, Lx, Ly)
+            ndep > 0 || return nothing
+            dropped = Array(ws.dropped)[1]
+            if dropped > 1.0e-9 * ndep
+                @warn "spectral deposit clipped charge at the Dirichlet wall; the box \
+                       no longer covers the whole beam" dropped_fraction = dropped / ndep ndeposits = ndep box = (Lx, Ly) maxlog = 8
+            end
+            return nothing
         end
 
         # Fused symmetric-extension build. The DST/DCT of A along a dimension is
@@ -347,7 +392,7 @@ if _HAS_CUDA
             CUDA.fill!(ws.rho, 0)
             threads = 256
             CUDA.@cuda threads=threads blocks=cld(ns, threads) _cuda_spectral_deposit_kernel!(
-                ws.rho, sx, sy, T(Lx), T(Ly), T(hx), T(hy), Nx, Ny)
+                ws.rho, sx, sy, T(Lx), T(Ly), T(hx), T(hy), Nx, Ny, ws.dropped)
             # rholm = DST2(DST1(rho)) / (a*b*ns) ; philm = -rholm .* G  (store in s1)
             _cuda_dst1!(ws.s2, ws, ws.rho)
             _cuda_dst2!(ws.s1, ws, ws.s2)
@@ -369,7 +414,7 @@ if _HAS_CUDA
         # snapshots) after a virtual drift by `drift`, so the drift is folded into the
         # deposit and the 6D path never allocates a per-plane drifted source array.
         function _cuda_spectral_deposit_drift_kernel!(rho, sx, spx, sy, spy, drift,
-                                                      Lx, Ly, hx, hy, Nx, Ny)
+                                                      Lx, Ly, hx, hy, Nx, Ny, dropped)
             t = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             t <= length(sx) || return nothing
             @inbounds begin
@@ -377,10 +422,23 @@ if _HAS_CUDA
                 Y = (sy[t] + spy[t] * drift + Ly) / hy
                 i = _grid_floor(X); j = _grid_floor(Y)
                 wx = X - i; wy = Y - j
-                (1 <= i <= Nx   && 1 <= j <= Ny)   && CUDA.@atomic rho[i, j]         += (1 - wx) * (1 - wy)
-                (1 <= i + 1 <= Nx && 1 <= j <= Ny) && CUDA.@atomic rho[i + 1, j]     += wx * (1 - wy)
-                (1 <= i <= Nx   && 1 <= j + 1 <= Ny) && CUDA.@atomic rho[i, j + 1]   += (1 - wx) * wy
-                (1 <= i + 1 <= Nx && 1 <= j + 1 <= Ny) && CUDA.@atomic rho[i + 1, j + 1] += wx * wy
+                w11 = (1 - wx) * (1 - wy); w21 = wx * (1 - wy)
+                w12 = (1 - wx) * wy;       w22 = wx * wy
+                written = zero(w11)
+                if 1 <= i <= Nx && 1 <= j <= Ny
+                    CUDA.@atomic rho[i, j] += w11; written += w11
+                end
+                if 1 <= i + 1 <= Nx && 1 <= j <= Ny
+                    CUDA.@atomic rho[i + 1, j] += w21; written += w21
+                end
+                if 1 <= i <= Nx && 1 <= j + 1 <= Ny
+                    CUDA.@atomic rho[i, j + 1] += w12; written += w12
+                end
+                if 1 <= i + 1 <= Nx && 1 <= j + 1 <= Ny
+                    CUDA.@atomic rho[i + 1, j + 1] += w22; written += w22
+                end
+                clipped = w11 + w21 + w12 + w22 - written
+                clipped > 0 && CUDA.@atomic dropped[1] += Float64(clipped)
             end
             return nothing
         end
@@ -388,7 +446,7 @@ if _HAS_CUDA
         # Same deposit but reading the source straight from the beam rep via slice
         # indices `idx` (no compact gather), matching the PIC indexed-wavefront path.
         function _cuda_spectral_deposit_idx_kernel!(rho, x, px, y, py, idx, drift,
-                                                    Lx, Ly, hx, hy, Nx, Ny)
+                                                    Lx, Ly, hx, hy, Nx, Ny, dropped)
             t = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             t <= length(idx) || return nothing
             @inbounds begin
@@ -397,10 +455,23 @@ if _HAS_CUDA
                 Y = (y[p] + py[p] * drift + Ly) / hy
                 i = _grid_floor(X); j = _grid_floor(Y)
                 wx = X - i; wy = Y - j
-                (1 <= i <= Nx   && 1 <= j <= Ny)   && CUDA.@atomic rho[i, j]         += (1 - wx) * (1 - wy)
-                (1 <= i + 1 <= Nx && 1 <= j <= Ny) && CUDA.@atomic rho[i + 1, j]     += wx * (1 - wy)
-                (1 <= i <= Nx   && 1 <= j + 1 <= Ny) && CUDA.@atomic rho[i, j + 1]   += (1 - wx) * wy
-                (1 <= i + 1 <= Nx && 1 <= j + 1 <= Ny) && CUDA.@atomic rho[i + 1, j + 1] += wx * wy
+                w11 = (1 - wx) * (1 - wy); w21 = wx * (1 - wy)
+                w12 = (1 - wx) * wy;       w22 = wx * wy
+                written = zero(w11)
+                if 1 <= i <= Nx && 1 <= j <= Ny
+                    CUDA.@atomic rho[i, j] += w11; written += w11
+                end
+                if 1 <= i + 1 <= Nx && 1 <= j <= Ny
+                    CUDA.@atomic rho[i + 1, j] += w21; written += w21
+                end
+                if 1 <= i <= Nx && 1 <= j + 1 <= Ny
+                    CUDA.@atomic rho[i, j + 1] += w12; written += w12
+                end
+                if 1 <= i + 1 <= Nx && 1 <= j + 1 <= Ny
+                    CUDA.@atomic rho[i + 1, j + 1] += w22; written += w22
+                end
+                clipped = w11 + w21 + w12 + w22 - written
+                clipped > 0 && CUDA.@atomic dropped[1] += Float64(clipped)
             end
             return nothing
         end
@@ -456,7 +527,7 @@ if _HAS_CUDA
             CUDA.fill!(ws.rho, 0)
             threads = 256
             CUDA.@cuda threads=threads blocks=cld(ns, threads) _cuda_spectral_deposit_drift_kernel!(
-                ws.rho, sx, spx, sy, spy, T(drift), T(Lx), T(Ly), T(hx), T(hy), Nx, Ny)
+                ws.rho, sx, spx, sy, spy, T(drift), T(Lx), T(Ly), T(hx), T(hy), Nx, Ny, ws.dropped)
             _cuda_spectral_solve_from_rho!(ws, Phig, Exg, Eyg, a, b, ns)
             return T(hx), T(hy)
         end
@@ -470,7 +541,7 @@ if _HAS_CUDA
             CUDA.fill!(ws.rho, 0)
             threads = 256
             CUDA.@cuda threads=threads blocks=cld(ns, threads) _cuda_spectral_deposit_idx_kernel!(
-                ws.rho, x, px, y, py, idx, T(drift), T(Lx), T(Ly), T(hx), T(hy), Nx, Ny)
+                ws.rho, x, px, y, py, idx, T(drift), T(Lx), T(Ly), T(hx), T(hy), Nx, Ny, ws.dropped)
             _cuda_spectral_solve_from_rho!(ws, Phig, Exg, Eyg, a, b, ns)
             return T(hx), T(hy)
         end
@@ -510,11 +581,14 @@ if _HAS_CUDA
                 n1 = length(slices1.indices); n2 = length(slices2.indices)
                 threads = 256
                 luminosity = zero(T)
+                CUDA.fill!(ws.dropped, 0.0)
+                ndep = 0
                 for (_, i, j) in _slice_collision_order(slices1, slices2)
                     idx1 = slices1.indices[i]; idx2 = slices2.indices[j]
                     (length(idx1) == 0 || length(idx2) == 0) && continue
                     sx1 = r1.x[idx1]; sy1 = r1.y[idx1]
                     sx2 = r2.x[idx2]; sy2 = r2.y[idx2]
+                    ndep += length(idx1) + length(idx2)
                     # beam1 -> beam2
                     Exg, Eyg, hx, hy =
                         _cuda_spectral_field!(ws, sx1, sy1, Lx, Ly)
@@ -529,10 +603,13 @@ if _HAS_CUDA
                     CUDA.@cuda threads=threads blocks=cld(length(idx1), threads) _cuda_spectral_interp_scatter_kernel!(
                         r1.px, r1.py, idx1, Exg2, Eyg2, sx1, sy1,
                         T(Lx), T(Ly), hx2, hy2, Nx, Ny, a2)
-                    compute_luminosity &&
-                        (luminosity += _cuda_spectral_luminosity_pair(
-                            solver, sx1, sy1, sx2, sy2, klum, lnx, lny))
+                    if compute_luminosity
+                        luminosity += _cuda_spectral_luminosity_pair(
+                            solver, sx1, sy1, sx2, sy2, klum, lnx, lny, ws.dropped)
+                        ndep += length(idx1) + length(idx2)
+                    end
                 end
+                _cuda_spectral_deposit_tripwire_flush!(ws, ndep, Lx, Ly)
                 return compute_luminosity ? luminosity : T(NaN)
             finally
                 _release_spectral_cuda_ws!(lease)
@@ -615,9 +692,9 @@ if _HAS_CUDA
             CUDA.fill!(ws.qlum1, 0); CUDA.fill!(ws.qlum2, 0)
             threads = 256
             CUDA.@cuda threads=threads blocks=cld(length(idx1), threads) _cuda_spectral_deposit_idx_kernel!(
-                ws.qlum1, x1, px1, y1, py1, idx1, T(s1), T(-xmin + hx), T(-ymin + hy), T(hx), T(hy), nx, ny)
+                ws.qlum1, x1, px1, y1, py1, idx1, T(s1), T(-xmin + hx), T(-ymin + hy), T(hx), T(hy), nx, ny, ws.dropped)
             CUDA.@cuda threads=threads blocks=cld(n2, threads) _cuda_spectral_deposit_drift_kernel!(
-                ws.qlum2, v2x, v2px, v2y, v2py, T(s2), T(-xmin + hx), T(-ymin + hy), T(hx), T(hy), nx, ny)
+                ws.qlum2, v2x, v2px, v2y, v2py, T(s2), T(-xmin + hx), T(-ymin + hy), T(hx), T(hy), nx, ny, ws.dropped)
             lum = dot(vec(ws.qlum1), vec(ws.qlum2))
             return lum * T(klum) / (hx * hy)
         end
@@ -641,6 +718,8 @@ if _HAS_CUDA
             try
                 Lx, Ly = _cuda_spectral_box_drifted(solver, r1, r2)
                 luminosity = zero(T)
+                CUDA.fill!(ws.dropped, 0.0)
+                ndep = 0
                 for (_, i, j) in _slice_collision_order(slices1, slices2)
                     idx1 = slices1.indices[i]; idx2 = slices2.indices[j]
                     (length(idx1) == 0 || length(idx2) == 0) && continue
@@ -663,12 +742,15 @@ if _HAS_CUDA
                     _cuda_spectral_collision_direction_6d_idx!(
                         solver, ws, r1, idx1, r2, idx2, param1, param2,
                         slices1.weight[i] * kbb2, Lx, Ly)
-                    compute_luminosity &&
-                        (luminosity +=
+                    ndep += 2 * length(idx1)          # L and R plane solves
+                    if compute_luminosity
+                        luminosity +=
                             _cuda_spectral_luminosity_idx_snap!(
                                 solver, ws, r1, idx1, param1.center,
                                 ws.snapx, ws.snappx, ws.snapy, ws.snappy,
-                                n2, param2.center, klum, lnx, lny))
+                                n2, param2.center, klum, lnx, lny)
+                        ndep += length(idx1) + n2
+                    end
                     v2x = @view ws.snapx[1:n2]
                     v2px = @view ws.snappx[1:n2]
                     v2y = @view ws.snapy[1:n2]
@@ -677,7 +759,9 @@ if _HAS_CUDA
                         solver, ws, v2x, v2px, v2y, v2py,
                         r1, idx1, param2, param1,
                         slices2.weight[j] * kbb1, Lx, Ly)
+                    ndep += 2 * n2
                 end
+                _cuda_spectral_deposit_tripwire_flush!(ws, ndep, Lx, Ly)
                 return compute_luminosity ? luminosity : T(NaN)
             finally
                 _release_spectral_cuda_ws!(lease)
@@ -782,8 +866,10 @@ if _HAS_CUDA
         end
 
         # Density-overlap luminosity on a shared grid (matches the CPU convention).
+        # `dropped` is the caller's workspace tripwire accumulator; the luminosity
+        # box covers its own extrema by construction, so it contributes zero.
         function _cuda_spectral_luminosity_pair(solver::SpectralPoissonSolver,
-                                                x1, y1, x2, y2, klum, nx, ny)
+                                                x1, y1, x2, y2, klum, nx, ny, dropped)
             T = eltype(x1)
             xmin = min(minimum(x1), minimum(x2)); xmax = max(maximum(x1), maximum(x2))
             ymin = min(minimum(y1), minimum(y2)); ymax = max(maximum(y1), maximum(y2))
@@ -796,9 +882,9 @@ if _HAS_CUDA
             q1 = CUDA.zeros(T, nx, ny); q2 = CUDA.zeros(T, nx, ny)
             threads = 256
             CUDA.@cuda threads=threads blocks=cld(length(x1), threads) _cuda_spectral_deposit_kernel!(
-                q1, x1, y1, T(-xmin + hx), T(-ymin + hy), hx, hy, nx, ny)
+                q1, x1, y1, T(-xmin + hx), T(-ymin + hy), hx, hy, nx, ny, dropped)
             CUDA.@cuda threads=threads blocks=cld(length(x2), threads) _cuda_spectral_deposit_kernel!(
-                q2, x2, y2, T(-xmin + hx), T(-ymin + hy), hx, hy, nx, ny)
+                q2, x2, y2, T(-xmin + hx), T(-ymin + hy), hx, hy, nx, ny, dropped)
             lum = sum(q1 .* q2)
             return lum * T(klum) / (hx * hy)
         end
