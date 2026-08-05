@@ -36,8 +36,15 @@ const FRINGE_BEND = 8           # exact hard-edge dipole fringe (Maxwell-require
 # which are smooth at h = 0 by construction:
 #     C1 = sin(hL)/h  -> L ,      C2 = (1 - cos(hL))/h -> 0 .
 # ---------------------------------------------------------------------------
-@inline function _curv_sin(h::T, L::T) where {T}
+# Untyped signatures, promoting through the product: the straight solenoid
+# calls `_curv_sin(kappa/2, L)` with a COORDINATE-dependent kappa, so under a
+# ForwardDiff coordinate Jacobian the arguments arrive as (Dual, Float64) and
+# the former strict `(::T, ::T)` pair was a MethodError — the same class as
+# `_sol_log_over_h`'s recorded fix, invisible to the parameter-derivative
+# sweep whose duals arrive matched (2026-08-05 audit, F17).
+@inline function _curv_sin(h, L)
     u = h * L
+    T = typeof(u)
     # `real(T)` for the crossover, not `T`: element parameters may now be dual
     # numbers or complex (a parameter derivative), and a complex threshold does
     # not order. Same reason `_atan_over` does it.
@@ -45,11 +52,10 @@ const FRINGE_BEND = 8           # exact hard-edge dipole fringe (Maxwell-require
     return sin(u) / h
 end
 
-@inline function _curv_vers(h::T, L::T) where {T}
+@inline function _curv_vers(h, L)
     u = h * L
-    # `real(T)` for the crossover, not `T`: element parameters may now be dual
-    # numbers or complex (a parameter derivative), and a complex threshold does
-    # not order. Same reason `_atan_over` does it.
+    T = typeof(u)
+    # `real(T)` for the crossover, not `T` — see `_curv_sin`.
     abs(u) < real(T)(1e-4) && return h * L * L / 2 * (one(T) - u * u / 12 * (one(T) - u * u / 30))
     return (one(T) - cos(u)) / h
 end
@@ -775,15 +781,31 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
         b0 = zero(T)
     end
     kn, ks = _strength_tuples(T, knraw, ksraw)
+    # `curved` selects the frame's tracking path and is resolved HERE, before
+    # anything downstream consumes the curvature -- nothing about curvature is
+    # decided inside a kernel. Defaults to `!iszero(h)`; `true` at h = 0
+    # exercises the curved closed form where the straight one also applies,
+    # and `false` at h != 0 ignores the curvature and warns rather than doing
+    # so silently. `hc` is the curvature the element actually tracks with:
+    # the 2026-08-05 audit (U10-4) found the old ordering built the psi table
+    # and stored raw h with `curved = false`, so the body kept the curvature
+    # its own warning said was ignored (1.6e-7 against a real h = 0 track).
+    requested_curved = getparam(spec, :curved, nothing)
+    curved = requested_curved === nothing ? !iszero(h) : Bool(requested_curved)
+    if !curved && !iszero(h)
+        @warn "element has curved = false with h != 0; the frame curvature is \
+               ignored and the body tracks in a straight frame" h
+    end
+    hc = curved ? h : zero(T)
     # A curved frame changes the multipole potential itself (Section 4.4), so a
     # combined-function magnet needs the curved field table. A pure NORMAL
     # dipole is exempt: its curved potential terminates (Psi_2 = 0), so the
     # straight form is already exact for it once the (1+hx) factor is applied.
     # The skew dipole is NOT exempt -- see `_needs_curved_potential`.
-    combined = _needs_curved_potential(kn, ks, h)
+    combined = _needs_curved_potential(kn, ks, hc)
     curved_order = Int(getparam(spec, :curved_order, 8))
     curved_order >= 1 || throw(ArgumentError("curved_order must be positive, got $curved_order"))
-    psi = combined ? _curved_potential_coeffs(T, kn, ks, h, curved_order) : ()
+    psi = combined ? _curved_potential_coeffs(T, kn, ks, hc, curved_order) : ()
     mc = combined ? curved_order : 0
     edge = Bool(getparam(spec, :bend_fringe, true))
     bits = _fringe_bits(Symbol(getparam(spec, :fringe, :none)), edge)
@@ -792,20 +814,8 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
     wc = getparam(spec, :wedge_coeff, (1, 2))
     length(wc) == 2 || throw(ArgumentError(
         "wedge_coeff must hold two values, got $(length(wc))"))
-    # `curved` selects the frame's tracking path and is resolved HERE, once, then
-    # carried in the type -- nothing about curvature is decided inside a kernel.
-    # Defaults to `!iszero(h)`; `true` at h = 0 exercises the curved closed form
-    # where the straight one also applies (both are exact here, so it validates
-    # the path rather than an approximation), and `false` at h != 0 ignores the
-    # curvature and warns rather than doing so silently.
-    requested_curved = getparam(spec, :curved, nothing)
-    curved = requested_curved === nothing ? !iszero(h) : Bool(requested_curved)
-    if !curved && !iszero(h)
-        @warn "element has curved = false with h != 0; the frame curvature is \
-               ignored and the body tracks in a straight frame" h
-    end
     return LatticeMagnet{typeof(method),T,length(kn),order,bits,mc,length(psi),curved}(
-        method, L, h, b0, kn, ks, psi, nst,
+        method, L, hc, b0, kn, ks, psi, nst,
         T(getparam(spec, :e1, zero(T))), T(getparam(spec, :e2, zero(T))),
         T(getparam(spec, :fint1, zero(T))), T(getparam(spec, :fint2, zero(T))),
         T(getparam(spec, :hgap1, zero(T))), T(getparam(spec, :hgap2, zero(T))),

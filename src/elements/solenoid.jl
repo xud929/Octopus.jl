@@ -228,17 +228,30 @@ is what makes this closed-form rather than an expansion.
     kappa = ks / ps
     # Momentum rotates by -kappa*L; the displacement runs along the *half*
     # angle. That half is the Larmor angle and is the factor-of-two check.
-    half = cis(-kappa * L / 2)
-    rot = half * half
-    W0 = complex(Px, Py)
+    #
+    # Written in real arithmetic, transcribing the complex-plane closed form
+    # operation for operation (`half = cis(-kappa L/2)`, `rot = half^2`,
+    # `w = (x+iy) + (W0/ps)*C1*half`, `W = W0*rot`): `complex(x, y)` has no
+    # method for dual-number coordinates, so the former complex-typed body
+    # made every straight solenoid a MethodError under a ForwardDiff
+    # coordinate Jacobian (2026-08-05 audit, F17). The transcription is
+    # bit-identical on floats -- Julia's complex ops are defined as exactly
+    # these real formulas -- which is what keeps the PTC validation intact.
+    hi, hr = sincos(-kappa * L / 2)
+    rr = hr * hr - hi * hi
+    ri = hr * hi + hi * hr
     # 2 sin(kappa L / 2) / kappa is sin(uL)/u at u = kappa/2, so the existing
     # small-argument-safe helper is the same function and is reused rather than
     # a second series written.
-    w = complex(x, y) + (W0 / ps) * _curv_sin(kappa / 2, L) * half
-    W = W0 * rot
-    xn, yn = real(w), imag(w)
+    C1 = _curv_sin(kappa / 2, L)
+    br = (Px / ps) * C1
+    bi = (Py / ps) * C1
+    xn = x + (br * hr - bi * hi)
+    yn = y + (br * hi + bi * hr)
+    Wr = Px * rr - Py * ri
+    Wi = Px * ri + Py * rr
     # Exit edge, at the new position.
-    pxn, pyn = _solenoid_edge(-k, xn, yn, real(W), imag(W))
+    pxn, pyn = _solenoid_edge(-k, xn, yn, Wr, Wi)
     # p_s is constant, so the longitudinal advance is the drift's, term for term.
     return xn, pxn, yn, pyn, z + L * (1 - (1 + pz) / ps), pz
 end
@@ -387,27 +400,36 @@ function Solenoid(spec::ElementSpec,
     nst = Int(getparam(spec, :nst, curved ? 16 : 1))
     nst >= 1 || throw(ArgumentError("solenoid nst must be at least 1; got $(nst)"))
     n = max(length(kn_raw), length(ksk_raw))
-    T = float(promote_type(typeof(L), typeof(ks), typeof(h), Float64))
+    # Promote over the multipole strengths too, not only (L, ks, h): a dual
+    # k1 through `numeric_type`-blind conversion was a `Float64(::Dual)`
+    # MethodError (2026-08-05 audit, U10-2).
+    T = float(promote_type(typeof(L), typeof(ks), typeof(h), Float64,
+                           map(typeof, (kn_raw..., ksk_raw...))...))
     kn = ntuple(i -> i <= length(kn_raw) ? T(kn_raw[i]) : zero(T), n)
     ksk = ntuple(i -> i <= length(ksk_raw) ? T(ksk_raw[i]) : zero(T), n)
+    # The runtime stores hc — the curvature the element actually TRACKS with —
+    # not the raw h: `curved = false` means "ignore the curvature", and storing
+    # raw h handed `_sol_kick` a curved-frame kick with no potential table, a
+    # silent non-gradient at |J'SJ-S| = 2.5e-3 (2026-08-05 audit, U10-3). The
+    # spec keeps the raw h for schema round-trips.
+    hc = curved ? T(h) : zero(T)
     # A pure solenoid drops to N = 0, which selects the exact single-map method:
     # no splitting, no steps, and bit-identical to what it was before multipoles
     # existed.
     if all(iszero, kn) && all(iszero, ksk)
         return Solenoid{typeof(method),T,0,curved,0,0}(
-            method, T(L), T(ks), T(h), (), (), (), nst)
+            method, T(L), T(ks), hc, (), (), (), nst)
     end
     # A curved frame makes `_lattice_kick` a non-gradient for everything except a
     # pure normal dipole, so the same tabulated potential a combined-function
     # bend uses is built here. `curved`, not `h != 0`: a caller who asked to
     # ignore the curvature tracks a straight solenoid, and a straight frame
     # needs no table.
-    hc = curved ? T(h) : zero(T)
     needs = _needs_curved_potential(kn, ksk, hc)
     psi = needs ? _curved_potential_coeffs(T, kn, ksk, hc, _SOL_CURVED_ORDER) : ()
     mc = needs ? _SOL_CURVED_ORDER : 0
     return Solenoid{typeof(method),T,n,curved,mc,length(psi)}(
-        method, T(L), T(ks), T(h), kn, ksk, psi, nst)
+        method, T(L), T(ks), hc, kn, ksk, psi, nst)
 end
 
 @element_spec begin

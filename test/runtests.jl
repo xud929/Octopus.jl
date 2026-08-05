@@ -2959,6 +2959,53 @@ end
         L=0.7, nst=2, kn=(0.0, 1.1), ks=(0.04,), h=0.05))) < 1.0e-12
 end
 
+@testset "Straight solenoids differentiate, and curved=false means straight" begin
+    # 2026-08-05 audit F17 (U10-1/2/3/4). The straight solenoid's body was
+    # complex-typed (`complex(x, y)` has no Dual method) and `_curv_sin` was
+    # strict `(::T,::T)` with a coordinate-dependent kappa, so EVERY straight
+    # solenoid was a MethodError under a ForwardDiff coordinate Jacobian —
+    # invisible to the h≠0 sweep above, which only exercises curved solenoids.
+    # The map is now a real-arithmetic transcription, verified bit-identical
+    # on floats over a 42-point grid. And `curved=false` stored the RAW h, so
+    # the solenoid tracked a silent non-gradient kick (|J'SJ-S| = 2.5e-3)
+    # and the magnet kept the curvature its own warning said was ignored
+    # (1.6e-7 against a real h=0 track); both runtimes now store the
+    # curvature they actually track with.
+    S6 = zeros(6, 6)
+    for (q, p) in ((1, 2), (3, 4), (5, 6))
+        S6[q, p] = 1.0
+        S6[p, q] = -1.0
+    end
+    u0 = [1.0e-3, 1.0e-4, -0.5e-3, 2.0e-4, 1.0e-3, 1.0e-4]
+    residual(mapf) = begin
+        J = ForwardDiff.jacobian(u -> collect(mapf(u...)), u0)
+        maximum(abs, J' * S6 * J - S6)
+    end
+    # Straight pure solenoid and straight solenoid with multipoles: the
+    # Jacobian exists (no MethodError) and the map is symplectic.
+    @test residual(compile_runtime(SolenoidSpec(L=1.3, ks=1.7))) < 1.0e-10
+    @test residual(compile_runtime(SolenoidSpec(L=1.3, ks=1.7,
+                                                kskew=(0.05,), nst=4))) < 1.0e-10
+    # A dual PARAMETER through the multipole strengths compiles and tracks
+    # (U10-2: the promotion once covered only L, ks, h).
+    d_k1 = ForwardDiff.derivative(0.6) do k1
+        el = compile_runtime(SolenoidSpec(L=1.3, ks=1.7, kn=(0.0, k1), nst=2))
+        el(u0...)[2]
+    end
+    @test isfinite(d_k1)
+    # curved=false with h≠0 warns, stores h=0, and tracks EXACTLY as h=0.
+    sol_cf = @test_logs (:warn, r"curved = false") match_mode = :any compile_runtime(
+        SolenoidSpec(L=1.3, ks=1.7, h=0.05, kskew=(0.05,), curved=false, nst=4))
+    sol_h0 = compile_runtime(SolenoidSpec(L=1.3, ks=1.7, kskew=(0.05,), nst=4))
+    @test sol_cf.h == 0.0
+    @test sol_cf(u0...) == sol_h0(u0...)
+    @test residual(sol_cf) < 1.0e-9
+    mag_cf = @test_logs (:warn, r"curved = false") match_mode = :any compile_runtime(
+        SBendSpec(L=1.1, h=0.1, b0=0.1, kn=(0.0, 0.4), curved=false, nst=2))
+    mag_h0 = compile_runtime(SBendSpec(L=1.1, h=0.0, b0=0.1, kn=(0.0, 0.4), nst=2))
+    @test mag_cf(u0...) == mag_h0(u0...)
+end
+
 @testset "No method grows a Core.Box outside the argued allowlist" begin
     # The concurrency sweep (docs/todo.md): two of the three 2026-08-03
     # threading defects were one Julia trap -- a name assigned both in a `do`

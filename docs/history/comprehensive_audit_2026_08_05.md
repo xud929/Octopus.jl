@@ -79,9 +79,9 @@ disposed of every lead from that unit).
 | U16 | `test/runtests.jl` 1–3800 | agent | reported (6 leads; 60 testsets audited, 10 strong-tests verified) |
 | U17 | `test/runtests.jl` 3800–EOF | agent | reported (8 leads; 75 testsets audited, 10 strong-tests verified) |
 | U18 | `test/examples/` + `examples/` | agent | reported (6 leads; all five scripts executed clean, pair-consistency verified bit-identical) |
-| U19 | `validation/` coherent-modes cluster: `coherent_mode_vlasov_theory.jl` (713), `coherent_beam_beam_modes.jl` (215), `coherent_mode_eic_comparison.jl` (171), `coherent_mode_scans.jl` (114), `coherent_beam_beam_modes_beambeam3d.jl` (68), `counter_rng_validation.jl` (118) | agent | pending |
-| U20 | `validation/` field cluster: `pic_gaussian_field_validation.jl` (430), `near_round_gaussian_transition.jl` (412), `gaussian_pic_zscan.jl` (363), `spectral_poisson_field_validation.jl` (300), `gaussian_pic_bigaussian_validation.jl` (196), `gaussian_pic_field_validation.jl` (167), `pic_grid_extent_stability.jl` (157), `pic_slice_boundary_jitter.jl` (129), `soft_gaussian_pic_comparison.jl` (116), `pic_gaussian_luminosity_validation.jl` (158) | agent | pending |
-| U21 | `validation/` remainder: `slice_longitudinal_zscan.jl` (618), `high_energy_weakstrong_limit.jl` (420), `generate_ptc_reference.jl` (396), `gaussian_slicing_convergence.jl` (286), `strong_strong_spectral_comparison.jl` (276), `slice_interpolation_emittance_growth.jl` (239) + `_summary` (116), `lattice_cells.jl` (235), `pic_option_consistency.jl` (233) + `_summary` (137), `symplecticity_validation.jl` (196), `tracking_backend_consistency.jl` (168), + all remaining small scripts | agent | pending |
+| U19 | `validation/` coherent-modes cluster | agent | reported (10 leads incl. the stale theory-note table (HIGH) and the stale no-detached-mode claim; harmonic self-check binds, BB3D provenance reproduced) |
+| U20 | `validation/` field cluster | agent | reported (8 leads, print-only/header-drift class; no bitrot, no circularity, all recorded numbers reproduce) |
+| U21 | `validation/` remainder | agent | reported (13 leads incl. print-only gates and the lexicographic PTC-table pick; PTC provenance chain verified intact 55==55==55) |
 | U22 | Post-audit delta: the four commits after `f55cf82` (diffs in `BeamObservers.jl`, `interface.jl`, `test/runtests.jl`, `examples/knob_control.jl`) | **auditor** | all four diffs read + flush/prepare context; produced F1, A-1, A-4, A-5 |
 | U23 | Seam-class passes over the seam map (§3) | **auditor** | pending |
 
@@ -280,6 +280,31 @@ the note (correction block beside the original). Fixed alongside: U12-2
 coinciding with ThinCrabCavity only at β=1) and U12-3 (`voltage` +
 explicit `beta0`/`gamma0` silently overwrote the explicit values — now a
 directed refusal, verified).
+
+**F17 (High, auditor-reproduced from U10-1/2/3/4, FIXED).** Four related
+solenoid/magnet defects. (1) Every STRAIGHT solenoid was a `MethodError`
+under a ForwardDiff coordinate Jacobian — the body was complex-typed
+(`complex(x, y)` has no Dual method) and `_curv_sin` was strict `(::T,::T)`
+with a coordinate-dependent kappa; invisible to the h≠0 sweep, which only
+exercises curved solenoids, and to the parameter-derivative sweep, whose
+duals arrive matched. Fix: the map is a real-arithmetic transcription of
+the complex closed form — verified **bit-identical** over a 42-point
+(ks, L, coords) grid — and `_curv_sin`/`_curv_vers` promote through their
+product. Post-fix: complex-step and ForwardDiff agree (dx/dx =
+0.8826462496730979 both routes); straight-solenoid symplecticity residual
+1.8e-16..5.6e-16. (2) `Solenoid(spec)` promoted only (L, ks, h), so dual
+multipole strengths died in conversion — promotion now spans the strength
+tuples (derivative measured finite). (3) `curved=false` stored the RAW h:
+the psi table was gated on `hc=0` while `_sol_kick` received `elem.h≠0` —
+a silent non-gradient at |J′SJ−S| = 2.50e-3 (k0s) / 2.5e-5 (k1). The
+runtime now stores the curvature it tracks with; curved=false equals the
+h=0 control exactly (6.3e-11 = FD floor, identical). (4) The LatticeMagnet
+had the OPPOSITE defect: it resolved `curved` AFTER building the psi table
+and stored raw h, so the body kept the curvature its own warning said was
+ignored (1.6e-7 vs a real h=0 track) — resolution hoisted above every
+consumer, `hc` stored; curved=false now equals h=0 **exactly** (0.0).
+Fingerprint bit-identical after the whole package (the default
+`curved=true` path stores `hc == h`). Pinned by a new testset.
 
 **F1 (Moderate, auditor-confirmed, FIXED in package 2).**
 `src/tasks/strongstrong/interface.jl:1991-1992`
@@ -561,3 +586,6 @@ luminosity schedule dispatch is specialized by all three grid solvers.
 | `src/elements/rf_cavity.jl` | model boundary documented (`_rf_kick`, spec docstring, ParamMeta, construction_help); voltage+explicit-beta0 refusal | F16, U12-2, U12-3 |
 | `docs/theory/rf_cavity_and_reference_energy.md` | F16 correction block beside the Step-0 example that carried the defect | F16 |
 | `docs/todo.md` | new open row: RF velocity-slip term, folded into the Scope-B survey channel | F16 |
+| `src/elements/solenoid.jl` | real-arithmetic `_solenoid_map` (bit-identical transcription); promotion over multipole strengths; runtime stores `hc` | F17 |
+| `src/elements/lattice_magnets.jl` | `_curv_sin`/`_curv_vers` promote through the product; `curved` resolved before the psi table; runtime stores `hc` | F17 |
+| `test/runtests.jl` | testset: straight-solenoid Jacobians at machine epsilon, dual multipole parameter, curved=false equals h=0 exactly on both elements | F17 |
