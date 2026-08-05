@@ -12,8 +12,11 @@ using Symbolics
 # Whether the CUDA half of this suite ran at all must be visible in the summary,
 # not inferable only by noticing that some testsets printed fewer assertions.
 #
-# Nine testsets are gated behind `_HAS_CUDA && CUDA.functional()`; three carry an
-# `else @test_skip` and six are silent. CI (`.github/workflows/ci.yml`) runs on
+# More than twenty testsets are gated behind `_HAS_CUDA && CUDA.functional()`
+# (the 2026-08-05 audit counted 24+ in the back half alone and replaced the
+# three `else @test true` green-lies with honest skips; gated sets without an
+# else still vanish silently — prefer `else @test_skip` in new ones). CI
+# (`.github/workflows/ci.yml`) runs on
 # `ubuntu-latest` with no GPU, so on CI **every** CUDA test is skipped while the
 # run still reports "Testing Octopus tests passed".
 #
@@ -3433,6 +3436,32 @@ end
     @test_throws ArgumentError execute!(t8, mk1(); turns=2)   # column mismatch refused
 
     foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
+end
+
+@testset "Philox4x32-10 matches the Random123 known-answer vectors" begin
+    # 2026-08-05 audit (U15-1/U19-5): the RNG validation script measures only
+    # moments and correlations, and PASSED a Philox with the Weyl key bump
+    # removed and a 3-round variant. These are the upstream Random123
+    # kat_vectors for philox4x32-10, driven exactly as counter_philox4x32
+    # drives the round loop; they pin the implementation, not its statistics.
+    philox10(c0, c1, c2, c3, k0, k1) = begin
+        for _ in 1:Octopus.PHILOX4X32_ROUNDS
+            c0, c1, c2, c3 = Octopus._philox4x32_round(c0, c1, c2, c3, k0, k1)
+            k0 += Octopus.PHILOX4X32_W0
+            k1 += Octopus.PHILOX4X32_W1
+        end
+        (c0, c1, c2, c3)
+    end
+    @test Octopus.PHILOX4X32_ROUNDS == 10
+    @test philox10(0x00000000, 0x00000000, 0x00000000, 0x00000000,
+                   0x00000000, 0x00000000) ==
+          (0x6627e8d5, 0xe169c58d, 0xbc57ac4c, 0x9b00dbd8)
+    @test philox10(0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
+                   0xffffffff, 0xffffffff) ==
+          (0x408f276d, 0x41c83b0e, 0xa20bc7c6, 0x6d5451fd)
+    @test philox10(0x243f6a88, 0x85a308d3, 0x13198a2e, 0x03707344,
+                   0xa4093822, 0x299f31d0) ==
+          (0xd16cfe09, 0x94fdcceb, 0x5001e420, 0x24126ea1)
 end
 
 @testset "Wrapped stochastic elements keep their context, shared streams warn, unbound apertures cannot corrupt" begin
@@ -7433,7 +7462,7 @@ end
         # and a wrong grid shows up at ~1e-3 relative (that was the original bug).
         @test maximum(abs.(cu_zero .- cu_none)) <= 1e-13 * maximum(abs, cu_none)
     else
-        @test true
+        @test_skip "CUDA device not available"
     end
 end
 
@@ -7482,7 +7511,7 @@ end
         @test rec2[end].gpic_moments == 0
         @test rec2[end].gpic_profiles == 0
     else
-        @test true
+        @test_skip "CUDA device not available"
     end
 end
 
@@ -7537,7 +7566,7 @@ end
             @test isapprox(l, lum_cpu; rtol=1e-11)         # bug 2
         end
     else
-        @test true
+        @test_skip "CUDA device not available"
     end
 end
 

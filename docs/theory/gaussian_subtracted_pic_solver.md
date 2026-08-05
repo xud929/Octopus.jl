@@ -592,8 +592,11 @@ grid floor, so the $O(r^3)$ truncation dominates and the coupled branch can be
 worse. **Recommended use: flat beams with $r_{\text{tol}}\sim0.05$-$0.1$.** Do not
 enable it for near-round slices with strong tilt.
 
-The branch is CPU-only; the CUDA path raises rather than silently running the
-uncoupled subtraction.
+The two CUDA *reference* routes raise rather than silently running the
+uncoupled subtraction; the default CUDA indexed-wavefront route implements
+the coupled subtraction (this paragraph once said the branch was CPU-only —
+corrected by the 2026-08-05 audit, U8-1; the solver docstring was already
+right).
 
 ## 8. Longitudinal kick and the drift-to-boundary structure
 

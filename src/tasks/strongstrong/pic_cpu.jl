@@ -228,6 +228,21 @@ function _validate_pic_solver(solver::PICPoissonSolver)
             "estimator, so a non-default value would be silently ignored. Use " *
             "interaction_grid = :slice_pair, or set grid_extent = :extrema."))
     end
+    # `slice_interpolation = :quadratic` is consumed only by the slice-pair
+    # interpolation path; the `:node` planes carry their own interpolation and
+    # the quadratic request was accepted and bit-identically ignored on BOTH
+    # backends, so the parity contract shared the blind spot (2026-08-05
+    # audit, U1-2/U5-3, found independently by two readers). Reject rather
+    # than silently ignore, the same policy as `grid_extent` above; making
+    # :quadratic and :node compose is future work for the
+    # node_interaction_grid program.
+    if ig == :node && si != :linear
+        throw(ArgumentError(
+            "slice_interpolation = $(repr(solver.slice_interpolation)) is not implemented " *
+            "for interaction_grid = :node: the node-plane path applies its own " *
+            "interpolation, so the request was silently ignored on both backends. Use " *
+            "interaction_grid = :slice_pair for :quadratic, or slice_interpolation = :linear."))
+    end
     return nothing
 end
 

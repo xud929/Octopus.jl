@@ -811,9 +811,9 @@ exactness through order $2N_s-1$ (`test/runtests.jl`).
 
 | `slice_method` | Rule | Construction |
 |---|---|---|
-| `:equal_area` (default) | **#2** | closed form; bit-identical to the pre-existing implementation |
+| `:equal_area` | **#2** | closed form; bit-identical to the pre-existing implementation |
 | `:equal_area_centroid` | **#3** | closed form, $N_s[\varphi(\lambda_k)-\varphi(\lambda_{k+1})]$ |
-| `:sqrt_density` | **#4** | fixed point (Section 3.4) |
+| `:sqrt_density` (default since 2026-07-31; this table once said `:equal_area`) | **#4** | fixed point (Section 3.4) |
 | `:min_cdf_area` | **#5** | fixed point (Section 3.5) |
 | `:equal_spacing_density` | **#1** | closed form |
 | `:gauss_hermite` | — | Golub–Welsch |

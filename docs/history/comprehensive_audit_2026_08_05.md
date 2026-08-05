@@ -306,6 +306,30 @@ consumer, `hc` stored; curved=false now equals h=0 **exactly** (0.0).
 Fingerprint bit-identical after the whole package (the default
 `curved=true` path stores `hc == h`). Pinned by a new testset.
 
+**F18 (Medium, double-sourced U1-2/U5-3, FIXED).**
+`slice_interpolation = :quadratic` under `interaction_grid = :node` was
+accepted and bit-identically ignored on BOTH backends (the parity contract
+shared the blind spot; found independently by two readers, reproduced by
+the U5 probe: ndiff = 0 vs a 10,000-value control). `_validate_pic_solver`
+now refuses the combination with a directed message, the same policy as
+its `grid_extent` precedent; composing them is future work for the
+node-interaction-grid program. Verified: refusal fires at collide,
+`:node`+`:linear` unaffected.
+
+**F19 (Medium, from U15-1/U19-5, FIXED).** Nothing pinned the Philox
+IMPLEMENTATION: the RNG validation script measures only moments and passed
+a Weyl-bump-removed Philox and a 3-round variant. The suite now carries the
+three upstream Random123 `kat_vectors` for philox4x32-10, driven exactly as
+`counter_philox4x32` drives the round loop (U15 verified the current
+implementation bit-exact against them; the testset makes that permanent).
+
+**F20 (Medium, from U17-1, FIXED).** Three CUDA-gated testsets reported a
+green `@test true` on CPU-only hosts — a pass that asserts nothing, against
+the file's own honest-skip rule — now `@test_skip "CUDA device not
+available"`; the header's stale "nine gated testsets" inventory corrected
+(24+ in the back half alone). Gated sets with no else-branch still vanish
+silently; noted in the header for new tests.
+
 **F1 (Moderate, auditor-confirmed, FIXED in package 2).**
 `src/tasks/strongstrong/interface.jl:1991-1992`
 (`_prepare_strong_strong_luminosity_file!`): a torn last line from a
@@ -589,3 +613,8 @@ luminosity schedule dispatch is specialized by all three grid solvers.
 | `src/elements/solenoid.jl` | real-arithmetic `_solenoid_map` (bit-identical transcription); promotion over multipole strengths; runtime stores `hc` | F17 |
 | `src/elements/lattice_magnets.jl` | `_curv_sin`/`_curv_vers` promote through the product; `curved` resolved before the psi table; runtime stores `hc` | F17 |
 | `test/runtests.jl` | testset: straight-solenoid Jacobians at machine epsilon, dual multipole parameter, curved=false equals h=0 exactly on both elements | F17 |
+| `src/tasks/strongstrong/pic_cpu.jl` | `_validate_pic_solver` refuses `:node` + `:quadratic` | F18 |
+| `test/runtests.jl` | Philox4x32-10 Random123 known-answer testset | F19 |
+| `test/runtests.jl` | three `@test true` CUDA gates → `@test_skip`; header inventory corrected | F20 |
+| `docs/theory/gaussian_longitudinal_slicing.md` | default-rule table row corrected (`:sqrt_density`, was `:equal_area`) | U7-5 |
+| `docs/theory/gaussian_subtracted_pic_solver.md` | §7.5 coupled-branch backend claim corrected beside the original | U8-1 |
