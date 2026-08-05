@@ -419,10 +419,16 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
                           Float64; rng_id=102)
     mismatch_before1 = map(copy, coordinate_arrays(mismatch_beam1.rep))
     mismatch_before2 = map(copy, coordinate_arrays(mismatch_beam2.rep))
+    # A GENUINE configuration mismatch: same type, different resolved
+    # configuration. Two identical GaussianPoissonSolver() objects sat here
+    # before the U4-observation fix — the old identity rule threw on them,
+    # but identical configurations are the same solver in every observable
+    # way and are accepted by design now, so the probe must disagree in
+    # substance, not in objectid (2026-08-05 queue session).
     mismatch_ip1 = StrongStrongCollision(:mismatch;
         poisson_solver=GaussianPoissonSolver())
     mismatch_ip2 = StrongStrongCollision(:mismatch;
-        poisson_solver=GaussianPoissonSolver())
+        poisson_solver=GaussianPoissonSolver(min_sigma=1.0e-12))
     solver_mismatch_rejected = try
         execute!(StrongStrongTask((line[1], mismatch_ip1), (line[1], mismatch_ip2);
             policy=CPUThreadsExecutionPolicy(threads=first(worker_sweep))),
@@ -438,6 +444,33 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     metrics[:solver_mismatch_unchanged] = solver_mismatch_unchanged
     (solver_mismatch_rejected && solver_mismatch_unchanged) || return ContractResult(false,
         "strong-strong solver mismatch was not rejected before line mutation.";
+        metrics=metrics)
+
+    # The complement pins the other half of the rule: equal configurations
+    # in DISTINCT objects are the same solver and must be ACCEPTED, so the
+    # rejection above keys on the configuration and not on the object.
+    equal_beam1 = Beam(16, CPUThreadsExecutionPolicy(threads=first(worker_sweep)),
+                       Float64; rng_id=103)
+    equal_beam2 = Beam(16, CPUThreadsExecutionPolicy(threads=first(worker_sweep)),
+                       Float64; rng_id=104)
+    # Explicit kbb on both: the contract's bare probe beams carry no E0, and
+    # a beam-derived kbb would throw AFTER the solver-equality gate — this
+    # probe must reach the collide itself to prove acceptance.
+    equal_ip1 = StrongStrongCollision(:equalcfg;
+        poisson_solver=GaussianPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6))
+    equal_ip2 = StrongStrongCollision(:equalcfg;
+        poisson_solver=GaussianPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6))
+    solver_equal_config_accepted = try
+        execute!(StrongStrongTask((line[1], equal_ip1), (line[1], equal_ip2);
+            policy=CPUThreadsExecutionPolicy(threads=first(worker_sweep))),
+            equal_beam1, equal_beam2; turns=1)
+        true
+    catch
+        false
+    end
+    metrics[:solver_equal_config_accepted] = solver_equal_config_accepted
+    solver_equal_config_accepted || return ContractResult(false,
+        "structurally identical solver objects were rejected as a configuration mismatch.";
         metrics=metrics)
 
     available, reason = _contract_backends_available(CUDABackend)
