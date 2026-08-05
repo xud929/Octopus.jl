@@ -74,57 +74,17 @@ function map_inverse_residual(forward, reverse, q0)
                norm(collect(forward(reverse_q0...)) .- q0, Inf))
 end
 
-function symplecticity_cases()
-    linear = Linear6D(Linear6DSpec{Float64}(;
-        beta1=(0.8, 0.072, 90.0),
-        beta2=(0.82, 0.075, 91.0),
-        alpha1=(0.0, 0.0, 0.0),
-        alpha2=(0.01, -0.02, 0.0),
-        dmu=(0.08, 0.12, 0.02),
-        zeta1=(0.002, -0.001, 0.0, 0.0),
-        eta1=(0.001, 0.0, -0.001, 0.0),
-        R1=(0.001, -0.0005, 0.0003, 0.0007),
-        zeta2=(0.001, 0.0005, -0.0003, 0.0002),
-        eta2=(-0.0004, 0.0001, 0.0002, -0.0001),
-        R2=(0.0006, 0.0002, -0.0001, 0.0005),
-    ))
-    covariance = [
-        1.21e-8   1.0e-9   2.4e-9  -3.0e-10
-        1.0e-9    4.0e-8   2.0e-10  1.5e-9
-        2.4e-9    2.0e-10  6.4e-9  -6.0e-10
-       -3.0e-10   1.5e-9  -6.0e-10  2.25e-8
-    ]
-    thin = ThinStrongBeam(ThinStrongBeamSpec{Float64}(;
-        kbb=1.0e-8,
-        covariance=covariance,
-        center=(2.0e-5, -1.0e-5, 3.0e-4),
-        angle=(3.0e-4, -2.0e-4, 0.0),
-        virtual_drift=:hirata,
-    ))
-    gaussian = GaussianStrongBeam(GaussianStrongBeamSpec{Float64}(;
-        thin=ThinStrongBeamSpec{Float64}(;
-            kbb=8.0e-9,
-            covariance=covariance,
-            center=(-1.0e-5, 2.0e-5, -2.0e-4),
-            angle=(2.0e-4, -1.0e-4, 0.0),
-            virtual_drift=:hirata,
-        ),
-        ns=3,
-        sigz=7.0e-3,
-        slice_method=:equal_area,
-    ))
-    q0 = [4.0e-4, 1.0e-4, -2.0e-4, -1.5e-4, 1.2e-3, 2.0e-4]
-    return (
-        (name=:Linear6D, element=linear, q0=q0, tolerance=5.0e-8),
-        (name=:CrabDispersion, element=CrabDispersion(CrabDispersionSpec{Float64}(zeta1=0.02, zeta2=-0.01, zeta3=0.004, zeta4=0.002)), q0=q0, tolerance=5.0e-8),
-        (name=:MomentumDispersion, element=MomentumDispersion(MomentumDispersionSpec{Float64}(eta1=0.03, eta2=-0.006, eta3=0.002, eta4=0.01)), q0=q0, tolerance=5.0e-8),
-        (name=:XYCoupling, element=XYCoupling(0.01, -0.003, 0.002, 0.004), q0=q0, tolerance=5.0e-8),
-        (name=:ThinCrabCavity, element=ThinCrabCavity{2}(197.0e6; strengthX=(1.0e-5, -2.0e-6), strengthY=(3.0e-6, 0.0), phase=(0.0, 0.2)), q0=q0, tolerance=5.0e-7),
-        (name=:ChromaticityKick, element=ChromaticityKick(ChromaticityKickSpec{Float64}(; xi=(1.2, -0.8), beta=(0.82, 0.075), alpha=(0.01, -0.02), zeta=(0.002, -0.001, 0.0, 0.0), eta=(0.001, 0.0, -0.001, 0.0), R=(0.001, -0.0005, 0.0003, 0.0007))), q0=q0, tolerance=5.0e-6),
-        (name=:ThinStrongBeam, element=thin, q0=q0, tolerance=5.0e-7),
-        (name=:GaussianStrongBeam, element=gaussian, q0=q0, tolerance=5.0e-7),
-    )
-end
+# One case list, two independent evaluators (2026-08-05 audit, U21-4). The
+# script used to carry its own hand copy of the contract's case list, and
+# the copy had gone stale — 8 of the contract's 12 cases, no solenoid, no
+# chromatic/exact virtual-drift sweep, no registry tripwire — while both
+# sides claimed mirror status of the other. The list now IS the contract's
+# (`_symplecticity_contract_cases`, whose validate carries the
+# declaration↔case tripwire), so the mirror cannot drift. What stays
+# independent here is the EVALUATOR: the finite-difference Jacobian and the
+# symplectic form above are written locally, so a defect in the contract's
+# own differentiation cannot hide itself.
+symplecticity_cases() = Octopus._symplecticity_contract_cases()
 
 function run_lorentz_quasisymplectic_validation(; angle=0.01,
                                                   step=DEFAULT_STEP,
