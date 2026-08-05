@@ -585,6 +585,11 @@ correctness-critical; each carries its file:line in the unit reports.
   path cannot clip -- it never moves x/y inside a collision -- which is
   why the CPU R9 suite case (and the new CUDA one) fires only through the
   6D map.
+- **U9-2** R12 source pre-solve hoist ported to the CUDA transverse path
+  (`8fa77e9`): n1+n2 gathers and solves where the pair loop did 2*n1*n2,
+  stored meshes scattered in the unchanged pair order. 228.7 -> 93.8 ms
+  (2.44x) at 16 slices / 200k / grid 128, luminosity off; CPU/CUDA parity
+  unchanged to the digit (3.2526e-19 worst coordinate delta pre and post).
 
 
 
