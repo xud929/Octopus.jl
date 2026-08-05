@@ -170,6 +170,7 @@ Deferred parameter expressions over named knobs; design note in
 ?knob_derivative
 ?knob_symbolic
 ?knob_from_symbolic
+?knob_symbolics_available
 ?KnobEffectivenessContract
 ```
 

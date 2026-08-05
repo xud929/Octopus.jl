@@ -1,4 +1,5 @@
-export knob_derivative, knob_symbolic, knob_from_symbolic
+export knob_derivative, knob_symbolic, knob_from_symbolic,
+       knob_symbolics_available
 
 #=
 Symbolic layer over the knob expression tree.
@@ -40,6 +41,21 @@ _register_symbolic_adapter!(to, from) =
     (_SYMBOLIC_ADAPTER[] = (to=to, from=from); nothing)
 """True when the Symbolics adapter is active in this session."""
 _symbolics_adapter_active() = _SYMBOLIC_ADAPTER[] !== nothing
+
+"""
+    knob_symbolics_available()
+
+True when the optional `Symbolics.jl` adapter is active in this session, i.e.
+when [`knob_symbolic`](@ref) and [`knob_from_symbolic`](@ref) will work instead
+of raising their directed error — the public query for graceful degradation
+(scripts that use the adapter when present and skip it otherwise). In package
+mode (`using Octopus`) the adapter activates when the session loads Symbolics
+(`using Symbolics`) through the `OctopusSymbolicsExt` weak-dependency
+extension; in script mode (`include("src/Octopus.jl")`) it activates during the
+include when Symbolics is importable from the active project. Everything else
+in the knob system, including [`knob_derivative`](@ref), never needs Symbolics.
+"""
+knob_symbolics_available() = _symbolics_adapter_active()
 function _symbolic_adapter()
     impl = _SYMBOLIC_ADAPTER[]
     impl === nothing && throw(ArgumentError(

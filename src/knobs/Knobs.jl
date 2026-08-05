@@ -60,7 +60,10 @@ struct KnobCall <: AbstractKnobExpression
 end
 
 Base.:(==)(a::KnobRef, b::KnobRef) = a.path === b.path
-Base.:(==)(a::KnobConst, b::KnobConst) = a.value == b.value
+# `isequal`, not `==`: tree equality is STRUCTURAL, and the documented
+# round-trip invariant `knob_expression(string(e)) == e` must hold for a
+# constant-folded NaN too (2026-08-05 audit, U14-2). Consistent with `hash`.
+Base.:(==)(a::KnobConst, b::KnobConst) = isequal(a.value, b.value)
 Base.:(==)(a::KnobCall, b::KnobCall) =
     a.op === b.op && length(a.args) == length(b.args) &&
     all(a.args[i] == b.args[i] for i in eachindex(a.args))
@@ -98,9 +101,15 @@ const _KNOB_OPERATORS = Dict{Symbol,Tuple{Function,UnitRange{Int}}}(
     :max => (max, 2:32),
 )
 
-# Named constants allowed as bare symbols inside expressions.
+# Named constants allowed as bare symbols inside expressions. NaN and Inf are
+# here because `repr` of a non-finite KnobConst prints exactly these names, and
+# accepting them keeps the string round trip total over derivative constant
+# folds (2026-08-05 audit, U14-2). Every key is also a FORBIDDEN knob name:
+# `_knob_define!` rejects it, because `@knob_expr` would read the name as the
+# constant and silently shadow the knob (2026-08-05 audit, U14-3).
 const _KNOB_NAMED_CONSTANTS = Dict{Symbol,Float64}(
     :pi => Float64(pi), :π => Float64(pi), :ℯ => Float64(ℯ),
+    :NaN => NaN, :Inf => Inf,
 )
 
 # ---------------------------------------------------------------------------
@@ -184,6 +193,13 @@ function _lower_knob(ex)
             args = AbstractKnobExpression[_lower_knob(a) for a in ex.args[2:end]]
             length(args) in spec[2] || throw(ArgumentError(
                 "operator $(op) takes $(spec[2]) arguments; got $(length(args))"))
+            # `-Inf` prints as the negation CALL of the named constant `Inf`
+            # (Julia has no negative literal for it); fold that back so
+            # `KnobConst(-Inf)` round-trips as itself (2026-08-05 audit, U14-2).
+            if op === :- && length(args) == 1 && args[1] isa KnobConst &&
+               !isfinite((args[1]::KnobConst).value)
+                return KnobConst(-(args[1]::KnobConst).value)
+            end
             return KnobCall(op, args)
         end
     end
@@ -284,17 +300,14 @@ _convert_knob_value(path::Symbol, T::Type, value) =
     end
 
 # Resolve the declared type for a (re)declaration: an explicit annotation wins,
-# an existing entry keeps its type, and new knobs default to Float64.
-function _resolve_knob_type_locked!(path::Symbol, T::Union{Nothing,Type})
+# an existing entry keeps its type, and new knobs default to Float64. Pure by
+# design (2026-08-05 audit, U14-1): the retype itself — which CONVERTS the
+# stored value, i.e. mutates — is applied only on success paths, after every
+# guard, so a rejected call leaves the registry untouched.
+function _declared_knob_type_locked(path::Symbol, T::Union{Nothing,Type})
+    T === nothing || return T
     entry = get(_KNOB_TABLE, path, nothing)
-    T === nothing && return entry === nothing ? Float64 : entry.type
-    if entry !== nothing && entry.type !== T
-        v = entry.value === nothing ? nothing :
-            _convert_knob_value(path, T, entry.value)
-        entry.type = T
-        v === nothing || (entry.value = v)
-    end
-    return T
+    return entry === nothing ? Float64 : entry.type
 end
 
 function _install_dependent_locked!(path::Symbol, T::Type, node::AbstractKnobExpression)
@@ -312,6 +325,7 @@ function _install_dependent_locked!(path::Symbol, T::Type, node::AbstractKnobExp
         _KNOB_TABLE[path] = entry
     else
         _remove_reverse_edges_locked!(path, entry.expression)
+        entry.type = T
     end
     entry.expression = node
     entry.value = nothing
@@ -332,6 +346,7 @@ function _install_independent_locked!(path::Symbol, T::Type, value)
         _KNOB_TABLE[path] = entry
     else
         _remove_reverse_edges_locked!(path, entry.expression)
+        entry.type = T
         entry.expression = nothing
         entry.value = value
     end
@@ -348,38 +363,59 @@ non-`Real` declared types, where the expression tree does not apply.
 """
 function _knob_define!(path::Symbol, T::Union{Nothing,Type}, rhs, rhs_thunk)
     lock(_KNOB_LOCK) do
-        # `_resolve_knob_type_locked!` CONVERTS the stored value when the declared
-        # type changes, so `@knob p::T` on an existing knob is a value mutation
-        # even though it looks like a pure annotation. Capture the value first so
-        # the bare-declaration branch below can tell.
-        _pre_entry = get(_KNOB_TABLE, path, nothing)
-        _pre_value = _pre_entry === nothing ? nothing : _pre_entry.value
-        Tdecl = _resolve_knob_type_locked!(path, T)
+        # A name the expression language reads as a literal constant can never
+        # be reached by a KnobRef (`@knob_expr(pi)` lowers to KnobConst, checked
+        # BEFORE the KnobRef branch), so registering it would leave the registry
+        # and the expression language silently disagreeing about one name.
+        # Reject at declaration (2026-08-05 audit, U14-3).
+        haskey(_KNOB_NAMED_CONSTANTS, path) && throw(ArgumentError(
+            "cannot declare a knob named $(path): knob expressions read $(path) " *
+            "as the literal constant $(_KNOB_NAMED_CONSTANTS[path]), so the " *
+            "knob would be unreachable from every expression; pick a " *
+            "namespaced name instead (e.g. consts.$(path))"))
+        entry = get(_KNOB_TABLE, path, nothing)
+        Tdecl = _declared_knob_type_locked(path, T)
         if rhs === nothing
-            entry = get(_KNOB_TABLE, path, nothing)
+            # Bare (re)declaration. The guard runs BEFORE the retype below,
+            # because the retype converts the stored value — a mutation — and a
+            # call that throws must leave the registry untouched (2026-08-05
+            # audit, U14-1: this guard used to run after the retype, so
+            # `@knob dep::Float32` on an expression-defined knob converted the
+            # cached value, kept the new type, threw, and never bumped the
+            # epoch — the silent-stale-physics class).
+            entry !== nothing && entry.expression !== nothing && throw(ArgumentError(
+                "knob $(path) is already defined by the expression " *
+                "$(_knob_expr_string(entry.expression)); redefine it explicitly " *
+                "with @knob $(path) = <expression or value>"))
             if entry === nothing
                 _check_namespace_collision_locked(path)
                 _KNOB_TABLE[path] = _KnobEntry(path, Tdecl, nothing, nothing, Set{Symbol}())
                 _KNOB_EPOCH[] += 1
-            elseif entry.expression !== nothing
-                throw(ArgumentError(
-                    "knob $(path) is already defined by the expression " *
-                    "$(_knob_expr_string(entry.expression)); redefine it explicitly " *
-                    "with @knob $(path) = <expression or value>"))
-            elseif _pre_value !== nothing && entry.value !== nothing &&
-                   !isequal(_pre_value, entry.value)
-                # The retype changed the number. Everything downstream is now
-                # stale, and without this the staleness is SILENT: `knob_value`
-                # reports the new value while dependent caches and every compiled
-                # runtime keep the old one, because nothing bumps the epoch that
-                # `Tasks.jl` and the strong-strong executor gate recompilation on.
+            elseif entry.type !== Tdecl
+                # `@knob p::T` on an existing independent knob is a value
+                # mutation even though it looks like a pure annotation: the
+                # stored value is converted to T. When the number changes,
+                # everything downstream is stale, and without the bump the
+                # staleness is SILENT: `knob_value` reports the new value while
+                # dependent caches and every compiled runtime keep the old one,
+                # because nothing bumps the epoch that `Tasks.jl` and the
+                # strong-strong executor gate recompilation on.
                 #
-                # Measured before this: `@knob a = 0.1; @knob b = a * 1.0` then
-                # `@knob a::Float32` left `knob_value(:a) == 0.1f0` (0.10000000149011612)
-                # while `knob_value(:b)` stayed 0.1, with the epoch unmoved.
-                # `set_knob!` has always done both of these; this path did neither.
-                _invalidate_dependents_locked!(path)
-                _KNOB_EPOCH[] += 1
+                # Measured before the epoch fix: `@knob a = 0.1; @knob b = a * 1.0`
+                # then `@knob a::Float32` left `knob_value(:a) == 0.1f0`
+                # (0.10000000149011612) while `knob_value(:b)` stayed 0.1, with
+                # the epoch unmoved. `set_knob!` has always done both of these.
+                v = entry.value === nothing ? nothing :
+                    _convert_knob_value(path, Tdecl, entry.value)
+                entry.type = Tdecl
+                if v !== nothing
+                    changed = !isequal(entry.value, v)
+                    entry.value = v
+                    if changed
+                        _invalidate_dependents_locked!(path)
+                        _KNOB_EPOCH[] += 1
+                    end
+                end
             end
             return KnobRef(path)
         end
@@ -468,7 +504,13 @@ macro knob(ex)
                              $(QuoteNode(rhs)), $thunk_arg))
     root = Symbol(first(split(string(path), '.')))
     root === path && return define
+    # Root-binding validation BEFORE registration: `_ensure_knob_root` throwing
+    # after `$define` left the knob registered and the epoch bumped by a failed
+    # declaration (2026-08-05 audit, U14-4: `@knob sin.x = 1.0` errored yet
+    # `list_knobs()` contained `sin.x`). The binding itself still happens after,
+    # so a `$define` rejection creates no namespace constant either.
     return quote
+        _check_knob_root($(QuoteNode(root)), $(__module__))
         local ref = $define
         _ensure_knob_root($(QuoteNode(root)), $(__module__))
         ref
@@ -667,19 +709,27 @@ Base.show(io::IO, ns::KnobNamespace) =
           getfield(ns, :prefix) === Symbol("") ? "<root>" : getfield(ns, :prefix),
           ")")
 
-"""Bind `root` as a `KnobNamespace` constant in `mod` (idempotent); called by
-`@knob` for dotted paths so plain assignment works after declaration."""
-function _ensure_knob_root(root::Symbol, mod::Module)
+"""Reject binding `root` when `mod` already names something that is not a
+`KnobNamespace`. Split from [`_ensure_knob_root`](@ref) so `@knob` can validate
+BEFORE registering the knob — the collision throwing after registration left
+the knob in the registry (2026-08-05 audit, U14-4)."""
+function _check_knob_root(root::Symbol, mod::Module)
     # The binding may have been created at runtime by an earlier @knob in the
     # same function body, i.e. in a newer world than the running method; go
     # through invokelatest for world-age-correct access (Julia >= 1.12).
-    if Base.invokelatest(isdefined, mod, root)
-        b = Base.invokelatest(getglobal, mod, root)
-        b isa KnobNamespace || throw(ArgumentError(
-            "cannot bind knob namespace $(root): $(mod).$(root) already names " *
-            "a $(typeof(b)); pick a different knob root or rename that binding"))
-        return nothing
-    end
+    Base.invokelatest(isdefined, mod, root) || return nothing
+    b = Base.invokelatest(getglobal, mod, root)
+    b isa KnobNamespace || throw(ArgumentError(
+        "cannot bind knob namespace $(root): $(mod).$(root) already names " *
+        "a $(typeof(b)); pick a different knob root or rename that binding"))
+    return nothing
+end
+
+"""Bind `root` as a `KnobNamespace` constant in `mod` (idempotent); called by
+`@knob` for dotted paths so plain assignment works after declaration."""
+function _ensure_knob_root(root::Symbol, mod::Module)
+    _check_knob_root(root, mod)
+    Base.invokelatest(isdefined, mod, root) && return nothing
     Core.eval(mod, :(const $root = $(KnobNamespace(root))))
     return nothing
 end
@@ -847,7 +897,15 @@ function _knob_expr_string(n::KnobCall, prec::Int=0)
         p = _knob_prec(n.op)
         pieces = String[]
         for (i, a) in enumerate(n.args)
-            required = i == 1 ? p : (n.op in (:-, :/, :^) ? p + 1 : p)
+            # `^` is RIGHT-associative, so it is the base (first operand) that
+            # must not print bare when it is itself a `^`: `(u^v)^w` printed as
+            # "u ^ v ^ w" reparses as `u^(v^w)` — 64 silently became 512
+            # through the documented round trip (2026-08-05 audit, U14-2).
+            # `-` and `/` are left-associative; there the RIGHT operand needs
+            # the extra precedence.
+            required = n.op === :^ ? (i == 1 ? p + 1 : p) :
+                       i == 1      ? p :
+                       (n.op in (:-, :/) ? p + 1 : p)
             push!(pieces, _knob_expr_string(a, required))
         end
         s = join(pieces, " $(n.op) ")
@@ -865,11 +923,32 @@ Base.show(io::IO, n::KnobCall) = print(io, _knob_expr_string(n))
 
 # Friendly constructors convert parameters eagerly (`T(value)`), which would
 # either fail obscurely or force premature evaluation. Fail with directions.
-(::Type{T})(::AbstractKnobExpression) where {T<:AbstractFloat} = throw(ArgumentError(
+# Every Number, not just AbstractFloat: `Int(e)` deserves the same directions
+# (2026-08-05 audit, U14-7).
+(::Type{T})(::AbstractKnobExpression) where {T<:Number} = throw(ArgumentError(
     "a knob expression cannot be converted to a number eagerly. Use the flexible " *
     "ElementSpec{kind}(; param=@knob_expr(...)) constructor so compile_runtime " *
     "defers evaluation, or call knob_value(expression) to evaluate now."))
 Base.float(x::AbstractKnobExpression) = Float64(x)
+
+# The design doc promises `2 * e` a DIRECTED error, not a bare MethodError:
+# mixing numbers (or other expressions) into expression objects through
+# ordinary arithmetic is the number-one composition trap, and before the
+# 2026-08-05 audit (U14-7) only `Float64(e)`/`float(e)` got directions while
+# `2 * e` fell through to `MethodError: no method matching *(::Int64, ...)`.
+_knob_eager_arithmetic_error(op::Symbol) = throw(ArgumentError(
+    "a knob expression is not a number; $(op) does not evaluate it eagerly. " *
+    "Compose expressions syntactically — @knob_expr(2 * x) or knob_expression " *
+    "— so the result stays a validated, printable expression, or call " *
+    "knob_value(expression) where the number is needed."))
+for op in (:+, :-, :*, :/, :^)
+    @eval Base.$op(::Number, ::AbstractKnobExpression) =
+        _knob_eager_arithmetic_error($(QuoteNode(op)))
+    @eval Base.$op(::AbstractKnobExpression, ::Number) =
+        _knob_eager_arithmetic_error($(QuoteNode(op)))
+    @eval Base.$op(::AbstractKnobExpression, ::AbstractKnobExpression) =
+        _knob_eager_arithmetic_error($(QuoteNode(op)))
+end
 
 # ---------------------------------------------------------------------------
 # compile_runtime integration

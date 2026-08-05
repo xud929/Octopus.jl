@@ -48,7 +48,10 @@ a *dependent* knob; `@knob a = b` is an alias. Dependent knobs require a
 parameters through a bare knob reference. Every knob referenced by an
 expression must already be declared — declaration-before-use is what catches
 typos at definition time. Redefinition is allowed and rewires the dependency
-graph; cycles are rejected.
+graph; cycles are rejected. Names that knob expressions read as literal
+constants (`pi`/`π`, `ℯ`, `NaN`, `Inf`) are rejected as knob names: such a
+knob could never be reached by an expression, so the registry and the
+expression language would silently disagree about one name.
 
 **Namespaces are names, not modules.** `HSR.power_supply.arc_quad` is
 flattened to the single key `Symbol("HSR.power_supply.arc_quad")` in a flat
@@ -160,7 +163,10 @@ expression is also the input to every analysis and serialization entry point:
 `knob_dependencies(e)`, `knob_derivative(e, @knob_expr(path))`,
 `knob_symbolic(e)`, `knob_to_expr(e)`, and the lossless
 `string(e)`/`knob_expression(s)` round trip (validation against declared knobs
-happens at rebuild time). A practical pattern: hold an expression inside a
+happens at rebuild time). The round trip is total: non-finite constants — which
+constant folding in `knob_derivative` can produce, e.g. `NaN` from
+differentiating `x / 0.0` — print as `NaN`/`Inf`/`-Inf`, and the parser reads
+those names as numeric literals, one reason they cannot be knob names (§2). A practical pattern: hold an expression inside a
 `ScheduledAction` callback and call `knob_value` there, making a per-turn
 parameter follow a knob chain during a run.
 
@@ -199,13 +205,19 @@ return a wrong branch.
 **Symbolics.jl adapter, optional.** `knob_symbolic(expr)` builds a Symbolics
 expression with one variable per knob path; `knob_from_symbolic` converts back
 through the same lowering and validation (function-object heads from
-`Symbolics.toexpr` are mapped back through the whitelist). Symbolics is loaded
-with the same optional pattern as CUDA in `src/beam/Beam.jl`: install it in an
-environment on your load path (`import Pkg; Pkg.add("Symbolics")`) and the
-adapter activates; without it, only these two functions error (with
-instructions) and everything else — including `knob_derivative` — works. The
-universal bridge `knob_to_expr`/`knob_expression` (expression tree ↔ Julia
-`Expr`/string) needs no packages at all and is the interface any other
+`Symbolics.toexpr` are mapped back through the whitelist). Symbolics is an
+optional dependency declared under `[weakdeps]`, and how the adapter activates
+depends on how Octopus was loaded. In package mode (`using Octopus`),
+installing Symbolics is *not* enough: the `OctopusSymbolicsExt` extension
+activates only when the session loads it — run `using Symbolics` (after
+`import Pkg; Pkg.add("Symbolics")` if needed). In script mode
+(`include("src/Octopus.jl")`, the developer form), the extension loader never
+runs, so the adapter instead activates during the include when Symbolics is
+importable from the active project. `knob_symbolics_available()` is the public
+query; when the adapter is inactive, only `knob_symbolic`/`knob_from_symbolic`
+error (with instructions) and everything else — including `knob_derivative` —
+works. The universal bridge `knob_to_expr`/`knob_expression` (expression tree ↔
+Julia `Expr`/string) needs no packages at all and is the interface any other
 symbolic tool can target.
 
 ## 5. Limitations and future work

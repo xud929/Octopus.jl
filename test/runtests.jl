@@ -7338,7 +7338,10 @@ end
         # the unavailable branch on every package-mode run (part 6, R3).
         e3 = knob_expression("t_knob.k1 / t_knob.brho + 2.0")
         @test knob_expression(string(knob_to_expr(e3))) == e3
-        @test Octopus._symbolics_adapter_active()
+        # Through the PUBLIC query (2026-08-05 audit, U14-5): user scripts
+        # branching on adapter availability must not need an internal.
+        @test knob_symbolics_available()
+        @test knob_symbolics_available() === Octopus._symbolics_adapter_active()
         e4 = knob_expression("t_knob.k1 * t_knob.brho + t_knob.k1")
         @test knob_value(knob_from_symbolic(knob_symbolic(e4))) ≈ knob_value(e4)
 
@@ -7346,6 +7349,99 @@ end
         result = validate(KnobEffectivenessContract())
         @test result.passed
         @test result.metrics[:knob_resolution_receipt]
+    finally
+        reset_knobs!()
+    end
+end
+
+@testset "Knob registry atomicity and round-trip totality" begin
+    # Pins the 2026-08-05 audit's U14 findings: a rejected knob call must leave
+    # NO partial state (the registry's permanent epoch/mutation-path
+    # discipline), and the documented string round trip must be total.
+    reset_knobs!()
+    try
+        # 2026-08-05 audit, U14-1: `@knob dep::T` on an expression-defined knob
+        # used to retype the entry and CONVERT its cached value before the
+        # rejection throw, with no epoch bump -- knob_value then reported
+        # 0.1f0::Float32 while dependent caches and every compiled runtime kept
+        # 0.1, and nothing recompiled. The guard now precedes any mutation.
+        @knob t_atom.a = 0.1
+        @knob t_atom.b = t_atom.a * 1.0
+        v0 = knob_value("t_atom.b")
+        e0 = knob_epoch()
+        @test_throws ArgumentError Octopus._knob_define!(
+            Symbol("t_atom.b"), Float32, nothing, nothing)
+        @test knob_value("t_atom.b") === v0     # value AND type untouched
+        @test knob_epoch() == e0                # no bump from a rejected call
+        # Same discipline on the redefinition branch: an rhs that fails to
+        # lower must not leave a retype behind either.
+        @test_throws ArgumentError Octopus._knob_define!(
+            Symbol("t_atom.b"), Float32, Meta.parse("rand() * 2.0"), nothing)
+        @test knob_value("t_atom.b") === v0
+        @test knob_epoch() == e0
+        # The legitimate retype of an INDEPENDENT knob still converts the value
+        # and still bumps (the 2026-08-04 audit's R4 fix, re-pinned here).
+        Octopus._knob_define!(Symbol("t_atom.a"), Float32, nothing, nothing)
+        @test knob_value("t_atom.a") === 0.1f0
+        @test knob_epoch() != e0
+
+        # 2026-08-05 audit, U14-4: `@knob sin.x = 1.0` used to register the
+        # knob and bump the epoch BEFORE _ensure_knob_root threw on the
+        # collision with Base.sin; the root is now validated first.
+        e4 = knob_epoch()
+        @test_throws ArgumentError Core.eval(@__MODULE__, :(@knob sin.x = 1.0))
+        @test !(Symbol("sin.x") in list_knobs())
+        @test knob_epoch() == e4
+
+        # 2026-08-05 audit, U14-3: a knob named like an expression-language
+        # constant was declarable but silently unreachable (`@knob_expr(pi)`
+        # lowers to KnobConst, so registry and expressions disagreed on one
+        # name). Now rejected at declaration, for every named constant.
+        for name in (:pi, :π, :ℯ, :NaN, :Inf)
+            @test_throws ArgumentError Octopus._knob_define!(name, Meta.parse("3.0"))
+            @test !(name in list_knobs())
+        end
+        @test knob_epoch() == e4
+
+        # 2026-08-05 audit, U14-2: `^` is right-associative, so a `^` nested as
+        # the BASE of another `^` must keep its parentheses -- `(u^v)^w` used
+        # to print as "u ^ v ^ w" and reparse as u^(v^w): 64 became 512 through
+        # the documented knob_expression(string(e)) == e round trip.
+        @knob t_atom.u = 2.0
+        @knob t_atom.v = 3.0
+        @knob t_atom.w = 2.0
+        epow = knob_expression("(t_atom.u ^ t_atom.v) ^ t_atom.w")
+        @test string(epow) == "(t_atom.u ^ t_atom.v) ^ t_atom.w"
+        @test knob_expression(string(epow)) == epow
+        @test knob_value(epow) == 64.0
+        eright = knob_expression("t_atom.u ^ (t_atom.v ^ t_atom.w)")
+        @test knob_expression(string(eright)) == eright
+        @test knob_value(eright) == 512.0
+        # Non-finite constant folds (e.g. d(x/0.0)/dx) used to print as "NaN",
+        # which reparsed as KnobRef(:NaN) -> "unknown knob NaN". NaN/Inf are
+        # named constants to the parser now, `-Inf` folds back to one constant
+        # (Julia has no negative literal for it), and KnobConst equality is
+        # isequal-based so the NaN round trip is testable at all.
+        dnan = knob_derivative(knob_expression("t_atom.u / 0.0"), Symbol("t_atom.u"))
+        @test dnan isa Octopus.KnobConst
+        @test knob_expression(string(dnan)) == dnan
+        for c in (Octopus.KnobConst(Inf), Octopus.KnobConst(-Inf))
+            @test knob_expression(string(c)) == c
+        end
+
+        # 2026-08-05 audit, U14-7: the design doc promises `2 * e` a directed
+        # error, but only Float64(e)/float(e) had one -- everything else was a
+        # bare MethodError. Arithmetic composition and Number conversion now
+        # both direct the user to @knob_expr/knob_value.
+        eexpr = knob_expression("2.0 * t_atom.u")
+        @test_throws ArgumentError 2 * eexpr
+        @test_throws ArgumentError 2.0 * eexpr
+        @test_throws ArgumentError (1 // 2) * eexpr
+        @test_throws ArgumentError eexpr + 1
+        @test_throws ArgumentError eexpr / eexpr
+        @test_throws ArgumentError eexpr^2
+        @test_throws ArgumentError Int(eexpr)
+        @test_throws ArgumentError Float64(eexpr)
     finally
         reset_knobs!()
     end

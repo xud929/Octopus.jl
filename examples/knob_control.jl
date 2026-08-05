@@ -148,7 +148,7 @@ fd = (knob_value(@knob_expr(tan(ip.half_crossing_angle + 1.0e-9) /
                             sqrt(ele.crab_beta_x * ele.beta_x))) -
       ele.crab_strength) / 1.0e-9
 println("  evaluated: ", knob_value(d), "   finite-difference check: ", fd)
-if Octopus._symbolics_adapter_active()
+if knob_symbolics_available()
     sym = knob_symbolic(@knob_expr(ele.crab_strength * HSR.B_rho + ele.crab_strength))
     println("Symbolics form:  ", sym)
     println("round-tripped:   ", knob_from_symbolic(sym))
