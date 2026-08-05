@@ -123,7 +123,53 @@ line = (
         sigma=(95.0e-6, 8.5e-6, 6.0e-2),
         rng_id=101,
     ),
+    # Every kind that declares ElementTrackingBackendConsistencyContract in
+    # its metadata tracks here. The line used to carry 11 hand-picked kinds
+    # while 18 declaring kinds — the whole thick-magnet family and every thin
+    # element — were covered by neither this script nor the suite's
+    # composed-cell testset; the tripwire after the contract definitions
+    # fails the run when a newly declaring kind is not added (2026-08-05
+    # audit, U21-5). Strengths are mild and the aperture generous: this is a
+    # parity check, and a lost or wildly nonlinear particle tests less of the
+    # map, not more.
+    DriftSpec(L=0.35, h=0.02),
+    QuadrupoleSpec(L=0.4, k1=0.8, nst=2, fringe=:all, va=0.03, vs=1.0e-4,
+                   x_offset=1.0e-4),
+    SextupoleSpec(L=0.25, k2=6.0, nst=2, tilt=0.01),
+    OctupoleSpec(L=0.15, k3=80.0, nst=2),
+    MultipoleSpec(L=0.3, k1=0.5, k2=4.0, nst=2, y_offset=1.0e-4),
+    SBendSpec(L=1.1, angle=0.05, k1=0.2, e1=0.02, e2=0.015, fringe=:all,
+              nst=2, ref_tilt=0.05),
+    SolenoidSpec(L=0.8, ks=0.3, kn=(0.0, 0.2), nst=2),
+    ThinRFCavitySpec(197.0e6; strength=1.0e-4, beta0=0.99, gamma0=100.0),
+    PatchSpec(dx=1.0e-5, dz=2.0e-5, angle_x=1.0e-4, angle_s=0.01),
+    MarkerSpec(),
+    ThinMultipoleSpec(knl=(0.0, 0.05, 1.2)),
+    ThinDipoleSpec(k0l=1.0e-3),
+    ThinQuadrupoleSpec(k1l=0.05),
+    ThinSextupoleSpec(k2l=1.2),
+    HKickerSpec(hkick=1.0e-4),
+    VKickerSpec(vkick=1.0e-4),
+    KickerSpec(hkick=1.0e-4, vkick=-5.0e-5),
+    ApertureSpec(shape=:ellipse, x_limit=1.0, y_limit=1.0),
 )
+
+# Declaration↔coverage tripwire (2026-08-05 audit, U21-5), the same rule
+# SymplecticityContract applies to its case list: a kind that declares the
+# contract and is missing from this line is a silent coverage gap.
+let covered = Set(Octopus.kind(spec) for spec in line)
+    declaring = Symbol[]
+    for T in Octopus.registered_element_specs()
+        meta = Octopus._element_meta_or_nothing(T)
+        meta === nothing && continue
+        any(C -> C === ElementTrackingBackendConsistencyContract, meta.contracts) &&
+            push!(declaring, meta.kind)
+    end
+    uncovered = sort!(setdiff(declaring, covered))
+    isempty(uncovered) || error(
+        "kinds declare ElementTrackingBackendConsistencyContract but are " *
+        "missing from this line: " * join(uncovered, ", "))
+end
 
 cpu_cpu = ElementTrackingBackendConsistencyContract(;
     line=line,

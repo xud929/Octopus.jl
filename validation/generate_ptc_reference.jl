@@ -71,7 +71,12 @@ const PARTICLES = [
 
 """
 One reference case: a MAD-X element definition plus the PTC integrator setting.
-`octopus` names the spec keywords the contract will build from.
+The Octopus spec each case is compared against lives in ONE place,
+`_ptc_reference_specs()` in `src/contracts/Contracts.jl`, keyed by `name`. A
+`Case` once carried its own copy as an `octopus` Dict that nothing read; the
+copy had already drifted (a `multipole` missing its strengths, an
+unregistered `:rbend` kind), which is what an unread duplicate does
+(2026-08-05 audit, U21-6).
 """
 struct Case
     name::String
@@ -81,49 +86,33 @@ struct Case
     nst::Int
     fringe::Bool          # per-element permfringe -- turns on MULTIPOLE_FRINGE
     ealign::String        # EALIGN body, applied through ptc_align; "" for none
-    octopus::Dict{Symbol,Any}
 end
-Case(name, madx, L, method, nst, fringe::Bool, octopus) =
-    Case(name, madx, L, method, nst, fringe, "", octopus)
+Case(name, madx, L, method, nst, fringe::Bool) =
+    Case(name, madx, L, method, nst, fringe, "")
 
 # Fringe defaults off, so the cases that predate the fringe comparison keep
 # generating byte-identical rows: the switch is only emitted when it is on.
-Case(name, madx, L, method, nst, octopus) = Case(name, madx, L, method, nst, false, "", octopus)
+Case(name, madx, L, method, nst) = Case(name, madx, L, method, nst, false, "")
 
 const CASES = Case[
-    Case("drift", "drift, l=0.7", 0.7, 2, 1,
-         Dict(:kind => :drift, :L => 0.7)),
-    Case("quadrupole_m2_n1", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 1,
-         Dict(:kind => :quadrupole, :L => 0.4, :kn => (0.0, 1.7), :nst => 1, :integrator_order => 2)),
-    Case("quadrupole_m2_n8", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 8,
-         Dict(:kind => :quadrupole, :L => 0.4, :kn => (0.0, 1.7), :nst => 8, :integrator_order => 2)),
-    Case("quadrupole_m4_n3", "quadrupole, l=0.4, k1=1.7", 0.4, 4, 3,
-         Dict(:kind => :quadrupole, :L => 0.4, :kn => (0.0, 1.7), :nst => 3, :integrator_order => 4)),
-    Case("quadrupole_skew", "quadrupole, l=0.4, k1s=0.9", 0.4, 2, 4,
-         Dict(:kind => :quadrupole, :L => 0.4, :ks => (0.0, 0.9), :nst => 4, :integrator_order => 2)),
-    Case("sextupole_m2_n4", "sextupole, l=0.25, k2=14.0", 0.25, 2, 4,
-         Dict(:kind => :sextupole, :L => 0.25, :kn => (0.0, 0.0, 14.0), :nst => 4, :integrator_order => 2)),
-    Case("sextupole_m4_n2", "sextupole, l=0.25, k2=14.0", 0.25, 4, 2,
-         Dict(:kind => :sextupole, :L => 0.25, :kn => (0.0, 0.0, 14.0), :nst => 2, :integrator_order => 4)),
-    Case("octupole_m2_n4", "octupole, l=0.15, k3=220.0", 0.15, 2, 4,
-         Dict(:kind => :octupole, :L => 0.15, :kn => (0.0, 0.0, 0.0, 220.0), :nst => 4, :integrator_order => 2)),
-    Case("sbend_m2_n1", "sbend, l=1.1, angle=0.198", 1.1, 2, 1,
-         Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 1)),
-    Case("sbend_m2_n4", "sbend, l=1.1, angle=0.198", 1.1, 2, 4,
-         Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 4)),
-    Case("sbend_m4_n2", "sbend, l=1.1, angle=0.198", 1.1, 4, 2,
-         Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 2)),
+    Case("drift", "drift, l=0.7", 0.7, 2, 1),
+    Case("quadrupole_m2_n1", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 1),
+    Case("quadrupole_m2_n8", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 8),
+    Case("quadrupole_m4_n3", "quadrupole, l=0.4, k1=1.7", 0.4, 4, 3),
+    Case("quadrupole_skew", "quadrupole, l=0.4, k1s=0.9", 0.4, 2, 4),
+    Case("sextupole_m2_n4", "sextupole, l=0.25, k2=14.0", 0.25, 2, 4),
+    Case("sextupole_m4_n2", "sextupole, l=0.25, k2=14.0", 0.25, 4, 2),
+    Case("octupole_m2_n4", "octupole, l=0.15, k3=220.0", 0.15, 2, 4),
+    Case("sbend_m2_n1", "sbend, l=1.1, angle=0.198", 1.1, 2, 1),
+    Case("sbend_m2_n4", "sbend, l=1.1, angle=0.198", 1.1, 2, 4),
+    Case("sbend_m4_n2", "sbend, l=1.1, angle=0.198", 1.1, 4, 2),
     # angle=0 makes a MAD-X sbend a straight combined magnet, which is exactly
     # a thick general multipole -- MAD-X's own MULTIPOLE element is thin.
-    Case("multipole_m2_n4", "sbend, l=0.3, angle=0, k1=1.2, k2=8.0", 0.3, 2, 4,
-         Dict(:kind => :multipole, :L => 0.3)),
-    Case("multipole_m4_n2", "sbend, l=0.3, angle=0, k1=1.2, k2=8.0, k3=90.0", 0.3, 4, 2,
-         Dict(:kind => :multipole, :L => 0.3)),
+    Case("multipole_m2_n4", "sbend, l=0.3, angle=0, k1=1.2, k2=8.0", 0.3, 2, 4),
+    Case("multipole_m4_n2", "sbend, l=0.3, angle=0, k1=1.2, k2=8.0, k3=90.0", 0.3, 4, 2),
     # Combined-function bends: the curved-frame multipole kick of Section 4.4.
-    Case("cfbend_m2_n4", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4,
-         Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 4)),
-    Case("cfbend_m4_n2", "sbend, l=1.1, angle=0.198, k1=0.6, k2=5.0", 1.1, 4, 2,
-         Dict(:kind => :sbend, :L => 1.1, :h => 0.198 / 1.1, :b0 => 0.198 / 1.1, :nst => 2)),
+    Case("cfbend_m2_n4", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4),
+    Case("cfbend_m4_n2", "sbend, l=1.1, angle=0.198, k1=0.6, k2=5.0", 1.1, 4, 2),
     # ---------------------------------------------------------------------
     # Hard-edge multipole fringe, via ptc_setswitch. Each case pins one branch
     # of PTC's MULTIPOLE_FRINGER that a source comparison turned up:
@@ -133,14 +122,10 @@ const CASES = Case[
     #   cfbend_fringe      J==1 with BEND_FRINGE drops BN(1), which would
     #                      otherwise double-count the exact dipole fringe
     # ---------------------------------------------------------------------
-    Case("quadrupole_fringe", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, true,
-         Dict(:kind => :quadrupole, :L => 0.4)),
-    Case("multipole_fringe", "sbend, l=0.3, angle=0, k1=1.2, k2=8.0", 0.3, 2, 4, true,
-         Dict(:kind => :multipole, :L => 0.3)),
-    Case("sbend_fringe", "sbend, l=1.1, angle=0.198", 1.1, 2, 4, true,
-         Dict(:kind => :sbend, :L => 1.1)),
-    Case("cfbend_fringe", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4, true,
-         Dict(:kind => :sbend, :L => 1.1)),
+    Case("quadrupole_fringe", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, true),
+    Case("multipole_fringe", "sbend, l=0.3, angle=0, k1=1.2, k2=8.0", 0.3, 2, 4, true),
+    Case("sbend_fringe", "sbend, l=1.1, angle=0.198", 1.1, 2, 4, true),
+    Case("cfbend_fringe", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4, true),
     # ---------------------------------------------------------------------
     # Pole-face angles. Fringes stay off here, which is what selects PTC's
     # MAD8_WEDGE branch: the quadrupole-in-wedge kick with its coefficients
@@ -148,13 +133,11 @@ const CASES = Case[
     # because the term needs both a nonzero edge angle and a quadrupole
     # component. sbend_fint adds the FINT/HGAP terms of FRINGE_dipole.
     # ---------------------------------------------------------------------
-    Case("sbend_edge", "sbend, l=1.1, angle=0.198, e1=0.1, e2=0.1", 1.1, 2, 4,
-         Dict(:kind => :sbend, :L => 1.1)),
-    Case("cfbend_edge", "sbend, l=1.1, angle=0.198, k1=0.6, e1=0.1, e2=0.1", 1.1, 2, 4,
-         Dict(:kind => :sbend, :L => 1.1)),
+    Case("sbend_edge", "sbend, l=1.1, angle=0.198, e1=0.1, e2=0.1", 1.1, 2, 4),
+    Case("cfbend_edge", "sbend, l=1.1, angle=0.198, k1=0.6, e1=0.1, e2=0.1", 1.1, 2, 4),
     Case("sbend_fint",
          "sbend, l=1.1, angle=0.198, e1=0.1, e2=0.1, fint=0.5, fintx=0.5, hgap=0.03",
-         1.1, 2, 4, Dict(:kind => :sbend, :L => 1.1)),
+         1.1, 2, 4),
     # ---------------------------------------------------------------------
     # Misalignments, through EALIGN + ptc_align. One degree of freedom each:
     # MAD-X references a misalignment to the ENTRANCE frame (see
@@ -168,33 +151,31 @@ const CASES = Case[
     # multi-rotation cases that DO separate them follow below.
     # ---------------------------------------------------------------------
     Case("quad_mis_dx", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
-         "dx=1.0e-3", Dict(:kind => :quadrupole, :L => 0.4)),
+         "dx=1.0e-3"),
     Case("quad_mis_dy", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
-         "dy=-8.0e-4", Dict(:kind => :quadrupole, :L => 0.4)),
+         "dy=-8.0e-4"),
     Case("quad_mis_ds", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
-         "ds=2.0e-3", Dict(:kind => :quadrupole, :L => 0.4)),
+         "ds=2.0e-3"),
     Case("quad_mis_dtheta", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
-         "dtheta=3.0e-3", Dict(:kind => :quadrupole, :L => 0.4)),
+         "dtheta=3.0e-3"),
     Case("quad_mis_dphi", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
-         "dphi=3.0e-3", Dict(:kind => :quadrupole, :L => 0.4)),
+         "dphi=3.0e-3"),
     Case("quad_mis_dpsi", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
-         "dpsi=0.03", Dict(:kind => :quadrupole, :L => 0.4)),
+         "dpsi=0.03"),
     Case("sext_mis_dx", "sextupole, l=0.25, k2=14.0", 0.25, 2, 4, false,
-         "dx=1.0e-3", Dict(:kind => :sextupole, :L => 0.25)),
+         "dx=1.0e-3"),
     # All six at once. These are what distinguish the two rotation-composition
     # conventions: MAD-X composes intrinsically as R_z R_x R_y, Bmad about fixed
     # axes as R_y R_x R_z, and the two agree for any single rotation, so only a
     # multi-rotation case can tell them apart.
     Case("quad_mis_all", "quadrupole, l=0.4, k1=1.7", 0.4, 2, 4, false,
-         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02",
-         Dict(:kind => :quadrupole, :L => 0.4)),
+         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02"),
     # Misaligned bends, which exercise the survey: the exit transform is built
     # from the exit geometry, and the design frame has turned by hL in between.
     Case("cfbend_mis_dx", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4, false,
-         "dx=1.0e-3", Dict(:kind => :sbend, :L => 1.1)),
+         "dx=1.0e-3"),
     Case("cfbend_mis_all", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4, false,
-         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02",
-         Dict(:kind => :sbend, :L => 1.1)),
+         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02"),
     # ---------------------------------------------------------------------
     # ref_tilt: the roll of the DESIGN ORBIT plane, which MAD-X spells `tilt`
     # on the element itself rather than through EALIGN. This is the keyword
@@ -214,19 +195,15 @@ const CASES = Case[
     # invisible unless both are nonzero, exactly as the rotation-composition
     # convention was, so a single-parameter case cannot see it.
     # ---------------------------------------------------------------------
-    Case("sbend_reftilt", "sbend, l=1.1, angle=0.198, tilt=0.3", 1.1, 2, 4,
-         Dict(:kind => :sbend, :L => 1.1)),
+    Case("sbend_reftilt", "sbend, l=1.1, angle=0.198, tilt=0.3", 1.1, 2, 4),
     Case("sbend_reftilt_vertical",
-         "sbend, l=1.1, angle=0.198, tilt=1.5707963267948966", 1.1, 2, 4,
-         Dict(:kind => :sbend, :L => 1.1)),
-    Case("cfbend_reftilt", "sbend, l=1.1, angle=0.198, k1=0.6, tilt=0.3", 1.1, 2, 4,
-         Dict(:kind => :sbend, :L => 1.1)),
+         "sbend, l=1.1, angle=0.198, tilt=1.5707963267948966", 1.1, 2, 4),
+    Case("cfbend_reftilt", "sbend, l=1.1, angle=0.198, k1=0.6, tilt=0.3", 1.1, 2, 4),
     Case("cfbend_reftilt_mis_dx", "sbend, l=1.1, angle=0.198, k1=0.6, tilt=0.3",
-         1.1, 2, 4, false, "dx=1.0e-3", Dict(:kind => :sbend, :L => 1.1)),
+         1.1, 2, 4, false, "dx=1.0e-3"),
     Case("cfbend_reftilt_mis_all", "sbend, l=1.1, angle=0.198, k1=0.6, tilt=0.3",
          1.1, 2, 4, false,
-         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02",
-         Dict(:kind => :sbend, :L => 1.1)),
+         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02"),
     # A spread of roll angles. Octopus cannot be quadrant-sensitive -- the map
     # is two sincos values and four multiply-adds, with no branch and no atan --
     # so these are really a check on MAD-X, which is free to normalise, wrap, or
@@ -242,29 +219,22 @@ const CASES = Case[
     # `neg_mis_all` repeats the ordering case at a negative roll, because the
     # `:madx` fix conjugates by R_z(-psi) and a sign slip there would survive
     # every positive-angle case.
-    Case("sbend_reftilt_neg", "sbend, l=1.1, angle=0.198, tilt=-0.7", 1.1, 2, 4,
-         Dict(:kind => :sbend, :L => 1.1)),
+    Case("sbend_reftilt_neg", "sbend, l=1.1, angle=0.198, tilt=-0.7", 1.1, 2, 4),
     Case("cfbend_reftilt_quarter",
-         "sbend, l=1.1, angle=0.198, k1=0.6, tilt=0.7853981633974483", 1.1, 2, 4,
-         Dict(:kind => :sbend, :L => 1.1)),
-    Case("sbend_reftilt_obtuse", "sbend, l=1.1, angle=0.198, tilt=2.4", 1.1, 2, 4,
-         Dict(:kind => :sbend, :L => 1.1)),
+         "sbend, l=1.1, angle=0.198, k1=0.6, tilt=0.7853981633974483", 1.1, 2, 4),
+    Case("sbend_reftilt_obtuse", "sbend, l=1.1, angle=0.198, tilt=2.4", 1.1, 2, 4),
     Case("sbend_reftilt_pi", "sbend, l=1.1, angle=0.198, tilt=3.141592653589793",
-         1.1, 2, 4, Dict(:kind => :sbend, :L => 1.1)),
-    Case("sbend_reftilt_small", "sbend, l=1.1, angle=0.198, tilt=1.0e-3", 1.1, 2, 4,
-         Dict(:kind => :sbend, :L => 1.1)),
+         1.1, 2, 4),
+    Case("sbend_reftilt_small", "sbend, l=1.1, angle=0.198, tilt=1.0e-3", 1.1, 2, 4),
     Case("cfbend_reftilt_neg_mis_all", "sbend, l=1.1, angle=0.198, k1=0.6, tilt=-0.7",
          1.1, 2, 4, false,
-         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02",
-         Dict(:kind => :sbend, :L => 1.1)),
+         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02"),
     # RBEND: a sector bend with angle/2 added to each face. `option, rbarc=false`
     # above matters -- by default MAD-X treats an RBEND's l as the CHORD and
     # converts to arc, while Octopus's L is the arc, so without it the two
     # magnets differ in length.
-    Case("rbend", "rbend, l=1.1, angle=0.198", 1.1, 2, 4,
-         Dict(:kind => :rbend, :L => 1.1)),
-    Case("rbend_k1", "rbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4,
-         Dict(:kind => :rbend, :L => 1.1)),
+    Case("rbend", "rbend, l=1.1, angle=0.198", 1.1, 2, 4),
+    Case("rbend_k1", "rbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4),
     # A rolled RBEND. Worth its own cases rather than inheriting the SBEND
     # ones: an RBEND reaches the sector-bend map through a conversion that adds
     # angle/2 to each pole face, and `ref_tilt` has to survive that conversion
@@ -272,32 +242,24 @@ const CASES = Case[
     # a real lattice wants -- a vertical RBEND -- and the last one carries the
     # roll and a misalignment together, so the RBEND path is held to the same
     # two-parameter ordering test as the sector bend.
-    Case("rbend_reftilt", "rbend, l=1.1, angle=0.198, tilt=0.3", 1.1, 2, 4,
-         Dict(:kind => :rbend, :L => 1.1)),
+    Case("rbend_reftilt", "rbend, l=1.1, angle=0.198, tilt=0.3", 1.1, 2, 4),
     Case("rbend_reftilt_vertical",
-         "rbend, l=1.1, angle=0.198, tilt=1.5707963267948966", 1.1, 2, 4,
-         Dict(:kind => :rbend, :L => 1.1)),
+         "rbend, l=1.1, angle=0.198, tilt=1.5707963267948966", 1.1, 2, 4),
     Case("rbend_k1_reftilt_mis_all", "rbend, l=1.1, angle=0.198, k1=0.6, tilt=0.3",
          1.1, 2, 4, false,
-         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02",
-         Dict(:kind => :rbend, :L => 1.1)),
+         "dx=1.0e-3, dy=-8.0e-4, ds=2.0e-3, dtheta=1.0e-3, dphi=-7.0e-4, dpsi=0.02"),
     # Thin multipole: MAD-X's MULTIPOLE is zero length with integrated KNL/KSL,
     # which is exactly what ThinMultipoleSpec means.
-    Case("thin_multipole", "multipole, knl={0.0, 0.05, 1.2}", 0.0, 2, 1,
-         Dict(:kind => :thin_multipole)),
-    Case("thin_multipole_skew", "multipole, knl={0.0, 0.05}, ksl={0.0, 0.0, 0.8}", 0.0, 2, 1,
-         Dict(:kind => :thin_multipole)),
+    Case("thin_multipole", "multipole, knl={0.0, 0.05, 1.2}", 0.0, 2, 1),
+    Case("thin_multipole_skew", "multipole, knl={0.0, 0.05}, ksl={0.0, 0.0, 0.8}", 0.0, 2, 1),
     # Solenoid. Both polarities, deliberately: the sign of ks follows the charge
     # convention and the field direction, so agreement at one polarity proves
     # nothing about the other, and a sign error is invisible in any quantity
     # that is even in ks. Two strengths so the ks-dependence is exercised, not
     # just one working point.
-    Case("solenoid_pos", "solenoid, l=1.3, ks=0.35", 1.3, 2, 1,
-         Dict(:kind => :solenoid, :L => 1.3, :ks => 0.35)),
-    Case("solenoid_neg", "solenoid, l=1.3, ks=-0.35", 1.3, 2, 1,
-         Dict(:kind => :solenoid, :L => 1.3, :ks => -0.35)),
-    Case("solenoid_strong", "solenoid, l=2.0, ks=1.7", 2.0, 2, 1,
-         Dict(:kind => :solenoid, :L => 2.0, :ks => 1.7)),
+    Case("solenoid_pos", "solenoid, l=1.3, ks=0.35", 1.3, 2, 1),
+    Case("solenoid_neg", "solenoid, l=1.3, ks=-0.35", 1.3, 2, 1),
+    Case("solenoid_strong", "solenoid, l=2.0, ks=1.7", 2.0, 2, 1),
     # Solenoid with a superimposed multipole. PTC's SOL5 carries AN/BN natively
     # and interleaves KICK_SOL with KICKMUL, so this exercises our Strang
     # splitting against PTC's -- the two pieces do not commute, so agreement
@@ -307,10 +269,8 @@ const CASES = Case[
     # keyword. So the body is written with knl = k1*L = 0.6*1.3 = 0.78 while our
     # spec carries the thick k1 = 0.6, matching how every other thick magnet in
     # Octopus is spelled. Getting this conversion backwards is a factor of L.
-    Case("solenoid_k1_n8", "solenoid, l=1.3, ks=0.35, knl={0.0, 0.78}", 1.3, 2, 8,
-         Dict(:kind => :solenoid, :L => 1.3, :ks => 0.35, :kn => (0.0, 0.6), :nst => 8)),
-    Case("solenoid_k1_n32", "solenoid, l=1.3, ks=0.35, knl={0.0, 0.78}", 1.3, 2, 32,
-         Dict(:kind => :solenoid, :L => 1.3, :ks => 0.35, :kn => (0.0, 0.6), :nst => 32)),
+    Case("solenoid_k1_n8", "solenoid, l=1.3, ks=0.35, knl={0.0, 0.78}", 1.3, 2, 8),
+    Case("solenoid_k1_n32", "solenoid, l=1.3, ks=0.35, knl={0.0, 0.78}", 1.3, 2, 32),
 ]
 
 function madx_version()
