@@ -630,8 +630,12 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
     sdx2 = zero(T); sdpx2 = zero(T); sdy2 = zero(T); sdpy2 = zero(T)
     sdxpx = zero(T); sdypy = zero(T)
     sdxy = zero(T); sdxpy = zero(T); sdpxy = zero(T); sdpxpy = zero(T)
-    nchunks = _cpu_worker_count()
-    if nchunks == 1 || n < _STRONG_STRONG_PARALLEL_MOMENT_MIN
+    # Fixed chunk grid above the threshold, and path choice by data size
+    # ONLY: the chunk-ordered fold must not depend on the worker count, and
+    # neither may the serial/chunked decision (U5-2; moments moved by up to
+    # 131,072 ulps between 1/4/8 workers pre-fix).
+    nchunks = _REDUCTION_CHUNKS
+    if n < _STRONG_STRONG_PARALLEL_MOMENT_MIN
         for i in idx
             @inbounds begin
                 dx = T(x[i]) - x0; dpx = T(px[i]) - px0

@@ -64,8 +64,11 @@ function _slice_slice_gaussian_kick!(rep::Phase6DRep, idx::Vector{Int}, moments2
     isempty(idx) && return zero(eltype(rep.x))
     T = eltype(rep.x)
     n = length(idx)
-    nchunks = _cpu_worker_count()
-    if nchunks == 1 || n < _STRONG_STRONG_PARALLEL_KICK_MIN
+    # Fixed chunk grid above the threshold, path choice by data size only —
+    # same count-invariance rule as the deposit and moment reductions
+    # (U5-1/2).
+    nchunks = _REDUCTION_CHUNKS
+    if n < _STRONG_STRONG_PARALLEL_KICK_MIN
         lum = zero(T)
         for i in idx
             @inbounds lum += _apply_slice_kick_one!(

@@ -3085,15 +3085,19 @@ end
 end
 
 @testset "CPU solver stack is thread-count invariant" begin
-    # Identical inputs at 1 and 4 logical workers: COORDINATES must be
-    # bit-identical (kicks are chunk-local, so no cross-worker reduction
-    # touches them). The spectral LUMINOSITY total is the one legitimate
-    # cross-chunk reduction -- its parts are summed per worker partition, and
-    # the fold order moves it by exactly 1 ulp between nchunks=1 and
-    # nchunks>1 (measured: -0.0625 on a 4.75e14 total, with every nchunks>=2
-    # bit-identical to each other) -- so it gets a few-ulp tolerance rather
-    # than equality. Worker count is a policy knob, so both counts are real
-    # even on a single-threaded test run.
+    # Identical inputs must give bit-identical results at every worker
+    # count. The original pin ran only BELOW the 4096-particle parallel
+    # thresholds (n=1500), so the threaded deposit/moment/kick folds were
+    # never inside the pinned envelope — and above them the chunk-ordered
+    # reductions moved with the worker count (coordinates ~8e-15, moments to
+    # 131,072 ulps; 2026-08-05 audit U5-1/2, U16-3). The reductions now use
+    # FIXED chunk grids with the serial/chunked choice made by data size
+    # only, so the second block below pins full bit-equality — luminosity
+    # included — at n=15000, above every threshold, for 1/4/8 workers
+    # (measured exact, 0 ulp, at zero collide-time cost: 3.06 s vs 3.10 s at
+    # n=1e6). The first block keeps the original sub-threshold pin; its
+    # spectral-luminosity tolerance covers the historical 1-ulp fold-order
+    # allowance, which equality also satisfies.
     mkr(n) = begin
         s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
         z = [2.0e-2 * sin(0.7 * i + 2.0) + 1.0e-3 * sin(3.1 * i) for i in 1:n]
@@ -3131,6 +3135,28 @@ end
         end
         @test all(a == b for (a, b) in zip(outs[1][2], outs[2][2]))
         @test all(a == b for (a, b) in zip(outs[1][3], outs[2][3]))
+    end
+
+    # Above every parallel threshold: full bit-equality at 1/4/8 workers.
+    for (label, solver) in (
+            ("pic", PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                grid=(16, 16), green_cache=:none, slicing=slc)),
+            ("gpic", GaussianPICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6,
+                luminosity_scale=1.0, grid=(16, 16), green_cache=:none, slicing=slc)),
+            ("spectral_l", SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6,
+                luminosity_scale=1.0, grid=(32, 32), slicing=slc)))
+        outs = map((1, 4, 8)) do k
+            b1, b2 = mkb(15000), mkb(15000)
+            lum = workers(k, b1.rep) do
+                collide!(solver, b1, b2, CPUThreadsBackend)
+            end
+            (lum, map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)))
+        end
+        for other in (2, 3)
+            @test outs[1][1] == outs[other][1]
+            @test all(a == b for (a, b) in zip(outs[1][2], outs[other][2]))
+            @test all(a == b for (a, b) in zip(outs[1][3], outs[other][3]))
+        end
     end
 end
 

@@ -550,6 +550,19 @@ const _STRONG_STRONG_PARALLEL_MOMENT_MIN = 4096
 const _STRONG_STRONG_PARALLEL_KICK_MIN = 4096
 const _PIC_PARALLEL_DEPOSIT_MIN = 4096
 
+# Fixed chunk counts for the count-invariant parallel reductions. Chunk
+# boundaries must depend only on the DATA size, never on the active worker
+# count: the pre-fix chunking used `_cpu_worker_count()`, so above the
+# thresholds the chunk-ordered float folds changed with the thread setting —
+# coordinates by ~8e-15 and transverse moments by up to 131,072 ulps between
+# 1/4/8 workers (2026-08-05 audit, U5-1/2, confirmed from the test side by
+# U16-3). Logical workers multiplex over chunks, so a fixed count caps
+# deposit parallelism at 16 concurrent padded grids (bounded memory) and the
+# cheap-partial reductions at 64 chunks; both merge sequentially in chunk
+# order, which is what makes the result identical at every worker count.
+const _PIC_DEPOSIT_CHUNKS = 16
+const _REDUCTION_CHUNKS = 64
+
 # Safety margin, in grid cells, required before reusing a shifted PIC Green
 # template for a new source/field domain.
 const _PIC_TEMPLATE_MARGIN_CELLS = 1.5
@@ -604,7 +617,7 @@ function _pic_cpu_workspace(::Type{T}, nx::Integer, ny::Integer) where {T}
     green_fft = zeros(Complex{T}, 2nx, 2ny)
     fft_plan = plan_fft!(spectral)
     ifft_plan = plan_ifft!(spectral)
-    local_charge = [similar(charge) for _ in 1:_cpu_worker_count()]
+    local_charge = [similar(charge) for _ in 1:_PIC_DEPOSIT_CHUNKS]
     left = _PICFieldWorkspace(zeros(T, nx, ny), zeros(T, nx, ny), zeros(T, nx, ny))
     right = _PICFieldWorkspace(zeros(T, nx, ny), zeros(T, nx, ny), zeros(T, nx, ny))
     mid = Base.RefValue{Union{Nothing,_PICFieldWorkspace{T}}}(nothing)

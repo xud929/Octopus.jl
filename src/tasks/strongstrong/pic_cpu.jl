@@ -161,7 +161,10 @@ end
 
 function _pic_cpu_workspace!(runtime_cache::Dict, label::Symbol,
                              solver::PICPoissonSolver, ::Type{T}) where {T}
-    key = (:cpu_pic_workspace, label, T, solver.grid, _cpu_worker_count())
+    # No worker count in the key: since the count-invariance fix (U5-1/2)
+    # every workspace buffer is sized by fixed chunk constants, so one
+    # workspace serves every thread setting.
+    key = (:cpu_pic_workspace, label, T, solver.grid)
     return get!(runtime_cache, key) do
         _pic_cpu_workspace(T, solver.grid...)
     end
@@ -1282,7 +1285,9 @@ function _pic_solve_drifted_field_with_green_fft!(field::_PICFieldWorkspace,
 end
 
 function _pic_deposit!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
-    if _cpu_worker_count() > 1 && length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
+    # Path choice by data size ONLY: gating on the worker count made the
+    # 1-worker result differ from every multi-worker one (U5-1).
+    if length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
         return _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
     end
     return _pic_deposit_serial!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
@@ -1290,7 +1295,9 @@ end
 
 function _pic_deposit!(charge, method, x, y, x0, y0, hx, hy, nx, ny,
                        workspace::_PICCPUWorkspace)
-    if _cpu_worker_count() > 1 && length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
+    # Path choice by data size ONLY: gating on the worker count made the
+    # 1-worker result differ from every multi-worker one (U5-1).
+    if length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
         return _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny, workspace)
     end
     return _pic_deposit_serial!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
@@ -1298,7 +1305,9 @@ end
 
 function _pic_deposit_drifted!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny,
                                workspace::_PICCPUWorkspace)
-    if _cpu_worker_count() > 1 && length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
+    # Path choice by data size ONLY: gating on the worker count made the
+    # 1-worker result differ from every multi-worker one (U5-1).
+    if length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
         return _pic_deposit_drifted_threaded!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny, workspace)
     end
     return _pic_deposit_drifted_serial!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny)
@@ -1341,7 +1350,8 @@ function _pic_deposit_drifted_serial!(charge, method, x, px, y, py, drift_s, x0,
 end
 
 function _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
-    nchunks = _cpu_worker_count()
+    # Fixed chunk grid: results must not depend on the worker count (U5-1).
+    nchunks = _PIC_DEPOSIT_CHUNKS
     local_charge = [zero(charge) for _ in 1:nchunks]
     _run_logical_workers(nchunks) do chunk, _
         first_i, last_i = _chunk_bounds(length(x), nchunks, chunk)
@@ -1356,7 +1366,7 @@ end
 
 function _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny,
                                 workspace::_PICCPUWorkspace)
-    nchunks = _cpu_worker_count()
+    nchunks = _PIC_DEPOSIT_CHUNKS
     local_charge = workspace.local_charge
     length(local_charge) == nchunks || return _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
     _run_logical_workers(nchunks) do chunk, _
@@ -1373,7 +1383,7 @@ end
 
 function _pic_deposit_drifted_threaded!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny,
                                         workspace::_PICCPUWorkspace)
-    nchunks = _cpu_worker_count()
+    nchunks = _PIC_DEPOSIT_CHUNKS
     local_charge = workspace.local_charge
     length(local_charge) == nchunks ||
         return _pic_deposit_drifted_serial!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny)
