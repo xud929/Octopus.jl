@@ -4477,6 +4477,36 @@ end
     end
 end
 
+@testset "CUDA last_luminosity is the final turn's value, as on CPU" begin
+    # 2026-08-05 audit open-queue U7-2: the CUDA weak-strong kernels
+    # accumulated luminosity across the in-kernel turn loop, so
+    # last_luminosity came out ~turns × the CPU value (measured exactly 3.0×
+    # at turns=3 for the thin element, with the CPU showing genuine per-turn
+    # variation the sum erased). Pinned at multi-turn CPU parity.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        for kind in (:thin_strong_beam, :gaussian_strong_beam)
+            spec = example_spec(ElementSpec{kind})
+            mkrep() = Phase6DRep([1.0e-4, -2.0e-4, 3.0e-5], [1.0e-5, 0.0, -5.0e-6],
+                                 [-0.5e-4, 2.0e-5, 1.0e-6], [2.0e-5, -1.0e-5, 0.0],
+                                 [1.0e-3, -1.0e-2, 5.0e-3], [1.0e-4, 2.0e-4, -3.0e-4])
+            ec = compile_runtime(spec)
+            rc = mkrep()
+            pol = Octopus.ResolvedCPUExecutionPolicy(4)
+            Octopus._with_execution_policy(pol) do
+                track!(rc, ec, 3, pol)
+            end
+            eg = compile_runtime(spec)
+            rg = Phase6DRep((Octopus.CUDA.CuArray(a)
+                             for a in coordinate_arrays(mkrep()))...)
+            track!(rg, eg, 3, CUDABackend)
+            @test isapprox(Float64(eg.last_luminosity), Float64(ec.last_luminosity);
+                           rtol=1.0e-12)
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 aperture_beam(n; seed=7) = begin
     set_global_rng!(seed=seed, method=:philox)
     Beam(n, CPUThreadsBackend, Float64; beta=(0.5, 0.5, 10.0), alpha=(0.0, 0.0, 0.0),

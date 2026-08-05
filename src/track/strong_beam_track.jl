@@ -141,17 +141,24 @@ if _HAS_CUDA
 			while index <= length(rep)
 				@inbounds begin
 					x, px, y, py, z, pz = rep[index]
-					total_lum = zero(x)
+					turn_lum = zero(x)
 					for turn in 1:turns
+						# Reset per turn: `last_luminosity` is the FINAL
+						# turn's value, as on the CPU path. Accumulating
+						# across the in-kernel turn loop made the CUDA
+						# result ~turns x the CPU one (2026-08-05 audit
+						# queue, U7-2; measured ratio exactly 3.0 at
+						# turns = 3).
+						turn_lum = zero(x)
 						x, px, y, py, z, pz, l = _cuda_thin_strong_beam_track(
 							x, px, y, py, z, pz,
 							moments, kbb, klum, xo, yo, zo, pxo, pyo, pzo,
 							ppxo, ppyo, ppzo, virtual_drift,
 						)
-						total_lum += l
+						turn_lum += l
 					end
 					rep[index] = (x, px, y, py, z, pz)
-					lum[index] = total_lum
+					lum[index] = turn_lum
 				end
 				index += stride
 			end
@@ -170,8 +177,10 @@ if _HAS_CUDA
 			while index <= length(rep)
 				@inbounds begin
 					x, px, y, py, z, pz = rep[index]
-					total_lum = zero(x)
+					turn_lum = zero(x)
 					for turn in 1:turns
+						# Reset per turn — same U7-2 fix as the thin kernel.
+						turn_lum = zero(x)
 						for i in ns:-1:1
 							slice_pxo, slice_pyo = _cuda_slice_transverse_angles(
 								has_slice_angles, pxo, pyo,
@@ -184,11 +193,11 @@ if _HAS_CUDA
 								slice_pxo, slice_pyo, pzo,
 								ppxo, ppyo, ppzo, virtual_drift,
 							)
-							total_lum += l * slice_weight[i]
+							turn_lum += l * slice_weight[i]
 						end
 					end
 					rep[index] = (x, px, y, py, z, pz)
-					lum[index] = total_lum
+					lum[index] = turn_lum
 				end
 				index += stride
 			end
