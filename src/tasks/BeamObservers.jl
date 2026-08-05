@@ -647,6 +647,10 @@ mutable struct CoordinateSnapshotObserver <: AbstractBeamObserver
     path::String
     npart::Union{Nothing,Int}
     append::Bool
+    # (turn, byte offset before that record) for every record THIS object
+    # wrote — the compact record format carries no turn label, so this map is
+    # what lets a replayed window truncate its stale records (U6-2).
+    written::Vector{Tuple{Int64,Int64}}
 end
 
 """
@@ -657,7 +661,7 @@ Write coordinate snapshots in the Octopus compact coordinate record format.
 function CoordinateSnapshotObserver(path::AbstractString; npart=nothing, append::Bool=true)
     count = npart === nothing ? nothing : Int(npart)
     count === nothing || count >= 0 || throw(ArgumentError("npart must be nonnegative or nothing"))
-    return CoordinateSnapshotObserver(String(path), count, append)
+    return CoordinateSnapshotObserver(String(path), count, append, Tuple{Int64,Int64}[])
 end
 
 mutable struct LuminosityObserver <: AbstractBeamObserver
@@ -817,7 +821,10 @@ function observe!(observer::CoordinateSnapshotObserver, ctx::TrackingContext, re
     _record_execution!(:observer_output, _observer_backend(),
         (observer=:CoordinateSnapshotObserver, turn=ctx.turn, npart=npart,
          append=observer.append))
+    offset = observer.append && isfile(observer.path) ? Int64(filesize(observer.path)) :
+             Int64(0)
     write_beam_coordinates(observer.path, rep; npart=npart, append=observer.append)
+    push!(observer.written, (Int64(ctx.turn), offset))
     observer.append = true
     return nothing
 end
@@ -840,6 +847,141 @@ end
 
 function prepare_observer!(observer::LuminosityObserver, runtime_elems)
     observer.elements = runtime_elems
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Replayed-window discard for the continuing observers (2026-08-05 audit
+# open-queue U6-2). A failed `execute!`'s retry — or an explicit `start_turn`
+# rewind — replays absolute turns these observers may already have written,
+# and until this block only `MomentObserver` and the task-level .lum file
+# followed the idempotence rule (drop rows at or beyond the incoming window's
+# `first_turn`); the others duplicated turn labels. Each discard acts only on
+# a CONTINUING observer object (`initialized`/`append` already set): a fresh
+# object rewrites its file anyway, which is the documented replace semantics.
+# ---------------------------------------------------------------------------
+
+function prepare_observer!(observer::LuminosityObserver, runtime_elems, schedule,
+                           turns, first_turn)
+    prepare_observer!(observer, runtime_elems)
+    _discard_replayed_luminosity_rows!(observer, Int(first_turn))
+    return nothing
+end
+prepare_line_observer!(observer::LuminosityObserver, schedule, turns, first_turn=0) =
+    _discard_replayed_luminosity_rows!(observer, Int(first_turn))
+
+function _discard_replayed_luminosity_rows!(observer::LuminosityObserver, first_turn::Int)
+    (observer.initialized && isfile(observer.path)) || return nothing
+    rows = readlines(observer.path)
+    turn_of(line) = tryparse(Int, first(split(line, '\t')))
+    kept = [line for line in rows
+            if !isempty(strip(line)) && turn_of(line) !== nothing &&
+               turn_of(line) < first_turn]
+    tmp = observer.path * ".prepare.tmp"
+    open(tmp, "w") do io
+        for line in kept
+            println(io, line)
+        end
+    end
+    mv(tmp, observer.path; force=true)
+    return nothing
+end
+
+function prepare_observer!(observer::JLD2BeamMomentObserver, runtime_elems, schedule,
+                           turns, first_turn)
+    _discard_replayed_jld2_rows!(observer, Int(first_turn))
+    return nothing
+end
+prepare_line_observer!(observer::JLD2BeamMomentObserver, schedule, turns, first_turn=0) =
+    _discard_replayed_jld2_rows!(observer, Int(first_turn))
+
+function _discard_replayed_jld2_rows!(observer::JLD2BeamMomentObserver, first_turn::Int)
+    # Unflushed rows from a crashed window would be re-observed by the retry.
+    empty!(observer.buffer_turns)
+    empty!(observer.buffer)
+    (observer.initialized && isfile(observer.path)) || return nothing
+    JLD2.jldopen(observer.path, "r+") do file
+        haskey(file, "data") || return nothing
+        data = file["data"]
+        keep = findall(<(Float64(first_turn)), view(data, :, 1))
+        length(keep) == size(data, 1) && return nothing
+        kept = data[keep, :]
+        _jld2_replace!(file, "data", kept)
+        _jld2_replace!(file, "record_count", Int64(size(kept, 1)))
+        observer.record_count = size(kept, 1)
+        return nothing
+    end
+    return nothing
+end
+
+function prepare_observer!(observer::BeamMomentObserver, runtime_elems, schedule,
+                           turns, first_turn)
+    _discard_replayed_binary_rows!(observer, Int(first_turn))
+    return nothing
+end
+prepare_line_observer!(observer::BeamMomentObserver, schedule, turns, first_turn=0) =
+    _discard_replayed_binary_rows!(observer, Int(first_turn))
+
+function _discard_replayed_binary_rows!(observer::BeamMomentObserver, first_turn::Int)
+    empty!(observer.buffer_turns)
+    empty!(observer.buffer)
+    (observer.initialized && isfile(observer.path)) || return nothing
+    open(observer.path, "r+") do io
+        nrows = Int(read(io, Int32))
+        fmtlen = Int(read(io, Int32))
+        fmt = String(read(io, fmtlen))
+        ncols = count(==(','), fmt) + 1
+        rowbytes = ncols * sizeof(Float64)
+        base = 8 + fmtlen
+        turn_at(i) = (seek(io, base + (i - 1) * rowbytes); read(io, Float64))
+        # Rows are in ascending turn order (schedules plan forward and rewinds
+        # drop), so the cutoff is a binary search on the leading turn column.
+        lo, hi = 1, nrows
+        kept = nrows
+        while lo <= hi
+            mid = (lo + hi) >> 1
+            if turn_at(mid) < Float64(first_turn)
+                lo = mid + 1
+            else
+                kept = mid - 1
+                hi = mid - 1
+            end
+        end
+        kept = min(kept, nrows)
+        if kept < nrows
+            seekstart(io)
+            write(io, Int32(kept))
+            truncate(io, base + kept * rowbytes)
+        end
+        observer.record_count = kept
+        return nothing
+    end
+    return nothing
+end
+
+function prepare_observer!(observer::CoordinateSnapshotObserver, runtime_elems, schedule,
+                           turns, first_turn)
+    _discard_replayed_snapshots!(observer, Int(first_turn))
+    return nothing
+end
+prepare_line_observer!(observer::CoordinateSnapshotObserver, schedule, turns, first_turn=0) =
+    _discard_replayed_snapshots!(observer, Int(first_turn))
+
+function _discard_replayed_snapshots!(observer::CoordinateSnapshotObserver, first_turn::Int)
+    # Snapshot records carry no turn label in the file, so the discard uses
+    # the (turn → byte offset) map this observer keeps for the records IT
+    # wrote: same-object retries truncate cleanly; records in a pre-existing
+    # file the object never wrote cannot be attributed and are left alone.
+    isempty(observer.written) && return nothing
+    isfile(observer.path) || return (empty!(observer.written); nothing)
+    idx = findfirst(entry -> entry[1] >= first_turn, observer.written)
+    idx === nothing && return nothing
+    offset = observer.written[idx][2]
+    open(observer.path, "r+") do io
+        truncate(io, offset)
+    end
+    resize!(observer.written, idx - 1)
+    isempty(observer.written) && (observer.append = false)
     return nothing
 end
 

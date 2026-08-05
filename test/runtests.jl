@@ -3438,6 +3438,64 @@ end
     foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
 end
 
+@testset "Every continuing observer drops its replayed window" begin
+    # 2026-08-05 audit open-queue U6-2: only MomentObserver and the task-level
+    # .lum path followed the drop-at-first_turn idempotence rule; the
+    # Luminosity, JLD2, binary-moment, and coordinate-snapshot observers
+    # duplicated turn labels on a crashed-execute! retry or an explicit rewind
+    # (measured [0,1,2,0,1,2,3,4,5]). All four now discard rows/records at or
+    # beyond the incoming window's first turn; snapshots use the observer's
+    # (turn → byte offset) map, since their record format carries no turn
+    # label.
+    mk1() = Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+    dline = (DriftSpec(L=1.0),)
+
+    p1 = tempname() * ".tsv"
+    t1 = TrackingTask(dline; hooks=(ScheduledObserver(LuminosityObserver(p1)),))
+    execute!(t1, mk1(); turns=3)
+    execute!(t1, mk1(); turns=4, start_turn=1)
+    @test [parse(Int, first(split(l, '\t'))) for l in readlines(p1)] == collect(0:4)
+
+    p2 = tempname() * ".jld2"
+    t2 = TrackingTask(dline; hooks=(ScheduledObserver(JLD2BeamMomentObserver(p2; capacity=1)),))
+    execute!(t2, mk1(); turns=3)
+    execute!(t2, mk1(); turns=4, start_turn=1)
+    jturns = Octopus.JLD2.jldopen(p2, "r") do f
+        Int.(f["data"][:, 1])
+    end
+    @test jturns == collect(0:4)
+
+    p3 = tempname() * ".dat"
+    t3 = TrackingTask(dline; hooks=(ScheduledObserver(BeamMomentObserver(p3; capacity=1)),))
+    execute!(t3, mk1(); turns=3)
+    execute!(t3, mk1(); turns=4, start_turn=1)
+    bturns = open(p3, "r") do io
+        n = Int(read(io, Int32))
+        fl = Int(read(io, Int32))
+        fmt = String(read(io, fl))
+        ncols = count(==(','), fmt) + 1
+        [(seek(io, 8 + fl + (i - 1) * ncols * 8); Int(read(io, Float64))) for i in 1:n]
+    end
+    @test bturns == collect(0:4)
+
+    p4 = tempname() * ".dat"
+    t4 = TrackingTask(dline; hooks=(ScheduledObserver(CoordinateSnapshotObserver(p4; append=false)),))
+    execute!(t4, mk1(); turns=3)
+    execute!(t4, mk1(); turns=2, start_turn=1)
+    nrec = open(p4, "r") do io
+        c = 0
+        while !eof(io)
+            n = Int(read(io, UInt32))
+            skip(io, 6 * n * 8)
+            c += 1
+        end
+        c
+    end
+    @test nrec == 3
+
+    foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
+end
+
 @testset "Philox4x32-10 matches the Random123 known-answer vectors" begin
     # 2026-08-05 audit (U15-1/U19-5): the RNG validation script measures only
     # moments and correlations, and PASSED a Philox with the Weyl key bump
