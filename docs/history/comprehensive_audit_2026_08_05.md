@@ -69,9 +69,9 @@ disposed of every lead from that unit).
 | U6 | `src/tasks/BeamObservers.jl` (1,582) + `BPMObserver.jl` (324) + `Tasks.jl` (827) | agent (+auditor for the `append` delta) | reported (6 leads; §7) |
 | U7 | `src/elements/strong_beam.jl` (1,547) + `src/track/strong_beam_track.jl` (495) + `src/tasks/strongstrong/gaussian.jl` (195) | agent | reported (5 leads; §7) |
 | U8 | `src/tasks/strongstrong/gaussian_pic.jl` (869) + `gaussian_pic_cuda.jl` (1,232) — twin pair, parity brief | agent | reported (1 doc lead; clean) |
-| U9 | `src/tasks/strongstrong/spectral.jl` (1,148) + `spectral_cuda.jl` (806) — twin pair, parity brief | agent | reading |
-| U10 | `src/elements/lattice_magnets.jl` (1,222) + `solenoid.jl` (436) + `linear6d.jl` (306) + `linear_maps.jl` (236) | agent | reading |
-| U11 | `src/elements/beam_line.jl` (587) + `aperture.jl` (583) + `thin_elements.jl` (346) + `radiation.jl` (313) + `misalignment.jl` (293) | agent | pending |
+| U9 | `src/tasks/strongstrong/spectral.jl` (1,148) + `spectral_cuda.jl` (806) — twin pair, parity brief | agent | reported (clean; 4 minor/known items) |
+| U10 | `src/elements/lattice_magnets.jl` (1,222) + `solenoid.jl` (436) + `linear6d.jl` (306) + `linear_maps.jl` (236) | agent | reported (11 leads; §7) |
+| U11 | `src/elements/beam_line.jl` (587) + `aperture.jl` (583) + `thin_elements.jl` (346) + `radiation.jl` (313) + `misalignment.jl` (293) | agent | reported (12 leads; §7) |
 | U12 | `src/elements/rf_cavity.jl` (223) + `patch.jl` (209) + `chromaticity_kick.jl` (192) + `crab_cavity.jl` (181) + `lorentz_boost.jl` (163) + `ref_tilt.jl` (126) + `Elements.jl` (15) + `src/track/phase6d_track.jl` (359) + `longitudinal.jl` (232) + `fused_track.jl` (77) + `radiation_track.jl` (67) + `Track.jl` (64) | agent | pending |
 | U13 | `src/knowledge/Knowledge.jl` (955) + `Methods.jl` (75) + `src/registry/Registry.jl` (218) + `src/examples/Examples.jl` (35) + `src/Octopus.jl` (76) + `src/policies/Policies.jl` (352) | agent | pending |
 | U14 | `src/knobs/Knobs.jl` (916) + `symbolic.jl` (319) + `ext/OctopusSymbolicsExt.jl` (19) | agent | pending |
@@ -208,6 +208,17 @@ refuses the detailed-timing degradation with a directed message naming the
 sequential alternative. All four flag combos + the runtime case refuse with
 `ArgumentError`; the honored routes are regression-guarded. Pinned by the
 same CUDA testset.
+
+**F12 (Moderate, auditor-reproduced from U3-1, FIXED).**
+`HighEnergyWeakStrongLimitContract` and `CoherentModePhysicsContract` seeded
+the global RNG and never restored it (probe: seeds `0x123456789abcdef` and
+`20260727` left behind), while every other RNG-touching contract in
+`Contracts.jl` saves/restores — the exact mechanism of the recorded
+SolverOption suite failure. Both validates now wrap their bodies in the
+file's own `try/finally` restore idiom; probe re-run shows LEAKED=false for
+both. U3-2 fixed alongside: the symplecticity docstring advertised
+`default_tolerance=5.0e-7` while the struct default is `5.0e-8` (the fix
+had landed in code only).
 
 **F1 (Moderate, auditor-confirmed, FIXED in package 2).**
 `src/tasks/strongstrong/interface.jl:1991-1992`
@@ -353,6 +364,49 @@ quadrature, neutralization exact):
 - U8-1 (Low, doc): theory note §7.5 claims the coupled branch is CPU-only;
   the CUDA indexed route implements it (solver docstring is correct).
 
+From U9 (spectral twins; **clean** — continuum-mode-sum anchor re-earned at
+≤3.7e-15, S20/R2/R7/R9/R10/R12 fixes verified, Core.Box allowlist re-derived
+TRUE): U9-1 (Minor): the R9 dropped-charge tripwire is CPU-only — all three
+CUDA spectral deposits still clip silently. U9-2: R12 hoist CPU-only
+(perf, doubly non-default). U9-3/U9-4: comment/doc nuances.
+
+From U10 (lattice magnet stack; the exact bend/drift/fringe algebra audits
+clean to generating-function level):
+
+- **U10-1 (High).** `solenoid.jl:237` `_curv_sin(kappa/2, L)` strict
+  `(::T,::T)` with coordinate-dependent kappa: the straight solenoid
+  MethodErrors under ForwardDiff coordinate Jacobians (the h≠0 sweep only
+  exercises curved solenoids, so it cannot see this).
+- **U10-3 (Medium).** `curved=false` with stored `h≠0`: the psi table is
+  gated on `hc=0` but `_sol_kick` receives `elem.h≠0` → non-gradient kick,
+  |J′SJ−S| = 2.50e-3 — the original F2-class magnitude, silently.
+- U10-4 (Low): LatticeMagnet `curved=false` does the OPPOSITE (keeps
+  curvature, warns it is ignored — the warning is false by 1.6e-7).
+- U10-2 (Med): `Solenoid(spec)` promotes over (L,ks,h) only — Dual multipole
+  strengths die. U10-5/6/7 (Low): series-branch boundary errors
+  (`_curv_vers` 5.9e-9, `_sol_log_over_h` derivative 1.5e-8, `_wedge`
+  cancellation ∝1/b1). U10-8/9 (doc): theory-note fringe equations not
+  symplectically consistent as written; contradictory kill-flag claims.
+  U10-10 (info): unknown-kwarg mechanism characterized — out-of-schema
+  keys can CHANGE PHYSICS (`QuadrupoleSpec(e1=0.2)` shifts tracking 7.7e-7).
+  U10-11 (Low): linear6d validator orders on T → Complex MethodError.
+
+From U11 (aperture/beam_line/thin/radiation/misalignment):
+
+- **U11-5 (Med-High).** `MisalignedElement`/`RefTilted`/`CompositeLine`
+  wrappers drop `TrackingContext`: wrapped stochastic radiation silently
+  uses `Random.randn()` — determinism and CPU/CUDA identity lost.
+- **U11-6 (Medium).** The radiation RNG key lacks placement identity: two
+  placements of one `LumpedRadSpec` draw identical noise (2 kicks = exactly
+  2× one; variance 4× not 2×).
+- **U11-7 (Medium).** `aperture.jl:334-342` loss_record with defaulted
+  `element_id=0`: `@inbounds counts[0]+=1` is a silent out-of-bounds write;
+  the loss is invisible.
+- U11-1/2/3/4 (Med): BeamLine own-state nested line counts L=0 in surveys;
+  `reverse` drops own state; folded-override guard omits thin kinds;
+  post-construction `setproperty!` stored-never-read. U11-8 (Low-Med):
+  composite-line aperture losses unattributed. U11-9..12 (Low/doc).
+
 From U4 (reported; agent report at `scratchpad/reports/U4_report.md`):
 
 - **U4-1 (HIGH, unverified by auditor).** `interface.jl:1717-1722,1854-1855,
@@ -404,3 +458,4 @@ luminosity schedule dispatch is specialized by all three grid solvers.
 | `src/tasks/strongstrong/pic_cuda.jl` | `_cuda_pic_extract_slice` always gathers all six coordinates; runtime route guard refuses `:node` off the indexed wavefront sub-route | F10, F11 |
 | `src/tasks/strongstrong/pic_cpu.jl` | `_require_cuda_pic_options` `:node` gate requires the full indexed wavefront flag set | F11 |
 | `test/runtests.jl` | CUDA testset: gathered routes carry pz (parity pinned at 1e-13; measured 7.2e-15..1.4e-14), `:node` degradation refused statically and at runtime | F10, F11 |
+| `src/contracts/Contracts.jl` | RNG save/restore in the two leaking validates; docstring tolerance 5.0e-7 → 5.0e-8 | F12 |

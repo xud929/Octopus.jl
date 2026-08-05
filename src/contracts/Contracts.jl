@@ -1078,7 +1078,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    SymplecticityContract(; step=3.0e-7, default_tolerance=5.0e-7, lorentz_angle=0.01)
+    SymplecticityContract(; step=3.0e-7, default_tolerance=5.0e-8, lorentz_angle=0.01)
 
 Finite-difference symplecticity of the six-dimensional runtime maps: for each
 checked element the Jacobian `J` of the map at a reference phase-space point
@@ -1307,69 +1307,79 @@ end
 
 function validate(contract::HighEnergyWeakStrongLimitContract; kwargs...)
     metrics = Dict{Symbol,Any}()
-    set_global_rng!(seed=0x123456789abcdef, method=:philox)
-    electron = Beam(contract.n_particles, CPUThreadsBackend, Float64;
-        beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0, 0.0),
-        sigma=(106e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=11,
-        charge=-1.0, mc2=EMASS_EV, E0=contract.electron_gev * 1.0e9,
-        r0=RE, npart=1.7203e11)
-    proton = Beam(contract.n_particles, CPUThreadsBackend, Float64;
-        beta=(0.8, 0.072, 6e-2 / 6.6e-4), alpha=(0.0, 0.0, 0.0),
-        sigma=(95e-6, 8.5e-6, 6e-2), cutoff=5.0, rng_id=12,
-        charge=1.0, mc2=PMASS_EV, E0=275e9,
-        r0=RE * ME0 / PMASS_EV, npart=0.6881e11)
-    slicing = LongitudinalSlicing(
-        method=:normal_quantile, nslices=contract.nslices, center_position=:centroid)
-    gaussian = GaussianPoissonSolver(
-        slicing=slicing, virtual_drift=:hirata, include_sigma_xy=false,
-        gaussian_when_luminosity=1, batch_mode=:wavefront)
-    pic = PICPoissonSolver(
-        slicing=slicing, grid=(contract.pic_grid, contract.pic_grid),
-        deposit_method=:CIC, green_type=:integrated, green_cache=:slice_pair,
-        longitudinal_kick=true, batch_mode=:wavefront)
+    # The global RNG is contract input, not contract property: save and
+    # restore it, as every other RNG-touching contract in this file does
+    # (2026-08-05 audit, U3-1: this validate left its fixed seed behind
+    # for whatever ran next).
+    old_seed = global_rng_seed()
+    old_method = global_rng_method()
+    try
+        set_global_rng!(seed=0x123456789abcdef, method=:philox)
+        electron = Beam(contract.n_particles, CPUThreadsBackend, Float64;
+            beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0, 0.0),
+            sigma=(106e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=11,
+            charge=-1.0, mc2=EMASS_EV, E0=contract.electron_gev * 1.0e9,
+            r0=RE, npart=1.7203e11)
+        proton = Beam(contract.n_particles, CPUThreadsBackend, Float64;
+            beta=(0.8, 0.072, 6e-2 / 6.6e-4), alpha=(0.0, 0.0, 0.0),
+            sigma=(95e-6, 8.5e-6, 6e-2), cutoff=5.0, rng_id=12,
+            charge=1.0, mc2=PMASS_EV, E0=275e9,
+            r0=RE * ME0 / PMASS_EV, npart=0.6881e11)
+        slicing = LongitudinalSlicing(
+            method=:normal_quantile, nslices=contract.nslices, center_position=:centroid)
+        gaussian = GaussianPoissonSolver(
+            slicing=slicing, virtual_drift=:hirata, include_sigma_xy=false,
+            gaussian_when_luminosity=1, batch_mode=:wavefront)
+        pic = PICPoissonSolver(
+            slicing=slicing, grid=(contract.pic_grid, contract.pic_grid),
+            deposit_method=:CIC, green_type=:integrated, green_cache=:slice_pair,
+            longitudinal_kick=true, batch_mode=:wavefront)
 
-    reference_electron = _wsl_clone_cpu_beam(electron)
-    reference_proton = _wsl_clone_cpu_beam(proton)
-    reference_luminosity = _wsl_weakstrong_reference!(
-        reference_electron, reference_proton, gaussian)
+        reference_electron = _wsl_clone_cpu_beam(electron)
+        reference_proton = _wsl_clone_cpu_beam(proton)
+        reference_luminosity = _wsl_weakstrong_reference!(
+            reference_electron, reference_proton, gaussian)
 
-    gaussian_electron = _wsl_clone_cpu_beam(electron)
-    gaussian_proton = _wsl_clone_cpu_beam(proton)
-    gaussian_luminosity = collide!(gaussian, gaussian_electron, gaussian_proton,
-                                   CPUThreadsBackend)
-    pic_electron = _wsl_clone_cpu_beam(electron)
-    pic_proton = _wsl_clone_cpu_beam(proton)
-    pic_luminosity = collide!(pic, pic_electron, pic_proton, CPUThreadsBackend)
+        gaussian_electron = _wsl_clone_cpu_beam(electron)
+        gaussian_proton = _wsl_clone_cpu_beam(proton)
+        gaussian_luminosity = collide!(gaussian, gaussian_electron, gaussian_proton,
+                                       CPUThreadsBackend)
+        pic_electron = _wsl_clone_cpu_beam(electron)
+        pic_proton = _wsl_clone_cpu_beam(proton)
+        pic_luminosity = collide!(pic, pic_electron, pic_proton, CPUThreadsBackend)
 
-    gaussian_proton_error = _wsl_max_abs(gaussian_proton.rep, reference_proton.rep)
-    gaussian_electron_change = _wsl_max_abs(gaussian_electron.rep, electron.rep)
-    gaussian_lum_rel = abs(gaussian_luminosity - reference_luminosity) /
-        max(abs(reference_luminosity), eps(Float64))
-    reference_rms = _wsl_centered_rms(reference_proton.rep)
-    pic_size_rel = maximum(abs.(_wsl_centered_rms(pic_proton.rep) .- reference_rms) ./
-                           max.(reference_rms, eps(Float64)))
-    pic_lum_rel = abs(pic_luminosity - reference_luminosity) /
-        max(abs(reference_luminosity), eps(Float64))
+        gaussian_proton_error = _wsl_max_abs(gaussian_proton.rep, reference_proton.rep)
+        gaussian_electron_change = _wsl_max_abs(gaussian_electron.rep, electron.rep)
+        gaussian_lum_rel = abs(gaussian_luminosity - reference_luminosity) /
+            max(abs(reference_luminosity), eps(Float64))
+        reference_rms = _wsl_centered_rms(reference_proton.rep)
+        pic_size_rel = maximum(abs.(_wsl_centered_rms(pic_proton.rep) .- reference_rms) ./
+                               max.(reference_rms, eps(Float64)))
+        pic_lum_rel = abs(pic_luminosity - reference_luminosity) /
+            max(abs(reference_luminosity), eps(Float64))
 
-    metrics[:gaussian_proton_max_abs_error] = gaussian_proton_error
-    metrics[:gaussian_electron_max_abs_change] = gaussian_electron_change
-    metrics[:gaussian_luminosity_relative_error] = gaussian_lum_rel
-    metrics[:pic_luminosity_relative_error] = pic_lum_rel
-    metrics[:pic_proton_size_relative_error] = pic_size_rel
-    metrics[:n_particles] = contract.n_particles
+        metrics[:gaussian_proton_max_abs_error] = gaussian_proton_error
+        metrics[:gaussian_electron_max_abs_change] = gaussian_electron_change
+        metrics[:gaussian_luminosity_relative_error] = gaussian_lum_rel
+        metrics[:pic_luminosity_relative_error] = pic_lum_rel
+        metrics[:pic_proton_size_relative_error] = pic_size_rel
+        metrics[:n_particles] = contract.n_particles
 
-    gaussian_passed = gaussian_proton_error <= contract.gaussian_atol &&
-                      gaussian_electron_change <= contract.gaussian_atol &&
-                      gaussian_lum_rel <= contract.gaussian_luminosity_rtol
-    pic_passed = pic_lum_rel <= contract.pic_luminosity_rtol &&
-                 pic_size_rel <= contract.pic_size_rtol
-    passed = gaussian_passed && pic_passed
-    message = passed ?
-        "Strong-strong collisions reduce to the frozen-source weak-strong kick at infinite source energy (soft-Gaussian exact; PIC within model tolerance)." :
-        "The high-energy weak-strong limit failed (soft-Gaussian exactness or PIC model tolerance)."
-    return ContractResult(passed, message;
-                          residual=max(gaussian_proton_error, pic_lum_rel),
-                          metrics=metrics)
+        gaussian_passed = gaussian_proton_error <= contract.gaussian_atol &&
+                          gaussian_electron_change <= contract.gaussian_atol &&
+                          gaussian_lum_rel <= contract.gaussian_luminosity_rtol
+        pic_passed = pic_lum_rel <= contract.pic_luminosity_rtol &&
+                     pic_size_rel <= contract.pic_size_rtol
+        passed = gaussian_passed && pic_passed
+        message = passed ?
+            "Strong-strong collisions reduce to the frozen-source weak-strong kick at infinite source energy (soft-Gaussian exact; PIC within model tolerance)." :
+            "The high-energy weak-strong limit failed (soft-Gaussian exactness or PIC model tolerance)."
+        return ContractResult(passed, message;
+                              residual=max(gaussian_proton_error, pic_lum_rel),
+                              metrics=metrics)
+    finally
+        set_global_rng!(seed=old_seed, method=old_method)
+    end
 end
 
 """
@@ -1500,23 +1510,31 @@ end
 
 function validate(contract::CoherentModePhysicsContract; kwargs...)
     metrics = Dict{Symbol,Any}()
-    result = _coherent_mode_lambdas(contract, contract.solver)
-    metrics[:solver] = contract.solver
-    passed = true
-    worst_drift = 0.0
-    for plane in (:x, :y)
-        lambda = result[Symbol(plane, :_lambda)]
-        drift = result[Symbol(plane, :_sigma_drift)]
-        metrics[Symbol(:lambda_, plane)] = lambda
-        metrics[Symbol(:sigma_drift_, plane)] = drift
-        worst_drift = max(worst_drift, abs(drift))
-        passed &= contract.lambda_band[1] <= lambda <= contract.lambda_band[2]
+    # Save/restore the global RNG around _coherent_mode_lambdas, which
+    # seeds it (2026-08-05 audit, U3-1).
+    old_seed = global_rng_seed()
+    old_method = global_rng_method()
+    try
+        result = _coherent_mode_lambdas(contract, contract.solver)
+        metrics[:solver] = contract.solver
+        passed = true
+        worst_drift = 0.0
+        for plane in (:x, :y)
+            lambda = result[Symbol(plane, :_lambda)]
+            drift = result[Symbol(plane, :_sigma_drift)]
+            metrics[Symbol(:lambda_, plane)] = lambda
+            metrics[Symbol(:sigma_drift_, plane)] = drift
+            worst_drift = max(worst_drift, abs(drift))
+            passed &= contract.lambda_band[1] <= lambda <= contract.lambda_band[2]
+        end
+        passed &= worst_drift <= contract.sigma_mode_atol
+        message = passed ?
+            "The $(contract.solver) solver reproduces the Vlasov-band coherent-mode Yokoya factor with the sigma mode unshifted." :
+            "The $(contract.solver) solver does not reproduce the Vlasov-band Yokoya factor (expected for moment-closure solvers: the pi-mode excess over the rigid value requires distribution-shape feedback)."
+        return ContractResult(passed, message; residual=worst_drift, metrics=metrics)
+    finally
+        set_global_rng!(seed=old_seed, method=old_method)
     end
-    passed &= worst_drift <= contract.sigma_mode_atol
-    message = passed ?
-        "The $(contract.solver) solver reproduces the Vlasov-band coherent-mode Yokoya factor with the sigma mode unshifted." :
-        "The $(contract.solver) solver does not reproduce the Vlasov-band Yokoya factor (expected for moment-closure solvers: the pi-mode excess over the rigid value requires distribution-shape feedback)."
-    return ContractResult(passed, message; residual=worst_drift, metrics=metrics)
 end
 
 """
