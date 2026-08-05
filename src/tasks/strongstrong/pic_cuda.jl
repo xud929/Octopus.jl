@@ -4333,18 +4333,23 @@ if _HAS_CUDA
             f0 = floor(u)
             ix = Int32(f0)
             f = u - f0
+            # w3 in the same closed form as the CPU `_pic_tsc_weights`, not
+            # the 1-w1-w2 complement it once was: the complement differed
+            # from the CPU weight by 1 ulp on some inputs, a needless
+            # backend divergence in a deposit both backends must agree on
+            # (2026-08-05 audit, U2-3).
             if f < typeof(u)(0.5)
                 t = f * f
                 w1 = typeof(u)(0.125) + typeof(u)(0.5) * (t - f)
                 w2 = typeof(u)(0.75) - t
-                w3 = one(u) - w1 - w2
+                w3 = typeof(u)(0.125) + typeof(u)(0.5) * (t + f)
                 base = ix
             else
                 fr = one(u) - f
                 t = fr * fr
                 w1 = typeof(u)(0.125) + typeof(u)(0.5) * (t + fr)
                 w2 = typeof(u)(0.75) - t
-                w3 = one(u) - w1 - w2
+                w3 = typeof(u)(0.125) + typeof(u)(0.5) * (t - fr)
                 base = ix + Int32(1)
             end
             base = max(Int32(1), min(base, n - Int32(2)))
