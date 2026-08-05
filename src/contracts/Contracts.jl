@@ -2378,9 +2378,10 @@ function validate(contract::SolverOptionEffectivenessContract; kwargs...)
     # silently outside the sweep — the staleness mode the contract otherwise
     # only guards per-option.
     for T in subtypes(AbstractPoissonSolver)
-        # Parametric solver/observer types are UnionAlls, for which
-        # `isconcretetype` is false — gate on abstractness instead.
+        # UnionAll gate + Octopus-defined only (test scaffolding may subtype
+        # in Main; see the interface.jl tree guards).
         isabstracttype(T) && continue
+        parentmodule(T) === (@__MODULE__) || continue
         haskey(contract.probes, nameof(T)) || return ContractResult(false,
             "$(nameof(T)) has no solver-option probe entry; the sweep would silently skip it")
     end

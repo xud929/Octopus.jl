@@ -1669,8 +1669,13 @@ function validate_configuration_metadata()
     # someone edits an enumeration.
     for T in subtypes(AbstractPoissonSolver)
         # Parametric solver/observer types are UnionAlls, for which
-        # `isconcretetype` is false — gate on abstractness instead.
+        # `isconcretetype` is false — gate on abstractness instead. And only
+        # types DEFINED IN OCTOPUS: the suite defines throwaway observer
+        # subtypes in Main, and the tree guard flagging those failed the
+        # public-configuration contract in suite context only (2026-08-05
+        # campaign shakeout).
         isabstracttype(T) && continue
+        parentmodule(T) === (@__MODULE__) || continue
         T in (PICPoissonSolver, GaussianPoissonSolver, SpectralPoissonSolver,
               GaussianPICPoissonSolver) || push!(errors,
             "$(T) is a concrete AbstractPoissonSolver with no validate_configuration_metadata block")
@@ -1720,8 +1725,13 @@ function validate_configuration_metadata()
     # keeps the next observer from repeating that.
     for T in subtypes(AbstractBeamObserver)
         # Parametric solver/observer types are UnionAlls, for which
-        # `isconcretetype` is false — gate on abstractness instead.
+        # `isconcretetype` is false — gate on abstractness instead. And only
+        # types DEFINED IN OCTOPUS: the suite defines throwaway observer
+        # subtypes in Main, and the tree guard flagging those failed the
+        # public-configuration contract in suite context only (2026-08-05
+        # campaign shakeout).
         isabstracttype(T) && continue
+        parentmodule(T) === (@__MODULE__) || continue
         any(o -> o isa T, observer_instances) || push!(errors,
             "$(T) is a concrete AbstractBeamObserver with no validate_configuration_metadata coverage")
     end
