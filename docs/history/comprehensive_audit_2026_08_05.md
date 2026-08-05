@@ -101,12 +101,55 @@ disposed of every lead from that unit).
 
 ## 2. Traceability matrix
 
-(built during Phase 3; see §3 seam map first — the matrix rows are added as
-units report)
+Traceability held up better than any prior pass expected: every physics
+feature audited traces Requirement → theory note → equation → implementation
+→ test → (usually) validation. The verified chains, with the strongest link
+named: lattice magnets (note §4-6 → `lattice_magnets.jl` → PTC contract with
+committed reference, provenance chain 55==55==55 cases, MAD-X 5.03.06+flags
+recorded — U10/U21); solenoid (note → map → RK4-independent testset at 1e-12
+— U10/U17); Bassetti-Erskine (note → four branches → independent 96-pt and
+200k-pt quadrature at ≤2.5e-14 — U7); slicing (note incl. published-table
+erratum → seven rules → Furman Table 1 at ≤5e-7 — U7); spectral solver (note
+→ both backends → continuum mode sum at ≤3.7e-15 — U9); GaussianPIC (note →
+twins → quadrature/closed-form at documented tolerances — U8); Philox (spec →
+implementation → now the Random123 KAT gate — U15/F19); longitudinal
+conventions (note §2 → `longitudinal.jl` → 12 round trips at ≤3.9e-17 —
+U12). **Broken links found and dispositioned:** the RF cavity chain's
+note→code link carried the same defect at both ends (F16); the coherent-mode
+note's §3 table no longer traces to what the code produces (U19-1, priced);
+three contracts trace to no runner (U3-6/U21-13, priced); two validation
+"references" are local reimplementations rather than the production objects
+they claim to validate (U20-2/U20-4, priced).
 
 ## 3. Seam map
 
-(auditor-owned; populated before/while wave results arrive)
+The seam classes, their participants, and who covered them this pass:
+
+- **CPU↔CUDA twins** (`pic_cpu`↔`pic_cuda`, `gaussian_pic`↔`_cuda`,
+  `spectral`↔`_cuda`, `strong_beam_track` host↔device): U8/U9 parity-briefed
+  side-by-side reads plus the auditor's measured parity on newly-unlocked
+  routes (7.2e-15..1.4e-14). Defects found ON this seam: F10 (5-field slice
+  vs unconditional marshal), F11 (route-dependent :node), U2-2 (equal_area
+  membership drift, open), U7-2 (luminosity turns-accumulation, open),
+  U15-3 (cutoff clip-vs-resample, open). The seam-defect clustering the
+  protocol predicts held.
+- **Producer↔consumer protocols** (append/restart for .lum + MomentObserver;
+  knob/spec epochs; loss-record lifecycle): auditor-direct (U22 + fix
+  packages 2/5) and U4/U6/U14. Defects: F1/F3/F4/F5/F7/F9, U6-2 (open),
+  U14-1 (open), U13-2 (open).
+- **Declared schema ↔ runtime consumer**: U3/U13 enumerations plus
+  effectiveness contracts. Defects: F18, U3-4/U3-5 (open), U11-3/U11-4
+  (open), the unknown-kwarg acceptance family (U3-10/U13-1, open).
+- **Multiple walkers over one structure** (line expansion/survey/aperture
+  binding/observer collection): U11 enumerated every walker; the T3 pin
+  holds for the bound pair; U11-1/U11-8 (nested-line survey and
+  composite-aperture attribution, open) sit exactly on the unbound edge of
+  that seam; F14's new collector deliberately walks deeper than the binder
+  and says so.
+- **Element wrappers ↔ context path** (a seam this audit ADDS to the map):
+  the generic ctx fallback silently un-contexts any wrapper that forgets to
+  forward — F13 fixed the three known wrappers; the class is worth a
+  lowered-code-style sweep if new wrappers appear.
 
 ## 4. Findings
 
@@ -346,7 +389,27 @@ MomentObserver twin is crash-safe here by `record_count` ordering
 
 ## 5. Corrections to this audit's own analysis
 
-(none yet)
+- **U2-1's `cuda_async=false` variant was wrong**: that route is guarded by
+  the existing `:quadratic` gate (my GPU run got the directed refusal, not
+  the crash). The lead was right in mechanism and wrong in one of its two
+  claimed reachable routes — recorded, and the narrower truth is what F10
+  fixed.
+- **The A-2 "mid-file corruption refused" check does not discriminate**:
+  pre-fix code also threw `ArgumentError` (from `parse`, accidentally). The
+  five other package-2 behaviors carry the negative control; this one is
+  guarded by message content only.
+- **F15's negative control is unobservable in principle**: the pre-fix
+  behavior was an out-of-bounds write whose visible state happened to match
+  the fixed behavior. Recorded rather than manufactured.
+- **Fingerprint scope**: the baseline is CPU-only by design; CUDA-touching
+  fixes (F10/F11) were instead gated by measured cross-backend parity. A
+  future audit wanting a CUDA fingerprint should capture one before its
+  first CUDA fix.
+- **Agent-lead survival**: 21 briefed units produced ~120 leads; every lead
+  the auditor acted on reproduced (with one variant narrowed, above), and
+  none of the ~90 as-yet-unfixed leads has been contradicted — but they
+  remain LEADS (≈60% historical survival) until reproduced; §7 marks the
+  auditor-reproduced subset explicitly.
 
 ## 6. Test, contract, validation, and execution log
 
@@ -370,7 +433,65 @@ MomentObserver twin is crash-safe here by `record_count` ordering
   `gpu_fixverify_f10_f11.jl`): pre-fix U2-1 FieldError and U1-1 node-drop
   measurements; post-fix parity and refusal matrix (see F10/F11).
 
-## 7. Lead queue
+## 7. Open queue — dispositioned, priced, with reproductions
+
+Every item below survived to the end of this pass unfixed, with its severity
+and what closing it takes. Items marked ✔ were auditor-reproduced; the rest
+are agent leads with recorded reproductions.
+
+**Medium-high / physics or determinism:**
+- ✔ **Thread-count invariance above the parallel thresholds** (U5-1/2,
+  U16-3, triple-sourced): the part-9 "bit-identical at 1/4/8 workers" claim
+  was true only below `_PIC_PARALLEL_DEPOSIT_MIN=4096` (the pin used 500 —
+  1500/beam over 3 slices); above it, chunk-ordered deposit and moment
+  reductions differ across worker counts (coords ≤2.5e-15, moments to
+  131,072 ulps). Roundoff-scale, but the recorded claim is now corrected
+  here and in `todo.md`; the decision (count-invariant fixed-chunk
+  reduction vs re-scoping the pin) is the owner's, priced in `todo.md`.
+- **U7-2**: CUDA weak-strong kernels SUM luminosity across turns while the
+  CPU stores the final turn (~N× divergence of `last_luminosity`); backend
+  contract compares coordinates only. GPU repro recipe in U7's report.
+- **U6-2**: `LuminosityObserver`/`JLD2BeamMomentObserver`/
+  `BeamMomentObserver`/`CoordinateSnapshotObserver` have no replayed-window
+  discard (retry duplicates turn labels) — the idempotence protocol exists
+  only for `MomentObserver` and the .lum path. Probe recorded.
+- **U7-1**: elliptical (η≠0) Bassetti-Erskine kick throws under ForwardDiff
+  (`_near_round_conditioning_factor`, `_erfcx` lack Dual paths) —
+  same family as F17 but needs a derivative rule, not a transcription.
+- **U19-1/U19-2 (doc-High)**: coherent-modes note §3 table is
+  pre-normalization-fix data; the "no detached EIC y-mode" claim is stale
+  against the current eigen-solve. Needs re-runs to regenerate — priced,
+  not guessed.
+
+**Medium / correctness-adjacent and validator gaps:** U3-3 (solenoid
+declares SymplecticityContract; contract case list lacks it; no
+declaration↔case tripwire), U3-4 (+U13 detail: `validate_configuration_
+metadata` misses GaussianPICPoissonSolver, BPMObserver, any task-level
+schema; second hand-copied solver list at `Contracts.jl:2188`), U3-6/U21-13
+(PublicConfigurationEffectiveness + both strong-strong backend-consistency
+contracts executed by no test and no CI), U3-10/U13-1/U11-9 (unknown
+keywords accepted by all 32 friendly constructors; out-of-schema keys can
+change physics — `QuadrupoleSpec(e1=0.2)` shifts tracking 7.7e-7; choke
+point characterized in U13's report), U13-2 (params read by compile are
+rejected by the documented `spec.param=` binding; the `spec.params[:k]=`
+escape hatch skips the `_SPEC_EPOCH` bump), U13-3 (empty `tracking_methods`
+silently disables three validator checks; `:line` live instance), U14-1
+(knob retype-before-throw mutates cached value without epoch bump), U14-2
+(`^` string round-trip), U17-2 (spectral-vs-BE proton assertion passes with
+the kick zeroed/doubled/flipped), U17-3 (corpse semantics differ Gaussian
+vs PIC, 2.6% luminosity, unpinned), U16-2 (a "must be able to fail" control
+that cannot fail), U16-5 (bare `catch` swallows AD-sweep regressions),
+U15-3 (cutoff clip-vs-resample between backends, atoms at the cutoff),
+U19-3 (detuning u>1 unphysical and grid-dependent in archived bands).
+
+**Low / hygiene, docs, dead code** (full detail in unit reports):
+U1-3, U2-2, U2-3, U3-5/7/8/9, U5-5/6/7/8, U9-1..4, U10-5/6/7/8/9/11,
+U11-1/2/3/4/8/10/11/12, U12-4/5 (+two cross-file notes), U13-4/5/6,
+U14-3..7 (incl. the public `knob_symbolics_available()` query that would
+retire A-1), U15-2/4/5/6/7, U16-1/4/6, U17-4..8, U18-1..6, U19-4..10,
+U20-1..8, U21-1..12, A-1.
+
+## 7a. Historical lead queue (as first recorded)
 
 Wave 1 is fully reported (U1–U6; full agent reports under
 `scratchpad/reports/`). Open leads by unit, severity-ordered; ✔ marks
