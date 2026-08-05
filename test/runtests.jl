@@ -3254,14 +3254,19 @@ end
                 luminosity_scale=1.0, grid=(16, 16), green_cache=:none, slicing=slc)),
             ("spectral_l", SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6,
                 luminosity_scale=1.0, grid=(32, 32), slicing=slc)))
-        outs = map((1, 4, 8)) do k
+        # Counts clamped to the pool: the policy refuses workers above
+        # Threads.nthreads (measured at the suite's --threads=4 when this
+        # block first asked for 8). Any two distinct counts prove the
+        # invariance; 1/4/8 was verified out-of-suite on an 8-thread pool.
+        counts = unique((1, 2, Threads.nthreads(:default)))
+        outs = map(counts) do k
             b1, b2 = mkb(15000), mkb(15000)
             lum = workers(k, b1.rep) do
                 collide!(solver, b1, b2, CPUThreadsBackend)
             end
             (lum, map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)))
         end
-        for other in (2, 3)
+        for other in 2:length(outs)
             @test outs[1][1] == outs[other][1]
             @test all(a == b for (a, b) in zip(outs[1][2], outs[other][2]))
             @test all(a == b for (a, b) in zip(outs[1][3], outs[other][3]))
