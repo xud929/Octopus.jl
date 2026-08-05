@@ -640,6 +640,28 @@ Minor findings to appear thorough is itself a defect in the audit.
 
 # Phase 18 — Required Final Report
 
+## Where it lands, and what it is named
+
+The report's name is what the "Worked precedents" lookup at the top of
+this document searches for, so the convention is binding, not stylistic:
+
+- A **full pass** writes `docs/history/comprehensive_audit_YYYY_MM_DD.md`,
+  dated by the day the pass closes (a rare second full pass closing the
+  same day appends `_b`).
+- A **scoped pass** writes `docs/history/audit_<scope-slug>_YYYY_MM_DD.md`
+  — never the `comprehensive_` prefix, which would make a narrow pass
+  masquerade as the newest full precedent.
+- **Unit reports** are archived beside the report at
+  `docs/history/<report-name>_unit_reports/U<k>_report.md`, in the same
+  commit — they are the queue's file:line ground truth, and leaving them
+  in session scratch nearly cost one audit its entire open queue
+  (Measured Lesson 6).
+- The report is added to the `docs/README.md` index in the same commit,
+  per AGENTS.md's documentation rules, and `docs/todo.md` gains or updates
+  the row that carries the audit's open queue pointer.
+
+## Contents
+
 Include:
 
 - Executive Summary
