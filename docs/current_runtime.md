@@ -504,11 +504,18 @@ coordinate array in the tracked representation.
 
 CI has no GPU, so the CUDA half of the suite executes only where someone
 runs it — the repository's dominant recorded failure class ("correct
-check, never executed"). GPU machines therefore run the exact CI gate
-nightly via `test/nightly_suite.sh` from the user crontab
-(`47 2 * * * .../test/nightly_suite.sh`), which appends one
-date/commit/testsets/verdict/exit row per run to
-`~/.octopus_nightly/status.tsv` and keeps the last 14 logs beside it.
-Before trusting a "the suite is green" claim on a GPU machine, check
-`column -t ~/.octopus_nightly/status.tsv | tail` — a FAIL row or a stale
-date is the signal. Installed on the RTX 4500 Ada machine on 2026-08-05.
+check, never executed"). `test/nightly_suite.sh` is the standing
+counterweight: the exact CI gate invocation, run nightly from the user
+crontab, appending one date/commit/testsets/verdict/exit row per run to
+`~/.octopus_nightly/status.tsv` and keeping the last 14 logs beside it.
+
+The gate is **opt-in, per machine**: the script is inert repository
+content, and cloning, `Pkg.add`, or `Pkg.test` never installs it — it runs
+only where someone has added the crontab entry by hand
+(`47 2 * * * .../test/nightly_suite.sh`). It is currently installed on
+exactly one machine, the RTX 4500 Ada box (2026-08-05; first row PASS at
+151 testsets). On a machine that carries the gate, check
+`column -t ~/.octopus_nightly/status.tsv | tail` before trusting a "the
+suite is green" claim — a FAIL row or a stale date is the signal. On any
+other machine, the absence of `~/.octopus_nightly/` simply means the gate
+is not installed there.
