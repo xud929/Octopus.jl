@@ -1507,8 +1507,13 @@ end
           MisalignedElement{<:LatticeMagnet}
     @test compile_runtime(ThinQuadrupoleSpec(k1l=0.05, tilt=0.02)) isa
           MisalignedElement{<:ThinMultipole}
-    @test compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, x_offset=1e-3)).inner ===
-          nothing || true   # the wrapped element is reachable for inspection
+    # The wrapped element is reachable for inspection and IS the runtime the
+    # aligned compile produces (`x || true` here used to be a tautology).
+    let wrapped = compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, x_offset=1e-3))
+        @test wrapped.inner isa LatticeMagnet
+        @test typeof(wrapped.inner) ===
+              typeof(compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7)))
+    end
 end
 
 @testset "The bend map is cancellation-free as b0 goes to zero" begin
@@ -2099,18 +2104,27 @@ end
                     err = maximum(abs, d .- fd) / max(maximum(abs, fd), 1e-8)
                     push!(isfinite(err) && err < 1e-4 ? verified : disagreed,
                           "$(meta.kind).$(key)")
-                catch
+                catch sweep_err
                     # Genuinely not complex-steppable, and each for a reason:
-                    # an aperture is a threshold test, the solenoid's kernel
-                    # already uses complex arithmetic internally, and the
-                    # near-round beam-beam evaluator is calibrated per
-                    # precision. A dual number reaches the first two; none of
-                    # them is a pinned type.
+                    # an aperture is a threshold test (a complex coordinate
+                    # has no ordering, so it raises a MethodError) and the
+                    # strong-beam evaluators are calibrated per precision
+                    # (MethodError / InexactError on a complex parameter).
+                    # Only those two exception types may be swallowed; a bare
+                    # catch here once hid every possible regression, so
+                    # anything else -- a genuine error in an element map --
+                    # propagates and fails the testset.
+                    sweep_err isa Union{MethodError,InexactError} || rethrow()
                 end
             end
         end
         @test isempty(disagreed)
-        @test length(verified) >= 19
+        # The floor is today's exact count (25: measured 2026-08 -- the caught
+        # bucket holds only aperture.x/y_limit, gaussian_strong_beam.sigz and
+        # thin_strong_beam.kbb/klum), so silently losing even ONE element to
+        # the catch above fails. Raise this number when a new differentiable
+        # parameter is registered; never lower it.
+        @test length(verified) >= 25
         # the kinds that must stay differentiable
         for k in ("quadrupole", "sextupole", "octupole", "multipole", "sbend",
                   "drift", "patch", "kicker", "thin_crab_cavity")
@@ -2356,6 +2370,15 @@ end
     H = ForwardDiff.hessian(obj, p0)
     @test maximum(abs, H .- H') == 0.0
     @test all(isfinite, H)
+    #    Symmetric and finite alone cannot see a wrong-but-finite value, so pin
+    #    every column against a central finite difference of the gradient --
+    #    which item 2 already pinned against differences of obj itself.
+    #    Measured agreement 4e-9..9e-8, so rtol=1e-5 leaves >100x headroom.
+    for (j, h) in ((1, 1e-5), (2, 1e-5), (3, 1e-7))
+        e = zeros(3); e[j] = h
+        @test H[:, j] ≈ (ForwardDiff.gradient(obj, p0 .+ e) .-
+                         ForwardDiff.gradient(obj, p0 .- e)) ./ 2h rtol = 1.0e-5
+    end
 
     # 4. the solenoid, invisible to complex-step because its own kernel builds
     #    `complex(a, b)` internally. A dual reaches it, so this is the only
@@ -3166,24 +3189,21 @@ end
     end
 end
 
-@testset "CUDA equal_area histogram matches the per-bin-mask oracle" begin
+@testset "CUDA equal_area histogram matches the CPU membership rule" begin
     # R8 (part 6): the histogram is now one atomic kernel pass instead of a
     # device broadcast + reduction PER BIN (57.8 ms -> 3.2 ms at n=1e6,
-    # ns=15). The kernel must reproduce the mask semantics bit for bit --
-    # candidate-bin division corrected against the exact edge expressions,
-    # last bin closed, ties on an edge landing identically.
+    # ns=15). U2-2 then aligned its membership with the CPU `_slice_bin`
+    # (division + clamp): the kernel must land every live finite particle in
+    # the bin the CPU `_threaded_histogram` gives it, bit for bit -- the old
+    # edge-comparison rule disagreed on ~0.8% of quantized-z samples and
+    # dropped rounding orphans the CPU clamps into the extreme bins.
     if CUDA_TESTS_ACTIVE
         oracle(z_h, flags_h, zmin, width, bins) = begin
-            T = eltype(z_h)
             counts = zeros(Int, bins)
-            for b in 1:bins
-                lb = T(zmin + (b - 1) * width)
-                rb = T(zmin + b * width)
-                for (i, zi) in enumerate(z_h)
-                    flags_h === nothing || flags_h[i] || continue
-                    inbin = b == bins ? (zi >= lb && zi <= rb) : (zi >= lb && zi < rb)
-                    inbin && (counts[b] += 1)
-                end
+            for (i, zi) in enumerate(z_h)
+                flags_h === nothing || flags_h[i] || continue
+                b = Octopus._slice_bin(zi, zmin, width, bins)
+                b == 0 || (counts[b] += 1)
             end
             counts
         end
@@ -4222,26 +4242,37 @@ end
     # Ties are measure-zero for continuous Float64 z, which is why this survived
     # every existing test -- but routine for a Float32 beam, for z loaded at
     # limited precision, and for any initial condition that puts z on a grid.
+    #
+    # The CPU half of the invariant needs no GPU, so it runs on every host --
+    # only the CUDA parity half is gated.
+    n = 2000
+    mkb(pol) = begin
+        set_global_rng!(seed=5, method=:philox)
+        Beam(n, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+             sigma=(1.0e-4, 1.0e-5, 1.0e-2), cutoff=5.0, rng_id=1, charge=-1.0,
+             mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+    end
+    b = mkb(CPUThreadsBackend)
+    z = round.(Array(b.rep.z) ./ 1.0e-3) .* 1.0e-3       # deliberate ties
+    copyto!(b.rep.z, z)
+    @test length(unique(z)) < n ÷ 10                      # the premise holds
+    for ns in (5, 9)
+        sl = LongitudinalSlicing(nslices=ns, method=:equal_count)
+        sc = Octopus.longitudinal_slices(b.rep, sl)
+        # exact equal-count even under ties, as the docstring promises
+        cc = [length(i) for i in sc.indices]
+        @test maximum(cc) - minimum(cc) <= 1
+    end
     if CUDA_TESTS_ACTIVE
-        n = 2000
-        mkb(pol) = begin
-            set_global_rng!(seed=5, method=:philox)
-            Beam(n, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
-                 sigma=(1.0e-4, 1.0e-5, 1.0e-2), cutoff=5.0, rng_id=1, charge=-1.0,
-                 mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.0e11)
-        end
-        b = mkb(CPUThreadsBackend); g = mkb(CUDAExecutionPolicy())
-        z = round.(Array(b.rep.z) ./ 1.0e-3) .* 1.0e-3       # deliberate ties
-        copyto!(b.rep.z, z); copyto!(g.rep.z, z)
-        @test length(unique(z)) < n ÷ 10                      # the premise holds
+        g = mkb(CUDAExecutionPolicy())
+        copyto!(g.rep.z, z)
         for ns in (5, 9)
             sl = LongitudinalSlicing(nslices=ns, method=:equal_count)
             sc = Octopus.longitudinal_slices(b.rep, sl)
             sg = Octopus._cuda_longitudinal_slices(g.rep, sl)
-            # exact equal-count on BOTH backends, as the docstring promises
+            # exact equal-count on the GPU too, and the same counts
             cc = [length(i) for i in sc.indices]
             cg = [length(i) for i in sg.indices]
-            @test maximum(cc) - minimum(cc) <= 1
             @test cg == cc
             # and the same particles, not merely the same counts
             @test [sort(Array(i)) for i in sg.indices] == [sort(Array(i)) for i in sc.indices]
@@ -4545,6 +4576,71 @@ end
         @test_throws ArgumentError collide!(solver, test_beam(corpse(1)),
                                             test_beam(clean_rep()), CPUThreadsBackend)
     end
+end
+
+@testset "Lost-particle charge semantics are pinned per solver family" begin
+    # The two solver families implement DIFFERENT documented semantics for a
+    # dead particle's share of the bunch charge, and the corpse-variant equality
+    # above is blind to both by construction: a count-normalization defect is
+    # corpse-content-independent, so all three variants move together. Pin each
+    # family's semantics against a survivors-only reference so a silent change
+    # on either side fails here.
+    #
+    # Gaussian: slice weights are live fractions summing to one, so the solver
+    # RENORMALIZES -- a masked beam collides bit-identically to a beam that
+    # simply does not contain the corpses.
+    # PIC: `_pic_kbb1`/`_pic_kbb2` keep dividing by the FULL macro count (the
+    # `_nonfinite_coordinate_error` docstring in interface.jl): a dead particle
+    # stops depositing and the bunch carries proportionally less charge, so the
+    # kick on the opposing beam scales by the live fraction, while the
+    # luminosity -- normalized per live particle -- stays put.
+    #
+    # kbb is tiny so the kick is linear and the live fraction is read off the
+    # kick rms directly: measured masked/survivors kick rms ratio 0.899934
+    # against live_frac 0.9 (residual 7.3e-5), and the Gaussian arms are
+    # bit-identical. A renormalizing PIC lands at 1.0, 111x outside the rtol;
+    # a charge-reducing Gaussian breaks the bit equality by ~1e-7 in the
+    # coordinates and the luminosity in the 5th digit.
+    n = 4000
+    dead = collect(1:10:n)                      # 10% dead, spread across z
+    live_frac = (n - length(dead)) / n
+    sl = LongitudinalSlicing(nslices=3, method=:equal_count)
+    kbb = 1.0e-10
+    rms(v) = sqrt(sum(abs2, v) / length(v))
+    clean() = Phase6DRep((loss_test_coords(n)[k]
+                          for k in (:x, :px, :y, :py, :z, :pz))...)
+    # npart pinned equal on both arms so the beams differ ONLY by the corpses.
+    mk(rep) = begin
+        params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=n)
+        Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+    end
+    function masked_vs_survivors(solver)
+        masked_tgt = mk(clean())
+        l_masked = allow_lost_particles() do
+            collide!(solver, mk(loss_test_rep(n, dead)), masked_tgt,
+                     CPUThreadsBackend)
+        end
+        surv_tgt = mk(clean())
+        l_surv = collide!(solver, mk(loss_survivor_rep(n, dead)), surv_tgt,
+                          CPUThreadsBackend)
+        return l_masked, l_surv, masked_tgt, surv_tgt
+    end
+
+    lg_m, lg_s, gt_m, gt_s = masked_vs_survivors(GaussianPoissonSolver(
+        kbb1=kbb, kbb2=kbb, luminosity_scale=1.0, slicing=sl))
+    @test lg_m == lg_s
+    @test all(a == b for (a, b) in zip(coordinate_arrays(gt_m),
+                                       coordinate_arrays(gt_s)))
+
+    lp_m, lp_s, pt_m, pt_s = masked_vs_survivors(PICPoissonSolver(
+        kbb1=kbb, kbb2=kbb, luminosity_scale=1.0, grid=(64, 64),
+        green_cache=:none, slicing=sl))
+    z0 = clean()
+    kick_masked = pt_m.rep.py .- z0.py
+    kick_surv = pt_s.rep.py .- z0.py
+    @test rms(kick_surv) > 0                    # the premise: a kick happened
+    @test isapprox(rms(kick_masked) / rms(kick_surv), live_frac; rtol=1.0e-3)
+    @test isapprox(lp_m, lp_s; rtol=1.0e-4)
 end
 
 @testset "Lost particles are dropped from every slicing method" begin
@@ -5704,18 +5800,31 @@ end
         return e, p
     end
     sl = LongitudinalSlicing(nslices=1, method=:normal_quantile, center_position=:centroid)
+    e0, p0 = round_pair()
+    px0 = copy(e0.rep.px)
+    py0 = copy(p0.rep.py)
     eg, pg = round_pair()
     collide!(GaussianPoissonSolver(slicing=sl, longitudinal_kick=false), eg, pg, CPUThreadsBackend)
+    kick_e_ref = eg.rep.px .- px0
+    kick_p_ref = pg.rep.py .- py0
     # Both spectral variants reproduce the analytic Bassetti-Erskine kick (physical
     # kbb convention identical to GaussianPoissonSolver); the residual is the
-    # deposition/mode-truncation shape error, well under 3%.
+    # deposition/mode-truncation shape error. Compare the per-particle KICK, not
+    # final momenta: the proton-side kick is only ~5% of the intrinsic momentum
+    # spread, so an rms-of-final-momenta ratio passed with the kick zeroed,
+    # doubled, or sign-flipped (measured ratios 0.998 / 1.004 / 0.999 against
+    # atol=0.03), and the electron side was blind to a sign flip (0.989). Against
+    # the kick itself those same mutations give relative errors 1.0 / 0.96 / 2.0
+    # on both beams, while the real residual is 0.017-0.027.
     for (method, grid) in ((:grid, (128, 128)), (:grid_free, (48, 48)))
         es, ps = round_pair()
         collide!(SpectralPoissonSolver(slicing=sl, method=method, grid=grid,
                                        domain_factor=16.0, longitudinal_kick=false),
                  es, ps, CPUThreadsBackend)
-        @test isapprox(rms(es.rep.px) / rms(eg.rep.px), 1.0; atol=0.03)
-        @test isapprox(rms(ps.rep.py) / rms(pg.rep.py), 1.0; atol=0.03)
+        kick_e = es.rep.px .- px0
+        kick_p = ps.rep.py .- py0
+        @test rms(kick_e .- kick_e_ref) / rms(kick_e_ref) < 0.05
+        @test rms(kick_p .- kick_p_ref) / rms(kick_p_ref) < 0.05
     end
 end
 

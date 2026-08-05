@@ -5230,12 +5230,14 @@ if _HAS_CUDA
         # atomically bumping its bin -- the previous implementation built a
         # full-length device mask and reduced it PER BIN (`bins` broadcasts +
         # reductions over n), which measured 57.8 ms against 0.6 ms at n=1e6,
-        # ns=15 (audit part 6, R8). Bin membership reproduces the mask
-        # semantics exactly: the candidate index from division is corrected
-        # against the same `zmin + b*width` edge expressions the masks
-        # compared with, the last bin closes on the right, and a value no
-        # interval accepts (possible at the extremes under rounding, which the
-        # old version silently under-counted too) is dropped identically.
+        # ns=15 (audit part 6, R8). Bin membership is the CPU `_slice_bin`
+        # rule (slicing.jl), division + clamp, transcribed exactly: every
+        # live finite particle lands in the bin `_threaded_histogram` gives
+        # it, bit for bit. The earlier edge-comparison rule inherited from
+        # the mask implementation disagreed with the CPU on ~0.8% of
+        # quantized-z samples and dropped rounding orphans the CPU clamps
+        # into the extreme bins, shifting `cumulative` and hence the
+        # interpolated :equal_area boundaries across backends (audit U2-2).
         function _cuda_equal_area_histogram_kernel!(counts, z, flags, zmin, width, bins)
             i = (CUDA.blockIdx().x - Int32(1)) * CUDA.blockDim().x + CUDA.threadIdx().x
             i > length(z) && return nothing
@@ -5243,19 +5245,14 @@ if _HAS_CUDA
                 @inbounds flags[i] || return nothing
             end
             @inbounds zi = z[i]
-            isfinite(zi) || return nothing
-            T = typeof(zi)
-            lo(bb) = T(zmin + (bb - 1) * width)
-            hi(bb) = T(zmin + bb * width)
-            b = clamp(unsafe_trunc(Int, floor((zi - zmin) / width)) + 1, 1, Int(bins))
-            while b > 1 && zi < lo(b)
-                b -= 1
-            end
-            while b < Int(bins) && zi >= hi(b)
-                b += 1
-            end
-            inside = zi >= lo(b) && (b == Int(bins) ? zi <= hi(b) : zi < hi(b))
-            inside || return nothing
+            # `_slice_bin`, inlined for the kernel: the non-finite guard is
+            # the same both-comparisons-fail-for-NaN trick, and its
+            # `floor(Int, d)` becomes `unsafe_trunc(Int, floor(d))` -- exact
+            # here because d is confined to [0, bins] (zi lies inside the
+            # live extrema that defined zmin and width).
+            d = (zi - zmin) / width
+            (d > -Inf && d < Inf) || return nothing
+            b = clamp(unsafe_trunc(Int, floor(d)) + 1, 1, Int(bins))
             CUDA.@atomic counts[b] += Int32(1)
             return nothing
         end
