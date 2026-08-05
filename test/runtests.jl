@@ -3470,6 +3470,31 @@ end
     foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
 end
 
+@testset "Unknown spec keys warn, placement keys bind, set_param! bumps the epoch" begin
+    # 2026-08-05 audit open-queue U3-10/U13-1/U13-2. Every friendly
+    # constructor documents open keyword storage, so unknown keys stay LEGAL
+    # — but a typo of a physics parameter looked identical and tracked
+    # silently (an out-of-schema e1=0.2 on a quadrupole shifts tracking by
+    # 7.7e-7); construction now warns once naming the keys. The placement
+    # keys compile_runtime consumes for EVERY kind (offsets, pitches, tilt,
+    # ref_tilt, misalign_convention) are exempt and are now accepted by the
+    # documented `spec.key = value` binding path, which used to reject them
+    # on 17 of 30 kinds while compiling them happily. set_param! is the
+    # deliberate-metadata door that bumps the recompile epoch the raw
+    # params-Dict write skips.
+    @test_logs (:warn, r"unknown parameter") match_mode = :any QuadrupoleSpec(
+        L=0.3, k1=1.2, this_keyword_does_not_exist=1.0)
+    @test_logs (:warn, r"bogus") match_mode = :any ElementSpec{:quadrupole}(; bogus=2.0)
+    @test_logs DriftSpec(L=0.5, x_offset=1.0e-3)          # placement: silent
+    d = DriftSpec(L=0.5)
+    d.x_offset = 1.0e-3
+    @test compile_runtime(d) isa Octopus.MisalignedElement
+    e0 = Octopus._spec_epoch()
+    set_param!(d, :my_note, "hello")
+    @test Octopus._spec_epoch() == e0 + 1
+    @test d.params[:my_note] == "hello"
+end
+
 @testset "Contract coverage guards: declared kinds, solver tree, broken baselines, unrun contracts" begin
     # 2026-08-05 audit open-queue items U3-3/4/6/7. The symplecticity case
     # list now carries the solenoid (the one kind that DECLARES the

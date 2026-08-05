@@ -9,7 +9,7 @@ export AbstractOctopusObject,
        ParamMeta, ElementMeta, element_meta, register_element_meta!, @element_spec,
        register_element_spec!, register_friendly_alias!, registered_element_specs,
        parameter_schema, example_spec, construction_help, element_help,
-       validate_element_metadata, allowed_physics_keywords
+       validate_element_metadata, allowed_physics_keywords, set_param!
 
 """Root type for structured, introspectable architectural objects in Octopus."""
 abstract type AbstractOctopusObject end
@@ -46,16 +46,60 @@ way to *bind an existing element to a knob* after construction
 (`spec.zeta1 = @knob_expr(HSR.arc_k1)`). Assignments are validated against the
 element's parameter schema when one is registered (unknown names are typos,
 rejected with the valid list); genuinely new metadata keys go through
-`spec.params[:key] = value`. Every in-place parameter mutation bumps a global
+`set_param!(spec, :key, value)` — NOT the raw `spec.params[:key] = value`
+Dict, which skips the recompile epoch below and leaves an already-built task
+tracking stale physics (2026-08-05 audit, U13-2). Placement keys the compile
+consumes for every kind (offsets, pitches, tilt, `ref_tilt`,
+`misalign_convention`) are always assignable. Every in-place parameter
+mutation bumps a global
 spec epoch, so tasks already built from this spec recompile their runtime line
 at the next `execute!` — exactly like knob assignment.
 """
 struct ElementSpec{Kind} <: AbstractElementSpec
     params::Dict{Symbol,Any}
+    function ElementSpec{Kind}(params::Dict{Symbol,Any}) where {Kind}
+        spec = new{Kind}(params)
+        # Every construction route funnels through here, so this is the one
+        # choke point for the unknown-key warning (2026-08-05 audit, U13-1).
+        _warn_unknown_spec_keys(ElementSpec{Kind}, params)
+        return spec
+    end
 end
 
 ElementSpec{Kind}(; kwargs...) where {Kind} =
     ElementSpec{Kind}(Dict{Symbol,Any}(Symbol(k) => v for (k, v) in pairs(kwargs)))
+
+# Placement keys `compile_runtime` consumes for EVERY kind — the misalignment
+# and design-orbit-roll wraps read them regardless of the element's own
+# schema (`_misalignment_wrap`, `_ref_tilt_wrap`), so `setproperty!` accepts
+# them and the unknown-key warning below exempts them. Before this list, the
+# documented binding path rejected physically meaningful input on 17 of 30
+# kinds (`DriftSpec(L=0.5, x_offset=1e-3)` compiled to a MisalignedElement
+# while `d.x_offset = 1e-3` threw; 2026-08-05 audit, U13-2).
+const _PLACEMENT_PARAM_KEYS = (:x_offset, :y_offset, :z_offset, :x_pitch,
+                               :y_pitch, :tilt, :misalign_convention, :ref_tilt)
+
+# Loud, not strict: every friendly constructor documents "extra keyword
+# arguments are stored as descriptive spec metadata", so an unknown key is
+# LEGAL — but it is also exactly what a typo of a physics parameter looks
+# like, and a typo tracked silently is silent wrong physics (measured: an
+# out-of-schema `e1 = 0.2` on a quadrupole shifts tracking by 7.7e-7;
+# 2026-08-05 audit, U3-10/U13-1/U10-10). One warning at construction names
+# the unrecognized keys; `set_param!` is the deliberate-metadata door that
+# stays silent.
+function _warn_unknown_spec_keys(::Type{ElementSpec{Kind}}, params::Dict{Symbol,Any}) where {Kind}
+    meta = get(ELEMENT_META_BY_KIND, Kind, nothing)
+    # No meta yet: `@element_spec` example expressions run before their own
+    # registration, and unregistered kinds have no schema to check against.
+    (meta === nothing || isempty(meta.parameters)) && return nothing
+    unknown = [k for k in keys(params)
+               if !haskey(meta.parameters, k) && !(k in _PLACEMENT_PARAM_KEYS)]
+    isempty(unknown) && return nothing
+    @warn "ElementSpec{$(repr(Kind))}: unknown parameter(s) stored as descriptive " *
+          "metadata only — if one is a typo of a physics parameter, it is NOT " *
+          "being tracked. Deliberate metadata can use set_param! to stay silent." kind = Kind unknown = sort!(unknown; by = string)
+    return nothing
+end
 
 # Bumped by every in-place ElementSpec parameter mutation; task runtime caches
 # compare it (next to the knob epoch) so a post-construction binding reaches an
@@ -77,7 +121,7 @@ function Base.setproperty!(spec::ElementSpec{Kind}, name::Symbol, value) where {
         "params is the ElementSpec storage field; assign individual parameters " *
         "(spec.zeta1 = ...) instead"))
     p = getfield(spec, :params)
-    if !haskey(p, name)
+    if !haskey(p, name) && !(name in _PLACEMENT_PARAM_KEYS)
         meta = _element_meta_or_nothing(spec)
         if meta !== nothing && !isempty(meta.parameters) &&
            !haskey(meta.parameters, name)
@@ -85,10 +129,27 @@ function Base.setproperty!(spec::ElementSpec{Kind}, name::Symbol, value) where {
                 "element kind $(repr(Kind)) has no parameter $(name); valid " *
                 "parameters: " *
                 join(sort!(collect(propertynames(meta.parameters)); by=string), ", ") *
-                ". For a new metadata key, write spec.params[$(repr(name))] = value."))
+                ". For a new metadata key, use set_param!(spec, $(repr(name)), value) " *
+                "— the raw spec.params[...] = ... form skips the recompile epoch."))
         end
     end
     p[name] = value
+    _SPEC_EPOCH[] += 1
+    return value
+end
+
+"""
+    set_param!(spec, key, value)
+
+Set any spec parameter or metadata key, bypassing the schema check but NOT
+the recompile epoch: a mutation through the raw `spec.params[key] = value`
+Dict never bumps `_SPEC_EPOCH`, so an already-built task would keep tracking
+the stale compile (2026-08-05 audit, U13-2). This is the deliberate door for
+out-of-schema metadata; schema-checked physics parameters read better as
+`spec.key = value`.
+"""
+function set_param!(spec::ElementSpec, key::Symbol, value)
+    getfield(spec, :params)[key] = value
     _SPEC_EPOCH[] += 1
     return value
 end

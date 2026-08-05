@@ -37,3 +37,4 @@ profiling/log
 # Python bytecode from paper/ helper scripts
 __pycache__/
 *.pyc
+.claude/
