@@ -84,7 +84,15 @@ Return a deterministic `UInt64` using the selected Octopus counter RNG method.
         # Philox: falling through silently produced valid-looking numbers
         # from the wrong stream (2026-08-05 audit, U15-4);
         # rng_method_symbol already throws for the same code.
-        throw(ArgumentError("unknown RNG method code $(method_code)"))
+        #
+        # The message is STATIC because this runs inside CUDA kernels (every
+        # stochastic element draws through here): interpolating the code
+        # builds a heap string, which is invalid device IR — the U15-4 throw
+        # as first written broke the fused-kernel compile for any line
+        # containing a counter-RNG element, and no suite test tracked one on
+        # the fused CUDA path to notice (caught by the U21-5 coverage
+        # extension; pinned in the suite).
+        throw(ArgumentError("unknown RNG method code; use RNG_PHILOX or RNG_SPLITMIX"))
     end
 end
 

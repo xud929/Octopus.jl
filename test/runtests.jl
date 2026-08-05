@@ -4164,6 +4164,23 @@ end
             atol=1.0e-10, rtol=1.0e-10))
         @test gpu.status in (:passed, :skipped)
     end
+
+    # A counter-RNG element must COMPILE in the fused CUDA kernel. Every
+    # stochastic draw funnels through octopus_uint64, whose unknown-method
+    # throw as first written (2026-08-05 hygiene sweep, U15-4) interpolated
+    # the code into the message — a heap string, invalid device IR — so any
+    # line containing a stochastic element failed cuda_track_kernel!
+    # compilation outright, and nothing here tracked one to notice. Caught by
+    # the U21-5 validation-line extension; the message is static now, and
+    # this pins the whole class: compile, run, and agree with the CPU.
+    lumped = LumpedRadSpec{Float64}(;
+        damping_turns=(4000.0, 4000.0, 2000.0), beta=(0.8, 0.072, 90.0),
+        alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), rng_id=103)
+    stochastic_gpu = validate(ElementTrackingBackendConsistencyContract(;
+        line=(lumped,), n_particles=256, turns=2,
+        backend_a=CPUThreadsBackend, backend_b=CUDABackend,
+        atol=1.0e-10, rtol=1.0e-10))
+    @test stochastic_gpu.status in (:passed, :skipped)
 end
 
 @testset "Configuration rejection" begin
