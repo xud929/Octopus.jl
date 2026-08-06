@@ -2,7 +2,7 @@ export RNG_PHILOX, RNG_SPLITMIX,
        set_global_rng!, global_rng_seed, global_rng_method, global_rng_method_code,
        next_rng_id!, claim_rng_id!, reset_rng_id_counter!,
        octopus_uint64, octopus_uniform01, octopus_normal_pair, octopus_normal,
-       counter_philox4x32, counter_uint64, counter_uniform01,
+       counter_philox4x32, counter_uint64, counter_uniform01, philox4x32_self_test,
        counter_normal_pair, counter_normal,
        splitmix_uint64, splitmix_uniform01, splitmix_normal_pair, splitmix_normal
 
@@ -205,12 +205,59 @@ separates independent stochastic elements or streams.
     k0 = _counter_rng_low32(key)
     k1 = _counter_rng_high32(key)
 
+    return _philox4x32_block(c0, c1, c2, c3, k0, k1)
+end
+
+"""
+    _philox4x32_block(c0, c1, c2, c3, k0, k1)
+
+Apply the full Philox4x32-`PHILOX4X32_ROUNDS` block function to a 128-bit
+counter and 64-bit key, returning the four output words.
+
+This is the round loop *and* the Weyl key schedule that
+[`counter_philox4x32`](@ref) runs, factored out so that the known-answer test
+can drive the production driver rather than a re-implementation of it. Keeping
+it in one place is the point: the previous known-answer testset re-wrote this
+loop locally, so it pinned `_philox4x32_round` and the constants but not the
+schedule that actually consumes them (2026-08-05_b audit, U25-2).
+"""
+@inline function _philox4x32_block(c0::UInt32, c1::UInt32, c2::UInt32, c3::UInt32,
+                                   k0::UInt32, k1::UInt32)
     for _ in 1:PHILOX4X32_ROUNDS
         c0, c1, c2, c3 = _philox4x32_round(c0, c1, c2, c3, k0, k1)
         k0 += PHILOX4X32_W0
         k1 += PHILOX4X32_W1
     end
     return c0, c1, c2, c3
+end
+
+"""
+    philox4x32_self_test() -> Bool
+
+Check the counter RNG's block function against the upstream Random123
+`kat_vectors` for `philox4x32-10`, returning `true` when it reproduces all
+three bit-for-bit.
+
+This answers a question no amount of moment-and-correlation testing can. Those
+statistics are satisfied by any generator with good low-order behaviour
+whatever its round function: a Philox with the Weyl key bump removed, and a
+3-round variant, both pass a mean/variance/correlation gate comfortably
+(2026-08-05_b audit, U25-2, measured). Only a known-answer vector pins the
+*implementation*. Both `test/runtests.jl` and
+`validation/counter_rng_validation.jl` call this, so there is one copy of the
+vectors and one driver under test.
+"""
+function philox4x32_self_test()
+    PHILOX4X32_ROUNDS == 10 || return false
+    return _philox4x32_block(0x00000000, 0x00000000, 0x00000000, 0x00000000,
+                             0x00000000, 0x00000000) ==
+           (0x6627e8d5, 0xe169c58d, 0xbc57ac4c, 0x9b00dbd8) &&
+           _philox4x32_block(0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
+                             0xffffffff, 0xffffffff) ==
+           (0x408f276d, 0x41c83b0e, 0xa20bc7c6, 0x6d5451fd) &&
+           _philox4x32_block(0x243f6a88, 0x85a308d3, 0x13198a2e, 0x03707344,
+                             0xa4093822, 0x299f31d0) ==
+           (0xd16cfe09, 0x94fdcceb, 0x5001e420, 0x24126ea1)
 end
 
 """

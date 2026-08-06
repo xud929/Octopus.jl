@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **105 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **106 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -90,7 +90,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U24-5 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/symplecticity_validation.jl:116-124` | the script derives the case list from the contract but does **not** run the contract's |
 | U24-6 | medium |  | `test/runtests.jl:7106 (SEAM — outside my region, reported and stopped)` | the one place that runs `symplecticity_validation.jl` automatically passes |
 | U25-1 | medium |  | `validation/pic_option_consistency.jl:119-124 (+ :226-228)` | on the GPU, choosing `interaction_grid=:node` or `slice_interpolation=:quadratic` |
-| U25-2 | medium |  | `validation/counter_rng_validation.jl:86-92` | the script's gate is a *statistics* test, not a *generator* test — it |
+| U25-2 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/counter_rng_validation.jl:86-92` | the script's gate is a *statistics* test, not a *generator* test — it |
 | U25-3 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/counter_rng_validation.jl:86-92` | the same gate's tolerances are fixed absolute constants while the |
 | U25-4 | medium |  | `validation/tracking_backend_consistency.jl:154 (seam: src/contracts/Co` | `:aperture` is covered by the tripwire **by name only** — with the |
 | U3-1 | medium |  | `src/tasks/strongstrong/pic_cuda.jl:5564-5578, 5660-5668` | The CUDA slice transverse moments change with the launch grid rather than only with |

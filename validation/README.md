@@ -179,9 +179,24 @@ grid-free solver.
 ## Counter RNG
 
 `counter_rng_validation.jl` checks the Philox-based stateless counter RNG used
-for current stochastic beam initialization and tracking. It reports basic
+for current stochastic beam initialization and tracking. It runs the
+Random123 known-answer vectors for philox4x32-10 first, then reports basic
 uniform and normal statistics, component correlation, neighboring-particle
 correlation, and reproducibility checks.
+
+**Read the two halves differently.** The known-answer check is the generator
+anchor: it drives the production block function and either reproduces the
+upstream vectors bit-for-bit or fails. The moment and correlation checks are a
+*statistics* test and cannot stand in for it — measured, a Philox4x32 with the
+Weyl key bump removed and a 3-round variant both pass every moment bound
+comfortably (2026-08-05_b audit, U25-2). The same known-answer gate runs in
+`test/runtests.jl` ("Philox4x32-10 matches the Random123 known-answer
+vectors"); both call `Octopus.philox4x32_self_test()`, so there is one copy of
+the vectors and one driver under test.
+
+The moment tolerances scale as `1/sqrt(N)` (6σ), so every `N` below is a valid
+run; they were fixed constants calibrated to `N = 1e6` and failed a healthy
+generator at the smaller `N` this file recommends (U25-3).
 
 Run the default one-million-sample check:
 

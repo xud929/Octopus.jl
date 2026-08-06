@@ -21,8 +21,23 @@ Optional environment variables:
     OCTOPUS_RNG_VALIDATION_BACKEND=philox
     OCTOPUS_RNG_VALIDATION_WRITE_CSV=true
 
-The checks are intentionally lightweight. They verify reproducibility and basic
-standard-normal statistics; they are not a full statistical test suite.
+What each half of this script can and cannot detect (2026-08-05_b audit, U25-2):
+
+  * The MOMENT checks below (means, variances, the two correlations, the tail
+    fractions) are a statistics test, not a generator test. They are satisfied
+    by any generator with good low-order behaviour, whatever its round
+    function. Measured: a Philox4x32 with the Weyl key bump REMOVED, and a
+    3-round variant, both pass every one of them. Do not read a pass here as
+    evidence that the generator is the algorithm it claims to be.
+  * The KNOWN-ANSWER check does exactly that, and is the anchor: it drives the
+    production block function against the upstream Random123 `kat_vectors` for
+    philox4x32-10 and reproduces them bit-for-bit or fails. It runs first here,
+    and again in `test/runtests.jl` ("Philox4x32-10 matches the Random123
+    known-answer vectors"), from one shared implementation.
+
+The moment checks remain useful for what they are: they catch a driver that
+mis-maps counters onto the block function, which a known-answer vector on the
+block alone would not see. Neither half is a full statistical test suite.
 =#
 
 N = parse(Int, get(ENV, "OCTOPUS_RNG_VALIDATION_N", "1000000"))
@@ -36,6 +51,14 @@ normal_value = backend == :philox ? counter_normal :
                backend == :splitmix ? splitmix_normal :
                error("unknown OCTOPUS_RNG_VALIDATION_BACKEND=$(backend); use philox or splitmix")
 uniform_value = backend == :philox ? counter_uniform01 : splitmix_uniform01
+
+# The generator identity check, first and loudest: everything below it is a
+# statistics test that a wrong Philox passes (U25-2).
+kat_ok = philox4x32_self_test()
+println("Philox4x32-10 known-answer vectors = ", kat_ok)
+kat_ok || error("Philox4x32-10 does not reproduce the Random123 known-answer " *
+                "vectors: the generator is not the algorithm it claims to be. " *
+                "No moment statistic below can substitute for this.")
 
 samples = Vector{Float64}(undef, N)
 samples2 = Vector{Float64}(undef, N)

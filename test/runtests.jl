@@ -4347,27 +4347,48 @@ end
 @testset "Philox4x32-10 matches the Random123 known-answer vectors" begin
     # 2026-08-05 audit (U15-1/U19-5): the RNG validation script measures only
     # moments and correlations, and PASSED a Philox with the Weyl key bump
-    # removed and a 3-round variant. These are the upstream Random123
-    # kat_vectors for philox4x32-10, driven exactly as counter_philox4x32
-    # drives the round loop; they pin the implementation, not its statistics.
-    philox10(c0, c1, c2, c3, k0, k1) = begin
+    # removed and a 3-round variant. The upstream Random123 kat_vectors for
+    # philox4x32-10 pin the implementation, not its statistics.
+    #
+    # 2026-08-05_b audit, U25-2: this testset used to re-write the round loop
+    # locally, so it pinned `_philox4x32_round` and the constants but NOT the
+    # Weyl key schedule that consumes them -- the very thing whose removal the
+    # statistical gate could not see. The vectors and the driver now live in
+    # `philox4x32_self_test`, which runs the production block function, and
+    # the validation script gates on the same call.
+    @test Octopus.PHILOX4X32_ROUNDS == 10
+    @test Octopus.philox4x32_self_test()
+
+    # The self-test must be able to FAIL, or it is decoration. Perturbing the
+    # key schedule by one Weyl step -- the exact regression the moment gate
+    # accepts -- has to break every vector.
+    bumpless(c0, c1, c2, c3, k0, k1) = begin
         for _ in 1:Octopus.PHILOX4X32_ROUNDS
             c0, c1, c2, c3 = Octopus._philox4x32_round(c0, c1, c2, c3, k0, k1)
-            k0 += Octopus.PHILOX4X32_W0
-            k1 += Octopus.PHILOX4X32_W1
         end
         (c0, c1, c2, c3)
     end
-    @test Octopus.PHILOX4X32_ROUNDS == 10
-    @test philox10(0x00000000, 0x00000000, 0x00000000, 0x00000000,
-                   0x00000000, 0x00000000) ==
-          (0x6627e8d5, 0xe169c58d, 0xbc57ac4c, 0x9b00dbd8)
-    @test philox10(0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
-                   0xffffffff, 0xffffffff) ==
-          (0x408f276d, 0x41c83b0e, 0xa20bc7c6, 0x6d5451fd)
-    @test philox10(0x243f6a88, 0x85a308d3, 0x13198a2e, 0x03707344,
-                   0xa4093822, 0x299f31d0) ==
-          (0xd16cfe09, 0x94fdcceb, 0x5001e420, 0x24126ea1)
+    @test bumpless(0x00000000, 0x00000000, 0x00000000, 0x00000000,
+                   0x00000000, 0x00000000) !=
+          Octopus._philox4x32_block(0x00000000, 0x00000000, 0x00000000,
+                                    0x00000000, 0x00000000, 0x00000000)
+
+    # And the block function must be the one the production driver runs, not a
+    # parallel copy that could drift away from it.
+    @test Octopus.counter_philox4x32(123456789, 7, 11, 42, 1) ==
+          Octopus._philox4x32_block(
+              Octopus._counter_rng_low32(UInt64(42)),
+              Octopus._counter_rng_high32(UInt64(42)),
+              Octopus._counter_rng_low32(UInt64(7)),
+              Octopus._counter_rng_high32(UInt64(7)),
+              Octopus._counter_rng_low32(
+                  Octopus._counter_rng_splitmix64(UInt64(123456789)) ⊻
+                  Octopus._counter_rng_splitmix64(UInt64(11) + 0x9e3779b97f4a7c15) ⊻
+                  Octopus._counter_rng_splitmix64(UInt64(1) + 0xbf58476d1ce4e5b9)),
+              Octopus._counter_rng_high32(
+                  Octopus._counter_rng_splitmix64(UInt64(123456789)) ⊻
+                  Octopus._counter_rng_splitmix64(UInt64(11) + 0x9e3779b97f4a7c15) ⊻
+                  Octopus._counter_rng_splitmix64(UInt64(1) + 0xbf58476d1ce4e5b9)))
 end
 
 @testset "Wrapped stochastic elements keep their context, shared streams warn, unbound apertures cannot corrupt" begin
