@@ -77,7 +77,17 @@ Overrides: `OCTOPUS_EMIT_SCHEME` (`linear`/`quadratic`), `OCTOPUS_EMIT_NSLICES`,
 Outputs (under `result/`)
 -------------------------
 - `emittance_growth_<tag>.tsv`      -- per-turn eps_x, eps_y, eps_z for both beams
-- `emittance_growth_<tag>.meta.tsv` -- one summary row (growth rates, validity)
+- `emittance_growth_<tag>.meta.tsv` -- one summary row (conditions, growth rates,
+  validity). The conditions include the solver family, read off the solver
+  object, so the aggregator can tell a study arm from a run made with a locally
+  modified solver.
+
+The `emittance_growth_` prefix is this script's namespace and the aggregator
+globs it. A run that is not a product of this script -- a different solver, a
+repeat of a seed already taken, a scratch probe -- must be written under a
+different prefix, or it will collide with a study arm on a seed the aggregator
+then refuses to average. `OCTOPUS_EMIT_TAG` renames the file but does not change
+the recorded conditions, so it cannot be used to separate one.
 """
 
 # Uses the precompiled package rather than `include`-ing the source: this script
@@ -229,9 +239,13 @@ open(joinpath(result_dir, "emittance_growth_$(tag).tsv"), "w") do io
     writedlm(io, permutedims(hcat(rows...)))
 end
 
-meta = [tag String(config.scheme) config.nslices String(config.deposit) String(config.gridmode) config.seed config.turns config.npart config.grid gr_ele_y gr_ele_x gr_pro_y gr_pro_x ey[end]/ey[1] py_[end]/py_[1] cross_frac elapsed]
+# Recorded from the solver object rather than named by hand, so a run made with
+# a locally modified solver cannot be mistaken for a study arm by the aggregator.
+solver_family = String(string(nameof(typeof(solver))))
+
+meta = [tag String(config.scheme) config.nslices String(config.deposit) String(config.gridmode) solver_family config.seed config.turns config.npart config.grid gr_ele_y gr_ele_x gr_pro_y gr_pro_x ey[end]/ey[1] py_[end]/py_[1] cross_frac elapsed]
 open(joinpath(result_dir, "emittance_growth_$(tag).meta.tsv"), "w") do io
-    writedlm(io, ["tag" "scheme" "nslices" "deposit" "gridmode" "seed" "turns" "npart" "grid" "growth_ele_ey" "growth_ele_ex" "growth_pro_ey" "growth_pro_ex" "final_ratio_ele_ey" "final_ratio_pro_ey" "boundary_cross_fraction" "elapsed_s"])
+    writedlm(io, ["tag" "scheme" "nslices" "deposit" "gridmode" "solver" "seed" "turns" "npart" "grid" "growth_ele_ey" "growth_ele_ex" "growth_pro_ey" "growth_pro_ex" "final_ratio_ele_ey" "final_ratio_pro_ey" "boundary_cross_fraction" "elapsed_s"])
     writedlm(io, meta)
 end
 

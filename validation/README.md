@@ -535,6 +535,21 @@ Aggregate all completed arms (seed means, spreads, and separation from baseline)
 julia --project=. validation/slice_interpolation_emittance_growth_summary.jl
 ```
 
+An arm is the *full* set of recorded run conditions. `scheme`, `nslices`,
+`deposit` and `gridmode` name the arm; every other recorded condition
+(`npart`, `turns`, `grid`, `solver`) defines the block it is compared within,
+and each arm is measured only against the baseline of its own block. Vertical
+growth scales roughly as `1/npart`, so pooling across particle counts inflates
+the baseline spread and moves every reported separation — that is a defect this
+script had (audit lead U24-1) and now cannot have, because a condition column
+joins the grouping key automatically. Two rows sharing a seed *and* all
+conditions make the seed spread undefined, so the script errors and names them
+rather than averaging.
+
+The `emittance_growth_` prefix is the arm script's namespace. Runs that are not
+its products — a modified solver, a repeated seed, a scratch probe — must use a
+different prefix.
+
 Outputs under `result/`: `emittance_growth_<tag>.tsv` (per-turn emittances),
 `emittance_growth_<tag>.meta.tsv` (one summary row per run), and
 `emittance_growth_summary.tsv` (per-arm aggregate).

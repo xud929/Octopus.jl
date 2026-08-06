@@ -916,8 +916,8 @@ unrelated.
 head-on collision, linear one-turn maps, no chromaticity or dispersion, and **no
 radiation damping or excitation**, so the Poisson solver is the only
 non-symplectic element and every bit of vertical emittance growth is numerical.
-30k macroparticles/beam, `grid=(64,64)`, 800 turns, 4 seeds per arm (3 for the
-30-slice arm). 47% of particles change slice index per turn (62% at 30 slices),
+30k macroparticles/beam, `grid=(64,64)`, 800 turns, 4 seeds per arm.
+47% of particles change slice index per turn (62% at 30 slices),
 so the discontinuity is heavily sampled and a null result is meaningful.
 `t` is the separation from baseline in pooled standard errors; $|t|<2$ is not
 resolved. The electron is the sensitive probe ($Q_s=-0.069$ against the proton's
@@ -927,10 +927,40 @@ $-0.01$).
 |---|---|---|---|---|---|---|---|
 | `:linear` | 15 | CIC | slice_pair | $8.201\times10^{-5}$ | — | $3.273\times10^{-6}$ | — |
 | `:quadratic` | 15 | CIC | slice_pair | $8.185\times10^{-5}$ | **−0.09** | $2.962\times10^{-6}$ | −1.10 |
-| `:linear` | **30** | CIC | slice_pair | $8.464\times10^{-5}$ | **+1.56** | $3.082\times10^{-6}$ | −0.37 |
+| `:linear` | **30** | CIC | slice_pair | $8.502\times10^{-5}$ | **+1.88** | $2.945\times10^{-6}$ | −0.81 |
 | `:linear` | 15 | **TSC** | slice_pair | $7.160\times10^{-5}$ | **−6.93** | $3.028\times10^{-6}$ | −0.91 |
 | `:quadratic` | 15 | **TSC** | slice_pair | $7.057\times10^{-5}$ | **−5.22** | $2.746\times10^{-6}$ | −1.77 |
 | `:linear` | 15 | CIC | **source_slice** | $7.591\times10^{-5}$ | **−3.44** | $2.291\times10^{-6}$ | **−2.79** |
+
+**Correction (2026-08-06, audit lead U24-1).** Two changes to this table, and one
+warning about regenerating it.
+
+The 30-slice row was originally recorded as
+$8.464\times10^{-5}$ / $+1.56$ / $3.082\times10^{-6}$ / $-0.37$ over **three**
+seeds, before a fourth seed was run. The row above is the four-seed value; the
+three-seed numbers reproduce exactly if the fourth is withheld. Conclusion 2 is
+unchanged — $+1.88$ is still inside $|t|<2$, i.e. still not resolved.
+
+The other five rows were **correct as recorded** and reproduce to four
+significant figures today. What had broken was the *aggregator*:
+`slice_interpolation_emittance_growth_summary.jl` identified an arm by
+`(scheme, nslices, deposit, gridmode)` only, so it pooled every run sharing
+those four regardless of particle count, turn count or solver. Vertical growth
+scales roughly as $1/N$, so the baseline silently absorbed runs at 30k, 60k and
+120k particles — 22 rows instead of 4 — inflating its spread tenfold
+($2.785\times10^{-5}$ against the clean $2.823\times10^{-6}$) and dragging its
+mean to $5.644\times10^{-5}$. Every $t$ in the table then changed and three
+flipped sign, so the printed verdict moved from "not resolved" to "resolved" for
+four of the five arms purely from directory contents. The arm key now includes
+every recorded condition, each arm is compared only within its own block, and a
+repeated seed under identical conditions is an error rather than an extra
+sample.
+
+**This table is not regenerable from a clean checkout.** `result/` is
+gitignored, so the 46 meta rows behind these numbers exist only on the machine
+that produced them; elsewhere the documented command reports "run the arms
+first". Re-running the study costs roughly 600 s per arm/seed (measured 0.99
+s/turn at 30k), i.e. ~6 arms x 4 seeds.
 
 1. **`:quadratic` does not reduce emittance growth.** $t=-0.09$ on the electron;
    not resolved. Nor does it add anything on top of `:TSC`. The `:fourth`
