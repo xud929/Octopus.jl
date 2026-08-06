@@ -31,7 +31,12 @@ Numbered as in the manuscript.
 - **Table 2** (Yokoya factors, Sec. 5.1): the PIC row is
   `lambda_round_converged.tsv`, an independent three-seed re-measurement from
   `lambda_flat_converged.jl` (aspect 1.0) that reproduces the printed entries;
-  the BeamBeam3D entry uses the deck in `data/bb3d_decks/`.
+  the BeamBeam3D entry uses the single-slice deck in `data/bb3d_decks/`
+  (`beam1.in`, `beam2.in`, `singleslice_fort.{24,25,34,35}`) -- see
+  `data/bb3d_decks/PROVENANCE.md` for the BeamBeam3D commit, run date and
+  the verification that the committed files are bit-identical to the run.
+  "The deck" was ambiguous between six decks in that directory
+  (2026-08-05_b audit, U22-12).
 - **Table 3** (cross-code emittance benchmark, Sec. 5.4) is computed from
   `eic_emittance_{octopus,bb3d}.tsv` as the mean over the final 2048 turns.
   NOTE the two beams use different baselines, deliberately: the DAMPED electron

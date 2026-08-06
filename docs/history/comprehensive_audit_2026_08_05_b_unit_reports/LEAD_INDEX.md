@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **186 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **189 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -210,7 +210,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U21-9 | low | CONFIRMED, FIXED (2026-08-06) | `test/nightly_suite.sh:69` | `ls -1t "$OUTDIR"/*.log \| grep -v latest \| …` filters on the whole path, so a |
 | U22-10 | low | FIXED | `docs/theory/coherent_beam_beam_modes.md:30-32` | "For flat beams the gradient scales as 1/σ_x (sheet-like field), so the same |
 | U22-11 | low |  | `region-wide (see the table in §(f))` | 11 of the 13 thresholds in this region are print-only; no run in the region can |
-| U22-12 | low |  | `validation/coherent_beam_beam_modes_beambeam3d.jl:8-30,67-68` | The cross-code comparison **data** is committed and reproduces exactly, but its |
+| U22-12 | low | CONFIRMED, FIXED (2026-08-06) — PROVENANCE.md written and independently verified against the run directory | `validation/coherent_beam_beam_modes_beambeam3d.jl:8-30,67-68` | The cross-code comparison **data** is committed and reproduces exactly, but its |
 | U22-17 | low |  | `validation/coherent_mode_scans.jl and validation/coherent_mode_eic_com` | The committed strong-strong archives **no longer reproduce** from current code |
 | U23-10 | low |  | `validation/gaussian_pic_field_validation.jl:90 and validation/gaussian` | Both local-reimplementation scripts hardcode the second-order field derivative, so the |
 | U23-11 | low | CONFIRMED, FIXED (2026-08-06) — all three mismatches | `validation/spectral_poisson_field_validation.jl:23, 244-245, 259` | Three header/comment statements disagree with the code beneath them (U20-4b/c/d, all |
@@ -293,9 +293,9 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U20-12 | info |  | `test/runtests.jl:7103, 7113 — carry-over of U17-7` | the two `include`s of `validation/symplecticity_validation.jl` and |
 | U22-13 | info |  | `docs/theory/coherent_beam_beam_modes.md:118-120,211-212,167` | The figures the regenerated sections point at predate the data they claim to |
 | U22-14 | info |  | `docs/theory/coherent_beam_beam_modes.md:167,177,122-129` | Presentation defects in §3 that make the section hard to read correctly: the |
-| U22-15 | info |  | `validation/coherent_mode_vlasov_theory.jl:678-680,415; validation/cohe` | Hand-copied constants and formulas across the region (Measured Lesson 4), all |
+| U22-15 | info | CONFIRMED, FIXED (2026-08-06) — constants aligned to the framework + suite tripwire | `validation/coherent_mode_vlasov_theory.jl:678-680,415; validation/cohe` | Hand-copied constants and formulas across the region (Measured Lesson 4), all |
 | U22-16 | info |  | `validation/coherent_mode_vlasov_theory.jl:508` | Self-check 4's 2e-2 tolerance passes at r=0.5 with only 11% of its budget to |
-| U22-18 | info |  | `validation/coherent_mode_vlasov_theory.jl:718` | Latent crash — `maximum(v for v in vals if v <= e_band[2] + 5 * xi_e)` throws |
+| U22-18 | info | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:718` | Latent crash — `maximum(v for v in vals if v <= e_band[2] + 5 * xi_e)` throws |
 | U23-14 | trivial |  | `validation/pic_grid_extent_stability.jl:26 and src/tasks/strongstrong/` | Both the validation docstring and the production docstring record ":sigma … measured |
 | U23-9 | trivial | CONFIRMED, FIXED (2026-08-06) | `validation/gaussian_pic_zscan.jl:60, 88` | The documented override `OCTOPUS_GPIC_ZSCAN_NSLICES` throws `BoundsError` for any |
 | U25-10 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/tracking_context_policy_consistency.jl, strong_strong_obser` | three scripts print their CUDA skip but offer no way to *require* the GPU |

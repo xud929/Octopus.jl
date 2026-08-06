@@ -817,9 +817,20 @@ println("Finite-xi map correction written (Y0 anchored to measured 1.20).")
 # 3. EIC-like asymmetric case (strong-strong example constants, head-on
 #    equivalent). Lengths in meters inside the kernel.
 # ---------------------------------------------------------------------------
-const RE_M = 2.8179403262e-15
-const EMASS = 0.51099906e6
-const PMASS = 938.27231e6
+# These MUST match src/constants/Constants.jl (2026-08-05_b audit, U22-15). They
+# were older CODATA values -- 2.8179403262e-15, 0.51099906e6, 938.27231e6 --
+# while the framework carries the current ones, so this script and
+# coherent_mode_eic_comparison.jl described "the same EIC case" with different
+# physical constants. The differences are ~1e-9 relative and changed no reported
+# digit, which is why it went unnoticed; that is exactly the drift Measured
+# Lesson 4 is about.
+#
+# The copy stays because this script is deliberately standalone (LinearAlgebra
+# and FFTW only, no Octopus import), so the suite carries a tripwire that reads
+# these three lines and compares them against the framework's values.
+const RE_M = 2.8179403205e-15
+const EMASS = 0.51099895069e6
+const PMASS = 938.27208943e6
 ele = (E=10.0e9, N=1.7203e11, sig=(106.0e-6, 9.5e-6), tune=(0.08, 0.14))
 pro = (E=275.0e9, N=0.6881e11, sig=(95.0e-6, 8.5e-6), tune=(0.228, 0.210))
 beta_e = (0.55, 0.056); beta_p = (0.8, 0.072)
@@ -857,10 +868,24 @@ open(joinpath(RESULT_DIR, "eic_coherent_modes.tsv"), "w") do io
         println("    discrete modes outside both continua: ",
                 isempty(discrete) ? "none" :
                 join(round.(discrete; digits=5), ", "))
-        top_e = maximum(v for v in vals if v <= e_band[2] + 5 * xi_e)
-        println("    highest mode near e-band: ", round(top_e; digits=5),
-                "  ->  (Q - Q_e)/xi_e = ",
-                round((top_e - ele.tune[i]) / xi_e; digits=3))
+        # Guarded: `maximum` over an empty generator throws
+        # `ArgumentError: reducing over an empty collection`, and it would do so
+        # AFTER the TSV had been partially written (2026-08-05_b audit, U22-18).
+        # It cannot fire for the two shipped EIC planes, where the lowest
+        # eigenvalue always sits near Q_e, but it is one parameter change away --
+        # a much larger tune split, or an inverted band ordering in a future
+        # asymmetric case.
+        near_e = [v for v in vals if v <= e_band[2] + 5 * xi_e]
+        if isempty(near_e)
+            println("    highest mode near e-band: none (no eigenvalue at or below ",
+                    round(e_band[2] + 5 * xi_e; digits=5),
+                    "; the spectrum sits entirely above the electron band)")
+        else
+            top_e = maximum(near_e)
+            println("    highest mode near e-band: ", round(top_e; digits=5),
+                    "  ->  (Q - Q_e)/xi_e = ",
+                    round((top_e - ele.tune[i]) / xi_e; digits=3))
+        end
         top_all = maximum(vals)
         println("    highest mode overall:    ", round(top_all; digits=5),
                 "  ->  (Q - Q_p)/xi_p = ",

@@ -4154,6 +4154,27 @@ end
     end
 end
 
+@testset "The standalone theory script's constants match the framework's" begin
+    # 2026-08-05_b audit, U22-15. validation/coherent_mode_vlasov_theory.jl is
+    # deliberately standalone -- LinearAlgebra and FFTW only, no Octopus import
+    # -- so it hand-copies RE, the electron mass and the proton mass. They had
+    # drifted to older CODATA values (2.8179403262e-15, 0.51099906e6,
+    # 938.27231e6) while the framework moved on, so that script and
+    # coherent_mode_eic_comparison.jl described the same EIC case with different
+    # physical constants. The differences are ~1e-9 relative and changed no
+    # reported digit, which is precisely why nobody noticed.
+    script = read(joinpath(pkgdir(Octopus), "validation",
+                           "coherent_mode_vlasov_theory.jl"), String)
+    function literal(name)
+        m = match(Regex("const " * name * " = ([0-9.e+-]+)"), script)
+        m === nothing && return nothing
+        parse(Float64, m.captures[1])
+    end
+    @test literal("RE_M") == Octopus.RE
+    @test literal("EMASS") == Octopus.EMASS_EV
+    @test literal("PMASS") == Octopus.PMASS_EV
+end
+
 @testset "The JLD2 moment layout is derived, not hand-copied three times" begin
     # 2026-08-05_b audit, U7-8. The column layout lived in three independent
     # hand copies -- the names, a table of hardcoded ranges, and a third set of
