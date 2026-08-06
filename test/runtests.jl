@@ -4154,6 +4154,43 @@ end
     end
 end
 
+@testset "The Linear6D symplecticity validator accepts every numeric type it advertises" begin
+    # 2026-08-05_b audit, U9-3. `_linear6d_symplectic_error` ordered on `T`
+    # rather than `real(T)`: `typemax`, `max`, `>` and `<=` are all undefined
+    # for Complex, so a Linear6D with complex entries died with
+    # `MethodError: isless(::ComplexF64, ::Float64)` -- in the one function
+    # whose widening to `T<:Number` exists to admit exactly that type. Complex
+    # entries are complex-step differentiation, which is the recurring class
+    # AGENTS.md names and which this session hit again in longitudinal.jl.
+    #
+    # Everything that should be real already was (`abs(value - target)` and
+    # `abs(positive) + abs(negative)` return reals even for Complex); only the
+    # ordered thresholds and the magnitude accumulators were wrongly typed.
+    ident = ntuple(k -> ((k - 1) ÷ 6 == (k - 1) % 6 ? 1.0 : 0.0), 36)
+    for build in (identity,
+                  t -> ntuple(k -> complex(t[k], 0.0), 36),
+                  t -> ntuple(k -> Float32(t[k]), 36),
+                  t -> ntuple(k -> big(t[k]), 36))
+        e = Octopus._linear6d_symplectic_error(build(ident))
+        @test e.ratio == 0                      # the identity IS symplectic
+        @test e.residual isa Real               # never Complex
+        @test e.ratio isa Real
+    end
+
+    # It must still REJECT, and the complex path must agree with the real one
+    # exactly -- a validator that accepts everything is the failure this guards.
+    bad = ntuple(k -> k == 1 ? 1.0 + 1.0e-12 : ident[k], 36)
+    real_ratio = Octopus._linear6d_symplectic_error(bad).ratio
+    cplx_ratio = Octopus._linear6d_symplectic_error(
+        ntuple(k -> complex(bad[k], 0.0), 36)).ratio
+    @test real_ratio > 1                        # rejected
+    @test cplx_ratio == real_ratio              # same answer, either arithmetic
+
+    # And the public path the widening exists for must compile.
+    @test compile_runtime(Linear6DSpec{ComplexF64}(
+        beta1=(3.1, 2.2, 40.0), dmu=(0.7 + 0im, 1.3, 0.02))) !== nothing
+end
+
 @testset "The standalone theory script's constants match the framework's" begin
     # 2026-08-05_b audit, U22-15. validation/coherent_mode_vlasov_theory.jl is
     # deliberately standalone -- LinearAlgebra and FFTW only, no Octopus import

@@ -129,45 +129,55 @@ _identity66(::Type{T}) where {T} =
 @inline _mget(m, i, j) = m[(i - 1) * 6 + j]
 
 function _linear6d_symplectic_error(matrix::NTuple{36,T}) where {T<:Number}
+    # Thresholds and accumulators live in `real(T)`, not `T` (2026-08-05_b
+    # audit, U9-3). Everything that should be real already is -- `abs(value -
+    # target)` and `abs(positive) + abs(negative)` return reals even for
+    # Complex -- so only the ORDERED quantities were wrongly typed, and
+    # `typemax`, `max`, `>` and `<=` are all undefined for Complex. A
+    # `Linear6D` with complex entries therefore died with
+    # `MethodError: isless(::ComplexF64, ::Float64)`, in the one function whose
+    # widening to `T<:Number` exists to admit exactly that type -- which is
+    # complex-step differentiation, the recurring class AGENTS.md names.
+    R = real(T)
     all(isfinite, matrix) ||
-        return (residual=typemax(T), tolerance=zero(T), ratio=typemax(T))
-    max_residual = zero(T)
-    max_tolerance = zero(T)
-    max_ratio = zero(T)
+        return (residual=typemax(R), tolerance=zero(R), ratio=typemax(R))
+    max_residual = zero(R)
+    max_tolerance = zero(R)
+    max_ratio = zero(R)
     # Each entry of M'JM contains three signed 2x2 determinants. The row scale
     # is a componentwise forward-error bound, unlike ||M||^2, which becomes
     # unusably loose for large reciprocal canonical scalings.
     for i in 1:6
-        row_residual = zero(T)
-        row_scale = zero(T)
+        row_residual = zero(R)
+        row_scale = zero(R)
         for j in 1:6
-            value = zero(T)
-            product_scale = zero(T)
+            value = zero(T)              # a residual: stays in T
+            product_scale = zero(R)      # a magnitude: real, or `max` has no order
             for coordinate in (1, 3, 5)
                 positive = _mget(matrix, coordinate, i) *
                            _mget(matrix, coordinate + 1, j)
                 negative = _mget(matrix, coordinate + 1, i) *
                            _mget(matrix, coordinate, j)
                 isfinite(positive) && isfinite(negative) ||
-                    return (residual=typemax(T), tolerance=zero(T),
-                            ratio=typemax(T))
+                    return (residual=typemax(R), tolerance=zero(R),
+                            ratio=typemax(R))
                 value = (value + positive) - negative
                 product_scale += abs(positive) + abs(negative)
             end
             target = isodd(i) && j == i + 1 ? one(T) :
                      iseven(i) && j == i - 1 ? -one(T) : zero(T)
-            row_residual += abs(value - target)
-            row_scale += max(abs(target), product_scale)
+            row_residual += R(abs(value - target))
+            row_scale += R(max(abs(target), product_scale))
         end
         # Six products and additions form each entry. A factor of 64 leaves a
         # conservative margin over the first-order rounding bound while still
         # rejecting Float64 relative defects above roughly 1e-14.
-        row_tolerance = T(64) * eps(T) * max(one(T), row_scale)
+        row_tolerance = R(64) * eps(R) * max(one(R), row_scale)
         isfinite(row_residual) && isfinite(row_tolerance) ||
-            return (residual=typemax(T), tolerance=zero(T), ratio=typemax(T))
-        ratio = row_tolerance > zero(T) ?
+            return (residual=typemax(R), tolerance=zero(R), ratio=typemax(R))
+        ratio = row_tolerance > zero(R) ?
             row_residual / row_tolerance :
-            (iszero(row_residual) ? zero(T) : typemax(T))
+            (iszero(row_residual) ? zero(R) : typemax(R))
         if ratio > max_ratio
             max_ratio = ratio
             max_residual = row_residual
@@ -180,7 +190,7 @@ end
 function _validate_linear6d_symplectic(
         matrix::NTuple{36,T}; source="Linear6D matrix") where {T<:Number}
     error = _linear6d_symplectic_error(matrix)
-    error.ratio <= one(T) && return matrix
+    error.ratio <= one(real(T)) && return matrix
     throw(ArgumentError(
         "$(source) must be finite and canonical symplectic in " *
         "(x, px, y, py, z, pz) order: worst row residual=$(error.residual), " *

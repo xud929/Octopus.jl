@@ -223,6 +223,28 @@ struct XYCoupling{M<:AbstractTrackingMethod,FloatT <: Number} <: AbstractTrackOp
     r3::FloatT
     r4::FloatT
     mode::XYCouplingMode
+
+    function XYCoupling{M,FloatT}(method::M, r1::FloatT, r2::FloatT, r3::FloatT,
+                                  r4::FloatT, mode::XYCouplingMode) where {M,FloatT}
+        # Checked HERE, not in the kernel (2026-08-05_b audit, U9-8). The map
+        # scales by `g = 1/sqrt(1 + r1*r4 - r2*r3)`, and a determinant at or
+        # below zero made `sqrt` throw a bare DomainError from inside
+        # `track_particle` -- naming neither the element nor which of the four
+        # parameters was wrong, and from a kernel, where a throw is also a
+        # device-IR problem. Construction is the only place that can say what
+        # went wrong.
+        #
+        # `real` so the check works on the complex-step and Dual axes this type
+        # is generic over; the determinant of a physical coupling block is real.
+        det = 1 + r1 * r4 - r2 * r3
+        if mode !== XY_UNDEF && isfinite(real(det)) && real(det) <= 0
+            throw(ArgumentError(
+                "XYCoupling is not invertible: 1 + r1*r4 - r2*r3 = $(real(det)) " *
+                "must be positive, because the map scales by 1/sqrt of it. " *
+                "Got r1=$(r1), r2=$(r2), r3=$(r3), r4=$(r4)."))
+        end
+        return new{M,FloatT}(method, r1, r2, r3, r4, mode)
+    end
 end
 
 @element_spec begin
@@ -247,6 +269,13 @@ end
     example = XYCouplingSpec{Float64}(r1=0.01)
     construction_help = "Friendly constructor: XYCouplingSpec{T}(; r1, r2, r3, r4, mode=XY_MODEA, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:xy_coupling}(; r1=r1, r2=r2, r3=r3, r4=r4, mode=mode, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
 end
+
+# Restored explicitly: defining an inner constructor above removes Julia's
+# automatic outer one, and the spec path calls this six-argument form.
+XYCoupling(method::M, r1::Number, r2::Number, r3::Number, r4::Number,
+           mode::XYCouplingMode) where {M<:AbstractTrackingMethod} =
+    XYCoupling{M,promote_type(typeof(r1), typeof(r2), typeof(r3), typeof(r4))}(
+        method, promote(r1, r2, r3, r4)..., mode)
 
 XYCoupling(r1::T, r2::T, r3::T, r4::T) where {T<:Number} =
     XYCoupling{Symplectic6DMap,T}(Symplectic6DMap(), r1, r2, r3, r4, XY_MODEA)
