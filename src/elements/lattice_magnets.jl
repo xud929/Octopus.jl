@@ -63,10 +63,19 @@ end
     # (measured vs BigFloat) against the series' 5.2e-17 — an 8-digit cliff one
     # ulp wide. The series therefore runs out to where the closed form has
     # recovered: measured vs BigFloat across the seam, the closed branch holds
-    # <= 5.9e-15 for u in [0.125, 0.5] and the series (extended by the u^6 and
+    # <= 7.2e-15 for u in [0.125, 0.5] and the series (extended by the u^6 and
     # u^8 terms below, alternating so the truncation is bounded by the first
-    # omitted term u^10/239500800 ~ 4e-18) holds <= 8.5e-17 — both sides now
-    # <= 1e-14, seam jump 6.0e-15 (2026-08-05 audit, U10-5).
+    # omitted term u^10/239500800 ~ 4e-18) holds <= 8.5e-17 — seam jump
+    # 6.0e-15 (2026-08-05 audit, U10-5).
+    #
+    # The closed-branch figure was recorded as 5.9e-15 and is 20% optimistic:
+    # re-measured at 400-bit precision over 400k points, the maximum is
+    # 7.106e-15 at u = 0.1255, just inside the crossover where the cancellation
+    # is worst (2026-08-05_b audit, U9-4). That matters because it is exactly
+    # the kind of number a later session re-derives a tolerance from -- and one
+    # did: the suite's bound on this branch had to be loosened from 1e-14 to
+    # 1e-13 (U17b-1), because 1e-14 is only 1.4x the true error and half an ulp
+    # of `cos` is amplified 118x here.
     abs(u) < real(T)(0.125) && return h * L * L / 2 *
         (one(T) - u * u / 12 * (one(T) - u * u / 30 * (one(T) - u * u / 56 * (one(T) - u * u / 90))))
     return (one(T) - cos(u)) / h

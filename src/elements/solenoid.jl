@@ -233,14 +233,16 @@ curvature costs here.
     d = L / nst
     @inbounds for _ in 1:nst
         # Fixed-point iterate the midpoint state, starting from the current one.
-        mx, mpx, my, mpy, mz = x, px, y, py, z
+        # No `mz`: `_sol_curved_deriv` takes no z and z' does not depend on z,
+        # so the midpoint z was computed on every one of the 16 sweeps and never
+        # read (2026-08-05_b audit, U9-9). Removed from the hot loop.
+        mx, mpx, my, mpy = x, px, y, py
         for _ in 1:_SOL_MIDPOINT_ITERS
-            fx, fpx, fy, fpy, fz, _ = _sol_curved_deriv(h, ks, mx, mpx, my, mpy, pz)
+            fx, fpx, fy, fpy, _, _ = _sol_curved_deriv(h, ks, mx, mpx, my, mpy, pz)
             mx = x + d / 2 * fx
             mpx = px + d / 2 * fpx
             my = y + d / 2 * fy
             mpy = py + d / 2 * fpy
-            mz = z + d / 2 * fz
         end
         fx, fpx, fy, fpy, fz, _ = _sol_curved_deriv(h, ks, mx, mpx, my, mpy, pz)
         x += d * fx
@@ -549,7 +551,7 @@ end
         kskew=ParamMeta(default=(), meaning="skew partners of kn. Spelled `kskew` rather than `ks` because the solenoid needs `ks` for its own strength; usually set through the named k0s/k1s/k2s keywords instead"),
         curved=ParamMeta(default=nothing, meaning="force the curved (implicit-midpoint) or straight (exact) tracking path. `nothing` lets the frame decide, i.e. curved when h != 0. `true` with h = 0 runs the integrator where the exact map is also available, which validates it directly rather than as a limit; `false` with h != 0 ignores the curvature and warns"),
         h=ParamMeta(default=0, meaning="reference-frame curvature. h=0 is the exact closed-form map; h!=0 has no closed form and no exact splitting either, so it integrates with implicit midpoint over nst steps"),
-        nst=ParamMeta(default=1, meaning="integration steps. Used when multipoles are present, or when h != 0; a straight pure solenoid is exact and ignores it. The default is 1 straight but 16 curved, because nst=1 does not converge at production curvature. Measure convergence for production work rather than trusting the default"),
+        nst=ParamMeta(default=1, meaning="integration steps. Used when multipoles are present, or when h != 0; a straight pure solenoid is exact and ignores it. THE MACHINE-READABLE default=1 ABOVE IS THE STRAIGHT-SOLENOID VALUE: the compile path uses 16 when h != 0, because nst=1 does not converge at production curvature, and a single ParamMeta field cannot express a conditional default (2026-08-05_b audit, U9-5). Measure convergence for production work rather than trusting either number"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )

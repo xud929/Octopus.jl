@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **197 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **200 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -276,8 +276,8 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U8-4 | low |  | `src/elements/strong_beam.jl:1277-1280 — re-verification of prior lead ` | a `slice_center` supplied without a matching `slice_weight` is silently |
 | U8-5 | low |  | `src/elements/strong_beam.jl:1285 — re-verification of prior lead U7-4,` | `slice_method = :equal_width` without `slice_width` throws |
 | U9-3 | low | CONFIRMED, FIXED (2026-08-06) — real(T) thresholds; complex/Dual/BigFloat/Float32 all verified, rejection ratio identical | `src/elements/linear6d.jl:131–188 (`_linear6d_symplectic_error`, `_vali` | the symplecticity validator orders on `T` rather than `real(T)`, so a |
-| U9-4 | low |  | `src/elements/lattice_magnets.jl:60–71 (`_curv_vers` crossover comment)` | the comment records "the closed branch holds <= 5.9e-15 for u in [0.125, 0.5]"; |
-| U9-5 | low |  | `src/elements/solenoid.jl:464 (`nst` ParamMeta)` | the machine-readable `default=1` disagrees with the compile path's actual |
+| U9-4 | low | CONFIRMED, FIXED (2026-08-06) — re-measured independently at 7.106e-15, not 5.9e-15 | `src/elements/lattice_magnets.jl:60–71 (`_curv_vers` crossover comment)` | the comment records "the closed branch holds <= 5.9e-15 for u in [0.125, 0.5]"; |
+| U9-5 | low | CONFIRMED, dispositioned (2026-08-06) — the default is conditional and one ParamMeta field cannot hold both; the field now says which case it shows | `src/elements/solenoid.jl:464 (`nst` ParamMeta)` | the machine-readable `default=1` disagrees with the compile path's actual |
 | U9-6 | low |  | `src/elements/linear_maps.jl:25, 103, 195; src/elements/linear6d.jl:19,` | the default friendly constructors of the four linear-map kinds pin `Float64` |
 | U9-7 | low |  | `src/elements/linear_maps.jl:251–254 — OUT OF HYPOTHESIS (usability)` | `XYCoupling(r1::T, r2::T, r3::T, r4::T) where {T<:Number}` is strict same-type, |
 | U9-8 | low | CONFIRMED, FIXED (2026-08-06) — validated at construction, not in the kernel | `src/elements/linear_maps.jl:263 — OUT OF HYPOTHESIS (error quality / d` | `g = inv(sqrt(1 + r1*r4 - r2*r3))` throws a bare `DomainError` with no element |
@@ -316,7 +316,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U26-8 | minor | FIXED | `docs/theory/misalignment_and_patch_maps.md §6a` | §6a names two `misalign_convention` values that do not exist. |
 | U26-9 | minor | CONFIRMED, FIXED (2026-08-06) | `docs/theory/slice_longitudinal_interpolation.md §10.5 + §12` | the note advertises `grid_extent = :sigma` as complementary to |
 | U8-6 | informational |  | `— out-of-hypothesis, cross-file seam` | `validation/near_round_gaussian_transition.jl` computes exactly the two |
-| U9-9 | info |  | `src/elements/solenoid.jl:188–196 — OUT OF HYPOTHESIS (style)` | `mz` in `_solenoid_curved_map` is assigned in every fixed-point sweep and |
+| U9-9 | info | CONFIRMED, FIXED (2026-08-06) — dead store removed, tracking bit-identical | `src/elements/solenoid.jl:188–196 — OUT OF HYPOTHESIS (style)` | `mz` in `_solenoid_curved_map` is assigned in every fixed-point sweep and |
 
 ## Notes on individual dispositions
 
