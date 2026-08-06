@@ -2993,6 +2993,40 @@ Octopus.apply_action!(::ReseedGlobalRNGAction, ctx, rep) =
     let entries = configuration_report(BPMObserver("t11"; x_noise=1.0))
         @test any(e -> e.name === :rng_id, entries)
     end
+
+    # 2026-08-05_b audit, U7-5: a BPM reading copied ALL SIX coordinate arrays
+    # to the host for two numbers. `_live_stat_flags` returns nothing unless
+    # `allow_lost_particles()` is on, so on the default path only x and y are
+    # ever read -- but `_host_coordinate_arrays(rep)` ran first regardless. At
+    # the production size that is 6 x 2.56e6 x 8 B = 123 MB per reading, in a
+    # function whose docstring justifies itself with "hundreds of BPMs read
+    # every turn". Measured on the RTX 4500 Ada at 2.56M particles: 160.26 ms
+    # before, 0.112 ms after (1434x).
+    #
+    # Pinned by HOST ALLOCATION, which is what regressed: `_mean(v)` is
+    # `sum(v)/length(v)` and reduces on the device, so the default path must
+    # transfer essentially nothing. A returning `Array(v)` shows up here as
+    # megabytes. The masked path is asserted to still agree numerically.
+    let n = 50_000
+        mk() = Phase6DRep([1.0e-4 * sin(0.7i) for i in 1:n], zeros(n),
+                          [1.0e-5 * sin(0.3i) for i in 1:n], zeros(n),
+                          [1.0e-3 * sin(0.1i) for i in 1:n], zeros(n))
+        r = mk()
+        plain = Octopus._bpm_centroid(r)
+        masked = allow_lost_particles(; enabled=true) do
+            Octopus._bpm_centroid(r)
+        end
+        @test plain[1] ≈ masked[1] && plain[2] ≈ masked[2]
+        if CUDA_TESTS_ACTIVE
+            g = Phase6DRep((Octopus.CUDA.CuArray(a) for a in coordinate_arrays(r))...)
+            gx, gy = Octopus._bpm_centroid(g)
+            @test gx ≈ plain[1] && gy ≈ plain[2]
+            Octopus._bpm_centroid(g)                      # warm
+            @test @allocated(Octopus._bpm_centroid(g)) < 100_000
+        else
+            @test_skip "CUDA device not available"
+        end
+    end
 end
 
 @testset "A crashed execute! still delivers its loss artifacts" begin

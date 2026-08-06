@@ -198,6 +198,23 @@ through the same masked `_mean` that `beam_statistics` uses -- same reduction,
 same lost-particle handling, none of the rest.
 """
 function _bpm_centroid(rep)
+    # Default path: no host copy at all. `_live_stat_flags` returns `nothing`
+    # unless `allow_lost_particles()` is on, and then only x and y are read --
+    # but this called `_host_coordinate_arrays(rep)` first, which is `Array(v)`
+    # for ALL SIX coordinates. At the production benchmark size that is
+    # 6 x 2.56e6 x 8 B = 123 MB copied per reading, for two numbers, in a
+    # function whose own docstring justifies itself with "a lattice can hold
+    # hundreds of BPMs read every turn" (2026-08-05_b audit, U7-5).
+    #
+    # `_mean(v)` is `sum(v)/length(v)`, which reduces on the device for a
+    # CuArray, so the common case now transfers nothing.
+    if !allow_lost_particles()
+        return _mean(rep.x), _mean(rep.y)
+    end
+    # Lost particles allowed: liveness genuinely depends on all six components,
+    # so the masked path keeps its host copy. Narrowing that one too needs the
+    # device-side mask the CUDA `_moment_observer_row` builds, which is a
+    # separate change.
     coords = _host_coordinate_arrays(rep)
     flags = _live_stat_flags(coords)
     nlive = flags === nothing ? length(rep) : count(flags)
