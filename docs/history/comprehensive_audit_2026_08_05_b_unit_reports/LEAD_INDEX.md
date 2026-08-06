@@ -70,9 +70,9 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U21-16 | medium |  | `test/examples/strong_strong_tracking.jl:230 and test/examples/weak_str` | `OCTOPUS_USE_GPU` is the one boolean with a stricter, different grammar |
 | U21-18 | medium |  | `test/examples/strong_strong_tracking.jl:352-364, 424-441` | all seven `OCTOPUS_CUDA_PIC_*_THREADS` overrides are validated and then |
 | U21-19 | medium |  | `test/examples/strong_strong_tracking.jl:352-353, 589-600` | `OCTOPUS_MOMENT_CAPACITY=0` is silently accepted, writes **no moment files |
-| U21-2 | medium |  | `test/nightly_suite.sh:56-57` | the same scrape turns a **PASSING** suite into `FAIL` with a synthetic |
-| U21-3 | medium |  | `test/nightly_suite.sh:36-43` | lock contention writes **no row at all** and exits 0, so a wedged or |
-| U21-4 | medium |  | `test/nightly_suite.sh:33,46` | two further row-less exits. `mkdir -p "$OUTDIR"` (line 33) is unchecked, so |
+| U21-2 | medium | CONFIRMED CLOSED by U21-1 fix (2026-08-06) | `test/nightly_suite.sh:56-57` | the same scrape turns a **PASSING** suite into `FAIL` with a synthetic |
+| U21-3 | medium | CONFIRMED, FIXED (2026-08-06) | `test/nightly_suite.sh:36-43` | lock contention writes **no row at all** and exits 0, so a wedged or |
+| U21-4 | medium | CONFIRMED, FIXED (2026-08-06) | `test/nightly_suite.sh:33,46` | two further row-less exits. `mkdir -p "$OUTDIR"` (line 33) is unchecked, so |
 | U22-2 | medium-high | CONFIRMED, FIXED (2026-08-06) | `docs/theory/coherent_beam_beam_modes.md:64-67 and validation/coherent_` | The theory note and the script's own header state `u(0)=1` and an incoherent |
 | U22-3 | medium-high | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:703-704 and docs/theory/cohe` | Every number in §4's x row is a quadrature artifact — the continuum edges (max |
 | U22-4 | medium |  | `validation/coherent_mode_vlasov_theory.jl:342-364 vs :235-254` | Self-check 5 — the check advertised as validating "every assembly constant ... |
