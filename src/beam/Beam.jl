@@ -659,6 +659,19 @@ function beam_statistics(rep::Phase6DRep; diagonal_fourth::Bool=false)
 	T = promote_type(map(eltype, coords)...)
 	flags = _live_stat_flags(coords)
 	nlive = flags === nothing ? length(rep) : count(flags)
+	# A directed error, like this file's others (2026-08-05_b audit, U14-9).
+	# `_mean` survives an empty vector (`sum(Float64[])` is 0.0) but
+	# `_covariance` is a `sum(f, zip(a, b))` with no `init`, which Base refuses
+	# on an empty collection -- so an empty rep, which the Phase6DRep docstring
+	# advertises as legal for storage and I/O, failed with "reducing over an
+	# empty collection is not allowed; consider supplying init to the reducer",
+	# naming neither this function nor the beam.
+	nlive > 0 || throw(ArgumentError(
+		length(rep) == 0 ?
+		"beam_statistics needs at least one particle; this Phase6DRep is empty. " *
+		"An empty rep is legal for storage and I/O, but there are no moments to compute." :
+		"beam_statistics needs at least one LIVE particle; all $(length(rep)) in " *
+		"this Phase6DRep are lost (NaN coordinates)."))
 	means = collect(T, (_mean(coords[i], flags, nlive) for i in 1:6))
 	cov = Matrix{T}(undef, 6, 6)
 	# Upper triangle only, mirrored: 21 O(N) passes rather than 36. The mirror

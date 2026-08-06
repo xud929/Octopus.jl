@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **191 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **195 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -158,9 +158,9 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U14-4 | low |  | `src/track/longitudinal.jl:133-148, and the "4.4e-16" pin in docs/theor` | `_delta_from_pt` and `_pt_from_delta` are written in their cancelling forms, so |
 | U14-5 | low |  | `src/beam/Beam.jl:445-455 vs 457-474` | the U15-7 directed refusal for non-`AbstractFloat` coordinate types was added to |
 | U14-6 | low |  | `src/track/longitudinal.jl:100-103 (`reference_beta` docstring)` | the docstring's stated *reason* for choosing `√((γ-1)(γ+1))/γ` is measurably |
-| U14-7 | low |  | `src/track/radiation_track.jl:33-65` | `cuda_track_lumped_rad_kernel!` is the only GPU radiation path that does **not** |
-| U14-8 | low |  | `src/track/phase6d_track.jl:38-48 vs 304-314` | `_reject_contextless_tracking` — the directed refusal that exists so a |
-| U14-9 | low |  | `src/beam/Beam.jl:650-691 vs 40-44` | `beam_statistics` on an empty `Phase6DRep` raises Base's generic |
+| U14-7 | low | CONFIRMED, not fixed — needs a decision on the deprecated entry point; on todo.md (2026-08-06) | `src/track/radiation_track.jl:33-65` | `cuda_track_lumped_rad_kernel!` is the only GPU radiation path that does **not** |
+| U14-8 | low | ALREADY FIXED by 7503de4 (audit F5) — the CUDA policy path carries the refusal at phase6d_track.jl:306 and the backend-tag form delegates to it; the lead is stale at HEAD (2026-08-06) | `src/track/phase6d_track.jl:38-48 vs 304-314` | `_reject_contextless_tracking` — the directed refusal that exists so a |
+| U14-9 | low | CONFIRMED, FIXED (2026-08-06) | `src/beam/Beam.jl:650-691 vs 40-44` | `beam_statistics` on an empty `Phase6DRep` raises Base's generic |
 | U16-1 | low | FIXED | `docs/theory/rf_cavity_and_reference_energy.md:160,163 (also docs/todo.` | ** The F16 correction block sends a future fixer to the wrong section — |
 | U16-10 | low |  | `examples/weak_strong_tracking.jl:65, examples/strong_strong_tracking.j` | ** The same physical quantity, 12.5e-3 rad, is the **half** crossing |
 | U16-3 | low |  | `src/elements/rf_cavity.jl:251 (`construction_help`)` | ** The velocity-slip model boundary is documented on the human docstring |
@@ -281,7 +281,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U9-6 | low |  | `src/elements/linear_maps.jl:25, 103, 195; src/elements/linear6d.jl:19,` | the default friendly constructors of the four linear-map kinds pin `Float64` |
 | U9-7 | low |  | `src/elements/linear_maps.jl:251–254 — OUT OF HYPOTHESIS (usability)` | `XYCoupling(r1::T, r2::T, r3::T, r4::T) where {T<:Number}` is strict same-type, |
 | U9-8 | low |  | `src/elements/linear_maps.jl:263 — OUT OF HYPOTHESIS (error quality / d` | `g = inv(sqrt(1 + r1*r4 - r2*r3))` throws a bare `DomainError` with no element |
-| U14-10 | info |  | `src/math/SpecialMath.jl:92-97` | `pi = zero(T)` inside `faddeeva_w_upper_reim` shadows `Base.pi` for the rest of the |
+| U14-10 | info | CONFIRMED, FIXED (2026-08-06) | `src/math/SpecialMath.jl:92-97` | `pi = zero(T)` inside `faddeeva_w_upper_reim` shadows `Base.pi` for the rest of the |
 | U14-11 | info/seam |  | `src/math/SpecialMath.jl accuracy → src/track/strong_beam_track.jl:390-` | the Faddeeva real part carries no relative accuracy near the real axis, and its |
 | U15-10 | minor |  | `src/elements/aperture.jl:416-441 (`Aperture(spec, method)`)` | supplying `alive` silently makes `shape`, `x_limit` and `y_limit` inert |
 | U15-11 | minor |  | `src/elements/aperture.jl:295-304 (`_aperture_record!`)` | the turn number is stored in a slot whose element type is the *coordinate* |

@@ -89,15 +89,21 @@ coordinates.
     numi = zr
     zrZ, ziZ = _cdiv_reim(numr, numi, denr, deni)
 
+    # `pim`, not `pi`: a local named `pi` shadows `Base.pi` for the rest of the
+    # body, silently, and this is the CUDA beam-beam hot path -- anyone later
+    # writing `T(pi)` here meaning the constant would get `T(0)` and a wrong
+    # answer with no diagnostic (2026-08-05_b audit, U14-10). The values were
+    # correct because pi is never needed in this scope; the hazard is that
+    # nothing says so.
     pr = zero(T)
-    pi = zero(T)
+    pim = zero(T)
     for c in FADDEEVA_WEIDEMAN_COEFFS
-        pr, pi = _cmul_reim(pr, pi, zrZ, ziZ)
+        pr, pim = _cmul_reim(pr, pim, zrZ, ziZ)
         pr += T(c)
     end
 
     den2r, den2i = _cmul_reim(denr, deni, denr, deni)
-    tr, ti = _cdiv_reim(2 * pr, 2 * pi, den2r, den2i)
+    tr, ti = _cdiv_reim(2 * pr, 2 * pim, den2r, den2i)
     ir, ii = _cdiv_reim(T(FADDEEVA_WEIDEMAN_INVSQRTPI), zero(T), denr, deni)
     return tr + ir, ti + ii
 end
