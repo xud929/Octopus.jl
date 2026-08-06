@@ -7742,6 +7742,24 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             Octopus.CUDA.fill!(ws.dropped, 0.0)
             Octopus._cuda_spectral_field!(ws, inside, sy, Lx, Ly)
             @test dropped() == 0.0
+
+            # A PARTIALLY clipped particle, which is what separates a charge
+            # tally from a particle tally. Everything above uses a fully
+            # out-of-box probe leaving exactly 1.0, and 1.0 is also what a
+            # per-particle counter reports and what a "count only when nothing
+            # was written" counter reports -- so two of the four defects
+            # injected into these kernels went uncaught (2026-08-05_b audit,
+            # U20-6). At x = 0.94*Lx the particle straddles the wall and leaves
+            # a FRACTIONAL 0.49: a particle counter would say 1.0, a
+            # fully-outside-only counter 0.0, and silent clipping 0.0.
+            partial = Octopus.CUDA.CuArray([fill(1.0e-4, n - 1); 0.94 * Lx])
+            Octopus.CUDA.fill!(ws.dropped, 0.0)
+            Octopus._cuda_spectral_field!(ws, partial, sy, Lx, Ly)
+            d_partial = dropped()
+            @test isapprox(d_partial, 0.49; atol = 1.0e-3)
+            # Stated as its own assertion so the discriminating property cannot
+            # be lost to a tolerance widening: it must be neither 0 nor 1.
+            @test 0.05 < d_partial < 0.95
         finally
             Octopus._release_spectral_cuda_ws!(lease)
         end

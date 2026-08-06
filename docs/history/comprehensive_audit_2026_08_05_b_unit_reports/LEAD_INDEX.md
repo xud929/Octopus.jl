@@ -61,7 +61,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U19-3 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:4778–4841` | `"Lost-particle charge semantics are pinned per solver family"` pins **2 |
 | U20-4 | medium |  | `test/runtests.jl:7199 ("CUDA near-round Gaussian transition matches CP` | at `T = Float32` the near-axis sample point cannot detect a zero, |
 | U20-5 | medium |  | `test/runtests.jl:7173 ("CUDA round Gaussian near-axis stability")` | the testset's named subject — near-axis kick stability — is compared under |
-| U20-6 | medium |  | `test/runtests.jl:7572 ("CUDA spectral deposit tripwire (R9, U9-1)")` | this new testset verifies "leaves exactly its unit charge" using only a |
+| U20-6 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:7572 ("CUDA spectral deposit tripwire (R9, U9-1)")` | this new testset verifies "leaves exactly its unit charge" using only a |
 | U21-10 | medium |  | `test/examples/strong_strong_tracking.jl:29-39` | the U18-2 documentation fix landed by `b986c73` was inserted **into the |
 | U21-11 | medium |  | `test/examples/strong_strong_tracking.jl:35-36 vs 642-650` | the same commit's documentation and code contradict each other about |
 | U21-12 | medium |  | `test/examples/strong_strong_tracking.jl:644-650` | the U18-5 fix's own comment misdescribes its own code, and the fix |
