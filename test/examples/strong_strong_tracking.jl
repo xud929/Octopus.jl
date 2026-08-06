@@ -27,22 +27,23 @@ Select a CUDA device explicitly:
     OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_DEVICE=1 julia --project=. test/examples/strong_strong_tracking.jl
 
 This example uses the PIC solver by default. Select the Poisson solver with
-Further switches this header once omitted (2026-08-05 audit, U18-2), all
-read below with the defaults shown at their read sites:
-OCTOPUS_CPU_THREADS, OCTOPUS_N_MACRO, OCTOPUS_PROTON_ENERGY_GEV,
-OCTOPUS_CUDA_NVTX, OCTOPUS_DISABLE_MOMENTS,
-OCTOPUS_DISABLE_LUMINOSITY_OUTPUT, OCTOPUS_MOMENT_CAPACITY,
-OCTOPUS_SPECTRAL_FIELD_PRECISION, OCTOPUS_GPIC_GRID, OCTOPUS_TURN_TIMING_PATH
-(cwd-relative), the CUDA_PIC_SLICE_PAIR green-cache aliases, and the
-per-kernel CUDA_PIC_*_THREADS overrides.
-
 OCTOPUS_SOLVER (pic | spectral | gaussian | gaussian_pic); an unrecognized name
 is an error. The spectral grid/box can be overridden with
 OCTOPUS_SPECTRAL_GRID="nx,ny" and OCTOPUS_SPECTRAL_DOMAIN_FACTOR for A/B timing:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_SOLVER=spectral OCTOPUS_N_MACRO_ELE=2560000 OCTOPUS_N_MACRO_PRO=1024000 OCTOPUS_RECORD_TURN_TIMES=1 julia --project=. test/examples/strong_strong_tracking.jl
 
-The soft-Gaussian solver is also available as a commented alternative below the
+Further switches this header once omitted (2026-08-05 audit, U18-2), all read
+below with the defaults shown at their read sites: OCTOPUS_CPU_THREADS,
+OCTOPUS_N_MACRO, OCTOPUS_PROTON_ENERGY_GEV, OCTOPUS_CUDA_NVTX,
+OCTOPUS_DISABLE_MOMENTS, OCTOPUS_DISABLE_LUMINOSITY_OUTPUT,
+OCTOPUS_MOMENT_CAPACITY, OCTOPUS_SPECTRAL_FIELD_PRECISION, OCTOPUS_GPIC_GRID,
+OCTOPUS_TURN_TIMING_PATH (a relative value resolves against `test/result/`,
+beside this harness -- NOT against the caller's cwd), the
+CUDA_PIC_SLICE_PAIR green-cache aliases, and the per-kernel
+CUDA_PIC_*_THREADS overrides.
+
+The soft-Gaussian solver is also available as a commented alternative ABOVE the
 solver construction.
 
 Run the high-energy weak-strong limiting case by making the electron beam

@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **87 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **91 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -62,10 +62,10 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U20-4 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:7199 ("CUDA near-round Gaussian transition matches CP` | at `T = Float32` the near-axis sample point cannot detect a zero, |
 | U20-5 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:7173 ("CUDA round Gaussian near-axis stability")` | the testset's named subject — near-axis kick stability — is compared under |
 | U20-6 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:7572 ("CUDA spectral deposit tripwire (R9, U9-1)")` | this new testset verifies "leaves exactly its unit charge" using only a |
-| U21-10 | medium |  | `test/examples/strong_strong_tracking.jl:29-39` | the U18-2 documentation fix landed by `b986c73` was inserted **into the |
-| U21-11 | medium |  | `test/examples/strong_strong_tracking.jl:35-36 vs 642-650` | the same commit's documentation and code contradict each other about |
-| U21-12 | medium |  | `test/examples/strong_strong_tracking.jl:644-650` | the U18-5 fix's own comment misdescribes its own code, and the fix |
-| U21-13 | medium |  | `test/examples/strong_strong_tracking.jl:45-46` | U18-1 was only half-fixed. The code comment at 365-369 now correctly warns |
+| U21-10 | medium | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:29-39` | the U18-2 documentation fix landed by `b986c73` was inserted **into the |
+| U21-11 | medium | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:35-36 vs 642-650` | the same commit's documentation and code contradict each other about |
+| U21-12 | medium | REFUTED: test/result IS gitignored and the comment is accurate (2026-08-06) | `test/examples/strong_strong_tracking.jl:644-650` | the U18-5 fix's own comment misdescribes its own code, and the fix |
+| U21-13 | medium | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:45-46` | U18-1 was only half-fixed. The code comment at 365-369 now correctly warns |
 | U21-15 | medium |  | `test/examples/strong_strong_tracking.jl:252-351 (all boolean toggles)` | every boolean `OCTOPUS_*` toggle silently treats an unrecognised value as |
 | U21-16 | medium |  | `test/examples/strong_strong_tracking.jl:230 and test/examples/weak_str` | `OCTOPUS_USE_GPU` is the one boolean with a stricter, different grammar |
 | U21-18 | medium |  | `test/examples/strong_strong_tracking.jl:352-364, 424-441` | all seven `OCTOPUS_CUDA_PIC_*_THREADS` overrides are validated and then |
