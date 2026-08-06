@@ -24,6 +24,34 @@ if _HAS_CUDA
         # box, and no atomic fires in that common case. The collide entry
         # points zero the accumulator, and flush one aggregate warning per
         # collision (audit 2026-08-05, U9-1).
+        #
+        # That differencing argument holds only while the weights are WELL
+        # CONDITIONED, which the 2026-08-05_b audit found is exactly where the
+        # tripwire was needed least. `_grid_floor` returns `_GRID_REJECT`
+        # (-2.31e18) for |X| >= 1e15 or a non-finite coordinate; then
+        # `wx = X - i ~ 2.31e18`, the literal 1 falls below its ulp, so
+        # `(1 - wx)` rounds to exactly `-wx`, all four weights cancel and
+        # `clipped` is exactly 0.0 — the atomic never fires. For NaN the
+        # difference is NaN and `NaN > 0` is false. Measured:
+        #
+        #   X       1-wx == -wx   clipped   fires?
+        #   1e13    false          1.0       yes
+        #   1e15    TRUE           0.0       NO
+        #   NaN     false          NaN       NO
+        #   Inf     TRUE           NaN       NO
+        #
+        # i.e. silent for the three worst inputs, in the blow-up regime R9
+        # exists for, while the CPU twin's conservation check (`ns - sum(rho)`)
+        # counts each such particle as a full unit. `_cuda_spectral_clipped`
+        # restores that: a rejected index or non-finite weight deposits nothing,
+        # so it dropped its whole unit charge. Shared by all three kernels
+        # rather than hand-copied into each (AGENTS.md: derive, don't copy).
+        @inline function _cuda_spectral_clipped(w11, w21, w12, w22, written, i, j, wx, wy)
+            lost = (i == _GRID_REJECT) | (j == _GRID_REJECT) |
+                   !isfinite(wx) | !isfinite(wy)
+            return lost ? one(w11) : (w11 + w21 + w12 + w22 - written)
+        end
+
         function _cuda_spectral_deposit_kernel!(rho, sx, sy, Lx, Ly, hx, hy, Nx, Ny, dropped)
             p = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             p <= length(sx) || return nothing
@@ -46,7 +74,7 @@ if _HAS_CUDA
                 if 1 <= i + 1 <= Nx && 1 <= j + 1 <= Ny
                     CUDA.@atomic rho[i + 1, j + 1] += w22; written += w22
                 end
-                clipped = w11 + w21 + w12 + w22 - written
+                clipped = _cuda_spectral_clipped(w11, w21, w12, w22, written, i, j, wx, wy)
                 clipped > 0 && CUDA.@atomic dropped[1] += Float64(clipped)
             end
             return nothing
@@ -437,7 +465,7 @@ if _HAS_CUDA
                 if 1 <= i + 1 <= Nx && 1 <= j + 1 <= Ny
                     CUDA.@atomic rho[i + 1, j + 1] += w22; written += w22
                 end
-                clipped = w11 + w21 + w12 + w22 - written
+                clipped = _cuda_spectral_clipped(w11, w21, w12, w22, written, i, j, wx, wy)
                 clipped > 0 && CUDA.@atomic dropped[1] += Float64(clipped)
             end
             return nothing
@@ -470,7 +498,7 @@ if _HAS_CUDA
                 if 1 <= i + 1 <= Nx && 1 <= j + 1 <= Ny
                     CUDA.@atomic rho[i + 1, j + 1] += w22; written += w22
                 end
-                clipped = w11 + w21 + w12 + w22 - written
+                clipped = _cuda_spectral_clipped(w11, w21, w12, w22, written, i, j, wx, wy)
                 clipped > 0 && CUDA.@atomic dropped[1] += Float64(clipped)
             end
             return nothing
