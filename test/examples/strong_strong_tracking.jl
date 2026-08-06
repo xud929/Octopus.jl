@@ -228,7 +228,29 @@ n_macro_ele = parse(Int, get(ENV, "OCTOPUS_N_MACRO_ELE",
 n_macro_pro = parse(Int, get(ENV, "OCTOPUS_N_MACRO_PRO",
                              isempty(common_n_macro) ? string(input.default_demo_macroparticles) : common_n_macro))
 
-use_gpu = get(ENV, "OCTOPUS_USE_GPU", "0") == "1"
+"""
+Parse a boolean `OCTOPUS_*` switch, rejecting anything it does not recognise.
+
+Two defects this replaces (2026-08-05_b audit, U21-15/U21-16). Every toggle used
+`get(ENV, K, default) in ("1", "true", "TRUE", "yes", "YES")`, so an
+unrecognised value fell through to `false` -- a typo did not fail, it silently
+DISABLED the five switches whose default is on, and the run looked healthy.
+And `OCTOPUS_USE_GPU` alone used `== "1"`, a stricter and different grammar, so
+`OCTOPUS_USE_GPU=true` and `=yes` silently ran on CPU while those same two words
+enabled every other flag in this file -- the worst version of the defect,
+because the whole point of the switch is which hardware the timing came from.
+
+One grammar now, and a value outside it is an error naming the variable.
+"""
+function env_bool(key::AbstractString, default::Bool)
+    raw = get(ENV, key, default ? "1" : "0")
+    lowered = lowercase(strip(raw))
+    lowered in ("1", "true", "yes", "on") && return true
+    lowered in ("0", "false", "no", "off") && return false
+    error("$(key)=$(repr(raw)) is not a boolean; use 1/0, true/false, yes/no or on/off")
+end
+
+use_gpu = env_bool("OCTOPUS_USE_GPU", false)
 if use_gpu
     import CUDA
     CUDA.functional(false) || error("OCTOPUS_USE_GPU=1 requested, but CUDA.functional(false) is false.")
@@ -250,8 +272,7 @@ set_global_rng!(seed = input.seed, method = :philox)
 
 ele = input.electron
 pro = input.proton
-weak_strong_limit = get(ENV, "OCTOPUS_WEAK_STRONG_LIMIT", "0") in
-                    ("1", "true", "TRUE", "yes", "YES")
+weak_strong_limit = env_bool("OCTOPUS_WEAK_STRONG_LIMIT", false)
 electron_energy = if haskey(ENV, "OCTOPUS_ELECTRON_ENERGY_GEV")
     parse(Float64, ENV["OCTOPUS_ELECTRON_ENERGY_GEV"]) * 1.0e9
 elseif weak_strong_limit
@@ -305,12 +326,12 @@ pic_slice_pair_green_min_ratio = parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR
 pic_slice_pair_green_growth = parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH",
                                                  get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH",
                                                      string(input.solver.pic_slice_pair_green_growth))))
-pic_longitudinal_kick = get(ENV, "OCTOPUS_PIC_LONGITUDINAL_KICK", "1") in ("1", "true", "TRUE", "yes", "YES")
+pic_longitudinal_kick = env_bool("OCTOPUS_PIC_LONGITUDINAL_KICK", true)
 pic_batch_mode = Symbol(lowercase(get(ENV, "OCTOPUS_PIC_BATCH_MODE", "wavefront")))
-cuda_pic_async = get(ENV, "OCTOPUS_CUDA_PIC_ASYNC", "1") in ("1", "true", "TRUE", "yes", "YES")
-cuda_pic_batch_fft = get(ENV, "OCTOPUS_CUDA_PIC_BATCH_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
-cuda_pic_wavefront_fft = get(ENV, "OCTOPUS_CUDA_PIC_WAVEFRONT_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
-cuda_pic_indexed_wavefront = get(ENV, "OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT", "1") in ("1", "true", "TRUE", "yes", "YES")
+cuda_pic_async = env_bool("OCTOPUS_CUDA_PIC_ASYNC", true)
+cuda_pic_batch_fft = env_bool("OCTOPUS_CUDA_PIC_BATCH_FFT", true)
+cuda_pic_wavefront_fft = env_bool("OCTOPUS_CUDA_PIC_WAVEFRONT_FFT", true)
+cuda_pic_indexed_wavefront = env_bool("OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT", true)
 pic_luminosity_every = parse(Int, get(ENV, "OCTOPUS_PIC_LUMINOSITY_EVERY", "1"))
 pic_luminosity_grid = if haskey(ENV, "OCTOPUS_PIC_LUMINOSITY_GRID")
     values = parse.(Int, split(ENV["OCTOPUS_PIC_LUMINOSITY_GRID"], ','))
@@ -330,26 +351,18 @@ pic_luminosity_schedule =
     pic_luminosity_every == 0 ? AtTurns(Int[]) :
     pic_luminosity_every == 1 ? nothing :
     EveryNSteps(step = pic_luminosity_every)
-record_turn_times = get(ENV, "OCTOPUS_RECORD_TURN_TIMES", "0") in
-                    ("1", "true", "TRUE", "yes", "YES")
+record_turn_times = env_bool("OCTOPUS_RECORD_TURN_TIMES", false)
 diagnostics = StrongStrongDiagnostics(;
     record_turn_times,
     memory_log_every = parse(Int, get(ENV, "OCTOPUS_CUDA_MEMORY_LOG_EVERY", "0")),
-    pic_timing = get(ENV, "OCTOPUS_CUDA_PIC_TIMING", "0") in
-                 ("1", "true", "TRUE", "yes", "YES"),
-    pic_timing_detail = get(ENV, "OCTOPUS_CUDA_PIC_TIMING_DETAIL", "0") in
-                        ("1", "true", "TRUE", "yes", "YES"),
-    cache_stats = get(ENV, "OCTOPUS_PIC_CACHE_STATS", "0") in
-                  ("1", "true", "TRUE", "yes", "YES"),
-    nvtx = get(ENV, "OCTOPUS_CUDA_NVTX", "0") in
-           ("1", "true", "TRUE", "yes", "YES"),
+    pic_timing = env_bool("OCTOPUS_CUDA_PIC_TIMING", false),
+    pic_timing_detail = env_bool("OCTOPUS_CUDA_PIC_TIMING_DETAIL", false),
+    cache_stats = env_bool("OCTOPUS_PIC_CACHE_STATS", false),
+    nvtx = env_bool("OCTOPUS_CUDA_NVTX", false),
 )
-disable_moments = get(ENV, "OCTOPUS_DISABLE_MOMENTS", "0") in
-                  ("1", "true", "TRUE", "yes", "YES")
-disable_luminosity_output = get(ENV, "OCTOPUS_DISABLE_LUMINOSITY_OUTPUT", "0") in
-                            ("1", "true", "TRUE", "yes", "YES")
-disable_collision = get(ENV, "OCTOPUS_DISABLE_COLLISION", "0") in
-                    ("1", "true", "TRUE", "yes", "YES")
+disable_moments = env_bool("OCTOPUS_DISABLE_MOMENTS", false)
+disable_luminosity_output = env_bool("OCTOPUS_DISABLE_LUMINOSITY_OUTPUT", false)
+disable_collision = env_bool("OCTOPUS_DISABLE_COLLISION", false)
 moment_capacity = parse(Int, get(ENV, "OCTOPUS_MOMENT_CAPACITY",
                                  string(input.output.moment_capacity)))
 optional_cuda_pic_threads(key) = haskey(ENV, key) ? parse(Int, ENV[key]) : nothing
