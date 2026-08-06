@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **37 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **38 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -30,7 +30,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U26-3 | major | FIXED | `docs/README.md (theory index entries for aperture and RF cavity)` | the index describes two implemented subsystems as unimplemented — |
 | U26-4 | major |  | `docs/theory/coherent_beam_beam_modes.md §2` | §2 states the equilibrium potential is "normalized to $\hat V_0''(0)=1$ so |
 | U6-1 | major | F7 confirmed, priced | `src/tasks/strongstrong/pic_cpu.jl:608 (also 870–938 and 824)` | under `interaction_grid = :node` and `:source_slice` the dropped-charge tripwire is |
-| U6-2 | major (performance) |  | `src/tasks/strongstrong/pic_cpu.jl:1338–1365 (constants at src/tasks/st` | `_PIC_PARALLEL_DEPOSIT_MIN = 4096` now selects the fixed 16-chunk deposit far below |
+| U6-2 | major (performance) | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/pic_cpu.jl:1338–1365 (constants at src/tasks/st` | `_PIC_PARALLEL_DEPOSIT_MIN = 4096` now selects the fixed 16-chunk deposit far below |
 | U9-1 | major | F4 FIXED | `src/elements/solenoid.jl:166 (`_SOL_MIDPOINT_ITERS`), 411 (`nst` defau` | the curved solenoid's implicit-midpoint stage is solved by a fixed 16 |
 | U1-1 | medium | F1 confirmed, open | `src/tasks/strongstrong/pic_cuda.jl:156-160, 360-366, 728-830, 832-926,` | the per-pair luminosity sink `_ACTIVE_PIC_LUMINOSITY_PAIR_SINK` is populated by the |
 | U11-1 | medium | F6 FIXED | `src/tasks/strongstrong/spectral_cuda.jl:49-50 (identical copies at 440` | The CUDA R9 dropped-charge tripwire reports **exactly zero** for the most |

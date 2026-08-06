@@ -1336,9 +1336,11 @@ function _pic_solve_drifted_field_with_green_fft!(field::_PICFieldWorkspace,
 end
 
 function _pic_deposit!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
-    # Path choice by data size ONLY: gating on the worker count made the
-    # 1-worker result differ from every multi-worker one (U5-1).
-    if length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
+    # Path choice by data and mesh size ONLY: gating on the worker count made
+    # the 1-worker result differ from every multi-worker one (U5-1), and gating
+    # on n alone sent small slices on large grids into a deposit whose fixed
+    # cost is grid-sized (U6-2).
+    if _pic_deposit_parallel(length(x), nx, ny)
         return _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
     end
     return _pic_deposit_serial!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
@@ -1346,9 +1348,11 @@ end
 
 function _pic_deposit!(charge, method, x, y, x0, y0, hx, hy, nx, ny,
                        workspace::_PICCPUWorkspace)
-    # Path choice by data size ONLY: gating on the worker count made the
-    # 1-worker result differ from every multi-worker one (U5-1).
-    if length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
+    # Path choice by data and mesh size ONLY: gating on the worker count made
+    # the 1-worker result differ from every multi-worker one (U5-1), and gating
+    # on n alone sent small slices on large grids into a deposit whose fixed
+    # cost is grid-sized (U6-2).
+    if _pic_deposit_parallel(length(x), nx, ny)
         return _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny, workspace)
     end
     return _pic_deposit_serial!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
@@ -1356,9 +1360,11 @@ end
 
 function _pic_deposit_drifted!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny,
                                workspace::_PICCPUWorkspace)
-    # Path choice by data size ONLY: gating on the worker count made the
-    # 1-worker result differ from every multi-worker one (U5-1).
-    if length(x) >= _PIC_PARALLEL_DEPOSIT_MIN
+    # Path choice by data and mesh size ONLY: gating on the worker count made
+    # the 1-worker result differ from every multi-worker one (U5-1), and gating
+    # on n alone sent small slices on large grids into a deposit whose fixed
+    # cost is grid-sized (U6-2).
+    if _pic_deposit_parallel(length(x), nx, ny)
         return _pic_deposit_drifted_threaded!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny, workspace)
     end
     return _pic_deposit_drifted_serial!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny)

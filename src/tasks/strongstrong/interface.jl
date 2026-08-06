@@ -565,7 +565,47 @@ _pic_slice_context(key::Tuple{Int,Int}) = "slice pair ($(key[1]), $(key[2]))"
 # usually cheaper than thread scheduling and per-thread reduction overhead.
 const _STRONG_STRONG_PARALLEL_MOMENT_MIN = 4096
 const _STRONG_STRONG_PARALLEL_KICK_MIN = 4096
+# Absolute floor for the deposit; the binding condition is the mesh-scaled one
+# below. A particle count alone cannot decide this, because the threaded
+# deposit's overhead is set by the GRID, not by n.
 const _PIC_PARALLEL_DEPOSIT_MIN = 4096
+
+# Particles per grid cell required before the chunked deposit pays for itself.
+#
+# `_pic_deposit_threaded!` costs `_PIC_DEPOSIT_CHUNKS` x (`fill!` + `.+=`) over a
+# 2nx x 2ny padded grid before it touches a particle, so its fixed cost scales
+# with the MESH while the win scales with n. Gating on n alone (the state after
+# the U5-1 worker-count removal) therefore routed tiny slices on big grids
+# straight into the expensive path: measured 28x slower at grid 128 / n = 4096,
+# and a 5% particle-count increase across the threshold cost 1.5x per turn
+# end-to-end (2026-08-05_b audit, U6-2).
+#
+# Measured threaded/serial break-even on this host (8 threads, CIC, drifted
+# deposit), as particles per cell:
+#
+#     grid  16 (256 cells)    ~140     grid  64 (4096 cells)   ~49
+#     grid  32 (1024 cells)   ~156     grid 128 (16384 cells)  ~30
+#
+# It is not constant -- the serial path also slows on larger meshes -- so one
+# number cannot sit exactly on every crossover. 160 is chosen to sit at or above
+# the worst of them, because the penalties are wildly asymmetric: choosing
+# serial when threaded would have won costs at most ~1.4x, while choosing
+# threaded when serial would have won costs up to 57x. The EIC production point
+# (2.56M particles, 15 slices, grid 128 => ~171k/slice) measures 2.2x SLOWER on
+# the threaded path, so it belongs on the serial side and now takes it.
+#
+# Like the floor above, this depends only on data and mesh size -- never on the
+# worker count -- so the thread-count invariance pinned in U5-1/U5-2 is
+# unaffected: the same input takes the same path at 1, 4 and 8 workers.
+const _PIC_DEPOSIT_PARTICLES_PER_CELL = 160
+
+"""
+Whether the chunked (threaded) deposit is worth its grid-sized fixed cost for
+`n` particles on an `nx` x `ny` mesh. Data and mesh only, never worker count.
+"""
+_pic_deposit_parallel(n::Integer, nx::Integer, ny::Integer) =
+    n >= _PIC_PARALLEL_DEPOSIT_MIN &&
+    n >= _PIC_DEPOSIT_PARTICLES_PER_CELL * nx * ny
 
 # Fixed chunk counts for the count-invariant parallel reductions. Chunk
 # boundaries must depend only on the DATA size, never on the active worker

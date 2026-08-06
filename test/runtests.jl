@@ -3218,11 +3218,21 @@ end
     # 131,072 ulps; 2026-08-05 audit U5-1/2, U16-3). The reductions now use
     # FIXED chunk grids with the serial/chunked choice made by data size
     # only, so the second block below pins full bit-equality — luminosity
-    # included — at n=15000, above every threshold, for 1/4/8 workers
-    # (measured exact, 0 ulp, at zero collide-time cost: 3.06 s vs 3.10 s at
-    # n=1e6). The first block keeps the original sub-threshold pin; its
-    # spectral-luminosity tolerance covers the historical 1-ulp fold-order
+    # included — at n=15000, above the moment and kick thresholds, for 1/4/8
+    # workers (measured exact, 0 ulp, at zero collide-time cost: 3.06 s vs
+    # 3.10 s at n=1e6). The first block keeps the original sub-threshold pin;
+    # its spectral-luminosity tolerance covers the historical 1-ulp fold-order
     # allowance, which equality also satisfies.
+    #
+    # This block no longer reaches the THREADED DEPOSIT, and saying so matters
+    # more than the coverage it lost. The deposit threshold is now mesh-scaled
+    # (U6-2: its fixed cost is grid-sized, so a particle count alone routed
+    # small slices on big grids into a path 28x slower), and at these grids
+    # that needs ~41k-164k particles per slice — far past what belongs in CI.
+    # The deposit's own worker invariance is therefore pinned directly, on the
+    # threaded entry point, in the third block below. Routing through collide!
+    # at production sizes to reach it would trade minutes of CI for the same
+    # assertion.
     mkr(n) = begin
         s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
         z = [2.0e-2 * sin(0.7 * i + 2.0) + 1.0e-3 * sin(3.1 * i) for i in 1:n]
@@ -3286,6 +3296,48 @@ end
             @test outs[1][1] == outs[other][1]
             @test all(a == b for (a, b) in zip(outs[1][2], outs[other][2]))
             @test all(a == b for (a, b) in zip(outs[1][3], outs[other][3]))
+        end
+    end
+
+    # The threaded deposit itself, entered directly. Since U6-2 made the
+    # deposit threshold mesh-scaled, the collide! blocks above no longer route
+    # here at CI-sized inputs, and an unexercised invariance claim is not a
+    # claim (Measured Lesson: a check only counts while it executes).
+    #
+    # The path is chosen by data and mesh only, so the routing decision is
+    # asserted to be worker-count-blind as well as the arithmetic: a future
+    # `_cpu_worker_count()` creeping back into the predicate fails here.
+    let nx = 8, ny = 8,
+        # Derived from the threshold, not hardcoded: if the constant moves, this
+        # input follows it instead of silently dropping to the serial path.
+        n = Octopus._PIC_DEPOSIT_PARTICLES_PER_CELL * nx * ny
+        x = [1.0e-4 * sin(0.7i) for i in 1:n]
+        y = [1.0e-5 * sin(0.31i) for i in 1:n]
+        px = [1.0e-6 * sin(1.1i) for i in 1:n]
+        py = [1.0e-7 * sin(0.53i) for i in 1:n]
+        x0, y0 = -2.0e-4, -2.0e-5
+        hx, hy = 4.0e-4 / (2nx), 4.0e-5 / (2ny)
+        counts = unique((1, 2, Threads.nthreads(:default)))
+        # Exactly on the threshold, so this input is on the threaded side and
+        # one particle fewer is not -- the boundary itself is pinned.
+        @test Octopus._pic_deposit_parallel(n, nx, ny)
+        @test !Octopus._pic_deposit_parallel(n - 1, nx, ny)
+        for method in (:CIC, :TSC)
+            grids = map(counts) do k
+                ws = Octopus._pic_cpu_workspace(Float64, nx, ny)
+                ch = zeros(2nx, 2ny)
+                Octopus._with_execution_policy(
+                    Octopus.ResolvedCPUExecutionPolicy(k)) do
+                    # The routing decision must not see the worker count.
+                    @test Octopus._pic_deposit_parallel(n, nx, ny)
+                    Octopus._pic_deposit_drifted_threaded!(
+                        ch, method, x, px, y, py, 0.0, x0, y0, hx, hy, nx, ny, ws)
+                end
+                copy(ch)
+            end
+            for other in 2:length(grids)
+                @test grids[1] == grids[other]     # bit-identical, not approx
+            end
         end
     end
 end
