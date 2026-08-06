@@ -5650,6 +5650,30 @@ end
         @test collect(p(; inv...)(p(; fwd...)(u0...)...)) ≈ collect(u0) atol=1e-16
     end
 
+    # 2026-08-05_b audit, U16-4. Every case above is SINGLE-parameter (or a pure
+    # translation), and that is exactly why the defect below survived: with no
+    # rotation the reference length and the reference particle's actual path
+    # coincide, so all of them round-tripped at <= 6.7e-18.
+    #
+    # `_patch_reference_length` returned the new origin's displacement PROJECTED
+    # onto the new s axis, while the on-axis particle drifts the UNPROJECTED
+    # distance to reach the face. A patch carrying both a dz and a
+    # transverse-axis rotation therefore moved z by exactly dz*(cos(theta) - 1):
+    # measured -1.943e-5 at (dz=0.23, angle_y=0.013) and -2.498e-3 at
+    # (dz=0.50, angle_y=0.100).
+    #
+    # The invariant is exact and needs no tolerance: the reference particle is
+    # what z is measured against, so a patch must leave its z alone. (Composing
+    # a combined patch with negated parameters is NOT its inverse -- translation
+    # and rotation do not commute, residual 3e-3 -- so the single-parameter
+    # inverse sweep above cannot be extended to cover this.)
+    for kw in ((dz=0.23, angle_y=0.013), (dz=1.20, angle_y=0.0125),
+               (dz=0.50, angle_y=0.100), (dx=0.05, angle_y=0.013),
+               (dy=-0.04, angle_x=0.02), (dz=0.31, angle_x=0.02, angle_y=0.017),
+               (dx=0.03, dy=-0.02, dz=0.4, angle_x=0.02, angle_y=0.017, angle_s=0.05))
+        @test p(; kw...)(0, 0, 0, 0, 0, 0)[5] == 0.0
+    end
+
     # A purely longitudinal patch IS a drift: the drift-to-the-new-face step is
     # what gives a patch an effective length, so dz must reproduce DriftSpec
     # exactly rather than merely relabel s.

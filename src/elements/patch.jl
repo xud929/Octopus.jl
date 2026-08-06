@@ -116,14 +116,31 @@ Exact patch map. Three steps, following Bmad's `track_a_patch`:
 end
 
 """
-Reference path length through the patch: the new origin's displacement projected
-onto the new `s` axis. This is what the on-axis reference particle traverses, and
-subtracting it is what keeps `z` measured against the reference rather than
-against the old frame.
+Reference path length through the patch: the distance the on-axis, on-momentum
+reference particle actually travels to reach the new entrance face. Subtracting
+it is what keeps `z` measured against the reference rather than against the old
+frame.
+
+This returned the new origin's displacement PROJECTED onto the new `s` axis,
+under a docstring claiming that projection was what the reference particle
+traverses. It is not. Run the map above at `(0,0,0,0,0,0)`: the projection is
+`ds`, while the particle drifts `ds/q3` to reach the face, so a patch carrying
+both a `dz` and a transverse-axis rotation shifted `z` by exactly
+`dz*(cos(theta) - 1)` -- and the headline identity in this file's own docstring,
+that composing a patch with its exact inverse is the identity, failed in `z` by
+that amount. Measured: -1.943e-5 at `dz=0.23, angle_y=0.013`, -2.498e-3 at
+`dz=0.50, angle_y=0.100` (2026-08-05_b audit, U16-4).
+
+Single-parameter patches are unaffected -- with no rotation `q3 = 1` and the two
+lengths coincide -- which is why every one-parameter round trip passed at
+<= 6.7e-18 and nothing caught it.
 """
 @inline function _patch_reference_length(elem::Patch, W)
     _, _, s = _patch_apply(W, elem.dx, elem.dy, elem.dz)
-    return s
+    # The reference particle's own direction cosine along the new s axis: it
+    # enters along the OLD s axis, so rotate (0, 0, 1) into the new frame.
+    _, _, q3 = _patch_apply(W, zero(s), zero(s), one(s))
+    return s / q3
 end
 
 @inline track_particle(::NonSymplectic6DMap, elem::Patch, x, px, y, py, z, pz) =
