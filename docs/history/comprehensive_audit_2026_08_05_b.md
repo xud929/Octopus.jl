@@ -29,8 +29,9 @@ fix's blast radius includes dimensions nothing measures; this pass is that
 lesson applied to a whole campaign, and it paid.
 
 26 briefed reading units plus auditor-direct seam passes over 53,472 Julia
-lines. **Four findings confirmed by auditor reproduction, two of them fixed and
-negative-controlled:**
+lines. **Seven findings confirmed by auditor reproduction, four of them fixed
+and negative-controlled**, plus two documentation status defects corrected.
+The headline four:
 
 - **F2 [Major, FIXED]** — an `execute!` that threw during observer preparation
   **destroyed luminosity history it had never written to**: 3 rows → 0 in
@@ -75,6 +76,27 @@ sub-route matrix at 8.99e-17. `_needs_curved_potential` was shown to be
 *exactly* the Cauchy-Riemann condition by total enumeration. The prior pass's
 U11-1 walker split is genuinely fixed — 13 independent walkers agree on a
 three-deep nested line.
+
+Three further Major findings were confirmed in a continuation pass and are
+detailed in §4: **F5**, the contextless CUDA `track!` replaying turn 0 every
+turn (radiation variance too large by a factor of `turns`, fixed); **F6**, the
+CUDA spectral R9 tripwire reporting exactly zero at blow-up through a float
+cancellation (fixed); and **F7**, the PIC dropped-charge tripwire being
+unreachable by construction under `:node`/`:source_slice` (confirmed, priced,
+not fixed).
+
+**One pattern accounts for most of this pass.** F1, F6, F7, and the bulk of the
+queue are the same defect shape: *an instrument that fails in the regime it
+exists for*. A contract passing by comparing an empty set; a tripwire whose
+arithmetic cancels exactly when the coordinate is worst; a counter disabled by
+the very validator that enforces its precondition; a completeness count that
+drops 112 of 501 parameters; an aperture probe whose all-NaN baseline can only
+answer "moved"; a `Core.Box` sweep catching 3 of 7 injections; a TSC parity test
+whose sample grid is entirely dyadic; an RNG gate that accepts a Philox with its
+key schedule removed. The physics core, measured against references built fresh
+this session, held everywhere it was checked. **Phase 12 — validate the
+instrument before trusting a clean sweep — is where the next pass should spend
+its budget.**
 
 **The honest remainder** is a priced queue of ~105 agent leads with
 reproductions (§7), 7 of them Major candidates, none auditor-verified. Its
@@ -450,6 +472,100 @@ joins no slice under any of the five slicing methods and reaches no grid cell,
 "verified bit-exact against a beam that omits it"
 (`docs/theory/aperture_and_particle_loss.md:380–385`). The defect is
 observability, not the beam-beam result.
+
+### F5 [Major, FIXED] The contextless CUDA `track!` replayed turn 0 for every turn
+
+`phase6d_track.jl:304`. Lead U14-1, reproduced and **sharpened** by the auditor.
+
+`track!(rep, elems, turns, ::ResolvedCUDAExecutionPolicy)` constructed a fresh
+`TrackingContext()` **inside** its turn loop. The counter RNG is keyed on the
+turn, so every turn of a stochastic element replayed one draw. Measured, 20,000
+particles, damping off, so `x` is exactly the accumulated excitation:
+
+| backend | var(16)/var(1) | corr(x₁₆,x₁) | max&#124;x₁₆ − 16·x₁&#124; |
+|---|---|---|---|
+| CPU | 15.60 (≈16, independent) | 0.00048 | 9.76e-8 |
+| **CUDA, pre-fix** | **256.00 = 16²** | **1.0** | **2.6e-23** |
+| CUDA, post-fix | 15.97 | 0.2512 | 9.27e-8 |
+
+Radiation excitation was therefore **coherent rather than diffusive**, with
+variance too large by a factor of `turns` — the wrong quantity entirely for an
+emittance-growth study, growing with run length. Reachable from the deprecated
+but exported `track!(rep, elems, turns, CUDABackend)`.
+
+The post-fix `corr = 0.2512` is **not** a residual defect: it is `1/√16`. With a
+counter RNG the 16-turn run genuinely *contains* turn 1's draw, so 0.25 is the
+correct signature of independent accumulation. CPU shows ≈0 only because its
+contextless path uses a stateful RNG and draws a different sequence entirely —
+which is also why CPU never had this defect: it calls the *context-free*
+`fusedTrack` rather than fabricating a context.
+
+That same asymmetry had left the CUDA path without the
+`_reject_contextless_tracking` guard the CPU path calls, whose docstring says a
+silent run "reads as 'nothing was lost' rather than 'nothing was recorded' —
+the failure mode this whole design is trying to avoid". Added, after grepping
+for anything probing the old acceptance (Measured Lesson 2): one contextless
+CUDA call site exists in the tree and it carries no aperture. Full suite green
+afterwards (151 testsets, exit 0).
+
+### F6 [Major, FIXED] The CUDA spectral R9 tripwire was silent in the regime it exists for
+
+`spectral_cuda.jl`, three deposit kernels. Lead U11-1, verified by the auditor
+first arithmetically and then on the device.
+
+The kernels measured clipped charge by **differencing** the stencil weights
+against what was written. The comment justifying that argues the difference is
+"exactly 0.0 when every node lands in the box" — true, but the converse it
+silently relies on is not. `_grid_floor` returns `_GRID_REJECT` (−2.31e18) for
+|X| ≥ 1e15 or a non-finite coordinate; then `wx = X − i ≈ 2.31e18`, the literal
+`1` falls below its ulp, `(1 − wx)` rounds to **exactly** `−wx`, all four
+weights cancel, and `clipped` is exactly 0.0. For `NaN` the difference is `NaN`
+and `NaN > 0` is false.
+
+| X | `1-wx == -wx` | `clipped` | fires? |
+|---|---|---|---|
+| 1e11, 1e13 | false | 1.0 | yes |
+| **1e15, 1e16** | **true** | **0.0** | **no** |
+| **NaN** | false | NaN | **no** |
+| **Inf** | true | NaN | **no** |
+
+So the instrument went blind **exactly at blow-up — the disease R9 exists to
+detect** — while the CPU twin's conservation check (`ns − sum(rho)`) counts each
+such particle as a full unit. This is Phase 12's rule in the negative.
+
+`_cuda_spectral_clipped` restores the CPU semantics (a rejected index or
+non-finite weight deposited nothing, so it dropped its whole unit charge),
+written **once** and shared by all three kernels rather than hand-copied into
+each. Device verification against the CPU conservation rule, 63 in-box particles
+plus one pathological — all seven cases now agree, and the in-box control still
+reports exactly 0.0, so no false positives.
+
+### F7 [Major, CONFIRMED, not fixed] The PIC dropped-charge tripwire is unreachable under `:node` and `:source_slice`
+
+`pic_cpu.jl:608`. Lead U6-1, confirmed **structurally** by the auditor.
+
+Both counting calls (`_pic_count_outside_box`, `_pic_count_outside_box_drifted`)
+sit inside `if ge !== :extrema`. But `_validate_pic_solver` **throws** unless
+`grid_extent == :extrema` whenever `interaction_grid != :slice_pair`. The two
+conditions are complementary, so under `:node` and `:source_slice` the counting
+is **unreachable by construction**, and `_pic_interaction_node!` contains zero
+counting calls (`grep -c dropped` over that function returns 0).
+
+The guard's stated premise — "`:extrema` covers every particle by construction"
+— holds for `:slice_pair`, whose mesh is sized inside `_pic_interaction!` from
+this slice's own **post-drift** extrema. It does not hold for `:node`, whose
+meshes are deliberately built at **turn start** by `_pic_prebuild_node_caches!`,
+so intra-turn kicks can carry particles outside them: the exact R9 mechanism
+(a box sized pre-collision while deposits happen after intra-collision kicks).
+U6 measured 2 of 1,800,000 source deposits escaping on an EIC-like flat pair
+with `workspace.dropped[] == 0` and no warning, and a synthetic sweep reaching
+47% of deposits once the per-turn excursion exceeds the 1.5-cell margin.
+
+**Not fixed here**, deliberately: the repair belongs in `_pic_interaction_node!`
+and the `:source_slice` path, and adding counting there without measuring the
+escapee set on both backends would risk a new defect in a region whose parity
+this pass has not re-measured. Priced: one session, with the negative control
+being U6's own 2-particle-charge reproduction.
 
 ## 5. Corrections to this audit's own analysis
 
