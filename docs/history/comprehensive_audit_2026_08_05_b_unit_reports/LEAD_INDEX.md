@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **98 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **100 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -99,11 +99,11 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U3-6 | low-medium |  | `src/tasks/strongstrong/pic_cuda.jl:4002-4010, 4034-4051, 4077-4094, 41` | The CUDA PIC route is **not** run-to-run bit-reproducible: the same process, the same |
 | U4-1 | medium | CONFIRMED, not fixed — needs a probe redesign; on todo.md (2026-08-06) | `src/contracts/Contracts.jl:1963-1967 (probe) → :2125 (decision)` | the `:aperture` probe produces an all-NaN baseline, so all 11 aperture parameters counted in `checked` are decided by a NaN comparison that can only ever say "the parameter moved the map" — the apertu |
 | U4-10 | low-medium |  | `src/contracts/Contracts.jl:321-322 with :344-348 and :351-354` | on a single-threaded Julia the `PublicConfigurationEffectivenessContract`'s worker-invariance comparison executes zero times, yet the metrics report it as measured and passed. |
-| U4-11 | low-medium |  | `src/contracts/Contracts.jl:1351-1371 with docstring :1310-1317` | the "analytic weak-strong reference" that `HighEnergyWeakStrongLimitContract` holds the soft-Gaussian solver to at 2e-14 is not analytic and not independent — it calls the same three functions the pro |
+| U4-11 | low-medium | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:1351-1371 with docstring :1310-1317` | the "analytic weak-strong reference" that `HighEnergyWeakStrongLimitContract` holds the soft-Gaussian solver to at 2e-14 is not analytic and not independent — it calls the same three functions the pro |
 | U4-12 | medium-low |  | `src/contracts/Contracts.jl:1932-1986 (probes) with :2064` | `misalign_convention` — the MAD-X-vs-Bmad rotation composition order, which the PTC contract's `quad_mis_all` / `cfbend_mis_all` cases exist precisely to pin — is **inert at every shipped probe**, on  |
 | U4-2 | medium |  | `src/contracts/Contracts.jl:2116-2117 and :2122, message at :2135-2137` | of the 501 declared element parameters (`ParamMeta` entries across all registered specs), 353 are checked, 36 are documented-inactive, and **112 are silently dropped** — neither counted in `checked` n |
 | U4-3 | medium |  | `src/contracts/Contracts.jl:2061-2072 (`_perturb_param`)` | `_perturb_param`'s magnitude and type dispatch make ~15 declared parameters permanently unverifiable, and the "rejected ⇒ consumed" reasoning at :2122 is wrong for all of them. |
-| U4-4 | medium-low |  | `src/contracts/Contracts.jl:1942-1945 (`:sbend` probe)` | `sbend.fringe` is bitwise inert at the probe the contract ships, violating the probes' own stated design rule, and the Symbol blind spot (U4-2) guarantees nobody will ever be told. |
+| U4-4 | medium-low | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:1942-1945 (`:sbend` probe)` | `sbend.fringe` is bitwise inert at the probe the contract ships, violating the probes' own stated design rule, and the Symbol blind spot (U4-2) guarantees nobody will ever be told. |
 | U4-5 | medium |  | `src/contracts/Contracts.jl:2444-2454` | the U3-8 repair to the `:cuda_pic_launch` branch of `_solver_contract_receipt_carries` is vacuous for **both** options that actually take that branch, so the per-option receipt claim is still receipt- |
 | U4-6 | medium |  | `src/contracts/Contracts.jl:2432-2443 with :2552-2555 / :2651-2655` | for options whose declared consumer is `:solver_runtime`, "the value reached a runtime consumer" is proven by reading back a receipt that is a verbatim dump of the object under test — the check's pass |
 | U4-7 | medium |  | `src/contracts/Contracts.jl:2459-2471 vs :2338-2339` | the new solver-enumeration tripwire guards `contract.probes`, but the sweep iterates the hardcoded `_solver_contract_types()`. The two sets are different, so the natural response to a firing tripwire  |

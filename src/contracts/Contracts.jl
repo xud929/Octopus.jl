@@ -1332,10 +1332,26 @@ end
 Verify the high-energy weak-strong limit of the strong-strong collision: with
 the electron energy made effectively infinite, the electron beam must be
 unchanged and the proton beam must receive exactly the frozen-source
-weak-strong kick. The soft-Gaussian solver is held to machine-precision
-agreement with the analytic weak-strong reference (this is the sharp limit
-statement); PIC is held to explicit grid/model-convergence tolerances against
-the same reference. The spectral solvers' high-energy limit remains covered by
+weak-strong kick.
+
+The soft-Gaussian half is held to machine precision (2e-14) against a
+frozen-source reference, and what that establishes is precise: at infinite
+source energy the strong-strong SCHEDULING reduces to the weak-strong
+construction -- slice ordering, slice weights, `kbb`, `klum` and the virtual
+drift plumbing. It is **not** an independent check of the kick itself.
+`_wsl_weakstrong_reference!` calls `_slice_collision_order`,
+`_slice_transverse_moments` and `_slice_slice_gaussian_kick!`, and each has
+exactly one method in the package -- the same ones `_gaussian_collide_pair!`
+calls. The reference differs only in loop structure, so a defect inside the
+kick cancels exactly on both sides and this tolerance cannot see it. The
+docstring previously called this "the analytic weak-strong reference (this is
+the sharp limit statement)", which reads as a claim about the kick
+(2026-08-05_b audit, U4-11).
+
+The PIC half IS a genuine cross-implementation comparison -- a grid solver
+against the soft-Gaussian construction -- and its 8% tolerance is where this
+contract's independent evidence about the kick actually lives. The spectral
+solvers' high-energy limit remains covered by
 `validation/high_energy_weakstrong_limit.jl`, which this contract mirrors.
 """
 Base.@kwdef struct HighEnergyWeakStrongLimitContract <: AbstractPhysicsContract
@@ -1961,9 +1977,21 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
                   highest_fringe=1, x_offset=1.0e-3),
     :multipole => (L=0.3, k1=1.2, k2=8.0, nst=2, fringe=:all, va=0.03, vs=1.0e-4,
                    highest_fringe=1, x_offset=1.0e-3),
+    # `highest_fringe = 2`, not 1. At 1 the multipole fringe is capped below the
+    # quadrupole order, so `fringe` in {:none, :multipole, :soft_quad, :all} all
+    # compile to a BITWISE IDENTICAL map -- measured 0.0 difference for all four
+    # -- which violates this table's own stated rule that probes are "chosen so
+    # conditional parameters are in a configuration where they can act". At 2
+    # (PTC's own default, and what the PTC contract's sbend_fringe/cfbend_fringe
+    # cases use) `:none` and `:soft_quad` separate from `:all` by 7.8e-9, so the
+    # parameter is reachable (2026-08-05_b audit, U4-4).
+    #
+    # This makes the probe capable; it does not by itself make the contract
+    # check `fringe`, because `_perturb_param` returns nothing for every Symbol
+    # and the pair is dropped before the count (U4-2, still open).
     :sbend => (L=1.1, angle=0.198, k1=0.6, k2=5.0, nst=2, e1=0.1, e2=0.1,
                fint1=0.5, fint2=0.5, hgap1=0.03, hgap2=0.03, hface1=0.02,
-               hface2=0.02, fringe=:all, highest_fringe=1, curved_order=3,
+               hface2=0.02, fringe=:all, highest_fringe=2, curved_order=3,
                x_offset=1.0e-3),
     # The optics form, deliberately without `matrix`: Linear6D uses a stored
     # matrix when there is one, so probing the example (which stores the folded
