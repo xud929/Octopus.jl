@@ -771,6 +771,13 @@ did not return before the halt. Both are recorded in §7 rather than claimed.
 
 ## 7. Open queue — dispositioned, priced, with reproductions
 
+**Resuming? Use [`comprehensive_audit_2026_08_05_b_unit_reports/LEAD_INDEX.md`](comprehensive_audit_2026_08_05_b_unit_reports/LEAD_INDEX.md)**,
+not this section. It is machine-extracted from the 26 unit reports (so it cannot
+drift from them by hand-copying), carries **all 305 leads** rather than the
+highlights below, and has a status column. Regenerate it from the reports rather
+than hand-editing it. This section stays as the narrative: what the queue means,
+which candidates matter most, and why.
+
 **Read this header before using the queue.** Every row below is an
 **agent-reported LEAD with a reproduction, not an auditor-verified finding**.
 The series' measured survival rate for agent leads is ~60%, in four distinct
