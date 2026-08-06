@@ -1010,14 +1010,16 @@ function _discard_replayed_jld2_rows!(observer::JLD2BeamMomentObserver, first_tu
     empty!(observer.buffer_turns)
     empty!(observer.buffer)
     (observer.initialized && isfile(observer.path)) || return nothing
-    JLD2.jldopen(observer.path, "r+") do file
-        haskey(file, "data") || return nothing
-        data = file["data"]
+    # Atomic: this rewrites `data`, and a kill mid-rewrite must not leave the
+    # file without it (U7-2).
+    _jld2_atomic_update!(observer.path) do pending
+        haskey(pending, "data") || return nothing
+        data = pending["data"]
         keep = findall(<(Float64(first_turn)), view(data, :, 1))
         length(keep) == size(data, 1) && return nothing
         kept = data[keep, :]
-        _jld2_replace!(file, "data", kept)
-        _jld2_replace!(file, "record_count", Int64(size(kept, 1)))
+        pending["data"] = kept
+        pending["record_count"] = Int64(size(kept, 1))
         observer.record_count = size(kept, 1)
         return nothing
     end
@@ -1208,8 +1210,11 @@ end
 
 function _flush_jld2_moment_buffer!(observer::JLD2BeamMomentObserver)
     isempty(observer.buffer) && return nothing
-    JLD2.jldopen(observer.path, "r+") do file
-        _append_jld2_moment_columns!(file, observer)
+    # Atomic: `_append_jld2_moment_columns!` rewrites the WHOLE `data` matrix on
+    # every flush, so the delete-then-write window it used to run in was open
+    # once per observed turn (U7-2).
+    _jld2_atomic_update!(observer.path) do pending
+        _append_jld2_moment_columns!(pending, observer)
     end
     empty!(observer.buffer_turns)
     empty!(observer.buffer)
@@ -1570,6 +1575,65 @@ function _jld2_replace!(file, key::AbstractString, value)
     haskey(file, key) && delete!(file, key)
     file[key] = value
     return nothing
+end
+
+"""
+Apply `mutate!(pending)` to a JLD2 file's contents and swap it in atomically.
+
+`pending` is a `Dict` of every key the file currently holds; whatever it holds
+afterwards is what the file will hold. The new contents go to a sibling
+temporary and are `mv`-ed over the original, so a process death leaves either
+the old file or the new one and never a partial.
+
+This exists because `_jld2_replace!` is `delete!` then write, in place: between
+those two calls the file has no `data` key at all, and
+`_append_jld2_moment_columns!` runs that on EVERY flush (default capacity 1, so
+once per observed turn). A kill in that window loses the entire history rather
+than the in-flight row. That is the F4 defect, fixed for the `.lum` path with
+tmp + `mv` and left unfixed in this twin; `_discard_replayed_jld2_rows!` then
+added a second instance of it. The binary and HDF5 twins both make the opposite
+promise -- rows first, count second (F9) -- and JLD2 made none
+(2026-08-05_b audit, U7-2).
+"""
+function _jld2_atomic_update!(mutate!, path::AbstractString)
+    pending = Dict{String,Any}()
+    if isfile(path)
+        JLD2.jldopen(path, "r") do file
+            for k in _jld2_all_keys(file)
+                pending[k] = file[k]
+            end
+        end
+    end
+    mutate!(pending)
+    tmp = path * ".tmp"
+    try
+        JLD2.jldopen(tmp, "w") do file
+            for (k, v) in pending
+                file[k] = v
+            end
+        end
+        mv(tmp, path; force=true)
+    catch
+        rm(tmp; force=true)
+        rethrow()
+    end
+    return nothing
+end
+
+"""Every leaf key in a JLD2 file, including nested `metadata/...` paths."""
+function _jld2_all_keys(file, prefix::String="")
+    node = isempty(prefix) ? file : file[prefix]
+    out = String[]
+    for k in keys(node)
+        full = isempty(prefix) ? String(k) : prefix * "/" * String(k)
+        child = file[full]
+        if child isa JLD2.Group
+            append!(out, _jld2_all_keys(file, full))
+        else
+            push!(out, full)
+        end
+    end
+    return out
 end
 
 function _rows_matrix(getter, stats_buffer, width::Integer)

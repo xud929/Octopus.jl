@@ -4216,6 +4216,38 @@ end
         @test String(read(p5)[1:prefix]) == "FOREIGN-PREFIX-DATA"   # still there
         rm(p5; force=true)
     end
+    # 2026-08-05_b audit, U7-2: `_jld2_replace!` is `delete!` then write, IN
+    # PLACE, and `_append_jld2_moment_columns!` rewrites the whole `data` matrix
+    # through it on every flush -- default capacity 1, so once per observed
+    # turn. Between the delete and the re-write the file has no `data` key at
+    # all, so a process death in that window lost the ENTIRE history rather than
+    # the in-flight row. That is the F4 defect, fixed for the `.lum` path with
+    # tmp + `mv` and left unfixed in this twin; the replay discard then added a
+    # second instance of it. Both now go through an atomic swap.
+    let p7 = tempname() * ".jld2"
+        obs = JLD2BeamMomentObserver(p7)
+        rep7 = Phase6DRep([1.0, 2.0, 3.0, 4.0], zeros(4), zeros(4), zeros(4), zeros(4), zeros(4))
+        for t in 1:3
+            Octopus.observe!(obs, Octopus.with_turn(Octopus.TrackingContext(), t), rep7)
+        end
+        Octopus.finalize_observer!(obs)
+        before = Octopus.JLD2.jldopen(f -> (size(f["data"], 1), f["record_count"]), p7, "r")
+        @test before == (3, 3)
+        # A failure inside the update must leave the ORIGINAL file intact --
+        # this is the property the in-place delete could not offer.
+        @test_throws ErrorException Octopus._jld2_atomic_update!(p7) do pending
+            pending["data"] = zeros(0, 1)
+            error("simulated crash mid-update")
+        end
+        after = Octopus.JLD2.jldopen(f -> (size(f["data"], 1), f["record_count"]), p7, "r")
+        @test after == before
+        @test !isfile(p7 * ".tmp")        # and no debris left behind
+        # Nested metadata must survive the rewrite, not just the data matrix.
+        @test Octopus.JLD2.jldopen(f -> f["metadata/format"], p7, "r") ==
+              "Octopus.JLD2BeamMomentObserver"
+        rm(p7; force=true)
+    end
+
     # Control: with NO foreign prefix the reset must still happen, or a retry
     # appends a second copy instead of replacing the first.
     let p6 = tempname() * ".bin"
