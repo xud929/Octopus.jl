@@ -5674,6 +5674,24 @@ end
         @test p(; kw...)(0, 0, 0, 0, 0, 0)[5] == 0.0
     end
 
+    # 2026-08-05_b audit, U16-5: a patch angle and a misalignment angle of the
+    # same value roll OPPOSITE ways. Both share `_misalign_matrix` but apply it
+    # in opposite senses -- the patch forms W*a, the frame changes form W'*a --
+    # so `PatchSpec(angle_s = +psi)` and `tilt = +psi` are inverses. Neither
+    # side is wrong (the misalignments are pinned against PTC at 5e-13, the
+    # patch follows Bmad's track_a_patch); what was missing was any statement
+    # that sharing the matrix does not mean sharing the sense. Pinned by
+    # measurement so the relationship cannot drift silently: the EXACT
+    # equality is the assertion, the inequality is its control.
+    let psi = 0.37, uu = (4.0e-4, 1.0e-4, -2.0e-4, -1.5e-4, 1.2e-3, 2.0e-4)
+        qq = compile_runtime(QuadrupoleSpec(L=0.4, k1=0.9, nst=4))
+        tilted = collect(compile_runtime(QuadrupoleSpec(L=0.4, k1=0.9, nst=4, tilt=psi))(uu...))
+        minus_plus = collect(p(angle_s=psi)(qq(p(angle_s=-psi)(uu...)...)...))
+        plus_minus = collect(p(angle_s=-psi)(qq(p(angle_s=psi)(uu...)...)...))
+        @test maximum(abs.(tilted .- minus_plus)) == 0.0
+        @test maximum(abs.(tilted .- plus_minus)) > 1.0e-5
+    end
+
     # A purely longitudinal patch IS a drift: the drift-to-the-new-face step is
     # what gives a patch an effective length, so dz must reproduce DriftSpec
     # exactly rather than merely relabel s.

@@ -34,6 +34,26 @@ transformation.
 `_rot_xz`'s convention. `t_offset` shifts the reference arrival time, which is
 what lets a patch describe a path-length difference between two branches rather
 than only a geometric one.
+
+!!! warning "A patch angle and a misalignment angle of the same value roll opposite ways"
+    A patch and the misalignment/`ref_tilt` family share `_misalign_matrix`, but
+    apply it in opposite senses: the patch forms `W * a` (`_patch_apply`) while
+    the frame changes form `Wᵀ * a` (`_frame_change`, `_s_rotate`). So
+    `PatchSpec(angle_s = +ψ)` and `tilt = +ψ` are **not** the same rotation --
+    they are inverses.
+
+    Measured: a quadrupole with `tilt = +0.37` equals the same quadrupole
+    sandwiched between `PatchSpec(angle_s = -0.37)` and
+    `PatchSpec(angle_s = +0.37)` exactly (0.0), and differs from the
+    `(+0.37, -0.37)` sandwich by 2.0e-4 (2026-08-05_b audit, U16-5).
+
+    This is a convention split, not a defect on either side: the misalignment
+    family is pinned against PTC at 5e-13 by the `quad_mis_all`/`cfbend_mis_all`
+    reference cases, and the patch follows Bmad's `track_a_patch`. What was
+    missing is that `_patch_rotation`'s rationale below -- sharing the matrix so
+    a patch "cannot drift away from the magnets it sits between" -- guarantees
+    the composition order and the x-sign, and NOT the overall sense. Compose the
+    two by measurement, not by assuming the parameter names agree.
 """
 struct Patch{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
@@ -70,6 +90,13 @@ The mapping is by *axis*, which is what the patch's parameter names say:
 The negation on `angle_x` is not a correction; it is what makes
 `angle_x = +eps` a positive rotation about the x axis given that
 `_misalign_matrix` builds `R_x(-phi)`.
+
+What is shared is the matrix, not the SENSE in which it is applied: the patch
+forms `W * a` here while the misalignment and `ref_tilt` paths form `Wᵀ * a`.
+The guarantee above is therefore about composition order and the x-sign, which
+are the parts PTC and Bmad genuinely disagree on -- it is not a guarantee that
+`angle_s = +psi` and `tilt = +psi` mean the same roll. They are inverses; see
+the warning on `Patch` (audit U16-5).
 """
 @inline _patch_rotation(::Type{T}, ax, ay, as, madx::Bool) where {T} =
     _misalign_matrix(T, ay, -ax, as, madx)
