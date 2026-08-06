@@ -3795,6 +3795,25 @@ end
     @test getparam(rev, :x_offset, nothing) == 2.0e-4
     @test getparam(reverse(rev), :x_offset, nothing) == 2.0e-4
 
+    # 2026-08-05_b audit, U15-3: the U11-2 fix above stopped reverse() from
+    # dropping the line's own state, but did it by re-listing the SAME
+    # LineEntry objects -- so the reflected line shared each placement's
+    # `overrides` Dict and `path` Vector with its source. Measured:
+    # `rev[1] === cryo[2]`, and `rev[1].k1 = 9.9` set
+    # `getparam(cryo[2], :k1) == 9.9`. That contradicts the composition model,
+    # which requires per-occurrence error parameters not to share
+    # (theory/beam_line_composition §7b). Placements are copied now; the SPEC
+    # is still shared, which is correct -- two placements of one magnet are one
+    # magnet -- and only the per-placement mutable state is duplicated.
+    ri, ci = line_entries(rev), line_entries(cryo)
+    @test ri[1] !== ci[2]
+    @test getfield(ri[1], :overrides) !== getfield(ci[2], :overrides)
+    @test getfield(ri[1], :path) !== getfield(ci[2], :path)
+    @test getfield(ri[1], :spec) === getfield(ci[2], :spec)   # order still reversed
+    ri[1].k1 = 9.9
+    @test getparam(ri[1], :k1) == 9.9
+    @test getparam(ci[2], :k1, nothing) === nothing            # no write-through
+
     tq = ThinQuadrupoleSpec(k1l=0.05)
     entry = line_entries(BeamLine("L", tq, DriftSpec(L=1.0)))[1]
     @test_throws ArgumentError entry.k1l = 999.0

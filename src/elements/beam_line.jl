@@ -315,9 +315,27 @@ function Base.reverse(spec::ElementSpec{:line})
     # only, over this line's placements; a kept-whole sub-line placement is
     # one unit and its interior order is its own.
     p = copy(getfield(spec, :params))
-    p[:entries] = Tuple(reverse(collect(line_entries(spec))))
+    # Each placement is COPIED, not re-listed. Reusing the `LineEntry` objects
+    # made the reflected line share their `overrides` Dict and `path` Vector
+    # with the source, so a per-occurrence override written on one appeared on
+    # the other: `rev[1] === inner[2]`, and `rev[1].k1 = 9.9` set
+    # `getparam(inner[2], :k1) == 9.9` (2026-08-05_b audit, U15-3). That
+    # contradicts the composition model directly -- theory/beam_line_composition
+    # §7b: "Error parameters must not share. Every physical magnet has its own
+    # misalignment. Two occurrences with a common x_offset would be a fiction."
+    # `_append_line_child!` copies for this same reason; the U11-2 fix replaced
+    # a positional rebuild that went through it with a direct re-listing.
+    p[:entries] = Tuple(_copy_line_entry(e) for e in reverse(collect(line_entries(spec))))
     return ElementSpec{:line}(p)
 end
+
+"""A placement copy that shares no mutable state with its original."""
+_copy_line_entry(e::LineEntry) = LineEntry(
+    getfield(e, :spec),
+    copy(getfield(e, :path)),
+    copy(getfield(e, :tags)),
+    copy(getfield(e, :overrides)),
+)
 
 """Repetition: `repeat(cell, 8)` is eight placements of the cell's contents."""
 Base.repeat(spec::ElementSpec{:line}, n::Integer) =
