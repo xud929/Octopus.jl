@@ -1659,6 +1659,25 @@ strong_strong_task_option_schema() = (
 )
 
 """
+Every concrete Octopus-owned subtype of `T`, at any depth.
+
+Only types DEFINED IN OCTOPUS: the suite defines throwaway subtypes in `Main`,
+and a tree guard flagging those failed the public-configuration contract in
+suite context only (2026-08-05 campaign shakeout). Parametric types are
+`UnionAll`s, for which `isconcretetype` is false, so abstractness is the gate.
+"""
+function _concrete_octopus_subtypes(T::Type, acc=Any[])
+    for S in subtypes(T)
+        if isabstracttype(S)
+            _concrete_octopus_subtypes(S, acc)
+        elseif parentmodule(S) === (@__MODULE__)
+            push!(acc, S)
+        end
+    end
+    return acc
+end
+
+"""
     validate_configuration_metadata() -> Bool
 
 Cross-check every public configuration schema against its constructor:
@@ -1672,7 +1691,26 @@ concrete solver/observer defined in Octopus is covered. Throws an
 """
 function validate_configuration_metadata()
     errors = String[]
-    for policy_type in (CPUThreadsExecutionPolicy, CUDAExecutionPolicy, GPUExecutionPolicy)
+    # Completeness by TYPE TREE, not hand list. The U3-4 repair totalized the
+    # solver and observer loops this way and stopped at them: policies and
+    # schedules kept their hand-written tuples, so a new concrete
+    # `AbstractExecutionPolicy` or `AbstractSchedule` was unchecked until
+    # someone edited an enumeration. `PlaceholderPolicy` sitting outside the
+    # tuple already showed the omission was live rather than theoretical
+    # (2026-08-05_b audit, U12-3).
+    #
+    # The walk RECURSES, unlike the solver and observer guards: the policy tree
+    # is two deep (CUDAExecutionPolicy and GPUExecutionPolicy sit under
+    # AbstractGPUExecutionPolicy), so a one-level `subtypes` would have walked
+    # straight past the two policies that matter most and reported clean.
+    _policy_types = (CPUThreadsExecutionPolicy, CUDAExecutionPolicy, GPUExecutionPolicy,
+                     PlaceholderPolicy)
+    for T in _concrete_octopus_subtypes(AbstractExecutionPolicy)
+        T in _policy_types || push!(errors,
+            "$(T) is a concrete Octopus execution policy with no block in " *
+            "validate_configuration_metadata; add one (see the solver tree guard)")
+    end
+    for policy_type in _policy_types
         schema = policy_option_schema(policy_type)
         for (name, meta) in pairs(schema)
             meta.consumer === :unspecified && push!(errors,
@@ -1797,6 +1835,15 @@ function validate_configuration_metadata()
             "StrongStrongDiagnostics.$(name) has no runtime consumer")
         isequal(getproperty(default_diagnostics, name), meta.default) || push!(errors,
             "StrongStrongDiagnostics.$(name) metadata default disagrees with constructor")
+    end
+    # Same tree guard as the policies above (U12-3): a new concrete schedule
+    # fails here until it gets a block. PredicateSchedule is checked separately
+    # below, so it is listed as covered rather than flagged.
+    _schedule_types = (AlwaysSchedule, EveryNSteps, AtTurns, PredicateSchedule)
+    for T in _concrete_octopus_subtypes(AbstractSchedule)
+        T in _schedule_types || push!(errors,
+            "$(T) is a concrete Octopus schedule with no block in " *
+            "validate_configuration_metadata; add one (see the solver tree guard)")
     end
     for schedule_type in (AlwaysSchedule, EveryNSteps, AtTurns)
         for (name, meta) in pairs(schedule_option_schema(schedule_type))

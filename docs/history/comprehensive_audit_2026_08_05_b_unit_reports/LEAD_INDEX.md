@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **75 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **76 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -37,7 +37,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U12-1 | medium |  | `src/knowledge/Knowledge.jl:891-902 (declared-defaults check absent)` | `ParamMeta.default` is decoration — nothing in the repository compares a |
 | U12-11 | medium | CONFIRMED, FIXED (2026-08-06) | `src/policies/Policies.jl:259-264` | `_active_cuda_launch` is an **undeclared second consumer** of |
 | U12-2 | medium |  | `src/knowledge/Knowledge.jl:904-910, 948-965 (parameter-is-read and rea` | nothing verifies that a declared element parameter is consumed by the |
-| U12-3 | medium |  | `src/tasks/strongstrong/interface.jl:1617 and :1743 — hardcoded POLICY ` | `validate_configuration_metadata`'s type enumeration was totalized for |
+| U12-3 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:1617 and :1743 — hardcoded POLICY ` | `validate_configuration_metadata`'s type enumeration was totalized for |
 | U12-4 | medium |  | `src/knowledge/Knowledge.jl:960-964` | for an element declaring more than one tracking method, only the |
 | U13-1 | medium | CONFIRMED, FIXED (2026-08-06) | `src/knobs/Knobs.jl:394-418` | `@knob p::T` on an existing knob whose converted value is `isequal` to |
 | U13-5 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/Tasks.jl:429 (and 242)` | A line whose `:L` is a knob expression makes every `execute!` that was |

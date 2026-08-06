@@ -69,6 +69,23 @@ end
     metadata = validate_element_metadata(; throw_on_error=true)
     @test metadata.passed
     @test validate_configuration_metadata()
+    # 2026-08-05_b audit, U12-3: the U3-4 repair totalized this validator's
+    # solver and observer loops by walking the type tree, and stopped there --
+    # execution policies and schedules kept hand-written tuples, so a new
+    # concrete type was unchecked until someone edited an enumeration.
+    # `PlaceholderPolicy` already sat outside the policy tuple, which showed the
+    # omission was live rather than theoretical.
+    #
+    # The walk RECURSES, and that is the load-bearing part: the policy tree is
+    # two deep (CUDAExecutionPolicy and GPUExecutionPolicy live under
+    # AbstractGPUExecutionPolicy), so a one-level `subtypes` guard would have
+    # walked past the two policies that matter most and still reported clean.
+    let found = Octopus._concrete_octopus_subtypes(Octopus.AbstractExecutionPolicy)
+        @test CUDAExecutionPolicy in found          # depth 2
+        @test GPUExecutionPolicy in found           # depth 2
+        @test CPUThreadsExecutionPolicy in found    # depth 1
+    end
+    @test !isempty(Octopus._concrete_octopus_subtypes(Octopus.AbstractSchedule))
 
     snapshot_path = joinpath(pkgdir(Octopus), "docs", "registry_snapshot.md")
     @test registry_snapshot_markdown() == read(snapshot_path, String)
