@@ -157,8 +157,10 @@ from `reference_beta_gamma(E0, mc2)`, and `s` enters only for
 > `η = α_c` instead of `η = α_c - 1/γ₀²` — measured 1.84× synchrotron-tune
 > error at 2.5 GeV proton with `α_c = 0.2`, and the wrong side of transition
 > whenever `α_c < 1/γ₀²`; negligible for the ultrarelativistic parameters
-> §7's checks ran at, which is why they passed. §7's own criterion (`ν_s`
-> against the **full** `η`) would have caught it. The fix needs the element
+> §8's checks ran at, which is why they passed. §8 item 4's own criterion
+> (`ν_s` against the **full** `η`) would have caught it. (This block cited
+> §7 until the 2026-08-05_b audit; §7 is *The self-referential phase*, and
+> the ν_s criterion is §8 item 4.) The fix needs the element
 > to know its accumulated reference arc (`turn·C + s_elem`) — the same
 > survey channel Scope B needs for `P0(s)`; until that exists the boundary
 > is documented on the element and tracked in `todo.md`.

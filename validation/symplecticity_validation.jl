@@ -8,7 +8,7 @@ Run from the project root:
 Controls:
 
     OCTOPUS_SYMPLECTICITY_STEP=3e-7
-    OCTOPUS_SYMPLECTICITY_TOL=5e-7
+    OCTOPUS_SYMPLECTICITY_TOL=5e-8
 
 The script checks runtime maps that are registered as `Symplectic6DMap` plus
 the weak-strong beam-beam maps that are intended to be six-dimensional

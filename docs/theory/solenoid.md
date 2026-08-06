@@ -681,7 +681,7 @@ therefore carry `knl = k1*L` in the MAD-X body against `k1` in the Octopus spec.
 
 - **PTC**: $4.7\times10^{-13}$ at `nst=8` and $3.6\times10^{-13}$ at `nst=32`,
   against `solenoid, l=1.3, ks=0.35, knl={0.0, 0.78}`. Two step counts, so the
-  comparison tests convergence and not one working point. Contract now 41 cases.
+  comparison tests convergence and not one working point. Contract now 55 cases (the count is the committed PTC reference table's, `validation/reference/ptc_madx_5.03.06.tsv`; it read 41 until the 2026-08-05_b audit measured it).
 - **Reduces to a quadrupole**: `ks=0` with `k1` reproduces `QuadrupoleSpec` to
   $7\times10^{-18}$ — the splitting collapses to the thing it splits.
 - **Reduces to the exact solenoid**: any all-zero multipole set returns the

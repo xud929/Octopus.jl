@@ -1542,7 +1542,7 @@ function configuration_report(solver::GaussianPoissonSolver;
                               policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
                               backend=nothing)
     # `backend` was accepted and then ignored, so `batch_mode` -- CUDA-only, and
-    # consumed at pic_cuda.jl:5041 -- was reported `:resolved` on CPU, where the
+    # consumed by `collide!(::GaussianPoissonSolver, ..., ::Type{CUDABackend})` -- was reported `:resolved` on CPU, where the
     # collision-time order is fixed. The PIC report already made this
     # distinction; both now answer the question the caller asked.
     selected_backend = backend === nothing ?
@@ -2078,7 +2078,7 @@ function _preflight_solver_configurations!(task, blocks1, blocks2, policy)
         else
             # Every solver, not only PIC: a CUDA-only option carries the same
             # obligation wherever it is declared, and the soft-Gaussian
-            # `batch_mode` (consumed at pic_cuda.jl:5041) was silently ignored
+            # `batch_mode` (consumed by `collide!(::GaussianPoissonSolver, ..., ::Type{CUDABackend})`) was silently ignored
             # on CPU because this loop skipped non-PIC solvers.
             configured = solver_configuration(solver)
             for (name, meta) in pairs(solver_option_schema(solver))
