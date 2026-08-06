@@ -132,7 +132,27 @@ reference_beta_gamma(E0, mc2) = (reference_beta(E0, mc2), reference_gamma(E0, mc
 """
 @inline function _delta_from_pt(pt, beta0, gamma0)
     ibg = _inv_beta_gamma(beta0, gamma0)
-    return -1 + sqrt((inv(beta0) + pt)^2 - ibg * ibg)
+    rad = (inv(beta0) + pt)^2 - ibg * ibg
+    # A particle decelerated below rest energy drives the radicand negative --
+    # it happens at p_t = -1/beta0 + 1/(beta0*gamma0), reachable by anything
+    # outside the RF bucket whose delta walks to -1, and `_rf_kick` runs this
+    # per particle per turn. `sqrt` THREW a DomainError there, which is the one
+    # outcome this repository's loss design cannot use: a dead particle is
+    # defined by a NON-FINITE COORDINATE, and `allow_lost_particles` exists so a
+    # run continues over the survivors. A throw is invisible to that machinery,
+    # and inside a CUDA kernel it aborted the entire launch with a
+    # KernelException rather than losing one particle (2026-08-05_b audit,
+    # U14-3). NaN is also the better device IR: it removes a throw from a
+    # kernel-reachable branch.
+    #
+    # `real(rad)`, not `rad`: this file's number type is not always real. The
+    # parameter-derivative sweep differentiates by COMPLEX STEP, so a bare
+    # `rad < 0` raises a MethodError on a complex argument and the element
+    # silently leaves the differentiable set. That is the recurring bug this
+    # repository has paid for before -- `_curv_sin`, `_curv_vers`,
+    # `_atan_over`, `_sol_log_over_h` and `abs(hL) < pi/2` each needed the same
+    # treatment. Caught here by the sweep's own floor dropping 25 -> 21.
+    return real(rad) < 0 ? oftype(rad, NaN) : -1 + sqrt(rad)
 end
 
 """

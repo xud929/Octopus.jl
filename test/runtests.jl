@@ -2358,6 +2358,33 @@ end
         @test max(abs(z3 - z1), abs(p3 - p1)) < 1.0e-15
     end
 
+    # 2026-08-05_b audit, U14-3: a particle decelerated below rest energy drives
+    # `_delta_from_pt`'s radicand negative, and `sqrt` THREW a DomainError --
+    # the one outcome the loss design cannot use. A dead particle is defined by
+    # a non-finite coordinate, and `allow_lost_particles` exists so a run
+    # continues over the survivors; a throw is invisible to that, and in a CUDA
+    # kernel it aborted the whole launch instead of losing one particle. It
+    # returns NaN now, which is also better device IR (one fewer throw on a
+    # kernel-reachable branch).
+    let b0 = 0.9268998208, g0 = 2.664472           # 2.5 GeV proton
+        threshold = -inv(b0) + inv(b0 * g0)
+        @test isnan(Octopus._delta_from_pt(threshold - 1.0e-4, b0, g0))
+        @test isnan(Octopus._delta_from_pt(-1.0, b0, g0))
+        @test isfinite(Octopus._delta_from_pt(threshold + 1.0e-3, b0, g0))
+        # The conversion the RF kick runs per particle per turn yields
+        # non-finite coordinates rather than throwing, so loss accounting sees it.
+        zz, pp = convert_longitudinal(TIME_ENERGY => PATHLENGTH_DELTA, 0.01, -1.0;
+                                      beta0=b0, gamma0=g0)
+        @test !isfinite(zz) || !isfinite(pp)
+        # In-range values are untouched: exact inverse of _pt_from_delta.
+        # atol as well as rtol: d = 0.0 round-trips to -1.1e-16, which is exact
+        # to machine precision but which no relative tolerance can accept.
+        for d in (-0.5, -0.1, 0.0, 0.05, 0.3)
+            @test isapprox(Octopus._delta_from_pt(Octopus._pt_from_delta(d, b0, g0), b0, g0),
+                           d; rtol = 1.0e-14, atol = 1.0e-15)
+        end
+    end
+
     # exactly symplectic: the 2x2 longitudinal Jacobian has unit determinant
     for (b0, g0) in cases, a in convs, b in convs
         a === b && continue
