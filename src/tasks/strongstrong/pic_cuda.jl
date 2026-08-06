@@ -72,7 +72,20 @@ if _HAS_CUDA
                           ctx::TrackingContext)
             workspace = _cuda_pic_workspace(solver, eltype(beam1.rep.x))
             green_cache = _cuda_pic_green_cache(solver, eltype(beam1.rep.x))
-            return _cuda_pic_collide!(solver, beam1, beam2, workspace, green_cache, ctx)
+            # Install the timing context, or every luminosity record this route
+            # writes is stamped turn = -1 (2026-08-05_b audit, U1-4). The CUDA
+            # sink reads the SCOPED value, not the `ctx` argument
+            # (`turn = context === nothing ? -1 : context.turn`), while the CPU
+            # twin reads `ctx` directly -- so given the same TrackingContext the
+            # two backends disagreed about what turn a record belongs to. Any
+            # consumer keyed by turn, such as the backend-consistency contract's
+            # `Dict((row.turn, row.i, row.j) => ...)`, collapses every turn onto
+            # one bucket. Only `_strong_strong_collide!` installed it, which is
+            # why nothing reached this through StrongStrongTask.
+            return Base.ScopedValues.with(
+                    _ACTIVE_PIC_TIMING_CONTEXT => (label=:collide, turn=ctx.turn)) do
+                _cuda_pic_collide!(solver, beam1, beam2, workspace, green_cache, ctx)
+            end
         end
 
         function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
@@ -153,8 +166,8 @@ if _HAS_CUDA
                       include_hi=j == length(slices2.center))
                 gather_range = _cuda_nvtx_push(CUDABackend, "pic gather slices")
                 t_gather = time_ns()
-                slice1 = _cuda_pic_extract_slice(beam1.rep, slices1.indices[i], solver.longitudinal_kick)
-                slice2 = _cuda_pic_extract_slice(beam2.rep, slices2.indices[j], solver.longitudinal_kick)
+                slice1 = _cuda_pic_extract_slice(beam1.rep, slices1.indices[i])
+                slice2 = _cuda_pic_extract_slice(beam2.rep, slices2.indices[j])
                 _cuda_pic_add_time!(timing, :gather, t_gather)
                 _cuda_nvtx_pop(CUDABackend, gather_range)
                 (slice1 === nothing || slice2 === nothing) && continue
@@ -353,8 +366,8 @@ if _HAS_CUDA
                           include_hi=i == length(slices1.center))
                     p2 = (lb=slices2.boundary[j], center=slices2.center[j], rb=slices2.boundary[j + 1],
                           include_hi=j == length(slices2.center))
-                    slice1 = _cuda_pic_extract_slice(beam1.rep, slices1.indices[i], solver.longitudinal_kick)
-                    slice2 = _cuda_pic_extract_slice(beam2.rep, slices2.indices[j], solver.longitudinal_kick)
+                    slice1 = _cuda_pic_extract_slice(beam1.rep, slices1.indices[i])
+                    slice2 = _cuda_pic_extract_slice(beam2.rep, slices2.indices[j])
                     gathered[n] = (pair=pair, p1=p1, p2=p2, slice1=slice1, slice2=slice2)
                 end
                 _cuda_pic_add_time!(timing, :gather, t_gather)
@@ -657,6 +670,16 @@ if _HAS_CUDA
                 Symbol(solver.green_cache),
                 solver.slice_pair_green_min_ratio,
                 solver.slice_pair_green_growth,
+                # The fourth field the CPU key carries and this one did not
+                # (2026-08-05_b audit, U1-2). The U1-3 repair added the three
+                # above with the rationale "the CPU key carries them and this
+                # one did not" and stopped one short. Inert today -- on CUDA the
+                # :node route never writes slice_pair_green_cache and the
+                # wavefront workspaces keep :standard and :node under separate
+                # keys -- but the next mode that both keys the cache and differs
+                # by interaction_grid would inherit the original reproducibility
+                # drift.
+                Symbol(solver.interaction_grid),
             )
             return get!(cache, key) do
                 _cuda_pic_workspace(solver, T)
@@ -722,7 +745,13 @@ if _HAS_CUDA
         end
 
 
-        function _cuda_pic_extract_slice(rep::Phase6DRep, idx, longitudinal_kick::Bool=false)
+        # No `longitudinal_kick` parameter: the F10 fix made this gather all six
+        # planes unconditionally, and the body has ignored the flag ever since
+        # while all eight call sites still computed and passed it. The sibling
+        # `_cuda_pic_store_slice!` has an identically named parameter that IS
+        # honoured, so the two read as a matched pair and were not
+        # (2026-08-05_b audit, U1-6).
+        function _cuda_pic_extract_slice(rep::Phase6DRep, idx)
             n = length(idx)
             n == 0 && return nothing
             T = eltype(rep.x)
@@ -1424,14 +1453,14 @@ if _HAS_CUDA
                 i = Int(item.pair.i); j = Int(item.pair.j)
                 nc1 = get!(() -> Dict{Int,Any}(), node_cache, (i, 1))
                 if isempty(nc1)
-                    src = _cuda_pic_extract_slice(rep1, slices1.indices[i], lon)
+                    src = _cuda_pic_extract_slice(rep1, slices1.indices[i])
                     src === nothing || _cuda_pic_build_node_grids!(
                         nc1, solver, T, src.coords, slices1.center[i], rep2,
                         slices2.indices, slices2.boundary, lon)
                 end
                 nc2 = get!(() -> Dict{Int,Any}(), node_cache, (j, 2))
                 if isempty(nc2)
-                    src = _cuda_pic_extract_slice(rep2, slices2.indices[j], lon)
+                    src = _cuda_pic_extract_slice(rep2, slices2.indices[j])
                     src === nothing || _cuda_pic_build_node_grids!(
                         nc2, solver, T, src.coords, slices2.center[j], rep1,
                         slices1.indices, slices1.boundary, lon)
@@ -1640,7 +1669,18 @@ if _HAS_CUDA
             T = eltype(rep1.x)
             npairs = length(valid)
             half = T(0.5)
-            threads = 256
+            # Resolved through the public surface like every other launch in
+            # this file (2026-08-05_b audit, U1-3). A literal 256 here fed four
+            # launches -- the wavefront bounds init and the two indexed bounds
+            # reductions -- and `_cuda_pic_threads` is the single point that
+            # reads the resolved CUDAPICLaunchConfig, the single place the
+            # device MAX_THREADS_PER_BLOCK validation applies, and the single
+            # emitter of :cuda_pic_launch receipts. So the production route's
+            # bounds stage was invisible to the configuration a user sets and to
+            # the receipts they read to confirm it took effect. The bounds
+            # reduction is field work, and its shared array is sized for up to
+            # 1024 threads.
+            threads = _cuda_pic_threads(:field)
             block_cap = _CUDA_PIC_BOUNDS_PARTIAL_BLOCKS
             stream = CUDA.stream()
             t_bounds = time_ns()
@@ -1855,7 +1895,7 @@ if _HAS_CUDA
             fylo = fill(T(Inf), ns); fyhi = fill(T(-Inf), ns)
             for sl in 1:ns
                 co = if field_slices === nothing
-                    item = _cuda_pic_extract_slice(rep, slice_indices[sl], longitudinal)
+                    item = _cuda_pic_extract_slice(rep, slice_indices[sl])
                     item === nothing ? nothing : item.coords
                 else
                     field_slices[sl]
@@ -1916,13 +1956,13 @@ if _HAS_CUDA
             nf = length(slices_fld.center)
             field_slices = Vector{Any}(undef, nf)
             for sl in 1:nf
-                item = _cuda_pic_extract_slice(rep_fld, slices_fld.indices[sl], longitudinal)
+                item = _cuda_pic_extract_slice(rep_fld, slices_fld.indices[sl])
                 field_slices[sl] = item === nothing ? nothing : item.coords
             end
             for i in eachindex(slices_src.center)
                 nc = get!(() -> Dict{Int,Any}(), node_cache, (i, dir))
                 isempty(nc) || continue
-                src = _cuda_pic_extract_slice(rep_src, slices_src.indices[i], longitudinal)
+                src = _cuda_pic_extract_slice(rep_src, slices_src.indices[i])
                 src === nothing && continue
                 _cuda_pic_build_node_grids!(nc, solver, T, src.coords, slices_src.center[i],
                                             rep_fld, slices_fld.indices, slices_fld.boundary,
@@ -3804,23 +3844,12 @@ if _HAS_CUDA
             return T(lum) * T(klum) / (hx * hy)
         end
 
-        function _cuda_pic_gather_slice_kernel!(sx, spx, sy, spy, sz,
-                                                x, px, y, py, z, idx)
-            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-            stride = CUDA.gridDim().x * CUDA.blockDim().x
-            while index <= length(idx)
-                source_index = idx[index]
-                @inbounds begin
-                    sx[index] = x[source_index]
-                    spx[index] = px[source_index]
-                    sy[index] = y[source_index]
-                    spy[index] = py[source_index]
-                    sz[index] = z[source_index]
-                end
-                index += stride
-            end
-            return nothing
-        end
+        # `_cuda_pic_gather_slice_kernel!` (the five-plane gather) was deleted
+        # here: the F10 fix made every gather marshal all six planes, leaving it
+        # with no caller and no test, and dead device code cannot be verified by
+        # anything (2026-08-05_b audit, U1-6). Its six-plane sibling below is
+        # the live one. Recover it from git history if a five-plane route ever
+        # returns.
 
         function _cuda_pic_gather_slice_longitudinal_kernel!(sx, spx, sy, spy, sz, spz,
                                                              x, px, y, py, z, pz, idx)

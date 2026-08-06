@@ -304,12 +304,28 @@ if _HAS_CUDA
         # fraction is relative to all deposited charge. One aggregate warning
         # per collision -- the CPU path warns per solve -- because a per-solve
         # readback would synchronize the stream the solves pipeline on.
+        # `ndep` counts only deposits that CAN clip (2026-08-05_b audit, U11-2).
+        # The luminosity-grid deposits used to be in this denominator, and their
+        # box covers its own extrema by construction, so they contribute exactly
+        # zero to the numerator while inflating the divisor -- at the recorded R9
+        # configuration a third of a 3072 denominator was inert padding, and the
+        # same physical event read 8.5x quieter than on the CPU (CPU worst-solve
+        # 8.3155e-01 against CUDA 9.7291e-02). The aggregate dropped CHARGE was
+        # always exactly right (298.876726 on both); it is the fraction, and
+        # therefore the severity a reader infers, that was diluted.
+        #
+        # The remaining difference is scope and is now stated in the payload
+        # rather than left implicit (U11-3): the CPU warns per solve with that
+        # solve's own source count, this warns once per collision over every
+        # clipping deposit in it. Both carry `nsource` and `dropped_fraction` so
+        # one grep finds both backends, and `scope` says which question the
+        # number answers.
         function _cuda_spectral_deposit_tripwire_flush!(ws::_SpectralCudaWS, ndep::Int, Lx, Ly)
             ndep > 0 || return nothing
             dropped = Array(ws.dropped)[1]
             if dropped > 1.0e-9 * ndep
                 @warn "spectral deposit clipped charge at the Dirichlet wall; the box \
-                       no longer covers the whole beam" dropped_fraction = dropped / ndep ndeposits = ndep box = (Lx, Ly) maxlog = 8
+                       no longer covers the whole beam" dropped_fraction = dropped / ndep nsource = ndep scope = :collision_aggregate box = (Lx, Ly) maxlog = 8
             end
             return nothing
         end
@@ -419,6 +435,19 @@ if _HAS_CUDA
             _spectral_cuda_setbox!(ws, Float64(a), Float64(b))
             CUDA.fill!(ws.rho, 0)
             threads = 256
+            # An empty source deposits nothing; it must not CRASH (2026-08-05_b
+            # audit, U11-5). `blocks = cld(ns, threads)` is 0 at ns = 0 and CUDA
+            # rejects the launch with "Grid dimensions CuDim3(0x0,0x1,0x1) are
+            # not positive", while the `ns > 0 ? ... : ...` normalisation below
+            # reads as a guarantee that this case is handled -- the CPU twin
+            # genuinely handles it and the CUDA side copied the ternary without
+            # the branch it belongs to. Only the LAUNCH is skipped: `rho` has
+            # just been zeroed, and the transforms of a zero source give the
+            # zero field, which is the right answer. Returning early instead
+            # would leave the field arrays holding the previous call's values.
+            # Unreachable through `collide!` today because both entry points
+            # skip empty slices, so this closes a latent trap.
+            ns > 0 &&
             CUDA.@cuda threads=threads blocks=cld(ns, threads) _cuda_spectral_deposit_kernel!(
                 ws.rho, sx, sy, T(Lx), T(Ly), T(hx), T(hy), Nx, Ny, ws.dropped)
             # rholm = DST2(DST1(rho)) / (a*b*ns) ; philm = -rholm .* G  (store in s1)
@@ -554,6 +583,19 @@ if _HAS_CUDA
             _spectral_cuda_setbox!(ws, Float64(a), Float64(b))
             CUDA.fill!(ws.rho, 0)
             threads = 256
+            # An empty source deposits nothing; it must not CRASH (2026-08-05_b
+            # audit, U11-5). `blocks = cld(ns, threads)` is 0 at ns = 0 and CUDA
+            # rejects the launch with "Grid dimensions CuDim3(0x0,0x1,0x1) are
+            # not positive", while the `ns > 0 ? ... : ...` normalisation below
+            # reads as a guarantee that this case is handled -- the CPU twin
+            # genuinely handles it and the CUDA side copied the ternary without
+            # the branch it belongs to. Only the LAUNCH is skipped: `rho` has
+            # just been zeroed, and the transforms of a zero source give the
+            # zero field, which is the right answer. Returning early instead
+            # would leave the field arrays holding the previous call's values.
+            # Unreachable through `collide!` today because both entry points
+            # skip empty slices, so this closes a latent trap.
+            ns > 0 &&
             CUDA.@cuda threads=threads blocks=cld(ns, threads) _cuda_spectral_deposit_drift_kernel!(
                 ws.rho, sx, spx, sy, spy, T(drift), T(Lx), T(Ly), T(hx), T(hy), Nx, Ny, ws.dropped)
             _cuda_spectral_solve_from_rho!(ws, Phig, Exg, Eyg, a, b, ns)
@@ -568,6 +610,19 @@ if _HAS_CUDA
             _spectral_cuda_setbox!(ws, Float64(a), Float64(b))
             CUDA.fill!(ws.rho, 0)
             threads = 256
+            # An empty source deposits nothing; it must not CRASH (2026-08-05_b
+            # audit, U11-5). `blocks = cld(ns, threads)` is 0 at ns = 0 and CUDA
+            # rejects the launch with "Grid dimensions CuDim3(0x0,0x1,0x1) are
+            # not positive", while the `ns > 0 ? ... : ...` normalisation below
+            # reads as a guarantee that this case is handled -- the CPU twin
+            # genuinely handles it and the CUDA side copied the ternary without
+            # the branch it belongs to. Only the LAUNCH is skipped: `rho` has
+            # just been zeroed, and the transforms of a zero source give the
+            # zero field, which is the right answer. Returning early instead
+            # would leave the field arrays holding the previous call's values.
+            # Unreachable through `collide!` today because both entry points
+            # skip empty slices, so this closes a latent trap.
+            ns > 0 &&
             CUDA.@cuda threads=threads blocks=cld(ns, threads) _cuda_spectral_deposit_idx_kernel!(
                 ws.rho, x, px, y, py, idx, T(drift), T(Lx), T(Ly), T(hx), T(hy), Nx, Ny, ws.dropped)
             _cuda_spectral_solve_from_rho!(ws, Phig, Exg, Eyg, a, b, ns)
@@ -653,7 +708,10 @@ if _HAS_CUDA
                     if compute_luminosity
                         luminosity += _cuda_spectral_luminosity_pair(
                             solver, xs1[i], ys1[i], xs2[j], ys2[j], klum, lnx, lny, ws.dropped)
-                        ndep += length(idx1) + length(idx2)
+                        # NOT added to `ndep`: the luminosity grid covers its
+                        # own extrema, so these deposits cannot clip and only
+                        # dilute the reported fraction (U11-2).
+                        nothing
                     end
                 end
                 _cuda_spectral_deposit_tripwire_flush!(ws, ndep, Lx, Ly)
@@ -712,10 +770,21 @@ if _HAS_CUDA
         # the midpoint drift folded into the deposit. Source 1 is read from the rep via
         # `idx1`; source 2 from the contiguous snapshot arrays sx2..spy2 (length n2).
         function _cuda_spectral_luminosity_idx_snap!(solver::SpectralPoissonSolver,
-                                                     ws::_SpectralCudaWS{T},
+                                                     ws::_SpectralCudaWS{TWS},
                                                      rep1, idx1, center1,
                                                      sx2, spx2, sy2, spy2, n2, center2,
-                                                     klum, nx, ny) where {T}
+                                                     klum, nx, ny) where {TWS}
+            # The COORDINATE type, not the workspace type (2026-08-05_b audit,
+            # U11-4). `field_precision = :single` is documented as selecting "the
+            # CUDA field-solve precision", and taking `T` from the workspace made
+            # it reach past the field solve into the 6D LUMINOSITY: the drifts
+            # s1/s2, the extents, hx/hy, the accumulators and the final
+            # `lum * klum / (hx*hy)` all became Float32. The transverse twin
+            # `_cuda_spectral_luminosity_pair` sets `T = eltype(x1)` and stays
+            # Float64 under the same option, so the two paths disagreed about
+            # what the option means, and only the 6D one silently downgraded a
+            # reported observable.
+            T = eltype(rep1.x)
             s1 = T(0.5) * (T(center1) - T(center2))
             s2 = T(0.5) * (T(center2) - T(center1))
             v2x = @view sx2[1:n2]; v2px = @view spx2[1:n2]

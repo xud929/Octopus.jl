@@ -408,8 +408,12 @@ function _spectral_deposit_tripwire(rho, ns, Lx, Ly)
     ns > 0 || return nothing
     deficit = ns - sum(rho)
     if deficit > 1.0e-9 * ns
+        # `scope` distinguishes this per-solve number from the CUDA twin's
+        # per-collision aggregate; the message text and the other keys are
+        # deliberately identical so one grep finds both (2026-08-05_b audit,
+        # U11-3).
         @warn "spectral deposit clipped charge at the Dirichlet wall; the box \
-               no longer covers the whole beam" dropped_fraction = deficit / ns nsource = ns box = (Lx, Ly) maxlog = 8
+               no longer covers the whole beam" dropped_fraction = deficit / ns nsource = ns scope = :per_solve box = (Lx, Ly) maxlog = 8
     end
     return nothing
 end

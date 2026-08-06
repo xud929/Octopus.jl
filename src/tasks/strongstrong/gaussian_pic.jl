@@ -138,10 +138,40 @@ function solver_configuration(solver::GaussianPICPoissonSolver)
     ))
 end
 
+"""
+PIC options the hybrid neither reads nor accepts a non-default value for.
+
+Listed once here and consumed by `configuration_report` so the user-facing
+"what will actually happen" surface cannot claim a setting is resolved when
+`collide!` throws on it (2026-08-05_b audit, U10-1).
+"""
+const _GPIC_INERT_PIC_OPTIONS = (:slice_interpolation, :interaction_grid,
+                                 :grid_extent, :grid_extent_sigma,
+                                 :cuda_async, :cuda_batch_fft,
+                                 :cuda_wavefront_fft)
+
 function configuration_report(solver::GaussianPICPoissonSolver;
                               policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
                               backend=nothing)
     pic_entries = configuration_report(solver.pic; policy=policy, backend=backend)
+    # Seven of the embedded PIC solver's entries are NOT resolved for the
+    # hybrid, and forwarding them unmodified told the user a setting was in
+    # force for values that hard-error (2026-08-05_b audit, U10-1).
+    # `_require_linear_slice_interpolation` throws on a non-default
+    # `slice_interpolation`, `interaction_grid` or `grid_extent`, and the CUDA
+    # route throws on `cuda_async`/`cuda_batch_fft`/`cuda_wavefront_fft = false`.
+    # Even at their defaults the hybrid does not read them: it hardcodes the
+    # slice-pair box, sizes its extent from `margin_sigma`, and picks its CUDA
+    # route from `batch_mode` and `cuda_indexed_wavefront` alone. The
+    # `coupling_tol` entry below is the pattern -- report the dependency, do not
+    # claim resolution. "Ignored configuration must warn, throw, or be
+    # documented as inert, never vanish", applied to the report rather than to
+    # the run: the throw is loud and the report contradicted it.
+    pic_entries = map(pic_entries) do e
+        e.name in _GPIC_INERT_PIC_OPTIONS || return e
+        ConfigurationEntry(e.name, e.requested, e.resolved, :inactive_dependency,
+            "not read by GaussianPICPoissonSolver: " * e.reason, e.consumer)
+    end
     extras = ConfigurationEntry[]
     push!(extras, ConfigurationEntry(:margin_sigma, solver.margin_sigma, solver.margin_sigma,
         :resolved, "adaptive-box Gaussian containment margin in sigmas", :gaussian_pic_subtraction))
@@ -777,6 +807,15 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
     pic = gsolver.pic
     _validate_pic_solver(pic)
     _require_linear_slice_interpolation(pic, "GaussianPICPoissonSolver")
+    # Reset and report the dropped-charge counter, as the plain-PIC twin does
+    # (2026-08-05_b audit, U10-2). This solver shares `_PICCPUWorkspace` and
+    # calls into `_pic_interaction!`, which increments `workspace.dropped[]`,
+    # but never zeroed it and never reported it -- so a stale count from a
+    # previous collide could persist and a real one would go unmentioned. The
+    # channel is unreachable today only because the hybrid rejects every
+    # non-:extrema `grid_extent`; this is the missing guardrail, not an active
+    # loss, and it costs one store.
+    workspace.dropped[] = 0
     slices1 = longitudinal_slices(beam1.rep, pic.slicing1)
     slices2 = longitudinal_slices(beam2.rep, pic.slicing2)
     kbb1 = _pic_kbb1(pic, beam1, beam2)
@@ -816,6 +855,7 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
         end
     end
     _pic_report_green_cache(green_cache)
+    _pic_report_dropped(workspace)          # U10-2
     return luminosity
 end
 

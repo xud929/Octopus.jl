@@ -8614,8 +8614,20 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         # pre-collision coordinates, strong intra-collision kick; the CPU
         # twin of this assert is in the slicing testset) warns through the
         # CUDA 6D path too -- one aggregate warning per collision where the
-        # CPU path warns per solve. No transverse-path assert: that map never
-        # moves x/y inside the collision, so its deposits cannot clip.
+        # CPU path warns per solve (the two now carry the same `dropped_fraction`
+        # and `nsource` keys plus a `scope` tag, and the CUDA denominator no
+        # longer includes the luminosity deposits that cannot clip -- U11-2/3).
+        #
+        # There is no transverse-path assert here, and the reason previously
+        # given for that was WRONG (2026-08-05_b audit, U11-6): "that map never
+        # moves x/y inside the collision, so its deposits cannot clip". The
+        # premise is true and the conclusion does not follow. Intra-collision
+        # motion is not the only route to clipping: when the box is set by the
+        # `1.05*emax` branch rather than by `d*sigma`, the 5% headroom is
+        # thinner than one cell on small grids -- the CPU tripwire's own
+        # docstring names `Nx < ~41` -- and the transverse deposits clip on both
+        # backends at plausible settings. What is missing is a transverse-path
+        # case, not a proof that one is unnecessary.
         strong_gpu(n) = begin
             s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
             x = s(1.0e-4, 0.0); x[1] = 8.0e-4

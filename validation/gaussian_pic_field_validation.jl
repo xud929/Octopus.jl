@@ -55,6 +55,38 @@ function m2(A, B, mu, s, xi)
            s^2 * ((B - mu) * gval(B, mu, s) - (A - mu) * gval(A, mu, s)) -
            2 * d * s^2 * (gval(B, mu, s) - gval(A, mu, s))
 end
+"""
+Equality tripwire against the shipped `_gpic_gaussian_profile!`.
+
+The profile above is deliberately an INDEPENDENT re-derivation -- that
+independence is what makes this a validation of the shipped code rather than a
+tautology. But the script's header claims both solvers are "exercised through
+their real internals", and with a hand copy in the subtraction path a regression
+in `_gpic_gaussian_profile!` (its CIC/TSC branch, the half/3half cell edges, the
+1.125/1.5/0.5 weights) would leave this study green (2026-08-05_b audit, U10-5).
+
+So the copy stays and the drift becomes loud. Measured agreement when this was
+added: 2.36e-16 (CIC), 4.27e-15 (TSC).
+"""
+function check_profile_against_shipped(; atol=1.0e-12)
+    worst = 0.0
+    for method in (:CIC, :TSC), (nnode, h, mu, s) in (
+            (33, 0.25, 0.3, 1.1), (64, 0.1, -0.7, 0.45), (17, 0.5, 0.0, 2.0))
+        x0 = -h * (nnode ÷ 2)
+        nodes = [x0 + h * (k - 1) for k in 1:nnode]
+        mine = gauss_profile(nodes, h, mu, s, method)
+        theirs = Vector{Float64}(undef, nnode)
+        Main.Octopus._gpic_gaussian_profile!(theirs, x0, h, mu, s, method)
+        worst = max(worst, maximum(abs, mine .- theirs))
+    end
+    worst <= atol || error(
+        "validation's own erf node profile has drifted from the shipped " *
+        "_gpic_gaussian_profile!: max |difference| = $(worst) > $(atol). " *
+        "One of the two is wrong; this script's accuracy table certifies the " *
+        "SHIPPED one, so they must agree.")
+    return worst
+end
+
 function gauss_profile(nodes, h, mu, s, method::Symbol)
     g = similar(nodes)
     for (k, xi) in pairs(nodes)
@@ -167,6 +199,13 @@ cases = [
     ("25:1", 2.0e-3, 0.08e-3),
 ]
 grids = Tuple(parse.(Int, split(get(ENV, "OCTOPUS_GPIC_GRIDS", "48,64,128"), ',')))
+
+# Run the tripwire BEFORE any accuracy number is produced: a table certifying
+# the shipped profile, computed with a copy that has silently drifted from it,
+# is worse than no table (U10-5).
+let drift = check_profile_against_shipped()
+    println("erf node profile vs shipped _gpic_gaussian_profile!: max |diff| = ", drift)
+end
 
 rows = Any[]
 println("Gaussian-subtracted PIC field accuracy vs Bassetti-Erskine (deterministic source)")

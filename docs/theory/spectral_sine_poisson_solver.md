@@ -344,7 +344,22 @@ $$
 
 A single in-place FFT plan per dimension serves both the DST and the cosine
 derivative (only the extension sign differs). The CUDA `collide!` agrees with the
-CPU path to machine precision (kicks ~4e-16, luminosity ~9e-16).
+CPU path to machine precision: transverse kicks ~4e-16, luminosity ~9e-16.
+
+**The 6D longitudinal kick is ~30x looser, and that is structural**
+(2026-08-05_b audit, U11-7). `pz` is accumulated from a DIFFERENCE of two
+potentials, `Kz = phiL - phiR`, so the cancellation amplifies the relative
+divergence well past the transverse kick's: measured CPU-vs-CUDA
+**1.08e-14 to 1.23e-14** relative on 6D `pz`. Quoting the transverse figure
+alone understated it by about thirty times.
+
+**The CUDA path is not run-to-run reproducible**, on either route. The deposit
+kernels accumulate through atomics, so the summation order varies between
+otherwise identical runs; the measured 6D `pz` run-to-run spread is
+**6.65e-15**, which is the same order as the CPU/CUDA difference above and
+should be read as the floor on any CUDA-side comparison. Until this note said
+so, the only statement of it anywhere was one inline comment inside the
+*transverse* collide function, while the largest spread is in the 6D one.
 
 **Throughput caveat (corrected).** An earlier version of this note claimed the
 CUDA spectral path is "about 4x faster than the PIC CUDA path at matched grid

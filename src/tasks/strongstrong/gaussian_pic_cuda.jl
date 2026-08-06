@@ -729,10 +729,27 @@ if _HAS_CUDA
             # kick plus the coupled pz terms via _cuda_cp_covariance_kick.
             cpl = prep.mode === :coupled
             m = prep.mom
-            cmom = StrongTransverseMoments{T,true}(
-                T(m.varx), T(m.cxy), T(m.vary),
-                T(m.cxpx), T(m.cxpy), T(m.cypx), T(m.cypy),
-                T(m.varpx), T(m.cpxpy), T(m.varpy))
+            # Same tolerance as the CPU twin `_gpic_coupled_moments`, which
+            # guards this exact construction with `hasproperty` because "the
+            # CUDA non-indexed and sequential routes do not compute [the
+            # cross-plane terms]". The guard existed on one side of the seam
+            # only, so the invariant keeping the bare field access safe here --
+            # that this function is reached solely from the indexed route, whose
+            # moments always populate all four -- was undocumented on the side
+            # that would crash (2026-08-05_b audit, U10-4). This is host code
+            # marshalling a device argument, so the failure would be a
+            # marshalling error, which is the shape F10 already cost once.
+            has_cross = hasproperty(m, :cxy) && hasproperty(m, :cxpy) &&
+                        hasproperty(m, :cypx) && hasproperty(m, :cpxpy)
+            cmom = has_cross ?
+                StrongTransverseMoments{T,true}(
+                    T(m.varx), T(m.cxy), T(m.vary),
+                    T(m.cxpx), T(m.cxpy), T(m.cypx), T(m.cypy),
+                    T(m.varpx), T(m.cpxpy), T(m.varpy)) :
+                StrongTransverseMoments{T,true}(
+                    T(m.varx), zero(T), T(m.vary),
+                    T(m.cxpx), zero(T), zero(T), T(m.cypy),
+                    T(m.varpx), zero(T), T(m.varpy))
             return (ns = prep.do_gauss ? T(prep.mom.n) : zero(T),
                     mpx=T(prep.mom.mpx), mpy=T(prep.mom.mpy),
                     sigxL=T(prep.bL.sigx), sigyL=T(prep.bL.sigy), muxL=T(prep.bL.mux), muyL=T(prep.bL.muy),

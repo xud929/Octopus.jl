@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **131 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **147 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -120,22 +120,22 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U7-4 | moderate | CONFIRMED, FIXED (2026-08-06) | `src/tasks/BeamObservers.jl:1745 (`_is_hdf5_output`), consumed at 1669–` | `MomentObserver` writes HDF5 to whatever path it is given, but |
 | U7-5 | moderate | CONFIRMED, FIXED (2026-08-06) | `src/tasks/BPMObserver.jl:200–205 (`_bpm_centroid`)` | on a CUDA beam a BPM reading copies **all six** coordinate arrays to the |
 | U9-2 | medium | CONFIRMED; false-warning half FIXED (2026-08-06); schema completion on todo.md | `src/elements/lattice_magnets.jl spec blocks (drift 1092–1100, quadrupo` | the per-kind `parameters` declarations under-declare what `_lattice_magnet` |
-| U1-2 | low |  | `src/tasks/strongstrong/pic_cuda.jl:585-605` | the U1-3 fix that landed in this diff copied three of the four fields the CUDA |
-| U1-3 | low |  | `src/tasks/strongstrong/pic_cuda.jl:1587` | `_cuda_pic_prepare_interaction_wavefront_indexed!` hardcodes `threads = 256` — the |
-| U1-4 | low |  | `src/tasks/strongstrong/pic_cuda.jl:16-21` | `collide!(solver, beam1, beam2, CUDABackend, ctx::TrackingContext)` accepts a real |
-| U1-5 | low |  | `src/tasks/strongstrong/pic_cuda.jl:130-149, 1349-1452 — OUT OF HYPOTHE` | under `interaction_grid = :node` no particle that escapes its turn-start node mesh is |
-| U1-6 | low |  | `src/tasks/strongstrong/pic_cuda.jl:670-696` | after the F10 fix, `_cuda_pic_extract_slice`'s `longitudinal_kick` parameter is dead |
-| U10-1 | low |  | `src/tasks/strongstrong/gaussian_pic.jl:141-158` | `configuration_report(::GaussianPICPoissonSolver)` reports `status=:resolved` |
-| U10-2 | low |  | `src/tasks/strongstrong/gaussian_pic.jl:775-820` | `_gpic_collide!` neither resets nor reports `workspace.dropped[]`, while |
-| U10-3 | low |  | `src/tasks/strongstrong/gaussian_pic.jl:353,361-362,373-376` | the CPU moment pass always accumulates the four cross-plane sums |
-| U10-4 | low |  | `src/tasks/strongstrong/gaussian_pic_cuda.jl:732-735` | `_cuda_gpic_gtuple` reads `m.cxy`, `m.cxpy`, `m.cypx`, `m.cpxpy` |
-| U10-5 | low |  | `validation/gaussian_pic_field_validation.jl:44-72` | the validation script that produces the theory note's §9 accuracy table |
-| U11-2 | low |  | `src/tasks/strongstrong/spectral_cuda.jl:279-287` | The CUDA warning's `dropped_fraction` is diluted by a denominator that |
-| U11-3 | low |  | `src/tasks/strongstrong/spectral_cuda.jl:283-284 vs spectral.jl:411-412` | The two tripwires emit the same message string but different structured |
-| U11-4 | low |  | `src/tasks/strongstrong/spectral_cuda.jl:686-719 and 639-681` | `field_precision=:single` reaches beyond the field solve: it downgrades |
-| U11-5 | low |  | `src/tasks/strongstrong/spectral_cuda.jl:394 (also 529, 543)` | The three CUDA solve entry points cannot survive an empty source |
-| U11-6 | low |  | `test/runtests.jl, "CUDA spectral deposit tripwire (R9, U9-1)" testset` | The comment "No transverse-path assert: that map never moves x/y inside |
-| U11-7 | low |  | `docs/theory/spectral_sine_poisson_solver.md §13` | The recorded CPU/CUDA agreement figure ("kicks ~4e-16, luminosity |
+| U1-2 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:585-605` | the U1-3 fix that landed in this diff copied three of the four fields the CUDA |
+| U1-3 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:1587` | `_cuda_pic_prepare_interaction_wavefront_indexed!` hardcodes `threads = 256` — the |
+| U1-4 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:16-21` | `collide!(solver, beam1, beam2, CUDABackend, ctx::TrackingContext)` accepts a real |
+| U1-5 | low | CONFIRMED; CPU half closed by U6-1 (2026-08-06); CUDA node counter on todo.md | `src/tasks/strongstrong/pic_cuda.jl:130-149, 1349-1452 — OUT OF HYPOTHE` | under `interaction_grid = :node` no particle that escapes its turn-start node mesh is |
+| U1-6 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:670-696` | after the F10 fix, `_cuda_pic_extract_slice`'s `longitudinal_kick` parameter is dead |
+| U10-1 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/gaussian_pic.jl:141-158` | `configuration_report(::GaussianPICPoissonSolver)` reports `status=:resolved` |
+| U10-2 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/gaussian_pic.jl:775-820` | `_gpic_collide!` neither resets nor reports `workspace.dropped[]`, while |
+| U10-3 | low | CONFIRMED, not fixed — hot-path change needs tolerance threaded through 3 more functions; on todo.md (2026-08-06) | `src/tasks/strongstrong/gaussian_pic.jl:353,361-362,373-376` | the CPU moment pass always accumulates the four cross-plane sums |
+| U10-4 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/gaussian_pic_cuda.jl:732-735` | `_cuda_gpic_gtuple` reads `m.cxy`, `m.cxpy`, `m.cypx`, `m.cpxpy` |
+| U10-5 | low | CONFIRMED, FIXED (2026-08-06) — copy kept, drift tripwire added and wired in | `validation/gaussian_pic_field_validation.jl:44-72` | the validation script that produces the theory note's §9 accuracy table |
+| U11-2 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/spectral_cuda.jl:279-287` | The CUDA warning's `dropped_fraction` is diluted by a denominator that |
+| U11-3 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/spectral_cuda.jl:283-284 vs spectral.jl:411-412` | The two tripwires emit the same message string but different structured |
+| U11-4 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/spectral_cuda.jl:686-719 and 639-681` | `field_precision=:single` reaches beyond the field solve: it downgrades |
+| U11-5 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/spectral_cuda.jl:394 (also 529, 543)` | The three CUDA solve entry points cannot survive an empty source |
+| U11-6 | low | CONFIRMED, comment corrected (2026-08-06); the missing transverse case itself is still absent | `test/runtests.jl, "CUDA spectral deposit tripwire (R9, U9-1)" testset` | The comment "No transverse-path assert: that map never moves x/y inside |
+| U11-7 | low | CONFIRMED, FIXED (2026-08-06) | `docs/theory/spectral_sine_poisson_solver.md §13` | The recorded CPU/CUDA agreement figure ("kicks ~4e-16, luminosity |
 | U12-10 | low |  | `src/knowledge/Knowledge.jl:839-845, 955-959` | the knowledge layer hard-codes the list of generic placement wrappers |
 | U12-12 | low |  | `src/policies/Policies.jl:330-338` | the public `configuration_report` docstring states a six-item status |
 | U12-13 | low |  | `src/policies/Policies.jl:45-50, 83-87` | `ExecutionAuditReceipt.backend` is written at every one of the ~30 |
