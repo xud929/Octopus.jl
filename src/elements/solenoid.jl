@@ -165,14 +165,36 @@ end
 # A fixed count also keeps the kernel branch-free for the GPU.
 const _SOL_MIDPOINT_ITERS = 16
 
-# The contraction factor `q = |L*ks| / (2*nst)` at or below which
-# `_SOL_MIDPOINT_ITERS` sweeps converge to machine precision. The fixed-point
-# map contracts at rate ~q, so the residual after 16 sweeps is ~q^16, and
-# q = 0.1 gives 1e-16 -- which is why the table above bottoms out at the one
-# point it was measured at (q = 0.069) and degrades smoothly above it:
-# q = 0.27 -> 1.8e-9, q = 0.78 -> 0.73, q >= 1 -> divergence or NaN.
-# Enforced at construction by `Solenoid` (2026-08-05_b audit, U9-1).
-const _SOL_MIDPOINT_CONTRACTION = 0.1
+# How converged the implicit stage must be before `Solenoid` stops warning.
+#
+# The fixed-point map contracts at rate ~q = |L*ks|/(2*nst), so after
+# `_SOL_MIDPOINT_ITERS` sweeps the symplectic residual is ~q^_SOL_MIDPOINT_ITERS.
+# Rather than pick a bare q, state the residual budget and DERIVE q from it, so
+# the two cannot drift apart if the sweep count ever changes.
+#
+# Calibration, measured with exact ForwardDiff Jacobians:
+#
+#     q      measured |J'SJ-S|     model q^16
+#     0.069  1.11e-16              1.2e-19
+#     0.138  9.30e-15              1.2e-14
+#     0.184  1.19e-12              1.1e-12
+#     0.277  1.08e-9               1.6e-9
+#
+# — the model tracks four decades of residual to within an order of magnitude.
+#
+# 1e-10 sits two orders BELOW `SymplecticityContract`'s own 5e-8 tolerance, so a
+# solenoid that does not warn is comfortably inside every symplecticity check
+# the repository makes.
+#
+# Correction (same audit): this was first written as a bare `q <= 0.1`, which
+# warned on `_symplecticity_contract_cases()`'s own nst=8 curved solenoid —
+# q = 0.138, whose measured residual is 9.30e-15, i.e. machine precision. That
+# made every clean run of the contract and of
+# `validation/symplecticity_validation.jl` emit a not-converged warning, which
+# is the "loud but wrong" failure mode: a warning that fires on healthy input
+# trains its reader to ignore it. Caught by a reading unit, not by the suite.
+const _SOL_MIDPOINT_RESIDUAL_BUDGET = 1.0e-10
+const _SOL_MIDPOINT_CONTRACTION = _SOL_MIDPOINT_RESIDUAL_BUDGET^(1 / _SOL_MIDPOINT_ITERS)
 
 """
 Curved-frame solenoid by the **implicit midpoint rule**.
