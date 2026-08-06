@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **95 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **98 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -310,11 +310,11 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U25-7 | minor |  | `validation/README.md §"Beam Optics Interface Consistency"` | the README credits the script with a check it does not perform — "and |
 | U25-8 | minor |  | `validation/README.md and three script headers — undocumented outputs` | four output files that the region actually writes are named in neither |
 | U25-9 | minor |  | `validation/README.md §soft_gaussian_pic_comparison and §moment_observe` | two scripts abort immediately without a GPU, and the README presents both |
-| U26-5 | minor |  | `docs/theory/coherent_beam_beam_modes.md §4 (EIC eigen-solve table)` | the x-plane continuum edges quoted in the theory table are set by the |
+| U26-5 | minor | CLOSED by the U22-3 fix (2026-08-06) | `docs/theory/coherent_beam_beam_modes.md §4 (EIC eigen-solve table)` | the x-plane continuum edges quoted in the theory table are set by the |
 | U26-6 | minor | FIXED | `docs/theory/pic_free_space_kernels.md §3.5` | §3.4's correction block states plainly that at grid 128 `:lattice` "comes |
-| U26-7 | minor |  | `docs/theory/pic_free_space_kernels.md §3.4 correction table vs src/tas` | the note and the source carry the same re-measurement and disagree on the |
+| U26-7 | minor | CONFIRMED, FIXED (2026-08-06) | `docs/theory/pic_free_space_kernels.md §3.4 correction table vs src/tas` | the note and the source carry the same re-measurement and disagree on the |
 | U26-8 | minor | FIXED | `docs/theory/misalignment_and_patch_maps.md §6a` | §6a names two `misalign_convention` values that do not exist. |
-| U26-9 | minor |  | `docs/theory/slice_longitudinal_interpolation.md §10.5 + §12` | the note advertises `grid_extent = :sigma` as complementary to |
+| U26-9 | minor | CONFIRMED, FIXED (2026-08-06) | `docs/theory/slice_longitudinal_interpolation.md §10.5 + §12` | the note advertises `grid_extent = :sigma` as complementary to |
 | U8-6 | informational |  | `— out-of-hypothesis, cross-file seam` | `validation/near_round_gaussian_transition.jl` computes exactly the two |
 | U9-9 | info |  | `src/elements/solenoid.jl:188–196 — OUT OF HYPOTHESIS (style)` | `mz` in `_solenoid_curved_map` is assigned in every fixed-point sweep and |
 

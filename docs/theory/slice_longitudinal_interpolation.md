@@ -864,9 +864,20 @@ statistic. Measured relative variation of the box
 The predicted $\sim6-7\%$ extrema jitter is confirmed. `:sigma` is **4-8× stabler**,
 against a prediction of $\ge10\times$ — the prediction was optimistic.
 
-Crucially, `:sigma` addresses a *different* breaker than `:node`: node indexing
-removes the slice-boundary jump exactly but does nothing about **turn-to-turn**
-mesh jitter (Section 5, item 2). `:sigma` cuts that by $5\times$.
+`:sigma` addresses a *different* breaker than `:node`: node indexing removes the
+slice-boundary jump exactly but does nothing about **turn-to-turn** mesh jitter
+(Section 5, item 2). `:sigma` cuts that by $5\times$.
+
+> **They cannot be combined, and the constructor says so (2026-08-06, audit lead
+> U26-9).** The natural reading of the paragraph above — and of §12's
+> recommendation of `:node` for dynamics work — is "enable both". That
+> combination throws: `_pic_validate` rejects any `grid_extent != :extrema`
+> unless `interaction_grid === :slice_pair`, because `:node` sizes its mesh from
+> per-node extrema and consults no extent estimator, so a non-default
+> `grid_extent` would be silently ignored. Rejecting rather than ignoring is
+> deliberate (it is what the CUDA PIC and Gaussian-PIC paths already did), but
+> nothing in this note said so. Choose one: `:node` for the slice-boundary jump,
+> or `:slice_pair` + `:sigma` for the mesh jitter.
 
 **A `:quantile` estimator was implemented, measured, and removed.** At a coverage
 target tight enough to avoid charge loss ($1-10^{-5}$), the target rounds to *all*

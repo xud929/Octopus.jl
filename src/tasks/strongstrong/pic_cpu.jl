@@ -1686,10 +1686,17 @@ const _PIC_LATTICE_GREEN_MULT = 8          # periodic box multiple of the padded
 # error against Bassetti-Erskine at grid 64, versus the `:integrated` default:
 #
 #     aspect    :integrated    :lattice (mult 8)    :lattice (aspect-aware)
-#     round       9.60e-04           1.74e-03              1.48e-03
+#     round       9.60e-04           1.74e-03              1.74e-03
 #     5:1         2.33e-03           6.76e-03              1.92e-03
 #     11:1        3.10e-03           3.21e-02              2.64e-03
 #     25:1        3.70e-03           1.54e-01              3.18e-03
+#
+# The round row's last two columns MUST be identical, and this table said
+# 1.48e-03 there (2026-08-05_b audit, U26-7). At rho = 1,
+# `_pic_lattice_box_mult(1.0)` returns (8, 8) -- literally the flat mult-8 box --
+# so the two columns are the same computation and cannot differ. The theory
+# note's §3.4 table is the self-consistent one (1.74e-3 in both) and this
+# comment was the copy that drifted.
 #
 # `:lattice` exists for "flat-beam field-accuracy studies only", and at the 11:1
 # production aspect ratio it was **10.3x worse** than the kernel it replaces. With
