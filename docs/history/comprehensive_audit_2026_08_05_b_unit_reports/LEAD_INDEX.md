@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **38 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **40 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -26,9 +26,9 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U22-1 | high | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:108,111-112 (`GH_N/GH_W`, `g` | The flat-beam regime the note and the script disown as a limitation of the 1D |
 | U24-1 | high | CONFIRMED, FIXED (2026-08-06) | `validation/slice_interpolation_emittance_growth_summary.jl:60-88` | the arm-grouping key omits `npart` and `turns`, so the baseline arm silently pools 22 runs |
 | U26-1 | major | FIXED | `docs/theory/gaussian_longitudinal_slicing.md § "Measured ranking"` | the note states the shipped default slicing rule is `:equal_area` and |
-| U26-2 | major |  | `docs/theory/slice_longitudinal_interpolation.md §7.5, §10.6, §12` | the note says CUDA `:quadratic` exists only on the sequential |
+| U26-2 | major | CONFIRMED, FIXED (2026-08-06) | `docs/theory/slice_longitudinal_interpolation.md §7.5, §10.6, §12` | the note says CUDA `:quadratic` exists only on the sequential |
 | U26-3 | major | FIXED | `docs/README.md (theory index entries for aperture and RF cavity)` | the index describes two implemented subsystems as unimplemented — |
-| U26-4 | major |  | `docs/theory/coherent_beam_beam_modes.md §2` | §2 states the equilibrium potential is "normalized to $\hat V_0''(0)=1$ so |
+| U26-4 | major | CONFIRMED, FIXED (2026-08-06) | `docs/theory/coherent_beam_beam_modes.md §2` | §2 states the equilibrium potential is "normalized to $\hat V_0''(0)=1$ so |
 | U6-1 | major | F7 confirmed, priced | `src/tasks/strongstrong/pic_cpu.jl:608 (also 870–938 and 824)` | under `interaction_grid = :node` and `:source_slice` the dropped-charge tripwire is |
 | U6-2 | major (performance) | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/pic_cpu.jl:1338–1365 (constants at src/tasks/st` | `_PIC_PARALLEL_DEPOSIT_MIN = 4096` now selects the fixed 16-chunk deposit far below |
 | U9-1 | major | F4 FIXED | `src/elements/solenoid.jl:166 (`_SOL_MIDPOINT_ITERS`), 411 (`nst` defau` | the curved solenoid's implicit-midpoint stage is solved by a fixed 16 |

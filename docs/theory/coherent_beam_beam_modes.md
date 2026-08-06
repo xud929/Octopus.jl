@@ -72,13 +72,34 @@ quadrature across the step is what initially produced a wrong incoherent
 normalization ($u(0) \ne 1$), caught by the self-checks below. The kick
 potential is $W(u) = \int_0^u G$, and the per-turn Hamiltonian perturbation is
 $H_1 = 2\xi\,[\hat V_0(x) + \delta\hat V(x,\theta)]$, where $\hat V_0$ is the
-equilibrium (source-averaged) potential normalized to $\hat V_0''(0) = 1$ so
-that the small-amplitude incoherent shift is exactly $\xi$.
+equilibrium (source-averaged) potential, normalized by the **analytic on-axis
+gradient** that defines $\xi$.
+
+> **Correction (2026-08-06, audit lead U26-4).** This paragraph previously said
+> $\hat V_0$ is "normalized to $\hat V_0''(0) = 1$ so that the small-amplitude
+> incoherent shift is exactly $\xi$", and the next one gave $u(0)=1$ and the
+> continuum $[Q_0, Q_0+\xi]$. That is pre-fix text. Normalizing by the
+> reduction's *own* averaged curvature is circular — it forces $u(0)=1$
+> whatever the kernel does — which is precisely what the script's self-check 4
+> removed, and $u(0)=1$ is now the signature that the circular normalization
+> has come back. The implementing code asserts the opposite.
 
 **Incoherent spectrum.** Averaging over angle gives the amplitude-dependent
 tune $\omega(J) = Q_0 + \xi\,u(J)$ with $u(J) = 2\,d\langle\hat
-V_0\rangle/dJ$, $u(0)=1$, $u\to0$ at large $J$: the incoherent continuum
-$[Q_0,\,Q_0+\xi]$ (focusing sign; attractive $e^+e^-$).
+V_0\rangle/dJ$ and $u\to0$ at large $J$, so the incoherent continuum is
+$[Q_0,\,Q_0 + \xi\max u]$ (focusing sign; attractive $e^+e^-$).
+
+The small-amplitude value is **below** $\xi$, and by a known factor: the
+reduction convolves *both* beams' other-plane spreads into the kick
+($s_t = \sqrt2\,r$) while $\xi$ is defined by the source's own $\sigma$, so
+
+$$u(0) \;=\; \frac{1+r}{1+\sqrt2\,r},$$
+
+which is $0.828$ at $r=1$ and approaches 1 only in the flat limit. Measured:
+$\max u$ runs $0.827$ (round) to $0.990$ at $r=0.02$, against this expression
+to better than $0.2\%$ — and `max u <= 1` is now asserted per row of the aspect
+scan, because the quadrature defect corrected in §3 announced itself by
+violating it (max $u$ reached 23.2).
 
 **Coherent perturbation.** Write $f_1 = g(J)\,e^{i(\varphi-\Omega\theta)}$
 (the $m=1$ dipole harmonic; the $m=-1$ sideband and the angle-dependent part
@@ -96,8 +117,9 @@ $$K(J,J') = \frac{1}{2\pi^2}\int_0^{2\pi}\!\!d\varphi\int_0^{\pi}\!\!d\varphi'
 
 with $\hat V_{\rm pt} = W/N_0$ the point-kick potential under the same
 normalization. Discretizing $J$ on Gauss-Legendre nodes turns this into a
-$2N\times2N$ real matrix. Three structural checks validate every constant at
-once:
+$2N\times2N$ real matrix. Five structural checks validate every constant at
+once (this list said "three" and omitted 4 and 5 — the two that changed the
+physics — until audit lead U26-4; the script has carried five):
 
 1. **Translation invariance:** the co-moving rigid displacement
    $g_{\rm rigid}(J) \propto \sqrt{2J}\,e^{-J}$ must be an eigenvector at
@@ -110,6 +132,19 @@ once:
    The code reproduces this analytically and numerically.
 3. **$\xi$-independence:** at leading order both the detuning and the
    coupling scale with $\xi$, so $Y$ must not depend on it; verified.
+4. **Non-circular normalization:** the normalizing curvature must be the
+   analytic on-axis gradient, not the reduction's own averaged curvature.
+   Normalizing by the latter forces $u(0)=1$ whatever the kernel does, so the
+   check reports $u(0)$ and requires it to match $(1+r)/(1+\sqrt2 r)$ — below
+   1 and aspect-dependent. A value of exactly 1 means the circular
+   normalization has returned. This is the check whose failure at flat aspect
+   ratios was misread as a limit of the reduction; see §3.
+5. **Harmonic assembly constants:** a harmonic interaction must give
+   $\Lambda = 2$ exactly. For $V(u)=u^2/2$ the detuning vanishes and the $m=1$
+   projection has the closed form $K(J,J') = -\sqrt{JJ'}/2$, which pins the
+   $\varphi/\varphi'$ quadrature weights, the $1/(2\pi^2)$ projection factor
+   and the $2\xi e^{-J}w'$ weighting against a closed form — independently of
+   the Coulomb kernel and of check 4.
 
 The discrete eigenvalue of the anti-symmetric sector above the continuum is
 the $\pi$ mode; $Y = (\Omega_\pi - Q_0)/\xi$.

@@ -436,11 +436,24 @@ implemented only on the CUDA *sequential, non-batched-FFT* route
 | sequential non-async `:linear` | 0.7940 | 2.48x |
 | sequential non-async `:quadratic` | 0.9190 | **2.87x** |
 
-The third plane costs only 1.14x *on its own route*, but that route is itself
-2.48x the production default, so the honest cost of `:quadratic` on CUDA today is
-**2.87x**, not 1.14x. A CUDA user wanting three-node interpolation should either
-run the CPU path (+5%) or wait for wavefront support. CPU/CUDA parity on the
-supported route is 7.5e-16 relative.
+The third plane costs only 1.14x *on its own route*, but that route was itself
+2.48x the production default, so at the time of measurement the honest cost of
+`:quadratic` on CUDA was **2.87x**, not 1.14x. CPU/CUDA parity on the supported
+route is 7.5e-16 relative.
+
+> **Superseded (2026-08-06, audit lead U26-2): the wavefront port landed.** The
+> paragraph above used to end "should either run the CPU path (+5%) or wait for
+> wavefront support", and §12 repeated it. `:quadratic` now runs on the
+> production indexed wavefront route
+> (`_cuda_pic_interaction_wavefront_quadratic_indexed_batched_fft!`, whose own
+> docstring names it the production route), so the 2.48x sequential-route
+> penalty no longer applies and only the ~1.14x third-plane cost remains. The
+> table above is kept as the measurement of the *sequential* route it describes,
+> not as current advice. `:node` likewise runs on the indexed wavefront route;
+> only the non-indexed sub-routes throw, and only because
+> `pic_timing_detail=true` disables the indexed one. The solver docstring in
+> `src/tasks/strongstrong/interface.jl` has been current throughout — prefer it
+> over this note where they disagree.
 
 Compare against the alternative of reducing $\Delta$ by increasing $N$: slice
 pairs scale as $N^2$, so halving $\Delta$ costs $4\times$. **Three nodes is
@@ -1005,8 +1018,12 @@ slices, and both together — do nothing. Consistent with Section 11 of the
   **together with** `:TSC`. Alone with `:CIC` it captures about a twentieth of
   the available gain, because the $C^0$ deposit, not the interpolation order, is
   the limiter. This is a field-accuracy justification, not a dynamics one.
-- **On CUDA:** `:quadratic` costs $2.87\times$ the production default until the
-  wavefront route can carry a third field plane. Prefer the CPU path (+5%).
+- **On CUDA:** `:quadratic` runs on the production indexed wavefront route, so
+  it costs about $1.14\times$ the production default — the third field plane
+  and nothing else. (Corrected 2026-08-06, U26-2: this read "$2.87\times$ …
+  until the wavefront route can carry a third field plane. Prefer the CPU path",
+  which described the sequential route and predated the port. §7.5 has the
+  detail.)
 
 ## References
 
