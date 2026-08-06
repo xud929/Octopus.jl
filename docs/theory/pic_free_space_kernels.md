@@ -389,6 +389,15 @@ slice pair and turn. Two measurements refute the *affordability* half of it:
    sharply sensitive to $\rho$. At the 11:1 production beams, grid 128
    (`:integrated` reference 1.991e-2):
 
+   > **Read §3.4's correction block first (2026-08-05_b audit, U26-6).** The
+   > "versus `:integrated`" column below is *pre-fix* data. §3.4 records that at
+   > grid 128 the aspect cap binds and `:lattice` comes out **at par** with
+   > `:integrated` (1.18e-3 vs 1.16e-3), not 1.48× better. The column is kept
+   > because the *shape* it demonstrates — accuracy collapsing as $\rho$
+   > quantization coarsens, and the kernel becoming worse than the one it
+   > replaces beyond ~2% — is what this item is about and is unaffected. The
+   > absolute advantage is not.
+
    | $\rho$ error | median field error | versus `:integrated` |
    | ---: | ---: | --- |
    | exact | 1.348e-2 | 1.48x better |
@@ -411,8 +420,11 @@ The cache is capped at 384 entries to bound memory. The cap must be generous: at
 64 entries it thrashes and the cost rises from 1.8x to **6.8x** a turn.
 
 **Recommendation: opt-in for flat-beam field-accuracy work; do not use in
-production.** The honest trade at the production aspect ratio is 1.30x lower
-systematic field error for 1.74x runtime and ~645 MB. Since the gain is in
+production.** The honest trade at the production aspect ratio is 1.74x runtime
+and ~645 MB for a systematic field-error gain that §3.4's correction measures as
+**par at grid 128**, not the 1.30x this sentence claimed before the 2026-08-05_b
+audit. The recommendation is unchanged and is if anything stronger: the cost is
+real and measured, the benefit at the production point is not. Since the gain is in
 systematic error, and the analogous `:fourth` gradient bought a comparable factor
 while measurably *not* reducing shot-noise-driven emittance growth, this is very
 unlikely to change a multi-turn dynamics result.

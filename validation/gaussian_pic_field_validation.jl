@@ -15,7 +15,8 @@ simulation the per-particle single-turn kick is additionally shot-noise limited;
 that floor is identical for PIC and the hybrid and is not what this checks.)
 
 Both solvers are exercised through their real internals: PIC via
-`_pic_solve_field` and the hybrid via the same integrated-log Green convolution
+a local `solve_from_charge` wrapper around the production `_pic_green_fft`/
+`_pic_field` kernels, and the hybrid via the same integrated-log Green convolution
 with the erf-integrated Gaussian subtracted on the grid and the exact
 Bassetti-Erskine field added back.
 
