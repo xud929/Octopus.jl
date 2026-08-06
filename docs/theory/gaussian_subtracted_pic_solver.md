@@ -663,6 +663,27 @@ max transverse-kick error over a $\pm4\sigma$ grid):
 | ~11:1 (production e-) | 128 | 1.3e-3 | 3.2e-4 | 4.1x |
 | 25:1 | 48 | 5.0e-3 | 2.8e-4 | 17.6x |
 
+> **What the hybrid column measures (2026-08-06, audit lead U23-2).** These
+> numbers are unchanged, but until now they could not have been wrong. The
+> script forced both the subtracted profile and the added-back field to the
+> *nominal* $(0, \sigma)$, and the add-back was the identical
+> `gaussian_beambeam_kick` call supplying the reference, so the reported hybrid
+> error reduced algebraically to $2\,\delta E/n_s$ — the magnitude of the
+> residual grid field measured against zero. It carried no information about
+> the Bassetti-Erskine evaluator, the moment estimate, or the consistency
+> between what is subtracted and what is added back, which is exactly where a
+> production bug would live: `_gpic_interaction!` derives both from
+> `_gpic_source_moments`, not from nominal values.
+>
+> Both are now derived from the source sample's own moments, as production does.
+> The measured values above reproduce to two significant figures, because a
+> well-sampled symmetric source has sample moments close to nominal — but the
+> column can now fail: injecting a 2% mismatch between the added-back $\sigma$
+> and the subtracted one moves the round/48 hybrid median from $1.6\times
+> 10^{-4}$ to $2.4\times10^{-3}$ and turns the $9.2\times$ gain into $0.6\times$,
+> i.e. the hybrid reads worse than plain PIC. Under the previous form that
+> injection was not representable at all.
+
 The hybrid error is nearly **grid-independent** (~2e-4 median at every grid),
 because the analytic term carries the sharp core exactly and the residual is
 smooth. The practical consequence: **the hybrid at grid $48\times48$ matches or

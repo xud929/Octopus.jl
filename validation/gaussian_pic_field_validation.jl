@@ -111,9 +111,26 @@ function run_case(sigx, sigy; grid, method=:CIC, nsrc_axis=400, field_axis=81,
     O._pic_deposit!(Qpart, method, sx, sy, source_grid.x0, source_grid.y0, hx, hy, nx, ny)
     phiP, ExP, EyP = solve_from_charge(solver, Qpart, source_grid, field_grid, nx, ny)
 
+    # Subtraction profile and add-back are both built from the SOURCE SAMPLE's
+    # moments, as production does (`_gpic_source_moments` -> the profile it
+    # subtracts and the Gaussian it adds back), not from the nominal (0, sigma).
+    #
+    # Forcing both to nominal made the HYB column circular: the add-back was the
+    # identical `gaussian_beambeam_kick(sigx, sigy, ...)` call that supplies the
+    # reference, so `hkx - ekx = 2*deX/ns + ekx - ekx = 2*deX/ns` identically --
+    # the reported hybrid error was the magnitude of the residual grid field
+    # measured against zero, carrying no information about the Bassetti-Erskine
+    # evaluator, the moment estimate, or the consistency between the subtracted
+    # profile and the added-back field, which is exactly where a production bug
+    # lives. Docs section 9 and the manuscript's Figure 2 rest on this column
+    # (2026-08-05_b audit, U23-2).
+    mx = sum(sx) / ns
+    my = sum(sy) / ns
+    sxs = sqrt(max(sum(abs2, sx .- mx) / ns, 0.0))
+    sys = sqrt(max(sum(abs2, sy .- my) / ns, 0.0))
     xn = [source_grid.x0 + (i - 1) * hx for i in 1:nx]
     yn = [source_grid.y0 + (j - 1) * hy for j in 1:ny]
-    gx = gauss_profile(xn, hx, 0.0, sigx, method); gy = gauss_profile(yn, hy, 0.0, sigy, method)
+    gx = gauss_profile(xn, hx, mx, sxs, method); gy = gauss_profile(yn, hy, my, sys, method)
     dQ = copy(Qpart)
     for j in 1:ny, i in 1:nx
         dQ[i, j] -= ns * gx[i] * gy[j]
@@ -122,11 +139,17 @@ function run_case(sigx, sigy; grid, method=:CIC, nsrc_axis=400, field_axis=81,
 
     pic = Float64[]; hyb = Float64[]; en = Float64[]
     for y in yg, x in xg
+        # Reference: the analytic field of the NOMINAL Gaussian.
         ekx, eky = gaussian_beambeam_kick(sigx, sigy, x, y)
+        # Add-back: the analytic field of the SAMPLE's Gaussian, at the sample's
+        # centroid -- the quantity production actually adds. It no longer
+        # cancels against the reference, so the HYB column measures the
+        # subtract/add-back consistency instead of `2*deX/ns` (U23-2).
+        akx, aky = gaussian_beambeam_kick(sxs, sys, x - mx, y - my)
         peX, peY, _ = O._pic_interpolate_kick(solver, field_grid, x, y, phiP, ExP, EyP, phiP, ExP, EyP, 1.0, 0.0)
         deX, deY, _ = O._pic_interpolate_kick(solver, field_grid, x, y, phiD, ExD, EyD, phiD, ExD, EyD, 1.0, 0.0)
         pkx = 2peX / ns; pky = 2peY / ns
-        hkx = 2 * (deX + (ns / 2) * ekx) / ns; hky = 2 * (deY + (ns / 2) * eky) / ns
+        hkx = 2 * (deX + (ns / 2) * akx) / ns; hky = 2 * (deY + (ns / 2) * aky) / ns
         push!(pic, hypot(pkx - ekx, pky - eky))
         push!(hyb, hypot(hkx - ekx, hky - eky))
         push!(en, hypot(ekx, eky))
