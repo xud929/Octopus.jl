@@ -1,5 +1,60 @@
 if _HAS_CUDA
     @eval begin
+        """
+            _cuda_launch_capped!(f, launch, stream, args...)
+
+        Launch kernel `f` with `launch.threads`, reduced to what `f` can
+        actually be launched with on this device.
+
+        The thread count that reaches the strong-strong kick kernels is the raw
+        policy value, and the only validation upstream compares it against
+        `DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK` (1024), which cannot see
+        register pressure. These kernels are register-heavy, so a value that is
+        legal by that check is not launchable: measured on an RTX 4500 Ada,
+        `_cuda_slice_kick_kernel!` needs 149 registers/thread,
+        `_cuda_gaussian_fused_kick_kernel!` 163, and the indexed PIC kick 130 --
+        so `threads = 512` died with ERROR_LAUNCH_OUT_OF_RESOURCES on three of
+        the four strong-strong routes, after a fifteen-frame CUDA stack trace
+        and after the run had already started (2026-08-05_b audit, U3-2).
+        `OCTOPUS_CUDA_THREADS` accepts 512, and the repository's own
+        launch-geometry contract sweeps it.
+
+        Capping rather than erroring follows what this file already does for the
+        moment kernels, where `_cuda_gaussian_moment_launch` caps at 256 for
+        shared-memory reasons. Every kernel here is grid-strided, so the cap
+        changes the partition and not the result. It is announced once and
+        recorded in a receipt, because a silently downgraded launch is a
+        performance number with a hidden variable in it.
+        """
+        @inline function _cuda_launch_capped!(f::F, launch, stream, args...) where {F}
+            kernel = CUDA.@cuda launch = false f(args...)
+            usable = CUDA.maxthreads(kernel)
+            threads = min(launch.threads, usable)
+            if threads < launch.threads
+                @warn """
+                CUDA launch threads reduced from $(launch.threads) to $(usable) for \
+                $(nameof(f)): the kernel's register use leaves no room for more per \
+                block. The requested value is legal against the device's 1024-thread \
+                ceiling but not launchable for this kernel. Timings are for \
+                $(usable) threads.""" maxlog = 1 _id = Symbol(:cuda_thread_cap_, nameof(f))
+                _record_execution!(:cuda_strong_strong_thread_cap, CUDABackend,
+                    (kernel=nameof(f), requested=launch.threads, resolved=threads))
+            end
+            # Blocks scale back up so the grid still covers the work in one
+            # sweep; every kernel routed here is grid-strided, so this is a
+            # partition change, not a coverage requirement.
+            blocks = launch.blocks
+            if threads < launch.threads && blocks isa Integer
+                blocks = max(1, cld(blocks * launch.threads, threads))
+            end
+            if stream === nothing
+                kernel(args...; threads=threads, blocks=blocks)
+            else
+                kernel(args...; threads=threads, blocks=blocks, stream=stream)
+            end
+            return nothing
+        end
+
         function collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CUDABackend})
             workspace = _cuda_pic_workspace(solver, eltype(beam1.rep.x))
             green_cache = _cuda_pic_green_cache(solver, eltype(beam1.rep.x))
@@ -1211,7 +1266,8 @@ if _HAS_CUDA
                         solver.ignore_centroid1, solver.ignore_centroid2,
                         T(solver.min_sigma), ncolumns, Val(COUPLED))
                 kick_launch = _active_cuda_launch(max_seg_len)
-                CUDA.@cuda threads=kick_launch.threads blocks=(kick_launch.blocks, nsegments) _cuda_gaussian_fused_kick_kernel!(
+                _cuda_launch_capped!(_cuda_gaussian_fused_kick_kernel!,
+                        (threads=kick_launch.threads, blocks=(kick_launch.blocks, nsegments)), nothing,
                         beam1.rep, beam2.rep, perm1, perm2, seg_beam, seg_off, seg_len,
                         seg_mcol, seg_center, seg_kbb, seg_lumoff, seg_scale, seg_complum,
                         device_kmoments, device_means, lum, solver.virtual_drift,
@@ -2098,7 +2154,7 @@ if _HAS_CUDA
             hzi1, zbias1 = _slice_interpolation_parameters(T(param_field1.lb), T(param_field1.rb))
             hzi2, zbias2 = _slice_interpolation_parameters(T(param_field2.lb), T(param_field2.rb))
             if solver.longitudinal_kick
-                CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_pair_indexed_longitudinal_kernel!(
+                _cuda_launch_capped!(_cuda_pic_kick_pair_indexed_longitudinal_kernel!, (threads=threads, blocks=blocks), stream,
                     rep1.x, rep1.px, rep1.y, rep1.py, rep1.pz, rep1.z, idx1,
                     rep2.x, rep2.px, rep2.y, rep2.py, rep2.pz, rep2.z, idx2,
                     phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R,
@@ -2112,7 +2168,7 @@ if _HAS_CUDA
                     T(source_center2), hzi2, zbias2, T(kbb2),
                 )
             else
-                CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_pair_indexed_kernel!(
+                _cuda_launch_capped!(_cuda_pic_kick_pair_indexed_kernel!, (threads=threads, blocks=blocks), stream,
                     rep1.x, rep1.px, rep1.y, rep1.py, rep1.z, idx1,
                     rep2.x, rep2.px, rep2.y, rep2.py, rep2.z, idx2,
                     phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R,
@@ -5155,14 +5211,14 @@ if _HAS_CUDA
                         context="beam 2, slice $(j)")
                 launch1 = _active_cuda_launch(length(slices1.indices[i]))
                 launch2 = _active_cuda_launch(length(slices2.indices[j]))
-                CUDA.@cuda threads=launch1.threads blocks=launch1.blocks _cuda_slice_kick_kernel!(
+                _cuda_launch_capped!(_cuda_slice_kick_kernel!, launch1, nothing,
                     beam1.rep, slices1.indices[i], lum,
                     moments2, slices2.center[j],
                     slices2.weight[j] * kbb1,
                     solver.virtual_drift, Val(LONGITUDINAL),
                     Val(!sample_beam1), 0, one(T),
                 )
-                CUDA.@cuda threads=launch2.threads blocks=launch2.blocks _cuda_slice_kick_kernel!(
+                _cuda_launch_capped!(_cuda_slice_kick_kernel!, launch2, nothing,
                     beam2.rep, slices2.indices[j], lum,
                     moments1, slices1.center[i],
                     slices1.weight[i] * kbb2,

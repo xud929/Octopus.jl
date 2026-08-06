@@ -4054,6 +4054,71 @@ end
     @test d.params[:my_note] == "hello"
 end
 
+@testset "A launch the device accepts but the kernel cannot run" begin
+    # 2026-08-05_b audit, U3-2. The thread count reaching the strong-strong kick
+    # kernels was the raw policy value, and the only upstream validation compares
+    # it against DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK (1024), which cannot see
+    # register pressure. Measured on an RTX 4500 Ada: _cuda_slice_kick_kernel!
+    # needs 149 registers/thread, _cuda_gaussian_fused_kick_kernel! 163, the
+    # indexed PIC kick 130 -- so threads=512 died with
+    # ERROR_LAUNCH_OUT_OF_RESOURCES on three of the four strong-strong routes,
+    # after the run had started and fifteen CUDA frames deep. OCTOPUS_CUDA_THREADS
+    # accepts 512 and the launch-geometry contract sweeps it.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        sl512 = LongitudinalSlicing(nslices=3, method=:normal_quantile)
+        mkb(pol) = Beam(4000, pol, Float64; beta=(0.55, 0.056, 12.7),
+            alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+            r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        run512(solver) = begin
+            pol = CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=512))
+            set_global_rng!(seed=123, method=:philox)
+            ip = StrongStrongCollision(:ip; poisson_solver=solver)
+            task = StrongStrongTask((ip,), (ip,); policy=pol)
+            audit = ExecutionAudit()
+            with_execution_audit(audit) do
+                execute!(task, mkb(pol), mkb(pol); turns=1)
+            end
+            audit
+        end
+        # All three previously-failing routes must now complete.
+        for solver in (GaussianPoissonSolver(; slicing=sl512, longitudinal_kick=true,
+                                             batch_mode=:sequential),
+                       GaussianPoissonSolver(; slicing=sl512, longitudinal_kick=true,
+                                             batch_mode=:wavefront),
+                       PICPoissonSolver(; slicing=sl512, grid=(32, 32),
+                                        longitudinal_kick=true, batch_mode=:wavefront))
+            audit = run512(solver)
+            # ...and must SAY they were capped. A silent downgrade would leave a
+            # timing number with a hidden variable in it, which is the same defect
+            # U25-1 fixed for batching.
+            caps = filter(r -> r.consumer === :cuda_strong_strong_thread_cap,
+                          execution_receipts(audit))
+            @test !isempty(caps)
+            @test all(r -> r.values.resolved < r.values.requested, caps)
+            @test all(r -> r.values.requested == 512, caps)
+        end
+
+        # The cap must not fire when it is not needed: a default-sized launch has
+        # to run byte-for-byte the path it always ran, with no receipt at all.
+        audit256 = let pol = CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=256))
+            set_global_rng!(seed=123, method=:philox)
+            ip = StrongStrongCollision(:ip; poisson_solver=GaussianPoissonSolver(;
+                slicing=sl512, longitudinal_kick=true, batch_mode=:sequential))
+            task = StrongStrongTask((ip,), (ip,); policy=pol)
+            a = ExecutionAudit()
+            with_execution_audit(a) do
+                execute!(task, mkb(pol), mkb(pol); turns=1)
+            end
+            a
+        end
+        @test isempty(filter(r -> r.consumer === :cuda_strong_strong_thread_cap,
+                             execution_receipts(audit256)))
+    else
+        @test_skip "CUDA device required: this pin is about a real kernel launch"
+    end
+end
+
 @testset "A lost particle is a comparison, not a poison pill" begin
     # 2026-08-05_b audit, U25-4. `_aperture_kill` writes NaN into all six
     # coordinates; `abs(NaN - NaN)` is NaN and `max(x, NaN)` is NaN in Julia, so

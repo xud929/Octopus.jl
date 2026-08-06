@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **116 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **117 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -94,7 +94,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U25-3 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/counter_rng_validation.jl:86-92` | the same gate's tolerances are fixed absolute constants while the |
 | U25-4 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/tracking_backend_consistency.jl:154 (seam: src/contracts/Co` | `:aperture` is covered by the tripwire **by name only** — with the |
 | U3-1 | medium |  | `src/tasks/strongstrong/pic_cuda.jl:5564-5578, 5660-5668` | The CUDA slice transverse moments change with the launch grid rather than only with |
-| U3-2 | medium |  | `src/tasks/strongstrong/pic_cuda.jl:5158, 5165, 2101, 1214` | `threads = 512` — a value the repository's own launch-geometry contract sweeps and |
+| U3-2 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:5158, 5165, 2101, 1214` | `threads = 512` — a value the repository's own launch-geometry contract sweeps and |
 | U3-3 | low-medium |  | `src/tasks/strongstrong/pic_cuda.jl:4885-4898, 5073-5090` | The CIC branch of `_cuda_pic_interpolate_field` and `_cuda_pic_interpolate_kick` is |
 | U3-6 | low-medium |  | `src/tasks/strongstrong/pic_cuda.jl:4002-4010, 4034-4051, 4077-4094, 41` | The CUDA PIC route is **not** run-to-run bit-reproducible: the same process, the same |
 | U4-1 | medium | CONFIRMED, not fixed — needs a probe redesign; on todo.md (2026-08-06) | `src/contracts/Contracts.jl:1963-1967 (probe) → :2125 (decision)` | the `:aperture` probe produces an all-NaN baseline, so all 11 aperture parameters counted in `checked` are decided by a NaN comparison that can only ever say "the parameter moved the map" — the apertu |
