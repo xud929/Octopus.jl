@@ -5027,6 +5027,28 @@ end
     @test isnan(lum)
     @test all(array -> all(isfinite, array), coordinate_arrays(b1))
     @test all(array -> all(isfinite, array), coordinate_arrays(b2))
+
+    # 2026-08-05_b audit, U5-2: the schedule was consulted TWICE per collision
+    # per turn -- once by the file-writing gate and once by the solver, back to
+    # back. For a pure predicate that is merely wasteful; for a STATEFUL
+    # PredicateSchedule the two answers differ, and the gate writing
+    # "evaluated" while the solver declined produces a row of NaN -- the value
+    # this file reserves for "evaluated and numerically failed". Measured
+    # before: 2 calls for one turn, gate = true, solver = false.
+    let calls = Ref(0)
+        stateful = PredicateSchedule(_ -> (calls[] += 1; isodd(calls[])))
+        s = pic(luminosity_schedule=stateful)
+        for t in 1:4
+            c = TrackingContext(turn=t)
+            gate = Octopus._strong_strong_luminosity_evaluated(s, c)
+            solver = Octopus._pic_compute_luminosity(s, c)
+            @test gate == solver          # one answer, not two
+        end
+        # One evaluation per turn, not two. The memo must also NOT freeze the
+        # answer across turns: a stateful predicate alternating true/false has
+        # to keep alternating, which a sticky cache would break.
+        @test calls[] == 4
+    end
 end
 
 # Deterministic beam of `n` particles, with `dead` marked non-finite in a

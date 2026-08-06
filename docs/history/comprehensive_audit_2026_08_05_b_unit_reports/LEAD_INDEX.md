@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **84 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **85 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -110,7 +110,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U4-8 | medium |  | `src/contracts/Contracts.jl:1276-1290 with :1172-1243` | the declaration↔case tripwire constrains exactly **one** registered kind, and fifteen kinds whose declared tracking method is `Symplectic6DMap` have no symplecticity case at all. The tripwire's author |
 | U4-9 | low-medium |  | `src/contracts/Contracts.jl:867-879 with metrics at :905-915` | `StrongStrongPICBackendConsistencyContract` reports three named checks as passed with nothing compared, for public parameter choices its own docstring advertises. |
 | U5-1 | medium | F2 FIXED | `src/tasks/strongstrong/interface.jl:2015-2025` | the U4-4 ordering fix reversed the truncation window instead of closing it — an |
-| U5-2 | medium |  | `src/tasks/strongstrong/interface.jl:2217-2218` | the luminosity schedule is evaluated twice per collision per turn — once by the |
+| U5-2 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:2217-2218` | the luminosity schedule is evaluated twice per collision per turn — once by the |
 | U5-3 | low-medium |  | `src/tasks/strongstrong/interface.jl:2009-2010 (declaration at 1596-160` | `luminosity_append` declares `consumer=:strong_strong_output`, but the only |
 | U5-4 | low-medium |  | `src/tasks/strongstrong/interface.jl:1726-1733` | the task block of `validate_configuration_metadata` compares the schema default to |
 | U6-3 | medium (performance) | CLOSED by the U6-2 fix; measured + pinned 2026-08-06 | `src/tasks/strongstrong/pic_cpu.jl:1990–1991` | the luminosity deposit calls the **workspace-less** `_pic_deposit!`, so above 4,096 |

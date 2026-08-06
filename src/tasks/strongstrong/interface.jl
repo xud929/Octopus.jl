@@ -2443,10 +2443,37 @@ function _strong_strong_collide_backend!(task, label, solver, beam1, beam2, back
     return collide!(solver, beam1, beam2, backend, ctx)
 end
 
+# One-slot memo for the luminosity schedule's answer.
+#
+# The schedule is consulted TWICE per collision per turn: once by the
+# file-writing gate (`_strong_strong_luminosity_evaluated`, pushed into
+# `luminosity_evaluated`) and once by the solver itself, back to back in the
+# same loop iteration. For a pure predicate that is merely wasteful; for a
+# STATEFUL `PredicateSchedule` the two calls return different answers, and the
+# gate writing "evaluated" while the solver declined produces a row of NaN --
+# the value this file's own docstring reserves for "evaluated and numerically
+# failed". Measured on a schedule alternating true/false: 2 calls for one turn,
+# gate = true, solver = false (2026-08-05_b audit, U5-2).
+#
+# One slot is enough and cannot grow: the two calls are adjacent, and a later
+# collision in the same turn simply replaces the entry. Keyed by the SCHEDULE's
+# identity rather than the solver's so two collisions sharing one schedule
+# object still get one evaluation per (schedule, turn).
+const _LUM_SCHEDULE_MEMO = Ref{Tuple{UInt,Int64,Bool}}((UInt(0), typemin(Int64), false))
+
 _pic_compute_luminosity(::PICPoissonSolver, ::Nothing) = true
 function _pic_compute_luminosity(solver::PICPoissonSolver, ctx::TrackingContext)
     schedule = solver.luminosity_schedule
+    if schedule !== nothing
+        key = objectid(schedule)
+        memo = _LUM_SCHEDULE_MEMO[]
+        if memo[1] == key && memo[2] == Int64(ctx.turn)
+            return memo[3]
+        end
+    end
     evaluated = schedule === nothing || should_run(schedule, ctx)
+    schedule === nothing ||
+        (_LUM_SCHEDULE_MEMO[] = (objectid(schedule), Int64(ctx.turn), evaluated))
     active_policy = _ACTIVE_RESOLVED_POLICY[]
     active_backend = active_policy isa AbstractResolvedExecutionPolicy ?
         backend_type(active_policy) : :unknown
