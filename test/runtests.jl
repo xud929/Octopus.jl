@@ -7311,7 +7311,15 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             Octopus.CUDA.synchronize()
             actual = Array(output)
             expected = T[expected_kick..., expected_hessian...]
-            @test actual ≈ expected rtol=16eps(T) atol=16eps(T)
+            # Kick and Hessian are compared SEPARATELY, because they differ by
+            # eight orders of magnitude here and `isapprox` on the joined vector
+            # judges both against the norm -- which the O(1) Hessian sets. The
+            # testset's named subject is the near-axis KICK, and under the joined
+            # comparison a 2.7% (Float32) relative error in it passed
+            # (2026-08-05_b audit, U20-5): tolerance 16eps(Float32)*1.414 =
+            # 2.70e-6 against |kx| = 1.0e-4.
+            @test actual[1:2] ≈ expected[1:2] rtol=16eps(T) atol=16eps(T)*abs(x)
+            @test actual[3:5] ≈ expected[3:5] rtol=16eps(T) atol=16eps(T)
             @test actual[1] != zero(T)
             @test actual[2] != zero(T)
         end
@@ -7337,7 +7345,20 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
                     Octopus.CUDA.@cuda threads=1 blocks=1 cuda_near_round_gaussian_kernel!(
                         output, sig1, sig2, x, y)
                     Octopus.CUDA.synchronize()
-                    @test Array(output) ≈ collect(expected) rtol=tolerance atol=tolerance
+                    act = Array(output)
+                    exp4 = collect(expected)
+                    # Kick (1:2) and Hessian (3:4) compared separately: joined,
+                    # `isapprox` scales the absolute floor by the vector norm,
+                    # which the O(1) Hessian sets, so at the near-axis point the
+                    # kick's effective tolerance was 4.27e-5 against |Kx| ~
+                    # 9.5e-7 -- 45x the quantity. Measured consequence: at
+                    # Float32, 5 of 25 (eta, point) samples accepted a ZERO
+                    # kick, and sign-flipped and 10x-wrong kicks passed too
+                    # (2026-08-05_b audit, U20-4). The absolute floor for the
+                    # kick is now scaled to the kick's own magnitude.
+                    kick_floor = tolerance * max(maximum(abs, exp4[1:2]), eps(T))
+                    @test act[1:2] ≈ exp4[1:2] rtol=tolerance atol=kick_floor
+                    @test act[3:4] ≈ exp4[3:4] rtol=tolerance atol=tolerance
                 end
             end
         end
