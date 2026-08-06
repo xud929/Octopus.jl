@@ -75,12 +75,12 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U21-4 | medium | CONFIRMED, FIXED (2026-08-06) | `test/nightly_suite.sh:33,46` | two further row-less exits. `mkdir -p "$OUTDIR"` (line 33) is unchecked, so |
 | U22-2 | medium-high | CONFIRMED, FIXED (2026-08-06) | `docs/theory/coherent_beam_beam_modes.md:64-67 and validation/coherent_` | The theory note and the script's own header state `u(0)=1` and an incoherent |
 | U22-3 | medium-high | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:703-704 and docs/theory/cohe` | Every number in §4's x row is a quadrature artifact — the continuum edges (max |
-| U22-4 | medium |  | `validation/coherent_mode_vlasov_theory.jl:342-364 vs :235-254` | Self-check 5 — the check advertised as validating "every assembly constant ... |
-| U22-5 | medium |  | `docs/theory/coherent_beam_beam_modes.md:186-187` | The finite-ξ map correction is quoted with the **wrong sign** — "(for Q_0 = 0.31: |
-| U22-6 | medium |  | `docs/theory/coherent_beam_beam_modes.md:131-140 (the † footnote)` | The footnote that justifies flagging the r = 0.02-0.05 row quotes max-`u` numbers |
-| U22-7 | medium |  | `docs/theory/coherent_beam_beam_modes.md:243 (and :233-256)` | The §4 **comparison** table still states the retracted y-plane prediction ("top |
-| U22-8 | low-medium |  | `validation/coherent_mode_vlasov_theory.jl:399-403,410` | The referee's section comment states the **retracted** Fourier transform, and its |
-| U22-9 | low-medium |  | `validation/coherent_mode_vlasov_theory.jl:64-71` | The header's "residual inconsistency" block describes a diagnostic the code no |
+| U22-4 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:342-364 vs :235-254` | Self-check 5 — the check advertised as validating "every assembly constant ... |
+| U22-5 | medium | CONFIRMED, FIXED (2026-08-06) | `docs/theory/coherent_beam_beam_modes.md:186-187` | The finite-ξ map correction is quoted with the **wrong sign** — "(for Q_0 = 0.31: |
+| U22-6 | medium | CLOSED by the U22-1 rewrite (2026-08-06) | `docs/theory/coherent_beam_beam_modes.md:131-140 (the † footnote)` | The footnote that justifies flagging the r = 0.02-0.05 row quotes max-`u` numbers |
+| U22-7 | medium | CONFIRMED, FIXED (2026-08-06) | `docs/theory/coherent_beam_beam_modes.md:243 (and :233-256)` | The §4 **comparison** table still states the retracted y-plane prediction ("top |
+| U22-8 | low-medium | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:399-403,410` | The referee's section comment states the **retracted** Fourier transform, and its |
+| U22-9 | low-medium | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:64-71` | The header's "residual inconsistency" block describes a diagnostic the code no |
 | U23-1 | medium |  | `validation/pic_gaussian_luminosity_validation.jl:81-82 (+148-149)` | The region's only enforced numeric gate compares production `_pic_luminosity` against |
 | U23-2 | medium |  | `validation/gaussian_pic_field_validation.jl:124-131` | The "HYB" column of the table that `docs/theory/gaussian_subtracted_pic_solver.md` §9 |
 | U23-3 | medium-low |  | `validation/near_round_gaussian_transition.jl:173-188 and 407-411` | The script that is the theory note's declared validation of the near-round/elliptic |

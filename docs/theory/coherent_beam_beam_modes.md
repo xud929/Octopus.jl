@@ -278,10 +278,20 @@ $$\cos 2\pi Q_\pi = \cos 2\pi Q_0 - 2\pi Y_0\,\xi\,\sin 2\pi Q_0
 \;\;\Rightarrow\;\;
 Y_{\rm eff}(\xi) = \frac{\arccos(\cdot)/2\pi - Q_0}{\xi},$$
 
-a weak, $Q_0$-dependent drift of order $\pi Y_0^2 \cot(2\pi Q_0)\,\xi$
-(for $Q_0 = 0.31$: $\Delta Y \approx -0.01$ at $\xi=0.005$, $-0.04$ at
+a weak, $Q_0$-dependent drift of order $-\pi Y_0^2 \cot(2\pi Q_0)\,\xi$
+(for $Q_0 = 0.31$: $\Delta Y \approx +0.01$ at $\xi=0.005$, $+0.04$ at
 $\xi=0.02$), compared against the measured PIC $\xi$ scan in
 `result/yokoya_vs_xi.png`.
+
+> **Correction (2026-08-06, audit lead U22-5): the sign was inverted here.**
+> This parenthetical read $-0.01$ and $-0.04$, which contradicted the same
+> section's own statement eleven lines above that the correction "predicts a
+> *positive* shift ($+0.04$ at $Q_0=0.31$)" — and destroyed the point being
+> made there, since the whole observation is that the measurement dips while
+> the map algebra predicts a rise. $\cot(2\pi\cdot0.31) = -0.396 < 0$, so the
+> drift is positive at this tune. The committed
+> `result/yokoya_vs_xi_theory.tsv` agrees: $1.2094$ and $1.2434$ against the
+> anchor $Y_0 = 1.20$, i.e. $+0.0094$ and $+0.0434$.
 
 ## 4. The asymmetric (EIC-like) case
 
@@ -342,13 +352,33 @@ Current coupled eigen-solve (`result/eic_coherent_modes.tsv`, regenerated
 (`validation/coherent_mode_eic_comparison.jl`; figure
 `result/eic_mode_comparison.png`; 4096 turns, 20k macroparticles/beam, both
 beams kicked $0.1\sigma$ in both planes). The head-on equivalent run through
-the real 2D PIC solver confirms the theory's structure and sharpens the
-marginality into a measured effect:
+the real 2D PIC solver confirms the theory's *continuum* structure — where the
+x-plane responses sit, and that the y planes are where the persistent
+behaviour is — while **falsifying its one detached-mode prediction**
+(2026-08-06, U22-7; "confirms the theory's structure" alone overstated this):
 
 | plane | prediction | measurement |
 |---|---|---|
 | x | responses confined to the two separated continua, Landau-damped | e peak $0.0955 \in [0.080, 0.168]$, p peak $0.231 \in [0.228, 0.237]$; broad structures; centroid decoherence in $\sim48$ turns (e) and $\sim112$ turns (p) |
-| y | overlapping continua; top coupled mode *at* the e-continuum edge — marginal | **both beams lock onto one narrow persistent line at $0.2109$** (the proton bare tune, inside the band overlap), two decades above the rest of the spectrum, with **no measurable decoherence over 4096 turns** — while the same proton beam decoheres in 112 turns in x |
+| y | overlapping continua; **one discrete mode at $0.22432$, above both** | **both beams lock onto one narrow persistent line at $0.2109$** (the proton bare tune, inside the band overlap), two decades above the rest of the spectrum, with **no measurable decoherence over 4096 turns** — while the same proton beam decoheres in 112 turns in x. **The predicted $0.22432$ mode is NOT present**: in $[0.220, 0.229]$ the amplitudes are $8.5\times10^{-4}$ (e) and $1.2\times10^{-3}$ (p) of their global peaks |
+
+> **Correction (2026-08-06, audit lead U22-7).** The prediction cell above read
+> "top coupled mode *at* the e-continuum edge — marginal", which is the claim
+> the correction block in §4 above explicitly retracts: this table was not
+> updated when the eigen-solve was regenerated, so §4 asserted and denied the
+> same thing 22 lines apart. It now states the current prediction.
+>
+> Stating it truthfully makes the more important point visible: **the theory's
+> one falsifiable EIC prediction is not confirmed.** The discrete y mode at
+> $0.22432$ does not appear in the strong-strong measurement, in either the
+> committed spectra or a fresh run — global peaks sit at $0.0955$ (e_x),
+> $0.2310$ (p_x) and $0.2109$ (both y), and the $[0.220, 0.229]$ window holds
+> nothing above $10^{-3}$ of peak. The persistent line that IS observed sits at
+> the proton bare tune, *inside* both as-coded continua, which the prose below
+> already describes correctly. The juxtaposition previously read as
+> confirmation of a prediction that failed. What the measurement supports is
+> the weakly-damped p-dominated edge mode discussed below — a real collective
+> effect, but not the detached mode the 1D reduction predicts.
 
 The factor $\gtrsim 40$ persistence contrast between the proton's x and y
 centroids (equal $\xi_p$ in both planes) is a genuine collective effect: a

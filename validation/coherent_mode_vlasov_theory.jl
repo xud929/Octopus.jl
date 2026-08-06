@@ -69,13 +69,23 @@ built in:
    weights, the 1/(2 pi^2) projection factor and the 2 xi e^{-J} w' weighting --
    against a closed form, independently of the Coulomb kernel and of check 4.
 
-   A residual inconsistency of the averaged kernel survives this fix and is
-   reported rather than hidden: the rigid-bunch diagnostic
-   2*normalized_equilibrium(k,sqrt2)/normalized_equilibrium(k,1), which would
-   be 1 for a kernel whose relative-displacement response matched its on-axis
-   gradient, runs 1.21 (round) to 1.41 (extreme flat).  The reduction is
-   therefore not a quantitative instrument at the few-percent level; see the
-   manuscript's Sec. 5.1.
+   The check-4 block also prints a rigid-bunch diagnostic,
+   2*normalized_equilibrium(k,sqrt2)/n0phys, which is analytically exactly 1
+   (2*[1/(sqrt2(sqrt2+s_t))]*(1+s_t/sqrt2) = 1) and measures 1.0000-1.0085
+   across the scan.  It is a consistency check on the normalizer, not a
+   physics result.
+
+   This paragraph used to describe a DIFFERENT quantity --
+   2*normalized_equilibrium(k,sqrt2)/normalized_equilibrium(k,1), divided by
+   the reduction's own normalizer rather than the physical one -- and quoted it
+   as running "1.21 (round) to 1.41 (extreme flat)", numbers no run has printed
+   since that denominator changed.  It then drew a conclusion from them ("the
+   reduction is therefore not a quantitative instrument at the few-percent
+   level"), which rested on nothing this file computes, and contradicted the
+   body's own printed preamble saying the rigid-bunch limit is analytically 1
+   (2026-08-05_b audit, U22-9).  The reduction's accuracy claim now rests where
+   it is actually measured: 1-2% against the independent particle referee at
+   every aspect ratio (section 3 of docs/theory/coherent_beam_beam_modes.md).
 
 Outputs (TSV under result/): yokoya_vs_aspect.tsv, yokoya_vs_aspect_narrow.tsv,
 yokoya_box_convergence.tsv, yokoya_vs_xi_theory.tsv, eic_coherent_modes.tsv. Plots: validation/plot_coherent_mode_theory.py.
@@ -282,7 +292,20 @@ function detuning_u(k::PlaneKernel, N0, scale_w, scale_s, J)
     return 2 * (avg(J + dJ) - avg(Jm)) / (J + dJ - Jm)
 end
 
-function kernel_matrix(k::PlaneKernel, N0, scale_w, scale_s, Jw, Js)
+"""
+Assemble the m=1 kernel matrix for an arbitrary pairwise potential `V(u)`.
+
+The potential is a parameter so that self-check 5 (harmonic limit) can drive
+THIS function rather than a copy of it. It previously re-implemented the phi/phi'
+grids, the accumulation and the `(2pi/nphi)(pi/nphi2)/(2pi^2)` factor inline,
+under a comment asserting the constants were "identical to kernel_matrix" -- a
+hand-copy inside the check whose whole purpose is to pin those constants against
+a closed form, which is Measured Lesson 4 turned on itself. Measured: scaling
+`kernel_matrix`'s result by 1.05 left self-check 5 reporting Lambda = 1.999975
+and kernel_err = 1.2e-14, both unchanged to every printed digit, while every
+Lambda in every table moved by +2.2% (2026-08-05_b audit, U22-4).
+"""
+function kernel_matrix_potential(V, N0, scale_w, scale_s, Jw, Js)
     nphi = NPHI
     nphi2 = NPHI ÷ 2
     phi = ((0:(nphi - 1)) .+ 0.5) .* (2pi / nphi)
@@ -295,13 +318,16 @@ function kernel_matrix(k::PlaneKernel, N0, scale_w, scale_s, Jw, Js)
             xw = sqrt(2Jv) .* cw .* scale_w
             acc = 0.0
             @inbounds for a in 1:nphi, b in 1:nphi2
-                acc += cw[a] * cs[b] * raw_potential(k, xw[a] - xs[b])
+                acc += cw[a] * cs[b] * V(xw[a] - xs[b])
             end
             K[ii, jj] = acc * (2pi / nphi) * (pi / nphi2) / (2 * pi^2) / N0
         end
     end
     return K
 end
+
+kernel_matrix(k::PlaneKernel, N0, scale_w, scale_s, Jw, Js) =
+    kernel_matrix_potential(u -> raw_potential(k, u), N0, scale_w, scale_s, Jw, Js)
 
 # ---------------------------------------------------------------------------
 # Coupled two-beam eigenproblem for one plane.
@@ -393,25 +419,11 @@ function harmonic_Y(; Q=Q0, xi=XI)
     Jn, Jw = gauss_legendre(NJ)
     J = (Jn .+ 1.0) .* (JMAX / 2)
     w = Jw .* (JMAX / 2)
-    nphi = NPHI
-    nphi2 = NPHI ÷ 2
-    phi = ((0:(nphi - 1)) .+ 0.5) .* (2pi / nphi)
-    phi2 = ((0:(nphi2 - 1)) .+ 0.5) .* (pi / nphi2)
-    cw = cos.(phi); cs = cos.(phi2)
-    K = Matrix{Float64}(undef, length(J), length(J))
-    for (jj, Jp) in enumerate(J)
-        xs = sqrt(2Jp) .* cs
-        for (ii, Jv) in enumerate(J)
-            xw = sqrt(2Jv) .* cw
-            acc = 0.0
-            @inbounds for a in 1:nphi, b in 1:nphi2
-                u = xw[a] - xs[b]
-                acc += cw[a] * cs[b] * (u * u / 2)
-            end
-            # Identical assembly constants to `kernel_matrix`, with N0 = 1.
-            K[ii, jj] = acc * (2pi / nphi) * (pi / nphi2) / (2 * pi^2)
-        end
-    end
+    # THE assembly, not a copy of it: same function the Coulomb tables go
+    # through, with the harmonic potential substituted and N0 = 1. That is what
+    # makes this check able to fail on a drift in the projection factor or the
+    # quadrature weights -- as a hand-copy could not (U22-4).
+    K = kernel_matrix_potential(u -> u * u / 2, 1.0, 1.0, 1.0, J, J)
     # Largest relative departure of the assembled kernel from the closed form.
     kerr = maximum(abs(K[i, j] + sqrt(J[i] * J[j]) / 2) /
                    (sqrt(J[i] * J[j]) / 2) for i in eachindex(J), j in eachindex(J))
@@ -446,18 +458,33 @@ end
 
 # ---------------------------------------------------------------------------
 # Independent referee: direct particle simulation of the SAME 1D-reduced
-# model. The y-averaged kernel has the closed-form Fourier transform
-# FT[G](k) = -i pi sign(k) e^{-s^2 k^2 / 2}, so the beam-beam force is a
-# (smoothed) Hilbert transform of the opposing line density — computed
-# spectrally each turn. This shares NO code with the matrix eigenproblem:
-# agreement validates the Vlasov solve of the model itself.
+# model. The beam-beam force is a smoothed Hilbert transform of the opposing
+# line density, computed spectrally each turn.
+#
+# This comment used to give the transform as FT[G](k) = -i pi sign(k)
+# e^{-s^2 k^2/2}. That Gaussian suppression is WRONG -- it was retracted on
+# 2026-07-28 after external review, the correct erfcx form is what the code 21
+# lines below actually uses, and the inline comment there explains why. The
+# file was carrying the error and its own correction at the same time
+# (2026-05_b audit, U22-8). See the header's model section for the corrected
+# transform.
+#
+# "Shares NO code with the matrix eigenproblem" was also too strong, and the
+# strength of the cross-check does not need it: `erfcx_pos` is common to both,
+# and the on-axis gradient is written out here rather than taken from
+# `analytic_gradient`. What is genuinely independent is the SOLVE -- particles
+# pushed turn by turn against a matrix eigenproblem -- which is what makes
+# agreement meaningful, and it is why this referee was unaffected by the
+# quadrature defect that broke the matrix's flat-beam rows (U22-1).
 # ---------------------------------------------------------------------------
 import FFTW
 
 function simulate_1d_model(r; xi=XI, q0=Q0, n_macro=100_000, turns=4096,
                            ngrid=4096, L=24.0, offset=0.1, seed=1234567)
     s_t = sqrt(2.0) * r
-    k = PlaneKernel(s_t, 1.05 * sqrt(2 * JMAX) * 2 + 6 * s_t)
+    # (A `PlaneKernel` was built here and never read -- dead since this force
+    # became spectral. Removed rather than left as a false hint that the
+    # referee shares the matrix path's kernel; audit U22-8.)
     # Same normalization fix as coupled_modes: divide by the PHYSICAL on-axis
     # gradient 1/[sigma_i (sigma_i + sigma_o)], not by the reduction's own
     # averaged curvature. Both solvers must use the same xi or their agreement
