@@ -85,9 +85,9 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U23-2 | medium |  | `validation/gaussian_pic_field_validation.jl:124-131` | The "HYB" column of the table that `docs/theory/gaussian_subtracted_pic_solver.md` §9 |
 | U23-3 | medium-low |  | `validation/near_round_gaussian_transition.jl:173-188 and 407-411` | The script that is the theory note's declared validation of the near-round/elliptic |
 | U24-2 | medium |  | `validation/lattice_cells.jl:239-243` | the gate added for U21-3 covers 2 of the 4 error metrics the file's own header declares; |
-| U24-3 | medium |  | `validation/symplecticity_validation.jl:13-14 (and validation/README.md` | both the script header and the README claim coverage of every registered `Symplectic6DMap` |
+| U24-3 | medium | FIXED earlier (642bc86); verified 2026-08-06 | `validation/symplecticity_validation.jl:13-14 (and validation/README.md` | both the script header and the README claim coverage of every registered `Symplectic6DMap` |
 | U24-4 | medium | FIXED | `validation/symplecticity_validation.jl:11` | the header advertises `OCTOPUS_SYMPLECTICITY_TOL=5e-7`, ten times the code's actual default |
-| U24-5 | medium |  | `validation/symplecticity_validation.jl:116-124` | the script derives the case list from the contract but does **not** run the contract's |
+| U24-5 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/symplecticity_validation.jl:116-124` | the script derives the case list from the contract but does **not** run the contract's |
 | U24-6 | medium |  | `test/runtests.jl:7106 (SEAM — outside my region, reported and stopped)` | the one place that runs `symplecticity_validation.jl` automatically passes |
 | U25-1 | medium |  | `validation/pic_option_consistency.jl:119-124 (+ :226-228)` | on the GPU, choosing `interaction_grid=:node` or `slice_interpolation=:quadratic` |
 | U25-2 | medium |  | `validation/counter_rng_validation.jl:86-92` | the script's gate is a *statistics* test, not a *generator* test — it |

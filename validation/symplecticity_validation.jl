@@ -153,11 +153,35 @@ function print_lorentz_quasisymplectic_result(result)
     println("  passed = ", result.inverse_passed && result.determinant_passed)
 end
 
+"""
+Run the contract's declaration-vs-coverage tripwire and report it.
+
+The case list is derived from `SymplecticityContract` rather than copied, but
+deriving it is only half of Measured Lesson 4: the tripwire that catches a
+registered kind DECLARING the contract with no case lives in
+`validate(::SymplecticityContract)`, and this script never called it. Since this
+script is the documented way to check symplecticity after a change
+(`validation/README.md`), the check a developer actually ran was the one without
+the tripwire (2026-08-05_b audit, U24-5).
+"""
+function run_symplecticity_coverage()
+    r = validate(SymplecticityContract())
+    uncovered = get(r.metrics, :kinds_declaring_without_case, nothing)
+    println()
+    println("Declaration-vs-coverage tripwire (from the contract, not this script):")
+    println("  registered kinds declaring SymplecticityContract with no case = ",
+            uncovered === nothing ? "<metric absent>" : uncovered)
+    return r
+end
+
 if abspath(PROGRAM_FILE) == @__FILE__
     results = run_symplecticity_validation()
     print_symplecticity_results(results)
     all(result -> result.passed, results) ||
         error("one or more symplecticity checks failed")
+    coverage = run_symplecticity_coverage()
+    coverage.passed ||
+        error("symplecticity declaration-vs-coverage tripwire failed: " * coverage.message)
     lorentz = run_lorentz_quasisymplectic_validation()
     print_lorentz_quasisymplectic_result(lorentz)
     lorentz.inverse_passed && lorentz.determinant_passed ||
