@@ -55,6 +55,15 @@ struct TrackingTask <: AbstractTask
     loss_log::Union{Nothing,String}
     loss_report::Bool
     loss_record::Base.RefValue{Any}
+    # Which rep `loss_record` was built for. A `LossRecord` is "one per beam"
+    # by its own docstring, but the reuse test compared only shape (count
+    # length, backend, slot eltype, slot width), so a second beam of the same
+    # size silently inherited the first beam's cumulative counters and
+    # per-particle slots (2026-08-05_b audit, U15-5). Held weakly: this is an
+    # identity check, not ownership, and a task must not keep a finished beam
+    # alive. A collected referent reads as `nothing`, which simply fails the
+    # match and builds a fresh record -- the safe direction.
+    loss_owner::Base.RefValue{WeakRef}
 end
 
 function configuration_report(task::TrackingTask, rep::Phase6DRep)
@@ -149,7 +158,7 @@ function TrackingTask(elements;
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
                         Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),
                         loss_log === nothing ? nothing : String(loss_log),
-                        loss_report, Ref{Any}(nothing))
+                        loss_report, Ref{Any}(nothing), Ref(WeakRef(nothing)))
 end
 
 """
@@ -675,7 +684,16 @@ function _ensure_loss_record!(task::TrackingTask, rep)
     existing = task.loss_record[]
     want_slots = task.loss_log !== nothing
     if existing !== nothing
-        fits = length(loss_counts(existing)) == length(specs) &&
+        # Identity first: everything below only establishes that the record has
+        # the right SHAPE for this rep, which a different beam of the same size
+        # and backend also has. Reusing on shape alone made a second beam
+        # inherit the first's cumulative counters, so a pristine beam reported
+        # dead=0, logged=1, unattributed=-1 and warned that "particles were lost
+        # with no aperture responsible" (U15-5). Counts are cumulative across
+        # turns of the SAME beam, which is what stepping one turn at a time
+        # needs, so the discriminator has to be the beam, not the counts.
+        fits = task.loss_owner[].value === rep &&
+               length(loss_counts(existing)) == length(specs) &&
                _loss_record_matches_rep(existing, rep) &&
                (existing.slots === nothing) == !want_slots &&
                (existing.slots === nothing || size(existing.slots, 2) == length(rep))
@@ -687,6 +705,7 @@ function _ensure_loss_record!(task::TrackingTask, rep)
     end
     record = LossRecord(names, length(rep), rep; log=want_slots)
     task.loss_record[] = record
+    task.loss_owner[] = WeakRef(rep)
     return record
 end
 

@@ -2802,6 +2802,33 @@ end
         @test s.by_aperture == [1, 1]
     end
 
+    # 2026-08-05_b audit, U15-5: `LossRecord`'s own docstring says "one per
+    # BEAM", but the reuse test compared only shape -- count length, backend,
+    # slot eltype, slot width -- so a second beam of the same size inherited the
+    # first beam's cumulative counters and per-particle slots. Measured: after a
+    # run that lost one particle, a second `execute!` on a PRISTINE two-particle
+    # rep reported dead=0, logged=1, unattributed=-1 and warned "particles were
+    # lost with no aperture responsible" for a beam that lost nothing.
+    let t2 = TrackingTask(BeamLine("L", ApertureSpec(x_limit=1.0e-3, y_limit=1.0e-3, name="C"))),
+        mk(xs) = Phase6DRep(collect(xs), zeros(length(xs)), zeros(length(xs)),
+                            zeros(length(xs)), zeros(length(xs)), zeros(length(xs)))
+        r1 = mk([5.0e-3, 0.0])
+        allow_lost_particles(; enabled=true) do; execute!(t2, r1; turns=1) end
+        rec1 = loss_record(t2)
+        @test loss_counts(rec1) == [1]
+        r2 = mk([0.0, 0.0])                       # pristine: nothing to lose
+        allow_lost_particles(; enabled=true) do; execute!(t2, r2; turns=1) end
+        @test loss_record(t2) !== rec1            # a different beam, a different record
+        @test loss_counts(loss_record(t2)) == [0]
+        @test loss_summary(r2, t2).unattributed == 0   # was -1
+        # Counts must still ACCUMULATE across turns of the SAME beam, which is
+        # what stepping one turn at a time relies on -- the discriminator is the
+        # beam's identity, not the counter state.
+        rec2 = loss_record(t2)
+        allow_lost_particles(; enabled=true) do; execute!(t2, r2; turns=1) end
+        @test loss_record(t2) === rec2
+    end
+
     # T4: elements inside the vector advance arc length.
     @test Octopus._aperture_s_positions(nested) == [1.0, 3.5]
 
