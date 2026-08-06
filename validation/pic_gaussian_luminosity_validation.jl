@@ -78,8 +78,18 @@ function deposited_overlap(method, grid, padding_cells, x1, y1, x2, y2)
     q2 = zeros(Float64, nx + 1, ny + 1)
     O._pic_deposit!(q1, method, x1, y1, xmin, ymin, hx, hy, nx + 1, ny + 1)
     O._pic_deposit!(q2, method, x2, y2, xmin, ymin, hx, hy, nx + 1, ny + 1)
-    return sum(@view(q1[1:nx, 1:ny]) .* @view(q2[1:nx, 1:ny])) /
-           (length(x1) * length(x2) * hx * hy)
+    # The FULL (nx+1) x (ny+1) extent, matching production. This summed
+    # q1[1:nx, 1:ny] -- the pre-U5-8 truncation -- so the region's only enforced
+    # numeric gate was comparing production against a stale copy of production
+    # and could not detect the very defect U5-8 recorded. Under TSC a particle
+    # at the mesh's upper edge (u_max = nx - 1.05) deposits into node nx+1, and
+    # the committed cases passed only because none of them puts both beams'
+    # extreme particles on the same edge, so the PRODUCT q1*q2 vanished there.
+    # Worse than merely blind: a regression that re-truncated production would
+    # have made the two agree BETTER. Measured with both beams identical, before
+    # this line was corrected: 5.07e-9 (TSC, grid 32) and 8.88e-8 (TSC, grid
+    # 128) against the script's own 1e-12 gate (2026-08-05_b audit, U23-1).
+    return sum(q1 .* q2) / (length(x1) * length(x2) * hx * hy)
 end
 
 cases = [
@@ -93,6 +103,16 @@ cases = [
      μx2=0.0, μy2=0.0, σx2=85e-6, σy2=14e-6),
     (name=:offset_flat, μx1=-30e-6, μy1=2e-6, σx1=110e-6, σy1=9e-6,
      μx2=25e-6, μy2=-3e-6, σx2=85e-6, σy2=14e-6),
+    # Both beams the SAME particle set, so their extreme particles land on the
+    # same mesh edge and the product q1*q2 is nonzero there. Every case above
+    # draws the two beams from different Halton offsets, so that product
+    # vanished on the edge and the gate could not see an extent mismatch
+    # between this script and production -- which is exactly what it had
+    # (2026-08-05_b audit, U23-1). This case measured 5.07e-9 (TSC grid 32) and
+    # 8.88e-8 (TSC grid 128) against the 1e-12 gate before the sum was
+    # corrected, so it is the case that gives the gate teeth.
+    (name=:identical_edge_probe, μx1=0.0, μy1=0.0, σx1=95e-6, σy1=95e-6,
+     μx2=0.0, μy2=0.0, σx2=95e-6, σy2=95e-6, same_particles=true),
 ]
 
 n_particles_values = parse.(Int, split(
@@ -107,7 +127,7 @@ for n_particles in n_particles_values, case in cases
     )
     x2, y2 = gaussian_halton_particles(
         case.μx2, case.μy2, case.σx2, case.σy2, n_particles;
-        start=n_particles + 101,
+        start=get(case, :same_particles, false) ? 1 : n_particles + 101,
     )
     exact = analytic_gaussian_overlap(case)
     for method in (:CIC, :TSC), ngrid in grids, padding in paddings

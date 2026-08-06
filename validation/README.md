@@ -313,8 +313,19 @@ convergent quadrature, not an exact finite-particle-shape overlap.
 
 The analytic comparison characterizes convergence rather than enforcing exact
 agreement. The script strictly gates only agreement between the production
-luminosity implementation and the independently assembled discrete
-quadrature.
+luminosity implementation and a locally assembled discrete quadrature.
+
+That quadrature is **not** independent of production — it calls the same
+`_pic_deposit!` — so what the gate pins is the *interface*: the padding algebra,
+the mesh extent and the normalization around the shared deposit. It is described
+that way deliberately. It was previously called "independently assembled", and
+the copy had also gone stale: it summed the pre-U5-8 truncated `1:nx, 1:ny`
+extent while production had moved to the full `(nx+1) x (ny+1)`, so the gate
+could not detect the defect U5-8 recorded, and a regression that re-truncated
+production would have made the two agree *better*. The committed cases hid it
+because none put both beams' extreme particles on the same mesh edge; the
+`identical_edge_probe` case exists to make sure one always does (2026-08-05_b
+audit, U23-1).
 
 ```bash
 julia --project=. validation/pic_gaussian_luminosity_validation.jl
