@@ -1,14 +1,18 @@
 # Comprehensive Audit — 2026-08-05_b (second full re-read, same day)
 
-**Status: HALTED HONESTLY at the Phase 16 gate.** The declared scope was
-whole-repository uniform depth; **23 of 26 reading units returned** and their
-reports are archived beside this file. Three did not return before the halt
-(U21 `test/examples/` + `nightly_suite.sh`, U22 `validation/` coherent-mode
-cluster, U24 `validation/` remainder A) — those regions are therefore **read
-but unreported**, and §0b marks them so rather than claiming coverage. What it
-would take to close them: re-run those three briefs, roughly one session.
-(U25 returned *after* the halt was written; its material is folded into §7 and
-its report archived, but it did not inform the fixes.)
+**Status: CONTINUATION PASS IN PROGRESS.** A first halt was taken at the
+Phase 16 gate with 23 of 26 reading units returned; the owner then directed
+the audit to continue until the declared whole-repository scope is actually
+covered. The three regions that were read-but-unreported at that halt (U21
+`test/examples/` + `nightly_suite.sh`, U22 `validation/` coherent-mode cluster,
+U24 `validation/` remainder A) have been **re-briefed and are reading now**,
+and the continuation has additionally verified three further Major findings
+from the queue (F5, F6, F7). U25 returned just after the first halt; its
+material is folded into §7.
+
+The first halt's own record is kept rather than rewritten: it was honest when
+written, and the protocol's rule about visible wrong turns applies to a
+premature halt as much as to a wrong claim.
 
 The gate itself passed: **151 top-level testsets, exit 0, 23 CUDA testsets on
 the device, zero skips** (§6), and the pre-modification behavioural fingerprint
@@ -101,10 +105,11 @@ its budget.**
 **The honest remainder** is a priced queue of ~105 agent leads with
 reproductions (§7), 7 of them Major candidates, none auditor-verified. Its
 header says so in terms, because the series' measured agent survival rate is
-~60% in four distinct miss shapes. The single most alarming candidate: the
-CUDA spectral dropped-charge tripwire appears to report **exactly zero in the
-blow-up regime it exists for**, through a float cancellation — an instrument
-that has never been shown the disease at full strength.
+~60% in four distinct miss shapes. (The queue's most alarming candidate when
+that queue was first written — the CUDA spectral tripwire reporting zero at
+blow-up — has since been verified and fixed as **F6**; the §7 rows for U11-1,
+U14-1 and U6-1 are correspondingly promoted to F6, F5 and F7 and are no longer
+open leads.)
 
 - Commit under audit: `7de4d8132111c902f823da47323aaa496d674201` (clean tree at start).
 - Protocol: [`docs/comprehensive_audit.md`](../comprehensive_audit.md).
