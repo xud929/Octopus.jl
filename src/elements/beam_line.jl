@@ -565,27 +565,36 @@ struct CompositeLine{T<:Tuple} <: AbstractTrackOp
     ops::T
 end
 
-@inline function track_particle(method::AbstractTrackingMethod, elem::CompositeLine,
-                                x, px, y, py, z, pz)
-    for op in elem.ops
-        x, px, y, py, z, pz = track_particle(method, op, x, px, y, py, z, pz)
-    end
-    return x, px, y, py, z, pz
-end
+# Both call paths delegate to `fusedTrack`, which is `@generated` and unrolls
+# the (possibly nested) op tuple at COMPILE time.
+#
+# The runtime `for op in elem.ops` these replace could not compile for CUDA:
+# indexing a heterogeneous `Tuple` with a non-constant index lowers to
+# `ijl_get_nth_field_checked`, which has no device implementation, so a
+# kept-whole line — a girder or cryostat, this file's flagship feature — threw
+# `InvalidIRError` on a `CuArray` rep for every assembly whose members were not
+# all one concrete type, i.e. every realistic one. A homogeneous line happened
+# to compile, which is why it survived (2026-08-05_b audit, U15-1).
+#
+# Delegating also lets each op supply its OWN tracking method, via its own call
+# operator, instead of having the first op's method imposed on all of them —
+# so a mixed-method assembly (an aperture is `NonSymplectic6DMap`, a magnet
+# `Symplectic6DMap`) now tracks on this path as it already did on the ctx path
+# (U15-4). The `method` argument is retained for signature compatibility with
+# the `track_particle` family and is deliberately unused.
+@inline track_particle(::AbstractTrackingMethod, elem::CompositeLine,
+                       x, px, y, py, z, pz) =
+    fusedTrack(elem.ops, x, px, y, py, z, pz)
 
 @inline (elem::CompositeLine)(x, px, y, py, z, pz) =
-    track_particle(_inner_method(elem), elem, x, px, y, py, z, pz)
+    fusedTrack(elem.ops, x, px, y, py, z, pz)
 
 # Forward the tracking context to every member op (F13, 2026-08-05 audit):
 # a stochastic element inside a composite line must see the same ctx it
 # would see placed directly in the task line.
-@inline function (elem::CompositeLine)(ctx::TrackingContext, particle_id,
-                                       x, px, y, py, z, pz)
-    for op in elem.ops
-        x, px, y, py, z, pz = op(ctx, particle_id, x, px, y, py, z, pz)
-    end
-    return x, px, y, py, z, pz
-end
+@inline (elem::CompositeLine)(ctx::TrackingContext, particle_id,
+                              x, px, y, py, z, pz) =
+    fusedTrack(ctx, elem.ops, particle_id, x, px, y, py, z, pz)
 
 # A composite has no method of its own; it borrows its first element's, which is
 # what the wrappers ask for when a misaligned line is tracked directly.
