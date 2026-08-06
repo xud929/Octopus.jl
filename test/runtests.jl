@@ -4910,6 +4910,37 @@ end
     @test rms(kick_surv) > 0                    # the premise: a kick happened
     @test isapprox(rms(kick_masked) / rms(kick_surv), live_frac; rtol=1.0e-3)
     @test isapprox(lp_m, lp_s; rtol=1.0e-4)
+
+    # 2026-08-05_b audit, U19-3: this pinned 2 of the 5 solver configurations
+    # its sibling testset exercises, and the two it omitted are exactly the two
+    # a reader would most likely guess wrong -- SpectralPoissonSolver
+    # renormalizes (like Gaussian) while GaussianPICPoissonSolver keeps the live
+    # fraction (like PIC), which is the opposite of what the names suggest. A
+    # silent change to either failed nothing anywhere in the suite.
+    #
+    # The ratio is the discriminating instrument, not the family name: measured
+    # masked/survivors kick rms 0.899981 for GaussianPIC and 1.000000 for
+    # Spectral against live_frac = 0.9. A renormalizing PIC lands at 0.999919,
+    # 111x outside this rtol, so the check separates the two semantics cleanly.
+    function kick_ratio(solver)
+        m, s, tm, ts = masked_vs_survivors(solver)
+        base = clean()
+        return rms(tm.rep.py .- base.py) / rms(ts.rep.py .- base.py), m, s
+    end
+
+    r_gpic, lgp_m, lgp_s = kick_ratio(GaussianPICPoissonSolver(
+        kbb1=kbb, kbb2=kbb, luminosity_scale=1.0, grid=(64, 64),
+        green_cache=:none, slicing=sl))
+    @test isapprox(r_gpic, live_frac; rtol=1.0e-3)   # keeps the live fraction
+    @test isapprox(lgp_m, lgp_s; rtol=1.0e-4)
+
+    r_spec, lsp_m, lsp_s = kick_ratio(SpectralPoissonSolver(
+        kbb1=kbb, kbb2=kbb, luminosity_scale=1.0, grid=(64, 64), slicing=sl))
+    @test isapprox(r_spec, 1.0; rtol=1.0e-3)         # renormalizes
+    @test isapprox(lsp_m, lsp_s; rtol=1.0e-4)
+    # The two semantics must stay distinguishable: if a change collapsed them,
+    # both ratios would agree and this margin would vanish.
+    @test abs(r_spec - r_gpic) > 0.05
 end
 
 @testset "Lost particles are dropped from every slicing method" begin

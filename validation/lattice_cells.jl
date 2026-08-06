@@ -236,9 +236,40 @@ println("\nTSV written to result/lattice_cells.tsv")
 
 # Gate, not just print (2026-08-05 audit, U21-3): a :failed backend contract
 # or a non-symplectic cell exited 0 and looked green in any driver.
+#
+# All FOUR declared metrics are gated (2026-08-05_b audit, U24-2). The first
+# version covered 2 of 4: linear stability and the Courant-Snyder invariant
+# drift were pushed, printed and written to the TSV but never compared -- and
+# the drift is the metric introduced precisely to catch what the one-turn
+# residual cannot, "a map that is symplectic once but not stably so". It also
+# returns NaN on three paths (unstable Twiss, a tracking throw, non-finite
+# coordinates), and NaN propagated to the column and the TSV while the script
+# exited 0. `|tr| < 2` was enforced only inside `find_stable`, on the BARE
+# cells, so the three `+sext` variants were never re-tested for stability even
+# though a thick sextupole changes the one-turn map.
+#
+# Thresholds from measurement, not taste. Drifts today: FODO 3.56e-9,
+# FODO+sext 8.29e-4, DBA 9.39e-5, DBA+sext 7.24e-4, TBA 7.35e-5, TBA+sext
+# 1.40e-3 -- so 5e-3 clears the worst by ~3.5x while a map that is not stably
+# symplectic departs by orders of magnitude. Traces run 0.0066 to 1.5510
+# against the hard physical bound of 2.
+const INVARIANT_DRIFT_MAX = 5.0e-3
 for (r, b) in zip(rows, backend_rows)
     r[3] <= 5.0e-7 || error("cell $(r[1]) symplecticity residual $(r[3]) exceeds 5e-7")
+    for (plane, tr) in (("x", r[4]), ("y", r[5]))
+        isfinite(tr) ||
+            error("cell $(r[1]) |trace| in $plane is $tr, not finite")
+        tr < 2 ||
+            error("cell $(r[1]) is linearly UNSTABLE in $plane: |trace| = $tr >= 2")
+    end
+    isfinite(r[6]) ||
+        error("cell $(r[1]) Courant-Snyder invariant drift is $(r[6]): the tracking " *
+              "or the Twiss solve failed, and a non-finite drift used to print and pass")
+    r[6] <= INVARIANT_DRIFT_MAX ||
+        error("cell $(r[1]) Courant-Snyder invariant drift $(r[6]) exceeds " *
+              "$(INVARIANT_DRIFT_MAX): the map is symplectic per turn but not stably so")
     b[2] == "passed" || error("cell $(r[1]) CPU/CPU backend contract: $(b[2])")
     b[3] in ("passed", "skipped") || error("cell $(r[1]) CPU/CUDA backend contract: $(b[3])")
 end
-println("all cells gated: symplectic and backend-consistent")
+println("all cells gated: symplectic, linearly stable, invariant-conserving, ",
+        "and backend-consistent")

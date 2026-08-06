@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **57 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **60 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -56,9 +56,9 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U18-1 | medium |  | `test/runtests.jl:3134-3207 ("No method grows a Core.Box outside the ar` | the permanent `Core.Box` sweep catches **3 of 7** injected boxes — its |
 | U18-2 | medium |  | `test/runtests.jl:3209-3288 ("CPU solver stack is thread-count invarian` | the second (above-threshold) block is a hand-copy of the first block's |
 | U18-3 | low-medium |  | `test/runtests.jl:4252-4256, 4270-4274 ("Lattice cells track and stay s` | three CPU↔CUDA agreement checks are asserted as |
-| U19-1 | medium |  | `test/runtests.jl:6599 (gate at 6604)` | `"CUDA GaussianPIC coupled subtraction matches CPU"` is the only CUDA gate |
+| U19-1 | medium | CLOSED by the U20-3 fix (2026-08-06) | `test/runtests.jl:6599 (gate at 6604)` | `"CUDA GaussianPIC coupled subtraction matches CPU"` is the only CUDA gate |
 | U19-2 | medium |  | `test/runtests.jl:4733–4776 (Spectral arm)` | the Spectral arm of `"Lost particles cannot influence a strong-strong |
-| U19-3 | medium |  | `test/runtests.jl:4778–4841` | `"Lost-particle charge semantics are pinned per solver family"` pins **2 |
+| U19-3 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:4778–4841` | `"Lost-particle charge semantics are pinned per solver family"` pins **2 |
 | U20-4 | medium |  | `test/runtests.jl:7199 ("CUDA near-round Gaussian transition matches CP` | at `T = Float32` the near-axis sample point cannot detect a zero, |
 | U20-5 | medium |  | `test/runtests.jl:7173 ("CUDA round Gaussian near-axis stability")` | the testset's named subject — near-axis kick stability — is compared under |
 | U20-6 | medium |  | `test/runtests.jl:7572 ("CUDA spectral deposit tripwire (R9, U9-1)")` | this new testset verifies "leaves exactly its unit charge" using only a |
@@ -84,7 +84,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U23-1 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/pic_gaussian_luminosity_validation.jl:81-82 (+148-149)` | The region's only enforced numeric gate compares production `_pic_luminosity` against |
 | U23-2 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/gaussian_pic_field_validation.jl:124-131` | The "HYB" column of the table that `docs/theory/gaussian_subtracted_pic_solver.md` §9 |
 | U23-3 | medium-low |  | `validation/near_round_gaussian_transition.jl:173-188 and 407-411` | The script that is the theory note's declared validation of the near-round/elliptic |
-| U24-2 | medium |  | `validation/lattice_cells.jl:239-243` | the gate added for U21-3 covers 2 of the 4 error metrics the file's own header declares; |
+| U24-2 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/lattice_cells.jl:239-243` | the gate added for U21-3 covers 2 of the 4 error metrics the file's own header declares; |
 | U24-3 | medium | FIXED earlier (642bc86); verified 2026-08-06 | `validation/symplecticity_validation.jl:13-14 (and validation/README.md` | both the script header and the README claim coverage of every registered `Symplectic6DMap` |
 | U24-4 | medium | FIXED | `validation/symplecticity_validation.jl:11` | the header advertises `OCTOPUS_SYMPLECTICITY_TOL=5e-7`, ten times the code's actual default |
 | U24-5 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/symplecticity_validation.jl:116-124` | the script derives the case list from the contract but does **not** run the contract's |
