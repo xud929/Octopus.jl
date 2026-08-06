@@ -4242,6 +4242,28 @@ end
         after = Octopus.JLD2.jldopen(f -> (size(f["data"], 1), f["record_count"]), p7, "r")
         @test after == before
         @test !isfile(p7 * ".tmp")        # and no debris left behind
+        # 2026-08-05_b audit, U7-3: file size used to be QUADRATIC in the number
+        # of flushes, because every flush appended a fresh copy of the growing
+        # `data` matrix and JLD2 never reclaimed the space of the dataset
+        # `_jld2_replace!` deleted -- a 2,000-turn default run wrote 961 MB for
+        # 960 KB of data, 1001x. The atomic rewrite writes a NEW file each time
+        # and moves it into place, so dead space cannot accumulate. Measured
+        # after: the size/payload ratio FALLS with turn count (1.34x at 50
+        # turns, 1.09x at 200, 1.04x at 400) instead of growing. The bound is
+        # generous; what it catches is a return to super-linear growth.
+        let p8 = tempname() * ".jld2"
+            o8 = JLD2BeamMomentObserver(p8)
+            r8 = Phase6DRep([1.0e-4, 2.0e-4], zeros(2), [1.0e-5, 2.0e-5], zeros(2),
+                            [1.0e-3, 2.0e-3], zeros(2))
+            for t in 1:200
+                Octopus.observe!(o8, Octopus.with_turn(Octopus.TrackingContext(), t), r8)
+            end
+            Octopus.finalize_observer!(o8)
+            rows, ncol = Octopus.JLD2.jldopen(f -> size(f["data"]), p8, "r")
+            @test rows == 200
+            @test filesize(p8) < 4 * rows * ncol * sizeof(Float64)
+            rm(p8; force=true)
+        end
         # Nested metadata must survive the rewrite, not just the data matrix.
         @test Octopus.JLD2.jldopen(f -> f["metadata/format"], p7, "r") ==
               "Octopus.JLD2BeamMomentObserver"
