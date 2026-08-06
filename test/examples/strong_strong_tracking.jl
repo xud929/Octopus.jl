@@ -716,7 +716,16 @@ let resolved = solver_configuration(solver)
                 resolved.resolved_luminosity_deposit_method)
 end
 println("luminosity = ", disable_luminosity_output ? "disabled" : luminosity_path)
-println("electron moments = ", disable_moments ? "disabled" : electron_moment_path)
-println("proton moments = ", disable_moments ? "disabled" : proton_moment_path)
+# Report what was WRITTEN, not what was configured. These were gated on
+# `disable_moments` alone, so `OCTOPUS_MOMENT_CAPACITY=0` -- a documented way to
+# disable moment output (`capacity = 0` disables output, BeamObservers.jl) --
+# printed both paths as though the files existed. Nothing wrote them
+# (2026-08-05_b audit, U21-19; its claim that capacity=0 is silently ACCEPTED
+# describes intended behaviour, but the reporting was wrong).
+_moment_status(path) = disable_moments ? "disabled" :
+                       moment_capacity == 0 ? "disabled (OCTOPUS_MOMENT_CAPACITY=0)" :
+                       isfile(path) ? path : "$(path) (not written)"
+println("electron moments = ", _moment_status(electron_moment_path))
+println("proton moments = ", _moment_status(proton_moment_path))
 println("electron rms = ", stats_ele.rms)
 println("proton rms = ", stats_pro.rms)

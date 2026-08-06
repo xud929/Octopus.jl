@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **93 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **94 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -69,7 +69,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U21-15 | medium | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:252-351 (all boolean toggles)` | every boolean `OCTOPUS_*` toggle silently treats an unrecognised value as |
 | U21-16 | medium | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:230 and test/examples/weak_str` | `OCTOPUS_USE_GPU` is the one boolean with a stricter, different grammar |
 | U21-18 | medium |  | `test/examples/strong_strong_tracking.jl:352-364, 424-441` | all seven `OCTOPUS_CUDA_PIC_*_THREADS` overrides are validated and then |
-| U21-19 | medium |  | `test/examples/strong_strong_tracking.jl:352-353, 589-600` | `OCTOPUS_MOMENT_CAPACITY=0` is silently accepted, writes **no moment files |
+| U21-19 | medium | PARTLY CONFIRMED: capacity=0 is a documented disable; the REPORT was wrong, fixed (2026-08-06) | `test/examples/strong_strong_tracking.jl:352-353, 589-600` | `OCTOPUS_MOMENT_CAPACITY=0` is silently accepted, writes **no moment files |
 | U21-2 | medium | CONFIRMED CLOSED by U21-1 fix (2026-08-06) | `test/nightly_suite.sh:56-57` | the same scrape turns a **PASSING** suite into `FAIL` with a synthetic |
 | U21-3 | medium | CONFIRMED, FIXED (2026-08-06) | `test/nightly_suite.sh:36-43` | lock contention writes **no row at all** and exits 0, so a wedged or |
 | U21-4 | medium | CONFIRMED, FIXED (2026-08-06) | `test/nightly_suite.sh:33,46` | two further row-less exits. `mkdir -p "$OUTDIR"` (line 33) is unchecked, so |
