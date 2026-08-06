@@ -1550,6 +1550,17 @@ validates it and always uses collision-time order, so a non-default value is ina
 solver_option_schema(::Type{<:PICPoissonSolver}) = _PIC_SOLVER_OPTION_SCHEMA
 
 function _pic_option_active(name::Symbol, solver::PICPoissonSolver)
+    # `grid_extent_sigma` declares `dependencies=(:grid_extent,)` and this
+    # function did not implement it, so `configuration_report` called it
+    # `:resolved` -- "validated solver configuration" -- under the default
+    # `grid_extent = :extrema`, where it is provably inert: its only consumer is
+    # the `:sigma` branch of `_pic_axis_extent`. Measured: with `:extrema`,
+    # sigma 6.0 against 2.0 leaves coordinates bit-identical and the luminosity
+    # rows identical; with `:sigma` they differ. The `:inactive_dependency`
+    # machinery exists precisely to tell a value that acts from one that does
+    # not, and it misclassified the one PIC option whose declared dependency it
+    # skipped (2026-08-05_b audit, U5-5).
+    name === :grid_extent_sigma && return solver.grid_extent === :sigma
     name === :slice_pair_green_min_ratio && return solver.green_cache === :slice_pair
     name === :slice_pair_green_growth && return solver.green_cache === :slice_pair
     name === :cuda_batch_fft && return solver.cuda_async
@@ -2230,6 +2241,31 @@ function _preflight_solver_configurations!(task, blocks1, blocks2, policy)
     return nothing
 end
 
+"""
+Running count of luminosity rows dropped because per-IP schedules disagreed.
+
+Kept in the task's runtime cache rather than as a field, so no constructor
+changes. The per-turn `@warn` carries `maxlog = 4`, which is right for the
+noise but meant a long run lost rows silently after the fourth one -- measured
+30 turns, 1 row written, 29 dropped, 4 warnings (2026-08-05_b audit, U5-9).
+Measured Lesson 8 is that data and coverage never disappear without a signal, so
+the total is reported once at the end of the run.
+"""
+_dropped_lum_counter(task::StrongStrongTask) =
+    get!(() -> Ref(0), task.runtime_cache, :dropped_luminosity_rows)::Base.RefValue{Int}
+
+function _report_dropped_luminosity_rows(task::StrongStrongTask)
+    counter = _dropped_lum_counter(task)
+    n = counter[]
+    n == 0 && return nothing
+    @warn "luminosity rows dropped this run: per-IP luminosity schedules disagreed " *
+          "on $(n) turn(s), and each such row was dropped WHOLE, including the " *
+          "sibling collisions' evaluated values. The per-turn warning is capped at " *
+          "4; this is the total." dropped_rows = n path = task.luminosity_path
+    counter[] = 0
+    return nothing
+end
+
 function _warn_inactive_diagnostics(diagnostics::StrongStrongDiagnostics, backend)
     inactive = Symbol[]
     for (name, meta) in pairs(diagnostics_option_schema(diagnostics))
@@ -2334,6 +2370,17 @@ function _commit_strong_strong_luminosity_file!(task::StrongStrongTask, plan)
               "history at $(path): execution starts at or before every recorded " *
               "row. Pass the matching absolute start_turn " *
               "to execute! to continue the file instead." dropped_rows = plan.dropped
+    elseif plan.dropped > 0
+        # PARTIAL truncation was silent (2026-08-05_b audit, U5-10). The guard
+        # above is `isempty(kept) && ...`, so a fresh task with a wrong but
+        # nonzero start_turn destroyed the tail of the file with no signal at
+        # all. Rewinding IS the documented behaviour, which is exactly why it
+        # has to be stated: the deliberate rewind and the mistyped start_turn
+        # look identical from here, and only the user can tell them apart.
+        @warn "luminosity_append=true is rewinding $(path): rows at or after the " *
+              "start turn are being discarded. This is the documented rewind if " *
+              "you meant it; if you did not, your start_turn is below the end of " *
+              "the existing history." dropped_rows = plan.dropped kept_rows = length(plan.kept)
     end
     if plan.replace
         open(path, "w") do io
@@ -2417,6 +2464,7 @@ function _execute_strong_strong_turns!(
                 # or the other. The row is dropped WHOLE — including the
                 # sibling IPs' evaluated values — and that loss is loud
                 # rather than silent (2026-08-05 audit, U4 observation).
+                _dropped_lum_counter(task)[] += 1
                 @warn "luminosity row dropped: per-IP luminosity schedules disagree " *
                       "on this turn, so evaluated sibling values are not written; " *
                       "align luminosity_schedule across collisions sharing one file" turn = ctx.turn maxlog = 4
@@ -2428,6 +2476,7 @@ function _execute_strong_strong_turns!(
             push!(task.turn_times, (time_ns() - turn_t0) * 1.0e-9)
         end
     end
+    _report_dropped_luminosity_rows(task)      # U5-9: the total, past maxlog
     return nothing
 end
 
@@ -2450,6 +2499,15 @@ Deriving the receipt from `solver_option_schema`/`solver_configuration` keeps it
 complete by construction. Costs nothing unless an `ExecutionAudit` is active.
 """
 function _record_solver_configuration!(solver::AbstractPoissonSolver, backend)
+    # The guard has to be HERE, not inside `_record_execution!` (2026-08-05_b
+    # audit, U5-7). That function checks the active audit inside its own body,
+    # and Julia evaluates the argument eagerly at the call site -- so the
+    # docstring's "costs nothing unless an ExecutionAudit is active" was false:
+    # `solver_configuration` built a 26-key NamedTuple for a PIC solver on every
+    # collision of every turn, audit or no audit, and the result was thrown
+    # away. This is called from `_strong_strong_collide!`, i.e. per collision
+    # per turn.
+    _ACTIVE_EXECUTION_AUDIT[] === nothing && return nothing
     _record_execution!(:solver_runtime, backend, (
         solver=Symbol(nameof(typeof(solver))),
         configuration=solver_configuration(solver),
@@ -2678,11 +2736,28 @@ function _collision_solver(task::StrongStrongTask, c1::StrongStrongCollision, c2
         # every observable way. Comparing by identity refused a caller who
         # built the two lines independently (2026-08-05 audit, U4
         # observation); a genuine configuration mismatch still throws.
-        typeof(s1) === typeof(s2) &&
-            solver_configuration(s1) == solver_configuration(s2) ||
+        #
+        # A solver type with NO registered `solver_option_schema` falls back to
+        # `NamedTuple()`, so `solver_configuration` is empty for it and
+        # `() == ()` accepted any two such objects however differently
+        # configured -- line 2's solver was then discarded with no warning
+        # (2026-08-05_b audit, U5-6). That only affects user-defined solvers,
+        # since all four in-repo solvers have schemas, but `AbstractPoissonSolver`
+        # is the documented "how to write a solver" extension point, and the
+        # rule this replaced (`s1 !== s2` throws) did not have the hole. With no
+        # schema there is nothing to compare, so identity is the only honest
+        # test and we fall back to it.
+        cfg1 = solver_configuration(s1)
+        comparable = typeof(s1) === typeof(s2) && !isempty(cfg1)
+        agree = comparable ? cfg1 == solver_configuration(s2) : false
+        agree ||
             throw(ArgumentError(
                 "collision $(c1.label) specifies different Poisson solver " *
-                "configurations in line1 and line2"))
+                "configurations in line1 and line2" *
+                (comparable ? "" :
+                 "; $(nameof(typeof(s1))) registers no solver_option_schema, so " *
+                 "its configuration cannot be compared and the two objects must " *
+                 "be identical")))
     end
     s1 !== nothing && return s1
     s2 !== nothing && return s2

@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **169 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **175 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -244,17 +244,17 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U4-16 | low |  | `src/contracts/Contracts.jl:1273` | the Lorentz quasi-symplecticity criterion uses two tolerances hardcoded in the function body (`1.0e-10`, `2.0e-7`) that no field of `SymplecticityContract` governs, so the contract's declared `default |
 | U4-17 | low |  | `src/contracts/Contracts.jl:1987-2037 and :2257-2288` | neither exemption table has a staleness tripwire. Both are clean today (measured), but a `(kind, parameter)` or `(solver, option)` pair that no longer exists silently excuses nothing, and — the direct |
 | U4-18 | low |  | `src/contracts/Contracts.jl:313 → src/tasks/strongstrong/interface.jl` | two of the checks `validate_configuration_metadata()` gained in the U3-4 repair, and which `PublicConfigurationEffectivenessContract` calls as its first act, cannot fail — the BPMObserver schema↔repor |
-| U5-10 | low |  | `src/tasks/strongstrong/interface.jl:2160-2166` | the append-mode "replacing the entire existing luminosity history" warning fires |
+| U5-10 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:2160-2166` | the append-mode "replacing the entire existing luminosity history" warning fires |
 | U5-11 | low |  | `src/tasks/strongstrong/interface.jl:1592 (export list at :1-10)` | `strong_strong_task_option_schema` is the only public configuration schema in the |
 | U5-12 | low |  | `src/tasks/strongstrong/interface.jl:700-702 vs 647-677 — class (b)` | `LongitudinalSlicing` accepts three slicing methods that no docstring or schema |
 | U5-13 | low | FIXED | `src/tasks/strongstrong/interface.jl:1545, 2064 — OUT OF HYPOTHESIS (tr` | two source comments point the reader at `pic_cuda.jl:5041` for the Gaussian |
 | U5-14 | low |  | `src/tasks/strongstrong/interface.jl:1649-1654, 1743-1757, 1780-1792` | `validate_configuration_metadata`'s default-vs-constructor check is applied |
 | U5-15 | low |  | `src/tasks/strongstrong/interface.jl:945-1179` | `backend_configurations` is a public `PICPoissonSolver` constructor keyword with a |
-| U5-5 | low |  | `src/tasks/strongstrong/interface.jl:1484-1494 (declaration at 1413-141` | `grid_extent_sigma` declares `dependencies=(:grid_extent,)` but `_pic_option_active` |
-| U5-6 | low |  | `src/tasks/strongstrong/interface.jl:2467-2482` | the identity→configuration change in `_collision_solver` silently accepts and |
-| U5-7 | low |  | `src/tasks/strongstrong/interface.jl:2275-2281 (docstring claim at 2273` | `_record_solver_configuration!`'s docstring says "Costs nothing unless an |
-| U5-8 | low |  | `src/tasks/strongstrong/interface.jl:2216 + 2467-2482 — OUT OF HYPOTHES` | `_collision_solver`'s new configuration comparison runs once per collision per |
-| U5-9 | low |  | `src/tasks/strongstrong/interface.jl:2235-2245 — OUT OF HYPOTHESIS (obs` | the mixed-schedule dropped-row warning carries `maxlog = 4`, so a long run loses |
+| U5-5 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:1484-1494 (declaration at 1413-141` | `grid_extent_sigma` declares `dependencies=(:grid_extent,)` but `_pic_option_active` |
+| U5-6 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:2467-2482` | the identity→configuration change in `_collision_solver` silently accepts and |
+| U5-7 | low | CONFIRMED, FIXED (2026-08-06) — now 0 allocations with no audit active | `src/tasks/strongstrong/interface.jl:2275-2281 (docstring claim at 2273` | `_record_solver_configuration!`'s docstring says "Costs nothing unless an |
+| U5-8 | low | CONFIRMED, not fixed — ~200 us/turn, moves work across the preflight boundary; on todo.md (2026-08-06) | `src/tasks/strongstrong/interface.jl:2216 + 2467-2482 — OUT OF HYPOTHES` | `_collision_solver`'s new configuration comparison runs once per collision per |
+| U5-9 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:2235-2245 — OUT OF HYPOTHESIS (obs` | the mixed-schedule dropped-row warning carries `maxlog = 4`, so a long run loses |
 | U6-10 | low |  | `src/tasks/strongstrong/pic_cpu.jl:1418–1440` | the `length(local_charge) == nchunks` fallbacks are dead code, and the two of them |
 | U6-4 | low (performance) |  | `src/tasks/strongstrong/pic_cpu.jl:1843–1858` | `_pic_field!` marks the whole `Ey` pass `@inbounds` but leaves the `Ex` boundary rows |
 | U6-5 | low |  | `src/tasks/strongstrong/spectral.jl:1000 and 1043–1062` | the campaign's "including spectral luminosity (0 ulp)" is true of the **longitudinal** |
