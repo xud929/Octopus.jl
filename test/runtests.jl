@@ -1,6 +1,9 @@
 using Test
 using Octopus
 using LinearAlgebra
+# Seeded sweeps whose sample values must not be dyadic (see the TSC weight
+# testset -- a dyadic-only grid cannot fail on the defect it names, audit U20-1).
+using Random
 # Test-only: Octopus takes no runtime dependency on any AD package.
 using ForwardDiff
 # Test-only: loading Symbolics activates the OctopusSymbolicsExt weak-dep
@@ -7638,17 +7641,38 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         # the closed form — a 1-ulp backend divergence in a deposit both
         # sides must agree on. The kernel helper is pure arithmetic, so it
         # is compared on the host, both branches and the edges included.
+        # The dyadic grid alone cannot fail on the defect it names. Steps of
+        # 15/256 and 32/256 have few significant bits, so for every one of its
+        # 528 samples t = f*f, 0.75 - t and 0.125 + 0.5*(t +- f) are exact,
+        # w1 + w2 + w3 sums to 1 exactly, and the complement w3 = 1 - w1 - w2
+        # rounds to the closed form bit for bit. Measured: 0 of 528 samples
+        # discriminate, against 68.3% of random u (2026-08-05_b audit, U20-1;
+        # the recorded U2-3 defect re-injected into the kernel passed this
+        # testset). Non-dyadic samples are therefore swept as well -- and the
+        # testset asserts its own discriminating power rather than assuming it,
+        # so a future grid change that quietly returns it to all-dyadic fails
+        # here instead of going blind.
+        rng = MersenneTwister(20260805)
+        discriminating = 0
         mismatches = 0
         for n in (16, 33)
-            for u in vcat(collect(range(0.0, n - 1.0; length=257)),
+            dyadic = vcat(collect(range(0.0, n - 1.0; length=257)),
                           [0.5, 1.5, 7.25, 7.5, 7.75, n - 1.5, n - 1.0])
+            nondyadic = [1.0 + (n - 2.0) * rand(rng) for _ in 1:256]
+            for u in vcat(dyadic, nondyadic)
                 base_cpu, w_cpu = Octopus._pic_tsc_weights(u, n)
                 base_gpu, w1, w2, w3 = Octopus._cuda_pic_tsc_weights(u, Int32(n))
                 (Int(base_gpu) == base_cpu && (w1, w2, w3) === w_cpu) ||
                     (mismatches += 1)
+                # Would this sample tell the closed form from the complement?
+                w_cpu[3] === (1 - w_cpu[1] - w_cpu[2]) || (discriminating += 1)
             end
         end
         @test mismatches == 0
+        # Coverage tripwire: without this the testset can pass while being
+        # incapable of failing. ~68% of non-dyadic draws discriminate, so 512
+        # draws make a zero here impossible unless the sweep itself regressed.
+        @test discriminating > 100
     end
 
     @testset "CUDA GaussianPIC solver matches CPU" begin
@@ -8153,6 +8177,39 @@ end
         eright = knob_expression("t_atom.u ^ (t_atom.v ^ t_atom.w)")
         @test knob_expression(string(eright)) == eright
         @test knob_value(eright) == 512.0
+
+        # 2026-08-05_b audit, U20-2: the class above regenerated one operator to
+        # the left. `+` and `*` were printed WITHOUT parentheses around a nested
+        # same-operator child on the grounds that they associate -- which they
+        # do not in floating point. `a + (b + c)` printed "a + b + c", reparsed
+        # to a flat 3-ary call, and the value moved. The pin sweeps both nesting
+        # directions for every infix operator the parser accepts, taken from
+        # `_KNOB_OPERATORS` rather than hand-listed, so a newly whitelisted
+        # n-ary operator is covered here the day it is added.
+        infix = filter(op -> op in (:+, :-, :*, :/, :^),
+                       sort!(collect(keys(Octopus._KNOB_OPERATORS))))
+        @test length(infix) == 5          # tripwire: the table still has these
+        for op in infix
+            for form in ("t_atom.u $op (t_atom.v $op t_atom.w)",
+                         "(t_atom.u $op t_atom.v) $op t_atom.w",
+                         "t_atom.u $op t_atom.v $op t_atom.w")
+                ex = knob_expression(form)
+                @test knob_expression(string(ex)) == ex
+                @test knob_value(knob_expression(string(ex))) === knob_value(ex)
+            end
+        end
+        # The value change that made this more than a structural nit: without
+        # the parentheses this evaluates 0.0 before the round trip and 1.0 after.
+        @knob t_atom.big = 1.0e16
+        @knob t_atom.negbig = -1.0e16
+        @knob t_atom.one = 1.0
+        ecancel = knob_expression("t_atom.big + (t_atom.negbig + t_atom.one)")
+        @test knob_value(ecancel) == 0.0
+        @test knob_value(knob_expression(string(ecancel))) == 0.0
+        # Precedence must still print naturally -- the fix must not parenthesize
+        # across levels, only within one.
+        @test string(knob_expression("t_atom.u + t_atom.v * t_atom.w")) ==
+              "t_atom.u + t_atom.v * t_atom.w"
         # Non-finite constant folds (e.g. d(x/0.0)/dx) used to print as "NaN",
         # which reparsed as KnobRef(:NaN) -> "unknown knob NaN". NaN/Inf are
         # named constants to the parser now, `-Inf` folds back to one constant

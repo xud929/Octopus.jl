@@ -896,17 +896,23 @@ function _knob_expr_string(n::KnobCall, prec::Int=0)
     if n.op in (:+, :-, :*, :/, :^) && length(n.args) >= 2
         p = _knob_prec(n.op)
         pieces = String[]
-        for (i, a) in enumerate(n.args)
-            # `^` is RIGHT-associative, so it is the base (first operand) that
-            # must not print bare when it is itself a `^`: `(u^v)^w` printed as
-            # "u ^ v ^ w" reparses as `u^(v^w)` — 64 silently became 512
-            # through the documented round trip (2026-08-05 audit, U14-2).
-            # `-` and `/` are left-associative; there the RIGHT operand needs
-            # the extra precedence.
-            required = n.op === :^ ? (i == 1 ? p + 1 : p) :
-                       i == 1      ? p :
-                       (n.op in (:-, :/) ? p + 1 : p)
-            push!(pieces, _knob_expr_string(a, required))
+        for a in n.args
+            # Every operand must out-rank its parent, so a nested call of the
+            # SAME precedence always parenthesizes. Anything weaker re-associates
+            # through the documented round trip
+            # `knob_expression(string(e)) == e` (docs/knob_control.md).
+            #
+            # This was arrived at twice. The first pass (2026-08-05 audit,
+            # U14-2) special-cased `^` (right-associative: `(u^v)^w` printed
+            # "u ^ v ^ w" reparsed as `u^(v^w)`, 64 silently becoming 512) and
+            # the right operand of `-` and `/`, but left `+` and `*` bare on the
+            # grounds that they associate. They do not, in floating point:
+            # `a + (b + c)` printed "a + b + c", reparsed to a flat 3-ary call,
+            # and with a = 1e16, b = -1e16, c = 1 the value moved 0.0 -> 1.0
+            # (2026-08-05_b audit, U20-2). Precedence still separates the
+            # levels, so `a + b * c` keeps its natural form; only same-level
+            # nesting gains parentheses, which is exactly the ambiguity.
+            push!(pieces, _knob_expr_string(a, p + 1))
         end
         s = join(pieces, " $(n.op) ")
         return p < prec ? "($s)" : s
