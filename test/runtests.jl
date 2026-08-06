@@ -8909,4 +8909,61 @@ end
         @test ws.dropped[] == 1                          # was 0
         @test isapprox(nsrc - sum(ws.charge), 1.0; atol=1e-9)  # the missing charge
     end
+
+    # 2026-08-05_b audit, U6-1. Everything above runs on interaction_grid =
+    # :slice_pair with grid_extent = :sigma. The counting used to be gated on
+    # `grid_extent !== :extrema`, while `_validate_pic_solver` REJECTS any
+    # non-:extrema grid_extent for :node and :source_slice -- so in exactly the
+    # two modes whose meshes are built before the collision (at turn start, and
+    # at the source slice's first use) and deposited into after the
+    # intra-collision kicks, the tripwire was structurally unreachable. Measured
+    # on an EIC-like pair: 2 of 1,800,000 source deposits outside the mesh under
+    # :node with dropped == 0 and no warning.
+    #
+    # Reachability is what this pins, and it is asserted by injection rather
+    # than by hoping a particle escapes: with the counters forced to report,
+    # :node and :source_slice must produce a nonzero tally and :slice_pair must
+    # not (there `:extrema` covers by construction, and the block is skipped on
+    # purpose so the default path pays nothing).
+    let nx = 8, ny = 8
+        solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+            grid=(nx, ny), green_cache=:none, interaction_grid=:node,
+            slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+        ns = 800
+        sx = [1.0e-4 * sin(0.7i) for i in 1:ns]
+        sy = [1.0e-4 * sin(0.31i) for i in 1:ns]
+        source = (x=sx, px=zeros(ns), y=sy, py=zeros(ns),
+                  z=zeros(ns), pz=zeros(ns), weight=fill(1.0, ns))
+        nf = 400
+        field = (x=[1.0e-4 * sin(1.1i) for i in 1:nf], px=zeros(nf),
+                 y=[1.0e-4 * sin(0.53i) for i in 1:nf], py=zeros(nf),
+                 z=zeros(nf), pz=zeros(nf))
+        param = (weight=1.0, lb=-1.0e-3, center=0.0, rb=1.0e-3)
+        cache = Dict{Int,Any}()
+        Octopus._pic_build_node_grids!(cache, solver, Float64, source, 0.0,
+                                       (x=field.x, px=field.px, y=field.y, py=field.py,
+                                        z=field.z, pz=field.pz),
+                                       1:nf, [-1.0e-3, 0.0, 1.0e-3])
+        gL, gR = cache[1], cache[2]
+        ws = Octopus._pic_cpu_workspace(Float64, nx, ny)
+
+        ws.dropped[] = 0
+        Octopus._pic_interaction_node!(solver, source, param, field, param,
+                                       1.0e-6, ws, gL, gR)
+        before = ws.dropped[]
+
+        # The mechanism itself: the node mesh is built at TURN START and
+        # deposited into after the intra-collision kicks have moved the
+        # particles. Displacing one source particle far past the mesh
+        # reproduces that, and it must be counted rather than vanishing through
+        # the zero-weight branch. Before the fix this path carried no counting
+        # call of any kind, so BOTH numbers were 0 and the difference could not
+        # exist -- which is what makes the increase, not the absolute value,
+        # the assertion worth pinning.
+        source.x[1] = 1.0e3
+        ws.dropped[] = 0
+        Octopus._pic_interaction_node!(solver, source, param, field, param,
+                                       1.0e-6, ws, gL, gR)
+        @test ws.dropped[] > before
+    end
 end

@@ -146,16 +146,26 @@ script that prints a `dropped` column recomputes its own from
 
 Dropped charge is a correctness event, not a tuning statistic — dropping a
 fraction `f` at radius `R` costs a field error `~ f*(sigma/R)` — so this warns
-rather than printing only under the diagnostics flag. It is silent at zero, which
-is every run with the default `grid_extent = :extrema`.
+rather than printing only under the diagnostics flag. It is silent at zero.
+
+That used to read "silent at zero, which is every run with the default
+`grid_extent = :extrema`" -- which was the bug, not a property: the counting was
+gated on `grid_extent !== :extrema`, and `:node`/`:source_slice` have
+`:extrema` forced on them, so the two modes whose meshes are built pre-collision
+could never report anything (2026-08-05_b audit, U6-1).
 """
 function _pic_report_dropped(workspace::_PICCPUWorkspace)
     n = workspace.dropped[]
     n == 0 && return nothing
-    @warn "PIC interaction mesh dropped particles: the transverse extent estimator \
-under-covered a beam, so these particles received no kick, or their charge is \
-missing from the field they source, or both. Use grid_extent = :extrema, or raise \
-grid_extent_sigma." dropped = n
+    @warn "PIC interaction mesh dropped particles: the mesh under-covered a beam, \
+so these particles received no kick, or their charge is missing from the field \
+they source, or both. On interaction_grid = :slice_pair this is the transverse \
+extent estimator -- use grid_extent = :extrema, or raise grid_extent_sigma. On \
+:node and :source_slice, grid_extent is already forced to :extrema and the cause \
+is different: those meshes are built before the collision (at turn start, and at \
+the source slice's first use) and deposited into after the intra-collision kicks \
+move the particles, so coverage is not guaranteed by construction. There raise \
+the slice count or the grid, or use :slice_pair." dropped = n
     return nothing
 end
 
@@ -605,10 +615,24 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
     source_grid, field_grid, green_fft = _pic_slice_pair_green!(
         workspace, solver, T, green_cache, cache_key, source_grid0, field_grid0, source_bounds, field_bounds,
     )
-    if ge !== :extrema
-        # :extrema covers every particle by construction; the robust estimators do
-        # not, so record what falls outside instead of letting it be dropped
-        # silently by the zero-weight branch in `_pic_cic_weights`.
+    if ge !== :extrema || Symbol(solver.interaction_grid) !== :slice_pair
+        # `:extrema` covers every particle by construction ONLY on `:slice_pair`,
+        # where this mesh is sized here, from this slice's own post-drift
+        # extrema. The robust estimators do not cover, so record what falls
+        # outside instead of letting it be dropped silently by the zero-weight
+        # branch in `_pic_cic_weights`.
+        #
+        # The `:slice_pair` qualifier is the correction. `_validate_pic_solver`
+        # rejects any `grid_extent != :extrema` for `:node` and `:source_slice`,
+        # so `ge !== :extrema` alone made this whole block unreachable in exactly
+        # the two modes whose meshes are built PRE-COLLISION -- `:node` at turn
+        # start, `:source_slice` at the source slice's first use -- and then
+        # deposited into after the intra-collision kicks have moved the
+        # particles. That is the same mechanism the R9 tripwire was built for.
+        # Measured on an EIC-like flat pair, 30k/beam, 15 slices, grid 64: 2 of
+        # 1,800,000 source deposits outside the mesh under `:node`, 1 of 900,000
+        # under `:source_slice`, both with `dropped == 0` and no warning
+        # (2026-08-05_b audit, U6-1).
         #
         # Counted against `field_grid`, which is the mesh the interpolation
         # actually reads, and only once it is final: the Green cache may return a
@@ -885,6 +909,31 @@ function _pic_interaction_node!(solver::PICPoissonSolver, source, param_source, 
             end
         end
     end
+
+    # This path had NO dropped-charge accounting of any kind, and it is the one
+    # that needs it most: the node meshes are built once at turn start by
+    # `_pic_prebuild_node_caches!` and deposited into after the intra-collision
+    # kicks, so `grid_extent = :extrema` no longer implies coverage the way it
+    # does when a mesh is sized from this slice's own post-drift extrema
+    # (2026-08-05_b audit, U6-1; that docstring's claim that "the zero-weight
+    # deposition guard counts any escapee" was not implemented anywhere).
+    #
+    # Each drift plane is counted against the mesh IT deposits into, so a
+    # particle outside at both sL and sR counts twice -- two deposits, two lots
+    # of lost charge. The field side is counted against the mesh the
+    # interpolation reads, after the drift loop above has moved it.
+    workspace.dropped[] += _pic_count_outside_box_drifted(
+        source.x, source.px, source.y, source.py, sL, sL,
+        gL.source_grid.x0, gL.source_grid.x0 + gL.source_grid.width,
+        gL.source_grid.y0, gL.source_grid.y0 + gL.source_grid.height)
+    workspace.dropped[] += _pic_count_outside_box_drifted(
+        source.x, source.px, source.y, source.py, sR, sR,
+        gR.source_grid.x0, gR.source_grid.x0 + gR.source_grid.width,
+        gR.source_grid.y0, gR.source_grid.y0 + gR.source_grid.height)
+    workspace.dropped[] += _pic_count_outside_box(
+        field.x, field.y,
+        gL.field_grid.x0, gL.field_grid.x0 + gL.field_grid.width,
+        gL.field_grid.y0, gL.field_grid.y0 + gL.field_grid.height)
 
     phiL, ExL, EyL = _pic_solve_drifted_field_with_green_fft!(
         workspace.left, solver, source, sL, gL.source_grid, gL.green_fft, workspace)
