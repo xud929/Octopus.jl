@@ -1018,6 +1018,34 @@ function validate_element_metadata(; throw_on_error::Bool=false)
                 any(rt -> rt isa Type && _compiled_matches_runtime(compiled, rt),
                     values(meta.runtime_types)) ||
                     push!(errors, "ElementMeta $(meta.kind) example compiles to $(typeof(compiled)), which is not a declared runtime type")
+
+                # EVERY declared mapping, not just the example's own.
+                #
+                # The check above is `any(...)` over ONE compiled example, and
+                # `compile_runtime(example)` selects the example's own
+                # `:tracking_method` -- so for a kind declaring several methods,
+                # the other entries were never constructed and could name
+                # anything. `haskey(meta.runtime_types, method)` proves an entry
+                # EXISTS, never that it is right. Live exposure at the time:
+                # `:lumped_radiation` declares Radiation6DMap, Damping6DMap and
+                # Diffusion6DMap while its example uses the first, leaving two of
+                # three mappings unvalidated (2026-08-05_b audit, U12-4).
+                if length(meta.runtime_types) > 1
+                    for (method, rt) in pairs(meta.runtime_types)
+                        rt isa Type || continue
+                        c = try
+                            compile_runtime(example, method())
+                        catch err
+                            push!(errors,
+                                "ElementMeta $(meta.kind) declares $(method) but its " *
+                                "example cannot compile with it: $(sprint(showerror, err))")
+                            continue
+                        end
+                        _compiled_matches_runtime(c, rt) || push!(errors,
+                            "ElementMeta $(meta.kind) maps $(method) to $(rt) but " *
+                            "compiling with it yields $(typeof(c))")
+                    end
+                end
             end
         end
 

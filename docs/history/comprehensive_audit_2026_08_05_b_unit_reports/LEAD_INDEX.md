@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **77 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **78 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -38,7 +38,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U12-11 | medium | CONFIRMED, FIXED (2026-08-06) | `src/policies/Policies.jl:259-264` | `_active_cuda_launch` is an **undeclared second consumer** of |
 | U12-2 | medium |  | `src/knowledge/Knowledge.jl:904-910, 948-965 (parameter-is-read and rea` | nothing verifies that a declared element parameter is consumed by the |
 | U12-3 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:1617 and :1743 — hardcoded POLICY ` | `validate_configuration_metadata`'s type enumeration was totalized for |
-| U12-4 | medium |  | `src/knowledge/Knowledge.jl:960-964` | for an element declaring more than one tracking method, only the |
+| U12-4 | medium | CONFIRMED, FIXED (2026-08-06) | `src/knowledge/Knowledge.jl:960-964` | for an element declaring more than one tracking method, only the |
 | U13-1 | medium | CONFIRMED, FIXED (2026-08-06) | `src/knobs/Knobs.jl:394-418` | `@knob p::T` on an existing knob whose converted value is `isequal` to |
 | U13-5 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/Tasks.jl:429 (and 242)` | A line whose `:L` is a knob expression makes every `execute!` that was |
 | U14-3 | medium | CONFIRMED, FIXED (2026-08-06) | `src/track/longitudinal.jl:133-136 (`_delta_from_pt`), reached from `co` | a particle decelerated below rest energy makes the radicand negative and `sqrt` |
