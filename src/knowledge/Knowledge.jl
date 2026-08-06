@@ -323,6 +323,31 @@ const ALLOWED_PHYSICS_KEYWORDS = Set{Symbol}([
 """Return the current controlled physics-keyword set."""
 allowed_physics_keywords() = copy(ALLOWED_PHYSICS_KEYWORDS)
 
+"""
+    _help_mentions_parameter(help, key) -> Bool
+
+Whether `help` mentions `key` as a word rather than as an accidental substring.
+
+Julia identifiers may contain letters, digits, underscores and `!`, so a
+mention is a match not flanked by any of those (2026-08-05_b audit, U12-5).
+"""
+function _help_mentions_parameter(help::AbstractString, key::Symbol)
+    name = string(key)
+    isvalid_char(c) = isletter(c) || isdigit(c) || c == '_' || c == '!'
+    start = 1
+    while true
+        r = findnext(name, help, start)
+        r === nothing && return false
+        before = first(r) == 1 ? nothing : help[prevind(help, first(r))]
+        after_i = nextind(help, last(r))
+        after = after_i > lastindex(help) ? nothing : help[after_i]
+        okbefore = before === nothing || !isvalid_char(before)
+        okafter = after === nothing || !isvalid_char(after)
+        (okbefore && okafter) && return true
+        start = nextind(help, first(r))
+    end
+end
+
 """Register an `ElementSpec{Kind}` type for reflection-generated registries."""
 function register_element_spec!(T)
     T in REGISTERED_ELEMENT_SPECS || push!(REGISTERED_ELEMENT_SPECS, T)
@@ -877,11 +902,20 @@ function _indent_lines(text::AbstractString, prefix::AbstractString)
     return join((prefix * line for line in split(text, '\n')), "\n")
 end
 
-"""Whether a compiled example is (or wraps) an instance of a declared runtime type."""
-# "Is (or wraps)": a spec carrying a misalignment or a ref_tilt compiles to
-# a wrapper around the declared runtime, and the bare `isa` falsely rejected
-# any such example (2026-08-05 audit, U13-4). The wrapper types are defined
-# later in the include order; the names resolve at call time.
+"""
+Whether a compiled example is (or wraps) an instance of a declared runtime type.
+
+"Is (or wraps)": a spec carrying a misalignment or a ref_tilt compiles to a
+wrapper around the declared runtime, and the bare `isa` falsely rejected any such
+example (2026-08-05 audit, U13-4). The wrapper types are defined later in the
+include order; the names resolve at call time.
+
+Those four lines used to sit BETWEEN this docstring and the `function` line as
+comments, which detaches the docstring on Julia 1.12 with no warning
+(2026-08-05_b audit, U12-9) -- the exact gotcha the U13-4 audit itself recorded,
+reintroduced by the U13-4 fix. The "Every export is documented" tripwire cannot
+see it, because it iterates `names(Octopus)` and this is not exported.
+"""
 function _compiled_matches_runtime(compiled, rt::Type)
     compiled isa rt && return true
     if compiled isa MisalignedElement || compiled isa RefTilted
@@ -980,7 +1014,14 @@ function validate_element_metadata(; throw_on_error::Bool=false)
                 if pmeta.required && example isa ElementSpec && !hasparam(example, key)
                     push!(errors, "ElementMeta $(meta.kind) example is missing required parameter $(key)")
                 end
-                occursin(string(key), construction_help(T)) ||
+                # Word boundaries, not a bare substring (2026-08-05_b audit,
+                # U12-5). `occursin(string(key), help)` is satisfied by any
+                # accidental substring, and for short parameter names almost any
+                # English sentence contains one: with schema keys `a` and `b`,
+                # the help text "Absolutely tracking_method." mentions neither
+                # and passed. A check that a one-letter name cannot fail is not
+                # a check.
+                _help_mentions_parameter(construction_help(T), key) ||
                     push!(errors, "ElementMeta $(meta.kind) construction_help does not mention parameter $(key)")
             end
         end

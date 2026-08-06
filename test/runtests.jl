@@ -4149,6 +4149,62 @@ end
     end
 end
 
+@testset "No docstring is detached by comment lines" begin
+    # 2026-08-05_b audit, U12-9. On Julia 1.12 a string literal followed by
+    # COMMENT lines and then a definition attaches to nothing, silently. The
+    # "Every export is documented" tripwire closed this class for exports, but
+    # it iterates `names(Octopus)` and therefore structurally cannot see a
+    # non-exported one -- and both instances in the repo were non-exported:
+    # `_compiled_matches_runtime` (inserted by the U13-4 FIX, in the very audit
+    # that recorded the gotcha) and `_alloc_randn`.
+    #
+    # This scans the source for the pattern instead, so it sees what the
+    # export-based check cannot. A docstring's explanation belongs INSIDE the
+    # docstring; a comment between the two is the bug.
+    detached = String[]
+    for (root, _, files) in walkdir(joinpath(pkgdir(Octopus), "src")), f in files
+        endswith(f, ".jl") || continue
+        path = joinpath(root, f)
+        lines = readlines(path)
+        i = 1
+        while i <= length(lines)
+            line = lines[i]
+            stripped = strip(line)
+            # A one-line docstring, or the closing line of a block docstring.
+            closes = (startswith(stripped, "\"\"\"") && endswith(stripped, "\"\"\"") &&
+                      length(stripped) > 6) || stripped == "\"\"\""
+            if closes
+                j = i + 1
+                saw_comment = false
+                while j <= length(lines)
+                    nxt = strip(lines[j])
+                    if isempty(nxt)
+                        j += 1
+                    elseif startswith(nxt, "#")
+                        saw_comment = true
+                        j += 1
+                    else
+                        break
+                    end
+                end
+                if saw_comment && j <= length(lines)
+                    target = strip(lines[j])
+                    # Only a definition would have been documented.
+                    if occursin(r"^(function|const|macro|struct|abstract type|mutable struct|@\w+)\b", target) ||
+                       occursin(r"^[A-Za-z_][A-Za-z0-9_!]*\(.*\)\s*=", target)
+                        push!(detached, "$(f):$(i) -> $(first(target, 60))")
+                    end
+                end
+                i = j
+            else
+                i += 1
+            end
+        end
+    end
+    isempty(detached) || foreach(d -> @info("detached docstring: " * d), detached)
+    @test isempty(detached)
+end
+
 @testset "The documented configuration-status vocabulary is the real one" begin
     # 2026-08-05_b audit, U12-12. The public `configuration_report` docstring
     # listed six statuses in prose and two were wrong: `:library_managed` exists

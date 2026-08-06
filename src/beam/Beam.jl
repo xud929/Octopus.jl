@@ -58,15 +58,22 @@ if _HAS_ADAPT
 	@eval Adapt.@adapt_structure Phase6DRep
 end
 
-"""Allocate `N` normally distributed random coordinates on the requested backend."""
-# Documented divergence (2026-08-05 audit, U15-3): the counter-based and GPU
-# samplers CLIP at the cutoff (an atom of probability lands exactly on ±c —
-# measured 2705/1e6 at c=3, kurtosis 2.919) while the CPU stateful-rng path
-# RESAMPLES (no atom, kurtosis 2.828). At the default cutoff=5 the
-# difference is O(1e-7) of the population and irrelevant; at small cutoffs
-# the two beams are drawn from genuinely different truncated distributions.
-# Unifying would change every recorded seeded run, so the divergence is
-# recorded here instead — revisit only with a reseeding decision.
+"""
+Allocate `N` normally distributed random coordinates on the requested backend.
+
+Documented divergence (2026-08-05 audit, U15-3): the counter-based and GPU
+samplers CLIP at the cutoff (an atom of probability lands exactly on ±c —
+measured 2705/1e6 at c=3, kurtosis 2.919) while the CPU stateful-rng path
+RESAMPLES (no atom, kurtosis 2.828). At the default cutoff=5 the difference is
+O(1e-7) of the population and irrelevant; at small cutoffs the two beams are
+drawn from genuinely different truncated distributions. Unifying would change
+every recorded seeded run, so the divergence is recorded here instead — revisit
+only with a reseeding decision.
+
+(The explanation was comment lines between the docstring and the `function`
+line, which detaches the docstring on Julia 1.12 silently; 2026-08-05_b audit,
+U12-9.)
+"""
 function _alloc_randn(::Type{CUDABackend}, T, N; cutoff=Inf, rng=nothing)
 	_HAS_CUDA || error("CUDABackend requires CUDA.jl to be available.")
 	rng = rng === nothing ? CUDA.default_rng() : rng

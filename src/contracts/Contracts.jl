@@ -2746,7 +2746,19 @@ _solver_contract_moved(a, b) =
 # value? For :solver_runtime the whole configuration travels in the receipt; the
 # specialised consumers publish their own fields.
 function _solver_contract_receipt_carries(receipts, consumer::Symbol,
-                                          name::Symbol, value)
+                                          name::Symbol, value,
+                                          backend::Union{Nothing,DataType}=nothing)
+    # The BACKEND tag is finally read (2026-08-05_b audit, U12-13). Every
+    # `_record_execution!` writes it at all ~30 consumer boundaries and nothing
+    # in src/, test/ or validation/ had ever consulted it -- the contracts
+    # filtered on `r.consumer` and read `r.values` only. Several consumer
+    # symbols are genuinely backend-polymorphic (`:observer_output`,
+    # `:hook_schedule`, `:isolated_tracking`, `:solver_runtime`, the
+    # strong-strong and schedule ones), so a CUDA-declared option could be
+    # certified effective by a receipt emitted on CPU. The discriminator was in
+    # the data all along.
+    receipts = backend === nothing ? receipts :
+               filter(r -> r.backend === backend, receipts)
     # Handled across the whole receipt set, not per receipt: one receipt per
     # family means the evidence for a multi-family configuration is spread over
     # several of them (U4-5).
@@ -2901,7 +2913,7 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
                 moved && push!(failures,
                     "$(kind).$(name) is declared $(meta.category) but changed the collision result")
                 _solver_contract_receipt_carries(observed[3], meta.consumer, name,
-                                                 alt_value) ||
+                                                 alt_value, CPUThreadsBackend) ||
                     push!(failures,
                         "$(kind).$(name) reached no receipt named by its consumer $(meta.consumer)")
             else
@@ -3000,7 +3012,7 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
                         "result by $(round(spread; sigdigits=3)), above this solver's own " *
                         "repeat spread of $(round(cuda_floor; sigdigits=3))")
                     _solver_contract_receipt_carries(observed[3], meta.consumer, name,
-                                                     cuda_alt) ||
+                                                     cuda_alt, CUDABackend) ||
                         push!(failures,
                             "$(kind).$(name) reached no receipt named by its consumer " *
                             "$(meta.consumer) on CUDA")

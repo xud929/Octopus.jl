@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **151 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **154 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -138,7 +138,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U11-7 | low | CONFIRMED, FIXED (2026-08-06) | `docs/theory/spectral_sine_poisson_solver.md §13` | The recorded CPU/CUDA agreement figure ("kicks ~4e-16, luminosity |
 | U12-10 | low |  | `src/knowledge/Knowledge.jl:839-845, 955-959` | the knowledge layer hard-codes the list of generic placement wrappers |
 | U12-12 | low | CONFIRMED, FIXED (2026-08-06) | `src/policies/Policies.jl:330-338` | the public `configuration_report` docstring states a six-item status |
-| U12-13 | low |  | `src/policies/Policies.jl:45-50, 83-87` | `ExecutionAuditReceipt.backend` is written at every one of the ~30 |
+| U12-13 | low | CONFIRMED, FIXED (2026-08-06) | `src/policies/Policies.jl:45-50, 83-87` | `ExecutionAuditReceipt.backend` is written at every one of the ~30 |
 | U12-14 | low | CONFIRMED, FIXED (2026-08-06) | `src/policies/Policies.jl:96-102, 185-210` | `PlaceholderPolicy` and the deprecated `GPUExecutionPolicy` — both |
 | U12-15 | low |  | `src/policies/Policies.jl:131-138` | `AbstractGPUExecutionPolicy` is a taxonomy node whose documented purpose is |
 | U12-16 | low |  | `src/examples/Examples.jl:1-35` | `Example` is one of AGENTS.md's seven Core Objects, and its entire runtime |
@@ -146,11 +146,11 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U12-18 | low |  | `src/knowledge/Knowledge.jl:84-104 — **out of hypothesis**` | the unknown-spec-key warning re-fires on **every** `compile_runtime` of a |
 | U12-19 | low |  | `src/registry/Registry.jl:6-16 vs 211-226` | the `OctopusRegistry` docstring still enumerates exactly three |
 | U12-20 | low |  | `src/Octopus.jl:107-121` | the script-mode ForwardDiff branch is dead under every committed |
-| U12-5 | low |  | `src/knowledge/Knowledge.jl:899-900` | the "construction_help mentions every parameter" check is a bare substring |
+| U12-5 | low | CONFIRMED, FIXED (2026-08-06) — word-boundary match; found 2 real gaps the substring test hid | `src/knowledge/Knowledge.jl:899-900` | the "construction_help mentions every parameter" check is a bare substring |
 | U12-6 | low |  | `src/knowledge/Knowledge.jl:173-180, 886-889` | three metadata channels the framework presents as authoritative — |
 | U12-7 | low | CONFIRMED, FIXED (2026-08-06) | `src/knowledge/Knowledge.jl:316-323` | a second `@element_spec` block for an already-registered kind silently |
 | U12-8 | low |  | `src/knowledge/Knowledge.jl:967-982` | three of the validator's checks — friendly schema, friendly |
-| U12-9 | low |  | `src/knowledge/Knowledge.jl:834-839` | the docstring on `_compiled_matches_runtime` is **detached** — the four |
+| U12-9 | low | CONFIRMED, FIXED (2026-08-06) — both instances reattached, source-scan tripwire added | `src/knowledge/Knowledge.jl:834-839` | the docstring on `_compiled_matches_runtime` is **detached** — the four |
 | U13-6 | low |  | `src/tasks/Tasks.jl:503-518 (seam with BeamObservers.jl:74-80)` | A scheduled hook whose schedule cannot fire anywhere in the requested |
 | U13-7 | low |  | `src/knobs/Knobs.jl:390-393` | Declaring a brand-new knob bumps the global epoch, so every |
 | U13-8 | low |  | `src/knobs/Knobs.jl:196-202, 913-916` | `@knob_expr(-(5.0))` prints as `"-5.0"`, which reparses as the *literal* |
