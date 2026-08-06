@@ -2148,6 +2148,26 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
 )
 
 """
+Keys merged ONTO a kind's probe (whether that probe is curated or the kind's own
+example), for conditional parameters that are structurally inert in the shipped
+configuration.
+
+This is a merge rather than a probe entry because the value that unlocks the
+parameter often sits beside required keywords the probe would otherwise have to
+restate -- and because those keywords are element types that are not yet defined
+where `DEFAULT_ELEMENT_PARAM_PROBES` is evaluated.
+
+`gaussian_strong_beam.slice_width` is consumed only by `:equal_width` slicing
+(its own declared meaning says so), while the example spec slices by
+`:sqrt_density`. It was therefore reported declared-but-not-consumed the moment
+the sweep widened enough to reach it, when it is in fact perfectly effective at
+the configuration where it applies (2026-08-05_b audit, U4-2/U4-3).
+"""
+const ELEMENT_PARAM_PROBE_OVERRIDES = Dict{Symbol,Any}(
+    :gaussian_strong_beam => (slice_method=:equal_width, slice_width=3.0e-3),
+)
+
+"""
     ElementParameterEffectivenessContract <: AbstractImplementationContract
 
 Contract checking that every declared element parameter reaches the compiled
@@ -2166,20 +2186,71 @@ Base.@kwdef struct ElementParameterEffectivenessContract <: AbstractImplementati
     atol::Float64 = 0.0
 end
 
-# Perturbation for a declared parameter, chosen to be small but unmistakable and
-# valid for the parameter's type. Returns `nothing` when the parameter is not
-# something this contract can vary (a tracking method, a symbol enum).
-function _perturb_param(key::Symbol, current)
-    key === :tracking_method && return nothing
-    current isa Bool && return !current
-    current isa Symbol && return nothing
+# Candidate perturbations for a declared parameter, most physical first. The
+# CONSTRUCTOR arbitrates: the caller tries them in order and keeps the first one
+# accepted, so validity is decided by the element rather than guessed here. An
+# empty tuple means the parameter is not something this contract can vary (a
+# tracking method, a symbol enum).
+#
+# A single guess left ~15 parameters permanently unverifiable while the
+# "a rejected value is consumed by definition" reasoning counted them as fine
+# (2026-08-05_b audit, U4-3):
+#
+#   * Placement parameters declare an INTEGER default of `0` with unit "m" or
+#     "rad", so the `Integer` branch perturbed them by 1 metre or 1 radian.
+#     Seven threw DomainError inside the map and were dropped -- yet a 1e-3
+#     perturbation moves the sbend map by 6.8e-4 (y_offset), 4.1e-5 (x_pitch),
+#     4.7e-5 (y_pitch). They were checkable all along, at a physical amplitude.
+#   * `curved` declares a default of `nothing`, which the caller substitutes
+#     with `0.0`; the `Real` branch then produced `0.13` and the constructor
+#     raised `InexactError: Bool(0.13)`. `drift.curved`, `sbend.curved` and
+#     `solenoid.curved` were never verified -- the parameter audit F17 was
+#     about.
+#   * `integrator_order` accepts only `(2, 4)`, so `2 -> 3` was rejected on
+#     quadrupole, sextupole, octupole, multipole and sbend -- while
+#     `(:drift, :integrator_order)` sits in the inactive table WITH a reason,
+#     which reads as a claim that the others are checked.
+# A placement parameter is physical whatever its ParamMeta says. The unit is
+# consulted first because it is the general signal, but several kinds carry the
+# spliced placement entries with an EMPTY unit (measured: `sbend.y_offset` has
+# `unit = ""` while `_PLACEMENT_PARAMS` declares "m"), so the authoritative key
+# list backs it up rather than a hand-copied name list here.
+_perturb_is_physical(key, pmeta) =
+    key in _PLACEMENT_PARAM_KEYS ||
+    (pmeta isa ParamMeta && pmeta.unit in ("m", "rad"))
+
+function _perturb_candidates(key::Symbol, current, pmeta)
+    key === :tracking_method && return ()
+    current isa Bool && return (!current,)
+    current isa Symbol && return ()
     if current isa Tuple
-        isempty(current) && return (0.0, 0.31)
-        return ntuple(i -> Float64(current[i]) + 0.17 * i, length(current))
+        isempty(current) && return ((0.0, 0.31),)
+        return (ntuple(i -> Float64(current[i]) + 0.17 * i, length(current)),)
     end
-    current isa Integer && return Int(current) + 1
-    current isa Real && return Float64(current) + 0.13
-    return nothing
+    # A `nothing` default carries no type at all, so offer the shapes an element
+    # parameter actually takes and let the constructor pick.
+    current === nothing && return (true, false, 1.0e-3, 1)
+    if current isa Integer
+        # An integer-declared physical quantity is still a physical quantity:
+        # perturb it by a physical amount before trying the enum-style step.
+        return _perturb_is_physical(key, pmeta) ? (1.0e-3, Int(current) + 1) :
+                                                  (Int(current) + 1, Int(current) + 2)
+    end
+    # Additive AND multiplicative. A fixed +0.13 is unphysical for any
+    # small-scale quantity, and unphysical is not the same as ineffective:
+    # `gaussian_strong_beam.slice_width` is a length in metres against a 7 mm
+    # bunch, so +0.13 m puts every particle in one slice and the map does not
+    # move -- the parameter looks dead when it is only being asked the wrong
+    # question. A relative perturbation is scale-correct for exactly these
+    # (2026-08-05_b audit, U4-3).
+    current isa Real && return (Float64(current) + 0.13, Float64(current) * 1.37)
+    return ()
+end
+
+# Retained for callers and tests that want the single primary perturbation.
+function _perturb_param(key::Symbol, current, pmeta=nothing)
+    candidates = _perturb_candidates(key, current, pmeta)
+    return isempty(candidates) ? nothing : first(candidates)
 end
 
 function validate(contract::ElementParameterEffectivenessContract; kwargs...)
@@ -2188,6 +2259,16 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
     broken = String[]
     checked = 0
     skipped = Symbol[]
+    # Every parameter this contract does NOT decide has to be visible
+    # (2026-08-05_b audit, U4-2). Of 501 declared parameters, 353 were checked,
+    # 36 were documented-inactive, and 112 were dropped by the two `continue`s
+    # below without being counted anywhere -- while the success message read
+    # "every declared element parameter reached the map (353 checked, 0 kinds
+    # without a probe)", which a reader takes for completeness. That is the
+    # AGENTS.md rule "do not report an unrun check as passed", in the file whose
+    # job is to enforce it.
+    unperturbable = String[]   # no perturbation this contract can form
+    rejected = String[]        # constructor refused the perturbed value
     for T in registered_element_specs()
         meta = _element_meta_or_nothing(T)
         meta === nothing && continue
@@ -2210,6 +2291,10 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
             push!(skipped, meta.kind)
             continue
         end
+        if haskey(ELEMENT_PARAM_PROBE_OVERRIDES, meta.kind)
+            merge!(probe, Dict{Symbol,Any}(
+                pairs(ELEMENT_PARAM_PROBE_OVERRIDES[meta.kind])))
+        end
         baseline = try
             collect(compile_runtime(ctor(; probe...))(u...))
         catch err
@@ -2223,29 +2308,65 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
         for (key, pmeta) in pairs(parameter_schema(T))
             pmeta isa ParamMeta || continue
             haskey(contract.inactive, (meta.kind, key)) && continue
-            current = get(probe, key, pmeta.default === nothing ? 0.0 : pmeta.default)
-            new = _perturb_param(key, current)
-            new === nothing && continue
-            moved = try
-                collect(compile_runtime(ctor(; merge(probe,
-                    Dict{Symbol,Any}(key => new))...))(u...))
-            catch
-                continue          # a rejected value is consumed by definition
+            # The raw default, INCLUDING `nothing`. Substituting 0.0 here threw
+            # away the only type information a `nothing`-defaulted parameter
+            # has, sending `curved` down the Real branch to `InexactError:
+            # Bool(0.13)` (U4-3). `_perturb_candidates` handles `nothing` by
+            # offering the shapes an element parameter takes.
+            current = get(probe, key, pmeta.default)
+            candidates = _perturb_candidates(key, current, pmeta)
+            if isempty(candidates)
+                push!(unperturbable, "$(meta.kind).$(key)")
+                continue
+            end
+            # The question is "does this parameter reach the map AT ALL", so
+            # every valid alternative gets a turn and the largest movement wins.
+            # Taking only the first accepted candidate answers a narrower
+            # question and gets it wrong: `drift`'s probe has `h = 0.05`, so
+            # `curved = true` is what the frame already chose and moves nothing,
+            # while `curved = false` -- the value audit F17 was about -- moves
+            # the map. "A rejected value is consumed by definition" was the old
+            # reasoning for skipping outright, and it is wrong for a
+            # perturbation that is unphysical rather than invalid, so the
+            # constructor arbitrates validity and the map arbitrates effect
+            # (2026-08-05_b audit, U4-3).
+            accepted = false
+            deviation = 0.0
+            for candidate in candidates
+                moved = try
+                    collect(compile_runtime(ctor(; merge(probe,
+                        Dict{Symbol,Any}(key => candidate))...))(u...))
+                catch
+                    nothing
+                end
+                moved === nothing && continue
+                accepted = true
+                deviation = max(deviation, maximum(abs, moved .- baseline))
+                deviation > contract.atol && break
+            end
+            if !accepted
+                push!(rejected, "$(meta.kind).$(key)")
+                continue
             end
             checked += 1
-            maximum(abs, moved .- baseline) <= contract.atol &&
-                push!(ignored, "$(meta.kind).$(key)")
+            deviation <= contract.atol && push!(ignored, "$(meta.kind).$(key)")
         end
     end
     metrics = Dict{Symbol,Any}(:checked => checked, :ignored => length(ignored),
                                :skipped_kinds => length(skipped),
-                               :broken_kinds => length(broken))
+                               :broken_kinds => length(broken),
+                               :unperturbable => length(unperturbable),
+                               :rejected => length(rejected),
+                               :undecided => length(unperturbable) + length(rejected))
     isempty(broken) || return ContractResult(false,
         "probe baselines threw (a broken kind, not a missing probe): " *
         join(sort(broken), "; "); metrics=metrics)
     isempty(ignored) && return ContractResult(true,
-        "every declared element parameter reached the map ($(checked) checked, " *
-        "$(length(skipped)) kinds without a probe)"; metrics=metrics)
+        "every parameter this contract could decide reached the map " *
+        "($(checked) checked, $(length(skipped)) kinds without a probe; " *
+        "$(length(unperturbable)) with no formable perturbation, " *
+        "$(length(rejected)) whose perturbation the constructor rejected -- " *
+        "neither group is verified)"; metrics=metrics)
     return ContractResult(false,
         "declared but not consumed: " * join(sort(ignored), ", "); metrics=metrics)
 end

@@ -1921,7 +1921,40 @@ end
     # is the same shape as a skip that reports as a pass (2026-08-05_b audit,
     # U17b-3). Raise this when a new differentiable parameter is registered;
     # never lower it.
-    @test r.metrics[:checked] >= 353
+    @test r.metrics[:checked] >= 369
+
+    # What the contract does NOT decide has to be visible, and bounded
+    # (2026-08-05_b audit, U4-2). 112 of 501 declared parameters used to be
+    # dropped by two `continue`s that left no trace in metrics, under a message
+    # reading "every declared element parameter reached the map" -- an unrun
+    # check reported as a pass, in the file whose job is to forbid that.
+    @test haskey(r.metrics, :unperturbable) && haskey(r.metrics, :rejected)
+    @test r.metrics[:undecided] == r.metrics[:unperturbable] + r.metrics[:rejected]
+    # Ratchet, like the floor above: these may only go DOWN. They fell from
+    # 83/29 to 73/23 when the perturbation stopped being a single guess and the
+    # constructor started arbitrating validity (U4-3), which moved 16 parameters
+    # from undecided to checked -- 353 -> 369.
+    @test r.metrics[:unperturbable] <= 73
+    @test r.metrics[:rejected] <= 23
+
+    # U4-3's three named holes, each verified directly rather than by counting.
+    # (a) A placement parameter declares an INTEGER default of 0 with unit "m",
+    #     so the old `Int(current)+1` perturbed it by one metre and seven kinds
+    #     threw DomainError inside the map and were dropped as "consumed by
+    #     definition". The physical candidate comes first now.
+    pm = Octopus.parameter_schema(SBendSpec)
+    @test first(Octopus._perturb_candidates(:y_offset, 0, pm[:y_offset])) == 1.0e-3
+    # (b) `curved` declares a default of `nothing`, which the caller replaced
+    #     with 0.0, sending it to the Real branch and `InexactError: Bool(0.13)`.
+    #     drift/sbend/solenoid `curved` -- audit F17's parameter -- were never
+    #     verified. Both booleans are offered, because at the drift probe's
+    #     h = 0.05 it is `false` that moves the map, not `true`.
+    @test true in Octopus._perturb_candidates(:curved, nothing, pm[:curved])
+    @test false in Octopus._perturb_candidates(:curved, nothing, pm[:curved])
+    # (c) `integrator_order` accepts only (2, 4), so the single 2 -> 3 guess was
+    #     rejected on five kinds while the inactive table's entry for drift read
+    #     as a claim that the others were checked.
+    @test 4 in Octopus._perturb_candidates(:integrator_order, 2, pm[:integrator_order])
     # Every element kind that has a friendly constructor is now probed, either
     # explicitly or through its own curated example.
     # Tightened from <= 3 (2026-08-05 audit): the three kinds this pin was
@@ -4116,6 +4149,7 @@ end
         # launch at 256 and have nothing to cap. Asserting unconditionally is how
         # the first version of this pin passed standalone and failed in the suite.
         requested_any = Int[]
+        caps_any = Any[]
         for solver in (GaussianPoissonSolver(; slicing=sl512, longitudinal_kick=true,
                                              batch_mode=:sequential),
                        GaussianPoissonSolver(; slicing=sl512, longitudinal_kick=true,
@@ -4132,17 +4166,19 @@ end
                      if r.consumer === :cuda_pic_launch && r.values.family === :kick])
             append!(requested_any, requested)
             caps = filter(r -> r.consumer === :cuda_strong_strong_thread_cap, rs)
-            if any(>(384), requested)
-                @test !isempty(caps)
-                @test all(r -> r.values.resolved < r.values.requested, caps)
-            else
-                # Nothing to cap: then nothing may claim to have capped.
-                @test isempty(caps)
-            end
+            append!(caps_any, caps)
+            # Whatever was capped must be coherently capped. Note this does NOT
+            # require a cap: the launchable ceiling is per KERNEL, so a route
+            # whose kick kernel happens to fit at 512 legitimately caps nothing.
+            # Requiring one per route is what made the previous version of this
+            # pin fail in the suite while passing alone.
+            @test all(r -> r.values.resolved < r.values.requested, caps)
         end
-        # Anti-vacuity: at least one route must actually have asked for 512, or
-        # the loop above proved nothing about the cap at all.
+        # Two anti-vacuity checks, because "no cap recorded" is also what a
+        # broken cap looks like: some route must really have asked for 512, and
+        # the mechanism must really have fired somewhere.
         @test any(>(384), requested_any)
+        @test !isempty(caps_any)
 
         # The cap must not fire when it is not needed: a default-sized launch has
         # to run byte-for-byte the path it always ran, with no receipt at all.
