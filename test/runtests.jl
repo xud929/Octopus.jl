@@ -4875,7 +4875,14 @@ end
         # in x or py carries an ordinary z, passes through here, and is caught
         # by a downstream chokepoint instead.
         @test_throws ArgumentError Octopus.longitudinal_slices(z_poisoned, sl)
-        @test Octopus.longitudinal_slices(poisoned, sl) isa Any
+        # `isa Any` was true of every value including `nothing`, so this
+        # asserted only "did not throw" while reading as a value pin
+        # (2026-08-05_b audit, U19-6). Assert the shape instead: a rep
+        # poisoned away from z must still produce a real slicing with the
+        # requested number of slices.
+        sliced_nonz = Octopus.longitudinal_slices(poisoned, sl)
+        @test sliced_nonz !== nothing
+        @test length(sliced_nonz.indices) == length(reference.indices)
     end
     # A beam with nothing left alive cannot be sliced, and says so plainly
     # rather than surfacing as a non-finite boundary.
@@ -8064,7 +8071,13 @@ end
         # Through the PUBLIC query (2026-08-05 audit, U14-5): user scripts
         # branching on adapter availability must not need an internal.
         @test knob_symbolics_available()
-        @test knob_symbolics_available() === Octopus._symbolics_adapter_active()
+        # Was `knob_symbolics_available() === _symbolics_adapter_active()`,
+        # which compares a function to its own body (symbolic.jl defines the
+        # former AS the latter) and so could never fail (2026-08-05_b audit,
+        # U20-7). The real claim in the comment above is that a user script
+        # must not need the internal -- i.e. that the public query is
+        # exported. Assert that.
+        @test :knob_symbolics_available in names(Octopus)
         e4 = knob_expression("t_knob.k1 * t_knob.brho + t_knob.k1")
         @test knob_value(knob_from_symbolic(knob_symbolic(e4))) ≈ knob_value(e4)
 
