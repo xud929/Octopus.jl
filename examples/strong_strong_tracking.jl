@@ -250,7 +250,12 @@ line_pro = (
 # ---------------------------------------------------------------------------
 # Build and run.
 # ---------------------------------------------------------------------------
-task = StrongStrongTask(line_ele, line_pro; luminosity_path = luminosity_path)
+# `policy` is passed here as well as to `Beam(...)`: a task built without it
+# resolves a fresh default at execute time, so any non-default execution choice
+# would reach beam construction and be silently dropped for the tracking itself
+# (2026-08-05_b audit, U21-17).
+task = StrongStrongTask(line_ele, line_pro; policy = policy,
+                        luminosity_path = luminosity_path)
 execute!(task, beam_ele, beam_pro; turns = config.turns)
 
 stats_ele = beam_statistics(beam_ele)

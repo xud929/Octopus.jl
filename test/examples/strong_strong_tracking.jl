@@ -631,6 +631,18 @@ line_pro = (
 )
 
 task = StrongStrongTask(line_ele, line_pro;
+    # Without this the launch geometry built above reaches only `Beam(...)` and
+    # is then discarded: `task.policy === nothing` makes `execute!` resolve a
+    # FRESH default policy, and the PIC per-kernel "inherit" path inherits that
+    # default's 256 threads rather than OCTOPUS_CUDA_THREADS. Measured: a
+    # harness policy of CPUThreadsExecutionPolicy(1) executed at
+    # ResolvedCPUExecutionPolicy(4), and OCTOPUS_CUDA_THREADS=2048 -- an
+    # impossible block size on every NVIDIA GPU -- ran to completion with
+    # byte-identical output to the default, never reaching the device-limit
+    # guard, because that guard sits on the policy path the task discarded. All
+    # three documented launch knobs were inert for the thing they tune
+    # (2026-08-05_b audit, U21-17).
+    policy = policy,
     luminosity_path = disable_luminosity_output ? nothing : luminosity_path,
     diagnostics,
 )

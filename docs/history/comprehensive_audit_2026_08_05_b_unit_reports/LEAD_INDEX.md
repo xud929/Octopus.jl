@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **42 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **45 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -22,7 +22,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U20-2 | major | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:8080 ("Knob registry atomicity and round-trip totalit` | the "round-trip totality" half is not total — the documented invariant |
 | U20-3 | major | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:7133 (and 6604, 8451)` | on a CPU-only host **17 testsets and 402 of the 415 GPU-gated assertions |
 | U21-1 | major | F8 FIXED | `test/nightly_suite.sh:49-57` | the suite's exit code is recovered by **scraping the log file**, a channel |
-| U21-17 | major |  | `test/examples/strong_strong_tracking.jl:235-247, 633-636` | `OCTOPUS_CUDA_THREADS`, `OCTOPUS_CUDA_BLOCKS` and `OCTOPUS_CPU_THREADS` |
+| U21-17 | major | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:235-247, 633-636` | `OCTOPUS_CUDA_THREADS`, `OCTOPUS_CUDA_BLOCKS` and `OCTOPUS_CPU_THREADS` |
 | U22-1 | high | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:108,111-112 (`GH_N/GH_W`, `g` | The flat-beam regime the note and the script disown as a limitation of the 1D |
 | U24-1 | high | CONFIRMED, FIXED (2026-08-06) | `validation/slice_interpolation_emittance_growth_summary.jl:60-88` | the arm-grouping key omits `npart` and `turns`, so the baseline arm silently pools 22 runs |
 | U26-1 | major | FIXED | `docs/theory/gaussian_longitudinal_slicing.md § "Measured ranking"` | the note states the shipped default slicing rule is `:equal_area` and |
