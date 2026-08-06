@@ -1707,14 +1707,16 @@ const _JLD2_MOMENT_BLOCK_WIDTHS = (
 
 """Column ranges of the JLD2 moment table, derived from the block widths."""
 function _jld2_moment_ranges()
-    offset = 0
-    pairs = map(keys(_JLD2_MOMENT_BLOCK_WIDTHS)) do name
-        width = getproperty(_JLD2_MOMENT_BLOCK_WIDTHS, name)
-        range = (offset + 1):(offset + width)
-        offset += width
-        name => range
-    end
-    return NamedTuple(pairs)
+    # No accumulator captured by a closure: `offset += width` inside a `do`
+    # block makes Julia allocate a `Core.Box` for it, and the permanent box
+    # sweep in test/runtests.jl fails on any new one. (Caught by that sweep on
+    # this very function, one commit after the sweep was widened to see methods
+    # it could not reach before -- U18-1 finding U7-8.)
+    w = values(_JLD2_MOMENT_BLOCK_WIDTHS)
+    n = length(w)
+    stops = ntuple(i -> sum(w[1:i]), n)
+    return NamedTuple{keys(_JLD2_MOMENT_BLOCK_WIDTHS)}(
+        ntuple(i -> (stops[i] - w[i] + 1):stops[i], n))
 end
 
 function _jld2_moment_data_matrix(turn, mean, covariance, rms, emittance, xz, yz, fourth)

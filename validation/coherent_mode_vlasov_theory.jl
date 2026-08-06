@@ -899,6 +899,10 @@ open(joinpath(RESULT_DIR, "eic_coherent_modes.tsv"), "w") do io
     end
 end
 println()
-println("TSV outputs in result/: yokoya_vs_aspect.tsv, yokoya_vs_xi_theory.tsv, eic_coherent_modes.tsv")
+# All five, not three (2026-08-05_b audit, U22-14 / U19-6): the header at the
+# top of this file lists them correctly and this closing line named only three,
+# so a reader who trusted the run's own summary missed two of its outputs.
+println("TSV outputs in result/: yokoya_vs_aspect.tsv, yokoya_vs_aspect_narrow.tsv, ",
+        "yokoya_box_convergence.tsv, yokoya_vs_xi_theory.tsv, eic_coherent_modes.tsv")
 
 end # OCTOPUS_VLASOV_LIB_ONLY guard

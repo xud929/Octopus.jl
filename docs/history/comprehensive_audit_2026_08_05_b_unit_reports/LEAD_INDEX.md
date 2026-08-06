@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **189 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **191 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -292,9 +292,9 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U16-11 | style |  | `examples/weak_strong_tracking.jl:1` | ** Style only. `using LinearAlgebra` sits on line 1, **above** the |
 | U20-12 | info |  | `test/runtests.jl:7103, 7113 — carry-over of U17-7` | the two `include`s of `validation/symplecticity_validation.jl` and |
 | U22-13 | info |  | `docs/theory/coherent_beam_beam_modes.md:118-120,211-212,167` | The figures the regenerated sections point at predate the data they claim to |
-| U22-14 | info |  | `docs/theory/coherent_beam_beam_modes.md:167,177,122-129` | Presentation defects in §3 that make the section hard to read correctly: the |
+| U22-14 | info | CONFIRMED, script half FIXED (2026-08-06) — closing summary now names all five TSVs, verified against the writes | `docs/theory/coherent_beam_beam_modes.md:167,177,122-129` | Presentation defects in §3 that make the section hard to read correctly: the |
 | U22-15 | info | CONFIRMED, FIXED (2026-08-06) — constants aligned to the framework + suite tripwire | `validation/coherent_mode_vlasov_theory.jl:678-680,415; validation/cohe` | Hand-copied constants and formulas across the region (Measured Lesson 4), all |
-| U22-16 | info |  | `validation/coherent_mode_vlasov_theory.jl:508` | Self-check 4's 2e-2 tolerance passes at r=0.5 with only 11% of its budget to |
+| U22-16 | info | RESOLVED by the U22-1 quadrature fix (2026-08-06) — measured u(0) vs exact now ~1e-4 against a 2e-2 tolerance (200x margin, was 1.1x); zero self-check-4 FAILs | `validation/coherent_mode_vlasov_theory.jl:508` | Self-check 4's 2e-2 tolerance passes at r=0.5 with only 11% of its budget to |
 | U22-18 | info | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:718` | Latent crash — `maximum(v for v in vals if v <= e_band[2] + 5 * xi_e)` throws |
 | U23-14 | trivial |  | `validation/pic_grid_extent_stability.jl:26 and src/tasks/strongstrong/` | Both the validation docstring and the production docstring record ":sigma … measured |
 | U23-9 | trivial | CONFIRMED, FIXED (2026-08-06) | `validation/gaussian_pic_zscan.jl:60, 88` | The documented override `OCTOPUS_GPIC_ZSCAN_NSLICES` throws `BoundsError` for any |
