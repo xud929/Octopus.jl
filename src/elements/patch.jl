@@ -152,7 +152,13 @@ reason: the *particle-count* is preserved but the map is not a magnet map, and
 the tracking-method tag names the kernel family rather than a physics claim.
 
 ```julia
-PatchSpec(angle_x = 12.5e-3)          # a crossing angle
+PatchSpec(angle_x = 12.5e-3)          # a VERTICAL frame rotation: this
+                                      # deflects in y (py = -0.0125). A
+                                      # horizontal crossing angle -- which is
+                                      # what every crossing in this repository
+                                      # is -- is `angle_y` (2026-08-05_b audit,
+                                      # U16-6: this line read "a crossing
+                                      # angle" and named the wrong plane).
 PatchSpec(dx = 0.05, dz = 1.2)        # a beamline junction
 ```
 

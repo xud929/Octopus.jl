@@ -164,8 +164,8 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U16-1 | low | FIXED | `docs/theory/rf_cavity_and_reference_energy.md:160,163 (also docs/todo.` | ** The F16 correction block sends a future fixer to the wrong section — |
 | U16-10 | low |  | `examples/weak_strong_tracking.jl:65, examples/strong_strong_tracking.j` | ** The same physical quantity, 12.5e-3 rad, is the **half** crossing |
 | U16-3 | low |  | `src/elements/rf_cavity.jl:251 (`construction_help`)` | ** The velocity-slip model boundary is documented on the human docstring |
-| U16-6 | low |  | `src/elements/patch.jl:155 and :208` | ** The `PatchSpec` docstring's first worked example and the kind's |
-| U16-7 | low |  | `examples/weak_strong_tracking.jl:40 and :106` | ** `input.total_turns = 1_000_000` is **never read** — the file's |
+| U16-6 | low | FIXED | `src/elements/patch.jl:155 and :208` | ** The `PatchSpec` docstring's first worked example and the kind's |
+| U16-7 | low | VERIFIED, not fixed — see note | `examples/weak_strong_tracking.jl:40 and :106` | ** `input.total_turns = 1_000_000` is **never read** — the file's |
 | U16-8 | low |  | `src/elements/chromaticity_kick.jl:104,110,116,117` | ** `ChromaticityKick`'s tracking kernel is written with the Float64 |
 | U16-9 | low |  | `src/elements/{rf_cavity,patch,chromaticity_kick,crab_cavity,lorentz_bo` | ** The declaration↔case tripwire added for `SymplecticityContract` |
 | U17b-2 | low |  | `test/runtests.jl:1599-1601 and :1616` | the two seam checks in the new "Series helpers" testset have **zero** discriminating |
@@ -233,7 +233,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U26-12 | low |  | `AGENTS.md "Source Ownership" (out-of-hypothesis; task item f)` | the directory list names 7 of the 13 directories under `src/`. |
 | U26-13 | low |  | `docs/theory/rf_cavity_and_reference_energy.md §6` | the note reads as a pending proposal for an element that is implemented, |
 | U26-14 | low/style |  | `docs/theory/spectral_sine_poisson_solver.md §2` | "$\sin(\alpha_l\cdot 0)=\sin(l\pi)=0$" conflates the two edges — the |
-| U26-15 | low/style |  | `docs/theory/beam_line_composition.md §5, §7` | nomenclature drift — the note recommends `find(line, sel)` throughout |
+| U26-15 | low/style | FIXED | `docs/theory/beam_line_composition.md §5, §7` | nomenclature drift — the note recommends `find(line, sel)` throughout |
 | U3-4 | low |  | `src/tasks/strongstrong/pic_cuda.jl:5580-5584` | For a `Float32` beam the CPU builds the slice moments in `Float64` and the CUDA |
 | U3-5 | low |  | `src/tasks/strongstrong/pic_cuda.jl:4661-4738` | `_cuda_pic_kick_indexed_kernel!` (4661-4696) and |
 | U3-7 | low |  | `src/tasks/strongstrong/pic_cuda.jl:5136, 5173-5177` | For a `Float32` beam, `_cuda_gaussian_collide_sequential!` returns a `Float64` |
@@ -317,3 +317,24 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U26-9 | minor |  | `docs/theory/slice_longitudinal_interpolation.md §10.5 + §12` | the note advertises `grid_extent = :sigma` as complementary to |
 | U8-6 | informational |  | `— out-of-hypothesis, cross-file seam` | `validation/near_round_gaussian_transition.jl` computes exactly the two |
 | U9-9 | info |  | `src/elements/solenoid.jl:188–196 — OUT OF HYPOTHESIS (style)` | `mz` in `_solenoid_curved_map` is assigned in every fixed-point sweep and |
+
+## Notes on individual dispositions
+
+**U16-7 — verified, deliberately not fixed.** The claim is correct:
+`examples/weak_strong_tracking.jl`'s `input.total_turns` is read nowhere, and
+the run length is a duplicated literal (`1_000_000` at two sites). The obvious
+fix — pointing `moment_stop` at `input.total_turns` — **does not work and was
+reverted after being caught by running the example**: `moment_stop` lives
+*inside* the `input = (...)` literal, so the reference is to a variable that
+does not exist yet (`UndefVarError: input not defined`). The sibling
+`examples/strong_strong_tracking.jl` gets this right only because it uses
+`input.total_turns` at the *point of use*, outside the config block. Fixing it
+properly means restructuring the example's config literal, which changes a
+curated precedent rather than repairing a defect — the auditor's call, not a
+drive-by edit. Left for a session that can re-run and re-pin both examples.
+
+**U19-7 — WONTFIX, recorded.** `@test nthreads(:default) > 1 skip = (nthreads(:default) == 1)`
+is circular as filed, but it is the Julia idiom for "assert this premise where
+it is testable, mark it skipped where it is not", and it does that job.
+Rewriting it would be churn; manufacturing Minor findings to look thorough is
+itself a defect in an audit.

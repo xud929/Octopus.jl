@@ -142,8 +142,8 @@ Writing `cqs = BeamLine("CQS", [corr, quad, sext])` and then
 `arc = BeamLine("ARC1", [cqs, dip, cqs, dip, ...])` is exactly how an engineer
 thinks. Expansion flattens it, and each expanded entry records the assemblies it
 came from, addressable as the path `ARC1/CQS[3]` (§5a). Then
-`find(line, sel"ARC1/CQS[3]")` returns that module's entries,
-`find(line, sel"ARC1")` the larger span, a misalignment applied to
+`find_entries(line, sel"ARC1/CQS[3]")` returns that module's entries,
+`find_entries(line, sel"ARC1")` the larger span, a misalignment applied to
 an assembly applies to its members, and additional cross-cutting groups
 (power supply, survey monument) are extra tags rather than a second, conflicting
 tree. No `Depth`, no partial expansion, no half-expanded object.
@@ -185,7 +185,7 @@ AT gets this right with **one** concept. `Refpts` accepts an index, a boolean
 mask, an element type, a name pattern, or a callable, and every selection-taking
 function accepts a `Refpts`. One idea, uniformly applied.
 
-**Recommendation:** a single `find(line, sel)` where `sel` dispatches on type —
+**Recommendation:** a single `find_entries(line, sel)` where `sel` dispatches on type —
 `String` (exact name), `Regex` (pattern), `Type` (element class), `Function`
 (predicate) — returning indices. Everything else composes from it with base
 Julia: `first(find(...))`, `last(find(...))`, `line[find(...)]`. The `first`/`last`
@@ -193,7 +193,7 @@ keyword pairs disappear.
 
 ### 5a. A selector, in the XPath sense
 
-`find` is a selector, and the addressing problem of §3a is a path problem, so
+`find_entries` is a selector, and the addressing problem of §3a is a path problem, so
 the two should be one thing. The shape to borrow is **XPath's**, not CSS's:
 `/` for hierarchy and `[n]` for a positional predicate is exactly
 `ARC1/CQS[3]`. CSS's power lives in combinators over a genuinely attributed
@@ -274,8 +274,8 @@ BeamLine
   runtime object. Type stability, plan caching and the GPU path are untouched. A
   `BeamLine` iterated *during* tracking would be the failure mode to avoid.
 - **`s` computed and cached**, extending `_aperture_s_positions` to all entries.
-- **`find(line, sel)`** as §5, with an assembly name as one more thing `sel`
-  accepts — the engineer's `find(line, sel"ARC1/CQS[12]")` and the physicist's
+- **`find_entries(line, sel)`** as §5, with an assembly name as one more thing `sel`
+  accepts — the engineer's `find_entries(line, sel"ARC1/CQS[12]")` and the physicist's
   `find(line, QuadrupoleSpec)` are the same call.
 - **An assembly is a legitimate misalignment target.** This is what Bmad's
   girder buys and it is the point of naming assemblies at all: displacing a
