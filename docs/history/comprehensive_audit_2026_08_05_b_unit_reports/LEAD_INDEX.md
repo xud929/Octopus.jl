@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **101 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **102 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -117,7 +117,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U7-1 | moderate | CONFIRMED, FIXED (2026-08-06) | `src/tasks/BeamObservers.jl:1094` | `_discard_replayed_snapshots!` truncates the file to preserve |
 | U7-2 | moderate | CONFIRMED, FIXED (2026-08-06) | `src/tasks/BeamObservers.jl:1557 (`_jld2_replace!`), reached from 1549,` | a process death anywhere inside a `JLD2BeamMomentObserver` flush loses |
 | U7-3 | moderate | CLOSED by the U7-2 fix; measured + pinned 2026-08-06 | `src/tasks/BeamObservers.jl:1531–1561` | `JLD2BeamMomentObserver` file size is **quadratic** in the number of |
-| U7-4 | moderate |  | `src/tasks/BeamObservers.jl:1745 (`_is_hdf5_output`), consumed at 1669–` | `MomentObserver` writes HDF5 to whatever path it is given, but |
+| U7-4 | moderate | CONFIRMED, FIXED (2026-08-06) | `src/tasks/BeamObservers.jl:1745 (`_is_hdf5_output`), consumed at 1669–` | `MomentObserver` writes HDF5 to whatever path it is given, but |
 | U7-5 | moderate |  | `src/tasks/BPMObserver.jl:200–205 (`_bpm_centroid`)` | on a CUDA beam a BPM reading copies **all six** coordinate arrays to the |
 | U9-2 | medium |  | `src/elements/lattice_magnets.jl spec blocks (drift 1092–1100, quadrupo` | the per-kind `parameters` declarations under-declare what `_lattice_magnet` |
 | U1-2 | low |  | `src/tasks/strongstrong/pic_cuda.jl:585-605` | the U1-3 fix that landed in this diff copied three of the four fields the CUDA |

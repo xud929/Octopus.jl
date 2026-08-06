@@ -1818,8 +1818,37 @@ function column_names(file::MomentOutputFile)
     end
 end
 
-_is_hdf5_output(path::AbstractString) =
-    lowercase(splitext(String(path))[2]) in (".h5", ".hdf5")
+"""
+Whether a moment file is HDF5, decided by its CONTENT rather than its name.
+
+`MomentObserver` calls `HDF5.h5open(path, "w")` unconditionally, so it writes
+HDF5 to whatever path it is given -- while this predicate used to test only
+`splitext(path)[2] in (".h5", ".hdf5")`. On any other extension the read fell
+through to the JLD2 branch, which returns `file["data"]` whole and never applies
+the `/data[1:record_count, :]` slice its own docstring promises. JLD2 reads an
+HDF5 file successfully (with a "File likely not written by JLD2" warning), so
+the result was silent wrong data, not an error: measured on a run that
+preallocated 10 records and wrote 4, a `.h5` path read back 4 correct rows and a
+`.dat` path read back 10 -- the last six fabricated, all-zero, and carrying turn
+label 0.0 (2026-08-05_b audit, U7-4).
+
+The HDF5 signature is the fixed 8-byte magic at the start of the file, so this
+is exact rather than heuristic. A missing or unreadable file falls back to the
+extension, which keeps the error message about the path rather than the format.
+"""
+function _is_hdf5_output(path::AbstractString)
+    p = String(path)
+    magic = UInt8[0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]
+    try
+        isfile(p) || return lowercase(splitext(p)[2]) in (".h5", ".hdf5")
+        open(p, "r") do io
+            head = read(io, length(magic))
+            return length(head) == length(magic) && head == magic
+        end
+    catch
+        return lowercase(splitext(p)[2]) in (".h5", ".hdf5")
+    end
+end
 
 function _read_hdf5_record_count(h5)
     count = read(h5["record_count"])

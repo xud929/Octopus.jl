@@ -4242,6 +4242,29 @@ end
         after = Octopus.JLD2.jldopen(f -> (size(f["data"], 1), f["record_count"]), p7, "r")
         @test after == before
         @test !isfile(p7 * ".tmp")        # and no debris left behind
+        # 2026-08-05_b audit, U7-4: `MomentObserver` writes HDF5 to whatever
+        # path it is given, but the reader used to pick its branch from the
+        # FILENAME EXTENSION. On any non-.h5/.hdf5 path the read fell to the
+        # JLD2 branch, which returns `data` whole and never applies the
+        # `/data[1:record_count, :]` slice its docstring promises -- so a run
+        # that preallocated 10 records and wrote 4 read back 10 rows, six of
+        # them fabricated zeros carrying turn label 0.0. Detection is by the
+        # HDF5 magic bytes now, so the name cannot lie about the format.
+        let p9 = tempname() * ".dat"          # deliberately NOT .h5
+            o9 = MomentObserver(p9; capacity=2)
+            r9 = Phase6DRep([1.0e-4, 2.0e-4], zeros(2), [1.0e-5, 2.0e-5], zeros(2),
+                            [1.0e-3, 2.0e-3], zeros(2))
+            Octopus.prepare_observer!(o9, (), AlwaysSchedule(), 10, 0)   # plan 10
+            for t in 1:4                                                  # write 4
+                Octopus.observe!(o9, Octopus.with_turn(Octopus.TrackingContext(), t), r9)
+            end
+            Octopus.finalize_observer!(o9)
+            @test Octopus._is_hdf5_output(p9)          # content, not extension
+            d9 = read(MomentOutputFile(p9))
+            @test size(d9, 1) == 4                      # was 10
+            @test d9[:, 1] == [1.0, 2.0, 3.0, 4.0]      # no fabricated turn 0 rows
+            rm(p9; force=true)
+        end
         # 2026-08-05_b audit, U7-3: file size used to be QUADRATIC in the number
         # of flushes, because every flush appended a fresh copy of the growing
         # `data` matrix and JLD2 never reclaimed the space of the dataset
