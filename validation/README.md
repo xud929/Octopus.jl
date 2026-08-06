@@ -382,9 +382,15 @@ julia --project=. validation/high_energy_weakstrong_limit.jl
 OCTOPUS_HIGH_ENERGY_SPECTRAL_CUDA=1 julia --project=. validation/high_energy_weakstrong_limit.jl
 ```
 
-`symplecticity_validation.jl` computes finite-difference Jacobians for all
-current six-dimensional symplectic runtime maps and reports
-`norm(J' * S * J - S, Inf)`.
+`symplecticity_validation.jl` computes finite-difference Jacobians for the 12
+cases `SymplecticityContract` declares -- which it derives rather than copies --
+and reports `norm(J' * S * J - S, Inf)`. That is **not** every six-dimensional
+symplectic runtime map: it covers 7 of the 22 registered kinds declaring
+`Symplectic6DMap`, plus the beam-beam and Lorentz maps. The thick lattice-magnet
+family is covered against PTC instead (a different claim), and the thin kickers,
+marker and thin RF cavity by neither. See the script header. (This entry read
+"for all current six-dimensional symplectic runtime maps" until the 2026-08-05_b
+audit counted it, U24-3.)
 
 ```bash
 julia --project=. validation/symplecticity_validation.jl

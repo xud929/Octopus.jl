@@ -10,9 +10,18 @@ Controls:
     OCTOPUS_SYMPLECTICITY_STEP=3e-7
     OCTOPUS_SYMPLECTICITY_TOL=5e-8
 
-The script checks runtime maps that are registered as `Symplectic6DMap` plus
-the weak-strong beam-beam maps that are intended to be six-dimensional
-symplectic. Stochastic radiation maps are intentionally excluded. Hirata's
+The script checks the 12 cases `SymplecticityContract` declares -- it derives
+that list rather than copying it -- which covers 7 of the 22 registered kinds
+whose metadata declares `Symplectic6DMap`, plus the weak-strong beam-beam maps
+and the Lorentz pair. It is NOT a sweep of every symplectic runtime map: the
+whole thick lattice-magnet family (drift, quadrupole, sextupole, octupole,
+multipole, sbend), the thin kickers and multipoles, the marker and the thin RF
+cavity have no case here. The lattice magnets are covered against PTC instead,
+which is a different claim (agreement with an external code, not
+||J'SJ - S|| <= tol); the thin kickers, marker and RF cavity are covered by
+neither. Counted, not assumed (2026-08-05_b audit, U24-3); this paragraph
+previously read "checks runtime maps that are registered as `Symplectic6DMap`",
+which a reader reasonably took as all of them. Stochastic radiation maps are intentionally excluded. Hirata's
 crossing-angle Lorentz maps are reported separately: they are exact inverse
 coordinate transformations, but only *quasi*-symplectic in accelerator
 coordinates. Their determinants are `sec(angle)^3` and `cos(angle)^3`, so
