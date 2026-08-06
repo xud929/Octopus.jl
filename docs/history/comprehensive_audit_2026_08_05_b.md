@@ -923,29 +923,52 @@ by parameter.
 
 ## 9. Remaining risks
 
-1. **Three regions are read but unreported** (U21, U22, U24 — `test/examples/`
-   + the new `nightly_suite.sh`, the coherent-mode validation cluster, and
-   `validation/` remainder A including the PTC provenance chain and the
-   symplecticity case list). The declared scope is therefore **not fully
-   covered**, and this is the honest boundary of the pass. `nightly_suite.sh`
-   is the one that most deserves the re-run: it is 71 entirely new lines whose
-   whole job is to detect a failing suite, and Measured Lesson 9 records that
-   a trailing pipe eats exactly that signal.
-2. **~90 leads remain unverified.** At the series' measured ~60% survival that
-   is roughly 35 real defects still in the tree, in four miss shapes — and the
-   shape that matters most is "right, but the stated *reason* is wrong", since
-   the reason determines the fix.
-3. **F1 and A-1 are confirmed and unfixed.** F1 leaves a contract that can pass
-   by comparing an empty set; A-1 leaves strong-strong loss accounting absent.
-   Neither is a wrong number today; both are observability defects, which is
-   the class this repository's history says regenerates.
-4. **The instruments are weaker than the code.** Repeatedly this pass, the
-   thing found wanting was a check rather than a kernel: 112 element parameters
-   dropped from a "completeness" count, an aperture probe that cannot fail, a
-   `Core.Box` sweep catching 3 of 7, a TSC parity test whose grid is entirely
-   dyadic, five validation scripts with no assertion of any kind, and a
-   dropped-charge tripwire that may report zero in the blow-up regime it exists
-   for. Phase 12's rule — validate the instrument before trusting a clean
-   sweep — is the single highest-yield thing the next pass can spend time on.
-5. **Bmad reference cases** remain blocked on an external tool; the default
+Rewritten at the close; the version written at the first halt is superseded
+because the three regions it named as uncovered have since reported.
+
+1. **~130 leads remain unverified.** At the series' measured ~60% survival that
+   is roughly 75 real defects still in the tree. The miss shape that matters
+   most is "right, but the stated *reason* is wrong", since the reason
+   determines the fix — this pass produced a clean example in U26-5, where the
+   x-plane conclusion survived repair but every number and the stated reason
+   did not.
+2. **Two confirmed findings are unfixed and priced.** **F1** leaves a contract
+   that can pass by comparing an empty set; **F7** leaves the PIC dropped-charge
+   counter unreachable by construction under `:node`/`:source_slice`. Neither is
+   a wrong number today; both are the observability class this repository's
+   history says regenerates.
+3. **The instruments are weaker than the code, and that is this audit's
+   substantive result.** Confirmed instances: a contract comparing an empty set
+   (F1); a tripwire cancelling to exactly zero at blow-up (F6); a counter
+   disabled by the validator enforcing its precondition (F7); a nightly gate
+   reading its verdict from the program it tests (F8); a completeness count
+   dropping 112 of 501 parameters (U4-2); an aperture probe whose all-NaN
+   baseline can only answer "moved" (U4-1); a `Core.Box` sweep catching 3 of 7
+   injections (U18-1); a TSC parity test sampled only on dyadic points (U20-1);
+   an RNG gate accepting a Philox with its key schedule removed (U25-2); 11 of
+   13 coherent-mode thresholds print-only (U22-11); and the auditor's own guard,
+   miscalibrated twice (C-2). **Phase 12 — validate the instrument before
+   trusting a clean sweep — is where the next pass should spend its budget.**
+4. **A green gate is not a quiet one.** C-2's first two versions emitted 30
+   spurious warnings per full-suite run and the suite stayed green throughout.
+   Nothing in this repository checks warning volume, and that is how two
+   miscalibrations survived a passing gate. A warning-count tripwire is cheap
+   and would have caught both.
+5. **One incomplete run, recorded rather than omitted:** the GaussianPIC leg of
+   `validation/coherent_beam_beam_modes.jl` was still tracking (~28 min) when
+   U22 closed. Its two siblings completed and reproduce their header numbers
+   exactly, and `CoherentModePhysicsContract` covers the same solver at reduced
+   settings, so the gap is bounded — but it was not run to completion.
+6. **U22-1 refutes a published conclusion.** The coherent-modes note's §3
+   conclusion 3 rests on flat-beam values that are a quadrature artifact
+   (Λ 1.92–23.2 shipped vs 1.29–1.32 converged). The note, the script header and
+   `paper/` material derived from them need revisiting together; this is a
+   Knowledge-Layer repair, not a code fix, and it is the largest single item
+   left.
+7. **Provenance gaps that are cheap to close:** the BeamBeam3D cross-code
+   anchor reproduces bit-identically but its checkout (`50d01d8`), run date and
+   deck association are recorded nowhere in the repository (U22-12); and the
+   5e-8 symplecticity budget is duplicated in `solenoid.jl` rather than read
+   from the contract, for include-order reasons (C-2).
+8. **Bmad reference cases** remain blocked on an external tool; the default
    misalignment convention is still validated only against itself.
