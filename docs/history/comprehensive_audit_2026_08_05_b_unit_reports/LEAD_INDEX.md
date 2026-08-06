@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **119 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **121 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -106,8 +106,8 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U4-4 | medium-low | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:1942-1945 (`:sbend` probe)` | `sbend.fringe` is bitwise inert at the probe the contract ships, violating the probes' own stated design rule, and the Symbol blind spot (U4-2) guarantees nobody will ever be told. |
 | U4-5 | medium |  | `src/contracts/Contracts.jl:2444-2454` | the U3-8 repair to the `:cuda_pic_launch` branch of `_solver_contract_receipt_carries` is vacuous for **both** options that actually take that branch, so the per-option receipt claim is still receipt- |
 | U4-6 | medium |  | `src/contracts/Contracts.jl:2432-2443 with :2552-2555 / :2651-2655` | for options whose declared consumer is `:solver_runtime`, "the value reached a runtime consumer" is proven by reading back a receipt that is a verbatim dump of the object under test — the check's pass |
-| U4-7 | medium |  | `src/contracts/Contracts.jl:2459-2471 vs :2338-2339` | the new solver-enumeration tripwire guards `contract.probes`, but the sweep iterates the hardcoded `_solver_contract_types()`. The two sets are different, so the natural response to a firing tripwire  |
-| U4-8 | medium |  | `src/contracts/Contracts.jl:1276-1290 with :1172-1243` | the declaration↔case tripwire constrains exactly **one** registered kind, and fifteen kinds whose declared tracking method is `Symplectic6DMap` have no symplecticity case at all. The tripwire's author |
+| U4-7 | medium | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:2459-2471 vs :2338-2339` | the new solver-enumeration tripwire guards `contract.probes`, but the sweep iterates the hardcoded `_solver_contract_types()`. The two sets are different, so the natural response to a firing tripwire  |
+| U4-8 | medium | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:1276-1290 with :1172-1243` | the declaration↔case tripwire constrains exactly **one** registered kind, and fifteen kinds whose declared tracking method is `Symplectic6DMap` have no symplecticity case at all. The tripwire's author |
 | U4-9 | low-medium |  | `src/contracts/Contracts.jl:867-879 with metrics at :905-915` | `StrongStrongPICBackendConsistencyContract` reports three named checks as passed with nothing compared, for public parameter choices its own docstring advertises. |
 | U5-1 | medium | F2 FIXED | `src/tasks/strongstrong/interface.jl:2015-2025` | the U4-4 ordering fix reversed the truncation window instead of closing it — an |
 | U5-2 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:2217-2218` | the luminosity schedule is evaluated twice per collision per turn — once by the |

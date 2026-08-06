@@ -4265,12 +4265,33 @@ end
     @test haskey(r.metrics, :Solenoid_residual)
     @test haskey(r.metrics, :SolenoidCurvedMultipole_residual)
 
-    # Tripwire control: a temporarily registered kind declaring the contract
-    # with an uncovered runtime type must FAIL the contract by name.
+    # 2026-08-05_b audit, U4-8: the obligation is derived from
+    # `Symplectic6DMap ∈ tracking_methods`, not from `meta.contracts`. The old
+    # set was measured to be exactly ONE kind (:solenoid), so eleven of the
+    # twelve cases could have been deleted without tripping anything. The
+    # structural set is 22 kinds, of which 7 had a case; all 22 do now.
+    @test haskey(r.metrics, :Drift_residual)          # thick family, was uncovered
+    @test haskey(r.metrics, :SBend_residual)
+    @test haskey(r.metrics, :Kicker_residual)         # covered by neither PTC nor this
+    @test haskey(r.metrics, :ThinRFCavity_residual)
+    let declaring = 0
+        for T in Octopus.registered_element_specs()
+            m = Octopus._element_meta_or_nothing(T)
+            m === nothing && continue
+            any(M -> M === Symplectic6DMap, m.tracking_methods) && (declaring += 1)
+        end
+        @test declaring >= 22          # the guarded set, ratcheted
+    end
+
+    # Tripwire control: a temporarily registered kind declaring Symplectic6DMap
+    # with an uncovered runtime type must FAIL the contract by name. Declaring
+    # it through `tracking_methods` is the point -- that is the set the wire now
+    # derives from, and a `contracts=[SymplecticityContract]` declaration alone
+    # no longer obliges anything (U4-8).
     try
         Octopus.register_element_meta!(Octopus.ElementMeta(;
             kind=:symp_liar, spec_type=ElementSpec{:symp_liar},
-            contracts=[SymplecticityContract], runtime_type=Base.RefValue))
+            tracking_methods=[Symplectic6DMap], runtime_type=Base.RefValue))
         rl = validate(SymplecticityContract())
         @test !rl.passed
         @test occursin("symp_liar", rl.message)

@@ -1322,6 +1322,64 @@ function _symplecticity_contract_cases()
         (name=:SolenoidCurvedMultipole,
          element=Solenoid(SolenoidSpec(L=1.3, ks=1.7, h=0.18, kskew=(0.05,),
                                        nst=8)), q0=q0, tolerance=5.0e-7),
+        # The other fifteen kinds that declare Symplectic6DMap (2026-08-05_b
+        # audit, U4-8). Before this the list held 12 cases for 7 of the 22
+        # declaring kinds, and the tripwire below derived its obligation from
+        # `meta.contracts` -- a set containing exactly ONE element, :solenoid --
+        # so removing any of the other eleven cases would not have tripped it.
+        # The lattice magnets among these are checked against PTC, which is a
+        # different claim (agreement with an external code, not
+        # ||J'SJ - S|| <= tol); the thin kickers, marker and RF cavity were
+        # checked by neither.
+        #
+        # Tolerances are ~100x the measured residual rather than the file's
+        # older round numbers, so they can actually catch a break: measured
+        # here, thin elements 1.3e-13, drift/quad/sext/oct/multipole 2.0e-11 to
+        # 7.8e-11, sbend 2.6e-10, thin RF cavity 5.5e-11.
+        (name=:Drift, element=compile_runtime(DriftSpec(L=0.35, h=0.02)),
+         q0=q0, tolerance=1.0e-8),
+        (name=:Quadrupole,
+         element=compile_runtime(QuadrupoleSpec(L=0.4, k1=0.8, nst=2)),
+         q0=q0, tolerance=1.0e-8),
+        (name=:Sextupole,
+         element=compile_runtime(SextupoleSpec(L=0.25, k2=6.0, nst=2)),
+         q0=q0, tolerance=1.0e-8),
+        (name=:Octupole,
+         element=compile_runtime(OctupoleSpec(L=0.15, k3=80.0, nst=2)),
+         q0=q0, tolerance=1.0e-8),
+        (name=:Multipole,
+         element=compile_runtime(MultipoleSpec(L=0.3, k1=0.5, k2=4.0, nst=2)),
+         q0=q0, tolerance=1.0e-8),
+        (name=:SBend,
+         element=compile_runtime(SBendSpec(L=1.1, angle=0.05, k1=0.2, e1=0.02,
+                                           e2=0.015, nst=2)),
+         q0=q0, tolerance=1.0e-8),
+        (name=:ThinRFCavity,
+         element=compile_runtime(ThinRFCavitySpec(197.0e6; strength=1.0e-4,
+                                                  beta0=0.99, gamma0=100.0)),
+         q0=q0, tolerance=1.0e-8),
+        (name=:ThinMultipole,
+         element=compile_runtime(ThinMultipoleSpec(knl=(0.0, 0.05, 1.2))),
+         q0=q0, tolerance=1.0e-11),
+        (name=:ThinDipole, element=compile_runtime(ThinDipoleSpec(k0l=1.0e-3)),
+         q0=q0, tolerance=1.0e-11),
+        (name=:ThinQuadrupole,
+         element=compile_runtime(ThinQuadrupoleSpec(k1l=0.05)),
+         q0=q0, tolerance=1.0e-11),
+        (name=:ThinSextupole, element=compile_runtime(ThinSextupoleSpec(k2l=1.2)),
+         q0=q0, tolerance=1.0e-11),
+        (name=:HKicker, element=compile_runtime(HKickerSpec(hkick=1.0e-4)),
+         q0=q0, tolerance=1.0e-11),
+        (name=:VKicker, element=compile_runtime(VKickerSpec(vkick=1.0e-4)),
+         q0=q0, tolerance=1.0e-11),
+        (name=:Kicker,
+         element=compile_runtime(KickerSpec(hkick=1.0e-4, vkick=-5.0e-5)),
+         q0=q0, tolerance=1.0e-11),
+        # Structurally trivial -- the identity is symplectic by inspection --
+        # but the obligation is derived, and an exemption here would be a
+        # hand-maintained hole of exactly the kind this tripwire exists to close.
+        (name=:Marker, element=compile_runtime(MarkerSpec()),
+         q0=q0, tolerance=1.0e-11),
     )
 end
 
@@ -1356,15 +1414,24 @@ function validate(contract::SymplecticityContract; kwargs...)
     lorentz_passed = inverse_residual <= 1.0e-10 && determinant_error <= 2.0e-7
     all_passed &= lorentz_passed
 
-    # Declaration↔case tripwire (2026-08-05 audit, U3-3): every registered
-    # kind whose metadata declares this contract must be represented above by
-    # an element of its runtime type, or the hand-built list silently falls
-    # behind the registry.
+    # Declaration↔case tripwire (2026-08-05 audit, U3-3), derived from the
+    # STRUCTURAL declaration rather than the contract list (2026-08-05_b audit,
+    # U4-8).
+    #
+    # The obligation used to be `SymplecticityContract ∈ meta.contracts`, and
+    # that set was measured to be exactly `[:solenoid]` -- one kind. Eleven of
+    # the twelve cases could have been deleted without tripping anything, and a
+    # new symplectic element added the way the existing 21 were (declaring only
+    # ElementTrackingBackendConsistencyContract) was invisible. Deriving from
+    # `Symplectic6DMap ∈ meta.tracking_methods` moves the obligation from a
+    # declaration nobody maintains to one the element cannot avoid making: it is
+    # how the element says how it tracks. That took the guarded set from 1 kind
+    # to 22, of which 7 had a case.
     uncovered = Symbol[]
     for T in registered_element_specs()
         meta = _element_meta_or_nothing(T)
         meta === nothing && continue
-        any(C -> C === SymplecticityContract, meta.contracts) || continue
+        any(M -> M === Symplectic6DMap, meta.tracking_methods) || continue
         RT = meta.runtime_type
         (RT !== nothing && any(case -> case.element isa RT, cases)) ||
             push!(uncovered, meta.kind)
@@ -2567,8 +2634,22 @@ end
 description(::Type{SolverOptionEffectivenessContract}) =
     "Checks that every declared strong-strong solver option reaches a runtime consumer."
 
-_solver_contract_types() = (GaussianPoissonSolver, PICPoissonSolver,
-                            GaussianPICPoissonSolver, SpectralPoissonSolver)
+"""
+Concrete Poisson solvers the option sweep iterates.
+
+DERIVED, not listed (2026-08-05_b audit, U4-7). This was a four-element
+hand-written tuple while the enumeration tripwire beside it guarded
+`contract.probes` — two different sets. `probes ⊇ derived` does not imply
+`swept ⊇ derived`, so the natural response to a firing tripwire (add a probe
+entry) made the contract report `:passed` with its unchanged "68 on CPU, 10
+CUDA-only options, 2 launch surfaces" while the new solver's schema was never
+read once. Demonstrated with an injected Octopus-defined solver.
+
+`_concrete_octopus_subtypes` recurses, which `subtypes` does not: a future
+intermediate abstract solver type would otherwise hide every concrete leaf
+beneath it, the same trap U12-3 fixed for execution policies.
+"""
+_solver_contract_types() = Tuple(_concrete_octopus_subtypes(AbstractPoissonSolver))
 
 _solver_option_is_execution(meta) = meta.category in (:execution, :performance)
 
@@ -2693,11 +2774,10 @@ function validate(contract::SolverOptionEffectivenessContract; kwargs...)
     # concrete Poisson solver must carry a probe entry, or a NEW solver is
     # silently outside the sweep — the staleness mode the contract otherwise
     # only guards per-option.
-    for T in subtypes(AbstractPoissonSolver)
-        # UnionAll gate + Octopus-defined only (test scaffolding may subtype
-        # in Main; see the interface.jl tree guards).
-        isabstracttype(T) && continue
-        parentmodule(T) === (@__MODULE__) || continue
+    # The guarded set and the SWEPT set are now the same function
+    # (`_solver_contract_types`), so a probe entry can no longer satisfy the
+    # tripwire for a solver the sweep never visits (U4-7).
+    for T in _solver_contract_types()
         haskey(contract.probes, nameof(T)) || return ContractResult(false,
             "$(nameof(T)) has no solver-option probe entry; the sweep would silently skip it")
     end
