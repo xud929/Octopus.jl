@@ -1038,6 +1038,22 @@ function _discard_replayed_binary_rows!(observer::BeamMomentObserver, first_turn
     empty!(observer.buffer_turns)
     empty!(observer.buffer)
     (observer.initialized && isfile(observer.path)) || return nothing
+    # The `filesize > 0` guard the F7 fix gave both twins and this one lacked
+    # (2026-08-05_b audit, U7-7). Without it the two `read(io, Int32)` below hit
+    # a zero-length file and threw a bare `EOFError` naming neither the path nor
+    # the observer. F7's own disposition for the HDF5 twin was that "a zero-byte
+    # leftover from a crash at create time is not a table; it is replaced
+    # fresh"; the binary twin neither replaced nor explained. Reachability is
+    # low -- `initialized` is monotone within an object, so something outside
+    # the observer must have truncated the file -- but the asymmetry is what
+    # makes the class regenerate.
+    if filesize(observer.path) == 0
+        @warn "moment observer: the recorded file is zero bytes (a crash at " *
+              "create time leaves this), so there are no rows to discard; it " *
+              "will be written fresh" path = observer.path
+        observer.initialized = false
+        return nothing
+    end
     open(observer.path, "r+") do io
         nrows = Int(read(io, Int32))
         fmtlen = Int(read(io, Int32))
@@ -1237,7 +1253,22 @@ end
 
 function _prepare_moment_observer!(observer::MomentObserver, schedule, turns,
                                   first_turn::Integer=0)
-    observer.buffer_capacity == 0 && return nothing
+    if observer.buffer_capacity == 0
+        # `capacity = 0` disables output, which is documented and deliberate --
+        # but "disables output" and "leaves the last run's file untouched" are
+        # different promises, and only the first was made (2026-08-05_b audit,
+        # U7-9). A stale table from a previous run sits at `path` looking
+        # exactly like current output, with nothing said. The file is NOT
+        # removed here, because deleting a user's data on a disabled observer
+        # would be a worse surprise than leaving it; the point is that the
+        # ambiguity stops being silent.
+        isfile(observer.path) && filesize(observer.path) > 0 &&
+            @warn "MomentObserver(capacity=0) writes nothing, and a file already " *
+                  "exists at this path: it is from an EARLIER run and will not be " *
+                  "updated. Delete it, or use a different path, if you are about " *
+                  "to read it as this run's output." path = observer.path maxlog = 1
+        return nothing
+    end
     planned_turns = _scheduled_turns(schedule, turns, first_turn)
     planned_turns === nothing && throw(ArgumentError(
         "MomentObserver requires a predictable schedule: use AlwaysSchedule, EveryNSteps, or AtTurns with known task turns."
@@ -1652,31 +1683,53 @@ function _rows_covariance(stats_buffer)
     return out
 end
 
+"""
+Width in columns of each block of the JLD2 moment table, in order.
+
+The ONE place the layout is stated (2026-08-05_b audit, U7-8). It used to live
+in three independent hand copies -- the column names, a table of hardcoded
+`turn=1:1, mean=2:7, covariance=8:43, ...` offsets, and a third set of
+`col += 6 / += 36 / += 3` steps inside the matrix builder -- with no tripwire.
+Adding or reordering a column in one silently mislabels `read_moment(:emittance)`
+from the others. The three did agree (1+6+36+6+3+1+1+6 = 60); Measured Lesson 4
+is that hand-copied knowledge drifts, so derive and add a tripwire.
+"""
+const _JLD2_MOMENT_BLOCK_WIDTHS = (
+    turn = 1,
+    mean = 6,
+    covariance = 36,
+    rms = 6,
+    emittance = 3,
+    xz_covariance = 1,
+    yz_covariance = 1,
+    diagonal_fourth_central = 6,
+)
+
+"""Column ranges of the JLD2 moment table, derived from the block widths."""
 function _jld2_moment_ranges()
-    return (
-        turn = 1:1,
-        mean = 2:7,
-        covariance = 8:43,
-        rms = 44:49,
-        emittance = 50:52,
-        xz_covariance = 53:53,
-        yz_covariance = 54:54,
-        diagonal_fourth_central = 55:60,
-    )
+    offset = 0
+    pairs = map(keys(_JLD2_MOMENT_BLOCK_WIDTHS)) do name
+        width = getproperty(_JLD2_MOMENT_BLOCK_WIDTHS, name)
+        range = (offset + 1):(offset + width)
+        offset += width
+        name => range
+    end
+    return NamedTuple(pairs)
 end
 
 function _jld2_moment_data_matrix(turn, mean, covariance, rms, emittance, xz, yz, fourth)
     n = length(turn)
     data = Matrix{Float64}(undef, n, length(_jld2_moment_column_names()))
-    col = 1
-    data[:, col] .= turn; col += 1
-    data[:, col:(col + 5)] .= mean; col += 6
-    data[:, col:(col + 35)] .= reshape(covariance, n, 36); col += 36
-    data[:, col:(col + 5)] .= rms; col += 6
-    data[:, col:(col + 2)] .= emittance; col += 3
-    data[:, col] .= xz; col += 1
-    data[:, col] .= yz; col += 1
-    data[:, col:(col + 5)] .= fourth
+    # The SAME ranges the readers use, not a third copy of the arithmetic (U7-8).
+    r = _jld2_moment_ranges()
+    data[:, r.turn] .= turn
+    data[:, r.mean] .= mean
+    data[:, r.covariance] .= reshape(covariance, n, length(r.covariance))
+    data[:, r.rms] .= rms
+    data[:, r.emittance] .= emittance
+    data[:, r.xz_covariance] .= xz
+    data[:, r.yz_covariance] .= yz
+    data[:, r.diagonal_fourth_central] .= fourth
     return data
 end
 

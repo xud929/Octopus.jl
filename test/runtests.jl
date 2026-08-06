@@ -4149,6 +4149,47 @@ end
     end
 end
 
+@testset "The JLD2 moment layout is derived, not hand-copied three times" begin
+    # 2026-08-05_b audit, U7-8. The column layout lived in three independent
+    # hand copies -- the names, a table of hardcoded ranges, and a third set of
+    # `col += 6 / += 36 / += 3` steps in the matrix builder -- with no tripwire.
+    # Adding or reordering a column in one silently mislabels
+    # `read_moment(:emittance)` from the others.
+    widths = Octopus._JLD2_MOMENT_BLOCK_WIDTHS
+    ranges = Octopus._jld2_moment_ranges()
+    names = Octopus._jld2_moment_column_names()
+
+    # (a) the ranges tile the table exactly, with no gap and no overlap
+    @test keys(ranges) == keys(widths)
+    covered = Int[]
+    for k in keys(ranges)
+        r = getproperty(ranges, k)
+        @test length(r) == getproperty(widths, k)
+        append!(covered, collect(r))
+    end
+    @test covered == collect(1:length(names))     # gapless, ordered, complete
+
+    # (b) the names agree with the widths, which is the join the three copies
+    #     could previously break independently
+    @test length(names) == sum(values(widths))
+
+    # (c) and the blocks land where their names say. A mislabelled block is the
+    #     failure this whole tripwire exists for, so check the boundaries by
+    #     name rather than by index arithmetic.
+    @test names[first(ranges.turn)] == "turn"
+    @test names[first(ranges.mean)] == "mean_x"
+    @test names[last(ranges.mean)] == "mean_pz"
+    @test names[first(ranges.covariance)] == "cov_x_x"
+    @test names[last(ranges.covariance)] == "cov_pz_pz"
+    @test names[first(ranges.rms)] == "rms_x"
+    @test names[first(ranges.emittance)] == "emit_x"
+    @test names[last(ranges.emittance)] == "emit_z"
+    @test names[first(ranges.xz_covariance)] == "xz_covariance"
+    @test names[first(ranges.yz_covariance)] == "yz_covariance"
+    @test names[first(ranges.diagonal_fourth_central)] == "diagonal_fourth_x"
+    @test names[last(ranges.diagonal_fourth_central)] == "diagonal_fourth_pz"
+end
+
 @testset "The near-round Gauss-Legendre reference has not drifted from its twin" begin
     # 2026-08-05_b audit, U23-13. The 96-point Gauss-Legendre reference is the
     # independent standard the whole near-round validation rests on, and it
