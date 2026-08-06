@@ -4149,6 +4149,42 @@ end
     end
 end
 
+@testset "The near-round Gauss-Legendre reference has not drifted from its twin" begin
+    # 2026-08-05_b audit, U23-13. The 96-point Gauss-Legendre reference is the
+    # independent standard the whole near-round validation rests on, and it
+    # exists as TWO verbatim hand copies: `_transition_gauss_legendre` +
+    # `_transition_reference` in validation/near_round_gaussian_transition.jl,
+    # and the inline Golub-Welsch decomposition plus `transition_reference` in
+    # this file. Character-for-character the same algorithm, with no shared
+    # source and nothing tying them together -- "do not hand-copy knowledge",
+    # and a correction to one would not reach the other.
+    #
+    # Both copies stay: an independent re-derivation is what makes the script a
+    # validation of the suite's tolerances rather than a restatement of them.
+    # What was missing is this: the script's OWN definitions are loaded here (a
+    # slice of the file, so its sweep does not run) and the two are required to
+    # agree.
+    script = joinpath(pkgdir(Octopus), "validation", "near_round_gaussian_transition.jl")
+    lines = readlines(script)
+    first_line = findfirst(l -> startswith(l, "function _transition_gauss_legendre"), lines)
+    last_line = findfirst(l -> startswith(l, "function _transition_value"), lines)
+    @test first_line !== nothing && last_line !== nothing && last_line > first_line
+    probe = Module(:NearRoundReferenceProbe)
+    Core.eval(probe, :(using LinearAlgebra))
+    Core.eval(probe, Meta.parseall(join(lines[first_line:(last_line - 1)], "\n")))
+
+    worst = 0.0
+    for (s1, s2) in ((1.0e-4, 1.0e-4), (1.0e-4, 0.9e-4), (2.0e-4, 1.0e-4)),
+        (x, y) in ((1.0e-5, 2.0e-5), (-3.0e-5, 1.0e-5), (0.0, 4.0e-5))
+        mine = transition_reference(s1, s2, x, y)
+        theirs = Base.invokelatest(probe._transition_reference, s1, s2, x, y)
+        worst = max(worst, maximum(abs.(collect(mine) .- collect(theirs))))
+    end
+    # Same algorithm in the same arithmetic: they must agree to round-off, not
+    # merely to a physics tolerance.
+    @test worst <= 1.0e-18
+end
+
 @testset "No docstring is detached by comment lines" begin
     # 2026-08-05_b audit, U12-9. On Julia 1.12 a string literal followed by
     # COMMENT lines and then a definition attaches to nothing, silently. The

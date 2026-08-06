@@ -18,7 +18,7 @@ fields. Error metric: per-point transverse-kick error normalized by the maximum
 exact kick norm over a +-4 sigma grid; medians and maxima reported. Deterministic
 Gaussian quantile lattices (no shot noise) isolate the systematic field error.
 
-Findings (see docs/theory/gaussian_subtracted_pic_solver.md): the hybrid is never worse
+Findings (see docs/theory/gaussian_subtracted_pic_solver.md): in the MEDIAN the hybrid is never worse
 than plain PIC and beats it by ~2-3x for near-Gaussian sources (the beam-beam
 regime), degrading gracefully toward parity as the perturbation grows. The
 weakest gain is for a diagonally offset perturbation, which introduces x-y

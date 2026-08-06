@@ -118,7 +118,8 @@ residual.
 julia --project=. validation/gaussian_pic_bigaussian_validation.jl
 ```
 
-The hybrid is never worse than plain PIC and beats it ~2-3x for near-Gaussian
+The hybrid is never worse than plain PIC IN THE MEDIAN (its worst-point error
+can exceed PIC's -- measured max_gain 0.9957; U23-12) and beats it ~2-3x for near-Gaussian
 sources, degrading gracefully toward parity as the perturbation grows. The
 weakest gain is a diagonally offset perturbation (x-y coupling the uncoupled
 subtraction cannot remove), motivating the coupled/rotated subtraction branch.

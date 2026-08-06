@@ -33,14 +33,25 @@ Run from the project root:
 
     julia --project=. validation/spectral_poisson_field_validation.jl
 
-Two solver variants are implemented:
+Four solver variants are defined here, and the main table reports THREE of them
+plus PIC (2026-08-05_b audit, U23-11: the header said "two", and the two it
+described were not the two the table shows):
 
-- grid-free: mode coefficients formed directly from particle positions
-  (`rho_lm = (4/ab) sum_p sin(alpha_l x_p) sin(beta_m y_p)`); cost O(Np*L*M) for
-  deposition and O(Nf*L*M) for evaluation. Uses the exact analytic derivative.
-- grid (DST): particles deposited by CIC onto an Nx x Ny mesh, solved by a 2D
-  type-I discrete sine transform, differentiated by finite differences; cost
-  O(Np) + O(Nx*Ny*log) + O(Nf). This is the practical variant.
+- `spectral-onmesh` (`spectral_onmesh_field`) -- grid-free coefficients
+  evaluated on the mesh;
+- `spectral-specderiv` (`spectral_specderiv_field`) -- grid-free with the exact
+  analytic (spectral) derivative;
+- `spectral-grid-fd` (`spectral_grid_field`) -- particles deposited by CIC onto
+  an Nx x Ny mesh, solved by a 2D type-I discrete sine transform, differentiated
+  by finite differences; cost O(Np) + O(Nx*Ny*log) + O(Nf). The practical
+  variant;
+- the grid-free reference used by the scaling regression below, which does not
+  appear as a row in the main table.
+
+The underlying distinction is between forming mode coefficients directly from
+particle positions (`rho_lm = (4/ab) sum_p sin(alpha_l x_p) sin(beta_m y_p)`;
+cost O(Np*L*M) for deposition and O(Nf*L*M) for evaluation) and depositing to a
+mesh first.
 
 Outputs `result/spectral_poisson_field_validation.tsv`.
 =#
@@ -255,7 +266,11 @@ for (ratio, name, pg) in cases
     Ky = [last(gaussian_beambeam_kick(sx, sy, xf[k], yf[k])) for k in eachindex(xf)]
 
     # Recommended settings: square domain sized to max(sx,sy); anisotropic grid
-    # resolving the thin direction with Ny ~ 2*domsig*(sx/sy).
+    # resolving the thin direction with Ny ~ 6*domsig*(smax/min(sx,sy)), capped
+    # at 1200. The comment used to say `2*domsig*(sx/sy)` -- a factor of 3 below
+    # what the line beneath it requests, and for flat25 it predicted 800 where
+    # the code asks for 2400 and the cap delivers 1200 (2026-08-05_b audit,
+    # U23-11).
     smax = max(sx, sy); domsig = 16.0
     Lx = domsig * smax; Ly = domsig * smax
     Nx = 128; Ny = max(128, ceil(Int, 6 * domsig * (smax / min(sx, sy))))
@@ -268,8 +283,9 @@ for (ratio, name, pg) in cases
         Ex, Ey = f()
         md, p95, mx = shape_relerr(Ex, Ey, Kx, Ky)
         t = bench(f)
-        params = startswith(label, "spectral") ?
-                 (label == "spectral-free" ? "d=16 L=M=96" : "d=16 Nx=$Nx Ny=$Ny") : "grid=$pg TSC"
+        # No "spectral-free" arm: the loop above never produces that label, so the
+        # branch that tested for it was dead (2026-08-05_b audit, U23-11).
+        params = startswith(label, "spectral") ? "d=16 Nx=$Nx Ny=$Ny" : "grid=$pg TSC"
         @printf("%-9s %5.0f  %-18s %-16s %.3e  %.3e  %.3e  %.4f\n", name, ratio, label, params, md, p95, mx, t)
         push!(rows, @sprintf("%s\t%.0f\t%s\t%s\t%.6e\t%.6e\t%.6e\t%.6f", name, ratio, label, params, md, p95, mx, t))
     end

@@ -707,13 +707,22 @@ the grid residual (`validation/gaussian_pic_bigaussian_validation.jl`, grid 128)
 | +20% perturbation, offset $(2,2)\sigma$ (coupled) | 6.5e-4 | 4.4e-4 | 1.5x |
 | +10% far perturbation, $(3,0)\sigma$ | 6.1e-4 | 4.5e-4 | 1.4x |
 
-The hybrid is **never worse than PIC** and degrades *gracefully*: the gain is
+The hybrid is **never worse than PIC in the median** and degrades *gracefully*: the gain is
 largest (2–3x) for near-Gaussian sources — the physically relevant beam-beam
 regime — and shrinks toward parity as the source departs from Gaussian. The
 weakest case is a *diagonally* offset perturbation, which induces x–y coupling
 ($\sigma_{xy}\neq0$) the uncoupled subtraction leaves in the residual; an x-only
 offset (no coupling) keeps a 2.2–3.4x gain. This is exactly the regime the
 coupled (rotated) subtraction of Section 7 would recover.
+
+**The median qualifier is load-bearing** (2026-08-05_b audit, U23-12). The table
+above reports medians; the same runs also report a max-error column, and there
+the hybrid's worst point can exceed PIC's once the residual and the
+discretisation floor cross: measured `max_gain` **0.9957** at round/grid 128 in a
+fresh run, and 0.9988 / 0.9982 at 25:1 on grids 96 and 256 in `paper/data/`. The
+bi-Gaussian script's random-draw columns show the same for the coupled case,
+HYB 1.30e-3 against PIC 1.25e-3. The shot-noise paragraph below explains why;
+the sentence above used to be unqualified and sat directly over it.
 
 **Shot-noise caveat (important).** The gains above are in the *systematic*
 (coherent) field — the deterministic grid-discretization bias, which is the part

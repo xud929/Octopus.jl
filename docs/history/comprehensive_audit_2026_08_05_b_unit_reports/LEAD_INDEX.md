@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **179 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **182 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -213,9 +213,9 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U22-12 | low |  | `validation/coherent_beam_beam_modes_beambeam3d.jl:8-30,67-68` | The cross-code comparison **data** is committed and reproduces exactly, but its |
 | U22-17 | low |  | `validation/coherent_mode_scans.jl and validation/coherent_mode_eic_com` | The committed strong-strong archives **no longer reproduce** from current code |
 | U23-10 | low |  | `validation/gaussian_pic_field_validation.jl:90 and validation/gaussian` | Both local-reimplementation scripts hardcode the second-order field derivative, so the |
-| U23-11 | low |  | `validation/spectral_poisson_field_validation.jl:23, 244-245, 259` | Three header/comment statements disagree with the code beneath them (U20-4b/c/d, all |
-| U23-12 | low |  | `docs/theory/gaussian_subtracted_pic_solver.md:693 + validation/gaussia` | "The hybrid is **never worse than PIC**" is contradicted by the max-error column of the |
-| U23-13 | low |  | `validation/near_round_gaussian_transition.jl:29-60 (cross-file seam)` | The 96-point Gauss-Legendre reference — the independent standard the whole near-round |
+| U23-11 | low | CONFIRMED, FIXED (2026-08-06) — all three mismatches | `validation/spectral_poisson_field_validation.jl:23, 244-245, 259` | Three header/comment statements disagree with the code beneath them (U20-4b/c/d, all |
+| U23-12 | low | CONFIRMED, FIXED (2026-08-06) — qualified in the theory note, README and script header | `docs/theory/gaussian_subtracted_pic_solver.md:693 + validation/gaussia` | "The hybrid is **never worse than PIC**" is contradicted by the max-error column of the |
+| U23-13 | low | CONFIRMED, FIXED (2026-08-06) — both copies kept, drift tripwire added | `validation/near_round_gaussian_transition.jl:29-60 (cross-file seam)` | The 96-point Gauss-Legendre reference — the independent standard the whole near-round |
 | U23-4 | low | FIXED | `validation/gaussian_pic_field_validation.jl:17-20` | The header asserts the script exercises "real internals … PIC via `_pic_solve_field`"; |
 | U23-5 | low |  | `docs/theory/gaussian_subtracted_pic_solver.md:695-701 + validation/gau` | The documented motivation for the coupled (rotated) subtraction branch — "the weakest |
 | U23-6 | low | CONFIRMED, FIXED (2026-08-06) — blindness stated exactly; suite already carries the mitigation | `validation/spectral_poisson_field_validation.jl:215-221` | `shape_relerr` returns **exactly 0.000e+00** for a "solver" whose field is the exact |
