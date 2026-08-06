@@ -400,9 +400,22 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
         # success, so a blown-up run left no loss file at all (audit part 7,
         # T6). The stored turn is deliberately NOT advanced, matching the
         # docstring above.
-        summary = _task_loss_summary(task, rep)
-        wrote_file = _write_task_loss_log(task, summary)
-        _report_losses(task, rep, summary, wrote_file)
+        #
+        # Best-effort, and that is the whole point: an exception is already in
+        # flight, and a failure of this flush must not REPLACE the error that
+        # actually stopped the run. It did -- a `loss_log` on an unwritable
+        # path surfaced an `HDF5.API.H5Error` while the real tracking error
+        # was discarded, so the user debugged the wrong thing (2026-08-05_b
+        # audit, U13-2).
+        try
+            summary = _task_loss_summary(task, rep)
+            wrote_file = _write_task_loss_log(task, summary)
+            _report_losses(task, rep, summary, wrote_file)
+        catch flush_error
+            @warn "the crashed run's loss accounting could not be flushed; the \
+                   tracking error that stopped the run is the one below, and is \
+                   the one to fix" flush_error
+        end
         rethrow()
     end
     task.next_turn[] = next_turn
@@ -502,6 +515,7 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     # disagrees with it on every execute! after the first.
     prepare_observers!(task.observers, runtime_elems; turns=turns, first_turn=first_turn)
     prepare_line_observers!(runtime_entries; turns=turns, first_turn=first_turn)
+    tracking_completed = false
     try
         base_ctx = TrackingContext()
         for offset in 0:(turns - 1)
@@ -516,14 +530,44 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             _execute_tracking_plan_turn!(rep, plan, policy, ctx)
             run_observers!(task.observers, ctx, rep)
         end
+        tracking_completed = true
     finally
         # Nested so the line observers are finalized even when a task-level
         # finalizer throws; each helper already finishes its own list before
         # rethrowing its first error (audit part 7, T7).
-        try
-            finalize_observers!(task.observers)
-        finally
-            _finalize_line_observers!(runtime_entries)
+        #
+        # The two paths differ, and the difference is the fix (2026-08-05_b
+        # audit, U13-3):
+        #
+        #   tracking SUCCEEDED -- a finalizer failure IS the failure. It means
+        #     an output could not be closed or written, so it must raise;
+        #     swallowing it would lose data silently.
+        #   tracking FAILED -- an exception is already in flight, and Julia's
+        #     `finally` semantics make a throw here REPLACE it. A broken
+        #     observer finalizer hid the physics error that stopped the run
+        #     (measured: `FINALIZER_ERROR` surfaced, the real error vanished).
+        #     Finalize best-effort and warn; never mask the primary error.
+        if tracking_completed
+            try
+                finalize_observers!(task.observers)
+            finally
+                _finalize_line_observers!(runtime_entries)
+            end
+        else
+            try
+                finalize_observers!(task.observers)
+            catch finalize_error
+                @warn "an observer finalizer failed while another error was \
+                       already propagating; the error that stopped the run is \
+                       the one below" finalize_error
+            end
+            try
+                _finalize_line_observers!(runtime_entries)
+            catch finalize_error
+                @warn "a line-observer finalizer failed while another error was \
+                       already propagating; the error that stopped the run is \
+                       the one below" finalize_error
+            end
         end
     end
     return rep
