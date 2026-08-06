@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **81 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **82 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -114,7 +114,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U5-3 | low-medium |  | `src/tasks/strongstrong/interface.jl:2009-2010 (declaration at 1596-160` | `luminosity_append` declares `consumer=:strong_strong_output`, but the only |
 | U5-4 | low-medium |  | `src/tasks/strongstrong/interface.jl:1726-1733` | the task block of `validate_configuration_metadata` compares the schema default to |
 | U6-3 | medium (performance) | CLOSED by the U6-2 fix; measured + pinned 2026-08-06 | `src/tasks/strongstrong/pic_cpu.jl:1990–1991` | the luminosity deposit calls the **workspace-less** `_pic_deposit!`, so above 4,096 |
-| U7-1 | moderate |  | `src/tasks/BeamObservers.jl:1094` | `_discard_replayed_snapshots!` truncates the file to preserve |
+| U7-1 | moderate | CONFIRMED, FIXED (2026-08-06) | `src/tasks/BeamObservers.jl:1094` | `_discard_replayed_snapshots!` truncates the file to preserve |
 | U7-2 | moderate |  | `src/tasks/BeamObservers.jl:1557 (`_jld2_replace!`), reached from 1549,` | a process death anywhere inside a `JLD2BeamMomentObserver` flush loses |
 | U7-3 | moderate |  | `src/tasks/BeamObservers.jl:1531–1561` | `JLD2BeamMomentObserver` file size is **quadratic** in the number of |
 | U7-4 | moderate |  | `src/tasks/BeamObservers.jl:1745 (`_is_hdf5_output`), consumed at 1669–` | `MomentObserver` writes HDF5 to whatever path it is given, but |

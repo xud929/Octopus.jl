@@ -1091,7 +1091,19 @@ function _discard_replayed_snapshots!(observer::CoordinateSnapshotObserver, firs
         truncate(io, offset)
     end
     resize!(observer.written, idx - 1)
-    isempty(observer.written) && (observer.append = false)
+    # `append = false` is only correct when NOTHING precedes this object's
+    # records. `offset` is the byte position before the first record being
+    # dropped, so a non-zero offset with an empty `written` list means the file
+    # still holds data this observer never wrote -- the very data the
+    # `truncate` above just took care to preserve, per this function's own
+    # docstring ("records in a pre-existing file the object never wrote cannot
+    # be attributed and are left alone").
+    #
+    # Resetting unconditionally made the next `observe!` compute offset = 0 and
+    # reopen with "w", destroying that prefix. Measured: a 19-byte foreign
+    # prefix survived the discard (file truncated 215 -> 19) and was gone after
+    # the retry (2026-08-05_b audit, U7-1).
+    isempty(observer.written) && offset == 0 && (observer.append = false)
     return nothing
 end
 

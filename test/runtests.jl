@@ -4197,6 +4197,39 @@ end
     end
     @test nrec == 3
 
+    # 2026-08-05_b audit, U7-1: the snapshot observer's discard truncates the
+    # file to PRESERVE records it cannot attribute -- its docstring says
+    # unattributable pre-existing data is "left alone" -- and then set
+    # `append = false` unconditionally, so the next observe! reopened with "w"
+    # and destroyed exactly what the truncate had just preserved. The reset is
+    # only correct when nothing precedes this observer's own records.
+    let p5 = tempname() * ".bin"
+        write(p5, "FOREIGN-PREFIX-DATA")
+        prefix = filesize(p5)
+        obs = CoordinateSnapshotObserver(p5; append=true)
+        rep5 = Phase6DRep(collect(1.0:4), zeros(4), zeros(4), zeros(4), zeros(4), zeros(4))
+        Octopus.observe!(obs, Octopus.with_turn(Octopus.TrackingContext(), 5), rep5)
+        Octopus._discard_replayed_snapshots!(obs, 5)
+        @test filesize(p5) == prefix          # the truncate preserved it
+        @test obs.append                      # and the reset must NOT have fired
+        Octopus.observe!(obs, Octopus.with_turn(Octopus.TrackingContext(), 5), rep5)
+        @test String(read(p5)[1:prefix]) == "FOREIGN-PREFIX-DATA"   # still there
+        rm(p5; force=true)
+    end
+    # Control: with NO foreign prefix the reset must still happen, or a retry
+    # appends a second copy instead of replacing the first.
+    let p6 = tempname() * ".bin"
+        obs = CoordinateSnapshotObserver(p6; append=true)
+        rep6 = Phase6DRep(collect(1.0:4), zeros(4), zeros(4), zeros(4), zeros(4), zeros(4))
+        Octopus.observe!(obs, Octopus.with_turn(Octopus.TrackingContext(), 5), rep6)
+        one_record = filesize(p6)
+        Octopus._discard_replayed_snapshots!(obs, 5)
+        @test !obs.append
+        Octopus.observe!(obs, Octopus.with_turn(Octopus.TrackingContext(), 5), rep6)
+        @test filesize(p6) == one_record      # replaced, not appended
+        rm(p6; force=true)
+    end
+
     foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
 end
 
