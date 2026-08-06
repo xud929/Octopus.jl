@@ -1916,7 +1916,12 @@ end
     r = validate(ElementParameterEffectivenessContract())
     @test r.status === :passed
     @test r.metrics[:ignored] == 0
-    @test r.metrics[:checked] > 200
+    # Today's exact count, not a round number 43% below it. At `> 200` against a
+    # real 353 the floor tolerated losing 153 parameter checks in silence, which
+    # is the same shape as a skip that reports as a pass (2026-08-05_b audit,
+    # U17b-3). Raise this when a new differentiable parameter is registered;
+    # never lower it.
+    @test r.metrics[:checked] >= 353
     # Every element kind that has a friendly constructor is now probed, either
     # explicitly or through its own curated example.
     # Tightened from <= 3 (2026-08-05 audit): the three kinds this pin was

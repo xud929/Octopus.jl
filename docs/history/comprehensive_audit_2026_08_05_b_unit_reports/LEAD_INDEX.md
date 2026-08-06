@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **78 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **80 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -36,7 +36,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U11-1 | medium | F6 FIXED | `src/tasks/strongstrong/spectral_cuda.jl:49-50 (identical copies at 440` | The CUDA R9 dropped-charge tripwire reports **exactly zero** for the most |
 | U12-1 | medium | CONFIRMED, FIXED (2026-08-06) | `src/knowledge/Knowledge.jl:891-902 (declared-defaults check absent)` | `ParamMeta.default` is decoration — nothing in the repository compares a |
 | U12-11 | medium | CONFIRMED, FIXED (2026-08-06) | `src/policies/Policies.jl:259-264` | `_active_cuda_launch` is an **undeclared second consumer** of |
-| U12-2 | medium |  | `src/knowledge/Knowledge.jl:904-910, 948-965 (parameter-is-read and rea` | nothing verifies that a declared element parameter is consumed by the |
+| U12-2 | medium | PARTLY WRONG: parameter-is-read already covered (353 checks); recorded 2026-08-06 | `src/knowledge/Knowledge.jl:904-910, 948-965 (parameter-is-read and rea` | nothing verifies that a declared element parameter is consumed by the |
 | U12-3 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:1617 and :1743 — hardcoded POLICY ` | `validate_configuration_metadata`'s type enumeration was totalized for |
 | U12-4 | medium | CONFIRMED, FIXED (2026-08-06) | `src/knowledge/Knowledge.jl:960-964` | for an element declaring more than one tracking method, only the |
 | U13-1 | medium | CONFIRMED, FIXED (2026-08-06) | `src/knobs/Knobs.jl:394-418` | `@knob p::T` on an existing knob whose converted value is `isequal` to |
@@ -52,7 +52,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U16-4 | medium | CONFIRMED, FIXED (2026-08-06) | `src/elements/patch.jl:118-127 (`_patch_reference_length`)` | ** `_patch_reference_length` returns the new origin's displacement |
 | U16-5 | medium | CONFIRMED; documented + pinned, not re-signed (2026-08-06) | `src/elements/patch.jl:74-82 vs src/elements/ref_tilt.jl:69-70` | ** The patch and the misalignment/`ref_tilt` family share |
 | U17b-1 | medium |  | `test/runtests.jl:1599-1601` | the `_curv_vers` seam loop asserts `< 1.0e-14` on a quantity whose measured value |
-| U17b-3 | low-medium |  | `test/runtests.jl:1889` | `@test r.metrics[:checked] > 200` leaves 153 checks (43% of the real count) of |
+| U17b-3 | low-medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:1889` | `@test r.metrics[:checked] > 200` leaves 153 checks (43% of the real count) of |
 | U18-1 | medium |  | `test/runtests.jl:3134-3207 ("No method grows a Core.Box outside the ar` | the permanent `Core.Box` sweep catches **3 of 7** injected boxes — its |
 | U18-2 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:3209-3288 ("CPU solver stack is thread-count invarian` | the second (above-threshold) block is a hand-copy of the first block's |
 | U18-3 | low-medium |  | `test/runtests.jl:4252-4256, 4270-4274 ("Lattice cells track and stay s` | three CPU↔CUDA agreement checks are asserted as |
