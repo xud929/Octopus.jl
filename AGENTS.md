@@ -98,10 +98,22 @@ Lessons"); the receipts are the dated records in `docs/history/`.
   thresholding. After a fix lands, re-read the call sites and sibling tables
   it touched, and re-run the property the fix was *about* on the neighbours
   it did not change.
+- A configuration you *set* is not a configuration the code *read*. Assert
+  what the run recorded, not what you passed in. A U3-2 sweep reported all
+  four strong-strong CUDA routes healthy at 512, 768 and 1024 threads — a
+  clean false negative, because the policy went to the beams and not to the
+  `StrongStrongTask`, so every launch silently used 256. The execution
+  receipts said so; the exit status did not. Where a setting can also arrive
+  ambiently (a process-global launch config, an env var), make the assertion
+  conditional on the recorded request and add an explicit anti-vacuity check
+  that at least one path really carried it — otherwise the test passes alone
+  and fails in the suite, or worse, passes both times having tested nothing.
 - Do not hand-copy knowledge (case lists, solver enumerations, spec
   tables). Derive from the one authoritative source and add a coverage
   tripwire; extending a check to cover everything tends to find a real bug
-  immediately.
+  immediately. This applies to *launch sites* too: the first U3-2 fix capped
+  four kick launches and left eight, so the pin passed standalone and failed
+  in the suite when a different route reached an uncapped kernel.
 - Loud beats silent: dropped charge, dropped rows, skipped checks, and
   ignored configuration must warn, throw, or be documented as inert —
   never vanish.

@@ -757,7 +757,8 @@ if _HAS_CUDA
             x02 = T(fg2.x0); y02 = T(fg2.y0); hx2 = T(fg2.width) / T(nx - 1); hy2 = T(fg2.height) / T(ny - 1)
             g1 = _cuda_gpic_gtuple(T, prep1); g2 = _cuda_gpic_gtuple(T, prep2)
             if pic.longitudinal_kick
-                CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_gpic_kick_pair_indexed_longitudinal_kernel!(
+                _cuda_launch_capped!(_cuda_gpic_kick_pair_indexed_longitudinal_kernel!, (threads=threads, blocks=blocks), stream,
+                    
                     rep1.x, rep1.px, rep1.y, rep1.py, rep1.pz, rep1.z, idx1,
                     rep2.x, rep2.px, rep2.y, rep2.py, rep2.pz, rep2.z, idx2,
                     phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R,
@@ -766,7 +767,8 @@ if _HAS_CUDA
                     T(sc1), hzi1, zbias1, T(kbb1), g1, T(sc2), hzi2, zbias2, T(kbb2), g2,
                 )
             else
-                CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_gpic_kick_pair_indexed_kernel!(
+                _cuda_launch_capped!(_cuda_gpic_kick_pair_indexed_kernel!, (threads=threads, blocks=blocks), stream,
+                    
                     rep1.x, rep1.px, rep1.y, rep1.py, rep1.z, idx1,
                     rep2.x, rep2.px, rep2.y, rep2.py, rep2.z, idx2,
                     phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R,
@@ -1109,7 +1111,8 @@ if _HAS_CUDA
             x0 = T(field_grid.x0); y0 = T(field_grid.y0)
             hx = T(field_grid.width) / T(nx - 1); hy = T(field_grid.height) / T(ny - 1)
             if pic.longitudinal_kick
-                CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_gpic_kick_longitudinal_kernel!(
+                _cuda_launch_capped!(_cuda_gpic_kick_longitudinal_kernel!, (threads=threads, blocks=blocks), stream,
+                    
                     field.x, field.px, field.y, field.py, field.pz,
                     field.x, field.px, field.y, field.py, field.z, field.pz,
                     phiL, ExL, EyL, phiR, ExR, EyR, x0, y0, hx, hy, Int32(nx), Int32(ny), method_code,
@@ -1117,7 +1120,8 @@ if _HAS_CUDA
                     ns, mpx, mpy, sigxL, sigyL, muxL, muyL, sigxR, sigyR, muxR, muyR, rxL, ryL, rxR, ryR,
                 )
             else
-                CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_gpic_kick_kernel!(
+                _cuda_launch_capped!(_cuda_gpic_kick_kernel!, (threads=threads, blocks=blocks), stream,
+                    
                     field.x, field.px, field.y, field.py,
                     field.x, field.px, field.y, field.py, field.z,
                     phiL, ExL, EyL, phiR, ExR, EyR, x0, y0, hx, hy, Int32(nx), Int32(ny), method_code,

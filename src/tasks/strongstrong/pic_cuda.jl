@@ -1785,7 +1785,8 @@ if _HAS_CUDA
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
             nx, ny = solver.grid
             hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
-            CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_node_kernel!(
+            _cuda_launch_capped!(_cuda_pic_kick_node_kernel!, (threads=threads, blocks=blocks), stream,
+                
                 out.x, out.px, out.y, out.py, out.pz,
                 field.x, field.px, field.y, field.py, field.z, field.pz,
                 phiL, ExL, EyL, ExR, EyR, phiZ,
@@ -1975,7 +1976,8 @@ if _HAS_CUDA
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
             nx, ny = solver.grid
             hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
-            CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_quadratic_kernel!(
+            _cuda_launch_capped!(_cuda_pic_kick_quadratic_kernel!, (threads=threads, blocks=blocks), stream,
+                
                 out.x, out.px, out.y, out.py, out.pz,
                 field.x, field.px, field.y, field.py, field.z, field.pz,
                 phiL, ExL, EyL, phiM, ExM, EyM, phiR, ExR, EyR,
@@ -1997,7 +1999,8 @@ if _HAS_CUDA
             nx, ny = solver.grid
             hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
             if solver.longitudinal_kick
-                CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_longitudinal_kernel!(
+                _cuda_launch_capped!(_cuda_pic_kick_longitudinal_kernel!, (threads=threads, blocks=blocks), stream,
+                
                     out.x, out.px, out.y, out.py, out.pz,
                     field.x, field.px, field.y, field.py, field.z, field.pz,
                     phiL, ExL, EyL, phiR, ExR, EyR,
@@ -2007,7 +2010,8 @@ if _HAS_CUDA
                     T(source_center), hzi, zbias, T(kbb),
                 )
             else
-                CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_kernel!(
+                _cuda_launch_capped!(_cuda_pic_kick_kernel!, (threads=threads, blocks=blocks), stream,
+                
                     out.x, out.px, out.y, out.py,
                     field.x, field.px, field.y, field.py, field.z,
                     phiL, ExL, EyL, phiR, ExR, EyR,
@@ -2106,7 +2110,8 @@ if _HAS_CUDA
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
             nx, ny = solver.grid
             hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
-            CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_node_indexed_kernel!(
+            _cuda_launch_capped!(_cuda_pic_kick_node_indexed_kernel!, (threads=threads, blocks=blocks), stream,
+                
                 rep.x, rep.px, rep.y, rep.py, rep.pz, rep.z, idx,
                 phiL, ExL, EyL, ExR, EyR, phiZ,
                 T(gL.field_grid.x0), T(gL.field_grid.y0),
@@ -3511,7 +3516,8 @@ if _HAS_CUDA
             method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
             nx, ny = solver.grid
             hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
-            CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_kick_quadratic_indexed_kernel!(
+            _cuda_launch_capped!(_cuda_pic_kick_quadratic_indexed_kernel!, (threads=threads, blocks=blocks), stream,
+                
                 rep.x, rep.px, rep.y, rep.py, rep.pz, rep.z, idx,
                 phiL, ExL, EyL, phiM, ExM, EyM, phiR, ExR, EyR,
                 T(field_grid.x0), T(field_grid.y0),

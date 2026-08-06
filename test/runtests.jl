@@ -4054,6 +4054,27 @@ end
     @test d.params[:my_note] == "hello"
 end
 
+
+@testset "Every register-heavy kick launch goes through the thread cap" begin
+    # Measured Lesson 4, applied to launch sites (2026-08-05_b audit, U3-2). The
+    # first fix here capped four kick launches and left EIGHT uncapped, which is
+    # how the pin above passed standalone and failed in the full suite -- a
+    # different route reached a kernel the cap never saw. A hand-maintained list
+    # of launch sites has nothing to keep it honest, so the source is the list.
+    #
+    # This is deliberately a SOURCE check: the uncapped sites are unreachable
+    # without a GPU, so no runtime test on CI could ever see them.
+    for file in ("pic_cuda.jl", "gaussian_pic_cuda.jl")
+        path = joinpath(pkgdir(Octopus), "src", "tasks", "strongstrong", file)
+        raw = String[]
+        for (i, line) in enumerate(eachline(path))
+            occursin("CUDA.@cuda", line) && occursin("kick", lowercase(line)) &&
+                push!(raw, "$(file):$(i)")
+        end
+        @test isempty(raw)
+    end
+end
+
 @testset "A launch the device accepts but the kernel cannot run" begin
     # 2026-08-05_b audit, U3-2. The thread count reaching the strong-strong kick
     # kernels was the raw policy value, and the only upstream validation compares
@@ -4081,23 +4102,47 @@ end
             end
             audit
         end
-        # All three previously-failing routes must now complete.
+        # All three previously-failing routes must now complete at 512. That
+        # completion IS the regression: before the cap they threw
+        # ERROR_LAUNCH_OUT_OF_RESOURCES here.
+        #
+        # The cap receipt is asserted CONDITIONALLY, on what the run actually
+        # requested rather than on what this testset asked for. The kick thread
+        # count reaches the Gaussian routes from the policy
+        # (`_active_cuda_launch`) but the PIC routes from
+        # `_cuda_pic_threads(:kick)`, which reads a process-global config and
+        # falls back to 256 when none is installed -- so in a full-suite run,
+        # after other testsets have touched that global, a route can legitimately
+        # launch at 256 and have nothing to cap. Asserting unconditionally is how
+        # the first version of this pin passed standalone and failed in the suite.
+        requested_any = Int[]
         for solver in (GaussianPoissonSolver(; slicing=sl512, longitudinal_kick=true,
                                              batch_mode=:sequential),
                        GaussianPoissonSolver(; slicing=sl512, longitudinal_kick=true,
                                              batch_mode=:wavefront),
                        PICPoissonSolver(; slicing=sl512, grid=(32, 32),
-                                        longitudinal_kick=true, batch_mode=:wavefront))
+                                        longitudinal_kick=true, batch_mode=:wavefront,
+                                        backend_configurations=(
+                                            CUDAPICLaunchConfig(kick_threads=512),)))
             audit = run512(solver)
-            # ...and must SAY they were capped. A silent downgrade would leave a
-            # timing number with a hidden variable in it, which is the same defect
-            # U25-1 fixed for batching.
-            caps = filter(r -> r.consumer === :cuda_strong_strong_thread_cap,
-                          execution_receipts(audit))
-            @test !isempty(caps)
-            @test all(r -> r.values.resolved < r.values.requested, caps)
-            @test all(r -> r.values.requested == 512, caps)
+            rs = execution_receipts(audit)
+            requested = vcat(
+                [r.values.threads for r in rs if r.consumer === :cuda_strong_strong_launch],
+                [r.values.threads for r in rs
+                     if r.consumer === :cuda_pic_launch && r.values.family === :kick])
+            append!(requested_any, requested)
+            caps = filter(r -> r.consumer === :cuda_strong_strong_thread_cap, rs)
+            if any(>(384), requested)
+                @test !isempty(caps)
+                @test all(r -> r.values.resolved < r.values.requested, caps)
+            else
+                # Nothing to cap: then nothing may claim to have capped.
+                @test isempty(caps)
+            end
         end
+        # Anti-vacuity: at least one route must actually have asked for 512, or
+        # the loop above proved nothing about the cap at all.
+        @test any(>(384), requested_any)
 
         # The cap must not fire when it is not needed: a default-sized launch has
         # to run byte-for-byte the path it always ran, with no receipt at all.

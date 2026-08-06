@@ -818,3 +818,25 @@ and the per-unit reports archived beside them.
     touched, and re-run the property the fix was ABOUT on the neighbours it did
     not change — the four above were all findable that way and none was found
     that way.
+
+11. **A configuration you set is not a configuration the code read; make it
+    say so.** Fixing U3-2 meant showing that `threads = 512` breaks the
+    strong-strong CUDA kick kernels. The first sweep reported all four routes
+    OK at 512, and at 768, and at 1024 — a clean, confident, completely false
+    negative: `CUDAExecutionPolicy(...)` had been passed to the beams but not
+    to `StrongStrongTask`, so `_active_cuda_launch` resolved from a default
+    policy and every launch used 256. Nothing errored. The exit status was
+    zero. What caught it was asking the run what it had actually done: the
+    execution receipts said `threads = 256` for a run requesting 1024. With
+    the policy attached, the same sweep failed at 512 on three of four routes,
+    exactly as the lead claimed, at 149/163/130 registers per thread. The same
+    session then produced the mirror-image error — a pin asserting a cap
+    receipt unconditionally, which passed standalone and failed in the full
+    suite because a process-global launch config left by an earlier testset
+    meant one route had nothing to cap. The habit this buys: when a test's
+    subject is a *setting*, assert what the run recorded, not what you passed
+    in; and where the setting can be supplied ambiently, make the assertion
+    conditional on the recorded request and add an explicit anti-vacuity check
+    that at least one path really carried it. This is Lesson 1 ("correct check,
+    never executed") wearing the clothes of a configuration knob, and receipts
+    are what tell the two apart.
