@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **63 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **64 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -54,7 +54,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U17b-1 | medium |  | `test/runtests.jl:1599-1601` | the `_curv_vers` seam loop asserts `< 1.0e-14` on a quantity whose measured value |
 | U17b-3 | low-medium |  | `test/runtests.jl:1889` | `@test r.metrics[:checked] > 200` leaves 153 checks (43% of the real count) of |
 | U18-1 | medium |  | `test/runtests.jl:3134-3207 ("No method grows a Core.Box outside the ar` | the permanent `Core.Box` sweep catches **3 of 7** injected boxes — its |
-| U18-2 | medium |  | `test/runtests.jl:3209-3288 ("CPU solver stack is thread-count invarian` | the second (above-threshold) block is a hand-copy of the first block's |
+| U18-2 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:3209-3288 ("CPU solver stack is thread-count invarian` | the second (above-threshold) block is a hand-copy of the first block's |
 | U18-3 | low-medium |  | `test/runtests.jl:4252-4256, 4270-4274 ("Lattice cells track and stay s` | three CPU↔CUDA agreement checks are asserted as |
 | U19-1 | medium | CLOSED by the U20-3 fix (2026-08-06) | `test/runtests.jl:6599 (gate at 6604)` | `"CUDA GaussianPIC coupled subtraction matches CPU"` is the only CUDA gate |
 | U19-2 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:4733–4776 (Spectral arm)` | the Spectral arm of `"Lost particles cannot influence a strong-strong |

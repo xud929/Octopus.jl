@@ -3227,10 +3227,15 @@ end
     # reductions moved with the worker count (coordinates ~8e-15, moments to
     # 131,072 ulps; 2026-08-05 audit U5-1/2, U16-3). The reductions now use
     # FIXED chunk grids with the serial/chunked choice made by data size
-    # only, so the second block below pins full bit-equality — luminosity
-    # included — at n=15000, above the moment and kick thresholds, for 1/4/8
-    # workers (measured exact, 0 ulp, at zero collide-time cost: 3.06 s vs
-    # 3.10 s at n=1e6). The first block keeps the original sub-threshold pin;
+    # only, so the second block below pins bit-equality at n=15000, above the
+    # moment and kick thresholds, for 1/4/8 workers (measured exact, 0 ulp, at
+    # zero collide-time cost: 3.06 s vs 3.10 s at n=1e6).
+    #
+    # "luminosity included" was in that sentence and is not true of every
+    # solver: the spectral TRANSVERSE path still folds its luminosity over
+    # worker-count-many chunks, and moves by ~1 ulp. It has its own block
+    # below with the envelope that actually holds (U18-2). pic, gpic and
+    # spectral_l are exact, luminosity included. The first block keeps the original sub-threshold pin;
     # its spectral-luminosity tolerance covers the historical 1-ulp fold-order
     # allowance, which equality also satisfies.
     #
@@ -3306,6 +3311,44 @@ end
             @test outs[1][1] == outs[other][1]
             @test all(a == b for (a, b) in zip(outs[1][2], outs[other][2]))
             @test all(a == b for (a, b) in zip(outs[1][3], outs[other][3]))
+        end
+    end
+
+    # `spectral_t` (transverse-only spectral) was in the sub-threshold block
+    # above and silently absent from this one, with nothing in the code or
+    # comments recording the omission -- and it is precisely the arm the
+    # omission mattered for (2026-08-05_b audit, U18-2). Its COORDINATES are
+    # bit-identical across worker counts like everything else, but its
+    # luminosity is not: `spectral.jl` still partitions that fold by
+    # `_cpu_worker_count()` (the pair-batch reduction near line 1103), unlike
+    # the PIC deposit and the moment reduction which use fixed chunk counts.
+    #
+    # Measured at n=15000: max|dL| = 8.0 at nslices=3 and 16.0 at nslices=15
+    # across 1/2/4 workers, i.e. 1.7e-16 and 2.7e-16 relative -- about one ulp,
+    # the signature of a chunk-ordered float fold whose chunk count moved.
+    #
+    # Pinned as a documented envelope rather than dropped: coordinates must be
+    # bit-identical, and the luminosity must agree to a few ulp. That makes a
+    # real regression (a changed reduction, not a changed fold order) fail here,
+    # where the omission made nothing fail at all. Restoring exact equality
+    # needs the fixed-chunk-grid treatment applied to the spectral pair-batch
+    # reduction; that is a separate, priced change.
+    let spec_t = SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6,
+            luminosity_scale=1.0, grid=(32, 32), longitudinal_kick=false, slicing=slc)
+        counts = unique((1, 2, Threads.nthreads(:default)))
+        outs = map(counts) do k
+            b1, b2 = mkb(15000), mkb(15000)
+            lum = workers(k, b1.rep) do
+                collide!(spec_t, b1, b2, CPUThreadsBackend)
+            end
+            (lum, map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)))
+        end
+        for other in 2:length(outs)
+            @test all(a == b for (a, b) in zip(outs[1][2], outs[other][2]))
+            @test all(a == b for (a, b) in zip(outs[1][3], outs[other][3]))
+            # A few ulp of the value, not a blanket rtol: 8 ulp at this
+            # magnitude is ~6e-16 relative, far below any physical change.
+            @test abs(outs[1][1] - outs[other][1]) <= 8 * eps(outs[1][1])
         end
     end
 
