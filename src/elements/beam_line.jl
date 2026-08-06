@@ -133,6 +133,12 @@ const _FOLDED_NAMED_STRENGTHS = Dict{Symbol,Any}(
     :thin_dipole => _THIN_DIP_NAMED,
     :thin_quadrupole => _THIN_QUAD_NAMED,
     :thin_sextupole => _THIN_SEXT_NAMED,
+    # The sixth fold site, missed one commit after the thin kinds were added
+    # for the identical reason (2026-08-05_b audit, U15-7). `SolenoidSpec`
+    # folds `_MULTIPOLE_NAMED` too, so `entry.k1 = 999.0` on a solenoid
+    # placement was accepted, reported by `getparam`, and never read --
+    # `compile_runtime(entry).kn` stayed (0.0, 0.5).
+    :solenoid => _MULTIPOLE_NAMED,
 )
 
 # Which tuple pair a kind folds into: thick kinds use kn/ks, thin kinds
@@ -140,6 +146,12 @@ const _FOLDED_NAMED_STRENGTHS = Dict{Symbol,Any}(
 const _FOLDED_TUPLE_KEYS = Dict{Symbol,Tuple{Symbol,Symbol}}(
     :thin_multipole => (:knl, :ksl), :thin_dipole => (:knl, :ksl),
     :thin_quadrupole => (:knl, :ksl), :thin_sextupole => (:knl, :ksl),
+    # The solenoid MUST have an entry, not just fall through to the (:kn, :ks)
+    # default: `ks` is the solenoid strength there, so `SolenoidSpec` folds skew
+    # into `:kskew` instead. Without this line the rejection message would tell
+    # the user to write `ks`, i.e. to overwrite the solenoid's defining
+    # parameter (U15-7).
+    :solenoid => (:kn, :kskew),
 )
 
 """Spec parameters with this placement's overrides applied on top."""

@@ -3820,6 +3820,27 @@ end
     q = QuadrupoleSpec(L=0.3, k1=1.2, nst=2)
     @test_throws ArgumentError q.k1 = 999.0
 
+    # 2026-08-05_b audit, U15-7: the SIXTH fold site. `SolenoidSpec` folds
+    # `_MULTIPOLE_NAMED` too, and was missing from `_FOLDED_NAMED_STRENGTHS`
+    # one commit after the thin kinds were added for the identical reason, so
+    # `entry.k1 = 999.0` on a solenoid placement was accepted, reported by
+    # getparam, and never read (compile_runtime kept kn = (0.0, 0.5)).
+    sol = SolenoidSpec(L=1.0, ks=0.3, k1=0.5)
+    @test !haskey(getfield(sol, :params), :k1)          # it really does fold
+    sol_entry = line_entries(BeamLine("S", sol))[1]
+    @test_throws ArgumentError sol_entry.k1 = 999.0
+    # The message must name `kn`, NOT `ks`: on a solenoid `ks` is the solenoid
+    # strength, so the default (:kn, :ks) advice would tell the user to
+    # overwrite the element's defining parameter.
+    sol_msg = try
+        sol_entry.k1 = 999.0
+        ""
+    catch err
+        sprint(showerror, err)
+    end
+    @test occursin("kn", sol_msg)
+    @test !occursin("Assign `ks`", sol_msg)
+
     hidden = BeamLine("CRYO2", ApertureSpec(x_limit=1.0e-3, name="HIDDEN"),
                       DriftSpec(L=0.5); x_offset=1.0e-4)
     @test_logs (:warn, r"outside loss accounting") match_mode = :any TrackingTask(

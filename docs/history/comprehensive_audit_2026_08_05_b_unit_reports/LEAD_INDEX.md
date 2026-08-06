@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **65 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **66 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -47,7 +47,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U15-4 | medium | F12 FIXED | `src/elements/beam_line.jl:568-577 (`track_particle(::AbstractTrackingM` | the context-free call path applies **one borrowed tracking method to every |
 | U15-5 | medium |  | `src/elements/aperture.jl:104-117 (`_loss_record_matches_rep`) + src/ta` | the task's loss record is reused for **any** representation of the same |
 | U15-6 | medium |  | `src/elements/beam_line.jl:384-391 + :637 (the new `L` ParamMeta on `:l` | declaring `L` as a `:line` parameter re-opens the walker split U11-1 |
-| U15-7 | medium |  | `src/elements/beam_line.jl:122-143 (`_FOLDED_NAMED_STRENGTHS`, `_FOLDED` | the folded-name guard is a hand-copied table that misses the sixth |
+| U15-7 | medium | CONFIRMED, FIXED (2026-08-06) | `src/elements/beam_line.jl:122-143 (`_FOLDED_NAMED_STRENGTHS`, `_FOLDED` | the folded-name guard is a hand-copied table that misses the sixth |
 | U16-2 | medium |  | `docs/theory/rf_cavity_and_reference_energy.md:88-89 and 285-288` | ** The theory note — the design authority the element's |
 | U16-4 | medium |  | `src/elements/patch.jl:118-127 (`_patch_reference_length`)` | ** `_patch_reference_length` returns the new origin's displacement |
 | U16-5 | medium |  | `src/elements/patch.jl:74-82 vs src/elements/ref_tilt.jl:69-70` | ** The patch and the misalignment/`ref_tilt` family share |
