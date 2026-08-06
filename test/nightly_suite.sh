@@ -12,9 +12,12 @@
 #
 #     47 2 * * * /path/to/Octopus/test/nightly_suite.sh
 #
-# Output: $HOME/.octopus_nightly/<date>.log (last 14 kept),
-# `latest.log` symlink, and one appended row per run in `status.tsv`:
-# date, commit (--dirty marked), testset count, verdict, exit code.
+# Output: $HOME/.octopus_nightly/<datetime>.log (last 14 kept), where
+# <datetime> is YYYYmmdd_HHMMSS -- the header and the status.tsv column header
+# both said "date" while the value has always carried a time too, which matters
+# the moment two runs land on one day (2026-08-05_b audit, U21-7).
+# Also a `latest.log` symlink, and one appended row per run in `status.tsv`:
+# datetime, commit (--dirty marked), testset count, cuda, verdict, exit code.
 # The verdict is PASS, FAIL, LOCKED (another run held the lock, so this one did
 # nothing) or ERROR (the repository could not be entered). LOCKED and ERROR
 # exist so that a gate which did not run still leaves a row: "no row" used to be
@@ -40,6 +43,13 @@
 # from a channel the suite can write. `CODE=$?` immediately after the command
 # is the whole fix; the `exit=` line remains in the log for a human reader but
 # is no longer load-bearing.
+#
+# (An earlier version of this header claimed the trailing-pipe trap "is why the
+# code is captured before any postprocessing". That was not what the code did:
+# it wrote `exit=N` into $LOG and scraped it back with `sed | tail -1`, which is
+# the defect described above, not a defence against it. The wrong justification
+# is why the defect read as intentional to two reviewers -- 2026-08-05_b audit,
+# U21-8.)
 
 set -u
 
@@ -60,12 +70,12 @@ COMMIT="$(git -C "$REPO" describe --always --dirty 2>/dev/null || echo unknown)"
 # gate was indistinguishable from a passing run to cron for up to 24 h while
 # `status.tsv` simply stopped growing. The only surviving signal was a stale
 # date, which nothing checks (2026-08-05_b audit, U21-3/U21-4).
-emit_row() {   # verdict, exit code, testsets
+emit_row() {   # verdict, exit code, testsets, cuda
     [ -d "$OUTDIR" ] || return 0
     [ -f "$OUTDIR/status.tsv" ] ||
-        printf 'date\tcommit\ttestsets\tverdict\texit\n' > "$OUTDIR/status.tsv"
-    printf '%s\t%s\t%s\t%s\t%s\n' \
-        "$STAMP" "$COMMIT" "${3:-0}" "$1" "$2" >> "$OUTDIR/status.tsv"
+        printf 'datetime\tcommit\ttestsets\tcuda\tverdict\texit\n' > "$OUTDIR/status.tsv"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$STAMP" "$COMMIT" "${3:-0}" "${4:-unknown}" "$1" "$2" >> "$OUTDIR/status.tsv"
 }
 
 # The one path that cannot leave a row is an $OUTDIR that will not exist, so it
@@ -78,16 +88,29 @@ fi
 # One run at a time; a wedged run older than a day does not block forever.
 if ! mkdir "$LOCK" 2>/dev/null; then
     if [ -n "$(find "$OUTDIR" -maxdepth 1 -name lock -mmin +1440)" ]; then
-        rmdir "$LOCK" 2>/dev/null
-        mkdir "$LOCK" 2>/dev/null || { emit_row LOCKED 0 0; exit 0; }
+        # Claim the stale lock by RENAMING it, which is atomic: of two runs that
+        # both see it as stale, exactly one `mv` can succeed and the other finds
+        # nothing to move. The previous form was `rmdir` then `mkdir` -- three
+        # non-atomic syscalls -- so both could remove and both recreate, with the
+        # second `rmdir` deleting the FIRST run's fresh lock. Both then proceeded
+        # concurrently against one repository and both appended rows
+        # (2026-08-05_b audit, U21-6).
+        CLAIM="$LOCK.stale.$$"
+        if mv "$LOCK" "$CLAIM" 2>/dev/null; then
+            rmdir "$CLAIM" 2>/dev/null
+            mkdir "$LOCK" 2>/dev/null || { emit_row LOCKED 0 0 unknown; exit 0; }
+        else
+            emit_row LOCKED 0 0 unknown
+            exit 0
+        fi
     else
-        emit_row LOCKED 0 0
+        emit_row LOCKED 0 0 unknown
         exit 0
     fi
 fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
-cd "$REPO" || { emit_row ERROR 1 0; exit 1; }
+cd "$REPO" || { emit_row ERROR 1 0 unknown; exit 1; }
 
 echo "== octopus nightly suite  $STAMP  commit $COMMIT" > "$LOG"
 "$JULIA" --project=. --threads=4 -e \
@@ -98,10 +121,39 @@ TESTSETS="$(grep -c '^Test Summary' "$LOG")"
 VERDICT=FAIL
 [ "$CODE" = "0" ] && VERDICT=PASS
 
-emit_row "$VERDICT" "$CODE" "$TESTSETS"
+# The testset count is a COVERAGE tripwire, and nothing calibrated it
+# (2026-08-05_b audit, U21-5). `grep -c '^Test Summary'` counts top-level
+# testsets only -- nested ones print no header -- so the number is 158 with a
+# GPU and 142 without on this suite. The one failure it can detect is a GPU
+# machine that silently stops running the CUDA half, and that was recorded as
+# PASS with a smaller number, indistinguishable from a full pass to anyone
+# reading verdicts. The expected value existed in exactly two places, both
+# prose: docs/current_runtime.md and a single historical row.
+#
+# So: record WHICH mode ran, and compare against the best count previously seen
+# in that same mode. A drop is loud on stderr and marked in the verdict, while
+# the exit code still reflects the suite -- a legitimately removed testset must
+# not turn a green suite red, but it must not pass unmentioned either.
+if grep -q 'NO CUDA DEVICE' "$LOG"; then CUDA=no; else CUDA=yes; fi
+BEST=0
+if [ -f "$OUTDIR/status.tsv" ]; then
+    BEST="$(awk -F'\t' -v c="$CUDA" 'NR>1 && $4==c && $3+0>m {m=$3+0} END {print m+0}' \
+            "$OUTDIR/status.tsv")"
+fi
+if [ "$VERDICT" = PASS ] && [ "$BEST" -gt 0 ] && [ "$TESTSETS" -lt "$BEST" ]; then
+    echo "octopus nightly: COVERAGE DROP -- $TESTSETS testsets with cuda=$CUDA," \
+         "against $BEST previously seen in that mode. A suite that stops running" \
+         "part of itself passes with a smaller number." >&2
+    VERDICT=PASS_FEWER
+fi
+
+emit_row "$VERDICT" "$CODE" "$TESTSETS" "$CUDA"
 ln -sfn "$LOG" "$OUTDIR/latest.log"
 
 # Keep the last 14 logs.
-ls -1t "$OUTDIR"/*.log 2>/dev/null | grep -v latest | tail -n +15 | xargs -r rm -f
+# Match the BASENAME, not the whole path: a $HOME containing the substring
+# "latest" (a user named `latest`, a path like /home/latestbuild/...) filtered
+# every log out and disabled rotation entirely (2026-08-05_b audit, U21-9).
+ls -1t "$OUTDIR"/*.log 2>/dev/null | grep -v '/latest\.log$' | tail -n +15 | xargs -r rm -f
 
 exit "$CODE"

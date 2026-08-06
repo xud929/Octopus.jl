@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **159 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **164 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -203,11 +203,11 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U21-26 | low |  | `test/examples/weak_strong_tracking.jl:33` | confirms and refines the prior unit's finding. Both harnesses write into |
 | U21-27 | low |  | `both harnesses (write paths)` | confirms and refines the prior unit's finding. Both harnesses write into |
 | U21-28 | low |  | `seam — moment `.h5` outputs are not reproducible` |  |
-| U21-5 | low |  | `test/nightly_suite.sh:58` | the `testsets` column is a real, uncalibrated coverage tripwire: it is not |
-| U21-6 | low |  | `test/nightly_suite.sh:36-43` | stale-lock reclamation is racy — two runs that both observe `-mmin +1440` |
-| U21-7 | low |  | `test/nightly_suite.sh:15,17,29` | header/output mismatch. It documents `$HOME/.octopus_nightly/<date>.log` |
-| U21-8 | low |  | `test/nightly_suite.sh:20-22` | the header's own justification is factually wrong — "the trailing-pipe trap |
-| U21-9 | low |  | `test/nightly_suite.sh:69` | `ls -1t "$OUTDIR"/*.log \| grep -v latest \| …` filters on the whole path, so a |
+| U21-5 | low | CONFIRMED, FIXED (2026-08-06) | `test/nightly_suite.sh:58` | the `testsets` column is a real, uncalibrated coverage tripwire: it is not |
+| U21-6 | low | CONFIRMED, FIXED (2026-08-06) | `test/nightly_suite.sh:36-43` | stale-lock reclamation is racy — two runs that both observe `-mmin +1440` |
+| U21-7 | low | CONFIRMED, FIXED (2026-08-06) | `test/nightly_suite.sh:15,17,29` | header/output mismatch. It documents `$HOME/.octopus_nightly/<date>.log` |
+| U21-8 | low | CONFIRMED, FIXED (2026-08-06) | `test/nightly_suite.sh:20-22` | the header's own justification is factually wrong — "the trailing-pipe trap |
+| U21-9 | low | CONFIRMED, FIXED (2026-08-06) | `test/nightly_suite.sh:69` | `ls -1t "$OUTDIR"/*.log \| grep -v latest \| …` filters on the whole path, so a |
 | U22-10 | low | FIXED | `docs/theory/coherent_beam_beam_modes.md:30-32` | "For flat beams the gradient scales as 1/σ_x (sheet-like field), so the same |
 | U22-11 | low |  | `region-wide (see the table in §(f))` | 11 of the 13 thresholds in this region are print-only; no run in the region can |
 | U22-12 | low |  | `validation/coherent_beam_beam_modes_beambeam3d.jl:8-30,67-68` | The cross-code comparison **data** is committed and reproduces exactly, but its |
