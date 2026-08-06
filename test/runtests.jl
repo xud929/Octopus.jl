@@ -488,13 +488,17 @@ end
     end
 end
 
-@testset "Near-round Gaussian transition" begin
-    beta = [k / sqrt(4k^2 - 1) for k in 1:95]
+# Hoisted out of the "Near-round Gaussian transition" testset so the
+# drift tripwire against validation/near_round_gaussian_transition.jl's own copy
+# can reach it (2026-08-05_b audit, U23-13). One definition here, used by both.
+let beta = [k / sqrt(4k^2 - 1) for k in 1:95]
     quadrature = eigen(SymTridiagonal(zeros(96), beta))
-    nodes = (quadrature.values .+ 1) ./ 2
-    weights = quadrature.vectors[1, :] .^ 2
+    global const TRANSITION_NODES = (quadrature.values .+ 1) ./ 2
+    global const TRANSITION_WEIGHTS = quadrature.vectors[1, :] .^ 2
+end
 
-    function transition_reference(sig1, sig2, x, y)
+function transition_reference(sig1, sig2, x, y)
+    nodes, weights = TRANSITION_NODES, TRANSITION_WEIGHTS
         v = (Float64(sig1)^2 + Float64(sig2)^2) / 2
         eta = (Float64(sig1)^2 - Float64(sig2)^2) / (2v)
         xb, yb = Float64(x), Float64(y)
@@ -510,14 +514,15 @@ end
             jx += weight * z / (1 + eta * z) * fx
             jy += weight * z / (1 - eta * z) * fy
         end
-        return (
-            xb / v * ix,
-            yb / v * iy,
-            -(ix / v - xb^2 / v^2 * jx),
-            -(iy / v - yb^2 / v^2 * jy),
-        )
-    end
+    return (
+        xb / v * ix,
+        yb / v * iy,
+        -(ix / v - xb^2 / v^2 * jx),
+        -(iy / v - yb^2 / v^2 * jy),
+    )
+end
 
+@testset "Near-round Gaussian transition" begin
     for T in (Float32, Float64)
         inner, outer = Octopus._near_round_eta_bounds(zero(T))
         @test inner == outer / T(2)
