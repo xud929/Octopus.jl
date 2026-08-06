@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **60 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **61 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -57,7 +57,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U18-2 | medium |  | `test/runtests.jl:3209-3288 ("CPU solver stack is thread-count invarian` | the second (above-threshold) block is a hand-copy of the first block's |
 | U18-3 | low-medium |  | `test/runtests.jl:4252-4256, 4270-4274 ("Lattice cells track and stay s` | three CPU↔CUDA agreement checks are asserted as |
 | U19-1 | medium | CLOSED by the U20-3 fix (2026-08-06) | `test/runtests.jl:6599 (gate at 6604)` | `"CUDA GaussianPIC coupled subtraction matches CPU"` is the only CUDA gate |
-| U19-2 | medium |  | `test/runtests.jl:4733–4776 (Spectral arm)` | the Spectral arm of `"Lost particles cannot influence a strong-strong |
+| U19-2 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:4733–4776 (Spectral arm)` | the Spectral arm of `"Lost particles cannot influence a strong-strong |
 | U19-3 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:4778–4841` | `"Lost-particle charge semantics are pinned per solver family"` pins **2 |
 | U20-4 | medium |  | `test/runtests.jl:7199 ("CUDA near-round Gaussian transition matches CP` | at `T = Float32` the near-axis sample point cannot detect a zero, |
 | U20-5 | medium |  | `test/runtests.jl:7173 ("CUDA round Gaussian near-axis stability")` | the testset's named subject — near-axis kick stability — is compared under |

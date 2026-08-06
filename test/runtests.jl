@@ -4,6 +4,9 @@ using LinearAlgebra
 # Seeded sweeps whose sample values must not be dyadic (see the TSC weight
 # testset -- a dyadic-only grid cannot fail on the defect it names, audit U20-1).
 using Random
+# Capturing warnings as evidence: a testset that asserts a solver did NOT clip
+# charge has to be able to see the warning it must not find (audit U19-2).
+using Logging
 # Test-only: Octopus takes no runtime dependency on any AD package.
 using ForwardDiff
 # Test-only: loading Symbolics activates the OctopusSymbolicsExt weak-dep
@@ -4815,7 +4818,22 @@ end
              luminosity_scale=1.0, slicing=sl)),
         ("GaussianPIC", GaussianPICPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4,
              luminosity_scale=1.0, grid=(64, 64), green_cache=:none, slicing=sl)),
-        ("Spectral", SpectralPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4,
+        # Spectral runs an order weaker than its siblings, and the reason is
+        # measured (2026-08-05_b audit, U19-2). Its Dirichlet box is sized once
+        # from pre-collision coordinates; at kbb = 1e-4 the intra-collision kick
+        # carried particles outside it and the deposit tripwire fired on EVERY
+        # solve with a clipped fraction between 0.216 and 1.0 -- including the
+        # clean/clean arm, so it was the configuration clipping, not the
+        # corpses. The three corpse variants were then equal because all three
+        # were equally destroyed, and the arm validated a degenerate
+        # configuration.
+        #
+        # It also spent the tripwire's process-wide `maxlog = 8` budget here:
+        # this testset alone emitted ~30 such events, after which the R9
+        # dropped-charge warning was SILENT for the rest of the Julia process,
+        # including every later testset. Fixing the regime fixes that too.
+        # Measured: 8 clip warnings at 1e-4, 4 at 1e-5, 0 at 1e-6.
+        ("Spectral", SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6,
              luminosity_scale=1.0, grid=(64, 64), slicing=sl)),
     )
     clean_rep() = Phase6DRep((loss_test_coords(n)[k]
@@ -4835,10 +4853,19 @@ end
         return Phase6DRep(c[:x], c[:px], c[:y], c[:py], c[:z], c[:pz])
     end
     for (name, solver) in solvers
-        values = allow_lost_particles() do
-            [collide!(solver, test_beam(corpse(v)), test_beam(clean_rep()),
-                      CPUThreadsBackend) for v in 1:3]
+        # The corpse-variant equality is only evidence if the arm is solving a
+        # sane configuration. If the mesh is clipping most of the charge, all
+        # three variants agree because all three are equally destroyed -- which
+        # is what the Spectral arm did (U19-2). Assert the regime, so a coupling
+        # or box change cannot quietly return it.
+        buf = IOBuffer()
+        values = with_logger(SimpleLogger(buf, Logging.Warn)) do
+            allow_lost_particles() do
+                [collide!(solver, test_beam(corpse(v)), test_beam(clean_rep()),
+                          CPUThreadsBackend) for v in 1:3]
+            end
         end
+        @test !occursin("clipped charge", String(take!(buf)))
         @test all(isfinite, values)
         @test values[1] == values[2] == values[3]
         # Without the flag the deliberate loss is still reported as a failure.
