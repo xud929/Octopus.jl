@@ -266,6 +266,7 @@ function BeamLine(name::AbstractString, children...; tags=(), kwargs...)
         pushfirst!(getfield(e, :path), (myname, 1))
     end
     params = Dict{Symbol,Any}(kwargs)
+    _reject_line_length(params)
     params[:name] = myname
     params[:entries] = entries
     return ElementSpec{:line}(params)
@@ -386,9 +387,37 @@ be constructible from its parameters by keyword alone.
 """
 function BeamLine(; name::AbstractString="", entries=LineEntry[], kwargs...)
     params = Dict{Symbol,Any}(kwargs)
+    _reject_line_length(params)
     params[:name] = String(name)
     params[:entries] = collect(LineEntry, entries)
     return ElementSpec{:line}(params)
+end
+
+"""
+A line's length is DERIVED from its contents, so setting one is rejected.
+
+Accepting it re-opened the walker split that U11-1 closed: the arc-position
+walkers consult `hasparam(spec, :L)` first, while `total_length` always re-sums
+the entries and `compile_runtime`'s survey merge overwrites any stored `:L` with
+the computed total. A user-set value was therefore honoured by one set of
+walkers and ignored by the other -- measured `total_length = 1.4` against
+`_placement_length = 99.0` for the same line, and `s_positions` of its parent
+reading [0.0, 99.0]. A bare `L=` also silently turned a structural line into a
+girder, because `_line_has_own_state` counts any key but `:name`/`:entries`
+(2026-08-05_b audit, U15-6).
+
+The `:L` ParamMeta stays: `compile_runtime` builds its survey spec by merging
+the computed total under that key, so the parameter is real -- it is just not
+one a user supplies.
+"""
+function _reject_line_length(params)
+    haskey(params, :L) || return params
+    throw(ArgumentError(
+        "a beam line's `L` is derived from its contents and cannot be set. " *
+        "It is computed by `total_length`, and a supplied value would be " *
+        "honoured by the arc-position walkers while `total_length` and the " *
+        "survey ignored it. Remove `L`; to give a line its own length, give " *
+        "its contents theirs."))
 end
 
 """The placements of a line, in order."""
@@ -736,7 +765,7 @@ end
         y_pitch=ParamMeta(default=0, meaning="rotation of the whole line about the x axis, in radians"),
         tilt=ParamMeta(default=0, meaning="roll of the whole line about the longitudinal axis, in radians"),
         misalign_convention=_COMMON_PARAMS.misalign_convention,
-        L=ParamMeta(default=0.0, unit="m", meaning="total arc length of the expanded line; stored by the line machinery so a nested own-state line surveys at its real length rather than zero"),
+        L=ParamMeta(default=0.0, unit="m", meaning="total arc length of the expanded line. DERIVED, not settable: `compile_runtime` merges the computed `total_length` under this key so a nested own-state line surveys at its real length rather than zero, and `BeamLine` rejects a supplied `L`. Nothing stores it on a user's line, so a supplied value would be honoured by the arc-position walkers and ignored by `total_length` and the survey"),
         ref_tilt=_PLACEMENT_PARAMS.ref_tilt,
     )
     example = BeamLine("CELL", QuadrupoleSpec(L=0.4, k1=1.7, nst=2))

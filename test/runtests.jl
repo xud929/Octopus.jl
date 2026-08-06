@@ -3865,6 +3865,22 @@ end
     @test Octopus._aperture_s_positions(
         (cryo, DriftSpec(L=1.0), ApertureSpec(x_limit=1.0e-3, name="END"))) == [2.4]
 
+    # 2026-08-05_b audit, U15-6: declaring `L` on `:line` re-opened the walker
+    # split U11-1 closed. The arc-position walkers consult `hasparam(spec, :L)`
+    # first, while `total_length` always re-sums the entries and
+    # `compile_runtime`'s survey merge overwrites any stored `:L`. A user-set
+    # value was therefore honoured by one set of walkers and ignored by the
+    # other: measured total_length = 1.4 against _placement_length = 99.0 on the
+    # same line, with the parent's s_positions reading [0.0, 99.0]. A bare `L=`
+    # also silently stopped a structural line dissolving, since
+    # `_line_has_own_state` counts any key but :name/:entries.
+    @test_throws ArgumentError BeamLine("CRYOL", QuadrupoleSpec(L=0.4, k1=1.0, nst=1),
+                                        DriftSpec(L=1.0); x_offset=1.0e-4, L=99.0)
+    @test_throws ArgumentError BeamLine("PLAIN", DriftSpec(L=1.0); L=99.0)
+    # The two walkers must now agree for a real girder, which is the property
+    # the split broke; the survey still gets a real length internally.
+    @test Octopus.total_length(cryo) == Octopus._placement_length(cryo)
+
     rev = reverse(cryo)
     @test getparam(rev, :x_offset, nothing) == 2.0e-4
     @test getparam(reverse(rev), :x_offset, nothing) == 2.0e-4
