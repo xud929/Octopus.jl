@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **69 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **70 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -40,7 +40,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U12-3 | medium |  | `src/tasks/strongstrong/interface.jl:1617 and :1743 — hardcoded POLICY ` | `validate_configuration_metadata`'s type enumeration was totalized for |
 | U12-4 | medium |  | `src/knowledge/Knowledge.jl:960-964` | for an element declaring more than one tracking method, only the |
 | U13-1 | medium |  | `src/knobs/Knobs.jl:394-418` | `@knob p::T` on an existing knob whose converted value is `isequal` to |
-| U13-5 | medium |  | `src/tasks/Tasks.jl:429 (and 242)` | A line whose `:L` is a knob expression makes every `execute!` that was |
+| U13-5 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/Tasks.jl:429 (and 242)` | A line whose `:L` is a knob expression makes every `execute!` that was |
 | U14-3 | medium | CONFIRMED, FIXED (2026-08-06) | `src/track/longitudinal.jl:133-136 (`_delta_from_pt`), reached from `co` | a particle decelerated below rest energy makes the radicand negative and `sqrt` |
 | U15-2 | medium | CONFIRMED, FIXED (2026-08-06) | `src/elements/beam_line.jl:599-616 (`compile_runtime(::ElementSpec{:lin` | a misaligned line that contains a bend is surveyed as **straight**, so its |
 | U15-3 | medium | CONFIRMED, FIXED (2026-08-06) | `src/elements/beam_line.jl:310-320 (`Base.reverse`)` | reflection now **aliases** placements — the reversed line and its source |

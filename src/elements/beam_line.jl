@@ -404,6 +404,20 @@ Base.firstindex(spec::ElementSpec{:line}) = 1
 Base.lastindex(spec::ElementSpec{:line}) = length(spec)
 
 """
+Length of a placement as a plain `Float64`, evaluating a knob-valued `:L`.
+
+`Float64(::AbstractKnobExpression)` raises the directed eager-conversion error,
+and knob-driven lengths are a documented first-class feature, so a bare
+`Float64(getparam(...))` here made every arc-length walk over UNRESOLVED specs
+throw. The one that mattered ran in `_write_task_loss_log`, i.e. AFTER all
+tracking had completed: a run with `loss_log` set and a knob-valued length
+tracked to the end and then died at the reporting step, losing the results. The
+same walk runs in `execute!`'s catch block, so it also masked whatever original
+error had stopped the run (2026-08-05_b audit, U13-5; and see U13-2).
+"""
+_placement_length_value(v) = v isa AbstractKnobExpression ? Float64(knob_value(v)) : Float64(v)
+
+"""
 Physical length of one placement. An own-state (non-dissolved) sub-line
 stores no `:L` of its own, so every arc-length walker counted a nested
 cryostat as ZERO — `s_positions`, `total_length`, the loss file's
@@ -411,11 +425,11 @@ cryostat as ZERO — `s_positions`, `total_length`, the loss file's
 assembly's length (2026-08-05 audit, U11-1). The length of such a placement
 is its contents'.
 """
-_placement_length(e) = Float64(getparam(e, :L, 0.0))
+_placement_length(e) = _placement_length_value(getparam(e, :L, 0.0))
 function _placement_length(entry::LineEntry)
     spec = getfield(entry, :spec)
     spec isa ElementSpec{:line} && !hasparam(spec, :L) && return total_length(spec)
-    return Float64(getparam(entry, :L, 0.0))
+    return _placement_length_value(getparam(entry, :L, 0.0))
 end
 _placement_length(spec::ElementSpec{:line}) =
     hasparam(spec, :L) ? Float64(param(spec, :L)) : total_length(spec)

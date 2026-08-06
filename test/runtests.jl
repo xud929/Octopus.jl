@@ -2829,6 +2829,26 @@ end
         @test loss_record(t2) === rec2
     end
 
+    # 2026-08-05_b audit, U13-5: a knob-valued `:L` made every arc-length walk
+    # over UNRESOLVED specs throw, because `Float64(::AbstractKnobExpression)`
+    # raises the directed eager-conversion error. The walk that mattered runs in
+    # `_write_task_loss_log`, i.e. AFTER all tracking has finished, so a run
+    # with `loss_log` set tracked to completion and then died at the reporting
+    # step. Knob-driven lengths are a documented first-class feature.
+    let
+        reset_knobs!()
+        @knob t_len.d = 0.5
+        kdrift = ElementSpec{:drift}(; L = @knob_expr(t_len.d),
+                                     tracking_method = Symplectic6DMap())
+        kap = ApertureSpec(shape=:rectangle, x_limit=1.5e-3, y_limit=1.0, name="COLL")
+        # Not merely non-throwing: the position must be the knob's VALUE, and
+        # must follow it when the knob moves.
+        @test Octopus._aperture_s_positions((kdrift, kap)) == [0.5]
+        set_knob!("t_len.d", 1.25)
+        @test Octopus._aperture_s_positions((kdrift, kap)) == [1.25]
+        reset_knobs!()
+    end
+
     # T4: elements inside the vector advance arc length.
     @test Octopus._aperture_s_positions(nested) == [1.0, 3.5]
 
