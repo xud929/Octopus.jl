@@ -409,7 +409,21 @@ function _knob_define!(path::Symbol, T::Union{Nothing,Type}, rhs, rhs_thunk)
                     _convert_knob_value(path, Tdecl, entry.value)
                 entry.type = Tdecl
                 if v !== nothing
-                    changed = !isequal(entry.value, v)
+                    # The TYPE change counts, not only a change of number.
+                    # `isequal` compares across types, so Float64 1.7 ->
+                    # BigFloat, Float32 1.7f0 -> Float64 and 2.0 -> Int 2 all
+                    # report "unchanged" while `entry.type` and
+                    # `typeof(entry.value)` both move. A knob's value type is
+                    # exactly what `numeric_type(resolve_knobs(spec))` promotes
+                    # over, so a fresh `compile_runtime` then yields a different
+                    # ELEMENT type while `_runtime_entries`' gate sees no epoch
+                    # motion and every already-built task keeps compiling at the
+                    # old precision -- indefinitely. Widening a knob's declared
+                    # type is the documented way to seed an AD or
+                    # extended-precision sweep, so doing it on a live task
+                    # silently doing nothing is the whole failure
+                    # (2026-08-05_b audit, U13-1).
+                    changed = !isequal(entry.value, v) || typeof(entry.value) !== typeof(v)
                     entry.value = v
                     if changed
                         _invalidate_dependents_locked!(path)

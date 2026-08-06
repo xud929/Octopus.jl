@@ -8603,6 +8603,35 @@ end
         @test knob_expression(string(eright)) == eright
         @test knob_value(eright) == 512.0
 
+        # 2026-08-05_b audit, U13-1: `@knob p::T` on an existing knob gated its
+        # epoch bump on `!isequal(old, new)`. `isequal` compares ACROSS types,
+        # so Float64 1.7 -> BigFloat reports "unchanged" while both
+        # `entry.type` and `typeof(entry.value)` move. A knob's value type is
+        # what `numeric_type(resolve_knobs(spec))` promotes over, so a fresh
+        # compile then yields a different ELEMENT type while `_runtime_entries`
+        # sees no epoch motion -- every already-built task keeps compiling at
+        # the old precision indefinitely. Widening a knob's declared type is the
+        # documented way to seed an AD or extended-precision sweep.
+        reset_knobs!()
+        @knob t_rt.a::Real = 1.7
+        let e_before = knob_epoch()
+            spec_rt = ElementSpec{:quadrupole}(; L=0.4, nst=4,
+                                               kn=(0.0, @knob_expr(t_rt.a)))
+            ty_before = typeof(compile_runtime(Octopus.resolve_knobs(spec_rt)))
+            @knob t_rt.a::BigFloat
+            @test knob_epoch() != e_before                 # was unmoved
+            @test typeof(knob_value("t_rt.a")) === BigFloat
+            ty_after = typeof(compile_runtime(Octopus.resolve_knobs(spec_rt)))
+            @test ty_after !== ty_before                   # the element retyped
+            # A genuine no-op must still NOT bump, or every redeclaration
+            # invalidates every task.
+            let e_noop = knob_epoch()
+                @knob t_rt.a::BigFloat
+                @test knob_epoch() == e_noop
+            end
+        end
+        reset_knobs!()
+
         # 2026-08-05_b audit, U20-2/U13-4: the class above regenerated one
         # operator to the left. `+` and `*` were printed WITHOUT parentheses
         # around a nested same-precedence child on the grounds that they
