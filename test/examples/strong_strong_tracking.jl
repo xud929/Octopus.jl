@@ -493,6 +493,34 @@ else
     )
 end
 
+# A launch override the chosen solver cannot consume is REFUSED, not dropped.
+#
+# `backend_configurations` is a `PICPoissonSolver` field, so it reaches only the
+# `pic` and `gaussian_pic` solvers. For `spectral` and `gaussian` all seven
+# OCTOPUS_CUDA_PIC_*_THREADS values were parsed, range-checked and then
+# discarded. The name makes it worse than a no-op:
+# OCTOPUS_CUDA_PIC_SPECTRAL_THREADS is exactly what someone tuning
+# OCTOPUS_SOLVER=spectral would reach for, and the run reported a timing that
+# had nothing to do with the value they set (2026-08-05_b audit, U21-18).
+#
+# AGENTS.md: a non-default request must be honoured or rejected, never silently
+# ignored.
+let launch_keys = ("OCTOPUS_CUDA_PIC_GATHER_SCATTER_THREADS",
+                   "OCTOPUS_CUDA_PIC_DEPOSITION_THREADS",
+                   "OCTOPUS_CUDA_PIC_KICK_THREADS",
+                   "OCTOPUS_CUDA_PIC_FIELD_THREADS",
+                   "OCTOPUS_CUDA_PIC_SPECTRAL_THREADS",
+                   "OCTOPUS_CUDA_PIC_GREEN_THREADS",
+                   "OCTOPUS_CUDA_PIC_LUMINOSITY_THREADS")
+    requested = filter(k -> haskey(ENV, k), launch_keys)
+    if !isempty(requested) && !(solver_name in ("pic", "gaussian_pic"))
+        error("$(join(requested, ", ")) set with OCTOPUS_SOLVER=$(solver_name), " *
+              "which has no backend_configurations field: these per-kernel launch " *
+              "overrides reach only the pic and gaussian_pic solvers, so the value " *
+              "would be parsed and discarded. Drop them, or select a PIC solver.")
+    end
+end
+
 electron_tccb2ip = Linear6DSpec{Float64}(;
     beta1 = ele.crab_beta,
     beta2 = ele.beta,
