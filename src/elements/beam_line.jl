@@ -651,7 +651,56 @@ function compile_runtime(spec::ElementSpec{:line}, args...)
     # storing it would count as "own state" and stop every line from dissolving.
     geom = ElementSpec{:line}(merge(getfield(resolved, :params),
                                     Dict{Symbol,Any}(:L => total_length(resolved))))
+    # The girder survey is straight. `geom` carries only :L, and `:h` is neither
+    # a declared `:line` parameter nor derived, so `_misalignment_wrap` reads
+    # h = 0 and builds both faces from a 1D survey. For a misaligned line whose
+    # contents BEND, the exit patch is then wrong at first order in the bend
+    # angle -- and silently, which
+    # theory/misalignment_and_patch_maps.md §5 calls "the worst possible failure
+    # mode, since a FODO test would pass". Measured against the same rigid
+    # displacement applied to the bend directly: max|girder - element| = 1.0e-6
+    # at angle 1e-3, 1.99e-4 at 0.198, 4.05e-4 at 0.4 -- exactly dx*theta, and
+    # exactly 0 for a straight body (2026-08-05_b audit, U15-2).
+    #
+    # The limitation was recorded in beam_line_composition.md §10 and nowhere
+    # else: nothing warned, and element_help(:line) advertised the girder use
+    # with no caveat. Closing it properly needs a real accumulated-frame survey
+    # for the assembly, which is a feature, not a patch -- so until then this is
+    # loud rather than silent.
+    if _line_is_misaligned(geom)
+        bend = _line_net_bend(resolved)
+        bend == 0 || @warn """a misaligned beam line containing bends is surveyed as \
+            STRAIGHT, so its exit patch is wrong at first order in the bend angle \
+            (of order dx*theta). Misalign the bending elements individually, or \
+            treat the result as approximate.""" line = line_name(spec) total_bend = bend maxlog = 1
+    end
     return _ref_tilt_wrap(geom, _misalignment_wrap(geom, CompositeLine(ops)))
+end
+
+"""Whether this line carries a misalignment of its own (mirrors `_misalignment_wrap`)."""
+_line_is_misaligned(spec) =
+    any(k -> getparam(spec, k, 0) != 0,
+        (:x_offset, :y_offset, :z_offset, :x_pitch, :y_pitch, :tilt))
+
+"""
+Total absolute bend of a line's contents, recursing into kept-whole sub-lines.
+
+Used only to decide whether the straight girder survey is a lie for this line.
+Absolute rather than net: two opposite bends still each sit on a curved frame,
+so a zero *net* angle does not make the 1D survey correct.
+"""
+function _line_net_bend(spec::ElementSpec{:line})
+    total = 0.0
+    for e in line_entries(spec)
+        s = getfield(e, :spec)
+        if s isa ElementSpec && kind(s) === :line
+            total += _line_net_bend(s)
+        else
+            total += abs(Float64(getparam(s, :angle, 0)))
+            total += abs(Float64(getparam(s, :h, 0))) * abs(Float64(getparam(s, :L, 0)))
+        end
+    end
+    return total
 end
 
 @element_spec begin
@@ -666,7 +715,7 @@ end
     parameters = (
         name=ParamMeta(default="", meaning="line name; becomes the leading path segment of every placement it contains"),
         entries=ParamMeta(default=(), meaning="the expanded placements. Built by BeamLine(name, children...) from nested children; the keyword form takes them ready-made, which is how a slice becomes a line"),
-        x_offset=ParamMeta(default=0, meaning="misalignment of the WHOLE LINE, which is what makes a girder or cryostat: a line carrying one does not dissolve into its parent, it stays a single placement and moves its contents rigidly"),
+        x_offset=ParamMeta(default=0, meaning="misalignment of the WHOLE LINE, which is what makes a girder or cryostat: a line carrying one does not dissolve into its parent, it stays a single placement and moves its contents rigidly. The assembly survey is STRAIGHT: if the line contains bends its exit patch is wrong at first order in the bend angle (order dx*theta), and compiling one warns. Misalign bending elements individually where that matters"),
         y_offset=ParamMeta(default=0, meaning="vertical misalignment of the whole line"),
         z_offset=ParamMeta(default=0, meaning="longitudinal misalignment of the whole line"),
         x_pitch=ParamMeta(default=0, meaning="rotation of the whole line about the y axis, in radians"),

@@ -3825,6 +3825,38 @@ end
     # one commit after the thin kinds were added for the identical reason, so
     # `entry.k1 = 999.0` on a solenoid placement was accepted, reported by
     # getparam, and never read (compile_runtime kept kn = (0.0, 0.5)).
+    # 2026-08-05_b audit, U15-2: a misaligned line containing bends is surveyed
+    # STRAIGHT, so its exit patch is wrong at first order in the bend angle.
+    # Measured against the same rigid displacement applied to the bend directly:
+    # max|girder - element| = 1.0e-6 at angle 1e-3 rising to 4.05e-4 at 0.4,
+    # exactly dx*theta, and exactly 0 for a straight body. The limitation lived
+    # only in a theory note; it is loud now. Warns only when BOTH conditions
+    # hold, so an unbent girder and a bent line with no misalignment stay quiet.
+    bendy() = compile_runtime(
+        BeamLine("G", SBendSpec(L=1.1, angle=0.2, k1=0.0, nst=8); x_offset=1.0e-3))
+    straight() = compile_runtime(
+        BeamLine("G", QuadrupoleSpec(L=0.4, k1=1.0, nst=2), DriftSpec(L=1.0); x_offset=1.0e-3))
+    unaligned() = compile_runtime(
+        BeamLine("G", SBendSpec(L=1.1, angle=0.2, k1=0.0, nst=8)))
+    saw(f) = begin
+        buf = IOBuffer()
+        with_logger(SimpleLogger(buf, Logging.Warn)) do; f(); end
+        occursin("surveyed as STRAIGHT", String(take!(buf)))
+    end
+    @test saw(bendy)
+    @test !saw(straight)
+    @test !saw(unaligned)
+    # The error it warns about is real and first order in the angle.
+    let q0 = (1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 0.0, 1.0e-3), th = 0.2
+        # Compiled under a capture logger: the warning is asserted just above,
+        # and letting it through again only adds noise to the suite output.
+        g, e = with_logger(SimpleLogger(IOBuffer(), Logging.Warn)) do
+            (compile_runtime(BeamLine("G", SBendSpec(L=1.1, angle=th, k1=0.0, nst=8); x_offset=1.0e-3)),
+             compile_runtime(SBendSpec(L=1.1, angle=th, k1=0.0, nst=8, x_offset=1.0e-3)))
+        end
+        @test maximum(abs.(collect(g(q0...)) .- collect(e(q0...)))) > 1.0e-5
+    end
+
     sol = SolenoidSpec(L=1.0, ks=0.3, k1=0.5)
     @test !haskey(getfield(sol, :params), :k1)          # it really does fold
     sol_entry = line_entries(BeamLine("S", sol))[1]
