@@ -135,23 +135,52 @@ measured 2D column from `yokoya_vs_aspect_measured.tsv`; figure
 
 | $r=\sigma_y/\sigma_x$ | 1D model, m=1 matrix | 1D model, exact (sim) | full 2D PIC (measured) |
 |---|---|---|---|
-| 0.02–0.05 † | 23.2 / 5.51 | 1.297 / 1.289 | 1.25 |
-| 0.1  | 1.923 | 1.274 | **1.27** |
-| 0.2–0.3   | 1.261 / 1.238 | 1.246 / 1.223 | 1.24 |
+| 0.02–0.05 ‡ | 1.321 / 1.308 | 1.297 / 1.289 | 1.25 |
+| 0.1  | 1.290 | 1.274 | **1.27** |
+| 0.2–0.3   | 1.260 / 1.238 | 1.246 / 1.223 | 1.24 |
 | 0.5       | 1.206 | 1.190 | 1.20 |
 | 0.7       | 1.184 | 1.167 | — |
+| 0.85      | 1.172 | 1.153 | — |
 | 1.0 (round) | 1.162 | 1.143 | **1.19** |
 
-† Outside the validated regime: self-check 4 bounds the 1D reduction's
-trustworthy range, and at these aspect ratios the radial detuning
-$u(J)$ exceeds its physical maximum of 1 (measured max $u \approx 1.8$ at
-NJ=40 growing to $\approx 2.9$ at NJ=72 — grid-dependent, i.e. an artifact),
-so the matrix numbers in this row characterize the truncation, not the
-physics. The 2026-08-05 audit found the table's PREVIOUS numbers
-(0.86–1.40 matrix, "no discrete mode"–1.55 sim) were pre-normalization-fix
-data the code no longer produces, contradicting conclusion 2 below; the
-audit's fix campaign regenerated every row from current code and added this
-regime flag (audit queue U19-1/U19-3).
+‡ **Corrected 2026-08-06 (audit lead U22-1); this row previously read 23.2 /
+5.51, and 0.1 previously read 1.923.** Those values were a quadrature
+artifact, not physics. `gauss_avg` averaged over the source Gaussian with a
+fixed 96-node Gauss-Hermite rule, whose node spacing is set by the *measure*
+($0.320\,\sigma$, innermost node at $0.160\,\sigma$), while the integrand
+carries all its structure on the scale $s_t=\sqrt2 r$ of the averaged plane.
+Once $s_t \lesssim 0.3\,\sigma$ the rule stepped straight over the cusp, the
+averaged potential's curvature at the origin came out too large, and $u(J)$ —
+the entire diagonal of the eigenproblem — was wrong. That is why max $u$ ran
+to 1.8–2.9 and *grew with NJ*: a finer $J$ grid sampled more of a diverging
+$u(J)$. The rule is now a panel Gauss-Legendre whose panel width resolves
+$s_t$; the values above are stable to five digits over a 4× panel-density
+range and reproduce the shipped $r\ge0.2$ numbers unchanged.
+
+The previous footnote read this artifact as a *physical* limit ("outside the
+validated regime … characterizes the truncation, not the physics"). The
+detection was right and the diagnosis was wrong, which is the expensive
+failure mode: the anomaly was real, but its cause was the quadrature, so the
+repair was a quadrature change rather than a caveat. Every row now satisfies
+max $u \le 1$ (0.990 at $r=0.02$ falling to 0.827 at $r=1$) and carries a
+discrete mode clear of the continuum by a uniform gap $\Lambda - \max u
+\approx 0.33$; before the fix that gap was $\le 0.007$ for $r \le 0.1$, i.e.
+the quoted "Yokoya factor" *was* the continuum top wearing a mode's name.
+These three invariants — max $u \le 1$, the mode gap, and per-row translation
+invariance — are now asserted per row by the script, which writes them into
+`yokoya_vs_aspect.tsv` and refuses to label a band edge a Yokoya factor.
+
+At $r = 0.02$ and $0.05$ the residual $\sigma$-drift ($2.9\times10^{-4}$,
+$1.3\times10^{-4}$) is above the $10^{-4}$ floor the other rows meet; this is
+the $J$-mesh, not the quadrature (`OCTOPUS_VLASOV_NJ=128 NPHI=160` brings
+$r=0.02$ to $7.5\times10^{-5}$ and moves $\Lambda$ by $3\times10^{-4}$), so
+those two rows carry fewer digits than the rest and are flagged
+`mesh_limited` rather than suppressed.
+
+An earlier correction, kept: the 2026-08-05 audit found the table's numbers
+before *that* pass (0.86–1.40 matrix, "no discrete mode"–1.55 sim) were
+pre-normalization-fix data the code no longer produced (audit queue
+U19-1/U19-3).
 
 Three conclusions, in decreasing order of certainty:
 
@@ -167,16 +196,34 @@ Three conclusions, in decreasing order of certainty:
    (CORRECTED 2026-07-28: an earlier version claimed 10-25% truncation error,
    which was entirely an incorrect spectral kernel in the particle referee —
    see Section 2). With the correct kernel the matrix and the exact particle
-   solution of the same model agree to 1-2% wherever a discrete pi mode
-   exists ($r \gtrsim 0.2$).
-3. **The 1D reduction itself fails for flat beams**: the exact 1D-model
-   solution loses the discrete $\pi$ mode below $r \approx 0.1$ (buried in
-   the continuum), while the real 2D system measurably keeps a healthy
-   discrete mode at $Y \approx 1.25$ there. The vertical degree of freedom is
-   not a spectator even for the horizontal mode. Quantitative $Y$ therefore
-   requires either the full 2D Vlasov computation (Yokoya-Koiso's original
-   route) or direct simulation — which is what our benchmark provides, now
-   with theory-grade structural checks around it.
+   solution of the same model agree to 1-2% at **every** aspect ratio in the
+   table: 1.8%, 1.5%, 1.2% at $r = 0.02, 0.05, 0.1$ and 1.1-1.7% from
+   $r = 0.2$ to round. **Extended 2026-08-06 (U22-1)** — this statement
+   previously carried the qualifier "wherever a discrete $\pi$ mode exists
+   ($r \gtrsim 0.2$)", which existed only because the flat rows were broken.
+3. **The 1D reduction is monotone and well-behaved across the whole range**,
+   $\Lambda = 1.32$ (flat) $\to 1.16$ (round), and tracks the measured 2D
+   curve to 2-4% except at round beams, where it sits ~2% low.
+
+   **REFUTED and REPLACED 2026-08-06 (audit lead U22-1).** This conclusion
+   previously read: *"The 1D reduction itself fails for flat beams: the exact
+   1D-model solution loses the discrete $\pi$ mode below $r \approx 0.1$
+   (buried in the continuum) … the vertical degree of freedom is not a
+   spectator even for the horizontal mode."* That was inferred from the
+   quadrature artifact corrected above, and two things refute it. First, the
+   corrected matrix carries a discrete mode at every $r$ down to 0.02, clear
+   of the continuum by the same gap (0.33) as at round beams. Second — and
+   independently of the fix — the note's own "exact (sim)" column never lost
+   the mode: it read 1.297 / 1.289 / 1.274 at $r = 0.02 / 0.05 / 0.1$ all
+   along, within 2-4% of the measured 2D values, because the particle referee
+   shares no code with the broken average. The table contradicted the
+   conclusion drawn from it.
+
+   What survives is weaker and worth keeping: the reduction is a 1-2%
+   instrument, not a substitute for the full 2D computation, and the rigid-bunch
+   diagnostic in Section 2 still runs 1.21-1.41 rather than 1. Quantitative $Y$
+   for a specific machine still comes from the 2D Vlasov route or from direct
+   simulation — which is what our benchmark provides.
 
 **$Y$ versus $\xi$** (`result/yokoya_vs_xi.png`): the measured PIC scan gives
 $Y = 1.183,\ 1.188,\ 1.185,\ 1.152$ at $\xi = 0.0025, 0.005, 0.01, 0.02$ —
@@ -227,8 +274,20 @@ Current coupled eigen-solve (`result/eic_coherent_modes.tsv`, regenerated
 
 | plane | e continuum | p continuum | discrete modes outside both |
 |---|---|---|---|
-| x | $[0.080,\ 0.2549]$ | $[0.228,\ 0.2509]$ | none (top mode $0.25488$, at the e-continuum edge, $(Q-Q_e)/\xi_e = 1.98$) |
+| x | $[0.080,\ 0.1650]$ | $[0.228,\ 0.2371]$ | none (top mode $0.23795$, at the **p**-continuum edge, $(Q-Q_p)/\xi_p = 1.06$) |
 | y | $[0.140,\ 0.2126]$ | $[0.210,\ 0.2168]$ | **one: $0.22432$**, above BOTH continua, $(Q-Q_e)/\xi_e = 0.84$, $(Q-Q_p)/\xi_p = 1.52$ |
+
+> **Correction (2026-08-06, audit lead U22-3).** The $x$ row previously read
+> e-continuum $[0.080,\ 0.2549]$, p-continuum $[0.228,\ 0.2509]$, top mode
+> $0.25488$ "at the e-continuum edge, $(Q-Q_e)/\xi_e = 1.98$". Every one of
+> those numbers came from the same broken source average as §3 (the $x$-plane
+> witness aspect ratios, 0.085 and 0.095, sit squarely in the failing regime):
+> the continuum tops are $\xi\cdot\max u$, and $\max u$ was 1.98 / 2.45 instead
+> of the analytic 0.965 / 0.969. The **conclusion is the one thing that
+> survives** — still no discrete $x$ mode outside both continua — but the bands,
+> the top mode and the stated reason do not, and after the repair the top $x$
+> mode sits at the **proton** edge, not the electron one. The $y$ row is
+> unchanged: its aspect ratios were on the converged side of the quadrature.
 
 > **Correction (2026-08-05 audit, U19-2).** This section previously
 > concluded "no coherent dipole mode detaches from the incoherent continua

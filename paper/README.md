@@ -55,6 +55,24 @@ Numbered as in the manuscript.
   counts are integer multiples of the transform counts with zero residual.
   The full pipeline is 37.7 ms/turn, 15.6% of device time.
 
+**Correction, 2026-08-06 (audit lead U22-1) — Fig. 6 is unaffected, and here
+is why that is checkable.** `yokoya_vs_aspect.tsv` was regenerated again after
+a *quadrature* defect was found in the same driver: the source average used a
+fixed 96-node Gauss-Hermite rule whose node spacing is set by the measure,
+while the integrand's structure lives on the averaged plane's scale `s_t`.
+For flat beams the rule stepped over that structure entirely, and the archived
+table's three flattest rows were artifacts — r = 0.02 read **23.16** where the
+converged value is **1.321**. The rule is now a panel Gauss-Legendre whose
+panel width resolves `s_t`.
+
+`make_figures.py` draws the theory curve only for `r >= VLASOV_CONVERGED_MIN_R
+= 0.5`, and every row at r >= 0.5 was always on the converged side: the
+regenerated values move by ~2e-6 relative (1.2060096 -> 1.2060074 at r = 0.5,
+1.1619516 -> 1.1619506 at r = 1.0), i.e. the fifth decimal. **No figure or
+caption number changes.** The archived TSV now carries the corrected rows plus
+three diagnostic columns (`max_u`, `mode_gap`, `is_mode`/`mesh_ok`); all are
+numeric, so `read_tsv`'s `float()` parse is unaffected.
+
 **Note on Fig. 6's theory curves.** `yokoya_vs_aspect.tsv` was regenerated
 after a normalization defect was found in
 `../validation/coherent_mode_vlasov_theory.jl`: the reduction normalized its

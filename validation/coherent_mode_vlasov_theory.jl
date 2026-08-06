@@ -21,8 +21,8 @@ This yields the coupled eigenproblem derived in the theory note:
 
   (Omega - omega_a(J)) g_a(J) = 2 xi_a e^{-J} Int K_ab(J,J') g_b(J') dJ'
 
-with omega_a(J) = Q_a + xi_a u_a(J) the amplitude-dependent incoherent tune,
-u_a(0) = 1, and the symmetric kernel
+with omega_a(J) = Q_a + xi_a u_a(J) the amplitude-dependent incoherent tune and
+the symmetric kernel
 
   K(J,J') = (1/2 pi^2) Int_0^{2pi} dphi Int_0^pi dphi'
             cos(phi) cos(phi') Vhat(x(J,phi) - x'(J',phi')).
@@ -39,7 +39,14 @@ leaves the other tables worth writing, and the reader of a quoted band is
 expected to have read the warning (2026-08-05 audit, U19-4/9). Self-checks
 built in:
 
-1. u(0) = 1 (normalization of the incoherent tune shift);
+1. max u <= 1, with u(0) = (1 + r)/(1 + sqrt2 r) for the symmetric case --
+   NOT u(0) = 1. The reduction convolves BOTH beams' other-plane spreads into
+   the kick (s_t = sqrt2 r) while xi is defined by the source's own sigma, so
+   the reduction's small-amplitude detuning is smaller than xi by exactly that
+   factor: 0.828 at r = 1, approaching 1 only in the flat limit. u(0) = 1 was
+   the signature of the circular normalization that check 4 below removed, so
+   asserting it here contradicted check 4 seventeen lines down (audit U22-2).
+   The invariant with teeth is max u <= 1, asserted per row in the aspect scan;
 2. the co-moving (sigma) mode must appear at exactly Q0 with the rigid
    translation eigenvector g ~ sqrt(2J) e^{-J} — this validates every
    constant in the kernel at once (translation invariance of the force);
@@ -97,19 +104,61 @@ function gauss_legendre(n)
     return nodes, weights          # on [-1, 1], weight 1
 end
 
-function gauss_hermite(n)
-    b = [sqrt(k / 2) for k in 1:(n - 1)]
-    E = eigen(SymTridiagonal(zeros(n), b))
-    nodes = E.values
-    weights = sqrt(pi) .* abs2.(E.vectors[1, :])
-    return nodes, weights          # weight e^{-t^2}
+# A Gauss-Hermite rule was used here to average over the source Gaussian. It is
+# gone rather than merely unused: its node spacing is set by the measure, which
+# is the one thing that must NOT set it here (see `gauss_avg`, audit U22-1).
+
+# Nodes for one panel of the averaging rule below, on [-1, 1].
+const GLP_N, GLP_W = gauss_legendre(10)
+# Truncation of the averaging measure, in units of its own sigma. The Gaussian
+# tail beyond 12 sigma is ~1e-32 and every integrand averaged here is bounded.
+const GAUSS_AVG_HALFWIDTH = 12.0
+# Panels per structure length, and the clamp on the resulting panel count.
+const GAUSS_AVG_PER_STRUCTURE = 4.0
+const GAUSS_AVG_MIN_PANELS = 64
+const GAUSS_AVG_MAX_PANELS = 16384
+
+"""
+Gaussian average  < f(v) >  with v ~ N(0, s), by a panel Gauss-Legendre rule
+whose panel width resolves `structure` -- the scale on which `f` varies.
+
+A fixed-order Gauss-Hermite rule cannot be used here, and this is a measured
+lesson rather than a preference (2026-08-05_b audit, U22-1). Its node spacing is
+set by the *measure*: at 96 nodes the innermost sit at |v| = 0.160 s with 0.320 s
+spacing. The integrands averaged below instead carry all their structure on the
+scale `s_t` of the averaged plane, inside |u| <~ s_t. Once s_t <~ 0.3 s the rule
+steps straight over that region, `averaged_potential`'s curvature at the origin
+comes out too large, and u(J) -- the entire diagonal of the eigenproblem -- is
+wrong. The damage was not subtle: Lambda at r = 0.02 came out 23.16 against a
+converged 1.321, and the error tracked s_t/s exactly, so the flat-beam rows of
+the aspect scan were quadrature artifacts that the note then read as a physical
+limitation of the 1D reduction.
+
+Raising the Hermite order is not the repair -- convergence is far too slow
+(u(0) at r = 0.1 needs ~4000 nodes, and r = 0.05 is not converged even there).
+What matters is node *spacing* relative to `s_t`, which is what this rule
+controls directly. `structure` defaults to `s`, recovering an ordinary smooth
+average when the integrand has no finer scale.
+"""
+gauss_avg(f, s) = gauss_avg(f, s, s)
+
+function gauss_avg(f, s, structure)
+    s == 0.0 && return f(0.0)
+    half = GAUSS_AVG_HALFWIDTH * s
+    width = 2 * half
+    target = structure > 0 ? structure / GAUSS_AVG_PER_STRUCTURE : width
+    npanel = clamp(ceil(Int, width / target), GAUSS_AVG_MIN_PANELS, GAUSS_AVG_MAX_PANELS)
+    h = width / npanel
+    acc = 0.0
+    for p in 0:(npanel - 1)
+        c = -half + (p + 0.5) * h
+        for i in eachindex(GLP_N)
+            v = c + 0.5h * GLP_N[i]
+            acc += GLP_W[i] * f(v) * exp(-v * v / (2 * s * s))
+        end
+    end
+    return acc * 0.5h / (sqrt(2pi) * s)
 end
-
-const GH_N, GH_W = gauss_hermite(96)
-
-"""Gaussian average  < f(v) >  with v ~ N(0, s)."""
-gauss_avg(f, s) = s == 0.0 ? f(0.0) :
-    sum(GH_W[i] * f(sqrt(2.0) * s * GH_N[i]) for i in eachindex(GH_N)) / sqrt(pi)
 
 # ---------------------------------------------------------------------------
 # The 1D-reduced kick kernel for one plane.
@@ -193,7 +242,8 @@ erf_series(z) = z >= 0 ? 1 - exp(-z^2) * erfcx_pos(z) : -(1 - exp(-z^2) * erfcx_
 
 """Source-averaged raw potential  < W(x - x') >_{x'~N(0,s_src)}  (smooth in x)."""
 function averaged_potential(k::PlaneKernel, x, s_src)
-    smooth = gauss_avg(xp -> _R(k, abs(x - xp)), s_src)
+    # _R varies on the scale k.s_t, not on s_src: the rule must resolve it.
+    smooth = gauss_avg(xp -> _R(k, abs(x - xp)), s_src, k.s_t)
     return sqrt(pi / 2) / k.s_t * (mean_abs(x, s_src) + smooth)
 end
 
@@ -206,7 +256,7 @@ function normalized_equilibrium(k::PlaneKernel, s_src)
         z = abs(u) / (sqrt(2.0) * s)
         (2z * erfcx_pos(z) - 2 / sqrt(pi)) / (sqrt(2.0) * s)
     end
-    return sqrt(pi / 2) / s * (sqrt(2 / pi) / s_src + gauss_avg(gp, s_src))
+    return sqrt(pi / 2) / s * (sqrt(2 / pi) / s_src + gauss_avg(gp, s_src, s))
 end
 
 # ---------------------------------------------------------------------------
@@ -585,17 +635,82 @@ println(" by the particle solver's PERIODIC BOX, not by m=1 truncation — see")
 println(" yokoya_box_convergence.tsv and docs/theory/coherent_beam_beam_modes.md;")
 println(" the physical 2D values come from validation/coherent_mode_scans.jl):")
 aspects = [0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.85, 1.0]   # 0.02 ~ flat limit
+
+# Per-row invariants. The 2026-08-05_b audit (U22-1) shipped a table whose three
+# flattest rows were quadrature artifacts, and each of these would have caught it
+# on its own -- while the criteria themselves already existed in the file, applied
+# only at r = 1 as the kernel-sign selector. A row that fails any of them is not a
+# Yokoya factor and is not written as one.
+#
+#   max u <= 1   exact in this model (self-check 4): u(J) is the reduction's
+#                averaged curvature over the physical on-axis one. The broken
+#                quadrature returned max u = 23.16 at r = 0.02.
+#   Lambda - max u   a discrete pi mode must sit clear of the continuum whose top
+#                is max u. When the gap collapses to the eigenvalue spacing the
+#                largest eigenvalue IS the band edge, so reporting it as a mode
+#                names a continuum top after a mode. At r <= 0.1 the broken run
+#                had gap <= 0.007 against 0.17-0.33 everywhere it was right.
+#   sigma drift  translation invariance, the check that validates every constant
+#                in the kernel at once.
+const U_MAX_TOL = 1.0e-3        # max u <= 1 + tol
+const MODE_GAP_MIN = 0.02       # Lambda - max u, well above the ~1e-3 spacing
+const DRIFT_TOL = 1.0e-4        # |sigma drift| / xi
+
+not_modes = String[]
+mesh_limited = String[]
 open(joinpath(RESULT_DIR, "yokoya_vs_aspect.tsv"), "w") do io
-    println(io, "aspect_ratio\tY_m1_matrix\tY_1d_sim\tsigma_drift_over_xi")
+    # Numeric columns only: paper/make_figures.py parses every field with
+    # float(), so a status string here would break the figure pipeline. The
+    # human-readable verdict goes to stdout; `is_mode` and `mesh_ok` carry it
+    # here as 1/0.
+    println(io, "aspect_ratio\tY_m1_matrix\tY_1d_sim\tsigma_drift_over_xi\tmax_u\tmode_gap\tis_mode\tmesh_ok")
     for r in aspects
         out = symmetric_Y(r; sign_kernel=SIGN_KERNEL)
         sim = simulate_1d_model(r)
-        println(io, r, '\t', out.Y, '\t', sim.Y, '\t', out.sigma_drift)
+        max_u = maximum(out.res.u1)
+        gap = out.Y - max_u
+        # Two independent verdicts, kept apart because they mean different
+        # things. `not_a_mode` says the reported number is the top of the
+        # continuum rather than a discrete mode -- it must not be quoted at all.
+        # `mesh_limited` says the mode is real but the J-mesh has not resolved
+        # the kernel's translation invariance to the usual floor, so the value
+        # carries fewer digits than the rows around it. Conflating them would
+        # have re-made the original mistake in the other direction.
+        notmode = String[]
+        max_u <= 1 + U_MAX_TOL || push!(notmode, "max_u=$(round(max_u; sigdigits=5))>1")
+        gap >= MODE_GAP_MIN || push!(notmode, "gap=$(round(gap; sigdigits=3))<$(MODE_GAP_MIN)")
+        mesh_ok = abs(out.sigma_drift) <= DRIFT_TOL
+        status = !isempty(notmode) ? "not_a_mode:" * join(notmode, ";") :
+                 mesh_ok ? "ok" : "mesh_limited:drift=$(round(out.sigma_drift; sigdigits=3))"
+        isempty(notmode) || push!(not_modes, "r=$r (" * join(notmode, ";") * ")")
+        isempty(notmode) && !mesh_ok && push!(mesh_limited, "r=$r")
+        println(io, r, '\t', out.Y, '\t', sim.Y, '\t', out.sigma_drift, '\t',
+                max_u, '\t', gap, '\t', isempty(notmode) ? 1 : 0, '\t', mesh_ok ? 1 : 0)
         println("  r = ", rpad(r, 5), "  Y(m=1 matrix) = ",
                 rpad(round(out.Y; digits=3), 6),
                 "  Y(exact 1D sim) = ", rpad(round(sim.Y; digits=3), 6),
-                "  (sigma drift/xi = ", round(out.sigma_drift; sigdigits=2), ")")
+                "  (sigma drift/xi = ", rpad(round(out.sigma_drift; sigdigits=2), 9),
+                "  max u = ", rpad(round(max_u; digits=4), 7),
+                "  gap = ", rpad(round(gap; digits=4), 7), ")",
+                isempty(notmode) ? (mesh_ok ? "" : "  [mesh-limited]") :
+                    "  <-- NOT A MODE: " * join(notmode, ";"))
     end
+end
+if isempty(not_modes) && isempty(mesh_limited)
+    println("  [PASS] every row: max u <= 1, discrete pi mode clear of the continuum, ",
+            "translation invariance within $(DRIFT_TOL).")
+else
+    isempty(not_modes) ||
+        @warn """these rows are NOT Yokoya factors: `Y_m1_matrix` is the top of
+                 the incoherent continuum, not a discrete mode. Do not quote
+                 them. This is the failure the 96-node Gauss-Hermite average
+                 produced for every r <= 0.1 before audit U22-1.""" rows = not_modes
+    isempty(mesh_limited) ||
+        @warn """these rows ARE discrete modes (max u <= 1, mode clear of the
+                 continuum) but the J-mesh has not resolved translation
+                 invariance to $(DRIFT_TOL); they carry fewer digits than the
+                 rest of the scan. Measured: OCTOPUS_VLASOV_NJ=128/NPHI=160
+                 brings r=0.02 to |drift| = 7.5e-5 and moves Lambda by 3e-4.""" rows = mesh_limited
 end
 
 # The scan above covers r <= 1, i.e. the WIDE plane of a flat source.  The
