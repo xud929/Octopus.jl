@@ -30,7 +30,8 @@ CUDA checks:
     julia --project=. -e 'using CUDA; println(CUDA.functional()); println(CUDA.has_cuda_gpu())'
     julia --project=. -e 'using CUDA; CUDA.versioninfo()'
 
-This file is meant to be the developer harness (the concise precedent is examples/weak_strong_tracking.jl) for realistic weak-strong tracking:
+This file is the developer harness for realistic weak-strong tracking; the
+concise precedent is examples/weak_strong_tracking.jl. It covers:
 
 1. Define one `input` named tuple with beam, optics, element, and output
    settings.
@@ -58,7 +59,9 @@ using .Octopus
 # job without editing the physics input below.
 input = (
     case_name = "weak_strong",
-    result_dir = joinpath(@__DIR__, "..", "result"),
+    # OCTOPUS_RESULT_DIR: see the strong-strong harness (2026-08-05_b audit,
+    # U21-27). Two concurrent runs used to clobber one another silently.
+    result_dir = get(ENV, "OCTOPUS_RESULT_DIR", joinpath(@__DIR__, "..", "result")),
     seed = 123456789,
     # NOTE: no `total_turns` or `weak_beam.n_macro` here. Both sat in this
     # block reading as authoritative defaults while nothing read them

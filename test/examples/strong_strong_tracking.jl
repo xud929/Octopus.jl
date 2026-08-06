@@ -53,6 +53,13 @@ overrides", which are neither greppable nor copy-pasteable and also dropped the
 OCTOPUS_ prefix, so eight variables stayed effectively undocumented --
 2026-08-05_b audit, U21-23.)
 
+The moment `.h5` outputs are NOT byte-reproducible across two identical runs, so
+no byte-level regression check can be built on them (2026-08-05_b audit, U21-28).
+Two independent sources: HDF5 writes object-header birth timestamps into the file
+format itself, and `MomentObserver` writes an `elapsed_time` dataset. Measured on
+the weak-strong harness, 48 differing bytes between two identical runs, all in
+4-byte timestamps and their checksums. Compare the DATASETS, not the files.
+
 The soft-Gaussian solver is also available as a commented alternative ABOVE the
 solver construction.
 
@@ -156,7 +163,14 @@ using .Octopus
 
 input = (
     case_name = "pic_hcc",
-    result_dir = joinpath(@__DIR__, "..", "result"),
+    # OCTOPUS_RESULT_DIR lets concurrent or comparative runs write somewhere of
+    # their own (2026-08-05_b audit, U21-27). The path was fixed and had no
+    # override, and two simultaneous runs did NOT fail -- measured twice,
+    # including with a deliberately widened write window, both exited 0 and left
+    # one set of files. Silent last-writer-wins is worse than an error by this
+    # repository's own "loud beats silent" rule, and there was no way to avoid
+    # it short of editing the harness.
+    result_dir = get(ENV, "OCTOPUS_RESULT_DIR", joinpath(@__DIR__, "..", "result")),
     seed = 123456789,
     total_turns = 50000,
     default_demo_macroparticles = 200,
@@ -335,8 +349,15 @@ beam_pro = Beam(n_macro_pro, policy, Float64;
     npart = pro.n_particle,
 )
 
-eltype(beam_ele.rep.x) === Float64 || error("electron beam tracking arrays must be Float64")
-eltype(beam_pro.rep.x) === Float64 || error("proton beam tracking arrays must be Float64")
+# Through `coordinate_arrays`, the public accessor, rather than `beam.rep.x`
+# (2026-08-05_b audit, U21-25). AGENTS.md classes the representation as an
+# implementation detail that "may change"; reaching into `.rep.x` is exactly
+# what a representation change breaks, and a harness is the worst place to
+# discover that.
+eltype(first(coordinate_arrays(beam_ele))) === Float64 ||
+    error("electron beam tracking arrays must be Float64")
+eltype(first(coordinate_arrays(beam_pro))) === Float64 ||
+    error("proton beam tracking arrays must be Float64")
 
 slicing = LongitudinalSlicing(;
     method = :normal_quantile,
@@ -404,10 +425,19 @@ cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 # NOTE (2026-08-05 audit, U18-1): solver selection moved to the
 # OCTOPUS_SOLVER environment switch further down, which OVERRIDES anything
 # assembled here — uncommenting this block alone is dead code. Use
-# OCTOPUS_SOLVER=gaussian instead; this block stays as the reference for
-# what that switch builds. It
-# replaces the grid PIC field solve with sliced Gaussian moments and a
-# closed-form Bassetti-Erskine kick; see docs/theory/beam_beam_longitudinal_kick.md.
+# OCTOPUS_SOLVER=gaussian instead.
+#
+# This block is the reference for the solver's KEYWORD SET, not for what the
+# switch passes (2026-08-05_b audit, U21-14): the switch sets slicing,
+# min_sigma, luminosity_scale, longitudinal_kick and batch_mode, and leaves
+# `virtual_drift` and `include_sigma_xy` at their constructor defaults. The
+# earlier wording said the block "stays as the reference for what that switch
+# builds", which over-stated it by exactly those two keywords — edit the switch
+# if you need them.
+#
+# The soft-Gaussian solver replaces the grid PIC field solve with sliced
+# Gaussian moments and a closed-form Bassetti-Erskine kick; see
+# docs/theory/beam_beam_longitudinal_kick.md.
 #
 # solver = GaussianPoissonSolver(;
 #     slicing = slicing,
