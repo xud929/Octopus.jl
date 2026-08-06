@@ -17,9 +17,25 @@
 # date, commit (--dirty marked), testset count, PASS/FAIL, exit code.
 # Check it with:  column -t ~/.octopus_nightly/status.tsv | tail
 #
-# The suite's own exit code is the verdict; the trailing-pipe trap that once
-# masked a failing run (Measured Lesson 9) is why the code is captured
-# before any postprocessing.
+# The suite's own exit code is the verdict, and it is taken from the shell,
+# never from the log. Measured Lesson 9 is about a trailing pipe eating a
+# failing status; this script originally answered that by echoing `exit=$?`
+# INTO the log and scraping it back with sed -- which is a strictly worse
+# channel, because the tested program also writes there. Two measured defeats
+# (2026-08-05_b audit, U21-1/U21-2):
+#
+#   * julia's last stdout line lacking a trailing newline concatenates the
+#     script's own `exit=N` marker onto it, so `^exit=` stops matching and the
+#     code falls through to the 125 sentinel -- a PASSING suite recorded
+#     `FAIL 125`;
+#   * with that in play, `tail -1` then picks up any EARLIER line beginning
+#     `exit=` -- and a suite that printed `exit=0` and failed was recorded
+#     `PASS 0`, with this script exiting 0.
+#
+# A gate whose one job is to notice a failing suite must not read its verdict
+# from a channel the suite can write. `CODE=$?` immediately after the command
+# is the whole fix; the `exit=` line remains in the log for a human reader but
+# is no longer load-bearing.
 
 set -u
 
@@ -46,15 +62,11 @@ trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 cd "$REPO" || exit 1
 COMMIT="$(git describe --always --dirty 2>/dev/null || echo unknown)"
 
-{
-    echo "== octopus nightly suite  $STAMP  commit $COMMIT"
-    "$JULIA" --project=. --threads=4 -e \
-        'using Pkg; Pkg.test(julia_args=["--threads=4"])'
-    echo "exit=$?"
-} > "$LOG" 2>&1
-
-CODE="$(sed -n 's/^exit=//p' "$LOG" | tail -1)"
-[ -n "$CODE" ] || CODE=125
+echo "== octopus nightly suite  $STAMP  commit $COMMIT" > "$LOG"
+"$JULIA" --project=. --threads=4 -e \
+    'using Pkg; Pkg.test(julia_args=["--threads=4"])' >> "$LOG" 2>&1
+CODE=$?
+printf '\nexit=%s\n' "$CODE" >> "$LOG"
 TESTSETS="$(grep -c '^Test Summary' "$LOG")"
 VERDICT=FAIL
 [ "$CODE" = "0" ] && VERDICT=PASS
