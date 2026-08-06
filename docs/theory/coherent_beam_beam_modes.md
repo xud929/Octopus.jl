@@ -24,14 +24,28 @@ eigenmodes:
   own displacement through a force gradient reduced by the $\sqrt2$-wider
   effective Gaussian.
 
-For **round** beams the 2D field gradient scales as $1/\sigma^2$, so the
-$\sqrt2$ widening halves it and the doubling restores it:
-$\Delta Q_\pi = \xi$, i.e. the rigid Yokoya factor $Y \equiv \Delta Q_\pi/\xi$
-is exactly $1$. For **flat** beams the gradient scales as $1/\sigma_x$
-(sheet-like field), so the same argument gives $Y_{\rm rigid} = 2/\sqrt2 =
-\sqrt2 \approx 1.41$. The rigid model already shows that $Y$ is a
-*geometry-dependent* number — but it freezes the distribution shape, which is
-exactly what the beam-beam force does not allow.
+The on-axis gradient of a 2D Gaussian is $\partial_x K_x(0) \propto
+1/(\sigma_x(\sigma_x+\sigma_y))$, which is **homogeneous of degree $-2$ in
+$(\sigma_x,\sigma_y)$ jointly**. The $\sqrt2$ widening therefore halves it at
+*every* aspect ratio, and the doubling restores it: $\Delta Q_\pi = \xi$, i.e.
+the rigid Yokoya factor $Y \equiv \Delta Q_\pi/\xi$ is **exactly $1$ for round
+and flat beams alike**. The rigid model freezes the distribution shape, which is
+exactly what the beam-beam force does not allow, and that — not geometry — is
+what the Vlasov treatment below corrects.
+
+> **Correction (2026-08-05_b audit, U22-10).** This paragraph previously argued
+> that for flat beams "the gradient scales as $1/\sigma_x$ (sheet-like field)"
+> and concluded $Y_{\rm rigid} = 2/\sqrt2 = \sqrt2 \approx 1.41$, calling $Y$ a
+> *geometry-dependent* number already at the rigid level. That is wrong twice
+> over: $1/\sigma_x$ is dimensionally impossible for a 2D field gradient, and
+> the degree-$-2$ homogeneity above holds regardless of flatness — verified at
+> $\sigma_y/\sigma_x = 1,\ 0.5,\ 0.09,\ 0.02,\ 10^{-6}$, all giving
+> $1.0000000$. It is not cosmetic: under $1.41$ this repository's own measured
+> flat values ($1.2522$, $1.2657$ in §3) would sit *below* the rigid model,
+> inverting the framing the whole benchmark rests on — that the Vlasov result
+> *exceeds* the rigid one. `validation/coherent_beam_beam_modes.jl` and
+> `validation/README.md` both already stated "rigid = 1" correctly, so the note
+> contradicted the code it documents.
 
 ## 2. Linearized Vlasov eigenproblem (symmetric collision)
 
