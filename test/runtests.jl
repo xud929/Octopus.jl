@@ -8640,7 +8640,9 @@ end
         # sees no epoch motion -- every already-built task keeps compiling at
         # the old precision indefinitely. Widening a knob's declared type is the
         # documented way to seed an AD or extended-precision sweep.
-        reset_knobs!()
+        # Its own namespace, and NO reset_knobs!() here: this block sits inside
+        # a testset that declares t_atom.* above and uses them below, so
+        # clearing the registry mid-testset destroys its neighbours.
         @knob t_rt.a::Real = 1.7
         let e_before = knob_epoch()
             spec_rt = ElementSpec{:quadrupole}(; L=0.4, nst=4,
@@ -8658,7 +8660,6 @@ end
                 @test knob_epoch() == e_noop
             end
         end
-        reset_knobs!()
 
         # 2026-08-05_b audit, U20-2/U13-4: the class above regenerated one
         # operator to the left. `+` and `*` were printed WITHOUT parentheses
