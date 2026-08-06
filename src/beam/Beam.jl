@@ -163,7 +163,7 @@ function _standard_gaussian_rep(::Type{BTAG}, ::Type{T}, N::Integer;
 	if resolved_rng === nothing
 		counter_seed = seed === nothing ? global_rng_seed() : UInt64(seed)
 		counter_method = global_rng_method_code()
-		counter_rng_id = rng_id == 0 ? next_rng_id!() : UInt64(rng_id)
+		counter_rng_id = rng_id == 0 ? next_rng_id!() : claim_rng_id!(rng_id)
 		coords = ntuple(i -> begin
 			_standardize!(_alloc_counter_randn(BTAG, T, Int(N), i;
 				cutoff=cutoff, seed=counter_seed, rng_method=counter_method,

@@ -31,7 +31,7 @@ function (::Type{LumpedRadSpec{T}})(;
                                     rng_id=zero(UInt64),
                                     kwargs...) where {T}
     stream_id = UInt64(rng_id)
-    stream_id == 0 && (stream_id = next_rng_id!())
+    stream_id = stream_id == 0 ? next_rng_id!() : claim_rng_id!(stream_id)
     return ElementSpec{:lumped_radiation}(
         _spec_params(;
             damping_turns=_fixed_tuple(damping_turns, 3, T),

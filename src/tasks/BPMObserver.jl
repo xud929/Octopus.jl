@@ -114,7 +114,7 @@ function BPMObserver(name::AbstractString="bpm";
     # An id drawn once at construction, not per reading: it is what makes the
     # noise stream this BPM's own, and distinct from every other stochastic
     # consumer in the run.
-    id = rng_id === nothing ? next_rng_id!() : Int(rng_id)
+    id = rng_id === nothing ? next_rng_id!() : Int(claim_rng_id!(rng_id))
     return BPMObserver(String(name), Float64(x_offset), Float64(y_offset), Float64(tilt),
                        Float64(x_gain), Float64(y_gain),
                        Float64(x_readout), Float64(y_readout),

@@ -1,6 +1,6 @@
 export RNG_PHILOX, RNG_SPLITMIX,
        set_global_rng!, global_rng_seed, global_rng_method, global_rng_method_code,
-       next_rng_id!, reset_rng_id_counter!,
+       next_rng_id!, claim_rng_id!, reset_rng_id_counter!,
        octopus_uint64, octopus_uniform01, octopus_normal_pair, octopus_normal,
        counter_philox4x32, counter_uint64, counter_uniform01,
        counter_normal_pair, counter_normal,
@@ -52,6 +52,31 @@ function next_rng_id!()
     # draw the same stream id, which would mean identical noise (2026-08-05
     # audit, U15-5).
     return Threads.atomic_add!(_GLOBAL_RNG_ID_COUNTER, UInt64(1)) + UInt64(1)
+end
+
+"""
+    claim_rng_id!(id) -> UInt64
+
+Record an **explicitly chosen** stochastic stream id and return it, advancing
+the auto-assign counter past it so `next_rng_id!` can never reissue it.
+
+Without this, an explicit id and an automatic one collide silently. Measured
+(2026-08-05_b audit, U14-2): `Beam(...; rng_id = 1)` left the counter at 0, an
+auto-assigned `LumpedRadSpec` in the same session then also received id 1, and
+the two consumers drew **the same stream** — beam initial coordinates and
+radiation excitation correlating at 0.99988. That is the worst possible
+correlation for an emittance-growth study, because the excitation is aligned
+with the distribution it is supposed to diffuse.
+
+A high-water mark rather than a registry: it is atomic, order-independent, and
+costs one compare-and-swap per stochastic consumer at construction. It does not
+catch the reverse order (an explicit id chosen to match one auto-assignment has
+already issued); `_warn_duplicate_radiation_streams` covers part of that, and
+the full registry is recorded in the audit queue rather than built here.
+"""
+function claim_rng_id!(id::Integer)
+    id > 0 && Threads.atomic_max!(_GLOBAL_RNG_ID_COUNTER, UInt64(id))
+    return UInt64(id)
 end
 
 """Reset the automatic stochastic consumer stream-id counter."""
