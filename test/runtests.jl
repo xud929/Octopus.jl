@@ -6981,6 +6981,32 @@ end
                    results[:TSC].lum / results[:TSC].full; rtol=1e-12)
     # and the recovered TSC charge is the measured 8.0e-5-relative deficit
     @test (results[:TSC].full - results[:TSC].truncated) / results[:TSC].full > 5e-5
+
+    # 2026-08-05_b audit, U6-3: the luminosity deposit calls the WORKSPACE-LESS
+    # `_pic_deposit!`, whose threaded branch allocates `_PIC_DEPOSIT_CHUNKS`
+    # fresh (nx+1) x (ny+1) matrices per call -- the workspace's own
+    # `local_charge` is sized for the INTERACTION mesh and is not usable here.
+    # Above the old flat 4096-particle threshold that cost 4.08 MB and 3.05 ms
+    # per call at grid 128, against 0 MB and 0.155 ms one particle below it:
+    # ~0.9 GB of churn per turn at 15 slices.
+    #
+    # The mesh-scaled threshold from U6-2 closed this without a second change --
+    # it needs 160*(nx+1)*(ny+1) ~ 2.7M particles per slice at grid 128, so the
+    # allocating branch is now unreachable at realistic counts. Measured after:
+    # 0 MB at every size, and grid 128 at 68k/slice went 13.391 -> 1.345 ms.
+    #
+    # Pinned by allocation because that is what regressed: a flat threshold
+    # coming back would show up here as megabytes, and the bound is loose enough
+    # (1 MB against the 4.08 MB defect) not to be brittle.
+    let grid = 128, n = 68_000
+        ws = Octopus._pic_cpu_workspace(Float64, grid, grid)
+        sol = PICPoissonSolver(grid=(grid, grid))
+        x1 = [1.0e-4 * sin(0.7i) for i in 1:n]; y1 = [1.0e-5 * sin(0.31i) for i in 1:n]
+        x2 = [1.0e-4 * sin(1.1i) for i in 1:n]; y2 = [1.0e-5 * sin(0.53i) for i in 1:n]
+        call() = Octopus._pic_luminosity(sol, x1, y1, x2, y2, 1.0, ws)
+        call()                                   # warm
+        @test @allocated(call()) < 1_000_000
+    end
 end
 
 @testset "Spectral field absolute normalization is derived, not fitted" begin
