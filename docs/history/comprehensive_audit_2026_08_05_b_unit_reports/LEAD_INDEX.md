@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **83 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **84 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -97,7 +97,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U3-2 | medium |  | `src/tasks/strongstrong/pic_cuda.jl:5158, 5165, 2101, 1214` | `threads = 512` — a value the repository's own launch-geometry contract sweeps and |
 | U3-3 | low-medium |  | `src/tasks/strongstrong/pic_cuda.jl:4885-4898, 5073-5090` | The CIC branch of `_cuda_pic_interpolate_field` and `_cuda_pic_interpolate_kick` is |
 | U3-6 | low-medium |  | `src/tasks/strongstrong/pic_cuda.jl:4002-4010, 4034-4051, 4077-4094, 41` | The CUDA PIC route is **not** run-to-run bit-reproducible: the same process, the same |
-| U4-1 | medium |  | `src/contracts/Contracts.jl:1963-1967 (probe) → :2125 (decision)` | the `:aperture` probe produces an all-NaN baseline, so all 11 aperture parameters counted in `checked` are decided by a NaN comparison that can only ever say "the parameter moved the map" — the apertu |
+| U4-1 | medium | CONFIRMED, not fixed — needs a probe redesign; on todo.md (2026-08-06) | `src/contracts/Contracts.jl:1963-1967 (probe) → :2125 (decision)` | the `:aperture` probe produces an all-NaN baseline, so all 11 aperture parameters counted in `checked` are decided by a NaN comparison that can only ever say "the parameter moved the map" — the apertu |
 | U4-10 | low-medium |  | `src/contracts/Contracts.jl:321-322 with :344-348 and :351-354` | on a single-threaded Julia the `PublicConfigurationEffectivenessContract`'s worker-invariance comparison executes zero times, yet the metrics report it as measured and passed. |
 | U4-11 | low-medium |  | `src/contracts/Contracts.jl:1351-1371 with docstring :1310-1317` | the "analytic weak-strong reference" that `HighEnergyWeakStrongLimitContract` holds the soft-Gaussian solver to at 2e-14 is not analytic and not independent — it calls the same three functions the pro |
 | U4-12 | medium-low |  | `src/contracts/Contracts.jl:1932-1986 (probes) with :2064` | `misalign_convention` — the MAD-X-vs-Bmad rotation composition order, which the PTC contract's `quad_mis_all` / `cfbend_mis_all` cases exist precisely to pin — is **inert at every shipped probe**, on  |
