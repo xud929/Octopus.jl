@@ -182,18 +182,35 @@ const _SOL_MIDPOINT_ITERS = 16
 #
 # — the model tracks four decades of residual to within an order of magnitude.
 #
-# 1e-10 sits two orders BELOW `SymplecticityContract`'s own 5e-8 tolerance, so a
-# solenoid that does not warn is comfortably inside every symplecticity check
-# the repository makes.
+# The budget is `SymplecticityContract`'s own `default_tolerance` (5e-8, see
+# `src/contracts/Contracts.jl`), which is the number this repository already
+# uses to decide whether a map counts as symplectic. So the rule the warning
+# encodes is exactly: *warn when the implicit stage is unconverged enough that
+# the resulting map would fail the repository's own symplecticity check.* A
+# solenoid that does not warn passes that check; one that does, does not.
 #
-# Correction (same audit): this was first written as a bare `q <= 0.1`, which
-# warned on `_symplecticity_contract_cases()`'s own nst=8 curved solenoid —
-# q = 0.138, whose measured residual is 9.30e-15, i.e. machine precision. That
-# made every clean run of the contract and of
-# `validation/symplecticity_validation.jl` emit a not-converged warning, which
-# is the "loud but wrong" failure mode: a warning that fires on healthy input
-# trains its reader to ignore it. Caught by a reading unit, not by the suite.
-const _SOL_MIDPOINT_RESIDUAL_BUDGET = 1.0e-10
+# NOTE (open, filed in the audit queue): 5e-8 is duplicated here rather than
+# read from the contract, because `solenoid.jl` is included before
+# `contracts/Contracts.jl` and a forward reference would be worse than a
+# documented copy. The two should be tied together with a coverage tripwire —
+# this is exactly the hand-copied-knowledge shape AGENTS.md warns about, and it
+# is recorded rather than left silent.
+#
+# Correction, twice over (same audit, C-2):
+#   * first written as a bare `q <= 0.1`, which warned on
+#     `_symplecticity_contract_cases()`'s own nst=8 curved solenoid — q = 0.138,
+#     measured residual 9.30e-15, i.e. machine precision — so every clean run of
+#     the contract and of `validation/symplecticity_validation.jl` emitted a
+#     not-converged warning;
+#   * then at a 1e-10 budget (q <= 0.237), which silenced nst=8 but still warned
+#     on the suite's deliberate nst=4 convergence-floor case, whose measured
+#     residual is 1.1e-9 — a case that PASSES the 5e-8 contract and exists
+#     precisely to document the floor.
+# Both are the "loud but wrong" failure mode: a warning that fires on healthy
+# input trains its reader to ignore it, which is worse than silence for the one
+# case that matters. Caught by a reading unit and by counting suite warnings —
+# not by the suite passing, which it did throughout.
+const _SOL_MIDPOINT_RESIDUAL_BUDGET = 5.0e-8
 const _SOL_MIDPOINT_CONTRACTION = _SOL_MIDPOINT_RESIDUAL_BUDGET^(1 / _SOL_MIDPOINT_ITERS)
 
 """
