@@ -1,0 +1,4 @@
+#!/bin/bash
+echo "Test Summary: x"
+echo "Test Summary: y"
+exit 0

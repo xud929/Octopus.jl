@@ -1,0 +1,4 @@
+#!/bin/bash
+echo "exit=0"
+printf "no trailing newline"
+exit 1

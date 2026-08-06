@@ -572,9 +572,89 @@ escapee set on both backends would risk a new defect in a region whose parity
 this pass has not re-measured. Priced: one session, with the negative control
 being U6's own 2-particle-charge reproduction.
 
+### F8 [Major, FIXED] The nightly gate could record `PASS` for a failing suite
+
+`test/nightly_suite.sh`. Lead U21-1, verified by the auditor against the real
+script in a scratch `$HOME`.
+
+**This is the most consequential finding of the pass.** The script exists for
+one job — noticing a failing suite on a GPU machine, because CI has no GPU, and
+"a correct check that never executes" is this repository's dominant recorded
+failure class. It recovered the suite's exit code by **scraping its own log**:
+
+```sh
+{ echo hdr; "$JULIA" ...; echo "exit=$?"; } > "$LOG" 2>&1
+CODE="$(sed -n 's/^exit=//p' "$LOG" | tail -1)"
+```
+
+— i.e. it read its verdict from a channel the tested program also writes. Two
+measured defeats: a last stdout line without a trailing newline concatenates the
+script's own `exit=N` marker onto it, so `^exit=` stops matching and `CODE`
+falls to the 125 sentinel; and with that in play `tail -1` picks up any *earlier*
+line beginning `exit=`.
+
+The header made it worse by asserting the opposite — it cited Measured Lesson 9
+and claimed the log round-trip was *why* the code was safe. Lesson 9 is about a
+trailing pipe eating a failing status; echoing the code into the log and
+scraping it back is a strictly worse channel than the pipe it replaced.
+
+`CODE=$?` immediately after the command is the whole fix. Negative control, the
+unit's own stubs against the real script:
+
+| stub | pre-fix | post-fix |
+|---|---|---|
+| **fails**, prints `exit=0`, no trailing newline | **`PASS 0`**, script exit 0 | `FAIL 1`, exit 1 |
+| **passes**, no trailing newline | `FAIL 125`, exit 125 | `PASS 0`, exit 0 |
+| plain exit 1 | `FAIL 1` | `FAIL 1` |
+| plain exit 0, 2 testsets | `PASS 0` | `PASS 0`, testsets=2 |
+
+Left open and filed rather than changed, because they are design calls with
+cron-noise consequences: lock contention and an unwritable `$HOME` both exit 0
+writing **no row** (U21-3/U21-4), and the `testsets` column is a real but
+uncalibrated tripwire — 151 with a GPU, 135 without, and nothing compares a row
+against the previous one (U21-5).
+
 ## 5. Corrections to this audit's own analysis
 
 Recorded beside the original claim, never over it, per the Absolute Rules.
+
+### C-2 — The auditor's own F4 guard was miscalibrated, twice
+
+**Original**: F4's convergence guard warned whenever the contraction factor
+`q = |L·ks|/(2·nst)` exceeded a hand-picked **0.1**.
+
+**Wrong twice, by measurement:**
+
+1. `q ≤ 0.1` warned on `_symplecticity_contract_cases()`'s own nst=8 curved
+   solenoid — q = 0.138, **measured residual 9.30e-15**, i.e. machine
+   precision. Every clean run of `SymplecticityContract` and of
+   `validation/symplecticity_validation.jl` emitted a not-converged warning
+   (30 of them in one full-suite run).
+2. Re-derived from a 1e-10 residual budget (q ≤ 0.237): silenced nst=8, but
+   still warned on the suite's deliberate **nst=4 convergence-floor** case,
+   whose measured residual is 1.1e-9 — a case that *passes* the 5e-8 contract
+   and exists precisely to document the floor.
+
+**Correct threshold**: the budget is `SymplecticityContract`'s own
+`default_tolerance` (5e-8), so `q_max = 5e-8^(1/16) = 0.3497` and the rule the
+warning encodes is exactly *"warn when the map would fail the repository's own
+symplecticity check"*. Full-suite solenoid warnings: **30 → 0**, with
+discriminating power intact (q=0.78 → 0.730 warns, q=0.81 → 7.197 warns,
+q=3.13 → NaN throws).
+
+**Why this belongs in the record.** Both wrong attempts are the *same failure
+mode this audit spent its length documenting* — an instrument miscalibrated for
+the regime it is used in — committed by the auditor, in a fix for that very
+class. Neither was caught by the suite, which stayed green through all three
+versions: the first was caught by a reading unit noticing a stray warning while
+auditing something else, the second by counting warnings in a suite log. A
+green gate does not mean a quiet one, and nothing in this repository checks
+warning volume.
+
+Filed with it: the 5e-8 is **duplicated** in `solenoid.jl` rather than read from
+the contract, because `solenoid.jl` is included first and a forward reference
+would be worse. That is the hand-copied-knowledge shape AGENTS.md wants a
+tripwire for, and it is recorded rather than left silent.
 
 ### C-1 — The auditor's "strong-strong kills silently" hypothesis was wrong, and measurement said so
 

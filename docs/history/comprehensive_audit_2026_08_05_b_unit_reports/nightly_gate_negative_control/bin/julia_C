@@ -1,0 +1,3 @@
+#!/bin/bash
+printf "ok no newline"
+exit 0
