@@ -801,3 +801,20 @@ and the per-unit reports archived beside them.
    single-threaded run aborts the thread-invariance testset, and a trailing
    pipe (`... | tail`) eats the failing exit code, so append the exit code
    to the log rather than trusting the last command's status.
+
+10. **A fix's NEIGHBOURS are where the next defect is, and nobody looks
+    there.** The 2026-08-05_b round found four defects that the immediately
+    preceding campaign had introduced, each within a commit or two of the fix
+    it accompanied: U11-2's `reverse` rebuild stopped dropping the line's own
+    state by re-listing the same `LineEntry` objects, which made the reflected
+    line ALIAS its source's per-placement overrides (U15-3); U11-3 added the
+    thin kinds to the folded-name guard and missed the solenoid one commit
+    later (U15-7); U11-1 closed a walker split and the `L` ParamMeta that came
+    with it re-opened the same split from the other side (U15-6); U5-1 removed
+    the worker-count gate from the deposit and left a threshold that could no
+    longer see the mesh, costing 1.5x per turn (U6-2). None was a wrong fix;
+    each was a correct fix whose blast radius was not re-walked. The habit
+    this buys: after a fix lands, re-read the call sites and sibling tables it
+    touched, and re-run the property the fix was ABOUT on the neighbours it did
+    not change — the four above were all findable that way and none was found
+    that way.

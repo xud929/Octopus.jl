@@ -90,6 +90,14 @@ Lessons"); the receipts are the dated records in `docs/history/`.
   probes the old behavior; touching code reachable from CUDA kernels means
   every branch must compile as device IR — throws included, so their
   messages stay static.
+- A fix's *neighbours* are where the next defect is. Four defects in the
+  2026-08-05_b round were introduced by the campaign immediately before it,
+  each within a commit or two of a correct fix whose blast radius was not
+  re-walked — an aliased rebuild, a sibling table left one entry short, a
+  re-opened walker split, a threshold that could no longer see what it was
+  thresholding. After a fix lands, re-read the call sites and sibling tables
+  it touched, and re-run the property the fix was *about* on the neighbours
+  it did not change.
 - Do not hand-copy knowledge (case lists, solver enumerations, spec
   tables). Derive from the one authoritative source and add a coverage
   tripwire; extending a check to cover everything tends to find a real bug
