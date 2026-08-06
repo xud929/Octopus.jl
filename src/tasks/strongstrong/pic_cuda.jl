@@ -5180,6 +5180,17 @@ if _HAS_CUDA
         function _cuda_gaussian_collide_sequential!(
                 solver::GaussianPoissonSolver{ST,D,COUPLED,LONGITUDINAL}, beam1::Beam,
                 beam2::Beam) where {ST,D,COUPLED,LONGITUDINAL}
+            # Emitted by the branch that READ `batch_mode`, matching the
+            # wavefront route's receipt (2026-08-05_b audit, U4-6). Without a
+            # receipt on this side, `GaussianPoissonSolver.batch_mode` had
+            # nothing to point its declared consumer at, and defaulted to
+            # `:solver_runtime` -- a verbatim dump of the solver the contract
+            # itself had just configured, so "the value reached a runtime
+            # consumer" passed by construction.
+            _record_execution!(:cuda_gaussian_algorithm, CUDABackend, (
+                batch_mode=:sequential, include_sigma_xy=COUPLED,
+                virtual_drift=typeof(solver.virtual_drift),
+            ))
             slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing1)
             slices2 = _cuda_longitudinal_slices(beam2.rep, solver.slicing2)
             kbb1 = _strong_strong_kbb1(solver, beam1, beam2)
@@ -5719,13 +5730,41 @@ if _HAS_CUDA
         @inline _cuda_gaussian_moment_nstats(coupled::Val) =
             _cuda_gaussian_centered_nstats(coupled) + 4
 
+        """
+            _cuda_gaussian_moment_launch(n) -> (threads, blocks)
+
+        Launch geometry for the slice-moment reduction, a function of the
+        particle count ALONE.
+
+        The partition of a slice's particles across threads and blocks is the
+        summation order of every moment sum, so deriving it from the active
+        policy made the moments a function of the launch geometry rather than of
+        the beam. Measured against the threads=256 result on identical data
+        (200,003 particles in one slice): threads=64 moved `covxpx` by 44 ulps
+        and `mpy` by 192; blocks=1024 moved `covxpx` by 5502 ulps. End to end
+        through a five-slice GaussianPoissonSolver collision that is
+        max|dpx| = 4.26e-18 and dLum/Lum = -4.6e-16 -- small, but a
+        reproducibility property the CPU twin was deliberately rewritten to
+        guarantee (U5-2: "the chunk-ordered fold must not depend on the worker
+        count") and the CUDA side never had (2026-08-05_b audit, U3-1).
+
+        Fourteen shared Float64 accumulators per thread make 256 the portable
+        thread ceiling even for the optional coupled path, so 256 is both the
+        cap and now the fixed value; blocks follow coverage, capped the same
+        way. The kernel is grid-strided, so this is a partition choice and not
+        a coverage requirement.
+
+        The cost is that `threads`/`blocks` on the execution policy no longer
+        tune this kernel. That is the intended trade -- the same one the CPU
+        made -- and it is recorded in a receipt so a run's provenance shows the
+        geometry that actually ran rather than the one requested.
+        """
         function _cuda_gaussian_moment_launch(n::Integer)
-            requested = _active_cuda_launch(n)
-            # Fourteen shared Float64 accumulators per thread make 256 the
-            # portable ceiling even for the optional coupled path.
-            threads = min(requested.threads, 256)
-            coverage_blocks = max(cld(Int(n), threads), 1)
-            blocks = max(requested.blocks, min(coverage_blocks, 256))
+            threads = 256
+            blocks = max(min(cld(Int(n), threads), 256), 1)
+            _record_execution!(:cuda_gaussian_moment_launch, CUDABackend,
+                (threads=threads, blocks=blocks, items=Int(n),
+                 resolved_by=:fixed_for_reproducibility))
             return (threads=threads, blocks=blocks)
         end
 

@@ -41,7 +41,7 @@ const DEFAULT_STEP = parse(Float64, get(ENV, "OCTOPUS_SYMPLECTICITY_STEP", "3e-7
 # four 5e-8 linear-map cases were judged ten times looser than they declare,
 # against measured residuals of ~1.5e-13. Kept equal to the
 # SymplecticityContract floor so the two stay mirrors of each other.
-const DEFAULT_TOL = parse(Float64, get(ENV, "OCTOPUS_SYMPLECTICITY_TOL", "5e-8"))
+const DEFAULT_TOL = parse(Float64, get(ENV, "OCTOPUS_SYMPLECTICITY_TOL", "1e-11"))
 
 function symplectic_form6(::Type{T}=Float64) where {T}
     S = zeros(T, 6, 6)

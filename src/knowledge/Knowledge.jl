@@ -89,13 +89,38 @@ const _PLACEMENT_PARAM_KEYS = (:x_offset, :y_offset, :z_offset, :x_pitch,
 # 2026-08-05 audit, U3-10/U13-1/U10-10). One warning at construction names
 # the unrecognized keys; `set_param!` is the deliberate-metadata door that
 # stays silent.
+"""
+    _extra_tracked_keys(kind) -> Tuple{Vararg{Symbol}}
+
+Keys the compiled runtime for `kind` reads that its own `parameters` schema does
+not declare.
+
+Only the unknown-key WARNING consults this: it exists so that warning cannot
+tell a user a key is untracked when the runtime reads it (2026-08-05_b audit,
+U9-2). Completing the schemas themselves is the real repair and is recorded on
+docs/todo.md, because it widens the parameter-effectiveness sweep by ~80 entries
+and each has to be either verified or exempted with a reason.
+
+The fallback is empty, so a kind that does not extend this is unaffected.
+"""
+_extra_tracked_keys(::Val) = ()
+
 function _warn_unknown_spec_keys(::Type{ElementSpec{Kind}}, params::Dict{Symbol,Any}) where {Kind}
     meta = get(ELEMENT_META_BY_KIND, Kind, nothing)
     # No meta yet: `@element_spec` example expressions run before their own
     # registration, and unregistered kinds have no schema to check against.
     (meta === nothing || isempty(meta.parameters)) && return nothing
+    # Keys the compiled runtime genuinely reads, beyond this kind's own schema.
+    # Warning about one of these would say "it is NOT being tracked" about a key
+    # that changes tracking by up to 5.8e-2 -- loud AND wrong, which is worse
+    # than silent (2026-08-05_b audit, U9-2). `_lattice_magnet` reads the same
+    # 23 body keys for every kind it compiles while each kind declares only its
+    # own subset, so e.g. `e1` on a quadrupole is read (measured 7.7e-7 shift)
+    # and was being reported as untracked.
+    extra = _extra_tracked_keys(Val(Kind))
     unknown = [k for k in keys(params)
-               if !haskey(meta.parameters, k) && !(k in _PLACEMENT_PARAM_KEYS)]
+               if !haskey(meta.parameters, k) && !(k in _PLACEMENT_PARAM_KEYS) &&
+                  !(k in extra)]
     isempty(unknown) && return nothing
     @warn "ElementSpec{$(repr(Kind))}: unknown parameter(s) stored as descriptive " *
           "metadata only — if one is a typo of a physics parameter, it is NOT " *

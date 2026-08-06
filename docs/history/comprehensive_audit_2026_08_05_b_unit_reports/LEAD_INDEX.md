@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **121 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **131 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -48,12 +48,12 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U15-5 | medium | CONFIRMED, FIXED (2026-08-06) | `src/elements/aperture.jl:104-117 (`_loss_record_matches_rep`) + src/ta` | the task's loss record is reused for **any** representation of the same |
 | U15-6 | medium | CONFIRMED, FIXED (2026-08-06) | `src/elements/beam_line.jl:384-391 + :637 (the new `L` ParamMeta on `:l` | declaring `L` as a `:line` parameter re-opens the walker split U11-1 |
 | U15-7 | medium | CONFIRMED, FIXED (2026-08-06) | `src/elements/beam_line.jl:122-143 (`_FOLDED_NAMED_STRENGTHS`, `_FOLDED` | the folded-name guard is a hand-copied table that misses the sixth |
-| U16-2 | medium |  | `docs/theory/rf_cavity_and_reference_energy.md:88-89 and 285-288` | ** The theory note — the design authority the element's |
+| U16-2 | medium | CONFIRMED, FIXED (2026-08-06) | `docs/theory/rf_cavity_and_reference_energy.md:88-89 and 285-288` | ** The theory note — the design authority the element's |
 | U16-4 | medium | CONFIRMED, FIXED (2026-08-06) | `src/elements/patch.jl:118-127 (`_patch_reference_length`)` | ** `_patch_reference_length` returns the new origin's displacement |
 | U16-5 | medium | CONFIRMED; documented + pinned, not re-signed (2026-08-06) | `src/elements/patch.jl:74-82 vs src/elements/ref_tilt.jl:69-70` | ** The patch and the misalignment/`ref_tilt` family share |
-| U17b-1 | medium |  | `test/runtests.jl:1599-1601` | the `_curv_vers` seam loop asserts `< 1.0e-14` on a quantity whose measured value |
+| U17b-1 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:1599-1601` | the `_curv_vers` seam loop asserts `< 1.0e-14` on a quantity whose measured value |
 | U17b-3 | low-medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:1889` | `@test r.metrics[:checked] > 200` leaves 153 checks (43% of the real count) of |
-| U18-1 | medium |  | `test/runtests.jl:3134-3207 ("No method grows a Core.Box outside the ar` | the permanent `Core.Box` sweep catches **3 of 7** injected boxes — its |
+| U18-1 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:3134-3207 ("No method grows a Core.Box outside the ar` | the permanent `Core.Box` sweep catches **3 of 7** injected boxes — its |
 | U18-2 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:3209-3288 ("CPU solver stack is thread-count invarian` | the second (above-threshold) block is a hand-copy of the first block's |
 | U18-3 | low-medium |  | `test/runtests.jl:4252-4256, 4270-4274 ("Lattice cells track and stay s` | three CPU↔CUDA agreement checks are asserted as |
 | U19-1 | medium | CLOSED by the U20-3 fix (2026-08-06) | `test/runtests.jl:6599 (gate at 6604)` | `"CUDA GaussianPIC coupled subtraction matches CPU"` is the only CUDA gate |
@@ -83,29 +83,29 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U22-9 | low-medium | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:64-71` | The header's "residual inconsistency" block describes a diagnostic the code no |
 | U23-1 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/pic_gaussian_luminosity_validation.jl:81-82 (+148-149)` | The region's only enforced numeric gate compares production `_pic_luminosity` against |
 | U23-2 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/gaussian_pic_field_validation.jl:124-131` | The "HYB" column of the table that `docs/theory/gaussian_subtracted_pic_solver.md` §9 |
-| U23-3 | medium-low |  | `validation/near_round_gaussian_transition.jl:173-188 and 407-411` | The script that is the theory note's declared validation of the near-round/elliptic |
+| U23-3 | medium-low | CONFIRMED, sampling half FIXED (2026-08-06); print-only-gate half is U20-1's, still open | `validation/near_round_gaussian_transition.jl:173-188 and 407-411` | The script that is the theory note's declared validation of the near-round/elliptic |
 | U24-2 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/lattice_cells.jl:239-243` | the gate added for U21-3 covers 2 of the 4 error metrics the file's own header declares; |
 | U24-3 | medium | FIXED earlier (642bc86); verified 2026-08-06 | `validation/symplecticity_validation.jl:13-14 (and validation/README.md` | both the script header and the README claim coverage of every registered `Symplectic6DMap` |
 | U24-4 | medium | FIXED | `validation/symplecticity_validation.jl:11` | the header advertises `OCTOPUS_SYMPLECTICITY_TOL=5e-7`, ten times the code's actual default |
 | U24-5 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/symplecticity_validation.jl:116-124` | the script derives the case list from the contract but does **not** run the contract's |
-| U24-6 | medium |  | `test/runtests.jl:7106 (SEAM — outside my region, reported and stopped)` | the one place that runs `symplecticity_validation.jl` automatically passes |
+| U24-6 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:7106 (SEAM — outside my region, reported and stopped)` | the one place that runs `symplecticity_validation.jl` automatically passes |
 | U25-1 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/pic_option_consistency.jl:119-124 (+ :226-228)` | on the GPU, choosing `interaction_grid=:node` or `slice_interpolation=:quadratic` |
 | U25-2 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/counter_rng_validation.jl:86-92` | the script's gate is a *statistics* test, not a *generator* test — it |
 | U25-3 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/counter_rng_validation.jl:86-92` | the same gate's tolerances are fixed absolute constants while the |
 | U25-4 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/tracking_backend_consistency.jl:154 (seam: src/contracts/Co` | `:aperture` is covered by the tripwire **by name only** — with the |
-| U3-1 | medium |  | `src/tasks/strongstrong/pic_cuda.jl:5564-5578, 5660-5668` | The CUDA slice transverse moments change with the launch grid rather than only with |
+| U3-1 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:5564-5578, 5660-5668` | The CUDA slice transverse moments change with the launch grid rather than only with |
 | U3-2 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:5158, 5165, 2101, 1214` | `threads = 512` — a value the repository's own launch-geometry contract sweeps and |
 | U3-3 | low-medium |  | `src/tasks/strongstrong/pic_cuda.jl:4885-4898, 5073-5090` | The CIC branch of `_cuda_pic_interpolate_field` and `_cuda_pic_interpolate_kick` is |
 | U3-6 | low-medium |  | `src/tasks/strongstrong/pic_cuda.jl:4002-4010, 4034-4051, 4077-4094, 41` | The CUDA PIC route is **not** run-to-run bit-reproducible: the same process, the same |
 | U4-1 | medium | CONFIRMED, not fixed — needs a probe redesign; on todo.md (2026-08-06) | `src/contracts/Contracts.jl:1963-1967 (probe) → :2125 (decision)` | the `:aperture` probe produces an all-NaN baseline, so all 11 aperture parameters counted in `checked` are decided by a NaN comparison that can only ever say "the parameter moved the map" — the apertu |
 | U4-10 | low-medium |  | `src/contracts/Contracts.jl:321-322 with :344-348 and :351-354` | on a single-threaded Julia the `PublicConfigurationEffectivenessContract`'s worker-invariance comparison executes zero times, yet the metrics report it as measured and passed. |
 | U4-11 | low-medium | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:1351-1371 with docstring :1310-1317` | the "analytic weak-strong reference" that `HighEnergyWeakStrongLimitContract` holds the soft-Gaussian solver to at 2e-14 is not analytic and not independent — it calls the same three functions the pro |
-| U4-12 | medium-low |  | `src/contracts/Contracts.jl:1932-1986 (probes) with :2064` | `misalign_convention` — the MAD-X-vs-Bmad rotation composition order, which the PTC contract's `quad_mis_all` / `cfbend_mis_all` cases exist precisely to pin — is **inert at every shipped probe**, on  |
+| U4-12 | medium-low | CONFIRMED; reporting half FIXED by U4-2 (now counted in :unperturbable); probe-configuration half on todo.md (2026-08-06) | `src/contracts/Contracts.jl:1932-1986 (probes) with :2064` | `misalign_convention` — the MAD-X-vs-Bmad rotation composition order, which the PTC contract's `quad_mis_all` / `cfbend_mis_all` cases exist precisely to pin — is **inert at every shipped probe**, on  |
 | U4-2 | medium | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:2116-2117 and :2122, message at :2135-2137` | of the 501 declared element parameters (`ParamMeta` entries across all registered specs), 353 are checked, 36 are documented-inactive, and **112 are silently dropped** — neither counted in `checked` n |
 | U4-3 | medium | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:2061-2072 (`_perturb_param`)` | `_perturb_param`'s magnitude and type dispatch make ~15 declared parameters permanently unverifiable, and the "rejected ⇒ consumed" reasoning at :2122 is wrong for all of them. |
 | U4-4 | medium-low | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:1942-1945 (`:sbend` probe)` | `sbend.fringe` is bitwise inert at the probe the contract ships, violating the probes' own stated design rule, and the Symbol blind spot (U4-2) guarantees nobody will ever be told. |
-| U4-5 | medium |  | `src/contracts/Contracts.jl:2444-2454` | the U3-8 repair to the `:cuda_pic_launch` branch of `_solver_contract_receipt_carries` is vacuous for **both** options that actually take that branch, so the per-option receipt claim is still receipt- |
-| U4-6 | medium |  | `src/contracts/Contracts.jl:2432-2443 with :2552-2555 / :2651-2655` | for options whose declared consumer is `:solver_runtime`, "the value reached a runtime consumer" is proven by reading back a receipt that is a verbatim dump of the object under test — the check's pass |
+| U4-5 | medium | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:2444-2454` | the U3-8 repair to the `:cuda_pic_launch` branch of `_solver_contract_receipt_carries` is vacuous for **both** options that actually take that branch, so the per-option receipt claim is still receipt- |
+| U4-6 | medium | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:2432-2443 with :2552-2555 / :2651-2655` | for options whose declared consumer is `:solver_runtime`, "the value reached a runtime consumer" is proven by reading back a receipt that is a verbatim dump of the object under test — the check's pass |
 | U4-7 | medium | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:2459-2471 vs :2338-2339` | the new solver-enumeration tripwire guards `contract.probes`, but the sweep iterates the hardcoded `_solver_contract_types()`. The two sets are different, so the natural response to a firing tripwire  |
 | U4-8 | medium | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:1276-1290 with :1172-1243` | the declaration↔case tripwire constrains exactly **one** registered kind, and fifteen kinds whose declared tracking method is `Symplectic6DMap` have no symplecticity case at all. The tripwire's author |
 | U4-9 | low-medium |  | `src/contracts/Contracts.jl:867-879 with metrics at :905-915` | `StrongStrongPICBackendConsistencyContract` reports three named checks as passed with nothing compared, for public parameter choices its own docstring advertises. |
@@ -119,7 +119,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U7-3 | moderate | CLOSED by the U7-2 fix; measured + pinned 2026-08-06 | `src/tasks/BeamObservers.jl:1531–1561` | `JLD2BeamMomentObserver` file size is **quadratic** in the number of |
 | U7-4 | moderate | CONFIRMED, FIXED (2026-08-06) | `src/tasks/BeamObservers.jl:1745 (`_is_hdf5_output`), consumed at 1669–` | `MomentObserver` writes HDF5 to whatever path it is given, but |
 | U7-5 | moderate | CONFIRMED, FIXED (2026-08-06) | `src/tasks/BPMObserver.jl:200–205 (`_bpm_centroid`)` | on a CUDA beam a BPM reading copies **all six** coordinate arrays to the |
-| U9-2 | medium |  | `src/elements/lattice_magnets.jl spec blocks (drift 1092–1100, quadrupo` | the per-kind `parameters` declarations under-declare what `_lattice_magnet` |
+| U9-2 | medium | CONFIRMED; false-warning half FIXED (2026-08-06); schema completion on todo.md | `src/elements/lattice_magnets.jl spec blocks (drift 1092–1100, quadrupo` | the per-kind `parameters` declarations under-declare what `_lattice_magnet` |
 | U1-2 | low |  | `src/tasks/strongstrong/pic_cuda.jl:585-605` | the U1-3 fix that landed in this diff copied three of the four fields the CUDA |
 | U1-3 | low |  | `src/tasks/strongstrong/pic_cuda.jl:1587` | `_cuda_pic_prepare_interaction_wavefront_indexed!` hardcodes `threads = 256` — the |
 | U1-4 | low |  | `src/tasks/strongstrong/pic_cuda.jl:16-21` | `collide!(solver, beam1, beam2, CUDABackend, ctx::TrackingContext)` accepts a real |

@@ -1222,7 +1222,7 @@ Base.@kwdef struct SymplecticityContract <: AbstractPhysicsContract
     # tightest per-case tolerance, or that case's declared value never binds:
     # at the former 5.0e-7 the four 5.0e-8 linear-map cases were judged ten
     # times looser than they declare, against measured residuals of ~1.5e-13.
-    default_tolerance::Float64 = 5.0e-8
+    default_tolerance::Float64 = 1.0e-11
     lorentz_angle::Float64 = 0.01
 end
 
@@ -2747,6 +2747,11 @@ _solver_contract_moved(a, b) =
 # specialised consumers publish their own fields.
 function _solver_contract_receipt_carries(receipts, consumer::Symbol,
                                           name::Symbol, value)
+    # Handled across the whole receipt set, not per receipt: one receipt per
+    # family means the evidence for a multi-family configuration is spread over
+    # several of them (U4-5).
+    consumer === :cuda_pic_launch &&
+        return _cuda_pic_launch_receipts_carry(receipts, value)
     for r in receipts
         r.consumer === consumer || continue
         if haskey(r.values, :configuration)
@@ -2754,19 +2759,53 @@ function _solver_contract_receipt_carries(receipts, consumer::Symbol,
             haskey(cfg, name) && isequal(getproperty(cfg, name), value) && return true
         end
         haskey(r.values, name) && isequal(getproperty(r.values, name), value) && return true
-        # cuda_pic_launch publishes one receipt per family rather than per
-        # option, so this generic path checks the requested VALUE landed in
-        # the receipt rather than merely that a threads field exists — the
-        # bare haskey form was satisfiable by any receipt at all (2026-08-05
-        # audit, U3-8; the dedicated launch-surface check below remains the
-        # strong gate).
-        if consumer === :cuda_pic_launch && haskey(r.values, :threads)
-            (name === :threads || name === :blocks) || return true
-            isequal(getproperty(r.values, name), value) && return true
-            continue
-        end
+        # cuda_pic_launch publishes one receipt per FAMILY rather than per
+        # option, so the generic paths above cannot match. See
+        # `_cuda_pic_launch_receipts_carry` before the loop -- this branch used
+        # to short-circuit to `true` for every option name that was not the
+        # literal `:threads` or `:blocks`, and no option in the entire schema is
+        # named either (2026-08-05_b audit, U4-5). The two options that reach
+        # here are `PICPoissonSolver.backend_configurations` and
+        # `GaussianPICPoissonSolver.backend_configurations`, so the branch was
+        # vacuous for 100% of its traffic and the arm comparing against
+        # `getproperty(r.values, name)` was dead code that could only ever have
+        # thrown FieldError.
     end
     return false
+end
+
+"""
+    _cuda_pic_launch_receipts_carry(receipts, configurations) -> Bool
+
+Whether the `:cuda_pic_launch` receipts show every per-family thread count that
+`configurations` requested.
+
+This is the real question for `backend_configurations`, whose declared consumer
+is `:cuda_pic_launch`: the receipts are published one per family with
+`(family, threads)`, so no field on them is named after the option. Asking
+whether a receipt merely EXISTS is what the previous form amounted to
+(2026-08-05_b audit, U4-5).
+
+A configuration requesting nothing is not evidence of anything, so it returns
+`false` rather than vacuously `true`.
+"""
+function _cuda_pic_launch_receipts_carry(receipts, configurations)
+    requested = Dict{Symbol,Int}()
+    for cfg in (configurations isa Tuple ? configurations : (configurations,))
+        cfg isa CUDAPICLaunchConfig || continue
+        for family in _CUDA_PIC_LAUNCH_FAMILIES
+            want = getproperty(cfg, Symbol(family, :_threads))
+            want === nothing || (requested[family] = Int(want))
+        end
+    end
+    isempty(requested) && return false
+    for (family, want) in requested
+        any(r -> r.consumer === :cuda_pic_launch &&
+                 haskey(r.values, :family) && r.values.family === family &&
+                 haskey(r.values, :threads) && r.values.threads == want,
+            receipts) || return false
+    end
+    return true
 end
 
 function validate(contract::SolverOptionEffectivenessContract; kwargs...)

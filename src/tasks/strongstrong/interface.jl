@@ -971,9 +971,19 @@ const _GAUSSIAN_SOLVER_OPTION_SCHEMA = (
         "Collision-point virtual-drift Hamiltonian."; category=:physics),
     include_sigma_xy=SolverOptionMeta(Bool, false,
         "Include the full coupled transverse slice covariance."; category=:physics),
+    # `consumer` names the receipt emitted by the code that BRANCHES on this
+    # value, not the solver dump (2026-08-05_b audit, U4-6). Without it the
+    # option fell back to `:solver_runtime`, whose receipt is
+    # `solver_configuration(solver)` -- a verbatim copy of the object the
+    # contract had just constructed, emitted before any backend dispatch. The
+    # effectiveness check "the value reached a runtime consumer" was therefore
+    # true by construction: if the CUDA soft-Gaussian route stopped reading
+    # `batch_mode` tomorrow, both halves of the check would still hold. This is
+    # the very option the contract's docstring cites as its motivating defect.
     batch_mode=SolverOptionMeta(Symbol, :wavefront,
         "CUDA slice-pair scheduling mode (:sequential or :wavefront); the CPU path ignores it.";
-        supported_backends=(CUDABackend,), category=:performance),
+        supported_backends=(CUDABackend,), category=:performance,
+        consumer=:cuda_gaussian_algorithm),
 )
 
 solver_option_schema(::Type{<:GaussianPoissonSolver}) = _GAUSSIAN_SOLVER_OPTION_SCHEMA

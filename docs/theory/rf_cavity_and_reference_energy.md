@@ -85,8 +85,11 @@ kcc = 2π * frequency / CLIGHT      # frequency in Hz
 - `frequency` in **Hz**, not MAD-X's MHz;
 - `phase` in **radians**, not MAD-X's units of $2\pi$, not Bmad's rad/$2\pi$,
   not elegant's degrees;
-- the argument is $k z + \varphi$, **additive**, taken against Octopus's own
-  longitudinal coordinate rather than a time or a $ct$;
+- the argument is $k z_1 + \varphi$, **additive**, taken against Octopus's own
+  longitudinal coordinate rather than a time or a $ct$, with $z_1$ the
+  TIME_ENERGY coordinate ($z/\beta$ in the tracked convention). This coincides
+  with `ThinCrabCavity`'s $kz$ **only at $\beta = 1$**: at 2.5 GeV proton and
+  $z = 7$ mm the two differ by $4.6\times10^{-3}$ rad;
 - harmonics are tuples, so a multi-harmonic cavity is native rather than an
   extension.
 
@@ -284,10 +287,21 @@ ambiguity.
 
 ## 9. Open questions for the human
 
-1. ~~Phase convention?~~ **Settled: follow `ThinCrabCavity`** — frequency in
-   Hz, phase in radians, argument $kz + \varphi$ (§4). The codebase had already
-   chosen, and two RF elements in one lattice must not mean two different things
-   by `phase`.
+1. ~~Phase convention?~~ **Settled: follow `ThinCrabCavity`'s units, not its
+   argument** — frequency in Hz, phase in radians, argument $k z_1 + \varphi$
+   (§4). The codebase had already chosen the units, and two RF elements in one
+   lattice must not mean two different things by `phase`.
+
+   Corrected 2026-08-06 (2026-08-05_b audit, U16-2). This item previously read
+   "argument $kz + \varphi$" and asserted the cross-element identity outright.
+   The U12-2 fix established that the accelerating cavity's argument is built
+   from $z_1$, the TIME_ENERGY coordinate, so the two elements agree on units
+   and on sign but coincide in argument only at $\beta = 1$. That fix landed on
+   the element, its ParamMeta and its construction_help and did not reach this
+   note, leaving the design authority contradicting the element it specifies —
+   the same one-directional shape the 2026-08-05 audit recorded for F16 itself.
+   `rf_cavity.jl`'s docstring is the statement to trust; this note now matches
+   it.
 2. ~~Does `RFCavitySpec` take `e0`?~~ **Settled: neither — it takes a
    normalized strength and no energy at all** (§6a). `BeamParams.E0` is the one
    source of truth, it is read only at setup to derive the strength, and

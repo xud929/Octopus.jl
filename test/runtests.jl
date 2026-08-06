@@ -1622,12 +1622,26 @@ end
     # U10-5: (1 - cos u)/h cancels as ~eps/u^2, so at the old 1e-4 boundary the
     # closed branch was 5.86e-9 relative while the series held 5.2e-17 — an
     # 8-digit cliff one ulp wide. The crossover now sits at 0.125 with the
-    # series extended through u^8; both sides must hold <= 1e-14.
+    # series extended through u^8; the series side holds <= 1e-15 and the
+    # closed side <= 1e-13, the latter set by the 118x amplification of a `cos`
+    # ulp rather than by the implementation (U17b-1 below).
     vers_ref(h) = (1 - cos(big(h))) / big(h)
     @test relerr(Octopus._curv_vers(1.001e-4, 1.0), vers_ref(1.001e-4)) < 1.0e-15
     @test relerr(Octopus._curv_vers(1.0e-2, 1.0), vers_ref(1.0e-2)) < 1.0e-15
+    # The bound on the CLOSED branch is set by the conditioning of the
+    # expression, not by this implementation (2026-08-05_b audit, U17b-1).
+    # `(1 - cos u)/h` at u = 0.13 has `1 - cos u = 8.447e-3`, so an error in
+    # `cos u` is amplified 118x: half an ulp of `cos` (1.1e-16) is 1.3e-14 of
+    # relative error, LARGER than the 1e-14 the bound used to demand. Measured
+    # today 5.89e-15 -- 0.45 ulp, a factor 1.7 from the old bound -- and
+    # recomputing with `cos u` moved one ulp gives 7.15e-15 / 1.91e-14. A
+    # different Julia version, or a build where `muladd` does not lower to
+    # `fma`, would have turned the suite red from this line onward with nothing
+    # wrong. Only `prevfloat(0.125)` was safe, because there the code takes the
+    # series branch. 1e-13 leaves room for a few ulps of `cos` while still
+    # being 8 orders below the 5.86e-9 cliff this test exists to guard.
     for h in (prevfloat(0.125), nextfloat(0.125), 0.13, 0.15)
-        @test relerr(Octopus._curv_vers(h, 1.0), vers_ref(h)) < 1.0e-14
+        @test relerr(Octopus._curv_vers(h, 1.0), vers_ref(h)) < 1.0e-13
     end
 
     # U10-6: _sol_log_over_h truncated its series at O(u^2) for a 1e-4
@@ -3345,15 +3359,38 @@ end
     offenders = String[]
     nmethods = 0
     seen = Set{Method}()
-    for name in names(Octopus; all=true, imported=false)
-        isdefined(Octopus, name) || continue
-        f = try
-            getfield(Octopus, name)
-        catch
-            continue
-        end
+    # Enumerate over EVERY loaded module's bindings, not just Octopus's own
+    # (2026-08-05_b audit, U18-1). `names(Octopus)` cannot reach a method
+    # Octopus adds to a generic owned by another module -- the binding lives in
+    # Base or Adapt, so `getfield(Octopus, name)` never yields the function even
+    # though `m.module === Octopus` holds for the method. Measured: 2224
+    # methods seen that way against 2494 with `m.module === Octopus`, a
+    # 270-method blind spot covering `Base.show` (7), `Base.==` (5),
+    # `Base.getindex` (5), `Base.hash` (5), the arithmetic operators (12), the
+    # property interface (12), `Adapt.adapt_structure` (3) and more. None of
+    # them carries a box today, so the sweep was blind rather than wrong -- but
+    # a box added to `Base.show(io, ::Beam)` tomorrow would have been invisible
+    # to the tripwire that exists to catch exactly that.
+    scan_modules = Module[Octopus]
+    for name in names(Main; all=true, imported=true)
+        isdefined(Main, name) || continue
+        v = try getfield(Main, name) catch; continue end
+        v isa Module && !(v in scan_modules) && push!(scan_modules, v)
+    end
+    for M in (Base, Core, Main), name in names(M; all=true, imported=true)
+        isdefined(M, name) || continue
+        v = try getfield(M, name) catch; continue end
+        v isa Module && !(v in scan_modules) && push!(scan_modules, v)
+    end
+    candidates = Any[]
+    for M in scan_modules, name in names(M; all=true, imported=true)
+        isdefined(M, name) || continue
+        f = try getfield(M, name) catch; continue end
         f isa Union{Function,Type} || continue
         f isa Core.Builtin && continue
+        push!(candidates, f)
+    end
+    for f in candidates
         ms = try
             methods(f)
         catch
@@ -3377,7 +3414,11 @@ end
             push!(offenders, "$(m.name) @ $(file):$(m.line)")
         end
     end
-    @test nmethods > 2000              # the sweep actually swept
+    # Ratcheted to the structural count (U18-1): 2494 methods have
+    # `m.module === Octopus`, against the 2224 the binding-based enumeration
+    # could reach. `> 2000` tolerated losing the entire 270-method blind spot
+    # without a word.
+    @test nmethods >= 2450             # the sweep actually swept, and widely
     @test isempty(offenders)
     isempty(offenders) || foreach(o -> @info("new Core.Box: " * o), offenders)
 end
@@ -4105,6 +4146,55 @@ end
                 push!(raw, "$(file):$(i)")
         end
         @test isempty(raw)
+    end
+end
+
+@testset "Slice moments are a function of the beam, not of the launch geometry" begin
+    # 2026-08-05_b audit, U3-1. `_cuda_gaussian_moment_launch` derived threads
+    # and blocks from the active policy, so the PARTITION of a slice's particles
+    # across threads and blocks -- which is the summation order of every moment
+    # sum -- was a function of the launch geometry rather than of the beam.
+    # Measured against threads=256 on identical data: threads=64 moved covxpx by
+    # 44 ulps and mpy by 192; blocks=1024 moved covxpx by 5502 ulps.
+    #
+    # The CPU twin was deliberately rewritten to guarantee exactly this
+    # invariant (U5-2, "the chunk-ordered fold must not depend on the worker
+    # count"); the CUDA side never had it and nothing tested for it.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        n = 200_003                      # deliberately not a multiple of any tile
+        z = [1.0e-2 * sin(0.013 * i) for i in 1:n]
+        rep = Phase6DRep(
+            Octopus.CUDA.CuArray([1.0e-4 * sin(0.017 * i) for i in 1:n]),
+            Octopus.CUDA.CuArray([2.0e-5 * cos(0.011 * i + 0.3) for i in 1:n]),
+            Octopus.CUDA.CuArray([8.0e-5 * sin(0.019 * i + 0.7) for i in 1:n]),
+            Octopus.CUDA.CuArray([1.5e-5 * cos(0.023 * i + 1.1) for i in 1:n]),
+            Octopus.CUDA.CuArray(z),
+            Octopus.CUDA.CuArray([5.0e-4 * sin(0.029 * i + 1.7) for i in 1:n]))
+        idx = Octopus.CUDA.CuArray(collect(1:n))
+        nstats = Octopus._cuda_gaussian_moment_nstats(Val(false))
+        partials = Octopus.CUDA.CuArray{Float64}(undef, nstats, 256, 1)
+        moments_under(threads, blocks) = Octopus._with_resolved_policy(
+            Octopus.ResolvedCUDAExecutionPolicy(0, threads, blocks)) do
+            Octopus._cuda_slice_transverse_moments(rep, idx, partials,
+                                                   false, 0.0, Val(false))
+        end
+        reference = moments_under(256, 256)
+        fields = propertynames(reference)
+        for (threads, blocks) in ((64, 256), (128, 256), (256, 512), (256, 1024))
+            m = moments_under(threads, blocks)
+            # BITWISE. An invariant stated as a tolerance is a different, weaker
+            # claim, and the whole point is that the geometry must not enter.
+            @test all(getproperty(m, f) === getproperty(reference, f) ||
+                      isequal(getproperty(m, f), getproperty(reference, f))
+                      for f in fields)
+        end
+        # The geometry really was varied: if the helper ignored its argument the
+        # loop above would compare the reference against itself four times.
+        @test Octopus._cuda_gaussian_moment_launch(n).threads == 256
+        @test Octopus._cuda_gaussian_moment_launch(n).blocks ==
+              max(min(cld(n, 256), 256), 1)
+    else
+        @test_skip "CUDA device required: this is a launch-geometry invariant"
     end
 end
 
@@ -7972,7 +8062,14 @@ end
 include(joinpath(pkgdir(Octopus), "validation", "symplecticity_validation.jl"))
 
 @testset "Finite-difference 6D symplecticity validation" begin
-    results = run_symplecticity_validation(; step=3.0e-7, default_tolerance=5.0e-6)
+    # No default_tolerance override (2026-08-05_b audit, U24-6). This call
+    # passed 5.0e-6 -- one hundred times the script's own floor and the
+    # contract's -- and the script applies `max(case.tolerance,
+    # default_tolerance)`, so every per-case declared tolerance was unbound
+    # here: the four 5e-8 linear-map cases, measured at ~1.5e-13, were judged
+    # at 5e-6, a 3.3e7x slack. That is exactly the defect the S3 fix removed,
+    # reintroduced at the call site. The script's own DEFAULT_TOL binds now.
+    results = run_symplecticity_validation(; step=3.0e-7)
     @test all(result -> result.passed, results)
     lorentz = run_lorentz_quasisymplectic_validation(; step=3.0e-7)
     @test lorentz.inverse_passed

@@ -793,6 +793,20 @@ function _strength_tuples(::Type{T}, kn, ks) where {T}
            ntuple(i -> i <= length(ks) ? T(ks[i]) : zero(T), n)
 end
 
+# Every key `_lattice_magnet` reads below, for EVERY kind it compiles, while
+# each kind's `parameters` declaration covers only its own subset. The
+# unknown-key warning consults this so it cannot claim a key the runtime reads
+# is "NOT being tracked" (2026-08-05_b audit, U9-2). Measured gaps: drift was
+# missing 21 of these, quadrupole/sextupole/octupole/multipole 15 each, sbend 2.
+const _LATTICE_BODY_KEYS = (:h, :b0, :kn, :ks, :bend_model, :curved, :curved_order,
+                            :bend_fringe, :fringe, :highest_fringe, :wedge_coeff,
+                            :e1, :e2, :fint1, :fint2, :hgap1, :hgap2, :hface1,
+                            :hface2, :va, :vs, :kill_ent_fringe, :kill_exi_fringe)
+
+for _k in (:drift, :quadrupole, :sextupole, :octupole, :multipole, :sbend)
+    @eval _extra_tracked_keys(::Val{$(QuoteNode(_k))}) = _LATTICE_BODY_KEYS
+end
+
 function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Type{T}) where {T}
     L = T(param(spec, :L))
     nst = Int(getparam(spec, :nst, 1))

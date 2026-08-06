@@ -170,11 +170,24 @@ end
 
 function run_near_round_transition_validation(::Type{T}) where {T<:AbstractFloat}
     inner, outer = Octopus._near_round_eta_bounds(zero(T))
+    # The BLEND INTERIOR is the point of this script, and it used to get one
+    # sample (2026-08-05_b audit, U23-3). The list was
+    # {0, inner/4, inner, (inner+outer)/2, outer, 2*outer, 1e-3, 1e-2, 0.1, 0.5}
+    # and every entry but `(inner+outer)/2` sits at or outside an endpoint, so
+    # ~92% of the interval the branch switch actually blends over was never
+    # evaluated. Measured: injecting a x1.1 evaluator error over t in
+    # [0.30, 0.40] left the sweep at 6.1096e-12, bit-identical to baseline, and
+    # left both continuity gaps identical too -- while the same injection at
+    # t in [0.45, 0.55] was caught at 1.0000e-03, which proves the metric works
+    # and the sampling was what failed.
+    #
+    # 17 interior points put a sample within 0.03 of every t in (0, 1).
+    blend_interior = T[inner + (outer - inner) * T(k / 18) for k in 1:17]
     eta_values = sort!(unique(T[
         0,
         inner / T(4),
         inner,
-        (inner + outer) / T(2),
+        blend_interior...,
         outer,
         T(2) * outer,
         T(0.001),
