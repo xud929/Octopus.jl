@@ -1820,11 +1820,25 @@ function validate_configuration_metadata()
     end
 
     # StrongStrongTask's own options (U3-5).
-    task_defaults = (luminosity_path=nothing, luminosity_append=false)
+    # A CONSTRUCTED task, not a second copy of the defaults. This read
+    # `task_defaults = (luminosity_path=nothing, luminosity_append=false)` -- a
+    # literal written in this same function -- so the docstring's claim that
+    # "metadata defaults match constructor defaults" was unbacked for
+    # StrongStrongTask: changing `luminosity_append::Bool=false` in the
+    # constructor left the check passing. Every sibling block already builds a
+    # real object (`solver_configuration(PICPoissonSolver())`,
+    # `LongitudinalSlicing()`, `StrongStrongDiagnostics()`), and a real probe
+    # was available here too (2026-08-05_b audit, U5-4).
+    default_task = StrongStrongTask((StrongStrongCollision(:probe),),
+                                    (StrongStrongCollision(:probe),))
+    # Key completeness, which no tripwire covered for the task schema: a new
+    # public task option is unchecked until it appears here.
+    Set(keys(strong_strong_task_option_schema())) ⊆ Set(fieldnames(StrongStrongTask)) ||
+        push!(errors, "StrongStrongTask schema names a key the type does not have")
     for (name, meta) in pairs(strong_strong_task_option_schema())
         meta.consumer === :unspecified && push!(errors,
             "StrongStrongTask.$(name) has no runtime consumer")
-        isequal(getproperty(task_defaults, name), meta.default) || push!(errors,
+        isequal(getproperty(default_task, name), meta.default) || push!(errors,
             "StrongStrongTask.$(name) metadata default disagrees with constructor")
     end
     Set(keys(diagnostics_option_schema())) == Set(fieldnames(StrongStrongDiagnostics)) ||
@@ -2111,8 +2125,17 @@ function _execute_strong_strong_task!(
         cache_stats=task.diagnostics.cache_stats,
         nvtx=task.diagnostics.nvtx,
     ))
+    # BOTH task options this consumer is declared for. `luminosity_append`
+    # names `:strong_strong_output` as its consumer, and the receipt carried
+    # `luminosity_path` alone -- so the declared consumer boundary never
+    # observed the value, and `validate_configuration_metadata` only checks
+    # that a consumer is NAMED, which is exactly the gap
+    # `SolverOptionEffectivenessContract`'s docstring calls out. The task
+    # options sit outside every effectiveness contract's schema sweep, so
+    # nothing else would have caught it (2026-08-05_b audit, U5-3).
     _record_execution!(:strong_strong_output, backend_type(policy),
-                       (luminosity_path=task.luminosity_path,))
+                       (luminosity_path=task.luminosity_path,
+                        luminosity_append=task.luminosity_append))
     blocks1 = _strong_strong_runtime_blocks(task, 1)
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
