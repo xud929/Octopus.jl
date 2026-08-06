@@ -32,6 +32,23 @@ ConfigurationOptionMeta(option_type, default, meaning;
                             Tuple(supported_backends), Tuple(Symbol.(dependencies)),
                             Symbol(consumer))
 
+"""
+    CONFIGURATION_STATUSES
+
+Every status a [`ConfigurationEntry`](@ref) may carry.
+
+  * `:resolved` -- the requested value is in force.
+  * `:unresolved` -- still awaiting runtime information.
+  * `:inherited` -- taken from an enclosing object rather than set here.
+  * `:deprecated` -- honoured, but the option is on its way out.
+  * `:inactive_backend` -- meaningless on the backend in use.
+  * `:inactive_dependency` -- meaningless given another option's value.
+
+Pinned against the source in the suite (2026-08-05_b audit, U12-12).
+"""
+const CONFIGURATION_STATUSES = (:resolved, :unresolved, :inherited, :deprecated,
+                                :inactive_backend, :inactive_dependency)
+
 """One requested/resolved configuration value and its effectiveness status."""
 struct ConfigurationEntry
     name::Symbol
@@ -368,10 +385,18 @@ policy_option_schema(::PlaceholderPolicy) = NamedTuple()
 
 Return structured `ConfigurationEntry` values for a policy, solver, slicing
 configuration, task, schedule, observer, or diagnostics object. Each entry
-separates the requested value from its resolved value and reports whether it is
-resolved, inherited, inactive, library-managed, deprecated, or still awaiting
-runtime information. Execution audits provide the separate evidence that a
-resolved value reached its concrete consumer.
+separates the requested value from its resolved value and reports its status,
+one of [`CONFIGURATION_STATUSES`](@ref). Execution audits provide the separate
+evidence that a resolved value reached its concrete consumer.
+
+This list used to be prose -- "resolved, inherited, inactive, library-managed,
+deprecated, or still awaiting runtime information" -- and two sixths of it were
+wrong: there is no `:library_managed` status anywhere in the codebase, and
+"inactive" is two distinct symbols, `:inactive_backend` and
+`:inactive_dependency`, neither of them `:inactive` (2026-08-05_b audit, U12-12).
+A hand-copied vocabulary with nothing checking it is the drift shape Measured
+Lesson 4 names, so it is a constant now and the suite pins it against what the
+source actually constructs.
 """
 function configuration_report(policy::CPUThreadsExecutionPolicy)
     resolved = _resolved_cpu_threads(policy)

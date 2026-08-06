@@ -114,6 +114,14 @@ Lessons"); the receipts are the dated records in `docs/history/`.
   immediately. This applies to *launch sites* too: the first U3-2 fix capped
   four kick launches and left eight, so the pin passed standalone and failed
   in the suite when a different route reached an uncapped kernel.
+- When you remove or rename a symbol, grep the whole `src/` tree, not the file
+  you are editing. Twice in one session a change was swept through its own file
+  and left siblings broken: U3-2 capped 4 of 12 kick launches, and U1-6 dropped
+  a dead parameter from `_cuda_pic_extract_slice` and updated the 8 call sites
+  in `pic_cuda.jl` while 4 more sat in `gaussian_pic_cuda.jl`. Both were caught
+  by the full-suite gate rather than by the edit, which is the gate working and
+  the habit failing. A repo-wide grep for the old arity or name costs seconds
+  and is the check that would have caught both.
 - Loud beats silent: dropped charge, dropped rows, skipped checks, and
   ignored configuration must warn, throw, or be documented as inert —
   never vanish.

@@ -339,6 +339,27 @@ Register declarative metadata for an element kind and add its `spec_type` to
 the element registry.
 """
 function register_element_meta!(meta::ElementMeta)
+    # A second declaration for an already-registered kind used to win or lose
+    # silently by include order (2026-08-05_b audit, U12-7). Both tables were
+    # assigned unconditionally, `register_element_spec!` de-duplicates the type
+    # list, and `validate_element_metadata`'s duplicate detector keys on
+    # `seen_kinds` while iterating `registered_element_specs()` -- so two blocks
+    # sharing one spec_type are seen exactly once and the loser is invisible.
+    # Measured: re-registering `:drift` with a changed description replaced it
+    # outright, with `validate passed = true, errors = 0`. That is "loud beats
+    # silent" inverted, on the table every other registry derives from.
+    #
+    # A warning rather than an error: tests legitimately register and remove
+    # temporary kinds (the contract tripwire controls do exactly that), and the
+    # replacement itself is a valid operation. What was missing was any signal.
+    if haskey(ELEMENT_META_BY_KIND, meta.kind)
+        previous = ELEMENT_META_BY_KIND[meta.kind]
+        previous === meta || previous.spec_type !== meta.spec_type ||
+            @warn "element kind re-registered: a second declaration replaced the \
+                   first, which is what a copy-pasted or merge-duplicated \
+                   @element_spec block looks like. The winner is decided by \
+                   include order." kind = meta.kind spec_type = meta.spec_type
+    end
     register_element_spec!(meta.spec_type)
     ELEMENT_META_BY_SPEC_TYPE[meta.spec_type] = meta
     meta.friendly_constructor === nothing ||

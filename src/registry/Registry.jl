@@ -224,3 +224,73 @@ function _runtime_object_types(reg::OctopusRegistry)
                      MisalignedElement, RefTilted, CompositeLine])
     return unique(out)
 end
+
+# ---------------------------------------------------------------------------
+# Registry self-description
+# ---------------------------------------------------------------------------
+#
+# `description(T)` falls back to `_element_meta_or_nothing(T)`, which is
+# `nothing` for every non-element type, and then returns "". Fifteen of the 35
+# types the registry publishes described themselves to any agent that asked as
+# the empty string -- including all four Poisson solvers, both flagship task
+# types and all three example categories -- while `description`'s own docstring
+# says these types "should extend this method" (2026-08-05_b audit, U12-17).
+# There was no tripwire, in contrast with the 336/336 export-docstring one.
+
+description(::Type{TrackingTask}) =
+    "Single-beam tracking task: a compiled line, a hook schedule and an execution policy, executed for a number of turns."
+description(::Type{StrongStrongTask}) =
+    "Two-beam strong-strong task: a pair of lines sharing collision points, whose beams act on each other through a Poisson solver."
+
+description(::Type{GaussianPoissonSolver}) =
+    "Sliced soft-Gaussian strong-strong solver: each slice acts through the analytic Bassetti-Erskine kick of the other beam's fitted Gaussian."
+description(::Type{PICPoissonSolver}) =
+    "Particle-in-cell strong-strong solver: charge deposited on a transverse mesh, the field from an FFT Green convolution, interpolated back to particles."
+description(::Type{GaussianPICPoissonSolver}) =
+    "Gaussian-subtracted PIC solver: the analytic Gaussian part is handled exactly and only the residual goes through the mesh, so the grid error is nearly grid-independent."
+description(::Type{SpectralPoissonSolver}) =
+    "Spectral sine-series strong-strong solver: the potential is expanded in Dirichlet sine modes on a fixed box, in a grid or grid-free variant."
+
+description(::Type{AbstractGPUExecutionPolicy}) =
+    "Taxonomy node for GPU execution policies; concrete subtypes carry the device and launch geometry."
+description(::Type{AbstractPhysicsContract}) =
+    "Contract asserting a physical property of the model, checkable against theory or an external code."
+description(::Type{AbstractImplementationContract}) =
+    "Contract asserting a property of the implementation rather than of the physics, such as a declared option reaching its consumer."
+description(::Type{AbstractBackendConsistencyContract}) =
+    "Contract asserting that two execution backends produce the same result for the same input."
+description(::Type{ElementParameterEffectivenessContract}) =
+    "Checks that every declared element parameter reaches the compiled map, by perturbing one at a time and tracking a probe particle."
+description(::Type{PTCConsistencyContract}) =
+    "Checks Octopus element maps against a committed MAD-X/PTC reference table."
+
+description(::Type{BenchmarkExample}) =
+    "Example category: a performance measurement with a recorded configuration and reference timing."
+description(::Type{ReferenceExample}) =
+    "Example category: a canonical usage the documentation and tests refer to."
+description(::Type{ResearchStudyExample}) =
+    "Example category: an exploratory study, whose numbers are findings rather than gates."
+
+"""
+    registry_types_without_description() -> Vector{Tuple{Symbol,Type}}
+
+Every type the registry publishes whose `description` is empty, as
+`(section, type)` pairs.
+
+The tripwire behind `description`'s "should extend this method": a type that
+joins the registry and does not describe itself is invisible to any agent that
+asks the registry what it is, and nothing used to notice (2026-08-05_b audit,
+U12-17).
+"""
+function registry_types_without_description(reg::OctopusRegistry=build_registry())
+    out = Tuple{Symbol,Type}[]
+    for name in propertynames(reg)
+        section = getproperty(reg, name)
+        section isa Union{Tuple,AbstractVector} || continue
+        for T in section
+            T isa Type || continue
+            isempty(description(T)) && push!(out, (name, T))
+        end
+    end
+    return out
+end

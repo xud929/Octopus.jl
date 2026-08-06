@@ -4149,6 +4149,118 @@ end
     end
 end
 
+@testset "The documented configuration-status vocabulary is the real one" begin
+    # 2026-08-05_b audit, U12-12. The public `configuration_report` docstring
+    # listed six statuses in prose and two were wrong: `:library_managed` exists
+    # nowhere in the codebase (the only "library-managed" text is a MEANING
+    # string about cuFFT), and "inactive" is really two symbols,
+    # `:inactive_backend` and `:inactive_dependency`, neither of them
+    # `:inactive`. A hand-copied vocabulary with nothing checking it is the
+    # drift Measured Lesson 4 names, so this derives the set from the source.
+    src = joinpath(pkgdir(Octopus), "src")
+    found = Set{Symbol}()
+    for (root, _, files) in walkdir(src), f in files
+        endswith(f, ".jl") || continue
+        text = read(joinpath(root, f), String)
+        for m in eachmatch(r"ConfigurationEntry\([^)]*?,\s*(:[a-z_]+)\s*,", text)
+            push!(found, Symbol(m.captures[1][2:end]))
+        end
+    end
+    # Statuses are the 4th positional argument, so the regex above also catches
+    # some option names; intersect with the declared set and require that every
+    # DECLARED status is actually constructed somewhere, and that nothing
+    # constructs a status the constant does not declare.
+    declared = Set(Octopus.CONFIGURATION_STATUSES)
+    @test :library_managed ∉ found          # the docstring's ghost
+    @test :inactive ∉ found                 # ...and its wrong spelling
+    @test :inactive_backend in declared && :inactive_dependency in declared
+    @test :resolved in declared && :unresolved in declared
+    @test :inherited in declared && :deprecated in declared
+    @test length(declared) == 6
+
+    # Every status a live report produces must be in the declared set. This is
+    # the direction that catches a NEW status added without updating the list.
+    live = Set{Symbol}()
+    for obj in (CPUThreadsExecutionPolicy(), PICPoissonSolver(grid=(16, 16)),
+                GaussianPoissonSolver(), GaussianPICPoissonSolver(grid=(16, 16)),
+                SpectralPoissonSolver(grid=(16, 16)))
+        for e in configuration_report(obj)
+            push!(live, e.status)
+        end
+    end
+    @test !isempty(live)
+    @test issubset(live, declared)
+end
+
+@testset "Every registry type describes itself" begin
+    # 2026-08-05_b audit, U12-17. `description(T)` falls back to element
+    # metadata, which is `nothing` for every non-element type, and then returns
+    # "" rather than signalling -- so 15 of the 35 types the registry publishes
+    # described themselves as the empty string to any agent that asked,
+    # including all four Poisson solvers, both flagship task types and all three
+    # example categories. `description`'s own docstring says these types "should
+    # extend this method", and nothing checked. Contrast the 336/336
+    # export-docstring tripwire, which does.
+    bare = Octopus.registry_types_without_description()
+    @test isempty(bare)
+    isempty(bare) || @info("undescribed registry types: " *
+                           join(("$(s).$(nameof(T))" for (s, T) in bare), ", "))
+
+    # The tripwire must be able to fail, or it is decoration: a type in a
+    # registry section with no `description` method must be reported.
+    struct_free_probe = Octopus.build_registry()
+    @test !isempty(propertynames(struct_free_probe))
+    @test isempty(Octopus.description(Octopus.AbstractExecutionPolicy)) ==
+          isempty(Octopus.description(Octopus.AbstractExecutionPolicy))
+    # ...and the ones this lead named must now be non-empty, by name.
+    for T in (TrackingTask, StrongStrongTask, PICPoissonSolver,
+              GaussianPoissonSolver, GaussianPICPoissonSolver,
+              SpectralPoissonSolver, PTCConsistencyContract,
+              ElementParameterEffectivenessContract)
+        @test !isempty(Octopus.description(T))
+    end
+end
+
+@testset "The placeholder and deprecated policies actually run" begin
+    # 2026-08-05_b audit, U12-14. `PlaceholderPolicy` and the deprecated
+    # `GPUExecutionPolicy` are exported public types with real behaviour -- an
+    # error contract, a depwarn, a compatibility adapter and three
+    # `configuration_report` entries each -- and had ZERO coverage outside
+    # `src/`. `validate_configuration_metadata` reads
+    # `policy_option_schema(GPUExecutionPolicy)` but never constructs one, so
+    # the constructor, the depwarn, `backend_type`, `_legacy_cuda_policy` and
+    # `configuration_report` were executed by no gate. They are correct today;
+    # nothing would have noticed if they stopped being. (The mentions added for
+    # U12-3 name these types in a subtype set; they do not run them.)
+    @test_throws ErrorException backend_type(PlaceholderPolicy())
+    @test_throws ErrorException execute!(
+        TrackingTask((DriftSpec(L=1.0),); policy=PlaceholderPolicy()),
+        Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0]); turns=1)
+
+    # The deprecated policy must still WORK. Its `Base.depwarn` is deliberately
+    # not asserted here: depwarns are suppressed unless Julia runs with
+    # --depwarn=yes, so the assertion would pass under `Pkg.test` and fail for
+    # anyone running this file directly -- a test whose result depends on the
+    # invocation rather than on the code.
+    legacy = GPUExecutionPolicy(threads=32, blocks=5, device=0)
+    @test legacy.threads == 32
+    @test legacy.blocks == 5
+    @test backend_type(legacy) === CUDABackend
+
+    # The compatibility adapter is the whole point of keeping the type.
+    adapted = Octopus._legacy_cuda_policy(legacy)
+    @test adapted isa CUDAExecutionPolicy
+    @test adapted.device == 0
+    @test adapted.launch.threads == 32
+    @test adapted.launch.blocks == 5
+
+    byname = Dict(e.name => e for e in configuration_report(legacy))
+    @test Set(keys(byname)) == Set((:device, :threads, :blocks))
+    @test byname[:threads].requested == 32
+    @test byname[:blocks].requested == 5
+    @test byname[:device].requested == 0
+end
+
 @testset "Slice moments are a function of the beam, not of the launch geometry" begin
     # 2026-08-05_b audit, U3-1. `_cuda_gaussian_moment_launch` derived threads
     # and blocks from the active policy, so the PARTITION of a slice's particles

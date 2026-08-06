@@ -532,8 +532,8 @@ if _HAS_CUDA
                     i, j = pair.i, pair.j
                     p1 = (lb=slices1.boundary[i], center=slices1.center[i], rb=slices1.boundary[i + 1])
                     p2 = (lb=slices2.boundary[j], center=slices2.center[j], rb=slices2.boundary[j + 1])
-                    slice1 = _cuda_pic_extract_slice(beam1.rep, slices1.indices[i], pic.longitudinal_kick)
-                    slice2 = _cuda_pic_extract_slice(beam2.rep, slices2.indices[j], pic.longitudinal_kick)
+                    slice1 = _cuda_pic_extract_slice(beam1.rep, slices1.indices[i])
+                    slice2 = _cuda_pic_extract_slice(beam2.rep, slices2.indices[j])
                     gathered[n] = (pair=pair, p1=p1, p2=p2, slice1=slice1, slice2=slice2)
                 end
                 _cuda_pic_add_time!(timing, :scatter, t_gather)
@@ -1014,8 +1014,8 @@ if _HAS_CUDA
                 t_int = time_ns()
                 p1 = (lb=slices1.boundary[i], center=slices1.center[i], rb=slices1.boundary[i + 1])
                 p2 = (lb=slices2.boundary[j], center=slices2.center[j], rb=slices2.boundary[j + 1])
-                slice1 = _cuda_pic_extract_slice(beam1.rep, slices1.indices[i], pic.longitudinal_kick)
-                slice2 = _cuda_pic_extract_slice(beam2.rep, slices2.indices[j], pic.longitudinal_kick)
+                slice1 = _cuda_pic_extract_slice(beam1.rep, slices1.indices[i])
+                slice2 = _cuda_pic_extract_slice(beam2.rep, slices2.indices[j])
                 (slice1 === nothing || slice2 === nothing) && continue
                 # Separate source (pre-collision) and field (kicked) buffers so the
                 # second direction deposits the UNKICKED opposing slice, matching the
