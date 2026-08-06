@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **76 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **77 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -34,7 +34,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U9-1 | major | F4 FIXED | `src/elements/solenoid.jl:166 (`_SOL_MIDPOINT_ITERS`), 411 (`nst` defau` | the curved solenoid's implicit-midpoint stage is solved by a fixed 16 |
 | U1-1 | medium | F1 CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:156-160, 360-366, 728-830, 832-926,` | the per-pair luminosity sink `_ACTIVE_PIC_LUMINOSITY_PAIR_SINK` is populated by the |
 | U11-1 | medium | F6 FIXED | `src/tasks/strongstrong/spectral_cuda.jl:49-50 (identical copies at 440` | The CUDA R9 dropped-charge tripwire reports **exactly zero** for the most |
-| U12-1 | medium |  | `src/knowledge/Knowledge.jl:891-902 (declared-defaults check absent)` | `ParamMeta.default` is decoration — nothing in the repository compares a |
+| U12-1 | medium | CONFIRMED, FIXED (2026-08-06) | `src/knowledge/Knowledge.jl:891-902 (declared-defaults check absent)` | `ParamMeta.default` is decoration — nothing in the repository compares a |
 | U12-11 | medium | CONFIRMED, FIXED (2026-08-06) | `src/policies/Policies.jl:259-264` | `_active_cuda_launch` is an **undeclared second consumer** of |
 | U12-2 | medium |  | `src/knowledge/Knowledge.jl:904-910, 948-965 (parameter-is-read and rea` | nothing verifies that a declared element parameter is consumed by the |
 | U12-3 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:1617 and :1743 — hardcoded POLICY ` | `validate_configuration_metadata`'s type enumeration was totalized for |

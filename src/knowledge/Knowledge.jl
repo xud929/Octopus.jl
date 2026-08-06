@@ -845,6 +845,44 @@ function _compiled_matches_runtime(compiled, rt::Type)
 end
 
 """
+Compare each declared `ParamMeta.default` against the runtime it produces.
+
+The checkable property is that OMITTING a parameter compiles to the same map as
+passing its declared default. Anything a kind cannot be built or compiled from
+is skipped rather than guessed at, and the skip is silent by design: this runs
+over every registered kind and a construction failure is the
+`ElementParameterEffectivenessContract`'s business, not this check's.
+
+Verified discriminating: with `quadrupole.nst`'s declared default (1) the two
+compile identically, and with a wrong one (7) they do not.
+"""
+function _check_declared_defaults!(errors, T, meta, example)
+    example isa ElementSpec || return errors
+    ctor = meta.friendly_constructor
+    ctor === nothing && return errors
+    base = try
+        Dict{Symbol,Any}(params(example))
+    catch
+        return errors
+    end
+    u = (1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 1.0e-3, 3.0e-4)
+    for (key, pmeta) in pairs(parameter_schema(T))
+        pmeta isa ParamMeta || continue
+        pmeta.default === nothing && continue
+        pmeta.required && continue
+        haskey(base, key) || continue
+        without = copy(base); delete!(without, key)
+        withdef = copy(base); withdef[key] = pmeta.default
+        omitted = try collect(compile_runtime(ctor(; without...))(u...)) catch; continue end
+        declared = try collect(compile_runtime(ctor(; withdef...))(u...)) catch; continue end
+        omitted == declared || push!(errors,
+            "ElementMeta $(meta.kind) parameter $(key) declares default " *
+            "$(repr(pmeta.default)) but omitting it compiles to a different map")
+    end
+    return errors
+end
+
+"""
     validate_element_metadata(; throw_on_error=false)
 
 Validate the registered element metadata table. This is intended for CI,
@@ -900,6 +938,25 @@ function validate_element_metadata(; throw_on_error::Bool=false)
                     push!(errors, "ElementMeta $(meta.kind) construction_help does not mention parameter $(key)")
             end
         end
+
+        # Declared defaults are checked against the RUNTIME, not merely stored.
+        #
+        # `ParamMeta.default` was decoration: it was read in exactly one place
+        # (the required-with-a-default check above) and otherwise only for
+        # display, so `element_help`, `parameter_schema` and every generated doc
+        # could state a default the constructor contradicts. The machinery for
+        # this already existed one layer over -- `validate_configuration_metadata`
+        # compares every policy, solver, schedule and observer option against its
+        # constructor -- and elements got no such pass (2026-08-05_b audit,
+        # U12-1).
+        #
+        # The property checked is the one that can actually be wrong: OMITTING a
+        # parameter must compile to the same map as passing its declared
+        # default. Comparing the declared default against the example's stored
+        # value would be meaningless -- an example is meant to demonstrate
+        # non-default values, and 31 of 72 such pairs differ for exactly that
+        # reason.
+        _check_declared_defaults!(errors, T, meta, example)
 
         if example isa ElementSpec
             schema_keys = Set(keys(parameter_schema(T)))
