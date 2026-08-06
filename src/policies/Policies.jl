@@ -256,11 +256,38 @@ function _run_logical_workers(f::F, workers::Integer=_cpu_worker_count()) where 
     return nothing
 end
 
+"""
+Launch geometry for the strong-strong CUDA kernels.
+
+This is the SECOND consumer of `CUDAExecutionPolicy`'s `threads`/`blocks`, and
+it used to be an undeclared one: it applies them to real kernels
+(`_cuda_gaussian_reduce_partials_kernel!`, `_cuda_gaussian_build_moments_kernel!`,
+`_cuda_gaussian_fused_kick_kernel!`) while the schema named only
+`:cuda_fused_launch` and only `_cuda_launch_track_policy!` emitted a receipt. So
+`configuration_report` under-reported where the value goes, and the
+effectiveness contracts could not observe it here at all (2026-08-05_b audit,
+U12-11).
+
+It also resolves `:auto` by a different rule than the fused tracker's — particle
+coverage capped at 256 blocks, not occupancy — and substitutes a fixed
+`(256, 256)` when no CUDA policy is in scope. Both are recorded in the receipt
+rather than left for a reader to infer, `resolved_by` naming which rule ran.
+"""
 function _active_cuda_launch(nitems::Integer)
     policy = _ACTIVE_RESOLVED_POLICY[]
-    policy isa ResolvedCUDAExecutionPolicy || return (threads=256, blocks=256)
+    if !(policy isa ResolvedCUDAExecutionPolicy)
+        _record_execution!(:cuda_strong_strong_launch, CUDABackend,
+            (threads=256, blocks=256, requested_blocks=:none,
+             items=Int(nitems), resolved_by=:no_active_policy))
+        return (threads=256, blocks=256)
+    end
     blocks = policy.blocks isa Int ? policy.blocks : min(cld(Int(nitems), policy.threads), 256)
-    return (threads=policy.threads, blocks=max(blocks, 1))
+    blocks = max(blocks, 1)
+    _record_execution!(:cuda_strong_strong_launch, CUDABackend,
+        (threads=policy.threads, blocks=blocks, requested_blocks=policy.blocks,
+         items=Int(nitems),
+         resolved_by=policy.blocks isa Int ? :explicit : :particle_coverage))
+    return (threads=policy.threads, blocks=blocks)
 end
 
 _legacy_cuda_policy(policy::GPUExecutionPolicy) = CUDAExecutionPolicy(
@@ -289,10 +316,19 @@ const _CUDA_POLICY_OPTION_SCHEMA = (
         "CUDA device index; nothing resolves from particle storage.";
         supported_backends=(CUDABackend,), consumer=:cuda_device),
     threads=ConfigurationOptionMeta(Int, 256,
-        "Threads per block for fused CUDA tracking.";
+        "Threads per block for fused CUDA tracking AND for the strong-strong \
+         CUDA kernels; both consume this value.";
         supported_backends=(CUDABackend,), consumer=:cuda_fused_launch),
     blocks=ConfigurationOptionMeta(Union{Int,Symbol}, :auto,
-        "Blocks for fused CUDA tracking; :auto uses occupancy and particle coverage.";
+        "Blocks per launch. TWO consumers resolve :auto by different rules: \
+         the fused tracker (:cuda_fused_launch) uses occupancy and particle \
+         coverage, while the strong-strong kernels \
+         (:cuda_strong_strong_launch) use particle coverage capped at 256 \
+         blocks, and fall back to a fixed 256 when no CUDA policy is in scope. \
+         The receipts carry `resolved_by` so which rule ran is observable. \
+         `consumer` below names only the fused tracker because the field holds \
+         ONE symbol; the second consumer is observable through its own \
+         :cuda_strong_strong_launch receipt.";
         supported_backends=(CUDABackend,), dependencies=(:threads,),
         consumer=:cuda_fused_launch),
 )

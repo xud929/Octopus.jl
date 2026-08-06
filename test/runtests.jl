@@ -4047,6 +4047,34 @@ end
         @test occursin("SpectralPoissonSolver", rs.message)
     end
 
+    # 2026-08-05_b audit, U12-11: `_active_cuda_launch` is a SECOND consumer of
+    # CUDAExecutionPolicy's threads/blocks -- it launches the strong-strong
+    # kernels -- and it emitted no receipt at all, so `configuration_report`
+    # under-reported where the value goes and the effectiveness contracts could
+    # not observe it here. It also resolves :auto by a different rule than the
+    # fused tracker (particle coverage capped at 256, not occupancy) and
+    # substitutes a fixed (256, 256) when no CUDA policy is in scope, both
+    # silently. The receipt now records which rule ran.
+    let a = Octopus.with_execution_audit(() -> Octopus._active_cuda_launch(10_000))
+        r = only(filter(x -> x.consumer === :cuda_strong_strong_launch,
+                        Octopus.execution_receipts(a)))
+        @test r.values.resolved_by === :no_active_policy   # the silent fallback, now visible
+        @test r.values.threads == 256 && r.values.blocks == 256
+    end
+    let a = Octopus.with_execution_audit() do
+            Octopus._with_resolved_policy(Octopus.ResolvedCUDAExecutionPolicy(0, 128, :auto)) do
+                Octopus._active_cuda_launch(10_000)
+            end
+        end
+        r = only(filter(x -> x.consumer === :cuda_strong_strong_launch,
+                        Octopus.execution_receipts(a)))
+        # The requested threads reach the kernels, and :auto resolves by
+        # particle coverage -- cld(10000, 128) = 79, not an occupancy figure.
+        @test r.values.threads == 128
+        @test r.values.blocks == cld(10_000, 128)
+        @test r.values.resolved_by === :particle_coverage
+    end
+
     # U3-6/U21-13: these contracts were executed by no test and no CI.
     rp = validate(PublicConfigurationEffectivenessContract())
     rp.status === :passed ||
