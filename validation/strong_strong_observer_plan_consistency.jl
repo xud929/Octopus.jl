@@ -59,4 +59,6 @@ end
 
 check_backend(CPUThreadsBackend)
 available, reason = Octopus._contract_backends_available(CUDABackend)
-available ? check_backend(CUDABackend) : println("CUDABackend skipped: ", reason)
+# U25-10: OCTOPUS_REQUIRE_GPU_CONTRACT=1 turns the skip into an error.
+available ? check_backend(CUDABackend) :
+    Octopus._gpu_skip_or_error("CUDABackend", reason)

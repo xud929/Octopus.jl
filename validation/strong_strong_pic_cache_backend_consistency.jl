@@ -36,8 +36,10 @@ const LUMINOSITY_DEPOSIT_METHOD = let value = uppercase(
     value == "INHERIT" ? nothing : Symbol(value)
 end
 const RTOL = parse(Float64, get(ENV, "OCTOPUS_CACHE_CONTRACT_RTOL", "1e-10"))
-const REQUIRE_GPU = get(ENV, "OCTOPUS_REQUIRE_GPU_CONTRACT", "0") in
-                    ("1", "true", "TRUE", "yes", "YES")
+# One parser for this variable, in Octopus (2026-08-05_b audit, U25-10): the
+# three copies here accepted different spellings ("on" worked in one script and
+# not the others), which is the shape of a flag that silently does nothing.
+const REQUIRE_GPU = Octopus._require_gpu_contract()
 
 contract = StrongStrongPICBackendConsistencyContract(
     n_particles=N,

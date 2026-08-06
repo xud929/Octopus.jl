@@ -1,6 +1,25 @@
 #=
 Compare the CPU and CUDA reduction paths used by MomentObserver. This is a
 diagnostic implementation check; it does not exercise or change tracking.
+
+REQUIRES A CUDA DEVICE. It compares two backends, so there is nothing for it to
+do on a CPU-only machine and it errors out immediately rather than pretending
+to have checked something.
+
+Reference model: the CPU reduction. Error metric: relative difference of every
+default first- and second-order moment, against
+`OCTOPUS_MOMENT_CONSISTENCY_RTOL` (default 5e-12). Writes no files -- the
+printed table is the output.
+
+Run from the project root:
+
+    julia --project=. validation/moment_observer_backend_consistency.jl
+
+Overrides: `OCTOPUS_MOMENT_CONSISTENCY_N` (default 100000),
+`OCTOPUS_MOMENT_CONSISTENCY_RTOL`.
+
+(The requirement, the run command, the metric and the no-output note were all
+absent from this header until the 2026-08-05_b audit, U25-9.)
 =#
 
 if !isdefined(Main, :Octopus)

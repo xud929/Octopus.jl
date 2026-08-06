@@ -64,7 +64,10 @@ if available
     cross_metrics = Octopus._contract_coordinate_metrics(cpu_fast, gpu_auto, 1e-10, 1e-10)
     cross_metrics[:passed_tolerance] || error("CPU/CUDA radiation mismatch")
 else
-    println("CUDA radiation checks skipped: ", reason)
+    # Assertable, not just visible (2026-08-05_b audit, U25-10): this printed a
+    # skip and exited 0, so a CPU-only run of a four-check script that ran one
+    # check was indistinguishable from a full pass.
+    Octopus._gpu_skip_or_error("CUDA radiation checks", reason)
 end
 
 weak_spec = ThinStrongBeamSpec{Float64}(

@@ -9,7 +9,14 @@ last 10 are the primary steady-state sample.
 Inputs are the fixed defaults below and may be overridden with the same
 environment variables accepted by `test/examples/strong_strong_tracking.jl`
 (the clean `examples/` counterpart reads no environment variables).
-Outputs are the printed physics summary and `result/pic_extreme_turn_times.tsv`.
+Outputs (2026-08-05_b audit, U25-8 -- the second file was undocumented, and it
+is the one that carries the provenance):
+
+    result/pic_extreme_turn_times.tsv  per-turn wall times
+    result/pic_extreme_summary.tsv     git commit, GPU and driver, resolved
+                                       CUDA launch configuration, timings
+
+plus the printed physics summary.
 
 Run from the project root:
 
@@ -91,7 +98,14 @@ if policy isa CUDAExecutionPolicy
         (policy.launch.blocks === :auto ? "per_compiled_kernel_occupancy_and_particle_coverage" :
                                           "explicit"))
     config_entries = configuration_report(solver; policy=policy, backend=CUDABackend)
-    for family in (:gather_scatter, :deposition, :kick, :field, :spectral, :green, :luminosity)
+    # Derive the family list, do not re-type it (2026-08-05_b audit, U25-6).
+    # This tuple used to be hand-copied here. `only(filter(...))` throws if a
+    # LISTED family disappears, but an eighth family added to the solver would
+    # simply never appear in the provenance summary -- a run recorded as fully
+    # provenanced while silently omitting a launch parameter that shaped it.
+    # That is Measured Lesson 4: a hand-maintained copy of a set that grows has
+    # nothing to keep it honest.
+    for family in Octopus._CUDA_PIC_LAUNCH_FAMILIES
         option = Symbol(:cuda_pic_, family, :_threads)
         entry = only(filter(item -> item.name === option, config_entries))
         push!(summary, string(option, "_requested") => string(entry.requested))

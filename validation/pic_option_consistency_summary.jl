@@ -57,6 +57,28 @@ end
 # option under test.
 baseline_for(tag) = endswith(tag, "_c") ? "base_c" : "base"
 
+# ...and now actually check it (2026-08-05_b audit, U25-11).
+#
+# The comment above stated that property for a pairing rule that was
+# `endswith(tag, "_c")` and nothing else. Every condition it names is sitting in
+# meta.tsv unread, so a mistyped tag -- `base` at 50 000 particles against `quad`
+# at 2 000 -- silently reported shot noise as an option drift, with the `npart`
+# column the only clue and no warning anywhere.
+#
+# These are the columns that must MATCH for a comparison to mean anything. The
+# option columns (interaction_grid, slice_interpolation, deposit, grid_extent,
+# grid_quantize, batch_mode, cuda_async, backend) are deliberately absent: those
+# are what the arms exist to vary.
+const COMPARABLE_COLS = ["npart", "npart_e", "npart_p", "turns", "grid",
+                         "nslices", "timing_from"]
+
+"""Condition columns on which `tag` and its baseline disagree, as `col: a vs b`."""
+function incomparable_with(runs, tag, bt)
+    m, b = runs[tag], runs[bt]
+    return [string(c, ": ", m[c], " vs ", b[c]) for c in COMPARABLE_COLS
+            if haskey(m, c) && haskey(b, c) && m[c] != b[c]]
+end
+
 
 col(m, name) = m["series"][:, m["cols"][name]]
 
@@ -85,12 +107,29 @@ let missing_base = sort([t for t in keys(runs) if !haskey(runs, baseline_for(t))
     isempty(missing_base) ||
         println("SKIPPED (no baseline run found): ", join(missing_base, ", "))
 end
+# Same rule, the condition half (U25-11): a pair that differs in something the
+# arms were not varying is not a measurement of anything, so say so and drop it
+# rather than print a number that reads as an option effect.
+incomparable = Dict{String,Vector{String}}()
+for t in sort(collect(keys(runs)))
+    bt = baseline_for(t)
+    (t == bt || !haskey(runs, bt)) && continue
+    d = incomparable_with(runs, t, bt)
+    isempty(d) || (incomparable[t] = d)
+end
+if !isempty(incomparable)
+    println("SKIPPED (conditions differ from baseline -- not an option effect):")
+    for t in sort(collect(keys(incomparable)))
+        println("  ", t, " vs ", baseline_for(t), " -> ", join(incomparable[t], ", "))
+    end
+end
 @printf("%-10s %6s %9s %11s %11s %11s %11s %10s\n",
         "tag", "npart", "turn_s", "lum_mean", "lum_worst", "epsy_mean", "epsx_mean", "lum_drift")
 for tag in sort(collect(keys(runs)))
     m = runs[tag]
     bt = baseline_for(tag)
     haskey(runs, bt) || continue
+    haskey(incomparable, tag) && continue          # U25-11: announced above
     base = runs[bt]
     lm, lw = reldiff(col(m, "luminosity"), col(base, "luminosity"))
     ym, _ = reldiff(col(m, "e_ey"), col(base, "e_ey"))

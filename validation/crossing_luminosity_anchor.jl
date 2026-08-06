@@ -3,6 +3,17 @@
 # charge (beam-beam negligible). Three configs: head-on, half-crossing 12.5 mrad
 # without crabs, same with ideal crabs. Reference: continuous R = 1/sqrt(1+phi^2)
 # and the 15-quantile-slice discrete sum (isolates slicing error).
+#
+# Error metric: relative difference of the measured luminosity ratio against
+# each reference. Paper-cited; paper/data/crossing_lum_anchor.tsv is the
+# hand-transcribed copy.
+#
+# Run from the project root:
+#
+#     julia --startup-file=no --project=. validation/crossing_luminosity_anchor.jl
+#
+# Outputs, under result/lum_anchor/: lum_headon.lum, lum_crossing.lum,
+# lum_crab.lum (undocumented until the 2026-08-05_b audit, U25-12).
 include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
 using .Octopus
 using Statistics

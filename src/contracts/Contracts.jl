@@ -969,6 +969,35 @@ function _contract_backends_available(backends::DataType...)
     return true, ""
 end
 
+"""
+    _require_gpu_contract() -> Bool
+
+Whether `OCTOPUS_REQUIRE_GPU_CONTRACT` demands that a skipped GPU check be an
+error rather than a printed skip.
+
+One definition, because the alternative is what was here: six validation
+scripts each parsing the same variable, in three different ways, and three of
+them not honouring it at all -- so on a CPU-only machine those three exited 0
+having run a fraction of their documented checks, indistinguishable from a full
+pass (2026-08-05_b audit, U25-10). "Loud beats silent" needs the skip to be
+assertable, not just visible.
+"""
+_require_gpu_contract() =
+    lowercase(get(ENV, "OCTOPUS_REQUIRE_GPU_CONTRACT", "0")) in ("1", "true", "yes", "on")
+
+"""
+    _gpu_skip_or_error(label, reason)
+
+Report an unavailable GPU leg: `error` when `OCTOPUS_REQUIRE_GPU_CONTRACT` is
+set, otherwise print `label skipped: reason` and return.
+"""
+function _gpu_skip_or_error(label::AbstractString, reason::AbstractString)
+    _require_gpu_contract() && error(
+        "$(label) requires a CUDA device and OCTOPUS_REQUIRE_GPU_CONTRACT is set: $(reason)")
+    println(label, " skipped: ", reason)
+    return nothing
+end
+
 _contract_policy(::Type{CPUThreadsBackend}) = CPUThreadsExecutionPolicy()
 _contract_policy(::Type{CUDABackend}) = CUDAExecutionPolicy()
 
@@ -1005,6 +1034,9 @@ function _contract_coordinate_metrics(rep_a, rep_b, atol, rtol)
     max_component_rel = 0.0
     max_component_rel_scale = 0.0
     max_allowed_ratio = 0.0
+    lost_both = 0        # both backends killed this coordinate: agreement
+    lost_mismatch = 0    # exactly one did: the worst kind of disagreement
+    compared = 0         # coordinate pairs that actually entered a tolerance
     for dim in 1:6
         a = Array(arrays_a[dim])
         b = Array(arrays_b[dim])
@@ -1012,6 +1044,28 @@ function _contract_coordinate_metrics(rep_a, rep_b, atol, rtol)
         for i in eachindex(a)
             av = Float64(a[i])
             bv = Float64(b[i])
+            # A lost particle is a comparison, not a poison pill (2026-08-05_b
+            # audit, U25-4). `_aperture_kill` writes NaN into all six
+            # coordinates, `abs(NaN - NaN)` is NaN, and `max(x, NaN)` is NaN in
+            # Julia -- so a single lost particle turned every metric into NaN
+            # and `passed_tolerance` into false, EVEN WHEN both backends lost
+            # exactly the same particles. That made the aperture untestable: the
+            # validation line had to keep limits no particle could ever reach,
+            # so `:aperture` was covered by name and by nothing else.
+            #
+            # Both NaN means the two backends agree that this particle is gone,
+            # which is the agreement this contract exists to measure. Exactly
+            # one NaN is a real disagreement of the worst kind -- one backend
+            # kept a particle the other killed -- and is counted separately and
+            # forced to fail below, rather than being averaged into a tolerance.
+            if isnan(av) && isnan(bv)
+                lost_both += 1
+                continue
+            elseif isnan(av) || isnan(bv)
+                lost_mismatch += 1
+                continue
+            end
+            compared += 1
             diff = abs(av - bv)
             scale = max(abs(av), abs(bv))
             allowed = Float64(atol) + Float64(rtol) * scale
@@ -1030,6 +1084,10 @@ function _contract_coordinate_metrics(rep_a, rep_b, atol, rtol)
         end
     end
     global_rel = max_abs / max(max_scale, eps(Float64))
+    # `compared > 0` is not pedantry. Skipping NaN pairs means a run in which
+    # EVERY particle died on both backends would leave max_allowed_ratio at its
+    # initial 0.0 and report a pass having compared nothing -- the green lie
+    # AGENTS.md forbids. A comparison with nothing in it is not a pass.
     return Dict{Symbol,Any}(
         :max_abs_error => max_abs,
         :global_rel_error => global_rel,
@@ -1038,7 +1096,10 @@ function _contract_coordinate_metrics(rep_a, rep_b, atol, rtol)
         :max_allowed_ratio => max_allowed_ratio,
         :atol => Float64(atol),
         :rtol => Float64(rtol),
-        :passed_tolerance => max_allowed_ratio <= 1.0,
+        :lost_both_backends => lost_both,
+        :lost_one_backend => lost_mismatch,
+        :compared_coordinates => compared,
+        :passed_tolerance => max_allowed_ratio <= 1.0 && lost_mismatch == 0 && compared > 0,
     )
 end
 

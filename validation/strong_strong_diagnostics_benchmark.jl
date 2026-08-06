@@ -17,6 +17,19 @@ Run from the project root, for example:
     julia --project=. validation/strong_strong_diagnostics_benchmark.jl
 
 Set OCTOPUS_SOLVER=gaussian to exercise the soft-Gaussian source-moment path.
+
+Outputs (2026-08-05_b audit, U25-8 -- this header named none of them):
+
+    result/pic_diagnostics_<mode>_turn_times.tsv   per-turn wall times
+    result/pic_diagnostics_<mode>_summary.tsv      provenance and the sampled
+                                                   mean/median/min/std
+
+and, written by the tracking harness this script includes, in the modes that
+enable them:
+
+    test/result/pic_hcc.lum       (luminosity_io, both)
+    test/result/pic_hcc.ele.h5    (moments, both)
+    test/result/pic_hcc.pro.h5    (moments, both)
 =#
 
 mode = Symbol(lowercase(get(ENV, "OCTOPUS_DIAGNOSTIC_BENCHMARK_MODE", "baseline")))
@@ -122,10 +135,19 @@ if policy isa CUDAExecutionPolicy
     push!(configuration_rows, "cuda_fused_threads_requested" => policy.launch.threads)
     push!(configuration_rows, "cuda_fused_blocks_requested" => policy.launch.blocks)
     config_entries = configuration_report(solver; policy=policy, backend=CUDABackend)
-    for family in (:gather_scatter, :deposition, :kick, :field, :spectral, :green, :luminosity)
+    # Derive the family list and refuse to skip one (2026-08-05_b audit, U25-6).
+    # This was a hand-copied tuple whose loop body did `isempty(matches) &&
+    # continue`, which swallowed BOTH directions: a family added to the solver
+    # never appeared, and a family that stopped being reported vanished without
+    # a word. Either way the summary claimed complete provenance while missing a
+    # launch parameter that shaped the timings it records.
+    for family in Octopus._CUDA_PIC_LAUNCH_FAMILIES
         option = Symbol(:cuda_pic_, family, :_threads)
         matches = filter(item -> item.name === option, config_entries)
-        isempty(matches) && continue
+        isempty(matches) && error(
+            "CUDA PIC launch family $(family) is in Octopus._CUDA_PIC_LAUNCH_FAMILIES " *
+            "but configuration_report did not report $(option): the benchmark " *
+            "summary would silently omit it.")
         entry = only(matches)
         push!(configuration_rows, string(option, "_requested") => entry.requested)
         push!(configuration_rows, string(option, "_resolved") => entry.resolved)

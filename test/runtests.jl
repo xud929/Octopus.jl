@@ -4054,6 +4054,57 @@ end
     @test d.params[:my_note] == "hello"
 end
 
+@testset "A lost particle is a comparison, not a poison pill" begin
+    # 2026-08-05_b audit, U25-4. `_aperture_kill` writes NaN into all six
+    # coordinates; `abs(NaN - NaN)` is NaN and `max(x, NaN)` is NaN in Julia, so
+    # ONE lost particle turned every backend-consistency metric into NaN and
+    # passed_tolerance into false -- even when both backends killed exactly the
+    # same particles. That made the aperture untestable, so
+    # validation/tracking_backend_consistency.jl had to carry 1 m limits against
+    # a 1e-4 m beam and covered :aperture by name and nothing else.
+    mk(x) = Phase6DRep(copy(x), zeros(length(x)), zeros(length(x)),
+                       zeros(length(x)), zeros(length(x)), zeros(length(x)))
+    m(a, b) = Octopus._contract_coordinate_metrics(mk(a), mk(b), 1e-12, 1e-12)
+
+    # Both backends killed the same particle: that IS agreement.
+    agree = m([1.0, 2.0, NaN, 4.0], [1.0, 2.0, NaN, 4.0])
+    @test agree[:passed_tolerance]
+    @test agree[:lost_both_backends] == 1
+    @test agree[:lost_one_backend] == 0
+    @test isfinite(agree[:max_abs_error])          # no longer NaN-poisoned
+
+    # One kept a particle the other killed: the worst disagreement there is, and
+    # it must fail on its own count, not by being averaged into a tolerance.
+    split = m([1.0, 2.0, NaN, 4.0], [1.0, 2.0, 3.0, 4.0])
+    @test !split[:passed_tolerance]
+    @test split[:lost_one_backend] == 1
+
+    # Survivors still have to agree: skipping NaNs must not skip real error.
+    @test !m([1.0, 2.0, NaN], [1.0, 2.5, NaN])[:passed_tolerance]
+
+    # And a comparison with nothing left in it is not a pass. Without this,
+    # every particle dying on both backends leaves max_allowed_ratio at its
+    # initial 0.0 and reports success having compared zero coordinates.
+    allnan(n) = Phase6DRep(fill(NaN, n), fill(NaN, n), fill(NaN, n),
+                           fill(NaN, n), fill(NaN, n), fill(NaN, n))
+    empty_cmp = Octopus._contract_coordinate_metrics(allnan(4), allnan(4), 1e-12, 1e-12)
+    @test empty_cmp[:compared_coordinates] == 0
+    @test !empty_cmp[:passed_tolerance]
+
+    # The end-to-end property the validation script now relies on: an aperture
+    # tight enough to bite kills particles, both backends agree about which, and
+    # the survivors still compare exactly.
+    line = (ApertureSpec(shape=:ellipse, x_limit=7.0e-5, y_limit=5.6e-5),)
+    res = validate(ElementTrackingBackendConsistencyContract(;
+        line=line, n_particles=2000, turns=1,
+        backend_a=CPUThreadsBackend, backend_b=CPUThreadsBackend,
+        seed=UInt64(123456789), rng_method=:philox, atol=1e-10, rtol=1e-10))
+    @test res.passed
+    @test res.metrics[:lost_both_backends] > 0        # it really kills
+    @test res.metrics[:compared_coordinates] > 0      # and really compares
+    @test res.metrics[:lost_one_backend] == 0
+end
+
 @testset "Contract coverage guards: declared kinds, solver tree, broken baselines, unrun contracts" begin
     # 2026-08-05 audit open-queue items U3-3/4/6/7. The symplecticity case
     # list now carries the solenoid (the one kind that DECLARES the

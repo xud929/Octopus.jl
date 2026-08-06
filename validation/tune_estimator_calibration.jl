@@ -1,5 +1,16 @@
 # Calibration of the Hann-window + parabolic-interpolation tune estimator on
-# synthetic two-tone signals mimicking sigma/pi dipole spectra.
+# synthetic two-tone signals mimicking sigma/pi dipole spectra, where the true
+# tunes are known by construction.
+#
+# Error metric: median, p95 and maximum of |Q_hat - Q_1| over 500 trials.
+# Writes no files -- the printed calibration table is the output. Paper-cited.
+#
+# Run from the project root:
+#
+#     julia --startup-file=no --project=. validation/tune_estimator_calibration.jl
+#
+# (Metric, run command and the no-output note were all missing until the
+# 2026-08-05_b audit, U25-12.)
 import FFTW
 using Statistics, Random
 function ftune(sig)

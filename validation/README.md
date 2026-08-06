@@ -227,10 +227,27 @@ julia --project=. validation/counter_rng_validation.jl
 
 ## Tracking Backend Consistency
 
-`tracking_backend_consistency.jl` runs `ElementTrackingBackendConsistencyContract` on
-a deterministic mixed tracking line, including stochastic `LumpedRad`. It
+`tracking_backend_consistency.jl` runs `ElementTrackingBackendConsistencyContract`
+on a deterministic tracking line that carries **every element kind declaring
+that contract** -- 29 of them: the whole thick-magnet family, every thin
+element, patch, marker, aperture, RF cavity, and stochastic `LumpedRad`. It
 always runs CPU/CPU and runs CPU/GPU when CUDA is visible or explicitly
 requested.
+
+The line is not a hand-picked sample, and must not become one again. It carried
+11 kinds while 18 declaring kinds went untracked (2026-08-05 audit, U21-5), so
+the script now ends with a **declaration-coverage tripwire**: a kind that
+declares the contract and is missing from the line fails the run by name. Adding
+a kind to the contract therefore obliges you to add it here, which is the point
+-- this entry described the 11-kind version until the 2026-08-05_b audit
+(U25-13).
+
+Two coverage limits are worth knowing. `:aperture` is in the line by name only:
+the committed limits are 1 m against a beam of ~1e-4 m, so no particle can ever
+reach it, and it cannot be tightened, because `_aperture_kill` writes `NaN` into
+all six coordinates and the contract's comparator turns `NaN` into a failure
+even when both backends lose the same particles identically (U25-4). `:marker`
+is a documented no-op, so covering it by name is all there is to cover.
 
 The CPU/CPU result is a same-process deterministic repeatability check. For the
 current fused elementwise tracking path, exact zero error is expected because
@@ -267,6 +284,7 @@ OCTOPUS_CONTRACT_N=100000 \
 OCTOPUS_CONTRACT_TURNS=5 \
 OCTOPUS_CONTRACT_ATOL=1e-10 \
 OCTOPUS_CONTRACT_RTOL=1e-10 \
+OCTOPUS_CONTRACT_SEED=123456789 \
 julia --project=. validation/tracking_backend_consistency.jl
 ```
 
@@ -291,8 +309,17 @@ performance regression measurements are recorded in
 
 `beam_optics_interface_consistency.jl` checks the shared three-plane
 `beta`/`alpha` Beam interface, exact compatibility with legacy two-component
-alpha input when `alpha_z=0`, sigma/emittance equivalence, longitudinal
-covariance, and CPU/CUDA agreement.
+alpha input when `alpha_z=0`, sigma/emittance equivalence, and longitudinal
+covariance.
+
+It runs that same set of checks **on each backend separately**, on CUDA as well
+when a device is available. It does not compare CPU arrays against CUDA arrays:
+`check_backend(CPUThreadsBackend)` and `check_backend(CUDABackend)` are two
+independent calls, and no value from one is ever held against the other. This
+entry used to claim "and CPU/CUDA agreement", which it never did
+(2026-08-05_b audit, U25-7). Cross-backend agreement for *tracking* is covered
+by `tracking_backend_consistency.jl` and the
+`StrongStrongPICBackendConsistencyContract`.
 
 ```bash
 julia --project=. validation/beam_optics_interface_consistency.jl
@@ -384,7 +411,8 @@ julia --threads=4 --project=. validation/strong_strong_gaussian_backend_consiste
 difference between soft-Gaussian and PIC using identical cloned live beams. It
 reports luminosity, final six-dimensional RMS sizes, particle-coordinate RMS
 differences, and synchronized CUDA timings. The comparison is not an equality
-gate.
+gate. **It requires a CUDA device** and errors out immediately without one --
+the timings it reports are CUDA timings (2026-08-05_b audit, U25-9).
 
 ```bash
 julia --project=. validation/soft_gaussian_pic_comparison.jl
@@ -454,6 +482,11 @@ file output are disabled in the timed region.
 julia --project=. validation/strong_strong_pic_extreme_benchmark.jl
 ```
 
+Outputs, under `result/`: `pic_extreme_turn_times.tsv` (per-turn wall times)
+and `pic_extreme_summary.tsv` -- the provenance record carrying the git commit,
+GPU and driver, and the resolved CUDA launch configuration. The second file was
+undocumented (2026-08-05_b audit, U25-8).
+
 Tracked run-by-run results, commands, validation gates, and decisions are in
 `../docs/history/strong_strong_pic_extreme_benchmark_history.md`. Generated timing TSV files
 under `result/` remain intentionally gitignored.
@@ -476,11 +509,20 @@ moment path with the same tracking and diagnostic workload. Production-size
 diagnostic benchmarks are manual runs and are not part of the fast package
 test suite.
 
+Outputs, under `result/`: `pic_diagnostics_<mode>_turn_times.tsv` and
+`pic_diagnostics_<mode>_summary.tsv`. The tracking harness this script includes
+also writes `test/result/pic_hcc.lum` (`luminosity_io`, `both`) and
+`test/result/pic_hcc.ele.h5` / `pic_hcc.pro.h5` (`moments`, `both`) -- none of
+which this entry named (2026-08-05_b audit, U25-8).
+
 Tracked results, accuracy checks, and accepted/rejected experiments are in
 `../docs/history/strong_strong_diagnostics_benchmark_history.md`.
 
 `moment_observer_backend_consistency.jl` directly compares every default
-first- and second-order moment produced by the CPU and CUDA reduction paths:
+first- and second-order moment produced by the CPU and CUDA reduction paths.
+**It requires a CUDA device** and errors out immediately without one -- it
+compares two backends, so there is nothing for it to do on a CPU-only machine
+(2026-08-05_b audit, U25-9):
 
 ```bash
 julia --project=. validation/moment_observer_backend_consistency.jl
@@ -814,11 +856,31 @@ OCTOPUS_OPT_TAG=node OCTOPUS_OPT_INTERACTION_GRID=node \
 julia --project=. validation/pic_option_consistency_summary.jl
 ```
 
-Overrides: `OCTOPUS_OPT_TAG`, `OCTOPUS_OPT_TURNS`, `OCTOPUS_OPT_NPART`,
+Overrides: `OCTOPUS_OPT_TAG`, `OCTOPUS_OPT_TURNS`, `OCTOPUS_OPT_NPART`
+(or `OCTOPUS_OPT_NPART_E` / `OCTOPUS_OPT_NPART_P` separately),
 `OCTOPUS_OPT_GRID`, `OCTOPUS_OPT_NSLICES`, `OCTOPUS_OPT_INTERACTION_GRID`,
 `OCTOPUS_OPT_SLICE_INTERP`, `OCTOPUS_OPT_DEPOSIT`, `OCTOPUS_OPT_EXTENT`,
 `OCTOPUS_OPT_QUANTIZE`, `OCTOPUS_OPT_DUMP_TURNS`, `OCTOPUS_OPT_TIMING_FROM`,
-`OCTOPUS_OPT_BACKEND`.
+`OCTOPUS_OPT_BACKEND`, `OCTOPUS_OPT_BATCH_MODE`, `OCTOPUS_OPT_CUDA_ASYNC`.
+
+**Hold batching fixed before comparing GPU costs.** On the GPU,
+`interaction_grid=:node` and `slice_interpolation=:quadratic` each also switch
+`batch_mode` to `:sequential` and turn `cuda_async` off unless you override
+them, so such an arm's `mean_turn_s` is the option's cost *plus* the cost of
+losing batching. Measured at 2000 particles on a 32x32 grid: 0.0940 s/turn for
+`:node` with the auto-downgrade against 0.0641 s/turn with
+`OCTOPUS_OPT_BATCH_MODE=wavefront OCTOPUS_OPT_CUDA_ASYNC=true` -- a third of the
+apparent cost was the batching. The run warns when this fires and records both
+effective values in `meta.tsv` (2026-08-05_b audit, U25-1).
+
+Outputs, under `result/`: `pic_option_<tag>.tsv` (per-turn luminosity and
+moments), `pic_option_<tag>.coords.tsv` (coordinates at the dump turns),
+`pic_option_<tag>.meta.tsv` (one row of options, effective batching, timing),
+and `pic_option_<tag>.lum` (the task's own luminosity file, rewritten each turn
+and read back for the series). The summary script writes
+`result/pic_option_consistency_summary.tsv`, and refuses to compare an arm
+whose particle count, turn count, grid, slice count or timing window differs
+from its baseline -- it names the mismatch instead (U25-8, U25-11).
 
 Outputs under `result/`: `pic_option_<tag>.tsv` (per-turn series),
 `.coords.tsv` (coordinate dumps), `.meta.tsv` (options and timing),
@@ -925,13 +987,40 @@ Overrides: `OCTOPUS_LATTICE_N`, `OCTOPUS_LATTICE_TURNS`, `OCTOPUS_LATTICE_LONG`.
 Outputs `result/lattice_cells.tsv`. Derivations for every map:
 `../docs/theory/lattice_hamiltonian_and_conventions.md`.
 
-- `crossing_luminosity_anchor.jl` — anchors the crossing-angle luminosity
-  reduction against the closed-form geometric factor through the Lorentz
-  boost pair; paper-cited (`paper/data/crossing_lum_anchor.tsv` is the
-  hand-transcribed copy). Run:
-  `julia --startup-file=no --project=. validation/crossing_luminosity_anchor.jl`
-- `tune_estimator_calibration.jl` — calibrates the coherent-mode tune
-  estimator's peak interpolation on synthetic spectra with known tunes.
-  Run: `julia --startup-file=no --project=. validation/tune_estimator_calibration.jl`
-  (Both were committed and paper-cited with no README entry until the
-  2026-08-05 audit, U21-1.)
+## Paper Anchors
+
+Two paper-cited scripts. They were committed and cited with no README entry at
+all until the 2026-08-05 audit (U21-1), and the entries added then sat at the
+tail of the PTC/lattice section above with no metric and no outputs
+(2026-08-05_b audit, U25-12).
+
+`crossing_luminosity_anchor.jl` anchors the crossing-angle luminosity reduction
+against the closed-form geometric factor, through the Lorentz boost pair.
+Symmetric Gaussian beams with the hourglass suppressed (`beta* >> sigma_z`) and
+a tiny bunch charge so beam-beam is negligible; three configurations -- head-on,
+half-crossing 12.5 mrad without crabs, and the same with ideal crabs.
+
+Reference model: the continuous Piwinski factor `R = 1/sqrt(1 + phi^2)`, and the
+15-quantile-slice discrete sum, which isolates slicing error from the geometric
+factor. Error metric: relative difference of the measured luminosity ratio
+against each reference.
+
+```bash
+julia --startup-file=no --project=. validation/crossing_luminosity_anchor.jl
+```
+
+Outputs, under `result/lum_anchor/`: `lum_headon.lum`, `lum_crossing.lum`,
+`lum_crab.lum`. `paper/data/crossing_lum_anchor.tsv` is a hand-transcribed copy
+for the paper.
+
+`tune_estimator_calibration.jl` calibrates the coherent-mode tune estimator's
+Hann-window plus parabolic peak interpolation on synthetic two-tone signals
+mimicking sigma/pi dipole spectra, where the true tunes are known by
+construction.
+
+Error metric: median, p95 and maximum of `|Q_hat - Q_1|` over 500 trials.
+Writes no files -- the calibration table is the printed output.
+
+```bash
+julia --startup-file=no --project=. validation/tune_estimator_calibration.jl
+```

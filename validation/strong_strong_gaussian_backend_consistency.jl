@@ -26,8 +26,10 @@ using .Octopus
 const N = parse(Int, get(ENV, "OCTOPUS_GAUSSIAN_CONTRACT_N", "1000"))
 const TURNS = parse(Int, get(ENV, "OCTOPUS_GAUSSIAN_CONTRACT_TURNS", "2"))
 const RTOL = parse(Float64, get(ENV, "OCTOPUS_GAUSSIAN_CONTRACT_RTOL", "1e-10"))
-const REQUIRE_GPU = get(ENV, "OCTOPUS_REQUIRE_GPU_CONTRACT", "0") in
-                    ("1", "true", "TRUE", "yes", "YES")
+# One parser for this variable, in Octopus (2026-08-05_b audit, U25-10): the
+# three copies here accepted different spellings ("on" worked in one script and
+# not the others), which is the shape of a flag that silently does nothing.
+const REQUIRE_GPU = Octopus._require_gpu_contract()
 
 contract = StrongStrongGaussianBackendConsistencyContract(
     n_particles=N,

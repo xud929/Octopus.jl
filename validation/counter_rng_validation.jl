@@ -21,6 +21,11 @@ Optional environment variables:
     OCTOPUS_RNG_VALIDATION_BACKEND=philox
     OCTOPUS_RNG_VALIDATION_WRITE_CSV=true
 
+Output: nothing unless `OCTOPUS_RNG_VALIDATION_WRITE_CSV=true`, which writes
+`result/counter_rng_validation_summary.csv`. That destination moved out of the
+tracked `validation/` tree in the 2026-08-05 audit (U19-8) and was recorded in
+neither this header nor the README (2026-08-05_b audit, U25-8).
+
 What each half of this script can and cannot detect (2026-08-05_b audit, U25-2):
 
   * The MOMENT checks below (means, variances, the two correlations, the tail

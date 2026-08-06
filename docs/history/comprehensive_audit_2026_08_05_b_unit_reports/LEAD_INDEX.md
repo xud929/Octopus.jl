@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **106 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **116 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -89,10 +89,10 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U24-4 | medium | FIXED | `validation/symplecticity_validation.jl:11` | the header advertises `OCTOPUS_SYMPLECTICITY_TOL=5e-7`, ten times the code's actual default |
 | U24-5 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/symplecticity_validation.jl:116-124` | the script derives the case list from the contract but does **not** run the contract's |
 | U24-6 | medium |  | `test/runtests.jl:7106 (SEAM — outside my region, reported and stopped)` | the one place that runs `symplecticity_validation.jl` automatically passes |
-| U25-1 | medium |  | `validation/pic_option_consistency.jl:119-124 (+ :226-228)` | on the GPU, choosing `interaction_grid=:node` or `slice_interpolation=:quadratic` |
+| U25-1 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/pic_option_consistency.jl:119-124 (+ :226-228)` | on the GPU, choosing `interaction_grid=:node` or `slice_interpolation=:quadratic` |
 | U25-2 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/counter_rng_validation.jl:86-92` | the script's gate is a *statistics* test, not a *generator* test — it |
 | U25-3 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/counter_rng_validation.jl:86-92` | the same gate's tolerances are fixed absolute constants while the |
-| U25-4 | medium |  | `validation/tracking_backend_consistency.jl:154 (seam: src/contracts/Co` | `:aperture` is covered by the tripwire **by name only** — with the |
+| U25-4 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/tracking_backend_consistency.jl:154 (seam: src/contracts/Co` | `:aperture` is covered by the tripwire **by name only** — with the |
 | U3-1 | medium |  | `src/tasks/strongstrong/pic_cuda.jl:5564-5578, 5660-5668` | The CUDA slice transverse moments change with the launch grid rather than only with |
 | U3-2 | medium |  | `src/tasks/strongstrong/pic_cuda.jl:5158, 5165, 2101, 1214` | `threads = 512` — a value the repository's own launch-geometry contract sweeps and |
 | U3-3 | low-medium |  | `src/tasks/strongstrong/pic_cuda.jl:4885-4898, 5073-5090` | The CIC branch of `_cuda_pic_interpolate_field` and `_cuda_pic_interpolate_kick` is |
@@ -298,18 +298,18 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U22-18 | info |  | `validation/coherent_mode_vlasov_theory.jl:718` | Latent crash — `maximum(v for v in vals if v <= e_band[2] + 5 * xi_e)` throws |
 | U23-14 | trivial |  | `validation/pic_grid_extent_stability.jl:26 and src/tasks/strongstrong/` | Both the validation docstring and the production docstring record ":sigma … measured |
 | U23-9 | trivial |  | `validation/gaussian_pic_zscan.jl:60, 88` | The documented override `OCTOPUS_GPIC_ZSCAN_NSLICES` throws `BoundsError` for any |
-| U25-10 | minor |  | `validation/tracking_context_policy_consistency.jl, strong_strong_obser` | three scripts print their CUDA skip but offer no way to *require* the GPU |
-| U25-11 | minor |  | `validation/pic_option_consistency_summary.jl:55-58, 90-102` | the summary pairs a run with its baseline by tag suffix alone and never |
-| U25-12 | minor |  | `validation/README.md:881-890 and validation/{crossing_luminosity_ancho` | the two entries added for U21-1 are attached to the wrong section and |
-| U25-13 | minor |  | `validation/README.md:213-256 §"Tracking Backend Consistency"` | the README entry for the region's most important script was not updated |
+| U25-10 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/tracking_context_policy_consistency.jl, strong_strong_obser` | three scripts print their CUDA skip but offer no way to *require* the GPU |
+| U25-11 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/pic_option_consistency_summary.jl:55-58, 90-102` | the summary pairs a run with its baseline by tag suffix alone and never |
+| U25-12 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/README.md:881-890 and validation/{crossing_luminosity_ancho` | the two entries added for U21-1 are attached to the wrong section and |
+| U25-13 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/README.md:213-256 §"Tracking Backend Consistency"` | the README entry for the region's most important script was not updated |
 | U25-14 | info |  | `validation/crossing_luminosity_anchor.jl:6` | the only script in the region whose `include` of `src/Octopus.jl` is not |
 | U25-15 | info |  | `validation/strong_strong_{diagnostics,pic_extreme}_benchmark.jl — unde` | both benchmark scripts read a dozen globals that leak out of |
 | U25-16 | info — infrastructure |  | `seam: test/examples/strong_strong_tracking.jl fixed output directory` |  |
 | U25-5 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/strong_strong_diagnostics_benchmark.jl:26-64` | the script's turn count and the harness's turn count are two different |
-| U25-6 | minor |  | `validation/strong_strong_diagnostics_benchmark.jl:108 and validation/s` | both benchmark scripts hand-copy the CUDA PIC launch-family list instead |
-| U25-7 | minor |  | `validation/README.md §"Beam Optics Interface Consistency"` | the README credits the script with a check it does not perform — "and |
-| U25-8 | minor |  | `validation/README.md and three script headers — undocumented outputs` | four output files that the region actually writes are named in neither |
-| U25-9 | minor |  | `validation/README.md §soft_gaussian_pic_comparison and §moment_observe` | two scripts abort immediately without a GPU, and the README presents both |
+| U25-6 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/strong_strong_diagnostics_benchmark.jl:108 and validation/s` | both benchmark scripts hand-copy the CUDA PIC launch-family list instead |
+| U25-7 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/README.md §"Beam Optics Interface Consistency"` | the README credits the script with a check it does not perform — "and |
+| U25-8 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/README.md and three script headers — undocumented outputs` | four output files that the region actually writes are named in neither |
+| U25-9 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/README.md §soft_gaussian_pic_comparison and §moment_observe` | two scripts abort immediately without a GPU, and the README presents both |
 | U26-5 | minor | CLOSED by the U22-3 fix (2026-08-06) | `docs/theory/coherent_beam_beam_modes.md §4 (EIC eigen-solve table)` | the x-plane continuum edges quoted in the theory table are set by the |
 | U26-6 | minor | FIXED | `docs/theory/pic_free_space_kernels.md §3.5` | §3.4's correction block states plainly that at grid 128 `:lattice` "comes |
 | U26-7 | minor | CONFIRMED, FIXED (2026-08-06) | `docs/theory/pic_free_space_kernels.md §3.4 correction table vs src/tas` | the note and the source carry the same re-measurement and disagree on the |

@@ -65,7 +65,7 @@ atol = parse(Float64, get(ENV, "OCTOPUS_CONTRACT_ATOL", "1e-10"))
 rtol = parse(Float64, get(ENV, "OCTOPUS_CONTRACT_RTOL", "1e-10"))
 seed = parse(UInt64, get(ENV, "OCTOPUS_CONTRACT_SEED", "123456789"))
 run_gpu = get(ENV, "OCTOPUS_RUN_GPU_CONTRACT", "auto")
-require_gpu = _bool_env("OCTOPUS_REQUIRE_GPU_CONTRACT", false)
+require_gpu = Octopus._require_gpu_contract()   # U25-10: one parser, in Octopus
 
 line = (
     Linear6DSpec{Float64}(;
@@ -209,6 +209,63 @@ else
     println("CPU/GPU tracking backend consistency")
     println("  status = skipped")
     println("  message = CUDA check not requested and CUDA is not visible to Julia.")
+end
+
+# --- the aperture, actually exercised -----------------------------------------
+#
+# `:aperture` is in the line above, and until now that was ALL it was: the
+# committed limits are 1 m against a beam of ~1e-4 m, so no particle could ever
+# reach the ellipse and the element was the identity map on both backends. The
+# one behaviour an aperture has -- killing a particle -- was never executed
+# (2026-08-05_b audit, U25-4).
+#
+# It could not be fixed in place, for two reasons, and both are now dealt with:
+#
+#   1. `_aperture_kill` writes NaN into all six coordinates, and the contract
+#      comparator turned a single NaN into a NaN metric and a failed run even
+#      when both backends killed exactly the same particles. The comparator now
+#      counts identical losses as the agreement they are, and fails only when
+#      the two backends DISAGREE about who died.
+#   2. Tightening the in-line aperture is not stable. Every element upstream
+#      shapes the beam by the time it reaches the aperture -- measured, a 1 mm
+#      ellipse kills all 10000 particles there -- and the coverage tripwire
+#      obliges future authors to ADD elements to that line, which moves the
+#      distribution again. Any hand-tuned limit would drift to 0% or 100%.
+#
+# So the aperture gets its own arm, on the initial distribution, where the beam
+# is known and fixed by `_contract_default_initial_rep`: |x| <= 1e-4,
+# |y| <= 8e-5. The limits below cut well inside that, so the kill fraction is a
+# property of two constants rather than of the whole line.
+aperture_line = (ApertureSpec(shape=:ellipse, x_limit=7.0e-5, y_limit=5.6e-5),)
+aperture_backends = Tuple{DataType,String}[(CPUThreadsBackend, "CPU/CPU")]
+(should_run_gpu || require_gpu) && push!(aperture_backends, (CUDABackend, "CPU/GPU"))
+for (backend_b, label) in aperture_backends
+    result = validate(ElementTrackingBackendConsistencyContract(;
+        line=aperture_line, n_particles=N, turns=1,
+        backend_a=CPUThreadsBackend, backend_b=backend_b,
+        seed=seed, rng_method=:philox, atol=atol, rtol=rtol))
+    _print_result("$(label) aperture loss consistency", result)
+    if result.status == :skipped
+        require_gpu && error("$(label) aperture loss consistency was required but skipped")
+        continue
+    end
+    result.status == :failed && error("$(label) aperture loss consistency failed")
+    # The check must not be allowed to go quietly vacuous. If a future change to
+    # the initial distribution or the limits stops the aperture killing anything,
+    # this arm silently reverts to covering :aperture by name -- which is the
+    # exact defect it was added to close. Survivors are equally required: with
+    # every particle dead there is no map left to compare.
+    lost = result.metrics[:lost_both_backends]
+    compared = result.metrics[:compared_coordinates]
+    lost > 0 || error("aperture loss consistency killed no particle: the aperture " *
+                      "is being covered by name only again (limits vs distribution)")
+    compared > 0 || error("aperture loss consistency killed every particle: nothing " *
+                          "was compared, so the arm proves nothing")
+    result.metrics[:lost_one_backend] == 0 ||
+        error("backends disagree about which particles the aperture killed: " *
+              "$(result.metrics[:lost_one_backend]) coordinate(s)")
+    println("  killed ", lost, " of ", lost + compared,
+            " coordinate slots, compared ", compared)
 end
 
 println("tracking backend consistency validation complete")

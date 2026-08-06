@@ -39,7 +39,18 @@ Overrides: `OCTOPUS_OPT_TAG`, `OCTOPUS_OPT_TURNS`, `OCTOPUS_OPT_NPART`
 `OCTOPUS_OPT_GRID`, `OCTOPUS_OPT_NSLICES`, `OCTOPUS_OPT_INTERACTION_GRID`,
 `OCTOPUS_OPT_SLICE_INTERP`, `OCTOPUS_OPT_DEPOSIT`, `OCTOPUS_OPT_EXTENT`,
 `OCTOPUS_OPT_QUANTIZE`, `OCTOPUS_OPT_DUMP_TURNS` (comma-separated),
-`OCTOPUS_OPT_TIMING_FROM`, `OCTOPUS_OPT_BACKEND` (`cpu`/`gpu`).
+`OCTOPUS_OPT_TIMING_FROM`, `OCTOPUS_OPT_BACKEND` (`cpu`/`gpu`),
+`OCTOPUS_OPT_BATCH_MODE`, `OCTOPUS_OPT_CUDA_ASYNC`.
+
+!!! warning "Hold batching fixed before comparing GPU costs"
+    On the GPU, `interaction_grid=:node` and `slice_interpolation=:quadratic`
+    each *also* switch `batch_mode` to `:sequential` and turn `cuda_async` off,
+    unless you set `OCTOPUS_OPT_BATCH_MODE`/`OCTOPUS_OPT_CUDA_ASYNC`. A
+    `mean_turn_s` from such an arm is the cost of the option **plus** the cost
+    of losing batching, and the audit measured that as a 2.4x "cost of `:node`"
+    (0.0252 s wavefront against 0.0617 s sequential+sync). The run now warns
+    when this fires, and both effective values are recorded in `meta.tsv`
+    (2026-08-05_b audit, U25-1).
 
 Compare completed runs with
 `validation/pic_option_consistency_summary.jl`.
@@ -48,7 +59,10 @@ Outputs (under `result/`)
 -------------------------
 - `pic_option_<tag>.tsv`        -- per-turn luminosity and moments
 - `pic_option_<tag>.coords.tsv` -- coordinates at the dump turns
-- `pic_option_<tag>.meta.tsv`   -- one row: options, timing, totals
+- `pic_option_<tag>.meta.tsv`   -- one row: options (including the *effective*
+  `batch_mode` and `cuda_async`), timing, totals
+- `pic_option_<tag>.lum`        -- the task's own luminosity file, rewritten
+  each turn and read back for the series above (2026-08-05_b audit, U25-8)
 """
 
 using Octopus
@@ -122,6 +136,37 @@ solver = PICPoissonSolver(; slicing=slicing, grid=(config.grid, config.grid),
     cuda_async=isempty(config.cuda_async) ?
         !(config.backend === :gpu && (config.igrid === :node || config.sinterp === :quadratic)) :
         parse(Bool, config.cuda_async))
+
+# A silent batching downgrade would confound every cost number this script
+# reports (2026-08-05_b audit, U25-1).
+#
+# On the GPU, `interaction_grid=:node` and `slice_interpolation=:quadratic` each
+# ALSO flip `batch_mode` to `:sequential` and `cuda_async` off, unless the caller
+# overrides them. This script exists to report the per-turn cost of an option --
+# its own docstring says the cost ordering is grid- and particle-count dependent
+# -- so attributing a sequential, synchronous run's cost to `:node` alone
+# overstates it by whatever the batching is worth. Measured for the audit:
+# 0.0252 s (gpu, wavefront) against 0.0617 s (node, sequential+sync), reported
+# as a 2.4x "cost of :node".
+#
+# The downgrade is not forced by the runtime -- `cuda_indexed_wavefront` defaults
+# to true and the CUDA wavefront route supports `:node` through the fully-indexed
+# sub-route -- so it is a default worth being able to see and to override. Both
+# effective values are recorded in meta.tsv below, read off the constructed
+# solver rather than recomputed here, and the downgrade announces itself.
+if config.backend === :gpu && (config.igrid === :node || config.sinterp === :quadratic) &&
+   (isempty(config.batch_mode) || isempty(config.cuda_async))
+    @warn """
+    Batching downgraded with the option under test: this arm's per-turn cost is \
+    NOT comparable to a wavefront arm's without accounting for it.
+      interaction_grid      = $(config.igrid)
+      slice_interpolation   = $(config.sinterp)
+      batch_mode            = $(solver.batch_mode)$(isempty(config.batch_mode) ? " (auto)" : " (OCTOPUS_OPT_BATCH_MODE)")
+      cuda_async            = $(solver.cuda_async)$(isempty(config.cuda_async) ? " (auto)" : " (OCTOPUS_OPT_CUDA_ASYNC)")
+    Set OCTOPUS_OPT_BATCH_MODE=wavefront and OCTOPUS_OPT_CUDA_ASYNC=true to hold \
+    batching fixed and measure the option alone. Both effective values are in \
+    the run's meta.tsv."""
+end
 
 function ring(b, other_beta, fcrab, kx, tune, chrom, rad)
     t2ip = Linear6DSpec{Float64}(; beta1=other_beta, beta2=b.beta, alpha1=b.alpha,
@@ -224,8 +269,12 @@ if !isempty(coord_rows)
     end
 end
 open(joinpath(result_dir, "pic_option_$(config.tag).meta.tsv"), "w") do io
-    writedlm(io, ["tag" "backend" "turns" "npart" "npart_e" "npart_p" "grid" "nslices" "interaction_grid" "slice_interpolation" "deposit" "grid_extent" "grid_quantize" "mean_turn_s" "timing_from"])
-    writedlm(io, [config.tag String(config.backend) config.turns config.npart config.npart_e config.npart_p config.grid config.nslices String(config.igrid) String(config.sinterp) String(config.deposit) String(config.extent) config.quantize mean_t config.timing_from])
+    # batch_mode/cuda_async are read off the SOLVER, not recomputed from
+    # `config`: they are what the run actually used, including the GPU
+    # auto-downgrade that :node and :quadratic trigger (U25-1). Without them a
+    # mean_turn_s attributed to one option silently contains a batching change.
+    writedlm(io, ["tag" "backend" "turns" "npart" "npart_e" "npart_p" "grid" "nslices" "interaction_grid" "slice_interpolation" "deposit" "grid_extent" "grid_quantize" "batch_mode" "cuda_async" "mean_turn_s" "timing_from"])
+    writedlm(io, [config.tag String(config.backend) config.turns config.npart config.npart_e config.npart_p config.grid config.nslices String(config.igrid) String(config.sinterp) String(config.deposit) String(config.extent) config.quantize String(solver.batch_mode) solver.cuda_async mean_t config.timing_from])
 end
 
 @printf("%-16s turns=%d npart=%d/%d grid=%d nsl=%d  mean turn (%d-%d) = %.4f s\n",
