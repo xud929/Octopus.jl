@@ -8,22 +8,22 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **31 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **37 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
 | U13-2 | major | F9 FIXED | `src/tasks/Tasks.jl:391-407` | An exception raised inside `execute!`'s failure-path loss report |
 | U13-3 | major | F10 FIXED | `src/tasks/Tasks.jl:519-528` | An exception from `finalize_observers!` (or `_finalize_line_observers!`) |
-| U13-4 | major |  | `src/knobs/Knobs.jl:895-918` | The documented lossless round trip `knob_expression(string(e)) == e` |
+| U13-4 | major | CONFIRMED, FIXED (2026-08-06) | `src/knobs/Knobs.jl:895-918` | The documented lossless round trip `knob_expression(string(e)) == e` |
 | U14-1 | major | F5 FIXED | `src/track/phase6d_track.jl:304-314` | the **contextless** CUDA `track!` builds a fresh `TrackingContext()` *inside* its |
 | U14-2 | major | F13 FIXED | `src/math/counter_rng.jl:50-61, src/beam/Beam.jl:166, src/elements/radi` | explicit `rng_id`s do not reserve themselves in the atomic auto-id counter, and the |
 | U15-1 | major | F11 FIXED | `src/elements/beam_line.jl:568-593` | a kept-whole line (girder/cryostat) — the flagship feature of this file — |
-| U20-1 | major |  | `test/runtests.jl:7629 ("TSC weights are bit-identical across backends ` | this new testset cannot fail on the defect its own comment names — its |
-| U20-2 | major |  | `test/runtests.jl:8080 ("Knob registry atomicity and round-trip totalit` | the "round-trip totality" half is not total — the documented invariant |
+| U20-1 | major | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:7629 ("TSC weights are bit-identical across backends ` | this new testset cannot fail on the defect its own comment names — its |
+| U20-2 | major | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:8080 ("Knob registry atomicity and round-trip totalit` | the "round-trip totality" half is not total — the documented invariant |
 | U20-3 | major |  | `test/runtests.jl:7133 (and 6604, 8451)` | on a CPU-only host **17 testsets and 402 of the 415 GPU-gated assertions |
 | U21-1 | major | F8 FIXED | `test/nightly_suite.sh:49-57` | the suite's exit code is recovered by **scraping the log file**, a channel |
 | U21-17 | major |  | `test/examples/strong_strong_tracking.jl:235-247, 633-636` | `OCTOPUS_CUDA_THREADS`, `OCTOPUS_CUDA_BLOCKS` and `OCTOPUS_CPU_THREADS` |
-| U22-1 | high |  | `validation/coherent_mode_vlasov_theory.jl:108,111-112 (`GH_N/GH_W`, `g` | The flat-beam regime the note and the script disown as a limitation of the 1D |
+| U22-1 | high | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:108,111-112 (`GH_N/GH_W`, `g` | The flat-beam regime the note and the script disown as a limitation of the 1D |
 | U24-1 | high | CONFIRMED, FIXED (2026-08-06) | `validation/slice_interpolation_emittance_growth_summary.jl:60-88` | the arm-grouping key omits `npart` and `turns`, so the baseline arm silently pools 22 runs |
 | U26-1 | major | FIXED | `docs/theory/gaussian_longitudinal_slicing.md § "Measured ranking"` | the note states the shipped default slicing rule is `:equal_area` and |
 | U26-2 | major |  | `docs/theory/slice_longitudinal_interpolation.md §7.5, §10.6, §12` | the note says CUDA `:quadratic` exists only on the sequential |
@@ -73,8 +73,8 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U21-2 | medium |  | `test/nightly_suite.sh:56-57` | the same scrape turns a **PASSING** suite into `FAIL` with a synthetic |
 | U21-3 | medium |  | `test/nightly_suite.sh:36-43` | lock contention writes **no row at all** and exits 0, so a wedged or |
 | U21-4 | medium |  | `test/nightly_suite.sh:33,46` | two further row-less exits. `mkdir -p "$OUTDIR"` (line 33) is unchecked, so |
-| U22-2 | medium-high |  | `docs/theory/coherent_beam_beam_modes.md:64-67 and validation/coherent_` | The theory note and the script's own header state `u(0)=1` and an incoherent |
-| U22-3 | medium-high |  | `validation/coherent_mode_vlasov_theory.jl:703-704 and docs/theory/cohe` | Every number in §4's x row is a quadrature artifact — the continuum edges (max |
+| U22-2 | medium-high | CONFIRMED, FIXED (2026-08-06) | `docs/theory/coherent_beam_beam_modes.md:64-67 and validation/coherent_` | The theory note and the script's own header state `u(0)=1` and an incoherent |
+| U22-3 | medium-high | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:703-704 and docs/theory/cohe` | Every number in §4's x row is a quadrature artifact — the continuum edges (max |
 | U22-4 | medium |  | `validation/coherent_mode_vlasov_theory.jl:342-364 vs :235-254` | Self-check 5 — the check advertised as validating "every assembly constant ... |
 | U22-5 | medium |  | `docs/theory/coherent_beam_beam_modes.md:186-187` | The finite-ξ map correction is quoted with the **wrong sign** — "(for Q_0 = 0.31: |
 | U22-6 | medium |  | `docs/theory/coherent_beam_beam_modes.md:131-140 (the † footnote)` | The footnote that justifies flagging the r = 0.02-0.05 row quotes max-`u` numbers |

@@ -8178,26 +8178,33 @@ end
         @test knob_expression(string(eright)) == eright
         @test knob_value(eright) == 512.0
 
-        # 2026-08-05_b audit, U20-2: the class above regenerated one operator to
-        # the left. `+` and `*` were printed WITHOUT parentheses around a nested
-        # same-operator child on the grounds that they associate -- which they
-        # do not in floating point. `a + (b + c)` printed "a + b + c", reparsed
-        # to a flat 3-ary call, and the value moved. The pin sweeps both nesting
-        # directions for every infix operator the parser accepts, taken from
-        # `_KNOB_OPERATORS` rather than hand-listed, so a newly whitelisted
-        # n-ary operator is covered here the day it is added.
+        # 2026-08-05_b audit, U20-2/U13-4: the class above regenerated one
+        # operator to the left. `+` and `*` were printed WITHOUT parentheses
+        # around a nested same-precedence child on the grounds that they
+        # associate -- which they do not in floating point. `a + (b + c)` printed
+        # "a + b + c", reparsed to a flat 3-ary call, and the value moved.
+        #
+        # The pin is the WHOLE binary x binary x operand-position grid rather
+        # than a hand-picked sample, because the mixed same-precedence cases are
+        # the ones a same-operator sweep misses: `u + (v - w)` and `u * (v / w)`
+        # also re-associated, and the latter turned 1e300 into Inf through the
+        # documented round trip. Operators come from `_KNOB_OPERATORS`, so a
+        # newly whitelisted infix operator enters the grid the day it is added.
         infix = filter(op -> op in (:+, :-, :*, :/, :^),
                        sort!(collect(keys(Octopus._KNOB_OPERATORS))))
         @test length(infix) == 5          # tripwire: the table still has these
-        for op in infix
-            for form in ("t_atom.u $op (t_atom.v $op t_atom.w)",
-                         "(t_atom.u $op t_atom.v) $op t_atom.w",
-                         "t_atom.u $op t_atom.v $op t_atom.w")
-                ex = knob_expression(form)
-                @test knob_expression(string(ex)) == ex
-                @test knob_value(knob_expression(string(ex))) === knob_value(ex)
-            end
+        assoc_fail = Tuple{Symbol,Symbol,Int}[]
+        shapes = 0
+        for outer in infix, inner in infix, pos in 1:2
+            leaf_u = Octopus.KnobRef(Symbol("t_atom.u"))
+            nested = Octopus.KnobCall(inner, [Octopus.KnobRef(Symbol("t_atom.v")),
+                                              Octopus.KnobRef(Symbol("t_atom.w"))])
+            ex = Octopus.KnobCall(outer, pos == 1 ? [nested, leaf_u] : [leaf_u, nested])
+            shapes += 1
+            (knob_expression(string(ex)) == ex) || push!(assoc_fail, (outer, inner, pos))
         end
+        @test shapes == 50
+        @test isempty(assoc_fail)
         # The value change that made this more than a structural nit: without
         # the parentheses this evaluates 0.0 before the round trip and 1.0 after.
         @knob t_atom.big = 1.0e16
