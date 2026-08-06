@@ -16,6 +16,19 @@ The same least-squares calibration is applied to the PIC solver so the two are
 compared purely on field shape (the physical coupling constant kbb is applied
 separately in production and is not part of this shape test).
 
+WHAT THIS METRIC CANNOT SEE, exactly (2026-08-05_b audit, U23-6). `c` is chosen
+to minimise the residual, so it absorbs ANY scalar factor exactly, and the
+residual and the normaliser then scale together, leaving the ratio invariant. A
+"solver" returning the exact reference field multiplied by 2, by 0.5, or by
+**-1** -- sign-inverted, attractive where the physics is repulsive -- scores
+0.000e+00 on all three statistics. The blindness is exact and unbounded, not
+approximate: the metric is invariant to scaling the reference by 100%.
+
+So "median rel error 1.3e-3" is a statement about SHAPE and nothing else. The
+absolute normalisation is a separate claim, and it is checked separately, in
+`test/runtests.jl`'s "Spectral field absolute normalization is derived, not
+fitted" testset -- which exists for this reason. Read the two together.
+
 Run from the project root:
 
     julia --project=. validation/spectral_poisson_field_validation.jl

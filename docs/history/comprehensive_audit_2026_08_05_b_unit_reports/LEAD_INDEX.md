@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **175 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **179 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -218,9 +218,9 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U23-13 | low |  | `validation/near_round_gaussian_transition.jl:29-60 (cross-file seam)` | The 96-point Gauss-Legendre reference — the independent standard the whole near-round |
 | U23-4 | low | FIXED | `validation/gaussian_pic_field_validation.jl:17-20` | The header asserts the script exercises "real internals … PIC via `_pic_solve_field`"; |
 | U23-5 | low |  | `docs/theory/gaussian_subtracted_pic_solver.md:695-701 + validation/gau` | The documented motivation for the coupled (rotated) subtraction branch — "the weakest |
-| U23-6 | low |  | `validation/spectral_poisson_field_validation.jl:215-221` | `shape_relerr` returns **exactly 0.000e+00** for a "solver" whose field is the exact |
-| U23-7 | low |  | `validation/pic_grid_extent_stability.jl:109-110` | The `dropped` column double-counts a corner escapee and measures a different box from |
-| U23-8 | low |  | `validation/pic_gaussian_field_validation.jl:20-24` | The header's "Outputs are written under `result/`" list omits a file the script always |
+| U23-6 | low | CONFIRMED, FIXED (2026-08-06) — blindness stated exactly; suite already carries the mitigation | `validation/spectral_poisson_field_validation.jl:215-221` | `shape_relerr` returns **exactly 0.000e+00** for a "solver" whose field is the exact |
+| U23-7 | low | CONFIRMED, FIXED (2026-08-06) | `validation/pic_grid_extent_stability.jl:109-110` | The `dropped` column double-counts a corner escapee and measures a different box from |
+| U23-8 | low | CONFIRMED, FIXED (2026-08-06) | `validation/pic_gaussian_field_validation.jl:20-24` | The header's "Outputs are written under `result/`" list omits a file the script always |
 | U24-10 | low |  | `validation/generate_ptc_reference.jl:336-355` | the committed reference table is truncated before the first MAD-X job runs, so a failure |
 | U24-11 | low |  | `validation/high_energy_weakstrong_limit.jl:380-381` | the two Gaussian-arm thresholds are the only tolerances in the file that are neither |
 | U24-12 | low |  | `validation/strong_strong_spectral_comparison.jl:1-27, 156-163` | the header has no `Outputs` section although the script writes five TSVs, and it carries a |
@@ -297,7 +297,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U22-16 | info |  | `validation/coherent_mode_vlasov_theory.jl:508` | Self-check 4's 2e-2 tolerance passes at r=0.5 with only 11% of its budget to |
 | U22-18 | info |  | `validation/coherent_mode_vlasov_theory.jl:718` | Latent crash — `maximum(v for v in vals if v <= e_band[2] + 5 * xi_e)` throws |
 | U23-14 | trivial |  | `validation/pic_grid_extent_stability.jl:26 and src/tasks/strongstrong/` | Both the validation docstring and the production docstring record ":sigma … measured |
-| U23-9 | trivial |  | `validation/gaussian_pic_zscan.jl:60, 88` | The documented override `OCTOPUS_GPIC_ZSCAN_NSLICES` throws `BoundsError` for any |
+| U23-9 | trivial | CONFIRMED, FIXED (2026-08-06) | `validation/gaussian_pic_zscan.jl:60, 88` | The documented override `OCTOPUS_GPIC_ZSCAN_NSLICES` throws `BoundsError` for any |
 | U25-10 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/tracking_context_policy_consistency.jl, strong_strong_obser` | three scripts print their CUDA skip but offer no way to *require* the GPU |
 | U25-11 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/pic_option_consistency_summary.jl:55-58, 90-102` | the summary pairs a run with its baseline by tag suffix alone and never |
 | U25-12 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/README.md:881-890 and validation/{crossing_luminosity_ancho` | the two entries added for U21-1 are attached to the wrong section and |

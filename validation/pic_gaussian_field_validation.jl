@@ -17,11 +17,29 @@ From the project root:
 julia --project=. validation/pic_gaussian_field_validation.jl
 ```
 
+Inputs (all optional; 2026-08-05_b audit, U23-8 -- the header documented none of
+them, contrary to AGENTS.md §Updating Validations):
+
+- `OCTOPUS_PIC_VALIDATION_RANDOM_CASES`  number of random cases; > 0 switches the
+  script into random-sweep mode, which CHANGES the summary filename (below)
+- `OCTOPUS_PIC_VALIDATION_RANDOM_SEED`   seed for that sweep
+- `OCTOPUS_PIC_VALIDATION_SIGMA_MIN`, `..._SIGMA_MAX`   sampled sigma range
+- `OCTOPUS_PIC_VALIDATION_PIC_GRID`      PIC grid size
+- `OCTOPUS_PIC_VALIDATION_EXTENT_SIGMA`  box half-width in sigmas
+- `OCTOPUS_PIC_VALIDATION_SOURCE_AXIS`, `..._FIELD_AXIS`   axis selection
+- `OCTOPUS_PIC_VALIDATION_WRITE_CASE_DATA`   write the per-case tables
+
 Outputs are written under `result/`:
 
-- `pic_gaussian_field_validation_summary.tsv`
-- `pic_gaussian_field_validation_caseNN.tsv`
+- `pic_gaussian_field_validation_summary.tsv` in the DEFAULT mode, but
+  `pic_gaussian_field_validation_random_summary.tsv` whenever
+  `OCTOPUS_PIC_VALIDATION_RANDOM_CASES > 0` -- and that second file is the one
+  the manuscript's Figure 3 depends on, so the header naming only the first sent
+  a reader looking for a file the mode they were told to run does not write
+- `pic_gaussian_field_validation_caseNN.tsv` (only with WRITE_CASE_DATA)
 - `pic_gaussian_field_validation_caseNN.png`
+- `pic_gaussian_field_validation_plot.py` -- written unconditionally, and absent
+  from this list until U23-8
 """
 
 include("../src/Octopus.jl")

@@ -57,7 +57,12 @@ config = (
     grid = (_envi("OCTOPUS_GPIC_ZSCAN_GRID", 64), _envi("OCTOPUS_GPIC_ZSCAN_GRID", 64)),
     deposit_method = _envs("OCTOPUS_GPIC_ZSCAN_DEPOSIT", :CIC),
     nslices = _envi("OCTOPUS_GPIC_ZSCAN_NSLICES", 7),
-    source_slice = 4,
+    # The MIDDLE slice, derived from nslices rather than hardcoded to 4
+    # (2026-08-05_b audit, U23-9). `nslices` is env-driven while this was a
+    # literal, so any documented override below 4 died with
+    # `BoundsError: attempt to access 3-element Vector{Vector{Int64}} at
+    # index [4]` -- a documented knob that could only be turned upward.
+    source_slice = max(1, (_envi("OCTOPUS_GPIC_ZSCAN_NSLICES", 7) + 1) ÷ 2),
     scan_slices = 3,
     samples_per_slice = 61,
     boundary_eps_frac = 1.0e-6,

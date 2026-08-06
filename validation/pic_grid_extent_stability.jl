@@ -30,11 +30,24 @@ tight enough to avoid charge loss, the target rounds to *all* particles for
 realistic slice populations, so it degenerates to the extremum and adds histogram
 quantization noise -- it measured *worse* than `:extrema` (7.2e-2 against 5.3e-2).
 
-`dropped` reports particles that fell outside the estimated box and were dropped
-by the zero-weight branch in `_pic_cic_weights`. It must stay at zero for a
-production setting: dropping a fraction `f` of charge at radius `R` costs a field
-error `~ f*(sigma/R)`, so even `1e-3` is the same order as the discontinuity the
-estimators are meant to remove.
+`dropped` counts particles outside the RAW estimated axis interval. It must stay
+at zero for a production setting: dropping a fraction `f` of charge at radius `R`
+costs a field error `~ f*(sigma/R)`, so even `1e-3` is the same order as the
+discontinuity the estimators are meant to remove.
+
+It is deliberately a script-local quantity and NOT the production drop count, in
+three ways worth knowing before comparing the two (2026-08-05_b audit, U23-7):
+
+  * production drops against the box `_pic_interaction_grids` builds, which adds
+    three cells of padding (`width += 3*tx`) and may quantise, while this reads
+    the raw `_pic_axis_extent` interval -- so this column is the STRICTER test
+    and can be nonzero where production drops nothing;
+  * production counts against DRIFTED source coordinates (`x + px*s`) through
+    `_pic_count_outside_box_drifted`, this against the undrifted `beam.rep.x`;
+  * both now count particles rather than axis violations. This column used to be
+    a per-axis sum, so one corner escapee -- outside in x and in y -- was
+    reported as 2. That is the same defect the 2026-08-05 audit fixed in
+    `_pic_count_outside_box` (U5-6) and it was left standing here.
 
 Run
 ---
@@ -106,8 +119,13 @@ function slice_boxes(solver, beam, sl)
         n = length(idx)
         ax = O._pic_axis_extent(ge, xlo, xhi, xorigin, xs, xs2, n, k)
         ay = O._pic_axis_extent(ge, ylo, yhi, yorigin, ys, ys2, n, k)
-        drop += count(i -> !(ax[1] <= beam.rep.x[i] <= ax[2]), idx) +
-                count(i -> !(ay[1] <= beam.rep.y[i] <= ay[2]), idx)
+        # Count PARTICLES outside the box, not axis violations (2026-08-05_b
+        # audit, U23-7). The per-axis sum reported a corner escapee -- outside
+        # in both x and y -- as 2, which is exactly the defect the 2026-08-05
+        # audit fixed on the production side in `_pic_count_outside_box`
+        # (U5-6) and which was left standing in this script's own column.
+        drop += count(i -> !(ax[1] <= beam.rep.x[i] <= ax[2] &&
+                             ay[1] <= beam.rep.y[i] <= ay[2]), idx)
         push!(wx, ax[2] - ax[1]); push!(wy, ay[2] - ay[1])
     end
     return wx, wy, drop
