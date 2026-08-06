@@ -1,18 +1,26 @@
 # Comprehensive Audit — 2026-08-05_b (second full re-read, same day)
 
-**Status: CONTINUATION PASS IN PROGRESS.** A first halt was taken at the
-Phase 16 gate with 23 of 26 reading units returned; the owner then directed
-the audit to continue until the declared whole-repository scope is actually
-covered. The three regions that were read-but-unreported at that halt (U21
-`test/examples/` + `nightly_suite.sh`, U22 `validation/` coherent-mode cluster,
-U24 `validation/` remainder A) have been **re-briefed and are reading now**,
-and the continuation has additionally verified three further Major findings
-from the queue (F5, F6, F7). U25 returned just after the first halt; its
-material is folded into §7.
+**Status: COMPLETE — the declared scope is covered.** All **26 of 26 reading
+units have reported**, and every report is archived beside this file. The
+whole-repository uniform-depth scope declared in §0 is therefore actually
+covered, not claimed.
+
+A first halt was taken at the Phase 16 gate with 23 units returned; the owner
+directed the audit to continue until coverage was real. The three
+read-but-unreported regions (U21 `test/examples/` + `nightly_suite.sh`, U22
+`validation/` coherent-mode cluster, U24 `validation/` remainder A) were
+re-briefed and have now reported — **and the highest-severity finding of the
+entire audit, F8, came from one of them.** That is the argument for the
+continuation, recorded rather than asserted: the premature halt would have
+shipped a nightly gate that could report `PASS` on a failing suite.
 
 The first halt's own record is kept rather than rewritten: it was honest when
-written, and the protocol's rule about visible wrong turns applies to a
-premature halt as much as to a wrong claim.
+written, and the rule about visible wrong turns applies to a premature halt as
+much as to a wrong claim.
+
+**Final gate:** exit 0, 151 top-level testsets, 23 CUDA testsets on the device,
+zero skips, **solenoid warnings 30 → 0**. **Fingerprint:** byte-identical to the
+pre-modification baseline across all six fixes, all 1,495 values.
 
 The gate itself passed: **151 top-level testsets, exit 0, 23 CUDA testsets on
 the device, zero skips** (§6), and the pre-modification behavioural fingerprint
@@ -849,6 +857,52 @@ Its leads, still unverified:
   the guard checks `turns` rather than `length(timings)`.
 - Plus README drift on ten entries (U25-7/8/9/10/12/13) and two hand-copied
   CUDA launch-family lists with no new-member tripwire (U25-6).
+
+### U22 — the last region, reported after the continuation
+
+Its headline is a **physics-documentation** finding, not an observability one:
+
+- **U22-1 [High]** — the flat-beam regime that `coherent_beam_beam_modes.md` §3
+  and the script header both disown as a *model* limitation is a **fixed-order
+  quadrature bug**. `gauss_avg`'s 96-node Gauss-Hermite rule has its innermost
+  nodes at 0.160 σ_src with 0.320 σ_src spacing, while the integrand carries all
+  its structure inside `s_t = √2·r` — which quantitatively predicts the observed
+  FAIL/PASS boundary (0.283 at r=0.2 fails, 0.707 at r=0.5 passes). Converged
+  Λ ≈ **1.29–1.32**, not the shipped **1.92–23.2**. Two independent
+  confirmations: a from-scratch matrix (1.3208/1.3081/1.2897 at r=0.02/0.05/0.1)
+  and **the script's own particle referee** at converged box size L=192
+  (1.3022/1.2992/1.2820) — agreeing to 0.6–1.4%, i.e. the same 1–2% the note
+  claims only for r ≳ 0.2. The tell: for r ≤ 0.1 the shipped Λ equals `max u` to
+  four digits, so the reported "mode" is the continuum edge. **Note §3's
+  conclusion 3 is refuted by this.**
+- **U22-10 [Low]** — §1's "flat beams … `Y_rigid = 2/√2 = √2 ≈ 1.41`" is wrong;
+  the rigid factor is **exactly 1 at every aspect ratio**, because the on-axis
+  gradient `1/(σ_x(σ_x+σ_y))` is homogeneous of degree −2, so widening both
+  sigmas by √2 halves it regardless of flatness. Not cosmetic: under 1.41 the
+  repository's own measured flat values (1.2522, 1.2657) would sit *below* the
+  rigid model, inverting the framing the benchmark rests on. Two other places in
+  the repo already state it correctly.
+- **U22-2/U22-3** confirm U26-4 and half of U26-5: `u(0)` is 0.8296, not 1; and
+  every number in §4's x row is a quadrature artifact — though the *conclusion*
+  ("none detached") survives repair, while its stated reason does not.
+- **U22-5** — the note's finite-ξ correction carries the **wrong sign**,
+  contradicting its own line 171, the committed TSV, and an independent
+  derivation.
+- **U22-11** — 11 of 13 thresholds in the cluster are print-only; no run in the
+  region can fail on physics, and the invariants that would have caught U22-1
+  are absent although the data for one is already in the shipped TSV.
+- **U22-17 [seam]** — committed strong-strong archives no longer reproduce where
+  the spectral line is broad (r=0.05 moves 9.9e-4); not thread nondeterminism
+  (bit-identical at 1/4/8 threads); 118 `src/` commits are candidates and
+  bisecting is the auditor's job.
+
+**Clean, and strongly so:** all five TSVs regenerate **bit-identical** to both
+`result/` and `paper/data/`; the kernel assembly and eigen-solve were confirmed
+by a from-scratch reimplementation matching to ≤2e-4 across the whole narrow
+branch; the published Yokoya anchor (≈1.21 round) reproduces exactly
+(BB3D 1.197/1.210, Octopus PIC 1.1990/1.2064); and the BB3D cross-code data is
+committed and bit-identical, with the deck matching the Octopus case parameter
+by parameter.
 
 ### Inherited items, dispositioned
 
