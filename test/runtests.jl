@@ -3845,7 +3845,17 @@ end
         @info "public-configuration contract result" rp.status rp.message rp.metrics
     @test rp.status === :passed || (rp.status === :skipped && !CUDA_TESTS_ACTIVE)
     if CUDA_TESTS_ACTIVE
-        @test validate(StrongStrongPICBackendConsistencyContract()).passed
+        rpic = validate(StrongStrongPICBackendConsistencyContract())
+        @test rpic.passed
+        # `passed` alone did not mean the per-pair luminosity trace was
+        # compared: that comparison was gated on `batch_mode == :wavefront` and,
+        # when skipped, still reported success having compared nothing
+        # (2026-08-05_b audit, U1-1). The count is now asserted, so a contract
+        # that certifies backend equivalence while comparing an empty set fails
+        # here instead of passing quietly.
+        @test rpic.metrics[:slice_pair_luminosity_records_compared] > 0
+        @test rpic.metrics[:slice_pair_luminosity_records_compared] ==
+              rpic.metrics[:slice_pair_luminosity_cpu_records]
         @test validate(StrongStrongGaussianBackendConsistencyContract()).passed
     else
         @test_skip "CUDA device not available"

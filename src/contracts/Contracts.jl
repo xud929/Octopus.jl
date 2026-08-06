@@ -864,8 +864,26 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
                                 for row in cpu_pair_luminosities)
             gpu_pair_map = Dict((row.turn, row.i, row.j) => row.luminosity
                                 for row in gpu_pair_luminosities)
-            pair_trace_expected = contract.batch_mode == :wavefront
+            # Whether a per-pair trace is expected is decided by what the CPU
+            # reference actually produced, NOT by `batch_mode`. Keying it off
+            # `batch_mode == :wavefront` was wrong twice over (2026-08-05_b
+            # audit, U1-1): with `:sequential` the whole comparison was skipped
+            # and the contract still reported `passed`, having compared nothing
+            # -- an unrun check reported as a passed one, which the repository
+            # forbids -- and even under `:wavefront` the flag does not predict
+            # the trace, because only the fully-indexed sub-route populates the
+            # sink (measured: 16 records on the indexed default, 0 on
+            # `indexed=false`, `wavefront_fft=false` and `async=false`, against
+            # 16 on every CPU route).
+            #
+            # The CPU pushes one record per slice pair from the single loop that
+            # serves every configuration, so an empty CPU trace means the run had
+            # no pairs at all; a non-empty CPU trace with an empty GPU one is a
+            # real backend divergence and is reported as such rather than
+            # silently waived.
+            pair_trace_expected = !isempty(cpu_pair_map)
             pair_keys_match = !pair_trace_expected || keys(cpu_pair_map) == keys(gpu_pair_map)
+            pair_records_compared = pair_keys_match ? length(cpu_pair_map) : 0
             pair_luminosity_rel = pair_trace_expected && pair_keys_match ? maximum(
                 abs(gpu_pair_map[key] - cpu_pair_map[key]) /
                 max(abs(cpu_pair_map[key]), eps(Float64)) for key in keys(cpu_pair_map)
@@ -902,8 +920,12 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
                 :cpu_luminosity => cpu_luminosity,
                 :gpu_luminosity => gpu_luminosity,
                 :luminosity_records_compared => length(cpu_luminosity_series),
-                :slice_pair_luminosity_records_compared =>
-                    pair_trace_expected ? length(cpu_pair_map) : 0,
+                # The number of pairs actually compared, not the number the CPU
+                # offered: if the keys disagree nothing was compared, and that
+                # must read as 0 rather than as the CPU's count (U1-1).
+                :slice_pair_luminosity_records_compared => pair_records_compared,
+                :slice_pair_luminosity_cpu_records => length(cpu_pair_map),
+                :slice_pair_luminosity_gpu_records => length(gpu_pair_map),
                 :slice_pair_luminosity_rel_error => pair_luminosity_rel,
                 :slice_pair_luminosity_passed_tolerance => pair_luminosity_ok,
                 :luminosity_rel_error => luminosity_rel,
