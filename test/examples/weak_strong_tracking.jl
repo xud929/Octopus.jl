@@ -60,14 +60,16 @@ input = (
     case_name = "weak_strong",
     result_dir = joinpath(@__DIR__, "..", "result"),
     seed = 123456789,
-    total_turns = 1_000_000,
+    # NOTE: no `total_turns` or `weak_beam.n_macro` here. Both sat in this
+    # block reading as authoritative defaults while nothing read them
+    # (2026-08-05_b audit, U21-24): the turn count comes from OCTOPUS_TURNS and
+    # the macroparticle count from OCTOPUS_N_MACRO (default 10000).
 
     weak_beam = (
         charge = 1.0,
         mass = PMASS_EV,
         energy = 275.0e9,
         n_particle = 0.6881e11,
-        n_macro = 1_024_000,
         cutoff = 5.0,
         sigx = 95.0e-6,
         sigy = 8.5e-6,

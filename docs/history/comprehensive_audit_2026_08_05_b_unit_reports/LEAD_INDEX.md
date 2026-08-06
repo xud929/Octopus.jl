@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **154 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **159 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -194,11 +194,11 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U20-8 | low |  | `test/runtests.jl:8123 and 7992` | two hand-copied case lists with no declaration-to-coverage tripwire, in the |
 | U20-9 | low |  | `test/runtests.jl:7629 (gating, not content)` | "TSC weights are bit-identical across backends" is a **pure host-side** |
 | U21-14 | low |  | `test/examples/strong_strong_tracking.jl:365-381 vs 434-441` | the new note claims the commented block "stays as the reference for what |
-| U21-20 | low |  | `test/examples/strong_strong_tracking.jl:677-684` | the summary block prints PIC-family settings unconditionally, so a |
-| U21-21 | low |  | `test/examples/strong_strong_tracking.jl:415-422` | inconsistent grid-value validation. `OCTOPUS_PIC_LUMINOSITY_GRID` checks |
-| U21-22 | low |  | `test/examples/strong_strong_tracking.jl:254-263` | `OCTOPUS_ELECTRON_ENERGY_GEV=-5` (a negative beam energy) is accepted and |
-| U21-23 | low |  | `test/examples/strong_strong_tracking.jl:1-139` | eight `OCTOPUS_*` variables are still absent from the header after the |
-| U21-24 | low |  | `test/examples/strong_strong_tracking.jl:159,179 and test/examples/weak` | dead configuration fields that read as authoritative defaults. |
+| U21-20 | low | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:677-684` | the summary block prints PIC-family settings unconditionally, so a |
+| U21-21 | low | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:415-422` | inconsistent grid-value validation. `OCTOPUS_PIC_LUMINOSITY_GRID` checks |
+| U21-22 | low | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:254-263` | `OCTOPUS_ELECTRON_ENERGY_GEV=-5` (a negative beam energy) is accepted and |
+| U21-23 | low | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:1-139` | eight `OCTOPUS_*` variables are still absent from the header after the |
+| U21-24 | low | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:159,179 and test/examples/weak` | dead configuration fields that read as authoritative defaults. |
 | U21-25 | low |  | `test/examples/strong_strong_tracking.jl:291-292` | confirms and refines the prior unit's finding. Both harnesses write into |
 | U21-26 | low |  | `test/examples/weak_strong_tracking.jl:33` | confirms and refines the prior unit's finding. Both harnesses write into |
 | U21-27 | low |  | `both harnesses (write paths)` | confirms and refines the prior unit's finding. Both harnesses write into |

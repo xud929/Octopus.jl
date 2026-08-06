@@ -39,9 +39,19 @@ OCTOPUS_N_MACRO, OCTOPUS_PROTON_ENERGY_GEV, OCTOPUS_CUDA_NVTX,
 OCTOPUS_DISABLE_MOMENTS, OCTOPUS_DISABLE_LUMINOSITY_OUTPUT,
 OCTOPUS_MOMENT_CAPACITY, OCTOPUS_SPECTRAL_FIELD_PRECISION, OCTOPUS_GPIC_GRID,
 OCTOPUS_TURN_TIMING_PATH (a relative value resolves against `test/result/`,
-beside this harness -- NOT against the caller's cwd), the
-CUDA_PIC_SLICE_PAIR green-cache aliases, and the per-kernel
-CUDA_PIC_*_THREADS overrides.
+beside this harness -- NOT against the caller's cwd),
+OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO,
+OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH,
+OCTOPUS_CUDA_PIC_GATHER_SCATTER_THREADS, OCTOPUS_CUDA_PIC_DEPOSITION_THREADS,
+OCTOPUS_CUDA_PIC_KICK_THREADS, OCTOPUS_CUDA_PIC_FIELD_THREADS,
+OCTOPUS_CUDA_PIC_SPECTRAL_THREADS, OCTOPUS_CUDA_PIC_GREEN_THREADS and
+OCTOPUS_CUDA_PIC_LUMINOSITY_THREADS.
+
+(Written out by name rather than as globs: the U18-2 fix wrote "the
+CUDA_PIC_SLICE_PAIR green-cache aliases" and "the per-kernel CUDA_PIC_*_THREADS
+overrides", which are neither greppable nor copy-pasteable and also dropped the
+OCTOPUS_ prefix, so eight variables stayed effectively undocumented --
+2026-08-05_b audit, U21-23.)
 
 The soft-Gaussian solver is also available as a commented alternative ABOVE the
 solver construction.
@@ -157,7 +167,13 @@ input = (
         mass = EMASS_EV,
         energy = 10.0e9,
         n_particle = 1.7203e11,
-        n_macro = 2560000,
+        # NOTE: no `n_macro` here. The production macroparticle counts are
+        # 2_560_000 electrons and 1_024_000 protons, but this harness takes its
+        # count from OCTOPUS_N_MACRO / _ELE / _PRO and defaults to
+        # `default_demo_macroparticles` (200). Fields named `n_macro` sat in
+        # this block reading as authoritative defaults while nothing read them
+        # (2026-08-05_b audit, U21-24); the clean `examples/` counterpart keeps
+        # the production numbers in its `config` block, where they ARE read.
         cutoff = 5.0,
         sigma = (106.0e-6, 9.5e-6, 0.7e-2),
         beta = (0.55, 0.056, 0.7e-2 / 5.5e-4),
@@ -177,7 +193,6 @@ input = (
         mass = PMASS_EV,
         energy = 275.0e9,
         n_particle = 0.6881e11,
-        n_macro = 1024000,
         cutoff = 5.0,
         sigma = (95.0e-6, 8.5e-6, 6.0e-2),
         beta = (0.8, 0.072, 6.0e-2 / 6.6e-4),
@@ -273,16 +288,26 @@ set_global_rng!(seed = input.seed, method = :philox)
 ele = input.electron
 pro = input.proton
 weak_strong_limit = env_bool("OCTOPUS_WEAK_STRONG_LIMIT", false)
+# A beam energy must be positive (2026-08-05_b audit, U21-22).
+# `OCTOPUS_ELECTRON_ENERGY_GEV=-5` used to be accepted and tracked to
+# completion, printing `electron_energy_GeV = -5.0` and plausible-looking rms,
+# exit 0 -- a nonsense configuration producing numbers a reader would trust.
+function _energy_env(name, default_eV)
+    haskey(ENV, name) || return default_eV
+    gev = parse(Float64, ENV[name])
+    (isfinite(gev) || gev > 0) || error("$(name) must be a positive number of GeV; got $(gev)")
+    gev > 0 || error("$(name) must be positive; got $(gev) GeV")
+    return gev * 1.0e9
+end
+
 electron_energy = if haskey(ENV, "OCTOPUS_ELECTRON_ENERGY_GEV")
-    parse(Float64, ENV["OCTOPUS_ELECTRON_ENERGY_GEV"]) * 1.0e9
+    _energy_env("OCTOPUS_ELECTRON_ENERGY_GEV", ele.energy)
 elseif weak_strong_limit
     1.0e100 * 1.0e9
 else
     ele.energy
 end
-proton_energy = haskey(ENV, "OCTOPUS_PROTON_ENERGY_GEV") ?
-    parse(Float64, ENV["OCTOPUS_PROTON_ENERGY_GEV"]) * 1.0e9 :
-    pro.energy
+proton_energy = _energy_env("OCTOPUS_PROTON_ENERGY_GEV", pro.energy)
 
 beam_ele = Beam(n_macro_ele, policy, Float64;
     beta = ele.beta,
@@ -426,14 +451,21 @@ cuda_pic_backend_configurations = use_gpu ? (cuda_pic_launch,) : ()
 solver_name = lowercase(get(ENV, "OCTOPUS_SOLVER", "pic"))
 solver_name in ("pic", "spectral", "gaussian", "gaussian_pic") || error(
     "OCTOPUS_SOLVER must be one of pic, spectral, gaussian, gaussian_pic; got $(repr(solver_name))")
-spectral_grid = let v = get(ENV, "OCTOPUS_SPECTRAL_GRID", "127,383")
-    parts = parse.(Int, split(v, ',')); (parts[1], parts[2])
+# Same named error its sibling OCTOPUS_PIC_LUMINOSITY_GRID raises (2026-08-05_b
+# audit, U21-21). Without the arity check a one-element value died with a raw
+# `BoundsError: attempt to access 1-element Vector{Int64} at index [2]`, which
+# tells the user nothing about which variable was wrong or what it wanted.
+_grid_env(name, default) = let v = get(ENV, name, default)
+    parts = parse.(Int, split(v, ','))
+    length(parts) == 2 || error("$(name) must be nx,ny; got $(repr(v))")
+    all(>(0), parts) || error("$(name) entries must be positive; got $(repr(v))")
+    (parts[1], parts[2])
 end
+
+spectral_grid = _grid_env("OCTOPUS_SPECTRAL_GRID", "127,383")
 spectral_domain_factor = parse(Float64, get(ENV, "OCTOPUS_SPECTRAL_DOMAIN_FACTOR", "8.0"))
 spectral_field_precision = Symbol(lowercase(get(ENV, "OCTOPUS_SPECTRAL_FIELD_PRECISION", "double")))
-gpic_grid = let v = get(ENV, "OCTOPUS_GPIC_GRID", "64,64")
-    parts = parse.(Int, split(v, ',')); (parts[1], parts[2])
-end
+gpic_grid = _grid_env("OCTOPUS_GPIC_GRID", "64,64")
 
 solver = if solver_name == "spectral"
     SpectralPoissonSolver(;
@@ -724,18 +756,34 @@ println("electron_energy_GeV = ", electron_energy / 1.0e9)
 println("proton_energy_GeV = ", proton_energy / 1.0e9)
 println("pic_longitudinal_kick = ", pic_longitudinal_kick)
 println("pic_batch_mode = ", pic_batch_mode)
-println("cuda_pic_async = ", cuda_pic_async)
-println("cuda_pic_batch_fft = ", cuda_pic_batch_fft)
-println("cuda_pic_wavefront_fft = ", cuda_pic_wavefront_fft)
-println("cuda_pic_indexed_wavefront = ", cuda_pic_indexed_wavefront)
-println("pic_green_cache = ", pic_green_cache)
-println("pic_slice_pair_green_min_ratio = ", pic_slice_pair_green_min_ratio)
-println("pic_slice_pair_green_growth = ", pic_slice_pair_green_growth)
-println("pic_luminosity_every = ", pic_luminosity_every)
-println("pic_luminosity_grid = ",
-        pic_luminosity_grid === nothing ? input.solver.pic_grid : pic_luminosity_grid)
-println("pic_luminosity_deposit_method = ",
-        pic_luminosity_deposit_method === nothing ? "inherit" : pic_luminosity_deposit_method)
+# The PIC-family lines print only when a PIC-family solver is actually in use
+# (2026-08-05_b audit, U21-20). They used to print unconditionally, so a
+# `OCTOPUS_SOLVER=gaussian` or `=spectral` run reported ten settings it never
+# applied -- green_cache, the two slice-pair ratios, the four cuda_pic flags and
+# the three luminosity ones -- none of which reaches a GaussianPoissonSolver or
+# a SpectralPoissonSolver. A configuration dump that lists what was NOT applied
+# is worse than one that stays quiet, because it is what a reader trusts when
+# reconciling two runs.
+if solver isa Union{PICPoissonSolver,GaussianPICPoissonSolver}
+    println("cuda_pic_async = ", cuda_pic_async)
+    println("cuda_pic_batch_fft = ", cuda_pic_batch_fft)
+    println("cuda_pic_wavefront_fft = ", cuda_pic_wavefront_fft)
+    println("cuda_pic_indexed_wavefront = ", cuda_pic_indexed_wavefront)
+    println("pic_green_cache = ", pic_green_cache)
+    println("pic_slice_pair_green_min_ratio = ", pic_slice_pair_green_min_ratio)
+    println("pic_slice_pair_green_growth = ", pic_slice_pair_green_growth)
+    println("pic_luminosity_every = ", pic_luminosity_every)
+    # The grid the solver ACTUALLY uses. With OCTOPUS_SOLVER=gaussian_pic this
+    # printed `input.solver.pic_grid` while the hybrid ran on `gpic_grid`
+    # (default (64, 64) against a reported (128, 128)) -- U21-20.
+    println("pic_luminosity_grid = ",
+            pic_luminosity_grid !== nothing ? pic_luminosity_grid :
+            solver isa GaussianPICPoissonSolver ? gpic_grid : input.solver.pic_grid)
+    println("pic_luminosity_deposit_method = ",
+            pic_luminosity_deposit_method === nothing ? "inherit" : pic_luminosity_deposit_method)
+else
+    println("pic_family_settings = not applied (solver is ", nameof(typeof(solver)), ")")
+end
 # Only the PIC-family solvers expose a resolved luminosity deposit method; the
 # spectral and soft-Gaussian configurations have no such field.
 let resolved = solver_configuration(solver)
