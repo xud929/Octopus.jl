@@ -46,10 +46,17 @@ const CUDA_TESTS_ACTIVE = Octopus._HAS_CUDA && Octopus.CUDA.functional()
     if CUDA_TESTS_ACTIVE
         @test Octopus.CUDA.functional()
     else
+        # No count here on purpose. This message said "Nine" while the real
+        # number had grown past twenty, because a hand-maintained tally of a set
+        # that grows with every new CUDA testset has nothing to keep it honest
+        # (2026-08-05_b audit, U20-11). The skipped testsets now announce
+        # themselves individually in the summary's Broken column, which is the
+        # count that cannot drift.
         @info """
         NO CUDA DEVICE: the GPU half of this suite did NOT run.
-        Nine CUDA-gated testsets were skipped, including every CPU/CUDA parity
-        check. A green run here says nothing about pic_cuda.jl, gaussian_pic_cuda.jl
+        Every CUDA-gated testset was skipped, including all CPU/CUDA parity
+        checks; each reports itself as Broken/skipped in the summary below.
+        A green run here says nothing about pic_cuda.jl, gaussian_pic_cuda.jl
         or spectral_cuda.jl. Run on a GPU host before trusting a CUDA change."""
         @test_skip "CUDA device not available -- GPU half of the suite skipped"
     end
@@ -6699,6 +6706,10 @@ end
         @test_throws ArgumentError collide!(
             GaussianPICPoissonSolver(slicing=sl2, grid=(64,64), coupling_tol=0.0,
                                      cuda_indexed_wavefront=false), eb, pb, CUDABackend)
+    else
+        # Without this the testset reports Total 0 on a CPU-only host: no pass,
+        # no skip, nothing to notice (2026-08-05_b audit, U20-3).
+        @test_skip "CUDA device not available"
     end
 end
 
@@ -8000,6 +8011,14 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         expect_nonfinite_error(() -> collide!(
             spectral, gpu_rep(poison=:x), gpu_rep(), Octopus.CUDABackend))
     end
+else
+    # This `if` guards 17 testsets and 358 assertions. Without an `else` the
+    # whole block does not exist on a CPU-only host -- `Total 0`, no pass and
+    # no skip -- which is the failure class the header of this file forbids
+    # (2026-08-05_b audit, U20-3). One visible skip stands in for the block.
+    @testset "CUDA GPU-only block" begin
+        @test_skip "CUDA device not available -- 17 GPU-only testsets did not run"
+    end
 end
 
 @testset "Knob control" begin
@@ -8603,6 +8622,11 @@ end
                      e2, p2, CUDABackend)
             @test maximum(abs.(flat(e2) .- ref)) < 1e-13
         end
+    else
+        # Part (e) alone is GPU-only; without this the testset shrinks from 15
+        # assertions to 10 on a CPU-only host with nothing to show for it
+        # (2026-08-05_b audit, U20-3).
+        @test_skip "CUDA device not available"
     end
 end
 

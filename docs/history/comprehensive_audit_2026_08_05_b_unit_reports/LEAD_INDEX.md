@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **40 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **42 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -20,7 +20,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U15-1 | major | F11 FIXED | `src/elements/beam_line.jl:568-593` | a kept-whole line (girder/cryostat) — the flagship feature of this file — |
 | U20-1 | major | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:7629 ("TSC weights are bit-identical across backends ` | this new testset cannot fail on the defect its own comment names — its |
 | U20-2 | major | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:8080 ("Knob registry atomicity and round-trip totalit` | the "round-trip totality" half is not total — the documented invariant |
-| U20-3 | major |  | `test/runtests.jl:7133 (and 6604, 8451)` | on a CPU-only host **17 testsets and 402 of the 415 GPU-gated assertions |
+| U20-3 | major | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:7133 (and 6604, 8451)` | on a CPU-only host **17 testsets and 402 of the 415 GPU-gated assertions |
 | U21-1 | major | F8 FIXED | `test/nightly_suite.sh:49-57` | the suite's exit code is recovered by **scraping the log file**, a channel |
 | U21-17 | major |  | `test/examples/strong_strong_tracking.jl:235-247, 633-636` | `OCTOPUS_CUDA_THREADS`, `OCTOPUS_CUDA_BLOCKS` and `OCTOPUS_CPU_THREADS` |
 | U22-1 | high | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:108,111-112 (`GH_N/GH_W`, `g` | The flat-beam regime the note and the script disown as a limitation of the 1D |
@@ -188,7 +188,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U2-2 | low |  | `src/tasks/strongstrong/pic_cuda.jl:2603` | the node-indexed wavefront field solve deposits, Green-multiplies, |
 | U2-3 | low |  | `src/tasks/strongstrong/pic_cuda.jl:2140` | the CUDA workspace cache key — which is also the identity of the embedded |
 | U20-10 | low |  | `test/runtests.jl:8723` | `@test Octopus._pic_count_outside_box([1.0, NaN, 2.0], …) == 1` cannot |
-| U20-11 | low |  | `out-of-region seam — test/runtests.jl:46–51` | the `@info` a CPU-only user actually sees still says "**Nine** |
+| U20-11 | low | CONFIRMED, FIXED (2026-08-06) | `out-of-region seam — test/runtests.jl:46–51` | the `@info` a CPU-only user actually sees still says "**Nine** |
 | U20-13 | low |  | `test/runtests.jl:7679–7684 — carry-over of U17's "note while there"` | the comment states "~1e-13: … well within the 1e-10 contract" and the |
 | U20-7 | low | FIXED | `test/runtests.jl:8067` | `@test knob_symbolics_available() === Octopus._symbolics_adapter_active()` |
 | U20-8 | low |  | `test/runtests.jl:8123 and 7992` | two hand-copied case lists with no declaration-to-coverage tripwire, in the |
