@@ -83,12 +83,33 @@ println("reproducible same counter = ", repro_ok)
 println("different rng_id separates stream = ", stream_sep)
 println("different turn separates stream = ", turn_sep)
 
-ok = abs(mean_normal) < 5e-3 &&
-     abs(var_normal - 1) < 1e-2 &&
-     abs(mean_uniform - 0.5) < 5e-3 &&
-     abs(var_uniform - 1 / 12) < 5e-3 &&
-     abs(corr_pair) < 5e-3 &&
-     abs(corr_neighbor) < 5e-3 &&
+# Tolerances SCALE with N, because the statistics they bound do.
+#
+# These were fixed absolute constants (5e-3 on the means and correlations, 1e-2
+# on the normal variance) while every one of those quantities has a sampling
+# error of order 1/sqrt(N). At the default N = 1e6 that made |mean| < 5e-3 a 5
+# sigma bound, which is fine -- but at N = 2e5, which validation/README.md
+# itself advertises as "a smaller check", it is 2.2 sigma, and at N = 1e5 it is
+# 1.6 sigma. A perfectly healthy generator fails the gate at the smaller N the
+# documentation recommends (2026-08-05_b audit, U25-3).
+#
+# 6 sigma keeps a healthy generator passing at every N while still catching a
+# real bias, which a fixed constant cannot do at both ends of the range.
+sigma_mean = 1 / sqrt(N)                 # sd of a mean of unit-variance samples
+sigma_var = sqrt(2 / N)                  # sd of a variance estimate, normal case
+sigma_corr = 1 / sqrt(N)                 # sd of a correlation at rho = 0
+tol_mean_normal = 6 * sigma_mean
+tol_var_normal = 6 * sigma_var
+tol_mean_uniform = 6 * sigma_mean / sqrt(12)      # uniform sd is 1/sqrt(12)
+tol_var_uniform = 6 * (1 / 12) * sqrt(2 / N)      # scaled by the uniform variance
+tol_corr = 6 * sigma_corr
+
+ok = abs(mean_normal) < tol_mean_normal &&
+     abs(var_normal - 1) < tol_var_normal &&
+     abs(mean_uniform - 0.5) < tol_mean_uniform &&
+     abs(var_uniform - 1 / 12) < tol_var_uniform &&
+     abs(corr_pair) < tol_corr &&
+     abs(corr_neighbor) < tol_corr &&
      repro_ok && stream_sep && turn_sep
 
 if write_csv

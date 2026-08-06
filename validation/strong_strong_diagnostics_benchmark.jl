@@ -58,6 +58,23 @@ for (key, value) in defaults
     haskey(ENV, key) || (ENV[key] = value)
 end
 
+# Guard the EFFECTIVE turn count, not this script's own variable.
+#
+# The check above compares `sample_turns` against `turns`, which comes from
+# OCTOPUS_DIAGNOSTIC_BENCHMARK_TURNS -- but the loop just above only sets
+# OCTOPUS_TURNS when it is not already present, so a pre-set OCTOPUS_TURNS wins
+# and the two numbers are unrelated. With a smaller pre-set value the sample
+# slice below runs off the end and the script dies with a BoundsError AFTER the
+# entire measured workload has been paid for (2026-08-05_b audit, U25-5).
+let effective = parse(Int, ENV["OCTOPUS_TURNS"])
+    effective >= sample_turns || error(
+        "OCTOPUS_TURNS=$(effective) is smaller than sample_turns=$(sample_turns): " *
+        "the benchmark would track $(effective) turns and then fail sampling the " *
+        "last $(sample_turns). Raise OCTOPUS_TURNS, lower " *
+        "OCTOPUS_DIAGNOSTIC_BENCHMARK_SAMPLE_TURNS, or unset OCTOPUS_TURNS to use " *
+        "OCTOPUS_DIAGNOSTIC_BENCHMARK_TURNS=$(turns).")
+end
+
 include(joinpath(@__DIR__, "..", "test", "examples", "strong_strong_tracking.jl"))
 
 timings = turn_timings(task)

@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **103 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **105 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -91,7 +91,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U24-6 | medium |  | `test/runtests.jl:7106 (SEAM — outside my region, reported and stopped)` | the one place that runs `symplecticity_validation.jl` automatically passes |
 | U25-1 | medium |  | `validation/pic_option_consistency.jl:119-124 (+ :226-228)` | on the GPU, choosing `interaction_grid=:node` or `slice_interpolation=:quadratic` |
 | U25-2 | medium |  | `validation/counter_rng_validation.jl:86-92` | the script's gate is a *statistics* test, not a *generator* test — it |
-| U25-3 | medium |  | `validation/counter_rng_validation.jl:86-92` | the same gate's tolerances are fixed absolute constants while the |
+| U25-3 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/counter_rng_validation.jl:86-92` | the same gate's tolerances are fixed absolute constants while the |
 | U25-4 | medium |  | `validation/tracking_backend_consistency.jl:154 (seam: src/contracts/Co` | `:aperture` is covered by the tripwire **by name only** — with the |
 | U3-1 | medium |  | `src/tasks/strongstrong/pic_cuda.jl:5564-5578, 5660-5668` | The CUDA slice transverse moments change with the launch grid rather than only with |
 | U3-2 | medium |  | `src/tasks/strongstrong/pic_cuda.jl:5158, 5165, 2101, 1214` | `threads = 512` — a value the repository's own launch-geometry contract sweeps and |
@@ -305,7 +305,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U25-14 | info |  | `validation/crossing_luminosity_anchor.jl:6` | the only script in the region whose `include` of `src/Octopus.jl` is not |
 | U25-15 | info |  | `validation/strong_strong_{diagnostics,pic_extreme}_benchmark.jl — unde` | both benchmark scripts read a dozen globals that leak out of |
 | U25-16 | info — infrastructure |  | `seam: test/examples/strong_strong_tracking.jl fixed output directory` |  |
-| U25-5 | minor |  | `validation/strong_strong_diagnostics_benchmark.jl:26-64` | the script's turn count and the harness's turn count are two different |
+| U25-5 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/strong_strong_diagnostics_benchmark.jl:26-64` | the script's turn count and the harness's turn count are two different |
 | U25-6 | minor |  | `validation/strong_strong_diagnostics_benchmark.jl:108 and validation/s` | both benchmark scripts hand-copy the CUDA PIC launch-family list instead |
 | U25-7 | minor |  | `validation/README.md §"Beam Optics Interface Consistency"` | the README credits the script with a check it does not perform — "and |
 | U25-8 | minor |  | `validation/README.md and three script headers — undocumented outputs` | four output files that the region actually writes are named in neither |
