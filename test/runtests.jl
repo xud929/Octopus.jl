@@ -2800,7 +2800,13 @@ end
         println("META=", validate_element_metadata().passed)
         """
         out = try
-            read(`$(Base.julia_cmd()) --startup-file=no -e $script`, String)
+            # An explicit JULIA_LOAD_PATH: `Pkg.test` runs its child with the
+            # variable set to empty, and `Base.julia_cmd()` inherits the
+            # environment, so a naive subprocess cannot even find `Pkg`.
+            cmd = addenv(`$(Base.julia_cmd()) --startup-file=no -e $script`,
+                         "JULIA_LOAD_PATH" => "@:@v#.#:@stdlib",
+                         "JULIA_PROJECT" => nothing)
+            read(cmd, String)
         catch err
             @info "script-mode ForwardDiff environment could not be built; \
                    branch NOT exercised this run" err
@@ -4538,7 +4544,7 @@ end
         MomentObserver(p2; capacity=2, append=true, orders=1:1)),))
     @test_throws ArgumentError execute!(t8, mk1(); turns=2)   # column mismatch refused
 
-    foreach(p -> rm(p; force=true), (p1, p2, p3, p4, p5))
+    foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
 end
 
 @testset "Nested lines have length, reflection keeps state, folded sugar is rejected everywhere" begin
@@ -5741,7 +5747,7 @@ end
     execute!(t4, mk1(); turns=2)
     @test turns_in(p4) == [0, 1]
 
-    foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
+    foreach(p -> rm(p; force=true), (p1, p2, p3, p4, p5))
 end
 
 @testset "A task re-run on the other backend reallocates its loss record" begin
