@@ -432,6 +432,23 @@ function Aperture(spec::ElementSpec,
         y_limit > 0 || throw(ArgumentError(
             "aperture y_limit must be positive; got $(y_limit)"))
     end
+    if alive !== nothing
+        # `alive` REPLACES the shape/limit geometry, and doing so silently let a
+        # spec that reads like a 1 mm ellipse pass a particle at 0.5 m -- the
+        # shape collapses to 0, the limits are stored and reported by
+        # `element_help` but never consulted, and their validation is skipped
+        # too, so `x_limit = -1.0` compiled without complaint (2026-08-05_b
+        # audit, U15-10). `:aperture` declares only the backend-consistency
+        # contract, so no effectiveness probe covers it either.
+        stated = Symbol[]
+        hasparam(spec, :shape) && push!(stated, :shape)
+        hasparam(spec, :x_limit) && push!(stated, :x_limit)
+        hasparam(spec, :y_limit) && push!(stated, :y_limit)
+        isempty(stated) || @warn "ApertureSpec: `alive` replaces the built-in " *
+            "geometry, so the shape/limit parameters given here are stored and " *
+            "reported but NEVER consulted -- the predicate alone decides who " *
+            "survives. Drop them, or drop `alive`." ignored = stated maxlog = 1
+    end
     shape = alive === nothing ? _APERTURE_SHAPE_CODES[shape_name] : UInt8(0)
     record = getparam(spec, :loss_record, nothing)
     element_id = Int32(getparam(spec, :element_id, 0))

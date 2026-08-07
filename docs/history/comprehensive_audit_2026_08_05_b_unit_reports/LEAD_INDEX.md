@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **231 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **233 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -283,11 +283,11 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U9-8 | low | CONFIRMED, FIXED (2026-08-06) — validated at construction, not in the kernel | `src/elements/linear_maps.jl:263 — OUT OF HYPOTHESIS (error quality / d` | `g = inv(sqrt(1 + r1*r4 - r2*r3))` throws a bare `DomainError` with no element |
 | U14-10 | info | CONFIRMED, FIXED (2026-08-06) | `src/math/SpecialMath.jl:92-97` | `pi = zero(T)` inside `faddeeva_w_upper_reim` shadows `Base.pi` for the rest of the |
 | U14-11 | info/seam |  | `src/math/SpecialMath.jl accuracy → src/track/strong_beam_track.jl:390-` | the Faddeeva real part carries no relative accuracy near the real axis, and its |
-| U15-10 | minor |  | `src/elements/aperture.jl:416-441 (`Aperture(spec, method)`)` | supplying `alive` silently makes `shape`, `x_limit` and `y_limit` inert |
+| U15-10 | minor | CONFIRMED, FIXED (2026-08-06) — `alive` superseding the geometry now warns; alive-alone and geometry-alone stay silent | `src/elements/aperture.jl:416-441 (`Aperture(spec, method)`)` | supplying `alive` silently makes `shape`, `x_limit` and `y_limit` inert |
 | U15-11 | minor |  | `src/elements/aperture.jl:295-304 (`_aperture_record!`)` | the turn number is stored in a slot whose element type is the *coordinate* |
 | U15-12 | minor |  | `src/elements/beam_line.jl:335-346 (`_entry_label`)` | the beam-line design keys provenance paths on a `:name` parameter that |
 | U15-13 | minor |  | `src/elements/aperture.jl:38-41 (LossRecord docstring claim)` | `LossRecord`'s docstring says the private-slot design means "CPU and CUDA |
-| U15-8 | minor |  | `src/elements/beam_line.jl:385-389 (`_placement_length(::LineEntry)`)` | an `:L` placement override on a nested own-state line is stored, reported |
+| U15-8 | minor | CONFIRMED, FIXED (2026-08-06) — refused rather than honoured, to keep the two walkers in agreement (U15-6) | `src/elements/beam_line.jl:385-389 (`_placement_length(::LineEntry)`)` | an `:L` placement override on a nested own-state line is stored, reported |
 | U15-9 | minor | FIXED | `docs/theory/misalignment_and_patch_maps.md:262-266` | the theory note tells the reader Octopus exposes `misalign_convention` |
 | U16-11 | style |  | `examples/weak_strong_tracking.jl:1` | ** Style only. `using LinearAlgebra` sits on line 1, **above** the |
 | U20-12 | info |  | `test/runtests.jl:7103, 7113 — carry-over of U17-7` | the two `include`s of `validation/symplecticity_validation.jl` and |

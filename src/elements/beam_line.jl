@@ -457,7 +457,24 @@ is its contents'.
 _placement_length(e) = _placement_length_value(getparam(e, :L, 0.0))
 function _placement_length(entry::LineEntry)
     spec = getfield(entry, :spec)
-    spec isa ElementSpec{:line} && !hasparam(spec, :L) && return total_length(spec)
+    if spec isa ElementSpec{:line}
+        # A placement-level `:L` on a LINE was stored, reported by `getparam`,
+        # and never read here -- the return above fired first (2026-08-05_b
+        # audit, U15-8). "Placement wins" (beam_line_composition.md §7b) is the
+        # rule for element placements, and honouring it HERE would re-open the
+        # split U15-6 closed: `total_length` always re-sums the entries, so a
+        # line whose placement claimed a different length would be one length to
+        # one walker and another to the other. The constructor already refuses
+        # `L` on a line for exactly that reason, so the placement refuses it too
+        # rather than storing a value it will not use.
+        haskey(getfield(entry, :overrides), :L) && throw(ArgumentError(
+            "a beam line's arc length is computed from its entries and cannot be " *
+            "overridden on the placement either: `L` was set on this placement of " *
+            "line $(repr(getparam(spec, :name, ""))). `total_length` re-sums the " *
+            "entries regardless, so the two would disagree. Change the entries, or " *
+            "wrap the line in an element that does carry its own length."))
+        return total_length(spec)
+    end
     return _placement_length_value(getparam(entry, :L, 0.0))
 end
 _placement_length(spec::ElementSpec{:line}) =
