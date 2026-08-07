@@ -205,6 +205,57 @@ end
 _live_count(::Nothing, n::Integer) = Int(n)
 _live_count(flags::Vector{Bool}, n::Integer) = count(flags)
 
+# One canonical reduction shape for every ORDER-DEPENDENT slicing statistic —
+# the z mean, the z standard deviation, and the slice centroids (U6-7). Fixed
+# 4096 lanes: lane t folds elements t, t + 4096, t + 2·4096, … in order, and
+# the lane sums are then folded serially 1..4096. The same shape runs on both
+# backends — strided lanes are coalesced for the CUDA kernels and one
+# cache-resident accumulator pass for the CPU — so boundaries and centers are
+# bit-identical across backends by construction rather than "close": before
+# this, `:normal_quantile` boundaries differed by up to 1363 ulps and
+# `:equal_count` centroids by up to 48,247 ulps between the CPU's serial or
+# pairwise folds and the CUDA broadcast reductions, which at Float32 is a
+# ~1e-7 relative divergence upstream of every kick. min/max/count are
+# order-independent and exact under any shape, so they keep their native
+# reductions on each backend. The lane count is a fixed constant for the same
+# reason `_cuda_gaussian_moment_launch` fixes its geometry: the partition IS
+# the summation order, so nothing runtime-dependent may choose it.
+const _SLICE_FOLD_LANES = 4096
+
+"""Lane-shaped Σ f(z_i) over live particles; the CUDA z-stats kernels
+implement exactly this fold (see `_cuda_lane_z_moment_kernel!`)."""
+function _lane_z_moment(z::AbstractVector, flags, μ, ::Val{POW}) where {POW}
+    T = eltype(z)
+    L = _SLICE_FOLD_LANES
+    acc = zeros(T, L)
+    @inbounds for i in eachindex(z)
+        _flag_live(flags, i) || continue
+        v = POW == 2 ? (z[i] - μ) * (z[i] - μ) : z[i]
+        acc[((i - 1) % L) + 1] += v
+    end
+    s = zero(T)
+    @inbounds for t in 1:L
+        s += acc[t]
+    end
+    return s
+end
+
+"""Lane-shaped Σ z[idx[k]] over a slice's member list, in list order; the
+CUDA centroid kernel implements exactly this fold."""
+function _lane_indexed_sum(z::AbstractVector, idx)
+    T = eltype(z)
+    L = _SLICE_FOLD_LANES
+    acc = zeros(T, L)
+    @inbounds for k in eachindex(idx)
+        acc[((k - 1) % L) + 1] += z[idx[k]]
+    end
+    s = zero(T)
+    @inbounds for t in 1:L
+        s += acc[t]
+    end
+    return s
+end
+
 """
     _live_z_stats(z, flags)
 
@@ -220,21 +271,19 @@ non-finite boundary and trips the chokepoint there, exactly as before.
 function _live_z_stats(z::AbstractVector, flags)
     T = eltype(z)
     zmin = T(Inf); zmax = T(-Inf)
-    s1 = zero(T); n_live = 0
+    n_live = 0
     @inbounds for i in eachindex(z)
         _flag_live(flags, i) || continue
         zi = z[i]
         zmin = min(zmin, zi); zmax = max(zmax, zi)
-        s1 += zi; n_live += 1
+        n_live += 1
     end
     n_live == 0 && return (n_live=0, zmin=T(NaN), zmax=T(NaN), mean=T(NaN), sigma=T(NaN))
-    μ = s1 / n_live
-    s2 = zero(T)
-    @inbounds for i in eachindex(z)
-        _flag_live(flags, i) || continue
-        d = z[i] - μ
-        s2 += d * d
-    end
+    # Mean and sigma through the canonical lane fold (U6-7), so the CUDA
+    # twin's kernels produce bit-identical values; NaN from live input still
+    # propagates through the lane sums exactly as it did serially.
+    μ = _lane_z_moment(z, flags, zero(T), Val(1)) / n_live
+    s2 = _lane_z_moment(z, flags, μ, Val(2))
     return (n_live=n_live, zmin=zmin, zmax=zmax, mean=μ,
             sigma=sqrt(max(s2 / n_live, zero(T))))
 end
@@ -496,8 +545,10 @@ function _finish_longitudinal_slices(rep::Phase6DRep, slicing, indices, boundari
         idx = indices[s]
         weights[s] = length(idx) / total
         if slicing.center_position == :centroid
+            # Canonical lane fold (U6-7): the CUDA centroid kernel and the
+            # equal-count host path fold the same member list the same way.
             centers[s] = isempty(idx) ? (boundaries[s] + boundaries[s + 1]) / 2 :
-                         sum(i -> z[i], idx) / length(idx)
+                         _lane_indexed_sum(z, idx) / length(idx)
         elseif slicing.center_position == :midpoint
             centers[s] = (boundaries[s] + boundaries[s + 1]) / 2
         else

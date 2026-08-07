@@ -61,15 +61,20 @@ function _slice_slice_gaussian_kick!(rep::Phase6DRep, idx::Vector{Int}, moments2
                                      virtual_drift::AbstractVirtualDrift,
                                      longitudinal_kick::Val,
                                      compute_luminosity::Val{COMPUTE_LUMINOSITY}) where {COMPUTE_LUMINOSITY}
-    isempty(idx) && return zero(eltype(rep.x))
-    T = eltype(rep.x)
+    # Luminosity accumulates at the working precision the solver's scalars
+    # promote to (U3-4's convention; found by U6-7's measurement): the chunked
+    # branch stored Float64 per-chunk sums into an eltype(rep.x) array, so a
+    # Float32 beam under the default Float64 solver lost ~1e-8 relative in the
+    # fold while the serial branch (and the CUDA twin) accumulated in Float64.
+    AT = promote_type(eltype(rep.x), typeof(kbb_slice), typeof(min_sigma))
+    isempty(idx) && return zero(AT)
     n = length(idx)
     # Fixed chunk grid above the threshold, path choice by data size only —
     # same count-invariance rule as the deposit and moment reductions
     # (U5-1/2).
     nchunks = _REDUCTION_CHUNKS
     if n < _STRONG_STRONG_PARALLEL_KICK_MIN
-        lum = zero(T)
+        lum = zero(AT)
         for i in idx
             @inbounds lum += _apply_slice_kick_one!(
                 rep, i, moments2, center2, kbb_slice, min_sigma,
@@ -77,7 +82,7 @@ function _slice_slice_gaussian_kick!(rep::Phase6DRep, idx::Vector{Int}, moments2
         end
         return lum / TWOPI * klum_slice
     end
-    local_lum = zeros(T, nchunks)
+    local_lum = zeros(AT, nchunks)
     # `chunk_lum`, NOT `lum`. The do-block is a CLOSURE and `lum` is also
     # assigned in the serial branch above, which is function scope -- `if` does
     # not open a scope in Julia, only `for`/`let`/`function` do. Reusing the
@@ -91,7 +96,7 @@ function _slice_slice_gaussian_kick!(rep::Phase6DRep, idx::Vector{Int}, moments2
     # code of every `_run_logical_workers` caller.
     _run_logical_workers(nchunks) do chunk, _
         first_i, last_i = _chunk_bounds(n, nchunks, chunk)
-        chunk_lum = zero(T)
+        chunk_lum = zero(AT)
         for pos in first_i:last_i
             @inbounds chunk_lum += _apply_slice_kick_one!(
                 rep, idx[pos], moments2, center2, kbb_slice, min_sigma,

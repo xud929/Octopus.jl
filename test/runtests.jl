@@ -11298,3 +11298,116 @@ end
         @test_skip "CUDA device not available"
     end
 end
+
+@testset "Slice geometry is bit-identical across backends" begin
+    # 2026-08-05_b audit, U6-7. Slice MEMBERSHIP already agreed everywhere,
+    # but boundaries and centers did not: `:normal_quantile`/`:specified`
+    # boundaries differed by up to 1363 ulps and `:equal_count` centers by up
+    # to 48,247 ulps, because the CPU folded its z mean/sigma serially and its
+    # centroids pairwise while CUDA used device broadcast reductions and a
+    # host view sum — different summation orders over the same data, upstream
+    # of every kick, and at Float32 a ~1e-7 relative divergence that dominated
+    # CPU/CUDA kick disagreement (measured 6.4e-8 on identical beams, U3-4).
+    #
+    # Every ORDER-DEPENDENT slicing statistic now takes one canonical shape on
+    # both backends (`_SLICE_FOLD_LANES` in slicing.jl): 4096 fixed lanes,
+    # lane t folding elements t, t+4096, … in order, lanes folded serially —
+    # coalesced for the CUDA kernels, one cache-resident accumulator pass for
+    # the CPU, and measured FASTER on CUDA than the broadcast reductions it
+    # replaced (5.71 -> 4.36 ms at 2.56M/15 slices: the n-sized ifelse
+    # temporaries are gone). min/max/count are order-independent and exact
+    # under any shape, so each backend keeps its native reduction for those.
+    #
+    # The equalities below are ==, not isapprox: bit-identity is the property.
+
+    # The lane fold degenerates to the plain left-to-right serial sum for
+    # n <= 4096, so small CPU cases keep their pre-change values exactly.
+    let z = collect(range(-0.7, 1.3; length=1000)) .^ 3
+        @test Octopus._lane_z_moment(z, nothing, 0.0, Val(1)) == foldl(+, z)
+        idx = collect(1:2:999)
+        @test Octopus._lane_indexed_sum(z, idx) == foldl(+, z[idx])
+    end
+
+    if CUDA_TESTS_ACTIVE
+        CuA = Octopus.CUDA.CuArray
+        # Unit level, including the masked (dead-particle) path: the stats
+        # NamedTuples must agree field for field, bitwise.
+        let n = 30_000
+            set_global_rng!(seed=29, method=:philox)
+            z = randn(n) .* 7.0e-3
+            flags = collect(rand(n) .> 0.05)   # Vector{Bool}: _flag_live's type
+            for (fh, fd) in ((nothing, nothing), (flags, CuA(flags)))
+                sc = Octopus._live_z_stats(z, fh)
+                sg = Octopus._cuda_live_z_stats(CuA(z), fd)
+                @test sc.n_live == sg.n_live
+                @test sc.zmin == sg.zmin && sc.zmax == sg.zmax
+                @test sc.mean == sg.mean
+                @test sc.sigma == sg.sigma
+            end
+        end
+        # Whole-structure equality for every method, Float64 and Float32, on
+        # identical uploaded beams: boundaries, centers, weights bitwise.
+        for T in (Float64, Float32)
+            set_global_rng!(seed=4242, method=:philox)
+            e = Beam(50_000, Octopus.CPUThreadsBackend, T; beta=(0.55, 0.056, 12.7),
+                alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+                r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            eg = Octopus._strong_strong_contract_beam(e, Octopus.CUDABackend)
+            for method in (:normal_quantile, :equal_area, :equal_width,
+                           :equal_count, :specified)
+                sl = method == :specified ?
+                    LongitudinalSlicing(nslices=4, method=method,
+                                        positions=[-0.8, 0.0, 0.9]) :
+                    LongitudinalSlicing(nslices=5, method=method)
+                slc = longitudinal_slices(e.rep, sl)
+                slg = Octopus._cuda_longitudinal_slices(eg.rep, sl)
+                @test slc.boundary == slg.boundary
+                @test slc.center == slg.center
+                @test slc.weight == slg.weight
+                @test all(sort(slc.indices[k]) == sort(Array(slg.indices[k]))
+                          for k in eachindex(slc.indices))
+            end
+        end
+        # End to end, the payoff this and U3-4 bought together: a Float32
+        # collision produces BIT-IDENTICAL kicked coordinates on both
+        # backends and both CUDA routes — every particle, ==, where the two
+        # fixes started from 6.4e-8 relative disagreement. The luminosity is
+        # at Float64 rounding on the wavefront route; the sequential route
+        # carries a documented ~1e-9 envelope from the transverse-moment
+        # folds, whose shapes are still per-backend (the todo row records
+        # this as the residual; the kicks are insensitive to it because the
+        # Float64 moment differences vanish in the Float32 coordinate
+        # rounding).
+        mk32(rng_id, charge, mc2, E0, betas, sigmas, npart) = begin
+            Beam(20_000, Octopus.CPUThreadsBackend, Float32; beta=betas,
+                alpha=(0.0, 0.0, 0.0), sigma=sigmas, cutoff=5.0, rng_id=rng_id,
+                charge=charge, mc2=mc2, E0=E0,
+                r0=RE * ME0 / mc2, npart=npart)
+        end
+        basepair() = begin
+            set_global_rng!(seed=4242, method=:philox)
+            (mk32(1, -1.0, EMASS_EV, 10.0e9, (0.55, 0.056, 12.7),
+                  (106.0e-6, 9.5e-6, 7.0e-3), 1.7e11),
+             mk32(2, 1.0, PMASS_EV, 275.0e9, (0.8, 0.072, 90.9),
+                  (95.0e-6, 8.5e-6, 6.0e-2), 0.7e11))
+        end
+        for (kw, lum_tol) in (((batch_mode=:sequential,), 1.0e-8), (NamedTuple(), 1.0e-14))
+            s = GaussianPoissonSolver(; slicing=LongitudinalSlicing(
+                nslices=3, method=:normal_quantile), kw...)
+            e1, p1 = basepair()
+            e2, p2 = basepair()
+            eg = Octopus._strong_strong_contract_beam(e2, Octopus.CUDABackend)
+            pg = Octopus._strong_strong_contract_beam(p2, Octopus.CUDABackend)
+            lc = collide!(s, e1, p1, Octopus.CPUThreadsBackend)
+            lg = collide!(s, eg, pg, Octopus.CUDABackend)
+            Octopus.CUDA.synchronize()
+            @test Array(eg.rep.px) == e1.rep.px
+            @test Array(eg.rep.py) == e1.rep.py
+            @test Array(pg.rep.px) == p1.rep.px
+            @test abs(Float64(lc) - Float64(lg)) <= lum_tol * abs(Float64(lc))
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end

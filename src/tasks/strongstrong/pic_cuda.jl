@@ -5518,13 +5518,79 @@ if _HAS_CUDA
         _cuda_live_count(::Nothing, n::Integer) = Int(n)
         _cuda_live_count(flags, n::Integer) = Int(sum(flags))
 
+        # Device twins of the canonical lane fold (`_SLICE_FOLD_LANES`,
+        # slicing.jl, U6-7): lane t folds elements t, t+L, t+2L, … in order.
+        # The stride is the CONSTANT lane count, never the launch geometry, so
+        # the summation order cannot depend on how the kernel is launched —
+        # the same rule `_cuda_gaussian_moment_launch` fixes its geometry for.
+        function _cuda_lane_z_moment_kernel!(lane_sums, z, flags, μ,
+                                             ::Val{POW}) where {POW}
+            L = _SLICE_FOLD_LANES
+            t = Int((CUDA.blockIdx().x - Int32(1)) * CUDA.blockDim().x + CUDA.threadIdx().x)
+            t > L && return nothing
+            T = eltype(lane_sums)
+            acc = zero(T)
+            i = t
+            n = length(z)
+            while i <= n
+                live = flags === nothing || @inbounds flags[i]
+                if live
+                    @inbounds zi = z[i]
+                    acc += POW == 2 ? (zi - μ) * (zi - μ) : zi
+                end
+                i += L
+            end
+            @inbounds lane_sums[t] = acc
+            return nothing
+        end
+
+        function _cuda_lane_indexed_sum_kernel!(lane_sums, z, idx)
+            L = _SLICE_FOLD_LANES
+            t = Int((CUDA.blockIdx().x - Int32(1)) * CUDA.blockDim().x + CUDA.threadIdx().x)
+            t > L && return nothing
+            T = eltype(lane_sums)
+            acc = zero(T)
+            k = t
+            n = length(idx)
+            while k <= n
+                @inbounds acc += z[idx[k]]
+                k += L
+            end
+            @inbounds lane_sums[t] = acc
+            return nothing
+        end
+
+        # The lane fold, exactly as the CPU folds its lanes: serial, 1..L.
+        function _cuda_lane_fold(lane_sums)
+            host = Array(lane_sums)
+            s = zero(eltype(host))
+            @inbounds for t in eachindex(host)
+                s += host[t]
+            end
+            return s
+        end
+
+        function _cuda_lane_launch()
+            threads = _cuda_pic_threads(:gather_scatter)
+            return (threads=threads, blocks=cld(_SLICE_FOLD_LANES, threads))
+        end
+
         """Longitudinal extrema, mean, sigma and live count, reduced on device."""
         function _cuda_live_z_stats(z, flags)
             T = eltype(z)
+            # min/max/count are order-independent and exact under any
+            # reduction shape; only the mean and sigma folds must take the
+            # canonical lane shape to be bit-identical with the CPU (U6-7).
+            lane_sums = CUDA.CuArray{T}(undef, _SLICE_FOLD_LANES)
+            launch = _cuda_lane_launch()
             if flags === nothing
                 n = length(z)
-                μ = T(sum(z) / n)
-                σ = sqrt(max(T(sum((z .- μ) .* (z .- μ)) / n), zero(T)))
+                CUDA.@cuda threads=launch.threads blocks=launch.blocks _cuda_lane_z_moment_kernel!(
+                    lane_sums, z, nothing, zero(T), Val(1))
+                μ = T(_cuda_lane_fold(lane_sums) / n)
+                CUDA.@cuda threads=launch.threads blocks=launch.blocks _cuda_lane_z_moment_kernel!(
+                    lane_sums, z, nothing, μ, Val(2))
+                σ = sqrt(max(T(_cuda_lane_fold(lane_sums) / n), zero(T)))
                 return (n_live=n, zmin=T(minimum(z)), zmax=T(maximum(z)),
                         mean=μ, sigma=σ)
             end
@@ -5533,9 +5599,12 @@ if _HAS_CUDA
                                    mean=T(NaN), sigma=T(NaN))
             zmin = T(minimum(ifelse.(flags, z, T(Inf))))
             zmax = T(maximum(ifelse.(flags, z, T(-Inf))))
-            μ = T(sum(ifelse.(flags, z, zero(T))) / n_live)
-            d = ifelse.(flags, z .- μ, zero(T))
-            σ = sqrt(max(T(sum(d .* d) / n_live), zero(T)))
+            CUDA.@cuda threads=launch.threads blocks=launch.blocks _cuda_lane_z_moment_kernel!(
+                lane_sums, z, flags, zero(T), Val(1))
+            μ = T(_cuda_lane_fold(lane_sums) / n_live)
+            CUDA.@cuda threads=launch.threads blocks=launch.blocks _cuda_lane_z_moment_kernel!(
+                lane_sums, z, flags, μ, Val(2))
+            σ = sqrt(max(T(_cuda_lane_fold(lane_sums) / n_live), zero(T)))
             return (n_live=n_live, zmin=zmin, zmax=zmax, mean=μ, sigma=σ)
         end
 
@@ -5781,8 +5850,10 @@ if _HAS_CUDA
                 indices[s] = CUDA.CuArray{Int}(hidx)
                 weights[s] = T(count) / total
                 if slicing.center_position == :centroid
+                    # The CPU's own lane fold on the host copy (U6-7): same
+                    # function, same rank-ordered member list, identical bits.
                     centers[s] = count == 0 ? (lb + rb) / 2 :
-                        T(sum(@view(z_host[hidx])) / count)
+                        T(_lane_indexed_sum(z_host, hidx) / count)
                 elseif slicing.center_position == :midpoint
                     centers[s] = (lb + rb) / 2
                 else
@@ -5820,6 +5891,8 @@ if _HAS_CUDA
             centers = Vector{T}(undef, ns)
             weights = Vector{T}(undef, ns)
             indices = Vector{Any}(undef, ns)
+            lane_sums = CUDA.CuArray{T}(undef, _SLICE_FOLD_LANES)
+            launch = _cuda_lane_launch()
             for s in 1:ns
                 lb = boundaries[s]
                 rb = boundaries[s + 1]
@@ -5831,7 +5904,17 @@ if _HAS_CUDA
                 indices[s] = idx
                 weights[s] = T(count) / total
                 if slicing.center_position == :centroid
-                    centers[s] = count == 0 ? (lb + rb) / 2 : T(sum(ifelse.(mask, z, zero(T))) / count)
+                    # Canonical lane fold over the member list (U6-7): the CPU
+                    # `_finish_longitudinal_slices` folds the same ascending
+                    # index list the same way, so the centroid is bit-identical
+                    # rather than a different-shaped masked reduction.
+                    if count == 0
+                        centers[s] = (lb + rb) / 2
+                    else
+                        CUDA.@cuda threads=launch.threads blocks=launch.blocks _cuda_lane_indexed_sum_kernel!(
+                            lane_sums, z, idx)
+                        centers[s] = T(_cuda_lane_fold(lane_sums) / count)
+                    end
                 elseif slicing.center_position == :midpoint
                     centers[s] = (lb + rb) / 2
                 else
