@@ -317,6 +317,30 @@ function _declared_knob_type_locked(path::Symbol, T::Union{Nothing,Type})
     return entry === nothing ? Float64 : entry.type
 end
 
+# Does declaring `path` need to bump the global epoch?
+#
+# The epoch is the recompilation gate: `Tasks.jl` and the strong-strong executor
+# rebuild their runtime lines whenever it moves, so a bump costs a full
+# `compile_runtime` over every element of every knob-dependent task. Declaring a
+# knob name that is NOT already in the table cannot invalidate anything, because
+# nothing can reference it yet: `_validate_refs_locked` enforces
+# declaration-before-use, so no live `AbstractKnobExpression` names it and no
+# compiled runtime depends on it.
+#
+# The load-bearing half of that argument is DELETION. A stale expression built
+# before `_forget_knob!` or `reset_knobs!` still holds the name, so re-declaring
+# it makes that expression resolvable again with a different value -- but both
+# removal paths bump the epoch themselves, so any task compiled before the
+# deletion is already past its gate and recompiles on its next execute either
+# way. Skipping the bump here therefore never leaves a task reading a value the
+# registry no longer holds. If a future removal path stops bumping, this
+# reasoning breaks and the skip must come back out.
+#
+# Measured on a 50-element knob-driven line, 20 executes with one unrelated
+# brand-new knob declared before each: 36.7 ms -> 10.6 ms, against a 10.5 ms
+# floor with no declarations at all (2026-08-05_b audit, U13-7).
+@inline _knob_declaration_bumps_epoch(entry) = entry !== nothing
+
 function _install_dependent_locked!(path::Symbol, T::Type, node::AbstractKnobExpression)
     T <: Real || throw(ArgumentError(
         "knob $(path) is declared ::$(T); expression-defined knobs must have a " *
@@ -327,6 +351,7 @@ function _install_dependent_locked!(path::Symbol, T::Type, node::AbstractKnobExp
     path in _knob_closure_locked(deps) && throw(ArgumentError(
         "defining knob $(path) with this expression would create a dependency cycle"))
     entry = get(_KNOB_TABLE, path, nothing)
+    bump = _knob_declaration_bumps_epoch(entry)
     if entry === nothing
         entry = _KnobEntry(path, T, nothing, nothing, Set{Symbol}())
         _KNOB_TABLE[path] = entry
@@ -340,7 +365,7 @@ function _install_dependent_locked!(path::Symbol, T::Type, node::AbstractKnobExp
         push!(_KNOB_TABLE[d].dependents, path)
     end
     _invalidate_dependents_locked!(path)
-    _KNOB_EPOCH[] += 1
+    bump && (_KNOB_EPOCH[] += 1)
     return KnobRef(path)
 end
 
@@ -348,6 +373,7 @@ function _install_independent_locked!(path::Symbol, T::Type, value)
     _check_namespace_collision_locked(path)
     value = _convert_knob_value(path, T, value)
     entry = get(_KNOB_TABLE, path, nothing)
+    bump = _knob_declaration_bumps_epoch(entry)
     if entry === nothing
         entry = _KnobEntry(path, T, nothing, value, Set{Symbol}())
         _KNOB_TABLE[path] = entry
@@ -358,7 +384,7 @@ function _install_independent_locked!(path::Symbol, T::Type, value)
         entry.value = value
     end
     _invalidate_dependents_locked!(path)
-    _KNOB_EPOCH[] += 1
+    bump && (_KNOB_EPOCH[] += 1)
     return KnobRef(path)
 end
 
@@ -397,7 +423,7 @@ function _knob_define!(path::Symbol, T::Union{Nothing,Type}, rhs, rhs_thunk)
             if entry === nothing
                 _check_namespace_collision_locked(path)
                 _KNOB_TABLE[path] = _KnobEntry(path, Tdecl, nothing, nothing, Set{Symbol}())
-                _KNOB_EPOCH[] += 1
+                # No bump: see `_knob_declaration_bumps_epoch` (U13-7).
             elseif entry.type !== Tdecl
                 # `@knob p::T` on an existing independent knob is a value
                 # mutation even though it looks like a pure annotation: the
@@ -981,8 +1007,26 @@ end
 # compile_runtime integration
 # ---------------------------------------------------------------------------
 
-_param_has_knob(v) = v isa AbstractKnobExpression ||
-    (v isa Tuple && any(x -> x isa AbstractKnobExpression, v))
+# The detector and the resolver MUST have the same reach.
+#
+# `_param_has_knob` used to test one level only (`v isa Tuple && any(x -> x isa
+# AbstractKnobExpression, v)`) while `_resolve_knob_param(v::Tuple)` was already
+# fully recursive. The detector, not the resolver, is the binding constraint --
+# `resolve_knobs` returns the spec unchanged when the detector says no -- so a
+# knob expression inside a NESTED tuple or a vector-valued parameter was
+# invisible: the raw expression object reached the runtime constructor, and the
+# epoch gate in `Tasks.jl` treated the task as knob-free, so a later `set_knob!`
+# never reached it. `docs/knob_control.md` listed "no array-valued knobs" as a
+# limitation, but the limitation was enforced by nothing -- it degraded
+# silently, which is the one outcome this repository does not accept
+# (2026-08-05_b audit, U13-9).
+#
+# Both sides now recurse over the same container shapes, so the property to hold
+# on to is `_param_has_knob(v) == (_resolve_knob_param(v) !== v)` for every
+# shape either one understands. Anything else (a Dict, a struct) is still opaque
+# to both, consistently.
+_param_has_knob(v) = v isa AbstractKnobExpression
+_param_has_knob(v::Union{Tuple,NamedTuple,AbstractArray}) = any(_param_has_knob, v)
 
 """True when a line/spec/container holds any knob-expression parameter."""
 _has_knob_parameters(x) = false
@@ -992,7 +1036,12 @@ _has_knob_parameters(spec::ElementSpec) = any(_param_has_knob, values(params(spe
 
 _resolve_knob_param(v) = v
 _resolve_knob_param(v::AbstractKnobExpression) = knob_value(v)
-_resolve_knob_param(v::Tuple) = map(_resolve_knob_param, v)
+_resolve_knob_param(v::Union{Tuple,NamedTuple}) = map(_resolve_knob_param, v)
+# Guarded, unlike the tuple method: mapping a knob-free array would copy it on
+# every `resolve_knobs`, and `resolve_knobs` walks EVERY parameter of a spec
+# once any one of them holds a knob.
+_resolve_knob_param(v::AbstractArray) =
+    _param_has_knob(v) ? map(_resolve_knob_param, v) : v
 
 """
     resolve_knobs(spec)

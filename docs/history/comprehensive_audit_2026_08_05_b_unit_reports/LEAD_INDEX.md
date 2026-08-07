@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **250 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **255 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -155,9 +155,9 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U13-7 | low |  | `src/knobs/Knobs.jl:390-393` | Declaring a brand-new knob bumps the global epoch, so every |
 | U13-8 | low | CONFIRMED, FIXED (2026-08-06) — finite negated literals fold; all 13 round-trip controls still pass | `src/knobs/Knobs.jl:196-202, 913-916` | `@knob_expr(-(5.0))` prints as `"-5.0"`, which reparses as the *literal* |
 | U13-9 | low |  | `src/knobs/Knobs.jl:957-968 (out of hypothesis)` | A knob expression inside a **nested** tuple or a **vector**-valued spec |
-| U14-4 | low |  | `src/track/longitudinal.jl:133-148, and the "4.4e-16" pin in docs/theor` | `_delta_from_pt` and `_pt_from_delta` are written in their cancelling forms, so |
-| U14-5 | low |  | `src/beam/Beam.jl:445-455 vs 457-474` | the U15-7 directed refusal for non-`AbstractFloat` coordinate types was added to |
-| U14-6 | low |  | `src/track/longitudinal.jl:100-103 (`reference_beta` docstring)` | the docstring's stated *reason* for choosing `√((γ-1)(γ+1))/γ` is measurably |
+| U14-4 | low | FIXED (both conversions rewritten cancellation-free; 8.9e-5 -> 2.2e-16 relative forward, round trip 1.0 -> 3.2e-16) | `src/track/longitudinal.jl:133-148, and the "4.4e-16" pin in docs/theor` | `_delta_from_pt` and `_pt_from_delta` are written in their cancelling forms, so |
+| U14-5 | low | FIXED (refusal moved to a helper called from both random-Beam entry points) | `src/beam/Beam.jl:445-455 vs 457-474` | the U15-7 directed refusal for non-`AbstractFloat` coordinate types was added to |
+| U14-6 | low | FIXED (docstring justification was backwards; re-measured table added. Lead moderate-gamma "code worse" claim NOT reproduced) | `src/track/longitudinal.jl:100-103 (`reference_beta` docstring)` | the docstring's stated *reason* for choosing `√((γ-1)(γ+1))/γ` is measurably |
 | U14-7 | low | CONFIRMED, not fixed — needs a decision on the deprecated entry point; on todo.md (2026-08-06) | `src/track/radiation_track.jl:33-65` | `cuda_track_lumped_rad_kernel!` is the only GPU radiation path that does **not** |
 | U14-8 | low | ALREADY FIXED by 7503de4 (audit F5) — the CUDA policy path carries the refusal at phase6d_track.jl:306 and the backend-tag form delegates to it; the lead is stale at HEAD (2026-08-06) | `src/track/phase6d_track.jl:38-48 vs 304-314` | `_reject_contextless_tracking` — the directed refusal that exists so a |
 | U14-9 | low | CONFIRMED, FIXED (2026-08-06) | `src/beam/Beam.jl:650-691 vs 40-44` | `beam_statistics` on an empty `Phase6DRep` raises Base's generic |
@@ -278,8 +278,8 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U9-3 | low | CONFIRMED, FIXED (2026-08-06) — real(T) thresholds; complex/Dual/BigFloat/Float32 all verified, rejection ratio identical | `src/elements/linear6d.jl:131–188 (`_linear6d_symplectic_error`, `_vali` | the symplecticity validator orders on `T` rather than `real(T)`, so a |
 | U9-4 | low | CONFIRMED, FIXED (2026-08-06) — re-measured independently at 7.106e-15, not 5.9e-15 | `src/elements/lattice_magnets.jl:60–71 (`_curv_vers` crossover comment)` | the comment records "the closed branch holds <= 5.9e-15 for u in [0.125, 0.5]"; |
 | U9-5 | low | CONFIRMED, dispositioned (2026-08-06) — the default is conditional and one ParamMeta field cannot hold both; the field now says which case it shows | `src/elements/solenoid.jl:464 (`nst` ParamMeta)` | the machine-readable `default=1` disagrees with the compile path's actual |
-| U9-6 | low |  | `src/elements/linear_maps.jl:25, 103, 195; src/elements/linear6d.jl:19,` | the default friendly constructors of the four linear-map kinds pin `Float64` |
-| U9-7 | low |  | `src/elements/linear_maps.jl:251–254 — OUT OF HYPOTHESIS (usability)` | `XYCoupling(r1::T, r2::T, r3::T, r4::T) where {T<:Number}` is strict same-type, |
+| U9-6 | low | FIXED (element type inferred over a Float64 floor; zeta/eta/R added to the optics-matrix promotion) | `src/elements/linear_maps.jl:25, 103, 195; src/elements/linear6d.jl:19,` | the default friendly constructors of the four linear-map kinds pin `Float64` |
+| U9-7 | low | FIXED (both convenience forms accept mixed Number types, delegating to the 6-arg promotion) | `src/elements/linear_maps.jl:251–254 — OUT OF HYPOTHESIS (usability)` | `XYCoupling(r1::T, r2::T, r3::T, r4::T) where {T<:Number}` is strict same-type, |
 | U9-8 | low | CONFIRMED, FIXED (2026-08-06) — validated at construction, not in the kernel | `src/elements/linear_maps.jl:263 — OUT OF HYPOTHESIS (error quality / d` | `g = inv(sqrt(1 + r1*r4 - r2*r3))` throws a bare `DomainError` with no element |
 | U14-10 | info | CONFIRMED, FIXED (2026-08-06) | `src/math/SpecialMath.jl:92-97` | `pi = zero(T)` inside `faddeeva_w_upper_reim` shadows `Base.pi` for the rest of the |
 | U14-11 | info/seam |  | `src/math/SpecialMath.jl accuracy → src/track/strong_beam_track.jl:390-` | the Faddeeva real part carries no relative accuracy near the real axis, and its |

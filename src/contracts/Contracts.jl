@@ -1430,10 +1430,20 @@ function _symplecticity_contract_cases()
          element=compile_runtime(SBendSpec(L=1.1, angle=0.05, k1=0.2, e1=0.02,
                                            e2=0.015, nst=2)),
          q0=q0, tolerance=1.0e-8),
+        # beta0 DERIVED from gamma0, not chosen alongside it. This case
+        # carried `beta0=0.99, gamma0=100.0` -- a pair no particle can have,
+        # since gamma0 = 100 means beta0 = 0.99994999... The two conversions it
+        # exercises are mutual inverses only on a consistent pair, so the
+        # fixture was asking the contract to certify a map built on impossible
+        # physics; it passed at 1.5e-10 by accident of how the old cancelling
+        # forms were written. On the consistent pair the same case measures
+        # 1.8e-13 (2026-08-05_b audit, U14-4). `ThinRFCavitySpec` now refuses
+        # an inconsistent pair outright, so this fixture cannot drift back.
         (name=:ThinRFCavity,
          element=compile_runtime(ThinRFCavitySpec(197.0e6; strength=1.0e-4,
-                                                  beta0=0.99, gamma0=100.0)),
-         q0=q0, tolerance=1.0e-8),
+                                                  beta0=sqrt(99.0 * 101.0) / 100.0,
+                                                  gamma0=100.0)),
+         q0=q0, tolerance=1.0e-11),
         (name=:ThinMultipole,
          element=compile_runtime(ThinMultipoleSpec(knl=(0.0, 0.05, 1.2))),
          q0=q0, tolerance=1.0e-11),

@@ -222,9 +222,21 @@ symbolic tool can target.
 
 ## 5. Limitations and future work
 
-- **Scalar-shaped values.** A knob holds one value of its declared type;
-  expressions resolve scalar and tuple-of-scalar element parameters. No units,
-  no array-valued knobs.
+- **Scalar-shaped values.** A knob holds one value of its declared type. No
+  units. A knob *expression* may appear anywhere inside an element parameter
+  that is a scalar, a tuple (at any nesting depth), a named tuple, or an array;
+  the detector and the resolver walk the same shapes, so what is detected is
+  what is resolved. Anything else — a `Dict`, a user struct — is opaque to
+  both, consistently.
+
+  This used to read "no array-valued knobs", but nothing enforced it: the
+  detector tested one level while the resolver was already recursive, so an
+  expression nested inside a tuple or held in a vector was *silently* left
+  unresolved. The raw expression object reached the runtime constructor and the
+  epoch gate treated the task as knob-free, so a later `set_knob!` never
+  reached it. A limitation nothing enforces is not a limitation, it is a
+  silent-wrong-answer path (2026-08-05_b audit, U13-9), so the two sides were
+  made to agree rather than the shapes refused.
 - **Next-`execute!` granularity.** Knob changes land when the line is next
   compiled, not mid-execution; per-turn knob ramps inside one `execute!` call
   would need the epoch check moved into the turn loop (and per-turn

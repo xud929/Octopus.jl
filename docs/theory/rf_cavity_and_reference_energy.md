@@ -188,6 +188,20 @@ The identity is the exact physical relation, so using it *repairs* the stored
 `β₀`'s own rounding rather than inheriting it; the rewrite is better than the
 literal form even when the literal form is evaluated exactly.
 
+It also makes an invariant load-bearing that was previously only implied:
+**`β₀` and `γ₀` must be the same particle.** They are two views of one energy,
+related by `β₀² = (γ₀²-1)/γ₀²`, and the two conversions are mutual inverses
+only where that holds — so an inconsistent pair gives a map that is not
+symplectic, with no error raised. Two fixtures in this repository were carrying
+such pairs: the `SymplecticityContract`'s thin-RF-cavity case at
+`β₀ = 0.99, γ₀ = 100.0` (residual 2.0e-2 — γ₀ = 100 means β₀ = 0.99994999…),
+and the conversion round-trip test at a pair hand-typed to ten digits (residual
+-3.8e-8). `ThinRFCavitySpec` — the only place in the repository where a caller
+hands over both by hand — now refuses an inconsistent pair, and
+`reference_pair_residual(β₀, γ₀)` reports the defect. On the corrected fixture
+the cavity measures `‖JᵀSJ - S‖ = 1.8e-13`, against 1.5e-10 for the literal
+forms on the impossible pair they were tuned against.
+
 This settles the sandwich question. The cavity body lives in `TIME_ENERGY` —
 which *is* the $(t, E)$ pair, $z_1 = -c\Delta t$ and $p_t = \Delta E/(P_0c)$ —
 so the body is `pt += strength * sin(k*z1 + phase)` with no $\beta$ factor in

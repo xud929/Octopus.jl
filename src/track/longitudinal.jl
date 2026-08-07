@@ -2,6 +2,7 @@ export LongitudinalConvention, TimeEnergy, SigmaPsigma, PathLengthDelta, TimeDel
        TIME_ENERGY, SIGMA_PSIGMA, PATHLENGTH_DELTA, TIME_DELTA,
        convention_number, tracking_convention,
        reference_gamma, reference_beta, reference_beta_gamma,
+       reference_pair_residual,
        convert_longitudinal, particle_beta
 
 # ---------------------------------------------------------------------------
@@ -134,6 +135,57 @@ end
 Both reference factors at once, which is what every conversion needs.
 """
 reference_beta_gamma(E0, mc2) = (reference_beta(E0, mc2), reference_gamma(E0, mc2))
+
+"""
+    reference_pair_residual(beta0, gamma0)
+
+`1/β₀² - 1/(β₀γ₀)² - 1`, which is **exactly zero** for any physically possible
+reference particle: `β₀` and `γ₀` are two views of one energy, related by
+`β₀² = (γ₀²-1)/γ₀²`, so the quantity is an algebraic identity and not an
+approximation. Nonzero means the pair describes two *different* particles.
+
+This is not decoration. [`_delta_from_pt`](@ref) and [`_pt_from_delta`](@ref)
+use the identity to stay cancellation-free, and they are mutual inverses only
+where it holds — so an inconsistent pair silently produces a map that is not
+symplectic. Measured on the `SymplecticityContract`'s thin-RF-cavity case,
+whose fixture carried `beta0 = 0.99, gamma0 = 100.0` (residual 2.0e-2, a pair
+no particle can have): `‖JᵀSJ - S‖` was 5.0e-3 against a 1.0e-8 tolerance. On
+the *consistent* pair for that γ₀ the same case measures 1.8e-13 — 800× better
+than the pre-rewrite forms managed (2026-08-05_b audit, U14-4).
+
+Evaluated in the well-conditioned `(a-ibg)(a+ibg) - 1` form, so a consistent
+pair returns 0 or one ulp rather than a cancellation artefact.
+"""
+function reference_pair_residual(beta0, gamma0)
+    a = inv(beta0)
+    ibg = _inv_beta_gamma(beta0, gamma0)
+    return (a - ibg) * (a + ibg) - 1
+end
+
+# The refusal, for constructors that take the pair directly. Construction time,
+# never per particle: `_delta_from_pt` runs inside CUDA kernels, where a throw
+# aborts the whole launch (U14-3).
+#
+# 1e-10 rather than a few ulp: a caller who writes beta0 out to ~11 digits is
+# doing something reasonable, and the resulting defect stays below the
+# symplecticity tolerances this repository holds its maps to. Beyond that the
+# map is measurably non-canonical and saying so is worth more than accepting it.
+const _REFERENCE_PAIR_TOLERANCE = 1.0e-10
+
+function _check_reference_pair(beta0, gamma0; source::AbstractString)
+    residual = reference_pair_residual(beta0, gamma0)
+    abs(real(residual)) <= _REFERENCE_PAIR_TOLERANCE || throw(ArgumentError(
+        "$(source): beta0 = $(beta0) and gamma0 = $(gamma0) are not the same " *
+        "reference particle. They must satisfy beta0^2 = (gamma0^2-1)/gamma0^2 " *
+        "exactly; this pair leaves 1/beta0^2 - 1/(beta0*gamma0)^2 - 1 = " *
+        "$(residual), and gamma0 = $(gamma0) implies beta0 = " *
+        "$(sqrt((gamma0 - 1) * (gamma0 + 1)) / gamma0). The longitudinal " *
+        "conversions rely on that identity to stay cancellation-free and are " *
+        "mutual inverses only where it holds, so an inconsistent pair gives a " *
+        "map that is not symplectic. Derive both from the energy with " *
+        "reference_beta_gamma(E0, mc2)."))
+    return nothing
+end
 
 # `1/(β₀γ₀) = mc²/(P₀c)`. Formed once per conversion and passed down, because it
 # is the only place the rest mass enters and because the product is better

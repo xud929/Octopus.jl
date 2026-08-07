@@ -2514,7 +2514,12 @@ end
     # kernel it aborted the whole launch instead of losing one particle. It
     # returns NaN now, which is also better device IR (one fewer throw on a
     # kernel-reachable branch).
-    let b0 = 0.9268998208, g0 = 2.664472           # 2.5 GeV proton
+    # DERIVED, not hand-typed. This block used to read
+    # `b0 = 0.9268998208, g0 = 2.664472`, which is not one particle: the pair
+    # leaves `1/b0^2 - 1/(b0*g0)^2 - 1 = -3.8e-8` where the identity says
+    # exactly zero, so the two conversions below stop being mutual inverses
+    # (2026-08-05_b audit, U14-4).
+    let (b0, g0) = reference_beta_gamma(2.5e9, PMASS_EV)   # 2.5 GeV proton
         threshold = -inv(b0) + inv(b0 * g0)
         @test isnan(Octopus._delta_from_pt(threshold - 1.0e-4, b0, g0))
         @test isnan(Octopus._delta_from_pt(-1.0, b0, g0))
@@ -2561,6 +2566,31 @@ end
                 @test abs(got - ref) <= 1.0e-11 * abs(ref)  # was 8.9e-5 at 1e-12
             end
         end
+        # An inconsistent (beta0, gamma0) pair is REFUSED at construction, not
+        # silently reinterpreted. beta0 and gamma0 are two views of one
+        # reference energy; supplied separately they can disagree, and the
+        # cancellation-free conversions are mutual inverses only where the
+        # identity holds -- so an inconsistent pair yields a map that is not
+        # symplectic. This is not hypothetical: the SymplecticityContract's own
+        # thin-RF-cavity fixture carried `beta0=0.99, gamma0=100.0` (residual
+        # 2.0e-2, no particle at all) and the round-trip block above carried a
+        # pair hand-typed to 10 digits (residual -3.8e-8).
+        @test reference_pair_residual(reference_beta_gamma(275e9, PMASS_EV)...) == 0
+        for (E0, mc2) in ((275e9, PMASS_EV), (2.5e9, PMASS_EV), (10e9, EMASS_EV))
+            @test abs(reference_pair_residual(reference_beta_gamma(E0, mc2)...)) <= 1.0e-15
+        end
+        @test abs(reference_pair_residual(0.99, 100.0)) > 1.0e-2
+        @test_throws ArgumentError ThinRFCavitySpec(197.0e6; strength = 1.0e-4,
+                                                    beta0 = 0.99, gamma0 = 100.0)
+        @test_throws ArgumentError ThinRFCavitySpec(197.0e6; strength = 1.0e-4,
+                                                    beta0 = 0.9268998208, gamma0 = 2.664472)
+        # The consistent pair still constructs, and its map is symplectic to
+        # 1.8e-13 -- 800x better than the pre-rewrite forms managed on the
+        # inconsistent fixture that used to stand here.
+        @test ThinRFCavitySpec(197.0e6; strength = 1.0e-4,
+                               beta0 = sqrt(99.0 * 101.0) / 100.0,
+                               gamma0 = 100.0) isa ElementSpec{:thin_rf_cavity}
+
         # The rewrite must not put a throw back on a kernel-reachable branch:
         # δ → -1 drives `1/β₀² + (2δ + δ²)` through zero, which is why the
         # radicand is kept in its provably-non-negative `(1+δ)² + 1/(β₀γ₀)²`
