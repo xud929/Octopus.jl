@@ -1130,11 +1130,16 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
     try
         for batch in batches
             nworkers = clamp(max_workers, 1, length(batch))
-            lum_parts = zeros(typeof(luminosity), nworkers)
+            # `lum_parts` indexed by PAIR position, not by chunk — the same
+            # U6-5 treatment the transverse path got: `sum(lum_parts)` then
+            # runs over the batch's pairs in schedule order at any worker
+            # count, so the fold order is a property of the data. The
+            # chunk-indexed version measured exact across 1/2/4 workers only
+            # by luck of the summed values; this makes it structural (U18-2).
+            lum_parts = zeros(typeof(luminosity), length(batch))
             _run_logical_workers(nworkers) do chunk, _
                 ws = grid ? pool[chunk] : nothing
                 lo, hi = _chunk_bounds(length(batch), nworkers, chunk)
-                local_lum = zero(typeof(luminosity))
                 for pos in lo:hi
                     pair = batch[pos]
                     i = pair.i; j = pair.j
@@ -1158,10 +1163,9 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
                     _pic_store_slice!(beam1.rep, idx1, field1)
                     _pic_store_slice!(beam2.rep, idx2, field2)
                     compute_luminosity &&
-                        (local_lum += _spectral_luminosity_pair(
+                        (@inbounds lum_parts[pos] = _spectral_luminosity_pair(
                             solver, vx1, vy1, vx2, vy2, klum, lnx, lny))
                 end
-                lum_parts[chunk] = local_lum
             end
             luminosity += sum(lum_parts)
         end

@@ -4043,11 +4043,12 @@ end
             end
             (lum, map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)))
         end
-        if startswith(label, "spectral")
-            @test isapprox(outs[1][1], outs[2][1]; rtol=8 * eps(Float64))
-        else
-            @test outs[1][1] == outs[2][1]
-        end
+        # The spectral arms carried an 8-ulp envelope for the worker-count-
+        # chunked luminosity folds; the transverse fold is slice-indexed
+        # (U6-5) and the longitudinal pair-batch fold is now pair-indexed
+        # (U18-2 closure), so the fold order is a property of the data on
+        # both paths and equality is the honest pin everywhere.
+        @test outs[1][1] == outs[2][1]
         @test all(a == b for (a, b) in zip(outs[1][2], outs[2][2]))
         @test all(a == b for (a, b) in zip(outs[1][3], outs[2][3]))
     end
