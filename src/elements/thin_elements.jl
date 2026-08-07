@@ -98,6 +98,18 @@ const _THIN_DIP_NAMED = ((:k0l, :k0sl, 0),)
 const _THIN_QUAD_NAMED = ((:k1l, :k1sl, 1),)
 const _THIN_SEXT_NAMED = ((:k2l, :k2sl, 2),)
 
+# Fold-site declarations for the override guard (see the registry in
+# lattice_magnets.jl). The thin kinds fold k0l..k5sl into knl/ksl and were
+# once missing from the hand-maintained table, so `entry.k1l = 999` was the
+# exact written-reported-never-read no-op the guard exists to catch
+# (2026-08-05 audit, U11-3) — declaring them beside their constants is what
+# closed that class.
+for (k, named) in ((:thin_multipole, _THIN_MULTI_NAMED), (:thin_dipole, _THIN_DIP_NAMED),
+                   (:thin_quadrupole, _THIN_QUAD_NAMED), (:thin_sextupole, _THIN_SEXT_NAMED))
+    _FOLDED_NAMED_STRENGTHS[k] = named
+    _FOLDED_TUPLE_KEYS[k] = (:knl, :ksl)
+end
+
 for (kind, ctor, named) in ((:thin_multipole, :ThinMultipoleSpec, :_THIN_MULTI_NAMED),
                             (:thin_dipole, :ThinDipoleSpec, :_THIN_DIP_NAMED),
                             (:thin_quadrupole, :ThinQuadrupoleSpec, :_THIN_QUAD_NAMED),
@@ -105,7 +117,8 @@ for (kind, ctor, named) in ((:thin_multipole, :ThinMultipoleSpec, :_THIN_MULTI_N
     @eval begin
         abstract type $ctor end
         $ctor(; kwargs...) = ElementSpec{$(QuoteNode(kind))}(_spec_params(;
-            _fold_named_strengths($named, kwargs; nkey=:knl, skey=:ksl)...))
+            _fold_named_strengths($named, kwargs; nkey=:knl, skey=:ksl,
+                                  kind=$(QuoteNode(kind)))...))
     end
 end
 

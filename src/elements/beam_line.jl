@@ -119,40 +119,14 @@ function _reject_folded_override(spec, name::Symbol)
     return nothing
 end
 
-const _FOLDED_NAMED_STRENGTHS = Dict{Symbol,Any}(
-    :quadrupole => _QUAD_NAMED,
-    :sextupole => _SEXT_NAMED,
-    :octupole => _OCT_NAMED,
-    :sbend => _BEND_NAMED,
-    :multipole => _MULTIPOLE_NAMED,
-    # The thin kinds fold k0l..k5sl into knl/ksl the same way and were
-    # missing from this table, so `entry.k1l = 999` was the exact
-    # written-reported-never-read no-op the guard exists to catch
-    # (2026-08-05 audit, U11-3).
-    :thin_multipole => _THIN_MULTI_NAMED,
-    :thin_dipole => _THIN_DIP_NAMED,
-    :thin_quadrupole => _THIN_QUAD_NAMED,
-    :thin_sextupole => _THIN_SEXT_NAMED,
-    # The sixth fold site, missed one commit after the thin kinds were added
-    # for the identical reason (2026-08-05_b audit, U15-7). `SolenoidSpec`
-    # folds `_MULTIPOLE_NAMED` too, so `entry.k1 = 999.0` on a solenoid
-    # placement was accepted, reported by `getparam`, and never read --
-    # `compile_runtime(entry).kn` stayed (0.0, 0.5).
-    :solenoid => _MULTIPOLE_NAMED,
-)
-
-# Which tuple pair a kind folds into: thick kinds use kn/ks, thin kinds
-# knl/ksl. The rejection message points at the right one.
-const _FOLDED_TUPLE_KEYS = Dict{Symbol,Tuple{Symbol,Symbol}}(
-    :thin_multipole => (:knl, :ksl), :thin_dipole => (:knl, :ksl),
-    :thin_quadrupole => (:knl, :ksl), :thin_sextupole => (:knl, :ksl),
-    # The solenoid MUST have an entry, not just fall through to the (:kn, :ks)
-    # default: `ks` is the solenoid strength there, so `SolenoidSpec` folds skew
-    # into `:kskew` instead. Without this line the rejection message would tell
-    # the user to write `ks`, i.e. to overwrite the solenoid's defining
-    # parameter (U15-7).
-    :solenoid => (:kn, :kskew),
-)
+# `_FOLDED_NAMED_STRENGTHS` / `_FOLDED_TUPLE_KEYS`, which this guard reads,
+# are declared in lattice_magnets.jl and POPULATED BESIDE EACH FOLD SITE
+# (lattice_magnets.jl, thin_elements.jl, solenoid.jl) rather than hand-listed
+# here: this file's one-place table fell behind twice (U11-3, U15-7), and
+# `_fold_named_strengths` now verifies its caller's kind against the registry
+# at every construction, so an undeclared fold site fails its own
+# @element_spec example at include time instead of silently narrowing this
+# guard (U15-7 closure, 2026-08-07).
 
 """Spec parameters with this placement's overrides applied on top."""
 function _merged_params(entry::LineEntry)

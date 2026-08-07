@@ -4685,6 +4685,44 @@ end
     @test occursin("kn", sol_msg)
     @test !occursin("Assign `ks`", sol_msg)
 
+    # U15-7 closure (2026-08-07): the guard's tables are no longer a
+    # hand-list in beam_line.jl — they fell behind twice (the thin kinds,
+    # then :solenoid one commit later). Each fold site now registers its own
+    # entry beside its constants, and `_fold_named_strengths` verifies its
+    # caller's kind against the registry at EVERY construction, so an
+    # undeclared fold site fails its own @element_spec example at include
+    # time. Injection: removing a declaration (or its tuple keys) fails the
+    # kind's first construction, naming the kind.
+    let saved = pop!(Octopus._FOLDED_NAMED_STRENGTHS, :solenoid)
+        try
+            err = try
+                SolenoidSpec(L=1.0, ks=0.5, k1=0.1)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ArgumentError
+            @test occursin("solenoid", sprint(showerror, err))
+        finally
+            Octopus._FOLDED_NAMED_STRENGTHS[:solenoid] = saved
+        end
+    end
+    let savedk = pop!(Octopus._FOLDED_TUPLE_KEYS, :solenoid)
+        try
+            @test_throws ArgumentError SolenoidSpec(L=1.0, ks=0.5, k1=0.1)
+        finally
+            Octopus._FOLDED_TUPLE_KEYS[:solenoid] = savedk
+        end
+    end
+    @test SolenoidSpec(L=1.0, ks=0.5, k1=0.1) isa ElementSpec   # restored
+    # Coverage pin: exactly the ten folding kinds are declared. A new fold
+    # site fails here (and at its own first construction) until it registers.
+    @test sort(collect(keys(Octopus._FOLDED_NAMED_STRENGTHS))) ==
+          [:multipole, :octupole, :quadrupole, :sbend, :sextupole, :solenoid,
+           :thin_dipole, :thin_multipole, :thin_quadrupole, :thin_sextupole]
+    # An empty fold list is exempt from declaration (nothing is foldable).
+    @test DriftSpec(L=1.0) isa ElementSpec
+
     hidden = BeamLine("CRYO2", ApertureSpec(x_limit=1.0e-3, name="HIDDEN"),
                       DriftSpec(L=0.5); x_offset=1.0e-4)
     @test_logs (:warn, r"outside loss accounting") match_mode = :any TrackingTask(

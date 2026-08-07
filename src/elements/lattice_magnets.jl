@@ -955,6 +955,26 @@ const _BEND_NAMED = ((:k1, :k1s, 1), (:k2, :k2s, 2))
 const _MULTIPOLE_NAMED = ((:k0, :k0s, 0), (:k1, :k1s, 1), (:k2, :k2s, 2),
                           (:k3, :k3s, 3), (:k4, :k4s, 4), (:k5, :k5s, 5))
 
+# Declared fold sites, read by the beam-line override guard
+# (`_reject_folded_override`, beam_line.jl). POPULATED BESIDE EACH FOLD SITE —
+# here, in thin_elements.jl and in solenoid.jl — rather than hand-listed in
+# one distant table: the one-place list fell behind twice (2026-08-05 U11-3:
+# the thin kinds; 2026-08-05_b U15-7: :solenoid one commit later), each miss
+# turning a placement override into a written-reported-never-read no-op.
+# `_fold_named_strengths` verifies its caller's kind against these at every
+# construction, so an undeclared fold site fails its own @element_spec
+# example at include time — the loudest tripwire a registration can have.
+const _FOLDED_NAMED_STRENGTHS = Dict{Symbol,Any}()
+# Which tuple pair a kind folds into (kn/ks unless declared otherwise); the
+# guard's rejection message points at the right one.
+const _FOLDED_TUPLE_KEYS = Dict{Symbol,Tuple{Symbol,Symbol}}()
+
+_FOLDED_NAMED_STRENGTHS[:quadrupole] = _QUAD_NAMED
+_FOLDED_NAMED_STRENGTHS[:sextupole] = _SEXT_NAMED
+_FOLDED_NAMED_STRENGTHS[:octupole] = _OCT_NAMED
+_FOLDED_NAMED_STRENGTHS[:sbend] = _BEND_NAMED
+_FOLDED_NAMED_STRENGTHS[:multipole] = _MULTIPOLE_NAMED
+
 """
 Element type of the folded strength tuples, promoted over **both** spellings
 before either is read.
@@ -977,7 +997,7 @@ end
 
 
 """
-    _fold_named_strengths(named, kwargs)
+    _fold_named_strengths(named, kwargs; nkey, skey, kind)
 
 Fold named strength keywords into the positional `kn`/`ks` tuples that
 `_lattice_magnet` reads.
@@ -986,8 +1006,36 @@ Fold named strength keywords into the positional `kn`/`ks` tuples that
 `K_n` and therefore lands at index `n+1` (Section 4.1 indexing). Setting the
 same order both ways is contradictory rather than merely redundant, so it
 throws instead of letting one spelling silently win.
+
+`kind` is REQUIRED, and is this function's self-declaring tripwire
+(2026-08-05_b audit, U15-7): the beam-line override guard's tables
+(`_FOLDED_NAMED_STRENGTHS` / `_FOLDED_TUPLE_KEYS`, beam_line.jl) were
+hand-maintained against this function's call sites and fell behind twice —
+the thin kinds, then `:solenoid` one commit later — each miss turning a
+per-occurrence override into a written-reported-never-read no-op. Every fold
+site now names its kind and the fold verifies the guard declares it, so an
+undeclared folding kind fails at its FIRST construction, in any test or
+example that builds it, rather than passing silently. The registry's
+example-compiles check constructs every kind, which is what makes this a
+coverage tripwire rather than a hope.
 """
-function _fold_named_strengths(named, kwargs; nkey::Symbol=:kn, skey::Symbol=:ks)
+function _fold_named_strengths(named, kwargs; nkey::Symbol=:kn, skey::Symbol=:ks,
+                               kind::Symbol)
+    if !isempty(named)
+        declared = get(_FOLDED_NAMED_STRENGTHS, kind, nothing)
+        declared === named || throw(ArgumentError(
+            "element kind $(kind) folds named strengths, but the beam-line " *
+            "override guard does not declare it (or declares a different " *
+            "strength list): add :$(kind) => the same named-strength constant " *
+            "to _FOLDED_NAMED_STRENGTHS in beam_line.jl, so placement " *
+            "overrides of its named strengths are rejected instead of " *
+            "silently never read (U15-7)"))
+        declared_keys = get(_FOLDED_TUPLE_KEYS, kind, (:kn, :ks))
+        declared_keys == (nkey, skey) || throw(ArgumentError(
+            "element kind $(kind) folds into ($(nkey), $(skey)) but the " *
+            "override guard's _FOLDED_TUPLE_KEYS says $(declared_keys); " *
+            "align them so the rejection message names the real tuple (U15-7)"))
+    end
     d = Dict{Symbol,Any}(kwargs)
     T = _strength_eltype(named, d, nkey, skey)
     kn = T[T(float(v)) for v in get(d, nkey, ())]
@@ -1025,7 +1073,8 @@ for (kind, ctor, named) in ((:drift, :DriftSpec, :_NO_NAMED),
     @eval begin
         abstract type $ctor end
         $ctor(; kwargs...) = ElementSpec{$(QuoteNode(kind))}(
-            _spec_params(; _fold_named_strengths($named, kwargs)...))
+            _spec_params(; _fold_named_strengths($named, kwargs;
+                                                 kind=$(QuoteNode(kind)))...))
     end
 end
 
@@ -1102,7 +1151,7 @@ end
 # bend angle. Giving h and b0 directly stays available for the case they differ
 # (a bend off its design orbit), but giving both spellings is contradictory.
 function SBendSpec(; kwargs...)
-    d = _fold_named_strengths(_BEND_NAMED, kwargs)
+    d = _fold_named_strengths(_BEND_NAMED, kwargs; kind=:sbend)
     if haskey(d, :angle)
         (haskey(d, :h) || haskey(d, :b0)) && throw(ArgumentError(
             "angle and h/b0 both set the bend geometry; give one or the other"))

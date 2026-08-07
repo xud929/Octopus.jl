@@ -431,9 +431,21 @@ abstract type SolenoidSpec end
 # collision is real and one of the two spellings had to move; the solenoid's
 # defining parameter keeps the name the rest of the world uses for it, and the
 # skew tuple is the one users almost always reach through `k1s`/`k2s` anyway.
+# Fold-site declaration for the override guard (registry in
+# lattice_magnets.jl). The solenoid was the SIXTH fold site, missed one
+# commit after the thin kinds were added for the identical reason
+# (2026-08-05_b audit, U15-7): `entry.k1 = 999.0` on a solenoid placement was
+# accepted, reported by `getparam`, and never read. The tuple-keys entry MUST
+# exist too, not fall through to the (:kn, :ks) default: `ks` is the solenoid
+# strength itself, so skew folds into `:kskew`, and the default advice would
+# have told the user to overwrite the solenoid's defining parameter.
+_FOLDED_NAMED_STRENGTHS[:solenoid] = _MULTIPOLE_NAMED
+_FOLDED_TUPLE_KEYS[:solenoid] = (:kn, :kskew)
+
 SolenoidSpec(; kwargs...) = ElementSpec{:solenoid}(
     _spec_params(; _fold_named_strengths(_MULTIPOLE_NAMED, kwargs;
-                                         nkey=:kn, skey=:kskew)...))
+                                         nkey=:kn, skey=:kskew,
+                                         kind=:solenoid)...))
 
 function Solenoid(spec::ElementSpec,
                   method::AbstractTrackingMethod=Symplectic6DMap())
