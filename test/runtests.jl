@@ -4307,6 +4307,13 @@ end
     # This scans the source for the pattern instead, so it sees what the
     # export-based check cannot. A docstring's explanation belongs INSIDE the
     # docstring; a comment between the two is the bug.
+    #
+    # Only the COMMENT shape is scanned, deliberately. The sibling mistake --
+    # a docstring immediately followed by another docstring, so the first
+    # documents the second -- is a hard precompile error ("cannot document the
+    # following expression"), so Julia catches it before this file can run, and
+    # a check here for it could never fire. Tried and reverted (2026-08-05_b
+    # audit, U4-13); the silent shape is the one that needs a scan.
     detached = String[]
     for (root, _, files) in walkdir(joinpath(pkgdir(Octopus), "src")), f in files
         endswith(f, ".jl") || continue

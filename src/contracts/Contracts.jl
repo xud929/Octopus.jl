@@ -178,9 +178,37 @@ Run a validation contract against the supplied objects. Concrete contracts shoul
 extend this method and return `ContractResult`.
 """
 function validate(contract::AbstractContract, args...; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
     return ContractResult(false,
         "No validation implementation registered for $(nameof(typeof(contract))).")
 end
+
+"""
+    _reject_unknown_validate_kwargs(contract, kwargs)
+
+Refuse keyword arguments no `validate` method reads.
+
+Every `validate` signature is `(contract; kwargs...)` and no body has ever read
+`kwargs`, so a misspelled or invented keyword was silently accepted and dropped
+-- `validate(SymplecticityContract(); tolerance=1e-30, this_kwarg_does_not_exist=42)`
+returned a result byte-identical to the no-keyword call (2026-08-05_b audit,
+U4-13). That is the unknown-keyword family, inside the file whose job is to catch
+it, and the contracts themselves assert the opposite for everyone else:
+`PublicConfigurationEffectivenessContract` FAILS if `Beam` silently ignores an
+unknown keyword. Contract structs are `Base.@kwdef` and already `MethodError`;
+only this entry point was permissive.
+
+Tuning belongs in the contract's own fields, which is why nothing reads kwargs.
+"""
+function _reject_unknown_validate_kwargs(contract, kwargs)
+    isempty(kwargs) && return nothing
+    names = join(sort!(collect(String.(keys(kwargs)))), ", ")
+    throw(ArgumentError(
+        "validate($(nameof(typeof(contract)))) does not accept keyword arguments; " *
+        "got $(names). Contract settings are fields: construct the contract with " *
+        "them, e.g. $(nameof(typeof(contract)))(; ...)."))
+end
+
 
 description(::Type{ElementTrackingBackendConsistencyContract}) =
     "Checks coordinate consistency for the same tracking line across two execution backends."
@@ -198,6 +226,7 @@ description(::Type{KnobEffectivenessContract}) =
     "Checks that knob expressions reach compiled runtime elements and that knob changes recompile them."
 
 function validate(contract::KnobEffectivenessContract; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
     metrics = Dict{Symbol,Any}()
     contract_paths = (
         Symbol("__knob_contract__.current"), Symbol("__knob_contract__.transfer"),
@@ -308,6 +337,7 @@ function validate(contract::KnobEffectivenessContract; kwargs...)
 end
 
 function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
     metrics = Dict{Symbol,Any}()
     try
         validate_configuration_metadata()
@@ -350,8 +380,26 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     end
     metrics[:cpu_workers_tested] = worker_sweep
     metrics[:cpu_worker_receipts] = cpu_receipt_counts
-    metrics[:cpu_worker_coordinate_max_abs_error] = cpu_coordinate_error
-    metrics[:cpu_worker_effective] = true
+    # The INVARIANCE comparison needs two worker counts to compare. On a
+    # single-threaded Julia the sweep collapses to [1], the comparison branch
+    # never runs, `cpu_coordinate_error` keeps its 0.0 initialiser -- and this
+    # used to publish `max_abs_error = 0.0` and `effective = true` regardless,
+    # i.e. a measurement that was never taken, reported as passed
+    # (2026-08-05_b audit, U4-10). Measured at `-t1`: `status = passed`,
+    # `cpu_workers_tested = [1]`, error 0.0, effective true. `validate` is
+    # public API, and the CI gate's --threads=4 is what kept the suite honest,
+    # not the contract.
+    if length(worker_sweep) >= 2
+        metrics[:cpu_worker_coordinate_max_abs_error] = cpu_coordinate_error
+        metrics[:cpu_worker_effective] = true
+    else
+        metrics[:cpu_worker_coordinate_max_abs_error] = :not_measured
+        metrics[:cpu_worker_effective] = :not_measured
+        metrics[:cpu_worker_invariance_note] =
+            "only one logical-worker count is available on this Julia " *
+            "(--threads=$(Threads.nthreads(:default))); worker-invariance was " *
+            "not compared. Run with at least two threads to measure it."
+    end
 
     invalid_rejected = try
         CPUThreadsExecutionPolicy(threads=Threads.nthreads(:default) + 1)
@@ -637,6 +685,7 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
 end
 
 function validate(contract::ElementTrackingBackendConsistencyContract; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
     available, reason = _contract_backends_available(contract.backend_a, contract.backend_b)
     if !available
         return ContractResult(:skipped, reason; metrics=Dict(
@@ -681,6 +730,7 @@ function validate(contract::ElementTrackingBackendConsistencyContract; kwargs...
 end
 
 function validate(contract::StrongStrongGaussianBackendConsistencyContract; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
     available, reason = _contract_backends_available(CPUThreadsBackend, CUDABackend)
     if !available
         return ContractResult(:skipped, reason; metrics=Dict(
@@ -777,6 +827,7 @@ function validate(contract::StrongStrongGaussianBackendConsistencyContract; kwar
 end
 
 function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
     available, reason = _contract_backends_available(CPUThreadsBackend, CUDABackend)
     if !available
         return ContractResult(:skipped, reason; metrics=Dict(
@@ -887,14 +938,24 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
             pair_luminosity_rel = pair_trace_expected && pair_keys_match ? maximum(
                 abs(gpu_pair_map[key] - cpu_pair_map[key]) /
                 max(abs(cpu_pair_map[key]), eps(Float64)) for key in keys(cpu_pair_map)
-            ) : pair_trace_expected ? Inf : 0.0
-            pair_luminosity_ok = pair_keys_match &&
-                (!pair_trace_expected || pair_luminosity_rel <= contract.luminosity_rtol)
+            ) : pair_trace_expected ? Inf : :not_applicable
+            pair_luminosity_ok = !pair_trace_expected ? :not_applicable :
+                (pair_keys_match && pair_luminosity_rel <= contract.luminosity_rtol)
 
             cpu_history = _strong_strong_contract_cpu_cache_history(cpu_task)
             gpu_history = _strong_strong_contract_cuda_cache_history(gpu_task)
-            cache_history_ok = cpu_history == gpu_history
-            cache_reuse_ok = contract.green_cache != :slice_pair || cpu_history[1] > 0
+            # `:not_applicable`, not `true`, when there is nothing to compare
+            # (2026-08-05_b audit, U4-9). With `green_cache = :none` neither
+            # side has a cache, so `cpu_history == gpu_history` reduces to
+            # `(0,0,0) == (0,0,0)` and `cache_reuse_ok` short-circuits on the
+            # mode -- and the contract then published
+            # `cache_reuse_observed = true` with zero caches, which is exactly
+            # the misreport AGENTS.md forbids. Same for the pair-luminosity
+            # trace under `batch_mode = :sequential`, where 0 records compared
+            # were reported as a passing 0.0 relative error.
+            cache_compared = contract.green_cache === :slice_pair
+            cache_history_ok = cache_compared ? cpu_history == gpu_history : :not_applicable
+            cache_reuse_ok = cache_compared ? cpu_history[1] > 0 : :not_applicable
 
             metrics = Dict{Symbol,Any}(
                 :backend_a => :CPUThreadsBackend,
@@ -937,8 +998,12 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
                 :cache_reuse_observed => cache_reuse_ok,
                 :cpu_threads => Threads.nthreads(),
             )
-            ok = coordinate_ok && luminosity_ok && pair_luminosity_ok &&
-                 cache_history_ok && cache_reuse_ok
+            # `:not_applicable` does not block the verdict, and does not
+            # contribute a passing one either -- it says the question was not
+            # asked (U4-9). Anything that WAS compared must still pass.
+            _decided(v) = v === :not_applicable ? true : v
+            ok = coordinate_ok && luminosity_ok && _decided(pair_luminosity_ok) &&
+                 _decided(cache_history_ok) && _decided(cache_reuse_ok)
             message = ok ?
                 "Strong-strong PIC CPU and CUDA results agree within tolerance." :
                 "Strong-strong PIC CPU and CUDA results disagree or cache histories diverge."
@@ -1384,6 +1449,7 @@ function _symplecticity_contract_cases()
 end
 
 function validate(contract::SymplecticityContract; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
     metrics = Dict{Symbol,Any}()
     S = _symplectic_form6()
     worst_ratio = 0.0
@@ -1537,6 +1603,7 @@ function _wsl_weakstrong_reference!(source, probe, solver)
 end
 
 function validate(contract::HighEnergyWeakStrongLimitContract; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
     metrics = Dict{Symbol,Any}()
     # The global RNG is contract input, not contract property: save and
     # restore it, as every other RNG-touching contract in this file does
@@ -1740,6 +1807,7 @@ function _coherent_mode_lambdas(contract::CoherentModePhysicsContract, kind::Sym
 end
 
 function validate(contract::CoherentModePhysicsContract; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
     metrics = Dict{Symbol,Any}()
     # Save/restore the global RNG around _coherent_mode_lambdas, which
     # seeds it (2026-08-05 audit, U3-1).
@@ -2000,6 +2068,7 @@ function _ptc_reference_path(contract::PTCConsistencyContract)
 end
 
 function validate(contract::PTCConsistencyContract; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
     path = _ptc_reference_path(contract)
     if path === nothing || !isfile(path)
         return ContractResult(:skipped,
@@ -2321,6 +2390,7 @@ function _perturb_param(key::Symbol, current, pmeta=nothing)
 end
 
 function validate(contract::ElementParameterEffectivenessContract; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
     u = (2.3e-3, 4.1e-4, -1.7e-3, -3.2e-4, 1.5e-3, 9.0e-4)
     ignored = String[]
     broken = String[]
@@ -2821,6 +2891,7 @@ function _cuda_pic_launch_receipts_carry(receipts, configurations)
 end
 
 function validate(contract::SolverOptionEffectivenessContract; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
     # Solver enumeration guard (2026-08-05 audit, U3-4's sibling): every
     # concrete Poisson solver must carry a probe entry, or a NEW solver is
     # silently outside the sweep — the staleness mode the contract otherwise
