@@ -1,5 +1,3 @@
-using LinearAlgebra
-
 #=
 Weak-strong tracking example: a live weak proton beam colliding with a fixed
 soft-Gaussian strong beam, through a crab crossing.
@@ -62,6 +60,12 @@ input = (
     optics = (
         crab_beta_x = 1300.0,
         crab_beta_y = 100.0,
+        # HALF the full crossing angle, which is what LorentzBoostSpec takes and
+        # what the crab strength tan(theta)/sqrt(beta_cc*beta*) below assumes.
+        # Named `half_crossing_angle` in knob_control.jl, Knobs.jl and
+        # validation/crossing_luminosity_anchor.jl -- same quantity, and the
+        # factor of two is the classic beam-beam error (2026-08-05_b audit,
+        # U16-10).
         crossing_angle = 12.5e-3,
         tune = (0.228, 0.210, -0.01),
         chromaticity = (2.0, 2.0),

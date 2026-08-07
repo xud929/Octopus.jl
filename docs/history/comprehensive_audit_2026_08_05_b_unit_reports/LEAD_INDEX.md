@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **236 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **238 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -162,7 +162,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U14-8 | low | ALREADY FIXED by 7503de4 (audit F5) — the CUDA policy path carries the refusal at phase6d_track.jl:306 and the backend-tag form delegates to it; the lead is stale at HEAD (2026-08-06) | `src/track/phase6d_track.jl:38-48 vs 304-314` | `_reject_contextless_tracking` — the directed refusal that exists so a |
 | U14-9 | low | CONFIRMED, FIXED (2026-08-06) | `src/beam/Beam.jl:650-691 vs 40-44` | `beam_statistics` on an empty `Phase6DRep` raises Base's generic |
 | U16-1 | low | FIXED | `docs/theory/rf_cavity_and_reference_energy.md:160,163 (also docs/todo.` | ** The F16 correction block sends a future fixer to the wrong section — |
-| U16-10 | low |  | `examples/weak_strong_tracking.jl:65, examples/strong_strong_tracking.j` | ** The same physical quantity, 12.5e-3 rad, is the **half** crossing |
+| U16-10 | low | CONFIRMED, FIXED (2026-08-06) — both ParamMeta and both examples now state HALF and cross-reference the other name | `examples/weak_strong_tracking.jl:65, examples/strong_strong_tracking.j` | ** The same physical quantity, 12.5e-3 rad, is the **half** crossing |
 | U16-3 | low |  | `src/elements/rf_cavity.jl:251 (`construction_help`)` | ** The velocity-slip model boundary is documented on the human docstring |
 | U16-6 | low | FIXED | `src/elements/patch.jl:155 and :208` | ** The `PatchSpec` docstring's first worked example and the kind's |
 | U16-7 | low | VERIFIED, not fixed — see note | `examples/weak_strong_tracking.jl:40 and :106` | ** `input.total_turns = 1_000_000` is **never read** — the file's |
@@ -289,7 +289,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U15-13 | minor |  | `src/elements/aperture.jl:38-41 (LossRecord docstring claim)` | `LossRecord`'s docstring says the private-slot design means "CPU and CUDA |
 | U15-8 | minor | CONFIRMED, FIXED (2026-08-06) — refused rather than honoured, to keep the two walkers in agreement (U15-6) | `src/elements/beam_line.jl:385-389 (`_placement_length(::LineEntry)`)` | an `:L` placement override on a nested own-state line is stored, reported |
 | U15-9 | minor | FIXED | `docs/theory/misalignment_and_patch_maps.md:262-266` | the theory note tells the reader Octopus exposes `misalign_convention` |
-| U16-11 | style |  | `examples/weak_strong_tracking.jl:1` | ** Style only. `using LinearAlgebra` sits on line 1, **above** the |
+| U16-11 | style | CONFIRMED, FIXED (2026-08-06) — stray import removed, header is first; example still runs | `examples/weak_strong_tracking.jl:1` | ** Style only. `using LinearAlgebra` sits on line 1, **above** the |
 | U20-12 | info |  | `test/runtests.jl:7103, 7113 — carry-over of U17-7` | the two `include`s of `validation/symplecticity_validation.jl` and |
 | U22-13 | info |  | `docs/theory/coherent_beam_beam_modes.md:118-120,211-212,167` | The figures the regenerated sections point at predate the data they claim to |
 | U22-14 | info | CONFIRMED, script half FIXED (2026-08-06) — closing summary now names all five TSVs, verified against the writes | `docs/theory/coherent_beam_beam_modes.md:167,177,122-129` | Presentation defects in §3 that make the section hard to read correctly: the |

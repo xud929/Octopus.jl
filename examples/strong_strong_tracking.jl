@@ -54,6 +54,12 @@ input = (
     result_dir = joinpath(@__DIR__, "..", "result"),
     seed = 123456789,
     total_turns = 50000,
+    # HALF the full crossing angle, which is what LorentzBoostSpec takes and
+    # what the crab strength tan(theta)/sqrt(beta_cc*beta*) below assumes.
+    # Named `half_crossing_angle` in knob_control.jl, Knobs.jl and
+    # validation/crossing_luminosity_anchor.jl -- same quantity, and the
+    # factor of two is the classic beam-beam error (2026-08-05_b audit,
+    # U16-10).
     crossing_angle = 12.5e-3,
 
     electron = (
