@@ -196,8 +196,15 @@ function _lower_knob(ex)
             # `-Inf` prints as the negation CALL of the named constant `Inf`
             # (Julia has no negative literal for it); fold that back so
             # `KnobConst(-Inf)` round-trips as itself (2026-08-05 audit, U14-2).
-            if op === :- && length(args) == 1 && args[1] isa KnobConst &&
-               !isfinite((args[1]::KnobConst).value)
+            #
+            # Extended to FINITE negated literals too (2026-08-05_b audit,
+            # U13-8). `KnobCall(:-, [KnobConst(5.0)])` prints as "-5.0", which
+            # Julia's parser reads back as the literal `KnobConst(-5.0)`, so
+            # `knob_expression(string(e)) == e` was false: the value survived
+            # and the tree did not. Folding here makes printing and parsing
+            # agree for every negated literal rather than only the non-finite
+            # ones -- `-(-5.0)`, `-u`, `+(5.0)` and the rest already round-trip.
+            if op === :- && length(args) == 1 && args[1] isa KnobConst
                 return KnobConst(-(args[1]::KnobConst).value)
             end
             return KnobCall(op, args)

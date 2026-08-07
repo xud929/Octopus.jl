@@ -524,6 +524,7 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     # disagrees with it on every execute! after the first.
     prepare_observers!(task.observers, runtime_elems; turns=turns, first_turn=first_turn)
     prepare_line_observers!(runtime_entries; turns=turns, first_turn=first_turn)
+    _warn_unfireable_schedules(task.observers, turns, first_turn)
     tracking_completed = false
     try
         base_ctx = TrackingContext()
@@ -580,6 +581,37 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
         end
     end
     return rep
+end
+
+"""
+Warn about a scheduled hook that cannot fire anywhere in the requested window.
+
+A `ScheduledObserver(obs, AtTurns([500]))` on a `turns = 10` run observed
+nothing and said nothing -- the run looked complete and the output file was
+empty or absent (2026-08-05_b audit, U13-6). `execute!` already hands the
+prepare step both `turns` and `first_turn`, so the driver has exactly what a
+warning needs; nothing was asking the question.
+
+Only a schedule that yields a KNOWN, empty set of turns is reported. A planner
+that cannot enumerate its turns (a predicate schedule) says nothing, because
+"unknown" is not "empty".
+"""
+function _warn_unfireable_schedules(observers, turns::Integer, first_turn::Integer)
+    turns > 0 || return nothing
+    for hook in observers
+        schedule = hasfield(typeof(hook), :schedule) ?
+                   getfield(hook, :schedule) : nothing
+        schedule === nothing && continue
+        planned = _scheduled_turns(schedule, turns, first_turn)
+        planned === nothing && continue          # not enumerable: say nothing
+        isempty(planned) || continue
+        @warn "a scheduled hook cannot fire in this run: its schedule selects no \
+               turn in the requested window, so it will observe nothing and its \
+               output will be empty or absent. Check the schedule against \
+               `turns` and the absolute `start_turn`." schedule = schedule \
+              turns = turns first_turn = first_turn maxlog = 4
+    end
+    return nothing
 end
 
 function _execute_fast_tracking_turns!(rep, runtime_elems, turns::Int,

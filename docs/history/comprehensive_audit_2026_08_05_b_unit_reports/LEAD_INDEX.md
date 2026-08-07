@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **242 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **244 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -151,9 +151,9 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U12-7 | low | CONFIRMED, FIXED (2026-08-06) | `src/knowledge/Knowledge.jl:316-323` | a second `@element_spec` block for an already-registered kind silently |
 | U12-8 | low | CONFIRMED, not fixed — same constructor-keyword obstacle as U4-18; on todo.md (2026-08-06) | `src/knowledge/Knowledge.jl:967-982` | three of the validator's checks — friendly schema, friendly |
 | U12-9 | low | CONFIRMED, FIXED (2026-08-06) — both instances reattached, source-scan tripwire added | `src/knowledge/Knowledge.jl:834-839` | the docstring on `_compiled_matches_runtime` is **detached** — the four |
-| U13-6 | low |  | `src/tasks/Tasks.jl:503-518 (seam with BeamObservers.jl:74-80)` | A scheduled hook whose schedule cannot fire anywhere in the requested |
+| U13-6 | low | CONFIRMED, FIXED (2026-08-06) — unfireable schedules now warn; verified fires only when the window is genuinely empty | `src/tasks/Tasks.jl:503-518 (seam with BeamObservers.jl:74-80)` | A scheduled hook whose schedule cannot fire anywhere in the requested |
 | U13-7 | low |  | `src/knobs/Knobs.jl:390-393` | Declaring a brand-new knob bumps the global epoch, so every |
-| U13-8 | low |  | `src/knobs/Knobs.jl:196-202, 913-916` | `@knob_expr(-(5.0))` prints as `"-5.0"`, which reparses as the *literal* |
+| U13-8 | low | CONFIRMED, FIXED (2026-08-06) — finite negated literals fold; all 13 round-trip controls still pass | `src/knobs/Knobs.jl:196-202, 913-916` | `@knob_expr(-(5.0))` prints as `"-5.0"`, which reparses as the *literal* |
 | U13-9 | low |  | `src/knobs/Knobs.jl:957-968 (out of hypothesis)` | A knob expression inside a **nested** tuple or a **vector**-valued spec |
 | U14-4 | low |  | `src/track/longitudinal.jl:133-148, and the "4.4e-16" pin in docs/theor` | `_delta_from_pt` and `_pt_from_delta` are written in their cancelling forms, so |
 | U14-5 | low |  | `src/beam/Beam.jl:445-455 vs 457-474` | the U15-7 directed refusal for non-`AbstractFloat` coordinate types was added to |
