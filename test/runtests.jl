@@ -7864,6 +7864,60 @@ end
     end
 end
 
+@testset "The gpic cross-plane gate skips work without moving a bit" begin
+    # 2026-08-05_b audit, U10-3. `_gpic_source_moments` accumulated all 14
+    # sums unconditionally, including the four cross-plane ones that are
+    # provably unreachable under the default coupling_tol = Inf
+    # (`_gpic_control_variate_mode` short-circuits on isfinite before reading
+    # bL.rxy) — a measured 26-33% overhead on the moment loop the CUDA twin
+    # never paid, since it already selects 14-vs-10 device slots. The CPU now
+    # gates on the same isfinite switch.
+    #
+    # The gate is a runtime Bool and NOT a Val, and this testset is why: a
+    # Val parameter compiled second specializations of the moment loop and
+    # the boundary, LLVM contracted their shared FMA-shaped arithmetic
+    # differently, and mom.varx / bR.sigx came out 1 ulp apart from
+    # bit-identical inputs — 1-ulp kick differences on ~27% of particles that
+    # no read-the-code argument predicted. The end-to-end == below is the pin
+    # that caught it.
+    set_global_rng!(seed=33, method=:philox)
+    let n = 20_000
+        src = (x=randn(n) .* 1e-4, px=randn(n) .* 1e-5,
+               y=randn(n) .* 1e-5, py=randn(n) .* 1e-6)
+        mt = Octopus._gpic_source_moments(src)
+        mg = Octopus._gpic_source_moments(src, false)
+        for k in (:n, :mx, :mpx, :varx, :cxpx, :varpx, :my, :mpy, :vary, :cypy, :varpy)
+            @test getproperty(mt, k) === getproperty(mg, k)
+        end
+        @test mg.cxy === 0.0 && mg.cpxpy === 0.0
+        @test mt.cpxpy !== 0.0    # anti-vacuity: the full path computed them
+    end
+    mkb(rng_id, q, m, E) = begin
+        Beam(10_000, Octopus.CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
+            alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+            rng_id=rng_id, charge=q, mc2=m, E0=E, r0=RE * ME0 / m, npart=1.0e11)
+    end
+    runtol(tol) = begin
+        set_global_rng!(seed=97, method=:philox)
+        e = mkb(1, -1.0, EMASS_EV, 10.0e9)
+        p = mkb(2, 1.0, PMASS_EV, 275.0e9)
+        g = GaussianPICPoissonSolver(; grid=(32, 32), luminosity_scale=1.0,
+            kbb1=1.0e-6, kbb2=1.0e-6, coupling_tol=tol,
+            slicing=LongitudinalSlicing(nslices=3, method=:normal_quantile))
+        lum = collide!(g, e, p, Octopus.CPUThreadsBackend)
+        (lum, e, p)
+    end
+    # Inf takes the gated path; a huge finite tolerance takes the ungated
+    # path but still resolves :uncoupled — so every observable must be
+    # BIT-identical between the two.
+    lumI, eI, pI = runtol(Inf)
+    lumF, eF, pF = runtol(1.0e9)
+    @test lumI == lumF
+    @test eI.rep.px == eF.rep.px && eI.rep.py == eF.rep.py
+    @test eI.rep.x == eF.rep.x && eI.rep.pz == eF.rep.pz
+    @test pI.rep.px == pF.rep.px && pI.rep.py == pF.rep.py
+end
+
 @testset "GaussianPIC solver construction and metadata" begin
     s = GaussianPICPoissonSolver(grid=(64, 64))
     @test s.margin_sigma == 5.0

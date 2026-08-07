@@ -371,7 +371,7 @@ end
 # Raw transverse moments of the source slice, needed to build the drifted
 # reference Gaussian at each field-slice boundary.
 # ---------------------------------------------------------------------------
-function _gpic_source_moments(source)
+function _gpic_source_moments(source, coupled::Bool=true)
     T = eltype(source.x)
     n = length(source.x)
     x0 = source.x[1]; px0 = source.px[1]
@@ -379,7 +379,21 @@ function _gpic_source_moments(source)
     sx = zero(T); spx = zero(T); sy = zero(T); spy = zero(T)
     sxx = zero(T); spxpx = zero(T); syy = zero(T); spypy = zero(T)
     sxpx = zero(T); sypy = zero(T)
-    # cross-plane sums, needed for the coupled (rotated) subtraction
+    # Cross-plane sums, needed only for the coupled (rotated) subtraction —
+    # gated exactly as the CUDA twin gates its 14-vs-10 device slots
+    # (2026-08-05_b audit, U10-3): under the default coupling_tol = Inf the
+    # coupled branch is unreachable, so accumulating these unconditionally
+    # was a measured 33% overhead on this loop the GPU never paid.
+    #
+    # `coupled` is a RUNTIME Bool, not a Val, and that choice is load-bearing:
+    # a Val parameter compiles a second specialization of this loop and of the
+    # muladd tail below, and LLVM contracted the shared accumulations into FMA
+    # differently in the two — mom.varx came out 1 ulp apart from identical
+    # data, which surfaced as 1-ulp kick differences on ~27% of particles
+    # between the gated and ungated paths. One instance means one instruction
+    # sequence for the shared sums, so gating cannot move a single bit of
+    # them; the per-particle branch predicts perfectly (it never changes
+    # direction within a slice) and keeps ~all of the measured saving.
     sxy = zero(T); sxpy = zero(T); sypx = zero(T); spxpy = zero(T)
     @inbounds for i in 1:n
         dx = source.x[i] - x0; dpx = source.px[i] - px0
@@ -388,8 +402,10 @@ function _gpic_source_moments(source)
         sxx += dx * dx; spxpx += dpx * dpx
         syy += dy * dy; spypy += dpy * dpy
         sxpx += dx * dpx; sypy += dy * dpy
-        sxy += dx * dy; sxpy += dx * dpy
-        sypx += dy * dpx; spxpy += dpx * dpy
+        if coupled
+            sxy += dx * dy; sxpy += dx * dpy
+            sypx += dy * dpx; spxpy += dpx * dpy
+        end
     end
     invn = inv(T(n))
     dmx = sx * invn; dmpx = spx * invn; dmy = sy * invn; dmpy = spy * invn
@@ -400,10 +416,11 @@ function _gpic_source_moments(source)
     varpx = max(_shifted_second_moment(spxpx, dmpx, invn), zero(T))
     cypy = _shifted_cross_moment(sypy, dmy, dmpy, invn)
     varpy = max(_shifted_second_moment(spypy, dmpy, invn), zero(T))
-    cxy = _shifted_cross_moment(sxy, dmx, dmy, invn)
-    cxpy = _shifted_cross_moment(sxpy, dmx, dmpy, invn)
-    cypx = _shifted_cross_moment(sypx, dmy, dmpx, invn)
-    cpxpy = _shifted_cross_moment(spxpy, dmpx, dmpy, invn)
+    z = zero(T)
+    cxy = coupled ? _shifted_cross_moment(sxy, dmx, dmy, invn) : z
+    cxpy = coupled ? _shifted_cross_moment(sxpy, dmx, dmpy, invn) : z
+    cypx = coupled ? _shifted_cross_moment(sypx, dmy, dmpx, invn) : z
+    cpxpy = coupled ? _shifted_cross_moment(spxpy, dmpx, dmpy, invn) : z
     return (n=n, mx=mx, mpx=mpx, varx=varx, cxpx=cxpx, varpx=varpx,
             my=my, mpy=mpy, vary=vary, cypy=cypy, varpy=varpy,
             cxy=cxy, cxpy=cxpy, cypx=cypx, cpxpy=cpxpy)
@@ -473,10 +490,26 @@ end
     return mux, muy, sigx, sigy
 end
 
-@inline function _gpic_boundary(mom, s)
+@inline function _gpic_boundary(mom, s, coupled::Bool=true)
     mux, muy, sigx, sigy = _gpic_drifted_gaussian(mom, s)
     rx = 2 * (mom.cxpx + s * mom.varpx)
     ry = 2 * (mom.cypy + s * mom.varpy)
+    if !coupled
+        # Under the caller's gate (coupled ⇔ isfinite(coupling_tol), U10-3)
+        # none of the coupled fields are ever read:
+        # `_gpic_control_variate_mode` short-circuits on isfinite before
+        # touching rxy or coupled_resolved, and a/lam/sigc are consumed only
+        # inside the :coupled branch that gate makes unreachable. Zeros keep
+        # the tuple shape stable without paying the covariance transport.
+        # A runtime Bool, not a Val, for the same reason as
+        # `_gpic_source_moments`: a second specialization of this function
+        # contracted the drifted-variance polynomial differently and moved
+        # sigx by 1 ulp between the gated and ungated paths.
+        z = zero(rx)
+        return (mux=mux, muy=muy, sigx=sigx, sigy=sigy, rx=rx, ry=ry,
+                a=z, b=z, d=z, rxy=z, lam=z, sigc=z,
+                coupled_resolved=false)
+    end
     a, b, d, _, _, _ = _gpic_drifted_covariance(mom, s)
     rxy = _gpic_correlation(a, b, d)
     resolved = _gpic_coupled_covariance_resolved(a, b, d)
@@ -622,9 +655,18 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
     sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
     sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
 
-    mom = _gpic_source_moments(source)
-    bL = _gpic_boundary(mom, sL)
-    bR = _gpic_boundary(mom, sR)
+    # The coupled branch is reachable only when coupling_tol is finite
+    # (`_gpic_control_variate_mode` short-circuits on isfinite before reading
+    # any cross-plane quantity), so an infinite tolerance skips the four
+    # cross-plane sums and the covariance transport entirely — the same gate
+    # the CUDA twin applies to its 14-vs-10 device slots (U10-3). Results are
+    # bit-identical either way: the gated work was provably unread, and the
+    # gate is a runtime Bool so no second specialization exists to contract
+    # the shared arithmetic differently.
+    coupled_gate = isfinite(T(gsolver.coupling_tol))
+    mom = _gpic_source_moments(source, coupled_gate)
+    bL = _gpic_boundary(mom, sL, coupled_gate)
+    bR = _gpic_boundary(mom, sR, coupled_gate)
     muxL, muyL, sigxL, sigyL = bL.mux, bL.muy, bL.sigx, bL.sigy
     muxR, muyR, sigxR, sigyR = bR.mux, bR.muy, bR.sigx, bR.sigy
     mode = _gpic_control_variate_mode(
