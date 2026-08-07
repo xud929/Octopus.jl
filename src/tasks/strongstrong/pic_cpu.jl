@@ -1902,13 +1902,27 @@ function _pic_field!(Ex, Ey, phi, hx, hy, fourth::Bool)
             Ey[i, j] = T(0.5) * hyi * (phi[i, j - 1] - phi[i, j + 1])
         end
     end
-    for j in 1:ny
+    # `@inbounds` over the whole Ex pass, not only its fourth-order inner loop
+    # (2026-08-05_b audit, U6-4). The comment above records the @inbounds win as
+    # taken, and the Ey pass has it throughout, but the boundary rows and the
+    # DEFAULT second-order inner loop were still bounds-checked -- so the
+    # default path paid for a check the Ey twin had already argued away.
+    # `_validate_pic_grid` guarantees nx, ny >= 5, which is that same safety
+    # argument. Verified bit-identical on all four (grid, order) combinations.
+    #
+    # Measured here on the default second-order path, best of 30 x 20 calls:
+    # grid 64 2.56 -> 2.36 us (1.08x), grid 128 8.23 -> 7.45 us (1.10x). The
+    # lead reported 1.23x / 1.22x / 1.09x at grids 64 / 128 / 256 against
+    # different absolute timings (16.20 us at grid 128 where this box measures
+    # 8.23), so the gain is real but smaller than recorded; these are this
+    # machine's numbers.
+    @inbounds for j in 1:ny
         Ex[1, j] = hxi * (T(1.5) * phi[1, j] - 2 * phi[2, j] + T(0.5) * phi[3, j])
         Ex[nx, j] = hxi * (-T(1.5) * phi[nx, j] + 2 * phi[nx - 1, j] - T(0.5) * phi[nx - 2, j])
         if fourth && nx >= 5
             Ex[2, j] = T(0.5) * hxi * (phi[1, j] - phi[3, j])
             Ex[nx - 1, j] = T(0.5) * hxi * (phi[nx - 2, j] - phi[nx, j])
-            @inbounds for i in 3:(nx - 2)
+            for i in 3:(nx - 2)
                 Ex[i, j] = c4 * hxi * ((phi[i + 2, j] - phi[i - 2, j]) +
                                        8 * (phi[i - 1, j] - phi[i + 1, j]))
             end

@@ -1043,11 +1043,28 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
             _spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
 
         # Direction 1: beam1 sources -> kick beam2 field slices (parallel over j).
-        lum_parts = zeros(T, nchunks)
+        #
+        # `lum_parts` is indexed by SLICE, not by chunk (2026-08-05_b audit,
+        # U6-5). Its length was `nchunks`, i.e. the worker count, so
+        # `sum(lum_parts)` reassociated whenever the worker count changed and
+        # the transverse spectral luminosity was not thread-count invariant --
+        # measured 1 ulp between 1 and 4 workers and 2 ulp between 1 and 8, at
+        # 90,000 particles over 15 slices, while the coordinates were bitwise
+        # identical (0 of 540,000 differing). The campaign that recorded
+        # "including spectral luminosity (0 ulp)" had measured the LONGITUDINAL
+        # solver.
+        #
+        # Indexing by slice makes the fold order a property of the data: n2
+        # entries summed in j order at any worker count. The fixed-chunk-grid
+        # precedent (`_REDUCTION_CHUNKS`, U5-2) is not usable here because
+        # `nchunks` also sizes the grid-workspace pool, and 64 workspaces is a
+        # memory cost this path should not pay; a per-slice vector of floats is
+        # negligible. Each j is written by exactly one chunk, so there is no
+        # race.
+        lum_parts = zeros(T, n2)
         _run_logical_workers(nchunks) do chunk, _
             ws = grid ? pool[chunk] : nothing
             jlo, jhi = _chunk_bounds(n2, nchunks, chunk)
-            lp = zero(T)
             for j in jlo:jhi
                 jdx = idx2[j]; isempty(jdx) && continue
                 fx = @view r2.x[jdx]; fy = @view r2.y[jdx]
@@ -1060,11 +1077,10 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
                         r2.px[p] += a * ex[t]; r2.py[p] += a * ey[t]
                     end
                     compute_luminosity &&
-                        (lp += _spectral_luminosity_pair(
+                        (@inbounds lum_parts[j] += _spectral_luminosity_pair(
                             solver, sx, sy, fx, fy, klum, lnx, lny))
                 end
             end
-            lum_parts[chunk] = lp
         end
 
         # Direction 2: beam2 sources -> kick beam1 field slices (parallel over i).

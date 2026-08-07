@@ -3536,12 +3536,18 @@ end
     # across 1/2/4 workers, i.e. 1.7e-16 and 2.7e-16 relative -- about one ulp,
     # the signature of a chunk-ordered float fold whose chunk count moved.
     #
-    # Pinned as a documented envelope rather than dropped: coordinates must be
-    # bit-identical, and the luminosity must agree to a few ulp. That makes a
-    # real regression (a changed reduction, not a changed fold order) fail here,
-    # where the omission made nothing fail at all. Restoring exact equality
-    # needs the fixed-chunk-grid treatment applied to the spectral pair-batch
-    # reduction; that is a separate, priced change.
+    # CLOSED (2026-08-05_b audit, U6-5). The envelope above was the honest pin
+    # while the fold was worker-partitioned; it is now exact. `lum_parts` is
+    # indexed by SLICE rather than by chunk, so `sum(lum_parts)` runs over n2
+    # entries in j order at any worker count. The fixed-chunk-grid treatment
+    # this note asked for was not usable directly -- `nchunks` also sizes the
+    # spectral grid-workspace pool, and 64 workspaces is a memory cost this path
+    # should not pay -- so the fold order was made a property of the DATA
+    # instead, which is the same guarantee by a cheaper route.
+    #
+    # Negative control, executed: with the pre-fix code this arm reports
+    # 7.912867394918645e29 at 1 worker against 7.912867394918643e29 at 4 and 8
+    # (90,000 particles, 15 slices), and bit-identical everywhere after.
     let spec_t = SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6,
             luminosity_scale=1.0, grid=(32, 32), longitudinal_kick=false, slicing=slc)
         counts = unique((1, 2, Threads.nthreads(:default)))
@@ -3555,9 +3561,9 @@ end
         for other in 2:length(outs)
             @test all(a == b for (a, b) in zip(outs[1][2], outs[other][2]))
             @test all(a == b for (a, b) in zip(outs[1][3], outs[other][3]))
-            # A few ulp of the value, not a blanket rtol: 8 ulp at this
-            # magnitude is ~6e-16 relative, far below any physical change.
-            @test abs(outs[1][1] - outs[other][1]) <= 8 * eps(outs[1][1])
+            # EXACT now, not an envelope: the fold no longer depends on the
+            # worker count, so anything but equality is a real regression.
+            @test outs[1][1] === outs[other][1]
         end
     end
 

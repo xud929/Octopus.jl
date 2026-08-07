@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **200 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **202 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -256,8 +256,8 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U5-8 | low | CONFIRMED, not fixed — ~200 us/turn, moves work across the preflight boundary; on todo.md (2026-08-06) | `src/tasks/strongstrong/interface.jl:2216 + 2467-2482 — OUT OF HYPOTHES` | `_collision_solver`'s new configuration comparison runs once per collision per |
 | U5-9 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:2235-2245 — OUT OF HYPOTHESIS (obs` | the mixed-schedule dropped-row warning carries `maxlog = 4`, so a long run loses |
 | U6-10 | low |  | `src/tasks/strongstrong/pic_cpu.jl:1418–1440` | the `length(local_charge) == nchunks` fallbacks are dead code, and the two of them |
-| U6-4 | low (performance) |  | `src/tasks/strongstrong/pic_cpu.jl:1843–1858` | `_pic_field!` marks the whole `Ey` pass `@inbounds` but leaves the `Ex` boundary rows |
-| U6-5 | low |  | `src/tasks/strongstrong/spectral.jl:1000 and 1043–1062` | the campaign's "including spectral luminosity (0 ulp)" is true of the **longitudinal** |
+| U6-4 | low (performance) | CONFIRMED, FIXED (2026-08-06) — bit-identical verified; 1.08x/1.10x measured here (report claimed 1.23x/1.22x) | `src/tasks/strongstrong/pic_cpu.jl:1843–1858` | `_pic_field!` marks the whole `Ey` pass `@inbounds` but leaves the `Ex` boundary rows |
+| U6-5 | low | CONFIRMED, FIXED (2026-08-06) — fold indexed by slice; exact across 1/4/8 workers, negative control executed | `src/tasks/strongstrong/spectral.jl:1000 and 1043–1062` | the campaign's "including spectral luminosity (0 ulp)" is true of the **longitudinal** |
 | U6-6 | low |  | `src/tasks/strongstrong/pic_cpu.jl:1551–1568` | `_pic_tsc_weights` still computes its weights from untyped `Float64` literals, so a |
 | U6-7 | low |  | `src/tasks/strongstrong/slicing.jl:220–240 (`_live_z_stats`) and :464–4` | slice **membership** is identical CPU vs CUDA in every case I could construct (see |
 | U6-8 | low |  | `src/tasks/strongstrong/slicing.jl:388` | the comment "One convention, slice 1, everywhere (audit part 6, R7)" is false for |
