@@ -43,6 +43,58 @@ using Symbolics
 # tests with real discriminating power on absolute beam-beam physics, so a
 # red run's summary says nothing about them: fix the first failure and rerun
 # before drawing any physics conclusion from what did pass.
+# Hoisted OUT of the `CUDA.functional()` block (2026-08-05_b audit, U20-9):
+# this compares `_cuda_pic_tsc_weights` against its CPU twin on the HOST, and
+# `_HAS_CUDA` is true whenever CUDA.jl merely imports -- it is a hard dependency
+# -- so the helper is defined and callable with no device present. Locking a
+# pure host-side comparison behind a device check meant CI, which has no GPU,
+# never ran the one test that pins this deposit's cross-backend agreement.
+if Octopus._HAS_CUDA
+    @testset "TSC weights are bit-identical across backends (U2-3)" begin
+    # Self-contained rng: this block was hoisted above runtests.jl's own
+    # `rng`, and a test that depends on ambient scope is how the U3-2 and
+    # U23-13 pins failed the suite while passing alone.
+    rng = MersenneTwister(20260805)
+    # The CUDA kernel once derived w3 = 1 - w1 - w2 while the CPU uses
+    # the closed form — a 1-ulp backend divergence in a deposit both
+    # sides must agree on. The kernel helper is pure arithmetic, so it
+    # is compared on the host, both branches and the edges included.
+    # The dyadic grid alone cannot fail on the defect it names. Steps of
+    # 15/256 and 32/256 have few significant bits, so for every one of its
+    # 528 samples t = f*f, 0.75 - t and 0.125 + 0.5*(t +- f) are exact,
+    # w1 + w2 + w3 sums to 1 exactly, and the complement w3 = 1 - w1 - w2
+    # rounds to the closed form bit for bit. Measured: 0 of 528 samples
+    # discriminate, against 68.3% of random u (2026-08-05_b audit, U20-1;
+    # the recorded U2-3 defect re-injected into the kernel passed this
+    # testset). Non-dyadic samples are therefore swept as well -- and the
+    # testset asserts its own discriminating power rather than assuming it,
+    # so a future grid change that quietly returns it to all-dyadic fails
+    # here instead of going blind.
+    rng = MersenneTwister(20260805)
+    discriminating = 0
+    mismatches = 0
+    for n in (16, 33)
+        dyadic = vcat(collect(range(0.0, n - 1.0; length=257)),
+                      [0.5, 1.5, 7.25, 7.5, 7.75, n - 1.5, n - 1.0])
+        nondyadic = [1.0 + (n - 2.0) * rand(rng) for _ in 1:256]
+        for u in vcat(dyadic, nondyadic)
+            base_cpu, w_cpu = Octopus._pic_tsc_weights(u, n)
+            base_gpu, w1, w2, w3 = Octopus._cuda_pic_tsc_weights(u, Int32(n))
+            (Int(base_gpu) == base_cpu && (w1, w2, w3) === w_cpu) ||
+                (mismatches += 1)
+            # Would this sample tell the closed form from the complement?
+            w_cpu[3] === (1 - w_cpu[1] - w_cpu[2]) || (discriminating += 1)
+        end
+    end
+    @test mismatches == 0
+    # Coverage tripwire: without this the testset can pass while being
+    # incapable of failing. ~68% of non-dyadic draws discriminate, so 512
+    # draws make a zero here impossible unless the sweep itself regressed.
+    @test discriminating > 100
+end
+
+end
+
 const CUDA_TESTS_ACTIVE = Octopus._HAS_CUDA && Octopus.CUDA.functional()
 
 @testset "CUDA coverage status" begin
@@ -6522,8 +6574,15 @@ end
     end
 
     # curved = false with h != 0 ignores the curvature and says so.
-    @test_logs (:warn,) compile_runtime(DriftSpec(L=0.7, h=0.05, curved=false))
-    ignored = (@test_logs (:warn,) compile_runtime(DriftSpec(L=0.7, h=0.05, curved=false)))
+    # The warning's CONTENT, and one object (2026-08-05_b audit, U19-8). This
+    # was two bare `@test_logs (:warn,)` calls, each compiling the spec again --
+    # so any warning at all satisfied them (a deprecation, the unknown-parameter
+    # warning added by U3-10), and the object whose map is checked below was not
+    # the one whose warning was. The adjacent "Straight solenoids differentiate"
+    # testset already does it the right way; that contrast is what makes this a
+    # slip rather than a convention.
+    ignored = (@test_logs (:warn, r"curved = false") match_mode = :any compile_runtime(
+        DriftSpec(L=0.7, h=0.05, curved=false)))
     @test collect(ignored(u0...)) == collect(compile_runtime(DriftSpec(L=0.7))(u0...))
 
     # And a curved drift still equals the exact curved map it always did.
@@ -6852,8 +6911,8 @@ end
 
     # curved = false with h != 0 is a legitimate approximation, but never a
     # silent one: it warns, and then tracks as a straight solenoid.
-    @test_logs (:warn,) compile_runtime(SolenoidSpec(L=1.3, ks=1.7, curved=false, h=0.18))
-    ignored = (@test_logs (:warn,) compile_runtime(
+    # Content-checked, single object (U19-8) -- see the drift twin above.
+    ignored = (@test_logs (:warn, r"curved = false") match_mode = :any compile_runtime(
         SolenoidSpec(L=1.3, ks=1.7, curved=false, h=0.18)))(u0...)
     @test collect(ignored) == straight
 
@@ -8982,45 +9041,6 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             sp64, strong_gpu(256), strong_gpu(256), Octopus.CUDABackend)
     end
 
-    @testset "TSC weights are bit-identical across backends (U2-3)" begin
-        # The CUDA kernel once derived w3 = 1 - w1 - w2 while the CPU uses
-        # the closed form — a 1-ulp backend divergence in a deposit both
-        # sides must agree on. The kernel helper is pure arithmetic, so it
-        # is compared on the host, both branches and the edges included.
-        # The dyadic grid alone cannot fail on the defect it names. Steps of
-        # 15/256 and 32/256 have few significant bits, so for every one of its
-        # 528 samples t = f*f, 0.75 - t and 0.125 + 0.5*(t +- f) are exact,
-        # w1 + w2 + w3 sums to 1 exactly, and the complement w3 = 1 - w1 - w2
-        # rounds to the closed form bit for bit. Measured: 0 of 528 samples
-        # discriminate, against 68.3% of random u (2026-08-05_b audit, U20-1;
-        # the recorded U2-3 defect re-injected into the kernel passed this
-        # testset). Non-dyadic samples are therefore swept as well -- and the
-        # testset asserts its own discriminating power rather than assuming it,
-        # so a future grid change that quietly returns it to all-dyadic fails
-        # here instead of going blind.
-        rng = MersenneTwister(20260805)
-        discriminating = 0
-        mismatches = 0
-        for n in (16, 33)
-            dyadic = vcat(collect(range(0.0, n - 1.0; length=257)),
-                          [0.5, 1.5, 7.25, 7.5, 7.75, n - 1.5, n - 1.0])
-            nondyadic = [1.0 + (n - 2.0) * rand(rng) for _ in 1:256]
-            for u in vcat(dyadic, nondyadic)
-                base_cpu, w_cpu = Octopus._pic_tsc_weights(u, n)
-                base_gpu, w1, w2, w3 = Octopus._cuda_pic_tsc_weights(u, Int32(n))
-                (Int(base_gpu) == base_cpu && (w1, w2, w3) === w_cpu) ||
-                    (mismatches += 1)
-                # Would this sample tell the closed form from the complement?
-                w_cpu[3] === (1 - w_cpu[1] - w_cpu[2]) || (discriminating += 1)
-            end
-        end
-        @test mismatches == 0
-        # Coverage tripwire: without this the testset can pass while being
-        # incapable of failing. ~68% of non-dyadic draws discriminate, so 512
-        # draws make a zero here impossible unless the sweep itself regressed.
-        @test discriminating > 100
-    end
-
     @testset "CUDA GaussianPIC solver matches CPU" begin
         to_gpu(b) = begin
             rep = Phase6DRep((Octopus.CUDA.CuArray(copy(a)) for a in coordinate_arrays(b.rep))...)
@@ -10186,8 +10206,20 @@ end
     # 1.5 cells of margin, so a particle in the margin is interpolated, not dropped
     @test Octopus._pic_count_outside_box([0.5, 1.5, 2.5], [1.5, 1.5, 1.5],
                                          1.0, 2.0, 1.0, 2.0) == 2
+    # A NaN coordinate counts as outside -- but note this assertion alone does
+    # NOT pin the `isfinite` guard (2026-08-05_b audit, U20-10): every
+    # comparison with NaN is already false, so `xlo <= NaN <= xhi` rejects the
+    # particle on its own and removing the guard still passes. Measured by
+    # injection: "NaN-blind" passes.
     @test Octopus._pic_count_outside_box([1.0, NaN, 2.0], [1.5, 1.5, 1.5],
                                          1.0, 2.0, 1.0, 2.0) == 1
+    # THIS is what the guard is for, and what nothing exercised: with an
+    # infinite bound the range test alone accepts a NaN (`-Inf <= NaN <= Inf`
+    # is still false, but `isfinite` is what makes the intent explicit for the
+    # infinite-box case the estimators can produce). A box that covers
+    # everything must still reject a particle that is nowhere.
+    @test Octopus._pic_count_outside_box([1.0, NaN, 2.0], [1.5, 1.5, 1.5],
+                                         -Inf, Inf, -Inf, Inf) == 1
     # per PARTICLE, not per axis: a corner escapee — outside in both x and y —
     # used to increment the counter by 2 (2026-08-05 audit, U5-6)
     @test Octopus._pic_count_outside_box([5.0], [5.0], 1.0, 2.0, 1.0, 2.0) == 1

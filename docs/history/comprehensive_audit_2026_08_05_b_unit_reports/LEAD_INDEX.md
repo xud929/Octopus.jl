@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **233 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **236 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -182,17 +182,17 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U19-5 | low |  | `test/runtests.jl:6341–6365` | the `:node` defining-property block — 18,036 of this testset's 30,053 |
 | U19-6 | low | FIXED | `test/runtests.jl:4878` | `@test Octopus.longitudinal_slices(poisoned, sl) isa Any` asserts nothing |
 | U19-7 | low | WONTFIX (idiom; recorded) | `test/runtests.jl:5182` | `@test Threads.nthreads(:default) > 1 skip = (Threads.nthreads(:default) == 1)` |
-| U19-8 | low |  | `test/runtests.jl:5299–5300 and 5587–5588` | the two `curved = false` warning pins are content-free — `@test_logs |
+| U19-8 | low | CONFIRMED, FIXED (2026-08-06) — both pins check the warning's content and one object | `test/runtests.jl:5299–5300 and 5587–5588` | the two `curved = false` warning pins are content-free — `@test_logs |
 | U19-9 | low |  | `test/runtests.jl:5628–5630` | the cross-implementation solenoid↔SBend reference — U17 rated it one of |
 | U2-1 | low | F1 confirmed, open | `src/tasks/strongstrong/pic_cuda.jl:3672` | the per-pair luminosity diagnostic trace `_ACTIVE_PIC_LUMINOSITY_PAIR_SINK` |
 | U2-2 | low |  | `src/tasks/strongstrong/pic_cuda.jl:2603` | the node-indexed wavefront field solve deposits, Green-multiplies, |
 | U2-3 | low |  | `src/tasks/strongstrong/pic_cuda.jl:2140` | the CUDA workspace cache key — which is also the identity of the embedded |
-| U20-10 | low |  | `test/runtests.jl:8723` | `@test Octopus._pic_count_outside_box([1.0, NaN, 2.0], …) == 1` cannot |
+| U20-10 | low | CONFIRMED, FIXED (2026-08-06) — the infinite-bound case the guard actually governs is now covered | `test/runtests.jl:8723` | `@test Octopus._pic_count_outside_box([1.0, NaN, 2.0], …) == 1` cannot |
 | U20-11 | low | CONFIRMED, FIXED (2026-08-06) | `out-of-region seam — test/runtests.jl:46–51` | the `@info` a CPU-only user actually sees still says "**Nine** |
 | U20-13 | low |  | `test/runtests.jl:7679–7684 — carry-over of U17's "note while there"` | the comment states "~1e-13: … well within the 1e-10 contract" and the |
 | U20-7 | low | FIXED | `test/runtests.jl:8067` | `@test knob_symbolics_available() === Octopus._symbolics_adapter_active()` |
 | U20-8 | low |  | `test/runtests.jl:8123 and 7992` | two hand-copied case lists with no declaration-to-coverage tripwire, in the |
-| U20-9 | low |  | `test/runtests.jl:7629 (gating, not content)` | "TSC weights are bit-identical across backends" is a **pure host-side** |
+| U20-9 | low | CONFIRMED, FIXED (2026-08-06) — hoisted out of the device gate; verified it runs with CUDA_VISIBLE_DEVICES="" | `test/runtests.jl:7629 (gating, not content)` | "TSC weights are bit-identical across backends" is a **pure host-side** |
 | U21-14 | low | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:365-381 vs 434-441` | the new note claims the commented block "stays as the reference for what |
 | U21-20 | low | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:677-684` | the summary block prints PIC-family settings unconditionally, so a |
 | U21-21 | low | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:415-422` | inconsistent grid-value validation. `OCTOPUS_PIC_LUMINOSITY_GRID` checks |
