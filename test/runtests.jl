@@ -4477,6 +4477,30 @@ end
     b1, b2 = beams()
     @test_throws ArgumentError execute!(t_ne, b1, b2; turns=1)
 
+    # U5-8 (2026-08-05_b audit): the identity-to-configuration change made
+    # the turn loop rebuild and compare two solver_configuration NamedTuples
+    # once per collision per TURN — measured 48 µs and 58,704 bytes per call
+    # for distinct-but-equal solvers, pure waste since solvers are immutable
+    # and the answer cannot change between turns. The preflight walk, which
+    # already visits every collision once per execute!, now returns the
+    # per-block resolved solvers and the turn loop indexes into them. This
+    # pins the contract: one resolution, identical to what per-turn
+    # resolution would produce, aligned with the blocks.
+    let blocks1 = Octopus._strong_strong_runtime_blocks(t_eq, 1),
+        blocks2 = Octopus._strong_strong_runtime_blocks(t_eq, 2)
+        policy = Octopus._resolve_execution_policy(
+            CPUThreadsExecutionPolicy(), b1.rep)
+        solvers = Octopus._preflight_solver_configurations!(
+            t_eq, blocks1, blocks2, policy)
+        @test length(solvers) == length(blocks1)
+        for (k, (bl1, bl2)) in enumerate(zip(blocks1, blocks2))
+            expect = bl1.collision === nothing ? nothing :
+                Octopus._collision_solver(t_eq, bl1.collision, bl2.collision)
+            @test solvers[k] === expect
+        end
+        @test any(s -> s !== nothing, solvers)   # anti-vacuity: an IP resolved
+    end
+
     # (1) IP2 evaluates luminosity only at turn 0: turn 0 writes a complete
     # row, turn 1 is partial — dropped whole, loudly, and the file carries
     # exactly the complete rows.

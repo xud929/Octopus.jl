@@ -2241,7 +2241,7 @@ function _execute_strong_strong_task!(
     blocks1 = _strong_strong_runtime_blocks(task, 1)
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
-    _preflight_solver_configurations!(task, blocks1, blocks2, policy)
+    solvers = _preflight_solver_configurations!(task, blocks1, blocks2, policy)
     # Validate every output preparer BEFORE any of them commits, then commit.
     #
     # Ordering alone cannot fix this and the history shows why: the 2026-08-05
@@ -2276,7 +2276,7 @@ function _execute_strong_strong_task!(
                                _ACTIVE_PIC_PHASE_TIMING_SINK => task.pic_phase_times) do
             if task.luminosity_path === nothing
                 _execute_strong_strong_turns!(
-                    task, beam1, beam2, blocks1, blocks2, policy, ctx,
+                    task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
                     turns, first_turn, nothing)
             else
                 # The prepare step above owned the header and the
@@ -2284,7 +2284,7 @@ function _execute_strong_strong_task!(
                 # rows in append mode from here.
                 open(task.luminosity_path, "a") do io
                     _execute_strong_strong_turns!(
-                        task, beam1, beam2, blocks1, blocks2, policy, ctx,
+                        task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
                         turns, first_turn, io)
                 end
             end
@@ -2298,9 +2298,19 @@ end
 
 function _preflight_solver_configurations!(task, blocks1, blocks2, policy)
     inactive = Set{Symbol}()
-    for (block1, block2) in zip(blocks1, blocks2)
+    # Resolved per-block solvers, returned for the turn loop: solvers are
+    # immutable and the blocks are fixed for the whole execute!, so the
+    # identity-vs-configuration comparison in `_collision_solver` cannot
+    # change between turns — yet the turn loop used to redo it per collision
+    # per TURN, costing 58,704 bytes and 78.3 µs per call for
+    # distinct-but-equal solvers, a size-independent ~200 µs/turn
+    # (2026-08-05_b audit, U5-8). This walk already visits every collision
+    # exactly once, so it is the natural owner of the resolution.
+    solvers = Vector{Any}(nothing, length(blocks1))
+    for (k, (block1, block2)) in enumerate(zip(blocks1, blocks2))
         block1.collision === nothing && continue
         solver = _collision_solver(task, block1.collision, block2.collision)
+        solvers[k] = solver
         if policy isa ResolvedCUDAExecutionPolicy
             launch_solver = _pic_launch_solver(solver)
             launch_solver === nothing ||
@@ -2319,7 +2329,7 @@ function _preflight_solver_configurations!(task, blocks1, blocks2, policy)
         end
     end
     isempty(inactive) || @warn "non-default CUDA-only solver options are inactive on CPU storage" options=sort!(collect(inactive))
-    return nothing
+    return solvers
 end
 
 """
@@ -2497,7 +2507,7 @@ function _resolve_strong_strong_policy(task::StrongStrongTask,
 end
 
 function _execute_strong_strong_turns!(
-        task, beam1, beam2, blocks1, blocks2, policy, ctx,
+        task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
         turns::Int, first_turn::Int64, io)
     backend = backend_type(policy)
     streams = _strong_strong_segment_streams(policy)
@@ -2518,7 +2528,9 @@ function _execute_strong_strong_turns!(
             )
             _cuda_nvtx_pop(backend, line_range)
             if blocks1[j].collision !== nothing
-                solver = _collision_solver(task, blocks1[j].collision, blocks2[j].collision)
+                # Resolved once per execute! by the preflight walk (U5-8);
+                # solvers are immutable, so the answer cannot change per turn.
+                solver = solvers[j]
                 luminosity_evaluated === nothing ||
                     push!(luminosity_evaluated, _strong_strong_luminosity_evaluated(solver, ctx))
                 collision_range = _cuda_nvtx_push(backend, "strongstrong collision")
