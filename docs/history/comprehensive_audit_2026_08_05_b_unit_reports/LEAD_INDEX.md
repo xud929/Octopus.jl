@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **202 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **207 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -255,13 +255,13 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U5-7 | low | CONFIRMED, FIXED (2026-08-06) — now 0 allocations with no audit active | `src/tasks/strongstrong/interface.jl:2275-2281 (docstring claim at 2273` | `_record_solver_configuration!`'s docstring says "Costs nothing unless an |
 | U5-8 | low | CONFIRMED, not fixed — ~200 us/turn, moves work across the preflight boundary; on todo.md (2026-08-06) | `src/tasks/strongstrong/interface.jl:2216 + 2467-2482 — OUT OF HYPOTHES` | `_collision_solver`'s new configuration comparison runs once per collision per |
 | U5-9 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:2235-2245 — OUT OF HYPOTHESIS (obs` | the mixed-schedule dropped-row warning carries `maxlog = 4`, so a long run loses |
-| U6-10 | low |  | `src/tasks/strongstrong/pic_cpu.jl:1418–1440` | the `length(local_charge) == nchunks` fallbacks are dead code, and the two of them |
+| U6-10 | low | CONFIRMED, FIXED (2026-08-06) — two disagreeing dead fallbacks replaced by the invariant | `src/tasks/strongstrong/pic_cpu.jl:1418–1440` | the `length(local_charge) == nchunks` fallbacks are dead code, and the two of them |
 | U6-4 | low (performance) | CONFIRMED, FIXED (2026-08-06) — bit-identical verified; 1.08x/1.10x measured here (report claimed 1.23x/1.22x) | `src/tasks/strongstrong/pic_cpu.jl:1843–1858` | `_pic_field!` marks the whole `Ey` pass `@inbounds` but leaves the `Ex` boundary rows |
 | U6-5 | low | CONFIRMED, FIXED (2026-08-06) — fold indexed by slice; exact across 1/4/8 workers, negative control executed | `src/tasks/strongstrong/spectral.jl:1000 and 1043–1062` | the campaign's "including spectral luminosity (0 ulp)" is true of the **longitudinal** |
-| U6-6 | low |  | `src/tasks/strongstrong/pic_cpu.jl:1551–1568` | `_pic_tsc_weights` still computes its weights from untyped `Float64` literals, so a |
-| U6-7 | low |  | `src/tasks/strongstrong/slicing.jl:220–240 (`_live_z_stats`) and :464–4` | slice **membership** is identical CPU vs CUDA in every case I could construct (see |
-| U6-8 | low |  | `src/tasks/strongstrong/slicing.jl:388` | the comment "One convention, slice 1, everywhere (audit part 6, R7)" is false for |
-| U6-9 | low |  | `src/tasks/strongstrong/pic_cpu.jl:1243–1247` | two unreachable branches in `_pic_align_grid_origins`. |
+| U6-6 | low | CONFIRMED, FIXED (2026-08-06) — TSC literals typed; Float32 in, Float32 out | `src/tasks/strongstrong/pic_cpu.jl:1551–1568` | `_pic_tsc_weights` still computes its weights from untyped `Float64` literals, so a |
+| U6-7 | low | CONFIRMED, not fixed — cross-backend reduction-shape parity job; on todo.md (2026-08-06) | `src/tasks/strongstrong/slicing.jl:220–240 (`_live_z_stats`) and :464–4` | slice **membership** is identical CPU vs CUDA in every case I could construct (see |
+| U6-8 | low | CONFIRMED, FIXED (2026-08-06) — exception verified independently ([2,2,3] vs [7,0,0]) | `src/tasks/strongstrong/slicing.jl:388` | the comment "One convention, slice 1, everywhere (audit part 6, R7)" is false for |
+| U6-9 | low | CONFIRMED, dispositioned (2026-08-06) — branches kept as a guard, unreachability documented with the exact-1.0 subtlety | `src/tasks/strongstrong/pic_cpu.jl:1243–1247` | two unreachable branches in `_pic_align_grid_origins`. |
 | U7-10 | low | CONFIRMED, not fixed — needs a path registry and a policy decision; on todo.md (2026-08-06) | `src/tasks/BeamObservers.jl:1152–1176` | two `BeamMomentObserver`s writing one path silently interleave and lose |
 | U7-11 | low |  | `src/tasks/BPMObserver.jl:170–171, 179–187` | `bpm_reading` mutates the observer. The exported convenience form |
 | U7-12 | low |  | `src/tasks/BPMObserver.jl:200–205` | a BPM reading of a fully-lost beam is `NaN` by an undocumented `0/0`, |

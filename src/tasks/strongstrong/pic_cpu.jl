@@ -1289,6 +1289,19 @@ function _pic_align_grid_origins(green_type, source0, field0, h)
     if Symbol(green_type) == :standard
         t += t > 0 ? -0.25 : 0.25
     else
+        # Defensive, and unreachable as written (2026-08-05_b audit, U6-9).
+        # `f1` and `f2` are `v/h - floor(v/h)`, so each lies in [0, 1] -- note
+        # [0, 1], not [0, 1): for a tiny negative `v/h` the subtraction rounds
+        # to exactly 1.0 in Float64, which the usual "fractional part is < 1"
+        # argument misses. Even so `t = (f2 - f1)/2` is bounded by 0.5 in
+        # magnitude, because reaching |t| > 0.5 would need |f2 - f1| > 1 and
+        # both lie within [0, 1]. So neither branch fires.
+        #
+        # Kept rather than deleted: it is a two-line wrap whose premise depends
+        # on that float subtlety, and it would be correct if a future change to
+        # how `f1`/`f2` are formed made it reachable. The post-shift invariant
+        # that actually matters -- fractional separation exactly 0 here, exactly
+        # +/-0.5 for `:standard` -- holds either way.
         if t > 0.5
             t -= 0.5
         elseif t < -0.5
@@ -1474,7 +1487,18 @@ function _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny,
                                 workspace::_PICCPUWorkspace)
     nchunks = _PIC_DEPOSIT_CHUNKS
     local_charge = workspace.local_charge
-    length(local_charge) == nchunks || return _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
+    # The invariant, not a silent fallback (2026-08-05_b audit, U6-10).
+    # `_pic_cpu_workspace` always builds `local_charge` with exactly
+    # `_PIC_DEPOSIT_CHUNKS` entries and both call sites compare against that
+    # same constant, so this cannot fire -- and the two fallbacks DISAGREED
+    # about what to do if it did: this one silently re-entered the threaded
+    # path, its drifted twin the serial one. A workspace that does not match
+    # its own constant is a construction bug, and a quietly different code
+    # path is the worst way to learn about it.
+    length(local_charge) == nchunks || error(
+        "PIC deposit workspace has $(length(local_charge)) chunk grids but the " *
+        "deposit wants $(nchunks); _pic_cpu_workspace builds _PIC_DEPOSIT_CHUNKS " *
+        "of them, so this is a workspace construction bug.")
     _run_logical_workers(nchunks) do chunk, _
         local_grid = local_charge[chunk]
         fill!(local_grid, zero(eltype(local_grid)))
@@ -1491,8 +1515,11 @@ function _pic_deposit_drifted_threaded!(charge, method, x, px, y, py, drift_s, x
                                         workspace::_PICCPUWorkspace)
     nchunks = _PIC_DEPOSIT_CHUNKS
     local_charge = workspace.local_charge
-    length(local_charge) == nchunks ||
-        return _pic_deposit_drifted_serial!(charge, method, x, px, y, py, drift_s, x0, y0, hx, hy, nx, ny)
+    # Same invariant as the undrifted twin above (U6-10).
+    length(local_charge) == nchunks || error(
+        "PIC drifted-deposit workspace has $(length(local_charge)) chunk grids " *
+        "but the deposit wants $(nchunks); _pic_cpu_workspace builds " *
+        "_PIC_DEPOSIT_CHUNKS of them, so this is a workspace construction bug.")
     _run_logical_workers(nchunks) do chunk, _
         local_grid = local_charge[chunk]
         fill!(local_grid, zero(eltype(local_grid)))
@@ -1607,16 +1634,26 @@ result. The margin stays as it is.
     if !(zero(u) <= u <= u_of(n))
         return 1, (zero(u), zero(u), zero(u))
     end
+    # Literals typed to the coordinate, as the CUDA twin already writes them
+    # (2026-08-05_b audit, U6-6). Untyped `0.125` / `0.5` / `0.75` promote a
+    # Float32 coordinate to Float64, so a Float32 beam got Float64 TSC weights
+    # on the CPU while `_cuda_pic_tsc_weights` computed them in Float32 -- and
+    # the CPU then accumulated `Float32_array += Float64_product`, i.e. in
+    # Float64 with a final rounding, where the device accumulates in Float32.
+    # The CIC pair beside this one is already type-clean on both sides, so TSC
+    # was the only divergence left in a deposit the 2026-08-05 audit (U2-3)
+    # aligned in closed form.
     ix = floor(Int, u)
     f = u - floor(u)
-    if f < 0.5
+    c8 = oftype(f, 0.125); half = oftype(f, 0.5); c34 = oftype(f, 0.75)
+    if f < half
         t = f * f
-        w = (0.125 + 0.5 * (t - f), 0.75 - t, 0.125 + 0.5 * (t + f))
+        w = (c8 + half * (t - f), c34 - t, c8 + half * (t + f))
         base = ix
     else
         fr = one(f) - f
         t = fr * fr
-        w = (0.125 + 0.5 * (t + fr), 0.75 - t, 0.125 + 0.5 * (t - fr))
+        w = (c8 + half * (t + fr), c34 - t, c8 + half * (t - fr))
         base = ix + 1
     end
     return clamp(base, 1, n - 2), w

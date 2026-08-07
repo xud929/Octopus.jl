@@ -385,7 +385,17 @@ function _slices_from_boundaries(rep::Phase6DRep, slicing, boundaries, flags=not
     # A zero-width distribution collapses every boundary to one value, and
     # `searchsortedlast` + clamp then filed everything into slice `ns` -- while
     # the equal-width and equal-area paths deliberately use slice 1 for the
-    # same beam. One convention, slice 1, everywhere (audit part 6, R7).
+    # same beam. One convention, slice 1, for every method that reaches this
+    # function (audit part 6, R7).
+    #
+    # NOT `:equal_count`, which never gets here: it builds membership from the
+    # rank permutation and calls `_finish_longitudinal_slices` directly, so a
+    # zero-width beam lands in the LAST slices by rank -- measured [2,2,3] for
+    # seven co-located particles at ns=3, where every other method gives
+    # [7,0,0], and [0,0,1] for a single particle where the others give [1,0,0].
+    # That is deliberate and documented as the R2 rank contract in
+    # `LongitudinalSlicing`'s docstring, and both backends agree on it; the word
+    # "everywhere" was the only thing wrong here (2026-08-05_b audit, U6-8).
     if ns > 0 && boundaries[1] == boundaries[end]
         indices = [Int[] for _ in 1:ns]
         for i in eachindex(z)
