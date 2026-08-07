@@ -731,6 +731,13 @@ Supported methods:
 - `:specified`: use `positions` as internal boundaries in units of beam
   longitudinal rms around the beam mean.
 
+Three further values are accepted as ALIASES, and were undeclared until the
+2026-08-05_b audit (U5-12) -- behaviour keyed off something no docstring or
+schema entry mentioned:
+
+- `:equal_spaced` — alias for `:equal_width`.
+- `:gaussian`, `:Gaussian` — aliases for `:normal_quantile`.
+
 `center_position` may be `:centroid` or `:midpoint`.
 """
 struct LongitudinalSlicing <: AbstractOctopusObject
@@ -1030,7 +1037,19 @@ end
                       luminosity_deposit_method=nothing,
                       luminosity_schedule=nothing,
                       slicing=LongitudinalSlicing(),
-                      slicing1=nothing, slicing2=nothing)
+                      slicing1=nothing, slicing2=nothing,
+                      field_derivative=:second, interaction_grid=:slice_pair,
+                      backend_configurations=())
+
+`backend_configurations` is the ONLY way to attach a `CUDAPICLaunchConfig` and
+so to set the per-family CUDA thread counts; it takes a tuple of backend
+configuration objects. It went unmentioned in this docstring, and
+`CUDAPICLaunchConfig`'s own docstring does not say how to attach it either, so
+its only public appearance was a line in `docs/current_runtime.md`
+(2026-08-05_b audit, U5-15):
+
+    PICPoissonSolver(; grid=(128, 128),
+                     backend_configurations=(CUDAPICLaunchConfig(kick_threads=256),))
 
 Grid particle-in-cell strong-strong collision solver. Each directed slice-pair
 interaction deposits the source slice onto a transverse mesh at the left and

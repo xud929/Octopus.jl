@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **246 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **248 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -246,10 +246,10 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U4-18 | low | CONFIRMED; (ii) already closed by U5-4, (i) vacuous by construction and a field-based substitute was tried and reverted — on todo.md (2026-08-06) | `src/contracts/Contracts.jl:313 → src/tasks/strongstrong/interface.jl` | two of the checks `validate_configuration_metadata()` gained in the U3-4 repair, and which `PublicConfigurationEffectivenessContract` calls as its first act, cannot fail — the BPMObserver schema↔repor |
 | U5-10 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:2160-2166` | the append-mode "replacing the entire existing luminosity history" warning fires |
 | U5-11 | low |  | `src/tasks/strongstrong/interface.jl:1592 (export list at :1-10)` | `strong_strong_task_option_schema` is the only public configuration schema in the |
-| U5-12 | low |  | `src/tasks/strongstrong/interface.jl:700-702 vs 647-677 — class (b)` | `LongitudinalSlicing` accepts three slicing methods that no docstring or schema |
+| U5-12 | low | CONFIRMED, FIXED (2026-08-06) — three aliases declared; verified they behave identically to their targets | `src/tasks/strongstrong/interface.jl:700-702 vs 647-677 — class (b)` | `LongitudinalSlicing` accepts three slicing methods that no docstring or schema |
 | U5-13 | low | FIXED | `src/tasks/strongstrong/interface.jl:1545, 2064 — OUT OF HYPOTHESIS (tr` | two source comments point the reader at `pic_cuda.jl:5041` for the Gaussian |
 | U5-14 | low |  | `src/tasks/strongstrong/interface.jl:1649-1654, 1743-1757, 1780-1792` | `validate_configuration_metadata`'s default-vs-constructor check is applied |
-| U5-15 | low |  | `src/tasks/strongstrong/interface.jl:945-1179` | `backend_configurations` is a public `PICPoissonSolver` constructor keyword with a |
+| U5-15 | low | CONFIRMED, FIXED (2026-08-06) — in the signature and the prose, with the usage example that was nowhere | `src/tasks/strongstrong/interface.jl:945-1179` | `backend_configurations` is a public `PICPoissonSolver` constructor keyword with a |
 | U5-5 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:1484-1494 (declaration at 1413-141` | `grid_extent_sigma` declares `dependencies=(:grid_extent,)` but `_pic_option_active` |
 | U5-6 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:2467-2482` | the identity→configuration change in `_collision_solver` silently accepts and |
 | U5-7 | low | CONFIRMED, FIXED (2026-08-06) — now 0 allocations with no audit active | `src/tasks/strongstrong/interface.jl:2275-2281 (docstring claim at 2273` | `_record_solver_configuration!`'s docstring says "Costs nothing unless an |
