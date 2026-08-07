@@ -235,6 +235,22 @@ documented boundary that justifies the extra module layer.
   implementations may use task-owned subdirectories with a short entry file,
   but should not introduce a new Julia module boundary.
 - `src/constants/`: shared physical constants with units documented.
+- `src/beam/`: the beam layer -- `BeamParams`, `Phase6DRep`, `Beam`, coordinate
+  accessors and beam statistics.
+- `src/knobs/`: the knob system -- expressions, epochs, resolution and the
+  Symbolics adapter. Public API surface; design note `docs/knob_control.md`.
+- `src/knowledge/`: the self-describing layer -- `ElementSpec`, `ElementMeta`,
+  parameter schemas, metadata validation.
+- `src/registry/`: reflection registry and the generated snapshot.
+- `src/math/`: shared numerics with no accelerator semantics (Faddeeva, the
+  counter RNG, special functions).
+- `src/examples/`: the `Example` category types the registry publishes. The
+  curated precedents themselves are scripts in `examples/`, not here.
+
+(That list is all thirteen directories under `src/`. It named seven until the
+2026-08-05_b audit, U26-12, leaving an agent orienting from this file with no
+ownership rule for six of them -- including `src/knobs/`, an entire public API
+surface with its own indexed design note.)
 - `docs/`: documentation, indexed by `docs/README.md`. Detailed API guidance
   belongs in docstrings, not here. Subfolders: `docs/theory/` holds
   physics/method derivations (the Knowledge Layer) that implementing code links

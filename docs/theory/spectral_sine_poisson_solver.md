@@ -69,9 +69,15 @@ $$
     \nabla^2\psi_{lm} = -(\alpha_l^2+\beta_m^2)\,\psi_{lm}.
 $$
 
-Every $\psi_{lm}$ satisfies the boundary condition automatically:
-$\sin(\alpha_l\cdot 0)=\sin(l\pi)=0$ and $\sin(\beta_m\cdot 0)=\sin(m\pi)=0$, so
+Every $\psi_{lm}$ satisfies the boundary condition automatically, at each of the
+two edges separately: $\sin(\alpha_l\cdot 0)=0$ and $\sin(\alpha_l\cdot a)=\sin(l\pi)=0$,
+and likewise $\sin(\beta_m\cdot 0)=0$ and $\sin(\beta_m\cdot b)=\sin(m\pi)=0$, so
 $\psi_{lm}=0$ on all four edges $x=0,a$ and $y=0,b$.
+
+(Written as `$\sin(\alpha_l\cdot 0)=\sin(l\pi)=0$` until the 2026-08-05_b audit,
+U26-14, which chains the two edges through an equality that holds only because
+both sides vanish -- $\alpha_l\cdot 0$ is not $l\pi$. The mathematics was right;
+the chain was not.)
 
 **Boundary-condition note.** The sine basis enforces *homogeneous Dirichlet*
 boundary conditions, $\phi|_{\partial\Omega}=0$. This is **not** the exact

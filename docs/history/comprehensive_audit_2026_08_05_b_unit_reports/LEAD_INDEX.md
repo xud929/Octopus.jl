@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **244 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **246 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -230,9 +230,9 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U24-9 | low |  | `validation/slice_longitudinal_zscan.jl:34-38 vs 388-543` | the header describes one secondary pass (per-slice grid); the code runs and emits four |
 | U26-10 | low |  | `docs/theory/slice_longitudinal_interpolation.md (file:line citations)` | nearly every `file:line` pointer in the note has rotted, and the note |
 | U26-11 | low | FIXED | `docs/theory/solenoid.md §14.2` | "Contract now 41 cases"; the committed PTC reference table carries 55. |
-| U26-12 | low |  | `AGENTS.md "Source Ownership" (out-of-hypothesis; task item f)` | the directory list names 7 of the 13 directories under `src/`. |
+| U26-12 | low | CONFIRMED, FIXED (2026-08-06) — all 13 src/ directories now have an ownership rule | `AGENTS.md "Source Ownership" (out-of-hypothesis; task item f)` | the directory list names 7 of the 13 directories under `src/`. |
 | U26-13 | low |  | `docs/theory/rf_cavity_and_reference_energy.md §6` | the note reads as a pending proposal for an element that is implemented, |
-| U26-14 | low/style |  | `docs/theory/spectral_sine_poisson_solver.md §2` | "$\sin(\alpha_l\cdot 0)=\sin(l\pi)=0$" conflates the two edges — the |
+| U26-14 | low/style | CONFIRMED, FIXED (2026-08-06) — the two edges stated separately | `docs/theory/spectral_sine_poisson_solver.md §2` | "$\sin(\alpha_l\cdot 0)=\sin(l\pi)=0$" conflates the two edges — the |
 | U26-15 | low/style | FIXED | `docs/theory/beam_line_composition.md §5, §7` | nomenclature drift — the note recommends `find(line, sel)` throughout |
 | U3-4 | low | CONFIRMED, not fixed — needs a convention decision (promote to solver type vs follow the beam); on todo.md (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:5580-5584` | For a `Float32` beam the CPU builds the slice moments in `Float64` and the CUDA |
 | U3-5 | low |  | `src/tasks/strongstrong/pic_cuda.jl:4661-4738` | `_cuda_pic_kick_indexed_kernel!` (4661-4696) and |
