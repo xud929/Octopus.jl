@@ -5717,7 +5717,7 @@ end
     t3 = TrackingTask(dline; hooks=(ScheduledObserver(MomentObserver(p3; capacity=2, append=true)),))
     execute!(t3, mk1(); turns=3)
     t3b = TrackingTask(dline; hooks=(ScheduledObserver(MomentObserver(p3; capacity=2, append=true)),))
-    @test_logs (:warn, r"replacing the entire existing moment table") match_mode = :any execute!(
+    @test_logs (:warn, r"replacing the ENTIRE existing moment table") match_mode = :any execute!(
         t3b, mk1(); turns=2)
     @test turns_in(p3) == [0, 1]
 
