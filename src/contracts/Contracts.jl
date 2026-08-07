@@ -1289,6 +1289,17 @@ Base.@kwdef struct SymplecticityContract <: AbstractPhysicsContract
     # times looser than they declare, against measured residuals of ~1.5e-13.
     default_tolerance::Float64 = 1.0e-11
     lorentz_angle::Float64 = 0.01
+    # The Lorentz half's two criteria, as FIELDS (2026-08-05_b audit, U4-16).
+    # They were literals in the function body -- `inverse_residual <= 1.0e-10 &&
+    # determinant_error <= 2.0e-7` -- so `default_tolerance`, which the struct
+    # documents as the knob, reached only the twelve case residuals and not the
+    # crossing-map half of what this contract checks. A caller tightening it to
+    # probe a regression saw the Lorentz verdict never move. Values unchanged;
+    # they are simply reachable now, and the boost pair is quasi-symplectic by
+    # construction (det = sec^3 / cos^3), so these are not the case tolerance
+    # under another name and are deliberately separate knobs.
+    lorentz_inverse_tolerance::Float64 = 1.0e-10
+    lorentz_determinant_tolerance::Float64 = 2.0e-7
 end
 
 description(::Type{SymplecticityContract}) =
@@ -1477,7 +1488,8 @@ function validate(contract::SymplecticityContract; kwargs...)
                             abs(reverse_det - cos(contract.lorentz_angle)^3))
     metrics[:lorentz_inverse_residual] = inverse_residual
     metrics[:lorentz_determinant_error] = determinant_error
-    lorentz_passed = inverse_residual <= 1.0e-10 && determinant_error <= 2.0e-7
+    lorentz_passed = inverse_residual <= contract.lorentz_inverse_tolerance &&
+                     determinant_error <= contract.lorentz_determinant_tolerance
     all_passed &= lorentz_passed
 
     # Declaration↔case tripwire (2026-08-05 audit, U3-3), derived from the
@@ -2406,6 +2418,7 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
     # job is to enforce it.
     unperturbable = String[]   # no perturbation this contract can form
     rejected = String[]        # constructor refused the perturbed value
+    exemptions_seen = Set{Tuple{Symbol,Symbol}}()   # U4-17: which `inactive` entries applied
     for T in registered_element_specs()
         meta = _element_meta_or_nothing(T)
         meta === nothing && continue
@@ -2444,7 +2457,16 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
         end
         for (key, pmeta) in pairs(parameter_schema(T))
             pmeta isa ParamMeta || continue
-            haskey(contract.inactive, (meta.kind, key)) && continue
+            # Record which exemptions were consulted, so a stale one can be
+            # reported (2026-08-05_b audit, U4-17). An exemption for a
+            # (kind, parameter) pair that no longer exists excuses nothing and
+            # nobody notices; worse, an exemption whose parameter later becomes
+            # genuinely ignored keeps excusing it forever, silently, which is
+            # the direction that matters.
+            if haskey(contract.inactive, (meta.kind, key))
+                push!(exemptions_seen, (meta.kind, key))
+                continue
+            end
             # The raw default, INCLUDING `nothing`. Substituting 0.0 here threw
             # away the only type information a `nothing`-defaulted parameter
             # has, sending `curved` down the Real branch to `InexactError:
@@ -2489,15 +2511,27 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
             deviation <= contract.atol && push!(ignored, "$(meta.kind).$(key)")
         end
     end
+    # An exemption naming a pair the sweep never reaches is stale: the kind or
+    # the parameter is gone, or a probe change moved it out of range, and the
+    # entry now documents something that does not exist (U4-17).
+    stale_exemptions = sort!([string(k, ".", p) for (k, p) in keys(contract.inactive)
+                              if !((k, p) in exemptions_seen)])
     metrics = Dict{Symbol,Any}(:checked => checked, :ignored => length(ignored),
                                :skipped_kinds => length(skipped),
                                :broken_kinds => length(broken),
                                :unperturbable => length(unperturbable),
                                :rejected => length(rejected),
-                               :undecided => length(unperturbable) + length(rejected))
+                               :undecided => length(unperturbable) + length(rejected),
+                               :exemptions_declared => length(contract.inactive),
+                               :exemptions_applied => length(exemptions_seen),
+                               :stale_exemptions => length(stale_exemptions))
     isempty(broken) || return ContractResult(false,
         "probe baselines threw (a broken kind, not a missing probe): " *
         join(sort(broken), "; "); metrics=metrics)
+    isempty(stale_exemptions) || return ContractResult(false,
+        "declared inactive but never reached by the sweep (stale exemptions -- the " *
+        "kind or parameter is gone, or a probe change moved it out of range): " *
+        join(stale_exemptions, ", "); metrics=metrics)
     isempty(ignored) && return ContractResult(true,
         "every parameter this contract could decide reached the map " *
         "($(checked) checked, $(length(skipped)) kinds without a probe; " *
@@ -2917,6 +2951,7 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
     failures = String[]
     checked = 0
     deferred_cuda = Tuple{Symbol,Symbol}[]
+    solver_exemptions_seen = Set{Tuple{Symbol,Symbol}}()   # U4-17
     # Pin the RNG, as every other strong-strong contract does. Without this the
     # probe beams depend on whatever global state the caller left behind: this
     # contract passed standalone and failed inside the test suite, where earlier
@@ -2934,7 +2969,10 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
         baseline = _solver_contract_observable(baseline_solver, base1, base2,
                                                CPUThreadsBackend)
         for (name, meta) in pairs(solver_option_schema(T))
-            haskey(contract.inactive, (kind, name)) && continue
+            if haskey(contract.inactive, (kind, name))
+                push!(solver_exemptions_seen, (kind, name))    # U4-17
+                continue
+            end
             if !haskey(alternatives, name)
                 push!(failures,
                       "$(kind).$(name) has no declared alternative and no stated reason")
@@ -3137,6 +3175,19 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
     end
     metrics[:cuda_launch_solvers_checked] = cuda_checked
     metrics[:cuda_options_checked] = cuda_options_checked
+
+    # Same staleness tripwire as the element table (U4-17): an exemption naming
+    # a (solver, option) pair the sweep never reaches excuses nothing, and an
+    # entry whose option later becomes genuinely ignored would keep excusing it
+    # forever with no signal.
+    stale = sort!([string(k, ".", n) for (k, n) in keys(contract.inactive)
+                   if !((k, n) in solver_exemptions_seen)])
+    metrics[:exemptions_declared] = length(contract.inactive)
+    metrics[:exemptions_applied] = length(solver_exemptions_seen)
+    metrics[:stale_exemptions] = length(stale)
+    isempty(stale) || return ContractResult(false,
+        "declared inactive but never reached by the sweep (stale exemptions): " *
+        join(stale, ", "); metrics=metrics)
 
     isempty(failures) || return ContractResult(false,
         "solver options did not reach their consumers: " * join(sort(failures), "; ");

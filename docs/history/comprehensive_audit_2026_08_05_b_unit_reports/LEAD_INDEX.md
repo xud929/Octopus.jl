@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **210 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **214 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -239,11 +239,11 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U3-7 | low |  | `src/tasks/strongstrong/pic_cuda.jl:5136, 5173-5177` | For a `Float32` beam, `_cuda_gaussian_collide_sequential!` returns a `Float64` |
 | U3-8 | low |  | `src/tasks/strongstrong/pic_cuda.jl:4774-4802` | `_cuda_pic_kick_pair_indexed_longitudinal_kernel!` is the only kick kernel in the |
 | U4-13 | low | CONFIRMED, FIXED (2026-08-06) — all 12 validate methods reject unknown keywords | `src/contracts/Contracts.jl:180, :200, :310, :639, :683, :779, :1245, :` | every `validate` method takes `; kwargs...` and no method reads it, so any keyword a caller misspells or invents is silently accepted and dropped — the (e) unknown-keyword family, inside the file whos |
-| U4-14 | low |  | `src/contracts/Contracts.jl:185-198, :1146, :1330, :1497, :2335` | the hand-written `description` method table covers 9 of the 11 concrete contracts; `PTCConsistencyContract` and `ElementParameterEffectivenessContract` fall through to a fallback that returns the empt |
+| U4-14 | low | ALREADY FIXED by U12-17 (2026-08-06) — all 11 concrete contracts describe themselves, with a registry tripwire | `src/contracts/Contracts.jl:185-198, :1146, :1330, :1497, :2335` | the hand-written `description` method table covers 9 of the 11 concrete contracts; `PTCConsistencyContract` and `ElementParameterEffectivenessContract` fall through to a fallback that returns the empt |
 | U4-15 | low |  | `src/contracts/Contracts.jl:1543-1545` | `CoherentModePhysicsContract(solver=:gaussian_pic)` — one of the three solver branches the contract's docstring declares, and one it declares *passing* — is executed by no test and no validation scrip |
-| U4-16 | low |  | `src/contracts/Contracts.jl:1273` | the Lorentz quasi-symplecticity criterion uses two tolerances hardcoded in the function body (`1.0e-10`, `2.0e-7`) that no field of `SymplecticityContract` governs, so the contract's declared `default |
-| U4-17 | low |  | `src/contracts/Contracts.jl:1987-2037 and :2257-2288` | neither exemption table has a staleness tripwire. Both are clean today (measured), but a `(kind, parameter)` or `(solver, option)` pair that no longer exists silently excuses nothing, and — the direct |
-| U4-18 | low |  | `src/contracts/Contracts.jl:313 → src/tasks/strongstrong/interface.jl` | two of the checks `validate_configuration_metadata()` gained in the U3-4 repair, and which `PublicConfigurationEffectivenessContract` calls as its first act, cannot fail — the BPMObserver schema↔repor |
+| U4-16 | low | CONFIRMED, FIXED (2026-08-06) — Lorentz tolerances are fields now; verified the knob moves the verdict | `src/contracts/Contracts.jl:1273` | the Lorentz quasi-symplecticity criterion uses two tolerances hardcoded in the function body (`1.0e-10`, `2.0e-7`) that no field of `SymplecticityContract` governs, so the contract's declared `default |
+| U4-17 | low | CONFIRMED, FIXED (2026-08-06) — staleness tripwire on both tables; 36/36 and 10/10 applied, negative control executed | `src/contracts/Contracts.jl:1987-2037 and :2257-2288` | neither exemption table has a staleness tripwire. Both are clean today (measured), but a `(kind, parameter)` or `(solver, option)` pair that no longer exists silently excuses nothing, and — the direct |
+| U4-18 | low | CONFIRMED; (ii) already closed by U5-4, (i) vacuous by construction and a field-based substitute was tried and reverted — on todo.md (2026-08-06) | `src/contracts/Contracts.jl:313 → src/tasks/strongstrong/interface.jl` | two of the checks `validate_configuration_metadata()` gained in the U3-4 repair, and which `PublicConfigurationEffectivenessContract` calls as its first act, cannot fail — the BPMObserver schema↔repor |
 | U5-10 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:2160-2166` | the append-mode "replacing the entire existing luminosity history" warning fires |
 | U5-11 | low |  | `src/tasks/strongstrong/interface.jl:1592 (export list at :1-10)` | `strong_strong_task_option_schema` is the only public configuration schema in the |
 | U5-12 | low |  | `src/tasks/strongstrong/interface.jl:700-702 vs 647-677 — class (b)` | `LongitudinalSlicing` accepts three slicing methods that no docstring or schema |

@@ -1929,6 +1929,18 @@ function validate_configuration_metadata()
         report_names = Set(entry.name for entry in configuration_report(observer))
         schema_names == report_names || push!(errors,
             "$(typeof(observer)) schema and configuration-report keys disagree")
+        # NOTE (2026-08-05_b audit, U4-18): the comparison above is real for the
+        # five observers whose reports are hand-written tuples, and an IDENTITY
+        # for any observer that derives its report by iterating the schema --
+        # `configuration_report(::BPMObserver)` does exactly that, so for it the
+        # check passes for any possible schema.
+        #
+        # A "every option names a field" check was tried here and REVERTED: an
+        # option is a CONSTRUCTOR KEYWORD, not a field, and three observers
+        # legitimately expose `capacity` while storing `buffer_capacity`. There
+        # is no cheap field-based substitute; making this non-vacuous needs the
+        # keyword set of the constructor, which Julia does not expose directly.
+        # Recorded on docs/todo.md rather than replaced with a wrong check.
     end
     isempty(errors) || throw(ArgumentError(join(errors, '\n')))
     return true
