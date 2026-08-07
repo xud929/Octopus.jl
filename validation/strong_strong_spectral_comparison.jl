@@ -24,6 +24,16 @@ Useful controls:
     OCTOPUS_SPECTRAL_COMPARE_INCLUDE_GRID_FREE=1
     OCTOPUS_SPECTRAL_COMPARE_BACKEND=cpu
     OCTOPUS_SPECTRAL_COMPARE_OUTPUT=result/strong_strong_spectral_comparison
+
+Outputs (five TSVs, all sharing OCTOPUS_SPECTRAL_COMPARE_OUTPUT as their prefix;
+AGENTS.md §Updating Validations requires them stated, and the header named only
+the prefix -- 2026-08-05_b audit, U24-12):
+
+    <prefix>_timing.tsv                 per-solver complete-turn wall times
+    <prefix>_luminosity.tsv             luminosity per turn per solver
+    <prefix>_moments.tsv                final six-dimensional beam moments
+    <prefix>_coordinate_differences.tsv per-particle coordinate deltas against PIC
+    <prefix>_field_microprofile.tsv     field samples along a line through the core
 =#
 
 if !isdefined(Main, :Octopus)
@@ -156,8 +166,11 @@ function field_microbenchmark(solver, base1, base2)
     # `_spectral_field` was the allocating one-shot entry point; `ec86c34`
     # ("isolate solver workspaces across executions") replaced it with
     # `_spectral_field_ws`, which takes a caller-owned workspace and ignores it
-    # for `:grid_free`. This script was written before that and has not run
-    # since. The workspace is built OUTSIDE the timed block on purpose, so
+    # for `:grid_free`. This script predates that change; the "and has not run
+    # since" that used to follow is no longer true -- it was run to completion
+    # at HEAD on 2026-08-06 (2026-08-05_b audit, U24-12), which is what makes
+    # the workspace handling below load-bearing rather than untested.
+    # The workspace is built OUTSIDE the timed block on purpose, so
     # `@allocated` still measures the field solve rather than the setup;
     # `_spectral_grid_ws` documents this exact caller ("internal one-off
     # validation callers own this workspace directly").

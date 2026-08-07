@@ -32,6 +32,13 @@ Selected by environment variable; one process per arm/seed.
 | D | `:linear`    | N   | `:TSC` | isolates deposition from interpolation |
 | E | `:quadratic` | N   | `:TSC` | the combination the z-scan favours |
 | F | `:linear`    | N   | `:CIC` | `interaction_grid=:source_slice`: removes the transverse grid-resizing jump instead |
+| G | `:linear`    | N   | `:CIC` | `interaction_grid=:node`: one node mesh per turn, so neither beam resizes a grid mid-collision |
+
+(Arm G was missing from this table while the override list below documented it,
+`interaction_grid in (:slice_pair, :source_slice, :node)` accepts it, the theory
+note discusses it at length in §10.6, and `result/` holds 14 runs of it -- so the
+arm was real and studied but absent from the table a reader uses to pick one;
+2026-08-05_b audit, U24-13.)
 
 Discrimination
 --------------

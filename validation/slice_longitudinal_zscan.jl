@@ -95,7 +95,16 @@ config = (
     green_type      = :integrated,
     field_derivative = :second,
     nslices         = _envi("OCTOPUS_ZSCAN_NSLICES", 7),  # slices/beam, normal-quantile
-    source_slices   = (4, 6),    # source slice indices to test: centre and off-centre
+    # Derived from nslices, not literals (2026-08-05_b audit, U24-8). The intent
+    # -- centre and off-centre -- is expressible from the slice count, while
+    # `(4, 6)` is only the answer for the default 7 and made the documented
+    # OCTOPUS_ZSCAN_NSLICES override crash with a raw `BoundsError: attempt to
+    # access 5-element Vector{Vector{Int64}} at index [6]` for any value below 6.
+    source_slices   = let ns = _envi("OCTOPUS_ZSCAN_NSLICES", 7)
+        centre = max(1, (ns + 1) ÷ 2)
+        off = min(ns, centre + max(1, ns ÷ 4))
+        centre == off ? (centre,) : (centre, off)
+    end,
     scan_slices     = 3,         # number of adjacent field slices to sweep
     samples_per_slice = 61,      # z samples per field slice
     boundary_eps_frac = 1.0e-6,  # boundary probe offset, as a fraction of slice width

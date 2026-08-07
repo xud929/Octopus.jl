@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **227 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **231 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -222,11 +222,11 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U23-7 | low | CONFIRMED, FIXED (2026-08-06) | `validation/pic_grid_extent_stability.jl:109-110` | The `dropped` column double-counts a corner escapee and measures a different box from |
 | U23-8 | low | CONFIRMED, FIXED (2026-08-06) | `validation/pic_gaussian_field_validation.jl:20-24` | The header's "Outputs are written under `result/`" list omits a file the script always |
 | U24-10 | low |  | `validation/generate_ptc_reference.jl:336-355` | the committed reference table is truncated before the first MAD-X job runs, so a failure |
-| U24-11 | low |  | `validation/high_energy_weakstrong_limit.jl:380-381` | the two Gaussian-arm thresholds are the only tolerances in the file that are neither |
-| U24-12 | low |  | `validation/strong_strong_spectral_comparison.jl:1-27, 156-163` | the header has no `Outputs` section although the script writes five TSVs, and it carries a |
-| U24-13 | low |  | `validation/slice_interpolation_emittance_growth.jl:26-35` | the arms table documents six arms A–F and omits the `:node` interaction-grid arm, which the |
+| U24-11 | low | CONFIRMED, FIXED (2026-08-06) — named consts + env vars; verified the knob bites | `validation/high_energy_weakstrong_limit.jl:380-381` | the two Gaussian-arm thresholds are the only tolerances in the file that are neither |
+| U24-12 | low | CONFIRMED, FIXED (2026-08-06) — five outputs named, stale 'has not run since' corrected | `validation/strong_strong_spectral_comparison.jl:1-27, 156-163` | the header has no `Outputs` section although the script writes five TSVs, and it carries a |
+| U24-13 | low | CONFIRMED, FIXED (2026-08-06) — the :node arm added to the table | `validation/slice_interpolation_emittance_growth.jl:26-35` | the arms table documents six arms A–F and omits the `:node` interaction-grid arm, which the |
 | U24-7 | low |  | `validation/symplecticity_validation.jl:89-93` | the Lorentz leg is still hand-copied knowledge — reference point, crossing angle and both |
-| U24-8 | low |  | `validation/slice_longitudinal_zscan.jl:98` | `source_slices = (4, 6)` is hardcoded while `OCTOPUS_ZSCAN_NSLICES` is a documented |
+| U24-8 | low | CONFIRMED, FIXED (2026-08-06) — source slices derived from nslices; verified at 3, 5 and 7 | `validation/slice_longitudinal_zscan.jl:98` | `source_slices = (4, 6)` is hardcoded while `OCTOPUS_ZSCAN_NSLICES` is a documented |
 | U24-9 | low |  | `validation/slice_longitudinal_zscan.jl:34-38 vs 388-543` | the header describes one secondary pass (per-slice grid); the code runs and emits four |
 | U26-10 | low |  | `docs/theory/slice_longitudinal_interpolation.md (file:line citations)` | nearly every `file:line` pointer in the note has rotted, and the note |
 | U26-11 | low | FIXED | `docs/theory/solenoid.md §14.2` | "Contract now 41 cases"; the committed PTC reference table carries 55. |

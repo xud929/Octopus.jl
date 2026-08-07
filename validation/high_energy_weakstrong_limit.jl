@@ -14,6 +14,8 @@ Controls:
     OCTOPUS_HIGH_ENERGY_SPECTRAL_FREE_GRID=48,48
     OCTOPUS_HIGH_ENERGY_ELECTRON_GEV=1e100
     OCTOPUS_HIGH_ENERGY_SIGMA_XY=false
+    OCTOPUS_HIGH_ENERGY_GAUSSIAN_ATOL=2e-14
+    OCTOPUS_HIGH_ENERGY_GAUSSIAN_LUM_RTOL=2e-12
     OCTOPUS_HIGH_ENERGY_PIC_LUM_RTOL=0.08
     OCTOPUS_HIGH_ENERGY_PIC_SIZE_RTOL=0.08
     OCTOPUS_HIGH_ENERGY_SPECTRAL_MODEL_LUM_RTOL=0.08
@@ -43,6 +45,17 @@ const GRID = parse(Int, get(ENV, "OCTOPUS_HIGH_ENERGY_GRID", "96"))
 const ELECTRON_GEV = parse(Float64, get(ENV, "OCTOPUS_HIGH_ENERGY_ELECTRON_GEV", "1e100"))
 const INCLUDE_SIGMA_XY = lowercase(get(ENV, "OCTOPUS_HIGH_ENERGY_SIGMA_XY", "false")) in
     ("1", "true", "yes", "on")
+# The Gaussian arm's two thresholds, named and env-tunable like every other
+# tolerance in this file (2026-08-05_b audit, U24-11). They were bare literals
+# in the middle of a NamedTuple -- hand copies of
+# `HighEnergyWeakStrongLimitContract`'s `gaussian_atol` / `gaussian_luminosity_rtol`
+# defaults -- so `test/runtests.jl` overrode every OTHER tolerance of the same
+# comparison and could not touch these two, tuning the two arms by different
+# mechanisms.
+const GAUSSIAN_ATOL =
+    parse(Float64, get(ENV, "OCTOPUS_HIGH_ENERGY_GAUSSIAN_ATOL", "2.0e-14"))
+const GAUSSIAN_LUM_RTOL =
+    parse(Float64, get(ENV, "OCTOPUS_HIGH_ENERGY_GAUSSIAN_LUM_RTOL", "2.0e-12"))
 const PIC_LUM_RTOL = parse(Float64, get(ENV, "OCTOPUS_HIGH_ENERGY_PIC_LUM_RTOL", "0.08"))
 const PIC_SIZE_RTOL = parse(Float64, get(ENV, "OCTOPUS_HIGH_ENERGY_PIC_SIZE_RTOL", "0.08"))
 const SPECTRAL_MODEL_LUM_RTOL =
@@ -295,7 +308,9 @@ function run_high_energy_weakstrong_limit(; n=N, nslices=NSLICES, grid=GRID,
                                           spectral_model_size_rtol=SPECTRAL_MODEL_SIZE_RTOL,
                                           spectral_limit_atol=SPECTRAL_LIMIT_ATOL,
                                           spectral_limit_luminosity_rtol=SPECTRAL_LIMIT_LUM_RTOL,
-                                          spectral_cuda=SPECTRAL_CUDA)
+                                          spectral_cuda=SPECTRAL_CUDA,
+                                          gaussian_atol=GAUSSIAN_ATOL,
+                                          gaussian_lum_rtol=GAUSSIAN_LUM_RTOL)
     base_electron, base_proton = high_energy_base_beams(;
         n=n, electron_gev=electron_gev)
     slicing = LongitudinalSlicing(
@@ -377,8 +392,8 @@ function run_high_energy_weakstrong_limit(; n=N, nslices=NSLICES, grid=GRID,
         gaussian_electron_max_abs_change=gaussian_electron_error,
         gaussian_proton_size_relative_error=gaussian_size_rel,
         pic_proton_size_relative_error=pic_size_rel,
-        gaussian_passed=gaussian_proton_error <= 2.0e-14 &&
-                        gaussian_lum_rel <= 2.0e-12,
+        gaussian_passed=gaussian_proton_error <= gaussian_atol &&
+                        gaussian_lum_rel <= gaussian_lum_rtol,
         pic_passed=pic_lum_rel <= pic_luminosity_rtol && pic_size_rel <= pic_size_rtol,
         pic_luminosity_rtol=pic_luminosity_rtol,
         pic_size_rtol=pic_size_rtol,
