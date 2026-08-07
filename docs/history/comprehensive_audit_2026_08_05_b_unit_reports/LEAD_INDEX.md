@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **238 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **240 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -170,8 +170,8 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U16-9 | low |  | `src/elements/{rf_cavity,patch,chromaticity_kick,crab_cavity,lorentz_bo` | ** The declaration↔case tripwire added for `SymplecticityContract` |
 | U17b-2 | low |  | `test/runtests.jl:1599-1601 and :1616` | the two seam checks in the new "Series helpers" testset have **zero** discriminating |
 | U17b-4 | low |  | `test/runtests.jl:626-629` | on the Float32 leg, `soft_result ≈ weak_result rtol=32eps(T) atol=32eps(T)` admits |
-| U17b-5 | low |  | `test/runtests.jl:1918 (also :1888, :1897, :44, :57)` | five assertions in the region cannot fail; they are guaranteed by the line above |
-| U17b-6 | low |  | `test/runtests.jl:46-50` | the runtime banner that exists specifically to make CUDA skips visible understates |
+| U17b-5 | low | CONFIRMED, FIXED (2026-08-06) — all five annotated as implied, so the count is not read as coverage | `test/runtests.jl:1918 (also :1888, :1897, :44, :57)` | five assertions in the region cannot fail; they are guaranteed by the line above |
+| U17b-6 | low | CONFIRMED; count half already fixed by U20-11, file-list half FIXED (2026-08-06) — all twelve CUDA-bearing files named | `test/runtests.jl:46-50` | the runtime banner that exists specifically to make CUDA skips visible understates |
 | U17b-7 | low |  | `test/runtests.jl:2205-2210` | the AD sweep's floor is exact **today** (measured `verified = 25`, headroom 0) but |
 | U17b-8 | low |  | `test/runtests.jl:904-909` | the `:equal_area` "closed form" check compares `_gaussian_slices` against an |
 | U18-4 | low |  | `test/runtests.jl:3014-3085 ("Curved frame x transverse field: every ro` | the permanent h≠0 symplecticity sweep does **not** derive its case list; the |

@@ -99,6 +99,10 @@ const CUDA_TESTS_ACTIVE = Octopus._HAS_CUDA && Octopus.CUDA.functional()
 
 @testset "CUDA coverage status" begin
     if CUDA_TESTS_ACTIVE
+        # Implied by the branch: `CUDA_TESTS_ACTIVE` IS
+        # `_HAS_CUDA && CUDA.functional()` (2026-08-05_b audit, U17b-5). It
+        # exists so this visibility testset is non-empty on a GPU host rather
+        # than reporting zero assertions, which would read as "not run".
         @test Octopus.CUDA.functional()
     else
         # No count here on purpose. This message said "Nine" while the real
@@ -111,14 +115,23 @@ const CUDA_TESTS_ACTIVE = Octopus._HAS_CUDA && Octopus.CUDA.functional()
         NO CUDA DEVICE: the GPU half of this suite did NOT run.
         Every CUDA-gated testset was skipped, including all CPU/CUDA parity
         checks; each reports itself as Broken/skipped in the summary below.
-        A green run here says nothing about pic_cuda.jl, gaussian_pic_cuda.jl
-        or spectral_cuda.jl. Run on a GPU host before trusting a CUDA change."""
+        A green run here says nothing about ANY CUDA path. Twelve source files
+        carry CUDABackend code -- the three *_cuda.jl solvers plus Beam.jl,
+        phase6d_track.jl, strong_beam_track.jl, radiation_track.jl,
+        Contracts.jl, interface.jl, spectral.jl, Policies.jl and Octopus.jl --
+        and none of it ran. The banner used to name only the first three, which
+        read as the full list (2026-08-05_b audit, U17b-6).
+        Run on a GPU host before trusting a CUDA change."""
         @test_skip "CUDA device not available -- GPU half of the suite skipped"
     end
 end
 
 @testset "Architecture integrity" begin
     metadata = validate_element_metadata(; throw_on_error=true)
+    # Implied, not independent (2026-08-05_b audit, U17b-5):
+    # `throw_on_error=true` already throws whenever `!passed`, so reaching this
+    # line means it passed. Kept as documentation of intent; do not count it as
+    # coverage.
     @test metadata.passed
     @test validate_configuration_metadata()
     # 2026-08-05_b audit, U12-3: the U3-4 repair totalized this validator's
@@ -1986,6 +1999,8 @@ end
     # while validate_element_metadata still passed.
     r = validate(ElementParameterEffectivenessContract())
     @test r.status === :passed
+    # Implied by `status === :passed` above (2026-08-05_b audit, U17b-5): the
+    # contract fails whenever `ignored` is non-empty. Kept as documentation.
     @test r.metrics[:ignored] == 0
     # Today's exact count, not a round number 43% below it. At `> 200` against a
     # real 353 the floor tolerated losing 153 parameter checks in silence, which
@@ -2033,6 +2048,8 @@ end
     # form), silently skipped; they now have keyword forms, the contract
     # reports broken kinds as failures, and the honest count is zero.
     @test r.metrics[:skipped_kinds] == 0
+    # Implied by `status === :passed`, like `:ignored` above (U17b-5). The
+    # substantive pin in this block is `skipped_kinds == 0`, which is not.
     @test r.metrics[:broken_kinds] == 0
 
     # The contract must be able to fail, or it is decoration. The original
@@ -2054,6 +2071,11 @@ end
     @test r.status === :passed
     # Every declared spec must have been compared, not just the ones the
     # committed table happens to carry.
+    # Implied by `status === :passed` above, not independent (2026-08-05_b
+    # audit, U17b-5): the contract returns a FAILURE carrying no metrics at all
+    # when any declared spec is uncompared, so a passing status already means
+    # every spec was. The line that actually pins this is the truncation
+    # mutation control below.
     @test r.metrics[:cases] == length(Octopus._ptc_reference_specs())
 
     # The guard must be able to fire, or it is decoration: drop one case's rows
