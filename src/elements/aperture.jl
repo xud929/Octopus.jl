@@ -35,10 +35,22 @@ Two mechanisms at two different rates, which is the point:
   fires once ever, so there is no contention. `nothing` when no log path was
   requested, in which case an aperture counts and kills without recording.
 
-The per-particle slot costs `~60 N` bytes per beam and is why it is allocated
+The per-particle slot costs `~64 N` bytes per beam and is why it is allocated
 only on request. It buys two things a compacting append buffer cannot: slot `i`
-is always particle `i`, so CPU and CUDA produce byte-identical records, and `N`
-slots is an exact bound that no run can overflow.
+is always particle `i`, so CPU and CUDA agree on WHICH RECORD IS WHOSE with no
+ordering to reconcile, and `N` slots is an exact bound that no run can overflow.
+
+That is an ordering claim, not a bit-equality claim, and this docstring used to
+overreach into the latter ("CPU and CUDA produce byte-identical records"). For a
+stochastic line they are not: `octopus_normal`'s Float64 draws differ between
+backends by up to 2 ulp on ~13% of samples (measured 135/1024 entries, max
+absolute difference 3.4e-21, max 2 ulp, on a line containing only a
+`LumpedRadSpec` so the recorded coordinate IS the draw). The difference is
+entirely upstream in the counter-RNG normal transform — drift-only and
+quadrupole-only lines over the same beam record bit-identically — and it is
+twelve orders inside the 1e-10 the backend-consistency contract asks for. A
+documentation over-claim rather than a numerical defect, but the docstring is
+what a reader would quote (2026-08-05_b audit, U15-13).
 
 Row layout is `(turn, element_id, x, px, y, py, z, pz)`. `element_id == 0` is
 the never-lost sentinel, which is what the writer filters on. `particle_id` is
@@ -87,7 +99,17 @@ per-particle forensics.
 """
 function LossRecord(names::Vector{String}, nparticles::Integer, rep::Phase6DRep;
                     log::Bool=true)
-    T = eltype(rep.x)
+    # `promote_type(..., Float64)`, not the coordinate type. Two of the eight
+    # rows hold INTEGERS -- the turn and the element id -- and the turn is not
+    # small: a Float32 record narrows `ctx.turn` and starts reporting wrong turn
+    # numbers past 16,777,216 (`Float32(16777217) == 1.6777216f7`, off by one;
+    # `Float32(16777219)`, off by three), silently, in exactly the runs that
+    # reach 1e7 turns -- lifetime and dynamic-aperture studies (2026-08-05_b
+    # audit, U15-11). Widening the record is lossless for the six coordinate
+    # rows, costs 8 extra bytes per particle only when logging is on, and leaves
+    # Float64 beams -- the overwhelming majority -- byte-for-byte unchanged.
+    # An exotic coordinate type (Dual, BigFloat) still promotes to itself.
+    T = promote_type(eltype(rep.x), Float64)
     na = max(length(names), 1)
     on_cuda = _HAS_CUDA && rep.x isa CUDA.CuArray
     counts = on_cuda ? CUDA.zeros(Int32, na) : zeros(Int32, na)
@@ -474,14 +496,16 @@ end
         dx=ParamMeta(default=0, meaning="horizontal displacement of the aperture, for a collimator on a displaced magnet body"),
         dy=ParamMeta(default=0, meaning="vertical displacement of the aperture"),
         alive=ParamMeta(default=nothing, meaning="pure scalar predicate (x, px, y, py, z, pz) -> Bool evaluated in the aperture frame, for shapes the regular set cannot express. Must not capture an array, or it will not run on the device"),
-        name=ParamMeta(default="", meaning="label carried into the loss log so a record names a collimator rather than an index"),
         element_id=ParamMeta(default=0, meaning="identifier stamped into each loss record; assigned by the task from the aperture's position in the compiled line"),
         loss_record=ParamMeta(default=nothing, meaning="per-beam loss record this aperture writes into; supplied by the task, `nothing` means kill and count without recording"),
         tracking_method=ParamMeta(default=NonSymplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
+        # After the splat, so this kind's more specific meaning wins over the
+        # generic `name` in `_PLACEMENT_PARAMS` (2026-08-05_b audit, U15-12).
+        name=ParamMeta(default="", meaning="label carried into the loss log so a record names a collimator rather than an index"),
     )
     example = ApertureSpec(shape=:rectellipse, x_limit=2.0e-2, y_limit=5.0e-3, name="COLL_H")
-    construction_help = "Friendly constructor: ApertureSpec(; shape=:rectangle, x_limit, y_limit, dx=0, dy=0, alive=nothing, name=\"\", tracking_method=NonSymplectic6DMap()). Regular shapes are :rectangle, :ellipse and :rectellipse; anything else goes through `alive`, a pure scalar predicate on all six coordinates. Killed particles become NaN in every coordinate. Loss position resolves only to where you place apertures, so guard both faces of a magnet with two of them. The task supplies element_id and loss_record when it builds the lattice; set neither by hand. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
+    construction_help = "Friendly constructor: ApertureSpec(; shape=:rectangle, x_limit, y_limit, dx=0, dy=0, alive=nothing, name=\"\", tracking_method=NonSymplectic6DMap()). Regular shapes are :rectangle, :ellipse and :rectellipse; anything else goes through `alive`, a pure scalar predicate on all six coordinates. Killed particles become NaN in every coordinate. Loss position resolves only to where you place apertures, so guard both faces of a magnet with two of them. The task supplies element_id and loss_record when it builds the lattice; set neither by hand. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
 
 const LOSS_RECORD_COLUMNS =

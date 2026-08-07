@@ -1012,11 +1012,28 @@ end
     end
 
     # :equal_area is Furman #2 in closed form; guard the shipped default.
+    #
+    # This leg is CIRCULAR by construction and stays only as a structure check:
+    # the reference expression calls the same `Octopus.inverse_erf` the
+    # implementation does, so the measured difference is exactly 0.0 and no
+    # error in `inverse_erf` can show up here (2026-08-05_b audit, U17b-8).
+    # What it does check is real but narrow: that `_gaussian_slices` applies
+    # THAT formula, with the right k range, the right SQRT2 and uniform
+    # weights. `inverse_erf` itself is anchored independently five lines up,
+    # against Furman's published Table 1 at ns = 5 (measured 4.34e-7 against a
+    # 5e-6 bound).
     for ns in (3, 5, 7, 15)
         z, w = Octopus._gaussian_slices(Float64, ns, nothing, nothing, 1.0, :equal_area, nothing)
         half = (ns - 1) ÷ 2
         @test collect(z) ≈ [Octopus.SQRT2 * Octopus.inverse_erf(2k / ns) for k in -half:half]
         @test collect(w) == fill(1 / ns, ns)
+    end
+    # ... so anchor `inverse_erf` non-circularly at the ratios the closed form
+    # actually uses, against `SpecialFunctions.erf` (a different implementation)
+    # by round trip. This is what the circular leg above cannot do.
+    for ns in (3, 5, 7, 15), k in (-((ns - 1) ÷ 2)):((ns - 1) ÷ 2)
+        u = 2k / ns
+        @test Octopus.erf(Octopus.inverse_erf(u)) ≈ u atol=1.0e-12
     end
 
     # Gauss-Hermite is defined by moment exactness, not by Ref. [1]: an ns-point
@@ -2428,12 +2445,21 @@ end
             end
         end
         @test isempty(disagreed)
-        # The floor is today's exact count (25: measured 2026-08 -- the caught
-        # bucket holds only aperture.x/y_limit, gaussian_strong_beam.sigz and
-        # thin_strong_beam.kbb/klum), so silently losing even ONE element to
-        # the catch above fails. Raise this number when a new differentiable
-        # parameter is registered; never lower it.
-        @test length(verified) >= 25
+        # EQUALITY, not `>=`. The count is exact today (25), so `>= 25` is a
+        # perfect tripwire right now and a decaying one: the first time a new
+        # differentiable parameter is registered without this number being
+        # raised, one gained plus one lost still passes, and the comment's
+        # claim -- "silently losing even ONE element fails" -- quietly stops
+        # being true (2026-08-05_b audit, U17b-7). Equality fails on the
+        # ADDITION too, which is exactly when the number should be revisited.
+        #
+        # If this fails after registering a parameter: check the new name is in
+        # `verified` and raise the number. If it fails otherwise, something
+        # stopped differentiating and the `caught` bucket below says what.
+        # The caught bucket holds aperture.x/y_limit, gaussian_strong_beam.sigz
+        # and thin_strong_beam.kbb/klum -- five, by construction of the two
+        # exception types the catch admits.
+        @test length(verified) == 25
         # the kinds that must stay differentiable
         for k in ("quadrupole", "sextupole", "octupole", "multipole", "sbend",
                   "drift", "patch", "kicker", "thin_crab_cavity")
@@ -2731,6 +2757,82 @@ end
                                  beta0=b0, gamma0=g0)
         @test imag(o[1]) / h ≈ 1 / particle_beta(PATHLENGTH_DELTA, pz; beta0=b0, gamma0=g0) rtol = 1e-12
     end
+end
+
+@testset "script mode picks up the ForwardDiff rules" begin
+    # The `_HAS_FORWARDDIFF_SCRIPT_MODE` branch in src/Octopus.jl is dead under
+    # every committed invocation: `--project=.` cannot import ForwardDiff (it is
+    # a weak dependency and is not in the Manifest), and the suite runs in
+    # package mode where the flag is false by design and the extension takes
+    # over. So the branch was executed by no gate at all -- correct today,
+    # verified by hand, protected by nothing (2026-08-05_b audit, U12-20).
+    #
+    # Exercised in a subprocess with its OWN environment, because that is the
+    # only configuration in which the branch is reachable: a user project that
+    # happens to carry ForwardDiff. Skipped rather than failed when the
+    # environment cannot be built (no network on a CI runner), and the skip is
+    # LOUD -- an @info, not silence.
+    if get(ENV, "OCTOPUS_SKIP_SCRIPT_MODE_TEST", "0") == "1"
+        @info "script-mode ForwardDiff test skipped by OCTOPUS_SKIP_SCRIPT_MODE_TEST"
+        @test true
+    else
+        root = pkgdir(Octopus)
+        script = """
+        import Pkg
+        Pkg.activate(temp = true, io = devnull)
+        Pkg.add(["ForwardDiff", "CUDA", "FFTW", "HDF5", "JLD2", "NVTX",
+                 "SpecialFunctions", "Adapt"], io = devnull)
+        include(joinpath("$(root)", "src", "Octopus.jl"))
+        using .Octopus
+        println("FLAG=", Octopus._HAS_FORWARDDIFF_SCRIPT_MODE)
+        println("META=", validate_element_metadata().passed)
+        """
+        out = try
+            read(`$(Base.julia_cmd()) --startup-file=no -e $script`, String)
+        catch err
+            @info "script-mode ForwardDiff environment could not be built; \
+                   branch NOT exercised this run" err
+            ""
+        end
+        if !isempty(out)
+            # The flag must be TRUE: if it is false the environment did not
+            # actually carry ForwardDiff and the test proved nothing.
+            @test occursin("FLAG=true", out)
+            @test occursin("META=true", out)
+        else
+            @test_broken false      # visible in the summary, unlike a silent skip
+        end
+    end
+end
+
+@testset "the Example core object answers with real scripts" begin
+    # `Example` is one of AGENTS.md's seven Core Objects, and its entire runtime
+    # realisation was three struct definitions that nothing ever instantiated --
+    # so `summarize_registry().examples` answered "which examples should an
+    # agent imitate?" with three empty type NAMES while the curated precedents
+    # sat in `examples/`, unknown to the registry (2026-08-05_b audit, U12-16).
+    cat = example_catalog()
+    @test length(cat) >= 3
+    @test all(e -> e isa Octopus.AbstractExample, cat)
+    for e in cat
+        # Resolves, or the catalogue has fallen behind the repository. This is
+        # the tripwire: a renamed or deleted script fails here rather than
+        # leaving a dangling entry in the snapshot.
+        @test isfile(example_script_path(e))
+        @test !isempty(e.summary)
+        @test !isempty(e.objects)
+        # The objects an example is FOR are mostly PARAMETRIC, which is why the
+        # field had to widen from `Vector{DataType}`: a bare parametric name is
+        # a UnionAll and does not convert.
+        @test e.objects isa Vector{Type}
+    end
+    # Every committed script under examples/ is catalogued, derived rather than
+    # listed: a new example that nobody registers fails here.
+    scripts = sort(filter(f -> endswith(f, ".jl"),
+                          readdir(joinpath(pkgdir(Octopus), "examples"))))
+    @test sort([basename(e.title) for e in cat]) == scripts
+    # The legacy construction still works, so the widening is not a break.
+    @test ReferenceExample("t", "s", DataType[Int]) isa ReferenceExample
 end
 
 @testset "every public configuration schema is exported" begin
@@ -4391,7 +4493,7 @@ end
         MomentObserver(p2; capacity=2, append=true, orders=1:1)),))
     @test_throws ArgumentError execute!(t8, mk1(); turns=2)   # column mismatch refused
 
-    foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
+    foreach(p -> rm(p; force=true), (p1, p2, p3, p4, p5))
 end
 
 @testset "Nested lines have length, reflection keeps state, folded sugar is rejected everywhere" begin
@@ -5567,6 +5669,26 @@ end
     @test_logs (:warn, r"replacing the entire existing moment table") match_mode = :any execute!(
         t3b, mk1(); turns=2)
     @test turns_in(p3) == [0, 1]
+
+    # PARTIAL loss is loud too. `kept == 0` warned when the whole table went
+    # and said nothing when only its tail did, so a fresh task given a
+    # wrong-but-nonzero start_turn destroyed rows in silence -- the same F3
+    # scenario the total-loss warning exists for, one step less extreme
+    # (2026-08-05_b audit, U7-6).
+    p5 = tempname() * ".h5"
+    t5 = TrackingTask(dline; hooks=(ScheduledObserver(MomentObserver(p5; capacity=4, append=true)),))
+    execute!(t5, mk1(); turns=10)
+    @test turns_in(p5) == collect(0:9)
+    t5b = TrackingTask(dline; hooks=(ScheduledObserver(MomentObserver(p5; capacity=4, append=true)),))
+    @test_logs (:warn, r"dropping the tail of the existing moment table") match_mode = :any execute!(
+        t5b, mk1(); turns=2, start_turn=1)
+    @test turns_in(p5) == [0, 1, 2]                # 9 rows became 3, and said so
+    # A continuation that drops NOTHING stays silent, or the warning is noise.
+    t5c = TrackingTask(dline; hooks=(ScheduledObserver(MomentObserver(p5; capacity=4, append=true)),))
+    @test isempty(filter(r -> r.level === Logging.Warn,
+                         collect(Test.collect_test_logs(() ->
+                             execute!(t5c, mk1(); turns=2, start_turn=3))[1])))
+    @test turns_in(p5) == [0, 1, 2, 3, 4]
 
     p4 = tempname() * ".h5"
     touch(p4)                                      # crash-at-create leftover
@@ -10150,6 +10272,20 @@ end
     @test gau.metrics[:lambda_x] < coh.metrics[:lambda_x]
     @test gau.metrics[:lambda_y] < coh.metrics[:lambda_y]
     @test abs(gau.metrics[:sigma_drift_x]) <= 2.0e-4   # closure still gets the sigma mode right
+
+    # The THIRD solver branch. `solver=:gaussian_pic` is one of the three the
+    # contract's docstring declares, and one it declares PASSING, and it was
+    # executed by no test and no validation script -- the docstring's claim
+    # "the PIC-based solvers pass" carried a runner for one of the two
+    # (2026-08-05_b audit, U4-15). It does pass; that is what made it cheap
+    # to close rather than a reason to leave it unrun.
+    gpic = validate(CoherentModePhysicsContract(solver=:gaussian_pic))
+    @test gpic.passed
+    @test occursin("gaussian_pic", gpic.message)
+    # It is a PIC-based solver, so it must land with :pic and not with the
+    # soft-Gaussian closure that is documented to fail.
+    @test gpic.metrics[:lambda_x] > gau.metrics[:lambda_x]
+    @test gpic.metrics[:lambda_y] > gau.metrics[:lambda_y]
 end
 
 @testset "Strong-strong physical parameter validation" begin

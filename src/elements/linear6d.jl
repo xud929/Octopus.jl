@@ -347,5 +347,5 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = Linear6DSpec{Float64}(matrix=Matrix{Float64}(I, 6, 6))
-    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...), where matrix must be canonical symplectic, or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), zeta2=zeta1, eta2=eta1, R2=R1, tracking_method=Symplectic6DMap(), kwargs...). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
+    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...), where matrix must be canonical symplectic, or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), zeta2=zeta1, eta2=eta1, R2=R1, tracking_method=Symplectic6DMap(), kwargs...). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end

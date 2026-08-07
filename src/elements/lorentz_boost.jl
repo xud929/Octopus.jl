@@ -73,7 +73,7 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = LorentzBoostSpec(0.03)
-    construction_help = "Friendly constructor: LorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
+    construction_help = "Friendly constructor: LorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
 
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
@@ -111,7 +111,7 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = RevLorentzBoostSpec(0.03)
-    construction_help = "Friendly constructor: RevLorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:rev_lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
+    construction_help = "Friendly constructor: RevLorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:rev_lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
 
 LorentzBoost(angle::Number) = _lorentz_boost(LorentzBoost, angle, NonSymplectic6DMap())

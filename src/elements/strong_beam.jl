@@ -1588,7 +1588,7 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = ThinStrongBeamSpec{Float64}(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3))
-    construction_help = "Friendly constructor: ThinStrongBeamSpec{T}(; kbb, klum=1, beta=nothing, alpha=(0,0), sigma=nothing, covariance=nothing, coupling=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, tracking_method=WeakStrongBeamBeamMap(), kwargs...). Supply beta/sigma or covariance; coupling transforms the uncoupled covariance. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
+    construction_help = "Friendly constructor: ThinStrongBeamSpec{T}(; kbb, klum=1, beta=nothing, alpha=(0,0), sigma=nothing, covariance=nothing, coupling=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, tracking_method=WeakStrongBeamBeamMap(), kwargs...). Supply beta/sigma or covariance; coupling transforms the uncoupled covariance. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
 
 @element_spec begin
@@ -1620,7 +1620,7 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = GaussianStrongBeamSpec{Float64}(thin=ThinStrongBeamSpec{Float64}(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3)), ns=3, sigz=0.01)
-    construction_help = "Friendly constructor: GaussianStrongBeamSpec{T}(; thin, ns, sigz=nothing, mean=nothing, covariance=nothing, slice_method=:sqrt_density, slice_width=nothing, slice_center=nothing, slice_weight=nothing, slice_hoffset=nothing, slice_voffset=nothing, slice_pxoffset=nothing, slice_pyoffset=nothing, hvoffset=nothing, tracking_method=WeakStrongBeamBeamMap(), kwargs...). A 6 x 6 covariance is conditioned on each longitudinal slice. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
+    construction_help = "Friendly constructor: GaussianStrongBeamSpec{T}(; thin, ns, sigz=nothing, mean=nothing, covariance=nothing, slice_method=:sqrt_density, slice_width=nothing, slice_center=nothing, slice_weight=nothing, slice_hoffset=nothing, slice_voffset=nothing, slice_pxoffset=nothing, slice_pyoffset=nothing, hvoffset=nothing, tracking_method=WeakStrongBeamBeamMap(), kwargs...). A 6 x 6 covariance is conditioned on each longitudinal slice. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
 
 default_method(::Type{ElementSpec{:thin_strong_beam}}) = WeakStrongBeamBeamMap()

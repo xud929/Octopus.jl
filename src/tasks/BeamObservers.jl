@@ -1325,12 +1325,35 @@ function _moment_append_continue!(observer::MomentObserver, first_turn::Int, npl
             turn_col = dset[1:written, 1]
             kept = searchsortedfirst(turn_col, Float64(first_turn)) - 1
         end
-        if written > 0 && kept == 0
-            @warn "MomentObserver(append=true) is replacing the entire existing " *
-                  "moment table at $(observer.path): execution starts at turn " *
-                  "$(first_turn), at or before every recorded row. Pass the " *
-                  "matching absolute start_turn to execute! to continue the " *
-                  "file instead." dropped_rows = written
+        # Announce ANY loss, not only total loss. The `kept == 0` form warned
+        # when the whole table went and said nothing when part of it did -- so a
+        # fresh task given a wrong-but-nonzero `start_turn` destroyed the tail
+        # of an appendable table silently. Measured: a 10-row table, then a
+        # fresh task with `start_turn=1, turns=2`, left 3 rows and no signal
+        # (2026-08-05_b audit, U7-6).
+        #
+        # Dropping rows is still the correct idempotence rule -- a retry that
+        # replays the same absolute turns must not leave two rows for one turn
+        # -- so this stays a warning and not a refusal. What was wrong was that
+        # the deliberate rewind and the caller who does not know the resume
+        # point are indistinguishable from the outside, and only one of them
+        # got told.
+        if written > kept
+            if kept == 0
+                @warn "MomentObserver(append=true) is replacing the ENTIRE existing " *
+                      "moment table at $(observer.path): execution starts at turn " *
+                      "$(first_turn), at or before every recorded row. Pass the " *
+                      "matching absolute start_turn to execute! to continue the " *
+                      "file instead." dropped_rows = written
+            else
+                @warn "MomentObserver(append=true) is dropping the tail of the existing " *
+                      "moment table at $(observer.path): execution starts at turn " *
+                      "$(first_turn), which is inside the recorded range, so every " *
+                      "row at or after it is being rewritten. Intended for a rewind " *
+                      "or a replayed retry; if this is a fresh task, pass the " *
+                      "matching absolute start_turn to execute! " *
+                      "instead." dropped_rows = written - kept kept_rows = kept
+            end
         end
         HDF5.set_extent_dims(dset, (kept + nplanned, length(observer.column_names)))
         file["record_count"][1] = Int64(kept)

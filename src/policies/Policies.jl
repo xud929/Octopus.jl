@@ -243,8 +243,15 @@ The backend TAG a policy executes on — the bridge from the HOW (policy) to
 the WHERE (backend dispatch).
 """
 backend_type(::CPUThreadsExecutionPolicy) = CPUThreadsBackend
-backend_type(::CUDAExecutionPolicy) = CUDABackend
-backend_type(::GPUExecutionPolicy) = CUDABackend
+# ONE method on the family, not one per vendor policy. `AbstractGPUExecutionPolicy`
+# was a taxonomy node whose docstring said it exists "so GPU-generic code can
+# dispatch on the family without naming a vendor", and no method in the
+# repository dispatched on it -- a published abstraction documenting a
+# capability the code did not have (2026-08-05_b audit, U12-15). This is that
+# capability, and it is not invented for the occasion: `CUDAExecutionPolicy` and
+# the deprecated `GPUExecutionPolicy` had identical bodies here. A second vendor
+# policy would inherit it.
+backend_type(::AbstractGPUExecutionPolicy) = CUDABackend
 backend_type(::ResolvedCPUExecutionPolicy) = CPUThreadsBackend
 backend_type(::ResolvedCUDAExecutionPolicy) = CUDABackend
 backend_type(::PlaceholderPolicy) = error(

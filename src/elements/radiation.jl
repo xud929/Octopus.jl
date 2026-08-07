@@ -323,7 +323,7 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = LumpedRadSpec{Float64}(damping_turns=(1000.0, 1000.0, 500.0), rng_id=1)
-    construction_help = "Friendly constructor: LumpedRadSpec{T}(; damping_turns, beta=(1,1,1), alpha=(0,0,0), sigma=(-1,-1,-1), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), is_damping=true, is_excitation=true, tracking_method=Radiation6DMap(), rng_id=0, kwargs...). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
+    construction_help = "Friendly constructor: LumpedRadSpec{T}(; damping_turns, beta=(1,1,1), alpha=(0,0,0), sigma=(-1,-1,-1), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), is_damping=true, is_excitation=true, tracking_method=Radiation6DMap(), rng_id=0, kwargs...). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
 
 default_method(::Type{ElementSpec{:lumped_radiation}}) = Radiation6DMap()

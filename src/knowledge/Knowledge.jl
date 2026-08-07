@@ -224,6 +224,16 @@ ParamMeta(; required::Bool=false, unit="", default=nothing, meaning="") =
 # sweep output, because a mathematically inert conjugation can still move
 # the last bit through the (v - d) + d round trip.
 const _PLACEMENT_PARAMS = (
+    # `name` is here for the same reason the placement keys are: the beam-line
+    # walker reads `getparam(child, :name, "")` for every entry and the design
+    # promises provenance paths like `ARC1/QF[3]`, but only `:line` and
+    # `:aperture` declared it -- so naming an ordinary lattice element warned
+    # that the value was "NOT being tracked", on the one parameter whose whole
+    # purpose is to be carried rather than consumed (2026-08-05_b audit,
+    # U15-12). Those two kinds keep their own, more specific `meaning`; a
+    # per-kind entry wins over this one.
+    name=ParamMeta(default="",
+        meaning="label for this element, carried into beam-line provenance paths (ARC1/QF[3]) and into diagnostics that name an element rather than an index; read by the line walker, never by a tracking kernel"),
     x_offset=ParamMeta(default=0, unit="m",
         meaning="horizontal displacement of the element body, a placement error consumed by the generic misalignment wrap at compile_runtime, not by the element kernel; see src/elements/misalignment.jl"),
     y_offset=ParamMeta(default=0, unit="m",

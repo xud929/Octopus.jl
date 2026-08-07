@@ -101,21 +101,34 @@ end
     x, px, y, py, z, pz = _inverse(elem.coupling, x, px, y, py, z, pz)
 
     x0, px0, y0, py0 = x, px, y, py
-    μx = TWOPI * elem.xix * pz
+    # `R(TWOPI)` and `R(0.5)`, not the bare Float64 constant and literal. Both
+    # promote the whole kernel: a `ChromaticityKick{...,Float32}` fed Float32
+    # coordinates returned all-Float64 output, so the struct's `T` was honoured
+    # for storage and discarded in the arithmetic -- on a CUDA-reachable path,
+    # in an element that declares the backend-consistency contract. Its
+    # siblings in this region do it correctly (`ThinCrabCavity` writes
+    # `T(2)*T(pi)/...`, `LorentzBoost` uses `one(pz0)` idioms), so the standard
+    # is the region's own (2026-08-05_b audit, U16-8).
+    #
+    # `real(...)` on the coordinate rather than the element type: the
+    # coordinate is what the arithmetic is in, and a complex-step sweep passes
+    # a Complex pz through here, where a real constant must stay real.
+    R = real(typeof(pz))
+    μx = R(TWOPI) * elem.xix * pz
     cx = cos(μx)
     sx = sin(μx)
     x = x0 * (cx + elem.alfx * sx) + px0 * elem.betx * sx
     px = -x0 * sx * elem.gamx + px0 * (cx - elem.alfx * sx)
 
-    μy = TWOPI * elem.xiy * pz
+    μy = R(TWOPI) * elem.xiy * pz
     cy = cos(μy)
     sy = sin(μy)
     y = y0 * (cy + elem.alfy * sy) + py0 * elem.bety * sy
     py = -y0 * sy * elem.gamy + py0 * (cy - elem.alfy * sy)
 
-    Jx = 0.5 * (elem.gamx * x0 * x0 + 2 * elem.alfx * x0 * px0 + elem.betx * px0 * px0)
-    Jy = 0.5 * (elem.gamy * y0 * y0 + 2 * elem.alfy * y0 * py0 + elem.bety * py0 * py0)
-    z += TWOPI * (elem.xix * Jx + elem.xiy * Jy)
+    Jx = R(0.5) * (elem.gamx * x0 * x0 + 2 * elem.alfx * x0 * px0 + elem.betx * px0 * px0)
+    Jy = R(0.5) * (elem.gamy * y0 * y0 + 2 * elem.alfy * y0 * py0 + elem.bety * py0 * py0)
+    z += R(TWOPI) * (elem.xix * Jx + elem.xiy * Jy)
 
     x, px, y, py, z, pz = elem.coupling(x, px, y, py, z, pz)
     x, px, y, py, z, pz = elem.eta(x, px, y, py, z, pz)
@@ -202,5 +215,5 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = ChromaticityKickSpec{Float64}(xi=(1.0, 1.0), beta=(1.0, 1.0))
-    construction_help = "Friendly constructor: ChromaticityKickSpec{T}(; xi, beta, alpha=(0,0,0), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), tracking_method=Symplectic6DMap(), kwargs...). beta and alpha accept two or three values; only the transverse pair is used. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx)."
+    construction_help = "Friendly constructor: ChromaticityKickSpec{T}(; xi, beta, alpha=(0,0,0), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), tracking_method=Symplectic6DMap(), kwargs...). beta and alpha accept two or three values; only the transverse pair is used. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
