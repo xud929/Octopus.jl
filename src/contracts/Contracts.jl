@@ -2264,6 +2264,25 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     # so `tilt` would read as inert when it is only unprobeable there.
     :lumped_radiation => (damping_turns=(1000.0, 800.0, 500.0), rng_id=1),
 )
+"""
+Parameters that every kind CARRIES rather than consumes.
+
+`DEFAULT_INACTIVE_ELEMENT_PARAMS` is keyed by `(kind, parameter)`, which is
+right for an exemption that depends on the map -- `marker.x_offset` is inert
+because the identity commutes with a placement, and that is a statement about
+markers. `:name` is not like that: no tracking kernel reads it for ANY kind, by
+design, and it became a parameter of all thirty when the beam-line walker's
+provenance paths were made declarable (2026-08-05_b audit, U15-12). Thirty
+copies of one reason is worse than one, and each copy would need its own
+staleness bookkeeping.
+
+Counted in its own `:carried` metric rather than dropped, because what the
+contract does not decide has to be visible (U4-2).
+"""
+const CARRIED_ELEMENT_PARAMS = Dict{Symbol,String}(
+    :name => "a label carried into beam-line provenance paths and into diagnostics that name an element rather than an index; no tracking kernel reads it, for any kind",
+)
+
 const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:drift, :nst) => "the drift is exact, so there are no integration steps",
     (:drift, :integrator_order) => "the drift is exact, so there is nothing to split",
@@ -2285,7 +2304,6 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     # contract could measure. They are declared inert here rather than left to
     # look ignored, which is the distinction the contract exists to draw.
     (:aperture, :alive) => "a predicate has no perturbation this contract can form; its effect is covered by the shape-versus-predicate equivalence test",
-    (:aperture, :name) => "a label carried into the loss log, not into the coordinate map",
     (:aperture, :element_id) => "stamped into loss records by the task; does not enter the coordinate map",
     (:aperture, :loss_record) => "an output handle written on the loss transition, not an input to the map",
     # Placement parameters (declared for every kind since the schemas learned
@@ -2465,6 +2483,7 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
     # job is to enforce it.
     unperturbable = String[]   # no perturbation this contract can form
     rejected = String[]        # constructor refused the perturbed value
+    carried = String[]         # carried by every kind, consumed by none (see CARRIED_ELEMENT_PARAMS)
     exemptions_seen = Set{Tuple{Symbol,Symbol}}()   # U4-17: which `inactive` entries applied
     for T in registered_element_specs()
         meta = _element_meta_or_nothing(T)
@@ -2510,6 +2529,13 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
             # nobody notices; worse, an exemption whose parameter later becomes
             # genuinely ignored keeps excusing it forever, silently, which is
             # the direction that matters.
+            # Kind-independent exemptions first: a per-kind `inactive` entry for
+            # one of these would never be consulted and would then read as
+            # stale (see `CARRIED_ELEMENT_PARAMS`).
+            if haskey(CARRIED_ELEMENT_PARAMS, key)
+                push!(carried, "$(meta.kind).$(key)")
+                continue
+            end
             if haskey(contract.inactive, (meta.kind, key))
                 push!(exemptions_seen, (meta.kind, key))
                 continue
@@ -2571,6 +2597,7 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
                                :broken_kinds => length(broken),
                                :unperturbable => length(unperturbable),
                                :rejected => length(rejected),
+                               :carried => length(carried),
                                :undecided => length(unperturbable) + length(rejected),
                                :exemptions_declared => length(contract.inactive),
                                :exemptions_applied => length(exemptions_seen),

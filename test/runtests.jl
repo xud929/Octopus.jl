@@ -2080,6 +2080,18 @@ end
     @test r.metrics[:unperturbable] <= 73
     @test r.metrics[:rejected] <= 23
 
+    # `:name` is CARRIED by every kind and consumed by none, so it is exempt
+    # kind-independently rather than through thirty copies of one reason in
+    # `inactive` -- each of which would need its own staleness bookkeeping
+    # (2026-08-05_b audit, U15-12). Counted, not dropped: what the contract
+    # does not decide has to be visible.
+    @test r.metrics[:carried] == length(registered_element_specs())
+    @test haskey(Octopus.CARRIED_ELEMENT_PARAMS, :name)
+    # ... and the per-kind exemption it replaced is gone, or it would read as
+    # stale forever.
+    @test !haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:aperture, :name))
+    @test r.metrics[:stale_exemptions] == 0
+
     # A CONSTRAINED pair is perturbed jointly, not one field at a time.
     # `beta0` and `gamma0` on :thin_rf_cavity are two views of one reference
     # energy; the generic perturbation used to "check" beta0 by setting it to
@@ -2803,6 +2815,39 @@ end
             @test_broken false      # visible in the summary, unlike a silent skip
         end
     end
+end
+
+@testset "a torn coordinate record is reported, not mis-framed" begin
+    # The compact format is `UInt32(n)` then `6n` Float64s, with no framing and
+    # no per-record length, so a partial write mis-frames EVERY later record: a
+    # sequential reader takes the next header out of the middle of the truncated
+    # one and returns plausible garbage. The `.lum` twin got torn-last-line
+    # handling in F1; this format cannot without a format change that would
+    # invalidate every committed archive (2026-08-05_b audit, U7-13). What is
+    # possible is checking the declared count against the bytes remaining.
+    rep = Phase6DRep(collect(1.0:5.0), collect(1.0:5.0), collect(1.0:5.0),
+                     collect(1.0:5.0), collect(1.0:5.0), collect(1.0:5.0))
+    path = tempname()
+    write_beam_coordinates(path, rep; append = false)
+    write_beam_coordinates(path, rep)
+    @test length(read_beam_coordinates(path; record = 0)) == 5
+    @test length(read_beam_coordinates(path; record = 1)) == 5
+    open(path, "r+") do io
+        truncate(io, filesize(io) - 100)          # tear the second record
+    end
+    @test_throws ArgumentError read_beam_coordinates(path; record = 1)
+    err = try
+        read_beam_coordinates(path; record = 1); nothing
+    catch e
+        e
+    end
+    # The message must name the record, or it does not help anyone truncate.
+    @test occursin("record 1", sprint(showerror, err))
+    @test occursin("TORN", sprint(showerror, err))
+    # Records BEFORE the tear are still readable: the guard reports the break,
+    # it does not refuse the whole file.
+    @test length(read_beam_coordinates(path; record = 0)) == 5
+    rm(path; force = true)
 end
 
 @testset "the Example core object answers with real scripts" begin

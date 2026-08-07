@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **299 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **305 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -185,7 +185,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U19-8 | low | CONFIRMED, FIXED (2026-08-06) — both pins check the warning's content and one object | `test/runtests.jl:5299–5300 and 5587–5588` | the two `curved = false` warning pins are content-free — `@test_logs |
 | U19-9 | low | FIXED (bound 1e-6 -> 5e-8 at the nst it runs at; comment corrected; nst=1024 leg added) | `test/runtests.jl:5628–5630` | the cross-implementation solenoid↔SBend reference — U17 rated it one of |
 | U2-1 | low | F1 confirmed, open | `src/tasks/strongstrong/pic_cuda.jl:3672` | the per-pair luminosity diagnostic trace `_ACTIVE_PIC_LUMINOSITY_PAIR_SINK` |
-| U2-2 | low |  | `src/tasks/strongstrong/pic_cuda.jl:2603` | the node-indexed wavefront field solve deposits, Green-multiplies, |
+| U2-2 | low | CONFIRMED, DEFERRED (measured 4.8% vs 36.9% saving; needs a coupled plane-layout change across the workspace, the solve and the kick call site -- recorded on todo.md with its table) | `src/tasks/strongstrong/pic_cuda.jl:2603` | the node-indexed wavefront field solve deposits, Green-multiplies, |
 | U2-3 | low | STALE-PLUS-TRIPWIRE (interaction_grid already added by U1-2; added a source-derived test that the CPU key is a subset of the CUDA key) | `src/tasks/strongstrong/pic_cuda.jl:2140` | the CUDA workspace cache key — which is also the identity of the embedded |
 | U20-10 | low | CONFIRMED, FIXED (2026-08-06) — the infinite-bound case the guard actually governs is now covered | `test/runtests.jl:8723` | `@test Octopus._pic_count_outside_box([1.0, NaN, 2.0], …) == 1` cannot |
 | U20-11 | low | CONFIRMED, FIXED (2026-08-06) | `out-of-region seam — test/runtests.jl:46–51` | the `@info` a CPU-only user actually sees still says "**Nine** |
@@ -248,7 +248,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U5-11 | low | FIXED (strong_strong_task_option_schema exported and given a signature line; export rule pinned over all 8 schemas) | `src/tasks/strongstrong/interface.jl:1592 (export list at :1-10)` | `strong_strong_task_option_schema` is the only public configuration schema in the |
 | U5-12 | low | CONFIRMED, FIXED (2026-08-06) — three aliases declared; verified they behave identically to their targets | `src/tasks/strongstrong/interface.jl:700-702 vs 647-677 — class (b)` | `LongitudinalSlicing` accepts three slicing methods that no docstring or schema |
 | U5-13 | low | FIXED | `src/tasks/strongstrong/interface.jl:1545, 2064 — OUT OF HYPOTHESIS (tr` | two source comments point the reader at `pic_cuda.jl:5041` for the Gaussian |
-| U5-14 | low |  | `src/tasks/strongstrong/interface.jl:1649-1654, 1743-1757, 1780-1792` | `validate_configuration_metadata`'s default-vs-constructor check is applied |
+| U5-14 | low | FIXED (CUDAPICLaunchConfig, AlwaysSchedule and AtTurns default checks added; observers deferred to todo.md -- option names are not field names and three sentinels are legitimate) | `src/tasks/strongstrong/interface.jl:1649-1654, 1743-1757, 1780-1792` | `validate_configuration_metadata`'s default-vs-constructor check is applied |
 | U5-15 | low | CONFIRMED, FIXED (2026-08-06) — in the signature and the prose, with the usage example that was nowhere | `src/tasks/strongstrong/interface.jl:945-1179` | `backend_configurations` is a public `PICPoissonSolver` constructor keyword with a |
 | U5-5 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:1484-1494 (declaration at 1413-141` | `grid_extent_sigma` declares `dependencies=(:grid_extent,)` but `_pic_option_active` |
 | U5-6 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:2467-2482` | the identity→configuration change in `_collision_solver` silently accepts and |
@@ -265,7 +265,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U7-10 | low | CONFIRMED, not fixed — needs a path registry and a policy decision; on todo.md (2026-08-06) | `src/tasks/BeamObservers.jl:1152–1176` | two `BeamMomentObserver`s writing one path silently interleave and lose |
 | U7-11 | low | CONFIRMED, FIXED (2026-08-06) — the mutation is documented with its measured effect | `src/tasks/BPMObserver.jl:170–171, 179–187` | `bpm_reading` mutates the observer. The exported convenience form |
 | U7-12 | low | CONFIRMED, FIXED (2026-08-06) — the NaN convention stated, matching the moment observer's | `src/tasks/BPMObserver.jl:200–205` | a BPM reading of a fully-lost beam is `NaN` by an undocumented `0/0`, |
-| U7-13 | low |  | `src/tasks/BeamObservers.jl:934–937` | the compact coordinate record format has no framing or length check, so a |
+| U7-13 | low | FIXED-AS-FAR-AS-THE-FORMAT-ALLOWS (declared count checked against bytes remaining on a seekable stream; torn record named, earlier records still readable) | `src/tasks/BeamObservers.jl:934–937` | the compact coordinate record format has no framing or length check, so a |
 | U7-6 | low | FIXED (partial table loss now warns too; clean continuation stays silent, both pinned) | `src/tasks/BeamObservers.jl:1280–1286` | F3's "loud replacement" mitigation only fires when the whole table is |
 | U7-7 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/BeamObservers.jl:1038–1042` | `_discard_replayed_binary_rows!` has no `filesize > 0` guard — the F7 fix |
 | U7-8 | low | CONFIRMED, FIXED (2026-08-06) — layout derived from one width table + tripwire | `src/tasks/BeamObservers.jl:1518–1605` | the JLD2 column layout is hand-copied into **three** independent places |
@@ -282,7 +282,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U9-7 | low | FIXED (both convenience forms accept mixed Number types, delegating to the 6-arg promotion) | `src/elements/linear_maps.jl:251–254 — OUT OF HYPOTHESIS (usability)` | `XYCoupling(r1::T, r2::T, r3::T, r4::T) where {T<:Number}` is strict same-type, |
 | U9-8 | low | CONFIRMED, FIXED (2026-08-06) — validated at construction, not in the kernel | `src/elements/linear_maps.jl:263 — OUT OF HYPOTHESIS (error quality / d` | `g = inv(sqrt(1 + r1*r4 - r2*r3))` throws a bare `DomainError` with no element |
 | U14-10 | info | CONFIRMED, FIXED (2026-08-06) | `src/math/SpecialMath.jl:92-97` | `pi = zero(T)` inside `faddeeva_w_upper_reim` shadows `Base.pi` for the rest of the |
-| U14-11 | info/seam |  | `src/math/SpecialMath.jl accuracy → src/track/strong_beam_track.jl:390-` | the Faddeeva real part carries no relative accuracy near the real axis, and its |
+| U14-11 | info/seam | FIXED-AS-DOCUMENTED (Faddeeva Re-part floor recorded at the consumer with its measurements; 8.1e-14 of Kx, ~1e-12 sigma_y, nothing owed) | `src/math/SpecialMath.jl accuracy → src/track/strong_beam_track.jl:390-` | the Faddeeva real part carries no relative accuracy near the real axis, and its |
 | U15-10 | minor | CONFIRMED, FIXED (2026-08-06) — `alive` superseding the geometry now warns; alive-alone and geometry-alone stay silent | `src/elements/aperture.jl:416-441 (`Aperture(spec, method)`)` | supplying `alive` silently makes `shape`, `x_limit` and `y_limit` inert |
 | U15-11 | minor | FIXED (loss-record slots widened to promote_type(T,Float64); Float32 turn numbers were wrong past 2^24) | `src/elements/aperture.jl:295-304 (`_aperture_record!`)` | the turn number is stored in a slot whose element type is the *coordinate* |
 | U15-12 | minor | FIXED (:name declared by all 30 kinds via _PLACEMENT_PARAMS plus explicit entries for the 13 that enumerate; construction_help updated) | `src/elements/beam_line.jl:335-346 (`_entry_label`)` | the beam-line design keys provenance paths on a `:name` parameter that |
@@ -303,8 +303,8 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U25-12 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/README.md:881-890 and validation/{crossing_luminosity_ancho` | the two entries added for U21-1 are attached to the wrong section and |
 | U25-13 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/README.md:213-256 §"Tracking Backend Consistency"` | the README entry for the region's most important script was not updated |
 | U25-14 | info | FIXED (six unguarded includes, not the one reported; all guarded and switched to @__DIR__) | `validation/crossing_luminosity_anchor.jl:6` | the only script in the region whose `include` of `src/Octopus.jl` is not |
-| U25-15 | info |  | `validation/strong_strong_{diagnostics,pic_extreme}_benchmark.jl — unde` | both benchmark scripts read a dozen globals that leak out of |
-| U25-16 | info — infrastructure |  | `seam: test/examples/strong_strong_tracking.jl fixed output directory` |  |
+| U25-15 | info | FIXED (HARNESS_EXPORTS declared and assert_harness_exports called at the top of both benchmark scripts; negative control fires) | `validation/strong_strong_{diagnostics,pic_extreme}_benchmark.jl — unde` | both benchmark scripts read a dozen globals that leak out of |
+| U25-16 | info — infrastructure | STALE AT HEAD (OCTOPUS_RESULT_DIR already overrides the output directory in both harnesses) | `seam: test/examples/strong_strong_tracking.jl fixed output directory` |  |
 | U25-5 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/strong_strong_diagnostics_benchmark.jl:26-64` | the script's turn count and the harness's turn count are two different |
 | U25-6 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/strong_strong_diagnostics_benchmark.jl:108 and validation/s` | both benchmark scripts hand-copy the CUDA PIC launch-family list instead |
 | U25-7 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/README.md §"Beam Optics Interface Consistency"` | the README credits the script with a check it does not perform — "and |

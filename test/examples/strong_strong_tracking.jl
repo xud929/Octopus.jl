@@ -835,3 +835,46 @@ println("electron moments = ", _moment_status(electron_moment_path))
 println("proton moments = ", _moment_status(proton_moment_path))
 println("electron rms = ", stats_ele.rms)
 println("proton rms = ", stats_pro.rms)
+
+# ---------------------------------------------------------------------------
+# PUBLISHED NAMES: what an including script may rely on.
+#
+# `validation/strong_strong_diagnostics_benchmark.jl` and
+# `validation/strong_strong_pic_extreme_benchmark.jl` include this file and then
+# read a dozen of its globals. None of that was a declared interface, so a
+# rename here broke both with an `UndefVarError` at the END of a
+# production-size GPU run -- after the measurement, not before it
+# (2026-08-05_b audit, U25-15). This list IS the interface; `HARNESS_EXPORTS`
+# lets an including script assert it before spending an hour.
+#
+# Adding a name here is free. Removing or renaming one is a breaking change to
+# both benchmark scripts, and the assertion at the top of each will say so
+# immediately rather than at the end.
+# ---------------------------------------------------------------------------
+const HARNESS_EXPORTS = (
+    :input,                 # the resolved configuration NamedTuple
+    :task,                  # the StrongStrongTask that was executed
+    :solver,                # the Poisson solver it was built with
+    :policy,                # the execution policy
+    :luminosity_path,       # output paths, whether or not anything wrote them
+    :electron_moment_path,
+    :proton_moment_path,
+    :stats_ele,             # beam_statistics of each beam after the run
+    :stats_pro,
+)
+
+"""
+Assert that this harness still publishes everything `names` asks for.
+
+Call it immediately after `include`ing the harness, so a rename fails in the
+first second rather than after the measured run.
+"""
+function assert_harness_exports(names)
+    missing_names = [n for n in names if !isdefined(@__MODULE__, n)]
+    isempty(missing_names) || error(
+        "the strong-strong harness no longer publishes " *
+        join(missing_names, ", ") * ". Its published interface is " *
+        "HARNESS_EXPORTS in test/examples/strong_strong_tracking.jl; update " *
+        "this script and that list together.")
+    return nothing
+end

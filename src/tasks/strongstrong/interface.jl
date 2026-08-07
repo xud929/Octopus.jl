@@ -1795,9 +1795,17 @@ function validate_configuration_metadata()
 
     Set(keys(cuda_pic_launch_option_schema())) == Set(fieldnames(CUDAPICLaunchConfig)) ||
         push!(errors, "CUDAPICLaunchConfig fields and metadata keys disagree")
+    default_cuda_pic = CUDAPICLaunchConfig()
     for (name, meta) in pairs(cuda_pic_launch_option_schema())
         meta.consumer === :unspecified && push!(errors,
             "CUDAPICLaunchConfig.$(name) has no runtime consumer")
+        # The DEFAULT check, which this surface had never had -- it got the
+        # key-set check and the consumer check and not this one, unlike
+        # LongitudinalSlicing, the four solvers, the diagnostics and the task
+        # (2026-08-05_b audit, U5-14). Its option names map 1:1 onto its
+        # fields, so unlike the observers it needs no sentinel convention.
+        isequal(getproperty(default_cuda_pic, name), meta.default) || push!(errors,
+            "CUDAPICLaunchConfig.$(name) metadata default disagrees with constructor")
     end
     solver_fields = Set(fieldnames(PICPoissonSolver))
     schema_fields = Set(keys(solver_option_schema(PICPoissonSolver)))
@@ -1924,6 +1932,25 @@ function validate_configuration_metadata()
     for (_, meta) in pairs(schedule_option_schema(PredicateSchedule(identity)))
         meta.consumer === :unspecified && push!(errors,
             "PredicateSchedule has no runtime consumer")
+    end
+    # The other two schedules, which had consumer checks and no default check
+    # (2026-08-05_b audit, U5-14). `AtTurns` takes its list positionally, so
+    # "the default" is what the schema declares for an instance built from it;
+    # `AlwaysSchedule` declares no options at all, and asserting that makes
+    # "no default check here" a stated fact rather than an omission that looks
+    # like the same oversight.
+    isempty(schedule_option_schema(AlwaysSchedule())) || push!(errors,
+        "AlwaysSchedule declares options but validate_configuration_metadata " *
+        "assumes it has none; add a default check alongside EveryNSteps'")
+    # `AtTurns`' one option is a required positional, so its declared default is
+    # the EMPTY construction -- checking against a populated instance would be
+    # checking that a schema default equals a caller's argument, which is not a
+    # claim about anything.
+    let probe = AtTurns(Int[])
+        for (name, meta) in pairs(schedule_option_schema(probe))
+            isequal(getproperty(probe, name), meta.default) || push!(errors,
+                "AtTurns.$(name) metadata default disagrees with the empty construction")
+        end
     end
     observer_instances = (
         BeamMomentObserver("metadata.bin"),

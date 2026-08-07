@@ -769,6 +769,21 @@ end
     read_beam_coordinates(path; record=0, FloatT=Float64)
 
 Read one Octopus compact coordinate record into a `Phase6DRep`.
+
+The format is `UInt32(n)` followed by `6n` `Float64`s, with no framing and no
+per-record length field, so a **torn write mis-frames every later record**: a
+partial record leaves a declared `n` that does not match the bytes present, and
+a sequential reader then reads the next record's header out of the middle of
+the truncated one. The `.lum` twin got explicit torn-last-line handling in F1;
+this format cannot get an equivalent without a format change, and changing it
+would invalidate every committed archive (2026-08-05_b audit, U7-13).
+
+What IS possible without a format change, and what this does: when the reader
+has a seekable stream it checks each declared `n` against the bytes actually
+remaining, so a torn file is reported at the record where the framing breaks
+rather than returning plausible garbage or a `Vector` of the wrong length. On a
+non-seekable stream (a pipe) the check is skipped -- there is nothing to check
+against -- and the docstring above is the only warning.
 """
 function read_beam_coordinates(path::AbstractString; record::Integer=0, FloatT=Float64)
 	open(path, "r") do io
@@ -776,11 +791,33 @@ function read_beam_coordinates(path::AbstractString; record::Integer=0, FloatT=F
 	end
 end
 function read_beam_coordinates(io::IO; record::Integer=0, FloatT=Float64)
-	for _ in 1:Int(record)
+	total = try
+		filesize(io)
+	catch
+		-1                      # not seekable: no bound to check against
+	end
+	function _framed_count(index)
 		n = Int(read(io, UInt32))
+		n >= 0 || throw(ArgumentError(
+			"beam coordinate record $(index) declares a negative particle count"))
+		if total >= 0
+			need = 6 * n * sizeof(Float64)
+			remaining = total - position(io)
+			remaining >= need || throw(ArgumentError(
+				"beam coordinate record $(index) declares $(n) particles, which " *
+				"needs $(need) bytes, but only $(remaining) remain in the stream. " *
+				"The file is TORN at this record: the format carries no framing, " *
+				"so every record after a partial write is mis-framed and nothing " *
+				"later in the file can be trusted. Truncate to the last good " *
+				"record or rewrite the file."))
+		end
+		return n
+	end
+	for index in 0:(Int(record) - 1)
+		n = _framed_count(index)
 		skip(io, 6 * n * sizeof(Float64))
 	end
-	n = Int(read(io, UInt32))
+	n = _framed_count(Int(record))
 	coords = ntuple(_ -> FloatT.(read!(io, Vector{Float64}(undef, n))), 6)
 	return Phase6DRep(coords...)
 end

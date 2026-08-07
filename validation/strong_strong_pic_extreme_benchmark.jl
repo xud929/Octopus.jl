@@ -48,6 +48,11 @@ for (key, value) in defaults
 end
 
 include(joinpath(@__DIR__, "..", "test", "examples", "strong_strong_tracking.jl"))
+# Assert the harness's published interface BEFORE anything else reads it:
+# these names were an undeclared dependency, and a rename in the harness
+# surfaced as an UndefVarError at the end of a production-size GPU run
+# (2026-08-05_b audit, U25-15).
+assert_harness_exports((:input, :task, :solver, :policy))
 
 timings = turn_timings(task)
 length(timings) >= 20 || error("benchmark requires at least 20 turns so the final 10 exclude warm-up")

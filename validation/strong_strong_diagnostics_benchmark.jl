@@ -89,6 +89,12 @@ let effective = parse(Int, ENV["OCTOPUS_TURNS"])
 end
 
 include(joinpath(@__DIR__, "..", "test", "examples", "strong_strong_tracking.jl"))
+# Assert the harness's published interface BEFORE anything else reads it:
+# these names were an undeclared dependency, and a rename in the harness
+# surfaced as an UndefVarError at the end of a production-size GPU run
+# (2026-08-05_b audit, U25-15).
+assert_harness_exports((:input, :task, :luminosity_path, :electron_moment_path, :proton_moment_path,
+         :stats_ele, :stats_pro, :solver, :policy))
 
 timings = turn_timings(task)
 sample = timings[(end - sample_turns + 1):end]

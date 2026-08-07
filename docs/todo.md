@@ -2518,6 +2518,41 @@ Remaining:
    the folded tuple, i.e. redundant state the runtime never reads, which is
    worse. Revisit only if it confuses someone.
 
+13. **Observer option defaults are not checked against their constructors**
+   (2026-08-05_b audit, U5-14). `validate_configuration_metadata` gained
+   default checks for `CUDAPICLaunchConfig`, `AlwaysSchedule` and `AtTurns`
+   this pass, and the observers still have only consumer and
+   schema-to-report checks. A naive loop does not work, and the obstacles are
+   measured rather than assumed: option names are not field names
+   (`MomentObserver.capacity` is the field `buffer_capacity`, so
+   `getproperty(obs, name)` throws), and three defaults are legitimate
+   SENTINELS -- `path` is positional, `MomentObserver.moments` declares
+   `nothing` against a 27-moment constructor default, and `BPMObserver.rng_id`
+   declares 0 against an auto-assigned unique id. Closing this needs a
+   declared-sentinel convention plus an option-name-to-field map, i.e. a
+   design decision about how a schema states "no default", not a repair.
+
+14. **The node-indexed CUDA wavefront computes two dead field planes**
+   (2026-08-05_b audit, U2-2). `_cuda_pic_solve_wavefront_fields_node_indexed!`
+   deposits, Green-multiplies, inverse-FFTs and differentiates all six planes
+   per slice pair with no reference to `solver.longitudinal_kick`, while its
+   own sequential twin and the CPU twin both skip the third solve when the
+   flag is off. Measured, 200,000 particles, 9 slices, grid 64x64, seconds per
+   turn with `longitudinal_kick` true then false:
+
+   | route | true | false | saving |
+   |---|---|---|---|
+   | `:node` + `:wavefront` | 0.12595 | 0.11991 | 4.8% |
+   | `:node` + `:sequential` | 0.31471 | 0.19964 | 36.6% |
+   | `:slice_pair` + `:wavefront` | 0.05284 | 0.03333 | 36.9% |
+
+   Correctness is unaffected (CPU/CUDA node parity with the flag off is
+   1.2e-16 relative). The fix is a plane layout of 4 per pair instead of 6
+   when the flag is off, which changes the `pp(o+3)`/`pp(o+6)` indexing at the
+   kick call site, the `% 6 == 0` workspace assertion and the `6 * max_pairs`
+   reservation together -- a contained but genuinely coupled CUDA change that
+   wants its own commit and its own GPU parity run, not a tail-end edit.
+
 ## Earlier Completed
 
 - Soft-Gaussian CUDA optimization (host-sync removal, device moments, fused

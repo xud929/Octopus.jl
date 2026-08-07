@@ -427,6 +427,21 @@ end
 	reti = A * (w1i - B * w2i)
 	Kx = reti
 	Ky = retr
+	# `Ky` is built from the REAL part of w, which carries no relative accuracy
+	# near the real axis: `Re w(x + i0) = exp(-x^2)`, and for x >~ 5 that is far
+	# below the ~1e-14 absolute error of the |w| evaluation, so `Re w` is noise
+	# there. On the symmetry axis y = 0 the exact answer is Ky = 0 and this
+	# returns the noise instead.
+	#
+	# Measured and NEGLIGIBLE, recorded here so the seam is not rediscovered as
+	# an open question (2026-08-05_b audit, U14-11). At sig1 = 106 um,
+	# sig2 = 9.5 um, x = 3e-4 m: Ky(y=0) = 6.4e-10 against Kx = 7.9e+03, a ratio
+	# of 8.1e-14 -- an effective spurious |y| of ~9e-18 m, about 1e-12 sigma_y.
+	# `Ky(y = 1e-9)` is already 7.1e-02, so the floor is only reached below
+	# |y| ~ 1e-17 m. Floors at x = 1e-3 and 2e-3 m are 6.0e-10 and 1.6e-10.
+	# Nothing in this repository resolves 1e-12 sigma, so there is no repair
+	# owed; what would be wrong is discovering this number in a test and
+	# treating it as a defect.
 	return negx ? -Kx : Kx, negy ? -Ky : Ky
 end
 
