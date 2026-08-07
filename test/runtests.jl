@@ -418,6 +418,71 @@ function covariance_kick_and_direct_pz(moments, S, x, y; kbb=0.7)
     return (result[2], result[4]), result[6]
 end
 
+@testset "The deprecated CUDA LumpedRad route draws from the counter RNG" begin
+    # 2026-08-05_b audit, U14-7: `track!(rep, elem::LumpedRad, turns,
+    # CUDABackend)` was the only GPU radiation path outside the counter-RNG
+    # guarantee — it drew with `Random.randn(CUDA.default_rng(), ...)`, so
+    # its results depended on CUDA's global RNG state, could not match the
+    # CPU, and were not thread- or layout-invariant ("statistically right
+    # from a different and unreproducible stream", var ratio 1.0059). It also
+    # allocated six N-length CuArrays per turn for the pre-drawn normals.
+    # The kernel is now a thin wrapper over the same
+    # `_track_lumped_rad_context` functions the fused route uses, keyed by
+    # the global seed/method, 0-based turn, elem.rng_id and particle index.
+    if CUDA_TESTS_ACTIVE
+        set_global_rng!(seed=777, method=:philox)
+        spec = LumpedRadSpec(damping_turns=(20.0, 25.0, 30.0), beta=(0.7, 0.9, 1.1),
+                             alpha=(0.2, -0.1, 0.05), sigma=(1.2e-3, 0.8e-3, 2.0e-3),
+                             rng_id=0x1234)
+        elem = compile_runtime(spec)
+        n = 4096
+        mkrep() = begin
+            s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+            Phase6DRep(s(1e-4, 0.0), s(1e-5, 0.3), s(1e-4, 0.9), s(1e-5, 1.2),
+                       s(1e-3, 2.1), s(1e-4, 2.5))
+        end
+        gdev() = Phase6DRep(map(Octopus.CUDA.CuArray,
+                                coordinate_arrays(mkrep()))...)
+        # Reproducible: two identical runs are bitwise equal (the old route
+        # was CUDA-global-RNG-state-dependent and could not be).
+        g1 = gdev(); g2 = gdev()
+        track!(g1, elem, 3, Octopus.CUDABackend); Octopus.CUDA.synchronize()
+        track!(g2, elem, 3, Octopus.CUDABackend); Octopus.CUDA.synchronize()
+        @test Array(g1.x) == Array(g2.x) && Array(g1.px) == Array(g2.px)
+        @test Array(g1.pz) == Array(g2.pz)
+        # And it matches the host context-path reference — the same draws by
+        # construction (the counter is integer-exact across backends), the
+        # kick arithmetic to within GPU/CPU FMA-contraction ulps (measured
+        # 8.7e-19 absolute on 1e-4-scale coordinates).
+        ref = mkrep()
+        base = TrackingContext()
+        for turn in 1:3
+            ctx = with_turn(base, Int64(turn - 1))
+            for i in 1:n
+                ref[i] = Octopus._track_lumped_rad_context(
+                    elem.method, elem, ctx, i, ref[i]...)
+            end
+        end
+        @test maximum(abs.(Array(g1.x) .- ref.x)) <= 1.0e-16
+        @test maximum(abs.(Array(g1.px) .- ref.px)) <= 1.0e-16
+        # Statistical sanity retained from the row's measurement: pure
+        # diffusion variance grows as turns * exc^2.
+        spec_d = LumpedRadSpec(damping_turns=(1e18, 1e18, 1e18), beta=(1.0, 1.0, 1.0),
+                               alpha=(0.0, 0.0, 0.0), sigma=(1.0e-3, 1.0e-3, 1.0e-3),
+                               tracking_method=Diffusion6DMap(), rng_id=0x77)
+        elem_d = compile_runtime(spec_d)
+        gz = Phase6DRep(map(_ -> Octopus.CUDA.zeros(Float64, 200_000), 1:6)...)
+        track!(gz, elem_d, 16, Octopus.CUDABackend); Octopus.CUDA.synchronize()
+        xs = Array(gz.x)
+        mu = sum(xs) / length(xs)
+        varx = sum(abs2, xs .- mu) / (length(xs) - 1)
+        ratio = varx / (16 * Float64(elem_d.excitation[1])^2)
+        @test 0.95 < ratio < 1.05
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 function numerical_potential_hessian(moments, S, x, y; kbb=0.7, h=1.0e-5)
     force(x, y) = first(covariance_kick_and_direct_pz(moments, S, x, y; kbb=kbb))
     fxp, fyp = force(x + h, y)
