@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **224 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **227 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -234,10 +234,10 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U26-13 | low |  | `docs/theory/rf_cavity_and_reference_energy.md §6` | the note reads as a pending proposal for an element that is implemented, |
 | U26-14 | low/style |  | `docs/theory/spectral_sine_poisson_solver.md §2` | "$\sin(\alpha_l\cdot 0)=\sin(l\pi)=0$" conflates the two edges — the |
 | U26-15 | low/style | FIXED | `docs/theory/beam_line_composition.md §5, §7` | nomenclature drift — the note recommends `find(line, sel)` throughout |
-| U3-4 | low |  | `src/tasks/strongstrong/pic_cuda.jl:5580-5584` | For a `Float32` beam the CPU builds the slice moments in `Float64` and the CUDA |
+| U3-4 | low | CONFIRMED, not fixed — needs a convention decision (promote to solver type vs follow the beam); on todo.md (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:5580-5584` | For a `Float32` beam the CPU builds the slice moments in `Float64` and the CUDA |
 | U3-5 | low |  | `src/tasks/strongstrong/pic_cuda.jl:4661-4738` | `_cuda_pic_kick_indexed_kernel!` (4661-4696) and |
-| U3-7 | low |  | `src/tasks/strongstrong/pic_cuda.jl:5136, 5173-5177` | For a `Float32` beam, `_cuda_gaussian_collide_sequential!` returns a `Float64` |
-| U3-8 | low |  | `src/tasks/strongstrong/pic_cuda.jl:4774-4802` | `_cuda_pic_kick_pair_indexed_longitudinal_kernel!` is the only kick kernel in the |
+| U3-7 | low | CONFIRMED, same convention question as U3-4; on todo.md (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:5136, 5173-5177` | For a `Float32` beam, `_cuda_gaussian_collide_sequential!` returns a `Float64` |
+| U3-8 | low | CONFIRMED, FIXED (2026-08-06) — grid-stride loop added, matching its twin; coverage verified at kick_threads=64 | `src/tasks/strongstrong/pic_cuda.jl:4774-4802` | `_cuda_pic_kick_pair_indexed_longitudinal_kernel!` is the only kick kernel in the |
 | U4-13 | low | CONFIRMED, FIXED (2026-08-06) — all 12 validate methods reject unknown keywords | `src/contracts/Contracts.jl:180, :200, :310, :639, :683, :779, :1245, :` | every `validate` method takes `; kwargs...` and no method reads it, so any keyword a caller misspells or invents is silently accepted and dropped — the (e) unknown-keyword family, inside the file whos |
 | U4-14 | low | ALREADY FIXED by U12-17 (2026-08-06) — all 11 concrete contracts describe themselves, with a registry tripwire | `src/contracts/Contracts.jl:185-198, :1146, :1330, :1497, :2335` | the hand-written `description` method table covers 9 of the 11 concrete contracts; `PTCConsistencyContract` and `ElementParameterEffectivenessContract` fall through to a fallback that returns the empt |
 | U4-15 | low |  | `src/contracts/Contracts.jl:1543-1545` | `CoherentModePhysicsContract(solver=:gaussian_pic)` — one of the three solver branches the contract's docstring declares, and one it declares *passing* — is executed by no test and no validation scrip |

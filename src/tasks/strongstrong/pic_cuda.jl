@@ -4872,22 +4872,37 @@ if _HAS_CUDA
             source_center1, field_hzi1, field_zbias1, kbb1,
             source_center2, field_hzi2, field_zbias2, kbb2,
         )
+            # Grid-strided, like its non-longitudinal twin (2026-08-05_b audit,
+            # U3-8). This was the only kick kernel in the file that computed
+            # `index` once and returned, so it was correct only because its
+            # single launcher happens to supply full coverage -- while the file
+            # caps blocks in several other places (`_CUDA_PIC_BOUNDS_PARTIAL_BLOCKS`,
+            # and `min(cld(n, threads), 256)` in `_active_cuda_launch`). Any
+            # future cap would have dropped the tail silently: unkicked
+            # particles, no warning. The U3-2 thread cap added this session
+            # scales blocks up precisely to preserve that coverage, which kept
+            # it correct but left the trap in place; a stride loop removes it.
             index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-            if index <= length(idx2)
-                _cuda_pic_apply_indexed_longitudinal_kick!(
-                    x2, px2, y2, py2, pz2, z2, idx2[index],
-                    phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R,
-                    x02, y02, hx2, hy2, nx, ny, method_code,
-                    source_center2, field_hzi2, field_zbias2, kbb2,
-                )
-            end
-            if index <= length(idx1)
-                _cuda_pic_apply_indexed_longitudinal_kick!(
-                    x1, px1, y1, py1, pz1, z1, idx1[index],
-                    phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R,
-                    x01, y01, hx1, hy1, nx, ny, method_code,
-                    source_center1, field_hzi1, field_zbias1, kbb1,
-                )
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            n = max(length(idx1), length(idx2))
+            while index <= n
+                if index <= length(idx2)
+                    _cuda_pic_apply_indexed_longitudinal_kick!(
+                        x2, px2, y2, py2, pz2, z2, idx2[index],
+                        phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R,
+                        x02, y02, hx2, hy2, nx, ny, method_code,
+                        source_center2, field_hzi2, field_zbias2, kbb2,
+                    )
+                end
+                if index <= length(idx1)
+                    _cuda_pic_apply_indexed_longitudinal_kick!(
+                        x1, px1, y1, py1, pz1, z1, idx1[index],
+                        phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R,
+                        x01, y01, hx1, hy1, nx, ny, method_code,
+                        source_center1, field_hzi1, field_zbias1, kbb1,
+                    )
+                end
+                index += stride
             end
             return nothing
         end
