@@ -14,6 +14,37 @@ function _float_params(spec::ElementSpec, keys::Symbol...)
     return map(k -> T(param(spec, k)), keys)
 end
 
+# Element type for a friendly linear-map constructor called WITHOUT its `{T}`.
+#
+# These four constructors used to hard-code `{Float64}` and then convert with
+# `T(value)`, so a `Dual` or `Complex` parameter died with `Float64(::Dual)`
+# unless the caller spelled `Spec{T}` -- while every lattice magnet promotes
+# automatically through `numeric_type(spec)`. That inconsistency is what made
+# the `T<:Number` widening only half delivered (2026-08-05_b audit, U9-6).
+#
+# `Float64` is a FLOOR, not just a fallback: integers, rationals and Float32
+# still land on Float64 exactly as before, so this only ever widens. Narrowing
+# (a genuinely Float32 spec) stays behind the explicit `Spec{Float32}` form,
+# because the symplecticity tolerances downstream are calibrated per precision
+# and silently narrowing on an argument's type would be a surprise.
+#
+# Only values of the named parameters are considered. Extra kwargs are stored
+# as descriptive metadata and may be numbers with no bearing on the arithmetic
+# -- promoting over `some_count=2` would be a real bug.
+function _linear_map_eltype(values...)
+    T = Float64
+    for v in values
+        if v isa Number
+            T = promote_type(T, typeof(v))
+        elseif v isa Union{Tuple,AbstractArray}
+            for u in v
+                u isa Number && (T = promote_type(T, typeof(u)))
+            end
+        end
+    end
+    return T
+end
+
 """
     CrabDispersionSpec{T=Float64}(; zeta1=0, zeta2=0, zeta3=0, zeta4=0,
                                   tracking_method=Symplectic6DMap(), kwargs...)
@@ -21,8 +52,18 @@ end
 Create an `ElementSpec{:crab_dispersion}`. The `zeta` fields define a
 six-dimensional symplectic crab-dispersion coordinate transform. Extra keyword
 arguments are stored as descriptive spec metadata.
+
+Without the explicit `{T}`, the element type is inferred by promoting the
+named parameters over a `Float64` floor, so a `Dual` or `Complex` parameter
+differentiates without the caller having to spell the type — matching how
+every lattice magnet promotes through `numeric_type(spec)` (2026-08-05_b
+audit, U9-6). Integers, rationals and `Float32` still land on `Float64`;
+narrowing stays behind the explicit `{T}` form. Extra keyword arguments are
+descriptive metadata and take no part in the promotion.
 """
-CrabDispersionSpec(; kwargs...) = CrabDispersionSpec{Float64}(; kwargs...)
+CrabDispersionSpec(; zeta1=0, zeta2=0, zeta3=0, zeta4=0, kwargs...) =
+    CrabDispersionSpec{_linear_map_eltype(zeta1, zeta2, zeta3, zeta4)}(;
+        zeta1=zeta1, zeta2=zeta2, zeta3=zeta3, zeta4=zeta4, kwargs...)
 function (::Type{CrabDispersionSpec{T}})(; zeta1=zero(T), zeta2=zero(T),
                                         zeta3=zero(T), zeta4=zero(T),
                                         tracking_method=Symplectic6DMap(),
@@ -99,8 +140,18 @@ end
 
 Create an `ElementSpec{:momentum_dispersion}`. Extra keyword arguments are
 stored as descriptive spec metadata.
+
+Without the explicit `{T}`, the element type is inferred by promoting the
+named parameters over a `Float64` floor, so a `Dual` or `Complex` parameter
+differentiates without the caller having to spell the type — matching how
+every lattice magnet promotes through `numeric_type(spec)` (2026-08-05_b
+audit, U9-6). Integers, rationals and `Float32` still land on `Float64`;
+narrowing stays behind the explicit `{T}` form. Extra keyword arguments are
+descriptive metadata and take no part in the promotion.
 """
-MomentumDispersionSpec(; kwargs...) = MomentumDispersionSpec{Float64}(; kwargs...)
+MomentumDispersionSpec(; eta1=0, eta2=0, eta3=0, eta4=0, kwargs...) =
+    MomentumDispersionSpec{_linear_map_eltype(eta1, eta2, eta3, eta4)}(;
+        eta1=eta1, eta2=eta2, eta3=eta3, eta4=eta4, kwargs...)
 function (::Type{MomentumDispersionSpec{T}})(; eta1=zero(T), eta2=zero(T),
                                             eta3=zero(T), eta4=zero(T),
                                             tracking_method=Symplectic6DMap(),
@@ -191,8 +242,18 @@ XY_MODEB
 
 Create an `ElementSpec{:xy_coupling}` for a transverse x-y coupling coordinate
 transform. Extra keyword arguments are stored as descriptive spec metadata.
+
+Without the explicit `{T}`, the element type is inferred by promoting the
+named parameters over a `Float64` floor, so a `Dual` or `Complex` parameter
+differentiates without the caller having to spell the type — matching how
+every lattice magnet promotes through `numeric_type(spec)` (2026-08-05_b
+audit, U9-6). Integers, rationals and `Float32` still land on `Float64`;
+narrowing stays behind the explicit `{T}` form. Extra keyword arguments are
+descriptive metadata and take no part in the promotion.
 """
-XYCouplingSpec(; kwargs...) = XYCouplingSpec{Float64}(; kwargs...)
+XYCouplingSpec(; r1=0, r2=0, r3=0, r4=0, kwargs...) =
+    XYCouplingSpec{_linear_map_eltype(r1, r2, r3, r4)}(;
+        r1=r1, r2=r2, r3=r3, r4=r4, kwargs...)
 function (::Type{XYCouplingSpec{T}})(; r1=zero(T), r2=zero(T), r3=zero(T),
                                     r4=zero(T), mode::XYCouplingMode=XY_MODEA,
                                     tracking_method=Symplectic6DMap(),
@@ -277,10 +338,17 @@ XYCoupling(method::M, r1::Number, r2::Number, r3::Number, r4::Number,
     XYCoupling{M,promote_type(typeof(r1), typeof(r2), typeof(r3), typeof(r4))}(
         method, promote(r1, r2, r3, r4)..., mode)
 
-XYCoupling(r1::T, r2::T, r3::T, r4::T) where {T<:Number} =
-    XYCoupling{Symplectic6DMap,T}(Symplectic6DMap(), r1, r2, r3, r4, XY_MODEA)
-XYCoupling(r1::T, r2::T, r3::T, r4::T, mode::XYCouplingMode) where {T<:Number} =
-    XYCoupling{Symplectic6DMap,T}(Symplectic6DMap(), r1, r2, r3, r4, mode)
+# `::Number`, not a strict same-type `::T`: the natural `XYCoupling(0.01, 0, 0, 0)`
+# was a MethodError, because writing an exact zero as `0` rather than `0.0` is
+# what anyone does. Same strict-signature class as the `_curv_sin` /
+# `_sol_log_over_h` fixes, one layer up; the spec path already promoted
+# correctly, so only these two convenience forms were affected (2026-08-05_b
+# audit, U9-7). Promotion is delegated to the six-argument method above so
+# there is one promotion rule, not three.
+XYCoupling(r1::Number, r2::Number, r3::Number, r4::Number) =
+    XYCoupling(Symplectic6DMap(), r1, r2, r3, r4, XY_MODEA)
+XYCoupling(r1::Number, r2::Number, r3::Number, r4::Number, mode::XYCouplingMode) =
+    XYCoupling(Symplectic6DMap(), r1, r2, r3, r4, mode)
 XYCoupling(spec::ElementSpec{:xy_coupling}, method::AbstractTrackingMethod=tracking_method(spec)) =
     XYCoupling(method, _float_params(spec, :r1, :r2, :r3, :r4)..., getparam(spec, :mode, XY_MODEA))
 

@@ -98,8 +98,27 @@ reference_gamma(E0, mc2) = E0 / mc2
     reference_beta(E0, mc2)
 
 Reference velocity `β₀`, computed as `√((γ-1)(γ+1))/γ` rather than
-`√(1-1/γ²)`: the two agree analytically, and the first keeps its digits when
-`γ` is large, which is the only regime this is ever used in.
+`√(1-1/γ²)`: the two agree analytically, and the first keeps its digits as
+`γ → 1`.
+
+The direction matters and this docstring used to state it backwards (it said
+the form "keeps its digits when `γ` is large, which is the only regime this is
+ever used in" — 2026-08-05_b audit, U14-6). The cancellation is `γ² - 1`, and
+it is catastrophic as `γ → 1`, not as `γ → ∞`: at large `γ` the naive form
+subtracts a *tiny* number from 1 and loses nothing. Measured relative error
+against `BigFloat`, evaluated from the same stored `γ`:
+
+| γ | `√((γ-1)(γ+1))/γ` | `√(1-1/γ²)` |
+|---|---|---|
+| 19569.5 | 3.2e-17 | 7.9e-17 |
+| 293.092 | 3.9e-17 | 7.2e-17 |
+| 2.66447 | 4.2e-17 | 4.2e-17 |
+| 1.000000001 | 5.3e-17 | **7.5e-10** |
+
+Everything at γ ≳ 2 is sub-ulp either way, so the *choice* is free there; the
+whole gain is the bottom row. "The only regime this is ever used in" was also
+wrong — this repository's own 2.5 GeV proton validation case runs at γ = 2.66,
+which is what the F16 note in §5.4 is about.
 """
 function reference_beta(E0, mc2)
     g = reference_gamma(E0, mc2)
@@ -128,11 +147,30 @@ reference_beta_gamma(E0, mc2) = (reference_beta(E0, mc2), reference_gamma(E0, mc
 """
     _delta_from_pt(pt, beta0, gamma0)
 
-`δ = -1 + √((1/β₀ + p_t)² - 1/(β₀γ₀)²)`, note Section 2.2.
+`δ = -1 + √((1/β₀ + p_t)² - 1/(β₀γ₀)²)`, note Section 2.2, evaluated in the
+cancellation-free form below.
+
+Written as `δ = u/(1 + √(1+u))` with `u = 2p_t/β₀ + p_t²`. The two agree
+because `1/β₀² - 1/(β₀γ₀)² = 1` *exactly* — it is `(γ₀²-1)/(β₀²γ₀²)` with
+`β₀² = (γ₀²-1)/γ₀²` — so the radicand is `1 + u` and the literal form's
+`-1 + √(1+u)` subtracts two quantities that are both ≈ 1. That costs ~1 ulp
+of the *operands*, i.e. ~1e-16 **absolute** no matter how small δ is, so the
+relative accuracy degrades as `1/δ`: measured against a BigFloat evaluation
+from `E₀/mc²` at 10 GeV e⁻, the literal form is wrong by 5.6e-11 relative at
+`p_t = 1e-6` and 8.9e-5 at `p_t = 1e-12`, and the δ→p_t→δ round trip returns
+**zero** for δ = 1e-16. The form below is within 1 ulp at every amplitude
+tested (1e-2 down to 1e-12, three energies spanning γ₀ = 2.66 to 19569) and
+its round trip is bit-exact. Using the identity is not merely equivalent —
+it is *better* than the literal form even in exact arithmetic on the stored
+`beta0`, because the identity is the exact physical relation and so repairs
+`beta0`'s own rounding instead of inheriting it (2026-08-05_b audit, U14-4).
+
+`gamma0` is unused and kept for signature symmetry with [`_pt_from_delta`]
+(@ref) and the `_pz_of` / `_pt_of` dispatch tables.
 """
 @inline function _delta_from_pt(pt, beta0, gamma0)
-    ibg = _inv_beta_gamma(beta0, gamma0)
-    rad = (inv(beta0) + pt)^2 - ibg * ibg
+    u = 2 * pt / beta0 + pt * pt
+    rad = 1 + u
     # A particle decelerated below rest energy drives the radicand negative --
     # it happens at p_t = -1/beta0 + 1/(beta0*gamma0), reachable by anything
     # outside the RF bucket whose delta walks to -1, and `_rf_kick` runs this
@@ -152,7 +190,7 @@ reference_beta_gamma(E0, mc2) = (reference_beta(E0, mc2), reference_gamma(E0, mc
     # repository has paid for before -- `_curv_sin`, `_curv_vers`,
     # `_atan_over`, `_sol_log_over_h` and `abs(hL) < pi/2` each needed the same
     # treatment. Caught here by the sweep's own floor dropping 25 -> 21.
-    return real(rad) < 0 ? oftype(rad, NaN) : -1 + sqrt(rad)
+    return real(rad) < 0 ? oftype(rad, NaN) : u / (1 + sqrt(rad))
 end
 
 """
@@ -161,10 +199,26 @@ end
 `p_t = -1/β₀ + √((1+δ)² + 1/(β₀γ₀)²)`, note Section 2.2. The exact inverse of
 [`_delta_from_pt`](@ref); `dδ/dp_t = 1/β`, which is what makes each conversion's
 longitudinal Jacobian `β·β⁻¹ = 1`.
+
+Written cancellation-free as `p_t = w/(1/β₀ + √((1+δ)² + 1/(β₀γ₀)²))` with
+`w = 2δ + δ²`, by the same `1/β₀² - 1/(β₀γ₀)² = 1` identity that
+[`_delta_from_pt`](@ref) uses — see its docstring for the measurements. This
+form is what makes the round trip through `p_t` bit-exact; the literal form
+lost all relative accuracy below δ ≈ 1e-14 (2026-08-05_b audit, U14-4).
+
+The radicand is kept in the `(1+δ)² + 1/(β₀γ₀)²` form rather than the
+algebraically equal `1/β₀² + w`: only the first is *provably* non-negative in
+floating point. At δ ≈ -1 the second is a difference of two quantities that
+are both ≈ 1 and can round below zero, which would put a `DomainError` back
+into a kernel-reachable branch — the exact failure U14-3 removed from
+[`_delta_from_pt`](@ref). The cancellation this lead is about lives in the
+*numerator*, and that is where the rewrite is; the denominator is ≈ 2/β₀ and
+well conditioned, so evaluating it the safe way costs nothing.
 """
 @inline function _pt_from_delta(delta, beta0, gamma0)
     ibg = _inv_beta_gamma(beta0, gamma0)
-    return -inv(beta0) + sqrt((1 + delta)^2 + ibg * ibg)
+    w = 2 * delta + delta * delta
+    return w / (inv(beta0) + sqrt((1 + delta)^2 + ibg * ibg))
 end
 
 """

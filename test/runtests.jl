@@ -2525,11 +2525,48 @@ end
                                       beta0=b0, gamma0=g0)
         @test !isfinite(zz) || !isfinite(pp)
         # In-range values are untouched: exact inverse of _pt_from_delta.
-        # atol as well as rtol: d = 0.0 round-trips to -1.1e-16, which is exact
-        # to machine precision but which no relative tolerance can accept.
         for d in (-0.5, -0.1, 0.0, 0.05, 0.3)
             @test isapprox(Octopus._delta_from_pt(Octopus._pt_from_delta(d, b0, g0), b0, g0),
                            d; rtol = 1.0e-14, atol = 1.0e-15)
+        end
+    end
+
+    # 2026-08-05_b audit, U14-4: both conversions used to be written in their
+    # literal `-1 + √(...)` / `-1/β₀ + √(...)` forms, which subtract two
+    # quantities that are both ≈ 1. That costs ~1e-16 ABSOLUTE regardless of
+    # amplitude, so the relative accuracy degraded as 1/δ: measured 8.9e-5
+    # relative error at p_t = 1e-12, and the δ → p_t → δ round trip returned
+    # exactly ZERO for δ = 1e-16 -- a small-amplitude synchrotron oscillation
+    # erased by the coordinate change alone. The identity
+    # `1/β₀² - 1/(β₀γ₀)² = 1` is exact, which makes both cancellation-free.
+    #
+    # RELATIVE tolerances only, and no atol: an absolute tolerance is exactly
+    # what hid this, and it is the small-amplitude end that the old forms lost.
+    @testset "longitudinal conversions keep relative accuracy at small amplitude" begin
+        for (b0, g0) in cases
+            # δ = 0 is now bit-exact both ways, not 1.1e-16 off.
+            @test Octopus._pt_from_delta(0.0, b0, g0) === 0.0
+            @test Octopus._delta_from_pt(0.0, b0, g0) === 0.0
+            for d in (3.0e-2, 1.0e-4, 1.0e-8, 1.0e-12, 1.0e-16,
+                      -1.0e-3, -1.0e-8, -1.0e-14)
+                rt = Octopus._delta_from_pt(Octopus._pt_from_delta(d, b0, g0), b0, g0)
+                @test abs(rt - d) <= 4.0e-16 * abs(d)      # was 1.0 at d = 1e-16
+            end
+            # Forward accuracy against a BigFloat evaluation from the SAME
+            # stored β₀, γ₀ -- so this measures the expression, not the inputs.
+            for pt in (1.0e-2, 1.0e-6, 1.0e-10, 1.0e-12)
+                B = BigFloat(b0); G = BigFloat(g0); ibg = inv(B * G)
+                ref = -1 + sqrt((inv(B) + BigFloat(pt))^2 - ibg * ibg)
+                got = Octopus._delta_from_pt(pt, b0, g0)
+                @test abs(got - ref) <= 1.0e-11 * abs(ref)  # was 8.9e-5 at 1e-12
+            end
+        end
+        # The rewrite must not put a throw back on a kernel-reachable branch:
+        # δ → -1 drives `1/β₀² + (2δ + δ²)` through zero, which is why the
+        # radicand is kept in its provably-non-negative `(1+δ)² + 1/(β₀γ₀)²`
+        # form rather than the algebraically equal one.
+        for (b0, g0) in cases, d in (-1.0, -1.0 - 1.0e-12, -1.0 - 1.0e-6, -2.0)
+            @test isfinite(Octopus._pt_from_delta(d, b0, g0))
         end
     end
 
@@ -2588,6 +2625,92 @@ end
                                  beta0=b0, gamma0=g0)
         @test imag(o[1]) / h ≈ 1 / particle_beta(PATHLENGTH_DELTA, pz; beta0=b0, gamma0=g0) rtol = 1e-12
     end
+end
+
+@testset "linear-map friendly constructors promote their element type" begin
+    # 2026-08-05_b audit, U9-6: the four friendly linear-map constructors
+    # hard-coded `{Float64}` and then converted with `T(value)`, so a Dual or
+    # Complex parameter died with `Float64(::Dual)` unless the caller spelled
+    # `Spec{T}` -- while every lattice magnet promotes automatically. Half of a
+    # `T<:Number` widening delivers nothing.
+    u = (1.0e-3, 2.0e-4, 5.0e-4, 1.0e-4, 1.0e-2, 3.0e-3)
+    for f in (t -> CrabDispersionSpec(zeta1 = 0.11 + t),
+              t -> MomentumDispersionSpec(eta1 = 0.11 + t),
+              t -> XYCouplingSpec(r1 = 0.11 + t),
+              t -> Linear6DSpec(beta1 = (3.1, 2.2, 40.0), dmu = (0.3 + t, 0.2, 0.1)),
+              t -> Linear6DSpec(beta1 = (3.1, 2.2, 40.0), dmu = (0.3, 0.2, 0.1),
+                                zeta1 = (0.01 + t, 0.0, 0.0, 0.0)))
+        @test ForwardDiff.derivative(t -> sum(compile_runtime(f(t))(u...)), 0.0) isa Float64
+    end
+    # Two derivatives that must be NONZERO, so the test cannot pass by the
+    # Dual silently collapsing to a Float64 on the way in.
+    @test ForwardDiff.derivative(
+        t -> compile_runtime(Linear6DSpec(beta1 = (3.1, 2.2, 40.0),
+                                          dmu = (0.3 + t, 0.2, 0.1)))(u...)[1], 0.0) != 0
+    @test ForwardDiff.derivative(
+        t -> compile_runtime(Linear6DSpec(beta1 = (3.1, 2.2, 40.0), dmu = (0.3, 0.2, 0.1),
+                                          zeta1 = (0.01 + t, 0.0, 0.0, 0.0)))(u...)[1], 0.0) != 0
+
+    # Float64 is a FLOOR, not merely a fallback -- integers and rationals still
+    # land on Float64, so this change only ever widens.
+    for s in (CrabDispersionSpec(zeta1 = 1//10), MomentumDispersionSpec(eta1 = 0),
+              XYCouplingSpec(r1 = 1//10),
+              Linear6DSpec(beta1 = (3, 2, 40), dmu = (0.3, 0.2, 0.1)),
+              Linear6DSpec(matrix = Matrix{Int}(I, 6, 6)))
+        @test numeric_type(compile_runtime(s)) === Float64
+    end
+    # Descriptive metadata takes no part in the promotion: an integer
+    # `some_count=2` must not drag the element type down to Int.
+    let s = (@test_logs (:warn,) CrabDispersionSpec(zeta1 = 0.1, some_count = 2))
+        @test numeric_type(compile_runtime(s)) === Float64
+    end
+
+    # 2026-08-05_b audit, U9-6, second half: `_linear6d_matrix_from_optics`
+    # promoted over beta/alpha/dmu but NOT zeta/eta/R. Unreachable through the
+    # friendly constructor, which pre-converts -- but reachable through the raw
+    # `ElementSpec`, which is the documented flexible form.
+    let dual = ForwardDiff.Dual(0.01, 1.0), z4 = (0.0, 0.0, 0.0, 0.0)
+        raw = ElementSpec{:linear6d}(Dict{Symbol,Any}(
+            :beta1 => (3.1, 2.2, 40.0), :beta2 => (3.1, 2.2, 40.0),
+            :alpha1 => (0.0, 0.0, 0.0), :alpha2 => (0.0, 0.0, 0.0),
+            :dmu => (0.3, 0.2, 0.1),
+            :zeta1 => (dual, 0.0, 0.0, 0.0), :eta1 => z4, :R1 => z4,
+            :zeta2 => z4, :eta2 => z4, :R2 => z4,
+            :tracking_method => Symplectic6DMap()))
+        @test numeric_type(compile_runtime(raw)) <: ForwardDiff.Dual
+    end
+
+    # 2026-08-05_b audit, U9-7: `XYCoupling(r1::T, r2::T, r3::T, r4::T)` was
+    # strict same-type, so writing an exact zero as `0` rather than `0.0` --
+    # which is what anyone does -- was a MethodError.
+    @test numeric_type(XYCoupling(0.01, 0, 0, 0)) === Float64
+    @test numeric_type(XYCoupling(1//100, 0.0, 0.0, 0.0)) === Float64
+    @test numeric_type(XYCoupling(0.01, 0, 0, 0, XY_MODEB)) === Float64
+    @test XYCoupling(0.01, 0, 0, 0, XY_MODEB).mode === XY_MODEB
+end
+
+@testset "random Beam refuses non-AbstractFloat on BOTH entry points" begin
+    # 2026-08-05_b audit, U14-5: the U15-7 directed refusal was added to the
+    # policy overload only. The docstring advertises `CPUThreadsBackend` and
+    # `CUDABackend` as second arguments too, and that is a SEPARATE method
+    # rather than a forwarding wrapper -- so the deep MethodError the refusal
+    # exists to prevent was still reachable through the documented signature.
+    for second in (CPUThreadsExecutionPolicy(), CPUThreadsBackend)
+        @test_throws ArgumentError Beam(4, second, Rational{Int})
+        err = try
+            Beam(4, second, Rational{Int}); nothing
+        catch e
+            e
+        end
+        @test occursin("AbstractFloat coordinate type", sprint(showerror, err))
+    end
+    # Still constructs for the types it is supposed to accept -- and the
+    # coordinate type argument is honoured, not merely tolerated. (`eltype` of
+    # the representation, not `numeric_type`: the latter has a generic Float64
+    # fallback for anything that is not an `ElementSpec`, so it would pass here
+    # no matter what the beam actually held.)
+    @test eltype(Beam(4, CPUThreadsBackend, Float32).rep.x) === Float32
+    @test eltype(Beam(4, CPUThreadsExecutionPolicy(), Float32).rep.x) === Float32
 end
 
 @testset "ForwardDiff differentiates the lattice" begin

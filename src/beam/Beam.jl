@@ -449,14 +449,29 @@ RNG using `global_rng_seed()`, `global_rng_method()`, and the beam `rng_id`.
 If `rng_id == 0`, a stream id is assigned with `next_rng_id!()`. Passing an
 explicit `rng` uses that RNG as a convenience override and ignores `rng_id`.
 """
-function Beam(N::Integer, policy::AbstractExecutionPolicy, FloatT::Type{RT}=Float64; kwargs...) where {RT<:Real}
-    # Directed refusal instead of a deep MethodError: sampling draws through
-    # octopus_normal, which needs a concrete AbstractFloat — a Dual or exotic
-    # Real died inside the RNG with no hint (2026-08-05 audit, U15-7).
+# Directed refusal instead of a deep MethodError: sampling draws through
+# octopus_normal, which needs a concrete AbstractFloat — a Dual or exotic Real
+# died inside the RNG with no hint (2026-08-05 audit, U15-7).
+#
+# Called from BOTH random-`Beam` entry points. The refusal was added to the
+# policy overload only, but the docstring above advertises `CPUThreadsBackend`
+# and `CUDABackend` as second arguments too, and that overload is a separate
+# method rather than a forwarding wrapper — so the exact MethodError the
+# refusal exists to prevent was still reachable through the documented
+# signature (2026-08-05_b audit, U14-5).
+@inline function _require_sampling_float(::Type{RT}) where {RT<:Real}
     RT <: AbstractFloat || throw(ArgumentError(
         "Beam sampling requires an AbstractFloat coordinate type (the counter " *
         "RNG draws concrete floats); got $(RT). Build a Phase6DRep directly " *
         "for exotic number types."))
+    return nothing
+end
+
+function Beam(N::Integer, policy::AbstractExecutionPolicy, FloatT::Type{RT}=Float64; kwargs...) where {RT<:Real}
+    # Checked here as well as in the backend-tag method below, so the refusal
+    # lands before `activate_policy!` mutates global state for a call that
+    # cannot succeed.
+    _require_sampling_float(RT)
 	activate_policy!(policy)
 	return Beam(Int(N), backend_type(policy), RT; execution_policy=policy, kwargs...)
 end
@@ -479,6 +494,7 @@ function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
               initial_offset=zeros(RT, 6),
               execution_policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
               kwargs...) where {BTAG<:AbstractExecutionBackend,RT<:Real}
+	_require_sampling_float(RT)
 	N > 0 || throw(ArgumentError("random Beam construction requires a positive particle count; got $(N)"))
 	params = _beam_params(RT, Int(N); kwargs...)
 	rep = _standard_gaussian_rep(BTAG, RT, Int(N);

@@ -173,6 +173,21 @@ positions to 4.4e-16; **exactly symplectic**, `|det J - 1| ≤ 4.4e-16`, which i
 the note's generating-function claim confirmed numerically rather than assumed;
 every identity of §2.2 term by term.
 
+That 4.4e-16 is an **absolute** number, and until the 2026-08-05_b audit
+(U14-4) it was also all there was: `δ ↔ p_t` were written in their literal
+`-1 + √(...)` forms, which subtract two quantities that are both ≈ 1 and so
+carry ~1e-16 absolute *whatever the amplitude*. Relative accuracy therefore
+degraded as `1/δ` — 8.9e-5 at `p_t = 1e-12`, and the `δ → p_t → δ` round trip
+returned exactly **zero** for `δ = 1e-16`. Both are now written
+cancellation-free using `1/β₀² - 1/(β₀γ₀)² = 1`, which is exact:
+`δ = u/(1+√(1+u))` with `u = 2p_t/β₀ + p_t²`, and the mirror form for the
+inverse. Re-measured against BigFloat from `E₀/mc²` over three energies
+(γ₀ = 2.66, 160, 19570) and amplitudes 1e-2 down to 1e-12: **2.2e-16 relative
+forward, 3.2e-16 relative round trip** — flat, not amplitude-dependent.
+The identity is the exact physical relation, so using it *repairs* the stored
+`β₀`'s own rounding rather than inheriting it; the rewrite is better than the
+literal form even when the literal form is evaluated exactly.
+
 This settles the sandwich question. The cavity body lives in `TIME_ENERGY` —
 which *is* the $(t, E)$ pair, $z_1 = -c\Delta t$ and $p_t = \Delta E/(P_0c)$ —
 so the body is `pt += strength * sin(k*z1 + phase)` with no $\beta$ factor in

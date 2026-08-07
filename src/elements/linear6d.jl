@@ -15,8 +15,24 @@ The runtime stores the 6x6 matrix as a flat tuple for GPU-compatible callable
 tracking. An explicit matrix must satisfy `transpose(M) * J * M = J` in the
 canonical `(x, px, y, py, z, pz)` ordering. Validation uses a
 precision-derived, magnitude-aware floating-point error bound.
+
+Without the explicit `{T}`, the element type is inferred by promoting the
+named parameters over a `Float64` floor, so a `Dual` or `Complex` parameter
+differentiates without the caller having to spell the type — matching how
+every lattice magnet promotes through `numeric_type(spec)` (2026-08-05_b
+audit, U9-6). Integers, rationals and `Float32` still land on `Float64`;
+narrowing stays behind the explicit `{T}` form. Extra keyword arguments are
+descriptive metadata and take no part in the promotion.
 """
-Linear6DSpec(; kwargs...) = Linear6DSpec{Float64}(; kwargs...)
+Linear6DSpec(; matrix=nothing, beta1=nothing, dmu=nothing, beta2=beta1,
+              alpha1=(0, 0, 0), alpha2=alpha1,
+              zeta1=(0, 0, 0, 0), eta1=(0, 0, 0, 0), R1=(0, 0, 0, 0),
+              zeta2=zeta1, eta2=eta1, R2=R1, kwargs...) =
+    Linear6DSpec{_linear_map_eltype(matrix, beta1, dmu, beta2, alpha1, alpha2,
+                                    zeta1, eta1, R1, zeta2, eta2, R2)}(;
+        matrix=matrix, beta1=beta1, dmu=dmu, beta2=beta2,
+        alpha1=alpha1, alpha2=alpha2, zeta1=zeta1, eta1=eta1, R1=R1,
+        zeta2=zeta2, eta2=eta2, R2=R2, kwargs...)
 function (::Type{Linear6DSpec{T}})(; matrix=nothing,
                                   beta1=nothing,
                                   dmu=nothing,
@@ -220,7 +236,16 @@ function _linear6d_matrix_from_optics(spec::ElementSpec{:linear6d})
     alpha1 = param(spec, :alpha1)
     alpha2 = param(spec, :alpha2)
     dmu = param(spec, :dmu)
-    T = promote_type(map(typeof, (beta1..., beta2..., alpha1..., alpha2..., dmu...))...)
+    # The promotion has to span EVERY optics parameter that reaches the matrix,
+    # not just the Twiss block: it used to cover beta/alpha/dmu only, so a Dual
+    # or Complex zeta/eta/R died at the `_linear6d_tuple(..., T)` conversions
+    # below with `Float64(::Dual)`. Unreachable through the friendly
+    # constructor, which pre-converts, but reachable through a raw `ElementSpec`
+    # -- which is the documented flexible form (2026-08-05_b audit, U9-6).
+    T = promote_type(map(typeof, (beta1..., beta2..., alpha1..., alpha2..., dmu...,
+                                  param(spec, :zeta1)..., param(spec, :eta1)...,
+                                  param(spec, :R1)..., param(spec, :zeta2)...,
+                                  param(spec, :eta2)..., param(spec, :R2)...))...)
     B = _zero66(T)
     for i in 1:3
         s = sin(T(dmu[i]))
