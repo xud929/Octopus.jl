@@ -9632,16 +9632,16 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         # and `nsource` keys plus a `scope` tag, and the CUDA denominator no
         # longer includes the luminosity deposits that cannot clip -- U11-2/3).
         #
-        # There is no transverse-path assert here, and the reason previously
-        # given for that was WRONG (2026-08-05_b audit, U11-6): "that map never
-        # moves x/y inside the collision, so its deposits cannot clip". The
-        # premise is true and the conclusion does not follow. Intra-collision
-        # motion is not the only route to clipping: when the box is set by the
-        # `1.05*emax` branch rather than by `d*sigma`, the 5% headroom is
-        # thinner than one cell on small grids -- the CPU tripwire's own
-        # docstring names `Nx < ~41` -- and the transverse deposits clip on both
-        # backends at plausible settings. What is missing is a transverse-path
-        # case, not a proof that one is unnecessary.
+        # The reason once given for having NO transverse-path assert was wrong
+        # (2026-08-05_b audit, U11-6): "that map never moves x/y inside the
+        # collision, so its deposits cannot clip". The premise is true and the
+        # conclusion does not follow -- intra-collision motion is not the only
+        # route to clipping. When the box is set by the `1.05*emax` branch
+        # rather than by `d*sigma` (any beam whose extremum exceeds d/1.05
+        # times its rms: an outlier or a halo), the 5% headroom is thinner than
+        # one cell on a small grid -- the CPU tripwire's own docstring names
+        # `Nx < ~41` -- and the outermost particle's CIC stencil straddles the
+        # wall. The case is here now rather than argued away.
         strong_gpu(n) = begin
             s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
             x = s(1.0e-4, 0.0); x[1] = 8.0e-4
@@ -9655,6 +9655,40 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             grid=(64, 64), slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
         @test_logs (:warn, r"clipped charge at the Dirichlet wall") match_mode = :any collide!(
             sp64, strong_gpu(256), strong_gpu(256), Octopus.CUDABackend)
+
+        # THE TRANSVERSE PATH, with `longitudinal_kick=false` so the 6D route
+        # above cannot be what warns. Both backends must see it, or the
+        # tripwire only guards one of them.
+        strong_cpu(n) = begin
+            s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+            x = s(1.0e-4, 0.0); x[1] = 8.0e-4          # the halo that sets 1.05*emax
+            rep = Phase6DRep(x, s(1.0e-5, 0.3), s(1.0e-4, 0.9), s(1.0e-5, 1.2),
+                             s(1.0e-2, 2.0), s(1.0e-4, 2.5))
+            params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=n)
+            Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+        end
+        transverse(grid, domain_factor) = SpectralPoissonSolver(
+            kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+            grid=(grid, grid), domain_factor=domain_factor, longitudinal_kick=false,
+            slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+        # Measured 2026-08-07: CPU warns twice (once per solve) and CUDA once
+        # (aggregated per collision) at every one of domain_factor/grid =
+        # 4.0/16, 4.0/32, 5.0/32, 8.0/32.
+        @test_logs (:warn, r"clipped charge at the Dirichlet wall") match_mode = :any collide!(
+            transverse(32, 4.0), strong_cpu(256), strong_cpu(256), CPUThreadsBackend)
+        @test_logs (:warn, r"clipped charge at the Dirichlet wall") match_mode = :any collide!(
+            transverse(32, 4.0), strong_gpu(256), strong_gpu(256), Octopus.CUDABackend)
+        # NEGATIVE CONTROL, or the assertions above would pass on a tripwire
+        # that fires unconditionally: a box wide enough for the halo warns on
+        # neither backend. Measured 0/0 at 2.0/64 and 16.0/8.
+        for (backend, mk) in ((CPUThreadsBackend, strong_cpu),
+                              (Octopus.CUDABackend, strong_gpu))
+            logs = Test.collect_test_logs() do
+                collide!(transverse(64, 2.0), mk(256), mk(256), backend)
+            end[1]
+            @test !any(r -> r.level === Logging.Warn &&
+                            occursin("clipped charge", string(r.message)), logs)
+        end
     end
 
     @testset "CUDA GaussianPIC solver matches CPU" begin

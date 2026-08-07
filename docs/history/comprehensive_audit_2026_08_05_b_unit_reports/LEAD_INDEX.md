@@ -134,7 +134,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U11-3 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/spectral_cuda.jl:283-284 vs spectral.jl:411-412` | The two tripwires emit the same message string but different structured |
 | U11-4 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/spectral_cuda.jl:686-719 and 639-681` | `field_precision=:single` reaches beyond the field solve: it downgrades |
 | U11-5 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/spectral_cuda.jl:394 (also 529, 543)` | The three CUDA solve entry points cannot survive an empty source |
-| U11-6 | low | CONFIRMED, comment corrected (2026-08-06); the missing transverse case itself is still absent | `test/runtests.jl, "CUDA spectral deposit tripwire (R9, U9-1)" testset` | The comment "No transverse-path assert: that map never moves x/y inside |
+| U11-6 | low | FIXED (2026-08-07): comment corrected earlier, and the missing transverse-path case added on both backends with a wide-box negative control | `test/runtests.jl, "CUDA spectral deposit tripwire (R9, U9-1)" testset` | The comment "No transverse-path assert: that map never moves x/y inside |
 | U11-7 | low | CONFIRMED, FIXED (2026-08-06) | `docs/theory/spectral_sine_poisson_solver.md §13` | The recorded CPU/CUDA agreement figure ("kicks ~4e-16, luminosity |
 | U12-10 | low | CONFIRMED, FIXED (2026-08-06) — unwrap derived from structure (an `inner` field), not a hand list | `src/knowledge/Knowledge.jl:839-845, 955-959` | the knowledge layer hard-codes the list of generic placement wrappers |
 | U12-12 | low | CONFIRMED, FIXED (2026-08-06) | `src/policies/Policies.jl:330-338` | the public `configuration_report` docstring states a six-item status |
