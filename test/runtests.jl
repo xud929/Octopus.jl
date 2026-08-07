@@ -5363,6 +5363,69 @@ end
         @test rpic.metrics[:slice_pair_luminosity_records_compared] > 0
         @test rpic.metrics[:slice_pair_luminosity_records_compared] ==
               rpic.metrics[:slice_pair_luminosity_cpu_records]
+        # 2026-08-07 (U1-1 remainder, todo row): only the indexed wavefront
+        # sub-route populated the GPU per-pair luminosity sink, so this
+        # contract FAILED at `batch_mode=:sequential` — 18 CPU records against
+        # 0 GPU, relative error Inf — and nothing in the suite ran that
+        # public configuration. Every CUDA route now pushes through
+        # `_cuda_pic_push_pair_luminosity!`; this pins the once-red mode.
+        rseq = validate(StrongStrongPICBackendConsistencyContract(batch_mode=:sequential))
+        @test rseq.passed
+        @test rseq.metrics[:slice_pair_luminosity_records_compared] > 0
+        @test rseq.metrics[:slice_pair_luminosity_records_compared] ==
+              rseq.metrics[:slice_pair_luminosity_cpu_records]
+        # The contract's two batch modes reach only the batched-FFT pair
+        # route and the indexed wavefront route. The other push sites are
+        # selected by CUDA-only solver flags the contract does not expose, so
+        # pin each remaining site directly: same beams both backends, sink
+        # installed, traces compared key-by-key. An empty GPU trace here is
+        # exactly the regression this guards against.
+        let contract = StrongStrongPICBackendConsistencyContract()
+            slicing = LongitudinalSlicing(method=:normal_quantile, nslices=contract.nslices,
+                                          center_position=:centroid)
+            trace_for = function (backend, solver)
+                Octopus.set_global_rng!(seed=contract.seed, method=:philox)
+                base1, base2 = Octopus._strong_strong_contract_base_beams(contract)
+                b1 = Octopus._strong_strong_contract_beam(base1, backend)
+                b2 = Octopus._strong_strong_contract_beam(base2, backend)
+                ip = StrongStrongCollision(:ip; poisson_solver=solver)
+                task = StrongStrongTask((ip,), (ip,))
+                sink = Any[]
+                Base.ScopedValues.with(Octopus._ACTIVE_PIC_LUMINOSITY_PAIR_SINK => sink) do
+                    execute!(task, b1, b2; turns=2)
+                end
+                backend === Octopus.CUDABackend && Octopus.CUDA.synchronize()
+                return Dict((r.turn, r.i, r.j) => r.luminosity for r in sink)
+            end
+            mk = (; kw...) -> PICPoissonSolver(; slicing=slicing, grid=contract.grid,
+                                               longitudinal_kick=true,
+                                               luminosity_schedule=nothing, kw...)
+            gmk = (; kw...) -> GaussianPICPoissonSolver(; slicing=slicing, grid=contract.grid,
+                                                        longitudinal_kick=true,
+                                                        luminosity_schedule=nothing, kw...)
+            # (cpu solver, gpu solver) per remaining CUDA push site:
+            arms = (
+                (:seq_sync, mk(cuda_async=false),
+                 mk(batch_mode=:sequential, cuda_async=false)),
+                (:seq_async_pair, mk(cuda_batch_fft=false),
+                 mk(batch_mode=:sequential, cuda_batch_fft=false)),
+                (:wf_non_indexed, mk(), mk(cuda_indexed_wavefront=false)),
+                (:wf_no_wavefront_fft, mk(), mk(cuda_wavefront_fft=false)),
+                (:wf_sync_fallback, mk(cuda_async=false), mk(cuda_async=false)),
+                (:gpic_sequential, gmk(), gmk(batch_mode=:sequential)),
+            )
+            for (name, cpu_solver, gpu_solver) in arms
+                cpu_map = trace_for(Octopus.CPUThreadsBackend, cpu_solver)
+                gpu_map = trace_for(Octopus.CUDABackend, gpu_solver)
+                @test !isempty(cpu_map)
+                @test keys(cpu_map) == keys(gpu_map)
+                if keys(cpu_map) == keys(gpu_map) && !isempty(cpu_map)
+                    rel = maximum(abs(gpu_map[k] - cpu_map[k]) /
+                                  max(abs(cpu_map[k]), eps()) for k in keys(cpu_map))
+                    @test rel <= contract.luminosity_rtol
+                end
+            end
+        end
         @test validate(StrongStrongGaussianBackendConsistencyContract()).passed
     else
         @test_skip "CUDA device not available"

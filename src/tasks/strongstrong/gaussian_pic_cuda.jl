@@ -1029,7 +1029,9 @@ if _HAS_CUDA
                 _cuda_gpic_interaction!(gsolver, slice2.coords, p2, field1, p1, kbb1, workspace.charges[2],
                                         spc, (Int(i), Int(j), 2))
                 if compute_luminosity
-                    luminosity += _cuda_pic_luminosity(pic, slice1.coords, p1, slice2.coords, p2, klum, workspace)
+                    pair_luminosity = _cuda_pic_luminosity(pic, slice1.coords, p1, slice2.coords, p2, klum, workspace)
+                    luminosity += pair_luminosity
+                    _cuda_pic_push_pair_luminosity!((Int(i), Int(j)), pair_luminosity)
                 end
                 _cuda_pic_store_slice!(beam1.rep, slice1.idx, field1, pic.longitudinal_kick)
                 _cuda_pic_store_slice!(beam2.rep, slice2.idx, field2, pic.longitudinal_kick)

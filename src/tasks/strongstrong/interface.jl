@@ -383,24 +383,27 @@ const _DEFAULT_STRONG_STRONG_DIAGNOSTICS = StrongStrongDiagnostics()
 const _ACTIVE_STRONG_STRONG_DIAGNOSTICS = Base.ScopedValues.ScopedValue(_DEFAULT_STRONG_STRONG_DIAGNOSTICS)
 const _ACTIVE_PIC_PHASE_TIMING_SINK = Base.ScopedValues.ScopedValue{Any}(nothing)
 const _ACTIVE_PIC_TIMING_CONTEXT = Base.ScopedValues.ScopedValue{Any}(nothing)
-# Per-slice-pair luminosity trace. NOT populated uniformly across backends, and
-# that asymmetry is load-bearing for anything comparing the two:
+# Per-slice-pair luminosity trace, populated on BOTH backends by every route
+# that computes luminosity:
 #
-#   CPU   every route -- the push sits in the single collision loop that serves
-#         every configuration.
-#   CUDA  the fully-indexed wavefront sub-route ONLY
-#         (`_cuda_pic_wavefront_luminosity_indexed`). The other five producers
-#         -- sequential non-async, sequential node, the async pair route, the
-#         batched-FFT pair route and the non-indexed batched-FFT wavefront
-#         route -- reduce to a scalar in-kernel and never touch the sink.
-#         Measured 2026-08-05_b (U1-1): 16 records on the indexed default, 0 on
-#         `cuda_indexed_wavefront=false`, `wavefront_fft=false` and
-#         `cuda_async=false`, against 16 on every CPU route.
+#   CPU   the push sits in the single collision loop that serves every
+#         configuration (and its gpic twin in `gaussian_pic.jl`).
+#   CUDA  every route pushes through `_cuda_pic_push_pair_luminosity!` --
+#         sequential sync/node, the async pair route, the batched-FFT pair
+#         route, the non-indexed and indexed wavefront routes, and the gpic
+#         sequential/wavefront/indexed twins. Until 2026-08-07 only the
+#         fully-indexed wavefront sub-route pushed (2026-08-05_b, U1-1:
+#         0 records on `cuda_indexed_wavefront=false`, `wavefront_fft=false`
+#         and `cuda_async=false`, against 16 on every CPU route), which made
+#         `StrongStrongPICBackendConsistencyContract` fail honestly at
+#         `batch_mode=:sequential`. A new CUDA route must call the helper
+#         wherever it resolves a per-pair value; the helper warns rather than
+#         silently skipping when a route cannot attribute its pair.
 #
-# So an empty sink after a CUDA run does not mean "no pairs"; it may mean "this
-# route cannot report them". `StrongStrongPICBackendConsistencyContract` decides
-# whether a trace was expected from what the CPU reference produced, never from
-# `batch_mode`, precisely because that flag does not predict this.
+# `StrongStrongPICBackendConsistencyContract` still decides whether a trace was
+# expected from what the CPU reference produced, never from `batch_mode`: that
+# stays the honest criterion even now that every route reports, because it is
+# the one that cannot be fooled by a future route regressing to silence.
 const _ACTIVE_PIC_LUMINOSITY_PAIR_SINK = Base.ScopedValues.ScopedValue{Any}(nothing)
 _strong_strong_diagnostics() = _ACTIVE_STRONG_STRONG_DIAGNOSTICS[]
 

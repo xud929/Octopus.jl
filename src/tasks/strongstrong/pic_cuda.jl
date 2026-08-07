@@ -259,7 +259,9 @@ if _HAS_CUDA
                     end
                     if compute_luminosity
                         t_luminosity = time_ns()
-                        luminosity += _cuda_pic_luminosity(solver, slice1.coords, p1, slice2.coords, p2, klum, workspace)
+                        pair_luminosity = _cuda_pic_luminosity(solver, slice1.coords, p1, slice2.coords, p2, klum, workspace)
+                        luminosity += pair_luminosity
+                        _cuda_pic_push_pair_luminosity!((Int(i), Int(j)), pair_luminosity)
                         _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
                     end
                     _cuda_pic_write_coords!(slice1.coords, field1)
@@ -463,9 +465,12 @@ if _HAS_CUDA
                             )
                             if compute_luminosity
                                 t_luminosity = time_ns()
-                                luminosity += _cuda_pic_luminosity(
+                                pair_luminosity = _cuda_pic_luminosity(
                                     solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, klum, workspace,
                                 )
+                                luminosity += pair_luminosity
+                                _cuda_pic_push_pair_luminosity!(
+                                    (Int(item.pair.i), Int(item.pair.j)), pair_luminosity)
                                 _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
                             end
                             _cuda_pic_write_coords!(item.slice1.coords, field1)
@@ -583,6 +588,27 @@ if _HAS_CUDA
 
         _cuda_pic_indexed_wavefront_enabled(solver::PICPoissonSolver) =
             solver.cuda_indexed_wavefront
+
+        # One record per slice pair, keyed like the CPU reference's
+        # (turn, i, j): `StrongStrongPICBackendConsistencyContract` compares
+        # the two traces, so EVERY CUDA route that resolves a per-pair
+        # luminosity value must push here — not only the indexed wavefront
+        # one, which was the U1-1 gap (2026-08-05_b; repaired 2026-08-07).
+        function _cuda_pic_push_pair_luminosity!(pair_ij, luminosity)
+            sink = _ACTIVE_PIC_LUMINOSITY_PAIR_SINK[]
+            sink === nothing && return nothing
+            if pair_ij === nothing
+                # A route that cannot attribute its pair would silently
+                # re-open the U1-1 gap; say so instead of dropping quietly.
+                @warn "CUDA PIC per-pair luminosity trace is active but this route supplied no (i, j) pair key; the record is dropped" maxlog = 1
+                return nothing
+            end
+            context = _ACTIVE_PIC_TIMING_CONTEXT[]
+            turn = context === nothing ? -1 : context.turn
+            push!(sink, (turn=turn, i=Int(pair_ij[1]), j=Int(pair_ij[2]),
+                         luminosity=Float64(luminosity)))
+            return nothing
+        end
 
         function _cuda_pic_timing_stats()
             _cuda_pic_timing_enabled() || return nothing
@@ -929,6 +955,7 @@ if _HAS_CUDA
                 t_luminosity = time_ns()
                 luminosity = fetch(luminosity_task)
                 CUDA.synchronize(luminosity_stream)
+                _cuda_pic_push_pair_luminosity!(pair_ij, luminosity)
                 _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
             end
 
@@ -1012,6 +1039,7 @@ if _HAS_CUDA
                 t_luminosity = time_ns()
                 luminosity = fetch(luminosity_task)
                 CUDA.synchronize(luminosity_stream)
+                _cuda_pic_push_pair_luminosity!(pair_ij, luminosity)
                 _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
             end
 
@@ -3654,9 +3682,12 @@ if _HAS_CUDA
             t_luminosity = time_ns()
             luminosity = zero(T)
             for item in valid
-                luminosity += _cuda_pic_luminosity(
+                pair_luminosity = _cuda_pic_luminosity(
                     solver, item.slice1.coords, item.p1, item.slice2.coords, item.p2, klum, workspace,
                 )
+                luminosity += pair_luminosity
+                _cuda_pic_push_pair_luminosity!(
+                    (Int(item.pair.i), Int(item.pair.j)), pair_luminosity)
             end
             _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
             return luminosity
@@ -3726,6 +3757,28 @@ if _HAS_CUDA
                 accum, q1, q2, scale, Int32(nx + 1), Int32(ny + 1), Int32(npairs),
             )
             CUDA.synchronize(stream)
+            if _ACTIVE_PIC_LUMINOSITY_PAIR_SINK[] !== nothing
+                # The accumulation kernel above only produces the batch total,
+                # so resolve the per-pair values for the trace with the
+                # overlap-partials kernel (the indexed route's reduction) on
+                # the same q1/q2/scale. Trace-only work; the returned total
+                # stays the accumulation kernel's, so tracing cannot change
+                # the luminosity a run reports.
+                blocks_per_pair = cld((nx + 1) * (ny + 1), threads)
+                overlap_blocks = blocks_per_pair * npairs
+                CUDA.@cuda threads=threads blocks=overlap_blocks shmem=threads*sizeof(T) stream=stream _cuda_pic_luminosity_overlap_partials_kernel!(
+                    wf.luminosity_overlap_partials, q1, q2, scale,
+                    Int32(nx + 1), Int32(ny + 1), Int32(blocks_per_pair), Int32(npairs),
+                )
+                partials = Array(@view(wf.luminosity_overlap_partials[1:overlap_blocks]))
+                for n in 1:npairs
+                    first_block = (n - 1) * blocks_per_pair + 1
+                    pair_luminosity = sum(@view(partials[first_block:(first_block + blocks_per_pair - 1)]))
+                    item = valid[n]
+                    _cuda_pic_push_pair_luminosity!(
+                        (Int(item.pair.i), Int(item.pair.j)), pair_luminosity)
+                end
+            end
             _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
             return T(CUDA.@allowscalar accum[1])
         end
@@ -3807,19 +3860,14 @@ if _HAS_CUDA
                 Int32(nx + 1), Int32(ny + 1), Int32(blocks_per_pair), Int32(npairs),
             )
             luminosity = sum(wf.luminosity_overlap_partials)
-            sink = _ACTIVE_PIC_LUMINOSITY_PAIR_SINK[]
-            if sink !== nothing
+            if _ACTIVE_PIC_LUMINOSITY_PAIR_SINK[] !== nothing
                 partials = Array(@view(wf.luminosity_overlap_partials[1:overlap_blocks]))
-                context = _ACTIVE_PIC_TIMING_CONTEXT[]
-                turn = context === nothing ? -1 : context.turn
                 for n in 1:npairs
                     first_block = (n - 1) * blocks_per_pair + 1
                     pair_luminosity = sum(@view(partials[first_block:(first_block + blocks_per_pair - 1)]))
                     item = valid[n]
-                    push!(sink, (
-                        turn=turn, i=Int(item.pair.i), j=Int(item.pair.j),
-                        luminosity=Float64(pair_luminosity),
-                    ))
+                    _cuda_pic_push_pair_luminosity!(
+                        (Int(item.pair.i), Int(item.pair.j)), pair_luminosity)
                 end
             end
             _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
