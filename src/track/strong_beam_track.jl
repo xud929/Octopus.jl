@@ -234,7 +234,14 @@ function track!(rep, elem::ThinStrongBeam, turns, ::Type{CUDABackend}; threads=2
 		)
 		CUDA.synchronize(stream)
 	end
-	elem.last_luminosity = _cuda_luminosity_total(lum, rep)
+	# Only when a turn actually ran (2026-08-05_b audit, U8-2). The CPU
+	# assigns inside `for _ in 1:turns`, so at `turns = 0` it retains the
+	# previous value; CUDA allocated a zeroed `lum`, launched a kernel whose
+	# accumulator never enters the loop body, and then assigned
+	# unconditionally -- so a no-op call ERASED the last real measurement.
+	# Measured: CPU 1.5854148099e+05 -> 1.5854148099e+05, CUDA the same value
+	# -> 0.0. The U7-2 regression pin covers `turns = 3` only.
+	turns > 0 && (elem.last_luminosity = _cuda_luminosity_total(lum, rep))
 	return nothing
 end
 
@@ -280,7 +287,14 @@ function track!(rep, elem::GaussianStrongBeam, turns, ::Type{CUDABackend}; threa
 		)
 		CUDA.synchronize(stream)
 	end
-	elem.last_luminosity = _cuda_luminosity_total(lum, rep)
+	# Only when a turn actually ran (2026-08-05_b audit, U8-2). The CPU
+	# assigns inside `for _ in 1:turns`, so at `turns = 0` it retains the
+	# previous value; CUDA allocated a zeroed `lum`, launched a kernel whose
+	# accumulator never enters the loop body, and then assigned
+	# unconditionally -- so a no-op call ERASED the last real measurement.
+	# Measured: CPU 1.5854148099e+05 -> 1.5854148099e+05, CUDA the same value
+	# -> 0.0. The U7-2 regression pin covers `turns = 3` only.
+	turns > 0 && (elem.last_luminosity = _cuda_luminosity_total(lum, rep))
 	return nothing
 end
 
@@ -447,7 +461,11 @@ end
 		scale = _round_gaussian_force_scale(r2, v)
 		expterm = exp(-r2 / (T(2) * v))
 		H1, _, H2 = _round_gaussian_hessian(kbb, sqrt(v), x, y, expterm)
-		return scale * x, scale * y, H1, H2, zero(T)
+		# The limit, matching the CPU twin (2026-08-05_b audit, U8-1): L/D is
+		# `-x*y*m1(q)/v^2` as eta -> 0, not zero. Both sides carried the same
+		# hard zero, so CPU/CUDA parity could not see it.
+		_, m1_round, _, _, _, _, _ = _near_round_moments_0_6(r2 / (T(2) * v))
+		return scale * x, scale * y, H1, H2, -x * y / (v * v) * m1_round
 	end
 
 	inner, outer = _near_round_eta_bounds(eta)

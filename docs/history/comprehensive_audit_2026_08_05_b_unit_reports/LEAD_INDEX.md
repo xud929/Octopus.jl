@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **219 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **224 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -270,11 +270,11 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U7-7 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/BeamObservers.jl:1038–1042` | `_discard_replayed_binary_rows!` has no `filesize > 0` guard — the F7 fix |
 | U7-8 | low | CONFIRMED, FIXED (2026-08-06) — layout derived from one width table + tripwire | `src/tasks/BeamObservers.jl:1518–1605` | the JLD2 column layout is hand-copied into **three** independent places |
 | U7-9 | low | CONFIRMED, FIXED (2026-08-06) — stale file now announced; the disable itself is documented behaviour | `src/tasks/BeamObservers.jl:1223` | `MomentObserver(capacity=0)` silently skips the predictable-schedule |
-| U8-1 | low |  | `src/elements/strong_beam.jl:1056-1061` | on the exact-round branch (`eta == 0`) the response evaluator returns |
-| U8-2 | low |  | `src/track/strong_beam_track.jl:216-239, 252-285` | with `turns == 0`, CUDA `track!` **overwrites** `elem.last_luminosity` |
-| U8-3 | low |  | `src/elements/strong_beam.jl:719` | `u < oftype(u, 1.0e-2)` in `_round_gaussian_hessian` is the exact |
-| U8-4 | low |  | `src/elements/strong_beam.jl:1277-1280 — re-verification of prior lead ` | a `slice_center` supplied without a matching `slice_weight` is silently |
-| U8-5 | low |  | `src/elements/strong_beam.jl:1285 — re-verification of prior lead U7-4,` | `slice_method = :equal_width` without `slice_width` throws |
+| U8-1 | low | CONFIRMED, FIXED (2026-08-06) — true limit returned on both backends; continuity across eta=0 verified to 10 figures | `src/elements/strong_beam.jl:1056-1061` | on the exact-round branch (`eta == 0`) the response evaluator returns |
+| U8-2 | low | CONFIRMED, FIXED (2026-08-06) | `src/track/strong_beam_track.jl:216-239, 252-285` | with `turns == 0`, CUDA `track!` **overwrites** `elem.last_luminosity` |
+| U8-3 | low | CONFIRMED, FIXED (2026-08-06) — real() convention on both crossovers; complex axis verified to agree with real | `src/elements/strong_beam.jl:719` | `u < oftype(u, 1.0e-2)` in `_round_gaussian_hessian` is the exact |
+| U8-4 | low | CONFIRMED, FIXED (2026-08-06) — a lone slice_center/weight is refused, not discarded | `src/elements/strong_beam.jl:1277-1280 — re-verification of prior lead ` | a `slice_center` supplied without a matching `slice_weight` is silently |
+| U8-5 | low | CONFIRMED, FIXED (2026-08-06) — ArgumentError with guidance, not MethodError | `src/elements/strong_beam.jl:1285 — re-verification of prior lead U7-4,` | `slice_method = :equal_width` without `slice_width` throws |
 | U9-3 | low | CONFIRMED, FIXED (2026-08-06) — real(T) thresholds; complex/Dual/BigFloat/Float32 all verified, rejection ratio identical | `src/elements/linear6d.jl:131–188 (`_linear6d_symplectic_error`, `_vali` | the symplecticity validator orders on `T` rather than `real(T)`, so a |
 | U9-4 | low | CONFIRMED, FIXED (2026-08-06) — re-measured independently at 7.106e-15, not 5.9e-15 | `src/elements/lattice_magnets.jl:60–71 (`_curv_vers` crossover comment)` | the comment records "the closed branch holds <= 5.9e-15 for u in [0.125, 0.5]"; |
 | U9-5 | low | CONFIRMED, dispositioned (2026-08-06) — the default is conditional and one ParamMeta field cannot hold both; the field now says which case it shows | `src/elements/solenoid.jl:464 (`nst` ParamMeta)` | the machine-readable `default=1` disagrees with the compile path's actual |

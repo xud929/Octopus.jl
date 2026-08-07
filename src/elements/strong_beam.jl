@@ -716,7 +716,14 @@ end
         return h, zero(h), h
     end
     u = r2 / (2 * sigma2)
-    if u < oftype(u, 1.0e-2)
+    # `real(...)` on both sides, the convention every neighbouring crossover in
+    # this file already follows through a `where {T<:Real}` bound
+    # (`_near_round_eta_bounds`, `_near_round_blend`, the two moment helpers).
+    # This function carries no such bound, so with a Complex-valued T the
+    # `oftype` succeeded and the `<` then threw a MethodError from inside the
+    # kernel -- the same complex-step class as U9-3, and the one crossover in
+    # this region that was not type-guarded (2026-08-05_b audit, U8-3).
+    if real(u) < real(oftype(u, 1.0e-2))
         # For phi(u) = (1-exp(-u))/u, both phi and phi' need their series:
         # the direct phi' numerator cancels to second order as u approaches zero.
         oneu = one(u)
@@ -958,7 +965,10 @@ end
     # The fifth-degree radial series has O(rho^6) relative truncation error,
     # while Faddeeva subtraction has O(eps/(rho*sqrt(eta))) relative error.
     # Compare rho^7 directly to avoid a fractional power in GPU kernels.
-    return rho2 * rho2 * rho2 * sqrt(rho2) <= eps(T) / sqrt(eta)
+    # Same convention (U8-3): the comparison is between magnitudes, and `eps`
+    # and `<=` are undefined for a Complex T.
+    R = real(T)
+    return real(rho2 * rho2 * rho2 * sqrt(rho2)) <= eps(R) / real(sqrt(eta))
 end
 
 @inline function _elliptic_gaussian_axis_component(
@@ -1058,7 +1068,19 @@ end
         scale = _round_gaussian_force_scale(r2, v)
         expterm = exp(-r2 / (T(2) * v))
         H1, _, H2 = _round_gaussian_hessian(kbb, sqrt(v), x, y, expterm)
-        return scale * x, scale * y, H1, H2, zero(T)
+        # The LIMIT of L/D, not a hard zero (2026-08-05_b audit, U8-1).
+        # `L/D = (Kx*y - Ky*x)/(sig1^2 - sig2^2)` is cancellation-free in its
+        # integral form, `-x*y*m1(q)/v^2`, which is exactly what the near-round
+        # series returns as eta -> 0+. Returning `zero(T)` here was a 100% error
+        # in the fifth value while the other four are right to 4.6e-16, and it
+        # made the response discontinuous across `eta == 0`.
+        #
+        # Latent rather than live: the only consumer is the coupled
+        # `_cp_covariance_kick` rotation term, reached only when
+        # eta > inner ~ 2.206e-4, so this branch is unreachable from there --
+        # which is why a 100% error sat here unnoticed.
+        _, m1_round, _, _, _, _, _ = _near_round_moments_0_6(r2 / (T(2) * v))
+        return scale * x, scale * y, H1, H2, -x * y / (v * v) * m1_round
     end
 
     inner, outer = _near_round_eta_bounds(eta)
@@ -1278,11 +1300,39 @@ function _gaussian_slices(::Type{T}, ns::Int, slice_center, slice_weight, sigz, 
     if slice_center !== nothing && slice_weight !== nothing
         return _strong_tuple(slice_center, ns, T), _strong_tuple(slice_weight, ns, T)
     end
+    # A LONE center or weight was silently discarded and replaced by the
+    # `slice_method` nodes -- user-supplied physics vanishing without a signal,
+    # which is the class Measured Lesson 8 exists for (2026-08-05_b audit,
+    # U8-4; re-verification of U7-3). The pair is all-or-nothing by design,
+    # because a custom set of centers has no meaning without the weights that
+    # go with it; what was missing is saying so.
+    if slice_center !== nothing || slice_weight !== nothing
+        given = slice_center !== nothing ? "slice_center" : "slice_weight"
+        other = slice_center !== nothing ? "slice_weight" : "slice_center"
+        throw(ArgumentError(
+            "GaussianStrongBeamSpec was given $(given) without $(other). Custom " *
+            "slices are all-or-nothing: a set of centers has no meaning without " *
+            "the weights that go with it. Supply both, or neither and let " *
+            "slice_method = $(repr(method)) generate them -- passing one alone " *
+            "used to be discarded silently."))
+    end
     sigz === nothing && throw(ArgumentError("GaussianStrongBeamSpec requires sigz unless slice_center and slice_weight are supplied"))
     ns > 0 || throw(ArgumentError("ns must be positive, got $ns"))
     T(sigz) > zero(T) || throw(ArgumentError("sigz must be positive, got $sigz"))
     method == :equal_area && return _equal_area_slices(T, ns, T(sigz))
-    method == :equal_width && return _equal_width_slices(T, ns, T(sigz), T(width))
+    if method == :equal_width
+        # An ArgumentError with guidance, like every other misconfiguration in
+        # this constructor (2026-08-05_b audit, U8-5; re-verification of U7-4).
+        # `T(width)` on `nothing` threw `MethodError: no method matching
+        # Float64(::Nothing)` -- the wrong exception class for a user
+        # configuration error, and it named neither the option nor the fix.
+        width === nothing && throw(ArgumentError(
+            "slice_method = :equal_width requires slice_width (the uniform node " *
+            "spacing, in metres). Supply it, or choose a slice_method that " *
+            "generates its own nodes -- one of $(SLICE_METHODS) other than " *
+            ":equal_width."))
+        return _equal_width_slices(T, ns, T(sigz), T(width))
+    end
     method == :equal_area_centroid && return _equal_area_centroid_slices(T, ns, T(sigz))
     method == :sqrt_density && return _sqrt_density_slices(T, ns, T(sigz))
     method == :gauss_hermite && return _gauss_hermite_slices(T, ns, T(sigz))
