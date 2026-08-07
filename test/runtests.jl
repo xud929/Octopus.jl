@@ -5582,6 +5582,52 @@ end
     @test maximum(abs, J' * S6 * J - S6) < 1.0e-10
 end
 
+@testset "A second live observer on one path warns at initialization" begin
+    # 2026-08-05_b audit, U7-10. Two live observers writing one path end
+    # self-consistent and WRONG: the second's `_initialize_*_file!`
+    # truncates the first's rows, and the survivor resyncs onto the OTHER
+    # writer's rows — measured turn column [0, 1, 4, 5] from an interleaved
+    # 4-turn and 2-turn pair, file reporting 4 valid rows, no warning. The
+    # process-wide path registry (weak observer identity) now warns at the
+    # second live observer's initialization; a SINGLE observer continuing
+    # across execute! calls — the documented pattern — stays silent, which
+    # is why the registry is per-process and keyed on identity rather than
+    # per-task: the interleave crosses task boundaries, where each execute!
+    # prepares and finalizes cleanly.
+    mkp() = Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+    dline = (DriftSpec(L=1.0),)
+    second_writer_warns(lg) = count(
+        l -> occursin("second live observer", string(l.message)), lg)
+    p = tempname() * ".bin"
+    obs = BeamMomentObserver(p)
+    t1 = TrackingTask(dline; hooks=(ScheduledObserver(obs),))
+    lg, _ = Test.collect_test_logs() do
+        execute!(t1, mkp(); turns=3)
+        execute!(t1, mkp(); turns=4, start_turn=3)
+    end
+    @test second_writer_warns(lg) == 0        # documented continuing pattern
+    obs2 = BeamMomentObserver(p)
+    t2 = TrackingTask(dline; hooks=(ScheduledObserver(obs2),))
+    lg2, _ = Test.collect_test_logs() do
+        execute!(t2, mkp(); turns=2)
+    end
+    @test second_writer_warns(lg2) == 1       # the U7-10 interleave, now loud
+    rm(p; force=true)
+    # The JLD2 sibling shares the mechanism through the same registry.
+    pj = tempname() * ".jld2"
+    oj1 = JLD2BeamMomentObserver(pj; capacity=1)
+    lgj, _ = Test.collect_test_logs() do
+        execute!(TrackingTask(dline; hooks=(ScheduledObserver(oj1),)), mkp(); turns=2)
+    end
+    @test second_writer_warns(lgj) == 0
+    oj2 = JLD2BeamMomentObserver(pj; capacity=1)
+    lgj2, _ = Test.collect_test_logs() do
+        execute!(TrackingTask(dline; hooks=(ScheduledObserver(oj2),)), mkp(); turns=2)
+    end
+    @test second_writer_warns(lgj2) == 1
+    rm(pj; force=true)
+end
+
 @testset "Every continuing observer drops its replayed window" begin
     # 2026-08-05 audit open-queue U6-2: only MomentObserver and the task-level
     # .lum path followed the drop-at-first_turn idempotence rule; the

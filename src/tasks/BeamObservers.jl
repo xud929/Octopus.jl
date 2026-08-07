@@ -187,6 +187,45 @@ function run_observers!(observers, ctx::TrackingContext, rep)
     return nothing
 end
 
+# Process-wide registry of output paths with a live writing observer
+# (2026-08-05_b audit, U7-10). Two live observers writing one path end
+# self-consistent and WRONG: the second's initializer truncates the first's
+# rows, and the surviving writer then resyncs onto the OTHER observer's rows
+# and appends after them — measured turn column [0, 1, 4, 5] from an
+# interleaved 4-turn and 2-turn pair, with the file reporting 4 valid rows
+# and no warning anywhere. Path sharing by a SINGLE observer continued
+# across tasks is documented and handled; a SECOND live observer on the same
+# path is almost certainly a mistake, so its initialization warns. A warning
+# rather than an error, and per-process rather than per-task, deliberately:
+# the interleave crosses task boundaries (each execute! prepares and
+# finalizes cleanly, so no task-scoped check can see it), and the registry
+# keys on weak object identity, which can flag the collision but cannot
+# prove intent. A collected observer's entry goes stale with it, so an
+# abandoned path can be reused without noise.
+const _OBSERVER_PATH_REGISTRY = Dict{String,WeakRef}()
+const _OBSERVER_PATH_REGISTRY_LOCK = ReentrantLock()
+
+function _register_observer_path!(observer, path::AbstractString)
+    key = abspath(String(path))
+    lock(_OBSERVER_PATH_REGISTRY_LOCK) do
+        prior = get(_OBSERVER_PATH_REGISTRY, key, nothing)
+        if prior !== nothing
+            live = prior.value
+            if live !== nothing && live !== observer
+                @warn "a second live observer is initializing an output path " *
+                      "that another live observer is writing: this " *
+                      "initialization truncates the first observer's rows, " *
+                      "and later flushes from both will interleave into a " *
+                      "self-consistent but wrong file. Give each observer " *
+                      "its own path (U7-10)." path = key first_observer =
+                      typeof(live) second_observer = typeof(observer)
+            end
+        end
+        _OBSERVER_PATH_REGISTRY[key] = WeakRef(observer)
+    end
+    return nothing
+end
+
 """
     prepare_observers!(observers, runtime_elems; turns=nothing, first_turn=0)
 
@@ -1160,6 +1199,7 @@ function _moment_output_row(stats)
 end
 
 function _initialize_moment_file!(observer::BeamMomentObserver)
+    _register_observer_path!(observer, observer.path)   # U7-10
     fmt = "turn"
     for i in 1:6
         fmt *= ",mu$i"
@@ -1209,6 +1249,7 @@ finalize_observer!(observer::BeamMomentObserver) =
     _flush_moment_buffer!(observer)
 
 function _initialize_jld2_moment_file!(observer::JLD2BeamMomentObserver)
+    _register_observer_path!(observer, observer.path)   # U7-10
     JLD2.jldopen(observer.path, "w") do file
         file["metadata/format"] = "Octopus.JLD2BeamMomentObserver"
         file["metadata/layout"] = "columnar_v2"
@@ -1410,6 +1451,7 @@ end
 _scheduled_turns(schedule::PredicateSchedule, turns, first_turn::Integer=0) = nothing
 
 function _initialize_hdf5_moment_file!(observer::MomentObserver)
+    _register_observer_path!(observer, observer.path)   # U7-10
     HDF5.h5open(observer.path, "w") do file
         ncols = length(observer.column_names)
         if observer.append
