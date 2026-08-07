@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **240 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **242 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -175,8 +175,8 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U17b-7 | low |  | `test/runtests.jl:2205-2210` | the AD sweep's floor is exact **today** (measured `verified = 25`, headroom 0) but |
 | U17b-8 | low |  | `test/runtests.jl:904-909` | the `:equal_area` "closed form" check compares `_gaussian_slices` against an |
 | U18-4 | low |  | `test/runtests.jl:3014-3085 ("Curved frame x transverse field: every ro` | the permanent h≠0 symplecticity sweep does **not** derive its case list; the |
-| U18-5 | low |  | `test/runtests.jl:3718-3720 ("Unknown spec keys warn…")` | the comment promises a check ("match the message and check the kwarg |
-| U18-6 | low |  | `test/runtests.jl:2876-2879 ("Observer finalizers, BPM noise keys, and ` | `@test @elapsed(Octopus._scheduled_turns(s, 5, 10^8)) < 0.005` is a |
+| U18-5 | low | CONFIRMED, FIXED (2026-08-06) — the promised kwarg check now exists and asserts the key names | `test/runtests.jl:3718-3720 ("Unknown spec keys warn…")` | the comment promises a check ("match the message and check the kwarg |
+| U18-6 | low | CONFIRMED, FIXED (2026-08-06) — allocation witness (96 B vs 4096) replaces the flaky 5 ms wall-clock | `test/runtests.jl:2876-2879 ("Observer finalizers, BPM noise keys, and ` | `@test @elapsed(Octopus._scheduled_turns(s, 5, 10^8)) < 0.005` is a |
 | U19-10 | low |  | `test/runtests.jl:5805` | `@test isapprox(lum32, lum64; rtol=1.0e-5)` in |
 | U19-4 | low |  | `test/runtests.jl:5747–5779` | `"PIC kbb override uses physical units"` is circular — the pass is |
 | U19-5 | low |  | `test/runtests.jl:6341–6365` | the `:node` defining-property block — 18,036 of this testset's 30,053 |

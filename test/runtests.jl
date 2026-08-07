@@ -3110,7 +3110,19 @@ Octopus.apply_action!(::ReseedGlobalRNGAction, ctx, rep) =
     end
     let s = EveryNSteps(start=0, stop=typemax(Int), step=1)
         Octopus._scheduled_turns(s, 5, 10^8)          # warm up
-        @test @elapsed(Octopus._scheduled_turns(s, 5, 10^8)) < 0.005
+        # A COMPLEXITY guard, not a wall-clock one (2026-08-05_b audit, U18-6).
+        # This was `@elapsed(...) < 0.005`, and this file aborts at its first
+        # failing testset (its own header records that as U17-7), so one GC
+        # pause or a preempted shared runner would silently drop every testset
+        # after this line -- including the whole CUDA block and the end-of-file
+        # physics backstops. Measured cost is 8.8e-8 to 4.2e-6 s, so the real
+        # property is that the planner does not walk the 10^8 offset: allocation
+        # is the machine-independent witness of that, where time is not.
+        @test (@allocated Octopus._scheduled_turns(s, 5, 10^8)) < 4096
+        # Belt and braces: still time it, but generously enough that only a
+        # genuine O(first_turn) regression can trip it -- 1000x the worst
+        # measured sample rather than the ~1200x-headroom 5 ms.
+        @test @elapsed(Octopus._scheduled_turns(s, 5, 10^8)) < 0.5
         @test Octopus._scheduled_turns(s, 5, 10^8) == collect(10^8:(10^8 + 4))
     end
 
@@ -4201,8 +4213,20 @@ end
     @test_logs (:warn, r"unknown parameter") match_mode = :any QuadrupoleSpec(
         L=0.3, k1=1.2, this_keyword_does_not_exist=1.0)
     # The offending key travels in the structured kwargs, which @test_logs
-    # regexes do not inspect — match the message and check the kwarg below.
+    # regexes do not inspect — so the "check the kwarg below" this comment
+    # promised is done HERE, and was missing entirely (2026-08-05_b audit,
+    # U18-5): a regression that warned about the RIGHT thing while naming the
+    # WRONG key satisfied every assertion in this testset.
     @test_logs (:warn, r"unknown parameter") match_mode = :any ElementSpec{:quadrupole}(; bogus=2.0)
+    let logs = Test.collect_test_logs() do
+            ElementSpec{:quadrupole}(; bogus=2.0, alsobogus=3.0)
+        end
+        rec = only(filter(r -> r.level === Logging.Warn &&
+                               occursin("unknown parameter", r.message), logs[1]))
+        named = Set(Symbol.(rec.kwargs[:unknown]))
+        @test named == Set((:bogus, :alsobogus))     # the payload, by name
+        @test rec.kwargs[:kind] === :quadrupole
+    end
     @test_logs DriftSpec(L=0.5, x_offset=1.0e-3)          # placement: silent
     d = DriftSpec(L=0.5)
     d.x_offset = 1.0e-3
