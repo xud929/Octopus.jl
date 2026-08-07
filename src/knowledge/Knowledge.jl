@@ -122,9 +122,18 @@ function _warn_unknown_spec_keys(::Type{ElementSpec{Kind}}, params::Dict{Symbol,
                if !haskey(meta.parameters, k) && !(k in _PLACEMENT_PARAM_KEYS) &&
                   !(k in extra)]
     isempty(unknown) && return nothing
+    # `maxlog`, because this fires more than once per spec (2026-08-05_b audit,
+    # U12-18). The warning lives in the inner constructor -- the right choke
+    # point for construction -- but `resolve_knobs` rebuilds
+    # `ElementSpec{Kind}(resolved)` on every `compile_runtime` of a
+    # knob-carrying spec, so the constructor and its warning run again each
+    # time. Its own design note says "One warning at construction names the
+    # unrecognized keys"; a knob sweep recompiling a thousand times said it a
+    # thousand times. Keyed by kind and key set, so a genuinely different typo
+    # elsewhere still speaks up.
     @warn "ElementSpec{$(repr(Kind))}: unknown parameter(s) stored as descriptive " *
           "metadata only — if one is a typo of a physics parameter, it is NOT " *
-          "being tracked. Deliberate metadata can use set_param! to stay silent." kind = Kind unknown = sort!(unknown; by = string)
+          "being tracked. Deliberate metadata can use set_param! to stay silent." kind = Kind unknown = sort!(unknown; by = string) maxlog = 1 _id = Symbol(:unknown_spec_keys_, Kind, :_, hash(sort!(copy(unknown); by = string)))
     return nothing
 end
 
@@ -918,9 +927,21 @@ see it, because it iterates `names(Octopus)` and this is not exported.
 """
 function _compiled_matches_runtime(compiled, rt::Type)
     compiled isa rt && return true
-    if compiled isa MisalignedElement || compiled isa RefTilted
-        return _compiled_matches_runtime(compiled.inner, rt)
-    end
+    # Derived from STRUCTURE, not a hand list of wrapper types (2026-08-05_b
+    # audit, U12-10). This named `MisalignedElement` and `RefTilted` explicitly,
+    # inside `src/knowledge/`, so any future generic wrapper -- a girder, a
+    # slice container -- had to be hand-added here or every example carrying it
+    # was falsely rejected: the same hand-copied-knowledge shape, with no
+    # tripwire. A placement wrapper is exactly a runtime op that holds its
+    # subject in an `inner` field, which both of those do and which a new one
+    # would too.
+    #
+    # `CompositeLine` is deliberately NOT unwrapped: it holds `ops`, a tuple of
+    # several operations, so there is no single inner runtime it could be said
+    # to match -- and that is why the field test, rather than "any wrapper",
+    # is the right rule.
+    hasfield(typeof(compiled), :inner) &&
+        return _compiled_matches_runtime(getfield(compiled, :inner), rt)
     return false
 end
 

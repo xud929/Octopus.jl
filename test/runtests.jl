@@ -4401,6 +4401,24 @@ end
     @test issubset(live, declared)
 end
 
+@testset "The Runtime Objects section is complete" begin
+    # 2026-08-05_b audit, U12-19. `_runtime_object_types` derives most of its
+    # content from element metadata and then hand-appends six types with no
+    # owning meta -- a fourth hand-maintained piece the `OctopusRegistry`
+    # docstring did not declare, with nothing failing when the next wrapper or
+    # beam-scale runtime type is forgotten. U13-6 fixed that list's staleness
+    # and left its structure.
+    missing_types = Octopus.runtime_object_types_missing_from_snapshot()
+    isempty(missing_types) ||
+        @info("runtime objects absent from the snapshot: " *
+              join(string.(nameof.(missing_types)), ", "))
+    @test isempty(missing_types)
+
+    # The check must be able to fail, or it is decoration: a concrete
+    # AbstractTrackOp that is not in the section must be reported.
+    @test !isempty(Octopus._subtypes_recursive(Octopus.AbstractTrackOp))
+end
+
 @testset "Every registry type describes itself" begin
     # 2026-08-05_b audit, U12-17. `description(T)` falls back to element
     # metadata, which is `nothing` for every non-element type, and then returns

@@ -294,3 +294,30 @@ function registry_types_without_description(reg::OctopusRegistry=build_registry(
     end
     return out
 end
+
+"""
+    runtime_object_types_missing_from_snapshot() -> Vector{Type}
+
+Concrete `AbstractTrackOp` subtypes absent from the Runtime Objects section.
+
+`_runtime_object_types` derives most of its content from element metadata and
+then hand-appends six types with no owning meta -- a fourth hand-maintained
+piece the `OctopusRegistry` docstring did not declare and nothing checked
+(2026-08-05_b audit, U12-19). The U13-6 repair fixed that list's *staleness*
+and left its *structure*: the next wrapper or beam-scale runtime type still
+needs a hand edit, with nothing failing when it is forgotten.
+
+This is the missing comparison. It is a soft list -- it reports rather than
+throws -- so the caller decides; the suite asserts it is empty.
+"""
+function runtime_object_types_missing_from_snapshot(reg::OctopusRegistry=build_registry())
+    listed = Set{Any}(_runtime_object_types(reg))
+    missing = Any[]
+    for T in _subtypes_recursive(AbstractTrackOp)
+        isabstracttype(T) && continue
+        parentmodule(T) === (@__MODULE__) || continue
+        T in listed && continue
+        push!(missing, T)
+    end
+    return sort!(missing; by = t -> string(nameof(t)))
+end
