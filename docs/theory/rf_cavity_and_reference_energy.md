@@ -1,5 +1,14 @@
 # RF Cavities, and Whether There Is a Reference Particle
 
+> **Status: Scope A is IMPLEMENTED.** `ThinRFCavitySpec` / `ThinRFCavity`
+> exist, are exported, are metadata-registered and appear in the registry
+> snapshot; §6's Scope A is a record of what was built, not a proposal. Scope B
+> (a varying reference energy, `P0(s)`) is still open, and so are §9's
+> questions. This note was written before the implementation and its present
+> tense below is the tense of the design discussion — read §6 as "this is the
+> design that was adopted", not "this is what we should do" (2026-08-05_b
+> audit, U26-13).
+
 Octopus has no RF cavity. `thin_crab_cavity` is transverse only, so there is
 nothing that closes the longitudinal plane — no synchrotron motion, no bucket,
 no longitudinal Twiss. That blocks the optics work, which is why this note
@@ -209,7 +218,8 @@ it at all. Every $\beta$ lives in the two wrappers, where §2.2 put them, and
 Scope B becomes an **asymmetric** sandwich: same body, exit wrapper at a
 different $P_0$.
 
-**Scope A — `ThinRFCavitySpec`, constant reference energy. Do this now.**
+**Scope A — `ThinRFCavitySpec`, constant reference energy. Implemented; see
+the status banner at the top of this note.**
 
 **Thin**, matching `ThinCrabCavity` and `ThinMultipole`: one localised kick, with
 `L` buying drift space so the arc length is right. No transit-time factor and no
@@ -219,8 +229,17 @@ It closes the longitudinal plane, gives synchrotron motion and the bucket,
 unblocks Twiss, and needs no reference machinery whatsoever.
 
 ```
-ThinRFCavitySpec(frequency; voltage, e0, mc2, phase=0, L=0)
+ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0)
+ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0,
+                 tracking_method=Symplectic6DMap())
 ```
+
+Both forms are accepted, and the second is what the first reduces to: `voltage`
+with `e0`/`mc2` derives the dimensionless `strength` and the `(β₀, γ₀)` pair, so
+no absolute energy is stored on the element. `charge` and the second form were
+missing from this block until the 2026-08-05_b audit (U26-13). The explicit form
+refuses a `(β₀, γ₀)` pair that is not one particle — see the note on
+`reference_pair_residual` in §6a.
 
 - **Body in `TIME_ENERGY`, conjugated by §2.2**, per Step 0 above.
 - **Two dimensionless numbers, not one**: a strength and $\beta_0$ (equivalently

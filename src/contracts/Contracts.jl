@@ -1305,6 +1305,17 @@ end
 description(::Type{SymplecticityContract}) =
     "Checks finite-difference 6D symplecticity of the runtime maps, including the weak-strong beam-beam kicks."
 
+"""
+The single probe point every `SymplecticityContract` case is evaluated at, and
+the one `validation/symplecticity_validation.jl` mirrors.
+
+Named rather than written out three times (twice here, once in the validation
+script) so the mirror cannot drift -- the same reasoning that made the case list
+itself shared (2026-08-05_b audit, U24-7). Off-axis in all six coordinates, so
+no term of a map can vanish by accident of the probe.
+"""
+const SYMPLECTICITY_PROBE_POINT = [4.0e-4, 1.0e-4, -2.0e-4, -1.5e-4, 1.2e-3, 2.0e-4]
+
 function _symplectic_form6()
     S = zeros(Float64, 6, 6)
     for coordinate in (1, 3, 5)
@@ -1359,7 +1370,7 @@ function _symplecticity_contract_cases()
             kbb=8.0e-9, covariance=covariance, center=(-1.0e-5, 2.0e-5, -2.0e-4),
             angle=(2.0e-4, -1.0e-4, 0.0), virtual_drift=:hirata),
         ns=3, sigz=7.0e-3, slice_method=:equal_area))
-    q0 = [4.0e-4, 1.0e-4, -2.0e-4, -1.5e-4, 1.2e-3, 2.0e-4]
+    q0 = copy(SYMPLECTICITY_PROBE_POINT)
     return (
         (name=:Linear6D, element=linear, q0=q0, tolerance=5.0e-8),
         (name=:CrabDispersion,
@@ -1486,7 +1497,7 @@ function validate(contract::SymplecticityContract; kwargs...)
     end
 
     # Hirata Lorentz crossing maps: quasi-symplectic pair.
-    q0 = [4.0e-4, 1.0e-4, -2.0e-4, -1.5e-4, 1.2e-3, 2.0e-4]
+    q0 = copy(SYMPLECTICITY_PROBE_POINT)
     forward = LorentzBoost(contract.lorentz_angle)
     reverse = RevLorentzBoost(contract.lorentz_angle)
     forward_det = det(_contract_fd_jacobian6(q -> forward(q...), q0, contract.step))
@@ -2405,6 +2416,32 @@ function _perturb_candidates(key::Symbol, current, pmeta)
     return ()
 end
 
+# Parameters that are not INDEPENDENTLY variable, and the joint moves that
+# perturb them legally.
+#
+# `beta0` and `gamma0` on `:thin_rf_cavity` are two views of one reference
+# energy, constrained by `beta0^2 = (gamma0^2-1)/gamma0^2`. Moving one alone
+# builds a reference particle that cannot exist, and `ThinRFCavitySpec` now
+# refuses it. Before that refusal the generic perturbation "checked" `beta0` by
+# setting it to `0.99 + 0.13 = 1.12` -- faster than light -- so the evidence
+# that the parameter reached the map came from a value no beam can have
+# (2026-08-05_b audit, U14-4).
+#
+# The effectiveness question for a constrained pair is necessarily JOINT: there
+# is no perturbation that moves one and not the other. Both keys therefore get
+# the same joint move, and what is proved is that the reference energy reaches
+# the map -- which is the strongest true statement available here, and strictly
+# more than an exemption would say. Returns `nothing` for the ordinary case.
+function _perturb_coupled_overrides(kind::Symbol, key::Symbol, probe)
+    (kind === :thin_rf_cavity && (key === :beta0 || key === :gamma0)) || return nothing
+    g0 = Float64(get(probe, :gamma0, 100.0))
+    return [begin
+                g = 1 + factor * (g0 - 1)
+                Dict{Symbol,Any}(:gamma0 => g,
+                                 :beta0 => sqrt((g - 1) * (g + 1)) / g)
+            end for factor in (1.37, 3.0)]
+end
+
 # Retained for callers and tests that want the single primary perturbation.
 function _perturb_param(key::Symbol, current, pmeta=nothing)
     candidates = _perturb_candidates(key, current, pmeta)
@@ -2483,7 +2520,9 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
             # Bool(0.13)` (U4-3). `_perturb_candidates` handles `nothing` by
             # offering the shapes an element parameter takes.
             current = get(probe, key, pmeta.default)
-            candidates = _perturb_candidates(key, current, pmeta)
+            coupled = _perturb_coupled_overrides(meta.kind, key, probe)
+            candidates = coupled === nothing ?
+                _perturb_candidates(key, current, pmeta) : coupled
             if isempty(candidates)
                 push!(unperturbable, "$(meta.kind).$(key)")
                 continue
@@ -2502,9 +2541,10 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
             accepted = false
             deviation = 0.0
             for candidate in candidates
+                override = candidate isa Dict{Symbol,Any} ?
+                    candidate : Dict{Symbol,Any}(key => candidate)
                 moved = try
-                    collect(compile_runtime(ctor(; merge(probe,
-                        Dict{Symbol,Any}(key => candidate))...))(u...))
+                    collect(compile_runtime(ctor(; merge(probe, override)...))(u...))
                 catch
                     nothing
                 end

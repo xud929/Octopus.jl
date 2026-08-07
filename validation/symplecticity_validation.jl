@@ -95,11 +95,21 @@ end
 # own differentiation cannot hide itself.
 symplecticity_cases() = Octopus._symplecticity_contract_cases()
 
-function run_lorentz_quasisymplectic_validation(; angle=0.01,
-                                                  step=DEFAULT_STEP,
-                                                  inverse_tolerance=1.0e-10,
-                                                  determinant_tolerance=2.0e-7)
-    q0 = [4.0e-4, 1.0e-4, -2.0e-4, -1.5e-4, 1.2e-3, 2.0e-4]
+# The Lorentz leg's knowledge comes from the contract too (2026-08-05_b audit,
+# U24-7). Angle, probe point and both tolerances used to be literals duplicated
+# here -- exactly the pattern the case-list repair above removed one function
+# up. They agreed; nothing made them agree tomorrow, and nothing would have
+# reported the divergence. Defaults now read the contract's own fields, which
+# became fields precisely so they could be read (U4-16); an explicit argument
+# still overrides, which is what a probe of a tightened bound needs.
+const _SYMP_CONTRACT_DEFAULTS = SymplecticityContract()
+
+function run_lorentz_quasisymplectic_validation(;
+        angle=_SYMP_CONTRACT_DEFAULTS.lorentz_angle,
+        step=DEFAULT_STEP,
+        inverse_tolerance=_SYMP_CONTRACT_DEFAULTS.lorentz_inverse_tolerance,
+        determinant_tolerance=_SYMP_CONTRACT_DEFAULTS.lorentz_determinant_tolerance)
+    q0 = copy(Octopus.SYMPLECTICITY_PROBE_POINT)
     forward = LorentzBoost(angle)
     reverse = RevLorentzBoost(angle)
     forward_det = jacobian_determinant(q -> forward(q...), q0; step=step)

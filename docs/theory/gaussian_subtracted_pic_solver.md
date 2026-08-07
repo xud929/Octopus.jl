@@ -710,9 +710,20 @@ the grid residual (`validation/gaussian_pic_bigaussian_validation.jl`, grid 128)
 The hybrid is **never worse than PIC in the median** and degrades *gracefully*: the gain is
 largest (2–3x) for near-Gaussian sources — the physically relevant beam-beam
 regime — and shrinks toward parity as the source departs from Gaussian. The
-weakest case is a *diagonally* offset perturbation, which induces x–y coupling
-($\sigma_{xy}\neq0$) the uncoupled subtraction leaves in the residual; an x-only
-offset (no coupling) keeps a 2.2–3.4x gain. This is exactly the regime the
+weakest case is the **far x-only** perturbation at 1.4x, with the diagonally
+offset (coupled) case next at 1.5x; what shrinks the gain is DISTANCE of the
+perturbation from the core, and coupling is a second, smaller effect on top of
+it.
+
+This paragraph used to read "the weakest case is a *diagonally* offset
+perturbation … an x-only offset (no coupling) keeps a 2.2–3.4x gain", which the
+table directly above it contradicts — the narrative read "weakest" off the last
+row rather than off the smallest number, and the row order is not the gain order
+(2026-08-05_b audit, U23-5). Re-run at HEAD, the numbers are the table's own:
+coupled 6.5e-4 → 4.4e-4 = 1.5x, far x-only 6.1e-4 → 4.5e-4 = 1.4x. The coupled
+subtraction branch is still worth having — it is the only mechanism that can
+remove a $\sigma_{xy}\neq0$ residual at all — but the argument for it is
+structural, not "this is the worst row". This is the regime the
 coupled (rotated) subtraction of Section 7 would recover.
 
 **The median qualifier is load-bearing** (2026-08-05_b audit, U23-12). The table

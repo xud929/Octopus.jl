@@ -14,7 +14,12 @@
 #
 # Outputs, under result/lum_anchor/: lum_headon.lum, lum_crossing.lum,
 # lum_crab.lum (undocumented until the 2026-08-05_b audit, U25-12).
-include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+# Guarded like every other script in `validation/`: without it this file
+# cannot be `include`d after any sibling in one process, which is how the
+# audit harnesses drive them (2026-08-05_b audit, U25-14).
+if !isdefined(Main, :Octopus)
+    include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+end
 using .Octopus
 using Statistics
 import SpecialFunctions: erfinv

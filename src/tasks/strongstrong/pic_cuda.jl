@@ -1,3 +1,39 @@
+# ---------------------------------------------------------------------------
+# THE CUDA PIC ROUTE IS NOT RUN-TO-RUN BIT-REPRODUCIBLE.
+#
+# The same process, the same input beam and the same launch configuration
+# produce different luminosity and different particle coordinates on repeated
+# calls. This is a property of the algorithm on this hardware, not a defect, and
+# it was undocumented until the 2026-08-05_b audit (U3-6).
+#
+# Cause: every deposition writes with `CUDA.@atomic charge[...] += w`
+# (`_cuda_pic_deposit_drifted_plane_kernel!`,
+# `_cuda_pic_deposit_drifted_indexed_plane_kernel!`, `_cuda_pic_deposit_point!`).
+# Floating-point addition is not associative and the hardware ordering of
+# concurrent atomics is not fixed, so the charge grid -- and everything
+# downstream of it -- varies between launches. `_cuda_pic_luminosity_wavefront_kernel!`
+# adds a second, coarser source: a single `CUDA.@atomic accum[1] +=` over the
+# whole plane stack.
+#
+# Measured, 60,000 particles/beam, grid 32x32, 4 slices, `green_cache=:none`,
+# six repetitions of the same `collide!` in one process:
+#
+#   route                    luminosity bit-identical   coordinates bit-identical
+#   wavefront, non-indexed   no (spread/mean 8.3e-16)   no
+#   wavefront, indexed       no (spread/mean 6.9e-16)   no
+#   sequential               no (spread/mean 6.9e-16)   no
+#
+# The magnitudes are at rounding level, so no physics result is affected. What
+# IS affected is any claim that rests on bit-reproduction: a test that asserts
+# two CUDA runs are `==` will be flaky, and a CPU/CUDA parity check must be
+# written with a tolerance rather than an equality. Every such check in the
+# suite is written that way; this comment exists so the next one is too.
+#
+# Making the route reproducible would mean deterministic reduction ordering
+# (sorted atomics or a per-block partial pass everywhere), which costs more than
+# the property is worth here. If a run ever needs bit-reproduction, it needs the
+# CPU backend.
+# ---------------------------------------------------------------------------
 if _HAS_CUDA
     @eval begin
         """
@@ -4749,84 +4785,17 @@ if _HAS_CUDA
             return nothing
         end
 
-        function _cuda_pic_kick_indexed_kernel!(xarr, pxarr, yarr, pyarr, zarr, idx,
-                                                phiL, ExL, EyL, phiR, ExR, EyR,
-                                                x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32,
-                                                source_center, field_hzi, field_zbias, kbb)
-            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-            stride = CUDA.gridDim().x * CUDA.blockDim().x
-            hxi = inv(hx)
-            hyi = inv(hy)
-            while index <= length(idx)
-                particle = idx[index]
-                oldx = xarr[particle]
-                oldpx = pxarr[particle]
-                oldy = yarr[particle]
-                oldpy = pyarr[particle]
-                oldz = zarr[particle]
-                s1 = typeof(source_center)(0.5) * (oldz - source_center)
-                x = oldx + oldpx * s1
-                y = oldy + oldpy * s1
-                zL = -oldz * field_hzi + field_zbias
-                zL = min(max(zL, zero(zL)), one(zL))
-                zR = one(zL) - zL
-                Kx, Ky = _cuda_pic_interpolate_field(
-                    method_code, x, y, x0, y0, hxi, hyi, nx, ny,
-                    phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
-                )
-                newpx = oldpx + 2 * kbb * Kx
-                newpy = oldpy + 2 * kbb * Ky
-                s2 = typeof(source_center)(0.5) * (source_center - oldz)
-                xarr[particle] = x + s2 * newpx
-                yarr[particle] = y + s2 * newpy
-                pxarr[particle] = newpx
-                pyarr[particle] = newpy
-                index += stride
-            end
-            return nothing
-        end
-
-        function _cuda_pic_kick_indexed_longitudinal_kernel!(xarr, pxarr, yarr, pyarr, pzarr, zarr, idx,
-                                                             phiL, ExL, EyL, phiR, ExR, EyR,
-                                                             x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32,
-                                                             source_center, field_hzi, field_zbias, kbb)
-            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-            stride = CUDA.gridDim().x * CUDA.blockDim().x
-            hxi = inv(hx)
-            hyi = inv(hy)
-            kick_scale = 2 * kbb
-            while index <= length(idx)
-                particle = idx[index]
-                oldx = xarr[particle]
-                oldpx = pxarr[particle]
-                oldy = yarr[particle]
-                oldpy = pyarr[particle]
-                oldz = zarr[particle]
-                oldpz = pzarr[particle]
-                s1 = typeof(source_center)(0.5) * (oldz - source_center)
-                x = oldx + oldpx * s1
-                y = oldy + oldpy * s1
-                pz = oldpz - typeof(source_center)(0.25) * (oldpx * oldpx + oldpy * oldpy)
-                zL = -oldz * field_hzi + field_zbias
-                zL = min(max(zL, zero(zL)), one(zL))
-                zR = one(zL) - zL
-                Kx, Ky, Kz = _cuda_pic_interpolate_kick(
-                    method_code, x, y, x0, y0, hxi, hyi, nx, ny,
-                    phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
-                )
-                newpx = oldpx + kick_scale * Kx
-                newpy = oldpy + kick_scale * Ky
-                pz += kick_scale * Kz * field_hzi
-                s2 = typeof(source_center)(0.5) * (source_center - oldz)
-                xarr[particle] = x + s2 * newpx
-                yarr[particle] = y + s2 * newpy
-                pxarr[particle] = newpx
-                pyarr[particle] = newpy
-                pzarr[particle] = pz + typeof(source_center)(0.25) * (newpx * newpx + newpy * newpy)
-                index += stride
-            end
-            return nothing
-        end
+        # `_cuda_pic_kick_indexed_kernel!` and
+        # `_cuda_pic_kick_indexed_longitudinal_kernel!` stood here -- 78 lines
+        # launched from nowhere in the repository, duplicating the live
+        # `_cuda_pic_apply_indexed_kick!` / `..._longitudinal_kick!` pair below
+        # line for line. Julia does not compile device code until it is
+        # launched, so "every branch must compile as device IR, throws
+        # included" (Measured Lesson 2) had no purchase on them, and a fix to
+        # the live pair would have left them silently stale -- hand-copied
+        # knowledge with no consumer to keep it honest. Deleted
+        # (2026-08-05_b audit, U3-5). They did still compile when launched by
+        # hand, so this is removal of unreachable code, not of a known defect.
 
         function _cuda_pic_kick_pair_indexed_kernel!(
             x1, px1, y1, py1, z1, idx1,
@@ -4988,16 +4957,27 @@ if _HAS_CUDA
             if method_code == 1
                 ix, wx1, wx2 = _cuda_pic_cic_weights(ux, nx)
                 iy, wy1, wy2 = _cuda_pic_cic_weights(uy, ny)
+                # Accumulation order matches the CPU twin's
+                # `for m in eachindex(wx), n in eachindex(wy)` -- x index OUTER,
+                # so (1,1),(1,2),(2,1),(2,2). This hand-unroll used to run the
+                # y index outer, swapping the two middle terms; floating-point
+                # addition is not associative, so 22.5% of CIC interpolations
+                # differed from the CPU in the last bits for a purely notational
+                # reason (measured over 200,000 random weight/field draws, max
+                # relative gap 4.9e-12). This file's own
+                # `_cuda_pic_interpolate_kick_quadratic` already used the CPU
+                # order, and both TSC branches do -- three CIC interpolators in
+                # one file, two of them transposed (2026-08-05_b audit, U3-3).
                 @inbounds begin
                     w = wx1 * wy1
                     Kx += w * (zL * ExL[ix, iy] + zR * ExR[ix, iy])
                     Ky += w * (zL * EyL[ix, iy] + zR * EyR[ix, iy])
-                    w = wx2 * wy1
-                    Kx += w * (zL * ExL[ix + 1, iy] + zR * ExR[ix + 1, iy])
-                    Ky += w * (zL * EyL[ix + 1, iy] + zR * EyR[ix + 1, iy])
                     w = wx1 * wy2
                     Kx += w * (zL * ExL[ix, iy + 1] + zR * ExR[ix, iy + 1])
                     Ky += w * (zL * EyL[ix, iy + 1] + zR * EyR[ix, iy + 1])
+                    w = wx2 * wy1
+                    Kx += w * (zL * ExL[ix + 1, iy] + zR * ExR[ix + 1, iy])
+                    Ky += w * (zL * EyL[ix + 1, iy] + zR * EyR[ix + 1, iy])
                     w = wx2 * wy2
                     Kx += w * (zL * ExL[ix + 1, iy + 1] + zR * ExR[ix + 1, iy + 1])
                     Ky += w * (zL * EyL[ix + 1, iy + 1] + zR * EyR[ix + 1, iy + 1])
@@ -5176,19 +5156,30 @@ if _HAS_CUDA
             if method_code == 1
                 ix, wx1, wx2 = _cuda_pic_cic_weights(ux, nx)
                 iy, wy1, wy2 = _cuda_pic_cic_weights(uy, ny)
+                # Accumulation order matches the CPU twin's
+                # `for m in eachindex(wx), n in eachindex(wy)` -- x index OUTER,
+                # so (1,1),(1,2),(2,1),(2,2). This hand-unroll used to run the
+                # y index outer, swapping the two middle terms; floating-point
+                # addition is not associative, so 22.5% of CIC interpolations
+                # differed from the CPU in the last bits for a purely notational
+                # reason (measured over 200,000 random weight/field draws, max
+                # relative gap 4.9e-12). This file's own
+                # `_cuda_pic_interpolate_kick_quadratic` already used the CPU
+                # order, and both TSC branches do -- three CIC interpolators in
+                # one file, two of them transposed (2026-08-05_b audit, U3-3).
                 @inbounds begin
                     w = wx1 * wy1
                     Kx += w * (zL * ExL[ix, iy] + zR * ExR[ix, iy])
                     Ky += w * (zL * EyL[ix, iy] + zR * EyR[ix, iy])
                     Kz += w * (phiL[ix, iy] - phiR[ix, iy])
-                    w = wx2 * wy1
-                    Kx += w * (zL * ExL[ix + 1, iy] + zR * ExR[ix + 1, iy])
-                    Ky += w * (zL * EyL[ix + 1, iy] + zR * EyR[ix + 1, iy])
-                    Kz += w * (phiL[ix + 1, iy] - phiR[ix + 1, iy])
                     w = wx1 * wy2
                     Kx += w * (zL * ExL[ix, iy + 1] + zR * ExR[ix, iy + 1])
                     Ky += w * (zL * EyL[ix, iy + 1] + zR * EyR[ix, iy + 1])
                     Kz += w * (phiL[ix, iy + 1] - phiR[ix, iy + 1])
+                    w = wx2 * wy1
+                    Kx += w * (zL * ExL[ix + 1, iy] + zR * ExR[ix + 1, iy])
+                    Ky += w * (zL * EyL[ix + 1, iy] + zR * EyR[ix + 1, iy])
+                    Kz += w * (phiL[ix + 1, iy] - phiR[ix + 1, iy])
                     w = wx2 * wy2
                     Kx += w * (zL * ExL[ix + 1, iy + 1] + zR * ExR[ix + 1, iy + 1])
                     Ky += w * (zL * EyL[ix + 1, iy + 1] + zR * EyR[ix + 1, iy + 1])

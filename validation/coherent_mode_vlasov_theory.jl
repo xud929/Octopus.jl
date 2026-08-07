@@ -557,6 +557,17 @@ function simulate_1d_model(r; xi=XI, q0=Q0, n_macro=100_000, turns=4096,
             q_sigma=tune(c1 .+ c2))
 end
 
+# Self-check outcomes, collected rather than only printed.
+#
+# 11 of the 13 thresholds in this file used to be print-only: the self-checks
+# reported PASS/FAIL and escalated to `@warn`, and the only `error()` was the
+# kernel-sign gate above -- so a run in which the quadrature was unconverged and
+# the harmonic limit was wrong still exited 0, and a caller driving this from a
+# script had no way to tell (2026-08-05_b audit, U22-11). The individual
+# warnings stay, because they name which downstream rows are affected; what is
+# new is that the run now FAILS at the end if any of them fired.
+const SELF_CHECK_FAILURES = String[]
+
 if get(ENV, "OCTOPUS_VLASOV_LIB_ONLY", "0") == "1"
     # Definitions only (for convergence experiments and external reuse).
 else
@@ -589,6 +600,8 @@ let failed = String[]
                 " rigid=", rpad(round(rigid; digits=4), 9),
                 ok ? "PASS" : "FAIL (quadrature unconverged at this s_t)")
     end
+    isempty(failed) || push!(SELF_CHECK_FAILURES,
+        "self-check 4 (normalization + origin quadrature) at r = " * join(failed, ", "))
     if !isempty(failed)
         @warn string("Self-check 4 FAILED at aspect ratios ", join(failed, ", "),
                      ": `normalized_equilibrium`'s origin-region quadrature is ",
@@ -608,6 +621,8 @@ let h = harmonic_Y()
             " (must be 2; overlap ", round(h.overlap_pi; digits=4), ")")
     println("  Lambda = ", round(h.Y; digits=6),
             abs(h.Y - 2.0) < 1e-3 && h.kernel_err < 1e-6 ? "  PASS" : "  FAIL")
+    (abs(h.Y - 2.0) < 1e-3 && h.kernel_err < 1e-6) || push!(SELF_CHECK_FAILURES,
+        "self-check 5 (harmonic limit) Lambda = $(h.Y), kernel err = $(h.kernel_err)")
     if !(abs(h.Y - 2.0) < 1e-3 && h.kernel_err < 1e-6)
         @warn string("Self-check 5 FAILED: harmonic interaction gives Lambda = ",
                      h.Y, " (exact 2) with kernel error ", h.kernel_err,
@@ -727,6 +742,12 @@ if isempty(not_modes) && isempty(mesh_limited)
     println("  [PASS] every row: max u <= 1, discrete pi mode clear of the continuum, ",
             "translation invariance within $(DRIFT_TOL).")
 else
+    # `max u <= 1` is the invariant with teeth -- a row that violates it is the
+    # top of the incoherent continuum, not a Yokoya factor. It was checked and
+    # warned about, never escalated, so a run producing them exited 0
+    # (2026-08-05_b audit, U22-11).
+    isempty(not_modes) || push!(SELF_CHECK_FAILURES,
+        "aspect-scan rows that are NOT discrete modes: " * join(not_modes, ", "))
     isempty(not_modes) ||
         @warn """these rows are NOT Yokoya factors: `Y_m1_matrix` is the top of
                  the incoherent continuum, not a discrete mode. Do not quote
@@ -904,5 +925,23 @@ println()
 # so a reader who trusted the run's own summary missed two of its outputs.
 println("TSV outputs in result/: yokoya_vs_aspect.tsv, yokoya_vs_aspect_narrow.tsv, ",
         "yokoya_box_convergence.tsv, yokoya_vs_xi_theory.tsv, eic_coherent_modes.tsv")
+
+# The gate. `OCTOPUS_VLASOV_ALLOW_SELF_CHECK_FAILURE=1` reduces it to a warning,
+# for the convergence experiments that deliberately drive the quadrature past
+# where it converges -- but the default is to fail, so a run that produces
+# non-quantitative rows cannot be mistaken for one that did not.
+if !isempty(SELF_CHECK_FAILURES)
+    message = "coherent-mode Vlasov self-checks failed: " *
+              join(SELF_CHECK_FAILURES, "; ") *
+              ". Lambda from the affected rows is not quantitative and must not " *
+              "be plotted or quoted."
+    if get(ENV, "OCTOPUS_VLASOV_ALLOW_SELF_CHECK_FAILURE", "0") == "1"
+        @warn message
+    else
+        error(message)
+    end
+else
+    println("all self-checks PASS")
+end
 
 end # OCTOPUS_VLASOV_LIB_ONLY guard

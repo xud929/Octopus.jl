@@ -15,7 +15,7 @@ Numbered as in the manuscript.
 | # | file | section | data |
 |---|---|---|---|
 | 1 | `fig_noise_floor.pdf` | 4.1 | `flat_beam_noise_floor.tsv` |
-| 2 | `fig_error_vs_grid.pdf` | 4.1 | `gaussian_pic_field_validation_summary.tsv`, `pic_analytic_floor.tsv` |
+| 2 | `fig_error_vs_grid.pdf` | 4.1 | `gaussian_pic_field_validation_summary.tsv` (regenerate with `OCTOPUS_GPIC_GRIDS=48,64,96,128,192,256`; the script's default sweep is only 48,64,128 — U23-10), `pic_analytic_floor.tsv` |
 | 3 | `fig_error_vs_aspect.pdf` | 4.1 | `pic_gaussian_field_validation_random_summary.tsv` |
 | 4 | `fig_boundary_jump.pdf` | 4.2 | `slice_longitudinal_zscan_jumps.tsv`, `slice_longitudinal_zscan_tsc_jumps.tsv` |
 | 5 | `fig_coherent_fft.pdf` | 5.1 | `coherent_spectrum_pic_{x,y}.tsv` |

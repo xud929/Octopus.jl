@@ -78,6 +78,14 @@ end
 const _SOL_CURVED_ORDER = 8
 
 """
+Series/closed-form crossover for [`_sol_log_over_h`](@ref), named for the same
+reason as [`CURV_VERS_CROSSOVER`](@ref): the suite's seam checks straddle it,
+and a hand-copied literal in the test would stop straddling silently if this
+moved (2026-08-05_b audit, U17b-2).
+"""
+const SOL_LOG_CROSSOVER = 1.0e-2
+
+"""
     _sol_log_over_h(h, x)
 
 `ln(1+hx)/h`, smooth at `h = 0` where it is the removable limit `x`.
@@ -86,6 +94,7 @@ Same removable-singularity problem the curvature helpers solve, and handled the
 same way: the closed form loses digits to cancellation near `h = 0`, so small
 arguments take a series instead.
 """
+
 @inline function _sol_log_over_h(h, x)
     # No `(::T, ::T)` constraint: a coordinate Jacobian differentiates x with
     # the element's h still Float64, and the strict same-type signature made
@@ -105,7 +114,7 @@ arguments take a series instead.
     # u >~ 4e-3. At u = 1e-2 both branches measure <= 5e-14 in d/dh
     # (series 1.8e-14 bound, closed ~4e-14) and <= 2e-16 in value vs BigFloat
     # (2026-08-05 audit, U10-6).
-    abs(u) < real(T)(1e-2) && return x *
+    abs(u) < real(T)(SOL_LOG_CROSSOVER) && return x *
         (one(T) - u / 2 * (one(T) - 2u / 3 * (one(T) - 3u / 4 * (one(T) - 4u / 5 *
         (one(T) - 5u / 6 * (one(T) - 6u / 7 * (one(T) - 7u / 8)))))))
     return log1p(u) / h

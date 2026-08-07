@@ -8,6 +8,38 @@ benchmark `validation/coherent_beam_beam_modes.jl`, and
 (`yokoya_vs_aspect.png`, `yokoya_vs_xi.png`, `eic_coherent_modes.png`) by
 `validation/plot_coherent_mode_theory.py`.
 
+> **The electron x line is quoted as a BAND, not a peak, and deliberately.**
+> That line is broad and carries three near-degenerate maxima (2.860e-4 at
+> 0.09546, 2.517e-4 at 0.11938, 2.513e-4 at 0.10596), so `argmax` flips under
+> any perturbation at all: a fresh run at HEAD reports 0.10571 where the
+> committed archive reports 0.09546. Both are inside $[0.080, 0.168]$ and the
+> physics claim — confined to the e band, broad, Landau-damped — is unaffected,
+> but the specific number is not reproducible and must not be quoted as a
+> measurement (2026-08-05_b audit, U22-17).
+>
+> The same sensitivity, at a smaller scale, in the aspect scan: the committed
+> `yokoya_vs_aspect_measured.tsv` no longer reproduces bit-for-bit at the flat
+> end ($\Delta\Lambda = +9.9\times10^{-4}$ at $r = 0.05$, $-5.7\times10^{-5}$
+> at $r = 0.09$, exact from $r = 0.2$ up), although neither generating script has
+> changed. It is not thread nondeterminism — 1, 4 and 8 threads give identical
+> 16-digit values. A ULP-level perturbation entered from `src/` and the flat
+> rows amplify it because their spectral lines are broad: $9.9\times10^{-4}$ in
+> $\Lambda$ is $5\times10^{-6}$ in $Q_\pi$, one percent of an FFT bin at 2048
+> turns. **Every number this note quotes survives at its quoted precision**
+> (1.25, 1.266, 1.24, 1.20, 1.19), so this is provenance, not physics — but the
+> archives are a record of one run, not a reproducible target, and a future
+> regeneration should expect the flat end to move in the fourth digit.
+
+> **The figures are not committed and are not automatically current.**
+> `result/` is gitignored, so a fresh clone has none of them, and on a working
+> tree they can predate the TSVs they claim to show — on the audit host all
+> three were dated 2026-07-27 while the TSVs behind them were regenerated
+> 2026-08-05, so they still drew the pre-fix curve this note's §3 disowns
+> (2026-08-05_b audit, U22-13). **Regenerate before reading a figure**: run
+> `validation/coherent_mode_vlasov_theory.jl` and `coherent_mode_scans.jl`,
+> then `validation/plot_coherent_mode_theory.py`. The committed
+> `paper/data/*.tsv` are post-fix and match current code; only the PNGs drift.
+
 ## 1. The rigid-bunch model, and why it is only the starting point
 
 Two identical bunches collide head-on at one IP; consider one transverse
@@ -359,7 +391,7 @@ behaviour is — while **falsifying its one detached-mode prediction**
 
 | plane | prediction | measurement |
 |---|---|---|
-| x | responses confined to the two separated continua, Landau-damped | e peak $0.0955 \in [0.080, 0.168]$, p peak $0.231 \in [0.228, 0.237]$; broad structures; centroid decoherence in $\sim48$ turns (e) and $\sim112$ turns (p) |
+| x | responses confined to the two separated continua, Landau-damped | e response fills $[0.080, 0.168]$, p peak $0.231 \in [0.228, 0.237]$; broad structures; centroid decoherence in $\sim48$ turns (e) and $\sim112$ turns (p) |
 | y | overlapping continua; **one discrete mode at $0.22432$, above both** | **both beams lock onto one narrow persistent line at $0.2109$** (the proton bare tune, inside the band overlap), two decades above the rest of the spectrum, with **no measurable decoherence over 4096 turns** — while the same proton beam decoheres in 112 turns in x. **The predicted $0.22432$ mode is NOT present**: in $[0.220, 0.229]$ the amplitudes are $8.5\times10^{-4}$ (e) and $1.2\times10^{-3}$ (p) of their global peaks |
 
 > **Correction (2026-08-06, audit lead U22-7).** The prediction cell above read
@@ -371,8 +403,9 @@ behaviour is — while **falsifying its one detached-mode prediction**
 > Stating it truthfully makes the more important point visible: **the theory's
 > one falsifiable EIC prediction is not confirmed.** The discrete y mode at
 > $0.22432$ does not appear in the strong-strong measurement, in either the
-> committed spectra or a fresh run — global peaks sit at $0.0955$ (e_x),
-> $0.2310$ (p_x) and $0.2109$ (both y), and the $[0.220, 0.229]$ window holds
+> committed spectra or a fresh run — global peaks sit in the e_x **band**
+> $[0.080, 0.168]$, at $0.2310$ (p_x) and $0.2109$ (both y), and the
+> $[0.220, 0.229]$ window holds
 > nothing above $10^{-3}$ of peak. The persistent line that IS observed sits at
 > the proton bare tune, *inside* both as-coded continua, which the prose below
 > already describes correctly. The juxtaposition previously read as

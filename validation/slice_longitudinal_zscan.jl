@@ -31,11 +31,22 @@ The exact longitudinal reference is the central difference of the exact potentia
 along the scan, evaluated at the particle's own transverse position, which is the
 same quantity the two-node secant `(phi_L - phi_R)/(rb - lb)` approximates.
 
-A second pass repeats the `:linear` scheme with a **per-slice** grid, sized from
-each field slice's own particle bounding box exactly as `_pic_interaction_grids`
-does in production, to measure the transverse jump that per-slice grid resizing
-introduces at a shared slice boundary. That jump is not an interpolation error
-and is not removed by adding nodes.
+Grid-mode passes
+----------------
+`_jumps.tsv` carries a `grid_mode` column with FIVE values, not the one the
+header used to describe (2026-08-05_b audit, U24-9). A reader of that file could
+not learn from here what three of them meant:
+
+| `grid_mode` | what it measures |
+|---|---|
+| `common_grid` | the baseline: one grid shared by every slice, so the transverse mesh contributes no jump at all and what remains is the longitudinal interpolation error alone. |
+| `per_slice_grid` | the `:linear` scheme with a grid sized from each field slice's own particle bounding box, exactly as `_pic_interaction_grids` does in production. This measures the transverse jump that per-slice grid RESIZING introduces at a shared slice boundary -- not an interpolation error, and not removed by adding nodes. |
+| `source_slice_grid` | the same, but sized from the SOURCE slice rather than the field slice, which is the other defensible convention and moves the jump to a different boundary. |
+| `node_grid` | the prototype fix: one grid per shared NODE, so both slices adjacent to a boundary see the same mesh there. This is the arrangement `_pic_node_grid!` implements in production. |
+| `node_source_evolution` | the residual left after `node_grid`, i.e. how much of the remaining jump is the source distribution genuinely evolving between the two slices rather than a meshing artefact. This is the only pass that measures a physical quantity rather than a discretisation defect, and it is what says whether the node grid is finished. |
+
+The "node grid vs per-slice-pair" ratio table printed at the end summarises the
+last two against the second; it is printed only and written to no file.
 
 Error metrics
 -------------
@@ -75,7 +86,14 @@ Outputs (under `result/`)
   file went undocumented here and in the README; 2026-08-05 audit, U21-8)
 """
 
-include("../src/Octopus.jl")
+# Guarded like every other script in `validation/`: without it this file
+# cannot be `include`d after any sibling in one process, which is how the
+# audit harnesses drive them. `@__DIR__` rather than a cwd-relative path,
+# for the same reason (2026-08-05_b audit, U25-14 -- which named one
+# script; six were unguarded).
+if !isdefined(Main, :Octopus)
+    include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+end
 using .Octopus
 using DelimitedFiles
 using Printf

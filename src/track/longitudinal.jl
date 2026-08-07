@@ -279,8 +279,17 @@ end
 `β = Pc/E = (1+δ)/(1/β₀ + p_t)`: the *particle's* velocity, not the reference's.
 This is the factor that distinguishes the four coordinate definitions from one
 another, and the one that silently disappears in the ultrarelativistic limit.
+
+Evaluated as `β₀(1+δ)/(1 + β₀p_t)`, which is the same expression with the
+reciprocal cleared. That makes the reference particle EXACT: at `δ = p_t = 0`
+this returns `beta0` itself, where the literal form returns `1/(1/β₀)` — a
+double reciprocal that is off by an ulp for most `β₀`. The old inexactness in
+[`_pt_from_delta`](@ref) used to cancel that ulp by accident; making that
+conversion bit-exact at zero (U14-4) exposed it, and "a particle at the design
+momentum moves at the design velocity" is worth having exactly rather than
+nearly. One division instead of two, as a side effect.
 """
-@inline _beta_of(delta, pt, beta0) = (1 + delta) / (inv(beta0) + pt)
+@inline _beta_of(delta, pt, beta0) = beta0 * (1 + delta) / (1 + beta0 * pt)
 
 """
     particle_beta(convention, pz; beta0, gamma0)

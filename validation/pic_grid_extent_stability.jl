@@ -22,8 +22,14 @@ turn_to_turn   = std_t(width_t) / mean_t(width_t)     for one fixed slice
 ```
 
 `:sigma` is expected to be stabler than `:extrema`, because a second moment has
-`O(1/sqrt(n))` noise where an extremum has `O(1)`. Measured: 4-8x, against a
-prediction of >=10x, so the prediction was optimistic.
+`O(1/sqrt(n))` noise where an extremum has `O(1)`. Measured: 3.5-8.2x at the committed defaults (200,000 particles, 15 slices,
+8 turns): 8.2x and 5.1x in x slice-to-slice and turn-to-turn, 3.9x and
+3.5x in y. The quoted range used to be "4-8x" -- a single run's numbers
+with the envelope rounded off, and both vertical-plane ratios sit under
+its floor (2026-08-05_b audit, U23-14). The plane asymmetry is the point:
+y carries fewer sigma of aperture per slice, so its extremum is less
+noisy to begin with and there is less for `:sigma` to recover.
+Against a prediction of >=10x, so the prediction was optimistic.
 
 A `:quantile` estimator was measured here and **removed**: at a coverage target
 tight enough to avoid charge loss, the target rounds to *all* particles for
@@ -60,7 +66,12 @@ Overrides: `OCTOPUS_EXTENT_NPART`, `OCTOPUS_EXTENT_NSLICES`, `OCTOPUS_EXTENT_TUR
 Outputs `result/pic_grid_extent_stability.tsv`.
 """
 
-include("../src/Octopus.jl")
+# Guarded like every other script in `validation/`: without it this file
+# cannot be `include`d after any sibling in one process, which is how the
+# audit harnesses drive them (2026-08-05_b audit, U25-14).
+if !isdefined(Main, :Octopus)
+    include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+end
 using .Octopus
 using DelimitedFiles
 using Printf

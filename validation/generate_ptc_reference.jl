@@ -333,7 +333,18 @@ end
 version = madx_version()
 mkpath(OUTDIR)
 path = joinpath(OUTDIR, "ptc_madx_$(version).tsv")
-open(path, "w") do io
+# Write to a temporary file and rename only on success. `open(path, "w")`
+# TRUNCATES the committed reference before the first of 55 MAD-X jobs runs, so
+# any failure part-way through -- a non-zero MAD-X exit, a short particle count,
+# a missing output file -- left a partial table in the working tree: destroy the
+# artifact first, detect later. The contract's declared-spec tripwire does catch
+# a truncated table loudly, and `git checkout` recovers it, but neither is a
+# reason to break it first (2026-08-05_b audit, U24-10). `mv` within the same
+# directory is atomic on POSIX, so there is no window where `path` is partial.
+tmp_path = path * ".partial-$(getpid())"
+ok = false
+try
+open(tmp_path, "w") do io
     println(io, "# PTC reference for PTCConsistencyContract")
     println(io, "# MAD-X version: $version")
     println(io, "# flags: model=1 (drift-kick-drift), exact=true, time=false")
@@ -351,6 +362,15 @@ open(path, "w") do io
                     f[1], f[2], f[3], f[4], -f[5], f[6])
         end
         println("  $(case.name): ok")
+    end
+end
+global ok = true
+finally
+    if ok
+        mv(tmp_path, path; force=true)
+    else
+        rm(tmp_path; force=true)
+        @warn "PTC reference generation failed; the committed table is untouched" path
     end
 end
 println("\nMAD-X $version -> $path")

@@ -42,7 +42,14 @@ Outputs are written under `result/`:
   from this list until U23-8
 """
 
-include("../src/Octopus.jl")
+# Guarded like every other script in `validation/`: without it this file
+# cannot be `include`d after any sibling in one process, which is how the
+# audit harnesses drive them. `@__DIR__` rather than a cwd-relative path,
+# for the same reason (2026-08-05_b audit, U25-14 -- which named one
+# script; six were unguarded).
+if !isdefined(Main, :Octopus)
+    include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+end
 using .Octopus
 using DelimitedFiles
 using Printf

@@ -723,10 +723,21 @@ end
                 soft_rep, 1, soft_source, zero(T), kbb, zero(T), true, false)
             soft_result = collect(soft_rep[1])
 
-            tolerance = T(32) * eps(T)
+            # Tolerance scaled to the KICK, not to the coordinate norm.
+            # `isapprox` takes `max(atol, rtol*max(norm(a),norm(b)))`, and with
+            # x = 0.4 dominating the norm, `rtol=atol=32eps(T)` came to
+            # atol = 3.8e-6 on the Float32 leg -- against a total px kick of
+            # 7.6e-4. That is a 0.50% error admitted in the very quantity being
+            # compared, while the agreement actually observed is 1.5e-11:
+            # 250,000x looser than the signal. The Float64 leg was sound only by
+            # accident of eps (2026-08-05_b audit, U17b-4).
+            kick_scale = max(abs(weak_result[2] - initial[2]),
+                             abs(weak_result[4] - initial[4]))
+            @test kick_scale > T(1.0e-5)          # the comparison has a signal
+            tolerance = T(32) * eps(T) * kick_scale
             @test all(isfinite, weak_result)
             @test all(isfinite, soft_result)
-            @test soft_result ≈ weak_result rtol=tolerance atol=tolerance
+            @test all(abs.(soft_result .- weak_result) .<= tolerance)
         end
     end
 end
@@ -1710,8 +1721,25 @@ end
     # wrong. Only `prevfloat(0.125)` was safe, because there the code takes the
     # series branch. 1e-13 leaves room for a few ulps of `cos` while still
     # being 8 orders below the 5.86e-9 cliff this test exists to guard.
-    for h in (prevfloat(0.125), nextfloat(0.125), 0.13, 0.15)
-        @test relerr(Octopus._curv_vers(h, 1.0), vers_ref(h)) < 1.0e-13
+    # The probe points are DERIVED from the source constant, not hand-copied.
+    # These two lines used to read `prevfloat(0.125)` / `nextfloat(0.125)`;
+    # moving the crossover in lattice_magnets.jl would have put both on the
+    # same side, so the seam tests would silently stop straddling anything
+    # while still passing (2026-08-05_b audit, U17b-2).
+    let xo = Octopus.CURV_VERS_CROSSOVER
+        for h in (prevfloat(xo), nextfloat(xo), 1.04 * xo, 1.2 * xo)
+            @test relerr(Octopus._curv_vers(h, 1.0), vers_ref(h)) < 1.0e-13
+        end
+        # The two branches must MEET at the crossover. A truncated series (the
+        # U10-6 defect one helper down) shows up here and nowhere else: the
+        # closed-branch accuracy loop above cannot see it, because the series
+        # branch is not the branch it evaluates.
+        # Bounded by the CLOSED branch's own conditioning (5.65e-15 here, the
+        # 118x `cos`-ulp amplification U17b-1 documents), not by the series,
+        # which measures 2.0e-17. Measured jump 6.0e-15; 5e-14 leaves 8x.
+        @test abs(Octopus._curv_vers(prevfloat(xo), 1.0) -
+                  Octopus._curv_vers(nextfloat(xo), 1.0)) /
+              abs(Octopus._curv_vers(xo, 1.0)) < 5.0e-14
     end
 
     # U10-6: _sol_log_over_h truncated its series at O(u^2) for a 1e-4
@@ -1723,11 +1751,23 @@ end
     log_ref(h) = log1p(big(h)) / big(h)
     dlog_ref(h) = (1 / (1 + big(h)) / big(h)) - log1p(big(h)) / big(h)^2
     g(h) = Octopus._sol_log_over_h(h, 1.0)
-    for h in (1.001e-4, prevfloat(1.0e-2), nextfloat(1.0e-2), 2.0e-2)
+    for h in (1.001e-4, prevfloat(Octopus.SOL_LOG_CROSSOVER),
+              nextfloat(Octopus.SOL_LOG_CROSSOVER), 2.0 * Octopus.SOL_LOG_CROSSOVER)
         @test relerr(g(h), log_ref(h)) < 1.0e-15
         @test relerr(ForwardDiff.derivative(g, h), dlog_ref(h)) < 1.0e-13
     end
-    @test abs(g(prevfloat(1e-2)) - g(nextfloat(1e-2))) / abs(g(1e-2)) < 1.0e-15
+    let xo = Octopus.SOL_LOG_CROSSOVER
+        @test abs(g(prevfloat(xo)) - g(nextfloat(xo))) / abs(g(xo)) < 1.0e-15
+        # The DERIVATIVE must also meet, which is the quantity U10-6's truncated
+        # series actually broke (1.5e-8 at its boundary, against a value jump of
+        # 2.5e-13 -- five orders apart, so a value-only continuity check is the
+        # weaker half of this pair).
+        # Measured 4.96e-14, against the 1.5e-8 the truncated series produced
+        # at its boundary -- six orders of discrimination.
+        @test abs(ForwardDiff.derivative(g, prevfloat(xo)) -
+                  ForwardDiff.derivative(g, nextfloat(xo))) /
+              abs(ForwardDiff.derivative(g, xo)) < 5.0e-13
+    end
 
     # U10-7: _wedge formed Delta = (A + asin(px/w) - asin(pxn/w))/b1, an O(b1)
     # angle from O(A) terms — error grew as ~eps*A/b1 (measured 2.8e-10 on z at
@@ -2023,6 +2063,29 @@ end
     @test r.metrics[:unperturbable] <= 73
     @test r.metrics[:rejected] <= 23
 
+    # A CONSTRAINED pair is perturbed jointly, not one field at a time.
+    # `beta0` and `gamma0` on :thin_rf_cavity are two views of one reference
+    # energy; the generic perturbation used to "check" beta0 by setting it to
+    # 0.99 + 0.13 = 1.12 -- faster than light -- and the element accepted it,
+    # so the evidence that the parameter reached the map came from a value no
+    # beam can have. Both keys now move the energy together and stay on the
+    # physical manifold, which keeps the two counts above where they were
+    # (2026-08-05_b audit, U14-4).
+    let coupled = Octopus._perturb_coupled_overrides(:thin_rf_cavity, :beta0,
+                                                     Dict{Symbol,Any}(:gamma0 => 293.09))
+        @test coupled !== nothing && !isempty(coupled)
+        for override in coupled
+            @test haskey(override, :beta0) && haskey(override, :gamma0)
+            @test abs(reference_pair_residual(override[:beta0], override[:gamma0])) <= 1.0e-14
+            @test override[:gamma0] != 293.09          # it really moves
+        end
+        # Ordinary parameters are untouched by the coupling hook.
+        @test Octopus._perturb_coupled_overrides(:quadrupole, :k1,
+                                                 Dict{Symbol,Any}()) === nothing
+        @test Octopus._perturb_coupled_overrides(:thin_rf_cavity, :phase,
+                                                 Dict{Symbol,Any}()) === nothing
+    end
+
     # U4-3's three named holes, each verified directly rather than by counting.
     # (a) A placement parameter declares an INTEGER default of 0 with unit "m",
     #     so the old `Int(current)+1` perturbed it by one metre and seven kinds
@@ -2219,7 +2282,9 @@ end
     # discard every CUDAPICLaunchConfig and the inherited policy thread count
     # while configuration_report called them resolved.
     r = validate(SolverOptionEffectivenessContract())
-    @test r.status in (:passed, :skipped)      # :skipped when no CUDA device
+    # `:skipped` only without a GPU -- see U18-3 note below; a tolerant status
+    # assertion makes a GPU-less run indistinguishable from a real one.
+    @test r.status === :passed || (r.status === :skipped && !CUDA_TESTS_ACTIVE)
     @test r.metrics[:cpu_options_checked] > 60
 
     # Every declared option must be judged or exempted with a reason; an option
@@ -2555,15 +2620,26 @@ end
             for d in (3.0e-2, 1.0e-4, 1.0e-8, 1.0e-12, 1.0e-16,
                       -1.0e-3, -1.0e-8, -1.0e-14)
                 rt = Octopus._delta_from_pt(Octopus._pt_from_delta(d, b0, g0), b0, g0)
-                @test abs(rt - d) <= 4.0e-16 * abs(d)      # was 1.0 at d = 1e-16
+                @test abs(rt - d) <= 1.0e-15 * abs(d)      # was 1.0 at d = 1e-16
             end
-            # Forward accuracy against a BigFloat evaluation from the SAME
-            # stored β₀, γ₀ -- so this measures the expression, not the inputs.
+        end
+        # Forward accuracy against the TRUE value: BigFloat all the way from
+        # E₀/mc², not a BigFloat evaluation of the literal expression on the
+        # already-rounded β₀. The distinction matters and is the point of the
+        # rewrite -- `1/β₀² - 1/(β₀γ₀)² = 1` is the exact physical relation, so
+        # using it REPAIRS the stored β₀'s own rounding instead of inheriting
+        # it, and the identity-based form is therefore closer to the truth than
+        # an exact evaluation of the form it replaced. Referencing the literal
+        # expression would score that improvement as an error.
+        for (E0, mc2) in ((275e9, PMASS_EV), (2.5e9, PMASS_EV), (10e9, EMASS_EV))
+            b0, g0 = reference_beta_gamma(E0, mc2)
             for pt in (1.0e-2, 1.0e-6, 1.0e-10, 1.0e-12)
-                B = BigFloat(b0); G = BigFloat(g0); ibg = inv(B * G)
+                G = BigFloat(E0) / BigFloat(mc2)
+                B = sqrt((G - 1) * (G + 1)) / G
+                ibg = inv(B * G)
                 ref = -1 + sqrt((inv(B) + BigFloat(pt))^2 - ibg * ibg)
                 got = Octopus._delta_from_pt(pt, b0, g0)
-                @test abs(got - ref) <= 1.0e-11 * abs(ref)  # was 8.9e-5 at 1e-12
+                @test abs(got - ref) <= 1.0e-15 * abs(ref)  # was 8.9e-5 at 1e-12
             end
         end
         # An inconsistent (beta0, gamma0) pair is REFUSED at construction, not
@@ -2657,7 +2733,65 @@ end
     end
 end
 
+@testset "every public configuration schema is exported" begin
+    # `strong_strong_task_option_schema` was the only one that was not, so the
+    # metadata the U3-5 fix added was reachable only by knowing the internal
+    # name -- undiscoverable through the API every other configuration surface
+    # uses (2026-08-05_b audit, U5-11). Derived from the module's own names, so
+    # a new schema added without an export fails here.
+    schema_names = filter(names(Octopus; all = true)) do n
+        s = String(n)
+        # `names(...; all=true)` also lists each function's `#name` method-table
+        # binding and any `_`-prefixed internal, neither of which is a surface.
+        endswith(s, "_option_schema") && !startswith(s, "#") && !startswith(s, "_")
+    end
+    exported = Set(names(Octopus))
+    @test length(schema_names) >= 8
+    for n in schema_names
+        @test n in exported
+    end
+    @test :strong_strong_task_option_schema in exported
+    @test keys(strong_strong_task_option_schema()) ==
+          (:luminosity_path, :luminosity_append)
+end
+
+@testset "CUDA and CPU PIC cache keys cannot drift apart" begin
+    # The CUDA workspace key embeds the slice-pair Green cache, so every solver
+    # field the CPU's `_pic_green_cache!` key carries must appear in it too.
+    # This has now gone wrong TWICE by hand-copying: U1-3 added three of the
+    # four missing fields and stopped one short, and U1-2 added the fourth.
+    # "Derive the missing fields from the other key rather than by hand" is the
+    # rule; this is the tripwire that makes the rule enforceable, and it reads
+    # the SOURCE so it works with no GPU present (2026-08-05_b audit, U2-3).
+    key_fields(path, marker, closer) = begin
+        text = read(joinpath(pkgdir(Octopus), path), String)
+        i = findfirst(marker, text)
+        j = findnext(closer, text, last(i))
+        blob = text[first(i):first(j)]
+        # Strip comments: the U1-2/U1-3 rationale mentions field names in prose.
+        stripped = join((first(split(line, "#")) for line in split(blob, "\n")), "\n")
+        Set(Symbol(m.captures[1]) for m in eachmatch(r"solver\.([a-z_0-9]+)", stripped))
+    end
+    cuda_key = key_fields("src/tasks/strongstrong/pic_cuda.jl",
+                          ":cuda_pic_workspace,", "\n            )")
+    cpu_key = key_fields("src/tasks/strongstrong/pic_cpu.jl",
+                         ":cpu_pic_green_cache,", "\n    )")
+    # Non-empty, or the extraction silently checks nothing.
+    @test length(cpu_key) >= 6
+    @test length(cuda_key) >= 10
+    @test :interaction_grid in cpu_key && :interaction_grid in cuda_key
+    @test isempty(setdiff(cpu_key, cuda_key))      # the drift that happened twice
+end
+
 @testset "linear-map friendly constructors promote their element type" begin
+    # `numeric_type` is for SPECS: `numeric_type(x, default=Float64) = default`
+    # catches everything else, so calling it on a compiled runtime element
+    # returns Float64 no matter what the element holds -- every assertion below
+    # would pass vacuously. The runtime element's own last type parameter is
+    # the number type, for all four kinds.
+    map_eltype(el) = typeof(el).parameters[end]
+    @test map_eltype(compile_runtime(XYCouplingSpec{Float32}(r1 = 0.1f0))) === Float32
+    @test numeric_type(compile_runtime(XYCouplingSpec{Float32}(r1 = 0.1f0))) === Float64
     # 2026-08-05_b audit, U9-6: the four friendly linear-map constructors
     # hard-coded `{Float64}` and then converted with `T(value)`, so a Dual or
     # Complex parameter died with `Float64(::Dual)` unless the caller spelled
@@ -2687,12 +2821,12 @@ end
               XYCouplingSpec(r1 = 1//10),
               Linear6DSpec(beta1 = (3, 2, 40), dmu = (0.3, 0.2, 0.1)),
               Linear6DSpec(matrix = Matrix{Int}(I, 6, 6)))
-        @test numeric_type(compile_runtime(s)) === Float64
+        @test map_eltype(compile_runtime(s)) === Float64
     end
     # Descriptive metadata takes no part in the promotion: an integer
     # `some_count=2` must not drag the element type down to Int.
     let s = (@test_logs (:warn,) CrabDispersionSpec(zeta1 = 0.1, some_count = 2))
-        @test numeric_type(compile_runtime(s)) === Float64
+        @test map_eltype(compile_runtime(s)) === Float64
     end
 
     # 2026-08-05_b audit, U9-6, second half: `_linear6d_matrix_from_optics`
@@ -2707,15 +2841,15 @@ end
             :zeta1 => (dual, 0.0, 0.0, 0.0), :eta1 => z4, :R1 => z4,
             :zeta2 => z4, :eta2 => z4, :R2 => z4,
             :tracking_method => Symplectic6DMap()))
-        @test numeric_type(compile_runtime(raw)) <: ForwardDiff.Dual
+        @test map_eltype(compile_runtime(raw)) <: ForwardDiff.Dual
     end
 
     # 2026-08-05_b audit, U9-7: `XYCoupling(r1::T, r2::T, r3::T, r4::T)` was
     # strict same-type, so writing an exact zero as `0` rather than `0.0` --
     # which is what anyone does -- was a MethodError.
-    @test numeric_type(XYCoupling(0.01, 0, 0, 0)) === Float64
-    @test numeric_type(XYCoupling(1//100, 0.0, 0.0, 0.0)) === Float64
-    @test numeric_type(XYCoupling(0.01, 0, 0, 0, XY_MODEB)) === Float64
+    @test map_eltype(XYCoupling(0.01, 0, 0, 0)) === Float64
+    @test map_eltype(XYCoupling(1//100, 0.0, 0.0, 0.0)) === Float64
+    @test map_eltype(XYCoupling(0.01, 0, 0, 0, XY_MODEB)) === Float64
     @test XYCoupling(0.01, 0, 0, 0, XY_MODEB).mode === XY_MODEB
 end
 
@@ -3516,6 +3650,36 @@ end
     # Undeclared h on a raw spec still routes through the shared gate.
     @test residual(compile_runtime(ElementSpec{:quadrupole}(;
         L=0.7, nst=2, kn=(0.0, 1.1), ks=(0.04,), h=0.05))) < 1.0e-12
+
+    # DERIVE the case list the comment above claims is derived.
+    #
+    # "the only two kinds whose schemas offer both curvature and field (derived,
+    # not assumed)" was a hand-assertion: nothing in this testset computed that
+    # set, so a newly registered kind carrying both would be swept by nothing
+    # and fail no test. The claim is true at HEAD -- measured across every
+    # registered kind, exactly [:sbend, :solenoid] carry both, with :drift
+    # carrying curvature alone -- but that is a fact about HEAD, not an
+    # invariant the suite maintains. The right shape is one testset away:
+    # `kinds_declaring_without_case == 0` on SymplecticityContract
+    # (2026-08-05_b audit, U18-4).
+    let curvature_keys = (:h, :curved, :b0),
+        field_keys = (:kn, :ks, :kskew, :k1, :k2, :k3, :knl, :ksl),
+        swept = Set([:sbend, :solenoid])
+        both = Symbol[]
+        for T in registered_element_specs()
+            schema = parameter_schema(T)
+            keys_present = keys(schema)
+            any(k -> k in keys_present, curvature_keys) || continue
+            any(k -> k in keys_present, field_keys) || continue
+            push!(both, Octopus.element_meta(T).kind)
+        end
+        # Both directions, so the tripwire fires on an ADDITION (a new kind the
+        # sweep does not cover) and on a REMOVAL (a swept kind that lost its
+        # curvature or field, making its cases above vacuous).
+        @test isempty(setdiff(Set(both), swept))     # unswept kind carrying both
+        @test isempty(setdiff(swept, Set(both)))     # swept kind that no longer does
+        @test Set(both) == swept
+    end
 end
 
 @testset "Straight solenoids differentiate, and curved=false means straight" begin
@@ -5538,7 +5702,14 @@ end
     # by validation/generate_ptc_reference.jl. Skips cleanly when the table is
     # absent; MAD-X is never needed at test time.
     result = validate(PTCConsistencyContract())
-    @test result.status in (:passed, :skipped)
+    # The reference table IS committed (validation/reference/ptc_madx_*.tsv), so
+    # `:skipped` here does not mean "no MAD-X available" -- it means the table
+    # went missing, and the tolerant `status in (:passed, :skipped)` that used to
+    # stand here would have turned 36 cross-code comparisons into a silent pass.
+    # Same class as U18-3's CUDA assertions; asserted against the file so the
+    # failure names its own cause (2026-08-05_b audit, U18-3).
+    @test Octopus._ptc_reference_path(PTCConsistencyContract()) !== nothing
+    @test result.status === :passed
     if result.status === :passed
         @test result.metrics[:cases] >= 36
         @test haskey(result.metrics, :madx_version)
@@ -5646,7 +5817,13 @@ end
             line=cell, n_particles=512, turns=2,
             backend_a=CPUThreadsBackend, backend_b=CUDABackend,
             atol=1.0e-10, rtol=1.0e-10))
-        @test gpu.status in (:passed, :skipped)
+        # `:skipped` is only legitimate WITHOUT a GPU. Asserted as
+        # `status in (:passed, :skipped)` this check counted a vacuous skip as an
+        # ordinary pass, and the test summary was byte-for-byte identical on a
+        # GPU-less host and a real GPU run -- the F20 class in its subtler form
+        # (2026-08-05_b audit, U18-3).
+        @test gpu.status === :passed ||
+              (gpu.status === :skipped && !CUDA_TESTS_ACTIVE)
     end
 
     # A counter-RNG element must COMPILE in the fused CUDA kernel. Every
@@ -5664,7 +5841,13 @@ end
         line=(lumped,), n_particles=256, turns=2,
         backend_a=CPUThreadsBackend, backend_b=CUDABackend,
         atol=1.0e-10, rtol=1.0e-10))
-    @test stochastic_gpu.status in (:passed, :skipped)
+    # `:skipped` is only legitimate WITHOUT a GPU. Asserted as
+    # `status in (:passed, :skipped)` this check counted a vacuous skip as an
+    # ordinary pass, and the test summary was byte-for-byte identical on a
+    # GPU-less host and a real GPU run -- the F20 class in its subtler form
+    # (2026-08-05_b audit, U18-3).
+    @test stochastic_gpu.status === :passed ||
+          (stochastic_gpu.status === :skipped && !CUDA_TESTS_ACTIVE)
 end
 
 @testset "Configuration rejection" begin
@@ -7143,7 +7326,16 @@ end
     #            `LatticeMagnet` builds through a completely different path
     #            (exact curved drift plus `_curved_kick`, no implicit midpoint).
     #            Two independent implementations agreeing is the strongest
-    #            evidence available here; measured 6.8e-10 at nst = 1024.
+    #            evidence available here. Measured 1.09e-8 at nst = 256, which
+    #            is the step count the assertion below actually runs at, and
+    #            6.79e-10 at nst = 1024 -- 16x apart, as a second-order Strang
+    #            splitting should be. The comment used to quote only the
+    #            nst = 1024 number beside an nst = 256 assertion bounded at
+    #            1e-6, i.e. 92x above what the assertion produces, so anything
+    #            between 1e-8 and 1e-6 passed silently (2026-08-05_b audit,
+    #            U19-9). The recorded defect this guards -- a straight
+    #            multipole kick in a curved frame -- was 9.6e-4, so a 5x bound
+    #            still catches it with four orders to spare.
     let u = u0, ferr = (a, b) -> maximum(abs, collect(a) .- collect(b))
         for (nm, kw) in (("k1", (k1=0.6,)), ("k0s", (k0s=0.2,)))
             ref = sol(; L=1.3, ks=1.7, nst=256, kw...)(u...)
@@ -7153,7 +7345,13 @@ end
         end
         qref = compile_runtime(SBendSpec(L=1.3, h=0.18, b0=0.0, k1=0.6,
                                          bend_fringe=false, nst=256))(u...)
-        @test ferr(sol(L=1.3, ks=0.0, h=0.18, k1=0.6, nst=256)(u...), qref) < 1.0e-6
+        @test ferr(sol(L=1.3, ks=0.0, h=0.18, k1=0.6, nst=256)(u...), qref) < 5.0e-8
+        # ... and it really is the splitting error, not a floor: 16x smaller at
+        # 4x the steps. A bound alone cannot tell those apart.
+        let qref1024 = compile_runtime(SBendSpec(L=1.3, h=0.18, b0=0.0, k1=0.6,
+                                                 bend_fringe=false, nst=1024))(u...)
+            @test ferr(sol(L=1.3, ks=0.0, h=0.18, k1=0.6, nst=1024)(u...), qref1024) < 3.0e-9
+        end
     end
 
     for (name, kw) in (("normal quad", (k1=0.6,)), ("skew quad", (k1s=0.6,)),
@@ -7289,9 +7487,22 @@ end
     phys1 = Octopus._strong_strong_kbb1(base, e, p)
     phys2 = Octopus._strong_strong_kbb2(base, e, p)
     over = PICPoissonSolver(slicing=sl, grid=(32, 32), kbb1=phys1, kbb2=phys2)
-    # A physical-unit override resolves to the same per-deposited-particle scale
-    # as the derived value, i.e. kbb means the same thing as for the Gaussian
-    # solver. (Before the fix the override skipped the /n_macro division.)
+    # ABSOLUTE scale, not branch parity. Both `_pic_kbb1` branches divide by
+    # the same `length(beam2.rep)`, so `over == base` is guaranteed by
+    # construction for any COMMON-MODE defect -- including the one the comment
+    # names: drop `/ length(beam2.rep)` from both branches and the two sides
+    # still move together and both assertions still pass. What the test means
+    # to claim is that kbb means the same thing here as for the Gaussian
+    # solver, and that is a statement about the value (2026-08-05_b audit,
+    # U19-4, re-raised from U17-4).
+    @test Octopus._pic_kbb1(base, e, p) == phys1 / length(p.rep)
+    @test Octopus._pic_kbb2(base, e, p) == phys2 / length(e.rep)
+    # ... and the division is not vacuous: the two beams are macro-particle
+    # ensembles, so the per-deposited-particle scale is smaller than the
+    # physical one by exactly the macro count.
+    @test length(p.rep) == 2000 && length(e.rep) == 2000
+    @test Octopus._pic_kbb1(base, e, p) != phys1
+    # Then, and only then, branch parity.
     @test Octopus._pic_kbb1(over, e, p) == Octopus._pic_kbb1(base, e, p)
     @test Octopus._pic_kbb2(over, e, p) == Octopus._pic_kbb2(base, e, p)
     # The explicit physical override reproduces the derived collision byte-for-byte.
@@ -7328,7 +7539,16 @@ end
     b64a, b64b = mkbeam(Float64), mkbeam(Float64)
     lum64 = collide!(mkgpic(), b64a, b64b, CPUThreadsBackend)
     @test isfinite(lum32)
-    @test isapprox(lum32, lum64; rtol=1.0e-5)      # Float32 inputs, not a new physics
+    # rtol tied to what the hybrid actually delivers, not to Float32's eps.
+    # `rtol=1.0e-5` was 1656x looser than the measured agreement (6.0e-9) and
+    # ~80x looser than eps(Float32) = 1.19e-7, so a regression that carried the
+    # luminosity accumulation in Float32 would land near 1e-7 and still pass --
+    # i.e. the check could only ever catch a MethodError, which the lines around
+    # it already pin. The measured 6.0e-9 is BELOW eps(Float32), which is itself
+    # the evidence that the accumulation is promoted to Float64 internally, and
+    # that is the property worth pinning (2026-08-05_b audit, U19-10).
+    @test isapprox(lum32, lum64; rtol=1.0e-7)
+    @test abs(lum32 - lum64) / abs(lum64) < eps(Float32)   # promotion, not luck
     @test all(all(isfinite, a) for a in coordinate_arrays(b32a.rep))
     @test all(all(isfinite, a) for a in coordinate_arrays(b32b.rep))
 end
@@ -7872,9 +8092,20 @@ end
         cache = Dict{Int,Any}()
         get_node(b) = Octopus._pic_node_grid!(cache, PICPoissonSolver(; slicing=sl, grid=(64, 64)),
             Float64, src, s1.center[2], p3.rep, s2.indices, s2.boundary, b)
+        # The `continue` below used to be unguarded, and 18,036 of this
+        # testset's 30,053 assertions live inside it. If `_pic_node_grid!` ever
+        # started returning `nothing` -- an empty-slice guard, a changed
+        # memoization key, a different slicing default -- every one of them
+        # would disappear and the testset would still pass on its outer 17.
+        # The neighbouring union-bounds block asserts `ub !== nothing` before
+        # consuming it; this one did not (2026-08-05_b audit, U19-5).
+        @test length(s2.boundary) - 2 == 3                 # the loop has a body
+        materialised = 0
         for b in 2:length(s2.boundary)-1
             gb = get_node(b)
+            @test gb !== nothing
             gb === nothing && continue
+            materialised += 1
             @test get_node(b) === gb                       # memoized, identical object
             # node b's mesh must contain both adjacent slices' drifted particles
             nx = 64
@@ -7888,6 +8119,7 @@ end
                 @test gb.field_grid.y0 <= yv <= gb.field_grid.y0 + gb.field_grid.height
             end
         end
+        @test materialised == 3                            # all three nodes ran
     end
 end
 
@@ -8656,9 +8888,12 @@ end
     @test report_by_name[:min_domain_halfwidth].resolved == 1.0e-4
 end
 
-include(joinpath(pkgdir(Octopus), "validation", "symplecticity_validation.jl"))
-
+# The `include` is INSIDE the testset. As a top-level statement a load
+# error in the validation script aborted the whole file instead of failing
+# one testset, taking every later testset with it -- including the physics
+# backstops that run last (2026-08-05_b audit, U20-12, carried from U17-7).
 @testset "Finite-difference 6D symplecticity validation" begin
+    include(joinpath(pkgdir(Octopus), "validation", "symplecticity_validation.jl"))
     # No default_tolerance override (2026-08-05_b audit, U24-6). This call
     # passed 5.0e-6 -- one hundred times the script's own floor and the
     # contract's -- and the script applies `max(case.tolerance,
@@ -8673,9 +8908,12 @@ include(joinpath(pkgdir(Octopus), "validation", "symplecticity_validation.jl"))
     @test lorentz.determinant_passed
 end
 
-include(joinpath(pkgdir(Octopus), "validation", "high_energy_weakstrong_limit.jl"))
-
+# The `include` is INSIDE the testset. As a top-level statement a load
+# error in the validation script aborted the whole file instead of failing
+# one testset, taking every later testset with it -- including the physics
+# backstops that run last (2026-08-05_b audit, U20-12, carried from U17-7).
 @testset "High-energy weak-strong strong-strong limit" begin
+    include(joinpath(pkgdir(Octopus), "validation", "high_energy_weakstrong_limit.jl"))
     result = run_high_energy_weakstrong_limit(;
         n=256, nslices=3, grid=48,
         spectral_grid=(32, 64),
@@ -9122,13 +9360,19 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             Octopus.CUDA.synchronize()
             # Same algorithm and particle data, so CPU and CUDA agree to round-off
             # (up to accumulation order across the backends' parallel reductions).
+            # Measured 8.5e-16 on the coordinates and 2.2e-16 on the luminosity
+            # (RTX 4500 Ada, 2026-08-07), in the norm-relative sense `isapprox`
+            # uses. `rtol=1.0e-9` was six orders above that -- an absolute drift
+            # of 6e-11 admitted on a z whose scale is 1e-2 (2026-08-05_b audit,
+            # U20-13). 1e-12 keeps ~1000x for a different GPU or a different
+            # reduction width, and is still three orders tighter than before.
             for (cpu_beam, gpu_beam) in ((ecpu, egpu), (pcpu, pgpu))
                 for (expected, actual) in zip(coordinate_arrays(cpu_beam),
                                               coordinate_arrays(gpu_beam))
-                    @test Array(actual) ≈ expected rtol=1.0e-9 atol=1.0e-18
+                    @test Array(actual) ≈ expected rtol=1.0e-12 atol=1.0e-18
                 end
             end
-            @test lum_gpu ≈ lum_cpu rtol=1.0e-9
+            @test lum_gpu ≈ lum_cpu rtol=1.0e-12
         end
         # field_precision=:single runs the CUDA field solve in Float32: not
         # bit-parity with the CPU Float64 path, but the smooth field keeps the kick
@@ -9272,12 +9516,17 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             for (cpu_beam, gpu_beam) in ((ecpu, egpu), (pcpu, pgpu))
                 for (expected, actual) in zip(coordinate_arrays(cpu_beam),
                                               coordinate_arrays(gpu_beam))
-                    # ~1e-13: the only backend difference is the parallel-reduction
-                    # order of the slice moments; well within the 1e-10 contract.
-                    @test Array(actual) ≈ expected rtol=1.0e-9 atol=1.0e-18
+                    # The only backend difference is the parallel-reduction order
+                    # of the slice moments. The comment used to say "~1e-13 ...
+                    # well within the 1e-10 contract" beside an `rtol=1.0e-9`
+                    # assertion, i.e. an order LOOSER than the contract it cited
+                    # (2026-08-05_b audit, U20-13). Re-measured here across both
+                    # wavefront paths and both kick modes: 6.0e-14 on the
+                    # coordinates, 4.1e-15 on the luminosity.
+                    @test Array(actual) ≈ expected rtol=1.0e-11 atol=1.0e-18
                 end
             end
-            @test lum_gpu ≈ lum_cpu rtol=1.0e-9
+            @test lum_gpu ≈ lum_cpu rtol=1.0e-12
         end
     end
 
@@ -9601,6 +9850,30 @@ end
             e = knob_expression(s)
             @test knob_expression(string(e)) == e
         end
+        # ... and over EVERY operator in the whitelist, at every arity it
+        # declares, nested one level. The hand-picked strings above cover 8 of
+        # the 24 entries in `_KNOB_OPERATORS` (`* / - ^ + sin atan max`),
+        # leaving `abs acos asin cbrt cos cosh exp inv log log10 min sign sinh
+        # sqrt tan tanh` unswept -- in the block whose comment says the round
+        # trip is "documented" (2026-08-05_b audit, U20-8).
+        let arg(i) = i == 1 ? knob_expression("t_knob.k1") :
+                     i == 2 ? knob_expression("2.0") : knob_expression("t_knob.brho"),
+            covered = Set{Symbol}()
+            for (op, (_, arities)) in Octopus._KNOB_OPERATORS
+                for n in (first(arities), min(last(arities), 3))
+                    e = Octopus.KnobCall(op, Octopus.AbstractKnobExpression[arg(i) for i in 1:n])
+                    @test knob_expression(string(e)) == e
+                    # One nesting level, so precedence and parenthesisation are
+                    # exercised rather than only the leaf printer.
+                    nested = Octopus.KnobCall(:+, Octopus.AbstractKnobExpression[
+                        e, knob_expression("t_knob.xfer")])
+                    @test knob_expression(string(nested)) == nested
+                    push!(covered, op)
+                end
+            end
+            @test covered == Set(keys(Octopus._KNOB_OPERATORS))
+            @test length(covered) >= 24
+        end
 
         # compile_runtime resolves scalar and tuple knob parameters, and a
         # knob assignment recompiles an already-built task through the epoch
@@ -9730,7 +10003,12 @@ end
         # constant was declarable but silently unreachable (`@knob_expr(pi)`
         # lowers to KnobConst, so registry and expressions disagreed on one
         # name). Now rejected at declaration, for every named constant.
-        for name in (:pi, :π, :ℯ, :NaN, :Inf)
+        # DERIVED from the authoritative dict, not hand-copied. The list used
+        # to read `(:pi, :π, :ℯ, :NaN, :Inf)`, which is 5 of 5 today and would
+        # stay green if a sixth constant were added -- in the testset whose name
+        # claims totality (2026-08-05_b audit, U20-8).
+        @test !isempty(Octopus._KNOB_NAMED_CONSTANTS)
+        for name in keys(Octopus._KNOB_NAMED_CONSTANTS)
             @test_throws ArgumentError Octopus._knob_define!(name, Meta.parse("3.0"))
             @test !(name in list_knobs())
         end

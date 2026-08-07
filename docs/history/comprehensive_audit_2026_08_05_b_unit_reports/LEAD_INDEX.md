@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **255 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **286 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -55,7 +55,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U17b-3 | low-medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:1889` | `@test r.metrics[:checked] > 200` leaves 153 checks (43% of the real count) of |
 | U18-1 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:3134-3207 ("No method grows a Core.Box outside the ar` | the permanent `Core.Box` sweep catches **3 of 7** injected boxes — its |
 | U18-2 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:3209-3288 ("CPU solver stack is thread-count invarian` | the second (above-threshold) block is a hand-copy of the first block's |
-| U18-3 | low-medium |  | `test/runtests.jl:4252-4256, 4270-4274 ("Lattice cells track and stay s` | three CPU↔CUDA agreement checks are asserted as |
+| U18-3 | low-medium | FIXED (three CUDA status assertions gated on CUDA_TESTS_ACTIVE; PTC table asserted present too) | `test/runtests.jl:4252-4256, 4270-4274 ("Lattice cells track and stay s` | three CPU↔CUDA agreement checks are asserted as |
 | U19-1 | medium | CLOSED by the U20-3 fix (2026-08-06) | `test/runtests.jl:6599 (gate at 6604)` | `"CUDA GaussianPIC coupled subtraction matches CPU"` is the only CUDA gate |
 | U19-2 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:4733–4776 (Spectral arm)` | the Spectral arm of `"Lost particles cannot influence a strong-strong |
 | U19-3 | medium | CONFIRMED, FIXED (2026-08-06) | `test/runtests.jl:4778–4841` | `"Lost-particle charge semantics are pinned per solver family"` pins **2 |
@@ -95,8 +95,8 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U25-4 | medium | CONFIRMED, FIXED (2026-08-06) | `validation/tracking_backend_consistency.jl:154 (seam: src/contracts/Co` | `:aperture` is covered by the tripwire **by name only** — with the |
 | U3-1 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:5564-5578, 5660-5668` | The CUDA slice transverse moments change with the launch grid rather than only with |
 | U3-2 | medium | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:5158, 5165, 2101, 1214` | `threads = 512` — a value the repository's own launch-geometry contract sweeps and |
-| U3-3 | low-medium |  | `src/tasks/strongstrong/pic_cuda.jl:4885-4898, 5073-5090` | The CIC branch of `_cuda_pic_interpolate_field` and `_cuda_pic_interpolate_kick` is |
-| U3-6 | low-medium |  | `src/tasks/strongstrong/pic_cuda.jl:4002-4010, 4034-4051, 4077-4094, 41` | The CUDA PIC route is **not** run-to-run bit-reproducible: the same process, the same |
+| U3-3 | low-medium | FIXED (CUDA CIC unroll reordered to the CPU x-outer order) | `src/tasks/strongstrong/pic_cuda.jl:4885-4898, 5073-5090` | The CIC branch of `_cuda_pic_interpolate_field` and `_cuda_pic_interpolate_kick` is |
+| U3-6 | low-medium | FIXED-AS-DOCUMENTED (non-reproducibility confirmed on all three routes and documented at the top of pic_cuda.jl) | `src/tasks/strongstrong/pic_cuda.jl:4002-4010, 4034-4051, 4077-4094, 41` | The CUDA PIC route is **not** run-to-run bit-reproducible: the same process, the same |
 | U4-1 | medium | CONFIRMED, not fixed — needs a probe redesign; on todo.md (2026-08-06) | `src/contracts/Contracts.jl:1963-1967 (probe) → :2125 (decision)` | the `:aperture` probe produces an all-NaN baseline, so all 11 aperture parameters counted in `checked` are decided by a NaN comparison that can only ever say "the parameter moved the map" — the apertu |
 | U4-10 | low-medium | CONFIRMED, FIXED (2026-08-06) — reports :not_measured at one thread, still measures at 4 | `src/contracts/Contracts.jl:321-322 with :344-348 and :351-354` | on a single-threaded Julia the `PublicConfigurationEffectivenessContract`'s worker-invariance comparison executes zero times, yet the metrics report it as measured and passed. |
 | U4-11 | low-medium | CONFIRMED, FIXED (2026-08-06) | `src/contracts/Contracts.jl:1351-1371 with docstring :1310-1317` | the "analytic weak-strong reference" that `HighEnergyWeakStrongLimitContract` holds the soft-Gaussian solver to at 2e-14 is not analytic and not independent — it calls the same three functions the pro |
@@ -152,9 +152,9 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U12-8 | low | CONFIRMED, not fixed — same constructor-keyword obstacle as U4-18; on todo.md (2026-08-06) | `src/knowledge/Knowledge.jl:967-982` | three of the validator's checks — friendly schema, friendly |
 | U12-9 | low | CONFIRMED, FIXED (2026-08-06) — both instances reattached, source-scan tripwire added | `src/knowledge/Knowledge.jl:834-839` | the docstring on `_compiled_matches_runtime` is **detached** — the four |
 | U13-6 | low | CONFIRMED, FIXED (2026-08-06) — unfireable schedules now warn; verified fires only when the window is genuinely empty | `src/tasks/Tasks.jl:503-518 (seam with BeamObservers.jl:74-80)` | A scheduled hook whose schedule cannot fire anywhere in the requested |
-| U13-7 | low |  | `src/knobs/Knobs.jl:390-393` | Declaring a brand-new knob bumps the global epoch, so every |
+| U13-7 | low | FIXED (brand-new knob names no longer bump the epoch; 11.31 ms -> 2.00 ms against a 1.84 ms floor) | `src/knobs/Knobs.jl:390-393` | Declaring a brand-new knob bumps the global epoch, so every |
 | U13-8 | low | CONFIRMED, FIXED (2026-08-06) — finite negated literals fold; all 13 round-trip controls still pass | `src/knobs/Knobs.jl:196-202, 913-916` | `@knob_expr(-(5.0))` prints as `"-5.0"`, which reparses as the *literal* |
-| U13-9 | low |  | `src/knobs/Knobs.jl:957-968 (out of hypothesis)` | A knob expression inside a **nested** tuple or a **vector**-valued spec |
+| U13-9 | low | FIXED (detector made recursive to match the resolver; both now cover Tuple/NamedTuple/AbstractArray, property pinned) | `src/knobs/Knobs.jl:957-968 (out of hypothesis)` | A knob expression inside a **nested** tuple or a **vector**-valued spec |
 | U14-4 | low | FIXED (both conversions rewritten cancellation-free; 8.9e-5 -> 2.2e-16 relative forward, round trip 1.0 -> 3.2e-16) | `src/track/longitudinal.jl:133-148, and the "4.4e-16" pin in docs/theor` | `_delta_from_pt` and `_pt_from_delta` are written in their cancelling forms, so |
 | U14-5 | low | FIXED (refusal moved to a helper called from both random-Beam entry points) | `src/beam/Beam.jl:445-455 vs 457-474` | the U15-7 directed refusal for non-`AbstractFloat` coordinate types was added to |
 | U14-6 | low | FIXED (docstring justification was backwards; re-measured table added. Lead moderate-gamma "code worse" claim NOT reproduced) | `src/track/longitudinal.jl:100-103 (`reference_beta` docstring)` | the docstring's stated *reason* for choosing `√((γ-1)(γ+1))/γ` is measurably |
@@ -163,35 +163,35 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U14-9 | low | CONFIRMED, FIXED (2026-08-06) | `src/beam/Beam.jl:650-691 vs 40-44` | `beam_statistics` on an empty `Phase6DRep` raises Base's generic |
 | U16-1 | low | FIXED | `docs/theory/rf_cavity_and_reference_energy.md:160,163 (also docs/todo.` | ** The F16 correction block sends a future fixer to the wrong section — |
 | U16-10 | low | CONFIRMED, FIXED (2026-08-06) — both ParamMeta and both examples now state HALF and cross-reference the other name | `examples/weak_strong_tracking.jl:65, examples/strong_strong_tracking.j` | ** The same physical quantity, 12.5e-3 rad, is the **half** crossing |
-| U16-3 | low |  | `src/elements/rf_cavity.jl:251 (`construction_help`)` | ** The velocity-slip model boundary is documented on the human docstring |
+| U16-3 | low | FIXED (velocity-slip boundary added to construction_help and the L ParamMeta, with its measured consequence) | `src/elements/rf_cavity.jl:251 (`construction_help`)` | ** The velocity-slip model boundary is documented on the human docstring |
 | U16-6 | low | FIXED | `src/elements/patch.jl:155 and :208` | ** The `PatchSpec` docstring's first worked example and the kind's |
 | U16-7 | low | VERIFIED, not fixed — see note | `examples/weak_strong_tracking.jl:40 and :106` | ** `input.total_turns = 1_000_000` is **never read** — the file's |
 | U16-8 | low |  | `src/elements/chromaticity_kick.jl:104,110,116,117` | ** `ChromaticityKick`'s tracking kernel is written with the Float64 |
-| U16-9 | low |  | `src/elements/{rf_cavity,patch,chromaticity_kick,crab_cavity,lorentz_bo` | ** The declaration↔case tripwire added for `SymplecticityContract` |
-| U17b-2 | low |  | `test/runtests.jl:1599-1601 and :1616` | the two seam checks in the new "Series helpers" testset have **zero** discriminating |
-| U17b-4 | low |  | `test/runtests.jl:626-629` | on the Float32 leg, `soft_result ≈ weak_result rtol=32eps(T) atol=32eps(T)` admits |
+| U16-9 | low | STALE AT HEAD (U4-8 already moved the obligation from meta.contracts to tracking_methods: 22 kinds, 27 cases, 0 uncovered -- verified) | `src/elements/{rf_cavity,patch,chromaticity_kick,crab_cavity,lorentz_bo` | ** The declaration↔case tripwire added for `SymplecticityContract` |
+| U17b-2 | low | FIXED (crossovers named in src as CURV_VERS_CROSSOVER / SOL_LOG_CROSSOVER; test derives its probes and asserts branch continuity in value and derivative) | `test/runtests.jl:1599-1601 and :1616` | the two seam checks in the new "Series helpers" testset have **zero** discriminating |
+| U17b-4 | low | FIXED (tolerance scaled to the kick: 0.50% of signal -> ~0.5%/200; kick_scale asserted nonzero) | `test/runtests.jl:626-629` | on the Float32 leg, `soft_result ≈ weak_result rtol=32eps(T) atol=32eps(T)` admits |
 | U17b-5 | low | CONFIRMED, FIXED (2026-08-06) — all five annotated as implied, so the count is not read as coverage | `test/runtests.jl:1918 (also :1888, :1897, :44, :57)` | five assertions in the region cannot fail; they are guaranteed by the line above |
 | U17b-6 | low | CONFIRMED; count half already fixed by U20-11, file-list half FIXED (2026-08-06) — all twelve CUDA-bearing files named | `test/runtests.jl:46-50` | the runtime banner that exists specifically to make CUDA skips visible understates |
 | U17b-7 | low |  | `test/runtests.jl:2205-2210` | the AD sweep's floor is exact **today** (measured `verified = 25`, headroom 0) but |
 | U17b-8 | low |  | `test/runtests.jl:904-909` | the `:equal_area` "closed form" check compares `_gaussian_slices` against an |
-| U18-4 | low |  | `test/runtests.jl:3014-3085 ("Curved frame x transverse field: every ro` | the permanent h≠0 symplecticity sweep does **not** derive its case list; the |
+| U18-4 | low | FIXED (case list now derived from the schemas: [:sbend,:solenoid], both directions asserted) | `test/runtests.jl:3014-3085 ("Curved frame x transverse field: every ro` | the permanent h≠0 symplecticity sweep does **not** derive its case list; the |
 | U18-5 | low | CONFIRMED, FIXED (2026-08-06) — the promised kwarg check now exists and asserts the key names | `test/runtests.jl:3718-3720 ("Unknown spec keys warn…")` | the comment promises a check ("match the message and check the kwarg |
 | U18-6 | low | CONFIRMED, FIXED (2026-08-06) — allocation witness (96 B vs 4096) replaces the flaky 5 ms wall-clock | `test/runtests.jl:2876-2879 ("Observer finalizers, BPM noise keys, and ` | `@test @elapsed(Octopus._scheduled_turns(s, 5, 10^8)) < 0.005` is a |
-| U19-10 | low |  | `test/runtests.jl:5805` | `@test isapprox(lum32, lum64; rtol=1.0e-5)` in |
-| U19-4 | low |  | `test/runtests.jl:5747–5779` | `"PIC kbb override uses physical units"` is circular — the pass is |
-| U19-5 | low |  | `test/runtests.jl:6341–6365` | the `:node` defining-property block — 18,036 of this testset's 30,053 |
+| U19-10 | low | FIXED (rtol 1e-5 -> 1e-7 plus an eps(Float32) promotion assertion; measured 6.0e-9) | `test/runtests.jl:5805` | `@test isapprox(lum32, lum64; rtol=1.0e-5)` in |
+| U19-4 | low | FIXED (absolute-scale assertion added; branch parity kept but no longer the only claim) | `test/runtests.jl:5747–5779` | `"PIC kbb override uses physical units"` is circular — the pass is |
+| U19-5 | low | FIXED (gb !== nothing asserted, loop-body count pinned at 3) | `test/runtests.jl:6341–6365` | the `:node` defining-property block — 18,036 of this testset's 30,053 |
 | U19-6 | low | FIXED | `test/runtests.jl:4878` | `@test Octopus.longitudinal_slices(poisoned, sl) isa Any` asserts nothing |
 | U19-7 | low | WONTFIX (idiom; recorded) | `test/runtests.jl:5182` | `@test Threads.nthreads(:default) > 1 skip = (Threads.nthreads(:default) == 1)` |
 | U19-8 | low | CONFIRMED, FIXED (2026-08-06) — both pins check the warning's content and one object | `test/runtests.jl:5299–5300 and 5587–5588` | the two `curved = false` warning pins are content-free — `@test_logs |
-| U19-9 | low |  | `test/runtests.jl:5628–5630` | the cross-implementation solenoid↔SBend reference — U17 rated it one of |
+| U19-9 | low | FIXED (bound 1e-6 -> 5e-8 at the nst it runs at; comment corrected; nst=1024 leg added) | `test/runtests.jl:5628–5630` | the cross-implementation solenoid↔SBend reference — U17 rated it one of |
 | U2-1 | low | F1 confirmed, open | `src/tasks/strongstrong/pic_cuda.jl:3672` | the per-pair luminosity diagnostic trace `_ACTIVE_PIC_LUMINOSITY_PAIR_SINK` |
 | U2-2 | low |  | `src/tasks/strongstrong/pic_cuda.jl:2603` | the node-indexed wavefront field solve deposits, Green-multiplies, |
-| U2-3 | low |  | `src/tasks/strongstrong/pic_cuda.jl:2140` | the CUDA workspace cache key — which is also the identity of the embedded |
+| U2-3 | low | STALE-PLUS-TRIPWIRE (interaction_grid already added by U1-2; added a source-derived test that the CPU key is a subset of the CUDA key) | `src/tasks/strongstrong/pic_cuda.jl:2140` | the CUDA workspace cache key — which is also the identity of the embedded |
 | U20-10 | low | CONFIRMED, FIXED (2026-08-06) — the infinite-bound case the guard actually governs is now covered | `test/runtests.jl:8723` | `@test Octopus._pic_count_outside_box([1.0, NaN, 2.0], …) == 1` cannot |
 | U20-11 | low | CONFIRMED, FIXED (2026-08-06) | `out-of-region seam — test/runtests.jl:46–51` | the `@info` a CPU-only user actually sees still says "**Nine** |
-| U20-13 | low |  | `test/runtests.jl:7679–7684 — carry-over of U17's "note while there"` | the comment states "~1e-13: … well within the 1e-10 contract" and the |
+| U20-13 | low | FIXED (rtol 1e-9 -> 1e-12/1e-11 against measured 8.5e-16 and 6.0e-14) | `test/runtests.jl:7679–7684 — carry-over of U17's "note while there"` | the comment states "~1e-13: … well within the 1e-10 contract" and the |
 | U20-7 | low | FIXED | `test/runtests.jl:8067` | `@test knob_symbolics_available() === Octopus._symbolics_adapter_active()` |
-| U20-8 | low |  | `test/runtests.jl:8123 and 7992` | two hand-copied case lists with no declaration-to-coverage tripwire, in the |
+| U20-8 | low | FIXED (both sweeps derived: all 5 named constants, all 24 operators at both arities plus one nesting level, 0 failures) | `test/runtests.jl:8123 and 7992` | two hand-copied case lists with no declaration-to-coverage tripwire, in the |
 | U20-9 | low | CONFIRMED, FIXED (2026-08-06) — hoisted out of the device gate; verified it runs with CUDA_VISIBLE_DEVICES="" | `test/runtests.jl:7629 (gating, not content)` | "TSC weights are bit-identical across backends" is a **pure host-side** |
 | U21-14 | low | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:365-381 vs 434-441` | the new note claims the commented block "stays as the reference for what |
 | U21-20 | low | CONFIRMED, FIXED (2026-08-06) | `test/examples/strong_strong_tracking.jl:677-684` | the summary block prints PIC-family settings unconditionally, so a |
@@ -209,25 +209,25 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U21-8 | low | CONFIRMED, FIXED (2026-08-06) | `test/nightly_suite.sh:20-22` | the header's own justification is factually wrong — "the trailing-pipe trap |
 | U21-9 | low | CONFIRMED, FIXED (2026-08-06) | `test/nightly_suite.sh:69` | `ls -1t "$OUTDIR"/*.log \| grep -v latest \| …` filters on the whole path, so a |
 | U22-10 | low | FIXED | `docs/theory/coherent_beam_beam_modes.md:30-32` | "For flat beams the gradient scales as 1/σ_x (sheet-like field), so the same |
-| U22-11 | low |  | `region-wide (see the table in §(f))` | 11 of the 13 thresholds in this region are print-only; no run in the region can |
+| U22-11 | low | FIXED (self-checks 4/5 and the max-u invariant now fail the run; negative control fires) | `region-wide (see the table in §(f))` | 11 of the 13 thresholds in this region are print-only; no run in the region can |
 | U22-12 | low | CONFIRMED, FIXED (2026-08-06) — PROVENANCE.md written and independently verified against the run directory | `validation/coherent_beam_beam_modes_beambeam3d.jl:8-30,67-68` | The cross-code comparison **data** is committed and reproduces exactly, but its |
-| U22-17 | low |  | `validation/coherent_mode_scans.jl and validation/coherent_mode_eic_com` | The committed strong-strong archives **no longer reproduce** from current code |
-| U23-10 | low |  | `validation/gaussian_pic_field_validation.jl:90 and validation/gaussian` | Both local-reimplementation scripts hardcode the second-order field derivative, so the |
+| U22-17 | low | FIXED-AS-DOCUMENTED (electron x line requoted as a band; archive drift recorded as provenance with its measurements) | `validation/coherent_mode_scans.jl and validation/coherent_mode_eic_com` | The committed strong-strong archives **no longer reproduce** from current code |
+| U23-10 | low | FIXED (both scripts honour field_derivative; the paper-table grid override recorded in the script, validation/README and paper/README) | `validation/gaussian_pic_field_validation.jl:90 and validation/gaussian` | Both local-reimplementation scripts hardcode the second-order field derivative, so the |
 | U23-11 | low | CONFIRMED, FIXED (2026-08-06) — all three mismatches | `validation/spectral_poisson_field_validation.jl:23, 244-245, 259` | Three header/comment statements disagree with the code beneath them (U20-4b/c/d, all |
 | U23-12 | low | CONFIRMED, FIXED (2026-08-06) — qualified in the theory note, README and script header | `docs/theory/gaussian_subtracted_pic_solver.md:693 + validation/gaussia` | "The hybrid is **never worse than PIC**" is contradicted by the max-error column of the |
 | U23-13 | low | CONFIRMED, FIXED (2026-08-06) — both copies kept, drift tripwire added | `validation/near_round_gaussian_transition.jl:29-60 (cross-file seam)` | The 96-point Gauss-Legendre reference — the independent standard the whole near-round |
 | U23-4 | low | FIXED | `validation/gaussian_pic_field_validation.jl:17-20` | The header asserts the script exercises "real internals … PIC via `_pic_solve_field`"; |
-| U23-5 | low |  | `docs/theory/gaussian_subtracted_pic_solver.md:695-701 + validation/gau` | The documented motivation for the coupled (rotated) subtraction branch — "the weakest |
+| U23-5 | low | FIXED (weakest case is the far x-only 1.4x, not the coupled 1.5x; corrected in the note, the script header and validation/README) | `docs/theory/gaussian_subtracted_pic_solver.md:695-701 + validation/gau` | The documented motivation for the coupled (rotated) subtraction branch — "the weakest |
 | U23-6 | low | CONFIRMED, FIXED (2026-08-06) — blindness stated exactly; suite already carries the mitigation | `validation/spectral_poisson_field_validation.jl:215-221` | `shape_relerr` returns **exactly 0.000e+00** for a "solver" whose field is the exact |
 | U23-7 | low | CONFIRMED, FIXED (2026-08-06) | `validation/pic_grid_extent_stability.jl:109-110` | The `dropped` column double-counts a corner escapee and measures a different box from |
 | U23-8 | low | CONFIRMED, FIXED (2026-08-06) | `validation/pic_gaussian_field_validation.jl:20-24` | The header's "Outputs are written under `result/`" list omits a file the script always |
-| U24-10 | low |  | `validation/generate_ptc_reference.jl:336-355` | the committed reference table is truncated before the first MAD-X job runs, so a failure |
+| U24-10 | low | FIXED (tempfile-plus-rename, so a failed regeneration leaves the committed table intact) | `validation/generate_ptc_reference.jl:336-355` | the committed reference table is truncated before the first MAD-X job runs, so a failure |
 | U24-11 | low | CONFIRMED, FIXED (2026-08-06) — named consts + env vars; verified the knob bites | `validation/high_energy_weakstrong_limit.jl:380-381` | the two Gaussian-arm thresholds are the only tolerances in the file that are neither |
 | U24-12 | low | CONFIRMED, FIXED (2026-08-06) — five outputs named, stale 'has not run since' corrected | `validation/strong_strong_spectral_comparison.jl:1-27, 156-163` | the header has no `Outputs` section although the script writes five TSVs, and it carries a |
 | U24-13 | low | CONFIRMED, FIXED (2026-08-06) — the :node arm added to the table | `validation/slice_interpolation_emittance_growth.jl:26-35` | the arms table documents six arms A–F and omits the `:node` interaction-grid arm, which the |
-| U24-7 | low |  | `validation/symplecticity_validation.jl:89-93` | the Lorentz leg is still hand-copied knowledge — reference point, crossing angle and both |
+| U24-7 | low | FIXED (SYMPLECTICITY_PROBE_POINT shared; Lorentz angle and both tolerances now default from the contract fields) | `validation/symplecticity_validation.jl:89-93` | the Lorentz leg is still hand-copied knowledge — reference point, crossing angle and both |
 | U24-8 | low | CONFIRMED, FIXED (2026-08-06) — source slices derived from nslices; verified at 3, 5 and 7 | `validation/slice_longitudinal_zscan.jl:98` | `source_slices = (4, 6)` is hardcoded while `OCTOPUS_ZSCAN_NSLICES` is a documented |
-| U24-9 | low |  | `validation/slice_longitudinal_zscan.jl:34-38 vs 388-543` | the header describes one secondary pass (per-slice grid); the code runs and emits four |
+| U24-9 | low | FIXED (all five grid_mode families documented in the header, verified against the code) | `validation/slice_longitudinal_zscan.jl:34-38 vs 388-543` | the header describes one secondary pass (per-slice grid); the code runs and emits four |
 | U26-10 | low |  | `docs/theory/slice_longitudinal_interpolation.md (file:line citations)` | nearly every `file:line` pointer in the note has rotted, and the note |
 | U26-11 | low | FIXED | `docs/theory/solenoid.md §14.2` | "Contract now 41 cases"; the committed PTC reference table carries 55. |
 | U26-12 | low | CONFIRMED, FIXED (2026-08-06) — all 13 src/ directories now have an ownership rule | `AGENTS.md "Source Ownership" (out-of-hypothesis; task item f)` | the directory list names 7 of the 13 directories under `src/`. |
@@ -235,7 +235,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U26-14 | low/style | CONFIRMED, FIXED (2026-08-06) — the two edges stated separately | `docs/theory/spectral_sine_poisson_solver.md §2` | "$\sin(\alpha_l\cdot 0)=\sin(l\pi)=0$" conflates the two edges — the |
 | U26-15 | low/style | FIXED | `docs/theory/beam_line_composition.md §5, §7` | nomenclature drift — the note recommends `find(line, sel)` throughout |
 | U3-4 | low | CONFIRMED, not fixed — needs a convention decision (promote to solver type vs follow the beam); on todo.md (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:5580-5584` | For a `Float32` beam the CPU builds the slice moments in `Float64` and the CUDA |
-| U3-5 | low |  | `src/tasks/strongstrong/pic_cuda.jl:4661-4738` | `_cuda_pic_kick_indexed_kernel!` (4661-4696) and |
+| U3-5 | low | FIXED (78 lines of unlaunched duplicate kick kernels deleted) | `src/tasks/strongstrong/pic_cuda.jl:4661-4738` | `_cuda_pic_kick_indexed_kernel!` (4661-4696) and |
 | U3-7 | low | CONFIRMED, same convention question as U3-4; on todo.md (2026-08-06) | `src/tasks/strongstrong/pic_cuda.jl:5136, 5173-5177` | For a `Float32` beam, `_cuda_gaussian_collide_sequential!` returns a `Float64` |
 | U3-8 | low | CONFIRMED, FIXED (2026-08-06) — grid-stride loop added, matching its twin; coverage verified at kick_threads=64 | `src/tasks/strongstrong/pic_cuda.jl:4774-4802` | `_cuda_pic_kick_pair_indexed_longitudinal_kernel!` is the only kick kernel in the |
 | U4-13 | low | CONFIRMED, FIXED (2026-08-06) — all 12 validate methods reject unknown keywords | `src/contracts/Contracts.jl:180, :200, :310, :639, :683, :779, :1245, :` | every `validate` method takes `; kwargs...` and no method reads it, so any keyword a caller misspells or invents is silently accepted and dropped — the (e) unknown-keyword family, inside the file whos |
@@ -245,7 +245,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U4-17 | low | CONFIRMED, FIXED (2026-08-06) — staleness tripwire on both tables; 36/36 and 10/10 applied, negative control executed | `src/contracts/Contracts.jl:1987-2037 and :2257-2288` | neither exemption table has a staleness tripwire. Both are clean today (measured), but a `(kind, parameter)` or `(solver, option)` pair that no longer exists silently excuses nothing, and — the direct |
 | U4-18 | low | CONFIRMED; (ii) already closed by U5-4, (i) vacuous by construction and a field-based substitute was tried and reverted — on todo.md (2026-08-06) | `src/contracts/Contracts.jl:313 → src/tasks/strongstrong/interface.jl` | two of the checks `validate_configuration_metadata()` gained in the U3-4 repair, and which `PublicConfigurationEffectivenessContract` calls as its first act, cannot fail — the BPMObserver schema↔repor |
 | U5-10 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/strongstrong/interface.jl:2160-2166` | the append-mode "replacing the entire existing luminosity history" warning fires |
-| U5-11 | low |  | `src/tasks/strongstrong/interface.jl:1592 (export list at :1-10)` | `strong_strong_task_option_schema` is the only public configuration schema in the |
+| U5-11 | low | FIXED (strong_strong_task_option_schema exported and given a signature line; export rule pinned over all 8 schemas) | `src/tasks/strongstrong/interface.jl:1592 (export list at :1-10)` | `strong_strong_task_option_schema` is the only public configuration schema in the |
 | U5-12 | low | CONFIRMED, FIXED (2026-08-06) — three aliases declared; verified they behave identically to their targets | `src/tasks/strongstrong/interface.jl:700-702 vs 647-677 — class (b)` | `LongitudinalSlicing` accepts three slicing methods that no docstring or schema |
 | U5-13 | low | FIXED | `src/tasks/strongstrong/interface.jl:1545, 2064 — OUT OF HYPOTHESIS (tr` | two source comments point the reader at `pic_cuda.jl:5041` for the Gaussian |
 | U5-14 | low |  | `src/tasks/strongstrong/interface.jl:1649-1654, 1743-1757, 1780-1792` | `validate_configuration_metadata`'s default-vs-constructor check is applied |
@@ -290,19 +290,19 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U15-8 | minor | CONFIRMED, FIXED (2026-08-06) — refused rather than honoured, to keep the two walkers in agreement (U15-6) | `src/elements/beam_line.jl:385-389 (`_placement_length(::LineEntry)`)` | an `:L` placement override on a nested own-state line is stored, reported |
 | U15-9 | minor | FIXED | `docs/theory/misalignment_and_patch_maps.md:262-266` | the theory note tells the reader Octopus exposes `misalign_convention` |
 | U16-11 | style | CONFIRMED, FIXED (2026-08-06) — stray import removed, header is first; example still runs | `examples/weak_strong_tracking.jl:1` | ** Style only. `using LinearAlgebra` sits on line 1, **above** the |
-| U20-12 | info |  | `test/runtests.jl:7103, 7113 — carry-over of U17-7` | the two `include`s of `validation/symplecticity_validation.jl` and |
-| U22-13 | info |  | `docs/theory/coherent_beam_beam_modes.md:118-120,211-212,167` | The figures the regenerated sections point at predate the data they claim to |
+| U20-12 | info | FIXED (both validation includes moved inside their testsets) | `test/runtests.jl:7103, 7113 — carry-over of U17-7` | the two `include`s of `validation/symplecticity_validation.jl` and |
+| U22-13 | info | FIXED (figures documented as uncommitted and possibly stale, with a regeneration recipe) | `docs/theory/coherent_beam_beam_modes.md:118-120,211-212,167` | The figures the regenerated sections point at predate the data they claim to |
 | U22-14 | info | CONFIRMED, script half FIXED (2026-08-06) — closing summary now names all five TSVs, verified against the writes | `docs/theory/coherent_beam_beam_modes.md:167,177,122-129` | Presentation defects in §3 that make the section hard to read correctly: the |
 | U22-15 | info | CONFIRMED, FIXED (2026-08-06) — constants aligned to the framework + suite tripwire | `validation/coherent_mode_vlasov_theory.jl:678-680,415; validation/cohe` | Hand-copied constants and formulas across the region (Measured Lesson 4), all |
 | U22-16 | info | RESOLVED by the U22-1 quadrature fix (2026-08-06) — measured u(0) vs exact now ~1e-4 against a 2e-2 tolerance (200x margin, was 1.1x); zero self-check-4 FAILs | `validation/coherent_mode_vlasov_theory.jl:508` | Self-check 4's 2e-2 tolerance passes at r=0.5 with only 11% of its budget to |
 | U22-18 | info | CONFIRMED, FIXED (2026-08-06) | `validation/coherent_mode_vlasov_theory.jl:718` | Latent crash — `maximum(v for v in vals if v <= e_band[2] + 5 * xi_e)` throws |
-| U23-14 | trivial |  | `validation/pic_grid_extent_stability.jl:26 and src/tasks/strongstrong/` | Both the validation docstring and the production docstring record ":sigma … measured |
+| U23-14 | trivial | FIXED (4-8x -> measured 3.5-8.2x with its envelope, in both the script and the production docstring) | `validation/pic_grid_extent_stability.jl:26 and src/tasks/strongstrong/` | Both the validation docstring and the production docstring record ":sigma … measured |
 | U23-9 | trivial | CONFIRMED, FIXED (2026-08-06) | `validation/gaussian_pic_zscan.jl:60, 88` | The documented override `OCTOPUS_GPIC_ZSCAN_NSLICES` throws `BoundsError` for any |
 | U25-10 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/tracking_context_policy_consistency.jl, strong_strong_obser` | three scripts print their CUDA skip but offer no way to *require* the GPU |
 | U25-11 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/pic_option_consistency_summary.jl:55-58, 90-102` | the summary pairs a run with its baseline by tag suffix alone and never |
 | U25-12 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/README.md:881-890 and validation/{crossing_luminosity_ancho` | the two entries added for U21-1 are attached to the wrong section and |
 | U25-13 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/README.md:213-256 §"Tracking Backend Consistency"` | the README entry for the region's most important script was not updated |
-| U25-14 | info |  | `validation/crossing_luminosity_anchor.jl:6` | the only script in the region whose `include` of `src/Octopus.jl` is not |
+| U25-14 | info | FIXED (six unguarded includes, not the one reported; all guarded and switched to @__DIR__) | `validation/crossing_luminosity_anchor.jl:6` | the only script in the region whose `include` of `src/Octopus.jl` is not |
 | U25-15 | info |  | `validation/strong_strong_{diagnostics,pic_extreme}_benchmark.jl — unde` | both benchmark scripts read a dozen globals that leak out of |
 | U25-16 | info — infrastructure |  | `seam: test/examples/strong_strong_tracking.jl fixed output directory` |  |
 | U25-5 | minor | CONFIRMED, FIXED (2026-08-06) | `validation/strong_strong_diagnostics_benchmark.jl:26-64` | the script's turn count and the harness's turn count are two different |
@@ -315,7 +315,7 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U26-7 | minor | CONFIRMED, FIXED (2026-08-06) | `docs/theory/pic_free_space_kernels.md §3.4 correction table vs src/tas` | the note and the source carry the same re-measurement and disagree on the |
 | U26-8 | minor | FIXED | `docs/theory/misalignment_and_patch_maps.md §6a` | §6a names two `misalign_convention` values that do not exist. |
 | U26-9 | minor | CONFIRMED, FIXED (2026-08-06) | `docs/theory/slice_longitudinal_interpolation.md §10.5 + §12` | the note advertises `grid_extent = :sigma` as complementary to |
-| U8-6 | informational |  | `— out-of-hypothesis, cross-file seam` | `validation/near_round_gaussian_transition.jl` computes exactly the two |
+| U8-6 | informational | FIXED (conditioning-factor band and CPU/CUDA parity now assert; negative control fires) | `— out-of-hypothesis, cross-file seam` | `validation/near_round_gaussian_transition.jl` computes exactly the two |
 | U9-9 | info | CONFIRMED, FIXED (2026-08-06) — dead store removed, tracking bit-identical | `src/elements/solenoid.jl:188–196 — OUT OF HYPOTHESIS (style)` | `mz` in `_solenoid_curved_map` is assigned in every fixed-point sweep and |
 
 ## Notes on individual dispositions

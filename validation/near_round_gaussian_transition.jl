@@ -422,4 +422,45 @@ if abspath(PROGRAM_FILE) == @__FILE__
             result.max_response_relative_error,
             result.max_core_gradient_error)), results) ||
         error("non-finite transition validation metric")
+
+    # `isfinite` was the ONLY failure condition here, in a script whose whole
+    # purpose is to compute the two numbers that bind the near-round
+    # calibration and the CPU/CUDA split -- so it printed them and asserted
+    # neither (2026-08-05_b audit, U8-6). A validation script that cannot fail
+    # is a report, not a validation.
+    #
+    # Bounds are ~3x the values measured on 2026-08-07 with an RTX 4500 Ada,
+    # not round numbers: loose enough to survive a different GPU or a Julia
+    # minor version, tight enough to notice a real drift.
+    for (T, result) in zip((Float32, Float64), results)
+        nominal = Float64(Octopus._near_round_conditioning_factor(T))
+        observed = Float64(result.observed_outer_conditioning_factor)
+        # The conditioning factor is the constant the outer crossover is sized
+        # from. Nominal 64.0 / 8.0; measured 61.94 / 4.95. The Float32 gap is a
+        # factor 1.6 and is why the bound is stated as a RATIO band rather than
+        # an absolute: what matters is that the calibration still describes the
+        # function, not that it matches to three digits.
+        0.4 <= observed / nominal <= 2.5 || error(
+            "near-round outer conditioning factor drifted from its calibration: " *
+            "$(T) observed $(observed) against nominal $(nominal)")
+    end
+    let f64 = results[2]
+        f64.max_force_relative_error < 2.0e-11 || error(
+            "Float64 near-round force error regressed: $(f64.max_force_relative_error)")
+        f64.max_response_relative_error < 4.0e-8 || error(
+            "Float64 near-round response error regressed: $(f64.max_response_relative_error)")
+    end
+
+    # The CPU/CUDA split. The theory note lists "CPU versus CUDA evaluation" as
+    # an axis on which C_BE varies, yet ONE constant serves both -- so the
+    # parity number is the evidence that the single constant is still adequate,
+    # and it was printed and dropped. Measured 1.37e-11 (Float64) and 1.15e-5
+    # (Float32) against the independent quadrature.
+    for (T, bound) in ((Float32, 4.0e-5), (Float64, 5.0e-11))
+        parity = run_near_round_cuda_parity(T)
+        parity === nothing && continue          # no GPU: nothing measured, nothing claimed
+        parity.max_relative_error < bound || error(
+            "near-round CPU/CUDA parity regressed for $(T): " *
+            "$(parity.max_relative_error) exceeds $(bound)")
+    end
 end

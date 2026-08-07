@@ -12,6 +12,18 @@ See `docs/theory/lattice_hamiltonian_and_conventions.md` Section 7.
 """
 const LATTICE_INTEGRATOR_ORDERS = (2, 4)
 
+"""
+Series/closed-form crossover for `_curv_vers`, as a named constant rather than
+a literal in the branch.
+
+The suite's seam checks straddle this value, and they used to do it with a
+hand-copied `0.125`: moving the constant here would have put `prevfloat(0.125)`
+and `nextfloat(0.125)` on the same side, so the seam tests would silently stop
+straddling anything while still passing (2026-08-05_b audit, U17b-2). Now there
+is one definition and the test derives its probe points from it.
+"""
+const CURV_VERS_CROSSOVER = 0.125
+
 # Forest-Ruth / Yoshida-4, a = 1 - 2^(1/3).
 const _FR_A = 1 - cbrt(2.0)
 const _FR_D1 = 0.5 / (1 + _FR_A)
@@ -52,6 +64,7 @@ const FRINGE_BEND = 8           # exact hard-edge dipole fringe (Maxwell-require
     return sin(u) / h
 end
 
+
 @inline function _curv_vers(h, L)
     u = h * L
     T = typeof(u)
@@ -76,7 +89,7 @@ end
     # did: the suite's bound on this branch had to be loosened from 1e-14 to
     # 1e-13 (U17b-1), because 1e-14 is only 1.4x the true error and half an ulp
     # of `cos` is amplified 118x here.
-    abs(u) < real(T)(0.125) && return h * L * L / 2 *
+    abs(u) < real(T)(CURV_VERS_CROSSOVER) && return h * L * L / 2 *
         (one(T) - u * u / 12 * (one(T) - u * u / 30 * (one(T) - u * u / 56 * (one(T) - u * u / 90))))
     return (one(T) - cos(u)) / h
 end

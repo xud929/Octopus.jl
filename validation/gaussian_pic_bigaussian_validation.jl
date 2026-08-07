@@ -21,9 +21,13 @@ Gaussian quantile lattices (no shot noise) isolate the systematic field error.
 Findings (see docs/theory/gaussian_subtracted_pic_solver.md): in the MEDIAN the hybrid is never worse
 than plain PIC and beats it by ~2-3x for near-Gaussian sources (the beam-beam
 regime), degrading gracefully toward parity as the perturbation grows. The
-weakest gain is for a diagonally offset perturbation, which introduces x-y
-coupling the uncoupled subtraction cannot remove -- motivating the coupled
-(rotated) subtraction branch gated by `coupling_tol`.
+weakest gain is the FAR x-only perturbation at 1.4x, with the diagonally offset
+(coupled) case next at 1.5x -- distance from the core is what shrinks the gain,
+and x-y coupling is a second, smaller effect on top of it. (This header used to
+name the coupled case as the weakest, which the script's own output table
+contradicts; 2026-08-05_b audit, U23-5.) The coupled (rotated) subtraction
+branch gated by `coupling_tol` is still the only mechanism that can remove a
+sigma_xy residual at all, which is the structural argument for it.
 
 Outputs (under result/):
 - gaussian_pic_bigaussian_validation.md (this header once promised a _summary.tsv nothing wrote; U20-3)
@@ -65,7 +69,16 @@ function solve_from_charge(solver, charge, sg, fg, nx, ny)
     gfft = O._pic_green_fft(solver, Float64, sg, fg)
     sp = Complex{Float64}.(charge); fft!(sp); sp .*= gfft; ifft!(sp)
     phi = real.(sp[1:nx, 1:ny])
-    Ex, Ey = O._pic_field(phi, sg.width / (nx - 1), sg.height / (ny - 1))
+    # `_pic_fourth_order(solver)`, not the `fourth=false` default. This local
+    # reimplementation hardcoded second order, so the public solver option
+    # `field_derivative = :fourth` was silently ignored by the study that
+    # carries the hybrid's documented accuracy table -- a copy fallen behind
+    # the original, which is what production does at
+    # `_pic_field!(..., _pic_fourth_order(solver))` (2026-08-05_b audit,
+    # U23-10). The committed defaults give the same value either way; the
+    # point is that the option is now reachable from this harness.
+    Ex, Ey = O._pic_field(phi, sg.width / (nx - 1), sg.height / (ny - 1),
+                          O._pic_fourth_order(solver))
     return phi, Ex, Ey
 end
 

@@ -90,9 +90,18 @@ isolates the *systematic* grid-discretization error the subtraction removes.
 
 ```bash
 julia --project=. validation/gaussian_pic_field_validation.jl
+
+# The committed paper table needs a WIDER grid sweep than the default:
+OCTOPUS_GPIC_GRIDS=48,64,96,128,192,256 \
+    julia --project=. --threads=4 validation/gaussian_pic_field_validation.jl
 ```
 
-It sweeps aspect ratios (round to 25:1) and grids (48/64/128) and reports the
+`paper/data/gaussian_pic_field_validation_summary.tsv` (Figure 2) carries 24
+rows at 48/64/96/128/192/256, which the default 12-row sweep cannot produce.
+That override was recorded nowhere until the 2026-08-05_b audit (U23-10), so the
+frozen figure could not be regenerated from the committed defaults.
+
+It sweeps aspect ratios (round to 25:1) and grids (48/64/128 by default) and reports the
 normalized median/max kick error for both solvers plus the hybrid/PIC gain. The
 hybrid error is nearly grid-independent; at grid 48 it matches or beats plain PIC
 at grid 128 (median gain 9-20x at coarse grids, 2.6-4.1x at 128). Reference
@@ -121,8 +130,11 @@ julia --project=. validation/gaussian_pic_bigaussian_validation.jl
 The hybrid is never worse than plain PIC IN THE MEDIAN (its worst-point error
 can exceed PIC's -- measured max_gain 0.9957; U23-12) and beats it ~2-3x for near-Gaussian
 sources, degrading gracefully toward parity as the perturbation grows. The
-weakest gain is a diagonally offset perturbation (x-y coupling the uncoupled
-subtraction cannot remove), motivating the coupled/rotated subtraction branch.
+weakest gain is the FAR x-only perturbation at 1.4x, with the diagonally offset
+(coupled) case next at 1.5x -- distance from the core shrinks the gain, and x-y
+coupling is a smaller second effect (2026-08-05_b audit, U23-5). The
+coupled/rotated subtraction branch is motivated structurally: it is the only
+mechanism that removes a sigma_xy residual at all.
 
 Characterization, not a gate, and the same local-reimplementation caveat as
 the field study above: the "hybrid" here is assembled from `PICPoissonSolver`

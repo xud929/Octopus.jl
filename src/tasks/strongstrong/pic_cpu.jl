@@ -1007,7 +1007,14 @@ Turn one axis' shifted single-pass accumulators into a `(lo, hi)` mesh extent.
   `sigma*sqrt(2 ln n)` with Gumbel fluctuation `sigma/sqrt(2 ln n)`, several
   percent of the box, and it drifts systematically with slice population.
 - `:sigma` returns `mean +- k*sd`. Its noise is `O(1/sqrt(n))` instead: measured
-  4-8x stabler than `:extrema` both slice-to-slice and turn-to-turn. It does
+  3.5-8.2x at the committed defaults (200,000 particles, 15 slices,
+  8 turns): 8.2x and 5.1x in x slice-to-slice and turn-to-turn, 3.9x and
+  3.5x in y. The quoted range used to be "4-8x" -- a single run's numbers
+  with the envelope rounded off, and both vertical-plane ratios sit under
+  its floor (2026-08-05_b audit, U23-14). The plane asymmetry is the point:
+  y carries fewer sigma of aperture per slice, so its extremum is less
+  noisy to begin with and there is less for `:sigma` to recover.
+  Stabler than `:extrema` on every one of the four measures. It does
   **not** guarantee coverage, which is why `_pic_cic_weights` drops out-of-range
   particles and the caller counts them.
 

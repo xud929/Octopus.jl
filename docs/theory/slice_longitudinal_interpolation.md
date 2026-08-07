@@ -17,6 +17,13 @@ synchro-beam map this discretizes,
 model, and [`pic_free_space_kernels.md`](pic_free_space_kernels.md) for the field
 solve at each node.
 
+> **Pointers in this note name functions and expressions, not line numbers.**
+> Every `file:line` citation it originally carried had rotted by the
+> 2026-08-05_b audit (U26-10) — `pic_cpu.jl:938`, the line the whole of §4 rests
+> on, had moved to 1884, and six others pointed at unrelated code. A line number
+> is a pointer that decays silently every time the file above it changes; a
+> function name or a distinctive expression is one `grep` away and stays true.
+
 ## 1. Geometry and conventions
 
 Write $c$ for the longitudinal coordinate of the source slice plane (its
@@ -63,7 +70,7 @@ below:
 2. the **field map** itself, through the source drift $\sigma(z)$.
 
 The implementation treats these differently. The evaluation point is computed
-exactly per particle (`pic_cpu.jl:242-244`). Only the field map is interpolated.
+exactly per particle (`pic_cpu.jl`, `_pic_build_node_grids!`, the `xv = rep.x[i] + sh * rep.px[i]` pair). Only the field map is interpolated.
 That is a deliberate and important choice: the entire drift dependence, which is
 large and particle-specific, is exact, and the interpolation error is confined to
 the much weaker dependence of the *source field* on its own drift.
@@ -134,7 +141,7 @@ at both ends.
 ### 3.2 Across a slice boundary
 
 Slices share boundaries — `param = (lb=boundary[i], center=center[i],
-rb=boundary[i+1])` at `pic_cpu.jl:54-57` — so for adjacent field slices $s$ and
+rb=boundary[i+1])` at `pic_cpu.jl`, the `param1`/`param2` named tuples at the top of `collide!` — so for adjacent field slices $s$ and
 $s+1$,
 
 $$
@@ -169,7 +176,7 @@ term, not noise, and it is the mechanism that three nodes attacks.
 
 ## 4. The longitudinal kick is *not* continuous
 
-The longitudinal kick is built differently. At `pic_cpu.jl:938`,
+The longitudinal kick is built differently. In `_pic_interpolate_kick` (`pic_cpu.jl`),
 
 ```julia
 Kz += w * (phiL[ii, jj] - phiR[ii, jj])
@@ -241,7 +248,7 @@ solve at a given source drift returns the same numbers regardless of which field
 slice requested it. Three implementation choices break that assumption. They are
 independent of the interpolation order and are **not** fixed by adding nodes.
 
-1. **Per-slice-pair grid sizing.** `_pic_interaction_grids` (`pic_cpu.jl:315`)
+1. **Per-slice-pair grid sizing.** `_pic_interaction_grids` (`pic_cpu.jl`)
    sizes the mesh from the bounding box of the *requesting slice's* particles, so
    adjacent field slices receive different origins $(x_0,y_0)$ and different cell
    sizes $(h_x,h_y)$. The PIC discretization error is a function of those, and it
@@ -251,7 +258,7 @@ independent of the interpolation order and are **not** fixed by adding nodes.
    it sits beside.
 
 2. **Per-turn re-slicing.** `longitudinal_slices` is called from the instantaneous
-   distribution on every collision (`pic_cpu.jl:42-43`). Under the default
+   distribution on every collision (`pic_cpu.jl`, `collide!`). Under the default
    `:equal_area` method the internal boundaries carry histogram shot noise, and
    the outermost boundaries are pinned to $\min z$ and $\max z$ — i.e. to single
    extreme macroparticles. Node positions therefore jitter turn to turn, which
@@ -473,14 +480,15 @@ sharing, hence $C^0$.
 **Slice centroid (rejected).** The centroid is the correct first-moment position
 for the *source plane* — it is what makes the thin-slice model reproduce the
 bunch's longitudinal moments, and it is why `center_position = :centroid` is the
-default (`interface.jl:487`). It is the wrong choice for an *interpolation node*.
+default (`interface.jl`, the `LongitudinalSlicing` keyword list). It is the wrong choice for an *interpolation node*.
 Under `:equal_area` slicing the centroid sits off-center, badly so in the tail
 slices, which clusters the nodes and degrades the worst-case error on the far
 side of the interval. The two roles are distinct and should not be forced to
 share a value.
 
-For reference, `center_position` is validated at `interface.jl:494` and consumed
-at `slicing.jl:337-344`: `:centroid` takes the mean $z$ of the bin's particles
+For reference, `center_position` is validated by the `"center_position must be :centroid or
+:midpoint"` throw in `interface.jl` and consumed in
+`_finish_longitudinal_slices` (`slicing.jl`): `:centroid` takes the mean $z$ of the bin's particles
 (falling back to the bin midpoint when the bin is empty), `:midpoint` takes
 $(b_s+b_{s+1})/2$. Because `:equal_area` pins $b_1=\min z$ and $b_{N+1}=\max z$,
 `:midpoint` places the outer planes halfway to the most extreme macroparticle —
@@ -509,7 +517,7 @@ Two reasons the asymptotic gain of Section 7.3 will not be realized in full.
    macroparticle crossing a cell boundary as the source drifts produces a kink.
    A third $\sigma$-derivative sampled through CIC is therefore noisier than the
    clean estimate suggests. The precedent is `field_derivative = :fourth`
-   (`interface.jl:768-775`, and Section 2 of
+   (the `GaussianPoissonSolver` docstring in `interface.jl`, and Section 2 of
    [`pic_free_space_kernels.md`](pic_free_space_kernels.md)), which delivered
    $\sim1.6\times$ rather than the $4\times$ its order implies, for exactly this
    reason. `deposit_method = :TSC` is $C^1$ and should show a larger gain than

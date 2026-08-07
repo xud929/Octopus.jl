@@ -6,7 +6,8 @@ export AbstractPoissonSolver, LongitudinalSlicing, longitudinal_slices,
        SolverOptionMeta, solver_option_schema, solver_configuration, solver_help,
        StrongStrongGaussianPoissonSolver, StrongStrongCollision,
        StrongStrongDiagnostics, DiagnosticsOptionMeta, diagnostics_option_schema,
-       diagnostics_help, StrongStrongTask, turn_timings,
+       diagnostics_help, StrongStrongTask, strong_strong_task_option_schema,
+       turn_timings,
        pic_phase_timings, diagnostic_summary, collide!
 
 """
@@ -1681,11 +1682,21 @@ function configuration_report(diagnostics::StrongStrongDiagnostics; backend=noth
 end
 
 """
-Declared metadata for `StrongStrongTask`'s own public options.
+    strong_strong_task_option_schema()
+
+Declared metadata for `StrongStrongTask`'s own public options, as a `NamedTuple`
+of [`ConfigurationOptionMeta`](@ref) — the same shape as
+[`slicing_option_schema`](@ref), [`solver_option_schema`](@ref),
+[`diagnostics_option_schema`](@ref) and
+[`cuda_pic_launch_option_schema`](@ref), and discoverable the same way.
 
 Added by the 2026-08-05 audit (U3-5): `luminosity_append` landed with a
 configuration-report entry but no schema, so nothing mechanical paired its
-documented default with the constructor.
+documented default with the constructor. It was then the only public
+configuration schema in the repository that was neither exported nor given a
+signature line, so the metadata that fix added was reachable only by knowing the
+internal name — undiscoverable through the API every other configuration surface
+uses (2026-08-05_b audit, U5-11).
 """
 strong_strong_task_option_schema() = (
     luminosity_path=ConfigurationOptionMeta(Union{Nothing,String}, nothing,

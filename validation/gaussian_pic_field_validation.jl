@@ -120,7 +120,15 @@ function solve_from_charge(solver, charge, source_grid, field_grid, nx, ny)
     fft!(sp); sp .*= green_fft; ifft!(sp)
     phi = real.(sp[1:nx, 1:ny])
     hx = source_grid.width / (nx - 1); hy = source_grid.height / (ny - 1)
-    Ex, Ey = O._pic_field(phi, hx, hy)
+    # `_pic_fourth_order(solver)`, not the `fourth=false` default. This local
+    # reimplementation hardcoded second order, so the public solver option
+    # `field_derivative = :fourth` was silently ignored by the study that
+    # carries the hybrid's documented accuracy table -- a copy fallen behind
+    # the original, which is what production does at
+    # `_pic_field!(..., _pic_fourth_order(solver))` (2026-08-05_b audit,
+    # U23-10). The committed defaults give the same value either way; the
+    # point is that the option is now reachable from this harness.
+    Ex, Ey = O._pic_field(phi, hx, hy, O._pic_fourth_order(solver))
     return phi, Ex, Ey
 end
 
@@ -198,6 +206,16 @@ cases = [
     ("production_e ~11:1", 106.0e-6, 9.5e-6),
     ("25:1", 2.0e-3, 0.08e-3),
 ]
+# Default 48,64,128 (12 rows). The committed paper table
+# `paper/data/gaussian_pic_field_validation_summary.tsv` carries 24 rows at
+# 48,64,96,128,192,256, so REGENERATING IT NEEDS THE OVERRIDE:
+#
+#   OCTOPUS_GPIC_GRIDS=48,64,96,128,192,256 julia --project=. --threads=4 \
+#       validation/gaussian_pic_field_validation.jl
+#
+# That override was recorded in neither this header, validation/README.md
+# nor paper/README.md, so the frozen figure could not be reproduced from
+# the committed defaults (2026-08-05_b audit, U23-10).
 grids = Tuple(parse.(Int, split(get(ENV, "OCTOPUS_GPIC_GRIDS", "48,64,128"), ',')))
 
 # Run the tripwire BEFORE any accuracy number is produced: a table certifying
