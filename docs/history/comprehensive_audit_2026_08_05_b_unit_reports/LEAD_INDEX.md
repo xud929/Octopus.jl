@@ -8,7 +8,7 @@ is worth one reproduction, not a fix.
 
 Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 
-**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **248 dispositioned.**
+**305 leads** — 20 Major/High, 88 Medium, 161 Low, 36 Info/style. **250 dispositioned.**
 
 | id | sev | status | location | claim |
 |---|---|---|---|---|
@@ -263,8 +263,8 @@ Status is filled in as rows are dispositioned. Blank = not yet reproduced.
 | U6-8 | low | CONFIRMED, FIXED (2026-08-06) — exception verified independently ([2,2,3] vs [7,0,0]) | `src/tasks/strongstrong/slicing.jl:388` | the comment "One convention, slice 1, everywhere (audit part 6, R7)" is false for |
 | U6-9 | low | CONFIRMED, dispositioned (2026-08-06) — branches kept as a guard, unreachability documented with the exact-1.0 subtlety | `src/tasks/strongstrong/pic_cpu.jl:1243–1247` | two unreachable branches in `_pic_align_grid_origins`. |
 | U7-10 | low | CONFIRMED, not fixed — needs a path registry and a policy decision; on todo.md (2026-08-06) | `src/tasks/BeamObservers.jl:1152–1176` | two `BeamMomentObserver`s writing one path silently interleave and lose |
-| U7-11 | low |  | `src/tasks/BPMObserver.jl:170–171, 179–187` | `bpm_reading` mutates the observer. The exported convenience form |
-| U7-12 | low |  | `src/tasks/BPMObserver.jl:200–205` | a BPM reading of a fully-lost beam is `NaN` by an undocumented `0/0`, |
+| U7-11 | low | CONFIRMED, FIXED (2026-08-06) — the mutation is documented with its measured effect | `src/tasks/BPMObserver.jl:170–171, 179–187` | `bpm_reading` mutates the observer. The exported convenience form |
+| U7-12 | low | CONFIRMED, FIXED (2026-08-06) — the NaN convention stated, matching the moment observer's | `src/tasks/BPMObserver.jl:200–205` | a BPM reading of a fully-lost beam is `NaN` by an undocumented `0/0`, |
 | U7-13 | low |  | `src/tasks/BeamObservers.jl:934–937` | the compact coordinate record format has no framing or length check, so a |
 | U7-6 | low |  | `src/tasks/BeamObservers.jl:1280–1286` | F3's "loud replacement" mitigation only fires when the whole table is |
 | U7-7 | low | CONFIRMED, FIXED (2026-08-06) | `src/tasks/BeamObservers.jl:1038–1042` | `_discard_replayed_binary_rows!` has no `filesize > 0` guard — the F7 fix |

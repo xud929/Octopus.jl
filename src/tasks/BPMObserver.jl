@@ -130,6 +130,19 @@ end
 
 Apply the device model to a centroid and return `(x_read, y_read)`.
 
+!!! warning "This call MUTATES the BPM"
+    Reading advances the BPM's occurrence counter, because the noise draw is
+    keyed on it (see below), so every later reading of the same BPM **in the
+    same turn** gets a different noise sample than it otherwise would. The name
+    carries no `!` and this went unstated (2026-08-05_b audit, U7-11).
+
+    It matters for a read-only-looking peek from an action or a hook: measured,
+    one `execute!(turns=4)` records
+    `[2.09e-5, 6.71e-6, 8.09e-6, -6.93e-6]` on its own and
+    `[1.36e-6, -8.95e-7, 4.88e-6, -1.28e-5]` when something peeks each turn.
+    The effect is bounded to one `execute!`, because `prepare_observer!` resets
+    the counter, which is why it is easy to miss.
+
 Separated from `observe!` because it is the whole physics of the element and is
 worth testing without a beam. The noise draw is a function of the context's
 RNG snapshot, the turn, the BPM's `rng_id`, and the reading's occurrence index
@@ -218,6 +231,13 @@ function _bpm_centroid(rep)
     coords = _host_coordinate_arrays(rep)
     flags = _live_stat_flags(coords)
     nlive = flags === nothing ? length(rep) : count(flags)
+    # An all-dead beam reads NaN, deliberately: `_mean` is `s / nlive` and
+    # `0.0 / 0` is NaN, which is the honest value for "there is no centroid".
+    # That was arrived at by accident and documented nowhere, while the moment
+    # observer reaches the same answer through an explicit, commented branch --
+    # "An all-dead beam has no moments to report. NaN is the honest value"
+    # (2026-08-05_b audit, U7-12). Same behaviour on both, now stated on both,
+    # so a future reader does not "fix" the division.
     return _mean(coords[1], flags, nlive), _mean(coords[3], flags, nlive)
 end
 
