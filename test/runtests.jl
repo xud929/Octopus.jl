@@ -11218,3 +11218,83 @@ end
         @test_skip "CUDA device not available"
     end
 end
+
+@testset "Slice moments choose the solver's working precision on both backends" begin
+    # 2026-08-05_b audit, U3-4 (and U3-7's return-type half). For a Float32
+    # beam under the default GaussianPoissonSolver{Float64}, the CPU
+    # `_slice_transverse_moments` promotes through `min_sigma::Float64` to
+    # Float64 moments, while the CUDA twin followed the beam: measured
+    # StrongTransverseMoments{Float32} against {Float64}, sx apart by 1.9e-8
+    # relative, and the wavefront route even RETURNED a Float32 luminosity
+    # where the CPU and the sequential route return Float64. The convention is
+    # now decided and shared: the solver's explicit scalar type governs, on
+    # both backends — the same principle as GaussianStrongBeamSpec{T}'s
+    # explicit precision parameter — so `promote_type(eltype(rep.x),
+    # typeof(solver.min_sigma))` sizes the CUDA moment partials, the fused
+    # wavefront moment pipeline, and the luminosity accumulators, and the two
+    # moment kernels convert coordinates BEFORE subtracting the anchor,
+    # exactly as the CPU's `T(x[i]) - x0` does. A Float64 beam is untouched
+    # (every conversion is an identity).
+    #
+    # What remains at Float32 end to end is NOT the moments: with identical
+    # uploaded beams the kick still disagrees at ~6.4e-8 relative, dominated
+    # by slice boundaries/centers computed with different reduction shapes —
+    # that is the open U6-7 row, and the end-to-end Float32 parity pin
+    # belongs with its fix.
+    if CUDA_TESTS_ACTIVE
+        mkf32() = begin
+            set_global_rng!(seed=4242, method=:philox)
+            Beam(20_000, Octopus.CPUThreadsBackend, Float32; beta=(0.55, 0.056, 12.7),
+                alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+                r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        end
+        solver = GaussianPoissonSolver(; slicing=LongitudinalSlicing(
+            nslices=3, method=:normal_quantile))
+        MT = promote_type(Float32, typeof(solver.min_sigma))
+        @test MT === Float64
+        e = mkf32()
+        eg = Octopus._strong_strong_contract_beam(e, Octopus.CUDABackend)
+        slc = longitudinal_slices(e.rep, solver.slicing1)
+        slg = Octopus._cuda_longitudinal_slices(eg.rep, solver.slicing1)
+        # Same membership is what makes the moment comparison meaningful at
+        # all; boundaries/centers may still differ at Float32 ulps (U6-7).
+        @test all(sort(slc.indices[k]) == sort(Array(slg.indices[k])) for k in 1:3)
+        nstats = Octopus._cuda_gaussian_moment_nstats(Val(false))
+        part = Octopus.CUDA.CuArray{MT}(undef, nstats, 256, 1)
+        for k in 1:3
+            mc = Octopus._slice_transverse_moments(
+                e.rep, slc.indices[k], false, solver.min_sigma, Val(false))
+            mg = Octopus._cuda_slice_transverse_moments(
+                eg.rep, slg.indices[k], part, false, solver.min_sigma, Val(false))
+            @test typeof(mg.moments) === typeof(mc.moments)   # was {Float32} vs {Float64}
+            @test abs(mc.sx - mg.sx) / mc.sx <= 1e-12          # was 1.9e-8
+            @test abs(mc.spx - mg.spx) / mc.spx <= 1e-12
+            @test abs(mc.covxpx - mg.covxpx) <= 1e-11 * abs(mc.covxpx) + 1e-25
+        end
+        # Both CUDA routes return the CPU's Float64 luminosity for a Float32
+        # beam; the wavefront route returned Float32 before (U3-7). This is
+        # also the observable that pins the MT buffer allocations end to end.
+        mkpair() = begin
+            set_global_rng!(seed=4242, method=:philox)
+            e2 = Beam(4000, Octopus.CPUThreadsBackend, Float32; beta=(0.55, 0.056, 12.7),
+                alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+                r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            p2 = Beam(4000, Octopus.CPUThreadsBackend, Float32; beta=(0.8, 0.072, 90.9),
+                alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+                rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
+                r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            (Octopus._strong_strong_contract_beam(e2, Octopus.CUDABackend),
+             Octopus._strong_strong_contract_beam(p2, Octopus.CUDABackend))
+        end
+        for kw in ((batch_mode=:sequential,), NamedTuple())
+            s = GaussianPoissonSolver(; slicing=LongitudinalSlicing(
+                nslices=3, method=:normal_quantile), kw...)
+            g1, g2 = mkpair()
+            @test collide!(s, g1, g2, Octopus.CUDABackend) isa Float64
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end

@@ -873,6 +873,15 @@ in the same length units as the particle coordinates. Its default `0` applies no
 artificial floor and leaves every nonzero RMS data-derived. Supply a positive
 value only when a physical minimum source size is part of the model.
 
+The solver's scalar type `T` is also the working precision: slice moments and
+the luminosity accumulate at `promote_type(eltype(rep.x), T)` on BOTH backends
+(via `min_sigma`'s type on the CPU, and the moment-partials/luminosity buffer
+types on CUDA — unified 2026-08-07, U3-4/U3-7; the CUDA twin previously
+followed the beam, so a Float32 beam under this solver's default `Float64` got
+Float32 moments there and Float64 on the CPU). A beam colliding under the
+default solver therefore always gets Float64 moments; construct
+`GaussianPoissonSolver{Float32}` to make both backends follow a Float32 beam.
+
 `slicing` applies the same longitudinal slicing to both beams. Use `slicing1`
 and `slicing2` to specify different slicing configurations for beam 1 and beam
 2.

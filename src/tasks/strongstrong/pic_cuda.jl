@@ -1224,6 +1224,15 @@ if _HAS_CUDA
             kbb2 = _strong_strong_kbb2(solver, beam1, beam2)
             klum1, klum2 = _strong_strong_luminosity_scales(solver, beam1, beam2)
             T = eltype(beam1.rep.x)
+            # Same working-precision rule as the sequential route and the CPU
+            # twin (U3-4): the whole moment pipeline — partials, sums, the
+            # device-built kick moments and means, and the kick scales the CPU
+            # carries at solver precision (seg_kbb, seg_scale, lum) — runs at
+            # MT. seg_center deliberately stays at T: the CPU's virtual drift
+            # computes from beam-precision coordinates and a beam-precision
+            # slice center, so promoting the center HERE would diverge from
+            # the CPU, not converge to it. Identity for a Float64 beam.
+            MT = promote_type(T, typeof(solver.min_sigma))
             sample_beam1 = solver.gaussian_when_luminosity == 1
             all_indices = Iterators.flatten((slices1.indices, slices2.indices))
             max_moment_blocks = maximum(
@@ -1232,8 +1241,8 @@ if _HAS_CUDA
             max_batch = maximum(length, batches; init=1)
             nstats = _cuda_gaussian_moment_nstats(Val(COUPLED))
             centered_nstats = _cuda_gaussian_centered_nstats(Val(COUPLED))
-            partials = CUDA.zeros(T, nstats, max_moment_blocks, 2 * max_batch)
-            device_sums = CUDA.CuArray{T}(undef, nstats, 2 * max_batch)
+            partials = CUDA.zeros(MT, nstats, max_moment_blocks, 2 * max_batch)
+            device_sums = CUDA.CuArray{MT}(undef, nstats, 2 * max_batch)
             block_counts = CUDA.CuArray{Int32}(undef, 2 * max_batch)
             host_block_counts = Vector{Int32}(undef, 2 * max_batch)
             # Idea #1: keep slice moments on the device instead of transferring
@@ -1241,8 +1250,8 @@ if _HAS_CUDA
             # wavefront. col_n carries the per-column slice particle count.
             host_col_n = Vector{Int32}(undef, 2 * max_batch)
             col_n = CUDA.CuArray{Int32}(undef, 2 * max_batch)
-            device_kmoments = CUDA.CuArray{StrongTransverseMoments{T,COUPLED}}(undef, 2 * max_batch)
-            device_means = CUDA.CuArray{T}(undef, 4, 2 * max_batch)
+            device_kmoments = CUDA.CuArray{StrongTransverseMoments{MT,COUPLED}}(undef, 2 * max_batch)
+            device_means = CUDA.CuArray{MT}(undef, 4, 2 * max_batch)
             # Non-finite poison flag (N1, docs/todo.md): the fused path keeps slice
             # moments on the device, so the build kernel raises this one-element
             # flag instead of a per-batch host check; it is read back once per
@@ -1269,24 +1278,24 @@ if _HAS_CUDA
             seg_complum = CUDA.CuArray{Int32}(undef, 2 * max_batch)
             host_seg_center = Vector{T}(undef, 2 * max_batch)
             seg_center = CUDA.CuArray{T}(undef, 2 * max_batch)
-            host_seg_kbb = Vector{T}(undef, 2 * max_batch)
-            seg_kbb = CUDA.CuArray{T}(undef, 2 * max_batch)
-            host_seg_scale = Vector{T}(undef, 2 * max_batch)
-            seg_scale = CUDA.CuArray{T}(undef, 2 * max_batch)
+            host_seg_kbb = Vector{MT}(undef, 2 * max_batch)
+            seg_kbb = CUDA.CuArray{MT}(undef, 2 * max_batch)
+            host_seg_scale = Vector{MT}(undef, 2 * max_batch)
+            seg_scale = CUDA.CuArray{MT}(undef, 2 * max_batch)
             perm1, offsets1 = _cuda_concat_slice_indices(slices1.indices)
             perm2, offsets2 = _cuda_concat_slice_indices(slices2.indices)
             moment_threads = _cuda_gaussian_moment_launch(1).threads
-            moment_shmem = centered_nstats * moment_threads * sizeof(T)
+            moment_shmem = centered_nstats * moment_threads * sizeof(MT)
             max_lum = maximum(batches; init=0) do batch
                 sum(pair -> sample_beam1 ? length(slices2.indices[pair.j]) :
                                            length(slices1.indices[pair.i]), batch)
             end
-            lum = CUDA.CuArray{T}(undef, max(max_lum, 1))
-            luminosity = zero(T)
+            lum = CUDA.CuArray{MT}(undef, max(max_lum, 1))
+            luminosity = zero(MT)
             # Accumulate per-wavefront luminosity on the device and read it back
             # once at the end, instead of a blocking host reduction per batch.
-            luminosity_acc = CUDA.zeros(T, 1)
-            batch_lum = CUDA.CuArray{T}(undef, 1)
+            luminosity_acc = CUDA.zeros(MT, 1)
+            batch_lum = CUDA.CuArray{MT}(undef, 1)
             _record_execution!(:cuda_gaussian_algorithm, CUDABackend, (
                 batch_mode=:wavefront, include_sigma_xy=COUPLED,
                 virtual_drift=typeof(solver.virtual_drift),
@@ -5426,16 +5435,23 @@ if _HAS_CUDA
             kbb2 = _strong_strong_kbb2(solver, beam1, beam2)
             klum1, klum2 = _strong_strong_luminosity_scales(solver, beam1, beam2)
             T = eltype(beam1.rep.x)
+            # Working precision for slice moments and luminosity: the solver's
+            # min_sigma scalar promotes exactly as in the CPU
+            # `_slice_transverse_moments` (U3-4) — a Float32 beam under the
+            # default Float64 solver computes Float64 moments on BOTH backends
+            # (measured 6.4e-8 relative kick disagreement before, coordinate
+            # rounding after). Identity for a Float64 beam.
+            MT = promote_type(T, typeof(solver.min_sigma))
             sample_beam1 = solver.gaussian_when_luminosity == 1
             sampled_indices = sample_beam1 ? slices2.indices : slices1.indices
             max_sampled_slice = maximum(length, sampled_indices; init=0)
-            lum = CUDA.CuArray{T}(undef, max(max_sampled_slice, 1))
+            lum = CUDA.CuArray{MT}(undef, max(max_sampled_slice, 1))
             all_indices = Iterators.flatten((slices1.indices, slices2.indices))
             max_moment_blocks = maximum(
                 idx -> _cuda_gaussian_moment_launch(length(idx)).blocks, all_indices; init=1)
             nstats = _cuda_gaussian_moment_nstats(Val(COUPLED))
-            moment_partials = CUDA.CuArray{T}(undef, nstats, max_moment_blocks, 1)
-            luminosity = zero(T)
+            moment_partials = CUDA.CuArray{MT}(undef, nstats, max_moment_blocks, 1)
+            luminosity = zero(MT)
             for (_, i, j) in _slice_collision_order(slices1, slices2)
                 moments1 = _cuda_slice_transverse_moments(
                     beam1.rep, slices1.indices[i], moment_partials,
@@ -5462,14 +5478,14 @@ if _HAS_CUDA
                     moments2, slices2.center[j],
                     slices2.weight[j] * kbb1,
                     solver.virtual_drift, Val(LONGITUDINAL),
-                    Val(!sample_beam1), 0, one(T),
+                    Val(!sample_beam1), 0, one(MT),
                 )
                 _cuda_launch_capped!(_cuda_slice_kick_kernel!, launch2, nothing,
                     beam2.rep, slices2.indices[j], lum,
                     moments1, slices1.center[i],
                     slices1.weight[i] * kbb2,
                     solver.virtual_drift, Val(LONGITUDINAL),
-                    Val(sample_beam1), 0, one(T),
+                    Val(sample_beam1), 0, one(MT),
                 )
                 if sample_beam1
                     luminosity += sum(@view lum[1:length(slices2.indices[j])]) /
@@ -5866,7 +5882,10 @@ if _HAS_CUDA
         function _cuda_slice_transverse_moments(rep::Phase6DRep, idx, partials,
                                                 ignore_centroid::Bool, min_sigma,
                                                 coupled::Val{COUPLED}) where {COUPLED}
-            T = eltype(rep.x)
+            # The partials buffer carries the working precision, which the
+            # caller sets to promote_type(eltype(rep.x), typeof(min_sigma)) —
+            # the CPU `_slice_transverse_moments` convention (U3-4).
+            T = eltype(partials)
             n = length(idx)
             n == 0 && return _cuda_gaussian_moments_from_sums(
                 zeros(T, _cuda_gaussian_moment_nstats(coupled)),
@@ -6004,17 +6023,22 @@ if _HAS_CUDA
             centered_nstats = _cuda_gaussian_centered_nstats(Val(COUPLED))
             values = ntuple(_ -> zero(T), Val(centered_nstats))
             @inbounds anchor_particle = idx[1]
+            # Convert BEFORE subtracting, exactly as the CPU twin's
+            # `T(x[i]) - x0` does: when the working type is wider than the
+            # coordinates (a Float32 beam under a Float64 solver, U3-4), a
+            # coordinate-precision subtraction would round first and the two
+            # backends would disagree. Identity when T == eltype(x).
             @inbounds begin
-                x0 = x[anchor_particle]; px0 = px[anchor_particle]
-                y0 = y[anchor_particle]; py0 = py[anchor_particle]
+                x0 = T(x[anchor_particle]); px0 = T(px[anchor_particle])
+                y0 = T(y[anchor_particle]); py0 = T(py[anchor_particle])
             end
             position = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
             while position <= length(idx)
                 @inbounds begin
                     particle = idx[position]
-                    dx = x[particle] - x0; dpx = px[particle] - px0
-                    dy = y[particle] - y0; dpy = py[particle] - py0
+                    dx = T(x[particle]) - x0; dpx = T(px[particle]) - px0
+                    dy = T(y[particle]) - y0; dpy = T(py[particle]) - py0
                     if COUPLED
                         values = (
                             values[1] + dx, values[2] + dpx,
@@ -6185,11 +6209,13 @@ if _HAS_CUDA
             x0 = zero(T); px0 = zero(T); y0 = zero(T); py0 = zero(T)
             if len > 0
                 @inbounds anchor_particle = beam1 ? perm1[off + 1] : perm2[off + 1]
+                # Convert BEFORE subtracting — same rule as the per-column
+                # kernel and the CPU twin (U3-4). Identity when T == eltype(x1).
                 @inbounds begin
-                    x0 = beam1 ? x1[anchor_particle] : x2[anchor_particle]
-                    px0 = beam1 ? px1[anchor_particle] : px2[anchor_particle]
-                    y0 = beam1 ? y1[anchor_particle] : y2[anchor_particle]
-                    py0 = beam1 ? py1[anchor_particle] : py2[anchor_particle]
+                    x0 = T(beam1 ? x1[anchor_particle] : x2[anchor_particle])
+                    px0 = T(beam1 ? px1[anchor_particle] : px2[anchor_particle])
+                    y0 = T(beam1 ? y1[anchor_particle] : y2[anchor_particle])
+                    py0 = T(beam1 ? py1[anchor_particle] : py2[anchor_particle])
                 end
             end
             threads = CUDA.blockDim().x
@@ -6198,10 +6224,10 @@ if _HAS_CUDA
             while position <= len
                 @inbounds begin
                     particle = beam1 ? perm1[off + position] : perm2[off + position]
-                    dx = (beam1 ? x1[particle] : x2[particle]) - x0
-                    dpx = (beam1 ? px1[particle] : px2[particle]) - px0
-                    dy = (beam1 ? y1[particle] : y2[particle]) - y0
-                    dpy = (beam1 ? py1[particle] : py2[particle]) - py0
+                    dx = T(beam1 ? x1[particle] : x2[particle]) - x0
+                    dpx = T(beam1 ? px1[particle] : px2[particle]) - px0
+                    dy = T(beam1 ? y1[particle] : y2[particle]) - y0
+                    dpy = T(beam1 ? py1[particle] : py2[particle]) - py0
                     if COUPLED
                         values = (
                             values[1] + dx, values[2] + dpx,
