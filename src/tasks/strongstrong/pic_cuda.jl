@@ -191,6 +191,7 @@ if _HAS_CUDA
                 _cuda_pic_prebuild_node_caches!(node_cache, solver, Tn, beam2.rep, slices2,
                                                 beam1.rep, slices1, 2, solver.longitudinal_kick)
             end
+            fill!(workspace.dropped, Int32(0))
             spc = green_cache === nothing && _cuda_pic_slice_pair_green_cache_enabled(solver) ?
                 workspace.slice_pair_green_cache : nothing
             pair_count = 0
@@ -248,9 +249,11 @@ if _HAS_CUDA
                             continue
                         end
                         _cuda_pic_interaction_node!(solver, slice1.coords, p1, field2, p2, kbb2,
-                                                    gL1, gR1, workspace.charges[1], timing)
+                                                    gL1, gR1, workspace.charges[1], timing,
+                                                    workspace.dropped)
                         _cuda_pic_interaction_node!(solver, slice2.coords, p2, field1, p1, kbb1,
-                                                    gL2, gR2, workspace.charges[2], timing)
+                                                    gL2, gR2, workspace.charges[2], timing,
+                                                    workspace.dropped)
                     else
                     _cuda_pic_interaction!(solver, slice1.coords, p1, field2, p2, kbb2, green_cache, workspace.charges[1], timing,
                                            spc, (Int(i), Int(j), 1))
@@ -286,6 +289,7 @@ if _HAS_CUDA
             # Scatter writes are launched on the current stream. Complete them
             # before post-collision tracking starts on independent beam streams.
             CUDA.synchronize(CUDA.stream())
+            _cuda_pic_report_dropped(workspace)
             return luminosity
         end
 
@@ -353,6 +357,7 @@ if _HAS_CUDA
                     node=node_mode || _pic_quadratic_slice(solver),
                 )
             end
+            fill!(workspace.dropped, Int32(0))
             for batch in batches
                 batch_count += 1
                 max_batch_size = max(max_batch_size, length(batch))
@@ -502,6 +507,7 @@ if _HAS_CUDA
             # Scatter writes are launched on the current stream. Complete them
             # before post-collision tracking starts on independent beam streams.
             CUDA.synchronize(CUDA.stream())
+            _cuda_pic_report_dropped(workspace)
             return luminosity
         end
 
@@ -532,6 +538,11 @@ if _HAS_CUDA
             field_streams::NTuple{4,Any}
             luminosity_stream::Any
             prep_done::Any
+            # Device-side dropped-charge counter (Int32, length 1): the CUDA
+            # twin of `_PICCPUWorkspace.dropped`. Incremented by the
+            # count-outside-box kernels on the node routes, read back once per
+            # collide by `_cuda_pic_report_dropped` (2026-08-05_b U1-5).
+            dropped::Any
         end
 
         mutable struct _CUDAPICTimingStats
@@ -706,6 +717,7 @@ if _HAS_CUDA
                 (CUDA.CuStream(), CUDA.CuStream(), CUDA.CuStream(), CUDA.CuStream()),
                 CUDA.CuStream(),
                 CUDA.CuEvent(CUDA.EVENT_DISABLE_TIMING),
+                CUDA.zeros(Int32, 1),
             )
         end
 
@@ -1551,6 +1563,28 @@ if _HAS_CUDA
             end
             _cuda_pic_add_time!(timing, :prepare, t_prepare)
 
+            # Dropped-charge accounting (U1-5), mirroring the CPU node path:
+            # per direction, each drift plane against the node mesh it deposits
+            # into and the field side against the mesh the interpolation reads.
+            # Launched before the field solves on the same stream, so the
+            # counts see the coordinates the deposits will see.
+            for n in 1:npairs
+                item = valid[n]
+                nd12 = nodes12[n]; nd21 = nodes21[n]
+                _cuda_pic_count_outside_drifted!(
+                    workspace.dropped, rep1, item.idx1, nd12.sL, nd12.sL, nd12.gL.source_grid)
+                _cuda_pic_count_outside_drifted!(
+                    workspace.dropped, rep1, item.idx1, nd12.sR, nd12.sR, nd12.gR.source_grid)
+                _cuda_pic_count_outside_zdrift!(
+                    workspace.dropped, rep2, item.idx2, item.p1.center, nd12.gL.field_grid)
+                _cuda_pic_count_outside_drifted!(
+                    workspace.dropped, rep2, item.idx2, nd21.sL, nd21.sL, nd21.gL.source_grid)
+                _cuda_pic_count_outside_drifted!(
+                    workspace.dropped, rep2, item.idx2, nd21.sR, nd21.sR, nd21.gR.source_grid)
+                _cuda_pic_count_outside_zdrift!(
+                    workspace.dropped, rep1, item.idx1, item.p2.center, nd21.gL.field_grid)
+            end
+
             # Reuse the indexed luminosity reduction: it works from slice indices
             # and computes its own bounds when none are supplied, so no gather is
             # needed. An earlier version here gathered both slices per pair --
@@ -2044,13 +2078,64 @@ if _HAS_CUDA
             return get(cache, b, nothing)
         end
 
+        # Host wrappers for the dropped-charge count kernels (U1-5). Launched on
+        # the current stream, so they read the coordinates as they stand at
+        # interaction time -- before this pair's kicks, which are submitted
+        # later on the same stream. Only the node routes call these: on CUDA,
+        # `_require_cuda_pic_options` forces grid_extent = :extrema and rejects
+        # :source_slice, so the CPU counting gate
+        # (`ge !== :extrema || interaction_grid !== :slice_pair`) is live
+        # exactly when interaction_grid = :node, whose meshes are built at turn
+        # start and deposited into after the intra-collision kicks (U6-1).
+        function _cuda_pic_count_outside_drifted!(counter, rep, idx, sL, sR, grid)
+            n = idx === nothing ? length(rep.x) : length(idx)
+            n == 0 && return nothing
+            T = eltype(rep.x)
+            threads = _cuda_pic_threads(:deposition)
+            CUDA.@cuda threads=threads blocks=cld(n, threads) _cuda_pic_count_outside_drifted_kernel!(
+                counter, rep.x, rep.px, rep.y, rep.py, idx, T(sL), T(sR),
+                T(grid.x0), T(grid.x0) + T(grid.width),
+                T(grid.y0), T(grid.y0) + T(grid.height),
+            )
+            return nothing
+        end
+
+        function _cuda_pic_count_outside_zdrift!(counter, rep, idx, source_center, grid)
+            n = idx === nothing ? length(rep.x) : length(idx)
+            n == 0 && return nothing
+            T = eltype(rep.x)
+            threads = _cuda_pic_threads(:deposition)
+            CUDA.@cuda threads=threads blocks=cld(n, threads) _cuda_pic_count_outside_zdrift_kernel!(
+                counter, rep.x, rep.px, rep.y, rep.py, rep.z, idx, T(source_center),
+                T(grid.x0), T(grid.x0) + T(grid.width),
+                T(grid.y0), T(grid.y0) + T(grid.height),
+            )
+            return nothing
+        end
+
+        # One readback per collide, after the closing synchronize, through the
+        # same message the CPU emits (`_pic_report_dropped_count`).
+        function _cuda_pic_report_dropped(workspace::_CUDAPICWorkspace)
+            n = Int(CUDA.@allowscalar workspace.dropped[1])
+            _pic_report_dropped_count(n)
+            return nothing
+        end
+
         """Node-indexed CUDA interaction: three solves, two transverse meshes."""
         function _cuda_pic_interaction_node!(solver::PICPoissonSolver, source, param_source,
                                              field, param_field, kbb, gL, gR,
-                                             charge=nothing, timing=nothing)
+                                             charge=nothing, timing=nothing, dropped=nothing)
             T = eltype(source.x)
             sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
             sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
+            if dropped !== nothing
+                # Mirrors the CPU `_pic_interaction_node!` accounting exactly:
+                # each drift plane against the mesh IT deposits into, the field
+                # side against the mesh the interpolation reads (U6-1).
+                _cuda_pic_count_outside_drifted!(dropped, source, nothing, sL, sL, gL.source_grid)
+                _cuda_pic_count_outside_drifted!(dropped, source, nothing, sR, sR, gR.source_grid)
+                _cuda_pic_count_outside_zdrift!(dropped, field, nothing, param_source.center, gL.field_grid)
+            end
             t_fields = time_ns()
             phiL, ExL, EyL = _cuda_pic_solve_drifted_field_with_green_fft(
                 solver, source, sL, gL.source_grid, gL.green_fft, charge, timing)
@@ -4111,6 +4196,67 @@ if _HAS_CUDA
                    _cuda_pic_atan_ratio(x, y) * y * y
         end
 
+
+        # CUDA twins of `_pic_count_outside_box` / `_pic_count_outside_box_drifted`
+        # (2026-08-05_b U1-5): count particles whose deposit or interpolation
+        # position falls outside the final mesh box, into the workspace's device
+        # counter. One count per particle even when both planes (or both axes)
+        # miss, exactly like the CPU helpers (U5-5/U5-6); the node path calls the
+        # drifted counter once per plane with sL == sR, so a particle outside
+        # both planes counts twice -- two deposits, two lots of lost charge --
+        # matching the CPU node accounting (U6-1). `idx === nothing` means the
+        # whole slice view; otherwise `idx` is the slice's index list on a full
+        # beam rep (the indexed wavefront route).
+        function _cuda_pic_count_outside_drifted_kernel!(counter, x, px, y, py, idx,
+                                                         sL, sR, xlo, xhi, ylo, yhi)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            n = idx === nothing ? length(x) : length(idx)
+            c = Int32(0)
+            while index <= n
+                i = idx === nothing ? index : Int(idx[index])
+                @inbounds begin
+                    xl = x[i] + px[i] * sL
+                    yl = y[i] + py[i] * sL
+                    xr = x[i] + px[i] * sR
+                    yr = y[i] + py[i] * sR
+                end
+                inbox = isfinite(xl) && xlo <= xl <= xhi &&
+                        isfinite(yl) && ylo <= yl <= yhi &&
+                        isfinite(xr) && xlo <= xr <= xhi &&
+                        isfinite(yr) && ylo <= yr <= yhi
+                inbox || (c += Int32(1))
+                index += stride
+            end
+            c > Int32(0) && CUDA.@atomic counter[1] += c
+            return nothing
+        end
+
+        # Field-side twin: the interpolation position is the coordinate drifted
+        # by `0.5 * (z - source_center)`, the same drift the CPU applies in
+        # place before its count and the kick kernels apply inline here.
+        function _cuda_pic_count_outside_zdrift_kernel!(counter, x, px, y, py, z, idx,
+                                                        source_center, xlo, xhi, ylo, yhi)
+            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            n = idx === nothing ? length(x) : length(idx)
+            half = oftype(xlo, 0.5)
+            c = Int32(0)
+            while index <= n
+                i = idx === nothing ? index : Int(idx[index])
+                @inbounds begin
+                    s = half * (z[i] - source_center)
+                    xd = x[i] + px[i] * s
+                    yd = y[i] + py[i] * s
+                end
+                inbox = isfinite(xd) && xlo <= xd <= xhi &&
+                        isfinite(yd) && ylo <= yd <= yhi
+                inbox || (c += Int32(1))
+                index += stride
+            end
+            c > Int32(0) && CUDA.@atomic counter[1] += c
+            return nothing
+        end
 
         function _cuda_pic_deposit_nomask_kernel!(charge, x, y, x0, y0, hx, hy, nx::Int32, ny::Int32, method_code::Int32)
             index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x

@@ -155,7 +155,13 @@ gated on `grid_extent !== :extrema`, and `:node`/`:source_slice` have
 could never report anything (2026-08-05_b audit, U6-1).
 """
 function _pic_report_dropped(workspace::_PICCPUWorkspace)
-    n = workspace.dropped[]
+    return _pic_report_dropped_count(Int(workspace.dropped[]))
+end
+
+# Shared reader for both backends: the CUDA workspace's device counter is read
+# back once per collide and routed here (`_cuda_pic_report_dropped`, U1-5), so
+# a dropped particle warns identically wherever it happens.
+function _pic_report_dropped_count(n::Integer)
     n == 0 && return nothing
     @warn "PIC interaction mesh dropped particles: the mesh under-covered a beam, \
 so these particles received no kick, or their charge is missing from the field \

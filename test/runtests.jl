@@ -11072,4 +11072,149 @@ end
                                        1.0e-6, ws, gL, gR)
         @test ws.dropped[] > before
     end
+
+    # 2026-08-05_b audit, U1-5: the CUDA routes had no dropped-charge counter
+    # of ANY kind -- `grep -c dropped pic_cuda.jl` found nothing but a comment
+    # -- and because a dropped particle changes both backends' fields
+    # identically, the parity contracts could never see the gap. On CUDA the
+    # CPU counting gate is live exactly under interaction_grid = :node
+    # (`_require_cuda_pic_options` forces grid_extent = :extrema and rejects
+    # :source_slice), so the counters sit on the two node routes and count the
+    # SAME event the CPU counts: a particle outside the final mesh box, once
+    # per particle however many planes or axes miss. That definition is what
+    # makes every assertion below an EQUALITY against the CPU, not a bare
+    # "warns on CUDA too".
+    if CUDA_TESTS_ACTIVE
+        # The kernels count what `_pic_count_outside_box*` count, including
+        # the NaN and both-planes-miss conventions, and the indexed variant
+        # agrees with the CPU helper on the sliced arrays.
+        let n = 512
+            set_global_rng!(seed=17, method=:philox)
+            hx = randn(n) .* 1e-4; hpx = randn(n) .* 1e-5
+            hy = randn(n) .* 1e-4; hpy = randn(n) .* 1e-5
+            hz = randn(n) .* 1e-3
+            hx[7] = 25.0; hy[13] = -40.0; hx[99] = NaN
+            grid = (x0=-2.0e-4, width=4.0e-4, y0=-2.0e-4, height=4.0e-4)
+            sL, sR = 3.0e-3, -2.0e-3
+            rep = (x=Octopus.CUDA.CuArray(hx), px=Octopus.CUDA.CuArray(hpx),
+                   y=Octopus.CUDA.CuArray(hy), py=Octopus.CUDA.CuArray(hpy),
+                   z=Octopus.CUDA.CuArray(hz))
+            dropped = Octopus.CUDA.zeros(Int32, 1)
+            Octopus._cuda_pic_count_outside_drifted!(dropped, rep, nothing, sL, sR, grid)
+            @test Int(Array(dropped)[1]) == Octopus._pic_count_outside_box_drifted(
+                hx, hpx, hy, hpy, sL, sR,
+                grid.x0, grid.x0 + grid.width, grid.y0, grid.y0 + grid.height)
+            idx = collect(Int32, 1:3:n)
+            fill!(dropped, Int32(0))
+            Octopus._cuda_pic_count_outside_drifted!(
+                dropped, rep, Octopus.CUDA.CuArray(idx), sL, sR, grid)
+            @test Int(Array(dropped)[1]) == Octopus._pic_count_outside_box_drifted(
+                hx[idx], hpx[idx], hy[idx], hpy[idx], sL, sR,
+                grid.x0, grid.x0 + grid.width, grid.y0, grid.y0 + grid.height)
+            # Field side: drift by 0.5*(z - center) on host, then the plain
+            # CPU box count is the reference.
+            c0 = 1.0e-4
+            xd = hx .+ hpx .* (0.5 .* (hz .- c0))
+            yd = hy .+ hpy .* (0.5 .* (hz .- c0))
+            fill!(dropped, Int32(0))
+            Octopus._cuda_pic_count_outside_zdrift!(dropped, rep, nothing, c0, grid)
+            @test Int(Array(dropped)[1]) == Octopus._pic_count_outside_box(
+                xd, yd, grid.x0, grid.x0 + grid.width, grid.y0, grid.y0 + grid.height)
+        end
+
+        # The same U6-1 injection as the CPU block above, on identical
+        # coordinates and identical whole-field node meshes: benign is 0 on
+        # both backends, and the displaced particle's count is EQUAL, not
+        # merely nonzero.
+        let nx = 8, ny = 8
+            solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                grid=(nx, ny), green_cache=:none, interaction_grid=:node,
+                batch_mode=:sequential, cuda_async=false,
+                slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+            ns = 800; nf = 400
+            sxh = [1.0e-4 * sin(0.7i) for i in 1:ns]
+            syh = [1.0e-4 * sin(0.31i) for i in 1:ns]
+            fxh = [1.0e-4 * sin(1.1i) for i in 1:nf]
+            fyh = [1.0e-4 * sin(0.53i) for i in 1:nf]
+            param = (weight=1.0, lb=-1.0e-3, center=0.0, rb=1.0e-3)
+            cpu_source = (x=copy(sxh), px=zeros(ns), y=copy(syh), py=zeros(ns),
+                          z=zeros(ns), pz=zeros(ns), weight=fill(1.0, ns))
+            cpu_field = (x=copy(fxh), px=zeros(nf), y=copy(fyh), py=zeros(nf),
+                         z=zeros(nf), pz=zeros(nf))
+            ccache = Dict{Int,Any}()
+            Octopus._pic_build_node_grids!(ccache, solver, Float64, cpu_source, 0.0,
+                cpu_field, [1:nf, 1:nf], [-1.0e-3, 0.0, 1.0e-3])
+            cws = Octopus._pic_cpu_workspace(Float64, nx, ny)
+            cpu_source.x[1] = 1.0e3
+            cws.dropped[] = 0
+            Octopus._pic_interaction_node!(solver, cpu_source, param, cpu_field, param,
+                                           1.0e-6, cws, ccache[1], ccache[2])
+            cpu_count = cws.dropped[]
+            @test cpu_count > 0
+
+            CuA = Octopus.CUDA.CuArray
+            gsource = (x=CuA(sxh), px=CuA(zeros(ns)), y=CuA(syh), py=CuA(zeros(ns)),
+                       z=CuA(zeros(ns)), pz=CuA(zeros(ns)))
+            gfield = (x=CuA(fxh), px=CuA(zeros(nf)), y=CuA(fyh), py=CuA(zeros(nf)),
+                      z=CuA(zeros(nf)), pz=CuA(zeros(nf)))
+            gcache = Dict{Int,Any}()
+            Octopus._cuda_pic_build_node_grids!(gcache, solver, Float64, gsource, 0.0,
+                nothing, (1:1, 1:1), [-1.0e-3, 0.0, 1.0e-3], false, Any[gfield, gfield])
+            gws = Octopus._cuda_pic_workspace(solver, Float64)
+            fill!(gws.dropped, Int32(0))
+            Octopus._cuda_pic_interaction_node!(solver, gsource, param, gfield, param,
+                1.0e-6, gcache[1], gcache[2], gws.charges[1], nothing, gws.dropped)
+            @test Int(Array(gws.dropped)[1]) == 0        # benign: mesh covers
+            Octopus.CUDA.@allowscalar gsource.x[1] = 1.0e3
+            fill!(gws.dropped, Int32(0))
+            Octopus._cuda_pic_interaction_node!(solver, gsource, param, gfield, param,
+                1.0e-6, gcache[1], gcache[2], gws.charges[1], nothing, gws.dropped)
+            @test Int(Array(gws.dropped)[1]) == cpu_count
+        end
+
+        # End to end through the public collide!: on a config where the CPU
+        # genuinely drops (node meshes built at turn start, deposits after the
+        # intra-collision kicks), BOTH CUDA node routes must warn with the
+        # SAME total the CPU reports; and the default :slice_pair route stays
+        # silent, because there `:extrema` covers by construction and no
+        # count kernel is ever launched. cpu_total > 0 is the anti-vacuity
+        # check: if a solver change legitimately stops the drops, this fails
+        # loudly and the arm gets recalibrated rather than pinning nothing.
+        let sl4 = LongitudinalSlicing(nslices=4, method=:normal_quantile,
+                                      center_position=:centroid)
+            mkb(backend) = begin
+                set_global_rng!(seed=91, method=:philox)
+                e = Beam(3000, backend, Float64; beta=(0.55, 0.056, 12.7),
+                    alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+                    rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+                    r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                p = Beam(3000, backend, Float64; beta=(0.8, 0.072, 90.9),
+                    alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+                    rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
+                    r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+                (e, p)
+            end
+            dropped_total(lg) = begin
+                warns = [l for l in lg if occursin("dropped particles", string(l.message))]
+                isempty(warns) ? 0 : sum(l.kwargs[:dropped] for l in warns)
+            end
+            runb(backend; kw...) = begin
+                e, p = mkb(backend)
+                s = PICPoissonSolver(; slicing=sl4, grid=(64, 64), kw...)
+                lg, _ = Test.collect_test_logs() do
+                    collide!(s, e, p, backend)
+                end
+                dropped_total(lg)
+            end
+            cpu_total = runb(Octopus.CPUThreadsBackend; interaction_grid=:node,
+                             batch_mode=:sequential, cuda_async=false)
+            @test cpu_total > 0
+            @test runb(Octopus.CUDABackend; interaction_grid=:node,
+                       batch_mode=:sequential, cuda_async=false) == cpu_total
+            @test runb(Octopus.CUDABackend; interaction_grid=:node) == cpu_total
+            @test runb(Octopus.CUDABackend) == 0
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
 end
