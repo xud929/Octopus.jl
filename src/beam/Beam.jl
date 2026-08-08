@@ -70,13 +70,21 @@ drawn from genuinely different truncated distributions. Unifying would change
 every recorded seeded run, so the divergence is recorded here instead — revisit
 only with a reseeding decision.
 
+`rng` is REQUIRED, not defaulted (2026-08-07 neighbour audit, N8): the only
+caller guards on `resolved_rng !== nothing`, and a silent fallback to the
+global CUDA/Julia RNG would put a future caller outside the counter-RNG
+guarantee without anyone choosing that. The explicit-rng escape hatch itself
+is the documented deprecated path.
+
 (The explanation was comment lines between the docstring and the `function`
 line, which detaches the docstring on Julia 1.12 silently; 2026-08-05_b audit,
-U12-9.)
+U12-9 — and the N8 note above was first inserted as exactly such a comment
+block, against this very paragraph, before the tripwire caught it. Fourth
+occurrence of the class in two days; the rule stands: nothing goes between a
+docstring and its definition.)
 """
-function _alloc_randn(::Type{CUDABackend}, T, N; cutoff=Inf, rng=nothing)
+function _alloc_randn(::Type{CUDABackend}, T, N; cutoff=Inf, rng)
 	_HAS_CUDA || error("CUDABackend requires CUDA.jl to be available.")
-	rng = rng === nothing ? CUDA.default_rng() : rng
 	values = Random.randn(rng, T, N)
 	if !(values isa CUDA.CuArray)
 		values = CUDA.CuArray(values)
@@ -90,8 +98,7 @@ function _alloc_randn(::Type{CUDABackend}, T, N; cutoff=Inf, rng=nothing)
 	return values
 end
 
-function _alloc_randn(::Type{CPUThreadsBackend}, T, N; cutoff=Inf, rng=nothing)
-	rng = rng === nothing ? Random.default_rng() : rng
+function _alloc_randn(::Type{CPUThreadsBackend}, T, N; cutoff=Inf, rng)
 	if isfinite(cutoff)
 		c = T(cutoff)
 		out = Vector{T}(undef, N)
@@ -106,17 +113,6 @@ function _alloc_randn(::Type{CPUThreadsBackend}, T, N; cutoff=Inf, rng=nothing)
 	end
 	return randn(rng, T, N)
 end
-
-function _default_rng(::Type{CPUThreadsBackend})
-	return Random.default_rng()
-end
-
-function _default_rng(::Type{CUDABackend})
-	_HAS_CUDA || error("CUDABackend requires CUDA.jl to be available.")
-	return CUDA.default_rng()
-end
-
-
 
 function _resolve_rng(::Type{BTAG}, rng, seed, rng_id) where {BTAG<:AbstractExecutionBackend}
 	if rng !== nothing

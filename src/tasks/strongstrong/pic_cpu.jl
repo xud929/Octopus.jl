@@ -46,7 +46,17 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     klum = _pic_luminosity_scale(solver, beam1, beam2)
     compute_luminosity = _pic_compute_luminosity(solver, ctx)
     T = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(kbb1), typeof(kbb2))
-    luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : T(NaN)
+    # The luminosity ESTIMATE is returned as Float64 on every backend and
+    # every beam precision (2026-08-07 neighbour audit, N7). Nothing else is
+    # stable to key it on: klum and kbb follow the beam's params type, so a
+    # Float32 beam gave a Float32 klum, and which scalar happened to promote
+    # differed by backend -- the CPU returned Float64, CUDA Float32, and every
+    # no-compute arm a beam-typed NaN. Float64 is what the task layer already
+    # writes to .lum files; the per-pair computation itself deliberately stays
+    # at the pipeline's own precision (the recorded pipeline-precision
+    # asymmetry remains on the N7 ledger row).
+    LT = Float64
+    luminosity = compute_luminosity ? zero(LT) : LT(NaN)
     share_grid = _pic_source_slice_grid(solver)
     node_grid = _pic_node_grid_mode(solver)
     # Node meshes are memoized per (source slice, direction); each is shared by

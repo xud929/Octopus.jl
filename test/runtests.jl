@@ -11527,6 +11527,64 @@ end
     end
 end
 
+@testset "PIC-family luminosity returns Float64 on every backend and precision" begin
+    # 2026-08-07 neighbour audit, N7. Nothing stable existed to key the
+    # return type on: klum and kbb follow the beam's params type, so a
+    # Float32 beam gave a Float32 klum, and which scalar happened to promote
+    # differed by backend — the CPU returned Float64 (through its Float64
+    # workspace), CUDA Float32 (beam-typed accumulators), and every
+    # no-compute arm a beam-typed NaN. The convention is now explicit:
+    # collide! returns a Float64 luminosity estimate everywhere, which is
+    # what the task layer already writes to .lum files. The per-pair
+    # computation stays at the pipeline's own precision; the CPU-Float64 vs
+    # CUDA-Float32 pipeline asymmetry for Float32 beams remains a recorded
+    # ledger row, and the measured Float32 cross-backend envelope
+    # (kick 1.55e-6, luminosity ~1e-7 relative) is pinned here so a
+    # regression to garbage cannot hide behind "Float32 is imprecise".
+    mkbn(::Type{T}) where {T} = begin
+        set_global_rng!(seed=4242, method=:philox)
+        e = Beam(8000, Octopus.CPUThreadsBackend, T; beta=(0.55, 0.056, 12.7),
+            alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+            r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        p = Beam(8000, Octopus.CPUThreadsBackend, T; beta=(0.8, 0.072, 90.9),
+            alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
+            r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+        (e, p)
+    end
+    mkpic() = PICPoissonSolver(grid=(16, 16), green_cache=:none,
+        slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+    mkgp() = GaussianPICPoissonSolver(grid=(16, 16), green_cache=:none,
+        slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+    for T in (Float64, Float32), mk in (mkpic, mkgp)
+        e1, p1 = mkbn(T)
+        @test collide!(mk(), e1, p1, Octopus.CPUThreadsBackend) isa Float64
+    end
+    if CUDA_TESTS_ACTIVE
+        for T in (Float64, Float32), mk in (mkpic, mkgp)
+            e2, p2 = mkbn(T)
+            eg = Octopus._strong_strong_contract_beam(e2, Octopus.CUDABackend)
+            pg = Octopus._strong_strong_contract_beam(p2, Octopus.CUDABackend)
+            @test collide!(mk(), eg, pg, Octopus.CUDABackend) isa Float64
+        end
+        # The Float32 PIC cross-backend envelope, previously unpinned.
+        e1, p1 = mkbn(Float32)
+        e2, p2 = mkbn(Float32)
+        eg = Octopus._strong_strong_contract_beam(e2, Octopus.CUDABackend)
+        pg = Octopus._strong_strong_contract_beam(p2, Octopus.CUDABackend)
+        s1, s2 = mkpic(), mkpic()
+        lc = collide!(s1, e1, p1, Octopus.CPUThreadsBackend)
+        lg = collide!(s2, eg, pg, Octopus.CUDABackend)
+        Octopus.CUDA.synchronize()
+        @test abs(lc - lg) <= 1.0e-5 * abs(lc)
+        dpx = maximum(abs.(Array(eg.rep.px) .- e1.rep.px))
+        @test dpx <= 1.0e-5 * maximum(abs.(e1.rep.px))
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 @testset "The gpic direct collide! stamps real turns on CUDA" begin
     # 2026-08-07 neighbour audit, N1: the plain-PIC five-argument CUDA
     # collide! installs _ACTIVE_PIC_TIMING_CONTEXT because the per-pair

@@ -865,7 +865,9 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
     klum = _pic_luminosity_scale(pic, beam1, beam2)
     compute_luminosity = _pic_compute_luminosity(pic, ctx)
     T = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(kbb1), typeof(kbb2))
-    luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : T(NaN)
+    # N7: the luminosity estimate returns Float64 everywhere (see pic_cpu.jl).
+    LT = Float64
+    luminosity = compute_luminosity ? zero(LT) : LT(NaN)
     for (_, i, j) in _slice_collision_order(slices1, slices2)
         idx1 = slices1.indices[i]
         idx2 = slices2.indices[j]

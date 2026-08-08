@@ -169,7 +169,9 @@ if _HAS_CUDA
             kbb2 = _pic_kbb2(solver, beam1, beam2)
             klum = _pic_luminosity_scale(solver, beam1, beam2)
             compute_luminosity = _pic_compute_luminosity(solver, ctx)
-            luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
+            # N7: the luminosity estimate returns Float64 everywhere (see pic_cpu.jl).
+            LT = Float64
+            luminosity = compute_luminosity ? zero(LT) : LT(NaN)
             detailed_timing = _cuda_pic_detailed_timing_enabled()
             use_async = _cuda_pic_async_enabled(solver) && !detailed_timing
             use_batch_fft = use_async && _cuda_pic_batch_fft_enabled(solver)
@@ -305,7 +307,9 @@ if _HAS_CUDA
             kbb2 = _pic_kbb2(solver, beam1, beam2)
             klum = _pic_luminosity_scale(solver, beam1, beam2)
             compute_luminosity = _pic_compute_luminosity(solver, ctx)
-            luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
+            # N7: the luminosity estimate returns Float64 everywhere (see pic_cpu.jl).
+            LT = Float64
+            luminosity = compute_luminosity ? zero(LT) : LT(NaN)
             detailed_timing = _cuda_pic_detailed_timing_enabled()
             use_async = _cuda_pic_async_enabled(solver) && !detailed_timing
             use_batch_fft = use_async && _cuda_pic_batch_fft_enabled(solver)

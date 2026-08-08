@@ -149,7 +149,9 @@ if _HAS_CUDA
             kbb2 = _pic_kbb2(pic, beam1, beam2)
             klum = _pic_luminosity_scale(pic, beam1, beam2)
             compute_luminosity = _pic_compute_luminosity(pic, ctx)
-            luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
+            # N7: the luminosity estimate returns Float64 everywhere (see pic_cpu.jl).
+            LT = Float64
+            luminosity = compute_luminosity ? zero(LT) : LT(NaN)
             timing = _cuda_pic_timing_stats()
             _cuda_pic_add_time!(timing, :slicing, t_slice)
             pair_count = 0; batch_count = 0; max_batch = 0
@@ -537,7 +539,9 @@ if _HAS_CUDA
             kbb2 = _pic_kbb2(pic, beam1, beam2)
             klum = _pic_luminosity_scale(pic, beam1, beam2)
             compute_luminosity = _pic_compute_luminosity(pic, ctx)
-            luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
+            # N7: the luminosity estimate returns Float64 everywhere (see pic_cpu.jl).
+            LT = Float64
+            luminosity = compute_luminosity ? zero(LT) : LT(NaN)
             timing = _cuda_pic_timing_stats()
             _cuda_pic_add_time!(timing, :slicing, t_slice)
             pair_count = 0; batch_count = 0; max_batch = 0
@@ -1028,7 +1032,9 @@ if _HAS_CUDA
             kbb1 = _pic_kbb1(pic, beam1, beam2); kbb2 = _pic_kbb2(pic, beam1, beam2)
             klum = _pic_luminosity_scale(pic, beam1, beam2)
             compute_luminosity = _pic_compute_luminosity(pic, ctx)
-            luminosity = compute_luminosity ? zero(eltype(beam1.rep.x)) : eltype(beam1.rep.x)(NaN)
+            # N7: the luminosity estimate returns Float64 everywhere (see pic_cpu.jl).
+            LT = Float64
+            luminosity = compute_luminosity ? zero(LT) : LT(NaN)
             timing = _cuda_pic_timing_stats()
             _cuda_pic_add_time!(timing, :slicing, t_slice)
             pair_count = 0
