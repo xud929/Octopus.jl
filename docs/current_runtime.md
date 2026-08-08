@@ -512,10 +512,20 @@ crontab, appending one date/commit/testsets/verdict/exit row per run to
 The gate is **opt-in, per machine**: the script is inert repository
 content, and cloning, `Pkg.add`, or `Pkg.test` never installs it — it runs
 only where someone has added the crontab entry by hand
-(`47 2 * * * .../test/nightly_suite.sh`). It is currently installed on
-exactly one machine, the RTX 4500 Ada box (2026-08-05; first row PASS at
-151 testsets). On a machine that carries the gate, check
-`column -t ~/.octopus_nightly/status.tsv | tail` before trusting a "the
-suite is green" claim — a FAIL row or a stale date is the signal. On any
-other machine, the absence of `~/.octopus_nightly/` simply means the gate
-is not installed there.
+(`47 2 * * * .../test/nightly_suite.sh`). On a machine that carries the
+gate, check `column -t ~/.octopus_nightly/status.tsv | tail` before
+trusting a "the suite is green" claim — a FAIL row or a stale date is the
+signal. On any other machine, the absence of `~/.octopus_nightly/` simply
+means the gate is not installed there.
+
+**Currently installed nowhere.** It ran on the RTX 4500 Ada box from
+2026-08-05 (first row PASS at 151 testsets) until 2026-08-07, when the
+crontab entry was removed at the system manager's direction — scheduled
+long-running jobs are not permitted on that box. The two FAIL rows of
+2026-08-06/07 (exit 143/137, external SIGTERM/SIGKILL around 02:47) were
+the manager's kills, not suite failures; `status.tsv` keeps them as the
+honest record. Until the gate has a permitted home, the CUDA half of the
+suite executes only when someone runs the CI invocation by hand — which
+returns that half to the "correct check, executed only on demand" state
+this section exists to warn about, so run it before trusting cross-backend
+claims.
