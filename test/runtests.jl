@@ -11527,6 +11527,42 @@ end
     end
 end
 
+@testset "The gpic direct collide! stamps real turns on CUDA" begin
+    # 2026-08-07 neighbour audit, N1: the plain-PIC five-argument CUDA
+    # collide! installs _ACTIVE_PIC_TIMING_CONTEXT because the per-pair
+    # luminosity sink reads the SCOPED value, not the ctx argument (U1-4);
+    # the gpic twin did not, so every record its routes push — records that
+    # exist since U1-1 — was stamped turn = -1 while the CPU twin stamps
+    # ctx.turn, collapsing any (turn, i, j)-keyed consumer onto one bucket.
+    # Found by re-walking U1-1's neighbours, exactly where the "fix's
+    # neighbours" lesson says to look.
+    if CUDA_TESTS_ACTIVE
+        set_global_rng!(seed=51, method=:philox)
+        e = Beam(4000, Octopus.CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
+            alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+            r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+        p = Beam(4000, Octopus.CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.9),
+            alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
+            r0=RE * ME0 / PMASS_EV, npart=1.0e11)
+        eg = Octopus._strong_strong_contract_beam(e, Octopus.CUDABackend)
+        pg = Octopus._strong_strong_contract_beam(p, Octopus.CUDABackend)
+        g = GaussianPICPoissonSolver(; grid=(16, 16), luminosity_scale=1.0,
+            kbb1=1.0e-6, kbb2=1.0e-6,
+            slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+        sink = Any[]
+        Base.ScopedValues.with(Octopus._ACTIVE_PIC_LUMINOSITY_PAIR_SINK => sink) do
+            collide!(g, eg, pg, Octopus.CUDABackend, TrackingContext(turn=7))
+        end
+        Octopus.CUDA.synchronize()
+        @test !isempty(sink)                        # the route pushes (U1-1)
+        @test all(r -> r.turn == 7, sink)           # and stamps ctx.turn (N1)
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 @testset "Slice geometry is bit-identical across backends" begin
     # 2026-08-05_b audit, U6-7. Slice MEMBERSHIP already agreed everywhere,
     # but boundaries and centers did not: `:normal_quantile`/`:specified`

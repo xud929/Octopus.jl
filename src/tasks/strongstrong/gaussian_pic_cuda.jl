@@ -31,7 +31,17 @@ if _HAS_CUDA
         end
         function collide!(solver::GaussianPICPoissonSolver, beam1::Beam, beam2::Beam,
                           ::Type{CUDABackend}, ctx::TrackingContext)
-            return _cuda_gpic_entry!(solver, beam1, beam2, ctx)
+            # Install the timing context exactly as the plain-PIC twin does
+            # (pic_cuda.jl, U1-4): the CUDA per-pair luminosity sink and the
+            # phase-timing record read the SCOPED value, not the `ctx`
+            # argument, so without this every record on the direct-collide!
+            # route is stamped turn = -1 while the CPU twin stamps ctx.turn.
+            # Found by the 2026-08-07 neighbour audit as the U1-4 twin this
+            # entry point was missing.
+            return Base.ScopedValues.with(
+                    _ACTIVE_PIC_TIMING_CONTEXT => (label=:collide, turn=ctx.turn)) do
+                _cuda_gpic_entry!(solver, beam1, beam2, ctx)
+            end
         end
 
         # The coupled (rotated) subtraction of docs Section 7 exists on the CPU
@@ -104,13 +114,26 @@ if _HAS_CUDA
                 cuda_wavefront_fft=pic.cuda_wavefront_fft,
                 cuda_indexed_wavefront=indexed,
             ))
-            if Symbol(pic.batch_mode) == :wavefront
+            # Reset and read back the dropped-charge counter around every
+            # route, as the CPU gpic twin does (gaussian_pic.jl, U10-2) and
+            # the plain-PIC CUDA collides do (U1-5). Structurally inert today
+            # — gpic forces slice_pair + :extrema on both backends, so
+            # nothing can increment — but the defensive store/readback
+            # existed only on the CPU side, and a future gpic route reaching
+            # a counting deposit would have warned there and stayed silent
+            # here (2026-08-07 neighbour audit).
+            fill!(workspace.dropped, Int32(0))
+            lum = if Symbol(pic.batch_mode) == :wavefront
                 if _cuda_pic_indexed_wavefront_enabled(pic)
-                    return _cuda_gpic_collide_wavefront_indexed!(gsolver, beam1, beam2, workspace, ctx)
+                    _cuda_gpic_collide_wavefront_indexed!(gsolver, beam1, beam2, workspace, ctx)
+                else
+                    _cuda_gpic_collide_wavefront!(gsolver, beam1, beam2, workspace, ctx)
                 end
-                return _cuda_gpic_collide_wavefront!(gsolver, beam1, beam2, workspace, ctx)
+            else
+                _cuda_gpic_collide_sequential!(gsolver, beam1, beam2, workspace, ctx)
             end
-            return _cuda_gpic_collide_sequential!(gsolver, beam1, beam2, workspace, ctx)
+            _cuda_pic_report_dropped(workspace)
+            return lum
         end
 
         # -------- indexed wavefront (fastest: no gather/scatter) --------

@@ -238,6 +238,12 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   [`strong_strong_pic_extreme_benchmark_history.md`](history/strong_strong_pic_extreme_benchmark_history.md),
   [`strong_strong_diagnostics_benchmark_history.md`](history/strong_strong_diagnostics_benchmark_history.md).
 - Audits / change records:
+  [`neighbour_audit_2026_08_07.md`](history/neighbour_audit_2026_08_07.md)
+  (targeted post-campaign audit of the 2026-08-07 ten-fix session's blast
+  radius — "a fix's neighbours are where the next defect is", applied to the
+  campaign that re-learned it: two neighbour defects fixed in the closing
+  commit, six more verified, priced and opened as todo rows, and the swept
+  surfaces recorded clean),
   [`comprehensive_audit_2026_08_04.md` part 1](history/comprehensive_audit_2026_08_04.md#part-1)
   (repository audit against the Phase 0-18 protocol: **seven confirmed defects
   fixed**, every one of them with a passing test asserting the right invariant.
