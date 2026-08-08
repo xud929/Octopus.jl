@@ -1630,7 +1630,7 @@ function _wsl_weakstrong_reference!(source, probe, solver)
             slices_source.weight[i] * kbb,
             slices_source.weight[i] * klum_probe,
             solver.min_sigma, solver.virtual_drift,
-            Val(solver.longitudinal_kick), Val(true))
+            Val(solver.longitudinal_kick), true)
     end
     return luminosity
 end

@@ -964,6 +964,11 @@ function observe!(observer::MomentObserver, ctx::TrackingContext, rep)
 end
 
 function observe!(observer::CoordinateSnapshotObserver, ctx::TrackingContext, rep)
+    # First write registers the path (U7-10 registry; N3 extension): under
+    # append=false this call truncates, and even in append mode a second live
+    # writer interleaves records and the replay truncation then cuts at THIS
+    # object's byte offsets.
+    isempty(observer.written) && _register_observer_path!(observer, observer.path)
     npart = observer.npart === nothing ? length(rep) : observer.npart
     npart <= length(rep) || throw(ArgumentError(
         "CoordinateSnapshotObserver npart $(npart) exceeds particle count $(length(rep))"))
@@ -982,6 +987,9 @@ function observe!(observer::LuminosityObserver, ctx::TrackingContext, rep)
     _record_execution!(:observer_output, _observer_backend(),
         (observer=:LuminosityObserver, turn=ctx.turn, elements=length(observer.elements)))
     mode = observer.initialized ? "a" : "w"
+    # First write truncates, off a per-object latch: the U7-10 shape exactly,
+    # so it registers exactly like the moment observers (N3 extension).
+    observer.initialized || _register_observer_path!(observer, observer.path)
     open(observer.path, mode) do io
         print(io, ctx.turn, '\t')
         for elem in observer.elements

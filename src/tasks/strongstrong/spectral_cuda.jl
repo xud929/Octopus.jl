@@ -913,16 +913,22 @@ if _HAS_CUDA
 
         function _cuda_masked_rms(v, flags)
             T = eltype(v)
-            if flags === nothing
-                n = length(v)
-                m = sum(v) / n
-                return sqrt(sum(abs2, v .- m) / n)
-            end
-            n = Int(sum(flags))
+            # The CPU's canonical lane fold, on the device (N5; see
+            # `_masked_rms`): lane kernels with the CONSTANT stride, lane
+            # sums folded serially on the host — bit-identical to the CPU by
+            # construction, replacing the tree reductions (and their n-sized
+            # ifelse temporaries) that moved the spectral box at ulps.
+            n = flags === nothing ? length(v) : Int(sum(flags))
             n == 0 && return T(NaN)
-            m = T(sum(ifelse.(flags, v, zero(T))) / n)
-            d = ifelse.(flags, v .- m, zero(T))
-            return sqrt(max(T(sum(d .* d) / n), zero(T)))
+            lane_sums = CUDA.CuArray{T}(undef, _SLICE_FOLD_LANES)
+            launch = _cuda_lane_launch()
+            CUDA.@cuda threads=launch.threads blocks=launch.blocks _cuda_lane_z_moment_kernel!(
+                lane_sums, v, flags, zero(T), Val(1))
+            m = _cuda_lane_fold(lane_sums) / n
+            CUDA.@cuda threads=launch.threads blocks=launch.blocks _cuda_lane_z_moment_kernel!(
+                lane_sums, v, flags, m, Val(2))
+            s2 = _cuda_lane_fold(lane_sums)
+            return sqrt(s2 / n)
         end
 
         function _cuda_spectral_box(solver::SpectralPoissonSolver, r1, r2)

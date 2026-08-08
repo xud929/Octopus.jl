@@ -5482,14 +5482,14 @@ if _HAS_CUDA
                     moments2, slices2.center[j],
                     slices2.weight[j] * kbb1,
                     solver.virtual_drift, Val(LONGITUDINAL),
-                    Val(!sample_beam1), 0, one(MT),
+                    !sample_beam1, 0, one(MT),
                 )
                 _cuda_launch_capped!(_cuda_slice_kick_kernel!, launch2, nothing,
                     beam2.rep, slices2.indices[j], lum,
                     moments1, slices1.center[i],
                     slices1.weight[i] * kbb2,
                     solver.virtual_drift, Val(LONGITUDINAL),
-                    Val(sample_beam1), 0, one(MT),
+                    sample_beam1, 0, one(MT),
                 )
                 if sample_beam1
                     luminosity += sum(@view lum[1:length(slices2.indices[j])]) /
@@ -6204,8 +6204,8 @@ if _HAS_CUDA
         function _cuda_slice_kick_kernel!(rep, idx, lum, moments2, center2,
                                           kbb_slice, virtual_drift,
                                           longitudinal_kick::Val{LONGITUDINAL},
-                                          ::Val{COMPUTE_LUMINOSITY}, lum_offset,
-                                          lum_scale) where {LONGITUDINAL,COMPUTE_LUMINOSITY}
+                                          compute_lum::Bool, lum_offset,
+                                          lum_scale) where {LONGITUDINAL}
             start_index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
             stride = CUDA.gridDim().x * CUDA.blockDim().x
             position = start_index
@@ -6235,7 +6235,9 @@ if _HAS_CUDA
                     rep.x[index] = x; rep.px[index] = px
                     rep.y[index] = y; rep.py[index] = py
                     rep.z[index] = z; rep.pz[index] = pz
-                    if COMPUTE_LUMINOSITY
+                    # Runtime Bool, not Val (N6): one compiled body for
+                    # both directions, like the fused route's seg_complum.
+                    if compute_lum
                         lum[lum_offset + position] = density * TWOPI * lum_scale
                     end
                 end

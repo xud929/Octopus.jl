@@ -35,6 +35,11 @@ defect is" — and it found real ones.
 
 ## Recorded as open rows in docs/todo.md (verified, priced, not rushed)
 
+*(Closure status, 2026-08-08: N4, N5, N6, N7 and N8 were closed the next
+day, plus the observer half of N3 — dispositions in their todo rows. Still
+open from this audit: the task-level writer-registry design half of N3, and
+the pipeline-precision decision recorded inside the closed N7 row.)*
+
 - **N3 — three more truncating observer writers outside the U7-10 registry**:
   `LuminosityObserver` (`initialized ? "a" : "w"` on first observe),
   `BPMObserver` (same latch, plus `_bpm_discard_window!` rewriting the whole

@@ -5626,6 +5626,55 @@ end
     end
     @test second_writer_warns(lgj2) == 1
     rm(pj; force=true)
+
+    # N3 (2026-08-07 neighbour audit): the three writers the U7-10 sweep
+    # found outside the registry — LuminosityObserver and BPMObserver
+    # truncate off the same per-object `initialized` latch (and the BPM
+    # replay rewrites the whole file from this object's memory), the
+    # snapshot observer truncates under append=false and its replay cuts at
+    # this object's byte offsets. All three now register; same warn-once,
+    # silent-continuation semantics as the moment observers.
+    pl = tempname() * ".lum"
+    ol1 = LuminosityObserver(pl)
+    lgl, _ = Test.collect_test_logs() do
+        observe!(ol1, TrackingContext(turn=0), mkp())
+        observe!(ol1, TrackingContext(turn=1), mkp())
+    end
+    @test second_writer_warns(lgl) == 0
+    ol2 = LuminosityObserver(pl)
+    lgl2, _ = Test.collect_test_logs() do
+        observe!(ol2, TrackingContext(turn=0), mkp())
+    end
+    @test second_writer_warns(lgl2) == 1
+    rm(pl; force=true)
+
+    pb = tempname() * ".tsv"
+    ob1 = BPMObserver("b1"; path=pb)
+    lgb, _ = Test.collect_test_logs() do
+        observe!(ob1, TrackingContext(turn=0), mkp())
+        observe!(ob1, TrackingContext(turn=1), mkp())
+    end
+    @test second_writer_warns(lgb) == 0
+    ob2 = BPMObserver("b2"; path=pb)
+    lgb2, _ = Test.collect_test_logs() do
+        observe!(ob2, TrackingContext(turn=0), mkp())
+    end
+    @test second_writer_warns(lgb2) == 1
+    rm(pb; force=true)
+
+    ps = tempname() * ".bin"
+    os1 = CoordinateSnapshotObserver(ps)
+    lgs, _ = Test.collect_test_logs() do
+        observe!(os1, TrackingContext(turn=0), mkp())
+        observe!(os1, TrackingContext(turn=1), mkp())
+    end
+    @test second_writer_warns(lgs) == 0
+    os2 = CoordinateSnapshotObserver(ps)
+    lgs2, _ = Test.collect_test_logs() do
+        observe!(os2, TrackingContext(turn=0), mkp())
+    end
+    @test second_writer_warns(lgs2) == 1
+    rm(ps; force=true)
 end
 
 @testset "Every continuing observer drops its replayed window" begin
@@ -11580,6 +11629,103 @@ end
         @test abs(lc - lg) <= 1.0e-5 * abs(lc)
         dpx = maximum(abs.(Array(eg.rep.px) .- e1.rep.px))
         @test dpx <= 1.0e-5 * maximum(abs.(e1.rep.px))
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
+@testset "Flipping gaussian_when_luminosity moves luminosity and nothing else" begin
+    # 2026-08-07 neighbour audit, N6. The Val{COMPUTE_LUMINOSITY} gate
+    # compiled two specializations of the whole soft-Gaussian kick body to
+    # gate only the returned density, and both were reachable for the same
+    # beam by flipping gaussian_when_luminosity — the U10-3
+    # second-specialization contraction mechanism, latent because nothing
+    # pinned across the flip. The gate is a runtime Bool now (matching the
+    # CUDA fused route's seg_complum discipline), and THIS is the pin: the
+    # effectiveness contract documents the option as "meant to move
+    # [luminosity] and nothing else", so coordinates must be bit-identical
+    # across the flip on every route.
+    mkgb(rng_id, q, m, E) = begin
+        Beam(6000, Octopus.CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
+            alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+            rng_id=rng_id, charge=q, mc2=m, E0=E, r0=RE * ME0 / m, npart=1.0e11)
+    end
+    runflip(when, backend, kw) = begin
+        set_global_rng!(seed=71, method=:philox)
+        e = mkgb(1, -1.0, EMASS_EV, 10.0e9)
+        p = mkgb(2, 1.0, PMASS_EV, 275.0e9)
+        s = GaussianPoissonSolver(; slicing=LongitudinalSlicing(
+                nslices=3, method=:normal_quantile),
+            gaussian_when_luminosity=when, kw...)
+        if backend === Octopus.CUDABackend
+            e = Octopus._strong_strong_contract_beam(e, backend)
+            p = Octopus._strong_strong_contract_beam(p, backend)
+        end
+        lum = collide!(s, e, p, backend)
+        backend === Octopus.CUDABackend && Octopus.CUDA.synchronize()
+        (lum, Array(e.rep.px), Array(p.rep.px), Array(e.rep.pz))
+    end
+    arms = CUDA_TESTS_ACTIVE ?
+        ((Octopus.CPUThreadsBackend, NamedTuple()),
+         (Octopus.CUDABackend, (batch_mode=:sequential,)),
+         (Octopus.CUDABackend, NamedTuple())) :
+        ((Octopus.CPUThreadsBackend, NamedTuple()),)
+    for (backend, kw) in arms
+        l1, epx1, ppx1, epz1 = runflip(1, backend, kw)
+        l2, epx2, ppx2, epz2 = runflip(2, backend, kw)
+        @test epx1 == epx2
+        @test ppx1 == ppx2
+        @test epz1 == epz2
+        @test l1 != l2      # anti-vacuity: the option does move luminosity
+    end
+end
+
+@testset "Weak-strong luminosity is thread-count invariant" begin
+    # 2026-08-07 neighbour audit, N4. The strong-beam luminosity folds were
+    # sized by policy.threads with STRIDED membership, so both the grouping
+    # and the membership of every partial changed with the thread setting —
+    # the exact class U5-1/U18-2 removed from the strong-strong stack,
+    # surviving on the weak-strong path with no pin (the thread-invariance
+    # testset sweeps strong-strong collide! only). Fixed chunk grid with
+    # contiguous membership now; == across worker counts is the property.
+    mkrep(n) = begin
+        s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+        Phase6DRep(s(1.0e-4, 0.0), s(1.0e-5, 0.3), s(1.0e-4, 0.9),
+                   s(1.0e-5, 1.2), s(1.0e-3, 2.1), s(1.0e-4, 2.5))
+    end
+    thin = compile_runtime(ThinStrongBeamSpec{Float64}(
+        kbb=1.0e-4, beta=(1.0, 1.0), sigma=(106.0e-6, 9.5e-6)))
+    outs = map(unique((1, 2, Threads.nthreads(:default)))) do k
+        rep = mkrep(20_000)
+        policy = Octopus._resolve_execution_policy(
+            CPUThreadsExecutionPolicy(threads=k), rep)
+        Octopus._with_execution_policy(policy) do
+            track!(rep, thin, 2, policy)
+        end
+        (thin.last_luminosity, copy(rep.px))
+    end
+    for other in 2:length(outs)
+        @test outs[1][1] == outs[other][1]
+        @test outs[1][2] == outs[other][2]
+    end
+end
+
+@testset "The spectral rms and Dirichlet box are bit-identical across backends" begin
+    # 2026-08-07 neighbour audit, N5. `_masked_rms` fed the Dirichlet box
+    # half-width L = max(d*smax, 1.05*emax) — the mesh every spectral kick is
+    # solved on — with a serial CPU fold, a DIFFERENT pairwise CPU shape when
+    # unmasked, and CUDA tree reductions: three shapes for one quantity, ulp
+    # differences in L whenever the rms half dominates (the documented
+    # production regime). Both backends now use the canonical U6-7 lane
+    # fold; == is the property.
+    set_global_rng!(seed=61, method=:philox)
+    v = randn(30_000) .* 1.0e-4
+    flags = collect(rand(30_000) .> 0.03)
+    @test Octopus._masked_rms(v, nothing) isa Float64
+    if CUDA_TESTS_ACTIVE
+        CuA = Octopus.CUDA.CuArray
+        @test Octopus._masked_rms(v, nothing) == Octopus._cuda_masked_rms(CuA(v), nothing)
+        @test Octopus._masked_rms(v, flags) == Octopus._cuda_masked_rms(CuA(v), CuA(flags))
     else
         @test_skip "CUDA device not available"
     end

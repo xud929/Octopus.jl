@@ -42,18 +42,28 @@ function track!(rep, elem::ThinStrongBeam, turns, policy::ResolvedCPUExecutionPo
 end
 
 function _track_thin_strong_beam!(rep, elem::ThinStrongBeam, turns, policy, mask)
+	# Fixed chunk grid, contiguous membership, chunk-ordered fold (U5-2's
+	# recipe; 2026-08-07 neighbour audit, N4): the fold was sized by
+	# policy.threads with STRIDED membership, so both the grouping and the
+	# membership of every partial changed with the thread setting and
+	# last_luminosity was not thread-count invariant -- the class removed
+	# from the strong-strong stack, surviving on this weak-strong path. The
+	# per-particle tracking writes are index-local either way; only the
+	# luminosity fold order needed to become a property of the data.
+	nchunks = _REDUCTION_CHUNKS
 	for _ in 1:turns
-		local_lum = zeros(eltype(rep.x), policy.threads)
-		_run_logical_workers(policy.threads) do worker, nworkers
+		local_lum = zeros(eltype(rep.x), nchunks)
+		_run_logical_workers(nchunks) do chunk, _
+			first_i, last_i = _chunk_bounds(length(rep), nchunks, chunk)
 			value = zero(eltype(rep.x))
-			for index in worker:nworkers:length(rep)
+			for index in first_i:last_i
 				@inbounds begin
 					x, px, y, py, z, pz, lum = _thin_strong_beam_track(elem, rep[index]...)
 					rep[index] = (x, px, y, py, z, pz)
 					value = _add_luminosity(mask, value, lum, x, px, y, py, z, pz)
 				end
 			end
-			local_lum[worker] = value
+			local_lum[chunk] = value
 		end
 		elem.last_luminosity = sum(local_lum)
 	end
@@ -73,11 +83,21 @@ function track!(rep, elem::GaussianStrongBeam, turns, policy::ResolvedCPUExecuti
 end
 
 function _track_gaussian_strong_beam!(rep, elem::GaussianStrongBeam, turns, policy, mask)
+	# Fixed chunk grid, contiguous membership, chunk-ordered fold (U5-2's
+	# recipe; 2026-08-07 neighbour audit, N4): the fold was sized by
+	# policy.threads with STRIDED membership, so both the grouping and the
+	# membership of every partial changed with the thread setting and
+	# last_luminosity was not thread-count invariant -- the class removed
+	# from the strong-strong stack, surviving on this weak-strong path. The
+	# per-particle tracking writes are index-local either way; only the
+	# luminosity fold order needed to become a property of the data.
+	nchunks = _REDUCTION_CHUNKS
 	for _ in 1:turns
-		local_lum = zeros(eltype(rep.x), policy.threads)
-		_run_logical_workers(policy.threads) do worker, nworkers
+		local_lum = zeros(eltype(rep.x), nchunks)
+		_run_logical_workers(nchunks) do chunk, _
+			first_i, last_i = _chunk_bounds(length(rep), nchunks, chunk)
 			value = zero(eltype(rep.x))
-			for index in worker:nworkers:length(rep)
+			for index in first_i:last_i
 				@inbounds begin
 					x, px, y, py, z, pz, lum =
 						_track_gaussian_strong_beam_with_luminosity(elem, rep[index]...)
@@ -85,7 +105,7 @@ function _track_gaussian_strong_beam!(rep, elem::GaussianStrongBeam, turns, poli
 					value = _add_luminosity(mask, value, lum, x, px, y, py, z, pz)
 				end
 			end
-			local_lum[worker] = value
+			local_lum[chunk] = value
 		end
 		elem.last_luminosity = sum(local_lum)
 	end

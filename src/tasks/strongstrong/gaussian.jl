@@ -45,13 +45,13 @@ function _cpu_gaussian_slice_pair!(solver::GaussianPoissonSolver{T,D,COUPLED,LON
         rep1, slices1.indices[i], moments2, slices2.center[j],
         slices2.weight[j] * kbb1, slices2.weight[j] * klum1,
         solver.min_sigma, solver.virtual_drift, Val(LONGITUDINAL),
-        Val(!sample_beam1),
+        !sample_beam1,
     )
     lum1 = _slice_slice_gaussian_kick!(
         rep2, slices2.indices[j], moments1, slices1.center[i],
         slices1.weight[i] * kbb2, slices1.weight[i] * klum2,
         solver.min_sigma, solver.virtual_drift, Val(LONGITUDINAL),
-        Val(sample_beam1),
+        sample_beam1,
     )
     return sample_beam1 ? lum1 : lum2
 end
@@ -60,7 +60,7 @@ function _slice_slice_gaussian_kick!(rep::Phase6DRep, idx::Vector{Int}, moments2
                                      center2, kbb_slice, klum_slice, min_sigma,
                                      virtual_drift::AbstractVirtualDrift,
                                      longitudinal_kick::Val,
-                                     compute_luminosity::Val{COMPUTE_LUMINOSITY}) where {COMPUTE_LUMINOSITY}
+                                     compute_luminosity::Bool)
     # Luminosity accumulates at the working precision the solver's scalars
     # promote to (U3-4's convention; found by U6-7's measurement): the chunked
     # branch stored Float64 per-chunk sums into an eltype(rep.x) array, so a
@@ -153,7 +153,7 @@ end
                                         kbb_slice, min_sigma,
                                         virtual_drift::AbstractVirtualDrift,
                                         longitudinal_kick::Val{LONGITUDINAL},
-                                        ::Val{COMPUTE_LUMINOSITY}) where {LONGITUDINAL,COMPUTE_LUMINOSITY}
+                                        compute_luminosity::Bool) where {LONGITUDINAL}
     @inbounds begin
         x = rep.x[i]; px = rep.px[i]
         y = rep.y[i]; py = rep.py[i]
@@ -181,17 +181,25 @@ end
         rep.y[i] = y; rep.py[i] = py
         rep.z[i] = z; rep.pz[i] = pz
     end
-    return COMPUTE_LUMINOSITY ? density * TWOPI : zero(density)
+    return compute_luminosity ? density * TWOPI : zero(density)
 end
 
+# `compute_luminosity` is a runtime Bool, not a Val, on the main method
+# above (2026-08-07 neighbour audit, N6): the Val compiled a second
+# specialization of the ENTIRE kick body to gate only the returned density,
+# and both specializations are reachable for the same beam by flipping
+# `gaussian_when_luminosity` -- the U10-3 second-specialization contraction
+# mechanism, which moved shared results by 1 ulp there. One instruction
+# sequence now, matching the CUDA fused route's runtime seg_complum gate;
+# this Val method survives only as a compatibility entry for callers that
+# still pass Val.
 @inline _apply_slice_kick_one!(rep::Phase6DRep, i, moments2, center2,
                                kbb_slice, min_sigma,
                                virtual_drift::AbstractVirtualDrift,
                                longitudinal_kick::Val,
-                               compute_luminosity::Bool) =
+                               compute_luminosity::Val{C}) where {C} =
     _apply_slice_kick_one!(rep, i, moments2, center2, kbb_slice, min_sigma,
-                           virtual_drift, longitudinal_kick,
-                           Val(compute_luminosity))
+                           virtual_drift, longitudinal_kick, C)
 
 # Compatibility entry point for code that exercised the former internal helper.
 @inline _apply_slice_kick_one!(rep::Phase6DRep, i, moments2, center2,

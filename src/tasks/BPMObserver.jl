@@ -250,6 +250,10 @@ function observe!(bpm::BPMObserver, ctx::TrackingContext, rep)
     push!(bpm.x, rx)
     push!(bpm.y, ry)
     if bpm.path !== nothing
+        # First write truncates off a per-object latch, and
+        # `_bpm_discard_window!` later rewrites the WHOLE file from this
+        # object's memory -- both the U7-10 shape (N3 extension).
+        bpm.initialized || _register_observer_path!(bpm, bpm.path)
         open(bpm.path, bpm.initialized ? "a" : "w") do io
             bpm.initialized || println(io, "turn\tx\ty")
             println(io, ctx.turn, '\t', rx, '\t', ry)

@@ -135,7 +135,7 @@ function weakstrong_limit_reference!(source, probe, solver)
             solver.min_sigma,
             solver.virtual_drift,
             Val(solver.longitudinal_kick),
-            Val(true))
+            true)   # runtime Bool since the N6 conversion
     end
     return luminosity
 end

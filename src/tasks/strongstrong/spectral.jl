@@ -797,20 +797,19 @@ the box still comes out non-finite and trips the chokepoint below when
 """
 function _masked_rms(v, flags)
     T = eltype(v)
-    flags === nothing && (m = sum(v) / length(v); return sqrt(sum(abs2, v .- m) / length(v)))
-    s = zero(T); n = 0
-    @inbounds for i in eachindex(v)
-        _flag_live(flags, i) || continue
-        s += v[i]; n += 1
-    end
+    # Mean and squared-deviation sums through the canonical lane fold
+    # (`_SLICE_FOLD_LANES`, U6-7 machinery; 2026-08-07 neighbour audit, N5):
+    # the CPU used a serial fold (and a DIFFERENT pairwise shape when
+    # unmasked) while CUDA used tree reductions, so the Dirichlet box
+    # half-width L = max(d*smax, 1.05*emax) — the mesh every spectral kick
+    # is solved on — differed at ulps across backends whenever the rms half
+    # dominates, which is the documented production regime. One shape now;
+    # NaN from live input still propagates through the lane sums, so the
+    # non-finite chokepoints downstream fire exactly as before.
+    n = flags === nothing ? length(v) : count(flags)
     n == 0 && return T(NaN)
-    m = s / n
-    s2 = zero(T)
-    @inbounds for i in eachindex(v)
-        _flag_live(flags, i) || continue
-        d = v[i] - m
-        s2 += d * d
-    end
+    m = _lane_z_moment(v, flags, zero(T), Val(1)) / n
+    s2 = _lane_z_moment(v, flags, m, Val(2))
     return sqrt(s2 / n)
 end
 
