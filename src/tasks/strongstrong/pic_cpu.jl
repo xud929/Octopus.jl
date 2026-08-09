@@ -1110,7 +1110,17 @@ end
 
 @inline function _pic_resolve_transverse_extent(solver::PICPoissonSolver,
                                                 xspan, yspan, context::AbstractString)
-    T = promote_type(typeof(xspan), typeof(yspan), eltype(solver.min_transverse_extent))
+    # The working precision is the BOUNDS' type; solver configuration
+    # scalars convert as values rather than promoting the type (2026-08-08,
+    # from the solver-matrix finding): promoting through the solver's Float64
+    # fields gave Float32 beams Float64 grid geometry, and every per-particle
+    # deposit and interpolation then mixed Float32 coordinates with Float64
+    # origins/spacings -- measured 1.5-1.6x SLOWER than the uniform Float64
+    # path on the CPU at production size. The CUDA path never had this
+    # because its launch wrappers convert grid scalars to the working type at
+    # the kernel boundary. Float64 runs are bit-unchanged (T is Float64
+    # there either way).
+    T = promote_type(typeof(xspan), typeof(yspan))
     floor_x = T(solver.min_transverse_extent[1])
     floor_y = T(solver.min_transverse_extent[2])
     width = max(T(xspan), floor_x)
@@ -1129,8 +1139,8 @@ end
 function _pic_interaction_grids(solver::PICPoissonSolver, sxmin, sxmax, symin, symax,
                                 fxmin, fxmax, fymin, fymax)
     nx, ny = solver.grid
-    T = promote_type(typeof(sxmin), typeof(fxmin),
-                     eltype(solver.min_transverse_extent))
+    # Bounds' type, not the solver's -- see _pic_resolve_transverse_extent.
+    T = promote_type(typeof(sxmin), typeof(fxmin))
     width, height = _pic_resolve_transverse_extent(
         solver,
         max(T(sxmax - sxmin), T(fxmax - fxmin)),

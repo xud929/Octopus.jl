@@ -235,6 +235,11 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   [`strong_strong_gaussian_optimization.md`](history/strong_strong_gaussian_optimization.md)
   (soft-Gaussian audit).
 - Benchmark histories:
+  [`solver_matrix_2026_08_08.md`](history/solver_matrix_2026_08_08.md)
+  (every solver × both backends × both precisions at the production point,
+  one protocol: timing, physics agreement, the CPU-Float32 grid-typing
+  regression it caught and the fix, and the 16-thread CPU baselines the
+  thread-optimization campaign starts from),
   [`strong_strong_pic_extreme_benchmark_history.md`](history/strong_strong_pic_extreme_benchmark_history.md),
   [`strong_strong_diagnostics_benchmark_history.md`](history/strong_strong_diagnostics_benchmark_history.md).
 - Audits / change records:

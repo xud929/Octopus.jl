@@ -6,6 +6,29 @@ independent of any one agent tool: the entry path is
 repository's agent instructions can follow. Read it in full before an
 audit and treat it as binding.
 
+## The targeted neighbour audit (the post-campaign standard)
+
+A full run of this protocol is for auditing the repository; after a FIX
+CAMPAIGN — a session that landed several fixes or a feature — the standing
+obligation is smaller and different: a **targeted neighbour audit** of the
+campaign's own diff, per the Measured Lesson "a fix's neighbours are where
+the next defect is". Owner direction (2026-08-08): run one after every
+bug-fix or feature campaign.
+
+The shape, from the worked precedent
+[`neighbour_audit_2026_08_07.md`](history/neighbour_audit_2026_08_07.md):
+for each fix, re-walk its call sites and sibling surfaces (the sibling FILE
+especially — the CPU/CUDA twin, the thin/thick twin), and re-run the
+property the fix was about on the neighbours it did not change. Fan the
+read-heavy sweeps out to agents; re-verify every load-bearing claim against
+source or by measurement before recording it. Fix what is small and squarely
+in the campaign's blast radius; price and ledger the rest as todo rows.
+That precedent found two real defects in the campaign it audited — both in
+the gpic sibling file of plain-PIC fixes — and its own closure commits then
+had a missed sibling-file caller caught by the gate, which is the lesson
+demonstrating itself. Scale it to the campaign: a one-line fix needs the
+call-site re-walk, not the agent fleet.
+
 ## Worked precedents, and how much of them to read
 
 The dated records under `docs/history/` are executed instances of this

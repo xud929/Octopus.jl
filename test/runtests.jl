@@ -11617,6 +11617,19 @@ end
             pg = Octopus._strong_strong_contract_beam(p2, Octopus.CUDABackend)
             @test collide!(mk(), eg, pg, Octopus.CUDABackend) isa Float64
         end
+        # The grid geometry follows the beam type (2026-08-08, solver-matrix
+        # finding): promoting through the solver's Float64 fields gave
+        # Float32 beams Float64 grid origins/spacings, and the per-particle
+        # deposit/interp loops then paid mixed-precision promotion — measured
+        # 1.5-1.6x SLOWER than Float64 on the CPU at production size,
+        # recovered to parity by typing the grids from the bounds.
+        for T in (Float64, Float32)
+            g1, g2 = Octopus._pic_interaction_grids(
+                mkpic(), T(-1e-4), T(1e-4), T(-1e-5), T(1e-5),
+                T(-1e-4), T(1e-4), T(-1e-5), T(1e-5))
+            @test typeof(g1.x0) === T && typeof(g1.width) === T
+            @test typeof(g2.x0) === T && typeof(g2.height) === T
+        end
         # The Float32 PIC cross-backend envelope, previously unpinned.
         e1, p1 = mkbn(Float32)
         e2, p2 = mkbn(Float32)
