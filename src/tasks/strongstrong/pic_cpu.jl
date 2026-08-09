@@ -687,65 +687,165 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
         # Third node at the field-slice midpoint. The drifted source coordinate
         # x + px*s is affine in s, so the sL/sR bounding box already contains the
         # midpoint plane and no grid resizing is needed.
-        sM = T(0.5) * (sL + sR)
+        # `s_mid`, NOT `sM`. The virtual-position closure below captures `sM`,
+        # and `if` opens no scope in Julia, so reusing the name here makes one
+        # function-scope variable assigned in two places -- which boxes it and
+        # fails the `Core.Box` tripwire. Same defect class as `chunk_lum` in
+        # gaussian.jl and `chunk_counts` in slicing.jl; the distinct name is the
+        # whole fix.
+        s_mid = T(0.5) * (sL + sR)
         phiM, ExM, EyM = _pic_solve_drifted_field_with_green_fft!(
-            _pic_mid_field!(workspace, solver.grid...), solver, source, sM,
+            _pic_mid_field!(workspace, solver.grid...), solver, source, s_mid,
             source_grid, green_fft, workspace,
         )
-        for i in 1:nfield
-            @inbounds begin
-                zL = clamp(-T(field.z[i]) * hzi + zbias, zero(T), one(T))
-                Kx, Ky, Kz = _pic_interpolate_kick_quadratic(
-                    solver, field_grid, field.x[i], field.y[i],
-                    phiL, ExL, EyL, phiM, ExM, EyM, phiR, ExR, EyR, one(T) - zL,
-                )
-                field.px[i] += kick_scale * Kx
-                field.py[i] += kick_scale * Ky
-                if solver.longitudinal_kick
-                    field.pz[i] += kick_scale * Kz * hzi
-                end
-                s = T(0.5) * (T(param_source.center) - field.z[i])
-                field.x[i] += s * field.px[i]
-                field.y[i] += s * field.py[i]
-                if solver.longitudinal_kick
-                    field.pz[i] += T(0.25) * (field.px[i] * field.px[i] + field.py[i] * field.py[i])
-                end
-            end
+        _pic_map_particles(nfield) do first_i, last_i
+            _pic_apply_kick_quadratic_range!(
+                solver, field, field_grid, phiL, ExL, EyL, phiM, ExM, EyM,
+                phiR, ExR, EyR, kick_scale, hzi, zbias,
+                T(param_source.center), T, first_i, last_i,
+            )
         end
     else
-        for i in 1:nfield
-            @inbounds begin
-                zL = clamp(-T(field.z[i]) * hzi + zbias, zero(T), one(T))
-                zR = one(T) - zL
-                Kx, Ky, Kz = _pic_interpolate_kick(
-                    solver, field_grid, field.x[i], field.y[i],
-                    phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
-                )
-                field.px[i] += kick_scale * Kx
-                field.py[i] += kick_scale * Ky
-                if solver.longitudinal_kick
-                    field.pz[i] += kick_scale * Kz * hzi
-                end
-                s = T(0.5) * (T(param_source.center) - field.z[i])
-                field.x[i] += s * field.px[i]
-                field.y[i] += s * field.py[i]
-                if solver.longitudinal_kick
-                    field.pz[i] += T(0.25) * (field.px[i] * field.px[i] + field.py[i] * field.py[i])
-                end
-            end
+        _pic_map_particles(nfield) do first_i, last_i
+            _pic_apply_kick_range!(
+                solver, field, field_grid, phiL, ExL, EyL, phiR, ExR, EyR,
+                kick_scale, hzi, zbias, T(param_source.center), T, first_i, last_i,
+            )
         end
     end
 
     sM = T(0.5) * (T(param_source.center) - T(param_field.center))
     vx = Vector{T}(undef, nsource)
     vy = Vector{T}(undef, nsource)
-    for i in 1:nsource
+    _pic_map_particles(nsource) do first_i, last_i
+        _pic_virtual_positions_range!(vx, vy, source, sM, first_i, last_i)
+    end
+    return vx, vy
+end
+
+"""
+    _pic_map_particles(f, n)
+
+Run `f(first_i, last_i)` over a partition of `1:n`, threaded above
+`_STRONG_STRONG_PARALLEL_KICK_MIN` and serial below it.
+
+**Why this one may chunk by worker count when the deposit may not.** U5-1/U5-2
+fixed the rule that a chunk boundary must depend only on the data size, because
+a chunk-ordered float FOLD reassociates when the chunk count changes — that is
+what moved transverse moments by up to 131,072 ulps between 1, 4 and 8 workers.
+The callers here fold nothing: every write is to index `i` of an array indexed
+by `i`, read from index `i` of arrays indexed by `i`, with the field planes and
+the grid shared read-only. A partition therefore cannot change a single bit, at
+any worker count, in any order — which is asserted directly rather than argued,
+by the 1-vs-N-worker bitwise pin in the suite.
+
+That distinction is the whole reason this exists as a separate helper from
+`_pic_deposit_threaded!`: the deposit accumulates into a shared grid and is
+stuck at `_PIC_DEPOSIT_CHUNKS`, while these maps are free to use the whole
+machine. Do not add a reduction to a `_pic_map_particles` callback — put it in a
+fixed chunk grid instead, or the invariance pin above stops being true.
+"""
+function _pic_map_particles(f::F, n::Integer) where {F}
+    n > 0 || return nothing
+    nn = Int(n)
+    if nn < _STRONG_STRONG_PARALLEL_KICK_MIN
+        f(1, nn)
+        return nothing
+    end
+    # Chunk-size FLOOR, not just a total-size floor, and it is the SAME measured
+    # break-even as the serial cutoff above rather than a second tuned number: a
+    # chunk smaller than the size at which threading starts to pay is by
+    # definition not worth spawning. These maps run once per interaction -- 450
+    # of them per turn at the production point -- so the worker count alone is
+    # the wrong chunk count. Measured on the 128-thread box at 640k/256k, taking
+    # `nchunks = worker count` outright: 6.1 s at 16 workers but 8.6 s at 64 and
+    # 63.6 s at 128, where the same input with this floor gives 6.2 / 7.2 / 13.0.
+    # The width now follows the DATA and stops at what the data can feed.
+    nchunks = clamp(fld(nn, _STRONG_STRONG_PARALLEL_KICK_MIN), 1, _cpu_worker_count())
+    if nchunks <= 1
+        f(1, nn)
+        return nothing
+    end
+    _run_logical_workers(nchunks) do chunk, _
+        first_i, last_i = _chunk_bounds(nn, nchunks, chunk)
+        first_i > last_i || f(first_i, last_i)
+    end
+    return nothing
+end
+
+"""
+Apply the two-node interpolated beam-beam kick and the synchro-beam drift to
+field particles `first_i:last_i`. Index-local: see `_pic_map_particles`.
+"""
+function _pic_apply_kick_range!(solver, field, field_grid, phiL, ExL, EyL,
+                                phiR, ExR, EyR, kick_scale, hzi, zbias,
+                                source_center, ::Type{T}, first_i, last_i) where {T}
+    for i in first_i:last_i
+        @inbounds begin
+            zL = clamp(-T(field.z[i]) * hzi + zbias, zero(T), one(T))
+            zR = one(T) - zL
+            Kx, Ky, Kz = _pic_interpolate_kick(
+                solver, field_grid, field.x[i], field.y[i],
+                phiL, ExL, EyL, phiR, ExR, EyR, zL, zR,
+            )
+            field.px[i] += kick_scale * Kx
+            field.py[i] += kick_scale * Ky
+            if solver.longitudinal_kick
+                field.pz[i] += kick_scale * Kz * hzi
+            end
+            s = T(0.5) * (source_center - field.z[i])
+            field.x[i] += s * field.px[i]
+            field.y[i] += s * field.py[i]
+            if solver.longitudinal_kick
+                field.pz[i] += T(0.25) * (field.px[i] * field.px[i] + field.py[i] * field.py[i])
+            end
+        end
+    end
+    return nothing
+end
+
+"""
+The `slice_interpolation = :quadratic` twin of `_pic_apply_kick_range!`.
+"""
+function _pic_apply_kick_quadratic_range!(solver, field, field_grid, phiL, ExL, EyL,
+                                          phiM, ExM, EyM, phiR, ExR, EyR,
+                                          kick_scale, hzi, zbias, source_center,
+                                          ::Type{T}, first_i, last_i) where {T}
+    for i in first_i:last_i
+        @inbounds begin
+            zL = clamp(-T(field.z[i]) * hzi + zbias, zero(T), one(T))
+            Kx, Ky, Kz = _pic_interpolate_kick_quadratic(
+                solver, field_grid, field.x[i], field.y[i],
+                phiL, ExL, EyL, phiM, ExM, EyM, phiR, ExR, EyR, one(T) - zL,
+            )
+            field.px[i] += kick_scale * Kx
+            field.py[i] += kick_scale * Ky
+            if solver.longitudinal_kick
+                field.pz[i] += kick_scale * Kz * hzi
+            end
+            s = T(0.5) * (source_center - field.z[i])
+            field.x[i] += s * field.px[i]
+            field.y[i] += s * field.py[i]
+            if solver.longitudinal_kick
+                field.pz[i] += T(0.25) * (field.px[i] * field.px[i] + field.py[i] * field.py[i])
+            end
+        end
+    end
+    return nothing
+end
+
+"""
+Drift source particles `first_i:last_i` to the luminosity overlap plane.
+Index-local: see `_pic_map_particles`.
+"""
+function _pic_virtual_positions_range!(vx, vy, source, sM, first_i, last_i)
+    for i in first_i:last_i
         @inbounds begin
             vx[i] = source.x[i] + source.px[i] * sM
             vy[i] = source.y[i] + source.py[i] * sM
         end
     end
-    return vx, vy
+    return nothing
 end
 
 """

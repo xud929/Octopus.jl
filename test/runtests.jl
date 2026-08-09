@@ -4230,6 +4230,67 @@ end
             end
         end
     end
+
+    # `_pic_map_particles`, entered directly. It is the one CPU strong-strong
+    # partition that chunks by WORKER COUNT rather than by a fixed grid, which
+    # is legal only because its callbacks fold nothing -- so what has to be
+    # pinned is (a) that the partition tiles 1:n exactly at every worker count,
+    # since a gap or an overlap would silently drop or double-kick particles,
+    # and (b) that it really splits, or the collide!-level equality below is
+    # asserting nothing (Measured Lesson: a check only counts while it
+    # executes; a configuration you set is not one the code read).
+    let n = 3 * Octopus._STRONG_STRONG_PARALLEL_KICK_MIN
+        counts = unique((1, 2, Threads.nthreads(:default)))
+        for k in counts
+            seen = Tuple{Int,Int}[]
+            guard = ReentrantLock()
+            Octopus._with_execution_policy(Octopus.ResolvedCPUExecutionPolicy(k)) do
+                Octopus._pic_map_particles(n) do first_i, last_i
+                    lock(guard) do
+                        push!(seen, (first_i, last_i))
+                    end
+                end
+            end
+            sort!(seen)
+            @test first(first(seen)) == 1
+            @test last(last(seen)) == n
+            @test all(seen[i][2] + 1 == seen[i + 1][1] for i in 1:(length(seen) - 1))
+            # Anti-vacuity: three chunks' worth of data on two or more workers
+            # must produce two or more chunks. Without this the whole block
+            # passes on a map that silently never threads.
+            k == 1 || @test length(seen) >= 2
+        end
+        # Below the threshold it stays serial whatever the pool says, and the
+        # boundary itself is pinned rather than assumed.
+        Octopus._with_execution_policy(Octopus.ResolvedCPUExecutionPolicy(4)) do
+            below = Tuple{Int,Int}[]
+            Octopus._pic_map_particles(Octopus._STRONG_STRONG_PARALLEL_KICK_MIN - 1) do a, b
+                push!(below, (a, b))
+            end
+            @test below == [(1, Octopus._STRONG_STRONG_PARALLEL_KICK_MIN - 1)]
+        end
+    end
+
+    # And through public collide!, at a size where the kick and virtual-position
+    # maps really do split: 3 slices x 10000 particles clears two chunks of
+    # `_STRONG_STRONG_PARALLEL_KICK_MIN` per slice. The block above at n=15000
+    # gives 5000/slice, which rounds to one chunk and leaves these maps serial.
+    let solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                                  grid=(16, 16), green_cache=:none, slicing=slc)
+        counts = unique((1, 2, Threads.nthreads(:default)))
+        outs = map(counts) do k
+            b1, b2 = mkb(30000), mkb(30000)
+            lum = workers(k, b1.rep) do
+                collide!(solver, b1, b2, CPUThreadsBackend)
+            end
+            (lum, map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)))
+        end
+        for other in 2:length(outs)
+            @test outs[1][1] == outs[other][1]
+            @test all(a == b for (a, b) in zip(outs[1][2], outs[other][2]))
+            @test all(a == b for (a, b) in zip(outs[1][3], outs[other][3]))
+        end
+    end
 end
 
 @testset "CUDA equal_area histogram matches the CPU membership rule" begin

@@ -233,7 +233,12 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   [`strong_strong_spectral_optimization_history.md`](history/strong_strong_spectral_optimization_history.md),
   [`strong_strong_gaussian_optimization_history.md`](history/strong_strong_gaussian_optimization_history.md),
   [`strong_strong_gaussian_optimization.md`](history/strong_strong_gaussian_optimization.md)
-  (soft-Gaussian audit).
+  (soft-Gaussian audit),
+  [`cpu_threading_2026_08_09.md`](history/cpu_threading_2026_08_09.md)
+  (the CPU-threading campaign on the 128-thread/64-core box: what was serial
+  and why, the per-fix measurements with their bitwise-parity digests, and the
+  machine-level findings — idle-thread spin, GC share, and why a pool wider
+  than the data's parallelism costs rather than pays).
 - Benchmark histories:
   [`solver_matrix_2026_08_08.md`](history/solver_matrix_2026_08_08.md)
   (every solver × both backends × both precisions at the production point,
