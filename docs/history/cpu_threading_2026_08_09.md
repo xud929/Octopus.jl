@@ -307,6 +307,41 @@ Production point, s/collide, digest `0x58fc69d46333dfe0` throughout:
 on a second solver: the allocation was the loop compiling badly inside a long
 function, not anything about the physics.
 
+**Neighbour check on the two solvers this campaign did NOT touch.** Fixes 1–4
+changed shared infrastructure — `_run_logical_workers` (it now unwraps a
+worker's exception), `ExecutionAudit` (a lock) and `_PICSlicePairGreenCache` (a
+lock field) — so spectral and the soft-Gaussian were re-measured against the
+baseline rather than assumed unaffected. Production point, 16 threads:
+
+| solver | baseline `d0fb3f2` | at HEAD | digest |
+|---|---|---|---|
+| Spectral      | 5.00 | 4.88 | `0x00c98cd00a439897`, identical |
+| soft-Gaussian | 2.93 | 3.02 | `0x193c817f4b56ca7d`, identical |
+
+Both within run-to-run noise, both bit-identical. Nothing leaked.
+
+**All four CPU solvers, production point, 16 threads, s/collide:**
+
+| solver | baseline | at HEAD | |
+|---|---|---|---|
+| PIC           | 41.03 | 4.20 | **9.8x** |
+| GaussianPIC   | 65.45 | 8.23 | **8.0x** |
+| Spectral      |  5.00 | 4.88 | untouched |
+| soft-Gaussian |  2.93 | 3.02 | untouched |
+
+The two grid solvers were 8–13x slower than the other two and are now level
+with them. Every number here is bit-identical to the pre-campaign HEAD.
+
+**Where the remaining headroom is, measured rather than guessed.** The
+soft-Gaussian allocates 0.09 GiB per collide, spends ~0% in GC and still
+improves from 16 to 32 threads (3.02 → 2.09 s) — it is healthy and needs
+nothing. Spectral allocates **9.83 GiB** and spends **27–30%** of its wall in
+GC, and regresses past 16 threads (4.88 → 6.28 at 32): it already batches its
+pairs, so what it has is the allocation defect fixes 1 and 4 found twice, and
+it is the obvious next target. PIC and gpic now sit at 6.3 GiB each, which is
+the slice gather/scatter — each slice makes the beam round trip once per PAIR
+rather than once per turn.
+
 **The trap fired a third time, in a new shape.** Here `phiL, ExL, EyL` and
 `phiR, ExR, EyR` were assigned in BOTH branches of `if use_coupled`, which was
 harmless while nothing captured them — adding the kick closure is what turned
