@@ -645,7 +645,7 @@ end
 # ---------------------------------------------------------------------------
 function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_source,
                             field, param_field, kbb, workspace::_PICCPUWorkspace,
-                            green_cache, cache_key)
+                            green_cache, cache_key; vslot::Int=0)
     pic = gsolver.pic
     nx, ny = pic.grid
     T = promote_type(eltype(source.x), eltype(field.x), typeof(kbb))
@@ -673,7 +673,7 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
         nsource, T(gsolver.coupling_tol), bL, bR)
     mode === :pic &&
         return _pic_interaction!(pic, source, param_source, field, param_field,
-                                 kbb, workspace, green_cache, cache_key)
+                                 kbb, workspace, green_cache, cache_key; vslot=vslot)
     use_coupled = mode === :coupled
 
     margin = T(gsolver.margin_sigma)
@@ -792,8 +792,7 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
     end
 
     s_virtual = T(0.5) * (T(param_source.center) - T(param_field.center))
-    vx = Vector{T}(undef, nsource)
-    vy = Vector{T}(undef, nsource)
+    vx, vy = _pic_virtual_buffers(workspace, vslot, nsource, T)
     _pic_map_particles(nsource) do first_i, last_i
         _pic_virtual_positions_range!(vx, vy, source, s_virtual, first_i, last_i)
     end
@@ -1027,10 +1026,12 @@ function _gpic_collide_pair!(lum_parts, p::Int, gsolver::GaussianPICPoissonSolve
     field1 = _pic_copy_coords(coord1)
     field2 = _pic_copy_coords(coord2)
     vx1, vy1 = _gpic_interaction!(
-        gsolver, coord1, param1, field2, param2, kbb2, workspace, green_cache, (i, j, 1),
+        gsolver, coord1, param1, field2, param2, kbb2, workspace, green_cache, (i, j, 1);
+        vslot=1,
     )
     vx2, vy2 = _gpic_interaction!(
-        gsolver, coord2, param2, field1, param1, kbb1, workspace, green_cache, (i, j, 2),
+        gsolver, coord2, param2, field1, param1, kbb1, workspace, green_cache, (i, j, 2);
+        vslot=2,
     )
     _pic_store_slice!(beam1.rep, idx1, field1)
     _pic_store_slice!(beam2.rep, idx2, field2)

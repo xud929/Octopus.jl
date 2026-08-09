@@ -459,6 +459,36 @@ This is the shape the bandwidth finding implies: at a fixed schedule, the way
 to go faster is to move fewer bytes per pair, not to spread the same bytes over
 more threads.
 
+## Fix 9 — the virtual-position buffers are reused, not reallocated
+
+`_pic_interaction!`, `_pic_interaction_node!` and `_gpic_interaction!` each
+allocated a fresh `vx`/`vy` pair for the source's virtual positions at the
+luminosity plane: 3.82 MB per pair, 450 interactions per turn, **0.86 GiB per
+collide** of the 1.68 that remained. They now come from two reusable slots on
+the (per-worker) workspace — two, because both directions' results are alive at
+once for `_pic_luminosity`, so one slot would alias.
+
+`vslot = 0` still allocates, which is what the direct callers in `test/` and
+`validation/` want; a working type that does not match the workspace's falls
+back to allocation rather than asserting. The `mode === :pic` delegation inside
+`_gpic_interaction!` forwards the slot — without that, gpic's most common route
+would have kept allocating with nothing to show it.
+
+| | before | after |
+|---|---|---|
+| allocated per collide (1 thread) | 1.68 GiB | **0.74 GiB** |
+| 1 thread | 9.39 s | **8.81 s** |
+| 16 threads | 3.03 s | **2.99 s** |
+| 32 threads | 4.15 s | 3.82 s |
+| GC pauses per collide | 13 | 7 |
+
+Digest `0x4625d8c583a1efa1` unchanged. **PIC is 41.03 -> 2.99 s, 13.7x**, and
+allocation is down 8.5x from the campaign's start.
+
+The gain is largest at 1 and 32 threads and inside noise at 16, which is what
+the bandwidth reading predicts: at 16 threads the memory system is already the
+constraint, so removing allocation helps most where it is not.
+
 ## The honest ceiling statement
 
 Wall time is the objective; the utilisation number can rise while it worsens,

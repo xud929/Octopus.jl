@@ -696,6 +696,18 @@ struct _PICCPUWorkspace{T}
     dropped::Base.RefValue{Int}
     luminosity_q1::Matrix{T}
     luminosity_q2::Matrix{T}
+    # Virtual source positions at the luminosity overlap plane, one reusable
+    # pair of buffers per DIRECTION of a slice pair. Both directions' results
+    # are alive at once -- `_pic_luminosity` consumes all four together -- so
+    # two slots are needed and one would alias.
+    #
+    # These used to be freshly allocated inside every interaction: 3.82 MB per
+    # pair, 450 interactions per turn, 0.86 GiB per collide of the 1.68 that
+    # remained after the slice hoist. Since the wall-time ceiling on this box is
+    # memory bandwidth, allocating and first-touching that much fresh memory
+    # every turn is exactly the wrong thing to be doing.
+    virtual_x::Vector{Vector{T}}
+    virtual_y::Vector{Vector{T}}
 end
 
 mutable struct _PICSlicePairGreenEntry{T}
@@ -740,6 +752,7 @@ function _pic_cpu_workspace(::Type{T}, nx::Integer, ny::Integer) where {T}
     return _PICCPUWorkspace{T}(
         charge, spectral, green, green_fft, fft_plan, ifft_plan, local_charge, left, right, mid,
         Base.RefValue(0), zeros(T, nx + 1, ny + 1), zeros(T, nx + 1, ny + 1),
+        [T[], T[]], [T[], T[]],
     )
 end
 

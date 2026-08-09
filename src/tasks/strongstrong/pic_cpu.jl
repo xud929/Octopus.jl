@@ -349,9 +349,9 @@ function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
                               slices1.indices, slices1.boundary, i + 1)
         (gL1 === nothing || gR1 === nothing || gL2 === nothing || gR2 === nothing) && return false
         vx1, vy1 = _pic_interaction_node!(
-            solver, coord1, param1, field2, param2, kbb2, workspace, gL1, gR1)
+            solver, coord1, param1, field2, param2, kbb2, workspace, gL1, gR1; vslot=1)
         vx2, vy2 = _pic_interaction_node!(
-            solver, coord2, param2, field1, param1, kbb1, workspace, gL2, gR2)
+            solver, coord2, param2, field1, param1, kbb1, workspace, gL2, gR2; vslot=2)
     else
         # `union_bounds` is only ever written on the `:source_slice` path, which
         # `_pic_batchable` keeps sequential; `batched` asserts that rather than
@@ -371,10 +371,12 @@ function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
         key1 = share_grid ? (i, 0, 1) : (i, j, 1)
         key2 = share_grid ? (j, 0, 2) : (i, j, 2)
         vx1, vy1 = _pic_interaction!(
-            solver, coord1, param1, field2, param2, kbb2, workspace, green_cache, key1, ov1,
+            solver, coord1, param1, field2, param2, kbb2, workspace, green_cache, key1, ov1;
+            vslot=1,
         )
         vx2, vy2 = _pic_interaction!(
-            solver, coord2, param2, field1, param1, kbb1, workspace, green_cache, key2, ov2,
+            solver, coord2, param2, field1, param1, kbb1, workspace, green_cache, key2, ov2;
+            vslot=2,
         )
     end
     # Slice i was kicked in place and is already current. Slice j swaps: the
@@ -863,6 +865,38 @@ identical, so this removes work rather than changing any of it.
 _pic_slice_states(rep::Phase6DRep, indices) =
     [_pic_extract_slice(rep, idx) for idx in indices]
 
+"""
+    _pic_virtual_buffers(workspace, slot, n, T) -> (vx, vy)
+
+`n`-element buffers for a direction's virtual source positions.
+
+`slot = 0` allocates, which is what every caller outside the collide loop wants
+(the direct entry points in `test/` and `validation/` keep their own arrays and
+outlive the workspace). `slot = 1` or `2` hands back the workspace's reusable
+pair for that direction — valid only until the same slot is asked for again,
+which is within the pair, which is where `_pic_luminosity` consumes them.
+
+The fallback method covers a working type that does not match the workspace's.
+It cannot fire on the collide path — `_pic_cpu_scalar_type` builds the
+workspace from the same promotion — but reusing a `Vector{Float64}` as
+`Vector{Float32}` would be a type error rather than a slow path, so the
+mismatch allocates instead of asserting.
+"""
+@inline _pic_virtual_buffers(::_PICCPUWorkspace, ::Int, n::Int, ::Type{T}) where {T} =
+    (Vector{T}(undef, n), Vector{T}(undef, n))
+
+@inline function _pic_virtual_buffers(workspace::_PICCPUWorkspace{T}, slot::Int,
+                                      n::Int, ::Type{T}) where {T}
+    slot == 0 && return (Vector{T}(undef, n), Vector{T}(undef, n))
+    vx = workspace.virtual_x[slot]
+    vy = workspace.virtual_y[slot]
+    if length(vx) != n
+        resize!(vx, n)
+        resize!(vy, n)
+    end
+    return vx, vy
+end
+
 """Copy one resident slice into its scratch twin, field by field."""
 function _pic_copy_slice!(dst, src)
     copyto!(dst.x, src.x); copyto!(dst.px, src.px)
@@ -918,7 +952,7 @@ end
 
 function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field, param_field, kbb,
                            workspace::_PICCPUWorkspace, green_cache, cache_key,
-                           bounds_override=nothing)
+                           bounds_override=nothing; vslot::Int=0)
     nsource = length(source.x)
     nfield = length(field.x)
     T = promote_type(eltype(source.x), eltype(field.x), typeof(kbb))
@@ -1101,8 +1135,7 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
     end
 
     sM = T(0.5) * (T(param_source.center) - T(param_field.center))
-    vx = Vector{T}(undef, nsource)
-    vy = Vector{T}(undef, nsource)
+    vx, vy = _pic_virtual_buffers(workspace, vslot, nsource, T)
     _pic_map_particles(nsource) do first_i, last_i
         _pic_virtual_positions_range!(vx, vy, source, sM, first_i, last_i)
     end
@@ -1412,7 +1445,8 @@ grids the difference is wrong by 20-50%, and the discrepancy is not a constant, 
 no gauge fix exists).
 """
 function _pic_interaction_node!(solver::PICPoissonSolver, source, param_source, field,
-                                param_field, kbb, workspace::_PICCPUWorkspace, gL, gR)
+                                param_field, kbb, workspace::_PICCPUWorkspace, gL, gR;
+                                vslot::Int=0)
     nsource = length(source.x)
     nfield = length(field.x)
     T = promote_type(eltype(source.x), eltype(field.x), typeof(kbb))
@@ -1495,13 +1529,9 @@ function _pic_interaction_node!(solver::PICPoissonSolver, source, param_source, 
     end
 
     sM = T(0.5) * (T(param_source.center) - T(param_field.center))
-    vx = Vector{T}(undef, nsource)
-    vy = Vector{T}(undef, nsource)
-    for i in 1:nsource
-        @inbounds begin
-            vx[i] = source.x[i] + source.px[i] * sM
-            vy[i] = source.y[i] + source.py[i] * sM
-        end
+    vx, vy = _pic_virtual_buffers(workspace, vslot, nsource, T)
+    _pic_map_particles(nsource) do first_i, last_i
+        _pic_virtual_positions_range!(vx, vy, source, sM, first_i, last_i)
     end
     return vx, vy
 end
