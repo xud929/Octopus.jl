@@ -393,15 +393,32 @@ is the campaign's most useful negative result:
 **CPU time more than doubles** going from 1 to 16 threads for the same work.
 Sixteen threads burn 21 CPU-seconds to do what one thread does in 9.4.
 
-**Correction to an earlier claim in this note.** That inflation was first
-attributed here to memory-bandwidth contention. That was asserted, not
-measured, and the measurement does not support it. Re-running at 32 and 64
-threads with `--gcthreads=4` instead of Julia's default (which scales with
-`--threads`) cuts CPU time sharply — 40.7 -> 26.4 s at 64 threads — so **GC
-threads are the dominant term in the CPU inflation**. But it does NOT improve
-wall time (4.12 -> 4.71 s at 64; GC wall goes up because collections are
-slower with fewer markers), so CPU inflation is a red herring for the ceiling.
-Bandwidth may still contribute; nothing here establishes it.
+**Two different quantities, and this note conflated them once in each
+direction.** CPU-time inflation and the wall-time ceiling have different
+causes, and each was mis-attributed before being measured:
+
+- **CPU-time inflation is dominated by GC threads.** Julia scales its GC thread
+  count with `--threads`; running with `--gcthreads=4` cuts CPU from 40.7 to
+  26.4 s at 64 threads. It does NOT improve wall time (4.12 -> 4.71 s — fewer
+  markers make each collection slower), so CPU inflation is a red herring for
+  the ceiling.
+- **The wall-time ceiling is memory bandwidth**, and this one IS measured, by
+  three tests that separate it from the alternatives:
+
+  1. *Not the wavefront width.* Raising the slice count from 15 to 31 nearly
+     doubles the available pair parallelism and lifts utilisation (38.6% ->
+     48.8% at 16 threads), and 32 threads is still slower than 16 (6.20 against
+     5.83 s). More independent work does not help.
+  2. *Not NUMA latency.* `numactl --cpunodebind=0 --membind=0` gives ~10%
+     (16 threads 6.39 -> 5.74, 32 threads 6.49 -> 6.12) and does not change the
+     shape: 32 still loses to 16 with all memory local.
+  3. *Positive control.* Shrink the working set until it is cache-resident
+     (256k/102k over 31 slices, ~400 KB per slice) and the direction REVERSES:
+     32 threads beats 16, 3.95 against 4.13 s. Same code, same schedule, same
+     thread counts — only the footprint changed.
+
+  Growing CPU time with flat wall time is the signature of a shared resource
+  being saturated, and (3) identifies which one.
 
 **What the wall-time cliff actually was: this campaign's own nesting rule.**
 Going 16 -> 32 threads made the collide *slower*, 3.5 -> 4.6 s, which is not
@@ -424,13 +441,37 @@ That also explains why the per-batch allocation measured worse twice (4.20 ->
 5.41, then 3.20 -> 3.94): it is a *finer* nesting rule, and nesting itself was
 the problem.
 
-**The honest ceiling statement.** Wall time is the objective; the utilisation
-number can rise while it worsens, so it is a diagnostic and not a target. Pair
-parallelism saturates at the slice count (15 here), and past that a larger pool
-costs a further 15-25% in wall time from pool-size overheads whose cause is not
-yet attributed. Getting past ~16 threads needs more *independent* work — more
-slices, or the serial blocks inside a pair made to parallelize efficiently —
-and both need re-measuring rather than assuming.
+## Fix 8 — one copy per pair instead of two
+
+Both interactions of a pair must see their SOURCE slice as it stood before the
+pair. Direction 1 reads slice `i` and writes slice `j`; direction 2 reads `j`
+and writes `i`. In that order direction 1 has finished reading slice `i` before
+direction 2 writes it — so **slice `i` can be kicked in place and needs no copy
+at all**. Only slice `j` needs one, because direction 1 writes it before
+direction 2 reads it. Copying both was the obvious form and cost twice the
+traffic; aliasing the LARGER side (the 8.19 MB electron slice, against 3.28 MB
+for a proton one) is where the saving is.
+
+Production point, 16 threads: **3.45 -> 3.03 s**, allocation 1.79 -> 1.68 GiB,
+digest unchanged. **PIC is now 41.03 -> 3.03 s, 13.5x.**
+
+This is the shape the bandwidth finding implies: at a fixed schedule, the way
+to go faster is to move fewer bytes per pair, not to spread the same bytes over
+more threads.
+
+## The honest ceiling statement
+
+Wall time is the objective; the utilisation number can rise while it worsens,
+so it is a diagnostic and not a target.
+
+**Threads do pay, up to a point that is set by bandwidth**: 9.39 s at one
+thread to 3.03 s at sixteen, a 3.1x speedup on a workload that measured no
+speedup at all at the start of this campaign. Past ~16 threads at production
+sizes the memory system is saturated (evidence above), so the route to using
+more of the machine is **less traffic per unit of work**, not finer division of
+the same traffic. That is what the last three fixes did — 6.28 GiB -> 1.68 GiB
+per collide — and where the remaining headroom is: the per-interaction `vx`/`vy`
+buffers are 0.86 GiB of the 1.68 that remain, and are reusable per worker.
 
 **The trap fired a third time, in a new shape.** Here `phiL, ExL, EyL` and
 `phiR, ExR, EyR` were assigned in BOTH branches of `if use_coupled`, which was

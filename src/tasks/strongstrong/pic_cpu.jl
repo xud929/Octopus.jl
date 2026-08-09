@@ -145,7 +145,8 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # kicks the scratch, and swaps. See `_pic_slice_states`.
     state1 = _pic_slice_states(beam1.rep, slices1.indices)
     state2 = _pic_slice_states(beam2.rep, slices2.indices)
-    scratch1 = _pic_slice_states(beam1.rep, slices1.indices)
+    # Only beam 2 needs a scratch twin: beam 1's slice is kicked in place. See
+    # `_pic_collide_pair!` for why one copy per pair is the minimum.
     scratch2 = _pic_slice_states(beam2.rep, slices2.indices)
 
     # The pool is STORAGE, not a worker count. `_pic_cpu_workspace_pool!` only
@@ -222,7 +223,7 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
                     p = pair_pos[(pr.i, pr.j)]
                     ran[p] = _pic_collide_pair!(
                         lum_parts, p, solver, beam1, beam2, slices1, slices2,
-                        state1, scratch1, state2, scratch2,
+                        state1, state2, scratch2,
                         pr.i, pr.j, chunk_ws, green_cache, node_cache, union_bounds,
                         share_grid, node_grid, kbb1, kbb2, klum,
                         compute_luminosity, T, true)
@@ -239,7 +240,7 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
         for (p, entry) in pairs(order)
             ran[p] = _pic_collide_pair!(
                 lum_parts, p, solver, beam1, beam2, slices1, slices2,
-                state1, scratch1, state2, scratch2,
+                state1, state2, scratch2,
                 entry[2], entry[3], serial_ws, green_cache, node_cache, union_bounds,
                 share_grid, node_grid, kbb1, kbb2, klum,
                 compute_luminosity, T, false)
@@ -289,7 +290,7 @@ of one batch to different workers. The two shared structures are
 """
 function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
                             beam1::Beam, beam2::Beam, slices1, slices2,
-                            state1, scratch1, state2, scratch2,
+                            state1, state2, scratch2,
                             i::Int, j::Int, workspace::_PICCPUWorkspace,
                             green_cache, node_cache, union_bounds,
                             share_grid::Bool, node_grid::Bool,
@@ -302,14 +303,26 @@ function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
               center=slices1.center[i], rb=slices1.boundary[i + 1])
     param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
               center=slices2.center[j], rb=slices2.boundary[j + 1])
-    # Resident slices: no gather, no scatter, and the only copy is the one the
-    # physics requires -- both interactions of a pair must see the partner slice
-    # as it was BEFORE this pair, so the kicked copy has to be separate from the
-    # source. The copy lands in a pre-allocated scratch twin and the two are
-    # swapped at the end, so the pair allocates nothing.
+    # ONE copy per pair, not two, and it is provably the minimum.
+    #
+    # Both interactions must see their SOURCE slice as it was before this pair.
+    # Direction 1 reads slice i and writes slice j; direction 2 reads slice j
+    # and writes slice i. Run in that order, direction 1 has finished reading
+    # slice i before direction 2 writes it, so slice i can be kicked IN PLACE
+    # and needs no copy at all. Slice j does: direction 1 writes it before
+    # direction 2 reads it, so direction 2 would otherwise see kicked values.
+    #
+    # Copying both was the obvious form and cost twice the traffic. The copy is
+    # pure memory movement -- 8.19 MB for an electron slice at the production
+    # point against 3.28 MB for a proton one -- and traffic is what makes a pair
+    # cost ~2x more when fifteen of them run at once, so aliasing the LARGER
+    # side is where the saving is. Neither interaction writes its source (they
+    # read it for bounds, for the deposit, and for the virtual positions), which
+    # is what makes the in-place kick safe; `_pic_interaction!` and
+    # `_pic_interaction_node!` both hold to that.
     coord1 = state1[i]
     coord2 = state2[j]
-    field1 = _pic_copy_slice!(scratch1[i], coord1)
+    field1 = coord1                                    # kicked in place
     field2 = _pic_copy_slice!(scratch2[j], coord2)
     if node_grid
         # Read-only lookups, never `get!`. `_pic_prebuild_node_caches!` ran for
@@ -364,10 +377,10 @@ function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
             solver, coord2, param2, field1, param1, kbb1, workspace, green_cache, key2, ov2,
         )
     end
-    # Swap, don't copy back: the kicked scratch BECOMES the resident slice and
-    # the old resident becomes next pair's scratch. Within a batch no two pairs
-    # share a slice index, so these element writes never overlap.
-    @inbounds state1[i], scratch1[i] = scratch1[i], state1[i]
+    # Slice i was kicked in place and is already current. Slice j swaps: the
+    # kicked scratch BECOMES the resident slice, the old resident becomes the
+    # next pair's scratch. Within a batch no two pairs share a slice index, so
+    # this element write never races another.
     @inbounds state2[j], scratch2[j] = scratch2[j], state2[j]
     if compute_luminosity
         @inbounds lum_parts[p] = _pic_luminosity(solver, vx1, vy1, vx2, vy2, klum, workspace)
