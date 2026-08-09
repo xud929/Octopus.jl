@@ -140,6 +140,14 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # neighbouring pairs would read-modify-write the same word and lose one.
     ran = fill(false, npairs)
 
+    # Gather each slice ONCE, and give it a scratch twin to be kicked into. The
+    # pair loop then neither gathers nor scatters; it copies state -> scratch,
+    # kicks the scratch, and swaps. See `_pic_slice_states`.
+    state1 = _pic_slice_states(beam1.rep, slices1.indices)
+    state2 = _pic_slice_states(beam2.rep, slices2.indices)
+    scratch1 = _pic_slice_states(beam1.rep, slices1.indices)
+    scratch2 = _pic_slice_states(beam2.rep, slices2.indices)
+
     # The pool is STORAGE, not a worker count. `_pic_cpu_workspace_pool!` only
     # ever grows, so `length(workspaces)` is the high-water mark of every policy
     # this label has run under; scheduling off it would keep spawning 15 pair
@@ -152,6 +160,16 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
         # to the per-particle maps inside each pair so the two levels compose
         # instead of multiplying. Integer division, floor at 1: a pair always
         # gets at least itself.
+        # Divided ONCE, by the pool rather than by each batch's width. Dividing
+        # per batch -- so the width-1 batch at each end gets every thread for
+        # its per-particle and per-cell maps -- is the obvious remedy for the
+        # wavefront triangle and was measured TWICE, before and after the Green
+        # table build started threading: 16 threads went 4.20 -> 5.41 s the
+        # first time and 3.20 -> 3.94 s the second. Both times CPU time rose
+        # faster than wall time fell (19.3 -> 27.9 s at 16 threads), i.e. the
+        # extra occupancy was overhead, not work. Re-measure after any change
+        # that moves a substantial block inside a pair; it is the right idea
+        # waiting on parallel efficiency it does not have yet.
         inner_workers = max(1, fld(_cpu_worker_count(), pool_workers))
         batches = collision_pair_batches(slices1, slices2)
         # Consumer-boundary receipt, so a test can assert the schedule the run
@@ -184,6 +202,7 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
                     p = pair_pos[(pr.i, pr.j)]
                     ran[p] = _pic_collide_pair!(
                         lum_parts, p, solver, beam1, beam2, slices1, slices2,
+                        state1, scratch1, state2, scratch2,
                         pr.i, pr.j, chunk_ws, green_cache, node_cache, union_bounds,
                         share_grid, node_grid, kbb1, kbb2, klum,
                         compute_luminosity, T, true)
@@ -200,11 +219,19 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
         for (p, entry) in pairs(order)
             ran[p] = _pic_collide_pair!(
                 lum_parts, p, solver, beam1, beam2, slices1, slices2,
+                state1, scratch1, state2, scratch2,
                 entry[2], entry[3], serial_ws, green_cache, node_cache, union_bounds,
                 share_grid, node_grid, kbb1, kbb2, klum,
                 compute_luminosity, T, false)
         end
     end
+
+    # Scatter the resident slices back into the beams, once. Until this runs the
+    # beams still hold the turn-start coordinates -- which is why anything
+    # inside the loop that needs current values reads the states instead (see
+    # the `_pic_union_bounds` states method).
+    _pic_store_slice_states!(beam1.rep, slices1.indices, state1)
+    _pic_store_slice_states!(beam2.rep, slices2.indices, state2)
 
     luminosity = LT(NaN)
     if compute_luminosity
@@ -242,6 +269,7 @@ of one batch to different workers. The two shared structures are
 """
 function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
                             beam1::Beam, beam2::Beam, slices1, slices2,
+                            state1, scratch1, state2, scratch2,
                             i::Int, j::Int, workspace::_PICCPUWorkspace,
                             green_cache, node_cache, union_bounds,
                             share_grid::Bool, node_grid::Bool,
@@ -254,10 +282,15 @@ function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
               center=slices1.center[i], rb=slices1.boundary[i + 1])
     param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
               center=slices2.center[j], rb=slices2.boundary[j + 1])
-    coord1 = _pic_extract_slice(beam1.rep, idx1)
-    coord2 = _pic_extract_slice(beam2.rep, idx2)
-    field1 = _pic_copy_coords(coord1)
-    field2 = _pic_copy_coords(coord2)
+    # Resident slices: no gather, no scatter, and the only copy is the one the
+    # physics requires -- both interactions of a pair must see the partner slice
+    # as it was BEFORE this pair, so the kicked copy has to be separate from the
+    # source. The copy lands in a pre-allocated scratch twin and the two are
+    # swapped at the end, so the pair allocates nothing.
+    coord1 = state1[i]
+    coord2 = state2[j]
+    field1 = _pic_copy_slice!(scratch1[i], coord1)
+    field2 = _pic_copy_slice!(scratch2[j], coord2)
     if node_grid
         # Read-only lookups, never `get!`. `_pic_prebuild_node_caches!` ran for
         # both directions before any pair, and it fills every source slice that
@@ -294,9 +327,13 @@ function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
             "interaction_grid = :source_slice reached the batched PIC pair loop; " *
             "its union mesh depends on how much of the turn has been applied, so " *
             "_pic_batchable must keep it sequential.")
-        ov1 = share_grid ? get!(() -> _pic_union_bounds(coord1, param1.center, beam2.rep, slices2.indices),
+        # From the resident STATES, not `beam2.rep`: with the slices held
+        # resident the beam is stale until the collide ends, so reading it would
+        # size the mesh from the turn-start distribution instead of the current
+        # one. See the states method of `_pic_union_bounds`.
+        ov1 = share_grid ? get!(() -> _pic_union_bounds(coord1, param1.center, state2, slices2.indices),
                                 union_bounds, (i, 1)) : nothing
-        ov2 = share_grid ? get!(() -> _pic_union_bounds(coord2, param2.center, beam1.rep, slices1.indices),
+        ov2 = share_grid ? get!(() -> _pic_union_bounds(coord2, param2.center, state1, slices1.indices),
                                 union_bounds, (j, 2)) : nothing
         key1 = share_grid ? (i, 0, 1) : (i, j, 1)
         key2 = share_grid ? (j, 0, 2) : (i, j, 2)
@@ -307,8 +344,11 @@ function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
             solver, coord2, param2, field1, param1, kbb1, workspace, green_cache, key2, ov2,
         )
     end
-    _pic_store_slice!(beam1.rep, idx1, field1)
-    _pic_store_slice!(beam2.rep, idx2, field2)
+    # Swap, don't copy back: the kicked scratch BECOMES the resident slice and
+    # the old resident becomes next pair's scratch. Within a batch no two pairs
+    # share a slice index, so these element writes never overlap.
+    @inbounds state1[i], scratch1[i] = scratch1[i], state1[i]
+    @inbounds state2[j], scratch2[j] = scratch2[j], state2[j]
     if compute_luminosity
         @inbounds lum_parts[p] = _pic_luminosity(solver, vx1, vy1, vx2, vy2, klum, workspace)
     end
@@ -566,6 +606,60 @@ function _pic_union_bounds(source, center, rep, field_indices)
         _nonfinite_coordinate_error(:field,
             (x=rep.x, px=rep.px, y=rep.y, py=rep.py, z=rep.z);
             context="source-slice union bounds")
+    return _pic_union_bounds_tail(source, c, T, fxmin, fxmax, fymin, fymax, zmin, zmax)
+end
+
+"""
+    _pic_union_bounds(source, center, states::AbstractVector, field_indices)
+
+The resident-slice form, and the ONLY one the collide loop uses.
+
+`interaction_grid = :source_slice` sizes its mesh from a union over the whole
+partner beam **at the source slice's first use**, so its value depends on how
+much of the turn has already been applied. Once the slices are held resident,
+`rep` is stale until the collide ends, and reading it here would silently size
+the mesh from the turn-START distribution instead of the current one — a
+physics change disguised as a refactor. `states[sl][pos]` is exactly what
+`rep[field_indices[sl][pos]]` held before hoisting, read in the same order, so
+this reproduces the old bounds bit for bit.
+
+The `rep` method above is kept for the direct callers in `test/` and
+`validation/`, which pass a beam that no collide is mutating.
+"""
+function _pic_union_bounds(source, center, states::AbstractVector, field_indices)
+    T = eltype(source.x)
+    c = T(center)
+    zmin = T(Inf); zmax = T(-Inf)
+    fxmin = T(Inf); fxmax = T(-Inf); fymin = T(Inf); fymax = T(-Inf)
+    for (sl, idx) in pairs(field_indices)
+        fc = states[sl]
+        @inbounds for pos in eachindex(idx)
+            zi = T(fc.z[pos])
+            zmin = min(zmin, zi); zmax = max(zmax, zi)
+            s = T(0.5) * (zi - c)
+            xv = fc.x[pos] + s * fc.px[pos]
+            yv = fc.y[pos] + s * fc.py[pos]
+            fxmin = min(fxmin, xv); fxmax = max(fxmax, xv)
+            fymin = min(fymin, yv); fymax = max(fymax, yv)
+        end
+    end
+    if isnan(zmin) || !all(isfinite, (fxmin, fxmax, fymin, fymax))
+        bad = findfirst(c2 -> !all(isfinite, c2.z) || !all(isfinite, c2.x) ||
+                              !all(isfinite, c2.px) || !all(isfinite, c2.y) ||
+                              !all(isfinite, c2.py), states)
+        bad === nothing || _nonfinite_coordinate_error(:field,
+            (x=states[bad].x, px=states[bad].px, y=states[bad].y,
+             py=states[bad].py, z=states[bad].z);
+            context="source-slice union bounds")
+    end
+    isfinite(zmin) || return nothing
+    return _pic_union_bounds_tail(source, c, T, fxmin, fxmax, fymin, fymax, zmin, zmax)
+end
+
+# The source half, shared by both forms: it reads only this slice's own
+# coordinates, which hoisting does not change.
+function _pic_union_bounds_tail(source, c, ::Type{T}, fxmin, fxmax, fymin, fymax,
+                                zmin, zmax) where {T}
     sA = T(0.5) * (c - zmax)
     sB = T(0.5) * (c - zmin)
     sxmin = T(Inf); sxmax = T(-Inf); symin = T(Inf); symax = T(-Inf)
@@ -715,6 +809,49 @@ end
 
 _pic_copy_coords(c) = (x=copy(c.x), px=copy(c.px), y=copy(c.y),
                        py=copy(c.py), z=copy(c.z), pz=copy(c.pz))
+
+"""
+    _pic_slice_states(rep, indices) -> Vector
+
+Gather every slice's coordinates ONCE per collide, in slice order.
+
+The pair loop used to gather a slice out of the beam, copy it, and scatter it
+back for EVERY pair it took part in — 15 times per turn per slice at the
+production point, when it needs gathering once and storing once. That was
+measured at **58.1% of a slice-pair's cost** and accounted for essentially the
+whole 6.28 GiB a collide allocated (extract + copy + store, 26.8 MB per pair x
+225 pairs = 6.0 GB against 6.28 GiB measured), which in turn drove the ~20% of
+wall spent in GC.
+
+Holding the slices resident makes the per-pair cost one contiguous copy instead
+of an indexed gather, an indexed scatter and a copy — and the values are
+identical, so this removes work rather than changing any of it.
+"""
+_pic_slice_states(rep::Phase6DRep, indices) =
+    [_pic_extract_slice(rep, idx) for idx in indices]
+
+"""Copy one resident slice into its scratch twin, field by field."""
+function _pic_copy_slice!(dst, src)
+    copyto!(dst.x, src.x); copyto!(dst.px, src.px)
+    copyto!(dst.y, src.y); copyto!(dst.py, src.py)
+    copyto!(dst.z, src.z); copyto!(dst.pz, src.pz)
+    return dst
+end
+
+"""
+Scatter the resident slices back into the beam, once, at the end of the collide.
+
+Empty slices are skipped rather than scattered: `_pic_extract_slice` gives them
+zero-length arrays and `_pic_store_slice!` would loop zero times anyway, but
+skipping says so.
+"""
+function _pic_store_slice_states!(rep::Phase6DRep, indices, states)
+    for (sl, idx) in pairs(indices)
+        isempty(idx) && continue
+        _pic_store_slice!(rep, idx, states[sl])
+    end
+    return nothing
+end
 
 function _pic_store_slice!(rep::Phase6DRep, idx, c)
     for (j, i) in pairs(idx)
@@ -961,10 +1098,21 @@ stuck at `_PIC_DEPOSIT_CHUNKS`, while these maps are free to use the whole
 machine. Do not add a reduction to a `_pic_map_particles` callback — put it in a
 fixed chunk grid instead, or the invariance pin above stops being true.
 """
-function _pic_map_particles(f::F, n::Integer) where {F}
+_pic_map_particles(f::F, n::Integer) where {F} =
+    _pic_map_range(f, n, _STRONG_STRONG_PARALLEL_KICK_MIN)
+
+"""
+    _pic_map_range(f, n, min_chunk)
+
+The partitioner behind `_pic_map_particles`, with the break-even size as a
+parameter so grid sweeps can use it too: a Green-table column carries `2nx`
+cells of work, not one particle's worth, so it reaches the same per-chunk cost
+at a very different count.
+"""
+function _pic_map_range(f::F, n::Integer, min_chunk::Integer) where {F}
     n > 0 || return nothing
     nn = Int(n)
-    if nn < _STRONG_STRONG_PARALLEL_KICK_MIN
+    if nn < min_chunk
         f(1, nn)
         return nothing
     end
@@ -984,7 +1132,7 @@ function _pic_map_particles(f::F, n::Integer) where {F}
     # `nchunks = worker count` outright: 6.1 s at 16 workers but 8.6 s at 64 and
     # 63.6 s at 128, where the same input with this floor gives 6.2 / 7.2 / 13.0.
     # The width now follows the DATA and stops at what the data can feed.
-    nchunks = clamp(fld(nn, _STRONG_STRONG_PARALLEL_KICK_MIN), 1, workers)
+    nchunks = clamp(fld(nn, Int(min_chunk)), 1, workers)
     if nchunks <= 1
         f(1, nn)
         return nothing
@@ -2239,16 +2387,42 @@ end
 function _pic_green!(green, green_type, field_x0, field_y0, source_x0, source_y0, hx, hy, nx, ny)
     Symbol(green_type) == :lattice && return _pic_green_lattice!(
         green, field_x0, field_y0, source_x0, source_y0, hx, hy, nx, ny)
+    # Threaded over COLUMNS of the padded table. Every cell is a pure function
+    # of its own (i, j) and writes only `green[i+1, j+1]`, so any partition in
+    # any order gives the same table bit for bit -- the same argument as
+    # `_pic_map_particles`, and the reason this needs no fold.
+    #
+    # Worth doing because it is the largest block left in a slice pair after the
+    # slice-hoist: ~35% of the pair, four `_pic_kernel_integral` evaluations
+    # (each an `atan` and a `log`) per cell over a 2nx x 2ny table.
+    #
+    # The loop nest is also column-outer/row-inner where it used to be
+    # row-outer, so a worker's cells are contiguous in this column-major array
+    # instead of striding by 2nx. That reorders the WRITES, not the values.
+    _pic_map_range(2ny, max(1, cld(_PIC_GREEN_MIN_CHUNK_CELLS, 2nx))) do jfirst, jlast
+        _pic_green_columns!(green, green_type, field_x0, field_y0,
+                            source_x0, source_y0, hx, hy, nx, ny,
+                            jfirst - 1, jlast - 1)
+    end
+    return green
+end
+
+"""
+Fill Green-table columns `jfirst:jlast` (0-based). Index-local: see `_pic_green!`.
+"""
+function _pic_green_columns!(green, green_type, field_x0, field_y0,
+                             source_x0, source_y0, hx, hy, nx, ny, jfirst, jlast)
     T = eltype(green)
     half_hx = hx / 2
     half_hy = hy / 2
     hxihyi = T(-0.5) / (hx * hy)
-    for i in 0:(2nx - 1), j in 0:(2ny - 1)
+    integrated = Symbol(green_type) == :integrated
+    for j in jfirst:jlast, i in 0:(2nx - 1)
         ii = i < nx ? i : i - 2nx
         jj = j < ny ? j : j - 2ny
         x = field_x0 - source_x0 + ii * hx
         y = field_y0 - source_y0 + jj * hy
-        if Symbol(green_type) == :integrated
+        if integrated
             val = _pic_kernel_integral(x + half_hx, y + half_hy)
             val += _pic_kernel_integral(x - half_hx, y - half_hy)
             val -= _pic_kernel_integral(x + half_hx, y - half_hy)

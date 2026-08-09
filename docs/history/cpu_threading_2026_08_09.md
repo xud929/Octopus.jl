@@ -342,6 +342,75 @@ it is the obvious next target. PIC and gpic now sit at 6.3 GiB each, which is
 the slice gather/scatter — each slice makes the beam round trip once per PAIR
 rather than once per turn.
 
+## Fix 5 — resident slice buffers, and fix 6 — the threaded Green table (2026-08-09)
+
+**Thread utilisation is now measured, not inferred.**
+`profiling/benchmark_collide_cpu.jl` reads process CPU seconds from
+`/proc/self/stat` and reports `cpu / (wall x nthreads)`. It is only meaningful
+with `JULIA_THREAD_SLEEP_THRESHOLD=0`, since spinning idle threads would
+otherwise be counted as work; the harness says so when the variable is unset.
+
+**Fix 5 — the slices are gathered once per collide, not once per pair.** A
+slice used to be gathered out of the beam, copied, and scattered back for every
+pair it took part in — 15 round trips per turn where one suffices — which the
+profile put at **58.1% of a slice-pair's cost** and which accounted for
+essentially the whole 6.28 GiB a collide allocated (26.8 MB per pair x 225
+pairs = 6.0 GB, against 6.28 GiB measured). `_pic_slice_states` now holds each
+slice resident with a scratch twin; a pair copies state into scratch, kicks the
+scratch, and swaps. The `:source_slice` union mesh reads the STATES rather than
+the beam, which is what keeps its bounds identical now that the beam is stale
+until the collide ends.
+
+**Fix 6 — the Green table build threads over columns.** After fix 5 it was the
+largest block left, ~35% of a pair: four `_pic_kernel_integral` evaluations (an
+`atan` and a `log` each) per cell of a 2nx x 2ny table. Every cell is a pure
+function of its own `(i, j)`, so any partition is bit-exact. The loop nest also
+became column-outer/row-inner, so a worker's cells are contiguous in this
+column-major array instead of striding by `2nx`.
+
+Production point, s/collide, digest `0x4625d8c583a1efa1` throughout:
+
+| julia --threads | before fix 5 | after fixes 5+6 | allocated |
+|---|---|---|---|
+| 1  | 15.02 | **9.41** | 6.28 -> 1.64 GiB |
+| 16 |  4.31 | **3.51** | 6.28 -> 1.79 GiB |
+| 32 |  6.82 |   4.59 | |
+
+**PIC is now 41.03 -> 3.51 s at the production point, 11.7x.**
+
+## Utilisation is not the objective, and the measurement says why
+
+The obvious reading of "threads are only 37% utilised" is that filling them
+would cut the wall time proportionally. The instrument says otherwise, and this
+is the campaign's most useful negative result:
+
+| threads | wall | CPU | utilisation |
+|---|---|---|---|
+| 1  | 9.41 |  9.4 s | 99.8% |
+| 16 | 3.51 | 21.1 s | 37.5% |
+| 32 | 4.59 | 45.0 s | 28.7% |
+
+**CPU time more than doubles** going from 1 to 16 threads for the same work.
+Sixteen threads burn 21 CPU-seconds to do what one thread does in 9.4. So the
+missing 62% is not idle capacity waiting to be filled — a large part of it is
+work that only exists *because* the run is parallel: multi-threaded GC marking,
+task spawn and join, and above all memory-bandwidth contention, since the
+deposit, interpolation and slice copies are all bandwidth-bound and sixteen
+threads do not get sixteen times the bandwidth on a 2-socket box.
+
+The per-batch worker allocation is the proof. It raises measured utilisation
+(37.7% -> 42.1% at 16 threads) and makes the wall time WORSE (3.20 -> 3.94 s),
+because the added occupancy is overhead: CPU time went 19.3 -> 27.9 s. It was
+measured twice — once when only the kick map threaded inside a pair, once after
+the Green build did — and reverted both times. Chasing the utilisation number
+directly would have accepted it.
+
+The honest ceiling statement for this workload on this box: **wall time is the
+objective, CPU-time inflation is the diagnostic**, and past ~16 threads the
+inflation grows faster than the wall falls. Raising the ceiling further needs
+the remaining work to become less bandwidth-bound (or NUMA-aware), not more
+finely divided.
+
 **The trap fired a third time, in a new shape.** Here `phiL, ExL, EyL` and
 `phiR, ExR, EyR` were assigned in BOTH branches of `if use_coupled`, which was
 harmless while nothing captured them — adding the kick closure is what turned

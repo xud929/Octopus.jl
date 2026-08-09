@@ -132,6 +132,26 @@ snap_ele = snapshot(beam_ele)
 snap_pro = snapshot(beam_pro)
 
 """
+Process CPU seconds (user+sys), read from `/proc/self/stat`.
+
+Utilisation is `cpu / (wall * nthreads)`: 100% means every thread did useful
+work for the whole collide. It is ONLY meaningful with
+`JULIA_THREAD_SLEEP_THRESHOLD=0` -- otherwise idle Julia threads spin in
+`poptask` and this counts that spinning as work.
+
+Read the number as a diagnostic, not a target. Raising occupancy can make the
+wall time WORSE when the added work is overhead: the per-batch worker
+allocation measured 37.7% -> 42.1% utilisation and 3.20 -> 3.94 s at 16
+threads. Compare CPU seconds against the 1-thread run -- the gap is what
+parallelism costs.
+"""
+function cpu_seconds()
+    stat = read("/proc/self/stat", String)
+    fields = split(stat[findlast(==(')'), stat) + 1:end])
+    return (parse(Int, fields[12]) + parse(Int, fields[13])) / 100
+end
+
+"""
 Order-sensitive bitwise digest of every coordinate of every beam.
 
 Rotate-then-xor over the raw bit patterns, so two digests agree only if every
@@ -160,12 +180,18 @@ for _ in 1:REPEATS
     restore!(beam_ele, snap_ele)
     restore!(beam_pro, snap_pro)
     gc0 = Base.gc_num()
+    cpu0 = cpu_seconds()
     t0 = time_ns()
     lum = collide!(solver, beam_ele, beam_pro, CPUThreadsBackend)
     dt = (time_ns() - t0) / 1e9
+    cpu = cpu_seconds() - cpu0
     gc1 = Base.gc_num()
     gc_s = (gc1.total_time - gc0.total_time) / 1e9
-    @printf("  collide %.4f s   gc %.4f s (%.1f%%)\n", dt, gc_s, 100 * gc_s / dt)
+    nthreads = Threads.nthreads(:default)
+    @printf("  collide %.4f s   gc %.4f s (%.1f%%)   cpu %.1f s   util %.1f%%%s\n",
+            dt, gc_s, 100 * gc_s / dt, cpu, 100 * cpu / (dt * nthreads),
+            get(ENV, "JULIA_THREAD_SLEEP_THRESHOLD", "") == "0" ? "" :
+                "   (idle threads spinning: util inflated)")
     push!(times, dt)
     push!(lums, lum)
     push!(digests, coordinate_digest(beam_ele, beam_pro))

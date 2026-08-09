@@ -660,6 +660,12 @@ _pic_deposit_parallel(n::Integer, nx::Integer, ny::Integer) =
 const _PIC_DEPOSIT_CHUNKS = 16
 const _REDUCTION_CHUNKS = 64
 
+# Cells per chunk of the threaded Green-table build. A cell is four
+# `_pic_kernel_integral` evaluations (an `atan` and a `log` each), so it carries
+# far more work than a particle in the kick map -- the count that reaches the
+# same per-chunk cost is correspondingly smaller.
+const _PIC_GREEN_MIN_CHUNK_CELLS = 2048
+
 # Safety margin, in grid cells, required before reusing a shifted PIC Green
 # template for a new source/field domain.
 const _PIC_TEMPLATE_MARGIN_CELLS = 1.5
