@@ -276,9 +276,42 @@ than assumed.
 Digests: `0x967d4e7aecddbba5` (quarter size) and `0x58fc69d46333dfe0`
 (production), each identical between the baseline and every thread count here.
 
-**What this leaves, and it is the whole remaining cost.** gpic still allocates
-**47.1 GiB per collide** — unchanged from the baseline — and now spends **39%**
-of its wall in GC, against PIC's 6.3 GiB and 20%. gpic never received fix 1:
-its kick loop is still inline in `_gpic_interaction!`, which is exactly the
-shape that was allocating in `_pic_interaction!` before extraction. That is
-the next fix, and on PIC's evidence it is worth more than the batching was.
+**What this left, and it was the whole remaining cost.** gpic still allocated
+**47.1 GiB per collide** — unchanged from the baseline — and spent **39%** of
+its wall in GC, against PIC's 6.3 GiB and 20%. gpic had never received fix 1:
+its kick loop was still inline in `_gpic_interaction!`, exactly the shape that
+was allocating in `_pic_interaction!` before extraction. Fix 4 below.
+
+## Fix 4 — the fix-1 treatment for GaussianPIC's kick loop (2026-08-09)
+
+`_gpic_apply_kick_range!` and `_pic_virtual_positions_range!` (reused as is)
+behind `_pic_map_particles`, exactly as for plain PIC. `use_coupled` stays a
+runtime `Bool` rather than becoming a `Val`, for the recorded reason: a second
+specialization lets LLVM contract the shared FMAs differently, which is how the
+2026-08-07 `Val` gating moved `mom.varx` by 1 ulp.
+
+Production point, s/collide, digest `0x58fc69d46333dfe0` throughout:
+
+| julia --threads | baseline `d0fb3f2` | after fix 3 | after fix 4 |
+|---|---|---|---|
+| 1  | — | 67.25 | 33.76 |
+| 16 | 65.45 | 26.16 | **8.23** |
+| 32 | — | 26.16 | 10.27 |
+
+| | after fix 3 | after fix 4 |
+|---|---|---|
+| allocated per collide | 47.14 GiB | **6.28 GiB** |
+| GC share of wall (16 thr) | 39% | 12.3% |
+
+**8.0x end to end for gpic** (65.45 → 8.23), and it confirms the fix-1 reading
+on a second solver: the allocation was the loop compiling badly inside a long
+function, not anything about the physics.
+
+**The trap fired a third time, in a new shape.** Here `phiL, ExL, EyL` and
+`phiR, ExR, EyR` were assigned in BOTH branches of `if use_coupled`, which was
+harmless while nothing captured them — adding the kick closure is what turned
+two assignments at function scope into a `Core.Box`. Fixed by making the branch
+an `if` EXPRESSION with a single assignment site. Worth generalising: any
+`if`/`else` that assigns the same name in both branches becomes a boxing defect
+the moment a closure is introduced below it, so extracting a loop into a
+closure means re-checking every name it reads.

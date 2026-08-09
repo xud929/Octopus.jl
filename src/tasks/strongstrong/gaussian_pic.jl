@@ -737,27 +737,37 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
 
     gxbuf = Vector{T}(undef, nx)
     gybuf = Vector{T}(undef, ny)
-    if use_coupled
+    # ONE assignment site for the six field planes, from an `if` EXPRESSION
+    # rather than two assignments in two branches. `if` opens no scope, so the
+    # branch form makes these function-scope variables assigned twice, and the
+    # kick closure below captures them -- `Core.Box`, which the permanent
+    # lowered-code sweep rejects. (Before extraction there was no closure here,
+    # so the branch form was harmless; adding the closure is what made it a
+    # defect. Third instance of the trap in this campaign.)
+    planes = if use_coupled
         m1x = Vector{T}(undef, nx); m2x = Vector{T}(undef, nx)
         dgy = Vector{T}(undef, ny); ddgy = Vector{T}(undef, ny)
-        phiL, ExL, EyL = _gpic_solve_drifted_field_coupled!(
+        pL = _gpic_solve_drifted_field_coupled!(
             workspace.left, pic, source, sL, source_grid, green_fft, workspace,
             muxL, muyL, sqrt(bL.a), bL.sigc, bL.lam, nsource, gsolver.neutralize,
             gxbuf, m1x, m2x, gybuf, dgy, ddgy)
-        phiR, ExR, EyR = _gpic_solve_drifted_field_coupled!(
+        pR = _gpic_solve_drifted_field_coupled!(
             workspace.right, pic, source, sR, source_grid, green_fft, workspace,
             muxR, muyR, sqrt(bR.a), bR.sigc, bR.lam, nsource, gsolver.neutralize,
             gxbuf, m1x, m2x, gybuf, dgy, ddgy)
+        (pL[1], pL[2], pL[3], pR[1], pR[2], pR[3])
     else
-        phiL, ExL, EyL = _gpic_solve_drifted_field!(
+        pL = _gpic_solve_drifted_field!(
             workspace.left, pic, source, sL, source_grid, green_fft, workspace,
             muxL, muyL, sigxL, sigyL, nsource, gsolver.neutralize, gxbuf, gybuf,
         )
-        phiR, ExR, EyR = _gpic_solve_drifted_field!(
+        pR = _gpic_solve_drifted_field!(
             workspace.right, pic, source, sR, source_grid, green_fft, workspace,
             muxR, muyR, sigxR, sigyR, nsource, gsolver.neutralize, gxbuf, gybuf,
         )
+        (pL[1], pL[2], pL[3], pR[1], pR[2], pR[3])
     end
+    phiL, ExL, EyL, phiR, ExR, EyR = planes
 
     kick_scale = T(2) * T(kbb)
     half_ns = T(0.5) * T(nsource)
@@ -769,7 +779,50 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
     rxR = 2 * (mom.cxpx + sR * mom.varpx); ryR = 2 * (mom.cypy + sR * mom.varpy)
     cmom = _gpic_coupled_moments(mom)
     hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
-    @inbounds for i in 1:nfield
+    # Boundary quantities bundled per node so the range function's signature
+    # stays readable. Concrete NamedTuples of `T`, so this costs nothing.
+    bndL = (mux=muxL, muy=muyL, sigx=sigxL, sigy=sigyL, rx=rxL, ry=ryL, s=sL)
+    bndR = (mux=muxR, muy=muyR, sigx=sigxR, sigy=sigyR, rx=rxR, ry=ryR, s=sR)
+    _pic_map_particles(nfield) do first_i, last_i
+        _gpic_apply_kick_range!(
+            pic, field, field_grid, phiL, ExL, EyL, phiR, ExR, EyR,
+            bndL, bndR, cmom, kick_scale, half_ns, kbb_eff, mpx, mpy,
+            hzi, zbias, T(param_source.center), use_coupled, T, first_i, last_i,
+        )
+    end
+
+    s_virtual = T(0.5) * (T(param_source.center) - T(param_field.center))
+    vx = Vector{T}(undef, nsource)
+    vy = Vector{T}(undef, nsource)
+    _pic_map_particles(nsource) do first_i, last_i
+        _pic_virtual_positions_range!(vx, vy, source, s_virtual, first_i, last_i)
+    end
+    return vx, vy
+end
+
+"""
+Apply the Gaussian-subtracted kick and the synchro-beam drift to field
+particles `first_i:last_i`.
+
+The `_pic_apply_kick_range!` twin, extracted for the same two reasons and with
+the same measured character: index-local writes, so any partition reproduces
+the serial result bit for bit, and — the bigger effect — the loop compiles
+badly inside `_gpic_interaction!`'s long body and well as a small function
+taking its operands as arguments. `_pic_interaction!` allocated 43.8 GiB per
+collide at the production point before the same change and 6.1 GiB after.
+
+`use_coupled` stays a runtime `Bool`, deliberately. As `Val` it would compile a
+second specialization of the shared arithmetic and LLVM would contract its FMAs
+differently, which is how the 2026-08-07 `Val` gating moved `mom.varx` by 1 ulp
+between two paths that were supposed to agree exactly.
+"""
+function _gpic_apply_kick_range!(pic::PICPoissonSolver, field, field_grid,
+                                 phiL, ExL, EyL, phiR, ExR, EyR,
+                                 bndL, bndR, cmom, kick_scale, half_ns, kbb_eff,
+                                 mpx, mpy, hzi, zbias, source_center,
+                                 use_coupled::Bool, ::Type{T},
+                                 first_i, last_i) where {T}
+    @inbounds for i in first_i:last_i
         x = field.x[i]; y = field.y[i]
         zL = clamp(-T(field.z[i]) * hzi + zbias, zero(T), one(T))
         zR = one(T) - zL
@@ -783,9 +836,9 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
             # the coupled longitudinal physics the uncoupled branch cannot form.
             zpx = zero(T); zpy = zero(T); zpz = zero(T)
             _, pxL, _, pyL, _, pzL, _ = _cp_covariance_kick(
-                cmom, kbb_eff, -sL, x - muxL, y - muyL, x, zpx, y, zpy, T(0), zpz)
+                cmom, kbb_eff, -bndL.s, x - bndL.mux, y - bndL.muy, x, zpx, y, zpy, T(0), zpz)
             _, pxR, _, pyR, _, pzR, _ = _cp_covariance_kick(
-                cmom, kbb_eff, -sR, x - muxR, y - muyR, x, zpx, y, zpy, T(0), zpz)
+                cmom, kbb_eff, -bndR.s, x - bndR.mux, y - bndR.muy, x, zpx, y, zpy, T(0), zpz)
             dpx_a = zL * pxL + zR * pxR
             dpy_a = zL * pyL + zR * pyR
             field.px[i] += kick_scale * Kx_d + dpx_a
@@ -798,14 +851,14 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
         else
             if pic.longitudinal_kick
                 beLx, beLy, HxxL, HyyL = _gaussian_beambeam_kick_response(
-                    kbb_eff, sigxL, sigyL, x - muxL, y - muyL)
+                    kbb_eff, bndL.sigx, bndL.sigy, x - bndL.mux, y - bndL.muy)
                 beRx, beRy, HxxR, HyyR = _gaussian_beambeam_kick_response(
-                    kbb_eff, sigxR, sigyR, x - muxR, y - muyR)
+                    kbb_eff, bndR.sigx, bndR.sigy, x - bndR.mux, y - bndR.muy)
             else
                 beLx, beLy = gaussian_beambeam_kick(
-                    sigxL, sigyL, x - muxL, y - muyL)
+                    bndL.sigx, bndL.sigy, x - bndL.mux, y - bndL.muy)
                 beRx, beRy = gaussian_beambeam_kick(
-                    sigxR, sigyR, x - muxR, y - muyR)
+                    bndR.sigx, bndR.sigy, x - bndR.mux, y - bndR.muy)
             end
             Kx_a = half_ns * (zL * beLx + zR * beRx)
             Ky_a = half_ns * (zL * beLy + zR * beRy)
@@ -814,29 +867,21 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
             field.px[i] += kick_scale * Kx_d + dpx_a
             field.py[i] += kick_scale * Ky_d + dpy_a
             if pic.longitudinal_kick
-                covL = _gpic_cov_pz(HxxL, HyyL, rxL, ryL)
-                covR = _gpic_cov_pz(HxxR, HyyR, rxR, ryR)
+                covL = _gpic_cov_pz(HxxL, HyyL, bndL.rx, bndL.ry)
+                covR = _gpic_cov_pz(HxxR, HyyR, bndR.rx, bndR.ry)
                 field.pz[i] += kick_scale * Kz_d * hzi
                 field.pz[i] += zL * covL + zR * covR
                 field.pz[i] += T(0.5) * (dpx_a * mpx + dpy_a * mpy)
             end
         end
-        s = T(0.5) * (T(param_source.center) - field.z[i])
+        s = T(0.5) * (source_center - field.z[i])
         field.x[i] += s * field.px[i]
         field.y[i] += s * field.py[i]
         if pic.longitudinal_kick
             field.pz[i] += T(0.25) * (field.px[i] * field.px[i] + field.py[i] * field.py[i])
         end
     end
-
-    sM = T(0.5) * (T(param_source.center) - T(param_field.center))
-    vx = Vector{T}(undef, nsource)
-    vy = Vector{T}(undef, nsource)
-    @inbounds for i in 1:nsource
-        vx[i] = source.x[i] + source.px[i] * sM
-        vy[i] = source.y[i] + source.py[i] * sM
-    end
-    return vx, vy
+    return nothing
 end
 
 # ---------------------------------------------------------------------------
