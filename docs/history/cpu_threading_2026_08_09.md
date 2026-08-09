@@ -169,3 +169,88 @@ groups the collision order into conflict-free batches with
 `_run_logical_workers` with a workspace pool and a pair-indexed luminosity
 fold. That is why spectral measures 6.65 s/turn on CPU against PIC's 40.8.
 PIC and GaussianPIC have no such structure. Both are next.
+
+## Fix 2 — conflict-free pair batching for PIC (2026-08-09)
+
+**What.** The PIC pair loop now takes its pairs from
+`collision_pair_batches` and runs each batch on `_run_logical_workers`, one
+scratch workspace per worker from a pooled, grown-in-place
+`_pic_cpu_workspace_pool!`. The per-pair body moved into
+`_pic_collide_pair!`. This is the structure `spectral.jl` has had all along.
+
+**Bit-identical to the pre-campaign HEAD, not merely equivalent.** The
+schedule is safe because `collision_pair_batches` preserves each slice's own
+collision order, so a pair still sees exactly the partner state it saw when
+the loop was sequential. What that does NOT give for free is the luminosity
+fold: summing per batch would reassociate it. So every pair's luminosity is
+written into `lum_parts[p]` at its position in the **collision** order and the
+fold is done at the end in that order, and the per-pair trace with it. The
+digest across the whole campaign is one number:
+
+    baseline d0fb3f2, 1 and 16 threads      0x4625d8c583a1efa1
+    after fix 1, 1/16/32/64/128 threads     0x4625d8c583a1efa1
+    after fix 2, 1/8/16/32/64/128 threads   0x4625d8c583a1efa1
+
+**Which modes may batch, and why the third may not.** `:slice_pair` (the
+default) sizes its mesh from the two slices of its own pair, whose relative
+order batching preserves. `:node` builds every mesh at turn start — the
+prebuild written after lazy building made CPU and the CUDA wavefront route
+disagree by 3.8e-5, i.e. this hazard was already known here. `:source_slice`
+takes a union over the *whole* partner beam at the source slice's first use,
+so its mesh depends on how much of the turn has been applied; it stays
+sequential, enforced in `_pic_batchable` and asserted from the execution
+receipt rather than from the predicate alone.
+
+**Shared state, and what each needed.** The Green cache keeps one lock in the
+cache object, held only across the `entries` lookup and insert — never across
+the rebuild, which is the expensive part and runs in the worker's own
+workspace. Because every `:slice_pair` key is `(i, j, direction)`, distinct
+pairs touch distinct keys and each key's hit/miss/rebuild sequence is the one
+the sequential loop produced. `dropped` is now summed over the pool so a
+dropped particle stays exactly as loud as before. `ExecutionAudit` took a lock
+too: `_record_execution!` is now reached from inside worker tasks, and two
+tasks pushing to one Vector corrupt it rather than reorder it.
+
+**Result at the production point** (2.56M/1.024M, 15 slices, grid 128,
+s/collide, `JULIA_THREAD_SLEEP_THRESHOLD=0`):
+
+| julia --threads | baseline `d0fb3f2` | after fix 1 | after fix 2 |
+|---|---|---|---|
+| 1   | 42.97 | 14.26 | 14.39 |
+| 16  | 41.03 | 13.30 | **4.20–4.68** |
+| 32  | —     | —     | 6.25 |
+| 64  | —     | —     | 7.57 |
+| 128 | —     | —     | 7.44 |
+
+**8.8–9.8x at the production point**, bit-identical throughout.
+
+**Allocation is where fix 1's production win actually came from.** The
+baseline allocates **43.78 GiB per collide** and spends 23% of its wall in GC;
+after fix 1 that is 6.13 GiB and 6%. The quarter-size point showed fix 1 as a
+2x win, the production point as 3.1x, and this is the difference: the kick
+loop inside the long `_pic_interaction!` body was allocating, and extracting
+it into a small typed function stopped that.
+
+**Two levels of parallelism have to be divided, not multiplied.** With the
+pair loop batched, the per-particle maps inside each pair were still asking
+for the whole pool: up to 15 concurrent pairs x 41 chunks each. Measured
+5.76 s at 16 threads, 6.45 at 32, 7.08 at 64. A scoped `_PIC_MAP_WORKER_BUDGET`
+now hands each pair `worker_count ÷ pool_size`, and 16 threads improved to
+4.20 s — at 16 threads the budget is 1, so the inner maps go serial and that
+is *faster* than splitting them 41 ways underneath an already-parallel loop.
+
+**Why it stops scaling past ~16 threads, honestly.** A batch cannot repeat a
+beam-1 or beam-2 slice, so with 15 slices no batch is wider than 15 and the
+pool is capped there. Past that, extra threads add GC (now 20–27% of wall) and
+scheduler cost with no more pair parallelism to claim. Getting beyond this
+needs the allocation itself reduced, which is the next item: the slice
+gather/scatter is both the 41% block and the source of the 6.3 GiB.
+
+**Found by the tripwire again, and this one was not benign.** The per-worker
+workspace was first named `ws`, the same name the sequential branch uses.
+`if`/`else` opens no scope, so that is one function-scope variable captured by
+the worker closure — one `Core.Box`, one workspace shared by every worker. One
+pair's charge grid reached another pair's field solve and the collide died
+with an all-NaN slice. Renamed to `chunk_ws`/`serial_ws`. Second time in this
+campaign, and the reason the batched-vs-sequential pin asserts the schedule
+from an execution receipt rather than trusting that it ran.

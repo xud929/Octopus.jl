@@ -4271,6 +4271,136 @@ end
         end
     end
 
+    # The CPU PIC pair loop runs conflict-free batches of slice pairs
+    # concurrently, each on its own scratch workspace. `collision_pair_batches`
+    # preserves every slice's own collision order, and the luminosity fold and
+    # per-pair trace are written by position in the COLLISION order and read
+    # back in it, so the batched schedule must reproduce the sequential one
+    # BIT FOR BIT -- not to a tolerance.
+    #
+    # What this has to defend against is concrete and was hit while writing it:
+    # naming the per-worker workspace `ws`, the same name the sequential branch
+    # uses, made one `Core.Box` shared by every worker and therefore one
+    # workspace shared by every worker, and one pair's charge grid reached
+    # another pair's field solve. The failure was an all-NaN slice, which is
+    # loud -- but a subtler sharing bug would just move the answer.
+    let solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                                  grid=(16, 16), green_cache=:slice_pair, slicing=slc)
+        counts = unique((1, 2, Threads.nthreads(:default)))
+        schedules = Dict{Int,Any}()
+        outs = map(counts) do k
+            b1, b2 = mkb(9000), mkb(9000)
+            audit = Octopus.ExecutionAudit()
+            # `with_execution_audit` returns the AUDIT, not what the block
+            # evaluated to, so the luminosity comes out through a Ref.
+            lum = Ref(0.0)
+            Octopus.with_execution_audit(audit) do
+                workers(k, b1.rep) do
+                    lum[] = collide!(solver, b1, b2, CPUThreadsBackend)
+                end
+            end
+            schedules[k] = [r.values for r in Octopus.execution_receipts(audit)
+                            if r.consumer === :cpu_pic_pair_schedule]
+            (lum[], map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)))
+        end
+        for other in 2:length(outs)
+            @test outs[1][1] == outs[other][1]
+            @test all(a == b for (a, b) in zip(outs[1][2], outs[other][2]))
+            @test all(a == b for (a, b) in zip(outs[1][3], outs[other][3]))
+        end
+        # Anti-vacuity, on what the run RECORDED: one worker must have taken the
+        # sequential branch and the many-worker run must have really batched,
+        # with a batch wide enough for two pairs to have overlapped. Without
+        # this the equality above is satisfied by a solver that never batches.
+        @test length(schedules[1]) == 1
+        @test schedules[1][1].schedule === :sequential
+        if maximum(counts) > 1
+            top = schedules[maximum(counts)]
+            @test length(top) == 1
+            @test top[1].schedule === :batched
+            @test top[1].pair_workers >= 2
+            @test top[1].widest_batch >= 2
+            @test top[1].batches >= 1
+        end
+    end
+
+    # `interaction_grid = :source_slice` must NEVER batch: its mesh is a union
+    # over the whole partner beam taken at the source slice's first use, so its
+    # value depends on how much of the turn has already been applied, and
+    # batching preserves per-slice order but not global order. The rule lives in
+    # `_pic_batchable`; this asserts both the predicate and what a real run does
+    # with it, because the predicate being right is no use if the loop stops
+    # consulting it.
+    let seq_solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                                      grid=(16, 16), green_cache=:slice_pair,
+                                      interaction_grid=:source_slice, slicing=slc),
+        batch_solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                                        grid=(16, 16), green_cache=:slice_pair, slicing=slc)
+        @test !Octopus._pic_batchable(seq_solver)
+        @test Octopus._pic_batchable(batch_solver)
+        @test Octopus._pic_pool_size(seq_solver) == 1
+        b1, b2 = mkb(9000), mkb(9000)
+        audit = Octopus.ExecutionAudit()
+        Octopus.with_execution_audit(audit) do
+            workers(Threads.nthreads(:default), b1.rep) do
+                collide!(seq_solver, b1, b2, CPUThreadsBackend)
+            end
+        end
+        sched = [r.values for r in Octopus.execution_receipts(audit)
+                 if r.consumer === :cpu_pic_pair_schedule]
+        @test length(sched) == 1
+        @test sched[1].schedule === :sequential
+    end
+
+    # The workspace pool: cached across calls and GROWN rather than rebuilt, so
+    # a later call wanting more workers does not strand the earlier pool (each
+    # workspace is ~8 MB at grid 128). Entries must be distinct objects -- a
+    # pool that handed the same workspace to two workers is exactly the sharing
+    # bug above, wearing a pool's clothes.
+    let cache = Dict{Any,Any}(),
+        solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                                  grid=(8, 8), green_cache=:slice_pair, slicing=slc)
+        p2 = Octopus._pic_cpu_workspace_pool!(cache, :ip, solver, Float64, 2)
+        @test length(p2) == 2
+        @test p2[1] !== p2[2]
+        first_ws = p2[1]
+        p5 = Octopus._pic_cpu_workspace_pool!(cache, :ip, solver, Float64, 5)
+        @test length(p5) == 5
+        @test p5 === p2                       # grown in place, not replaced
+        @test p5[1] === first_ws               # and the existing entries kept
+        @test length(unique(objectid.(p5))) == 5
+        # Asking for fewer never shrinks: the pool is reused across turns.
+        @test length(Octopus._pic_cpu_workspace_pool!(cache, :ip, solver, Float64, 1)) == 5
+    end
+
+    # A worker's exception must surface as ITSELF, at every worker count.
+    # `@sync` wraps a throw from a spawned task in
+    # `CompositeException([TaskFailedException(...)])`, so once the PIC pair loop
+    # started running pairs on workers, the non-finite chokepoints' `ArgumentError`
+    # -- whose message names the slice pair, the count, the first offending
+    # particle and `allow_lost_particles` -- stopped being visible to a caller
+    # matching on `ArgumentError`. Caught by the "fail fast at solver
+    # chokepoints" testset, and fixed in `_run_logical_workers` rather than in
+    # that test, because burying the message hurts users, not just assertions.
+    # The invariant is the general one: same input, same failure, whatever the
+    # worker count.
+    let counts = unique((1, 2, Threads.nthreads(:default)))
+        for k in counts
+            err = try
+                Octopus._with_execution_policy(Octopus.ResolvedCPUExecutionPolicy(k)) do
+                    Octopus._run_logical_workers(k) do w, n
+                        w == n && throw(ArgumentError("worker failure probe"))
+                    end
+                end
+                nothing
+            catch e
+                e
+            end
+            @test err isa ArgumentError
+            @test err isa ArgumentError && err.msg == "worker failure probe"
+        end
+    end
+
     # And through public collide!, at a size where the kick and virtual-position
     # maps really do split: 3 slices x 10000 particles clears two chunks of
     # `_STRONG_STRONG_PARALLEL_KICK_MIN` per slice. The block above at n=15000

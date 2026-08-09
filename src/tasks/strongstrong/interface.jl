@@ -405,6 +405,24 @@ const _ACTIVE_PIC_TIMING_CONTEXT = Base.ScopedValues.ScopedValue{Any}(nothing)
 # stays the honest criterion even now that every route reports, because it is
 # the one that cannot be fooled by a future route regressing to silence.
 const _ACTIVE_PIC_LUMINOSITY_PAIR_SINK = Base.ScopedValues.ScopedValue{Any}(nothing)
+
+"""
+Worker budget for one `_pic_map_particles` call, or `0` for "the whole pool".
+
+The CPU PIC solver parallelizes at two levels: conflict-free batches of slice
+pairs on the outside, and the index-local per-particle maps inside each pair.
+Both read the same worker count, so without a budget the inner level multiplies
+the outer one and a 64-thread pool gets 600+ runnable tasks.
+
+A scoped value rather than a parameter because the two levels are separated by
+`_pic_interaction!`'s whole signature, and threading a worker count through it
+would put a scheduling concern into every physics call site. Scoped values are
+inherited by spawned tasks, which is exactly the propagation this needs.
+
+It cannot change a result: it only sets how many chunks an index-local map is
+split into, and those maps fold nothing (see `_pic_map_particles`).
+"""
+const _PIC_MAP_WORKER_BUDGET = Base.ScopedValues.ScopedValue{Int}(0)
 _strong_strong_diagnostics() = _ACTIVE_STRONG_STRONG_DIAGNOSTICS[]
 
 """Structured metadata for one public solver constructor option."""
@@ -687,6 +705,19 @@ mutable struct _PICSlicePairGreenCache{T}
     hits::Int
     misses::Int
     rebuilds::Int
+    # The CPU pair loop runs conflict-free batches of pairs concurrently
+    # (`_pic_batchable`), and they share this one cache. The lock is a field
+    # rather than a parameter threaded through `_pic_slice_pair_green!` so that
+    # every call site is protected by construction — a future caller cannot
+    # forget to pass it. It guards ONLY the `entries` Dict and the three
+    # counters; the expensive rebuild happens outside it, in the worker's own
+    # workspace.
+    #
+    # Concurrency does not change what this cache returns. Under `:slice_pair`
+    # every key is `(i, j, direction)`, so distinct pairs touch distinct keys
+    # and each key's hit/miss/rebuild sequence is exactly the one the sequential
+    # loop produced.
+    lock::ReentrantLock
 end
 
 function _pic_cpu_workspace(::Type{T}, nx::Integer, ny::Integer) where {T}

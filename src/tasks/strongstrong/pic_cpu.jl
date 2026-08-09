@@ -15,9 +15,9 @@ end
 function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx)
     T = _pic_cpu_scalar_type(solver, beam1, beam2)
     nx, ny = solver.grid
-    workspace = _pic_cpu_workspace(T, nx, ny)
+    workspaces = [_pic_cpu_workspace(T, nx, ny) for _ in 1:_pic_pool_size(solver)]
     green_cache = _pic_green_cache(solver, T)
-    return _pic_collide!(solver, beam1, beam2, ctx, workspace, green_cache)
+    return _pic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache)
 end
 
 function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
@@ -25,9 +25,48 @@ function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
                                  beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend},
                                  ctx::TrackingContext)
     T = _pic_cpu_scalar_type(solver, beam1, beam2)
-    workspace = _pic_cpu_workspace!(task.runtime_cache, label, solver, T)
+    workspaces = _pic_cpu_workspace_pool!(task.runtime_cache, label, solver, T,
+                                          _pic_pool_size(solver))
     green_cache = _pic_green_cache!(task.runtime_cache, label, solver, T)
-    return _pic_collide!(solver, beam1, beam2, ctx, workspace, green_cache)
+    return _pic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache)
+end
+
+"""
+Whether the CPU PIC pair loop may run its pairs in conflict-free batches.
+
+`interaction_grid = :source_slice` may NOT, and this is the one place the
+distinction is made. Its mesh comes from `_pic_union_bounds`, a union over the
+**whole** partner beam evaluated at the source slice's first use, so its value
+depends on how much of the turn has already been applied — and
+`collision_pair_batches` preserves each slice's own collision order but not the
+global one, so "how much has been applied" is exactly what batching changes.
+
+The other two modes are schedule-independent by construction, which is why the
+batched path reproduces the sequential result bit for bit rather than merely
+approximating it:
+
+- `:slice_pair` (the default) sizes its mesh from the two slices of its own
+  pair, and the batcher preserves their relative order.
+- `:node` builds every mesh at turn start in `_pic_prebuild_node_caches!` —
+  written for precisely this hazard, after lazy building made CPU and the CUDA
+  wavefront route disagree by 3.8e-5.
+"""
+_pic_batchable(solver::PICPoissonSolver) = !_pic_source_slice_grid(solver)
+
+# Upper bound on the width of a conflict-free batch: no batch repeats a beam-1
+# or a beam-2 slice, so it cannot be wider than the smaller slice count. Sizing
+# the pool past that would allocate workspaces (~8 MB each at grid 128) that no
+# schedule can ever hand work to. `:specified` slicing takes its count from the
+# internal boundary list, so both sources are consulted rather than `nslices`
+# alone.
+_pic_slice_count_bound(slicing::LongitudinalSlicing) =
+    max(slicing.nslices, length(slicing.positions) + 1)
+
+function _pic_pool_size(solver::PICPoissonSolver)
+    _pic_batchable(solver) || return 1
+    width = min(_pic_slice_count_bound(solver.slicing1),
+                _pic_slice_count_bound(solver.slicing2))
+    return clamp(_cpu_worker_count(), 1, max(width, 1))
 end
 
 _strong_strong_collide_backend!(task::StrongStrongTask, label::Symbol,
@@ -36,9 +75,15 @@ _strong_strong_collide_backend!(task::StrongStrongTask, label::Symbol,
                                 ctx::TrackingContext) =
     _strong_strong_collide!(task, label, solver, beam1, beam2, CPUThreadsBackend, ctx)
 
+_pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
+              workspace::_PICCPUWorkspace, green_cache) =
+    _pic_collide!(solver, beam1, beam2, ctx, (workspace,), green_cache)
+
 function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
-                       workspace::_PICCPUWorkspace, green_cache)
+                       workspaces, green_cache)
     _validate_pic_solver(solver)
+    isempty(workspaces) && throw(ArgumentError(
+        "PIC CPU collide needs at least one scratch workspace; got an empty pool."))
     slices1 = longitudinal_slices(beam1.rep, solver.slicing1)
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
     kbb1 = _pic_kbb1(solver, beam1, beam2)
@@ -56,13 +101,14 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # at the pipeline's own precision (the recorded pipeline-precision
     # asymmetry remains on the N7 ledger row).
     LT = Float64
-    luminosity = compute_luminosity ? zero(LT) : LT(NaN)
     share_grid = _pic_source_slice_grid(solver)
     node_grid = _pic_node_grid_mode(solver)
     # Node meshes are memoized per (source slice, direction); each is shared by
     # the two field slices adjacent to that node, which is what restores exact
     # continuity at their common boundary.
-    workspace.dropped[] = 0
+    for ws in workspaces
+        ws.dropped[] = 0
+    end
     node_cache = Dict{Tuple{Int,Int},Dict{Int,Any}}()
     if node_grid
         _pic_prebuild_node_caches!(node_cache, solver, T, beam1.rep, slices1,
@@ -74,35 +120,173 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # from the union over every field slice, so adjacent field slices reuse one
     # mesh and the transverse kick no longer jumps at their shared boundary.
     union_bounds = Dict{Tuple{Int,Int},Any}()
-    for (_, i, j) in _slice_collision_order(slices1, slices2)
-        idx1 = slices1.indices[i]
-        idx2 = slices2.indices[j]
-        (isempty(idx1) || isempty(idx2)) && continue
-        param1 = (weight=slices1.weight[i], lb=slices1.boundary[i],
-                  center=slices1.center[i], rb=slices1.boundary[i + 1])
-        param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
-                  center=slices2.center[j], rb=slices2.boundary[j + 1])
-        coord1 = _pic_extract_slice(beam1.rep, idx1)
-        coord2 = _pic_extract_slice(beam2.rep, idx2)
-        field1 = _pic_copy_coords(coord1)
-        field2 = _pic_copy_coords(coord2)
-        if node_grid
-            nc1 = get!(() -> Dict{Int,Any}(), node_cache, (i, 1))
-            nc2 = get!(() -> Dict{Int,Any}(), node_cache, (j, 2))
-            gL1 = _pic_node_grid!(nc1, solver, T, coord1, param1.center, beam2.rep,
-                                  slices2.indices, slices2.boundary, j)
-            gR1 = _pic_node_grid!(nc1, solver, T, coord1, param1.center, beam2.rep,
-                                  slices2.indices, slices2.boundary, j + 1)
-            gL2 = _pic_node_grid!(nc2, solver, T, coord2, param2.center, beam1.rep,
-                                  slices1.indices, slices1.boundary, i)
-            gR2 = _pic_node_grid!(nc2, solver, T, coord2, param2.center, beam1.rep,
-                                  slices1.indices, slices1.boundary, i + 1)
-            (gL1 === nothing || gR1 === nothing || gL2 === nothing || gR2 === nothing) && continue
-            vx1, vy1 = _pic_interaction_node!(
-                solver, coord1, param1, field2, param2, kbb2, workspace, gL1, gR1)
-            vx2, vy2 = _pic_interaction_node!(
-                solver, coord2, param2, field1, param1, kbb1, workspace, gL2, gR2)
-        else
+
+    order = _slice_collision_order(slices1, slices2)
+    npairs = length(order)
+    # Every pair's position in the COLLISION order. The luminosity fold and the
+    # per-pair trace are then written by position and read back in that order at
+    # the end, whichever schedule ran -- so the batched path reproduces the
+    # sequential fold exactly instead of reassociating it into a different
+    # ~1-ulp answer. `spectral.jl` folds per batch and had to widen a pin for
+    # it; there is no reason to repeat that here.
+    pair_pos = Dict{Tuple{Int,Int},Int}()
+    sizehint!(pair_pos, npairs)
+    for (p, entry) in pairs(order)
+        pair_pos[(entry[2], entry[3])] = p
+    end
+    lum_parts = zeros(LT, npairs)
+    # `Vector{Bool}`, NOT a `BitVector`: workers write disjoint entries, and a
+    # BitVector packs eight of them into one byte, so two workers updating
+    # neighbouring pairs would read-modify-write the same word and lose one.
+    ran = fill(false, npairs)
+
+    if _pic_batchable(solver) && length(workspaces) > 1 && npairs > 1
+        # What is left of the pool once the pairs have taken their share, handed
+        # to the per-particle maps inside each pair so the two levels compose
+        # instead of multiplying. Integer division, floor at 1: a pair always
+        # gets at least itself.
+        inner_workers = max(1, fld(_cpu_worker_count(), length(workspaces)))
+        batches = collision_pair_batches(slices1, slices2)
+        # Consumer-boundary receipt, so a test can assert the schedule the run
+        # ACTUALLY used rather than the one its policy asked for. Without it,
+        # "batched and sequential agree bit for bit" passes just as happily when
+        # nothing ever batched (Measured Lesson: a configuration you set is not
+        # a configuration the code read).
+        _record_execution!(:cpu_pic_pair_schedule, CPUThreadsBackend,
+                           (schedule=:batched, pairs=npairs, batches=length(batches),
+                            widest_batch=maximum(length, batches; init=0),
+                            pair_workers=length(workspaces),
+                            inner_workers=inner_workers))
+        Base.ScopedValues.with(_PIC_MAP_WORKER_BUDGET => inner_workers) do
+        for batch in batches
+            nworkers = clamp(length(workspaces), 1, length(batch))
+            # `chunk_ws`, NOT `ws`. The sequential branch below also assigns
+            # `ws`, and `if`/`else` opens no scope in Julia, so one name here
+            # would be a single function-scope variable captured by this
+            # closure -- one `Core.Box` shared by every worker, and therefore
+            # ONE workspace shared by every worker. Measured before the rename:
+            # the charge grid of one pair reached the field solve of another and
+            # the collide failed with an all-NaN slice. Same defect as
+            # `chunk_lum` in gaussian.jl and `chunk_counts` in slicing.jl; the
+            # permanent lowered-code sweep is what named it.
+            _run_logical_workers(nworkers) do chunk, _
+                chunk_ws = workspaces[chunk]
+                lo, hi = _chunk_bounds(length(batch), nworkers, chunk)
+                for pos in lo:hi
+                    pr = batch[pos]
+                    p = pair_pos[(pr.i, pr.j)]
+                    ran[p] = _pic_collide_pair!(
+                        lum_parts, p, solver, beam1, beam2, slices1, slices2,
+                        pr.i, pr.j, chunk_ws, green_cache, node_cache, union_bounds,
+                        share_grid, node_grid, kbb1, kbb2, klum,
+                        compute_luminosity, T, true)
+                end
+            end
+        end
+        end
+    else
+        _record_execution!(:cpu_pic_pair_schedule, CPUThreadsBackend,
+                           (schedule=:sequential, pairs=npairs, batches=0,
+                            widest_batch=0, pair_workers=1,
+                            inner_workers=_cpu_worker_count()))
+        serial_ws = first(workspaces)
+        for (p, entry) in pairs(order)
+            ran[p] = _pic_collide_pair!(
+                lum_parts, p, solver, beam1, beam2, slices1, slices2,
+                entry[2], entry[3], serial_ws, green_cache, node_cache, union_bounds,
+                share_grid, node_grid, kbb1, kbb2, klum,
+                compute_luminosity, T, false)
+        end
+    end
+
+    luminosity = LT(NaN)
+    if compute_luminosity
+        luminosity = zero(LT)
+        sink = _ACTIVE_PIC_LUMINOSITY_PAIR_SINK[]
+        turn = ctx === nothing ? -1 : ctx.turn
+        for p in 1:npairs
+            @inbounds ran[p] || continue
+            @inbounds luminosity += lum_parts[p]
+            sink === nothing || push!(sink, (
+                turn=turn, i=Int(order[p][2]), j=Int(order[p][3]),
+                luminosity=Float64(lum_parts[p]),
+            ))
+        end
+    end
+    _pic_report_green_cache(green_cache)
+    _pic_report_dropped(workspaces)
+    return luminosity
+end
+
+"""
+    _pic_collide_pair!(lum_parts, p, solver, ..., workspace, ..., batched) -> Bool
+
+One slice-pair collision, writing its luminosity into `lum_parts[p]` and
+returning whether it ran at all (an empty slice on either side, or a node mesh
+that could not be built, is a skip — and a skip must not contribute to the fold
+or to the per-pair trace).
+
+Everything it touches is either private to this pair (the extracted slice
+coordinates, the returned virtual positions) or exclusive to `workspace` for the
+duration of the call, which is what lets the batched caller hand different pairs
+of one batch to different workers. The two shared structures are
+`green_cache`, which takes its own lock, and — under `:source_slice` only —
+`union_bounds`, which is why that mode does not batch (`_pic_batchable`).
+"""
+function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
+                            beam1::Beam, beam2::Beam, slices1, slices2,
+                            i::Int, j::Int, workspace::_PICCPUWorkspace,
+                            green_cache, node_cache, union_bounds,
+                            share_grid::Bool, node_grid::Bool,
+                            kbb1, kbb2, klum, compute_luminosity::Bool,
+                            ::Type{T}, batched::Bool) where {T}
+    idx1 = slices1.indices[i]
+    idx2 = slices2.indices[j]
+    (isempty(idx1) || isempty(idx2)) && return false
+    param1 = (weight=slices1.weight[i], lb=slices1.boundary[i],
+              center=slices1.center[i], rb=slices1.boundary[i + 1])
+    param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
+              center=slices2.center[j], rb=slices2.boundary[j + 1])
+    coord1 = _pic_extract_slice(beam1.rep, idx1)
+    coord2 = _pic_extract_slice(beam2.rep, idx2)
+    field1 = _pic_copy_coords(coord1)
+    field2 = _pic_copy_coords(coord2)
+    if node_grid
+        # Read-only lookups, never `get!`. `_pic_prebuild_node_caches!` ran for
+        # both directions before any pair, and it fills every source slice that
+        # has particles -- which this pair does, or the emptiness check above
+        # would have returned. An insert here would both race two workers on one
+        # Dict and build the mesh from a partially kicked beam, the 3.8e-5
+        # CPU/CUDA divergence that the prebuild exists to prevent. Loud if the
+        # invariant is ever broken, rather than silently raced.
+        nc1 = get(node_cache, (i, 1), nothing)
+        nc2 = get(node_cache, (j, 2), nothing)
+        (nc1 === nothing || nc2 === nothing || isempty(nc1) || isempty(nc2)) && error(
+            "PIC node mesh cache is missing or empty for source slice $(i) of beam 1 " *
+            "or $(j) of beam 2 at collision time, though both slices have particles; " *
+            "_pic_prebuild_node_caches! must fill every non-empty source slice " *
+            "before the pair loop runs.")
+        gL1 = _pic_node_grid!(nc1, solver, T, coord1, param1.center, beam2.rep,
+                              slices2.indices, slices2.boundary, j)
+        gR1 = _pic_node_grid!(nc1, solver, T, coord1, param1.center, beam2.rep,
+                              slices2.indices, slices2.boundary, j + 1)
+        gL2 = _pic_node_grid!(nc2, solver, T, coord2, param2.center, beam1.rep,
+                              slices1.indices, slices1.boundary, i)
+        gR2 = _pic_node_grid!(nc2, solver, T, coord2, param2.center, beam1.rep,
+                              slices1.indices, slices1.boundary, i + 1)
+        (gL1 === nothing || gR1 === nothing || gL2 === nothing || gR2 === nothing) && return false
+        vx1, vy1 = _pic_interaction_node!(
+            solver, coord1, param1, field2, param2, kbb2, workspace, gL1, gR1)
+        vx2, vy2 = _pic_interaction_node!(
+            solver, coord2, param2, field1, param1, kbb1, workspace, gL2, gR2)
+    else
+        # `union_bounds` is only ever written on the `:source_slice` path, which
+        # `_pic_batchable` keeps sequential; `batched` asserts that rather than
+        # trusting the two predicates to stay in step.
+        batched && share_grid && error(
+            "interaction_grid = :source_slice reached the batched PIC pair loop; " *
+            "its union mesh depends on how much of the turn has been applied, so " *
+            "_pic_batchable must keep it sequential.")
         ov1 = share_grid ? get!(() -> _pic_union_bounds(coord1, param1.center, beam2.rep, slices2.indices),
                                 union_bounds, (i, 1)) : nothing
         ov2 = share_grid ? get!(() -> _pic_union_bounds(coord2, param2.center, beam1.rep, slices1.indices),
@@ -115,22 +299,13 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
         vx2, vy2 = _pic_interaction!(
             solver, coord2, param2, field1, param1, kbb1, workspace, green_cache, key2, ov2,
         )
-        end
-        _pic_store_slice!(beam1.rep, idx1, field1)
-        _pic_store_slice!(beam2.rep, idx2, field2)
-        if compute_luminosity
-            pair_luminosity = _pic_luminosity(solver, vx1, vy1, vx2, vy2, klum, workspace)
-            luminosity += pair_luminosity
-            sink = _ACTIVE_PIC_LUMINOSITY_PAIR_SINK[]
-            sink === nothing || push!(sink, (
-                turn=ctx === nothing ? -1 : ctx.turn, i=Int(i), j=Int(j),
-                luminosity=Float64(pair_luminosity),
-            ))
-        end
     end
-    _pic_report_green_cache(green_cache)
-    _pic_report_dropped(workspace)
-    return luminosity
+    _pic_store_slice!(beam1.rep, idx1, field1)
+    _pic_store_slice!(beam2.rep, idx2, field2)
+    if compute_luminosity
+        @inbounds lum_parts[p] = _pic_luminosity(solver, vx1, vy1, vx2, vy2, klum, workspace)
+    end
+    return true
 end
 
 """
@@ -168,6 +343,19 @@ function _pic_report_dropped(workspace::_PICCPUWorkspace)
     return _pic_report_dropped_count(Int(workspace.dropped[]))
 end
 
+# Pool form: the batched pair loop gives each worker its own workspace, so the
+# count a run must report is the SUM over the pool, not one worker's share. One
+# warning per collide either way -- summing here rather than warning per
+# workspace keeps a dropped particle exactly as loud as it was when the loop was
+# sequential, instead of N times louder or, worse, N-1 times quieter.
+function _pic_report_dropped(workspaces)
+    total = 0
+    for ws in workspaces
+        total += Int(ws.dropped[])
+    end
+    return _pic_report_dropped_count(total)
+end
+
 # Shared reader for both backends: the CUDA workspace's device counter is read
 # back once per collide and routed here (`_cuda_pic_report_dropped`, U1-5), so
 # a dropped particle warns identically wherever it happens.
@@ -202,6 +390,35 @@ function _pic_cpu_workspace!(runtime_cache::Dict, label::Symbol,
     return get!(runtime_cache, key) do
         _pic_cpu_workspace(T, solver.grid...)
     end
+end
+
+"""
+    _pic_cpu_workspace_pool!(runtime_cache, label, solver, T, n) -> Vector
+
+`n` scratch workspaces for the batched pair loop, cached across turns and GROWN
+in place when a later call wants more.
+
+`n` is deliberately NOT part of the key. Keying on it would strand a whole pool
+every time the worker count changed, and a workspace is ~8 MB at grid 128
+(sixteen padded deposit grids); growing keeps exactly one pool per
+(label, T, grid) for the process's lifetime, which is what the singular
+workspace above already does.
+
+Which workspace a pair is handed cannot move a result. Every buffer is fully
+overwritten before it is read -- `charge` and the luminosity grids are `fill!`ed,
+`spectral` and `green_fft` are assigned whole, the field planes are written by
+the solve that reads them -- and `dropped` is a counter that
+`_pic_report_dropped` sums over the pool.
+"""
+function _pic_cpu_workspace_pool!(runtime_cache::Dict, label::Symbol,
+                                  solver::PICPoissonSolver, ::Type{T},
+                                  n::Integer) where {T}
+    key = (:cpu_pic_workspace_pool, label, T, solver.grid)
+    pool = get!(() -> _PICCPUWorkspace{T}[], runtime_cache, key)::Vector{_PICCPUWorkspace{T}}
+    while length(pool) < n
+        push!(pool, _pic_cpu_workspace(T, solver.grid...))
+    end
+    return pool
 end
 
 function _pic_green_cache!(runtime_cache::Dict, label::Symbol,
@@ -752,6 +969,13 @@ function _pic_map_particles(f::F, n::Integer) where {F}
         f(1, nn)
         return nothing
     end
+    # Inside the batched pair loop the pairs are already using the pool, so this
+    # map may only have the slice of it that its own pair was given. Without
+    # that budget every one of up to 15 concurrent pairs asked for the whole
+    # machine -- measured 5.76 s at 16 threads but 6.45 at 32 and 7.08 at 64,
+    # the cost of 600+ runnable tasks on 64 threads.
+    budget = _PIC_MAP_WORKER_BUDGET[]
+    workers = budget > 0 ? budget : _cpu_worker_count()
     # Chunk-size FLOOR, not just a total-size floor, and it is the SAME measured
     # break-even as the serial cutoff above rather than a second tuned number: a
     # chunk smaller than the size at which threading starts to pay is by
@@ -761,7 +985,7 @@ function _pic_map_particles(f::F, n::Integer) where {F}
     # `nchunks = worker count` outright: 6.1 s at 16 workers but 8.6 s at 64 and
     # 63.6 s at 128, where the same input with this floor gives 6.2 / 7.2 / 13.0.
     # The width now follows the DATA and stops at what the data can feed.
-    nchunks = clamp(fld(nn, _STRONG_STRONG_PARALLEL_KICK_MIN), 1, _cpu_worker_count())
+    nchunks = clamp(fld(nn, _STRONG_STRONG_PARALLEL_KICK_MIN), 1, workers)
     if nchunks <= 1
         f(1, nn)
         return nothing
@@ -1286,6 +1510,7 @@ function _pic_green_cache(solver::PICPoissonSolver, ::Type{T}) where {T}
     cache = Symbol(solver.green_cache)
     cache == :slice_pair && return _PICSlicePairGreenCache{T}(
         Dict{Tuple{Int,Int,Int},_PICSlicePairGreenEntry{T}}(), 0, 0, 0,
+        ReentrantLock(),
     )
     return nothing
 end
@@ -1294,24 +1519,47 @@ function _pic_slice_pair_green!(workspace::_PICCPUWorkspace, solver::PICPoissonS
                                 cache, cache_key, source_grid, field_grid,
                                 source_bounds, field_bounds) where {T}
     if cache isa _PICSlicePairGreenCache{T} && cache_key !== nothing
-        entry = get(cache.entries, cache_key, nothing)
-        if entry !== nothing && _pic_slice_pair_entry_usable(solver, entry, source_grid, field_grid, source_bounds, field_bounds)
-            cache.hits += 1
-            entry.uses += 1
+        # Explicit lock/unlock rather than `lock(cache.lock) do ... end`: the
+        # do-block form is a closure over locals this function also assigns,
+        # which is the `Core.Box` shape the permanent lowered-code sweep exists
+        # to reject.
+        local entry, usable
+        lock(cache.lock)
+        try
+            entry = get(cache.entries, cache_key, nothing)
+            usable = entry !== nothing && _pic_slice_pair_entry_usable(
+                solver, entry, source_grid, field_grid, source_bounds, field_bounds)
+            if usable
+                cache.hits += 1
+                entry.uses += 1
+            end
+        finally
+            unlock(cache.lock)
+        end
+        if usable
             return entry.source_grid, entry.field_grid, entry.green_fft
         end
+        # Rebuilt OUTSIDE the lock, into this worker's own workspace: the Green
+        # table and its FFT are the expensive part of a miss, and holding the
+        # cache lock across them would serialize the batch on the one thing
+        # batching is meant to overlap.
         expanded_source = _pic_expand_grid_by(source_grid, T(1) + T(solver.slice_pair_green_growth))
         expanded_field = _pic_expand_grid_by(field_grid, T(1) + T(solver.slice_pair_green_growth))
         expanded_source, expanded_field = _pic_realign_expanded_grids(
             solver.green_type, expanded_source, expanded_field, solver.grid...)
         green_fft = copy(_pic_green_fft!(workspace, solver, T, expanded_source, expanded_field))
-        if entry === nothing
-            cache.misses += 1
-            cache.entries[cache_key] = _PICSlicePairGreenEntry{T}(expanded_source, expanded_field, green_fft, 1, 0)
-        else
-            cache.rebuilds += 1
-            entry.rebuilds += 1
-            cache.entries[cache_key] = _PICSlicePairGreenEntry{T}(expanded_source, expanded_field, green_fft, 1, entry.rebuilds)
+        lock(cache.lock)
+        try
+            if entry === nothing
+                cache.misses += 1
+                cache.entries[cache_key] = _PICSlicePairGreenEntry{T}(expanded_source, expanded_field, green_fft, 1, 0)
+            else
+                cache.rebuilds += 1
+                entry.rebuilds += 1
+                cache.entries[cache_key] = _PICSlicePairGreenEntry{T}(expanded_source, expanded_field, green_fft, 1, entry.rebuilds)
+            end
+        finally
+            unlock(cache.lock)
         end
         return expanded_source, expanded_field, green_fft
     end

@@ -74,7 +74,16 @@ does not allocate receipts and does not synchronize merely for auditing.
 """
 mutable struct ExecutionAudit
     receipts::Vector{ExecutionAuditReceipt}
+    # `_record_execution!` is reached from inside worker tasks: the CPU PIC pair
+    # loop runs batches of slice pairs concurrently and each pair's per-particle
+    # maps call `_run_logical_workers` again, which records. Two tasks pushing
+    # to one Vector is a corrupted vector, not a reordered one, so the push is
+    # locked. Auditing is opt-in, so uninstrumented runs never take this lock --
+    # `_record_execution!` returns on the `audit === nothing` check first.
+    lock::ReentrantLock
 end
+ExecutionAudit(receipts::Vector{ExecutionAuditReceipt}) =
+    ExecutionAudit(receipts, ReentrantLock())
 ExecutionAudit() = ExecutionAudit(ExecutionAuditReceipt[])
 
 const _ACTIVE_EXECUTION_AUDIT = Base.ScopedValues.ScopedValue{Any}(nothing)
@@ -87,7 +96,14 @@ The receipts recorded inside a `with_execution_audit` block: one entry per
 consumer-boundary `_record_execution!`, which is how the effectiveness
 contracts prove a configuration value was READ rather than merely stored.
 """
-execution_receipts(audit::ExecutionAudit) = copy(audit.receipts)
+function execution_receipts(audit::ExecutionAudit)
+    lock(audit.lock)
+    try
+        return copy(audit.receipts)
+    finally
+        unlock(audit.lock)
+    end
+end
 
 """Run `f()` while recording actual configuration consumers into `audit`."""
 function with_execution_audit(f::F, audit::ExecutionAudit=ExecutionAudit()) where {F}
@@ -99,7 +115,14 @@ end
 
 function _record_execution!(consumer::Symbol, backend, values::NamedTuple)
     audit = _ACTIVE_EXECUTION_AUDIT[]
-    audit === nothing || push!(audit.receipts, ExecutionAuditReceipt(consumer, backend, values))
+    audit === nothing && return nothing
+    receipt = ExecutionAuditReceipt(consumer, backend, values)
+    lock(audit.lock)
+    try
+        push!(audit.receipts, receipt)
+    finally
+        unlock(audit.lock)
+    end
     return nothing
 end
 
@@ -274,10 +297,52 @@ function _run_logical_workers(f::F, workers::Integer=_cpu_worker_count()) where 
         f(1, 1)
         return nothing
     end
-    @sync for worker in 1:nworkers
-        Threads.@spawn f(worker, nworkers)
+    try
+        @sync for worker in 1:nworkers
+            Threads.@spawn f(worker, nworkers)
+        end
+    catch err
+        _rethrow_worker_failure(err)
     end
     return nothing
+end
+
+"""
+    _rethrow_worker_failure(err)
+
+Rethrow what a worker actually threw, not the wrapper `@sync` builds around it.
+
+A fail-fast throw from inside a worker arrives as
+`CompositeException([TaskFailedException(task), ...])`, so a caller matching on
+`ArgumentError` sees neither the type nor the message. That matters here beyond
+tidiness: every non-finite chokepoint in this repository throws an
+`ArgumentError` whose message names the slice pair, the count and the first
+offending particle, and tells the caller about `allow_lost_particles` — a
+diagnostic that is worthless buried two exception layers down.
+
+The rule this restores is that the same input fails the same way whether the
+work ran serially or across workers. Which is exactly what a worker count is
+not allowed to change: `nworkers == 1` takes the branch above and never wraps.
+
+Only the FIRST cause is unwrapped. Concurrent workers that fail together are
+almost always seeing one poisoned input from their own share of it, so the first
+is representative; if nothing can be unwrapped the original is rethrown intact
+rather than being replaced by something less informative.
+"""
+function _rethrow_worker_failure(err)
+    cause = err
+    while true
+        if cause isa CompositeException && !isempty(cause.exceptions)
+            cause = first(cause.exceptions)
+        elseif cause isa TaskFailedException
+            result = cause.task.result
+            result isa Exception || break
+            cause = result
+        else
+            break
+        end
+    end
+    throw(cause)
 end
 
 """
