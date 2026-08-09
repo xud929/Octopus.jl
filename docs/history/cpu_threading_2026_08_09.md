@@ -254,3 +254,31 @@ pair's charge grid reached another pair's field solve and the collide died
 with an all-NaN slice. Renamed to `chunk_ws`/`serial_ws`. Second time in this
 campaign, and the reason the batched-vs-sequential pin asserts the schedule
 from an execution receipt rather than trusting that it ran.
+
+## Fix 3 — the same batching for GaussianPIC (2026-08-09)
+
+`_gpic_collide!` had the identical sequential pair loop and now shares the
+whole mechanism: `_pic_pool_size`, `_pic_cpu_workspace_pool!`,
+`collision_pair_batches`, the collision-order luminosity fold, the
+`:cpu_pic_pair_schedule` receipt and `_PIC_MAP_WORKER_BUDGET`. It is the
+simpler case — gpic REJECTS `interaction_grid` as an inert option
+(`_GPIC_INERT_PIC_OPTIONS`), so the `:source_slice` union mesh that keeps
+plain PIC sequential cannot arise; `_pic_batchable` is still consulted rather
+than assumed.
+
+| point | baseline `d0fb3f2` | after fix 3 | |
+|---|---|---|---|
+| quarter size, 16 threads | 18.88 | 8.60 | 2.2x |
+| production, 16 threads   | 65.45 | 26.16 | **2.5x** |
+| production, 1 thread     | —     | 67.25 | |
+| production, 32 threads   | —     | 26.16 | |
+
+Digests: `0x967d4e7aecddbba5` (quarter size) and `0x58fc69d46333dfe0`
+(production), each identical between the baseline and every thread count here.
+
+**What this leaves, and it is the whole remaining cost.** gpic still allocates
+**47.1 GiB per collide** — unchanged from the baseline — and now spends **39%**
+of its wall in GC, against PIC's 6.3 GiB and 20%. gpic never received fix 1:
+its kick loop is still inline in `_gpic_interaction!`, which is exactly the
+shape that was allocating in `_pic_interaction!` before extraction. That is
+the next fix, and on PIC's evidence it is worth more than the batching was.

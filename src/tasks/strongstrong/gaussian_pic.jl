@@ -844,10 +844,16 @@ end
 # Gaussian-subtracted interaction; everything else (slicing, luminosity,
 # green cache, workspace) is the shared PIC infrastructure.
 # ---------------------------------------------------------------------------
+_gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
+               workspace::_PICCPUWorkspace, green_cache) =
+    _gpic_collide!(gsolver, beam1, beam2, ctx, (workspace,), green_cache)
+
 function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
-                        workspace::_PICCPUWorkspace, green_cache)
+                        workspaces, green_cache)
     pic = gsolver.pic
     _validate_pic_solver(pic)
+    isempty(workspaces) && throw(ArgumentError(
+        "GaussianPIC CPU collide needs at least one scratch workspace; got an empty pool."))
     _require_linear_slice_interpolation(pic, "GaussianPICPoissonSolver")
     # Reset and report the dropped-charge counter, as the plain-PIC twin does
     # (2026-08-05_b audit, U10-2). This solver shares `_PICCPUWorkspace` and
@@ -857,7 +863,9 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
     # channel is unreachable today only because the hybrid rejects every
     # non-:extrema `grid_extent`; this is the missing guardrail, not an active
     # loss, and it costs one store.
-    workspace.dropped[] = 0
+    for ws in workspaces
+        ws.dropped[] = 0
+    end
     slices1 = longitudinal_slices(beam1.rep, pic.slicing1)
     slices2 = longitudinal_slices(beam2.rep, pic.slicing2)
     kbb1 = _pic_kbb1(pic, beam1, beam2)
@@ -867,40 +875,119 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
     T = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(kbb1), typeof(kbb2))
     # N7: the luminosity estimate returns Float64 everywhere (see pic_cpu.jl).
     LT = Float64
-    luminosity = compute_luminosity ? zero(LT) : LT(NaN)
-    for (_, i, j) in _slice_collision_order(slices1, slices2)
-        idx1 = slices1.indices[i]
-        idx2 = slices2.indices[j]
-        (isempty(idx1) || isempty(idx2)) && continue
-        param1 = (weight=slices1.weight[i], lb=slices1.boundary[i],
-                  center=slices1.center[i], rb=slices1.boundary[i + 1])
-        param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
-                  center=slices2.center[j], rb=slices2.boundary[j + 1])
-        coord1 = _pic_extract_slice(beam1.rep, idx1)
-        coord2 = _pic_extract_slice(beam2.rep, idx2)
-        field1 = _pic_copy_coords(coord1)
-        field2 = _pic_copy_coords(coord2)
-        vx1, vy1 = _gpic_interaction!(
-            gsolver, coord1, param1, field2, param2, kbb2, workspace, green_cache, (i, j, 1),
-        )
-        vx2, vy2 = _gpic_interaction!(
-            gsolver, coord2, param2, field1, param1, kbb1, workspace, green_cache, (i, j, 2),
-        )
-        _pic_store_slice!(beam1.rep, idx1, field1)
-        _pic_store_slice!(beam2.rep, idx2, field2)
-        if compute_luminosity
-            pair_luminosity = _pic_luminosity(pic, vx1, vy1, vx2, vy2, klum, workspace)
-            luminosity += pair_luminosity
-            sink = _ACTIVE_PIC_LUMINOSITY_PAIR_SINK[]
+
+    # Same schedule, fold and receipts as `_pic_collide!`; see the reasoning
+    # there. gpic is the simpler case: it REJECTS `interaction_grid` as inert
+    # (`_GPIC_INERT_PIC_OPTIONS`), so the `:source_slice` union mesh that keeps
+    # plain PIC sequential cannot arise here, and `_pic_batchable` is consulted
+    # anyway rather than assumed.
+    order = _slice_collision_order(slices1, slices2)
+    npairs = length(order)
+    pair_pos = Dict{Tuple{Int,Int},Int}()
+    sizehint!(pair_pos, npairs)
+    for (p, entry) in pairs(order)
+        pair_pos[(entry[2], entry[3])] = p
+    end
+    lum_parts = zeros(LT, npairs)
+    ran = fill(false, npairs)      # Vector{Bool}, not BitVector: see _pic_collide!
+
+    if _pic_batchable(pic) && length(workspaces) > 1 && npairs > 1
+        inner_workers = max(1, fld(_cpu_worker_count(), length(workspaces)))
+        batches = collision_pair_batches(slices1, slices2)
+        _record_execution!(:cpu_pic_pair_schedule, CPUThreadsBackend,
+                           (schedule=:batched, pairs=npairs, batches=length(batches),
+                            widest_batch=maximum(length, batches; init=0),
+                            pair_workers=length(workspaces),
+                            inner_workers=inner_workers))
+        Base.ScopedValues.with(_PIC_MAP_WORKER_BUDGET => inner_workers) do
+        for batch in batches
+            nworkers = clamp(length(workspaces), 1, length(batch))
+            # `chunk_ws`, NOT `ws` -- the sequential branch below assigns `ws`
+            # at function scope, and sharing the name boxes it into one
+            # workspace for every worker. See `_pic_collide!`.
+            _run_logical_workers(nworkers) do chunk, _
+                chunk_ws = workspaces[chunk]
+                lo, hi = _chunk_bounds(length(batch), nworkers, chunk)
+                for pos in lo:hi
+                    pr = batch[pos]
+                    p = pair_pos[(pr.i, pr.j)]
+                    ran[p] = _gpic_collide_pair!(
+                        lum_parts, p, gsolver, beam1, beam2, slices1, slices2,
+                        pr.i, pr.j, chunk_ws, green_cache, kbb1, kbb2, klum,
+                        compute_luminosity)
+                end
+            end
+        end
+        end
+    else
+        _record_execution!(:cpu_pic_pair_schedule, CPUThreadsBackend,
+                           (schedule=:sequential, pairs=npairs, batches=0,
+                            widest_batch=0, pair_workers=1,
+                            inner_workers=_cpu_worker_count()))
+        serial_ws = first(workspaces)
+        for (p, entry) in pairs(order)
+            ran[p] = _gpic_collide_pair!(
+                lum_parts, p, gsolver, beam1, beam2, slices1, slices2,
+                entry[2], entry[3], serial_ws, green_cache, kbb1, kbb2, klum,
+                compute_luminosity)
+        end
+    end
+
+    luminosity = LT(NaN)
+    if compute_luminosity
+        luminosity = zero(LT)
+        sink = _ACTIVE_PIC_LUMINOSITY_PAIR_SINK[]
+        turn = ctx === nothing ? -1 : ctx.turn
+        for p in 1:npairs
+            @inbounds ran[p] || continue
+            @inbounds luminosity += lum_parts[p]
             sink === nothing || push!(sink, (
-                turn=ctx === nothing ? -1 : ctx.turn, i=Int(i), j=Int(j),
-                luminosity=Float64(pair_luminosity),
+                turn=turn, i=Int(order[p][2]), j=Int(order[p][3]),
+                luminosity=Float64(lum_parts[p]),
             ))
         end
     end
     _pic_report_green_cache(green_cache)
-    _pic_report_dropped(workspace)          # U10-2
+    _pic_report_dropped(workspaces)         # U10-2, summed over the pool
     return luminosity
+end
+
+"""
+One Gaussian-subtracted slice-pair collision; the `_pic_collide_pair!` twin.
+
+Returns whether the pair ran, and writes its luminosity into `lum_parts[p]` at
+the pair's position in the COLLISION order so the fold stays independent of the
+schedule.
+"""
+function _gpic_collide_pair!(lum_parts, p::Int, gsolver::GaussianPICPoissonSolver,
+                             beam1::Beam, beam2::Beam, slices1, slices2,
+                             i::Int, j::Int, workspace::_PICCPUWorkspace,
+                             green_cache, kbb1, kbb2, klum,
+                             compute_luminosity::Bool)
+    idx1 = slices1.indices[i]
+    idx2 = slices2.indices[j]
+    (isempty(idx1) || isempty(idx2)) && return false
+    param1 = (weight=slices1.weight[i], lb=slices1.boundary[i],
+              center=slices1.center[i], rb=slices1.boundary[i + 1])
+    param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
+              center=slices2.center[j], rb=slices2.boundary[j + 1])
+    coord1 = _pic_extract_slice(beam1.rep, idx1)
+    coord2 = _pic_extract_slice(beam2.rep, idx2)
+    field1 = _pic_copy_coords(coord1)
+    field2 = _pic_copy_coords(coord2)
+    vx1, vy1 = _gpic_interaction!(
+        gsolver, coord1, param1, field2, param2, kbb2, workspace, green_cache, (i, j, 1),
+    )
+    vx2, vy2 = _gpic_interaction!(
+        gsolver, coord2, param2, field1, param1, kbb1, workspace, green_cache, (i, j, 2),
+    )
+    _pic_store_slice!(beam1.rep, idx1, field1)
+    _pic_store_slice!(beam2.rep, idx2, field2)
+    if compute_luminosity
+        @inbounds lum_parts[p] = _pic_luminosity(
+            gsolver.pic, vx1, vy1, vx2, vy2, klum, workspace)
+    end
+    return true
 end
 
 function collide!(solver::GaussianPICPoissonSolver, beam1::Beam, beam2::Beam,
@@ -929,9 +1016,9 @@ function _gpic_collide_fresh!(solver::GaussianPICPoissonSolver, beam1::Beam,
                               beam2::Beam, ctx)
     T = _pic_cpu_scalar_type(solver.pic, beam1, beam2)
     nx, ny = solver.pic.grid
-    workspace = _pic_cpu_workspace(T, nx, ny)
+    workspaces = [_pic_cpu_workspace(T, nx, ny) for _ in 1:_pic_pool_size(solver.pic)]
     green_cache = _pic_green_cache(solver.pic, T)
-    return _gpic_collide!(solver, beam1, beam2, ctx, workspace, green_cache)
+    return _gpic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache)
 end
 
 function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
@@ -939,9 +1026,10 @@ function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
                                  beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend},
                                  ctx::TrackingContext)
     T = _pic_cpu_scalar_type(solver.pic, beam1, beam2)
-    workspace = _pic_cpu_workspace!(task.runtime_cache, label, solver.pic, T)
+    workspaces = _pic_cpu_workspace_pool!(task.runtime_cache, label, solver.pic, T,
+                                          _pic_pool_size(solver.pic))
     green_cache = _pic_green_cache!(task.runtime_cache, label, solver.pic, T)
-    return _gpic_collide!(solver, beam1, beam2, ctx, workspace, green_cache)
+    return _gpic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache)
 end
 
 _strong_strong_collide_backend!(task::StrongStrongTask, label::Symbol,
