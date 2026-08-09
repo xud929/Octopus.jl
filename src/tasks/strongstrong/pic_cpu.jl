@@ -170,7 +170,27 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
         # extra occupancy was overhead, not work. Re-measure after any change
         # that moves a substantial block inside a pair; it is the right idea
         # waiting on parallel efficiency it does not have yet.
-        inner_workers = max(1, fld(_cpu_worker_count(), pool_workers))
+        # NO nesting inside the batched pair loop. The pair level already
+        # supplies the concurrency, and splitting each pair's per-particle and
+        # per-cell maps on top of it measurably costs.
+        #
+        # Found by a natural experiment on `fld(nthreads, pool)`, which is 1 up
+        # to 29 threads and 2 from 30 (the pool caps at 15 slices). Wall time
+        # and CPU time at the production point:
+        #
+        #     threads   16     20     29  |   30     32
+        #     wall    3.40   3.45   3.82  | 4.54   4.99
+        #     cpu     20.1   19.8   25.9  | 43.9   49.5
+        #
+        # The step is exactly where the split turns on, not a smooth curve, so
+        # it is this rule and not the thread count. With no nesting: 3.45 at 16,
+        # 4.00 at 32, 4.36 at 64 -- the cliff is gone and wide pools merely stop
+        # helping instead of hurting.
+        #
+        # `_pic_map_particles` is NOT dead: the sequential path (one workspace —
+        # `:source_slice`, or too few slices to batch) leaves the budget at 0 and
+        # uses the whole pool, which is where it earns its keep.
+        inner_workers = 1
         batches = collision_pair_batches(slices1, slices2)
         # Consumer-boundary receipt, so a test can assert the schedule the run
         # ACTUALLY used rather than the one its policy asked for. Without it,

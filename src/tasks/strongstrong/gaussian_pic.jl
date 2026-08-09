@@ -941,7 +941,9 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
     # `_pic_collide!`.
     pool_workers = min(length(workspaces), _pic_pool_size(pic))
     if _pic_batchable(pic) && pool_workers > 1 && npairs > 1
-        inner_workers = max(1, fld(_cpu_worker_count(), pool_workers))
+        # No nesting inside the batched pair loop; see `_pic_collide!` for the
+        # measurement that decided this.
+        inner_workers = 1
         batches = collision_pair_batches(slices1, slices2)
         _record_execution!(:cpu_pic_pair_schedule, CPUThreadsBackend,
                            (schedule=:batched, pairs=npairs, batches=length(batches),

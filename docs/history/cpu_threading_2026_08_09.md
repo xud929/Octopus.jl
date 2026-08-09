@@ -391,25 +391,46 @@ is the campaign's most useful negative result:
 | 32 | 4.59 | 45.0 s | 28.7% |
 
 **CPU time more than doubles** going from 1 to 16 threads for the same work.
-Sixteen threads burn 21 CPU-seconds to do what one thread does in 9.4. So the
-missing 62% is not idle capacity waiting to be filled — a large part of it is
-work that only exists *because* the run is parallel: multi-threaded GC marking,
-task spawn and join, and above all memory-bandwidth contention, since the
-deposit, interpolation and slice copies are all bandwidth-bound and sixteen
-threads do not get sixteen times the bandwidth on a 2-socket box.
+Sixteen threads burn 21 CPU-seconds to do what one thread does in 9.4.
 
-The per-batch worker allocation is the proof. It raises measured utilisation
-(37.7% -> 42.1% at 16 threads) and makes the wall time WORSE (3.20 -> 3.94 s),
-because the added occupancy is overhead: CPU time went 19.3 -> 27.9 s. It was
-measured twice — once when only the kick map threaded inside a pair, once after
-the Green build did — and reverted both times. Chasing the utilisation number
-directly would have accepted it.
+**Correction to an earlier claim in this note.** That inflation was first
+attributed here to memory-bandwidth contention. That was asserted, not
+measured, and the measurement does not support it. Re-running at 32 and 64
+threads with `--gcthreads=4` instead of Julia's default (which scales with
+`--threads`) cuts CPU time sharply — 40.7 -> 26.4 s at 64 threads — so **GC
+threads are the dominant term in the CPU inflation**. But it does NOT improve
+wall time (4.12 -> 4.71 s at 64; GC wall goes up because collections are
+slower with fewer markers), so CPU inflation is a red herring for the ceiling.
+Bandwidth may still contribute; nothing here establishes it.
 
-The honest ceiling statement for this workload on this box: **wall time is the
-objective, CPU-time inflation is the diagnostic**, and past ~16 threads the
-inflation grows faster than the wall falls. Raising the ceiling further needs
-the remaining work to become less bandwidth-bound (or NUMA-aware), not more
-finely divided.
+**What the wall-time cliff actually was: this campaign's own nesting rule.**
+Going 16 -> 32 threads made the collide *slower*, 3.5 -> 4.6 s, which is not
+something a thread count should do. A natural experiment isolates it. The pool
+caps at 15 (one per slice), so `inner_workers = fld(nthreads, pool)` is 1 up to
+29 threads and 2 from 30:
+
+| threads | 16 | 20 | 29 | **30** | 32 |
+|---|---|---|---|---|---|
+| wall | 3.40 | 3.45 | 3.82 | **4.54** | 4.99 |
+| cpu | 20.1 | 19.8 | 25.9 | **43.9** | 49.5 |
+
+The step lands exactly where the split turns on, not on a smooth curve. So the
+per-pair maps were being split on top of an already-parallel pair loop and
+paying for it. With nesting removed inside the batched loop: **3.45 s at 16,
+4.00 at 32, 4.36 at 64** — the cliff is gone and wide pools merely stop helping
+rather than hurting.
+
+That also explains why the per-batch allocation measured worse twice (4.20 ->
+5.41, then 3.20 -> 3.94): it is a *finer* nesting rule, and nesting itself was
+the problem.
+
+**The honest ceiling statement.** Wall time is the objective; the utilisation
+number can rise while it worsens, so it is a diagnostic and not a target. Pair
+parallelism saturates at the slice count (15 here), and past that a larger pool
+costs a further 15-25% in wall time from pool-size overheads whose cause is not
+yet attributed. Getting past ~16 threads needs more *independent* work — more
+slices, or the serial blocks inside a pair made to parallelize efficiently —
+and both need re-measuring rather than assuming.
 
 **The trap fired a third time, in a new shape.** Here `phiL, ExL, EyL` and
 `phiR, ExR, EyR` were assigned in BOTH branches of `if use_coupled`, which was
