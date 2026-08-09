@@ -936,17 +936,21 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
     lum_parts = zeros(LT, npairs)
     ran = fill(false, npairs)      # Vector{Bool}, not BitVector: see _pic_collide!
 
-    if _pic_batchable(pic) && length(workspaces) > 1 && npairs > 1
-        inner_workers = max(1, fld(_cpu_worker_count(), length(workspaces)))
+    # The pool is storage, not a worker count: it only grows, so its length is
+    # the high-water mark of every policy this label has run under. See
+    # `_pic_collide!`.
+    pool_workers = min(length(workspaces), _pic_pool_size(pic))
+    if _pic_batchable(pic) && pool_workers > 1 && npairs > 1
+        inner_workers = max(1, fld(_cpu_worker_count(), pool_workers))
         batches = collision_pair_batches(slices1, slices2)
         _record_execution!(:cpu_pic_pair_schedule, CPUThreadsBackend,
                            (schedule=:batched, pairs=npairs, batches=length(batches),
                             widest_batch=maximum(length, batches; init=0),
-                            pair_workers=length(workspaces),
+                            pair_workers=pool_workers,
                             inner_workers=inner_workers))
         Base.ScopedValues.with(_PIC_MAP_WORKER_BUDGET => inner_workers) do
         for batch in batches
-            nworkers = clamp(length(workspaces), 1, length(batch))
+            nworkers = clamp(pool_workers, 1, length(batch))
             # `chunk_ws`, NOT `ws` -- the sequential branch below assigns `ws`
             # at function scope, and sharing the name boxes it into one
             # workspace for every worker. See `_pic_collide!`.

@@ -4373,6 +4373,54 @@ end
         @test length(Octopus._pic_cpu_workspace_pool!(cache, :ip, solver, Float64, 1)) == 5
     end
 
+    # Slice index sets must be pairwise DISJOINT. Batching made this
+    # load-bearing and it was not pinned anywhere: pairs in one batch write
+    # different slices of the same beam concurrently, so two slices sharing a
+    # particle index would be a data race on that particle rather than the
+    # merely-wrong physics it would have been under the sequential loop. Checked
+    # on the tie-splitting case too (`:equal_count` splits a tie group ACROSS
+    # slices by rank, audit part 6 R2, which is exactly where an overlap would
+    # come from if one ever did).
+    let n = 4000
+        s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+        z = [2.0e-2 * sin(0.7 * i + 2.0) + 1.0e-3 * sin(3.1 * i) for i in 1:n]
+        for zz in (z, round.(z, digits=3))       # continuous, then heavy ties
+            rep = Phase6DRep(s(1.0e-4, 0.0), s(1.0e-5, 0.3), s(1.0e-4, 0.9),
+                             s(1.0e-5, 1.2), zz, s(1.0e-4, 2.5))
+            for method in (:equal_area, :equal_count, :equal_width, :normal_quantile)
+                sl = Octopus.longitudinal_slices(
+                    rep, LongitudinalSlicing(nslices=7, method=method))
+                flat = reduce(vcat, sl.indices)
+                @test length(flat) == length(unique(flat))
+                @test length(flat) == n          # and every particle is placed
+            end
+        end
+    end
+
+    # The workspace pool is STORAGE, not a worker count. It only grows, so its
+    # length is the high-water mark of every policy the label has run under; the
+    # pair width must be recomputed from the policy in force. Without this a
+    # pool grown to N keeps spawning N pair workers after the caller asks for 2
+    # -- a configuration set and not read, which is the failure mode the
+    # execution receipts exist to make visible.
+    let solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                                  grid=(16, 16), green_cache=:slice_pair, slicing=slc)
+        wide = [Octopus._pic_cpu_workspace(Float64, 16, 16) for _ in 1:8]
+        b1, b2 = mkb(9000), mkb(9000)
+        audit = Octopus.ExecutionAudit()
+        Octopus.with_execution_audit(audit) do
+            workers(1, b1.rep) do
+                Octopus._pic_collide!(solver, b1, b2, nothing, wide, nothing)
+            end
+        end
+        sched = [r.values for r in Octopus.execution_receipts(audit)
+                 if r.consumer === :cpu_pic_pair_schedule]
+        @test length(sched) == 1
+        # One worker requested, eight workspaces available: the run must report
+        # the policy, not the pool.
+        @test sched[1].schedule === :sequential
+    end
+
     # A worker's exception must surface as ITSELF, at every worker count.
     # `@sync` wraps a throw from a spawned task in
     # `CompositeException([TaskFailedException(...)])`, so once the PIC pair loop

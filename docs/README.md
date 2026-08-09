@@ -248,6 +248,12 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   [`strong_strong_pic_extreme_benchmark_history.md`](history/strong_strong_pic_extreme_benchmark_history.md),
   [`strong_strong_diagnostics_benchmark_history.md`](history/strong_strong_diagnostics_benchmark_history.md).
 - Audits / change records:
+  [`neighbour_audit_2026_08_09.md`](history/neighbour_audit_2026_08_09.md)
+  (targeted neighbour audit of the CPU-threading campaign — organised around
+  what concurrent pair batching newly makes load-bearing rather than around the
+  diff: slice-index disjointness, the global lattice-Green memo, workspace
+  exclusivity, and the pool-vs-policy worker count; includes the measured
+  negative result on per-batch worker allocation),
   [`neighbour_audit_2026_08_07.md`](history/neighbour_audit_2026_08_07.md)
   (targeted post-campaign audit of the 2026-08-07 ten-fix session's blast
   radius — "a fix's neighbours are where the next defect is", applied to the

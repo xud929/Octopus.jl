@@ -140,12 +140,19 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # neighbouring pairs would read-modify-write the same word and lose one.
     ran = fill(false, npairs)
 
-    if _pic_batchable(solver) && length(workspaces) > 1 && npairs > 1
+    # The pool is STORAGE, not a worker count. `_pic_cpu_workspace_pool!` only
+    # ever grows, so `length(workspaces)` is the high-water mark of every policy
+    # this label has run under; scheduling off it would keep spawning 15 pair
+    # workers after a caller asked for 2, which is a configuration set and not
+    # read. The width is recomputed from the policy here and the pool indexed
+    # only up to it.
+    pool_workers = min(length(workspaces), _pic_pool_size(solver))
+    if _pic_batchable(solver) && pool_workers > 1 && npairs > 1
         # What is left of the pool once the pairs have taken their share, handed
         # to the per-particle maps inside each pair so the two levels compose
         # instead of multiplying. Integer division, floor at 1: a pair always
         # gets at least itself.
-        inner_workers = max(1, fld(_cpu_worker_count(), length(workspaces)))
+        inner_workers = max(1, fld(_cpu_worker_count(), pool_workers))
         batches = collision_pair_batches(slices1, slices2)
         # Consumer-boundary receipt, so a test can assert the schedule the run
         # ACTUALLY used rather than the one its policy asked for. Without it,
@@ -155,11 +162,11 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
         _record_execution!(:cpu_pic_pair_schedule, CPUThreadsBackend,
                            (schedule=:batched, pairs=npairs, batches=length(batches),
                             widest_batch=maximum(length, batches; init=0),
-                            pair_workers=length(workspaces),
+                            pair_workers=pool_workers,
                             inner_workers=inner_workers))
         Base.ScopedValues.with(_PIC_MAP_WORKER_BUDGET => inner_workers) do
         for batch in batches
-            nworkers = clamp(length(workspaces), 1, length(batch))
+            nworkers = clamp(pool_workers, 1, length(batch))
             # `chunk_ws`, NOT `ws`. The sequential branch below also assigns
             # `ws`, and `if`/`else` opens no scope in Julia, so one name here
             # would be a single function-scope variable captured by this
@@ -381,17 +388,6 @@ function _pic_cpu_scalar_type(solver::PICPoissonSolver, beam1::Beam, beam2::Beam
     )
 end
 
-function _pic_cpu_workspace!(runtime_cache::Dict, label::Symbol,
-                             solver::PICPoissonSolver, ::Type{T}) where {T}
-    # No worker count in the key: since the count-invariance fix (U5-1/2)
-    # every workspace buffer is sized by fixed chunk constants, so one
-    # workspace serves every thread setting.
-    key = (:cpu_pic_workspace, label, T, solver.grid)
-    return get!(runtime_cache, key) do
-        _pic_cpu_workspace(T, solver.grid...)
-    end
-end
-
 """
     _pic_cpu_workspace_pool!(runtime_cache, label, solver, T, n) -> Vector
 
@@ -401,8 +397,11 @@ in place when a later call wants more.
 `n` is deliberately NOT part of the key. Keying on it would strand a whole pool
 every time the worker count changed, and a workspace is ~8 MB at grid 128
 (sixteen padded deposit grids); growing keeps exactly one pool per
-(label, T, grid) for the process's lifetime, which is what the singular
-workspace above already does.
+(label, T, grid) for the process's lifetime.
+
+Because it only grows, `length(pool)` is the HIGH-WATER MARK of every policy
+this label has run under, not the policy in force now — so it is storage, never
+a worker count. `_pic_collide!` recomputes the width from `_pic_pool_size`.
 
 Which workspace a pair is handed cannot move a result. Every buffer is fully
 overwritten before it is read -- `charge` and the luminosity grids are `fill!`ed,
