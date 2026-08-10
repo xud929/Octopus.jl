@@ -311,6 +311,27 @@ mutable struct _SpectralGridWS
     pcol::FFTW.r2rFFTWPlan          # RODFT00 dim 1
     pcosx::FFTW.r2rFFTWPlan         # REDFT00 dim 1 on padx
     pcosy::FFTW.r2rFFTWPlan         # REDFT00 dim 2 on pady
+    # Per-pair scratch, TWO slots each because the L and R quantities are alive
+    # together: the kick loop blends `phiL/ExL/EyL` with `phiR/ExR/EyR`, and the
+    # two drifted source planes are both needed to size the box. One slot would
+    # alias them.
+    #
+    # These were freshly allocated on every call -- three field arrays per solve
+    # and two source arrays per drift, four solves and four drifts per slice
+    # pair -- which is the 5.23 GiB/collide the slice hoist left behind. The
+    # workspace is already leased per worker, so the slots inherit its
+    # exclusivity.
+    phi_buf::Vector{Vector{Float64}}
+    ex_buf::Vector{Vector{Float64}}
+    ey_buf::Vector{Vector{Float64}}
+    src_x::Vector{Vector{Float64}}
+    src_y::Vector{Vector{Float64}}
+    # Virtual source positions at the luminosity plane. Slotted by DIRECTION,
+    # not by L/R: both directions' results are alive together when
+    # `_spectral_luminosity_pair` consumes all four, so the second interaction
+    # of a pair must not reuse the first's buffers.
+    mid_x::Vector{Vector{Float64}}
+    mid_y::Vector{Vector{Float64}}
 end
 
 function _SpectralGridWS(Nx::Int, Ny::Int)
@@ -325,7 +346,27 @@ function _SpectralGridWS(Nx::Int, Ny::Int)
     pcosy = FFTW.plan_r2r(pady, FFTW.REDFT00, 2)
     return _SpectralGridWS(Nx, Ny, NaN, NaN, zeros(Nx), zeros(Ny), zeros(Nx, Ny),
         rho, rholm, philm, tmp, padx, cosx, pady, cosy, Phig, Exg, Eyg,
-        prho, prow, pcol, pcosx, pcosy)
+        prho, prow, pcol, pcosx, pcosy,
+        [Float64[], Float64[]], [Float64[], Float64[]], [Float64[], Float64[]],
+        [Float64[], Float64[]], [Float64[], Float64[]],
+        [Float64[], Float64[]], [Float64[], Float64[]])
+end
+
+"""
+    _spectral_slot(buffers, slot, n) -> Vector{Float64}
+
+Slot `slot` of a workspace buffer set, resized to `n`.
+
+`slot = 0` allocates, which is what the `:grid_free` method and every direct
+caller outside the collide loop want -- `ws` is `nothing` there, and callers
+that keep their arrays must not be handed one the next pair overwrites. Slots 1
+and 2 are the L and R halves of one slice pair, valid until that slot is asked
+for again.
+"""
+@inline function _spectral_slot(buffers::Vector{Vector{Float64}}, slot::Int, n::Int)
+    buf = buffers[slot]
+    length(buf) == n || resize!(buf, n)
+    return buf
 end
 
 # A collision parallelizes over field slices, so each logical worker needs its
@@ -496,7 +537,8 @@ function _spectral_field_grid_eval(Exg, Eyg, Nx, Ny, fx, fy, Lx, Ly)
     return Ex, Ey
 end
 
-function _spectral_field_grid_potential!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly)
+function _spectral_field_grid_potential!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly;
+                                         vslot::Int=0)
     Nx, Ny = ws.Nx, ws.Ny
     a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1)
     ns = length(sx)
@@ -548,9 +590,9 @@ function _spectral_field_grid_potential!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx
         ws.Eyg[l, m] = -scale * (ws.cosy[l, m + 1] / 2)
     end
     nf = length(fx)
-    Phi = Vector{Float64}(undef, nf)
-    Ex = Vector{Float64}(undef, nf)
-    Ey = Vector{Float64}(undef, nf)
+    Phi = vslot == 0 ? Vector{Float64}(undef, nf) : _spectral_slot(ws.phi_buf, vslot, nf)
+    Ex  = vslot == 0 ? Vector{Float64}(undef, nf) : _spectral_slot(ws.ex_buf,  vslot, nf)
+    Ey  = vslot == 0 ? Vector{Float64}(undef, nf) : _spectral_slot(ws.ey_buf,  vslot, nf)
     Phig = ws.Phig; Exg = ws.Exg; Eyg = ws.Eyg
     @inbounds for k in 1:nf
         X = (fx[k] + Lx) / hx; Y = (fy[k] + Ly) / hy
@@ -776,10 +818,11 @@ function _spectral_field_ws(solver::SpectralPoissonSolver, ws, sx, sy, fx, fy, L
     return _spectral_field_grid!(ws, sx, sy, fx, fy, Lx, Ly)
 end
 
-function _spectral_field_potential_ws(solver::SpectralPoissonSolver, ws, sx, sy, fx, fy, Lx, Ly)
+function _spectral_field_potential_ws(solver::SpectralPoissonSolver, ws, sx, sy, fx, fy,
+                                      Lx, Ly; vslot::Int=0)
     solver.method === :grid_free &&
         return _spectral_field_free_potential(sx, sy, fx, fy, Lx, Ly, solver.grid...)
-    return _spectral_field_grid_potential!(ws, sx, sy, fx, fy, Lx, Ly)
+    return _spectral_field_grid_potential!(ws, sx, sy, fx, fy, Lx, Ly; vslot=vslot)
 end
 
 
@@ -901,10 +944,21 @@ function _spectral_box_drifted(solver::SpectralPoissonSolver, rep1, rep2)
     return L, L
 end
 
-function _spectral_drifted_source(source, drift_s, ::Type{T}) where {T}
+"""
+Drift a source slice to one boundary plane.
+
+`ws`/`vslot` let the caller supply the workspace's reusable slot instead of a
+fresh pair. The slot is only taken when `T === Float64` -- the buffers are
+`Float64`, and handing them back as a `Vector{Float32}` would be a type error
+rather than a slow path. On the collide path `T` promotes through the solver's
+scalars and is `Float64`, so the allocating branch is the safety net.
+"""
+function _spectral_drifted_source(source, drift_s, ::Type{T};
+                                  ws=nothing, vslot::Int=0) where {T}
     n = length(source.x)
-    x = Vector{T}(undef, n)
-    y = Vector{T}(undef, n)
+    use_slot = ws !== nothing && vslot != 0 && T === Float64
+    x = use_slot ? _spectral_slot(ws.src_x, vslot, n) : Vector{T}(undef, n)
+    y = use_slot ? _spectral_slot(ws.src_y, vslot, n) : Vector{T}(undef, n)
     @inbounds for i in 1:n
         x[i] = T(source.x[i]) + T(source.px[i]) * T(drift_s)
         y[i] = T(source.y[i]) + T(source.py[i]) * T(drift_s)
@@ -912,11 +966,13 @@ function _spectral_drifted_source(source, drift_s, ::Type{T}) where {T}
     return x, y
 end
 
-function _spectral_midpoint_source(source, param_source, param_field, ::Type{T}) where {T}
+function _spectral_midpoint_source(source, param_source, param_field, ::Type{T};
+                                   ws=nothing, dir::Int=0) where {T}
     sM = T(0.5) * (T(param_source.center) - T(param_field.center))
     n = length(source.x)
-    x = Vector{T}(undef, n)
-    y = Vector{T}(undef, n)
+    use_slot = ws !== nothing && dir != 0 && T === Float64
+    x = use_slot ? _spectral_slot(ws.mid_x, dir, n) : Vector{T}(undef, n)
+    y = use_slot ? _spectral_slot(ws.mid_y, dir, n) : Vector{T}(undef, n)
     @inbounds for i in 1:n
         x[i] = T(source.x[i]) + T(source.px[i]) * sM
         y[i] = T(source.y[i]) + T(source.py[i]) * sM
@@ -925,13 +981,13 @@ function _spectral_midpoint_source(source, param_source, param_field, ::Type{T})
 end
 
 function _spectral_interaction!(solver::SpectralPoissonSolver, source, param_source,
-                                field, param_field, kbb_slice, ws, Lx, Ly)
+                                field, param_field, kbb_slice, ws, Lx, Ly; dir::Int=0)
     T = promote_type(eltype(source.x), eltype(field.x), typeof(kbb_slice))
     nfield = length(field.x)
     sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
     sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
-    sxL, syL = _spectral_drifted_source(source, sL, T)
-    sxR, syR = _spectral_drifted_source(source, sR, T)
+    sxL, syL = _spectral_drifted_source(source, sL, T; ws=ws, vslot=1)
+    sxR, syR = _spectral_drifted_source(source, sR, T; ws=ws, vslot=2)
 
     @inbounds for i in 1:nfield
         s = T(0.5) * (T(field.z[i]) - T(param_source.center))
@@ -940,8 +996,10 @@ function _spectral_interaction!(solver::SpectralPoissonSolver, source, param_sou
         field.pz[i] -= T(0.25) * (field.px[i] * field.px[i] + field.py[i] * field.py[i])
     end
 
-    phiL, ExL, EyL = _spectral_field_potential_ws(solver, ws, sxL, syL, field.x, field.y, Lx, Ly)
-    phiR, ExR, EyR = _spectral_field_potential_ws(solver, ws, sxR, syR, field.x, field.y, Lx, Ly)
+    phiL, ExL, EyL = _spectral_field_potential_ws(solver, ws, sxL, syL, field.x, field.y,
+                                                  Lx, Ly; vslot=1)
+    phiR, ExR, EyR = _spectral_field_potential_ws(solver, ws, sxR, syR, field.x, field.y,
+                                                  Lx, Ly; vslot=2)
 
     hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
     kick_scale = T(kbb_slice)
@@ -960,7 +1018,7 @@ function _spectral_interaction!(solver::SpectralPoissonSolver, source, param_sou
         field.pz[i] += T(0.25) * (field.px[i] * field.px[i] + field.py[i] * field.py[i])
     end
 
-    return _spectral_midpoint_source(source, param_source, param_field, T)
+    return _spectral_midpoint_source(source, param_source, param_field, T; ws=ws, dir=dir)
 end
 
 function collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend})
@@ -1168,10 +1226,10 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
                     field2 = _pic_copy_slice!(scratch2[j], coord2)
                     vx1, vy1 = _spectral_interaction!(
                         solver, coord1, param1, field2, param2,
-                        slices1.weight[i] * kbb2, ws, Lx, Ly)
+                        slices1.weight[i] * kbb2, ws, Lx, Ly; dir=1)
                     vx2, vy2 = _spectral_interaction!(
                         solver, coord2, param2, field1, param1,
-                        slices2.weight[j] * kbb1, ws, Lx, Ly)
+                        slices2.weight[j] * kbb1, ws, Lx, Ly; dir=2)
                     # Slice i is already current; slice j swaps its kicked
                     # scratch in. No two pairs of a batch share a slice index,
                     # so this element write never races another.

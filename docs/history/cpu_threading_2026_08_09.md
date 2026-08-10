@@ -521,7 +521,7 @@ All four CPU solvers, production point, 16 threads, s/collide:
 |---|---|---|---|
 | PIC           | 41.03 | **2.99** | **13.7x** |
 | GaussianPIC   | 65.45 | **6.75** | **9.7x** |
-| Spectral      |  5.00 | **3.98** | **1.26x** (fix 11) |
+| Spectral      |  5.00 | **2.60** | **1.92x** (fixes 11-12) |
 | soft-Gaussian |  2.93 |   3.02 | untouched |
 
 End to end through the production harness, PIC at 16 threads: **40.8 -> 4.06
@@ -550,6 +550,40 @@ alone on purpose — already pair-indexed (U6-5/U18-2), and moving it to the
 collision-order fold PIC uses would reassociate the sum and shift this solver's
 bits for no gain. The 5.23 GiB that remains is the per-pair `Phi`/`Ex`/`Ey`
 field arrays, a different site from the one this fix addressed.
+
+## Fix 12 — Spectral's per-pair field and source arrays
+
+What fix 11 left: `Phi`/`Ex`/`Ey` allocated fresh in every field solve, the two
+drifted source planes in every drift, and the virtual positions in every
+interaction — four solves, four drifts and two midpoint builds per slice pair,
+**5.23 GiB per collide**. They now come from reusable slots on the per-worker
+`_SpectralGridWS`, which is already leased exclusively so the slots inherit its
+exclusivity.
+
+Two slot axes, and confusing them would have been the bug:
+
+- `Phi`/`Ex`/`Ey` and the drifted sources are slotted **L/R**, because the kick
+  loop blends `phiL…` with `phiR…` and both live at once inside one call;
+- the virtual positions are slotted by **DIRECTION**, because the collide loop
+  calls the interaction twice with the same workspace and hands all four results
+  to `_spectral_luminosity_pair` afterwards. An L/R slot there would have let
+  the second interaction clobber the first's output before the luminosity read
+  it — checked before writing, not after.
+
+`slot = 0` still allocates, which is what `:grid_free` (no workspace) and the
+direct callers want, and the source/midpoint slots are taken only when
+`T === Float64`, since the buffers are `Float64` and handing them back as
+`Vector{Float32}` would be a type error rather than a slow path.
+
+| | fix 11 | fix 12 |
+|---|---|---|
+| production, 16 threads | 3.98 s | **2.60 s** |
+| allocated per collide | 5.23 GiB | **0.42 GiB** |
+| GC share | 20% | 1.3–8% |
+
+Digest `0x00c98cd00a439897` unchanged at 1, 16 and 32 threads.
+**Spectral is 5.00 -> 2.60 s, 1.92x**, with allocation down 23x from where the
+audit found it.
 
 ## The regression guard
 
