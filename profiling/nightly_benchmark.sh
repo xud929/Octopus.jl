@@ -136,6 +136,8 @@ echo "== octopus cpu benchmark  $STAMP  commit $COMMIT  threads $THREADS" > "$LO
 # says: idle Julia threads otherwise spin in `poptask` and that spinning would
 # be counted as work. It changes no results.
 FAILED=0
+NFAILED=0
+NOK=0
 for solver in $SOLVERS; do
     echo "-- $solver" >> "$LOG"
     OCTOPUS_BENCH_SOLVER="$solver" \
@@ -157,8 +159,11 @@ for solver in $SOLVERS; do
     # run into a recorded failure (U21-1).
     if [ "$CODE" -ne 0 ]; then
         FAILED=1
+        NFAILED=$((NFAILED + 1))
         note "octopus benchmark: $solver exited $CODE -- see $LOG"
         emit_failure_row "$solver"
+    else
+        NOK=$((NOK + 1))
     fi
 done
 
@@ -166,6 +171,19 @@ ln -sfn "$LOG" "$OUTDIR/latest.log"
 # Keep the last 14, as the suite gate does.
 ls -1t "$OUTDIR"/*.log 2>/dev/null | tail -n +15 | xargs -r rm -f
 
-echo "octopus benchmark: rows appended to $HISTORY"
-echo "octopus benchmark: NOT committed -- review and commit the new rows yourself"
+# The closing message reports what actually happened. The first version said
+# "rows appended" unconditionally, so a run in which EVERY solver failed -- and
+# one with no history file at all, where nothing could be written -- still
+# printed a success-shaped line on stdout. The exit code was right and stderr
+# carried the failures, but a gate whose stdout reads like success on a total
+# failure is the U21-1/U21-2 lesson wearing different clothes: the verdict must
+# not be easier to misread than it is to read. Found by exercising the failure
+# path in the 2026-08-10 neighbour audit rather than by review.
+if [ "$NOK" -gt 0 ]; then
+    echo "octopus benchmark: $NOK solver row(s) appended to $HISTORY"
+    echo "octopus benchmark: NOT committed -- review and commit the new rows yourself"
+else
+    echo "octopus benchmark: NO timing rows appended -- every solver failed"
+fi
+[ "$NFAILED" -eq 0 ] || echo "octopus benchmark: $NFAILED solver(s) FAILED -- see $LOG"
 exit "$FAILED"

@@ -259,6 +259,14 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   [`strong_strong_pic_extreme_benchmark_history.md`](history/strong_strong_pic_extreme_benchmark_history.md),
   [`strong_strong_diagnostics_benchmark_history.md`](history/strong_strong_diagnostics_benchmark_history.md).
 - Audits / change records:
+  [`neighbour_audit_2026_08_10.md`](history/neighbour_audit_2026_08_10.md)
+  (second pass over the CPU-threading campaign, end to end: verifies
+  structurally — not just by digest — that no interaction writes its source,
+  which is what the in-place slice kick rests on; re-runs the digest property on
+  all four solvers; walks the three shared surfaces the campaign changed out to
+  their CUDA and sibling users; and records a runner that reported success on a
+  total failure, plus an orphan sweep of its own that reported thirteen false
+  positives),
   [`neighbour_audit_2026_08_09.md`](history/neighbour_audit_2026_08_09.md)
   (targeted neighbour audit of the CPU-threading campaign — organised around
   what concurrent pair batching newly makes load-bearing rather than around the
