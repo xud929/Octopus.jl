@@ -489,6 +489,49 @@ The gain is largest at 1 and 32 threads and inside noise at 16, which is what
 the bandwidth reading predicts: at 16 threads the memory system is already the
 constraint, so removing allocation helps most where it is not.
 
+## Fix 10 — the same treatment for GaussianPIC
+
+gpic had received the batching and the kick extraction but not the structural
+half: it still gathered and scattered per pair and copied both slices. Ported
+`_pic_slice_states`, the single copy with slice `i` kicked in place, and the
+end-of-collide scatter. gpic is the simpler case again — it rejects
+`interaction_grid`, so there is no `:source_slice` union mesh to keep reading
+live values.
+
+| | before | after |
+|---|---|---|
+| production, 1 thread | 33.76 s | **27.50 s** |
+| production, 16 threads | 8.23 s | **6.75 s** |
+| allocated per collide | 6.28 GiB | **1.02 GiB** |
+| GC share (16 threads) | 12.3% | **3.0%** |
+
+Digest `0x58fc69d46333dfe0` unchanged. **gpic is 65.45 -> 6.75 s, 9.7x.**
+
+Smaller than PIC's gain from the same change, and the reason is worth keeping:
+gpic's per-pair physics (source moments, the coupled solve, the
+Bassetti-Erskine add-back) is a larger share of its pair than PIC's is, so the
+gather/scatter it removed was a smaller fraction to begin with. The fix is the
+same; the leverage is not.
+
+## Campaign result
+
+All four CPU solvers, production point, 16 threads, s/collide:
+
+| solver | baseline `d0fb3f2` | at HEAD | |
+|---|---|---|---|
+| PIC           | 41.03 | **2.99** | **13.7x** |
+| GaussianPIC   | 65.45 | **6.75** | **9.7x** |
+| Spectral      |  5.00 |   4.88 | untouched |
+| soft-Gaussian |  2.93 |   3.02 | untouched |
+
+End to end through the production harness, PIC at 16 threads: **40.8 -> 4.06
+s/turn**, a 200-turn run going from 2 h 16 min to about 13.5 minutes. (The
+baseline is the recorded mean over turns 100-200; the new figure is the mean
+over turns 2-20 of the same harness at the same point.)
+
+Every number in this campaign is bit-identical to the pre-campaign HEAD: one
+digest per solver, held across ten fixes and every thread count from 1 to 128.
+
 ## The honest ceiling statement
 
 Wall time is the objective; the utilisation number can rise while it worsens,

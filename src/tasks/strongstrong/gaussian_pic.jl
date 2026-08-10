@@ -935,6 +935,12 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
     lum_parts = zeros(LT, npairs)
     ran = fill(false, npairs)      # Vector{Bool}, not BitVector: see _pic_collide!
 
+    # Gather each slice once per collide instead of once per pair; only beam 2
+    # needs a scratch twin. See `_pic_slice_states` and `_pic_collide_pair!`.
+    state1 = _pic_slice_states(beam1.rep, slices1.indices)
+    state2 = _pic_slice_states(beam2.rep, slices2.indices)
+    scratch2 = _pic_slice_states(beam2.rep, slices2.indices)
+
     # The pool is storage, not a worker count: it only grows, so its length is
     # the high-water mark of every policy this label has run under. See
     # `_pic_collide!`.
@@ -963,6 +969,7 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
                     p = pair_pos[(pr.i, pr.j)]
                     ran[p] = _gpic_collide_pair!(
                         lum_parts, p, gsolver, beam1, beam2, slices1, slices2,
+                        state1, state2, scratch2,
                         pr.i, pr.j, chunk_ws, green_cache, kbb1, kbb2, klum,
                         compute_luminosity)
                 end
@@ -978,6 +985,7 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
         for (p, entry) in pairs(order)
             ran[p] = _gpic_collide_pair!(
                 lum_parts, p, gsolver, beam1, beam2, slices1, slices2,
+                state1, state2, scratch2,
                 entry[2], entry[3], serial_ws, green_cache, kbb1, kbb2, klum,
                 compute_luminosity)
         end
@@ -997,6 +1005,10 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
             ))
         end
     end
+    # Scatter the resident slices back into the beams, once.
+    _pic_store_slice_states!(beam1.rep, slices1.indices, state1)
+    _pic_store_slice_states!(beam2.rep, slices2.indices, state2)
+
     _pic_report_green_cache(green_cache)
     _pic_report_dropped(workspaces)         # U10-2, summed over the pool
     return luminosity
@@ -1011,6 +1023,7 @@ schedule.
 """
 function _gpic_collide_pair!(lum_parts, p::Int, gsolver::GaussianPICPoissonSolver,
                              beam1::Beam, beam2::Beam, slices1, slices2,
+                             state1, state2, scratch2,
                              i::Int, j::Int, workspace::_PICCPUWorkspace,
                              green_cache, kbb1, kbb2, klum,
                              compute_luminosity::Bool)
@@ -1021,10 +1034,14 @@ function _gpic_collide_pair!(lum_parts, p::Int, gsolver::GaussianPICPoissonSolve
               center=slices1.center[i], rb=slices1.boundary[i + 1])
     param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
               center=slices2.center[j], rb=slices2.boundary[j + 1])
-    coord1 = _pic_extract_slice(beam1.rep, idx1)
-    coord2 = _pic_extract_slice(beam2.rep, idx2)
-    field1 = _pic_copy_coords(coord1)
-    field2 = _pic_copy_coords(coord2)
+    # Resident slices and ONE copy per pair, the `_pic_collide_pair!` treatment.
+    # Direction 1 reads slice i and writes slice j, direction 2 the reverse, so
+    # slice i is kicked in place and only slice j needs a copy. Neither
+    # interaction writes its source, which is what makes that safe.
+    coord1 = state1[i]
+    coord2 = state2[j]
+    field1 = coord1                                    # kicked in place
+    field2 = _pic_copy_slice!(scratch2[j], coord2)
     vx1, vy1 = _gpic_interaction!(
         gsolver, coord1, param1, field2, param2, kbb2, workspace, green_cache, (i, j, 1);
         vslot=1,
@@ -1033,8 +1050,8 @@ function _gpic_collide_pair!(lum_parts, p::Int, gsolver::GaussianPICPoissonSolve
         gsolver, coord2, param2, field1, param1, kbb1, workspace, green_cache, (i, j, 2);
         vslot=2,
     )
-    _pic_store_slice!(beam1.rep, idx1, field1)
-    _pic_store_slice!(beam2.rep, idx2, field2)
+    # Slice i is already current; slice j swaps its kicked scratch in.
+    @inbounds state2[j], scratch2[j] = scratch2[j], state2[j]
     if compute_luminosity
         @inbounds lum_parts[p] = _pic_luminosity(
             gsolver.pic, vx1, vy1, vx2, vy2, klum, workspace)
