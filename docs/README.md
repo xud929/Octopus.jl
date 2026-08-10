@@ -240,6 +240,17 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   machine-level findings — idle-thread spin, GC share, and why a pool wider
   than the data's parallelism costs rather than pays).
 - Benchmark histories:
+  [`cpu_benchmark_history.tsv`](history/cpu_benchmark_history.tsv)
+  (one appended row per solver per run of
+  `profiling/nightly_benchmark.sh` — datetime, commit, host, thread count,
+  median/min/max s/collide, GC seconds, CPU seconds, thread utilisation,
+  allocation and the coordinate digest. It is the *timing* half of the
+  performance guard: the suite asserts allocation, because a wall-clock bound
+  in `runtests.jl` would abort the whole gate on one flake, so a kernel that
+  gets slower without allocating shows up here as a trend instead. The runner
+  ships INERT and is opt-in per machine — scheduled long-running jobs are not
+  permitted on the 128-thread box, the same directive that removed the nightly
+  suite gate on 2026-08-07),
   [`solver_matrix_2026_08_08.md`](history/solver_matrix_2026_08_08.md)
   (every solver × both backends × both precisions at the production point,
   one protocol: timing, physics agreement, the CPU-Float32 grid-typing

@@ -54,6 +54,7 @@ end
 using .Octopus
 using Printf
 using Profile
+using Dates
 
 env_int(name, default) = parse(Int, get(ENV, name, string(default)))
 env_bool(name, default) = get(ENV, name, default ? "1" : "0") in ("1", "true", "yes")
@@ -176,6 +177,9 @@ collide!(solver, beam_ele, beam_pro, CPUThreadsBackend)     # compile + warm cac
 times = Float64[]
 lums = Float64[]
 digests = UInt64[]
+gcs = Float64[]
+cpus = Float64[]
+allocs = Float64[]
 for _ in 1:REPEATS
     restore!(beam_ele, snap_ele)
     restore!(beam_pro, snap_pro)
@@ -195,10 +199,17 @@ for _ in 1:REPEATS
     push!(times, dt)
     push!(lums, lum)
     push!(digests, coordinate_digest(beam_ele, beam_pro))
+    push!(gcs, gc_s)
+    push!(cpus, cpu)
+    push!(allocs, (gc1.allocd - gc0.allocd + gc1.total_allocd - gc0.total_allocd) / 2^30)
 end
 
 sorted = sort(times)
 median = sorted[cld(length(sorted), 2)]
+# The row reports the MEDIAN run's own gc/cpu/allocation, not an average across
+# repeats: mixing the median of one quantity with the mean of another describes
+# no run that happened.
+med_i = findfirst(==(median), times)
 @printf("MEDIAN %.4f s   min %.4f   max %.4f\n", median, first(sorted), last(sorted))
 @printf("luminosity = %.17g\n", first(lums))
 @printf("DIGEST 0x%016x   (repeats agree: %s)\n",
@@ -212,12 +223,37 @@ if !isempty(TSV)
     dir = dirname(TSV)
     isempty(dir) || isdir(dir) || mkpath(dir)
     fresh = !isfile(TSV)
+    # `datetime` and `commit` come from the caller when there is one, so a
+    # nightly row identifies the tree it measured rather than the moment the
+    # file was written. Falling back to `now()` and "unknown" keeps a hand run
+    # from writing an empty column.
+    stamp = get(ENV, "OCTOPUS_BENCH_STAMP", "")
+    isempty(stamp) && (stamp = Dates.format(Dates.now(), "yyyymmdd_HHMMSS"))
+    commit = get(ENV, "OCTOPUS_BENCH_COMMIT", "unknown")
     open(TSV, "a") do io
-        fresh && println(io, "tag\tsolver\tn_ele\tn_pro\tslices\tgrid\tjulia_threads\t" *
-                             "median_s\tmin_s\tmax_s\tluminosity\tdigest")
-        @printf(io, "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%.6f\t%.6f\t%.6f\t%.17g\t0x%016x\n",
-                TAG, SOLVER, N_ELE, N_PRO, NSLICES, GRID, Threads.nthreads(:default),
-                median, first(sorted), last(sorted), first(lums), first(digests))
+        fresh && println(io,
+            "datetime\tcommit\thost\ttag\tsolver\tn_ele\tn_pro\tslices\tgrid\t" *
+            "julia_threads\tmedian_s\tmin_s\tmax_s\tgc_s\tcpu_s\tutil_pct\t" *
+            "alloc_gib\tluminosity\tdigest")
+        # Field by field rather than one long `@printf` format: `@printf`
+        # requires a LITERAL format string, so a concatenated one is a load-time
+        # error -- which is how the first run of `nightly_benchmark.sh` failed,
+        # after every solver had finished its timings. Per-field formatting also
+        # keeps each column next to the header entry it belongs to.
+        nthreads = Threads.nthreads(:default)
+        row = (stamp, commit, gethostname(), TAG, SOLVER,
+               string(N_ELE), string(N_PRO), string(NSLICES), string(GRID),
+               string(nthreads),
+               @sprintf("%.6f", median),
+               @sprintf("%.6f", first(sorted)),
+               @sprintf("%.6f", last(sorted)),
+               @sprintf("%.4f", gcs[med_i]),
+               @sprintf("%.2f", cpus[med_i]),
+               @sprintf("%.1f", 100 * cpus[med_i] / (median * nthreads)),
+               @sprintf("%.4f", allocs[med_i]),
+               @sprintf("%.17g", first(lums)),
+               @sprintf("0x%016x", first(digests)))
+        println(io, join(row, '\t'))
     end
     println("appended to $TSV")
 end
