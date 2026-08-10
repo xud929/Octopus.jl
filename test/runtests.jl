@@ -4471,6 +4471,86 @@ end
     end
 end
 
+@testset "CPU strong-strong collide allocation does not scale with the pair count" begin
+    # The suite's performance regression test, and it asserts ALLOCATION rather
+    # than wall time on purpose.
+    #
+    # Wall time is what users care about, but a wall-clock bound here would be
+    # the wrong instrument: this file aborts at its first failure, so one flake
+    # on a loaded shared machine costs the whole gate — including the CUDA half,
+    # which is the recorded dominant failure class. Timing belongs in
+    # `profiling/benchmark_collide_cpu.jl`, which reports s/collide, GC share
+    # and thread utilisation on demand.
+    #
+    # Allocation is the right proxy because it is (a) deterministic and
+    # machine-independent, so it cannot flake, and (b) what the 2026-08-09
+    # CPU-threading campaign actually bought: PIC went 41.03 -> 2.99 s/collide
+    # at the production point, and the bulk of that came from removing memory
+    # traffic, not from adding threads — the wall-time ceiling on that box was
+    # measured to be memory bandwidth. See
+    # `docs/history/cpu_threading_2026_08_09.md`.
+    #
+    # THE PROPERTY, which is stronger than any absolute number: the pair loop
+    # holds each slice resident and copies once per pair instead of gathering,
+    # copying and scattering per pair. So a collide's allocation is set by the
+    # BEAM size, not by the number of slice pairs. Quadrupling the pairs (3 -> 6
+    # slices is 9 -> 36 pairs) must therefore barely move it.
+    #
+    # Discriminating power, measured against the pre-campaign commit d0fb3f2:
+    #
+    #                          at HEAD      d0fb3f2
+    #     3 slices, 9 pairs    6.1 x beam   110.7 x beam
+    #     6 slices, 36 pairs   6.9 x beam   219.0 x beam
+    #     growth 9 -> 36 pairs   1.14x         1.98x
+    #
+    # Both bounds below fail on the old code by a wide margin and pass now with
+    # roughly 3x headroom, which is the room a future refactor has before it has
+    # to think about this.
+    n = 30000
+    beam_bytes = 6 * n * sizeof(Float64)
+    mkr_a(m) = begin
+        s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:m]
+        z = [2.0e-2 * sin(0.7 * i + 2.0) + 1.0e-3 * sin(3.1 * i) for i in 1:m]
+        Phase6DRep(s(1.0e-4, 0.0), s(1.0e-5, 0.3), s(1.0e-4, 0.9),
+                   s(1.0e-5, 1.2), z, s(1.0e-4, 2.5))
+    end
+    mkb_a(m) = begin
+        rep = mkr_a(m)
+        params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0e-9, npart=m)
+        Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+    end
+    solvers = (
+        ("pic", sl -> PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                                       grid=(16, 16), green_cache=:slice_pair, slicing=sl)),
+        ("gpic", sl -> GaussianPICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                                                grid=(16, 16), green_cache=:slice_pair, slicing=sl)),
+    )
+    for (label, mk) in solvers
+        results = map((3, 6)) do nslices
+            solver = mk(LongitudinalSlicing(nslices=nslices, method=:equal_count))
+            # Warm first: the first call compiles, and compilation allocates far
+            # more than the collide does. Fresh beams for the measured call so it
+            # solves the same problem the warm one did.
+            wb1, wb2 = mkb_a(n), mkb_a(n)
+            warm_lum = collide!(solver, wb1, wb2, CPUThreadsBackend)
+            b1, b2 = mkb_a(n), mkb_a(n)
+            bytes = @allocated collide!(solver, b1, b2, CPUThreadsBackend)
+            (bytes=bytes, lum=warm_lum)
+        end
+        # Anti-vacuity: a collide that did nothing would allocate nothing and
+        # pass every bound below.
+        @test all(r -> isfinite(r.lum) && r.lum > 0, results)
+        for r in results
+            @test r.bytes <= 20 * beam_bytes
+        end
+        @test results[2].bytes <= 1.5 * results[1].bytes
+        # Reported so a failure says by how much, not just that it failed.
+        for (nslices, r) in zip((3, 6), results)
+            @info "$label collide allocation" nslices pairs=nslices^2 MiB=round(r.bytes / 2^20, digits=2) x_beam=round(r.bytes / beam_bytes, digits=2)
+        end
+    end
+end
+
 @testset "CUDA equal_area histogram matches the CPU membership rule" begin
     # R8 (part 6): the histogram is now one atomic kernel pass instead of a
     # device broadcast + reduction PER BIN (57.8 ms -> 3.2 ms at n=1e6,

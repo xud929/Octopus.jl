@@ -532,6 +532,43 @@ over turns 2-20 of the same harness at the same point.)
 Every number in this campaign is bit-identical to the pre-campaign HEAD: one
 digest per solver, held across ten fixes and every thread count from 1 to 128.
 
+## The regression guard
+
+The campaign left the suite able to lose all of this with the gate still green,
+so it now carries a performance regression test — asserting **allocation**, not
+wall time.
+
+Wall time is what users care about, but a wall-clock bound in `runtests.jl`
+would be the wrong instrument: the file aborts at its first failure, so one
+flake on a loaded shared machine costs the whole gate including the CUDA half,
+which is the recorded dominant failure class. Timing stays in
+`profiling/benchmark_collide_cpu.jl`, on demand.
+
+Allocation is the right proxy here because it is deterministic and
+machine-independent — it cannot flake — and because it is what this campaign
+actually bought: the wall-time ceiling was measured to be memory bandwidth, so
+bytes moved is the quantity that governs.
+
+The test asserts the PROPERTY rather than a magic number: a collide's
+allocation is set by the BEAM size, not by the number of slice pairs, because
+each slice is now held resident and copied once per pair instead of gathered,
+copied and scattered. Quadrupling the pairs must barely move it.
+
+Discriminating power, measured against the pre-campaign commit `d0fb3f2`:
+
+| | at HEAD | `d0fb3f2` |
+|---|---|---|
+| 3 slices, 9 pairs | 6.1 x beam | **110.7 x beam** |
+| 6 slices, 36 pairs | 6.9 x beam | **219.0 x beam** |
+| growth, 9 -> 36 pairs | 1.14x | **1.98x** |
+
+Bounds are 20x beam and 1.5x growth: roughly 3x headroom at HEAD, and the old
+code fails both by a wide margin. Verified stable at 1, 4, 8, 16 and 32 threads
+(5.3-7.5x beam, growth 1.14-1.25x) — it plateaus because the workspace pool
+caps at the slice count. Anti-vacuous: a collide that did nothing would
+allocate nothing and pass every bound, so the luminosity is asserted finite and
+positive first.
+
 ## The honest ceiling statement
 
 Wall time is the objective; the utilisation number can rise while it worsens,
