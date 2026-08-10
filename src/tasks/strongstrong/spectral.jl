@@ -1127,6 +1127,19 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
     pool = grid ? lease.workspaces : nothing
 
     try
+        # Gather each slice ONCE per collide instead of once per pair, and give
+        # beam 2 a scratch twin. Direction 1 finishes reading slice i before
+        # direction 2 writes it, so slice i is kicked IN PLACE and only slice j
+        # needs a copy; `_spectral_interaction!` writes no source, which is what
+        # makes that safe. Same treatment, and the same reasoning, as
+        # `_pic_collide_pair!` -- see `_pic_slice_states`.
+        #
+        # This path allocated 9.83 GiB per collide and spent 27-30% of its wall
+        # in GC, of which the per-pair gather, copy and scatter were about 6 GiB
+        # (2026-08-10 neighbour audit ledger row).
+        state1 = _pic_slice_states(beam1.rep, slices1.indices)
+        state2 = _pic_slice_states(beam2.rep, slices2.indices)
+        scratch2 = _pic_slice_states(beam2.rep, slices2.indices)
         for batch in batches
             nworkers = clamp(max_workers, 1, length(batch))
             # `lum_parts` indexed by PAIR position, not by chunk — the same
@@ -1149,18 +1162,20 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
                               center=slices1.center[i], rb=slices1.boundary[i + 1])
                     param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
                               center=slices2.center[j], rb=slices2.boundary[j + 1])
-                    coord1 = _pic_extract_slice(beam1.rep, idx1)
-                    coord2 = _pic_extract_slice(beam2.rep, idx2)
-                    field1 = _pic_copy_coords(coord1)
-                    field2 = _pic_copy_coords(coord2)
+                    coord1 = state1[i]
+                    coord2 = state2[j]
+                    field1 = coord1                     # kicked in place
+                    field2 = _pic_copy_slice!(scratch2[j], coord2)
                     vx1, vy1 = _spectral_interaction!(
                         solver, coord1, param1, field2, param2,
                         slices1.weight[i] * kbb2, ws, Lx, Ly)
                     vx2, vy2 = _spectral_interaction!(
                         solver, coord2, param2, field1, param1,
                         slices2.weight[j] * kbb1, ws, Lx, Ly)
-                    _pic_store_slice!(beam1.rep, idx1, field1)
-                    _pic_store_slice!(beam2.rep, idx2, field2)
+                    # Slice i is already current; slice j swaps its kicked
+                    # scratch in. No two pairs of a batch share a slice index,
+                    # so this element write never races another.
+                    @inbounds state2[j], scratch2[j] = scratch2[j], state2[j]
                     compute_luminosity &&
                         (@inbounds lum_parts[pos] = _spectral_luminosity_pair(
                             solver, vx1, vy1, vx2, vy2, klum, lnx, lny))
@@ -1168,6 +1183,12 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
             end
             luminosity += sum(lum_parts)
         end
+        # Scatter the resident slices back into the beams, once. The per-batch
+        # luminosity fold above is deliberately left alone: it is pair-indexed
+        # already (U6-5/U18-2) and moving it to a collision-order fold would
+        # reassociate the sum and shift this solver's luminosity bits.
+        _pic_store_slice_states!(beam1.rep, slices1.indices, state1)
+        _pic_store_slice_states!(beam2.rep, slices2.indices, state2)
         return compute_luminosity ? luminosity : LT(NaN)
     finally
         lease === nothing || _release_spectral_grid_ws_pool!(lease)

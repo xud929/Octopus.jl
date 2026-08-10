@@ -91,14 +91,20 @@ luminosity agreeing with `Float64` to ~3e-7.
 
 ## Ledgered, not fixed
 
-**Spectral still has the per-pair gather/copy/scatter** the campaign removed
-from PIC and gpic (`spectral.jl:1152-1163`), plus per-pair field-array
-allocations, and allocates **9.83 GiB/collide** with 27–30% of its wall in GC.
-This is not a defect and not a regression — the campaign scoped to the two grid
-solvers, which were 8–13x slower — but it is the same shape, and the fix is now
-a worked precedent twice over. Priced: spectral is 4.88 s/collide against PIC's
-2.99, so it is no longer the bottleneck; do it when spectral matters, not
-before.
+**Spectral had the per-pair gather/copy/scatter** the campaign removed from PIC
+and gpic (`spectral.jl:1152-1163`), plus per-pair field-array allocations, and
+allocated **9.83 GiB/collide** with 27–30% of its wall in GC. It was ledgered
+here as "same shape, worked precedent twice over, but no longer the bottleneck —
+do it when spectral matters".
+
+**Closed the same day** at the owner's direction, since the precedent made it
+mechanical: 5.00 -> **3.98 s** at 16 threads, allocation 9.83 -> **5.23 GiB**,
+GC 27–30% -> 20%, digest `0x00c98cd00a439897` unchanged. What was NOT changed,
+deliberately: spectral folds its luminosity per batch and that fold is already
+pair-indexed (U6-5/U18-2), so moving it to PIC's collision-order fold would
+reassociate the sum and shift this solver's luminosity bits for no gain. The
+remaining 5.23 GiB is the per-pair `Phi`/`Ex`/`Ey` field arrays, a different
+allocation site from the one this row was about.
 
 **Coverage boundary of the new performance guard**: the allocation test
 exercises `:slice_pair` with linear interpolation. `:node` and `:quadratic`

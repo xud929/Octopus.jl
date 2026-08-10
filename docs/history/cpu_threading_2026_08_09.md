@@ -521,7 +521,7 @@ All four CPU solvers, production point, 16 threads, s/collide:
 |---|---|---|---|
 | PIC           | 41.03 | **2.99** | **13.7x** |
 | GaussianPIC   | 65.45 | **6.75** | **9.7x** |
-| Spectral      |  5.00 |   4.88 | untouched |
+| Spectral      |  5.00 | **3.98** | **1.26x** (fix 11) |
 | soft-Gaussian |  2.93 |   3.02 | untouched |
 
 End to end through the production harness, PIC at 16 threads: **40.8 -> 4.06
@@ -531,6 +531,25 @@ over turns 2-20 of the same harness at the same point.)
 
 Every number in this campaign is bit-identical to the pre-campaign HEAD: one
 digest per solver, held across ten fixes and every thread count from 1 to 128.
+
+## Fix 11 — the slice hoist for Spectral
+
+Ledgered by the 2026-08-10 neighbour audit and closed the same day: the
+longitudinal spectral path carried the same per-pair gather, copy and scatter,
+and `_spectral_interaction!` writes no source, so the single-copy form with
+slice `i` kicked in place transfers unchanged.
+
+| | before | after |
+|---|---|---|
+| production, 16 threads | 5.00 s | **3.98 s** |
+| allocated per collide | 9.83 GiB | **5.23 GiB** |
+| GC share | 27–30% | 20% |
+
+Digest `0x00c98cd00a439897` unchanged. Its per-batch luminosity fold is left
+alone on purpose — already pair-indexed (U6-5/U18-2), and moving it to the
+collision-order fold PIC uses would reassociate the sum and shift this solver's
+bits for no gain. The 5.23 GiB that remains is the per-pair `Phi`/`Ex`/`Ey`
+field arrays, a different site from the one this fix addressed.
 
 ## The regression guard
 
