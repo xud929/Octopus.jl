@@ -180,6 +180,32 @@ rate); on the A100 the fused passes are bandwidth-bound, projected
 strong-strong alike — the observer is task- and backend-agnostic, and
 strong-strong lines carry it per beam at larger particle counts.
 
+## Final A100 numbers (owner-measured, at the Val-powers kernel)
+
+The closing anatomy run on the production A100, observer files on
+node-local storage:
+
+| configuration | ms/turn |
+|---|---|
+| bare line | 3.401 |
+| + luminosity every turn | 3.414 |
+| + moments every turn | 3.728 |
+| + both (production-shaped) | 3.787 |
+
+The moment observer's evolution across the campaign's three kernel
+generations, same machine, same configuration: **1.74 → 0.96 → 0.33
+ms/turn** (per-moment loop → fused runtime-powers → Val-powers unrolled).
+Luminosity observation: ~7 ms → 0.013. Production on the cluster
+filesystem adds the tuned flush amortization (~0.2–0.3 ms at
+`moment_capacity=1024`), landing ~4.0 against the 10.75 ms/turn that opened
+the campaign — with every-turn sampling of both diagnostics retained and
+trajectories pinned bit-identical throughout. Every load-bearing projection
+in this record was ultimately replaced by an owner measurement, and two of
+those measurements overturned the model they tested (the A100 "no speedup"
+that exposed the filesystem cost, and the Ada≡A100 equality that exposed
+the latency-bound kernel); the sequence stands as the argument for closing
+records on production evidence.
+
 ## Left open, deliberately
 
 - The `:auto` blocks path for the isolated weak-strong elements caps at 256
