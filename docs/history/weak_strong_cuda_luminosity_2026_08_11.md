@@ -147,8 +147,17 @@ tree, and the host finishes over block partials in block order — two
 round-trips, two passes, no float atomics, bitwise run-to-run
 deterministic. Power rows are staged in shared memory (global re-reads of
 the powers matrix dominated the first version: 1.0 ms vs 0.94 after).
-Selections whose order >= 2 count exceeds the 32-row register budget fall
-back to the per-moment path, asserted in the suite at the workspace type.
+Selections past one pass's 32-row register budget run the same kernel in
+chunks through a row offset (owner request, for planned third-order tail
+studies): orders=1:3 makes 4 round-trips instead of 84, and the per-moment
+path was deleted — one code path. Two GPU traps found on the way: Base
+tuple `map` allocates via its Any32 path at exactly 32 elements (invalid
+device IR at exactly the chunk width — replaced by an argument-capturing
+tuple add), and a second dynamic shared array aliases the first unless
+explicitly offset. Chunked parity is pinned at rtol 1e-9, not 1e-12: odd
+central moments of near-symmetric data are cancellation residues whose
+relative error reduction order legitimately moves to ~1e-10, while a
+chunking defect would be O(1).
 
 Liveness semantics are unchanged and pinned: masked rows skip dead
 particles inside the kernel; unmasked rows stay loud — a dead coordinate
