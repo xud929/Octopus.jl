@@ -132,6 +132,37 @@ at `capacity=100` (28x). The strong-strong task never had this cost — its
 `execute!` (`interface.jl` run body), the third and fastest of the three
 output designs now in the tree.
 
+## Fused moment reductions (same day, third campaign)
+
+With luminosity output at ~0.02 ms, the anatomy's next line was the
+`MomentObserver`: 1.74 ms/turn at the A100 production point even with files
+on local storage — not I/O but ~33 host sync round-trips and ~80 full-array
+passes per observed turn (6 mean reductions, then fill/broadcast/sum per
+order >= 2 moment, one scalar D2H each). Replaced by a fused two-pass
+kernel: pass 1 computes the six coordinate sums plus the live count in one
+sweep (a zero-power row's term is 1.0, so it counts what the mask admits);
+pass 2 takes the means and accumulates every order >= 2 power row per
+thread in registers, block-reduces each in a fixed-order shared-memory
+tree, and the host finishes over block partials in block order — two
+round-trips, two passes, no float atomics, bitwise run-to-run
+deterministic. Power rows are staged in shared memory (global re-reads of
+the powers matrix dominated the first version: 1.0 ms vs 0.94 after).
+Selections whose order >= 2 count exceeds the 32-row register budget fall
+back to the per-moment path, asserted in the suite at the workspace type.
+
+Liveness semantics are unchanged and pinned: masked rows skip dead
+particles inside the kernel; unmasked rows stay loud — a dead coordinate
+poisons exactly the moments that touch it, and the suite pins the NaN
+pattern equal to the CPU fold's, which remains the shared numerics oracle
+(agreement ≤ 1.2e-13 measured, rtol 1e-12 pinned).
+
+Measured, RTX 4500 Ada, 1.024M particles, default 27-moment set:
+`observe!` 2.83 → 0.96 ms/turn. The Ada kernel is FP64-throttled (1/64
+rate); on the A100 the fused passes are bandwidth-bound, projected
+0.15–0.2 ms/turn against the measured 1.74. Benefits weak-strong and
+strong-strong alike — the observer is task- and backend-agnostic, and
+strong-strong lines carry it per beam at larger particle counts.
+
 ## Left open, deliberately
 
 - The `:auto` blocks path for the isolated weak-strong elements caps at 256
