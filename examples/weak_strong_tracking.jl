@@ -19,10 +19,14 @@ The pattern this example follows:
 3. Build element specs in tracking order and place observers where they matter.
 4. Build `TrackingTask(line)` and `execute!` it.
 
-Outputs are written under `result/`:
+Outputs are written under `result/<seed>/`, named by the case:
 
-- `weak_strong.lum`         : turn and luminosity
-- `weak_strong_moments.h5`  : weak-beam moment history
+- `<case_name>.lum`  : turn and luminosity
+- `<case_name>.h5`   : weak-beam moment history
+
+so seed scans and multi-case studies (different chromaticities, crab
+schemes) never collide on output paths — change `case_name` or `seed` and
+everything downstream follows.
 =#
 
 if !isdefined(Main, :Octopus)
@@ -32,17 +36,18 @@ using .Octopus
 
 # Physics input for this weak-proton crab-crossing case.
 input = (
+    # `case_name` and `seed` name the output directory and files below; every
+    # field in this block is consumed — a field nothing reads is the
+    # config-that-was-never-read defect class (AGENTS.md Hard-Won Rules).
     case_name = "weak_strong",
     result_dir = joinpath(@__DIR__, "..", "result"),
     seed = 123456789,
-    total_turns = 1_000_000,
 
     weak_beam = (
         charge = 1.0,
         mass = PMASS_EV,
         energy = 275.0e9,
         n_particle = 0.6881e11,
-        n_macro = 1_024_000,
         cutoff = 5.0,
         sigx = 95.0e-6,
         sigy = 8.5e-6,
@@ -73,6 +78,12 @@ input = (
 
     crab_cavity = (
         frequency = 197.0e6,
+        # Relative harmonic weights of the horizontal crab kick; the absolute
+        # scale tan(crossing_angle)/sqrt(beta_cc * beta*) is derived below.
+        # (4/3, -1/3) is the two-harmonic scheme that cancels the leading
+        # nonlinearity of a single 197 MHz cavity; (1.0, 0.0, 0.0) is a
+        # single-harmonic crab.
+        harmonic_weights = (4.0 / 3.0, -1.0 / 3.0, 0.0),
         strength_y = (0.0, 0.0, 0.0),
         phase = (0.0, 0.0, 0.0),
     ),
@@ -103,19 +114,26 @@ input = (
     ),
 
     output = (
-        luminosity_file = "weak_strong.lum",
-        moment_file = "weak_strong_moments.h5",
+        # Filenames derive from `case_name` above — one authority, no copies.
+        # The capacities buffer rows in memory between file appends/flushes:
+        # on a networked filesystem the per-turn open/append/close is the
+        # dominant observer cost (measured 2.3 ms/turn on a cluster
+        # filesystem vs 0.02 local; docs/history/
+        # weak_strong_cuda_luminosity_2026_08_11.md), and amortized cost
+        # falls monotonically with capacity. 1024 is the MomentObserver
+        # default; do not lower it on shared storage.
+        luminosity_capacity = 100,
+        moment_capacity = 1024,
         moment_start = 0,
         moment_step = 1,
-        moment_stop = 1_000_000,
-        moment_capacity = 100,
     ),
 )
 
 # Run configuration. Edit these; the physics `input` above is separate.
 config = (
     use_gpu = false,     # true routes beam storage and tracking to CUDA
-    turns = 2,           # raise for a real run
+    gpu_device = nothing, # CUDA device index, or nothing for the current one
+    turns = 2,           # raise for a real run (production: 1_000_000)
     n_macro = 10_000,    # ~1_024_000 for a production weak beam
 )
 turns = config.turns
@@ -124,7 +142,8 @@ if config.use_gpu
     import CUDA
     CUDA.functional(false) || error("config.use_gpu is true, but CUDA is not functional")
 end
-policy = config.use_gpu ? CUDAExecutionPolicy() : CPUThreadsExecutionPolicy()
+policy = config.use_gpu ? CUDAExecutionPolicy(device = config.gpu_device) :
+                          CPUThreadsExecutionPolicy()
 set_global_rng!(seed = input.seed, method = :philox)
 
 wb = input.weak_beam
@@ -151,7 +170,7 @@ beam = Beam(n_macro, policy, Float64;
 
 opt = input.optics
 cckick = tan(opt.crossing_angle) / sqrt(wb.beta_x * opt.crab_beta_x)
-cc_strength_x = (cckick * 4.0 / 3.0, -cckick / 3.0, 0.0)
+cc_strength_x = cckick .* input.crab_cavity.harmonic_weights
 
 tccb2ip = Linear6DSpec{Float64}(;
     beta1 = (opt.crab_beta_x, opt.crab_beta_y, beta_z),
@@ -253,15 +272,18 @@ radiation = LumpedRadSpec{Float64}(;
     rng_id = 2,
 )
 
-mkpath(input.result_dir)
-luminosity_path = joinpath(input.result_dir, input.output.luminosity_file)
-moment_path = joinpath(input.result_dir, input.output.moment_file)
-luminosity_observer = ScheduledObserver(LuminosityObserver(luminosity_path))
+# Outputs land under result/<seed>/, named by the case, so seed scans and
+# multi-case studies never collide.
+outdir = joinpath(input.result_dir, string(input.seed))
+mkpath(outdir)
+luminosity_path = joinpath(outdir, input.case_name * ".lum")
+moment_path = joinpath(outdir, input.case_name * ".h5")
+luminosity_observer = ScheduledObserver(
+    LuminosityObserver(luminosity_path; capacity = input.output.luminosity_capacity))
 moment_observer = ScheduledObserver(
     MomentObserver(moment_path; capacity = input.output.moment_capacity),
     EveryNSteps(
         start = input.output.moment_start,
-        stop = input.output.moment_stop,
         step = input.output.moment_step,
     ),
 )

@@ -97,6 +97,10 @@ input = (
 
     crab_cavity = (
         frequency = 197.0e6,
+        # Relative harmonic weights of the horizontal crab kick; (4/3, -1/3)
+        # is the two-harmonic compensation scheme, (1.0, 0.0, 0.0) a single
+        # cavity. The absolute scale is derived below.
+        harmonic_weights = (4.0 / 3.0, -1.0 / 3.0, 0.0),
         strength_y = (0.0, 0.0, 0.0),
         phase = (0.0, 0.0, 0.0),
     ),
@@ -127,12 +131,16 @@ input = (
     ),
 
     output = (
-        luminosity_file = "weak_strong.lum",
-        moment_file = "weak_strong_moments.h5",
+        # Filenames derive from `case_name` — one authority, no copies (its
+        # previous life as a defined-but-unread field was the U21-24 class the
+        # NOTE above records for total_turns/n_macro). Capacities buffer rows
+        # between appends/flushes; on networked filesystems the per-turn
+        # open/append/close dominates observer cost (2.3 ms/turn measured;
+        # docs/history/weak_strong_cuda_luminosity_2026_08_11.md).
+        luminosity_capacity = 100,
+        moment_capacity = 1024,
         moment_start = 0,
         moment_step = 1,
-        moment_stop = 1_000_000,
-        moment_capacity = 100,
     ),
 )
 
@@ -181,7 +189,7 @@ beam = Beam(n_macro, policy, Float64;
 
 opt = input.optics
 cckick = tan(opt.crossing_angle) / sqrt(wb.beta_x * opt.crab_beta_x)
-cc_strength_x = (cckick * 4.0 / 3.0, -cckick / 3.0, 0.0)
+cc_strength_x = cckick .* input.crab_cavity.harmonic_weights
 
 tccb2ip = Linear6DSpec{Float64}(;
     beta1 = (opt.crab_beta_x, opt.crab_beta_y, beta_z),
@@ -283,15 +291,18 @@ radiation = LumpedRadSpec{Float64}(;
     rng_id = 2,
 )
 
-mkpath(input.result_dir)
-luminosity_path = joinpath(input.result_dir, input.output.luminosity_file)
-moment_path = joinpath(input.result_dir, input.output.moment_file)
-luminosity_observer = ScheduledObserver(LuminosityObserver(luminosity_path))
+# Outputs land under result_dir/<seed>/, named by the case, matching the
+# clean example's layout so seed scans and multi-case runs never collide.
+outdir = joinpath(input.result_dir, string(input.seed))
+mkpath(outdir)
+luminosity_path = joinpath(outdir, input.case_name * ".lum")
+moment_path = joinpath(outdir, input.case_name * ".h5")
+luminosity_observer = ScheduledObserver(
+    LuminosityObserver(luminosity_path; capacity = input.output.luminosity_capacity))
 moment_observer = ScheduledObserver(
     MomentObserver(moment_path; capacity = input.output.moment_capacity),
     EveryNSteps(
         start = input.output.moment_start,
-        stop = input.output.moment_stop,
         step = input.output.moment_step,
     ),
 )

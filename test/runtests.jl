@@ -4650,11 +4650,19 @@ end
     # config (gitignored, but every Pkg.test left the artifacts behind;
     # 2026-08-05 audit, U18-3). Remove exactly the files these runs create,
     # in both output directories, and leave anything else in result/ alone.
-    for dir in (joinpath(root, "result"), joinpath(root, "test", "result")),
-        name in ("weak_strong.lum", "weak_strong_moments.h5",
-                 "pic_hcc.lum", "pic_hcc.ele.h5", "pic_hcc.pro.h5")
-
-        rm(joinpath(dir, name); force=true)
+    # The weak-strong pair writes under result/<seed>/<case_name>.* since
+    # 2026-08-11 (seed 123456789, case "weak_strong" — the scripts' shipped
+    # config values); the seed directory is removed only when these deletions
+    # leave it empty.
+    for dir in (joinpath(root, "result"), joinpath(root, "test", "result"))
+        for name in ("pic_hcc.lum", "pic_hcc.ele.h5", "pic_hcc.pro.h5")
+            rm(joinpath(dir, name); force=true)
+        end
+        seed_dir = joinpath(dir, "123456789")
+        for name in ("weak_strong.lum", "weak_strong.h5")
+            rm(joinpath(seed_dir, name); force=true)
+        end
+        isdir(seed_dir) && isempty(readdir(seed_dir)) && rm(seed_dir)
     end
 end
 
