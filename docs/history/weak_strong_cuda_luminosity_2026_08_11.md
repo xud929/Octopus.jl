@@ -95,6 +95,43 @@ every-turn luminosity, GPU utilization from ~30% to ~70–80%. **To be
 confirmed on the production machine**; the pre-change 10.75 ms/turn is the
 owner's measurement, 2026-08-11.
 
+## A100 confirmation and the filesystem finding (later the same day)
+
+The owner's production batch (4 GPUs, 4 cases, `result/` on the cluster
+filesystem) still measured 11.05 ms/turn on the new code — which looked like
+the optimization failing. A steady-state anatomy harness run on the
+production A100 attributed it instead:
+
+| A100, 1.024M particles, ns=7, observer files on: | node-local tmp | cluster fs |
+|--------------------------------------------------|---------------:|-----------:|
+| bare line                                        | 3.407          | 3.391      |
+| + luminosity every turn                          | 3.406          | 5.740      |
+| + moments every turn (`capacity=100`)            | 5.150          | 6.711      |
+| + both (the production configuration)            | 5.281          | 10.392     |
+
+Readings: the device-reduction fix works — every-turn luminosity observation
+costs 0.001 ms/turn on local storage, and the production-shaped line hits the
+predicted 4–6 ms band (5.28). The remaining gap to 11.05 was **filesystem
+cost**: ~2.3 ms/turn for the `.lum` per-turn open/append/close and ~1.6
+ms/turn amortized HDF5 moment flushes (the owner's explicit
+`moment_capacity=100` is 10x below the `MomentObserver` default of 1024).
+False trails burned on the way, recorded so the next session does not repeat
+them: GPU memory occupancy (750 MB resident of 40 GB — irrelevant), stale
+code on the Distributed workers (`addprocs` does not inherit the notebook
+project; ruled out by `isdefined` on every worker), and amortized first-call
+compilation (ruled out at 186k turns).
+
+Fix: `LuminosityObserver(path; capacity=N)` — rows buffer in memory and one
+append writes them all, mirroring the moment observers' capacity pattern.
+Default `capacity=1` preserves the old per-turn durability byte-for-byte;
+`finalize_observer!` flushes on both execute! exit paths (T7), replay
+discard empties pending rows first, and the file format is pinned
+byte-identical across capacities. Measured on `/cfs`: 0.590 → 0.021 ms/turn
+at `capacity=100` (28x). The strong-strong task never had this cost — its
+`luminosity_path` streams through one handle held open across the whole
+`execute!` (`interface.jl` run body), the third and fastest of the three
+output designs now in the tree.
+
 ## Left open, deliberately
 
 - The `:auto` blocks path for the isolated weak-strong elements caps at 256
