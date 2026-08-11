@@ -1731,7 +1731,12 @@ if _HAS_CUDA
             off = 0
             while off < nm2
                 c = min(_CUDA_FUSED_MOMENT_CHUNK, nm2 - off)
-                val = Val(ntuple(m -> moments[reduce_idx[off + m]].powers, c))
+                # `let`-bound copy: capturing the reassigned loop variable
+                # would box it (the suite's Core.Box tripwire caught exactly
+                # that here on the first version).
+                val = let base = off
+                    Val(ntuple(m -> moments[reduce_idx[base + m]].powers, c))
+                end
                 push!(chunks, (off, c, val))
                 off += c
             end
