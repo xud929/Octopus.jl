@@ -2015,8 +2015,6 @@ function validate_configuration_metadata()
         end
     end
     observer_instances = (
-        BeamMomentObserver("metadata.bin"),
-        JLD2BeamMomentObserver("metadata.jld2"),
         MomentObserver("metadata.h5"),
         CoordinateSnapshotObserver("metadata.coord"),
         LuminosityObserver("metadata.lum"),
@@ -2036,7 +2034,7 @@ function validate_configuration_metadata()
         any(o -> o isa T, observer_instances) || push!(errors,
             "$(T) is a concrete AbstractBeamObserver with no validate_configuration_metadata coverage")
     end
-    for observer_type in (BeamMomentObserver, JLD2BeamMomentObserver, MomentObserver,
+    for observer_type in (MomentObserver,
                           CoordinateSnapshotObserver, LuminosityObserver, BPMObserver)
         for (name, meta) in pairs(observer_option_schema(observer_type))
             meta.consumer === :unspecified && push!(errors,

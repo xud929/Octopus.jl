@@ -63,6 +63,14 @@ two chunks), so a device path could reuse this campaign's machinery nearly
 verbatim — or the pair gets documented as legacy/CPU-appropriate. Todo row
 added.
 
+*N1 closure, same day (owner decision):* removed rather than fixed. Both
+observers, their writers, schemas, exports, metadata probes, and their suite
+pins (U7-2, U7-3, U7-8 — lessons preserved in the dated records) are gone in
+the pre-release window; the JLD2/binary reader branches stay for archived
+files, and the U7-10 registry test re-vehicled onto `MomentObserver`. One
+public moment observer remains, which is the derive-from-one-source rule
+applied to output paths.
+
 **N2 — `BPMObserver` in path mode opens its file every observed turn.
 Ledgered.** `BPMObserver.jl:257` is the same open/append/close-per-turn
 shape the `.lum` observer had (2.3 ms/turn on the production cluster FS).

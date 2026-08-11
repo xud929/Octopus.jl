@@ -5233,47 +5233,6 @@ end
     @test literal("PMASS") == Octopus.PMASS_EV
 end
 
-@testset "The JLD2 moment layout is derived, not hand-copied three times" begin
-    # 2026-08-05_b audit, U7-8. The column layout lived in three independent
-    # hand copies -- the names, a table of hardcoded ranges, and a third set of
-    # `col += 6 / += 36 / += 3` steps in the matrix builder -- with no tripwire.
-    # Adding or reordering a column in one silently mislabels
-    # `read_moment(:emittance)` from the others.
-    widths = Octopus._JLD2_MOMENT_BLOCK_WIDTHS
-    ranges = Octopus._jld2_moment_ranges()
-    names = Octopus._jld2_moment_column_names()
-
-    # (a) the ranges tile the table exactly, with no gap and no overlap
-    @test keys(ranges) == keys(widths)
-    covered = Int[]
-    for k in keys(ranges)
-        r = getproperty(ranges, k)
-        @test length(r) == getproperty(widths, k)
-        append!(covered, collect(r))
-    end
-    @test covered == collect(1:length(names))     # gapless, ordered, complete
-
-    # (b) the names agree with the widths, which is the join the three copies
-    #     could previously break independently
-    @test length(names) == sum(values(widths))
-
-    # (c) and the blocks land where their names say. A mislabelled block is the
-    #     failure this whole tripwire exists for, so check the boundaries by
-    #     name rather than by index arithmetic.
-    @test names[first(ranges.turn)] == "turn"
-    @test names[first(ranges.mean)] == "mean_x"
-    @test names[last(ranges.mean)] == "mean_pz"
-    @test names[first(ranges.covariance)] == "cov_x_x"
-    @test names[last(ranges.covariance)] == "cov_pz_pz"
-    @test names[first(ranges.rms)] == "rms_x"
-    @test names[first(ranges.emittance)] == "emit_x"
-    @test names[last(ranges.emittance)] == "emit_z"
-    @test names[first(ranges.xz_covariance)] == "xz_covariance"
-    @test names[first(ranges.yz_covariance)] == "yz_covariance"
-    @test names[first(ranges.diagonal_fourth_central)] == "diagonal_fourth_x"
-    @test names[last(ranges.diagonal_fourth_central)] == "diagonal_fourth_pz"
-end
-
 @testset "The near-round Gauss-Legendre reference has not drifted from its twin" begin
     # 2026-08-05_b audit, U23-13. The 96-point Gauss-Legendre reference is the
     # independent standard the whole near-round validation rests on, and it
@@ -5917,34 +5876,25 @@ end
     dline = (DriftSpec(L=1.0),)
     second_writer_warns(lg) = count(
         l -> occursin("second live observer", string(l.message)), lg)
-    p = tempname() * ".bin"
-    obs = BeamMomentObserver(p)
+    # The moment-family registry member is MomentObserver since the legacy
+    # binary/JLD2 moment observers were removed (2026-08-11 neighbour-audit
+    # N1 closure); the mechanism under test is the shared path registry, not
+    # any one writer.
+    p = tempname() * ".h5"
+    obs = MomentObserver(p)
     t1 = TrackingTask(dline; hooks=(ScheduledObserver(obs),))
     lg, _ = Test.collect_test_logs() do
         execute!(t1, mkp(); turns=3)
         execute!(t1, mkp(); turns=4, start_turn=3)
     end
     @test second_writer_warns(lg) == 0        # documented continuing pattern
-    obs2 = BeamMomentObserver(p)
+    obs2 = MomentObserver(p)
     t2 = TrackingTask(dline; hooks=(ScheduledObserver(obs2),))
     lg2, _ = Test.collect_test_logs() do
         execute!(t2, mkp(); turns=2)
     end
     @test second_writer_warns(lg2) == 1       # the U7-10 interleave, now loud
     rm(p; force=true)
-    # The JLD2 sibling shares the mechanism through the same registry.
-    pj = tempname() * ".jld2"
-    oj1 = JLD2BeamMomentObserver(pj; capacity=1)
-    lgj, _ = Test.collect_test_logs() do
-        execute!(TrackingTask(dline; hooks=(ScheduledObserver(oj1),)), mkp(); turns=2)
-    end
-    @test second_writer_warns(lgj) == 0
-    oj2 = JLD2BeamMomentObserver(pj; capacity=1)
-    lgj2, _ = Test.collect_test_logs() do
-        execute!(TrackingTask(dline; hooks=(ScheduledObserver(oj2),)), mkp(); turns=2)
-    end
-    @test second_writer_warns(lgj2) == 1
-    rm(pj; force=true)
 
     # N3 (2026-08-07 neighbour audit): the three writers the U7-10 sweep
     # found outside the registry — LuminosityObserver and BPMObserver
@@ -5999,12 +5949,13 @@ end
 @testset "Every continuing observer drops its replayed window" begin
     # 2026-08-05 audit open-queue U6-2: only MomentObserver and the task-level
     # .lum path followed the drop-at-first_turn idempotence rule; the
-    # Luminosity, JLD2, binary-moment, and coordinate-snapshot observers
-    # duplicated turn labels on a crashed-execute! retry or an explicit rewind
-    # (measured [0,1,2,0,1,2,3,4,5]). All four now discard rows/records at or
-    # beyond the incoming window's first turn; snapshots use the observer's
+    # Luminosity and coordinate-snapshot observers duplicated turn labels on a
+    # crashed-execute! retry or an explicit rewind (measured
+    # [0,1,2,0,1,2,3,4,5]). Both now discard rows/records at or beyond the
+    # incoming window's first turn; snapshots use the observer's
     # (turn → byte offset) map, since their record format carries no turn
-    # label.
+    # label. (The legacy binary/JLD2 moment observers this fix also covered
+    # were removed 2026-08-11, neighbour-audit N1 closure.)
     mk1() = Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
     dline = (DriftSpec(L=1.0),)
 
@@ -6013,28 +5964,6 @@ end
     execute!(t1, mk1(); turns=3)
     execute!(t1, mk1(); turns=4, start_turn=1)
     @test [parse(Int, first(split(l, '\t'))) for l in readlines(p1)] == collect(0:4)
-
-    p2 = tempname() * ".jld2"
-    t2 = TrackingTask(dline; hooks=(ScheduledObserver(JLD2BeamMomentObserver(p2; capacity=1)),))
-    execute!(t2, mk1(); turns=3)
-    execute!(t2, mk1(); turns=4, start_turn=1)
-    jturns = Octopus.JLD2.jldopen(p2, "r") do f
-        Int.(f["data"][:, 1])
-    end
-    @test jturns == collect(0:4)
-
-    p3 = tempname() * ".dat"
-    t3 = TrackingTask(dline; hooks=(ScheduledObserver(BeamMomentObserver(p3; capacity=1)),))
-    execute!(t3, mk1(); turns=3)
-    execute!(t3, mk1(); turns=4, start_turn=1)
-    bturns = open(p3, "r") do io
-        n = Int(read(io, Int32))
-        fl = Int(read(io, Int32))
-        fmt = String(read(io, fl))
-        ncols = count(==(','), fmt) + 1
-        [(seek(io, 8 + fl + (i - 1) * ncols * 8); Int(read(io, Float64))) for i in 1:n]
-    end
-    @test bturns == collect(0:4)
 
     p4 = tempname() * ".dat"
     t4 = TrackingTask(dline; hooks=(ScheduledObserver(CoordinateSnapshotObserver(p4; append=false)),))
@@ -6070,81 +5999,31 @@ end
         @test String(read(p5)[1:prefix]) == "FOREIGN-PREFIX-DATA"   # still there
         rm(p5; force=true)
     end
-    # 2026-08-05_b audit, U7-2: `_jld2_replace!` is `delete!` then write, IN
-    # PLACE, and `_append_jld2_moment_columns!` rewrites the whole `data` matrix
-    # through it on every flush -- default capacity 1, so once per observed
-    # turn. Between the delete and the re-write the file has no `data` key at
-    # all, so a process death in that window lost the ENTIRE history rather than
-    # the in-flight row. That is the F4 defect, fixed for the `.lum` path with
-    # tmp + `mv` and left unfixed in this twin; the replay discard then added a
-    # second instance of it. Both now go through an atomic swap.
-    let p7 = tempname() * ".jld2"
-        obs = JLD2BeamMomentObserver(p7)
-        rep7 = Phase6DRep([1.0, 2.0, 3.0, 4.0], zeros(4), zeros(4), zeros(4), zeros(4), zeros(4))
-        for t in 1:3
-            Octopus.observe!(obs, Octopus.with_turn(Octopus.TrackingContext(), t), rep7)
+    # 2026-08-05_b audit, U7-4: `MomentObserver` writes HDF5 to whatever
+    # path it is given, but the reader used to pick its branch from the
+    # FILENAME EXTENSION. On any non-.h5/.hdf5 path the read fell to the
+    # JLD2 branch, which returns `data` whole and never applies the
+    # `/data[1:record_count, :]` slice its docstring promises -- so a run
+    # that preallocated 10 records and wrote 4 read back 10 rows, six of
+    # them fabricated zeros carrying turn label 0.0. Detection is by the
+    # HDF5 magic bytes now, so the name cannot lie about the format. (The
+    # JLD2 writer twin and its atomic-update/quadratic-size pins were removed
+    # with the legacy observers, 2026-08-11 neighbour-audit N1 closure; the
+    # JLD2 READER branch this test exercises stays, for archived files.)
+    let p9 = tempname() * ".dat"          # deliberately NOT .h5
+        o9 = MomentObserver(p9; capacity=2)
+        r9 = Phase6DRep([1.0e-4, 2.0e-4], zeros(2), [1.0e-5, 2.0e-5], zeros(2),
+                        [1.0e-3, 2.0e-3], zeros(2))
+        Octopus.prepare_observer!(o9, (), AlwaysSchedule(), 10, 0)   # plan 10
+        for t in 1:4                                                  # write 4
+            Octopus.observe!(o9, Octopus.with_turn(Octopus.TrackingContext(), t), r9)
         end
-        Octopus.finalize_observer!(obs)
-        before = Octopus.JLD2.jldopen(f -> (size(f["data"], 1), f["record_count"]), p7, "r")
-        @test before == (3, 3)
-        # A failure inside the update must leave the ORIGINAL file intact --
-        # this is the property the in-place delete could not offer.
-        @test_throws ErrorException Octopus._jld2_atomic_update!(p7) do pending
-            pending["data"] = zeros(0, 1)
-            error("simulated crash mid-update")
-        end
-        after = Octopus.JLD2.jldopen(f -> (size(f["data"], 1), f["record_count"]), p7, "r")
-        @test after == before
-        @test !isfile(p7 * ".tmp")        # and no debris left behind
-        # 2026-08-05_b audit, U7-4: `MomentObserver` writes HDF5 to whatever
-        # path it is given, but the reader used to pick its branch from the
-        # FILENAME EXTENSION. On any non-.h5/.hdf5 path the read fell to the
-        # JLD2 branch, which returns `data` whole and never applies the
-        # `/data[1:record_count, :]` slice its docstring promises -- so a run
-        # that preallocated 10 records and wrote 4 read back 10 rows, six of
-        # them fabricated zeros carrying turn label 0.0. Detection is by the
-        # HDF5 magic bytes now, so the name cannot lie about the format.
-        let p9 = tempname() * ".dat"          # deliberately NOT .h5
-            o9 = MomentObserver(p9; capacity=2)
-            r9 = Phase6DRep([1.0e-4, 2.0e-4], zeros(2), [1.0e-5, 2.0e-5], zeros(2),
-                            [1.0e-3, 2.0e-3], zeros(2))
-            Octopus.prepare_observer!(o9, (), AlwaysSchedule(), 10, 0)   # plan 10
-            for t in 1:4                                                  # write 4
-                Octopus.observe!(o9, Octopus.with_turn(Octopus.TrackingContext(), t), r9)
-            end
-            Octopus.finalize_observer!(o9)
-            @test Octopus._is_hdf5_output(p9)          # content, not extension
-            d9 = read(MomentOutputFile(p9))
-            @test size(d9, 1) == 4                      # was 10
-            @test d9[:, 1] == [1.0, 2.0, 3.0, 4.0]      # no fabricated turn 0 rows
-            rm(p9; force=true)
-        end
-        # 2026-08-05_b audit, U7-3: file size used to be QUADRATIC in the number
-        # of flushes, because every flush appended a fresh copy of the growing
-        # `data` matrix and JLD2 never reclaimed the space of the dataset
-        # `_jld2_replace!` deleted -- a 2,000-turn default run wrote 961 MB for
-        # 960 KB of data, 1001x. The atomic rewrite writes a NEW file each time
-        # and moves it into place, so dead space cannot accumulate. Measured
-        # after: the size/payload ratio FALLS with turn count (1.34x at 50
-        # turns, 1.09x at 200, 1.04x at 400) instead of growing. The bound is
-        # generous; what it catches is a return to super-linear growth.
-        let p8 = tempname() * ".jld2"
-            o8 = JLD2BeamMomentObserver(p8)
-            r8 = Phase6DRep([1.0e-4, 2.0e-4], zeros(2), [1.0e-5, 2.0e-5], zeros(2),
-                            [1.0e-3, 2.0e-3], zeros(2))
-            for t in 1:200
-                Octopus.observe!(o8, Octopus.with_turn(Octopus.TrackingContext(), t), r8)
-            end
-            Octopus.finalize_observer!(o8)
-            rows, ncol = Octopus.JLD2.jldopen(f -> size(f["data"]), p8, "r")
-            @test rows == 200
-            @test filesize(p8) < 4 * rows * ncol * sizeof(Float64)
-            rm(p8; force=true)
-        end
-        # Nested metadata must survive the rewrite, not just the data matrix.
-        @test Octopus.JLD2.jldopen(f -> f["metadata/format"], p7, "r") ==
-              "Octopus.JLD2BeamMomentObserver"
-        rm(p7; force=true)
+        Octopus.finalize_observer!(o9)
+        @test Octopus._is_hdf5_output(p9)          # content, not extension
+        d9 = read(MomentOutputFile(p9))
+        @test size(d9, 1) == 4                      # was 10
+        @test d9[:, 1] == [1.0, 2.0, 3.0, 4.0]      # no fabricated turn 0 rows
+        rm(p9; force=true)
     end
 
     # Control: with NO foreign prefix the reset must still happen, or a retry
@@ -6161,7 +6040,7 @@ end
         rm(p6; force=true)
     end
 
-    foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
+    foreach(p -> rm(p; force=true), (p1, p4))
 end
 
 @testset "LuminosityObserver capacity buffers rows and flushes on every exit path" begin

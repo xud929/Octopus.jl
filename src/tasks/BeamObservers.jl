@@ -5,7 +5,7 @@ export AbstractSchedule, AbstractBeamObserver, AbstractBeamAction,
        should_run, ScheduledObserver, ScheduledAction,
        schedule_option_schema, observer_option_schema,
        Moment, name, symbol, column_names,
-       BeamMomentObserver, JLD2BeamMomentObserver, MomentObserver,
+       MomentObserver,
        CoordinateSnapshotObserver, LuminosityObserver, BeamSwapAction,
        observe!, apply_action!, run_observers!, run_actions!,
        prepare_observers!, prepare_line_observers!,
@@ -422,35 +422,6 @@ function _push_task_hook!(actions, observers, hook)
     throw(ArgumentError("unsupported task hook type $(typeof(hook)); use ScheduledAction, ScheduledObserver, AbstractBeamAction, or AbstractBeamObserver"))
 end
 
-mutable struct BeamMomentObserver <: AbstractBeamObserver
-    path::String
-    buffer_capacity::Int
-    buffer_turns::Vector{Float64}
-    buffer::Vector{Vector{Float64}}
-    record_count::Int
-    initialized::Bool
-end
-
-"""
-    BeamMomentObserver(path; capacity=1)
-
-Write turn, means, upper-triangular covariance, and diagonal fourth central
-moments to an Octopus compact binary moment-output file.
-"""
-function BeamMomentObserver(path::AbstractString; capacity::Integer=1)
-    capacity >= 0 || throw(ArgumentError("capacity must be nonnegative"))
-    return BeamMomentObserver(String(path), Int(capacity), Float64[], Vector{Float64}[], 0, false)
-end
-
-mutable struct JLD2BeamMomentObserver <: AbstractBeamObserver
-    path::String
-    buffer_capacity::Int
-    buffer_turns::Vector{Float64}
-    buffer::Vector{Any}
-    record_count::Int
-    initialized::Bool
-end
-
 """
     Moment(p1, p2, p3, p4, p5, p6)
     Moment(; x=0, px=0, y=0, py=0, z=0, pz=0)
@@ -633,27 +604,6 @@ mutable struct MomentObserver <: AbstractBeamObserver
     initialized::Bool
     append::Bool
     reduction_scratch::Any
-end
-
-"""
-    JLD2BeamMomentObserver(path; capacity=1)
-
-Write beam statistics to a Julia-native JLD2 file.
-
-The file uses a columnar layout:
-
-- `data`: dense matrix with one row per observed turn. Column 1 is `turn`;
-  the remaining columns are flattened beam statistics.
-
-Column metadata is stored under `metadata/column_names` and
-`metadata/ranges/<name>`. Turn is column 1 of `data`; no duplicate `turn`
-dataset is stored. Use `read(MomentOutputFile(path), :emittance)` or
-`read_moment(path, :emittance)` to extract named blocks without duplicating
-datasets in the file.
-"""
-function JLD2BeamMomentObserver(path::AbstractString; capacity::Integer=1)
-    capacity >= 0 || throw(ArgumentError("capacity must be nonnegative"))
-    return JLD2BeamMomentObserver(String(path), Int(capacity), Float64[], Any[], 0, false)
 end
 
 """
@@ -841,12 +791,6 @@ function LuminosityObserver(path::AbstractString; capacity::Integer=1)
     return LuminosityObserver(String(path), cap, (), false, String[])
 end
 
-const _BUFFERED_OBSERVER_OPTION_SCHEMA = (
-    path=ConfigurationOptionMeta(String, nothing, "Required output path.";
-        category=:output, consumer=:observer_output),
-    capacity=ConfigurationOptionMeta(Int, 1, "Number of observed rows buffered before a flush.";
-        category=:output, consumer=:observer_output),
-)
 """
     observer_option_schema(observer_or_type)
 
@@ -856,10 +800,6 @@ concrete observer by `validate_configuration_metadata()`.
 """
 function observer_option_schema end
 
-observer_option_schema(::Type{BeamMomentObserver}) = _BUFFERED_OBSERVER_OPTION_SCHEMA
-observer_option_schema(::BeamMomentObserver) = _BUFFERED_OBSERVER_OPTION_SCHEMA
-observer_option_schema(::Type{JLD2BeamMomentObserver}) = _BUFFERED_OBSERVER_OPTION_SCHEMA
-observer_option_schema(::JLD2BeamMomentObserver) = _BUFFERED_OBSERVER_OPTION_SCHEMA
 observer_option_schema(::Type{MomentObserver}) = (
     path=ConfigurationOptionMeta(String, nothing, "Required HDF5 output path.";
         category=:output, consumer=:observer_output),
@@ -888,18 +828,6 @@ observer_option_schema(::Type{LuminosityObserver}) = (
         "Observed rows buffered before one append; 1 writes every observed turn.";
         category=:output, consumer=:observer_output),)
 observer_option_schema(::LuminosityObserver) = observer_option_schema(LuminosityObserver)
-
-function configuration_report(observer::Union{BeamMomentObserver,JLD2BeamMomentObserver})
-    return (
-        ConfigurationEntry(:path, observer.path, observer.path, :resolved,
-            "required output path", :observer_output),
-        ConfigurationEntry(:capacity, observer.buffer_capacity, observer.buffer_capacity,
-            observer.buffer_capacity == 0 ? :inactive_dependency : :resolved,
-            observer.buffer_capacity == 0 ? "zero capacity disables output" :
-                                            "active output buffer capacity",
-            :observer_output),
-    )
-end
 
 function configuration_report(observer::MomentObserver)
     return (
@@ -951,28 +879,6 @@ Replace the current representation with the `Phase6DRep` or `Beam` returned by
 """
 struct BeamSwapAction{F} <: AbstractBeamAction
     provider::F
-end
-
-function observe!(observer::BeamMomentObserver, ctx::TrackingContext, rep)
-    observer.buffer_capacity == 0 && return nothing
-    _record_execution!(:observer_output, _observer_backend(),
-        (observer=:BeamMomentObserver, turn=ctx.turn, capacity=observer.buffer_capacity))
-    observer.initialized || _initialize_moment_file!(observer)
-    push!(observer.buffer_turns, Float64(ctx.turn))
-    push!(observer.buffer, _moment_output_row(beam_statistics(rep; diagonal_fourth=true)))
-    length(observer.buffer) >= observer.buffer_capacity && _flush_moment_buffer!(observer)
-    return nothing
-end
-
-function observe!(observer::JLD2BeamMomentObserver, ctx::TrackingContext, rep)
-    observer.buffer_capacity == 0 && return nothing
-    _record_execution!(:observer_output, _observer_backend(),
-        (observer=:JLD2BeamMomentObserver, turn=ctx.turn, capacity=observer.buffer_capacity))
-    observer.initialized || _initialize_jld2_moment_file!(observer)
-    push!(observer.buffer_turns, Float64(ctx.turn))
-    push!(observer.buffer, beam_statistics(rep; diagonal_fourth=true))
-    length(observer.buffer) >= observer.buffer_capacity && _flush_jld2_moment_buffer!(observer)
-    return nothing
 end
 
 function observe!(observer::MomentObserver, ctx::TrackingContext, rep)
@@ -1092,96 +998,6 @@ function _discard_replayed_luminosity_rows!(observer::LuminosityObserver, first_
     return nothing
 end
 
-function prepare_observer!(observer::JLD2BeamMomentObserver, runtime_elems, schedule,
-                           turns, first_turn)
-    _discard_replayed_jld2_rows!(observer, Int(first_turn))
-    return nothing
-end
-prepare_line_observer!(observer::JLD2BeamMomentObserver, schedule, turns, first_turn=0) =
-    _discard_replayed_jld2_rows!(observer, Int(first_turn))
-
-function _discard_replayed_jld2_rows!(observer::JLD2BeamMomentObserver, first_turn::Int)
-    # Unflushed rows from a crashed window would be re-observed by the retry.
-    empty!(observer.buffer_turns)
-    empty!(observer.buffer)
-    (observer.initialized && isfile(observer.path)) || return nothing
-    # Atomic: this rewrites `data`, and a kill mid-rewrite must not leave the
-    # file without it (U7-2).
-    _jld2_atomic_update!(observer.path) do pending
-        haskey(pending, "data") || return nothing
-        data = pending["data"]
-        keep = findall(<(Float64(first_turn)), view(data, :, 1))
-        length(keep) == size(data, 1) && return nothing
-        kept = data[keep, :]
-        pending["data"] = kept
-        pending["record_count"] = Int64(size(kept, 1))
-        observer.record_count = size(kept, 1)
-        return nothing
-    end
-    return nothing
-end
-
-function prepare_observer!(observer::BeamMomentObserver, runtime_elems, schedule,
-                           turns, first_turn)
-    _discard_replayed_binary_rows!(observer, Int(first_turn))
-    return nothing
-end
-prepare_line_observer!(observer::BeamMomentObserver, schedule, turns, first_turn=0) =
-    _discard_replayed_binary_rows!(observer, Int(first_turn))
-
-function _discard_replayed_binary_rows!(observer::BeamMomentObserver, first_turn::Int)
-    empty!(observer.buffer_turns)
-    empty!(observer.buffer)
-    (observer.initialized && isfile(observer.path)) || return nothing
-    # The `filesize > 0` guard the F7 fix gave both twins and this one lacked
-    # (2026-08-05_b audit, U7-7). Without it the two `read(io, Int32)` below hit
-    # a zero-length file and threw a bare `EOFError` naming neither the path nor
-    # the observer. F7's own disposition for the HDF5 twin was that "a zero-byte
-    # leftover from a crash at create time is not a table; it is replaced
-    # fresh"; the binary twin neither replaced nor explained. Reachability is
-    # low -- `initialized` is monotone within an object, so something outside
-    # the observer must have truncated the file -- but the asymmetry is what
-    # makes the class regenerate.
-    if filesize(observer.path) == 0
-        @warn "moment observer: the recorded file is zero bytes (a crash at " *
-              "create time leaves this), so there are no rows to discard; it " *
-              "will be written fresh" path = observer.path
-        observer.initialized = false
-        return nothing
-    end
-    open(observer.path, "r+") do io
-        nrows = Int(read(io, Int32))
-        fmtlen = Int(read(io, Int32))
-        fmt = String(read(io, fmtlen))
-        ncols = count(==(','), fmt) + 1
-        rowbytes = ncols * sizeof(Float64)
-        base = 8 + fmtlen
-        turn_at(i) = (seek(io, base + (i - 1) * rowbytes); read(io, Float64))
-        # Rows are in ascending turn order (schedules plan forward and rewinds
-        # drop), so the cutoff is a binary search on the leading turn column.
-        lo, hi = 1, nrows
-        kept = nrows
-        while lo <= hi
-            mid = (lo + hi) >> 1
-            if turn_at(mid) < Float64(first_turn)
-                lo = mid + 1
-            else
-                kept = mid - 1
-                hi = mid - 1
-            end
-        end
-        kept = min(kept, nrows)
-        if kept < nrows
-            seekstart(io)
-            write(io, Int32(kept))
-            truncate(io, base + kept * rowbytes)
-        end
-        observer.record_count = kept
-        return nothing
-    end
-    return nothing
-end
-
 function prepare_observer!(observer::CoordinateSnapshotObserver, runtime_elems, schedule,
                            turns, first_turn)
     _discard_replayed_snapshots!(observer, Int(first_turn))
@@ -1243,99 +1059,6 @@ end
 function _call_provider(provider, ctx)
     return applicable(provider, ctx) ? provider(ctx) : provider()
 end
-
-function _moment_output_row(stats)
-    row = Float64[]
-    append!(row, Float64.(stats.mean))
-    for i in 1:6, j in i:6
-        push!(row, Float64(stats.covariance[i, j]))
-    end
-    append!(row, Float64.(stats.diagonal_fourth_central))
-    return row
-end
-
-function _initialize_moment_file!(observer::BeamMomentObserver)
-    _register_observer_path!(observer, observer.path)   # U7-10
-    fmt = "turn"
-    for i in 1:6
-        fmt *= ",mu$i"
-    end
-    for i in 1:6, j in i:6
-        fmt *= ",sigma$i$j"
-    end
-    for i in 1:6
-        fmt *= ",kappa$i"
-    end
-    open(observer.path, "w") do io
-        write(io, Int32(0))
-        write(io, Int32(sizeof(fmt)))
-        write(io, codeunits(fmt))
-    end
-    observer.initialized = true
-    return nothing
-end
-
-function _flush_moment_buffer!(observer::BeamMomentObserver)
-    isempty(observer.buffer) && return nothing
-    open(observer.path, "r+") do io
-        # Rows land at the offset the on-disk count implies, and the count is
-        # updated only after they are written — in that order, so a crash
-        # between the two leaves orphan bytes past the counted region that
-        # the next flush overwrites, never a count exceeding the rows on
-        # disk (the HDF5 observer makes the same ordering promise;
-        # 2026-08-05 audit, U6-6).
-        seek(io, 4)
-        fmtlen = Int(read(io, Int32))
-        rowbytes = (1 + length(first(observer.buffer))) * sizeof(Float64)
-        seek(io, 8 + fmtlen + observer.record_count * rowbytes)
-        for (turn, row) in zip(observer.buffer_turns, observer.buffer)
-            write(io, Float64(turn))
-            write(io, Float64.(row))
-        end
-        observer.record_count += length(observer.buffer)
-        seekstart(io)
-        write(io, Int32(observer.record_count))
-    end
-    empty!(observer.buffer_turns)
-    empty!(observer.buffer)
-    return nothing
-end
-
-finalize_observer!(observer::BeamMomentObserver) =
-    _flush_moment_buffer!(observer)
-
-function _initialize_jld2_moment_file!(observer::JLD2BeamMomentObserver)
-    _register_observer_path!(observer, observer.path)   # U7-10
-    JLD2.jldopen(observer.path, "w") do file
-        file["metadata/format"] = "Octopus.JLD2BeamMomentObserver"
-        file["metadata/layout"] = "columnar_v2"
-        file["metadata/labels"] = ["x", "px", "y", "py", "z", "pz"]
-        file["metadata/covariance_layout"] = "full_6x6"
-        file["metadata/column_names"] = _jld2_moment_column_names()
-        for (name, range) in pairs(_jld2_moment_ranges())
-            file["metadata/ranges/$(name)"] = collect(range)
-        end
-        file["record_count"] = Int64(0)
-    end
-    observer.initialized = true
-    return nothing
-end
-
-function _flush_jld2_moment_buffer!(observer::JLD2BeamMomentObserver)
-    isempty(observer.buffer) && return nothing
-    # Atomic: `_append_jld2_moment_columns!` rewrites the WHOLE `data` matrix on
-    # every flush, so the delete-then-write window it used to run in was open
-    # once per observed turn (U7-2).
-    _jld2_atomic_update!(observer.path) do pending
-        _append_jld2_moment_columns!(pending, observer)
-    end
-    empty!(observer.buffer_turns)
-    empty!(observer.buffer)
-    return nothing
-end
-
-finalize_observer!(observer::JLD2BeamMomentObserver) =
-    _flush_jld2_moment_buffer!(observer)
 
 function finalize_observer!(observer::MomentObserver)
     try
@@ -1824,178 +1547,6 @@ function _compute_moment(arrays, means, moment::Moment, flags=nothing, nlive=len
     return acc / nlive
 end
 
-function _jld2_moment_column_names()
-    labels = ["x", "px", "y", "py", "z", "pz"]
-    names = String["turn"]
-    append!(names, ["mean_$label" for label in labels])
-    append!(names, ["cov_$(labels[i])_$(labels[j])" for i in 1:6 for j in 1:6])
-    append!(names, ["rms_$label" for label in labels])
-    append!(names, ["emit_x", "emit_y", "emit_z"])
-    push!(names, "xz_covariance")
-    push!(names, "yz_covariance")
-    append!(names, ["diagonal_fourth_$label" for label in labels])
-    return names
-end
-
-function _append_jld2_moment_columns!(file, observer::JLD2BeamMomentObserver)
-    new_turn = Float64.(observer.buffer_turns)
-    new_mean = _rows_matrix(stats -> stats.mean, observer.buffer, 6)
-    new_covariance = _rows_covariance(observer.buffer)
-    new_rms = _rows_matrix(stats -> stats.rms, observer.buffer, 6)
-    new_emittance = _rows_matrix(stats -> stats.emittance, observer.buffer, 3)
-    new_xz = Float64[stats.xz_covariance for stats in observer.buffer]
-    new_yz = Float64[stats.yz_covariance for stats in observer.buffer]
-    new_fourth = _rows_matrix(stats -> stats.diagonal_fourth_central, observer.buffer, 6)
-    new_data = _jld2_moment_data_matrix(
-        new_turn, new_mean, new_covariance, new_rms, new_emittance, new_xz, new_yz, new_fourth,
-    )
-
-    data = _jld2_read_or_empty(file, "data", zeros(Float64, 0, length(_jld2_moment_column_names())))
-
-    data = vcat(data, new_data)
-
-    observer.record_count = size(data, 1)
-    _jld2_replace!(file, "data", data)
-    _jld2_replace!(file, "record_count", Int64(observer.record_count))
-    return nothing
-end
-
-_jld2_read_or_empty(file, key::AbstractString, default) =
-    haskey(file, key) ? file[key] : default
-
-function _jld2_replace!(file, key::AbstractString, value)
-    haskey(file, key) && delete!(file, key)
-    file[key] = value
-    return nothing
-end
-
-"""
-Apply `mutate!(pending)` to a JLD2 file's contents and swap it in atomically.
-
-`pending` is a `Dict` of every key the file currently holds; whatever it holds
-afterwards is what the file will hold. The new contents go to a sibling
-temporary and are `mv`-ed over the original, so a process death leaves either
-the old file or the new one and never a partial.
-
-This exists because `_jld2_replace!` is `delete!` then write, in place: between
-those two calls the file has no `data` key at all, and
-`_append_jld2_moment_columns!` runs that on EVERY flush (default capacity 1, so
-once per observed turn). A kill in that window loses the entire history rather
-than the in-flight row. That is the F4 defect, fixed for the `.lum` path with
-tmp + `mv` and left unfixed in this twin; `_discard_replayed_jld2_rows!` then
-added a second instance of it. The binary and HDF5 twins both make the opposite
-promise -- rows first, count second (F9) -- and JLD2 made none
-(2026-08-05_b audit, U7-2).
-"""
-function _jld2_atomic_update!(mutate!, path::AbstractString)
-    pending = Dict{String,Any}()
-    if isfile(path)
-        JLD2.jldopen(path, "r") do file
-            for k in _jld2_all_keys(file)
-                pending[k] = file[k]
-            end
-        end
-    end
-    mutate!(pending)
-    tmp = path * ".tmp"
-    try
-        JLD2.jldopen(tmp, "w") do file
-            for (k, v) in pending
-                file[k] = v
-            end
-        end
-        mv(tmp, path; force=true)
-    catch
-        rm(tmp; force=true)
-        rethrow()
-    end
-    return nothing
-end
-
-"""Every leaf key in a JLD2 file, including nested `metadata/...` paths."""
-function _jld2_all_keys(file, prefix::String="")
-    node = isempty(prefix) ? file : file[prefix]
-    out = String[]
-    for k in keys(node)
-        full = isempty(prefix) ? String(k) : prefix * "/" * String(k)
-        child = file[full]
-        if child isa JLD2.Group
-            append!(out, _jld2_all_keys(file, full))
-        else
-            push!(out, full)
-        end
-    end
-    return out
-end
-
-function _rows_matrix(getter, stats_buffer, width::Integer)
-    out = Matrix{Float64}(undef, length(stats_buffer), width)
-    for (i, stats) in pairs(stats_buffer)
-        out[i, :] .= Float64.(getter(stats))
-    end
-    return out
-end
-
-function _rows_covariance(stats_buffer)
-    out = Array{Float64}(undef, length(stats_buffer), 6, 6)
-    for (i, stats) in pairs(stats_buffer)
-        out[i, :, :] .= Float64.(stats.covariance)
-    end
-    return out
-end
-
-"""
-Width in columns of each block of the JLD2 moment table, in order.
-
-The ONE place the layout is stated (2026-08-05_b audit, U7-8). It used to live
-in three independent hand copies -- the column names, a table of hardcoded
-`turn=1:1, mean=2:7, covariance=8:43, ...` offsets, and a third set of
-`col += 6 / += 36 / += 3` steps inside the matrix builder -- with no tripwire.
-Adding or reordering a column in one silently mislabels `read_moment(:emittance)`
-from the others. The three did agree (1+6+36+6+3+1+1+6 = 60); Measured Lesson 4
-is that hand-copied knowledge drifts, so derive and add a tripwire.
-"""
-const _JLD2_MOMENT_BLOCK_WIDTHS = (
-    turn = 1,
-    mean = 6,
-    covariance = 36,
-    rms = 6,
-    emittance = 3,
-    xz_covariance = 1,
-    yz_covariance = 1,
-    diagonal_fourth_central = 6,
-)
-
-"""Column ranges of the JLD2 moment table, derived from the block widths."""
-function _jld2_moment_ranges()
-    # No accumulator captured by a closure: `offset += width` inside a `do`
-    # block makes Julia allocate a `Core.Box` for it, and the permanent box
-    # sweep in test/runtests.jl fails on any new one. (Caught by that sweep on
-    # this very function, one commit after the sweep was widened to see methods
-    # it could not reach before -- U18-1 finding U7-8.)
-    w = values(_JLD2_MOMENT_BLOCK_WIDTHS)
-    n = length(w)
-    stops = ntuple(i -> sum(w[1:i]), n)
-    return NamedTuple{keys(_JLD2_MOMENT_BLOCK_WIDTHS)}(
-        ntuple(i -> (stops[i] - w[i] + 1):stops[i], n))
-end
-
-function _jld2_moment_data_matrix(turn, mean, covariance, rms, emittance, xz, yz, fourth)
-    n = length(turn)
-    data = Matrix{Float64}(undef, n, length(_jld2_moment_column_names()))
-    # The SAME ranges the readers use, not a third copy of the arithmetic (U7-8).
-    r = _jld2_moment_ranges()
-    data[:, r.turn] .= turn
-    data[:, r.mean] .= mean
-    data[:, r.covariance] .= reshape(covariance, n, length(r.covariance))
-    data[:, r.rms] .= rms
-    data[:, r.emittance] .= emittance
-    data[:, r.xz_covariance] .= xz
-    data[:, r.yz_covariance] .= yz
-    data[:, r.diagonal_fourth_central] .= fourth
-    return data
-end
-
 """
     MomentOutputFile(path)
 
@@ -2246,8 +1797,10 @@ end
 """
     read_moment(file_or_path, name)
 
-Read a named moment block from a columnar `JLD2BeamMomentObserver` file without
-duplicating datasets on disk.
+Read a named moment block from a legacy columnar JLD2 moment file (format
+`"Octopus.JLD2BeamMomentObserver"`) without duplicating datasets on disk. The
+writer was removed on 2026-08-11; this reader stays so archived files remain
+readable.
 
 Prefer `read(MomentOutputFile(path))` for new code. `read_moment` is kept as a
 compatibility alias and for callers that already have an open JLD2 file handle.
