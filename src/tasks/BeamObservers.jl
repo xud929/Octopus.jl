@@ -1616,11 +1616,13 @@ if _HAS_CUDA
         # Pass 1 uses `means = 0` with the six identity power rows plus one
         # all-zero row: a zero-power row's term is exactly 1.0, so its
         # accumulator counts the particles the mask admitted. Pass 2 gets the
-        # real means and the order >= 2 rows. The per-moment
-        # fill/broadcast/sum loop this replaces made ~33 host sync round-trips
-        # and ~80 full-array passes per observed turn — 1.53 ms at 1M
-        # particles against 0.63 ms for a single reduction (2026-08-11
-        # record); the fused path makes 2 round-trips and 2 passes.
+        # real means and the order >= 2 rows, in chunks of
+        # `_CUDA_FUSED_MOMENT_CHUNK` power rows read through `moffset`. The
+        # per-moment fill/broadcast/sum loop this replaces made ~33 host sync
+        # round-trips and ~80 full-array passes per observed turn — 1.53 ms
+        # at 1M particles against 0.63 ms for a single reduction (2026-08-11
+        # record); the fused path makes 1 + ceil(nm/32) round-trips and as
+        # many passes — 2 for the default 27-moment set.
         #
         # `use_mask` is a runtime Bool, not a Val: both branches share one
         # compiled kernel, so the unmasked path cannot drift a ulp from the
@@ -1629,8 +1631,16 @@ if _HAS_CUDA
         # precomputed flags array; with the mask off every particle
         # contributes and a non-finite coordinate stays LOUD (NaN row), as on
         # the CPU path.
+        # Elementwise tuple add as a separate function: `map` on tuples of 32+
+        # elements takes Base's generic `Any32` path, which allocates and is
+        # invalid GPU IR — exactly at the chunk width. A closure over function
+        # ARGUMENTS is box-free (they are never reassigned), unlike one over
+        # the kernel's reassigned accumulator local.
+        @inline _moment_tuple_add(a::NTuple{N,Float64}, b::NTuple{N,Float64}) where {N} =
+            ntuple(i -> @inbounds(a[i] + b[i]), Val(N))
+
         function _cuda_fused_moment_kernel!(partials, x, px, y, py, z, pz,
-                                            powers, means, use_mask::Bool,
+                                            powers, moffset::Int, means, use_mask::Bool,
                                             n::Int, ::Val{NM}) where {NM}
             tid = CUDA.threadIdx().x
             nthreads = CUDA.blockDim().x
@@ -1649,7 +1659,7 @@ if _HAS_CUDA
                 @inbounds while k <= NM * 6
                     m = (k - 1) % NM + 1
                     d = (k - 1) ÷ NM + 1
-                    spowers[k] = powers[m, d]
+                    spowers[k] = powers[moffset + m, d]
                     k += nthreads
                 end
             end
@@ -1675,7 +1685,7 @@ if _HAS_CUDA
                         end
                         term
                     end
-                    accs = map(+, accs, terms)
+                    accs = _moment_tuple_add(accs, terms)
                 end
                 i += stride
             end
@@ -1699,16 +1709,19 @@ if _HAS_CUDA
             return nothing
         end
 
-        # Register accumulators bound the fused row: past this many order >= 2
-        # rows the kernel's ntuple would spill, so exotic hand-built selections
-        # fall back to the per-moment path below. The default orders=1:2 set
-        # has 21.
-        const _CUDA_FUSED_MOMENT_MAX = 32
+        # Register accumulators bound one fused pass: past this many order >= 2
+        # rows the kernel's ntuple would spill to local memory and invert the
+        # win, so larger selections run the SAME kernel in chunks of this
+        # width — ceil(nm/32) passes and syncs instead of one per moment. The
+        # default orders=1:2 set has 21 rows (one chunk); orders=1:3 has 77
+        # (three chunks, for the planned tail studies).
+        const _CUDA_FUSED_MOMENT_CHUNK = 32
         const _CUDA_MOMENT_THREADS = 256
 
         function _cuda_moment_workspace!(observer::MomentObserver, moments::Tuple, n::Int)
             reduce_idx = [j for (j, m) in enumerate(moments) if sum(m.powers) >= 2]
             nm2 = length(reduce_idx)
+            width = min(nm2, _CUDA_FUSED_MOMENT_CHUNK)
             blocks = max(min(cld(n, _CUDA_MOMENT_THREADS), 256), 1)
             ws = observer.reduction_scratch
             valid = ws isa NamedTuple && ws.n == n && ws.reduce_idx == reduce_idx
@@ -1719,18 +1732,20 @@ if _HAS_CUDA
             ws = (n=n, reduce_idx=reduce_idx, blocks=blocks,
                   powers1=powers1, powers2=powers2,
                   partials1=CUDA.CuArray{Float64}(undef, blocks, 7),
-                  partials2=nm2 == 0 ? nothing : CUDA.CuArray{Float64}(undef, blocks, nm2),
+                  partials2=nm2 == 0 ? nothing : CUDA.CuArray{Float64}(undef, blocks, width),
                   host1=Matrix{Float64}(undef, blocks, 7),
-                  host2=nm2 == 0 ? nothing : Matrix{Float64}(undef, blocks, nm2))
+                  host2=nm2 == 0 ? nothing : Matrix{Float64}(undef, blocks, width))
             observer.reduction_scratch = ws
             return ws
         end
 
         # Host-side fixed-order finish of the block partials: column sums in
-        # block order, deterministic like the kernel's tree.
-        function _cuda_moment_block_sums!(host, partials)
+        # block order, deterministic like the kernel's tree. `nm` bounds the
+        # valid columns — a partial chunk leaves stale data in the rest of the
+        # reused buffer.
+        function _cuda_moment_block_sums!(host, partials, nm::Int)
             copyto!(host, partials)
-            nb, nm = size(host)
+            nb = size(host, 1)
             return ntuple(nm) do m
                 s = 0.0
                 @inbounds for b in 1:nb
@@ -1749,16 +1764,13 @@ if _HAS_CUDA
             arrays = coordinate_arrays(rep)
             n = length(arrays[1])
             use_mask = allow_lost_particles()
-            nreduce = count(m -> sum(m.powers) >= 2, moments)
-            nreduce <= _CUDA_FUSED_MOMENT_MAX ||
-                return _cuda_moment_row_per_moment!(row, arrays, moments, observer, n)
             ws = _cuda_moment_workspace!(observer, moments, n)
             threads = _CUDA_MOMENT_THREADS
             shmem(nm) = threads * sizeof(Float64) + nm * 6 * sizeof(Int32)
             zero6 = ntuple(_ -> 0.0, 6)
             CUDA.@cuda threads=threads blocks=ws.blocks shmem=shmem(7) _cuda_fused_moment_kernel!(
-                ws.partials1, arrays..., ws.powers1, zero6, use_mask, n, Val(7))
-            sums = _cuda_moment_block_sums!(ws.host1, ws.partials1)
+                ws.partials1, arrays..., ws.powers1, 0, zero6, use_mask, n, Val(7))
+            sums = _cuda_moment_block_sums!(ws.host1, ws.partials1, 7)
             nlive = use_mask ? Int(sums[7]) : n
             if nlive == 0
                 fill!(view(row, 2:length(row)), NaN)
@@ -1767,11 +1779,16 @@ if _HAS_CUDA
             means = ntuple(d -> sums[d] / nlive, 6)
             if ws.powers2 !== nothing
                 nm2 = length(ws.reduce_idx)
-                CUDA.@cuda threads=threads blocks=ws.blocks shmem=shmem(nm2) _cuda_fused_moment_kernel!(
-                    ws.partials2, arrays..., ws.powers2, means, use_mask, n, Val(nm2))
-                sums2 = _cuda_moment_block_sums!(ws.host2, ws.partials2)
-                for (slot, j) in enumerate(ws.reduce_idx)
-                    row[j + 1] = sums2[slot] / nlive
+                off = 0
+                while off < nm2
+                    c = min(_CUDA_FUSED_MOMENT_CHUNK, nm2 - off)
+                    CUDA.@cuda threads=threads blocks=ws.blocks shmem=shmem(c) _cuda_fused_moment_kernel!(
+                        ws.partials2, arrays..., ws.powers2, off, means, use_mask, n, Val(c))
+                    sums2 = _cuda_moment_block_sums!(ws.host2, ws.partials2, c)
+                    for slot in 1:c
+                        row[ws.reduce_idx[off + slot] + 1] = sums2[slot] / nlive
+                    end
+                    off += c
                 end
             end
             for (j, moment) in enumerate(moments)
@@ -1780,58 +1797,6 @@ if _HAS_CUDA
                 row[j + 1] = order == 1 ? means[findfirst(!=(0), moment.powers)] : 1.0
             end
             return row
-        end
-
-        # The pre-fused path, kept for selections whose order >= 2 count
-        # exceeds the register budget. Same numerics as before the fused
-        # kernel; do not extend it — extend the fused path's budget instead.
-        function _cuda_moment_row_per_moment!(row, arrays, moments::Tuple,
-                                              observer::MomentObserver, n::Int)
-            flags = allow_lost_particles() ?
-                is_live.(arrays[1], arrays[2], arrays[3], arrays[4], arrays[5], arrays[6]) :
-                nothing
-            nlive = flags === nothing ? n : Int(sum(flags))
-            if nlive == 0
-                fill!(view(row, 2:length(row)), NaN)
-                return row
-            end
-            means = ntuple(6) do i
-                a = flags === nothing ? arrays[i] :
-                    ifelse.(flags, arrays[i], zero(eltype(arrays[i])))
-                Float64(sum(a) / nlive)
-            end
-            scratch = observer.reduction_scratch
-            if !(scratch isa CUDA.CuArray) || length(scratch) != n || eltype(scratch) != eltype(arrays[1])
-                scratch = similar(arrays[1])
-                observer.reduction_scratch = scratch
-            end
-            for (j, moment) in enumerate(moments)
-                row[j + 1] = _cuda_compute_moment!(scratch, arrays, means, moment, flags, nlive)
-            end
-            return row
-        end
-
-        function _cuda_compute_moment!(scratch, arrays, means, moment::Moment,
-                                       flags=nothing, nlive=length(scratch))
-            powers = moment.powers
-            order = sum(powers)
-            order == 1 && return means[findfirst(!=(0), powers)]
-            fill!(scratch, one(eltype(scratch)))
-            for d in 1:6
-                p = powers[d]
-                p == 0 && continue
-                if p == 1
-                    scratch .= scratch .* (arrays[d] .- means[d])
-                elseif p == 2
-                    scratch .= scratch .* (arrays[d] .- means[d]) .^ 2
-                else
-                    scratch .= scratch .* (arrays[d] .- means[d]) .^ p
-                end
-            end
-            # Zero the dead *after* the product: their coordinates are non-finite,
-            # so masking each factor would still leave NaN in the accumulator.
-            flags === nothing || (scratch .= ifelse.(flags, scratch, zero(eltype(scratch))))
-            return Float64(sum(scratch) / nlive)
         end
     end
 end

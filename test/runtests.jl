@@ -7610,9 +7610,9 @@ end
     #       moments that touch it, on both backends, no more and no less;
     #   (c) bitwise run-to-run determinism (fixed-order block tree + host
     #       finish, no float atomics);
-    #   (d) the register-budget fallback for oversized selections still runs
-    #       the old per-moment path, asserted at the workspace type — the
-    #       consumer boundary — not by absence of error.
+    #   (d) selections past one chunk's register budget run the same kernel
+    #       in chunks (orders=1:3 -> three passes), asserted at the workspace
+    #       type — the consumer boundary — not by absence of error.
     if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         n = 50_000
         mkrep() = Phase6DRep([1.0e-4 * sin(0.7i) + 2.0e-6 for i in 1:n],
@@ -7647,15 +7647,25 @@ end
         r2 = Octopus._moment_observer_row(ctx, rg, moms, og)
         @test r1 == r2                                               # (c)
 
-        # (d) orders=1:3 has 77 order >= 2 rows, past the register budget.
+        # (d) orders=1:3 has 77 order >= 2 rows — three chunks of the fused
+        # kernel, exercising a full chunk boundary and a partial tail chunk.
+        # The count assertion is the anti-vacuity check: if the selection ever
+        # shrank below the chunk width, this block would silently stop testing
+        # chunking at all.
         bc, bg = MomentObserver(tempname() * ".h5"; orders=1:3),
                  MomentObserver(tempname() * ".h5"; orders=1:3)
-        @test count(m -> sum(m.powers) >= 2, bc.moments) > Octopus._CUDA_FUSED_MOMENT_MAX
+        @test count(m -> sum(m.powers) >= 2, bc.moments) > 2 * Octopus._CUDA_FUSED_MOMENT_CHUNK
         rc = mkrep()
         rowc = Octopus._moment_observer_row(ctx, rc, bc.moments, bc)
         rowg = Octopus._moment_observer_row(ctx, togpu(rc), bg.moments, bg)
-        @test bg.reduction_scratch isa Octopus.CUDA.CuArray          # fallback ran
-        @test all(isapprox.(rowg[2:end], rowc[2:end]; rtol=1.0e-12))
+        @test bg.reduction_scratch isa NamedTuple                    # fused path, chunked
+        # rtol 1e-9, not 1e-12: odd central moments of near-symmetric data are
+        # tiny residues of cancelling sums, so reduction order moves the
+        # RELATIVE error to ~1e-10 while the absolute error stays at machine
+        # level (measured 1.7e-10 on this data). A chunking defect — a wrong
+        # slot or offset — is an O(1) relative error, far past this pin.
+        @test all(isapprox.(rowg[2:end], rowc[2:end]; rtol=1.0e-9))
+        @test rowg == Octopus._moment_observer_row(ctx, togpu(rc), bg.moments, bg)
     else
         @test_skip "CUDA device not available"
     end
