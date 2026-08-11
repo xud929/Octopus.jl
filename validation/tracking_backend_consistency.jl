@@ -141,7 +141,13 @@ line = (
     SBendSpec(L=1.1, angle=0.05, k1=0.2, e1=0.02, e2=0.015, fringe=:all,
               nst=2, ref_tilt=0.05),
     SolenoidSpec(L=0.8, ks=0.3, kn=(0.0, 0.2), nst=2),
-    ThinRFCavitySpec(197.0e6; strength=1.0e-4, beta0=0.99, gamma0=100.0),
+    # Derived pair, not hand-picked: the U14-4 reference-pair invariant rejects
+    # (0.99, 100.0), and had rejected it since 2026-08-07 -- this script was
+    # un-runnable for three days because the invariant's blast radius was not
+    # re-walked over the validations that construct cavities.
+    ThinRFCavitySpec(197.0e6; strength=1.0e-4,
+                     beta0=reference_beta(51.1e6, 0.511e6),
+                     gamma0=reference_gamma(51.1e6, 0.511e6)),
     PatchSpec(dx=1.0e-5, dz=2.0e-5, angle_x=1.0e-4, angle_s=0.01),
     MarkerSpec(),
     ThinMultipoleSpec(knl=(0.0, 0.05, 1.2)),
