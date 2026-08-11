@@ -233,11 +233,88 @@ if _HAS_CUDA
 	end
 end
 
+# ---------------------------------------------------------------------------
+# Reused per-element CUDA buffers. Every call previously allocated a fresh
+# N-element luminosity buffer and, for the sliced element, rebuilt four to six
+# ns-element CuArrays; at 1M particles that host-side work was ~1.2 ms per
+# observed turn against ~4 ms of kernel time on an A100 (2026-08-11 record in
+# docs/history/weak_strong_cuda_luminosity_2026_08_11.md). The cache is keyed
+# by element identity, revalidated against device, eltype, and lengths on
+# every call, and entries die with their element through the WeakKeyDict.
+#
+# The luminosity buffer is handed out UNINITIALIZED: both kernels assign
+# lum[index] for every index and the grid-stride loop covers 1:length(rep),
+# so no stale value can survive into the reduction. If a kernel ever gains an
+# early exit that skips indices, this must go back to zeroing.
+# ---------------------------------------------------------------------------
+const _WEAK_STRONG_CUDA_WS_LOCK = ReentrantLock()
+const _WEAK_STRONG_CUDA_WS = Base.WeakKeyDict{Any,Any}()
+
+function _weak_strong_cuda_workspace(elem::ThinStrongBeam, ::Type{T}, N::Int) where {T}
+	device = Int(CUDA.deviceid(CUDA.device()))
+	return lock(_WEAK_STRONG_CUDA_WS_LOCK) do
+		ws = get(_WEAK_STRONG_CUDA_WS, elem, nothing)
+		if !(ws isa NamedTuple) || ws.device != device || ws.T !== T || length(ws.lum) != N
+			ws = (device=device, T=T, lum=CUDA.CuVector{T}(undef, N))
+			_WEAK_STRONG_CUDA_WS[elem] = ws
+		end
+		return ws
+	end
+end
+
+function _weak_strong_cuda_workspace(elem::GaussianStrongBeam, ::Type{T}, N::Int) where {T}
+	device = Int(CUDA.deviceid(CUDA.device()))
+	ns = elem.ns
+	angles = _has_slice_angles(elem)
+	return lock(_WEAK_STRONG_CUDA_WS_LOCK) do
+		ws = get(_WEAK_STRONG_CUDA_WS, elem, nothing)
+		valid = ws isa NamedTuple && ws.device == device && ws.T === T &&
+			length(ws.lum) == N && length(ws.stage) == ns && ws.angles == angles
+		if !valid
+			ws = (device=device, T=T, angles=angles,
+				lum=CUDA.CuVector{T}(undef, N),
+				stage=Vector{T}(undef, ns),
+				slice_center=CUDA.CuVector{T}(undef, ns),
+				slice_weight=CUDA.CuVector{T}(undef, ns),
+				slice_hoffset=CUDA.CuVector{T}(undef, ns),
+				slice_voffset=CUDA.CuVector{T}(undef, ns),
+				slice_pxoffset=angles ? CUDA.CuVector{T}(undef, ns) : nothing,
+				slice_pyoffset=angles ? CUDA.CuVector{T}(undef, ns) : nothing)
+			_WEAK_STRONG_CUDA_WS[elem] = ws
+		end
+		return ws
+	end
+end
+
+# Slice data is re-uploaded on EVERY call, not cached until invalidation: the
+# host vectors are fields of a mutable runtime element that scheduled actions
+# may modify between turns, and the CPU path reads them fresh each turn. The
+# staging copy performs the same eltype conversion the old
+# `CUDA.CuArray(T.(v))` construction did, so the uploaded values are
+# bit-identical to before; only the per-call allocations are gone.
+function _upload_slice_values!(stage::Vector{T}, dev, host) where {T}
+	stage .= host
+	copyto!(dev, stage)
+	return nothing
+end
+
+function _refresh_gaussian_slice_buffers!(ws, elem::GaussianStrongBeam)
+	_upload_slice_values!(ws.stage, ws.slice_center, elem.slice_center)
+	_upload_slice_values!(ws.stage, ws.slice_weight, elem.slice_weight)
+	_upload_slice_values!(ws.stage, ws.slice_hoffset, elem.slice_hoffset)
+	_upload_slice_values!(ws.stage, ws.slice_voffset, elem.slice_voffset)
+	if ws.angles
+		_upload_slice_values!(ws.stage, ws.slice_pxoffset, elem.slice_pxoffset)
+		_upload_slice_values!(ws.stage, ws.slice_pyoffset, elem.slice_pyoffset)
+	end
+	return nothing
+end
+
 function track!(rep, elem::ThinStrongBeam, turns, ::Type{CUDABackend}; threads=256, blocks=256, stream=nothing)
 	_HAS_CUDA || error("CUDABackend requires CUDA.jl to be available.")
 	N = length(rep)
 	T = eltype(rep.x)
-	lum = CUDA.zeros(T, N)
+	lum = _weak_strong_cuda_workspace(elem, T, N).lum
 	if stream === nothing
 		CUDA.@cuda threads=threads blocks=blocks cuda_track_thin_strong_beam_kernel!(
 			rep, lum, Int(turns),
@@ -280,14 +357,16 @@ function track!(rep, elem::GaussianStrongBeam, turns, ::Type{CUDABackend}; threa
 	_HAS_CUDA || error("CUDABackend requires CUDA.jl to be available.")
 	N = length(rep)
 	T = eltype(rep.x)
-	lum = CUDA.zeros(T, N)
-	slice_center = CUDA.CuArray(T.(elem.slice_center))
-	slice_weight = CUDA.CuArray(T.(elem.slice_weight))
-	slice_hoffset = CUDA.CuArray(T.(elem.slice_hoffset))
-	slice_voffset = CUDA.CuArray(T.(elem.slice_voffset))
+	ws = _weak_strong_cuda_workspace(elem, T, N)
+	_refresh_gaussian_slice_buffers!(ws, elem)
+	lum = ws.lum
+	slice_center = ws.slice_center
+	slice_weight = ws.slice_weight
+	slice_hoffset = ws.slice_hoffset
+	slice_voffset = ws.slice_voffset
 	has_slice_angles = Val(_has_slice_angles(elem))
-	slice_pxoffset = _has_slice_angles(elem) ? CUDA.CuArray(T.(elem.slice_pxoffset)) : nothing
-	slice_pyoffset = _has_slice_angles(elem) ? CUDA.CuArray(T.(elem.slice_pyoffset)) : nothing
+	slice_pxoffset = ws.slice_pxoffset
+	slice_pyoffset = ws.slice_pyoffset
 	t = elem.thin
 	if stream === nothing
 		CUDA.@cuda threads=threads blocks=blocks cuda_track_gaussian_strong_beam_kernel!(
