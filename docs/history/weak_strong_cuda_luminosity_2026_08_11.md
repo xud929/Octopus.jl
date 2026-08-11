@@ -145,8 +145,16 @@ pass 2 takes the means and accumulates every order >= 2 power row per
 thread in registers, block-reduces each in a fixed-order shared-memory
 tree, and the host finishes over block partials in block order — two
 round-trips, two passes, no float atomics, bitwise run-to-run
-deterministic. Power rows are staged in shared memory (global re-reads of
-the powers matrix dominated the first version: 1.0 ms vs 0.94 after).
+deterministic. Power rows first moved from global to shared memory (1.0 ms vs 0.94), then
+— after the owner's A100 anatomy run measured the SAME ~0.96 ms as the Ada,
+the fingerprint of dependent-chain latency rather than FP64 rate or
+bandwidth, and a block sweep showed geometry makes it worse — into the
+kernel's TYPE domain: the powers arrive as a Val parameter, the inner loops
+unroll to bare multiplies (the default set becomes 21 pair products), and
+each distinct selection JIT-compiles one cached kernel. Measured on the
+Ada: 0.90 -> 0.52 ms/turn default set, 3.84 -> 1.50 orders=1:3; the parity
+signatures are bit-identical to the runtime-powers version, so the multiply
+order is unchanged.
 Selections past one pass's 32-row register budget run the same kernel in
 chunks through a row offset (owner request, for planned third-order tail
 studies): orders=1:3 makes 4 round-trips instead of 84, and the per-moment
