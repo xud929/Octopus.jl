@@ -24,11 +24,11 @@ The pattern this example follows:
 5. Build both ring lines with matching `StrongStrongCollision` markers.
 6. Build a `StrongStrongTask` and `execute!` it.
 
-Outputs are written under `result/`:
+Outputs are written under `result/<seed>/`, named by the case:
 
-- `pic_hcc.lum`      : turn and per-collision luminosity
-- `pic_hcc.ele.h5`   : electron-beam moment history
-- `pic_hcc.pro.h5`   : proton-beam moment history
+- `<case_name>.lum`      : turn and per-collision luminosity
+- `<case_name>.ele.h5`   : electron-beam moment history
+- `<case_name>.pro.h5`   : proton-beam moment history
 =#
 
 if !isdefined(Main, :Octopus)
@@ -50,10 +50,10 @@ config = (
 # Physics input (the collision case). Independent of the run configuration.
 # ---------------------------------------------------------------------------
 input = (
+    # `case_name` and `seed` name the output directory and files below.
     case_name = "pic_hcc",
     result_dir = joinpath(@__DIR__, "..", "result"),
     seed = 123456789,
-    total_turns = 50000,
     # HALF the full crossing angle, which is what LorentzBoostSpec takes and
     # what the crab strength tan(theta)/sqrt(beta_cc*beta*) below assumes.
     # Named `half_crossing_angle` in knob_control.jl, Knobs.jl and
@@ -114,12 +114,16 @@ input = (
     ),
 
     output = (
-        luminosity_file = "pic_hcc.lum",
-        electron_moment_file = "pic_hcc.ele.h5",
-        proton_moment_file = "pic_hcc.pro.h5",
+        # Filenames derive from `case_name` above — one authority, no copies
+        # (the weak-strong pair's 2026-08-11 fix, same class). The moment
+        # capacity buffers rows between HDF5 flushes; 1024 is the
+        # MomentObserver default and networked filesystems punish less
+        # (docs/history/weak_strong_cuda_luminosity_2026_08_11.md). The
+        # task-level .lum stream holds one file handle open across execute!
+        # and needs no capacity.
         moment_start = 0,
         moment_step = 1,
-        moment_capacity = 100,
+        moment_capacity = 1024,
     ),
 )
 
@@ -231,12 +235,15 @@ lb = LorentzBoostSpec(input.crossing_angle)
 rlb = RevLorentzBoostSpec(input.crossing_angle)
 ip = StrongStrongCollision(:ip; poisson_solver = solver)
 
-mkpath(input.result_dir)
-luminosity_path = joinpath(input.result_dir, input.output.luminosity_file)
-electron_moment_path = joinpath(input.result_dir, input.output.electron_moment_file)
-proton_moment_path = joinpath(input.result_dir, input.output.proton_moment_file)
+# Outputs land under result/<seed>/, named by the case — the same layout as
+# the weak-strong example, so seed scans and multi-case studies never collide.
+outdir = joinpath(input.result_dir, string(input.seed))
+mkpath(outdir)
+luminosity_path = joinpath(outdir, input.case_name * ".lum")
+electron_moment_path = joinpath(outdir, input.case_name * ".ele.h5")
+proton_moment_path = joinpath(outdir, input.case_name * ".pro.h5")
 moment_schedule = EveryNSteps(;
-    start = input.output.moment_start, stop = input.total_turns, step = input.output.moment_step)
+    start = input.output.moment_start, step = input.output.moment_step)
 electron_observer = ScheduledObserver(
     MomentObserver(electron_moment_path; capacity = input.output.moment_capacity), moment_schedule)
 proton_observer = ScheduledObserver(

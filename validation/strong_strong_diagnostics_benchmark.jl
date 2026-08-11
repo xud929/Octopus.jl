@@ -27,9 +27,9 @@ Outputs (2026-08-05_b audit, U25-8 -- this header named none of them):
 and, written by the tracking harness this script includes, in the modes that
 enable them:
 
-    test/result/pic_hcc.lum       (luminosity_io, both)
-    test/result/pic_hcc.ele.h5    (moments, both)
-    test/result/pic_hcc.pro.h5    (moments, both)
+    test/result/<seed>/pic_hcc.lum       (luminosity_io, both)
+    test/result/<seed>/pic_hcc.ele.h5    (moments, both)
+    test/result/<seed>/pic_hcc.pro.h5    (moments, both)
 =#
 
 mode = Symbol(lowercase(get(ENV, "OCTOPUS_DIAGNOSTIC_BENCHMARK_MODE", "baseline")))

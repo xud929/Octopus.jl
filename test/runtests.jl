@@ -4655,11 +4655,9 @@ end
     # config values); the seed directory is removed only when these deletions
     # leave it empty.
     for dir in (joinpath(root, "result"), joinpath(root, "test", "result"))
-        for name in ("pic_hcc.lum", "pic_hcc.ele.h5", "pic_hcc.pro.h5")
-            rm(joinpath(dir, name); force=true)
-        end
         seed_dir = joinpath(dir, "123456789")
-        for name in ("weak_strong.lum", "weak_strong.h5")
+        for name in ("weak_strong.lum", "weak_strong.h5",
+                     "pic_hcc.lum", "pic_hcc.ele.h5", "pic_hcc.pro.h5")
             rm(joinpath(seed_dir, name); force=true)
         end
         isdir(seed_dir) && isempty(readdir(seed_dir)) && rm(seed_dir)

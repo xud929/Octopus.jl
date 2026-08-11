@@ -114,6 +114,25 @@ The failure was caught by grepping the log before pushing; later gates
 print an explicit `GATE_GREEN` sentinel only when `Pkg.test` itself
 returns. Worth keeping in the wrapper.
 
+*Neighbour audit of the example update* (`2e3e8e6`, owner-requested): the
+fix's property — every config field is consumed — walked to the example
+siblings it did not change. Three findings, all fixed in the follow-up
+commit: **E1**, my own campaign's incomplete sweep — the weak-strong
+harness twin's header still documented the old flat output filenames while
+its body wrote the new layout; **E2**, the strong-strong pair carried the
+identical defect family the owner reported in weak-strong — dead
+`case_name` with hard-coded `pic_hcc.*` filenames, `total_turns` alive only
+as a moment-schedule bound, `moment_capacity=100` — fixed with the same
+treatment (case/seed-derived outputs, unbounded schedule, capacity 1024),
+which is the 08-07 precedent exactly: the sibling file is where the defect
+was; **E3**, downstream path documentation — the diagnostics benchmark
+header, `validation/README.md`, and the suite's artifact-cleanup list all
+named the old flat paths and now follow the seed-directory layout.
+`knob_control.jl` is clean (no file outputs). Both strong-strong scripts
+re-run at shipped config with rms identical between clean and harness
+twins; the `public_api.md` illustrative path strings are usage snippets,
+not layout claims, and were left alone.
+
 **Verified clean, no action:** the U14-4 reference-pair invariant's blast
 radius (the remaining `beta0=0.99, gamma0=100.0` occurrences are the
 invariant's own rejection pins in `test/runtests.jl` and the repaired

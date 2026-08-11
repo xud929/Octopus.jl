@@ -41,12 +41,13 @@ concise precedent is examples/weak_strong_tracking.jl. It covers:
 4. Place observers/actions in the line when their location matters.
 5. Build `TrackingTask(line)` and execute it with `execute!`.
 
-Outputs are written to `test/result/` (this harness keeps its outputs beside
-the tests; the clean `examples/` counterpart writes to the repo-root `result/`):
+Outputs are written to `test/result/<seed>/`, named by the case (this harness
+keeps its outputs beside the tests; the clean `examples/` counterpart writes
+the same layout under the repo-root `result/`):
 
-- `weak_strong.lum`: turn and luminosity values.
-- `weak_strong_moments.h5`: scheduled first- and second-order moments written
-  by `MomentObserver`.
+- `<case_name>.lum`: turn and luminosity values.
+- `<case_name>.h5`: scheduled first- and second-order moments written by
+  `MomentObserver`.
 =#
 
 if !isdefined(Main, :Octopus)

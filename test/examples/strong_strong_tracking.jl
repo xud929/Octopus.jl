@@ -151,9 +151,9 @@ diagnosis:
 Output is written to `test/result/` (this harness keeps its outputs beside the
 tests; the clean `examples/` counterpart writes to the repo-root `result/`):
 
-- `test/result/pic_hcc.lum`
-- `test/result/pic_hcc.ele.h5`
-- `test/result/pic_hcc.pro.h5`
+- `test/result/<seed>/pic_hcc.lum`
+- `test/result/<seed>/pic_hcc.ele.h5`
+- `test/result/<seed>/pic_hcc.pro.h5`
 =#
 
 if !isdefined(Main, :Octopus)
@@ -172,7 +172,6 @@ input = (
     # it short of editing the harness.
     result_dir = get(ENV, "OCTOPUS_RESULT_DIR", joinpath(@__DIR__, "..", "result")),
     seed = 123456789,
-    total_turns = 50000,
     default_demo_macroparticles = 200,
     crossing_angle = 12.5e-3,
 
@@ -241,12 +240,15 @@ input = (
     ),
 
     output = (
-        luminosity_file = "pic_hcc.lum",
-        electron_moment_file = "pic_hcc.ele.h5",
-        proton_moment_file = "pic_hcc.pro.h5",
+        # Filenames derive from `case_name` — one authority, no copies (the
+        # weak-strong pair's 2026-08-11 fix, same class); `total_turns` went
+        # with them, a hand copy that only bounded the moment schedule.
+        # 1024 is the MomentObserver default; networked filesystems punish
+        # smaller flushes (docs/history/
+        # weak_strong_cuda_luminosity_2026_08_11.md).
         moment_start = 0,
         moment_step = 1,
-        moment_capacity = 100,
+        moment_capacity = 1024,
     ),
 )
 
@@ -681,13 +683,15 @@ rlb = RevLorentzBoostSpec(input.crossing_angle)
 ip = StrongStrongCollision(:ip; poisson_solver = solver)
 collision_elements = disable_collision ? () : (ip,)
 
-mkpath(input.result_dir)
-luminosity_path = joinpath(input.result_dir, input.output.luminosity_file)
-electron_moment_path = joinpath(input.result_dir, input.output.electron_moment_file)
-proton_moment_path = joinpath(input.result_dir, input.output.proton_moment_file)
+# Outputs land under result_dir/<seed>/, named by the case, matching the
+# clean example's layout.
+outdir = joinpath(input.result_dir, string(input.seed))
+mkpath(outdir)
+luminosity_path = joinpath(outdir, input.case_name * ".lum")
+electron_moment_path = joinpath(outdir, input.case_name * ".ele.h5")
+proton_moment_path = joinpath(outdir, input.case_name * ".pro.h5")
 moment_schedule = EveryNSteps(;
     start = input.output.moment_start,
-    stop = input.total_turns,
     step = input.output.moment_step,
 )
 electron_observers = disable_moments ? () : (

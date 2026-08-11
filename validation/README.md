@@ -524,9 +524,10 @@ test suite.
 
 Outputs, under `result/`: `pic_diagnostics_<mode>_turn_times.tsv` and
 `pic_diagnostics_<mode>_summary.tsv`. The tracking harness this script includes
-also writes `test/result/pic_hcc.lum` (`luminosity_io`, `both`) and
-`test/result/pic_hcc.ele.h5` / `pic_hcc.pro.h5` (`moments`, `both`) -- none of
-which this entry named (2026-08-05_b audit, U25-8).
+also writes `test/result/<seed>/pic_hcc.lum` (`luminosity_io`, `both`) and
+`test/result/<seed>/pic_hcc.ele.h5` / `pic_hcc.pro.h5` (`moments`, `both`) --
+none of which this entry named (2026-08-05_b audit, U25-8; seed-directory
+layout since 2026-08-11).
 
 Tracked results, accuracy checks, and accepted/rejected experiments are in
 `../docs/history/strong_strong_diagnostics_benchmark_history.md`.
