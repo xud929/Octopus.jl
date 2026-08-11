@@ -29,13 +29,28 @@ Total the CUDA per-particle luminosity array, dropping dead particles.
 
 The kernel has already run, so liveness is read from the post-kernel
 representation -- the same "judge the output" rule as the CPU accumulator, and
-for the same reason. With the mask off this is the plain `sum` it replaced.
+for the same reason.
+
+The reduction runs on the device and only the scalar crosses PCIe. The
+previous host-side `sum(Array(lum))` copied the full buffer every observed
+turn -- 8 MB and 6.3 ms at 1M particles, the single largest host-side gap in
+the weak-strong turn cycle (2026-08-11 record in `docs/history/`). The device
+tree reduction associates the sum differently from the old host pairwise sum,
+so `last_luminosity` may move in its last ulp relative to pre-change results;
+it is deterministic for a fixed device, length, and launch. CPU and CUDA
+backends already used different fold orders (fixed-chunk fold vs host pairwise
+sum), so cross-backend luminosity agreement stays physics-level, never
+bitwise. The masked path fuses liveness selection into the reduction, with no
+flags temporary.
 """
 function _cuda_luminosity_total(lum, rep)
-	allow_lost_particles() || return sum(Array(lum))
-	flags = is_live.(rep.x, rep.px, rep.y, rep.py, rep.z, rep.pz)
-	return sum(Array(ifelse.(flags, lum, zero(eltype(lum)))))
+	allow_lost_particles() || return sum(lum)
+	return mapreduce(_live_luminosity_value, +,
+		lum, rep.x, rep.px, rep.y, rep.py, rep.z, rep.pz)
 end
+
+@inline _live_luminosity_value(l, x, px, y, py, z, pz) =
+	is_live(x, px, y, py, z, pz) ? l : zero(l)
 
 function track!(rep, elem::ThinStrongBeam, turns, policy::ResolvedCPUExecutionPolicy)
 	return _track_thin_strong_beam!(rep, elem, turns, policy, active_live_mask())

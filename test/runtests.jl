@@ -7470,6 +7470,72 @@ end
     end
 end
 
+@testset "CUDA luminosity reduces on the device and honors the live mask" begin
+    # The weak-strong CUDA reduction copied the full per-particle luminosity
+    # buffer to the host and summed there -- 8 MB and 6.3 ms per observed turn
+    # at 1M particles, the largest host-side gap in the weak-strong turn cycle
+    # (2026-08-11, docs/history/weak_strong_cuda_luminosity_2026_08_11.md).
+    # Now the reduction runs on the device and only the scalar crosses PCIe.
+    # Pinned the same two ways as the U7-5 BPM twin of this defect:
+    # numerically against the CPU fold, and by HOST ALLOCATION, which is what
+    # regressed -- a returning `Array(lum)` shows up here as megabytes.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        for kind in (:thin_strong_beam, :gaussian_strong_beam)
+            spec = example_spec(ElementSpec{kind})
+            n = 200_000
+            mkrep() = Phase6DRep([1.0e-4 * sin(0.7i) for i in 1:n],
+                                 [1.0e-5 * sin(0.5i) for i in 1:n],
+                                 [1.0e-5 * sin(0.3i) for i in 1:n],
+                                 [1.0e-5 * cos(0.4i) for i in 1:n],
+                                 [1.0e-3 * sin(0.1i) for i in 1:n],
+                                 [1.0e-4 * cos(0.2i) for i in 1:n])
+            kill!(r) = (for i in 1:97; r.x[11i] = NaN; end; r)
+            togpu(r) = Phase6DRep((Octopus.CUDA.CuArray(a)
+                                   for a in coordinate_arrays(r))...)
+
+            # Default path: a non-finite coordinate must stay LOUD -- the sum
+            # is NaN on both backends, not silently finite.
+            ec, eg = compile_runtime(spec), compile_runtime(spec)
+            rc, rg = kill!(mkrep()), togpu(kill!(mkrep()))
+            pol = Octopus.ResolvedCPUExecutionPolicy(4)
+            Octopus._with_execution_policy(pol) do
+                track!(rc, ec, 1, pol)
+            end
+            track!(rg, eg, 1, CUDABackend)
+            @test isnan(Float64(ec.last_luminosity))
+            @test isnan(Float64(eg.last_luminosity))
+
+            # Masked path: dead contributions are dropped inside the device
+            # reduction, and the total matches the CPU fold.
+            ec, eg = compile_runtime(spec), compile_runtime(spec)
+            rc, rg = kill!(mkrep()), togpu(kill!(mkrep()))
+            allow_lost_particles(; enabled=true) do
+                Octopus._with_execution_policy(pol) do
+                    track!(rc, ec, 1, pol)
+                end
+                track!(rg, eg, 1, CUDABackend)
+            end
+            @test isfinite(Float64(eg.last_luminosity))
+            @test isapprox(Float64(eg.last_luminosity), Float64(ec.last_luminosity);
+                           rtol=1.0e-12)
+
+            # Allocation tripwire, both paths. The old host reduction copied
+            # 8 B per particle back (1.6 MB at this n); the workspace reuse
+            # also keeps the per-call CuArray churn out of this number. Warm
+            # first so compilation does not count.
+            track!(rg, eg, 1, CUDABackend)
+            @test @allocated(track!(rg, eg, 1, CUDABackend)) < 200_000
+            masked_alloc = allow_lost_particles(; enabled=true) do
+                track!(rg, eg, 1, CUDABackend)
+                @allocated(track!(rg, eg, 1, CUDABackend))
+            end
+            @test masked_alloc < 200_000
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 aperture_beam(n; seed=7) = begin
     set_global_rng!(seed=seed, method=:philox)
     Beam(n, CPUThreadsBackend, Float64; beta=(0.5, 0.5, 10.0), alpha=(0.0, 0.0, 0.0),
