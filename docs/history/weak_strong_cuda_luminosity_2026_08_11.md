@@ -208,11 +208,14 @@ records on production evidence.
 
 ## Left open, deliberately
 
-- The `:auto` blocks path for the isolated weak-strong elements caps at 256
-  blocks (65,536 threads — an A100 holds ~221k resident). Worth an explicit
-  `CUDALaunchConfig(threads=256, blocks=2048)` sweep on the A100; not changed
-  here because the cap is also the fused-tracking convention and the kernel,
-  not the launch, dominated the observed problem.
+- ~~The `:auto` blocks cap at 256~~ **Closed by owner measurement (same
+  day):** an A100 sweep of `blocks` ∈ {256, 512, 1024, 2048} through
+  `CUDALaunchConfig` left the bare line flat at 3.40 ± 0.05 ms/turn — the
+  beam-beam kernel is throughput-bound, unlike its latency-bound moment
+  sibling, so the cap costs nothing and launch geometry holds no remaining
+  speed. 3.4 ms/turn is the certified floor for this configuration; past it
+  lies only Faddeeva algorithmics, which is a physics-validation campaign,
+  not a launch knob.
 - Decimating the luminosity schedule
   (`ScheduledObserver(obs, EveryNSteps(step=10))`) remains the zero-code
   mitigation for workflows that do not need the turn-by-turn signal; on
