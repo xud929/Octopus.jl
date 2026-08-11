@@ -585,6 +585,37 @@ Digest `0x00c98cd00a439897` unchanged at 1, 16 and 32 threads.
 **Spectral is 5.00 -> 2.60 s, 1.92x**, with allocation down 23x from where the
 audit found it.
 
+## Correction — the collide figures in this note are COLD-CACHE numbers
+
+Found on 2026-08-10 while allocation-profiling gpic. `collide!(solver, b1, b2,
+backend)` builds a fresh Green cache AND a fresh workspace pool on every call,
+so `profiling/benchmark_collide_cpu.jl` measured a cold cache every repeat.
+Measured at the production point, PIC's Green cache takes **450 misses on turn
+1, then 450 hits on turn 2**, settling at ~60–90 rebuilds/turn — so the direct
+path was charging 450 x 1.05 MB of Green-FFT copies to every collide, 0.68 GiB
+of the 1.02 GiB the harness reported.
+
+The harness now collides through the task path with one persistent
+`runtime_cache`, as `execute!` does. Production-shaped numbers, 16 threads:
+
+| solver | cold | **warm** | allocated |
+|---|---|---|---|
+| PIC | 3.09 | **2.17** | 1.0162 -> **0.2629** GiB |
+| GaussianPIC | 6.62 | **5.91** | 1.0179 -> **0.2638** GiB |
+| Spectral | 2.77 | 2.79 | 0.4243 (its pool was already leased warm) |
+| soft-Gaussian | 2.65 | 3.48 | 0.0898 (no cache to warm) |
+
+**What this does and does not change.** The campaign's before/after figures were
+taken with the SAME instrument at both ends, so the speedups stand; the absolute
+HEAD numbers are simply better than quoted. The end-to-end figure (40.8 -> 4.06
+s/turn) went through `execute!` and was already on the warm path, so it needs no
+correction. Benchmark-history rows are tagged `nightly` (cold) and
+`nightly-warm` (production-shaped); they are not comparable and the tag is how
+the file says so.
+
+The lesson is the campaign's own, turned on its instrument: a measurement can be
+reproducible, bit-checked and still be of the wrong thing.
+
 ## The regression guard
 
 The campaign left the suite able to lose all of this with the gate still green,

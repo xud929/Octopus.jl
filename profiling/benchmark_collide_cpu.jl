@@ -18,6 +18,12 @@ luminosity.
 
 Unlike `benchmark_strong_strong_pic.jl`, this script does NOT require CUDA.
 
+It collides through the TASK path with one persistent task, so the Green cache
+and workspace pool live across repeats exactly as they do under `execute!`.
+Timing a public `collide!` instead measures a COLD cache on every call, which
+is a property of the harness rather than of the solver -- see the comment at
+`bench_task` for the measurement.
+
 Structure. Build both beams once, snapshot their coordinates, then for each
 repeat restore the snapshot and time one `collide!`. Restoring matters:
 `collide!` mutates both beams, so without it repeat k solves a different problem
@@ -132,6 +138,29 @@ restore!(beam, snap) = foreach((a, b) -> copyto!(a, b), coordinate_arrays(beam),
 snap_ele = snapshot(beam_ele)
 snap_pro = snapshot(beam_pro)
 
+# Collide through the TASK path, not the public `collide!`, and hold one task
+# across every repeat.
+#
+# `collide!(solver, b1, b2, backend)` builds a fresh Green cache AND a fresh
+# workspace pool on every call, so it measures a COLD cache every time.
+# Production does not: `execute!` keeps both in `task.runtime_cache` across
+# turns. Measured at the production point, PIC's Green cache takes 450 misses on
+# turn 1 and then 450 hits on turn 2, settling at ~60-90 rebuilds per turn -- so
+# the direct path was charging 450 x 1.05 MB of Green-FFT copies to every
+# collide, 0.68 GiB of the 1.02 GiB this script used to report. That is a
+# property of the harness, not of the solver, and a benchmark that measures it
+# is measuring the wrong thing (found by allocation-profiling gpic in the
+# 2026-08-10 session).
+#
+# `Octopus._strong_strong_collide_backend!` is the same entry `execute!` uses
+# per collision, and it is generic over all four solvers. Reaching for an
+# internal here is what AGENTS.md permits a profiling script to do when the goal
+# is to measure an implementation detail -- and the detail IS the caching. The task carries empty
+# lines: nothing here tracks, so no element is needed -- only the runtime_cache.
+bench_task = StrongStrongTask((), (); poisson_solver = solver)
+const BENCH_LABEL = :bench
+bench_ctx(turn) = TrackingContext(turn = Int64(turn))
+
 """
 Process CPU seconds (user+sys), read from `/proc/self/stat`.
 
@@ -172,7 +201,15 @@ end
 @printf("solver=%s n_ele=%d n_pro=%d slices=%d grid=%d julia_threads=%d\n",
         SOLVER, N_ELE, N_PRO, NSLICES, GRID, Threads.nthreads(:default))
 
-collide!(solver, beam_ele, beam_pro, CPUThreadsBackend)     # compile + warm caches
+# Two warm collides, not one: the first compiles and fills the Green cache
+# cold, the second is the first to run against a warm cache. Timing from a
+# single warm-up would still carry 450 cache misses.
+for w in 1:2
+    restore!(beam_ele, snap_ele)
+    restore!(beam_pro, snap_pro)
+    Octopus._strong_strong_collide_backend!(bench_task, BENCH_LABEL, solver, beam_ele, beam_pro,
+                                    CPUThreadsBackend, bench_ctx(w))
+end
 
 times = Float64[]
 lums = Float64[]
@@ -186,7 +223,9 @@ for _ in 1:REPEATS
     gc0 = Base.gc_num()
     cpu0 = cpu_seconds()
     t0 = time_ns()
-    lum = collide!(solver, beam_ele, beam_pro, CPUThreadsBackend)
+    lum = Octopus._strong_strong_collide_backend!(bench_task, BENCH_LABEL, solver,
+                                          beam_ele, beam_pro, CPUThreadsBackend,
+                                          bench_ctx(10 + length(times)))
     dt = (time_ns() - t0) / 1e9
     cpu = cpu_seconds() - cpu0
     gc1 = Base.gc_num()
@@ -266,7 +305,9 @@ if DOPROF
     restore!(beam_ele, snap_ele)
     restore!(beam_pro, snap_pro)
     Profile.clear()
-    @profile collide!(solver, beam_ele, beam_pro, CPUThreadsBackend)
+    @profile Octopus._strong_strong_collide_backend!(bench_task, BENCH_LABEL, solver,
+                                             beam_ele, beam_pro, CPUThreadsBackend,
+                                             bench_ctx(99))
     open(path, "w") do io
         println(io, "======== FLAT (self time) ========")
         Profile.print(io, format = :flat, sortedby = :count, mincount = 10, maxdepth = 200)

@@ -40,6 +40,13 @@
 # Run it by hand the same way -- it takes ~10 minutes at the production point.
 # ---------------------------------------------------------------------------
 #
+# The `tag` column reads `nightly-warm` from 2026-08-10. Rows tagged plain
+# `nightly` were taken through the public `collide!`, which builds a fresh Green
+# cache and workspace pool on EVERY call and so measured a cold cache each time
+# -- 0.68 GiB of the 1.02 GiB it reported for PIC. The harness now collides
+# through the task path with one persistent `runtime_cache`, as `execute!` does.
+# The two tags are NOT comparable and the tag is how the file says so.
+#
 # Conventions borrowed from `test/nightly_suite.sh`, and for its reasons:
 #   * the exit code comes from `$?` immediately after the command, never from
 #     the log -- the benchmarked program writes there too (U21-1/U21-2);
@@ -146,7 +153,7 @@ for solver in $SOLVERS; do
     OCTOPUS_BENCH_REPEATS="$REPEATS" \
     OCTOPUS_BENCH_SLICES="$SLICES" \
     OCTOPUS_BENCH_GRID="$GRID" \
-    OCTOPUS_BENCH_TAG=nightly \
+    OCTOPUS_BENCH_TAG=nightly-warm \
     OCTOPUS_BENCH_TSV="$HISTORY" \
     OCTOPUS_BENCH_STAMP="$STAMP" \
     OCTOPUS_BENCH_COMMIT="$COMMIT" \
