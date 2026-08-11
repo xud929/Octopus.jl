@@ -66,10 +66,28 @@ added.
 *N1 closure, same day (owner decision):* removed rather than fixed. Both
 observers, their writers, schemas, exports, metadata probes, and their suite
 pins (U7-2, U7-3, U7-8 — lessons preserved in the dated records) are gone in
-the pre-release window; the JLD2/binary reader branches stay for archived
-files, and the U7-10 registry test re-vehicled onto `MomentObserver`. One
-public moment observer remains, which is the derive-from-one-source rule
-applied to output paths.
+the pre-release window; the JLD2 reader branch stays for archived files, and
+the U7-10 registry test re-vehicled onto `MomentObserver`. One public moment
+observer remains, which is the derive-from-one-source rule applied to output
+paths.
+
+*Neighbour audit of the removal itself* (the campaign standard applied to
+its own closure): an orphan sweep over all 45 private names remaining in
+`BeamObservers.jl` (with `grep -F`, per the 2026-08-10 N2 lesson about `!`
+and `\b`) found zero orphaned helpers; the reverse-reference sweep is clean
+(the survivors are the reader docstring's historical format string and dated
+records); both reader branches were exercised (the HDF5 branch by the
+retained U7-4 suite pin, the JLD2 branch against a synthesized
+legacy-format file); the coverage tree guard and configuration contracts
+re-ran green. **One finding, fixed here (R1):** the removal's own closure
+texts claimed "the JLD2/binary READER branches stay" — but the binary
+`.bin` format never had an in-tree reader; `MomentOutputFile` branches only
+HDF5/JLD2, and the deleted U6-2 test read `.bin` by hand. Nothing readable
+was lost, but the claim promised recovery machinery that does not exist —
+the verdict-easier-to-misread shape again, this time in an audit record.
+Corrected, with the `.bin` layout documented for archival recovery:
+`Int32` row count, `Int32` format-string length, CSV column names, then
+`Float64` rows (`_initialize_moment_file!` before `3a65c7e`).
 
 **N2 — `BPMObserver` in path mode opens its file every observed turn.
 Ledgered.** `BPMObserver.jl:257` is the same open/append/close-per-turn
