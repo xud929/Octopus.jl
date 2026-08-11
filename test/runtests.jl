@@ -7597,6 +7597,70 @@ end
     end
 end
 
+@testset "Fused CUDA moment row matches the CPU fold on every liveness path" begin
+    # The CUDA moment row used to run one fill/broadcast/sum/sync cycle PER
+    # MOMENT — ~33 host round-trips and ~80 full-array passes per observed
+    # turn, 1.7 ms at the A100 production point (2026-08-11 record,
+    # docs/history/weak_strong_cuda_luminosity_2026_08_11.md). The fused
+    # two-pass kernel accumulates every requested power row in registers and
+    # makes two round-trips. Pinned against the CPU fold, which is the
+    # numerics oracle both backends share:
+    #   (a) finite values at rtol 1e-12, masked and unmasked;
+    #   (b) the unmasked NaN pattern — a dead coordinate poisons exactly the
+    #       moments that touch it, on both backends, no more and no less;
+    #   (c) bitwise run-to-run determinism (fixed-order block tree + host
+    #       finish, no float atomics);
+    #   (d) the register-budget fallback for oversized selections still runs
+    #       the old per-moment path, asserted at the workspace type — the
+    #       consumer boundary — not by absence of error.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        n = 50_000
+        mkrep() = Phase6DRep([1.0e-4 * sin(0.7i) + 2.0e-6 for i in 1:n],
+                             [1.0e-5 * sin(0.5i) for i in 1:n],
+                             [1.0e-5 * sin(0.3i) - 1.0e-6 for i in 1:n],
+                             [1.0e-5 * cos(0.4i) for i in 1:n],
+                             [1.0e-3 * sin(0.1i) for i in 1:n],
+                             [1.0e-4 * cos(0.2i) for i in 1:n])
+        kill!(r) = (for i in 1:53; r.x[9i] = NaN; end; r)
+        togpu(r) = Phase6DRep((Octopus.CUDA.CuArray(a)
+                               for a in coordinate_arrays(r))...)
+        ctx = Octopus.with_turn(Octopus.TrackingContext(), 11)
+        oc, og = MomentObserver(tempname() * ".h5"), MomentObserver(tempname() * ".h5")
+        moms = oc.moments
+
+        for (killed, masked) in ((false, false), (true, false), (true, true))
+            rc = killed ? kill!(mkrep()) : mkrep()
+            rg = togpu(rc)
+            body = () -> (Octopus._moment_observer_row(ctx, rc, moms, oc),
+                          Octopus._moment_observer_row(ctx, rg, moms, og))
+            rowc, rowg = masked ? allow_lost_particles(body; enabled=true) : body()
+            @test rowg[1] == Float64(ctx.turn)
+            @test isnan.(rowc) == isnan.(rowg)                      # (b)
+            fin = .!isnan.(rowc)
+            @test all(isapprox.(rowg[fin], rowc[fin]; rtol=1.0e-12)) # (a)
+            (killed && !masked) && @test any(isnan, rowc[2:end])     # loud, not silent
+        end
+        @test og.reduction_scratch isa NamedTuple                    # fused path ran
+
+        rg = togpu(mkrep())
+        r1 = Octopus._moment_observer_row(ctx, rg, moms, og)
+        r2 = Octopus._moment_observer_row(ctx, rg, moms, og)
+        @test r1 == r2                                               # (c)
+
+        # (d) orders=1:3 has 77 order >= 2 rows, past the register budget.
+        bc, bg = MomentObserver(tempname() * ".h5"; orders=1:3),
+                 MomentObserver(tempname() * ".h5"; orders=1:3)
+        @test count(m -> sum(m.powers) >= 2, bc.moments) > Octopus._CUDA_FUSED_MOMENT_MAX
+        rc = mkrep()
+        rowc = Octopus._moment_observer_row(ctx, rc, bc.moments, bc)
+        rowg = Octopus._moment_observer_row(ctx, togpu(rc), bg.moments, bg)
+        @test bg.reduction_scratch isa Octopus.CUDA.CuArray          # fallback ran
+        @test all(isapprox.(rowg[2:end], rowc[2:end]; rtol=1.0e-12))
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 aperture_beam(n; seed=7) = begin
     set_global_rng!(seed=seed, method=:philox)
     Beam(n, CPUThreadsBackend, Float64; beta=(0.5, 0.5, 10.0), alpha=(0.0, 0.0, 0.0),

@@ -1606,6 +1606,140 @@ end
 
 if _HAS_CUDA
     @eval begin
+        # One fused kernel serves both passes of the moment row. Each thread
+        # reads its particle's six coordinates ONCE and accumulates a term for
+        # all NM requested power rows in registers; blocks tree-reduce each
+        # accumulator in shared memory in a fixed order and the host finishes
+        # over the block partials in block order — deterministic for a fixed
+        # (n, threads, blocks), with no floating-point atomics anywhere.
+        #
+        # Pass 1 uses `means = 0` with the six identity power rows plus one
+        # all-zero row: a zero-power row's term is exactly 1.0, so its
+        # accumulator counts the particles the mask admitted. Pass 2 gets the
+        # real means and the order >= 2 rows. The per-moment
+        # fill/broadcast/sum loop this replaces made ~33 host sync round-trips
+        # and ~80 full-array passes per observed turn — 1.53 ms at 1M
+        # particles against 0.63 ms for a single reduction (2026-08-11
+        # record); the fused path makes 2 round-trips and 2 passes.
+        #
+        # `use_mask` is a runtime Bool, not a Val: both branches share one
+        # compiled kernel, so the unmasked path cannot drift a ulp from the
+        # masked path over identical live data. Dead particles are skipped by
+        # re-testing `is_live` on the coordinates rather than through a
+        # precomputed flags array; with the mask off every particle
+        # contributes and a non-finite coordinate stays LOUD (NaN row), as on
+        # the CPU path.
+        function _cuda_fused_moment_kernel!(partials, x, px, y, py, z, pz,
+                                            powers, means, use_mask::Bool,
+                                            n::Int, ::Val{NM}) where {NM}
+            tid = CUDA.threadIdx().x
+            nthreads = CUDA.blockDim().x
+            bid = CUDA.blockIdx().x
+            stride = CUDA.gridDim().x * nthreads
+            # Stage the power rows in shared memory once per block: the main
+            # loop reads NM*6 entries per particle, and serving those from
+            # global memory dominated the kernel (measured 1.0 ms vs 0.3 ms
+            # at 1M particles on the RTX 4500 Ada). The Int32 region sits
+            # after the Float64 reduction buffer — dynamic shared arrays all
+            # start at offset 0 unless told otherwise, and an unoffset second
+            # array would alias the first.
+            spowers = CUDA.CuDynamicSharedArray(Int32, NM * 6,
+                                                nthreads * sizeof(Float64))
+            let k = tid
+                @inbounds while k <= NM * 6
+                    m = (k - 1) % NM + 1
+                    d = (k - 1) ÷ NM + 1
+                    spowers[k] = powers[m, d]
+                    k += nthreads
+                end
+            end
+            CUDA.sync_threads()
+            accs = ntuple(_ -> 0.0, Val(NM))
+            i = (bid - 1) * nthreads + tid
+            @inbounds while i <= n
+                xi = Float64(x[i]); pxi = Float64(px[i]); yi = Float64(y[i])
+                pyi = Float64(py[i]); zi = Float64(z[i]); pzi = Float64(pz[i])
+                if !use_mask || is_live(xi, pxi, yi, pyi, zi, pzi)
+                    diffs = (xi - means[1], pxi - means[2], yi - means[3],
+                             pyi - means[4], zi - means[5], pzi - means[6])
+                    # `terms` then `map`, not an accumulating closure: a
+                    # closure that captured the reassigned `accs` would box it
+                    # and fail GPU compilation.
+                    terms = ntuple(Val(NM)) do m
+                        term = 1.0
+                        for d in 1:6
+                            p = spowers[m + NM * (d - 1)]
+                            for _ in 1:p
+                                term *= diffs[d]
+                            end
+                        end
+                        term
+                    end
+                    accs = map(+, accs, terms)
+                end
+                i += stride
+            end
+            shared = CUDA.CuDynamicSharedArray(Float64, nthreads)
+            for m in 1:NM
+                @inbounds shared[tid] = accs[m]
+                CUDA.sync_threads()
+                s = nthreads >> 1
+                while s > 0
+                    if tid <= s
+                        @inbounds shared[tid] += shared[tid + s]
+                    end
+                    CUDA.sync_threads()
+                    s >>= 1
+                end
+                if tid == 1
+                    @inbounds partials[bid, m] = shared[1]
+                end
+                CUDA.sync_threads()
+            end
+            return nothing
+        end
+
+        # Register accumulators bound the fused row: past this many order >= 2
+        # rows the kernel's ntuple would spill, so exotic hand-built selections
+        # fall back to the per-moment path below. The default orders=1:2 set
+        # has 21.
+        const _CUDA_FUSED_MOMENT_MAX = 32
+        const _CUDA_MOMENT_THREADS = 256
+
+        function _cuda_moment_workspace!(observer::MomentObserver, moments::Tuple, n::Int)
+            reduce_idx = [j for (j, m) in enumerate(moments) if sum(m.powers) >= 2]
+            nm2 = length(reduce_idx)
+            blocks = max(min(cld(n, _CUDA_MOMENT_THREADS), 256), 1)
+            ws = observer.reduction_scratch
+            valid = ws isa NamedTuple && ws.n == n && ws.reduce_idx == reduce_idx
+            valid && return ws
+            powers1 = CUDA.CuArray(Int32[d == m ? 1 : 0 for m in 1:7, d in 1:6])
+            powers2 = nm2 == 0 ? nothing :
+                CUDA.CuArray(Int32[moments[reduce_idx[m]].powers[d] for m in 1:nm2, d in 1:6])
+            ws = (n=n, reduce_idx=reduce_idx, blocks=blocks,
+                  powers1=powers1, powers2=powers2,
+                  partials1=CUDA.CuArray{Float64}(undef, blocks, 7),
+                  partials2=nm2 == 0 ? nothing : CUDA.CuArray{Float64}(undef, blocks, nm2),
+                  host1=Matrix{Float64}(undef, blocks, 7),
+                  host2=nm2 == 0 ? nothing : Matrix{Float64}(undef, blocks, nm2))
+            observer.reduction_scratch = ws
+            return ws
+        end
+
+        # Host-side fixed-order finish of the block partials: column sums in
+        # block order, deterministic like the kernel's tree.
+        function _cuda_moment_block_sums!(host, partials)
+            copyto!(host, partials)
+            nb, nm = size(host)
+            return ntuple(nm) do m
+                s = 0.0
+                @inbounds for b in 1:nb
+                    s += host[b, m]
+                end
+                s
+            end
+        end
+
         function _moment_observer_row(ctx::TrackingContext,
                                       rep::Phase6DRep{<:CUDA.CuArray}, moments::Tuple,
                                       observer::MomentObserver)
@@ -1614,8 +1748,45 @@ if _HAS_CUDA
             isempty(moments) && return row
             arrays = coordinate_arrays(rep)
             n = length(arrays[1])
-            # `nothing` when the mask is off, so the reductions below stay the
-            # plain device reductions they were.
+            use_mask = allow_lost_particles()
+            nreduce = count(m -> sum(m.powers) >= 2, moments)
+            nreduce <= _CUDA_FUSED_MOMENT_MAX ||
+                return _cuda_moment_row_per_moment!(row, arrays, moments, observer, n)
+            ws = _cuda_moment_workspace!(observer, moments, n)
+            threads = _CUDA_MOMENT_THREADS
+            shmem(nm) = threads * sizeof(Float64) + nm * 6 * sizeof(Int32)
+            zero6 = ntuple(_ -> 0.0, 6)
+            CUDA.@cuda threads=threads blocks=ws.blocks shmem=shmem(7) _cuda_fused_moment_kernel!(
+                ws.partials1, arrays..., ws.powers1, zero6, use_mask, n, Val(7))
+            sums = _cuda_moment_block_sums!(ws.host1, ws.partials1)
+            nlive = use_mask ? Int(sums[7]) : n
+            if nlive == 0
+                fill!(view(row, 2:length(row)), NaN)
+                return row
+            end
+            means = ntuple(d -> sums[d] / nlive, 6)
+            if ws.powers2 !== nothing
+                nm2 = length(ws.reduce_idx)
+                CUDA.@cuda threads=threads blocks=ws.blocks shmem=shmem(nm2) _cuda_fused_moment_kernel!(
+                    ws.partials2, arrays..., ws.powers2, means, use_mask, n, Val(nm2))
+                sums2 = _cuda_moment_block_sums!(ws.host2, ws.partials2)
+                for (slot, j) in enumerate(ws.reduce_idx)
+                    row[j + 1] = sums2[slot] / nlive
+                end
+            end
+            for (j, moment) in enumerate(moments)
+                order = sum(moment.powers)
+                order >= 2 && continue
+                row[j + 1] = order == 1 ? means[findfirst(!=(0), moment.powers)] : 1.0
+            end
+            return row
+        end
+
+        # The pre-fused path, kept for selections whose order >= 2 count
+        # exceeds the register budget. Same numerics as before the fused
+        # kernel; do not extend it — extend the fused path's budget instead.
+        function _cuda_moment_row_per_moment!(row, arrays, moments::Tuple,
+                                              observer::MomentObserver, n::Int)
             flags = allow_lost_particles() ?
                 is_live.(arrays[1], arrays[2], arrays[3], arrays[4], arrays[5], arrays[6]) :
                 nothing
