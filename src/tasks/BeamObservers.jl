@@ -806,21 +806,40 @@ end
 
 mutable struct LuminosityObserver <: AbstractBeamObserver
     path::String
+    capacity::Int
     elements::Tuple
     initialized::Bool
+    pending::Vector{String}
 end
 
 """
-    LuminosityObserver(path)
+    LuminosityObserver(path; capacity=1)
 
 Write one row per observed turn: turn number followed by positive luminosity
 values reported by runtime beam-beam elements in the task line.
+
+`capacity` is the number of observed rows buffered in memory before one
+append writes them all. The default `1` opens and appends the file every
+observed turn — every row is durable the moment it is observed and the file
+can be followed live. On a networked filesystem that per-turn open/close is
+the dominant cost of luminosity observation (measured 2.3 ms/turn against
+0.02 ms local, 2026-08-11 record in `docs/history/`), so production runs on
+shared storage should set `capacity` to 100 or more. Buffered rows are
+flushed by `finalize_observer!` — including when tracking throws — so an
+ordinary failure loses nothing; only a hard kill can lose up to
+`capacity - 1` rows, and `tail -f` lags by up to `capacity` turns. The file
+format is identical for every capacity.
 
 This observer requests diagnostic tracking. `TrackingTask` then keeps ordinary
 line segments fused while isolating beam-beam runtime elements so they can
 update their `last_luminosity` field.
 """
-LuminosityObserver(path::AbstractString) = LuminosityObserver(String(path), (), false)
+function LuminosityObserver(path::AbstractString; capacity::Integer=1)
+    cap = Int(capacity)
+    cap >= 1 || throw(ArgumentError(
+        "LuminosityObserver capacity must be at least 1; got $(cap)."))
+    return LuminosityObserver(String(path), cap, (), false, String[])
+end
 
 const _BUFFERED_OBSERVER_OPTION_SCHEMA = (
     path=ConfigurationOptionMeta(String, nothing, "Required output path.";
@@ -864,6 +883,9 @@ observer_option_schema(::Type{CoordinateSnapshotObserver}) = (
 observer_option_schema(::CoordinateSnapshotObserver) = observer_option_schema(CoordinateSnapshotObserver)
 observer_option_schema(::Type{LuminosityObserver}) = (
     path=ConfigurationOptionMeta(String, nothing, "Required weak-strong luminosity output path.";
+        category=:output, consumer=:observer_output),
+    capacity=ConfigurationOptionMeta(Int, 1,
+        "Observed rows buffered before one append; 1 writes every observed turn.";
         category=:output, consumer=:observer_output),)
 observer_option_schema(::LuminosityObserver) = observer_option_schema(LuminosityObserver)
 
@@ -911,7 +933,9 @@ function configuration_report(observer::CoordinateSnapshotObserver)
 end
 configuration_report(observer::LuminosityObserver) = (
     ConfigurationEntry(:path, observer.path, observer.path, :resolved,
-        "required luminosity output path", :observer_output),)
+        "required luminosity output path", :observer_output),
+    ConfigurationEntry(:capacity, observer.capacity, observer.capacity, :resolved,
+        "observed rows buffered before an append", :observer_output),)
 
 function _observer_backend()
     policy = _ACTIVE_RESOLVED_POLICY[]
@@ -985,22 +1009,42 @@ end
 
 function observe!(observer::LuminosityObserver, ctx::TrackingContext, rep)
     _record_execution!(:observer_output, _observer_backend(),
-        (observer=:LuminosityObserver, turn=ctx.turn, elements=length(observer.elements)))
+        (observer=:LuminosityObserver, turn=ctx.turn, elements=length(observer.elements),
+         capacity=observer.capacity))
+    # The row is formatted with the same print calls the direct write used, so
+    # the file is byte-identical for every capacity.
+    io = IOBuffer()
+    print(io, ctx.turn, '\t')
+    for elem in observer.elements
+        lum = luminosity(elem, ctx, rep)
+        lum > 0.0 && print(io, lum, '\t')
+    end
+    print(io, '\n')
+    push!(observer.pending, String(take!(io)))
+    length(observer.pending) >= observer.capacity && _flush_luminosity_rows!(observer)
+    return nothing
+end
+
+function _flush_luminosity_rows!(observer::LuminosityObserver)
+    isempty(observer.pending) && return nothing
     mode = observer.initialized ? "a" : "w"
     # First write truncates, off a per-object latch: the U7-10 shape exactly,
     # so it registers exactly like the moment observers (N3 extension).
     observer.initialized || _register_observer_path!(observer, observer.path)
     open(observer.path, mode) do io
-        print(io, ctx.turn, '\t')
-        for elem in observer.elements
-            lum = luminosity(elem, ctx, rep)
-            lum > 0.0 && print(io, lum, '\t')
+        for row in observer.pending
+            print(io, row)
         end
-        print(io, '\n')
     end
     observer.initialized = true
+    empty!(observer.pending)
     return nothing
 end
+
+# Flushes on BOTH execute! exit paths (T7): after a success a failed flush must
+# raise, and after a tracking failure the buffered rows are exactly the tail
+# the crash analysis wants on disk.
+finalize_observer!(observer::LuminosityObserver) = _flush_luminosity_rows!(observer)
 
 function prepare_observer!(observer::LuminosityObserver, runtime_elems)
     observer.elements = runtime_elems
@@ -1028,6 +1072,10 @@ prepare_line_observer!(observer::LuminosityObserver, schedule, turns, first_turn
     _discard_replayed_luminosity_rows!(observer, Int(first_turn))
 
 function _discard_replayed_luminosity_rows!(observer::LuminosityObserver, first_turn::Int)
+    # Unflushed rows would be re-observed by the replayed window (the JLD2
+    # discard's rule). Ordinarily empty here — finalize flushed them — but a
+    # caller that skipped finalize must not get duplicate labels.
+    empty!(observer.pending)
     (observer.initialized && isfile(observer.path)) || return nothing
     rows = readlines(observer.path)
     turn_of(line) = tryparse(Int, first(split(line, '\t')))

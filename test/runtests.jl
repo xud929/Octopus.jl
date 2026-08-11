@@ -6164,6 +6164,67 @@ end
     foreach(p -> rm(p; force=true), (p1, p2, p3, p4))
 end
 
+@testset "LuminosityObserver capacity buffers rows and flushes on every exit path" begin
+    # The .lum observer opened/appended/closed its file EVERY observed turn --
+    # 2.3 ms/turn on the production cluster filesystem vs 0.02 ms local, the
+    # cost that ate the weak-strong optimization's A100 gain (2026-08-11
+    # record, docs/history/weak_strong_cuda_luminosity_2026_08_11.md).
+    # `capacity` buffers rows like the moment observers. Pinned here:
+    # (a) the file is byte-identical for every capacity (format unchanged),
+    # (b) the flush cadence is real -- observed at the file, the consumer
+    #     boundary, so a capacity that is stored-but-ignored fails loudly,
+    # (c) buffered rows survive a crashed execute! (T7 finalizes on failure),
+    # (d) replayed windows do not duplicate labels under buffering.
+    mk() = Phase6DRep([1e-4, -2e-4], zeros(2), [1e-5, 0.0], zeros(2), zeros(2), zeros(2))
+    dline = (DriftSpec(L=1.0),)
+
+    # (a) byte identity across capacities
+    pa, pb = tempname() * ".lum", tempname() * ".lum"
+    ta = TrackingTask(dline; hooks=(ScheduledObserver(LuminosityObserver(pa)),))
+    execute!(ta, mk(); turns=10)
+    tb = TrackingTask(dline; hooks=(ScheduledObserver(LuminosityObserver(pb; capacity=4)),))
+    execute!(tb, mk(); turns=10)
+    @test read(pa, String) == read(pb, String)
+    foreach(p -> rm(p; force=true), (pa, pb))
+
+    # (b) flush cadence at the consumer boundary
+    pc = tempname() * ".lum"
+    oc = LuminosityObserver(pc; capacity=3)
+    Octopus.prepare_observer!(oc, ())
+    ctxt(t) = Octopus.with_turn(Octopus.TrackingContext(), t)
+    Octopus.observe!(oc, ctxt(0), mk())
+    Octopus.observe!(oc, ctxt(1), mk())
+    @test !isfile(pc)                                   # buffered, not written
+    Octopus.observe!(oc, ctxt(2), mk())
+    @test count(==('\n'), read(pc, String)) == 3        # one append wrote all three
+    Octopus.observe!(oc, ctxt(3), mk())
+    @test count(==('\n'), read(pc, String)) == 3        # pending again
+    Octopus.finalize_observer!(oc)
+    @test count(==('\n'), read(pc, String)) == 4        # finalize flushed the tail
+    @test parse(Int, first(split(last(readlines(pc)), '\t'))) == 3
+    rm(pc; force=true)
+
+    # (c) crash flush + (d) failed-window retry does not duplicate
+    pf = tempname() * ".lum"
+    tf = TrackingTask(dline; hooks=(ScheduledObserver(LuminosityObserver(pf; capacity=100)),
+                                    ScheduledAction(FailAtTurnAction(3))))
+    @test_throws ErrorException execute!(tf, mk(); turns=5)
+    @test [parse(Int, first(split(l, '\t'))) for l in readlines(pf)] == [0, 1, 2]
+    @test_throws ErrorException execute!(tf, mk(); turns=5)
+    @test [parse(Int, first(split(l, '\t'))) for l in readlines(pf)] == [0, 1, 2]
+    rm(pf; force=true)
+
+    # (d) successful rewind under buffering
+    pd = tempname() * ".lum"
+    td = TrackingTask(dline; hooks=(ScheduledObserver(LuminosityObserver(pd; capacity=2)),))
+    execute!(td, mk(); turns=3)
+    execute!(td, mk(); turns=4, start_turn=1)
+    @test [parse(Int, first(split(l, '\t'))) for l in readlines(pd)] == collect(0:4)
+    rm(pd; force=true)
+
+    @test_throws ArgumentError LuminosityObserver("x.lum"; capacity=0)
+end
+
 @testset "Philox4x32-10 matches the Random123 known-answer vectors" begin
     # 2026-08-05 audit (U15-1/U19-5): the RNG validation script measures only
     # moments and correlations, and PASSED a Philox with the Weyl key bump
