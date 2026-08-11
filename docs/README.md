@@ -239,7 +239,13 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   and why, the per-fix measurements with their bitwise-parity digests, and the
   machine-level findings — idle-thread spin, GC share, and why a pool wider
   than the data's parallelism costs rather than pays),
-  [`weak_strong_cuda_luminosity_2026_08_11.md`](history/weak_strong_cuda_luminosity_2026_08_11.md)
+  [`weak_strong_cuda_luminosity_2026_08_11.md`](history/weak_strong_cuda_luminosity_2026_08_11.md),
+  [`neighbour_audit_2026_08_11.md`](history/neighbour_audit_2026_08_11.md)
+  (the campaign's targeted neighbour audit: the bitwise pin re-run at final
+  HEAD, the no-full-array-D2H property walked to every per-turn diagnostic
+  surface — two ledgered findings, the legacy moment observers and BPM path
+  mode, both the campaign's own defect class alive in unchanged siblings —
+  and the gate-verdict process lesson)
   (why 20–55% GPU utilization at 1M weak-strong particles was a duty-cycle
   symptom, not kernel quality: the per-turn 8 MB host-side luminosity
   reduction and CuArray churn removed — device reduction + per-element buffer
