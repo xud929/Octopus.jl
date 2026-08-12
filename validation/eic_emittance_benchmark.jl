@@ -174,7 +174,12 @@ input = (
         charge = -1.0,
         mass = EMASS_EV,
         energy = 10.0e9,
-        n_particle = 1.7203e11,
+        # 1.72e11, not the EIC-canonical 1.7203e11: the BeamBeam3D eicdamp
+        # deck this benchmark compares against runs 1.72e11, and a cross-code
+        # comparison must feed both codes identical beams (owner directive,
+        # 2026-08-12; the 0.28%-class intensity mismatches were the same
+        # order as the Table-3 baseline differences).
+        n_particle = 1.72e11,
         n_macro = 2560000,
         cutoff = 5.0,
         sigma = (106.0e-6, 9.5e-6, 0.7e-2),
@@ -194,7 +199,8 @@ input = (
         charge = 1.0,
         mass = PMASS_EV,
         energy = 275.0e9,
-        n_particle = 0.6881e11,
+        # 0.69e11, matching the BeamBeam3D deck (see the electron note).
+        n_particle = 0.69e11,
         n_macro = 1024000,
         cutoff = 5.0,
         sigma = (95.0e-6, 8.5e-6, 6.0e-2),
