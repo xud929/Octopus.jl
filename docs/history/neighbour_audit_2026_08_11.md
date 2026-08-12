@@ -133,6 +133,28 @@ re-run at shipped config with rms identical between clean and harness
 twins; the `public_api.md` illustrative path strings are usage snippets,
 not layout claims, and were left alone.
 
+*Neighbour audit of the rewind-count fix* (`219e6c2`): the property —
+destruction warnings report what was actually destroyed, and clean
+continuations stay silent — walked to every sibling trim/discard surface.
+**Verified clean:** the MomentObserver append-mode twin computes its counts
+correctly (`written - kept`, fired only when `written > kept`) and has
+carried its silent-continuation pin since U7-6 — the `.lum` planner was the
+lone miscount, and its `dropped` field has no consumer beyond the two warn
+branches; the full-replace branch is provably unaffected (kept is empty
+there, so the corrected count equals the old one); the end-of-run
+schedule-disagreement reporter labels its number "this is the total", which
+it is; the new suite pins assert the warning's kwargs, not just its firing.
+**Noted, no action:** the two same-object trims — the weak-strong
+`LuminosityObserver` replay discard and the snapshot observer's truncate —
+are silent by design, an intentional asymmetry: they fire only when the
+caller rewinds a live task that owns the observer, where the resume point
+is knowable, whereas the append-mode surfaces warn because a FRESH task can
+legitimately continue a file and a wrong `start_turn` is indistinguishable
+from a deliberate rewind there. If a future session revisits, the moment
+twin's warning is the template; the case for it is weaker where it is
+currently absent, and adding noise is the failure mode this very fix
+repaired.
+
 **Verified clean, no action:** the U14-4 reference-pair invariant's blast
 radius (the remaining `beta0=0.99, gamma0=100.0` occurrences are the
 invariant's own rejection pins in `test/runtests.jl` and the repaired
