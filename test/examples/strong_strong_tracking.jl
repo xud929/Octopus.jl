@@ -38,6 +38,7 @@ below with the defaults shown at their read sites: OCTOPUS_CPU_THREADS,
 OCTOPUS_N_MACRO, OCTOPUS_PROTON_ENERGY_GEV, OCTOPUS_CUDA_NVTX,
 OCTOPUS_DISABLE_MOMENTS, OCTOPUS_DISABLE_LUMINOSITY_OUTPUT,
 OCTOPUS_MOMENT_CAPACITY, OCTOPUS_SPECTRAL_FIELD_PRECISION, OCTOPUS_GPIC_GRID,
+OCTOPUS_PIC_GRID ("nx,ny", overrides the input block's pic_grid),
 OCTOPUS_TURN_TIMING_PATH (a relative value resolves against `test/result/`,
 beside this harness -- NOT against the caller's cwd),
 OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO,
@@ -498,6 +499,8 @@ spectral_grid = _grid_env("OCTOPUS_SPECTRAL_GRID", "127,383")
 spectral_domain_factor = parse(Float64, get(ENV, "OCTOPUS_SPECTRAL_DOMAIN_FACTOR", "8.0"))
 spectral_field_precision = Symbol(lowercase(get(ENV, "OCTOPUS_SPECTRAL_FIELD_PRECISION", "double")))
 gpic_grid = _grid_env("OCTOPUS_GPIC_GRID", "64,64")
+pic_grid = _grid_env("OCTOPUS_PIC_GRID",
+    join(string.(input.solver.pic_grid), ','))
 
 solver = if solver_name == "spectral"
     SpectralPoissonSolver(;
@@ -538,7 +541,7 @@ else
     PICPoissonSolver(;
         slicing = slicing,
         luminosity_scale = input.solver.luminosity_scale,
-        grid = input.solver.pic_grid,
+        grid = pic_grid,
         deposit_method = input.solver.pic_deposit_method,
         green_type = input.solver.pic_green_type,
         green_cache = pic_green_cache,
@@ -812,7 +815,7 @@ if solver isa Union{PICPoissonSolver,GaussianPICPoissonSolver}
     # (default (64, 64) against a reported (128, 128)) -- U21-20.
     println("pic_luminosity_grid = ",
             pic_luminosity_grid !== nothing ? pic_luminosity_grid :
-            solver isa GaussianPICPoissonSolver ? gpic_grid : input.solver.pic_grid)
+            solver isa GaussianPICPoissonSolver ? gpic_grid : pic_grid)
     println("pic_luminosity_deposit_method = ",
             pic_luminosity_deposit_method === nothing ? "inherit" : pic_luminosity_deposit_method)
 else
