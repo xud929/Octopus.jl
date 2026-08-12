@@ -2485,7 +2485,15 @@ function _plan_strong_strong_luminosity_file(task::StrongStrongTask, blocks1,
         "malformed ($(repr(rows[bad]))), which cannot come from a torn final " *
         "write; refusing to continue a corrupt file. Use a new path."))
     kept = [line for line in rows if parse(Int, first(split(line, '\t'))) < first_turn]
-    return (header=header, kept=kept, replace=false, torn=torn, dropped=length(rows))
+    # `dropped` is the rows actually discarded, NOT the file's total row count.
+    # It was `length(rows)` from U5-10 until 2026-08-11, so every CLEAN
+    # continuation — a swap-out second stage, a chunked run — warned
+    # "rewinding: dropped_rows=N, kept_rows=N" while discarding nothing, and a
+    # real data-loss question (the swap-out injection report) was answered by
+    # a false alarm. The warning's own anti-vacuity case, a continuation that
+    # must stay SILENT, was the one never tested.
+    return (header=header, kept=kept, replace=false, torn=torn,
+            dropped=length(rows) - length(kept))
 end
 
 """

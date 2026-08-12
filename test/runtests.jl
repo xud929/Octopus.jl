@@ -6257,6 +6257,35 @@ end
         t2b, b1, b2; turns=2)
     @test lum_turns(p2) == [0, 1]
 
+    # A CLEAN continuation warns nothing — the anti-vacuity case the .lum
+    # warning never had. The planner reported `dropped = length(rows)`, the
+    # file's TOTAL row count, from U5-10 until 2026-08-11, so every healthy
+    # swap-out second stage and chunked continuation fired the rewind warning
+    # while discarding nothing; a real data-loss report was then answered by
+    # this false alarm (the MomentObserver twin below has carried the same
+    # silent-continuation pin since U7-6; the .lum half was the unwalked
+    # sibling).
+    p6 = tempname() * ".lum"
+    t6 = StrongStrongTask(l1, l2; luminosity_path=p6, luminosity_append=true)
+    b1, b2 = beams(); execute!(t6, b1, b2; turns=3)
+    b1new, b2keep = beams()
+    @test isempty(filter(r -> r.level === Logging.Warn,
+                         collect(Test.collect_test_logs(() ->
+                             execute!(t6, b1new, b2keep; turns=2))[1])))
+    @test lum_turns(p6) == [0, 1, 2, 3, 4]
+    # And a GENUINE partial rewind reports the rows actually discarded, not
+    # the file total: 5 rows, start_turn=4 -> 1 dropped, 4 kept.
+    t6b = StrongStrongTask(l1, l2; luminosity_path=p6, luminosity_append=true)
+    b1, b2 = beams()
+    logs = collect(Test.collect_test_logs(() ->
+        execute!(t6b, b1, b2; turns=1, start_turn=4))[1])
+    rewinds = filter(r -> occursin("rewinding", string(r.message)), logs)
+    @test length(rewinds) == 1
+    @test rewinds[1].kwargs[:dropped_rows] == 1
+    @test rewinds[1].kwargs[:kept_rows] == 4
+    @test lum_turns(p6) == [0, 1, 2, 3, 4]
+    rm(p6; force=true)
+
     # MomentObserver twin: loud wipe, and a zero-byte leftover initializes fresh.
     turns_in(path) = Octopus.HDF5.h5open(path) do f
         n = Int(read(f["record_count"])[1])
