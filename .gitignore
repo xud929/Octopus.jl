@@ -34,7 +34,7 @@ profiling/log
 # Jupyter notebooks are kept outside this repo
 *.ipynb
 
-# Python bytecode from paper/ helper scripts
+# Python bytecode (analysis helpers)
 __pycache__/
 *.pyc
 # Agent-tool session state (any assistant's local config) stays out of the

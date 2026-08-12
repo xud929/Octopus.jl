@@ -3,7 +3,8 @@ EIC cross-code emittance benchmark (Sec. 5.4, Table 3, Fig. 8).
 
 Head-on: crossing angle AND both crab-cavity families zeroed, chromaticity
 zeroed, to match the BeamBeam3D `eicdamp` deck archived in
-data/bb3d_decks/eicdamp/.  10 GeV electrons against 275 GeV protons at the
+data/bb3d_decks/eicdamp/ of the paper repository
+(https://github.com/xud929/2026_octopus_cpc).  10 GeV electrons against 275 GeV protons at the
 production constants of Sec. 6.1, 15 normal-quantile slices, 128^2 mesh,
 1e5 macroparticles per beam (matching BeamBeam3D), 8192 turns, electron
 radiation damping shortened 4000 -> 400 turns.
@@ -18,7 +19,7 @@ Run:
   OCTOPUS_USE_GPU=1 OCTOPUS_TURNS=8192 \
   OCTOPUS_N_MACRO_ELE=100000 OCTOPUS_N_MACRO_PRO=100000 \
   EIC_TAG=eic_matched EIC_MOMENT_STEP=16 SST_GRID=128 \
-  julia --startup-file=no --project=. paper/eic_emittance_benchmark.jl
+  julia --startup-file=no --project=. validation/eic_emittance_benchmark.jl
 
 BeamBeam3D side: the eicdamp deck, `mpirun -n 2 ./xmain` (use the system
 OpenMPI, not a conda one).  Emittance is column 7 of fort.24/25 (beam 1

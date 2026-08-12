@@ -44,6 +44,26 @@ untouched as the archival record of what was submitted, with its own
   there was nothing to merge — the paper repository's package supersedes it,
   and the snapshot remains the record of what the journal received.
 
+## Neighbour audit of the migration (same day)
+
+The migration's own properties walked back over both repositories.
+**Found and fixed:** five relocated scripts' headers still gave their run
+commands as `paper/<script>.jl`, and three cited archived-data paths
+(`data/bb3d_decks/eicdamp/`, `multiturn_deferred/README.md`) that now live
+in the paper repository — the exact stale-header class the example-update
+audit hit one day earlier (E1); the repo `.gitignore` carried a comment
+naming the removed directory. **In the paper repository:** the quickstart's
+`make_figures.py` step broke its own `sha256sum -c` step — regeneration
+rewrites PDF metadata, measured by byte comparison — so `SHA256SUMS` now
+covers the frozen inputs only and the README says why (`8fd96c2`).
+**Verified clean:** the eight `drivers/` write to the repository-root
+`result/` or stdout (no path assumed the old tree); the lambda scans'
+outputs are stdout by design (their TSVs were hand-transcribed,
+consistent with the U21-12 provenance caveat); repo-wide sweeps of both
+trees show no remaining live `paper/` references outside dated records; the
+Octopus gate ran green on the removal; `kick_decomposition.jl` ran
+end-to-end from `validation/` writing under `result/`.
+
 ## Octopus-side reference updates
 
 `validation/gaussian_pic_field_validation.jl`,

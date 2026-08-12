@@ -84,7 +84,8 @@ function measure_both(; aspect, xi_x = 0.005, turns = TURNS, n_macro = NMACRO,
 
     # Deterministic line (collision + linear map, no stochastic element), so
     # the per-turn execute! loop is safe here; see
-    # paper/data/multiturn_deferred/README.md.
+    # data/multiturn_deferred/README.md in the paper repository
+    # (https://github.com/xud929/2026_octopus_cpc).
     x1 = Vector{Float64}(undef, turns); x2 = similar(x1)
     y1 = similar(x1); y2 = similar(x1)
     for t in 1:turns

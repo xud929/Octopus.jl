@@ -10,14 +10,15 @@ benchmark: 20 warm-up turns discarded, 10 steady-state turns measured.
 The two execute! calls restart the task turn counter, which replays the
 stochastic stream in the profiled segment.  That changes the physics of those
 turns but not which kernels run or how long they take, and the profiled
-segment's physics is discarded.  (See paper/data/multiturn_deferred/README.md
+segment's physics is discarded.  (See data/multiturn_deferred/README.md in the paper repository,
+https://github.com/xud929/2026_octopus_cpc,
 for why the restart matters when physics IS the output.)
 
 Run (production point):
   OCTOPUS_USE_GPU=1 OCTOPUS_N_MACRO_ELE=2560000 OCTOPUS_N_MACRO_PRO=1024000 \
   OCTOPUS_DISABLE_MOMENTS=1 OCTOPUS_DISABLE_LUMINOSITY_OUTPUT=1 \
   PROF_WARMUP=20 PROF_TURNS=10 \
-  julia --startup-file=no --project=. paper/cuda_device_profile.jl
+  julia --startup-file=no --project=. profiling/cuda_device_profile.jl
 
 Do not run this while another job is using the GPU.
 =#

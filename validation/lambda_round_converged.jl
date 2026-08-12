@@ -17,7 +17,7 @@ Result archived in data/lambda_round_converged.tsv:
 against the printed Table 2 values 1.198 +- 0.004 and 1.206 +- 0.003.
 
 Run:
-  julia --threads=8 --startup-file=no --project=. paper/lambda_round_converged.jl
+  julia --threads=8 --startup-file=no --project=. validation/lambda_round_converged.jl
 =#
 
 ENV["OCTOPUS_LFC_ASPECT"] = get(ENV, "OCTOPUS_LFC_ASPECT", "1.0")

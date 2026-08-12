@@ -31,7 +31,7 @@ recorded numbers; the flat case (sig_x/sig_y = 11) is the new result.
 
 Run from this folder (CPU, ~2-4 min after compilation):
 
-    julia --startup-file=no --project=. paper/noise_floor_meshswap.jl
+    julia --startup-file=no --project=. validation/noise_floor_meshswap.jl
 
 Output: data/noise_floor_meshswap.tsv plus a printed table.
         (With the production mesh assignment: data/flat_beam_noise_floor.tsv.)

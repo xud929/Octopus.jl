@@ -22,7 +22,7 @@ recorded numbers; the flat case (sig_x/sig_y = 11) is the new result.
 
 Run from this folder (CPU, ~2-4 min after compilation):
 
-    julia --startup-file=no --project=. paper/kick_decomposition.jl
+    julia --startup-file=no --project=. validation/kick_decomposition.jl
 
 Output: data/flat_beam_noise_floor.tsv plus a printed table.
 =#
