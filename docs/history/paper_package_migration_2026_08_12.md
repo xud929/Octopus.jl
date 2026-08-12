@@ -64,6 +64,20 @@ trees show no remaining live `paper/` references outside dated records; the
 Octopus gate ran green on the removal; `kick_decomposition.jl` ran
 end-to-end from `validation/` writing under `result/`.
 
+*Second pass (the audit's own fixes audited):* checking `SHA256SUMS` against
+`git ls-files` in both directions found two second-order defects of the
+first pass's manifest fix — five `data/*.log` files were checksummed from
+disk but silently dropped from git by the `.gitignore` `*.log` rule (a
+fresh clone failed `sha256sum -c`), and four of them are the raw stdout
+transcripts behind hand-transcribed TSVs, the U21-12 no-machine-path class:
+the ignore rule was discarding provenance from an archival repository. The
+transcripts are now tracked and documented, the rule is narrowed to
+`manuscript/*.log`, and the manifest is generated FROM the tracked set, so
+manifest = fresh clone by construction (paper repo `17d7158`). On the
+Octopus side the pass added the missing run command to `emit_xcode.jl` (the
+one mover whose header never had one). The recursion terminated: the second
+pass's checks were re-run on its own output and found nothing further.
+
 ## Octopus-side reference updates
 
 `validation/gaussian_pic_field_validation.jl`,

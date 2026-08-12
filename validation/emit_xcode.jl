@@ -1,7 +1,11 @@
 # Emittance-evolution cross-check against BeamBeam3D (round and flat).
 # Same beam parameters as the coherent-mode benchmark deck; records the
 # per-turn geometric emittance of beam 1 so eps(turn) can be overlaid on
-# BeamBeam3D's fort.24 columns 7-8.
+# BeamBeam3D's fort.24 columns 7-8 (the decks and outputs are archived in
+# the paper repository, https://github.com/xud929/2026_octopus_cpc).
+# Writes emit_xcode_<tag>.tsv under result/. Run from the project root:
+#
+#   julia --startup-file=no --project=. validation/emit_xcode.jl
 include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
 mkpath(joinpath(@__DIR__, "..", "result"))
 using .Octopus
