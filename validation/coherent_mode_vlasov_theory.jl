@@ -701,7 +701,8 @@ const DRIFT_TOL = 1.0e-4        # |sigma drift| / xi
 not_modes = String[]
 mesh_limited = String[]
 open(joinpath(RESULT_DIR, "yokoya_vs_aspect.tsv"), "w") do io
-    # Numeric columns only: paper/make_figures.py parses every field with
+    # Numeric columns only: the paper repository's make_figures.py
+    # (https://github.com/xud929/2026_octopus_cpc) parses every field with
     # float(), so a status string here would break the figure pipeline. The
     # human-readable verdict goes to stdout; `is_mode` and `mesh_ok` carry it
     # here as 1/0.

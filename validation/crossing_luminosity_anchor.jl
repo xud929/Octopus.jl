@@ -5,7 +5,8 @@
 # and the 15-quantile-slice discrete sum (isolates slicing error).
 #
 # Error metric: relative difference of the measured luminosity ratio against
-# each reference. Paper-cited; paper/data/crossing_lum_anchor.tsv is the
+# each reference. Paper-cited; data/crossing_lum_anchor.tsv in the paper
+# repository (https://github.com/xud929/2026_octopus_cpc) is the
 # hand-transcribed copy.
 #
 # Run from the project root:

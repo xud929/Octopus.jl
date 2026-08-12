@@ -206,15 +206,17 @@ cases = [
     ("production_e ~11:1", 106.0e-6, 9.5e-6),
     ("25:1", 2.0e-3, 0.08e-3),
 ]
-# Default 48,64,128 (12 rows). The committed paper table
-# `paper/data/gaussian_pic_field_validation_summary.tsv` carries 24 rows at
+# Default 48,64,128 (12 rows). The archived paper table
+# `data/gaussian_pic_field_validation_summary.tsv` in the paper repository
+# (https://github.com/xud929/2026_octopus_cpc) carries 24 rows at
 # 48,64,96,128,192,256, so REGENERATING IT NEEDS THE OVERRIDE:
 #
 #   OCTOPUS_GPIC_GRIDS=48,64,96,128,192,256 julia --project=. --threads=4 \
 #       validation/gaussian_pic_field_validation.jl
 #
 # That override was recorded in neither this header, validation/README.md
-# nor paper/README.md, so the frozen figure could not be reproduced from
+# nor the package README (now the paper repository's), so the frozen figure
+# could not be reproduced from
 # the committed defaults (2026-08-05_b audit, U23-10).
 grids = Tuple(parse.(Int, split(get(ENV, "OCTOPUS_GPIC_GRIDS", "48,64,128"), ',')))
 

@@ -240,6 +240,10 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   machine-level findings — idle-thread spin, GC share, and why a pool wider
   than the data's parallelism costs rather than pays),
   [`weak_strong_cuda_luminosity_2026_08_11.md`](history/weak_strong_cuda_luminosity_2026_08_11.md),
+  [`paper_package_migration_2026_08_12.md`](history/paper_package_migration_2026_08_12.md)
+  (the `paper/` reproduction package moved to its own public repository —
+  what went where, the hard-coded-path finding in the claim verifier, and
+  the supersession relationship to the frozen submission snapshot),
   [`neighbour_audit_2026_08_11.md`](history/neighbour_audit_2026_08_11.md)
   (the campaign's targeted neighbour audit: the bitwise pin re-run at final
   HEAD, the no-full-array-D2H property walked to every per-turn diagnostic

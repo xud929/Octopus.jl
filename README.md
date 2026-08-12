@@ -168,6 +168,24 @@ OCTOPUS_RUN_GPU_CONTRACT=1 julia --project=. validation/tracking_backend_consist
 julia --threads=4 --project=. validation/strong_strong_pic_cache_backend_consistency.jl
 ```
 
+## Publication
+
+The methods paper — "A GPU-accelerated framework for multi-slice, multi-turn
+strong-strong beam-beam simulation" (submitted to Computer Physics
+Communications) — has its own repository:
+
+> https://github.com/xud929/2026_octopus_cpc
+
+It archives the manuscript, the frozen data behind every figure and table,
+the figure-generation and claim-verification tooling, and the paper-specific
+study drivers, pinned to the Octopus commit they ran against. Six paper-cited
+measurement scripts live in this repository under `validation/`
+(`lambda_round_converged.jl`, `lambda_flat_converged.jl`,
+`eic_emittance_benchmark.jl`, `emit_xcode.jl`, `noise_floor_meshswap.jl`,
+`kick_decomposition.jl`; see the "Paper Reproduction Drivers" section of
+`validation/README.md`), and the device-time profiling driver under
+`profiling/cuda_device_profile.jl`.
+
 ## Documentation Map
 
 - `AGENTS.md`: development rules for human and AI collaborators.

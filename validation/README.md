@@ -96,7 +96,8 @@ OCTOPUS_GPIC_GRIDS=48,64,96,128,192,256 \
     julia --project=. --threads=4 validation/gaussian_pic_field_validation.jl
 ```
 
-`paper/data/gaussian_pic_field_validation_summary.tsv` (Figure 2) carries 24
+`data/gaussian_pic_field_validation_summary.tsv` in the paper repository
+(https://github.com/xud929/2026_octopus_cpc; Figure 2) carries 24
 rows at 48/64/96/128/192/256, which the default 12-row sweep cannot produce.
 That override was recorded nowhere until the 2026-08-05_b audit (U23-10), so the
 frozen figure could not be regenerated from the committed defaults.
@@ -1024,8 +1025,9 @@ julia --startup-file=no --project=. validation/crossing_luminosity_anchor.jl
 ```
 
 Outputs, under `result/lum_anchor/`: `lum_headon.lum`, `lum_crossing.lum`,
-`lum_crab.lum`. `paper/data/crossing_lum_anchor.tsv` is a hand-transcribed copy
-for the paper.
+`lum_crab.lum`. `data/crossing_lum_anchor.tsv` in the paper repository
+(https://github.com/xud929/2026_octopus_cpc) is a hand-transcribed copy for
+the paper.
 
 `tune_estimator_calibration.jl` calibrates the coherent-mode tune estimator's
 Hann-window plus parabolic peak interpolation on synthetic two-tone signals
@@ -1038,3 +1040,36 @@ Writes no files -- the calibration table is the printed output.
 ```bash
 julia --startup-file=no --project=. validation/tune_estimator_calibration.jl
 ```
+
+## Paper Reproduction Drivers (migrated from `paper/`, 2026-08-12)
+
+Six paper-cited measurement scripts moved here when the reproduction package
+became its own repository (https://github.com/xud929/2026_octopus_cpc, which
+archives their frozen outputs and the manuscript). They live in `validation/`
+because each is a reusable correctness measurement, not merely a figure
+feeder; their run commands and reference models are in their headers. All
+write TSVs under `result/`.
+
+- `lambda_round_converged.jl` / `lambda_flat_converged.jl` — the Yokoya
+  factors of Table 2 re-measured at converged settings (8192 turns, 1e5
+  macroparticles/beam, three seeds), round (aspect 1.0) and flat (r = 0.09),
+  against the m=1 Vlasov matrix of `coherent_mode_vlasov_theory.jl`. The
+  round script sets the aspect and includes the flat one, so they move as a
+  pair.
+- `eic_emittance_benchmark.jl` — the EIC cross-code emittance benchmark
+  against BeamBeam3D (Table 3): head-on, crossing angle AND both crab
+  families zeroed, 15 slices, 128^2 mesh, damping shortened to 400 turns.
+  The BeamBeam3D decks and outputs are archived in the paper repository
+  under `data/bb3d_decks/`.
+- `emit_xcode.jl` — per-turn geometric emittance at the coherent-mode
+  benchmark point, for overlay on BeamBeam3D `fort.24`.
+- `noise_floor_meshswap.jl` — plain PIC at 64^2 against the hybrid at 128^2
+  at the production 11:1 aspect; also regenerates Table 1
+  (`flat_beam_noise_floor.tsv`) bit-for-bit with `picgrid`/`hybgrid` at the
+  production assignment.
+- `kick_decomposition.jl` — the systematic/fluctuation decomposition of the
+  flat-beam kick error (Sec. 4.1), with the Rademacher-bootstrap bias floor;
+  realization and bootstrap counts from `OCTOPUS_KD_R` / `OCTOPUS_KD_NBOOT`.
+
+The CUDA device-time decomposition driver (`cuda_device_profile.jl`, Table 6)
+moved to `profiling/` — it is a performance harness, not a validation.
