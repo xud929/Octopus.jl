@@ -32,6 +32,12 @@ const SEEDS = [parse(Int, s) for s in split(get(ENV, "OCTOPUS_LFC_SEEDS",
                                                "20260727,20260728,20260729"), ',')]
 const OUT = get(ENV, "OCTOPUS_LFC_OUT",
                 joinpath(@__DIR__, "..", "result", "lambda_flat_converged.tsv"))
+# One-at-a-time sensitivity knobs (paper Sec. "Coherent modes"): mesh,
+# initial offset (in units of sigma), and solver family. Defaults reproduce
+# the archived tables bit-for-bit.
+const LFC_GRID = parse(Int, get(ENV, "OCTOPUS_LFC_GRID", "128"))
+const LFC_OFFSET = parse(Float64, get(ENV, "OCTOPUS_LFC_OFFSET", "0.1"))
+const LFC_SOLVER = get(ENV, "OCTOPUS_LFC_SOLVER", "pic")
 
 # Identical estimator to validation/coherent_mode_scans.jl: Hann window,
 # parabolic interpolation of the peak bin.
@@ -61,7 +67,7 @@ function measure_both(; aspect, xi_x = 0.005, turns = TURNS, n_macro = NMACRO,
     # narrow-plane beam-beam parameter of the same configuration
     xi_y = npart * r0 * beta[2] / (2pi * gamma_rel * sigy * (sigx + sigy))
 
-    offset1 = (0.1 * sigx, 0.0, 0.1 * sigy, 0.0, 0.0, 0.0)
+    offset1 = (LFC_OFFSET * sigx, 0.0, LFC_OFFSET * sigy, 0.0, 0.0, 0.0)
     beam1 = Beam(n_macro, policy, Float64;
         beta = beta, alpha = (0.0, 0.0, 0.0), sigma = sigma, cutoff = 5.0,
         rng_id = 1, charge = -1.0, mc2 = EMASS_EV, E0 = energy, r0 = r0,
@@ -73,9 +79,19 @@ function measure_both(; aspect, xi_x = 0.005, turns = TURNS, n_macro = NMACRO,
 
     slicing = LongitudinalSlicing(; method = :normal_quantile, nslices = 1,
                                   center_position = :centroid)
-    solver = PICPoissonSolver(; slicing = slicing, grid = (128, 128),
-        deposit_method = :CIC, green_type = :integrated, green_cache = :slice_pair,
-        longitudinal_kick = false)
+    solver = if LFC_SOLVER == "pic"
+        PICPoissonSolver(; slicing = slicing, grid = (LFC_GRID, LFC_GRID),
+            deposit_method = :CIC, green_type = :integrated,
+            green_cache = :slice_pair, longitudinal_kick = false)
+    elseif LFC_SOLVER == "soft"
+        GaussianPoissonSolver(; slicing = slicing, longitudinal_kick = false)
+    elseif LFC_SOLVER == "hybrid"
+        GaussianPICPoissonSolver(; slicing = slicing, grid = (64, 64),
+            deposit_method = :CIC, green_type = :integrated,
+            longitudinal_kick = false)
+    else
+        error("OCTOPUS_LFC_SOLVER must be pic|soft|hybrid, got $(LFC_SOLVER)")
+    end
     ip = StrongStrongCollision(:ip; poisson_solver = solver)
     one_turn = Linear6DSpec{Float64}(;
         beta1 = beta, beta2 = beta, alpha1 = (0.0, 0.0, 0.0),
