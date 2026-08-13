@@ -199,7 +199,7 @@ end
 # measured the median of the total. This measures both, per mesh and per
 # deposition kernel, on identical sources.
 # ---------------------------------------------------------------------------
-function decompose(sigx, sigy; grid, method, n, R, seed)
+function decompose(sigx, sigy; grid, method, n, R, seed, dump_path = nothing)
     xg = collect(range(-4sigx, 4sigx; length = 81))
     yg = collect(range(-4sigy, 4sigy; length = 81))
     xf = Float64[]; yf = Float64[]
@@ -218,6 +218,22 @@ function decompose(sigx, sigy; grid, method, n, R, seed)
         kx, ky = pic_kicks(sx, sy, xf, yf; grid = grid, method = method)
         ex[:, r] .= kx .- kex
         ey[:, r] .= ky .- key
+    end
+    if dump_path !== nothing
+        # Per-realization error record for the POOLED (cross-ensemble)
+        # analysis: raw Float64, column-major (npoints, R) — realization r
+        # is one contiguous block of npoints values.  gnorm in the sidecar.
+        mkpath(dirname(dump_path))
+        open(dump_path * "_ex.bin", "w") do io
+            write(io, ex)
+        end
+        open(dump_path * "_ey.bin", "w") do io
+            write(io, ey)
+        end
+        open(dump_path * "_meta.tsv", "w") do io
+            println(io, "npoints\tR\tgnorm")
+            println(io, length(xf), '\t', R, '\t', gnorm)
+        end
     end
     bias = [hypot(sum(@view ex[k, :]) / R, sum(@view ey[k, :]) / R) for k in eachindex(xf)]
     fluc = [hypot(std(@view ex[k, :]), std(@view ey[k, :])) for k in eachindex(xf)]
@@ -288,8 +304,19 @@ open(OUT2, "w") do io
                 # +16.9..+19.3% over six fresh ensembles.  Parameterized so the
                 # spread across ensembles can be measured and quoted; the
                 # default reproduces the archived file bit-for-bit.
+                # OCTOPUS_KD_DUMP=<dir>: archive the per-realization errors
+                # for the CIC 64^2/256^2 cases the pooled Panel-B analysis
+                # needs (the submitted pooled statistics were computed from
+                # arrays that were never retained — U-class archival gap).
+                dump_dir = get(ENV, "OCTOPUS_KD_DUMP", "")
+                dump_path = (!isempty(dump_dir) && method == :CIC &&
+                             grid in (64, 256)) ?
+                    joinpath(dump_dir,
+                             "kd_seed$(KD_SEED)_$(fam)_$(grid)_$(method)") :
+                    nothing
                 b, f, t, fl, flr, flu = decompose(sx, sy; grid = grid, method = method,
-                                                  n = n, R = R, seed = KD_SEED)
+                                                  n = n, R = R, seed = KD_SEED,
+                                                  dump_path = dump_path)
                 @printf("%-7s %4d^2 %s n=%.0e  bias=%.3e  fluct=%.3e  total=%.3e\n",
                         fam, grid, method, n, b, f, t)
                 println(io, fam, "\t", grid, "\t", method, "\t", n, "\t", R,

@@ -35,12 +35,17 @@ crab_beta = (150.0, 30.0, beta[3])
 crab_freq = 100.0e6
 tunes = (0.31, 0.32, -0.005)
 nmacro = 200_000
-nslices = 15
+# Parameterized for the paper's robustness statements (five paired seeds;
+# the 1/7/15/31-slice x 128^2/256^2 grid scan); defaults reproduce the
+# archived single-seed anchor.
+nslices = parse(Int, get(ENV, "OCTOPUS_ANCHOR_NSLICES", "15"))
+anchor_seed = parse(Int, get(ENV, "OCTOPUS_ANCHOR_SEED", "20260728"))
+anchor_grid = parse(Int, get(ENV, "OCTOPUS_ANCHOR_GRID", "128"))
 energy = 10.0e9
 npart_small = 1.0e8                   # xi ~ 1e-5: geometry test, not dynamics
 
 function run_config(tag; angle, crab)
-    set_global_rng!(seed = 20260728, method = :philox)
+    set_global_rng!(seed = anchor_seed, method = :philox)
     policy = CPUThreadsExecutionPolicy()
     gr = energy / EMASS_EV
     r0 = RE * ME0 / EMASS_EV
@@ -53,7 +58,7 @@ function run_config(tag; angle, crab)
 
     sl = LongitudinalSlicing(; method = :normal_quantile, nslices = nslices,
         center_position = :centroid)
-    solver = PICPoissonSolver(; slicing = sl, grid = (128, 128),
+    solver = PICPoissonSolver(; slicing = sl, grid = (anchor_grid, anchor_grid),
         deposit_method = :CIC, green_type = :integrated,
         longitudinal_kick = true)
     ip = StrongStrongCollision(:ip; poisson_solver = solver)
