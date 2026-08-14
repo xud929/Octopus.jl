@@ -312,12 +312,20 @@ _collect_spec_s!(out, elements::Tuple, s, K::Val) =
     (foreach(e -> _collect_spec_s!(out, e, s, K), elements); out)
 _collect_spec_s!(out, elements::AbstractVector, s, K::Val) =
     (foreach(e -> _collect_spec_s!(out, e, s, K), elements); out)
+# `K` may be one kind or a tuple of kinds; a tuple-matched walk keeps LINE
+# ORDER for zero-length elements at the same arc position, where an s-sort of
+# two single-kind walks interleaves ties arbitrarily (caught by the cavity
+# chain: an accelerating cavity and a ring cavity at one s swapped, and the
+# chain read a gain that had not happened yet).
+@inline _kind_matches(EK::Symbol, K::Symbol) = EK === K
+@inline _kind_matches(EK::Symbol, K::Tuple) = EK in K
+
 function _collect_spec_s!(out, element::ElementSpec{EK}, s, ::Val{K}) where {EK,K}
     # The third slot carries the matched spec/entry itself: the cavity survey
     # needs only lengths, but the accelerating-cavity chain validation reads
     # declared parameters, and a second traversal would be the two-walker
     # divergence T3 exists to forbid.
-    EK === K && push!(out, (s[], _placement_length(element), element))
+    _kind_matches(EK, K) && push!(out, (s[], _placement_length(element), element))
     # `_placement_length` so a bare own-state line spec in a task tuple
     # contributes its contents' length, not zero (U11-1).
     s[] += _placement_length(element)
@@ -325,7 +333,9 @@ function _collect_spec_s!(out, element::ElementSpec{EK}, s, ::Val{K}) where {EK,
 end
 function _collect_spec_s!(out, entry::LineEntry, s, ::Val{K}) where {K}
     spec = getfield(entry, :spec)
-    spec isa ElementSpec{K} && push!(out, (s[], _placement_length(entry), entry))
+    spec isa AbstractElementSpec && spec isa ElementSpec &&
+        _kind_matches(kind(spec), K) &&
+        push!(out, (s[], _placement_length(entry), entry))
     # `_placement_length`, not a raw `:L` read: a nested own-state line
     # counted as zero length here, shifting every later aperture_s (U11-1).
     s[] += _placement_length(entry)
@@ -413,6 +423,16 @@ execute!(task::TrackingTask, beam::Beam; turns::Integer=1, start_turn=nothing) =
 function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     nturns, first_turn, next_turn =
         _task_execution_window(task.next_turn[], turns, start_turn)
+    if (nturns > 1 || first_turn != 0) && _has_accelerating_cavity(task.elements)
+        throw(ArgumentError(
+            "this line contains an accelerating cavity and the requested " *
+            "window (turns = $(nturns), starting at turn $(first_turn)) " *
+            "re-traverses it: the second pass would track against a stale " *
+            "reference energy, silently. An accelerating line is " *
+            "SINGLE-PASS -- execute exactly one turn from turn 0, or unroll " *
+            "multipass recirculation per " *
+            "docs/design/survey_and_reference_channel.md."))
+    end
     runtime_entries = _runtime_entries(task, rep)
     runtime_elems = _physics_line(runtime_entries)
     policy = _resolve_execution_policy(task.policy, rep)
@@ -815,8 +835,10 @@ function _bind_survey(entries::Tuple, elements)
         ds[i] = kicks[i] - kicks[i-1]
     end
     n > 0 && (ds[1] = total - kicks[n] + kicks[1])
+    ents = [p[3] for p in pairs]
     id = Ref(0)
-    bound = map(entry -> _bind_survey_entry(entry, kicks, ds, id), entries)
+    bound = map(entry -> _bind_survey_entry(entry, kicks, ds, ents, total, id),
+                entries)
     id[] == n || error(
         "the survey walk found $(n) thin_rf_cavity spec(s) but the compiled " *
         "line contains $(id[]); a cavity is sitting inside a kept-whole " *
@@ -825,25 +847,39 @@ function _bind_survey(entries::Tuple, elements)
     return bound
 end
 
-_bind_survey_entry(entry::PhysicsEntry, kicks, ds, id) =
-    PhysicsEntry(_survey_rebind(entry.element, kicks, ds, id))
-_bind_survey_entry(entry, kicks, ds, id) = entry
+_bind_survey_entry(entry::PhysicsEntry, kicks, ds, ents, total, id) =
+    PhysicsEntry(_survey_rebind(entry.element, kicks, ds, ents, total, id))
+_bind_survey_entry(entry, kicks, ds, ents, total, id) = entry
 
-_survey_rebind(op, kicks, ds, id) = op
-function _survey_rebind(op::ThinRFCavity, kicks, ds, id)
+_survey_rebind(op, kicks, ds, ents, total, id) = op
+function _survey_rebind(op::ThinRFCavity, kicks, ds, ents, total, id)
     i = (id[] += 1)
     # Out of range: more compiled cavities than surveyed specs. Return the op
     # unbound; the caller's count check reports the mismatch with its cause.
     i <= length(kicks) || return op
-    return _attach_survey(op, ds[i])
+    k = op.k
+    if isnan(k)
+        # A harmon cavity: the frequency resolves HERE, against the walked
+        # total arc length -- "the line knows C" (theory note Sec. 6, harmon).
+        # f = h*beta0*c/C, so k = 2pi*f/c = 2pi*h*beta0/C.
+        h = getparam(ents[i], :harmon, nothing)
+        h === nothing && throw(ArgumentError(
+            "cavity $(i) compiled with no frequency and declares no harmon; " *
+            "the spec constructor should have refused this"))
+        total > 0 || throw(ArgumentError(
+            "ThinRFCavitySpec(harmon=$(h)) needs a line with nonzero arc " *
+            "length to resolve its frequency; this line's total is $(total)"))
+        k = 2 * pi * h * op.beta0 / total
+    end
+    return _attach_survey(op, ds[i], k)
 end
-_survey_rebind(op::CompositeLine, kicks, ds, id) =
-    CompositeLine(map(o -> _survey_rebind(o, kicks, ds, id), op.ops))
-_survey_rebind(op::MisalignedElement, kicks, ds, id) =
-    MisalignedElement(_survey_rebind(op.inner, kicks, ds, id),
+_survey_rebind(op::CompositeLine, kicks, ds, ents, total, id) =
+    CompositeLine(map(o -> _survey_rebind(o, kicks, ds, ents, total, id), op.ops))
+_survey_rebind(op::MisalignedElement, kicks, ds, ents, total, id) =
+    MisalignedElement(_survey_rebind(op.inner, kicks, ds, ents, total, id),
                       op.qin, op.oin, op.qout, op.oout)
-_survey_rebind(op::RefTilted, kicks, ds, id) =
-    RefTilted(_survey_rebind(op.inner, kicks, ds, id), op.c, op.s)
+_survey_rebind(op::RefTilted, kicks, ds, ents, total, id) =
+    RefTilted(_survey_rebind(op.inner, kicks, ds, ents, total, id), op.c, op.s)
 
 """
 Validate the declared reference-energy chain of a line's accelerating
@@ -860,31 +896,58 @@ declare, which is the energy half of the survey channel in the ownership the
 design note chose (declare-and-check, not store-and-repair).
 """
 function _validate_reference_chain(elements)
-    triples = Tuple{Float64,Float64,Any}[]
-    _collect_spec_s!(triples, elements, Ref(0.0), Val(:thin_accelerating_cavity))
-    length(triples) < 2 && return nothing
-    prev_gamma = nothing
+    events = Tuple{Float64,Float64,Any}[]
+    _collect_spec_s!(events, elements, Ref(0.0),
+                     Val((:thin_rf_cavity, :thin_accelerating_cavity)))
+    length(events) < 2 && return nothing
+    # Every cavity of either kind declares a reference; in one line they are
+    # views of ONE energy profile, so they must compose in s-order: a ring
+    # cavity must MATCH the local reference (it does not change it), an
+    # accelerating cavity must match and then advance it. This also closes
+    # the older quiet hole of two ring cavities declaring different
+    # references in one lattice -- the two-E0 mistake Sec. 6a of the theory
+    # note exists to make unrepresentable.
+    running = nothing
     prev_s = 0.0
-    for (i, (s, L, ent)) in enumerate(triples)
-        b0 = Float64(getparam(ent, :beta0))
+    for (i, (s, L, ent)) in enumerate(events)
+        spec = ent isa LineEntry ? getfield(ent, :spec) : ent
+        ckind = kind(spec) === :thin_accelerating_cavity ? :accelerating : :ring
         g0 = Float64(getparam(ent, :gamma0))
-        if prev_gamma !== nothing
-            rel = abs(g0 - prev_gamma) / prev_gamma
+        if running !== nothing
+            rel = abs(g0 - running) / running
             rel <= 1.0e-10 || throw(ArgumentError(
-                "accelerating-cavity reference chain broken at cavity $(i) " *
-                "(s = $(s)): it declares entry gamma0 = $(g0), but the " *
-                "previous cavity (s = $(prev_s)) exits at gamma = " *
-                "$(prev_gamma). Renormalize the downstream cavity to the " *
-                "chain's local reference; elements carry ratios, and the " *
-                "line only checks that the declared ratios compose."))
+                "cavity reference chain broken at the $(ckind) cavity at " *
+                "s = $(s) (cavity $(i) of $(length(events))): it declares " *
+                "gamma0 = $(g0), but the chain's local reference there is " *
+                "gamma = $(running) (set at s = $(prev_s)). Renormalize the " *
+                "cavity to the local reference; elements carry ratios, and " *
+                "the line only checks that the declared ratios compose."))
         end
-        _, g1 = _accelerating_exit_pair(Float64(getparam(ent, :strength)),
-                                        Float64(getparam(ent, :phase, 0.0)),
-                                        b0, g0)
-        prev_gamma = g1
+        if ckind === :accelerating
+            _, g1 = _accelerating_exit_pair(Float64(getparam(ent, :strength)),
+                                            Float64(getparam(ent, :phase, 0.0)),
+                                            Float64(getparam(ent, :beta0)), g0)
+            running = g1
+        else
+            running = g0
+        end
         prev_s = s
     end
     return nothing
+end
+
+"""
+A closed ring cannot contain an accelerating cavity: re-traversing one
+re-applies a reference-energy step whose exit reference the lattice's
+declarations do not carry, so the second pass is tracked against a wrong
+reference with no error anywhere downstream. Refused loudly at `execute!`
+whenever more than a single first pass is requested; multipass recirculation
+is the knob-per-pass unrolling of the design note, not repetition.
+"""
+function _has_accelerating_cavity(elements)
+    acc = Tuple{Float64,Float64,Any}[]
+    _collect_spec_s!(acc, elements, Ref(0.0), Val(:thin_accelerating_cavity))
+    return !isempty(acc)
 end
 
 function _runtime_line_entries(elements)

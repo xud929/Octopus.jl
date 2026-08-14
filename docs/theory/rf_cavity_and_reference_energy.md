@@ -388,5 +388,13 @@ ambiguity.
    normalized strength and no energy at all** (§6a). `BeamParams.E0` is the one
    source of truth, it is read only at setup to derive the strength, and
    tracking never sees it. Two energies could disagree; a ratio cannot.
-3. Is a `harmon` that cannot be resolved without a line an error, or should the
-   cavity simply require `frequency` until lines carry a circumference?
+3. ~~Is a `harmon` that cannot be resolved without a line an error, or should
+   the cavity simply require `frequency` until lines carry a circumference?~~
+   **Settled (2026-08-14): both, in sequence.** `ThinRFCavitySpec(harmon=h)`
+   stores the harmonic number and no frequency; when a task compiles the
+   line, `_bind_survey` — which already walks the total arc for the
+   velocity-slip channel — resolves `f = h·β₀c/C` and fills the runtime `k`,
+   making the survey channel the line-length consumer §6 predicted. A harmon
+   cavity compiled *bare* has `k = NaN` and its kick refuses with a static
+   message rather than guessing, exactly the "must throw rather than guess"
+   this item asked for. Exactly one of `frequency`/`harmon` may be given.

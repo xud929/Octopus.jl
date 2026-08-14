@@ -3009,6 +3009,83 @@ end
         voltage=-0.9999e9, e0=1.0e9, mc2=PMASS_EV)
 end
 
+@testset "Cavity chain composition, single-pass refusal, harmon resolution" begin
+    # Closures of the Scope B ledger (2026-08-14): the chain now validates
+    # EVERY cavity kind against the local reference, an accelerating line
+    # refuses re-traversal, and harmon resolves against the line's
+    # circumference through the survey channel (theory note Sec. 9 item 3).
+    E0, V, mc2 = 1.0e9, 25.0e6, EMASS_EV
+    acc(e) = ThinAcceleratingCavitySpec(1.3e9; voltage=V, e0=e, mc2=mc2)
+    rfc(e) = ThinRFCavitySpec(2.99792458e6; voltage=1.0e5, e0=e, mc2=mc2)
+
+    # A ring cavity mid-chain is a view of the same energy profile: it must
+    # match the local reference where it sits, entry to derived exit.
+    good = (rfc(E0), DriftSpec(L=1.0), acc(E0), DriftSpec(L=1.0),
+            rfc(E0 + V), acc(E0 + V))
+    Octopus._runtime_entries(TrackingTask(good))
+    bad = (rfc(E0), DriftSpec(L=1.0), acc(E0), DriftSpec(L=1.0), rfc(E0))
+    err = try
+        Octopus._runtime_entries(TrackingTask(bad))
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("ring cavity", sprint(showerror, err))
+    # ...and two ring cavities declaring different references in one lattice
+    # -- the two-E0 mistake, previously quiet -- now refuse even with no
+    # accelerating cavity anywhere.
+    err2 = try
+        Octopus._runtime_entries(TrackingTask((rfc(E0), DriftSpec(L=1.0),
+                                               rfc(2 * E0))))
+        nothing
+    catch e
+        e
+    end
+    @test err2 isa ArgumentError && occursin("chain broken", sprint(showerror, err2))
+
+    # An accelerating line is single-pass: multi-turn windows and
+    # continuations refuse rather than track a second pass against a stale
+    # reference.
+    t = TrackingTask((DriftSpec(L=1.0), acc(E0)))
+    rep = Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0])
+    execute!(t, rep; turns=1)
+    @test_throws ArgumentError execute!(t, rep; turns=1)      # continuation
+    t2 = TrackingTask((DriftSpec(L=1.0), acc(E0)))
+    @test_throws ArgumentError execute!(t2, rep; turns=2)     # window
+
+    # harmon: f = h*beta0*c/C resolved at bind. The harmonic-1 ring must
+    # match the explicit-frequency ring built from the same C.
+    C = 100.0
+    b0, g0 = reference_beta_gamma(2.5e9, PMASS_EV)
+    m = [1.0 0 0 0 0 0; 0 1.0 0 0 0 0; 0 0 1.0 0 0 0; 0 0 0 1.0 0 0;
+         0 0 0 0 1.0 -0.2*C; 0 0 0 0 0 1.0]
+    hring = TrackingTask((DriftSpec(L=C), Linear6DSpec(matrix=m),
+                          ThinRFCavitySpec(; harmon=1, voltage=1.0e6,
+                                           e0=2.5e9, mc2=PMASS_EV)))
+    fring = TrackingTask((DriftSpec(L=C), Linear6DSpec(matrix=m),
+                          ThinRFCavitySpec(b0 * CLIGHT / C; voltage=1.0e6,
+                                           e0=2.5e9, mc2=PMASS_EV)))
+    zh = Float64[]; zf = Float64[]
+    reph = Phase6DRep([0.0], [0.0], [0.0], [0.0], [1e-3], [0.0])
+    repf = Phase6DRep([0.0], [0.0], [0.0], [0.0], [1e-3], [0.0])
+    for _ in 1:64
+        execute!(hring, reph; turns=1); push!(zh, reph.z[1])
+        execute!(fring, repf; turns=1); push!(zf, repf.z[1])
+    end
+    @test isapprox(zh, zf; rtol=1e-12)
+    # A bare-compiled harmon cavity has no circumference: NaN k, and the
+    # kick refuses with a static message rather than tracking garbage.
+    hcav = Octopus.ThinRFCavity(ThinRFCavitySpec(; harmon=1, voltage=1.0e6,
+                                                 e0=2.5e9, mc2=PMASS_EV))
+    @test isnan(hcav.k)
+    @test_throws ErrorException hcav(0.0, 0.0, 0.0, 0.0, 1e-3, 0.0)
+    # Exactly one of frequency/harmon.
+    @test_throws ArgumentError ThinRFCavitySpec(; frequency=1e6, harmon=2,
+        voltage=1.0e6, e0=2.5e9, mc2=PMASS_EV)
+    @test_throws ArgumentError ThinRFCavitySpec(; harmon=-1, voltage=1.0e6,
+        e0=2.5e9, mc2=PMASS_EV)
+end
+
 @testset "CUDA surveyed cavity matches CPU bit for bit" begin
     # The slip-corrected kick is a new branch reachable from the fused CUDA
     # kernels (AGENTS.md: every branch must compile as device IR), and the

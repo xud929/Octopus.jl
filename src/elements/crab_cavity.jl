@@ -63,6 +63,18 @@ pz -= (strengthX[i]*x + strengthY[i]*y) * cos(i*kcc*z + phase[i])
 ```
 
 for `i = 1:N`, leaving `x`, `y`, and `z` unchanged.
+
+**Model boundary — the phase reads `z`, not arrival time.** Two effects are
+deliberately absent, both assessed 2026-08-14 (F16 neighbour walk): the
+`β` factor between `z` and `z₁ = z/β` (recorded below at 4.6e-3 rad for
+2.5 GeV/7 mm), and the velocity slip accumulated since the ring cavity's
+per-turn correction, `Δs·(β/β₀ − 1)` with `Δs < C`. At production crab
+parameters the slip is negligible — EIC 275 GeV proton: 1.8e-4 rad of
+crabbing phase (7.4e-4 of `k·σ_z`), far below RF phase-control tolerance;
+10 GeV electron: 8e-8 rad. It matters only in the moderate-energy regime
+F16 itself lived in (2.5 GeV, C = 100 m: 0.118 rad), where no crab
+operates; the survey channel and `_velocity_slip_g` stand ready if one
+ever does.
 """
 struct ThinCrabCavity{N,M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M

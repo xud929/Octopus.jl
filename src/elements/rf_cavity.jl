@@ -137,6 +137,10 @@ by construction (Section 2). The composition therefore is.
     # `_misalignment_wrap` and `_ref_tilt_wrap` both set the precedent of
     # returning the input untouched when there is no effect to apply.
     iszero(elem.strength) && return (x, px, y, py, z, pz)
+    # Static message, so the branch compiles as device IR (AGENTS.md rule).
+    isnan(elem.k) && error("ThinRFCavitySpec(harmon=...) has no frequency until \
+a task line's circumference resolves it; compile through a TrackingTask, or \
+give frequency= for standalone use")
     # Survey-bound (F16 closure): the velocity slip enters as a symplectic
     # z-SHIFT before the kick, never as an `s` argument to the conversion.
     # The convention-#3 coordinate is a path deficit and physically does not
@@ -289,17 +293,50 @@ end
 
 """
     ThinRFCavitySpec(; frequency, ...)
+    ThinRFCavitySpec(; harmon, ...)
 
 Keyword form. Same element; exists because reflection builds every kind by
 keyword alone, and because a spec rebuilt from `parameter_schema` should round
 trip.
+
+`harmon` is the alternative to `frequency`: the harmonic number `h`, with
+`f = h·β₀c/C` resolved against the line's circumference **when a task
+compiles the line** (the survey channel already walks the total arc — the
+theory note's "the line knows C"). A harmon cavity compiled bare has no
+circumference to resolve against and throws at its first kick rather than
+guessing (§9 item 3's answer). Exactly one of `frequency`/`harmon` may be
+given.
 """
-ThinRFCavitySpec(; frequency, kwargs...) = ThinRFCavitySpec(frequency; kwargs...)
+function ThinRFCavitySpec(; frequency=nothing, harmon=nothing, kwargs...)
+    if harmon !== nothing
+        frequency === nothing || throw(ArgumentError(
+            "give either `frequency` (Hz) or `harmon` (harmonic number, " *
+            "resolved against the line's circumference at task compile), " *
+            "not both"))
+        harmon > 0 || throw(ArgumentError("harmon must be positive, got $harmon"))
+        # The frequency checks are deferred to the bind; everything else --
+        # strength derivation, the reference-pair refusal -- is shared by
+        # constructing at a positive placeholder frequency and swapping the
+        # stored parameters, so the two forms cannot drift apart.
+        spec = ThinRFCavitySpec(1.0; kwargs...)
+        p = getfield(spec, :params)
+        delete!(p, :frequency)
+        p[:harmon] = harmon
+        return spec
+    end
+    frequency === nothing && throw(ArgumentError(
+        "ThinRFCavitySpec needs `frequency` (Hz) or `harmon`"))
+    return ThinRFCavitySpec(frequency; kwargs...)
+end
 
 function ThinRFCavity(spec::ElementSpec{:thin_rf_cavity},
                   method::AbstractTrackingMethod=tracking_method(spec))
     T = numeric_type(spec)
-    k = T(2) * T(pi) * T(param(spec, :frequency)) / T(CLIGHT)
+    f = getparam(spec, :frequency, nothing)
+    # A harmon cavity has no frequency until a line's circumference resolves
+    # it: k stays NaN out of a bare compile, `_bind_survey` fills it, and the
+    # kick refuses to run on NaN rather than track garbage (Sec. 9 item 3).
+    k = f === nothing ? T(NaN) : T(2) * T(pi) * T(f) / T(CLIGHT)
     return ThinRFCavity{typeof(method),T}(
         method, T(param(spec, :strength)), k, T(getparam(spec, :phase, 0)),
         T(getparam(spec, :L, 0)), T(param(spec, :beta0)), T(param(spec, :gamma0)),
@@ -314,8 +351,9 @@ Rebuild the runtime cavity with its survey value bound. Called by
 never by users. Rebuilding rather than mutating keeps the compiled op
 immutable and `isbits`, which the CUDA kernels require.
 """
-_attach_survey(elem::ThinRFCavity{M,T}, ds_turn::Real) where {M,T} =
-    ThinRFCavity{M,T}(elem.method, elem.strength, elem.k, elem.phase, elem.L,
+_attach_survey(elem::ThinRFCavity{M,T}, ds_turn::Real,
+               k::Real=elem.k) where {M,T} =
+    ThinRFCavity{M,T}(elem.method, elem.strength, T(k), elem.phase, elem.L,
                       elem.beta0, elem.gamma0, T(ds_turn))
 
 _has_survey(elem::ThinRFCavity) = !isnan(elem.ds_turn)
@@ -331,7 +369,8 @@ _has_survey(elem::ThinRFCavity) = !isnan(elem.ds_turn)
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
-        frequency=ParamMeta(required=true, unit="Hz", meaning="RF frequency, in Hz as ThinCrabCavity takes it and not MAD-X's MHz"),
+        frequency=ParamMeta(default=nothing, unit="Hz", meaning="RF frequency, in Hz as ThinCrabCavity takes it and not MAD-X's MHz. Give frequency OR harmon; a harmon spec stores no frequency at all"),
+        harmon=ParamMeta(default=nothing, meaning="harmonic number h, the alternative to frequency: f = h*beta0*c/C is resolved against the line's total arc length when a task compiles the line (the survey channel). A harmon cavity compiled bare throws at its first kick rather than guess a circumference"),
         strength=ParamMeta(required=true, meaning="dimensionless kick qV/(P0 c): the change in p_t per unit sin. Derived from voltage and e0 by the friendly constructor, so no absolute energy is stored on the element and nothing can disagree with BeamParams.E0"),
         phase=ParamMeta(default=0, unit="rad", meaning="RF phase in radians, entering as the additive `k*z1 + phase` with z1 the TIME_ENERGY coordinate (z/beta in the tracked convention; coincides with ThinCrabCavity's k*z only at beta = 1). phase = 0 gives no net acceleration, which is a ring's natural zero; an accelerating cavity is a different element with a different zero"),
         beta0=ParamMeta(required=true, meaning="reference velocity, dimensionless. Needed by the coordinate conversions and by the energy-to-momentum factor; it is what distinguishes a proton ring from an electron ring and what the ultrarelativistic approximation throws away"),
@@ -341,7 +380,7 @@ _has_survey(elem::ThinRFCavity) = !isnan(elem.ds_turn)
         _PLACEMENT_PARAMS...,
     )
     example = ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV)
-    construction_help = "Friendly constructor: ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=Symplectic6DMap()). A THIN RF cavity WITHOUT acceleration -- Bmad's rfcavity, not its lcavity -- so the reference energy is constant through it and phase = 0 is no net acceleration. Thin means ONE localised kick: L buys drift space so the cavity occupies its proper arc length, but there is no transit-time factor and no RF focusing, the same standing as ThinCrabCavity and ThinMultipole. THIRD model boundary, CONDITIONAL since the F16 closure (2026-08-14): a cavity compiled BARE -- outside a task line -- has no velocity-slip term, so a ring it closes has slip factor alpha_c alone, missing -1/gamma0^2 (the recorded 1.84x synchrotron-tune error at a 2.5 GeV proton with alpha_c = 0.2, and the wrong side of transition whenever alpha_c < 1/gamma0^2). A cavity compiled THROUGH A TASK LINE is bound to the geometric survey and applies the exact velocity slip as a symplectic z-shift ds_turn*(beta/beta0 - 1) before its kick, closing the ring with the full eta = alpha_c - 1/gamma0^2 on every path and backend; a cavity hidden inside a kept-whole own-state sub-line is refused loudly at compile rather than silently left uncorrected. Physics: docs/theory/arc_survey_and_velocity_slip.md. Frequency in Hz and phase in radians, matching ThinCrabCavity so that `phase` means one thing across every RF element. The energy is an ARGUMENT and not a field: voltage and e0 are reduced to a dimensionless strength at construction, so nothing on the element can disagree with BeamParams.E0. The body is written in the TIME_ENERGY convention and conjugated back by convert_longitudinal, which is why there is no beta factor in it. Design: docs/theory/rf_cavity_and_reference_energy.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=Symplectic6DMap()); keyword-only alternative ThinRFCavitySpec(harmon=h; ...) stores the harmonic number instead of a frequency -- f = h*beta0*c/C resolves against the line's total arc length when a task compiles the line, and a harmon cavity compiled bare throws at its first kick rather than guess a circumference (give exactly one of frequency/harmon). A THIN RF cavity WITHOUT acceleration -- Bmad's rfcavity, not its lcavity -- so the reference energy is constant through it and phase = 0 is no net acceleration. Thin means ONE localised kick: L buys drift space so the cavity occupies its proper arc length, but there is no transit-time factor and no RF focusing, the same standing as ThinCrabCavity and ThinMultipole. THIRD model boundary, CONDITIONAL since the F16 closure (2026-08-14): a cavity compiled BARE -- outside a task line -- has no velocity-slip term, so a ring it closes has slip factor alpha_c alone, missing -1/gamma0^2 (the recorded 1.84x synchrotron-tune error at a 2.5 GeV proton with alpha_c = 0.2, and the wrong side of transition whenever alpha_c < 1/gamma0^2). A cavity compiled THROUGH A TASK LINE is bound to the geometric survey and applies the exact velocity slip as a symplectic z-shift ds_turn*(beta/beta0 - 1) before its kick, closing the ring with the full eta = alpha_c - 1/gamma0^2 on every path and backend; a cavity hidden inside a kept-whole own-state sub-line is refused loudly at compile rather than silently left uncorrected. Physics: docs/theory/arc_survey_and_velocity_slip.md. Frequency in Hz and phase in radians, matching ThinCrabCavity so that `phase` means one thing across every RF element. The energy is an ARGUMENT and not a field: voltage and e0 are reduced to a dimensionless strength at construction, so nothing on the element can disagree with BeamParams.E0. The body is written in the TIME_ENERGY convention and conjugated back by convert_longitudinal, which is why there is no beta factor in it. Design: docs/theory/rf_cavity_and_reference_energy.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
 
 # ---------------------------------------------------------------------------

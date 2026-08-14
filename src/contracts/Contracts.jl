@@ -2454,6 +2454,7 @@ const CARRIED_ELEMENT_PARAMS = Dict{Symbol,String}(
 
 const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:drift, :nst) => "the drift is exact, so there are no integration steps",
+    (:thin_rf_cavity, :harmon) => "consumed at TASK BIND, not at the bare compile this probe uses: the harmonic number resolves to a frequency against the line's circumference in _bind_survey, and a bare-compiled harmon cavity deliberately refuses to track at all. Effectiveness is pinned instead by the harmon-vs-explicit-frequency ring identity testset",
     (:drift, :integrator_order) => "the drift is exact, so there is nothing to split",
     (:marker, :tracking_method) => "a marker is the identity under every method",
     (:line, :L) => "survey metadata, not tracking input: consumed by the arc-length walkers (s_positions, total_length, aperture_s and the misaligned-parent survey), not by the coordinate map this contract measures — declared by the 2026-08-05 campaign so nested own-state lines survey at their real length",
