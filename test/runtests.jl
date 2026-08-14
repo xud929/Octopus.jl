@@ -3086,6 +3086,50 @@ end
         e0=2.5e9, mc2=PMASS_EV)
 end
 
+@testset "knob_report over a container reports the wiring" begin
+    # The container-scoped overload (2026-08-14): the registry view lists the
+    # knob NAMESPACE; this one answers what a knob actually drives in a given
+    # line -- both directions, expression text and evaluated value per site,
+    # derived on demand from the specs (never registered, so never stale).
+    # Reference designs measured first: Tao's lord/slave tables and Xsuite's
+    # xdeps controlled_targets; MAD-X has forward only, elegant neither.
+    @knob krw_report.bus::Float64 = 2.0
+    @knob krw_report.trim::Float64 = 0.1
+    qf = ElementSpec{:quadrupole}(; L=0.4,
+                                  kn=(0.0, @knob_expr(0.5 * krw_report.bus)))
+    qd = ElementSpec{:quadrupole}(; L=0.4, kn=(0.0, -0.3))
+    line = BeamLine("krwline", qf, DriftSpec(L=1.0), qd)
+    # the trim-supply pattern: an OVERRIDE that is an expression
+    Octopus.line_entries(line)[3].kn =
+        (0.0, @knob_expr(-0.5 * krw_report.bus + krw_report.trim))
+    buf = IOBuffer()
+    knob_report(line; io=buf)
+    out = String(take!(buf))
+    @test occursin("By knob:", out) && occursin("By site:", out)
+    @test occursin("krwline/QUADRUPOLE :: kn[2] = 0.5 * krw_report.bus  (= 1.0)",
+                   out)
+    @test occursin("krwline/QUADRUPOLE[2]", out)     # override site, by path
+    @test occursin("krw_report.trim", out)
+    # a bare KnobRef binding is a wiring edge to that knob (knob_dependencies
+    # reports a ref's OWN deps, empty for an independent knob; the report
+    # must not lose the site)
+    knob_report((ElementSpec{:multipole}(; L=0.3,
+                     kn=(0.0, @knob_expr(krw_report.bus), 8.0)),); io=buf)
+    tup = String(take!(buf))
+    @test occursin("elements[1] (multipole) :: kn[2] = krw_report.bus", tup)
+    @test occursin("[knobs: krw_report.bus]", tup)
+    # prefix keeps only sites reading a matching knob
+    knob_report(line; prefix="krw_report.trim", io=buf)
+    filtered = String(take!(buf))
+    @test occursin("QUADRUPOLE[2]", filtered)
+    @test !occursin("kn[2] = 0.5 *", filtered)
+    # loud empties
+    knob_report((DriftSpec(L=1.0),); io=buf)
+    @test occursin("No knob-driven parameters", String(take!(buf)))
+    knob_report(line; prefix="krw_report.nosuch", io=buf)
+    @test occursin("No knob-driven parameters under", String(take!(buf)))
+end
+
 @testset "CUDA surveyed cavity matches CPU bit for bit" begin
     # The slip-corrected kick is a new branch reachable from the fused CUDA
     # kernels (AGENTS.md: every branch must compile as device IR), and the

@@ -868,6 +868,12 @@ end
 Print every registered knob (optionally under a namespace prefix): its current
 value (or `unset`/`pending`), its defining expression for dependent knobs, and
 its direct dependents.
+
+This is the **registry** view — the knob namespace. It deliberately does not
+know which element parameters hold expressions: for that, hand a container to
+`knob_report(elements; ...)` (defined with the beam line machinery), the
+**wiring** view that walks the given line/tuple and reports what each knob
+actually drives. `docs/knob_control.md` §2a has the split and its reasons.
 """
 function knob_report(; prefix::AbstractString="", io::IO=stdout)
     paths = list_knobs(prefix)

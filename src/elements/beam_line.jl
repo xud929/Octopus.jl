@@ -768,3 +768,136 @@ end
     example = BeamLine("CELL", QuadrupoleSpec(L=0.4, k1=1.7, nst=2))
     construction_help = "Friendly constructor: BeamLine(name, children...; tags=(), kwargs...); children may be element specs, other lines, in-line hooks, or vectors/tuples of those. Nesting, reverse (reflection -- ORDER ONLY, it does not swap e1/e2) and repeat are construction syntax and expand away, with provenance kept per placement so ARC1/CQS[3] stays addressable. A line given a misalignment does NOT dissolve: it stays one placement and moves its contents rigidly, which is how a cryostat or girder is expressed. Select with find_entries(line, sel\"ARC1/CQS[3]\"), which also takes a Regex, a tag Symbol, a Type or a predicate. Keyword form BeamLine(; name, entries) rebuilds a line from existing placements. The misalignment keywords x_offset, y_offset, z_offset, x_pitch, y_pitch and tilt displace the WHOLE line rigidly and are what make it a girder, with misalign_convention choosing the reference point and rotation order exactly as it does for a single magnet. A line's arc length L is COMPUTED from its entries and is not a keyword: setting it is rejected, because the walkers that read a stored L and the ones that re-sum the entries would then disagree (2026-08-05_b audit, U15-6). Design: docs/theory/beam_line_composition.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
+
+# ---------------------------------------------------------------------------
+# The container-scoped knob report: the WIRING view of the knob system.
+# ---------------------------------------------------------------------------
+
+"""
+    knob_report(elements; prefix="", io=stdout)
+
+The **wiring** view of the knob system, scoped to the given container — a
+line spec, a `BeamLine`, or a tuple of specs/placements: which element
+parameters hold knob expressions, printed in both directions (per knob, the
+driven sites; per site, the expression and its current value). The
+zero-argument `knob_report(; prefix)` remains the **registry** view — the
+declared knobs and their values; this method answers the question the
+registry cannot: *what does this knob actually drive in this lattice?*
+
+Derived on demand from the specs themselves, never registered: expressions
+are plain values that are copied freely (placement overrides, line
+expansion, spec merges), so a global binding registry would go stale the
+way stored copies always do here. The cost of the derive-on-demand choice
+is the container scope — the same knob can drive two lines differently, and
+the report answers only for the elements it is handed. A knob expression
+bound to a plain Julia variable is deliberately invisible: an expression is
+inert until it is stored on a spec parameter, and findability begins there.
+
+Placement overrides are read through the merged view, so an
+expression-valued override reports at its placement path. Expressions
+nested in tuple strengths report with their index (`kn[2]`). Sites whose
+expressions read no knob under `prefix` are filtered out when a prefix is
+given.
+
+The two reference designs, measured (2026-08-14): Tao prints a lord's
+slaves with expression text and evaluated contributions and a slave's
+"Controller Lord(s)" — but Bmad sums stacked overlays into one attribute,
+where an Octopus parameter holds exactly one expression; Xsuite's
+`.xdeps.info()` gives per-variable `controlled_targets` from a live global
+graph, which it can afford because every assignment flows through its
+ref/view machinery — Octopus expressions are plain values, hence this
+query. MAD-X has the forward direction only; elegant has neither.
+"""
+function knob_report(elements::Union{Tuple,AbstractVector,ElementSpec{:line}};
+                     prefix::AbstractString="", io::IO=stdout)
+    sites = NamedTuple{(:site, :param, :expr),Tuple{String,String,Any}}[]
+    _knob_binding_sites!(sites, elements, Ref(0))
+    if !isempty(prefix)
+        filter!(s -> any(d -> startswith(String(d), prefix),
+                         _site_knobs(s.expr)), sites)
+    end
+    if isempty(sites)
+        println(io, isempty(prefix) ?
+            "No knob-driven parameters in the given elements." :
+            "No knob-driven parameters under $(repr(prefix)) in the given elements.")
+        return nothing
+    end
+    render(s) = begin
+        val = try
+            string(knob_value(s.expr))
+        catch err
+            "unassigned: " * sprint(showerror, err)
+        end
+        "$(s.site) :: $(s.param) = $(string(s.expr))  (= $(val))"
+    end
+    byknob = Dict{Symbol,Vector{Int}}()
+    for (i, s) in enumerate(sites), d in _site_knobs(s.expr)
+        push!(get!(Vector{Int}, byknob, d), i)
+    end
+    println(io, "Knob-driven parameters ($(length(sites)) site(s); ",
+            "registry view: knob_report()):")
+    println(io)
+    println(io, "By knob:")
+    for d in sort!(collect(keys(byknob)); by=string)
+        println(io, "  ", d, " = ",
+                try string(knob_value(d)) catch; "<unassigned>" end)
+        for i in byknob[d]
+            println(io, "    ", render(sites[i]))
+        end
+    end
+    println(io)
+    println(io, "By site:")
+    for s in sites
+        println(io, "  ", render(s),
+                "  [knobs: ", join(string.(_site_knobs(s.expr)), ", "), "]")
+    end
+    return nothing
+end
+
+# The knobs a binding SITE reads. `knob_dependencies` deliberately reports a
+# bare KnobRef's own dependencies (empty for an independent knob) because it
+# answers "what does this knob read"; a wiring site bound to a bare reference
+# depends on THAT knob, so the ref's own path joins the set here.
+_site_knobs(expr::KnobRef) = Symbol[_knob_path(expr)]
+_site_knobs(expr) = knob_dependencies(expr)
+
+_knob_binding_sites!(out, elements::Union{Tuple,AbstractVector}, ordinal) =
+    (foreach(e -> _knob_binding_sites!(out, e, ordinal), elements); out)
+_knob_binding_sites!(out, line::ElementSpec{:line}, ordinal) =
+    _knob_binding_sites!(out, line_entries(line), ordinal)
+function _knob_binding_sites!(out, entry::LineEntry, ordinal)
+    spec = getfield(entry, :spec)
+    spec isa ElementSpec{:line} &&
+        return _knob_binding_sites!(out, line_entries(spec), ordinal)
+    spec isa AbstractElementSpec || return out
+    ordinal[] += 1
+    _knob_param_sites!(out, entry_path(entry), _merged_params(entry))
+    return out
+end
+function _knob_binding_sites!(out, element, ordinal)
+    element isa AbstractElementSpec || return out
+    if element isa ElementSpec{:line}
+        return _knob_binding_sites!(out, line_entries(element), ordinal)
+    end
+    ordinal[] += 1
+    _knob_param_sites!(out, "elements[$(ordinal[])] ($(kind(element)))",
+                       getfield(element, :params))
+    return out
+end
+
+function _knob_param_sites!(out, site::AbstractString, params)
+    for (key, val) in sort!(collect(params); by=x -> string(x[1]))
+        _param_has_knob(val) || continue
+        _knob_value_sites!(out, String(site), String(key), val)
+    end
+    return out
+end
+_knob_value_sites!(out, site, label, v) = nothing
+_knob_value_sites!(out, site, label, v::AbstractKnobExpression) =
+    push!(out, (site=site, param=label, expr=v))
+function _knob_value_sites!(out, site, label, v::Union{Tuple,AbstractArray})
+    for (i, x) in enumerate(v)
+        _param_has_knob(x) && _knob_value_sites!(out, site, "$(label)[$(i)]", x)
+    end
+    return nothing
+end

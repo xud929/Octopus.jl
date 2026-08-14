@@ -141,6 +141,36 @@ object; the audit receipt is emitted; and the unset/cycle/dependent-set guards
 fire. Knob entry points are listed in `docs/registry_snapshot.md` ("Knob
 Control").
 
+## 2a. Two reports: the registry and the wiring
+
+`knob_report()` is the **registry** view: the declared knob namespace, its
+values and dependent-knob structure. It deliberately does not know where
+expressions ended up — expressions are plain values, copied freely through
+placement overrides, line expansion and spec merges, and a global registry
+of bindings would go stale the way stored copies always do here.
+
+`knob_report(elements; prefix, io)` — a line spec, a `BeamLine`, or a tuple
+— is the **wiring** view, derived on demand from the specs themselves: per
+knob, the driven sites (provenance path, parameter, expression text,
+current evaluated value); per site, its expressions and the knobs they
+read. Placement overrides report at their placement path through the merged
+view; tuple-nested strengths report with their index (`kn[2]`); a bare
+`KnobRef` binding is a wiring edge to that knob. The scope is the container
+you hand it — the same knob can drive two lines differently — and **an
+expression bound to a plain Julia variable is invisible by design**: it
+drives nothing until it is stored on a spec parameter, and findability
+begins there.
+
+The reference designs, measured (2026-08-14): Tao prints an overlay lord's
+slaves with expression text and evaluated contributions, and a slave's
+"Controller Lord(s)" (Bmad *sums* stacked overlays into one attribute,
+where an Octopus parameter holds exactly one expression); Xsuite's
+`.xdeps.info()` reports per-variable `controlled_targets` from a live
+global graph, affordable there because every assignment flows through its
+ref/view machinery; MAD-X has the forward direction only (`show` prints
+definitions with `:=` expressions); elegant freezes its RPN expressions at
+parse and has neither.
+
 ## 3. Reading values; expressions outside element specs
 
 `@knob_expr` returns a first-class expression object — it is not tied to
