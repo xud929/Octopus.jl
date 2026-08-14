@@ -110,6 +110,23 @@ of this channel is quiet wrongness, and the refusal is the tripwire.
   autoscale passes are out of scope until a validation contract for them
   exists.
 
+> **Correction (2026-08-14, at implementation).** This subsection planned
+> around passing an accumulated arc into the coordinate conversion, and the
+> first implementation draft refined that to a bounded per-turn `Δs` — both
+> forms are **wrong**, and the second was caught by measurement before
+> landing: a constant `s` inside the conversion cancels out of the one-turn
+> dynamics entirely (measured `ν_s` stayed at the `α_c`-only value), and an
+> accumulating one is the unbounded-state route this subsection was trying
+> to avoid. The correct carrier is a **symplectic z-shift at the cavity**,
+> `z += Δs·(β/β₀ − 1)` with the exact cancellation-free `g(δ)`, after which
+> no turn counter, no `k·C mod 2π` folding, and no context requirement
+> exist at all — the correction is a per-op constant. Derivation, the
+> negative measurements, and the injection convention:
+> [`theory/arc_survey_and_velocity_slip.md`](../theory/arc_survey_and_velocity_slip.md).
+> The `TrackingContext.turn` half of §2's table is therefore **unused by
+> F16**; it remains correct for consumers that genuinely need absolute turn
+> numbering (Scope B's phase bookkeeping may; the stochastic elements do).
+
 ## 4. What this channel is *not*: alternatives considered
 
 Several designs achieve similar physics. Each was considered and rejected for
@@ -219,7 +236,28 @@ with the chosen route for each:
    `P0(s)` from the energy survey, baked per element; boundary rescaling at
    each energy step. No dynamic part at all.
 3. **Multi-pass at different energies** (ERL): statically unrolled — each
-   pass compiles its own instances against its own survey. No new mechanism.
+   pass compiles its own instances against its own survey. The *sequencing*
+   is repetition, but the essence of Bmad's multipass is not: it is a
+   **sharing discipline** — one physical element seen by N passes, where the
+   physical quantities (the field: one magnet, one supply; the misalignment:
+   the magnet sits where it sits) exist once, while per-pass quantities
+   (`p0c`, hence normalized strengths) differ per view. Modeled as two
+   independent instances, nothing ties the copies' fields together — retune
+   the magnet and someone must remember every copy, the hand-copied-state
+   staleness failure again. The Octopus carrier of the sharing is the **knob
+   system**: the knob holds the physical quantity (the lord), the per-pass
+   specs hold expressions over it with per-pass normalization (the slaves) —
+   `pass1.k1 = q·B/P0₁`, `pass2.k1 = q·B/P0₂`, one `B` knob feeding both,
+   divergence unrepresentable because the dependency is declared. This is
+   the control-room reality stated directly: a machine has no per-element
+   truth — the control system owns setpoints, and every element parameter is
+   a derived view through the wiring diagram, which is exactly what the knob
+   dependency graph is. One caveat repetition does not supply: **inter-pass
+   RF phase coherence** (an ERL's energy recovery lives in the ~180° return
+   phase set by the pass-to-pass time of flight). Under the relative-time
+   choice (§3c) that relationship is an explicit modeled input — naturally a
+   knob on the later pass's phase, possibly an expression over the return-arc
+   length — never something "run it twice" gets right silently.
 4. **Ramping ring**: `P0(s, turn) ≈ P0_profile(s) × ramp(turn)` — the
    within-turn profile is flat to `~10⁻⁵`, so the dynamic part is a global
    per-turn scalar. Route: a knob on the reference; a scheduled action

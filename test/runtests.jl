@@ -2284,6 +2284,44 @@ end # _lane_gate("Element parameter effectiveness")
     end
 end
 
+@testset "MAD-X survey consistency" begin
+    # The arc survey against MAD-X's own expansion, element for element:
+    # nesting, reflection (reverse here, -half there), heavy curvature (bend
+    # L is the ARC in both codes), rbend-as-sbend-with-faces, cavities with
+    # drift-space L. docs/theory/arc_survey_and_velocity_slip.md Sec. 1.
+    r = validate(MADXSurveyConsistencyContract())
+    @test r.status === :passed
+    @test r.metrics[:cases] == length(Octopus._madx_survey_reference_lines())
+    @test r.metrics[:max_deviation] <= 1e-12
+
+    # Discriminating power, the PTC precedent: a table missing a case must
+    # fail naming it, and a corrupted length must fail on the numbers.
+    source = Octopus._madx_survey_reference_path(MADXSurveyConsistencyContract())
+    mktempdir() do dir
+        truncated = joinpath(dir, "survey_madx_truncated.tsv")
+        open(truncated, "w") do io
+            for line in eachline(source)
+                startswith(line, "curved_heavy\t") && continue
+                println(io, line)
+            end
+        end
+        narrowed = validate(MADXSurveyConsistencyContract(path=truncated))
+        @test narrowed.status === :failed
+        @test occursin("curved_heavy", narrowed.message)
+
+        corrupted = joinpath(dir, "survey_madx_corrupted.tsv")
+        open(corrupted, "w") do io
+            for line in eachline(source)
+                println(io, startswith(line, "flat_fodo\t1\t") ?
+                    replace(line, "0.45" => "0.46") : line)
+            end
+        end
+        bad = validate(MADXSurveyConsistencyContract(path=corrupted))
+        @test bad.status === :failed
+        @test occursin("flat_fodo", bad.message)
+    end
+end
+
 @testset "Integrated Green kernel on the axes" begin
     # `_pic_atan_ratio` referenced a name this module never defines, so every
     # on-axis node of the DEFAULT :integrated Green kernel raised
@@ -2683,6 +2721,168 @@ end
           parameter_schema(ElementSpec{:thin_crab_cavity}).frequency.unit == "Hz"
     @test parameter_schema(ElementSpec{:thin_rf_cavity}).phase.unit ==
           parameter_schema(ElementSpec{:thin_crab_cavity}).phase.unit == "rad"
+end
+
+@testset "RF velocity slip closes the full slip factor (F16)" begin
+    # docs/theory/arc_survey_and_velocity_slip.md, implemented. A ring built
+    # from a pure-path drift, a Linear6D R56 map (the convention-#3 lattice
+    # part, alpha_c only), and a task-compiled cavity must oscillate at the
+    # tune of the FULL eta = alpha_c - 1/gamma0^2 -- the theory note's Sec. 8
+    # item 4 criterion, at the working point where the defect measured 1.84x.
+    C = 100.0
+    E0 = 2.5e9
+    freq = 2.99792458e6                       # harmonic 1 of C = 100 m
+    gamma0 = E0 / PMASS_EV
+    b0, g0 = reference_beta_gamma(E0, PMASS_EV)
+    # 200 kV, deliberately weak: the analytic nu_s below is the LINEARIZED
+    # one-turn map, which drops O(strength) pieces of the exact conjugated
+    # kick (the back-conversion's coordinate response). At 1 MV those pieces
+    # measured as a +0.7% tune excess against the formula — physics of the
+    # exact map, not error — and they scale down with voltage; at 200 kV the
+    # formula is in its regime and the 5e-3 tolerance is honest.
+    cavspec() = ThinRFCavitySpec(freq; voltage=2.0e5, e0=E0, mc2=PMASS_EV)
+    function ringspecs(alpha_c)
+        m = [1.0 0 0 0 0 0; 0 1.0 0 0 0 0; 0 0 1.0 0 0 0; 0 0 0 1.0 0 0;
+             0 0 0 0 1.0 -alpha_c*C; 0 0 0 0 0 1.0]
+        (DriftSpec(L=C), Linear6DSpec(matrix=m), cavspec())
+    end
+    function track_z(specs; turns, corrected)
+        local rep = Phase6DRep([0.0], [0.0], [0.0], [0.0], [1.0e-3], [0.0])
+        local out = Vector{Float64}(undef, turns)
+        if corrected
+            local t = TrackingTask(specs)
+            for n in 1:turns
+                execute!(t, rep; turns=1)
+                out[n] = rep.z[1]
+            end
+        else
+            # The uncorrected baseline: the SAME ops compiled bare, i.e. the
+            # recorded s = 0 model boundary, tracked without the task binding.
+            local ops = Tuple(compile_runtime(s) for s in specs)
+            local c = (rep.x[1], rep.px[1], rep.y[1], rep.py[1], rep.z[1], rep.pz[1])
+            for n in 1:turns
+                c = fusedTrack(ops, c...)
+                out[n] = c[5]
+            end
+        end
+        return out
+    end
+    # Tune estimator: FFT coarse bin, then golden-section refinement of the
+    # Hann-windowed DTFT magnitude — unbiased to ~1e-7, where the first
+    # draft's rectangular-window parabolic interpolation carried an
+    # O(0.3 bin) systematic that read as a fake "physics excess" growing as
+    # 1/nu (measured +0.7% at nu*N = 33, +1.7% at 15).
+    # Every name in here is `local` on principle: a bare `kbin = ...` in a
+    # closure ASSIGNS TO an enclosing variable of the same name rather than
+    # shadowing it — the first draft's inner `k` silently overwrote the RF
+    # wavenumber `k` above with an FFT bin index, and the analytic prediction
+    # moved 17x while the measurement stood still. The same
+    # assigned-in-closure class the Core.Box sweep hunts, caught here by the
+    # lane checkpoint.
+    function tune(zseries)
+        local N = length(zseries)
+        local zc = zseries .- sum(zseries) / N
+        local w = [0.5 - 0.5 * cospi(2 * (n - 1) / N) for n in 1:N]
+        local wz = w .* zc
+        local amp = nu -> abs(sum(wz[n] * cispi(-2 * nu * (n - 1)) for n in 1:N))
+        local a = abs.(Octopus.FFTW.rfft(wz))
+        local kbin = argmax(a[2:end]) + 1
+        local lo = (kbin - 2) / N
+        local hi = kbin / N
+        local gr = (sqrt(5) - 1) / 2
+        local c = hi - gr * (hi - lo)
+        local d = lo + gr * (hi - lo)
+        for _ in 1:60
+            if amp(c) > amp(d)
+                hi = d
+            else
+                lo = c
+            end
+            c = hi - gr * (hi - lo)
+            d = lo + gr * (hi - lo)
+        end
+        return (lo + hi) / 2
+    end
+
+    alpha_c = 0.2
+    eta_full = alpha_c - 1 / gamma0^2
+    strength = 2.0e5 / (b0 * E0)
+    k = 2pi * freq / CLIGHT
+    nu_of(eta) = acos(1 - k * strength * eta * C / (2 * b0^2)) / 2pi
+
+    zs = track_z(ringspecs(alpha_c); turns=8192, corrected=true)
+    nu = tune(zs)
+    @test isapprox(nu, nu_of(eta_full); rtol=5e-3)      # the full eta...
+    @test !isapprox(nu, nu_of(alpha_c); rtol=0.2)       # ...not alpha_c alone
+    @test maximum(abs, zs) < 2.0e-3                     # bounded bucket motion
+
+    # The uncorrected baseline still shows the documented boundary: alpha_c
+    # alone, 1.84x off at this working point. Keeping it measurable is what
+    # makes this pair a real A/B rather than a tautology.
+    zs0 = track_z(ringspecs(alpha_c); turns=8192, corrected=false)
+    nu0 = tune(zs0)
+    @test isapprox(nu0, nu_of(alpha_c); rtol=5e-3)
+    @test isapprox(nu0 / nu, sqrt(alpha_c / eta_full); rtol=1e-2)   # the 1.84
+
+    # Wrong side of transition: alpha_c < 1/gamma0^2 makes the true eta
+    # NEGATIVE, so the phase-0 fixed point the alpha_c-only ring happily
+    # oscillates around is unstable for the corrected ring.
+    ac2 = 0.10
+    @test ac2 < 1 / gamma0^2
+    zw = track_z(ringspecs(ac2); turns=2048, corrected=true)
+    zw0 = track_z(ringspecs(ac2); turns=2048, corrected=false)
+    @test maximum(abs, zw) > 10 * 1.0e-3                # corrected: unstable
+    @test maximum(abs, zw0) < 2.0e-3                    # uncorrected: stable
+
+    # _velocity_slip_g against BigFloat: the cancellation-free identity holds
+    # to full relative precision across energies and amplitudes, including
+    # gamma0 ~ 2e4 where the literal beta/beta0 - 1 loses everything. The
+    # reference pair is built CONSISTENTLY from first principles in BigFloat
+    # — big(bb)/big(gg) would freeze each value's own Float64 rounding into
+    # a pair that satisfies beta0^2*gamma0^2 = gamma0^2 - 1 only to 1e-16,
+    # and the ratio-form reference then measures that violation amplified by
+    # gamma0^2 (observed 1.2e-11 at gamma0 = 293) instead of the formula's
+    # arithmetic. Same lesson as U14-4: the pair is one particle, not two
+    # numbers.
+    for e0 in (2.5e9, 275.0e9, 1.8362e13)
+        bb, gg = reference_beta_gamma(e0, PMASS_EV)
+        gamB = big(e0) / big(PMASS_EV)
+        betB = sqrt(1 - 1 / gamB^2)
+        for pt in (1e-2, 1e-4, 1e-8, 1e-12, -1e-3)
+            delta = Octopus._delta_from_pt(pt, bb, gg)
+            g = Octopus._velocity_slip_g(delta, pt, bb, gg)
+            gB = let p = big(pt)
+                d = Octopus._delta_from_pt(p, betB, gamB)
+                (1 + d) / (1 + betB * p) - 1
+            end
+            @test isapprox(g, Float64(gB); rtol=1e-13)
+        end
+    end
+
+    # Survey binding: ds_turn partitions the ring by kick position and wraps.
+    two = (DriftSpec(L=30.0), cavspec(), DriftSpec(L=70.0), cavspec())
+    ents = Octopus._runtime_entries(TrackingTask(two))
+    cs = [e.element for e in ents if e isa Octopus.PhysicsEntry &&
+          e.element isa Octopus.ThinRFCavity]
+    @test length(cs) == 2 && cs[1].ds_turn == 30.0 && cs[2].ds_turn == 70.0
+    # A bare compile carries no survey and keeps the documented boundary.
+    @test isnan(Octopus.ThinRFCavity(cavspec()).ds_turn)
+    # The survey walker is the aperture walker: one traversal, one truth.
+    line = BeamLine("curved", DriftSpec(L=1.0), SBendSpec(L=2.2, angle=0.5),
+                    DriftSpec(L=0.5), SBendSpec(L=2.2, angle=0.5), cavspec(),
+                    DriftSpec(L=3.0))
+    pairs = Tuple{Float64,Float64}[]
+    acc = Ref(0.0)
+    Octopus._collect_spec_s!(pairs, Octopus.line_entries(line), acc,
+                             Val(:thin_rf_cavity))
+    @test length(pairs) == 1 && pairs[1][1] == s_positions(line)[5]
+    @test acc[] == Octopus.total_length(line)
+    # A cavity inside a kept-whole line is refused loudly, never silently
+    # left at the s = 0 boundary (the walker does not descend own-state
+    # lines; the runtime rebind does -- the count check catches the gap).
+    inner = BeamLine("inner", DriftSpec(L=1.0), cavspec(); x_offset=1.0e-3)
+    kept = TrackingTask((DriftSpec(L=2.0), inner))
+    @test_throws ErrorException Octopus._runtime_entries(kept)
 end
 
 @testset "Longitudinal conventions convert exactly" begin

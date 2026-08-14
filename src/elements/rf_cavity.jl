@@ -56,7 +56,37 @@ struct ThinRFCavity{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     L::T
     beta0::T
     gamma0::T
+    # Survey channel (docs/design/survey_and_reference_channel.md). NaN means
+    # "no survey": the cavity was compiled bare, outside a task line, and
+    # keeps the documented s = 0 model boundary. A finite value is bound by
+    # `_bind_survey` when a task compiles the line, and switches the kick to
+    # the slip-corrected form: a symplectic z-shift of
+    # `ds_turn * (β/β₀ - 1)` before the kick (see _rf_kick). `ds_turn` is the
+    # arc distance from the previous cavity kick, wrapping the turn (one
+    # cavity: the full line length), so every number stays bounded at any
+    # turn count and no turn counter is needed: the correction is a per-op
+    # constant, identical on the fused, contextless, and direct
+    # track_particle paths. The one convention this buys is that the
+    # injection pass is treated as a full wrap too, misdating its slip by one
+    # partial turn — a bounded, delta-dependent redefinition of the injection
+    # reference time, recorded in the theory note.
+    ds_turn::T
 end
+
+"""
+    _velocity_slip_g(delta, pt, beta0, gamma0)
+
+`(β - β₀)/β₀`, exactly and cancellation-free: the relative velocity excess of
+an off-momentum particle. Derived by the conjugate trick from
+`(1+δ)² - (1+β₀ p_t)² = p_t (2/β₀ + p_t)/γ₀²` (the same identity family as
+the U14-4 `δ ↔ p_t` rewrite), so the `1/γ₀²` smallness is an explicit factor
+rather than a subtraction of two numbers near 1 — full relative precision at
+any energy, where the literal `β/β₀ - 1` loses everything at large `γ₀`.
+Verified against BigFloat in the F16 validation testset.
+"""
+@inline _velocity_slip_g(delta, pt, beta0, gamma0) =
+    pt * (2 / beta0 + pt) /
+    (gamma0^2 * (2 + delta + beta0 * pt) * (1 + beta0 * pt))
 
 """
 Longitudinal kick, in convention #1 where it is one line.
@@ -79,20 +109,47 @@ Negligible when `gamma0^2 * alpha_c >> 1` (the validated EIC-class cases:
 electron 10 GeV has 1/gamma0^2 = 2.6e-9); WRONG physics for moderate-energy
 hadron rings — measured 1.84x synchrotron-tune error at 2.5 GeV proton with
 alpha_c = 0.2, and the wrong side of transition whenever
-`alpha_c < 1/gamma0^2`. The open `docs/todo.md` row tracks the fix, which
-needs the arc-position channel.
+`alpha_c < 1/gamma0^2`.
+
+**F16 closure (2026-08-13): this boundary now applies only to a cavity
+compiled bare.** A cavity compiled through a task line gets `ds_turn` bound by
+`_bind_survey` — the arc distance from the previous cavity's kick, wrapping
+the turn — and this same kick then advances `z` by the exact velocity slip
+`ds_turn * (β/β₀ - 1)` before the conjugated body, restoring the full
+`eta = alpha_c - 1/gamma0^2`. Between kicks `delta` is untouched by the
+convention-#3 lattice maps, so per-segment shifts compose to exactly the
+per-turn `C*(β/β₀ - 1)`; every number stays bounded at any turn count. Why a
+z-shift and not an `s` argument to the conversion: a constant per-turn `s`
+inside the conjugation cancels out of the one-turn dynamics entirely
+(measured), and an accumulating `turn*C` one grows without bound — the
+derivation, that negative measurement, and the injection-pass convention are
+in docs/theory/arc_survey_and_velocity_slip.md.
 
 Changing only the momentum by a function of the coordinate is a canonical
 transformation, so the kick is symplectic, and the two wrappers are symplectic
 by construction (Section 2). The composition therefore is.
 """
-@inline function _rf_kick(elem::ThinRFCavity, x, px, y, py, z, pz)
+@inline function _rf_kick(elem::ThinRFCavity{M,T}, x, px, y, py, z, pz) where {M,T}
     # A cavity with no voltage is exactly nothing, not nothing to round-off.
     # The conversion round trip is only exact to ~4e-16, so without this a
     # switched-off cavity would perturb a lattice in the last bits -- and
     # `_misalignment_wrap` and `_ref_tilt_wrap` both set the precedent of
     # returning the input untouched when there is no effect to apply.
     iszero(elem.strength) && return (x, px, y, py, z, pz)
+    # Survey-bound (F16 closure): the velocity slip enters as a symplectic
+    # z-SHIFT before the kick, never as an `s` argument to the conversion.
+    # The convention-#3 coordinate is a path deficit and physically does not
+    # slip with velocity -- the slip lives in arrival TIME, which accumulates
+    # without bound -- so a bounded-state cavity must reconcile the two by
+    # advancing the z its phase reads by the time slip accumulated since the
+    # previous kick, `ds_turn * (β/β₀ - 1)`. (A constant `s` inside the
+    # conversion cancels out of the one-turn dynamics entirely: measured
+    # nu_s stayed at the alpha_c-only value to 0.7%. The derivation and that
+    # negative result: docs/theory/arc_survey_and_velocity_slip.md.)
+    if _has_survey(elem)
+        pt0 = _pt_from_delta(pz, elem.beta0, elem.gamma0)
+        z += elem.ds_turn * _velocity_slip_g(pz, pt0, elem.beta0, elem.gamma0)
+    end
     z1, pt = convert_longitudinal(PATHLENGTH_DELTA => TIME_ENERGY, z, pz;
                                   beta0=elem.beta0, gamma0=elem.gamma0)
     pt += elem.strength * sin(elem.k * z1 + elem.phase)
@@ -116,6 +173,15 @@ end
 
 @inline (elem::ThinRFCavity)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
+
+# No context-aware method is defined: with the arc argument in difference
+# form the slip correction is a per-op CONSTANT, so the generic
+# AbstractTrackOp ctx fallback (which drops ctx and calls the contextless op)
+# is exactly right, and every path — fused, contextless track!, direct
+# track_particle — computes the same corrected kick. This is deliberate: an
+# earlier draft read ctx.turn to special-case the injection pass, which made
+# the raw track! path (whose default TrackingContext pins turn = 0) silently
+# wrong instead of merely conventionally offset. See the design note §3c.
 
 """
     rf_strength(; voltage, e0, charge = 1, beta0)
@@ -158,11 +224,14 @@ thing across every RF element in a lattice:
   `ThinCrabCavity`'s `k*z` only at `β = 1`; at 2.5 GeV proton and `z = 7 mm`
   the two differ by 4.6e-3 rad.
 
-Two model boundaries, stated so they are visible from the call site: no
-transit-time factor and no RF focusing (see `L`), and **no velocity-slip
-term** — the slip factor this cavity closes the ring with is `alpha_c`
-alone, missing `-1/gamma0²` (see `_rf_kick`; negligible for
-ultrarelativistic beams, wrong for moderate-energy hadron rings).
+Model boundaries, stated so they are visible from the call site: no
+transit-time factor and no RF focusing (see `L`). The velocity-slip boundary
+is **conditional** since the F16 closure (2026-08-14): compiled *bare*, the
+cavity has no velocity-slip term and closes a ring with `alpha_c` alone,
+missing `-1/gamma0²`; compiled *through a task line*, it is bound to the
+geometric survey and applies the exact slip as a symplectic z-shift before
+its kick, closing the ring with the full `eta = alpha_c - 1/gamma0²`
+(`docs/theory/arc_survey_and_velocity_slip.md`).
 
 The second form is the friendly one: give a voltage and the beam's `e0`/`mc2`
 and the spec stores the dimensionless results. **The energy is an argument, not
@@ -232,8 +301,23 @@ function ThinRFCavity(spec::ElementSpec{:thin_rf_cavity},
     k = T(2) * T(pi) * T(param(spec, :frequency)) / T(CLIGHT)
     return ThinRFCavity{typeof(method),T}(
         method, T(param(spec, :strength)), k, T(getparam(spec, :phase, 0)),
-        T(getparam(spec, :L, 0)), T(param(spec, :beta0)), T(param(spec, :gamma0)))
+        T(getparam(spec, :L, 0)), T(param(spec, :beta0)), T(param(spec, :gamma0)),
+        T(NaN))
 end
+
+"""
+    _attach_survey(elem::ThinRFCavity, ds_turn)
+
+Rebuild the runtime cavity with its survey value bound. Called by
+`_bind_survey` (Tasks.jl) when a task compiles a line containing this cavity;
+never by users. Rebuilding rather than mutating keeps the compiled op
+immutable and `isbits`, which the CUDA kernels require.
+"""
+_attach_survey(elem::ThinRFCavity{M,T}, ds_turn::Real) where {M,T} =
+    ThinRFCavity{M,T}(elem.method, elem.strength, elem.k, elem.phase, elem.L,
+                      elem.beta0, elem.gamma0, T(ds_turn))
+
+_has_survey(elem::ThinRFCavity) = !isnan(elem.ds_turn)
 
 @element_spec begin
     kind = :thin_rf_cavity
@@ -256,5 +340,5 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV)
-    construction_help = "Friendly constructor: ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=Symplectic6DMap()). A THIN RF cavity WITHOUT acceleration -- Bmad's rfcavity, not its lcavity -- so the reference energy is constant through it and phase = 0 is no net acceleration. Thin means ONE localised kick: L buys drift space so the cavity occupies its proper arc length, but there is no transit-time factor and no RF focusing, the same standing as ThinCrabCavity and ThinMultipole. THIRD model boundary, and the one with physics consequences: there is NO VELOCITY-SLIP TERM. The longitudinal wrap uses -c*dt = z/beta and drops s*(1/beta0 - 1/beta), so the slip factor a ring built from this element closes with is alpha_c alone, missing -1/gamma0^2 -- negligible for ultrarelativistic beams, WRONG for moderate-energy hadron rings (measured 1.84x synchrotron-tune error at a 2.5 GeV proton with alpha_c = 0.2, and the wrong side of transition whenever alpha_c < 1/gamma0^2). Fixing it needs the element to know its accumulated reference arc; tracked in todo.md. Frequency in Hz and phase in radians, matching ThinCrabCavity so that `phase` means one thing across every RF element. The energy is an ARGUMENT and not a field: voltage and e0 are reduced to a dimensionless strength at construction, so nothing on the element can disagree with BeamParams.E0. The body is written in the TIME_ENERGY convention and conjugated back by convert_longitudinal, which is why there is no beta factor in it. Design: docs/theory/rf_cavity_and_reference_energy.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=Symplectic6DMap()). A THIN RF cavity WITHOUT acceleration -- Bmad's rfcavity, not its lcavity -- so the reference energy is constant through it and phase = 0 is no net acceleration. Thin means ONE localised kick: L buys drift space so the cavity occupies its proper arc length, but there is no transit-time factor and no RF focusing, the same standing as ThinCrabCavity and ThinMultipole. THIRD model boundary, CONDITIONAL since the F16 closure (2026-08-14): a cavity compiled BARE -- outside a task line -- has no velocity-slip term, so a ring it closes has slip factor alpha_c alone, missing -1/gamma0^2 (the recorded 1.84x synchrotron-tune error at a 2.5 GeV proton with alpha_c = 0.2, and the wrong side of transition whenever alpha_c < 1/gamma0^2). A cavity compiled THROUGH A TASK LINE is bound to the geometric survey and applies the exact velocity slip as a symplectic z-shift ds_turn*(beta/beta0 - 1) before its kick, closing the ring with the full eta = alpha_c - 1/gamma0^2 on every path and backend; a cavity hidden inside a kept-whole own-state sub-line is refused loudly at compile rather than silently left uncorrected. Physics: docs/theory/arc_survey_and_velocity_slip.md. Frequency in Hz and phase in radians, matching ThinCrabCavity so that `phase` means one thing across every RF element. The energy is an ARGUMENT and not a field: voltage and e0 are reduced to a dimensionless strength at construction, so nothing on the element can disagree with BeamParams.E0. The body is written in the TIME_ENERGY convention and conjugated back by convert_longitudinal, which is why there is no beta factor in it. Design: docs/theory/rf_cavity_and_reference_energy.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end

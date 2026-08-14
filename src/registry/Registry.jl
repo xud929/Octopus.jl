@@ -263,6 +263,8 @@ description(::Type{ElementParameterEffectivenessContract}) =
     "Checks that every declared element parameter reaches the compiled map, by perturbing one at a time and tracking a probe particle."
 description(::Type{PTCConsistencyContract}) =
     "Checks Octopus element maps against a committed MAD-X/PTC reference table."
+description(::Type{MADXSurveyConsistencyContract}) =
+    "Checks the arc survey (s positions, placement lengths, total length) against a committed MAD-X SURVEY reference, element for element."
 
 description(::Type{BenchmarkExample}) =
     "Example category: a performance measurement with a recorded configuration and reference timing."

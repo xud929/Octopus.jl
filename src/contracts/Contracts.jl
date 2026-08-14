@@ -7,6 +7,7 @@ export ContractResult, passed, validate,
        SymplecticityContract,
        HighEnergyWeakStrongLimitContract,
        PTCConsistencyContract,
+       MADXSurveyConsistencyContract,
        ElementParameterEffectivenessContract,
        CoherentModePhysicsContract,
        SolverOptionEffectivenessContract
@@ -2165,6 +2166,139 @@ function validate(contract::PTCConsistencyContract; kwargs...)
     return ContractResult(false,
         "PTC comparison (MAD-X $(version)) failed: " * join(failures, "; ");
         residual=maximum(values(worst)), metrics=metrics)
+end
+
+
+"""
+    MADXSurveyConsistencyContract(; path=nothing, atol=1e-12)
+
+Check the arc survey — `s_positions`, placement lengths, `total_length` —
+against a committed MAD-X `SURVEY` reference, element for element.
+
+The fixtures (`_madx_survey_reference_lines`) exercise the structures the
+survey walker must get right: a flat cell, nested sub-lines expanded twice,
+a reflected half (`reverse` here, `-half` in MAD-X — two independent
+expansions of the same structure), heavily curved bends (arc-length
+semantics at large angle), an `RBendSpec` emitted as SBEND with explicit
+half-angle faces, and RF cavities whose `L` buys drift space. Each fixture
+has a hand-written MAD-X twin in `validation/generate_madx_survey_reference.jl`;
+the pairing is by eye, and *this comparison* is what keeps the two honest —
+any drift between them fails on count, length, or position.
+
+A recorded cross-code caveat the fixtures deliberately sidestep: MAD-X's
+`RBEND` (default `RBARC=true`) treats the stated `L` as the **chord** and
+surveys the computed arc (measured: `L=2, angle=0.5` surveys `2.020986`),
+while Octopus's `RBendSpec` takes `L` as the **arc** (it is sugar over
+`SBendSpec`). The generator therefore mirrors rbend content as SBEND +
+face angles, where the two codes agree by construction.
+
+Like the PTC contract, the reference is committed
+(`validation/reference/survey_madx_*.tsv`) so validation needs no MAD-X;
+regeneration does.
+"""
+Base.@kwdef struct MADXSurveyConsistencyContract <: AbstractImplementationContract
+    path::Union{Nothing,String} = nothing
+    atol::Float64 = 1e-12
+end
+
+"Fixture lines matching the cases in the committed MAD-X survey table."
+function _madx_survey_reference_lines()
+    qf = QuadrupoleSpec(L=0.45, k1=0.31)
+    qd = QuadrupoleSpec(L=0.45, k1=-0.29)
+    d1 = DriftSpec(L=1.15)
+    d2 = DriftSpec(L=0.35)
+    sx = SextupoleSpec(L=0.18, k2=1.1)
+    b1 = SBendSpec(L=2.2, angle=0.12)
+    b7 = SBendSpec(L=2.2, angle=0.7)
+    cav(L) = ThinRFCavitySpec(2.99792458e6; voltage=1.0e6, e0=2.5e9,
+                              mc2=PMASS_EV, L=L)
+    cell = BeamLine("cell", qf, d1, b1, d1, qd)
+    half = BeamLine("half", cell, cell, b1)
+    return Dict{String,Any}(
+        "flat_fodo" => BeamLine("flat_fodo", qf, d2, sx, d1, b1, d1, qd, d2),
+        "nested_reflected" => BeamLine("nested_reflected", half, reverse(half)),
+        "curved_heavy" => BeamLine("curved_heavy", b7, d2, b7, d1, b7),
+        "rbend_faces" => BeamLine("rbend_faces", d1,
+                                  RBendSpec(L=2.0, angle=0.5), d1),
+        "with_cavity" => BeamLine("with_cavity", DriftSpec(L=3.0), cav(0.6),
+                                  DriftSpec(L=5.0), cav(0.0), DriftSpec(L=1.4)),
+    )
+end
+
+function _madx_survey_reference_path(contract::MADXSurveyConsistencyContract)
+    contract.path !== nothing && return contract.path
+    dir = normpath(joinpath(@__DIR__, "..", "..", "validation", "reference"))
+    isdir(dir) || return nothing
+    files = filter(f -> startswith(f, "survey_madx_") && endswith(f, ".tsv"),
+                   readdir(dir))
+    isempty(files) && return nothing
+    # Numeric version sort, not lexicographic (U21-7, as the PTC contract).
+    natkey(f) = [something(tryparse(Int, m.match), 0) for m in eachmatch(r"\d+", f)]
+    return joinpath(dir, last(sort(files; by=natkey)))
+end
+
+function validate(contract::MADXSurveyConsistencyContract; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
+    path = _madx_survey_reference_path(contract)
+    if path === nothing || !isfile(path)
+        return ContractResult(:skipped,
+            "no committed MAD-X survey table found; regenerate with " *
+            "validation/generate_madx_survey_reference.jl on a machine with MAD-X")
+    end
+    lines = _madx_survey_reference_lines()
+    version = "unknown"
+    table = Dict{String,Vector{NTuple{2,Float64}}}()   # case => [(L, s_end)]
+    for row in eachline(path)
+        if startswith(row, "#")
+            m = match(r"MAD-X version:\s*(\S+)", row)
+            m === nothing || (version = m.captures[1])
+            continue
+        end
+        (startswith(row, "case") || isempty(strip(row))) && continue
+        f = split(row, '\t')
+        length(f) == 6 || continue
+        push!(get!(Vector{NTuple{2,Float64}}, table, String(f[1])),
+              (parse(Float64, f[5]), parse(Float64, f[6])))
+    end
+    untested = sort!(collect(setdiff(keys(lines), keys(table))))
+    isempty(untested) || return ContractResult(false,
+        "MAD-X survey table $(path) has no rows for: " * join(untested, ", ") *
+        ". Regenerate it with validation/generate_madx_survey_reference.jl.")
+
+    failures = String[]
+    worst = 0.0
+    for (name, line) in lines
+        rows = table[name]
+        entries = line_entries(line)
+        s = s_positions(line)
+        if length(entries) != length(rows)
+            push!(failures, "$(name): $(length(entries)) entries vs " *
+                            "$(length(rows)) MAD-X rows")
+            continue
+        end
+        for (i, (Lref, send)) in enumerate(rows)
+            Li = _placement_length(entries[i])
+            dev = max(abs(Li - Lref), abs(s[i] + Li - send))
+            worst = max(worst, dev)
+            dev <= contract.atol || push!(failures,
+                "$(name)[$(i)]: L $(Li) vs $(Lref), s_end $(s[i] + Li) vs " *
+                "$(send)")
+        end
+        tdev = abs(total_length(line) - rows[end][2])
+        worst = max(worst, tdev)
+        tdev <= contract.atol ||
+            push!(failures, "$(name): total_length $(total_length(line)) vs " *
+                            "$(rows[end][2])")
+    end
+    metrics = Dict{Symbol,Any}(:madx_version => version,
+                               :cases => length(lines), :max_deviation => worst)
+    isempty(failures) && return ContractResult(true,
+        "survey matches MAD-X $(version) across $(length(lines)) fixture " *
+        "lines, worst deviation $(round(worst; sigdigits=3))";
+        residual=worst, metrics=metrics)
+    return ContractResult(false,
+        "MAD-X survey comparison failed: " * join(failures, "; ");
+        residual=worst, metrics=metrics)
 end
 
 

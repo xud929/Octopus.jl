@@ -56,6 +56,13 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
 Self-contained derivations behind the accelerator-physics methods. They are
 reference material, not API docs; the implementing code links back to them.
 
+- [`arc_survey_and_velocity_slip.md`](theory/arc_survey_and_velocity_slip.md) —
+  what the survey coordinate is (arc length; bend `L` *is* the arc, so
+  curvature changes nothing; the patch and kept-whole-line caveats), why the
+  convention-#3 path deficit does not slip with velocity while arrival time
+  does, the symplectic z-shift form of the cavity's slip correction with the
+  exact cancellation-free `g(δ)`, and the two measured wrong forms kept as
+  negative results. Physics behind the survey channel and the F16 closure.
 - [`beam_beam_longitudinal_kick.md`](theory/beam_beam_longitudinal_kick.md) — the
   synchro-beam 6D longitudinal kick: moving source centroid, transported
   covariance, principal-axis rotation, virtual drift, and the slingshot term.

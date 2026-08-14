@@ -294,27 +294,42 @@ direction that need not lie along the design orbit. And this is arc length only
 `docs/theory/misalignment_and_patch_maps.md` Section 8 asks for.
 """
 function _aperture_s_positions(elements)
-    out = Float64[]
-    _collect_aperture_s!(out, elements, Ref(0.0))
-    return out
+    out = Tuple{Float64,Float64}[]
+    _collect_spec_s!(out, elements, Ref(0.0), Val(:aperture))
+    return [p[1] for p in out]
 end
 
-_collect_aperture_s!(out, elements::Tuple, s) =
-    (foreach(e -> _collect_aperture_s!(out, e, s), elements); out)
-_collect_aperture_s!(out, elements::AbstractVector, s) =
-    (foreach(e -> _collect_aperture_s!(out, e, s), elements); out)
-_collect_aperture_s!(out, element::ElementSpec{:aperture}, s) = (push!(out, s[]); out)
-function _collect_aperture_s!(out, entry::LineEntry, s)
+# One arc walker for every kind that needs positions along the line — the
+# aperture s-positions above and the cavity survey below MUST agree with each
+# other and with `s_positions(line)`, so there is exactly one traversal
+# (U11-1, and the T3 two-walker lesson). Pushes `(s_entry, placement_length)`
+# for each spec of kind `K`, advances by `_placement_length` for everything,
+# and does not descend into a kept-whole (own-state) line spec — it advances
+# by that line's total length instead, exactly as the compiled runtime treats
+# it as one `CompositeLine` op. The accumulator's final value is the total
+# arc length of the walked elements.
+_collect_spec_s!(out, elements::Tuple, s, K::Val) =
+    (foreach(e -> _collect_spec_s!(out, e, s, K), elements); out)
+_collect_spec_s!(out, elements::AbstractVector, s, K::Val) =
+    (foreach(e -> _collect_spec_s!(out, e, s, K), elements); out)
+function _collect_spec_s!(out, element::ElementSpec{EK}, s, ::Val{K}) where {EK,K}
+    EK === K && push!(out, (s[], _placement_length(element)))
+    # `_placement_length` so a bare own-state line spec in a task tuple
+    # contributes its contents' length, not zero (U11-1).
+    s[] += _placement_length(element)
+    return out
+end
+function _collect_spec_s!(out, entry::LineEntry, s, ::Val{K}) where {K}
     spec = getfield(entry, :spec)
-    spec isa ElementSpec{:aperture} && return (push!(out, s[]); out)
+    spec isa ElementSpec{K} && push!(out, (s[], _placement_length(entry)))
     # `_placement_length`, not a raw `:L` read: a nested own-state line
     # counted as zero length here, shifting every later aperture_s (U11-1).
     s[] += _placement_length(entry)
     return out
 end
-function _collect_aperture_s!(out, element, s)
-    # `_placement_length` so a bare own-state line spec in a task tuple
-    # contributes its contents' length, not zero (U11-1).
+function _collect_spec_s!(out, element, s, ::Val)
+    # Keep the original walker's contract for any AbstractElementSpec that is
+    # not the parametric ElementSpec shape: its length still advances the arc.
     element isa AbstractElementSpec && (s[] += _placement_length(element))
     return out
 end
@@ -697,6 +712,7 @@ function _runtime_entries(task::TrackingTask, rep=nothing)
     sepoch = _spec_epoch()
     entries = _runtime_line_entries(task.elements)
     entries = _bind_apertures(entries, record)
+    entries = _bind_survey(entries, task.elements)
     task.runtime_entries_cache[] =
         (entries, _has_knob_parameters(task.elements), kepoch, sepoch, record)
     empty!(task.plan_cache)
@@ -761,6 +777,68 @@ end
 _bind_aperture_entry(entry::PhysicsEntry{<:Aperture}, record, id) =
     PhysicsEntry(_attach_loss_record(entry.element, record, id[] += 1))
 _bind_aperture_entry(entry, record, id) = entry
+
+"""
+Bind survey values to every runtime cavity in the compiled line
+(docs/design/survey_and_reference_channel.md).
+
+The spec-side walk (`_collect_spec_s!`, the same traversal the aperture arc
+positions use) yields each cavity's kick position `s_entry + L/2` and the
+line's total arc length; the difference form `ds_turn` — arc from the
+previous kick, wrapping the turn — is what the slip-corrected kick consumes,
+so no `turn·C`-sized number is ever formed. Lines without a cavity return
+untouched, so no other task pays anything.
+
+The count check mirrors `_bind_apertures`: the spec walk does not descend a
+kept-whole (own-state) line, so a cavity inside one is found by the runtime
+rebind but not by the survey — refused loudly here rather than silently left
+at the s = 0 boundary.
+"""
+function _bind_survey(entries::Tuple, elements)
+    pairs = Tuple{Float64,Float64}[]
+    acc = Ref(0.0)
+    _collect_spec_s!(pairs, elements, acc, Val(:thin_rf_cavity))
+    total = acc[]
+    kicks = [p[1] + p[2] / 2 for p in pairs]
+    n = length(kicks)
+    # No early return on n == 0: the rebind must still walk the runtime side,
+    # because a cavity hidden in a kept-whole sub-line is found there and
+    # nowhere else -- with an early return it would silently keep the s = 0
+    # boundary, which is the exact silence this count check exists to refuse.
+    ds = similar(kicks)
+    for i in 2:n
+        ds[i] = kicks[i] - kicks[i-1]
+    end
+    n > 0 && (ds[1] = total - kicks[n] + kicks[1])
+    id = Ref(0)
+    bound = map(entry -> _bind_survey_entry(entry, kicks, ds, id), entries)
+    id[] == n || error(
+        "the survey walk found $(n) thin_rf_cavity spec(s) but the compiled " *
+        "line contains $(id[]); a cavity is sitting inside a kept-whole " *
+        "(own-state) sub-line, which the survey does not descend. Flatten " *
+        "that line or place the cavity at the task level.")
+    return bound
+end
+
+_bind_survey_entry(entry::PhysicsEntry, kicks, ds, id) =
+    PhysicsEntry(_survey_rebind(entry.element, kicks, ds, id))
+_bind_survey_entry(entry, kicks, ds, id) = entry
+
+_survey_rebind(op, kicks, ds, id) = op
+function _survey_rebind(op::ThinRFCavity, kicks, ds, id)
+    i = (id[] += 1)
+    # Out of range: more compiled cavities than surveyed specs. Return the op
+    # unbound; the caller's count check reports the mismatch with its cause.
+    i <= length(kicks) || return op
+    return _attach_survey(op, ds[i])
+end
+_survey_rebind(op::CompositeLine, kicks, ds, id) =
+    CompositeLine(map(o -> _survey_rebind(o, kicks, ds, id), op.ops))
+_survey_rebind(op::MisalignedElement, kicks, ds, id) =
+    MisalignedElement(_survey_rebind(op.inner, kicks, ds, id),
+                      op.qin, op.oin, op.qout, op.oout)
+_survey_rebind(op::RefTilted, kicks, ds, id) =
+    RefTilted(_survey_rebind(op.inner, kicks, ds, id), op.c, op.s)
 
 function _runtime_line_entries(elements)
     out = Any[]

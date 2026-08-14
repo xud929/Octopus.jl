@@ -292,6 +292,7 @@ constructor names remain the user-facing way to build those specs.
 - `StrongStrongPICBackendConsistencyContract`
 - `ElementParameterEffectivenessContract`
 - `KnobEffectivenessContract`
+- `MADXSurveyConsistencyContract`
 - `PTCConsistencyContract`
 - `PublicConfigurationEffectivenessContract`
 - `SolverOptionEffectivenessContract`

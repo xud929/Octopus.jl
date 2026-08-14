@@ -176,6 +176,19 @@ from `reference_beta_gamma(E0, mc2)`, and `s` enters only for
 > to know its accumulated reference arc (`turn·C + s_elem`) — the same
 > survey channel Scope B needs for `P0(s)`; until that exists the boundary
 > is documented on the element and tracked in `todo.md`.
+>
+> **Closed (2026-08-14).** The survey channel landed and the cavity now
+> applies the slip — but *not* through this conversion's `s` argument, and
+> this block's own prescription (`turn·C + s_elem` into the conversion)
+> turned out to be one of two measured wrong forms: a constant per-turn `s`
+> cancels out of the one-turn dynamics entirely (measured: ν_s stayed at
+> the α_c-only value), and the accumulated form makes bounded state
+> unbounded. The correct carrier is a symplectic z-shift,
+> `z += Δs·(β/β₀ − 1)` with `Δs` the arc from the previous cavity kick
+> wrapping the turn, applied before the unchanged conjugated body.
+> Derivation, the exact cancellation-free `g(δ)`, both negative
+> measurements, and the §8-item-4 ν_s verification at this block's own
+> working point: [`arc_survey_and_velocity_slip.md`](arc_survey_and_velocity_slip.md).
 
 Verified: round trip over every ordered pair at three energies and two arc
 positions to 4.4e-16; **exactly symplectic**, `|det J - 1| ≤ 4.4e-16`, which is

@@ -988,6 +988,25 @@ default.
 julia --project=. validation/generate_ptc_reference.jl
 ```
 
+`generate_madx_survey_reference.jl` drives MAD-X `SURVEY` to produce the
+table that `MADXSurveyConsistencyContract` checks the arc survey against —
+`s_positions`, placement lengths, and `total_length`, element for element
+across nested, reflected (`reverse` vs `-half`), heavily curved, and
+cavity-bearing fixture lines. Reference model: MAD-X's own `LINE` expansion
+and its `S` column (end-of-element arc length); error metric: absolute
+deviation, atol 1e-12; output: `validation/reference/survey_madx_<ver>.tsv`,
+committed so the contract needs no MAD-X. Two conventions are pinned by
+construction rather than compared: bend `L` is the ARC in both codes, and
+rbend content is emitted as SBEND + half-angle faces because MAD-X's RBEND
+(`RBARC=true` default) treats its stated `L` as the chord and surveys the
+computed arc (measured: `L=2, angle=0.5` surveys `2.020986251`) while
+`RBendSpec` takes `L` as the arc. Physics note:
+`docs/theory/arc_survey_and_velocity_slip.md`.
+
+```bash
+julia --project=. validation/generate_madx_survey_reference.jl
+```
+
 `lattice_cells.jl` builds FODO, DBA and TBA cells from those magnets and checks
 that they compose into working lattices: one-turn symplecticity by complex step,
 linear stability in both planes, Courant-Snyder invariant drift measured on

@@ -393,6 +393,15 @@ over the element tuple, so it costs the hot path nothing.
 _requires_tracking_context(elem) = false
 _requires_tracking_context(elems::Tuple) = any(_requires_tracking_context, elems)
 _requires_tracking_context(::Aperture{F,M,<:LossRecord}) where {F,M} = true
+# The wrappers forward ctx to their inner op (F13), so the requirement must
+# look through them too: without these, a recording aperture — or a
+# survey-bound cavity — inside a misaligned/rolled wrap or a kept-whole line
+# was invisible to the refusal and a bare `track!` ran it silently degraded
+# (found while wiring the survey channel, 2026-08-13).
+_requires_tracking_context(elem::MisalignedElement) =
+    _requires_tracking_context(elem.inner)
+_requires_tracking_context(elem::RefTilted) = _requires_tracking_context(elem.inner)
+_requires_tracking_context(elem::CompositeLine) = _requires_tracking_context(elem.ops)
 
 """
     ApertureSpec(; shape, x_limit, y_limit, dx, dy, alive, name)
