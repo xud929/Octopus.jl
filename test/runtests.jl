@@ -8098,6 +8098,19 @@ end
     @test Octopus._requires_tracking_context(line)
     @test_throws ArgumentError track!(beam.rep, line, 1,
                                       Octopus.ResolvedCPUExecutionPolicy(1))
+    # ...and the requirement must be seen THROUGH the wrappers, which forward
+    # ctx to their inner op (F13): before the 2026-08-14 recursion methods a
+    # recording aperture inside a composite/misaligned/rolled wrap was
+    # invisible to this refusal and a bare track! ran it silently degraded
+    # (neighbour audit 2026-08-14 — the fix had landed without this pin).
+    let ap = line[2]
+        @test Octopus._requires_tracking_context(Octopus.CompositeLine((ap,)))
+        @test Octopus._requires_tracking_context(Octopus.MisalignedElement(
+            ap, ntuple(i -> Float64(i == 1 || i == 5 || i == 9), 9),
+            (0.0, 0.0, 0.0), ntuple(i -> Float64(i == 1 || i == 5 || i == 9), 9),
+            (0.0, 0.0, 0.0)))
+        @test Octopus._requires_tracking_context(Octopus.RefTilted(ap, 1.0, 0.0))
+    end
 
     track!(beam.rep, line, 5; policy=CPUThreadsExecutionPolicy())
     losses = loss_records(record)

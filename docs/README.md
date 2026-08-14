@@ -276,6 +276,12 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   (the `paper/` reproduction package moved to its own public repository —
   what went where, the hard-coded-path finding in the claim verifier, and
   the supersession relationship to the frozen submission snapshot),
+  [`neighbour_audit_2026_08_14.md`](history/neighbour_audit_2026_08_14.md)
+  (targeted neighbour audit of the survey/velocity-slip/Scope-B campaign:
+  campaign-wide properties re-run at final HEAD — MAD-X survey deviation
+  0.0, backend consistency 2.8e-16, the F16 ring physics — the per-fix
+  walks with their probes, one fixed finding (the wrapper-recursion refusal
+  had landed without a pin), and the priced/ledgered remainder),
   [`neighbour_audit_2026_08_11.md`](history/neighbour_audit_2026_08_11.md)
   (the campaign's targeted neighbour audit: the bitwise pin re-run at final
   HEAD, the no-full-array-D2H property walked to every per-turn diagnostic
