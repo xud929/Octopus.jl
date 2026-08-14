@@ -1124,9 +1124,28 @@ abstract type SBendSpec end
 
 """
 Friendly constructor for a rectangular bend, built as an `ElementSpec{:sbend}`
-with `angle/2` added to each pole-face angle -- MAD-X's exact RBEND conversion,
-a construction convenience over the validated sector-bend map. See
-`element_help(:sbend)` for the parameter schema.
+with `angle/2` added to each pole-face angle -- MAD-X's exact RBEND face
+conversion, a construction convenience over the validated sector-bend map.
+See `element_help(:sbend)` for the parameter schema.
+
+**`L` is the ARC length, as it is for every Octopus element** — the survey,
+`s_positions`, and `total_length` are all sums of `L`, and this kind is no
+exception. This deliberately does **not** match MAD-X's default RBEND length
+semantics: with MAD-X's `RBARC=true` (its default) the `L` you write in a
+MAD-X lattice is the **chord**, and MAD-X surveys the computed arc (measured
+on 5.03.06: `rbend, l=2, angle=0.5` surveys `s = 2.020986251`). Porting a
+MAD-X RBEND, either convert the length yourself or hand the chord over
+directly:
+
+    RBendSpec(chord=2.0, angle=0.5)    # MAD-X RBARC semantics: L = chord·(θ/2)/sin(θ/2)
+    RBendSpec(L=2.0209862…, angle=0.5) # the same magnet, by its arc
+
+`chord` and `L` are mutually exclusive; `chord` is folded into `L` at
+construction and never stored, so it cannot be overridden on a placement
+(the guard names the conversion). The choice of arc-`L` is a feature, not an
+accident: one length rule for every element is what keeps the survey a plain
+`L`-sum, and it is pinned externally against a true MAD-X RBEND by the
+`MADXSurveyConsistencyContract` fixture `rbend_chord`.
 """
 abstract type RBendSpec end
 
@@ -1139,7 +1158,17 @@ abstract type RBendSpec end
 function RBendSpec(; kwargs...)
     d = Dict{Symbol,Any}(kwargs)
     haskey(d, :angle) || throw(ArgumentError("RBendSpec needs angle"))
-    haskey(d, :L) || throw(ArgumentError("RBendSpec needs L"))
+    if haskey(d, :chord)
+        haskey(d, :L) && throw(ArgumentError(
+            "give either `L` (the arc length) or `chord` (MAD-X RBARC \
+             semantics, folded to L = chord * (angle/2) / sin(angle/2)), \
+             not both"))
+        half = float(d[:angle]) / 2
+        chord = float(pop!(d, :chord))
+        d[:L] = iszero(half) ? chord : chord * half / sin(half)
+    end
+    haskey(d, :L) || throw(ArgumentError(
+        "RBendSpec needs `L` (arc length) or `chord` (MAD-X RBARC semantics)"))
     half = float(d[:angle]) / 2
     d[:e1] = float(get(d, :e1, 0.0)) + half
     d[:e2] = float(get(d, :e2, 0.0)) + half
@@ -1423,7 +1452,7 @@ end
         tracking_method=_COMMON_PARAMS.tracking_method,
     )
     example = SBendSpec(L=1.0, angle=0.05)
-    construction_help = "Friendly constructor: SBendSpec(; L, angle=0, h=0, b0=0, k1=0, k1s=0, k2=0, k2s=0, kn=(), ks=(), e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=true, bend_model=:exact, curved=nothing, curved_order=8, wedge_coeff=(1,2), nst=1, integrator_order=2, fringe=:none, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, ref_tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is angle, which sets h = b0 = angle / L; give h and b0 directly when the frame curvature and the field differ, but not alongside angle. Combined-function bends take k1/k2 (k1s/k2s skew), with kn/ks for higher orders and field errors. TILT VERSUS REF_TILT: tilt rolls the magnet body and is an error (Bmad roll, MAD-X EALIGN dpsi); ref_tilt rolls the design orbit plane and is a design choice (Bmad ref_tilt, MAD-X `sbend, tilt=`). A vertical bend is ref_tilt=pi/2. Translating a MAD-X bend tilt into Octopus tilt is the common mistake and gives a machine error where the lattice meant geometry. RBendSpec(; L, angle, ...) builds this same kind with parallel pole faces: it adds angle/2 to each of e1/e2 (the MAD-X RBEND conversion) and forwards everything else to SBendSpec, so every contract and parameter here applies to it. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: SBendSpec(; L, angle=0, h=0, b0=0, k1=0, k1s=0, k2=0, k2s=0, kn=(), ks=(), e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=true, bend_model=:exact, curved=nothing, curved_order=8, wedge_coeff=(1,2), nst=1, integrator_order=2, fringe=:none, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, ref_tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is angle, which sets h = b0 = angle / L; give h and b0 directly when the frame curvature and the field differ, but not alongside angle. Combined-function bends take k1/k2 (k1s/k2s skew), with kn/ks for higher orders and field errors. TILT VERSUS REF_TILT: tilt rolls the magnet body and is an error (Bmad roll, MAD-X EALIGN dpsi); ref_tilt rolls the design orbit plane and is a design choice (Bmad ref_tilt, MAD-X `sbend, tilt=`). A vertical bend is ref_tilt=pi/2. Translating a MAD-X bend tilt into Octopus tilt is the common mistake and gives a machine error where the lattice meant geometry. RBendSpec(; L, angle, ...) builds this same kind with parallel pole faces: it adds angle/2 to each of e1/e2 (the MAD-X RBEND face conversion) and forwards everything else to SBendSpec, so every contract and parameter here applies to it. RBendSpec's L is the ARC length like every Octopus element -- NOT MAD-X's default RBEND semantics, where the written L is the chord (RBARC=true) and the surveyed arc is longer; porting a MAD-X RBEND, give RBendSpec(chord=..., angle=...) and the arc L = chord*(angle/2)/sin(angle/2) is computed at construction (chord and L are mutually exclusive; chord is folded and never stored). Pinned against a true MAD-X RBEND by the MADXSurveyConsistencyContract fixture rbend_chord. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
 
 # RBendSpec constructs an ElementSpec{:sbend}, so its metadata IS the sector

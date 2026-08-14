@@ -2185,12 +2185,14 @@ has a hand-written MAD-X twin in `validation/generate_madx_survey_reference.jl`;
 the pairing is by eye, and *this comparison* is what keeps the two honest —
 any drift between them fails on count, length, or position.
 
-A recorded cross-code caveat the fixtures deliberately sidestep: MAD-X's
-`RBEND` (default `RBARC=true`) treats the stated `L` as the **chord** and
-surveys the computed arc (measured: `L=2, angle=0.5` surveys `2.020986`),
-while Octopus's `RBendSpec` takes `L` as the **arc** (it is sugar over
-`SBendSpec`). The generator therefore mirrors rbend content as SBEND +
-face angles, where the two codes agree by construction.
+A recorded cross-code caveat: MAD-X's `RBEND` (default `RBARC=true`) treats
+the stated `L` as the **chord** and surveys the computed arc (measured:
+`L=2, angle=0.5` surveys `2.020986251`), while Octopus's `RBendSpec` takes
+`L` as the **arc** (it is sugar over `SBendSpec`). The `rbend_faces` fixture
+sidesteps this by mirroring rbend content as SBEND + face angles, where the
+two codes agree by construction; the `rbend_chord` fixture MEETS it — a true
+MAD-X `rbend` against `RBendSpec(chord=..., angle=...)`, whose construction
+fold `L = chord·(θ/2)/sin(θ/2)` must land on exactly the arc MAD-X surveys.
 
 Like the PTC contract, the reference is committed
 (`validation/reference/survey_madx_*.tsv`) so validation needs no MAD-X;
@@ -2220,6 +2222,13 @@ function _madx_survey_reference_lines()
         "curved_heavy" => BeamLine("curved_heavy", b7, d2, b7, d1, b7),
         "rbend_faces" => BeamLine("rbend_faces", d1,
                                   RBendSpec(L=2.0, angle=0.5), d1),
+        # A TRUE MAD-X rbend against RBendSpec's chord keyword: MAD-X (RBARC
+        # default) reads its written L as the chord and surveys the computed
+        # arc; chord= reproduces that fold at construction, so the surveys
+        # must agree exactly. This is the one fixture where the two codes'
+        # rbend length semantics MEET rather than being sidestepped.
+        "rbend_chord" => BeamLine("rbend_chord", d2,
+                                  RBendSpec(chord=2.0, angle=0.5), d2),
         "with_cavity" => BeamLine("with_cavity", DriftSpec(L=3.0), cav(0.6),
                                   DriftSpec(L=5.0), cav(0.0), DriftSpec(L=1.4)),
     )

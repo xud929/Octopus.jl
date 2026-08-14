@@ -2320,6 +2320,29 @@ end
         @test bad.status === :failed
         @test occursin("flat_fodo", bad.message)
     end
+
+    # RBendSpec's MAD-X bridge: `chord` folds to the arc at construction
+    # (L = chord·(θ/2)/sin(θ/2), MAD-X RBARC semantics) and the stored L is
+    # the arc, like every Octopus element. The physical agreement with a true
+    # MAD-X rbend is the contract's rbend_chord fixture above (deviation 0.0
+    # at full TFS precision); these pin the constructor semantics around it.
+    rb = RBendSpec(chord=2.0, angle=0.5)
+    @test Octopus.param(rb, :L) == 2.0 * 0.25 / sin(0.25)
+    @test Octopus.param(RBendSpec(chord=1.3, angle=0.0), :L) == 1.3
+    @test_throws ArgumentError RBendSpec(chord=2.0, L=2.02, angle=0.5)
+    @test_throws ArgumentError RBendSpec(angle=0.5)
+    # `chord` is folded and never stored, so a placement override named
+    # `chord` would be a silent no-op; the guard refuses it with the
+    # conversion in the message (the `angle` precedent).
+    line = BeamLine("rbline", rb, DriftSpec(L=1.0))
+    entry = Octopus.line_entries(line)[1]
+    err = try
+        entry.chord = 1.9
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("sin(angle/2)", sprint(showerror, err))
 end
 
 @testset "Integrated Green kernel on the axes" begin

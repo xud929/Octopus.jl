@@ -14,10 +14,13 @@
 # Conventions pinned by construction rather than compared:
 # * bends state their ARC length (`SBEND, L=` is arc in MAD-X, as is
 #   Octopus's `SBendSpec`);
-# * rbend content is emitted as SBEND + explicit half-angle face angles,
-#   because MAD-X's RBEND (default RBARC=true) treats the stated L as the
-#   CHORD and surveys the computed arc (measured on 5.03.06: L=2, angle=0.5
-#   surveys 2.020986251), while Octopus's RBendSpec takes L as the arc;
+# * rbend content is emitted two ways: `rbend_faces` as SBEND + explicit
+#   half-angle face angles (the conventions agree by construction), and
+#   `rbend_chord` as a TRUE MAD-X rbend against RBendSpec(chord=...) —
+#   MAD-X's RBEND (default RBARC=true) treats the stated L as the CHORD and
+#   surveys the computed arc (measured on 5.03.06: L=2, angle=0.5 surveys
+#   2.020986251), while Octopus's RBendSpec takes L as the arc and folds a
+#   given chord to L = chord*(angle/2)/sin(angle/2) at construction;
 # * RFCAVITY carries its L as drift space in both codes; frequency is MHz in
 #   MAD-X and Hz in Octopus, irrelevant to the survey.
 #
@@ -58,6 +61,11 @@ const DECKS = Dict{String,String}(
         d1: drift, l = 1.15;
         rbf: sbend, l = 2.0, angle = 0.5, e1 = 0.25, e2 = 0.25;
         rbend_faces: line = (d1, rbf, d1);
+        """,
+    "rbend_chord" => """
+        d2: drift, l = 0.35;
+        rbc: rbend, l = 2.0, angle = 0.5;
+        rbend_chord: line = (d2, rbc, d2);
         """,
     "with_cavity" => """
         dc3: drift, l = 3.0;
@@ -100,6 +108,10 @@ function main()
         write(deck, DECKS[case] * """
             beam;
             use, period = $case;
+            ! full double precision in the TFS: the default 10-significant-digit
+            ! format truncates computed arcs (the rbend chord fold showed as a
+            ! fake 3.9e-10 deviation against MAD-X's own rounding).
+            set, format = "22.16e";
             survey, file = "$tfs";
             stop;
             """)

@@ -103,6 +103,12 @@ function _reject_folded_override(spec, name::Symbol)
              placement override named `angle` would never be read. Override `h` and \
              `b0` instead."))
     end
+    if k === :sbend && (name === :chord)
+        throw(ArgumentError(
+            "`chord` is folded into the arc length `L` by RBendSpec at construction, \
+             so a placement override named `chord` would never be read. Override `L` \
+             with the arc length instead: L = chord * (angle/2) / sin(angle/2)."))
+    end
     named = get(_FOLDED_NAMED_STRENGTHS, k, nothing)
     named === nothing && return nothing
     nk, sk = get(_FOLDED_TUPLE_KEYS, k, (:kn, :ks))

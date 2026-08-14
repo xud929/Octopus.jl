@@ -995,12 +995,15 @@ across nested, reflected (`reverse` vs `-half`), heavily curved, and
 cavity-bearing fixture lines. Reference model: MAD-X's own `LINE` expansion
 and its `S` column (end-of-element arc length); error metric: absolute
 deviation, atol 1e-12; output: `validation/reference/survey_madx_<ver>.tsv`,
-committed so the contract needs no MAD-X. Two conventions are pinned by
-construction rather than compared: bend `L` is the ARC in both codes, and
-rbend content is emitted as SBEND + half-angle faces because MAD-X's RBEND
-(`RBARC=true` default) treats its stated `L` as the chord and surveys the
-computed arc (measured: `L=2, angle=0.5` surveys `2.020986251`) while
-`RBendSpec` takes `L` as the arc. Physics note:
+committed so the contract needs no MAD-X. Bend `L` is the ARC in both codes
+for SBEND; MAD-X's RBEND (`RBARC=true` default) instead treats its stated
+`L` as the chord and surveys the computed arc (measured: `L=2, angle=0.5`
+surveys `2.0209862506105356`), while `RBendSpec` keeps `L` as the arc — a
+deliberate one-length-rule feature, bridged by
+`RBendSpec(chord=..., angle=...)`, which folds the chord to the arc at
+construction. The `rbend_faces` fixture sidesteps the difference (SBEND +
+half-angle faces); the `rbend_chord` fixture meets it head on (a true MAD-X
+rbend vs the chord fold; deviation 0.0 at full TFS precision). Physics note:
 `docs/theory/arc_survey_and_velocity_slip.md`.
 
 ```bash

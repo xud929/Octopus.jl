@@ -23,7 +23,13 @@ kind with frame curvature `h`) the spec's `L` **is the arc length**, the
 MAD-X `SBEND` convention this codebase follows throughout (the PTC contract's
 bends are constructed the same way). The chord `2/h·sin(hL/2)` is a
 *geometric* quantity — where the magnet's ends sit in space — and never a
-survey quantity. A lattice of bends therefore surveys as plain `L`-sums at
+survey quantity. The one cross-code exception to watch is MAD-X's `RBEND`
+(default `RBARC=true`), whose *written* `L` is the chord while its surveyed
+arc is longer; Octopus's `RBendSpec` deliberately keeps the one-length rule
+(`L` is the arc) and bridges importers with `RBendSpec(chord=…, angle=…)`,
+whose construction fold `L = chord·(θ/2)/sin(θ/2)` is pinned against a true
+MAD-X rbend by the survey contract's `rbend_chord` fixture at zero measured
+deviation. A lattice of bends therefore surveys as plain `L`-sums at
 any bend angle, which is exactly what the MAD-X consistency contract pins
 externally (MAD-X's `SURVEY` `S` column is the same arc-length sum, while its
 `X/Z/THETA` columns are the floor plan the 1D survey deliberately does not
