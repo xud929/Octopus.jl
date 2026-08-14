@@ -75,10 +75,28 @@ const DECKS = Dict{String,String}(
         cv0: rfcavity, l = 0, volt = 1.0, freq = 2.99792458;
         with_cavity: line = (dc3, cv6, dc5, cv0, dc14);
         """,
+    "vertical_bend" => """
+        d2: drift, l = 0.35;
+        vb: sbend, l = 2.2, angle = 0.5, tilt = 1.5707963267948966;
+        vertical_bend: line = (d2, vb, d2);
+        """,
+    # octopus angle_s = +0.2 twins with srotation angle = -0.2: the measured
+    # U16-5 roll inversion (docs/theory/floor_plan_survey.md, Sec. 4 item 2).
+    "patch_srot" => """
+        d1: drift, l = 1.15;
+        sr: srotation, angle = -0.2;
+        patch_srot: line = (d1, sr, d1);
+        """,
+    "patch_yrot" => """
+        d1: drift, l = 1.15;
+        yr: yrotation, angle = 0.1;
+        patch_yrot: line = (d1, yr, d1);
+        """,
 )
 
 function parse_survey_tfs(path)
-    rows = NamedTuple{(:name, :keyword, :s, :l),Tuple{String,String,Float64,Float64}}[]
+    rows = NamedTuple{(:name, :keyword, :s, :l, :x, :y, :z, :theta, :phi, :psi),
+                      Tuple{String,String,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64}}[]
     cols = String[]
     for line in eachline(path)
         startswith(line, "@") && continue
@@ -93,7 +111,10 @@ function parse_survey_tfs(path)
         name = strip(d["NAME"], '"')
         (endswith(name, "\$START") || endswith(name, "\$END")) && continue
         push!(rows, (name=name, keyword=strip(d["KEYWORD"], '"'),
-                     s=parse(Float64, d["S"]), l=parse(Float64, d["L"])))
+                     s=parse(Float64, d["S"]), l=parse(Float64, d["L"]),
+                     x=parse(Float64, d["X"]), y=parse(Float64, d["Y"]),
+                     z=parse(Float64, d["Z"]), theta=parse(Float64, d["THETA"]),
+                     phi=parse(Float64, d["PHI"]), psi=parse(Float64, d["PSI"])))
     end
     return rows
 end
@@ -121,7 +142,8 @@ function main()
         occursin("finished normally", log) ||
             error("MAD-X did not finish normally for $case:\n$(last(log, 2000))")
         for (i, r) in enumerate(parse_survey_tfs(tfs))
-            println(out, join((case, i, r.name, r.keyword, r.l, r.s), '\t'))
+            println(out, join((case, i, r.name, r.keyword, r.l, r.s,
+                               r.x, r.y, r.z, r.theta, r.phi, r.psi), '\t'))
         end
     end
     ref = normpath(joinpath(@__DIR__, "reference", "survey_madx_$(version).tsv"))
@@ -129,7 +151,7 @@ function main()
         println(io, "# MAD-X survey reference for MADXSurveyConsistencyContract")
         println(io, "# MAD-X version: $version")
         println(io, "# generated: $(basename(@__FILE__)), see its header for the model")
-        println(io, "case\tidx\tname\tkeyword\tL\ts_end")
+        println(io, "case\tidx\tname\tkeyword\tL\ts_end\tX\tY\tZ\ttheta\tphi\tpsi")
         write(io, take!(out))
     end
     println("wrote $ref")

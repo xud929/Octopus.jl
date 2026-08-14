@@ -443,6 +443,15 @@ Agreement with PTC, driven through `sbend, tilt=`: **3.5e-13** for a pure dipole
   that a misaligned magnet is the main reason a particle hits an aperture still
   stands, and the aperture deliberately carries its own `dx`/`dy` rather than
   routing through the misalignment frames — see that note's Section 4.
-- **Survey.** PTC's approach presumes a survey exists. Octopus has no geometry
+- ~~**Survey.** PTC's approach presumes a survey exists. Octopus has no geometry
   layer, so the centre-referenced parameterization is the only workable one for
-  now; a survey would be needed for a machine described by measured frames.
+  now; a survey would be needed for a machine described by measured frames.~~
+  **Done (2026-08-14)**: the floor-plan survey —
+  [`floor_plan_survey.md`](floor_plan_survey.md), `survey(line)` in
+  `src/elements/floor_plan.jl` — propagates the global frame per element
+  through the same `_patch_rotation` primitives this note pinned, and is
+  checked element-for-element against MAD-X `SURVEY` (all six floor columns,
+  worst deviation 7.1e-15 over nine fixtures) by the
+  `MADXSurveyConsistencyContract`. The centre-referenced misalignment
+  parameterization stays; the survey deliberately excludes misalignments and
+  `tilt`, which are errors about the frame it computes.

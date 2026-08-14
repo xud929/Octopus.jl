@@ -2172,8 +2172,10 @@ end
 """
     MADXSurveyConsistencyContract(; path=nothing, atol=1e-12)
 
-Check the arc survey — `s_positions`, placement lengths, `total_length` —
-against a committed MAD-X `SURVEY` reference, element for element.
+Check both surveys — the arc walker (`s_positions`, placement lengths,
+`total_length`) and the floor plan (`survey`: global `X, Y, Z`,
+`θ, φ, ψ`) — against a committed MAD-X `SURVEY` reference, element for
+element.
 
 The fixtures (`_madx_survey_reference_lines`) exercise the structures the
 survey walker must get right: a flat cell, nested sub-lines expanded twice,
@@ -2231,6 +2233,16 @@ function _madx_survey_reference_lines()
                                   RBendSpec(chord=2.0, angle=0.5), d2),
         "with_cavity" => BeamLine("with_cavity", DriftSpec(L=3.0), cav(0.6),
                                   DriftSpec(L=5.0), cav(0.0), DriftSpec(L=1.4)),
+        # Floor-plan fixtures (docs/theory/floor_plan_survey.md §4). The
+        # vertical bend pins ref_tilt's sign AS MAD-X's tilt; the patch pair
+        # pins the rotation senses — note the srot twin carries angle = -0.2
+        # in the deck, the measured U16-5 roll inversion between `angle_s`
+        # and MAD-X's psi sense.
+        "vertical_bend" => BeamLine("vertical_bend", d2,
+                                    SBendSpec(L=2.2, angle=0.5, ref_tilt=pi/2),
+                                    d2),
+        "patch_srot" => BeamLine("patch_srot", d1, PatchSpec(angle_s=0.2), d1),
+        "patch_yrot" => BeamLine("patch_yrot", d1, PatchSpec(angle_y=0.1), d1),
     )
 end
 
@@ -2256,7 +2268,11 @@ function validate(contract::MADXSurveyConsistencyContract; kwargs...)
     end
     lines = _madx_survey_reference_lines()
     version = "unknown"
-    table = Dict{String,Vector{NTuple{2,Float64}}}()   # case => [(L, s_end)]
+    # case => [(L, s_end, X, Y, Z, THETA, PHI, PSI)]. A six-column table from
+    # before the floor-plan extension parses as zero usable rows, so the
+    # coverage check below reports every case as missing and names the
+    # regeneration script -- stale-reference failure, not a silent skip.
+    table = Dict{String,Vector{NTuple{8,Float64}}}()
     for row in eachline(path)
         if startswith(row, "#")
             m = match(r"MAD-X version:\s*(\S+)", row)
@@ -2265,9 +2281,9 @@ function validate(contract::MADXSurveyConsistencyContract; kwargs...)
         end
         (startswith(row, "case") || isempty(strip(row))) && continue
         f = split(row, '\t')
-        length(f) == 6 || continue
-        push!(get!(Vector{NTuple{2,Float64}}, table, String(f[1])),
-              (parse(Float64, f[5]), parse(Float64, f[6])))
+        length(f) == 12 || continue
+        push!(get!(Vector{NTuple{8,Float64}}, table, String(f[1])),
+              ntuple(i -> parse(Float64, f[4 + i]), 8))
     end
     untested = sort!(collect(setdiff(keys(lines), keys(table))))
     isempty(untested) || return ContractResult(false,
@@ -2280,18 +2296,28 @@ function validate(contract::MADXSurveyConsistencyContract; kwargs...)
         rows = table[name]
         entries = line_entries(line)
         s = s_positions(line)
-        if length(entries) != length(rows)
-            push!(failures, "$(name): $(length(entries)) entries vs " *
+        frames = survey(line)
+        if length(entries) != length(rows) || length(frames) != length(rows)
+            push!(failures, "$(name): $(length(entries)) entries / " *
+                            "$(length(frames)) survey frames vs " *
                             "$(length(rows)) MAD-X rows")
             continue
         end
-        for (i, (Lref, send)) in enumerate(rows)
+        for (i, row) in enumerate(rows)
+            Lref, send = row[1], row[2]
             Li = _placement_length(entries[i])
-            dev = max(abs(Li - Lref), abs(s[i] + Li - send))
+            f = frames[i]
+            # Arc columns from the arc walker; floor columns from the
+            # floor-plan survey -- one MAD-X table checks both walkers.
+            dev = max(abs(Li - Lref), abs(s[i] + Li - send),
+                      abs(f.position[1] - row[3]), abs(f.position[2] - row[4]),
+                      abs(f.position[3] - row[5]), abs(f.theta - row[6]),
+                      abs(f.phi - row[7]), abs(f.psi - row[8]))
             worst = max(worst, dev)
             dev <= contract.atol || push!(failures,
                 "$(name)[$(i)]: L $(Li) vs $(Lref), s_end $(s[i] + Li) vs " *
-                "$(send)")
+                "$(send), floor $(f.position)/$(f.theta)/$(f.phi)/$(f.psi) " *
+                "vs $(row[3:8])")
         end
         tdev = abs(total_length(line) - rows[end][2])
         worst = max(worst, tdev)

@@ -989,10 +989,14 @@ julia --project=. validation/generate_ptc_reference.jl
 ```
 
 `generate_madx_survey_reference.jl` drives MAD-X `SURVEY` to produce the
-table that `MADXSurveyConsistencyContract` checks the arc survey against —
-`s_positions`, placement lengths, and `total_length`, element for element
-across nested, reflected (`reverse` vs `-half`), heavily curved, and
-cavity-bearing fixture lines. Reference model: MAD-X's own `LINE` expansion
+table that `MADXSurveyConsistencyContract` checks BOTH surveys against —
+the arc walker (`s_positions`, placement lengths, `total_length`) and the
+floor plan (`survey`: global `X, Y, Z` and `theta, phi, psi`,
+`docs/theory/floor_plan_survey.md`) — element for element across nested,
+reflected (`reverse` vs `-half`), heavily curved, vertical-bend
+(`ref_tilt` ↔ MAD-X `tilt`), patch-rotation (`angle_s = +a` twins
+`srotation, angle = -a`, the measured U16-5 roll inversion; `angle_y`
+twins `yrotation` directly), and cavity-bearing fixture lines. Reference model: MAD-X's own `LINE` expansion
 and its `S` column (end-of-element arc length); error metric: absolute
 deviation, atol 1e-12; output: `validation/reference/survey_madx_<ver>.tsv`,
 committed so the contract needs no MAD-X. Bend `L` is the ARC in both codes

@@ -2301,6 +2301,26 @@ end
     @test r.metrics[:cases] == length(Octopus._madx_survey_reference_lines())
     @test r.metrics[:max_deviation] <= 1e-12
 
+    # The floor plan's own invariants, independent of the committed table
+    # (docs/theory/floor_plan_survey.md). The extraction identity is the
+    # note's load-bearing anchor: the angles of W = R_s(0.3) R_y(-0.5)
+    # R_s(-0.3) must be the MAD-X-measured triple to the last digit.
+    ft = survey((SBendSpec(L=2.0, angle=0.5, ref_tilt=0.3),))[end]
+    @test isapprox(ft.theta, -0.4810158446769440; atol=1e-15)
+    @test isapprox(ft.phi, -0.1421582627151752; atol=1e-15)
+    @test isapprox(ft.psi, -0.0349203257492635; atol=1e-15)
+    # Ring closure: eight 45-degree bends with drifts return the frame to
+    # the origin -- the global integration no per-element comparison gives.
+    ring = Tuple(vcat([[SBendSpec(L=1.0, angle=pi/4), DriftSpec(L=2.0)]
+                       for _ in 1:8]...))
+    fr = survey(ring)[end]
+    @test maximum(abs, fr.position) < 1e-13
+    @test abs(fr.theta) < 1e-13         # atan2 wraps -2pi to 0
+    # Misalignments and body tilt never move the survey; ref_tilt does.
+    fm = survey((SBendSpec(L=2.0, angle=0.5, x_offset=1e-3, tilt=0.2),))[end]
+    f0 = survey((SBendSpec(L=2.0, angle=0.5),))[end]
+    @test fm.position == f0.position && fm.psi == f0.psi
+
     # Discriminating power, the PTC precedent: a table missing a case must
     # fail naming it, and a corrupted length must fail on the numbers.
     source = Octopus._madx_survey_reference_path(MADXSurveyConsistencyContract())

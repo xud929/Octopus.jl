@@ -63,6 +63,14 @@ reference material, not API docs; the implementing code links back to them.
   does, the symplectic z-shift form of the cavity's slip correction with the
   exact cancellation-free `g(δ)`, and the two measured wrong forms kept as
   negative results. Physics behind the survey channel and the F16 closure.
+- [`floor_plan_survey.md`](theory/floor_plan_survey.md) — the global-geometry
+  survey (MAD-X `SURVEY`): frame propagation `(V, W)`, the per-element
+  geometric maps (bends in the `ref_tilt`-rolled plane, patches through the
+  shared `_patch_rotation`, misalignments deliberately excluded), the
+  measured MAD-X angle conventions with the `tilt = 0.3` extraction anchor,
+  the gimbal edge, and the measured `angle_s`-vs-`srotation` roll inversion.
+  Written before the implementation, per owner direction; every convention
+  is measured, not assumed.
 - [`beam_beam_longitudinal_kick.md`](theory/beam_beam_longitudinal_kick.md) — the
   synchro-beam 6D longitudinal kick: moving source centroid, transported
   covariance, principal-axis rotation, virtual drift, and the slingshot term.
