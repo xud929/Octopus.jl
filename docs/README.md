@@ -26,6 +26,26 @@ Categories:
   evaluation at `compile_runtime`, epoch-based task recompilation, the native
   symbolic derivative, and the optional Symbolics.jl adapter.
 
+## Design notes (architecture decisions)
+
+Records of *which* design was chosen among alternatives that achieve similar
+physics, and why — the decision layer between the theory notes (which derive
+what is true) and the source (which implements what was chosen). A design note
+cites the theory it builds on and the alternatives it rejected; it does not
+duplicate derivations. (`knob_control.md` above is also a design note; it
+predates this folder and stays top-level because `AGENTS.md` links it.)
+
+- [`survey_and_reference_channel.md`](design/survey_and_reference_channel.md) —
+  the channel telling a runtime element its place on the reference trajectory:
+  static survey values (`s_elem`, later `P0`) baked at compile via the line
+  walk, the dynamic part from `TrackingContext.turn`, loud refusal without
+  context; the rejected alternatives (seventh coordinate, slip-in-every-map,
+  context-resident `s`/`P0`, stored per-element reference, time-dependent
+  kernels); the taxonomy of reference-energy change (single-pass, multipass,
+  ramping-as-knob-epochs); and where Octopus follows versus departs from
+  Bmad's bookkeeping-plus-rampers strategy. Prerequisite design for the F16
+  velocity-slip fix and RF Scope B.
+
 ## Theory / method notes (the physics "Knowledge Layer")
 
 Self-contained derivations behind the accelerator-physics methods. They are

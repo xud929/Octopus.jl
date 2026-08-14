@@ -254,7 +254,10 @@ surface with its own indexed design note.)
 - `docs/`: documentation, indexed by `docs/README.md`. Detailed API guidance
   belongs in docstrings, not here. Subfolders: `docs/theory/` holds
   physics/method derivations (the Knowledge Layer) that implementing code links
-  back to; `docs/history/` holds dated records of implemented work (optimization
+  back to; `docs/design/` holds architecture decision notes — which design was
+  chosen among alternatives and why, citing the theory it builds on and the
+  alternatives it rejected (theory derives, design decides, source implements);
+  `docs/history/` holds dated records of implemented work (optimization
   and benchmark histories, audits). Top-level `docs/` keeps entry-point,
   generated, or volatile-runtime notes (`public_api.md`, `registry_snapshot.md`,
   `current_runtime.md`) and the forward plan (`todo.md`). Add every new document
