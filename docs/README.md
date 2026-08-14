@@ -35,6 +35,11 @@ cites the theory it builds on and the alternatives it rejected; it does not
 duplicate derivations. (`knob_control.md` above is also a design note; it
 predates this folder and stays top-level because `AGENTS.md` links it.)
 
+- [`testing_lanes.md`](design/testing_lanes.md) — the fast development lane
+  (`Pkg.test(test_args=["lane=fast"])`): the measured time split behind the 13
+  guarded heavyweight sections, the loud-skip accounting rules, and the
+  decision matrix for change classes where only the full gate (CUDA active)
+  counts. The fast lane is a checkpoint, never a finish line.
 - [`survey_and_reference_channel.md`](design/survey_and_reference_channel.md) —
   the channel telling a runtime element its place on the reference trajectory:
   static survey values (`s_elem`, later `P0`) baked at compile via the line

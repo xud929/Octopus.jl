@@ -1,3 +1,32 @@
+# ---------------------------------------------------------------------------
+# Test lanes (docs/design/testing_lanes.md).
+#
+# Default is the FULL suite; `Pkg.test(test_args=["lane=fast"])` selects the
+# development-checkpoint lane, which skips the sections registered below via
+# `_lane_gate`, printing one loud LANE SKIP line per section and an accounting
+# banner at the end. The fast lane is a checkpoint, never a finish line: the
+# full-suite gate at CI settings remains the bar before any commit, and the
+# design note's matrix lists the change classes for which the full gate (with
+# CUDA active) is mandatory. An unknown lane name is an error, never a silent
+# fallback to full -- a typo must not produce a vacuous verdict.
+# ---------------------------------------------------------------------------
+const _TEST_LANE = let
+    lanes = [split(a, '='; limit=2)[2] for a in ARGS if startswith(a, "lane=")]
+    length(lanes) > 1 && error("multiple lane= arguments: $(lanes)")
+    lane = isempty(lanes) ? "full" : String(lanes[1])
+    lane in ("full", "fast") ||
+        error("unknown test lane $(repr(lane)); valid: lane=full, lane=fast")
+    lane
+end
+const _LANE_SKIPPED = String[]
+_lane_full() = _TEST_LANE == "full"
+function _lane_gate(name::AbstractString)
+    _lane_full() && return true
+    push!(_LANE_SKIPPED, String(name))
+    printstyled("LANE SKIP [$(_TEST_LANE)]: $(name)\n"; color=:yellow, bold=true)
+    return false
+end
+
 using Test
 using Octopus
 using LinearAlgebra
@@ -2114,6 +2143,7 @@ end
     end
 end
 
+if _lane_gate("Element parameter effectiveness")
 @testset "Element parameter effectiveness" begin
     # Every declared element parameter must reach the map. Metadata validation
     # checks a parameter is declared and documented, not that anything reads it,
@@ -2222,6 +2252,7 @@ end
     end
     @test haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :nst))
 end
+end # _lane_gate("Element parameter effectiveness")
 
 @testset "PTC coverage cannot narrow silently" begin
     r = validate(PTCConsistencyContract())
@@ -2370,6 +2401,7 @@ end
     end
 end
 
+if _lane_gate("Solver option effectiveness")
 @testset "Solver option effectiveness" begin
     # The solver-level analogue. Element parameters had a mechanical sweep and
     # solver options did not, which is how GaussianPICPoissonSolver came to
@@ -2400,6 +2432,7 @@ end
         @test occursin("equal to its own probe value", bad.message)
     end
 end
+end # _lane_gate("Solver option effectiveness")
 
 @testset "Element parameters carry their own number type" begin
     u = (1.0e-3, 1.0e-4, -0.5e-3, 2.0e-4, 0.0, 1.0e-3)
@@ -2836,6 +2869,7 @@ end
     end
 end
 
+if _lane_gate("script mode picks up the ForwardDiff rules")
 @testset "script mode picks up the ForwardDiff rules" begin
     # The `_HAS_FORWARDDIFF_SCRIPT_MODE` branch in src/Octopus.jl is dead under
     # every committed invocation: `--project=.` cannot import ForwardDiff (it is
@@ -2887,6 +2921,7 @@ end
         end
     end
 end
+end # _lane_gate("script mode picks up the ForwardDiff rules")
 
 @testset "a torn coordinate record is reported, not mis-framed" begin
     # The compact format is `UInt32(n)` then `6n` Float64s, with no framing and
@@ -3095,6 +3130,7 @@ end
     @test eltype(Beam(4, CPUThreadsExecutionPolicy(), Float32).rep.x) === Float32
 end
 
+if _lane_gate("ForwardDiff differentiates the lattice")
 @testset "ForwardDiff differentiates the lattice" begin
     # Octopus takes NO runtime dependency on ForwardDiff. It works because the
     # element layer is generic in its number type, so this testset is here to
@@ -3198,6 +3234,7 @@ end
         @test gk[1] != gk[2]
     end
 end
+end # _lane_gate("ForwardDiff differentiates the lattice")
 
 @testset "BeamLine composes, addresses and tracks" begin
     u = (1.0e-3, 1.0e-4, -0.5e-3, 2.0e-4, 0.0, 1.0e-3)
@@ -3797,6 +3834,7 @@ end
         gf, strong(256), strong(256), CPUThreadsBackend)
 end
 
+if _lane_gate("Curved frame x transverse field: every routing is a gradient")
 @testset "Curved frame x transverse field: every routing is a gradient" begin
     # The h != 0 cross-product sweep (docs/todo.md). A straight multipole
     # kick in a curved frame is a gradient iff h*Im f == 0 -- pure normal
@@ -3899,6 +3937,7 @@ end
         @test Set(both) == swept
     end
 end
+end # _lane_gate("Curved frame x transverse field: every routing is a gradient")
 
 @testset "Straight solenoids differentiate, and curved=false means straight" begin
     # 2026-08-05 audit F17 (U10-1/2/3/4). The straight solenoid's body was
@@ -4617,6 +4656,7 @@ end
     @test Ey1 == Ey0
 end
 
+if _lane_gate("Every example script runs against the current interface")
 @testset "Every example script runs against the current interface" begin
     # Examples are the precedents agents and users imitate (AGENTS.md), and
     # none was executed by this suite -- which is how a refactor that renamed
@@ -4663,6 +4703,7 @@ end
         isdir(seed_dir) && isempty(readdir(seed_dir)) && rm(seed_dir)
     end
 end
+end # _lane_gate("Every example script runs against the current interface")
 
 @testset "Every export is documented" begin
     # 76 of 335 exports lacked documentation when the 2026-08-05 audit swept
@@ -5660,6 +5701,7 @@ end
     @test res.metrics[:lost_one_backend] == 0
 end
 
+if _lane_gate("Contract coverage guards: declared kinds, solver tree, broken baselines, unrun contracts")
 @testset "Contract coverage guards: declared kinds, solver tree, broken baselines, unrun contracts" begin
     # 2026-08-05 audit open-queue items U3-3/4/6/7. The symplecticity case
     # list now carries the solenoid (the one kind that DECLARES the
@@ -5843,6 +5885,7 @@ end
         @test_skip "CUDA device not available"
     end
 end
+end # _lane_gate("Contract coverage guards: declared kinds, solver tree, broken baselines, unrun contracts")
 
 @testset "The elliptical strong-beam kick differentiates" begin
     # 2026-08-05 audit open-queue U7-1: the η≠0 Bassetti-Erskine kick threw
@@ -6516,6 +6559,7 @@ end
     end
 end
 
+if _lane_gate("Lattice cells track and stay symplectic")
 @testset "Lattice cells track and stay symplectic" begin
     S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
     track(cell, u) = foldl((c, e) -> e(c...), cell; init=u)
@@ -6602,6 +6646,7 @@ end
     @test stochastic_gpu.status === :passed ||
           (stochastic_gpu.status === :skipped && !CUDA_TESTS_ACTIVE)
 end
+end # _lane_gate("Lattice cells track and stay symplectic")
 
 @testset "Configuration rejection" begin
     @test_throws ArgumentError CPUThreadsExecutionPolicy(threads=0)
@@ -9327,6 +9372,7 @@ end
     @test abs(needed_scale(exg, eyg) - 1) < abs(needed_scale(exg2, eyg2) - 1)
 end
 
+if _lane_gate("CUDA GaussianPIC coupled subtraction matches CPU")
 @testset "CUDA GaussianPIC coupled subtraction matches CPU" begin
     # The coupled branch is implemented on the CPU path and on the default CUDA
     # indexed-wavefront route. This testset uses green_cache=:none; the
@@ -9374,6 +9420,7 @@ end
         @test_skip "CUDA device not available"
     end
 end
+end # _lane_gate("CUDA GaussianPIC coupled subtraction matches CPU")
 
 @testset "GaussianPIC coupled (rotated) subtraction" begin
     # docs/theory Section 7. Three things must hold:
@@ -11109,6 +11156,7 @@ end
     end
 end
 
+if _lane_gate("Physics contracts")
 @testset "Physics contracts" begin
     sym = validate(SymplecticityContract())
     @test sym.passed
@@ -11146,6 +11194,7 @@ end
     @test gpic.metrics[:lambda_x] > gau.metrics[:lambda_x]
     @test gpic.metrics[:lambda_y] > gau.metrics[:lambda_y]
 end
+end # _lane_gate("Physics contracts")
 
 @testset "Strong-strong physical parameter validation" begin
     rep1 = Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0])
@@ -11343,6 +11392,7 @@ end
 end
 
 
+if _lane_gate("PIC green_type=:lattice")
 @testset "PIC green_type=:lattice" begin
     # The lattice Green function inverts the five-point discrete Laplacian exactly
     # instead of discretizing the continuum -ln r. Derivation and measurements:
@@ -11434,6 +11484,7 @@ end
         @test_skip "CUDA device not available"
     end
 end
+end # _lane_gate("PIC green_type=:lattice")
 
 @testset "The lattice Green box is sized in physical units, not index units" begin
     # `_PIC_LATTICE_GREEN_MULT = 8` multiplied the padded extent on BOTH axes, which
@@ -11546,6 +11597,7 @@ end
     end
 end
 
+if _lane_gate("Green-cache expansion preserves the grid alignment its kernels require")
 @testset "Green-cache expansion preserves the grid alignment its kernels require" begin
     # `_pic_expand_grid_by` scales `width` with the node count fixed, so the cell
     # size grows while the origin separation does not: an exact k-cell separation
@@ -11620,6 +11672,7 @@ end
         @test isfinite(l) && all(isfinite, vcat(coordinate_arrays(e)...))
     end
 end
+end # _lane_gate("Green-cache expansion preserves the grid alignment its kernels require")
 
 @testset "grid_extent is rejected, not ignored, where no estimator runs" begin
     # `grid_extent` is consumed by `_pic_axis_extent`, which only the per-slice-pair
@@ -12010,6 +12063,7 @@ end
     end
 end
 
+if _lane_gate("PIC-family luminosity returns Float64 on every backend and precision")
 @testset "PIC-family luminosity returns Float64 on every backend and precision" begin
     # 2026-08-07 neighbour audit, N7. Nothing stable existed to key the
     # return type on: klum and kbb follow the beam's params type, so a
@@ -12080,6 +12134,7 @@ end
         @test_skip "CUDA device not available"
     end
 end
+end # _lane_gate("PIC-family luminosity returns Float64 on every backend and precision")
 
 @testset "Flipping gaussian_when_luminosity moves luminosity and nothing else" begin
     # 2026-08-07 neighbour audit, N6. The Val{COMPUTE_LUMINOSITY} gate
@@ -12325,4 +12380,16 @@ end
     else
         @test_skip "CUDA device not available"
     end
+end
+
+# Lane accounting (docs/design/testing_lanes.md): a skipped check only stops
+# counting when the skip is visible. Silence here would be the F2 failure mode.
+if !_lane_full()
+    printstyled("\n=== $(uppercase(_TEST_LANE)) LANE: $(length(_LANE_SKIPPED)) heavyweight sections SKIPPED ===\n";
+                color=:yellow, bold=true)
+    for name in _LANE_SKIPPED
+        println("  skipped: ", name)
+    end
+    printstyled("This lane is a development checkpoint, not a finish line: the full-suite\n" *
+                "gate at CI settings is still owed before any commit.\n"; color=:yellow)
 end

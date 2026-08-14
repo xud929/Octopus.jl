@@ -130,7 +130,12 @@ Lessons"); the receipts are the dated records in `docs/history/`.
   not in a session scratchpad.
 - Finish through the full-suite gate at CI settings
   (`julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'`);
-  it has caught what targeted verification cleared.
+  it has caught what targeted verification cleared. A fast development
+  checkpoint exists — `Pkg.test(test_args=["lane=fast"], julia_args=["--threads=4"])`
+  skips the registered heavyweight sections loudly — but it is never the
+  finish line, and [`docs/design/testing_lanes.md`](docs/design/testing_lanes.md)
+  lists the change classes for which only the full gate counts (CUDA-reachable
+  code and concurrency surfaces always, with CUDA active).
 
 ## Architectural Rules
 
