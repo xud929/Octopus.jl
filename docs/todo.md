@@ -7,6 +7,33 @@
 >
 > ## Open work, most actionable first
 >
+> **Start next: `BPMObserver` path-mode capacity buffering** (the N2 row
+> below). The worked recipe is `LuminosityObserver`'s capacity buffer
+> (`3cc0158`); the twist the row records is that BPM replay rewrites the
+> file from object memory, so the buffer must compose with that replay
+> model rather than the `.lum` row-trim. Bounded, self-contained, and worth
+> 2.3 ms/turn per BPM on the production cluster filesystem.
+>
+> **After it, the keystone: a `ParamMeta` `alternatives` field** (the
+> constructive direction recorded on the U4-12 row). One metadata addition
+> lets `_perturb_candidates` derive Symbol/flag perturbations instead of
+> returning `()`, which unblocks `misalign_convention` (U4-12), gives the
+> unfalsifiable aperture probes their per-kind shrinking-limit moves
+> (U4-1), and reaches `fringe`, `bend_model`, `aperture.shape`,
+> `patch.convention` and `xy_coupling.mode` — the sweep derives rather
+> than hand-lists, which is the rule this file keeps re-learning.
+>
+> Orientation notes for a fresh session: the CI-segfault row is a WATCH
+> (a flake-tally ledger since the 2026-08-14 re-float), not a work item;
+> the 2026-08-14 campaigns (survey channel, F16 velocity slip, Scope B
+> accelerating cavity, floor-plan survey, cavity-chain hardening, harmon)
+> closed their rows below, with the audit trail in
+> [`history/neighbour_audit_2026_08_14.md`](history/neighbour_audit_2026_08_14.md);
+> the remaining open rows after the two above are blocked-or-heavy
+> (U4-18/U12-8 on constructor-keyword introspection, U12-6 on semantic
+> checking, U9-2 on an ~80-entry schema completion priced in its row, and
+> the Bmad reference cases — now carrying four riders — on a tool).
+>
 > | item | state | notes |
 > |---|---|---|
 > | ~~`loss_summary` into `TrackingTask` diagnostics~~ | **done (2026-08-02)** | Fired automatically at the end of every `execute!`: silent when nothing was lost, `stdout` per collimator otherwise, into the `loss_log` HDF5 when one was asked for, and a warning whenever `unattributed != 0` — including when the line has no aperture at all, which is the case nothing else would notice. `loss_report=false` skips the `O(N)` reduction itself rather than silencing it, so it switches off the detection too — no warning, no summary in the file — which is the trade for a caller stepping one turn at a time. Aperture **arc positions** now fill the `aperture_s` dataset `write_loss_record` had always accepted and nothing ever supplied. |
