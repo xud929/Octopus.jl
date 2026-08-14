@@ -294,7 +294,7 @@ direction that need not lie along the design orbit. And this is arc length only
 `docs/theory/misalignment_and_patch_maps.md` Section 8 asks for.
 """
 function _aperture_s_positions(elements)
-    out = Tuple{Float64,Float64}[]
+    out = Tuple{Float64,Float64,Any}[]
     _collect_spec_s!(out, elements, Ref(0.0), Val(:aperture))
     return [p[1] for p in out]
 end
@@ -313,7 +313,11 @@ _collect_spec_s!(out, elements::Tuple, s, K::Val) =
 _collect_spec_s!(out, elements::AbstractVector, s, K::Val) =
     (foreach(e -> _collect_spec_s!(out, e, s, K), elements); out)
 function _collect_spec_s!(out, element::ElementSpec{EK}, s, ::Val{K}) where {EK,K}
-    EK === K && push!(out, (s[], _placement_length(element)))
+    # The third slot carries the matched spec/entry itself: the cavity survey
+    # needs only lengths, but the accelerating-cavity chain validation reads
+    # declared parameters, and a second traversal would be the two-walker
+    # divergence T3 exists to forbid.
+    EK === K && push!(out, (s[], _placement_length(element), element))
     # `_placement_length` so a bare own-state line spec in a task tuple
     # contributes its contents' length, not zero (U11-1).
     s[] += _placement_length(element)
@@ -321,7 +325,7 @@ function _collect_spec_s!(out, element::ElementSpec{EK}, s, ::Val{K}) where {EK,
 end
 function _collect_spec_s!(out, entry::LineEntry, s, ::Val{K}) where {K}
     spec = getfield(entry, :spec)
-    spec isa ElementSpec{K} && push!(out, (s[], _placement_length(entry)))
+    spec isa ElementSpec{K} && push!(out, (s[], _placement_length(entry), entry))
     # `_placement_length`, not a raw `:L` read: a nested own-state line
     # counted as zero length here, shifting every later aperture_s (U11-1).
     s[] += _placement_length(entry)
@@ -713,6 +717,7 @@ function _runtime_entries(task::TrackingTask, rep=nothing)
     entries = _runtime_line_entries(task.elements)
     entries = _bind_apertures(entries, record)
     entries = _bind_survey(entries, task.elements)
+    _validate_reference_chain(task.elements)
     task.runtime_entries_cache[] =
         (entries, _has_knob_parameters(task.elements), kepoch, sepoch, record)
     empty!(task.plan_cache)
@@ -795,7 +800,7 @@ rebind but not by the survey — refused loudly here rather than silently left
 at the s = 0 boundary.
 """
 function _bind_survey(entries::Tuple, elements)
-    pairs = Tuple{Float64,Float64}[]
+    pairs = Tuple{Float64,Float64,Any}[]
     acc = Ref(0.0)
     _collect_spec_s!(pairs, elements, acc, Val(:thin_rf_cavity))
     total = acc[]
@@ -839,6 +844,48 @@ _survey_rebind(op::MisalignedElement, kicks, ds, id) =
                       op.qin, op.oin, op.qout, op.oout)
 _survey_rebind(op::RefTilted, kicks, ds, id) =
     RefTilted(_survey_rebind(op.inner, kicks, ds, id), op.c, op.s)
+
+"""
+Validate the declared reference-energy chain of a line's accelerating
+cavities (docs/theory/rf_cavity_and_reference_energy.md, Scope B).
+
+An accelerating cavity carries no energy — only its declared entry pair and
+dimensionless strength, from which its exit pair is DERIVED
+(`_accelerating_exit_pair`, the same function the runtime compile uses, so
+the check and the map cannot disagree). This pass walks the specs in line
+order and refuses a lattice whose declarations do not compose: cavity `i+1`'s
+entry `γ₀` must be cavity `i`'s derived exit `γ₁` to within the reference-pair
+tolerance. Nothing is assigned — the line validates what the elements
+declare, which is the energy half of the survey channel in the ownership the
+design note chose (declare-and-check, not store-and-repair).
+"""
+function _validate_reference_chain(elements)
+    triples = Tuple{Float64,Float64,Any}[]
+    _collect_spec_s!(triples, elements, Ref(0.0), Val(:thin_accelerating_cavity))
+    length(triples) < 2 && return nothing
+    prev_gamma = nothing
+    prev_s = 0.0
+    for (i, (s, L, ent)) in enumerate(triples)
+        b0 = Float64(getparam(ent, :beta0))
+        g0 = Float64(getparam(ent, :gamma0))
+        if prev_gamma !== nothing
+            rel = abs(g0 - prev_gamma) / prev_gamma
+            rel <= 1.0e-10 || throw(ArgumentError(
+                "accelerating-cavity reference chain broken at cavity $(i) " *
+                "(s = $(s)): it declares entry gamma0 = $(g0), but the " *
+                "previous cavity (s = $(prev_s)) exits at gamma = " *
+                "$(prev_gamma). Renormalize the downstream cavity to the " *
+                "chain's local reference; elements carry ratios, and the " *
+                "line only checks that the declared ratios compose."))
+        end
+        _, g1 = _accelerating_exit_pair(Float64(getparam(ent, :strength)),
+                                        Float64(getparam(ent, :phase, 0.0)),
+                                        b0, g0)
+        prev_gamma = g1
+        prev_s = s
+    end
+    return nothing
+end
 
 function _runtime_line_entries(elements)
     out = Any[]

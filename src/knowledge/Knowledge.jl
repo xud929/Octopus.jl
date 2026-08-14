@@ -315,6 +315,7 @@ const ELEMENT_META_BY_SPEC_TYPE = IdDict{Any,ElementMeta}()
 const ELEMENT_META_BY_FRIENDLY_TYPE = IdDict{Any,ElementMeta}()
 const ELEMENT_META_BY_KIND = Dict{Symbol,ElementMeta}()
 const ALLOWED_PHYSICS_KEYWORDS = Set{Symbol}([
+    :acceleration,
     :crab_dispersion,
     :momentum_dispersion,
     :xy_coupling,

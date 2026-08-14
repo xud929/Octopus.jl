@@ -2594,7 +2594,8 @@ end
 # the map -- which is the strongest true statement available here, and strictly
 # more than an exemption would say. Returns `nothing` for the ordinary case.
 function _perturb_coupled_overrides(kind::Symbol, key::Symbol, probe)
-    (kind === :thin_rf_cavity && (key === :beta0 || key === :gamma0)) || return nothing
+    (kind in (:thin_rf_cavity, :thin_accelerating_cavity) &&
+     (key === :beta0 || key === :gamma0)) || return nothing
     g0 = Float64(get(probe, :gamma0, 100.0))
     return [begin
                 g = 1 + factor * (g0 - 1)

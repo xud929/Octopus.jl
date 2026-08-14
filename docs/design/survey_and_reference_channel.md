@@ -61,6 +61,17 @@ runtime element deliberately holds only dimensionless numbers normalized to
 reference change is a *renormalization*, which is an epoch-boundary recompile,
 not a per-particle input.
 
+> **Refinement at implementation (2026-08-14, Scope B).** The energy half
+> landed one notch more derived than the table's "baked at compile" cell:
+> because elements carry ratios and never energies (the theory note's §6a),
+> the per-element reference is **declared** by each accelerating cavity's
+> constructor-folded entry pair, its exit pair and damping ratio are
+> **derived** at compile from that declaration, and the line's pass
+> **validates** that the declarations compose — nothing is assigned at all.
+> Declare-and-check is §5's ownership choice applied to energy exactly as
+> to geometry; the geometric half still delivers `Δs` by rebind because arc
+> position is placement, not declaration.
+
 ## 3. The design
 
 ### 3a. Static half: the survey pass at compile time

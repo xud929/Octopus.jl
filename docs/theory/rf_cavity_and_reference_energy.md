@@ -1,13 +1,15 @@
 # RF Cavities, and Whether There Is a Reference Particle
 
-> **Status: Scope A is IMPLEMENTED.** `ThinRFCavitySpec` / `ThinRFCavity`
-> exist, are exported, are metadata-registered and appear in the registry
-> snapshot; §6's Scope A is a record of what was built, not a proposal. Scope B
-> (a varying reference energy, `P0(s)`) is still open, and so are §9's
-> questions. This note was written before the implementation and its present
-> tense below is the tense of the design discussion — read §6 as "this is the
-> design that was adopted", not "this is what we should do" (2026-08-05_b
-> audit, U26-13).
+> **Status: Scope A and Scope B are IMPLEMENTED.** `ThinRFCavitySpec` /
+> `ThinRFCavity` (Scope A, 2026-08-02; velocity slip closed 2026-08-14) and
+> `ThinAcceleratingCavitySpec` / `ThinAcceleratingCavity` (Scope B,
+> 2026-08-14) exist, are exported, metadata-registered, and in the registry
+> snapshot; §6's scopes are records of what was built, not proposals. §9's
+> question 3 (`harmon`) remains open. This note was written before the
+> implementation and its present tense below is the tense of the design
+> discussion — read §6 as "this is the design that was adopted"
+> (2026-08-05_b audit, U26-13). Scope B's closure block sits at the end of
+> §6a's Scope B list.
 
 Octopus has no RF cavity. `thin_crab_cavity` is transverse only, so there is
 nothing that closes the longitudinal plane — no synchrotron motion, no bucket,
@@ -317,6 +319,25 @@ A separate element kind, not a flag, for the reason in §3. It needs:
 4. an answer to what a transfer matrix means when the map is symplectic only
    *after* rescaling — which is precisely why Bmad carries `p0c` on every
    element rather than on the lattice.
+
+> **Implemented (2026-08-14): `ThinAcceleratingCavitySpec`.** All four items
+> landed, with item 3 resolved by §6a's own logic rather than as literally
+> written: because elements carry ratios and no energies, there is nothing
+> dimensional for a line to *tell* an element — instead each cavity
+> **declares** its entry pair (folded from `voltage`/`e0`/`mc2` at
+> construction), its exit pair and the damping ratio
+> `ρ = P₀ᵢₙ/P₀ₒᵤₜ` are **derived** at compile (`_accelerating_exit_pair`,
+> one function shared with the check), and the line **validates** that
+> successive declarations compose, refusing a broken chain loudly at task
+> compile. Same information as Bmad's per-element `p0c`, opposite ownership
+> (declare-and-check, not store-and-repair — the design note's §5 choice).
+> Item 2's rescaling is exact (`px, py, p_t` by `ρ`; `det J = ρ³`, pinned by
+> ForwardDiff in the suite), item 4's answer is that determinant statement,
+> and `phase = 0` is on crest with a `cos` body — the "different zero" §3
+> promised. Model boundaries as recorded on the element: thin, relative
+> time with no autoscale, no velocity-slip term, single-pass. §8's items
+> 1–3 are suite testsets; item 4 (ν_s) belongs to the ring cavity and is
+> pinned there; item 5 (PTC, for THIS kind) remains open in `todo.md`.
 
 ## 7. The self-referential phase, which has to be decided not discovered
 

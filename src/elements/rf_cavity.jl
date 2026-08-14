@@ -1,4 +1,5 @@
-export ThinRFCavitySpec, ThinRFCavity, rf_strength
+export ThinRFCavitySpec, ThinRFCavity, rf_strength,
+       ThinAcceleratingCavitySpec, ThinAcceleratingCavity
 
 # ---------------------------------------------------------------------------
 # THIN RF cavity, without acceleration.
@@ -341,4 +342,245 @@ _has_survey(elem::ThinRFCavity) = !isnan(elem.ds_turn)
     )
     example = ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV)
     construction_help = "Friendly constructor: ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=Symplectic6DMap()). A THIN RF cavity WITHOUT acceleration -- Bmad's rfcavity, not its lcavity -- so the reference energy is constant through it and phase = 0 is no net acceleration. Thin means ONE localised kick: L buys drift space so the cavity occupies its proper arc length, but there is no transit-time factor and no RF focusing, the same standing as ThinCrabCavity and ThinMultipole. THIRD model boundary, CONDITIONAL since the F16 closure (2026-08-14): a cavity compiled BARE -- outside a task line -- has no velocity-slip term, so a ring it closes has slip factor alpha_c alone, missing -1/gamma0^2 (the recorded 1.84x synchrotron-tune error at a 2.5 GeV proton with alpha_c = 0.2, and the wrong side of transition whenever alpha_c < 1/gamma0^2). A cavity compiled THROUGH A TASK LINE is bound to the geometric survey and applies the exact velocity slip as a symplectic z-shift ds_turn*(beta/beta0 - 1) before its kick, closing the ring with the full eta = alpha_c - 1/gamma0^2 on every path and backend; a cavity hidden inside a kept-whole own-state sub-line is refused loudly at compile rather than silently left uncorrected. Physics: docs/theory/arc_survey_and_velocity_slip.md. Frequency in Hz and phase in radians, matching ThinCrabCavity so that `phase` means one thing across every RF element. The energy is an ARGUMENT and not a field: voltage and e0 are reduced to a dimensionless strength at construction, so nothing on the element can disagree with BeamParams.E0. The body is written in the TIME_ENERGY convention and conjugated back by convert_longitudinal, which is why there is no beta factor in it. Design: docs/theory/rf_cavity_and_reference_energy.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+end
+
+# ---------------------------------------------------------------------------
+# THIN ACCELERATING cavity -- Scope B, Bmad's `lcavity` to the element above's
+# `rfcavity`. A separate KIND, not a flag (theory note §3): the two differ in
+# their zero (`phase = 0` is on crest here and no-acceleration there), in
+# their body trig (cos here, sin there), and in what happens to the reference
+# -- this element CHANGES it, which is the entire point.
+#
+# The reference-energy channel, resolved per §6a's "elements carry ratios":
+# the element never stores an energy. Construction folds (voltage, e0, mc2)
+# into the dimensionless entry pair (beta0, gamma0), the entry-normalized
+# strength qV/(P0_in c), and everything else -- the exit pair and the damping
+# ratio rho = P0_in/P0_out -- is DERIVED from those at compile through
+# `_accelerating_exit_pair`. The line's role is not to assign a P0 but to
+# VALIDATE the declared chain: successive accelerating cavities must agree,
+# exit pair to entry pair, and `_validate_reference_chain` (Tasks.jl) refuses
+# a lattice whose declared references do not compose. Same information as
+# Bmad's per-element p0c bookkeeping, opposite ownership -- declared and
+# checked rather than stored and repaired (design note §5).
+#
+# Model boundaries, visible from the call site as Scope A's are:
+#   * thin: one localised kick between two half drifts; no transit-time
+#     factor, no RF focusing, no field map;
+#   * relative time (§7): the phase is measured against the design arrival,
+#     z1 = -c dt with the design particle at 0; no autoscale pass;
+#   * no velocity-slip term: unlike the surveyed ring cavity above, this
+#     kind does not bind ds_turn. Single-pass lines at accelerating
+#     energies put that term at ~L_line * delta / gamma0^2, far below the
+#     model's other boundaries; a low-energy front end that cares inherits
+#     the F16 machinery, tracked in todo.md;
+#   * single-pass: a closed ring containing one is physically inconsistent
+#     (the second turn's entry reference is no longer beta0), and the chain
+#     validation cannot see ring closure -- multipass recirculation is the
+#     knob-as-lord unrolling of the design note, not repetition.
+# ---------------------------------------------------------------------------
+
+"""
+    ThinAcceleratingCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0)
+    ThinAcceleratingCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0)
+
+A **thin accelerating** cavity — Bmad's `lcavity`, where `ThinRFCavitySpec`
+is its `rfcavity`. The reference energy **changes across the element**:
+`phase = 0` is **on crest** (maximum design gain `qV`), and the body is
+`p_t += strength·cos(k·z₁ + phase)` — the different zero the ring cavity's
+docstring promises. Units follow every RF element here: `frequency` in Hz,
+`phase` in radians.
+
+No energy is stored (§6a): `voltage`/`e0`/`mc2` fold at construction into the
+entry-normalized `strength = qV/(P₀ᵢₙc)` and the entry pair `(β₀, γ₀)`; the
+exit pair and the damping ratio `ρ = P₀ᵢₙ/P₀ₒᵤₜ` are derived. The exit map
+re-references: design gain subtracted from `p_t`, momenta rescaled by `ρ`
+(`px, py` directly — this **is** adiabatic damping, det J = ρ³ exactly), and
+the longitudinal pair converted back at the exit reference. The design
+particle maps to itself exactly.
+
+A line's declared references must compose: cavity `i+1`'s entry pair must be
+cavity `i`'s exit pair, validated loudly when a task compiles the line.
+Physics: `docs/theory/rf_cavity_and_reference_energy.md` (Scope B).
+"""
+abstract type ThinAcceleratingCavitySpec end
+
+default_method(::Type{ElementSpec{:thin_accelerating_cavity}}) = NonSymplectic6DMap()
+
+# An abstract type rather than a bare function, like every friendly
+# constructor: the metadata registry keys them by type (the recorded
+# BeamLine lesson).
+function ThinAcceleratingCavitySpec(frequency;
+                      strength=nothing, beta0=nothing, gamma0=nothing,
+                      voltage=nothing, e0=nothing, mc2=nothing, charge=1,
+                      phase=0, L=0, tracking_method=NonSymplectic6DMap(), kwargs...)
+    if voltage !== nothing
+        (e0 === nothing || mc2 === nothing) && throw(ArgumentError(
+            "ThinAcceleratingCavitySpec with `voltage` also needs `e0` and `mc2` \
+             (the ENTRY reference energy); or give `strength`, `beta0`, `gamma0` \
+             directly"))
+        strength === nothing || throw(ArgumentError(
+            "give either `voltage` (with e0, mc2) or `strength`, not both"))
+        (beta0 === nothing && gamma0 === nothing) || throw(ArgumentError(
+            "give either `voltage` (with e0, mc2 — beta0 and gamma0 are derived) \
+             or `strength` with explicit `beta0`/`gamma0`, not a mix"))
+        beta0, gamma0 = reference_beta_gamma(e0, mc2)
+        strength = rf_strength(; voltage=voltage, e0=e0, charge=charge, beta0=beta0)
+    end
+    strength === nothing && throw(ArgumentError(
+        "ThinAcceleratingCavitySpec needs either `voltage` with `e0` and `mc2`, \
+         or `strength` with `beta0` and `gamma0`"))
+    (beta0 === nothing || gamma0 === nothing) && throw(ArgumentError(
+        "ThinAcceleratingCavitySpec needs `beta0` and `gamma0`; derive them with \
+         reference_beta_gamma(e0, mc2)"))
+    frequency > 0 || throw(ArgumentError("frequency must be positive, got $frequency"))
+    _check_reference_pair(beta0, gamma0; source="ThinAcceleratingCavitySpec")
+    # The exit pair must exist: a cavity whose design gain decelerates the
+    # reference to or below its rest energy declares no particle at all.
+    gE = 1 + strength * beta0 * cos(phase)
+    gamma0 * gE > 1 || throw(ArgumentError(
+        "the design gain decelerates the reference below its rest energy: \
+         gamma0 * (1 + strength*beta0*cos(phase)) = $(gamma0 * gE) <= 1"))
+    T = float(promote_type(typeof(strength), typeof(frequency), typeof(phase),
+                           typeof(L), typeof(beta0), typeof(gamma0)))
+    return ElementSpec{:thin_accelerating_cavity}(_spec_params(;
+        frequency=T(frequency), strength=T(strength), phase=T(phase), L=T(L),
+        beta0=T(beta0), gamma0=T(gamma0), tracking_method=tracking_method, kwargs...))
+end
+
+"""
+    ThinAcceleratingCavitySpec(; frequency, ...)
+
+Keyword form, for reflection and `parameter_schema` round trips.
+"""
+ThinAcceleratingCavitySpec(; frequency, kwargs...) =
+    ThinAcceleratingCavitySpec(frequency; kwargs...)
+
+"""
+    _accelerating_exit_pair(strength, phase, beta0, gamma0)
+
+The exit reference `(β₁, γ₁)` of an accelerating cavity, derived — never
+stored — from its dimensionless declaration: `E_out/E_in = 1 + strength·β₀·cos(phase)`
+(since `qV/E_in = strength·β₀`), so `γ₁ = γ₀·E_out/E_in` and
+`β₁ = √((γ₁-1)(γ₁+1))/γ₁`, the well-conditioned form. One function serves the
+runtime compile and the line's chain validation, so the two cannot disagree.
+"""
+function _accelerating_exit_pair(strength, phase, beta0, gamma0)
+    gamma1 = gamma0 * (1 + strength * beta0 * cos(phase))
+    beta1 = sqrt((gamma1 - 1) * (gamma1 + 1)) / gamma1
+    return beta1, gamma1
+end
+
+"""
+    ThinAcceleratingCavity{M,T}
+
+Runtime accelerating cavity: one on-crest-zeroed longitudinal kick between
+two half drifts, after which the reference energy is different.
+
+Holds only **dimensionless** numbers, like every element here: the
+entry-normalized strength, the entry pair, and — derived at compile, never
+stored on the spec — the exit pair and the damping ratio
+`rho = P0_in/P0_out` that the exit map applies to `px`, `py` and the
+longitudinal momentum (`det J = rho^3` exactly; adiabatic damping).
+"""
+struct ThinAcceleratingCavity{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
+    method::M
+    strength::T      # qV/(P0_in c), entry-normalized
+    k::T             # 2*pi*frequency/c
+    phase::T         # radians; 0 = on crest
+    L::T
+    beta0::T         # entry reference pair
+    gamma0::T
+    beta1::T         # exit reference pair, derived at compile
+    gamma1::T
+    rho::T           # P0_in/P0_out = (beta0*gamma0)/(beta1*gamma1)
+end
+
+function ThinAcceleratingCavity(spec::ElementSpec{:thin_accelerating_cavity},
+                  method::AbstractTrackingMethod=tracking_method(spec))
+    T = numeric_type(spec)
+    k = T(2) * T(pi) * T(param(spec, :frequency)) / T(CLIGHT)
+    strength = T(param(spec, :strength))
+    phase = T(getparam(spec, :phase, 0))
+    beta0 = T(param(spec, :beta0))
+    gamma0 = T(param(spec, :gamma0))
+    beta1, gamma1 = _accelerating_exit_pair(strength, phase, beta0, gamma0)
+    return ThinAcceleratingCavity{typeof(method),T}(
+        method, strength, k, phase, T(getparam(spec, :L, 0)),
+        beta0, gamma0, beta1, gamma1,
+        (beta0 * gamma0) / (beta1 * gamma1))
+end
+
+"""
+The asymmetric sandwich (theory note §6): entry conversion at the entry pair,
+the cos-body kick, re-referencing, exit conversion at the exit pair.
+
+Re-referencing is three exact steps: subtract the design gain
+(`p_t` is measured from the reference, and the reference just gained
+`strength·cos(phase)`), rescale the longitudinal momentum by `ρ` (it is
+normalized to `P₀`, which changed), and rescale `px`, `py` by `ρ` for the
+same reason — the last is adiabatic damping, and the map's determinant is
+`ρ³` exactly (one factor per canonical pair), which is what "symplectic only
+after rescaling" means concretely. `z₁ = -cΔt` itself is continuous: the
+element is thin, so no time passes, and relative time (§7) needs no offset
+because the design particle defines the clock on both sides. The design
+particle `(z₁, p_t) = (0, 0)` maps to `(0, 0)` exactly.
+"""
+@inline function _acc_kick(elem::ThinAcceleratingCavity, x, px, y, py, z, pz)
+    # A cavity with no voltage is exactly nothing: rho == 1 by construction,
+    # but the conversion round trip costs ~4e-16, so return untouched input
+    # exactly as the ring cavity does.
+    iszero(elem.strength) && return (x, px, y, py, z, pz)
+    z1, pt = convert_longitudinal(PATHLENGTH_DELTA => TIME_ENERGY, z, pz;
+                                  beta0=elem.beta0, gamma0=elem.gamma0)
+    pt += elem.strength * cos(elem.k * z1 + elem.phase)
+    pt = (pt - elem.strength * cos(elem.phase)) * elem.rho
+    zn, pzn = convert_longitudinal(TIME_ENERGY => PATHLENGTH_DELTA, z1, pt;
+                                   beta0=elem.beta1, gamma0=elem.gamma1)
+    return x, px * elem.rho, y, py * elem.rho, zn, pzn
+end
+
+@inline function track_particle(::NonSymplectic6DMap, elem::ThinAcceleratingCavity{M,T},
+                                x, px, y, py, z, pz) where {M,T}
+    if iszero(elem.L)
+        return _acc_kick(elem, x, px, y, py, z, pz)
+    end
+    # Drift-kick-drift; the convention-#3 drift carries no reference factor,
+    # so the same map serves both sides of the energy step.
+    half = elem.L / 2
+    x, px, y, py, z, pz = _lattice_drift(Val(false), zero(T), half, x, px, y, py, z, pz)
+    x, px, y, py, z, pz = _acc_kick(elem, x, px, y, py, z, pz)
+    return _lattice_drift(Val(false), zero(T), half, x, px, y, py, z, pz)
+end
+
+@inline (elem::ThinAcceleratingCavity)(x, px, y, py, z, pz) =
+    track_particle(elem.method, elem, x, px, y, py, z, pz)
+
+@element_spec begin
+    kind = :thin_accelerating_cavity
+    spec_type = ElementSpec{:thin_accelerating_cavity}
+    friendly_constructor = ThinAcceleratingCavitySpec
+    runtime_type = ThinAcceleratingCavity
+    description = "Thin accelerating cavity (Bmad's lcavity): one localised on-crest-zeroed kick that changes the reference energy, with exact re-referencing and adiabatic damping at the exit."
+    keywords = [:harmonic, :thick_element, :acceleration, :quasi_symplectic]
+    # NonSymplectic6DMap is the PHYSICS DECLARATION, not an implementation
+    # shortcut: det J = rho^3 != 1, so declaring Symplectic6DMap would claim
+    # an obligation the map deliberately does not meet -- and the derived
+    # symplecticity tripwire (U4-8) refuses exactly that claim. The Lorentz
+    # boost pair set the precedent. The map's own exact laws (det J = rho^3,
+    # symplectic after undoing the rescale) are pinned in the suite.
+    tracking_methods = [NonSymplectic6DMap]
+    contracts = [ElementTrackingBackendConsistencyContract]
+    analyses = [PlaceholderAnalysis]
+    parameters = (
+        frequency=ParamMeta(required=true, unit="Hz", meaning="RF frequency, in Hz as every RF element here takes it"),
+        strength=ParamMeta(required=true, meaning="dimensionless kick qV/(P0_in c), normalized to the ENTRY reference. Derived from voltage and e0 by the friendly constructor; the exit reference and the damping ratio rho are derived from it at compile, so no absolute energy is ever stored (theory note Sec. 6a)"),
+        phase=ParamMeta(default=0, unit="rad", meaning="RF phase in radians, entering as cos(k*z1 + phase): phase = 0 is ON CREST, maximum design gain -- the accelerating cavity's natural zero, deliberately different from ThinRFCavitySpec's no-gain zero"),
+        beta0=ParamMeta(required=true, meaning="ENTRY reference velocity, dimensionless. The exit pair is derived, and a line validates that successive accelerating cavities' declarations compose"),
+        gamma0=ParamMeta(required=true, meaning="ENTRY reference Lorentz factor, dimensionless"),
+        L=ParamMeta(default=0, unit="m", meaning="cavity length, buying DRIFT SPACE only, exactly as the ring cavity's L does: one localised kick at the centre, no transit-time factor, no RF focusing"),
+        tracking_method=ParamMeta(default=NonSymplectic6DMap(), meaning="per-element tracking method; NonSymplectic6DMap because det J = rho^3 -- the honest declaration for a deliberately damping map, the Lorentz-boost precedent"),
+        _PLACEMENT_PARAMS...,
+    )
+    example = ThinAcceleratingCavitySpec(1.3e9; voltage=25.0e6, e0=1.0e9, mc2=EMASS_EV)
+    construction_help = "Friendly constructor: ThinAcceleratingCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinAcceleratingCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=NonSymplectic6DMap()). A THIN ACCELERATING cavity -- Bmad's lcavity, where ThinRFCavitySpec is its rfcavity -- so the reference energy CHANGES across the element and phase = 0 is ON CREST (body cos(k*z1 + phase)), the different zero the ring cavity's help promises. e0/mc2 are the ENTRY reference; the exit pair and the damping ratio rho = P0_in/P0_out are DERIVED at compile from the stored dimensionless numbers, so no absolute energy is stored and nothing can disagree with BeamParams.E0 (theory note Sec. 6a: elements carry ratios). The exit map subtracts the design gain, rescales px, py and the longitudinal momentum by rho -- adiabatic damping, det J = rho^3 exactly -- and converts the longitudinal pair at the exit reference; the design particle maps to itself exactly. A task-compiled line VALIDATES the declared chain: each accelerating cavity's entry pair must match the previous one's derived exit pair, refused loudly otherwise. Model boundaries: thin (one kick, L buys drift space, no transit-time factor, no RF focusing), relative time with no autoscale pass, no velocity-slip term (single-pass lines at accelerating energies put it far below the model's other boundaries; tracked in todo.md), and SINGLE-PASS -- a closed ring containing one is physically inconsistent, and multipass recirculation is the knob-per-pass unrolling of docs/design/survey_and_reference_channel.md, not repetition. Physics: docs/theory/rf_cavity_and_reference_energy.md (Scope B). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end

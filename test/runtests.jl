@@ -2158,8 +2158,10 @@ if _lane_gate("Element parameter effectiveness")
     # real 353 the floor tolerated losing 153 parameter checks in silence, which
     # is the same shape as a skip that reports as a pass (2026-08-05_b audit,
     # U17b-3). Raise this when a new differentiable parameter is registered;
-    # never lower it.
-    @test r.metrics[:checked] >= 369
+    # never lower it. 369 -> 382 on 2026-08-14: thin_accelerating_cavity's
+    # parameters, with its beta0/gamma0 checked JOINTLY like the ring
+    # cavity's (a reference pair is one particle -- U14-4).
+    @test r.metrics[:checked] >= 382
 
     # What the contract does NOT decide has to be visible, and bounded
     # (2026-08-05_b audit, U4-2). 112 of 501 declared parameters used to be
@@ -2168,11 +2170,16 @@ if _lane_gate("Element parameter effectiveness")
     # check reported as a pass, in the file whose job is to forbid that.
     @test haskey(r.metrics, :unperturbable) && haskey(r.metrics, :rejected)
     @test r.metrics[:undecided] == r.metrics[:unperturbable] + r.metrics[:rejected]
-    # Ratchet, like the floor above: these may only go DOWN. They fell from
-    # 83/29 to 73/23 when the perturbation stopped being a single guess and the
-    # constructor started arbitrating validity (U4-3), which moved 16 parameters
-    # from undecided to checked -- 353 -> 369.
-    @test r.metrics[:unperturbable] <= 73
+    # Ratchet, like the floor above: these may only go DOWN — except by the
+    # explicit, commented widening that registering a NEW KIND brings, since
+    # each kind contributes its structurally unperturbable parameters. They
+    # fell from 83/29 to 73/23 when the perturbation stopped being a single
+    # guess and the constructor started arbitrating validity (U4-3), which
+    # moved 16 parameters from undecided to checked -- 353 -> 369; 73 -> 74
+    # on 2026-08-14 for thin_accelerating_cavity's one structural entry
+    # (rejected stayed 23: its beta0/gamma0 are coupled-perturbed, not
+    # rejected, per U14-4).
+    @test r.metrics[:unperturbable] <= 74
     @test r.metrics[:rejected] <= 23
 
     # `:name` is CARRIED by every kind and consumed by none, so it is exempt
@@ -2630,10 +2637,14 @@ end # _lane_gate("Solver option effectiveness")
         # The caught bucket holds aperture.x/y_limit, gaussian_strong_beam.sigz
         # and thin_strong_beam.kbb/klum -- five, by construction of the two
         # exception types the catch admits.
-        @test length(verified) == 25
+        # 25 -> 29 on 2026-08-14: thin_accelerating_cavity registered with 4
+        # complex-steppable parameter derivatives (of its 6 real example
+        # params; the other two land in the documented exception buckets).
+        @test length(verified) == 29
         # the kinds that must stay differentiable
         for k in ("quadrupole", "sextupole", "octupole", "multipole", "sbend",
-                  "drift", "patch", "kicker", "thin_crab_cavity")
+                  "drift", "patch", "kicker", "thin_crab_cavity",
+                  "thin_accelerating_cavity")
             @test any(startswith(v, k * ".") for v in verified)
         end
     end
@@ -2894,7 +2905,7 @@ end
     line = BeamLine("curved", DriftSpec(L=1.0), SBendSpec(L=2.2, angle=0.5),
                     DriftSpec(L=0.5), SBendSpec(L=2.2, angle=0.5), cavspec(),
                     DriftSpec(L=3.0))
-    pairs = Tuple{Float64,Float64}[]
+    pairs = Tuple{Float64,Float64,Any}[]
     acc = Ref(0.0)
     Octopus._collect_spec_s!(pairs, Octopus.line_entries(line), acc,
                              Val(:thin_rf_cavity))
@@ -2906,6 +2917,76 @@ end
     inner = BeamLine("inner", DriftSpec(L=1.0), cavspec(); x_offset=1.0e-3)
     kept = TrackingTask((DriftSpec(L=2.0), inner))
     @test_throws ErrorException Octopus._runtime_entries(kept)
+end
+
+@testset "Accelerating cavity changes the reference exactly (Scope B)" begin
+    # docs/theory/rf_cavity_and_reference_energy.md Scope B + Sec. 8 items
+    # 1-3. The element declares dimensionless ratios; the exit pair and the
+    # damping ratio are DERIVED; a line validates that declarations compose.
+    E0, V, mc2 = 1.0e9, 25.0e6, EMASS_EV
+    cav = ThinAcceleratingCavitySpec(1.3e9; voltage=V, e0=E0, mc2=mc2)
+    op = Octopus.ThinAcceleratingCavity(cav)
+    b0, g0 = reference_beta_gamma(E0, mc2)
+    @test isapprox(op.gamma1, g0 * (1 + Octopus.param(cav, :strength) * b0);
+                   rtol=1e-15)                       # on crest: E_out = E_in + qV
+    @test op.rho == (op.beta0 * op.gamma0) / (op.beta1 * op.gamma1)
+    @test op.rho < 1
+
+    # Sec. 8 item 2: zero voltage is the identity, bit for bit.
+    zop = Octopus.ThinAcceleratingCavity(
+        ThinAcceleratingCavitySpec(1.3e9; strength=0.0, beta0=b0, gamma0=g0))
+    cin = (1e-3, 1e-4, -2e-3, 3e-4, 5e-3, 1e-4)
+    @test zop(cin...) === cin
+
+    # The design particle maps to itself exactly, and a phase-pi/2 cavity
+    # (zero design gain) leaves the reference alone: rho == 1 exactly.
+    @test all(iszero, op(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    op90 = Octopus.ThinAcceleratingCavity(
+        ThinAcceleratingCavitySpec(1.3e9; voltage=V, e0=E0, mc2=mc2, phase=pi/2))
+    @test op90.rho == 1
+
+    # Adiabatic damping: px, py scale by rho exactly; x, y untouched; and the
+    # full map's determinant is rho^3 exactly (one factor per canonical
+    # pair), which is what "symplectic only after rescaling" means.
+    out = op(1e-3, 1e-4, -2e-3, 3e-4, 0.0, 0.0)
+    @test out[2] == 1e-4 * op.rho && out[4] == 3e-4 * op.rho
+    @test out[1] == 1e-3 && out[3] == -2e-3
+    J = ForwardDiff.jacobian(v -> collect(op(v...)), collect(cin))
+    @test isapprox(det(J), op.rho^3; rtol=1e-12)
+
+    # Sec. 8 item 1: the thin kick composed with explicit half drifts equals
+    # the thick element, to round-off.
+    thick = Octopus.ThinAcceleratingCavity(
+        ThinAcceleratingCavitySpec(1.3e9; voltage=V, e0=E0, mc2=mc2, L=0.4))
+    manual = let c = cin
+        c = compile_runtime(DriftSpec(L=0.2))(c...)
+        c = op(c...)
+        compile_runtime(DriftSpec(L=0.2))(c...)
+    end
+    @test collect(thick(cin...)) ≈ collect(manual) rtol=1e-15
+
+    # The declared chain: consistent composes, broken refuses loudly with
+    # the derived exit reference in the message.
+    E1 = E0 + V                                       # on-crest exit energy
+    c2 = ThinAcceleratingCavitySpec(1.3e9; voltage=10.0e6, e0=E1, mc2=mc2)
+    Octopus._runtime_entries(TrackingTask((DriftSpec(L=1.0), cav,
+                                           DriftSpec(L=2.0), c2)))
+    c2bad = ThinAcceleratingCavitySpec(1.3e9; voltage=10.0e6, e0=E0, mc2=mc2)
+    err = try
+        Octopus._runtime_entries(TrackingTask((DriftSpec(L=1.0), cav,
+                                               DriftSpec(L=2.0), c2bad)))
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("chain broken", sprint(showerror, err))
+
+    # Construction refusals: mixed forms, and a design gain that decelerates
+    # the reference below its rest energy.
+    @test_throws ArgumentError ThinAcceleratingCavitySpec(1.3e9; voltage=V,
+        e0=E0, mc2=mc2, strength=1e-3)
+    @test_throws ArgumentError ThinAcceleratingCavitySpec(1.3e9;
+        voltage=-0.9999e9, e0=1.0e9, mc2=PMASS_EV)
 end
 
 @testset "CUDA surveyed cavity matches CPU bit for bit" begin
