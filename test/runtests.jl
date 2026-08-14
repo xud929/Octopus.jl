@@ -2885,6 +2885,35 @@ end
     @test_throws ErrorException Octopus._runtime_entries(kept)
 end
 
+@testset "CUDA surveyed cavity matches CPU bit for bit" begin
+    # The slip-corrected kick is a new branch reachable from the fused CUDA
+    # kernels (AGENTS.md: every branch must compile as device IR), and the
+    # backend-consistency validation compiles its cavity BARE, so without
+    # this pin the surveyed branch would never build as device code in the
+    # suite. The correction is a per-op constant, so CPU and CUDA must agree
+    # exactly, not to a tolerance.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        C = 100.0
+        m = [1.0 0 0 0 0 0; 0 1.0 0 0 0 0; 0 0 1.0 0 0 0; 0 0 0 1.0 0 0;
+             0 0 0 0 1.0 -0.2*C; 0 0 0 0 0 1.0]
+        specs = (DriftSpec(L=C), Linear6DSpec(matrix=m),
+                 ThinRFCavitySpec(2.99792458e6; voltage=1.0e6, e0=2.5e9,
+                                  mc2=PMASS_EV))
+        function zrun(arr)
+            t = TrackingTask(specs)
+            rep = Phase6DRep(arr([0.0]), arr([0.0]), arr([0.0]), arr([0.0]),
+                             arr([1.0e-3]), arr([0.0]))
+            for _ in 1:64
+                execute!(t, rep; turns=1)
+            end
+            return Array(rep.z)[1]
+        end
+        @test zrun(identity) == zrun(Octopus.CUDA.CuArray)
+    else
+        @test_broken false      # visible in the summary, unlike a silent skip
+    end
+end
+
 @testset "Longitudinal conventions convert exactly" begin
     # docs/theory/lattice_hamiltonian_and_conventions.md Section 2, implemented.
     # The claim being tested is not "accurate" but EXACT: all four pairs come
