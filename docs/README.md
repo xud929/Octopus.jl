@@ -284,6 +284,12 @@ Forward-looking (not-yet-done) items live in `todo.md`, not here.
   (the `paper/` reproduction package moved to its own public repository —
   what went where, the hard-coded-path finding in the claim verifier, and
   the supersession relationship to the frozen submission snapshot),
+  [`neighbour_audit_2026_08_14_b.md`](history/neighbour_audit_2026_08_14_b.md)
+  (second same-day audit, over the floor-plan/ledger/wiring series: the
+  accelerating kind lacked the hidden-cavity tripwire its ring sibling had
+  — probed, fixed, pinned; the patch's geometric step and tracking map
+  verified as one transformation at 7e-18 in both conventions and pinned;
+  the wrong-probe parallax detour kept as the instructive part),
   [`neighbour_audit_2026_08_14.md`](history/neighbour_audit_2026_08_14.md)
   (targeted neighbour audit of the survey/velocity-slip/Scope-B campaign:
   campaign-wide properties re-run at final HEAD — MAD-X survey deviation

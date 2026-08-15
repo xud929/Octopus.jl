@@ -836,23 +836,44 @@ function _bind_survey(entries::Tuple, elements)
     end
     n > 0 && (ds[1] = total - kicks[n] + kicks[1])
     ents = [p[3] for p in pairs]
+    accs = Tuple{Float64,Float64,Any}[]
+    _collect_spec_s!(accs, elements, Ref(0.0), Val(:thin_accelerating_cavity))
     id = Ref(0)
-    bound = map(entry -> _bind_survey_entry(entry, kicks, ds, ents, total, id),
+    acc_id = Ref(0)
+    bound = map(entry -> _bind_survey_entry(entry, kicks, ds, ents, total, id,
+                                            acc_id),
                 entries)
     id[] == n || error(
         "the survey walk found $(n) thin_rf_cavity spec(s) but the compiled " *
-        "line contains $(id[]); a cavity is sitting inside a kept-whole " *
-        "(own-state) sub-line, which the survey does not descend. Flatten " *
-        "that line or place the cavity at the task level.")
+        "line contains $(id[]); the cavity sits inside a sub-line the spec walk " *
+        "does not descend -- a kept-whole (own-state) line, or a bare line " *
+        "nested inside a task tuple. Flatten it or place the cavity at the " *
+        "task level.")
+    # The same tripwire for the accelerating kind: the chain validation and
+    # the single-pass refusal both walk SPECS, so an accelerating cavity
+    # hidden in a kept-whole sub-line would evade both and run multi-turn
+    # against a stale reference, silently (2026-08-14 neighbour audit -- the
+    # rf-kind check above existed, its sibling did not).
+    acc_id[] == length(accs) || error(
+        "the survey walk found $(length(accs)) thin_accelerating_cavity " *
+        "spec(s) but the compiled line contains $(acc_id[]); an accelerating " *
+        "cavity sits inside a sub-line the spec walk does not descend -- a " *
+        "kept-whole (own-state) line, or a bare line nested inside a task " *
+        "tuple -- where the reference-chain validation and the single-pass " *
+        "refusal cannot see it. Flatten it or place the cavity at the task " *
+        "level.")
     return bound
 end
 
-_bind_survey_entry(entry::PhysicsEntry, kicks, ds, ents, total, id) =
-    PhysicsEntry(_survey_rebind(entry.element, kicks, ds, ents, total, id))
-_bind_survey_entry(entry, kicks, ds, ents, total, id) = entry
+_bind_survey_entry(entry::PhysicsEntry, kicks, ds, ents, total, id, acc_id) =
+    PhysicsEntry(_survey_rebind(entry.element, kicks, ds, ents, total, id,
+                                acc_id))
+_bind_survey_entry(entry, kicks, ds, ents, total, id, acc_id) = entry
 
-_survey_rebind(op, kicks, ds, ents, total, id) = op
-function _survey_rebind(op::ThinRFCavity, kicks, ds, ents, total, id)
+_survey_rebind(op, kicks, ds, ents, total, id, acc_id) = op
+_survey_rebind(op::ThinAcceleratingCavity, kicks, ds, ents, total, id, acc_id) =
+    (acc_id[] += 1; op)
+function _survey_rebind(op::ThinRFCavity, kicks, ds, ents, total, id, acc_id)
     i = (id[] += 1)
     # Out of range: more compiled cavities than surveyed specs. Return the op
     # unbound; the caller's count check reports the mismatch with its cause.
@@ -873,13 +894,15 @@ function _survey_rebind(op::ThinRFCavity, kicks, ds, ents, total, id)
     end
     return _attach_survey(op, ds[i], k)
 end
-_survey_rebind(op::CompositeLine, kicks, ds, ents, total, id) =
-    CompositeLine(map(o -> _survey_rebind(o, kicks, ds, ents, total, id), op.ops))
-_survey_rebind(op::MisalignedElement, kicks, ds, ents, total, id) =
-    MisalignedElement(_survey_rebind(op.inner, kicks, ds, ents, total, id),
+_survey_rebind(op::CompositeLine, kicks, ds, ents, total, id, acc_id) =
+    CompositeLine(map(o -> _survey_rebind(o, kicks, ds, ents, total, id, acc_id),
+                      op.ops))
+_survey_rebind(op::MisalignedElement, kicks, ds, ents, total, id, acc_id) =
+    MisalignedElement(_survey_rebind(op.inner, kicks, ds, ents, total, id, acc_id),
                       op.qin, op.oin, op.qout, op.oout)
-_survey_rebind(op::RefTilted, kicks, ds, ents, total, id) =
-    RefTilted(_survey_rebind(op.inner, kicks, ds, ents, total, id), op.c, op.s)
+_survey_rebind(op::RefTilted, kicks, ds, ents, total, id, acc_id) =
+    RefTilted(_survey_rebind(op.inner, kicks, ds, ents, total, id, acc_id),
+              op.c, op.s)
 
 """
 Validate the declared reference-energy chain of a line's accelerating

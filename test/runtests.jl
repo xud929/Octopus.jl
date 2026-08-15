@@ -2320,6 +2320,21 @@ end
     fm = survey((SBendSpec(L=2.0, angle=0.5, x_offset=1e-3, tilt=0.2),))[end]
     f0 = survey((SBendSpec(L=2.0, angle=0.5),))[end]
     @test fm.position == f0.position && fm.psi == f0.psi
+    # The patch's geometric step and its tracking map are ONE transformation
+    # read two ways (floor-plan note §4 item 2): a particle launched on the
+    # new reference — old-frame direction along the new s-hat, transverse
+    # position back-projected through the longitudinal offset — must track
+    # to transverse zeros, in BOTH conventions and with all angles nonzero
+    # (single rotations cannot distinguish the composition orders).
+    for conv in (:bmad, :madx)
+        pspec = PatchSpec(dx=0.01, dy=-0.02, dz=0.03, angle_x=0.05,
+                          angle_y=-0.04, angle_s=0.08, convention=conv)
+        d, R = Octopus._floor_step(pspec)
+        pop = compile_runtime(pspec)
+        out = pop(d[1] - d[3] * R[3] / R[9], R[3],
+                  d[2] - d[3] * R[6] / R[9], R[6], 0.0, 0.0)
+        @test maximum(abs, out[1:4]) < 1e-14
+    end
 
     # Discriminating power, the PTC precedent: a table missing a case must
     # fail naming it, and a corrupted length must fail on the numbers.
@@ -2937,6 +2952,23 @@ end
     inner = BeamLine("inner", DriftSpec(L=1.0), cavspec(); x_offset=1.0e-3)
     kept = TrackingTask((DriftSpec(L=2.0), inner))
     @test_throws ErrorException Octopus._runtime_entries(kept)
+    # ...and the accelerating kind has the same tripwire: hidden there, it
+    # would evade the chain validation AND the single-pass refusal (both walk
+    # specs) and run multi-turn against a stale reference — silently, before
+    # the 2026-08-14 neighbour audit added the sibling count check.
+    inner_acc = BeamLine("inner_acc", DriftSpec(L=1.0),
+                         ThinAcceleratingCavitySpec(1.3e9; voltage=25.0e6,
+                                                    e0=1.0e9, mc2=EMASS_EV);
+                         x_offset=1.0e-3)
+    kept_acc = TrackingTask((DriftSpec(L=2.0), inner_acc))
+    err_acc = try
+        Octopus._runtime_entries(kept_acc)
+        nothing
+    catch e
+        e
+    end
+    @test err_acc isa ErrorException &&
+          occursin("accelerating", sprint(showerror, err_acc))
 end
 
 @testset "Accelerating cavity changes the reference exactly (Scope B)" begin
