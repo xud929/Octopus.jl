@@ -27,7 +27,7 @@ export BPMObserver, bpm_reading, readings
 """
     BPMObserver(name; x_offset=0, y_offset=0, tilt=0, x_gain=0, y_gain=0,
                 x_readout=0, y_readout=0, x_noise=0, y_noise=0,
-                path=nothing, rng_id=nothing)
+                path=nothing, capacity=1, rng_id=nothing)
 
 A beam position monitor: reads the transverse **centroid** and reports it
 through a device error model.
@@ -65,7 +65,14 @@ reading biases rather than body positions — they are `x_readout` here. Setting
 wrong sign.
 
 Readings accumulate in memory and are available through
-[`readings`](@ref). Passing `path` also appends them to a TSV file.
+[`readings`](@ref). Passing `path` also appends them to a TSV file;
+`capacity` is the number of readings buffered before one append writes them
+all (default `1`: every reading durable the moment it is observed, at one
+file open per reading — the networked-filesystem cost and the buffering
+trade are the `LuminosityObserver` capacity story, and the same numbers).
+Buffered rows are flushed at the end of every `execute!`, including a
+failing one; a replayed turn window rewrites the file from memory, so the
+two mechanisms cannot disagree about what is on disk.
 
 ```julia
 bpm = BPMObserver("bpm_01"; x_offset = 1.0e-4, x_noise = 5.0e-6)
@@ -92,6 +99,22 @@ mutable struct BPMObserver <: AbstractBeamObserver
     x::Vector{Float64}
     y::Vector{Float64}
     path::Union{Nothing,String}
+    # Path-mode write buffering, the LuminosityObserver capacity recipe
+    # composed with the BPM's rewrite-from-memory replay: readings [1:flushed]
+    # are on disk, the tail is pending. capacity = 1 (the default) flushes
+    # every observed reading -- every row durable at once, the file
+    # followable live, exactly the pre-capacity behavior. On a networked
+    # filesystem the per-reading open/append/close is the dominant cost of
+    # observation (measured 2.3 ms/turn against 0.02 ms local for the .lum
+    # sibling, 2026-08-11 record), multiplied by however many BPMs a study
+    # reads -- production on shared storage sets capacity to 100 or more.
+    # Buffered rows are flushed by finalize_observer! including when tracking
+    # throws, so an ordinary failure loses nothing; only a hard kill can lose
+    # up to capacity - 1 rows. The replay rewrite (_bpm_discard_window!)
+    # rebuilds the WHOLE file from memory and resets the cursor to the end,
+    # so buffering and replay cannot disagree about what is on disk.
+    capacity::Int
+    flushed::Int
     initialized::Bool
     # Occurrence bookkeeping for the noise key: which turn was last drawn for,
     # and how many readings that turn has taken so far. `x_noise` is
@@ -108,7 +131,10 @@ function BPMObserver(name::AbstractString="bpm";
                      x_readout::Real=0, y_readout::Real=0,
                      x_noise::Real=0, y_noise::Real=0,
                      path::Union{Nothing,AbstractString}=nothing,
+                     capacity::Integer=1,
                      rng_id::Union{Nothing,Integer}=nothing)
+    capacity >= 1 || throw(ArgumentError(
+        "BPMObserver capacity must be at least 1; got $capacity"))
     x_noise >= 0 || throw(ArgumentError("x_noise is a standard deviation and must be nonnegative; got $x_noise"))
     y_noise >= 0 || throw(ArgumentError("y_noise is a standard deviation and must be nonnegative; got $y_noise"))
     # An id drawn once at construction, not per reading: it is what makes the
@@ -120,7 +146,8 @@ function BPMObserver(name::AbstractString="bpm";
                        Float64(x_readout), Float64(y_readout),
                        Float64(x_noise), Float64(y_noise), id,
                        Int[], Float64[], Float64[],
-                       path === nothing ? nothing : String(path), false,
+                       path === nothing ? nothing : String(path),
+                       Int(capacity), 0, false,
                        Int64(-1), 0)
 end
 
@@ -250,18 +277,39 @@ function observe!(bpm::BPMObserver, ctx::TrackingContext, rep)
     push!(bpm.x, rx)
     push!(bpm.y, ry)
     if bpm.path !== nothing
-        # First write truncates off a per-object latch, and
-        # `_bpm_discard_window!` later rewrites the WHOLE file from this
-        # object's memory -- both the U7-10 shape (N3 extension).
-        bpm.initialized || _register_observer_path!(bpm, bpm.path)
-        open(bpm.path, bpm.initialized ? "a" : "w") do io
-            bpm.initialized || println(io, "turn\tx\ty")
-            println(io, ctx.turn, '\t', rx, '\t', ry)
-        end
-        bpm.initialized = true
+        # The path is claimed at the first reading, before anything is
+        # written: two writers interleaving one file corrupt it whatever the
+        # buffering (U7-10 shape, N3 extension). The registry is idempotent
+        # for the same observer, so a replay that empties and refills the
+        # memory arrays re-claims harmlessly.
+        length(bpm.turns) == 1 && _register_observer_path!(bpm, bpm.path)
+        length(bpm.turns) - bpm.flushed >= bpm.capacity && _flush_bpm_rows!(bpm)
     end
     return nothing
 end
+
+"""
+Append the unflushed readings in one open. First write truncates off the
+per-object latch and writes the header; `_bpm_discard_window!` later rewrites
+the WHOLE file from this object's memory -- both the U7-10 shape (N3
+extension) -- and resets the cursor, so a flush never re-appends replayed
+rows.
+"""
+function _flush_bpm_rows!(bpm::BPMObserver)
+    bpm.path === nothing && return nothing
+    bpm.flushed >= length(bpm.turns) && return nothing
+    open(bpm.path, bpm.initialized ? "a" : "w") do io
+        bpm.initialized || println(io, "turn\tx\ty")
+        for i in (bpm.flushed + 1):length(bpm.turns)
+            println(io, bpm.turns[i], '\t', bpm.x[i], '\t', bpm.y[i])
+        end
+    end
+    bpm.flushed = length(bpm.turns)
+    bpm.initialized = true
+    return nothing
+end
+
+finalize_observer!(bpm::BPMObserver) = _flush_bpm_rows!(bpm)
 
 """
     readings(bpm)
@@ -304,6 +352,9 @@ function _bpm_discard_window!(bpm::BPMObserver, first_turn)
             end
         end
         bpm.initialized = true
+        # The rewrite IS a full flush: the cursor moves to the end so the
+        # next threshold flush appends only genuinely new readings.
+        bpm.flushed = length(bpm.turns)
     end
     return nothing
 end
@@ -341,6 +392,9 @@ const _BPM_OBSERVER_OPTION_SCHEMA = (
     rng_id=ConfigurationOptionMeta(Int, 0, "Noise-stream identity. Auto-assigned unique at construction; two BPMs given the same id read the same noise stream, so it is the one field deciding whether monitors share noise (audit part 7, T11).";
         category=:diagnostic, consumer=:bpm_reading),
     path=ConfigurationOptionMeta(Union{Nothing,String}, nothing, "Optional TSV output path; readings are always kept in memory.";
+        category=:output, consumer=:observer_output),
+    capacity=ConfigurationOptionMeta(Int, 1,
+        "Readings buffered before one append in path mode; 1 writes every observed reading. Flushed at the end of every execute!, including a failing one; the replay rewrite resets the cursor.";
         category=:output, consumer=:observer_output),
 )
 observer_option_schema(::Type{BPMObserver}) = _BPM_OBSERVER_OPTION_SCHEMA

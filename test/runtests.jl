@@ -4259,6 +4259,51 @@ end
     @test readings(bpm2)[1] == [0, 1, 2, 3, 4, 5]
 end
 
+@testset "BPMObserver path mode buffers by capacity" begin
+    # N2 closure (todo row, 2026-08-11): the LuminosityObserver capacity
+    # recipe composed with the BPM's rewrite-from-memory replay. capacity = 1
+    # (default) keeps the pre-capacity behavior exactly: one durable row per
+    # reading. Buffered rows flush at every execute! end through BOTH
+    # finalize chains; the replay rewrite resets the flush cursor, so
+    # buffering and replay cannot disagree about what is on disk.
+    rows(p) = countlines(p) - 1
+    rep1() = Phase6DRep([1e-4], [0.0], [2e-4], [0.0], [0.0], [0.0])
+    tdir = mktempdir()
+
+    p1 = joinpath(tdir, "b1.tsv")
+    b1 = BPMObserver("b1"; path=p1, capacity=3)
+    for turn in 0:6
+        Octopus.observe!(b1, TrackingContext(turn=turn), rep1())
+    end
+    @test rows(p1) == 6 && length(b1.turns) == 7    # two block flushes
+    Octopus.finalize_observer!(b1)
+    @test rows(p1) == 7                             # tail flushed
+
+    p2 = joinpath(tdir, "b2.tsv")
+    b2 = BPMObserver("b2"; path=p2)
+    Octopus.observe!(b2, TrackingContext(turn=0), rep1())
+    @test rows(p2) == 1                             # capacity 1: durable now
+
+    p3 = joinpath(tdir, "b3.tsv")
+    b3 = BPMObserver("b3"; path=p3, capacity=100)
+    t = TrackingTask((DriftSpec(L=1.0),); hooks=(ScheduledObserver(b3),))
+    r = rep1()
+    execute!(t, r; turns=7)
+    @test rows(p3) == 7                             # execute! finalizes
+    execute!(t, r; turns=4, start_turn=3)           # rewind: replay 3..6
+    turns = [parse(Int, split(l, '\t')[1]) for l in readlines(p3)[2:end]]
+    @test turns == collect(0:6)                     # each turn exactly once
+
+    p5 = joinpath(tdir, "b5.tsv")
+    b5 = BPMObserver("b5"; path=p5, capacity=50)
+    t5 = TrackingTask((DriftSpec(L=0.5), ScheduledObserver(b5),
+                       DriftSpec(L=0.5)))
+    execute!(t5, rep1(); turns=3)
+    @test rows(p5) == 3                             # in-line finalize chain
+
+    @test_throws ArgumentError BPMObserver("x"; capacity=0)
+end
+
 @testset "Slicing degenerate conventions and the spectral charge tripwire" begin
     # R7 (part 6): a zero-width z distribution used to land in slice 1 on the
     # CPU equal-width/equal-area paths and in slice `ns` everywhere a
