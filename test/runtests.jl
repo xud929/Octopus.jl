@@ -2170,8 +2170,13 @@ if _lane_gate("Element parameter effectiveness")
     # declared on all six kinds via one merged table, 83 new entries checked
     # at the _LATTICE_BODY_PROBE working point, plus drift.nst and
     # drift.integrator_order moving from documented-inactive to checked
-    # because a loaded drift genuinely splits.
-    @test r.metrics[:checked] >= 499
+    # because a loaded drift genuinely splits. 499 -> 500 on 2026-08-16: the
+    # U4-1 aperture repair -- the count moved by one (aperture.shape, newly
+    # perturbable through its declared alternatives) but the COVERAGE moved
+    # by twelve: the 11 aperture parameters previously scored effective
+    # through NaN arithmetic on a killed baseline are now genuinely decided
+    # at the survivable corner probe, 9 of them by an alive/dead flip.
+    @test r.metrics[:checked] >= 500
 
     # What the contract does NOT decide has to be visible, and bounded
     # (2026-08-05_b audit, U4-2). 112 of 501 declared parameters used to be
@@ -2193,8 +2198,9 @@ if _lane_gate("Element parameter effectiveness")
     # The U9-2 schema completion (2026-08-15) added 83 sweep entries and
     # moved NEITHER count: every new body-key entry is checked, none
     # undecided -- the working-point measurements in _LATTICE_BODY_PROBE's
-    # comment are what made that true.
-    @test r.metrics[:unperturbable] <= 42
+    # comment are what made that true. 42 -> 41 on 2026-08-16 (U4-1):
+    # aperture.shape moved to checked through its declared alternatives.
+    @test r.metrics[:unperturbable] <= 41
     @test r.metrics[:rejected] <= 23
 
     # `:name` is CARRIED by every kind and consumed by none, so it is exempt
@@ -2286,6 +2292,37 @@ if _lane_gate("Element parameter effectiveness")
     # for an effective parameter would keep excusing it forever, silently.
     @test !haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :nst))
     @test !haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :integrator_order))
+
+    # U4-1 (2026-08-16): the aperture half can now FAIL. The old probe killed
+    # its particle, `NaN <= atol` is false, and all 11 aperture parameters
+    # fell through both comparisons into "checked" whatever the map did --
+    # the row's directly-verified cannot-fail state. Re-running the sweep
+    # WITH that killing probe must now report the limits as
+    # declared-but-ignored: the NaN-aware `_probe_deviation` reads both-NaN
+    # as UNCHANGED, and a dead baseline gives every perturbation the same
+    # six NaNs.
+    let probes = merge(copy(Octopus.DEFAULT_ELEMENT_PARAM_PROBES),
+                       Dict{Symbol,Any}(:aperture => (shape=:ellipse,
+                           x_limit=1.0e-4, y_limit=2.0e-4, dx=1.0e-5, dy=2.0e-5)))
+        r = validate(ElementParameterEffectivenessContract(probes=probes))
+        @test r.status === :failed
+        @test occursin("aperture.x_limit", r.message)
+    end
+    # The comparator at its three corners: both-NaN is unchanged, an
+    # alive/dead flip is a definite change, finite pairs compare as before.
+    @test Octopus._probe_deviation((NaN, NaN, NaN, NaN, NaN, NaN),
+                                   (NaN, NaN, NaN, NaN, NaN, NaN)) == 0.0
+    @test Octopus._probe_deviation((1.0, NaN, 0.0, 0.0, 0.0, 0.0),
+                                   (1.0, 2.0, 0.0, 0.0, 0.0, 0.0)) == Inf
+    @test Octopus._probe_deviation((1.5, 2.0), (1.0, 2.0)) == 0.5
+    # And the survivable corner probe really survives -- the flip evidence
+    # above is only evidence because the baseline lives.
+    let p = Octopus.DEFAULT_ELEMENT_PARAM_PROBES[:aperture]
+        probe = merge((; p...), Octopus._PLACEMENT_PROBE_DOF)
+        out = compile_runtime(ApertureSpec(; probe...))(2.3e-3, 4.1e-4, -1.7e-3,
+                                                        -3.2e-4, 1.5e-3, 9.0e-4)
+        @test all(isfinite, out)
+    end
 end
 end # _lane_gate("Element parameter effectiveness")
 

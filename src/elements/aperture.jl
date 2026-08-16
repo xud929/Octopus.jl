@@ -499,9 +499,15 @@ end
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
-        shape=ParamMeta(default=:rectangle, meaning="acceptance shape: :rectangle, :ellipse, or :rectellipse (their intersection). Ignored when `alive` is given"),
-        x_limit=ParamMeta(default=Inf, meaning="horizontal half-aperture in particle-coordinate length units"),
-        y_limit=ParamMeta(default=Inf, meaning="vertical half-aperture in particle-coordinate length units"),
+        shape=ParamMeta(default=:rectangle, alternatives=(:rectangle, :ellipse, :rectellipse), meaning="acceptance shape: :rectangle, :ellipse, or :rectellipse (their intersection). Ignored when `alive` is given"),
+        # The limits' declared alternatives are shrunken, millimetre-class
+        # values, because a limit's only strong observable is the alive/dead
+        # flip and the generic Real perturbation only ever GROWS a value --
+        # from a surviving baseline, the one direction that shows nothing
+        # (U4-1). The effectiveness probe's corner particle sits just inside
+        # the probe limits and OUTSIDE these, so each alternative kills.
+        x_limit=ParamMeta(default=Inf, alternatives=(1.0e-3,), meaning="horizontal half-aperture in particle-coordinate length units"),
+        y_limit=ParamMeta(default=Inf, alternatives=(8.0e-4,), meaning="vertical half-aperture in particle-coordinate length units"),
         dx=ParamMeta(default=0, meaning="horizontal displacement of the aperture, for a collimator on a displaced magnet body"),
         dy=ParamMeta(default=0, meaning="vertical displacement of the aperture"),
         alive=ParamMeta(default=nothing, meaning="pure scalar predicate (x, px, y, py, z, pz) -> Bool evaluated in the aperture frame, for shapes the regular set cannot express. Must not capture an array, or it will not run on the device"),

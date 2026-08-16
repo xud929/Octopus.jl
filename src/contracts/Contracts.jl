@@ -2480,10 +2480,29 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     :hkicker => (hkick=1.0e-4, x_offset=1.0e-3),
     :vkicker => (vkick=1.0e-4, x_offset=1.0e-3),
     :kicker => (hkick=1.0e-4, vkick=-5.0e-5, x_offset=1.0e-3),
-    # Limits tight enough that the probe particle sits outside and is killed, so
-    # perturbing any of them changes the map. A generous aperture would pass
-    # every probe unchanged and report all four as ignored.
-    :aperture => (shape=:ellipse, x_limit=1.0e-4, y_limit=2.0e-4,
+    # The SURVIVABLE corner probe (U4-1, 2026-08-16). The old probe killed the
+    # particle, which was this contract's blind spot, not its cleverness: the
+    # baseline was six NaNs, `NaN <= atol` is false, and every aperture
+    # parameter was scored effective whatever the map did -- the contract
+    # could not fail here. An aperture's map is the identity for survivors,
+    # so the only strong observable is the alive/dead FLIP, which needs a
+    # baseline that LIVES. The particle sits in the rectangle's CORNER,
+    # inside the rectangle but outside the inscribed ellipse (frame position
+    # after the merged placement DOF: x ~ +1.29e-3 against x_limit=1.45e-3,
+    # y ~ -1.02e-3 against y_limit=1.15e-3), so that -- all measured:
+    #   * shape's declared alternatives (:ellipse, :rectellipse) both KILL;
+    #   * the limits' declared shrunken alternatives (1.0e-3, 8.0e-4) KILL;
+    #   * dx/dy/x_offset/y_offset at the generic +0.13 move KILL;
+    #   * tilt/ref_tilt at +0.13 rad rotate the corner out and KILL (the
+    #     margins 1.6e-4/1.3e-4 sit inside the ~2e-4 arc that rotation
+    #     sweeps at this radius).
+    # z_offset, x_pitch, y_pitch and misalign_convention cannot flip at any
+    # generic candidate (their boundary-relative shifts are O(px*dz, theta^2)
+    # ~ 1e-5, below the margins); they are checked through the placement
+    # wrap's measured last-bit deviations (1e-19..1e-17, deterministic IEEE
+    # arithmetic) -- weak but genuine consumption evidence: the frame
+    # arithmetic runs on the value.
+    :aperture => (shape=:rectangle, x_limit=1.45e-3, y_limit=1.15e-3,
                   dx=1.0e-5, dy=2.0e-5),
     # Multipoles must be present for `nst` to do anything: a pure solenoid is
     # the exact flow and ignores the step count, so probing it without them
@@ -2726,6 +2745,34 @@ function _perturb_param(key::Symbol, current, pmeta=nothing)
     return isempty(candidates) ? nothing : first(candidates)
 end
 
+"""
+NaN-aware coordinate deviation for the effectiveness sweep (U4-1).
+
+A killed particle is NaN in every coordinate, and plain `maximum(abs, moved
+.- baseline)` turned that into a verdict nothing had earned: `NaN <= atol` is
+false, so a dead-baseline pair fell through BOTH comparisons into "checked",
+and the aperture half of this contract could not fail -- all 11 of its
+parameters scored effective whatever the map did, verified directly when the
+U4-1 row was written.
+
+The rule here: a slot where both sides are NaN is UNCHANGED (`isequal`), a
+NaN against a finite value is a definite change -- the alive/dead flip, the
+only strong observable an identity-for-survivors map has -- and finite pairs
+compare as before. A fully dead baseline whose perturbations all die too now
+reads IGNORED, loudly, instead of silently passing.
+"""
+function _probe_deviation(moved, baseline)
+    dev = 0.0
+    for (m, b) in zip(moved, baseline)
+        if isnan(m) || isnan(b)
+            isequal(m, b) || return Inf
+        else
+            dev = max(dev, abs(m - b))
+        end
+    end
+    return dev
+end
+
 function validate(contract::ElementParameterEffectivenessContract; kwargs...)
     _reject_unknown_validate_kwargs(contract, kwargs)
     u = (2.3e-3, 4.1e-4, -1.7e-3, -3.2e-4, 1.5e-3, 9.0e-4)
@@ -2847,7 +2894,7 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
                 end
                 moved === nothing && continue
                 accepted = true
-                deviation = max(deviation, maximum(abs, moved .- baseline))
+                deviation = max(deviation, _probe_deviation(moved, baseline))
                 deviation > contract.atol && break
             end
             if !accepted
