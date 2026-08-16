@@ -32,9 +32,13 @@ an elevated role before making file changes.
 ## How To Orient
 
 - **To find out what is currently being worked on, read `docs/todo.md` first.**
-  Its header lists what is open, what is deliberately closed and why, and which
-  item to start next. The rest of that file is a record of completed work kept
-  for its measurements and its wrong turns, so do not read it front to back.
+  Since the 2026-08-16 restructure it holds ONLY open work: the live rows, the
+  open study questions, and the CI watch ledger. Read `docs/experiences.md`
+  before starting a campaign — it holds the recurring lessons the completed
+  work taught and the standing deliberately-not-being-done decisions. The
+  complete record of completed work, with its measurements and wrong turns, is
+  frozen in `docs/history/todo_ledger_archive.md`; code and test comments
+  citing a "todo row" by U-number resolve there.
 - **For an audit, a verification pass, or any repository-wide correctness
   review, follow [`docs/comprehensive_audit.md`](docs/comprehensive_audit.md).**
   It is the protocol, not a suggestion, and it names the worked precedents
@@ -265,9 +269,11 @@ surface with its own indexed design note.)
   `docs/history/` holds dated records of implemented work (optimization
   and benchmark histories, audits). Top-level `docs/` keeps entry-point,
   generated, or volatile-runtime notes (`public_api.md`, `registry_snapshot.md`,
-  `current_runtime.md`) and the forward plan (`todo.md`). Add every new document
-  to the `docs/README.md` index. Not-yet-done items go in `todo.md`; once
-  implemented, move the record to `docs/history/`.
+  `current_runtime.md`), the forward plan (`todo.md`), and the lessons file
+  (`experiences.md`). Add every new document to the `docs/README.md` index.
+  Not-yet-done items go in `todo.md`; once implemented, move the record to
+  `docs/history/` (closing rows land in `todo_ledger_archive.md` under a dated
+  note), and add any reusable lesson to `docs/experiences.md`.
 - `examples/`: clean, production-shaped workflow scripts — the precedents future
   users imitate. Each has a small top-of-file `config` block (no environment
   variables) and is self-describing; do not create a separate markdown page for

@@ -122,7 +122,8 @@ reference material, not API docs; the implementing code links back to them.
   including both polarities and the Strang-split multipole variant. Section 12
   surveys what PTC, Bmad and Elegant actually do (all hard-edge; only Elegant's
   `MAPSOLENOID` is soft, and it is a field-map integrator). Section 13's
-  curved-frame closure is **withdrawn** -- see `todo.md`.
+  curved-frame closure is **withdrawn** -- see the record in
+  [`history/todo_ledger_archive.md`](history/todo_ledger_archive.md).
 - [`aperture_and_particle_loss.md`](theory/aperture_and_particle_loss.md) —
   design note for aperture and particle loss, surveying MAD-X, Bmad, Xsuite and
   Elegant from source: the shapes all four converge on, whether the aperture is
@@ -244,12 +245,15 @@ reference material, not API docs; the implementing code links back to them.
 
 ## Planning
 
-- [`todo.md`](todo.md) — the single forward-looking plan (open items and
-  implementation/validation/performance plans per solver). The interaction-grid
-  determination program (phases 0-4), non-finite coordinate detection, and the
-  CUDA `:quadratic` wavefront port are complete; the leading open threads are
-  the outer-boundary re-slicing jitter (now quantified) and the remaining CUDA
-  `:node` performance budget.
+- [`todo.md`](todo.md) — open work ONLY, since the 2026-08-16 restructure:
+  the live rows, the open study questions, and the CI flake-tally watch.
+- [`experiences.md`](experiences.md) — the recurring lessons the completed
+  work taught, distilled and grounded in their incidents, plus the standing
+  deliberately-not-being-done decisions. Read it before starting a campaign.
+- [`history/todo_ledger_archive.md`](history/todo_ledger_archive.md) — the
+  complete pre-restructure TODO, frozen verbatim: every closed row, campaign
+  narrative, measurement and corrected wrong turn, with U-numbers intact so
+  code and test comments citing a "todo row" resolve here.
 
 ## Review process
 
@@ -265,7 +269,8 @@ reference material, not API docs; the implementing code links back to them.
 
 Dated records of implemented work — optimization campaigns, benchmark decisions,
 and audits. The source code is the authority; these preserve the rationale.
-Forward-looking (not-yet-done) items live in `todo.md`, not here.
+Forward-looking (not-yet-done) items live in `todo.md`, not here; the
+frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_ledger_archive.md).
 
 - Solver optimization histories:
   [`strong_strong_pic_optimization_history.md`](history/strong_strong_pic_optimization_history.md),

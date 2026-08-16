@@ -1,0 +1,191 @@
+# Experiences
+
+The recurring lessons this project has paid for, distilled from the completed
+work now frozen in
+[`history/todo_ledger_archive.md`](history/todo_ledger_archive.md) and the
+audit records beside it. AGENTS.md states the working rules; this file is the
+evidence base — each lesson names the incidents that taught it, so a future
+session can weigh the rule against what actually happened. When new work
+teaches something reusable, it lands here (dated), and the full record goes to
+`history/`.
+
+## A check must be able to fail
+
+- The effectiveness contract's original success message counted 353 checked
+  while 112 declared parameters were dropped by two `continue`s with no trace —
+  an unrun check reported as a pass, in the file whose job is to forbid that
+  (U4-2). Every verdict the contract does not reach is now a counted metric.
+- The aperture half could not fail at all: the probe killed its particle,
+  `NaN <= atol` is false, and all 11 aperture parameters fell through both
+  comparisons into "checked" whatever the map did (U4-1, closed 2026-08-16
+  with the NaN-aware comparator and the survivable corner probe).
+- The element metadata validator caught 1 of 13 injected defects because its
+  checks compared values that route through the same object — `x == x` in
+  three different costumes (U12-8, two remain open).
+- Every can-fail control the suite carries exists because an earlier control
+  could not fail: `status in (:passed, :failed)` asserts nothing (U16-2).
+  Corollary learned twice since: the control's exemplar must be chosen so no
+  probe improvement can un-inert it — `drift.nst` stopped serving when the
+  drift probe gained kick content, and `marker.x_offset` never could serve
+  because its exemption exists precisely for last-bit hair the sweep counts as
+  consumed.
+
+## Measure before designing, and record the negatives
+
+- The F16 velocity-slip closure shipped only on its third design; the first
+  two were plausible and measurably wrong, and both dead ends are recorded in
+  the theory note so nobody rediscovers them (arc_survey_and_velocity_slip.md §4).
+- The `tune()` "physics discrepancy" was an FFT interpolation bias growing as
+  1/ν — instrument error masquerading as physics until measured down.
+- Node-solve caching / the ~1e-4 interpolation floor closed NEGATIVE twice: it
+  introduces more error than it removes. Standing decision; reopen only with
+  new evidence.
+- The CPU-threading campaign mis-attributed its ceiling twice before measuring
+  it (CPU-time inflation was GC threads, a red herring; the wall ceiling is
+  memory bandwidth, established by three independent tests including a
+  cache-resident positive control).
+- The curved-magnet-vs-patches question (2026-08-16) split exactly along
+  measurement lines: free-space patches stall at the field-free wedge
+  aggregate; the pole-face wedge maps converge like 1/N to the Ψ₂ floor. The
+  wrong construction's stall value is pinned in the suite as a negative
+  control.
+
+## Derive, don't hand-copy — and give every derived list a tripwire
+
+- The one-place fold-site table fell behind twice in two days (U11-3, U15-7),
+  each miss turning a placement override into a written-reported-never-read
+  no-op; fold sites are now declared BESIDE each fold and verified at every
+  construction.
+- An unread duplicate WILL drift: the PTC generator once carried its own copy
+  of each case's Octopus spec that nothing read, and it had already drifted
+  (U21-6). The spec table lives in exactly one place now.
+- `_LATTICE_BODY_KEYS` is `keys(_LATTICE_BODY_PARAMS)` — the list cannot
+  disagree with the table it indexes (U9-2). The curved-frame symplecticity
+  sweep DERIVES the set of kinds carrying both curvature and field, and that
+  tripwire fired correctly the moment the U9-2 schemas landed, demanding the
+  five new routing cases on the spot.
+- The registry snapshot is regenerated, never hand-edited; a stale snapshot
+  aborts the suite loudly.
+
+## Loud beats silent — and loud-but-wrong is worse than silent
+
+- A typo'd physics key stored as silent metadata is silent wrong physics; the
+  unknown-key warning exists for that. But before the schemas told the truth,
+  that warning claimed keys the runtime READS were "NOT being tracked" —
+  measured shifts up to 5.8e-2 — loud AND wrong (U9-2). A warning that lies is
+  worse than none.
+- Count tripwires catch what silence hides: the dropped-charge tripwire caught
+  83% of a slice silently discarded the day it landed; the accelerating-cavity
+  count tripwire caught a kept-whole hidden cavity that compiled and ran
+  multi-turn.
+- Fast-lane skips print a banner naming every skipped gate: a checkpoint that
+  looks like a finish line is how coverage quietly narrows.
+
+## Exemptions and allowlists age
+
+- An exemption for a parameter that has become effective excuses it forever,
+  silently — the direction that matters. The stale-exemption tripwire (U4-17)
+  catches entries the sweep never reaches; nothing mechanical catches a wrong
+  one, so retiring exemptions beats accumulating them (drift.nst and
+  drift.integrator_order were retired the day a loaded drift genuinely split).
+- Thirty copies of one reason is worse than one: kind-independent facts
+  (`name` is carried, never consumed) get one entry, not per-kind copies each
+  needing its own staleness bookkeeping.
+
+## A probe must put the parameter where it can act
+
+- `highest_fringe` at a pure-k1 quadrupole capped nothing; `fringe` at
+  highest_fringe=1 compiled four bitwise-identical maps (U4-4). The probe
+  table's own rule: conditional parameters sit in a configuration where they
+  can act.
+- The misalignment CONVENTION is observable only with all six placement
+  degrees of freedom nonzero — measured 0.0 at single offsets, 1.294e-4 at the
+  full shape (U4-12). One central merge enriches every probe identically.
+- The curved-frame truncation taught the two-sided version: a normal K_n needs
+  `curved_order >= n+1` to reach the curved body at all, while the truncation
+  STEP is invisible without high-order content to correct — the multipole
+  probe needed its own working point where both are simultaneously visible
+  (U9-2).
+- An aperture's map is the identity for survivors, so its only strong
+  observable is the alive/dead flip — which requires a baseline that LIVES,
+  and shrinking-limit alternatives, because the generic perturbation only ever
+  grows a value (U4-1).
+
+## Two spellings of one truth are reconciled by construction, not convention
+
+- `k1` and a nonzero `kn[2]` together THROW rather than letting one spelling
+  silently win; `angle` contradicts `h`/`b0` and throws; a `harmon` cavity
+  compiled without its ring context carries a NaN sentinel and REFUSES to
+  track rather than guessing a frequency.
+- A constrained pair is one degree of freedom: `beta0`/`gamma0` are perturbed
+  JOINTLY on the physical manifold, after the generic sweep "checked" beta0
+  at 1.12 — faster than light (U14-4).
+
+## External codes: measure their conventions, never read them
+
+- MAD-X RBEND `L` is the CHORD by default (`rbarc`); MAD-X `sbend, tilt=` is
+  Octopus `ref_tilt`, NOT `tilt` — the keyword trap the whole ref_tilt feature
+  exists for; PTC's `T` is conjugate to delta with opposite orientation; MAD-X
+  TFS output truncates to 10 digits unless `set, format="22.16e"` — which once
+  masqueraded as a 3.9e-10 physics deviation.
+- MAD-X 5.03.06 IGNORES `k0` on SBEND for PTC (measured bit-identical with k0
+  absent, 0, 0.12, 1e-6), so `h != b0` has no spelling there; EFCOMP field
+  errors DO transfer, take INTEGRATED strengths, and are the only door to
+  orders above K3 on a thick element — the k3 ceiling is MAD-X's attribute
+  surface, not PTC's.
+- PTC's wedge branch reads a module variable left with no initializer; its
+  MAD8_WEDGE branch hardcodes (1,2). Both are now declared behavior in
+  `wedge_coeff`'s metadata because they were measured, not because any manual
+  says so.
+
+## Mechanics that bit more than once
+
+- `Core.Box` closure captures broke performance or correctness THREE times in
+  one campaign (reused variable names, both-branch assignment); the tripwire
+  that hunts it earns its keep.
+- A docstring is detached by any expression inserted between it and its
+  target: the tripwire caught the same mistake twice in two days
+  (`_PLACEMENT_PROBE_DOF`, `_LATTICE_BODY_PROBE`). Put new consts ABOVE the
+  docstring block.
+- Backticks in `git commit -m` are command-substituted by the shell; commit
+  messages go through `git commit -F <file>`.
+- Test pins must use representable arithmetic: `(1.0 + 1e-9) - 1.0` is not
+  1e-9, and `isapprox` at tiny magnitudes fails on the representation error of
+  the pin itself.
+- A NamedTuple iterates VALUES; iterate `pairs(...)` for key-value loops.
+- Generated artifacts are written to a temp file and renamed on success —
+  truncating the committed reference before the first of 55 jobs runs leaves a
+  partial artifact on any mid-run failure (U24-10).
+- Warnings that fire per compile need `maxlog` and a content-keyed `_id`: a
+  knob sweep recompiles thousands of times, and a warning that repeats
+  thousands of times is silence with extra steps.
+
+## Process habits that earned their place
+
+- The full-suite gate runs before EVERY commit; the fast lane is a checkpoint,
+  never a finish line.
+- A neighbour audit follows every campaign; each one so far has found and
+  fixed a real gap the campaign itself missed.
+- A recorded claim can be wrong: the curved-frame solenoid was closed on a
+  wrong argument, reopened, and implemented — the withdrawn closure is kept
+  readable so the mistake stays visible. Corrections live BESIDE originals,
+  never replacing them.
+- Decisions outrank stale plans: a phase list written before a decision does
+  not override it — check the decision items before implementing a
+  predecessor's sub-item.
+
+## Standing decisions, deliberately not being done
+
+Closed with reasons; reopen only if the stated condition changes.
+
+- **Soft-fringe solenoid** — only Elegant has one and it is a field-map
+  integrator, not a portable analytic model. Revisit if a fringe-region study
+  appears.
+- **`pz` fail-fast gap** — accepted because production runs use
+  `allow_lost_particles`; the conditions that would reverse it are recorded in
+  the archive.
+- **Node-solve caching / the ~1e-4 interpolation floor** — closed negative,
+  twice: it introduces more error than it removes.
+- **Nightly scheduled jobs on the shared 128-thread box** — the 2026-08-07
+  system-manager directive stands; benchmark and nightly scripts ship inert
+  and opt-in per machine, and nothing unattended writes to shared history.
