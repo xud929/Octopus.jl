@@ -2165,8 +2165,13 @@ if _lane_gate("Element parameter effectiveness")
     # parameters (misalign_convention on every kind, fringe, bend_model,
     # patch.convention, xy_coupling.mode) gained derived perturbations, and
     # every probe now carries all six placement DOF centrally so the
-    # convention is observable (U4-12 closed).
-    @test r.metrics[:checked] >= 414
+    # convention is observable (U4-12 closed). 414 -> 499 on 2026-08-15: the
+    # lattice-magnet body schemas completed (U9-2) -- all 23 _LATTICE_BODY_KEYS
+    # declared on all six kinds via one merged table, 83 new entries checked
+    # at the _LATTICE_BODY_PROBE working point, plus drift.nst and
+    # drift.integrator_order moving from documented-inactive to checked
+    # because a loaded drift genuinely splits.
+    @test r.metrics[:checked] >= 499
 
     # What the contract does NOT decide has to be visible, and bounded
     # (2026-08-05_b audit, U4-2). 112 of 501 declared parameters used to be
@@ -2185,6 +2190,10 @@ if _lane_gate("Element parameter effectiveness")
     # (rejected stayed 23: its beta0/gamma0 are coupled-perturbed, not
     # rejected, per U14-4); 74 -> 42 on 2026-08-15, the `alternatives`
     # keystone moving 32 formerly-Symbol-shaped parameters into checked.
+    # The U9-2 schema completion (2026-08-15) added 83 sweep entries and
+    # moved NEITHER count: every new body-key entry is checked, none
+    # undecided -- the working-point measurements in _LATTICE_BODY_PROBE's
+    # comment are what made that true.
     @test r.metrics[:unperturbable] <= 42
     @test r.metrics[:rejected] <= 23
 
@@ -2255,17 +2264,70 @@ if _lane_gate("Element parameter effectiveness")
     # The contract must be able to fail, or it is decoration. The original
     # control here asserted `status in (:passed, :failed)`, which cannot
     # fail (2026-08-05 audit, U16-2); the real control empties the
-    # documented-inactive allowlist, so the drift's genuinely inert `nst`
-    # must be REPORTED as a failure naming drift.nst.
+    # documented-inactive allowlist, so a genuinely inert exempted parameter
+    # must be REPORTED as a failure. The exemplar moved from drift.nst to
+    # thin_strong_beam.klum on 2026-08-15: completing the body schemas
+    # (U9-2) gave the drift probe kick content, a loaded drift genuinely
+    # splits, and nst became CHECKED. The exemplar is NOT one of the marker
+    # placement entries, and measurably cannot be: those exemptions exist
+    # because the placement conjugation moves the LAST BIT while being
+    # physically inert, so an actual sweep scores them consumed -- the
+    # emptied-allowlist run reports only the parameters invisible to one
+    # deterministic call, and klum (a luminosity-diagnostic input, never in
+    # the coordinate map) is structurally permanent among them.
     let bad = ElementParameterEffectivenessContract(
             inactive=empty(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS))
         r = validate(bad)
         @test r.status === :failed
-        @test occursin("drift.nst", r.message)
+        @test occursin("thin_strong_beam.klum", r.message)
     end
-    @test haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :nst))
+    @test haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:thin_strong_beam, :klum))
+    # ... and the retired drift exemptions are really retired: an exemption
+    # for an effective parameter would keep excusing it forever, silently.
+    @test !haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :nst))
+    @test !haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :integrator_order))
 end
 end # _lane_gate("Element parameter effectiveness")
+
+@testset "Lattice-magnet body schemas are complete (U9-2)" begin
+    # The six kinds compile through ONE `_lattice_magnet`, which reads the
+    # same 23 body keys for every kind; each schema now declares all of them,
+    # merged from one table, so `element_help` is accurate, the unknown-key
+    # warning needs no `_extra_tracked_keys` side list, and every key sits
+    # under the effectiveness sweep. The key list is DERIVED from the table
+    # (`keys(_LATTICE_BODY_PARAMS)`), so the 23 here pins table size, and the
+    # per-kind loop pins that the merge actually happened everywhere.
+    @test length(Octopus._LATTICE_BODY_KEYS) == 23
+    for k in (:drift, :quadrupole, :sextupole, :octupole, :multipole, :sbend)
+        sch = Octopus.parameter_schema(Octopus.ElementSpec{k})
+        @test all(b -> haskey(sch, b), Octopus._LATTICE_BODY_KEYS)
+    end
+    # The merge cannot clobber a curated meaning -- later keys win -- so the
+    # bend's angle-flavoured `h` and the quadrupole's fold-flavoured `kn`
+    # survive the splice.
+    @test occursin("angle", Octopus.parameter_schema(SBendSpec)[:h].meaning)
+    @test occursin("k1", Octopus.parameter_schema(QuadrupoleSpec)[:kn].meaning)
+
+    # The measured facts that motivated U9-2, pinned through the public API.
+    u = (2.3e-3, 4.1e-4, -1.7e-3, -3.2e-4, 1.5e-3, 9.0e-4)
+    # `e1` on a quadrupole is read (the audit's 7.7e-7-shift measurement).
+    q0 = collect(compile_runtime(QuadrupoleSpec(L=0.3, k1=1.2))(u...))
+    q1 = collect(compile_runtime(QuadrupoleSpec(L=0.3, k1=1.2, e1=0.2))(u...))
+    @test maximum(abs, q1 .- q0) > 1.0e-9
+    # A drift given b0 bends: the kind names the intent, the keys carry the
+    # field, the runtime is one function.
+    d0 = collect(compile_runtime(DriftSpec(L=0.5))(u...))
+    d1 = collect(compile_runtime(DriftSpec(L=0.5, b0=0.02))(u...))
+    @test maximum(abs, d1 .- d0) > 1.0e-6
+    # The sbend's two formerly-missing keys were va/vs: the soft-edge
+    # quadrupole fringe applies to a combined-function bend too.
+    s0 = collect(compile_runtime(SBendSpec(L=1.0, angle=0.1, k1=0.6, fringe=:all))(u...))
+    s1 = collect(compile_runtime(SBendSpec(L=1.0, angle=0.1, k1=0.6, fringe=:all, va=0.05))(u...))
+    @test maximum(abs, s1 .- s0) > 0
+    # Negative control: a genuine typo still warns. Completing the schemas
+    # replaced the side list; it did not widen what is silently accepted.
+    @test_logs (:warn, r"unknown parameter") QuadrupoleSpec(L=0.3, k1=1.2, e1_typo=0.1)
+end
 
 @testset "PTC coverage cannot narrow silently" begin
     r = validate(PTCConsistencyContract())
@@ -4430,9 +4492,11 @@ if _lane_gate("Curved frame x transverse field: every routing is a gradient")
     # dipole content only; everything else must route through the curved
     # potential. The 2026-08-03 audit found the routing missing twice
     # (2.5e-3 .. 3.2e-2 of symplecticity); this pins the whole content grid
-    # on the only two kinds whose schemas offer both curvature and field
-    # (derived, not assumed: no other registered kind carries both), plus the
-    # undeclared-h channel through the shared LatticeMagnet compile.
+    # on the kinds whose schemas offer both curvature and field -- originally
+    # exactly sbend and solenoid, since U9-2 (2026-08-15) all six
+    # lattice-magnet kinds, each with a routing case below -- plus the
+    # undeclared-h channel through the shared LatticeMagnet compile. The
+    # derived both-directions tripwire at the end keeps the case list honest.
     S6 = zeros(6, 6)
     for (q, p) in ((1, 2), (3, 4), (5, 6))
         S6[q, p] = 1.0
@@ -4496,20 +4560,43 @@ if _lane_gate("Curved frame x transverse field: every routing is a gradient")
     @test residual(compile_runtime(ElementSpec{:quadrupole}(;
         L=0.7, nst=2, kn=(0.0, 1.1), ks=(0.04,), h=0.05))) < 1.0e-12
 
+    # Since the body schemas completed (U9-2, 2026-08-15), EVERY lattice-
+    # magnet kind declares both curvature and field content -- that is the
+    # schema telling the truth about the one shared runtime, and the derived
+    # tripwire below correctly demanded these kinds join the sweep the moment
+    # the declarations landed. One mixed normal-and-skew case per kind
+    # through the FRIENDLY constructor: the kernel grid above already pins
+    # the shared curved potential exhaustively; these pin each constructor's
+    # routing into it.
+    @test residual(compile_runtime(DriftSpec(; L=0.7, h=0.05, nst=2,
+        kn=(0.0, 1.1), ks=(0.04,)))) < 1.0e-12
+    @test residual(compile_runtime(QuadrupoleSpec(; L=0.7, h=0.05, nst=2,
+        k1=1.1, ks=(0.04,)))) < 1.0e-12
+    @test residual(compile_runtime(SextupoleSpec(; L=0.6, h=0.05, nst=2,
+        k2=2.0, ks=(0.04, 0.2)))) < 1.0e-12
+    @test residual(compile_runtime(OctupoleSpec(; L=0.5, h=0.05, nst=2,
+        k3=12.0, ks=(0.04,)))) < 1.0e-12
+    @test residual(compile_runtime(MultipoleSpec(; L=0.6, h=0.05, nst=2,
+        k1=0.6, k2=1.0, ks=(0.03, 0.2)))) < 1.0e-12
+
     # DERIVE the case list the comment above claims is derived.
     #
     # "the only two kinds whose schemas offer both curvature and field (derived,
     # not assumed)" was a hand-assertion: nothing in this testset computed that
     # set, so a newly registered kind carrying both would be swept by nothing
-    # and fail no test. The claim is true at HEAD -- measured across every
-    # registered kind, exactly [:sbend, :solenoid] carry both, with :drift
-    # carrying curvature alone -- but that is a fact about HEAD, not an
-    # invariant the suite maintains. The right shape is one testset away:
+    # and fail no test. The claim was true when written -- exactly
+    # [:sbend, :solenoid] carried both -- but that was a fact about that HEAD,
+    # not an invariant the suite maintains, which is precisely why this
+    # tripwire fired when the U9-2 schema completion (2026-08-15) made all six
+    # lattice-magnet kinds declare both: the five new combinations got their
+    # cases above the moment their declarations landed, which is the tripwire
+    # doing its one job. The right long-term shape remains
     # `kinds_declaring_without_case == 0` on SymplecticityContract
     # (2026-08-05_b audit, U18-4).
     let curvature_keys = (:h, :curved, :b0),
         field_keys = (:kn, :ks, :kskew, :k1, :k2, :k3, :knl, :ksl),
-        swept = Set([:sbend, :solenoid])
+        swept = Set([:sbend, :solenoid, :drift, :quadrupole, :sextupole,
+                     :octupole, :multipole])
         both = Symbol[]
         for T in registered_element_specs()
             schema = parameter_schema(T)

@@ -815,19 +815,15 @@ function _strength_tuples(::Type{T}, kn, ks) where {T}
            ntuple(i -> i <= length(ks) ? T(ks[i]) : zero(T), n)
 end
 
-# Every key `_lattice_magnet` reads below, for EVERY kind it compiles, while
-# each kind's `parameters` declaration covers only its own subset. The
-# unknown-key warning consults this so it cannot claim a key the runtime reads
-# is "NOT being tracked" (2026-08-05_b audit, U9-2). Measured gaps: drift was
-# missing 21 of these, quadrupole/sextupole/octupole/multipole 15 each, sbend 2.
-const _LATTICE_BODY_KEYS = (:h, :b0, :kn, :ks, :bend_model, :curved, :curved_order,
-                            :bend_fringe, :fringe, :highest_fringe, :wedge_coeff,
-                            :e1, :e2, :fint1, :fint2, :hgap1, :hgap2, :hface1,
-                            :hface2, :va, :vs, :kill_ent_fringe, :kill_exi_fringe)
-
-for _k in (:drift, :quadrupole, :sextupole, :octupole, :multipole, :sbend)
-    @eval _extra_tracked_keys(::Val{$(QuoteNode(_k))}) = _LATTICE_BODY_KEYS
-end
+# Every key `_lattice_magnet` reads below is declared by EVERY kind it
+# compiles: `_LATTICE_BODY_PARAMS` (defined beside `_COMMON_PARAMS` below) is
+# merged into all six schemas, and `_LATTICE_BODY_KEYS` is derived from it.
+# Until 2026-08-15 each kind declared only its own subset -- drift was missing
+# 21 of the 23, quadrupole/sextupole/octupole/multipole 15 each, sbend 2 -- and
+# the unknown-key warning needed an `_extra_tracked_keys` side list so it could
+# not claim a key the runtime reads is "NOT being tracked" (2026-08-05_b audit,
+# U9-2). The completed schemas make that side list unnecessary: the warning
+# checks the schema, and the schema now tells the truth.
 
 function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Type{T}) where {T}
     L = T(param(spec, :L))
@@ -924,6 +920,50 @@ const _COMMON_PARAMS = (
     misalign_convention=ParamMeta(default=:bmad, alternatives=(:bmad, :madx), meaning="which code's misalignment convention to follow. :bmad references the displacement to the element centre, as survey data means, and composes the rotations about fixed axes as R_y R_x R_z. :madx references it to the entrance frame and composes them intrinsically as R_z R_x R_y, reproducing EALIGN through MAD_MISALIGN_FIBRE. The two agree only for a pure translation of a straight element, and for any single rotation"),
     tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
 )
+
+# The 23 body keys `_lattice_magnet` reads for EVERY kind it compiles, as one
+# schema table merged into all six kinds (U9-2). The kind names the intent; the
+# keys carry the field and geometry; the runtime is one function -- so `e1` on
+# a quadrupole is read (measured 7.7e-7 shift) and a drift given `b0` bends.
+# Declaring the full set everywhere is the truth-telling repair: `element_help`
+# is accurate, the unknown-key warning needs no side list, and every entry sits
+# under the parameter-effectiveness sweep. A kind whose meta needs more than
+# the generic meaning (drift's exactness, the bend's angle sugar) overrides the
+# entry in its own `parameters = merge(_LATTICE_BODY_PARAMS, (...))` call --
+# later keys win, so a curated meaning can never be clobbered by this table.
+const _LATTICE_BODY_PARAMS = (
+    h=ParamMeta(default=0, meaning="reference-frame curvature 1/rho; the frame of any lattice-magnet kind may be curved, a curved drift included. Independent of the dipole strength b0"),
+    b0=ParamMeta(default=0, meaning="dipole strength q B0 / P0; independent of the frame curvature h. Read for every lattice-magnet kind by the one shared runtime, so setting it on any kind adds a real dipole field"),
+    kn=ParamMeta(default=(), meaning="normal multipole strengths as a positional tuple; index i holds K_{i-1}, so kn[2] is K1. The named kinds fold their defining strengths (k1, k2, ...) into this at construction and use the tuple for measured field errors on top"),
+    ks=ParamMeta(default=(), meaning="skew partners of kn"),
+    bend_model=ParamMeta(default=:exact, alternatives=(:exact, :drift_kick), meaning="where the dipole sits in the splitting: :exact puts it in the integrable map (no splitting error, exact at nst=1); :drift_kick puts it in the kick, reproducing PTC MODEL=1 at finite nst"),
+    curved=ParamMeta(default=nothing, meaning="force the curved or straight body path. `nothing` lets the frame decide, i.e. curved when h != 0. Resolved at compile_runtime and carried in the type, so no curvature test happens inside the tracking kernel. `true` at h = 0 exercises the curved closed form where the straight one also applies; `false` at h != 0 ignores the curvature and warns"),
+    curved_order=ParamMeta(default=8, meaning="truncation order of the curved-frame field expansion used by curved multipole bodies (Section 4.4); a convergence parameter, unused when h == 0 or the magnet is a pure dipole"),
+    bend_fringe=ParamMeta(default=true, meaning="pole-face maps (exact rotation, face curvature, FINT/HGAP, wedge) and the Maxwell-required hard-edge dipole fringe. Defaults ON because it is first-order optics whenever e1 or e2 is nonzero: measured J[4,3] moves from 0 to -0.036 at e1=e2=0.1. With perpendicular faces it is purely nonlinear (linear map identical to 0 ulp), but it is still what PTC does and what Maxwell requires. Set false only to obtain the bare integrable map"),
+    fringe=_COMMON_PARAMS.fringe,
+    highest_fringe=_COMMON_PARAMS.highest_fringe,
+    wedge_coeff=ParamMeta(default=(1, 2), meaning="coefficients of the quadrupole-in-wedge kick applied at an angled pole face, PTC's wedge_coeff. The default (1,2) is what PTC's MAD8_WEDGE branch hardcodes and is its behaviour with fringes off; PTC's other branch reads a module variable left with no initializer, so (0,0) reproduces that. Inactive unless bend_fringe is on, a pole-face angle is nonzero, and the magnet carries a quadrupole component"),
+    e1=ParamMeta(default=0, meaning="entrance pole-face angle"),
+    e2=ParamMeta(default=0, meaning="exit pole-face angle"),
+    fint1=ParamMeta(default=0, meaning="entrance fringe-field integral"),
+    fint2=ParamMeta(default=0, meaning="exit fringe-field integral"),
+    hgap1=ParamMeta(default=0, meaning="entrance half gap"),
+    hgap2=ParamMeta(default=0, meaning="exit half gap"),
+    hface1=ParamMeta(default=0, meaning="entrance pole-face curvature"),
+    hface2=ParamMeta(default=0, meaning="exit pole-face curvature"),
+    va=_COMMON_PARAMS.va,
+    vs=_COMMON_PARAMS.vs,
+    kill_ent_fringe=_COMMON_PARAMS.kill_ent_fringe,
+    kill_exi_fringe=_COMMON_PARAMS.kill_exi_fringe,
+)
+
+# Derived, not hand-listed: the authoritative key list IS the table above.
+const _LATTICE_BODY_KEYS = keys(_LATTICE_BODY_PARAMS)
+
+# One shared construction_help sentence naming every body key, concatenated
+# into each kind's help so the metadata validator's mention check holds for
+# all six without six hand-copied enumerations.
+const _LATTICE_BODY_HELP = " Body keys read by the ONE shared lattice-magnet runtime for every kind (drift, quadrupole, sextupole, octupole, multipole, sbend), so any of these is legal and tracked on any of the six -- the kind names the intent, the keys carry the field and geometry: h (frame curvature; a curved drift is real), b0 (dipole strength; a drift given b0 bends), kn and ks (multipole strengths; index i holds K_{i-1}), bend_model (:exact or :drift_kick), curved and curved_order (body-path override and curved-frame truncation order), bend_fringe with pole-face geometry e1, e2, fint1, fint2, hgap1, hgap2, hface1, hface2 and wedge_coeff, fringe with highest_fringe, va, vs (soft-edge quadrupole fringe), kill_ent_fringe, kill_exi_fringe."
 
 # ---------------------------------------------------------------------------
 # Named strength keywords.
@@ -1203,17 +1243,15 @@ end
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [PlaceholderAnalysis]
-    parameters = (
+    parameters = merge(_LATTICE_BODY_PARAMS, (
         L=ParamMeta(required=true, meaning="arc length in metres"),
-        h=ParamMeta(default=0, meaning="reference-frame curvature 1/rho; a drift may be curved"),
-        curved=ParamMeta(default=nothing, meaning="force the curved or straight body path. `nothing` lets the frame decide, i.e. curved when h != 0. Resolved at compile_runtime and carried in the type, so no curvature test happens inside the tracking kernel. `true` at h = 0 exercises the curved closed form where the straight one also applies; `false` at h != 0 ignores the curvature and warns"),
-        nst=ParamMeta(default=1, meaning="integration steps; unused because the drift is exact"),
-        integrator_order=ParamMeta(default=2, meaning="unused because the drift is exact"),
+        nst=ParamMeta(default=1, meaning="integration steps; a PURE drift is exact and ignores them, but the shared lattice-magnet runtime reads body strengths on every kind, so a drift given kn/ks content splits and steps like any magnet"),
+        integrator_order=ParamMeta(default=2, meaning="unused by a pure drift, which is exact; splits a drift carrying body strengths, as on any magnet"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
-    )
+    ))
     example = DriftSpec(L=0.5)
-    construction_help = "Friendly constructor: DriftSpec(; L, h=0, curved=nothing, nst=1, integrator_order=2, tracking_method=Symplectic6DMap()). Exact in (1+delta); h != 0 gives a curved drift. nst and integrator_order are accepted for interface uniformity and unused, because the drift is exact. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: DriftSpec(; L, h=0, curved=nothing, nst=1, integrator_order=2, tracking_method=Symplectic6DMap()). Exact in (1+delta); h != 0 gives a curved drift. nst and integrator_order are accepted for interface uniformity; a pure drift is exact and ignores them, while a drift given body strengths splits like any magnet. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel." * _LATTICE_BODY_HELP
 end
 
 @element_spec begin
@@ -1226,7 +1264,7 @@ end
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [PlaceholderAnalysis]
-    parameters = (
+    parameters = merge(_LATTICE_BODY_PARAMS, (
         L=_COMMON_PARAMS.L,
         k1=ParamMeta(default=0, meaning="normal quadrupole strength K1; the normal way to build a quadrupole. Folded into kn[2] at construction"),
         k1s=ParamMeta(default=0, meaning="skew quadrupole strength; folded into ks[2] at construction"),
@@ -1234,12 +1272,6 @@ end
         ks=ParamMeta(default=(), meaning="skew partners of kn"),
         nst=_COMMON_PARAMS.nst,
         integrator_order=_COMMON_PARAMS.integrator_order,
-        fringe=_COMMON_PARAMS.fringe,
-        va=_COMMON_PARAMS.va,
-        vs=_COMMON_PARAMS.vs,
-        highest_fringe=_COMMON_PARAMS.highest_fringe,
-        kill_ent_fringe=_COMMON_PARAMS.kill_ent_fringe,
-        kill_exi_fringe=_COMMON_PARAMS.kill_exi_fringe,
         x_offset=_COMMON_PARAMS.x_offset,
         y_offset=_COMMON_PARAMS.y_offset,
         z_offset=_COMMON_PARAMS.z_offset,
@@ -1254,9 +1286,9 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
-    )
+    ))
     example = QuadrupoleSpec(L=0.3, k1=1.2)
-    construction_help = "Friendly constructor: QuadrupoleSpec(; L, k1=0, k1s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k1, with k1s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[2] is K1, and setting both k1 and a nonzero kn[2] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: QuadrupoleSpec(; L, k1=0, k1s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k1, with k1s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[2] is K1, and setting both k1 and a nonzero kn[2] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel." * _LATTICE_BODY_HELP
 end
 
 @element_spec begin
@@ -1269,7 +1301,7 @@ end
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [PlaceholderAnalysis]
-    parameters = (
+    parameters = merge(_LATTICE_BODY_PARAMS, (
         L=_COMMON_PARAMS.L,
         k2=ParamMeta(default=0, meaning="normal sextupole strength K2; the normal way to build a sextupole. Folded into kn[3] at construction"),
         k2s=ParamMeta(default=0, meaning="skew sextupole strength; folded into ks[3] at construction"),
@@ -1277,12 +1309,6 @@ end
         ks=ParamMeta(default=(), meaning="skew partners of kn"),
         nst=_COMMON_PARAMS.nst,
         integrator_order=_COMMON_PARAMS.integrator_order,
-        fringe=_COMMON_PARAMS.fringe,
-        va=_COMMON_PARAMS.va,
-        vs=_COMMON_PARAMS.vs,
-        highest_fringe=_COMMON_PARAMS.highest_fringe,
-        kill_ent_fringe=_COMMON_PARAMS.kill_ent_fringe,
-        kill_exi_fringe=_COMMON_PARAMS.kill_exi_fringe,
         x_offset=_COMMON_PARAMS.x_offset,
         y_offset=_COMMON_PARAMS.y_offset,
         z_offset=_COMMON_PARAMS.z_offset,
@@ -1297,9 +1323,9 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
-    )
+    ))
     example = SextupoleSpec(L=0.2, k2=12.0)
-    construction_help = "Friendly constructor: SextupoleSpec(; L, k2=0, k2s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k2, with k2s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[3] is K2, and setting both k2 and a nonzero kn[3] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: SextupoleSpec(; L, k2=0, k2s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k2, with k2s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[3] is K2, and setting both k2 and a nonzero kn[3] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel." * _LATTICE_BODY_HELP
 end
 
 @element_spec begin
@@ -1312,7 +1338,7 @@ end
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [PlaceholderAnalysis]
-    parameters = (
+    parameters = merge(_LATTICE_BODY_PARAMS, (
         L=_COMMON_PARAMS.L,
         k3=ParamMeta(default=0, meaning="normal octupole strength K3; the normal way to build an octupole. Folded into kn[4] at construction"),
         k3s=ParamMeta(default=0, meaning="skew octupole strength; folded into ks[4] at construction"),
@@ -1320,12 +1346,6 @@ end
         ks=ParamMeta(default=(), meaning="skew partners of kn"),
         nst=_COMMON_PARAMS.nst,
         integrator_order=_COMMON_PARAMS.integrator_order,
-        fringe=_COMMON_PARAMS.fringe,
-        va=_COMMON_PARAMS.va,
-        vs=_COMMON_PARAMS.vs,
-        highest_fringe=_COMMON_PARAMS.highest_fringe,
-        kill_ent_fringe=_COMMON_PARAMS.kill_ent_fringe,
-        kill_exi_fringe=_COMMON_PARAMS.kill_exi_fringe,
         x_offset=_COMMON_PARAMS.x_offset,
         y_offset=_COMMON_PARAMS.y_offset,
         z_offset=_COMMON_PARAMS.z_offset,
@@ -1340,9 +1360,9 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
-    )
+    ))
     example = OctupoleSpec(L=0.1, k3=300.0)
-    construction_help = "Friendly constructor: OctupoleSpec(; L, k3=0, k3s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k3, with k3s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[4] is K3, and setting both k3 and a nonzero kn[4] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: OctupoleSpec(; L, k3=0, k3s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k3, with k3s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[4] is K3, and setting both k3 and a nonzero kn[4] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel." * _LATTICE_BODY_HELP
 end
 
 @element_spec begin
@@ -1355,7 +1375,7 @@ end
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [PlaceholderAnalysis]
-    parameters = (
+    parameters = merge(_LATTICE_BODY_PARAMS, (
         L=_COMMON_PARAMS.L,
         k0=ParamMeta(default=0, meaning="normal dipole strength K0, i.e. a corrector kick; folded into kn[1] at construction"),
         k0s=ParamMeta(default=0, meaning="skew dipole strength; folded into ks[1] at construction"),
@@ -1373,12 +1393,6 @@ end
         ks=ParamMeta(default=(), meaning="skew partners of kn"),
         nst=_COMMON_PARAMS.nst,
         integrator_order=_COMMON_PARAMS.integrator_order,
-        fringe=_COMMON_PARAMS.fringe,
-        va=_COMMON_PARAMS.va,
-        vs=_COMMON_PARAMS.vs,
-        highest_fringe=_COMMON_PARAMS.highest_fringe,
-        kill_ent_fringe=_COMMON_PARAMS.kill_ent_fringe,
-        kill_exi_fringe=_COMMON_PARAMS.kill_exi_fringe,
         x_offset=_COMMON_PARAMS.x_offset,
         y_offset=_COMMON_PARAMS.y_offset,
         z_offset=_COMMON_PARAMS.z_offset,
@@ -1393,9 +1407,9 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
-    )
+    ))
     example = MultipoleSpec(L=0.2, k1=1.0, k2=5.0)
-    construction_help = "Friendly constructor: MultipoleSpec(; L, k0=0, k0s=0, k1=0, k1s=0, k2=0, k2s=0, k3=0, k3s=0, k4=0, k4s=0, k5=0, k5s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Named strengths run K0 (dipole corrector) through K5 (dodecapole), each folded into kn/ks at construction, so a decapole is k4 rather than four leading zeros. Orders beyond K5 and field errors use the positional tuples, where kn[i] is K_{i-1}. Setting a named strength and the matching nonzero kn entry together throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: MultipoleSpec(; L, k0=0, k0s=0, k1=0, k1s=0, k2=0, k2s=0, k3=0, k3s=0, k4=0, k4s=0, k5=0, k5s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Named strengths run K0 (dipole corrector) through K5 (dodecapole), each folded into kn/ks at construction, so a decapole is k4 rather than four leading zeros. Orders beyond K5 and field errors use the positional tuples, where kn[i] is K_{i-1}. Setting a named strength and the matching nonzero kn entry together throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel." * _LATTICE_BODY_HELP
 end
 
 @element_spec begin
@@ -1408,36 +1422,18 @@ end
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [PlaceholderAnalysis]
-    parameters = (
+    parameters = merge(_LATTICE_BODY_PARAMS, (
         L=_COMMON_PARAMS.L,
         angle=ParamMeta(default=0, meaning="design-orbit bend angle in radians; sets h = b0 = angle / L at construction. The normal way to build a bend. Contradicts h/b0, so giving both throws"),
         h=ParamMeta(default=0, meaning="reference-frame curvature 1/rho; need not equal b0. Give h and b0 instead of angle when they differ"),
-        curved=ParamMeta(default=nothing, meaning="force the curved or straight body path. `nothing` lets the frame decide, i.e. curved when h != 0. Resolved at compile_runtime and carried in the type, so no curvature test happens inside the tracking kernel. `true` at h = 0 exercises the curved closed form where the straight one also applies; `false` at h != 0 ignores the curvature and warns"),
-        b0=ParamMeta(default=0, meaning="dipole strength q B0 / P0; independent of h"),
         k1=ParamMeta(default=0, meaning="normal quadrupole component of a combined-function bend; folded into kn[2] at construction"),
         k1s=ParamMeta(default=0, meaning="skew quadrupole component; folded into ks[2] at construction"),
         k2=ParamMeta(default=0, meaning="normal sextupole component of a combined-function bend; folded into kn[3] at construction"),
         k2s=ParamMeta(default=0, meaning="skew sextupole component; folded into ks[3] at construction"),
         kn=ParamMeta(default=(), meaning="normal multipole strengths as a positional tuple; index i holds K_{i-1}. Use it for orders beyond k2 and for field errors. Setting k1/k2 and the matching nonzero kn entry together throws"),
         ks=ParamMeta(default=(), meaning="skew partners of kn"),
-        e1=ParamMeta(default=0, meaning="entrance pole-face angle"),
-        e2=ParamMeta(default=0, meaning="exit pole-face angle"),
-        fint1=ParamMeta(default=0, meaning="entrance fringe-field integral"),
-        fint2=ParamMeta(default=0, meaning="exit fringe-field integral"),
-        hgap1=ParamMeta(default=0, meaning="entrance half gap"),
-        hgap2=ParamMeta(default=0, meaning="exit half gap"),
-        hface1=ParamMeta(default=0, meaning="entrance pole-face curvature"),
-        hface2=ParamMeta(default=0, meaning="exit pole-face curvature"),
-        bend_fringe=ParamMeta(default=true, meaning="pole-face maps (exact rotation, face curvature, FINT/HGAP, wedge) and the Maxwell-required hard-edge dipole fringe. Defaults ON because it is first-order optics whenever e1 or e2 is nonzero: measured J[4,3] moves from 0 to -0.036 at e1=e2=0.1. With perpendicular faces it is purely nonlinear (linear map identical to 0 ulp), but it is still what PTC does and what Maxwell requires. Set false only to obtain the bare integrable map"),
-        curved_order=ParamMeta(default=8, meaning="truncation order of the curved-frame field expansion used by combined-function bends (Section 4.4); a convergence parameter, unused when h == 0 or the magnet is a pure dipole"),
-        bend_model=ParamMeta(default=:exact, alternatives=(:exact, :drift_kick), meaning="where the dipole sits in the splitting: :exact puts it in the integrable map (no splitting error, exact at nst=1); :drift_kick puts it in the kick, reproducing PTC MODEL=1 at finite nst"),
-        wedge_coeff=ParamMeta(default=(1, 2), meaning="coefficients of the quadrupole-in-wedge kick applied at an angled pole face, PTC's wedge_coeff. The default (1,2) is what PTC's MAD8_WEDGE branch hardcodes and is its behaviour with fringes off; PTC's other branch reads a module variable left with no initializer, so (0,0) reproduces that. Inactive unless bend_fringe is on, a pole-face angle is nonzero, and the bend carries a quadrupole component"),
         nst=_COMMON_PARAMS.nst,
         integrator_order=_COMMON_PARAMS.integrator_order,
-        fringe=_COMMON_PARAMS.fringe,
-        highest_fringe=_COMMON_PARAMS.highest_fringe,
-        kill_ent_fringe=_COMMON_PARAMS.kill_ent_fringe,
-        kill_exi_fringe=_COMMON_PARAMS.kill_exi_fringe,
         x_offset=_COMMON_PARAMS.x_offset,
         y_offset=_COMMON_PARAMS.y_offset,
         z_offset=_COMMON_PARAMS.z_offset,
@@ -1450,9 +1446,9 @@ end
         # instead of splatting `_PLACEMENT_PARAMS` (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
         tracking_method=_COMMON_PARAMS.tracking_method,
-    )
+    ))
     example = SBendSpec(L=1.0, angle=0.05)
-    construction_help = "Friendly constructor: SBendSpec(; L, angle=0, h=0, b0=0, k1=0, k1s=0, k2=0, k2s=0, kn=(), ks=(), e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=true, bend_model=:exact, curved=nothing, curved_order=8, wedge_coeff=(1,2), nst=1, integrator_order=2, fringe=:none, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, ref_tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is angle, which sets h = b0 = angle / L; give h and b0 directly when the frame curvature and the field differ, but not alongside angle. Combined-function bends take k1/k2 (k1s/k2s skew), with kn/ks for higher orders and field errors. TILT VERSUS REF_TILT: tilt rolls the magnet body and is an error (Bmad roll, MAD-X EALIGN dpsi); ref_tilt rolls the design orbit plane and is a design choice (Bmad ref_tilt, MAD-X `sbend, tilt=`). A vertical bend is ref_tilt=pi/2. Translating a MAD-X bend tilt into Octopus tilt is the common mistake and gives a machine error where the lattice meant geometry. RBendSpec(; L, angle, ...) builds this same kind with parallel pole faces: it adds angle/2 to each of e1/e2 (the MAD-X RBEND face conversion) and forwards everything else to SBendSpec, so every contract and parameter here applies to it. RBendSpec's L is the ARC length like every Octopus element -- NOT MAD-X's default RBEND semantics, where the written L is the chord (RBARC=true) and the surveyed arc is longer; porting a MAD-X RBEND, give RBendSpec(chord=..., angle=...) and the arc L = chord*(angle/2)/sin(angle/2) is computed at construction (chord and L are mutually exclusive; chord is folded and never stored). Pinned against a true MAD-X RBEND by the MADXSurveyConsistencyContract fixture rbend_chord. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: SBendSpec(; L, angle=0, h=0, b0=0, k1=0, k1s=0, k2=0, k2s=0, kn=(), ks=(), e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=true, bend_model=:exact, curved=nothing, curved_order=8, wedge_coeff=(1,2), nst=1, integrator_order=2, fringe=:none, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, ref_tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is angle, which sets h = b0 = angle / L; give h and b0 directly when the frame curvature and the field differ, but not alongside angle. Combined-function bends take k1/k2 (k1s/k2s skew), with kn/ks for higher orders and field errors. TILT VERSUS REF_TILT: tilt rolls the magnet body and is an error (Bmad roll, MAD-X EALIGN dpsi); ref_tilt rolls the design orbit plane and is a design choice (Bmad ref_tilt, MAD-X `sbend, tilt=`). A vertical bend is ref_tilt=pi/2. Translating a MAD-X bend tilt into Octopus tilt is the common mistake and gives a machine error where the lattice meant geometry. RBendSpec(; L, angle, ...) builds this same kind with parallel pole faces: it adds angle/2 to each of e1/e2 (the MAD-X RBEND face conversion) and forwards everything else to SBendSpec, so every contract and parameter here applies to it. RBendSpec's L is the ARC length like every Octopus element -- NOT MAD-X's default RBEND semantics, where the written L is the chord (RBARC=true) and the surveyed arc is longer; porting a MAD-X RBEND, give RBendSpec(chord=..., angle=...) and the arc L = chord*(angle/2)/sin(angle/2) is computed at construction (chord and L are mutually exclusive; chord is folded and never stored). Pinned against a true MAD-X RBEND by the MADXSurveyConsistencyContract fixture rbend_chord. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel." * _LATTICE_BODY_HELP
 end
 
 # RBendSpec constructs an ElementSpec{:sbend}, so its metadata IS the sector

@@ -2337,6 +2337,20 @@ function validate(contract::MADXSurveyConsistencyContract; kwargs...)
 end
 
 
+# The bend-family working point merged into every lattice-magnet probe except
+# the sbend's (whose own probe already carries it, with `angle` sugar on top).
+# The completed body schemas (U9-2) declare all 23 `_LATTICE_BODY_KEYS` on all
+# six kinds, and these are the keys that are conditional on each other: the
+# FINT/HGAP correction needs the dipole field and both factors nonzero,
+# `curved_order` and `curved` need a curved frame (and 3, not the default 8,
+# because at 8 the next order moves nothing measurable), `wedge_coeff` needs a
+# pole-face angle against a quadrupole component. One table, five merges, so a
+# working-point fix lands everywhere at once. Defined ABOVE the probe table's
+# docstring, not between it and its const, per the detachment tripwire.
+const _LATTICE_BODY_PROBE = (h=0.05, b0=0.15, e1=0.1, e2=0.1,
+                             fint1=0.5, fint2=0.5, hgap1=0.03, hgap2=0.03,
+                             hface1=0.02, hface2=0.02, curved_order=3)
+
 """
     ElementParameterEffectivenessContract(; probes=DEFAULT_ELEMENT_PARAM_PROBES,
                                           inactive=DEFAULT_INACTIVE_ELEMENT_PARAMS,
@@ -2364,18 +2378,46 @@ in a configuration where they can act: `va` needs a soft-edge fringe enabled,
 with no probe is skipped and counted, rather than silently passing.
 
 `inactive` lists `(kind, parameter)` pairs that are genuinely inert and must say
-why -- a drift's `nst` is the honest example, since an exact map has no steps.
+why -- a marker's `x_offset` is the honest example, since the identity map
+commutes with every rigid placement.
 """
 const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
-    :drift => (L=0.7, h=0.05),
-    :quadrupole => (L=0.4, kn=(0.0, 1.7, 5.0), nst=2, fringe=:all, va=0.03, vs=1.0e-4,
-                    highest_fringe=2, x_offset=1.0e-3),
-    :sextupole => (L=0.25, kn=(0.0, 1.2, 14.0), nst=2, fringe=:all, va=0.03, vs=1.0e-4,
-                   highest_fringe=2, x_offset=1.0e-3),
-    :octupole => (L=0.15, kn=(0.0, 1.2, 0.0, 220.0), nst=2, fringe=:all, va=0.03, vs=1.0e-4,
-                  highest_fringe=2, x_offset=1.0e-3),
-    :multipole => (L=0.3, k1=1.2, k2=8.0, nst=2, fringe=:all, va=0.03, vs=1.0e-4,
-                   highest_fringe=2, x_offset=1.0e-3),
+    # Body content on the DRIFT probe is deliberate, not decorative: the one
+    # shared runtime reads kn/ks/b0 on every kind, so the completed drift
+    # schema declares them, and probing them needs a configuration where the
+    # conditional ones can act -- `nst` and `integrator_order` split a loaded
+    # drift exactly as they split a quadrupole (their old inactive exemptions
+    # are gone because they are simply effective now), while `fringe`, `va`,
+    # `vs`, `highest_fringe` and `wedge_coeff` act only against multipole
+    # content the pure drift lacks.
+    :drift => merge(_LATTICE_BODY_PROBE,
+                    (L=0.7, kn=(0.0, 1.7, 5.0), nst=2, fringe=:all, va=0.03,
+                     vs=1.0e-4, highest_fringe=2)),
+    :quadrupole => merge(_LATTICE_BODY_PROBE,
+                    (L=0.4, kn=(0.0, 1.7, 5.0), nst=2, fringe=:all, va=0.03, vs=1.0e-4,
+                     highest_fringe=2, x_offset=1.0e-3)),
+    :sextupole => merge(_LATTICE_BODY_PROBE,
+                    (L=0.25, kn=(0.0, 1.2, 14.0), nst=2, fringe=:all, va=0.03, vs=1.0e-4,
+                     highest_fringe=2, x_offset=1.0e-3)),
+    :octupole => merge(_LATTICE_BODY_PROBE,
+                    (L=0.15, kn=(0.0, 1.2, 0.0, 220.0), nst=2, fringe=:all, va=0.03, vs=1.0e-4,
+                     highest_fringe=2, x_offset=1.0e-3)),
+    # The general multipole overrides the shared working point, because the
+    # truncation and the content it truncates pull against each other:
+    # measured, a normal K_n needs curved_order >= n+1 to reach the curved
+    # body at all (K3/K4/K5 moved 0.0 at the shared curved_order=3), while
+    # the curved_order STEP is invisible without high-order content to
+    # correct (6 -> 7 moved 0.0 over a K1/K2-only baseline, 2.2e-16 once
+    # k3/k4/k5 are set). curved_order=6 with named content at every order is
+    # the point where all six named strengths AND the truncation order move
+    # the map (k5s is the smallest at 8.7e-19 -- one bit is enough at
+    # atol=0). Skew content stays OUT of the baseline: a named skew beside a
+    # nonzero ks-tuple entry hits the fold contradiction guard and would
+    # flip ks from checked to constructor-rejected.
+    :multipole => merge(_LATTICE_BODY_PROBE,
+                   (L=0.3, k1=1.2, k2=8.0, k3=40.0, k4=900.0, k5=20000.0,
+                    curved_order=6, nst=2, fringe=:all, va=0.03, vs=1.0e-4,
+                    highest_fringe=2, x_offset=1.0e-3)),
     # `highest_fringe = 2`, not 1. At 1 the multipole fringe is capped below the
     # quadrupole order, so `fringe` in {:none, :multipole, :soft_quad, :all} all
     # compile to a BITWISE IDENTICAL map -- measured 0.0 difference for all four
@@ -2454,9 +2496,13 @@ const CARRIED_ELEMENT_PARAMS = Dict{Symbol,String}(
 )
 
 const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
-    (:drift, :nst) => "the drift is exact, so there are no integration steps",
+    # (:drift, :nst) and (:drift, :integrator_order) lived here with "the drift
+    # is exact" reasons until the body schemas were completed (U9-2): the drift
+    # probe now carries kn content because the shared runtime reads it, and a
+    # loaded drift genuinely splits, so both parameters moved from documented-
+    # inactive to CHECKED. An exemption for an effective parameter is the bad
+    # direction -- it keeps excusing forever, silently.
     (:thin_rf_cavity, :harmon) => "consumed at TASK BIND, not at the bare compile this probe uses: the harmonic number resolves to a frequency against the line's circumference in _bind_survey, and a bare-compiled harmon cavity deliberately refuses to track at all. Effectiveness is pinned instead by the harmon-vs-explicit-frequency ring identity testset",
-    (:drift, :integrator_order) => "the drift is exact, so there is nothing to split",
     (:marker, :tracking_method) => "a marker is the identity under every method",
     (:line, :L) => "survey metadata, not tracking input: consumed by the arc-length walkers (s_positions, total_length, aperture_s and the misaligned-parent survey), not by the coordinate map this contract measures — declared by the 2026-08-05 campaign so nested own-state lines survey at their real length",
     # These are consumed, but not through the single deterministic
