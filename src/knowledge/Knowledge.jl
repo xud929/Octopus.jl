@@ -200,18 +200,35 @@ Base.propertynames(spec::ElementSpec, ::Bool=false) =
     (sort!(collect(keys(getfield(spec, :params))); by=string)..., :params)
 
 """
-    ParamMeta(; required=false, unit="", default=nothing, meaning="")
+    ParamMeta(; required=false, unit="", default=nothing, meaning="",
+              alternatives=())
 
 Declarative metadata for one element-construction parameter.
+
+`alternatives` declares the parameter's other legitimate values — the enum
+for a Symbol/flag parameter (`misalign_convention`'s `(:bmad, :madx)`), or
+explicit hand-picked values where the generic numeric perturbation asks the
+wrong question. It is the machine-readable half of what `meaning` says in
+prose, and the parameter-effectiveness contract derives its perturbations
+from it: before `alternatives`, every Symbol parameter was structurally
+unperturbable and the contract could not check that `fringe`, `bend_model`,
+or the misalignment convention reached the map at all (U4-12). Declared
+alternatives replace the generic candidate rule for that parameter, so they
+also serve `Real` parameters whose only falsifiable moves are specific
+values. An empty tuple means "no declaration"; validity of each alternative
+is arbitrated by the constructor at probe time, exactly as numeric
+perturbations are (U4-3).
 """
 struct ParamMeta
     required::Bool
     unit::String
     default::Any
     meaning::String
+    alternatives::Tuple
 end
-ParamMeta(; required::Bool=false, unit="", default=nothing, meaning="") =
-    ParamMeta(required, String(unit), default, String(meaning))
+ParamMeta(; required::Bool=false, unit="", default=nothing, meaning="",
+          alternatives::Tuple=()) =
+    ParamMeta(required, String(unit), default, String(meaning), alternatives)
 
 # Schema entries for the placement keys, spliced into every registered kind's
 # `parameters` declaration (`_PLACEMENT_PARAMS...`) so `parameter_schema`,
@@ -246,7 +263,7 @@ const _PLACEMENT_PARAMS = (
         meaning="rotation of the body in the y-s plane (about the horizontal transverse axis); see x_offset"),
     tilt=ParamMeta(default=0, unit="rad",
         meaning="roll of the body about s, an alignment ERROR measured against the design orbit; the design roll is ref_tilt"),
-    misalign_convention=ParamMeta(default=:bmad,
+    misalign_convention=ParamMeta(default=:bmad, alternatives=(:bmad, :madx),
         meaning="which code's misalignment convention to follow, :bmad or :madx; they differ in rotation-composition order, the arc point the displacement anchors at, and the frame an error is stated in against a ref_tilt"),
     ref_tilt=ParamMeta(default=0, unit="rad",
         meaning="DESIGN roll of the element about s — geometry, not an error; wraps outside the misalignment, and a :madx alignment error against it is stated in the unrolled design frame"),

@@ -250,7 +250,7 @@ end
         angle_x=ParamMeta(default=0, meaning="rotation of the new frame about the x axis, in radians"),
         angle_y=ParamMeta(default=0, meaning="rotation about the y axis, in radians"),
         angle_s=ParamMeta(default=0, meaning="roll of the new frame about the longitudinal axis, in radians"),
-        convention=ParamMeta(default=:bmad, meaning="rotation composition order when more than one angle is nonzero, :bmad or :madx. The same split the misalignments carry, and the same default; single-axis rotations agree either way"),
+        convention=ParamMeta(default=:bmad, alternatives=(:bmad, :madx), meaning="rotation composition order when more than one angle is nonzero, :bmad or :madx. The same split the misalignments carry, and the same default; single-axis rotations agree either way"),
         t_offset=ParamMeta(default=0, meaning="reference arrival-time offset, in the same units as z. Lets a patch express a path-length difference between two branches rather than only a geometric one"),
         tracking_method=ParamMeta(default=NonSymplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,

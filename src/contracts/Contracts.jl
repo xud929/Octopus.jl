@@ -2368,14 +2368,14 @@ why -- a drift's `nst` is the honest example, since an exact map has no steps.
 """
 const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     :drift => (L=0.7, h=0.05),
-    :quadrupole => (L=0.4, k1=1.7, nst=2, fringe=:all, va=0.03, vs=1.0e-4,
-                    highest_fringe=1, x_offset=1.0e-3),
+    :quadrupole => (L=0.4, kn=(0.0, 1.7, 5.0), nst=2, fringe=:all, va=0.03, vs=1.0e-4,
+                    highest_fringe=2, x_offset=1.0e-3),
     :sextupole => (L=0.25, kn=(0.0, 1.2, 14.0), nst=2, fringe=:all, va=0.03, vs=1.0e-4,
-                   highest_fringe=1, x_offset=1.0e-3),
+                   highest_fringe=2, x_offset=1.0e-3),
     :octupole => (L=0.15, kn=(0.0, 1.2, 0.0, 220.0), nst=2, fringe=:all, va=0.03, vs=1.0e-4,
-                  highest_fringe=1, x_offset=1.0e-3),
+                  highest_fringe=2, x_offset=1.0e-3),
     :multipole => (L=0.3, k1=1.2, k2=8.0, nst=2, fringe=:all, va=0.03, vs=1.0e-4,
-                   highest_fringe=1, x_offset=1.0e-3),
+                   highest_fringe=2, x_offset=1.0e-3),
     # `highest_fringe = 2`, not 1. At 1 the multipole fringe is capped below the
     # quadrupole order, so `fringe` in {:none, :multipole, :soft_quad, :all} all
     # compile to a BITWISE IDENTICAL map -- measured 0.0 difference for all four
@@ -2385,9 +2385,10 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     # cases use) `:none` and `:soft_quad` separate from `:all` by 7.8e-9, so the
     # parameter is reachable (2026-08-05_b audit, U4-4).
     #
-    # This makes the probe capable; it does not by itself make the contract
-    # check `fringe`, because `_perturb_param` returns nothing for every Symbol
-    # and the pair is dropped before the count (U4-2, still open).
+    # This makes the probe capable, and since the ParamMeta `alternatives`
+    # keystone (2026-08-15) the contract DOES check `fringe`: a Symbol
+    # parameter's declared alternatives are its perturbations (the U4-2
+    # remnant this comment used to record as open).
     :sbend => (L=1.1, angle=0.198, k1=0.6, k2=5.0, nst=2, e1=0.1, e2=0.1,
                fint1=0.5, fint2=0.5, hgap1=0.03, hgap2=0.03, hface1=0.02,
                hface2=0.02, fringe=:all, highest_fringe=2, curved_order=3,
@@ -2576,8 +2577,22 @@ _perturb_is_physical(key, pmeta) =
     key in _PLACEMENT_PARAM_KEYS ||
     (pmeta isa ParamMeta && pmeta.unit in ("m", "rad"))
 
+# The six placement degrees of freedom merged into every effectiveness probe
+# (see the merge site in validate); magnitudes at the U4-12 working point.
+const _PLACEMENT_PROBE_DOF = (
+    x_offset=1.0e-3, y_offset=-0.7e-3, z_offset=0.5e-3,
+    x_pitch=0.8e-3, y_pitch=-0.6e-3, tilt=0.9e-3)
+
 function _perturb_candidates(key::Symbol, current, pmeta)
     key === :tracking_method && return ()
+    # Declared alternatives win outright: they are the schema saying "these
+    # are this parameter's other legitimate values", which is strictly more
+    # information than any generic type rule -- and the only road to a
+    # Symbol/flag parameter, which has no numeric neighbourhood (U4-12).
+    if pmeta isa ParamMeta && !isempty(pmeta.alternatives)
+        alts = Tuple(a for a in pmeta.alternatives if a != current)
+        isempty(alts) || return alts
+    end
     current isa Bool && return (!current,)
     current isa Symbol && return ()
     if current isa Tuple
@@ -2681,6 +2696,17 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
         if haskey(ELEMENT_PARAM_PROBE_OVERRIDES, meta.kind)
             merge!(probe, Dict{Symbol,Any}(
                 pairs(ELEMENT_PARAM_PROBE_OVERRIDES[meta.kind])))
+        end
+        # Every probe carries all six placement degrees of freedom unless it
+        # sets its own: the misalignment CONVENTION is observable only with
+        # every DOF nonzero (one rotation at a time cannot distinguish the
+        # composition orders -- U4-12, measured 0.0 at single offsets and
+        # 1.294e-4 at the full quad_mis_all shape), and a probe that cannot
+        # show a declared alternative would report the parameter ignored when
+        # it is only unasked. Central, so the example-derived fallback probes
+        # are enriched identically to the curated ones.
+        for (k, v) in pairs(_PLACEMENT_PROBE_DOF)
+            haskey(probe, k) || (probe[k] = v)
         end
         baseline = try
             collect(compile_runtime(ctor(; probe...))(u...))

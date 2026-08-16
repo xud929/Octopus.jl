@@ -323,7 +323,7 @@ end
         r2=ParamMeta(default=0, meaning="coupling coefficient r2"),
         r3=ParamMeta(default=0, meaning="coupling coefficient r3"),
         r4=ParamMeta(default=0, meaning="coupling coefficient r4"),
-        mode=ParamMeta(default=XY_MODEA, meaning="coupling convention"),
+        mode=ParamMeta(default=XY_MODEA, alternatives=(XY_MODEA, XY_MODEB), meaning="coupling convention"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )

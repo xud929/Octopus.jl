@@ -2160,8 +2160,13 @@ if _lane_gate("Element parameter effectiveness")
     # U17b-3). Raise this when a new differentiable parameter is registered;
     # never lower it. 369 -> 382 on 2026-08-14: thin_accelerating_cavity's
     # parameters, with its beta0/gamma0 checked JOINTLY like the ring
-    # cavity's (a reference pair is one particle -- U14-4).
-    @test r.metrics[:checked] >= 382
+    # cavity's (a reference pair is one particle -- U14-4). 382 -> 414 on
+    # 2026-08-15: the ParamMeta `alternatives` keystone -- Symbol/flag
+    # parameters (misalign_convention on every kind, fringe, bend_model,
+    # patch.convention, xy_coupling.mode) gained derived perturbations, and
+    # every probe now carries all six placement DOF centrally so the
+    # convention is observable (U4-12 closed).
+    @test r.metrics[:checked] >= 414
 
     # What the contract does NOT decide has to be visible, and bounded
     # (2026-08-05_b audit, U4-2). 112 of 501 declared parameters used to be
@@ -2178,8 +2183,9 @@ if _lane_gate("Element parameter effectiveness")
     # moved 16 parameters from undecided to checked -- 353 -> 369; 73 -> 74
     # on 2026-08-14 for thin_accelerating_cavity's one structural entry
     # (rejected stayed 23: its beta0/gamma0 are coupled-perturbed, not
-    # rejected, per U14-4).
-    @test r.metrics[:unperturbable] <= 74
+    # rejected, per U14-4); 74 -> 42 on 2026-08-15, the `alternatives`
+    # keystone moving 32 formerly-Symbol-shaped parameters into checked.
+    @test r.metrics[:unperturbable] <= 42
     @test r.metrics[:rejected] <= 23
 
     # `:name` is CARRIED by every kind and consumed by none, so it is exempt
@@ -4257,6 +4263,38 @@ end
     execute!(chunked, r2; turns=3)
     execute!(chunked, r2; turns=3)
     @test readings(bpm2)[1] == [0, 1, 2, 3, 4, 5]
+end
+
+@testset "ParamMeta alternatives derive Symbol perturbations" begin
+    # The keystone (2026-08-15): declared alternatives are the schema's
+    # machine-readable enum, and the effectiveness contract derives its
+    # perturbations from them -- the road to every Symbol/flag parameter,
+    # which has no numeric neighbourhood (U4-12).
+    pm = Octopus.parameter_schema(ElementSpec{:sbend})
+    @test pm.misalign_convention.alternatives == (:bmad, :madx)
+    @test Octopus._perturb_candidates(:misalign_convention, :bmad,
+                                      pm.misalign_convention) == (:madx,)
+    # the current value is excluded, not re-offered
+    @test Octopus._perturb_candidates(:fringe, :all, pm.fringe) ==
+          (:none, :multipole, :soft_quad)
+    @test Octopus._perturb_candidates(:bend_model, :exact, pm.bend_model) ==
+          (:drift_kick,)
+    # declared alternatives REPLACE the generic rule for any value type, so
+    # they also serve Real parameters whose only falsifiable moves are
+    # specific values (the U4-1 direction)
+    realmeta = ParamMeta(default=1.0, alternatives=(0.25, 4.0))
+    @test Octopus._perturb_candidates(:whatever, 1.0, realmeta) == (0.25, 4.0)
+    # no declaration: the generic rules stand, and a bare Symbol still has
+    # no candidates
+    plain = ParamMeta(default=:x)
+    @test Octopus._perturb_candidates(:whatever, :x, plain) == ()
+    # the U4-12 observable itself: with all six placement DOF, the two
+    # conventions produce genuinely different maps on a quadrupole
+    kw = merge((; Octopus.DEFAULT_ELEMENT_PARAM_PROBES[:quadrupole]...),
+               Octopus._PLACEMENT_PROBE_DOF)
+    mk(conv) = compile_runtime(QuadrupoleSpec(; kw..., misalign_convention=conv))
+    u = (2.3e-3, 4.1e-4, -1.7e-3, -3.2e-4, 1.5e-3, 9.0e-4)
+    @test collect(mk(:bmad)(u...)) != collect(mk(:madx)(u...))
 end
 
 @testset "BPMObserver path mode buffers by capacity" begin
