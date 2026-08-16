@@ -1941,6 +1941,34 @@ function _ptc_reference_specs()
         "cfbend_m4_n2" => SBendSpec(L=1.1, h=0.18, b0=0.18, kn=(0.0, 0.6, 5.0), nst=2,
                                     integrator_order=4,
                                     bend_model=:drift_kick, bend_fringe=true),
+        # The curved-potential channels the polygon benchmark isolated
+        # (2026-08-16). A PURE curved quadrupole (b0 = 0, h != 0) has no
+        # MAD-X 5.03.06 spelling -- SBEND's k0 is measured ignored by its PTC
+        # translation -- so the quadrupole-dominated bend at the polygon's
+        # working point stands in for it; cfbend_skew is the odd,
+        # Psi_1-seeded branch of the Section 4.4 recursion, previously
+        # uncompared; cfbend_k3 needs curved_order >= 4 to exist at all.
+        "cfbend_quad_heavy" => SBendSpec(L=0.7, h=0.21, b0=0.21, kn=(0.0, 1.7), nst=4,
+                                         bend_model=:drift_kick, bend_fringe=true),
+        "cfbend_skew" => SBendSpec(L=1.1, h=0.18, b0=0.18, ks=(0.0, 0.9), nst=4,
+                                   bend_model=:drift_kick, bend_fringe=true),
+        "cfbend_k3" => SBendSpec(L=1.1, h=0.18, b0=0.18, kn=(0.0, 0.6, 5.0, 40.0), nst=2,
+                                 integrator_order=4,
+                                 bend_model=:drift_kick, bend_fringe=true),
+        # Orders above K3, reaching MAD-X through EFCOMP field errors (dkn/dks
+        # are INTEGRATED, so these kn entries are dkn/L). cfbend_k5 compares
+        # the truncated curved potentials across implementations at orders
+        # where truncation is structural: K4 needs curved_order >= 5, K5
+        # needs >= 6, both inside the default 8.
+        "cfbend_k5" => SBendSpec(L=1.1, h=0.18, b0=0.18,
+                                 kn=(0.0, 0.6, 0.0, 0.0, 400.0, 5000.0), nst=4,
+                                 bend_model=:drift_kick, bend_fringe=true),
+        "multipole_k5" => MultipoleSpec(L=0.3, kn=(0.0, 1.2, 0.0, 0.0, 400.0, 5000.0),
+                                        ks=(0.0, 0.0, 0.0, 0.0, 0.0, -300.0), nst=4,
+                                        integrator_order=2),
+        "thin_multipole_k5" => [ThinMultipoleSpec(knl=(0.0, 0.05, 1.2, 30.0, 400.0, 5000.0),
+                                                  ksl=(0.0, 0.0, 0.0, 0.0, 0.0, -300.0)),
+                                DriftSpec(L=0.2)],
         # Hard-edge multipole fringe. `highest_fringe=2` is PTC's own
         # HIGHEST_FRINGE default, not a tuning knob: without it the comparison
         # would include sextupole and higher fringe terms that PTC truncates.

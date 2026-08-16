@@ -86,13 +86,20 @@ struct Case
     nst::Int
     fringe::Bool          # per-element permfringe -- turns on MULTIPOLE_FRINGE
     ealign::String        # EALIGN body, applied through ptc_align; "" for none
+    efcomp::String        # EFCOMP body -- the only door MAD-X offers to orders
+                          # above K3 on a THICK element (attributes stop at k3;
+                          # dkn/dks are INTEGRATED strengths, so an Octopus kn
+                          # entry is dkn/L). Measured transferred to PTC by
+                          # 5.03.06 with no extra ptc command. "" for none.
 end
 Case(name, madx, L, method, nst, fringe::Bool) =
-    Case(name, madx, L, method, nst, fringe, "")
+    Case(name, madx, L, method, nst, fringe, "", "")
+Case(name, madx, L, method, nst, fringe::Bool, ealign::String) =
+    Case(name, madx, L, method, nst, fringe, ealign, "")
 
 # Fringe defaults off, so the cases that predate the fringe comparison keep
 # generating byte-identical rows: the switch is only emitted when it is on.
-Case(name, madx, L, method, nst) = Case(name, madx, L, method, nst, false, "")
+Case(name, madx, L, method, nst) = Case(name, madx, L, method, nst, false, "", "")
 
 const CASES = Case[
     Case("drift", "drift, l=0.7", 0.7, 2, 1),
@@ -113,6 +120,39 @@ const CASES = Case[
     # Combined-function bends: the curved-frame multipole kick of Section 4.4.
     Case("cfbend_m2_n4", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4),
     Case("cfbend_m4_n2", "sbend, l=1.1, angle=0.198, k1=0.6, k2=5.0", 1.1, 4, 2),
+    # The curved-potential channels the polygon benchmark isolated
+    # (2026-08-16, testset "Curved magnets against straight magnets and
+    # coordinate changes"). MAD-X 5.03.06 cannot express h != b0 -- SBEND's
+    # k0 attribute is measured IGNORED by its PTC translation (outputs
+    # bit-identical with k0 absent, 0, 0.12 and 1e-6) -- so a PURE curved
+    # quadrupole (b0 = 0) has no MAD-X spelling here; the closest expressible
+    # object is the quadrupole-DOMINATED bend at the polygon's working point
+    # (h = 0.21, k1 = 1.7). cfbend_skew pins the curved SKEW quadrupole, the
+    # odd Psi_1-seeded branch of the Section 4.4 recursion -- the channel the
+    # 2.5e-3 symplecticity defect lived in -- previously uncompared against
+    # PTC. cfbend_k3 puts K3 content in a curved frame, which does not reach
+    # the curved body at all below curved_order 4 (k3 alone measured to move
+    # PTC's map, so the attribute is honored).
+    Case("cfbend_quad_heavy", "sbend, l=0.7, angle=0.147, k1=1.7", 0.7, 2, 4),
+    Case("cfbend_skew", "sbend, l=1.1, angle=0.198, k1s=0.9", 1.1, 2, 4),
+    Case("cfbend_k3", "sbend, l=1.1, angle=0.198, k1=0.6, k2=5.0, k3=40.0", 1.1, 4, 2),
+    # Orders ABOVE K3, which no thick-element attribute can spell: through
+    # EFCOMP field errors (dkn/dks are integrated, so kn = dkn/L). PTC carries
+    # arbitrary per-fibre AN/BN and its kick sums every order present -- the
+    # k3 attribute ceiling is MAD-X's element surface, not PTC's. cfbend_k5
+    # is the deep benchmark of the Section 4.4 recursion: K4 content needs
+    # curved_order >= 5 and K5 needs >= 6 to reach the curved body at all, so
+    # agreement here compares truncated curved potentials ACROSS
+    # implementations, not just low orders. multipole_k5 is the same content
+    # straight, with a skew K5 riding along; thin_multipole_k5 covers the
+    # integrated-kick spelling to the same order.
+    Case("cfbend_k5", "sbend, l=1.1, angle=0.198, k1=0.6", 1.1, 2, 4, false, "",
+         "dkn={0, 0, 0, 0, 440.0, 5500.0}"),
+    Case("multipole_k5", "sbend, l=0.3, angle=0, k1=1.2", 0.3, 2, 4, false, "",
+         "dkn={0, 0, 0, 0, 120.0, 1500.0}, dks={0, 0, 0, 0, 0, -90.0}"),
+    Case("thin_multipole_k5",
+         "multipole, knl={0.0, 0.05, 1.2, 30.0, 400.0, 5000.0}, ksl={0.0, 0.0, 0.0, 0.0, 0.0, -300.0}",
+         0.0, 2, 1),
     # ---------------------------------------------------------------------
     # Hard-edge multipole fringe, via ptc_setswitch. Each case pins one branch
     # of PTC's MULTIPOLE_FRINGER that a source comparison turned up:
@@ -297,6 +337,8 @@ function run_case(case::Case)
         use, sequence=lat;
         $(isempty(case.ealign) ? "" :
           "select, flag=error, clear;\n        select, flag=error, range=el;\n        ealign, " * case.ealign * ";")
+        $(isempty(case.efcomp) ? "" :
+          "select, flag=error, clear;\n        select, flag=error, range=el;\n        efcomp, " * case.efcomp * ";")
         ptc_create_universe;
         ptc_create_layout, model=1, method=$(case.method), nst=$(case.nst),
                            exact=true, time=false;
