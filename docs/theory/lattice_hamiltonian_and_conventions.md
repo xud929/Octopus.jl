@@ -330,6 +330,25 @@ finite-difference floor); the midplane field matches its definition to
 $4\times10^{-13}$ for $h$ up to $0.9$; and $h\to0$ recovers
 $-\Re\!\left[K_1w^2/2\right]$ to $5\times10^{-14}$.
 
+**A polygon benchmark (2026-08-16).** An independent check by construction
+rather than by limit algebra: $N$ *straight* quadrupole slices along the
+chords of the arc, joined by half-angle yaw patches, must converge to the
+curved magnet. Measured (testset "Curved magnets against straight magnets and
+coordinate changes", $h=0.21$, $K_1=1.7$, $L=0.7$): with free-space patches
+alone the polygon stalls at $1.3\times10^{-4}$ — the aggregate of field-free
+wedges every joint leaves, since a straight magnet's map is
+perpendicular-bounded — while rotating each slice's pole faces instead
+($e_1=e_2=-\varphi/2$, the RBend face conversion at quadrupole order) makes it
+converge like $1/N$ down to a floor of $1.1\times10^{-5}$ that is *pure
+y-plane*, proportional to $y$, and quadratic in $h$
+($1.12\times10^{-5}\to3.10\times10^{-6}\to9.29\times10^{-7}$ for
+$h\to h/2\to h/4$): exactly the off-midplane correction
+$\Psi_2=K_1(1+hx)$ that no straight quadrupole carries, isolated
+experimentally. The zero-field control matches the curved drift to $2\times
+10^{-16}$ at every $N$, and the $N{=}1$ drift case is the exact statement
+that a curved drift is a coordinate change, with $z$ differing by exactly the
+arc-minus-chord reference length.
+
 ### 4.5 The thin multipole kick
 
 Splitting $H=H_{\rm drift}+H_{\rm kick}$ with $H_{\rm kick}=-\Psi$, a kick of

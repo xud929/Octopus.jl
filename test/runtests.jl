@@ -2329,6 +2329,87 @@ end # _lane_gate("Element parameter effectiveness")
     @test_logs (:warn, r"unknown parameter") QuadrupoleSpec(L=0.3, k1=1.2, e1_typo=0.1)
 end
 
+@testset "Curved magnets against straight magnets and coordinate changes" begin
+    # Measured 2026-08-16. Free space is frame-independent, so a curved DRIFT
+    # is EXACTLY a coordinate change: yaw half the arc angle, drift the chord,
+    # yaw again. Only z differs, by exactly the arc-minus-chord reference
+    # length -- the RBend arc-vs-chord ledger in patch costume (z is measured
+    # against the declared reference, and the two constructions declare
+    # different reference lengths).
+    h, L, k1 = 0.21, 0.7, 1.7
+    theta = h * L
+    chord = 2 / h * sin(theta / 2)
+    us = ((2.3e-3, 4.1e-4, -1.7e-3, -3.2e-4, 1.5e-3, 9.0e-4),
+          (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+          (-1.0e-3, 8.0e-4, 2.0e-3, -6.0e-4, -2.0e-3, -1.2e-3))
+    yrot_half = compile_runtime(PatchSpec(angle_y=theta / 2))
+    curved_drift = compile_runtime(DriftSpec(L=L, h=h))
+    straight_drift = compile_runtime(DriftSpec(L=chord))
+    for u in us
+        v = collect(yrot_half(straight_drift(yrot_half(u...)...)...))
+        w = collect(curved_drift(u...))
+        @test maximum(abs, (w .- v)[[1, 2, 3, 4, 6]]) < 5.0e-15
+        @test abs(w[5] - v[5] - (L - chord)) < 1.0e-12
+    end
+
+    # The same conjugation on a QUADRUPOLE is not exact, and HOW it fails is
+    # the measurement. N straight-quad slices along the arc's chords, with two
+    # boundary treatments:
+    #   (a) free-space yaw patches alone leave field-free WEDGES at every
+    #       joint (a straight magnet's map is perpendicular-bounded), an
+    #       aggregate that does NOT vanish with N -- measured stalling at
+    #       1.32e-4 from N = 16 on, visible on the DESIGN RAY;
+    #   (b) rotating each slice's pole faces instead (e1 = e2 = -phi/2, the
+    #       RBend face conversion at quadrupole order: exact rotation plus
+    #       wedge kick) makes the polygon converge like 1/N, down to a floor
+    #       that is PURE Y-PLANE and proportional to y: the curved-frame
+    #       off-midplane Maxwell correction Psi_2 = K1(1+hx) (theory note
+    #       Section 4.4) that no straight quadrupole carries. Its identity is
+    #       pinned by h-scaling, 1.12e-5 -> 3.10e-6 -> 9.29e-7 for
+    #       h -> h/2 -> h/4 (dominantly quadratic: one h explicit in Psi_2,
+    #       one through the design-orbit offset).
+    curved_quad = compile_runtime(QuadrupoleSpec(L=L, h=h, k1=k1, nst=256,
+                                                 integrator_order=4))
+    function polygon_dev(N; faces)
+        phi = theta / N
+        c = 2 / h * sin(phi / 2)
+        yr = compile_runtime(PatchSpec(angle_y=phi / 2))
+        fkw = faces ? (e1=-phi / 2, e2=-phi / 2) : NamedTuple()
+        q = compile_runtime(QuadrupoleSpec(; L=c, k1=k1, nst=max(1, cld(256, N)),
+                                           integrator_order=4, fkw...))
+        dL = L - N * c
+        dev = 0.0
+        devmid = 0.0
+        for u in us
+            v = u
+            for _ in 1:N
+                v = yr(q(yr(v...)...)...)
+            end
+            d = maximum(abs, collect((v[1], v[2], v[3], v[4], v[5] + dL, v[6])) .-
+                             collect(curved_quad(u...)))
+            dev = max(dev, d)
+            u[3] == 0.0 && u[4] == 0.0 && (devmid = max(devmid, d))
+        end
+        return dev, devmid
+    end
+    naive64, _ = polygon_dev(64; faces=false)
+    @test naive64 > 5.0e-5                # the wedge aggregate: patches alone
+                                          # are the wrong boundary for a field
+    d1, _ = polygon_dev(1; faces=true)
+    d16, _ = polygon_dev(16; faces=true)
+    d64, mid64 = polygon_dev(64; faces=true)
+    @test d1 > 5.0e-3                     # one magnet + end patches is NOT the
+                                          # curved magnet (measured 8.4e-3)
+    @test d16 < d1 / 100                  # ... but the polygon converges
+    @test d64 < 1.5e-5                    # measured 1.13e-5, the Psi_2 floor
+    @test d64 < naive64 / 5               # and beats the wedge-blind version
+    @test mid64 < 5.0e-6                  # the midplane ray converges through
+    @test mid64 < d64 / 3                 # the floor (measured 2.1e-6 at
+                                          # N=64, 1.3e-7 by N=256): what
+                                          # remains is off-midplane content
+                                          # only
+end
+
 @testset "PTC coverage cannot narrow silently" begin
     r = validate(PTCConsistencyContract())
     @test r.status === :passed
