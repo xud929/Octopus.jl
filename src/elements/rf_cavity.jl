@@ -411,7 +411,7 @@ end
 #     kind does not bind ds_turn. Single-pass lines at accelerating
 #     energies put that term at ~L_line * delta / gamma0^2, far below the
 #     model's other boundaries; a low-energy front end that cares inherits
-#     the F16 machinery, tracked in todo.md;
+#     the F16 machinery (closed; record in docs/history/todo_ledger_archive.md);
 #   * single-pass: a closed ring containing one is physically inconsistent
 #     (the second turn's entry reference is no longer beta0), and the chain
 #     validation cannot see ring closure -- multipass recirculation is the

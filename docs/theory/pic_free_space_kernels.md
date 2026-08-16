@@ -187,7 +187,7 @@ on the literature claim.
 
 ### 3.4 Lattice Green function: derivation and measurement
 
-`docs/todo.md` carried "add a lattice Green-function variant" as an open PIC-core
+`docs/history/todo_ledger_archive.md` carried "add a lattice Green-function variant" as an open PIC-core
 item. Unlike the node-sampled and cell-integrated kernels, which discretize the
 *continuum* $-\ln r$, the lattice Green function inverts the **five-point discrete
 Laplacian exactly**, so the mesh solution satisfies the discrete Poisson equation

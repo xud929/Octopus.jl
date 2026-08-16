@@ -886,7 +886,7 @@ function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2,
     ext_x2 = _masked_ext(x2, flags2); ext_y2 = _masked_ext(y2, flags2)
     emax = max(ext_x1, ext_x2, ext_y1, ext_y2)
     L = max(d * smax, 1.05 * emax)
-    # Non-finite chokepoint (N1, docs/todo.md): NaN/Inf coordinates propagate into
+    # Non-finite chokepoint (N1, docs/history/todo_ledger_archive.md): NaN/Inf coordinates propagate into
     # the box size; out-of-box particles are silently dropped by the Dirichlet
     # deposit, so fail fast here instead. Under `allow_lost_particles` the
     # extrema skipped the dead, so reaching this means live input produced a

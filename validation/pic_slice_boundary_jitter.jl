@@ -2,7 +2,7 @@
 Per-turn re-slicing jitter of the longitudinal slice boundaries.
 
 Reference model: the strong-strong PIC collision rebuilds slice boundaries every
-turn from the instantaneous z distribution (docs/todo.md, "Slice longitudinal
+turn from the instantaneous z distribution (docs/history/todo_ledger_archive.md, "Slice longitudinal
 interpolation" item 5). Under `:equal_area` the internal boundaries are sample
 quantiles and the outermost boundaries are pinned to single extreme
 macroparticles, so a deterministic interpolation error becomes a fluctuating

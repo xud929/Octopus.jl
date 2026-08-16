@@ -177,7 +177,8 @@ from `reference_beta_gamma(E0, mc2)`, and `s` enters only for
 > the ν_s criterion is §8 item 4.) The fix needs the element
 > to know its accumulated reference arc (`turn·C + s_elem`) — the same
 > survey channel Scope B needs for `P0(s)`; until that exists the boundary
-> is documented on the element and tracked in `todo.md`.
+> is documented on the element and tracked in the ledger (now
+> `../history/todo_ledger_archive.md`).
 >
 > **Closed (2026-08-14).** The survey channel landed and the cavity now
 > applies the slip — but *not* through this conversion's `s` argument, and

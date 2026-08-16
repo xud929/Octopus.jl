@@ -4,7 +4,7 @@
 > architecture decision for the channel that tells a runtime element where it
 > sits on the reference trajectory — the accumulated arc position `s` and,
 > later, the local reference momentum `P0`. It is the shared prerequisite of
-> two open `docs/todo.md` items: the RF velocity-slip defect (F16, the
+> two open `docs/history/todo_ledger_archive.md` items: the RF velocity-slip defect (F16, the
 > 2026-08-05 audit) and RF Scope B (the accelerating cavity). The physics
 > derivations live in
 > [`theory/rf_cavity_and_reference_energy.md`](../theory/rf_cavity_and_reference_energy.md)
@@ -40,7 +40,7 @@ survey; both are cumulative design-time passes along the line; both need the
 same delivery path from the line into per-element compilation. Scope B's
 cavity phase is itself an arrival-time quantity, so F16's requirement is a
 strict subset of Scope B's. Building the channel once, with both consumers on
-the table, is the fold recorded in `todo.md`.
+the table, is the fold recorded in the archived ledger.
 
 ## 2. The decomposition principle
 

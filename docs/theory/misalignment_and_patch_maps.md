@@ -350,7 +350,7 @@ Measured, at `ref_tilt = 0.3` on a combined-function bend:
 Both parts of the transform must move together: rotating the offset but leaving
 $W$ alone still leaves 1.2e-4 on the all-six case.
 
-This overturned the prediction recorded in `docs/todo.md`, which reasoned that a
+This overturned the prediction recorded in `docs/history/todo_ledger_archive.md`, which reasoned that a
 design choice must compose outside an error and concluded the roll wraps the
 misalignment in every convention. That is true of the *maps* and false of the
 *frame the error is stated in*, which is the thing the comparison actually

@@ -254,7 +254,8 @@ the rolled one either way. So the `:madx` branch conjugates the rigid transform
 into the rolled frame, `W -> R_z(-psi) W R_z(psi)` and `d -> R_z(-psi) d`, and
 `ref_tilt` stays the outer wrapper in both.
 
-This overturns what `docs/todo.md` predicted before the comparison was run. That
+This overturns what the TODO ledger (now `docs/history/todo_ledger_archive.md`)
+predicted before the comparison was run. That
 entry reasoned that a design choice must compose outside an error, and concluded
 the roll wraps the misalignment in every convention. For MAD-X it is the other
 way round: the error is stated in the unrolled frame, which is the roll composed

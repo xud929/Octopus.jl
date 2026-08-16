@@ -700,7 +700,7 @@ function _gpic_interaction!(gsolver::GaussianPICPoissonSolver, source, param_sou
         source_xmin = min(source_xmin, gxlo); source_xmax = max(source_xmax, gxhi)
         source_ymin = min(source_ymin, gylo); source_ymax = max(source_ymax, gyhi)
     end
-    # Non-finite chokepoint (N1, docs/todo.md); see _pic_interaction!.
+    # Non-finite chokepoint (N1, docs/history/todo_ledger_archive.md); see _pic_interaction!.
     all(isfinite, (source_xmin, source_xmax, source_ymin, source_ymax)) ||
         _nonfinite_coordinate_error(:source,
             (x=source.x, px=source.px, y=source.y, py=source.py);

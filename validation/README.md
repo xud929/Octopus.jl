@@ -668,7 +668,7 @@ warning and by the suite's dropped-charge testsets, not by this script
 ## PIC Slice Boundary Jitter
 
 `pic_slice_boundary_jitter.jl` quantifies the per-turn re-slicing jitter of the
-longitudinal slice boundaries (docs/todo.md, slice-interpolation item 5): the
+longitudinal slice boundaries (docs/history/todo_ledger_archive.md, slice-interpolation item 5): the
 boundaries are rebuilt every turn from the instantaneous z distribution, so a
 deterministic interpolation error becomes a fluctuating one — a mechanism the
 frozen-slicing z-scan cannot see. The strong-strong example beams are tracked
@@ -811,7 +811,7 @@ resolution limit of the analysis), with the sigma mode at the bare tune to
 
 ## Gaussian-Subtracted PIC z-Scan
 
-`gaussian_pic_zscan.jl` completes docs/todo.md item 4a: the frozen longitudinal
+`gaussian_pic_zscan.jl` completes docs/history/todo_ledger_archive.md item 4a: the frozen longitudinal
 z-scan through the hybrid solver's **own** solve path
 (`_gpic_solve_drifted_field!`: deposit, erf Gaussian subtraction, residual
 Green-FFT solve, plus the analytic Bassetti-Erskine add-back blended with the
@@ -943,9 +943,15 @@ which would validate the wrong model. PTC's `T` column is negated on write,
 because its longitudinal variable is conjugate to `delta` with the opposite
 orientation.
 
-The 55 cases cover drift, quadrupole (normal and skew), sextupole, octupole,
+The 61 cases cover drift, quadrupole (normal and skew), sextupole, octupole,
 general multipole, sector bend and combined-function bend at both integrator
-orders, RBEND, thin multipoles and solenoids, plus pole-face angles
+orders, RBEND, thin multipoles and solenoids; the curved-potential channels
+(`cfbend_quad_heavy` at the polygon benchmark's working point, `cfbend_skew`
+for the curved skew quadrupole, and `cfbend_k3`/`cfbend_k5` with orders above
+K3 reaching PTC through EFCOMP field errors, whose `dkn`/`dks` are INTEGRATED
+strengths -- the k3 attribute ceiling is MAD-X's element surface, not PTC's,
+and a pure `b0 = 0` curved quadrupole has NO MAD-X 5.03.06 spelling because
+SBEND's `k0` is measured ignored by its PTC translation); plus pole-face angles
 (`sbend_edge`, `cfbend_edge`, `sbend_fint`), the hard-edge multipole fringe
 (`quadrupole_fringe`, `multipole_fringe`, `sbend_fringe`, `cfbend_fringe`),
 misalignments through `EALIGN` + `ptc_align` (`quad_mis_*`, `sext_mis_dx`,

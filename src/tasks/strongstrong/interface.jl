@@ -1241,8 +1241,8 @@ and 31% (proton), the only option resolved on both beams.
     Rule of thumb: safe below `sigma_z,field/beta*,source ~ 0.5`, needs measuring
     above ~1. The proper fix is to index the mesh by the interpolation *node*
     rather than the slice, which restores exact continuity at every boundary
-    without any union over the field beam; see the grid-determination program in
-    `docs/todo.md`.
+    without any union over the field beam; see the grid-determination
+    program, complete, in `docs/history/todo_ledger_archive.md`.
 
 `grid_extent` selects how a slice's mesh extent is estimated. `:extrema` (default)
 uses the sample min/max: it always covers every particle, but an extremum is

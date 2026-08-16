@@ -30,7 +30,7 @@ function _cpu_gaussian_slice_pair!(solver::GaussianPoissonSolver{T,D,COUPLED,LON
     moments2 = _slice_transverse_moments(
         rep2, slices2.indices[j], solver.ignore_centroid2, solver.min_sigma,
         Val(COUPLED))
-    # Non-finite chokepoint (N1, docs/todo.md): the moment reduction already
+    # Non-finite chokepoint (N1, docs/history/todo_ledger_archive.md): the moment reduction already
     # scanned every transverse coordinate; a NaN/Inf lands in these O(1) values.
     _gaussian_moments_finite(moments1) ||
         _nonfinite_coordinate_error(:source,

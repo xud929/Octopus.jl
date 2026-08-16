@@ -1256,7 +1256,7 @@ if _HAS_CUDA
             col_n = CUDA.CuArray{Int32}(undef, 2 * max_batch)
             device_kmoments = CUDA.CuArray{StrongTransverseMoments{MT,COUPLED}}(undef, 2 * max_batch)
             device_means = CUDA.CuArray{MT}(undef, 4, 2 * max_batch)
-            # Non-finite poison flag (N1, docs/todo.md): the fused path keeps slice
+            # Non-finite poison flag (N1, docs/history/todo_ledger_archive.md): the fused path keeps slice
             # moments on the device, so the build kernel raises this one-element
             # flag instead of a per-batch host check; it is read back once per
             # turn together with the luminosity accumulator (no extra sync).
@@ -1738,7 +1738,7 @@ if _HAS_CUDA
                                       field.y, field.py, field.z))
             _cuda_pic_add_time!(timing, :prepare_field, t_field)
 
-            # Non-finite chokepoint (N1, docs/todo.md): the bound reductions above
+            # Non-finite chokepoint (N1, docs/history/todo_ledger_archive.md): the bound reductions above
             # already scanned every coordinate and return host scalars, so this
             # check is free. Previously a NaN here poisoned the whole charge grid
             # through the atomic deposit.
@@ -1848,7 +1848,7 @@ if _HAS_CUDA
             _cuda_pic_add_elapsed!(timing, :prepare_source, elapsed ÷ 2)
             _cuda_pic_add_elapsed!(timing, :prepare_field, elapsed - elapsed ÷ 2)
 
-            # Non-finite chokepoint (N1, docs/todo.md): the fused bounds reduction
+            # Non-finite chokepoint (N1, docs/history/todo_ledger_archive.md): the fused bounds reduction
             # already scanned every coordinate; checking the host copy is free.
             nrows = compute_luminosity ? 12 : 8
             for n in 1:npairs, (column, rep, which) in ((2n - 1, rep1, :idx1), (2n, rep2, :idx2))
@@ -5465,7 +5465,7 @@ if _HAS_CUDA
                     beam2.rep, slices2.indices[j], moment_partials,
                     solver.ignore_centroid2, solver.min_sigma, Val(COUPLED),
                 )
-                # Non-finite chokepoint (N1, docs/todo.md): the moment reduction
+                # Non-finite chokepoint (N1, docs/history/todo_ledger_archive.md): the moment reduction
                 # already scanned every transverse coordinate.
                 _gaussian_moments_finite(moments1) ||
                     _nonfinite_coordinate_error(:source,
@@ -5869,7 +5869,7 @@ if _HAS_CUDA
 
         function _cuda_slices_from_boundaries(rep::Phase6DRep, slicing::LongitudinalSlicing,
                                               boundaries, flags=nothing)
-            # Earliest non-finite chokepoint (N1, docs/todo.md): a NaN/Inf z lands
+            # Earliest non-finite chokepoint (N1, docs/history/todo_ledger_archive.md): a NaN/Inf z lands
             # in the boundary extrema/quantiles of every slicing method.
             #
             # Under `allow_lost_particles` the boundaries came from live

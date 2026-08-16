@@ -166,8 +166,9 @@ works, so its own future self is the next reader of its records.)
   orchestrator.
 - **Checkpoint to disk continuously, not at the end.** The coverage ledger
   (with provenance), the open queue with a reproduction recipe per item,
-  corrections beside the claims they correct, and the `docs/todo.md` rows
-  are updated in the same commit as the work that changes them. Context
+  corrections beside the claims they correct, and the TODO ledger
+  (`docs/todo.md` for open rows; closures move to
+  `docs/history/todo_ledger_archive.md`) is updated in the same commit as the work that changes them. Context
   compaction must never be able to lose audit state: anything that matters
   is re-readable from the repository. A stale row costs the compacted
   orchestrator the same rediscovery it would cost a fresh session —

@@ -4478,7 +4478,7 @@ end
 end
 
 @testset "BPMObserver path mode buffers by capacity" begin
-    # N2 closure (todo row, 2026-08-11): the LuminosityObserver capacity
+    # N2 closure (archived todo row, 2026-08-11): the LuminosityObserver capacity
     # recipe composed with the BPM's rewrite-from-memory replay. capacity = 1
     # (default) keeps the pre-capacity behavior exactly: one durable row per
     # reading. Buffered rows flush at every execute! end through BOTH
@@ -4605,7 +4605,7 @@ end
 
 if _lane_gate("Curved frame x transverse field: every routing is a gradient")
 @testset "Curved frame x transverse field: every routing is a gradient" begin
-    # The h != 0 cross-product sweep (docs/todo.md). A straight multipole
+    # The h != 0 cross-product sweep (archived todo row). A straight multipole
     # kick in a curved frame is a gradient iff h*Im f == 0 -- pure normal
     # dipole content only; everything else must route through the curved
     # potential. The 2026-08-03 audit found the routing missing twice
@@ -4781,7 +4781,7 @@ end # _lane_gate("Curved frame x transverse field: every routing is a gradient")
 end
 
 @testset "No method grows a Core.Box outside the argued allowlist" begin
-    # The concurrency sweep (docs/todo.md): two of the three 2026-08-03
+    # The concurrency sweep (archived todo row): two of the three 2026-08-03
     # threading defects were one Julia trap -- a name assigned both in a `do`
     # block and its enclosing function is one shared Core.Box across every
     # worker. The sweep is on LOWERED code because a text sweep gave six
@@ -6611,7 +6611,7 @@ if _lane_gate("Contract coverage guards: declared kinds, solver tree, broken bas
         @test rpic.metrics[:slice_pair_luminosity_records_compared] > 0
         @test rpic.metrics[:slice_pair_luminosity_records_compared] ==
               rpic.metrics[:slice_pair_luminosity_cpu_records]
-        # 2026-08-07 (U1-1 remainder, todo row): only the indexed wavefront
+        # 2026-08-07 (U1-1 remainder, archived todo row): only the indexed wavefront
         # sub-route populated the GPU per-pair luminosity sink, so this
         # contract FAILED at `batch_mode=:sequential` — 18 CPU records against
         # 0 GPU, relative error Inf — and nothing in the suite ran that
@@ -13152,7 +13152,7 @@ end
         # fixes started from 6.4e-8 relative disagreement. The luminosity is
         # at Float64 rounding on the wavefront route; the sequential route
         # carries a documented ~1e-9 envelope from the transverse-moment
-        # folds, whose shapes are still per-backend (the todo row records
+        # folds, whose shapes are still per-backend (the archived todo row records
         # this as the residual; the kicks are insensitive to it because the
         # Float64 moment differences vanish in the Float32 coordinate
         # rounding).

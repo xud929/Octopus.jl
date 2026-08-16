@@ -97,9 +97,13 @@ not declare.
 
 Only the unknown-key WARNING consults this: it exists so that warning cannot
 tell a user a key is untracked when the runtime reads it (2026-08-05_b audit,
-U9-2). Completing the schemas themselves is the real repair and is recorded on
-docs/todo.md, because it widens the parameter-effectiveness sweep by ~80 entries
-and each has to be either verified or exempted with a reason.
+U9-2). NO KIND EXTENDS IT TODAY: the real repair -- completing the schemas so
+every read key is declared -- landed 2026-08-15 for the six lattice-magnet
+kinds (all 23 body keys, one merged `_LATTICE_BODY_PARAMS` table, every entry
+under the effectiveness sweep; record in
+docs/history/todo_ledger_archive.md, U9-2). The mechanism is kept as the
+stopgap for a future kind caught mid-repair, but the standing rule is the
+schema tells the truth and this list stays empty.
 
 The fallback is empty, so a kind that does not extend this is unaffected.
 """
@@ -926,6 +930,12 @@ function _schema_meta_suffix_param(meta::ParamMeta)
     push!(parts, meta.required ? "required" : "optional")
     !isempty(meta.unit) && push!(parts, "unit=$(meta.unit)")
     meta.default !== nothing && push!(parts, "default=$(meta.default)")
+    # Declared alternatives are half the point of the field: the enum a user
+    # can actually set. Rendering them was forgotten when the field landed
+    # (2026-08-16 neighbour audit) -- machine-readable but invisible in
+    # element_help is the same shape as declared-but-not-consumed.
+    !isempty(meta.alternatives) &&
+        push!(parts, "alternatives=" * join(repr.(meta.alternatives), ", "))
     !isempty(meta.meaning) && push!(parts, meta.meaning)
     return " (" * join(parts, "; ") * ")"
 end

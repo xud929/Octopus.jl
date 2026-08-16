@@ -994,7 +994,7 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
                                                 source_x0, sxs, sxs2, 2 * nsource, kext)
     source_ymin, source_ymax = _pic_axis_extent(ge, source_ymin, source_ymax,
                                                 source_y0, sys, sys2, 2 * nsource, kext)
-    # Non-finite chokepoint (N1, docs/todo.md): a NaN/Inf coordinate propagates
+    # Non-finite chokepoint (N1, docs/history/todo_ledger_archive.md): a NaN/Inf coordinate propagates
     # into these O(1) bound values, so this check costs nothing on the hot path.
     all(isfinite, (source_xmin, source_xmax, source_ymin, source_ymax)) ||
         _nonfinite_coordinate_error(:source,

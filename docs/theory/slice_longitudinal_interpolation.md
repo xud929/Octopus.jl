@@ -701,7 +701,8 @@ the field beam and no hourglass blow-up, at neutral cost. A bounded-group varian
 (one mesh per $G$ adjacent slices) was considered and withdrawn: it only reduces
 the jump from every transition to every $G$-th, for the same effort. The full
 program — robust extent estimation, out-of-range safety, quantization, and node
-indexing — is laid out in `todo.md`.
+indexing — is laid out in the archived ledger
+(`../history/todo_ledger_archive.md`).
 
 ### 10.3 Deposition is the limiter — `:TSC` unlocks the full order
 

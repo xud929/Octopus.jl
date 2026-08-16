@@ -858,11 +858,11 @@ $5.3\times10^{-7}$, so every entry below is resolved by $100\times$ or more:
 is also Xsuite's default.
 
 **Correction (2026-08-05_b audit, U26-1).** This paragraph previously read "The
-default is still `:equal_area` … `docs/todo.md` records that as an open call",
+default is still `:equal_area` … `docs/history/todo_ledger_archive.md` records that as an open call",
 and the table above marked `:equal_area` as the default. Both were stale:
 **`:sqrt_density` has been the shipped default since 2026-07-31**
 (`ParamMeta(default=:sqrt_density)` at `src/elements/strong_beam.jl`, and the
-`GaussianStrongBeamSpec` constructors), and `docs/todo.md` records the change as
+`GaussianStrongBeamSpec` constructors), and `docs/history/todo_ledger_archive.md` records the change as
 done. The original text is kept here rather than deleted because the
 contradiction it created was live: §10 forty lines above already annotated the
 change, so the note asserted both, and a reader taking this paragraph at face

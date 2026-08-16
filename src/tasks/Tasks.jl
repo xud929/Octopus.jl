@@ -222,7 +222,8 @@ every placement draw the SAME noise for a given (turn, particle):
 perfectly correlated kicks, and excitation variance scaling with the square
 of the placement count instead of linearly (2026-08-05 audit, F14; measured
 two kicks = exactly 2× one). Until line placements carry an identity of
-their own (the deferred observer-identity scheme in `docs/todo.md`),
+their own (the deferred observer-identity scheme in the archived BPM row,
+`docs/history/todo_ledger_archive.md`),
 distinct specs — or explicit distinct `rng_id`s — are the remedy, and this
 warning is what keeps the trap from being silent.
 """

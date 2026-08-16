@@ -289,6 +289,13 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   (the `paper/` reproduction package moved to its own public repository —
   what went where, the hard-coded-path finding in the claim verifier, and
   the supersession relationship to the frozen submission snapshot),
+  [`neighbour_audit_2026_08_16.md`](history/neighbour_audit_2026_08_16.md)
+  (over the keystone/U9-2/PTC/U4-1/restructure series plus a repository
+  findability pass: `alternatives` was machine-readable but invisible in
+  `element_help`, a docstring contradicted its own one-commit-old repair, a
+  stale PTC case count, ~45 moved-ledger references swept, and the frozen
+  archive's 47 relative links retargeted; solver-option contract and solenoid
+  checked clean),
   [`neighbour_audit_2026_08_14_b.md`](history/neighbour_audit_2026_08_14_b.md)
   (second same-day audit, over the floor-plan/ledger/wiring series: the
   accelerating kind lacked the hidden-cavity tripwire its ring sibling had
@@ -425,7 +432,7 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   could be anchored to an external reference was — the CUDA luminosity against the
   closed-form Gaussian overlap at three aspect ratios, the duplicated device
   weight functions against their CPU twins over 200,000 randomised samples. Also
-  closes the standing `todo.md` item on CUDA concurrency: a `Core.Box` census over
+  closes the then-standing ledger item on CUDA concurrency (archived): a `Core.Box` census over
   288 methods, clean. §4 is the most useful section — three claims this pass made
   and then withdrew, including a beam-swap that came within one step of being
   filed as a Major finding on the production route and was simply a misreading of

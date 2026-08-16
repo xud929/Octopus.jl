@@ -611,7 +611,7 @@ if _HAS_CUDA
             fxmax = T(mapreduce((x, px, z) -> x + px * half * (z - center), max, field.x, field.px, field.z))
             fymin = T(mapreduce((y, py, z) -> y + py * half * (z - center), min, field.y, field.py, field.z))
             fymax = T(mapreduce((y, py, z) -> y + py * half * (z - center), max, field.y, field.py, field.z))
-            # Non-finite chokepoint (N1, docs/todo.md); see _cuda_pic_prepare_interaction.
+            # Non-finite chokepoint (N1, docs/history/todo_ledger_archive.md); see _cuda_pic_prepare_interaction.
             all(isfinite, (sxmin, sxmax, symin, symax)) ||
                 _nonfinite_coordinate_error(:source,
                     (x=source.x, px=source.px, y=source.y, py=source.py))

@@ -374,7 +374,7 @@ PIC because the blown-up beams churn its adaptive Green cache. Measured through
 the **full example beamline** — the only fair benchmark — the spectral 6D grid
 path is *slower* than PIC at the production case, not faster. See
 `docs/history/strong_strong_spectral_optimization_history.md` and
-[`todo.md`](../todo.md) for the current measured ratio.
+[the archived ledger](../history/todo_ledger_archive.md) for the measured ratio.
 
 Every stage maps to a strong GPU primitive, and the solve is embarrassingly
 parallel over modes:

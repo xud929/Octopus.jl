@@ -85,7 +85,12 @@ AI models will change. The knowledge architecture should remain useful.
 Each of these was paid for in a recorded session. The full versions, with
 their evidence, are in
 [`docs/comprehensive_audit.md`](docs/comprehensive_audit.md) ("Measured
-Lessons"); the receipts are the dated records in `docs/history/`.
+Lessons"); the receipts are the dated records in `docs/history/`. The
+companion file [`docs/experiences.md`](docs/experiences.md) holds the
+recurring lessons distilled from the completed TODO ledger, grounded in their
+incidents — **read it before starting any modification or new feature** (it is
+short, and the mistakes the workflows below guard against are recorded there
+with what they cost), and add to it when new work teaches something reusable.
 
 - A check only counts while it executes. Gate skips must be visible, and
   "the suite is green" is a claim about which testsets actually ran.
@@ -288,6 +293,11 @@ surface with its own indexed design note.)
   (histories, audits) belong in `docs/history/`, not here.
 
 ## Updating Elements
+
+Before any of the Updating workflows in this and the following sections, skim
+[`docs/experiences.md`](docs/experiences.md): each workflow below exists
+because something went wrong once, and that file records what and how much it
+cost.
 
 When adding or changing an accelerator element:
 

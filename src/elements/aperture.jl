@@ -5,7 +5,8 @@ export ApertureSpec, Aperture, LossRecord, loss_counts, loss_records, aperture_n
 # Aperture: the element that loses particles.
 #
 # Design note: `docs/theory/aperture_and_particle_loss.md`. Plan and the
-# decisions taken up front: `docs/todo.md`, step 3.
+# decisions taken up front: the archived aperture program, step 3
+# (`docs/history/todo_ledger_archive.md`).
 #
 # A separate, zero-length element rather than an attribute of every magnet,
 # following Xsuite (`LimitRect`) and Elegant (`RCOL`) rather than MAD-X and

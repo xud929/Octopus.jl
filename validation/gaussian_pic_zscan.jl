@@ -1,7 +1,7 @@
 #=
 Frozen longitudinal z-scan of the Gaussian-subtracted PIC (hybrid) kick.
 
-Completes docs/todo.md item 4a: the earlier attempt called the raw PIC solve
+Completes docs/history/todo_ledger_archive.md item 4a: the earlier attempt called the raw PIC solve
 path and never exercised `GaussianPICPoissonSolver`'s control-variate
 subtraction, so it measured the PIC jump twice. This scan goes through the
 hybrid's own field construction (`_gpic_solve_drifted_field!`: deposit, erf

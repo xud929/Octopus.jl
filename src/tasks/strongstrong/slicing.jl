@@ -523,7 +523,7 @@ end
 function _finish_longitudinal_slices(rep::Phase6DRep, slicing, indices, boundaries, flags=nothing)
     # Earliest non-finite chokepoint: a NaN/Inf z propagates into the boundary
     # extrema/quantiles of every slicing method, so one O(nslices) check here
-    # covers them all (N1, docs/todo.md).
+    # covers them all (N1, docs/history/todo_ledger_archive.md).
     #
     # Under `allow_lost_particles` the boundaries were built from live particles
     # only, so a dead one can no longer reach them and this no longer fires for

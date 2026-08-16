@@ -580,7 +580,7 @@ to `Solenoid` would not describe this case and would not help it.
 > the frame afterwards, while a patch is a *deliberate* transition to a new
 > reference frame that persists. Section 7.5 of
 > [`misalignment_and_patch_maps.md`](misalignment_and_patch_maps.md) already
-> recommends building one; see the `patch` item in `docs/todo.md`. Until then
+> recommends building one; see the `patch` item in `docs/history/todo_ledger_archive.md`. Until then
 > the crossing-angle solenoid has no clean expression — which is a reason to
 > build the patch, not a reason to add $h$ to the solenoid.
 
@@ -615,7 +615,7 @@ physics itself.
 > on the reference orbit and as `h -> 0`, which is exactly the construction the
 > `psi` table already uses for curved multipoles. A curved solenoid is
 > therefore well posed; it is simply not closed-form, and needs an integrator as
-> the curved multipoles do. See `docs/todo.md`.
+> the curved multipoles do. See `docs/history/todo_ledger_archive.md`.
 
 **Superseded recommendation: do not add `h` to `Solenoid`.** It would name a toroidal magnet
 after a solenoid. If a curved-orbit solenoid study appears, reach for the patch

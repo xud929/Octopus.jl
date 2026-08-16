@@ -117,7 +117,7 @@ enough to return zero for it.
 
 ## 3. Decision: an observer bound to a position
 
-`docs/todo.md` asked whether a BPM is "an element that observes, or an observer
+`docs/history/todo_ledger_archive.md` asked whether a BPM is "an element that observes, or an observer
 bound to a position". It is the second.
 
 - The readout error model belongs in the readout. Section 2 shows the element
@@ -199,7 +199,7 @@ A BPM that used `randn()` would break the chunked-execution invariant that
 - **The error/calibration pairing.** The best idea in Bmad's model, and a pure
   subtraction, so nothing is lost by deferring it: a study can subtract its own
   estimates today. Worth adding when a beam-based-alignment study exists to use
-  it, which is the same "wait for the second consumer" rule `docs/todo.md`
+  it, which is the same "wait for the second consumer" rule `docs/history/todo_ledger_archive.md`
   applies to element names.
 - **`n_sample`, dispersion, phase and coupling measurements.** These need a
   measurement model per observable, not per monitor.
@@ -208,7 +208,7 @@ A BPM that used `randn()` would break the chunked-execution invariant that
 - **Charge/intensity dependence and nonlinear button response.** Real BPMs have
   both. Both need a device model this note does not attempt.
 - **Naming and discovery.** A BPM needs an identity to be useful in a
-  correction study, and observers have no naming scheme. `docs/todo.md` holds
+  correction study, and observers have no naming scheme. `docs/history/todo_ledger_archive.md` holds
   "element names fleet-wide", waiting for a second consumer — the BPM is *not*
   that consumer, since it is not an element, but it does establish that
   observers need the same thing. Recorded rather than solved here.
