@@ -70,16 +70,25 @@ function _floor_step(entry)
         R = _fp_transpose(_patch_rotation(Float64, ax, ay, as, madx))
         return (dx, dy, dz), R
     end
+    return _floor_arc_step(entry, Float64(L))
+end
+
+# The arc-or-straight tail of `_floor_step`, at an arbitrary length `ell`
+# along the element. `ell = L` is the full step; `ell < L` is the PARTIAL
+# step the curved-girder reference point needs when the girder's centre
+# (arc length L/2 of the assembly) falls inside a member. Patches never
+# take the partial form: they are zero-length, so no interior point exists.
+function _floor_arc_step(entry, ell::Float64)
     h = Float64(getparam(entry, :h, 0.0))
-    if !iszero(h) && !iszero(L)
-        alpha = h * L
+    if !iszero(h) && !iszero(ell)
+        alpha = h * ell
         rho = 1.0 / h
         t = Float64(getparam(entry, :ref_tilt, 0.0))
         d0 = (rho * (cos(alpha) - 1.0), 0.0, rho * sin(alpha))
         rt = _fp_rz(t)
         return _fp_apply(rt, d0), _fp_mul(rt, _fp_mul(_fp_ry(-alpha), _fp_transpose(rt)))
     end
-    return (0.0, 0.0, Float64(L)), _FP_IDENTITY
+    return (0.0, 0.0, ell), _FP_IDENTITY
 end
 
 _floor_children(line::ElementSpec{:line}) = line_entries(line)
@@ -133,3 +142,67 @@ end
 @inline _fp_theta(w) = atan(w[3], w[9])
 @inline _fp_phi(w) = asin(clamp(w[6], -1.0, 1.0))
 @inline _fp_psi(w) = atan(w[4], w[5])
+
+# Geometry-bearing entries of a line, flattened: kept-whole sub-lines are
+# descended (their bends turn the frame, as in `_survey_walk!`), in-line
+# hooks are dropped. Explicit flattening rather than a recursive closure so
+# nothing mutable is captured (the `Core.Box` class).
+function _girder_flat_entries!(out, entries)
+    for e in entries
+        spec = e isa LineEntry ? getfield(e, :spec) : e
+        if spec isa ElementSpec{:line}
+            _girder_flat_entries!(out, line_entries(spec))
+        elseif spec isa AbstractElementSpec
+            push!(out, e)
+        end
+    end
+    return out
+end
+
+"""
+    _girder_design_frames(line, starget) -> (Aref, Xref, Aend, Xend)
+
+The frames a misaligned BEAM LINE's `_misalign_frames_from` needs, from the
+same floor-plan steps `survey` composes: the design frame at arc length
+`starget` along the assembly (the reference point -- `0.0` for the MAD-X
+entrance convention, `total_length/2` for the Bmad centre convention) and the
+design exit frame, both in the line's entrance coordinates. The reference
+point may fall INSIDE a member, in which case that member contributes a
+partial arc step; on an exact member boundary the frame after the crossing is
+taken. The step and frame conventions here are the SAME row-major forms
+`_survey_frame` uses (a single arc reproduces it identically -- pinned by the
+girder testset), so the composed frames drop into the misalignment machinery
+with no conversion.
+
+Computed in `Float64`, like every floor-plan quantity: the design geometry
+carries no dependence on the girder's own alignment parameters, so
+alignment-seeded duals differentiate correctly through the wrap; a dual
+seeded on a MEMBER's design length or curvature is truncated here, as it is
+in `survey` itself.
+"""
+function _girder_design_frames(line::ElementSpec{:line}, starget::Float64)
+    V = (0.0, 0.0, 0.0)
+    W = _FP_IDENTITY
+    Vref, Wref = V, W
+    captured = starget <= 0.0
+    s = 0.0
+    for e in _girder_flat_entries!(Any[], line_entries(line))
+        Lp = Float64(_placement_length(e))
+        if !captured && starget < s + Lp
+            d, R = _floor_arc_step(e, starget - s)
+            Vref = V .+ _fp_apply(W, d)
+            Wref = _fp_mul(W, R)
+            captured = true
+        end
+        d, R = _floor_step(e)
+        V = V .+ _fp_apply(W, d)
+        W = _fp_mul(W, R)
+        s += Lp
+        if !captured && s >= starget
+            Vref, Wref = V, W
+            captured = true
+        end
+    end
+    captured || ((Vref, Wref) = (V, W))
+    return Wref, Vref, W, V
+end

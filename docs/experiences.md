@@ -160,6 +160,19 @@ teaches something reusable, it lands here (dated), and the full record goes to
   knob sweep recompiles thousands of times, and a warning that repeats
   thousands of times is silence with extra steps.
 
+## Re-price accepted limitations after every campaign
+
+- The curved-girder exit patch was measured wrong at dx·θ, documented, warned
+  about, and ACCEPTED in 2026-08-05 — correctly, because closing it "needs a
+  real accumulated-frame survey, which is a feature, not a patch". The
+  floor-plan campaign then built exactly that feature for a different reason,
+  and the limitation's price collapsed: the closure (2026-08-16) was one
+  generalised frames function plus a walker over machinery that already
+  existed, exact at 2.3e-16 where the acceptance had tolerated 4e-4. An
+  accepted limitation is a decision priced against the machinery of its day;
+  when a campaign lands new machinery, re-read the accepted list — one of its
+  prices has usually just dropped.
+
 ## Process habits that earned their place
 
 - The full-suite gate runs before EVERY commit; the fast lane is a checkpoint,

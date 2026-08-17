@@ -5862,36 +5862,77 @@ end
     # one commit after the thin kinds were added for the identical reason, so
     # `entry.k1 = 999.0` on a solenoid placement was accepted, reported by
     # getparam, and never read (compile_runtime kept kn = (0.0, 0.5)).
-    # 2026-08-05_b audit, U15-2: a misaligned line containing bends is surveyed
-    # STRAIGHT, so its exit patch is wrong at first order in the bend angle.
-    # Measured against the same rigid displacement applied to the bend directly:
-    # max|girder - element| = 1.0e-6 at angle 1e-3 rising to 4.05e-4 at 0.4,
-    # exactly dx*theta, and exactly 0 for a straight body. The limitation lived
-    # only in a theory note; it is loud now. Warns only when BOTH conditions
-    # hold, so an unbent girder and a bent line with no misalignment stay quiet.
+    # 2026-08-05_b audit, U15-2 -- CLOSED 2026-08-16. A misaligned line
+    # containing bends used to be surveyed STRAIGHT, its exit patch wrong at
+    # first order in the bend angle (measured max|girder - element| = 1.0e-6
+    # at angle 1e-3 rising to 4.05e-4 at 0.4, exactly dx*theta), and this
+    # block asserted the loud warning plus the defect's magnitude. The wrap
+    # now composes the line's floor-plan frames, so the SAME comparison is
+    # the exactness pin, and the retired warning must stay retired: a
+    # curved-girder compile is quiet because it is correct, not because the
+    # limitation went silent again.
     bendy() = compile_runtime(
         BeamLine("G", SBendSpec(L=1.1, angle=0.2, k1=0.0, nst=8); x_offset=1.0e-3))
-    straight() = compile_runtime(
-        BeamLine("G", QuadrupoleSpec(L=0.4, k1=1.0, nst=2), DriftSpec(L=1.0); x_offset=1.0e-3))
-    unaligned() = compile_runtime(
-        BeamLine("G", SBendSpec(L=1.1, angle=0.2, k1=0.0, nst=8)))
     saw(f) = begin
         buf = IOBuffer()
         with_logger(SimpleLogger(buf, Logging.Warn)) do; f(); end
         occursin("surveyed as STRAIGHT", String(take!(buf)))
     end
-    @test saw(bendy)
-    @test !saw(straight)
-    @test !saw(unaligned)
-    # The error it warns about is real and first order in the angle.
+    @test !saw(bendy)
+    # The defect this block used to measure at > 1.0e-5 is gone to roundoff.
     let q0 = (1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 0.0, 1.0e-3), th = 0.2
-        # Compiled under a capture logger: the warning is asserted just above,
-        # and letting it through again only adds noise to the suite output.
-        g, e = with_logger(SimpleLogger(IOBuffer(), Logging.Warn)) do
-            (compile_runtime(BeamLine("G", SBendSpec(L=1.1, angle=th, k1=0.0, nst=8); x_offset=1.0e-3)),
-             compile_runtime(SBendSpec(L=1.1, angle=th, k1=0.0, nst=8, x_offset=1.0e-3)))
+        g = compile_runtime(BeamLine("G", SBendSpec(L=1.1, angle=th, k1=0.0, nst=8); x_offset=1.0e-3))
+        e = compile_runtime(SBendSpec(L=1.1, angle=th, k1=0.0, nst=8, x_offset=1.0e-3))
+        @test maximum(abs.(collect(g(q0...)) .- collect(e(q0...)))) < 5.0e-14
+    end
+
+    # A curved girder surveys its own geometry (U15-2 closed, 2026-08-16).
+    # The wrap's faces come from the line's composed floor-plan frames, so a
+    # rigid displacement of a girder whose contents bend is EXACT -- pinned
+    # against the same rigid-displacement oracle the defect was measured
+    # with, at the same angles, now at roundoff instead of dx*theta.
+    let u0 = (1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 0.0, 1.0e-3),
+        mis = (x_offset=1.0e-3, y_offset=-8.0e-4, z_offset=2.0e-3,
+               x_pitch=1.0e-3, y_pitch=-7.0e-4, tilt=0.02)
+        # (1) Girder of one bend == the bend misaligned directly, at every
+        # angle the defect was measured, all six DOF, BOTH conventions (the
+        # centre reference lands mid-arc; the entrance reference pins the
+        # trivial-sref path).
+        for conv in (:bmad, :madx), th in (1.0e-3, 0.198, 0.4)
+            g = compile_runtime(BeamLine("GC", SBendSpec(L=1.1, angle=th, nst=8);
+                                         misalign_convention=conv, mis...))
+            e = compile_runtime(SBendSpec(L=1.1, angle=th, nst=8;
+                                          misalign_convention=conv, mis...))
+            @test maximum(abs, collect(g(u0...)) .- collect(e(u0...))) < 5.0e-14
         end
-        @test maximum(abs.(collect(g(q0...)) .- collect(e(q0...)))) > 1.0e-5
+        # (2) Split oracle: [bend] and [half-bend, half-bend] have identical
+        # geometry AND identical maps (the exact pure dipole splits freely),
+        # but the centre reference falls MID-ELEMENT in one and on a member
+        # boundary in the other -- so this pins the partial floor step
+        # against the boundary capture.
+        g1 = compile_runtime(BeamLine("G1", SBendSpec(L=1.1, angle=0.3); mis...))
+        g2 = compile_runtime(BeamLine("G2", SBendSpec(L=0.55, angle=0.15),
+                                      SBendSpec(L=0.55, angle=0.15); mis...))
+        @test maximum(abs, collect(g1(u0...)) .- collect(g2(u0...))) < 5.0e-14
+        # (3) The girder walk and the survey export are the same geometry:
+        # exit frame identical through a rolled bend, a drift and a patch.
+        line = BeamLine("GF", SBendSpec(L=1.1, angle=0.3, ref_tilt=0.2),
+                        DriftSpec(L=0.4), PatchSpec(angle_y=0.05, dz=0.01))
+        fr = survey(line_entries(line))[end]
+        _, _, We, Ve = Octopus._girder_design_frames(line, 0.0)
+        @test maximum(abs, collect(We .- fr.w)) == 0.0
+        @test maximum(abs, collect(Ve .- fr.position)) == 0.0
+        # (4) The general frames form reproduces the single-arc closed form
+        # -- the executable derive-check that lets the arc fast path keep its
+        # closed form instead of delegating.
+        W = Octopus._misalign_matrix(Float64, 1.0e-3, -7.0e-4, 0.02, false)
+        d = (1.0e-3, -8.0e-4, 2.0e-3)
+        h, L, sref = 0.27, 1.1, 0.55
+        old = Octopus._misalign_frames(Float64, W, d, h, L, sref)
+        Aref, Xref = Octopus._survey_frame(Float64, h, sref)
+        Aend, Xend = Octopus._survey_frame(Float64, h, L)
+        new = Octopus._misalign_frames_from(Float64, W, d, Aref, Xref, Aend, Xend)
+        @test maximum(maximum(abs, collect(a .- b)) for (a, b) in zip(old, new)) < 1.0e-15
     end
 
     sol = SolenoidSpec(L=1.0, ks=0.3, k1=0.5)

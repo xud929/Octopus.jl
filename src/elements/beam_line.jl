@@ -691,57 +691,34 @@ function compile_runtime(spec::ElementSpec{:line}, args...)
     # storing it would count as "own state" and stop every line from dissolving.
     geom = ElementSpec{:line}(merge(getfield(resolved, :params),
                                     Dict{Symbol,Any}(:L => total_length(resolved))))
-    # The girder survey is straight. `geom` carries only :L, and `:h` is neither
-    # a declared `:line` parameter nor derived, so `_misalignment_wrap` reads
-    # h = 0 and builds both faces from a 1D survey. For a misaligned line whose
-    # contents BEND, the exit patch is then wrong at first order in the bend
-    # angle -- and silently, which
-    # theory/misalignment_and_patch_maps.md §5 calls "the worst possible failure
-    # mode, since a FODO test would pass". Measured against the same rigid
-    # displacement applied to the bend directly: max|girder - element| = 1.0e-6
-    # at angle 1e-3, 1.99e-4 at 0.198, 4.05e-4 at 0.4 -- exactly dx*theta, and
-    # exactly 0 for a straight body (2026-08-05_b audit, U15-2).
-    #
-    # The limitation was recorded in beam_line_composition.md §10 and nowhere
-    # else: nothing warned, and element_help(:line) advertised the girder use
-    # with no caveat. Closing it properly needs a real accumulated-frame survey
-    # for the assembly, which is a feature, not a patch -- so until then this is
-    # loud rather than silent.
-    if _line_is_misaligned(geom)
-        bend = _line_net_bend(resolved)
-        bend == 0 || @warn """a misaligned beam line containing bends is surveyed as \
-            STRAIGHT, so its exit patch is wrong at first order in the bend angle \
-            (of order dx*theta). Misalign the bending elements individually, or \
-            treat the result as approximate.""" line = line_name(spec) total_bend = bend maxlog = 1
+    # The girder faces come from the line's COMPOSED floor-plan frames, not a
+    # straight 1D survey: `design` hands `_misalignment_wrap` the frame at the
+    # reference point (entrance or arc-length centre, per convention) and at
+    # the exit, walked with the same `_floor_step`s the `survey` export
+    # composes. Until 2026-08-16 the wrap read h = 0 from `geom` and built
+    # both faces straight, so a misaligned line whose contents BEND had an
+    # exit patch wrong at first order in the bend angle -- measured against
+    # the same rigid displacement applied to the bend directly:
+    # max|girder - element| = 1.0e-6 at angle 1e-3, 1.99e-4 at 0.198, 4.05e-4
+    # at 0.4, exactly dx*theta, and exactly 0 for a straight body (2026-08-05_b
+    # audit, U15-2; closed when the floor plan supplied the frames the wrap
+    # always needed). The same comparison is now the EXACTNESS pin: girder
+    # equals element to 1e-14 at every angle, both conventions, and the loud
+    # "surveyed as STRAIGHT" warning retired with the limitation it announced.
+    design = function (::Type{T}, which::Symbol) where {T}
+        starget = which === :entrance ? 0.0 : Float64(total_length(resolved)) / 2
+        Wr, Vr, We, Ve = _girder_design_frames(resolved, starget)
+        return (map(T, Wr), map(T, Vr), map(T, We), map(T, Ve))
     end
-    return _ref_tilt_wrap(geom, _misalignment_wrap(geom, CompositeLine(ops)))
+    return _ref_tilt_wrap(geom, _misalignment_wrap(geom, CompositeLine(ops);
+                                                   design=design))
 end
 
-"""Whether this line carries a misalignment of its own (mirrors `_misalignment_wrap`)."""
-_line_is_misaligned(spec) =
-    any(k -> getparam(spec, k, 0) != 0,
-        (:x_offset, :y_offset, :z_offset, :x_pitch, :y_pitch, :tilt))
-
-"""
-Total absolute bend of a line's contents, recursing into kept-whole sub-lines.
-
-Used only to decide whether the straight girder survey is a lie for this line.
-Absolute rather than net: two opposite bends still each sit on a curved frame,
-so a zero *net* angle does not make the 1D survey correct.
-"""
-function _line_net_bend(spec::ElementSpec{:line})
-    total = 0.0
-    for e in line_entries(spec)
-        s = getfield(e, :spec)
-        if s isa ElementSpec && kind(s) === :line
-            total += _line_net_bend(s)
-        else
-            total += abs(Float64(getparam(s, :angle, 0)))
-            total += abs(Float64(getparam(s, :h, 0))) * abs(Float64(getparam(s, :L, 0)))
-        end
-    end
-    return total
-end
+# The old U15-2 warning path's helpers (`_line_is_misaligned`,
+# `_line_net_bend`) are gone with the warning itself (2026-08-16): the girder
+# survey is exact now, `_misalignment_wrap` already no-ops on an unaligned
+# line, and a helper that existed only to decide whether the straight survey
+# was a lie has nothing left to decide.
 
 @element_spec begin
     kind = :line

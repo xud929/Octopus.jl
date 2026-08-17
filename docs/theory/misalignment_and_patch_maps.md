@@ -454,4 +454,12 @@ Agreement with PTC, driven through `sbend, tilt=`: **3.5e-13** for a pure dipole
   worst deviation 7.1e-15 over nine fixtures) by the
   `MADXSurveyConsistencyContract`. The centre-referenced misalignment
   parameterization stays; the survey deliberately excludes misalignments and
-  `tilt`, which are errors about the frame it computes.
+  `tilt`, which are errors about the frame it computes. **And it now feeds
+  the misalignment machinery itself (2026-08-16)**: a misaligned BEAM LINE's
+  faces come from `_girder_design_frames` — the survey's own floor steps
+  composed over the members — through `_misalign_frames_from`, the
+  generalisation of Section 5's frames to a body whose design geometry is
+  given rather than a single arc. That closed the U15-2 curved-girder
+  limitation (exit patch wrong by dx·θ for a girder containing bends) at
+  roundoff, measured against the rigid-displacement oracle at the defect's
+  own angles; see `beam_line_composition.md` §10 for the closure record.

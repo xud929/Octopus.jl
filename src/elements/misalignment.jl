@@ -179,6 +179,47 @@ function _misalign_frames(::Type{T}, W::NTuple{9,T}, d::NTuple{3,T},
     return Q_in, o_in, Q_out, o_out
 end
 
+"""
+    _misalign_frames_from(T, W, d, Aref, Xref, Aend, Xend)
+
+`_misalign_frames` for a body whose design geometry is GIVEN as frames rather
+than a single arc: the reference frame `(Aref, Xref)` (where the displacement
+`d` and rotation `W` are applied) and the design exit frame `(Aend, Xend)`,
+both in design-entrance coordinates. This is what a misaligned BEAM LINE
+needs -- a girder's internal geometry is the composition of its members'
+frames, not one arc -- and it closes the U15-2 limitation, where the girder
+was surveyed STRAIGHT and its exit patch was wrong by `dx*theta` at first
+order in the contents' bend angle.
+
+For a single arc the two functions agree exactly: the arc form's
+`_survey_frame(h, -sref)` and `_survey_frame(h, L - sref)` ARE the relative
+transforms this form computes explicitly (`Aref'` and the exit pulled back by
+`(Aref, Xref)`), by the arc's homogeneity. That identity is pinned executably
+in the suite ("A curved girder surveys its own geometry"), which is what lets
+the arc fast path above keep its closed form instead of delegating here.
+"""
+function _misalign_frames_from(::Type{T}, W::NTuple{9,T}, d::NTuple{3,T},
+                               Aref::NTuple{9,T}, Xref::NTuple{3,T},
+                               Aend::NTuple{9,T}, Xend::NTuple{3,T}) where {T}
+    z = zero(T)
+    Ob = Xref .+ _m3v(Aref, d)                       # body reference origin
+    Ab = _m3(Aref, W)                                # body reference axes
+    # Design faces pulled back into the reference frame's axes: the entrance
+    # is the design-entrance identity, the exit is (Aend, Xend).
+    I9 = (one(T), z, z, z, one(T), z, z, z, one(T))
+    Aen = _m3t(Aref, I9)
+    Xen = _m3tv(Aref, (z, z, z) .- Xref)
+    Aex = _m3t(Aref, Aend)
+    Xex = _m3tv(Aref, Xend .- Xref)
+    Q_in = _m3(Ab, Aen)
+    o_in = Ob .+ _m3v(Ab, Xen)
+    Q_ex = _m3(Ab, Aex)
+    o_ex = Ob .+ _m3v(Ab, Xex)
+    Q_out = _m3t(Q_ex, Aend)
+    o_out = _m3tv(Q_ex, Xend .- o_ex)
+    return Q_in, o_in, Q_out, o_out
+end
+
 
 # `T<:Number` rather than `T<:AbstractFloat`: the same widening the magnet
 # needed, and for the same reason -- a dual number is `<:Real` and a truncated
@@ -271,10 +312,17 @@ unlike the `:madx` branch it is **not** pinned by a reference case here -- there
 is no Bmad in this repository's validation path, the same position the `:bmad`
 rotation-composition order is already in.
 """
-function _misalignment_wrap(spec, inner)
+function _misalignment_wrap(spec, inner; design=nothing)
     # Promoted from the spec, so seeding an alignment parameter with a dual
     # gives a derivative of the orbit with respect to the misalignment --
     # what beam-based alignment and orbit correction need.
+    #
+    # `design`: an optional provider of the body's DESIGN geometry as frames,
+    # `design(T, which) -> (Aref, Xref, Aend, Xend)` with `which` one of
+    # `:entrance`/`:centre` (the reference-point convention). A single element
+    # is one arc and uses the closed form below; a misaligned BEAM LINE passes
+    # its composed floor-plan frames here, so a curved girder's faces are
+    # exact (U15-2 closed, 2026-08-16).
     T = numeric_type(spec)
     dx = T(getparam(spec, :x_offset, zero(T)))
     dy = T(getparam(spec, :y_offset, zero(T)))
@@ -301,6 +349,11 @@ function _misalignment_wrap(spec, inner)
         W = _m3(_m3t(R, W), R)
         d = _m3tv(R, d)
     end
-    qin, oin, qout, oout = _misalign_frames(T, W, d, h, L, sref)
+    qin, oin, qout, oout = if design === nothing
+        _misalign_frames(T, W, d, h, L, sref)
+    else
+        Aref, Xref, Aend, Xend = design(T, madx ? :entrance : :centre)
+        _misalign_frames_from(T, W, d, Aref, Xref, Aend, Xend)
+    end
     return MisalignedElement(inner, qin, oin, qout, oout)
 end

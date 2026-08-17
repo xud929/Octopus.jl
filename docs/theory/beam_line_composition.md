@@ -533,10 +533,30 @@ Two consequences, both accepted:
 - **No in-line hooks inside a composite assembly.** A BPM inside a cryostat
   cannot be a line-level `ScheduledObserver`, because the assembly is one entry.
   Place it outside the composite, which is where a real pickup sits.
-- **The assembly's own survey stays 1D.** Misaligning a straight cryostat is
+- ~~**The assembly's own survey stays 1D.**~~ Misaligning a straight cryostat is
   exact today through `_misalignment_wrap`. One containing bends needs the 3D
   geometry layer to place its contents relative to the girder frame, and that
   remains the deferred item it has been throughout
   ([`misalignment_and_patch_maps.md`](misalignment_and_patch_maps.md) §8).
+
+  **Closed (2026-08-16).** The 3D geometry layer landed as the floor plan
+  (`_floor_step`/`survey`, MAD-X-SURVEY-pinned), and the girder wrap now
+  composes the assembly's own frames: `compile_runtime(:line)` hands
+  `_misalignment_wrap` a `design` provider built on `_girder_design_frames`,
+  which walks the members with the survey's own steps (partial-stepping into
+  the member containing the arc-length centre when the Bmad reference point
+  falls inside one) and feeds `_misalign_frames_from` — the single-arc
+  `_misalign_frames` generalised to given frames, with the arc form retained
+  as the fast path and the equivalence pinned executably. Measured against
+  the same rigid-displacement oracle that quantified the defect
+  (max|girder − element| = 1.0e-6 at angle 1e-3 rising to 4.05e-4 at 0.4,
+  exactly dx·θ): now 2.3e-16 at every angle, both conventions, all six
+  degrees of freedom; a [bend] girder equals a [half-bend, half-bend] girder
+  to 4.4e-16 (mid-element versus boundary reference point); the girder walk's
+  exit frame equals the `survey` export bitwise through a rolled bend, a
+  drift and a patch. The "surveyed as STRAIGHT" warning retired with the
+  limitation it announced. This is Bmad's `girder` semantics in full — the
+  origin-shift transform against the true assembly geometry — where §2's
+  table could previously claim only the straight case.
 
 With this, the design is complete on paper.

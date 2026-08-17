@@ -2618,3 +2618,34 @@ Remaining:
 - Strong-strong example and task notebook default to the PIC solver with the
   soft-Gaussian solver as a commented alternative.
 - Lorentz crossing maps classified as Hirata quasi-symplectic (`NonSymplectic6DMap`).
+
+
+---
+
+## Rows closed after the 2026-08-16 freeze
+
+Per the restructure protocol: a row that closes moves here with its closing
+measurements, and the live `../todo.md` keeps only open work.
+
+### Curved-girder misalignment survey via the floor plan — closed 2026-08-16
+
+The row as it stood when it closed:
+
+| Curved-girder misalignment survey via the floor plan | **closed (2026-08-16)** | The kept-whole line's misalignment wrap builds both faces from a STRAIGHT 1D survey (`compile_runtime(:line)`, U15-2): for a misaligned line whose contents bend, the exit patch is wrong at first order in the bend angle — measured `dx·theta`, recorded in `beam_line_composition.md` §10 and accepted when no geometry layer existed. `_floor_step`/`survey` now exist and compose the exact per-element frames the wrap needs; routing the line wrap's survey through them would close the limitation. Not a defect (the recorded behavior stands, loudly documented); an upgrade priced at: rework `compile_runtime(:line)`'s geom construction + a curved-girder testset against the same rigid-displacement oracle U15-2 measured with. |
+
+Closure: `compile_runtime(:line)` hands `_misalignment_wrap` a `design`
+provider built on `_girder_design_frames` (the survey's own floor steps
+composed over the members, partial-stepping into the member containing the
+Bmad centre reference), consumed by `_misalign_frames_from` — the single-arc
+`_misalign_frames` generalised to given frames, arc fast path retained with
+the equivalence pinned executably (2.7e-16). Measured against the row's own
+rigid-displacement oracle at the defect's angles: max|girder − element| went
+from 1.0e-6/1.99e-4/4.05e-4 (exactly dx·θ at angles 1e-3/0.198/0.4) to
+2.3e-16 at every angle, both conventions, all six degrees of freedom; the
+split oracle ([bend] vs [half, half], mid-element vs boundary reference)
+agrees at 4.4e-16; the girder walk's exit frame equals the `survey` export
+bitwise through a rolled bend, a drift and a patch. The "surveyed as
+STRAIGHT" warning retired with the limitation it announced, along with
+`_line_is_misaligned`/`_line_net_bend`, which existed only to fire it.
+Records: `beam_line_composition.md` §10 (correction beside the original
+accepted consequence), `misalignment_and_patch_maps.md` §8.
