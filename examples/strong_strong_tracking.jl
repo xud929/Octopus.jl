@@ -268,7 +268,7 @@ line_pro = (
 # would reach beam construction and be silently dropped for the tracking itself
 # (2026-08-05_b audit, U21-17).
 task = StrongStrongTask(line_ele, line_pro; policy = policy,
-                        luminosity_path = luminosity_path)
+                        luminosity = luminosity_path)
 execute!(task, beam_ele, beam_pro; turns = config.turns)
 
 stats_ele = beam_statistics(beam_ele)

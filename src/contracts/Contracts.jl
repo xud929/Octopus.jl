@@ -1194,7 +1194,7 @@ function _strong_strong_gaussian_contract_task(
     )
     solver = GaussianPoissonSolver(slicing=slicing)
     ip = StrongStrongCollision(:ip; poisson_solver=solver)
-    return StrongStrongTask((ip,), (ip,); luminosity_path=luminosity_path)
+    return StrongStrongTask((ip,), (ip,); luminosity=luminosity_path)
 end
 
 function _strong_strong_contract_beam(beam, ::Type{CPUThreadsBackend})
@@ -1227,7 +1227,7 @@ function _strong_strong_contract_task(contract::StrongStrongPICBackendConsistenc
         luminosity_schedule=nothing,
     )
     ip = StrongStrongCollision(:ip; poisson_solver=solver)
-    return StrongStrongTask((ip,), (ip,); luminosity_path=luminosity_path)
+    return StrongStrongTask((ip,), (ip,); luminosity=luminosity_path)
 end
 
 
@@ -3228,7 +3228,7 @@ function _solver_contract_cuda_observable(solver, base1, base2)
         with_execution_audit(audit) do
             execute!(StrongStrongTask((ip,), (ip,);
                 policy=CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=256)),
-                luminosity_path=path), beam1, beam2; turns=1)
+                luminosity=path), beam1, beam2; turns=1)
             CUDA.synchronize()
         end
         append!(luminosities, _strong_strong_contract_luminosity_series(path))

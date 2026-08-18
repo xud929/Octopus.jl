@@ -1761,13 +1761,14 @@ internal name — undiscoverable through the API every other configuration surfa
 uses (2026-08-05_b audit, U5-11).
 """
 strong_strong_task_option_schema() = (
-    luminosity_path=ConfigurationOptionMeta(Union{Nothing,String}, nothing,
-        "Path of the task-level luminosity file; `nothing` disables the output.";
-        category=:output, consumer=:strong_strong_output),
-    luminosity_append=ConfigurationOptionMeta(Bool, false,
-        "Continue one luminosity file across executions, tasks, and restarts " *
-        "instead of rewriting it per execute!; replayed windows drop their " *
-        "stale rows first.";
+    luminosity=ConfigurationOptionMeta(Union{Nothing,LuminosityObserver}, nothing,
+        "Task-level luminosity sink: a LuminosityObserver (or a bare path as " *
+        "constructor sugar); `nothing` disables the output. The observer " *
+        "carries the path, the append/continue semantics (replayed windows " *
+        "drop their stale rows first) and the capacity buffering. The " *
+        "luminosity_path/luminosity_append keywords were RETIRED 2026-08-17 " *
+        "(phase 2 of the unification): they were sugar for this observer, " *
+        "and passing them now throws with the migration spelled out.";
         category=:output, consumer=:strong_strong_output),
 )
 
@@ -2089,7 +2090,7 @@ StrongStrongCollision(label; poisson_solver=nothing) =
 """
     StrongStrongTask(line1, line2; policy=nothing,
                      default_poisson_solver=GaussianPoissonSolver(),
-                     luminosity_path=nothing, luminosity_append=false)
+                     luminosity=nothing)
 
 Track two live beams through ordinary tracking lines containing matching
 `StrongStrongCollision` markers.
@@ -2111,27 +2112,24 @@ task = StrongStrongTask(line1, line2)
 execute!(task, beam1, beam2; turns=10)
 ```
 
-`luminosity_path` writes one row per evaluated turn: the absolute turn number
-followed by the per-collision luminosities. With the default
-`luminosity_append = false`, each `execute!` rewrites the file. With
-`luminosity_append = true` the file is CONTINUED across `execute!` calls,
-tasks sharing the path, and process restarts — one file with continuous
-absolute turns, matching `MomentObserver(append=true)`. Replayed turn windows
-(a failed `execute!`'s retry, an explicit `start_turn` rewind) drop their
-stale rows first, and a file whose header does not match this task's
-collision layout is refused.
-
-`luminosity` is the unified spelling of the same output (phase 1,
-2026-08-17): pass a [`LuminosityObserver`](@ref) — the same sink
-`TrackingTask` takes — or a bare path as sugar. The observer attaches at the
-TASK because pair-level luminosity belongs to neither line; internally the
-legacy keywords construct the identical observer, so there is exactly one
-write path and the file is byte-identical whichever spelling is used
-(`LuminosityObserver(path; append=true)` ≡ `luminosity_path=path,
-luminosity_append=true`). Passing both spellings throws. The output path is
-registered by observer identity, so a second task — or a weak-strong
-observer — writing the same path draws the collision warning, while the same
-task continuing across `execute!` calls stays silent.
+`luminosity` attaches the task-level luminosity sink: a
+[`LuminosityObserver`](@ref) — the same sink `TrackingTask` takes — or a bare
+path as sugar for `LuminosityObserver(path)`. It attaches at the TASK because
+pair-level luminosity belongs to neither line. One row per evaluated turn:
+the absolute turn number followed by the per-collision luminosities. With the
+default `append=false`, each `execute!` rewrites the file; with
+`LuminosityObserver(path; append=true)` the file is CONTINUED across
+`execute!` calls, tasks sharing the path, and process restarts — one file
+with continuous absolute turns, matching `MomentObserver(append=true)`.
+Replayed turn windows (a failed `execute!`'s retry, an explicit `start_turn`
+rewind) drop their stale rows first, and a file whose header does not match
+this task's collision layout is refused. The output path is registered by
+observer identity, so a second task — or a weak-strong observer — writing the
+same path draws the collision warning, while the same task continuing across
+`execute!` calls stays silent. The `luminosity_path`/`luminosity_append`
+keywords this replaced were retired 2026-08-17 (they had been sugar for the
+identical observer since phase 1 of the unification) and now throw with the
+migration spelled out.
 
 Pass `diagnostics=StrongStrongDiagnostics(record_turn_times=true)` to
 synchronize once at each turn boundary and record complete-turn wall time.
@@ -2148,13 +2146,11 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     line2::L2
     policy::Union{Nothing,AbstractExecutionPolicy}
     default_poisson_solver::S
-    luminosity_path::Union{Nothing,String}
-    luminosity_append::Bool
-    # The unified sink (phase 1, 2026-08-17). ALWAYS the single truth when
-    # luminosity output is on: the legacy keywords construct it, and
-    # `luminosity_path`/`luminosity_append` above MIRROR it so every existing
-    # read (config report, file planner, warnings) stays byte-identical.
-    luminosity_observer::Union{Nothing,LuminosityObserver}
+    # The unified luminosity sink (phases 1-2, 2026-08-17): the ONLY
+    # luminosity output channel. Carries the path, the append/continue
+    # semantics and the capacity buffering; the retired
+    # luminosity_path/luminosity_append keywords were sugar for it.
+    luminosity::Union{Nothing,LuminosityObserver}
     diagnostics::StrongStrongDiagnostics
     turn_times::Vector{Float64}
     pic_phase_times::Vector{Any}
@@ -2179,19 +2175,14 @@ function configuration_report(task::StrongStrongTask, beam1::Beam, beam2::Beam)
                      if block1.collision !== nothing)
     return (
         policy=configuration_report(public_policy, beam1.rep),
-        output=(ConfigurationEntry(:luminosity_path, task.luminosity_path,
-            task.luminosity_path,
-            task.luminosity_path === nothing ? :inactive_dependency : :resolved,
-            task.luminosity_path === nothing ? "luminosity file output disabled" :
-                                               "active task-level luminosity output path",
-            :strong_strong_output),
-            ConfigurationEntry(:luminosity_append, task.luminosity_append,
-            task.luminosity_append,
-            task.luminosity_path === nothing ? :inactive_dependency : :resolved,
-            task.luminosity_path === nothing ? "no luminosity path to append to" :
-            task.luminosity_append ?
+        output=(ConfigurationEntry(:luminosity, task.luminosity,
+            task.luminosity === nothing ? nothing : task.luminosity.path,
+            task.luminosity === nothing ? :inactive_dependency : :resolved,
+            task.luminosity === nothing ? "luminosity file output disabled" :
+            (task.luminosity.append ?
                 "continues one luminosity file across executions and restarts" :
-                "each execution rewrites the luminosity file (replace mode)",
+                "each execution rewrites the luminosity file (replace mode)") *
+            " at " * task.luminosity.path,
             :strong_strong_output),),
         diagnostics=configuration_report(task.diagnostics; backend=backend_type(policy)),
         solvers=Tuple(configuration_report(solver; policy=public_policy,
@@ -2211,8 +2202,8 @@ function StrongStrongTask(line1, line2;
                           seed=nothing,
                           default_poisson_solver::AbstractPoissonSolver=GaussianPoissonSolver(),
                           poisson_solver::Union{Nothing,AbstractPoissonSolver}=nothing,
-                          luminosity_path::Union{Nothing,AbstractString}=nothing,
-                          luminosity_append::Bool=false,
+                          luminosity_path=nothing,
+                          luminosity_append=nothing,
                           luminosity::Union{Nothing,LuminosityObserver,AbstractString}=nothing,
                           diagnostics::StrongStrongDiagnostics=StrongStrongDiagnostics(),
                           record_turn_times::Union{Nothing,Bool}=nothing)
@@ -2220,21 +2211,20 @@ function StrongStrongTask(line1, line2;
     line_tuple2 = _element_tuple(line2)
     seed !== nothing && @warn "StrongStrongTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
     solver = poisson_solver === nothing ? default_poisson_solver : poisson_solver
-    # One sink, three spellings. `luminosity=` takes an observer (or a bare
-    # path as sugar); the legacy keywords build the same observer internally,
-    # so there is exactly one write path. Both spellings at once is
-    # contradictory, not redundant -- which path wins? -- so it throws.
-    lumobs = if luminosity !== nothing
-        (luminosity_path === nothing && !luminosity_append) || throw(ArgumentError(
-            "pass either luminosity=... or the luminosity_path/luminosity_append " *
-            "keywords, not both"))
-        luminosity isa LuminosityObserver ? luminosity :
-            LuminosityObserver(String(luminosity))
-    elseif luminosity_path !== nothing
-        LuminosityObserver(String(luminosity_path); append=Bool(luminosity_append))
-    else
-        nothing
-    end
+    # The retired keywords are kept in the signature only to throw a precise
+    # error naming the replacement (a non-default request is honoured or
+    # rejected, never silently dropped; a bare unknown-keyword MethodError
+    # would not say what to do instead). Retired 2026-08-17, phase 2 of the
+    # unification -- they were sugar for the observer since phase 1.
+    (luminosity_path === nothing && luminosity_append === nothing) ||
+        throw(ArgumentError(
+            "luminosity_path/luminosity_append were retired (2026-08-17): pass " *
+            "luminosity=LuminosityObserver(path; append=true, capacity=...) or " *
+            "luminosity=path instead. The file format, append/rewind semantics " *
+            "and warnings are identical."))
+    lumobs = luminosity === nothing ? nothing :
+             luminosity isa LuminosityObserver ? luminosity :
+             LuminosityObserver(String(luminosity))
     if record_turn_times !== nothing
         diagnostics == StrongStrongDiagnostics() || throw(ArgumentError(
             "use either diagnostics or the compatibility record_turn_times keyword, not both"
@@ -2246,8 +2236,6 @@ function StrongStrongTask(line1, line2;
         line_tuple2,
         policy,
         solver,
-        lumobs === nothing ? nothing : lumobs.path,
-        lumobs === nothing ? false : lumobs.append,
         lumobs,
         diagnostics,
         Float64[],
@@ -2318,8 +2306,9 @@ function _execute_strong_strong_task!(
     # options sit outside every effectiveness contract's schema sweep, so
     # nothing else would have caught it (2026-08-05_b audit, U5-3).
     _record_execution!(:strong_strong_output, backend_type(policy),
-                       (luminosity_path=task.luminosity_path,
-                        luminosity_append=task.luminosity_append))
+                       (luminosity=task.luminosity === nothing ? nothing :
+                                   task.luminosity.path,
+                        append=task.luminosity !== nothing && task.luminosity.append))
     blocks1 = _strong_strong_runtime_blocks(task, 1)
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
@@ -2344,7 +2333,7 @@ function _execute_strong_strong_task!(
     # directory — can still land after the observers have committed. That
     # window is narrower than either single-ordering window it replaces, and
     # closing it needs a real two-phase commit across both subsystems.
-    lum_plan = task.luminosity_path === nothing ? nothing :
+    lum_plan = task.luminosity === nothing ? nothing :
         _plan_strong_strong_luminosity_file(task, blocks1, Int(first_turn))
     # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
     prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1);
@@ -2356,7 +2345,7 @@ function _execute_strong_strong_task!(
         ctx = TrackingContext()
         Base.ScopedValues.with(_ACTIVE_STRONG_STRONG_DIAGNOSTICS => task.diagnostics,
                                _ACTIVE_PIC_PHASE_TIMING_SINK => task.pic_phase_times) do
-            if task.luminosity_observer === nothing
+            if task.luminosity === nothing
                 _execute_strong_strong_turns!(
                     task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
                     turns, first_turn, nothing)
@@ -2367,8 +2356,8 @@ function _execute_strong_strong_task!(
                 # execute!-scoped stream, so the single-open-handle I/O shape
                 # is unchanged and the rows are byte-identical to the direct
                 # write this replaced (phase 1, 2026-08-17).
-                lumobs = task.luminosity_observer
-                open(task.luminosity_path, "a") do io
+                lumobs = task.luminosity
+                open(lumobs.path, "a") do io
                     lumobs.stream = io
                     try
                         _execute_strong_strong_turns!(
@@ -2443,7 +2432,8 @@ function _report_dropped_luminosity_rows(task::StrongStrongTask)
     @warn "luminosity rows dropped this run: per-IP luminosity schedules disagreed " *
           "on $(n) turn(s), and each such row was dropped WHOLE, including the " *
           "sibling collisions' evaluated values. The per-turn warning is capped at " *
-          "4; this is the total." dropped_rows = n path = task.luminosity_path
+          "4; this is the total." dropped_rows = n path = (
+              task.luminosity === nothing ? nothing : task.luminosity.path)
     counter[] = 0
     return nothing
 end
@@ -2471,9 +2461,9 @@ end
 Leave the luminosity file containing its header plus, in append mode, every
 well-formed existing row before `first_turn`.
 
-With the default `luminosity_append = false` this rewrites header-only, which
-is the historical replace-per-execution behaviour. With `luminosity_append =
-true` the file is CONTINUED: a run split across `execute!` calls on one task
+With the observer's default `append = false` this rewrites header-only, which
+is the historical replace-per-execution behaviour. With `append = true` the
+file is CONTINUED: a run split across `execute!` calls on one task
 object extends one file with continuous absolute turns, and a fresh task or
 process does the same **when `execute!` is given the matching absolute
 `start_turn`** — the file keeps the rows, but the resume point comes from the
@@ -2501,14 +2491,14 @@ replays its window, which is the documented crash protocol.
 """
 function _plan_strong_strong_luminosity_file(task::StrongStrongTask, blocks1,
                                              first_turn::Int)
-    path = task.luminosity_path
+    path = task.luminosity.path
     header = sprint(io -> _write_strong_strong_luminosity_header(io, blocks1))
-    if !task.luminosity_append || !isfile(path) || filesize(path) == 0
+    if !task.luminosity.append || !isfile(path) || filesize(path) == 0
         return (header=header, kept=String[], replace=true, torn=nothing, dropped=0)
     end
     lines = readlines(path)
     lines[1] * "\n" == header || throw(ArgumentError(
-        "StrongStrongTask(luminosity_append=true): the header at $(path) does not " *
+        "StrongStrongTask luminosity (append=true): the header at $(path) does not " *
         "match this task's collision layout ($(repr(lines[1])) vs " *
         "$(repr(chomp(header)))). Use a new path."))
     nfields = length(split(chomp(header), '\t'))
@@ -2524,7 +2514,7 @@ function _plan_strong_strong_luminosity_file(task::StrongStrongTask, blocks1,
     end
     bad = findfirst(!wellformed, rows)
     bad === nothing || throw(ArgumentError(
-        "StrongStrongTask(luminosity_append=true): data row $(bad) of $(path) is " *
+        "StrongStrongTask luminosity (append=true): data row $(bad) of $(path) is " *
         "malformed ($(repr(rows[bad]))), which cannot come from a torn final " *
         "write; refusing to continue a corrupt file. Use a new path."))
     kept = [line for line in rows if parse(Int, first(split(line, '\t'))) < first_turn]
@@ -2550,13 +2540,13 @@ threw — is worse than no warning: it describes a file state that does not
 exist.
 """
 function _commit_strong_strong_luminosity_file!(task::StrongStrongTask, plan)
-    path = task.luminosity_path
+    path = task.luminosity.path
     if plan.torn !== nothing
-        @warn "luminosity_append: dropping a torn partial last line (an interrupted " *
+        @warn "luminosity append: dropping a torn partial last line (an interrupted " *
               "write) before continuing $(path)" line = plan.torn
     end
     if isempty(plan.kept) && plan.dropped > 0
-        @warn "luminosity_append=true is replacing the entire existing luminosity " *
+        @warn "the luminosity observer (append=true) is replacing the entire existing luminosity " *
               "history at $(path): execution starts at or before every recorded " *
               "row. Pass the matching absolute start_turn " *
               "to execute! to continue the file instead." dropped_rows = plan.dropped
@@ -2567,7 +2557,7 @@ function _commit_strong_strong_luminosity_file!(task::StrongStrongTask, plan)
         # all. Rewinding IS the documented behaviour, which is exactly why it
         # has to be stated: the deliberate rewind and the mistyped start_turn
         # look identical from here, and only the user can tell them apart.
-        @warn "luminosity_append=true is rewinding $(path): rows at or after the " *
+        @warn "the luminosity observer (append=true) is rewinding $(path): rows at or after the " *
               "start turn are being discarded. This is the documented rewind if " *
               "you meant it; if you did not, your start_turn is below the end of " *
               "the existing history." dropped_rows = plan.dropped kept_rows = length(plan.kept)
@@ -2577,7 +2567,7 @@ function _commit_strong_strong_luminosity_file!(task::StrongStrongTask, plan)
     # second task -- or a weak-strong observer -- on this path is a different
     # live object and draws the U7-10 collision warning. Labels bind here too,
     # from the same header the planner validated against the file.
-    obs = task.luminosity_observer
+    obs = task.luminosity
     if obs !== nothing
         obs.labels === nothing &&
             (obs.labels = String.(split(chomp(plan.header), '\t'))[2:end])

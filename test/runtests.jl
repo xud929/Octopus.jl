@@ -3696,8 +3696,9 @@ end
         @test n in exported
     end
     @test :strong_strong_task_option_schema in exported
-    @test keys(strong_strong_task_option_schema()) ==
-          (:luminosity_path, :luminosity_append)
+    # (:luminosity_path, :luminosity_append) until 2026-08-17, when phase 2
+    # of the unification retired the keywords: the observer IS the option.
+    @test keys(strong_strong_task_option_schema()) == (:luminosity,)
 end
 
 @testset "CUDA and CPU PIC cache keys cannot drift apart" begin
@@ -5608,9 +5609,9 @@ end
     @test validate_element_metadata().passed      # registry restored
 end
 
-@testset "StrongStrongTask luminosity_append continues one file" begin
+@testset "StrongStrong luminosity observer append continues one file" begin
     # Companion to MomentObserver append: with the default the .lum file is
-    # rewritten per execute!; with luminosity_append=true it is continued,
+    # rewritten per execute!; with the observer's append=true it is continued,
     # replayed windows drop their stale rows, and a mismatched header is
     # refused. Together they make the injection swap-out workflow (a new
     # beam passed to the same task) produce continuous single files with no
@@ -5633,14 +5634,14 @@ end
     # default: replaced per execute! (historical behaviour, pinned)
     p1 = tempname() * ".lum"
     l1, l2 = lines()
-    t1 = StrongStrongTask(l1, l2; luminosity_path=p1)
+    t1 = StrongStrongTask(l1, l2; luminosity=p1)
     b1, b2 = beams(); execute!(t1, b1, b2; turns=3)
     b1, b2 = beams(); execute!(t1, b1, b2; turns=3)
     @test lum_turns(p1) == [3, 4, 5]
 
     # append: continued across execute! calls and across a beam swap
     p2 = tempname() * ".lum"
-    t2 = StrongStrongTask(l1, l2; luminosity_path=p2, luminosity_append=true)
+    t2 = StrongStrongTask(l1, l2; luminosity=LuminosityObserver(p2; append=true))
     b1, b2 = beams(); execute!(t2, b1, b2; turns=3)
     b1new, b2same = beams(); execute!(t2, b1new, b2same; turns=4)
     @test lum_turns(p2) == collect(0:6)
@@ -5656,7 +5657,7 @@ end
         println(io, "turn\tother_ip")
         println(io, "0\t1.0")
     end
-    t3 = StrongStrongTask(l1, l2; luminosity_path=p3, luminosity_append=true)
+    t3 = StrongStrongTask(l1, l2; luminosity=LuminosityObserver(p3; append=true))
     b1, b2 = beams()
     @test_throws ArgumentError execute!(t3, b1, b2; turns=1)
 
@@ -5691,26 +5692,29 @@ end
         execute!(task, b1, b2; turns=3)
     end
 
-    # Three spellings, one byte-identical file.
-    pk, po, ps = tempname() * ".lum", tempname() * ".lum", tempname() * ".lum"
-    run3(StrongStrongTask(l1, l2; luminosity_path=pk))
+    # Two spellings, one byte-identical file (the keyword spelling was
+    # RETIRED in phase 2, 2026-08-17 -- pinned below as a loud refusal).
+    po, ps = tempname() * ".lum", tempname() * ".lum"
     run3(StrongStrongTask(l1, l2; luminosity=LuminosityObserver(po)))
     run3(StrongStrongTask(l1, l2; luminosity=ps))
-    @test read(pk) == read(po)
-    @test read(pk) == read(ps)
-    # Both spellings at once is contradictory, not redundant.
-    @test_throws ArgumentError StrongStrongTask(l1, l2; luminosity_path=pk,
-                                                luminosity=LuminosityObserver(po))
-    # The observer's append is the keywords' append: continued file, rewind
-    # idempotence and all, byte for byte.
-    pa, pb = tempname() * ".lum", tempname() * ".lum"
-    ta = StrongStrongTask(l1, l2; luminosity_path=pa, luminosity_append=true)
-    tb = StrongStrongTask(l1, l2; luminosity=LuminosityObserver(pb; append=true))
+    @test read(po) == read(ps)
+    # The retired keywords throw a precise migration error, not a silent
+    # accept and not a bare unknown-keyword failure.
+    @test_throws ArgumentError StrongStrongTask(l1, l2; luminosity_path=po)
+    @test_throws ArgumentError StrongStrongTask(l1, l2; luminosity_append=true)
+    err = try
+        StrongStrongTask(l1, l2; luminosity_path=po)
+    catch e
+        sprint(showerror, e)
+    end
+    @test occursin("retired", err) && occursin("luminosity=", err)
+    # Append on the observer: continued file with rewind idempotence -- the
+    # semantics the retired keywords carried, now pinned on their one owner.
+    pa = tempname() * ".lum"
+    ta = StrongStrongTask(l1, l2; luminosity=LuminosityObserver(pa; append=true))
     run3(ta)
     x1, x2 = beams(); execute!(ta, x1, x2; turns=2, start_turn=3)
-    run3(tb)
-    y1, y2 = beams(); execute!(tb, y1, y2; turns=2, start_turn=3)
-    @test read(pa) == read(pb)
+    @test [parse(Int, first(split(l))) for l in readlines(pa)[2:end]] == collect(0:4)
     # Registered by observer identity: the same task continuing is SILENT,
     # a second task on the path draws the collision warning.
     pr = tempname() * ".lum"
@@ -5726,7 +5730,7 @@ end
     end
     @test warns(lg2) == 1
     # The strong-strong observer carries its bound collision labels.
-    @test t2.luminosity_observer.labels == ["ip"]
+    @test t2.luminosity.labels == ["ip"]
 
     # Weak-strong: the task-level kwarg is the same channel as an explicit
     # hook, byte for byte, and accepts the observer form (capacity included).
@@ -5742,7 +5746,7 @@ end
     @test [parse(Int, first(split(l, '\t'))) for l in readlines(pw3)] == [0, 1, 2]
     @test_throws ArgumentError TrackingTask(dline; luminosity=42)
 
-    foreach(p -> rm(p; force=true), (pk, po, ps, pa, pb, pr, pw1, pw2, pw3))
+    foreach(p -> rm(p; force=true), (po, ps, pa, pr, pw1, pw2, pw3))
 end
 
 @testset "Mixed-IP schedule rows drop loudly; solver equality is by configuration" begin
@@ -5815,7 +5819,7 @@ end
     ip1 = StrongStrongCollision(:ip1; poisson_solver=mkpic())
     ip2 = StrongStrongCollision(:ip2;
         poisson_solver=mkpic(luminosity_schedule=AtTurns([0])))
-    t = StrongStrongTask((ip1, l6a, ip2), (ip1, l6b, ip2); luminosity_path=p)
+    t = StrongStrongTask((ip1, l6a, ip2), (ip1, l6b, ip2); luminosity=p)
     b1, b2 = beams()
     @test_logs (:warn, r"luminosity row dropped") match_mode = :any execute!(
         t, b1, b2; turns=2)
@@ -7188,10 +7192,10 @@ end
     # A torn last line is dropped with a warning and cannot become a
     # duplicate turn label on the retry.
     p1 = tempname() * ".lum"
-    t1 = StrongStrongTask(l1, l2; luminosity_path=p1, luminosity_append=true)
+    t1 = StrongStrongTask(l1, l2; luminosity=LuminosityObserver(p1; append=true))
     b1, b2 = beams(); execute!(t1, b1, b2; turns=3)
     open(io -> print(io, "1"), p1, "a")            # torn first byte of a "12..." row
-    t1b = StrongStrongTask(l1, l2; luminosity_path=p1, luminosity_append=true)
+    t1b = StrongStrongTask(l1, l2; luminosity=LuminosityObserver(p1; append=true))
     b1, b2 = beams()
     @test_logs (:warn, r"torn partial last line") match_mode = :any execute!(
         t1b, b1, b2; turns=1, start_turn=3)
@@ -7203,15 +7207,15 @@ end
         println(io, "garbage\trow")
         println(io, "9\t1.0")
     end
-    t1c = StrongStrongTask(l1, l2; luminosity_path=p1, luminosity_append=true)
+    t1c = StrongStrongTask(l1, l2; luminosity=LuminosityObserver(p1; append=true))
     b1, b2 = beams()
     @test_throws ArgumentError execute!(t1c, b1, b2; turns=1, start_turn=10)
 
     # Total replacement (fresh task, no start_turn) is loud, naming the remedy.
     p2 = tempname() * ".lum"
-    t2 = StrongStrongTask(l1, l2; luminosity_path=p2, luminosity_append=true)
+    t2 = StrongStrongTask(l1, l2; luminosity=LuminosityObserver(p2; append=true))
     b1, b2 = beams(); execute!(t2, b1, b2; turns=3)
-    t2b = StrongStrongTask(l1, l2; luminosity_path=p2, luminosity_append=true)
+    t2b = StrongStrongTask(l1, l2; luminosity=LuminosityObserver(p2; append=true))
     b1, b2 = beams()
     @test_logs (:warn, r"replacing the entire existing luminosity") match_mode = :any execute!(
         t2b, b1, b2; turns=2)
@@ -7226,7 +7230,7 @@ end
     # silent-continuation pin since U7-6; the .lum half was the unwalked
     # sibling).
     p6 = tempname() * ".lum"
-    t6 = StrongStrongTask(l1, l2; luminosity_path=p6, luminosity_append=true)
+    t6 = StrongStrongTask(l1, l2; luminosity=LuminosityObserver(p6; append=true))
     b1, b2 = beams(); execute!(t6, b1, b2; turns=3)
     b1new, b2keep = beams()
     @test isempty(filter(r -> r.level === Logging.Warn,
@@ -7235,7 +7239,7 @@ end
     @test lum_turns(p6) == [0, 1, 2, 3, 4]
     # And a GENUINE partial rewind reports the rows actually discarded, not
     # the file total: 5 rows, start_turn=4 -> 1 dropped, 4 kept.
-    t6b = StrongStrongTask(l1, l2; luminosity_path=p6, luminosity_append=true)
+    t6b = StrongStrongTask(l1, l2; luminosity=LuminosityObserver(p6; append=true))
     b1, b2 = beams()
     logs = collect(Test.collect_test_logs(() ->
         execute!(t6b, b1, b2; turns=1, start_turn=4))[1])
@@ -10511,7 +10515,7 @@ end
                                        domain_factor=16.0,
                                        luminosity_schedule=EveryNSteps(step=3))
         ip = StrongStrongCollision(:ip; poisson_solver=solver)
-        task = StrongStrongTask((ip,), (ip,); luminosity_path=path)
+        task = StrongStrongTask((ip,), (ip,); luminosity=path)
         execute!(task, e, p; turns=7)
         turns = Int[]
         for line in eachline(path)

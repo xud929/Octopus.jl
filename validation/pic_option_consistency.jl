@@ -195,7 +195,7 @@ line_p = (rp[1], rp[2], rp[3], lb, ip, rlb, rp[4], rp[5], rp[6], rp[7], rp[8])
 
 lum_path = joinpath(result_dir, "pic_option_$(config.tag).lum")
 isfile(lum_path) && rm(lum_path)
-task = StrongStrongTask(line_e, line_p; luminosity_path=lum_path)
+task = StrongStrongTask(line_e, line_p; luminosity=lum_path)
 
 """
 Read the single luminosity row the task just wrote.

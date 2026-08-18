@@ -2649,3 +2649,27 @@ STRAIGHT" warning retired with the limitation it announced, along with
 `_line_is_misaligned`/`_line_net_bend`, which existed only to fire it.
 Records: `beam_line_composition.md` §10 (correction beside the original
 accepted consequence), `misalignment_and_patch_maps.md` §8.
+
+
+### Strong-strong luminosity through `LuminosityObserver` — closed 2026-08-17
+
+The row as it stood when phase 2 closed it:
+
+| Strong-strong luminosity through `LuminosityObserver` | **closed (2026-08-17, both phases)** | Owner decision, made after the seam was measured: every strong-strong solver already returns its luminosity through the one `_strong_strong_collide!` boundary, and the file exists at ONE write site in `interface.jl` -- so unifying the sink touches no solver, no CUDA kernel, no backend contract, and no hot path (the row write is once per turn, outside `collide!`). **Phase 1 (do first): keep `luminosity_path`/`luminosity_append` exactly as they are, and ADD `LuminosityObserver` as an accepted sink for `StrongStrongTask`.** The observer gains a push entry point (the task pushes completed rows; the schedule-disagreement row-dropping stays in the task, which is the only place that knows whether a row is whole), a column-header contract parameterized by labels (collision labels for strong-strong, beam-beam element identities for weak-strong -- which gains the header check it never had), the append/replay-drop semantics lifted from the task-side code, capacity buffering (strong-strong currently opens the file every turn with no buffering option, the measured 2.3 ms/turn NFS cost), and path registration by observer identity -- which closes the `.lum` half of the writer-registry row below. Regression spec already exists: the append-continuation, replay-drop, header-refusal and dropped-row-counter testsets must survive unchanged. **Attachment (owner decision, 2026-08-17): the observer attaches at the TASK CONSTRUCTOR for BOTH tasks** -- `StrongStrongTask(line1, line2; luminosity=LuminosityObserver(path; capacity=...))` and `TrackingTask(line; luminosity=...)`, with a bare path accepted as sugar -- so the attachment idiom unifies along with the object. For strong-strong it is the only natural home: pair-level luminosity belongs to neither line, which is also why `luminosity_path` already lives on the task. For weak-strong it REMOVES a latent footgun of line placement: a mid-line observer samples `last_luminosity` when the beam passes it, so beam-beam elements later in the line report the PREVIOUS turn's value in that row -- task-level attachment defines the sampling point once, at turn end, after the whole line. Line placement in weak-strong stays ACCEPTED for existing scripts (phase 2 decides its fate alongside the keywords); position-bound observers (BPM, moment, snapshot) are untouched -- their s-positions are physical, luminosity's never was. **Phase 2, a separate LATER decision: keep or retire `luminosity_path`/`luminosity_append`** (as sugar constructing the observer internally, or removed outright); nothing in phase 1 prejudges it. *(Phase 1 landed 2026-08-17: `StrongStrongTask(...; luminosity=obs_or_path)` and `TrackingTask(...; luminosity=obs_or_path)`; the legacy keywords now construct the identical observer internally, so there is exactly ONE write path -- measured byte-identical across all three spellings, including append/rewind parity; the `.lum` path registers by observer identity (same task silent, second writer warns -- pinned); the observer gained `append`, bound `labels`, the execute!-scoped `stream` (the single-open-handle I/O shape is unchanged), and the `_push_luminosity_row!` entry; row completeness stays the task's decision. What phase 2 decides is ONLY the keyword surface.)* |
+
+Phase 2 (owner decision: "Retire them."): `luminosity_path`/`luminosity_append`
+removed from the public surface. They stay in the constructor signature only
+to throw a precise ArgumentError naming the migration
+(`luminosity=LuminosityObserver(path; append=true, capacity=...)` or a bare
+path) — a non-default request is honoured or rejected, never dropped into a
+bare unknown-keyword failure. The mirror fields left the struct (the observer
+IS the `luminosity` field), `strong_strong_task_option_schema()` now has the
+single `luminosity` key (fieldname-paired, default-checked by
+validate_configuration_metadata's real-object probe), the configuration
+report and the execution receipt carry the observer, and every caller in the
+live tree migrated: contracts (2 sites), tests (~15 constructions plus the
+schema pin), five validation scripts, both examples, and the shared tracking
+harness. The torn-line/replace/rewind warnings kept their pinned message
+bodies with keyword-free prefixes. The retirement error itself is pinned
+(ArgumentError mentioning "retired" and "luminosity="), alongside the
+two-spelling byte identity and the observer-append rewind idempotence.

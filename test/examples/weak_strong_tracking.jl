@@ -298,8 +298,7 @@ outdir = joinpath(input.result_dir, string(input.seed))
 mkpath(outdir)
 luminosity_path = joinpath(outdir, input.case_name * ".lum")
 moment_path = joinpath(outdir, input.case_name * ".h5")
-luminosity_observer = ScheduledObserver(
-    LuminosityObserver(luminosity_path; capacity = input.output.luminosity_capacity))
+# Task-level luminosity sink (the unified spelling, 2026-08-17).
 moment_observer = ScheduledObserver(
     MomentObserver(moment_path; capacity = input.output.moment_capacity),
     EveryNSteps(
@@ -321,10 +320,11 @@ line_specs = (
     one_turn,
     chrom,
     radiation,
-    luminosity_observer,
     moment_observer,
 )
-task = TrackingTask(line_specs)
+task = TrackingTask(line_specs;
+    luminosity = LuminosityObserver(luminosity_path;
+                                    capacity = input.output.luminosity_capacity))
 execute!(task, beam; turns = turns)
 
 stats = beam_statistics(beam)

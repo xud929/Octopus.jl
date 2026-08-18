@@ -643,7 +643,7 @@ line_pro = (
 )
 
 task = StrongStrongTask(line_ele, line_pro;
-    luminosity_path = disable_luminosity_output ? nothing : luminosity_path,
+    luminosity = disable_luminosity_output ? nothing : luminosity_path,
     diagnostics,
 )
 function _emit(b)

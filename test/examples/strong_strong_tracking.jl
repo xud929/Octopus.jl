@@ -751,7 +751,7 @@ task = StrongStrongTask(line_ele, line_pro;
     # three documented launch knobs were inert for the thing they tune
     # (2026-08-05_b audit, U21-17).
     policy = policy,
-    luminosity_path = disable_luminosity_output ? nothing : luminosity_path,
+    luminosity = disable_luminosity_output ? nothing : luminosity_path,
     diagnostics,
 )
 execute!(task, beam_ele, beam_pro; turns = turns)

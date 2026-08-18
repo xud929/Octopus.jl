@@ -28,7 +28,7 @@ path = tempname() * ".lum"
 schedule = EveryNSteps(step=100)
 ip1 = StrongStrongCollision(:ip1; poisson_solver=ScheduledValidationSolver(schedule, 0.0))
 ip2 = StrongStrongCollision(:ip2; poisson_solver=ScheduledValidationSolver(schedule, 1000.0))
-task = StrongStrongTask((ip1, ip2), (ip1, ip2); luminosity_path=path)
+task = StrongStrongTask((ip1, ip2), (ip1, ip2); luminosity=path)
 beam1 = Beam(1, CPUThreadsExecutionPolicy(), Float64)
 beam2 = Beam(1, CPUThreadsExecutionPolicy(), Float64)
 execute!(task, beam1, beam2; turns=201)

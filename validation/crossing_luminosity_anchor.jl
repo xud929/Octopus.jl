@@ -83,7 +83,7 @@ function run_config(tag; angle, crab)
     end
 
     lum_path = joinpath(OUTDIR, "lum_$(tag).lum")
-    task = StrongStrongTask(elems, elems; luminosity_path = lum_path)
+    task = StrongStrongTask(elems, elems; luminosity = lum_path)
     execute!(task, b1, b2; turns = 3)
     vals = Float64[]
     for l in eachline(lum_path)
