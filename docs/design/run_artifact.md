@@ -131,6 +131,27 @@ its batch, so a retry trusts exactly the cursored prefix and the replay
 discard truncates datasets against absolute turns, as the text path does
 today. This must be designed in from the first dataset, not retrofitted.
 
+### Execution diagnostics
+
+The moment files' `turn` + `elapsed_time` per fire is a style worth keeping
+and generalising (owner direction, 2026-08-18): execution numbers are a
+product of the run like any other, so the artifact gives them their own
+channel — an `/execution/` group with ONE ROW PER `execute!` (execution
+index, start turn, window length, wall-clock start and elapsed, backend),
+appended and never overwritten, so a swap-out run's every execution keeps
+its record; rows from a replayed window are RETAINED too, distinguishable by
+execution index, because both attempts' timings are exactly what a retry
+diagnosis wants. Richer per-turn timing joins the same group behind the
+existing diagnostics precedent (`StrongStrongDiagnostics.record_turn_times`),
+and the opt-in/out keyword for execution logging harmonises with that
+diagnostics object on both tasks rather than inventing a second switch. The
+interim fix already landed on the moment files: a per-execution ledger
+(`/execution_elapsed`, `/execution_start_turn`, appended at prepare, updated
+per flush, created on demand for older files) with the scalar
+`/elapsed_time` keeping its documented current-execution semantics for
+existing readers — its overhead is one tiny dataset write per flush, so it
+needs no switch.
+
 ## Migration
 
 Behind the current APIs, in order; each step gated and byte/dataset-compared

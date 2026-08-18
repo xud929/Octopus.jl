@@ -5850,6 +5850,26 @@ end
     # table with continuous absolute turns. Replayed windows drop their stale
     # rows (the BPM idempotence rule), and a replace-mode file refuses to be
     # continued rather than corrupt.
+
+    # The per-execution ledger (2026-08-18, owner request): /elapsed_time is
+    # documented as the CURRENT execution's clock only, so a swap-out run's
+    # second execution used to overwrite the first's timing. Each execute!
+    # now appends a row to /execution_elapsed + /execution_start_turn at
+    # prepare and updates it at every flush -- earlier executions retain
+    # their wall times, the scalar keeps its compatible semantics.
+    let pl = tempname() * ".h5", mk = () -> Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+        obs = MomentObserver(pl; append=true, capacity=2)
+        tt = TrackingTask((DriftSpec(L=1.0),); hooks=(ScheduledObserver(obs),))
+        execute!(tt, mk(); turns=3)
+        execute!(tt, mk(); turns=2)
+        Octopus.HDF5.h5open(pl, "r") do f
+            led = read(f["execution_elapsed"])
+            @test length(led) == 2 && all(led .> 0.0)
+            @test read(f["execution_start_turn"]) == [0, 3]
+            @test read(f["elapsed_time"]) == [led[2]]   # scalar = current only
+        end
+        rm(pl; force=true)
+    end
     turns_in(path) = Octopus.HDF5.h5open(path) do f
         n = Int(read(f["record_count"])[1])
         Int.(f["data"][1:n, 1])

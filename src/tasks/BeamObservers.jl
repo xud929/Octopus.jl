@@ -604,6 +604,13 @@ mutable struct MomentObserver <: AbstractBeamObserver
     initialized::Bool
     append::Bool
     reduction_scratch::Any
+    # Which row of the per-execution ledger (/execution_elapsed,
+    # /execution_start_turn) THIS execution updates. Each execute! appends a
+    # ledger row at prepare, so a swap-out run's earlier executions keep
+    # their timings instead of being overwritten by the scalar
+    # /elapsed_time, which retains its documented current-execution
+    # semantics for existing readers (2026-08-18, owner request).
+    execution_slot::Int
 end
 
 """
@@ -641,7 +648,11 @@ The HDF5 file contains:
 - `/column_names`: string names aligned with `/data` columns.
 - `/record_count`: number of rows already flushed to disk.
 - `/elapsed_time`: elapsed wall time in seconds, updated whenever the buffer is
-  flushed.
+  flushed -- the CURRENT execution's clock only, by its documented semantics.
+- `/execution_elapsed`, `/execution_start_turn`: the per-execution ledger,
+  one entry per `execute!` of this file, appended at prepare and updated at
+  every flush -- so a swap-out run's earlier executions keep their wall
+  times (2026-08-18).
 
 `capacity` is the number of observed rows buffered in memory before a block is
 written to HDF5. Larger values reduce I/O overhead. Smaller values update
@@ -730,7 +741,7 @@ function MomentObserver(path::AbstractString; orders=1:2, extra=(), exclude=(),
     names = ["turn"; collect(name.(moments))]
     buffer = Matrix{Float64}(undef, max(Int(capacity), 1), length(names))
     return MomentObserver(String(path), moments, names, Int(capacity), buffer, 0, 0, 0,
-                          UInt64(0), false, Bool(append), nothing)
+                          UInt64(0), false, Bool(append), nothing, 0)
 end
 
 mutable struct CoordinateSnapshotObserver <: AbstractBeamObserver
@@ -1180,7 +1191,41 @@ function _prepare_moment_observer!(observer::MomentObserver, schedule, turns,
         observer.record_count = 0
         _initialize_hdf5_moment_file!(observer)
     end
+    _moment_execution_slot!(observer, Int(first_turn))
     observer.initialized = true
+    return nothing
+end
+
+"""
+Append one row to the file's per-execution ledger and remember its index.
+
+`/execution_elapsed` and `/execution_start_turn` carry one entry per
+`execute!` of this file: the slot is appended at prepare and updated at
+every flush, so a swap-out run's earlier executions RETAIN their wall
+times -- the scalar `/elapsed_time` keeps its documented
+current-execution-only semantics for existing readers. Created on demand,
+so an append-mode file written before the ledger existed gains it on its
+next continuation.
+"""
+function _moment_execution_slot!(observer::MomentObserver, first_turn::Int)
+    HDF5.h5open(observer.path, "r+") do file
+        if !haskey(file, "execution_elapsed")
+            for (name, T) in (("execution_elapsed", Float64),
+                              ("execution_start_turn", Int64))
+                HDF5.create_dataset(file, name, HDF5.datatype(T),
+                    HDF5.dataspace((0,); max_dims=(-1,)); chunk=(16,))
+            end
+        end
+        de = file["execution_elapsed"]
+        dt = file["execution_start_turn"]
+        n = length(de)
+        HDF5.set_extent_dims(de, (n + 1,))
+        HDF5.set_extent_dims(dt, (n + 1,))
+        de[n + 1] = 0.0
+        dt[n + 1] = Int64(first_turn)
+        observer.execution_slot = n + 1
+        HDF5.flush(file)
+    end
     return nothing
 end
 
@@ -1335,6 +1380,8 @@ function _flush_moment_observer!(observer::MomentObserver)
         file["record_count"][1] = Int64(row2)
         elapsed = (time_ns() - observer.start_time_ns) / 1.0e9
         file["elapsed_time"][1] = Float64(elapsed)
+        observer.execution_slot > 0 &&
+            (file["execution_elapsed"][observer.execution_slot] = Float64(elapsed))
         HDF5.flush(file)
     end
     observer.record_count = row2
