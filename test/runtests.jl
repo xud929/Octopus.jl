@@ -5745,6 +5745,21 @@ end
              mk1(); turns=3)
     @test [parse(Int, first(split(l, '\t'))) for l in readlines(pw3)] == [0, 1, 2]
     @test_throws ArgumentError TrackingTask(dline; luminosity=42)
+    # A FRESH weak-strong observer with append=true continues an existing
+    # file across restarts, with the replay-discard idempotence rule --
+    # until the 2026-08-18 follow-up, `append` was consumed only by the
+    # strong-strong planner and a fresh weak-strong observer truncated the
+    # history it was asked to continue.
+    pw4 = tempname() * ".tsv"
+    execute!(TrackingTask(dline; luminosity=pw4), mk1(); turns=3)
+    execute!(TrackingTask(dline; luminosity=LuminosityObserver(pw4; append=true)),
+             mk1(); turns=2, start_turn=3)
+    @test [parse(Int, first(split(l, '\t'))) for l in readlines(pw4)] == collect(0:4)
+    # ... and a rewind on a fresh append observer drops the stale rows.
+    execute!(TrackingTask(dline; luminosity=LuminosityObserver(pw4; append=true)),
+             mk1(); turns=1, start_turn=2)
+    @test [parse(Int, first(split(l, '\t'))) for l in readlines(pw4)] == [0, 1, 2]
+    rm(pw4; force=true)
 
     foreach(p -> rm(p; force=true), (po, ps, pa, pr, pw1, pw2, pw3))
 end

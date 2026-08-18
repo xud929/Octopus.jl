@@ -40,6 +40,13 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   guarded heavyweight sections, the loud-skip accounting rules, and the
   decision matrix for change classes where only the full gate (CUDA active)
   counts. The fast lane is a checkpoint, never a finish line.
+- [`run_artifact.md`](design/run_artifact.md) — the one-output-file-per-task
+  design (2026-08-18, decided, implementation on the ledger): the
+  probe/channel split, per-producer groups with independent turn axes (which
+  dissolve the mixed-IP row-drop machinery), name identities from provenance
+  paths, the three buffer shapes behind one protocol, the device-write
+  constraints, capacity posture, crash-recovery cursor, live text mirror,
+  and the migration order behind the current APIs.
 - [`survey_and_reference_channel.md`](design/survey_and_reference_channel.md) —
   the channel telling a runtime element its place on the reference trajectory:
   static survey values (`s_elem`, later `P0`) baked at compile via the line

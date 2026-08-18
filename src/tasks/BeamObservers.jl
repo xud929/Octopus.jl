@@ -986,12 +986,21 @@ end
 
 function _flush_luminosity_rows!(observer::LuminosityObserver)
     isempty(observer.pending) && return nothing
-    mode = observer.initialized ? "a" : "w"
-    # First write truncates, off a per-object latch: the U7-10 shape exactly,
-    # so it registers exactly like the moment observers (N3 extension). The
-    # registration latch is `registered`, not `initialized`, because a
+    # First write truncates, off a per-object latch -- UNLESS the observer
+    # was constructed with `append=true`, in which case an existing file is
+    # continued by a FRESH object too (the strong-strong restart semantics,
+    # extended to the weak-strong flush path by the 2026-08-18 audit's
+    # follow-up: until then `append` was consumed only by the strong-strong
+    # planner, so a fresh weak-strong observer truncated the history it was
+    # asked to continue). The idempotence rule still holds: the replay
+    # discard below drops rows at or beyond the incoming window's first
+    # turn, so a fresh append observer executed from absolute turn 0
+    # REPLACES the timeline, exactly as the strong-strong planner documents.
+    mode = (observer.initialized ||
+            (observer.append && isfile(observer.path))) ? "a" : "w"
+    # The registration latch is `registered`, not `initialized`, because a
     # strong-strong task registers at PREPARE (before any flush) and its
-    # prepare/commit owns truncation.
+    # prepare/commit owns truncation (the U7-10 shape; N3 extension).
     if !observer.registered
         _register_observer_path!(observer, observer.path)
         observer.registered = true
@@ -1041,7 +1050,8 @@ function _discard_replayed_luminosity_rows!(observer::LuminosityObserver, first_
     # discard's rule). Ordinarily empty here — finalize flushed them — but a
     # caller that skipped finalize must not get duplicate labels.
     empty!(observer.pending)
-    (observer.initialized && isfile(observer.path)) || return nothing
+    ((observer.initialized || observer.append) && isfile(observer.path)) ||
+        return nothing
     rows = readlines(observer.path)
     turn_of(line) = tryparse(Int, first(split(line, '\t')))
     kept = [line for line in rows
