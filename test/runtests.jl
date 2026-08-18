@@ -5800,6 +5800,7 @@ end
         @test read(Octopus.HDF5.attributes(f["luminosity"]["ip"])["rows_valid_through_turn"]) == 2
         @test read(f["execution"]["start_turn"]) == [0]
         @test read(f["execution"]["turns"]) == [3]
+        @test read(f["execution"]["current_turn"]) == [2]   # reached the window's end
         @test all(read(f["execution"]["elapsed"]) .> 0)
     end
 
@@ -5835,6 +5836,7 @@ end
     Octopus.HDF5.h5open(pa2, "r") do f
         @test read(f["luminosity"]["ip"]["turns"]) == [0, 1, 2]
         @test read(f["execution"]["start_turn"]) == [0, 3, 2]
+        @test read(f["execution"]["current_turn"]) == [2, 4, 2]   # per execution
     end
     # (4) Crash recovery: rows beyond the cursor are a torn tail and are
     # truncated on the next open.

@@ -25,9 +25,12 @@ the execution ledger:
   (the fixed-width text row's whole-row drop rule does not apply here).
   `NaN` keeps its meaning: evaluated and failed.
 - `/execution`: one row per `execute!` — `start_turn`, planned `turns`,
-  wall-clock `elapsed` (updated at every flush) — appended and never
-  overwritten, so every execution of a swap-out or chunked run keeps its
-  record.
+  `current_turn` and wall-clock `elapsed`, the last two updated at every
+  flush — appended and never overwritten, so every execution of a swap-out
+  or chunked run keeps its record. `current_turn` is the turn the execution
+  had reached at its most recent flush: live progress and rate from one
+  `h5ls` while running, and the run-level how-far-did-it-get answer after a
+  crash (the per-group cursors answer the same question per dataset).
 
 `append=false` (default) recreates the file per `execute!`; `append=true`
 continues it across `execute!` calls and process restarts under the replay
@@ -58,6 +61,10 @@ mutable struct RunArtifact
     execution_slot::Int
     start_time_ns::UInt64
     registered::Bool
+    # The turn the current execution has reached (execute!-scoped, set by
+    # the task's turn loop); persisted into /execution/current_turn at every
+    # flush, so the ledger row tracks live progress.
+    current_turn::Int64
 end
 
 function RunArtifact(path::AbstractString; append::Bool=false, capacity::Integer=64)
@@ -65,7 +72,7 @@ function RunArtifact(path::AbstractString; append::Bool=false, capacity::Integer
     cap >= 1 || throw(ArgumentError("RunArtifact capacity must be at least 1; got $(cap)."))
     return RunArtifact(String(path), Bool(append), cap, nothing,
                        Dict{String,Vector{Int64}}(), Dict{String,Vector{Float64}}(),
-                       0, UInt64(0), false)
+                       0, UInt64(0), false, Int64(0))
 end
 
 # HDF5 attribute write-or-overwrite (plain assignment refuses an existing
@@ -141,6 +148,7 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
             ex = HDF5.create_group(file, "execution")
             _ra_extendable!(ex, "start_turn", Int64)
             _ra_extendable!(ex, "turns", Int64)
+            _ra_extendable!(ex, "current_turn", Int64)
             _ra_extendable!(ex, "elapsed", Float64)
         else
             haskey(file, "luminosity") || throw(ArgumentError(
@@ -161,9 +169,20 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
             end
         end
         ex = file["execution"]
+        if !haskey(ex, "current_turn")
+            # A step-1 file from before the column existed: add it, padding
+            # the earlier rows with the nothing-known sentinel.
+            d = _ra_extendable!(ex, "current_turn", Int64)
+            nprev = length(ex["start_turn"])
+            if nprev > 0
+                HDF5.set_extent_dims(d, (nprev,))
+                d[1:nprev] = fill(Int64(typemin(Int32)), nprev)
+            end
+        end
         n = length(ex["start_turn"])
         for (name, val) in (("start_turn", Int64(first_turn)),
                             ("turns", Int64(planned_turns)),
+                            ("current_turn", Int64(first_turn) - 1),
                             ("elapsed", 0.0))
             d = ex[name]
             HDF5.set_extent_dims(d, (n + 1,))
@@ -171,6 +190,7 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
         end
         art.execution_slot = n + 1
         art.start_time_ns = time_ns()
+        art.current_turn = Int64(first_turn) - 1
         HDF5.flush(file)
     catch
         close(file)
@@ -207,6 +227,7 @@ function _ra_flush_luminosity!(art::RunArtifact, label::String)
     # rows beyond the cursor, which the next open truncates -- conservative.
     _ra_set_attr!(g, "rows_valid_through_turn", t[end])
     ex = art.file["execution"]
+    ex["current_turn"][art.execution_slot] = art.current_turn
     ex["elapsed"][art.execution_slot] = (time_ns() - art.start_time_ns) / 1.0e9
     HDF5.flush(art.file)
     empty!(t)
@@ -222,6 +243,7 @@ function finalize_run_artifact!(art::RunArtifact)
             _ra_flush_luminosity!(art, label)
         end
         ex = art.file["execution"]
+        ex["current_turn"][art.execution_slot] = art.current_turn
         ex["elapsed"][art.execution_slot] = (time_ns() - art.start_time_ns) / 1.0e9
         HDF5.flush(art.file)
     finally

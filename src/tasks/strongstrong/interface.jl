@@ -2705,6 +2705,10 @@ function _execute_strong_strong_turns!(
             end
         end
         _cuda_nvtx_pop(backend, turn_range)
+        # The ledger's live-progress column: the artifact persists this at
+        # its next flush, so a monitoring `h5ls` reads progress and rate
+        # without touching the data groups.
+        art === nothing || (art.current_turn = Int64(ctx.turn))
         if luminosities !== nothing && !isempty(luminosities)
             if all(luminosity_evaluated)
                 # Row completeness stays the TASK's decision; the observer is

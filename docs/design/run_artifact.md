@@ -137,7 +137,9 @@ The moment files' `turn` + `elapsed_time` per fire is a style worth keeping
 and generalising (owner direction, 2026-08-18): execution numbers are a
 product of the run like any other, so the artifact gives them their own
 channel — an `/execution/` group with ONE ROW PER `execute!` (execution
-index, start turn, window length, wall-clock start and elapsed, backend),
+index, start turn, window length, CURRENT TURN and elapsed updated at every
+flush -- live progress and rate from one `h5ls`, and the run-level
+how-far-did-it-get answer after a crash -- plus backend),
 appended and never overwritten, so a swap-out run's every execution keeps
 its record; rows from a replayed window are RETAINED too, distinguishable by
 execution index, because both attempts' timings are exactly what a retry
