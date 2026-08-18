@@ -2121,6 +2121,18 @@ absolute turns, matching `MomentObserver(append=true)`. Replayed turn windows
 stale rows first, and a file whose header does not match this task's
 collision layout is refused.
 
+`luminosity` is the unified spelling of the same output (phase 1,
+2026-08-17): pass a [`LuminosityObserver`](@ref) — the same sink
+`TrackingTask` takes — or a bare path as sugar. The observer attaches at the
+TASK because pair-level luminosity belongs to neither line; internally the
+legacy keywords construct the identical observer, so there is exactly one
+write path and the file is byte-identical whichever spelling is used
+(`LuminosityObserver(path; append=true)` ≡ `luminosity_path=path,
+luminosity_append=true`). Passing both spellings throws. The output path is
+registered by observer identity, so a second task — or a weak-strong
+observer — writing the same path draws the collision warning, while the same
+task continuing across `execute!` calls stays silent.
+
 Pass `diagnostics=StrongStrongDiagnostics(record_turn_times=true)` to
 synchronize once at each turn boundary and record complete-turn wall time.
 Retrieve structured results with `diagnostic_summary(task)`. The legacy
@@ -2138,6 +2150,11 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     default_poisson_solver::S
     luminosity_path::Union{Nothing,String}
     luminosity_append::Bool
+    # The unified sink (phase 1, 2026-08-17). ALWAYS the single truth when
+    # luminosity output is on: the legacy keywords construct it, and
+    # `luminosity_path`/`luminosity_append` above MIRROR it so every existing
+    # read (config report, file planner, warnings) stays byte-identical.
+    luminosity_observer::Union{Nothing,LuminosityObserver}
     diagnostics::StrongStrongDiagnostics
     turn_times::Vector{Float64}
     pic_phase_times::Vector{Any}
@@ -2196,12 +2213,28 @@ function StrongStrongTask(line1, line2;
                           poisson_solver::Union{Nothing,AbstractPoissonSolver}=nothing,
                           luminosity_path::Union{Nothing,AbstractString}=nothing,
                           luminosity_append::Bool=false,
+                          luminosity::Union{Nothing,LuminosityObserver,AbstractString}=nothing,
                           diagnostics::StrongStrongDiagnostics=StrongStrongDiagnostics(),
                           record_turn_times::Union{Nothing,Bool}=nothing)
     line_tuple1 = _element_tuple(line1)
     line_tuple2 = _element_tuple(line2)
     seed !== nothing && @warn "StrongStrongTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
     solver = poisson_solver === nothing ? default_poisson_solver : poisson_solver
+    # One sink, three spellings. `luminosity=` takes an observer (or a bare
+    # path as sugar); the legacy keywords build the same observer internally,
+    # so there is exactly one write path. Both spellings at once is
+    # contradictory, not redundant -- which path wins? -- so it throws.
+    lumobs = if luminosity !== nothing
+        (luminosity_path === nothing && !luminosity_append) || throw(ArgumentError(
+            "pass either luminosity=... or the luminosity_path/luminosity_append " *
+            "keywords, not both"))
+        luminosity isa LuminosityObserver ? luminosity :
+            LuminosityObserver(String(luminosity))
+    elseif luminosity_path !== nothing
+        LuminosityObserver(String(luminosity_path); append=Bool(luminosity_append))
+    else
+        nothing
+    end
     if record_turn_times !== nothing
         diagnostics == StrongStrongDiagnostics() || throw(ArgumentError(
             "use either diagnostics or the compatibility record_turn_times keyword, not both"
@@ -2213,8 +2246,9 @@ function StrongStrongTask(line1, line2;
         line_tuple2,
         policy,
         solver,
-        luminosity_path === nothing ? nothing : String(luminosity_path),
-        Bool(luminosity_append),
+        lumobs === nothing ? nothing : lumobs.path,
+        lumobs === nothing ? false : lumobs.append,
+        lumobs,
         diagnostics,
         Float64[],
         Any[],
@@ -2322,18 +2356,27 @@ function _execute_strong_strong_task!(
         ctx = TrackingContext()
         Base.ScopedValues.with(_ACTIVE_STRONG_STRONG_DIAGNOSTICS => task.diagnostics,
                                _ACTIVE_PIC_PHASE_TIMING_SINK => task.pic_phase_times) do
-            if task.luminosity_path === nothing
+            if task.luminosity_observer === nothing
                 _execute_strong_strong_turns!(
                     task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
                     turns, first_turn, nothing)
             else
                 # The prepare step above owned the header and the
                 # replace/append decision, so the run body always streams
-                # rows in append mode from here.
+                # rows in append mode from here -- through the observer's
+                # execute!-scoped stream, so the single-open-handle I/O shape
+                # is unchanged and the rows are byte-identical to the direct
+                # write this replaced (phase 1, 2026-08-17).
+                lumobs = task.luminosity_observer
                 open(task.luminosity_path, "a") do io
-                    _execute_strong_strong_turns!(
-                        task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
-                        turns, first_turn, io)
+                    lumobs.stream = io
+                    try
+                        _execute_strong_strong_turns!(
+                            task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
+                            turns, first_turn, lumobs)
+                    finally
+                        lumobs.stream = nothing
+                    end
                 end
             end
         end
@@ -2529,6 +2572,20 @@ function _commit_strong_strong_luminosity_file!(task::StrongStrongTask, plan)
               "you meant it; if you did not, your start_turn is below the end of " *
               "the existing history." dropped_rows = plan.dropped kept_rows = length(plan.kept)
     end
+    # The sink is registered by OBSERVER identity at prepare: the same task
+    # continuing across execute! calls is the same observer (silent), while a
+    # second task -- or a weak-strong observer -- on this path is a different
+    # live object and draws the U7-10 collision warning. Labels bind here too,
+    # from the same header the planner validated against the file.
+    obs = task.luminosity_observer
+    if obs !== nothing
+        obs.labels === nothing &&
+            (obs.labels = String.(split(chomp(plan.header), '\t'))[2:end])
+        if !obs.registered
+            _register_observer_path!(obs, path)
+            obs.registered = true
+        end
+    end
     if plan.replace
         open(path, "w") do io
             print(io, plan.header)
@@ -2564,7 +2621,7 @@ end
 
 function _execute_strong_strong_turns!(
         task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
-        turns::Int, first_turn::Int64, io)
+        turns::Int, first_turn::Int64, lumobs)
     backend = backend_type(policy)
     streams = _strong_strong_segment_streams(policy)
     memory_log_every = _strong_strong_cuda_memory_log_every(backend)
@@ -2572,8 +2629,8 @@ function _execute_strong_strong_turns!(
         turn = first_turn + offset
         turn_t0 = task.diagnostics.record_turn_times ? time_ns() : UInt64(0)
         ctx = with_turn(ctx, turn)
-        luminosities = io === nothing ? nothing : Float64[]
-        luminosity_evaluated = io === nothing ? nothing : Bool[]
+        luminosities = lumobs === nothing ? nothing : Float64[]
+        luminosity_evaluated = lumobs === nothing ? nothing : Bool[]
         turn_range = _cuda_nvtx_push(backend, "strongstrong turn")
         for j in eachindex(blocks1)
             line_range = _cuda_nvtx_push(backend, "strongstrong line tracking")
@@ -2600,11 +2657,9 @@ function _execute_strong_strong_turns!(
         _cuda_nvtx_pop(backend, turn_range)
         if luminosities !== nothing && !isempty(luminosities)
             if all(luminosity_evaluated)
-                print(io, ctx.turn)
-                for lum in luminosities
-                    print(io, '\t', lum)
-                end
-                println(io)
+                # Row completeness stays the TASK's decision; the observer is
+                # handed only whole rows.
+                _push_luminosity_row!(lumobs, ctx.turn, luminosities)
             elseif any(luminosity_evaluated)
                 # A row must carry one value per collision column, and NaN
                 # already means "evaluated and failed" (kept visible on

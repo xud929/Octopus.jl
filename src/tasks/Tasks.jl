@@ -117,6 +117,13 @@ turn-dependent updates mutate the cached runtime objects in place.
 The older `actions` and `observers` keywords remain accepted as compatibility
 aliases and are merged into `hooks`.
 
+`luminosity` attaches a [`LuminosityObserver`](@ref) at TASK level — the same
+sink `StrongStrongTask` takes, and the preferred spelling: it samples at turn
+end, after the whole line, where a mid-line placement would read beam-beam
+elements downstream of it at the previous turn's value. A bare path string is
+sugar for `LuminosityObserver(path)`. Line placement (the example above)
+remains accepted.
+
 # Loss accounting
 
 Every `execute!` reconciles two independent counts of how many particles are
@@ -149,11 +156,30 @@ function TrackingTask(elements;
                       contracts::Vector{DataType}=_collect_contracts(elements),
                       analyses::Vector{DataType}=_collect_analyses(elements),
                       loss_log::Union{Nothing,AbstractString}=nothing,
-                      loss_report::Bool=true)
+                      loss_report::Bool=true,
+                      luminosity=nothing)   # LuminosityObserver or path; untyped
+                                            # because BeamObservers.jl loads after
+                                            # this file -- validated in the body,
+                                            # where the name binds late
     element_tuple = _element_tuple(elements)
     seed !== nothing && @warn "TrackingTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
     _warn_duplicate_radiation_streams(element_tuple)
     _warn_hidden_apertures(element_tuple)
+    # The task-level luminosity sink (phase 1 of the unification, 2026-08-17):
+    # the same LuminosityObserver either task accepts, folded into the ordinary
+    # task-observer channel -- prepared with the runtime elements, consulted
+    # for the diagnostic-isolation request, observed AFTER the whole turn
+    # (which removes the line-placement footgun: a mid-line observer samples
+    # beam-beam elements downstream of it at the PREVIOUS turn's value), and
+    # finalized with everything else. A bare path is sugar for
+    # LuminosityObserver(path). Line placement remains accepted.
+    if luminosity !== nothing
+        obs = luminosity isa AbstractString ? LuminosityObserver(String(luminosity)) :
+              luminosity
+        obs isa LuminosityObserver || throw(ArgumentError(
+            "luminosity must be a LuminosityObserver or an output path; got $(typeof(luminosity))"))
+        observers = (_hook_tuple(observers)..., obs)
+    end
     action_tuple, observer_tuple = classify_task_hooks(hooks, actions, observers)
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
                         Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),

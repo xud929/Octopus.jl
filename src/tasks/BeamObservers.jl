@@ -760,6 +760,19 @@ mutable struct LuminosityObserver <: AbstractBeamObserver
     elements::Tuple
     initialized::Bool
     pending::Vector{String}
+    # The task-level sink half (phase 1 of the luminosity unification,
+    # 2026-08-17): `append` selects the strong-strong continue-the-file
+    # semantics; `labels` are the column labels the owning task binds (collision
+    # labels for strong-strong; `nothing` means the headerless weak-strong
+    # format); `stream` is an execute!-scoped held-open handle rows are pushed
+    # straight into (bypassing `pending`, so the strong-strong turn loop keeps
+    # its single-open-stream I/O shape); `registered` latches path
+    # registration independently of `initialized`, whose job is the
+    # weak-strong first-write truncation.
+    append::Bool
+    labels::Union{Nothing,Vector{String}}
+    stream::Union{Nothing,IO}
+    registered::Bool
 end
 
 """
@@ -784,11 +797,46 @@ This observer requests diagnostic tracking. `TrackingTask` then keeps ordinary
 line segments fused while isolating beam-beam runtime elements so they can
 update their `last_luminosity` field.
 """
-function LuminosityObserver(path::AbstractString; capacity::Integer=1)
+function LuminosityObserver(path::AbstractString; capacity::Integer=1,
+                            append::Bool=false)
     cap = Int(capacity)
     cap >= 1 || throw(ArgumentError(
         "LuminosityObserver capacity must be at least 1; got $(cap)."))
-    return LuminosityObserver(String(path), cap, (), false, String[])
+    return LuminosityObserver(String(path), cap, (), false, String[],
+                              Bool(append), nothing, nothing, false)
+end
+
+"""
+    _push_luminosity_row!(observer, turn, values)
+
+The task-level entry point: the owning task pushes one COMPLETED row (the
+absolute turn plus one value per column). Byte format identical to the
+strong-strong direct write it replaces — `turn`, then `'\\t'`-prefixed values,
+then a newline. With a held-open `stream` (the strong-strong turn loop) the
+row goes straight to it; otherwise it lands in `pending` under the capacity
+rule, flushed by `finalize_observer!` like every buffered row. Row
+completeness is the TASK's decision (only it knows whether per-collision
+schedules agree this turn); the observer never drops or reorders.
+"""
+function _push_luminosity_row!(observer::LuminosityObserver, turn::Integer, values)
+    if observer.stream !== nothing
+        io = observer.stream
+        print(io, turn)
+        for lum in values
+            print(io, '\t', lum)
+        end
+        println(io)
+        return nothing
+    end
+    io = IOBuffer()
+    print(io, turn)
+    for lum in values
+        print(io, '\t', lum)
+    end
+    println(io)
+    push!(observer.pending, String(take!(io)))
+    length(observer.pending) >= observer.capacity && _flush_luminosity_rows!(observer)
+    return nothing
 end
 
 """
@@ -826,6 +874,9 @@ observer_option_schema(::Type{LuminosityObserver}) = (
         category=:output, consumer=:observer_output),
     capacity=ConfigurationOptionMeta(Int, 1,
         "Observed rows buffered before one append; 1 writes every observed turn.";
+        category=:output, consumer=:observer_output),
+    append=ConfigurationOptionMeta(Bool, false,
+        "Continue an existing file across execute! calls and restarts (the strong-strong semantics: replayed windows drop their stale rows, a mismatched header is refused). false replaces the file on first write.";
         category=:output, consumer=:observer_output),)
 observer_option_schema(::LuminosityObserver) = observer_option_schema(LuminosityObserver)
 
@@ -863,7 +914,9 @@ configuration_report(observer::LuminosityObserver) = (
     ConfigurationEntry(:path, observer.path, observer.path, :resolved,
         "required luminosity output path", :observer_output),
     ConfigurationEntry(:capacity, observer.capacity, observer.capacity, :resolved,
-        "observed rows buffered before an append", :observer_output),)
+        "observed rows buffered before an append", :observer_output),
+    ConfigurationEntry(:append, observer.append, observer.append, :resolved,
+        "continue an existing file across execute! calls", :observer_output),)
 
 function _observer_backend()
     policy = _ACTIVE_RESOLVED_POLICY[]
@@ -935,8 +988,14 @@ function _flush_luminosity_rows!(observer::LuminosityObserver)
     isempty(observer.pending) && return nothing
     mode = observer.initialized ? "a" : "w"
     # First write truncates, off a per-object latch: the U7-10 shape exactly,
-    # so it registers exactly like the moment observers (N3 extension).
-    observer.initialized || _register_observer_path!(observer, observer.path)
+    # so it registers exactly like the moment observers (N3 extension). The
+    # registration latch is `registered`, not `initialized`, because a
+    # strong-strong task registers at PREPARE (before any flush) and its
+    # prepare/commit owns truncation.
+    if !observer.registered
+        _register_observer_path!(observer, observer.path)
+        observer.registered = true
+    end
     open(observer.path, mode) do io
         for row in observer.pending
             print(io, row)

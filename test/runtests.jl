@@ -5663,6 +5663,88 @@ end
     foreach(p -> rm(p; force=true), (p1, p2, p3))
 end
 
+@testset "Luminosity observer is the one sink for both tasks (phase 1)" begin
+    # The unification's contract (2026-08-17, todo row): one LuminosityObserver
+    # object serves weak-strong and strong-strong; the legacy strong-strong
+    # keywords construct the identical observer internally, so there is exactly
+    # ONE write path and the file is byte-identical whichever spelling is used;
+    # the path is registered by OBSERVER identity, so the same task continuing
+    # is silent while a second writer on the path draws the U7-10 collision
+    # warning. Attachment is at the task for both (pair-level luminosity
+    # belongs to neither strong-strong line; task-level weak-strong sampling
+    # happens at turn end, after the whole line).
+    mkb(rng_id, charge, mc2, E0) = begin
+        set_global_rng!(seed=5, method=:philox)
+        Beam(300, CPUThreadsExecutionPolicy(), Float64;
+            beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+            sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+            charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+    end
+    beams() = (mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9))
+    L6s(b, t) = Linear6DSpec{Float64}(; beta1=b, beta2=b, alpha1=(0.0, 0.0, 0.0),
+                                      alpha2=(0.0, 0.0, 0.0), dmu=2pi .* t)
+    ip = StrongStrongCollision(:ip)
+    l1 = (ip, L6s((0.55, 0.056, 12.7), (0.08, 0.14, -0.069)))
+    l2 = (ip, L6s((0.8, 0.072, 90.9), (0.228, 0.210, -0.01)))
+    run3(task) = begin
+        b1, b2 = beams()
+        execute!(task, b1, b2; turns=3)
+    end
+
+    # Three spellings, one byte-identical file.
+    pk, po, ps = tempname() * ".lum", tempname() * ".lum", tempname() * ".lum"
+    run3(StrongStrongTask(l1, l2; luminosity_path=pk))
+    run3(StrongStrongTask(l1, l2; luminosity=LuminosityObserver(po)))
+    run3(StrongStrongTask(l1, l2; luminosity=ps))
+    @test read(pk) == read(po)
+    @test read(pk) == read(ps)
+    # Both spellings at once is contradictory, not redundant.
+    @test_throws ArgumentError StrongStrongTask(l1, l2; luminosity_path=pk,
+                                                luminosity=LuminosityObserver(po))
+    # The observer's append is the keywords' append: continued file, rewind
+    # idempotence and all, byte for byte.
+    pa, pb = tempname() * ".lum", tempname() * ".lum"
+    ta = StrongStrongTask(l1, l2; luminosity_path=pa, luminosity_append=true)
+    tb = StrongStrongTask(l1, l2; luminosity=LuminosityObserver(pb; append=true))
+    run3(ta)
+    x1, x2 = beams(); execute!(ta, x1, x2; turns=2, start_turn=3)
+    run3(tb)
+    y1, y2 = beams(); execute!(tb, y1, y2; turns=2, start_turn=3)
+    @test read(pa) == read(pb)
+    # Registered by observer identity: the same task continuing is SILENT,
+    # a second task on the path draws the collision warning.
+    pr = tempname() * ".lum"
+    warns(lg) = count(r -> occursin("second live observer", string(r.message)), lg)
+    t1 = StrongStrongTask(l1, l2; luminosity=pr)
+    lg1, _ = Test.collect_test_logs() do
+        run3(t1); run3(t1)
+    end
+    @test warns(lg1) == 0
+    t2 = StrongStrongTask(l1, l2; luminosity=pr)
+    lg2, _ = Test.collect_test_logs() do
+        run3(t2)
+    end
+    @test warns(lg2) == 1
+    # The strong-strong observer carries its bound collision labels.
+    @test t2.luminosity_observer.labels == ["ip"]
+
+    # Weak-strong: the task-level kwarg is the same channel as an explicit
+    # hook, byte for byte, and accepts the observer form (capacity included).
+    mk1() = Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+    dline = (DriftSpec(L=1.0),)
+    pw1, pw2, pw3 = tempname() * ".tsv", tempname() * ".tsv", tempname() * ".tsv"
+    execute!(TrackingTask(dline; luminosity=pw1), mk1(); turns=3)
+    execute!(TrackingTask(dline; hooks=(ScheduledObserver(LuminosityObserver(pw2)),)),
+             mk1(); turns=3)
+    @test read(pw1) == read(pw2)
+    execute!(TrackingTask(dline; luminosity=LuminosityObserver(pw3; capacity=2)),
+             mk1(); turns=3)
+    @test [parse(Int, first(split(l, '\t'))) for l in readlines(pw3)] == [0, 1, 2]
+    @test_throws ArgumentError TrackingTask(dline; luminosity=42)
+
+    foreach(p -> rm(p; force=true), (pk, po, ps, pa, pb, pr, pw1, pw2, pw3))
+end
+
 @testset "Mixed-IP schedule rows drop loudly; solver equality is by configuration" begin
     # Two U4 observations (2026-08-05 audit §7). (1) A .lum row must carry
     # one value per collision column, and NaN already means "evaluated and
