@@ -1,4 +1,5 @@
-export RunArtifact
+export RunArtifact, read_luminosity, read_bpm, read_snapshot, read_losses,
+       read_execution, artifact_contents
 
 # ---------------------------------------------------------------------------
 # The run artifact: one HDF5 output file per task, one group per producer.
@@ -381,4 +382,120 @@ function _ra_push_probe_rows!(art::RunArtifact, key::String, rows::AbstractMatri
     _ra_set_attr!(g, "rows_valid_through_turn", Int64(round(Int64, rows[end, 1])))
     HDF5.flush(art.file)
     return nothing
+end
+
+
+# ---------------------------------------------------------------------------
+# Readers (step 4): the convenience surface for the one-file-per-task
+# artifact, matching the ergonomics the standalone files had. Moment groups
+# additionally read through the full MomentOutputFile machinery
+# (`MomentOutputFile(path; name="IP6")` -- read()/read(out, item)/
+# column_names work as they always did).
+# ---------------------------------------------------------------------------
+
+_ra_open(path) = HDF5.h5open(String(path), "r")
+
+"""
+    artifact_contents(path) -> Dict{String,Vector{String}}
+
+The artifact's table of contents: each product kind present, with its group
+names (`"luminosity" => ["ip6", "ip8"]`, `"moments" => ["IP6"]`, ...).
+"""
+function artifact_contents(path::AbstractString)
+    HDF5.h5open(String(path), "r") do f
+        out = Dict{String,Vector{String}}()
+        for kind in keys(f)
+            obj = f[kind]
+            # Named-group kinds list their probe/channel names; single
+            # products (losses, execution) are present with no names.
+            subs = obj isa HDF5.Group ?
+                [String(k) for k in keys(obj) if obj[k] isa HDF5.Group] : String[]
+            out[String(kind)] = sort(subs)
+        end
+        out
+    end
+end
+
+"""
+    read_luminosity(path; label=nothing)
+
+One collision's luminosity series as `(turns, values)`, or -- with no label
+-- every collision's, as a `Dict{String,NamedTuple}`. Each series is on its
+OWN turn axis (a collision has a row exactly where its schedule evaluated).
+"""
+function read_luminosity(path::AbstractString; label::Union{Nothing,AbstractString}=nothing)
+    HDF5.h5open(String(path), "r") do f
+        lum = f["luminosity"]
+        one(g) = (turns=read(g["turns"]), values=read(g["values"]))
+        label === nothing || return one(lum[String(label)])
+        Dict(String(k) => one(lum[k]) for k in keys(lum))
+    end
+end
+
+_ra_read_rows(path, kind, name) = HDF5.h5open(String(path), "r") do f
+    g = f[kind][String(name)]
+    names = String.(read(g["column_names"]))
+    data = read(g["data"])
+    (; (Symbol(n) => vec(data[:, i]) for (i, n) in pairs(names))...)
+end
+
+"""
+    read_bpm(path, name) -> (turn=..., x=..., y=...)
+
+One BPM's readings from the artifact, as column vectors keyed by name.
+"""
+read_bpm(path::AbstractString, name::AbstractString) = _ra_read_rows(path, "bpm", name)
+
+"""
+    read_snapshot(path, name) -> (turn=..., particle_id=..., x=..., px=..., ...)
+
+One snapshot probe's records: every fired turn's full coordinate block, as
+column vectors (filter on `turn` for one block).
+"""
+read_snapshot(path::AbstractString, name::AbstractString) =
+    _ra_read_rows(path, "snapshot", name)
+
+"""
+    read_execution(path) -> (start_turn=..., turns=..., current_turn=..., elapsed=...)
+
+The execution ledger: one entry per `execute!` of this artifact, in order.
+"""
+function read_execution(path::AbstractString)
+    HDF5.h5open(String(path), "r") do f
+        ex = f["execution"]
+        (start_turn=read(ex["start_turn"]), turns=read(ex["turns"]),
+         current_turn=read(ex["current_turn"]), elapsed=read(ex["elapsed"]))
+    end
+end
+
+"""
+    read_losses(path)
+
+The `/losses` group: per-loss rows as column vectors (matching
+`LOSS_RECORD_COLUMNS`), the per-aperture names/counts/arc positions, and the
+reconciliation summary when the run recorded one (`nothing` otherwise).
+A counters-only record (no log slots) yields empty row columns.
+"""
+function read_losses(path::AbstractString)
+    HDF5.h5open(String(path), "r") do f
+        g = f["losses"]
+        a = HDF5.attributes(g)
+        rows = if haskey(g, "data")
+            names = String.(read(g["column_names"]))
+            data = read(g["data"])
+            (; (Symbol(n) => vec(data[:, i]) for (i, n) in pairs(names))...)
+        else
+            (; (Symbol(n) => Float64[] for n in LOSS_RECORD_COLUMNS)...)
+        end
+        summary = haskey(a, "summary_dead") ?
+            (particles=Int(read(a["summary_particles"])),
+             live=Int(read(a["summary_live"])),
+             dead=Int(read(a["summary_dead"])),
+             unattributed=Int(read(a["summary_unattributed"]))) : nothing
+        merge(rows,
+              (aperture_names=String.(read(g["aperture_names"])),
+               aperture_counts=Int.(read(g["aperture_counts"])),
+               aperture_s=haskey(g, "aperture_s") ? read(g["aperture_s"]) : nothing,
+               summary=summary))
+    end
 end

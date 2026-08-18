@@ -1783,9 +1783,14 @@ seconds = read(out, :elapsed_time)
 """
 struct MomentOutputFile
     path::String
+    # "" reads a standalone moment file at the HDF5 root (the pre-artifact
+    # layout, still readable); "moments/<name>" reads that probe's group
+    # inside a run artifact (docs/design/run_artifact.md).
+    group::String
 end
 
-MomentOutputFile(path::AbstractString) = MomentOutputFile(String(path))
+MomentOutputFile(path::AbstractString; name::Union{Nothing,AbstractString}=nothing) =
+    MomentOutputFile(String(path), name === nothing ? "" : "moments/" * String(name))
 
 const OutputFile = MomentOutputFile
 const MomentFile = MomentOutputFile
@@ -1824,9 +1829,10 @@ function read(file::MomentOutputFile; orders=_READ_ALL_MOMENT_COLUMNS, extra=(),
         throw(ArgumentError("keyword moment selection is only supported for HDF5 output files"))
     end
     if orders === _READ_ALL_MOMENT_COLUMNS && isempty(extra) && isempty(exclude)
-        return _read_hdf5_data(file.path)
+        return _read_hdf5_data(file.path, file.group)
     end
-    return _read_hdf5_selection(file.path; orders=orders, extra=extra, exclude=exclude)
+    return _read_hdf5_selection(file.path, file.group;
+                                orders=orders, extra=extra, exclude=exclude)
 end
 
 """
@@ -1854,7 +1860,7 @@ seconds = read(out, :elapsed_time)
 ```
 """
 function read(file::MomentOutputFile, item::Union{Moment,Symbol,AbstractString})
-    _is_hdf5_output(file.path) && return _read_hdf5_column(file.path, item)
+    _is_hdf5_output(file.path) && return _read_hdf5_column(file.path, file.group, item)
     item isa Symbol && return read_moment(file.path, item)
     item isa AbstractString && return read_moment(file.path, Symbol(item))
     return read_moment(file.path, Symbol(name(item)))
@@ -1886,7 +1892,7 @@ df = DataFrame(data, Symbol.(names))
 function column_names(file::MomentOutputFile)
     if _is_hdf5_output(file.path)
         return HDF5.h5open(file.path, "r") do h5
-            String.(read(h5["column_names"]))
+            String.(read(_moment_h5_root(h5, file.group)["column_names"]))
         end
     end
     return JLD2.jldopen(file.path, "r") do jld
@@ -1927,26 +1933,33 @@ function _is_hdf5_output(path::AbstractString)
 end
 
 function _read_hdf5_record_count(h5)
+    # An artifact probe group has no record_count dataset: every row is
+    # cursor-valid on disk, so the row count IS the record count.
+    haskey(h5, "record_count") || return size(h5["data"], 1)
     count = read(h5["record_count"])
     return count isa AbstractArray ? Int(first(count)) : Int(count)
 end
 
-function _read_hdf5_data(path::AbstractString)
+_moment_h5_root(h5, group::String) = isempty(group) ? h5 : h5[group]
+
+function _read_hdf5_data(path::AbstractString, group::String="")
     return HDF5.h5open(path, "r") do h5
-        n = _read_hdf5_record_count(h5)
-        data = read(h5["data"])
+        root = _moment_h5_root(h5, group)
+        n = _read_hdf5_record_count(root)
+        data = read(root["data"])
         data[1:n, :]
     end
 end
 
-function _read_hdf5_column(path::AbstractString, item)
+function _read_hdf5_column(path::AbstractString, group::String, item)
     return HDF5.h5open(path, "r") do h5
-        special = _read_hdf5_special(h5, item)
+        root = _moment_h5_root(h5, group)
+        special = _read_hdf5_special(root, item)
         special === _NOT_HDF5_SPECIAL || return special
-        names = String.(read(h5["column_names"]))
+        names = String.(read(root["column_names"]))
         index = _hdf5_column_index(names, item)
-        n = _read_hdf5_record_count(h5)
-        vec(h5["data"][1:n, index])
+        n = _read_hdf5_record_count(root)
+        vec(root["data"][1:n, index])
     end
 end
 
@@ -1959,17 +1972,20 @@ function _read_hdf5_special(h5, item)
         return _read_hdf5_record_count(h5)
     elseif key == "elapsed_time"
         haskey(h5, "elapsed_time") || throw(ArgumentError(
-            "`elapsed_time` is not present in this output file. " *
-            "Recreate the file with the current MomentObserver to monitor elapsed wall time."
+            "`elapsed_time` is not present here. A run artifact's timing lives " *
+            "in its execution ledger: use read_execution(path). A standalone " *
+            "moment file needs recreating with the current MomentObserver."
         ))
         return Float64(first(read(h5["elapsed_time"])))
     end
     return _NOT_HDF5_SPECIAL
 end
 
-function _read_hdf5_selection(path::AbstractString; orders=(), extra=(), exclude=())
+function _read_hdf5_selection(path::AbstractString, group::String="";
+                              orders=(), extra=(), exclude=())
     requested = _selected_moments(orders=orders, extra=extra, exclude=exclude)
     return HDF5.h5open(path, "r") do h5
+        h5 = _moment_h5_root(h5, group)
         names = String.(read(h5["column_names"]))
         name_to_index = Dict(name => i for (i, name) in pairs(names))
         cols = Int[1]

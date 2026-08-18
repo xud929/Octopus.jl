@@ -5922,6 +5922,18 @@ end
             @test Int.(b[:, 1]) == [0, 1, 2]            # no duplicated rows
             @test read(f["execution"]["start_turn"]) == [0, 3, 2]
         end
+        # The reader surface (step 4): the artifact reads back with the
+        # ergonomics the standalone files had -- MomentOutputFile against a
+        # group, plus the per-kind readers.
+        @test artifact_contents(pa)["moments"] == ["IP6"]
+        mout = MomentOutputFile(pa; name="IP6")
+        @test Int.(read(mout, :turn)) == [0, 1, 2]
+        @test column_names(mout)[1] == "turn"
+        @test size(read(mout), 1) == 3
+        @test Int.(read_bpm(pa, "BPM_07").turn) == [0, 1, 2]
+        @test sort(unique(Int.(read_snapshot(pa, "inj").turn))) == [0, 1, 2]
+        @test read_execution(pa).start_turn == [0, 3, 2]
+
         # Name uniqueness is the identity rule, enforced loudly; a named
         # probe without an artifact-carrying task is refused, not ignored.
         tdup = TrackingTask((DriftSpec(L=1.0),);
