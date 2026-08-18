@@ -6008,6 +6008,45 @@ end
         _, _, We, Ve = Octopus._girder_design_frames(line, 0.0)
         @test maximum(abs, collect(We .- fr.w)) == 0.0
         @test maximum(abs, collect(Ve .- fr.position)) == 0.0
+        # (3b) Design rolls of NESTED sub-lines (2026-08-18 neighbour audit).
+        # A kept-whole sub-line's ref_tilt rolls its whole subtree; tracking
+        # always conjugated it (RefTilted), but both geometry walkers ignored
+        # it -- the survey laid a rolled cell's bends FLAT (measured 6.4e-2
+        # exit-position error at ref_tilt=0.4, angle=0.3) and a misaligned
+        # parent of a rolled sub-line CRASHED outright (`_inner_method` had
+        # the MisalignedElement recursion but not its RefTilted twin -- the
+        # U15-7 one-sibling-miss shape). All three now agree with the FLAT
+        # spelling, which runs through the MAD-X-pinned per-element path.
+        cell = BeamLine("CELL", SBendSpec(L=1.1, angle=0.3); ref_tilt=0.4)
+        flat = SBendSpec(L=1.1, angle=0.3, ref_tilt=0.4)
+        sn = survey(line_entries(BeamLine("P", cell)))[end]
+        sf = survey(line_entries(BeamLine("P", flat)))[end]
+        # Positions agree exactly. Orientations are compared through the
+        # CLOSED exit frames: a per-element row INSIDE a rolled sub-line
+        # rightly shows the rolled frame, and the sub-line boundary (zero
+        # length, coincident with the last member's exit) then closes the
+        # conjugation -- the closed frame is what parents attach to, what the
+        # walk RETURNS, and what the flat spelling's own row carries.
+        @test maximum(abs, collect(sn.position .- sf.position)) < 1.0e-15
+        gp = compile_runtime(BeamLine("P", cell; mis...))       # crashed before
+        gf = compile_runtime(BeamLine("P", flat; mis...))
+        @test maximum(abs, collect(gp(u0...)) .- collect(gf(u0...))) < 5.0e-14
+        # Two nesting levels compose: rolls about a shared entrance axis add.
+        cc = BeamLine("O", BeamLine("I", SBendSpec(L=1.1, angle=0.3);
+                                    ref_tilt=0.15); ref_tilt=0.25)
+        sflat = survey((SBendSpec(L=1.1, angle=0.3, ref_tilt=0.4),))[end]
+        snest = survey(line_entries(BeamLine("P", cc)))[end]
+        @test maximum(abs, collect(snest.position .- sflat.position)) < 1.0e-15
+        # The girder walk, the survey's closed exit, and the flat spelling
+        # stay one geometry through the roll (the flat row IS closed, since
+        # the per-element step carries its own trailing transpose).
+        _, _, Wn, Vn = Octopus._girder_design_frames(BeamLine("P", cell), 0.0)
+        _, _, Wf, Vf = Octopus._girder_design_frames(BeamLine("P", flat), 0.0)
+        @test maximum(abs, collect(Wn .- Wf)) < 1.0e-15
+        @test maximum(abs, collect(Vn .- Vf)) == 0.0
+        @test maximum(abs, collect(Wf .- sf.w)) == 0.0
+        @test maximum(abs, collect(Vf .- sf.position)) == 0.0
+
         # (4) The general frames form reproduces the single-arc closed form
         # -- the executable derive-check that lets the arc fast path keep its
         # closed form instead of delegating.

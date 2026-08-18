@@ -84,7 +84,7 @@ end
 
 """
     TrackingTask(elements; policy=nothing,
-                 hooks=(),
+                 hooks=(), luminosity=nothing,
                  contracts=..., analyses=...)
 
 Construct a tracking workflow from one element spec or a sequence of element

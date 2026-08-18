@@ -125,7 +125,20 @@ end
 function _survey_walk!(out, entry, V, W, s)
     spec = entry isa LineEntry ? getfield(entry, :spec) : entry
     if spec isa ElementSpec{:line}
-        return _survey_walk!(out, line_entries(spec), V, W, s)
+        # A sub-line's ref_tilt is DESIGN geometry -- the whole sub-assembly
+        # rolls about its entrance s-axis -- so the sub-walk is conjugated by
+        # R_z(psi), exactly as tracking conjugates the sub-line's map
+        # (RefTilted). Until the 2026-08-18 neighbour audit the descent
+        # ignored it: tracking rolled a nested cell's bends while the survey
+        # laid them flat (measured 6.4e-2 exit-position error at
+        # ref_tilt=0.4, angle=0.3). Misalignments and `tilt` on the sub-line
+        # stay excluded: those are errors about the design frame this walk
+        # computes.
+        psi = Float64(getparam(spec, :ref_tilt, 0.0))
+        iszero(psi) && return _survey_walk!(out, line_entries(spec), V, W, s)
+        rt = _fp_rz(psi)
+        V, W = _survey_walk!(out, line_entries(spec), V, _fp_mul(W, rt), s)
+        return V, _fp_mul(W, _fp_transpose(rt))
     end
     spec isa AbstractElementSpec || return V, W     # in-line hooks: no geometry
     d, R = _floor_step(entry)
@@ -143,17 +156,23 @@ end
 @inline _fp_phi(w) = asin(clamp(w[6], -1.0, 1.0))
 @inline _fp_psi(w) = atan(w[4], w[5])
 
-# Geometry-bearing entries of a line, flattened: kept-whole sub-lines are
-# descended (their bends turn the frame, as in `_survey_walk!`), in-line
+# Geometry-bearing entries of a line, flattened to (entry, Q) pairs where Q
+# is the accumulated DESIGN-ROLL conjugation of the enclosing sub-lines: a
+# nested sub-line's ref_tilt rolls its whole subtree about that subtree's
+# entrance s-axis, exactly as `_survey_walk!` conjugates its descent (and as
+# RefTilted conjugates the tracking map -- 2026-08-18 neighbour audit).
+# Kept-whole sub-lines are descended (their bends turn the frame), in-line
 # hooks are dropped. Explicit flattening rather than a recursive closure so
 # nothing mutable is captured (the `Core.Box` class).
-function _girder_flat_entries!(out, entries)
+function _girder_flat_entries!(out, entries, Q=_FP_IDENTITY)
     for e in entries
         spec = e isa LineEntry ? getfield(e, :spec) : e
         if spec isa ElementSpec{:line}
-            _girder_flat_entries!(out, line_entries(spec))
+            psi = Float64(getparam(spec, :ref_tilt, 0.0))
+            Qs = iszero(psi) ? Q : _fp_mul(Q, _fp_rz(psi))
+            _girder_flat_entries!(out, line_entries(spec), Qs)
         elseif spec isa AbstractElementSpec
-            push!(out, e)
+            push!(out, (e, Q))
         end
     end
     return out
@@ -186,17 +205,17 @@ function _girder_design_frames(line::ElementSpec{:line}, starget::Float64)
     Vref, Wref = V, W
     captured = starget <= 0.0
     s = 0.0
-    for e in _girder_flat_entries!(Any[], line_entries(line))
+    for (e, Q) in _girder_flat_entries!(Any[], line_entries(line))
         Lp = Float64(_placement_length(e))
         if !captured && starget < s + Lp
             d, R = _floor_arc_step(e, starget - s)
-            Vref = V .+ _fp_apply(W, d)
-            Wref = _fp_mul(W, R)
+            Vref = V .+ _fp_apply(W, _fp_apply(Q, d))
+            Wref = _fp_mul(W, _fp_mul(Q, _fp_mul(R, _fp_transpose(Q))))
             captured = true
         end
         d, R = _floor_step(e)
-        V = V .+ _fp_apply(W, d)
-        W = _fp_mul(W, R)
+        V = V .+ _fp_apply(W, _fp_apply(Q, d))
+        W = _fp_mul(W, _fp_mul(Q, _fp_mul(R, _fp_transpose(Q))))
         s += Lp
         if !captured && s >= starget
             Vref, Wref = V, W

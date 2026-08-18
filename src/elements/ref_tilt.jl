@@ -94,6 +94,14 @@ end
 
 _inner_method(inner) = inner.method
 _inner_method(inner::MisalignedElement) = _inner_method(inner.inner)
+# The sibling case the MisalignedElement recursion always needed: a kept-whole
+# ROLLED sub-line inside a misaligned parent compiles to
+# MisalignedElement(CompositeLine(RefTilted(...))), and the context-free call
+# chain resolved the method through `first(ops)` -- a RefTilted, which fell to
+# the generic `inner.method` and crashed (2026-08-18 neighbour audit; the
+# recursion for one wrapper without its twin was the same one-sibling miss as
+# U15-7's fold site).
+_inner_method(inner::RefTilted) = _inner_method(inner.inner)
 
 """
     _ref_tilt_wrap(spec, inner)
