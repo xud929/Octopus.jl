@@ -123,6 +123,13 @@ mutable struct BPMObserver <: AbstractBeamObserver
     # therefore the exact pre-existing stream.
     noise_turn::Int64
     noise_uses::Int
+    # Artifact-view mode (run-artifact step 2): `artifact=true` at
+    # construction binds this BPM's readings into the task's RunArtifact as
+    # /bpm/<name> ([turn, x, y] rows), alongside or instead of `path`.
+    artifact::Bool
+    artifact_ref::Any
+    artifact_key::Union{Nothing,String}
+    artifact_flushed::Int
 end
 
 function BPMObserver(name::AbstractString="bpm";
@@ -132,7 +139,8 @@ function BPMObserver(name::AbstractString="bpm";
                      x_noise::Real=0, y_noise::Real=0,
                      path::Union{Nothing,AbstractString}=nothing,
                      capacity::Integer=1,
-                     rng_id::Union{Nothing,Integer}=nothing)
+                     rng_id::Union{Nothing,Integer}=nothing,
+                     artifact::Bool=false)
     capacity >= 1 || throw(ArgumentError(
         "BPMObserver capacity must be at least 1; got $capacity"))
     x_noise >= 0 || throw(ArgumentError("x_noise is a standard deviation and must be nonnegative; got $x_noise"))
@@ -148,7 +156,7 @@ function BPMObserver(name::AbstractString="bpm";
                        Int[], Float64[], Float64[],
                        path === nothing ? nothing : String(path),
                        Int(capacity), 0, false,
-                       Int64(-1), 0)
+                       Int64(-1), 0, Bool(artifact), nothing, nothing, 0)
 end
 
 """
@@ -285,6 +293,21 @@ function observe!(bpm::BPMObserver, ctx::TrackingContext, rep)
         length(bpm.turns) == 1 && _register_observer_path!(bpm, bpm.path)
         length(bpm.turns) - bpm.flushed >= bpm.capacity && _flush_bpm_rows!(bpm)
     end
+    if bpm.artifact_key !== nothing &&
+       length(bpm.turns) - bpm.artifact_flushed >= bpm.capacity
+        _flush_bpm_artifact_rows!(bpm)
+    end
+    return nothing
+end
+
+function _flush_bpm_artifact_rows!(bpm::BPMObserver)
+    bpm.artifact_key === nothing && return nothing
+    n = length(bpm.turns)
+    bpm.artifact_flushed >= n && return nothing
+    r = (bpm.artifact_flushed + 1):n
+    rows = hcat(Float64.(bpm.turns[r]), bpm.x[r], bpm.y[r])
+    _ra_push_probe_rows!(bpm.artifact_ref, bpm.artifact_key, rows)
+    bpm.artifact_flushed = n
     return nothing
 end
 
@@ -309,7 +332,8 @@ function _flush_bpm_rows!(bpm::BPMObserver)
     return nothing
 end
 
-finalize_observer!(bpm::BPMObserver) = _flush_bpm_rows!(bpm)
+finalize_observer!(bpm::BPMObserver) =
+    (_flush_bpm_rows!(bpm); _flush_bpm_artifact_rows!(bpm); nothing)
 
 """
     readings(bpm)
@@ -363,10 +387,28 @@ end
 # AbstractBeamObserver fallbacks in BeamObservers.jl (see the NOTE there about
 # the overwrite trap). One method per preparation chain: task-level hooks and
 # in-line placements.
+function _bpm_prepare!(bpm::BPMObserver, first_turn)
+    _bpm_discard_window!(bpm, first_turn)
+    if bpm.artifact
+        art = active_run_artifact()
+        art === nothing && throw(ArgumentError(
+            "BPMObserver(artifact=true) is an artifact view: the task must " *
+            "carry artifact=RunArtifact(...)"))
+        bpm.artifact_ref = art
+        bpm.artifact_key = _ra_bind_probe!(art, "bpm", bpm.name,
+                                           ["turn", "x", "y"], Int(first_turn))
+        # The discard above kept the memory prefix with turns < first_turn,
+        # and the bind truncated the artifact group to the same boundary --
+        # the two are the same rows, so the push cursor starts past them
+        # (starting at 0 re-pushed every retained reading on continuation).
+        bpm.artifact_flushed = length(bpm.turns)
+    end
+    return nothing
+end
 prepare_observer!(bpm::BPMObserver, runtime_elems, schedule, turns, first_turn) =
-    (_bpm_discard_window!(bpm, first_turn); nothing)
+    _bpm_prepare!(bpm, first_turn)
 prepare_line_observer!(bpm::BPMObserver, schedule, turns, first_turn) =
-    (_bpm_discard_window!(bpm, first_turn); nothing)
+    _bpm_prepare!(bpm, first_turn)
 
 const _BPM_OBSERVER_OPTION_SCHEMA = (
     name=ConfigurationOptionMeta(String, "bpm", "Monitor identity, carried into readings and execution records.";

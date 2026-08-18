@@ -76,11 +76,13 @@ include("track/phase6d_track.jl")
 include("track/radiation_track.jl")
 include("track/strong_beam_track.jl")
 
-# Workflow composition, schedules, observers, and actions.
+# Workflow composition, schedules, observers, and actions. The run artifact
+# loads first so the task structs can carry a typed RunArtifact field; its
+# functions late-bind the observer-registry helper defined after it.
+include("tasks/RunArtifact.jl")
 include("tasks/Tasks.jl")
 include("tasks/BeamObservers.jl")
 include("tasks/BPMObserver.jl")
-include("tasks/RunArtifact.jl")
 include("tasks/StrongStrong.jl")
 
 # Generated registry/introspection helpers. Keep this last.

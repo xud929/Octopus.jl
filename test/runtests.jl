@@ -5856,6 +5856,85 @@ end
     Octopus.HDF5.h5open(pa2, "r") do f
         @test read(f["luminosity"]["ip"]["turns"]) == [0, 1, 2, 3]
     end
+    # (4b) The weak-strong side of the channel (step 2a): per-strong-beam
+    # datasets agreeing with the text mirror's positive rows, /losses
+    # mirroring the loss log exactly, and the ledger present even for a line
+    # with no luminosity producer at all.
+    let sb = ThinStrongBeamSpec(; kbb=1.0e-4, beta=(1.0, 1.0),
+                                sigma=(1.0e-3, 1.0e-3), klum=1.0)
+        wl, wa = tempname() * ".lum", tempname() * ".h5"
+        tw = TrackingTask((sb, DriftSpec(L=1.0)); luminosity=wl, artifact=wa)
+        execute!(tw, Phase6DRep([1.0e-3], [0.0], [0.5e-3], [0.0], [0.0], [0.0]);
+                 turns=3)
+        rows = [(parse(Int, split(l, '\t')[1]), parse(Float64, split(l, '\t')[2]))
+                for l in readlines(wl) if length(split(l, '\t')[2]) > 0]
+        Octopus.HDF5.h5open(wa, "r") do f
+            @test read(f["luminosity"]["strong_beam_1"]["turns"]) == first.(rows)
+            @test read(f["luminosity"]["strong_beam_1"]["values"]) == last.(rows)
+            @test read(f["execution"]["current_turn"]) == [2]
+        end
+        ap = ApertureSpec(shape=:ellipse, x_limit=2.0e-3, y_limit=2.0e-3)
+        wa2, wlog = tempname() * ".h5", tempname() * ".loss.h5"
+        tl = TrackingTask((ap, DriftSpec(L=1.0)); artifact=wa2, loss_log=wlog)
+        execute!(tl, Phase6DRep([1.0e-3, 5.0e-3], [0.0, 0.0], [0.0, 0.0],
+                                [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]); turns=3)
+        Octopus.HDF5.h5open(wa2, "r") do f
+            Octopus.HDF5.h5open(wlog, "r") do g
+                @test read(f["losses"]["data"]) == read(g["data"])
+                @test read(f["losses"]["aperture_counts"]) == read(g["aperture_counts"])
+                @test read(Octopus.HDF5.attributes(f["losses"])["summary_dead"]) == 1
+            end
+        end
+        wa3 = tempname() * ".h5"
+        execute!(TrackingTask((DriftSpec(L=1.0),); artifact=wa3),
+                 Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0]); turns=2)
+        Octopus.HDF5.h5open(wa3, "r") do f
+            @test read(f["execution"]["current_turn"]) == [1]
+        end
+        foreach(x -> rm(x; force=true), (wl, wa, wa2, wlog, wa3))
+    end
+
+    # (4c) Probes as named views (step 2): moments, snapshots and BPM
+    # readings bind to the artifact through the active-artifact scope at
+    # prepare, write row-matrix groups keyed by NAME (the design's identity
+    # rule), and follow the same continuation/rewind semantics per group.
+    let pa = tempname() * ".h5",
+        mk = () -> Phase6DRep([1.0e-3, -0.5e-3], [0.0, 0.0], [0.5e-3, 0.0],
+                              [0.0, 0.0], [0.0, 0.0], [0.0, 0.0])
+        tv = TrackingTask((DriftSpec(L=1.0),);
+                          hooks=(ScheduledObserver(MomentObserver(; name="IP6", orders=1:1, capacity=2)),
+                                 ScheduledObserver(CoordinateSnapshotObserver(; name="inj")),
+                                 ScheduledObserver(BPMObserver("BPM_07"; artifact=true))),
+                          artifact=RunArtifact(pa; append=true))
+        execute!(tv, mk(); turns=3)
+        execute!(tv, mk(); turns=2, start_turn=3)
+        execute!(tv, mk(); turns=1, start_turn=2)      # rewind
+        Octopus.HDF5.h5open(pa, "r") do f
+            @test sort(collect(keys(f))) ==
+                  ["bpm", "execution", "luminosity", "moments", "snapshot"]
+            m = read(f["moments"]["IP6"]["data"])
+            @test Int.(m[:, 1]) == [0, 1, 2]
+            @test read(f["moments"]["IP6"]["column_names"])[1] == "turn"
+            sdat = read(f["snapshot"]["inj"]["data"])
+            @test size(sdat) == (6, 8)                  # 2 particles x 3 turns
+            @test sort(unique(Int.(sdat[:, 1]))) == [0, 1, 2]
+            b = read(f["bpm"]["BPM_07"]["data"])
+            @test Int.(b[:, 1]) == [0, 1, 2]            # no duplicated rows
+            @test read(f["execution"]["start_turn"]) == [0, 3, 2]
+        end
+        # Name uniqueness is the identity rule, enforced loudly; a named
+        # probe without an artifact-carrying task is refused, not ignored.
+        tdup = TrackingTask((DriftSpec(L=1.0),);
+                            hooks=(ScheduledObserver(MomentObserver(; name="X")),
+                                   ScheduledObserver(MomentObserver(; name="X"))),
+                            artifact=tempname() * ".h5")
+        @test_throws ArgumentError execute!(tdup, mk(); turns=1)
+        tno = TrackingTask((DriftSpec(L=1.0),);
+                           hooks=(ScheduledObserver(MomentObserver(; name="Y")),))
+        @test_throws ArgumentError execute!(tno, mk(); turns=1)
+        rm(pa; force=true)
+    end
+
     # (5) A label mismatch is refused rather than silently mixed.
     tbad = StrongStrongTask((StrongStrongCollision(:other), l6a),
                             (StrongStrongCollision(:other), l6b);

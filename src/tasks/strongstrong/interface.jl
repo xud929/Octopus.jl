@@ -2368,16 +2368,20 @@ function _execute_strong_strong_task!(
     # closing it needs a real two-phase commit across both subsystems.
     lum_plan = task.luminosity === nothing ? nothing :
         _plan_strong_strong_luminosity_file(task, blocks1, Int(first_turn))
-    # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
-    prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1);
-                       turns=Int(turns), first_turn=Int(first_turn))
-    prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2);
-                       turns=Int(turns), first_turn=Int(first_turn))
-    lum_plan === nothing || _commit_strong_strong_luminosity_file!(task, lum_plan)
+    # The artifact opens FIRST: named probes in either line bind to it
+    # during their prepare through the active-artifact scope.
     if task.artifact !== nothing
         labels = [String(b.collision.label) for b in blocks1 if b.collision !== nothing]
         prepare_run_artifact!(task.artifact, labels, Int(first_turn), Int(turns))
     end
+    # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
+    Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => task.artifact) do
+        prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1);
+                           turns=Int(turns), first_turn=Int(first_turn))
+        prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2);
+                           turns=Int(turns), first_turn=Int(first_turn))
+    end
+    lum_plan === nothing || _commit_strong_strong_luminosity_file!(task, lum_plan)
     try
         ctx = TrackingContext()
         Base.ScopedValues.with(_ACTIVE_STRONG_STRONG_DIAGNOSTICS => task.diagnostics,

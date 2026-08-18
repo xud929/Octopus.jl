@@ -604,6 +604,12 @@ mutable struct MomentObserver <: AbstractBeamObserver
     initialized::Bool
     append::Bool
     reduction_scratch::Any
+    # Artifact-view mode (run-artifact step 2): a nonempty `name` makes this
+    # observer a view into the task's RunArtifact -- /moments/<name>, bound at
+    # prepare through the active-artifact scope -- instead of a file owner.
+    name::String
+    artifact_ref::Any
+    artifact_key::Union{Nothing,String}
     # Which row of the per-execution ledger (/execution_elapsed,
     # /execution_start_turn) THIS execution updates. Each execute! appends a
     # ledger row at prepare, so a swap-out run's earlier executions keep
@@ -741,13 +747,38 @@ function MomentObserver(path::AbstractString; orders=1:2, extra=(), exclude=(),
     names = ["turn"; collect(name.(moments))]
     buffer = Matrix{Float64}(undef, max(Int(capacity), 1), length(names))
     return MomentObserver(String(path), moments, names, Int(capacity), buffer, 0, 0, 0,
-                          UInt64(0), false, Bool(append), nothing, 0)
+                          UInt64(0), false, Bool(append), nothing, "", nothing, nothing, 0)
+end
+
+"""
+    MomentObserver(; name, orders=1:2, extra=(), exclude=(), capacity=1024)
+
+The artifact-view spelling (docs/design/run_artifact.md, step 2): the same
+scheduled moment probe, but writing into the owning task's [`RunArtifact`](@ref)
+as `/moments/<name>` -- column 1 the absolute turn, then the selected
+moments -- instead of owning a file. `name` is the group identity, unique
+within a task; append/replay/crash semantics come from the artifact's
+per-group cursor. Requires the task to carry `artifact=...`; refused loudly
+at prepare otherwise.
+"""
+function MomentObserver(; name::AbstractString, orders=1:2, extra=(), exclude=(),
+                        capacity::Integer=1024)
+    isempty(String(name)) && throw(ArgumentError("the artifact-view MomentObserver needs a nonempty name"))
+    obs = MomentObserver(tempname() * ".unused.h5"; orders=orders, extra=extra,
+                         exclude=exclude, capacity=capacity)
+    obs.name = String(name)
+    return obs
 end
 
 mutable struct CoordinateSnapshotObserver <: AbstractBeamObserver
     path::String
     npart::Union{Nothing,Int}
     append::Bool
+    # Artifact-view mode: /snapshot/<name>, rows
+    # [turn, particle_id, x, px, y, py, z, pz], one block per fire.
+    name::String
+    artifact_ref::Any
+    artifact_key::Union{Nothing,String}
     # (turn, byte offset before that record) for every record THIS object
     # wrote — the compact record format carries no turn label, so this map is
     # what lets a replayed window truncate its stale records (U6-2).
@@ -762,7 +793,24 @@ Write coordinate snapshots in the Octopus compact coordinate record format.
 function CoordinateSnapshotObserver(path::AbstractString; npart=nothing, append::Bool=true)
     count = npart === nothing ? nothing : Int(npart)
     count === nothing || count >= 0 || throw(ArgumentError("npart must be nonnegative or nothing"))
-    return CoordinateSnapshotObserver(String(path), count, append, Tuple{Int64,Int64}[])
+    return CoordinateSnapshotObserver(String(path), count, append, "", nothing,
+                                      nothing, Tuple{Int64,Int64}[])
+end
+
+"""
+    CoordinateSnapshotObserver(; name, npart=nothing)
+
+The artifact-view spelling: full phase-space snapshots into the owning
+task's [`RunArtifact`](@ref) as `/snapshot/<name>` -- rows
+`[turn, particle_id, x, px, y, py, z, pz]`, one block per fire, replayed
+windows dropped by the artifact's per-group cursor. Requires the task to
+carry `artifact=...`.
+"""
+function CoordinateSnapshotObserver(; name::AbstractString, npart=nothing)
+    isempty(String(name)) && throw(ArgumentError("the artifact-view CoordinateSnapshotObserver needs a nonempty name"))
+    obs = CoordinateSnapshotObserver(tempname() * ".unused"; npart=npart)
+    obs.name = String(name)
+    return obs
 end
 
 mutable struct LuminosityObserver <: AbstractBeamObserver
@@ -958,14 +1006,24 @@ function observe!(observer::MomentObserver, ctx::TrackingContext, rep)
 end
 
 function observe!(observer::CoordinateSnapshotObserver, ctx::TrackingContext, rep)
+    npart = observer.npart === nothing ? length(rep) : observer.npart
+    npart <= length(rep) || throw(ArgumentError(
+        "CoordinateSnapshotObserver npart $(npart) exceeds particle count $(length(rep))"))
+    if observer.artifact_key !== nothing
+        rows = Matrix{Float64}(undef, npart, 8)
+        rows[:, 1] .= Float64(ctx.turn)
+        rows[:, 2] .= Float64.(1:npart)
+        for (j, col) in enumerate((rep.x, rep.px, rep.y, rep.py, rep.z, rep.pz))
+            rows[:, 2 + j] = Float64.(Array(col)[1:npart])
+        end
+        _ra_push_probe_rows!(observer.artifact_ref, observer.artifact_key, rows)
+        return nothing
+    end
     # First write registers the path (U7-10 registry; N3 extension): under
     # append=false this call truncates, and even in append mode a second live
     # writer interleaves records and the replay truncation then cuts at THIS
     # object's byte offsets.
     isempty(observer.written) && _register_observer_path!(observer, observer.path)
-    npart = observer.npart === nothing ? length(rep) : observer.npart
-    npart <= length(rep) || throw(ArgumentError(
-        "CoordinateSnapshotObserver npart $(npart) exceeds particle count $(length(rep))"))
     _record_execution!(:observer_output, _observer_backend(),
         (observer=:CoordinateSnapshotObserver, turn=ctx.turn, npart=npart,
          append=observer.append))
@@ -1086,7 +1144,21 @@ end
 prepare_line_observer!(observer::CoordinateSnapshotObserver, schedule, turns, first_turn=0) =
     _discard_replayed_snapshots!(observer, Int(first_turn))
 
+const _SNAPSHOT_ARTIFACT_COLUMNS =
+    ["turn", "particle_id", "x", "px", "y", "py", "z", "pz"]
+
 function _discard_replayed_snapshots!(observer::CoordinateSnapshotObserver, first_turn::Int)
+    if !isempty(observer.name)
+        art = active_run_artifact()
+        art === nothing && throw(ArgumentError(
+            "CoordinateSnapshotObserver(name=$(repr(observer.name))) is an " *
+            "artifact view: the task must carry artifact=RunArtifact(...)"))
+        observer.artifact_ref = art
+        observer.artifact_key = _ra_bind_probe!(art, "snapshot", observer.name,
+                                                _SNAPSHOT_ARTIFACT_COLUMNS,
+                                                first_turn)
+        return nothing
+    end
     # Snapshot records carry no turn label in the file, so the discard uses
     # the (turn → byte offset) map this observer keeps for the records IT
     # wrote: same-object retries truncate cleanly; records in a pre-existing
@@ -1175,6 +1247,20 @@ function _prepare_moment_observer!(observer::MomentObserver, schedule, turns,
     ))
     observer.buffer_length = 0
     observer.start_time_ns = time_ns()
+    if !isempty(observer.name)
+        art = active_run_artifact()
+        art === nothing && throw(ArgumentError(
+            "MomentObserver(name=$(repr(observer.name))) is an artifact view: " *
+            "the task must carry artifact=RunArtifact(...)"))
+        observer.artifact_ref = art
+        observer.artifact_key = _ra_bind_probe!(art, "moments", observer.name,
+                                                observer.column_names,
+                                                Int(first_turn))
+        observer.planned_records = length(planned_turns)
+        observer.record_count = 0
+        observer.initialized = true
+        return nothing
+    end
     if observer.append && isfile(observer.path) && filesize(observer.path) > 0
         # Continue the existing table (a zero-byte leftover from a crash at
         # create time is not a table; it is replaced fresh, matching the
@@ -1371,6 +1457,13 @@ end
 
 function _flush_moment_observer!(observer::MomentObserver)
     observer.buffer_length == 0 && return nothing
+    if observer.artifact_key !== nothing
+        _ra_push_probe_rows!(observer.artifact_ref, observer.artifact_key,
+                             observer.buffer[1:observer.buffer_length, :])
+        observer.record_count += observer.buffer_length
+        observer.buffer_length = 0
+        return nothing
+    end
     row1 = observer.record_count + 1
     row2 = observer.record_count + observer.buffer_length
     row2 <= observer.planned_records || error(

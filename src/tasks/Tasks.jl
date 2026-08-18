@@ -55,6 +55,10 @@ struct TrackingTask <: AbstractTask
     loss_log::Union{Nothing,String}
     loss_report::Bool
     loss_record::Base.RefValue{Any}
+    # The run artifact (docs/design/run_artifact.md): the one-HDF5-per-task
+    # sink. For a weak-strong task it carries the per-strong-beam luminosity
+    # channel, the /losses group and the execution ledger.
+    artifact::Union{Nothing,RunArtifact}
     # Which rep `loss_record` was built for. A `LossRecord` is "one per beam"
     # by its own docstring, but the reuse test compared only shape (count
     # length, backend, slot eltype, slot width), so a second beam of the same
@@ -157,7 +161,8 @@ function TrackingTask(elements;
                       analyses::Vector{DataType}=_collect_analyses(elements),
                       loss_log::Union{Nothing,AbstractString}=nothing,
                       loss_report::Bool=true,
-                      luminosity=nothing)   # LuminosityObserver or path; untyped
+                      luminosity=nothing,
+                      artifact::Union{Nothing,RunArtifact,AbstractString}=nothing)   # LuminosityObserver or path; untyped
                                             # because BeamObservers.jl loads after
                                             # this file -- validated in the body,
                                             # where the name binds late
@@ -181,10 +186,12 @@ function TrackingTask(elements;
         observers = (_hook_tuple(observers)..., obs)
     end
     action_tuple, observer_tuple = classify_task_hooks(hooks, actions, observers)
+    art = artifact === nothing ? nothing :
+          artifact isa RunArtifact ? artifact : RunArtifact(String(artifact))
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
                         Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),
                         loss_log === nothing ? nothing : String(loss_log),
-                        loss_report, Ref{Any}(nothing), Ref(WeakRef(nothing)))
+                        loss_report, Ref{Any}(nothing), art, Ref(WeakRef(nothing)))
 end
 
 """
@@ -491,12 +498,34 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
                    tracking error that stopped the run is the one below, and is \
                    the one to fix" flush_error
         end
+        if task.artifact !== nothing && task.artifact.file !== nothing
+            # Same best-effort rule for the artifact: flush what the run
+            # produced (the losses recorded so far included), never replace
+            # the error that stopped the run.
+            try
+                _ra_write_losses!(task.artifact, task.loss_record[],
+                                  _aperture_s_positions(task.elements), nothing)
+                finalize_run_artifact!(task.artifact)
+            catch artifact_error
+                @warn "the crashed run's artifact could not be finalized; the \
+                       tracking error that stopped the run is the one below" artifact_error
+            end
+        end
         rethrow()
     end
     task.next_turn[] = next_turn
     summary = _task_loss_summary(task, rep)
     wrote_file = _write_task_loss_log(task, summary)
     _report_losses(task, rep, summary, wrote_file)
+    if task.artifact !== nothing
+        # Success path: /losses is rewritten whole from the cumulative record
+        # (the write_loss_record idempotence rule), then the artifact closes.
+        # A failure HERE is the failure -- an output that cannot be written
+        # must raise, the task-observer rule.
+        _ra_write_losses!(task.artifact, task.loss_record[],
+                          _aperture_s_positions(task.elements), summary)
+        finalize_run_artifact!(task.artifact)
+    end
     return result
 end
 
@@ -580,7 +609,8 @@ end
 
 function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                                  turns::Int, first_turn::Int64, policy)
-    if isempty(task.actions) && isempty(task.observers) && !_has_line_hooks(runtime_entries)
+    if isempty(task.actions) && isempty(task.observers) &&
+       !_has_line_hooks(runtime_entries) && task.artifact === nothing
         _execute_fast_tracking_turns!(
             rep, runtime_elems, turns, first_turn, policy, TrackingContext())
         return rep
@@ -588,9 +618,25 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     # `first_turn`, not just the count: `should_run` is handed the ABSOLUTE turn
     # (`first_turn + offset` below), so a planner filtering against `0:turns-1`
     # disagrees with it on every execute! after the first.
-    prepare_observers!(task.observers, runtime_elems; turns=turns, first_turn=first_turn)
-    prepare_line_observers!(runtime_entries; turns=turns, first_turn=first_turn)
+    art = task.artifact
+    strong_beams = art === nothing ? () :
+        Tuple(e for e in runtime_elems if e isa Union{ThinStrongBeam,GaussianStrongBeam})
+    if art !== nothing
+        # Per-strong-beam luminosity channel labels are positional; the
+        # element `name` will take over when runtime elements carry it. The
+        # artifact opens BEFORE the observers prepare, because named probes
+        # bind to it during their prepare through the active-artifact scope.
+        labels = [string("strong_beam_", i) for i in eachindex(strong_beams)]
+        prepare_run_artifact!(art, labels, Int(first_turn), Int(turns))
+    end
+    Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => art) do
+        prepare_observers!(task.observers, runtime_elems; turns=turns, first_turn=first_turn)
+        prepare_line_observers!(runtime_entries; turns=turns, first_turn=first_turn)
+    end
     _warn_unfireable_schedules(task.observers, turns, first_turn)
+    # The artifact's luminosity channel needs the same diagnostic isolation
+    # the luminosity observer requests; constant over the window, so hoisted.
+    artifact_diagnostics = art !== nothing && !isempty(strong_beams)
     tracking_completed = false
     try
         base_ctx = TrackingContext()
@@ -598,13 +644,25 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             turn = first_turn + offset
             ctx = with_turn(base_ctx, turn)
             run_actions!(task.actions, ctx, rep)
-            task_diagnostics = requires_elementwise_tracking(task.observers, ctx)
+            task_diagnostics = requires_elementwise_tracking(task.observers, ctx) ||
+                               artifact_diagnostics
             plan_key = _active_plan_key(runtime_entries, ctx, task_diagnostics)
             plan = get!(task.plan_cache, plan_key) do
                 _build_tracking_plan(runtime_entries, plan_key)
             end
             _execute_tracking_plan_turn!(rep, plan, policy, ctx)
             run_observers!(task.observers, ctx, rep)
+            if art !== nothing
+                art.current_turn = Int64(turn)
+                for (i, elem) in enumerate(strong_beams)
+                    lum = luminosity(elem, ctx, rep)
+                    # The text observer's positive filter, per element: a
+                    # strong beam whose luminosity diagnostic is off reports
+                    # 0.0 and gets no row on its axis.
+                    lum > 0.0 && push_luminosity!(art, string("strong_beam_", i),
+                                                  turn, Float64(lum))
+                end
+            end
         end
         tracking_completed = true
     finally

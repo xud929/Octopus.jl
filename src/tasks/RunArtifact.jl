@@ -65,6 +65,9 @@ mutable struct RunArtifact
     # the task's turn loop); persisted into /execution/current_turn at every
     # flush, so the ledger row tracks live progress.
     current_turn::Int64
+    # Probe identities bound THIS execute! (kind/name keys): the uniqueness
+    # domain of the design's name-as-identity rule. Cleared at prepare.
+    probe_names::Set{String}
 end
 
 function RunArtifact(path::AbstractString; append::Bool=false, capacity::Integer=64)
@@ -72,7 +75,7 @@ function RunArtifact(path::AbstractString; append::Bool=false, capacity::Integer
     cap >= 1 || throw(ArgumentError("RunArtifact capacity must be at least 1; got $(cap)."))
     return RunArtifact(String(path), Bool(append), cap, nothing,
                        Dict{String,Vector{Int64}}(), Dict{String,Vector{Float64}}(),
-                       0, UInt64(0), false, Int64(0))
+                       0, UInt64(0), false, Int64(0), Set{String}())
 end
 
 # HDF5 attribute write-or-overwrite (plain assignment refuses an existing
@@ -191,6 +194,7 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
         art.execution_slot = n + 1
         art.start_time_ns = time_ns()
         art.current_turn = Int64(first_turn) - 1
+        empty!(art.probe_names)
         HDF5.flush(file)
     catch
         close(file)
@@ -235,6 +239,45 @@ function _ra_flush_luminosity!(art::RunArtifact, label::String)
     return nothing
 end
 
+"""
+Rewrite the artifact's `/losses` group from the task's cumulative loss
+record, mirroring `write_loss_record`'s layout (per-loss rows, aperture
+names/counts/arc positions, and the reconciliation summary as attributes
+when the caller has one). Rewritten WHOLE per execute! -- the record is
+cumulative and a particle is lost at most once, so the rewrite is
+idempotent, exactly the loss-log rule. A task with no loss record (no
+aperture in the line) writes nothing; a counters-only record (no log
+slots requested) writes the per-aperture accounting without rows.
+"""
+function _ra_write_losses!(art::RunArtifact, record, s_positions, summary)
+    art.file === nothing && return nothing
+    record === nothing && return nothing
+    haskey(art.file, "losses") && HDF5.delete_object(art.file, "losses")
+    g = HDF5.create_group(art.file, "losses")
+    g["aperture_names"] = aperture_names(record)
+    g["aperture_counts"] = loss_counts(record)
+    s_positions === nothing || (g["aperture_s"] = collect(Float64, s_positions))
+    if record.slots !== nothing
+        r = loss_records(record)
+        n = length(r.particle_id)
+        data = Matrix{Float64}(undef, n, length(LOSS_RECORD_COLUMNS))
+        for (j, col) in enumerate(LOSS_RECORD_COLUMNS)
+            data[:, j] = Float64.(getproperty(r, Symbol(col)))
+        end
+        g["data"] = data
+        g["column_names"] = collect(String, LOSS_RECORD_COLUMNS)
+        _ra_set_attr!(g, "record_count", Int64(n))
+    end
+    if summary !== nothing
+        _ra_set_attr!(g, "summary_particles", Int64(summary.particles))
+        _ra_set_attr!(g, "summary_live", Int64(summary.live))
+        _ra_set_attr!(g, "summary_dead", Int64(summary.dead))
+        _ra_set_attr!(g, "summary_unattributed", Int64(summary.unattributed))
+    end
+    HDF5.flush(art.file)
+    return nothing
+end
+
 """Flush every pending group, stamp this execution's elapsed time, close."""
 function finalize_run_artifact!(art::RunArtifact)
     art.file === nothing && return nothing
@@ -250,5 +293,92 @@ function finalize_run_artifact!(art::RunArtifact)
         close(art.file)
         art.file = nothing
     end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Probes as views (migration step 2): moments, snapshots and BPM readings are
+# ROW-MATRIX groups -- 2-D extendable `data` whose column 1 is the absolute
+# turn, plus `column_names` -- under /moments, /snapshot and /bpm, keyed by
+# the probe's NAME (the design's identity rule; unique within one execute!).
+# One machinery serves all three: the products differ only in their columns
+# and their rows-per-fire.
+# ---------------------------------------------------------------------------
+
+"""
+The artifact the CURRENT task execution carries, or `nothing`. Bound around
+observer preparation by the task (`Base.ScopedValues`, the diagnostics-sink
+precedent), so line-placed probes -- which have no task handle -- can join
+the artifact at prepare time.
+"""
+const _ACTIVE_RUN_ARTIFACT = Base.ScopedValues.ScopedValue{Any}(nothing)
+active_run_artifact() = _ACTIVE_RUN_ARTIFACT[]
+
+function _ra_truncate_probe!(g, keep_through::Int64)
+    d = g["data"]
+    nrows = size(d, 1)
+    turns = nrows == 0 ? Float64[] : d[1:nrows, 1]
+    keep = searchsortedlast(turns, Float64(keep_through))
+    keep < nrows && HDF5.set_extent_dims(d, (keep, size(d, 2)))
+    _ra_set_attr!(g, "rows_valid_through_turn",
+                  Int64(keep == 0 ? typemin(Int32) : round(Int64, turns[keep])))
+    return nothing
+end
+
+"""
+Bind one probe to the open artifact: create its group (or continue it,
+refusing a column-layout mismatch), apply the crash-truncation and replay
+rules, and enforce name uniqueness within this execute!. Returns the group
+key the probe pushes rows through.
+"""
+function _ra_bind_probe!(art::RunArtifact, kind::String, name::String,
+                         colnames::Vector{String}, first_turn::Int)
+    art.file === nothing && throw(ArgumentError(
+        "a named probe needs an open run artifact; give the task artifact=..."))
+    isempty(name) && throw(ArgumentError("a probe bound to the artifact needs a name"))
+    key = kind * "/" * name
+    key in art.probe_names && throw(ArgumentError(
+        "duplicate probe name $(repr(name)) under /$(kind): names are the " *
+        "artifact's group identities and must be unique within a task"))
+    push!(art.probe_names, key)
+    f = art.file
+    parent = haskey(f, kind) ? f[kind] : HDF5.create_group(f, kind)
+    if haskey(parent, name)
+        g = parent[name]
+        stored = read(g["column_names"])
+        stored == colnames || throw(ArgumentError(
+            "the probe group /$(key) at $(art.path) carries columns $(stored), " *
+            "not $(colnames); use a different name or path"))
+        cursor = Int64(_ra_get_attr(g, "rows_valid_through_turn",
+                                    Int64(typemin(Int32))))
+        _ra_truncate_probe!(g, min(cursor, Int64(first_turn) - 1))
+    else
+        g = HDF5.create_group(parent, name)
+        ncols = length(colnames)
+        HDF5.create_dataset(g, "data", HDF5.datatype(Float64),
+            HDF5.dataspace((0, ncols); max_dims=(-1, ncols)); chunk=(256, ncols))
+        g["column_names"] = colnames
+        _ra_set_attr!(g, "name", name)
+        _ra_set_attr!(g, "rows_valid_through_turn", Int64(typemin(Int32)))
+    end
+    HDF5.flush(f)
+    return key
+end
+
+"""
+Append a block of probe rows (column 1 is the absolute turn) and advance the
+group's cursor to the block's last turn, flushed together -- the same
+rows-then-cursor ordering the luminosity channel uses, so a crash between
+them truncates conservatively on the next open.
+"""
+function _ra_push_probe_rows!(art::RunArtifact, key::String, rows::AbstractMatrix)
+    size(rows, 1) == 0 && return nothing
+    g = art.file[key]
+    d = g["data"]
+    n = size(d, 1)
+    HDF5.set_extent_dims(d, (n + size(rows, 1), size(d, 2)))
+    d[(n + 1):(n + size(rows, 1)), :] = Float64.(rows)
+    _ra_set_attr!(g, "rows_valid_through_turn", Int64(round(Int64, rows[end, 1])))
+    HDF5.flush(art.file)
     return nothing
 end
