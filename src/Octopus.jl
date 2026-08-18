@@ -80,6 +80,7 @@ include("track/strong_beam_track.jl")
 include("tasks/Tasks.jl")
 include("tasks/BeamObservers.jl")
 include("tasks/BPMObserver.jl")
+include("tasks/RunArtifact.jl")
 include("tasks/StrongStrong.jl")
 
 # Generated registry/introspection helpers. Keep this last.

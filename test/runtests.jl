@@ -3698,7 +3698,9 @@ end
     @test :strong_strong_task_option_schema in exported
     # (:luminosity_path, :luminosity_append) until 2026-08-17, when phase 2
     # of the unification retired the keywords: the observer IS the option.
-    @test keys(strong_strong_task_option_schema()) == (:luminosity,)
+    # ... and (:luminosity, :artifact) since the run artifact's step 1
+    # (2026-08-18): the artifact is the second and last output option.
+    @test keys(strong_strong_task_option_schema()) == (:luminosity, :artifact)
 end
 
 @testset "CUDA and CPU PIC cache keys cannot drift apart" begin
@@ -5762,6 +5764,105 @@ end
     rm(pw4; force=true)
 
     foreach(p -> rm(p; force=true), (po, ps, pa, pr, pw1, pw2, pw3))
+end
+
+@testset "The run artifact carries the strong-strong luminosity channel" begin
+    # docs/design/run_artifact.md, migration step 1 (2026-08-18): one HDF5
+    # per task; /luminosity/<label> with INDEPENDENT per-collision turn axes;
+    # /execution with one appended row per execute!; per-group
+    # rows-valid-through-turn cursor for crash recovery; append/replay per
+    # group; label mismatch refused. The text observer runs alongside as the
+    # live mirror and must agree exactly where both write.
+    mkb(rng_id, charge, mc2, E0) = begin
+        set_global_rng!(seed=5, method=:philox)
+        Beam(300, CPUThreadsExecutionPolicy(), Float64;
+            beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+            sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+            charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+    end
+    beams() = (mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9))
+    L6s(b, t) = Linear6DSpec{Float64}(; beta1=b, beta2=b, alpha1=(0.0, 0.0, 0.0),
+                                      alpha2=(0.0, 0.0, 0.0), dmu=2pi .* t)
+    l6a = L6s((0.55, 0.056, 12.7), (0.08, 0.14, -0.069))
+    l6b = L6s((0.8, 0.072, 90.9), (0.228, 0.210, -0.01))
+    ip = StrongStrongCollision(:ip)
+
+    # (1) The artifact and the text mirror agree exactly where both write,
+    # and the execution ledger carries this execute!.
+    pl, pa = tempname() * ".lum", tempname() * ".h5"
+    t1 = StrongStrongTask((ip, l6a), (ip, l6b); luminosity=pl, artifact=pa)
+    b1, b2 = beams(); execute!(t1, b1, b2; turns=3)
+    text = [(parse(Int, split(l, '\t')[1]), parse(Float64, split(l, '\t')[2]))
+            for l in readlines(pl)[2:end]]
+    Octopus.HDF5.h5open(pa, "r") do f
+        @test read(f["luminosity"]["ip"]["turns"]) == first.(text)
+        @test read(f["luminosity"]["ip"]["values"]) == last.(text)
+        @test read(Octopus.HDF5.attributes(f["luminosity"]["ip"])["rows_valid_through_turn"]) == 2
+        @test read(f["execution"]["start_turn"]) == [0]
+        @test read(f["execution"]["turns"]) == [3]
+        @test all(read(f["execution"]["elapsed"]) .> 0)
+    end
+
+    # (2) THE DISSOLUTION PIN. Two IPs with disagreeing luminosity schedules:
+    # the fixed-width text row must drop disagreeing turns WHOLE (pinned in
+    # the neighbouring testset), while the artifact keeps each collision's
+    # OWN evaluated turns -- the mixed-IP workaround does not exist here.
+    sl = LongitudinalSlicing(nslices=2, method=:equal_count)
+    sp = SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                               slicing=sl, method=:grid, grid=(32, 64),
+                               domain_factor=16.0,
+                               luminosity_schedule=EveryNSteps(step=3))
+    ip1 = StrongStrongCollision(:ip1)
+    ip2 = StrongStrongCollision(:ip2; poisson_solver=sp)
+    pm = tempname() * ".h5"
+    tmix = StrongStrongTask((ip1, l6a, ip2), (ip1, l6b, ip2); artifact=pm)
+    b1, b2 = beams()
+    Test.collect_test_logs() do
+        execute!(tmix, b1, b2; turns=7)
+    end
+    Octopus.HDF5.h5open(pm, "r") do f
+        @test read(f["luminosity"]["ip1"]["turns"]) == collect(0:6)
+        @test read(f["luminosity"]["ip2"]["turns"]) == [0, 3, 6]
+    end
+
+    # (3) Append continues per group, a rewind drops per group, and every
+    # execution keeps its ledger row.
+    pa2 = tempname() * ".h5"
+    t2 = StrongStrongTask((ip, l6a), (ip, l6b); artifact=RunArtifact(pa2; append=true))
+    b1, b2 = beams(); execute!(t2, b1, b2; turns=3)
+    b1, b2 = beams(); execute!(t2, b1, b2; turns=2, start_turn=3)
+    b1, b2 = beams(); execute!(t2, b1, b2; turns=1, start_turn=2)
+    Octopus.HDF5.h5open(pa2, "r") do f
+        @test read(f["luminosity"]["ip"]["turns"]) == [0, 1, 2]
+        @test read(f["execution"]["start_turn"]) == [0, 3, 2]
+    end
+    # (4) Crash recovery: rows beyond the cursor are a torn tail and are
+    # truncated on the next open.
+    Octopus.HDF5.h5open(pa2, "r+") do f
+        g = f["luminosity"]["ip"]
+        n = length(g["turns"])
+        Octopus.HDF5.set_extent_dims(g["turns"], (n + 2,))
+        Octopus.HDF5.set_extent_dims(g["values"], (n + 2,))
+        g["turns"][(n + 1):(n + 2)] = [98, 99]
+        g["values"][(n + 1):(n + 2)] = [1.0, 2.0]
+    end
+    logs_t2b, _ = Test.collect_test_logs() do
+        t2b = StrongStrongTask((ip, l6a), (ip, l6b);
+                               artifact=RunArtifact(pa2; append=true))
+        b1, b2 = beams(); execute!(t2b, b1, b2; turns=1, start_turn=3)
+    end
+    Octopus.HDF5.h5open(pa2, "r") do f
+        @test read(f["luminosity"]["ip"]["turns"]) == [0, 1, 2, 3]
+    end
+    # (5) A label mismatch is refused rather than silently mixed.
+    tbad = StrongStrongTask((StrongStrongCollision(:other), l6a),
+                            (StrongStrongCollision(:other), l6b);
+                            artifact=RunArtifact(pa2; append=true))
+    b1, b2 = beams()
+    Test.collect_test_logs() do
+        @test_throws ArgumentError execute!(tbad, b1, b2; turns=1)
+    end
+    foreach(x -> rm(x; force=true), (pl, pa, pm, pa2))
 end
 
 @testset "Mixed-IP schedule rows drop loudly; solver equality is by configuration" begin

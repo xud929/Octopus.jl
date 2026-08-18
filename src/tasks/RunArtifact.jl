@@ -1,0 +1,232 @@
+export RunArtifact
+
+# ---------------------------------------------------------------------------
+# The run artifact: one HDF5 output file per task, one group per producer.
+# Design: docs/design/run_artifact.md (decided 2026-08-18). This file is
+# migration step 1: the container, the crash-recovery cursor, the execution
+# channel, and the strong-strong luminosity channel with INDEPENDENT
+# per-collision turn axes. The text `.lum` path is untouched and may run
+# alongside (it is the design's live mirror); probes and losses join in later
+# steps.
+# ---------------------------------------------------------------------------
+
+"""
+    RunArtifact(path; append=false, capacity=64)
+
+The one-output-file-per-task sink (docs/design/run_artifact.md): an HDF5 file
+with one group per producer, owned by the task that carries it.
+
+This first migration step records the strong-strong luminosity channel and
+the execution ledger:
+
+- `/luminosity/<label>`: per-collision `turns`/`values` datasets with
+  INDEPENDENT turn axes — a collision writes a row exactly when its own
+  luminosity schedule evaluated, so per-IP schedules may disagree freely
+  (the fixed-width text row's whole-row drop rule does not apply here).
+  `NaN` keeps its meaning: evaluated and failed.
+- `/execution`: one row per `execute!` — `start_turn`, planned `turns`,
+  wall-clock `elapsed` (updated at every flush) — appended and never
+  overwritten, so every execution of a swap-out or chunked run keeps its
+  record.
+
+`append=false` (default) recreates the file per `execute!`; `append=true`
+continues it across `execute!` calls and process restarts under the replay
+idempotence rule: rows at or beyond the incoming window's first turn are
+dropped per group first. A file whose luminosity groups do not match the
+task's collision labels is refused rather than silently mixed.
+
+**Crash recovery** is the per-group cursor attribute
+`rows_valid_through_turn`, written AFTER its batch of rows and flushed with
+it: on open, any rows beyond the cursor are a torn tail from an interrupted
+write and are truncated. `capacity` is the rows-per-group buffered between
+flushes; the file handle is held open for the whole `execute!`, so flushing
+costs no open/close.
+
+Pass it to the task (`StrongStrongTask(...; artifact=RunArtifact(path))`, or
+a bare path as sugar). The artifact path is registered by artifact identity,
+so the same task continuing is silent while a second writer on the path
+draws the collision warning.
+"""
+mutable struct RunArtifact
+    path::String
+    append::Bool
+    capacity::Int
+    # execute!-scoped state
+    file::Union{Nothing,HDF5.File}
+    pending_turns::Dict{String,Vector{Int64}}
+    pending_values::Dict{String,Vector{Float64}}
+    execution_slot::Int
+    start_time_ns::UInt64
+    registered::Bool
+end
+
+function RunArtifact(path::AbstractString; append::Bool=false, capacity::Integer=64)
+    cap = Int(capacity)
+    cap >= 1 || throw(ArgumentError("RunArtifact capacity must be at least 1; got $(cap)."))
+    return RunArtifact(String(path), Bool(append), cap, nothing,
+                       Dict{String,Vector{Int64}}(), Dict{String,Vector{Float64}}(),
+                       0, UInt64(0), false)
+end
+
+# HDF5 attribute write-or-overwrite (plain assignment refuses an existing
+# attribute in HDF5.jl, and the cursor is rewritten at every flush).
+function _ra_set_attr!(obj, name::String, value)
+    a = HDF5.attributes(obj)
+    haskey(a, name) && HDF5.delete_attribute(obj, name)
+    a[name] = value
+    return nothing
+end
+
+_ra_get_attr(obj, name::String, default) = begin
+    a = HDF5.attributes(obj)
+    haskey(a, name) ? read(a[name]) : default
+end
+
+function _ra_extendable!(parent, name::String, ::Type{T}) where {T}
+    return HDF5.create_dataset(parent, name, HDF5.datatype(T),
+                               HDF5.dataspace((0,); max_dims=(-1,)); chunk=(256,))
+end
+
+function _ra_append_rows!(dset, vals)
+    n = length(dset)
+    HDF5.set_extent_dims(dset, (n + length(vals),))
+    dset[(n + 1):(n + length(vals))] = vals
+    return nothing
+end
+
+# Truncate one luminosity group to rows with turn <= keep_through. Rows are in
+# ascending turn order (schedules plan forward; rewinds drop), so the cutoff
+# is a scan for the boundary.
+function _ra_truncate_group!(g, keep_through::Int64)
+    dt, dv = g["turns"], g["values"]
+    turns = length(dt) == 0 ? Int64[] : read(dt)
+    keep = searchsortedlast(turns, keep_through)
+    if keep < length(turns)
+        HDF5.set_extent_dims(dt, (keep,))
+        HDF5.set_extent_dims(dv, (keep,))
+    end
+    _ra_set_attr!(g, "rows_valid_through_turn",
+                  Int64(keep == 0 ? typemin(Int32) : turns[keep]))
+    return nothing
+end
+
+"""
+Open (or create) the artifact for one `execute!`: validate or build the
+luminosity groups for `labels`, apply crash-truncation (rows beyond each
+group's cursor are a torn tail) and the replay rule (rows at or beyond
+`first_turn` are dropped), append this execution's ledger row, register the
+path by artifact identity, and hold the file open.
+"""
+function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
+                               first_turn::Int, planned_turns::Int)
+    art.file === nothing || error("RunArtifact at $(art.path) is already open; " *
+                                  "one artifact serves one execute! at a time")
+    if !art.registered
+        _register_observer_path!(art, art.path)
+        art.registered = true
+    end
+    fresh = !art.append || !isfile(art.path) || filesize(art.path) == 0
+    file = HDF5.h5open(art.path, fresh ? "w" : "r+")
+    try
+        if fresh
+            _ra_set_attr!(file, "octopus_run_artifact", Int64(1))
+            lum = HDF5.create_group(file, "luminosity")
+            for label in labels
+                g = HDF5.create_group(lum, label)
+                _ra_extendable!(g, "turns", Int64)
+                _ra_extendable!(g, "values", Float64)
+                _ra_set_attr!(g, "label", label)
+                _ra_set_attr!(g, "rows_valid_through_turn", Int64(typemin(Int32)))
+            end
+            ex = HDF5.create_group(file, "execution")
+            _ra_extendable!(ex, "start_turn", Int64)
+            _ra_extendable!(ex, "turns", Int64)
+            _ra_extendable!(ex, "elapsed", Float64)
+        else
+            haskey(file, "luminosity") || throw(ArgumentError(
+                "RunArtifact(append=true): $(art.path) is not a run artifact " *
+                "(no /luminosity group). Use a new path."))
+        existing = sort(collect(keys(file["luminosity"])))
+            sort(labels) == existing || throw(ArgumentError(
+                "RunArtifact(append=true): the luminosity groups at $(art.path) " *
+                "($(existing)) do not match this task's collision labels " *
+                "($(sort(labels))). Use a new path."))
+            for label in labels
+                g = file["luminosity"][label]
+                cursor = Int64(_ra_get_attr(g, "rows_valid_through_turn",
+                                            Int64(typemin(Int32))))
+                # Torn tail first (rows the cursor never blessed), then the
+                # replay rule: both reduce to one keep-through bound.
+                _ra_truncate_group!(g, min(cursor, Int64(first_turn) - 1))
+            end
+        end
+        ex = file["execution"]
+        n = length(ex["start_turn"])
+        for (name, val) in (("start_turn", Int64(first_turn)),
+                            ("turns", Int64(planned_turns)),
+                            ("elapsed", 0.0))
+            d = ex[name]
+            HDF5.set_extent_dims(d, (n + 1,))
+            d[n + 1] = val
+        end
+        art.execution_slot = n + 1
+        art.start_time_ns = time_ns()
+        HDF5.flush(file)
+    catch
+        close(file)
+        rethrow()
+    end
+    art.file = file
+    empty!(art.pending_turns)
+    empty!(art.pending_values)
+    return nothing
+end
+
+"""
+Record one collision's luminosity for one turn. Rows land on THIS label's own
+turn axis; nothing about other collisions' schedules is consulted, which is
+the design's point.
+"""
+function push_luminosity!(art::RunArtifact, label::String, turn::Integer, value::Float64)
+    t = get!(() -> Int64[], art.pending_turns, label)
+    v = get!(() -> Float64[], art.pending_values, label)
+    push!(t, Int64(turn))
+    push!(v, value)
+    length(t) >= art.capacity && _ra_flush_luminosity!(art, label)
+    return nothing
+end
+
+function _ra_flush_luminosity!(art::RunArtifact, label::String)
+    t = get(art.pending_turns, label, nothing)
+    (t === nothing || isempty(t)) && return nothing
+    v = art.pending_values[label]
+    g = art.file["luminosity"][label]
+    _ra_append_rows!(g["turns"], t)
+    _ra_append_rows!(g["values"], v)
+    # Rows first, cursor after, flushed together: a crash in between leaves
+    # rows beyond the cursor, which the next open truncates -- conservative.
+    _ra_set_attr!(g, "rows_valid_through_turn", t[end])
+    ex = art.file["execution"]
+    ex["elapsed"][art.execution_slot] = (time_ns() - art.start_time_ns) / 1.0e9
+    HDF5.flush(art.file)
+    empty!(t)
+    empty!(v)
+    return nothing
+end
+
+"""Flush every pending group, stamp this execution's elapsed time, close."""
+function finalize_run_artifact!(art::RunArtifact)
+    art.file === nothing && return nothing
+    try
+        for label in collect(keys(art.pending_turns))
+            _ra_flush_luminosity!(art, label)
+        end
+        ex = art.file["execution"]
+        ex["elapsed"][art.execution_slot] = (time_ns() - art.start_time_ns) / 1.0e9
+        HDF5.flush(art.file)
+    finally
+        close(art.file)
+        art.file = nothing
+    end
+    return nothing
+end

@@ -1770,6 +1770,13 @@ strong_strong_task_option_schema() = (
         "(phase 2 of the unification): they were sugar for this observer, " *
         "and passing them now throws with the migration spelled out.";
         category=:output, consumer=:strong_strong_output),
+    artifact=ConfigurationOptionMeta(Union{Nothing,RunArtifact}, nothing,
+        "The run artifact (docs/design/run_artifact.md): one HDF5 file per " *
+        "task carrying the per-collision luminosity channel on independent " *
+        "turn axes and the per-execution ledger; a bare path is constructor " *
+        "sugar. Opt-in; the text luminosity observer may run alongside as " *
+        "the live mirror.";
+        category=:output, consumer=:strong_strong_output),
 )
 
 """
@@ -2090,7 +2097,7 @@ StrongStrongCollision(label; poisson_solver=nothing) =
 """
     StrongStrongTask(line1, line2; policy=nothing,
                      default_poisson_solver=GaussianPoissonSolver(),
-                     luminosity=nothing)
+                     luminosity=nothing, artifact=nothing)
 
 Track two live beams through ordinary tracking lines containing matching
 `StrongStrongCollision` markers.
@@ -2131,6 +2138,14 @@ keywords this replaced were retired 2026-08-17 (they had been sugar for the
 identical observer since phase 1 of the unification) and now throw with the
 migration spelled out.
 
+`artifact` attaches the run artifact ([`RunArtifact`](@ref), or a bare path
+as sugar): one HDF5 file per task carrying the per-collision luminosity
+channel on INDEPENDENT turn axes (per-IP schedules may disagree freely; the
+whole-row drop rule applies only to the fixed-width text mirror above) and
+the per-execution ledger. Opt-in, and it may run alongside `luminosity` --
+the text file is the design's live `tail -f` mirror. Design:
+docs/design/run_artifact.md.
+
 Pass `diagnostics=StrongStrongDiagnostics(record_turn_times=true)` to
 synchronize once at each turn boundary and record complete-turn wall time.
 Retrieve structured results with `diagnostic_summary(task)`. The legacy
@@ -2151,6 +2166,11 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     # semantics and the capacity buffering; the retired
     # luminosity_path/luminosity_append keywords were sugar for it.
     luminosity::Union{Nothing,LuminosityObserver}
+    # The run artifact (docs/design/run_artifact.md, migration step 1): the
+    # one-HDF5-per-task sink carrying the per-collision luminosity channel
+    # with independent turn axes and the execution ledger. Opt-in; the text
+    # observer above may run alongside as the live mirror.
+    artifact::Union{Nothing,RunArtifact}
     diagnostics::StrongStrongDiagnostics
     turn_times::Vector{Float64}
     pic_phase_times::Vector{Any}
@@ -2183,6 +2203,13 @@ function configuration_report(task::StrongStrongTask, beam1::Beam, beam2::Beam)
                 "continues one luminosity file across executions and restarts" :
                 "each execution rewrites the luminosity file (replace mode)") *
             " at " * task.luminosity.path,
+            :strong_strong_output),
+            ConfigurationEntry(:artifact, task.artifact,
+            task.artifact === nothing ? nothing : task.artifact.path,
+            task.artifact === nothing ? :inactive_dependency : :resolved,
+            task.artifact === nothing ? "run-artifact output disabled" :
+            (task.artifact.append ? "continuing" : "rewriting") *
+            " the run artifact at " * task.artifact.path,
             :strong_strong_output),),
         diagnostics=configuration_report(task.diagnostics; backend=backend_type(policy)),
         solvers=Tuple(configuration_report(solver; policy=public_policy,
@@ -2205,6 +2232,7 @@ function StrongStrongTask(line1, line2;
                           luminosity_path=nothing,
                           luminosity_append=nothing,
                           luminosity::Union{Nothing,LuminosityObserver,AbstractString}=nothing,
+                          artifact::Union{Nothing,RunArtifact,AbstractString}=nothing,
                           diagnostics::StrongStrongDiagnostics=StrongStrongDiagnostics(),
                           record_turn_times::Union{Nothing,Bool}=nothing)
     line_tuple1 = _element_tuple(line1)
@@ -2225,6 +2253,8 @@ function StrongStrongTask(line1, line2;
     lumobs = luminosity === nothing ? nothing :
              luminosity isa LuminosityObserver ? luminosity :
              LuminosityObserver(String(luminosity))
+    art = artifact === nothing ? nothing :
+          artifact isa RunArtifact ? artifact : RunArtifact(String(artifact))
     if record_turn_times !== nothing
         diagnostics == StrongStrongDiagnostics() || throw(ArgumentError(
             "use either diagnostics or the compatibility record_turn_times keyword, not both"
@@ -2237,6 +2267,7 @@ function StrongStrongTask(line1, line2;
         policy,
         solver,
         lumobs,
+        art,
         diagnostics,
         Float64[],
         Any[],
@@ -2308,7 +2339,9 @@ function _execute_strong_strong_task!(
     _record_execution!(:strong_strong_output, backend_type(policy),
                        (luminosity=task.luminosity === nothing ? nothing :
                                    task.luminosity.path,
-                        append=task.luminosity !== nothing && task.luminosity.append))
+                        append=task.luminosity !== nothing && task.luminosity.append,
+                        artifact=task.artifact === nothing ? nothing :
+                                 task.artifact.path))
     blocks1 = _strong_strong_runtime_blocks(task, 1)
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
@@ -2341,6 +2374,10 @@ function _execute_strong_strong_task!(
     prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2);
                        turns=Int(turns), first_turn=Int(first_turn))
     lum_plan === nothing || _commit_strong_strong_luminosity_file!(task, lum_plan)
+    if task.artifact !== nothing
+        labels = [String(b.collision.label) for b in blocks1 if b.collision !== nothing]
+        prepare_run_artifact!(task.artifact, labels, Int(first_turn), Int(turns))
+    end
     try
         ctx = TrackingContext()
         Base.ScopedValues.with(_ACTIVE_STRONG_STRONG_DIAGNOSTICS => task.diagnostics,
@@ -2348,7 +2385,7 @@ function _execute_strong_strong_task!(
             if task.luminosity === nothing
                 _execute_strong_strong_turns!(
                     task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
-                    turns, first_turn, nothing)
+                    turns, first_turn, nothing, task.artifact)
             else
                 # The prepare step above owned the header and the
                 # replace/append decision, so the run body always streams
@@ -2362,14 +2399,28 @@ function _execute_strong_strong_task!(
                     try
                         _execute_strong_strong_turns!(
                             task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
-                            turns, first_turn, lumobs)
+                            turns, first_turn, lumobs, task.artifact)
                     finally
                         lumobs.stream = nothing
                     end
                 end
             end
         end
+        # Success path: a finalize failure here IS the failure (an output
+        # that cannot be closed must raise), matching the task-observer rule.
+        task.artifact === nothing || finalize_run_artifact!(task.artifact)
     finally
+        # Failure path: the artifact may still be open; close best-effort so
+        # a broken finalizer cannot replace the error that stopped the run.
+        if task.artifact !== nothing && task.artifact.file !== nothing
+            try
+                finalize_run_artifact!(task.artifact)
+            catch finalize_error
+                @warn "run-artifact finalize failed while another error was " *
+                      "already propagating; the error that stopped the run " *
+                      "is the one below" finalize_error
+            end
+        end
         _finalize_strong_strong_line_observers!(blocks1)
         _finalize_strong_strong_line_observers!(blocks2)
     end
@@ -2611,7 +2662,7 @@ end
 
 function _execute_strong_strong_turns!(
         task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
-        turns::Int, first_turn::Int64, lumobs)
+        turns::Int, first_turn::Int64, lumobs, art)
     backend = backend_type(policy)
     streams = _strong_strong_segment_streams(policy)
     memory_log_every = _strong_strong_cuda_memory_log_every(backend)
@@ -2642,6 +2693,15 @@ function _execute_strong_strong_turns!(
                 )
                 _cuda_nvtx_pop(backend, collision_range)
                 luminosities === nothing || push!(luminosities, Float64(lum))
+                # The artifact's channel: THIS collision's own turn axis, a
+                # row exactly when its own schedule evaluated -- no other
+                # collision's schedule is consulted (the design's point; the
+                # text row's whole-row drop rule below applies only to the
+                # fixed-width mirror).
+                if art !== nothing && _strong_strong_luminosity_evaluated(solver, ctx)
+                    push_luminosity!(art, String(blocks1[j].collision.label),
+                                     ctx.turn, Float64(lum))
+                end
             end
         end
         _cuda_nvtx_pop(backend, turn_range)
