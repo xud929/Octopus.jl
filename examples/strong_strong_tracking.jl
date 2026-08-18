@@ -267,8 +267,13 @@ line_pro = (
 # resolves a fresh default at execute time, so any non-default execution choice
 # would reach beam construction and be silently dropped for the tracking itself
 # (2026-08-05_b audit, U21-17).
+# The luminosity sink attaches at the TASK -- pair-level luminosity belongs
+# to neither line -- as a LuminosityObserver, the same object the weak-strong
+# example uses. `capacity` buffers rows between appends (worthwhile on
+# networked filesystems); `append = true` would continue one file across
+# executions and restarts instead of rewriting it per run.
 task = StrongStrongTask(line_ele, line_pro; policy = policy,
-                        luminosity = luminosity_path)
+                        luminosity = LuminosityObserver(luminosity_path))
 execute!(task, beam_ele, beam_pro; turns = config.turns)
 
 stats_ele = beam_statistics(beam_ele)
