@@ -117,7 +117,7 @@ mktempdir() do dir
         metrics[:passed_tolerance] || error("CPU/CUDA isolated weak-strong mismatch")
         cpu_lum = read(TaskOutput(joinpath(dir, "cpu.h5")), :luminosity; name="strong_beam_1")
         gpu_lum = read(TaskOutput(joinpath(dir, "gpu.h5")), :luminosity; name="strong_beam_1")
-        (!isempty(cpu_lum.turns) && cpu_lum.turns == gpu_lum.turns) ||
+        (!isempty(cpu_lum.turn) && cpu_lum.turn == gpu_lum.turn) ||
             error("weak-strong luminosity row mismatch")
     end
 end

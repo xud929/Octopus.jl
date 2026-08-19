@@ -445,8 +445,9 @@ discovery to data, the `MomentOutput` ergonomics generalized:
 
 ```julia
 out = TaskOutput("run.h5")
-read(out)                                    # table of contents: kind => names
-read(out, :luminosity)                       # Dict name => (turns=..., values=...)
+read(out)                                    # recursive contents: kind => name =>
+                                             #   (columns, rows[, s]) -- metadata only
+read(out, :luminosity)                       # Dict name => (turn=..., value=...)
 read(out, :luminosity; name="ip")            # one collision's series
 read(out, :moments; name="IP6")              # columns as a NamedTuple
 read(out, :moments; name="IP6", column=Moment(; x=1))   # one column
@@ -500,7 +501,11 @@ function _ra_named_group(g, out::TaskOutput, kind::Symbol, name)
     return g[String(name)]
 end
 
-_ra_lum_series(g) = (turns=read(g["turns"]), values=read(g["values"]))
+# Reader fields are the per-row convention (turn, value) -- the quantity is
+# named by the KIND, matching the probes' singular column names; the FILE
+# datasets keep their layout names (turns/values), so existing artifacts
+# continue and append untouched (owner direction, 2026-08-19).
+_ra_lum_series(g) = (turn=read(g["turns"]), value=read(g["values"]))
 
 function _ra_probe_columns(g)
     names = String.(read(g["column_names"]))
@@ -564,9 +569,10 @@ WHOLE file, snapshots included).
 
 For the named kinds, no `name` returns every group as a
 `Dict{String,NamedTuple}`; `name` selects one group, returned as a
-`NamedTuple` of column vectors (luminosity: `(turns, values)`, each series on
+`NamedTuple` of column vectors (luminosity: `(turn, value)`, each series on
 its OWN turn axis -- a collision has a row exactly where its schedule
-evaluated). `column` narrows a probe group to one column vector and accepts a
+evaluated; the execution ledger's `turns` is a different thing, the planned
+window length per `execute!`). `column` narrows a probe group to one column vector and accepts a
 `Symbol`, a column-name string, or a `Moment` (moment groups). `turn` narrows
 a snapshot group to one fired block.
 
@@ -650,11 +656,49 @@ function Base.read(out::TaskOutput, kind::Symbol;
 end
 
 """
-    read(out::TaskOutput) -> Dict{String,Vector{String}}
+    read(out::TaskOutput) -> Dict{String,Any}
 
-The artifact's table of contents: each product kind present, with its group
-names (`"luminosity" => ["ip6", "ip8"]`, `"moments" => ["IP6"]`, ...) --
-discovery through the same one verb as the data. `read(out, :all)` reads
-every product; `read(out, kind; ...)` selects.
+The artifact's table of contents, RECURSIVE and metadata-only (shape and
+attribute reads; no data): each named kind maps to `Dict(name =>
+(columns, rows[, s]))` -- `s` is the probe's arc position where stamped --
+and the single products carry their own `(columns, rows, ...)`. One call
+tells you how to write every subsequent `read(out, kind; ...)`;
+`read(out, :all)` returns the same nesting with the data in it.
 """
-Base.read(out::TaskOutput) = _ra_contents(out.path)
+function Base.read(out::TaskOutput)
+    _ra_open(out.path) do f
+        toc = Dict{String,Any}()
+        for kind in keys(f)
+            obj = f[kind]
+            k = String(kind)
+            if k == "execution"
+                cols = sort(collect(String.(keys(obj))))
+                toc[k] = (columns=cols,
+                          rows=isempty(cols) ? 0 : length(obj[first(cols)]))
+            elseif k == "losses"
+                toc[k] = (columns=haskey(obj, "column_names") ?
+                              String.(read(obj["column_names"])) : String[],
+                          rows=haskey(obj, "data") ? size(obj["data"], 1) : 0,
+                          apertures=String.(read(obj["aperture_names"])))
+            elseif obj isa HDF5.Group
+                groups = Dict{String,NamedTuple}()
+                for name in keys(obj)
+                    g = obj[name]
+                    g isa HDF5.Group || continue
+                    if k == "luminosity"
+                        groups[String(name)] = (columns=["turn", "value"],
+                                                rows=length(g["turns"]))
+                    else
+                        s = _ra_get_attr(g, "s", nothing)
+                        base = (columns=String.(read(g["column_names"])),
+                                rows=size(g["data"], 1))
+                        groups[String(name)] = s === nothing ? base :
+                                               merge(base, (s=Float64(s),))
+                    end
+                end
+                toc[k] = groups
+            end
+        end
+        toc
+    end
+end

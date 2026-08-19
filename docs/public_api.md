@@ -139,8 +139,8 @@ first_second = read(moments; orders = 1:2)
 names = column_names(moments)
 
 out = TaskOutput("result/pic_hcc.h5")
-read(out)                                 # table of contents: kind => names
-read(out, :luminosity; name = "ip")       # one collision's (turns, values)
+read(out)                                 # recursive contents: columns/rows/s per group
+read(out, :luminosity; name = "ip")       # one collision's (turn, value)
 read(out, :moments; name = "proton", column = Moment(; x = 1))
 read(out, :moments; name = "proton", orders = 1:2)   # selection, MomentObserver rules
 read(out, :bpm; name = "BPM_07", column = :x)

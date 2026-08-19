@@ -39,9 +39,9 @@ series = read(TaskOutput(path), :luminosity)
 println("Strong-strong scheduled luminosity artifact channels")
 println("ip1 = ", series["ip1"])
 println("ip2 = ", series["ip2"])
-series["ip1"].turns == [0, 100, 200] && series["ip2"].turns == [0, 100, 200] ||
+series["ip1"].turn == [0, 100, 200] && series["ip2"].turn == [0, 100, 200] ||
     error("scheduled luminosity channels contain skipped turns or omit evaluated ones")
-v1, v2 = series["ip1"].values, series["ip2"].values
+v1, v2 = series["ip1"].value, series["ip2"].value
 (v1[1] == 1.0 && isnan(v1[2]) && v1[3] == 201.0) ||
     error("ip1 channel altered its evaluated values (an evaluated NaN must be retained)")
 v2 == [1001.0, 1101.0, 1201.0] ||

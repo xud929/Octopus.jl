@@ -86,7 +86,7 @@ function run_config(tag; angle, crab)
     lum_path = joinpath(OUTDIR, "lum_$(tag).h5")
     task = StrongStrongTask(elems, elems; artifact = lum_path)
     execute!(task, b1, b2; turns = 3)
-    vals = collect(Float64, read(TaskOutput(lum_path), :luminosity; name = "ip").values)
+    vals = collect(Float64, read(TaskOutput(lum_path), :luminosity; name = "ip").value)
     println(tag, " luminosity per turn: ", vals)
     mean(vals)
 end

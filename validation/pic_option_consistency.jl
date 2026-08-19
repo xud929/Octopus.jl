@@ -210,7 +210,7 @@ needs no buffering assumptions.
 function last_luminosity_value(path)
     isfile(path) || return NaN
     series = read(TaskOutput(path), :luminosity; name="ip")
-    return isempty(series.values) ? NaN : Float64(series.values[end])
+    return isempty(series.value) ? NaN : Float64(series.value[end])
 end
 
 host(a) = Array(a)

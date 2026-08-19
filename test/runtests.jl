@@ -5660,7 +5660,7 @@ end
     end
     # ... and the reader hands the same series back.
     let series = read(TaskOutput(pa), :luminosity; name="ip")
-        @test series.turns == [0, 1, 2] && all(series.values .> 0)
+        @test series.turn == [0, 1, 2] && all(series.value .> 0)
     end
 
     # The retirement pins (step 4, 2026-08-18): every retired spelling throws
@@ -5805,7 +5805,17 @@ end
         # generalized (owner direction, 2026-08-18) -- plus MomentOutput
         # itself against a group for Moment-aware selection.
         tout = TaskOutput(pa)
-        @test read(tout)["moments"] == ["IP6"]     # bare read = the contents
+        # Bare read = the RECURSIVE metadata contents (owner direction,
+        # 2026-08-19): per group its columns, row count, and s where
+        # stamped -- one call sufficient to write every subsequent read.
+        let toc = read(tout)
+            @test sort(collect(keys(toc["moments"]))) == ["IP6"]
+            @test toc["moments"]["IP6"].columns[1] == "turn"
+            @test toc["moments"]["IP6"].rows == 3
+            @test isempty(toc["luminosity"])   # drift line: no producer, kind present
+            @test read(TaskOutput(pa2))["luminosity"]["ip"].columns == ["turn", "value"]
+            @test toc["execution"].rows == 3
+        end
         mout = MomentOutput(pa; name="IP6")
         @test Int.(read(mout, :turn)) == [0, 1, 2]
         @test column_names(mout)[1] == "turn"
@@ -5874,7 +5884,7 @@ end
         b1, b2 = beams()
         execute!(tss, b1, b2; turns=3)
         @test Int.(read(TaskOutput(pss), :moments; name="e_mid").turn) == [0, 1, 2]
-        @test read(TaskOutput(pss), :luminosity; name="ip").turns == [0, 1, 2]
+        @test read(TaskOutput(pss), :luminosity; name="ip").turn == [0, 1, 2]
         rm(pss; force=true)
     end
 
@@ -10359,15 +10369,15 @@ end
         task = StrongStrongTask((ip,), (ip,); artifact=path)
         execute!(task, e, p; turns=7)
         let series = read(TaskOutput(path), :luminosity; name="ip")
-            @test series.turns == [0, 3, 6]
-            @test all(isfinite, series.values)     # skipped turns leave no NaN marker
+            @test series.turn == [0, 3, 6]
+            @test all(isfinite, series.value)      # skipped turns leave no NaN marker
         end
 
         # A second call continues at turns 7:9. The default (append=false)
         # artifact represents the most recent call, so only scheduled
         # absolute turn 9 is present.
         execute!(task, e, p; turns=3)
-        @test read(TaskOutput(path), :luminosity; name="ip").turns == [9]
+        @test read(TaskOutput(path), :luminosity; name="ip").turn == [9]
     finally
         isfile(path) && rm(path)
     end
@@ -10418,14 +10428,14 @@ end
             poisson_solver=mksolver(EveryNSteps(step=3)))
         e, p = mkbeams()
         execute!(StrongStrongTask((ip,), (ip,); artifact=path), e, p; turns=7)
-        @test read(TaskOutput(path), :luminosity; name="ip").turns == [0, 3, 6]
+        @test read(TaskOutput(path), :luminosity; name="ip").turn == [0, 3, 6]
         rm(path; force=true)
     end
     let path = tempname() * ".h5"
         ip = StrongStrongCollision(:ip; poisson_solver=mksolver(AtTurns(Int[])))
         e, p = mkbeams()
         execute!(StrongStrongTask((ip,), (ip,); artifact=path), e, p; turns=3)
-        @test isempty(read(TaskOutput(path), :luminosity; name="ip").turns)
+        @test isempty(read(TaskOutput(path), :luminosity; name="ip").turn)
         rm(path; force=true)
     end
 

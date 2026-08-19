@@ -1234,8 +1234,8 @@ end
 
 function _strong_strong_contract_luminosity_series(path)
     series = read(TaskOutput(path), :luminosity; name="ip")
-    isempty(series.values) && error("strong-strong contract produced no luminosity records")
-    return collect(series.values)
+    isempty(series.value) && error("strong-strong contract produced no luminosity records")
+    return collect(series.value)
 end
 
 function _strong_strong_contract_cpu_cache_history(task)
@@ -3237,7 +3237,7 @@ function _solver_contract_cuda_observable(solver, base1, base2)
             CUDA.synchronize()
         end
         series = read(TaskOutput(path), :luminosity; name="solver_option")
-        append!(luminosities, series.values)
+        append!(luminosities, series.value)
     end
     coords = vcat((Array(a) for a in coordinate_arrays(beam1.rep))...,
                   (Array(a) for a in coordinate_arrays(beam2.rep))...)
