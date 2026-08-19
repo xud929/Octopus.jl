@@ -54,8 +54,8 @@ Shared where the role applies:
 - `luminosity_schedule` — evaluate luminosity only on scheduled turns, for the
   solvers where luminosity is a separable cost (`PICPoissonSolver`,
   `GaussianPICPoissonSolver`, `SpectralPoissonSolver`). Skipped turns still apply
-  the beam-beam kicks, return `NaN`, and are omitted from the task luminosity
-  file. `GaussianPoissonSolver` deliberately does **not** offer it: its luminosity
+  the beam-beam kicks, return `NaN`, and leave no row in the artifact's
+  luminosity channel. `GaussianPoissonSolver` deliberately does **not** offer it: its luminosity
   is a by-product of the per-particle kick (the Gaussian density factor is already
   needed for the `pz` term), so scheduling it would save nothing — measured at
   0% of the kick loop.
@@ -1761,21 +1761,14 @@ internal name — undiscoverable through the API every other configuration surfa
 uses (2026-08-05_b audit, U5-11).
 """
 strong_strong_task_option_schema() = (
-    luminosity=ConfigurationOptionMeta(Union{Nothing,LuminosityObserver}, nothing,
-        "Task-level luminosity sink: a LuminosityObserver (or a bare path as " *
-        "constructor sugar); `nothing` disables the output. The observer " *
-        "carries the path, the append/continue semantics (replayed windows " *
-        "drop their stale rows first) and the capacity buffering. The " *
-        "luminosity_path/luminosity_append keywords were RETIRED 2026-08-17 " *
-        "(phase 2 of the unification): they were sugar for this observer, " *
-        "and passing them now throws with the migration spelled out.";
-        category=:output, consumer=:strong_strong_output),
     artifact=ConfigurationOptionMeta(Union{Nothing,RunArtifact}, nothing,
         "The run artifact (docs/design/run_artifact.md): one HDF5 file per " *
         "task carrying the per-collision luminosity channel on independent " *
         "turn axes and the per-execution ledger; a bare path is constructor " *
-        "sugar. Opt-in; the text luminosity observer may run alongside as " *
-        "the live mirror.";
+        "sugar. THE luminosity/loss/probe output since the 2026-08-18 " *
+        "retirement of the standalone files (text .lum, per-observer h5, " *
+        "loss log): read it back with read(TaskOutput(path), kind; ...) " *
+        "and MomentOutput(path; name=...).";
         category=:output, consumer=:strong_strong_output),
 )
 
@@ -2023,9 +2016,8 @@ function validate_configuration_metadata()
         end
     end
     observer_instances = (
-        MomentObserver("metadata.h5"),
-        CoordinateSnapshotObserver("metadata.coord"),
-        LuminosityObserver("metadata.lum"),
+        MomentObserver(; name="metadata"),
+        CoordinateSnapshotObserver(; name="metadata"),
         BPMObserver(),
     )
     # BPMObserver was absent from these lists (U3-4); the tree guard below
@@ -2042,8 +2034,7 @@ function validate_configuration_metadata()
         any(o -> o isa T, observer_instances) || push!(errors,
             "$(T) is a concrete AbstractBeamObserver with no validate_configuration_metadata coverage")
     end
-    for observer_type in (MomentObserver,
-                          CoordinateSnapshotObserver, LuminosityObserver, BPMObserver)
+    for observer_type in (MomentObserver, CoordinateSnapshotObserver, BPMObserver)
         for (name, meta) in pairs(observer_option_schema(observer_type))
             meta.consumer === :unspecified && push!(errors,
                 "$(observer_type).$(name) has no runtime consumer")
@@ -2119,31 +2110,17 @@ task = StrongStrongTask(line1, line2)
 execute!(task, beam1, beam2; turns=10)
 ```
 
-`luminosity` attaches the task-level luminosity sink: a
-[`LuminosityObserver`](@ref) — the same sink `TrackingTask` takes — or a bare
-path as sugar for `LuminosityObserver(path)`. It attaches at the TASK because
-pair-level luminosity belongs to neither line. One row per evaluated turn:
-the absolute turn number followed by the per-collision luminosities. With the
-default `append=false`, each `execute!` rewrites the file; with
-`LuminosityObserver(path; append=true)` the file is CONTINUED across
-`execute!` calls, tasks sharing the path, and process restarts — one file
-with continuous absolute turns, matching `MomentObserver(append=true)`.
-Replayed turn windows (a failed `execute!`'s retry, an explicit `start_turn`
-rewind) drop their stale rows first, and a file whose header does not match
-this task's collision layout is refused. The output path is registered by
-observer identity, so a second task — or a weak-strong observer — writing the
-same path draws the collision warning, while the same task continuing across
-`execute!` calls stays silent. The `luminosity_path`/`luminosity_append`
-keywords this replaced were retired 2026-08-17 (they had been sugar for the
-identical observer since phase 1 of the unification) and now throw with the
-migration spelled out.
-
 `artifact` attaches the run artifact ([`RunArtifact`](@ref), or a bare path
-as sugar): one HDF5 file per task carrying the per-collision luminosity
-channel on INDEPENDENT turn axes (per-IP schedules may disagree freely; the
-whole-row drop rule applies only to the fixed-width text mirror above) and
-the per-execution ledger. Opt-in, and it may run alongside `luminosity` --
-the text file is the design's live `tail -f` mirror. Design:
+as sugar): one HDF5 file per task -- THE output since the standalone files
+retired (text luminosity 2026-08-18; the path keywords 2026-08-17). It
+carries the per-collision luminosity channel on INDEPENDENT turn axes
+(per-IP schedules may disagree freely: each collision writes a row exactly
+when its own schedule evaluated), the named probe groups, and the
+per-execution ledger. `RunArtifact(path; append=true)` continues one file
+across `execute!` calls, tasks sharing the path, and process restarts, with
+replayed windows dropped per group and a collision-label mismatch refused.
+Read it back with one handle -- `read(TaskOutput(path), kind; ...)` --
+and `MomentOutput(path; name=...)`. Design:
 docs/design/run_artifact.md.
 
 Pass `diagnostics=StrongStrongDiagnostics(record_turn_times=true)` to
@@ -2161,15 +2138,10 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     line2::L2
     policy::Union{Nothing,AbstractExecutionPolicy}
     default_poisson_solver::S
-    # The unified luminosity sink (phases 1-2, 2026-08-17): the ONLY
-    # luminosity output channel. Carries the path, the append/continue
-    # semantics and the capacity buffering; the retired
-    # luminosity_path/luminosity_append keywords were sugar for it.
-    luminosity::Union{Nothing,LuminosityObserver}
-    # The run artifact (docs/design/run_artifact.md, migration step 1): the
-    # one-HDF5-per-task sink carrying the per-collision luminosity channel
-    # with independent turn axes and the execution ledger. Opt-in; the text
-    # observer above may run alongside as the live mirror.
+    # The run artifact (docs/design/run_artifact.md): the one-HDF5-per-task
+    # sink -- the task's ONE output -- carrying the per-collision luminosity
+    # channel with independent turn axes, the named probe views, and the
+    # execution ledger. Optional: with no artifact, nothing is written.
     artifact::Union{Nothing,RunArtifact}
     diagnostics::StrongStrongDiagnostics
     turn_times::Vector{Float64}
@@ -2195,16 +2167,7 @@ function configuration_report(task::StrongStrongTask, beam1::Beam, beam2::Beam)
                      if block1.collision !== nothing)
     return (
         policy=configuration_report(public_policy, beam1.rep),
-        output=(ConfigurationEntry(:luminosity, task.luminosity,
-            task.luminosity === nothing ? nothing : task.luminosity.path,
-            task.luminosity === nothing ? :inactive_dependency : :resolved,
-            task.luminosity === nothing ? "luminosity file output disabled" :
-            (task.luminosity.append ?
-                "continues one luminosity file across executions and restarts" :
-                "each execution rewrites the luminosity file (replace mode)") *
-            " at " * task.luminosity.path,
-            :strong_strong_output),
-            ConfigurationEntry(:artifact, task.artifact,
+        output=(ConfigurationEntry(:artifact, task.artifact,
             task.artifact === nothing ? nothing : task.artifact.path,
             task.artifact === nothing ? :inactive_dependency : :resolved,
             task.artifact === nothing ? "run-artifact output disabled" :
@@ -2231,7 +2194,7 @@ function StrongStrongTask(line1, line2;
                           poisson_solver::Union{Nothing,AbstractPoissonSolver}=nothing,
                           luminosity_path=nothing,
                           luminosity_append=nothing,
-                          luminosity::Union{Nothing,LuminosityObserver,AbstractString}=nothing,
+                          luminosity=nothing,   # retired 2026-08-18; throws above
                           artifact::Union{Nothing,RunArtifact,AbstractString}=nothing,
                           diagnostics::StrongStrongDiagnostics=StrongStrongDiagnostics(),
                           record_turn_times::Union{Nothing,Bool}=nothing)
@@ -2244,15 +2207,13 @@ function StrongStrongTask(line1, line2;
     # rejected, never silently dropped; a bare unknown-keyword MethodError
     # would not say what to do instead). Retired 2026-08-17, phase 2 of the
     # unification -- they were sugar for the observer since phase 1.
-    (luminosity_path === nothing && luminosity_append === nothing) ||
-        throw(ArgumentError(
-            "luminosity_path/luminosity_append were retired (2026-08-17): pass " *
-            "luminosity=LuminosityObserver(path; append=true, capacity=...) or " *
-            "luminosity=path instead. The file format, append/rewind semantics " *
-            "and warnings are identical."))
-    lumobs = luminosity === nothing ? nothing :
-             luminosity isa LuminosityObserver ? luminosity :
-             LuminosityObserver(String(luminosity))
+    (luminosity_path === nothing && luminosity_append === nothing &&
+     luminosity === nothing) || throw(ArgumentError(
+        "the standalone luminosity outputs were retired (text observer " *
+        "2026-08-18; the path keywords 2026-08-17): pass " *
+        "artifact=RunArtifact(path; append=..., capacity=...) or " *
+        "artifact=path, and read it back with " *
+        "read(TaskOutput(path), :luminosity)."))
     art = artifact === nothing ? nothing :
           artifact isa RunArtifact ? artifact : RunArtifact(String(artifact))
     if record_turn_times !== nothing
@@ -2266,7 +2227,6 @@ function StrongStrongTask(line1, line2;
         line_tuple2,
         policy,
         solver,
-        lumobs,
         art,
         diagnostics,
         Float64[],
@@ -2337,11 +2297,9 @@ function _execute_strong_strong_task!(
     # options sit outside every effectiveness contract's schema sweep, so
     # nothing else would have caught it (2026-08-05_b audit, U5-3).
     _record_execution!(:strong_strong_output, backend_type(policy),
-                       (luminosity=task.luminosity === nothing ? nothing :
-                                   task.luminosity.path,
-                        append=task.luminosity !== nothing && task.luminosity.append,
-                        artifact=task.artifact === nothing ? nothing :
-                                 task.artifact.path))
+                       (artifact=task.artifact === nothing ? nothing :
+                                 task.artifact.path,
+                        append=task.artifact !== nothing && task.artifact.append))
     blocks1 = _strong_strong_runtime_blocks(task, 1)
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
@@ -2355,19 +2313,13 @@ function _execute_strong_strong_task!(
     # instead. Measured at 3 rows -> 0 in replace mode and 5 -> 2 in append,
     # by an `execute!` that then tracked nothing (2026-08-05_b audit, F2).
     #
-    # So: the luminosity planner does all of its reading, header matching and
-    # corruption refusal without writing; `prepare_observers!` then does its
-    # own validation-and-commit; and only then is the luminosity file written.
-    # A refusal on either side now leaves BOTH outputs as they were.
+    # So (as long as the text planner lived): it did all of its reading,
+    # header matching and corruption refusal without writing;
+    # `prepare_observers!` then did its own validation-and-commit; only then
+    # was the luminosity file written. A refusal on either side left BOTH
+    # outputs as they were -- and the artifact keeps that shape: its prepare
+    # validates (label match, torn-tail truncation) before any probe binds.
     #
-    # Residual, recorded honestly: `prepare_observers!` still validates and
-    # commits together (its five observer types would each need splitting), so
-    # a failure of the luminosity COMMIT itself — a full disk, a read-only
-    # directory — can still land after the observers have committed. That
-    # window is narrower than either single-ordering window it replaces, and
-    # closing it needs a real two-phase commit across both subsystems.
-    lum_plan = task.luminosity === nothing ? nothing :
-        _plan_strong_strong_luminosity_file(task, blocks1, Int(first_turn))
     # The artifact opens FIRST: named probes in either line bind to it
     # during their prepare through the active-artifact scope.
     if task.artifact !== nothing
@@ -2381,41 +2333,40 @@ function _execute_strong_strong_task!(
         prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2);
                            turns=Int(turns), first_turn=Int(first_turn))
     end
-    lum_plan === nothing || _commit_strong_strong_luminosity_file!(task, lum_plan)
+    line_observers_finalized = false
     try
         ctx = TrackingContext()
         Base.ScopedValues.with(_ACTIVE_STRONG_STRONG_DIAGNOSTICS => task.diagnostics,
                                _ACTIVE_PIC_PHASE_TIMING_SINK => task.pic_phase_times) do
-            if task.luminosity === nothing
-                _execute_strong_strong_turns!(
-                    task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
-                    turns, first_turn, nothing, task.artifact)
-            else
-                # The prepare step above owned the header and the
-                # replace/append decision, so the run body always streams
-                # rows in append mode from here -- through the observer's
-                # execute!-scoped stream, so the single-open-handle I/O shape
-                # is unchanged and the rows are byte-identical to the direct
-                # write this replaced (phase 1, 2026-08-17).
-                lumobs = task.luminosity
-                open(lumobs.path, "a") do io
-                    lumobs.stream = io
-                    try
-                        _execute_strong_strong_turns!(
-                            task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
-                            turns, first_turn, lumobs, task.artifact)
-                    finally
-                        lumobs.stream = nothing
-                    end
-                end
-            end
+            _execute_strong_strong_turns!(
+                task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
+                turns, first_turn, task.artifact)
         end
-        # Success path: a finalize failure here IS the failure (an output
-        # that cannot be closed must raise), matching the task-observer rule.
+        # Success path: line observers flush their buffered tails INTO the
+        # artifact first -- a probe view's tail lives in memory until its
+        # finalize -- and only then does the artifact close. Closing first
+        # sent the moment tails into a closed file (caught by the example
+        # scripts, 2026-08-18; pinned in the run-artifact testset). A
+        # finalize failure here IS the failure (an output that cannot be
+        # written must raise), matching the task-observer rule.
+        _finalize_strong_strong_line_observers!(blocks1)
+        _finalize_strong_strong_line_observers!(blocks2)
+        line_observers_finalized = true
         task.artifact === nothing || finalize_run_artifact!(task.artifact)
     finally
-        # Failure path: the artifact may still be open; close best-effort so
-        # a broken finalizer cannot replace the error that stopped the run.
+        # Failure path, same order best-effort: flush what the observers
+        # hold while the artifact is still open, then close it -- and
+        # neither step may replace the error that stopped the run.
+        if !line_observers_finalized
+            try
+                _finalize_strong_strong_line_observers!(blocks1)
+                _finalize_strong_strong_line_observers!(blocks2)
+            catch observer_error
+                @warn "line-observer finalize failed while another error " *
+                      "was already propagating; the error that stopped " *
+                      "the run is the one below" observer_error
+            end
+        end
         if task.artifact !== nothing && task.artifact.file !== nothing
             try
                 finalize_run_artifact!(task.artifact)
@@ -2425,8 +2376,6 @@ function _execute_strong_strong_task!(
                       "is the one below" finalize_error
             end
         end
-        _finalize_strong_strong_line_observers!(blocks1)
-        _finalize_strong_strong_line_observers!(blocks2)
     end
     return beam1, beam2
 end
@@ -2467,32 +2416,6 @@ function _preflight_solver_configurations!(task, blocks1, blocks2, policy)
     return solvers
 end
 
-"""
-Running count of luminosity rows dropped because per-IP schedules disagreed.
-
-Kept in the task's runtime cache rather than as a field, so no constructor
-changes. The per-turn `@warn` carries `maxlog = 4`, which is right for the
-noise but meant a long run lost rows silently after the fourth one -- measured
-30 turns, 1 row written, 29 dropped, 4 warnings (2026-08-05_b audit, U5-9).
-Measured Lesson 8 is that data and coverage never disappear without a signal, so
-the total is reported once at the end of the run.
-"""
-_dropped_lum_counter(task::StrongStrongTask) =
-    get!(() -> Ref(0), task.runtime_cache, :dropped_luminosity_rows)::Base.RefValue{Int}
-
-function _report_dropped_luminosity_rows(task::StrongStrongTask)
-    counter = _dropped_lum_counter(task)
-    n = counter[]
-    n == 0 && return nothing
-    @warn "luminosity rows dropped this run: per-IP luminosity schedules disagreed " *
-          "on $(n) turn(s), and each such row was dropped WHOLE, including the " *
-          "sibling collisions' evaluated values. The per-turn warning is capped at " *
-          "4; this is the total." dropped_rows = n path = (
-              task.luminosity === nothing ? nothing : task.luminosity.path)
-    counter[] = 0
-    return nothing
-end
-
 function _warn_inactive_diagnostics(diagnostics::StrongStrongDiagnostics, backend)
     inactive = Symbol[]
     for (name, meta) in pairs(diagnostics_option_schema(diagnostics))
@@ -2500,151 +2423,6 @@ function _warn_inactive_diagnostics(diagnostics::StrongStrongDiagnostics, backen
         isequal(getproperty(diagnostics, name), meta.default) || push!(inactive, name)
     end
     isempty(inactive) || @warn "non-default diagnostics are inactive on the selected backend" backend options=inactive
-    return nothing
-end
-
-function _write_strong_strong_luminosity_header(io, blocks)
-    print(io, "turn")
-    for block in blocks
-        block.collision === nothing || print(io, '\t', block.collision.label)
-    end
-    println(io)
-    return nothing
-end
-
-"""
-Leave the luminosity file containing its header plus, in append mode, every
-well-formed existing row before `first_turn`.
-
-With the observer's default `append = false` this rewrites header-only, which
-is the historical replace-per-execution behaviour. With `append = true` the
-file is CONTINUED: a run split across `execute!` calls on one task
-object extends one file with continuous absolute turns, and a fresh task or
-process does the same **when `execute!` is given the matching absolute
-`start_turn`** — the file keeps the rows, but the resume point comes from the
-caller. A fresh task with no `start_turn` executes from absolute turn 0, and
-under the idempotence rule below that REPLACES the recorded timeline; that
-replacement is deliberate-or-mistaken, so it is loud (one warning naming the
-`start_turn` remedy) rather than silent. Rows at or beyond `first_turn` are
-dropped first, because a replayed window (a failed `execute!`'s retry, an
-explicit `start_turn` rewind) rewrites the timeline from `first_turn` on, and
-a file carrying two rows for one turn is corrupt for every reader. A header
-that does not match this task's collision layout is refused rather than
-silently mixed.
-
-Torn writes (2026-08-05 audit, F1): a hard-killed run can leave a partial
-last line whose truncated turn field parses as a smaller turn and would slip
-under the drop rule, surviving the retry as a duplicate turn label. A
-malformed LAST line — wrong field count, or an unparseable turn — can only
-come from a torn final append, so it is dropped with a warning; a malformed
-line anywhere else cannot, and is refused as corruption. The rewrite goes
-through a temporary file and `mv`, so a kill during prepare itself cannot
-lose the history (U4-2). Residual risk, recorded: a torn line that truncates
-only a luminosity VALUE to a shorter valid float in a single-collision layout
-has the right field count and survives; it is removed by any retry that
-replays its window, which is the documented crash protocol.
-"""
-function _plan_strong_strong_luminosity_file(task::StrongStrongTask, blocks1,
-                                             first_turn::Int)
-    path = task.luminosity.path
-    header = sprint(io -> _write_strong_strong_luminosity_header(io, blocks1))
-    if !task.luminosity.append || !isfile(path) || filesize(path) == 0
-        return (header=header, kept=String[], replace=true, torn=nothing, dropped=0)
-    end
-    lines = readlines(path)
-    lines[1] * "\n" == header || throw(ArgumentError(
-        "StrongStrongTask luminosity (append=true): the header at $(path) does not " *
-        "match this task's collision layout ($(repr(lines[1])) vs " *
-        "$(repr(chomp(header)))). Use a new path."))
-    nfields = length(split(chomp(header), '\t'))
-    rows = [line for line in lines[2:end] if !isempty(strip(line))]
-    wellformed(line) = begin
-        parts = split(line, '\t')
-        length(parts) == nfields && tryparse(Int, parts[1]) !== nothing
-    end
-    torn = nothing
-    if !isempty(rows) && !wellformed(rows[end])
-        torn = rows[end]
-        rows = rows[1:(end - 1)]
-    end
-    bad = findfirst(!wellformed, rows)
-    bad === nothing || throw(ArgumentError(
-        "StrongStrongTask luminosity (append=true): data row $(bad) of $(path) is " *
-        "malformed ($(repr(rows[bad]))), which cannot come from a torn final " *
-        "write; refusing to continue a corrupt file. Use a new path."))
-    kept = [line for line in rows if parse(Int, first(split(line, '\t'))) < first_turn]
-    # `dropped` is the rows actually discarded, NOT the file's total row count.
-    # It was `length(rows)` from U5-10 until 2026-08-11, so every CLEAN
-    # continuation — a swap-out second stage, a chunked run — warned
-    # "rewinding: dropped_rows=N, kept_rows=N" while discarding nothing, and a
-    # real data-loss question (the swap-out injection report) was answered by
-    # a false alarm. The warning's own anti-vacuity case, a continuation that
-    # must stay SILENT, was the one never tested.
-    return (header=header, kept=kept, replace=false, torn=torn,
-            dropped=length(rows) - length(kept))
-end
-
-"""
-Write the luminosity file the plan describes. Separated from planning so that
-nothing is destroyed until every preparer has validated (2026-08-05_b audit,
-F2).
-
-The warnings live here rather than in the planner because a warning that
-announces a replacement which then does not happen — because a later preparer
-threw — is worse than no warning: it describes a file state that does not
-exist.
-"""
-function _commit_strong_strong_luminosity_file!(task::StrongStrongTask, plan)
-    path = task.luminosity.path
-    if plan.torn !== nothing
-        @warn "luminosity append: dropping a torn partial last line (an interrupted " *
-              "write) before continuing $(path)" line = plan.torn
-    end
-    if isempty(plan.kept) && plan.dropped > 0
-        @warn "the luminosity observer (append=true) is replacing the entire existing luminosity " *
-              "history at $(path): execution starts at or before every recorded " *
-              "row. Pass the matching absolute start_turn " *
-              "to execute! to continue the file instead." dropped_rows = plan.dropped
-    elseif plan.dropped > 0
-        # PARTIAL truncation was silent (2026-08-05_b audit, U5-10). The guard
-        # above is `isempty(kept) && ...`, so a fresh task with a wrong but
-        # nonzero start_turn destroyed the tail of the file with no signal at
-        # all. Rewinding IS the documented behaviour, which is exactly why it
-        # has to be stated: the deliberate rewind and the mistyped start_turn
-        # look identical from here, and only the user can tell them apart.
-        @warn "the luminosity observer (append=true) is rewinding $(path): rows at or after the " *
-              "start turn are being discarded. This is the documented rewind if " *
-              "you meant it; if you did not, your start_turn is below the end of " *
-              "the existing history." dropped_rows = plan.dropped kept_rows = length(plan.kept)
-    end
-    # The sink is registered by OBSERVER identity at prepare: the same task
-    # continuing across execute! calls is the same observer (silent), while a
-    # second task -- or a weak-strong observer -- on this path is a different
-    # live object and draws the U7-10 collision warning. Labels bind here too,
-    # from the same header the planner validated against the file.
-    obs = task.luminosity
-    if obs !== nothing
-        obs.labels === nothing &&
-            (obs.labels = String.(split(chomp(plan.header), '\t'))[2:end])
-        if !obs.registered
-            _register_observer_path!(obs, path)
-            obs.registered = true
-        end
-    end
-    if plan.replace
-        open(path, "w") do io
-            print(io, plan.header)
-        end
-        return nothing
-    end
-    tmp = path * ".prepare.tmp"
-    open(tmp, "w") do io
-        print(io, plan.header)
-        for line in plan.kept
-            println(io, line)
-        end
-    end
-    mv(tmp, path; force=true)
     return nothing
 end
 
@@ -2666,7 +2444,7 @@ end
 
 function _execute_strong_strong_turns!(
         task, beam1, beam2, blocks1, blocks2, solvers, policy, ctx,
-        turns::Int, first_turn::Int64, lumobs, art)
+        turns::Int, first_turn::Int64, art)
     backend = backend_type(policy)
     streams = _strong_strong_segment_streams(policy)
     memory_log_every = _strong_strong_cuda_memory_log_every(backend)
@@ -2674,8 +2452,6 @@ function _execute_strong_strong_turns!(
         turn = first_turn + offset
         turn_t0 = task.diagnostics.record_turn_times ? time_ns() : UInt64(0)
         ctx = with_turn(ctx, turn)
-        luminosities = lumobs === nothing ? nothing : Float64[]
-        luminosity_evaluated = lumobs === nothing ? nothing : Bool[]
         turn_range = _cuda_nvtx_push(backend, "strongstrong turn")
         for j in eachindex(blocks1)
             line_range = _cuda_nvtx_push(backend, "strongstrong line tracking")
@@ -2689,14 +2465,11 @@ function _execute_strong_strong_turns!(
                 # Resolved once per execute! by the preflight walk (U5-8);
                 # solvers are immutable, so the answer cannot change per turn.
                 solver = solvers[j]
-                luminosity_evaluated === nothing ||
-                    push!(luminosity_evaluated, _strong_strong_luminosity_evaluated(solver, ctx))
                 collision_range = _cuda_nvtx_push(backend, "strongstrong collision")
                 lum = _strong_strong_collide!(
                     task, blocks1[j].collision.label, solver, beam1, beam2, policy, ctx,
                 )
                 _cuda_nvtx_pop(backend, collision_range)
-                luminosities === nothing || push!(luminosities, Float64(lum))
                 # The artifact's channel: THIS collision's own turn axis, a
                 # row exactly when its own schedule evaluated -- no other
                 # collision's schedule is consulted (the design's point; the
@@ -2713,32 +2486,12 @@ function _execute_strong_strong_turns!(
         # its next flush, so a monitoring `h5ls` reads progress and rate
         # without touching the data groups.
         art === nothing || (art.current_turn = Int64(ctx.turn))
-        if luminosities !== nothing && !isempty(luminosities)
-            if all(luminosity_evaluated)
-                # Row completeness stays the TASK's decision; the observer is
-                # handed only whole rows.
-                _push_luminosity_row!(lumobs, ctx.turn, luminosities)
-            elseif any(luminosity_evaluated)
-                # A row must carry one value per collision column, and NaN
-                # already means "evaluated and failed" (kept visible on
-                # purpose), so a turn where per-IP luminosity schedules
-                # disagree cannot be written without corrupting one meaning
-                # or the other. The row is dropped WHOLE — including the
-                # sibling IPs' evaluated values — and that loss is loud
-                # rather than silent (2026-08-05 audit, U4 observation).
-                _dropped_lum_counter(task)[] += 1
-                @warn "luminosity row dropped: per-IP luminosity schedules disagree " *
-                      "on this turn, so evaluated sibling values are not written; " *
-                      "align luminosity_schedule across collisions sharing one file" turn = ctx.turn maxlog = 4
-            end
-        end
         _strong_strong_maybe_log_cuda_memory(backend, ctx.turn, memory_log_every)
         if task.diagnostics.record_turn_times
             backend === CUDABackend && CUDA.synchronize()
             push!(task.turn_times, (time_ns() - turn_t0) * 1.0e-9)
         end
     end
-    _report_dropped_luminosity_rows(task)      # U5-9: the total, past maxlog
     return nothing
 end
 

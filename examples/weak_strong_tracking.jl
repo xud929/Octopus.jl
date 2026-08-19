@@ -19,10 +19,14 @@ The pattern this example follows:
 3. Build element specs in tracking order and place observers where they matter.
 4. Build `TrackingTask(line)` and `execute!` it.
 
-Outputs are written under `result/<seed>/`, named by the case:
+Output is ONE run artifact under `result/<seed>/`
+(docs/design/run_artifact.md):
 
-- `<case_name>.lum`  : turn and luminosity
-- `<case_name>.h5`   : weak-beam moment history
+- `<case_name>.h5` : `/luminosity/strong_beam_1` (turn and luminosity),
+  `/moments/weak_beam`, and the `/execution` ledger; a line with apertures
+  would add `/losses`. Read with one handle: `out = TaskOutput(path)`,
+  then `read(out, :luminosity; name = "strong_beam_1")`, `read(out,
+  :moments; name = "weak_beam")`, `read(out, :execution)`
 
 so seed scans and multi-case studies (different chromaticities, crab
 schemes) never collide on output paths — change `case_name` or `seed` and
@@ -114,16 +118,16 @@ input = (
     ),
 
     output = (
-        # Filenames derive from `case_name` above — one authority, no copies.
-        # The capacities buffer rows in memory between file appends/flushes:
-        # on a networked filesystem the per-turn open/append/close is the
-        # dominant observer cost (measured 2.3 ms/turn on a cluster
-        # filesystem vs 0.02 local; docs/history/
+        # The filename derives from `case_name` above — one authority, no
+        # copies. `capacity` is the ARTIFACT'S: the one knob for how many
+        # rows every producer batches between appends (the per-observer
+        # capacities retired 2026-08-18). On a networked filesystem the
+        # per-turn write is the dominant observer cost (measured 2.3 ms/turn
+        # on a cluster filesystem vs 0.02 local; docs/history/
         # weak_strong_cuda_luminosity_2026_08_11.md), and amortized cost
-        # falls monotonically with capacity. 1024 is the MomentObserver
-        # default; do not lower it on shared storage.
-        luminosity_capacity = 100,
-        moment_capacity = 1024,
+        # falls monotonically with capacity; do not lower it on shared
+        # storage.
+        capacity = 1024,
         moment_start = 0,
         moment_step = 1,
     ),
@@ -272,17 +276,17 @@ radiation = LumpedRadSpec{Float64}(;
     rng_id = 2,
 )
 
-# Outputs land under result/<seed>/, named by the case, so seed scans and
+# Output lands under result/<seed>/, named by the case, so seed scans and
 # multi-case studies never collide.
 outdir = joinpath(input.result_dir, string(input.seed))
 mkpath(outdir)
-luminosity_path = joinpath(outdir, input.case_name * ".lum")
-moment_path = joinpath(outdir, input.case_name * ".h5")
-# Luminosity attaches at the TASK (the unified sink, 2026-08-17): sampled at
-# turn end after the whole line, the same LuminosityObserver StrongStrongTask
-# takes. The moment observer stays a line entry -- its position is physical.
+artifact_path = joinpath(outdir, input.case_name * ".h5")
+# The run artifact attaches at the TASK: the strong beam's luminosity channel
+# lands in it per turn, alongside the execution ledger. The moment observer
+# stays a line entry -- its position is physical -- but is a named VIEW into
+# the same file.
 moment_observer = ScheduledObserver(
-    MomentObserver(moment_path; capacity = input.output.moment_capacity),
+    MomentObserver(; name = "weak_beam"),
     EveryNSteps(
         start = input.output.moment_start,
         step = input.output.moment_step,
@@ -305,13 +309,12 @@ line_specs = (
     moment_observer,
 )
 task = TrackingTask(line_specs;
-    luminosity = LuminosityObserver(luminosity_path;
-                                    capacity = input.output.luminosity_capacity))
+    artifact = RunArtifact(artifact_path; capacity = input.output.capacity))
 execute!(task, beam; turns = turns)
 
 stats = beam_statistics(beam)
 println("turns = ", turns)
 println("n_macro = ", n_macro)
-println("luminosity = ", luminosity_path)
-println("moments = ", moment_path)
+println("artifact = ", artifact_path)
+println("  /luminosity/strong_beam_1, /moments/weak_beam, /execution")
 println("rms = ", stats.rms)

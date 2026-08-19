@@ -525,10 +525,11 @@ test suite.
 
 Outputs, under `result/`: `pic_diagnostics_<mode>_turn_times.tsv` and
 `pic_diagnostics_<mode>_summary.tsv`. The tracking harness this script includes
-also writes `test/result/<seed>/pic_hcc.lum` (`luminosity_io`, `both`) and
-`test/result/<seed>/pic_hcc.ele.h5` / `pic_hcc.pro.h5` (`moments`, `both`) --
-none of which this entry named (2026-08-05_b audit, U25-8; seed-directory
-layout since 2026-08-11).
+also writes the run artifact `test/result/<seed>/pic_hcc.h5` in every mode
+except `baseline` and `luminosity` -- `/luminosity/ip` in `luminosity_io`/
+`both`, `/moments/electron` and `/moments/proton` in `moments`/`both` (outputs
+unnamed here until the 2026-08-05_b audit, U25-8; seed-directory layout since
+2026-08-11; one-artifact layout since 2026-08-18).
 
 Tracked results, accuracy checks, and accepted/rejected experiments are in
 `../docs/history/strong_strong_diagnostics_benchmark_history.md`.
@@ -543,9 +544,10 @@ compares two backends, so there is nothing for it to do on a CPU-only machine
 julia --project=. validation/moment_observer_backend_consistency.jl
 ```
 
-`strong_strong_luminosity_schedule_output.jl` verifies that luminosity files
-omit unscheduled turns while preserving all scheduled results, including an
-evaluated `NaN`, and that the header identifies collision columns:
+`strong_strong_luminosity_schedule_output.jl` verifies that the run
+artifact's per-collision luminosity channels omit unscheduled turns while
+preserving all scheduled results, including an evaluated `NaN`, each channel
+on its own turn axis:
 
 ```bash
 julia --project=. validation/strong_strong_luminosity_schedule_output.jl
@@ -891,8 +893,8 @@ effective values in `meta.tsv` (2026-08-05_b audit, U25-1).
 Outputs, under `result/`: `pic_option_<tag>.tsv` (per-turn luminosity and
 moments), `pic_option_<tag>.coords.tsv` (coordinates at the dump turns),
 `pic_option_<tag>.meta.tsv` (one row of options, effective batching, timing),
-and `pic_option_<tag>.lum` (the task's own luminosity file, rewritten each turn
-and read back for the series). The summary script writes
+and `pic_option_<tag>.h5` (the task's run artifact in append mode, whose
+`/luminosity/ip` series is read back per turn). The summary script writes
 `result/pic_option_consistency_summary.tsv`, and refuses to compare an arm
 whose particle count, turn count, grid, slice count or timing window differs
 from its baseline -- it names the mismatch instead (U25-8, U25-11).
@@ -1056,8 +1058,9 @@ against each reference.
 julia --startup-file=no --project=. validation/crossing_luminosity_anchor.jl
 ```
 
-Outputs, under `result/lum_anchor/`: `lum_headon.lum`, `lum_crossing.lum`,
-`lum_crab.lum`. `data/crossing_lum_anchor.tsv` in the paper repository
+Outputs, under `result/lum_anchor/`: the run artifacts `lum_headon.h5`,
+`lum_crossing.h5`, `lum_crab.h5` (`/luminosity/ip` channels).
+`data/crossing_lum_anchor.tsv` in the paper repository
 (https://github.com/xud929/2026_octopus_cpc) is a hand-transcribed copy for
 the paper.
 

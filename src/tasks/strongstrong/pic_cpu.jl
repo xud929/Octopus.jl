@@ -96,10 +96,11 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # stable to key it on: klum and kbb follow the beam's params type, so a
     # Float32 beam gave a Float32 klum, and which scalar happened to promote
     # differed by backend -- the CPU returned Float64, CUDA Float32, and every
-    # no-compute arm a beam-typed NaN. Float64 is what the task layer already
-    # writes to .lum files; the per-pair computation itself deliberately stays
-    # at the pipeline's own precision (the recorded pipeline-precision
-    # asymmetry remains on the N7 ledger row).
+    # no-compute arm a beam-typed NaN. Float64 is what the task layer writes
+    # into the artifact's luminosity channel (originally its .lum files); the
+    # per-pair computation itself deliberately stays at the pipeline's own
+    # precision (the recorded pipeline-precision asymmetry remains on the N7
+    # ledger row).
     LT = Float64
     share_grid = _pic_source_slice_grid(solver)
     node_grid = _pic_node_grid_mode(solver)

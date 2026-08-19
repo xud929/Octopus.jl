@@ -5,11 +5,11 @@ validated PIC solver configuration. The default target is 200 turns; turns
 representative HDF5 flush.
 
 Modes:
-  baseline       no moments, no luminosity calculation or file
-  luminosity     luminosity calculation, no luminosity file
-  luminosity_io  luminosity calculation and text file
-  moments        two moment files, no luminosity calculation or file
-  both           moments plus luminosity calculation and text file
+  baseline       no moments, no luminosity calculation, no artifact
+  luminosity     luminosity calculation, no artifact
+  luminosity_io  luminosity calculation and its artifact channel
+  moments        two moment views in the artifact, no luminosity calculation
+  both           moments plus luminosity calculation and channel
 
 Run from the project root, for example:
 
@@ -25,11 +25,13 @@ Outputs (2026-08-05_b audit, U25-8 -- this header named none of them):
                                                    mean/median/min/std
 
 and, written by the tracking harness this script includes, in the modes that
-enable them:
+enable it:
 
-    test/result/<seed>/pic_hcc.lum       (luminosity_io, both)
-    test/result/<seed>/pic_hcc.ele.h5    (moments, both)
-    test/result/<seed>/pic_hcc.pro.h5    (moments, both)
+    test/result/<seed>/pic_hcc.h5        the run artifact (all modes except
+                                         baseline and luminosity):
+                                         /luminosity/ip in luminosity_io/both,
+                                         /moments/{electron,proton} in
+                                         moments/both
 =#
 
 mode = Symbol(lowercase(get(ENV, "OCTOPUS_DIAGNOSTIC_BENCHMARK_MODE", "baseline")))
@@ -93,7 +95,7 @@ include(joinpath(@__DIR__, "..", "test", "examples", "strong_strong_tracking.jl"
 # these names were an undeclared dependency, and a rename in the harness
 # surfaced as an UndefVarError at the end of a production-size GPU run
 # (2026-08-05_b audit, U25-15).
-assert_harness_exports((:input, :task, :luminosity_path, :electron_moment_path, :proton_moment_path,
+assert_harness_exports((:input, :task, :artifact_path,
          :stats_ele, :stats_pro, :solver, :policy))
 
 timings = turn_timings(task)
@@ -105,9 +107,8 @@ sample_median = isodd(length(sorted)) ? sorted[mid + 1] : (sorted[mid] + sorted[
 sample_std = sqrt(sum((x - sample_mean)^2 for x in sample) / (length(sample) - 1))
 
 file_size(path) = isfile(path) ? filesize(path) : 0
-luminosity_bytes = luminosity_file_enabled ? file_size(luminosity_path) : 0
-electron_moment_bytes = moments_enabled ? file_size(electron_moment_path) : 0
-proton_moment_bytes = moments_enabled ? file_size(proton_moment_path) : 0
+artifact_bytes = (luminosity_file_enabled || moments_enabled) ?
+                 file_size(artifact_path) : 0
 
 println("diagnostic_mode = ", mode)
 println("sample_turns = ", turns - sample_turns, ":", turns - 1)
@@ -115,9 +116,7 @@ println("sample_mean_seconds = ", sample_mean)
 println("sample_median_seconds = ", sample_median)
 println("sample_min_seconds = ", minimum(sample))
 println("sample_std_seconds = ", sample_std)
-println("luminosity_bytes = ", luminosity_bytes)
-println("electron_moment_bytes = ", electron_moment_bytes)
-println("proton_moment_bytes = ", proton_moment_bytes)
+println("artifact_bytes = ", artifact_bytes)
 
 summary_path = joinpath(result_dir, "pic_diagnostics_$(mode)_summary.tsv")
 configuration_rows = Pair{String,Any}[
@@ -131,9 +130,7 @@ configuration_rows = Pair{String,Any}[
     "sample_min_seconds" => minimum(sample),
     "sample_std_seconds" => sample_std,
     "moment_capacity" => ENV["OCTOPUS_MOMENT_CAPACITY"],
-    "luminosity_bytes" => luminosity_bytes,
-    "electron_moment_bytes" => electron_moment_bytes,
-    "proton_moment_bytes" => proton_moment_bytes,
+    "artifact_bytes" => artifact_bytes,
     "electron_rms" => join(stats_ele.rms, ','),
     "proton_rms" => join(stats_pro.rms, ','),
 ]

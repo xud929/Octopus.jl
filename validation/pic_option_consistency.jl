@@ -61,8 +61,9 @@ Outputs (under `result/`)
 - `pic_option_<tag>.coords.tsv` -- coordinates at the dump turns
 - `pic_option_<tag>.meta.tsv`   -- one row: options (including the *effective*
   `batch_mode` and `cuda_async`), timing, totals
-- `pic_option_<tag>.lum`        -- the task's own luminosity file, rewritten
-  each turn and read back for the series above (2026-08-05_b audit, U25-8)
+- `pic_option_<tag>.h5`         -- the task's run artifact (append mode, one
+  continuous /luminosity/ip series across the one-turn execute! calls), read
+  back for the series above (2026-08-05_b audit, U25-8)
 """
 
 using Octopus
@@ -193,29 +194,23 @@ rp = ring(pro, pro.crab_beta, pro.fcrab, pro.kx, pro.tune, pro.chrom, nothing)
 line_e = (re[1], re[2], re[3], lb, ip, rlb, re[4], re[5], re[6], re[7], re[8], ele_rad)
 line_p = (rp[1], rp[2], rp[3], lb, ip, rlb, rp[4], rp[5], rp[6], rp[7], rp[8])
 
-lum_path = joinpath(result_dir, "pic_option_$(config.tag).lum")
+lum_path = joinpath(result_dir, "pic_option_$(config.tag).h5")
 isfile(lum_path) && rm(lum_path)
-task = StrongStrongTask(line_e, line_p; luminosity=lum_path)
+task = StrongStrongTask(line_e, line_p;
+                        artifact=RunArtifact(lum_path; append=true))
 
 """
-Read the single luminosity row the task just wrote.
+Read the luminosity value the one-turn `execute!` just appended.
 
-`execute!` opens `luminosity_path` with `"w"` per call, so a one-turn-per-call
-loop leaves exactly one data row; reading it immediately after each call is the
-supported way to get a per-turn series without buffering assumptions.
+The artifact is in append mode, so the one-turn-per-call loop grows one
+continuous /luminosity/ip series; the last value is the turn just tracked.
+Every flush leaves the file readable, so reading immediately after each call
+needs no buffering assumptions.
 """
-function read_luminosity(path)
+function last_luminosity_value(path)
     isfile(path) || return NaN
-    v = NaN
-    for ln in eachline(path)
-        (isempty(ln) || startswith(ln, "#")) && continue
-        f = split(ln)
-        length(f) >= 2 || continue
-        tryparse(Int, f[1]) === nothing && continue
-        p2 = tryparse(Float64, f[2])
-        p2 === nothing || (v = p2)
-    end
-    return v
+    series = read(TaskOutput(path), :luminosity; name="ip")
+    return isempty(series.values) ? NaN : Float64(series.values[end])
 end
 
 host(a) = Array(a)
@@ -242,7 +237,7 @@ for turn in 1:config.turns
     execute!(task, beam_e, beam_p; turns=1)
     dt = time() - t0
     turn >= config.timing_from && push!(times, dt)
-    lum = read_luminosity(lum_path)
+    lum = last_luminosity_value(lum_path)
     me = moments(beam_e); mp = moments(beam_p)
     push!(rows, [turn, lum, me..., mp...])
     if turn in dump

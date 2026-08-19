@@ -418,9 +418,10 @@ Length of a placement as a plain `Float64`, evaluating a knob-valued `:L`.
 `Float64(::AbstractKnobExpression)` raises the directed eager-conversion error,
 and knob-driven lengths are a documented first-class feature, so a bare
 `Float64(getparam(...))` here made every arc-length walk over UNRESOLVED specs
-throw. The one that mattered ran in `_write_task_loss_log`, i.e. AFTER all
-tracking had completed: a run with `loss_log` set and a knob-valued length
-tracked to the end and then died at the reporting step, losing the results. The
+throw. The one that mattered ran in the loss-file rewrite (then
+`_write_task_loss_log`, today the artifact's `/losses` write), i.e. AFTER all
+tracking had completed: a run with a loss file requested and a knob-valued
+length tracked to the end and then died at the reporting step, losing the results. The
 same walk runs in `execute!`'s catch block, so it also masked whatever original
 error had stopped the run (2026-08-05_b audit, U13-5; and see U13-2).
 """

@@ -2673,3 +2673,88 @@ harness. The torn-line/replace/rewind warnings kept their pinned message
 bodies with keyword-free prefixes. The retirement error itself is pinned
 (ArgumentError mentioning "retired" and "luminosity="), alongside the
 two-spelling byte identity and the observer-append rewind idempotence.
+
+
+### The run artifact: one output file per task — closed 2026-08-18
+
+The row as it stood when step 4 closed it:
+
+| The run artifact: one output file per task | **steps 1-3 landed (2026-08-18); step 4 is the owner's retirement call** | Owner-decided design, recorded in [`design/run_artifact.md`](../design/run_artifact.md): one HDF5 artifact per task, one group per producer, with the probe/channel split (probes are PLACED -- moments, snapshots, BPM -- and gain `name` identities defaulting to provenance paths, closing the deferred BPM observer-identity scheme; channels are INTRINSIC and declared on producers -- `StrongStrongCollision`, the strong-beam specs, apertures). Independent per-dataset turn axes dissolve the mixed-IP row-drop machinery outright. The task owns the sink exactly once: open/append/replay/finalize, capacity batching as the default posture, a rows-valid-through-turn cursor per group for crash recovery (the text path's torn-line semantics, generalized), an optional live text mirror for `tail -f`. Producers and kernels are untouched -- sinks move, hot paths do not. Migration order per the note: container+cursor+luminosity channel (strong-strong first), then moments/snapshots/BPM as named views, then losses, with the current APIs as adapters until the owner retires them. *(Step 1 landed 2026-08-18: `RunArtifact` + `StrongStrongTask(...; artifact=obj_or_path)` -- `/luminosity/<label>` on independent per-collision turn axes (the mixed-IP whole-row drop rule measurably does not apply: disagreeing schedules keep their own evaluated turns, pinned), `/execution` with one appended row per execute!, the per-group rows-valid-through-turn cursor (torn tails truncated on reopen, pinned by an injected-tail test), append/replay per group, label-mismatch refusal, registry by artifact identity, and exact agreement with the text mirror where both write. Weak-strong luminosity, the probes (step 2) and losses (step 3) remain.)* *(Steps 2-3 landed the same day: `TrackingTask(...; artifact=...)` carries the per-strong-beam luminosity channel (positional labels until elements carry names), `/losses` rewritten whole per execute! from the cumulative record -- pinned equal to the loss log's datasets -- and the execution ledger with `current_turn`. Probes joined as NAMED VIEWS through the active-artifact scope: `MomentObserver(; name=...)`, `CoordinateSnapshotObserver(; name=...)` and `BPMObserver(...; artifact=true)` write row-matrix groups `/moments|snapshot|bpm/<name>` with per-group cursors, continuation and rewind pinned across three executions, name uniqueness enforced loudly, and a named probe without an artifact-carrying task refused. What remains is step 4 only: whether and when the standalone per-observer files retire behind the artifact -- the owner's call, plus the deferred niceties recorded in the note (s-position attributes on probe groups, element names for the weak-strong channel labels, the live text mirror as a first-class option).)* Prerequisites all landed: the luminosity unification (2026-08-17), the keyword retirement, and the weak-strong fresh-observer `append=true` fix (2026-08-18, pinned: a fresh observer continues an existing file across restarts with the replay-discard idempotence rule -- previously `append` was consumed only by the strong-strong planner and a fresh weak-strong observer truncated the history it was asked to continue). |
+
+Step 4 (owner decision: "retire the old output one. Think about the read. We
+need a convinence reader like read moment file as before."), in two halves the
+same day. First the READ surface, so nothing retired before its replacement
+could be read back: `MomentOutput(path; name=...)` reads a `/moments/<name>`
+group with the full existing API (`read(out)`, `read(out, item)`,
+`column_names`; `record_count` falls back to the data extent under the
+cursor rule; `elapsed_time` in group mode errors pointing at the execution
+ledger), plus ONE artifact handle — `read(TaskOutput(path), kind;
+name=..., column=..., turn=...)` over :luminosity/:moments/:snapshot/:bpm/
+:losses/:execution, with the bare `read(out)` returning the table of
+contents and `read(out, :all)` the whole file (owner direction: one `read`
+from discovery to data, keyword-selected, the `MomentOutput` ergonomics
+generalized, replacing a first-cut per-product `read_*` family the same
+day; the handle's first-cut name `TaskOutputFile` shortened to `TaskOutput`
+on owner direction too). Buffering unified the same way (owner direction):
+`RunArtifact(path; capacity=...)` is the ONE batching knob for the
+row-shaped producers — the per-observer `capacity` keywords on
+`MomentObserver` and `BPMObserver` retired (throwing the migration
+pointer), the moment row buffer is sized from the artifact at prepare
+(snapshots are the deliberate exception: a phase-space block is already
+large and writes immediately per fire; its volume knobs are the schedule
+and `npart`), and with it the
+`capacity = 0` disables-output spelling retired (the harnesses keep
+`OCTOPUS_MOMENT_CAPACITY=0` meaning "no moments" by folding it into their
+disable flag; the plan-consistency validation's disabled-probe fixture
+became a memory-only BPM). Then the WRITERS retired: the
+text `LuminosityObserver` deleted outright (its registry/capacity/torn-line
+machinery with it), `MomentObserver(path;...)`, `CoordinateSnapshotObserver(path;...)`
+and `BPMObserver(...; path=...)` throw precise retirement errors naming the
+artifact spelling and the reader (the name-form constructors build directly;
+the moment/snapshot file machinery -- append-continue, execution slots,
+byte-offset replay maps, per-file HDF5 init -- deleted), and
+`TrackingTask(...; luminosity=)` / `loss_log=` throw the same class of error
+(`_write_task_loss_log` deleted; per-particle loss slots now follow
+`artifact !== nothing`; the crash path computes the reconciliation summary
+best-effort so a crashed run's `/losses` still carries it). The metadata tree
+guard forced full deletion of `LuminosityObserver` (a throwing constructor
+cannot satisfy per-observer coverage); `MomentObserver`'s schema gained the
+`moments` entry its report carries, BPM's schema swapped `path` for
+`artifact`. Callers migrated: both examples and both harnesses (ONE
+`<case>.h5` per run; the SS harness's `HARNESS_EXPORTS` interface now
+publishes `artifact_path`, with the diagnostics benchmark consumer updated in
+the same commit; `OCTOPUS_DISABLE_LUMINOSITY_OUTPUT` now drops the artifact
+whole and errors on the contradictory moments-on combination unless
+luminosity evaluation itself is off), six validation scripts (the
+schedule-output validation rewritten against per-channel axes: pinned
+`ip1 = [0, 100, 200]` with an evaluated NaN RETAINED, `ip2` on its own axis),
+`Contracts.jl` (3 sites reading `read_luminosity` where text was parsed), and
+the test suite: five text/file-machinery testsets deleted (SS text append,
+phase-1 sink, torn/replace/rewind, LuminosityObserver capacity, MomentObserver
+append table), the mixed-IP drop half deleted (the dissolution pin is the
+artifact's), the U7-10 registry testset re-homed on the artifact (same
+warn-once semantics, registered by artifact identity), the U7-4 extension-lie
+pin kept as a reader-only test, loss tests migrated to `read_losses`, and the
+schema pin advanced to `(:artifact,)`. Retirement errors are pinned for every
+retired spelling ("retired" + "artifact" in the message), and
+`:LuminosityObserver` is pinned absent from `names(Octopus)`. The writer-path
+registry row's loss-log remainder closes with this: the artifact is the
+registry's one writer, by artifact identity. Deferred niceties stay on the
+open ledger: s-position attributes on probe groups, element names for the
+weak-strong channel labels, a live text mirror as a first-class option.
+
+
+### Task-level writer paths are outside the observer registry — closed 2026-08-18
+
+The row as it stood at closure:
+
+| Task-level writer paths are outside the observer registry | **open (2026-08-08 row remainder)** | The observer half of the truncating-writers row closed (LuminosityObserver/BPMObserver/CoordinateSnapshotObserver register with `_register_observer_path!`), but the task-level `.lum` path and the loss log (`write_loss_record`) are outside any registry, so an observer and a task — or two tasks — sharing a path collide with no signal. The open question is design, not mechanism: what object identity a task-level writer registers (the task? the plan?), which the observer-shaped registry does not answer. *(2026-08-17: the `.lum` half is CLOSED -- phase 1 landed and the path registers by observer identity; what remains here is the loss log only.)* Full record: the archive's "Three more truncating observer writers" row. |
+
+Closed by the run artifact's step 4 rather than by answering the design
+question: the loss log's standalone path retired (`loss_log=` throws; the
+accounting lives in the artifact's `/losses` group), and the artifact — the
+one remaining task-level writer — registers with `_register_observer_path!`
+by ARTIFACT identity at first prepare, which answers "what identity does a
+task-level writer register" for the only writer left. Pinned: a task
+continuing across execute! calls is silent, a second artifact on the path
+warns (the U7-10 testset, re-homed).

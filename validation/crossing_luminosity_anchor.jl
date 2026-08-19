@@ -13,8 +13,9 @@
 #
 #     julia --startup-file=no --project=. validation/crossing_luminosity_anchor.jl
 #
-# Outputs, under result/lum_anchor/: lum_headon.lum, lum_crossing.lum,
-# lum_crab.lum (undocumented until the 2026-08-05_b audit, U25-12).
+# Outputs, under result/lum_anchor/: lum_headon.h5, lum_crossing.h5,
+# lum_crab.h5 -- run artifacts whose /luminosity/ip channel this script reads
+# back (outputs undocumented until the 2026-08-05_b audit, U25-12).
 # Guarded like every other script in `validation/`: without it this file
 # cannot be `include`d after any sibling in one process, which is how the
 # audit harnesses drive them (2026-08-05_b audit, U25-14).
@@ -82,14 +83,10 @@ function run_config(tag; angle, crab)
         (lb, ip, rlb, ot)
     end
 
-    lum_path = joinpath(OUTDIR, "lum_$(tag).lum")
-    task = StrongStrongTask(elems, elems; luminosity = lum_path)
+    lum_path = joinpath(OUTDIR, "lum_$(tag).h5")
+    task = StrongStrongTask(elems, elems; artifact = lum_path)
     execute!(task, b1, b2; turns = 3)
-    vals = Float64[]
-    for l in eachline(lum_path)
-        v = tryparse(Float64, last(split(l)))
-        v === nothing || push!(vals, v)
-    end
+    vals = collect(Float64, read(TaskOutput(lum_path), :luminosity; name = "ip").values)
     println(tag, " luminosity per turn: ", vals)
     mean(vals)
 end

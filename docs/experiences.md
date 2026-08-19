@@ -159,6 +159,14 @@ teaches something reusable, it lands here (dated), and the full record goes to
 - Warnings that fire per compile need `maxlog` and a content-keyed `_id`: a
   knob sweep recompiles thousands of times, and a warning that repeats
   thousands of times is silence with extra steps.
+- Marker-span deletion scripts overshoot: deleting `LuminosityObserver`
+  (2026-08-18) by from-marker-to-marker cuts also swallowed the neighbouring
+  `observer_option_schema` stub, two other observers' schemas, and the
+  snapshot prepare/discard machinery — and the module still LOADED, because
+  Julia only misses a method at call time. After any type-level deletion, run
+  a survival probe of the neighbours' surface (their schemas, constructors,
+  reports), and recover swallowed text from `git diff`, which still holds it
+  verbatim.
 
 ## Re-price accepted limitations after every campaign
 

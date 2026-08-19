@@ -1,11 +1,25 @@
 # The run artifact: one output file per task
 
-**Status: decided 2026-08-18 (owner discussion), not yet implemented.** The
-sequencing and the decisions below are settled; the ledger row carries the
-implementation. Prerequisites already landed: the luminosity-sink unification
-(one `LuminosityObserver` for both tasks, task-attached, append/capacity;
-2026-08-17), the keyword retirement, and the weak-strong fresh-observer
-append fix (2026-08-18).
+**Status: decided 2026-08-18 (owner discussion); implemented 2026-08-18, all
+four migration steps.** The archive's "The run artifact: one output file per
+task" row is the full implementation record. Step 4 went further than the
+"adapters, deprecated on the owner's schedule" wording below: the owner
+retired the standalone writers outright (the text luminosity observer
+deleted; the per-observer file paths and `loss_log=` throw precise migration
+errors), with the reader surface landed first: ONE handle,
+`read(TaskOutput(path), kind; name=..., column=..., turn=...)`, the bare
+`read` returning the table of contents and `:all` the whole file, with
+`MomentOutput(path; name=...)` for Moment-aware selection (owner
+direction, 2026-08-18 — one `read` from discovery to data, not one function
+per product). Buffering unified the same day (owner direction): the
+"per-product buffer" ownership in the table below moved to the SINK —
+`RunArtifact(path; capacity=...)` is the one batching knob for every
+producer, and the per-observer `capacity` keywords retired with the
+writers. Deferred niceties (s-position attributes,
+weak-strong label names, a first-class live text mirror) are an open ledger
+row. Prerequisites had landed before implementation: the luminosity-sink
+unification (2026-08-17), the keyword retirement, and the weak-strong
+fresh-observer append fix (2026-08-18).
 
 ## The problem
 

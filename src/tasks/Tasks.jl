@@ -52,7 +52,6 @@ struct TrackingTask <: AbstractTask
     next_turn::Base.RefValue{Int64}
     runtime_entries_cache::Base.RefValue{Any}
     plan_cache::Dict{Any,Any}
-    loss_log::Union{Nothing,String}
     loss_report::Bool
     loss_record::Base.RefValue{Any}
     # The run artifact (docs/design/run_artifact.md): the one-HDF5-per-task
@@ -88,7 +87,7 @@ end
 
 """
     TrackingTask(elements; policy=nothing,
-                 hooks=(), luminosity=nothing,
+                 hooks=(), artifact=nothing,
                  contracts=..., analyses=...)
 
 Construct a tracking workflow from one element spec or a sequence of element
@@ -109,7 +108,7 @@ Line-level hooks can also appear inside `elements`:
 line = (
     crab_cavity,
     beam_beam,
-    ScheduledObserver(LuminosityObserver("luminosity.dat")),
+    ScheduledObserver(MomentObserver(; name = "post_bb")),
     radiation,
 )
 ```
@@ -121,12 +120,15 @@ turn-dependent updates mutate the cached runtime objects in place.
 The older `actions` and `observers` keywords remain accepted as compatibility
 aliases and are merged into `hooks`.
 
-`luminosity` attaches a [`LuminosityObserver`](@ref) at TASK level — the same
-sink `StrongStrongTask` takes, and the preferred spelling: it samples at turn
-end, after the whole line, where a mid-line placement would read beam-beam
-elements downstream of it at the previous turn's value. A bare path string is
-sugar for `LuminosityObserver(path)`. Line placement (the example above)
-remains accepted.
+`artifact` attaches the task's [`RunArtifact`](@ref) — the one-HDF5-per-task
+sink (`docs/design/run_artifact.md`), the same one `StrongStrongTask` takes.
+A bare path string is sugar for `RunArtifact(path)`. It carries the
+per-strong-beam luminosity channel (`/luminosity/strong_beam_<i>`, read back
+with `read(TaskOutput(path), :luminosity)`), the `/losses` group, the
+execution ledger,
+and every named probe view (`MomentObserver(; name=...)`,
+`CoordinateSnapshotObserver(; name=...)`, `BPMObserver(...; artifact=true)`)
+placed in the line or hooks.
 
 # Loss accounting
 
@@ -136,9 +138,10 @@ nobody fires is not a diagnostic — and the number that matters,
 `unattributed`, is one no user thinks to ask for.
 
 - **Nothing lost**: silent. A clean run prints nothing.
-- **`loss_log` given**: the accounting goes into that HDF5, next to the
-  per-aperture names, counts and arc positions, and the console stays quiet —
-  a run that asked for an artifact should not also chatter.
+- **`artifact` given**: the accounting goes into its `/losses` group, next to
+  the per-aperture names, counts and arc positions, and the console stays
+  quiet — a run that asked for an artifact should not also chatter. Read it
+  back with `read(TaskOutput(path), :losses)`.
 - **Otherwise**: a short summary on `stdout`, broken down per collimator.
 - **`unattributed != 0`**: warns either way. It means a coordinate went
   non-finite where nothing was collimating, and that should not be reachable
@@ -148,8 +151,8 @@ The reconciliation costs one `O(N)` non-finite reduction per `execute!` call,
 not per turn. `loss_report = false` skips that reduction rather than merely
 silencing it, so a caller stepping one turn at a time pays nothing — but it
 switches off the **detection** along with the printing: no `unattributed`
-warning, and no summary written into `loss_log`. The per-particle loss records
-are unaffected.
+warning, and no summary written into the artifact. The per-particle loss
+records are unaffected.
 """
 function TrackingTask(elements;
                       policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
@@ -159,38 +162,30 @@ function TrackingTask(elements;
                       observers=(),
                       contracts::Vector{DataType}=_collect_contracts(elements),
                       analyses::Vector{DataType}=_collect_analyses(elements),
-                      loss_log::Union{Nothing,AbstractString}=nothing,
+                      loss_log=nothing,      # retired 2026-08-18; throws below
                       loss_report::Bool=true,
-                      luminosity=nothing,
-                      artifact::Union{Nothing,RunArtifact,AbstractString}=nothing)   # LuminosityObserver or path; untyped
-                                            # because BeamObservers.jl loads after
-                                            # this file -- validated in the body,
-                                            # where the name binds late
+                      luminosity=nothing,    # retired 2026-08-18; throws below
+                      artifact::Union{Nothing,RunArtifact,AbstractString}=nothing)
+    luminosity === nothing || throw(ArgumentError(
+        "the standalone luminosity outputs were retired (text observer " *
+        "2026-08-18; the path keywords 2026-08-17): pass " *
+        "artifact=RunArtifact(path; append=..., capacity=...) or " *
+        "artifact=path, and read it back with " *
+        "read(TaskOutput(path), :luminosity)"))
+    loss_log === nothing || throw(ArgumentError(
+        "the standalone loss log was retired (2026-08-18): pass " *
+        "artifact=RunArtifact(path) or artifact=path -- the loss accounting " *
+        "goes into its /losses group -- and read it back with " *
+        "read(TaskOutput(path), :losses)"))
     element_tuple = _element_tuple(elements)
     seed !== nothing && @warn "TrackingTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
     _warn_duplicate_radiation_streams(element_tuple)
     _warn_hidden_apertures(element_tuple)
-    # The task-level luminosity sink (phase 1 of the unification, 2026-08-17):
-    # the same LuminosityObserver either task accepts, folded into the ordinary
-    # task-observer channel -- prepared with the runtime elements, consulted
-    # for the diagnostic-isolation request, observed AFTER the whole turn
-    # (which removes the line-placement footgun: a mid-line observer samples
-    # beam-beam elements downstream of it at the PREVIOUS turn's value), and
-    # finalized with everything else. A bare path is sugar for
-    # LuminosityObserver(path). Line placement remains accepted.
-    if luminosity !== nothing
-        obs = luminosity isa AbstractString ? LuminosityObserver(String(luminosity)) :
-              luminosity
-        obs isa LuminosityObserver || throw(ArgumentError(
-            "luminosity must be a LuminosityObserver or an output path; got $(typeof(luminosity))"))
-        observers = (_hook_tuple(observers)..., obs)
-    end
     action_tuple, observer_tuple = classify_task_hooks(hooks, actions, observers)
     art = artifact === nothing ? nothing :
           artifact isa RunArtifact ? artifact : RunArtifact(String(artifact))
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
                         Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),
-                        loss_log === nothing ? nothing : String(loss_log),
                         loss_report, Ref{Any}(nothing), art, Ref(WeakRef(nothing)))
 end
 
@@ -491,8 +486,7 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
         # audit, U13-2).
         try
             summary = _task_loss_summary(task, rep)
-            wrote_file = _write_task_loss_log(task, summary)
-            _report_losses(task, rep, summary, wrote_file)
+            _report_losses(task, rep, summary, task.artifact !== nothing)
         catch flush_error
             @warn "the crashed run's loss accounting could not be flushed; the \
                    tracking error that stopped the run is the one below, and is \
@@ -500,11 +494,17 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
         end
         if task.artifact !== nothing && task.artifact.file !== nothing
             # Same best-effort rule for the artifact: flush what the run
-            # produced (the losses recorded so far included), never replace
+            # produced (the losses recorded so far included, with the
+            # reconciliation summary when it is computable), never replace
             # the error that stopped the run.
             try
+                crash_summary = try
+                    _task_loss_summary(task, rep)
+                catch
+                    nothing
+                end
                 _ra_write_losses!(task.artifact, task.loss_record[],
-                                  _aperture_s_positions(task.elements), nothing)
+                                  _aperture_s_positions(task.elements), crash_summary)
                 finalize_run_artifact!(task.artifact)
             catch artifact_error
                 @warn "the crashed run's artifact could not be finalized; the \
@@ -515,8 +515,9 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     end
     task.next_turn[] = next_turn
     summary = _task_loss_summary(task, rep)
-    wrote_file = _write_task_loss_log(task, summary)
-    _report_losses(task, rep, summary, wrote_file)
+    # The console-quiet rule: with an artifact attached the accounting goes
+    # into its /losses group (written just below), so the summary is "on file".
+    _report_losses(task, rep, summary, task.artifact !== nothing)
     if task.artifact !== nothing
         # Success path: /losses is rewritten whole from the cumulative record
         # (the write_loss_record idempotence rule), then the artifact closes.
@@ -527,24 +528,6 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
         finalize_run_artifact!(task.artifact)
     end
     return result
-end
-
-"""
-Rewrite the loss file after a run, when a path was given.
-
-Rewritten whole rather than appended: the record is cumulative and a particle is
-lost at most once, so the file after `n` turns is a superset of the file after
-`n-1`. That makes the write idempotent and makes a run split across several
-`execute!` calls produce the same file as one long call.
-"""
-function _write_task_loss_log(task::TrackingTask, summary)
-    task.loss_log === nothing && return false
-    record = task.loss_record[]
-    record === nothing && return false
-    record.slots === nothing && return false
-    write_loss_record(task.loss_log, record;
-                      s=_aperture_s_positions(task.elements), summary=summary)
-    return true
 end
 
 """
@@ -656,9 +639,10 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                 art.current_turn = Int64(turn)
                 for (i, elem) in enumerate(strong_beams)
                     lum = luminosity(elem, ctx, rep)
-                    # The text observer's positive filter, per element: a
-                    # strong beam whose luminosity diagnostic is off reports
-                    # 0.0 and gets no row on its axis.
+                    # The positive filter, per element (carried over
+                    # from the retired text observer): a strong beam whose
+                    # luminosity diagnostic is off reports 0.0 and gets no
+                    # row on its axis.
                     lum > 0.0 && push_luminosity!(art, string("strong_beam_", i),
                                                   turn, Float64(lum))
                 end
@@ -840,7 +824,9 @@ function _ensure_loss_record!(task::TrackingTask, rep)
     specs = _aperture_specs(task.elements)
     isempty(specs) && return nothing
     existing = task.loss_record[]
-    want_slots = task.loss_log !== nothing
+    # Per-particle slots feed the artifact's /losses rows; without an artifact
+    # only the per-aperture counters are kept.
+    want_slots = task.artifact !== nothing
     if existing !== nothing
         # Identity first: everything below only establishes that the record has
         # the right SHAPE for this rep, which a different beam of the same size

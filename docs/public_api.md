@@ -98,11 +98,12 @@ Use Julia help:
 ?observer_option_schema
 ?Moment
 ?MomentObserver
-?MomentOutputFile
+?MomentOutput
 ?column_names
 ?name
 ?symbol
-?LuminosityObserver
+?RunArtifact
+?TaskOutput
 ```
 
 Runnable examples live in `examples/` and are self-documenting at the top of
@@ -110,39 +111,49 @@ each source file. They are clean precedents with a small top-of-file `config`
 block; the matching configurable developer harnesses (driven by `OCTOPUS_*`
 environment variables) live in `test/examples/`.
 
-`MomentObserver` writes HDF5 columnar moment files. Common access pattern:
+A task's outputs land in ONE run artifact — an HDF5 file the task carries
+(`artifact = RunArtifact(path)` or `artifact = path` on `TrackingTask` and
+`StrongStrongTask`; design note `docs/design/run_artifact.md`). Probes are
+named views into it: `MomentObserver(; name = ...)`,
+`CoordinateSnapshotObserver(; name = ...)`, `BPMObserver(...; artifact =
+true)`. Common access pattern:
 
-Use `?MomentObserver`, `?Moment`, `?MomentOutputFile`, `?column_names`,
-`?name`, and `?symbol` for the complete output API docstrings. This section is
-the quick entry point.
+Use `?MomentObserver`, `?Moment`, `?MomentOutput`, `?column_names`,
+`?name`, `?symbol`, `?RunArtifact`, and `?TaskOutput` for the complete
+output API docstrings. This section is the quick entry point.
 
 ```julia
-observer = MomentObserver("result/pic_hcc.pro.h5";
+observer = MomentObserver(; name = "proton",
     orders = 1:2,
     extra = (Moment(; pz=4),),
     exclude = (Moment(; z=2),),
 )
+# ... place it in the line, run the task with artifact = "result/pic_hcc.h5"
 
-moments = MomentOutputFile("result/pic_hcc.pro.h5")
+moments = MomentOutput("result/pic_hcc.h5"; name = "proton")
 data = read(moments)               # column 1 is turn
 turns = read(moments, :turn)        # same values as data[:, 1]
 mx = read(moments, Moment(; x=1))
 sxpx = read(moments, :m110000)
 first_second = read(moments; orders = 1:2)
 names = column_names(moments)
+
+out = TaskOutput("result/pic_hcc.h5")
+read(out)                                 # table of contents: kind => names
+read(out, :luminosity; name = "ip")       # one collision's (turns, values)
+read(out, :moments; name = "proton", column = Moment(; x = 1))
+read(out, :moments; name = "proton", orders = 1:2)   # selection, MomentObserver rules
+read(out, :bpm; name = "BPM_07", column = :x)
+read(out, :snapshot; name = "inj", turn = 100)
+read(out, :losses)                        # rows + apertures + summary
+read(out, :execution)                     # per-execute! ledger
+read(out, :all)                           # everything, nested by kind
 ```
 
-The main output datasets are `/data`, `/column_names`, and `/record_count`.
 Moment names are canonical strings such as `m100000`; if any exponent is
-multi-digit, separator form is used, such as `m10_0_0_0_0_0`.
-
-`MomentObserver` also updates lightweight progress datasets whenever its
-buffer is flushed:
-
-```julia
-records = read(moments, :record_count)
-seconds = read(moments, :elapsed_time)
-```
+multi-digit, separator form is used, such as `m10_0_0_0_0_0`. The execution
+ledger records start turn, planned window, current turn and elapsed wall
+time per `execute!`, updated at every flush — live progress from one file.
 
 Developer-facing numerical checks live in `validation/`. They may use internal
 helpers and should not be treated as public API examples.

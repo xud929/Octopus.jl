@@ -302,6 +302,13 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   on a missing `_inner_method` twin, and a nested sub-line's `ref_tilt` was
   invisible to both geometry walkers while tracking rolled it -- both fixed
   and pinned against the flat spellings at 0.0),
+  [`neighbour_audit_2026_08_18_b.md`](history/neighbour_audit_2026_08_18_b.md)
+  (over the run-artifact step-4 campaign -- writer retirement, the
+  `TaskOutput` reader, capacity unification: the weak-strong finalize-order
+  twin verified clean after the strong-strong bug the example testset
+  caught, eight stale-prose sites narrating the retired text machinery
+  fixed in place, orphan and retired-symbol sweeps clean, and the
+  gate-verdict lesson recurring as a masked wrapper exit code),
   [`neighbour_audit_2026_08_16.md`](history/neighbour_audit_2026_08_16.md)
   (over the keystone/U9-2/PTC/U4-1/restructure series plus a repository
   findability pass: `alternatives` was machine-readable but invisible in

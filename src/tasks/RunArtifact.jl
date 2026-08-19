@@ -1,14 +1,14 @@
-export RunArtifact, read_luminosity, read_bpm, read_snapshot, read_losses,
-       read_execution, artifact_contents
+export RunArtifact, TaskOutput
 
 # ---------------------------------------------------------------------------
 # The run artifact: one HDF5 output file per task, one group per producer.
-# Design: docs/design/run_artifact.md (decided 2026-08-18). This file is
-# migration step 1: the container, the crash-recovery cursor, the execution
-# channel, and the strong-strong luminosity channel with INDEPENDENT
-# per-collision turn axes. The text `.lum` path is untouched and may run
-# alongside (it is the design's live mirror); probes and losses join in later
-# steps.
+# Design: docs/design/run_artifact.md (decided and implemented 2026-08-18).
+# This file carries the container, the per-group crash-recovery cursor, the
+# execution ledger, the luminosity channels (strong-strong per collision,
+# weak-strong per strong beam, INDEPENDENT turn axes), the /losses writer,
+# the probe row-matrix machinery the named observer views bind through
+# (/moments|snapshot|bpm/<name>), and the TaskOutput reader. The standalone
+# per-observer writers retired behind it (step 4).
 # ---------------------------------------------------------------------------
 
 """
@@ -17,14 +17,19 @@ export RunArtifact, read_luminosity, read_bpm, read_snapshot, read_losses,
 The one-output-file-per-task sink (docs/design/run_artifact.md): an HDF5 file
 with one group per producer, owned by the task that carries it.
 
-This first migration step records the strong-strong luminosity channel and
-the execution ledger:
+The artifact carries every product of the run:
 
-- `/luminosity/<label>`: per-collision `turns`/`values` datasets with
-  INDEPENDENT turn axes — a collision writes a row exactly when its own
-  luminosity schedule evaluated, so per-IP schedules may disagree freely
-  (the fixed-width text row's whole-row drop rule does not apply here).
+- `/luminosity/<label>`: per-producer `turns`/`values` datasets with
+  INDEPENDENT turn axes — a collision (strong-strong labels) or strong beam
+  (weak-strong `strong_beam_<i>`) writes a row exactly when its own
+  luminosity schedule evaluated, so per-IP schedules may disagree freely.
   `NaN` keeps its meaning: evaluated and failed.
+- `/moments/<name>`, `/snapshot/<name>`, `/bpm/<name>`: the named probe
+  views (`MomentObserver(; name=...)`, `CoordinateSnapshotObserver(;
+  name=...)`, `BPMObserver(...; artifact=true)`) — row-matrix groups whose
+  column 1 is the absolute turn, names unique within a task.
+- `/losses`: the loss accounting, rewritten whole per `execute!` from the
+  cumulative record.
 - `/execution`: one row per `execute!` — `start_turn`, planned `turns`,
   `current_turn` and wall-clock `elapsed`, the last two updated at every
   flush — appended and never overwritten, so every execution of a swap-out
@@ -32,6 +37,8 @@ the execution ledger:
   had reached at its most recent flush: live progress and rate from one
   `h5ls` while running, and the run-level how-far-did-it-get answer after a
   crash (the per-group cursors answer the same question per dataset).
+
+Read it back through one handle: [`TaskOutput`](@ref).
 
 `append=false` (default) recreates the file per `execute!`; `append=true`
 continues it across `execute!` calls and process restarts under the replay
@@ -43,8 +50,15 @@ task's collision labels is refused rather than silently mixed.
 `rows_valid_through_turn`, written AFTER its batch of rows and flushed with
 it: on open, any rows beyond the cursor are a torn tail from an interrupted
 write and are truncated. `capacity` is the rows-per-group buffered between
-flushes; the file handle is held open for the whole `execute!`, so flushing
-costs no open/close.
+flushes — the ONE batching knob for the row-shaped producers (luminosity,
+moments, BPM readings; the per-observer capacities retired 2026-08-18).
+Snapshots are the deliberate exception: a phase-space block is already
+large (N particles x 8 columns), so each fire writes its block immediately
+— the per-write cost the capacity exists to amortize is negligible against
+the block itself, and buffering blocks would multiply host memory for
+nothing. A snapshot's volume knobs are its SCHEDULE and `npart`. The file
+handle is held open for the whole `execute!`, so flushing costs no
+open/close.
 
 Pass it to the task (`StrongStrongTask(...; artifact=RunArtifact(path))`, or
 a bare path as sugar). The artifact path is registered by artifact identity,
@@ -374,6 +388,13 @@ them truncates conservatively on the next open.
 """
 function _ra_push_probe_rows!(art::RunArtifact, key::String, rows::AbstractMatrix)
     size(rows, 1) == 0 && return nothing
+    # Loud, named failure instead of getindex(::Nothing): rows arriving after
+    # finalize mean a flush-ordering bug (observers must flush BEFORE the
+    # artifact closes -- the 2026-08-18 strong-strong finalize-order lesson).
+    art.file === nothing && error(
+        "RunArtifact at $(art.path) is closed but probe rows for $(key) " *
+        "are still arriving: observer flushes must run before " *
+        "finalize_run_artifact!")
     g = art.file[key]
     d = g["data"]
     n = size(d, 1)
@@ -388,21 +409,48 @@ end
 # ---------------------------------------------------------------------------
 # Readers (step 4): the convenience surface for the one-file-per-task
 # artifact, matching the ergonomics the standalone files had. Moment groups
-# additionally read through the full MomentOutputFile machinery
-# (`MomentOutputFile(path; name="IP6")` -- read()/read(out, item)/
+# additionally read through the full MomentOutput machinery
+# (`MomentOutput(path; name="IP6")` -- read()/read(out, item)/
 # column_names work as they always did).
 # ---------------------------------------------------------------------------
 
 _ra_open(path) = HDF5.h5open(String(path), "r")
+_ra_open(f::Function, path) = HDF5.h5open(f, String(path), "r")
 
 """
-    artifact_contents(path) -> Dict{String,Vector{String}}
+    TaskOutput(path)
 
-The artifact's table of contents: each product kind present, with its group
-names (`"luminosity" => ["ip6", "ip8"]`, `"moments" => ["IP6"]`, ...).
+Lightweight handle for reading a task's run artifact -- the one-HDF5-per-task
+output (`docs/design/run_artifact.md`). One `read` serves everything, from
+discovery to data, the `MomentOutput` ergonomics generalized:
+
+```julia
+out = TaskOutput("run.h5")
+read(out)                                    # table of contents: kind => names
+read(out, :luminosity)                       # Dict name => (turns=..., values=...)
+read(out, :luminosity; name="ip")            # one collision's series
+read(out, :moments; name="IP6")              # columns as a NamedTuple
+read(out, :moments; name="IP6", column=Moment(; x=1))   # one column
+read(out, :moments; name="IP6", orders=1:2)  # a moment selection
+read(out, :bpm; name="BPM_07", column=:x)
+read(out, :snapshot; name="inj", turn=2)     # one fired block
+read(out, :losses)                           # rows + apertures + summary
+read(out, :execution)                        # one ledger row per execute!
+read(out, :all)                              # every product, nested by kind
+```
+
+Moment groups additionally read through the full `MomentOutput` machinery
+(`MomentOutput(path; name="IP6")` -- `read(out)`/`read(out, item)`/
+`column_names` work as they always did).
 """
-function artifact_contents(path::AbstractString)
-    HDF5.h5open(String(path), "r") do f
+struct TaskOutput
+    path::String
+end
+TaskOutput(path::AbstractString) = TaskOutput(String(path))
+
+"""The table of contents: each product kind present, with its group names."""
+function _ra_contents(path::AbstractString)
+    _ra_open(path) do f
         out = Dict{String,Vector{String}}()
         for kind in keys(f)
             obj = f[kind]
@@ -416,86 +464,169 @@ function artifact_contents(path::AbstractString)
     end
 end
 
-"""
-    read_luminosity(path; label=nothing)
+const _RA_NAMED_KINDS = (:luminosity, :moments, :snapshot, :bpm)
+const _RA_KINDS = (:luminosity, :moments, :snapshot, :bpm, :losses, :execution)
 
-One collision's luminosity series as `(turns, values)`, or -- with no label
--- every collision's, as a `Dict{String,NamedTuple}`. Each series is on its
-OWN turn axis (a collision has a row exactly where its schedule evaluated).
-"""
-function read_luminosity(path::AbstractString; label::Union{Nothing,AbstractString}=nothing)
-    HDF5.h5open(String(path), "r") do f
-        lum = f["luminosity"]
-        one(g) = (turns=read(g["turns"]), values=read(g["values"]))
-        label === nothing || return one(lum[String(label)])
-        Dict(String(k) => one(lum[k]) for k in keys(lum))
-    end
+function _ra_require_group(f, out::TaskOutput, kind::Symbol)
+    haskey(f, String(kind)) || throw(ArgumentError(
+        "$(out.path) carries no $(kind); present: " *
+        join(sort(collect(keys(_ra_contents(out.path)))), ", ")))
+    return f[String(kind)]
 end
 
-_ra_read_rows(path, kind, name) = HDF5.h5open(String(path), "r") do f
-    g = f[kind][String(name)]
+function _ra_named_group(g, out::TaskOutput, kind::Symbol, name)
+    haskey(g, String(name)) || throw(ArgumentError(
+        "$(out.path) has no $(kind) group named $(repr(String(name))); " *
+        "present: " * join(_ra_contents(out.path)[String(kind)], ", ")))
+    return g[String(name)]
+end
+
+_ra_lum_series(g) = (turns=read(g["turns"]), values=read(g["values"]))
+
+function _ra_probe_columns(g)
     names = String.(read(g["column_names"]))
     data = read(g["data"])
     (; (Symbol(n) => vec(data[:, i]) for (i, n) in pairs(names))...)
 end
 
-"""
-    read_bpm(path, name) -> (turn=..., x=..., y=...)
+_ra_column_key(column::Symbol) = column
+_ra_column_key(column::AbstractString) = Symbol(column)
+# The Moment method lives in BeamObservers.jl, where Moment is defined
+# (that file loads after this one).
 
-One BPM's readings from the artifact, as column vectors keyed by name.
-"""
-read_bpm(path::AbstractString, name::AbstractString) = _ra_read_rows(path, "bpm", name)
+function _ra_select_column(rows::NamedTuple, column, what)
+    key = _ra_column_key(column)
+    haskey(rows, key) || throw(ArgumentError(
+        "$(what) has no column $(repr(key)); present: " *
+        join(string.(keys(rows)), ", ")))
+    return rows[key]
+end
 
-"""
-    read_snapshot(path, name) -> (turn=..., particle_id=..., x=..., px=..., ...)
-
-One snapshot probe's records: every fired turn's full coordinate block, as
-column vectors (filter on `turn` for one block).
-"""
-read_snapshot(path::AbstractString, name::AbstractString) =
-    _ra_read_rows(path, "snapshot", name)
-
-"""
-    read_execution(path) -> (start_turn=..., turns=..., current_turn=..., elapsed=...)
-
-The execution ledger: one entry per `execute!` of this artifact, in order.
-"""
-function read_execution(path::AbstractString)
-    HDF5.h5open(String(path), "r") do f
-        ex = f["execution"]
-        (start_turn=read(ex["start_turn"]), turns=read(ex["turns"]),
-         current_turn=read(ex["current_turn"]), elapsed=read(ex["elapsed"]))
+function _ra_losses(f)
+    g = f["losses"]
+    a = HDF5.attributes(g)
+    rows = if haskey(g, "data")
+        names = String.(read(g["column_names"]))
+        data = read(g["data"])
+        (; (Symbol(n) => vec(data[:, i]) for (i, n) in pairs(names))...)
+    else
+        (; (Symbol(n) => Float64[] for n in LOSS_RECORD_COLUMNS)...)
     end
+    summary = haskey(a, "summary_dead") ?
+        (particles=Int(read(a["summary_particles"])),
+         live=Int(read(a["summary_live"])),
+         dead=Int(read(a["summary_dead"])),
+         unattributed=Int(read(a["summary_unattributed"]))) : nothing
+    merge(rows,
+          (aperture_names=String.(read(g["aperture_names"])),
+           aperture_counts=Int.(read(g["aperture_counts"])),
+           aperture_s=haskey(g, "aperture_s") ? read(g["aperture_s"]) : nothing,
+           summary=summary))
+end
+
+_ra_execution(f) = begin
+    ex = f["execution"]
+    (start_turn=read(ex["start_turn"]), turns=read(ex["turns"]),
+     current_turn=read(ex["current_turn"]), elapsed=read(ex["elapsed"]))
 end
 
 """
-    read_losses(path)
+    read(out::TaskOutput, kind::Symbol; name=nothing, column=nothing, turn=nothing,
+         orders=nothing, extra=(), exclude=())
 
-The `/losses` group: per-loss rows as column vectors (matching
-`LOSS_RECORD_COLUMNS`), the per-aperture names/counts/arc positions, and the
-reconciliation summary when the run recorded one (`nothing` otherwise).
-A counters-only record (no log slots) yields empty row columns.
+One product of the artifact. `kind` is one of `:luminosity`, `:moments`,
+`:snapshot`, `:bpm`, `:losses`, `:execution` -- or `:all` for every product
+present, nested by kind (named kinds as `Dict{String,NamedTuple}`; reads the
+WHOLE file, snapshots included).
+
+For the named kinds, no `name` returns every group as a
+`Dict{String,NamedTuple}`; `name` selects one group, returned as a
+`NamedTuple` of column vectors (luminosity: `(turns, values)`, each series on
+its OWN turn axis -- a collision has a row exactly where its schedule
+evaluated). `column` narrows a probe group to one column vector and accepts a
+`Symbol`, a column-name string, or a `Moment` (moment groups). `turn` narrows
+a snapshot group to one fired block.
+
+`orders`/`extra`/`exclude` narrow a MOMENT group to a selection, by the
+`MomentObserver` rules (expand `orders`, add `extra`, remove `exclude`;
+requested moments not recorded in the group are skipped): the columns come
+back as the usual `NamedTuple`, `turn` first. `read(out, :moments;
+name="IP6", orders=1)` is the keyword twin of
+`read(MomentOutput(path; name="IP6"); orders=1)`, which returns the same
+selection as a matrix.
+
+`:losses` returns the per-loss rows as column vectors (pre-kill coordinates),
+the per-aperture names/counts/arc positions, and the reconciliation summary
+when the run recorded one (`nothing` otherwise). `:execution` returns the
+ledger -- one entry per `execute!`, `current_turn`/`elapsed` updated at every
+flush.
 """
-function read_losses(path::AbstractString)
-    HDF5.h5open(String(path), "r") do f
-        g = f["losses"]
-        a = HDF5.attributes(g)
-        rows = if haskey(g, "data")
-            names = String.(read(g["column_names"]))
-            data = read(g["data"])
-            (; (Symbol(n) => vec(data[:, i]) for (i, n) in pairs(names))...)
-        else
-            (; (Symbol(n) => Float64[] for n in LOSS_RECORD_COLUMNS)...)
+function Base.read(out::TaskOutput, kind::Symbol;
+                   name::Union{Nothing,AbstractString}=nothing,
+                   column=nothing, turn::Union{Nothing,Integer}=nothing,
+                   orders=nothing, extra=(), exclude=())
+    kind === :all || kind in _RA_KINDS || throw(ArgumentError(
+        "unknown artifact product $(repr(kind)); one of " *
+        join(string.(_RA_KINDS), ", ") * ", all"))
+    selection = orders !== nothing || !isempty(extra) || !isempty(exclude)
+    if selection
+        kind === :moments || throw(ArgumentError(
+            "orders/extra/exclude select moment columns; they do not apply to $(kind)"))
+        name === nothing && throw(ArgumentError(
+            "orders/extra/exclude selection needs a name= to pick the moment group"))
+        column === nothing || throw(ArgumentError(
+            "pass either column or an orders/extra/exclude selection, not both"))
+    end
+    if kind in (:all, :losses, :execution)
+        (name === nothing && column === nothing && turn === nothing) ||
+            throw(ArgumentError("$(kind) is not a named group: name/column/turn do not apply"))
+    end
+    if kind === :all
+        present = _ra_contents(out.path)
+        items = [Symbol(k) => read(out, Symbol(k)) for k in sort(collect(keys(present)))]
+        return (; items...)
+    end
+    turn === nothing || kind === :snapshot || throw(ArgumentError(
+        "turn selects a snapshot block; it does not apply to $(kind)"))
+    column === nothing || kind in (:moments, :snapshot, :bpm) || throw(ArgumentError(
+        "column selects from a probe group; it does not apply to $(kind)"))
+    _ra_open(out.path) do f
+        kind === :losses && return _ra_losses(f)
+        kind === :execution && return _ra_execution(f)
+        g = _ra_require_group(f, out, kind)
+        one_group = kind === :luminosity ? _ra_lum_series : _ra_probe_columns
+        if name === nothing
+            column === nothing && turn === nothing || throw(ArgumentError(
+                "column/turn selection needs a name= to pick the group"))
+            return Dict(String(k) => one_group(g[k])
+                        for k in keys(g) if g[k] isa HDF5.Group)
         end
-        summary = haskey(a, "summary_dead") ?
-            (particles=Int(read(a["summary_particles"])),
-             live=Int(read(a["summary_live"])),
-             dead=Int(read(a["summary_dead"])),
-             unattributed=Int(read(a["summary_unattributed"]))) : nothing
-        merge(rows,
-              (aperture_names=String.(read(g["aperture_names"])),
-               aperture_counts=Int.(read(g["aperture_counts"])),
-               aperture_s=haskey(g, "aperture_s") ? read(g["aperture_s"]) : nothing,
-               summary=summary))
+        rows = one_group(_ra_named_group(g, out, kind, name))
+        if turn !== nothing
+            keep = rows.turn .== Float64(turn)
+            rows = (; (k => v[keep] for (k, v) in pairs(rows))...)
+        end
+        if selection
+            # The MomentObserver selection rules; requested-but-unrecorded
+            # moments are skipped, matching MomentOutput.
+            wanted = Symbol[:turn]
+            for m in _selected_moments(orders=orders === nothing ? () : orders,
+                                       extra=extra, exclude=exclude)
+                push!(wanted, symbol(m))
+            end
+            rows = (; (k => rows[k] for k in wanted if haskey(rows, k))...)
+        end
+        column === nothing && return rows
+        return _ra_select_column(rows, column, "$(kind)/$(name)")
     end
 end
+
+"""
+    read(out::TaskOutput) -> Dict{String,Vector{String}}
+
+The artifact's table of contents: each product kind present, with its group
+names (`"luminosity" => ["ip6", "ip8"]`, `"moments" => ["IP6"]`, ...) --
+discovery through the same one verb as the data. `read(out, :all)` reads
+every product; `read(out, kind; ...)` selects.
+"""
+Base.read(out::TaskOutput) = _ra_contents(out.path)

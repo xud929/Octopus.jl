@@ -6,11 +6,11 @@ export AbstractSchedule, AbstractBeamObserver, AbstractBeamAction,
        schedule_option_schema, observer_option_schema,
        Moment, name, symbol, column_names,
        MomentObserver,
-       CoordinateSnapshotObserver, LuminosityObserver, BeamSwapAction,
+       CoordinateSnapshotObserver, BeamSwapAction,
        observe!, apply_action!, run_observers!, run_actions!,
        prepare_observers!, prepare_line_observers!,
        finalize_observers!, requires_elementwise_tracking,
-       MomentOutputFile, OutputFile, MomentFile, read_moment
+       MomentOutput, MomentOutputFile, OutputFile, MomentFile
 
 """
 Turn gate for a scheduled observer or action. A subtype implements
@@ -309,7 +309,7 @@ finalize_observer!(observer::AbstractBeamObserver) = nothing
 
 Whether tracking must keep per-element boundaries instead of fusing the line.
 The single-observer fallback is `false`; an observer that needs per-element
-diagnostics (e.g. `LuminosityObserver`) returns `true`. The `ctx` form only
+diagnostics returns `true`. The `ctx` form only
 counts observers whose schedule is active on `ctx.turn`, and `execute!` uses
 it to pick each turn's tracking plan.
 """
@@ -529,6 +529,10 @@ symbol(Moment(; x = 1)) == :m100000
 """
 symbol(moment::Moment) = Symbol(name(moment))
 
+# TaskOutput's column selector accepts a Moment; the method lives here
+# because RunArtifact.jl loads before Moment exists.
+_ra_column_key(column::Moment) = symbol(column)
+
 _moment_order_key(powers::NTuple{6,Int}) = ntuple(i -> -powers[i], 6)
 _moment_order(moment::Moment) = sum(moment.powers)
 
@@ -592,7 +596,6 @@ function _selected_moments(; orders=1:2, extra=(), exclude=())
 end
 
 mutable struct MomentObserver <: AbstractBeamObserver
-    path::String
     moments::Tuple
     column_names::Vector{String}
     buffer_capacity::Int
@@ -600,70 +603,44 @@ mutable struct MomentObserver <: AbstractBeamObserver
     buffer_length::Int
     record_count::Int
     planned_records::Int
-    start_time_ns::UInt64
     initialized::Bool
-    append::Bool
     reduction_scratch::Any
-    # Artifact-view mode (run-artifact step 2): a nonempty `name` makes this
-    # observer a view into the task's RunArtifact -- /moments/<name>, bound at
-    # prepare through the active-artifact scope -- instead of a file owner.
+    # The probe is a named VIEW into the owning task's RunArtifact --
+    # /moments/<name>, bound at prepare through the active-artifact scope.
     name::String
     artifact_ref::Any
     artifact_key::Union{Nothing,String}
-    # Which row of the per-execution ledger (/execution_elapsed,
-    # /execution_start_turn) THIS execution updates. Each execute! appends a
-    # ledger row at prepare, so a swap-out run's earlier executions keep
-    # their timings instead of being overwritten by the scalar
-    # /elapsed_time, which retains its documented current-execution
-    # semantics for existing readers (2026-08-18, owner request).
-    execution_slot::Int
+end
+
+_moment_column_names(moments) = ["turn"; collect(name.(moments))]
+
+"""
+    MomentObserver(path::AbstractString; ...)
+
+Retired. See the `MomentObserver(; name, ...)` artifact-view constructor.
+"""
+function MomentObserver(path::AbstractString; orders=1:2, extra=(), exclude=(),
+                        capacity::Integer=1024, append::Bool=false)
+    throw(ArgumentError(
+        "the standalone moment file writer was retired (2026-08-18): construct " *
+        "MomentObserver(; name=..., orders=..., capacity=...) as a view into the " *
+        "task's artifact=RunArtifact(path; append=..., capacity=...), and read it " *
+        "back with MomentOutput(path; name=...)"))
 end
 
 """
-    MomentObserver(path; orders=1:2, extra=(), exclude=(), capacity=1024, append=false)
+    MomentObserver(; name, orders=1:2, extra=(), exclude=())
 
-Write selected beam moments to an HDF5 table.
+Record selected beam moments into the owning task's [`RunArtifact`](@ref) as
+the group `/moments/<name>` -- column 1 the absolute turn, then the selected
+moments. `name` is the group identity, unique within a task;
+append/replay/crash semantics come from the artifact's per-group cursor.
+Requires the task to carry `artifact=...`; refused loudly at prepare
+otherwise.
 
-With the default `append=false`, re-executing a task prepares a **fresh**
-table at `path`: output from the previous execution is replaced. With
-`append=true` the table is created chunked/extendible and every execution
-**continues** it — a run split across `execute!` calls on one task object,
-or an injection swap-out passing a new beam to that same task, produces one
-file with continuous absolute turns automatically; a second task sharing the
-path or a fresh process restarting a chunked run continues it **when
-`execute!` is given the matching absolute `start_turn`** (the file keeps the
-rows, but the resume point is the caller's — a fresh task with no
-`start_turn` executes from absolute turn 0 and therefore replaces the
-recorded timeline, with one warning naming the `start_turn` remedy).
-Replayed turn windows (a failed `execute!`'s retry, an explicit `start_turn`
-rewind) drop their stale rows first, so the table never carries two rows for
-one turn. The two modes' files differ in HDF5 layout (contiguous vs
-chunked); an `append=true` observer refuses to continue a replace-mode file
-rather than corrupt it, and replaces a zero-byte leftover (a crash at create
-time) fresh. `/elapsed_time` always reports the current execution's wall
-time.
-
-`MomentObserver` is a scheduled observer. Put it in a task line or task hooks
-through `ScheduledObserver`. The observer writes one row per scheduled
-observation. Column 1 is always `turn`; the remaining columns are selected
-moments.
-
-The HDF5 file contains:
-
-- `/data`: dense numeric matrix. Column 1 is `turn`.
-- `/column_names`: string names aligned with `/data` columns.
-- `/record_count`: number of rows already flushed to disk.
-- `/elapsed_time`: elapsed wall time in seconds, updated whenever the buffer is
-  flushed -- the CURRENT execution's clock only, by its documented semantics.
-- `/execution_elapsed`, `/execution_start_turn`: the per-execution ledger,
-  one entry per `execute!` of this file, appended at prepare and updated at
-  every flush -- so a swap-out run's earlier executions keep their wall
-  times (2026-08-18).
-
-`capacity` is the number of observed rows buffered in memory before a block is
-written to HDF5. Larger values reduce I/O overhead. Smaller values update
-`/record_count` and `/elapsed_time` more frequently for progress monitoring.
-`capacity = 0` disables output.
+`MomentObserver` is a scheduled observer: put it in a task line or task hooks
+through `ScheduledObserver`, with a predictable schedule (`AlwaysSchedule`,
+`EveryNSteps`, or `AtTurns`). It writes one row per scheduled observation.
 
 Moment selection is:
 
@@ -674,228 +651,86 @@ selected = setdiff(selected, exclude)
 ```
 
 `exclude` wins. `turn` is always present and is not part of moment selection.
-Column order is canonical and does not depend on user input order.
-`orders` accepts integers, ranges, vectors, tuples, and nested combinations
-such as `1:2`, `(1, 2)`, `(1:2, 3)`, or `()`.
+Column order is canonical and does not depend on user input order. `orders`
+accepts integers, ranges, vectors, tuples, and nested combinations such as
+`1:2`, `(1, 2)`, `(1:2, 3)`, or `()`. First-order moments are means; moments
+of order 2 or higher are central moments.
 
-Default output:
+Buffering is the ARTIFACT'S: `RunArtifact(path; capacity=...)` is the one
+knob deciding how many rows the row-shaped producers batch per append (the
+per-observer `capacity` retired 2026-08-18; snapshots write a block per fire
+instead). The row buffer is sized from it at prepare.
 
-```julia
-MomentObserver("moments.h5")
-```
-
-writes all first-order moments and all unique second-order central moments.
-First-order moments are means. Moments of order 2 or higher are central moments.
-
-Common examples:
+Read back through the same handle as before:
 
 ```julia
-obs = MomentObserver("moments.h5")
-hook = ScheduledObserver(obs, EveryNSteps(start = 0, stop = 1000, step = 10))
-task = TrackingTask((line..., hook))
-execute!(task, beam; turns = 1000)
-```
-
-Select only first-order moments:
-
-```julia
-MomentObserver("mean_only.h5"; orders = 1)
-```
-
-Add a fourth-order longitudinal momentum moment:
-
-```julia
-MomentObserver("moments.h5";
-    orders = 1:2,
-    extra = (Moment(; pz = 4),),
-)
-```
-
-Remove one default moment, for example the `z` variance:
-
-```julia
-MomentObserver("moments.h5";
-    orders = 1:2,
-    exclude = (Moment(; z = 2),),
-)
-```
-
-Read output:
-
-```julia
-out = MomentOutputFile("moments.h5")
+out = MomentOutput("run.h5"; name = "IP6")
 data = read(out)
 turns = read(out, :turn)
 mx = read(out, Moment(; x = 1))
-sxpx = read(out, :m110000)
-names = column_names(out)
-records = read(out, :record_count)
-seconds = read(out, :elapsed_time)
 ```
 
-The observer requires a predictable schedule (`AlwaysSchedule`,
-`EveryNSteps`, or `AtTurns`) so the HDF5 data matrix can be preallocated.
-With `append=false` (the default), re-executing a task prepares a fresh table
-at `path`: output from the previous execution is replaced. With `append=true`
-the table is continued instead; see the paragraph above for exactly which
-continuation cases need an explicit `start_turn`.
-"""
-function MomentObserver(path::AbstractString; orders=1:2, extra=(), exclude=(),
-                        capacity::Integer=1024, append::Bool=false)
-    capacity >= 0 || throw(ArgumentError("capacity must be nonnegative"))
-    moments = _selected_moments(orders=orders, extra=extra, exclude=exclude)
-    names = ["turn"; collect(name.(moments))]
-    buffer = Matrix{Float64}(undef, max(Int(capacity), 1), length(names))
-    return MomentObserver(String(path), moments, names, Int(capacity), buffer, 0, 0, 0,
-                          UInt64(0), false, Bool(append), nothing, "", nothing, nothing, 0)
-end
-
-"""
-    MomentObserver(; name, orders=1:2, extra=(), exclude=(), capacity=1024)
-
-The artifact-view spelling (docs/design/run_artifact.md, step 2): the same
-scheduled moment probe, but writing into the owning task's [`RunArtifact`](@ref)
-as `/moments/<name>` -- column 1 the absolute turn, then the selected
-moments -- instead of owning a file. `name` is the group identity, unique
-within a task; append/replay/crash semantics come from the artifact's
-per-group cursor. Requires the task to carry `artifact=...`; refused loudly
-at prepare otherwise.
+with per-execution timing in `read(TaskOutput("run.h5"), :execution)`.
 """
 function MomentObserver(; name::AbstractString, orders=1:2, extra=(), exclude=(),
-                        capacity::Integer=1024)
+                        capacity=nothing)
+    capacity === nothing || throw(ArgumentError(
+        "the per-observer capacity was retired (2026-08-18): buffering " *
+        "belongs to the sink, so pass artifact=RunArtifact(path; " *
+        "capacity=...) on the task instead"))
     isempty(String(name)) && throw(ArgumentError("the artifact-view MomentObserver needs a nonempty name"))
-    obs = MomentObserver(tempname() * ".unused.h5"; orders=orders, extra=extra,
-                         exclude=exclude, capacity=capacity)
-    obs.name = String(name)
-    return obs
+    moments = _selected_moments(orders=orders, extra=extra, exclude=exclude)
+    cols = _moment_column_names(moments)
+    # The row buffer is sized from the artifact's capacity at prepare.
+    return MomentObserver(moments, cols, 0, Matrix{Float64}(undef, 0, length(cols)),
+                          0, 0, 0, false, nothing, String(name), nothing, nothing)
 end
 
 mutable struct CoordinateSnapshotObserver <: AbstractBeamObserver
-    path::String
     npart::Union{Nothing,Int}
-    append::Bool
-    # Artifact-view mode: /snapshot/<name>, rows
-    # [turn, particle_id, x, px, y, py, z, pz], one block per fire.
+    # The probe is a named VIEW into the owning task's RunArtifact --
+    # /snapshot/<name>, rows [turn, particle_id, x, px, y, py, z, pz],
+    # one block per fire.
     name::String
     artifact_ref::Any
     artifact_key::Union{Nothing,String}
-    # (turn, byte offset before that record) for every record THIS object
-    # wrote — the compact record format carries no turn label, so this map is
-    # what lets a replayed window truncate its stale records (U6-2).
-    written::Vector{Tuple{Int64,Int64}}
 end
 
 """
-    CoordinateSnapshotObserver(path; npart=nothing, append=true)
+    CoordinateSnapshotObserver(path; ...)
 
-Write coordinate snapshots in the Octopus compact coordinate record format.
+Retired. See the `CoordinateSnapshotObserver(; name, ...)` artifact-view
+constructor.
 """
 function CoordinateSnapshotObserver(path::AbstractString; npart=nothing, append::Bool=true)
-    count = npart === nothing ? nothing : Int(npart)
-    count === nothing || count >= 0 || throw(ArgumentError("npart must be nonnegative or nothing"))
-    return CoordinateSnapshotObserver(String(path), count, append, "", nothing,
-                                      nothing, Tuple{Int64,Int64}[])
+    throw(ArgumentError(
+        "the standalone coordinate snapshot file was retired (2026-08-18): " *
+        "construct CoordinateSnapshotObserver(; name=..., npart=...) as a view " *
+        "into the task's artifact=RunArtifact(path), and read it back with " *
+        "read(TaskOutput(path), :snapshot; name=name)"))
 end
 
 """
     CoordinateSnapshotObserver(; name, npart=nothing)
 
-The artifact-view spelling: full phase-space snapshots into the owning
-task's [`RunArtifact`](@ref) as `/snapshot/<name>` -- rows
+Record full phase-space snapshots into the owning task's
+[`RunArtifact`](@ref) as `/snapshot/<name>` -- rows
 `[turn, particle_id, x, px, y, py, z, pz]`, one block per fire, replayed
-windows dropped by the artifact's per-group cursor. Requires the task to
-carry `artifact=...`.
+windows dropped by the artifact's per-group cursor. `npart` captures only
+the leading particles; `nothing` captures every particle. Requires the task
+to carry `artifact=...`; read back with
+`read(TaskOutput(path), :snapshot; name=name)`.
+
+Each fire writes its block IMMEDIATELY: the artifact's `capacity` batching
+deliberately does not apply here, because a snapshot block is already large
+and buffering blocks would multiply host memory for no amortization gain.
+Control snapshot volume with the observer's schedule and `npart`.
 """
 function CoordinateSnapshotObserver(; name::AbstractString, npart=nothing)
     isempty(String(name)) && throw(ArgumentError("the artifact-view CoordinateSnapshotObserver needs a nonempty name"))
-    obs = CoordinateSnapshotObserver(tempname() * ".unused"; npart=npart)
-    obs.name = String(name)
-    return obs
-end
-
-mutable struct LuminosityObserver <: AbstractBeamObserver
-    path::String
-    capacity::Int
-    elements::Tuple
-    initialized::Bool
-    pending::Vector{String}
-    # The task-level sink half (phase 1 of the luminosity unification,
-    # 2026-08-17): `append` selects the strong-strong continue-the-file
-    # semantics; `labels` are the column labels the owning task binds (collision
-    # labels for strong-strong; `nothing` means the headerless weak-strong
-    # format); `stream` is an execute!-scoped held-open handle rows are pushed
-    # straight into (bypassing `pending`, so the strong-strong turn loop keeps
-    # its single-open-stream I/O shape); `registered` latches path
-    # registration independently of `initialized`, whose job is the
-    # weak-strong first-write truncation.
-    append::Bool
-    labels::Union{Nothing,Vector{String}}
-    stream::Union{Nothing,IO}
-    registered::Bool
-end
-
-"""
-    LuminosityObserver(path; capacity=1)
-
-Write one row per observed turn: turn number followed by positive luminosity
-values reported by runtime beam-beam elements in the task line.
-
-`capacity` is the number of observed rows buffered in memory before one
-append writes them all. The default `1` opens and appends the file every
-observed turn — every row is durable the moment it is observed and the file
-can be followed live. On a networked filesystem that per-turn open/close is
-the dominant cost of luminosity observation (measured 2.3 ms/turn against
-0.02 ms local, 2026-08-11 record in `docs/history/`), so production runs on
-shared storage should set `capacity` to 100 or more. Buffered rows are
-flushed by `finalize_observer!` — including when tracking throws — so an
-ordinary failure loses nothing; only a hard kill can lose up to
-`capacity - 1` rows, and `tail -f` lags by up to `capacity` turns. The file
-format is identical for every capacity.
-
-This observer requests diagnostic tracking. `TrackingTask` then keeps ordinary
-line segments fused while isolating beam-beam runtime elements so they can
-update their `last_luminosity` field.
-"""
-function LuminosityObserver(path::AbstractString; capacity::Integer=1,
-                            append::Bool=false)
-    cap = Int(capacity)
-    cap >= 1 || throw(ArgumentError(
-        "LuminosityObserver capacity must be at least 1; got $(cap)."))
-    return LuminosityObserver(String(path), cap, (), false, String[],
-                              Bool(append), nothing, nothing, false)
-end
-
-"""
-    _push_luminosity_row!(observer, turn, values)
-
-The task-level entry point: the owning task pushes one COMPLETED row (the
-absolute turn plus one value per column). Byte format identical to the
-strong-strong direct write it replaces — `turn`, then `'\\t'`-prefixed values,
-then a newline. With a held-open `stream` (the strong-strong turn loop) the
-row goes straight to it; otherwise it lands in `pending` under the capacity
-rule, flushed by `finalize_observer!` like every buffered row. Row
-completeness is the TASK's decision (only it knows whether per-collision
-schedules agree this turn); the observer never drops or reorders.
-"""
-function _push_luminosity_row!(observer::LuminosityObserver, turn::Integer, values)
-    if observer.stream !== nothing
-        io = observer.stream
-        print(io, turn)
-        for lum in values
-            print(io, '\t', lum)
-        end
-        println(io)
-        return nothing
-    end
-    io = IOBuffer()
-    print(io, turn)
-    for lum in values
-        print(io, '\t', lum)
-    end
-    println(io)
-    push!(observer.pending, String(take!(io)))
-    length(observer.pending) >= observer.capacity && _flush_luminosity_rows!(observer)
-    return nothing
+    count = npart === nothing ? nothing : Int(npart)
+    count === nothing || count >= 0 || throw(ArgumentError("npart must be nonnegative or nothing"))
+    return CoordinateSnapshotObserver(count, String(name), nothing, nothing)
 end
 
 """
@@ -908,74 +743,41 @@ concrete observer by `validate_configuration_metadata()`.
 function observer_option_schema end
 
 observer_option_schema(::Type{MomentObserver}) = (
-    path=ConfigurationOptionMeta(String, nothing, "Required HDF5 output path.";
+    name=ConfigurationOptionMeta(String, nothing,
+        "Group identity inside the task's run artifact (/moments/<name>); required, unique within a task.";
         category=:output, consumer=:observer_output),
-    moments=ConfigurationOptionMeta(Tuple, nothing, "Resolved canonical moment selection.";
-        category=:diagnostic, consumer=:moment_reduction),
-    capacity=ConfigurationOptionMeta(Int, 1024, "Observed rows buffered before an HDF5 flush.";
-        category=:output, consumer=:observer_output),
-    append=ConfigurationOptionMeta(Bool, false, "Continue an existing appendable moment file across executions, tasks, and process restarts instead of preparing a fresh table; replayed turn windows drop their stale rows first.";
-        category=:output, consumer=:observer_output),
-)
+    moments=ConfigurationOptionMeta(Tuple, nothing,
+        "Canonical moment selection resolved from orders/extra/exclude; exclude wins.";
+        category=:output, consumer=:moment_reduction),)
 observer_option_schema(::MomentObserver) = observer_option_schema(MomentObserver)
 observer_option_schema(::Type{CoordinateSnapshotObserver}) = (
-    path=ConfigurationOptionMeta(String, nothing, "Required coordinate output path.";
+    name=ConfigurationOptionMeta(String, nothing,
+        "Group identity inside the task's run artifact (/snapshot/<name>); required, unique within a task.";
         category=:output, consumer=:observer_output),
     npart=ConfigurationOptionMeta(Union{Nothing,Int}, nothing,
-        "Number of particles written; nothing writes all particles.";
-        category=:output, consumer=:observer_output),
-    append=ConfigurationOptionMeta(Bool, true, "Append after the first snapshot.";
-        category=:output, consumer=:observer_output),
-)
-observer_option_schema(::CoordinateSnapshotObserver) = observer_option_schema(CoordinateSnapshotObserver)
-observer_option_schema(::Type{LuminosityObserver}) = (
-    path=ConfigurationOptionMeta(String, nothing, "Required weak-strong luminosity output path.";
-        category=:output, consumer=:observer_output),
-    capacity=ConfigurationOptionMeta(Int, 1,
-        "Observed rows buffered before one append; 1 writes every observed turn.";
-        category=:output, consumer=:observer_output),
-    append=ConfigurationOptionMeta(Bool, false,
-        "Continue an existing file across execute! calls and restarts (the strong-strong semantics: replayed windows drop their stale rows, a mismatched header is refused). false replaces the file on first write.";
+        "Leading particle count captured per fire; nothing captures every particle.";
         category=:output, consumer=:observer_output),)
-observer_option_schema(::LuminosityObserver) = observer_option_schema(LuminosityObserver)
+observer_option_schema(::CoordinateSnapshotObserver) =
+    observer_option_schema(CoordinateSnapshotObserver)
 
 function configuration_report(observer::MomentObserver)
     return (
-        ConfigurationEntry(:path, observer.path, observer.path, :resolved,
-            "required HDF5 output path", :observer_output),
+        ConfigurationEntry(:name, observer.name, observer.name, :resolved,
+            "artifact group identity (/moments/<name>)", :observer_output),
         ConfigurationEntry(:moments, observer.moments, observer.moments, :resolved,
             "canonical selection resolved from orders/extra/exclude", :moment_reduction),
-        ConfigurationEntry(:capacity, observer.buffer_capacity, observer.buffer_capacity,
-            observer.buffer_capacity == 0 ? :inactive_dependency : :resolved,
-            observer.buffer_capacity == 0 ? "zero capacity disables output" :
-                                            "active HDF5 buffer capacity",
-            :observer_output),
-        ConfigurationEntry(:append, observer.append, observer.append, :resolved,
-            observer.append ?
-                "continues one extendible table across executions and restarts" :
-                "each execution prepares a fresh table (replace mode)",
-            :observer_output),
     )
 end
 
 function configuration_report(observer::CoordinateSnapshotObserver)
     return (
-        ConfigurationEntry(:path, observer.path, observer.path, :resolved,
-            "required coordinate output path", :observer_output),
+        ConfigurationEntry(:name, observer.name, observer.name, :resolved,
+            "artifact group identity (/snapshot/<name>)", :observer_output),
         ConfigurationEntry(:npart, observer.npart, observer.npart, :resolved,
             observer.npart === nothing ? "all particles" : "explicit particle count",
             :observer_output),
-        ConfigurationEntry(:append, observer.append, observer.append, :resolved,
-            "snapshot append mode", :observer_output),
     )
 end
-configuration_report(observer::LuminosityObserver) = (
-    ConfigurationEntry(:path, observer.path, observer.path, :resolved,
-        "required luminosity output path", :observer_output),
-    ConfigurationEntry(:capacity, observer.capacity, observer.capacity, :resolved,
-        "observed rows buffered before an append", :observer_output),
-    ConfigurationEntry(:append, observer.append, observer.append, :resolved,
-        "continue an existing file across execute! calls", :observer_output),)
 
 function _observer_backend()
     policy = _ACTIVE_RESOLVED_POLICY[]
@@ -994,7 +796,6 @@ struct BeamSwapAction{F} <: AbstractBeamAction
 end
 
 function observe!(observer::MomentObserver, ctx::TrackingContext, rep)
-    observer.buffer_capacity == 0 && return nothing
     _record_execution!(:observer_output, _observer_backend(),
         (observer=:MomentObserver, turn=ctx.turn, capacity=observer.buffer_capacity,
          moments=length(observer.moments)))
@@ -1005,186 +806,41 @@ function observe!(observer::MomentObserver, ctx::TrackingContext, rep)
     return nothing
 end
 
+const _SNAPSHOT_ARTIFACT_COLUMNS =
+    ["turn", "particle_id", "x", "px", "y", "py", "z", "pz"]
+
+function _bind_snapshot_probe!(observer::CoordinateSnapshotObserver, first_turn::Int)
+    art = active_run_artifact()
+    art === nothing && throw(ArgumentError(
+        "CoordinateSnapshotObserver(name=$(repr(observer.name))) is an " *
+        "artifact view: the task must carry artifact=RunArtifact(...)"))
+    observer.artifact_ref = art
+    observer.artifact_key = _ra_bind_probe!(art, "snapshot", observer.name,
+                                            _SNAPSHOT_ARTIFACT_COLUMNS, first_turn)
+    return nothing
+end
+
+function prepare_observer!(observer::CoordinateSnapshotObserver, runtime_elems,
+                           schedule, turns, first_turn)
+    _bind_snapshot_probe!(observer, Int(first_turn))
+    return nothing
+end
+prepare_line_observer!(observer::CoordinateSnapshotObserver, schedule, turns, first_turn=0) =
+    _bind_snapshot_probe!(observer, Int(first_turn))
+
 function observe!(observer::CoordinateSnapshotObserver, ctx::TrackingContext, rep)
     npart = observer.npart === nothing ? length(rep) : observer.npart
     npart <= length(rep) || throw(ArgumentError(
         "CoordinateSnapshotObserver npart $(npart) exceeds particle count $(length(rep))"))
-    if observer.artifact_key !== nothing
-        rows = Matrix{Float64}(undef, npart, 8)
-        rows[:, 1] .= Float64(ctx.turn)
-        rows[:, 2] .= Float64.(1:npart)
-        for (j, col) in enumerate((rep.x, rep.px, rep.y, rep.py, rep.z, rep.pz))
-            rows[:, 2 + j] = Float64.(Array(col)[1:npart])
-        end
-        _ra_push_probe_rows!(observer.artifact_ref, observer.artifact_key, rows)
-        return nothing
+    observer.artifact_key === nothing && throw(ArgumentError(
+        "CoordinateSnapshotObserver must be prepared (artifact-bound) before tracking"))
+    rows = Matrix{Float64}(undef, npart, 8)
+    rows[:, 1] .= Float64(ctx.turn)
+    rows[:, 2] .= Float64.(1:npart)
+    for (j, col) in enumerate((rep.x, rep.px, rep.y, rep.py, rep.z, rep.pz))
+        rows[:, 2 + j] = Float64.(Array(col)[1:npart])
     end
-    # First write registers the path (U7-10 registry; N3 extension): under
-    # append=false this call truncates, and even in append mode a second live
-    # writer interleaves records and the replay truncation then cuts at THIS
-    # object's byte offsets.
-    isempty(observer.written) && _register_observer_path!(observer, observer.path)
-    _record_execution!(:observer_output, _observer_backend(),
-        (observer=:CoordinateSnapshotObserver, turn=ctx.turn, npart=npart,
-         append=observer.append))
-    offset = observer.append && isfile(observer.path) ? Int64(filesize(observer.path)) :
-             Int64(0)
-    write_beam_coordinates(observer.path, rep; npart=npart, append=observer.append)
-    push!(observer.written, (Int64(ctx.turn), offset))
-    observer.append = true
-    return nothing
-end
-
-function observe!(observer::LuminosityObserver, ctx::TrackingContext, rep)
-    _record_execution!(:observer_output, _observer_backend(),
-        (observer=:LuminosityObserver, turn=ctx.turn, elements=length(observer.elements),
-         capacity=observer.capacity))
-    # The row is formatted with the same print calls the direct write used, so
-    # the file is byte-identical for every capacity.
-    io = IOBuffer()
-    print(io, ctx.turn, '\t')
-    for elem in observer.elements
-        lum = luminosity(elem, ctx, rep)
-        lum > 0.0 && print(io, lum, '\t')
-    end
-    print(io, '\n')
-    push!(observer.pending, String(take!(io)))
-    length(observer.pending) >= observer.capacity && _flush_luminosity_rows!(observer)
-    return nothing
-end
-
-function _flush_luminosity_rows!(observer::LuminosityObserver)
-    isempty(observer.pending) && return nothing
-    # First write truncates, off a per-object latch -- UNLESS the observer
-    # was constructed with `append=true`, in which case an existing file is
-    # continued by a FRESH object too (the strong-strong restart semantics,
-    # extended to the weak-strong flush path by the 2026-08-18 audit's
-    # follow-up: until then `append` was consumed only by the strong-strong
-    # planner, so a fresh weak-strong observer truncated the history it was
-    # asked to continue). The idempotence rule still holds: the replay
-    # discard below drops rows at or beyond the incoming window's first
-    # turn, so a fresh append observer executed from absolute turn 0
-    # REPLACES the timeline, exactly as the strong-strong planner documents.
-    mode = (observer.initialized ||
-            (observer.append && isfile(observer.path))) ? "a" : "w"
-    # The registration latch is `registered`, not `initialized`, because a
-    # strong-strong task registers at PREPARE (before any flush) and its
-    # prepare/commit owns truncation (the U7-10 shape; N3 extension).
-    if !observer.registered
-        _register_observer_path!(observer, observer.path)
-        observer.registered = true
-    end
-    open(observer.path, mode) do io
-        for row in observer.pending
-            print(io, row)
-        end
-    end
-    observer.initialized = true
-    empty!(observer.pending)
-    return nothing
-end
-
-# Flushes on BOTH execute! exit paths (T7): after a success a failed flush must
-# raise, and after a tracking failure the buffered rows are exactly the tail
-# the crash analysis wants on disk.
-finalize_observer!(observer::LuminosityObserver) = _flush_luminosity_rows!(observer)
-
-function prepare_observer!(observer::LuminosityObserver, runtime_elems)
-    observer.elements = runtime_elems
-    return nothing
-end
-
-# ---------------------------------------------------------------------------
-# Replayed-window discard for the continuing observers (2026-08-05 audit
-# open-queue U6-2). A failed `execute!`'s retry — or an explicit `start_turn`
-# rewind — replays absolute turns these observers may already have written,
-# and until this block only `MomentObserver` and the task-level .lum file
-# followed the idempotence rule (drop rows at or beyond the incoming window's
-# `first_turn`); the others duplicated turn labels. Each discard acts only on
-# a CONTINUING observer object (`initialized`/`append` already set): a fresh
-# object rewrites its file anyway, which is the documented replace semantics.
-# ---------------------------------------------------------------------------
-
-function prepare_observer!(observer::LuminosityObserver, runtime_elems, schedule,
-                           turns, first_turn)
-    prepare_observer!(observer, runtime_elems)
-    _discard_replayed_luminosity_rows!(observer, Int(first_turn))
-    return nothing
-end
-prepare_line_observer!(observer::LuminosityObserver, schedule, turns, first_turn=0) =
-    _discard_replayed_luminosity_rows!(observer, Int(first_turn))
-
-function _discard_replayed_luminosity_rows!(observer::LuminosityObserver, first_turn::Int)
-    # Unflushed rows would be re-observed by the replayed window (the JLD2
-    # discard's rule). Ordinarily empty here — finalize flushed them — but a
-    # caller that skipped finalize must not get duplicate labels.
-    empty!(observer.pending)
-    ((observer.initialized || observer.append) && isfile(observer.path)) ||
-        return nothing
-    rows = readlines(observer.path)
-    turn_of(line) = tryparse(Int, first(split(line, '\t')))
-    kept = [line for line in rows
-            if !isempty(strip(line)) && turn_of(line) !== nothing &&
-               turn_of(line) < first_turn]
-    tmp = observer.path * ".prepare.tmp"
-    open(tmp, "w") do io
-        for line in kept
-            println(io, line)
-        end
-    end
-    mv(tmp, observer.path; force=true)
-    return nothing
-end
-
-function prepare_observer!(observer::CoordinateSnapshotObserver, runtime_elems, schedule,
-                           turns, first_turn)
-    _discard_replayed_snapshots!(observer, Int(first_turn))
-    return nothing
-end
-prepare_line_observer!(observer::CoordinateSnapshotObserver, schedule, turns, first_turn=0) =
-    _discard_replayed_snapshots!(observer, Int(first_turn))
-
-const _SNAPSHOT_ARTIFACT_COLUMNS =
-    ["turn", "particle_id", "x", "px", "y", "py", "z", "pz"]
-
-function _discard_replayed_snapshots!(observer::CoordinateSnapshotObserver, first_turn::Int)
-    if !isempty(observer.name)
-        art = active_run_artifact()
-        art === nothing && throw(ArgumentError(
-            "CoordinateSnapshotObserver(name=$(repr(observer.name))) is an " *
-            "artifact view: the task must carry artifact=RunArtifact(...)"))
-        observer.artifact_ref = art
-        observer.artifact_key = _ra_bind_probe!(art, "snapshot", observer.name,
-                                                _SNAPSHOT_ARTIFACT_COLUMNS,
-                                                first_turn)
-        return nothing
-    end
-    # Snapshot records carry no turn label in the file, so the discard uses
-    # the (turn → byte offset) map this observer keeps for the records IT
-    # wrote: same-object retries truncate cleanly; records in a pre-existing
-    # file the object never wrote cannot be attributed and are left alone.
-    isempty(observer.written) && return nothing
-    isfile(observer.path) || return (empty!(observer.written); nothing)
-    idx = findfirst(entry -> entry[1] >= first_turn, observer.written)
-    idx === nothing && return nothing
-    offset = observer.written[idx][2]
-    open(observer.path, "r+") do io
-        truncate(io, offset)
-    end
-    resize!(observer.written, idx - 1)
-    # `append = false` is only correct when NOTHING precedes this object's
-    # records. `offset` is the byte position before the first record being
-    # dropped, so a non-zero offset with an empty `written` list means the file
-    # still holds data this observer never wrote -- the very data the
-    # `truncate` above just took care to preserve, per this function's own
-    # docstring ("records in a pre-existing file the object never wrote cannot
-    # be attributed and are left alone").
-    #
-    # Resetting unconditionally made the next `observe!` compute offset = 0 and
-    # reopen with "w", destroying that prefix. Measured: a 19-byte foreign
-    # prefix survived the discard (file truncated 215 -> 19) and was gone after
-    # the retry (2026-08-05_b audit, U7-1).
-    isempty(observer.written) && offset == 0 && (observer.append = false)
+    _ra_push_probe_rows!(observer.artifact_ref, observer.artifact_key, rows)
     return nothing
 end
 
@@ -1199,7 +855,7 @@ function prepare_line_observer!(observer::MomentObserver, schedule, turns, first
     return nothing
 end
 
-requires_elementwise_tracking(::LuminosityObserver) = true
+
 
 function apply_action!(action::BeamSwapAction, ctx::TrackingContext, rep)
     replacement = _call_provider(action.provider, ctx)
@@ -1225,161 +881,27 @@ end
 
 function _prepare_moment_observer!(observer::MomentObserver, schedule, turns,
                                   first_turn::Integer=0)
-    if observer.buffer_capacity == 0
-        # `capacity = 0` disables output, which is documented and deliberate --
-        # but "disables output" and "leaves the last run's file untouched" are
-        # different promises, and only the first was made (2026-08-05_b audit,
-        # U7-9). A stale table from a previous run sits at `path` looking
-        # exactly like current output, with nothing said. The file is NOT
-        # removed here, because deleting a user's data on a disabled observer
-        # would be a worse surprise than leaving it; the point is that the
-        # ambiguity stops being silent.
-        isfile(observer.path) && filesize(observer.path) > 0 &&
-            @warn "MomentObserver(capacity=0) writes nothing, and a file already " *
-                  "exists at this path: it is from an EARLIER run and will not be " *
-                  "updated. Delete it, or use a different path, if you are about " *
-                  "to read it as this run's output." path = observer.path maxlog = 1
-        return nothing
-    end
     planned_turns = _scheduled_turns(schedule, turns, first_turn)
     planned_turns === nothing && throw(ArgumentError(
         "MomentObserver requires a predictable schedule: use AlwaysSchedule, EveryNSteps, or AtTurns with known task turns."
     ))
     observer.buffer_length = 0
-    observer.start_time_ns = time_ns()
-    if !isempty(observer.name)
-        art = active_run_artifact()
-        art === nothing && throw(ArgumentError(
-            "MomentObserver(name=$(repr(observer.name))) is an artifact view: " *
-            "the task must carry artifact=RunArtifact(...)"))
-        observer.artifact_ref = art
-        observer.artifact_key = _ra_bind_probe!(art, "moments", observer.name,
-                                                observer.column_names,
-                                                Int(first_turn))
-        observer.planned_records = length(planned_turns)
-        observer.record_count = 0
-        observer.initialized = true
-        return nothing
-    end
-    if observer.append && isfile(observer.path) && filesize(observer.path) > 0
-        # Continue the existing table (a zero-byte leftover from a crash at
-        # create time is not a table; it is replaced fresh, matching the
-        # .lum twin). The kept rows live in the FILE, but the resume POINT is
-        # the caller's: a fresh task or process continues the table only when
-        # execute! is given the matching absolute start_turn — without it,
-        # execution starts at turn 0 and replaces the recorded timeline
-        # (loudly; see _moment_append_continue!).
-        kept = _moment_append_continue!(observer, Int(first_turn), length(planned_turns))
-        observer.record_count = kept
-        observer.planned_records = kept + length(planned_turns)
-    else
-        observer.planned_records = length(planned_turns)
-        observer.record_count = 0
-        _initialize_hdf5_moment_file!(observer)
-    end
-    _moment_execution_slot!(observer, Int(first_turn))
+    art = active_run_artifact()
+    art === nothing && throw(ArgumentError(
+        "MomentObserver(name=$(repr(observer.name))) is an artifact view: " *
+        "the task must carry artifact=RunArtifact(...)"))
+    observer.artifact_ref = art
+    observer.artifact_key = _ra_bind_probe!(art, "moments", observer.name,
+                                            observer.column_names,
+                                            Int(first_turn))
+    # Buffering is the artifact's: one capacity for every producer.
+    observer.buffer_capacity = art.capacity
+    observer.buffer = Matrix{Float64}(undef, art.capacity,
+                                      length(observer.column_names))
+    observer.planned_records = length(planned_turns)
+    observer.record_count = 0
     observer.initialized = true
     return nothing
-end
-
-"""
-Append one row to the file's per-execution ledger and remember its index.
-
-`/execution_elapsed` and `/execution_start_turn` carry one entry per
-`execute!` of this file: the slot is appended at prepare and updated at
-every flush, so a swap-out run's earlier executions RETAIN their wall
-times -- the scalar `/elapsed_time` keeps its documented
-current-execution-only semantics for existing readers. Created on demand,
-so an append-mode file written before the ledger existed gains it on its
-next continuation.
-"""
-function _moment_execution_slot!(observer::MomentObserver, first_turn::Int)
-    HDF5.h5open(observer.path, "r+") do file
-        if !haskey(file, "execution_elapsed")
-            for (name, T) in (("execution_elapsed", Float64),
-                              ("execution_start_turn", Int64))
-                HDF5.create_dataset(file, name, HDF5.datatype(T),
-                    HDF5.dataspace((0,); max_dims=(-1,)); chunk=(16,))
-            end
-        end
-        de = file["execution_elapsed"]
-        dt = file["execution_start_turn"]
-        n = length(de)
-        HDF5.set_extent_dims(de, (n + 1,))
-        HDF5.set_extent_dims(dt, (n + 1,))
-        de[n + 1] = 0.0
-        dt[n + 1] = Int64(first_turn)
-        observer.execution_slot = n + 1
-        HDF5.flush(file)
-    end
-    return nothing
-end
-
-"""
-Open an existing appendable moment file, drop any rows at or beyond
-`first_turn`, and grow the table's extent for the upcoming window.
-
-Dropping the replayed window is the same idempotence rule the BPM observer
-follows: rows there can only exist from a failed `execute!` whose retry
-replays the same absolute turns, or from an explicit `start_turn` rewind —
-either way the timeline from `first_turn` on is being rewritten, and a table
-with two rows for one turn is corrupt for every reader. Rows are in ascending
-turn order (schedules plan forward and rewinds drop), so the cutoff is a
-binary search on the turn column.
-"""
-function _moment_append_continue!(observer::MomentObserver, first_turn::Int, nplanned::Int)
-    return HDF5.h5open(observer.path, "r+") do file
-        (haskey(file, "data") && haskey(file, "record_count") &&
-         haskey(file, "column_names")) || throw(ArgumentError(
-            "MomentObserver(append=true): $(observer.path) exists but is not a moment file. Use a new path."))
-        dset = file["data"]
-        haskey(HDF5.attributes(dset), "appendable") || throw(ArgumentError(
-            "MomentObserver(append=true): $(observer.path) was created without append=true, " *
-            "so its HDF5 table is fixed-size and cannot grow. Use a new path or delete it."))
-        read(file["column_names"]) == observer.column_names || throw(ArgumentError(
-            "MomentObserver(append=true): the moment selection differs from the existing " *
-            "file at $(observer.path); matching columns are required to continue it."))
-        written = Int(read(file["record_count"])[1])
-        kept = written
-        if written > 0
-            turn_col = dset[1:written, 1]
-            kept = searchsortedfirst(turn_col, Float64(first_turn)) - 1
-        end
-        # Announce ANY loss, not only total loss. The `kept == 0` form warned
-        # when the whole table went and said nothing when part of it did -- so a
-        # fresh task given a wrong-but-nonzero `start_turn` destroyed the tail
-        # of an appendable table silently. Measured: a 10-row table, then a
-        # fresh task with `start_turn=1, turns=2`, left 3 rows and no signal
-        # (2026-08-05_b audit, U7-6).
-        #
-        # Dropping rows is still the correct idempotence rule -- a retry that
-        # replays the same absolute turns must not leave two rows for one turn
-        # -- so this stays a warning and not a refusal. What was wrong was that
-        # the deliberate rewind and the caller who does not know the resume
-        # point are indistinguishable from the outside, and only one of them
-        # got told.
-        if written > kept
-            if kept == 0
-                @warn "MomentObserver(append=true) is replacing the ENTIRE existing " *
-                      "moment table at $(observer.path): execution starts at turn " *
-                      "$(first_turn), at or before every recorded row. Pass the " *
-                      "matching absolute start_turn to execute! to continue the " *
-                      "file instead." dropped_rows = written
-            else
-                @warn "MomentObserver(append=true) is dropping the tail of the existing " *
-                      "moment table at $(observer.path): execution starts at turn " *
-                      "$(first_turn), which is inside the recorded range, so every " *
-                      "row at or after it is being rewritten. Intended for a rewind " *
-                      "or a replayed retry; if this is a fresh task, pass the " *
-                      "matching absolute start_turn to execute! " *
-                      "instead." dropped_rows = written - kept kept_rows = kept
-            end
-        end
-        HDF5.set_extent_dims(dset, (kept + nplanned, length(observer.column_names)))
-        file["record_count"][1] = Int64(kept)
-        HDF5.flush(file)
-        return kept
-    end
 end
 
 # The planner must filter against the ABSOLUTE turn window `execute!` will run,
@@ -1429,55 +951,13 @@ end
 
 _scheduled_turns(schedule::PredicateSchedule, turns, first_turn::Integer=0) = nothing
 
-function _initialize_hdf5_moment_file!(observer::MomentObserver)
-    _register_observer_path!(observer, observer.path)   # U7-10
-    HDF5.h5open(observer.path, "w") do file
-        ncols = length(observer.column_names)
-        if observer.append
-            # Chunked with an unlimited row dimension: a contiguous HDF5
-            # dataset (the replace-mode layout below) can never grow, which
-            # is the structural reason append needed more than a mode flag.
-            # Chunked datasets read back identically; unwritten rows are the
-            # 0.0 fill value, matching the replace-mode zeros.
-            chunk_rows = clamp(observer.planned_records, 1, 1024)
-            dset = HDF5.create_dataset(file, "data", HDF5.datatype(Float64),
-                HDF5.dataspace((observer.planned_records, ncols); max_dims=(-1, ncols));
-                chunk=(chunk_rows, ncols))
-            HDF5.attributes(dset)["appendable"] = Int8(1)
-        else
-            file["data"] = zeros(Float64, observer.planned_records, ncols)
-        end
-        file["column_names"] = observer.column_names
-        file["record_count"] = Int64[0]
-        file["elapsed_time"] = Float64[0.0]
-        HDF5.flush(file)
-    end
-    return nothing
-end
-
 function _flush_moment_observer!(observer::MomentObserver)
     observer.buffer_length == 0 && return nothing
-    if observer.artifact_key !== nothing
-        _ra_push_probe_rows!(observer.artifact_ref, observer.artifact_key,
-                             observer.buffer[1:observer.buffer_length, :])
-        observer.record_count += observer.buffer_length
-        observer.buffer_length = 0
-        return nothing
-    end
-    row1 = observer.record_count + 1
-    row2 = observer.record_count + observer.buffer_length
-    row2 <= observer.planned_records || error(
-        "MomentObserver received more records ($(row2)) than planned ($(observer.planned_records))")
-    HDF5.h5open(observer.path, "r+") do file
-        file["data"][row1:row2, :] = observer.buffer[1:observer.buffer_length, :]
-        file["record_count"][1] = Int64(row2)
-        elapsed = (time_ns() - observer.start_time_ns) / 1.0e9
-        file["elapsed_time"][1] = Float64(elapsed)
-        observer.execution_slot > 0 &&
-            (file["execution_elapsed"][observer.execution_slot] = Float64(elapsed))
-        HDF5.flush(file)
-    end
-    observer.record_count = row2
+    observer.artifact_key === nothing && throw(ArgumentError(
+        "MomentObserver must be prepared (artifact-bound) before flushing"))
+    _ra_push_probe_rows!(observer.artifact_ref, observer.artifact_key,
+                         observer.buffer[1:observer.buffer_length, :])
+    observer.record_count += observer.buffer_length
     observer.buffer_length = 0
     return nothing
 end
@@ -1757,7 +1237,7 @@ function _compute_moment(arrays, means, moment::Moment, flags=nothing, nlive=len
 end
 
 """
-    MomentOutputFile(path)
+    MomentOutput(path)
 
 Lightweight handle for reading a `MomentObserver` output file.
 
@@ -1766,7 +1246,7 @@ written `/data` matrix up to `/record_count`. Use `read(file, item)` for one
 column and keyword moment selection for a smaller matrix.
 
 ```julia
-out = MomentOutputFile("result/pic_hcc.h5")
+out = MomentOutput("result/pic_hcc.h5")
 
 data = read(out)
 turn = read(out, :turn)
@@ -1778,10 +1258,11 @@ records = read(out, :record_count)
 seconds = read(out, :elapsed_time)
 ```
 
-`MomentOutputFile` is the preferred reader for `MomentObserver` HDF5 files.
+`MomentOutput` is the preferred reader for moment output (renamed from
+`MomentOutputFile` 2026-08-18, matching `TaskOutput`). `MomentOutputFile`,
 `OutputFile` and `MomentFile` remain compatibility aliases.
 """
-struct MomentOutputFile
+struct MomentOutput
     path::String
     # "" reads a standalone moment file at the HDF5 root (the pre-artifact
     # layout, still readable); "moments/<name>" reads that probe's group
@@ -1789,17 +1270,18 @@ struct MomentOutputFile
     group::String
 end
 
-MomentOutputFile(path::AbstractString; name::Union{Nothing,AbstractString}=nothing) =
-    MomentOutputFile(String(path), name === nothing ? "" : "moments/" * String(name))
+MomentOutput(path::AbstractString; name::Union{Nothing,AbstractString}=nothing) =
+    MomentOutput(String(path), name === nothing ? "" : "moments/" * String(name))
 
-const OutputFile = MomentOutputFile
-const MomentFile = MomentOutputFile
+const MomentOutputFile = MomentOutput
+const OutputFile = MomentOutput
+const MomentFile = MomentOutput
 
 const _READ_ALL_MOMENT_COLUMNS = :__octopus_read_all_moment_columns__
 
 """
-    read(file::MomentOutputFile)
-    read(file::MomentOutputFile; orders=..., extra=(), exclude=())
+    read(file::MomentOutput)
+    read(file::MomentOutput; orders=..., extra=(), exclude=())
 
 Read an output data matrix.
 
@@ -1813,7 +1295,7 @@ rules as `MomentObserver`: expand `orders`, add `extra`, then remove `exclude`.
 Unavailable requested moments are skipped.
 
 ```julia
-out = MomentOutputFile("moments.h5")
+out = MomentOutput("moments.h5")
 data = read(out)
 names = column_names(out)
 
@@ -1823,9 +1305,9 @@ selected = read(out; orders = (), extra = (Moment(; pz = 4),))
 without_z2 = read(out; orders = 1:2, exclude = (Moment(; z = 2),))
 ```
 """
-function read(file::MomentOutputFile; orders=_READ_ALL_MOMENT_COLUMNS, extra=(), exclude=())
+function read(file::MomentOutput; orders=_READ_ALL_MOMENT_COLUMNS, extra=(), exclude=())
     if !_is_hdf5_output(file.path)
-        orders === _READ_ALL_MOMENT_COLUMNS && isempty(extra) && isempty(exclude) && return read_moment(file.path, :data)
+        orders === _READ_ALL_MOMENT_COLUMNS && isempty(extra) && isempty(exclude) && return _read_moment(file.path, :data)
         throw(ArgumentError("keyword moment selection is only supported for HDF5 output files"))
     end
     if orders === _READ_ALL_MOMENT_COLUMNS && isempty(extra) && isempty(exclude)
@@ -1836,7 +1318,7 @@ function read(file::MomentOutputFile; orders=_READ_ALL_MOMENT_COLUMNS, extra=(),
 end
 
 """
-    read(file::MomentOutputFile, item)
+    read(file::MomentOutput, item)
 
 Read one named output column or progress field.
 
@@ -1851,7 +1333,7 @@ For HDF5 moment output, `item` may be:
 Examples:
 
 ```julia
-out = MomentOutputFile("moments.h5")
+out = MomentOutput("moments.h5")
 turns = read(out, :turn)
 mx = read(out, Moment(; x = 1))
 sxpx = read(out, :m110000)
@@ -1859,15 +1341,15 @@ records = read(out, :record_count)
 seconds = read(out, :elapsed_time)
 ```
 """
-function read(file::MomentOutputFile, item::Union{Moment,Symbol,AbstractString})
+function read(file::MomentOutput, item::Union{Moment,Symbol,AbstractString})
     _is_hdf5_output(file.path) && return _read_hdf5_column(file.path, file.group, item)
-    item isa Symbol && return read_moment(file.path, item)
-    item isa AbstractString && return read_moment(file.path, Symbol(item))
-    return read_moment(file.path, Symbol(name(item)))
+    item isa Symbol && return _read_moment(file.path, item)
+    item isa AbstractString && return _read_moment(file.path, Symbol(item))
+    return _read_moment(file.path, Symbol(name(item)))
 end
 
 """
-    column_names(file::MomentOutputFile)
+    column_names(file::MomentOutput)
 
 Return output column names as strings.
 
@@ -1875,7 +1357,7 @@ For `MomentObserver` HDF5 files, this reads `/column_names`. The returned names
 align with columns of `read(file)`.
 
 ```julia
-out = MomentOutputFile("moments.h5")
+out = MomentOutput("moments.h5")
 data = read(out)
 names = column_names(out)
 
@@ -1889,7 +1371,7 @@ using DataFrames
 df = DataFrame(data, Symbol.(names))
 ```
 """
-function column_names(file::MomentOutputFile)
+function column_names(file::MomentOutput)
     if _is_hdf5_output(file.path)
         return HDF5.h5open(file.path, "r") do h5
             String.(read(_moment_h5_root(h5, file.group)["column_names"]))
@@ -1973,7 +1455,8 @@ function _read_hdf5_special(h5, item)
     elseif key == "elapsed_time"
         haskey(h5, "elapsed_time") || throw(ArgumentError(
             "`elapsed_time` is not present here. A run artifact's timing lives " *
-            "in its execution ledger: use read_execution(path). A standalone " *
+            "in its execution ledger: use read(TaskOutput(path), :execution). " *
+            "A standalone " *
             "moment file needs recreating with the current MomentObserver."
         ))
         return Float64(first(read(h5["elapsed_time"])))
@@ -2020,27 +1503,22 @@ function _hdf5_column_index(names::Vector{String}, item::AbstractString)
 end
 
 """
-    read_moment(file_or_path, name)
-
 Read a named moment block from a legacy columnar JLD2 moment file (format
-`"Octopus.JLD2BeamMomentObserver"`) without duplicating datasets on disk. The
-writer was removed on 2026-08-11; this reader stays so archived files remain
-readable.
-
-Prefer `read(MomentOutputFile(path))` for new code. `read_moment` is kept as a
-compatibility alias and for callers that already have an open JLD2 file handle.
-
-Supported names are `:turn`, `:data`, `:mean`, `:covariance`, `:rms`,
-`:emittance`, `:xz_covariance`, `:yz_covariance`, and
+`"Octopus.JLD2BeamMomentObserver"`). The writer was removed 2026-08-11 and
+the public `read_moment` name retired 2026-08-18 (owner direction) --
+`read(MomentOutput(path))` and `read(MomentOutput(path), item)` are the one
+reading surface, and they route through this internally so archived files
+remain readable. Supported names: `:turn`, `:data`, `:mean`, `:covariance`,
+`:rms`, `:emittance`, `:xz_covariance`, `:yz_covariance`,
 `:diagonal_fourth_central`.
 """
-function read_moment(path::AbstractString, name::Symbol)
+function _read_moment(path::AbstractString, name::Symbol)
     return JLD2.jldopen(path, "r") do file
-        read_moment(file, name)
+        _read_moment(file, name)
     end
 end
 
-function read_moment(file, name::Symbol)
+function _read_moment(file, name::Symbol)
     name === :data && return file["data"]
     range_key = "metadata/ranges/$(name)"
     haskey(file, range_key) || throw(KeyError(name))

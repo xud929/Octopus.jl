@@ -24,11 +24,14 @@ The pattern this example follows:
 5. Build both ring lines with matching `StrongStrongCollision` markers.
 6. Build a `StrongStrongTask` and `execute!` it.
 
-Outputs are written under `result/<seed>/`, named by the case:
+Output is ONE run artifact under `result/<seed>/` (docs/design/run_artifact.md):
 
-- `<case_name>.lum`      : turn and per-collision luminosity
-- `<case_name>.ele.h5`   : electron-beam moment history
-- `<case_name>.pro.h5`   : proton-beam moment history
+- `<case_name>.h5` : `/luminosity/ip` (turn and per-collision luminosity),
+  `/moments/electron` and `/moments/proton`, and the `/execution` ledger.
+  Read with one handle: `out = TaskOutput(path)`, then
+  `read(out, :luminosity; name = "ip")`, `read(out, :moments;
+  name = "electron")` (or `MomentOutput(path; name = "electron")` for
+  Moment-aware selection), `read(out, :execution)`.
 =#
 
 if !isdefined(Main, :Octopus)
@@ -114,16 +117,16 @@ input = (
     ),
 
     output = (
-        # Filenames derive from `case_name` above — one authority, no copies
-        # (the weak-strong pair's 2026-08-11 fix, same class). The moment
-        # capacity buffers rows between HDF5 flushes; 1024 is the
-        # MomentObserver default and networked filesystems punish less
+        # The filename derives from `case_name` above — one authority, no
+        # copies (the weak-strong pair's 2026-08-11 fix, same class).
+        # `capacity` is the ARTIFACT'S: the one knob for how many rows every
+        # producer batches between appends (the per-observer capacities
+        # retired 2026-08-18); networked filesystems punish less
         # (docs/history/weak_strong_cuda_luminosity_2026_08_11.md). The
-        # task-level .lum stream holds one file handle open across execute!
-        # and needs no capacity.
+        # artifact holds one file handle open across execute!.
         moment_start = 0,
         moment_step = 1,
-        moment_capacity = 1024,
+        capacity = 1024,
     ),
 )
 
@@ -173,6 +176,13 @@ solver = PICPoissonSolver(;
     slice_pair_green_min_ratio = input.solver.pic_slice_pair_green_min_ratio,
     slice_pair_green_growth = input.solver.pic_slice_pair_green_growth,
     longitudinal_kick = true,
+    # The luminosity schedule lives HERE, on the solver, because evaluation
+    # costs real solver work: e.g. `luminosity_schedule = EveryNSteps(step = 10)`
+    # evaluates (and therefore outputs) luminosity every 10th turn -- skipped
+    # turns still get their beam-beam kicks and simply have no row in the
+    # artifact's /luminosity/ip channel (each collision keeps its own turn
+    # axis). Default: every turn. GaussianPoissonSolver has no such option;
+    # its luminosity is a free byproduct of the kick computation.
 )
 
 # Sliced soft-Gaussian (Bassetti-Erskine) solver:
@@ -235,19 +245,19 @@ lb = LorentzBoostSpec(input.crossing_angle)
 rlb = RevLorentzBoostSpec(input.crossing_angle)
 ip = StrongStrongCollision(:ip; poisson_solver = solver)
 
-# Outputs land under result/<seed>/, named by the case — the same layout as
+# Output lands under result/<seed>/, named by the case — the same layout as
 # the weak-strong example, so seed scans and multi-case studies never collide.
+# One artifact per task: the moment probes are named VIEWS into it, placed in
+# their lines; the luminosity channel comes from the collision itself.
 outdir = joinpath(input.result_dir, string(input.seed))
 mkpath(outdir)
-luminosity_path = joinpath(outdir, input.case_name * ".lum")
-electron_moment_path = joinpath(outdir, input.case_name * ".ele.h5")
-proton_moment_path = joinpath(outdir, input.case_name * ".pro.h5")
+artifact_path = joinpath(outdir, input.case_name * ".h5")
 moment_schedule = EveryNSteps(;
     start = input.output.moment_start, step = input.output.moment_step)
 electron_observer = ScheduledObserver(
-    MomentObserver(electron_moment_path; capacity = input.output.moment_capacity), moment_schedule)
+    MomentObserver(; name = "electron"), moment_schedule)
 proton_observer = ScheduledObserver(
-    MomentObserver(proton_moment_path; capacity = input.output.moment_capacity), moment_schedule)
+    MomentObserver(; name = "proton"), moment_schedule)
 
 line_ele = (
     electron_tccb2ip_inv, electron_tccb, electron_tccb2ip, lb, ip, rlb,
@@ -267,21 +277,23 @@ line_pro = (
 # resolves a fresh default at execute time, so any non-default execution choice
 # would reach beam construction and be silently dropped for the tracking itself
 # (2026-08-05_b audit, U21-17).
-# The luminosity sink attaches at the TASK -- pair-level luminosity belongs
-# to neither line -- as a LuminosityObserver, the same object the weak-strong
-# example uses. `capacity` buffers rows between appends (worthwhile on
-# networked filesystems); `append = true` would continue one file across
-# executions and restarts instead of rewriting it per run.
+# The run artifact attaches at the TASK -- pair-level luminosity belongs to
+# neither line -- and every product lands in the one file: the collision's
+# luminosity channel, both moment views, the execution ledger.
+# `RunArtifact(path; append = true)` would continue one file across
+# executions and restarts instead of rewriting it per run; `capacity` is the
+# one buffering knob for every producer (worthwhile on networked
+# filesystems).
 task = StrongStrongTask(line_ele, line_pro; policy = policy,
-                        luminosity = LuminosityObserver(luminosity_path))
+                        artifact = RunArtifact(artifact_path;
+                                               capacity = input.output.capacity))
 execute!(task, beam_ele, beam_pro; turns = config.turns)
 
 stats_ele = beam_statistics(beam_ele)
 stats_pro = beam_statistics(beam_pro)
 println("turns = ", config.turns)
 println("poisson_solver = ", nameof(typeof(solver)))
-println("luminosity = ", luminosity_path)
-println("electron moments = ", electron_moment_path)
-println("proton moments = ", proton_moment_path)
+println("artifact = ", artifact_path)
+println("  /luminosity/ip, /moments/electron, /moments/proton, /execution")
 println("electron rms = ", stats_ele.rms)
 println("proton rms = ", stats_pro.rms)

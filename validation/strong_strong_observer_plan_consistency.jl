@@ -32,7 +32,9 @@ function make_task(with_observer)
     )
     solver = ValidationNoopPoissonSolver()
     ip = StrongStrongCollision(:ip; poisson_solver=solver)
-    observer = ScheduledObserver(MomentObserver(""; capacity=0))
+    # A memory-only BPM: a read-only observer that needs no artifact --
+    # its presence alone is what exercises the plan-cache key.
+    observer = ScheduledObserver(BPMObserver("plan_probe"))
     tail = with_observer ? (post, observer) : (post,)
     return StrongStrongTask((pre, ip, tail...), (pre, ip, tail...))
 end

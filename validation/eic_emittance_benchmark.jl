@@ -9,7 +9,8 @@ production constants of Sec. 6.1, 15 normal-quantile slices, 128^2 mesh,
 1e5 macroparticles per beam (matching BeamBeam3D), 8192 turns, electron
 radiation damping shortened 4000 -> 400 turns.
 
-Emittance vs turn is read from the MomentObserver HDF5 output, NOT by
+Emittance vs turn is read from the run artifact's moment groups
+(`MomentOutput(path; name = "electron"/"proton")`), NOT by
 looping execute!(...; turns=1): a fresh execute! restarts the task turn
 counter, which replays the counter-based Philox stream and turns the
 radiation excitation into a fixed per-particle kick.  See
@@ -152,9 +153,8 @@ diagnosis:
 Output is written to `test/result/` (this harness keeps its outputs beside the
 tests; the clean `examples/` counterpart writes to the repo-root `result/`):
 
-- `test/result/pic_hcc.lum`
-- `test/result/pic_hcc.ele.h5`
-- `test/result/pic_hcc.pro.h5`
+- `test/result/pic_hcc.h5` : the run artifact -- /luminosity/ip,
+  /moments/electron, /moments/proton, /execution
 =#
 
 if !isdefined(Main, :Octopus)
@@ -226,12 +226,10 @@ input = (
     ),
 
     output = (
-        luminosity_file = get(ENV, "EIC_TAG", "pic_hcc") * ".lum",
-        electron_moment_file = get(ENV, "EIC_TAG", "pic_hcc") * ".ele.h5",
-        proton_moment_file = get(ENV, "EIC_TAG", "pic_hcc") * ".pro.h5",
+        artifact_file = get(ENV, "EIC_TAG", "pic_hcc") * ".h5",
         moment_start = 0,
         moment_step = parse(Int, get(ENV, "EIC_MOMENT_STEP", "1")),
-        moment_capacity = 100,
+        capacity = 100,   # the ARTIFACT'S: one batching knob for every producer
     ),
 )
 
@@ -364,8 +362,13 @@ disable_luminosity_output = get(ENV, "OCTOPUS_DISABLE_LUMINOSITY_OUTPUT", "0") i
                             ("1", "true", "TRUE", "yes", "YES")
 disable_collision = get(ENV, "OCTOPUS_DISABLE_COLLISION", "0") in
                     ("1", "true", "TRUE", "yes", "YES")
+# OCTOPUS_MOMENT_CAPACITY sets the ARTIFACT capacity; 0 keeps its harness
+# meaning of "disable moment output" (the library capacity=0 spelling
+# retired with the per-observer capacity, 2026-08-18).
 moment_capacity = parse(Int, get(ENV, "OCTOPUS_MOMENT_CAPACITY",
-                                 string(input.output.moment_capacity)))
+                                 string(input.output.capacity)))
+disable_moments = disable_moments || moment_capacity == 0
+artifact_capacity = moment_capacity > 0 ? moment_capacity : input.output.capacity
 optional_cuda_pic_threads(key) = haskey(ENV, key) ? parse(Int, ENV[key]) : nothing
 cuda_pic_launch = CUDAPICLaunchConfig(
     gather_scatter_threads = optional_cuda_pic_threads("OCTOPUS_CUDA_PIC_GATHER_SCATTER_THREADS"),
@@ -590,9 +593,7 @@ ip = StrongStrongCollision(:ip; poisson_solver = solver)
 collision_elements = disable_collision ? () : (ip,)
 
 mkpath(input.result_dir)
-luminosity_path = joinpath(input.result_dir, input.output.luminosity_file)
-electron_moment_path = joinpath(input.result_dir, input.output.electron_moment_file)
-proton_moment_path = joinpath(input.result_dir, input.output.proton_moment_file)
+artifact_path = joinpath(input.result_dir, input.output.artifact_file)
 moment_schedule = EveryNSteps(;
     start = input.output.moment_start,
     stop = input.total_turns,
@@ -600,13 +601,13 @@ moment_schedule = EveryNSteps(;
 )
 electron_observers = disable_moments ? () : (
     ScheduledObserver(
-        MomentObserver(electron_moment_path; capacity = moment_capacity),
+        MomentObserver(; name = "electron"),
         moment_schedule,
     ),
 )
 proton_observers = disable_moments ? () : (
     ScheduledObserver(
-        MomentObserver(proton_moment_path; capacity = moment_capacity),
+        MomentObserver(; name = "proton"),
         moment_schedule,
     ),
 )
@@ -642,8 +643,18 @@ line_pro = (
     proton_observers...,
 )
 
+# The moment views need the artifact, so it is dropped only when nothing
+# needs it. With moments enabled, OCTOPUS_DISABLE_LUMINOSITY_OUTPUT cannot
+# suppress the luminosity channel -- the collision writes it whenever it
+# evaluates -- so that contradiction errors rather than writing silently.
+disable_artifact = disable_luminosity_output && disable_moments
+disable_luminosity_output && !disable_moments && !disable_collision && error(
+    "OCTOPUS_DISABLE_LUMINOSITY_OUTPUT=1 cannot suppress the luminosity " *
+    "channel while the artifact exists for the moment views; also set " *
+    "OCTOPUS_DISABLE_MOMENTS=1 (or OCTOPUS_DISABLE_COLLISION=1).")
 task = StrongStrongTask(line_ele, line_pro;
-    luminosity = disable_luminosity_output ? nothing : luminosity_path,
+    artifact = disable_artifact ? nothing :
+               RunArtifact(artifact_path; capacity = artifact_capacity),
     diagnostics,
 )
 function _emit(b)
@@ -731,8 +742,8 @@ let resolved = solver_configuration(solver)
         println("pic_luminosity_deposit_method_resolved = ",
                 resolved.resolved_luminosity_deposit_method)
 end
-println("luminosity = ", disable_luminosity_output ? "disabled" : luminosity_path)
-println("electron moments = ", disable_moments ? "disabled" : electron_moment_path)
-println("proton moments = ", disable_moments ? "disabled" : proton_moment_path)
+println("artifact = ", disable_artifact ? "disabled" : artifact_path)
+println("electron moments = ", disable_moments ? "disabled" : "$(artifact_path):/moments/electron")
+println("proton moments = ", disable_moments ? "disabled" : "$(artifact_path):/moments/proton")
 println("electron rms = ", stats_ele.rms)
 println("proton rms = ", stats_pro.rms)

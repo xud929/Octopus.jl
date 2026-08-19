@@ -45,9 +45,10 @@ Outputs are written to `test/result/<seed>/`, named by the case (this harness
 keeps its outputs beside the tests; the clean `examples/` counterpart writes
 the same layout under the repo-root `result/`):
 
-- `<case_name>.lum`: turn and luminosity values.
-- `<case_name>.h5`: scheduled first- and second-order moments written by
-  `MomentObserver`.
+- `<case_name>.h5`: the run artifact -- `/luminosity/strong_beam_1` (turn and
+  luminosity), `/moments/weak_beam` (scheduled first- and second-order
+  moments), and the `/execution` ledger; read through one handle,
+  `read(TaskOutput(path), kind; name = ...)`.
 =#
 
 if !isdefined(Main, :Octopus)
@@ -134,12 +135,13 @@ input = (
     output = (
         # Filenames derive from `case_name` — one authority, no copies (its
         # previous life as a defined-but-unread field was the U21-24 class the
-        # NOTE above records for total_turns/n_macro). Capacities buffer rows
-        # between appends/flushes; on networked filesystems the per-turn
-        # open/append/close dominates observer cost (2.3 ms/turn measured;
+        # NOTE above records for total_turns/n_macro). `capacity` is the
+        # ARTIFACT'S: the one knob for how many rows every producer batches
+        # between appends (the per-observer capacities retired 2026-08-18);
+        # on networked filesystems the per-turn write dominates observer
+        # cost (2.3 ms/turn measured;
         # docs/history/weak_strong_cuda_luminosity_2026_08_11.md).
-        luminosity_capacity = 100,
-        moment_capacity = 1024,
+        capacity = 1024,
         moment_start = 0,
         moment_step = 1,
     ),
@@ -296,11 +298,10 @@ radiation = LumpedRadSpec{Float64}(;
 # clean example's layout so seed scans and multi-case runs never collide.
 outdir = joinpath(input.result_dir, string(input.seed))
 mkpath(outdir)
-luminosity_path = joinpath(outdir, input.case_name * ".lum")
-moment_path = joinpath(outdir, input.case_name * ".h5")
-# Task-level luminosity sink (the unified spelling, 2026-08-17).
+artifact_path = joinpath(outdir, input.case_name * ".h5")
+# One run artifact per task; the moment observer is a named view into it.
 moment_observer = ScheduledObserver(
-    MomentObserver(moment_path; capacity = input.output.moment_capacity),
+    MomentObserver(; name = "weak_beam"),
     EveryNSteps(
         start = input.output.moment_start,
         step = input.output.moment_step,
@@ -323,13 +324,12 @@ line_specs = (
     moment_observer,
 )
 task = TrackingTask(line_specs;
-    luminosity = LuminosityObserver(luminosity_path;
-                                    capacity = input.output.luminosity_capacity))
+    artifact = RunArtifact(artifact_path; capacity = input.output.capacity))
 execute!(task, beam; turns = turns)
 
 stats = beam_statistics(beam)
 println("turns = ", turns)
 println("n_macro = ", n_macro)
-println("luminosity = ", luminosity_path)
-println("moments = ", moment_path)
+println("artifact = ", artifact_path)
+println("  /luminosity/strong_beam_1, /moments/weak_beam, /execution")
 println("rms = ", stats.rms)

@@ -116,8 +116,8 @@ transverse-only spectral map.
 `EveryNSteps(step=10)` or `AtTurns([0, 100])`, with the same convention as
 `PICPoissonSolver`: `nothing` evaluates luminosity every turn; when the schedule
 does not run, the beam-beam kicks are still applied and the returned luminosity is
-`NaN` to mark that it was intentionally not computed, and `StrongStrongTask` omits
-those turns from its luminosity file. Luminosity is a separate density-overlap
+`NaN` to mark that it was intentionally not computed, and those turns leave no
+row in the artifact's luminosity channel. Luminosity is a separate density-overlap
 deposit for this solver (~11% of a turn at the recommended production grid), so
 scheduling it is a real saving, unlike for `GaussianPoissonSolver` where the
 luminosity is a by-product of the kick and costs nothing.
@@ -197,7 +197,7 @@ const _SPECTRAL_SOLVER_OPTION_SCHEMA = (
         "CUDA field-solve precision; :double (bit-parity) or :single (faster, ~1e-7 field error)."; category=:accuracy_performance,
         supported_backends=(CUDABackend,)),
     luminosity_schedule = SolverOptionMeta(Union{Nothing,AbstractSchedule}, nothing,
-        "Schedule for luminosity evaluation; nothing evaluates every turn. Same convention as PICPoissonSolver: skipped turns return NaN and are omitted from the task luminosity file.";
+        "Schedule for luminosity evaluation; nothing evaluates every turn. Same convention as PICPoissonSolver: skipped turns return NaN and leave no row in the artifact's luminosity channel.";
         category=:diagnostic),
     slicing = SolverOptionMeta(LongitudinalSlicing, LongitudinalSlicing(),
         "Shared longitudinal slicing configuration."; category=:physics),
@@ -259,8 +259,9 @@ end
 
 # Luminosity scheduling, same convention as PICPoissonSolver: when the schedule
 # does not run, the beam-beam kicks are still applied and the returned luminosity
-# is NaN to mark that it was intentionally not computed. `StrongStrongTask` omits
-# those turns from the luminosity file (see _strong_strong_luminosity_evaluated).
+# is NaN to mark that it was intentionally not computed. `StrongStrongTask`
+# leaves those turns out of the artifact's luminosity channel (see
+# _strong_strong_luminosity_evaluated).
 _spectral_compute_luminosity(::SpectralPoissonSolver, ::Nothing) = true
 function _spectral_compute_luminosity(solver::SpectralPoissonSolver, ctx::TrackingContext)
     schedule = solver.luminosity_schedule

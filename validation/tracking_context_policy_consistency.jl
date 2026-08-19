@@ -2,8 +2,10 @@
 Validate context-aware policy execution for radiation and weak-strong tracking.
 The fast and planned paths must preserve counter-RNG samples;
 CUDA launch geometry must not change stochastic results. Radiation must remain
-in fused tracking, while luminosity observers explicitly isolate weak-strong
-elements, explicit source-modulation actions, and CPU/CUDA coordinates.
+in fused tracking, while the run artifact's luminosity channel (which requests
+the same diagnostic isolation the retired luminosity observer did) isolates
+weak-strong elements, explicit source-modulation actions, and CPU/CUDA
+coordinates.
 
 Run from the project root:
 
@@ -91,10 +93,9 @@ function run_weak(policy, backend, path)
     rep = Octopus._contract_rep_for_backend(base_rep(), backend)
     weak = ThinStrongBeam(weak_spec)
     ramp = ContextPolicyCentroidRamp(weak, (1e-7, -2e-7))
-    observer = ScheduledObserver(LuminosityObserver(path))
     audit = ExecutionAudit()
     with_execution_audit(audit) do
-        execute!(TrackingTask((weak, observer); policy=policy, hooks=(ramp,)),
+        execute!(TrackingTask((weak,); policy=policy, hooks=(ramp,), artifact=path),
                  rep; turns=2)
         backend === CUDABackend && Octopus.CUDA.synchronize()
     end
@@ -102,21 +103,22 @@ function run_weak(policy, backend, path)
 end
 
 mktempdir() do dir
-    cpu_weak, cpu_audit = run_weak(cpu_policy, CPUThreadsBackend, joinpath(dir, "cpu.tsv"))
+    cpu_weak, cpu_audit = run_weak(cpu_policy, CPUThreadsBackend, joinpath(dir, "cpu.h5"))
     count(r -> r.consumer === :isolated_tracking, execution_receipts(cpu_audit)) == 2 ||
         error("CPU weak-strong diagnostic isolation/update count mismatch")
     if available
         gpu_weak, gpu_audit = run_weak(
             CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=128, blocks=3)),
-            CUDABackend, joinpath(dir, "gpu.tsv"),
+            CUDABackend, joinpath(dir, "gpu.h5"),
         )
         count(r -> r.consumer === :isolated_tracking, execution_receipts(gpu_audit)) == 2 ||
             error("CUDA weak-strong diagnostic isolation/update count mismatch")
         metrics = Octopus._contract_coordinate_metrics(cpu_weak, gpu_weak, 1e-10, 1e-10)
         metrics[:passed_tolerance] || error("CPU/CUDA isolated weak-strong mismatch")
-        cpu_lum = readlines(joinpath(dir, "cpu.tsv"))
-        gpu_lum = readlines(joinpath(dir, "gpu.tsv"))
-        length(cpu_lum) == length(gpu_lum) == 2 || error("weak-strong luminosity row mismatch")
+        cpu_lum = read(TaskOutput(joinpath(dir, "cpu.h5")), :luminosity; name="strong_beam_1")
+        gpu_lum = read(TaskOutput(joinpath(dir, "gpu.h5")), :luminosity; name="strong_beam_1")
+        (!isempty(cpu_lum.turns) && cpu_lum.turns == gpu_lum.turns) ||
+            error("weak-strong luminosity row mismatch")
     end
 end
 

@@ -53,11 +53,11 @@ overrides", which are neither greppable nor copy-pasteable and also dropped the
 OCTOPUS_ prefix, so eight variables stayed effectively undocumented --
 2026-08-05_b audit, U21-23.)
 
-The moment `.h5` outputs are NOT byte-reproducible across two identical runs, so
-no byte-level regression check can be built on them (2026-08-05_b audit, U21-28).
+The `.h5` run artifact is NOT byte-reproducible across two identical runs, so
+no byte-level regression check can be built on it (2026-08-05_b audit, U21-28).
 Two independent sources: HDF5 writes object-header birth timestamps into the file
-format itself, and `MomentObserver` writes an `elapsed_time` dataset. Measured on
-the weak-strong harness, 48 differing bytes between two identical runs, all in
+format itself, and the artifact's `/execution` ledger records wall time. Measured
+on the weak-strong harness, 48 differing bytes between two identical runs, all in
 4-byte timestamps and their checksums. Compare the DATASETS, not the files.
 
 The soft-Gaussian solver is also available as a commented alternative ABOVE the
@@ -148,12 +148,13 @@ diagnosis:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_PIC_TIMING=1 OCTOPUS_CUDA_PIC_TIMING_DETAIL=1 julia --project=. test/examples/strong_strong_tracking.jl
 
-Output is written to `test/result/` (this harness keeps its outputs beside the
-tests; the clean `examples/` counterpart writes to the repo-root `result/`):
+Output is ONE run artifact under `test/result/` (this harness keeps its
+outputs beside the tests; the clean `examples/` counterpart writes the same
+layout under the repo-root `result/`):
 
-- `test/result/<seed>/pic_hcc.lum`
-- `test/result/<seed>/pic_hcc.ele.h5`
-- `test/result/<seed>/pic_hcc.pro.h5`
+- `test/result/<seed>/pic_hcc.h5` : `/luminosity/ip`, `/moments/electron`
+  and `/moments/proton`, and the `/execution` ledger; read through one
+  handle, `read(TaskOutput(path), kind; name = ...)`.
 =#
 
 if !isdefined(Main, :Octopus)
@@ -243,12 +244,13 @@ input = (
         # Filenames derive from `case_name` — one authority, no copies (the
         # weak-strong pair's 2026-08-11 fix, same class); `total_turns` went
         # with them, a hand copy that only bounded the moment schedule.
-        # 1024 is the MomentObserver default; networked filesystems punish
-        # smaller flushes (docs/history/
-        # weak_strong_cuda_luminosity_2026_08_11.md).
+        # `capacity` is the ARTIFACT'S: the one knob for how many rows every
+        # producer batches between appends (the per-observer capacities
+        # retired 2026-08-18); networked filesystems punish smaller flushes
+        # (docs/history/weak_strong_cuda_luminosity_2026_08_11.md).
         moment_start = 0,
         moment_step = 1,
-        moment_capacity = 1024,
+        capacity = 1024,
     ),
 )
 
@@ -411,8 +413,14 @@ diagnostics = StrongStrongDiagnostics(;
 disable_moments = env_bool("OCTOPUS_DISABLE_MOMENTS", false)
 disable_luminosity_output = env_bool("OCTOPUS_DISABLE_LUMINOSITY_OUTPUT", false)
 disable_collision = env_bool("OCTOPUS_DISABLE_COLLISION", false)
+# OCTOPUS_MOMENT_CAPACITY now sets the ARTIFACT capacity (the one knob for
+# every producer's batching); 0 keeps its documented harness meaning of
+# "disable moment output", folded into disable_moments below since the
+# library-level capacity=0 spelling retired with the per-observer capacity.
 moment_capacity = parse(Int, get(ENV, "OCTOPUS_MOMENT_CAPACITY",
-                                 string(input.output.moment_capacity)))
+                                 string(input.output.capacity)))
+disable_moments = disable_moments || moment_capacity == 0
+artifact_capacity = moment_capacity > 0 ? moment_capacity : input.output.capacity
 optional_cuda_pic_threads(key) = haskey(ENV, key) ? parse(Int, ENV[key]) : nothing
 cuda_pic_launch = CUDAPICLaunchConfig(
     gather_scatter_threads = optional_cuda_pic_threads("OCTOPUS_CUDA_PIC_GATHER_SCATTER_THREADS"),
@@ -687,25 +695,39 @@ collision_elements = disable_collision ? () : (ip,)
 # clean example's layout.
 outdir = joinpath(input.result_dir, string(input.seed))
 mkpath(outdir)
-luminosity_path = joinpath(outdir, input.case_name * ".lum")
-electron_moment_path = joinpath(outdir, input.case_name * ".ele.h5")
-proton_moment_path = joinpath(outdir, input.case_name * ".pro.h5")
+artifact_path = joinpath(outdir, input.case_name * ".h5")
 moment_schedule = EveryNSteps(;
     start = input.output.moment_start,
     step = input.output.moment_step,
 )
 electron_observers = disable_moments ? () : (
     ScheduledObserver(
-        MomentObserver(electron_moment_path; capacity = moment_capacity),
+        MomentObserver(; name = "electron"),
         moment_schedule,
     ),
 )
 proton_observers = disable_moments ? () : (
     ScheduledObserver(
-        MomentObserver(proton_moment_path; capacity = moment_capacity),
+        MomentObserver(; name = "proton"),
         moment_schedule,
     ),
 )
+# Post-unification, OCTOPUS_DISABLE_LUMINOSITY_OUTPUT means "no luminosity
+# rows on disk". With moments also disabled nothing needs the artifact and it
+# is dropped whole; with moments enabled their named views need the artifact,
+# and the luminosity channel writes whenever the collision evaluates -- so
+# that combination is only honest when luminosity evaluation itself is off
+# (OCTOPUS_PIC_LUMINOSITY_EVERY=0, the diagnostics benchmark's :moments
+# mode). Anything else would silently write the rows the caller asked to
+# suppress, so it errors instead.
+disable_artifact = disable_luminosity_output && disable_moments
+if disable_luminosity_output && !disable_moments && pic_luminosity_every != 0
+    error("OCTOPUS_DISABLE_LUMINOSITY_OUTPUT=1 cannot suppress the " *
+          "luminosity channel while the artifact exists for the moment " *
+          "views and the collision still evaluates luminosity: also set " *
+          "OCTOPUS_PIC_LUMINOSITY_EVERY=0, or OCTOPUS_DISABLE_MOMENTS=1 " *
+          "to drop the artifact whole.")
+end
 
 line_ele = (
     electron_tccb2ip_inv,
@@ -751,8 +773,8 @@ task = StrongStrongTask(line_ele, line_pro;
     # three documented launch knobs were inert for the thing they tune
     # (2026-08-05_b audit, U21-17).
     policy = policy,
-    luminosity = disable_luminosity_output ? nothing :
-                 LuminosityObserver(luminosity_path),
+    artifact = disable_artifact ? nothing :
+               RunArtifact(artifact_path; capacity = artifact_capacity),
     diagnostics,
 )
 execute!(task, beam_ele, beam_pro; turns = turns)
@@ -826,18 +848,20 @@ let resolved = solver_configuration(solver)
         println("pic_luminosity_deposit_method_resolved = ",
                 resolved.resolved_luminosity_deposit_method)
 end
-println("luminosity = ", disable_luminosity_output ? "disabled" : luminosity_path)
+println("artifact = ", disable_artifact ? "disabled" : artifact_path)
 # Report what was WRITTEN, not what was configured. These were gated on
-# `disable_moments` alone, so `OCTOPUS_MOMENT_CAPACITY=0` -- a documented way to
-# disable moment output (`capacity = 0` disables output, BeamObservers.jl) --
-# printed both paths as though the files existed. Nothing wrote them
-# (2026-08-05_b audit, U21-19; its claim that capacity=0 is silently ACCEPTED
-# describes intended behaviour, but the reporting was wrong).
-_moment_status(path) = disable_moments ? "disabled" :
-                       moment_capacity == 0 ? "disabled (OCTOPUS_MOMENT_CAPACITY=0)" :
-                       isfile(path) ? path : "$(path) (not written)"
-println("electron moments = ", _moment_status(electron_moment_path))
-println("proton moments = ", _moment_status(proton_moment_path))
+# `disable_moments` alone, so `OCTOPUS_MOMENT_CAPACITY=0` -- the harness's
+# documented way to disable moment output, folded into disable_moments above
+# since the library-level capacity=0 spelling retired -- printed both groups
+# as though they existed. Nothing wrote them (2026-08-05_b audit, U21-19;
+# its claim that capacity=0 is silently ACCEPTED describes intended
+# behaviour, but the reporting was wrong). The capacity=0 branch first, or
+# the fold above would mask its more specific message.
+_moment_status(group) = moment_capacity == 0 ? "disabled (OCTOPUS_MOMENT_CAPACITY=0)" :
+                        disable_moments ? "disabled" :
+                        "$(artifact_path):/moments/$(group)"
+println("electron moments = ", _moment_status("electron"))
+println("proton moments = ", _moment_status("proton"))
 println("electron rms = ", stats_ele.rms)
 println("proton rms = ", stats_pro.rms)
 
@@ -861,9 +885,7 @@ const HARNESS_EXPORTS = (
     :task,                  # the StrongStrongTask that was executed
     :solver,                # the Poisson solver it was built with
     :policy,                # the execution policy
-    :luminosity_path,       # output paths, whether or not anything wrote them
-    :electron_moment_path,
-    :proton_moment_path,
+    :artifact_path,         # the run artifact's path, whether or not anything wrote it
     :stats_ele,             # beam_statistics of each beam after the run
     :stats_pro,
 )

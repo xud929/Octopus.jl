@@ -423,13 +423,14 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
         "unknown Beam keyword was silently ignored."; metrics=metrics)
 
     schedule_effective = mktempdir() do dir
-        observer = MomentObserver(joinpath(dir, "moments.h5"); orders=1, capacity=2)
+        observer = MomentObserver(; name="moments", orders=1)
         scheduled = ScheduledObserver(observer, EveryNSteps(start=0, stop=5, step=2))
         rep = _contract_rep_for_backend(base, CPUThreadsBackend)
         audit = ExecutionAudit()
         with_execution_audit(audit) do
             execute!(TrackingTask((line..., scheduled);
-                                  policy=CPUThreadsExecutionPolicy(threads=first(worker_sweep))),
+                                  policy=CPUThreadsExecutionPolicy(threads=first(worker_sweep)),
+                                  artifact=RunArtifact(joinpath(dir, "run.h5"); capacity=2)),
                      rep; turns=5)
         end
         receipts = execution_receipts(audit)
@@ -754,8 +755,8 @@ function validate(contract::StrongStrongGaussianBackendConsistencyContract; kwar
         gpu2 = _strong_strong_contract_beam(base2, CUDABackend)
 
         return mktempdir() do tempdir
-            cpu_path = joinpath(tempdir, "cpu.lum")
-            gpu_path = joinpath(tempdir, "gpu.lum")
+            cpu_path = joinpath(tempdir, "cpu.h5")
+            gpu_path = joinpath(tempdir, "gpu.h5")
             cpu_task = _strong_strong_gaussian_contract_task(contract, cpu_path)
             gpu_task = _strong_strong_gaussian_contract_task(contract, gpu_path)
 
@@ -860,8 +861,8 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
         gpu2 = _strong_strong_contract_beam(base2, CUDABackend)
 
         return mktempdir() do tempdir
-            cpu_path = joinpath(tempdir, "cpu.lum")
-            gpu_path = joinpath(tempdir, "gpu.lum")
+            cpu_path = joinpath(tempdir, "cpu.h5")
+            gpu_path = joinpath(tempdir, "gpu.h5")
             cpu_task = _strong_strong_contract_task(contract, cpu_path)
             gpu_task = _strong_strong_contract_task(contract, gpu_path)
 
@@ -1186,7 +1187,7 @@ function _strong_strong_contract_base_beams(contract::Union{
 end
 
 function _strong_strong_gaussian_contract_task(
-        contract::StrongStrongGaussianBackendConsistencyContract, luminosity_path)
+        contract::StrongStrongGaussianBackendConsistencyContract, artifact_path)
     slicing = LongitudinalSlicing(
         method=:normal_quantile,
         nslices=contract.nslices,
@@ -1194,7 +1195,7 @@ function _strong_strong_gaussian_contract_task(
     )
     solver = GaussianPoissonSolver(slicing=slicing)
     ip = StrongStrongCollision(:ip; poisson_solver=solver)
-    return StrongStrongTask((ip,), (ip,); luminosity=luminosity_path)
+    return StrongStrongTask((ip,), (ip,); artifact=artifact_path)
 end
 
 function _strong_strong_contract_beam(beam, ::Type{CPUThreadsBackend})
@@ -1208,7 +1209,7 @@ function _strong_strong_contract_beam(beam, ::Type{CUDABackend})
 end
 
 function _strong_strong_contract_task(contract::StrongStrongPICBackendConsistencyContract,
-                                      luminosity_path)
+                                      artifact_path)
     slicing = LongitudinalSlicing(
         method=:normal_quantile,
         nslices=contract.nslices,
@@ -1227,14 +1228,14 @@ function _strong_strong_contract_task(contract::StrongStrongPICBackendConsistenc
         luminosity_schedule=nothing,
     )
     ip = StrongStrongCollision(:ip; poisson_solver=solver)
-    return StrongStrongTask((ip,), (ip,); luminosity=luminosity_path)
+    return StrongStrongTask((ip,), (ip,); artifact=artifact_path)
 end
 
 
 function _strong_strong_contract_luminosity_series(path)
-    lines = readlines(path)
-    length(lines) > 1 || error("strong-strong contract produced no luminosity records")
-    return [parse(Float64, last(split(line, '\t'))) for line in @view(lines[2:end])]
+    series = read(TaskOutput(path), :luminosity; name="ip")
+    isempty(series.values) && error("strong-strong contract produced no luminosity records")
+    return collect(series.values)
 end
 
 function _strong_strong_contract_cpu_cache_history(task)
@@ -3224,14 +3225,15 @@ function _solver_contract_cuda_observable(solver, base1, base2)
     audit = ExecutionAudit()
     luminosities = Float64[]
     mktempdir() do dir
-        path = joinpath(dir, "lum.tsv")
+        path = joinpath(dir, "run.h5")
         with_execution_audit(audit) do
             execute!(StrongStrongTask((ip,), (ip,);
                 policy=CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=256)),
-                luminosity=path), beam1, beam2; turns=1)
+                artifact=path), beam1, beam2; turns=1)
             CUDA.synchronize()
         end
-        append!(luminosities, _strong_strong_contract_luminosity_series(path))
+        series = read(TaskOutput(path), :luminosity; name="solver_option")
+        append!(luminosities, series.values)
     end
     coords = vcat((Array(a) for a in coordinate_arrays(beam1.rep))...,
                   (Array(a) for a in coordinate_arrays(beam2.rep))...)
