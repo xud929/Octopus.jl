@@ -15,9 +15,11 @@ per product). Buffering unified the same day (owner direction): the
 "per-product buffer" ownership in the table below moved to the SINK —
 `RunArtifact(path; capacity=...)` is the one batching knob for every
 producer, and the per-observer `capacity` keywords retired with the
-writers. Deferred niceties (s-position attributes,
-weak-strong label names, a first-class live text mirror) are an open ledger
-row. Prerequisites had landed before implementation: the luminosity-sink
+writers. Of the deferred niceties, the s-position
+attributes LANDED 2026-08-19 (probes stamp `attrs: name, s` at bind, from
+the one U11-1 arc walker; the reader surfaces `s` beside the columns);
+weak-strong label names and a first-class live text mirror remain an open
+ledger row. Prerequisites had landed before implementation: the luminosity-sink
 unification (2026-08-17), the keyword retirement, and the weak-strong
 fresh-observer append fix (2026-08-18).
 

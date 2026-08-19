@@ -5878,6 +5878,38 @@ end
         rm(pss; force=true)
     end
 
+    # (4f) The design's `attrs: name, s` (the niceties row's first item,
+    # closed 2026-08-19): a line-placed probe records its arc position,
+    # stamped at bind from the ONE spec-line walk (the U11-1 walker) and
+    # surfaced by the reader as the scalar `s` beside the columns. A
+    # task-hook probe has no line position and reads nothing; probes in the
+    # two strong-strong lines each get THEIR OWN line's arc length.
+    let pf = tempname() * ".h5"
+        hooked = MomentObserver(; name="hooked")
+        tv2 = TrackingTask((DriftSpec(L=1.0),
+                            ScheduledObserver(MomentObserver(; name="mid", orders=1)),
+                            DriftSpec(L=0.5),
+                            ScheduledObserver(BPMObserver("sb"; artifact=true)));
+                           hooks=(ScheduledObserver(hooked),), artifact=pf)
+        execute!(tv2, Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0]); turns=1)
+        of = TaskOutput(pf)
+        @test read(of, :moments; name="mid").s == 1.0
+        @test read(of, :bpm; name="sb").s == 1.5
+        @test read(of, :moments; name="hooked").s === nothing
+        rm(pf; force=true)
+    end
+    let pss = tempname() * ".h5"
+        tss2 = StrongStrongTask(
+            (DriftSpec(L=2.0), ip, l6a, ScheduledObserver(MomentObserver(; name="se"))),
+            (DriftSpec(L=3.0), ip, l6b, ScheduledObserver(MomentObserver(; name="sp")));
+            artifact=pss)
+        b1, b2 = beams()
+        execute!(tss2, b1, b2; turns=1)
+        @test read(TaskOutput(pss), :moments; name="se").s == 2.0
+        @test read(TaskOutput(pss), :moments; name="sp").s == 3.0
+        rm(pss; force=true)
+    end
+
     # (4e) The ledger's live current_turn AGREES with the channel cursor
     # at a mid-run capacity flush. Owner-observed 2026-08-19 at
     # capacity=100: assigned at the loop tail, the strong-strong ledger
@@ -11480,6 +11512,19 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
     end
 
     @testset "CUDA GaussianPIC singular-reference fallback matches PIC" begin
+        # Tolerance derivation (2026-08-19, after two in-suite failures at
+        # atol=2e-18 with 0-of-20 bit-exact standalone repetitions under the
+        # suite's own --check-bounds/--threads): the comparison is
+        # deterministic in isolation and wobbles only with SUITE HISTORY --
+        # the recorded CUDA atomic-deposition nondeterminism, entering here
+        # through allocation-layout-dependent scheduling, retriggered
+        # whenever testset composition shifts. The pin's purpose is ROUTE
+        # equivalence: a wrong fallback diverges at O(kick) ~ 1e-15
+        # wholesale and is caught by rtol=2e-12 regardless of atol; atol
+        # governs only the near-zero tail where the wobble lives, so 1e-16
+        # (100x under kick scale) keeps the full discriminating power while
+        # granting the backend its recorded ordering freedom. Ledger: the
+        # CUDA near-identity wobble tally row.
         n = 64
         x1 = collect(range(-1.0e-3, 1.0e-3; length=n))
         x2 = reverse(copy(x1))
@@ -11492,6 +11537,22 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         gpu_pair(y1, y2) =
             (test_gpu_beam(x1, y1), test_gpu_beam(x2, y2))
         host_arrays(beam) = map(Array, coordinate_arrays(beam))
+        # The ledger rule for near-identity CUDA wobbles: CAPTURE the data
+        # before comparing away the evidence. On any mismatch the pair is
+        # dumped whole, so the next in-suite failure is a mechanical diff
+        # instead of a truncated-print ghost hunt.
+        function checked(actual, expected, tag)
+            ok = isapprox(actual, expected; rtol=2.0e-12, atol=1.0e-16)
+            if !ok
+                dump = joinpath(mktempdir(; cleanup=false), "gpic_mismatch_$(tag).txt")
+                open(dump, "w") do io
+                    println(io, "expected = ", repr(expected))
+                    println(io, "actual   = ", repr(actual))
+                end
+                @info "GaussianPIC fallback mismatch captured" tag dump
+            end
+            return ok
+        end
 
         # Positive marginal widths but rank-one covariance exercises the default
         # indexed-wavefront mode selected by a finite coupling tolerance.
@@ -11504,11 +11565,11 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             gpic1, gpic2, Octopus.CUDABackend)
         Octopus.CUDA.synchronize()
         @test luminosity_gpic ≈ luminosity_pic rtol=2.0e-12
-        for (expected, actual) in zip(host_arrays(pic1), host_arrays(gpic1))
-            @test actual ≈ expected rtol=2.0e-12 atol=2.0e-18
+        for (k, (expected, actual)) in enumerate(zip(host_arrays(pic1), host_arrays(gpic1)))
+            @test checked(actual, expected, "rankone_b1c$(k)")
         end
-        for (expected, actual) in zip(host_arrays(pic2), host_arrays(gpic2))
-            @test actual ≈ expected rtol=2.0e-12 atol=2.0e-18
+        for (k, (expected, actual)) in enumerate(zip(host_arrays(pic2), host_arrays(gpic2)))
+            @test checked(actual, expected, "rankone_b2c$(k)")
         end
 
         # A zero marginal width takes the ordinary-PIC fallback on all CUDA
@@ -11533,11 +11594,11 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
                 GaussianPICPoissonSolver(; route_common...),
                 gpic1, gpic2, Octopus.CUDABackend)
             Octopus.CUDA.synchronize()
-            for (expected, actual) in zip(host_arrays(pic1), host_arrays(gpic1))
-                @test actual ≈ expected rtol=2.0e-12 atol=2.0e-18
+            for (k, (expected, actual)) in enumerate(zip(host_arrays(pic1), host_arrays(gpic1)))
+                @test checked(actual, expected, "route_$(route.batch_mode)_$(route.cuda_indexed_wavefront)_b1c$(k)")
             end
-            for (expected, actual) in zip(host_arrays(pic2), host_arrays(gpic2))
-                @test actual ≈ expected rtol=2.0e-12 atol=2.0e-18
+            for (k, (expected, actual)) in enumerate(zip(host_arrays(pic2), host_arrays(gpic2)))
+                @test checked(actual, expected, "route_$(route.batch_mode)_$(route.cuda_indexed_wavefront)_b2c$(k)")
             end
         end
     end

@@ -612,7 +612,10 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
         labels = [string("strong_beam_", i) for i in eachindex(strong_beams)]
         prepare_run_artifact!(art, labels, Int(first_turn), Int(turns))
     end
-    Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => art) do
+    Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => art,
+                           _ACTIVE_PROBE_S_MAP =>
+                               (art === nothing ? nothing :
+                                _line_probe_s_map(task.elements))) do
         prepare_observers!(task.observers, runtime_elems; turns=turns, first_turn=first_turn)
         prepare_line_observers!(runtime_entries; turns=turns, first_turn=first_turn)
     end

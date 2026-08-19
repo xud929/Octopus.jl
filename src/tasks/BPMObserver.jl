@@ -349,7 +349,8 @@ function _bpm_prepare!(bpm::BPMObserver, first_turn)
             "carry artifact=RunArtifact(...)"))
         bpm.artifact_ref = art
         bpm.artifact_key = _ra_bind_probe!(art, "bpm", bpm.name,
-                                           ["turn", "x", "y"], Int(first_turn))
+                                           ["turn", "x", "y"], Int(first_turn);
+                                           s=_active_probe_s(bpm))
         # The discard above kept the memory prefix with turns < first_turn,
         # and the bind truncated the artifact group to the same boundary --
         # the two are the same rows, so the push cursor starts past them

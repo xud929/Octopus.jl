@@ -226,6 +226,38 @@ function _register_observer_path!(observer, path::AbstractString)
     return nothing
 end
 
+# The probe arm of the ONE arc traversal (`_collect_spec_s!`, Tasks.jl --
+# the U11-1/T3 single-walker rule): in-line observers are zero-length and
+# advance nothing (the aperture walker's pinned contract), and under the
+# `:__probe__` kind they are COLLECTED with their arc position. Lives here
+# rather than beside the walker because ScheduledObserver loads after
+# Tasks.jl.
+function _collect_spec_s!(out, hook::Union{ScheduledObserver,AbstractBeamObserver},
+                          s, ::Val{K}) where {K}
+    _kind_matches(:__probe__, K) && push!(out, (s[], 0.0, hook))
+    return out
+end
+
+"""
+Arc position of every in-line observer, keyed by the OBSERVER OBJECT
+(unwrapped from its ScheduledObserver), from one spec-line walk. Consumed
+through the `_ACTIVE_PROBE_S_MAP` scope during prepare, so the artifact bind
+can stamp the design's `s` attribute; task-hook observers are absent from
+the map and stamp nothing.
+"""
+function _line_probe_s_map(elements, more...)
+    d = IdDict{Any,Float64}()
+    for line in (elements, more...)
+        out = Tuple{Float64,Float64,Any}[]
+        _collect_spec_s!(out, line, Ref(0.0), Val(:__probe__))
+        for (pos, _, hook) in out
+            obs = hook isa ScheduledObserver ? hook.observer : hook
+            d[obs] = pos
+        end
+    end
+    return d
+end
+
 """
     prepare_observers!(observers, runtime_elems; turns=nothing, first_turn=0)
 
@@ -816,7 +848,8 @@ function _bind_snapshot_probe!(observer::CoordinateSnapshotObserver, first_turn:
         "artifact view: the task must carry artifact=RunArtifact(...)"))
     observer.artifact_ref = art
     observer.artifact_key = _ra_bind_probe!(art, "snapshot", observer.name,
-                                            _SNAPSHOT_ARTIFACT_COLUMNS, first_turn)
+                                            _SNAPSHOT_ARTIFACT_COLUMNS, first_turn;
+                                            s=_active_probe_s(observer))
     return nothing
 end
 
@@ -893,7 +926,8 @@ function _prepare_moment_observer!(observer::MomentObserver, schedule, turns,
     observer.artifact_ref = art
     observer.artifact_key = _ra_bind_probe!(art, "moments", observer.name,
                                             observer.column_names,
-                                            Int(first_turn))
+                                            Int(first_turn);
+                                            s=_active_probe_s(observer))
     # Buffering is the artifact's: one capacity for every producer.
     observer.buffer_capacity = art.capacity
     observer.buffer = Matrix{Float64}(undef, art.capacity,

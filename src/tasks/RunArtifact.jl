@@ -27,7 +27,10 @@ The artifact carries every product of the run:
 - `/moments/<name>`, `/snapshot/<name>`, `/bpm/<name>`: the named probe
   views (`MomentObserver(; name=...)`, `CoordinateSnapshotObserver(;
   name=...)`, `BPMObserver(...; artifact=true)`) — row-matrix groups whose
-  column 1 is the absolute turn, names unique within a task.
+  column 1 is the absolute turn, names unique within a task; a line-placed
+  probe additionally carries its arc position as the `s` attribute (the
+  design's `attrs: name, s`; task-hook probes have no line position and
+  carry none).
 - `/losses`: the loss accounting, rewritten whole per `execute!` from the
   cumulative record.
 - `/execution`: one row per `execute!` — `start_turn`, planned `turns`,
@@ -340,6 +343,16 @@ function _ra_truncate_probe!(g, keep_through::Int64)
     return nothing
 end
 
+# The prepare walk's observer -> arc-position map (one spec traversal, the
+# U11-1 walker; built in BeamObservers.jl where ScheduledObserver exists).
+# nothing outside a prepare, or for a task-hook probe with no line position.
+const _ACTIVE_PROBE_S_MAP = Base.ScopedValues.ScopedValue{Any}(nothing)
+function _active_probe_s(observer)
+    m = _ACTIVE_PROBE_S_MAP[]
+    m === nothing && return nothing
+    return get(m, observer, nothing)
+end
+
 """
 Bind one probe to the open artifact: create its group (or continue it,
 refusing a column-layout mismatch), apply the crash-truncation and replay
@@ -347,7 +360,8 @@ rules, and enforce name uniqueness within this execute!. Returns the group
 key the probe pushes rows through.
 """
 function _ra_bind_probe!(art::RunArtifact, kind::String, name::String,
-                         colnames::Vector{String}, first_turn::Int)
+                         colnames::Vector{String}, first_turn::Int;
+                         s::Union{Nothing,Real}=nothing)
     art.file === nothing && throw(ArgumentError(
         "a named probe needs an open run artifact; give the task artifact=..."))
     isempty(name) && throw(ArgumentError("a probe bound to the artifact needs a name"))
@@ -376,6 +390,11 @@ function _ra_bind_probe!(art::RunArtifact, kind::String, name::String,
         _ra_set_attr!(g, "name", name)
         _ra_set_attr!(g, "rows_valid_through_turn", Int64(typemin(Int32)))
     end
+    # The design's `attrs: name, s`: a line-placed probe records WHERE in the
+    # line it sat (arc length at its placement), so the file answers it
+    # without the script that made it. Stamped on continue too -- idempotent
+    # for the same lattice, corrective if the probe moved.
+    s === nothing || _ra_set_attr!(g, "s", Float64(s))
     HDF5.flush(f)
     return key
 end
@@ -486,7 +505,11 @@ _ra_lum_series(g) = (turns=read(g["turns"]), values=read(g["values"]))
 function _ra_probe_columns(g)
     names = String.(read(g["column_names"]))
     data = read(g["data"])
-    (; (Symbol(n) => vec(data[:, i]) for (i, n) in pairs(names))...)
+    # `s` is the probe's arc position (the design's attrs: name, s), nothing
+    # for task-hook probes and files from before the attribute existed --
+    # the read_losses mixed scalars-and-columns precedent.
+    (; :s => _ra_get_attr(g, "s", nothing),
+       (Symbol(n) => vec(data[:, i]) for (i, n) in pairs(names))...)
 end
 
 _ra_column_key(column::Symbol) = column
@@ -555,6 +578,9 @@ name="IP6", orders=1)` is the keyword twin of
 `read(MomentOutput(path; name="IP6"); orders=1)`, which returns the same
 selection as a matrix.
 
+Probe groups carry the scalar `s` — the probe's arc position in its line —
+beside the columns (`nothing` for task-hook probes and pre-attribute files).
+
 `:losses` returns the per-loss rows as column vectors (pre-kill coordinates),
 the per-aperture names/counts/arc positions, and the reconciliation summary
 when the run recorded one (`nothing` otherwise). `:execution` returns the
@@ -604,7 +630,9 @@ function Base.read(out::TaskOutput, kind::Symbol;
         rows = one_group(_ra_named_group(g, out, kind, name))
         if turn !== nothing
             keep = rows.turn .== Float64(turn)
-            rows = (; (k => v[keep] for (k, v) in pairs(rows))...)
+            # Scalars (the s attribute) carry through; only columns filter.
+            rows = (; (k => (v isa AbstractVector ? v[keep] : v)
+                       for (k, v) in pairs(rows))...)
         end
         if selection
             # The MomentObserver selection rules; requested-but-unrecorded

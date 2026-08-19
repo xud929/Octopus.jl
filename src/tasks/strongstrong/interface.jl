@@ -2347,7 +2347,10 @@ function _execute_strong_strong_task!(
         prepare_run_artifact!(task.artifact, labels, Int(first_turn), Int(turns))
     end
     # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
-    Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => task.artifact) do
+    Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => task.artifact,
+                           _ACTIVE_PROBE_S_MAP =>
+                               (task.artifact === nothing ? nothing :
+                                _line_probe_s_map(task.line1, task.line2))) do
         prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1);
                            turns=Int(turns), first_turn=Int(first_turn))
         prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2);
