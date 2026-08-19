@@ -51,14 +51,17 @@ Shared where the role applies:
   for the solvers that offer both (`GaussianPoissonSolver`, `PICPoissonSolver`,
   `GaussianPICPoissonSolver`). CUDA-only; the CPU paths always use collision-time
   order.
-- `luminosity_schedule` — evaluate luminosity only on scheduled turns, for the
-  solvers where luminosity is a separable cost (`PICPoissonSolver`,
-  `GaussianPICPoissonSolver`, `SpectralPoissonSolver`). Skipped turns still apply
+- `luminosity_schedule` — every solver takes it; skipped turns still apply
   the beam-beam kicks, return `NaN`, and leave no row in the artifact's
-  luminosity channel. `GaussianPoissonSolver` deliberately does **not** offer it: its luminosity
-  is a by-product of the per-particle kick (the Gaussian density factor is already
-  needed for the `pz` term), so scheduling it would save nothing — measured at
-  0% of the kick loop.
+  luminosity channel. For the solvers where luminosity is a separable cost
+  (`PICPoissonSolver`, `GaussianPICPoissonSolver`, `SpectralPoissonSolver`)
+  the schedule also skips the evaluation itself. For `GaussianPoissonSolver`
+  it gates REPORTING only: its luminosity is a by-product of the per-particle
+  kick (the Gaussian density factor is already needed for the `pz` term,
+  measured at 0% of the kick loop), so unscheduled turns still compute the
+  value — there is nothing to save, only rows to suppress. (It gained the
+  keyword 2026-08-19: the artifact made the schedule mean "which turns get a
+  row", and that half applies to every solver.)
 
 Branch flags that select a numerical variant are named by their role and are
 solver-local, e.g. `deposit_method` (`:CIC`/`:TSC`), `green_type`
@@ -918,6 +921,13 @@ kbb2 = beam1.charge * beam2.charge * beam2.r0 * beam1.npart * beam2.mc2 / beam2.
 normalization for the beam sampled by the luminosity estimate. This solver is a
 sliced moment-based Poisson approximation, not a grid PIC solver.
 
+`luminosity_schedule` gates luminosity REPORTING (2026-08-19): this solver's
+luminosity is an inseparable free by-product of the kick, so unscheduled
+turns still apply identical kicks and still compute the value — they return
+`NaN` by the family convention and leave no row in the run artifact's
+luminosity channel. `nothing` (default) reports every turn;
+`AtTurns(Int[])` suppresses the channel entirely.
+
 `min_sigma` is an optional physical lower bound on each transverse slice RMS,
 in the same length units as the particle coordinates. Its default `0` applies no
 artificial floor and leaves every nonzero RMS data-derived. Supply a positive
@@ -953,6 +963,11 @@ struct GaussianPoissonSolver{T<:Real,D<:AbstractVirtualDrift,Coupled,Longitudina
     virtual_drift::D
     include_sigma_xy::Bool
     batch_mode::Symbol
+    # Reporting-only schedule (2026-08-19, owner direction): the soft-Gaussian
+    # luminosity is an inseparable free by-product of the kick (~0% measured),
+    # so unscheduled turns still compute it -- they return NaN by the family
+    # convention and leave no row in the artifact's channel.
+    luminosity_schedule::Union{Nothing,AbstractSchedule}
 end
 
 _optional_solver_value(::Type{T}, value) where {T<:Real} =
@@ -970,7 +985,8 @@ function GaussianPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   longitudinal_kick::Bool=true,
                                   virtual_drift=:hirata,
                                   include_sigma_xy::Bool=false,
-                                  batch_mode::Symbol=:wavefront) where {T<:Real}
+                                  batch_mode::Symbol=:wavefront,
+                                  luminosity_schedule::Union{Nothing,AbstractSchedule}=nothing) where {T<:Real}
     s1 = slicing1 === nothing ? slicing : slicing1
     s2 = slicing2 === nothing ? slicing : slicing2
     sigma_floor = T(min_sigma)
@@ -998,6 +1014,7 @@ function GaussianPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         drift,
         include_sigma_xy,
         batch_mode,
+        luminosity_schedule,
     )
 end
 
@@ -1054,6 +1071,9 @@ const _GAUSSIAN_SOLVER_OPTION_SCHEMA = (
         "CUDA slice-pair scheduling mode (:sequential or :wavefront); the CPU path ignores it.";
         supported_backends=(CUDABackend,), category=:performance,
         consumer=:cuda_gaussian_algorithm),
+    luminosity_schedule=SolverOptionMeta(Union{Nothing,AbstractSchedule}, nothing,
+        "Schedule for luminosity REPORTING; nothing reports every turn. Evaluation is an inseparable free by-product of the kick for this solver, so unscheduled turns still apply identical kicks, return NaN, and leave no row in the artifact's channel.";
+        category=:diagnostic),
 )
 
 solver_option_schema(::Type{<:GaussianPoissonSolver}) = _GAUSSIAN_SOLVER_OPTION_SCHEMA
@@ -2452,6 +2472,13 @@ function _execute_strong_strong_turns!(
         turn = first_turn + offset
         turn_t0 = task.diagnostics.record_turn_times ? time_ns() : UInt64(0)
         ctx = with_turn(ctx, turn)
+        # The ledger's live-progress column, set BEFORE any channel push: a
+        # capacity-boundary flush fires DURING this turn's collision, and it
+        # must persist THIS turn -- assigned at the loop tail it lagged one
+        # turn behind the channel cursor (ledger 798 against
+        # rows_valid_through_turn 799, owner-observed 2026-08-19; the
+        # weak-strong loop always had the assignment first).
+        art === nothing || (art.current_turn = Int64(ctx.turn))
         turn_range = _cuda_nvtx_push(backend, "strongstrong turn")
         for j in eachindex(blocks1)
             line_range = _cuda_nvtx_push(backend, "strongstrong line tracking")
@@ -2482,10 +2509,6 @@ function _execute_strong_strong_turns!(
             end
         end
         _cuda_nvtx_pop(backend, turn_range)
-        # The ledger's live-progress column: the artifact persists this at
-        # its next flush, so a monitoring `h5ls` reads progress and rate
-        # without touching the data groups.
-        art === nothing || (art.current_turn = Int64(ctx.turn))
         _strong_strong_maybe_log_cuda_memory(backend, ctx.turn, memory_log_every)
         if task.diagnostics.record_turn_times
             backend === CUDABackend && CUDA.synchronize()
@@ -2568,8 +2591,13 @@ end
 const _LUM_SCHEDULE_MEMO = Ref{Tuple{UInt,Int64,Bool}}((UInt(0), typemin(Int64), false))
 
 _pic_compute_luminosity(::PICPoissonSolver, ::Nothing) = true
-function _pic_compute_luminosity(solver::PICPoissonSolver, ctx::TrackingContext)
-    schedule = solver.luminosity_schedule
+_pic_compute_luminosity(solver::PICPoissonSolver, ctx::TrackingContext) =
+    _luminosity_schedule_evaluated(solver.luminosity_schedule, ctx)
+
+# The one memoized consult shared by every solver's schedule (the PIC gate's
+# body, extracted 2026-08-19 when the soft-Gaussian gained its reporting-only
+# schedule): same one-slot memo, same receipt.
+function _luminosity_schedule_evaluated(schedule, ctx::TrackingContext)
     if schedule !== nothing
         key = objectid(schedule)
         memo = _LUM_SCHEDULE_MEMO[]
@@ -2592,6 +2620,19 @@ end
 _strong_strong_luminosity_evaluated(::AbstractPoissonSolver, ::TrackingContext) = true
 _strong_strong_luminosity_evaluated(solver::PICPoissonSolver, ctx::TrackingContext) =
     _pic_compute_luminosity(solver, ctx)
+_strong_strong_luminosity_evaluated(solver::GaussianPoissonSolver, ctx::TrackingContext) =
+    _luminosity_schedule_evaluated(solver.luminosity_schedule, ctx)
+
+# The soft-Gaussian's scheduled-reporting wrapper (2026-08-19, owner
+# direction): kicks and the by-product luminosity computation are untouched
+# on every turn -- an unscheduled turn merely RETURNS NaN by the family
+# convention and (through the evaluated gate above) leaves no row in the
+# artifact's channel. Rides on the 4-arg backend methods, CPU and CUDA alike.
+function collide!(solver::GaussianPoissonSolver, beam1::Beam, beam2::Beam, backend,
+                  ctx::TrackingContext)
+    lum = collide!(solver, beam1, beam2, backend)
+    return _strong_strong_luminosity_evaluated(solver, ctx) ? lum : oftype(lum, NaN)
+end
 
 _cuda_nvtx_enabled() = _strong_strong_diagnostics().nvtx
 

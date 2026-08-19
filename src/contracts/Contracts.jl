@@ -3022,6 +3022,10 @@ _default_solver_option_alternatives() = Dict{Symbol,Any}(
         :virtual_drift => :chromatic,
         :include_sigma_xy => true,
         :batch_mode => :sequential,
+        # Reporting-only on this solver (2026-08-19): the two-turn probe sees
+        # the step-2 schedule as [value, NaN] against the baseline's
+        # [value, value] -- moved by isequal, exactly the PIC/spectral shape.
+        :luminosity_schedule => EveryNSteps(step=2),
     ),
     :PICPoissonSolver => _pic_family_alternatives(),
     :GaussianPICPoissonSolver => merge(_pic_family_alternatives(), Dict{Symbol,Any}(

@@ -180,6 +180,13 @@ teaches something reusable, it lands here (dated), and the full record goes to
   accepted limitation is a decision priced against the machinery of its day;
   when a campaign lands new machinery, re-read the accepted list — one of its
   prices has usually just dropped.
+- Second instance (2026-08-19): `GaussianPoissonSolver` was deliberately
+  denied `luminosity_schedule` because scheduling could save no compute (the
+  by-product, ~0%). The run artifact changed what the schedule MEANS — which
+  turns get a row — and that half applies to every solver, so the refusal's
+  price collapsed and the keyword completed the set with reporting-only
+  semantics. A refusal is priced against what a knob DID at the time; when a
+  campaign changes what the knob means, re-read the refusals too.
 
 ## Process habits that earned their place
 

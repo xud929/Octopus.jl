@@ -176,13 +176,14 @@ solver = PICPoissonSolver(;
     slice_pair_green_min_ratio = input.solver.pic_slice_pair_green_min_ratio,
     slice_pair_green_growth = input.solver.pic_slice_pair_green_growth,
     longitudinal_kick = true,
-    # The luminosity schedule lives HERE, on the solver, because evaluation
-    # costs real solver work: e.g. `luminosity_schedule = EveryNSteps(step = 10)`
-    # evaluates (and therefore outputs) luminosity every 10th turn -- skipped
-    # turns still get their beam-beam kicks and simply have no row in the
-    # artifact's /luminosity/ip channel (each collision keeps its own turn
-    # axis). Default: every turn. GaussianPoissonSolver has no such option;
-    # its luminosity is a free byproduct of the kick computation.
+    # The luminosity schedule lives HERE, on the solver: e.g.
+    # `luminosity_schedule = EveryNSteps(step = 10)` puts a luminosity row in
+    # the artifact every 10th turn -- skipped turns still get their beam-beam
+    # kicks and simply have no row in /luminosity/ip (each collision keeps
+    # its own turn axis). Default: every turn. Every solver takes it; for
+    # the grid solvers it also skips the evaluation cost, while for
+    # GaussianPoissonSolver (whose luminosity is a free byproduct of the
+    # kick) it gates reporting only.
 )
 
 # Sliced soft-Gaussian (Bassetti-Erskine) solver:

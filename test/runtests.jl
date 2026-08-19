@@ -4270,6 +4270,23 @@ end
 Octopus.apply_action!(a::FailAtTurnAction, ctx, rep) =
     (ctx.turn == a.at && error("deliberate failure at turn $(ctx.turn)"); nothing)
 
+# Mid-run ledger peek for the run-artifact testset: reads the OPEN
+# artifact's /execution current_turn and the channel cursor at one turn,
+# so the flush-time agreement between the two is observable from a test.
+struct LedgerPeekObserver <: Octopus.AbstractBeamObserver
+    art::RunArtifact
+    at_turn::Int
+    seen::Vector{Tuple{Int64,Int64}}
+end
+function Octopus.observe!(o::LedgerPeekObserver, ctx::Octopus.TrackingContext, rep)
+    ctx.turn == o.at_turn || return nothing
+    cur = read(o.art.file["execution"]["current_turn"])[end]
+    g = o.art.file["luminosity"]["ip"]
+    cursor = read(Octopus.HDF5.attributes(g)["rows_valid_through_turn"])
+    push!(o.seen, (Int64(cur), Int64(cursor)))
+    return nothing
+end
+
 # Observer pair for the stranded-finalizer test (part 7, T7).
 mutable struct FinalizeFlagObserver <: Octopus.AbstractBeamObserver
     finalized::Bool
@@ -5859,6 +5876,25 @@ end
         @test Int.(read(TaskOutput(pss), :moments; name="e_mid").turn) == [0, 1, 2]
         @test read(TaskOutput(pss), :luminosity; name="ip").turns == [0, 1, 2]
         rm(pss; force=true)
+    end
+
+    # (4e) The ledger's live current_turn AGREES with the channel cursor
+    # at a mid-run capacity flush. Owner-observed 2026-08-19 at
+    # capacity=100: assigned at the loop tail, the strong-strong ledger
+    # lagged the cursor by one turn (current_turn 798 against
+    # rows_valid_through_turn 799) -- the flush fires DURING a turn's
+    # collision push, so the assignment must precede the pushes (as the
+    # weak-strong loop always did).
+    let pled = tempname() * ".h5"
+        artl = RunArtifact(pled; capacity=2)
+        peek = LedgerPeekObserver(artl, 2, Tuple{Int64,Int64}[])
+        tl = StrongStrongTask((ip, l6a, peek), (ip, l6b); artifact=artl)
+        b1, b2 = beams()
+        execute!(tl, b1, b2; turns=4)
+        # capacity=2: the flush fires during turn 1's push and must persist
+        # turn 1 -- the turn whose row triggered it -- matching the cursor.
+        @test peek.seen == [(1, 1)]
+        rm(pled; force=true)
     end
 
     # (5) A label mismatch is refused rather than silently mixed.
@@ -10303,6 +10339,67 @@ end
     finally
         isfile(path) && rm(path)
     end
+end
+
+@testset "The gaussian solver takes the luminosity schedule (reporting-only)" begin
+    # Owner direction (2026-08-19), re-pricing the old refusal: the artifact
+    # made the schedule mean "which turns get a ROW", and that half applies
+    # to every solver. The soft-Gaussian's evaluation is an inseparable free
+    # by-product of the kick (~0% measured), so its schedule gates REPORTING
+    # only -- unscheduled turns apply IDENTICAL kicks and return NaN by the
+    # family convention, and the artifact channel keeps only scheduled turns.
+    mkbeams() = begin
+        set_global_rng!(seed=31, method=:philox)
+        e = Beam(2000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.0),
+            alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        p = Beam(2000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
+            alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+        return e, p
+    end
+    sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
+    mksolver(sch) = GaussianPoissonSolver(slicing=sl, luminosity_schedule=sch)
+
+    # (a) direct collide!: an unscheduled turn returns NaN with identical
+    # kicks; a scheduled turn recovers the unscheduled value exactly.
+    ev, pv = mkbeams()
+    lum_every = collide!(mksolver(nothing), ev, pv, CPUThreadsBackend, TrackingContext())
+    es, ps = mkbeams()
+    lum_skip = collide!(mksolver(AtTurns([7])), es, ps, CPUThreadsBackend, TrackingContext())
+    @test isfinite(lum_every) && lum_every > 0
+    @test isnan(lum_skip)
+    for (a, b) in zip(coordinate_arrays(ev.rep), coordinate_arrays(es.rep))
+        @test a == b
+    end
+    for (a, b) in zip(coordinate_arrays(pv.rep), coordinate_arrays(ps.rep))
+        @test a == b
+    end
+    er, pr = mkbeams()
+    @test collide!(mksolver(AtTurns([0])), er, pr, CPUThreadsBackend, TrackingContext()) == lum_every
+
+    # (b) the artifact channel keeps only the scheduled turns; an empty
+    # schedule suppresses the channel entirely (the "how do I turn
+    # luminosity output off" answer, uniform across solvers).
+    let path = tempname() * ".h5"
+        ip = StrongStrongCollision(:ip;
+            poisson_solver=mksolver(EveryNSteps(step=3)))
+        e, p = mkbeams()
+        execute!(StrongStrongTask((ip,), (ip,); artifact=path), e, p; turns=7)
+        @test read(TaskOutput(path), :luminosity; name="ip").turns == [0, 3, 6]
+        rm(path; force=true)
+    end
+    let path = tempname() * ".h5"
+        ip = StrongStrongCollision(:ip; poisson_solver=mksolver(AtTurns(Int[])))
+        e, p = mkbeams()
+        execute!(StrongStrongTask((ip,), (ip,); artifact=path), e, p; turns=3)
+        @test isempty(read(TaskOutput(path), :luminosity; name="ip").turns)
+        rm(path; force=true)
+    end
+
+    # (c) the option is declared metadata like its siblings.
+    @test haskey(solver_option_schema(GaussianPoissonSolver), :luminosity_schedule)
+    @test solver_configuration(mksolver(nothing)).luminosity_schedule === nothing
 end
 
 @testset "Spectral synchro-beam longitudinal map is finite" begin
