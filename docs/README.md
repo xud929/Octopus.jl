@@ -291,6 +291,14 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   and why, the per-fix measurements with their bitwise-parity digests, and the
   machine-level findings — idle-thread spin, GC share, and why a pool wider
   than the data's parallelism costs rather than pays),
+  [`multi_process_phase0_2026_08_19.md`](history/multi_process_phase0_2026_08_19.md)
+  (Phase 0 of the multi-process mixed policy, single-node scope: the first
+  weak-strong thread-scaling curve — allocation/GC-bound, 1.282 GiB/turn,
+  optimum 16 threads — the on-box MPI P x T matrix at the production point
+  (PIC 8x8 socket-bound 1.86x over 1x16; socket binding alone 17–22%), the
+  MPI-over-Distributed decision with its measured collective costs, and the
+  two environment traps — the HDF5_jll MPI-variant flip and the
+  MPIPreferences load-order lock — that Phase 1 must resolve),
   [`weak_strong_cuda_luminosity_2026_08_11.md`](history/weak_strong_cuda_luminosity_2026_08_11.md),
   [`paper_package_migration_2026_08_12.md`](history/paper_package_migration_2026_08_12.md)
   (the `paper/` reproduction package moved to its own public repository —
