@@ -11535,6 +11535,20 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         # (100x under kick scale) keeps the full discriminating power while
         # granting the backend its recorded ordering freedom. Ledger: the
         # CUDA near-identity wobble tally row.
+        #
+        # Revision (2026-08-19, observations 5-9 on that row, owner decision):
+        # the capture trap fired on four consecutive full-suite gates and
+        # MEASURED the ordering freedom the paragraph above only granted in
+        # principle: the py column on the zero-width routes takes exactly TWO
+        # bit-identical profiles A/B across processes and routes, with
+        # norm(A-B) = 6.3e-16 -- above atol = 1e-16, so any straddling draw
+        # failed the gate (straddle series 2,2,1,1,0 that night). atol is now
+        # 2e-15: 3x above the measured wobble norm, 4x under the wrong-route
+        # wholesale floor (O(kick) ~ 1e-15 per element, ~8e-15 in norm over
+        # n = 64, and rtol = 2e-12 catches wholesale divergence regardless of
+        # atol). The capture trap stays armed: any mismatch above THIS bound
+        # is a new phenomenon, not the tallied coin. Evidence arrays:
+        # docs/history/gpic_wobble_capture_2026_08_19.txt.
         n = 64
         x1 = collect(range(-1.0e-3, 1.0e-3; length=n))
         x2 = reverse(copy(x1))
@@ -11552,7 +11566,7 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         # dumped whole, so the next in-suite failure is a mechanical diff
         # instead of a truncated-print ghost hunt.
         function checked(actual, expected, tag)
-            ok = isapprox(actual, expected; rtol=2.0e-12, atol=1.0e-16)
+            ok = isapprox(actual, expected; rtol=2.0e-12, atol=2.0e-15)
             if !ok
                 dump = joinpath(mktempdir(; cleanup=false), "gpic_mismatch_$(tag).txt")
                 open(dump, "w") do io
@@ -13180,15 +13194,46 @@ end
         # NamedTuples must agree field for field, bitwise.
         let n = 30_000
             set_global_rng!(seed=29, method=:philox)
-            z = randn(n) .* 7.0e-3
-            flags = collect(rand(n) .> 0.05)   # Vector{Bool}: _flag_live's type
+            # Local Xoshiro, NOT the task RNG: `set_global_rng!` seeds only the
+            # Octopus counter RNG, so a bare `randn(n)` here drew from the
+            # per-run Test RNG -- 1-ulp roulette against the bit-identity pin
+            # below, the exact defect class the spectral-rms flake closed with
+            # a local Xoshiro(61). Fired 2026-08-19 (sigma off by 1 ulp,
+            # outermost Xoshiro(0x805ec498f9fbe4ef, ...); wobble tally row,
+            # observation 10). This pinned draw is verified bitwise equal on
+            # both backends, both arms, under --check-bounds.
+            test_rng = Random.Xoshiro(29)
+            z = randn(test_rng, n) .* 7.0e-3
+            flags = collect(rand(test_rng, n) .> 0.05)   # Vector{Bool}: _flag_live's type
             for (fh, fd) in ((nothing, nothing), (flags, CuA(flags)))
                 sc = Octopus._live_z_stats(z, fh)
                 sg = Octopus._cuda_live_z_stats(CuA(z), fd)
+                # Discriminator trap (wobble row, observation 11): the pinned
+                # vector's sigma still moved 1 ulp IN-SUITE on the masked arm
+                # while bit-stable standalone, with the kernel launch-shape-
+                # invariant by construction and the mean passing bitwise. On a
+                # mismatch, recompute on device in-process before the evidence
+                # is gone: a hardware transient (this GPU runs ECC-off) cannot
+                # repeat; ambient process state must.
+                if sc.sigma != sg.sigma
+                    sg2 = Octopus._cuda_live_z_stats(CuA(z), fd)
+                    @info "live_z_stats sigma discriminator" masked = (fh !== nothing) sc_sigma = repr(sc.sigma) sg_sigma = repr(sg.sigma) recompute_matches_cpu = (sg2.sigma == sc.sigma) recompute_matches_first_gpu = (sg2.sigma == sg.sigma)
+                end
                 @test sc.n_live == sg.n_live
                 @test sc.zmin == sg.zmin && sc.zmax == sg.zmax
                 @test sc.mean == sg.mean
-                @test sc.sigma == sg.sigma
+                # Sigma alone is bounded at 1 ulp rather than pinned bitwise
+                # (owner decision, 2026-08-19, wobble-row observations 10-12):
+                # the discriminator above measured the in-suite CUDA masked
+                # sigma deviating from the standalone value by exactly 1 ulp,
+                # DETERMINISTICALLY per process (recompute matches the first
+                # GPU value, same pair of values across gates), with count,
+                # extrema and mean bitwise equal throughout and no fastmath or
+                # math_mode setter anywhere in src/ or test/. The measured
+                # invariant is therefore: moments exact, sigma within 1 ulp.
+                # The mechanism stays open on the ledger row; the discriminator
+                # keeps logging every occurrence.
+                @test abs(reinterpret(Int64, sc.sigma) - reinterpret(Int64, sg.sigma)) <= 1
             end
         end
         # Whole-structure equality for every method, Float64 and Float32, on
