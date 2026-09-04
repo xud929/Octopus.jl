@@ -286,11 +286,21 @@ teaches something reusable, it lands here (dated), and the full record goes to
 
 ## Process habits that earned their place
 
-- The full-suite gate runs before EVERY commit; the fast lane is a checkpoint,
-  never a finish line. One derived exception since 2026-09-03: a diff that
-  `git diff --name-only` shows to be markdown-only (no `.jl`, no `.toml`, no
-  `.yml`, not the registry snapshot) finishes with the fast lane on the final
-  tree, because the fast lane already runs every docs check the suite has.
+- The full-suite gate runs before every PUSH, on the final tree of the batch
+  being pushed (owner decision 2026-09-04, superseding "before every commit").
+  Measured, on the change that prompted it: the gate is 24.5 minutes of which
+  0.8 is setup, so the cost is what it covers and not overhead -- the three
+  heaviest testsets (every example script, solver-option effectiveness,
+  physics contracts) are 39% of it and are already the ones the fast lane
+  skips. A batch of four commits therefore cost four gates and 100 minutes to
+  buy per-commit bisectability that a single-owner history rarely spends. The
+  trade accepted: an intermediate commit is not individually gated, so a
+  bisect can land on one that was never run alone; nothing reaches `origin`
+  ungated. The fast lane remains a checkpoint, never a finish line. One
+  derived exception since 2026-09-03: a diff that `git diff --name-only` shows
+  to be markdown-only (no `.jl`, no `.toml`, no `.yml`, not the registry
+  snapshot) finishes with the fast lane on the final tree, because the fast
+  lane already runs every docs check the suite has.
 - A neighbour audit follows every campaign; each one so far has found and
   fixed a real gap the campaign itself missed.
 - A recorded claim can be wrong: the curved-frame solenoid was closed on a

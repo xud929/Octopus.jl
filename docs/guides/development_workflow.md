@@ -98,8 +98,11 @@ workflow:
 The fast lane skips the registered heavyweight sections, prints one loud
 `LANE SKIP` line per skipped section, and ends with a banner naming what it
 owes; an unknown lane name is an error. Green fast runs accumulate no
-authority: the full gate runs on the final tree before every commit, with one
-derived exception. When `git diff --name-only` lists only `.md` files and none
+authority: the full gate runs on the final tree of the batch being pushed
+(owner decision 2026-09-04 -- commits may accumulate locally and the gate
+covers the tree they add up to, so a batch costs one gate rather than one per
+commit; the accepted trade is that an intermediate commit is not individually
+gated). One derived exception. When `git diff --name-only` lists only `.md` files and none
 of them is `docs/registry_snapshot.md`, the fast lane on the final tree is the
 gate, because it already runs every docs check the suite has. The change
 classes, each paid for by a recorded incident, are the matrix in
@@ -133,8 +136,10 @@ form.
   (`../history/comprehensive_audit_2026_08_04.md`, "A careless git
   checkout"). Files under `../history/` are frozen records: add new ones,
   never rewrite old ones.
-- Run the gate the matrix names on the final tree, not on the tree the work
-  started from.
+- Run the gate the matrix names on the final tree of the batch you are about
+  to push, not on the tree the work started from. Commits may accumulate
+  locally between gates; nothing reaches `origin` ungated, and each message
+  names the gate that covered it.
 
 ## Reporting
 

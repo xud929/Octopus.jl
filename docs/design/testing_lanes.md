@@ -52,8 +52,9 @@ gate?" is part of its review, and this note's numbers are the precedent.
 ## 3. When the full gate is mandatory
 
 The fast lane is a checkpoint **during** development. The full gate is the
-bar **before any commit**, and for the following change classes no amount of
-fast-lane green substitutes — each row is paid for by a recorded incident:
+bar **before any push** (owner decision 2026-09-04; it was before any commit
+until then, and the change is priced in `../experiences.md`), and for the
+following change classes no amount of fast-lane green substitutes — each row is paid for by a recorded incident:
 
 | change class | minimum bar | the receipt |
 |---|---|---|

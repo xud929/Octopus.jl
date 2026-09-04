@@ -115,7 +115,7 @@ Verification Matrix always remain in force. Guides live in `docs/guides/`.
 | Add or modify an example | the closest example and its harness where one exists; `example_catalog` | `examples_and_validation.md` | the script runs; the catalogue entry; the matrix |
 | Benchmark, profile, or optimize | the `profiling/` driver header (fixed point, digest); the campaign history | `development_workflow.md` | baseline first; before/after time, allocation, digest recorded; the matrix |
 | Change public documentation or APIs | the docstrings; `docs/public_api.md`; `docs/README.md` | `documentation.md` | the index entry; the snapshot; the matrix |
-| Finish and commit any change | `development_workflow.md`, "Committing" | `development_workflow.md` | the gate the matrix names, on the final tree; ledger updates in the same commit |
+| Finish and commit any change | `development_workflow.md`, "Committing" | `development_workflow.md` | ledger updates in the same commit; the gate the matrix names on the batch's final tree, before pushing |
 
 ## Change Authorization
 
@@ -163,9 +163,13 @@ checks run before the gate, never instead of it. Receipts:
 
 ## Definition of Done
 
-- The gate the matrix names ran on the final tree, CUDA active where the
-  matrix requires it; the report names the lane, lists every skipped or
-  unrunnable check, and states what was not verified.
+- The gate the matrix names ran on the final tree of the batch being pushed,
+  CUDA active where the matrix requires it; the report names the lane, lists
+  every skipped or unrunnable check, and states what was not verified. The
+  gate is owed before every PUSH rather than before every commit (owner
+  decision 2026-09-04): commits may accumulate locally, and the gate covers
+  the tree they add up to. Each commit message names the gate that covered
+  it.
 - Every new public option has its effectiveness test, every new public object
   is in `docs/registry_snapshot.md`, every new document is in `docs/README.md`.
 - `docs/todo.md`, `docs/history/`, and `docs/experiences.md` changed in the
