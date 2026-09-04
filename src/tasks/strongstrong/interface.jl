@@ -1837,8 +1837,8 @@ function validate_configuration_metadata()
     # is two deep (CUDAExecutionPolicy and GPUExecutionPolicy sit under
     # AbstractGPUExecutionPolicy), so a one-level `subtypes` would have walked
     # straight past the two policies that matter most and reported clean.
-    _policy_types = (CPUThreadsExecutionPolicy, CUDAExecutionPolicy, GPUExecutionPolicy,
-                     PlaceholderPolicy)
+    _policy_types = (CPUThreadsExecutionPolicy, MultiProcessExecutionPolicy,
+                     CUDAExecutionPolicy, GPUExecutionPolicy, PlaceholderPolicy)
     for T in _concrete_octopus_subtypes(AbstractExecutionPolicy)
         T in _policy_types || push!(errors,
             "$(T) is a concrete Octopus execution policy with no block in " *
@@ -1854,6 +1854,12 @@ function validate_configuration_metadata()
     default_cpu = CPUThreadsExecutionPolicy()
     policy_option_schema(default_cpu).threads.default === :auto ||
         push!(errors, "CPU policy metadata default disagrees with constructor")
+    default_mp = MultiProcessExecutionPolicy()
+    mp_schema = policy_option_schema(default_mp)
+    mp_schema.threads.default === default_mp.threads ||
+        push!(errors, "multi-process policy metadata threads default disagrees with constructor")
+    mp_schema.ranks.default === default_mp.ranks ||
+        push!(errors, "multi-process policy metadata ranks default disagrees with constructor")
     default_cuda = CUDAExecutionPolicy()
     default_cuda.launch.threads == policy_option_schema(default_cuda).threads.default ||
         push!(errors, "CUDA thread metadata default disagrees with constructor")
@@ -2299,6 +2305,7 @@ end
 
 function _execute_strong_strong_task!(
         task, beam1, beam2, turns::Int, first_turn::Int64, policy)
+    _reject_unsharded_multi_process("a StrongStrongTask")
     _warn_inactive_diagnostics(task.diagnostics, backend_type(policy))
     _record_execution!(:strong_strong_diagnostics, backend_type(policy), (
         record_turn_times=task.diagnostics.record_turn_times,

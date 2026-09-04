@@ -195,6 +195,29 @@ teaches something reusable, it lands here (dated), and the full record goes to
   caught by the full gate, not the edit. Grep the whole `src/` tree for the
   old name or arity (Measured Lesson 12 in `comprehensive_audit.md`).
 
+## A type inner code dispatches on is a bad thing to wrap
+
+- The multi-process policy was designed as a wrapper around
+  `ResolvedCPUExecutionPolicy` and an unwrap at "the task drivers"; an
+  adversarial read of the draft found the public keyword `track!` entry
+  resolves and passes the resolved object positionally into a method typed on
+  the concrete CPU type, so the published entry point would have thrown a
+  `MethodError` (2026-09-04, step 2). Eight methods and the worker-count
+  accessor dispatch on that type and four call sites pass it on. A SLOT on the
+  existing type instead of a wrapper around it made "at one rank nothing
+  changes" true by construction rather than by an argument that had to be
+  right at every site.
+- Resolution must stay pure. `configuration_report` resolves a policy only to
+  describe it and the strong-strong task resolves once per beam, so a side
+  effect at resolution (initialising MPI) fires when someone asks a question.
+  Side effects belong at activation, which happens once, where the run
+  actually begins.
+- A package extension must ADD a method, never redefine one its parent
+  already defined for the same signature -- that fails to precompile. Core
+  declares the fallback on `::Any` (or on `::Nothing` for the communicator
+  argument) and the extension the specific method; the dispatch, not a
+  mutable hook, is what selects it.
+
 ## Re-price accepted limitations after every campaign
 
 - The curved-girder exit patch was measured wrong at dx·θ, documented, warned

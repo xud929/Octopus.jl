@@ -59,6 +59,7 @@ Use Julia help:
 ?TrackingTask
 ?StrongStrongTask
 ?CPUThreadsExecutionPolicy
+?MultiProcessExecutionPolicy
 ?CUDAExecutionPolicy
 ?CUDALaunchConfig
 ?CUDAPICLaunchConfig

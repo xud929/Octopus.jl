@@ -43,6 +43,11 @@ using ForwardDiff
 # Before the extension existed the adapter was dead in package mode and the
 # round-trip test silently took its unavailable branch forever (part 6, R3).
 using Symbolics
+# Test-only, and deliberately NOT `using MPI`: this process must stay a
+# serial-passthrough one so the passthrough assertions below mean what they
+# say. MPICH_jll is here only for its `mpiexec`, which the multi-process
+# section launches; loading a jll triggers no package extension.
+using MPICH_jll
 
 # Whether the CUDA half of this suite ran at all must be visible in the summary,
 # not inferable only by noticing that some testsets printed fewer assertions.
@@ -6608,6 +6613,214 @@ end
     @test byname[:blocks].requested == 5
     @test byname[:device].requested == 0
 end
+
+@testset "The multi-process policy composes the CPU policy, and its seam is the identity at one rank" begin
+    # Multi-process campaign step 2 (docs/design/multi_process_policy.md).
+    # This process never loads MPI, so everything here exercises the SERIAL
+    # PASSTHROUGH -- which is the half a user without MPI gets, and the half
+    # that must be indistinguishable from today's single-process run. The MPI
+    # half runs under a launcher in the section below; keep the two claims
+    # apart, because a passthrough that quietly stood in for MPI would pass
+    # every assertion here.
+    @test Base.get_extension(Octopus, :OctopusMPIExt) === nothing
+
+    mkrep(n) = begin
+        s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+        Phase6DRep(s(1.0e-4, 0.0), s(1.0e-5, 0.3), s(1.0e-4, 0.9),
+                   s(1.0e-5, 1.2), s(1.0e-3, 2.1), s(1.0e-4, 2.5))
+    end
+    line = (CrabDispersionSpec{Float64}(zeta1=0.02, zeta3=-0.01),
+            Linear6DSpec{Float64}(beta1=(1.0, 1.0, 1.0), beta2=(1.0, 1.0, 1.0),
+                                  dmu=(0.31, 0.27, 0.02)))
+
+    for k in unique((1, 2, Threads.nthreads(:default)))
+        cpu_rep, mp_rep = mkrep(4000), mkrep(4000)
+        px0 = copy(cpu_rep.px)
+        mp_audit = ExecutionAudit()
+        execute!(TrackingTask(line; policy=CPUThreadsExecutionPolicy(threads=k)),
+                 cpu_rep; turns=2)
+        with_execution_audit(mp_audit) do
+            execute!(TrackingTask(line; policy=MultiProcessExecutionPolicy(threads=k)),
+                     mp_rep; turns=2)
+        end
+        # Same arithmetic, bit for bit: at one rank the multi-process policy
+        # IS the CPU policy it composes.
+        @test all(a == b for (a, b) in zip(coordinate_arrays(cpu_rep),
+                                           coordinate_arrays(mp_rep)))
+        @test cpu_rep.px != px0        # anti-vacuity: the line moved the beam
+
+        # `==` alone cannot fail on a DROPPED `threads`, because this path is
+        # thread-count invariant by construction -- a policy that ignored the
+        # keyword would still compare equal. Only the receipt can fail, so the
+        # receipt is the effectiveness assertion.
+        workers = filter(r -> r.consumer === :cpu_logical_workers,
+                         execution_receipts(mp_audit))
+        @test !isempty(workers)
+        @test all(r -> r.values.workers == k, workers)
+
+        handshake = filter(r -> r.consumer === :multi_process_communicator,
+                           execution_receipts(mp_audit))
+        @test length(handshake) == 1
+        @test only(handshake).values.nranks == 1
+        @test only(handshake).values.rank == 0
+        @test only(handshake).values.threads == k
+        @test only(handshake).values.resolved_by === :serial_passthrough
+    end
+
+    # The seam itself: every passthrough is the identity on its argument and
+    # every call is audited. A passthrough that mutated, or a receipt that
+    # never fired, would leave step 3's consumers with no way to tell a
+    # missing collective from a working one.
+    rep = mkrep(4)
+    resolved = Octopus._resolve_execution_policy(MultiProcessExecutionPolicy(), rep)
+    audit = ExecutionAudit()
+    with_execution_audit(audit) do
+        Octopus._with_execution_policy(resolved) do
+            @test Octopus._mp_nranks() == 1
+            @test Octopus._mp_rank() == 0
+            @test Octopus._mp_is_root()
+            grid = [1.0 -2.0; 3.5 4.25]
+            @test Octopus._mp_allsum!(grid) === grid
+            @test grid == [1.0 -2.0; 3.5 4.25]
+            lanes = [1.0, 2.0, 3.0]
+            @test Octopus._mp_lane_fold!(lanes) === lanes
+            @test lanes == [1.0, 2.0, 3.0]
+            @test Octopus._mp_allminmax(-1.5, 2.5) == (-1.5, 2.5)
+            carried = [7.0, 8.0]
+            @test Octopus._mp_bcast!(carried) === carried
+            @test carried == [7.0, 8.0]
+            @test Octopus._mp_bcast(:only_rank) === :only_rank
+            @test Octopus._mp_barrier() === nothing
+            counts = [1, 2, 3]
+            @test Octopus._mp_allsum!(counts) == [1, 2, 3]   # integers too
+        end
+    end
+    collectives = filter(r -> r.consumer === :multi_process_collective,
+                         execution_receipts(audit))
+    @test [r.values.kind for r in collectives] ==
+          [:allsum, :lane_fold, :allminmax, :bcast, :bcast_scalar, :barrier, :allsum]
+    @test all(r -> r.values.nranks == 1, collectives)
+    @test first(collectives).values.count == 4         # the 2x2 grid
+    @test first(collectives).values.bytes == 32
+
+    # Outside a multi-process run the seam is still callable and still the
+    # identity: step 3's consumers call it unconditionally, so the ordinary
+    # single-process path runs through these functions on every turn.
+    Octopus._with_execution_policy(
+        Octopus._resolve_execution_policy(CPUThreadsExecutionPolicy(), rep)) do
+        @test Octopus._mp_nranks() == 1
+        @test Octopus._mp_allminmax(0.0, 1.0) == (0.0, 1.0)
+    end
+end
+
+@testset "The multi-process policy rejects what it cannot honour" begin
+    # Constructor-time rejections: shape errors, caught before anything runs.
+    @test_throws ArgumentError MultiProcessExecutionPolicy(ranks=0)
+    @test_throws ArgumentError MultiProcessExecutionPolicy(ranks=-1)
+    @test_throws ArgumentError MultiProcessExecutionPolicy(ranks=:everything)
+    @test_throws ArgumentError MultiProcessExecutionPolicy(threads=0)
+    @test_throws ArgumentError MultiProcessExecutionPolicy(
+        threads=Threads.nthreads(:default) + 1)
+
+    rep = Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+    activate(policy) = Octopus._with_execution_policy(
+        Octopus._resolve_execution_policy(policy, rep)) do
+        Octopus._mp_nranks()
+    end
+    # The passthrough is a communicator of ONE, so `ranks=1` is the truth and
+    # is accepted; any other count is a request the run cannot honour, and a
+    # request that cannot be honoured is rejected rather than adjusted.
+    @test activate(MultiProcessExecutionPolicy(ranks=1)) == 1
+    @test activate(MultiProcessExecutionPolicy()) == 1
+    @test_throws ArgumentError activate(MultiProcessExecutionPolicy(ranks=2))
+
+    # Launched as one of several ranks with no communicator: every rank would
+    # run the whole job and write the same output. With the policy it throws;
+    # with an ordinary policy it warns, because farming independent jobs that
+    # way is legitimate.
+    withenv("PMI_SIZE" => "3") do
+        @test_throws ArgumentError activate(MultiProcessExecutionPolicy())
+        @test_logs (:warn, r"single-process one") match_mode = :any begin
+            activate(CPUThreadsExecutionPolicy())
+        end
+    end
+    # No launcher variable, no warning and no error: the ordinary case.
+    @test activate(CPUThreadsExecutionPolicy()) == 1
+end
+
+if _lane_gate("The multi-process seam runs under an MPI launcher")
+@testset "The multi-process seam runs under an MPI launcher" begin
+    # The only place the MPI half of the seam executes. Everything above this
+    # is the serial passthrough; a passthrough cannot tell you that
+    # `Allgather!` was called with the right buffer, that the rank-ordered
+    # fold gives every rank the same bits, or that one-rank MPI reproduces the
+    # single-process answer -- which is the campaign's literal requirement
+    # (docs/history/multi_process_phase0_2026_08_19.md, "Verdict").
+    #
+    # Subprocesses, because a rank count is a property of a launched process
+    # and the parent must stay a passthrough for the assertions above. The
+    # child is `test/mpi_seam_check.jl`; every line the assertions read starts
+    # with `MPI-CHECK`, and the child exits non-zero on its first failure so a
+    # broken rank takes the launcher down instead of hanging its peers at the
+    # next collective.
+    root = pkgdir(Octopus)
+    child = joinpath(root, "test", "mpi_seam_check.jl")
+    launcher = try
+        MPICH_jll.mpiexec(exe -> exe)
+    catch err
+        @info "MPICH_jll provided no mpiexec; the MPI seam was NOT exercised" err
+        nothing
+    end
+    run_ranks(n) = begin
+        # `Pkg.test` runs this process with JULIA_LOAD_PATH emptied and
+        # `Base.julia_cmd()` inherits the environment, so the child is given
+        # its load path explicitly; the active project is the test environment
+        # that carries both Octopus and MPI.
+        cmd = addenv(`$(launcher) -n $(n) $(Base.julia_cmd()) --startup-file=no --threads=2 $(child)`,
+                     "JULIA_LOAD_PATH" => "@:@stdlib",
+                     "JULIA_PROJECT" => Base.active_project())
+        out = IOBuffer()
+        ok = success(pipeline(cmd; stdout=out, stderr=out))
+        (ok, String(take!(out)))
+    end
+    if launcher === nothing
+        @test_broken false          # visible in the summary, unlike a silent skip
+    else
+        ok1, out1 = run_ranks(1)
+        ok2, out2 = run_ranks(2)
+        if !ok1 && !occursin("MPI-CHECK", out1)
+            # The environment could not run an MPI child at all (no launcher
+            # permissions, no shared memory). Loud, and NOT counted as a pass.
+            @info "the MPI child could not run; the MPI seam was NOT exercised" out=first(out1, 2000)
+            @test_broken false
+        else
+            @test ok1
+            @test ok2
+            # Both ranks must report, and both must report through MPI: a
+            # child that silently fell back to the passthrough would print
+            # `resolved_by=serial_passthrough` and one rank line.
+            @test occursin("MPI-CHECK rank=0 nranks=1 resolved_by=mpi_communicator OK", out1)
+            @test occursin("MPI-CHECK rank=0 nranks=2 resolved_by=mpi_communicator OK", out2)
+            @test occursin("MPI-CHECK rank=1 nranks=2 resolved_by=mpi_communicator OK", out2)
+            @test !occursin("MPI-CHECK FAIL", out1)
+            @test !occursin("MPI-CHECK FAIL", out2)
+
+            # One-rank MPI against today's single-process answer, bit for bit,
+            # on the same line and the same beam -- the two sides share
+            # `mpi_seam_check_fixture.jl` so neither can drift from the other.
+            include(joinpath(root, "test", "mpi_seam_check_fixture.jl"))
+            reference = _mpi_check_beam()
+            execute!(TrackingTask(_mpi_check_line();
+                                  policy=CPUThreadsExecutionPolicy(threads=1)),
+                     reference; turns=2)
+            signature = "MPI-CHECK coords " * _mpi_check_signature(reference)
+            @test occursin(signature, out1)
+            # Anti-vacuity: an empty or trivial signature would match anything.
+            @test length(signature) > 1000
+        end
+    end
+end
+end # _lane_gate("The multi-process seam runs under an MPI launcher")
 
 @testset "Slice moments are a function of the beam, not of the launch geometry" begin
     # 2026-08-05_b audit, U3-1. `_cuda_gaussian_moment_launch` derived threads

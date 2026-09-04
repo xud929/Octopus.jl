@@ -381,6 +381,51 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     end
     metrics[:cpu_workers_tested] = worker_sweep
     metrics[:cpu_worker_receipts] = cpu_receipt_counts
+
+    # The multi-process policy, in the serial passthrough this process is.
+    #
+    # Two things must be true and both are OBSERVED, not argued: the composed
+    # thread count reaches the same logical-worker consumer the CPU policy
+    # reaches (so `threads` is not decoration on the new type), and the rank
+    # count in the receipt is the one read FROM the communicator handshake,
+    # with the branch that produced it named. Without MPI loaded that branch
+    # is the passthrough, which is the honest thing to report -- the MPI
+    # branch is exercised where it can be, under a launcher, in the suite's
+    # multi-process section.
+    mp_workers = first(worker_sweep)
+    mp_rep = _contract_rep_for_backend(base, CPUThreadsBackend)
+    mp_audit = ExecutionAudit()
+    with_execution_audit(mp_audit) do
+        execute!(TrackingTask(line;
+                              policy=MultiProcessExecutionPolicy(threads=mp_workers)),
+                 mp_rep; turns=2)
+    end
+    mp_receipts = filter(r -> r.consumer === :multi_process_communicator,
+                         execution_receipts(mp_audit))
+    mp_worker_receipts = filter(r -> r.consumer === :cpu_logical_workers,
+                                execution_receipts(mp_audit))
+    isempty(mp_receipts) && return ContractResult(false,
+        "MultiProcessExecutionPolicy did not reach the communicator consumer.";
+        metrics=metrics)
+    all(r -> r.values.nranks >= 1 && r.values.rank >= 0 &&
+             r.values.threads == mp_workers &&
+             r.values.resolved_by in (:serial_passthrough, :mpi_communicator),
+        mp_receipts) || return ContractResult(false,
+        "MultiProcessExecutionPolicy communicator receipt is malformed.";
+        metrics=metrics)
+    (!isempty(mp_worker_receipts) &&
+     all(r -> r.values.workers == mp_workers, mp_worker_receipts)) ||
+        return ContractResult(false,
+        "MultiProcessExecutionPolicy($(mp_workers)) did not reach the logical-worker consumer.";
+        metrics=metrics)
+    mp_comparison = _contract_coordinate_metrics(rep_cpu, mp_rep, 0.0, 0.0)
+    mp_comparison[:max_abs_error] == 0.0 || return ContractResult(false,
+        "MultiProcessExecutionPolicy changed tracking results against the CPU policy it composes.";
+        residual=mp_comparison[:max_abs_error], metrics=metrics)
+    metrics[:multi_process_nranks] = first(mp_receipts).values.nranks
+    metrics[:multi_process_resolved_by] = first(mp_receipts).values.resolved_by
+    metrics[:multi_process_receipts] = length(mp_receipts)
+    metrics[:multi_process_coordinate_max_abs_error] = mp_comparison[:max_abs_error]
     # The INVARIANCE comparison needs two worker counts to compare. On a
     # single-threaded Julia the sweep collapses to [1], the comparison branch
     # never runs, `cpu_coordinate_error` keeps its 0.0 initialiser -- and this

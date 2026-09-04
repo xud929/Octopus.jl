@@ -134,6 +134,15 @@ Use `CPUThreadsExecutionPolicy(threads=:auto)` for CPU storage. An explicit
 integer is an Octopus logical-worker limit within Julia's default thread pool
 and must not exceed `Threads.nthreads(:default)`.
 
+Use `MultiProcessExecutionPolicy(threads=:auto, ranks=:auto)` for CPU storage
+across MPI ranks. It composes `CPUThreadsExecutionPolicy(threads)` per rank, so
+at one rank it is that policy exactly. `ranks=:auto` accepts whatever the
+launcher started; an integer must match the communicator exactly. MPI itself is
+a weak dependency: without it loaded the process is a communicator of one and
+the collective seam runs its serial passthrough. No task divides work across
+ranks yet, so `execute!` refuses at more than one rank
+(`design/multi_process_policy.md`, campaign step 2 of 4).
+
 Use `CUDAExecutionPolicy(device=nothing,
 launch=CUDALaunchConfig(threads=256, blocks=:auto))` for CUDA storage.
 `device=nothing` resolves from particle storage. Fused tracking resolves

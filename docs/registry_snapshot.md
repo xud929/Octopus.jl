@@ -289,6 +289,7 @@ constructor names remain the user-facing way to build those specs.
 - `CUDAExecutionPolicy`
 - `GPUExecutionPolicy`
 - `CPUThreadsExecutionPolicy`
+- `MultiProcessExecutionPolicy`
 - `PlaceholderPolicy`
 
 ## Contracts

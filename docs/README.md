@@ -40,6 +40,12 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   guarded heavyweight sections, the loud-skip accounting rules, and the
   decision matrix for change classes where only the full gate (CUDA active)
   counts. The fast lane is a checkpoint, never a finish line.
+- [`multi_process_policy.md`](design/multi_process_policy.md) — the
+  multi-process execution policy: why the resolved state is a slot on the CPU
+  policy rather than a wrapper around it, why resolution is pure while
+  activation reads the communicator, the six-function collective seam and its
+  rank-ordered folds, the determinism that buys at fixed and at varying rank
+  counts, and what step 3 must still choose.
 - [`run_artifact.md`](design/run_artifact.md) — the one-output-file-per-task
   design (2026-08-18, decided, implementation on the ledger): the
   probe/channel split, per-producer groups with independent turn axes (which
@@ -315,6 +321,12 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   and why, the per-fix measurements with their bitwise-parity digests, and the
   machine-level findings — idle-thread spin, GC share, and why a pool wider
   than the data's parallelism costs rather than pays),
+  [`mpi_environment_2026_09_04.md`](history/mpi_environment_2026_09_04.md)
+  (which MPI runtime an Octopus process carries, decided by test: MPICH_jll
+  by default because the installed HDF5_jll already links it, a system MPI as
+  a two-preference opt-in; corrects the Phase 0 "load-order lock" to the
+  narrower thing it is, and records why the tracked Manifest cannot be
+  re-resolved on this box),
   [`multi_process_phase0_2026_08_19.md`](history/multi_process_phase0_2026_08_19.md)
   (Phase 0 of the multi-process mixed policy, single-node scope: the first
   weak-strong thread-scaling curve — allocation/GC-bound, 1.282 GiB/turn,

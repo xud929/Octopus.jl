@@ -17,10 +17,12 @@ SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 
 [weakdeps]
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
 Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"
 
 [extensions]
 OctopusForwardDiffExt = "ForwardDiff"
+OctopusMPIExt = "MPI"
 OctopusSymbolicsExt = "Symbolics"
 
 [compat]
@@ -39,6 +41,10 @@ SpecialFunctions = "2"
 # two derivative rules generic code cannot express (the Faddeeva holomorphic
 # rule and the near-round precision calibration pass-through, audit U7-1).
 ForwardDiff = "1"
+# Weak dependency (and test dep): OctopusMPIExt binds the multi-process
+# policy's collective seam to MPI.jl. Core never imports it and keeps a
+# serial passthrough, so a process without MPI is a communicator of one.
+MPI = "0.20"
 # Weak dependency: the knob tree's Symbolics adapter lives in
 # OctopusSymbolicsExt and activates only when the user loads Symbolics.
 Symbolics = "7"
@@ -48,8 +54,14 @@ julia = "1.12"
 CUDA_Runtime_jll = "76a88914-d11a-5bdc-97e0-2f5a05c973a2"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
+MPICH_jll = "7cb0a576-ebde-5e09-9194-50597f1243b4"
 Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
+# MPICH_jll is here for its `mpiexec`, which the multi-process section
+# launches; loading a jll does not activate OctopusMPIExt, so the parent
+# suite stays a serial-passthrough process and its passthrough pins mean what
+# they say. MPI itself is a test dep so the CHILD processes can resolve it.
 [targets]
-test = ["Test", "ForwardDiff", "Symbolics", "Logging"]
+test = ["Test", "ForwardDiff", "Symbolics", "Logging", "MPI", "MPICH_jll"]

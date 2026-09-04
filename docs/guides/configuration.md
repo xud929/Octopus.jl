@@ -47,7 +47,12 @@ policy type the runtime cannot execute. `PlaceholderPolicy` is the
 non-executable sentinel used by examples and metadata (`backend_type` and
 `execute!` raise on it); it is not a way to reserve a future policy. A policy
 that needs a weak dependency keeps its type and serial fallback in core and
-puts only the dependency-bound methods in `ext/`.
+puts only the dependency-bound methods in `ext/`;
+`MultiProcessExecutionPolicy` with `ext/OctopusMPIExt.jl` is the worked
+example, and [`../design/multi_process_policy.md`](../design/multi_process_policy.md)
+records why its resolved state is a slot on the CPU policy rather than a
+wrapper around it, and why an extension method must ADD to a core function
+rather than redefine one.
 
 1. Put the policy type in `src/policies/`. Keep its fields about execution
    decisions, not element physics; document defaults and units in the

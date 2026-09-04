@@ -592,6 +592,7 @@ end
 
 function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                                  turns::Int, first_turn::Int64, policy)
+    _reject_unsharded_multi_process("a TrackingTask")
     if isempty(task.actions) && isempty(task.observers) &&
        !_has_line_hooks(runtime_entries) && task.artifact === nothing
         _execute_fast_tracking_turns!(

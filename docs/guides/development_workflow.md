@@ -22,11 +22,16 @@ the rules are in [`../experiences.md`](../experiences.md).
   contracts that need a device report `status=:skipped` rather than passing.
   GPU-box specifics (the untracked `LocalPreferences.toml` that selects the
   CUDA runtime, device diagnostics) are in `../current_runtime.md`.
-- Test-only dependencies (`ForwardDiff`, `Symbolics`, `Logging`) are listed
-  under `[targets]` in `Project.toml`; a plain `--project=.` session does not
-  have them.
+- Test-only dependencies (`ForwardDiff`, `Symbolics`, `Logging`, `MPI`,
+  `MPICH_jll`) are listed under `[targets]` in `Project.toml`; a plain
+  `--project=.` session does not have them. The tracked `Manifest.toml`
+  currently predates `Project.toml`, so `Pkg.test` re-resolves into a
+  temporary environment on every run and this section's "reproduces the exact
+  environment" is aspirational until the open `../todo.md` row closes.
 - `ext/` holds the package extensions for the `[weakdeps]` (`ForwardDiff`,
-  `Symbolics`). They activate only in package mode (next section).
+  `Symbolics`, `MPI`). They activate only in package mode (next section), so
+  a script-mode session gets each one's core fallback: for `MPI` that is the
+  collective seam's serial passthrough, a communicator of one.
 
 ## Two load modes
 

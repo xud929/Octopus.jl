@@ -1,4 +1,5 @@
 export PlaceholderPolicy, CPUThreadsExecutionPolicy,
+       MultiProcessExecutionPolicy,
        AbstractGPUExecutionPolicy, CUDALaunchConfig, CUDAExecutionPolicy,
        GPUExecutionPolicy, backend_type, activate_policy!,
        ConfigurationOptionMeta, ConfigurationEntry, policy_option_schema,
@@ -169,6 +170,78 @@ end
 CPUThreadsExecutionPolicy(; threads=:auto) = CPUThreadsExecutionPolicy(threads)
 
 """
+What a `MultiProcessExecutionPolicy` asked for, before any communicator has
+been consulted. Resolution is PURE: it may not initialise MPI, because
+`configuration_report` resolves a policy just to describe it, and the
+strong-strong task resolves once per beam.
+"""
+struct MultiProcessRequest
+    ranks::Union{Int,Symbol}
+end
+
+"""
+What the run actually got: the communicator (`nothing` in the serial
+passthrough), the rank count and this process's rank READ FROM IT at
+activation, the request they are checked against, and which branch produced
+them. Built by `_activate_resolved_policy!`, never by resolution -- the rank
+count a receipt reports must be the communicator's, not the policy's field
+(the "a configuration you set is not a configuration the code read"
+invariant).
+"""
+struct MultiProcessContext
+    comm::Any
+    nranks::Int
+    rank::Int
+    ranks::Union{Int,Symbol}
+    resolved_by::Symbol
+end
+
+"""
+    MultiProcessExecutionPolicy(; threads=:auto, ranks=:auto)
+
+Run one Octopus process per MPI rank, each with its own CPU logical workers.
+The per-rank core is `CPUThreadsExecutionPolicy(threads)` unchanged, so at one
+rank this policy is that policy: same partitions, same folds, same results,
+bit for bit.
+
+`ranks` is `:auto` (accept whatever the launcher started) or an integer the
+run must match exactly; a communicator of another size is rejected rather
+than silently accepted. Without `MPI` loaded the process is its own
+communicator of one, so `ranks = 1` is accepted and any larger integer is
+not: the collective seam runs its serial passthrough and `nranks` is 1.
+
+Sharding is NOT part of this policy yet. Step 2 of the multi-process campaign
+lands the policy, the communicator handshake and the collective seam;
+`execute!` refuses a task at more than one rank until step 3 gives the tasks
+a consumer that divides the work (`docs/design/multi_process_policy.md`).
+CPU storage only.
+"""
+struct MultiProcessExecutionPolicy <: AbstractExecutionPolicy
+    threads::Union{Int,Symbol}
+    ranks::Union{Int,Symbol}
+    function MultiProcessExecutionPolicy(threads::Union{Integer,Symbol},
+                                         ranks::Union{Integer,Symbol})
+        # The composed CPU policy validates `threads` with its own message, so
+        # there is one rule for thread counts and one place that states it.
+        cpu = CPUThreadsExecutionPolicy(threads)
+        if ranks isa Symbol
+            ranks === :auto || throw(ArgumentError(
+                "ranks must be :auto or a positive integer; got $(repr(ranks))."))
+            return new(cpu.threads, :auto)
+        end
+        n = Int(ranks)
+        n >= 1 || throw(ArgumentError("ranks must be a positive integer; got $(n)."))
+        return new(cpu.threads, n)
+    end
+end
+MultiProcessExecutionPolicy(; threads=:auto, ranks=:auto) =
+    MultiProcessExecutionPolicy(threads, ranks)
+
+"""The CPU policy a `MultiProcessExecutionPolicy` runs inside each rank."""
+_composed_cpu_policy(policy::MultiProcessExecutionPolicy) =
+    CPUThreadsExecutionPolicy(policy.threads)
+
+"""
 Root of GPU execution policies (`CUDAExecutionPolicy` and the legacy
 `GPUExecutionPolicy`), so GPU-generic code can dispatch on the family
 without naming a vendor. (Docstring added by the 2026-08-05 audit; this and
@@ -250,9 +323,29 @@ GPUExecutionPolicy(; threads::Integer=256, blocks::Integer=256, device=nothing) 
     GPUExecutionPolicy(threads, blocks, device)
 
 abstract type AbstractResolvedExecutionPolicy end
+
+"""
+A resolved CPU execution policy: the logical-worker count, plus the
+multi-process state when the run was launched through a
+`MultiProcessExecutionPolicy`.
+
+The multi-process state is a SLOT on the CPU policy rather than a wrapper
+type around it, deliberately. Eight methods and `_cpu_worker_count()`
+dispatch on this concrete type, and the public `track!`, `Beam`, task and
+`configuration_report` paths all pass a resolved policy positionally; a
+wrapper would have to be unwrapped at each of them, and one missed site is a
+`MethodError` for the public entry (or, worse, a silently different code
+path). With a slot, a one-rank run IS today's run, by construction rather
+than by argument. `nothing` is the ordinary single-process case; a
+`MultiProcessRequest` is what resolution produces; a `MultiProcessContext` is
+what activation puts back.
+"""
 struct ResolvedCPUExecutionPolicy <: AbstractResolvedExecutionPolicy
     threads::Int
+    multi_process::Union{Nothing,MultiProcessRequest,MultiProcessContext}
 end
+ResolvedCPUExecutionPolicy(threads::Integer) =
+    ResolvedCPUExecutionPolicy(Int(threads), nothing)
 struct ResolvedCUDAExecutionPolicy <: AbstractResolvedExecutionPolicy
     device::Int
     threads::Int
@@ -266,6 +359,7 @@ The backend TAG a policy executes on — the bridge from the HOW (policy) to
 the WHERE (backend dispatch).
 """
 backend_type(::CPUThreadsExecutionPolicy) = CPUThreadsBackend
+backend_type(::MultiProcessExecutionPolicy) = CPUThreadsBackend
 # ONE method on the family, not one per vendor policy. `AbstractGPUExecutionPolicy`
 # was a taxonomy node whose docstring said it exists "so GPU-generic code can
 # dispatch on the family without naming a vendor", and no method in the
@@ -287,6 +381,199 @@ function _cpu_worker_count()
     policy = _ACTIVE_RESOLVED_POLICY[]
     return policy isa ResolvedCPUExecutionPolicy ? policy.threads : Threads.nthreads(:default)
 end
+
+"""
+Tag the MPI extension dispatches on.
+
+Core defines the fallback on `::Any`, the extension the method on this exact
+type, so the extension ADDS a method instead of overwriting one -- an
+extension that redefines a method its parent already defined for the same
+signature fails to precompile.
+"""
+struct MPIBackendTag end
+
+"""
+The communicator the MPI extension offers, or `nothing` when it is not
+loaded. `OctopusMPIExt` defines the `::MPIBackendTag` method; this fallback
+is what a process without `MPI` sees.
+"""
+_mp_open_communicator(::Any) = nothing
+
+"""Size of and this process's rank in a communicator; the extension owns both."""
+_mp_communicator_size(comm) = error("no method to size $(typeof(comm)); OctopusMPIExt supplies it")
+_mp_communicator_rank(comm) = error("no method to rank $(typeof(comm)); OctopusMPIExt supplies it")
+
+"""
+The rank count the LAUNCHER announces, or `nothing` when no launcher
+variable is set.
+
+`mpiexec -n 4 julia ...` with `MPI` never loaded would otherwise give four
+processes that each believe they are a communicator of one, run the whole job,
+and write the same output file over each other -- silently, four times. Every
+launcher exports its size; a disagreement with the communicator Octopus
+actually has is a defect, so it throws.
+"""
+function _launcher_rank_count()
+    for name in ("PMI_SIZE", "OMPI_COMM_WORLD_SIZE", "MPI_LOCALNRANKS",
+                 "PMIX_SIZE", "MV2_COMM_WORLD_SIZE", "SLURM_NTASKS")
+        value = get(ENV, name, nothing)
+        value === nothing && continue
+        parsed = tryparse(Int, value)
+        parsed === nothing && continue
+        return (name, parsed)
+    end
+    return nothing
+end
+
+"""
+The multi-process state of the policy in force, or `nothing` outside a
+multi-process run. After activation this is a [`MultiProcessContext`](@ref).
+"""
+function _multi_process_state()
+    policy = _ACTIVE_RESOLVED_POLICY[]
+    policy isa ResolvedCPUExecutionPolicy || return nothing
+    return policy.multi_process
+end
+
+function _multi_process_context()
+    state = _multi_process_state()
+    return state isa MultiProcessContext ? state : nothing
+end
+
+"""The communicator in force, or `nothing` in the serial passthrough."""
+function _mp_comm()
+    context = _multi_process_context()
+    return context === nothing ? nothing : context.comm
+end
+
+"""
+    _mp_nranks() -> Int
+    _mp_rank() -> Int
+
+The size of the communicator in force and this process's rank in it: `1` and
+`0` outside a multi-process run, and `1` and `0` in the serial passthrough.
+"""
+_mp_nranks() = (context = _multi_process_context(); context === nothing ? 1 : context.nranks)
+_mp_rank() = (context = _multi_process_context(); context === nothing ? 0 : context.rank)
+
+"""Whether this rank owns the run's single-writer output (rank 0, always)."""
+_mp_is_root() = _mp_rank() == 0
+
+function _record_collective!(kind::Symbol, count::Integer, bytes::Integer)
+    # The `audit === nothing` check inside `_record_execution!` runs before
+    # anything is built, and this NamedTuple is small and concrete, so an
+    # unaudited collective pays a load and a branch.
+    _record_execution!(:multi_process_collective, CPUThreadsBackend,
+                       (kind=kind, count=Int(count), bytes=Int(bytes),
+                        nranks=_mp_nranks()))
+    return nothing
+end
+
+# --- the collective seam -----------------------------------------------------
+#
+# Six operations, each with a serial passthrough in core and an MPI method in
+# the extension, dispatching on the communicator so the two never collide.
+# Every floating-point reduction is an ALLGATHER FOLLOWED BY A FOLD IN RANK
+# ORDER, never `MPI_SUM`: a library sum may associate as it likes and by rank
+# count, which would make a result depend on how many processes computed it.
+# Rank-ordered folding gives every rank the same bits, and the same bits a
+# different rank count would give when the shard boundaries align with the
+# fold's own partition (`docs/design/multi_process_policy.md`).
+
+"""
+    _mp_allsum!(A) -> A
+
+Sum `A` elementwise across the communicator, in rank order, leaving the total
+in `A` on every rank. The passthrough returns `A` untouched.
+"""
+function _mp_allsum!(A::AbstractArray)
+    _record_collective!(:allsum, length(A), sizeof(A))
+    return _mp_allsum_impl!(A, _mp_comm())
+end
+_mp_allsum_impl!(A, ::Nothing) = A
+
+"""
+    _mp_lane_fold!(lanes) -> lanes
+
+The lane-partial form of [`_mp_allsum!`](@ref): each rank holds the partials of
+the lanes it owns, and every rank leaves with the whole lane vector. Named
+apart from `_mp_allsum!` because the shard contract differs -- lanes are
+block-cyclic, grids are elementwise -- even though the passthrough and the
+collective are the same operation today.
+"""
+function _mp_lane_fold!(lanes::AbstractVector)
+    _record_collective!(:lane_fold, length(lanes), sizeof(lanes))
+    return _mp_allsum_impl!(lanes, _mp_comm())
+end
+
+"""
+    _mp_allminmax(lo, hi) -> (lo, hi)
+
+The global minimum of `lo` and maximum of `hi`. Order-independent (min and max
+associate freely), so this one needs no rank-ordered fold -- which is why mesh
+and box sizing can use it without a determinism argument.
+"""
+function _mp_allminmax(lo::Real, hi::Real)
+    _record_collective!(:allminmax, 2, 2 * sizeof(lo))
+    return _mp_allminmax_impl(lo, hi, _mp_comm())
+end
+_mp_allminmax_impl(lo, hi, ::Nothing) = (lo, hi)
+
+"""
+    _mp_bcast!(A, root=0) -> A
+
+Replace `A` with rank `root`'s copy on every rank.
+"""
+function _mp_bcast!(A::AbstractArray, root::Integer=0)
+    _record_collective!(:bcast, length(A), sizeof(A))
+    return _mp_bcast_impl!(A, Int(root), _mp_comm())
+end
+_mp_bcast_impl!(A, root, ::Nothing) = A
+
+"""
+    _mp_bcast(value, root=0)
+
+Scalar [`_mp_bcast!`](@ref): every rank leaves with rank `root`'s `value`. Used
+for decisions that must not diverge (a schedule predicate, a slicing choice):
+a rank that decides differently from the others deadlocks the next collective.
+"""
+function _mp_bcast(value, root::Integer=0)
+    _record_collective!(:bcast_scalar, 1, sizeof(value))
+    return _mp_bcast_scalar_impl(value, Int(root), _mp_comm())
+end
+_mp_bcast_scalar_impl(value, root, ::Nothing) = value
+
+"""
+Refuse a task run on a communicator this campaign has not yet taught to
+divide work.
+
+Step 2 lands the policy, the communicator handshake and the collective seam;
+no task consumer shards anything yet. At more than one rank a task would run
+whole on every rank and every rank would write the same output file -- P
+copies of one answer, presented as a parallel run. Refusing is the "loud
+beats silent" rule and the "never claim a capability before its
+implementation exists" rule at once; step 3 replaces this with the sharded
+path, and the suite pins the refusal so the day it stops throwing is visible.
+"""
+function _reject_unsharded_multi_process(what::AbstractString)
+    nranks = _mp_nranks()
+    nranks > 1 || return nothing
+    throw(ArgumentError(
+        "$(what) was asked to run on $(nranks) MPI ranks, but no task " *
+        "consumer divides work across ranks yet (multi-process campaign " *
+        "step 2 lands the policy and the collective seam; step 3 shards the " *
+        "weak-strong task). Every rank would track the whole beam and write " *
+        "the same output. Run one rank, or use CPUThreadsExecutionPolicy."))
+end
+
+"""    _mp_barrier()
+
+Wait until every rank arrives. A no-op in the passthrough."""
+function _mp_barrier()
+    _record_collective!(:barrier, 0, 0)
+    return _mp_barrier_impl(_mp_comm())
+end
+_mp_barrier_impl(::Nothing) = nothing
 
 function _run_logical_workers(f::F, workers::Integer=_cpu_worker_count()) where {F}
     nworkers = Int(workers)
@@ -400,6 +687,17 @@ const _CPU_POLICY_OPTION_SCHEMA = (
         supported_backends=(CPUThreadsBackend,), consumer=:cpu_logical_workers),
 )
 
+const _MULTI_PROCESS_POLICY_OPTION_SCHEMA = (
+    threads=ConfigurationOptionMeta(Union{Int,Symbol}, :auto,
+        "Number of Octopus logical workers per rank, in Julia's default thread pool.";
+        supported_backends=(CPUThreadsBackend,), consumer=:cpu_logical_workers),
+    ranks=ConfigurationOptionMeta(Union{Int,Symbol}, :auto,
+        "Required MPI rank count; :auto accepts the communicator the launcher \
+         provided. Read back from the communicator at execution, never assumed.";
+        supported_backends=(CPUThreadsBackend,),
+        consumer=:multi_process_communicator),
+)
+
 const _CUDA_POLICY_OPTION_SCHEMA = (
     device=ConfigurationOptionMeta(Union{Nothing,Int}, nothing,
         "CUDA device index; nothing resolves from particle storage.";
@@ -445,6 +743,8 @@ constructors.
 """
 policy_option_schema(::Type{CPUThreadsExecutionPolicy}) = _CPU_POLICY_OPTION_SCHEMA
 policy_option_schema(::CPUThreadsExecutionPolicy) = _CPU_POLICY_OPTION_SCHEMA
+policy_option_schema(::Type{MultiProcessExecutionPolicy}) = _MULTI_PROCESS_POLICY_OPTION_SCHEMA
+policy_option_schema(::MultiProcessExecutionPolicy) = _MULTI_PROCESS_POLICY_OPTION_SCHEMA
 policy_option_schema(::Type{CUDAExecutionPolicy}) = _CUDA_POLICY_OPTION_SCHEMA
 policy_option_schema(::CUDAExecutionPolicy) = _CUDA_POLICY_OPTION_SCHEMA
 policy_option_schema(::Type{GPUExecutionPolicy}) = _LEGACY_GPU_POLICY_OPTION_SCHEMA
@@ -480,6 +780,26 @@ function configuration_report(policy::CPUThreadsExecutionPolicy)
     )
 end
 
+function configuration_report(policy::MultiProcessExecutionPolicy)
+    resolved_threads = _resolved_cpu_threads(_composed_cpu_policy(policy))
+    return (
+        ConfigurationEntry(:threads, policy.threads, resolved_threads, :resolved,
+            policy.threads === :auto ? "inherited from Julia's default thread pool" :
+                                       "explicit logical-worker count, per rank",
+            :cpu_logical_workers),
+        # `:unresolved`, and it stays `:unresolved` in this report however the
+        # policy was constructed: the rank count in force is the
+        # COMMUNICATOR's, read at activation, and a report that resolved it
+        # from the field would be reporting the request as though it were the
+        # answer.
+        ConfigurationEntry(:ranks, policy.ranks, policy.ranks, :unresolved,
+            policy.ranks === :auto ?
+                "read from the MPI communicator at execution" :
+                "checked against the MPI communicator at execution",
+            :multi_process_communicator),
+    )
+end
+
 function configuration_report(policy::CUDAExecutionPolicy)
     return (
         ConfigurationEntry(:device, policy.device, policy.device, :unresolved,
@@ -509,5 +829,6 @@ configuration_report(::PlaceholderPolicy) = ()
 
 description(::Type{PlaceholderPolicy}) = "Placeholder policy with no executable backend."
 description(::Type{CPUThreadsExecutionPolicy}) = "Runs with a bounded number of CPU logical workers."
+description(::Type{MultiProcessExecutionPolicy}) = "Runs one process per MPI rank, each with a bounded number of CPU logical workers."
 description(::Type{CUDAExecutionPolicy}) = "Runs CUDA kernels with backend-specific launch configuration."
 description(::Type{GPUExecutionPolicy}) = "Deprecated CUDA execution-policy compatibility type."

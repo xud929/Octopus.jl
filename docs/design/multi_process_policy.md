@@ -1,0 +1,167 @@
+# The Multi-Process Execution Policy
+
+Owner-directed campaign, single-node scope: P processes, each with T CPU
+threads, for the tracking and strong-strong tasks. Phase 0
+([`../history/multi_process_phase0_2026_08_19.md`](../history/multi_process_phase0_2026_08_19.md))
+measured the transport and fixed the order:
+
+1. **Weak-strong allocation extraction** — landed 2026-09-04
+   ([`../history/weak_strong_allocation_2026_09_04.md`](../history/weak_strong_allocation_2026_09_04.md)).
+2. **Policy type and collective seam** — this note.
+3. **Weak-strong sharding** — the first consumers of the seam.
+4. **Strong-strong, solver by solver** — soft-Gaussian, PIC, gpic, spectral.
+
+Steps 3 and 4 add consumers; this note fixes the shapes they consume, so it
+states what is decided and what is deliberately still open.
+
+## What step 2 is, and what it is not
+
+It is the policy, the communicator handshake, and six collectives with a
+serial passthrough in core and an MPI implementation in an extension. It is
+not sharding: no task divides work across ranks yet. A task asked to run on
+more than one rank therefore **refuses**, naming step 3, rather than running
+whole on every rank and letting every rank write the same output file. That
+refusal is pinned, so the day step 3 removes it is a visible event rather
+than a silent one.
+
+At one rank the policy is `CPUThreadsExecutionPolicy` — the same partitions,
+the same folds, the same numbers. That is measured both ways: in the serial
+passthrough by the suite, and with MPI genuinely loaded under a launcher, in
+the lane-gated section that compares a one-rank MPI run against a
+single-process one coordinate by coordinate.
+
+## The policy and where its state lives
+
+`MultiProcessExecutionPolicy(; threads=:auto, ranks=:auto)` composes
+`CPUThreadsExecutionPolicy(threads)` for the per-rank core. `ranks` is
+`:auto` (accept the launcher's communicator) or an integer the run must match
+exactly; a mismatch is rejected, never adjusted.
+
+The resolved form is **not** a wrapper around `ResolvedCPUExecutionPolicy`.
+It is that type, with a slot:
+
+```julia
+struct ResolvedCPUExecutionPolicy <: AbstractResolvedExecutionPolicy
+    threads::Int
+    multi_process::Union{Nothing,MultiProcessRequest,MultiProcessContext}
+end
+```
+
+The reason is blast radius. Eight methods and `_cpu_worker_count()` dispatch
+on this concrete type, and the public `track!`, `Beam`, task and
+`configuration_report` paths all hand a resolved policy on positionally. A
+wrapper has to be unwrapped at every one of them; one missed site is a
+`MethodError` on a public entry, or worse, a silently different code path. A
+slot makes "at one rank nothing changes" true by construction rather than by
+argument — the object the inner code sees is the object it sees today, and
+`nothing` in the slot is the ordinary single-process case.
+
+**Resolution is pure.** `_resolve_execution_policy` records a
+`MultiProcessRequest` and touches no communicator: `configuration_report`
+resolves a policy just to describe it, and the strong-strong task resolves
+once per beam. Initialising MPI as a side effect of asking a question would
+be a trap.
+
+**Activation reads the communicator.** `_activate_resolved_policy!` asks the
+extension for one, reads the rank count and this rank's index *from it*,
+checks them against the request and against the launcher, and returns a
+policy whose slot holds a `MultiProcessContext`. `_with_execution_policy`
+scopes the activated policy, so every consumer sees the context. The receipt
+it records, `:multi_process_communicator`, carries the count it read, not the
+count the policy asked for: a configuration you set is not a configuration
+the code read.
+
+## The seam
+
+Six operations, each a core function with a serial passthrough and an
+extension method dispatching on `MPI.Comm`:
+
+| function | passthrough | MPI |
+|---|---|---|
+| `_mp_allsum!(A)` | `A` | Allgather, then fold the blocks into `A` in rank order |
+| `_mp_lane_fold!(lanes)` | `lanes` | the same, named apart because the shard contract differs |
+| `_mp_allminmax(lo, hi)` | `(lo, hi)` | `Allreduce` with `min` and `max` |
+| `_mp_bcast!(A, root)` / `_mp_bcast(v, root)` | `A` / `v` | `Bcast!` / `bcast` |
+| `_mp_barrier()` | `nothing` | `Barrier` |
+| `_mp_nranks()`, `_mp_rank()`, `_mp_is_root()` | `1`, `0`, `true` | read from the communicator |
+
+Every call records a `:multi_process_collective` receipt when an audit is
+active, carrying kind, element count and bytes, so a later step can price its
+own traffic instead of estimating it.
+
+Two decisions inside those cells matter more than the rest.
+
+**No `MPI_SUM`.** Every floating-point reduction is an Allgather followed by
+a fold in rank order. A library sum may associate as it likes and may pick a
+different tree for a different rank count, so the same run could give
+different last bits on different ranks, and a 2-rank run could disagree with
+a 4-rank one for reasons no physics explains. The ordered fold costs O(P) in
+message volume, which Phase 0 already priced at 0.10–0.35 s/turn for 2–8
+ranks and accepted. `_mp_allminmax` is the exception and is allowed to be a
+true all-reduce, because min and max associate freely — which is exactly why
+mesh and box sizing may use it without a determinism argument.
+
+**A duplicated communicator.** The extension dups `COMM_WORLD` once per
+process and caches it. Octopus's determinism argument assumes its own
+messages are the only ones in flight on its communicator; dup buys that, and
+caching it keeps `Comm_dup` — itself collective — from being called once per
+`execute!`.
+
+## Determinism, and what step 3 must choose
+
+Fixed-P bit-repeatability holds for any shard, because the cross-rank fold is
+rank-ordered.
+
+Cross-P bit-invariance is available, but only where the shard aligns with the
+partition a fold already uses. The CPU task path has three fixed, data-only
+fold shapes: the 64-chunk `_REDUCTION_CHUNKS` grid, the 16-chunk
+`_PIC_DEPOSIT_CHUNKS` grid, and the 4096-lane `_SLICE_FOLD_LANES` fold. A
+rank shard that is a union of whole chunks (contiguous, `P | 64`) or whole
+lanes (block-cyclic, `P | 4096`) keeps the fold's own order, and the gathered
+partials fold to the same bits at any P. Folds keyed by *member-list
+position* rather than global index — per-slice moments, slice centroids, the
+PIC deposit — cannot be aligned that way, because slice membership is
+per-turn data; those are the CPU/CUDA-parity tolerance class Phase 0 named.
+The two aligned rules are mutually exclusive distributions, so step 3 picks
+one and states which folds it buys.
+
+Three more things step 3 owns, listed here because the seam is shaped for
+them and they are easy to discover late: the counter RNG keys beam allocation
+and radiation on the **global** particle index, so a shard carries an offset
+or P > 1 draws different noise than P = 1; every length that enters physics
+(slice weights, luminosity scales) becomes a global count through
+`_mp_allsum!`; and any decision that gates a collective — a schedule
+predicate, a slicing choice — must be broadcast, because a rank that decides
+differently deadlocks its peers at the next collective.
+
+## Threading, output, and the launcher
+
+MPI is initialised at `:funneled`: Octopus issues collectives from the task
+driver on the main thread, never from inside `_run_logical_workers`. Step 3
+adds the tripwire when the first consumer lands; today no collective is
+reachable from a worker.
+
+Rank 0 owns the artifact and the console summaries — the run artifact is
+serial HDF5 and two ranks opening one path is corruption. Step 3 implements
+it; step 2's refusal is what keeps the question from arising early.
+
+A launcher that starts several ranks while Octopus holds no communicator is
+the trap this design most wants to avoid: every rank runs the whole job and
+writes the same output, silently. With the multi-process policy that throws.
+With an ordinary policy it warns once, because farming independent jobs with
+`mpiexec` is legitimate — the warning names both readings and the keyword
+that asks for the other one.
+
+## Packaging
+
+`MPI` is a `[weakdeps]` entry with the `OctopusMPIExt` extension; core never
+imports it. Every method in the extension **adds** to a core function rather
+than replacing one: the communicator opener dispatches on
+`Octopus.MPIBackendTag` against a core fallback typed `::Any`, and each
+collective dispatches on `MPI.Comm` against a core method typed `::Nothing`.
+An extension that redefined a method its parent had already defined for the
+same signature would fail to precompile.
+
+The environment question — which MPI runtime an Octopus process carries, and
+how that interacts with HDF5 — is measured and decided in
+[`../history/mpi_environment_2026_09_04.md`](../history/mpi_environment_2026_09_04.md).

@@ -347,6 +347,16 @@ function _resolve_execution_policy(policy::Union{Nothing,AbstractExecutionPolicy
 	if policy isa CPUThreadsExecutionPolicy
 		return ResolvedCPUExecutionPolicy(_resolved_cpu_threads(policy))
 	end
+	if policy isa MultiProcessExecutionPolicy
+		# Resolution stays PURE -- it records the REQUEST and touches no
+		# communicator. `configuration_report(policy, rep)` resolves a policy
+		# only to describe it, and the strong-strong task resolves once per
+		# beam; initialising MPI from any of those would be a side effect of
+		# asking a question.
+		return ResolvedCPUExecutionPolicy(
+			_resolved_cpu_threads(_composed_cpu_policy(policy)),
+			MultiProcessRequest(policy.ranks))
+	end
 	cuda_policy = policy isa GPUExecutionPolicy ? _legacy_cuda_policy(policy) : policy
 	cuda_policy isa CUDAExecutionPolicy || throw(ArgumentError(
 		"unsupported execution policy $(typeof(policy))"))
@@ -361,7 +371,81 @@ function _resolve_execution_policy(policy::Union{Nothing,AbstractExecutionPolicy
 end
 
 function _activate_resolved_policy!(policy::ResolvedCPUExecutionPolicy)
-	return policy
+	request = policy.multi_process
+	if !(request isa MultiProcessRequest)
+		_warn_launcher_without_policy()
+		return policy
+	end
+	return ResolvedCPUExecutionPolicy(policy.threads,
+	                                  _open_multi_process_context(request, policy.threads))
+end
+
+"""
+Warn once when a launcher started several ranks and the policy in force is
+an ordinary single-process one.
+
+`mpiexec -n 4 julia script.jl` with a default policy is a legitimate way to
+farm four INDEPENDENT jobs, so this is not an error. It is also exactly what
+someone expecting a divided run would type, and in that reading Octopus is
+tracking the whole beam four times and four processes are writing one output
+path. The warning names both readings and the keyword that asks for the other
+one. `maxlog` and a content-keyed id because activation happens once per
+`execute!`, and a warning that repeats per call is silence with extra steps.
+"""
+function _warn_launcher_without_policy()
+	launcher = _launcher_rank_count()
+	launcher === nothing && return nothing
+	launcher[2] > 1 || return nothing
+	@warn "$(launcher[1])=$(launcher[2]): this process is one of $(launcher[2]) \
+	       launched ranks, but the execution policy in force is a \
+	       single-process one, so every rank runs the WHOLE job and every \
+	       rank writes the same output paths. That is correct for farming \
+	       independent jobs and wrong for one divided job; \
+	       MultiProcessExecutionPolicy(ranks=$(launcher[2])) asks for the \
+	       divided one." _id = :octopus_launcher_without_multi_process maxlog = 1
+	return nothing
+end
+
+"""
+Turn a `MultiProcessRequest` into the [`MultiProcessContext`](@ref) the run
+actually has: ask the extension for a communicator, read the rank count and
+this process's rank FROM IT, check them against the request and against the
+launcher, and record the receipt that proves which was consulted.
+"""
+function _open_multi_process_context(request::MultiProcessRequest, threads::Int)
+	comm = _mp_open_communicator(MPIBackendTag())
+	nranks, rank, resolved_by = if comm === nothing
+		(1, 0, :serial_passthrough)
+	else
+		(_mp_communicator_size(comm), _mp_communicator_rank(comm), :mpi_communicator)
+	end
+	if comm === nothing
+		# Loud beats silent: `mpiexec -n 4` without `MPI` loaded would give
+		# four processes that each believe they are alone, run the whole job
+		# four times, and write one output file four times over.
+		launcher = _launcher_rank_count()
+		if launcher !== nothing && launcher[2] > 1
+			throw(ArgumentError(
+				"$(launcher[1])=$(launcher[2]) says this process is one of " *
+				"$(launcher[2]) ranks, but no MPI communicator is available: " *
+				"Octopus would run the whole job on every rank and every rank " *
+				"would write the same output. Load MPI (`using MPI`, which " *
+				"activates OctopusMPIExt) in package mode, or launch a single " *
+				"process."))
+		end
+	end
+	if request.ranks isa Int && request.ranks != nranks
+		throw(ArgumentError(
+			"MultiProcessExecutionPolicy(ranks=$(request.ranks)) does not match " *
+			"the communicator in force, which has $(nranks) rank(s)" *
+			(comm === nothing ?
+				" (no MPI communicator: this process is its own communicator of one)" :
+				"") * "; requests are matched exactly, never adjusted."))
+	end
+	_record_execution!(:multi_process_communicator, CPUThreadsBackend,
+	                   (nranks=nranks, rank=rank, requested_ranks=request.ranks,
+	                    resolved_by=resolved_by, threads=threads))
+	return MultiProcessContext(comm, nranks, rank, request.ranks, resolved_by)
 end
 
 function _activate_resolved_policy!(policy::ResolvedCUDAExecutionPolicy)
@@ -372,17 +456,27 @@ function _activate_resolved_policy!(policy::ResolvedCUDAExecutionPolicy)
 end
 
 function _with_execution_policy(f::F, policy::AbstractResolvedExecutionPolicy) where {F}
-	_activate_resolved_policy!(policy)
-	return _with_resolved_policy(f, policy)
+	# The ACTIVATED policy is what gets scoped: activation is where a
+	# multi-process request becomes the context carrying the live
+	# communicator, and every consumer reads that context through
+	# `_ACTIVE_RESOLVED_POLICY`. For every other policy this is the object
+	# that went in.
+	activated = _activate_resolved_policy!(policy)
+	return _with_resolved_policy(f, activated)
 end
 
 function configuration_report(policy::AbstractExecutionPolicy, rep::Phase6DRep)
 	resolved = _resolve_execution_policy(policy, rep)
 	if resolved isa ResolvedCPUExecutionPolicy
-		return (ConfigurationEntry(:threads,
-			policy isa CPUThreadsExecutionPolicy ? policy.threads : resolved.threads,
+		threads_entry = ConfigurationEntry(:threads,
+			policy isa Union{CPUThreadsExecutionPolicy,MultiProcessExecutionPolicy} ?
+				policy.threads : resolved.threads,
 			resolved.threads, :resolved, "validated for CPU storage",
-			:cpu_logical_workers),)
+			:cpu_logical_workers)
+		policy isa MultiProcessExecutionPolicy || return (threads_entry,)
+		return (threads_entry,
+			ConfigurationEntry(:ranks, policy.ranks, policy.ranks, :unresolved,
+				"read from the MPI communicator at execution", :multi_process_communicator))
 	end
 	requested = policy isa GPUExecutionPolicy ? _legacy_cuda_policy(policy) : policy
 	status = policy isa GPUExecutionPolicy ? :deprecated : :resolved
