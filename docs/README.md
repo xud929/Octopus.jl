@@ -321,6 +321,11 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   and why, the per-fix measurements with their bitwise-parity digests, and the
   machine-level findings — idle-thread spin, GC share, and why a pool wider
   than the data's parallelism costs rather than pays),
+  [`multi_process_tracking_scaling_2026_09_04.md`](history/multi_process_tracking_scaling_2026_09_04.md)
+  (the rank-by-thread scaling the campaign exists for: processes beat threads
+  1.9x at the same width, 61.9x at 64 ranks x 2 threads, binding worth 4% in
+  speed but cutting the rank spread 35% to 5%, and why no code change
+  followed),
   [`multi_process_step3a_2026_09_04.md`](history/multi_process_step3a_2026_09_04.md)
   (a tracking task divided across ranks: the chunk-aligned shard rule and why
   it is derived rather than stored, global-index keying for the random

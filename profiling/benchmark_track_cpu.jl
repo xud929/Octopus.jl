@@ -46,11 +46,24 @@ Profile.Allocs' top sites by innermost Octopus frame, then exits. Run it at a
 reduced point (OCTOPUS_BENCH_N_MACRO=16384); it prints no timing and no digest,
 and it measures `track!` of the runtime line directly, so the task's per-turn
 bookkeeping (schedules, observers, the artifact) is outside the number.
+OCTOPUS_BENCH_MPI=1 runs the same fixed point divided across MPI ranks. It
+requires PACKAGE mode -- `using Octopus`, not `include("src/Octopus.jl")` --
+because a package extension activates in no other mode, and without
+OctopusMPIExt a process under a launcher has no communicator and refuses
+rather than quietly running the whole job on every rank. So this mode needs
+an environment that carries both Octopus and MPI, and the script switches its
+own load preamble accordingly.
 =#
-if !isdefined(Main, :Octopus)
-    include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+const BENCH_MPI = get(ENV, "OCTOPUS_BENCH_MPI", "0") == "1"
+if BENCH_MPI
+    @eval using Octopus
+    @eval using MPI
+else
+    if !isdefined(Main, :Octopus)
+        include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+    end
+    @eval using .Octopus
 end
-using .Octopus
 using Printf
 using LinearAlgebra
 using Profile          # the OCTOPUS_BENCH_ALLOC_PROFILE=1 mode below
@@ -61,7 +74,18 @@ const TURNS   = env_int("OCTOPUS_BENCH_TURNS", 20)
 const WINDOWS = env_int("OCTOPUS_BENCH_WINDOWS", 3)
 
 set_global_rng!(seed = 123456789, method = :philox)
-policy = CPUThreadsExecutionPolicy()
+
+# The macroparticle count stays GLOBAL under MPI: `Beam(N_MACRO, policy, ...)`
+# hands each rank its chunk-aligned slice, and a P-rank run tracks the same
+# beam a 1-rank run does, bit for bit
+# (docs/history/multi_process_step3a_2026_09_04.md). Each rank prints its own
+# timing tagged with its rank; the slowest rank is the turn's wall time, so a
+# reader takes the max rather than rank 0's line.
+#
+#     OCTOPUS_BENCH_MPI=1 mpiexec -n 8 julia --startup-file=no \
+#         --threads=8 profiling/benchmark_track_cpu.jl
+#
+policy = BENCH_MPI ? MultiProcessExecutionPolicy() : CPUThreadsExecutionPolicy()
 
 # Physics literals from test/examples/weak_strong_tracking.jl (weak proton
 # beam, EIC crab crossing, 7-slice Gaussian strong beam, chromaticity,
@@ -166,8 +190,17 @@ function coordinate_digest(beams...)
     return h
 end
 
-@printf("WS-BENCH n_macro=%d turns/window=%d windows=%d julia_threads=%d\n",
-        N_MACRO, TURNS, WINDOWS, Threads.nthreads(:default))
+# Read from the communicator, not from the policy field, and read once.
+const BENCH_RANK, BENCH_RANKS = let
+    resolved = Octopus._resolve_execution_policy(policy, beam.rep)
+    Octopus._with_execution_policy(resolved) do
+        (Octopus._mp_rank(), Octopus._mp_nranks())
+    end
+end
+
+@printf("WS-BENCH rank=%d ranks=%d n_macro=%d local_n=%d turns/window=%d windows=%d julia_threads=%d\n",
+        BENCH_RANK, BENCH_RANKS, N_MACRO, length(beam.rep), TURNS, WINDOWS,
+        Threads.nthreads(:default))
 
 execute!(task, beam; turns = 2)   # JIT + schedule warm-up
 
@@ -239,15 +272,19 @@ for w in 1:WINDOWS
     gc_s = (gc1.total_time - gc0.total_time) / 1e9
     nthreads = Threads.nthreads(:default)
     alloc = (gc1.allocd - gc0.allocd + gc1.total_allocd - gc0.total_allocd) / 2^30
-    @printf("  window %d: %.4f s/turn   gc %.1f%%   util %.1f%%   alloc %.3f GiB/turn%s\n",
-            w, dt / TURNS, 100 * gc_s / dt, 100 * cpu / (dt * nthreads), alloc / TURNS,
+    @printf("  rank %d window %d: %.4f s/turn   gc %.1f%%   util %.1f%%   alloc %.3f GiB/turn%s\n",
+            BENCH_RANK, w, dt / TURNS, 100 * gc_s / dt, 100 * cpu / (dt * nthreads), alloc / TURNS,
             get(ENV, "JULIA_THREAD_SLEEP_THRESHOLD", "") == "0" ? "" :
                 "   (idle threads spinning: util inflated)")
     push!(times, dt / TURNS)
 end
 sorted = sort(times)
 median = sorted[cld(length(sorted), 2)]
-@printf("WS-RESULT threads=%d n_macro=%d s_per_turn_median=%.4f min=%.4f max=%.4f\n",
-        Threads.nthreads(:default), N_MACRO, median, first(sorted), last(sorted))
-@printf("WS-DIGEST 0x%016x  (after %d total turns)\n",
-        coordinate_digest(beam), 2 + WINDOWS * TURNS)
+@printf("WS-RESULT rank=%d ranks=%d threads=%d n_macro=%d s_per_turn_median=%.4f min=%.4f max=%.4f\n",
+        BENCH_RANK, BENCH_RANKS, Threads.nthreads(:default), N_MACRO,
+        median, first(sorted), last(sorted))
+# Per-rank digest: it covers this rank's shard, so it is a "did the physics
+# run" check rather than the cross-rank identity, which the suite pins
+# properly by gathering the shards.
+@printf("WS-DIGEST rank=%d 0x%016x  (after %d total turns)\n",
+        BENCH_RANK, coordinate_digest(beam), 2 + WINDOWS * TURNS)

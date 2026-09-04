@@ -148,6 +148,21 @@ apertures -- is not divided yet, so a task carrying any of it refuses at more
 than one rank, and a strong-strong task refuses outright
 (`design/multi_process_policy.md`, campaign step 3a of 4).
 
+Measured on the 64-core, 128-thread box at the production point
+(`history/multi_process_tracking_scaling_2026_09_04.md`): ranks beat threads
+by 1.9x at the same width, 64 ranks of one thread against one rank of 64.
+The best measured configuration is **64 ranks x 2 threads**, 61.9x over one
+rank of one thread and 2.6x better than any single-process configuration.
+Bind to cores: it costs nothing in speed and cuts the spread between the
+fastest and slowest rank from 35% to 5%, and the slowest rank is what a turn
+costs. Do not bind to hardware threads, which oversubscribes a rank that runs
+more than one Julia thread.
+
+```bash
+OCTOPUS_BENCH_MPI=1 mpiexec -bind-to core -n 64 \
+    julia --project=<env with MPI> --threads=2 profiling/benchmark_track_cpu.jl
+```
+
 Use `CUDAExecutionPolicy(device=nothing,
 launch=CUDALaunchConfig(threads=256, blocks=:auto))` for CUDA storage.
 `device=nothing` resolves from particle storage. Fused tracking resolves
