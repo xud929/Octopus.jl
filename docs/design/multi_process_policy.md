@@ -173,6 +173,33 @@ runs code Octopus cannot reason about: task actions, line hooks, apertures
 (their per-particle loss rows key on the local index), and per-particle
 observers. Which observers are per-particle is declared beside each observer.
 
+## Step 3c: the output that cannot be reduced
+
+An aperture writes a row per lost particle and a snapshot observer a row per
+particle per turn. Those cannot be reduced, only moved, so the seam gains a
+seventh operation: `_mp_gather_rows` collects every rank's rows onto rank 0 in
+rank order, which is global particle order. Rank 0 only, because rank 0 owns
+the file.
+
+The rows carry the GLOBAL particle id. The aperture's slot table has one column
+per particle the rank holds, and its recording path was indexed by the id,
+which step 3a made global; the two differ by the shard offset the tracking
+context already carries, so the slot is now `particle_id - ctx.index_offset`
+while the file gets the global id back.
+
+One rule this made explicit, at the cost of a defect that reached a commit:
+**a collective outside the execution-policy scope is a silent no-op.** The
+post-run accounting in `execute!` ran after the scope closed, so the gather saw
+a communicator of one and returned only rank 0's rows -- and so had step 3b's
+loss-summary reduction, at the same spot, which was therefore never reached by
+`execute!` at all
+([`../history/multi_process_step3c_2026_09_04.md`](../history/multi_process_step3c_2026_09_04.md)).
+
+Only actions are refused now. An action is a callback the user wrote, handed
+the rep this rank holds, and Octopus cannot know whether it means to see a
+shard. Line observers are Octopus's own and divide, so the refusal
+distinguishes a line carrying an observer from one carrying an action.
+
 ## The CPU, MPI and CUDA consistency statement
 
 Three execution modes, and the relation between them is asserted in two

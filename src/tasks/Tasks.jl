@@ -465,8 +465,13 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     runtime_entries = _runtime_entries(task, rep)
     runtime_elems = _physics_line(runtime_entries)
     policy = _resolve_execution_policy(task.policy, rep)
+    # Activated ONCE per call. Activation is what opens the communicator and
+    # records the receipt naming it, so a second activation would record a
+    # second receipt for one run; the scope is then entered twice, around the
+    # tracking and around the accounting that follows it.
+    active = _activate_resolved_policy!(policy)
     result = try
-        _with_execution_policy(policy) do
+        _with_resolved_policy(active) do
             # Once per call, inside the policy scope: deriving the shard is a
             # collective, and every fold inside the run reads it from here
             # instead of paying for its own.
@@ -482,6 +487,13 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
         # success, so a blown-up run left no loss file at all (audit part 7,
         # T6). The stored turn is deliberately NOT advanced, matching the
         # docstring above.
+        #
+        # This runs OUTSIDE the policy scope, which is what makes it safe: an
+        # exception is in flight, the ranks may not agree on having thrown,
+        # and a collective issued by some of them would hang the rest. Outside
+        # the scope every collective is its serial passthrough, so a crashed
+        # run flushes what THIS rank saw -- the information that is actually
+        # available -- rather than deadlocking trying to agree.
         #
         # Best-effort, and that is the whole point: an exception is already in
         # flight, and a failure of this flush must not REPLACE the error that
@@ -519,18 +531,31 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
         rethrow()
     end
     task.next_turn[] = next_turn
-    summary = _global_loss_summary(_task_loss_summary(task, rep))
-    # The console-quiet rule: with an artifact attached the accounting goes
-    # into its /losses group (written just below), so the summary is "on file".
-    _report_losses(task, rep, summary, task.artifact !== nothing)
-    if task.artifact !== nothing
-        # Success path: /losses is rewritten whole from the cumulative record
-        # (the write_loss_record idempotence rule), then the artifact closes.
-        # A failure HERE is the failure -- an output that cannot be written
-        # must raise, the task-observer rule.
-        _ra_write_losses!(task.artifact, task.loss_record[],
-                          _aperture_s_positions(task.elements), summary)
-        finalize_run_artifact!(task.artifact)
+    # INSIDE the policy scope, and that is not decoration: the accounting
+    # below reduces and gathers across the ranks, and outside the scope those
+    # collectives see a communicator of one -- so every rank would report and
+    # write its own shard's answer as the beam's, silently. Found by the
+    # step-3c gather returning only rank 0's loss rows; it applies equally to
+    # the loss summary, which step 3b globalized here and which was therefore
+    # not reached (docs/history/multi_process_step3c_2026_09_04.md).
+    _with_resolved_policy(active) do
+        _with_shard(_mp_resolve_shard(length(rep))) do
+            summary = _global_loss_summary(_task_loss_summary(task, rep))
+            # The console-quiet rule: with an artifact attached the accounting
+            # goes into its /losses group (written just below), so the summary
+            # is "on file".
+            _report_losses(task, rep, summary, task.artifact !== nothing)
+            if task.artifact !== nothing
+                # Success path: /losses is rewritten whole from the cumulative
+                # record (the write_loss_record idempotence rule), then the
+                # artifact closes. A failure HERE is the failure -- an output
+                # that cannot be written must raise, the task-observer rule.
+                _ra_write_losses!(task.artifact, task.loss_record[],
+                                  _aperture_s_positions(task.elements), summary,
+                                  first(_mp_current_shard(length(rep))))
+                finalize_run_artifact!(task.artifact)
+            end
+        end
     end
     return result
 end
@@ -627,6 +652,11 @@ have. Declared beside the refusal that reads it, and specialised beside each
 observer that answers `true`.
 """
 _observer_is_per_particle(::Any) = false
+
+"""Whether the line carries an ACTION hook -- an arbitrary callback over the
+rep it is handed. Line OBSERVERS are Octopus's own and divide; actions are the
+user's and cannot be reasoned about."""
+_has_line_actions(entries::Tuple) = any(e -> e isa LineActionEntry, entries)
 _task_has_per_particle_observer(observers) =
     any(o -> _observer_is_per_particle(_as_scheduled_observer(o).observer),
         _hook_tuple(observers))
@@ -635,29 +665,27 @@ _task_has_per_particle_observer(observers) =
 Refuse, at more than one rank, the parts of a tracking task that are still
 not divided.
 
-Tracking is per-particle work and needs no communication to divide (step 3a).
-The diagnostics that reduce the beam to SCALARS -- moment observers, beam
-position monitors, the loss counts -- now reduce across the ranks and are
-written by rank 0 (step 3b). What is left is everything that needs the whole
-beam's PARTICLES in one place, or that runs code Octopus cannot reason about:
+Tracking divides by holding a shard (step 3a). The diagnostics that reduce the
+beam to SCALARS divide by reducing across the ranks (step 3b). The ones that
+emit a row per PARTICLE -- aperture loss rows, coordinate snapshots -- divide
+by gathering onto rank 0, which owns the file (step 3c).
 
-  * task actions, which are arbitrary callbacks over the rep handed to them;
-  * line hooks, same;
-  * apertures, whose per-particle loss rows key on the index the rank sees;
-  * per-particle observers, which record a row per particle.
+What is left is what Octopus cannot reason about: an ACTION is a callback the
+user wrote, handed the rep this rank holds. Octopus cannot know whether it
+means to see a shard, and a callback that computes a global quantity from one
+would be quietly wrong. So actions are refused rather than guessed at, and a
+user who wants one under a divided run has the rank accessors to write it
+against and can say so by dividing the work themselves.
 
-Each would need a gather the collective seam does not have, and each is
-refused rather than left to report a rank's own answer as the beam's.
+Line OBSERVERS are Octopus's own and divide; only line ACTIONS are refused.
 """
 function _reject_unsharded_tracking_features(task, runtime_entries)
     _mp_nranks() > 1 || return nothing
     blocked = String[]
-    isempty(task.actions) || push!(blocked, "task actions (arbitrary callbacks over the beam handed to them)")
-    _has_line_hooks(runtime_entries) && push!(blocked, "line hooks")
-    isempty(_aperture_s_positions(task.elements)) ||
-        push!(blocked, "apertures (their per-particle loss rows key on the local index)")
-    _task_has_per_particle_observer(task.observers) &&
-        push!(blocked, "per-particle observers (one row per particle, which needs a gather)")
+    isempty(task.actions) ||
+        push!(blocked, "task actions")
+    _has_line_actions(runtime_entries) &&
+        push!(blocked, "line actions")
     isempty(blocked) && return nothing
     throw(ArgumentError(
         "this TrackingTask carries " * join(blocked, ", ", " and ") *

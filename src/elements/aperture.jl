@@ -151,14 +151,16 @@ were lost, and wants to know *which* particles those were -- which the row index
 no longer says once the never-lost rows are dropped. So `particle_id` becomes an
 explicit column here, and nowhere earlier.
 """
-function loss_records(record::LossRecord)
+function loss_records(record::LossRecord; offset::Integer=0)
     slots = record.slots
     slots === nothing && throw(ArgumentError(
         "this loss record holds counters only; construct it with a log path to " *
         "record per-particle losses"))
     host = Array(slots)
-    lost = [i for i in axes(host, 2) if host[_LOSS_ROW_ELEMENT, i] != 0]
-    col(r) = [host[r, i] for i in lost]
+    # The slot index is this rank's; `offset` turns it back into the global
+    # particle it names. Zero, and therefore invisible, in a single-process run.
+    lost = [i + Int(offset) for i in axes(host, 2) if host[_LOSS_ROW_ELEMENT, i] != 0]
+    col(r) = [host[r, i - Int(offset)] for i in lost]
     return (particle_id=lost,
             turn=Int.(col(_LOSS_ROW_TURN)),
             element_id=Int.(col(_LOSS_ROW_ELEMENT)),
@@ -315,15 +317,20 @@ end
     # The coordinates are written *before* the kill overwrites them; that is the
     # whole reason to log here rather than to reconstruct afterwards. What was
     # lost is not recoverable from a beam of NaN.
+    # `particle_id` is the GLOBAL index -- that is what keys the counter RNG
+    # and what a reader wants in the file -- while `slots` has one column per
+    # particle THIS RANK holds. The context carries the difference, and it is
+    # zero in every single-process run.
+    slot = particle_id - ctx.index_offset
     @inbounds begin
-        slots[_LOSS_ROW_TURN, particle_id] = ctx.turn
-        slots[_LOSS_ROW_ELEMENT, particle_id] = id
-        slots[_LOSS_ROW_X + 0, particle_id] = x
-        slots[_LOSS_ROW_X + 1, particle_id] = px
-        slots[_LOSS_ROW_X + 2, particle_id] = y
-        slots[_LOSS_ROW_X + 3, particle_id] = py
-        slots[_LOSS_ROW_X + 4, particle_id] = z
-        slots[_LOSS_ROW_X + 5, particle_id] = pz
+        slots[_LOSS_ROW_TURN, slot] = ctx.turn
+        slots[_LOSS_ROW_ELEMENT, slot] = id
+        slots[_LOSS_ROW_X + 0, slot] = x
+        slots[_LOSS_ROW_X + 1, slot] = px
+        slots[_LOSS_ROW_X + 2, slot] = y
+        slots[_LOSS_ROW_X + 3, slot] = py
+        slots[_LOSS_ROW_X + 4, slot] = z
+        slots[_LOSS_ROW_X + 5, slot] = pz
     end
     return nothing
 end

@@ -144,9 +144,11 @@ holding a shard of the beam: `Beam(n, policy, ...)` takes `n` as the WHOLE
 beam and hands each rank its own contiguous, chunk-aligned slice, and a
 divided run reproduces the undivided one bit for bit. Diagnostics that reduce the beam to scalars -- moment observers, beam position
 monitors, loss counts -- reduce across the ranks, and rank 0 writes the one
-output file. Still refused at more than one rank: task actions, line hooks,
-apertures and per-particle observers, each of which needs the whole beam's
-particles in one place; and a strong-strong task refuses outright
+output file. Per-particle output -- aperture loss rows, coordinate snapshots -- carries the
+global particle id and is gathered onto rank 0, which writes the one file.
+Still refused at more than one rank: task and line ACTIONS, which are
+callbacks Octopus cannot reason about; and a strong-strong task refuses
+outright
 (`design/multi_process_policy.md`, campaign step 3a of 4).
 
 Measured on the 64-core, 128-thread box at the production point

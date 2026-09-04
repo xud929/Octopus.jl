@@ -6865,6 +6865,33 @@ end
     @test Octopus._observer_is_per_particle(CoordinateSnapshotObserver(name="s"))
 end
 
+@testset "Per-particle output carries the global particle id and gathers to one file" begin
+    # Multi-process step 3c. At one rank the gather is the identity and the
+    # offset is zero, so everything here is what it was; the divided halves
+    # are measured under a launcher.
+    rows = [Float64(10i + j) for i in 1:5, j in 1:3]
+    @test Octopus._mp_gather_rows(rows) === rows      # passthrough, no copy
+
+    # The loss record's slot index is the rank's; the offset turns it back
+    # into the particle it names, and zero leaves it alone.
+    n = 40
+    record = Octopus.LossRecord(zeros(Int, 1), zeros(Float64, 8, n), ["ap"])
+    record.slots[Octopus._LOSS_ROW_ELEMENT, 7] = 1.0
+    record.slots[Octopus._LOSS_ROW_ELEMENT, 31] = 1.0
+    @test Octopus.loss_records(record).particle_id == [7, 31]
+    @test Octopus.loss_records(record; offset=128).particle_id == [135, 159]
+    # The other columns must follow the same rows, not shift with the label.
+    record.slots[Octopus._LOSS_ROW_TURN, 31] = 5.0
+    @test Octopus.loss_records(record; offset=128).turn ==
+          Octopus.loss_records(record).turn == [0, 5]
+
+    # An action is the one hook left that cannot be divided, and the line
+    # carrying one is distinguished from a line carrying an observer.
+    @test Octopus._has_line_actions((Octopus.LineActionEntry(identity, 1),))
+    @test !Octopus._has_line_actions((Octopus.LineObserverEntry(nothing, 1),))
+    @test !Octopus._has_line_actions(())
+end
+
 @testset "The multi-process policy rejects what it cannot honour" begin
     # Constructor-time rejections: shape errors, caught before anything runs.
     @test_throws ArgumentError MultiProcessExecutionPolicy(ranks=0)
@@ -7041,6 +7068,28 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             for (a, b) in zip(one_rank, two_rank)
                 @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
             end
+
+            # --- step 3c: per-particle output gathers onto rank 0 --------
+            #
+            # An aperture writes a row per lost particle and a snapshot a row
+            # per particle per turn. Neither can be reduced, only moved, so
+            # both go through the seam's gather and land in rank 0's file
+            # carrying the GLOBAL particle id. The comparison is the set of
+            # ids the file records, sorted, so it is about WHICH particles
+            # were recorded rather than about the order ranks arrived in.
+            tagged(out, tag) = [strip(split(line, tag)[2]) for line in split(out, '\n')
+                                if startswith(line, tag)]
+            for tag in ("MPI-SNAPIDS ", "MPI-LOSSIDS ", "MPI-LOSSSUM ")
+                one, two = tagged(out1, tag), tagged(out2, tag)
+                @test length(one) == 1        # only rank 0 reports, and it does
+                @test one == two              # and a divided run recorded the same
+            end
+            # Anti-vacuity: the aperture really killed a useful fraction, and
+            # the snapshot really recorded its particles over both turns.
+            @test parse(Int, split(first(tagged(out1, "MPI-LOSSIDS ")))[1]) > 10
+            @test occursin("particles=$(_mpi_check_global_n())",
+                           first(tagged(out1, "MPI-LOSSSUM ")))
+            @test length(split(first(tagged(out1, "MPI-SNAPIDS ")), ",")) == 24
 
             # The shard rule itself, as the ranks report having applied it.
             offsets = [parse(Int, match(r"offset=(\d+)", line).captures[1])

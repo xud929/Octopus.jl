@@ -321,6 +321,11 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   and why, the per-fix measurements with their bitwise-parity digests, and the
   machine-level findings — idle-thread spin, GC share, and why a pool wider
   than the data's parallelism costs rather than pays),
+  [`multi_process_step3c_2026_09_04.md`](history/multi_process_step3c_2026_09_04.md)
+  (per-particle output across ranks: a gather in the seam, the global particle
+  id restored from the shard offset, and the defect it exposed -- a collective
+  outside the execution-policy scope is a silent no-op, which had left step
+  3b's loss reduction unreached),
   [`multi_process_step3b_2026_09_04.md`](history/multi_process_step3b_2026_09_04.md)
   (dividing the diagnostics, and the measured decision behind them: folding
   the moment reductions on the chunk grid would buy cross-rank bitwise

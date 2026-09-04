@@ -89,4 +89,36 @@ Octopus._mp_bcast_scalar_impl(value, root::Int, comm::MPI.Comm) =
 
 Octopus._mp_barrier_impl(comm::MPI.Comm) = (MPI.Barrier(comm); nothing)
 
+"""
+Gather rows onto rank 0 in rank order.
+
+Column by column, because the rows are stored column-major and a per-column
+`Gatherv!` needs no transposition on either side. The counts are all-reduced
+first so every rank knows the layout and only rank 0 allocates the result.
+"""
+function Octopus._mp_gather_rows_impl(rows::AbstractMatrix, comm::MPI.Comm)
+    nranks = Int(MPI.Comm_size(comm))
+    nranks == 1 && return rows
+    rank = Int(MPI.Comm_rank(comm))
+    root = 0
+    ncols = size(rows, 2)
+    counts = zeros(Cint, nranks)
+    counts[rank + 1] = Cint(size(rows, 1))
+    MPI.Allreduce!(counts, +, comm)
+    total = Int(sum(counts))
+    T = eltype(rows)
+    out = rank == root ? Matrix{T}(undef, total, ncols) : Matrix{T}(undef, 0, ncols)
+    for j in 1:ncols
+        send = collect(@view rows[:, j])
+        if rank == root
+            recv = Vector{T}(undef, total)
+            MPI.Gatherv!(send, MPI.VBuffer(recv, counts), root, comm)
+            @inbounds out[:, j] = recv
+        else
+            MPI.Gatherv!(send, nothing, root, comm)
+        end
+    end
+    return out
+end
+
 end

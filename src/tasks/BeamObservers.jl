@@ -866,18 +866,27 @@ prepare_line_observer!(observer::CoordinateSnapshotObserver, schedule, turns, fi
 _observer_is_per_particle(::CoordinateSnapshotObserver) = true
 
 function observe!(observer::CoordinateSnapshotObserver, ctx::TrackingContext, rep)
-    npart = observer.npart === nothing ? length(rep) : observer.npart
-    npart <= length(rep) || throw(ArgumentError(
-        "CoordinateSnapshotObserver npart $(npart) exceeds particle count $(length(rep))"))
+    # `npart` counts the WHOLE beam, as it always has: under a divided run
+    # each rank contributes the part of `1:npart` its shard covers, and the
+    # rows carry the global particle id. At one rank the offset is zero, the
+    # shard is the beam, and this is what it was.
+    offset, global_n = _mp_current_shard(length(rep))
+    npart = observer.npart === nothing ? global_n : observer.npart
+    npart <= global_n || throw(ArgumentError(
+        "CoordinateSnapshotObserver npart $(npart) exceeds particle count $(global_n)"))
     observer.artifact_key === nothing && throw(ArgumentError(
         "CoordinateSnapshotObserver must be prepared (artifact-bound) before tracking"))
-    rows = Matrix{Float64}(undef, npart, 8)
+    nlocal = clamp(npart - offset, 0, length(rep))
+    rows = Matrix{Float64}(undef, nlocal, 8)
     rows[:, 1] .= Float64(ctx.turn)
-    rows[:, 2] .= Float64.(1:npart)
+    rows[:, 2] .= Float64.(offset .+ (1:nlocal))
     for (j, col) in enumerate((rep.x, rep.px, rep.y, rep.py, rep.z, rep.pz))
-        rows[:, 2 + j] = Float64.(Array(col)[1:npart])
+        rows[:, 2 + j] = Float64.(Array(col)[1:nlocal])
     end
-    _ra_push_probe_rows!(observer.artifact_ref, observer.artifact_key, rows)
+    # Every rank gathers -- it is a collective -- and rank 0, which holds the
+    # file, is the one whose push writes anything.
+    _ra_push_probe_rows!(observer.artifact_ref, observer.artifact_key,
+                         _mp_gather_rows(rows))
     return nothing
 end
 

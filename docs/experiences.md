@@ -195,6 +195,23 @@ teaches something reusable, it lands here (dated), and the full record goes to
   caught by the full gate, not the edit. Grep the whole `src/` tree for the
   old name or arity (Measured Lesson 12 in `comprehensive_audit.md`).
 
+## A collective outside its scope is a silent no-op
+
+- The post-run accounting in `execute!` ran after the execution-policy block
+  closed, where every collective sees a communicator of one and quietly does
+  nothing. Each rank therefore reported and wrote its own shard's answer as
+  the beam's (2026-09-04, found in step 3c, present in committed step 3b).
+  Nothing errored, nothing warned, and each wrong number looked plausible --
+  42 loss rows became 42, 17 and 9 at one, two and four ranks. The shape to
+  watch for: an operation whose correctness depends on ambient scope, called
+  from a place that has left it.
+- The test that should have caught it did not, because it called the reduction
+  INSIDE a scope it established itself. A test that sets up the context the
+  code under test is supposed to inherit is testing the function, not the
+  route to it. The fix was to assert on the artifact the run WROTE rather than
+  on a value computed beside it -- the same "assert what the run recorded"
+  rule, applied to a reduction rather than to a configuration.
+
 ## The attractive uniformity is sometimes the wrong one
 
 - Making a reduction uniform across rank counts looked strictly good: fold the

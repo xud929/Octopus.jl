@@ -752,6 +752,28 @@ function _reject_unsharded_multi_process(what::AbstractString)
         "the same output. Run one rank, or use CPUThreadsExecutionPolicy."))
 end
 
+"""
+    _mp_gather_rows(rows) -> Matrix
+
+Collect every rank's rows onto rank 0, in rank order, and return them there;
+the other ranks get an empty matrix with the same columns.
+
+The seventh collective, and the one that is not a reduction. Everything above
+turns the beam into scalars, which is why the first six sufficed; per-particle
+output cannot be reduced, only moved. Losses and coordinate snapshots are the
+two consumers, and both are sparse in practice -- a loss row exists only for a
+particle that died -- so the message is small even at the production size.
+
+Rank order, so the rows arrive in the order the shards do, which is global
+particle order. Rank 0 only, because rank 0 owns the file: gathering onto
+every rank would multiply the traffic by the rank count to no purpose.
+"""
+function _mp_gather_rows(rows::AbstractMatrix)
+    _record_collective!(:gather_rows, length(rows), sizeof(rows))
+    return _mp_gather_rows_impl(rows, _mp_comm())
+end
+_mp_gather_rows_impl(rows::AbstractMatrix, ::Nothing) = rows
+
 """    _mp_barrier()
 
 Wait until every rank arrives. A no-op in the passthrough."""

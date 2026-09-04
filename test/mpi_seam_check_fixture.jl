@@ -92,3 +92,24 @@ function _mpi_check_poisoned_beam(policy)
     end
     return beam
 end
+
+# --- step 3c fixtures: the per-particle output -----------------------------
+
+"""A line with an aperture tight enough to kill a good fraction of the beam,
+so the loss rows are worth gathering, plus a snapshot observer whose `npart`
+counts the WHOLE beam."""
+_mpi_check_walled_line() = (Octopus.ApertureSpec(shape=:ellipse,
+                                                 x_limit=6.0e-5, y_limit=6.0e-5),)
+
+"""Snapshot and loss identities as the file records them, sorted, so a
+comparison is about WHICH particles were recorded and not about the order the
+ranks happened to arrive in."""
+function _mpi_check_perparticle_signature(path)
+    out = Octopus.TaskOutput(path)
+    snap = read(out, :snapshot)["snap"]
+    losses = read(out, :losses)
+    return (snapshot_ids=sort(Int.(snap.particle_id)),
+            snapshot_turns=sort(unique(Int.(snap.turn))),
+            loss_ids=sort(Int.(losses.particle_id)),
+            summary=losses.summary)
+end

@@ -113,23 +113,6 @@ let policy = MultiProcessExecutionPolicy(threads=1)
     end
     println("MPI-LUM ", child_rank(), " ", repr(element.last_luminosity))
 
-    # Step 3b divides the diagnostics that reduce the beam to scalars. What
-    # is still refused needs the whole beam's PARTICLES in one place: an
-    # aperture keys its loss rows on the index the rank sees.
-    walled = TrackingTask((_mpi_check_radiating_line()...,
-                           Octopus.ApertureSpec(shape=:ellipse, x_limit=1.0, y_limit=1.0));
-                          policy=policy)
-    threw = try
-        execute!(walled, _mpi_check_build_beam(policy); turns=1)
-        false
-    catch err
-        err isa ArgumentError && occursin("not divided", sprint(showerror, err))
-    end
-    Octopus._with_execution_policy(resolved) do
-        expected_refusal = Octopus._mp_nranks() > 1
-        threw == expected_refusal ||
-            fail("aperture refusal was $(threw) at $(Octopus._mp_nranks()) rank(s)")
-    end
 end
 
 # --- step 3b: the scalar diagnostics divide ------------------------------
@@ -170,6 +153,53 @@ let policy = MultiProcessExecutionPolicy(threads=1)
                                          " dead=", summary.dead,
                                          " live=", summary.live,
                                          " unattributed=", summary.unattributed)
+    end
+end
+
+# --- step 3c: the per-particle output gathers onto rank 0 -----------------
+#
+# An aperture writes one row per lost particle and a snapshot observer one row
+# per particle per turn. Neither can be reduced, only moved, so both go
+# through the seam's gather and land in rank 0's file -- carrying the GLOBAL
+# particle id, not the slot index the rank happened to use.
+let policy = MultiProcessExecutionPolicy(threads=1)
+    path = joinpath(tempdir(), "octopus_mpi_seam_check_3c.h5")
+    beam = _mpi_check_build_beam(policy)
+    resolved = Octopus._resolve_execution_policy(policy, beam.rep)
+    Octopus._with_execution_policy(resolved) do
+        Octopus._mp_is_root() && isfile(path) && rm(path)
+        Octopus._mp_barrier()
+    end
+    task = TrackingTask(_mpi_check_walled_line(); policy=policy, artifact=path,
+                        observers=(CoordinateSnapshotObserver(name="snap", npart=12),))
+    allow_lost_particles() do
+        execute!(task, beam; turns=2)
+    end
+    if child_rank() == 0
+        sig = _mpi_check_perparticle_signature(path)
+        println("MPI-SNAPIDS ", join(sig.snapshot_ids, ","))
+        println("MPI-SNAPTURNS ", join(sig.snapshot_turns, ","))
+        println("MPI-LOSSIDS ", length(sig.loss_ids), " ", join(sig.loss_ids, ","))
+        # The summary written INTO the file, which is the reduction that has
+        # to have happened inside the policy scope.
+        println("MPI-LOSSSUM particles=", sig.summary.particles,
+                " dead=", sig.summary.dead, " live=", sig.summary.live)
+    end
+
+    # An action is the one thing left that Octopus cannot reason about, and it
+    # must still refuse rather than hand a callback one rank's shard.
+    threw = try
+        execute!(TrackingTask(_mpi_check_line(); policy=policy,
+                              actions=(Octopus.BeamSwapAction(identity),)),
+                 _mpi_check_build_beam(policy); turns=1)
+        false
+    catch err
+        err isa ArgumentError && occursin("task actions", sprint(showerror, err))
+    end
+    Octopus._with_execution_policy(resolved) do
+        expected = Octopus._mp_nranks() > 1
+        threw == expected ||
+            fail("action refusal was $(threw) at $(Octopus._mp_nranks()) rank(s)")
     end
 end
 flush(stdout)

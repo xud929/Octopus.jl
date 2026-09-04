@@ -264,6 +264,25 @@ function _ra_flush_luminosity!(art::RunArtifact, label::String)
 end
 
 """
+This rank's loss rows, in global particle order, gathered onto rank 0.
+
+Returns `nothing` when the record keeps counters only, so the caller writes no
+`/data`. The rows carry the GLOBAL particle id: the slot they came from is
+this rank's, and the offset turns it back into the particle it names.
+"""
+function _ra_gathered_loss_rows(record, shard_offset::Integer)
+    record === nothing && return nothing
+    record.slots === nothing && return nothing
+    r = loss_records(record; offset=shard_offset)
+    n = length(r.particle_id)
+    rows = Matrix{Float64}(undef, n, length(LOSS_RECORD_COLUMNS))
+    for (j, col) in enumerate(LOSS_RECORD_COLUMNS)
+        rows[:, j] = Float64.(getproperty(r, Symbol(col)))
+    end
+    return _mp_gather_rows(rows)
+end
+
+"""
 Rewrite the artifact's `/losses` group from the task's cumulative loss
 record, mirroring `write_loss_record`'s layout (per-loss rows, aperture
 names/counts/arc positions, and the reconciliation summary as attributes
@@ -273,7 +292,12 @@ idempotent, exactly the loss-log rule. A task with no loss record (no
 aperture in the line) writes nothing; a counters-only record (no log
 slots requested) writes the per-aperture accounting without rows.
 """
-function _ra_write_losses!(art::RunArtifact, record, s_positions, summary)
+function _ra_write_losses!(art::RunArtifact, record, s_positions, summary,
+                           shard_offset::Integer=0)
+    # Every rank builds and gathers its rows -- the gather is a collective, so
+    # a rank that returned early would hang the rest -- and only rank 0, which
+    # holds the file, writes them.
+    gathered = _ra_gathered_loss_rows(record, shard_offset)
     art.file === nothing && return nothing
     record === nothing && return nothing
     haskey(art.file, "losses") && HDF5.delete_object(art.file, "losses")
@@ -281,16 +305,10 @@ function _ra_write_losses!(art::RunArtifact, record, s_positions, summary)
     g["aperture_names"] = aperture_names(record)
     g["aperture_counts"] = loss_counts(record)
     s_positions === nothing || (g["aperture_s"] = collect(Float64, s_positions))
-    if record.slots !== nothing
-        r = loss_records(record)
-        n = length(r.particle_id)
-        data = Matrix{Float64}(undef, n, length(LOSS_RECORD_COLUMNS))
-        for (j, col) in enumerate(LOSS_RECORD_COLUMNS)
-            data[:, j] = Float64.(getproperty(r, Symbol(col)))
-        end
-        g["data"] = data
+    if gathered !== nothing
+        g["data"] = gathered
         g["column_names"] = collect(String, LOSS_RECORD_COLUMNS)
-        _ra_set_attr!(g, "record_count", Int64(n))
+        _ra_set_attr!(g, "record_count", Int64(size(gathered, 1)))
     end
     if summary !== nothing
         _ra_set_attr!(g, "summary_particles", Int64(summary.particles))
