@@ -120,11 +120,148 @@ the same: the call count is unchanged at 1874, while the bytes fell from
 1,175,656 to 61,816, a factor of 19.
 
 **Still available, and not done.** The call count is untouched, and 1840 of
-those calls carry an average of 33 bytes. A slice's membership does not change
-during a collide, so its global count and its globally-first member are fixed
-for the whole loop and are being recomputed 225 times each; the two beams'
-messages per pair could also be merged. That is eight messages per slice pair
-where two would do, and it is latency the remaining spread is made of.
+those calls carry an average of 33 bytes, costing a measured 30% of the
+sixty-four-rank time.
+
+The largest lever is the one the other solvers already use.
+`collision_pair_batches` groups slice pairs that share no slice, and the
+soft-Gaussian path is the only one still colliding strictly sequentially. Its
+correctness argument is written down for PIC and applies here: batching
+preserves each slice's own collision order, so a pair sees exactly the partner
+state it saw sequentially, and the batched path reproduces the sequential
+result bit for bit. The mode it does not hold for is the one whose mesh depends
+on how much of the turn has been applied, and soft-Gaussian has no mesh. All
+pairs within a batch are independent, so their reductions travel in one
+message.
+
+| stage | calls per collide |
+|---|---|
+| now | 1874 |
+| hoist what is fixed for a collide (a slice's global count and its globally-first member, recomputed 225 times each) | ~970 |
+| merge the two beams' messages per pair | ~520 |
+| wavefront batching, about 29 batches | ~130 |
+
+At sixty-four ranks that would take the collective term from 0.0298 s to about
+0.0021 s and the collide from 0.1009 s to about 0.0731 s: 46x rather than 34x,
+and more at higher rank counts, since the term it removes grows with P. It
+should also shrink the run-to-run spread, which is jitter admitted through
+1874 synchronisation points.
+
+Two further levers, in order. A deterministic reduction tree would make each
+message O(log P) instead of O(P), which the table above shows is worth about
+3x per message at sixty-four ranks; Phase 0 asked for exactly this "past ~16
+ranks". And non-blocking exchange of the next batch overlapped with the
+current batch's kick is the "interleaving" Phase 0 also named, though after
+batching there are only about 29 exchanges left for it to hide.
+
+What will NOT help, and why, so it is not tried: a communicator per slice. The
+shard is contiguous in particle index, so every rank holds members of every
+slice and a per-slice reduction is still an all-ranks reduction. It would pay
+only under a longitudinally aligned decomposition, where a slice lives on few
+ranks -- and that conflicts with the chunk-aligned shard rule that buys the
+bit-identical folds, and would need re-partitioning every turn as z evolves.
+
+The floor is worth naming too. At sixty-four ranks each rank holds about 667
+members per slice, so the work behind each message is small and the per-rank
+inefficiency (18%) is already comparable to the communication. This problem
+size runs out of parallelism not far past here, whatever the seam does.
+
+## Where the remaining time goes, measured two ways
+
+Two independent measurements, because a budget built from one is an estimate.
+
+**The seam's own latency**, timed directly at each rank count on 2000 calls
+after a warm-up, at the sizes one collide actually uses:
+
+| ranks | one float | ten floats | min/max pair | the collide's 1874 calls |
+|---|---|---|---|---|
+| 2 | 1.4 us | 1.4 us | 1.3 us | 0.0026 s |
+| 8 | 6.0 | 6.0 | 3.5 | 0.0102 |
+| 16 | 8.6 | 8.9 | 4.2 | 0.0146 |
+| 32 | 12.0 | 13.7 | 5.4 | 0.0219 |
+| 64 | 18.6 | 22.6 | 7.1 | 0.0353 |
+
+Per-message cost rises roughly linearly with the rank count, which is the
+Allgather-plus-ordered-fold being O(P). Payload barely matters: ten floats cost
+what one does, so this is latency and not bandwidth.
+
+**The size scaling**, which separates the two terms without trusting the first
+measurement at all. At a fixed 64 ranks the collective COUNT depends on the
+slice count, not the particle count, so shrinking the beam shrinks compute and
+leaves communication alone. Best of five repeats:
+
+| beam | s/collide |
+|---|---|
+| 640,000 x 256,000 | 0.1009 |
+| halved | 0.0647 |
+| quartered | 0.0476 |
+
+Fitting the full and quarter points gives compute 0.0711 s and a
+size-independent 0.0298 s, and that fit predicts the half point at 0.0654
+against 0.0647 measured, 1% out. The size-independent term agrees with the
+0.0353 s timed directly.
+
+So the budget at sixty-four ranks, on 0.1009 s:
+
+| term | time | share |
+|---|---|---|
+| ideal compute (serial / 64) | 0.0530 s | 52% |
+| per-rank inefficiency | 0.0181 s | 18% |
+| collectives | 0.0298 s | 30% |
+
+## The levers the budget points at
+
+Two of the three terms have a named lever; the third is the floor.
+
+**The 30% collectives are a CALL-COUNT problem, not a payload problem** — the
+latency table above shows ten floats costing what one does. One collide issues
+1874 calls. Hoisting what is fixed for a whole collide takes that to ~970,
+sending the two beams' moments in one buffer instead of two to ~520, and
+batching independent slice pairs with `collision_pair_batches` (~29 batches
+instead of 225 pairs) to ~130. At the measured 18.6 us per message that is
+0.0298 s falling to about 0.0024, and the collide to 0.0731 s — 46x rather than
+34x, with the gain growing at higher rank counts because the per-message cost
+grows with P.
+
+Batching is safe here for the reason PIC already recorded: a batch preserves
+each slice's OWN collision order, so the batched path reproduces the sequential
+result bit for bit. PIC's one exception is a shared mesh, which the grid-free
+soft-Gaussian does not have. The CPU soft-Gaussian is in fact the only collide
+path in the tree still strictly sequential — the CUDA soft-Gaussian, PIC on
+both backends, Gaussian-PIC and spectral all batch already.
+
+**The 18% per-rank inefficiency is a WIDTH problem, and the two beams are the
+lever** (owner-raised, 2026-09-04). Within a slice pair the two beams are
+independent: the two moment reductions read different beams and neither reads
+the other's result, and the two kicks write disjoint arrays from moments both
+computed before either kick. Today they run one after the other, each over its
+own 64-chunk grid. A shard's slice is small — at 15 slices and 64 ranks a rank
+holds roughly a 960th of the beam per slice — so a 64-chunk grid over it is
+thin and most of the per-worker cost is grid overhead. Issuing both beams as
+one grid of 128 doubles the width exactly where it is thinnest, and the merged
+moment buffer is the same edit that turns two all-sums into one. The
+bit-identity constraint: each beam keeps its OWN luminosity accumulator and
+each fold stays in chunk order. Widen the grid, never merge the folds. The CUDA
+wavefront route is the existence proof that the shape works — it already
+carries both beams in one array dimension, `2 * max_batch` columns.
+
+**The switch is an existing keyword.** Owner constraint: reuse the public
+option keywords, invent none. `GaussianPoissonSolver` already carries
+`batch_mode` (`:sequential` or `:wavefront`, defaulting to `:wavefront`); only
+its CPU method declines to read it. Landing this means the CPU method starts
+honoring the field it already has, and the schema entry gains a CPU consumer
+beside its CUDA one. It also forces a correction that is already owed:
+`interface.jl` documents `batch_mode` as CUDA-only, "the CPU paths always use
+collision-time order", and that is not true today — CPU PIC and CPU
+Gaussian-PIC batch by their own `_pic_batchable` rule.
+
+**The 52% is the floor** for this decomposition. Past it come a deterministic
+reduction tree, worth roughly 3x per message at 64 ranks given how latency
+grows from 1.4 to 18.6 us between 2 and 64 ranks, and non-blocking overlap. A
+communicator per slice does NOT help: the shard is contiguous in particle
+index, so every rank holds members of every slice. That would need a
+longitudinally aligned decomposition, which conflicts with the chunk-aligned
+bit-identity and would have to re-partition every turn.
 
 ## What was measured and what was not
 
