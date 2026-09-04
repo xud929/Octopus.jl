@@ -1,25 +1,35 @@
-export AbstractTrackOp, TrackingContext, with_turn, track_particle
+export AbstractTrackOp, TrackingContext, with_turn, with_index_offset, track_particle
 
 """
     TrackingContext(; turn=0, seed=global_rng_seed(),
-                    rng_method=global_rng_method_code())
+                    rng_method=global_rng_method_code(), index_offset=0)
 
 Immutable execution context passed through tracking workflows and optionally
 into per-particle fused tracking. The context is intentionally small and
 `isbits` so it can be passed to CUDA kernels. `turn` identifies the current
 turn, while `seed` and `rng_method` snapshot the current Octopus global RNG
 state for stochastic tracking.
+
+`index_offset` is what makes a run divided across MPI ranks draw the same
+random numbers as an undivided one. The Octopus counter RNG keys each particle's
+stream on its index, so a rank holding global particles `k+1 … k+m` must key
+them on `k+i`, not on its own `1 … m`; the offset is that `k`. It is `0` in
+every single-process run, which is every run that does not go through a
+`MultiProcessExecutionPolicy`.
 """
 struct TrackingContext
 	turn::Int64
 	seed::UInt64
 	rng_method::UInt8
+	index_offset::Int64
 end
 
 TrackingContext(; turn::Integer=0,
 	            seed::Integer=global_rng_seed(),
-	            rng_method=global_rng_method_code()) =
-	TrackingContext(Int64(turn), UInt64(seed), rng_method_code(rng_method))
+	            rng_method=global_rng_method_code(),
+	            index_offset::Integer=0) =
+	TrackingContext(Int64(turn), UInt64(seed), rng_method_code(rng_method),
+	                Int64(index_offset))
 
 """
     with_turn(ctx, turn)
@@ -29,7 +39,16 @@ manually reconstructing `TrackingContext` so future scalar context fields only
 need to be handled in one place.
 """
 @inline with_turn(ctx::TrackingContext, turn::Integer) =
-	TrackingContext(Int64(turn), ctx.seed, ctx.rng_method)
+	TrackingContext(Int64(turn), ctx.seed, ctx.rng_method, ctx.index_offset)
+
+"""
+    with_index_offset(ctx, offset)
+
+Return a copy of `ctx` whose per-particle RNG streams are keyed from `offset`.
+Set once per run from the multi-process shard; see `TrackingContext`.
+"""
+@inline with_index_offset(ctx::TrackingContext, offset::Integer) =
+	TrackingContext(ctx.turn, ctx.seed, ctx.rng_method, Int64(offset))
 
 """
     AbstractTrackOp

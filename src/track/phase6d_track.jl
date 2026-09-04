@@ -11,9 +11,25 @@ function track!(rep, elems, turns; policy::Union{Nothing,AbstractExecutionPolicy
                 context::TrackingContext=TrackingContext())
 	resolved = _resolve_execution_policy(policy, rep)
 	_with_execution_policy(resolved) do
-		track!(rep, elems, turns, resolved, context)
+		# Inside the policy scope, because the shard is a property of the
+		# communicator this run has, and deriving it issues a collective.
+		track!(rep, elems, turns, resolved, _shard_context(context, rep))
 	end
 	return nothing
+end
+
+"""
+Give `ctx` the global index offset of this rank's shard, or leave it alone
+outside a multi-process run.
+
+Left alone rather than zeroed: a caller may have set an offset deliberately
+(tracking a slice of a beam it split itself), and overwriting that with 0
+would silently re-key its random streams.
+"""
+function _shard_context(ctx::TrackingContext, rep)
+	_multi_process_context() === nothing && return ctx
+	offset, _ = _mp_resolve_shard(length(rep))
+	return with_index_offset(ctx, offset)
 end
 
 function track!(rep, elems, turns, policy::AbstractExecutionPolicy;
@@ -28,7 +44,9 @@ function track!(rep, elems, turns, policy::ResolvedCPUExecutionPolicy,
 		turn_ctx = with_turn(ctx, ctx.turn + Int64(turn - 1))
 		_run_logical_workers(policy.threads) do worker, nworkers
 			for index in worker:nworkers:length(rep)
-				@inbounds rep[index] = fusedTrack(turn_ctx, elems, index, rep[index]...)
+				@inbounds rep[index] = fusedTrack(turn_ctx, elems,
+				                                  turn_ctx.index_offset + index,
+				                                  rep[index]...)
 			end
 		end
 	end
@@ -206,7 +224,9 @@ if _HAS_CUDA
 				turn_ctx = with_turn(ctx, ctx.turn + Int64(turn - 1))
 				index = start_index
 				while index<=length(rep)
-					@inbounds rep[index] = fusedTrack(turn_ctx, elems, index, rep[index]...)
+					@inbounds rep[index] = fusedTrack(turn_ctx, elems,
+				                                  turn_ctx.index_offset + index,
+				                                  rep[index]...)
 					index += stride
 				end
 			end

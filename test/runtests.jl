@@ -6713,6 +6713,101 @@ end
     end
 end
 
+@testset "The rank shard is a whole number of reduction chunks" begin
+    # Multi-process step 3a. The shard rule is the whole determinism argument
+    # for a divided run: every count-invariant float fold in the CPU stack
+    # partitions the beam into `_REDUCTION_CHUNKS` fixed chunks and sums the
+    # partials in chunk order, so a rank that owns WHOLE chunks lets that same
+    # order extend across processes. These are the rule's own properties,
+    # checkable without a communicator.
+    chunks = Octopus._REDUCTION_CHUNKS
+    for n in (4, 63, 64, 65, 1000, 1_024_000), p in (1, 2, 4, 8, 16, 32, 64)
+        ranges = [Octopus._mp_shard_range(n, p, r) for r in 0:(p - 1)]
+        # A partition: contiguous, in order, covering 1:n exactly once.
+        @test first(first(ranges)) == 1
+        @test last(last(ranges)) == n
+        @test sum(length, ranges) == n
+        @test all(first(ranges[i + 1]) == last(ranges[i]) + 1 for i in 1:(p - 1))
+        # And every boundary is a chunk boundary, which is the point.
+        starts = Set(Octopus._chunk_bounds(n, chunks, c)[1] for c in 1:chunks)
+        @test all(first(r) in starts for r in ranges)
+    end
+    # A rank count that cannot divide the chunks is rejected rather than
+    # silently costing bitwise reproducibility.
+    for p in (3, 5, 6, 7, 24, 48)
+        @test_throws ArgumentError Octopus._mp_shard_range(1000, p, 0)
+    end
+    # Outside a divided run the shard is the whole beam and costs nothing.
+    @test Octopus._mp_resolve_shard(1234) == (0, 1234)
+    @test Octopus._mp_first_chunk() == 1
+    @test Octopus._mp_local_chunks() == chunks
+end
+
+@testset "A sharded run keys its random streams on the global particle index" begin
+    # The counter RNG keys each particle's stream on its index, so a rank
+    # holding global particles k+1 … k+m must key them on k+i. The offset
+    # rides on the tracking context; these are the mechanics that carry it.
+    ctx = TrackingContext()
+    @test ctx.index_offset == 0
+    shifted = Octopus.with_index_offset(ctx, 128)
+    @test shifted.index_offset == 128
+    @test shifted.seed == ctx.seed && shifted.rng_method == ctx.rng_method
+    # `with_turn` must not drop it: the turn loop rebuilds the context every
+    # turn, and an offset lost there would re-key every draw after the first.
+    @test with_turn(shifted, 7).index_offset == 128
+    @test with_turn(shifted, 7).turn == 7
+    @test isbitstype(TrackingContext)      # still CUDA-passable
+
+    # Two turns of a radiating line, tracked with an offset, must equal the
+    # matching slice of an undivided run: that is what the offset buys.
+    line = (compile_runtime(LumpedRadSpec{Float64}(
+                damping_turns=(4000.0, 4000.0, 2000.0), beta=(1.0, 1.0, 1.0),
+                alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-5, 1.0e-3),
+                is_damping=true, is_excitation=true, rng_id=101)),)
+    mkrep(n, from) = begin
+        s(a, ph) = [a * sin(0.7 * (from + i) + ph) for i in 1:n]
+        Phase6DRep(s(1.0e-4, 0.0), s(1.0e-5, 0.3), s(1.0e-4, 0.9),
+                   s(1.0e-5, 1.2), s(1.0e-3, 2.1), s(1.0e-4, 2.5))
+    end
+    policy = Octopus._resolve_execution_policy(CPUThreadsExecutionPolicy(threads=1),
+                                               mkrep(1, 0))
+    whole = mkrep(64, 0)
+    Octopus._with_execution_policy(policy) do
+        track!(whole, line, 2, policy, TrackingContext())
+    end
+    second_half = mkrep(32, 32)
+    Octopus._with_execution_policy(policy) do
+        track!(second_half, line, 2, policy, Octopus.with_index_offset(TrackingContext(), 32))
+    end
+    @test all(whole.x[33:64] .== second_half.x)
+    @test all(whole.pz[33:64] .== second_half.pz)
+    # Anti-vacuity: without the offset the same slice differs, so the test
+    # above is about the offset and not about the map being the identity.
+    wrong = mkrep(32, 32)
+    Octopus._with_execution_policy(policy) do
+        track!(wrong, line, 2, policy, TrackingContext())
+    end
+    @test !all(whole.x[33:64] .== wrong.x)
+end
+
+@testset "A beam built under the multi-process policy is the beam it composes" begin
+    # One rank: the constructor must hand back exactly what
+    # CPUThreadsExecutionPolicy would. (More than one rank is measured under a
+    # launcher, where the shards are gathered and compared.)
+    mk(policy) = begin
+        set_global_rng!(seed=123456789, method=:philox)
+        Beam(512, policy, Float64; rng_id=1, beta=(1.0, 1.0, 1.0),
+             emit=(1.0e-9, 1.0e-9, 1.0e-6), cutoff=5.0)
+    end
+    divided = mk(MultiProcessExecutionPolicy(threads=1))
+    plain = mk(CPUThreadsExecutionPolicy(threads=1))
+    @test length(divided.rep) == 512
+    @test all(a == b for (a, b) in zip(coordinate_arrays(divided.rep),
+                                       coordinate_arrays(plain.rep)))
+    @test divided.params == plain.params
+    @test any(!iszero, divided.rep.x)        # anti-vacuity: a real beam
+end
+
 @testset "The multi-process policy rejects what it cannot honour" begin
     # Constructor-time rejections: shape errors, caught before anything runs.
     @test_throws ArgumentError MultiProcessExecutionPolicy(ranks=0)
@@ -6805,18 +6900,63 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             @test !occursin("MPI-CHECK FAIL", out1)
             @test !occursin("MPI-CHECK FAIL", out2)
 
-            # One-rank MPI against today's single-process answer, bit for bit,
-            # on the same line and the same beam -- the two sides share
-            # `mpi_seam_check_fixture.jl` so neither can drift from the other.
+            # --- CPU vs MPI: BITWISE ----------------------------------
+            #
+            # Both sides share `mpi_seam_check_fixture.jl`, so neither can
+            # drift from the other. The shards are compared by STRING: the
+            # child prints every coordinate at full precision, the parent
+            # concatenates the shards in rank order, and no arithmetic
+            # touches the comparison, so a bitwise claim stays bitwise.
             include(joinpath(root, "test", "mpi_seam_check_fixture.jl"))
-            reference = _mpi_check_beam()
-            execute!(TrackingTask(_mpi_check_line();
+            shards(out, tag) = begin
+                found = Dict{Int,Vector{String}}()
+                for line in split(out, '\n')
+                    startswith(line, tag * " ") || continue
+                    parts = split(line, ' '; limit=3)
+                    found[parse(Int, parts[2])] =
+                        [strip(p) for p in split(parts[3], '|')]
+                end
+                found
+            end
+            joined(out) = begin
+                found = shards(out, "MPI-TRACK")
+                isempty(found) && return ""
+                join((join((found[r][i] for r in sort(collect(keys(found)))), " ")
+                      for i in eachindex(found[first(sort(collect(keys(found))))])), " | ")
+            end
+
+            reference_beam = _mpi_check_build_beam(CPUThreadsExecutionPolicy(threads=1))
+            execute!(TrackingTask(_mpi_check_radiating_line();
                                   policy=CPUThreadsExecutionPolicy(threads=1)),
-                     reference; turns=2)
-            signature = "MPI-CHECK coords " * _mpi_check_signature(reference)
-            @test occursin(signature, out1)
-            # Anti-vacuity: an empty or trivial signature would match anything.
-            @test length(signature) > 1000
+                     reference_beam; turns=3)
+            reference = _mpi_check_shard_line(reference_beam.rep)
+            @test length(reference) > 10_000        # anti-vacuity: a real beam
+            @test joined(out1) == reference
+            @test joined(out2) == reference         # 2 ranks, bit for bit
+            @test length(shards(out2, "MPI-TRACK")) == 2
+
+            # The strong beam's luminosity crosses ranks through the chunk
+            # fold; every rank must leave with the single-process number.
+            lum_beam = _mpi_check_build_beam(CPUThreadsExecutionPolicy(threads=1))
+            element = _mpi_check_strong_beam()
+            resolved_cpu = Octopus._resolve_execution_policy(
+                CPUThreadsExecutionPolicy(threads=1), lum_beam.rep)
+            Octopus._with_execution_policy(resolved_cpu) do
+                track!(lum_beam.rep, element, 2, resolved_cpu)
+            end
+            reference_lum = repr(element.last_luminosity)
+            @test isfinite(element.last_luminosity) && element.last_luminosity > 0
+            for out in (out1, out2)
+                reported = [split(line)[3] for line in split(out, '\n')
+                            if startswith(line, "MPI-LUM ")]
+                @test !isempty(reported)
+                @test all(==(reference_lum), reported)
+            end
+
+            # The shard rule itself, as the ranks report having applied it.
+            offsets = [parse(Int, match(r"offset=(\d+)", line).captures[1])
+                       for line in split(out2, '\n') if startswith(line, "MPI-SHARD ")]
+            @test sort(offsets) == [0, div(_mpi_check_global_n(), 2)]
         end
     end
 end

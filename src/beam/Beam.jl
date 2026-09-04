@@ -566,6 +566,43 @@ function Beam(N::Integer, policy::AbstractExecutionPolicy, FloatT::Type{RT}=Floa
 	return Beam(Int(N), backend_type(policy), RT; execution_policy=policy, kwargs...)
 end
 
+"""
+    Beam(n_global, policy::MultiProcessExecutionPolicy, FloatT; kwargs...)
+
+Construct the shard of an `n_global`-particle beam that this rank owns.
+
+`n_global` is the WHOLE beam, not this process's share, so the same call gives
+the same physics at any rank count and a script does not have to divide by P.
+
+Every rank draws the whole beam and keeps its own contiguous, chunk-aligned
+slice. Drawing the whole thing on each rank looks wasteful, and it is, once,
+at startup -- but the alternative is not equivalent: the standardization that
+turns the raw normal draws into a unit beam takes the mean and variance over
+the ARRAY, so a rank that standardized its own slice would produce a
+measurably different beam from the single-process one, and no ordering of
+collectives recovers Julia's pairwise sum over the full array. Drawing whole
+and slicing is bit-identical to the undivided run by construction, needs no
+communication, and costs one transient allocation of the full beam per rank.
+"""
+function Beam(N::Integer, policy::MultiProcessExecutionPolicy, FloatT::Type{RT}=Float64;
+              kwargs...) where {RT<:Real}
+    _require_sampling_float(RT)
+    activate_policy!(policy)
+    whole = Beam(Int(N), backend_type(policy), RT; execution_policy=policy, kwargs...)
+    context = _open_multi_process_context(
+        MultiProcessRequest(policy.ranks),
+        _resolved_cpu_threads(_composed_cpu_policy(policy)))
+    context.nranks == 1 && return whole
+    shard = _mp_shard_range(Int(N), context.nranks, context.rank)
+    rep = _shard_rep(whole.rep, shard)
+    return Beam{backend_type(policy),typeof(whole.params),typeof(rep)}(whole.params, rep)
+end
+
+"""This rank's copy of `rep[range]`: a copy, not a view, so the whole beam the
+shard was cut from can be collected."""
+_shard_rep(rep::Phase6DRep, range) =
+    Phase6DRep(map(a -> a[range], coordinate_arrays(rep))...)
+
 function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
               beta=(one(RT), one(RT), one(RT)),
               alpha=(zero(RT), zero(RT), zero(RT)),

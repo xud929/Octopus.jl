@@ -467,8 +467,13 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     policy = _resolve_execution_policy(task.policy, rep)
     result = try
         _with_execution_policy(policy) do
-            _execute_tracking_task!(
-                task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy)
+            # Once per call, inside the policy scope: deriving the shard is a
+            # collective, and every fold inside the run reads it from here
+            # instead of paying for its own.
+            _with_shard(_mp_resolve_shard(length(rep))) do
+                _execute_tracking_task!(
+                    task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy)
+            end
         end
     catch
         # A crashed run still flushes the loss accounting recorded so far: the
@@ -590,13 +595,48 @@ function _task_loss_summary(task::TrackingTask, rep)
     return loss_summary(rep, task.loss_record[])
 end
 
+"""
+Refuse, at more than one rank, the parts of a tracking task that step 3a has
+not divided.
+
+Tracking itself is per-particle work: every element whose map is a function of
+one particle is divided by holding a shard, with no communication at all.
+What is not divided yet is the accounting that spans particles -- observers,
+actions and line hooks compute over the beam they are handed, and an aperture
+records losses by the index it sees, which on a shard is a local one. Those
+land in step 3b. Refusing here is the alternative to reporting a rank's own
+moments as though they were the beam's.
+
+The blanket refusal step 2 carried is now this narrower one: an ordinary
+tracking run with no diagnostics attached goes through.
+"""
+function _reject_unsharded_tracking_features(task, runtime_entries)
+    _mp_nranks() > 1 || return nothing
+    blocked = String[]
+    isempty(task.observers) || push!(blocked, "task observers")
+    isempty(task.actions) || push!(blocked, "task actions")
+    _has_line_hooks(runtime_entries) && push!(blocked, "line hooks")
+    task.artifact === nothing || push!(blocked, "a run artifact")
+    isempty(_aperture_s_positions(task.elements)) ||
+        push!(blocked, "apertures (their loss records key on the local index)")
+    isempty(blocked) && return nothing
+    throw(ArgumentError(
+        "this TrackingTask carries " * join(blocked, ", ", " and ") *
+        ", which multi-process step 3a does not divide across the " *
+        "$(_mp_nranks()) ranks in force: each rank would compute them over " *
+        "its own shard and report the result as the whole beam's. Step 3b " *
+        "divides them. Run one rank, use CPUThreadsExecutionPolicy, or drop " *
+        "the diagnostics."))
+end
+
 function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                                  turns::Int, first_turn::Int64, policy)
-    _reject_unsharded_multi_process("a TrackingTask")
+    _reject_unsharded_tracking_features(task, runtime_entries)
     if isempty(task.actions) && isempty(task.observers) &&
        !_has_line_hooks(runtime_entries) && task.artifact === nothing
         _execute_fast_tracking_turns!(
-            rep, runtime_elems, turns, first_turn, policy, TrackingContext())
+            rep, runtime_elems, turns, first_turn, policy,
+            with_index_offset(TrackingContext(), first(_mp_current_shard(length(rep)))))
         return rep
     end
     # `first_turn`, not just the count: `should_run` is handed the ABSOLUTE turn
@@ -626,7 +666,11 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     artifact_diagnostics = art !== nothing && !isempty(strong_beams)
     tracking_completed = false
     try
-        base_ctx = TrackingContext()
+        # Same global keying as the fused path: an element that draws per
+        # particle must draw the same numbers whether the beam is divided or
+        # not. (Reachable at one rank today; step 3b opens this path to more.)
+        base_ctx = with_index_offset(TrackingContext(),
+                                     first(_mp_current_shard(length(rep))))
         for offset in 0:(turns - 1)
             turn = first_turn + offset
             ctx = with_turn(base_ctx, turn)

@@ -65,11 +65,22 @@ function _track_thin_strong_beam!(rep, elem::ThinStrongBeam, turns, policy, mask
 	# from the strong-strong stack, surviving on this weak-strong path. The
 	# per-particle tracking writes are index-local either way; only the
 	# luminosity fold order needed to become a property of the data.
+	# Chunk grid, in GLOBAL terms. The fixed 64-chunk partition and its
+	# chunk-ordered fold are what make this luminosity independent of the
+	# worker count; a rank shard is a contiguous run of whole chunks, so the
+	# same partition and the same order extend across processes -- each rank
+	# folds the chunks it owns, and `_mp_chunk_fold` puts them back in chunk
+	# order. Bounds are mapped from the global chunk through the shard offset
+	# rather than recomputed locally, so the local partition IS the global one
+	# rather than something that happens to agree with it.
 	nchunks = _REDUCTION_CHUNKS
+	offset, global_n = _mp_current_shard(length(rep))
+	first_chunk, local_chunks = _mp_first_chunk(), _mp_local_chunks()
 	for _ in 1:turns
-		local_lum = zeros(eltype(rep.x), nchunks)
-		_run_logical_workers(nchunks) do chunk, _
-			first_i, last_i = _chunk_bounds(length(rep), nchunks, chunk)
+		local_lum = zeros(eltype(rep.x), local_chunks)
+		_run_logical_workers(local_chunks) do chunk, _
+			lo, hi = _chunk_bounds(global_n, nchunks, first_chunk + chunk - 1)
+			first_i, last_i = lo - offset, hi - offset
 			value = zero(eltype(rep.x))
 			for index in first_i:last_i
 				@inbounds begin
@@ -80,7 +91,7 @@ function _track_thin_strong_beam!(rep, elem::ThinStrongBeam, turns, policy, mask
 			end
 			local_lum[chunk] = value
 		end
-		elem.last_luminosity = sum(local_lum)
+		elem.last_luminosity = _mp_chunk_fold(local_lum, first_chunk)
 	end
 	return nothing
 end
@@ -106,11 +117,22 @@ function _track_gaussian_strong_beam!(rep, elem::GaussianStrongBeam, turns, poli
 	# from the strong-strong stack, surviving on this weak-strong path. The
 	# per-particle tracking writes are index-local either way; only the
 	# luminosity fold order needed to become a property of the data.
+	# Chunk grid, in GLOBAL terms. The fixed 64-chunk partition and its
+	# chunk-ordered fold are what make this luminosity independent of the
+	# worker count; a rank shard is a contiguous run of whole chunks, so the
+	# same partition and the same order extend across processes -- each rank
+	# folds the chunks it owns, and `_mp_chunk_fold` puts them back in chunk
+	# order. Bounds are mapped from the global chunk through the shard offset
+	# rather than recomputed locally, so the local partition IS the global one
+	# rather than something that happens to agree with it.
 	nchunks = _REDUCTION_CHUNKS
+	offset, global_n = _mp_current_shard(length(rep))
+	first_chunk, local_chunks = _mp_first_chunk(), _mp_local_chunks()
 	for _ in 1:turns
-		local_lum = zeros(eltype(rep.x), nchunks)
-		_run_logical_workers(nchunks) do chunk, _
-			first_i, last_i = _chunk_bounds(length(rep), nchunks, chunk)
+		local_lum = zeros(eltype(rep.x), local_chunks)
+		_run_logical_workers(local_chunks) do chunk, _
+			lo, hi = _chunk_bounds(global_n, nchunks, first_chunk + chunk - 1)
+			first_i, last_i = lo - offset, hi - offset
 			value = zero(eltype(rep.x))
 			for index in first_i:last_i
 				@inbounds begin
@@ -122,7 +144,7 @@ function _track_gaussian_strong_beam!(rep, elem::GaussianStrongBeam, turns, poli
 			end
 			local_lum[chunk] = value
 		end
-		elem.last_luminosity = sum(local_lum)
+		elem.last_luminosity = _mp_chunk_fold(local_lum, first_chunk)
 	end
 	return nothing
 end

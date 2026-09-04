@@ -321,6 +321,11 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   and why, the per-fix measurements with their bitwise-parity digests, and the
   machine-level findings — idle-thread spin, GC share, and why a pool wider
   than the data's parallelism costs rather than pays),
+  [`multi_process_step3a_2026_09_04.md`](history/multi_process_step3a_2026_09_04.md)
+  (a tracking task divided across ranks: the chunk-aligned shard rule and why
+  it is derived rather than stored, global-index keying for the random
+  streams, why a beam is drawn whole and sliced, and the bitwise agreement
+  measured at 1, 2 and 4 ranks with radiation on),
   [`mpi_environment_2026_09_04.md`](history/mpi_environment_2026_09_04.md)
   (which MPI runtime an Octopus process carries, decided by test: MPICH_jll
   by default because the installed HDF5_jll already links it, a system MPI as

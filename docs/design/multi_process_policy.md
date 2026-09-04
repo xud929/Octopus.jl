@@ -107,6 +107,64 @@ messages are the only ones in flight on its communicator; dup buys that, and
 caching it keeps `Comm_dup` — itself collective — from being called once per
 `execute!`.
 
+## Step 3a: dividing a tracking task
+
+A tracking task is per-particle work. Every element whose map is a function of
+one particle is divided by holding a shard of the beam, with no communication
+at all. Only two things in a line reduce across particles, and each is handled
+explicitly: a strong beam's luminosity, and an aperture's loss records.
+
+**The shard rule is a contiguous run of whole reduction chunks.** The CPU
+stack's count-invariant folds partition the beam into `_REDUCTION_CHUNKS`
+fixed chunks and sum the partials in chunk order, and that order is what makes
+a result independent of the worker count. Give each rank whole chunks and the
+same property extends across processes for free: the ranks' partials,
+gathered and folded in chunk order, are the single-process sum bit for bit.
+The price is that the rank count must divide the chunk count, which is
+enforced rather than worked around.
+
+**The shard is derived and verified, never stored.** Nothing in the particle
+representation records which slice of a larger beam it is, and a field that
+said so could disagree with the array beside it. Summing the ranks' counts and
+re-deriving the rule cannot disagree with itself, so a beam that was built or
+split some other way fails loudly instead of tracking with the wrong random
+streams and reducing into the wrong chunk slots.
+
+**Random streams key on the global particle index.** The counter RNG keys each
+particle's stream on its index, so a rank holding global particles `k+1 … k+m`
+keys them on `k+i`. The offset rides on the tracking context, is zero in every
+single-process run, and is what makes a radiating beam identical whether it is
+divided or not.
+
+**A beam is drawn whole and sliced, not drawn per rank.** This looks wasteful
+and is, once, at startup. The alternative is not equivalent: the
+standardization that turns raw normal draws into a unit beam takes the mean
+and variance over the array, so a rank standardizing its own slice would
+produce a measurably different beam, and no ordering of collectives recovers
+Julia's pairwise sum over the full array. Drawing whole and slicing is
+bit-identical by construction and needs no communication.
+
+What 3a does not divide, and therefore refuses at more than one rank:
+observers, actions, line hooks, the run artifact, and apertures. Each computes
+over the beam it is handed, or keys on the index it sees, so at more than one
+rank it would report a rank's own answer as the beam's. Step 3b divides them.
+
+## The CPU, MPI and CUDA consistency statement
+
+Three execution modes, and the relation between them is asserted in two
+places rather than three, because the third follows:
+
+| pair | relation | measured by |
+|---|---|---|
+| CPU vs MPI | **bitwise**, at every rank count that divides the chunks | the suite's multi-process section, under a launcher, comparing gathered shards against a single-process run |
+| CPU vs CUDA | agreement to the contract's tolerance | `ElementTrackingBackendConsistencyContract` and `validation/tracking_backend_consistency.jl` |
+| MPI vs CUDA | the same tolerance, by composition | not measured directly, and cannot be: the multi-process policy is CPU storage only, so no rank holds a CUDA beam |
+
+The bitwise half is the stronger claim and the one the shard rule exists to
+buy. It is also the half that would decay silently: a tolerance would absorb a
+fold quietly rearranged by a later change, where a bitwise comparison names it
+on the next gate.
+
 ## Determinism, and what step 3 must choose
 
 Fixed-P bit-repeatability holds for any shard, because the cross-rank fold is

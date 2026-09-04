@@ -139,9 +139,14 @@ across MPI ranks. It composes `CPUThreadsExecutionPolicy(threads)` per rank, so
 at one rank it is that policy exactly. `ranks=:auto` accepts whatever the
 launcher started; an integer must match the communicator exactly. MPI itself is
 a weak dependency: without it loaded the process is a communicator of one and
-the collective seam runs its serial passthrough. No task divides work across
-ranks yet, so `execute!` refuses at more than one rank
-(`design/multi_process_policy.md`, campaign step 2 of 4).
+the collective seam runs its serial passthrough. A tracking task is divided by
+holding a shard of the beam: `Beam(n, policy, ...)` takes `n` as the WHOLE
+beam and hands each rank its own contiguous, chunk-aligned slice, and a
+divided run reproduces the undivided one bit for bit. The accounting that
+spans particles -- observers, actions, line hooks, the run artifact and
+apertures -- is not divided yet, so a task carrying any of it refuses at more
+than one rank, and a strong-strong task refuses outright
+(`design/multi_process_policy.md`, campaign step 3a of 4).
 
 Use `CUDAExecutionPolicy(device=nothing,
 launch=CUDALaunchConfig(threads=256, blocks=:auto))` for CUDA storage.

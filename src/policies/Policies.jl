@@ -543,6 +543,136 @@ function _mp_bcast(value, root::Integer=0)
 end
 _mp_bcast_scalar_impl(value, root, ::Nothing) = value
 
+# --- the rank shard ----------------------------------------------------------
+#
+# A tracking task is per-particle work: every element whose map is a function
+# of one particle needs no communication at all to be divided. Only two things
+# in a line reduce across particles -- a strong beam's luminosity and an
+# aperture's loss records -- so the shard rule is chosen by what those
+# reductions need, not by the tracking.
+
+"""
+    _mp_shard_range(global_n, nranks, rank) -> UnitRange
+
+The global particle indices rank `rank` owns.
+
+The rule is: a contiguous run of WHOLE reduction chunks. Every count-invariant
+float fold in the CPU stack partitions the beam into `_REDUCTION_CHUNKS` fixed
+chunks and sums the partials in chunk order, and that order is what makes a
+result independent of the worker count. Give each rank whole chunks and the
+same property extends across processes for free: the ranks' partials, gathered
+and folded in chunk order, are the single-process sum bit for bit. Give them
+anything else and the fold has to be rearranged, which moves last bits for no
+physical reason.
+
+The price is that the rank count must divide `_REDUCTION_CHUNKS`. That is a
+real restriction and it is enforced rather than worked around: a rank count
+that would silently cost bitwise reproducibility is rejected.
+"""
+function _mp_shard_range(global_n::Integer, nranks::Integer, rank::Integer)
+    chunks = _REDUCTION_CHUNKS
+    per_rank, leftover = divrem(chunks, Int(nranks))
+    leftover == 0 || throw(ArgumentError(
+        "$(nranks) ranks cannot divide the $(chunks) fixed reduction chunks " *
+        "evenly, so no shard of the beam is chunk-aligned and a cross-rank " *
+        "fold could not reproduce the single-process sum bit for bit. Use a " *
+        "rank count that divides $(chunks): " *
+        join((p for p in 1:chunks if chunks % p == 0), ", ") * "."))
+    lo = _chunk_bounds(Int(global_n), chunks, Int(rank) * per_rank + 1)[1]
+    hi = _chunk_bounds(Int(global_n), chunks, (Int(rank) + 1) * per_rank)[2]
+    return lo:hi
+end
+
+"""
+    _mp_resolve_shard(local_n) -> (offset, global_n)
+
+Derive this rank's place in the global beam from the counts the ranks actually
+hold, and VERIFY that the local count is the one the shard rule prescribes.
+
+Derived rather than stored: nothing in the particle representation records
+which slice of a larger beam it is, and a field that said so could disagree
+with the array beside it. Summing the counts and re-deriving the rule cannot
+disagree with itself, and a beam that was built or split some other way fails
+here, loudly, instead of tracking with the wrong RNG streams and reducing into
+the wrong chunk slots.
+
+Issues one integer collective, so every rank must reach it -- it belongs at a
+run's entry, not inside a per-turn loop.
+"""
+function _mp_resolve_shard(local_n::Integer)
+    context = _multi_process_context()
+    (context === nothing || context.nranks == 1) && return (0, Int(local_n))
+    counts = zeros(Int, context.nranks)
+    counts[context.rank + 1] = Int(local_n)
+    _mp_allsum!(counts)
+    global_n = sum(counts)
+    expected = _mp_shard_range(global_n, context.nranks, context.rank)
+    length(expected) == Int(local_n) || throw(ArgumentError(
+        "rank $(context.rank) of $(context.nranks) holds $(local_n) particles, " *
+        "but the chunk-aligned shard of a $(global_n)-particle beam gives it " *
+        "$(length(expected)) (global indices $(expected)). Build the beam with " *
+        "`Beam(n_global, MultiProcessExecutionPolicy(...), ...)`, which shards " *
+        "it by this rule, or split it yourself on the same boundaries."))
+    return (first(expected) - 1, global_n)
+end
+
+"""
+This run's `(offset, global_n)`, set once at a run's entry so the per-turn
+folds inside it need no collective of their own.
+"""
+const _ACTIVE_SHARD = Base.ScopedValues.ScopedValue{Any}(nothing)
+
+_with_shard(f::F, shard) where {F} = Base.ScopedValues.with(f, _ACTIVE_SHARD => shard)
+
+"""
+    _mp_current_shard(local_n) -> (offset, global_n)
+
+The shard in force. Resolved once at a run's entry and read from the scope
+here; a caller that reaches a fold without having entered through a run pays
+the collective instead of getting a wrong answer.
+"""
+function _mp_current_shard(local_n::Integer)
+    shard = _ACTIVE_SHARD[]
+    shard === nothing && return _mp_resolve_shard(local_n)
+    return shard
+end
+
+"""
+    _mp_chunk_fold(partials, offset_chunk, nchunks_local) -> value
+
+Fold this rank's chunk partials into the global chunk-ordered sum.
+
+The single-process fold is `sum(partials)` over `_REDUCTION_CHUNKS` entries in
+chunk order. Across ranks each rank holds a contiguous run of those entries, so
+scattering them into their global slots, one all-sum, and the same ordered sum
+reproduces it exactly. The all-sum is over `_REDUCTION_CHUNKS` numbers, once
+per fold, whatever the beam size.
+"""
+function _mp_chunk_fold(partials::AbstractVector{T}, first_chunk::Integer) where {T}
+    context = _multi_process_context()
+    (context === nothing || context.nranks == 1) && return sum(partials)
+    global_partials = zeros(T, _REDUCTION_CHUNKS)
+    @inbounds for (j, value) in enumerate(partials)
+        global_partials[Int(first_chunk) + j - 1] = value
+    end
+    _mp_allsum!(global_partials)
+    return sum(global_partials)
+end
+
+"""The first global reduction chunk this rank owns (1 outside a sharded run)."""
+function _mp_first_chunk()
+    context = _multi_process_context()
+    (context === nothing || context.nranks == 1) && return 1
+    return context.rank * div(_REDUCTION_CHUNKS, context.nranks) + 1
+end
+
+"""The number of reduction chunks this rank owns."""
+function _mp_local_chunks()
+    context = _multi_process_context()
+    (context === nothing || context.nranks == 1) && return _REDUCTION_CHUNKS
+    return div(_REDUCTION_CHUNKS, context.nranks)
+end
+
 """
 Refuse a task run on a communicator this campaign has not yet taught to
 divide work.

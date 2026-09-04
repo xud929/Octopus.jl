@@ -195,6 +195,26 @@ teaches something reusable, it lands here (dated), and the full record goes to
   caught by the full gate, not the edit. Grep the whole `src/` tree for the
   old name or arity (Measured Lesson 12 in `comprehensive_audit.md`).
 
+## Derive a run's shape from what it holds, not from what it was told
+
+- A rank's slice of a divided beam is derived at the run's entry -- sum the
+  ranks' counts, re-derive the rule, check the local count against it -- rather
+  than stored in the representation (2026-09-04, step 3a). A stored field can
+  disagree with the array beside it; a derivation cannot disagree with itself,
+  and a beam split some other way then fails loudly instead of tracking with
+  the wrong random streams.
+- Two properties that look like they compose often do not. A beam's
+  standardization is a mean and variance over the WHOLE array, so a rank that
+  standardizes its own slice does not produce a slice of the standardized beam,
+  and no ordering of collectives recovers Julia's pairwise sum. Drawing the
+  whole beam on every rank and slicing costs one transient allocation and is
+  bit-identical by construction; the clever version is wrong.
+- A per-particle random stream keyed on an index makes sharding visible: the
+  divided run is identical everywhere until an element DRAWS, and then it is
+  different everywhere. Any test of a divided run should contain a drawing
+  element for that reason, with an anti-vacuity arm showing the comparison
+  fails without the offset.
+
 ## A type inner code dispatches on is a bad thing to wrap
 
 - The multi-process policy was designed as a wrapper around
@@ -217,6 +237,16 @@ teaches something reusable, it lands here (dated), and the full record goes to
   declares the fallback on `::Any` (or on `::Nothing` for the communicator
   argument) and the extension the specific method; the dispatch, not a
   mutable hook, is what selects it.
+- The docstring-detachment trap fired a third time (2026-09-04): a new
+  documented method inserted ABOVE an existing `function` line landed between
+  that function and ITS docstring, and the module refused to load with
+  "cannot document the following expression". Insert a documented method after
+  its neighbour's `end`, never before its neighbour's signature.
+- An accessor that reads the policy in force reports the single-process answer
+  outside an execution scope, which is correct and is also how a multi-rank
+  instrument came to label every line rank 0. An instrument that identifies
+  ranks should read the communicator, not the policy, and should read it after
+  the run has initialised MPI rather than at load time.
 
 ## Re-price accepted limitations after every campaign
 
