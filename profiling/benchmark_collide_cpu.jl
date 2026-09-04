@@ -54,14 +54,32 @@ set, and a sampling profile to OCTOPUS_BENCH_PROFILE_PATH when
 OCTOPUS_BENCH_PROFILE=1.
 =#
 
-if !isdefined(Main, :Octopus)
-    include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+# OCTOPUS_BENCH_MPI=1 runs the same fixed point divided across MPI ranks. It
+# requires PACKAGE mode -- `using Octopus`, not `include("src/Octopus.jl")` --
+# because a package extension activates in no other, and without OctopusMPIExt
+# a process under a launcher has no communicator and the policy refuses. The
+# two modes are exclusive: including the source defines `Main.Octopus`, which
+# a later `using Octopus` cannot then bind.
+const BENCH_MPI = get(ENV, "OCTOPUS_BENCH_MPI", "0") == "1"
+if BENCH_MPI
+    @eval using Octopus
+    @eval using MPI
+else
+    if !isdefined(Main, :Octopus)
+        include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+    end
+    @eval using .Octopus
 end
-using .Octopus
 using Printf
 using Profile
 using Dates
 
+# Only the soft-Gaussian solver divides today (campaign step 4a); the others
+# refuse, loudly, when asked to.
+#
+#     OCTOPUS_BENCH_MPI=1 OCTOPUS_BENCH_SOLVER=gaussian mpiexec -bind-to core \
+#         -n 16 julia --startup-file=no --threads=4 profiling/benchmark_collide_cpu.jl
+#
 env_int(name, default) = parse(Int, get(ENV, name, string(default)))
 env_bool(name, default) = get(ENV, name, default ? "1" : "0") in ("1", "true", "yes")
 
@@ -80,7 +98,14 @@ N_ELE > 0 && N_PRO > 0 || error("OCTOPUS_BENCH_N_ELE and _N_PRO must be positive
 
 set_global_rng!(seed = 123456789, method = :philox)
 
-policy = CPUThreadsExecutionPolicy(threads = :auto)
+policy = BENCH_MPI ? MultiProcessExecutionPolicy(threads = :auto) :
+                     CPUThreadsExecutionPolicy(threads = :auto)
+if BENCH_MPI && SOLVER != "gaussian"
+    error("OCTOPUS_BENCH_MPI=1 currently supports OCTOPUS_BENCH_SOLVER=gaussian " *
+          "only: the soft-Gaussian collide is the solver campaign step 4a " *
+          "divided. PIC, gaussian_pic and spectral need per-slice-pair grid " *
+          "all-sums and global mesh extrema, which are steps 4c onward.")
+end
 
 # The production case of test/examples/strong_strong_tracking.jl. Kept here as
 # literals rather than included from that harness: this script must stay a
@@ -198,8 +223,24 @@ function coordinate_digest(beams...)
     return h
 end
 
-@printf("solver=%s n_ele=%d n_pro=%d slices=%d grid=%d julia_threads=%d\n",
-        SOLVER, N_ELE, N_PRO, NSLICES, GRID, Threads.nthreads(:default))
+# Read from the communicator, not the policy field, and read once.
+const BENCH_RANK, BENCH_RANKS = let
+    resolved = Octopus._resolve_execution_policy(policy, beam_ele.rep)
+    Octopus._with_execution_policy(resolved) do
+        (Octopus._mp_rank(), Octopus._mp_nranks())
+    end
+end
+
+# One scope for the whole measurement: every reduction the collide issues sees
+# the communicator, and the shard is derived once instead of per collide.
+const BENCH_RESOLVED = Octopus._resolve_execution_policy(policy, beam_ele.rep)
+bench_scoped(f) = Octopus._with_execution_policy(BENCH_RESOLVED) do
+    Octopus._with_shard(f, Octopus._mp_resolve_shard(length(beam_ele.rep)))
+end
+
+@printf("solver=%s rank=%d ranks=%d n_ele=%d n_pro=%d local_ele=%d slices=%d grid=%d julia_threads=%d\n",
+        SOLVER, BENCH_RANK, BENCH_RANKS, N_ELE, N_PRO, length(beam_ele.rep),
+        NSLICES, GRID, Threads.nthreads(:default))
 
 # Two warm collides, not one: the first compiles and fills the Green cache
 # cold, the second is the first to run against a warm cache. Timing from a
@@ -207,8 +248,10 @@ end
 for w in 1:2
     restore!(beam_ele, snap_ele)
     restore!(beam_pro, snap_pro)
-    Octopus._strong_strong_collide_backend!(bench_task, BENCH_LABEL, solver, beam_ele, beam_pro,
-                                    CPUThreadsBackend, bench_ctx(w))
+    bench_scoped() do
+        Octopus._strong_strong_collide_backend!(bench_task, BENCH_LABEL, solver, beam_ele, beam_pro,
+                                        CPUThreadsBackend, bench_ctx(w))
+    end
 end
 
 times = Float64[]
@@ -223,16 +266,18 @@ for _ in 1:REPEATS
     gc0 = Base.gc_num()
     cpu0 = cpu_seconds()
     t0 = time_ns()
-    lum = Octopus._strong_strong_collide_backend!(bench_task, BENCH_LABEL, solver,
+    lum = bench_scoped() do
+        Octopus._strong_strong_collide_backend!(bench_task, BENCH_LABEL, solver,
                                           beam_ele, beam_pro, CPUThreadsBackend,
                                           bench_ctx(10 + length(times)))
+    end
     dt = (time_ns() - t0) / 1e9
     cpu = cpu_seconds() - cpu0
     gc1 = Base.gc_num()
     gc_s = (gc1.total_time - gc0.total_time) / 1e9
     nthreads = Threads.nthreads(:default)
-    @printf("  collide %.4f s   gc %.4f s (%.1f%%)   cpu %.1f s   util %.1f%%%s\n",
-            dt, gc_s, 100 * gc_s / dt, cpu, 100 * cpu / (dt * nthreads),
+    @printf("  rank %d collide %.4f s   gc %.4f s (%.1f%%)   cpu %.1f s   util %.1f%%%s\n",
+            BENCH_RANK, dt, gc_s, 100 * gc_s / dt, cpu, 100 * cpu / (dt * nthreads),
             get(ENV, "JULIA_THREAD_SLEEP_THRESHOLD", "") == "0" ? "" :
                 "   (idle threads spinning: util inflated)")
     push!(times, dt)

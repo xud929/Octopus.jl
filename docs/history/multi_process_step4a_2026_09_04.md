@@ -83,6 +83,30 @@ earlier fingerprint took the root-mean-square over the LOCAL shard and reported
 a 1.6% disagreement that was entirely its own. A quantity compared across rank
 counts has to be a quantity of the beam.
 
+## A defect this commit's own gate could not see
+
+`_slice_transverse_moments` was given the slice's GLOBAL member count as `n`,
+because that is the denominator its moments divide by. The local loops and the
+chunk grid kept using `n` too, so on a shard they ran past the end of a member
+list that holds only this rank's particles. With `@inbounds` that is a
+segmentation fault, and it was one: the divided collide died in the chunked
+moment path at the production point.
+
+Two things hid it. At one rank the two counts are the same number, so the full
+gate -- which is a single process -- could not reach it. And the divided probe
+that checked the collide used 4096 macroparticles over five slices, about 800
+members each, which is below the threshold where the moment reduction switches
+from a serial loop to the chunk grid: the crashing branch was never entered.
+It appeared the first time a divided run met a slice big enough to chunk,
+which was the production point at 640,000 by 256,000.
+
+The fix separates the two counts by name, `n_local` for every loop bound and
+chunk grid and `n` for the denominators, with the distinction stated where
+they are defined. The lesson for the rest of the campaign, now in
+`../experiences.md`: when a quantity acquires a global twin, every use of the
+original is a decision, and a name that no longer says which one it is will
+eventually be read the wrong way.
+
 ## What refuses
 
 `:equal_count` slicing orders the whole beam and cuts it into equal parts,

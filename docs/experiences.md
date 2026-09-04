@@ -195,6 +195,23 @@ teaches something reusable, it lands here (dated), and the full record goes to
   caught by the full gate, not the edit. Grep the whole `src/` tree for the
   old name or arity (Measured Lesson 12 in `comprehensive_audit.md`).
 
+## When a quantity acquires a global twin, rename both
+
+- A slice's member count became two numbers under sharding -- how many this
+  rank holds, and how many the slice has -- and one name was left doing both
+  jobs. The loops kept the global one and ran off the end of a local list;
+  with `@inbounds` that is a segmentation fault (2026-09-04, step 4a). It
+  survived a green full gate, because at one rank the two counts are equal and
+  the gate is a single process, and it survived the divided probe too, because
+  that probe's slices were below the size at which the reduction switches to
+  its chunked branch. It appeared only when a divided run met a slice big
+  enough to chunk.
+- Two habits follow. Name both quantities so a use has to choose, rather than
+  leaving the old name to mean whichever the reader assumes. And when a change
+  only manifests above a size threshold, the probe has to cross that threshold
+  -- a divided run at a size the code takes a different path for is a
+  different test.
+
 ## A global quantity does not make what is derived from it global
 
 - The longitudinal statistics of a divided beam were summed across the ranks

@@ -767,7 +767,14 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
     # a rank that returned early because its own shard held no member of this
     # slice would leave its peers waiting at the next one.
     divided = _mp_nranks() > 1
-    n = divided ? _mp_global_count(length(idx)) : length(idx)
+    # TWO counts, and confusing them is a segfault: `n_local` is how many
+    # members THIS rank holds and bounds every loop and chunk grid below,
+    # while `n` is how many the slice has and is the denominator the moments
+    # divide by. They are the same number in a single-process run, which is
+    # why a first cut used one for both and crashed only when a shard's slice
+    # crossed the chunking threshold.
+    n_local = length(idx)
+    n = divided ? _mp_global_count(n_local) : n_local
     if n == 0
         z = zero(T)
         floor2 = T(min_sigma) * T(min_sigma)
@@ -798,7 +805,11 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
     # neither may the serial/chunked decision (U5-2; moments moved by up to
     # 131,072 ulps between 1/4/8 workers pre-fix).
     nchunks = _REDUCTION_CHUNKS
-    if n < _STRONG_STRONG_PARALLEL_MOMENT_MIN
+    # Path choice and chunk grid on the LOCAL count: they are about the work
+    # this rank does. The fold's shape therefore depends on the shard size,
+    # which is a property of the rank count and not of the worker count -- the
+    # count-invariance U5-2 pinned is within a process and is untouched.
+    if n_local < _STRONG_STRONG_PARALLEL_MOMENT_MIN
         for i in idx
             @inbounds begin
                 dx = T(x[i]) - x0; dpx = T(px[i]) - px0
@@ -816,7 +827,7 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
     else
         local_sums = [zeros(T, COUPLED ? 14 : 10) for _ in 1:nchunks]
         _run_logical_workers(nchunks) do chunk, _
-            first_i, last_i = _chunk_bounds(n, nchunks, chunk)
+            first_i, last_i = _chunk_bounds(n_local, nchunks, chunk)
             sums = local_sums[chunk]
             for pos in first_i:last_i
                 @inbounds begin

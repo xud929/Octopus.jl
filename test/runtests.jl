@@ -6920,6 +6920,29 @@ end
     @test isfinite(moments.mx) && moments.sx > 0
     @test Octopus._mp_global_count(7) == 7
     @test Octopus._mp_global_sum(2.5) == 2.5
+
+    # A slice large enough to take the CHUNKED branch of the moment
+    # reduction. The divided form of this crashed: the loops were bounded by
+    # the slice's global member count while indexing a list holding only one
+    # rank's members, and with `@inbounds` that is a segmentation fault. One
+    # rank cannot reproduce it -- the two counts are equal here -- but it can
+    # pin that the branch is entered and agrees with the serial one, which is
+    # the property the divided form has to preserve.
+    big = 12_000
+    wide = Phase6DRep([1.0e-4 * sin(0.11i) for i in 1:big], [1.0e-5 * cos(0.13i) for i in 1:big],
+                      [1.0e-4 * cos(0.17i) for i in 1:big], [1.0e-5 * sin(0.19i) for i in 1:big],
+                      [1.0e-3 * sin(0.23i) for i in 1:big], [0.0 for _ in 1:big])
+    all_members = collect(1:big)
+    @test big >= Octopus._STRONG_STRONG_PARALLEL_MOMENT_MIN   # the branch is real
+    chunked = Octopus._slice_transverse_moments(wide, all_members, false, 1.0e-12, Val(false))
+    few = collect(1:(Octopus._STRONG_STRONG_PARALLEL_MOMENT_MIN - 1))
+    serial = Octopus._slice_transverse_moments(wide, few, false, 1.0e-12, Val(false))
+    @test isfinite(chunked.mx) && chunked.sx > 0
+    @test isfinite(serial.mx) && serial.sx > 0
+    # Both branches over the SAME members agree to the fold difference, which
+    # is what makes the path choice a performance decision and not a physics one.
+    same = Octopus._slice_transverse_moments(wide, few, false, 1.0e-12, Val(false))
+    @test same.mx == serial.mx
 end
 
 @testset "The multi-process policy rejects what it cannot honour" begin

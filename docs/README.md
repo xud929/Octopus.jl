@@ -321,6 +321,12 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   and why, the per-fix measurements with their bitwise-parity digests, and the
   machine-level findings — idle-thread spin, GC share, and why a pool wider
   than the data's parallelism costs rather than pays),
+  [`multi_process_strongstrong_scaling_2026_09_04.md`](history/multi_process_strongstrong_scaling_2026_09_04.md)
+  (the soft-Gaussian collide's rank scaling: 11.7x at sixteen ranks against
+  2.15x for the best threaded configuration, which settles the recorded
+  "gaussian collide flatline" as a property of threads and not of the solver;
+  and the counted 1874 collectives per collide that turn the curve over past
+  sixteen),
   [`multi_process_step4a_2026_09_04.md`](history/multi_process_step4a_2026_09_04.md)
   (the soft-Gaussian collide divided: five per-slice reductions, the shared
   shift origin, bit-identical slice boundaries, and the histogram whose
