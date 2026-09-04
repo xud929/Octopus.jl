@@ -258,12 +258,17 @@ function _lane_z_moment(z::AbstractVector, flags, μ, ::Val{POW};
         v = POW == 2 ? (z[i] - μ) * (z[i] - μ) : z[i]
         acc[((i + Int(offset) - 1) % L) + 1] += v
     end
-    _mp_nranks() == 1 || _mp_lane_fold!(acc)
     s = zero(T)
     @inbounds for t in 1:L
         s += acc[t]
     end
-    return s
+    # The ranks exchange the FOLDED scalar, not the 4096 lanes. Exchanging
+    # lanes would keep the fold's shape across processes, but the shape is
+    # already broken by the split within a lane -- a rank's partial starts
+    # from zero where the undivided accumulation would have carried in
+    # everything before it -- so it buys precision that is not there while
+    # costing 4096x the bytes, which is 32 KB per call per rank against 8.
+    return _mp_global_sum(s)
 end
 
 """Lane-shaped Σ z[idx[k]] over a slice's member list, in list order; the
@@ -275,17 +280,18 @@ function _lane_indexed_sum(z::AbstractVector, idx)
     @inbounds for k in eachindex(idx)
         acc[((k - 1) % L) + 1] += z[idx[k]]
     end
-    # Keyed by the member's POSITION in the list, which is per-slice data no
-    # fixed particle distribution aligns with, so a divided run groups these
-    # differently from an undivided one. Every member is still counted exactly
-    # once; the difference is the accumulation, and it is the parity tolerance
-    # class the campaign prices (docs/design/multi_process_policy.md).
-    _mp_nranks() == 1 || _mp_lane_fold!(acc)
     s = zero(T)
     @inbounds for t in 1:L
         s += acc[t]
     end
-    return s
+    # Keyed by the member's POSITION in the list, which is per-slice data no
+    # fixed particle distribution aligns with, so a divided run groups these
+    # differently from an undivided one however the exchange is shaped. Every
+    # member is still counted exactly once; the difference is the
+    # accumulation, and it is the parity tolerance class the campaign prices
+    # (docs/design/multi_process_policy.md). So the ranks exchange the folded
+    # scalar rather than the lanes.
+    return _mp_global_sum(s)
 end
 
 """

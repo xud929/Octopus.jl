@@ -195,6 +195,25 @@ teaches something reusable, it lands here (dated), and the full record goes to
   caught by the full gate, not the edit. Grep the whole `src/` tree for the
   old name or arity (Measured Lesson 12 in `comprehensive_audit.md`).
 
+## Measure the machine you are on, and only that
+
+- A rank-scaling table came out non-monotonic with a peak at sixteen ranks,
+  which the owner spotted as suspicious because the beam had fifteen slices.
+  It was two artifacts and one real effect. The first table bound each rank to
+  a core, which confines all of that rank's threads there, so every cell with
+  more than one thread per rank was oversubscribed and the numbers described
+  the binding flag. The second ran two repeats on a box that was not idle --
+  and one of the runs was contaminated by a test suite this session started
+  itself while the sweep was going. At five repeats the run-to-run spread was
+  176% at sixteen ranks and 1760% at sixty-four, which is the real effect:
+  1874 synchronisation points per collide amplify any one rank's jitter
+  (2026-09-04).
+- So: vary one axis at a time, check the load average at each launch and
+  record it, use enough repeats to see the spread rather than a point, and do
+  not run anything else on the box -- including this project's own suite --
+  while measuring. A spread column would have caught all three sooner than a
+  median column did.
+
 ## When a quantity acquires a global twin, rename both
 
 - A slice's member count became two numbers under sharding -- how many this

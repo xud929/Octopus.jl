@@ -6943,6 +6943,23 @@ end
     # is what makes the path choice a performance decision and not a physics one.
     same = Octopus._slice_transverse_moments(wide, few, false, 1.0e-12, Val(false))
     @test same.mx == serial.mx
+
+    # `_run_logical_workers` runs its grid inline when the pool holds one
+    # thread, because spawning a task per chunk buys nothing there. The
+    # property that makes it safe is that the workers write disjoint slots in
+    # worker order, so inline and spawned produce the same array; assert that
+    # directly, since the suite's own pool decides which branch runs here.
+    seen = zeros(Int, 16)
+    Octopus._run_logical_workers(16) do w, n
+        seen[w] = w * 10 + n
+    end
+    @test seen == [w * 10 + 16 for w in 1:16]
+    # And the one-worker case is the grid of one, not a special answer.
+    solo = Int[]
+    Octopus._run_logical_workers(1) do w, n
+        push!(solo, w + n)
+    end
+    @test solo == [2]
 end
 
 @testset "The multi-process policy rejects what it cannot honour" begin
@@ -7167,6 +7184,22 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             for k in keys(one)
                 @test isapprox(one[k], two[k]; rtol=1.0e-12, atol=0.0)
             end
+
+            # The child runs at ONE thread, where `_run_logical_workers` runs
+            # its chunk grid inline instead of spawning a task per chunk --
+            # a pool of one cannot run two things at once, and a
+            # strong-strong collide asks for ~900 of those grids per turn.
+            # The inline path writes the same slots in the same order, so it
+            # must give the same numbers as this process's spawning one; the
+            # suite runs at four threads, so this comparison is the only
+            # place the two paths meet.
+            b1, b2 = _mpi_check_collide_beams(CPUThreadsExecutionPolicy())
+            reference_lum = collide!(_mpi_check_gaussian_solver(), b1, b2,
+                                     CPUThreadsBackend)
+            @test isapprox(one["lum"], reference_lum; rtol=1.0e-12, atol=0.0)
+            reference_sig = _mpi_check_collide_signature(b1.rep)
+            @test isapprox(one["maxpx"], reference_sig.maxpx; rtol=1.0e-12, atol=0.0)
+            @test isapprox(one["rmspx"], reference_sig.rmspx; rtol=1.0e-12, atol=0.0)
 
             # The shard rule itself, as the ranks report having applied it.
             offsets = [parse(Int, match(r"offset=(\d+)", line).captures[1])

@@ -818,6 +818,22 @@ function _run_logical_workers(f::F, workers::Integer=_cpu_worker_count()) where 
         f(1, 1)
         return nothing
     end
+    if Threads.nthreads(:default) == 1
+        # A pool of one cannot run two things at once, so spawning `nworkers`
+        # tasks buys nothing and costs a spawn and a join each. Running them
+        # inline IN WORKER ORDER writes exactly the same slots -- the callers
+        # give each worker its own -- so the fold that follows is unchanged
+        # and this is a pure removal of overhead. It matters because the
+        # fixed chunk grids are 16 and 64 wide whatever the pool is: a
+        # strong-strong collide issues about 900 of these per turn, which at
+        # one thread was ~57,600 spawns for no parallelism, and one thread per
+        # rank is the configuration that scales best under MPI
+        # (docs/history/multi_process_strongstrong_scaling_2026_09_04.md).
+        for worker in 1:nworkers
+            f(worker, nworkers)
+        end
+        return nothing
+    end
     try
         @sync for worker in 1:nworkers
             Threads.@spawn f(worker, nworkers)
