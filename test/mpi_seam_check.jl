@@ -202,4 +202,44 @@ let policy = MultiProcessExecutionPolicy(threads=1)
             fail("action refusal was $(threw) at $(Octopus._mp_nranks()) rank(s)")
     end
 end
+
+# --- step 4a: the soft-Gaussian collide divides ---------------------------
+#
+# Strong-strong is a different shape from tracking: both beams are sliced and
+# every slice pair interacts, so the reductions are per slice rather than per
+# beam. What has to span the ranks is the slicing (its statistics AND the
+# histogram its boundaries are cut from), each slice's transverse moments and
+# weight, and the luminosity. The kick itself is local.
+let policy = MultiProcessExecutionPolicy(threads=1)
+    b1, b2 = _mpi_check_collide_beams(policy)
+    resolved = Octopus._resolve_execution_policy(policy, b1.rep)
+    Octopus._with_execution_policy(resolved) do
+        Octopus._with_shard(Octopus._mp_resolve_shard(length(b1.rep))) do
+            slices = Octopus.longitudinal_slices(
+                b1.rep, Octopus.LongitudinalSlicing(nslices=5, method=:equal_area))
+            if Octopus._mp_is_root()
+                println("MPI-SLICE bound ", join((repr(v) for v in slices.boundary), " "))
+                println("MPI-SLICE weight ", join((repr(v) for v in slices.weight), " "))
+            end
+            lum = collide!(_mpi_check_gaussian_solver(), b1, b2, CPUThreadsBackend)
+            sig = _mpi_check_collide_signature(b1.rep)
+            Octopus._mp_is_root() && println("MPI-COLLIDE lum=", repr(lum),
+                                             " maxpx=", repr(sig.maxpx),
+                                             " rmspx=", repr(sig.rmspx),
+                                             " rmspy=", repr(sig.rmspy))
+
+            # `:equal_count` orders the whole beam, which is a sort and not a
+            # fold, so it refuses rather than cutting a shard's boundaries.
+            threw = try
+                Octopus.longitudinal_slices(
+                    b1.rep, Octopus.LongitudinalSlicing(nslices=5, method=:equal_count))
+                false
+            catch err
+                err isa ArgumentError && occursin("global ordering", sprint(showerror, err))
+            end
+            threw == (Octopus._mp_nranks() > 1) ||
+                fail("equal_count refusal was $(threw) at $(Octopus._mp_nranks()) rank(s)")
+        end
+    end
+end
 flush(stdout)

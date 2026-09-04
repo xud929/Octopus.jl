@@ -321,6 +321,10 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   and why, the per-fix measurements with their bitwise-parity digests, and the
   machine-level findings — idle-thread spin, GC share, and why a pool wider
   than the data's parallelism costs rather than pays),
+  [`multi_process_step4a_2026_09_04.md`](history/multi_process_step4a_2026_09_04.md)
+  (the soft-Gaussian collide divided: five per-slice reductions, the shared
+  shift origin, bit-identical slice boundaries, and the histogram whose
+  locality made the luminosity 11% wrong until it was found),
   [`multi_process_step3c_2026_09_04.md`](history/multi_process_step3c_2026_09_04.md)
   (per-particle output across ranks: a gather in the seam, the global particle
   id restored from the shard offset, and the defect it exposed -- a collective

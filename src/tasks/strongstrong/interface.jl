@@ -2305,6 +2305,11 @@ end
 
 function _execute_strong_strong_task!(
         task, beam1, beam2, turns::Int, first_turn::Int64, policy)
+    # The soft-Gaussian COLLIDE divides (campaign step 4a): its slicing
+    # statistics, slice moments, weights and luminosity all reduce across the
+    # ranks. The strong-strong TASK does not yet -- its turn loop, observers
+    # and artifact are the wiring step 4b adds -- so the task still refuses
+    # and the solver is reachable divided through `collide!`.
     _reject_unsharded_multi_process("a StrongStrongTask")
     _warn_inactive_diagnostics(task.diagnostics, backend_type(policy))
     _record_execution!(:strong_strong_diagnostics, backend_type(policy), (

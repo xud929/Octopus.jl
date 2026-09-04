@@ -200,6 +200,30 @@ the rep this rank holds, and Octopus cannot know whether it means to see a
 shard. Line observers are Octopus's own and divide, so the refusal
 distinguishes a line carrying an observer from one carrying an action.
 
+## Step 4a: the soft-Gaussian collide
+
+Strong-strong is a different shape: both beams are sliced, every slice pair
+interacts, and the loop's earlier iterations change the beams its later ones
+read, so the moments cannot be hoisted out of it. Five reductions span the
+ranks: the longitudinal statistics, the histogram the equal-area boundaries
+are cut from, each slice's transverse moments, each slice's weight and
+centroid, and the luminosity. The kick stays local.
+
+The slice boundaries are the one place a tolerance is not acceptable. They
+decide which particle is in which slice, so a disagreement between ranks is a
+different collision rather than a small error. They come out bit-identical,
+and the measured agreement of the collide's aggregates is about 5e-16
+([`../history/multi_process_step4a_2026_09_04.md`](../history/multi_process_step4a_2026_09_04.md)).
+
+The shifted moments need a shared origin, because two ranks shifting about
+different ones produce sums that cannot be added. It is the slice's
+globally-first member, found with a minimum over the global index and then
+summed from the single rank that owns it.
+
+`:equal_count` slicing refuses: it orders the whole beam, which is a sort and
+not a fold. The other four methods size their boundaries from reductions that
+are now global.
+
 ## The CPU, MPI and CUDA consistency statement
 
 Three execution modes, and the relation between them is asserted in two

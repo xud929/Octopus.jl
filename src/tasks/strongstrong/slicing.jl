@@ -59,6 +59,20 @@ function longitudinal_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
     flags === nothing || count(flags) > 0 || throw(ArgumentError(
         "longitudinal slicing requires at least one live particle; " *
         "all $(length(rep.z)) are non-finite"))
+    # `:equal_count` orders the whole beam and cuts it into equal parts, which
+    # is a global sort rather than a fold: a rank can sort its own shard but
+    # not learn where its particles sit in the beam's order without moving
+    # them. Every other method sizes its boundaries from the longitudinal
+    # statistics, which ARE folds and are already global.
+    if method == :equal_count && _mp_nranks() > 1
+        throw(ArgumentError(
+            "longitudinal slicing method :equal_count needs a global ordering " *
+            "of the beam, which the collective seam does not provide, so it " *
+            "cannot run on the $(_mp_nranks()) ranks in force. Every other " *
+            "method sizes its boundaries from the longitudinal statistics, " *
+            "which are summed across the ranks: :equal_area, :equal_width, " *
+            ":normal_quantile and :specified all run divided."))
+    end
     if method == :equal_area
         return _longitudinal_slices_equal_area(rep, slicing, flags)
     elseif method == :equal_count
@@ -95,10 +109,15 @@ function _strong_strong_luminosity_scales(solver, beam1, beam2)
         return solver.luminosity_scale, solver.luminosity_scale
     end
     p1, p2 = beam1.params, beam2.params
-    length(beam1.rep) == 0 && throw(ArgumentError("strong-strong luminosity requires a nonempty beam1"))
-    length(beam2.rep) == 0 && throw(ArgumentError("strong-strong luminosity requires a nonempty beam2"))
-    return p1.npart * p2.npart / length(beam1.rep),
-           p1.npart * p2.npart / length(beam2.rep)
+    # The macroparticle counts here are the BEAMS', not the shards': the scale
+    # turns a per-macroparticle overlap into a physical luminosity, and a rank
+    # dividing by its own count would scale its contribution by the rank count.
+    n1 = _mp_global_count(length(beam1.rep))
+    n2 = _mp_global_count(length(beam2.rep))
+    n1 == 0 && throw(ArgumentError("strong-strong luminosity requires a nonempty beam1"))
+    n2 == 0 && throw(ArgumentError("strong-strong luminosity requires a nonempty beam2"))
+    return p1.npart * p2.npart / n1,
+           p1.npart * p2.npart / n2
 end
 
 function _longitudinal_slices_equal_area(rep::Phase6DRep, slicing::LongitudinalSlicing, flags)
@@ -120,6 +139,7 @@ function _longitudinal_slices_equal_area(rep::Phase6DRep, slicing::LongitudinalS
     end
     width = (zmax - zmin) / bins
     counts = _threaded_histogram(z, zmin, width, bins, flags)
+    _mp_nranks() == 1 || _mp_allsum!(counts)
     cumulative = cumsum(counts) ./ max(stats.n_live, 1)
     cumulative[end] = one(T)
     centers = [T(zmin + (i - 0.5) * width) for i in 1:bins]
@@ -224,15 +244,21 @@ const _SLICE_FOLD_LANES = 4096
 
 """Lane-shaped Σ f(z_i) over live particles; the CUDA z-stats kernels
 implement exactly this fold (see `_cuda_lane_z_moment_kernel!`)."""
-function _lane_z_moment(z::AbstractVector, flags, μ, ::Val{POW}) where {POW}
+function _lane_z_moment(z::AbstractVector, flags, μ, ::Val{POW};
+                        offset::Integer=0) where {POW}
     T = eltype(z)
     L = _SLICE_FOLD_LANES
     acc = zeros(T, L)
+    # Lanes are keyed by the GLOBAL particle index, so a divided beam puts each
+    # particle in the lane it would have occupied undivided. The ranks then
+    # exchange lane partials rather than scalars, which keeps the fold's shape
+    # across processes even though the accumulation within a lane is split.
     @inbounds for i in eachindex(z)
         _flag_live(flags, i) || continue
         v = POW == 2 ? (z[i] - μ) * (z[i] - μ) : z[i]
-        acc[((i - 1) % L) + 1] += v
+        acc[((i + Int(offset) - 1) % L) + 1] += v
     end
+    _mp_nranks() == 1 || _mp_lane_fold!(acc)
     s = zero(T)
     @inbounds for t in 1:L
         s += acc[t]
@@ -249,6 +275,12 @@ function _lane_indexed_sum(z::AbstractVector, idx)
     @inbounds for k in eachindex(idx)
         acc[((k - 1) % L) + 1] += z[idx[k]]
     end
+    # Keyed by the member's POSITION in the list, which is per-slice data no
+    # fixed particle distribution aligns with, so a divided run groups these
+    # differently from an undivided one. Every member is still counted exactly
+    # once; the difference is the accumulation, and it is the parity tolerance
+    # class the campaign prices (docs/design/multi_process_policy.md).
+    _mp_nranks() == 1 || _mp_lane_fold!(acc)
     s = zero(T)
     @inbounds for t in 1:L
         s += acc[t]
@@ -278,16 +310,41 @@ function _live_z_stats(z::AbstractVector, flags)
         zmin = min(zmin, zi); zmax = max(zmax, zi)
         n_live += 1
     end
+    # These five numbers set the slice boundaries, and every rank must get the
+    # SAME ones or the ranks disagree about which particle is in which slice --
+    # which is not a small difference but a different collision. Count and
+    # extrema are order-independent and therefore exact at any rank count; the
+    # mean and sigma go through the lane fold below, which carries the shard
+    # offset so lanes match.
+    offset = 0
+    if _mp_nranks() > 1
+        offset, _ = _mp_current_shard(length(z))
+        counts = [n_live]
+        _mp_allsum!(counts)
+        n_live = counts[1]
+        zmin, zmax = _mp_allminmax(zmin, zmax)
+    end
     n_live == 0 && return (n_live=0, zmin=T(NaN), zmax=T(NaN), mean=T(NaN), sigma=T(NaN))
     # Mean and sigma through the canonical lane fold (U6-7), so the CUDA
     # twin's kernels produce bit-identical values; NaN from live input still
     # propagates through the lane sums exactly as it did serially.
-    μ = _lane_z_moment(z, flags, zero(T), Val(1)) / n_live
-    s2 = _lane_z_moment(z, flags, μ, Val(2))
+    μ = _lane_z_moment(z, flags, zero(T), Val(1); offset=offset) / n_live
+    s2 = _lane_z_moment(z, flags, μ, Val(2); offset=offset)
     return (n_live=n_live, zmin=zmin, zmax=zmax, mean=μ,
             sigma=sqrt(max(s2 / n_live, zero(T))))
 end
 
+"""
+Bin the live particles by `z`, over the WHOLE beam.
+
+The counts are integers, so the cross-rank sum is exact whatever order it
+takes -- and it has to happen, because these counts are the empirical
+distribution the equal-area boundaries are cut from. A rank binning only its
+own shard cuts the boundaries of a beam it cannot see: measured, at two and
+four ranks the boundaries bunched into the top of the distribution and left
+whole slices empty, while the longitudinal statistics beside them were already
+exact and agreed.
+"""
 function _threaded_histogram(z, zmin, width, bins::Int, flags=nothing)
     nchunks = _cpu_worker_count()
     if nchunks == 1
@@ -537,18 +594,30 @@ function _finish_longitudinal_slices(rep::Phase6DRep, slicing, indices, boundari
     # Weights are a fraction of the *live* beam, so they still sum to one when
     # part of the beam is dead. Dividing by the full length would silently scale
     # every slice weight -- and therefore every kick -- by the survival ratio.
-    total = _live_count(flags, length(z))
+    # The whole beam's live count, so a slice's weight is its share of the
+    # BEAM and not of the shard -- every kick scales with it.
+    total = _mp_nranks() == 1 ? _live_count(flags, length(z)) :
+            _masked_global_count(k -> _flag_live(flags, k), length(z))
     ns = length(indices)
     centers = Vector{T}(undef, ns)
     weights = Vector{T}(undef, ns)
     for s in 1:ns
         idx = indices[s]
-        weights[s] = length(idx) / total
+        members = _mp_nranks() == 1 ? length(idx) : _mp_global_count(length(idx))
+        weights[s] = members / total
         if slicing.center_position == :centroid
             # Canonical lane fold (U6-7): the CUDA centroid kernel and the
             # equal-count host path fold the same member list the same way.
-            centers[s] = isempty(idx) ? (boundaries[s] + boundaries[s + 1]) / 2 :
-                         _lane_indexed_sum(z, idx) / length(idx)
+            centers[s] = if _mp_nranks() == 1
+                isempty(idx) ? (boundaries[s] + boundaries[s + 1]) / 2 :
+                _lane_indexed_sum(z, idx) / length(idx)
+            else
+                # `_lane_indexed_sum` is itself a collective, so every rank
+                # calls it whether or not it holds members of this slice.
+                total_z = _lane_indexed_sum(z, idx)
+                members == 0 ? (boundaries[s] + boundaries[s + 1]) / 2 :
+                               total_z / members
+            end
         elseif slicing.center_position == :midpoint
             centers[s] = (boundaries[s] + boundaries[s + 1]) / 2
         else
@@ -667,12 +736,38 @@ _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
 @inline _shifted_cross_moment(sum12, mean_offset1, mean_offset2, invn) =
     muladd(-mean_offset1, mean_offset2, sum12 * invn)
 
+"""
+The transverse coordinates of a slice's globally-first member, on every rank.
+
+Two collectives and no gather: the ranks agree on WHICH particle it is with a
+minimum over the global index each holds, and then the one rank that owns it
+contributes its coordinates while the others contribute zeros, so the sum is
+that rank's values exactly.
+"""
+function _mp_slice_reference(rep::Phase6DRep, idx::Vector{Int}, ::Type{T}) where {T}
+    offset, _ = _mp_current_shard(length(rep.z))
+    mine = isempty(idx) ? typemax(Int) : offset + idx[1]
+    first_global, _ = _mp_allminmax(mine, mine)
+    values = zeros(T, 4)
+    if !isempty(idx) && offset + idx[1] == first_global
+        i = idx[1]
+        @inbounds values .= (T(rep.x[i]), T(rep.px[i]), T(rep.y[i]), T(rep.py[i]))
+    end
+    _mp_allsum!(values)
+    return (values[1], values[2], values[3], values[4])
+end
+
 function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
                                    ignore_centroid::Bool, min_sigma,
                                    ::Val{COUPLED}) where {COUPLED}
     x, px, y, py = rep.x, rep.px, rep.y, rep.py
     T = promote_type(eltype(x), typeof(min_sigma))
-    n = length(idx)
+    # The count is the WHOLE slice's, so every rank agrees on whether the slice
+    # is empty and therefore on whether the collectives below happen at all --
+    # a rank that returned early because its own shard held no member of this
+    # slice would leave its peers waiting at the next one.
+    divided = _mp_nranks() > 1
+    n = divided ? _mp_global_count(length(idx)) : length(idx)
     if n == 0
         z = zero(T)
         floor2 = T(min_sigma) * T(min_sigma)
@@ -682,10 +777,17 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
                 my=z, sy=T(min_sigma), mpy=z, spy=z, covypy=z,
                 moments=moments)
     end
-    first_particle = idx[1]
-    @inbounds begin
-        x0 = T(x[first_particle]); px0 = T(px[first_particle])
-        y0 = T(y[first_particle]); py0 = T(py[first_particle])
+    # The shift reference. Every rank must use the SAME one: these are shifted
+    # moments, and two ranks shifting by different origins produce sums that
+    # cannot be added. Undivided it is the slice's first member, as it has
+    # always been; divided it is the first member GLOBALLY, which is that same
+    # particle.
+    x0, px0, y0, py0 = if divided
+        _mp_slice_reference(rep, idx, T)
+    else
+        first_particle = idx[1]
+        @inbounds (T(x[first_particle]), T(px[first_particle]),
+                   T(y[first_particle]), T(py[first_particle]))
     end
     sdx = zero(T); sdpx = zero(T); sdy = zero(T); sdpy = zero(T)
     sdx2 = zero(T); sdpx2 = zero(T); sdy2 = zero(T); sdpy2 = zero(T)
@@ -742,6 +844,23 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
                 sdxy += sums[11]; sdxpy += sums[12]
                 sdpxy += sums[13]; sdpxpy += sums[14]
             end
+        end
+    end
+    if divided
+        # One message per slice, carrying the ten or fourteen shifted sums.
+        # The kick that follows is local, so this is the only exchange the
+        # soft-Gaussian path needs per slice.
+        packed = COUPLED ?
+            T[sdx, sdpx, sdy, sdpy, sdx2, sdpx2, sdy2, sdpy2, sdxpx, sdypy,
+              sdxy, sdxpy, sdpxy, sdpxpy] :
+            T[sdx, sdpx, sdy, sdpy, sdx2, sdpx2, sdy2, sdpy2, sdxpx, sdypy]
+        _mp_allsum!(packed)
+        sdx, sdpx, sdy, sdpy = packed[1], packed[2], packed[3], packed[4]
+        sdx2, sdpx2, sdy2, sdpy2 = packed[5], packed[6], packed[7], packed[8]
+        sdxpx, sdypy = packed[9], packed[10]
+        if COUPLED
+            sdxy, sdxpy = packed[11], packed[12]
+            sdpxy, sdpxpy = packed[13], packed[14]
         end
     end
     invn = inv(T(n))

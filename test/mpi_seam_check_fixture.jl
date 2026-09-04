@@ -113,3 +113,38 @@ function _mpi_check_perparticle_signature(path)
             loss_ids=sort(Int.(losses.particle_id)),
             summary=losses.summary)
 end
+
+# --- step 4a fixtures: the soft-Gaussian collide ---------------------------
+
+"""Two beams and a soft-Gaussian solver, built by formula so both sides get
+the same ones. `:equal_area` because its boundaries come from a histogram of
+the beam, which is the reduction that has to span the ranks."""
+function _mpi_check_collide_beams(policy)
+    mk() = begin
+        Octopus.set_global_rng!(seed=1234, method=:philox)
+        Octopus.Beam(4096, policy, Float64; rng_id=1, beta=(1.0, 1.0, 1.0),
+                     emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11)
+    end
+    return mk(), mk()
+end
+
+_mpi_check_gaussian_solver() = Octopus.GaussianPoissonSolver(
+    kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+    slicing=Octopus.LongitudinalSlicing(nslices=5, method=:equal_area))
+
+"""
+A compact fingerprint of a collided beam: the kicks' extreme and their
+root-mean-square, at full precision, over the WHOLE beam.
+
+Compact because the comparison ships through a child's stdout, and sufficient
+because the kick is what the collide does. Global because a shard's own
+root-mean-square is not the beam's -- an early version of this compared local
+ones and reported a 1.6% disagreement that was entirely the fingerprint's.
+"""
+function _mpi_check_collide_signature(rep)
+    px, py = Array(rep.px), Array(rep.py)
+    n = Octopus._mp_global_count(length(px))
+    total(v) = Octopus._mp_global_sum(sum(abs2, v))
+    peak = Octopus._mp_allminmax(maximum(abs, px), maximum(abs, px))[2]
+    return (maxpx=peak, rmspx=sqrt(total(px) / n), rmspy=sqrt(total(py) / n))
+end

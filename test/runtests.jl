@@ -6892,6 +6892,36 @@ end
     @test !Octopus._has_line_actions(())
 end
 
+@testset "Strong-strong slicing reduces the whole beam" begin
+    # Multi-process step 4a. At one rank every reduction below is what it was;
+    # the divided halves are measured under a launcher. What is checkable here
+    # is that the boundaries come from the beam's own distribution and that
+    # the method needing a global ORDER is the one singled out.
+    n = 4000
+    rep = Phase6DRep([1.0e-4 * sin(0.7i) for i in 1:n], [0.0 for _ in 1:n],
+                     [1.0e-4 * cos(0.7i) for i in 1:n], [0.0 for _ in 1:n],
+                     [1.0e-3 * sin(0.3i) for i in 1:n], [0.0 for _ in 1:n])
+    stats = Octopus._live_z_stats(rep.z, nothing)
+    @test stats.n_live == n
+    @test stats.zmin < stats.mean < stats.zmax
+    # Equal-area boundaries are cut from a histogram of the beam, which is the
+    # reduction that has to span the ranks; the weights it produces are the
+    # evidence it saw the whole distribution.
+    slices = longitudinal_slices(rep, LongitudinalSlicing(nslices=5, method=:equal_area))
+    @test length(slices.weight) == 5
+    @test sum(slices.weight) ≈ 1.0
+    @test all(w -> 0.15 < w < 0.25, slices.weight)   # genuinely equal-area
+    @test issorted(slices.boundary)
+
+    # The slice moments shift by the slice's first member; at one rank that is
+    # the member it has always been.
+    moments = Octopus._slice_transverse_moments(rep, slices.indices[1], false, 1.0e-9,
+                                                Val(false))
+    @test isfinite(moments.mx) && moments.sx > 0
+    @test Octopus._mp_global_count(7) == 7
+    @test Octopus._mp_global_sum(2.5) == 2.5
+end
+
 @testset "The multi-process policy rejects what it cannot honour" begin
     # Constructor-time rejections: shape errors, caught before anything runs.
     @test_throws ArgumentError MultiProcessExecutionPolicy(ranks=0)
@@ -7090,6 +7120,30 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             @test occursin("particles=$(_mpi_check_global_n())",
                            first(tagged(out1, "MPI-LOSSSUM ")))
             @test length(split(first(tagged(out1, "MPI-SNAPIDS ")), ",")) == 24
+
+            # --- step 4a: the soft-Gaussian collide ----------------------
+            #
+            # Strong-strong is a different shape from tracking: both beams are
+            # sliced and every pair interacts, so the reductions are per slice.
+            # The slicing must come out IDENTICAL -- boundaries decide which
+            # particle is in which slice, and a disagreement there is a
+            # different collision, not a small error -- while the collide's
+            # aggregates are compared at the parity tolerance.
+            slicing_lines(out) = [line for line in split(out, '\n')
+                                  if startswith(line, "MPI-SLICE ")]
+            @test length(slicing_lines(out1)) == 2
+            @test slicing_lines(out1) == slicing_lines(out2)   # bit for bit
+
+            collide_values(out) = Dict(m.captures[1] => parse(Float64, m.captures[2])
+                                       for line in split(out, '\n')
+                                       if startswith(line, "MPI-COLLIDE ")
+                                       for m in eachmatch(r"(\w+)=([-\d.e+]+)", line))
+            one, two = collide_values(out1), collide_values(out2)
+            @test Set(keys(one)) == Set(["lum", "maxpx", "rmspx", "rmspy"])
+            @test one["lum"] > 0 && one["maxpx"] > 0        # anti-vacuity
+            for k in keys(one)
+                @test isapprox(one[k], two[k]; rtol=1.0e-12, atol=0.0)
+            end
 
             # The shard rule itself, as the ranks report having applied it.
             offsets = [parse(Int, match(r"offset=(\d+)", line).captures[1])

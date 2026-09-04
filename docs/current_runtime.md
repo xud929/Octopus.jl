@@ -147,8 +147,8 @@ monitors, loss counts -- reduce across the ranks, and rank 0 writes the one
 output file. Per-particle output -- aperture loss rows, coordinate snapshots -- carries the
 global particle id and is gathered onto rank 0, which writes the one file.
 Still refused at more than one rank: task and line ACTIONS, which are
-callbacks Octopus cannot reason about; and a strong-strong task refuses
-outright
+callbacks Octopus cannot reason about; and a strong-strong task still refuses outright, though the
+soft-Gaussian `collide!` itself divides
 (`design/multi_process_policy.md`, campaign step 3a of 4).
 
 Measured on the 64-core, 128-thread box at the production point

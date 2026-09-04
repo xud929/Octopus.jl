@@ -18,7 +18,11 @@ function collide!(solver::GaussianPoissonSolver, beam1::Beam, beam2::Beam, ::Typ
             kbb1, kbb2, klum1, klum2,
         )
     end
-    return luminosity
+    # Once per collide, not once per pair: each rank's per-pair contributions
+    # accumulate locally in collision order and the ranks exchange one number
+    # at the end. Per-pair exchange would cost a message per slice pair and
+    # buy nothing -- no consumer reads a single pair's luminosity here.
+    return _mp_global_sum(luminosity)
 end
 
 function _cpu_gaussian_slice_pair!(solver::GaussianPoissonSolver{T,D,COUPLED,LONGITUDINAL},

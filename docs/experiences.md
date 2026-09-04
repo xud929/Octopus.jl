@@ -195,6 +195,20 @@ teaches something reusable, it lands here (dated), and the full record goes to
   caught by the full gate, not the edit. Grep the whole `src/` tree for the
   old name or arity (Measured Lesson 12 in `comprehensive_audit.md`).
 
+## A global quantity does not make what is derived from it global
+
+- The longitudinal statistics of a divided beam were summed across the ranks
+  and agreed to the bit, and the slice boundaries derived from them were still
+  wrong at two and four ranks -- because equal-area boundaries are cut from a
+  HISTOGRAM of the beam, a different reduction that had to be found separately
+  (2026-09-04, step 4a). The luminosity came out 2% and 11% out and whole
+  slices were empty. What made it findable in minutes rather than hours was
+  printing the statistics AND the boundaries: the first pair agreed, so the
+  fault had to lie between them.
+- The corollary when dividing anything: enumerate the reductions, not the
+  quantities. Two numbers that look like one derived from the other may come
+  from two independent passes over the data.
+
 ## A collective outside its scope is a silent no-op
 
 - The post-run accounting in `execute!` ran after the execution-policy block

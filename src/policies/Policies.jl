@@ -656,6 +656,32 @@ function _masked_global_sum(term::F, islive::L, local_n::Integer) where {F,L}
 end
 
 """
+    _mp_global_sum(value) -> value
+
+One scalar summed across the ranks, in rank order. The passthrough returns it
+unchanged, so a single-process run does no arithmetic it did not do before.
+"""
+function _mp_global_sum(value::T) where {T<:Real}
+    _mp_nranks() == 1 && return value
+    packed = T[value]
+    _mp_allsum!(packed)
+    return packed[1]
+end
+
+"""
+    _mp_global_count(n) -> Int
+
+The whole beam's count of something each rank counted for its own shard.
+Integer, so the cross-rank sum is exact whatever order it takes.
+"""
+function _mp_global_count(n::Integer)
+    _mp_nranks() == 1 && return Int(n)
+    counts = [Int(n)]
+    _mp_allsum!(counts)
+    return counts[1]
+end
+
+"""
     _masked_global_count(islive, local_n) -> Int
 
 How many live particles the WHOLE beam has. Integer, so the cross-rank sum is
