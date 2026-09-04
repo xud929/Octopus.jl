@@ -861,6 +861,10 @@ end
 prepare_line_observer!(observer::CoordinateSnapshotObserver, schedule, turns, first_turn=0) =
     _bind_snapshot_probe!(observer, Int(first_turn))
 
+# One row per particle, so a divided run would have to gather the beam onto
+# rank 0 before writing (see `_observer_is_per_particle`).
+_observer_is_per_particle(::CoordinateSnapshotObserver) = true
+
 function observe!(observer::CoordinateSnapshotObserver, ctx::TrackingContext, rep)
     npart = observer.npart === nothing ? length(rep) : observer.npart
     npart <= length(rep) || throw(ArgumentError(
@@ -1029,7 +1033,9 @@ function _moment_observer_row(ctx::TrackingContext, rep, moments::Tuple, observe
     isempty(moments) && return row
     arrays = map(collect, coordinate_arrays(rep))
     flags = _moment_live_flags(arrays)
-    nlive = _moment_denominator(flags, length(arrays[1]))
+    local_n = length(arrays[1])
+    islive = k -> _moment_live(flags, k)
+    nlive = _masked_global_count(islive, local_n)
     # An all-dead beam has no moments to report. `NaN` is the honest value, and
     # the turn column stays intact so the record still says *when* that happened.
     if nlive == 0
@@ -1038,11 +1044,7 @@ function _moment_observer_row(ctx::TrackingContext, rep, moments::Tuple, observe
     end
     means = ntuple(6) do i
         a = arrays[i]
-        s = 0.0
-        @inbounds for k in eachindex(a)
-            _moment_live(flags, k) && (s += a[k])
-        end
-        Float64(s / nlive)
+        Float64(_masked_global_sum(k -> @inbounds(a[k]), islive, local_n) / nlive)
     end
     for (j, moment) in enumerate(moments)
         row[j + 1] = _compute_moment(arrays, means, moment, flags, nlive)
@@ -1256,18 +1258,17 @@ function _compute_moment(arrays, means, moment::Moment, flags=nothing, nlive=len
     order = sum(powers)
     order == 1 && return means[findfirst(!=(0), powers)]
     n = length(arrays[1])
-    acc = 0.0
-    @inbounds for i in 1:n
-        _moment_live(flags, i) || continue
-        term = 1.0
-        for d in 1:6
+    islive = i -> _moment_live(flags, i)
+    term = i -> begin
+        t = 1.0
+        @inbounds for d in 1:6
             p = powers[d]
             p == 0 && continue
-            term *= (arrays[d][i] - means[d]) ^ p
+            t *= (arrays[d][i] - means[d]) ^ p
         end
-        acc += term
+        t
     end
-    return acc / nlive
+    return _masked_global_sum(term, islive, n) / nlive
 end
 
 """

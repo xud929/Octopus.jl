@@ -195,6 +195,20 @@ teaches something reusable, it lands here (dated), and the full record goes to
   caught by the full gate, not the edit. Grep the whole `src/` tree for the
   old name or arity (Measured Lesson 12 in `comprehensive_audit.md`).
 
+## The attractive uniformity is sometimes the wrong one
+
+- Making a reduction uniform across rank counts looked strictly good: fold the
+  moment observer on the fixed chunk grid the rest of the stack uses, and a
+  divided beam's moments become the undivided beam's moments bit for bit. It
+  was implemented, and the suite refused it: a chunk grid partitions SLOTS,
+  and a masked beam has more slots than survivors, so "a lost particle is
+  excluded from every reduction, exactly" stopped holding (2026-09-04, step
+  3b). Two invariants wanted the same code and only one could have it; the one
+  about physics won over the one about reproducibility, and the loser is
+  priced and recorded rather than quietly dropped.
+- The corollary for a campaign: when a step's own posture already prices
+  something at a tolerance, check that price before paying more for the bit.
+
 ## Derive a run's shape from what it holds, not from what it was told
 
 - A rank's slice of a divided beam is derived at the run's entry -- sum the
@@ -237,11 +251,13 @@ teaches something reusable, it lands here (dated), and the full record goes to
   declares the fallback on `::Any` (or on `::Nothing` for the communicator
   argument) and the extension the specific method; the dispatch, not a
   mutable hook, is what selects it.
-- The docstring-detachment trap fired a third time (2026-09-04): a new
-  documented method inserted ABOVE an existing `function` line landed between
-  that function and ITS docstring, and the module refused to load with
-  "cannot document the following expression". Insert a documented method after
-  its neighbour's `end`, never before its neighbour's signature.
+- The docstring-detachment trap fired twice more in one session (2026-09-04,
+  a third and fourth time overall): a new documented method inserted ABOVE an
+  existing `function` line lands between that function and ITS docstring, and
+  the module refuses to load with "cannot document the following expression".
+  The rule that survives both: insert a documented method after its
+  neighbour's `end`, or before its neighbour's DOCSTRING -- never between a
+  docstring and the signature it belongs to.
 - An accessor that reads the policy in force reports the single-process answer
   outside an execution scope, which is correct and is also how a multi-rank
   instrument came to label every line rank 0. An instrument that identifies

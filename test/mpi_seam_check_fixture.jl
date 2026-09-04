@@ -70,3 +70,25 @@ _mpi_check_values(a) = join((repr(v) for v in a), " ")
 
 _mpi_check_shard_line(rep) =
     join((_mpi_check_values(a) for a in Octopus.coordinate_arrays(rep)), " | ")
+
+# --- step 3b fixtures: the scalar diagnostics ------------------------------
+
+"""The one output path every rank names, so "only rank 0 wrote it" is a
+statement about one file rather than about P different ones."""
+_mpi_check_artifact_path() = joinpath(tempdir(), "octopus_mpi_seam_check.h5")
+
+"""A beam with four particles deliberately poisoned, so the loss accounting
+has something to count and the moment reductions have something to mask."""
+function _mpi_check_poisoned_beam(policy)
+    beam = _mpi_check_build_beam(policy)
+    # Global indices, chosen to fall in different ranks' shards at P = 2 and 4.
+    offset = first(Octopus._mp_resolve_shard(length(beam.rep)))
+    for g in (7, 70, 150, 249)
+        local_i = g - offset
+        1 <= local_i <= length(beam.rep) || continue
+        for a in Octopus.coordinate_arrays(beam.rep)
+            a[local_i] = NaN
+        end
+    end
+    return beam
+end

@@ -142,10 +142,11 @@ a weak dependency: without it loaded the process is a communicator of one and
 the collective seam runs its serial passthrough. A tracking task is divided by
 holding a shard of the beam: `Beam(n, policy, ...)` takes `n` as the WHOLE
 beam and hands each rank its own contiguous, chunk-aligned slice, and a
-divided run reproduces the undivided one bit for bit. The accounting that
-spans particles -- observers, actions, line hooks, the run artifact and
-apertures -- is not divided yet, so a task carrying any of it refuses at more
-than one rank, and a strong-strong task refuses outright
+divided run reproduces the undivided one bit for bit. Diagnostics that reduce the beam to scalars -- moment observers, beam position
+monitors, loss counts -- reduce across the ranks, and rank 0 writes the one
+output file. Still refused at more than one rank: task actions, line hooks,
+apertures and per-particle observers, each of which needs the whole beam's
+particles in one place; and a strong-strong task refuses outright
 (`design/multi_process_policy.md`, campaign step 3a of 4).
 
 Measured on the 64-core, 128-thread box at the production point

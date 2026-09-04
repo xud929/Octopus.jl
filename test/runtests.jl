@@ -6808,6 +6808,63 @@ end
     @test any(!iszero, divided.rep.x)        # anti-vacuity: a real beam
 end
 
+@testset "Scalar diagnostics reduce the whole beam, and a lost particle still counts for nothing" begin
+    # Multi-process step 3b. The moment and orbit reductions became
+    # rank-aware; at one rank they must be EXACTLY what they were, because
+    # every recorded artifact was written by that path.
+    #
+    # The invariant that decided the design is here: a chunk-ordered fold
+    # would have made a divided beam's moments the undivided beam's moments
+    # bit for bit, but a chunk grid partitions SLOTS, and a masked beam has
+    # more slots than survivors -- so the masked row stopped equalling the
+    # survivors-only row. That property is worth more than cross-rank
+    # bitwise agreement, and this is the test that says so.
+    n, dead = 4000, Set([3, 11, 977, 2500])
+    co(a, ph) = [a * sin(0.7i + ph) for i in 1:n]
+    arrs = (co(1.0e-4, 0.0), co(1.0e-5, 0.3), co(1.0e-4, 0.9),
+            co(1.0e-5, 1.2), co(1.0e-3, 2.1), co(1.0e-4, 2.5))
+    poisoned = Phase6DRep(map(copy, arrs)...)
+    for d in dead, a in coordinate_arrays(poisoned)
+        a[d] = NaN
+    end
+    keep = [i for i in 1:n if !(i in dead)]
+    survivors = Phase6DRep(map(a -> a[keep], arrs)...)
+    ms = (Moment((1, 0, 0, 0, 0, 0)), Moment((0, 0, 1, 0, 0, 0)),
+          Moment((2, 0, 0, 0, 0, 0)), Moment((1, 1, 0, 0, 0, 0)))
+    ctx = TrackingContext(turn=7)
+    masked = allow_lost_particles() do
+        Octopus._moment_observer_row(ctx, poisoned, ms)
+    end
+    reference = Octopus._moment_observer_row(ctx, survivors, ms)
+    @test masked == reference          # bitwise, not approximately
+    @test masked[1] == 7.0
+    @test any(!=(0.0), masked[2:end])  # anti-vacuity: real moments
+
+    # The seam helpers at one rank: the sum is the serial sum it always was,
+    # and the count is the live count.
+    islive = k -> true
+    @test Octopus._masked_global_sum(k -> Float64(k), islive, 100) == sum(1.0:100.0)
+    @test Octopus._masked_global_count(islive, 100) == 100
+    flags = [isodd(k) for k in 1:100]
+    odd = k -> flags[k]
+    @test Octopus._masked_global_count(odd, 100) == 50
+    @test Octopus._masked_global_sum(k -> Float64(k), odd, 100) == sum(1.0:2.0:99.0)
+
+    # A loss summary at one rank is its own global summary.
+    rep = Phase6DRep(map(copy, arrs)...)
+    for d in dead, a in coordinate_arrays(rep)
+        a[d] = NaN
+    end
+    summary = Octopus.loss_summary(rep, nothing)
+    @test Octopus._global_loss_summary(summary) === summary
+    @test summary.dead == length(dead)
+    @test Octopus._global_loss_summary(nothing) === nothing
+
+    # Which observers can be divided is a declared property, not a guess.
+    @test !Octopus._observer_is_per_particle(MomentObserver(name="m"))
+    @test Octopus._observer_is_per_particle(CoordinateSnapshotObserver(name="s"))
+end
+
 @testset "The multi-process policy rejects what it cannot honour" begin
     # Constructor-time rejections: shape errors, caught before anything runs.
     @test_throws ArgumentError MultiProcessExecutionPolicy(ranks=0)
@@ -6951,6 +7008,38 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                             if startswith(line, "MPI-LUM ")]
                 @test !isempty(reported)
                 @test all(==(reference_lum), reported)
+            end
+
+            # --- step 3b: one output file, written by rank 0 -------------
+            #
+            # The row count is the proof. Every rank runs the observer,
+            # because its reduction is a collective; if every rank also WROTE,
+            # a two-rank run would leave two rows per turn.
+            rowcounts(out) = [parse(Int, split(line)[2]) for line in split(out, '\n')
+                              if startswith(line, "MPI-MOMROWS ")]
+            @test rowcounts(out1) == [3]
+            @test rowcounts(out2) == [3]
+
+            # The loss accounting spans the ranks: a divided run counts the
+            # whole beam, not the shard it happens to hold.
+            losses(out) = [line for line in split(out, '\n') if startswith(line, "MPI-LOSS ")]
+            @test length(losses(out1)) == 1        # and only rank 0 reports
+            @test length(losses(out2)) == 1
+            @test losses(out1) == losses(out2)
+            @test occursin("particles=$(_mpi_check_global_n())", first(losses(out1)))
+            @test occursin("dead=4", first(losses(out1)))
+
+            # The moments themselves: equal across rank counts to the
+            # accumulation difference between one serial sum and P of them,
+            # which is what the design prices and not a bitwise claim.
+            momrow(out) = [parse(Float64, v) for v in
+                           split(first(line for line in split(out, '\n')
+                                       if startswith(line, "MPI-MOM ")))[2:end]]
+            one_rank, two_rank = momrow(out1), momrow(out2)
+            @test length(one_rank) == length(two_rank) >= 3
+            @test any(!=(0.0), one_rank[2:end])     # anti-vacuity
+            for (a, b) in zip(one_rank, two_rank)
+                @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
             end
 
             # The shard rule itself, as the ranks report having applied it.

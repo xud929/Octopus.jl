@@ -149,6 +149,30 @@ observers, actions, line hooks, the run artifact, and apertures. Each computes
 over the beam it is handed, or keys on the index it sees, so at more than one
 rank it would report a rank's own answer as the beam's. Step 3b divides them.
 
+## Step 3b: dividing the diagnostics
+
+The diagnostics that reduce the beam to SCALARS divide: moment observers,
+beam position monitors, and the loss counts. Each reduces across the ranks and
+each is reported by rank 0, so one run produces one report and one output
+file. Every rank still runs every observer, because the reductions are
+collectives and a rank that skipped one would hang its peers.
+
+Those reductions are NOT bit-identical across rank counts, and that is a
+decision rather than an oversight
+([`../history/multi_process_step3b_2026_09_04.md`](../history/multi_process_step3b_2026_09_04.md)).
+Folding them on the fixed chunk grid would have bought bitwise agreement, and
+it was implemented and measured; it breaks a stronger property, that a lost
+particle is excluded from every reduction EXACTLY, because a chunk grid
+partitions slots and a masked beam has more slots than survivors. So the local
+accumulation stays what it was -- one rank's numbers do not move at all -- and
+the ranks' partials fold in rank order, agreeing with an undivided run to
+1.7e-14 at two ranks and 8.7e-14 at four.
+
+Still refused, because each needs the whole beam's PARTICLES in one place or
+runs code Octopus cannot reason about: task actions, line hooks, apertures
+(their per-particle loss rows key on the local index), and per-particle
+observers. Which observers are per-particle is declared beside each observer.
+
 ## The CPU, MPI and CUDA consistency statement
 
 Three execution modes, and the relation between them is asserted in two
@@ -156,7 +180,8 @@ places rather than three, because the third follows:
 
 | pair | relation | measured by |
 |---|---|---|
-| CPU vs MPI | **bitwise**, at every rank count that divides the chunks | the suite's multi-process section, under a launcher, comparing gathered shards against a single-process run |
+| CPU vs MPI, tracking | **bitwise**, at every rank count that divides the chunks | the suite's multi-process section, under a launcher, comparing gathered shards against a single-process run |
+| CPU vs MPI, scalar diagnostics | agreement to the accumulation difference between one serial sum and P of them: 1.7e-14 at two ranks, 8.7e-14 at four | the same section, comparing a divided run's moment row against a single-process one |
 | CPU vs CUDA | agreement to the contract's tolerance | `ElementTrackingBackendConsistencyContract` and `validation/tracking_backend_consistency.jl` |
 | MPI vs CUDA | the same tolerance, by composition | not measured directly, and cannot be: the multi-process policy is CPU storage only, so no rank holds a CUDA beam |
 

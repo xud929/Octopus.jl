@@ -519,7 +519,7 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
         rethrow()
     end
     task.next_turn[] = next_turn
-    summary = _task_loss_summary(task, rep)
+    summary = _global_loss_summary(_task_loss_summary(task, rep))
     # The console-quiet rule: with an artifact attached the accounting goes
     # into its /losses group (written just below), so the summary is "on file".
     _report_losses(task, rep, summary, task.artifact !== nothing)
@@ -533,6 +533,28 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
         finalize_run_artifact!(task.artifact)
     end
     return result
+end
+
+"""
+The loss accounting of the WHOLE beam, not of this rank's shard.
+
+Integer counts, so the cross-rank sum is exact whatever order it takes. Only
+the success path globalizes: the crash path runs while an exception is in
+flight and the ranks may not agree on having thrown, and a collective issued
+by some of them would hang the rest -- so a crashed run reports what its own
+rank saw, which is the information that is actually available.
+"""
+function _global_loss_summary(summary)
+    summary === nothing && return nothing
+    _mp_nranks() == 1 && return summary
+    counts = Int[summary.particles, summary.live, summary.dead,
+                 summary.logged, summary.unattributed]
+    _mp_allsum!(counts)
+    by_aperture = collect(Int, summary.by_aperture)
+    isempty(by_aperture) || _mp_allsum!(by_aperture)
+    return (particles=counts[1], live=counts[2], dead=counts[3],
+            logged=counts[4], unattributed=counts[5],
+            by_aperture=by_aperture, names=summary.names)
 end
 
 """
@@ -555,6 +577,9 @@ that should not be reachable only by opening an HDF5 file afterwards.
 """
 function _report_losses(task::TrackingTask, rep, summary, wrote_file::Bool)
     summary === nothing && return nothing
+    # One run, one report: every rank holds the same globalized summary, so a
+    # rank that also printed it would print the same lines P times.
+    _mp_is_root() || return nothing
     if summary.unattributed != 0
         @warn "particles were lost with no aperture responsible; a coordinate went \
                non-finite where nothing was collimating" unattributed = summary.unattributed dead = summary.dead logged = summary.logged
@@ -596,33 +621,47 @@ function _task_loss_summary(task::TrackingTask, rep)
 end
 
 """
-Refuse, at more than one rank, the parts of a tracking task that step 3a has
+Whether an observer records one row per PARTICLE rather than reducing the beam
+to scalars. The scalar ones divide; these need a gather the seam does not
+have. Declared beside the refusal that reads it, and specialised beside each
+observer that answers `true`.
+"""
+_observer_is_per_particle(::Any) = false
+_task_has_per_particle_observer(observers) =
+    any(o -> _observer_is_per_particle(_as_scheduled_observer(o).observer),
+        _hook_tuple(observers))
+
+"""
+Refuse, at more than one rank, the parts of a tracking task that are still
 not divided.
 
-Tracking itself is per-particle work: every element whose map is a function of
-one particle is divided by holding a shard, with no communication at all.
-What is not divided yet is the accounting that spans particles -- observers,
-actions and line hooks compute over the beam they are handed, and an aperture
-records losses by the index it sees, which on a shard is a local one. Those
-land in step 3b. Refusing here is the alternative to reporting a rank's own
-moments as though they were the beam's.
+Tracking is per-particle work and needs no communication to divide (step 3a).
+The diagnostics that reduce the beam to SCALARS -- moment observers, beam
+position monitors, the loss counts -- now reduce across the ranks and are
+written by rank 0 (step 3b). What is left is everything that needs the whole
+beam's PARTICLES in one place, or that runs code Octopus cannot reason about:
 
-The blanket refusal step 2 carried is now this narrower one: an ordinary
-tracking run with no diagnostics attached goes through.
+  * task actions, which are arbitrary callbacks over the rep handed to them;
+  * line hooks, same;
+  * apertures, whose per-particle loss rows key on the index the rank sees;
+  * per-particle observers, which record a row per particle.
+
+Each would need a gather the collective seam does not have, and each is
+refused rather than left to report a rank's own answer as the beam's.
 """
 function _reject_unsharded_tracking_features(task, runtime_entries)
     _mp_nranks() > 1 || return nothing
     blocked = String[]
-    isempty(task.observers) || push!(blocked, "task observers")
-    isempty(task.actions) || push!(blocked, "task actions")
+    isempty(task.actions) || push!(blocked, "task actions (arbitrary callbacks over the beam handed to them)")
     _has_line_hooks(runtime_entries) && push!(blocked, "line hooks")
-    task.artifact === nothing || push!(blocked, "a run artifact")
     isempty(_aperture_s_positions(task.elements)) ||
-        push!(blocked, "apertures (their loss records key on the local index)")
+        push!(blocked, "apertures (their per-particle loss rows key on the local index)")
+    _task_has_per_particle_observer(task.observers) &&
+        push!(blocked, "per-particle observers (one row per particle, which needs a gather)")
     isempty(blocked) && return nothing
     throw(ArgumentError(
         "this TrackingTask carries " * join(blocked, ", ", " and ") *
-        ", which multi-process step 3a does not divide across the " *
+        ", which the multi-process campaign has not divided across the " *
         "$(_mp_nranks()) ranks in force: each rank would compute them over " *
         "its own shard and report the result as the whole beam's. Step 3b " *
         "divides them. Run one rank, use CPUThreadsExecutionPolicy, or drop " *

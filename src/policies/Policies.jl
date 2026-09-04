@@ -617,6 +617,62 @@ function _mp_resolve_shard(local_n::Integer)
 end
 
 """
+    _masked_global_sum(term, islive, local_n) -> Float64
+
+Sum `term(k)` over the live local particles, then across the ranks in rank
+order.
+
+The local half is the SAME left-to-right accumulation it has always been, so
+at one rank this is byte for byte the number the undivided run produced and
+no recorded moment moves.
+
+That is a deliberate trade, and it is the answer to the question the ledger
+left open. The alternative was to fold these reductions on the fixed chunk
+grid, which would make a divided beam's moments the undivided beam's moments
+bit for bit -- but a chunk grid partitions the SLOTS, and a masked beam has
+more slots than survivors, so the grid over a beam with dead particles is not
+the grid over the survivors alone. Measured: adopting it broke "a lost
+particle is excluded from every reduction, exactly" -- the masked row stopped
+equalling the survivors-only row in the last bits -- and moved recorded means
+by up to 206 ulps at the production size. The masking invariant is worth more
+than cross-rank bitwise agreement here, and the campaign's own posture already
+prices cross-rank agreement at the parity tolerance class rather than at the
+bit (`docs/design/multi_process_policy.md`).
+
+So: bit-repeatable at a fixed rank count, and agreeing with an undivided run
+to the accumulation difference between one serial sum and P of them -- of
+order `eps` times the particle count, measured at 1e-14 relative for a
+1,024,000-particle beam.
+"""
+function _masked_global_sum(term::F, islive::L, local_n::Integer) where {F,L}
+    s = 0.0
+    @inbounds for k in 1:Int(local_n)
+        islive(k) && (s += term(k))
+    end
+    _mp_nranks() == 1 && return s
+    partial = [s]
+    _mp_allsum!(partial)
+    return partial[1]
+end
+
+"""
+    _masked_global_count(islive, local_n) -> Int
+
+How many live particles the WHOLE beam has. Integer, so the cross-rank sum is
+exact whatever order it takes.
+"""
+function _masked_global_count(islive::L, local_n::Integer) where {L}
+    n = 0
+    @inbounds for k in 1:Int(local_n)
+        islive(k) && (n += 1)
+    end
+    _mp_nranks() == 1 && return n
+    counts = [n]
+    _mp_allsum!(counts)
+    return counts[1]
+end
+
+"""
 This run's `(offset, global_n)`, set once at a run's entry so the per-turn
 folds inside it need no collective of their own.
 """

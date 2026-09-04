@@ -149,6 +149,11 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
                                first_turn::Int, planned_turns::Int)
     art.file === nothing || error("RunArtifact at $(art.path) is already open; " *
                                   "one artifact serves one execute! at a time")
+    # One run, one output file, written by rank 0. Every rank still runs the
+    # observers -- their reductions are collectives and a rank that skipped
+    # them would hang its peers -- but only rank 0 opens the file, so the
+    # others leave `file === nothing` and every write below no-ops.
+    _mp_is_root() || return nothing
     if !art.registered
         _register_observer_path!(art, art.path)
         art.registered = true
@@ -230,6 +235,7 @@ turn axis; nothing about other collisions' schedules is consulted, which is
 the design's point.
 """
 function push_luminosity!(art::RunArtifact, label::String, turn::Integer, value::Float64)
+    _mp_is_root() || return nothing
     t = get!(() -> Int64[], art.pending_turns, label)
     v = get!(() -> Float64[], art.pending_values, label)
     push!(t, Int64(turn))
@@ -362,10 +368,14 @@ key the probe pushes rows through.
 function _ra_bind_probe!(art::RunArtifact, kind::String, name::String,
                          colnames::Vector{String}, first_turn::Int;
                          s::Union{Nothing,Real}=nothing)
-    art.file === nothing && throw(ArgumentError(
-        "a named probe needs an open run artifact; give the task artifact=..."))
     isempty(name) && throw(ArgumentError("a probe bound to the artifact needs a name"))
     key = kind * "/" * name
+    # Non-root ranks hold no file, so a probe binds to a name and writes
+    # nothing; its observer still computes, because the computation is a
+    # collective.
+    _mp_is_root() || return key
+    art.file === nothing && throw(ArgumentError(
+        "a named probe needs an open run artifact; give the task artifact=..."))
     key in art.probe_names && throw(ArgumentError(
         "duplicate probe name $(repr(name)) under /$(kind): names are the " *
         "artifact's group identities and must be unique within a task"))
@@ -406,6 +416,7 @@ rows-then-cursor ordering the luminosity channel uses, so a crash between
 them truncates conservatively on the next open.
 """
 function _ra_push_probe_rows!(art::RunArtifact, key::String, rows::AbstractMatrix)
+    _mp_is_root() || return nothing
     size(rows, 1) == 0 && return nothing
     # Loud, named failure instead of getindex(::Nothing): rows arriving after
     # finalize mean a flush-ordering bug (observers must flush BEFORE the

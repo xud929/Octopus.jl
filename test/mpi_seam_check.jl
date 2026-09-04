@@ -113,22 +113,63 @@ let policy = MultiProcessExecutionPolicy(threads=1)
     end
     println("MPI-LUM ", child_rank(), " ", repr(element.last_luminosity))
 
-    # Step 3a divides tracking, not the accounting that spans particles. A
-    # task carrying a run artifact must refuse at more than one rank rather
-    # than have every rank write the same file; at one rank it must not.
-    diagnosed = TrackingTask(_mpi_check_radiating_line();
-                             policy=policy,
-                             artifact=joinpath(mktempdir(), "refused.h5"))
+    # Step 3b divides the diagnostics that reduce the beam to scalars. What
+    # is still refused needs the whole beam's PARTICLES in one place: an
+    # aperture keys its loss rows on the index the rank sees.
+    walled = TrackingTask((_mpi_check_radiating_line()...,
+                           Octopus.ApertureSpec(shape=:ellipse, x_limit=1.0, y_limit=1.0));
+                          policy=policy)
     threw = try
-        execute!(diagnosed, _mpi_check_build_beam(policy); turns=1)
+        execute!(walled, _mpi_check_build_beam(policy); turns=1)
         false
     catch err
-        err isa ArgumentError && occursin("step 3a does not divide", sprint(showerror, err))
+        err isa ArgumentError && occursin("not divided", sprint(showerror, err))
     end
     Octopus._with_execution_policy(resolved) do
         expected_refusal = Octopus._mp_nranks() > 1
         threw == expected_refusal ||
-            fail("artifact refusal was $(threw) at $(Octopus._mp_nranks()) rank(s)")
+            fail("aperture refusal was $(threw) at $(Octopus._mp_nranks()) rank(s)")
+    end
+end
+
+# --- step 3b: the scalar diagnostics divide ------------------------------
+#
+# One run, one output file, written by rank 0; every rank runs the observer,
+# because its reduction is a collective and a rank that skipped it would hang
+# its peers. The proof that only rank 0 wrote is the ROW COUNT: if every rank
+# wrote, a P-rank run would leave P rows per turn instead of one.
+let policy = MultiProcessExecutionPolicy(threads=1)
+    path = _mpi_check_artifact_path()
+    beam = _mpi_check_build_beam(policy)
+    resolved = Octopus._resolve_execution_policy(policy, beam.rep)
+    Octopus._with_execution_policy(resolved) do
+        Octopus._mp_is_root() && isfile(path) && rm(path)
+        Octopus._mp_barrier()
+    end
+    task = TrackingTask(_mpi_check_radiating_line(); policy=policy, artifact=path,
+                        observers=(MomentObserver(name="m", orders=1:2),))
+    execute!(task, beam; turns=3)
+    if child_rank() == 0
+        rows = read(MomentOutput(path; name="m"))
+        println("MPI-MOMROWS ", size(rows, 1))
+        println("MPI-MOM ", join((repr(v) for v in rows[end, :]), " "))
+    end
+
+    # Loss accounting spans the ranks: the counts a divided run reports are
+    # the whole beam's, not this rank's shard's.
+    poisoned = allow_lost_particles() do
+        b = _mpi_check_poisoned_beam(policy)
+        execute!(TrackingTask(_mpi_check_line(); policy=policy), b; turns=1)
+        b
+    end
+    Octopus._with_execution_policy(
+        Octopus._resolve_execution_policy(policy, poisoned.rep)) do
+        summary = Octopus._global_loss_summary(
+            Octopus.loss_summary(poisoned.rep, nothing))
+        Octopus._mp_is_root() && println("MPI-LOSS particles=", summary.particles,
+                                         " dead=", summary.dead,
+                                         " live=", summary.live,
+                                         " unattributed=", summary.unattributed)
     end
 end
 flush(stdout)

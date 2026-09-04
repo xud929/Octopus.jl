@@ -253,7 +253,19 @@ function _bpm_centroid(rep)
     # `_mean(v)` is `sum(v)/length(v)`, which reduces on the device for a
     # CuArray, so the common case now transfers nothing.
     if !allow_lost_particles()
-        return _mean(rep.x), _mean(rep.y)
+        # A BPM reads the BEAM's centroid, so under a divided run it reads
+        # across the ranks. `_mean(v)` is `sum(v)/length(v)` -- Julia's
+        # pairwise sum, which does not decompose -- so the divided path takes
+        # the serial form that does, at the cost stated on `_masked_global_sum`.
+        if _mp_nranks() == 1
+            return _mean(rep.x), _mean(rep.y)
+        end
+        n = length(rep)
+        alive = _ -> true
+        total = _masked_global_count(alive, n)
+        x, y = rep.x, rep.y
+        return (_masked_global_sum(k -> @inbounds(x[k]), alive, n) / total,
+                _masked_global_sum(k -> @inbounds(y[k]), alive, n) / total)
     end
     # Lost particles allowed: liveness genuinely depends on all six components,
     # so the masked path keeps its host copy. Narrowing that one too needs the
@@ -261,7 +273,9 @@ function _bpm_centroid(rep)
     # separate change.
     coords = _host_coordinate_arrays(rep)
     flags = _live_stat_flags(coords)
-    nlive = flags === nothing ? length(rep) : count(flags)
+    islive = k -> _stat_live(flags, k)
+    nlive = _mp_nranks() == 1 ? (flags === nothing ? length(rep) : count(flags)) :
+                                _masked_global_count(islive, length(rep))
     # An all-dead beam reads NaN, deliberately: `_mean` is `s / nlive` and
     # `0.0 / 0` is NaN, which is the honest value for "there is no centroid".
     # That was arrived at by accident and documented nowhere, while the moment
@@ -269,7 +283,11 @@ function _bpm_centroid(rep)
     # "An all-dead beam has no moments to report. NaN is the honest value"
     # (2026-08-05_b audit, U7-12). Same behaviour on both, now stated on both,
     # so a future reader does not "fix" the division.
-    return _mean(coords[1], flags, nlive), _mean(coords[3], flags, nlive)
+    _mp_nranks() == 1 &&
+        return _mean(coords[1], flags, nlive), _mean(coords[3], flags, nlive)
+    n = length(rep)
+    return (_masked_global_sum(k -> @inbounds(coords[1][k]), islive, n) / nlive,
+            _masked_global_sum(k -> @inbounds(coords[3][k]), islive, n) / nlive)
 end
 
 function observe!(bpm::BPMObserver, ctx::TrackingContext, rep)

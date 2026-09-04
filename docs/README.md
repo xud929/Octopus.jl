@@ -321,6 +321,12 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   and why, the per-fix measurements with their bitwise-parity digests, and the
   machine-level findings — idle-thread spin, GC share, and why a pool wider
   than the data's parallelism costs rather than pays),
+  [`multi_process_step3b_2026_09_04.md`](history/multi_process_step3b_2026_09_04.md)
+  (dividing the diagnostics, and the measured decision behind them: folding
+  the moment reductions on the chunk grid would buy cross-rank bitwise
+  agreement and was implemented, but it breaks "a lost particle is excluded
+  from every reduction, exactly", so the local accumulation stays and cross-rank
+  agreement is priced at 1e-14),
   [`multi_process_tracking_scaling_2026_09_04.md`](history/multi_process_tracking_scaling_2026_09_04.md)
   (the rank-by-thread scaling the campaign exists for: processes beat threads
   1.9x at the same width, 61.9x at 64 ranks x 2 threads, binding worth 4% in
