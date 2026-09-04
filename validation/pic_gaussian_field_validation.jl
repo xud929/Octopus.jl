@@ -18,7 +18,7 @@ julia --project=. validation/pic_gaussian_field_validation.jl
 ```
 
 Inputs (all optional; 2026-08-05_b audit, U23-8 -- the header documented none of
-them, contrary to AGENTS.md §Updating Validations):
+them, contrary to docs/guides/examples_and_validation.md):
 
 - `OCTOPUS_PIC_VALIDATION_RANDOM_CASES`  number of random cases; > 0 switches the
   script into random-sweep mode, which CHANGES the summary filename (below)

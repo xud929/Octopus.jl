@@ -183,6 +183,16 @@ end
 
     snapshot_path = joinpath(pkgdir(Octopus), "docs", "registry_snapshot.md")
     @test registry_snapshot_markdown() == read(snapshot_path, String)
+
+    # Every directory under src/ has an ownership bullet in AGENTS.md's source
+    # map. The map once named 7 of 13 directories (2026-08-05_b audit, U26-12;
+    # docs/history/comprehensive_audit_2026_08_05_b_unit_reports/U26_report.md);
+    # a hand-maintained count rots, so this derives the list from the tree.
+    agents_md = read(joinpath(pkgdir(Octopus), "AGENTS.md"), String)
+    for d in readdir(joinpath(pkgdir(Octopus), "src"))
+        isdir(joinpath(pkgdir(Octopus), "src", d)) || continue
+        @test occursin("- `src/$d/`:", agents_md)
+    end
 end
 
 @testset "Non-symplectic Lorentz method classification" begin

@@ -269,11 +269,9 @@ Implementation details that are expected to evolve are summarized in
 
 ## Validation
 
-Run the fast CPU-only package regression suite with:
-
-```bash
-julia --project=. -e 'using Pkg; Pkg.test()'
-```
+The package regression suite runs at CI settings: plain `Pkg.test` at
+`--threads=4` is the full gate and `lane=fast` is a development checkpoint.
+The commands are in `AGENTS.md` (Verification Matrix).
 
 The broader numerical studies and CPU/CUDA consistency checks remain separate
 scripts under `validation/`.

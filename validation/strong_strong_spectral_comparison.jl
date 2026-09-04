@@ -26,7 +26,7 @@ Useful controls:
     OCTOPUS_SPECTRAL_COMPARE_OUTPUT=result/strong_strong_spectral_comparison
 
 Outputs (five TSVs, all sharing OCTOPUS_SPECTRAL_COMPARE_OUTPUT as their prefix;
-AGENTS.md §Updating Validations requires them stated, and the header named only
+docs/guides/examples_and_validation.md requires them stated, and the header named only
 the prefix -- 2026-08-05_b audit, U24-12):
 
     <prefix>_timing.tsv                 per-solver complete-turn wall times

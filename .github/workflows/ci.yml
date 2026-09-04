@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    name: Julia 1.12 CPU smoke tests
+    name: Julia 1.12 CPU full-lane tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,5 +42,5 @@ jobs:
       # exactly that reason: the invariant `sum(loss_counts) == dead` was
       # already asserted and already passing, because CI only ever ran it with
       # one worker. Anything shared between workers needs more than one.
-      - name: Run fast package tests
+      - name: Run the full test lane (CPU, 4 threads; CUDA testsets skip without a GPU)
         run: julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'

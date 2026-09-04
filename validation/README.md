@@ -4,12 +4,10 @@ Validation scripts are developer-facing numerical checks. They may use internal
 helpers to test implementation details and should not be treated as public API
 examples.
 
-The fast, CPU-only package regression suite is separate from these scientific
-validations and benchmarks:
-
-```bash
-julia --project=. -e 'using Pkg; Pkg.test()'
-```
+The package regression suite is separate from these scientific validations
+and benchmarks. Plain `Pkg.test` at `--threads=4` is the full gate and
+`lane=fast` is a development checkpoint; the commands are in `AGENTS.md`
+(Verification Matrix) and `docs/guides/development_workflow.md`.
 
 ## Near-Round Gaussian Transition
 

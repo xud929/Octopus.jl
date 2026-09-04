@@ -176,7 +176,7 @@ comparison. Octopus's rule is *derive from the one authoritative source*:
 `BeamParams` owns `E0`, the line survey owns positions, and runtime ops are
 immutable `isbits` values compiled from them. A second stored copy is exactly
 the hand-copied state whose staleness this repo's audits keep finding
-(`AGENTS.md`, Hard-Won Rules).
+(`AGENTS.md`, Invariants).
 
 **(e) Time-dependent kernels for ramping** (each kernel evaluates `P0(t)`).
 Rejected; §6. The reference is bookkeeping, ramps are slow

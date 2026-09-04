@@ -58,6 +58,30 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   Bmad's bookkeeping-plus-rampers strategy. Prerequisite design for the F16
   velocity-slip fix and RF Scope B.
 
+## Development guides (`guides/`)
+
+Procedures, one per task class, routed from the Task Routing table in
+`AGENTS.md`. The root file keeps invariants and routing; these keep the steps.
+
+- [`guides/development_workflow.md`](guides/development_workflow.md) — the
+  environment, the two load modes, the commands, the single-testset probe
+  recipe, lanes and the gate, where output goes, committing, reporting.
+- [`guides/elements.md`](guides/elements.md) — adding or changing an element:
+  the two-layer design, the repository wiring around the `@element_spec`
+  checklist, and the tests and tripwires that fail the gate when missed.
+- [`guides/configuration.md`](guides/configuration.md) — tracking methods,
+  solvers, execution policies, and every public option: the consumer rule,
+  the schema and validator hooks, the effectiveness contract.
+- [`guides/contracts_and_analyses.md`](guides/contracts_and_analyses.md) —
+  contracts (attachment, `:skipped`, blast radius, the backend-consistency
+  scripts) and the placeholder-only state of analyses.
+- [`guides/examples_and_validation.md`](guides/examples_and_validation.md) —
+  `examples/`, the `test/examples/` harnesses, the examples catalogue,
+  validation scripts, and run output versus the tracked record.
+- [`guides/documentation.md`](guides/documentation.md) — docstrings as the
+  authority, generated and volatile documents, the `docs/` taxonomy, the
+  index, and what `AGENTS.md` itself may carry.
+
 ## Theory / method notes (the physics "Knowledge Layer")
 
 Self-contained derivations behind the accelerator-physics methods. They are
@@ -252,8 +276,8 @@ reference material, not API docs; the implementing code links back to them.
 
 ## Planning
 
-- [`todo.md`](todo.md) — open work ONLY, since the 2026-08-16 restructure:
-  the live rows, the open study questions, and the CI flake-tally watch.
+- [`todo.md`](todo.md) — open work ONLY: the live rows, the open study
+  questions, and the CI flake-tally watch.
 - [`experiences.md`](experiences.md) — the recurring lessons the completed
   work taught, distilled and grounded in their incidents, plus the standing
   deliberately-not-being-done decisions. Read it before starting a campaign.
@@ -621,5 +645,6 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
 - **Numerical checks and their run commands** → `validation/README.md` (the
   scripts themselves live in `validation/`).
 - **Runnable precedents** → self-documenting top-of-file comments in `examples/`.
-- **Development rules for humans and AI agents** → `AGENTS.md`.
+- **Development rules for humans and AI agents** → `AGENTS.md` (invariants,
+  task routing, verification matrix) and the guides in `guides/`.
 

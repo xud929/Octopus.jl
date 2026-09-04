@@ -236,7 +236,8 @@ explicit reproducibility contract before replacing the current default.
 `StrongStrongTask` tracks two live beams through ordinary tracking lines that
 contain matching `StrongStrongCollision` markers. Internally, each line is split
 at those markers so ordinary elements before, between, and after collisions can
-still use fused tracking plans.
+still use fused tracking plans. Task output is the run artifact described in
+`docs/design/run_artifact.md`.
 
 On CUDA, matching non-collision line segments for beam 1 and beam 2 are launched
 on separate CUDA streams and synchronized before the next
@@ -307,8 +308,9 @@ fallback.
 `PICPoissonSolver(luminosity_schedule=EveryNSteps(step=N))` computes PIC
 luminosity only on scheduled turns while still applying beam-beam kicks every
 turn. Use `AtTurns(Int[])` to disable luminosity computation. Skipped
-luminosity evaluations return `NaN` internally, but `StrongStrongTask` omits
-those turns from its luminosity file. An evaluated result that is genuinely
+luminosity evaluations return `NaN` internally, but `StrongStrongTask` writes
+no row for those turns in the run artifact's luminosity channel
+(`docs/design/run_artifact.md`). An evaluated result that is genuinely
 `NaN` is still written. In `test/examples/strong_strong_tracking.jl`, use
 `OCTOPUS_PIC_LUMINOSITY_EVERY=N`; `0` disables luminosity computation.
 PIC luminosity deposits both slices at their common centroid plane and

@@ -28,7 +28,7 @@ potential-difference longitudinal kick — `docs/theory/beam_beam_longitudinal_k
   full example beamline
   (`docs/history/strong_strong_spectral_optimization_history.md`) and
   0.324 s/turn as the mean over turns 60–120 of a 120-turn run
-  (`docs/todo.md`, CUDA `:node` status).
+  (`docs/history/todo_ledger_archive.md`, the CUDA `:node` row).
 - CPU and CUDA agree to tolerance on coordinates, luminosity, and Green-cache
   history, enforced by `StrongStrongPICBackendConsistencyContract`; every
   public solver option is verified to reach its runtime consumer by
@@ -145,11 +145,18 @@ julia --project=. test/examples/strong_strong_tracking.jl
 
 ## Validation
 
-Run the fast CPU-only package regression suite:
+Run the package regression suite at CI settings. This full lane is the finish
+line before every commit except a markdown-only diff, which finishes with the
+fast lane (`AGENTS.md`, Verification Matrix); it is multi-threaded because a
+single-threaded run skips the concurrency assertions:
 
 ```bash
-julia --project=. -e 'using Pkg; Pkg.test()'
+julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
 ```
+
+`Pkg.test(test_args=["lane=fast"], julia_args=["--threads=4"])` is a
+development checkpoint, not the gate; see `AGENTS.md` (Verification Matrix)
+and `docs/design/testing_lanes.md`.
 
 Scientific accuracy studies, backend consistency checks, and production-size
 benchmarks remain separate scripts under `validation/`.
@@ -188,15 +195,18 @@ measurement scripts live in this repository under `validation/`
 
 ## Documentation Map
 
-- `AGENTS.md`: development rules for human and AI collaborators.
-- `docs/README.md`: **index of every document in `docs/`** (categorized:
-  entry-point/generated, theory notes, planning) — start here.
+- `AGENTS.md`: the agent entry point: invariants, task routing, and the
+  verification matrix. Procedures live in `docs/guides/`.
+- `docs/README.md`: **index of every document in `docs/`** — start here.
 - `docs/public_api.md`: entry points to public docstrings and metadata queries.
 - `docs/current_runtime.md`: current runtime/backend behavior.
 - `docs/registry_snapshot.md`: generated registry snapshot.
-- `docs/todo.md`: forward-looking plan (open items per solver).
+- `docs/todo.md`: open work only; completed work is frozen in
+  `docs/history/todo_ledger_archive.md`, lessons in `docs/experiences.md`.
 - `docs/theory/`: physics/method theory notes (synchro-beam longitudinal kick,
   weak-strong source model, spectral solver, Gaussian-subtracted PIC solver).
+- `docs/design/`: architecture decision notes.
+- `docs/guides/`: development guides, one per task class.
 - `docs/history/`: dated records of implemented work (optimization and benchmark
   histories, audits).
 - `examples/`: runnable case-law examples.

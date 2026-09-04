@@ -42,7 +42,7 @@ using .Octopus
 input = (
     # `case_name` and `seed` name the output directory and files below; every
     # field in this block is consumed — a field nothing reads is the
-    # config-that-was-never-read defect class (AGENTS.md Hard-Won Rules).
+    # config-that-was-never-read defect class (AGENTS.md Invariants).
     case_name = "weak_strong",
     result_dir = joinpath(@__DIR__, "..", "result"),
     seed = 123456789,

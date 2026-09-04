@@ -8,8 +8,9 @@
 ## 1. What exists
 
 - **`lane=full`** (the default — plain `Pkg.test`, CI, the nightly script):
-  every testset, unchanged. This is the finish line for every commit, per the
-  Hard-Won Rule in `AGENTS.md`.
+  every testset, unchanged. This is the finish line for every commit outside
+  the derived markdown-only class of section 3, per the gate rule in
+  `AGENTS.md` (Verification Matrix).
 - **`lane=fast`** (`Pkg.test(test_args=["lane=fast"])`, with
   `julia_args=["--threads=4"]` as always): a development checkpoint that
   skips the sections registered with `_lane_gate` — the measured heavyweight
@@ -63,11 +64,13 @@ fast-lane green substitutes — each row is paid for by a recorded incident:
 | public config fields, solver/task options, observers, schedules | full gate | the "passes alone, fails in the suite" class (U3-2, U5-1); config-effectiveness contracts live in the heavy sections the fast lane skips |
 | element tracking kernels, `compile_runtime`, coordinate conversions | full gate | physics contracts and backend-consistency checks are skipped by the fast lane |
 | test infrastructure itself (gates, lanes, `runtests.jl` structure) | full gate | F2 again: a broken gate is the worst defect, because it silences every other one |
-| docs/markdown-only | full gate before commit (cheap relative to being wrong about "docs-only") | the suite walks docs (docstring detachment, index checks); "it's only docs" is a claim, the gate is the check |
+| markdown-only, DERIVED: `git diff --name-only` lists only `.md` files and none of them is `docs/registry_snapshot.md` | fast lane on the final tree (owner decision 2026-09-03) | the classification is read from the diff, not claimed; the only docs checks the suite has -- the snapshot compare and the `AGENTS.md` source-map tripwire, both in "Architecture integrity" -- run in the fast lane, so the full gate added nothing but insurance against misclassification, and the derivation removes the misclassification |
+| docs plus anything else (a `.jl` comment, `ci.yml`, the snapshot) | full gate before commit | "it's only docs" is a claim; the derived row above is the check, and a diff outside it is not docs-only (the 2026-09-03 AGENTS.md restructure itself touched four `.jl` files and `ci.yml`) |
 
-During the inner development loop, the recorded probe workflow (script-mode
-`include("src/Octopus.jl")` probes, targeted testset extraction) remains the
-fastest iteration path; the fast lane sits between probes and the gate.
+During the inner development loop, the probe workflow recorded in
+`../guides/development_workflow.md` (script-mode `include("src/Octopus.jl")`
+probes, targeted testset extraction run in package mode) remains the fastest
+iteration path; the fast lane sits between probes and the gate.
 
 ## 4. Rules that keep a partial run honest
 
@@ -77,10 +80,11 @@ fastest iteration path; the fast lane sits between probes and the gate.
 2. **The verdict is labeled.** "Tests passed" from a fast run means *the fast
    lane* passed. The banner says so; any human or agent report of a fast run
    must carry the lane name (the "the suite is green" claim is about which
-   testsets actually ran — Hard-Won Rules).
+   testsets actually ran — AGENTS.md Invariants).
 3. **No lane accumulates authority.** Green fast runs during development do
    not reduce the finish-line requirement; the full gate runs on the final
-   tree before every commit.
+   tree before every commit outside the derived markdown-only class of
+   section 3, and that class still runs the fast lane on the final tree.
 4. **Unknown lanes error.** `lane=fats` must die, not silently run full.
 
 ## 5. Deliberately not built (yet)

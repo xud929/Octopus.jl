@@ -1,451 +1,177 @@
 # Octopus Agent Entry Point
 
-Octopus is an AI-native accelerator physics framework. Its goal is not to
-replace existing accelerator codes such as MAD-X, Bmad, Elegant, Xsuite, or
-SciBmad. Its goal is to build a scientific software platform where AI can be a
-first-class developer while rigorous accelerator physics validation remains
-central.
+Octopus is an AI-native accelerator physics framework. It does not replace
+MAD-X, Bmad, Elegant, Xsuite, or SciBmad; it is a platform where AI can be a
+first-class developer while rigorous accelerator physics validation stays
+central. The current physics focus is beam-beam collisions: strong-strong
+(two live beams, sliced, with a Poisson solve per slice pair) and weak-strong
+6D tracking against a rigid Gaussian beam, on CPU threads or CUDA. The root
+`README.md` is the physics-level overview and owns the solver roster.
 
-Octopus is developed by humans and AI agents, so architectural intent must stay
-explicit in source, docstrings, examples, contracts, and generated registries.
-The codebase should be self-describing enough that an agent can extend it
-without reverse-engineering the whole implementation.
+This file works the way Octopus itself does: classify the requested
+operation, select the applicable method and policy, and require the
+appropriate contracts before accepting the result. It carries only what
+must not drift: the invariants, the source map, the routing table, the
+authorization rule, the verification matrix, and the definition of done.
+Procedures live in `docs/guides/`; changing facts live in generated
+registries and `docs/history/`. Do not read the source tree or every linked
+document by default; read what the matching rows name.
 
-Do not read the entire source tree by default. Read only the documents and files
-related to the task.
+## Invariants
 
-## Agent Role
+Each was paid for in a recorded session; the evidence is in the "Measured
+Lessons" of `docs/comprehensive_audit.md` and in `docs/experiences.md`, which
+also records what is deliberately not being done. Read `docs/experiences.md`
+before the first edit.
 
-Before changing files, an agent must know its role. If the human has not
-specified one, ask which role applies:
+- A check only counts while it executes. Skips are visible, an unrun check is
+  not a pass, and "green" names the testsets that ran.
+- A fix has a blast radius you did not measure. Before changing acceptance
+  or rejection semantics, find every contract and test probing the old
+  behavior.
+- A fix's neighbours are where the next defect is. Re-walk the call sites and
+  sibling files a fix touched, re-run its property on what it did not change,
+  and end every fix or feature campaign with a targeted neighbour audit.
+- A configuration you set is not a configuration the code read. Assert what
+  the run recorded. A silently ignored non-default request is a defect.
+- Every public option lands with its runtime consumer, structured metadata,
+  invalid and inactive behavior, and an effectiveness test at the consumer
+  boundary.
+- Every branch reachable from a CUDA kernel compiles as device IR, throws
+  included, so their messages stay static.
+- Do not hand-copy knowledge (case lists, solver enumerations, spec tables,
+  launch sites): derive it from one source and add a coverage tripwire. When
+  a symbol, arity, or launch site changes, grep the whole `src/` tree.
+- Loud beats silent. Dropped charge, dropped rows, skipped checks, and
+  ignored configuration warn, throw, or are documented as inert.
+- Prefer physics-level agreement to bitwise equality; state every tolerance.
+- Commit what a future session needs: reports, harnesses, provenance, and the
+  numbers behind a claim land in the same commit as the claim, never only in
+  a scratchpad or the git-ignored `result/`.
+- Contracts verify; policies only decide how to run. Never claim a contract,
+  analysis, policy, or keyword before its implementation exists.
+- The spec layer (physics meaning, metadata) and the runtime layer (execution
+  data) stay separate; runtime representations may change.
 
-- **User agent**: may inspect files, run commands, execute examples,
-  and explain results. Must not edit source files or add new project files.
-- **Developer agent**: may add new files and generated artifacts when requested,
-  but must not edit existing project files.
-- **Maintainer agent**: may add, edit, rename, or remove project files as needed
-  for the requested task.
+## Architecture and Source Map
 
-If a requested task exceeds the current role, stop and ask the human to confirm
-an elevated role before making file changes.
+Physics, then the Knowledge Layer, then implementation, then contracts, then
+validated software. The Core Objects are `ElementSpec`, `TrackingMethod`,
+`ExecutionPolicy`, `Contract`, `Analysis`, `Example`, and `Task`; each has an
+exported `Abstract<Name>` supertype in `src/knowledge/Knowledge.jl`, and
+`summarize_registry()` lists every category's concrete members, strong-strong
+solvers included. An element flows from `ElementSpec{kind}` through a
+`TrackingMethod` and an `ExecutionPolicy` into `compile_runtime`. Execution
+choices belong to policies; numerics intrinsic to a solver belong to it.
 
-## How To Orient
+One public module, `src/Octopus.jl`, holds the dependency-ordered include
+list; element files are included from `src/elements/Elements.jl`. No internal
+submodules. Every directory under `src/` has a bullet below; the suite checks.
 
-- **To find out what is currently being worked on, read `docs/todo.md` first.**
-  Since the 2026-08-16 restructure it holds ONLY open work: the live rows, the
-  open study questions, and the CI watch ledger. Read `docs/experiences.md`
-  before starting a campaign — it holds the recurring lessons the completed
-  work taught and the standing deliberately-not-being-done decisions. The
-  complete record of completed work, with its measurements and wrong turns, is
-  frozen in `docs/history/todo_ledger_archive.md`; code and test comments
-  citing a "todo row" by U-number resolve there.
-- **For an audit, a verification pass, or any repository-wide correctness
-  review, follow [`docs/comprehensive_audit.md`](docs/comprehensive_audit.md).**
-  It is the protocol, not a suggestion, and it names the worked precedents
-  under `docs/history/` and how much of them to read.
-- For a categorized index of every document, read `docs/README.md`.
-- For current public objects, read `docs/registry_snapshot.md` or run
-  `summarize_registry()`.
-- For stable API usage, read `docs/public_api.md`, then use Julia help on the
-  referenced docstrings.
-- For element construction help, use `element_help()` or
-  `element_help(MyElementSpec)`.
-- For developing a new accelerator element type, read `?ElementSpec`,
-  `?@element_spec`, and existing element source files.
-- For executable workflow patterns, read `?TrackingTask`, `?ScheduledObserver`,
-  `?ScheduledAction`, or the examples.
-- For realistic simulation precedents, inspect the files in `examples/`.
-  Each stable example should explain its purpose, structure, inputs, outputs,
-  and run command in a concise top-of-file comment.
-- For current runtime details, read `docs/current_runtime.md`.
-
-## Guiding Principle
-
-Do not merely use AI to write accelerator code. Design the codebase so its
-architecture is explicit enough for AI collaboration.
-
-The durable architecture is:
-
-```text
-Physics
-    ↓
-Knowledge Layer
-    ↓
-Implementation
-    ↓
-Contracts
-    ↓
-Validated Scientific Software
-```
-
-AI models will change. The knowledge architecture should remain useful.
-
-## Hard-Won Rules
-
-Each of these was paid for in a recorded session. The full versions, with
-their evidence, are in
-[`docs/comprehensive_audit.md`](docs/comprehensive_audit.md) ("Measured
-Lessons"); the receipts are the dated records in `docs/history/`. The
-companion file [`docs/experiences.md`](docs/experiences.md) holds the
-recurring lessons distilled from the completed TODO ledger, grounded in their
-incidents — **read it before starting any modification or new feature** (it is
-short, and the mistakes the workflows below guard against are recorded there
-with what they cost), and add to it when new work teaches something reusable.
-
-- A check only counts while it executes. Gate skips must be visible, and
-  "the suite is green" is a claim about which testsets actually ran.
-- A fix has a blast radius in dimensions you did not measure. Changing
-  acceptance/rejection semantics means finding every contract and test that
-  probes the old behavior; touching code reachable from CUDA kernels means
-  every branch must compile as device IR — throws included, so their
-  messages stay static.
-- A fix's *neighbours* are where the next defect is. Four defects in the
-  2026-08-05_b round were introduced by the campaign immediately before it,
-  each within a commit or two of a correct fix whose blast radius was not
-  re-walked — an aliased rebuild, a sibling table left one entry short, a
-  re-opened walker split, a threshold that could no longer see what it was
-  thresholding. After a fix lands, re-read the call sites and sibling tables
-  it touched, and re-run the property the fix was *about* on the neighbours
-  it did not change.
-- A configuration you *set* is not a configuration the code *read*. Assert
-  what the run recorded, not what you passed in. A U3-2 sweep reported all
-  four strong-strong CUDA routes healthy at 512, 768 and 1024 threads — a
-  clean false negative, because the policy went to the beams and not to the
-  `StrongStrongTask`, so every launch silently used 256. The execution
-  receipts said so; the exit status did not. Where a setting can also arrive
-  ambiently (a process-global launch config, an env var), make the assertion
-  conditional on the recorded request and add an explicit anti-vacuity check
-  that at least one path really carried it — otherwise the test passes alone
-  and fails in the suite, or worse, passes both times having tested nothing.
-- Do not hand-copy knowledge (case lists, solver enumerations, spec
-  tables). Derive from the one authoritative source and add a coverage
-  tripwire; extending a check to cover everything tends to find a real bug
-  immediately. This applies to *launch sites* too: the first U3-2 fix capped
-  four kick launches and left eight, so the pin passed standalone and failed
-  in the suite when a different route reached an uncapped kernel.
-- When you remove or rename a symbol, grep the whole `src/` tree, not the file
-  you are editing. Twice in one session a change was swept through its own file
-  and left siblings broken: U3-2 capped 4 of 12 kick launches, and U1-6 dropped
-  a dead parameter from `_cuda_pic_extract_slice` and updated the 8 call sites
-  in `pic_cuda.jl` while 4 more sat in `gaussian_pic_cuda.jl`. Both were caught
-  by the full-suite gate rather than by the edit, which is the gate working and
-  the habit failing. A repo-wide grep for the old arity or name costs seconds
-  and is the check that would have caught both.
-- Loud beats silent: dropped charge, dropped rows, skipped checks, and
-  ignored configuration must warn, throw, or be documented as inert —
-  never vanish.
-- Commit what a future session needs. Reports, harnesses, and provenance
-  belong in the repository, in the same commit as the claims they support —
-  not in a session scratchpad.
-- Finish through the full-suite gate at CI settings
-  (`julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'`);
-  it has caught what targeted verification cleared. A fast development
-  checkpoint exists — `Pkg.test(test_args=["lane=fast"], julia_args=["--threads=4"])`
-  skips the registered heavyweight sections loudly — but it is never the
-  finish line, and [`docs/design/testing_lanes.md`](docs/design/testing_lanes.md)
-  lists the change classes for which only the full gate counts (CUDA-reachable
-  code and concurrency surfaces always, with CUDA active).
-
-## Architectural Rules
-
-- Element specs describe physics meaning and metadata.
-- Tracking methods describe numerical algorithms.
-- Execution policies describe how computation is run.
-- Physics contracts define correctness checks.
-- Analyses define post-processing.
-- Examples define curated precedents.
-- Tasks compose workflows.
-- Task hooks handle scheduled diagnostics and turn-level orchestration outside
-  accelerator element sequences.
-- Runtime representations are implementation details and may change.
-
-Do not assume the current particle representation, backend, or tracking kernel
-interface is permanent.
-
-## Core Objects
-
-The first-class architecture objects are:
-
-- `ElementSpec`
-- `TrackingMethod`
-- `ExecutionPolicy`
-- `Contract`
-- `Analysis`
-- `Example`
-- `Task`
-
-These are architectural concepts, not incidental implementation details.
-
-## Two-Layer Element Design
-
-Every element should distinguish:
-
-- Spec layer: physics meaning, metadata, supported methods,
-  contracts, analyses, examples.
-- Runtime layer: compact data needed for efficient execution on a specific
-  method and policy.
-
-The intended flow is:
-
-```text
-ElementSpec{kind}
-    ↓
-TrackingMethod
-    ↓
-ExecutionPolicy
-    ↓
-compile_runtime
-    ↓
-Runtime object
-```
-
-Execution choices such as backend and parallel execution belong to policies,
-not to the element's physics spec. Numerical configuration that is intrinsic to
-a solver, such as strong-strong longitudinal slicing, belongs with that solver.
-
-## Self-Describing Source
-
-The source code should be the main source of truth. Prefer:
-
-```text
-Source code + docstrings + reflection + curated examples
-```
-
-over large external metadata hierarchies.
-
-Reflection-generated registries should answer questions such as:
-
-- Which element specs exist?
-- Which tracking methods support this spec?
-- Which contracts apply?
-- Which analyses exist?
-- Which examples should an agent imitate?
-
-## Contracts Versus Policies
-
-Policies decide how to run. Contracts verify whether the result is acceptable.
-
-Do not use policies as validation substitutes.
-
-Do not add speculative policy types. Keep a policy only when the runtime can
-execute it, or use `PlaceholderPolicy` to document an intentionally unfinished
-execution choice. Slicing, MPI, and accuracy-tolerance policies should be added
-only when their execution behavior and validation contracts exist.
-
-## Source Ownership
-
-Octopus uses one public Julia module in `src/Octopus.jl`. That file defines the
-dependency-ordered `include` list. Do not create internal Octopus submodules or
-make source files depend on parent-module imports unless there is a clear,
-documented boundary that justifies the extra module layer.
-
-- `src/elements/`: accelerator element specs, element-specific runtime maps, and
-  element-specific tracking implementations.
+- `src/elements/`: element specs, runtime maps, element tracking.
 - `src/track/`: generic tracking infrastructure only.
-- `src/policies/`: execution policy types and policy helpers.
-- `src/contracts/`: validation contract types and contract execution.
-- `src/analysis/`: analysis types and analysis execution.
-- `src/tasks/`: workflow composition and task execution. Large task
-  implementations may use task-owned subdirectories with a short entry file,
-  but should not introduce a new Julia module boundary.
-- `src/constants/`: shared physical constants with units documented.
-- `src/beam/`: the beam layer -- `BeamParams`, `Phase6DRep`, `Beam`, coordinate
-  accessors and beam statistics.
-- `src/knobs/`: the knob system -- expressions, epochs, resolution and the
-  Symbolics adapter. Public API surface; design note `docs/knob_control.md`.
-- `src/knowledge/`: the self-describing layer -- `ElementSpec`, `ElementMeta`,
-  parameter schemas, metadata validation.
-- `src/registry/`: reflection registry and the generated snapshot.
-- `src/math/`: shared numerics with no accelerator semantics (Faddeeva, the
-  counter RNG, special functions).
-- `src/examples/`: the `Example` category types the registry publishes. The
-  curated precedents themselves are scripts in `examples/`, not here.
+- `src/policies/`: execution policies and their option schemas.
+- `src/contracts/`: contract types and `validate` implementations.
+- `src/analysis/`: analysis types (placeholder-only today).
+- `src/tasks/`: workflow composition and execution; `strongstrong/` holds the
+  solvers and the configuration validator.
+- `src/constants/`: shared physical constants, units documented.
+- `src/beam/`: `BeamParams`, `Phase6DRep`, `Beam`, accessors, statistics.
+- `src/knobs/`: the knob system; design note `docs/knob_control.md`.
+- `src/knowledge/`: `ElementSpec`, `ElementMeta`, schemas, abstract roots.
+- `src/registry/`: the reflection registry and the generated snapshot.
+- `src/math/`: shared numerics with no accelerator semantics.
+- `src/examples/`: the `Example` objects and the examples catalogue.
+- `ext/`: package extensions for the `[weakdeps]`, the one sanctioned
+  boundary outside the module; core keeps a serial passthrough.
+- `test/runtests.jl`: the single suite. `test/examples/`: developer harnesses.
+  `examples/`: clean precedents. `validation/`: numerical checks and their
+  `README.md`. `profiling/`: opt-in benchmark drivers. `result/`: git-ignored
+  run output, never evidence.
+- `docs/`: `theory/` derives, `design/` decides, `guides/` instructs,
+  `history/` records (frozen: add, never rewrite); `docs/README.md` indexes
+  all of it. `.github/workflows/ci.yml`: the CPU-only CI gate.
 
-(That list is all thirteen directories under `src/`. It named seven until the
-2026-08-05_b audit, U26-12, leaving an agent orienting from this file with no
-ownership rule for six of them -- including `src/knobs/`, an entire public API
-surface with its own indexed design note.)
-- `docs/`: documentation, indexed by `docs/README.md`. Detailed API guidance
-  belongs in docstrings, not here. Subfolders: `docs/theory/` holds
-  physics/method derivations (the Knowledge Layer) that implementing code links
-  back to; `docs/design/` holds architecture decision notes — which design was
-  chosen among alternatives and why, citing the theory it builds on and the
-  alternatives it rejected (theory derives, design decides, source implements);
-  `docs/history/` holds dated records of implemented work (optimization
-  and benchmark histories, audits). Top-level `docs/` keeps entry-point,
-  generated, or volatile-runtime notes (`public_api.md`, `registry_snapshot.md`,
-  `current_runtime.md`), the forward plan (`todo.md`), and the lessons file
-  (`experiences.md`). Add every new document to the `docs/README.md` index.
-  Not-yet-done items go in `todo.md`; once implemented, move the record to
-  `docs/history/` (closing rows land in `todo_ledger_archive.md` under a dated
-  note), and add any reusable lesson to `docs/experiences.md`.
-- `examples/`: clean, production-shaped workflow scripts — the precedents future
-  users imitate. Each has a small top-of-file `config` block (no environment
-  variables) and is self-describing; do not create a separate markdown page for
-  each example.
-- `test/examples/`: configurable developer harnesses of the same workflows,
-  exposing solver selection, launch tuning, and diagnostics through `OCTOPUS_*`
-  environment variables. Each cites its clean counterpart in `examples/` and
-  vice versa. Put exploratory solver A/B toggles here, not in `examples/`.
-- `validation/`: developer-facing numerical validation scripts plus their
-  `README.md`. These may use internal helpers and should state the reference
-  model, error metric, output files, and run command. Narrative records
-  (histories, audits) belong in `docs/history/`, not here.
+## Task Routing
 
-## Updating Elements
+Classify the work before reading broadly. Apply every matching row when a
+task spans categories; cite a row by its task label. Read only what the
+matching rows name, not every referenced document. When directions conflict,
+the more specialized protocol controls, while the Invariants and the
+Verification Matrix always remain in force. Guides live in `docs/guides/`.
 
-Before any of the Updating workflows in this and the following sections, skim
-[`docs/experiences.md`](docs/experiences.md): each workflow below exists
-because something went wrong once, and that file records what and how much it
-cost.
+| Task | Read first | Guide | Finish with |
+|---|---|---|---|
+| Understand current work or choose the next task | `docs/todo.md`; `docs/experiences.md` whole | read-only | none; an opened or closed row changes with its work |
+| Run an example, harness, or script and explain the result | the script's header and `config`; the run-artifact reader in `docs/public_api.md` | read-only | none; report what the run recorded, not what you passed |
+| Audit, correctness review, or post-campaign neighbour audit | `docs/comprehensive_audit.md` in full | the protocol itself | the protocol's report, index entry, and `docs/todo.md` rows |
+| Diagnose or fix a defect | the owning `src/` file and its CPU/CUDA or thin/thick twin; the `@testset`s by name; `docs/comprehensive_audit.md` "Fix Confirmed Defects" | `development_workflow.md` | a regression test shown to fail unfixed; the neighbour audit; the matrix |
+| Add or modify an element | the `?@element_spec` checklist; a sibling element and its theory note | `elements.md` | `validate_element_metadata()`; the matrix |
+| Add or modify a tracking method | `?AbstractTrackingMethod`; `src/knowledge/Methods.jl` | `configuration.md` | `validation/tracking_backend_consistency.jl`; the matrix |
+| Add or modify a solver, policy, or public option | the runtime consumer; `?ConfigurationOptionMeta`; `solver_help()`; `docs/design/run_artifact.md` for output options | `configuration.md` | `validate_configuration_metadata()`; the effectiveness contract; the matrix |
+| Add or modify a contract or analysis | `src/contracts/Contracts.jl`; the specs that attach it | `contracts_and_analyses.md` | the contract's own `validate` run; the matrix |
+| Change CUDA-reachable or concurrent code | `docs/design/testing_lanes.md` section 3; `docs/current_runtime.md` backends and GPU notes | `development_workflow.md` | the backend-consistency scripts; the matrix, CUDA active |
+| Perform scientific validation or a numerical study | the owning theory note via `docs/README.md`; `validation/README.md`; the campaign's history file | `examples_and_validation.md` | the script reproduces; the record committed; the matrix |
+| Add or modify an example | the closest example and its harness where one exists; `example_catalog` | `examples_and_validation.md` | the script runs; the catalogue entry; the matrix |
+| Benchmark, profile, or optimize | the `profiling/` driver header (fixed point, digest); the campaign history | `development_workflow.md` | baseline first; before/after time, allocation, digest recorded; the matrix |
+| Change public documentation or APIs | the docstrings; `docs/public_api.md`; `docs/README.md` | `documentation.md` | the index entry; the snapshot; the matrix |
+| Finish and commit any change | `development_workflow.md`, "Committing" | `development_workflow.md` | the gate the matrix names, on the final tree; ledger updates in the same commit |
 
-When adding or changing an accelerator element:
+## Change Authorization
 
-1. Put the element in `src/elements/`.
-2. Use `ElementSpec{kind}` for the public spec object when the element may need
-   descriptive fields beyond runtime tracking parameters.
-3. Provide a friendly constructor such as `MyElementSpec(...)` that builds the
-   flexible `ElementSpec{kind}`.
-4. Register metadata with one `@element_spec begin ... end` block. Use the field
-   name `friendly_constructor`, not `friendly`.
-5. Attach concrete contracts only when a runnable `validate(...)` path exists.
-   Use an empty contract list for unvalidated elements. Keep not-yet-implemented
-   analysis declarations behind `PlaceholderAnalysis`; do not claim real
-   analyses until they exist.
-6. Decide which tracking method or tracking methods the element type supports. Users and
-   agents discover this through `supported_tracking_methods`.
-7. Confirm `element_help(MyElementSpec)` and `element_help(:my_element)` give a
-   useful summary.
-8. Define compact runtime data only when execution requires it.
-9. Connect specs to runtime data through `runtime_type` and `compile_runtime`.
-10. Keep element-specific tracking implementations with the element. The current
-    convention is `track_particle(TrackingMethod, runtime_element, coords...)`.
-    Put implementation details in `docs/current_runtime.md` when they are likely
-    to change.
-11. Add or update examples, docs, and contracts if public behavior changes.
+The request determines whether files may change; this file determines how.
+Explanation and review requests are read-only unless the request asks for
+changes. An audit writes the deliverables its protocol requires and runs its
+fixing phases only when the request authorizes edits; otherwise each
+confirmed finding becomes a `docs/todo.md` row. Stop and ask before anything
+irreversible: discarding uncommitted work, rewriting git history, altering an
+existing record under `docs/history/`. In a non-interactive, scheduled, or
+cloud run with no human to ask, work read-only and report the edits an
+attended session would have made. Nothing unattended writes shared history.
 
-## Metadata Principles
-
-- Humans maintain one declarative metadata block per public element.
-- Use `@element_spec` and `ParamMeta`; avoid scattering element metadata across
-  many methods.
-- Use `friendly_constructor`, not `friendly`, in metadata declarations.
-- Query functions such as `parameter_schema`, `example_spec`,
-  `construction_help`, `physics_keywords`, and `runtime_type` should derive from
-  `ElementMeta`.
-- Run `validate_element_metadata()` after changing element metadata.
-- Regenerate `docs/registry_snapshot.md` with `write_registry_snapshot()` after
-  public architecture objects change.
-- Do not claim real contracts, analyses, policies, or keywords before the
-  implementation exists. Omit contract metadata until a real contract exists;
-  use placeholders only for explicitly unfinished analysis or policy concepts.
-- Generated docs and agent help should derive from the metadata
-  registry whenever practical.
-
-## Updating Tracking Methods
-
-When adding a new numerical method:
-
-1. Define the method type in the knowledge/method layer.
-2. Declare which element specs support it.
-3. Add method-specific runtime data if needed.
-4. Add element-specific tracking implementations beside the affected element.
-5. Add validation contracts or contract tolerances appropriate for the method.
-6. Update registry/API docs if the method is public.
-
-## Updating Policies
-
-When adding an execution policy:
-
-1. Put the policy type in `src/policies/`.
-2. Keep policy fields about execution decisions, not element physics.
-3. Add helper methods such as backend selection only when generally meaningful.
-4. Update task execution only if the policy changes workflow behavior.
-5. Document defaults and units in docstrings.
-
-Every new public configuration field or keyword must land together with its
-runtime consumer, structured metadata, invalid/inactive behavior, and an
-effectiveness test that observes the value at the consumer boundary. Storing,
-documenting, or returning a value from a configuration helper is not evidence
-that it is applied. Do not accept silently ignored non-default requests. Run
-`validate_configuration_metadata()` and
-`validate(PublicConfigurationEffectivenessContract())` after changing public
-policies, solver options, task options, diagnostics, schedules, buffers, or
-backend-specific launch configuration.
-
-## Updating Contracts
-
-When adding a validation rule:
-
-1. Put the contract in `src/contracts/`.
-2. Return `ContractResult` from `validate`.
-3. Use `status=:skipped` for unavailable resources such as a missing CUDA
-   device; do not report an unrun check as passed.
-4. State numerical tolerances explicitly.
-5. Prefer physics-level agreement criteria over bitwise equality.
-6. Attach the contract to relevant specs through `required_contracts`.
-
-`ElementTrackingBackendConsistencyContract` is the first general implementation
-contract. Run `validation/tracking_backend_consistency.jl` after changing
-generic tracking, fused tracking, stochastic tracking, CUDA tracking, or an
-element implementation used by that script.
-
-## Updating Analyses
-
-When adding an analysis:
-
-1. Put the analysis type and execution API in `src/analysis/`.
-2. Attach it to relevant specs through `supported_analyses`.
-3. Provide a small executable example if the output is user-facing.
-
-## Updating Examples
-
-Examples are architectural precedents, not scratch work. Agents and human users
-should inspect example source files directly and read the top-of-file comment
-before reusing a pattern.
-
-- Put exploratory work and solver A/B toggles in the `test/examples/` harnesses,
-  driven by `OCTOPUS_*` environment variables.
-- Promote stable patterns into clean `examples/` files that carry a small
-  top-of-file `config` block instead of environment variables.
-- Keep reference examples small, executable, and tied to public APIs.
-- Put the example purpose, structure, input/output summary, and run command in a
-  concise top-of-file comment.
-- Do not create one markdown page per example. Use general workflow docs only
-  when documenting reusable API concepts across examples.
-- Update examples when public APIs change.
-
-## Updating Validations
-
-Validations are correctness checks, not user workflow examples.
-
-- Put analytic comparisons, numerical regression checks, and implementation
-  diagnostics in `validation/`.
-- Keep a concise top-of-file comment with the reference model, error metric,
-  inputs, outputs, and run command.
-- It is acceptable for validation scripts to use internal helpers when the goal
-  is to test an implementation detail.
-- Save summaries under `result/`; avoid writing dense per-case data by default
-  for large sweeps.
-- Update `validation/README.md` when adding a reusable validation script.
-
-## Documentation Rules
-
-- Public architecture APIs need docstrings.
-- New public objects should appear in `docs/registry_snapshot.md`.
-- New or changed workflows should update source docstrings and examples.
-- New or changed numerical checks should update validation scripts or their
-  README entry.
-- Runtime-specific details should go in `docs/current_runtime.md`, not here.
-- Do not duplicate large source explanations in markdown.
-
-## Minimal Verification
-
-From the project root:
+## Verification Matrix
 
 ```bash
-julia --startup-file=no --project=. -e 'include("src/Octopus.jl"); using .Octopus; println(summarize_registry())'
+# fast lane: a development checkpoint, never the finish line
+julia --project=. --threads=4 -e 'using Pkg; Pkg.test(test_args=["lane=fast"], julia_args=["--threads=4"])'
+# full gate at CI settings: the finish line for every class but one
+julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
 ```
 
-Run a task or example relevant to the change. Use CUDA validation only when the
-task touches GPU execution and a GPU is visible to Julia.
+The full gate is the finish line for every class below except the first,
+whose membership is read from `git diff --name-only`, never claimed. The
+fast lane skips heavyweight sections loudly and earns no authority
+elsewhere. CI has no GPU, so green CI covers CPU testsets only. Targeted
+checks run before the gate, never instead of it. Receipts:
+`docs/design/testing_lanes.md`, section 3.
+
+| Change class | Targeted checks | Gate |
+|---|---|---|
+| markdown only: the diff names only `.md` files and not `docs/registry_snapshot.md` | the index entry | fast lane on the final tree |
+| docs plus anything else: a `.jl` comment, the CI workflow, the snapshot | the index entry; the snapshot unchanged | full |
+| element spec, metadata, help output | `validate_element_metadata()`; both `element_help` forms; the snapshot | full |
+| element kernels, `compile_runtime`, coordinate conversions | `validation/tracking_backend_consistency.jl`; the symplecticity case | full |
+| public configuration: policies, solver and task options, observers, schedules, launch config | `validate_configuration_metadata()`; `validate(PublicConfigurationEffectivenessContract())`, full lane only | full |
+| contracts, tolerances, acceptance or rejection, aperture and loss | every probing test found first; the contract's own `validate` | full |
+| symbol removal or rename, arity, launch sites | a repo-wide `src/` grep | full |
+| CUDA-reachable code | every branch compiles as device IR; the backend-consistency scripts | full, CUDA active, on a GPU machine |
+| concurrency surfaces: worker closures, reductions, chunk grids, counter RNG | the `Core.Box` tripwire; thread-count invariance | full, at four threads |
+| examples | the script runs; the catalogue entry | full; example execution is full-lane only |
+| validation, study, or benchmark | the script reproduces; the record is committed | full, before the commit carrying the claim |
+| test infrastructure: lanes, gates, `test/runtests.jl` | the skip banner still appears | full |
+| read-only work | report the recorded configuration and every skipped check | none |
+
+## Definition of Done
+
+- The gate the matrix names ran on the final tree, CUDA active where the
+  matrix requires it; the report names the lane, lists every skipped or
+  unrunnable check, and states what was not verified.
+- Every new public option has its effectiveness test, every new public object
+  is in `docs/registry_snapshot.md`, every new document is in `docs/README.md`.
+- `docs/todo.md`, `docs/history/`, and `docs/experiences.md` changed in the
+  same commit as the work they describe; the numbers behind claims are
+  committed.
+- A fix or feature campaign ended with a targeted neighbour audit.
+- The commit subject is `type(scope): lower-case summary`; the body names
+  what changed, why, and the gate run; the message went through
+  `git commit -F <file>`.

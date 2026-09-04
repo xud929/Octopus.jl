@@ -167,6 +167,11 @@ teaches something reusable, it lands here (dated), and the full record goes to
   a survival probe of the neighbours' surface (their schemas, constructors,
   reports), and recover swallowed text from `git diff`, which still holds it
   verbatim.
+- A sweep that covers the file you are editing and not its sibling: U3-2
+  capped 4 of 12 kick launches (3a395ae); U1-6 updated 8 call sites in
+  `pic_cuda.jl` and missed 4 in `gaussian_pic_cuda.jl` (81430eb). Both were
+  caught by the full gate, not the edit. Grep the whole `src/` tree for the
+  old name or arity (Measured Lesson 12 in `comprehensive_audit.md`).
 
 ## Re-price accepted limitations after every campaign
 
@@ -191,7 +196,10 @@ teaches something reusable, it lands here (dated), and the full record goes to
 ## Process habits that earned their place
 
 - The full-suite gate runs before EVERY commit; the fast lane is a checkpoint,
-  never a finish line.
+  never a finish line. One derived exception since 2026-09-03: a diff that
+  `git diff --name-only` shows to be markdown-only (no `.jl`, no `.toml`, no
+  `.yml`, not the registry snapshot) finishes with the fast lane on the final
+  tree, because the fast lane already runs every docs check the suite has.
 - A neighbour audit follows every campaign; each one so far has found and
   fixed a real gap the campaign itself missed.
 - A recorded claim can be wrong: the curved-frame solenoid was closed on a
@@ -217,3 +225,9 @@ Closed with reasons; reopen only if the stated condition changes.
 - **Nightly scheduled jobs on the shared 128-thread box** — the 2026-08-07
   system-manager directive stands; benchmark and nightly scripts ship inert
   and opt-in per machine, and nothing unattended writes to shared history.
+- **`AGENTS.md` carries stable invariants and routing only** (2026-09-03
+  restructure, owner decision). Dates, campaign identifiers, directory
+  counts, and incident narratives live in generated registries, this file,
+  the Measured Lessons, and `docs/history/`; procedures live in
+  `docs/guides/`, one guide per routing row. A fact that will age does not
+  go in the entry point; a tripwire test replaces any hand-maintained count.

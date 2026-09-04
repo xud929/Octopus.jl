@@ -38,9 +38,11 @@ read them front to back. The budget that works:
 
 - Before starting: the **newest** `comprehensive_audit_*.md` record's
   executive summary and open-queue sections, plus the Measured Lessons at
-  the end of this document. At the time of writing the newest is
-  [`comprehensive_audit_2026_08_05.md`](history/comprehensive_audit_2026_08_05.md);
-  check `docs/history/` for anything later.
+  the end of this document. At the time of writing the newest full record is
+  [`comprehensive_audit_2026_08_05_b.md`](history/comprehensive_audit_2026_08_05_b.md),
+  and the post-campaign precedents are the `history/neighbour_audit_*.md`
+  records (newest `neighbour_audit_2026_08_18_b.md`); check `docs/history/`
+  for anything later.
 - During the audit: consult a record's deeper sections, or the archived
   per-unit reports beside it, only when a lead touches the region they
   cover.
@@ -864,3 +866,18 @@ and the per-unit reports archived beside them.
     that at least one path really carried it. This is Lesson 1 ("correct check,
     never executed") wearing the clothes of a configuration knob, and receipts
     are what tell the two apart.
+
+12. **When you remove or rename a symbol, change an arity, or cap a launch
+    site, grep the whole `src/` tree, not the file you are editing.** Twice
+    in one session (2026-08-06) a sweep covered one file of two. U3-2 capped
+    4 of 12 kick launches, so the pin passed standalone and failed in the
+    suite when a different route reached an uncapped kernel. U1-6 dropped a
+    dead parameter from `_cuda_pic_extract_slice` and updated the 8 call
+    sites in `pic_cuda.jl` while 4 more sat in `gaussian_pic_cuda.jl`, a
+    MethodError on every hybrid CUDA route. Both were caught by the
+    full-suite gate rather than by the edit: the gate working, the habit
+    failing. A repo-wide grep for the old name or arity costs seconds.
+    Receipts: `history/comprehensive_audit_2026_08_05_b_unit_reports/`
+    (`U3_report.md`, `U1_report.md`) and commits 3a395ae, 81430eb. This
+    lesson lived only in `AGENTS.md` until the 2026-09-03 restructure moved
+    the entry point to invariants and routing.
