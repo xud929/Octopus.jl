@@ -148,9 +148,8 @@ line = (
     ThinRFCavitySpec(197.0e6; strength=1.0e-4,
                      beta0=reference_beta(51.1e6, 0.511e6),
                      gamma0=reference_gamma(51.1e6, 0.511e6)),
-    ThinAcceleratingCavitySpec(1.3e9; strength=2.0e-2, phase=0.1,
-                               beta0=reference_beta(51.1e6, 0.511e6),
-                               gamma0=reference_gamma(51.1e6, 0.511e6)),
+    # The accelerating cavity is NOT here: it is single-pass by contract and
+    # rides its own one-turn line below.
     PatchSpec(dx=1.0e-5, dz=2.0e-5, angle_x=1.0e-4, angle_s=0.01),
     MarkerSpec(),
     ThinMultipoleSpec(knl=(0.0, 0.05, 1.2)),
@@ -163,10 +162,25 @@ line = (
     ApertureSpec(shape=:ellipse, x_limit=1.0, y_limit=1.0),
 )
 
+# `execute!` refuses a window that re-traverses an accelerating cavity (the
+# second pass would track against a stale reference energy; single-pass
+# refusal, 2026-08-14), and this script's default window is two turns. The
+# cavity joined the multi-turn line the same day, so the script's default run
+# threw at the first `validate` from then until 2026-09-04, when the
+# multi-process step-1 neighbour audit ran it as that change's targeted check
+# (docs/history/weak_strong_allocation_2026_09_04.md). Same shape as the
+# aperture arm below: the cavity tracks on its own one-turn line, and the
+# coverage tripwire counts both lines.
+single_pass_line = (
+    ThinAcceleratingCavitySpec(1.3e9; strength=2.0e-2, phase=0.1,
+                               beta0=reference_beta(51.1e6, 0.511e6),
+                               gamma0=reference_gamma(51.1e6, 0.511e6)),
+)
+
 # Declaration↔coverage tripwire (2026-08-05 audit, U21-5), the same rule
 # SymplecticityContract applies to its case list: a kind that declares the
-# contract and is missing from this line is a silent coverage gap.
-let covered = Set(Octopus.kind(spec) for spec in line)
+# contract and is missing from these lines is a silent coverage gap.
+let covered = Set(Octopus.kind(spec) for spec in (line..., single_pass_line...))
     declaring = Symbol[]
     for T in Octopus.registered_element_specs()
         meta = Octopus._element_meta_or_nothing(T)
@@ -177,7 +191,7 @@ let covered = Set(Octopus.kind(spec) for spec in line)
     uncovered = sort!(setdiff(declaring, covered))
     isempty(uncovered) || error(
         "kinds declare ElementTrackingBackendConsistencyContract but are " *
-        "missing from this line: " * join(uncovered, ", "))
+        "missing from these lines: " * join(uncovered, ", "))
 end
 
 cpu_cpu = ElementTrackingBackendConsistencyContract(;
@@ -218,6 +232,25 @@ else
     println("CPU/GPU tracking backend consistency")
     println("  status = skipped")
     println("  message = CUDA check not requested and CUDA is not visible to Julia.")
+end
+
+# --- the accelerating cavity, single-pass by contract -------------------------
+single_pass_backends = Tuple{DataType,String}[(CPUThreadsBackend, "CPU/CPU")]
+(should_run_gpu || require_gpu) && push!(single_pass_backends, (CUDABackend, "CPU/GPU"))
+for (backend_b, label) in single_pass_backends
+    result = validate(ElementTrackingBackendConsistencyContract(;
+        line=single_pass_line, n_particles=N, turns=1,
+        backend_a=CPUThreadsBackend, backend_b=backend_b,
+        seed=seed, rng_method=:philox, atol=atol, rtol=rtol))
+    _print_result("$(label) accelerating-cavity single-pass consistency", result)
+    if result.status == :skipped
+        require_gpu && error("$(label) accelerating-cavity single-pass consistency was required but skipped")
+        continue
+    end
+    result.status == :failed && error("$(label) accelerating-cavity single-pass consistency failed")
+    # Not allowed to go vacuous: the arm exists to compare a map.
+    result.metrics[:compared_coordinates] > 0 ||
+        error("accelerating-cavity single-pass consistency compared nothing")
 end
 
 # --- the aperture, actually exercised -----------------------------------------

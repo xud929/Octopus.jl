@@ -167,6 +167,28 @@ teaches something reusable, it lands here (dated), and the full record goes to
   a survival probe of the neighbours' surface (their schemas, constructors,
   reports), and recover swallowed text from `git diff`, which still holds it
   verbatim.
+- A mutable object built per particle inside a hot loop and handed to a
+  non-inlined callee escapes to the heap, one pool allocation per copy: the
+  sliced strong beam did this per slice per particle -- 7 x 192 B = 1344 B per
+  particle per turn, all but the per-call constants of the weak-strong line's
+  1.282 GiB/turn (1344 B x 1,024,000 is the whole figure) and the
+  whole reason its thread scaling capped with half of wall in GC (multi-process
+  step 1, 2026-09-04). The fix-1 shape again: an isbits carrier, the
+  arithmetic untouched, the digest unmoved. Two habits sharpened: divide a
+  per-turn allocation by the particle count before reading it (the Phase 0
+  record's "1.25 KB" was the decimal reading of the same 1344 B), and check
+  the sibling copy of the loop -- the elementwise luminosity path every
+  observer and artifact run takes had the same site, and the benchmark
+  exercised only the fused copy.
+- A refusal's blast radius includes the validation scripts that construct
+  what it refuses: the accelerating cavity's single-pass refusal (2026-08-14)
+  broke `validation/tracking_backend_consistency.jl` at its two-turn default
+  the same day the cavity joined that script's line, and nothing ran the
+  script for three weeks -- found 2026-09-04 when multi-process step 1 ran it
+  as the matrix's targeted check. Second time for this script (the U14-4
+  reference-pair invariant did the same for three days). A targeted check is
+  only a check while something runs it; a change to acceptance or rejection
+  semantics re-walks the validations, not only the suite.
 - A sweep that covers the file you are editing and not its sibling: U3-2
   capped 4 of 12 kick launches (3a395ae); U1-6 updated 8 call sites in
   `pic_cuda.jl` and missed 4 in `gaussian_pic_cuda.jl` (81430eb). Both were

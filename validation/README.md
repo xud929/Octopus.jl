@@ -237,6 +237,18 @@ OCTOPUS_RNG_VALIDATION_WRITE_CSV=true \
 julia --project=. validation/counter_rng_validation.jl
 ```
 
+## Strong-Beam Kick Fingerprint
+
+`strong_beam_kick_fingerprint.jl` is a refactor guard for the weak-strong kick
+chain: nine strong-beam configurations (every virtual-drift model, coupled
+moments, nonzero centre/angle/curvature, a 6x6 covariance with crab slope)
+tracked two turns through both loop copies, printing an order-sensitive
+digest of every coordinate and the luminosity. Run it on two checkouts
+(`OCT_ROOT` selects the second) and diff the `BR` lines; equal lines mean no
+bit moved. Same-machine, same-Julia-build comparisons only. Added with
+multi-process step 1 (2026-09-04), where it showed the slice-carrier change
+bit-identical on every branch the production line does not exercise.
+
 ## Tracking Backend Consistency
 
 `tracking_backend_consistency.jl` runs `ElementTrackingBackendConsistencyContract`
@@ -260,6 +272,14 @@ reach it, and it cannot be tightened, because `_aperture_kill` writes `NaN` into
 all six coordinates and the contract's comparator turns `NaN` into a failure
 even when both backends lose the same particles identically (U25-4). `:marker`
 is a documented no-op, so covering it by name is all there is to cover.
+`:thin_accelerating_cavity` is single-pass by contract (`execute!` refuses a
+window that re-traverses it), so it rides its own one-turn line after the
+multi-turn checks rather than the shared line; the coverage tripwire counts
+both lines. It had sat in the multi-turn line since 2026-08-14, which made the
+script's default two-turn run throw at its first `validate` until the
+2026-09-04 neighbour audit ran it as a targeted check (the fix's blast radius
+was not re-walked over the validations that construct cavities -- the second
+time for this script).
 
 The CPU/CPU result is a same-process deterministic repeatability check. For the
 current fused elementwise tracking path, exact zero error is expected because

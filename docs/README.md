@@ -323,6 +323,13 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   MPI-over-Distributed decision with its measured collective costs, and the
   two environment traps — the HDF5_jll MPI-variant flip and the
   MPIPreferences load-order lock — that Phase 1 must resolve),
+  [`weak_strong_allocation_2026_09_04.md`](history/weak_strong_allocation_2026_09_04.md)
+  (multi-process step 1: the weak-strong per-particle allocation localised to
+  the sliced strong beam's per-slice `mutable struct` -- 7 x 192 B = 1344 B
+  per particle per turn, all but the per-call constants of 1.282 GiB/turn --
+  and removed with an
+  isbits slice carrier; the before/after thread curve at the production point,
+  the unmoved digest, the pin shown to fail unfixed, the neighbour audit),
   [`weak_strong_cuda_luminosity_2026_08_11.md`](history/weak_strong_cuda_luminosity_2026_08_11.md),
   [`paper_package_migration_2026_08_12.md`](history/paper_package_migration_2026_08_12.md)
   (the `paper/` reproduction package moved to its own public repository —

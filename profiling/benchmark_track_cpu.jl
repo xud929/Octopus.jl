@@ -13,10 +13,14 @@ First measured curve (2026-08-19, production 1,024,000-particle point, this
 128-thread box; docs/history/multi_process_phase0_2026_08_19.md): 2.22 s/turn
 at 1 thread, 0.40 at 16 (the optimum), 0.66 at 32 — and 1.282 GiB allocated
 per turn at EVERY thread count, with GC share rising 3.2% -> 30.8% -> 52.2%
-at 1/16/64 threads. The weak-strong path is allocation/GC-bound past ~8
-threads: it never received the campaign's fix-1/fix-9 extraction treatment.
-That fix is step 1 of the multi-process campaign this instrument was built
-for.
+at 1/16/64 threads. The weak-strong path was allocation/GC-bound past ~8
+threads: it had never received the campaign's fix-1/fix-9 extraction treatment.
+That fix was step 1 of the multi-process campaign this instrument was built
+for, and it landed 2026-09-04
+(docs/history/weak_strong_allocation_2026_09_04.md): the per-slice carrier of
+the sliced strong beam became isbits, allocation 1.282 -> 0.000 GiB/turn and
+GC 0% at every thread count, the curve monotone to 64 threads (2.09 s/turn at
+1, 0.28 at 8, 0.17 at 16, 0.085 at 64), the digest below unmoved.
 
 The digest is comparable ACROSS thread counts at fixed n_macro and turns:
 same seed, same total turns => worker-count invariance says it must not move
@@ -33,6 +37,15 @@ OCTOPUS_BENCH_TURNS (window length, default 20), OCTOPUS_BENCH_WINDOWS
 (default 3). One warm window of 2 turns pays JIT; then WINDOWS timed windows
 of TURNS turns each, continuing the same run (`execute!` advances the task's
 absolute turn, so the radiation counter-RNG streams stay honest).
+
+OCTOPUS_BENCH_ALLOC_PROFILE=1 replaces the timed windows with the allocation
+localisation that found step 1's site: after the warm-up, bytes per particle
+for one fused turn of the whole line and of each element alone (the beam is
+restored between measurements, so every element sees the warmed state), then
+Profile.Allocs' top sites by innermost Octopus frame, then exits. Run it at a
+reduced point (OCTOPUS_BENCH_N_MACRO=16384); it prints no timing and no digest,
+and it measures `track!` of the runtime line directly, so the task's per-turn
+bookkeeping (schedules, observers, the artifact) is outside the number.
 =#
 if !isdefined(Main, :Octopus)
     include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
@@ -40,6 +53,7 @@ end
 using .Octopus
 using Printf
 using LinearAlgebra
+using Profile          # the OCTOPUS_BENCH_ALLOC_PROFILE=1 mode below
 
 env_int(name, default) = parse(Int, get(ENV, name, string(default)))
 const N_MACRO = env_int("OCTOPUS_BENCH_N_MACRO", 1_024_000)
@@ -156,6 +170,62 @@ end
         N_MACRO, TURNS, WINDOWS, Threads.nthreads(:default))
 
 execute!(task, beam; turns = 2)   # JIT + schedule warm-up
+
+if get(ENV, "OCTOPUS_BENCH_ALLOC_PROFILE", "0") == "1"
+    # Allocation localisation (multi-process step 1, 2026-09-04): the number
+    # that matters is bytes per PARTICLE per turn -- a per-call constant (the
+    # worker tasks, the chunk fold) is not a leak, a per-particle term is.
+    rep = beam.rep
+    elems = Octopus._physics_line(Octopus._runtime_entries(task, rep))
+    resolved = Octopus._resolve_execution_policy(task.policy, rep)
+    ctx = Octopus.with_turn(Octopus.TrackingContext(), Int64(2))
+    saved = map(copy, coordinate_arrays(beam))
+    restore!() = foreach((a, b) -> copyto!(a, b), coordinate_arrays(beam), saved)
+    measure(line) = Octopus._with_execution_policy(resolved) do
+        restore!()
+        Octopus.track!(rep, line, 1, resolved, ctx)          # warm the method
+        restore!()
+        gc0 = Base.gc_num()
+        Octopus.track!(rep, line, 1, resolved, ctx)
+        d = Base.GC_Diff(Base.gc_num(), gc0)
+        (bytes = d.allocd, count = Base.gc_alloc_count(d))
+    end
+    whole = measure(elems)
+    @printf("WS-ALLOC whole line: %.1f B/particle/turn, %.3f allocs/particle\n",
+            whole.bytes / N_MACRO, whole.count / N_MACRO)
+    for (i, e) in enumerate(elems)
+        one = measure((e,))
+        @printf("WS-ALLOC element %2d %-24s %8.1f B/particle/turn %7.3f allocs/particle\n",
+                i, string(nameof(typeof(e))), one.bytes / N_MACRO, one.count / N_MACRO)
+    end
+    restore!()
+    rate = min(1.0, 150_000 / max(whole.count, 1))
+    Profile.Allocs.clear()
+    Profile.Allocs.@profile sample_rate = rate Octopus._with_execution_policy(resolved) do
+        Octopus.track!(rep, elems, 1, resolved, ctx)
+    end
+    allocs = Profile.Allocs.fetch().allocs
+    # Anchor on this checkout's own src/ directory, not on a name substring:
+    # a clone named Octopus.jl/ or a scratch worktree must classify the same.
+    repo_root = normpath(joinpath(@__DIR__, ".."))
+    src_root = joinpath(repo_root, "src")
+    is_oct(fr) = startswith(string(fr.file), src_root)
+    frkey(fr) = string(fr.func, " @ ", relpath(string(fr.file), repo_root), ":", fr.line)
+    sites = Dict{String,Tuple{Int,Int}}()
+    for a in allocs
+        fr = filter(is_oct, a.stacktrace)
+        k = isempty(fr) ? "<no Octopus frame>" : join(frkey.(fr[1:min(3, length(fr))]), " <- ")
+        b, c = get(sites, k, (0, 0))
+        sites[k] = (b + a.size, c + 1)
+    end
+    total = sum(kv -> kv[2][1], sites; init = 0)
+    @printf("WS-ALLOC profile: %d samples at rate %.4f\n", length(allocs), rate)
+    for (k, (b, c)) in first(sort(collect(sites); by = kv -> -kv[2][1]), 12)
+        @printf("WS-ALLOC site %7.1f B/particle/turn %5.1f%% %8d samples  %s\n",
+                b / rate / N_MACRO, 100 * b / max(total, 1), c, k)
+    end
+    exit(0)
+end
 
 times = Float64[]
 for w in 1:WINDOWS

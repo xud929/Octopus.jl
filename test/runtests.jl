@@ -13103,6 +13103,97 @@ end
         @test outs[1][1] == outs[other][1]
         @test outs[1][2] == outs[other][2]
     end
+    # Multi-process step 1 (2026-09-04): the sliced element's two loop copies
+    # (fused callable and elementwise luminosity path) changed their per-slice
+    # carrier, and the pin above tracked a ThinStrongBeam only -- neither copy
+    # was under it. Same property, same shape, on the sliced element.
+    sliced = compile_runtime(GaussianStrongBeamSpec{Float64}(
+        thin=ThinStrongBeamSpec{Float64}(
+            kbb=1.0e-4, beta=(1.0, 1.0), sigma=(106.0e-6, 9.5e-6)),
+        ns=5, sigz=1.0e-3, slice_method=:equal_area))
+    outs_sliced = map(unique((1, 2, Threads.nthreads(:default)))) do k
+        rep = mkrep(20_000)
+        policy = Octopus._resolve_execution_policy(
+            CPUThreadsExecutionPolicy(threads=k), rep)
+        Octopus._with_execution_policy(policy) do
+            track!(rep, sliced, 2, policy)
+        end
+        (sliced.last_luminosity, copy(rep.px))
+    end
+    @test isfinite(outs_sliced[1][1]) && outs_sliced[1][1] > 0   # anti-vacuity
+    for other in 2:length(outs_sliced)
+        @test outs_sliced[1][1] == outs_sliced[other][1]
+        @test outs_sliced[1][2] == outs_sliced[other][2]
+    end
+end
+
+@testset "CPU weak-strong strong-beam tracking allocation does not scale with the particle count" begin
+    # Multi-process step 1 (2026-09-04;
+    # docs/history/weak_strong_allocation_2026_09_04.md). The production
+    # weak-strong line allocated 1344 B per particle per turn -- 1.282 GiB/turn
+    # at 1,024,000 particles, GC 31% of wall at the 16-thread optimum -- all
+    # but the per-call constants at one site: the sliced strong beam built a fresh mutable
+    # ThinStrongBeam per slice per particle (7 slices x 192 B pool class) and
+    # handed it to a non-inlined kick, so it escaped. The per-slice carrier is
+    # now the isbits ThinStrongBeamSlice. Allocation rather than wall time, for
+    # the reasons the strong-strong collide pin gives: deterministic,
+    # machine-independent, cannot flake.
+    #
+    # THE PROPERTY: tracking allocation is set by per-call constants (worker
+    # tasks, the chunk fold), not by the particle count, so doubling n must
+    # barely move it. Both loop copies are measured because both had the site:
+    # the fused callable (a line tuple through `track!`) and the elementwise
+    # luminosity path (`track!(rep, elem, turns, policy)`, the one every
+    # observer or artifact run takes).
+    #
+    # Discriminating power, measured on the unfixed tree (5dd9e22) at 4 threads:
+    #
+    #                     n=20000       n=40000      growth
+    #     fused        26,882,368 B  53,762,368 B   2.000   (1344 B/particle)
+    #     elementwise  26,910,416 B  53,790,416 B   1.999
+    #
+    # and on the fixed tree 2,368 B / 2,368 B (fused) and 30,416 B / 30,416 B
+    # (elementwise), growth 1.000 -- the per-call constants alone. The unfixed
+    # growth fails the 1.5x bound below by a wide margin; the fixed one cannot
+    # approach it without a per-particle term returning.
+    mkrep(n) = begin
+        s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+        Phase6DRep(s(1.0e-4, 0.0), s(1.0e-5, 0.3), s(1.0e-4, 0.9),
+                   s(1.0e-5, 1.2), s(1.0e-3, 2.1), s(1.0e-4, 2.5))
+    end
+    sliced = compile_runtime(GaussianStrongBeamSpec{Float64}(
+        thin=ThinStrongBeamSpec{Float64}(
+            kbb=1.0e-4, beta=(1.0, 1.0), sigma=(106.0e-6, 9.5e-6)),
+        ns=7, sigz=1.0e-3, slice_method=:equal_area))
+    policy = CPUThreadsExecutionPolicy()
+    fused(rep) = track!(rep, (sliced,), 1; policy=policy)
+    elementwise(rep) = begin
+        resolved = Octopus._resolve_execution_policy(policy, rep)
+        Octopus._with_execution_policy(resolved) do
+            track!(rep, sliced, 1, resolved)
+        end
+    end
+    # The carrier's two structural claims, pinned directly: isbits (so the
+    # per-slice copy lives on the stack) and outside the AbstractTrackOp tree
+    # (so the registry snapshot does not list it).
+    slice = Octopus._slice_thin_strong_beam(sliced.thin, sliced.thin.kbb, 0.0, 0.0, 0.0)
+    @test slice isa Octopus.ThinStrongBeamSlice
+    @test isbitstype(typeof(slice))
+    @test !(Octopus.ThinStrongBeamSlice <: Octopus.AbstractTrackOp)
+    for (label, track_once) in (("fused", fused), ("elementwise", elementwise))
+        bytes = map((20_000, 40_000)) do n
+            track_once(mkrep(n))          # warm: compilation allocates
+            rep = mkrep(n)
+            px0 = copy(rep.px)
+            b = @allocated track_once(rep)
+            @test rep.px != px0           # anti-vacuity: the kick acted
+            b
+        end
+        @test bytes[2] <= 1.5 * bytes[1]
+        @info "weak-strong $label tracking allocation" n=(20_000, 40_000) bytes ratio=round(bytes[2] / bytes[1], digits=3)
+    end
+    # anti-vacuity for the elementwise path: its luminosity fold ran
+    @test isfinite(sliced.last_luminosity) && sliced.last_luminosity > 0
 end
 
 @testset "The spectral rms and Dirichlet box are bit-identical across backends" begin

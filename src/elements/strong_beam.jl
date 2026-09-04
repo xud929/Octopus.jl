@@ -238,6 +238,39 @@ function ThinStrongBeam(spec::ElementSpec{:thin_strong_beam},
 end
 
 """
+Per-slice view of a `ThinStrongBeam`: the eleven fields the kick chain reads
+(`pzo`, `ppzo` and `method` are not among them), and no `last_luminosity`. The sliced Gaussian strong beam builds one per slice per
+particle. As a fresh `mutable struct ThinStrongBeam` handed to the
+non-inlined `_thin_strong_beam_track`, that copy escaped to the heap -- one
+pool allocation per slice per particle, 7 x 192 B = 1344 B per particle per
+turn on the production weak-strong line, all but the per-call constants of
+its 1.282 GiB/turn (1344 B x 1,024,000 particles is the whole figure) and
+the GC share that capped its thread scaling (multi-process step 1, 2026-09-04;
+`docs/history/weak_strong_allocation_2026_09_04.md`). Immutable and isbits, it
+lives on the stack and the kick arithmetic is untouched. Not an
+`AbstractTrackOp`: it is never placed in a line, and the registry snapshot
+walks that tree. The base element stays mutable because the elementwise
+paths write its `last_luminosity`.
+"""
+struct ThinStrongBeamSlice{T<:Number,P<:StrongTransverseMoments,D<:AbstractVirtualDrift}
+    moments::P
+    kbb::T
+    klum::T
+    xo::T
+    yo::T
+    zo::T
+    pxo::T
+    pyo::T
+    ppxo::T
+    ppyo::T
+    virtual_drift::D
+end
+
+"""The kick chain accepts the element or its per-slice view: one method body,
+two carriers."""
+const _ThinStrongKickSource = Union{ThinStrongBeam,ThinStrongBeamSlice}
+
+"""
     GaussianStrongBeamSpec{T=Float64}(; thin, ns, slice_center=nothing,
                                       slice_weight=nothing,
                                       slice_hoffset=nothing,
@@ -466,7 +499,7 @@ end
 @inline (elem::GaussianStrongBeam)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
 
-function _thin_strong_beam_track(elem::ThinStrongBeam, x, px, y, py, z, pz)
+function _thin_strong_beam_track(elem::_ThinStrongKickSource, x, px, y, py, z, pz)
     (elem.moments.a0 == 0 || elem.moments.d0 == 0) && return x, px, y, py, z, pz, zero(x)
     x, px, y, py, z, pz, S = _thin_strong_forward_virtual_drift(elem, x, px, y, py, z, pz)
     x, px, y, py, z, pz, lum = _cp_kick(elem, S, x, px, y, py, z, pz)
@@ -476,22 +509,20 @@ end
 
 function _slice_thin_strong_beam(base::ThinStrongBeam{M,T}, kbb, xo, yo, zo,
                                  pxo=base.pxo, pyo=base.pyo) where {M,T}
-    return ThinStrongBeam(
-        base.method,
+    return ThinStrongBeamSlice(
         base.moments,
         T(kbb), base.klum,
         T(xo), T(yo), T(zo),
-        T(pxo), T(pyo), base.pzo,
-        base.ppxo, base.ppyo, base.ppzo,
+        T(pxo), T(pyo),
+        base.ppxo, base.ppyo,
         base.virtual_drift,
-        zero(T),
     )
 end
 
-@inline _thin_strong_forward_virtual_drift(elem::ThinStrongBeam, x, px, y, py, z, pz) =
+@inline _thin_strong_forward_virtual_drift(elem::_ThinStrongKickSource, x, px, y, py, z, pz) =
     _forward_virtual_drift(elem.virtual_drift, x, px, y, py, z, pz, elem.zo)
 
-@inline _thin_strong_reverse_virtual_drift(elem::ThinStrongBeam, x, px, y, py, z, pz) =
+@inline _thin_strong_reverse_virtual_drift(elem::_ThinStrongKickSource, x, px, y, py, z, pz) =
     _reverse_virtual_drift(elem.virtual_drift, x, px, y, py, z, pz, elem.zo)
 
 @inline function _forward_virtual_drift(
@@ -604,7 +635,7 @@ end
     return x, px, y, py, z, pz
 end
 
-@inline function _cp_kick(elem::ThinStrongBeam, S, x, px, y, py, z, pz)
+@inline function _cp_kick(elem::_ThinStrongKickSource, S, x, px, y, py, z, pz)
     xx = x - elem.xo + elem.pxo * S - 0.5 * elem.ppxo * S * S
     yy = y - elem.yo + elem.pyo * S - 0.5 * elem.ppyo * S * S
     px0, py0 = px, py
