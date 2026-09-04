@@ -224,6 +224,35 @@ summed from the single rank that owns it.
 not a fold. The other four methods size their boundaries from reductions that
 are now global.
 
+### The batch is what makes the divided collide cheap
+
+The paragraph above says the moments cannot be hoisted out of the pair loop,
+and for the COORDINATES that is true — every pair kicks the slices it touches,
+so a later pair reads what an earlier one wrote. Two things about a slice are
+not coordinates, and those hoist all the way out of the collide: how many
+particles it holds, and WHICH particle is its globally-first member. Slice
+membership is fixed once the beams are sliced. So the global counts leave the
+pair loop as one all-sum over every slice, and the shift origin's OWNER leaves
+it as one minimum per slice, paid once. Only the origin's four coordinates are
+re-read, because those move.
+
+What is left divides by batch rather than by pair. `collision_pair_batches`
+groups pairs that repeat no beam-1 and no beam-2 slice, so within a batch the
+pairs commute: no pair reads or writes a slice another pair in the same batch
+touches. Every slice in a batch can therefore have its moments taken before
+any of the batch's kicks, which turns 2w separate exchanges into one per beam
+— and lets the batch issue all its kicks, both beams, as one grid. Measured at
+15x15 slices: 1874 collectives per collide become 222, and the two schedules
+agree to the bit at 1, 2 and 4 ranks (the multi-rank child asserts exactly
+that, on the same four numbers, at every rank count it runs).
+
+The switch is `batch_mode`, the keyword the solver already had for CUDA. It is
+one keyword with one meaning on both backends rather than a CPU-shaped
+sibling, which is also why its declared consumer is a receipt both routes emit:
+`_solver_contract_receipt_carries` filters receipts BY BACKEND before it looks
+at the name, so a `:cuda_`-tagged consumer could never have certified the CPU
+half.
+
 ## The CPU, MPI and CUDA consistency statement
 
 Three execution modes, and the relation between them is asserted in two

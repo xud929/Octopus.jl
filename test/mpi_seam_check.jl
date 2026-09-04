@@ -212,6 +212,9 @@ end
 # weight, and the luminosity. The kick itself is local.
 let policy = MultiProcessExecutionPolicy(threads=1)
     b1, b2 = _mpi_check_collide_beams(policy)
+    # A second, identical pair for the sequential schedule: the collide below
+    # kicks the beams it is given, so the two schedules cannot share one.
+    sb1, sb2 = _mpi_check_collide_beams(policy)
     resolved = Octopus._resolve_execution_policy(policy, b1.rep)
     Octopus._with_execution_policy(resolved) do
         Octopus._with_shard(Octopus._mp_resolve_shard(length(b1.rep))) do
@@ -227,6 +230,22 @@ let policy = MultiProcessExecutionPolicy(threads=1)
                                              " maxpx=", repr(sig.maxpx),
                                              " rmspx=", repr(sig.rmspx),
                                              " rmspy=", repr(sig.rmspy))
+
+            # `batch_mode` under division. The solver's default is
+            # `:wavefront`, so the line above is the BATCHED schedule; this is
+            # the sequential one, and the parent asserts the two agree to the
+            # character. A batch repeats no beam-1 and no beam-2 slice, so each
+            # slice still meets its partners in collision-time order, and the
+            # luminosity folds by position in that order rather than by
+            # arrival -- the schedule is free, at any rank count, and this is
+            # where "at any rank count" is measured rather than argued.
+            seq_lum = collide!(_mpi_check_gaussian_solver(batch_mode=:sequential),
+                               sb1, sb2, CPUThreadsBackend)
+            seq_sig = _mpi_check_collide_signature(sb1.rep)
+            Octopus._mp_is_root() && println("MPI-COLLIDESEQ lum=", repr(seq_lum),
+                                             " maxpx=", repr(seq_sig.maxpx),
+                                             " rmspx=", repr(seq_sig.rmspx),
+                                             " rmspy=", repr(seq_sig.rmspy))
 
             # `:equal_count` orders the whole beam, which is a sort and not a
             # fold, so it refuses rather than cutting a shard's boundaries.

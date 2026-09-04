@@ -128,8 +128,8 @@ function _mpi_check_collide_beams(policy)
     return mk(), mk()
 end
 
-_mpi_check_gaussian_solver() = Octopus.GaussianPoissonSolver(
-    kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+_mpi_check_gaussian_solver(; batch_mode=:wavefront) = Octopus.GaussianPoissonSolver(
+    kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, batch_mode=batch_mode,
     slicing=Octopus.LongitudinalSlicing(nslices=5, method=:equal_area))
 
 """

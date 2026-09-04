@@ -7185,6 +7185,20 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 @test isapprox(one[k], two[k]; rtol=1.0e-12, atol=0.0)
             end
 
+            # `batch_mode` under division, to the CHARACTER. The child's first
+            # collide runs the solver default `:wavefront`; its second runs
+            # `:sequential` on an identical pair of beams. Both lines carry
+            # `repr` of the same four numbers at full precision, so equal
+            # strings are equal bits -- which is the claim the wavefront
+            # schedule makes and the only one worth pinning: a batch repeats no
+            # beam-1 and no beam-2 slice, so it re-associates nothing. This is
+            # asserted at EVERY rank count the child runs, because the divided
+            # collide's merged exchanges are exactly what could break it.
+            for out in (out1, out2)
+                @test first(tagged(out, "MPI-COLLIDE ")) ==
+                      first(tagged(out, "MPI-COLLIDESEQ "))
+            end
+
             # The child runs at ONE thread, where `_run_logical_workers` runs
             # its chunk grid inline instead of spawning a task per chunk --
             # a pool of one cannot run two things at once, and a
@@ -11221,6 +11235,56 @@ end
     @test GaussianPoissonSolver(virtual_drift=:exact).virtual_drift isa ExactHamiltonianDrift
     @test_throws ArgumentError GaussianPoissonSolver(batch_mode=:invalid)
     @test_throws ArgumentError GaussianPoissonSolver(virtual_drift=:invalid)
+end
+
+@testset "The CPU soft-Gaussian reads batch_mode and the two schedules agree" begin
+    # `batch_mode` used to be a CUDA-only keyword; the CPU collide now reads the
+    # same field, and the whole point of the wavefront schedule is that it is
+    # free -- a batch repeats no beam-1 and no beam-2 slice, so each slice still
+    # meets its partners in collision-time order, and the luminosity fold is by
+    # position in that order rather than by arrival. So the assertion is
+    # BITWISE, not approximate, and it is made on both the coordinates and the
+    # luminosity, coupled and uncoupled.
+    rng = Random.Xoshiro(4104)
+    mkb(n, sz) = test_beam(Phase6DRep(
+        randn(rng, n) .* 1.0e-4, randn(rng, n) .* 1.0e-5,
+        randn(rng, n) .* 5.0e-6, randn(rng, n) .* 1.0e-6,
+        randn(rng, n) .* sz,     randn(rng, n) .* 1.0e-4))
+    ref1, ref2 = mkb(9000, 7.0e-3), mkb(5000, 6.0e-2)
+    slc = LongitudinalSlicing(nslices=7, method=:equal_area)
+    for coupled in (false, true)
+        outs = map((:sequential, :wavefront)) do mode
+            b1 = test_beam(Phase6DRep(map(copy, coordinate_arrays(ref1.rep))...))
+            b2 = test_beam(Phase6DRep(map(copy, coordinate_arrays(ref2.rep))...))
+            solver = GaussianPoissonSolver(; slicing1=slc, slicing2=slc,
+                                           include_sigma_xy=coupled,
+                                           kbb1=1.0e-8, kbb2=1.0e-8,
+                                           batch_mode=mode)
+            audit = Octopus.ExecutionAudit()
+            lum = Ref(0.0)
+            Octopus.with_execution_audit(audit) do
+                lum[] = collide!(solver, b1, b2, CPUThreadsBackend)
+            end
+            sched = [r.values for r in Octopus.execution_receipts(audit)
+                     if r.consumer === :gaussian_pair_schedule]
+            (lum[], map(copy, coordinate_arrays(b1.rep)),
+             map(copy, coordinate_arrays(b2.rep)), sched)
+        end
+        seq, wf = outs
+        @test seq[1] === wf[1]
+        @test all(a == b for (a, b) in zip(seq[2], wf[2]))
+        @test all(a == b for (a, b) in zip(seq[3], wf[3]))
+        # Anti-vacuity, on what each run RECORDED rather than on what it was
+        # asked for: without this, a CPU path that ignored `batch_mode` -- which
+        # is exactly what it did until 2026-09-04 -- satisfies every equality
+        # above by never batching at all.
+        @test length(seq[4]) == 1 && length(wf[4]) == 1
+        @test seq[4][1].batch_mode === :sequential
+        @test wf[4][1].batch_mode === :wavefront
+        @test seq[4][1].batches == 0
+        @test wf[4][1].batches < wf[4][1].pairs
+        @test wf[4][1].widest_batch > 1
+    end
 end
 
 @testset "Zero-width soft-Gaussian slice remains finite" begin

@@ -307,10 +307,18 @@ field-slice boundary interpolation. The longitudinal kick, virtual-drift
 Hamiltonians, moving-centroid term, slingshot contribution, and coupled
 `sigma_xy` derivative are derived in
 `docs/theory/beam_beam_longitudinal_kick.md`.
-`GaussianPoissonSolver(batch_mode=:wavefront)` is the default CUDA scheduler.
-It groups dependency-ready non-overlapping slice pairs, reduces all active
-source moments in one wavefront, then launches independent slice kicks. Set
-`batch_mode=:sequential` for the one-pair-at-a-time fallback. Set
+`GaussianPoissonSolver(batch_mode=:wavefront)` is the default scheduler on
+BOTH backends. It groups dependency-ready non-overlapping slice pairs, reduces
+all active source moments in one wavefront, then launches independent slice
+kicks. Set `batch_mode=:sequential` for the one-pair-at-a-time fallback; the
+two schedules agree bit for bit, because a batch repeats no beam-1 and no
+beam-2 slice — each slice still meets its partners in collision-time order —
+and the luminosity folds by position in that order rather than by arrival. On
+CPU the batch is also what makes the multi-process collide cheap: one slice
+pair at a time asks for its two slices' moments with its own collectives,
+while a batch exchanges every slice it holds in one message per beam, and the
+per-slice counts and shift-origin owners are hoisted out of the pair loop
+entirely (1874 collectives per collide at 15x15 slices become 222). Set
 `include_sigma_xy=true` when the full coupled transverse source covariance,
 including the longitudinal derivative of the rotated principal axes, is part
 of the model.

@@ -42,7 +42,8 @@ Environment switches, with the defaults shown at their read sites below:
 OCTOPUS_BENCH_SOLVER (pic | gaussian_pic | spectral | gaussian),
 OCTOPUS_BENCH_N_ELE, OCTOPUS_BENCH_N_PRO, OCTOPUS_BENCH_SLICES,
 OCTOPUS_BENCH_GRID, OCTOPUS_BENCH_REPEATS, OCTOPUS_BENCH_PROFILE,
-OCTOPUS_BENCH_PROFILE_PATH, OCTOPUS_BENCH_TAG, OCTOPUS_BENCH_TSV.
+OCTOPUS_BENCH_PROFILE_PATH, OCTOPUS_BENCH_TAG, OCTOPUS_BENCH_TSV,
+OCTOPUS_BENCH_BATCH_MODE (wavefront | sequential; the solvers' own keyword).
 
 The production point is `OCTOPUS_BENCH_N_ELE=2560000 OCTOPUS_BENCH_N_PRO=1024000`
 with the default 15 slices and grid 128; the defaults here are a quarter of that,
@@ -92,6 +93,9 @@ const REPEATS = env_int("OCTOPUS_BENCH_REPEATS", 3)
 const DOPROF  = env_bool("OCTOPUS_BENCH_PROFILE", false)
 const TAG     = get(ENV, "OCTOPUS_BENCH_TAG", "")
 const TSV     = get(ENV, "OCTOPUS_BENCH_TSV", "")
+# The solvers' own keyword, exposed so the two schedules can be timed against
+# each other; `:wavefront` is the solver default and stays the default here.
+const BATCH_MODE = Symbol(lowercase(get(ENV, "OCTOPUS_BENCH_BATCH_MODE", "wavefront")))
 
 REPEATS > 0 || error("OCTOPUS_BENCH_REPEATS must be positive")
 N_ELE > 0 && N_PRO > 0 || error("OCTOPUS_BENCH_N_ELE and _N_PRO must be positive")
@@ -136,19 +140,19 @@ solver = if SOLVER == "spectral"
                           longitudinal_kick = true)
 elseif SOLVER == "gaussian"
     GaussianPoissonSolver(; slicing = slicing, min_sigma = 1.0e-12,
-                          longitudinal_kick = true, batch_mode = :wavefront)
+                          longitudinal_kick = true, batch_mode = BATCH_MODE)
 elseif SOLVER == "gaussian_pic"
     GaussianPICPoissonSolver(; slicing = slicing, grid = (GRID, GRID),
                              deposit_method = :CIC, green_type = :integrated,
                              green_cache = :slice_pair, longitudinal_kick = true,
-                             batch_mode = :wavefront)
+                             batch_mode = BATCH_MODE)
 elseif SOLVER == "pic"
     PICPoissonSolver(; slicing = slicing, grid = (GRID, GRID),
                      deposit_method = :CIC, green_type = :integrated,
                      green_cache = :slice_pair,
                      slice_pair_green_min_ratio = 0.50,
                      slice_pair_green_growth = 0.25,
-                     longitudinal_kick = true, batch_mode = :wavefront)
+                     longitudinal_kick = true, batch_mode = BATCH_MODE)
 else
     error("OCTOPUS_BENCH_SOLVER must be pic | gaussian_pic | spectral | gaussian; " *
           "got $(repr(SOLVER))")

@@ -3161,7 +3161,10 @@ discarded every `CUDAPICLaunchConfig` and the inherited policy thread count
 while `configuration_report` called them resolved, because the installer tested
 `isa` against a solver that *composes* `PICPoissonSolver` rather than subtyping
 it; and a CUDA-only `batch_mode` on the soft-Gaussian solver was inactive on CPU
-with no warning anywhere. Neither is visible to a coordinate comparison, and
+with no warning anywhere (that one is now HONORED on CPU rather than merely
+warned about — the soft-Gaussian collide batches on both backends, and this
+contract's CPU half is what certifies it). Neither is visible to a coordinate
+comparison, and
 `validate_configuration_metadata()` passed throughout — it checks that a
 consumer is named, not that it runs.
 

@@ -49,8 +49,13 @@ Shared where the role applies:
   the soft-Gaussian solver is grid-free and has no `grid`.
 - `batch_mode::Symbol` — slice-pair scheduling, `:sequential` or `:wavefront`,
   for the solvers that offer both (`GaussianPoissonSolver`, `PICPoissonSolver`,
-  `GaussianPICPoissonSolver`). CUDA-only; the CPU paths always use collision-time
-  order.
+  `GaussianPICPoissonSolver`). `GaussianPoissonSolver` reads it on BOTH
+  backends; on `PICPoissonSolver` and `GaussianPICPoissonSolver` it is read on
+  CUDA, and their CPU paths decide batching for themselves (`_pic_batchable`,
+  which keeps `:source_slice` sequential because that mode shares mesh bounds
+  across pairs). Wherever a schedule is batched it reproduces the sequential
+  one: a batch never repeats a beam-1 or a beam-2 slice, so each slice still
+  meets its partners in collision-time order.
 - `luminosity_schedule` — every solver takes it; skipped turns still apply
   the beam-beam kicks, return `NaN`, and leave no row in the artifact's
   luminosity channel. For the solvers where luminosity is a separable cost
@@ -906,7 +911,10 @@ former transverse-only, non-symplectic map.
 rotates the Gaussian kick to its instantaneous principal axes, and includes
 the rotation derivative in the longitudinal kick. The default `false` retains
 the specialized uncoupled hot path. `batch_mode` may be `:sequential` or
-`:wavefront`; the latter groups dependency-safe slice pairs on CUDA.
+`:wavefront`; the latter groups dependency-safe slice pairs, on either backend.
+The two schedules produce identical results — the batched CPU route folds
+luminosity by position in the collision order and keeps each kick's own
+chunk-ordered accumulator, so it re-associates nothing.
 
 `kbb1` scales the kick applied to beam 1 by beam 2. `kbb2` scales the kick
 applied to beam 2 by beam 1. If either is `nothing`, it is derived from
@@ -1067,10 +1075,18 @@ const _GAUSSIAN_SOLVER_OPTION_SCHEMA = (
     # true by construction: if the CUDA soft-Gaussian route stopped reading
     # `batch_mode` tomorrow, both halves of the check would still hold. This is
     # the very option the contract's docstring cites as its motivating defect.
+    # ONE keyword, one meaning, both backends (2026-09-04). `batch_mode` was
+    # CUDA-only because the CPU collide never batched; now that it does, the
+    # switch is this field rather than a CPU-shaped sibling, `supported_backends`
+    # names both, and `consumer` names a receipt BOTH routes emit -- the CUDA
+    # ones alongside `:cuda_gaussian_algorithm`, which keeps carrying the rest
+    # of the device algorithm. A backend-tagged consumer symbol could not have
+    # certified the CPU half: `_solver_contract_receipt_carries` filters
+    # receipts by backend before it looks at the name.
     batch_mode=SolverOptionMeta(Symbol, :wavefront,
-        "CUDA slice-pair scheduling mode (:sequential or :wavefront); the CPU path ignores it.";
-        supported_backends=(CUDABackend,), category=:performance,
-        consumer=:cuda_gaussian_algorithm),
+        "Slice-pair scheduling mode (:sequential or :wavefront); read on both backends, and the two schedules agree bit for bit.";
+        supported_backends=(CPUThreadsBackend, CUDABackend), category=:performance,
+        consumer=:gaussian_pair_schedule),
     luminosity_schedule=SolverOptionMeta(Union{Nothing,AbstractSchedule}, nothing,
         "Schedule for luminosity REPORTING; nothing reports every turn. Evaluation is an inseparable free by-product of the kick for this solver, so unscheduled turns still apply identical kicks, return NaN, and leave no row in the artifact's channel.";
         category=:diagnostic),

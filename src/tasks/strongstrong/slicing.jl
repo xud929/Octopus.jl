@@ -736,11 +736,20 @@ _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
                           ignore_centroid::Bool, min_sigma) =
     _slice_transverse_moments(rep, idx, ignore_centroid, min_sigma, Val(false))
 
+# `fma`, NOT `muladd` (2026-09-04). `muladd` is defined as "fuse if the
+# compiler thinks it profitable", so which of two results these return is a
+# CODEGEN decision, and moving the caller moves the answer: splitting the
+# soft-Gaussian finalize into its own function -- same source text, same input
+# bits -- flipped a shifted variance from fused to unfused and shifted a
+# coupled collide's coordinates by 1 ulp. Measured before spelling it out:
+# every one of 400 sampled shifted moments on this CPU came back FUSED, so
+# `fma` is what the tree has been computing all along and this pins it there
+# instead of leaving it to the inliner. Both backends have the instruction.
 @inline _shifted_second_moment(sum2, mean_offset, invn) =
-    muladd(-mean_offset, mean_offset, sum2 * invn)
+    fma(-mean_offset, mean_offset, sum2 * invn)
 
 @inline _shifted_cross_moment(sum12, mean_offset1, mean_offset2, invn) =
-    muladd(-mean_offset1, mean_offset2, sum12 * invn)
+    fma(-mean_offset1, mean_offset2, sum12 * invn)
 
 """
 The transverse coordinates of a slice's globally-first member, on every rank.
@@ -763,45 +772,64 @@ function _mp_slice_reference(rep::Phase6DRep, idx::Vector{Int}, ::Type{T}) where
     return (values[1], values[2], values[3], values[4])
 end
 
-function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
-                                   ignore_centroid::Bool, min_sigma,
+"""
+How many shifted sums one slice contributes to a moment exchange.
+
+Ten uncoupled, fourteen coupled — the extra four are the cross terms `COUPLED`
+adds. It depends on the flag alone, which is what lets a caller holding several
+slices lay their sums end to end in ONE buffer at a fixed stride and exchange
+them with a single collective.
+"""
+@inline _slice_moment_nstats(::Val{COUPLED}) where {COUPLED} = COUPLED ? 14 : 10
+
+"""
+The moments an EMPTY slice reports: zero centroids and the `min_sigma` floor.
+
+Every rank agrees on emptiness because the count that decides it is the whole
+slice's, so this early return never leaves a peer waiting at a collective.
+"""
+function _slice_empty_moments(min_sigma, ::Type{T}, ::Val{COUPLED}) where {T,COUPLED}
+    z = zero(T)
+    floor2 = T(min_sigma) * T(min_sigma)
+    moments = StrongTransverseMoments{T,COUPLED}(
+        floor2, z, floor2, z, z, z, z, z, z, z)
+    return (mx=z, sx=T(min_sigma), mpx=z, spx=z, covxpx=z,
+            my=z, sy=T(min_sigma), mpy=z, spy=z, covypy=z,
+            moments=moments)
+end
+
+"""
+The shift origin for one slice's moments: its first member's coordinates.
+
+Every rank must use the SAME one — these are shifted moments, and two ranks
+shifting by different origins produce sums that cannot be added. Undivided it
+is the slice's first member, as it has always been; divided it is the first
+member GLOBALLY, which is that same particle.
+"""
+function _slice_moment_reference(rep::Phase6DRep, idx::Vector{Int},
+                                 ::Type{T}, divided::Bool) where {T}
+    divided && return _mp_slice_reference(rep, idx, T)
+    first_particle = idx[1]
+    @inbounds return (T(rep.x[first_particle]), T(rep.px[first_particle]),
+                      T(rep.y[first_particle]), T(rep.py[first_particle]))
+end
+
+"""
+Accumulate one slice's shifted transverse sums into `dest[off+1 : off+nstats]`.
+
+Split out of `_slice_transverse_moments` so a caller holding several slices can
+pack their sums into one buffer and exchange them with a single collective; the
+single-slice entry point is that caller with one slice. The split moves no
+arithmetic — the accumulation still runs in local scalars or in the fixed chunk
+grid, and only the final store knows about `dest` — which is what lets a batched
+collide stay bit-identical to a sequential one.
+"""
+function _slice_moment_local_sums!(dest::AbstractVector, off::Int,
+                                   rep::Phase6DRep, idx::Vector{Int},
+                                   x0, px0, y0, py0,
                                    ::Val{COUPLED}) where {COUPLED}
+    T = eltype(dest)
     x, px, y, py = rep.x, rep.px, rep.y, rep.py
-    T = promote_type(eltype(x), typeof(min_sigma))
-    # The count is the WHOLE slice's, so every rank agrees on whether the slice
-    # is empty and therefore on whether the collectives below happen at all --
-    # a rank that returned early because its own shard held no member of this
-    # slice would leave its peers waiting at the next one.
-    divided = _mp_nranks() > 1
-    # TWO counts, and confusing them is a segfault: `n_local` is how many
-    # members THIS rank holds and bounds every loop and chunk grid below,
-    # while `n` is how many the slice has and is the denominator the moments
-    # divide by. They are the same number in a single-process run, which is
-    # why a first cut used one for both and crashed only when a shard's slice
-    # crossed the chunking threshold.
-    n_local = length(idx)
-    n = divided ? _mp_global_count(n_local) : n_local
-    if n == 0
-        z = zero(T)
-        floor2 = T(min_sigma) * T(min_sigma)
-        moments = StrongTransverseMoments{T,COUPLED}(
-            floor2, z, floor2, z, z, z, z, z, z, z)
-        return (mx=z, sx=T(min_sigma), mpx=z, spx=z, covxpx=z,
-                my=z, sy=T(min_sigma), mpy=z, spy=z, covypy=z,
-                moments=moments)
-    end
-    # The shift reference. Every rank must use the SAME one: these are shifted
-    # moments, and two ranks shifting by different origins produce sums that
-    # cannot be added. Undivided it is the slice's first member, as it has
-    # always been; divided it is the first member GLOBALLY, which is that same
-    # particle.
-    x0, px0, y0, py0 = if divided
-        _mp_slice_reference(rep, idx, T)
-    else
-        first_particle = idx[1]
-        @inbounds (T(x[first_particle]), T(px[first_particle]),
-                   T(y[first_particle]), T(py[first_particle]))
-    end
     sdx = zero(T); sdpx = zero(T); sdy = zero(T); sdpy = zero(T)
     sdx2 = zero(T); sdpx2 = zero(T); sdy2 = zero(T); sdpy2 = zero(T)
     sdxpx = zero(T); sdypy = zero(T)
@@ -815,6 +843,7 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
     # this rank does. The fold's shape therefore depends on the shard size,
     # which is a property of the rank count and not of the worker count -- the
     # count-invariance U5-2 pinned is within a process and is untouched.
+    n_local = length(idx)
     if n_local < _STRONG_STRONG_PARALLEL_MOMENT_MIN
         for i in idx
             @inbounds begin
@@ -863,22 +892,40 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
             end
         end
     end
-    if divided
-        # One message per slice, carrying the ten or fourteen shifted sums.
-        # The kick that follows is local, so this is the only exchange the
-        # soft-Gaussian path needs per slice.
-        packed = COUPLED ?
-            T[sdx, sdpx, sdy, sdpy, sdx2, sdpx2, sdy2, sdpy2, sdxpx, sdypy,
-              sdxy, sdxpy, sdpxy, sdpxpy] :
-            T[sdx, sdpx, sdy, sdpy, sdx2, sdpx2, sdy2, sdpy2, sdxpx, sdypy]
-        _mp_allsum!(packed)
-        sdx, sdpx, sdy, sdpy = packed[1], packed[2], packed[3], packed[4]
-        sdx2, sdpx2, sdy2, sdpy2 = packed[5], packed[6], packed[7], packed[8]
-        sdxpx, sdypy = packed[9], packed[10]
+    @inbounds begin
+        dest[off + 1] = sdx; dest[off + 2] = sdpx
+        dest[off + 3] = sdy; dest[off + 4] = sdpy
+        dest[off + 5] = sdx2; dest[off + 6] = sdpx2
+        dest[off + 7] = sdy2; dest[off + 8] = sdpy2
+        dest[off + 9] = sdxpx; dest[off + 10] = sdypy
         if COUPLED
-            sdxy, sdxpy = packed[11], packed[12]
-            sdpxy, sdpxpy = packed[13], packed[14]
+            dest[off + 11] = sdxy; dest[off + 12] = sdxpy
+            dest[off + 13] = sdpxy; dest[off + 14] = sdpxpy
         end
+    end
+    return nothing
+end
+
+"""
+Turn one slice's exchanged sums back into its transverse moments.
+
+Reads `sums[off+1 : off+nstats]`, so it serves the single-slice path and a
+batched caller's shared buffer without either knowing about the other.
+"""
+function _slice_moments_finalize(sums::AbstractVector, off::Int, n::Integer,
+                                 x0, px0, y0, py0, ignore_centroid::Bool,
+                                 min_sigma, ::Val{COUPLED}) where {COUPLED}
+    T = eltype(sums)
+    @inbounds begin
+        sdx = sums[off + 1]; sdpx = sums[off + 2]
+        sdy = sums[off + 3]; sdpy = sums[off + 4]
+        sdx2 = sums[off + 5]; sdpx2 = sums[off + 6]
+        sdy2 = sums[off + 7]; sdpy2 = sums[off + 8]
+        sdxpx = sums[off + 9]; sdypy = sums[off + 10]
+        sdxy = COUPLED ? sums[off + 11] : zero(T)
+        sdxpy = COUPLED ? sums[off + 12] : zero(T)
+        sdpxy = COUPLED ? sums[off + 13] : zero(T)
+        sdpxpy = COUPLED ? sums[off + 14] : zero(T)
     end
     invn = inv(T(n))
     dmx = sdx * invn; dmpx = sdpx * invn
@@ -913,4 +960,34 @@ function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
         mpy=T(mpy), spy=sqrt(max(T(spy2), zero(T))), covypy=T(covypy),
         moments=moments,
     )
+end
+
+function _slice_transverse_moments(rep::Phase6DRep, idx::Vector{Int},
+                                   ignore_centroid::Bool, min_sigma,
+                                   ::Val{COUPLED}) where {COUPLED}
+    T = promote_type(eltype(rep.x), typeof(min_sigma))
+    # The count is the WHOLE slice's, so every rank agrees on whether the slice
+    # is empty and therefore on whether the collectives below happen at all --
+    # a rank that returned early because its own shard held no member of this
+    # slice would leave its peers waiting at the next one.
+    divided = _mp_nranks() > 1
+    # TWO counts, and confusing them is a segfault: `n_local` is how many
+    # members THIS rank holds and bounds every loop and chunk grid below,
+    # while `n` is how many the slice has and is the denominator the moments
+    # divide by. They are the same number in a single-process run, which is
+    # why a first cut used one for both and crashed only when a shard's slice
+    # crossed the chunking threshold.
+    n_local = length(idx)
+    n = divided ? _mp_global_count(n_local) : n_local
+    n == 0 && return _slice_empty_moments(min_sigma, T, Val(COUPLED))
+    x0, px0, y0, py0 = _slice_moment_reference(rep, idx, T, divided)
+    sums = zeros(T, _slice_moment_nstats(Val(COUPLED)))
+    _slice_moment_local_sums!(sums, 0, rep, idx, x0, px0, y0, py0, Val(COUPLED))
+    # One message per slice, carrying the ten or fourteen shifted sums. The
+    # kick that follows is local, so this is the only exchange one slice needs
+    # -- and a caller with several slices in hand merges them into one message
+    # for the lot (`_cpu_gaussian_batch_moments!`).
+    divided && _mp_allsum!(sums)
+    return _slice_moments_finalize(sums, 0, n, x0, px0, y0, py0,
+                                   ignore_centroid, min_sigma, Val(COUPLED))
 end

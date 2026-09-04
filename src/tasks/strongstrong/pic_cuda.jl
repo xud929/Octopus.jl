@@ -1304,6 +1304,11 @@ if _HAS_CUDA
                 batch_mode=:wavefront, include_sigma_xy=COUPLED,
                 virtual_drift=typeof(solver.virtual_drift),
             ))
+            # `batch_mode` is one keyword across both backends, so its declared
+            # consumer is a receipt both emit; the algorithm receipt above stays
+            # for the rest of the device configuration.
+            _record_execution!(:gaussian_pair_schedule, CUDABackend,
+                               (batch_mode=:wavefront,))
 
             for batch in batches
                 L = length(batch)
@@ -5433,6 +5438,11 @@ if _HAS_CUDA
                 batch_mode=:sequential, include_sigma_xy=COUPLED,
                 virtual_drift=typeof(solver.virtual_drift),
             ))
+            # `batch_mode` is one keyword across both backends, so its declared
+            # consumer is a receipt both emit; the algorithm receipt above stays
+            # for the rest of the device configuration.
+            _record_execution!(:gaussian_pair_schedule, CUDABackend,
+                               (batch_mode=:sequential,))
             slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing1)
             slices2 = _cuda_longitudinal_slices(beam2.rep, solver.slicing2)
             kbb1 = _strong_strong_kbb1(solver, beam1, beam2)

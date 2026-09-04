@@ -262,6 +262,32 @@ teaches something reusable, it lands here (dated), and the full record goes to
   on a value computed beside it -- the same "assert what the run recorded"
   rule, applied to a reduction rather than to a configuration.
 
+## `muladd` is a 1-ulp coin that refactoring flips
+
+- `muladd(x, y, z)` is defined as "fuse if the compiler thinks it profitable",
+  so which of two last bits a call site returns is a CODEGEN decision, not a
+  property of the source. Splitting `_slice_transverse_moments`'s finalize into
+  its own function so a batched caller could share it -- same source text, same
+  input bits, verified by dumping the raw shifted sums -- flipped
+  `_shifted_second_moment` from fused to unfused and moved a coupled collide's
+  coordinates by 1 ulp (2026-09-04). Uncoupled was unaffected: ten accumulators
+  fit where fourteen did not, which is how a register-pressure decision reaches
+  a physics result.
+- The fix is to spell the choice out. `fma` where fusion is what the tree
+  already does -- measured first, 400 of 400 sampled shifted moments came back
+  fused -- so the arithmetic is pinned instead of left to the inliner. Both
+  backends have the instruction.
+- The general shape: a bit-identity posture and `muladd` are in tension. Every
+  remaining `muladd` is a coin that any refactor touching its caller can flip,
+  and the tree's recorded near-identity wobbles have this shape. When a
+  bit-identity pin fails after a pure code MOVE, suspect this before suspecting
+  the move was not pure.
+- Diagnosis order that worked, and would have worked faster taken first:
+  compare the pre-change tree at the SAME commit (a stale worktree from earlier
+  in the session sent the first comparison chasing an unrelated campaign's
+  changes), then bisect by dumping the intermediate the two paths share -- the
+  raw sums matched, which localised the flip to the finalize in one step.
+
 ## The attractive uniformity is sometimes the wrong one
 
 - Making a reduction uniform across rank counts looked strictly good: fold the
