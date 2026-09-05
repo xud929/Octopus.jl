@@ -75,21 +75,28 @@ the code read.
 
 ## The seam
 
-Six operations, each a core function with a serial passthrough and an
-extension method dispatching on `MPI.Comm`:
+The seam's operations, each a core function with a serial passthrough and an
+extension method dispatching on `MPI.Comm` (the first six are step 2's; the
+rest arrived with the steps that needed them):
 
 | function | passthrough | MPI |
 |---|---|---|
-| `_mp_allsum!(A)` | `A` | Allgather, then fold the blocks into `A` in rank order |
-| `_mp_lane_fold!(lanes)` | `lanes` | the same, named apart because the shard contract differs |
+| `_mp_allsum!(A)` | `A` | below 2048 elements Allgather, then fold the blocks into `A` in rank order; above, an Alltoall of `P` blocks, the rank-ordered fold of each, then Allgather -- the same sum per element, `2n` per rank instead of `nP` (step 4c performance phase) |
+| `_mp_lane_fold!(lanes)` | `lanes` | the gather-and-fold, named apart because the shard contract differs |
 | `_mp_allminmax(lo, hi)` | `(lo, hi)` | `Allreduce` with `min` and `max` |
+| `_mp_allmin!(A)` / `_mp_allmax!(A)` | `A` | vector `Allreduce!` with `min` / `max` (step 4c) |
+| `_mp_reduce_scatter_blocks!(A, nblocks)` | `1:nblocks` | Alltoall laid out so each rank receives whole blocks, then the rank-ordered fold of its own; returns the blocks this rank owns (step 4c performance phase) |
+| `_mp_allgather_blocks!(A, nblocks)` | `A` | the inverse: each rank's owned blocks to every rank |
 | `_mp_bcast!(A, root)` / `_mp_bcast(v, root)` | `A` / `v` | `Bcast!` / `bcast` |
+| `_mp_gather_rows(rows)` | `rows` | rows onto rank 0 in rank order (step 3c) |
 | `_mp_barrier()` | `nothing` | `Barrier` |
 | `_mp_nranks()`, `_mp_rank()`, `_mp_is_root()` | `1`, `0`, `true` | read from the communicator |
 
 Every call records a `:multi_process_collective` receipt when an audit is
 active, carrying kind, element count and bytes, so a later step can price its
-own traffic instead of estimating it.
+own traffic instead of estimating it; the extension also keeps per-kind
+clocks of its MPI calls (`_mp_collective_times`), which the collide benchmark
+prints, because a count and a size do not say what a call cost.
 
 Two decisions inside those cells matter more than the rest.
 
@@ -351,14 +358,35 @@ measurement or by review:
 - **The non-finite chokepoints.** They tested local data and threw on one
   rank; each now takes its verdict on the local data, agrees it across the
   ranks as a count, and throws on every rank or none.
-- **The schedule.** Every collective is issued from inside a pair and MPI
-  runs at `:funneled`, so at more than one rank the wavefront batches keep
-  their order but their pairs run one at a time on the main thread, with the
-  inner per-particle maps keeping the thread pool. Per pair that is two
-  directions times two planes (three under quadratic interpolation or node
-  mode), each a grid all-sum, plus the luminosity's two -- the batched
-  exchange of a whole wavefront's planes in one message is the performance
-  phase.
+- **The schedule, and the batched exchange** (performance phase, record:
+  [`../history/multi_process_pic_scaling_2026_09_05.md`](../history/multi_process_pic_scaling_2026_09_05.md)).
+  The first division issued every collective from inside a pair -- about
+  twenty-four per pair, six of them a whole padded plane -- and, MPI being
+  `:funneled`, ran the pairs one at a time on the main thread. Under the
+  wavefront schedule on the `:slice_pair` mesh a batch's pairs are
+  conflict-free, so `pic_cpu_divided.jl` lets every pair of a batch reach
+  each collective together and every plane be solved once: one all-max of
+  every pair's stacked mesh extents and one all-sum of their `:sigma` sums,
+  counts and non-finite flags; the nx x ny interiors of every deposited plane
+  of both directions of every pair reduce-scattered by whole planes to OWNER
+  ranks (`_mp_reduce_scatter_blocks!`: an Alltoall laid out so each rank
+  receives whole planes, then the rank-ordered fold -- the all-sum's sum per
+  element), the owners solve, and the potentials all-gather
+  (`_mp_allgather_blocks!`) so every rank takes the gradient of the same
+  numbers; one all-max of the luminosity meshes' extents, a reduce-scatter of
+  every luminosity deposit to an owner that forms the overlap sum, and an
+  all-gather of those scalars. Seven collectives per batch, eight under
+  `:sigma`, none inside a pair -- so the pairs keep the worker pool -- the
+  solves divided by the rank count, and the same arithmetic in the same order
+  per particle and per grid element (the field's extents from `x + s*px`
+  without writing it; the in-place drift moves to the kick stage; the
+  padding sums zeros to zero), which the launcher child pins: the per-pair
+  exchange, kept as `batch_mode = :sequential`, equals the batched one bit
+  for bit at every rank count it runs. The node mesh keeps the per-pair
+  exchange (its staging differs); `:source_slice` never batches. Underneath,
+  the extension's all-sum above 2048 elements is a reduce-scatter (Alltoall
+  of `P` blocks, rank-ordered fold, Allgather): `2n` per rank instead of
+  `nP`, the same bits by construction and by measurement.
 
 Gaussian-PIC and spectral still refuse. Measured in
 [`../history/multi_process_step4c_pic_2026_09_05.md`](../history/multi_process_step4c_pic_2026_09_05.md).

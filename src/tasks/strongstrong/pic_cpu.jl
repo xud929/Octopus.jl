@@ -33,7 +33,13 @@ function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
     workspaces = _pic_cpu_workspace_pool!(task.runtime_cache, label, solver, T,
                                           _pic_pool_size(solver))
     green_cache = _pic_green_cache!(task.runtime_cache, label, solver, T)
-    return _pic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache)
+    # The batched exchange's staging (step 4c performance phase), kept across
+    # turns like the workspace pool: its planes are 30 MB at the production
+    # point.
+    batch_exchange = get!(() -> Ref{Any}(nothing), task.runtime_cache,
+                          (:cpu_pic_batch_exchange, label))::Base.RefValue{Any}
+    return _pic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache;
+                         batch_exchange=batch_exchange)
 end
 
 """
@@ -104,7 +110,8 @@ _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     _pic_collide!(solver, beam1, beam2, ctx, (workspace,), green_cache)
 
 function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
-                       workspaces, green_cache)
+                       workspaces, green_cache;
+                       batch_exchange::Base.RefValue{Any}=Ref{Any}(nothing))
     _validate_pic_solver(solver)
     # Step 4c divides this collide; until then a divided run must refuse here
     # too, not only at the task's preflight, so a bare `collide!` cannot
@@ -198,12 +205,15 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # workers after a caller asked for 2, which is a configuration set and not
     # read. The width is recomputed from the policy here and the pool indexed
     # only up to it.
-    # ONE pair worker when divided: every pair issues collectives, MPI runs at
-    # :funneled, and the seam's tripwire throws off the main thread -- so the
-    # batches keep their order and their pairs run one at a time on the main
-    # thread, with the inner per-particle maps keeping the whole pool. The
-    # batched EXCHANGE (one message per batch) is step 4c's performance phase.
-    pool_workers = divided ? 1 : min(length(workspaces), _pic_pool_size(solver))
+    # ONE pair worker where the pairs themselves issue collectives -- the
+    # per-pair exchange, which under division is what the node mesh still
+    # runs: MPI is :funneled and the seam's tripwire throws off the main
+    # thread, so those batches keep their order and their pairs run one at a
+    # time on the main thread, with the inner per-particle maps keeping the
+    # whole pool. The `:slice_pair` mesh runs the BATCHED exchange (step 4c's
+    # performance phase, `pic_cpu_divided.jl`), whose collectives sit between
+    # the stages of a batch and not inside a pair, so its pairs keep the pool.
+    pool_workers = (divided && node_grid) ? 1 : min(length(workspaces), _pic_pool_size(solver))
     # `batch_mode` is read HERE, on CPU, since 2026-09-04. Before that the CPU
     # loop scheduled by `_pic_batchable` alone and `:sequential` was accepted
     # and ignored -- warned about at task level, silent through a bare
@@ -255,6 +265,7 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
         # whole pool exactly as the sequential loop gives it to them.
         inner_workers = pool_workers > 1 ? 1 : _cpu_worker_count()
         batches = collision_pair_batches(slices1, slices2)
+        batched_exchange = divided && !node_grid
         # Consumer-boundary receipt, so a test can assert the schedule the run
         # ACTUALLY used rather than the one its policy asked for. Without it,
         # "batched and sequential agree bit for bit" passes just as happily when
@@ -266,13 +277,28 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
         # that ran, never a copy of the field, since a receipt that echoes the
         # request certifies nothing (U4-6) -- and `requested` is the field;
         # they differ only where the mesh forbids batching.
+        # `exchange` is what RAN, like `batch_mode`: `:batched` (every plane
+        # of a batch in one all-sum), `:per_pair`, or `:none` undivided.
         _record_execution!(:pic_pair_schedule, CPUThreadsBackend,
                            (batch_mode=:wavefront, requested=requested,
                             pairs=npairs, batches=length(batches),
                             widest_batch=maximum(length, batches; init=0),
                             pair_workers=pool_workers,
-                            inner_workers=inner_workers, ranks=_mp_nranks()))
+                            inner_workers=inner_workers, ranks=_mp_nranks(),
+                            exchange=batched_exchange ? :batched :
+                                     divided ? :per_pair : :none))
         Base.ScopedValues.with(_PIC_MAP_WORKER_BUDGET => inner_workers) do
+        if batched_exchange
+            ex = _pic_batch_exchange!(batch_exchange, solver, T,
+                                      maximum(length, batches; init=1))
+            for batch in batches
+                _pic_collide_batch_divided!(
+                    ex, batch, lum_parts, ran, pair_pos, solver, slices1, slices2,
+                    state1, state2, scratch2, workspaces, green_cache,
+                    kbb1, kbb2, klum, compute_luminosity, plan1, plan2,
+                    clamp(pool_workers, 1, length(batch)))
+            end
+        else
         for batch in batches
             nworkers = clamp(pool_workers, 1, length(batch))
             # `chunk_ws`, NOT `ws`. The sequential branch below also assigns
@@ -300,12 +326,14 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
             end
         end
         end
+        end
     else
         _record_execution!(:pic_pair_schedule, CPUThreadsBackend,
                            (batch_mode=:sequential, requested=requested,
                             pairs=npairs, batches=0,
                             widest_batch=0, pair_workers=1,
-                            inner_workers=_cpu_worker_count(), ranks=_mp_nranks()))
+                            inner_workers=_cpu_worker_count(), ranks=_mp_nranks(),
+                            exchange=divided ? :per_pair : :none))
         serial_ws = first(workspaces)
         for (p, entry) in pairs(order)
             ran[p] = _pic_collide_pair!(
@@ -2168,7 +2196,11 @@ function _pic_solve_field_with_green_fft!(field::_PICFieldWorkspace,
     charge = workspace.charge
     fill!(charge, zero(T))
     _pic_deposit!(charge, solver.deposit_method, x, y, T(source_grid.x0), T(source_grid.y0), hx, hy, nx, ny, workspace)
-    divided && _mp_allsum!(charge)
+    if divided
+        _mp_allsum!(charge)
+        _record_execution!(:pic_grid_exchange, CPUThreadsBackend,
+                           (planes=1, batched=false, ranks=_mp_nranks()))
+    end
     spectral = workspace.spectral
     spectral .= charge
     workspace.fft_plan * spectral
@@ -2200,9 +2232,14 @@ function _pic_solve_drifted_field_with_green_fft!(field::_PICFieldWorkspace,
     # particles of the source slice, and the field is the field of the whole
     # slice's charge -- one all-sum of the padded grid, then every rank
     # solves the identical field redundantly and kicks its own particles.
-    # Phase 1 exchanges the whole 2nx x 2ny matrix per plane; the batched
-    # exchange of a wavefront's planes is the performance phase.
-    divided && _mp_allsum!(charge)
+    # The per-pair exchange: the whole 2nx x 2ny matrix, one plane per call.
+    # The batched exchange (`pic_cpu_divided.jl`) sends every plane of a
+    # wavefront batch in one call; both record what they moved.
+    if divided
+        _mp_allsum!(charge)
+        _record_execution!(:pic_grid_exchange, CPUThreadsBackend,
+                           (planes=1, batched=false, ranks=_mp_nranks()))
+    end
     spectral = workspace.spectral
     spectral .= charge
     workspace.fft_plan * spectral
@@ -2297,7 +2334,15 @@ function _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
         _pic_deposit_range!(local_grid, method, x, y, x0, y0, hx, hy, nx, ny, first_i, last_i)
     end
     for local_grid in local_charge
-        charge .+= local_grid
+        # The batched exchange deposits into the nx x ny INTERIOR of a plane
+        # (`pic_cpu_divided.jl`) while the chunk grids are padded-plane
+        # sized; folding the interior of each chunk grid is the same
+        # additions in the same order, so the bits are the same.
+        if size(local_grid) == size(charge)
+            charge .+= local_grid
+        else
+            charge .+= view(local_grid, axes(charge)...)
+        end
     end
     return charge
 end
@@ -2325,7 +2370,15 @@ function _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny,
         _pic_deposit_range!(local_grid, method, x, y, x0, y0, hx, hy, nx, ny, first_i, last_i)
     end
     for local_grid in local_charge
-        charge .+= local_grid
+        # The batched exchange deposits into the nx x ny INTERIOR of a plane
+        # (`pic_cpu_divided.jl`) while the chunk grids are padded-plane
+        # sized; folding the interior of each chunk grid is the same
+        # additions in the same order, so the bits are the same.
+        if size(local_grid) == size(charge)
+            charge .+= local_grid
+        else
+            charge .+= view(local_grid, axes(charge)...)
+        end
     end
     return charge
 end
@@ -2348,7 +2401,15 @@ function _pic_deposit_drifted_threaded!(charge, method, x, px, y, py, drift_s, x
         )
     end
     for local_grid in local_charge
-        charge .+= local_grid
+        # The batched exchange deposits into the nx x ny INTERIOR of a plane
+        # (`pic_cpu_divided.jl`) while the chunk grids are padded-plane
+        # sized; folding the interior of each chunk grid is the same
+        # additions in the same order, so the bits are the same.
+        if size(local_grid) == size(charge)
+            charge .+= local_grid
+        else
+            charge .+= view(local_grid, axes(charge)...)
+        end
     end
     return charge
 end
@@ -2928,6 +2989,28 @@ end
 # cross-rank min/max then replaces with the beam's (step 4c).
 _pic_extremum(f::F, a, init) where {F} = isempty(a) ? init : f(a)
 
+"""
+The luminosity overlap mesh from the extrema of both slices' virtual
+positions: its origin, spacings and their inverses. ONE function for the
+per-pair path and the batched exchange (`pic_cpu_divided.jl`), so the two
+cannot drift apart by a rounding; the expressions are the ones
+`_pic_luminosity!` always evaluated, in the same order.
+"""
+function _pic_luminosity_mesh(solver::PICPoissonSolver, ::Type{T}, xmin, xmax, ymin, ymax) where {T}
+    nx, ny = _pic_luminosity_grid(solver)
+    width, height = _pic_resolve_transverse_extent(
+        solver, T(xmax - xmin), T(ymax - ymin), "PIC luminosity grid")
+    tx = width / T(nx - 1.1)
+    ty = height / T(ny - 1.1)
+    width += T(0.1) * tx
+    height += T(0.1) * ty
+    xmin -= T(0.05) * tx
+    ymin -= T(0.05) * ty
+    hx = width / (nx - 1)
+    hy = height / (ny - 1)
+    return (xmin=xmin, ymin=ymin, hx=hx, hy=hy, hxi=inv(hx), hyi=inv(hy))
+end
+
 function _pic_luminosity!(solver::PICPoissonSolver, x1, y1, x2, y2, klum, q1, q2;
                           divided::Bool=false)
     nx, ny = _pic_luminosity_grid(solver)
@@ -2946,22 +3029,13 @@ function _pic_luminosity!(solver::PICPoissonSolver, x1, y1, x2, y2, klum, q1, q2
         xmin, xmax = _mp_allminmax(xmin, xmax)
         ymin, ymax = _mp_allminmax(ymin, ymax)
     end
-    width, height = _pic_resolve_transverse_extent(
-        solver, T(xmax - xmin), T(ymax - ymin), "PIC luminosity grid")
-    tx = width / T(nx - 1.1)
-    ty = height / T(ny - 1.1)
-    width += T(0.1) * tx
-    height += T(0.1) * ty
-    xmin -= T(0.05) * tx
-    ymin -= T(0.05) * ty
-    hx = width / (nx - 1)
-    hy = height / (ny - 1)
-    hxi = inv(hx); hyi = inv(hy)
+    mesh = _pic_luminosity_mesh(solver, T, xmin, xmax, ymin, ymax)
+    hxi = mesh.hxi; hyi = mesh.hyi
     fill!(q1, zero(T))
     fill!(q2, zero(T))
     method = _pic_luminosity_deposit_method(solver)
-    _pic_deposit!(q1, method, x1, y1, xmin, ymin, hx, hy, nx + 1, ny + 1)
-    _pic_deposit!(q2, method, x2, y2, xmin, ymin, hx, hy, nx + 1, ny + 1)
+    _pic_deposit!(q1, method, x1, y1, mesh.xmin, mesh.ymin, mesh.hx, mesh.hy, nx + 1, ny + 1)
+    _pic_deposit!(q2, method, x2, y2, mesh.xmin, mesh.ymin, mesh.hx, mesh.hy, nx + 1, ny + 1)
     if divided
         _mp_allsum!(q1)
         _mp_allsum!(q2)

@@ -303,6 +303,19 @@ teaches something reusable, it lands here (dated), and the full record goes to
   parse is built whole and written once; lines that every rank prints go out
   one rank at a time with a barrier between, inside the policy scope where
   the barrier is a collective.
+- A cache of buffers typed `Vector` (abstract) made the seam's all-sum 40x
+  slower than the MPI calls inside it (2026-09-05, step 4c performance
+  phase): the rank-ordered fold dispatched per element, 42 ms per 512 KB
+  plane against 0.09 ms of MPI, and the divided PIC collide at two ranks
+  took 9.4 s against 2.5 s serial -- while a standalone probe of the same
+  algorithm with concretely typed locals had measured 0.25 ms. Two lessons:
+  a Dict-held buffer is returned through a type assertion (or a function
+  barrier), and a probe that reproduces the algorithm is not a measurement
+  of the code -- the extension's per-kind collective clocks
+  (`_mp_collective_times`, printed by the benchmark) are what found it, in
+  one run. And a profile hook that calls the collide OUTSIDE the policy
+  scope profiles an undivided collide of one shard: the 3c lesson met by the
+  instrument.
 
 ## A scope that holds one of something is a one-beam assumption
 

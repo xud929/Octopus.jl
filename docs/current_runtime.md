@@ -352,8 +352,10 @@ reference; the two schedules agree bit for bit. Under
 rank deposits its own particles, the charge grid is all-summed before every
 field solve, the mesh extents and the kick scale are the beam's; every CPU
 option route runs divided, the slice-pair Green cache included, since every
-rank holds the same cache); at more than one rank the wavefront batches run
-their pairs one at a time on the main thread.
+rank holds the same cache); under the wavefront schedule on the `:slice_pair`
+mesh every pair of a batch exchanges together and every plane is solved once
+on an owner rank (seven collectives per batch, the pairs on the worker
+pool), the node mesh exchanging per pair.
 `StrongStrongPICMultiProcessConsistencyContract` states the three-way claim
 (CPU against MPI per rank count, CPU against CUDA, MPI against CUDA by
 composition) and needs a launcher command to run its MPI legs.

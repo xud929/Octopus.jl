@@ -47,6 +47,45 @@ end
 Octopus._mp_communicator_size(comm::MPI.Comm) = Int(MPI.Comm_size(comm))
 Octopus._mp_communicator_rank(comm::MPI.Comm) = Int(MPI.Comm_rank(comm))
 
+# Wall time inside the MPI calls, per kind (`Octopus._mp_collective_times`):
+# two clock reads per collective, main thread only.
+const _MP_TIMES = Dict{Symbol,Tuple{Int,Int}}()
+Octopus._mp_collective_times_impl(::Octopus.MPIBackendTag) = copy(_MP_TIMES)
+Octopus._mp_reset_collective_times_impl!(::Octopus.MPIBackendTag) = (empty!(_MP_TIMES); nothing)
+@inline function _mp_timed(f::F, kind::Symbol) where {F}
+    t0 = time_ns()
+    r = f()
+    calls, ns = get(_MP_TIMES, kind, (0, 0))
+    _MP_TIMES[kind] = (calls + 1, ns + Int(time_ns() - t0))
+    return r
+end
+
+# Above `_MP_ALLSUM_SCATTER_MIN` elements the same sum is computed as a
+# reduce-scatter (step 4c performance phase): an `Alltoall` of `P` equal blocks
+# -- the array padded to a multiple of `P` -- each rank folding the `P` blocks it
+# received IN RANK ORDER, then an `Allgather` of the folded blocks. Element by
+# element that is exactly the gather-and-fold's sum (block `r` of rank `q` is
+# the `r`-th term, so the bits are the same; measured identical at every size
+# and rank count tried, 2, 4 and 8 ranks, `n` from 1 to 65536), moving `2n`
+# elements per rank instead of `nP`: a 512 KB plane at 2 ranks went 6.3 ms ->
+# 0.25 ms, at 8 ranks 10.0 -> 0.9 ms. Below the threshold two collectives cost
+# more than one gather. The buffers are kept per (element type, padded length)
+# -- collectives are funneled, so no two run at once.
+const _MP_ALLSUM_SCATTER_MIN = 2048
+const _MP_ALLSUM_BUFFERS = Dict{Tuple{DataType,Int,Int},Any}()
+
+"""Two `padded`-long vectors and one `block`-long one, keyed by all three so
+that two callers wanting the same padded length with different blocks never
+share a short block buffer. CONCRETELY typed on the way out: held as
+`Vector` the fold below dispatched per element and a 512 KB plane cost 42 ms
+against 0.09 ms for the MPI calls themselves (2026-09-05)."""
+function _mp_allsum_buffers(::Type{E}, padded::Int, block::Int) where {E}
+    bufs = get!(_MP_ALLSUM_BUFFERS, (E, padded, block)) do
+        (Vector{E}(undef, padded), Vector{E}(undef, padded), Vector{E}(undef, block))
+    end
+    return bufs::Tuple{Vector{E},Vector{E},Vector{E}}
+end
+
 """
 Allgather, then fold the per-rank blocks into `A` IN RANK ORDER.
 
@@ -59,29 +98,124 @@ project's determinism posture is stated against that (`docs/design/
 multi_process_policy.md`). It costs O(P) in message volume, which the Phase 0
 measurement already priced at 0.10–0.35 s/turn for 2–8 ranks.
 """
-function Octopus._mp_allsum_impl!(A::AbstractArray, comm::MPI.Comm)
+Octopus._mp_allsum_impl!(A::AbstractArray, comm::MPI.Comm) =
+    _mp_timed(() -> _mp_allsum_timed!(A, comm), :allsum)
+
+function _mp_allsum_timed!(A::AbstractArray, comm::MPI.Comm)
     nranks = Int(MPI.Comm_size(comm))
     nranks == 1 && return A
-    flat = vec(A)
-    n = length(flat)
-    gathered = Vector{eltype(A)}(undef, n * nranks)
-    MPI.Allgather!(MPI.Buffer(flat), MPI.UBuffer(gathered, n), comm)
-    fill!(flat, zero(eltype(A)))
-    for r in 0:(nranks - 1)
-        offset = r * n
-        @inbounds for i in 1:n
-            flat[i] += gathered[offset + i]
+    n = length(A)
+    E = eltype(A)
+    # Through the cached vectors, never `MPI.Buffer(A)`: the batched exchange
+    # hands the seam contiguous VIEWS of its staging arrays, which linear
+    # `copyto!` reads and writes and a raw buffer would not.
+    if n >= _MP_ALLSUM_SCATTER_MIN
+        block = cld(n, nranks)
+        padded = block * nranks
+        send, recv, mine = _mp_allsum_buffers(E, padded, block)
+        # Only the padding past the data needs zeroing.
+        n < padded && fill!(view(send, (n + 1):padded), zero(E))
+        copyto!(send, 1, A, 1, n)
+        MPI.Alltoall!(MPI.UBuffer(send, block), MPI.UBuffer(recv, block), comm)
+        fill!(mine, zero(E))
+        for r in 0:(nranks - 1)
+            offset = r * block
+            @inbounds for i in 1:block
+                mine[i] += recv[offset + i]
+            end
         end
+        MPI.Allgather!(MPI.Buffer(mine), MPI.UBuffer(send, block), comm)
+        copyto!(A, 1, send, 1, n)
+        return A
     end
+    _, gathered, mine = _mp_allsum_buffers(E, n * nranks, n)
+    copyto!(mine, 1, A, 1, n)
+    MPI.Allgather!(MPI.Buffer(mine), MPI.UBuffer(gathered, n), comm)
+    @inbounds for i in 1:n
+        s = zero(E)
+        for r in 0:(nranks - 1)
+            s += gathered[r * n + i]
+        end
+        A[i] = s
+    end
+    return A
+end
+
+"""
+The reduce-scatter by whole blocks (`Octopus._mp_reduce_scatter_blocks!`):
+`Alltoall` of `P` chunks of `cld(nblocks, P)` blocks each -- the array
+padded to `P` chunks -- then this rank folds the `P` partials of its chunk
+in rank order, the same sum per element as the all-sum's.
+"""
+function Octopus._mp_reduce_scatter_blocks_impl!(A::AbstractArray, nblocks::Int, comm::MPI.Comm)
+    return _mp_timed(:reduce_scatter) do
+        nranks = Int(MPI.Comm_size(comm))
+        rank = Int(MPI.Comm_rank(comm))
+        nranks == 1 && return 1:nblocks
+        n = length(A)
+        E = eltype(A)
+        n % nblocks == 0 || error("reduce-scatter of $(n) elements in $(nblocks) equal blocks")
+        chunk = cld(nblocks, nranks) * (n ÷ nblocks)
+        padded = chunk * nranks
+        send, recv, _ = _mp_allsum_buffers(E, padded, chunk)
+        n < padded && fill!(view(send, (n + 1):padded), zero(E))
+        copyto!(send, 1, A, 1, n)
+        MPI.Alltoall!(MPI.UBuffer(send, chunk), MPI.UBuffer(recv, chunk), comm)
+        base = rank * chunk
+        mine_len = clamp(n - base, 0, chunk)
+        @inbounds for i in 1:mine_len
+            s = zero(E)
+            for q in 0:(nranks - 1)
+                s += recv[q * chunk + i]
+            end
+            A[base + i] = s
+        end
+        return Octopus._mp_block_range(nblocks, nranks, rank)
+    end
+end
+
+function Octopus._mp_allgather_blocks_impl!(A::AbstractArray, nblocks::Int, comm::MPI.Comm)
+    return _mp_timed(:allgather) do
+        nranks = Int(MPI.Comm_size(comm))
+        rank = Int(MPI.Comm_rank(comm))
+        nranks == 1 && return A
+        n = length(A)
+        E = eltype(A)
+        n % nblocks == 0 || error("all-gather of $(n) elements in $(nblocks) equal blocks")
+        chunk = cld(nblocks, nranks) * (n ÷ nblocks)
+        padded = chunk * nranks
+        _, recv, mine = _mp_allsum_buffers(E, padded, chunk)
+        base = rank * chunk
+        mine_len = clamp(n - base, 0, chunk)
+        mine_len < chunk && fill!(view(mine, (mine_len + 1):chunk), zero(E))
+        mine_len > 0 && copyto!(mine, 1, A, base + 1, mine_len)
+        MPI.Allgather!(MPI.Buffer(mine), MPI.UBuffer(recv, chunk), comm)
+        copyto!(A, 1, recv, 1, n)
+        return A
+    end
+end
+
+"""The cached vector `A`'s elements are copied through for a min/max
+all-reduce, so a view can cross the seam (see `_mp_allsum_impl!`)."""
+function _mp_minmax_through_buffer!(A::AbstractArray, op, comm::MPI.Comm)
+    n = length(A)
+    E = eltype(A)
+    _, _, buf = _mp_allsum_buffers(E, n, n)
+    copyto!(buf, 1, A, 1, n)
+    MPI.Allreduce!(buf, op, comm)
+    copyto!(A, 1, buf, 1, n)
     return A
 end
 
 # min and max associate freely, so these need no ordered fold — which is what
 # makes them usable for mesh and box sizing without a determinism argument.
-Octopus._mp_allminmax_impl(lo, hi, comm::MPI.Comm) =
+Octopus._mp_allminmax_impl(lo, hi, comm::MPI.Comm) = _mp_timed(:allminmax) do
     (MPI.Allreduce(lo, min, comm), MPI.Allreduce(hi, max, comm))
-Octopus._mp_allmin_impl!(A::AbstractArray, comm::MPI.Comm) = (MPI.Allreduce!(A, min, comm); A)
-Octopus._mp_allmax_impl!(A::AbstractArray, comm::MPI.Comm) = (MPI.Allreduce!(A, max, comm); A)
+end
+Octopus._mp_allmin_impl!(A::AbstractArray, comm::MPI.Comm) =
+    _mp_timed(() -> _mp_minmax_through_buffer!(A, min, comm), :allmin)
+Octopus._mp_allmax_impl!(A::AbstractArray, comm::MPI.Comm) =
+    _mp_timed(() -> _mp_minmax_through_buffer!(A, max, comm), :allmax)
 
 Octopus._mp_bcast_impl!(A::AbstractArray, root::Int, comm::MPI.Comm) =
     (MPI.Bcast!(A, root, comm); A)

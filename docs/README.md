@@ -342,6 +342,13 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   grid is all-summed before every field solve, mesh extents and the kick
   scale become the beam's; every option route agrees across rank counts to
   7e-15 and bit for bit at one rank),
+  [`multi_process_pic_scaling_2026_09_05.md`](history/multi_process_pic_scaling_2026_09_05.md)
+  (the divided PIC collide made fast: one exchange per wavefront batch for
+  every pair and both directions, every plane solved once on an owner rank
+  and only the potential gathered, seven collectives per batch for ~24 per
+  pair, the pairs back on the worker pool -- all bit for bit, pinned against
+  the per-pair exchange; 5.9x at 16 ranks at the production point, and why
+  the curve turns over past that),
   [`multi_process_step4b_2026_09_05.md`](history/multi_process_step4b_2026_09_05.md)
   (the strong-strong task divided: one shard per beam keyed by
   representation, one tracking context per beam, the blanket refusal

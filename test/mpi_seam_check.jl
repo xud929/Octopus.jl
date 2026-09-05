@@ -379,10 +379,11 @@ let policy = MultiProcessExecutionPolicy(threads=1)
         # -- an all-sum of the padded grid per plane is what divides PIC, so
         # a divided run that issued none never divided anything.
         sched = [r.values for r in execution_receipts(audit) if r.consumer === :pic_pair_schedule]
-        grids = count(r -> r.consumer === :multi_process_collective && r.values.kind === :allsum &&
-                           r.values.count == 4 * 16 * 16, execution_receipts(audit))
+        exchanges = [r.values for r in execution_receipts(audit) if r.consumer === :pic_grid_exchange]
         println("MPI-PICSCHED ranks=", sched[1].ranks, " pair_workers=", sched[1].pair_workers,
-                " batch_mode=", sched[1].batch_mode, " grid_allsums=", grids)
+                " batch_mode=", sched[1].batch_mode, " exchange=", sched[1].exchange,
+                " grid_exchanges=", length(exchanges),
+                " planes=", sum(e.planes for e in exchanges; init=0))
     end
     # One WRITE per line, and the ranks take turns: two ranks printing at the
     # same moment had their lines merged mid-line in the launcher's stdout
@@ -397,7 +398,7 @@ let policy = MultiProcessExecutionPolicy(threads=1)
             Octopus._mp_barrier()
         end
     end
-    for (name, solver, threads) in _mpi_check_pic_variants()
+    for (name, solver, threads, _) in _mpi_check_pic_variants()
         vpolicy = threads == 1 ? policy : MultiProcessExecutionPolicy(threads=threads)
         r = _mpi_check_pic_collide_line(vpolicy, solver)
         # EVERY rank reports its luminosity: it is computed redundantly per

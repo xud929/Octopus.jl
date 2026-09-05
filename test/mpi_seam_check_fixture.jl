@@ -267,28 +267,37 @@ reached rather than dead; `:lumscale`, the DEFAULT luminosity scale, whose
 policy, under which a divided run must force ONE pair worker (the pairs
 issue collectives and MPI is `:funneled`) and hand the inner maps both
 threads -- pinned from the schedule receipt, since at one thread the forcing
-changes nothing and cannot be seen. Every arm but `:threads2` must differ
-from the default on the same beams -- asserted, so a variant that changed
-nothing cannot pass by running the default twice; `:threads2` must EQUAL it
-bit for bit (the CPU PIC collide is thread-count invariant by construction,
-and so must its divided form be), its difference being the receipt.
+changes nothing and cannot be seen (under the batched exchange of the
+performance phase the forcing applies to the node mesh alone, which still
+runs the per-pair exchange, so `:node2` is the two-thread node arm). Each
+tuple's fourth entry names the arm this one must EQUAL bit for bit at both
+rank counts, or `nothing` when it must DIFFER from the default -- asserted
+both ways, so a variant that changed nothing cannot pass by running the
+default twice and a schedule arm cannot pass by changing the physics: the
+two-thread policies equal their one-thread twins (the CPU PIC collide is
+thread-count invariant by construction, and so must its divided form be),
+and `:sequential` -- the per-pair exchange -- equals the default's batched
+exchange, which is the claim that the batched exchange re-associates
+nothing.
 """
 _mpi_check_pic_variants() = (
-    (:default, _mpi_check_pic_solver(), 1),
-    (:node, _mpi_check_pic_solver(interaction_grid=:node), 1),
-    (:source_slice, _mpi_check_pic_solver(interaction_grid=:source_slice), 1),
-    (:sigma, _mpi_check_pic_solver(grid_extent=:sigma, grid_extent_sigma=4.0), 1),
-    (:quadratic, _mpi_check_pic_solver(slice_interpolation=:quadratic), 1),
-    (:tsc, _mpi_check_pic_solver(deposit_method=:TSC), 1),
-    (:green_none, _mpi_check_pic_solver(green_cache=:none), 1),
-    (:lumgrid, _mpi_check_pic_solver(luminosity_grid=(24, 24), luminosity_deposit_method=:TSC), 1),
-    (:fourth, _mpi_check_pic_solver(field_derivative=:fourth), 1),
-    (:quantize, _mpi_check_pic_solver(grid_quantize=0.125), 1),
-    (:lattice, _mpi_check_pic_solver(green_type=:lattice), 1),
-    (:transverse, _mpi_check_pic_solver(longitudinal_kick=false), 1),
-    (:sparse, _mpi_check_pic_solver(slicing=_mpi_check_pic_sparse_slicing()), 1),
-    (:lumscale, _mpi_check_pic_solver(luminosity_scale=nothing), 1),
-    (:threads2, _mpi_check_pic_solver(), 2),
+    (:default, _mpi_check_pic_solver(), 1, nothing),
+    (:node, _mpi_check_pic_solver(interaction_grid=:node), 1, nothing),
+    (:source_slice, _mpi_check_pic_solver(interaction_grid=:source_slice), 1, nothing),
+    (:sigma, _mpi_check_pic_solver(grid_extent=:sigma, grid_extent_sigma=4.0), 1, nothing),
+    (:quadratic, _mpi_check_pic_solver(slice_interpolation=:quadratic), 1, nothing),
+    (:tsc, _mpi_check_pic_solver(deposit_method=:TSC), 1, nothing),
+    (:green_none, _mpi_check_pic_solver(green_cache=:none), 1, nothing),
+    (:lumgrid, _mpi_check_pic_solver(luminosity_grid=(24, 24), luminosity_deposit_method=:TSC), 1, nothing),
+    (:fourth, _mpi_check_pic_solver(field_derivative=:fourth), 1, nothing),
+    (:quantize, _mpi_check_pic_solver(grid_quantize=0.125), 1, nothing),
+    (:lattice, _mpi_check_pic_solver(green_type=:lattice), 1, nothing),
+    (:transverse, _mpi_check_pic_solver(longitudinal_kick=false), 1, nothing),
+    (:sparse, _mpi_check_pic_solver(slicing=_mpi_check_pic_sparse_slicing()), 1, nothing),
+    (:lumscale, _mpi_check_pic_solver(luminosity_scale=nothing), 1, nothing),
+    (:threads2, _mpi_check_pic_solver(), 2, :default),
+    (:sequential, _mpi_check_pic_solver(batch_mode=:sequential), 1, :default),
+    (:node2, _mpi_check_pic_solver(interaction_grid=:node), 2, :node),
 )
 
 _mpi_check_pic_sparse_slicing() = Octopus.LongitudinalSlicing(nslices=64, method=:equal_area)

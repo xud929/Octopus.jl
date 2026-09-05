@@ -461,6 +461,22 @@ _mp_rank() = (context = _multi_process_context(); context === nothing ? 0 : cont
 """Whether this rank owns the run's single-writer output (rank 0, always)."""
 _mp_is_root() = _mp_rank() == 0
 
+"""
+    _mp_collective_times() -> Dict{Symbol,Tuple{Int,Int}} or nothing
+
+Per kind of collective, `(calls, nanoseconds)` spent inside the extension's
+MPI calls since the last `_mp_reset_collective_times!()`: the number that
+says what division costs, which the receipts (a count and a size per call)
+cannot. `nothing` in the passthrough, where nothing is communicated. Rank
+local; the benchmark prints rank 0's.
+"""
+_mp_collective_times() = _mp_collective_times_impl(MPIBackendTag())
+_mp_reset_collective_times!() = _mp_reset_collective_times_impl!(MPIBackendTag())
+# `::Any`, so the extension's `::MPIBackendTag` methods ADD rather than
+# overwrite (an overwrite is refused at precompilation).
+_mp_collective_times_impl(::Any) = nothing
+_mp_reset_collective_times_impl!(::Any) = nothing
+
 function _record_collective!(kind::Symbol, count::Integer, bytes::Integer)
     # MPI is initialised at `:funneled`: only the main thread may issue a
     # collective. Every seam function records BEFORE it communicates, so this
@@ -500,7 +516,7 @@ Sum `A` elementwise across the communicator, in rank order, leaving the total
 in `A` on every rank. The passthrough returns `A` untouched.
 """
 function _mp_allsum!(A::AbstractArray)
-    _record_collective!(:allsum, length(A), sizeof(A))
+    _record_collective!(:allsum, length(A), length(A) * sizeof(eltype(A)))
     return _mp_allsum_impl!(A, _mp_comm())
 end
 _mp_allsum_impl!(A, ::Nothing) = A
@@ -553,12 +569,12 @@ extrema at once (a node mesh holds one box per slice boundary); the same
 free association makes both a plain all-reduce. Multi-process step 4c.
 """
 function _mp_allmin!(A::AbstractArray)
-    _record_collective!(:allmin, length(A), sizeof(A))
+    _record_collective!(:allmin, length(A), length(A) * sizeof(eltype(A)))
     return _mp_allmin_impl!(A, _mp_comm())
 end
 _mp_allmin_impl!(A, ::Nothing) = A
 function _mp_allmax!(A::AbstractArray)
-    _record_collective!(:allmax, length(A), sizeof(A))
+    _record_collective!(:allmax, length(A), length(A) * sizeof(eltype(A)))
     return _mp_allmax_impl!(A, _mp_comm())
 end
 _mp_allmax_impl!(A, ::Nothing) = A
@@ -932,6 +948,52 @@ function _mp_gather_rows(rows::AbstractMatrix)
     return _mp_gather_rows_impl(rows, _mp_comm())
 end
 _mp_gather_rows_impl(rows::AbstractMatrix, ::Nothing) = rows
+
+"""
+    _mp_block_range(nblocks, nranks, rank) -> UnitRange
+
+The contiguous run of blocks rank `rank` OWNS when `nblocks` equal blocks are
+dealt out `cld(nblocks, nranks)` at a time in rank order -- empty for the
+last ranks when there are fewer blocks than ranks. The ownership both block
+collectives below share.
+"""
+function _mp_block_range(nblocks::Integer, nranks::Integer, rank::Integer)
+    per = cld(Int(nblocks), Int(nranks))
+    lo = Int(rank) * per + 1
+    hi = min(Int(nblocks), (Int(rank) + 1) * per)
+    return lo:hi
+end
+
+"""
+    _mp_reduce_scatter_blocks!(A, nblocks) -> UnitRange
+
+`A` holds `nblocks` equal contiguous blocks, each rank's partial of every
+block. Afterwards THIS rank holds, in the blocks `_mp_block_range` deals it,
+the rank-ordered sum of every rank's partial -- element by element the sum
+`_mp_allsum!` computes, so the bits are the same -- and returns that range;
+the other blocks of `A` are left as they were. The step 4c performance
+phase's owner-solve: a plane's partial deposits meet on ONE rank, which
+solves it, instead of on every rank; an `Alltoall` laid out so each rank
+receives whole blocks, then the fold. The passthrough owns every block and
+sums nothing.
+"""
+function _mp_reduce_scatter_blocks!(A::AbstractArray, nblocks::Integer)
+    _record_collective!(:reduce_scatter, length(A), length(A) * sizeof(eltype(A)))
+    return _mp_reduce_scatter_blocks_impl!(A, Int(nblocks), _mp_comm())
+end
+_mp_reduce_scatter_blocks_impl!(A::AbstractArray, nblocks::Int, ::Nothing) = 1:nblocks
+
+"""
+    _mp_allgather_blocks!(A, nblocks) -> A
+
+The inverse: each rank contributes the blocks `_mp_block_range` deals it and
+every rank leaves with all `nblocks`. The passthrough is the identity.
+"""
+function _mp_allgather_blocks!(A::AbstractArray, nblocks::Integer)
+    _record_collective!(:allgather, length(A), length(A) * sizeof(eltype(A)))
+    return _mp_allgather_blocks_impl!(A, Int(nblocks), _mp_comm())
+end
+_mp_allgather_blocks_impl!(A::AbstractArray, nblocks::Int, ::Nothing) = A
 
 """    _mp_barrier()
 

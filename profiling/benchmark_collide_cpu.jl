@@ -104,11 +104,10 @@ set_global_rng!(seed = 123456789, method = :philox)
 
 policy = BENCH_MPI ? MultiProcessExecutionPolicy(threads = :auto) :
                      CPUThreadsExecutionPolicy(threads = :auto)
-if BENCH_MPI && SOLVER != "gaussian"
-    error("OCTOPUS_BENCH_MPI=1 currently supports OCTOPUS_BENCH_SOLVER=gaussian " *
-          "only: the soft-Gaussian collide is the solver campaign step 4a " *
-          "divided. PIC, gaussian_pic and spectral need per-slice-pair grid " *
-          "all-sums and global mesh extrema, which are steps 4c onward.")
+if BENCH_MPI && !(SOLVER in ("gaussian", "pic"))
+    error("OCTOPUS_BENCH_MPI=1 supports OCTOPUS_BENCH_SOLVER=gaussian (step 4a) " *
+          "and pic (step 4c) only: gaussian_pic and spectral still refuse to " *
+          "run divided.")
 end
 
 # The production case of test/examples/strong_strong_tracking.jl. Kept here as
@@ -268,6 +267,9 @@ digests = UInt64[]
 gcs = Float64[]
 cpus = Float64[]
 allocs = Float64[]
+# What the collectives cost, from the extension's clocks (rank 0 reports,
+# after the timed collides). Reset here so the warm collides do not count.
+BENCH_MPI && Octopus._mp_reset_collective_times!()
 for _ in 1:REPEATS
     restore!(beam_ele, snap_ele)
     restore!(beam_pro, snap_pro)
@@ -296,6 +298,18 @@ for _ in 1:REPEATS
     push!(allocs, (gc1.allocd - gc0.allocd + gc1.total_allocd - gc0.total_allocd) / 2^30)
 end
 
+if BENCH_MPI && BENCH_RANK == 0
+    ct = Octopus._mp_collective_times()
+    if ct !== nothing
+        total_ns = sum(last, values(ct); init=0)
+        @printf("COLLECTIVES rank 0 over %d collides: %.4f s in MPI calls (%.1f%% of %.4f s wall)\n",
+                REPEATS, total_ns / 1e9, 100 * total_ns / 1e9 / sum(times), sum(times))
+        for kind in sort(collect(keys(ct)); by=string)
+            calls, ns = ct[kind]
+            @printf("  %-12s calls %7d   %.4f s   %.1f us/call\n", kind, calls, ns / 1e9, ns / 1e3 / calls)
+        end
+    end
+end
 sorted = sort(times)
 median = sorted[cld(length(sorted), 2)]
 # The row reports the MEDIAN run's own gc/cpu/allocation, not an average across
@@ -358,9 +372,14 @@ if DOPROF
     restore!(beam_ele, snap_ele)
     restore!(beam_pro, snap_pro)
     Profile.clear()
-    @profile Octopus._strong_strong_collide_backend!(bench_task, BENCH_LABEL, solver,
-                                             beam_ele, beam_pro, CPUThreadsBackend,
-                                             bench_ctx(99))
+    # INSIDE the scope: outside it a divided run profiles an undivided collide
+    # of this rank's shard (the 3c lesson -- a collective outside its scope is
+    # a no-op -- met by the instrument itself, 2026-09-05).
+    @profile bench_scoped() do
+        Octopus._strong_strong_collide_backend!(bench_task, BENCH_LABEL, solver,
+                                                beam_ele, beam_pro, CPUThreadsBackend,
+                                                bench_ctx(99))
+    end
     open(path, "w") do io
         println(io, "======== FLAT (self time) ========")
         Profile.print(io, format = :flat, sortedby = :count, mincount = 10, maxdepth = 200)

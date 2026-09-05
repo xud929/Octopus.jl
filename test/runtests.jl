@@ -7638,7 +7638,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 # two-thread MPI, not a thread-invariance claim in disguise.
                 variants = Dict(String(name) => _mpi_check_pic_collide_line(
                                     CPUThreadsExecutionPolicy(threads=threads), solver)
-                                for (name, solver, threads) in _mpi_check_pic_variants())
+                                for (name, solver, threads, _) in _mpi_check_pic_variants())
                 (lum=join((repr(v) for v in rec.values), " "),
                  beam1=join((repr(v) for v in (s1.maxpx, s1.rmspx, s1.rmspy)), " "),
                  beam2=join((repr(v) for v in (s2.maxpx, s2.rmspx, s2.rmspy)), " "),
@@ -7662,10 +7662,19 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             # one all-sum of the padded 32 x 32 grid per plane -- 9 pairs, two
             # directions, two planes, two turns = 72. Zero would mean the run
             # never divided anything and agreed by running whole.
+            # What the divided run RECORDED (performance phase): the batched
+            # exchange ran at two ranks -- one all-sum per wavefront batch
+            # carrying every plane of every pair, 5 batches of a 3 x 3
+            # slicing per turn, 10 calls over two turns -- and the planes
+            # those calls moved are still the 72 the per-plane exchange
+            # moved (9 pairs, two directions, two planes, two turns). Zero
+            # planes would mean the run never divided anything and agreed
+            # by running whole; 72 calls would mean it fell back to the
+            # per-pair exchange.
             @test tagged(out1, "MPI-PICSCHED ") ==
-                  ["ranks=1 pair_workers=1 batch_mode=wavefront grid_allsums=0"]
+                  ["ranks=1 pair_workers=1 batch_mode=wavefront exchange=none grid_exchanges=0 planes=0"]
             @test tagged(out2, "MPI-PICSCHED ") ==
-                  ["ranks=2 pair_workers=1 batch_mode=wavefront grid_allsums=$(9 * 2 * 2 * 2)"]
+                  ["ranks=2 pair_workers=1 batch_mode=wavefront exchange=batched grid_exchanges=$(5 * 2) planes=$(9 * 2 * 2 * 2)"]
             variant(out, name) = let lines = [strip(split(line, "MPI-PICVAR " * name * " ")[2])
                                               for line in split(out, '\n')
                                               if startswith(line, "MPI-PICVAR " * name * " ")]
@@ -7674,7 +7683,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             ranklines(out, tag, key) = [strip(split(line, tag * key * " ")[2])
                                         for line in split(out, '\n')
                                         if startswith(line, tag * key * " ")]
-            for (name, _, threads) in _mpi_check_pic_variants()
+            for (name, _, threads, same_as) in _mpi_check_pic_variants()
                 key = String(name)
                 ref = picref.variants[key]
                 v1, v2 = variant(out1, key), variant(out2, key)
@@ -7686,12 +7695,15 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 end
                 # Anti-vacuity: every variant selects a route of its own, so
                 # it must differ from the default on the same beams -- except
-                # `:threads2`, whose difference is the schedule and whose
-                # RESULT must equal the default's at both rank counts (thread
-                # invariance, divided or not).
-                if name === :threads2
-                    @test v1 == picref.variants["default"].line
-                    @test v2 == variant(out2, "default")
+                # the arms whose difference is the SCHEDULE, which must equal
+                # the arm they name bit for bit at both rank counts: the
+                # two-thread policies (thread invariance, divided or not) and
+                # `:sequential`, the per-pair exchange against the batched
+                # one (performance phase), which is the claim that the
+                # batched exchange re-associates nothing.
+                if same_as !== nothing
+                    @test v1 == picref.variants[String(same_as)].line
+                    @test v2 == variant(out2, String(same_as))
                 elseif name !== :default
                     @test v1 != picref.variants["default"].line
                 end
@@ -7712,15 +7724,22 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 @test ranklines(out1, "MPI-PICVARDROP ", key) == [drop]
                 @test ranklines(out2, "MPI-PICVARDROP ", key) == [drop]
                 name === :node && @test ref.dropped > 0
-                # The schedule: at one rank the run is the CPU policy's, at two
-                # the pairs are forced onto ONE worker with the inner maps
-                # given every thread. Visible only where the policy has more
-                # than one thread, which is what the `:threads2` arm is for.
+                # The schedule: at one rank the run is the CPU policy's. At
+                # two, the batched exchange keeps the CPU policy's workers
+                # (no collective inside a pair), while the per-pair exchange
+                # the node mesh still runs forces ONE pair worker with the
+                # inner maps given every thread. Visible only where the
+                # policy has more than one thread, which is what the
+                # `:threads2` and `:node2` arms are for.
                 sched1 = ranklines(out1, "MPI-PICVARSCHED ", key)
                 sched2 = ranklines(out2, "MPI-PICVARSCHED ", key)
                 @test sched1 == ["pair_workers=$(ref.pair_workers) inner_workers=$(ref.inner_workers)"]
-                @test sched2 == ["pair_workers=1 inner_workers=$(threads)"]
-                name === :threads2 && @test ref.pair_workers == 2   # the forcing changed something
+                if name in (:node, :node2)
+                    @test sched2 == ["pair_workers=1 inner_workers=$(threads)"]
+                else
+                    @test sched2 == ["pair_workers=$(ref.pair_workers) inner_workers=$(ref.inner_workers)"]
+                end
+                name in (:threads2, :node2) && @test ref.pair_workers == 2   # two threads changed something
             end
             # The `:sparse` arm's premise, from the shard rule and the slicing:
             # at two ranks some rank holds no member of a populated slice.
