@@ -168,6 +168,55 @@ inefficiency (which this does not address) is left standing. The projection in
 the ledger was 0.0731 s from ~130 calls; 222 calls landed 0.0755, which is
 where a 1874 -> 222 rather than 1874 -> 130 reduction should land.
 
+## And on CUDA, where `batch_mode` came from
+
+Asked afterwards, and worth answering with numbers rather than by assertion:
+is `:sequential` a real option on the device?
+
+It is honoured. `collide!(::GaussianPoissonSolver, …, ::Type{CUDABackend})`
+branches on the field to `_cuda_gaussian_collide_sequential!`, which records the
+mode. It is not, however, a choice anyone should make for speed — it is the
+fallback, and the default is the other one. Isolated collision, 200,000
+particles per beam, 15 slices, best of five:
+
+| backend | coupling | `:sequential` | `:wavefront` |
+|---|---|---|---|
+| CUDA | uncoupled | 0.0430 s | **0.0282 s** (1.53x) |
+| CUDA | coupled | 0.0479 s | **0.0327 s** (1.46x) |
+| CPU (4 threads) | uncoupled | 1.0217 s | 1.0821 s |
+| CPU (4 threads) | coupled | 0.8323 s | **0.6464 s** (1.29x) |
+
+The CPU rows are a single process, where the batch buys no collectives and the
+grid is the only lever; they are noisy at this size (the uncoupled medians run
+the other way, 1.241 s sequential against 1.123 s wavefront) and the honest
+reading is "no worse, sometimes better". The batch earns its keep on CPU where
+the messages are, which is the divided run measured above.
+
+One asymmetry worth stating: on CPU the two schedules are BIT-identical, and
+the suite asserts that. On CUDA they are not — the coupled pair differs in the
+last bits (1.027454028682913e30 against 1.0274540286829126e30) — which is the
+device's own recorded float-atomic reordering, not the schedule. The CUDA
+backend-consistency contracts compare at their stated tolerance for that reason.
+
+### The device-side check that nearly disappeared
+
+Making `batch_mode` CPU-visible silently removed the CUDA half of its
+effectiveness check. `SolverOptionEffectivenessContract` decided what the
+DEVICE must honour with `!(CPUThreadsBackend in meta.supported_backends)` — a
+proxy for "only CUDA reads this" — so the moment the CPU learned to read the
+option, it dropped out of that list. Nothing went red: a check that stops
+running is not a failing check, which is this repository's dominant recorded
+failure class.
+
+The filter now asks the question it means: an option is checked on the device
+when CUDA reads it AND either the CPU cannot see it or it is an execution or
+performance choice. `_solver_option_is_execution` is what keeps physics options
+out, since the device half's assertion is "the result must NOT move" — the
+wrong claim for anything the CPU half checks by making it move. Enumerated
+before changing it, the new filter admits exactly one option that the old one
+did not: `GaussianPoissonSolver.batch_mode`. The contract passes with
+`cuda_options_checked = 10` against `cuda_only_options = 9`.
+
 ## What this does not do, and what is left
 
 The 18% per-rank inefficiency is untouched at one thread per rank, for the

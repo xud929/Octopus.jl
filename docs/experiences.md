@@ -30,6 +30,23 @@ teaches something reusable, it lands here (dated), and the full record goes to
   because its exemption exists precisely for last-bit hair the sweep counts as
   consumed.
 
+## A filter keyed on a proxy stops checking when the proxy moves
+
+- `SolverOptionEffectivenessContract` chose what the DEVICE must honour with
+  `!(CPUThreadsBackend in meta.supported_backends)` — a stand-in for "only CUDA
+  reads this". Teaching the CPU soft-Gaussian to read `batch_mode` (2026-09-04)
+  therefore removed the option from the device half silently: nothing went red,
+  because a check that stops running is not a failing check. The CPU half
+  gained a case and the CUDA half lost one, and the net assertion count barely
+  moved.
+- Ask the question you mean. The filter now says "CUDA reads it, and either the
+  CPU cannot see it or it is an execution choice", which is the actual
+  precondition for the assertion that follows ("the result must not move").
+- Enumerate before widening a filter: printing exactly which options the new
+  predicate admits that the old one did not turned an unbounded-feeling change
+  into a one-line risk (it admitted exactly the option that had just fallen
+  out).
+
 ## Measure before designing, and record the negatives
 
 - The F16 velocity-slip closure shipped only on its third design; the first

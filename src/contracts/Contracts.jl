@@ -3171,8 +3171,13 @@ consumer is named, not that it runs.
 An option with neither an alternative nor a stated reason **fails** the
 contract, so the tables cannot fall behind the schema.
 
-CUDA-only options are checked on CUDA; if no device is visible the contract
-returns `status=:skipped` rather than reporting an unrun check as passed.
+Options are checked on CUDA when the device is the only backend that reads
+them, and ALSO when both backends read them and the option is an execution or
+performance choice — otherwise an option that gains a CPU consumer silently
+stops being checked on the device, which is how `GaussianPoissonSolver.batch_mode`
+would have left the device half the day the CPU route learned to read it. If no
+device is visible the contract returns `status=:skipped` rather than reporting
+an unrun check as passed.
 """
 Base.@kwdef struct SolverOptionEffectivenessContract <: AbstractImplementationContract
     n_particles::Int = 256
@@ -3513,8 +3518,21 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
         # solver has no such keyword and rejected it.
         cuda_probe = haskey(solver_option_schema(T), :grid_extent) ?
             merge(NamedTuple(probe), (grid_extent=:extrema,)) : NamedTuple(probe)
+        # Every option the DEVICE must honour, which is not the same set as
+        # "the options only the device has". An option that BOTH backends read
+        # and that is an execution or performance choice belongs here too:
+        # `GaussianPoissonSolver.batch_mode` was CUDA-only, was checked here,
+        # and the day the CPU route learned to read it (2026-09-04) a filter
+        # keyed on CPU-invisibility silently stopped checking the device half.
+        # Nothing went red -- coverage disappearing is not an assertion
+        # failure, which is this repository's dominant recorded failure class.
+        # `_solver_option_is_execution` is what keeps physics options out: the
+        # assertion below is "the result must NOT move", which is the wrong
+        # claim for anything the CPU half checks by making it move.
         cuda_only = [(name, meta) for (name, meta) in pairs(solver_option_schema(T))
-                     if !(CPUThreadsBackend in meta.supported_backends) &&
+                     if CUDABackend in meta.supported_backends &&
+                        (!(CPUThreadsBackend in meta.supported_backends) ||
+                         _solver_option_is_execution(meta)) &&
                         !haskey(contract.inactive, (kind, name)) &&
                         haskey(alternatives, name)]
         if !isempty(cuda_only)
@@ -3643,7 +3661,7 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
         metrics=metrics)
     return ContractResult(true,
         "every declared solver option reached a runtime consumer " *
-        "($(checked) on CPU, $(cuda_options_checked) CUDA-only options, " *
+        "($(checked) on CPU, $(cuda_options_checked) on CUDA, " *
         "$(cuda_checked) launch surfaces)";
         metrics=metrics)
 end

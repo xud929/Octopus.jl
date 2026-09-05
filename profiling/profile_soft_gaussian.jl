@@ -103,8 +103,10 @@ function run_soft_gaussian_profile()
         method=:normal_quantile, nslices=NSLICES, center_position=:centroid)
     rows = Any[]
     for backend in soft_profile_backends()
+        # Both schedules on BOTH backends. The CPU arm used to be skipped
+        # because the CPU collide ignored `batch_mode`; it reads it as of
+        # 2026-09-04, so skipping here would hide half the CPU measurement.
         for include_sigma_xy in (false, true), batch_mode in (:sequential, :wavefront)
-            backend === CPUThreadsBackend && batch_mode === :wavefront && continue
             solver = GaussianPoissonSolver(
                 slicing=slicing, include_sigma_xy=include_sigma_xy,
                 virtual_drift=:hirata, batch_mode=batch_mode)
