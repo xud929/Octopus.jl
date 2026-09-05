@@ -546,6 +546,104 @@ dataflow across batches is the next step against. The `z` round trip (the
 collide never writes `z`, so `z` returns to its home slot bit for bit) is
 the migration's own check, printed per rank by the launcher child.
 
+## Step 4e: dataflow across batches
+
+**Why.** Step 4d's collide runs its pairs in wavefront batches, and within a
+batch every rank walks the same eight stages, waiting at each for its own
+messages. A rank's messages arrive when the ranks it shares a pair with have
+finished their stage, so a batch runs at the pace of its slowest member and
+a rank with a light pair, or none, idles until the batch is through. The
+clocks priced it ([`../history/multi_process_step4d_sliced_2026_09_05.md`](../history/multi_process_step4d_sliced_2026_09_05.md)):
+at sixteen ranks, one slice per rank, a batch's critical path is one whole
+slice's deposits and kicks on one rank, and the wavefront's duty cycle
+leaves half the ranks idle on the average batch (225 pairs over 29 batches,
+fifteen at the widest); at sixty-four ranks 72% of the wall is waiting,
+most of it owners on coordinators and the tail skew at the collide's end.
+
+**The rule.** A pair depends on nothing but its two slices' previous pairs:
+`(i, j)` may start once each of its slices has been kicked by THE PAIR BEFORE
+IT in the collision order, among that slice's non-empty pairs. That
+predecessor is read from `order`, never computed from indices: the collision
+time is `-(c1 + c2)/2` ascending, so with ascending slice centres the pair
+before `(i, j)` on slice `i` is `(i, j + 1)`, and index arithmetic would gate
+on a pair that has not run yet (the 4e review's finding). A rank's part of a
+slice is kicked by a stage of that rank alone, so the gate is local. The
+batch is therefore not a synchronisation point at all -- it is only the deal
+of the owners, which stays as it is (round-robin over all ranks from the
+pair's position in its batch, so the solves and the Green cache still spread
+and still land on the same rank every turn).
+
+Each rank runs an event loop: scan every live pair in the collision order and
+run every stage whose receives have completed (`_mp_test_all`, non-blocking)
+and whose gate is open -- relay duties first (a coordinator's fold, an
+owner's grids and solves, the luminosity folds), so a pair waiting on this
+rank is not held behind a long deposit of its own -- and repeat; when a whole
+scan runs nothing, block on the union of everything outstanding
+(`_mp_wait_any`). The stages, their messages and their tags are 4d's; only
+WHEN a rank runs them changes. The invariant that keeps every read identical:
+for each (rank, slice part) at most one pair sits between its first read and
+its kick, so every read is bracketed by the same kicks as in `order`.
+
+**Buffers.** Under 4d every message of a batch was waited before the next, so
+the scratch pools were reset per batch. Under dataflow a buffer belongs to
+its send until MPI says the send completed: a pair returns its buffers to the
+free lists only once `_mp_test_all` on its send list is true, and the loop
+drains the rest at its end. Nothing else covers them, and a plane reused
+early would corrupt a peer's charge silently. The pools are uncapped -- a cap
+that both sends and receives draw from is a resource deadlock -- and what is
+in flight is bounded by the gate instead: per slice part, one pair between
+its record and its kick plus its luminosity tail, and the pairs this rank
+owns or coordinates within the frontier. The `:sigma` origins move into the
+per-pair buffers under two codes inside the pair's tag space, so the
+free-list rule covers every buffer the loop sends and nothing rides a tag
+band of its own (a separate band collided with the pair band a few hundred
+pairs in, and a slice-keyed tag leaned on MPI's non-overtaking rule besides).
+The collide checks its largest tag against the communicator's limit rather
+than assuming it.
+
+**A pair that meets a non-finite extent releases its slices.** It marks
+itself done without kicking -- the batched loop's skip -- so its successors
+run and the collide reaches the count that makes every rank throw. A bad pair
+that simply stopped would hang its slices instead.
+
+**What does not change.** The arithmetic and every fold order. Both loops
+call the same leaves -- a direction's deposits, an owner's fold-and-solve of
+one plane, a field part's gradient-drift-kick, the luminosity's fold and
+overlap -- so the bits live in one place and the loops differ only in when
+they run them. A slice's pairs are still kicked in its collision order, each
+deposit still reads the slice after exactly the kicks the per-pair path
+applied, an owner still folds after ALL its partials have arrived and in
+group rank order (never on arrival), and the luminosity still folds in pair
+order at the end.
+
+`:sequential` keeps the 4d batched loop, one pair per batch, waited stage by
+stage: two loops, owned here, pinned against each other on every gate by the
+child's `:sequential` arm, which must equal the default bit for bit at every
+rank count -- a comparison of two different loops AND two different owner
+deals, not of one loop with itself. Every arm names the loop it ran in its
+schedule receipt, so a run that quietly fell back to the batched loop cannot
+pass as the dataflow one, and the child counts the overlap the loop achieved
+(pairs started while a pair of an earlier batch was still in flight on the
+same rank, and the widest set of batches in flight at once), so a dataflow
+loop that never overlapped anything shows as a zero. At one rank the
+self-delivery passthrough completes a receive when its tag has been sent, so
+the same loop runs there and stays the CPU bit for bit.
+
+**Which loop, and what it bought.** Measured as an A/B of the two loops on
+one box, interleaved ([`../history/multi_process_step4e_dataflow_2026_09_05.md`](../history/multi_process_step4e_dataflow_2026_09_05.md)):
+at sixty-four ranks the dataflow loop runs the production collide 1.4x
+faster, at thirty-two it ties, and at sixteen it is 2x SLOWER. The gate is
+the reason, not the loop: a slice's pairs are a chain, so a rank holding a
+WHOLE slice has nothing to overlap and the loop only adds a wake per hop,
+while a rank holding a fraction of a slice has the rest of its group's pairs
+and its owned planes to get on with. The stage waits the step set out to
+remove did go (`wait_potentials` 0.84 s to 0.02 s at sixteen ranks); at that
+layout the time reappears as idle in the chain. So the loop follows the
+layout: **groups wider than one rank run the dataflow loop, whole slices per
+rank the batched one**, and `batch_mode = :sequential` always runs the
+batched one. The floor is then the chain and the warm-up, both priced in the
+record.
+
 ## The CPU, MPI and CUDA consistency statement
 
 Three execution modes, and the relation between them is asserted in two

@@ -144,8 +144,20 @@ end
 """
 The migration (`Octopus._mp_exchange_columns`): columns sorted by
 destination, stably, so the order within a destination is the sender's; one
-`Alltoallv` of whole columns.
+`Alltoallv` of whole columns. The send and receive matrices are kept per
+(element type, rows, columns) -- between the turns of a run their shapes
+repeat, and fresh 9 MB matrices four times per collide were most of the
+0.149 GiB a rank allocated per collide at the production point (step 4d's
+record). The receive matrix is handed to the caller, who must be done with
+it before the next exchange of the same shape.
 """
+const _MP_EXCHANGE_BUFFERS = Dict{Tuple{Symbol,DataType,Int,Int},Any}()
+function _mp_exchange_buffer(role::Symbol, ::Type{E}, k::Int, n::Int) where {E}
+    return get!(_MP_EXCHANGE_BUFFERS, (role, E, k, n)) do
+        Matrix{E}(undef, k, n)
+    end::Matrix{E}
+end
+
 function Octopus._mp_exchange_columns_impl(cols::AbstractMatrix, dest, comm::MPI.Comm)
     return _mp_timed(:exchange_columns) do
         nranks = Int(MPI.Comm_size(comm))
@@ -158,7 +170,7 @@ function Octopus._mp_exchange_columns_impl(cols::AbstractMatrix, dest, comm::MPI
             send_counts[d + 1] += 1
         end
         offsets = cumsum(vcat(0, Int.(send_counts)))     # column offset per destination
-        send = Matrix{E}(undef, k, n)
+        send = _mp_exchange_buffer(:send, E, k, n)
         fill_pos = copy(offsets)
         @inbounds for j in 1:n
             d = dest[j] + 1
@@ -168,7 +180,9 @@ function Octopus._mp_exchange_columns_impl(cols::AbstractMatrix, dest, comm::MPI
         recv_counts = similar(send_counts)
         MPI.Alltoall!(MPI.UBuffer(send_counts, 1), MPI.UBuffer(recv_counts, 1), comm)
         total = Int(sum(recv_counts))
-        recv = Matrix{E}(undef, k, total)
+        # A different key from the send's even at equal shape: the caller
+        # holds the receive matrix while the return trip sends.
+        recv = _mp_exchange_buffer(:recv, E, k, total)
         MPI.Alltoallv!(MPI.VBuffer(vec(send), send_counts .* Cint(k)),
                        MPI.VBuffer(vec(recv), recv_counts .* Cint(k)), comm)
         return recv, Int.(recv_counts)
@@ -181,6 +195,11 @@ Octopus._mp_irecv_impl!(A, source::Int, tag::Int, comm::MPI.Comm) =
     _mp_timed(() -> MPI.Irecv!(A, comm; source=source, tag=tag), :irecv)
 Octopus._mp_wait_all_impl(requests::Vector{MPI.Request}, stage::Symbol, ::MPI.Comm) =
     _mp_timed(() -> (MPI.Waitall(requests); nothing), stage)
+Octopus._mp_tag_upper_bound(::MPI.Comm) = Int(MPI.tag_ub())
+Octopus._mp_test_all_impl(requests::Vector{MPI.Request}, ::MPI.Comm) =
+    isempty(requests) || _mp_timed(() -> MPI.Testall(requests), :test)
+Octopus._mp_wait_any_impl(requests::Vector{MPI.Request}, stage::Symbol, ::MPI.Comm) =
+    _mp_timed(() -> (MPI.Waitany(requests); nothing), stage)
 Octopus._mp_requests_impl(::MPI.Comm) = MPI.Request[]
 
 """The cached vector `A`'s elements are copied through for a min/max

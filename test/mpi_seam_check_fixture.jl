@@ -406,7 +406,9 @@ function _mpi_check_pic_collide_line(policy, solver; beams=_mpi_check_ss_beams)
              lum=repr(lum), dropped=logger.dropped[],
              pair_workers=Int(sched[1].pair_workers),
              inner_workers=Int(sched[1].inner_workers),
-             exchange=Symbol(sched[1].exchange), restored=restored)
+             exchange=Symbol(sched[1].exchange),
+             schedule=hasproperty(sched[1], :schedule) ? Symbol(sched[1].schedule) : :none,
+             restored=restored)
         end
     end
 end

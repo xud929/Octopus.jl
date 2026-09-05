@@ -96,6 +96,10 @@ const TSV     = get(ENV, "OCTOPUS_BENCH_TSV", "")
 # The solvers' own keyword, exposed so the two schedules can be timed against
 # each other; `:wavefront` is the solver default and stays the default here.
 const BATCH_MODE = Symbol(lowercase(get(ENV, "OCTOPUS_BENCH_BATCH_MODE", "wavefront")))
+# Which loop the slice-aligned PIC collide runs (step 4e): `auto` lets the
+# schedule decide, `dataflow` and `batched` force one, so both can be timed
+# back to back on the same box -- the only fair A/B on a shared machine.
+const PIC_LOOP = Symbol(lowercase(get(ENV, "OCTOPUS_BENCH_PIC_LOOP", "auto")))
 
 REPEATS > 0 || error("OCTOPUS_BENCH_REPEATS must be positive")
 N_ELE > 0 && N_PRO > 0 || error("OCTOPUS_BENCH_N_ELE and _N_PRO must be positive")
@@ -185,7 +189,12 @@ snap_pro = snapshot(beam_pro)
 # internal here is what AGENTS.md permits a profiling script to do when the goal
 # is to measure an implementation detail -- and the detail IS the caching. The task carries empty
 # lines: nothing here tracks, so no element is needed -- only the runtime_cache.
-bench_task = StrongStrongTask((), (); poisson_solver = solver)
+# OCTOPUS_BENCH_CACHE_STATS=1 prints the slice-pair Green cache's hits, misses
+# and rebuilds after every collide (every rank prints its own), the counters
+# that say what a first-collide-after-warm-up slowdown is made of.
+bench_task = StrongStrongTask((), (); poisson_solver = solver,
+                              diagnostics = StrongStrongDiagnostics(
+                                  cache_stats = env_bool("OCTOPUS_BENCH_CACHE_STATS", false)))
 const BENCH_LABEL = :bench
 bench_ctx(turn) = TrackingContext(turn = Int64(turn))
 
@@ -241,8 +250,15 @@ end
 # the proton beam as well, so every divided measurement before 4b ran the
 # proton beam's lane folds and shift origins at the electron beam's offset.
 const BENCH_RESOLVED = Octopus._resolve_execution_policy(policy, beam_ele.rep)
-bench_scoped(f) = Octopus._with_execution_policy(BENCH_RESOLVED) do
-    Octopus._with_beam_shards(f, beam_ele.rep, beam_pro.rep)
+# Inside the task's diagnostics scope too: `execute!` enters it and the
+# collide's cache-statistics print reads it, so calling the collide directly
+# without it silently prints nothing (the 3c lesson, met by this instrument
+# a second time, 2026-09-05).
+bench_scoped(f) = Base.ScopedValues.with(Octopus._ACTIVE_STRONG_STRONG_DIAGNOSTICS => bench_task.diagnostics,
+                                         Octopus._PIC_SLICED_LOOP => PIC_LOOP) do
+    Octopus._with_execution_policy(BENCH_RESOLVED) do
+        Octopus._with_beam_shards(f, beam_ele.rep, beam_pro.rep)
+    end
 end
 
 @printf("solver=%s rank=%d ranks=%d n_ele=%d n_pro=%d local_ele=%d slices=%d grid=%d julia_threads=%d\n",
@@ -286,10 +302,20 @@ for _ in 1:REPEATS
     gc1 = Base.gc_num()
     gc_s = (gc1.total_time - gc0.total_time) / 1e9
     nthreads = Threads.nthreads(:default)
-    @printf("  rank %d collide %.4f s   gc %.4f s (%.1f%%)   cpu %.1f s   util %.1f%%%s\n",
-            BENCH_RANK, dt, gc_s, 100 * gc_s / dt, cpu, 100 * cpu / (dt * nthreads),
+    alloc_gib = (gc1.allocd - gc0.allocd + gc1.total_allocd - gc0.total_allocd) / 2^30
+    @printf("  rank %d collide %.4f s   gc %.4f s (%.1f%%)   cpu %.1f s   util %.1f%%   alloc %.3f GiB%s\n",
+            BENCH_RANK, dt, gc_s, 100 * gc_s / dt, cpu, 100 * cpu / (dt * nthreads), alloc_gib,
             get(ENV, "JULIA_THREAD_SLEEP_THRESHOLD", "") == "0" ? "" :
                 "   (idle threads spinning: util inflated)")
+    if env_bool("OCTOPUS_BENCH_CACHE_STATS", false) && BENCH_RANK == 0
+        # The task's own cache objects, read after the collide: what THIS
+        # process's cache holds and how it was used, cumulative.
+        for (k, v) in bench_task.runtime_cache
+            v isa Octopus._PICSlicePairGreenCache || continue
+            @printf("  rank 0 green cache %s: entries %d hits %d misses %d rebuilds %d\n",
+                    repr(objectid(v)), length(v.entries), v.hits, v.misses, v.rebuilds)
+        end
+    end
     push!(times, dt)
     push!(lums, lum)
     push!(digests, coordinate_digest(beam_ele, beam_pro))

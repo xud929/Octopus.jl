@@ -342,6 +342,10 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   grid is all-summed before every field solve, mesh extents and the kick
   scale become the beam's; every option route agrees across rank counts to
   7e-15 and bit for bit at one rank),
+  [`multi_process_step4e_dataflow_2026_09_05.md`](history/multi_process_step4e_dataflow_2026_09_05.md)
+  (the wavefront batch stops being a barrier: each rank runs an event loop
+  over its pairs, bit for bit against the loop it replaces, and the A/B that
+  says which layout each loop belongs to),
   [`multi_process_step4d_sliced_2026_09_05.md`](history/multi_process_step4d_sliced_2026_09_05.md)
   (the slice-aligned collide: particles laid out by slice for one collide,
   every pair point-to-point between two small groups, one rank the CPU bit

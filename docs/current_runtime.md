@@ -354,8 +354,10 @@ field solve, the mesh extents and the kick scale are the beam's; every CPU
 option route runs divided, the slice-pair Green cache included, since every
 rank holds the same cache); on the `:slice_pair` mesh the particles are laid
 out by slice for the collide and every pair is point-to-point between the
-ranks holding its two slices, the node and source-slice meshes exchanging
-per pair.
+ranks holding its two slices, run by an event loop where a slice spans a
+group of ranks and batch by batch where a rank holds whole slices (the two
+are bit-identical, and the choice is a measured rule); the node and
+source-slice meshes exchange per pair.
 `StrongStrongPICMultiProcessConsistencyContract` states the three-way claim
 (CPU against MPI per rank count, CPU against CUDA, MPI against CUDA by
 composition) and needs a launcher command to run its MPI legs.

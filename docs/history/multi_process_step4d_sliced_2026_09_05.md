@@ -112,13 +112,19 @@ sockets rather than filling one), per collide in order:
 Two things to read there. Spread over the sockets, sixteen ranks reach
 0.72 s -- better than 4c's 1.07 -- and the median 1.13 is level with it; the
 first measurement's 3.1 s was a slow-collide median. And in every
-configuration the first timed collide, the third overall, is 2-3x slower
-than the ones after it (4.0-4.7 s): two warm collides are not enough for
-this path, and what warms in the third is not yet identified (the pools are
-full after the first batch of fifteen; a candidate is the Green cache's
-owner-side fill, whose tables are built on the first collide that deals a
-pair to a rank, and the deal changes when a batch's canonical order does).
-Recorded as an open item; the medians above include that collide.
+configuration the collides get faster over the run (2.6, 2.0, 2.1, 1.1 s on
+one sixteen-rank run with four timed collides): two warm collides are not
+enough for this path. The Green cache is NOT it -- read from the task's own
+cache after each collide (`OCTOPUS_BENCH_CACHE_STATS=1`, which now enters
+the task's diagnostics scope, without which the collide's own cache print
+never fires: the 3c lesson met by this instrument a second time), rank 0
+hits 42 of 42 owned tables on every collide after the first. What the run
+does show is 0.149 GiB allocated per rank per collide, the first paying
+0.36 s of GC: the migration's four matrices, the sort permutations, the
+per-batch pair records and the exchange primitive's own send and receive
+matrices are fresh every collide, and a heap that grows over the first
+collides is the shape of the trend. That is the third lever below, and the
+open item is closed into it. The medians above include the slow collides.
 
 The curve no longer turns over: 32 and 64 ranks are the best points, at
 7.6x, where 4c's best was 5.9x at sixteen. The clocks say what bounds it
@@ -151,8 +157,9 @@ batches), which the point-to-point form was built to allow.
    170k-particle slice deposits serially; the kick threads. `32 x 2` already
    beats `32 x 1` (0.52 against 0.76 at the fixed point); a data-size rule
    for the deposit that admits a 170k slice would do the same for `16 x 4`.
-3. **The migration's allocations** (send, receive and return matrices per
-   call: ~40 MB per rank per collide at the production point, 45 ms per
-   call at 64 ranks): cache them per (element type, columns).
+3. **The allocations** (0.149 GiB per rank per collide at the production
+   point: the migration's matrices and permutations, the exchange primitive's
+   own send and receive matrices, the per-batch pair records): cache them,
+   which is also what the warm-up trend asks for.
 4. Gaussian-PIC and spectral on the sliced layout; the node mesh on it; the
    campaign's neighbour audit when the last solver divides.

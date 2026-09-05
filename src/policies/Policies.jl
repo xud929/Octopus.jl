@@ -1010,6 +1010,52 @@ function _mp_wait_all(requests, stage::Symbol)
 end
 _mp_requests() = _mp_requests_impl(_mp_comm())
 
+"""
+    _mp_check_tag_bound(tag)
+
+Refuse a protocol whose largest tag the communicator will not carry. The MPI
+standard guarantees only 32767, and a slice-aligned collide's tags grow with
+the pair count times the codes per pair, so this is checked rather than
+assumed (the 4e review).
+"""
+function _mp_check_tag_bound(tag::Integer)
+    bound = _mp_tag_upper_bound(_mp_comm())
+    tag <= bound || throw(ArgumentError(
+        "this collide would use MPI tag $(tag), above the communicator's limit of $(bound); " *
+        "fewer slices, or a protocol with fewer tags per pair, is needed."))
+    return nothing
+end
+_mp_tag_upper_bound(::Nothing) = typemax(Int)
+
+"""
+    _mp_test_all(requests) -> Bool
+    _mp_wait_any(requests, stage)
+
+The dataflow pair (step 4e). `_mp_test_all` says whether every request in
+the list has completed, without blocking, and empties the list when so;
+`_mp_wait_any` blocks until at least one has, so a rank with nothing ready
+sleeps on its messages instead of spinning. At one rank a receive completes
+when its tag has been sent (the mailbox delivers at the test), and waiting
+with nothing deliverable is a protocol error and says so.
+
+Neither records a receipt: a dataflow loop polls thousands of times per
+collide and an audit would drown in them, so the collide counts its own
+polls instead. The `:funneled` tripwire is still honoured -- it is the
+receipt's first act, and is done by hand here.
+"""
+function _mp_test_all(requests)
+    _mp_nranks() > 1 && Threads.threadid() != 1 && throw(ArgumentError(
+        "a multi-process completion test was issued from thread $(Threads.threadid()); " *
+        "MPI runs at :funneled and Octopus polls from the main thread only."))
+    done = _mp_test_all_impl(requests, _mp_comm())
+    done && empty!(requests)
+    return done
+end
+function _mp_wait_any(requests, stage::Symbol)
+    _record_collective!(stage, length(requests), 0)
+    return _mp_wait_any_impl(requests, stage, _mp_comm())
+end
+
 # The passthrough's self-delivery: sends keep a copy by tag, receives queue
 # their buffers, the wait matches them. Main thread only, like every seam
 # call; a tag sent twice before a wait, or received without a send, is a
@@ -1020,12 +1066,12 @@ function _mp_isend_impl(A, dest::Int, tag::Int, ::Nothing)
     dest == 0 || error("a one-rank run sent to rank $(dest)")
     haskey(_MP_SELF_MAILBOX, tag) && error("tag $(tag) sent twice before a wait")
     _MP_SELF_MAILBOX[tag] = copy(A)
-    return nothing
+    return (:send, tag)
 end
 function _mp_irecv_impl!(A, source::Int, tag::Int, ::Nothing)
     source == 0 || error("a one-rank run received from rank $(source)")
     push!(_MP_SELF_PENDING, (tag, A))
-    return nothing
+    return (:recv, tag)
 end
 function _mp_wait_all_impl(requests, stage::Symbol, ::Nothing)
     for (tag, buf) in _MP_SELF_PENDING
@@ -1038,6 +1084,42 @@ function _mp_wait_all_impl(requests, stage::Symbol, ::Nothing)
     return nothing
 end
 _mp_requests_impl(::Nothing) = Any[]
+# Self-delivery for the dataflow: a pending receive whose tag has been sent
+# is delivered and dropped from the queue; the test is whether any receive
+# is still pending. (A rank's requests list holds its receives; the sends to
+# oneself are complete on posting.) The queue is shared by every pair in
+# flight, so the test delivers whatever is deliverable, not only the
+# caller's -- harmless, since each buffer belongs to one tag.
+function _mp_deliver_self!()
+    keep = Tuple{Int,Any}[]
+    for (tag, buf) in _MP_SELF_PENDING
+        if haskey(_MP_SELF_MAILBOX, tag)
+            sent = pop!(_MP_SELF_MAILBOX, tag)
+            length(sent) == length(buf) || error("message tagged $(tag): $(length(sent)) elements sent into a $(length(buf))-element receive")
+            copyto!(buf, 1, sent, 1, length(sent))
+        else
+            push!(keep, (tag, buf))
+        end
+    end
+    empty!(_MP_SELF_PENDING)
+    append!(_MP_SELF_PENDING, keep)
+    return nothing
+end
+# A caller's receives are complete when none of ITS tags is still pending.
+_mp_self_pending(requests) = any(r -> r isa Tuple && r[1] === :recv &&
+                                      any(p -> p[1] == r[2], _MP_SELF_PENDING), requests)
+function _mp_test_all_impl(requests, ::Nothing)
+    _mp_deliver_self!()
+    return !_mp_self_pending(requests)
+end
+function _mp_wait_any_impl(requests, stage::Symbol, ::Nothing)
+    _mp_deliver_self!()
+    _mp_self_pending(requests) && error(
+        "a one-rank run waited (" * String(stage) * ") on receives nothing has sent: tags " *
+        join((string(r[2]) for r in requests if r isa Tuple && r[1] === :recv &&
+              any(p -> p[1] == r[2], _MP_SELF_PENDING)), ", "))
+    return nothing
+end
 
 """    _mp_barrier()
 

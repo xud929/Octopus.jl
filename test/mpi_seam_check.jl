@@ -366,7 +366,10 @@ let policy = MultiProcessExecutionPolicy(threads=1)
         ex = [r.values for r in execution_receipts(audit) if r.consumer === :pic_slice_exchange]
         (partials=Octopus._mp_global_count(sum(e.partials_sent for e in ex; init=0)),
          solved=Octopus._mp_global_count(sum(e.planes_solved for e in ex; init=0)),
-         coordinated=Octopus._mp_global_count(sum(e.pairs_coordinated for e in ex; init=0)))
+         coordinated=Octopus._mp_global_count(sum(e.pairs_coordinated for e in ex; init=0)),
+         cross=Octopus._mp_global_count(sum(e.cross_batch_starts for e in ex; init=0)),
+         binflight=Octopus._mp_global_count(maximum(e.batches_in_flight_max for e in ex; init=0)),
+         maxflight=Octopus._mp_global_count(maximum(e.max_in_flight for e in ex; init=0)))
     end
     Octopus._with_execution_policy(resolved) do
         Octopus._with_beam_shards(b1.rep, b2.rep) do
@@ -389,8 +392,15 @@ let policy = MultiProcessExecutionPolicy(threads=1)
         sched = [r.values for r in execution_receipts(audit) if r.consumer === :pic_pair_schedule]
         println("MPI-PICSCHED ranks=", sched[1].ranks, " pair_workers=", sched[1].pair_workers,
                 " batch_mode=", sched[1].batch_mode, " exchange=", sched[1].exchange,
+                " schedule=", sched[1].schedule,
                 " partials=", picsums.partials, " solved=", picsums.solved,
                 " coordinated=", picsums.coordinated)
+        # What the dataflow loop overlapped: pairs that started while a pair
+        # of an EARLIER wavefront batch was still in flight on the same rank,
+        # and the widest set of batches in flight at once. Zero of the first
+        # would mean the loop ran batch by batch after all.
+        println("MPI-PICFLOW cross_batch_starts=", picsums.cross, " batches_in_flight_max=",
+                picsums.binflight, " max_in_flight=", picsums.maxflight)
         layouts = [r.values for r in execution_receipts(audit) if r.consumer === :pic_slice_layout]
         for l in layouts[1:2]      # the first turn's, one per beam
             println("MPI-PICLAYOUT beam=", l.beam, " groups=", join(l.groups, ","),
@@ -422,11 +432,12 @@ let policy = MultiProcessExecutionPolicy(threads=1)
         if child_rank() == 0
             emit("MPI-PICVAR $(name) $(r.line)")
             emit("MPI-PICVARDROP $(name) $(r.dropped)")
-            emit("MPI-PICVARSCHED $(name) pair_workers=$(r.pair_workers) inner_workers=$(r.inner_workers) exchange=$(r.exchange)")
+            emit("MPI-PICVARSCHED $(name) pair_workers=$(r.pair_workers) inner_workers=$(r.inner_workers) exchange=$(r.exchange) schedule=$(r.schedule)")
         end
-        # The `:skewed` arm twice: at a fixed rank count the sliced collide
-        # is bit-repeatable, and a three-rank group is where that can fail.
-        if name === :skewed
+        # Twice: at a fixed rank count the collide is bit-repeatable whatever
+        # order the messages arrived in. `:skewed` has a multi-rank group,
+        # `:sparse` has 64 slices and the widest interleaving of pairs.
+        if name in (:skewed, :sparse)
             r2 = _mpi_check_pic_collide_line(vpolicy, solver)
             child_rank() == 0 && emit("MPI-PICVAR2 $(name) $(r2.line)")
         end

@@ -7077,6 +7077,29 @@ end
     for (name, _) in variants
         name === :default || @test series[name] != series[:default]
     end
+    # Step 4e: the two loops of the slice-aligned collide -- the dataflow one
+    # the wavefront schedule runs, and the batched one `:sequential` keeps --
+    # on the SAME beams and the same schedule, forced by the internal switch.
+    # The launcher pins them through `:sequential` at every rank count; this
+    # pins the claim literally, one loop against the other with nothing else
+    # different, and it is where a divergence would be cheapest to find.
+    let mp = MultiProcessExecutionPolicy(threads=1)
+        loops = Dict{Symbol,Any}()
+        with_logger(NullLogger()) do
+            for loop in (:dataflow, :batched)
+                loops[loop] = Base.ScopedValues.with(Octopus._PIC_SLICED_LOOP => loop) do
+                    run(mp, pic())
+                end
+            end
+        end
+        @test all(a == b for (a, b) in zip(loops[:dataflow][1], loops[:batched][1]))
+        @test all(a == b for (a, b) in zip(loops[:dataflow][2], loops[:batched][2]))
+        @test loops[:dataflow][3] == loops[:batched][3]
+        # Each really ran the loop it was asked for, so this is not one loop
+        # compared with itself.
+        @test all(s -> s.schedule === :dataflow, loops[:dataflow][4])
+        @test all(s -> s.schedule === :batched, loops[:batched][4])
+    end
     # The kick scale divides by the BEAM's macroparticle count, read from the
     # shard scope: at one rank that is the length it always was.
     b1, b2 = beams(CPUThreadsExecutionPolicy(threads=1))
@@ -7333,6 +7356,9 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             @info "the MPI child could not run; the MPI seam was NOT exercised" out=first(out1, 2000)
             @test_broken false
         else
+            ok1 || @info "the MPI child failed at 1 rank" out=last(out1, 4000)
+            ok2 || @info "the MPI child failed at 2 ranks" out=last(out2, 4000)
+            ok4 || @info "the MPI child failed at 4 ranks" out=last(out4, 4000)
             @test ok1
             @test ok2
             @test ok4
@@ -7687,8 +7713,26 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 psolver = _mpi_check_pic_solver()
                 for (out, P) in ((out1, 1), (out2, 2), (out4, 4))
                     partials = 2 * _mpi_check_pic_partials(cb1, cb2, psolver, P)
+                    # Which loop, from the layout rule (step 4e): a slice
+                    # split across a group gets the dataflow loop, a rank
+                    # holding whole slices the batched one.
+                    widest = max(maximum(_mpi_check_pic_groups(cb1.rep, psolver.slicing1, P)),
+                                 maximum(_mpi_check_pic_groups(cb2.rep, psolver.slicing2, P)))
+                    loop = widest >= 2 ? "dataflow" : "batched"
                     @test tagged(out, "MPI-PICSCHED ") ==
-                          ["ranks=$(P) pair_workers=1 batch_mode=wavefront exchange=sliced partials=$(partials) solved=$(9 * 2 * 2 * 2) coordinated=$(9 * 2)"]
+                          ["ranks=$(P) pair_workers=1 batch_mode=wavefront exchange=sliced schedule=$(loop) partials=$(partials) solved=$(9 * 2 * 2 * 2) coordinated=$(9 * 2)"]
+                    # Where the dataflow loop ran, it overlapped the wavefront:
+                    # a pair started while a pair of an earlier batch was
+                    # still in flight on the same rank. Zero would mean it ran
+                    # batch by batch after all, and the equalities below would
+                    # be comparing the batched loop with itself.
+                    flow = only(tagged(out, "MPI-PICFLOW "))
+                    if loop == "dataflow"
+                        @test parse(Int, split(split(flow)[1], "=")[2]) > 0
+                        @test parse(Int, split(split(flow)[2], "=")[2]) >= 2
+                    else
+                        @test parse(Int, split(split(flow)[1], "=")[2]) == 0
+                    end
                     # The groups the child derived are the ones this rule
                     # derives (both beams), and the live members all left.
                     g1 = _mpi_check_pic_groups(cb1.rep, psolver.slicing1, P)
@@ -7724,10 +7768,11 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                     zs = [last(split(s)) for s in ranklines(out, "MPI-PICVARZ ", key)]
                     @test !isempty(zs) && all(==("true"), zs)
                 end
-                # Fixed rank count, same bits: the `:skewed` arm ran twice.
-                if name === :skewed
+                # Fixed rank count, same bits whatever order the messages
+                # arrived in: the arms that ran twice.
+                if name in (:skewed, :sparse)
                     for out in (out1, out2, out4)
-                        @test tagged(out, "MPI-PICVAR2 skewed ") == [variant(out, key)]
+                        @test tagged(out, "MPI-PICVAR2 $(key) ") == [variant(out, key)]
                     end
                 end
                 # Anti-vacuity: every variant selects a route of its own, so
@@ -7780,13 +7825,22 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 sched2 = ranklines(out2, "MPI-PICVARSCHED ", key)
                 sched4 = ranklines(out4, "MPI-PICVARSCHED ", key)
                 per_pair = name in (:node, :node2, :source_slice)
+                # `:sequential` always runs the BATCHED loop; the others
+                # follow the layout rule, so at four ranks -- where a slice is
+                # split -- the `same_as` equalities compare two different
+                # loops rather than one with itself (step 4e).
+                armloop(P) = name === :sequential ? "batched" :
+                    (maximum(_mpi_check_pic_groups(_mpi_check_ss_beams(CPUThreadsExecutionPolicy(threads=1))[1].rep,
+                                                   _mpi_check_pic_variants()[findfirst(v -> v[1] === name, _mpi_check_pic_variants())][2].slicing1, P)) >= 2 ?
+                     "dataflow" : "batched")
                 if per_pair
-                    @test sched1 == ["pair_workers=$(ref.pair_workers) inner_workers=$(ref.inner_workers) exchange=none"]
-                    @test sched2 == ["pair_workers=1 inner_workers=$(threads) exchange=per_pair"]
-                    @test sched4 == ["pair_workers=1 inner_workers=$(threads) exchange=per_pair"]
+                    @test sched1 == ["pair_workers=$(ref.pair_workers) inner_workers=$(ref.inner_workers) exchange=none schedule=none"]
+                    for sched in (sched2, sched4)
+                        @test sched == ["pair_workers=1 inner_workers=$(threads) exchange=per_pair schedule=none"]
+                    end
                 else
-                    for sched in (sched1, sched2, sched4)
-                        @test sched == ["pair_workers=1 inner_workers=$(threads) exchange=sliced"]
+                    for (sched, P) in ((sched1, 1), (sched2, 2), (sched4, 4))
+                        @test sched == ["pair_workers=1 inner_workers=$(threads) exchange=sliced schedule=$(armloop(P))"]
                     end
                 end
                 name in (:threads2, :node2) && @test ref.pair_workers == 2   # two threads changed the CPU run
