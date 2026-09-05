@@ -142,58 +142,46 @@ function _mp_allsum_timed!(A::AbstractArray, comm::MPI.Comm)
 end
 
 """
-The reduce-scatter by whole blocks (`Octopus._mp_reduce_scatter_blocks!`):
-`Alltoall` of `P` chunks of `cld(nblocks, P)` blocks each -- the array
-padded to `P` chunks -- then this rank folds the `P` partials of its chunk
-in rank order, the same sum per element as the all-sum's.
+The migration (`Octopus._mp_exchange_columns`): columns sorted by
+destination, stably, so the order within a destination is the sender's; one
+`Alltoallv` of whole columns.
 """
-function Octopus._mp_reduce_scatter_blocks_impl!(A::AbstractArray, nblocks::Int, comm::MPI.Comm)
-    return _mp_timed(:reduce_scatter) do
+function Octopus._mp_exchange_columns_impl(cols::AbstractMatrix, dest, comm::MPI.Comm)
+    return _mp_timed(:exchange_columns) do
         nranks = Int(MPI.Comm_size(comm))
-        rank = Int(MPI.Comm_rank(comm))
-        nranks == 1 && return 1:nblocks
-        n = length(A)
-        E = eltype(A)
-        n % nblocks == 0 || error("reduce-scatter of $(n) elements in $(nblocks) equal blocks")
-        chunk = cld(nblocks, nranks) * (n ÷ nblocks)
-        padded = chunk * nranks
-        send, recv, _ = _mp_allsum_buffers(E, padded, chunk)
-        n < padded && fill!(view(send, (n + 1):padded), zero(E))
-        copyto!(send, 1, A, 1, n)
-        MPI.Alltoall!(MPI.UBuffer(send, chunk), MPI.UBuffer(recv, chunk), comm)
-        base = rank * chunk
-        mine_len = clamp(n - base, 0, chunk)
-        @inbounds for i in 1:mine_len
-            s = zero(E)
-            for q in 0:(nranks - 1)
-                s += recv[q * chunk + i]
-            end
-            A[base + i] = s
+        k, n = size(cols)
+        E = eltype(cols)
+        length(dest) == n || error("one destination per column: $(length(dest)) for $(n)")
+        send_counts = zeros(Cint, nranks)
+        for d in dest
+            0 <= d < nranks || error("destination rank $(d) outside 0:$(nranks - 1)")
+            send_counts[d + 1] += 1
         end
-        return Octopus._mp_block_range(nblocks, nranks, rank)
+        offsets = cumsum(vcat(0, Int.(send_counts)))     # column offset per destination
+        send = Matrix{E}(undef, k, n)
+        fill_pos = copy(offsets)
+        @inbounds for j in 1:n
+            d = dest[j] + 1
+            fill_pos[d] += 1
+            copyto!(send, (fill_pos[d] - 1) * k + 1, cols, (j - 1) * k + 1, k)
+        end
+        recv_counts = similar(send_counts)
+        MPI.Alltoall!(MPI.UBuffer(send_counts, 1), MPI.UBuffer(recv_counts, 1), comm)
+        total = Int(sum(recv_counts))
+        recv = Matrix{E}(undef, k, total)
+        MPI.Alltoallv!(MPI.VBuffer(vec(send), send_counts .* Cint(k)),
+                       MPI.VBuffer(vec(recv), recv_counts .* Cint(k)), comm)
+        return recv, Int.(recv_counts)
     end
 end
 
-function Octopus._mp_allgather_blocks_impl!(A::AbstractArray, nblocks::Int, comm::MPI.Comm)
-    return _mp_timed(:allgather) do
-        nranks = Int(MPI.Comm_size(comm))
-        rank = Int(MPI.Comm_rank(comm))
-        nranks == 1 && return A
-        n = length(A)
-        E = eltype(A)
-        n % nblocks == 0 || error("all-gather of $(n) elements in $(nblocks) equal blocks")
-        chunk = cld(nblocks, nranks) * (n ÷ nblocks)
-        padded = chunk * nranks
-        _, recv, mine = _mp_allsum_buffers(E, padded, chunk)
-        base = rank * chunk
-        mine_len = clamp(n - base, 0, chunk)
-        mine_len < chunk && fill!(view(mine, (mine_len + 1):chunk), zero(E))
-        mine_len > 0 && copyto!(mine, 1, A, base + 1, mine_len)
-        MPI.Allgather!(MPI.Buffer(mine), MPI.UBuffer(recv, chunk), comm)
-        copyto!(A, 1, recv, 1, n)
-        return A
-    end
-end
+Octopus._mp_isend_impl(A, dest::Int, tag::Int, comm::MPI.Comm) =
+    _mp_timed(() -> MPI.Isend(A, comm; dest=dest, tag=tag), :isend)
+Octopus._mp_irecv_impl!(A, source::Int, tag::Int, comm::MPI.Comm) =
+    _mp_timed(() -> MPI.Irecv!(A, comm; source=source, tag=tag), :irecv)
+Octopus._mp_wait_all_impl(requests::Vector{MPI.Request}, stage::Symbol, ::MPI.Comm) =
+    _mp_timed(() -> (MPI.Waitall(requests); nothing), stage)
+Octopus._mp_requests_impl(::MPI.Comm) = MPI.Request[]
 
 """The cached vector `A`'s elements are copied through for a min/max
 all-reduce, so a view can cross the seam (see `_mp_allsum_impl!`)."""

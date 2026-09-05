@@ -7324,6 +7324,9 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
     else
         ok1, out1 = run_ranks(1)
         ok2, out2 = run_ranks(2)
+        # Four ranks (step 4d): three slices on four ranks put one slice on
+        # two ranks, the first real group of the slice-aligned collide.
+        ok4, out4 = run_ranks(4)
         if !ok1 && !occursin("MPI-CHECK", out1)
             # The environment could not run an MPI child at all (no launcher
             # permissions, no shared memory). Loud, and NOT counted as a pass.
@@ -7332,6 +7335,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
         else
             @test ok1
             @test ok2
+            @test ok4
             # Both ranks must report, and both must report through MPI: a
             # child that silently fell back to the passthrough would print
             # `resolved_by=serial_passthrough` and one rank line.
@@ -7671,10 +7675,32 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             # planes would mean the run never divided anything and agreed
             # by running whole; 72 calls would mean it fell back to the
             # per-pair exchange.
-            @test tagged(out1, "MPI-PICSCHED ") ==
-                  ["ranks=1 pair_workers=1 batch_mode=wavefront exchange=none grid_exchanges=0 planes=0"]
-            @test tagged(out2, "MPI-PICSCHED ") ==
-                  ["ranks=2 pair_workers=1 batch_mode=wavefront exchange=batched grid_exchanges=$(5 * 2) planes=$(9 * 2 * 2 * 2)"]
+            # What the divided run RECORDED (step 4d): the slice-aligned
+            # collide ran at every rank count, one included, and moved the
+            # partial planes the layout rule predicts for this fixture --
+            # computed here from the same rule -- over the task's two turns,
+            # solved every plane once, and coordinated every pair once. A run
+            # that fell back to the per-pair paths would say `per_pair`; one
+            # that solved every plane on every rank would report `solved`
+            # times the rank count.
+            let (cb1, cb2) = _mpi_check_ss_beams(CPUThreadsExecutionPolicy(threads=1)),
+                psolver = _mpi_check_pic_solver()
+                for (out, P) in ((out1, 1), (out2, 2), (out4, 4))
+                    partials = 2 * _mpi_check_pic_partials(cb1, cb2, psolver, P)
+                    @test tagged(out, "MPI-PICSCHED ") ==
+                          ["ranks=$(P) pair_workers=1 batch_mode=wavefront exchange=sliced partials=$(partials) solved=$(9 * 2 * 2 * 2) coordinated=$(9 * 2)"]
+                    # The groups the child derived are the ones this rule
+                    # derives (both beams), and the live members all left.
+                    g1 = _mpi_check_pic_groups(cb1.rep, psolver.slicing1, P)
+                    g2 = _mpi_check_pic_groups(cb2.rep, psolver.slicing2, P)
+                    layout = tagged(out, "MPI-PICLAYOUT ")
+                    @test length(layout) == 2
+                    @test startswith(layout[1], "beam=1 groups=$(join(g1, ",")) out=")
+                    @test startswith(layout[2], "beam=2 groups=$(join(g2, ",")) out=")
+                end
+                # The premise of the four-rank run: a slice on more than one rank.
+                @test maximum(_mpi_check_pic_groups(cb1.rep, psolver.slicing1, 4)) >= 2
+            end
             variant(out, name) = let lines = [strip(split(line, "MPI-PICVAR " * name * " ")[2])
                                               for line in split(out, '\n')
                                               if startswith(line, "MPI-PICVAR " * name * " ")]
@@ -7686,12 +7712,23 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             for (name, _, threads, same_as) in _mpi_check_pic_variants()
                 key = String(name)
                 ref = picref.variants[key]
-                v1, v2 = variant(out1, key), variant(out2, key)
-                @test v1 !== nothing && v2 !== nothing
-                (v1 === nothing || v2 === nothing) && continue
+                v1, v2, v4 = variant(out1, key), variant(out2, key), variant(out4, key)
+                @test v1 !== nothing && v2 !== nothing && v4 !== nothing
+                (v1 === nothing || v2 === nothing || v4 === nothing) && continue
                 @test v1 == ref.line                                # one rank: bit for bit
-                for (a, b) in zip(floats(v1), floats(v2))
+                for vP in (v2, v4), (a, b) in zip(floats(v1), floats(vP))
                     @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
+                end
+                # `z` came home to its slot on every rank at every rank count.
+                for out in (out1, out2, out4)
+                    zs = [last(split(s)) for s in ranklines(out, "MPI-PICVARZ ", key)]
+                    @test !isempty(zs) && all(==("true"), zs)
+                end
+                # Fixed rank count, same bits: the `:skewed` arm ran twice.
+                if name === :skewed
+                    for out in (out1, out2, out4)
+                        @test tagged(out, "MPI-PICVAR2 skewed ") == [variant(out, key)]
+                    end
                 end
                 # Anti-vacuity: every variant selects a route of its own, so
                 # it must differ from the default on the same beams -- except
@@ -7704,6 +7741,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 if same_as !== nothing
                     @test v1 == picref.variants[String(same_as)].line
                     @test v2 == variant(out2, String(same_as))
+                    @test v4 == variant(out4, String(same_as))
                 elseif name !== :default
                     @test v1 != picref.variants["default"].line
                 end
@@ -7731,35 +7769,52 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 # inner maps given every thread. Visible only where the
                 # policy has more than one thread, which is what the
                 # `:threads2` and `:node2` arms are for.
+                # The schedule: the sliced collide runs its pairs one at a
+                # time with the inner maps given every thread, at every rank
+                # count, one included; the node and source-slice meshes keep
+                # the CPU policy's workers at one rank (they are undivided
+                # there) and one worker beyond. Every arm names the exchange
+                # it ran, so a fallback to a per-pair path cannot pass as the
+                # sliced one.
                 sched1 = ranklines(out1, "MPI-PICVARSCHED ", key)
                 sched2 = ranklines(out2, "MPI-PICVARSCHED ", key)
-                @test sched1 == ["pair_workers=$(ref.pair_workers) inner_workers=$(ref.inner_workers)"]
-                if name in (:node, :node2)
-                    @test sched2 == ["pair_workers=1 inner_workers=$(threads)"]
+                sched4 = ranklines(out4, "MPI-PICVARSCHED ", key)
+                per_pair = name in (:node, :node2, :source_slice)
+                if per_pair
+                    @test sched1 == ["pair_workers=$(ref.pair_workers) inner_workers=$(ref.inner_workers) exchange=none"]
+                    @test sched2 == ["pair_workers=1 inner_workers=$(threads) exchange=per_pair"]
+                    @test sched4 == ["pair_workers=1 inner_workers=$(threads) exchange=per_pair"]
                 else
-                    @test sched2 == ["pair_workers=$(ref.pair_workers) inner_workers=$(ref.inner_workers)"]
+                    for sched in (sched1, sched2, sched4)
+                        @test sched == ["pair_workers=1 inner_workers=$(threads) exchange=sliced"]
+                    end
                 end
-                name in (:threads2, :node2) && @test ref.pair_workers == 2   # two threads changed something
+                name in (:threads2, :node2) && @test ref.pair_workers == 2   # two threads changed the CPU run
             end
-            # The `:sparse` arm's premise, from the shard rule and the slicing:
-            # at two ranks some rank holds no member of a populated slice.
+            # The arms' premises, from the layout rule (step 4d): `:sparse`
+            # is many WHOLE slices per rank (64 slices on two ranks), `:skewed`
+            # is a slice split over two ranks at four (its middle slice holds
+            # most of the beam) beside whole end slices, and `:big` is the
+            # threaded deposit on every part at two and four ranks.
             let (b1, b2) = _mpi_check_ss_beams(CPUThreadsExecutionPolicy(threads=1))
-                @test _mpi_check_pic_locally_empty(b1.rep, _mpi_check_pic_sparse_slicing(), 2) > 0
-                @test _mpi_check_pic_locally_empty(b2.rep, _mpi_check_pic_sparse_slicing(), 2) > 0
-                @test _mpi_check_pic_locally_empty(b1.rep, _mpi_check_pic_solver().slicing1, 2) == 0
+                sparse = _mpi_check_pic_groups(b1.rep, _mpi_check_pic_sparse_slicing(), 2)
+                @test count(==(1), sparse) >= 40 && maximum(sparse) == 1
+                # Three slices on four ranks: each end slice needs a rank of
+                # its own, so the middle one gets the other two -- a group.
+                skewed = _mpi_check_pic_groups(b1.rep, _mpi_check_pic_skewed_slicing(), 4)
+                @test skewed == [1, 2, 1]
             end
-            # The `:big` arm: the threaded deposit under division. Its premise
-            # is asserted -- every rank's share of every slice clears the
-            # floor at two ranks -- so a beam that quietly took the serial
-            # path could not pass as the threaded one.
             @test Octopus._pic_deposit_parallel(_mpi_check_pic_big_min_local_slice(2), 5, 5)
+            @test Octopus._pic_deposit_parallel(_mpi_check_pic_big_min_local_slice(4), 5, 5)
             @test tagged(out1, "MPI-PICBIG ") == [picref.big.line]
-            for (a, b) in zip(floats(picref.big.line), floats(first(tagged(out2, "MPI-PICBIG "))))
+            for out in (out2, out4), (a, b) in zip(floats(picref.big.line), floats(first(tagged(out, "MPI-PICBIG "))))
                 @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
             end
             @test [last(split(s)) for s in ranklines(out1, "MPI-PICBIGLUM", "")] == [picref.big.lum]
-            biglums2 = [last(split(s)) for s in ranklines(out2, "MPI-PICBIGLUM", "")]
-            @test length(biglums2) == 2 && biglums2[1] == biglums2[2]
+            for (out, P) in ((out2, 2), (out4, 4))
+                biglums = [last(split(s)) for s in ranklines(out, "MPI-PICBIGLUM", "")]
+                @test length(biglums) == P && allequal(biglums)
+            end
 
             # --- step 4c: the CPU/MPI/CUDA consistency contract ----------
             #

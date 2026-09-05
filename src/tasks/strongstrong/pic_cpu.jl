@@ -33,13 +33,12 @@ function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
     workspaces = _pic_cpu_workspace_pool!(task.runtime_cache, label, solver, T,
                                           _pic_pool_size(solver))
     green_cache = _pic_green_cache!(task.runtime_cache, label, solver, T)
-    # The batched exchange's staging (step 4c performance phase), kept across
-    # turns like the workspace pool: its planes are 30 MB at the production
-    # point.
-    batch_exchange = get!(() -> Ref{Any}(nothing), task.runtime_cache,
-                          (:cpu_pic_batch_exchange, label))::Base.RefValue{Any}
+    # The slice-aligned collide's scratch (step 4d), kept across turns like
+    # the workspace pool.
+    sliced_scratch = get!(() -> Ref{Any}(nothing), task.runtime_cache,
+                          (:cpu_pic_sliced_scratch, label))::Base.RefValue{Any}
     return _pic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache;
-                         batch_exchange=batch_exchange)
+                         sliced_scratch=sliced_scratch)
 end
 
 """
@@ -111,7 +110,7 @@ _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
 
 function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
                        workspaces, green_cache;
-                       batch_exchange::Base.RefValue{Any}=Ref{Any}(nothing))
+                       sliced_scratch::Base.RefValue{Any}=Ref{Any}(nothing))
     _validate_pic_solver(solver)
     # Step 4c divides this collide; until then a divided run must refuse here
     # too, not only at the task's preflight, so a bare `collide!` cannot
@@ -190,167 +189,204 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # neighbouring pairs would read-modify-write the same word and lose one.
     ran = fill(false, npairs)
 
-    # Gather each slice ONCE, and give it a scratch twin to be kicked into. The
-    # pair loop then neither gathers nor scatters; it copies state -> scratch,
-    # kicks the scratch, and swaps. See `_pic_slice_states`.
-    state1 = _pic_slice_states(beam1.rep, slices1.indices)
-    state2 = _pic_slice_states(beam2.rep, slices2.indices)
-    # Only beam 2 needs a scratch twin: beam 1's slice is kicked in place. See
-    # `_pic_collide_pair!` for why one copy per pair is the minimum.
-    scratch2 = _pic_slice_states(beam2.rep, slices2.indices)
-
-    # The pool is STORAGE, not a worker count. `_pic_cpu_workspace_pool!` only
-    # ever grows, so `length(workspaces)` is the high-water mark of every policy
-    # this label has run under; scheduling off it would keep spawning 15 pair
-    # workers after a caller asked for 2, which is a configuration set and not
-    # read. The width is recomputed from the policy here and the pool indexed
-    # only up to it.
-    # ONE pair worker where the pairs themselves issue collectives -- the
-    # per-pair exchange, which under division is what the node mesh still
-    # runs: MPI is :funneled and the seam's tripwire throws off the main
-    # thread, so those batches keep their order and their pairs run one at a
-    # time on the main thread, with the inner per-particle maps keeping the
-    # whole pool. The `:slice_pair` mesh runs the BATCHED exchange (step 4c's
-    # performance phase, `pic_cpu_divided.jl`), whose collectives sit between
-    # the stages of a batch and not inside a pair, so its pairs keep the pool.
-    pool_workers = (divided && node_grid) ? 1 : min(length(workspaces), _pic_pool_size(solver))
-    # `batch_mode` is read HERE, on CPU, since 2026-09-04. Before that the CPU
-    # loop scheduled by `_pic_batchable` alone and `:sequential` was accepted
-    # and ignored -- warned about at task level, silent through a bare
-    # `collide!`. `_pic_batching_requested` is the mesh constraint AND the
-    # request. The keyword means the SCHEDULE and the pool means the WIDTH, as
-    # on the other solvers: `:wavefront` batches at any worker count, a
-    # one-worker pool running the batches one pair at a time with the inner
-    # maps handed the whole pool, so a schedule comparison is a real
-    # comparison at one thread too rather than two sequential runs agreeing
-    # with themselves.
+    # The slice-aligned collide (multi-process step 4d, `pic_cpu_sliced.jl`)
+    # is what a multi-process policy runs on the `:slice_pair` mesh -- at
+    # one rank too, where it is the CPU collide bit for bit. The node and
+    # source-slice meshes keep the per-pair paths below.
     requested = Symbol(solver.batch_mode)
-    if _pic_batching_requested(solver) && npairs > 1
-        # What is left of the pool once the pairs have taken their share, handed
-        # to the per-particle maps inside each pair so the two levels compose
-        # instead of multiplying. Integer division, floor at 1: a pair always
-        # gets at least itself.
-        # Divided ONCE, by the pool rather than by each batch's width. Dividing
-        # per batch -- so the width-1 batch at each end gets every thread for
-        # its per-particle and per-cell maps -- is the obvious remedy for the
-        # wavefront triangle and was measured TWICE, before and after the Green
-        # table build started threading: 16 threads went 4.20 -> 5.41 s the
-        # first time and 3.20 -> 3.94 s the second. Both times CPU time rose
-        # faster than wall time fell (19.3 -> 27.9 s at 16 threads), i.e. the
-        # extra occupancy was overhead, not work. Re-measure after any change
-        # that moves a substantial block inside a pair; it is the right idea
-        # waiting on parallel efficiency it does not have yet.
-        # NO nesting inside the batched pair loop. The pair level already
-        # supplies the concurrency, and splitting each pair's per-particle and
-        # per-cell maps on top of it measurably costs.
-        #
-        # Found by a natural experiment on `fld(nthreads, pool)`, which is 1 up
-        # to 29 threads and 2 from 30 (the pool caps at 15 slices). Wall time
-        # and CPU time at the production point:
-        #
-        #     threads   16     20     29  |   30     32
-        #     wall    3.40   3.45   3.82  | 4.54   4.99
-        #     cpu     20.1   19.8   25.9  | 43.9   49.5
-        #
-        # The step is exactly where the split turns on, not a smooth curve, so
-        # it is this rule and not the thread count. With no nesting: 3.45 at 16,
-        # 4.00 at 32, 4.36 at 64 -- the cliff is gone and wide pools merely stop
-        # helping instead of hurting.
-        #
-        # `_pic_map_particles` is NOT dead: the sequential path (`:sequential`,
-        # `:source_slice`, or a single pair) leaves the budget at the pool and
-        # uses all of it, which is where it earns its keep -- and so does a
-        # batched loop whose pair level is width 1 (a 1 x N slicing, or one
-        # thread): there is nothing to nest under, so the inner maps get the
-        # whole pool exactly as the sequential loop gives it to them.
-        inner_workers = pool_workers > 1 ? 1 : _cpu_worker_count()
-        batches = collision_pair_batches(slices1, slices2)
-        batched_exchange = divided && !node_grid
-        # Consumer-boundary receipt, so a test can assert the schedule the run
-        # ACTUALLY used rather than the one its policy asked for. Without it,
-        # "batched and sequential agree bit for bit" passes just as happily when
-        # nothing ever batched (Measured Lesson: a configuration you set is not
-        # a configuration the code read).
-        # `:pic_pair_schedule`, not `:cpu_pic_pair_schedule`: the option is
-        # cross-backend, so its consumer name is too, and the CUDA routes emit
-        # the same receipt. `batch_mode` is what RAN -- a literal in the branch
-        # that ran, never a copy of the field, since a receipt that echoes the
-        # request certifies nothing (U4-6) -- and `requested` is the field;
-        # they differ only where the mesh forbids batching.
-        # `exchange` is what RAN, like `batch_mode`: `:batched` (every plane
-        # of a batch in one all-sum), `:per_pair`, or `:none` undivided.
+    sliced = _mp_multi_process_active() && !node_grid && !share_grid
+    if sliced
+        # ONE assignment: the scoped-value closure below captures this name,
+        # and a second assignment would box it (the lowered-code sweep).
+        scratch = let held = sliced_scratch[]
+            held isa _PICSlicedScratch{T} ? held : (sliced_scratch[] = _PICSlicedScratch{T}())
+        end
+        P = _mp_nranks()
+        layout1 = _pic_sliced_layout(plan1.counts, P)
+        layout2 = _pic_sliced_layout(plan2.counts, P)
+        sb1 = _pic_sliced_migrate_in(beam1.rep, slices1, layout1, T)
+        sb2 = _pic_sliced_migrate_in(beam2.rep, slices2, layout2, T)
+        # `sliced_batches`, not `batches`: the per-pair branch below assigns
+        # `batches` too, and one name assigned in two places and captured by
+        # the closure below is a `Core.Box` (the lowered-code sweep).
+        batching = _pic_batching_requested(solver) && npairs > 1
+        sliced_batches = batching ? collision_pair_batches(slices1, slices2) :
+                                    [[(i=Int(entry[2]), j=Int(entry[3]))] for entry in order]
         _record_execution!(:pic_pair_schedule, CPUThreadsBackend,
-                           (batch_mode=:wavefront, requested=requested,
-                            pairs=npairs, batches=length(batches),
-                            widest_batch=maximum(length, batches; init=0),
-                            pair_workers=pool_workers,
-                            inner_workers=inner_workers, ranks=_mp_nranks(),
-                            exchange=batched_exchange ? :batched :
-                                     divided ? :per_pair : :none))
-        Base.ScopedValues.with(_PIC_MAP_WORKER_BUDGET => inner_workers) do
-        if batched_exchange
-            ex = _pic_batch_exchange!(batch_exchange, solver, T,
-                                      maximum(length, batches; init=1))
+                           (batch_mode=batching ? :wavefront : :sequential, requested=requested,
+                            pairs=npairs, batches=length(sliced_batches),
+                            widest_batch=maximum(length, sliced_batches; init=0),
+                            pair_workers=1, inner_workers=_cpu_worker_count(),
+                            ranks=P, exchange=:sliced))
+        for (which, sb) in ((1, sb1), (2, sb2))
+            _record_execution!(:pic_slice_layout, CPUThreadsBackend,
+                               (beam=which, groups=[length(g) for g in sb.layout.groups],
+                                migrated_out=sb.migrated_out, migrated_in=sb.migrated_in,
+                                ranks=P))
+        end
+        nbad = Base.ScopedValues.with(_PIC_MAP_WORKER_BUDGET => _cpu_worker_count()) do
+            _pic_collide_sliced!(sb1, sb2, sliced_batches, order, pair_pos, lum_parts, ran, solver,
+                                 slices1, slices2, first(workspaces), green_cache, scratch,
+                                 kbb1, kbb2, klum, compute_luminosity)
+        end
+        _pic_sliced_migrate_out!(beam1.rep, sb1)
+        _pic_sliced_migrate_out!(beam2.rep, sb2)
+        # The coordinators hold their pairs' values and everyone else zeros,
+        # so the all-sum is exact and every rank folds the same vector below.
+        _mp_allsum!(lum_parts)
+        # The non-finite verdict, agreed once per collide: every rank throws
+        # or none (the 4c rule), the pair's ranks having already skipped it.
+        nbad_all = _mp_global_count(nbad)
+        nbad_all > 0 && throw(ArgumentError(
+            "PIC collide: $(nbad_all) slice pair(s) met a non-finite coordinate " *
+            "(this rank held $(nbad) of them); the run cannot continue."))
+    else
+        # Gather each slice ONCE, and give it a scratch twin to be kicked into. The
+        # pair loop then neither gathers nor scatters; it copies state -> scratch,
+        # kicks the scratch, and swaps. See `_pic_slice_states`.
+        state1 = _pic_slice_states(beam1.rep, slices1.indices)
+        state2 = _pic_slice_states(beam2.rep, slices2.indices)
+        # Only beam 2 needs a scratch twin: beam 1's slice is kicked in place. See
+        # `_pic_collide_pair!` for why one copy per pair is the minimum.
+        scratch2 = _pic_slice_states(beam2.rep, slices2.indices)
+
+        # The pool is STORAGE, not a worker count. `_pic_cpu_workspace_pool!` only
+        # ever grows, so `length(workspaces)` is the high-water mark of every policy
+        # this label has run under; scheduling off it would keep spawning 15 pair
+        # workers after a caller asked for 2, which is a configuration set and not
+        # read. The width is recomputed from the policy here and the pool indexed
+        # only up to it.
+        # ONE pair worker when divided: on this path -- the node and source-slice
+        # meshes, the `:slice_pair` mesh running the slice-aligned collide above
+        # -- every pair issues collectives, MPI is :funneled, and the seam's
+        # tripwire throws off the main thread, so the batches keep their order
+        # and their pairs run one at a time on the main thread, with the inner
+        # per-particle maps keeping the whole pool.
+        pool_workers = divided ? 1 : min(length(workspaces), _pic_pool_size(solver))
+        # `batch_mode` is read HERE, on CPU, since 2026-09-04. Before that the CPU
+        # loop scheduled by `_pic_batchable` alone and `:sequential` was accepted
+        # and ignored -- warned about at task level, silent through a bare
+        # `collide!`. `_pic_batching_requested` is the mesh constraint AND the
+        # request. The keyword means the SCHEDULE and the pool means the WIDTH, as
+        # on the other solvers: `:wavefront` batches at any worker count, a
+        # one-worker pool running the batches one pair at a time with the inner
+        # maps handed the whole pool, so a schedule comparison is a real
+        # comparison at one thread too rather than two sequential runs agreeing
+        # with themselves.
+        if _pic_batching_requested(solver) && npairs > 1
+            # What is left of the pool once the pairs have taken their share, handed
+            # to the per-particle maps inside each pair so the two levels compose
+            # instead of multiplying. Integer division, floor at 1: a pair always
+            # gets at least itself.
+            # Divided ONCE, by the pool rather than by each batch's width. Dividing
+            # per batch -- so the width-1 batch at each end gets every thread for
+            # its per-particle and per-cell maps -- is the obvious remedy for the
+            # wavefront triangle and was measured TWICE, before and after the Green
+            # table build started threading: 16 threads went 4.20 -> 5.41 s the
+            # first time and 3.20 -> 3.94 s the second. Both times CPU time rose
+            # faster than wall time fell (19.3 -> 27.9 s at 16 threads), i.e. the
+            # extra occupancy was overhead, not work. Re-measure after any change
+            # that moves a substantial block inside a pair; it is the right idea
+            # waiting on parallel efficiency it does not have yet.
+            # NO nesting inside the batched pair loop. The pair level already
+            # supplies the concurrency, and splitting each pair's per-particle and
+            # per-cell maps on top of it measurably costs.
+            #
+            # Found by a natural experiment on `fld(nthreads, pool)`, which is 1 up
+            # to 29 threads and 2 from 30 (the pool caps at 15 slices). Wall time
+            # and CPU time at the production point:
+            #
+            #     threads   16     20     29  |   30     32
+            #     wall    3.40   3.45   3.82  | 4.54   4.99
+            #     cpu     20.1   19.8   25.9  | 43.9   49.5
+            #
+            # The step is exactly where the split turns on, not a smooth curve, so
+            # it is this rule and not the thread count. With no nesting: 3.45 at 16,
+            # 4.00 at 32, 4.36 at 64 -- the cliff is gone and wide pools merely stop
+            # helping instead of hurting.
+            #
+            # `_pic_map_particles` is NOT dead: the sequential path (`:sequential`,
+            # `:source_slice`, or a single pair) leaves the budget at the pool and
+            # uses all of it, which is where it earns its keep -- and so does a
+            # batched loop whose pair level is width 1 (a 1 x N slicing, or one
+            # thread): there is nothing to nest under, so the inner maps get the
+            # whole pool exactly as the sequential loop gives it to them.
+            inner_workers = pool_workers > 1 ? 1 : _cpu_worker_count()
+            batches = collision_pair_batches(slices1, slices2)
+            # Consumer-boundary receipt, so a test can assert the schedule the run
+            # ACTUALLY used rather than the one its policy asked for. Without it,
+            # "batched and sequential agree bit for bit" passes just as happily when
+            # nothing ever batched (Measured Lesson: a configuration you set is not
+            # a configuration the code read).
+            # `:pic_pair_schedule`, not `:cpu_pic_pair_schedule`: the option is
+            # cross-backend, so its consumer name is too, and the CUDA routes emit
+            # the same receipt. `batch_mode` is what RAN -- a literal in the branch
+            # that ran, never a copy of the field, since a receipt that echoes the
+            # request certifies nothing (U4-6) -- and `requested` is the field;
+            # they differ only where the mesh forbids batching.
+            # `exchange` is what RAN, like `batch_mode`: `:per_pair` (every plane
+            # all-summed inside its pair) or `:none` undivided; the slice-aligned
+            # collide records `:sliced`.
+            _record_execution!(:pic_pair_schedule, CPUThreadsBackend,
+                               (batch_mode=:wavefront, requested=requested,
+                                pairs=npairs, batches=length(batches),
+                                widest_batch=maximum(length, batches; init=0),
+                                pair_workers=pool_workers,
+                                inner_workers=inner_workers, ranks=_mp_nranks(),
+                                exchange=divided ? :per_pair : :none))
+            Base.ScopedValues.with(_PIC_MAP_WORKER_BUDGET => inner_workers) do
             for batch in batches
-                _pic_collide_batch_divided!(
-                    ex, batch, lum_parts, ran, pair_pos, solver, slices1, slices2,
-                    state1, state2, scratch2, workspaces, green_cache,
-                    kbb1, kbb2, klum, compute_luminosity, plan1, plan2,
-                    clamp(pool_workers, 1, length(batch)))
-            end
-        else
-        for batch in batches
-            nworkers = clamp(pool_workers, 1, length(batch))
-            # `chunk_ws`, NOT `ws`. The sequential branch below also assigns
-            # `ws`, and `if`/`else` opens no scope in Julia, so one name here
-            # would be a single function-scope variable captured by this
-            # closure -- one `Core.Box` shared by every worker, and therefore
-            # ONE workspace shared by every worker. Measured before the rename:
-            # the charge grid of one pair reached the field solve of another and
-            # the collide failed with an all-NaN slice. Same defect as
-            # `chunk_lum` in gaussian.jl and `chunk_counts` in slicing.jl; the
-            # permanent lowered-code sweep is what named it.
-            _run_logical_workers(nworkers) do chunk, _
-                chunk_ws = workspaces[chunk]
-                lo, hi = _chunk_bounds(length(batch), nworkers, chunk)
-                for pos in lo:hi
-                    pr = batch[pos]
-                    p = pair_pos[(pr.i, pr.j)]
-                    ran[p] = _pic_collide_pair!(
-                        lum_parts, p, solver, beam1, beam2, slices1, slices2,
-                        state1, state2, scratch2,
-                        pr.i, pr.j, chunk_ws, green_cache, node_cache, union_bounds,
-                        share_grid, node_grid, kbb1, kbb2, klum,
-                        compute_luminosity, T, true, plan1, plan2, divided)
+                nworkers = clamp(pool_workers, 1, length(batch))
+                # `chunk_ws`, NOT `ws`. The sequential branch below also assigns
+                # `ws`, and `if`/`else` opens no scope in Julia, so one name here
+                # would be a single function-scope variable captured by this
+                # closure -- one `Core.Box` shared by every worker, and therefore
+                # ONE workspace shared by every worker. Measured before the rename:
+                # the charge grid of one pair reached the field solve of another and
+                # the collide failed with an all-NaN slice. Same defect as
+                # `chunk_lum` in gaussian.jl and `chunk_counts` in slicing.jl; the
+                # permanent lowered-code sweep is what named it.
+                _run_logical_workers(nworkers) do chunk, _
+                    chunk_ws = workspaces[chunk]
+                    lo, hi = _chunk_bounds(length(batch), nworkers, chunk)
+                    for pos in lo:hi
+                        pr = batch[pos]
+                        p = pair_pos[(pr.i, pr.j)]
+                        ran[p] = _pic_collide_pair!(
+                            lum_parts, p, solver, beam1, beam2, slices1, slices2,
+                            state1, state2, scratch2,
+                            pr.i, pr.j, chunk_ws, green_cache, node_cache, union_bounds,
+                            share_grid, node_grid, kbb1, kbb2, klum,
+                            compute_luminosity, T, true, plan1, plan2, divided)
+                    end
                 end
             end
+            end
+        else
+            _record_execution!(:pic_pair_schedule, CPUThreadsBackend,
+                               (batch_mode=:sequential, requested=requested,
+                                pairs=npairs, batches=0,
+                                widest_batch=0, pair_workers=1,
+                                inner_workers=_cpu_worker_count(), ranks=_mp_nranks(),
+                                exchange=divided ? :per_pair : :none))
+            serial_ws = first(workspaces)
+            for (p, entry) in pairs(order)
+                ran[p] = _pic_collide_pair!(
+                    lum_parts, p, solver, beam1, beam2, slices1, slices2,
+                    state1, state2, scratch2,
+                    entry[2], entry[3], serial_ws, green_cache, node_cache, union_bounds,
+                    share_grid, node_grid, kbb1, kbb2, klum,
+                    compute_luminosity, T, false, plan1, plan2, divided)
+            end
         end
-        end
-        end
-    else
-        _record_execution!(:pic_pair_schedule, CPUThreadsBackend,
-                           (batch_mode=:sequential, requested=requested,
-                            pairs=npairs, batches=0,
-                            widest_batch=0, pair_workers=1,
-                            inner_workers=_cpu_worker_count(), ranks=_mp_nranks(),
-                            exchange=divided ? :per_pair : :none))
-        serial_ws = first(workspaces)
-        for (p, entry) in pairs(order)
-            ran[p] = _pic_collide_pair!(
-                lum_parts, p, solver, beam1, beam2, slices1, slices2,
-                state1, state2, scratch2,
-                entry[2], entry[3], serial_ws, green_cache, node_cache, union_bounds,
-                share_grid, node_grid, kbb1, kbb2, klum,
-                compute_luminosity, T, false, plan1, plan2, divided)
-        end
-    end
 
-    # Scatter the resident slices back into the beams, once. Until this runs the
-    # beams still hold the turn-start coordinates -- which is why anything
-    # inside the loop that needs current values reads the states instead (see
-    # the `_pic_union_bounds` states method).
-    _pic_store_slice_states!(beam1.rep, slices1.indices, state1)
-    _pic_store_slice_states!(beam2.rep, slices2.indices, state2)
+        # Scatter the resident slices back into the beams, once. Until this runs the
+        # beams still hold the turn-start coordinates -- which is why anything
+        # inside the loop that needs current values reads the states instead (see
+        # the `_pic_union_bounds` states method).
+        _pic_store_slice_states!(beam1.rep, slices1.indices, state1)
+        _pic_store_slice_states!(beam2.rep, slices2.indices, state2)
+    end
 
     luminosity = LT(NaN)
     if compute_luminosity
@@ -2232,9 +2268,9 @@ function _pic_solve_drifted_field_with_green_fft!(field::_PICFieldWorkspace,
     # particles of the source slice, and the field is the field of the whole
     # slice's charge -- one all-sum of the padded grid, then every rank
     # solves the identical field redundantly and kicks its own particles.
-    # The per-pair exchange: the whole 2nx x 2ny matrix, one plane per call.
-    # The batched exchange (`pic_cpu_divided.jl`) sends every plane of a
-    # wavefront batch in one call; both record what they moved.
+    # The per-pair exchange: the whole 2nx x 2ny matrix, one plane per call,
+    # recorded so a run can say what it moved (the slice-aligned collide,
+    # `pic_cpu_sliced.jl`, moves interiors by message and records its own).
     if divided
         _mp_allsum!(charge)
         _record_execution!(:pic_grid_exchange, CPUThreadsBackend,
@@ -2334,8 +2370,8 @@ function _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny)
         _pic_deposit_range!(local_grid, method, x, y, x0, y0, hx, hy, nx, ny, first_i, last_i)
     end
     for local_grid in local_charge
-        # The batched exchange deposits into the nx x ny INTERIOR of a plane
-        # (`pic_cpu_divided.jl`) while the chunk grids are padded-plane
+        # The slice-aligned collide deposits into the nx x ny INTERIOR of a
+        # plane (`pic_cpu_sliced.jl`) while the chunk grids are padded-plane
         # sized; folding the interior of each chunk grid is the same
         # additions in the same order, so the bits are the same.
         if size(local_grid) == size(charge)
@@ -2370,8 +2406,8 @@ function _pic_deposit_threaded!(charge, method, x, y, x0, y0, hx, hy, nx, ny,
         _pic_deposit_range!(local_grid, method, x, y, x0, y0, hx, hy, nx, ny, first_i, last_i)
     end
     for local_grid in local_charge
-        # The batched exchange deposits into the nx x ny INTERIOR of a plane
-        # (`pic_cpu_divided.jl`) while the chunk grids are padded-plane
+        # The slice-aligned collide deposits into the nx x ny INTERIOR of a
+        # plane (`pic_cpu_sliced.jl`) while the chunk grids are padded-plane
         # sized; folding the interior of each chunk grid is the same
         # additions in the same order, so the bits are the same.
         if size(local_grid) == size(charge)
@@ -2401,8 +2437,8 @@ function _pic_deposit_drifted_threaded!(charge, method, x, px, y, py, drift_s, x
         )
     end
     for local_grid in local_charge
-        # The batched exchange deposits into the nx x ny INTERIOR of a plane
-        # (`pic_cpu_divided.jl`) while the chunk grids are padded-plane
+        # The slice-aligned collide deposits into the nx x ny INTERIOR of a
+        # plane (`pic_cpu_sliced.jl`) while the chunk grids are padded-plane
         # sized; folding the interior of each chunk grid is the same
         # additions in the same order, so the bits are the same.
         if size(local_grid) == size(charge)

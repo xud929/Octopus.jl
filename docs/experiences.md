@@ -303,6 +303,14 @@ teaches something reusable, it lands here (dated), and the full record goes to
   parse is built whole and written once; lines that every rank prints go out
   one rank at a time with a barrier between, inside the policy scope where
   the barrier is a collective.
+- An origin is a moving particle (2026-09-05, step 4d). The `:sigma` mesh
+  estimator is shifted about a slice's first member, and the per-pair path
+  reads that member at each pair -- already kicked by the pairs before it.
+  The slice-aligned collide's first cut exchanged the origins once at the
+  collide's start and was off by 4e-4 at one rank while thirteen other arms
+  were bit for bit; the one-rank pin found it in one run, and the origins
+  now travel before every batch. Any value a divided path hoists out of a
+  loop must be checked against WHEN the undivided path reads it.
 - A cache of buffers typed `Vector` (abstract) made the seam's all-sum 40x
   slower than the MPI calls inside it (2026-09-05, step 4c performance
   phase): the rank-ordered fold dispatched per element, 42 ms per 512 KB

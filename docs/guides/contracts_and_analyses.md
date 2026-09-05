@@ -40,8 +40,8 @@ composition. Its MPI legs are launched processes, so it needs the launcher
 command (`mpiexec=MPICH_jll.mpiexec()` in the suite; `nothing`, the default,
 returns `:skipped`) and a project that carries `MPI`; the child is
 `src/contracts/mpi_pic_consistency_child.jl`. After changing the divided PIC
-collide (`pic_cpu.jl` under `divided`), the seam, or the shard rule, run it at
-the rank counts you can launch. See `../design/multi_process_policy.md`.
+collide (`pic_cpu_sliced.jl`, or `pic_cpu.jl` under `divided`), the seam, or
+the layout rule, run it at the rank counts you can launch. See `../design/multi_process_policy.md`.
 
 ## Analyses
 

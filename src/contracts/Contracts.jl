@@ -151,16 +151,20 @@ carry the triangle bound). The claim per leg:
 
 - **one rank under MPI reproduces the CPU policy bit for bit** -- coordinates
   of both beams and the whole luminosity series compared with `==`;
-- **more ranks agree at the parity class** -- the deposit's chunk fold is keyed
-  by member-list position, which no shard aligns with, so a divided grid
-  differs from the undivided one by accumulation order; `rtol`/`atol` on the
-  coordinates pointwise through `_contract_coordinate_metrics`,
-  `luminosity_rtol` on every turn. Measured on the defaults (2026-09-05): two
-  ranks differ from the CPU by 5.5e-17 absolute, 2.3e-15 against the beam
-  scale, 0.18 of a 1e-12 pointwise allowance (so 0.018 of the default
-  1e-11), and 1.6e-15 relative on the luminosity; four ranks the same class.
-  The pointwise ratio is the criterion, the global one the number to read;
-  both are in the metrics per rank count;
+- **more ranks agree at the parity class** -- under the slice-aligned
+  collide (step 4d) a slice's deposits are folded over the ranks of its
+  group in a fixed order and the luminosity over pairs in pair order, so a
+  divided grid differs from the undivided one by accumulation order (with
+  `P <= nslices` a whole slice deposits in the serial member order and the
+  class shrinks); `rtol`/`atol` on the coordinates pointwise through
+  `_contract_coordinate_metrics`, `luminosity_rtol` on every turn. Measured
+  on the defaults under the slice-aligned collide (2026-09-05): 2, 4 and 8
+  ranks differ from the CPU by at most 5.8e-17 absolute, 0.12 of the default
+  1e-11 pointwise allowance, and 1.9e-15 relative on the luminosity -- the
+  same class at every rank count (4c's chunk layout measured 5.5e-17,
+  2.3e-15 against the beam scale, 1.6e-15). The pointwise ratio is the
+  criterion, the global one the number to read; both are in the metrics per
+  rank count;
 - **CPU against CUDA** at that contract's own tolerance.
 
 The MPI legs run in launched subprocesses, because a rank count is a property

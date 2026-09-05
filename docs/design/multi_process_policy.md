@@ -85,8 +85,8 @@ rest arrived with the steps that needed them):
 | `_mp_lane_fold!(lanes)` | `lanes` | the gather-and-fold, named apart because the shard contract differs |
 | `_mp_allminmax(lo, hi)` | `(lo, hi)` | `Allreduce` with `min` and `max` |
 | `_mp_allmin!(A)` / `_mp_allmax!(A)` | `A` | vector `Allreduce!` with `min` / `max` (step 4c) |
-| `_mp_reduce_scatter_blocks!(A, nblocks)` | `1:nblocks` | Alltoall laid out so each rank receives whole blocks, then the rank-ordered fold of its own; returns the blocks this rank owns (step 4c performance phase) |
-| `_mp_allgather_blocks!(A, nblocks)` | `A` | the inverse: each rank's owned blocks to every rank |
+| `_mp_exchange_columns(cols, dest)` | `cols`, `[n]` | counts by Alltoall, then one Alltoallv of whole columns; received in sender rank order (step 4d's migration) |
+| `_mp_isend(A, dest, tag)` / `_mp_irecv!(A, source, tag)` / `_mp_wait_all(reqs, stage)` | a copy to oneself, matched by tag at the wait | `Isend` / `Irecv!` / `Waitall`, the wait clocked per stage (step 4d's pair messages) |
 | `_mp_bcast!(A, root)` / `_mp_bcast(v, root)` | `A` / `v` | `Bcast!` / `bcast` |
 | `_mp_gather_rows(rows)` | `rows` | rows onto rank 0 in rank order (step 3c) |
 | `_mp_barrier()` | `nothing` | `Barrier` |
@@ -391,6 +391,161 @@ measurement or by review:
 Gaussian-PIC and spectral still refuse. Measured in
 [`../history/multi_process_step4c_pic_2026_09_05.md`](../history/multi_process_step4c_pic_2026_09_05.md).
 
+## Step 4d: the slice-aligned collide
+
+**Why.** Step 4c's collide, measured at the production point
+([`../history/multi_process_pic_scaling_2026_09_05.md`](../history/multi_process_pic_scaling_2026_09_05.md)),
+peaks at 5.9x on sixteen ranks and falls to 2.5x on sixty-four. The
+collectives are 84% of the wall there, and the reason is the layout, not a
+defect: every rank holds a chunk of every slice, so every plane's charge is
+the sum of `P` partials and every plane's potential must reach all `P`
+ranks. Per collide that is 900 planes x `P` x 128 KB through shared memory
+(15 GB at 64 ranks, 60 reduce-scatter calls of 8 MB per rank each), and
+MPICH's Alltoall delivers it at ~40 GB/s -- the aggregate grows with the rank
+count while the compute shrinks, and they cross near sixteen. The owner
+lifted the constraint that made the layout necessary (2026-09-05): the
+chunk-aligned bit-identity is not required of the collide; a result in the
+serial one's parity class is. (This section was reviewed adversarially
+before it was built; the review's findings are folded in below.)
+
+**The layout.** For the duration of one collide the LIVE particles of each
+beam are laid out by slice, slice-aligned rather than equal-count, so that no
+rank holds parts of two slices and no slice sends a sliver:
+
+- with `P <= nslices`, whole slices go to ranks: slice `s` goes to rank
+  `floor((C_{s-1} + n_s / 2) / (N / P))`, `C` the cumulative live counts, so
+  a rank holds a contiguous run of whole slices (fifteen equal slices on
+  sixteen ranks: one per rank and one rank idle; an `:equal_width` beam's
+  central slice can be most of a rank alone);
+- with `P > nslices`, slice `s` gets `g_s` ranks, `g_s` proportional to `n_s`
+  by largest remainder with `sum g_s = P` and `g_s = 0` for an empty slice,
+  and its members are split into `g_s` equal contiguous parts (fifteen equal
+  slices on sixty-four ranks: four slices on five ranks, eleven on four).
+
+A slice's GROUP `G_s` is the contiguous range of ranks holding it. Both beams
+are laid out by the same rule, independently. Within a slice the members are
+ordered by home rank then by home order -- the beam's global order -- so the
+slice's first member on the first rank of its group is the undivided run's
+first member, which is the `:sigma` origin, with no collective. Groups,
+owners and every message layout below are derived on every rank from the
+plan's global counts and the layout rule alone; changing that derivation is
+a protocol change.
+
+Tracking, the observers, the artifact and every other step of the campaign
+keep the chunk-aligned home layout untouched: the collide migrates the live
+particles in at its entry and back at its exit (`_mp_exchange_columns`, an
+all-to-all of columns: six coordinates and the slice index out, six back --
+no index travels; the home rank remembers the destination sort it applied
+and the slice rank the re-bucketing by slice, and inverts them). Dead
+particles join no slice and stay home. At the production point that is
+~170 MB aggregate each way against the 15 GB of planes it replaces. Outside
+the collide nothing changes.
+
+**The pair.** Pair `(i, j)` joins `G1_i` (source of direction 1, field of
+direction 2) and `G2_j`. Two fixed roles, both functions of the pair and the
+layout only:
+
+- the COORDINATOR is the first rank of `G1_i`; it forms the pair's mesh
+  extents and its luminosity mesh;
+- each PLANE of the pair (`(direction, plane)`: two planes per direction,
+  three under `:quadratic`) has an OWNER, dealt round-robin over all `P`
+  ranks from the pair's position in its batch (pairs of a batch in `(i, j)`
+  order), so a batch's solves spread over every rank -- `ceil(planes / P)`
+  each, one at 64 ranks -- rather than four on one rank; the owner keeps that
+  plane's Green table in its own slice-pair cache, keyed by `(i, j,
+  direction)`, and the deal is the same every turn while the batches are
+  (a re-ordered batch costs one rebuild, counted in the cache receipts).
+
+The stages of a batch, every message point-to-point (`Isend`/`Irecv` posted
+from the main thread between stages, tagged by pair, stage, direction and
+plane, waited with `_mp_wait_all`; the seam's `:funneled` tripwire covers
+them), seven hops in all:
+
+1. Every member of both groups sends the coordinator one record: its local
+   extents and `:sigma` sums as source and as field, its local count, its
+   first member's five coordinates, and a non-finite flag from its own data.
+   The coordinator folds the records in group rank order and sends the
+   reduced record (and the verdict) to every rank involved in the pair --
+   members and plane owners -- each of which forms the same grids from the
+   same numbers.
+2. Members of the source group deposit the nx x ny interior of each plane
+   at that plane's drift and send it to the plane's owner. The owner WAITS
+   FOR EVERY PARTIAL, then folds them in group rank order (never on
+   arrival), solves, and sends the potential to every member of the field
+   group, which takes the gradient itself and kicks its particles. Both
+   directions run in the same stages.
+3. Members send the coordinator the extrema of their virtual positions; the
+   coordinator returns the overlap mesh; members deposit and send; the
+   coordinator folds in group order and forms the overlap sum for the pair.
+
+Per pair that is `2 (|G1_i| + |G2_j|)` partial planes per direction and as
+many potentials -- about ten at 64 ranks, two at sixteen -- against `P` of
+each on the chunk-aligned layout; ~1.5 GB aggregate per collide at 64 ranks
+with the luminosity deposits and the migration, against 15 GB. No rank
+waits on any rank outside its pairs. The wavefront batches stay the
+schedule: a rank's pairs of one batch touch disjoint slices, so their stages
+interleave; at one thread per rank -- the measured-best configuration --
+the stages are main-thread code and the pool serves the per-particle maps
+only. Under `batch_mode = :sequential` the same path runs one pair per
+batch, so the two schedules stay bit-identical at every rank count (the 4a
+and 4c pin, kept). The 4c batched exchange (`pic_cpu_divided.jl`) is
+retired with this step; `:node` and `:source_slice` keep their 4c per-pair
+paths.
+
+**What remains collective, and the non-finite verdict.** Per collide: the
+slicing and the plan on the home layout (as before), the two migrations,
+one all-sum of the pair luminosity vector so every rank holds every pair's
+value folded in pair order, the dropped count, and one integer all-sum of
+the non-finite flags. Inside the stages nothing is collective, so the 4c
+rule -- every rank throws or none -- is kept this way: the flag rides in the
+stage-1 record, the coordinator's reply carries the verdict, every rank
+involved skips the rest of that pair, and the collide-end all-sum of flags
+makes every rank throw, the rank holding the coordinates with the detailed
+message. A failure outside that path ends the job through the launcher's
+abort, the 4b posture.
+
+**One rank.** The sliced path runs at one rank too, with self-delivery in
+the passthrough (a send to oneself is a copy), and there it is the CPU
+collide bit for bit: one group per slice, the members in home order, the
+deposit and the solve the undivided ones. That is the pin that touches this
+code -- the in-process one-rank check and the launcher's one-rank line --
+and the reason the receipt says `exchange=sliced` at one rank rather than
+`none`.
+
+**What it costs, per observable.** At a fixed rank count the run is
+bit-repeatable. Across rank counts the deposits of a slice are folded over
+its group in a fixed order and the luminosity over pairs in pair order, so
+the classes are 4c's ([`../history/multi_process_step4c_pic_2026_09_05.md`](../history/multi_process_step4c_pic_2026_09_05.md)):
+the luminosity in the 1e-15 class, coordinates 1e-15 against the beam scale
+and up to 1e-13 pointwise (the contract's own criterion), many-pair
+fingerprints 1e-14 at fifteen slices and 1e-13 at sixty-four; with
+`P <= nslices` a whole slice deposits in the serial member order, so the
+class should shrink below 4c's, and with `P > nslices` it is 4c's at
+`P / nslices` ranks. Under `grid_extent = :extrema` (the default) the grid is
+the serial grid to the bit, because the per-pair extents are exact; under
+`:sigma` the extents agree to the last bit of the exchanged sums, and
+`grid_quantize` and the cache's reuse test are discontinuous in that bit --
+the 4c caveat, unchanged. The class is a per-collide statement; nonlinear
+tracking separates last bits over thousands of turns, as it does for 4c.
+The tolerance protocol: land with the parent's 1e-12 pins, measure the
+child at 2, 4 and 8 ranks and the contract at 1, 2, 4 and 8, record the
+worst per arm and rank count, require ten times margin, pin no tighter than
+1e-13 from one measurement.
+
+**Expected.** The floor is the wavefront: 29 batches times the busiest
+rank's stage work (its pairs' deposits and kicks, its owned solves at 1.3 ms
+each, its copies) plus seven hops at ~0.5 ms a batch; at the production
+point ~0.2-0.3 s per collide on 32-64 ranks against 1.07 s today and 6.27 s
+serial, with the Green-cache hit rate at the physical kick deciding where in
+that range, and a curve that flattens near `P ~ 4 nslices` rather than
+turning over at sixteen. Measured ([`../history/multi_process_step4d_sliced_2026_09_05.md`](../history/multi_process_step4d_sliced_2026_09_05.md)):
+0.88 s at 32 ranks and 0.90 at 64 at the production point, 7.6x, the curve
+flat past 32; at sixteen ranks slower than 4c, because a batch's critical
+path is one whole slice's work on one rank -- the wavefront's floor, which
+dataflow across batches is the next step against. The `z` round trip (the
+collide never writes `z`, so `z` returns to its home slot bit for bit) is
+the migration's own check, printed per rank by the launcher child.
+
 ## The CPU, MPI and CUDA consistency statement
 
 Three execution modes, and the relation between them is asserted in two
@@ -400,7 +555,7 @@ places rather than three, because the third follows:
 |---|---|---|
 | CPU vs MPI, tracking | **bitwise**, at every rank count that divides the chunks | the suite's multi-process section, under a launcher, comparing gathered shards against a single-process run |
 | CPU vs MPI, scalar diagnostics | agreement to the accumulation difference between one serial sum and P of them: 1.7e-14 at two ranks, 8.7e-14 at four | the same section, comparing a divided run's moment row against a single-process one |
-| CPU vs MPI, strong-strong collides | **bitwise at one rank**; across rank counts the parity class -- the soft-Gaussian's aggregates to 5e-16, the PIC deposit's chunk fold is keyed by member-list position so its grids differ by accumulation order, measured 7e-15 worst over the option routes and 9e-14 on a 64-slice, 4096-pair arm | the same section: the child's luminosity series, fingerprints and per-route lines against a single-process run; for PIC also `StrongStrongPICMultiProcessConsistencyContract` |
+| CPU vs MPI, strong-strong collides | **bitwise at one rank**; across rank counts the parity class -- the soft-Gaussian's aggregates to 5e-16; PIC's deposits fold over a slice's group of ranks in a fixed order (step 4d), measured 6e-15 worst over the option routes at 2 and 4 ranks and 9e-14 on a 64-slice, 4096-pair arm | the same section: the child's luminosity series, fingerprints and per-route lines against a single-process run at 1, 2 and 4 ranks; for PIC also `StrongStrongPICMultiProcessConsistencyContract` |
 | CPU vs CUDA | agreement to the contract's tolerance | `ElementTrackingBackendConsistencyContract` and `validation/tracking_backend_consistency.jl`; for the collides the two `StrongStrong*BackendConsistencyContract`s |
 | MPI vs CUDA | the same tolerance, by composition | not measured directly, and cannot be: the multi-process policy is CPU storage only, so no rank holds a CUDA beam. For PIC the composition is carried as a number: `StrongStrongPICMultiProcessConsistencyContract` runs both legs on the same beams and reports the triangle bound |
 

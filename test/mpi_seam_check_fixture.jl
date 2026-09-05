@@ -298,27 +298,51 @@ _mpi_check_pic_variants() = (
     (:threads2, _mpi_check_pic_solver(), 2, :default),
     (:sequential, _mpi_check_pic_solver(batch_mode=:sequential), 1, :default),
     (:node2, _mpi_check_pic_solver(interaction_grid=:node), 2, :node),
+    (:skewed, _mpi_check_pic_solver(slicing=_mpi_check_pic_skewed_slicing()), 1, nothing),
 )
 
 _mpi_check_pic_sparse_slicing() = Octopus.LongitudinalSlicing(nslices=64, method=:equal_area)
 
 """
-How many (rank, slice) pairs at `nranks` ranks hold no member of a slice that
-is globally populated, for `rep` under `slicing` -- the count the `:sparse`
-arm's anti-vacuity reads, from the shard rule and the slicing alone.
+The slice-aligned layout (step 4d) of `rep` under `slicing` at `nranks`
+ranks, from the global slice counts and the layout rule alone -- what the
+launcher child's ranks derive for themselves, recomputed here so the
+parent's premises (which arm exercises which regime) and expectations (how
+many partial planes a collide must move) come from the same rule.
 """
-function _mpi_check_pic_locally_empty(rep, slicing, nranks::Integer)
-    n = length(rep)
+function _mpi_check_pic_layout(rep, slicing, nranks::Integer)
     slices = Octopus.longitudinal_slices(rep, slicing)
-    empties = 0
-    for idx in slices.indices
-        isempty(idx) && continue
-        for r in 0:(nranks - 1)
-            shard = Octopus._mp_shard_range(n, nranks, r)
-            any(i -> i in shard, idx) || (empties += 1)
-        end
+    return Octopus._pic_sliced_layout([length(idx) for idx in slices.indices], Int(nranks))
+end
+
+"""Group sizes per slice: 1 for a whole slice on one rank, more for a slice
+split across a group, 0 for an empty slice."""
+_mpi_check_pic_groups(rep, slicing, nranks::Integer) =
+    [length(g) for g in _mpi_check_pic_layout(rep, slicing, nranks).groups]
+
+"""The partial planes a collide of `solver` moves at `nranks` ranks: for every
+pair with members on both sides, the planes per direction times the two
+groups' sizes -- one interior per member per plane."""
+function _mpi_check_pic_partials(b1, b2, solver, nranks::Integer)
+    l1 = _mpi_check_pic_layout(b1.rep, solver.slicing1, nranks)
+    l2 = _mpi_check_pic_layout(b2.rep, solver.slicing2, nranks)
+    nplanes = solver.slice_interpolation === :quadratic ? 3 : 2
+    total = 0
+    for i in eachindex(l1.counts), j in eachindex(l2.counts)
+        (l1.counts[i] == 0 || l2.counts[j] == 0) && continue
+        total += nplanes * (length(l1.groups[i]) + length(l2.groups[j]))
     end
-    return empties
+    return total
+end
+
+"""The smallest part of any slice on any rank at `nranks` ranks."""
+function _mpi_check_pic_min_part(rep, slicing, nranks::Integer)
+    layout = _mpi_check_pic_layout(rep, slicing, nranks)
+    smallest = typemax(Int)
+    for parts in layout.parts, part in parts
+        smallest = min(smallest, length(part))
+    end
+    return smallest
 end
 
 _mpi_check_pic_artifact_path() = joinpath(tempdir(), "octopus_mpi_seam_check_4c.h5")
@@ -355,6 +379,9 @@ function _mpi_check_pic_collide_line(policy, solver; beams=_mpi_check_ss_beams)
     resolved = Octopus._resolve_execution_policy(policy, b1.rep)
     logger = _MPICheckDroppedLogger(Ref(0))
     audit = Octopus.ExecutionAudit()
+    # The collide never writes `z`, so `z` must come back to its home slot
+    # bit for bit: the migration's own check (step 4d), layout-independent.
+    z1 = copy(Array(b1.rep.z)); z2 = copy(Array(b2.rep.z))
     # INSIDE the policy scope: a bare collide outside it sees a communicator of
     # one and collides this rank's shard alone as if it were the beam (the
     # first draft of this did exactly that, and its luminosity fell as 1/P^2).
@@ -370,6 +397,7 @@ function _mpi_check_pic_collide_line(policy, solver; beams=_mpi_check_ss_beams)
         sched = [r.values for r in Octopus.execution_receipts(audit)
                  if r.consumer === :pic_pair_schedule]
         length(sched) == 1 || error("expected one PIC pair-schedule receipt, got $(length(sched))")
+        restored = Array(b1.rep.z) == z1 && Array(b2.rep.z) == z2
         Octopus._with_beam_shards(b1.rep, b2.rep) do
             s1 = _mpi_check_collide_signature(b1.rep)
             s2 = _mpi_check_collide_signature(b2.rep)
@@ -377,7 +405,8 @@ function _mpi_check_pic_collide_line(policy, solver; beams=_mpi_check_ss_beams)
                                           s2.maxpx, s2.rmspx, s2.rmspy, s2.rmspz)), " "),
              lum=repr(lum), dropped=logger.dropped[],
              pair_workers=Int(sched[1].pair_workers),
-             inner_workers=Int(sched[1].inner_workers))
+             inner_workers=Int(sched[1].inner_workers),
+             exchange=Symbol(sched[1].exchange), restored=restored)
         end
     end
 end
@@ -404,22 +433,23 @@ _mpi_check_pic_big_solver() = _mpi_check_pic_solver(grid=(5, 5))
 _mpi_check_pic_big_line(policy) =
     _mpi_check_pic_collide_line(policy, _mpi_check_pic_big_solver(); beams=_mpi_check_pic_big_beams)
 
-"""The smallest share of a slice any rank holds for the `:big` beams at
-`nranks` ranks: the number that must clear the threaded-deposit floor for the
-arm to test what it claims."""
+"""The smallest part of a slice any rank holds for the `:big` beams at
+`nranks` ranks under the slice-aligned layout: the number that must clear
+the threaded-deposit floor for the arm to test what it claims."""
 function _mpi_check_pic_big_min_local_slice(nranks::Integer)
     b1, b2 = _mpi_check_pic_big_beams(Octopus.CPUThreadsExecutionPolicy(threads=1))
-    smallest = typemax(Int)
-    for rep in (b1.rep, b2.rep)
-        n = length(rep)
-        slices = Octopus.longitudinal_slices(rep, _mpi_check_pic_big_solver().slicing1)
-        for idx in slices.indices, r in 0:(nranks - 1)
-            shard = Octopus._mp_shard_range(n, nranks, r)
-            smallest = min(smallest, count(i -> i in shard, idx))
-        end
-    end
-    return smallest
+    solver = _mpi_check_pic_big_solver()
+    return min(_mpi_check_pic_min_part(b1.rep, solver.slicing1, nranks),
+               _mpi_check_pic_min_part(b2.rep, solver.slicing2, nranks))
 end
+
+"""The `:skewed` arm's slicing: boundaries at -1.5 and 1.5 sigma, so the
+middle slice holds most of the beam and, at four ranks, is split over the
+two ranks the end slices leave (each end slice needs one of its own) -- a
+group beside whole slices, the two regimes of the sliced layout in one arm,
+and the arm the child runs twice for fixed-rank repeatability."""
+_mpi_check_pic_skewed_slicing() =
+    Octopus.LongitudinalSlicing(nslices=3, method=:specified, positions=[-1.5, 1.5])
 
 """The strong-strong task with a line ACTION in line 1, the one thing left
 that a divided run refuses."""

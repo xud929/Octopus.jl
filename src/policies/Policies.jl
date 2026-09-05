@@ -448,6 +448,14 @@ function _mp_comm()
     return context === nothing ? nothing : context.comm
 end
 
+"""Whether the active policy is a multi-process one, at ANY rank count --
+one rank included, where the collectives are their passthroughs and the
+messages are to oneself. The slice-aligned collide (step 4d) runs on it."""
+function _mp_multi_process_active()
+    policy = _ACTIVE_RESOLVED_POLICY[]
+    return policy isa ResolvedCPUExecutionPolicy && policy.multi_process !== nothing
+end
+
 """
     _mp_nranks() -> Int
     _mp_rank() -> Int
@@ -950,50 +958,86 @@ end
 _mp_gather_rows_impl(rows::AbstractMatrix, ::Nothing) = rows
 
 """
-    _mp_block_range(nblocks, nranks, rank) -> UnitRange
+    _mp_exchange_columns(cols::AbstractMatrix, dest::AbstractVector{<:Integer})
+        -> (received::Matrix, from_counts::Vector{Int})
 
-The contiguous run of blocks rank `rank` OWNS when `nblocks` equal blocks are
-dealt out `cld(nblocks, nranks)` at a time in rank order -- empty for the
-last ranks when there are fewer blocks than ranks. The ownership both block
-collectives below share.
+Column `j` of `cols` (a particle: its coordinates and whatever travels with
+them) goes to rank `dest[j]` (0-based). Every rank receives the columns sent
+to it in sender rank order and, within a sender, in the sender's column
+order -- a deterministic layout -- and learns how many came from each rank.
+Step 4d's migration, in and out of the slice-aligned collide. The
+passthrough returns `cols` itself and `[size(cols, 2)]`.
 """
-function _mp_block_range(nblocks::Integer, nranks::Integer, rank::Integer)
-    per = cld(Int(nblocks), Int(nranks))
-    lo = Int(rank) * per + 1
-    hi = min(Int(nblocks), (Int(rank) + 1) * per)
-    return lo:hi
+function _mp_exchange_columns(cols::AbstractMatrix, dest::AbstractVector{<:Integer})
+    _record_collective!(:exchange_columns, length(cols), length(cols) * sizeof(eltype(cols)))
+    return _mp_exchange_columns_impl(cols, dest, _mp_comm())
 end
+_mp_exchange_columns_impl(cols::AbstractMatrix, dest, ::Nothing) = (cols, Int[size(cols, 2)])
 
 """
-    _mp_reduce_scatter_blocks!(A, nblocks) -> UnitRange
+    _mp_isend(A, dest, tag) -> request
+    _mp_irecv!(A, source, tag) -> request
+    _mp_wait_all(requests, stage)
+    _mp_requests() -> an empty request list
 
-`A` holds `nblocks` equal contiguous blocks, each rank's partial of every
-block. Afterwards THIS rank holds, in the blocks `_mp_block_range` deals it,
-the rank-ordered sum of every rank's partial -- element by element the sum
-`_mp_allsum!` computes, so the bits are the same -- and returns that range;
-the other blocks of `A` are left as they were. The step 4c performance
-phase's owner-solve: a plane's partial deposits meet on ONE rank, which
-solves it, instead of on every rank; an `Alltoall` laid out so each rank
-receives whole blocks, then the fold. The passthrough owns every block and
-sums nothing.
+Point-to-point messages for the slice-aligned collide (step 4d): posted from
+the main thread between the stages of a batch (MPI runs at `:funneled`; the
+same tripwire as the collectives'), `A` an `Array` or a contiguous view that
+must stay untouched until `_mp_wait_all` returns, which also empties the
+list. `tag` is the message's identity -- pair, stage, direction and plane --
+so two messages between the same ranks never cross; `stage` names the wait
+in the receipts and the extension's clocks (`:wait_extents`,
+`:wait_deposits`, ...), because wait time per stage is the imbalance signal.
+
+At one rank every message is to oneself: the passthrough keeps the sent copy
+in a mailbox and delivers it into the matching receive at the wait, so the
+sliced collide runs at one rank on the same code -- which is what lets the
+one-rank bitwise pin touch it.
 """
-function _mp_reduce_scatter_blocks!(A::AbstractArray, nblocks::Integer)
-    _record_collective!(:reduce_scatter, length(A), length(A) * sizeof(eltype(A)))
-    return _mp_reduce_scatter_blocks_impl!(A, Int(nblocks), _mp_comm())
+function _mp_isend(A::AbstractArray, dest::Integer, tag::Integer)
+    _record_collective!(:isend, length(A), length(A) * sizeof(eltype(A)))
+    return _mp_isend_impl(A, Int(dest), Int(tag), _mp_comm())
 end
-_mp_reduce_scatter_blocks_impl!(A::AbstractArray, nblocks::Int, ::Nothing) = 1:nblocks
-
-"""
-    _mp_allgather_blocks!(A, nblocks) -> A
-
-The inverse: each rank contributes the blocks `_mp_block_range` deals it and
-every rank leaves with all `nblocks`. The passthrough is the identity.
-"""
-function _mp_allgather_blocks!(A::AbstractArray, nblocks::Integer)
-    _record_collective!(:allgather, length(A), length(A) * sizeof(eltype(A)))
-    return _mp_allgather_blocks_impl!(A, Int(nblocks), _mp_comm())
+function _mp_irecv!(A::AbstractArray, source::Integer, tag::Integer)
+    _record_collective!(:irecv, length(A), length(A) * sizeof(eltype(A)))
+    return _mp_irecv_impl!(A, Int(source), Int(tag), _mp_comm())
 end
-_mp_allgather_blocks_impl!(A::AbstractArray, nblocks::Int, ::Nothing) = A
+function _mp_wait_all(requests, stage::Symbol)
+    _record_collective!(stage, length(requests), 0)
+    _mp_wait_all_impl(requests, stage, _mp_comm())
+    empty!(requests)
+    return nothing
+end
+_mp_requests() = _mp_requests_impl(_mp_comm())
+
+# The passthrough's self-delivery: sends keep a copy by tag, receives queue
+# their buffers, the wait matches them. Main thread only, like every seam
+# call; a tag sent twice before a wait, or received without a send, is a
+# protocol error and says so.
+const _MP_SELF_MAILBOX = Dict{Int,Any}()
+const _MP_SELF_PENDING = Vector{Tuple{Int,Any}}()
+function _mp_isend_impl(A, dest::Int, tag::Int, ::Nothing)
+    dest == 0 || error("a one-rank run sent to rank $(dest)")
+    haskey(_MP_SELF_MAILBOX, tag) && error("tag $(tag) sent twice before a wait")
+    _MP_SELF_MAILBOX[tag] = copy(A)
+    return nothing
+end
+function _mp_irecv_impl!(A, source::Int, tag::Int, ::Nothing)
+    source == 0 || error("a one-rank run received from rank $(source)")
+    push!(_MP_SELF_PENDING, (tag, A))
+    return nothing
+end
+function _mp_wait_all_impl(requests, stage::Symbol, ::Nothing)
+    for (tag, buf) in _MP_SELF_PENDING
+        haskey(_MP_SELF_MAILBOX, tag) || error("no message tagged $(tag) was sent before the $(stage) wait")
+        sent = pop!(_MP_SELF_MAILBOX, tag)
+        length(sent) == length(buf) || error("message tagged $(tag): $(length(sent)) elements sent into a $(length(buf))-element receive")
+        copyto!(buf, 1, sent, 1, length(sent))
+    end
+    empty!(_MP_SELF_PENDING)
+    return nothing
+end
+_mp_requests_impl(::Nothing) = Any[]
 
 """    _mp_barrier()
 

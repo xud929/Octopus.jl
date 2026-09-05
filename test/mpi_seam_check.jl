@@ -360,6 +360,14 @@ let policy = MultiProcessExecutionPolicy(threads=1)
         execute!(_mpi_check_ss_task(policy, path; solver=_mpi_check_pic_solver()),
                  b1, b2; turns=2)
     end
+    # What the sliced collide moved, summed over the ranks (each rank records
+    # its own): the partial planes, the planes solved, the pairs coordinated.
+    picsums = Octopus._with_execution_policy(resolved) do
+        ex = [r.values for r in execution_receipts(audit) if r.consumer === :pic_slice_exchange]
+        (partials=Octopus._mp_global_count(sum(e.partials_sent for e in ex; init=0)),
+         solved=Octopus._mp_global_count(sum(e.planes_solved for e in ex; init=0)),
+         coordinated=Octopus._mp_global_count(sum(e.pairs_coordinated for e in ex; init=0)))
+    end
     Octopus._with_execution_policy(resolved) do
         Octopus._with_beam_shards(b1.rep, b2.rep) do
             s1 = _mpi_check_collide_signature(b1.rep)
@@ -379,11 +387,15 @@ let policy = MultiProcessExecutionPolicy(threads=1)
         # -- an all-sum of the padded grid per plane is what divides PIC, so
         # a divided run that issued none never divided anything.
         sched = [r.values for r in execution_receipts(audit) if r.consumer === :pic_pair_schedule]
-        exchanges = [r.values for r in execution_receipts(audit) if r.consumer === :pic_grid_exchange]
         println("MPI-PICSCHED ranks=", sched[1].ranks, " pair_workers=", sched[1].pair_workers,
                 " batch_mode=", sched[1].batch_mode, " exchange=", sched[1].exchange,
-                " grid_exchanges=", length(exchanges),
-                " planes=", sum(e.planes for e in exchanges; init=0))
+                " partials=", picsums.partials, " solved=", picsums.solved,
+                " coordinated=", picsums.coordinated)
+        layouts = [r.values for r in execution_receipts(audit) if r.consumer === :pic_slice_layout]
+        for l in layouts[1:2]      # the first turn's, one per beam
+            println("MPI-PICLAYOUT beam=", l.beam, " groups=", join(l.groups, ","),
+                    " out=", l.migrated_out, " in=", l.migrated_in)
+        end
     end
     # One WRITE per line, and the ranks take turns: two ranks printing at the
     # same moment had their lines merged mid-line in the launcher's stdout
@@ -406,10 +418,17 @@ let policy = MultiProcessExecutionPolicy(threads=1)
         # design's "every rank solves the identical field" is asserted by
         # nothing else -- so the parent holds the ranks to the same bits.
         emit_by_rank("MPI-PICVARLUM $(name) $(child_rank()) $(r.lum)")
+        emit_by_rank("MPI-PICVARZ $(name) $(child_rank()) $(r.restored)")
         if child_rank() == 0
             emit("MPI-PICVAR $(name) $(r.line)")
             emit("MPI-PICVARDROP $(name) $(r.dropped)")
-            emit("MPI-PICVARSCHED $(name) pair_workers=$(r.pair_workers) inner_workers=$(r.inner_workers)")
+            emit("MPI-PICVARSCHED $(name) pair_workers=$(r.pair_workers) inner_workers=$(r.inner_workers) exchange=$(r.exchange)")
+        end
+        # The `:skewed` arm twice: at a fixed rank count the sliced collide
+        # is bit-repeatable, and a three-rank group is where that can fail.
+        if name === :skewed
+            r2 = _mpi_check_pic_collide_line(vpolicy, solver)
+            child_rank() == 0 && emit("MPI-PICVAR2 $(name) $(r2.line)")
         end
     end
     # The threaded deposit, which the small beams never reach.
