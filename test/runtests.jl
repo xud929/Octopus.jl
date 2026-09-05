@@ -189,6 +189,28 @@ end
     snapshot_path = joinpath(pkgdir(Octopus), "docs", "registry_snapshot.md")
     @test registry_snapshot_markdown() == read(snapshot_path, String)
 
+    # Every document under docs/ is reachable from docs/README.md, by its own
+    # file name or by its directory's (the audit unit-report folders are
+    # indexed as folders). The rule "every new document is in docs/README.md"
+    # had no tripwire, and the soft-Gaussian wavefront record of 2026-09-04
+    # sat unindexed for a day until the next session's design review noticed
+    # (2026-09-04). Hidden directories (editor checkpoints) are skipped.
+    let docs = joinpath(pkgdir(Octopus), "docs"),
+        index = read(joinpath(docs, "README.md"), String),
+        unindexed = String[]
+        for (root, dirs, files) in walkdir(docs)
+            filter!(d -> !startswith(d, "."), dirs)
+            for f in files
+                endswith(f, ".md") || continue
+                f == "README.md" && root == docs && continue
+                (occursin(f, index) || occursin(basename(root) * "/", index)) ||
+                    push!(unindexed, relpath(joinpath(root, f), docs))
+            end
+        end
+        @test isempty(unindexed)
+        isempty(unindexed) || @info "documents missing from docs/README.md" unindexed
+    end
+
     # Every directory under src/ has an ownership bullet in AGENTS.md's source
     # map. The map once named 7 of 13 directories (2026-08-05_b audit, U26-12;
     # docs/history/comprehensive_audit_2026_08_05_b_unit_reports/U26_report.md);
@@ -2716,6 +2738,27 @@ if _lane_gate("Solver option effectiveness")
     # assertion makes a GPU-less run indistinguishable from a real one.
     @test r.status === :passed || (r.status === :skipped && !CUDA_TESTS_ACTIVE)
     @test r.metrics[:cpu_options_checked] > 60
+    # The device half must keep checking an option the CPU ALSO reads. When
+    # the CPU soft-Gaussian learned `batch_mode` (2026-09-04) a filter keyed
+    # on CPU-invisibility silently dropped it from this half, and the count
+    # barely moved; the same day PIC and Gaussian-PIC followed. Derive the
+    # set of both-backend execution options from the schemas and require the
+    # device count to cover them on top of the CUDA-only ones.
+    if CUDA_TESTS_ACTIVE
+        both = 0
+        alts = Octopus._default_solver_option_alternatives()
+        for T in Octopus._solver_contract_types(), (name, meta) in pairs(solver_option_schema(T))
+            CPUThreadsBackend in meta.supported_backends &&
+                Octopus.CUDABackend in meta.supported_backends &&
+                Octopus._solver_option_is_execution(meta) &&
+                !haskey(Octopus.DEFAULT_INACTIVE_SOLVER_OPTIONS, (nameof(T), name)) &&
+                haskey(get(alts, nameof(T), Dict{Symbol,Any}()), name) &&
+                (both += 1)
+        end
+        # Anti-vacuity: the three solvers whose `batch_mode` both backends read.
+        @test both >= 3
+        @test r.metrics[:cuda_options_checked] == r.metrics[:cuda_only_options] + both
+    end
 
     # Every declared option must be judged or exempted with a reason; an option
     # with neither fails, so the tables cannot fall behind the schema.
@@ -4836,13 +4879,11 @@ end
         ("GaussianStrongBeam", "strong_beam.jl"),
         # one-shot adapter activation; self-recursive local closures
         ("_activate_symbolics_adapter!", "symbolic.jl"),
-        # THE one concurrent-closure box, confirmed benign in audit parts 1
-        # and 6: the worker closure only READS `luminosity` (through typeof),
-        # the write is outside the do block, and the workers are @sync-joined.
-        # The natural refactor `luminosity += local_lum` INSIDE the closure
-        # would reproduce the _threaded_histogram defect exactly -- which is
-        # what this test exists to catch.
-        ("_spectral_collide_longitudinal!", "spectral.jl"),
+        # `_spectral_collide_longitudinal!` was THE one concurrent-closure box
+        # (the per-batch luminosity accumulator, read through typeof inside
+        # the worker closure and written outside it, argued benign in audit
+        # parts 1 and 6). It left this list 2026-09-04: the fold now runs after
+        # the closures, by collision position, and the sweep finds no box.
     ])
     offenders = String[]
     nmethods = 0
@@ -5162,7 +5203,7 @@ end
                 end
             end
             schedules[k] = [r.values for r in Octopus.execution_receipts(audit)
-                            if r.consumer === :cpu_pic_pair_schedule]
+                            if r.consumer === :pic_pair_schedule]
             (lum[], map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)))
         end
         for other in 2:length(outs)
@@ -5170,16 +5211,20 @@ end
             @test all(a == b for (a, b) in zip(outs[1][2], outs[other][2]))
             @test all(a == b for (a, b) in zip(outs[1][3], outs[other][3]))
         end
-        # Anti-vacuity, on what the run RECORDED: one worker must have taken the
-        # sequential branch and the many-worker run must have really batched,
-        # with a batch wide enough for two pairs to have overlapped. Without
-        # this the equality above is satisfied by a solver that never batches.
+        # Anti-vacuity, on what the run RECORDED: the one-worker run batches
+        # too -- one pair at a time on a width-1 pool, since the keyword is
+        # the schedule and the pool the width (2026-09-04) -- and the
+        # many-worker run must have really batched wide enough for two pairs
+        # to overlap. Without this the equality above is satisfied by a solver
+        # that never batches. The sequential-vs-batched pin itself lives in
+        # "batch_mode is one keyword".
         @test length(schedules[1]) == 1
-        @test schedules[1][1].schedule === :sequential
+        @test schedules[1][1].batch_mode === :wavefront
+        @test schedules[1][1].pair_workers == 1
         if maximum(counts) > 1
             top = schedules[maximum(counts)]
             @test length(top) == 1
-            @test top[1].schedule === :batched
+            @test top[1].batch_mode === :wavefront
             @test top[1].pair_workers >= 2
             @test top[1].widest_batch >= 2
             @test top[1].batches >= 1
@@ -5209,9 +5254,10 @@ end
             end
         end
         sched = [r.values for r in Octopus.execution_receipts(audit)
-                 if r.consumer === :cpu_pic_pair_schedule]
+                 if r.consumer === :pic_pair_schedule]
         @test length(sched) == 1
-        @test sched[1].schedule === :sequential
+        @test sched[1].batch_mode === :sequential      # what ran
+        @test sched[1].requested === :wavefront        # what was asked
     end
 
     # The workspace pool: cached across calls and GROWN rather than rebuilt, so
@@ -5276,11 +5322,12 @@ end
             end
         end
         sched = [r.values for r in Octopus.execution_receipts(audit)
-                 if r.consumer === :cpu_pic_pair_schedule]
+                 if r.consumer === :pic_pair_schedule]
         @test length(sched) == 1
         # One worker requested, eight workspaces available: the run must report
         # the policy, not the pool.
-        @test sched[1].schedule === :sequential
+        @test sched[1].batch_mode === :wavefront
+        @test sched[1].pair_workers == 1
     end
 
     # A worker's exception must surface as ITSELF, at every worker count.
@@ -11284,6 +11331,266 @@ end
         @test seq[4][1].batches == 0
         @test wf[4][1].batches < wf[4][1].pairs
         @test wf[4][1].widest_batch > 1
+    end
+end
+
+@testset "batch_mode is one keyword: PIC, Gaussian-PIC and spectral read it on CPU" begin
+    # Until 2026-09-04 `batch_mode` meant three different things: the
+    # soft-Gaussian read it on both backends, the two PIC solvers declared it
+    # CUDA-only while their CPU pair loops scheduled by `_pic_batchable` alone
+    # (so `batch_mode=:sequential` on CPU still batched, silently through a bare
+    # `collide!`), and the spectral solver had no such keyword -- its CPU 6D
+    # loop always batched and its CUDA loop never did. Now every solver reads
+    # it on CPU, and the claim is the same everywhere: `:wavefront` reproduces
+    # `:sequential` BIT FOR BIT, luminosity included, because a batch repeats
+    # no beam-1 and no beam-2 slice and the luminosity folds by position in the
+    # collision order whichever schedule ran.
+    #
+    # Every equality below is paired with an assertion on what the run
+    # RECORDED: without that, a loop that ignores the keyword -- which is what
+    # the CPU PIC loops did -- satisfies "the two schedules agree" by never
+    # batching at all.
+    mkr(n) = begin
+        s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+        z = [2.0e-2 * sin(0.7 * i + 2.0) + 1.0e-3 * sin(3.1 * i) for i in 1:n]
+        Phase6DRep(s(1.0e-4, 0.0), s(1.0e-5, 0.3), s(1.0e-4, 0.9),
+                   s(1.0e-5, 1.2), z, s(1.0e-4, 2.5))
+    end
+    mkb(n) = begin
+        rep = mkr(n)
+        params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0e-9, npart=n)
+        Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+    end
+    workers(f, k, rep) = Octopus._with_execution_policy(f,
+        Octopus._resolve_execution_policy(CPUThreadsExecutionPolicy(threads=k), rep))
+    slc = LongitudinalSlicing(nslices=5, method=:equal_count)
+    nthr = Threads.nthreads(:default)
+    run_collide(solver, k, consumer; n=9000) = begin
+        b1, b2 = mkb(n), mkb(n)
+        audit = Octopus.ExecutionAudit()
+        lum = Ref(0.0)
+        Octopus.with_execution_audit(audit) do
+            workers(k, b1.rep) do
+                lum[] = collide!(solver, b1, b2, CPUThreadsBackend)
+            end
+        end
+        sched = [r.values for r in Octopus.execution_receipts(audit)
+                 if r.consumer === consumer && r.backend === CPUThreadsBackend]
+        (lum[], map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)), sched)
+    end
+    same(a, b) = a[1] == b[1] &&
+        all(x == y for (x, y) in zip(a[2], b[2])) && all(x == y for (x, y) in zip(a[3], b[3]))
+    families = (
+        (:pic, (; kw...) -> PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                    grid=(16, 16), green_cache=:slice_pair, slicing=slc; kw...), :pic_pair_schedule),
+        (:gpic, (; kw...) -> GaussianPICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                    grid=(16, 16), green_cache=:slice_pair, slicing=slc; kw...), :pic_pair_schedule),
+        (:spectral, (; kw...) -> SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                    grid=(32, 32), slicing=slc; kw...), :spectral_pair_schedule),
+    )
+    for (label, mk, consumer) in families
+        seq = run_collide(mk(batch_mode=:sequential), nthr, consumer)
+        wf = run_collide(mk(batch_mode=:wavefront), nthr, consumer)
+        @test same(seq, wf)
+        # The sequential reference is worker-invariant too (it is what the
+        # thread-count pins elsewhere compare against).
+        @test same(run_collide(mk(batch_mode=:sequential), 1, consumer), seq)
+        # `batch_mode` in a receipt is what RAN (a literal in the branch that
+        # executed) and `requested` is the field: an echo of the field would
+        # satisfy the effectiveness contract's consumer check by construction.
+        @test length(seq[4]) == 1 && length(wf[4]) == 1
+        @test seq[4][1].batch_mode === :sequential
+        @test seq[4][1].requested === :sequential
+        @test seq[4][1].batches == 0
+        @test wf[4][1].batch_mode === :wavefront
+        @test wf[4][1].requested === :wavefront
+        @test wf[4][1].pairs == 25 && seq[4][1].pairs == 25
+        @test 1 <= wf[4][1].batches < wf[4][1].pairs
+        @test wf[4][1].widest_batch >= 2
+        # The keyword is the schedule and the pool is the width: `:wavefront`
+        # batches at ONE worker too (a width-1 pool runs the batches one pair
+        # at a time), so a schedule comparison is real at any thread count and
+        # never degenerates into two sequential runs agreeing with themselves.
+        wf1 = run_collide(mk(batch_mode=:wavefront), 1, consumer)
+        @test same(wf1, seq)
+        @test wf1[4][1].batch_mode === :wavefront
+        @test wf1[4][1].batches == wf[4][1].batches
+        if haskey(wf1[4][1], :pair_workers)
+            @test wf1[4][1].pair_workers == 1
+            # ...and hands the inner maps the whole pool, as the sequential
+            # loop does; at one worker that pool is one.
+            @test wf1[4][1].inner_workers == 1
+        end
+    end
+
+    # The sequential arm's per-particle maps only split above
+    # `_STRONG_STRONG_PARALLEL_KICK_MIN` particles per slice (4096), so the
+    # arms above (1800 per slice) never reach the chunked inner map. Size one
+    # arm past it, and assert on the receipt that the sequential loop really
+    # threaded its inner maps while the batched loop pinned them to one: the
+    # bit-identity claim then covers the chunked map against the serial one,
+    # which is the `_pic_map_particles` invariant on the collide path.
+    let slc3 = LongitudinalSlicing(nslices=3, method=:equal_count)
+        mk3(; kw...) = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                                        grid=(16, 16), green_cache=:slice_pair, slicing=slc3; kw...)
+        seq = run_collide(mk3(batch_mode=:sequential), nthr, :pic_pair_schedule; n=27000)
+        wf = run_collide(mk3(batch_mode=:wavefront), nthr, :pic_pair_schedule; n=27000)
+        @test same(seq, wf)
+        @test seq[4][1].batch_mode === :sequential
+        @test seq[4][1].inner_workers == nthr
+        @test wf[4][1].batch_mode === :wavefront
+        if nthr > 1
+            @test wf[4][1].pair_workers > 1
+            @test wf[4][1].inner_workers == 1
+        end
+    end
+
+    # `:sequential` sizes a one-workspace pool, and the request is read beside
+    # the mesh constraint rather than instead of it.
+    @test Octopus._pic_pool_size(PICPoissonSolver(slicing=slc, batch_mode=:sequential)) == 1
+    @test !Octopus._pic_batching_requested(PICPoissonSolver(slicing=slc, batch_mode=:sequential))
+    @test Octopus._pic_batching_requested(PICPoissonSolver(slicing=slc))
+    @test !Octopus._pic_batching_requested(PICPoissonSolver(slicing=slc, interaction_grid=:source_slice))
+
+    # `:source_slice` cannot batch whatever is asked: the receipt shows the
+    # request beside the schedule that ran, and the report calls the option
+    # inactive rather than resolved.
+    let s = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(16, 16),
+                             interaction_grid=:source_slice, slicing=slc)
+        r = run_collide(s, nthr, :pic_pair_schedule)
+        @test length(r[4]) == 1
+        @test r[4][1].requested === :wavefront
+        @test r[4][1].batch_mode === :sequential
+        entry(solver, backend) = only(filter(e -> e.name === :batch_mode,
+                                             collect(configuration_report(solver; backend=backend))))
+        @test entry(s, CPUThreadsBackend).status === :inactive_dependency
+        @test entry(PICPoissonSolver(slicing=slc), CPUThreadsBackend).status === :resolved
+        @test entry(PICPoissonSolver(slicing=slc), Octopus.CUDABackend).status === :resolved
+        @test entry(GaussianPICPoissonSolver(slicing=slc), CPUThreadsBackend).status === :resolved
+        @test entry(GaussianPICPoissonSolver(slicing=slc), CPUThreadsBackend).consumer === :pic_pair_schedule
+
+        # Spectral: the keyword is new there. Inert on the transverse-only map
+        # (order-free by construction -- the receipt says so) and on CUDA (one
+        # workspace, one schedule), and the report says both.
+        @test SpectralPoissonSolver().batch_mode === :wavefront
+        @test_throws ArgumentError SpectralPoissonSolver(batch_mode=:bogus)
+        t = SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(32, 32),
+                                  longitudinal_kick=false, batch_mode=:sequential, slicing=slc)
+        rt = run_collide(t, nthr, :spectral_pair_schedule)
+        @test length(rt[4]) == 1
+        @test rt[4][1].batch_mode === :order_free
+        @test rt[4][1].requested === :sequential
+        @test entry(t, CPUThreadsBackend).status === :inactive_dependency
+        @test entry(SpectralPoissonSolver(), CPUThreadsBackend).status === :resolved
+        @test entry(SpectralPoissonSolver(), Octopus.CUDABackend).status === :inactive_backend
+    end
+end
+
+@testset "Every solver's pair-schedule receipt has one shape" begin
+    # DERIVED from the solver tree and from each schema's declared consumer,
+    # so a new solver without the keyword, a renamed receipt, or a route that
+    # copies the field into the receipt instead of recording what it RAN fails
+    # here rather than drifting. `batch_mode` in the receipt is the schedule
+    # that ran; the request sits beside it in `requested`.
+    slc = LongitudinalSlicing(nslices=3, method=:equal_count)
+    s(scale, phase, n) = [scale * sin(0.7 * i + phase) for i in 1:n]
+    mkb(n) = begin
+        z = [2.0e-2 * sin(0.7 * i + 2.0) + 1.0e-3 * sin(3.1 * i) for i in 1:n]
+        rep = Phase6DRep(s(1.0e-4, 0.0, n), s(1.0e-5, 0.3, n), s(1.0e-4, 0.9, n),
+                         s(1.0e-5, 1.2, n), z, s(1.0e-4, 2.5, n))
+        params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0e-9, npart=n)
+        Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+    end
+    shape = (:batch_mode, :requested, :pairs, :batches, :widest_batch)
+    solvers = Octopus._solver_contract_types()
+    @test length(solvers) >= 4
+    for T in solvers
+        schema = solver_option_schema(T)
+        @test haskey(schema, :batch_mode)
+        haskey(schema, :batch_mode) || continue
+        meta = schema.batch_mode
+        @test CPUThreadsBackend in meta.supported_backends
+        @test meta.category in (:execution, :performance)
+        @test meta.consumer !== :solver_runtime && meta.consumer !== :unspecified
+        for mode in (:sequential, :wavefront)
+            kw = (kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, slicing=slc, batch_mode=mode)
+            solver = haskey(schema, :grid) ? T(; grid=(16, 16), kw...) : T(; kw...)
+            b1, b2 = mkb(3000), mkb(3000)
+            audit = Octopus.ExecutionAudit()
+            Octopus.with_execution_audit(audit) do
+                collide!(solver, b1, b2, CPUThreadsBackend)
+            end
+            receipts = [r.values for r in Octopus.execution_receipts(audit)
+                        if r.consumer === meta.consumer && r.backend === CPUThreadsBackend]
+            @test length(receipts) == 1
+            isempty(receipts) && continue
+            v = receipts[1]
+            @test all(k -> haskey(v, k), shape)
+            @test v.requested === mode
+            # At the defaults every solver honours the request on CPU, so what
+            # ran IS what was asked; the two inactive cases are pinned above.
+            @test v.batch_mode === mode
+            @test v.pairs == 9
+            @test (v.batch_mode === :wavefront) == (v.batches > 0)
+        end
+    end
+end
+
+@testset "CUDA routes record the pair schedule for every solver" begin
+    # The device half of the same claim: the receipt named by each schema's
+    # consumer is emitted on CUDA too, carrying the requested mode, so the
+    # effectiveness contract can certify the option on both backends through
+    # ONE consumer name (`_solver_contract_receipt_carries` filters by backend
+    # before it matches the name).
+    if CUDA_TESTS_ACTIVE
+        sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
+        function beams()
+            set_global_rng!(seed=11, method=:philox)
+            e = Beam(2000, CUDAExecutionPolicy(), Float64; beta=(1.0, 1.0, 10.0),
+                     alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 1.0e-2), cutoff=5.0,
+                     rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+                     r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            p = Beam(2000, CUDAExecutionPolicy(), Float64; beta=(1.0, 1.0, 10.0),
+                     alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 1.0e-2), cutoff=5.0,
+                     rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
+                     r0=RE * ME0 / PMASS_EV, npart=1.7e11)
+            return e, p
+        end
+        # (constructor, what ran per requested mode). The device honours the
+        # mode on PIC, Gaussian-PIC and the soft-Gaussian; the spectral 6D
+        # route has one schedule and says so; the transverse map is order-free.
+        arms = (
+            ((; kw...) -> PICPoissonSolver(slicing=sl, grid=(16, 16); kw...), identity),
+            ((; kw...) -> GaussianPICPoissonSolver(slicing=sl, grid=(16, 16); kw...), identity),
+            ((; kw...) -> GaussianPICPoissonSolver(slicing=sl, grid=(16, 16),
+                                                   cuda_indexed_wavefront=false; kw...), identity),
+            ((; kw...) -> GaussianPoissonSolver(slicing=sl; kw...), identity),
+            ((; kw...) -> SpectralPoissonSolver(slicing=sl, grid=(32, 32); kw...),
+             m -> :sequential),
+            ((; kw...) -> SpectralPoissonSolver(slicing=sl, grid=(32, 32),
+                                                longitudinal_kick=false; kw...),
+             m -> :order_free),
+        )
+        for (mk, expected) in arms, mode in (:sequential, :wavefront)
+            solver = mk(batch_mode=mode)
+            consumer = solver_option_schema(typeof(solver)).batch_mode.consumer
+            e, p = beams()
+            audit = Octopus.ExecutionAudit()
+            Octopus.with_execution_audit(audit) do
+                collide!(solver, e, p, Octopus.CUDABackend)
+                Octopus.CUDA.synchronize()
+            end
+            receipts = [r.values for r in Octopus.execution_receipts(audit)
+                        if r.consumer === consumer && r.backend === Octopus.CUDABackend]
+            @test length(receipts) == 1
+            isempty(receipts) && continue
+            @test receipts[1].requested === mode
+            @test receipts[1].batch_mode === expected(mode)
+            @test receipts[1].pairs == 9
+            @test (receipts[1].batch_mode === :wavefront) == (receipts[1].batches > 0)
+        end
+    else
+        @test_skip "CUDA device not available"
     end
 end
 

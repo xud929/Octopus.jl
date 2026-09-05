@@ -50,8 +50,25 @@ approximating it:
 - `:node` builds every mesh at turn start in `_pic_prebuild_node_caches!` —
   written for precisely this hazard, after lazy building made CPU and the CUDA
   wavefront route disagree by 3.8e-5.
+
+This predicate is the MESH constraint, and the one place the `:source_slice`
+rule lives (`_pic_option_active` derives the report's inactive status from it).
+The schedule the caller asked for is `solver.batch_mode`, read beside it since
+2026-09-04 (one keyword, both backends): `:wavefront` batches only where both
+allow it, `:sequential` never batches, and the `:pic_pair_schedule` receipt
+records the schedule that RAN in `batch_mode` next to the request in
+`requested` -- so a `:wavefront` run under `:source_slice` shows
+`requested=:wavefront, batch_mode=:sequential` rather than nothing.
 """
 _pic_batchable(solver::PICPoissonSolver) = !_pic_source_slice_grid(solver)
+
+"""
+Whether the CPU pair loop should batch at all: the mesh allows it
+(`_pic_batchable`) AND the solver asked for it (`batch_mode = :wavefront`).
+How WIDE a batch may run is a separate question, answered by `_pic_pool_size`.
+"""
+_pic_batching_requested(solver::PICPoissonSolver) =
+    _pic_batchable(solver) && solver.batch_mode === :wavefront
 
 # Upper bound on the width of a conflict-free batch: no batch repeats a beam-1
 # or a beam-2 slice, so it cannot be wider than the smaller slice count. Sizing
@@ -63,7 +80,9 @@ _pic_slice_count_bound(slicing::LongitudinalSlicing) =
     max(slicing.nslices, length(slicing.positions) + 1)
 
 function _pic_pool_size(solver::PICPoissonSolver)
-    _pic_batchable(solver) || return 1
+    # One workspace when the run cannot or must not batch: the sequential pair
+    # loop reads only the first, and every unused entry is ~8 MB at grid 128.
+    _pic_batching_requested(solver) || return 1
     width = min(_pic_slice_count_bound(solver.slicing1),
                 _pic_slice_count_bound(solver.slicing2))
     return clamp(_cpu_worker_count(), 1, max(width, 1))
@@ -157,7 +176,18 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # read. The width is recomputed from the policy here and the pool indexed
     # only up to it.
     pool_workers = min(length(workspaces), _pic_pool_size(solver))
-    if _pic_batchable(solver) && pool_workers > 1 && npairs > 1
+    # `batch_mode` is read HERE, on CPU, since 2026-09-04. Before that the CPU
+    # loop scheduled by `_pic_batchable` alone and `:sequential` was accepted
+    # and ignored -- warned about at task level, silent through a bare
+    # `collide!`. `_pic_batching_requested` is the mesh constraint AND the
+    # request. The keyword means the SCHEDULE and the pool means the WIDTH, as
+    # on the other solvers: `:wavefront` batches at any worker count, a
+    # one-worker pool running the batches one pair at a time with the inner
+    # maps handed the whole pool, so a schedule comparison is a real
+    # comparison at one thread too rather than two sequential runs agreeing
+    # with themselves.
+    requested = Symbol(solver.batch_mode)
+    if _pic_batching_requested(solver) && npairs > 1
         # What is left of the pool once the pairs have taken their share, handed
         # to the per-particle maps inside each pair so the two levels compose
         # instead of multiplying. Integer division, floor at 1: a pair always
@@ -189,18 +219,28 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
         # 4.00 at 32, 4.36 at 64 -- the cliff is gone and wide pools merely stop
         # helping instead of hurting.
         #
-        # `_pic_map_particles` is NOT dead: the sequential path (one workspace —
-        # `:source_slice`, or too few slices to batch) leaves the budget at 0 and
-        # uses the whole pool, which is where it earns its keep.
-        inner_workers = 1
+        # `_pic_map_particles` is NOT dead: the sequential path (`:sequential`,
+        # `:source_slice`, or a single pair) leaves the budget at the pool and
+        # uses all of it, which is where it earns its keep -- and so does a
+        # batched loop whose pair level is width 1 (a 1 x N slicing, or one
+        # thread): there is nothing to nest under, so the inner maps get the
+        # whole pool exactly as the sequential loop gives it to them.
+        inner_workers = pool_workers > 1 ? 1 : _cpu_worker_count()
         batches = collision_pair_batches(slices1, slices2)
         # Consumer-boundary receipt, so a test can assert the schedule the run
         # ACTUALLY used rather than the one its policy asked for. Without it,
         # "batched and sequential agree bit for bit" passes just as happily when
         # nothing ever batched (Measured Lesson: a configuration you set is not
         # a configuration the code read).
-        _record_execution!(:cpu_pic_pair_schedule, CPUThreadsBackend,
-                           (schedule=:batched, pairs=npairs, batches=length(batches),
+        # `:pic_pair_schedule`, not `:cpu_pic_pair_schedule`: the option is
+        # cross-backend, so its consumer name is too, and the CUDA routes emit
+        # the same receipt. `batch_mode` is what RAN -- a literal in the branch
+        # that ran, never a copy of the field, since a receipt that echoes the
+        # request certifies nothing (U4-6) -- and `requested` is the field;
+        # they differ only where the mesh forbids batching.
+        _record_execution!(:pic_pair_schedule, CPUThreadsBackend,
+                           (batch_mode=:wavefront, requested=requested,
+                            pairs=npairs, batches=length(batches),
                             widest_batch=maximum(length, batches; init=0),
                             pair_workers=pool_workers,
                             inner_workers=inner_workers))
@@ -233,8 +273,9 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
         end
         end
     else
-        _record_execution!(:cpu_pic_pair_schedule, CPUThreadsBackend,
-                           (schedule=:sequential, pairs=npairs, batches=0,
+        _record_execution!(:pic_pair_schedule, CPUThreadsBackend,
+                           (batch_mode=:sequential, requested=requested,
+                            pairs=npairs, batches=0,
                             widest_batch=0, pair_workers=1,
                             inner_workers=_cpu_worker_count()))
         serial_ws = first(workspaces)

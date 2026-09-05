@@ -47,15 +47,25 @@ Shared where the role applies:
 - `grid::Tuple{Int,Int}` — transverse mesh `(Nx, Ny)`, for the mesh-based solvers
   (`PICPoissonSolver`, `SpectralPoissonSolver`, `GaussianPICPoissonSolver`);
   the soft-Gaussian solver is grid-free and has no `grid`.
-- `batch_mode::Symbol` — slice-pair scheduling, `:sequential` or `:wavefront`,
-  for the solvers that offer both (`GaussianPoissonSolver`, `PICPoissonSolver`,
-  `GaussianPICPoissonSolver`). `GaussianPoissonSolver` reads it on BOTH
-  backends; on `PICPoissonSolver` and `GaussianPICPoissonSolver` it is read on
-  CUDA, and their CPU paths decide batching for themselves (`_pic_batchable`,
-  which keeps `:source_slice` sequential because that mode shares mesh bounds
-  across pairs). Wherever a schedule is batched it reproduces the sequential
-  one: a batch never repeats a beam-1 or a beam-2 slice, so each slice still
-  meets its partners in collision-time order.
+- `batch_mode::Symbol` — slice-pair scheduling, `:sequential` (one pair at a
+  time in collision-time order) or `:wavefront` (conflict-free batches from
+  `collision_pair_batches`, the default). Every solver takes it, and every
+  route that reads it records a `<solver>_pair_schedule` receipt whose
+  `batch_mode` is the schedule that RAN -- a literal from the branch that
+  executed -- beside the request in `requested` (2026-09-04: one keyword, one
+  meaning). Where it acts: `GaussianPoissonSolver` on both backends;
+  `PICPoissonSolver` and `GaussianPICPoissonSolver` on both backends, except
+  that `interaction_grid=:source_slice` cannot batch whatever is asked (its
+  mesh is a union over the partner beam taken at first use, so `_pic_batchable`
+  keeps it sequential and the configuration report marks the option inactive);
+  and `SpectralPoissonSolver` on the CPU 6D path only -- its transverse-only
+  map is order-free, and its CUDA route solves each pair through one workspace
+  with no batched field solve, so the device always runs in collision-time
+  order and the schema declares the option CPU-only. Wherever a schedule is
+  batched it reproduces the sequential one BIT FOR BIT: a batch never repeats
+  a beam-1 or a beam-2 slice, so each slice still meets its partners in
+  collision-time order, and the luminosity folds by position in that order
+  rather than by arrival.
 - `luminosity_schedule` — every solver takes it; skipped turns still apply
   the beam-beam kicks, return `NaN`, and leave no row in the artifact's
   luminosity channel. For the solvers where luminosity is a separable cost
@@ -1303,10 +1313,18 @@ value of `0.50` means the current requested width and height must both be at
 least half of the cached width and height. `slice_pair_green_growth` is the
 fractional grid enlargement used when building or rebuilding a cached entry; a
 value of `0.25` builds a grid 1.25 times larger than the current request.
-`batch_mode` may be `:sequential` or `:wavefront`. Sequential mode preserves
-the original one-slice-pair-at-a-time execution. Wavefront mode groups ready,
-non-overlapping slice pairs with `collision_pair_batches`; it currently affects
-the CUDA PIC path.
+`batch_mode` may be `:sequential` or `:wavefront`, on either backend. Sequential
+mode runs one slice pair at a time in collision-time order. Wavefront mode
+groups ready, non-overlapping slice pairs with `collision_pair_batches` and
+reproduces the sequential result bit for bit; on CPU the batch is the pair-level
+parallelism (each pair of a batch on its own workspace, up to the policy's
+worker count; a one-worker pool still runs the batches, one pair at a time,
+with the inner maps handed the whole pool), on CUDA it is the batched-FFT
+wavefront route. `interaction_grid=:source_slice` cannot batch -- its mesh is a
+union over the partner beam taken at first use -- so under it the run stays
+sequential whatever `batch_mode` says, and the configuration report marks the
+option inactive. Both backends record a `:pic_pair_schedule` receipt whose
+`batch_mode` is the schedule that RAN and whose `requested` is the field.
 The CUDA execution options are explicit solver configuration. `cuda_async`
 enables overlapping CUDA field work, `cuda_batch_fft` enables batched FFT
 solves, `cuda_wavefront_fft` enables the wavefront FFT path, and
@@ -1619,11 +1637,22 @@ meshes collapse to 7.";
         category=:accuracy_performance, dependencies=(:green_cache,)),
     longitudinal_kick = SolverOptionMeta(Bool, true,
         "Apply the Hirata-map potential-difference longitudinal kick."; category=:physics),
+    # One keyword, one meaning, both backends (2026-09-04). This was declared
+    # CUDA-only while the CPU pair loop scheduled by its own rule and never
+    # read the field, so `PICPoissonSolver(batch_mode=:sequential)` still
+    # batched on CPU -- warned about at task level, silent through a bare
+    # `collide!`. The CPU loop now reads it, and the consumer is a receipt BOTH
+    # backends emit: `_solver_contract_receipt_carries` filters by backend
+    # before it matches the name, so the CUDA-tagged algorithm receipt could
+    # never have certified the CPU half. `:source_slice` is the declared
+    # dependency -- its union mesh cannot batch -- and `_pic_option_active`
+    # reports the option inactive under it.
     batch_mode = SolverOptionMeta(Symbol, :wavefront,
-        "CUDA slice-pair scheduling mode; :wavefront or :sequential. The CPU path only \
-validates it and always uses collision-time order, so a non-default value is inactive there.";
-        supported_backends=(CUDABackend,), category=:execution,
-        consumer=:cuda_pic_algorithm),
+        "Slice-pair scheduling mode on both backends; :wavefront (conflict-free batches, \
+bit-identical to :sequential) or :sequential (one pair at a time in collision-time order). \
+Inactive under interaction_grid=:source_slice, whose union mesh cannot batch.";
+        supported_backends=(CPUThreadsBackend, CUDABackend), category=:execution,
+        dependencies=(:interaction_grid,), consumer=:pic_pair_schedule),
     cuda_async = SolverOptionMeta(Bool, true,
         "Overlap independent CUDA field work.";
         supported_backends=(CUDABackend,), category=:execution,
@@ -1679,6 +1708,14 @@ function _pic_option_active(name::Symbol, solver::PICPoissonSolver)
     # not, and it misclassified the one PIC option whose declared dependency it
     # skipped (2026-08-05_b audit, U5-5).
     name === :grid_extent_sigma && return solver.grid_extent === :sigma
+    # `:source_slice` shares one union mesh across a source slice's field
+    # slices, sized at that slice's first use, so its value depends on how much
+    # of the turn has already been applied and only the sequential schedule is
+    # correct there. The option is inert under that mode on either backend, and
+    # the report says so instead of calling a value it cannot act on
+    # `:resolved` (2026-09-04). DERIVED from `_pic_batchable`, the one place
+    # the mesh rule lives, so the report cannot disagree with the loop.
+    name === :batch_mode && return _pic_batchable(solver)
     name === :slice_pair_green_min_ratio && return solver.green_cache === :slice_pair
     name === :slice_pair_green_growth && return solver.green_cache === :slice_pair
     name === :cuda_batch_fft && return solver.cuda_async
@@ -1738,10 +1775,13 @@ end
 function configuration_report(solver::GaussianPoissonSolver;
                               policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
                               backend=nothing)
-    # `backend` was accepted and then ignored, so `batch_mode` -- CUDA-only, and
-    # consumed by `collide!(::GaussianPoissonSolver, ..., ::Type{CUDABackend})` -- was reported `:resolved` on CPU, where the
-    # collision-time order is fixed. The PIC report already made this
-    # distinction; both now answer the question the caller asked.
+    # `backend` was accepted and then ignored, so `batch_mode` -- CUDA-only at
+    # the time, consumed by `collide!(::GaussianPoissonSolver, ..., ::Type{CUDABackend})` -- was reported `:resolved`
+    # on CPU, where the collision-time order was fixed. The PIC report already
+    # made this distinction; both now answer the question the caller asked.
+    # (Since 2026-09-04 the CPU route reads `batch_mode` too, so no option on
+    # this solver is backend-inactive today; the branch stays for the next
+    # option that is.)
     selected_backend = backend === nothing ?
         (policy === nothing ? nothing : backend_type(policy)) : backend
     configured = solver_configuration(solver)
@@ -2453,8 +2493,11 @@ function _preflight_solver_configurations!(task, blocks1, blocks2, policy)
         else
             # Every solver, not only PIC: a CUDA-only option carries the same
             # obligation wherever it is declared, and the soft-Gaussian
-            # `batch_mode` (consumed by `collide!(::GaussianPoissonSolver, ..., ::Type{CUDABackend})`) was silently ignored
-            # on CPU because this loop skipped non-PIC solvers.
+            # `batch_mode` (then consumed only by `collide!(::GaussianPoissonSolver, ..., ::Type{CUDABackend})`) was silently
+            # ignored on CPU because this loop skipped non-PIC solvers. Since
+            # 2026-09-04 every solver's `batch_mode` is read on CPU, so this
+            # warning no longer names it; the PIC `cuda_*` flags and spectral's
+            # `field_precision` are what it catches today.
             configured = solver_configuration(solver)
             for (name, meta) in pairs(solver_option_schema(solver))
                 CPUThreadsBackend in meta.supported_backends && continue

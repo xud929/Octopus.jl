@@ -29,6 +29,14 @@ teaches something reusable, it lands here (dated), and the full record goes to
   drift probe gained kick content, and `marker.x_offset` never could serve
   because its exemption exists precisely for last-bit hair the sweep counts as
   consumed.
+- The field named after an option carries what the consumer DID with it,
+  never a copy of the field. The effectiveness contract certifies an option
+  by finding that field in a receipt with the requested value, so a receipt
+  that echoes the field certifies a loop that never read it (U4-6, and nearly
+  again on 2026-09-04: a draft of the pair-schedule receipts put the request
+  in `batch_mode` and what ran in a sibling field, and an adversarial review
+  of the plan caught it before the gate did). Write the literal in the branch
+  that executed; put the request beside it under another name.
 
 ## A filter keyed on a proxy stops checking when the proxy moves
 
@@ -230,6 +238,27 @@ teaches something reusable, it lands here (dated), and the full record goes to
   not run anything else on the box -- including this project's own suite --
   while measuring. A spread column would have caught all three sooner than a
   median column did.
+- An A/B run names the tree each arm loaded. The first measurement of the
+  spectral luminosity fold change reported "bit-identical at every size", and
+  it was pre against pre: a `cd` into the pre-change worktree earlier in the
+  same shell command made the post arm's `--project=.` resolve to the worktree
+  as well (2026-09-04). What caught it was not the numbers but a synthetic
+  check that the two associations must differ on random data of the same
+  shape. Print `pathof(Octopus)` from both arms, run each arm from its own
+  directory in its own command, and distrust a null result that a synthetic
+  model says cannot be null.
+
+## A predicted metric is a hand-copy of the future
+
+- A ledger row said the device-side effectiveness count "must rise, not stay
+  put" when the PIC solvers' `batch_mode` widened to both backends. It stayed
+  at 10 while the CUDA-only count fell from 9 to 7: the two options changed
+  bucket rather than being added, and the filter that was fixed the evening
+  before had already kept them checked (2026-09-04). The direction was a
+  guess dressed as a requirement; the suite now asserts the identity the
+  metrics actually satisfy -- device checks equal the CUDA-only options plus
+  the both-backend execution options derived from the schemas -- which
+  cannot be satisfied by a filter that silently drops either bucket.
 
 ## When a quantity acquires a global twin, rename both
 
@@ -278,6 +307,24 @@ teaches something reusable, it lands here (dated), and the full record goes to
   route to it. The fix was to assert on the artifact the run WROTE rather than
   on a value computed beside it -- the same "assert what the run recorded"
   rule, applied to a reduction rather than to a configuration.
+
+## A keyword one solver ignores is a second keyword
+
+- `batch_mode` was spelled identically on three solvers and meant three
+  things: the soft-Gaussian read it on both backends, the PIC pair loops read
+  it on CUDA and scheduled by their own mesh rule on CPU, and the spectral
+  solver had no such field while its two backends disagreed by construction
+  (2026-09-04). The owner's rule -- reuse keywords, invent none -- has a
+  flip side: a shared spelling is only reuse when every consumer reads it,
+  and the receipt is how that is checked. Since every route records the
+  requested mode beside the schedule that ran, a tripwire derived from the
+  solver tree can assert the shape once for all of them, and the next solver
+  cannot join without it.
+- Where a request cannot be honoured (a mesh that cannot batch, a map with no
+  order, a device with one schedule), the honest landing is three things at
+  once: the receipt shows the request beside what ran, the schema declares
+  the dependency or the backend, and the report says inactive. Silence and a
+  throw were both wrong here: the default value is the one that cannot act.
 
 ## `muladd` is a 1-ulp coin that refactoring flips
 

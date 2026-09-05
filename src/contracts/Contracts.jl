@@ -3089,6 +3089,12 @@ _default_solver_option_alternatives() = Dict{Symbol,Any}(
         :min_domain_halfwidth => 2.0e-3,
         :method => :grid_free,
         :longitudinal_kick => false,
+        # One keyword across the solvers (2026-09-04): the CPU 6D pair loop
+        # reads it, and the two schedules must agree EXACTLY -- this contract
+        # compares execution options with `!=` on coordinates and `isequal` on
+        # luminosity, which is why the spectral fold is by collision position
+        # on both routes.
+        :batch_mode => :sequential,
         :field_precision => :single,
         :luminosity_schedule => EveryNSteps(step=2),
         :slicing => LongitudinalSlicing(nslices=4, method=:equal_count),

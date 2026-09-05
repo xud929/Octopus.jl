@@ -945,13 +945,18 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
     # the high-water mark of every policy this label has run under. See
     # `_pic_collide!`.
     pool_workers = min(length(workspaces), _pic_pool_size(pic))
-    if _pic_batchable(pic) && pool_workers > 1 && npairs > 1
-        # No nesting inside the batched pair loop; see `_pic_collide!` for the
-        # measurement that decided this.
-        inner_workers = 1
+    # `batch_mode` read on CPU exactly as `_pic_collide!` reads it (2026-09-04):
+    # the keyword is the schedule, the pool is the width.
+    requested = Symbol(pic.batch_mode)
+    if _pic_batching_requested(pic) && npairs > 1
+        # No nesting inside the batched pair loop, except where the pair level
+        # is width 1 and there is nothing to nest under; see `_pic_collide!`
+        # for the measurement that decided this.
+        inner_workers = pool_workers > 1 ? 1 : _cpu_worker_count()
         batches = collision_pair_batches(slices1, slices2)
-        _record_execution!(:cpu_pic_pair_schedule, CPUThreadsBackend,
-                           (schedule=:batched, pairs=npairs, batches=length(batches),
+        _record_execution!(:pic_pair_schedule, CPUThreadsBackend,
+                           (batch_mode=:wavefront, requested=requested,
+                            pairs=npairs, batches=length(batches),
                             widest_batch=maximum(length, batches; init=0),
                             pair_workers=pool_workers,
                             inner_workers=inner_workers))
@@ -977,8 +982,9 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
         end
         end
     else
-        _record_execution!(:cpu_pic_pair_schedule, CPUThreadsBackend,
-                           (schedule=:sequential, pairs=npairs, batches=0,
+        _record_execution!(:pic_pair_schedule, CPUThreadsBackend,
+                           (batch_mode=:sequential, requested=requested,
+                            pairs=npairs, batches=0,
                             widest_batch=0, pair_workers=1,
                             inner_workers=_cpu_worker_count()))
         serial_ws = first(workspaces)

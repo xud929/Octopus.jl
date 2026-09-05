@@ -321,6 +321,16 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   and why, the per-fix measurements with their bitwise-parity digests, and the
   machine-level findings — idle-thread spin, GC share, and why a pool wider
   than the data's parallelism costs rather than pays),
+  [`batch_mode_one_keyword_2026_09_04.md`](history/batch_mode_one_keyword_2026_09_04.md)
+  (`batch_mode` made one keyword on every strong-strong solver and both
+  backends: the PIC pair loops read it on CPU, the spectral solver gains it,
+  every route records a pair-schedule receipt of one shape, and the spectral
+  6D luminosity fold moves to collision order -- measured at one to three last
+  bits with the coordinates unmoved),
+  [`soft_gaussian_wavefront_cpu_2026_09_04.md`](history/soft_gaussian_wavefront_cpu_2026_09_04.md)
+  (the CPU soft-Gaussian reads `batch_mode`: 1874 collectives per collide
+  become 222 and the 64-rank floor gains 1.29x; the `muladd`-to-`fma` 1-ulp
+  trap; and the device-side effectiveness check that nearly disappeared),
   [`multi_process_strongstrong_scaling_2026_09_04.md`](history/multi_process_strongstrong_scaling_2026_09_04.md)
   (the soft-Gaussian collide's rank scaling: 11.7x at sixteen ranks against
   2.15x for the best threaded configuration, which settles the recorded

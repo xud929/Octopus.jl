@@ -666,6 +666,11 @@ if _HAS_CUDA
                 luminosity = zero(T)
                 CUDA.fill!(ws.dropped, 0.0)
                 ndep = 0
+                # Order-free, as on the CPU twin: there is no schedule to
+                # choose, and the receipt records that (2026-09-04).
+                _record_execution!(:spectral_pair_schedule, CUDABackend,
+                                   (batch_mode=:order_free, requested=solver.batch_mode,
+                                    pairs=n1 * n2, batches=0, widest_batch=0))
                 # R12 hoist (CPU twin in `_spectral_collide_transverse!`): the
                 # mesh depends only on the source slice, and this path never
                 # mutates x/y, so gather each slice's coordinates and solve its
@@ -836,6 +841,15 @@ if _HAS_CUDA
                 luminosity = zero(T)
                 CUDA.fill!(ws.dropped, 0.0)
                 ndep = 0
+                # The device has ONE schedule: each pair's left/right planes go
+                # through this one workspace and there is no batched field
+                # solve here, which is why the schema declares `batch_mode`
+                # CPU-only. The receipt still records what ran, so a request
+                # is visible rather than dropped (2026-09-04).
+                _record_execution!(:spectral_pair_schedule, CUDABackend,
+                                   (batch_mode=:sequential, requested=solver.batch_mode,
+                                    pairs=length(slices1.indices) * length(slices2.indices),
+                                    batches=0, widest_batch=0))
                 for (_, i, j) in _slice_collision_order(slices1, slices2)
                     idx1 = slices1.indices[i]; idx2 = slices2.indices[j]
                     (length(idx1) == 0 || length(idx2) == 0) && continue

@@ -337,14 +337,22 @@ Hirata-map form of the PIC algorithm. Set
 `OCTOPUS_PIC_LONGITUDINAL_KICK=0` in the strong-strong test harness
 (`test/examples/strong_strong_tracking.jl`), to use a
 transverse-only map.
-`PICPoissonSolver(batch_mode=:wavefront)` is the default slice-pair schedule
-and groups ready, non-overlapping
-slice-pairs with `collision_pair_batches`. In CUDA PIC, wavefront mode gathers
+`PICPoissonSolver(batch_mode=:wavefront)` is the default slice-pair schedule on
+BOTH backends and groups ready, non-overlapping slice pairs with
+`collision_pair_batches`. On CPU a batch is the pair-level parallelism: each
+pair of a batch runs on its own workspace, up to the policy's worker count (a
+one-worker pool still runs the batches, one pair at a time, with the inner maps
+handed the whole pool). In CUDA PIC, wavefront mode gathers
 every active slice in a batch, solves all `4 * batch_size` source-boundary
 field problems in one batched cuFFT stack, applies the non-overlapping kicks,
 then scatters the batch back before moving to the next dependency frontier.
 Use `PICPoissonSolver(batch_mode=:sequential)` for the one-pair-at-a-time
-fallback.
+reference; the two schedules agree bit for bit. `interaction_grid=:source_slice`
+cannot batch (its mesh is a union over the partner beam taken at the source
+slice's first use), so it runs sequentially whatever `batch_mode` says and the
+configuration report marks the option inactive. Every route records a
+`:pic_pair_schedule` receipt whose `batch_mode` is the schedule that ran beside
+the request in `requested`; `GaussianPICPoissonSolver` shares all of this.
 `PICPoissonSolver(luminosity_schedule=EveryNSteps(step=N))` computes PIC
 luminosity only on scheduled turns while still applying beam-beam kicks every
 turn. Use `AtTurns(Int[])` to disable luminosity computation. Skipped
@@ -493,6 +501,16 @@ slice's left/right collision planes, interpolate the two transverse fields to
 each field particle, apply the potential-difference `pz` kick, and reverse the
 field-particle virtual drift. `longitudinal_kick=false` retains the original
 transverse-only spectral map for validation and speed comparisons.
+`SpectralPoissonSolver(batch_mode=:wavefront)` (the default) runs the CPU 6D
+pair loop in conflict-free batches on a pool of workspaces;
+`batch_mode=:sequential` runs one pair at a time in collision-time order, and
+the two agree bit for bit because each pair's luminosity is written by its
+position in the collision order and folded in that order whichever schedule
+ran. The keyword is inert with `longitudinal_kick=false` (the transverse-only
+map is order-free) and on CUDA, whose route solves every pair through one
+workspace and always runs in collision-time order; both show as inactive in
+the configuration report, and every route records a `:spectral_pair_schedule`
+receipt.
 For `method=:grid`, `grid=(Nx, Ny)` names both the interior collocation mesh and
 the retained sine modes solved by the DST/DCT path. For `method=:grid_free`, no
 mesh is allocated; `grid=(Nx, Ny)` is only the direct sine-mode count.

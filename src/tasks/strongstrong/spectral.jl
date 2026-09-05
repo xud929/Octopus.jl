@@ -72,6 +72,7 @@ struct SpectralPoissonSolver{T<:Real} <: AbstractPoissonSolver
     min_domain_halfwidth::T
     method::Symbol
     longitudinal_kick::Bool
+    batch_mode::Symbol
     field_precision::Symbol
     luminosity_schedule::Union{Nothing,AbstractSchedule}
     slicing::LongitudinalSlicing
@@ -85,7 +86,7 @@ end
     SpectralPoissonSolver(; kbb1=nothing, kbb2=nothing, luminosity_scale=nothing,
                            grid=(128, 128), domain_factor=16.0,
                            min_domain_halfwidth=0.0, method=:grid,
-                           longitudinal_kick=true,
+                           longitudinal_kick=true, batch_mode=:wavefront,
                            slicing=LongitudinalSlicing(), slicing1=nothing,
                            slicing2=nothing)
 
@@ -111,6 +112,17 @@ variant) or `:grid_free` (mode sums straight from particles; CPU only).
 `longitudinal_kick=true` applies the Hirata-map synchro-beam drift and
 potential-difference `pz` kick. Set it to `false` for the original
 transverse-only spectral map.
+
+`batch_mode` may be `:sequential` or `:wavefront` (default) and orders the CPU
+6D slice-pair loop: `:wavefront` runs conflict-free batches from
+`collision_pair_batches` on a pool of workspaces, `:sequential` runs one pair at
+a time in collision-time order, and the two agree bit for bit (each pair's
+luminosity is written by its position in the collision order and folded in that
+order whichever schedule ran). It is inert with `longitudinal_kick=false`, whose
+map is order-free, and on CUDA, whose route solves every pair through one
+workspace and always runs in collision-time order; both cases show as inactive
+in the configuration report, and every route records a
+`:spectral_pair_schedule` receipt with the requested mode and what ran.
 
 `luminosity_schedule` may be `nothing` or a schedule such as
 `EveryNSteps(step=10)` or `AtTurns([0, 100])`, with the same convention as
@@ -147,6 +159,7 @@ function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
                                   min_domain_halfwidth=0.0,
                                   method::Symbol=:grid,
                                   longitudinal_kick::Bool=true,
+                                  batch_mode::Symbol=:wavefront,
                                   field_precision::Symbol=:double,
                                   luminosity_schedule::Union{Nothing,AbstractSchedule}=nothing,
                                   slicing::LongitudinalSlicing=LongitudinalSlicing(),
@@ -160,13 +173,15 @@ function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
     isfinite(min_halfwidth) && min_halfwidth >= zero(T) || throw(ArgumentError(
         "min_domain_halfwidth must be finite and nonnegative; got $(min_domain_halfwidth)."))
     method in (:grid, :grid_free) || throw(ArgumentError("method must be :grid or :grid_free; got $(repr(method))"))
+    batch_mode in (:sequential, :wavefront) || throw(ArgumentError(
+        "batch_mode must be :sequential or :wavefront; got $(repr(batch_mode))."))
     field_precision in (:double, :single) ||
         throw(ArgumentError("field_precision must be :double or :single; got $(repr(field_precision))"))
     return SpectralPoissonSolver{T}(
         _optional_solver_value(T, kbb1), _optional_solver_value(T, kbb2),
         _optional_solver_value(T, luminosity_scale), (gx, gy), T(domain_factor),
         min_halfwidth, method,
-        Bool(longitudinal_kick), field_precision, luminosity_schedule,
+        Bool(longitudinal_kick), batch_mode, field_precision, luminosity_schedule,
         slicing, s1, s2, slicing1, slicing2)
 end
 
@@ -190,6 +205,22 @@ const _SPECTRAL_SOLVER_OPTION_SCHEMA = (
         "Field-solve variant; :grid (DST/DCT) or :grid_free (direct mode sums)."; category=:accuracy_performance),
     longitudinal_kick = SolverOptionMeta(Bool, true,
         "Apply the synchro-beam virtual drift and potential-difference pz kick."; category=:physics),
+    # One keyword across the solvers (2026-09-04). The CPU 6D pair loop had
+    # batched unconditionally and the CUDA one had walked the collision order,
+    # with no keyword to choose or even observe either; this is the keyword
+    # the other three solvers already carry, with the same two values and the
+    # same bit-identity claim. CPU-only, and the reason is structural rather
+    # than not-yet-implemented: the CUDA route (`spectral_cuda.jl`) solves each
+    # pair's left/right planes through ONE `_SpectralCudaWS` and has no batched
+    # field solve, so the device has exactly one schedule and the option can
+    # select nothing there. Its receipt still records what ran.
+    batch_mode = SolverOptionMeta(Symbol, :wavefront,
+        "Slice-pair scheduling of the CPU 6D path; :wavefront (conflict-free batches on a \
+worker pool) or :sequential (one pair at a time in collision-time order), bit-identical. \
+Inert with longitudinal_kick=false (the transverse-only map is order-free) and on CUDA, \
+whose route solves every pair through one workspace and always runs in collision-time order.";
+        supported_backends=(CPUThreadsBackend,), category=:execution,
+        dependencies=(:longitudinal_kick,), consumer=:spectral_pair_schedule),
     # supported_backends marks this :inactive_backend on CPU, which provably
     # ignores it -- the CPU path is always Float64 (audit part 6, R11). The
     # same machinery PIC's cuda_* options use one file over.
@@ -216,6 +247,16 @@ function solver_configuration(solver::SpectralPoissonSolver)
     ))
 end
 
+function _spectral_option_active(name::Symbol, solver::SpectralPoissonSolver)
+    # `batch_mode` orders the 6D pair loop. The transverse-only map reads
+    # original positions and only accumulates px/py, so there is no order to
+    # choose and the option is inert under `longitudinal_kick = false`; the
+    # report says so rather than calling it resolved (2026-09-04), the same
+    # `:inactive_dependency` machinery `_pic_option_active` uses.
+    name === :batch_mode && return solver.longitudinal_kick
+    return true
+end
+
 function configuration_report(solver::SpectralPoissonSolver;
                               policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
                               backend=nothing)
@@ -230,6 +271,9 @@ function configuration_report(solver::SpectralPoissonSolver;
         if selected_backend !== nothing && !(selected_backend in meta.supported_backends)
             push!(entries, ConfigurationEntry(name, requested, resolved, :inactive_backend,
                 "option does not apply to $(selected_backend)", meta.consumer))
+        elseif !_spectral_option_active(name, solver)
+            push!(entries, ConfigurationEntry(name, requested, resolved, :inactive_dependency,
+                "one or more declared dependencies disable this option", meta.consumer))
         else
             status = requested === nothing && resolved !== nothing ? :inherited : :resolved
             push!(entries, ConfigurationEntry(name, requested, resolved, status,
@@ -1057,6 +1101,12 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
     idx1 = slices1.indices; idx2 = slices2.indices
     w1 = slices1.weight; w2 = slices2.weight
     n1 = length(idx1); n2 = length(idx2)
+    # Order-free by construction (positions are read, only px/py accumulate),
+    # so there is no pair schedule to choose here; the receipt says so rather
+    # than leaving a `batch_mode` request unrecorded (2026-09-04).
+    _record_execution!(:spectral_pair_schedule, CPUThreadsBackend,
+                       (batch_mode=:order_free, requested=solver.batch_mode,
+                        pairs=n1 * n2, batches=0, widest_batch=0))
     Lx, Ly = _spectral_box(solver, r1, r2)
     grid = solver.method !== :grid_free
     nchunks = clamp(_cpu_worker_count(), 1, max(n1, n2))
@@ -1175,13 +1225,47 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
     lnx, lny = solver.grid
     Lx, Ly = _spectral_box_drifted(solver, beam1.rep, beam2.rep)
     LT = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(klum))
-    luminosity = zero(LT)
     grid = solver.method !== :grid_free
+
+    # The schedule (2026-09-04: `batch_mode` on every solver). `:wavefront`
+    # runs conflict-free batches of pairs on a pool of workspaces, one pair per
+    # worker; `:sequential` runs the collision order one pair at a time on one
+    # workspace. Both write each pair's luminosity by its POSITION in the
+    # collision order and fold at the end in that order, so the two schedules
+    # agree bit for bit -- the fold `pic_cpu.jl` and `gaussian.jl` use for the
+    # same reason. Until this change the path always batched and folded PER
+    # BATCH (`luminosity += sum(batch_parts)`), a different association from
+    # the collision order by last bits; the option's effectiveness check
+    # compares the two schedules exactly, so the fold is the sequential one
+    # now and the batched route reproduces it. Thread-count invariance is
+    # kept: on both routes the fold order is a property of the data.
+    order = _slice_collision_order(slices1, slices2)
+    npairs = length(order)
+    requested = solver.batch_mode
+    batched = requested === :wavefront && npairs > 1
     batches = collision_pair_batches(slices1, slices2)
-    max_workers = clamp(_cpu_worker_count(), 1, max(1, maximum(length, batches; init=1)))
+    max_workers = batched ?
+        clamp(_cpu_worker_count(), 1, max(1, maximum(length, batches; init=1))) : 1
+    # Consumer-boundary receipt: `batch_mode` is the schedule that RAN, from
+    # the same predicate that selects the loop below, and `requested` is the
+    # field -- so a test asserts on what the run RECORDED rather than on what
+    # it asked for (a path that never batched would otherwise satisfy "the two
+    # schedules agree" trivially, and a receipt that echoed the field would
+    # certify nothing).
+    _record_execution!(:spectral_pair_schedule, CPUThreadsBackend,
+                       (batch_mode=batched ? :wavefront : :sequential,
+                        requested=requested,
+                        pairs=npairs,
+                        batches=batched ? length(batches) : 0,
+                        widest_batch=batched ? maximum(length, batches; init=0) : 0))
+    pair_pos = Dict{Tuple{Int,Int},Int}()
+    sizehint!(pair_pos, npairs)
+    for (p, entry) in pairs(order)
+        pair_pos[(entry[2], entry[3])] = p
+    end
+    lum_parts = zeros(LT, npairs)
     lease = grid ?
-        _acquire_spectral_grid_ws_pool(
-            solver.grid[1], solver.grid[2], max_workers) :
+        _acquire_spectral_grid_ws_pool(solver.grid[1], solver.grid[2], max_workers) :
         nothing
     pool = grid ? lease.workspaces : nothing
 
@@ -1199,55 +1283,68 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
         state1 = _pic_slice_states(beam1.rep, slices1.indices)
         state2 = _pic_slice_states(beam2.rep, slices2.indices)
         scratch2 = _pic_slice_states(beam2.rep, slices2.indices)
-        for batch in batches
-            nworkers = clamp(max_workers, 1, length(batch))
-            # `lum_parts` indexed by PAIR position, not by chunk — the same
-            # U6-5 treatment the transverse path got: `sum(lum_parts)` then
-            # runs over the batch's pairs in schedule order at any worker
-            # count, so the fold order is a property of the data. The
-            # chunk-indexed version measured exact across 1/2/4 workers only
-            # by luck of the summed values; this makes it structural (U18-2).
-            lum_parts = zeros(typeof(luminosity), length(batch))
-            _run_logical_workers(nworkers) do chunk, _
-                ws = grid ? pool[chunk] : nothing
-                lo, hi = _chunk_bounds(length(batch), nworkers, chunk)
-                for pos in lo:hi
-                    pair = batch[pos]
-                    i = pair.i; j = pair.j
-                    idx1 = slices1.indices[i]
-                    idx2 = slices2.indices[j]
-                    (isempty(idx1) || isempty(idx2)) && continue
-                    param1 = (weight=slices1.weight[i], lb=slices1.boundary[i],
-                              center=slices1.center[i], rb=slices1.boundary[i + 1])
-                    param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
-                              center=slices2.center[j], rb=slices2.boundary[j + 1])
-                    coord1 = state1[i]
-                    coord2 = state2[j]
-                    field1 = coord1                     # kicked in place
-                    field2 = _pic_copy_slice!(scratch2[j], coord2)
-                    vx1, vy1 = _spectral_interaction!(
-                        solver, coord1, param1, field2, param2,
-                        slices1.weight[i] * kbb2, ws, Lx, Ly; dir=1)
-                    vx2, vy2 = _spectral_interaction!(
-                        solver, coord2, param2, field1, param1,
-                        slices2.weight[j] * kbb1, ws, Lx, Ly; dir=2)
-                    # Slice i is already current; slice j swaps its kicked
-                    # scratch in. No two pairs of a batch share a slice index,
-                    # so this element write never races another.
-                    @inbounds state2[j], scratch2[j] = scratch2[j], state2[j]
-                    compute_luminosity &&
-                        (@inbounds lum_parts[pos] = _spectral_luminosity_pair(
-                            solver, vx1, vy1, vx2, vy2, klum, lnx, lny))
+        # One slice pair on workspace `ws`, its luminosity written to collision
+        # position `p`. Shared by both schedules so they cannot drift apart.
+        # Nothing it captures is assigned more than once, so it grows no
+        # `Core.Box` (the tripwire testset sweeps for exactly that).
+        function collide_pair!(p, i, j, ws)
+            idx1 = slices1.indices[i]
+            idx2 = slices2.indices[j]
+            (isempty(idx1) || isempty(idx2)) && return nothing
+            param1 = (weight=slices1.weight[i], lb=slices1.boundary[i],
+                      center=slices1.center[i], rb=slices1.boundary[i + 1])
+            param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
+                      center=slices2.center[j], rb=slices2.boundary[j + 1])
+            coord1 = state1[i]
+            coord2 = state2[j]
+            field1 = coord1                     # kicked in place
+            field2 = _pic_copy_slice!(scratch2[j], coord2)
+            vx1, vy1 = _spectral_interaction!(
+                solver, coord1, param1, field2, param2,
+                slices1.weight[i] * kbb2, ws, Lx, Ly; dir=1)
+            vx2, vy2 = _spectral_interaction!(
+                solver, coord2, param2, field1, param1,
+                slices2.weight[j] * kbb1, ws, Lx, Ly; dir=2)
+            # Slice i is already current; slice j swaps its kicked scratch in.
+            # Under the batched schedule no two pairs of a batch share a slice
+            # index, so this element write never races another.
+            @inbounds state2[j], scratch2[j] = scratch2[j], state2[j]
+            compute_luminosity &&
+                (@inbounds lum_parts[p] = _spectral_luminosity_pair(
+                    solver, vx1, vy1, vx2, vy2, klum, lnx, lny))
+            return nothing
+        end
+        if batched
+            for batch in batches
+                nworkers = clamp(max_workers, 1, length(batch))
+                # `chunk_ws`, NOT `ws`: the sequential branch below assigns
+                # its workspace at function scope and `if`/`else` opens no
+                # scope, so one shared name would be a single boxed variable
+                # and one workspace for every worker (the `pic_cpu.jl` defect).
+                _run_logical_workers(nworkers) do chunk, _
+                    chunk_ws = grid ? pool[chunk] : nothing
+                    lo, hi = _chunk_bounds(length(batch), nworkers, chunk)
+                    for pos in lo:hi
+                        pair = batch[pos]
+                        collide_pair!(pair_pos[(pair.i, pair.j)], pair.i, pair.j,
+                                      chunk_ws)
+                    end
                 end
             end
-            luminosity += sum(lum_parts)
+        else
+            serial_ws = grid ? pool[1] : nothing
+            for (p, entry) in pairs(order)
+                collide_pair!(p, entry[2], entry[3], serial_ws)
+            end
         end
-        # Scatter the resident slices back into the beams, once. The per-batch
-        # luminosity fold above is deliberately left alone: it is pair-indexed
-        # already (U6-5/U18-2) and moving it to a collision-order fold would
-        # reassociate the sum and shift this solver's luminosity bits.
+        # Scatter the resident slices back into the beams, once, then fold the
+        # luminosity in collision order whichever schedule ran.
         _pic_store_slice_states!(beam1.rep, slices1.indices, state1)
         _pic_store_slice_states!(beam2.rep, slices2.indices, state2)
+        luminosity = zero(LT)
+        for p in 1:npairs
+            @inbounds luminosity += lum_parts[p]
+        end
         return compute_luminosity ? luminosity : LT(NaN)
     finally
         lease === nothing || _release_spectral_grid_ws_pool!(lease)

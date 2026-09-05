@@ -137,7 +137,7 @@ solver = if SOLVER == "spectral"
     # The documented production recommendation for these ~11:1 flat beams.
     SpectralPoissonSolver(; slicing = slicing, grid = (127, 383),
                           domain_factor = 8.0, method = :grid,
-                          longitudinal_kick = true)
+                          longitudinal_kick = true, batch_mode = BATCH_MODE)
 elseif SOLVER == "gaussian"
     GaussianPoissonSolver(; slicing = slicing, min_sigma = 1.0e-12,
                           longitudinal_kick = true, batch_mode = BATCH_MODE)

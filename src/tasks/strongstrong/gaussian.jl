@@ -29,17 +29,22 @@ function collide!(solver::GaussianPoissonSolver, beam1::Beam, beam2::Beam, ::Typ
         for (p, entry) in pairs(order)
             pair_pos[(entry[2], entry[3])] = p
         end
+        # `batch_mode` is what RAN -- a literal written in the branch that
+        # executed, never a copy of the field, because a receipt that echoes
+        # the request certifies nothing (U4-6) -- and `requested` is the field,
+        # so a downgrade shows beside it. The one shape every solver's pair
+        # schedule carries (2026-09-04).
         _record_execution!(:gaussian_pair_schedule, CPUThreadsBackend,
-                           (batch_mode=:wavefront, pairs=npairs,
-                            batches=length(batches),
+                           (batch_mode=:wavefront, requested=solver.batch_mode,
+                            pairs=npairs, batches=length(batches),
                             widest_batch=maximum(length, batches; init=0)))
         _cpu_gaussian_wavefront!(lum_parts, pair_pos, solver, beam1, beam2,
                                  slices1, slices2, batches,
                                  kbb1, kbb2, klum1, klum2)
     else
         _record_execution!(:gaussian_pair_schedule, CPUThreadsBackend,
-                           (batch_mode=:sequential, pairs=npairs, batches=0,
-                            widest_batch=0))
+                           (batch_mode=:sequential, requested=solver.batch_mode,
+                            pairs=npairs, batches=0, widest_batch=0))
         for (p, entry) in pairs(order)
             @inbounds lum_parts[p] = _cpu_gaussian_slice_pair!(
                 solver, beam1.rep, beam2.rep, slices1, slices2,

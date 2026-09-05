@@ -158,6 +158,13 @@ if _HAS_CUDA
             _cuda_pic_reserve_wavefront_workspaces!(
                 workspace, pic, eltype(beam1.rep.x), batches,
             )
+            # The schedule receipt both backends emit (2026-09-04); see
+            # `_cuda_pic_collide_wavefront!`.
+            _record_execution!(:pic_pair_schedule, CUDABackend,
+                               (batch_mode=:wavefront, requested=Symbol(pic.batch_mode),
+                                pairs=sum(length, batches; init=0),
+                                batches=length(batches),
+                                widest_batch=maximum(length, batches; init=0)))
             for batch in batches
                 batch_count += 1
                 pair_count += length(batch)
@@ -548,6 +555,11 @@ if _HAS_CUDA
             _cuda_pic_reserve_wavefront_workspaces!(
                 workspace, pic, eltype(beam1.rep.x), batches,
             )
+            _record_execution!(:pic_pair_schedule, CUDABackend,
+                               (batch_mode=:wavefront, requested=Symbol(pic.batch_mode),
+                                pairs=sum(length, batches; init=0),
+                                batches=length(batches),
+                                widest_batch=maximum(length, batches; init=0)))
             for batch in batches
                 batch_count += 1
                 pair_count += length(batch)
@@ -1038,6 +1050,10 @@ if _HAS_CUDA
             timing = _cuda_pic_timing_stats()
             _cuda_pic_add_time!(timing, :slicing, t_slice)
             pair_count = 0
+            _record_execution!(:pic_pair_schedule, CUDABackend,
+                               (batch_mode=:sequential, requested=Symbol(pic.batch_mode),
+                                pairs=length(slices1.center) * length(slices2.center),
+                                batches=0, widest_batch=0))
             for (_, i, j) in _slice_collision_order(slices1, slices2)
                 pair_count += 1
                 t_int = time_ns()

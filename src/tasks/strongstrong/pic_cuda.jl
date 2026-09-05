@@ -183,6 +183,16 @@ if _HAS_CUDA
                 cuda_indexed_wavefront=false,
                 detailed_timing=detailed_timing,
             ))
+            # One keyword, one meaning, both backends (2026-09-04): the schedule
+            # receipt the CPU pair loop emits, so `batch_mode`'s declared
+            # consumer is a name both backends carry. `batch_mode` is what RAN
+            # (a literal per route, as the algorithm receipt above does it) and
+            # `requested` is the field; the algorithm receipt keeps the rest of
+            # the device configuration.
+            _record_execution!(:pic_pair_schedule, CUDABackend,
+                               (batch_mode=:sequential, requested=Symbol(solver.batch_mode),
+                                pairs=length(slices1.center) * length(slices2.center),
+                                batches=0, widest_batch=0))
             reclaim_policy = _cuda_pic_reclaim_policy()
             node_mode = _pic_node_grid_mode(solver)
             node_cache = Dict{Tuple{Int,Int},Dict{Int,Any}}()
@@ -355,6 +365,13 @@ if _HAS_CUDA
                 cuda_indexed_wavefront=use_indexed_wavefront,
                 detailed_timing=detailed_timing,
             ))
+            # The schedule receipt both backends emit (2026-09-04); see the
+            # sequential route above.
+            _record_execution!(:pic_pair_schedule, CUDABackend,
+                               (batch_mode=:wavefront, requested=Symbol(solver.batch_mode),
+                                pairs=sum(length, batches; init=0),
+                                batches=length(batches),
+                                widest_batch=maximum(length, batches; init=0)))
             if use_wavefront_fft
                 _cuda_pic_reserve_wavefront_workspaces!(
                     workspace, solver, eltype(beam1.rep.x), batches;
@@ -1308,7 +1325,10 @@ if _HAS_CUDA
             # consumer is a receipt both emit; the algorithm receipt above stays
             # for the rest of the device configuration.
             _record_execution!(:gaussian_pair_schedule, CUDABackend,
-                               (batch_mode=:wavefront,))
+                               (batch_mode=:wavefront, requested=solver.batch_mode,
+                                pairs=sum(length, batches; init=0),
+                                batches=length(batches),
+                                widest_batch=maximum(length, batches; init=0)))
 
             for batch in batches
                 L = length(batch)
@@ -5441,10 +5461,12 @@ if _HAS_CUDA
             # `batch_mode` is one keyword across both backends, so its declared
             # consumer is a receipt both emit; the algorithm receipt above stays
             # for the rest of the device configuration.
-            _record_execution!(:gaussian_pair_schedule, CUDABackend,
-                               (batch_mode=:sequential,))
             slices1 = _cuda_longitudinal_slices(beam1.rep, solver.slicing1)
             slices2 = _cuda_longitudinal_slices(beam2.rep, solver.slicing2)
+            _record_execution!(:gaussian_pair_schedule, CUDABackend,
+                               (batch_mode=:sequential, requested=solver.batch_mode,
+                                pairs=length(slices1.center) * length(slices2.center),
+                                batches=0, widest_batch=0))
             kbb1 = _strong_strong_kbb1(solver, beam1, beam2)
             kbb2 = _strong_strong_kbb2(solver, beam1, beam2)
             klum1, klum2 = _strong_strong_luminosity_scales(solver, beam1, beam2)

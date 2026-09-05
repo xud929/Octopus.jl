@@ -80,7 +80,8 @@ Control the PIC longitudinal potential-difference kick. It is enabled by default
     OCTOPUS_PIC_LONGITUDINAL_KICK=1 julia --project=. test/examples/strong_strong_tracking.jl
     OCTOPUS_PIC_LONGITUDINAL_KICK=0 julia --project=. test/examples/strong_strong_tracking.jl
 
-Select PIC slice-pair scheduling:
+Select the slice-pair schedule -- every solver's `batch_mode`, read on CPU and CUDA
+(the spectral 6D loop reads it on CPU; its CUDA route has one schedule and says so):
 
     OCTOPUS_PIC_BATCH_MODE=sequential julia --project=. test/examples/strong_strong_tracking.jl
     OCTOPUS_PIC_BATCH_MODE=wavefront julia --project=. test/examples/strong_strong_tracking.jl
@@ -445,6 +446,9 @@ solver = if solver_name == "spectral"
         method = :grid,
         field_precision = spectral_field_precision,
         longitudinal_kick = pic_longitudinal_kick,
+        # The solvers' one schedule keyword (2026-09-04); the spectral 6D loop
+        # reads it on CPU, the CUDA route records that it has one schedule.
+        batch_mode = pic_batch_mode,
     )
 elseif solver_name == "gaussian"
     GaussianPoissonSolver(;

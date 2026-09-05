@@ -2758,3 +2758,35 @@ by ARTIFACT identity at first prepare, which answers "what identity does a
 task-level writer register" for the only writer left. Pinned: a task
 continuing across execute! calls is silent, a second artifact on the path
 warns (the U7-10 testset, re-homed).
+
+
+### `batch_mode` is not yet one keyword across the solvers — closed 2026-09-04
+
+The row as it stood when it closed (state column updated):
+
+| `batch_mode` is not yet one keyword across the solvers | **closed (2026-09-04)** | The soft-Gaussian now reads `batch_mode` on both backends, and the audit that followed shows the other three solvers do NOT yet make the keyword mean one thing. Measured, not assumed (`solver_option_schema` plus the call sites): **`PICPoissonSolver` and `GaussianPICPoissonSolver`** declare `batch_mode` CUDA-only and their CUDA routes read it, but their CPU collides schedule by their OWN rule -- `_pic_batchable(solver) && pool_workers > 1 && npairs > 1`, where `_pic_batchable` is `!_pic_source_slice_grid` -- so `PICPoissonSolver(batch_mode=:sequential)` on CPU still batches. That is declared (the schema says CUDA-only) and warned about, but only at TASK level: `_preflight_solver_configurations!` is called from `_execute_strong_strong_task!`, so a direct `collide!` on CPU accepts the request and ignores it in silence, which is the shape the public-option rule forbids. **`SpectralPoissonSolver`** has no `batch_mode` at all, and its two backends disagree by construction: the CPU collide calls `collision_pair_batches` unconditionally (`spectral.jl`), the CUDA collide walks `_slice_collision_order` at both of its sites (`spectral_cuda.jl`) -- the mirror image of the soft-Gaussian's old asymmetry, and nothing anywhere lets a caller choose or even observe which they got. The landing shape follows the owner's reuse rule: widen `batch_mode`'s scope to `(CPUThreadsBackend, CUDABackend)` on the two PIC solvers and have their CPU routes honour `:sequential` (with `_pic_batchable` remaining an independent constraint, since `:source_slice` shares mesh bounds across pairs and cannot batch whatever is asked); give spectral the same keyword and a CUDA wavefront route, or state in the schema why it cannot have one. Each move needs the receipt both backends emit (the soft-Gaussian's `:gaussian_pair_schedule` is the worked example, and the reason is mechanical: `_solver_contract_receipt_carries` filters by backend BEFORE it matches the consumer name). Precedent and measurements: [`history/soft_gaussian_wavefront_cpu_2026_09_04.md`](history/soft_gaussian_wavefront_cpu_2026_09_04.md), whose "device-side check that nearly disappeared" section is the trap to expect on each move: widening an option's `supported_backends` used to remove it from `SolverOptionEffectivenessContract`'s device half, and the filter that did that was fixed the same evening -- so a PIC/gpic widening should now KEEP its CUDA check, and the metric to watch is `cuda_options_checked` (10 against `cuda_only_options` 9 today; it must rise, not stay put). Two more things this row's work will meet: the CPU PIC/gpic collides already emit `:cpu_pic_pair_schedule` with a `schedule=` field, so the receipt exists and needs the mode added rather than inventing one; and a bit-identity pin is owed either way, since the whole claim of a batched schedule is that `collision_pair_batches` preserves each slice's own collision order. |
+
+Closure (record: [`batch_mode_one_keyword_2026_09_04.md`](batch_mode_one_keyword_2026_09_04.md)):
+one keyword, one meaning, every solver, both backends. The two PIC solvers'
+CPU pair loops read `batch_mode` beside the mesh constraint
+(`_pic_batching_requested = _pic_batchable && batch_mode === :wavefront`),
+their schema entry names both backends with `dependencies=(:interaction_grid,)`
+and the cross-backend consumer `:pic_pair_schedule` (the CPU receipt renamed
+from `:cpu_pic_pair_schedule`, the CUDA routes now emitting it beside
+`:cuda_pic_algorithm`); the spectral solver gains the field, declared CPU-only
+with the structural reason (one device workspace, no batched field solve) and
+`dependencies=(:longitudinal_kick,)`, its CPU 6D loop gains a sequential route
+and BOTH routes fold luminosity by collision position -- which moves the
+spectral 6D luminosity by one to three last bits against the pre-change
+worktree at six of ten measured cases, coordinates unmoved everywhere, thread
+invariance kept. Every route's receipt has one shape (`batch_mode` = what
+ran, a literal per branch; `requested` = the field; plus counts), pinned by a
+tripwire derived from `_solver_contract_types()`. Measured: `:sequential` == `:wavefront` bit for bit
+on PIC, gpic, spectral (6D and transverse) and the soft-Gaussian at 1 and 4
+workers, receipts asserting the batched arm batched (25 pairs, 9 batches,
+widest 5); CUDA receipts on all eight routes; `SolverOptionEffectivenessContract`
+passed with 73 CPU / 10 CUDA options, `cuda_only_options` 9 -> 7 -- the row's
+"cuda_options_checked must rise" was a mis-prediction (the two PIC options
+changed bucket, so 10 stays 10) and the suite now asserts the derived identity
+instead. `_spectral_collide_longitudinal!` lost its `Core.Box` and left the
+sweep's allowlist.
