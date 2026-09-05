@@ -6999,6 +6999,92 @@ end
     end
 end
 
+@testset "A PIC task under the multi-process policy is the task it composes" begin
+    # Multi-process step 4c. At one rank the divided PIC collide must be
+    # EXACTLY the CPU-policy one, on every route an option can select: the
+    # branches that divide it (exchanged extents and origins, all-summed
+    # deposits, global counts in the kick scale and the skips) must all be
+    # inert at one rank. Each variant is also shown to differ from the
+    # default, so no arm passes by running the default twice. (More than one
+    # rank is measured under a launcher.)
+    L6(dmu) = Linear6DSpec{Float64}(beta1=(1.0, 1.0, 1.0), beta2=(1.0, 1.0, 1.0), dmu=dmu)
+    rad(id) = LumpedRadSpec{Float64}(damping_turns=(4000.0, 4000.0, 2000.0),
+                                     beta=(1.0, 1.0, 1.0), alpha=(0.0, 0.0, 0.0),
+                                     sigma=(1.0e-4, 1.0e-5, 1.0e-3),
+                                     is_damping=true, is_excitation=true, rng_id=id)
+    slc = LongitudinalSlicing(nslices=3, method=:equal_area)
+    pic(; kw...) = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(16, 16),
+                                    green_cache=:slice_pair, slicing=slc; kw...)
+    variants = (
+        (:default, pic()),
+        (:node, pic(interaction_grid=:node)),
+        (:source_slice, pic(interaction_grid=:source_slice)),
+        (:sigma, pic(grid_extent=:sigma, grid_extent_sigma=4.0)),
+        (:quadratic, pic(slice_interpolation=:quadratic)),
+        (:tsc, pic(deposit_method=:TSC)),
+        (:green_none, pic(green_cache=:none)),
+        (:lumgrid, pic(luminosity_grid=(24, 24), luminosity_deposit_method=:TSC)),
+        (:fourth, pic(field_derivative=:fourth)),
+        (:quantize, pic(grid_quantize=0.125)),
+        (:lattice, pic(green_type=:lattice)),
+        (:transverse, pic(longitudinal_kick=false)),
+        # The 4c review's arms: 64 slices (at two ranks a rank holds no
+        # member of some populated slice; at one rank the branch must be
+        # inert) and the DEFAULT luminosity scale, which reads the beam's
+        # counts.
+        (:sparse, pic(slicing=LongitudinalSlicing(nslices=64, method=:equal_area))),
+        (:lumscale, pic(luminosity_scale=nothing)),
+    )
+    line(which, solver) = (L6((0.31, 0.27, 0.02)), rad(200 + which),
+                           StrongStrongCollision(:ip; poisson_solver=solver), L6((0.11, 0.07, 0.01)))
+    beams(policy) = begin
+        set_global_rng!(seed=4242, method=:philox)
+        (Beam(256, policy, Float64; rng_id=1, beta=(1.0, 1.0, 1.0),
+              emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11),
+         Beam(192, policy, Float64; rng_id=2, beta=(1.0, 1.0, 1.0),
+              emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11))
+    end
+    run(policy, solver) = begin
+        path = tempname() * ".h5"
+        b1, b2 = beams(policy)
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            execute!(StrongStrongTask(line(1, solver), line(2, solver); policy=policy, artifact=path),
+                     b1, b2; turns=2)
+        end
+        lum = read(TaskOutput(path), :luminosity; name="ip")
+        rm(path; force=true)
+        sched = [r.values for r in execution_receipts(audit) if r.consumer === :pic_pair_schedule]
+        (map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)),
+         collect(lum.value), sched)
+    end
+    # The `:node` mesh is built at turn start and deposited into after the
+    # kicks, so at this coarse grid it drops a few particles and warns; that
+    # is the documented behaviour of the mode, not a symptom of division.
+    series = Dict{Symbol,Vector{Float64}}()
+    with_logger(NullLogger()) do
+        for (name, solver) in variants
+            cpu = run(CPUThreadsExecutionPolicy(threads=1), solver)
+            mp = run(MultiProcessExecutionPolicy(threads=1), solver)
+            @test all(a == b for (a, b) in zip(cpu[1], mp[1]))
+            @test all(a == b for (a, b) in zip(cpu[2], mp[2]))
+            @test cpu[3] == mp[3] && length(cpu[3]) == 2
+            @test all(cpu[3] .> 0)
+            @test length(mp[4]) == 2 && all(s -> s.ranks == 1, mp[4])   # one receipt per turn
+            series[name] = cpu[3]
+        end
+    end
+    for (name, _) in variants
+        name === :default || @test series[name] != series[:default]
+    end
+    # The kick scale divides by the BEAM's macroparticle count, read from the
+    # shard scope: at one rank that is the length it always was.
+    b1, b2 = beams(CPUThreadsExecutionPolicy(threads=1))
+    @test Octopus._pic_kbb1(pic(), b1, b2) == 1.0e-6 / length(b2.rep)
+    @test Octopus._pic_kbb2(pic(), b1, b2) == 1.0e-6 / length(b1.rep)
+    @test Octopus._reject_undivided_solver(pic()) === nothing
+end
+
 @testset "Scalar diagnostics reduce the whole beam, and a lost particle still counts for nothing" begin
     # Multi-process step 3b. The moment and orbit reductions became
     # rank-aware; at one rank they must be EXACTLY what they were, because
@@ -7475,8 +7561,8 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             # What still refuses at two ranks and runs at one: PIC (step 4c)
             # and a line action. The child asserts the direction itself and
             # prints what it saw; both counts must have reached that line.
-            @test tagged(out1, "MPI-SSREFUSE ") == ["pic=false action=false"]
-            @test tagged(out2, "MPI-SSREFUSE ") == ["pic=true action=true"]
+            @test tagged(out1, "MPI-SSREFUSE ") == ["undivided=false action=false"]
+            @test tagged(out2, "MPI-SSREFUSE ") == ["undivided=true action=true"]
             # Each beam's shard, as each rank resolved it: the two beams
             # differ in size, so their offsets differ on rank 1 and a scope
             # that handed beam 2 beam 1's shard would print 128 for both.
@@ -7517,6 +7603,169 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             # did not refuse the all-dead one; rank 0 reports.
             @test tagged(out1, "MPI-SSPOISON ") == ["half_dead_sliced=true all_dead_refused=true"]
             @test tagged(out2, "MPI-SSPOISON ") == ["half_dead_sliced=true all_dead_refused=true"]
+
+            # --- step 4c: the PIC collide divides -------------------------
+            #
+            # Each rank deposits its own particles and the charge grid is
+            # all-summed before the field solve; the mesh extents are the
+            # beam's. The same three claims as 4b -- one rank bitwise against
+            # this process's CPU run, two ranks at the parity tolerance, rank
+            # 0 alone wrote -- on a task with two radiating lines and the
+            # artifact, then on one bare collide per option variant, because
+            # each variant selects a different route (node and source-slice
+            # meshes, the :sigma origin, the third plane, TSC, no cache, a
+            # separate luminosity mesh, the fourth-order field, quantized
+            # meshes, the lattice Green function, the transverse map).
+            #
+            # The cross-rank tolerance: the deposit's chunk fold is keyed by
+            # member-list position, which no shard aligns with, so a divided
+            # grid differs from the undivided one by accumulation order --
+            # measured 7.1e-15 worst over the option arms at two ranks and
+            # 6.8e-15 at four, 8.8e-14 on the 64-slice `:sparse` arm whose
+            # 4096 pairs accumulate more (2026-09-05); 1e-12 keeps an order
+            # of margin on the worst arm and is the CPU/CUDA contract's class.
+            picref = let path = tempname() * ".h5"
+                cpu = CPUThreadsExecutionPolicy(threads=1)
+                b1, b2 = _mpi_check_ss_beams(cpu)
+                execute!(_mpi_check_ss_task(cpu, path; solver=_mpi_check_pic_solver()),
+                         b1, b2; turns=2)
+                rec = _mpi_check_ss_record(path)
+                s1 = _mpi_check_collide_signature(b1.rep)
+                s2 = _mpi_check_collide_signature(b2.rep)
+                rm(path; force=true)
+                # Each arm's reference runs at the arm's own thread count, so
+                # the `:threads2` comparison is two-thread CPU against
+                # two-thread MPI, not a thread-invariance claim in disguise.
+                variants = Dict(String(name) => _mpi_check_pic_collide_line(
+                                    CPUThreadsExecutionPolicy(threads=threads), solver)
+                                for (name, solver, threads) in _mpi_check_pic_variants())
+                (lum=join((repr(v) for v in rec.values), " "),
+                 beam1=join((repr(v) for v in (s1.maxpx, s1.rmspx, s1.rmspy)), " "),
+                 beam2=join((repr(v) for v in (s2.maxpx, s2.rmspx, s2.rmspy)), " "),
+                 rows="$(rec.m1rows) $(rec.m2rows)", variants=variants,
+                 big=_mpi_check_pic_big_line(cpu))
+            end
+            for (tag, want) in (("MPI-PICLUM ", picref.lum), ("MPI-PICBEAM1 ", picref.beam1),
+                                ("MPI-PICBEAM2 ", picref.beam2), ("MPI-PICMOMROWS ", picref.rows))
+                @test length(tagged(out1, tag)) == 1 && length(tagged(out2, tag)) == 1
+                @test first(tagged(out1, tag)) == want              # one rank: bit for bit
+            end
+            @test first(tagged(out2, "MPI-PICMOMROWS ")) == "2 2"   # rank 0 wrote, once per turn
+            for tag in ("MPI-PICLUM ", "MPI-PICBEAM1 ", "MPI-PICBEAM2 ")
+                one, two = floats(first(tagged(out1, tag))), floats(first(tagged(out2, tag)))
+                @test length(one) == length(two) >= 2
+                for (a, b) in zip(one, two)
+                    @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
+                end
+            end
+            # What the divided run RECORDED: one pair worker at two ranks, and
+            # one all-sum of the padded 32 x 32 grid per plane -- 9 pairs, two
+            # directions, two planes, two turns = 72. Zero would mean the run
+            # never divided anything and agreed by running whole.
+            @test tagged(out1, "MPI-PICSCHED ") ==
+                  ["ranks=1 pair_workers=1 batch_mode=wavefront grid_allsums=0"]
+            @test tagged(out2, "MPI-PICSCHED ") ==
+                  ["ranks=2 pair_workers=1 batch_mode=wavefront grid_allsums=$(9 * 2 * 2 * 2)"]
+            variant(out, name) = let lines = [strip(split(line, "MPI-PICVAR " * name * " ")[2])
+                                              for line in split(out, '\n')
+                                              if startswith(line, "MPI-PICVAR " * name * " ")]
+                length(lines) == 1 ? lines[1] : nothing
+            end
+            ranklines(out, tag, key) = [strip(split(line, tag * key * " ")[2])
+                                        for line in split(out, '\n')
+                                        if startswith(line, tag * key * " ")]
+            for (name, _, threads) in _mpi_check_pic_variants()
+                key = String(name)
+                ref = picref.variants[key]
+                v1, v2 = variant(out1, key), variant(out2, key)
+                @test v1 !== nothing && v2 !== nothing
+                (v1 === nothing || v2 === nothing) && continue
+                @test v1 == ref.line                                # one rank: bit for bit
+                for (a, b) in zip(floats(v1), floats(v2))
+                    @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
+                end
+                # Anti-vacuity: every variant selects a route of its own, so
+                # it must differ from the default on the same beams -- except
+                # `:threads2`, whose difference is the schedule and whose
+                # RESULT must equal the default's at both rank counts (thread
+                # invariance, divided or not).
+                if name === :threads2
+                    @test v1 == picref.variants["default"].line
+                    @test v2 == variant(out2, "default")
+                elseif name !== :default
+                    @test v1 != picref.variants["default"].line
+                end
+                # Every rank left the collide with the SAME luminosity bits:
+                # the value is computed redundantly per rank from the
+                # all-summed grids, and a rank whose field differed from its
+                # peers' would show here first.
+                lums1 = [last(split(s)) for s in ranklines(out1, "MPI-PICVARLUM ", key)]
+                lums2 = [last(split(s)) for s in ranklines(out2, "MPI-PICVARLUM ", key)]
+                @test lums1 == [ref.lum]                            # one rank: bit for bit
+                @test length(lums2) == 2 && lums2[1] == lums2[2]    # two ranks: the same bits
+                isempty(lums2) || @test isapprox(floats(ref.lum)[1], floats(lums2[1])[1];
+                                                  rtol=1.0e-12, atol=0.0)
+                # The dropped-particle count is the BEAM's at every rank
+                # count (the pool's sum, then the ranks'); the `:node` arm is
+                # the one that drops, so the cross-rank sum is exercised.
+                drop = "$(ref.dropped)"
+                @test ranklines(out1, "MPI-PICVARDROP ", key) == [drop]
+                @test ranklines(out2, "MPI-PICVARDROP ", key) == [drop]
+                name === :node && @test ref.dropped > 0
+                # The schedule: at one rank the run is the CPU policy's, at two
+                # the pairs are forced onto ONE worker with the inner maps
+                # given every thread. Visible only where the policy has more
+                # than one thread, which is what the `:threads2` arm is for.
+                sched1 = ranklines(out1, "MPI-PICVARSCHED ", key)
+                sched2 = ranklines(out2, "MPI-PICVARSCHED ", key)
+                @test sched1 == ["pair_workers=$(ref.pair_workers) inner_workers=$(ref.inner_workers)"]
+                @test sched2 == ["pair_workers=1 inner_workers=$(threads)"]
+                name === :threads2 && @test ref.pair_workers == 2   # the forcing changed something
+            end
+            # The `:sparse` arm's premise, from the shard rule and the slicing:
+            # at two ranks some rank holds no member of a populated slice.
+            let (b1, b2) = _mpi_check_ss_beams(CPUThreadsExecutionPolicy(threads=1))
+                @test _mpi_check_pic_locally_empty(b1.rep, _mpi_check_pic_sparse_slicing(), 2) > 0
+                @test _mpi_check_pic_locally_empty(b2.rep, _mpi_check_pic_sparse_slicing(), 2) > 0
+                @test _mpi_check_pic_locally_empty(b1.rep, _mpi_check_pic_solver().slicing1, 2) == 0
+            end
+            # The `:big` arm: the threaded deposit under division. Its premise
+            # is asserted -- every rank's share of every slice clears the
+            # floor at two ranks -- so a beam that quietly took the serial
+            # path could not pass as the threaded one.
+            @test Octopus._pic_deposit_parallel(_mpi_check_pic_big_min_local_slice(2), 5, 5)
+            @test tagged(out1, "MPI-PICBIG ") == [picref.big.line]
+            for (a, b) in zip(floats(picref.big.line), floats(first(tagged(out2, "MPI-PICBIG "))))
+                @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
+            end
+            @test [last(split(s)) for s in ranklines(out1, "MPI-PICBIGLUM", "")] == [picref.big.lum]
+            biglums2 = [last(split(s)) for s in ranklines(out2, "MPI-PICBIGLUM", "")]
+            @test length(biglums2) == 2 && biglums2[1] == biglums2[2]
+
+            # --- step 4c: the CPU/MPI/CUDA consistency contract ----------
+            #
+            # The statement the design's consistency table makes, run as one
+            # public object: CPU against MPI at one rank bit for bit, at two
+            # ranks at the parity tolerance, and CPU against CUDA through the
+            # PIC backend contract whenever the device is active (so MPI
+            # against CUDA follows by composition). Its child is a script of
+            # its own under `src/contracts/`, launched under THIS project, so
+            # a launcher that runs the seam check and not the contract's child
+            # is caught here rather than in a user's session.
+            rmp = validate(StrongStrongPICMultiProcessConsistencyContract(
+                mpiexec=launcher, ranks=(1, 2), cuda=CUDA_TESTS_ACTIVE))
+            rmp.status === :passed ||
+                @info "multi-process PIC contract result" rmp.status rmp.message rmp.metrics
+            @test rmp.status === :passed
+            @test rmp.metrics[:mpi_ranks_checked] == 2
+            @test rmp.metrics[:mpi_1_status] === :compared
+            @test rmp.metrics[:mpi_1_bitwise] === true
+            @test rmp.metrics[:mpi_2_status] === :compared
+            @test rmp.metrics[:mpi_2_luminosity_rel_error] <= 1.0e-12
+            # The CUDA leg ran when the device is active, and is reported as
+            # not run -- not as passed -- when it is not.
+            @test rmp.metrics[:cuda_status] === (CUDA_TESTS_ACTIVE ? :passed : :not_run)
+            CUDA_TESTS_ACTIVE && @test haskey(rmp.metrics, :mpi_cuda_luminosity_bound)
         end
     end
 end
@@ -7811,6 +8060,29 @@ if _lane_gate("Contract coverage guards: declared kinds, solver tree, broken bas
         @test r.values.threads == 128
         @test r.values.blocks == cld(10_000, 128)
         @test r.values.resolved_by === :particle_coverage
+    end
+
+    # Multi-process step 4c: without a launcher the three-way PIC contract
+    # is a SKIP that names the legs it did not run, never a pass; a rank
+    # count the shard rule refuses fails before any process is launched; and
+    # the child rebuilds the contract from the words the parent passes it.
+    let c = StrongStrongPICMultiProcessConsistencyContract()
+        r0 = validate(c)
+        @test r0.status === :skipped
+        @test !r0.passed
+        @test occursin("NOT exercised", r0.message)
+        @test r0.metrics[:mpi_status] === :skipped
+        r3 = validate(StrongStrongPICMultiProcessConsistencyContract(ranks=(1, 3), mpiexec="mpiexec"))
+        @test r3.status === :failed
+        @test occursin("cannot divide", r3.message)
+        spec = Octopus._mpi_pic_contract_spec(Octopus._mpi_pic_contract_args(c, 2, "out.h5"))
+        @test spec.n_particles == c.n_particles && spec.turns == c.turns
+        @test spec.grid == c.grid && spec.nslices == c.nslices
+        @test spec.deposit_method === c.deposit_method && spec.green_cache === c.green_cache
+        @test spec.threads_per_rank == c.threads_per_rank && spec.seed == c.seed
+        @test spec.ranks == 2 && spec.out == "out.h5"
+        @test StrongStrongPICMultiProcessConsistencyContract in required_contracts(StrongStrongTask)
+        @test isfile(joinpath(pkgdir(Octopus), "src", "contracts", "mpi_pic_consistency_child.jl"))
     end
 
     # U3-6/U21-13: these contracts were executed by no test and no CI.

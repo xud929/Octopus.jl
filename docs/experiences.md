@@ -276,6 +276,33 @@ teaches something reusable, it lands here (dated), and the full record goes to
   only manifests above a size threshold, the probe has to cross that threshold
   -- a divided run at a size the code takes a different path for is a
   different test.
+- Third instance (2026-09-05, step 4c): PIC's per-macroparticle kick scale
+  divided by `length(beam.rep)`, which had always been the beam and became
+  the shard. Every kick scaled by the rank count -- 1.9x at two ranks, 3.5x
+  at four -- and the luminosity series drifted with it, while every mesh,
+  every deposit and every slice weight was already the beam's. Before
+  dividing anything, grep the solver for every `length(` of a beam or a
+  slice and decide each one: a denominator is the beam's, a loop bound is
+  the shard's.
+- The instrument can have the same defect: the first divided-collide arms of
+  the launcher check called `collide!` OUTSIDE the policy scope, where the
+  collide sees a communicator of one and collides the shard alone as if it
+  were the beam, and their luminosity fell as 1/P^2. The 3c lesson -- a
+  collective outside its scope is a silent no-op -- applies to test fixtures
+  as much as to `execute!`.
+- A NaN is not a signal across ranks (2026-09-05, from the 4c review, then
+  reproduced): `MPI_MIN`/`MPI_MAX` with a NaN input hand different ranks
+  different answers -- the rank holding the NaN got it back, its peer got the
+  finite value -- so a rank that decides whether to throw from an exchanged
+  bound leaves its peers blocked at the next collective. Take the verdict on
+  local data, agree it as an integer count, throw on every rank, and only
+  then consume the exchanged bounds.
+- Two ranks printing at the same moment merge mid-line in the launcher's
+  stdout (2026-09-05: `MPI-PICVAR MPI-PICVARLUM node 1 ...`), and a
+  `println` of several arguments is several writes. A line a parent will
+  parse is built whole and written once; lines that every rank prints go out
+  one rank at a time with a barrier between, inside the policy scope where
+  the barrier is a collective.
 
 ## A scope that holds one of something is a one-beam assumption
 

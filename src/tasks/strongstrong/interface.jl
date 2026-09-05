@@ -2264,10 +2264,12 @@ end
 
 required_contracts(::Type{<:StrongStrongTask}) =
     DataType[StrongStrongGaussianBackendConsistencyContract,
-             StrongStrongPICBackendConsistencyContract]
+             StrongStrongPICBackendConsistencyContract,
+             StrongStrongPICMultiProcessConsistencyContract]
 required_contracts(::StrongStrongTask) =
     DataType[StrongStrongGaussianBackendConsistencyContract,
-             StrongStrongPICBackendConsistencyContract]
+             StrongStrongPICBackendConsistencyContract,
+             StrongStrongPICMultiProcessConsistencyContract]
 
 function StrongStrongTask(line1, line2;
                           policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
@@ -2372,24 +2374,25 @@ end
 """
 Refuse, at more than one rank, a solver whose collide has not been divided.
 
-Step 4a divided the soft-Gaussian collide: its slicing, slice moments, weights
-and luminosity reduce across the ranks. PIC, Gaussian-PIC and spectral are
-step 4c onward -- they need per-slice-pair grid all-sums and global extrema
-for mesh sizing -- and until then each rank would collide its own shard alone
-and report the result as the beam's. Called at the task's preflight AND at
-each of those solvers' CPU collide entries, so a bare `collide!` refuses too.
+Step 4a divided the soft-Gaussian collide and step 4c the PIC one (per-pair
+grid all-sums before each field solve, global mesh extents). Gaussian-PIC and
+spectral are still to come, and until then each rank would collide its own
+shard alone and report the result as the beam's. Called at the task's
+preflight AND at each undivided solver's CPU collide entry, so a bare
+`collide!` refuses too.
 """
 function _reject_undivided_solver(solver::AbstractPoissonSolver)
     nranks = _mp_nranks()
     nranks > 1 || return nothing
-    solver isa GaussianPoissonSolver && return nothing
+    solver isa Union{GaussianPoissonSolver,PICPoissonSolver} && return nothing
     throw(ArgumentError(
         "$(nameof(typeof(solver))) does not divide across the $(nranks) MPI " *
-        "ranks in force: multi-process step 4a divided the soft-Gaussian " *
-        "collide (GaussianPoissonSolver); PIC, Gaussian-PIC and spectral are " *
-        "step 4c onward, and until then each rank would collide its own shard " *
-        "alone and report the result as the whole beam's. Use " *
-        "GaussianPoissonSolver, run one rank, or use CPUThreadsExecutionPolicy."))
+        "ranks in force: multi-process steps 4a and 4c divided the " *
+        "soft-Gaussian and PIC collides (GaussianPoissonSolver, " *
+        "PICPoissonSolver); Gaussian-PIC and spectral are still to come, and " *
+        "until then each rank would collide its own shard alone and report the " *
+        "result as the whole beam's. Use one of the divided solvers, run one " *
+        "rank, or use CPUThreadsExecutionPolicy."))
 end
 
 """

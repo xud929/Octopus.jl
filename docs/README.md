@@ -337,6 +337,11 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   "gaussian collide flatline" as a property of threads and not of the solver;
   and the counted 1874 collectives per collide that turn the curve over past
   sixteen),
+  [`multi_process_step4c_pic_2026_09_05.md`](history/multi_process_step4c_pic_2026_09_05.md)
+  (the PIC collide divided: each rank deposits its own particles, the charge
+  grid is all-summed before every field solve, mesh extents and the kick
+  scale become the beam's; every option route agrees across rank counts to
+  7e-15 and bit for bit at one rank),
   [`multi_process_step4b_2026_09_05.md`](history/multi_process_step4b_2026_09_05.md)
   (the strong-strong task divided: one shard per beam keyed by
   representation, one tracking context per beam, the blanket refusal

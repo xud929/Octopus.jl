@@ -347,7 +347,17 @@ every active slice in a batch, solves all `4 * batch_size` source-boundary
 field problems in one batched cuFFT stack, applies the non-overlapping kicks,
 then scatters the batch back before moving to the next dependency frontier.
 Use `PICPoissonSolver(batch_mode=:sequential)` for the one-pair-at-a-time
-reference; the two schedules agree bit for bit. `interaction_grid=:source_slice`
+reference; the two schedules agree bit for bit. Under
+`MultiProcessExecutionPolicy` the PIC collide divides across the ranks (each
+rank deposits its own particles, the charge grid is all-summed before every
+field solve, the mesh extents and the kick scale are the beam's; every CPU
+option route runs divided, the slice-pair Green cache included, since every
+rank holds the same cache); at more than one rank the wavefront batches run
+their pairs one at a time on the main thread.
+`StrongStrongPICMultiProcessConsistencyContract` states the three-way claim
+(CPU against MPI per rank count, CPU against CUDA, MPI against CUDA by
+composition) and needs a launcher command to run its MPI legs.
+`interaction_grid=:source_slice`
 cannot batch (its mesh is a union over the partner beam taken at the source
 slice's first use), so it runs sequentially whatever `batch_mode` says and the
 configuration report marks the option inactive. Every route records a

@@ -4,6 +4,7 @@ export ContractResult, passed, validate,
        ElementTrackingBackendConsistencyContract,
        StrongStrongGaussianBackendConsistencyContract,
        StrongStrongPICBackendConsistencyContract,
+       StrongStrongPICMultiProcessConsistencyContract,
        SymplecticityContract,
        HighEnergyWeakStrongLimitContract,
        PTCConsistencyContract,
@@ -133,6 +134,61 @@ Base.@kwdef struct StrongStrongPICBackendConsistencyContract <: AbstractBackendC
     atol::Float64 = 1e-10
     rtol::Float64 = 1e-10
     luminosity_rtol::Float64 = 1e-10
+end
+
+"""
+    StrongStrongPICMultiProcessConsistencyContract(; n_particles=1024, turns=2,
+        grid=(32, 32), nslices=3, deposit_method=:CIC, green_cache=:slice_pair,
+        ranks=(1, 2), threads_per_rank=1, mpiexec=nothing, timeout=1800,
+        atol=1e-18, rtol=1e-11, luminosity_rtol=1e-12, cuda=true,
+        seed=123456789)
+
+The three-way consistency statement for the PIC collide (multi-process step
+4c): CPU against MPI at every rank count in `ranks`, and -- when `cuda` -- CPU
+against CUDA through `StrongStrongPICBackendConsistencyContract` on the same
+beams and solver, so MPI against CUDA follows by composition (the metrics
+carry the triangle bound). The claim per leg:
+
+- **one rank under MPI reproduces the CPU policy bit for bit** -- coordinates
+  of both beams and the whole luminosity series compared with `==`;
+- **more ranks agree at the parity class** -- the deposit's chunk fold is keyed
+  by member-list position, which no shard aligns with, so a divided grid
+  differs from the undivided one by accumulation order; `rtol`/`atol` on the
+  coordinates pointwise through `_contract_coordinate_metrics`,
+  `luminosity_rtol` on every turn. Measured on the defaults (2026-09-05): two
+  ranks differ from the CPU by 5.5e-17 absolute, 2.3e-15 against the beam
+  scale, 0.18 of a 1e-12 pointwise allowance (so 0.018 of the default
+  1e-11), and 1.6e-15 relative on the luminosity; four ranks the same class.
+  The pointwise ratio is the criterion, the global one the number to read;
+  both are in the metrics per rank count;
+- **CPU against CUDA** at that contract's own tolerance.
+
+The MPI legs run in launched subprocesses, because a rank count is a property
+of a launched process: `mpiexec` is the launcher command (`MPICH_jll.mpiexec()`
+in the suite), each child is `src/contracts/mpi_pic_consistency_child.jl` under
+the CURRENT project and load path -- an environment that carries `MPI`, or the
+child cannot load the extension and the leg fails with its output -- and each
+child writes the beams gathered onto rank 0 and the luminosity series to a file
+this process reads. With `mpiexec = nothing` the result is `:skipped`, naming
+what was not exercised; an unrun leg is never reported as a pass. A child that
+blocks is killed after `timeout` seconds and reported as a failure.
+"""
+Base.@kwdef struct StrongStrongPICMultiProcessConsistencyContract <: AbstractBackendConsistencyContract
+    n_particles::Int = 1024
+    turns::Int = 2
+    grid::Tuple{Int,Int} = (32, 32)
+    nslices::Int = 3
+    deposit_method::Symbol = :CIC
+    green_cache::Symbol = :slice_pair
+    ranks::Tuple{Vararg{Int}} = (1, 2)
+    threads_per_rank::Int = 1
+    mpiexec::Union{Nothing,Cmd,String} = nothing
+    timeout::Float64 = 1800.0
+    atol::Float64 = 1e-18
+    rtol::Float64 = 1e-11
+    luminosity_rtol::Float64 = 1e-12
+    cuda::Bool = true
+    seed::UInt64 = UInt64(123456789)
 end
 
 """
@@ -1217,13 +1273,19 @@ end
 
 function _strong_strong_contract_base_beams(contract::Union{
         StrongStrongGaussianBackendConsistencyContract,
-        StrongStrongPICBackendConsistencyContract})
+        StrongStrongPICBackendConsistencyContract},
+        builder=CPUThreadsBackend)
+    # `builder` is a backend type or an execution policy: under
+    # `MultiProcessExecutionPolicy` the constructor draws the whole beam and
+    # keeps this rank's shard, bit-identical to the undivided beam by
+    # construction, which is what lets the multi-process contract's child build
+    # the SAME beams the parent compares against.
     n = contract.n_particles
-    beam1 = Beam(n, CPUThreadsBackend, Float64;
+    beam1 = Beam(n, builder, Float64;
         beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0, 0.0),
         sigma=(106e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=1,
         charge=-1.0, mc2=EMASS_EV, E0=10e9, r0=RE, npart=1.7203e11)
-    beam2 = Beam(n, CPUThreadsBackend, Float64;
+    beam2 = Beam(n, builder, Float64;
         beta=(0.8, 0.072, 6e-2 / 6.6e-4), alpha=(0.0, 0.0, 0.0),
         sigma=(95e-6, 8.5e-6, 6e-2), cutoff=5.0, rng_id=2,
         charge=1.0, mc2=PMASS_EV, E0=275e9,
@@ -1254,7 +1316,7 @@ function _strong_strong_contract_beam(beam, ::Type{CUDABackend})
 end
 
 function _strong_strong_contract_task(contract::StrongStrongPICBackendConsistencyContract,
-                                      artifact_path)
+                                      artifact_path; policy=nothing)
     slicing = LongitudinalSlicing(
         method=:normal_quantile,
         nslices=contract.nslices,
@@ -1273,9 +1335,205 @@ function _strong_strong_contract_task(contract::StrongStrongPICBackendConsistenc
         luminosity_schedule=nothing,
     )
     ip = StrongStrongCollision(:ip; poisson_solver=solver)
-    return StrongStrongTask((ip,), (ip,); artifact=artifact_path)
+    return StrongStrongTask((ip,), (ip,); artifact=artifact_path, policy=policy)
 end
 
+"""
+The PIC contract whose beams and task the multi-process contract's legs share.
+"""
+_mpi_pic_contract_base(c::StrongStrongPICMultiProcessConsistencyContract) =
+    StrongStrongPICBackendConsistencyContract(
+        n_particles=c.n_particles, turns=c.turns, grid=c.grid, nslices=c.nslices,
+        deposit_method=c.deposit_method, green_cache=c.green_cache, seed=c.seed)
+
+"""
+The keyword arguments the child rebuilds the contract from, as `key=value`
+command-line words (the child parses them back with `_mpi_pic_contract_spec`).
+"""
+function _mpi_pic_contract_args(c::StrongStrongPICMultiProcessConsistencyContract, ranks::Int,
+                                out::AbstractString)
+    return String["n_particles=$(c.n_particles)", "turns=$(c.turns)",
+                  "grid=$(c.grid[1]),$(c.grid[2])", "nslices=$(c.nslices)",
+                  "deposit_method=$(c.deposit_method)", "green_cache=$(c.green_cache)",
+                  "threads_per_rank=$(c.threads_per_rank)", "seed=$(c.seed)",
+                  "ranks=$(ranks)", "out=$(out)"]
+end
+
+function _mpi_pic_contract_spec(args)
+    kv = Dict{String,String}()
+    for a in args
+        k, v = split(a, "="; limit=2)
+        kv[String(k)] = String(v)
+    end
+    gx, gy = parse.(Int, split(kv["grid"], ","))
+    return (n_particles=parse(Int, kv["n_particles"]), turns=parse(Int, kv["turns"]),
+            grid=(gx, gy), nslices=parse(Int, kv["nslices"]),
+            deposit_method=Symbol(kv["deposit_method"]), green_cache=Symbol(kv["green_cache"]),
+            threads_per_rank=parse(Int, kv["threads_per_rank"]),
+            seed=parse(UInt64, kv["seed"]), ranks=parse(Int, kv["ranks"]), out=kv["out"])
+end
+
+"""
+Run one MPI leg: launch the child at `ranks` ranks under the launcher, bounded
+by the contract's `timeout`, and return `(ok, output)`.
+"""
+function _mpi_pic_contract_launch(c::StrongStrongPICMultiProcessConsistencyContract,
+                                  ranks::Int, out::AbstractString)
+    launcher = c.mpiexec isa Cmd ? c.mpiexec : Cmd([String(c.mpiexec)])
+    child = joinpath(pkgdir(@__MODULE__), "src", "contracts", "mpi_pic_consistency_child.jl")
+    args = _mpi_pic_contract_args(c, ranks, out)
+    cmd = `$(launcher) -n $(ranks) $(Base.julia_cmd()) --startup-file=no --threads=$(c.threads_per_rank) $(child) $(args)`
+    env = Pair{String,String}["JULIA_LOAD_PATH" => join(Base.LOAD_PATH, ":")]
+    project = Base.active_project()
+    project === nothing || push!(env, "JULIA_PROJECT" => project)
+    cmd = addenv(cmd, env...)
+    buffer = IOBuffer()
+    proc = run(pipeline(cmd; stdout=buffer, stderr=buffer); wait=false)
+    watchdog = Timer(c.timeout) do _
+        process_running(proc) && kill(proc)
+    end
+    wait(proc)
+    close(watchdog)
+    return success(proc), String(take!(buffer))
+end
+
+function _mpi_pic_contract_read(out::AbstractString)
+    return HDF5.h5open(out, "r") do f
+        rows(name) = read(f[name])
+        toRep(m) = Phase6DRep(m[:, 1], m[:, 2], m[:, 3], m[:, 4], m[:, 5], m[:, 6])
+        (rep1=toRep(rows("beam1")), rep2=toRep(rows("beam2")),
+         turns=Vector{Int}(read(f["turns"])), values=Vector{Float64}(read(f["values"])),
+         nranks=Int(read(f["nranks"])))
+    end
+end
+
+description(::Type{StrongStrongPICMultiProcessConsistencyContract}) =
+    "Checks the PIC collide's CPU, MPI (per rank count) and CUDA results against each other: one rank bitwise, more ranks and the device at their stated tolerances."
+
+function validate(contract::StrongStrongPICMultiProcessConsistencyContract; kwargs...)
+    _reject_unknown_validate_kwargs(contract, kwargs)
+    metrics = Dict{Symbol,Any}(:ranks => collect(contract.ranks),
+                               :mpi_ranks_checked => 0, :cuda_status => :not_run)
+    bad = [p for p in contract.ranks if p < 1 || _REDUCTION_CHUNKS % p != 0]
+    isempty(bad) || return ContractResult(false,
+        "rank counts $(bad) cannot divide the $(_REDUCTION_CHUNKS) reduction chunks; " *
+        "the shard rule accepts " *
+        join((p for p in 1:_REDUCTION_CHUNKS if _REDUCTION_CHUNKS % p == 0), ", ");
+        metrics=metrics)
+    if contract.mpiexec === nothing
+        metrics[:mpi_status] = :skipped
+        return ContractResult(:skipped,
+            "no MPI launcher given: pass mpiexec=<launcher command> " *
+            "(MPICH_jll.mpiexec() in the suite). The CPU/MPI legs were NOT exercised.";
+            metrics=metrics)
+    end
+    base = _mpi_pic_contract_base(contract)
+    old_seed = global_rng_seed()
+    old_method = global_rng_method()
+    failures = String[]
+    worst_rel = 0.0
+    worst_lum_rel = 0.0
+    cuda_skip = nothing
+    try
+        # The CPU reference, in this process, at the child's worker count.
+        set_global_rng!(seed=contract.seed, method=:philox)
+        base1, base2 = _strong_strong_contract_base_beams(base)
+        beam1 = _strong_strong_contract_beam(base1, CPUThreadsBackend)
+        beam2 = _strong_strong_contract_beam(base2, CPUThreadsBackend)
+        cpu = mktempdir() do dir
+            path = joinpath(dir, "cpu.h5")
+            task = _strong_strong_contract_task(
+                base, path; policy=CPUThreadsExecutionPolicy(threads=contract.threads_per_rank))
+            execute!(task, beam1, beam2; turns=contract.turns)
+            (rep1=beam1.rep, rep2=beam2.rep,
+             values=_strong_strong_contract_luminosity_series(path))
+        end
+        for P in contract.ranks
+            leg = mktempdir() do dir
+                out = joinpath(dir, "mpi_$(P).h5")
+                ok, output = _mpi_pic_contract_launch(contract, P, out)
+                ok && isfile(out) || return (ok=false, output=output, result=nothing)
+                (ok=true, output=output, result=_mpi_pic_contract_read(out))
+            end
+            if !leg.ok
+                tail = last(leg.output, 2000)
+                push!(failures, "the $(P)-rank child failed or timed out: " * tail)
+                metrics[Symbol("mpi_$(P)_status")] = :failed
+                continue
+            end
+            r = leg.result
+            metrics[:mpi_ranks_checked] += 1
+            r.nranks == P || push!(failures,
+                "the $(P)-rank child reported $(r.nranks) rank(s): the launcher did not divide it")
+            length(r.values) == length(cpu.values) || push!(failures,
+                "the $(P)-rank luminosity series has $(length(r.values)) turns, the CPU one $(length(cpu.values))")
+            m1 = _contract_coordinate_metrics(cpu.rep1, r.rep1, contract.atol, contract.rtol)
+            m2 = _contract_coordinate_metrics(cpu.rep2, r.rep2, contract.atol, contract.rtol)
+            lum_rel = length(r.values) == length(cpu.values) ?
+                maximum(abs(b - a) / max(abs(a), eps(Float64)) for (a, b) in zip(cpu.values, r.values); init=0.0) : Inf
+            bitwise = all(map(==, coordinate_arrays(cpu.rep1), coordinate_arrays(r.rep1))) &&
+                      all(map(==, coordinate_arrays(cpu.rep2), coordinate_arrays(r.rep2))) &&
+                      r.values == cpu.values
+            metrics[Symbol("mpi_$(P)_status")] = :compared
+            metrics[Symbol("mpi_$(P)_bitwise")] = bitwise
+            metrics[Symbol("mpi_$(P)_max_abs_error")] = max(m1[:max_abs_error], m2[:max_abs_error])
+            # The criterion and its margin: the pointwise ratio to what
+            # atol/rtol allow (pass is <= 1), and the same difference against
+            # the beam scale, which is the number to read.
+            metrics[Symbol("mpi_$(P)_max_allowed_ratio")] =
+                max(m1[:max_allowed_ratio], m2[:max_allowed_ratio])
+            metrics[Symbol("mpi_$(P)_global_rel_error")] =
+                max(m1[:global_rel_error], m2[:global_rel_error])
+            metrics[Symbol("mpi_$(P)_luminosity_rel_error")] = lum_rel
+            worst_rel = max(worst_rel, m1[:max_abs_error], m2[:max_abs_error])
+            worst_lum_rel = max(worst_lum_rel, lum_rel)
+            if P == 1
+                # The campaign's literal requirement: one rank IS the CPU policy.
+                bitwise || push!(failures,
+                    "one rank under MPI does not reproduce the CPU policy bit for bit " *
+                    "(max abs coordinate error $(metrics[Symbol("mpi_1_max_abs_error")]), " *
+                    "luminosity rel $(lum_rel))")
+            else
+                (m1[:passed_tolerance] && m2[:passed_tolerance]) || push!(failures,
+                    "$(P) ranks moved the coordinates past atol=$(contract.atol), rtol=$(contract.rtol) " *
+                    "(max abs error $(metrics[Symbol("mpi_$(P)_max_abs_error")]))")
+                lum_rel <= contract.luminosity_rtol || push!(failures,
+                    "$(P) ranks moved the luminosity by $(lum_rel) relative, past $(contract.luminosity_rtol)")
+            end
+        end
+        metrics[:mpi_status] = metrics[:mpi_ranks_checked] == length(contract.ranks) ? :compared : :incomplete
+        if contract.cuda
+            cuda = validate(base)
+            metrics[:cuda_status] = cuda.status
+            if cuda.status === :passed
+                metrics[:cuda_max_abs_error] = cuda.metrics[:max_abs_error]
+                metrics[:cuda_luminosity_rel_error] = cuda.metrics[:luminosity_rel_error]
+                # MPI against CUDA, by composition: each leg's distance from the
+                # CPU bounds their distance from each other.
+                metrics[:mpi_cuda_luminosity_bound] = worst_lum_rel + cuda.metrics[:luminosity_rel_error]
+            elseif cuda.status === :failed
+                push!(failures, "the CPU/CUDA leg failed: " * cuda.message)
+            else
+                cuda_skip = cuda.message
+            end
+        end
+    finally
+        set_global_rng!(seed=old_seed, method=old_method)
+    end
+    isempty(failures) || return ContractResult(false,
+        "strong-strong PIC CPU/MPI/CUDA consistency: " * join(failures, "; "); metrics=metrics)
+    mpi_note = "one rank under MPI is the CPU policy bit for bit; " *
+        "$(join(string.(filter(>(1), contract.ranks)), ", ")) ranks agree with it to " *
+        "$(round(worst_rel; sigdigits=3)) abs / $(round(worst_lum_rel; sigdigits=3)) rel luminosity"
+    # A requested leg that did not run is not a pass: the MPI legs' outcome is
+    # reported, and the status says the three-way claim was NOT established.
+    cuda_skip === nothing || return ContractResult(:skipped,
+        "strong-strong PIC: " * mpi_note * "; the CPU/CUDA leg was NOT exercised (" *
+        cuda_skip * "). Pass cuda=false to claim the CPU/MPI legs alone."; metrics=metrics)
+    cuda_note = contract.cuda ? "CPU/CUDA at its contract's tolerance" : "CUDA leg not requested"
+    return ContractResult(true, "strong-strong PIC: " * mpi_note * "; " * cuda_note * ".";
+        residual=worst_rel, metrics=metrics)
+end
 
 function _strong_strong_contract_luminosity_series(path)
     series = read(TaskOutput(path), :luminosity; name="ip")

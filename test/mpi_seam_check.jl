@@ -312,13 +312,13 @@ let policy = MultiProcessExecutionPolicy(threads=1)
     # What still refuses at more than one rank, and runs at one: a solver step
     # 4c has not divided, and a line action. Each must throw ONLY when the
     # ranks are more than one, naming what is missing.
-    threw_pic = try
+    threw_undivided = try
         pb1, pb2 = _mpi_check_ss_beams(policy)
-        execute!(_mpi_check_ss_task(policy, nothing; solver=_mpi_check_pic_solver()),
+        execute!(_mpi_check_ss_task(policy, nothing; solver=_mpi_check_undivided_solver()),
                  pb1, pb2; turns=1)
         false
     catch err
-        err isa ArgumentError && occursin("step 4c", sprint(showerror, err))
+        err isa ArgumentError && occursin("still to come", sprint(showerror, err))
     end
     threw_action = try
         ab1, ab2 = _mpi_check_ss_beams(policy)
@@ -329,14 +329,94 @@ let policy = MultiProcessExecutionPolicy(threads=1)
     end
     Octopus._with_execution_policy(resolved) do
         expected = Octopus._mp_nranks() > 1
-        threw_pic == expected ||
-            fail("PIC refusal was $(threw_pic) at $(Octopus._mp_nranks()) rank(s)")
+        threw_undivided == expected ||
+            fail("undivided-solver refusal was $(threw_undivided) at $(Octopus._mp_nranks()) rank(s)")
         threw_action == expected ||
             fail("line-action refusal was $(threw_action) at $(Octopus._mp_nranks()) rank(s)")
         # Every rank checked the direction above; rank 0 alone reports it.
-        Octopus._mp_is_root() && println("MPI-SSREFUSE pic=", threw_pic, " action=", threw_action)
+        Octopus._mp_is_root() && println("MPI-SSREFUSE undivided=", threw_undivided,
+                                         " action=", threw_action)
     end
 end
+
+# --- step 4c: the PIC collide divides -----------------------------------------
+#
+# Each rank deposits its own particles of a slice and the deposited charge grid
+# is all-summed before the field solve; the mesh extents (and, under :sigma,
+# the shift origin) are the beam's; every rank then solves the identical field
+# and kicks its own particles. Run through the task first -- two lines that
+# draw per particle, the artifact, two turns -- then one bare collide per
+# option variant, since each selects a different route through the code.
+let policy = MultiProcessExecutionPolicy(threads=1)
+    path = _mpi_check_pic_artifact_path()
+    b1, b2 = _mpi_check_ss_beams(policy)
+    resolved = Octopus._resolve_execution_policy(policy, b1.rep)
+    Octopus._with_execution_policy(resolved) do
+        Octopus._mp_is_root() && isfile(path) && rm(path)
+        Octopus._mp_barrier()
+    end
+    audit = ExecutionAudit()
+    with_execution_audit(audit) do
+        execute!(_mpi_check_ss_task(policy, path; solver=_mpi_check_pic_solver()),
+                 b1, b2; turns=2)
+    end
+    Octopus._with_execution_policy(resolved) do
+        Octopus._with_beam_shards(b1.rep, b2.rep) do
+            s1 = _mpi_check_collide_signature(b1.rep)
+            s2 = _mpi_check_collide_signature(b2.rep)
+            if Octopus._mp_is_root()
+                println("MPI-PICBEAM1 ", repr(s1.maxpx), " ", repr(s1.rmspx), " ", repr(s1.rmspy))
+                println("MPI-PICBEAM2 ", repr(s2.maxpx), " ", repr(s2.rmspx), " ", repr(s2.rmspy))
+            end
+        end
+    end
+    if child_rank() == 0
+        rec = _mpi_check_ss_record(path)
+        println("MPI-PICLUM ", join((repr(v) for v in rec.values), " "))
+        println("MPI-PICMOMROWS ", rec.m1rows, " ", rec.m2rows)
+        # What the run recorded: the schedule ran one pair at a time on the
+        # main thread at more than one rank, and the deposits were exchanged
+        # -- an all-sum of the padded grid per plane is what divides PIC, so
+        # a divided run that issued none never divided anything.
+        sched = [r.values for r in execution_receipts(audit) if r.consumer === :pic_pair_schedule]
+        grids = count(r -> r.consumer === :multi_process_collective && r.values.kind === :allsum &&
+                           r.values.count == 4 * 16 * 16, execution_receipts(audit))
+        println("MPI-PICSCHED ranks=", sched[1].ranks, " pair_workers=", sched[1].pair_workers,
+                " batch_mode=", sched[1].batch_mode, " grid_allsums=", grids)
+    end
+    # One WRITE per line, and the ranks take turns: two ranks printing at the
+    # same moment had their lines merged mid-line in the launcher's stdout
+    # (`MPI-PICVAR MPI-PICVARLUM node 1 ...`), and a `println` of several
+    # arguments is several writes. `emit` is one write; `emit_by_rank` is one
+    # write per rank, rank order, a barrier between -- inside the policy
+    # scope, where the barrier is a collective and not a no-op.
+    emit(line) = (write(stdout, line * "\n"); flush(stdout); nothing)
+    emit_by_rank(line) = Octopus._with_execution_policy(resolved) do
+        for r in 0:(Octopus._mp_nranks() - 1)
+            Octopus._mp_rank() == r && emit(line)
+            Octopus._mp_barrier()
+        end
+    end
+    for (name, solver, threads) in _mpi_check_pic_variants()
+        vpolicy = threads == 1 ? policy : MultiProcessExecutionPolicy(threads=threads)
+        r = _mpi_check_pic_collide_line(vpolicy, solver)
+        # EVERY rank reports its luminosity: it is computed redundantly per
+        # rank from the all-summed grids and the identical extents, and the
+        # design's "every rank solves the identical field" is asserted by
+        # nothing else -- so the parent holds the ranks to the same bits.
+        emit_by_rank("MPI-PICVARLUM $(name) $(child_rank()) $(r.lum)")
+        if child_rank() == 0
+            emit("MPI-PICVAR $(name) $(r.line)")
+            emit("MPI-PICVARDROP $(name) $(r.dropped)")
+            emit("MPI-PICVARSCHED $(name) pair_workers=$(r.pair_workers) inner_workers=$(r.inner_workers)")
+        end
+    end
+    # The threaded deposit, which the small beams never reach.
+    big = _mpi_check_pic_big_line(policy)
+    emit_by_rank("MPI-PICBIGLUM $(child_rank()) $(big.lum)")
+    child_rank() == 0 && emit("MPI-PICBIG $(big.line)")
+end
+flush(stdout)
 
 # --- step 4b, above the chunked thresholds ---------------------------------
 #

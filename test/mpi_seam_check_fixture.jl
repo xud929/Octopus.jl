@@ -5,6 +5,8 @@
 # worth anything if neither side can drift from the other. Functions rather
 # than constants so the parent can include this inside a `@testset` body.
 
+import Logging   # the dropped-count logger below; the includers need not carry it
+
 """A short, fully deterministic line, built by formula so both sides get the
 same one without sharing an RNG."""
 _mpi_check_line() = (Octopus.CrabDispersionSpec{Float64}(zeta1=0.02, zeta3=-0.01),
@@ -142,11 +144,15 @@ root-mean-square is not the beam's -- an early version of this compared local
 ones and reported a 1.6% disagreement that was entirely the fingerprint's.
 """
 function _mpi_check_collide_signature(rep)
-    px, py = Array(rep.px), Array(rep.py)
+    px, py, pz = Array(rep.px), Array(rep.py), Array(rep.pz)
     n = Octopus._mp_global_count(length(px))
     total(v) = Octopus._mp_global_sum(sum(abs2, v))
     peak = Octopus._mp_allminmax(maximum(abs, px), maximum(abs, px))[2]
-    return (maxpx=peak, rmspx=sqrt(total(px) / n), rmspy=sqrt(total(py) / n))
+    # `rmspz` is what sees the longitudinal kick: PIC's `longitudinal_kick`
+    # writes pz and nothing else, so a fingerprint of px and py alone found
+    # the transverse-only arm equal to the default (4c review).
+    return (maxpx=peak, rmspx=sqrt(total(px) / n), rmspy=sqrt(total(py) / n),
+            rmspz=sqrt(total(pz) / n))
 end
 
 # --- step 4b fixtures: the strong-strong task -------------------------------
@@ -228,10 +234,183 @@ _mpi_check_ss_big_solver() = Octopus.GaussianPoissonSolver(
 
 _mpi_check_ss_big_artifact_path() = joinpath(tempdir(), "octopus_mpi_seam_check_4b_big.h5")
 
-"""A PIC solver, which step 4c divides and which must refuse until then."""
-_mpi_check_pic_solver() = Octopus.PICPoissonSolver(
+"""A spectral solver, which step 4c has not yet divided and which must refuse
+at more than one rank (PIC divided 2026-09-05; Gaussian-PIC and spectral are
+still to come)."""
+_mpi_check_undivided_solver() = Octopus.SpectralPoissonSolver(
     kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(16, 16),
     slicing=Octopus.LongitudinalSlicing(nslices=3, method=:equal_area))
+
+# --- step 4c fixtures: the PIC collide ---------------------------------------
+
+"""The PIC solver the divided-PIC checks run: a 16 x 16 mesh, three equal-area
+slices, the slice-pair Green cache so its reuse decisions run divided too."""
+_mpi_check_pic_solver(; kw...) = Octopus.PICPoissonSolver(
+    kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(16, 16),
+    green_cache=:slice_pair,
+    slicing=Octopus.LongitudinalSlicing(nslices=3, method=:equal_area); kw...)
+
+"""
+The PIC option variants a divided run must honour, each with the route it
+selects and the thread count its policy runs at: the node and source-slice
+meshes (built from global extrema), the `:sigma` extent (a shared shift
+origin), the quadratic interpolation (a third plane), TSC deposition, no Green
+cache, a separate luminosity mesh, the fourth-order field derivative,
+quantized meshes, the lattice Green function, the transverse-only map; then
+the three arms the 4c review asked for -- `:sparse`, 64 equal-area slices on
+these beams, so that at two ranks a rank holds NO member of a slice that is
+globally populated (10 such (rank, slice) pairs on beam 1 and 9 on beam 2;
+85 and 104 at four ranks) and the empty-shard branches of the pair are
+reached rather than dead; `:lumscale`, the DEFAULT luminosity scale, whose
+`npart / (n1 n2)` reads the beam's counts and is hidden by the explicit
+`luminosity_scale = 1.0` of every other arm; and `:threads2`, a two-thread
+policy, under which a divided run must force ONE pair worker (the pairs
+issue collectives and MPI is `:funneled`) and hand the inner maps both
+threads -- pinned from the schedule receipt, since at one thread the forcing
+changes nothing and cannot be seen. Every arm but `:threads2` must differ
+from the default on the same beams -- asserted, so a variant that changed
+nothing cannot pass by running the default twice; `:threads2` must EQUAL it
+bit for bit (the CPU PIC collide is thread-count invariant by construction,
+and so must its divided form be), its difference being the receipt.
+"""
+_mpi_check_pic_variants() = (
+    (:default, _mpi_check_pic_solver(), 1),
+    (:node, _mpi_check_pic_solver(interaction_grid=:node), 1),
+    (:source_slice, _mpi_check_pic_solver(interaction_grid=:source_slice), 1),
+    (:sigma, _mpi_check_pic_solver(grid_extent=:sigma, grid_extent_sigma=4.0), 1),
+    (:quadratic, _mpi_check_pic_solver(slice_interpolation=:quadratic), 1),
+    (:tsc, _mpi_check_pic_solver(deposit_method=:TSC), 1),
+    (:green_none, _mpi_check_pic_solver(green_cache=:none), 1),
+    (:lumgrid, _mpi_check_pic_solver(luminosity_grid=(24, 24), luminosity_deposit_method=:TSC), 1),
+    (:fourth, _mpi_check_pic_solver(field_derivative=:fourth), 1),
+    (:quantize, _mpi_check_pic_solver(grid_quantize=0.125), 1),
+    (:lattice, _mpi_check_pic_solver(green_type=:lattice), 1),
+    (:transverse, _mpi_check_pic_solver(longitudinal_kick=false), 1),
+    (:sparse, _mpi_check_pic_solver(slicing=_mpi_check_pic_sparse_slicing()), 1),
+    (:lumscale, _mpi_check_pic_solver(luminosity_scale=nothing), 1),
+    (:threads2, _mpi_check_pic_solver(), 2),
+)
+
+_mpi_check_pic_sparse_slicing() = Octopus.LongitudinalSlicing(nslices=64, method=:equal_area)
+
+"""
+How many (rank, slice) pairs at `nranks` ranks hold no member of a slice that
+is globally populated, for `rep` under `slicing` -- the count the `:sparse`
+arm's anti-vacuity reads, from the shard rule and the slicing alone.
+"""
+function _mpi_check_pic_locally_empty(rep, slicing, nranks::Integer)
+    n = length(rep)
+    slices = Octopus.longitudinal_slices(rep, slicing)
+    empties = 0
+    for idx in slices.indices
+        isempty(idx) && continue
+        for r in 0:(nranks - 1)
+            shard = Octopus._mp_shard_range(n, nranks, r)
+            any(i -> i in shard, idx) || (empties += 1)
+        end
+    end
+    return empties
+end
+
+_mpi_check_pic_artifact_path() = joinpath(tempdir(), "octopus_mpi_seam_check_4c.h5")
+
+"""
+A logger that keeps the mesh's dropped-particle count out of the warning the
+collide raises (`_pic_report_dropped`: the BEAM's count, warned once by rank
+0) and swallows everything else, so the child's stdout stays the lines the
+parent parses.
+"""
+struct _MPICheckDroppedLogger <: Logging.AbstractLogger
+    dropped::Base.RefValue{Int}
+end
+Logging.min_enabled_level(::_MPICheckDroppedLogger) = Logging.Info
+Logging.shouldlog(::_MPICheckDroppedLogger, level, _module, group, id) = true
+Logging.catch_exceptions(::_MPICheckDroppedLogger) = false
+function Logging.handle_message(l::_MPICheckDroppedLogger, level, message, _module, group, id,
+                                file, line; kwargs...)
+    haskey(kwargs, :dropped) && (l.dropped[] += Int(kwargs[:dropped]))
+    return nothing
+end
+
+"""
+One PIC collide of a fresh beam pair, its luminosity and both beams'
+whole-beam fingerprints as one line of full-precision values, plus what the
+run recorded around it: the luminosity alone (every rank computes it
+redundantly from the all-summed grids, and the child prints it from every
+rank so the parent can hold them to the same bits), the dropped-particle
+count (the beam's, from rank 0's warning), and the pair schedule's worker
+split.
+"""
+function _mpi_check_pic_collide_line(policy, solver; beams=_mpi_check_ss_beams)
+    b1, b2 = beams(policy)
+    resolved = Octopus._resolve_execution_policy(policy, b1.rep)
+    logger = _MPICheckDroppedLogger(Ref(0))
+    audit = Octopus.ExecutionAudit()
+    # INSIDE the policy scope: a bare collide outside it sees a communicator of
+    # one and collides this rank's shard alone as if it were the beam (the
+    # first draft of this did exactly that, and its luminosity fell as 1/P^2).
+    return Octopus._with_execution_policy(resolved) do
+        # `with_execution_audit` returns the AUDIT, not the block's value.
+        lum = Ref{Float64}(NaN)
+        Logging.with_logger(logger) do
+            Octopus.with_execution_audit(audit) do
+                lum[] = Octopus.collide!(solver, b1, b2, Octopus.CPUThreadsBackend)
+            end
+        end
+        lum = lum[]
+        sched = [r.values for r in Octopus.execution_receipts(audit)
+                 if r.consumer === :pic_pair_schedule]
+        length(sched) == 1 || error("expected one PIC pair-schedule receipt, got $(length(sched))")
+        Octopus._with_beam_shards(b1.rep, b2.rep) do
+            s1 = _mpi_check_collide_signature(b1.rep)
+            s2 = _mpi_check_collide_signature(b2.rep)
+            (line=join((repr(v) for v in (lum, s1.maxpx, s1.rmspx, s1.rmspy, s1.rmspz,
+                                          s2.maxpx, s2.rmspx, s2.rmspy, s2.rmspz)), " "),
+             lum=repr(lum), dropped=logger.dropped[],
+             pair_workers=Int(sched[1].pair_workers),
+             inner_workers=Int(sched[1].inner_workers))
+        end
+    end
+end
+
+"""
+The beams of the `:big` arm: large enough that every rank's share of every
+slice reaches the THREADED deposit (`_pic_deposit_parallel`: at least 4096
+particles and 160 per cell, on the smallest mesh the solver accepts, 5 x 5)
+at two ranks -- 32768 per beam, three slices, ~5461 per slice per rank. The
+256/192-particle fixture is ~480x short of that path, so without this arm the
+divided run only ever exercised the serial deposit.
+"""
+function _mpi_check_pic_big_beams(policy)
+    Octopus.set_global_rng!(seed=4243, method=:philox)
+    b1 = Octopus.Beam(32768, policy, Float64; rng_id=3, beta=(1.0, 1.0, 1.0),
+                      emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11)
+    b2 = Octopus.Beam(32768, policy, Float64; rng_id=4, beta=(1.0, 1.0, 1.0),
+                      emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11)
+    return b1, b2
+end
+
+_mpi_check_pic_big_solver() = _mpi_check_pic_solver(grid=(5, 5))
+
+_mpi_check_pic_big_line(policy) =
+    _mpi_check_pic_collide_line(policy, _mpi_check_pic_big_solver(); beams=_mpi_check_pic_big_beams)
+
+"""The smallest share of a slice any rank holds for the `:big` beams at
+`nranks` ranks: the number that must clear the threaded-deposit floor for the
+arm to test what it claims."""
+function _mpi_check_pic_big_min_local_slice(nranks::Integer)
+    b1, b2 = _mpi_check_pic_big_beams(Octopus.CPUThreadsExecutionPolicy(threads=1))
+    smallest = typemax(Int)
+    for rep in (b1.rep, b2.rep)
+        n = length(rep)
+        slices = Octopus.longitudinal_slices(rep, _mpi_check_pic_big_solver().slicing1)
+        for idx in slices.indices, r in 0:(nranks - 1)
+            shard = Octopus._mp_shard_range(n, nranks, r)
+            smallest = min(smallest, count(i -> i in shard, idx))
+        end
+    end
+    return smallest
+end
 
 """The strong-strong task with a line ACTION in line 1, the one thing left
 that a divided run refuses."""

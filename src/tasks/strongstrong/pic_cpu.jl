@@ -17,7 +17,12 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx)
     nx, ny = solver.grid
     workspaces = [_pic_cpu_workspace(T, nx, ny) for _ in 1:_pic_pool_size(solver)]
     green_cache = _pic_green_cache(solver, T)
-    return _pic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache)
+    # Both beams' shards in scope for the whole collide (step 4c, as the
+    # soft-Gaussian's entry does since 4b): a task has already scoped them
+    # and this adds nothing; a bare collide resolves each once here.
+    return _with_beam_shards(beam1.rep, beam2.rep) do
+        _pic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache)
+    end
 end
 
 function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
@@ -112,7 +117,13 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     kbb1 = _pic_kbb1(solver, beam1, beam2)
     kbb2 = _pic_kbb2(solver, beam1, beam2)
     klum = _pic_luminosity_scale(solver, beam1, beam2)
-    compute_luminosity = _pic_compute_luminosity(solver, ctx)
+    # Divided (multi-process step 4c): rank 0's answer on every rank, because
+    # a `PredicateSchedule` is user code and its verdict gates the luminosity
+    # all-sums. ONE assignment -- the batch closure below captures this name,
+    # and a second assignment would box it (the permanent lowered-code sweep
+    # caught exactly that on the first draft).
+    compute_luminosity = _mp_nranks() > 1 ? _mp_bcast(_pic_compute_luminosity(solver, ctx)) :
+                                            _pic_compute_luminosity(solver, ctx)
     T = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(kbb1), typeof(kbb2))
     # The luminosity ESTIMATE is returned as Float64 on every backend and
     # every beam precision (2026-08-07 neighbour audit, N7). Nothing else is
@@ -127,6 +138,14 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     LT = Float64
     share_grid = _pic_source_slice_grid(solver)
     node_grid = _pic_node_grid_mode(solver)
+    # Divided (multi-process step 4c). Every skip decision below reads a
+    # slice's GLOBAL member count from the plan -- one integer all-sum per
+    # beam per collide, as the soft-Gaussian does -- so a rank whose own
+    # shard holds no member of a populated slice still takes part in the
+    # pair's collectives.
+    divided = _mp_nranks() > 1
+    plan1 = _divided_slice_plan(beam1.rep, slices1, divided)
+    plan2 = _divided_slice_plan(beam2.rep, slices2, divided)
     # Node meshes are memoized per (source slice, direction); each is shared by
     # the two field slices adjacent to that node, which is what restores exact
     # continuity at their common boundary.
@@ -136,9 +155,9 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     node_cache = Dict{Tuple{Int,Int},Dict{Int,Any}}()
     if node_grid
         _pic_prebuild_node_caches!(node_cache, solver, T, beam1.rep, slices1,
-                                   beam2.rep, slices2, 1)
+                                   beam2.rep, slices2, 1, plan1.counts, divided)
         _pic_prebuild_node_caches!(node_cache, solver, T, beam2.rep, slices2,
-                                   beam1.rep, slices1, 2)
+                                   beam1.rep, slices1, 2, plan2.counts, divided)
     end
     # Under :source_slice the mesh is sized once per (source slice, direction)
     # from the union over every field slice, so adjacent field slices reuse one
@@ -179,7 +198,12 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # workers after a caller asked for 2, which is a configuration set and not
     # read. The width is recomputed from the policy here and the pool indexed
     # only up to it.
-    pool_workers = min(length(workspaces), _pic_pool_size(solver))
+    # ONE pair worker when divided: every pair issues collectives, MPI runs at
+    # :funneled, and the seam's tripwire throws off the main thread -- so the
+    # batches keep their order and their pairs run one at a time on the main
+    # thread, with the inner per-particle maps keeping the whole pool. The
+    # batched EXCHANGE (one message per batch) is step 4c's performance phase.
+    pool_workers = divided ? 1 : min(length(workspaces), _pic_pool_size(solver))
     # `batch_mode` is read HERE, on CPU, since 2026-09-04. Before that the CPU
     # loop scheduled by `_pic_batchable` alone and `:sequential` was accepted
     # and ignored -- warned about at task level, silent through a bare
@@ -247,7 +271,7 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
                             pairs=npairs, batches=length(batches),
                             widest_batch=maximum(length, batches; init=0),
                             pair_workers=pool_workers,
-                            inner_workers=inner_workers))
+                            inner_workers=inner_workers, ranks=_mp_nranks()))
         Base.ScopedValues.with(_PIC_MAP_WORKER_BUDGET => inner_workers) do
         for batch in batches
             nworkers = clamp(pool_workers, 1, length(batch))
@@ -271,7 +295,7 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
                         state1, state2, scratch2,
                         pr.i, pr.j, chunk_ws, green_cache, node_cache, union_bounds,
                         share_grid, node_grid, kbb1, kbb2, klum,
-                        compute_luminosity, T, true)
+                        compute_luminosity, T, true, plan1, plan2, divided)
                 end
             end
         end
@@ -281,7 +305,7 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
                            (batch_mode=:sequential, requested=requested,
                             pairs=npairs, batches=0,
                             widest_batch=0, pair_workers=1,
-                            inner_workers=_cpu_worker_count()))
+                            inner_workers=_cpu_worker_count(), ranks=_mp_nranks()))
         serial_ws = first(workspaces)
         for (p, entry) in pairs(order)
             ran[p] = _pic_collide_pair!(
@@ -289,7 +313,7 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
                 state1, state2, scratch2,
                 entry[2], entry[3], serial_ws, green_cache, node_cache, union_bounds,
                 share_grid, node_grid, kbb1, kbb2, klum,
-                compute_luminosity, T, false)
+                compute_luminosity, T, false, plan1, plan2, divided)
         end
     end
 
@@ -341,10 +365,18 @@ function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
                             green_cache, node_cache, union_bounds,
                             share_grid::Bool, node_grid::Bool,
                             kbb1, kbb2, klum, compute_luminosity::Bool,
-                            ::Type{T}, batched::Bool) where {T}
+                            ::Type{T}, batched::Bool,
+                            plan1=nothing, plan2=nothing, divided::Bool=false) where {T}
     idx1 = slices1.indices[i]
     idx2 = slices2.indices[j]
-    (isempty(idx1) || isempty(idx2)) && return false
+    # Decided from the slices' GLOBAL member counts (step 4c): a rank whose
+    # shard holds no member of a populated slice must still take part in the
+    # pair's collectives, and a rank that returned on its local count would
+    # leave its peers waiting at the first of them. Undivided the plan is the
+    # local counts and this is the test it always was.
+    n1 = plan1 === nothing ? length(idx1) : plan1.counts[i]
+    n2 = plan2 === nothing ? length(idx2) : plan2.counts[j]
+    (n1 == 0 || n2 == 0) && return false
     param1 = (weight=slices1.weight[i], lb=slices1.boundary[i],
               center=slices1.center[i], rb=slices1.boundary[i + 1])
     param2 = (weight=slices2.weight[j], lb=slices2.boundary[j],
@@ -395,9 +427,11 @@ function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
                               slices1.indices, slices1.boundary, i + 1)
         (gL1 === nothing || gR1 === nothing || gL2 === nothing || gR2 === nothing) && return false
         vx1, vy1 = _pic_interaction_node!(
-            solver, coord1, param1, field2, param2, kbb2, workspace, gL1, gR1; vslot=1)
+            solver, coord1, param1, field2, param2, kbb2, workspace, gL1, gR1;
+            vslot=1, divided=divided)
         vx2, vy2 = _pic_interaction_node!(
-            solver, coord2, param2, field1, param1, kbb1, workspace, gL2, gR2; vslot=2)
+            solver, coord2, param2, field1, param1, kbb1, workspace, gL2, gR2;
+            vslot=2, divided=divided)
     else
         # `union_bounds` is only ever written on the `:source_slice` path, which
         # `_pic_batchable` keeps sequential; `batched` asserts that rather than
@@ -410,19 +444,31 @@ function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
         # resident the beam is stale until the collide ends, so reading it would
         # size the mesh from the turn-start distribution instead of the current
         # one. See the states method of `_pic_union_bounds`.
-        ov1 = share_grid ? get!(() -> _pic_union_bounds(coord1, param1.center, state2, slices2.indices),
+        ov1 = share_grid ? get!(() -> _pic_union_bounds(coord1, param1.center, state2, slices2.indices;
+                                                         divided=divided),
                                 union_bounds, (i, 1)) : nothing
-        ov2 = share_grid ? get!(() -> _pic_union_bounds(coord2, param2.center, state1, slices1.indices),
+        ov2 = share_grid ? get!(() -> _pic_union_bounds(coord2, param2.center, state1, slices1.indices;
+                                                         divided=divided),
                                 union_bounds, (j, 2)) : nothing
         key1 = share_grid ? (i, 0, 1) : (i, j, 1)
         key2 = share_grid ? (j, 0, 2) : (i, j, 2)
+        # Under `grid_extent = :sigma` the extent's shift origin must be the
+        # same particle on every rank (step 4c): the slice's globally-first
+        # member, from the rank the plan says owns it. Re-read per direction,
+        # because direction 1 kicks slice i in place before direction 2 reads
+        # it as the field.
+        sigma_refs = divided && Symbol(solver.grid_extent) === :sigma
+        ref_s1 = sigma_refs ? _pic_first_member(coord1, plan1.owns_reference[i]) : nothing
+        ref_f2 = sigma_refs ? _pic_first_member(field2, plan2.owns_reference[j]) : nothing
         vx1, vy1 = _pic_interaction!(
             solver, coord1, param1, field2, param2, kbb2, workspace, green_cache, key1, ov1;
-            vslot=1,
+            vslot=1, divided=divided, source_ref=ref_s1, field_ref=ref_f2,
         )
+        ref_s2 = sigma_refs ? _pic_first_member(coord2, plan2.owns_reference[j]) : nothing
+        ref_f1 = sigma_refs ? _pic_first_member(field1, plan1.owns_reference[i]) : nothing
         vx2, vy2 = _pic_interaction!(
             solver, coord2, param2, field1, param1, kbb1, workspace, green_cache, key2, ov2;
-            vslot=2,
+            vslot=2, divided=divided, source_ref=ref_s2, field_ref=ref_f1,
         )
     end
     # Slice i was kicked in place and is already current. Slice j swaps: the
@@ -431,7 +477,8 @@ function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
     # this element write never races another.
     @inbounds state2[j], scratch2[j] = scratch2[j], state2[j]
     if compute_luminosity
-        @inbounds lum_parts[p] = _pic_luminosity(solver, vx1, vy1, vx2, vy2, klum, workspace)
+        @inbounds lum_parts[p] = _pic_luminosity(solver, vx1, vy1, vx2, vy2, klum, workspace;
+                                                 divided=divided)
     end
     return true
 end
@@ -481,6 +528,10 @@ function _pic_report_dropped(workspaces)
     for ws in workspaces
         total += Int(ws.dropped[])
     end
+    # The BEAM's count, not this rank's shard's (step 4c): an integer sum
+    # across the ranks, and one warning from rank 0 rather than P of them.
+    total = _mp_global_count(total)
+    _mp_is_root() || return nothing
     return _pic_report_dropped_count(total)
 end
 
@@ -707,7 +758,8 @@ this reproduces the old bounds bit for bit.
 The `rep` method above is kept for the direct callers in `test/` and
 `validation/`, which pass a beam that no collide is mutating.
 """
-function _pic_union_bounds(source, center, states::AbstractVector, field_indices)
+function _pic_union_bounds(source, center, states::AbstractVector, field_indices;
+                           divided::Bool=false)
     T = eltype(source.x)
     c = T(center)
     zmin = T(Inf); zmax = T(-Inf)
@@ -724,7 +776,16 @@ function _pic_union_bounds(source, center, states::AbstractVector, field_indices
             fymin = min(fymin, yv); fymax = max(fymax, yv)
         end
     end
-    if isnan(zmin) || !all(isfinite, (fxmin, fxmax, fymin, fymax))
+    # The NaN verdict on the LOCAL data, agreed across the ranks before the
+    # extrema are exchanged (step 4c): every rank throws or none does.
+    field_bad = isnan(zmin) || !all(isfinite, (fxmin, fxmax, fymin, fymax))
+    if divided
+        field_bad = _mp_global_count(field_bad ? 1 : 0) > 0
+        zmin, zmax = _mp_allminmax(zmin, zmax)
+        fxmin, fxmax = _mp_allminmax(fxmin, fxmax)
+        fymin, fymax = _mp_allminmax(fymin, fymax)
+    end
+    if field_bad
         bad = findfirst(c2 -> !all(isfinite, c2.z) || !all(isfinite, c2.x) ||
                               !all(isfinite, c2.px) || !all(isfinite, c2.y) ||
                               !all(isfinite, c2.py), states)
@@ -732,15 +793,20 @@ function _pic_union_bounds(source, center, states::AbstractVector, field_indices
             (x=states[bad].x, px=states[bad].px, y=states[bad].y,
              py=states[bad].py, z=states[bad].z);
             context="source-slice union bounds")
+        # This rank holds no offender but a peer does: the same refusal, so
+        # the ranks leave together rather than one of them waiting.
+        _nonfinite_coordinate_error(:field, (x=T[],);
+                                    context="source-slice union bounds (on another rank)")
     end
     isfinite(zmin) || return nothing
-    return _pic_union_bounds_tail(source, c, T, fxmin, fxmax, fymin, fymax, zmin, zmax)
+    return _pic_union_bounds_tail(source, c, T, fxmin, fxmax, fymin, fymax, zmin, zmax;
+                                  divided=divided)
 end
 
 # The source half, shared by both forms: it reads only this slice's own
 # coordinates, which hoisting does not change.
 function _pic_union_bounds_tail(source, c, ::Type{T}, fxmin, fxmax, fymin, fymax,
-                                zmin, zmax) where {T}
+                                zmin, zmax; divided::Bool=false) where {T}
     sA = T(0.5) * (c - zmax)
     sB = T(0.5) * (c - zmin)
     sxmin = T(Inf); sxmax = T(-Inf); symin = T(Inf); symax = T(-Inf)
@@ -752,7 +818,13 @@ function _pic_union_bounds_tail(source, c, ::Type{T}, fxmin, fxmax, fymin, fymax
             symin = min(symin, ya, yb); symax = max(symax, ya, yb)
         end
     end
-    all(isfinite, (sxmin, sxmax, symin, symax)) ||
+    source_bad = !isempty(source.x) && !all(isfinite, (sxmin, sxmax, symin, symax))
+    if divided
+        source_bad = _mp_global_count(source_bad ? 1 : 0) > 0
+        sxmin, sxmax = _mp_allminmax(sxmin, sxmax)
+        symin, symax = _mp_allminmax(symin, symax)
+    end
+    (source_bad || !all(isfinite, (sxmin, sxmax, symin, symax))) &&
         _nonfinite_coordinate_error(:source,
             (x=source.x, px=source.px, y=source.y, py=source.py);
             context="source-slice union bounds")
@@ -863,14 +935,45 @@ end
 # physical scale is divided by the source macroparticle count to give the
 # per-deposited-particle scale. The division applies to a user-supplied override
 # too, so an explicit kbb1/kbb2 means the same physical quantity for both solvers.
+# Per MACROPARTICLE of the source beam, because the deposit is unit weight per
+# macroparticle and the field of the whole slice is the sum. The count is the
+# BEAM's, read from the shard the collide scoped at its entry (step 4c): a
+# rank dividing by its own shard's count scaled every kick by the rank count
+# -- measured 1.9x at two ranks and 3.5x at four before this read the scope.
 _pic_kbb1(solver::PICPoissonSolver, beam1, beam2) =
-    (solver.kbb1 !== nothing ? solver.kbb1 : _strong_strong_kbb1(solver, beam1, beam2)) / length(beam2.rep)
+    (solver.kbb1 !== nothing ? solver.kbb1 : _strong_strong_kbb1(solver, beam1, beam2)) /
+    last(_mp_current_shard(beam2.rep))
 _pic_kbb2(solver::PICPoissonSolver, beam1, beam2) =
-    (solver.kbb2 !== nothing ? solver.kbb2 : _strong_strong_kbb2(solver, beam1, beam2)) / length(beam1.rep)
+    (solver.kbb2 !== nothing ? solver.kbb2 : _strong_strong_kbb2(solver, beam1, beam2)) /
+    last(_mp_current_shard(beam1.rep))
 
 function _pic_luminosity_scale(solver::PICPoissonSolver, beam1, beam2)
     solver.luminosity_scale !== nothing && return solver.luminosity_scale
-    return beam1.params.npart * beam2.params.npart / (length(beam1.rep) * length(beam2.rep))
+    # The BEAMS' macroparticle counts, not the shards' (step 4c): read from
+    # the shards the collide scoped at its entry, no collective.
+    n1 = last(_mp_current_shard(beam1.rep))
+    n2 = last(_mp_current_shard(beam2.rep))
+    return beam1.params.npart * beam2.params.npart / (n1 * n2)
+end
+
+"""
+The slice's globally-first member's coordinates, on every rank (step 4c).
+
+The owning rank contributes its first member and the others contribute zeros,
+so one all-sum hands every rank the same five numbers -- the 4a shift-origin
+exchange, here for the `:sigma` mesh extent, whose shifted sums every rank
+must take about the same particle. The origin only conditions the estimator,
+so any shared particle would do; the globally-first one is what the undivided
+run uses, which keeps the divided estimator equal to it.
+"""
+function _pic_first_member(c, owns::Bool)
+    T = eltype(c.x)
+    v = zeros(T, 5)
+    if owns && !isempty(c.x)
+        @inbounds v .= (c.x[1], c.px[1], c.y[1], c.py[1], c.z[1])
+    end
+    _mp_allsum!(v)
+    return (x=v[1], px=v[2], y=v[3], py=v[4], z=v[5])
 end
 
 function _pic_extract_slice(rep::Phase6DRep, idx)
@@ -998,24 +1101,33 @@ end
 
 function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field, param_field, kbb,
                            workspace::_PICCPUWorkspace, green_cache, cache_key,
-                           bounds_override=nothing; vslot::Int=0)
+                           bounds_override=nothing; vslot::Int=0, divided::Bool=false,
+                           source_ref=nothing, field_ref=nothing)
     nsource = length(source.x)
     nfield = length(field.x)
     T = promote_type(eltype(source.x), eltype(field.x), typeof(kbb))
 
     sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
     sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
-    source_xl = source.x[1] + source.px[1] * sL
-    source_yl = source.y[1] + source.py[1] * sL
-    source_xr = source.x[1] + source.px[1] * sR
-    source_yr = source.y[1] + source.py[1] * sR
-    source_xmin = min(source_xl, source_xr)
-    source_xmax = max(source_xl, source_xr)
-    source_ymin = min(source_yl, source_yr)
-    source_ymax = max(source_yl, source_yr)
     ge = Symbol(solver.grid_extent)
-    source_x0 = source_xl
-    source_y0 = source_yl
+    # The `:sigma` estimator's shift origin: the first member's drifted
+    # position, as always -- and divided (step 4c) the slice's GLOBALLY-first
+    # member's, handed in by the caller, so every rank shifts about the same
+    # particle. The bounds start from +-Inf so that an EMPTY local slice of a
+    # globally populated one contributes nothing and still owes the exchanges
+    # below; with particles in hand the loop reproduces the old extrema bit
+    # for bit (min against +Inf is the identity).
+    if source_ref !== nothing
+        source_x0 = T(source_ref.x) + T(source_ref.px) * sL
+        source_y0 = T(source_ref.y) + T(source_ref.py) * sL
+    elseif nsource > 0
+        source_x0 = source.x[1] + source.px[1] * sL
+        source_y0 = source.y[1] + source.py[1] * sL
+    else
+        source_x0 = zero(T); source_y0 = zero(T)
+    end
+    source_xmin = T(Inf); source_xmax = T(-Inf)
+    source_ymin = T(Inf); source_ymax = T(-Inf)
     sxs = zero(T); sxs2 = zero(T); sys = zero(T); sys2 = zero(T)
     for i in 1:nsource
         @inbounds begin
@@ -1036,21 +1148,46 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
         end
     end
     kext = T(solver.grid_extent_sigma)
+    nsource_count = 2 * nsource
+    # Non-finite chokepoint (N1, docs/history/todo_ledger_archive.md): a
+    # NaN/Inf coordinate propagates into these O(1) bound values, so this
+    # check costs nothing on the hot path. Decided on the LOCAL data before
+    # any exchange and then agreed across the ranks as a count (step 4c), so
+    # every rank throws or none does -- a rank that threw on its own NaN would
+    # leave its peers waiting in the extent exchange.
+    source_bad = nsource > 0 &&
+        !all(isfinite, (source_xmin, source_xmax, source_ymin, source_ymax))
+    if divided
+        source_xmin, source_xmax = _mp_allminmax(source_xmin, source_xmax)
+        source_ymin, source_ymax = _mp_allminmax(source_ymin, source_ymax)
+        if ge !== :extrema
+            sums = T[sxs, sxs2, sys, sys2]
+            _mp_allsum!(sums)
+            sxs, sxs2, sys, sys2 = sums[1], sums[2], sums[3], sums[4]
+        end
+        nsource_count = _mp_global_count(nsource_count)
+        source_bad = _mp_global_count(source_bad ? 1 : 0) > 0
+    end
     source_xmin, source_xmax = _pic_axis_extent(ge, source_xmin, source_xmax,
-                                                source_x0, sxs, sxs2, 2 * nsource, kext)
+                                                source_x0, sxs, sxs2, nsource_count, kext)
     source_ymin, source_ymax = _pic_axis_extent(ge, source_ymin, source_ymax,
-                                                source_y0, sys, sys2, 2 * nsource, kext)
-    # Non-finite chokepoint (N1, docs/history/todo_ledger_archive.md): a NaN/Inf coordinate propagates
-    # into these O(1) bound values, so this check costs nothing on the hot path.
-    all(isfinite, (source_xmin, source_xmax, source_ymin, source_ymax)) ||
+                                                source_y0, sys, sys2, nsource_count, kext)
+    (source_bad || !all(isfinite, (source_xmin, source_xmax, source_ymin, source_ymax))) &&
         _nonfinite_coordinate_error(:source,
             (x=source.x, px=source.px, y=source.y, py=source.py);
             context=_pic_slice_context(cache_key))
 
-    field_xmin = field_xmax = field.x[1] + T(0.5) * (field.z[1] - T(param_source.center)) * field.px[1]
-    field_ymin = field_ymax = field.y[1] + T(0.5) * (field.z[1] - T(param_source.center)) * field.py[1]
-    field_x0 = field_xmin
-    field_y0 = field_ymin
+    if field_ref !== nothing
+        field_x0 = T(field_ref.x) + T(0.5) * (T(field_ref.z) - T(param_source.center)) * T(field_ref.px)
+        field_y0 = T(field_ref.y) + T(0.5) * (T(field_ref.z) - T(param_source.center)) * T(field_ref.py)
+    elseif nfield > 0
+        field_x0 = field.x[1] + T(0.5) * (field.z[1] - T(param_source.center)) * field.px[1]
+        field_y0 = field.y[1] + T(0.5) * (field.z[1] - T(param_source.center)) * field.py[1]
+    else
+        field_x0 = zero(T); field_y0 = zero(T)
+    end
+    field_xmin = T(Inf); field_xmax = T(-Inf)
+    field_ymin = T(Inf); field_ymax = T(-Inf)
     fxs = zero(T); fxs2 = zero(T); fys = zero(T); fys2 = zero(T)
     for i in 1:nfield
         @inbounds begin
@@ -1070,11 +1207,25 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
             end
         end
     end
+    nfield_count = nfield
+    field_bad = nfield > 0 &&
+        !all(isfinite, (field_xmin, field_xmax, field_ymin, field_ymax))
+    if divided
+        field_xmin, field_xmax = _mp_allminmax(field_xmin, field_xmax)
+        field_ymin, field_ymax = _mp_allminmax(field_ymin, field_ymax)
+        if ge !== :extrema
+            sums = T[fxs, fxs2, fys, fys2]
+            _mp_allsum!(sums)
+            fxs, fxs2, fys, fys2 = sums[1], sums[2], sums[3], sums[4]
+        end
+        nfield_count = _mp_global_count(nfield_count)
+        field_bad = _mp_global_count(field_bad ? 1 : 0) > 0
+    end
     field_xmin, field_xmax = _pic_axis_extent(ge, field_xmin, field_xmax,
-                                              field_x0, fxs, fxs2, nfield, kext)
+                                              field_x0, fxs, fxs2, nfield_count, kext)
     field_ymin, field_ymax = _pic_axis_extent(ge, field_ymin, field_ymax,
-                                              field_y0, fys, fys2, nfield, kext)
-    all(isfinite, (field_xmin, field_xmax, field_ymin, field_ymax)) ||
+                                              field_y0, fys, fys2, nfield_count, kext)
+    (field_bad || !all(isfinite, (field_xmin, field_xmax, field_ymin, field_ymax))) &&
         _nonfinite_coordinate_error(:field,
             (x=field.x, px=field.px, y=field.y, py=field.py, z=field.z);
             context=_pic_slice_context(cache_key))
@@ -1141,10 +1292,10 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
             source_grid.y0, source_grid.y0 + source_grid.height)
     end
     phiL, ExL, EyL = _pic_solve_drifted_field_with_green_fft!(
-        workspace.left, solver, source, sL, source_grid, green_fft, workspace,
+        workspace.left, solver, source, sL, source_grid, green_fft, workspace; divided=divided,
     )
     phiR, ExR, EyR = _pic_solve_drifted_field_with_green_fft!(
-        workspace.right, solver, source, sR, source_grid, green_fft, workspace,
+        workspace.right, solver, source, sR, source_grid, green_fft, workspace; divided=divided,
     )
 
     kick_scale = T(2) * T(kbb)
@@ -1162,7 +1313,7 @@ function _pic_interaction!(solver::PICPoissonSolver, source, param_source, field
         s_mid = T(0.5) * (sL + sR)
         phiM, ExM, EyM = _pic_solve_drifted_field_with_green_fft!(
             _pic_mid_field!(workspace, solver.grid...), solver, source, s_mid,
-            source_grid, green_fft, workspace,
+            source_grid, green_fft, workspace; divided=divided,
         )
         _pic_map_particles(nfield) do first_i, last_i
             _pic_apply_kick_quadratic_range!(
@@ -1360,7 +1511,8 @@ there is no hourglass blow-up: measured cell coarsening is 1.05-1.12x against
 per-slice-pair meshes.
 """
 function _pic_build_node_grids!(cache::Dict, solver::PICPoissonSolver, ::Type{T},
-                                source, center, rep, slice_indices, boundary) where {T}
+                                source, center, rep, slice_indices, boundary,
+                                divided::Bool=false) where {T}
     isempty(cache) || return cache
     nb = length(boundary)
     ns = nb - 1
@@ -1397,12 +1549,28 @@ function _pic_build_node_grids!(cache::Dict, solver::PICPoissonSolver, ::Type{T}
         end
     end
     # NaN in the node boxes means a non-finite coordinate; +-Inf means an empty
-    # slice (legitimate skip). Distinguish the two: fail fast on NaN.
-    any(v -> any(isnan, v), (sxlo, sxhi, sylo, syhi)) &&
+    # slice (legitimate skip). Distinguish the two: fail fast on NaN. Divided
+    # (step 4c) the NaN verdict is taken on the LOCAL boxes and agreed as a
+    # count before the boxes are exchanged, so every rank throws or none
+    # does; the boxes themselves then become the beam's by a vector min/max,
+    # and everything built from them is identical on every rank.
+    source_bad = any(v -> any(isnan, v), (sxlo, sxhi, sylo, syhi))
+    field_bad = any(v -> any(isnan, v), (fxlo, fxhi, fylo, fyhi))
+    if divided
+        source_bad = _mp_global_count(source_bad ? 1 : 0) > 0
+        field_bad = _mp_global_count(field_bad ? 1 : 0) > 0
+        for v in (sxlo, sylo, fxlo, fylo)
+            _mp_allmin!(v)
+        end
+        for v in (sxhi, syhi, fxhi, fyhi)
+            _mp_allmax!(v)
+        end
+    end
+    source_bad &&
         _nonfinite_coordinate_error(:source,
             (x=source.x, px=source.px, y=source.y, py=source.py);
             context="node-mesh build")
-    any(v -> any(isnan, v), (fxlo, fxhi, fylo, fyhi)) &&
+    field_bad &&
         _nonfinite_coordinate_error(:field,
             (x=rep.x, px=rep.px, y=rep.y, py=rep.py, z=rep.z);
             context="node-mesh build")
@@ -1448,17 +1616,21 @@ and the zero-weight deposition guard counts any escapee rather than smearing it.
 """
 function _pic_prebuild_node_caches!(node_cache::Dict, solver::PICPoissonSolver, ::Type{T},
                                     rep_src, slices_src, rep_fld, slices_fld,
-                                    dir::Int) where {T}
+                                    dir::Int, src_counts=nothing,
+                                    divided::Bool=false) where {T}
     for i in eachindex(slices_src.center)
         idx = slices_src.indices[i]
-        isempty(idx) && continue
+        # The skip reads the slice's GLOBAL count when divided (step 4c): the
+        # build exchanges its boxes, so every rank must build the same set.
+        n = src_counts === nothing ? length(idx) : src_counts[i]
+        n == 0 && continue
         nc = get!(() -> Dict{Int,Any}(), node_cache, (i, dir))
         isempty(nc) || continue
         # CPU reads `rep_fld` directly by index, so there is no gather to hoist
         # here; the per-source-slice field pass is a strided read, not a copy.
         src = _pic_extract_slice(rep_src, idx)
         _pic_build_node_grids!(nc, solver, T, src, slices_src.center[i], rep_fld,
-                               slices_fld.indices, slices_fld.boundary)
+                               slices_fld.indices, slices_fld.boundary, divided)
     end
     return node_cache
 end
@@ -1492,7 +1664,7 @@ no gauge fix exists).
 """
 function _pic_interaction_node!(solver::PICPoissonSolver, source, param_source, field,
                                 param_field, kbb, workspace::_PICCPUWorkspace, gL, gR;
-                                vslot::Int=0)
+                                vslot::Int=0, divided::Bool=false)
     nsource = length(source.x)
     nfield = length(field.x)
     T = promote_type(eltype(source.x), eltype(field.x), typeof(kbb))
@@ -1536,15 +1708,17 @@ function _pic_interaction_node!(solver::PICPoissonSolver, source, param_source, 
         gL.field_grid.y0, gL.field_grid.y0 + gL.field_grid.height)
 
     phiL, ExL, EyL = _pic_solve_drifted_field_with_green_fft!(
-        workspace.left, solver, source, sL, gL.source_grid, gL.green_fft, workspace)
+        workspace.left, solver, source, sL, gL.source_grid, gL.green_fft, workspace;
+        divided=divided)
     phiR, ExR, EyR = _pic_solve_drifted_field_with_green_fft!(
-        workspace.right, solver, source, sR, gR.source_grid, gR.green_fft, workspace)
+        workspace.right, solver, source, sR, gR.source_grid, gR.green_fft, workspace;
+        divided=divided)
     phiZ = nothing
     if solver.longitudinal_kick
         nx, ny = solver.grid
         phiZ, _, _ = _pic_solve_drifted_field_with_green_fft!(
             _pic_mid_field!(workspace, nx, ny), solver, source, sR,
-            gL.source_grid, gL.green_fft, workspace)
+            gL.source_grid, gL.green_fft, workspace; divided=divided)
     end
 
     kick_scale = T(2) * T(kbb)
@@ -1986,7 +2160,7 @@ end
 function _pic_solve_field_with_green_fft!(field::_PICFieldWorkspace,
                                           solver::PICPoissonSolver, x, y,
                                           source_grid, green_fft,
-                                          workspace::_PICCPUWorkspace)
+                                          workspace::_PICCPUWorkspace; divided::Bool=false)
     nx, ny = solver.grid
     T = eltype(x)
     hx = T(source_grid.width) / (nx - 1)
@@ -1994,6 +2168,7 @@ function _pic_solve_field_with_green_fft!(field::_PICFieldWorkspace,
     charge = workspace.charge
     fill!(charge, zero(T))
     _pic_deposit!(charge, solver.deposit_method, x, y, T(source_grid.x0), T(source_grid.y0), hx, hy, nx, ny, workspace)
+    divided && _mp_allsum!(charge)
     spectral = workspace.spectral
     spectral .= charge
     workspace.fft_plan * spectral
@@ -2010,7 +2185,7 @@ end
 function _pic_solve_drifted_field_with_green_fft!(field::_PICFieldWorkspace,
                                                   solver::PICPoissonSolver, source, drift_s,
                                                   source_grid, green_fft,
-                                                  workspace::_PICCPUWorkspace)
+                                                  workspace::_PICCPUWorkspace; divided::Bool=false)
     nx, ny = solver.grid
     T = eltype(source.x)
     hx = T(source_grid.width) / T(nx - 1)
@@ -2021,6 +2196,13 @@ function _pic_solve_drifted_field_with_green_fft!(field::_PICFieldWorkspace,
         charge, solver.deposit_method, source.x, source.px, source.y, source.py, T(drift_s),
         T(source_grid.x0), T(source_grid.y0), hx, hy, nx, ny, workspace,
     )
+    # The exchange that divides PIC (step 4c): each rank deposited its own
+    # particles of the source slice, and the field is the field of the whole
+    # slice's charge -- one all-sum of the padded grid, then every rank
+    # solves the identical field redundantly and kicks its own particles.
+    # Phase 1 exchanges the whole 2nx x 2ny matrix per plane; the batched
+    # exchange of a wavefront's planes is the performance phase.
+    divided && _mp_allsum!(charge)
     spectral = workspace.spectral
     spectral .= charge
     workspace.fft_plan * spectral
@@ -2724,31 +2906,46 @@ function _pic_interpolate_kick_quadratic(solver, grid, x, y,
     return Kx, Ky, Kz
 end
 
-function _pic_luminosity(solver::PICPoissonSolver, x1, y1, x2, y2, klum)
+function _pic_luminosity(solver::PICPoissonSolver, x1, y1, x2, y2, klum; divided::Bool=false)
     nx, ny = _pic_luminosity_grid(solver)
     T = promote_type(eltype(x1), eltype(x2), typeof(klum))
     q1 = zeros(T, nx + 1, ny + 1)
     q2 = zeros(T, nx + 1, ny + 1)
-    return _pic_luminosity!(solver, x1, y1, x2, y2, klum, q1, q2)
+    return _pic_luminosity!(solver, x1, y1, x2, y2, klum, q1, q2; divided=divided)
 end
 
 function _pic_luminosity(solver::PICPoissonSolver, x1, y1, x2, y2, klum,
-                         workspace::_PICCPUWorkspace)
+                         workspace::_PICCPUWorkspace; divided::Bool=false)
     nx, ny = _pic_luminosity_grid(solver)
     if size(workspace.luminosity_q1) != (nx + 1, ny + 1)
-        return _pic_luminosity(solver, x1, y1, x2, y2, klum)
+        return _pic_luminosity(solver, x1, y1, x2, y2, klum; divided=divided)
     end
     return _pic_luminosity!(solver, x1, y1, x2, y2, klum,
-                            workspace.luminosity_q1, workspace.luminosity_q2)
+                            workspace.luminosity_q1, workspace.luminosity_q2; divided=divided)
 end
 
-function _pic_luminosity!(solver::PICPoissonSolver, x1, y1, x2, y2, klum, q1, q2)
+# An extremum that an EMPTY local slice can take part in: +-Inf, which the
+# cross-rank min/max then replaces with the beam's (step 4c).
+_pic_extremum(f::F, a, init) where {F} = isempty(a) ? init : f(a)
+
+function _pic_luminosity!(solver::PICPoissonSolver, x1, y1, x2, y2, klum, q1, q2;
+                          divided::Bool=false)
     nx, ny = _pic_luminosity_grid(solver)
     T = promote_type(eltype(x1), eltype(x2), typeof(klum))
-    xmin = min(minimum(x1), minimum(x2))
-    xmax = max(maximum(x1), maximum(x2))
-    ymin = min(minimum(y1), minimum(y2))
-    ymax = max(maximum(y1), maximum(y2))
+    xmin = min(_pic_extremum(minimum, x1, T(Inf)), _pic_extremum(minimum, x2, T(Inf)))
+    xmax = max(_pic_extremum(maximum, x1, T(-Inf)), _pic_extremum(maximum, x2, T(-Inf)))
+    ymin = min(_pic_extremum(minimum, y1, T(Inf)), _pic_extremum(minimum, y2, T(Inf)))
+    ymax = max(_pic_extremum(maximum, y1, T(-Inf)), _pic_extremum(maximum, y2, T(-Inf)))
+    if divided
+        # The overlap mesh covers BOTH beams' virtual positions across every
+        # rank; the deposits below are then each rank's own particles, and
+        # the overlap of the all-summed grids is the beam's luminosity,
+        # identical on every rank -- so it is returned as it is, not summed
+        # again (the soft-Gaussian's per-rank partials are summed once at the
+        # end of its collide; PIC's per-pair values are already global).
+        xmin, xmax = _mp_allminmax(xmin, xmax)
+        ymin, ymax = _mp_allminmax(ymin, ymax)
+    end
     width, height = _pic_resolve_transverse_extent(
         solver, T(xmax - xmin), T(ymax - ymin), "PIC luminosity grid")
     tx = width / T(nx - 1.1)
@@ -2765,6 +2962,10 @@ function _pic_luminosity!(solver::PICPoissonSolver, x1, y1, x2, y2, klum, q1, q2
     method = _pic_luminosity_deposit_method(solver)
     _pic_deposit!(q1, method, x1, y1, xmin, ymin, hx, hy, nx + 1, ny + 1)
     _pic_deposit!(q2, method, x2, y2, xmin, ymin, hx, hy, nx + 1, ny + 1)
+    if divided
+        _mp_allsum!(q1)
+        _mp_allsum!(q2)
+    end
     # The overlap sum covers the FULL (nx+1) x (ny+1) deposit extent. It used
     # to stop at nx x ny, and with a TSC luminosity deposit the topmost
     # particles' third stencil cell lands exactly in the excluded row/column

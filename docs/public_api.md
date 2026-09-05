@@ -292,6 +292,7 @@ Use Julia help:
 ?ElementTrackingBackendConsistencyContract
 ?StrongStrongGaussianBackendConsistencyContract
 ?StrongStrongPICBackendConsistencyContract
+?StrongStrongPICMultiProcessConsistencyContract
 ?PublicConfigurationEffectivenessContract
 ?SymplecticityContract
 ?HighEnergyWeakStrongLimitContract

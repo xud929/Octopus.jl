@@ -299,6 +299,7 @@ constructor names remain the user-facing way to build those specs.
 - `ElementTrackingBackendConsistencyContract`
 - `StrongStrongGaussianBackendConsistencyContract`
 - `StrongStrongPICBackendConsistencyContract`
+- `StrongStrongPICMultiProcessConsistencyContract`
 - `ElementParameterEffectivenessContract`
 - `KnobEffectivenessContract`
 - `MADXSurveyConsistencyContract`

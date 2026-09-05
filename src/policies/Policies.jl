@@ -525,12 +525,43 @@ end
 The global minimum of `lo` and maximum of `hi`. Order-independent (min and max
 associate freely), so this one needs no rank-ordered fold -- which is why mesh
 and box sizing can use it without a determinism argument.
+
+A NaN is NOT a signal here. The extension maps these to `MPI_MIN`/`MPI_MAX`,
+whose result with a NaN input is rank-divergent (measured under MPICH at two
+ranks: the rank holding the NaN received it back, its peer received the finite
+value; at four ranks the finite values themselves differed by rank), so a rank
+that read a bound to decide whether to throw would leave its peers waiting at
+the next collective. A non-finite verdict is taken on LOCAL data, agreed as an
+integer count (`_mp_global_count`), and thrown on every rank before any
+exchanged bound is consumed -- `_pic_interaction!`, `_pic_build_node_grids!`
+and `_pic_union_bounds` all follow that order. Same for `_mp_allmin!` and
+`_mp_allmax!`.
 """
 function _mp_allminmax(lo::Real, hi::Real)
     _record_collective!(:allminmax, 2, 2 * sizeof(lo))
     return _mp_allminmax_impl(lo, hi, _mp_comm())
 end
 _mp_allminmax_impl(lo, hi, ::Nothing) = (lo, hi)
+
+"""
+    _mp_allmin!(A) -> A
+    _mp_allmax!(A) -> A
+
+Element-wise global minimum (maximum) of `A` across the ranks, in place. The
+vector form of `_mp_allminmax`, for the mesh sizing that reduces many
+extrema at once (a node mesh holds one box per slice boundary); the same
+free association makes both a plain all-reduce. Multi-process step 4c.
+"""
+function _mp_allmin!(A::AbstractArray)
+    _record_collective!(:allmin, length(A), sizeof(A))
+    return _mp_allmin_impl!(A, _mp_comm())
+end
+_mp_allmin_impl!(A, ::Nothing) = A
+function _mp_allmax!(A::AbstractArray)
+    _record_collective!(:allmax, length(A), sizeof(A))
+    return _mp_allmax_impl!(A, _mp_comm())
+end
+_mp_allmax_impl!(A, ::Nothing) = A
 
 """
     _mp_bcast!(A, root=0) -> A

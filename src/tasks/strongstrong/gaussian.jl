@@ -304,8 +304,12 @@ MEMBERSHIP, which the collide fixes when it slices the beams and no kick
 changes, so the two collectives behind them are paid once per collide instead
 of once per slice per pair. The coordinates themselves are not here: those the
 kicks do move, so they are re-read every batch.
+
+Shared by every divided collide (the soft-Gaussian since 4a, PIC since 4c):
+the global counts decide every pair skip symmetrically, and the reference
+owner is what a shift origin -- or a `:sigma` mesh-extent origin -- needs.
 """
-function _cpu_gaussian_slice_plan(rep::Phase6DRep, slices, divided::Bool)
+function _divided_slice_plan(rep::Phase6DRep, slices, divided::Bool)
     ns = length(slices.indices)
     counts = Vector{Int}(undef, ns)
     @inbounds for s in 1:ns
@@ -330,7 +334,7 @@ Every slice in `sliceids` gets its shift origin, in one exchange for the lot.
 The single-slice `_mp_slice_reference` in the same shape: the owning rank
 writes its member's four coordinates and every other rank writes zeros, so the
 sum is the owner's values exactly. WHICH rank owns each slice came from
-`_cpu_gaussian_slice_plan` once for the collide; only the coordinates are
+`_divided_slice_plan` once for the collide; only the coordinates are
 re-read, because the kicks move them.
 """
 function _cpu_gaussian_batch_reference(rep::Phase6DRep, slices, plan,
@@ -494,8 +498,8 @@ function _cpu_gaussian_wavefront!(lum_parts, pair_pos,
     rep1 = beam1.rep
     rep2 = beam2.rep
     divided = _mp_nranks() > 1
-    plan1 = _cpu_gaussian_slice_plan(rep1, slices1, divided)
-    plan2 = _cpu_gaussian_slice_plan(rep2, slices2, divided)
+    plan1 = _divided_slice_plan(rep1, slices1, divided)
+    plan2 = _divided_slice_plan(rep2, slices2, divided)
     sample_beam1 = solver.gaussian_when_luminosity == 1
     min_sigma = solver.min_sigma
     for batch in batches

@@ -80,6 +80,8 @@ end
 # makes them usable for mesh and box sizing without a determinism argument.
 Octopus._mp_allminmax_impl(lo, hi, comm::MPI.Comm) =
     (MPI.Allreduce(lo, min, comm), MPI.Allreduce(hi, max, comm))
+Octopus._mp_allmin_impl!(A::AbstractArray, comm::MPI.Comm) = (MPI.Allreduce!(A, min, comm); A)
+Octopus._mp_allmax_impl!(A::AbstractArray, comm::MPI.Comm) = (MPI.Allreduce!(A, max, comm); A)
 
 Octopus._mp_bcast_impl!(A::AbstractArray, root::Int, comm::MPI.Comm) =
     (MPI.Bcast!(A, root, comm); A)

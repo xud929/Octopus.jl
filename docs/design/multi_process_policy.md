@@ -100,7 +100,9 @@ different last bits on different ranks, and a 2-rank run could disagree with
 a 4-rank one for reasons no physics explains. The ordered fold costs O(P) in
 message volume, which Phase 0 already priced at 0.10–0.35 s/turn for 2–8
 ranks and accepted. `_mp_allminmax` is the exception and is allowed to be a
-true all-reduce, because min and max associate freely — which is exactly why
+true all-reduce (but a NaN in its input is rank-divergent under `MPI_MIN`
+and `MPI_MAX`, measured, so a non-finite verdict is agreed as an integer
+count and never read off an exchanged bound), because min and max associate freely — which is exactly why
 mesh and box sizing may use it without a determinism argument.
 
 **A duplicated communicator.** The extension dups `COMM_WORLD` once per
@@ -311,6 +313,56 @@ preparation would close it and is priced as hygiene, not owed here.
 Measured in
 [`../history/multi_process_step4b_2026_09_05.md`](../history/multi_process_step4b_2026_09_05.md).
 
+## Step 4c: the PIC collide
+
+The second solver, and the first with a mesh. A PIC pair deposits each slice's
+macroparticles onto a grid, solves the field by an FFT convolution with the
+Green function, and interpolates the kick back to the other slice's
+particles. Divided, each rank deposits its OWN particles of the source slice,
+the deposited charge grid is all-summed across the ranks, and every rank then
+solves the identical field redundantly -- a grid solve costs far less than
+moving particles -- and kicks its own particles. The luminosity is the overlap
+of two deposited grids, so its two deposits are all-summed the same way and
+the overlap is then the beam's on every rank, returned as it is rather than
+summed again (the soft-Gaussian's per-rank partials are summed once at the
+end of its collide; PIC's per-pair values are already global).
+
+What else had to become the beam's rather than the shard's, each found by
+measurement or by review:
+
+- **The mesh extents.** A pair's mesh is sized from the drifted extrema of
+  both slices; those are all-reduced (min and max associate, so no ordering
+  argument is needed), and everything downstream -- the grids, the quantized
+  extents, the slice-pair Green cache's reuse decisions, the node and
+  source-slice meshes -- then runs identically on every rank from identical
+  inputs. The Green-function cache therefore works divided with no exchange:
+  every rank holds the same cache. Under `grid_extent = :sigma` the estimator
+  shifts its sums about the slice's first member, which must be the same
+  particle on every rank: the globally-first member, obtained the 4a way.
+- **The kick scale.** PIC's per-macroparticle kick divides by the source
+  beam's macroparticle count, and it read the shard's. Every kick scaled by
+  the rank count -- 1.9x at two ranks, 3.5x at four -- before it read the
+  scoped global count. The luminosity scale had the same shape.
+- **Every skip.** A pair whose slice is empty on THIS rank but not globally
+  must still take part in the pair's collectives, so every skip -- the pair
+  itself, the node-mesh prebuild -- reads the slices' global counts from the
+  shared plan, and a rank holding no member of a slice starts its extrema
+  from infinity and deposits nothing.
+- **The non-finite chokepoints.** They tested local data and threw on one
+  rank; each now takes its verdict on the local data, agrees it across the
+  ranks as a count, and throws on every rank or none.
+- **The schedule.** Every collective is issued from inside a pair and MPI
+  runs at `:funneled`, so at more than one rank the wavefront batches keep
+  their order but their pairs run one at a time on the main thread, with the
+  inner per-particle maps keeping the thread pool. Per pair that is two
+  directions times two planes (three under quadratic interpolation or node
+  mode), each a grid all-sum, plus the luminosity's two -- the batched
+  exchange of a whole wavefront's planes in one message is the performance
+  phase.
+
+Gaussian-PIC and spectral still refuse. Measured in
+[`../history/multi_process_step4c_pic_2026_09_05.md`](../history/multi_process_step4c_pic_2026_09_05.md).
+
 ## The CPU, MPI and CUDA consistency statement
 
 Three execution modes, and the relation between them is asserted in two
@@ -320,13 +372,31 @@ places rather than three, because the third follows:
 |---|---|---|
 | CPU vs MPI, tracking | **bitwise**, at every rank count that divides the chunks | the suite's multi-process section, under a launcher, comparing gathered shards against a single-process run |
 | CPU vs MPI, scalar diagnostics | agreement to the accumulation difference between one serial sum and P of them: 1.7e-14 at two ranks, 8.7e-14 at four | the same section, comparing a divided run's moment row against a single-process one |
-| CPU vs CUDA | agreement to the contract's tolerance | `ElementTrackingBackendConsistencyContract` and `validation/tracking_backend_consistency.jl` |
-| MPI vs CUDA | the same tolerance, by composition | not measured directly, and cannot be: the multi-process policy is CPU storage only, so no rank holds a CUDA beam |
+| CPU vs MPI, strong-strong collides | **bitwise at one rank**; across rank counts the parity class -- the soft-Gaussian's aggregates to 5e-16, the PIC deposit's chunk fold is keyed by member-list position so its grids differ by accumulation order, measured 7e-15 worst over the option routes and 9e-14 on a 64-slice, 4096-pair arm | the same section: the child's luminosity series, fingerprints and per-route lines against a single-process run; for PIC also `StrongStrongPICMultiProcessConsistencyContract` |
+| CPU vs CUDA | agreement to the contract's tolerance | `ElementTrackingBackendConsistencyContract` and `validation/tracking_backend_consistency.jl`; for the collides the two `StrongStrong*BackendConsistencyContract`s |
+| MPI vs CUDA | the same tolerance, by composition | not measured directly, and cannot be: the multi-process policy is CPU storage only, so no rank holds a CUDA beam. For PIC the composition is carried as a number: `StrongStrongPICMultiProcessConsistencyContract` runs both legs on the same beams and reports the triangle bound |
 
 The bitwise half is the stronger claim and the one the shard rule exists to
 buy. It is also the half that would decay silently: a tolerance would absorb a
 fold quietly rearranged by a later change, where a bitwise comparison names it
 on the next gate.
+
+For the PIC collide the whole statement is one public object,
+`StrongStrongPICMultiProcessConsistencyContract` (step 4c). It builds the PIC
+backend contract's beams and task; runs them under
+`CPUThreadsExecutionPolicy` in the calling process; launches
+`src/contracts/mpi_pic_consistency_child.jl` at each requested rank count,
+where every rank draws the same beams under the multi-process policy (whole
+draw, own shard -- bit-identical to the undivided beam by construction), runs
+the same task divided and gathers both beams onto rank 0; and compares. One
+rank must match bit for bit, every other count to `rtol`/`luminosity_rtol`.
+With `cuda = true` it then runs `StrongStrongPICBackendConsistencyContract` on
+the same beams and reports the MPI-to-CUDA bound as the sum of the two legs'
+distances from the CPU. A rank count is a property of a launched process, so
+the contract needs the launcher command and a project that carries `MPI`;
+without a launcher it returns `:skipped` naming the legs it did not run, and a
+requested CUDA leg the device cannot run downgrades the result to `:skipped`
+too -- the three-way claim is not made on two legs.
 
 ## Determinism, and what step 3 must choose
 

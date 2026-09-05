@@ -33,6 +33,16 @@ stochastic, or CUDA tracking, or an element implementation it covers, run
 reference table, which `validation/generate_ptc_reference.jl` regenerates when
 MAD-X is on `PATH`.
 
+`StrongStrongPICMultiProcessConsistencyContract` is the three-way statement
+for the PIC collide -- CPU against MPI at each rank count, CPU against CUDA
+through `StrongStrongPICBackendConsistencyContract`, MPI against CUDA by
+composition. Its MPI legs are launched processes, so it needs the launcher
+command (`mpiexec=MPICH_jll.mpiexec()` in the suite; `nothing`, the default,
+returns `:skipped`) and a project that carries `MPI`; the child is
+`src/contracts/mpi_pic_consistency_child.jl`. After changing the divided PIC
+collide (`pic_cpu.jl` under `divided`), the seam, or the shard rule, run it at
+the rank counts you can launch. See `../design/multi_process_policy.md`.
+
 ## Analyses
 
 Analyses define post-processing. No concrete analysis exists yet:
