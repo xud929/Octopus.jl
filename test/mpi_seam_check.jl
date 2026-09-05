@@ -217,7 +217,7 @@ let policy = MultiProcessExecutionPolicy(threads=1)
     sb1, sb2 = _mpi_check_collide_beams(policy)
     resolved = Octopus._resolve_execution_policy(policy, b1.rep)
     Octopus._with_execution_policy(resolved) do
-        Octopus._with_shard(Octopus._mp_resolve_shard(length(b1.rep))) do
+        Octopus._with_beam_shards(b1.rep, b2.rep, sb1.rep, sb2.rep) do
             slices = Octopus.longitudinal_slices(
                 b1.rep, Octopus.LongitudinalSlicing(nslices=5, method=:equal_area))
             if Octopus._mp_is_root()
@@ -258,6 +258,161 @@ let policy = MultiProcessExecutionPolicy(threads=1)
             end
             threw == (Octopus._mp_nranks() > 1) ||
                 fail("equal_count refusal was $(threw) at $(Octopus._mp_nranks()) rank(s)")
+        end
+    end
+end
+
+# --- step 4b: the strong-strong TASK divides --------------------------------
+#
+# The collide divided in 4a; this runs it through `execute!` with everything
+# a task adds: two lines that each draw per particle, a line-placed moment
+# observer in each, the luminosity channel and the run artifact. Two beams of
+# DIFFERENT sizes, because a run holding two beams is where one scoped shard
+# handed the second beam the first beam's offset.
+let policy = MultiProcessExecutionPolicy(threads=1)
+    path = _mpi_check_ss_artifact_path()
+    b1, b2 = _mpi_check_ss_beams(policy)
+    resolved = Octopus._resolve_execution_policy(policy, b1.rep)
+    Octopus._with_execution_policy(resolved) do
+        Octopus._mp_is_root() && isfile(path) && rm(path)
+        Octopus._mp_barrier()
+        # Each beam's shard as this rank resolved it. The parent asserts the
+        # offsets: a wrong shift origin or a wrong radiation key on beam 2
+        # would look like ordinary last-bit noise everywhere else.
+        Octopus._with_beam_shards(b1.rep, b2.rep) do
+            s1 = Octopus._mp_current_shard(b1.rep)
+            s2 = Octopus._mp_current_shard(b2.rep)
+            @printf("MPI-SSSHARD rank=%d b1=%d/%d b2=%d/%d\n",
+                    Octopus._mp_rank(), s1[1], s1[2], s2[1], s2[2])
+        end
+    end
+    execute!(_mpi_check_ss_task(policy, path), b1, b2; turns=3)
+    # Whole-beam fingerprints of both beams after three turns, through the
+    # collectives, so a shard's own root-mean-square is never mistaken for the
+    # beam's (the 4a lesson).
+    Octopus._with_execution_policy(resolved) do
+        Octopus._with_beam_shards(b1.rep, b2.rep) do
+            s1 = _mpi_check_collide_signature(b1.rep)
+            s2 = _mpi_check_collide_signature(b2.rep)
+            if Octopus._mp_is_root()
+                println("MPI-SSBEAM1 ", repr(s1.maxpx), " ", repr(s1.rmspx), " ", repr(s1.rmspy))
+                println("MPI-SSBEAM2 ", repr(s2.maxpx), " ", repr(s2.rmspx), " ", repr(s2.rmspy))
+            end
+        end
+    end
+    if child_rank() == 0
+        rec = _mpi_check_ss_record(path)
+        println("MPI-SSLUMTURNS ", join(rec.turns, ","))
+        println("MPI-SSLUM ", join((repr(v) for v in rec.values), " "))
+        println("MPI-SSMOMROWS ", rec.m1rows, " ", rec.m2rows)
+        println("MPI-SSMOM1 ", join((repr(v) for v in rec.m1), " "))
+        println("MPI-SSMOM2 ", join((repr(v) for v in rec.m2), " "))
+    end
+
+    # What still refuses at more than one rank, and runs at one: a solver step
+    # 4c has not divided, and a line action. Each must throw ONLY when the
+    # ranks are more than one, naming what is missing.
+    threw_pic = try
+        pb1, pb2 = _mpi_check_ss_beams(policy)
+        execute!(_mpi_check_ss_task(policy, nothing; solver=_mpi_check_pic_solver()),
+                 pb1, pb2; turns=1)
+        false
+    catch err
+        err isa ArgumentError && occursin("step 4c", sprint(showerror, err))
+    end
+    threw_action = try
+        ab1, ab2 = _mpi_check_ss_beams(policy)
+        execute!(_mpi_check_ss_task_with_action(policy), ab1, ab2; turns=1)
+        false
+    catch err
+        err isa ArgumentError && occursin("line action", sprint(showerror, err))
+    end
+    Octopus._with_execution_policy(resolved) do
+        expected = Octopus._mp_nranks() > 1
+        threw_pic == expected ||
+            fail("PIC refusal was $(threw_pic) at $(Octopus._mp_nranks()) rank(s)")
+        threw_action == expected ||
+            fail("line-action refusal was $(threw_action) at $(Octopus._mp_nranks()) rank(s)")
+        # Every rank checked the direction above; rank 0 alone reports it.
+        Octopus._mp_is_root() && println("MPI-SSREFUSE pic=", threw_pic, " action=", threw_action)
+    end
+end
+
+# --- step 4b, above the chunked thresholds ---------------------------------
+#
+# The pair above never enters the chunked moment and kick branches; this one
+# does on every rank at 1, 2 and 4 ranks (see the fixture). Signatures and the
+# luminosity series only: the moment observers' first-order columns sit near
+# zero by construction at this size, and a relative comparison there measures
+# chance rather than agreement.
+let policy = MultiProcessExecutionPolicy(threads=1)
+    path = _mpi_check_ss_big_artifact_path()
+    b1, b2 = _mpi_check_ss_big_beams(policy)
+    resolved = Octopus._resolve_execution_policy(policy, b1.rep)
+    Octopus._with_execution_policy(resolved) do
+        Octopus._mp_is_root() && isfile(path) && rm(path)
+        Octopus._mp_barrier()
+    end
+    execute!(_mpi_check_ss_task(policy, path; solver=_mpi_check_ss_big_solver(),
+                                observers=false), b1, b2; turns=2)
+    Octopus._with_execution_policy(resolved) do
+        Octopus._with_beam_shards(b1.rep, b2.rep) do
+            s1 = _mpi_check_collide_signature(b1.rep)
+            s2 = _mpi_check_collide_signature(b2.rep)
+            if Octopus._mp_is_root()
+                println("MPI-SSBIGBEAM1 ", repr(s1.maxpx), " ", repr(s1.rmspx), " ", repr(s1.rmspy))
+                println("MPI-SSBIGBEAM2 ", repr(s2.maxpx), " ", repr(s2.rmspx), " ", repr(s2.rmspy))
+            end
+        end
+    end
+    if child_rank() == 0
+        series = read(Octopus.TaskOutput(path), :luminosity; name="ip")
+        println("MPI-SSBIGLUM ", join((repr(Float64(v)) for v in series.value), " "))
+    end
+end
+
+# --- step 4b: a shard with no live particle must not hang its peers --------
+#
+# Found by the 4b design review and reproduced under a launcher on the tree
+# that closed 4a: the slicing refused an all-dead SHARD on that rank's own
+# count while its peers went on into the first collective and waited there.
+# Both refusals now read the whole beam's counts. Global particles 129..256
+# are killed -- all of rank 1's shard at two ranks, ranks 2 and 3 at four --
+# so some ranks hold no live particle while the beam does; every rank must
+# slice. Then every particle is killed, and every rank must refuse alike.
+let policy = MultiProcessExecutionPolicy(threads=1)
+    b1, _ = _mpi_check_ss_beams(policy)
+    resolved = Octopus._resolve_execution_policy(policy, b1.rep)
+    slc = Octopus.LongitudinalSlicing(nslices=5, method=:equal_area)
+    Octopus._with_execution_policy(resolved) do
+        offset, _ = Octopus._mp_resolve_shard(length(b1.rep))
+        for g in 129:256
+            local_i = g - offset
+            1 <= local_i <= length(b1.rep) || continue
+            for a in Octopus.coordinate_arrays(b1.rep)
+                a[local_i] = NaN
+            end
+        end
+        Octopus._with_beam_shards(b1.rep) do
+            weights = allow_lost_particles() do
+                Octopus.longitudinal_slices(b1.rep, slc).weight
+            end
+            isapprox(sum(weights), 1.0; rtol=1.0e-12) ||
+                fail("half-dead beam sliced to weights $(weights) on rank $(Octopus._mp_rank())")
+            for a in Octopus.coordinate_arrays(b1.rep)
+                fill!(a, NaN)
+            end
+            threw = try
+                allow_lost_particles() do
+                    Octopus.longitudinal_slices(b1.rep, slc)
+                end
+                false
+            catch err
+                err isa ArgumentError && occursin("live particle", sprint(showerror, err))
+            end
+            threw || fail("all-dead beam did not refuse on rank $(Octopus._mp_rank())")
+            Octopus._mp_is_root() &&
+                println("MPI-SSPOISON half_dead_sliced=true all_dead_refused=true")
         end
     end
 end

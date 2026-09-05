@@ -2351,22 +2351,75 @@ function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam;
     empty!(task.turn_times)
     empty!(task.pic_phase_times)
     policy = _resolve_strong_strong_policy(task, beam1, beam2)
+    # Activated ONCE (one communicator receipt per run), and the whole run --
+    # preparation, the turn loop, the observers' flushes and the artifact's
+    # close -- sits inside the scope, because every one of those may issue a
+    # collective and a collective outside the scope is a silent no-op (the
+    # step-3c defect class). BOTH beams' shards are resolved here, one
+    # integer collective each in a fixed order, and scoped by representation:
+    # the two beams may differ in size, so a scope holding one shard would
+    # hand the second beam the first beam's offset (step 4b).
     result = _with_execution_policy(policy) do
-        _execute_strong_strong_task!(
-            task, beam1, beam2, nturns, first_turn, policy)
+        _with_beam_shards(beam1.rep, beam2.rep) do
+            _execute_strong_strong_task!(
+                task, beam1, beam2, nturns, first_turn, policy)
+        end
     end
     task.next_turn[] = next_turn
     return result
 end
 
+"""
+Refuse, at more than one rank, a solver whose collide has not been divided.
+
+Step 4a divided the soft-Gaussian collide: its slicing, slice moments, weights
+and luminosity reduce across the ranks. PIC, Gaussian-PIC and spectral are
+step 4c onward -- they need per-slice-pair grid all-sums and global extrema
+for mesh sizing -- and until then each rank would collide its own shard alone
+and report the result as the beam's. Called at the task's preflight AND at
+each of those solvers' CPU collide entries, so a bare `collide!` refuses too.
+"""
+function _reject_undivided_solver(solver::AbstractPoissonSolver)
+    nranks = _mp_nranks()
+    nranks > 1 || return nothing
+    solver isa GaussianPoissonSolver && return nothing
+    throw(ArgumentError(
+        "$(nameof(typeof(solver))) does not divide across the $(nranks) MPI " *
+        "ranks in force: multi-process step 4a divided the soft-Gaussian " *
+        "collide (GaussianPoissonSolver); PIC, Gaussian-PIC and spectral are " *
+        "step 4c onward, and until then each rank would collide its own shard " *
+        "alone and report the result as the whole beam's. Use " *
+        "GaussianPoissonSolver, run one rank, or use CPUThreadsExecutionPolicy."))
+end
+
+"""
+Refuse, at more than one rank, the parts of a strong-strong task that are
+still not divided: line ACTIONS in either line, the one thing left that
+Octopus cannot reason about (a callback the user wrote, handed the rep this
+rank holds). Line observers are Octopus's own and divide (steps 3b and 3c);
+apertures divide (3c); the soft-Gaussian collide divides (4a); the turn loop,
+the luminosity channel and the artifact divide here (4b).
+"""
+function _reject_unsharded_strong_strong_features(blocks1, blocks2)
+    _mp_nranks() > 1 || return nothing
+    for (which, blocks) in ((1, blocks1), (2, blocks2)), block in blocks
+        what = _has_line_actions(block.entries) ? "a line action" :
+               _has_predicate_scheduled_line_observers(block.entries) ?
+                   "a line observer on a PredicateSchedule" : nothing
+        what === nothing && continue
+        throw(ArgumentError(
+            "line$(which) of this StrongStrongTask carries $(what), which a run " *
+            "divided across the $(_mp_nranks()) ranks in force refuses by " *
+            "design: it is user code handed one rank's shard -- an action " *
+            "would report its answer as the whole beam's, and a schedule " *
+            "predicate gates a collective every rank must issue. Run one " *
+            "rank, use CPUThreadsExecutionPolicy, or drop it."))
+    end
+    return nothing
+end
+
 function _execute_strong_strong_task!(
         task, beam1, beam2, turns::Int, first_turn::Int64, policy)
-    # The soft-Gaussian COLLIDE divides (campaign step 4a): its slicing
-    # statistics, slice moments, weights and luminosity all reduce across the
-    # ranks. The strong-strong TASK does not yet -- its turn loop, observers
-    # and artifact are the wiring step 4b adds -- so the task still refuses
-    # and the solver is reachable divided through `collide!`.
-    _reject_unsharded_multi_process("a StrongStrongTask")
     _warn_inactive_diagnostics(task.diagnostics, backend_type(policy))
     _record_execution!(:strong_strong_diagnostics, backend_type(policy), (
         record_turn_times=task.diagnostics.record_turn_times,
@@ -2391,6 +2444,7 @@ function _execute_strong_strong_task!(
     blocks1 = _strong_strong_runtime_blocks(task, 1)
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
+    _reject_unsharded_strong_strong_features(blocks1, blocks2)
     solvers = _preflight_solver_configurations!(task, blocks1, blocks2, policy)
     # Validate every output preparer BEFORE any of them commits, then commit.
     #
@@ -2486,6 +2540,7 @@ function _preflight_solver_configurations!(task, blocks1, blocks2, policy)
         block1.collision === nothing && continue
         solver = _collision_solver(task, block1.collision, block2.collision)
         solvers[k] = solver
+        _reject_undivided_solver(solver)
         if policy isa ResolvedCUDAExecutionPolicy
             launch_solver = _pic_launch_solver(solver)
             launch_solver === nothing ||
@@ -2542,10 +2597,20 @@ function _execute_strong_strong_turns!(
     backend = backend_type(policy)
     streams = _strong_strong_segment_streams(policy)
     memory_log_every = _strong_strong_cuda_memory_log_every(backend)
+    # Each beam's line tracks under its OWN global index offset (step 4b):
+    # the two beams are sharded separately, so a radiating element or an
+    # aperture in line 1 keys on beam 1's global indices and one in line 2 on
+    # beam 2's. Read from the shards scoped at the run's entry -- no
+    # collective here -- and zero in every single-process run. The collide
+    # takes the turn-only context; it reads its offsets from the same scope.
+    shard_offset1 = first(_mp_current_shard(beam1.rep))
+    shard_offset2 = first(_mp_current_shard(beam2.rep))
     for offset in 0:(turns - 1)
         turn = first_turn + offset
         turn_t0 = task.diagnostics.record_turn_times ? time_ns() : UInt64(0)
         ctx = with_turn(ctx, turn)
+        ctx1 = with_index_offset(ctx, shard_offset1)
+        ctx2 = with_index_offset(ctx, shard_offset2)
         # The ledger's live-progress column, set BEFORE any channel push: a
         # capacity-boundary flush fires DURING this turn's collision, and it
         # must persist THIS turn -- assigned at the loop tail it lagged one
@@ -2559,7 +2624,7 @@ function _execute_strong_strong_turns!(
             _execute_strong_strong_segment_pair!(
                 beam1.rep, blocks1[j].entries, task.plan_cache1,
                 beam2.rep, blocks2[j].entries, task.plan_cache2,
-                policy, ctx, streams, j,
+                policy, ctx1, ctx2, streams, j,
             )
             _cuda_nvtx_pop(backend, line_range)
             if blocks1[j].collision !== nothing
@@ -2745,17 +2810,20 @@ function _strong_strong_maybe_log_cuda_memory(backend, turn::Integer, every::Int
     return nothing
 end
 
+# One context per beam: they differ only in `index_offset`, each beam's own
+# shard offset under a divided run (step 4b), and are the same object in a
+# single-process run.
 function _execute_strong_strong_segment_pair!(rep1, entries1::Tuple, plan_cache1,
                                               rep2, entries2::Tuple, plan_cache2,
-                                              policy, ctx, streams, block_index::Integer)
+                                              policy, ctx1, ctx2, streams, block_index::Integer)
     if policy isa ResolvedCUDAExecutionPolicy && streams !== nothing
-        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, policy, ctx, block_index, streams[1])
-        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, policy, ctx, block_index, streams[2])
+        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, policy, ctx1, block_index, streams[1])
+        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, policy, ctx2, block_index, streams[2])
         CUDA.synchronize(streams[1])
         CUDA.synchronize(streams[2])
     else
-        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, policy, ctx, block_index)
-        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, policy, ctx, block_index)
+        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, policy, ctx1, block_index)
+        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, policy, ctx2, block_index)
     end
     return nothing
 end

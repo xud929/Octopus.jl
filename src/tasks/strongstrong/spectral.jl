@@ -1080,6 +1080,7 @@ collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThre
 # and accumulates the kick from every source slice, so writes never collide.
 # Direction 1 (kick beam2) also accumulates the density-overlap luminosity.
 function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing)
+    _reject_undivided_solver(solver)            # step 4c divides this collide
     return solver.longitudinal_kick ?
         _spectral_collide_longitudinal!(solver, beam1, beam2, ctx) :
         _spectral_collide_transverse!(solver, beam1, beam2, ctx)

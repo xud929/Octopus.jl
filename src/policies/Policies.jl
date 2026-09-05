@@ -210,11 +210,13 @@ than silently accepted. Without `MPI` loaded the process is its own
 communicator of one, so `ranks = 1` is accepted and any larger integer is
 not: the collective seam runs its serial passthrough and `nranks` is 1.
 
-Sharding is NOT part of this policy yet. Step 2 of the multi-process campaign
-lands the policy, the communicator handshake and the collective seam;
-`execute!` refuses a task at more than one rank until step 3 gives the tasks
-a consumer that divides the work (`docs/design/multi_process_policy.md`).
-CPU storage only.
+A `TrackingTask` and a soft-Gaussian `StrongStrongTask` run divided across
+the ranks (multi-process steps 3a-3c and 4a-4b; the design and the
+per-step records are in `docs/design/multi_process_policy.md`). What still
+refuses at more than one rank, naming what is missing: task and line
+ACTIONS and observers on a `PredicateSchedule` (callbacks Octopus cannot
+reason about), `:equal_count` slicing (a global sort), and the PIC,
+Gaussian-PIC and spectral solvers (step 4c onward). CPU storage only.
 """
 struct MultiProcessExecutionPolicy <: AbstractExecutionPolicy
     threads::Union{Int,Symbol}
@@ -460,6 +462,17 @@ _mp_rank() = (context = _multi_process_context(); context === nothing ? 0 : cont
 _mp_is_root() = _mp_rank() == 0
 
 function _record_collective!(kind::Symbol, count::Integer, bytes::Integer)
+    # MPI is initialised at `:funneled`: only the main thread may issue a
+    # collective. Every seam function records BEFORE it communicates, so this
+    # is the one tripwire the design promised (step 4b lands it): a collective
+    # reached from a worker task throws a named error instead of corrupting
+    # the communicator or hanging. Nothing to check at one rank, where every
+    # collective is its passthrough.
+    _mp_nranks() > 1 && Threads.threadid() != 1 && throw(ArgumentError(
+        "a multi-process collective ($(kind)) was issued from thread " *
+        "$(Threads.threadid()); MPI runs at :funneled and Octopus issues " *
+        "collectives from the task driver on the main thread only, never from " *
+        "inside _run_logical_workers."))
     # The `audit === nothing` check inside `_record_execution!` runs before
     # anything is built, and this NamedTuple is small and concrete, so an
     # unaudited collective pays a load and a branch.
@@ -699,24 +712,136 @@ function _masked_global_count(islive::L, local_n::Integer) where {L}
 end
 
 """
-This run's `(offset, global_n)`, set once at a run's entry so the per-turn
-folds inside it need no collective of their own.
+One beam's place in a divided run: the identity of its representation, the
+particle count this rank holds of it, and the `(offset, global_n)` the shard
+rule gives that count.
+
+Keyed by the REPRESENTATION, not by the count (multi-process step 4b). A
+strong-strong task holds two beams of different sizes, and a scope that
+stored one `(offset, global_n)` handed the second beam the first beam's
+offset. Keying by local count instead is ambiguous in principle -- two beams
+of 256 and 257 particles give rank 1 of 2 the same 128-particle shard with
+different offsets -- so the key is the object every consumer already has in
+hand. `Beam` is immutable and tracking mutates its arrays in place, so a
+beam's `rep` is the same object for the whole run.
+"""
+struct _ShardEntry
+    rep::Any            # matched by `===`: exact, no hash, and it keeps the rep alive
+    local_n::Int
+    offset::Int
+    global_n::Int
+end
+
+"""
+This run's shards, one entry per beam, set once at a run's entry so the
+per-turn folds inside it need no collective of their own. `nothing` outside
+a run.
 """
 const _ACTIVE_SHARD = Base.ScopedValues.ScopedValue{Any}(nothing)
 
-_with_shard(f::F, shard) where {F} = Base.ScopedValues.with(f, _ACTIVE_SHARD => shard)
+_shard_entry(rep, shard::Tuple) =
+    _ShardEntry(rep, length(rep), Int(shard[1]), Int(shard[2]))
+
+"""Whether `rep` already has a shard in scope."""
+function _mp_shard_scoped(rep)
+    entries = _ACTIVE_SHARD[]
+    entries === nothing && return false
+    return any(e -> e.rep === rep, entries)
+end
+
+"""
+    _with_shards(f, entries)
+
+Run `f` with these `_ShardEntry`s in scope; the ones the enclosing scope
+already held stay visible, so a nested run of another beam does not hide the
+outer beam's shard.
+"""
+function _with_shards(f::F, entries::Tuple{Vararg{_ShardEntry}}) where {F}
+    outer = _ACTIVE_SHARD[]
+    combined = outer === nothing ? entries : (entries..., outer...)
+    return Base.ScopedValues.with(f, _ACTIVE_SHARD => combined)
+end
+
+"""
+    _with_shard(f, rep, shard)
+
+Run `f` with `rep`'s `(offset, global_n)` in scope.
+"""
+_with_shard(f::F, rep, shard::Tuple) where {F} = _with_shards(f, (_shard_entry(rep, shard),))
+
+"""
+    _with_beam_shards(f, reps...)
+
+Resolve every beam's shard that is not already in scope -- one integer
+collective each, in the order given, which every rank must therefore call in
+the same order -- and run `f` with all of them in scope. The entry point of
+any run that holds more than one beam; a bare `collide!` enters it too, so a
+consumer inside never resolves a shard of its own, and a collide reached
+through a task that already scoped its beams pays nothing here.
+"""
+function _with_beam_shards(f::F, reps...) where {F}
+    fresh = Tuple(rep for rep in reps if !_mp_shard_scoped(rep))
+    entries = Tuple(_shard_entry(rep, _mp_resolve_shard(length(rep))) for rep in fresh)
+    return _with_shards(f, entries)
+end
+
+"""
+    _mp_current_shard(rep) -> (offset, global_n)
+
+The shard in force for this representation, matched by identity. Outside any
+run (no scope) the shard is resolved -- one collective, symmetric because
+every rank is equally outside. Inside a run, a representation the run did
+not scope is an ERROR at more than one rank rather than a resolve: a resolve
+here would be a collective hidden inside a per-slice or per-turn function,
+and the design puts every shard resolution at a run's entry. At one rank it
+is simply the whole beam. Every decision below is a function of the scope,
+which every rank holds alike, so no branch can strand a peer.
+"""
+function _mp_current_shard(rep::AbstractPhaseRep)
+    entries = _ACTIVE_SHARD[]
+    entries === nothing && return _mp_resolve_shard(length(rep))
+    for e in entries
+        e.rep === rep || continue
+        e.local_n == length(rep) || throw(ArgumentError(
+            "the representation in scope held $(e.local_n) particles when its " *
+            "shard was resolved and holds $(length(rep)) now; a beam does not " *
+            "change size inside a run."))
+        return (e.offset, e.global_n)
+    end
+    _mp_nranks() == 1 && return (0, Int(length(rep)))
+    throw(ArgumentError(
+        "this representation has no shard in scope on the $(_mp_nranks()) ranks " *
+        "in force: enter the run through execute!, collide!, or " *
+        "_with_beam_shards, which resolve every beam's shard at the entry."))
+end
 
 """
     _mp_current_shard(local_n) -> (offset, global_n)
 
-The shard in force. Resolved once at a run's entry and read from the scope
-here; a caller that reaches a fold without having entered through a run pays
-the collective instead of getting a wrong answer.
+The count-keyed form, for a caller that holds a coordinate array and not the
+representation it belongs to. Every decision is made from facts every rank
+shares -- the scope's entries and their GLOBAL sizes -- never from this
+rank's own counts, because a rule keyed on local counts throws on the ranks
+where two beams' shards happen to coincide and proceeds on the others, which
+is a deadlock at the next collective. So: no scope, resolve; scoped beams of
+one global size, that shard (they all have the same one on this rank);
+scoped beams of several sizes, throw on every rank -- pass the
+representation instead.
 """
 function _mp_current_shard(local_n::Integer)
-    shard = _ACTIVE_SHARD[]
-    shard === nothing && return _mp_resolve_shard(local_n)
-    return shard
+    entries = _ACTIVE_SHARD[]
+    entries === nothing && return _mp_resolve_shard(local_n)
+    sizes = unique(e.global_n for e in entries)
+    length(sizes) == 1 || throw(ArgumentError(
+        "$(length(sizes)) beams of different sizes ($(join(sort(sizes), ", ")) " *
+        "particles) are in scope; a count cannot say which is meant -- call " *
+        "_mp_current_shard with the beam's representation."))
+    e = entries[1]
+    e.local_n == Int(local_n) && return (e.offset, e.global_n)
+    _mp_nranks() == 1 && return (0, Int(local_n))
+    throw(ArgumentError(
+        "a count of $(local_n) is not the scoped beam's $(e.local_n) particles " *
+        "on this rank; call _mp_current_shard with the beam's representation."))
 end
 
 """
@@ -753,29 +878,6 @@ function _mp_local_chunks()
     context = _multi_process_context()
     (context === nothing || context.nranks == 1) && return _REDUCTION_CHUNKS
     return div(_REDUCTION_CHUNKS, context.nranks)
-end
-
-"""
-Refuse a task run on a communicator this campaign has not yet taught to
-divide work.
-
-Step 2 lands the policy, the communicator handshake and the collective seam;
-no task consumer shards anything yet. At more than one rank a task would run
-whole on every rank and every rank would write the same output file -- P
-copies of one answer, presented as a parallel run. Refusing is the "loud
-beats silent" rule and the "never claim a capability before its
-implementation exists" rule at once; step 3 replaces this with the sharded
-path, and the suite pins the refusal so the day it stops throwing is visible.
-"""
-function _reject_unsharded_multi_process(what::AbstractString)
-    nranks = _mp_nranks()
-    nranks > 1 || return nothing
-    throw(ArgumentError(
-        "$(what) was asked to run on $(nranks) MPI ranks, but no task " *
-        "consumer divides work across ranks yet (multi-process campaign " *
-        "step 2 lands the policy and the collective seam; step 3 shards the " *
-        "weak-strong task). Every rank would track the whole beam and write " *
-        "the same output. Run one rank, or use CPUThreadsExecutionPolicy."))
 end
 
 """

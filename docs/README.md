@@ -337,6 +337,11 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   "gaussian collide flatline" as a property of threads and not of the solver;
   and the counted 1874 collectives per collide that turn the curve over past
   sixteen),
+  [`multi_process_step4b_2026_09_05.md`](history/multi_process_step4b_2026_09_05.md)
+  (the strong-strong task divided: one shard per beam keyed by
+  representation, one tracking context per beam, the blanket refusal
+  replaced by per-solver and line-action refusals; the luminosity series
+  bit-identical at 1, 2 and 4 ranks),
   [`multi_process_step4a_2026_09_04.md`](history/multi_process_step4a_2026_09_04.md)
   (the soft-Gaussian collide divided: five per-slice reductions, the shared
   shift origin, bit-identical slice boundaries, and the histogram whose

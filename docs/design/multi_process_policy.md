@@ -21,8 +21,10 @@ serial passthrough in core and an MPI implementation in an extension. It is
 not sharding: no task divides work across ranks yet. A task asked to run on
 more than one rank therefore **refuses**, naming step 3, rather than running
 whole on every rank and letting every rank write the same output file. That
-refusal is pinned, so the day step 3 removes it is a visible event rather
-than a silent one.
+refusal was pinned, so its removal was a visible event: step 3a narrowed it
+to what was still undivided, and step 4b removed the last blanket one. What
+refuses now is listed under each step, and every refusal names what is
+missing.
 
 At one rank the policy is `CPUThreadsExecutionPolicy` — the same partitions,
 the same folds, the same numbers. That is measured both ways: in the serial
@@ -253,6 +255,62 @@ sibling, which is also why its declared consumer is a receipt both routes emit:
 at the name, so a `:cuda_`-tagged consumer could never have certified the CPU
 half.
 
+## Step 4b: the strong-strong task
+
+The collide divided in 4a; this wires the task around it. Three things had to
+change, and two of them are about the run holding TWO beams where every
+earlier step held one.
+
+**One shard per beam, keyed by representation.** The scope that carries a
+run's `(offset, global_n)` held one of them, and every fold read it whatever
+beam it was folding. A strong-strong task's beams may differ in size, so the
+second beam was handed the first beam's offset. Keying by local count instead
+is ambiguous in principle -- beams of 256 and 257 particles give rank 1 of 2
+the same 128-particle shard at different offsets -- so the scope holds one
+entry per beam keyed by the identity of its `Phase6DRep`, which is the object
+every consumer already has: `Beam` is immutable and tracking mutates its
+arrays in place. The run resolves both shards at its entry, one integer
+collective each in a fixed order, and a consumer that reaches a fold with a
+representation the run did not scope pays the collective rather than getting
+another beam's answer. The count-keyed form survives for callers holding only
+an array; it throws on the ambiguous case rather than guess.
+
+**One tracking context per beam.** Each line tracks under its own global
+index offset, so a radiating element or an aperture in line 1 keys on beam
+1's global indices and one in line 2 on beam 2's. The collide takes the
+turn-only context and reads its offsets from the scope.
+
+**The whole run inside the scope.** Preparation, the turn loop, the observers'
+flushes and the artifact's close all sit inside the policy scope, because any
+of them may issue a collective (the step-3c lesson). The failure path issues
+none: probe-row pushes and the artifact's finalize are root-only, so a rank
+that throws cannot strand its peers from inside `finally`.
+
+Everything else was already divided: the luminosity is the collide's global
+sum and lands in the artifact through the root-only push; line observers
+reduce (3b) or gather (3c); the artifact is rank 0's. What refuses, named in
+the message: line ACTIONS in either line and line observers on a
+`PredicateSchedule` (both are user code handed one rank's shard, and a
+schedule predicate gates a collective every rank must issue -- the tracking
+task refuses the same two), `:equal_count` slicing (4a), and every solver but
+the soft-Gaussian -- PIC, Gaussian-PIC and spectral are step 4c onward, and
+each refuses at its CPU collide entry as well as at the task's preflight, so
+a bare `collide!` cannot collide one rank's shard and call it the beam.
+
+Two decisions that gated a collective were still rank-local on the collide
+path and were found by the 4b review: the slicing refused an EMPTY shard, or
+one whose particles were all dead, on this rank's own count, while its peers
+went on into the first collective and waited there -- reproduced under a
+launcher on the tree that closed 4a. Both refusals now read the whole beam's
+counts. The remaining rank-0-only failures (an artifact that cannot be
+opened, a duplicate probe name) leave the other ranks in their first
+collective, and the job ends because the launcher aborts on the non-zero
+exit -- the posture the tracking task has; a broadcast of the outcome after
+preparation would close it and is priced as hygiene, not owed here.
+
+Measured in
+[`../history/multi_process_step4b_2026_09_05.md`](../history/multi_process_step4b_2026_09_05.md).
+
 ## The CPU, MPI and CUDA consistency statement
 
 Three execution modes, and the relation between them is asserted in two
@@ -300,9 +358,11 @@ differently deadlocks its peers at the next collective.
 ## Threading, output, and the launcher
 
 MPI is initialised at `:funneled`: Octopus issues collectives from the task
-driver on the main thread, never from inside `_run_logical_workers`. Step 3
-adds the tripwire when the first consumer lands; today no collective is
-reachable from a worker.
+driver on the main thread, never from inside `_run_logical_workers`. The
+tripwire landed in step 4b: `_record_collective!`, which every seam function
+calls before it communicates, throws a named error at more than one rank
+when called off the main thread, so a collective that ever reaches a worker
+fails loudly instead of corrupting the communicator or hanging.
 
 Rank 0 owns the artifact and the console summaries — the run artifact is
 serial HDF5 and two ranks opening one path is corruption. Step 3 implements

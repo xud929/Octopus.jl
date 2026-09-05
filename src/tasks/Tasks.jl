@@ -475,7 +475,7 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
             # Once per call, inside the policy scope: deriving the shard is a
             # collective, and every fold inside the run reads it from here
             # instead of paying for its own.
-            _with_shard(_mp_resolve_shard(length(rep))) do
+            _with_shard(rep, _mp_resolve_shard(length(rep))) do
                 _execute_tracking_task!(
                     task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy)
             end
@@ -539,7 +539,7 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     # the loss summary, which step 3b globalized here and which was therefore
     # not reached (docs/history/multi_process_step3c_2026_09_04.md).
     _with_resolved_policy(active) do
-        _with_shard(_mp_resolve_shard(length(rep))) do
+        _with_shard(rep, _mp_resolve_shard(length(rep))) do
             summary = _global_loss_summary(_task_loss_summary(task, rep))
             # The console-quiet rule: with an artifact attached the accounting
             # goes into its /losses group (written just below), so the summary
@@ -552,7 +552,7 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
                 # that cannot be written must raise, the task-observer rule.
                 _ra_write_losses!(task.artifact, task.loss_record[],
                                   _aperture_s_positions(task.elements), summary,
-                                  first(_mp_current_shard(length(rep))))
+                                  first(_mp_current_shard(rep)))
                 finalize_run_artifact!(task.artifact)
             end
         end
@@ -662,6 +662,20 @@ _task_has_per_particle_observer(observers) =
         _hook_tuple(observers))
 
 """
+Whether any line observer runs on a `PredicateSchedule`. Its predicate is
+user code handed the tracking context, and its answer gates a collective
+(the moment observer's reduction, the snapshot observer's gather); a
+predicate that answered differently on two ranks would leave one waiting at
+a collective the other never issued. The design's rule is that such a
+decision must be broadcast; until an observer schedule is, the predicate
+schedule is refused at more than one rank alongside the actions (step 4b).
+"""
+_has_predicate_scheduled_line_observers(entries::Tuple) =
+    any(e -> e isa LineObserverEntry && e.observer.schedule isa PredicateSchedule, entries)
+_task_has_predicate_scheduled_observers(observers) =
+    any(o -> _as_scheduled_observer(o).schedule isa PredicateSchedule, _hook_tuple(observers))
+
+"""
 Refuse, at more than one rank, the parts of a tracking task that are still
 not divided.
 
@@ -686,14 +700,18 @@ function _reject_unsharded_tracking_features(task, runtime_entries)
         push!(blocked, "task actions")
     _has_line_actions(runtime_entries) &&
         push!(blocked, "line actions")
+    _task_has_predicate_scheduled_observers(task.observers) &&
+        push!(blocked, "observers on a PredicateSchedule")
+    _has_predicate_scheduled_line_observers(runtime_entries) &&
+        push!(blocked, "line observers on a PredicateSchedule")
     isempty(blocked) && return nothing
     throw(ArgumentError(
         "this TrackingTask carries " * join(blocked, ", ", " and ") *
-        ", which the multi-process campaign has not divided across the " *
-        "$(_mp_nranks()) ranks in force: each rank would compute them over " *
-        "its own shard and report the result as the whole beam's. Step 3b " *
-        "divides them. Run one rank, use CPUThreadsExecutionPolicy, or drop " *
-        "the diagnostics."))
+        ", which a run divided across the $(_mp_nranks()) ranks in force " *
+        "refuses by design: each is user code handed one rank's shard, and " *
+        "an action would report its answer as the whole beam's while a " *
+        "schedule predicate gates a collective the ranks must all issue. " *
+        "Run one rank, use CPUThreadsExecutionPolicy, or drop them."))
 end
 
 function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
@@ -703,7 +721,7 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
        !_has_line_hooks(runtime_entries) && task.artifact === nothing
         _execute_fast_tracking_turns!(
             rep, runtime_elems, turns, first_turn, policy,
-            with_index_offset(TrackingContext(), first(_mp_current_shard(length(rep)))))
+            with_index_offset(TrackingContext(), first(_mp_current_shard(rep))))
         return rep
     end
     # `first_turn`, not just the count: `should_run` is handed the ABSOLUTE turn
@@ -737,7 +755,7 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
         # particle must draw the same numbers whether the beam is divided or
         # not. (Reachable at one rank today; step 3b opens this path to more.)
         base_ctx = with_index_offset(TrackingContext(),
-                                     first(_mp_current_shard(length(rep))))
+                                     first(_mp_current_shard(rep)))
         for offset in 0:(turns - 1)
             turn = first_turn + offset
             ctx = with_turn(base_ctx, turn)

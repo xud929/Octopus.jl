@@ -277,6 +277,24 @@ teaches something reusable, it lands here (dated), and the full record goes to
   -- a divided run at a size the code takes a different path for is a
   different test.
 
+## A scope that holds one of something is a one-beam assumption
+
+- The shard scope stored one `(offset, global_n)` and every fold read it
+  whatever beam it was folding. Harmless through three steps that each held
+  one beam; wrong the moment a strong-strong task held two of different
+  sizes, when the second beam was handed the first beam's offset -- its
+  radiating elements keyed on the wrong global indices and its collide looked
+  for the slice's first member on the wrong rank (2026-09-05, step 4b). The
+  obvious repair, keying by local count, is ambiguous in principle: beams of
+  256 and 257 particles give rank 1 of 2 the same 128-particle shard at
+  different offsets, and a rank that guessed would guess silently. Key it by
+  the object every consumer already holds, and let the count-keyed form throw
+  on the ambiguous case rather than guess.
+- The general shape: when a run first holds TWO of what every earlier run
+  held one of, every scoped singleton and every "the beam's" accessor is a
+  decision that was never made. Enumerate them before the run, not after the
+  numbers disagree.
+
 ## A global quantity does not make what is derived from it global
 
 - The longitudinal statistics of a divided beam were summed across the ranks

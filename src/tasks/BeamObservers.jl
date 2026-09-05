@@ -870,7 +870,7 @@ function observe!(observer::CoordinateSnapshotObserver, ctx::TrackingContext, re
     # each rank contributes the part of `1:npart` its shard covers, and the
     # rows carry the global particle id. At one rank the offset is zero, the
     # shard is the beam, and this is what it was.
-    offset, global_n = _mp_current_shard(length(rep))
+    offset, global_n = _mp_current_shard(rep)
     npart = observer.npart === nothing ? global_n : observer.npart
     npart <= global_n || throw(ArgumentError(
         "CoordinateSnapshotObserver npart $(npart) exceeds particle count $(global_n)"))

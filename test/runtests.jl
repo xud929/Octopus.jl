@@ -6855,6 +6855,150 @@ end
     @test any(!iszero, divided.rep.x)        # anti-vacuity: a real beam
 end
 
+@testset "A strong-strong task under the multi-process policy is the task it composes" begin
+    # Multi-process step 4b. At one rank the divided strong-strong task must
+    # be EXACTLY the CPU-policy task: same coordinates in both beams, same
+    # luminosity series in the artifact, same line-observer rows -- with two
+    # beams of different sizes, each line drawing per particle, so a wrong
+    # shard offset on either beam would show. (More than one rank is measured
+    # under a launcher, where the parent compares the child's record with a
+    # run of this same task.)
+    L6(dmu) = Linear6DSpec{Float64}(beta1=(1.0, 1.0, 1.0), beta2=(1.0, 1.0, 1.0), dmu=dmu)
+    rad(id) = LumpedRadSpec{Float64}(damping_turns=(4000.0, 4000.0, 2000.0),
+                                     beta=(1.0, 1.0, 1.0), alpha=(0.0, 0.0, 0.0),
+                                     sigma=(1.0e-4, 1.0e-5, 1.0e-3),
+                                     is_damping=true, is_excitation=true, rng_id=id)
+    solver() = GaussianPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                                     slicing=LongitudinalSlicing(nslices=5, method=:equal_area))
+    line(which) = (L6((0.31, 0.27, 0.02)), rad(200 + which),
+                   MomentObserver(name="m$(which)", orders=1:2),
+                   StrongStrongCollision(:ip; poisson_solver=solver()), L6((0.11, 0.07, 0.01)))
+    beams(policy) = begin
+        set_global_rng!(seed=4242, method=:philox)
+        (Beam(256, policy, Float64; rng_id=1, beta=(1.0, 1.0, 1.0),
+              emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11),
+         Beam(192, policy, Float64; rng_id=2, beta=(1.0, 1.0, 1.0),
+              emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11))
+    end
+    run(policy) = begin
+        path = tempname() * ".h5"
+        b1, b2 = beams(policy)
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            execute!(StrongStrongTask(line(1), line(2); policy=policy, artifact=path),
+                     b1, b2; turns=3)
+        end
+        lum = read(TaskOutput(path), :luminosity; name="ip")
+        m1 = read(MomentOutput(path; name="m1")); m2 = read(MomentOutput(path; name="m2"))
+        rm(path; force=true)
+        (map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)),
+         collect(lum.turn), collect(lum.value), m1, m2,
+         count(r -> r.consumer === :multi_process_communicator, execution_receipts(audit)))
+    end
+    cpu = run(CPUThreadsExecutionPolicy(threads=1))
+    mp = run(MultiProcessExecutionPolicy(threads=1))
+    @test all(a == b for (a, b) in zip(cpu[1], mp[1]))
+    @test all(a == b for (a, b) in zip(cpu[2], mp[2]))
+    @test cpu[3] == mp[3] == [0, 1, 2]
+    @test cpu[4] == mp[4]
+    @test all(cpu[4] .> 0)                              # anti-vacuity
+    @test cpu[5] == mp[5] && size(cpu[5], 1) == 3
+    @test cpu[6] == mp[6] && size(cpu[6], 1) == 3
+    @test any(!=(0.0), cpu[1][2])                       # the lines moved the beams
+    @test mp[7] == 1                                    # activated ONCE per execute!
+
+    # The shard scope holds one entry per beam, keyed by representation: a run
+    # with two beams of different sizes must hand each its own shard, and the
+    # count-keyed form must refuse to guess between two beams whose local
+    # counts coincide (256 vs 257 particles give rank 1 of 2 the same 128).
+    r1, r2 = beams(CPUThreadsExecutionPolicy(threads=1))
+    resolved = Octopus._resolve_execution_policy(MultiProcessExecutionPolicy(threads=1), r1.rep)
+    Octopus._with_execution_policy(resolved) do
+        Octopus._with_beam_shards(r1.rep, r2.rep) do
+            @test Octopus._mp_current_shard(r1.rep) == (0, 256)
+            @test Octopus._mp_current_shard(r2.rep) == (0, 192)
+            # Two sizes in scope: a count cannot say which beam is meant, and
+            # the refusal is decided from the global sizes, so it is the same
+            # on every rank (see below).
+            @test_throws ArgumentError Octopus._mp_current_shard(256)
+            @test_throws ArgumentError Octopus._mp_current_shard(192)
+            # A representation the run did not scope is the whole beam at one
+            # rank (and an error at more) instead of inheriting another
+            # beam's shard.
+            other = Phase6DRep(zeros(7), zeros(7), zeros(7), zeros(7), zeros(7), zeros(7))
+            @test Octopus._mp_current_shard(other) == (0, 7)
+        end
+        # The count-keyed form decides from the scope's GLOBAL sizes, which
+        # every rank holds alike, never from this rank's counts: with beams of
+        # two sizes in scope it throws for ANY count (a rule keyed on local
+        # coincidences would throw on rank 1 of 2 for 256/257-particle beams
+        # and proceed on rank 0 -- a deadlock at the next collective), and
+        # with beams of one size it answers, duplicates included.
+        two_sizes = (Octopus._ShardEntry(r1.rep, 256, 0, 256),
+                     Octopus._ShardEntry(r2.rep, 192, 0, 257))
+        Octopus._with_shards(two_sizes) do
+            @test_throws ArgumentError Octopus._mp_current_shard(256)
+            @test_throws ArgumentError Octopus._mp_current_shard(32)
+            @test Octopus._mp_current_shard(r1.rep) == (0, 256)     # identity still answers
+            @test Octopus._mp_current_shard(r2.rep) == (0, 257)
+        end
+        # A scoped representation whose size no longer matches its entry is an
+        # error, not a stale answer.
+        Octopus._with_shards((Octopus._ShardEntry(r1.rep, 200, 0, 256),)) do
+            @test_throws ArgumentError Octopus._mp_current_shard(r1.rep)
+        end
+        one_size = (Octopus._ShardEntry(r1.rep, 256, 0, 256),
+                    Octopus._ShardEntry(r2.rep, 256, 0, 256))
+        Octopus._with_shards(one_size) do
+            @test Octopus._mp_current_shard(256) == (0, 256)
+            @test Octopus._mp_shard_scoped(r1.rep) && Octopus._mp_shard_scoped(r2.rep)
+        end
+        @test !Octopus._mp_shard_scoped(r1.rep)
+        # The solvers step 4c has not divided refuse only at more than one
+        # rank; at one rank they run as they always did.
+        @test Octopus._reject_undivided_solver(PICPoissonSolver()) === nothing
+        @test Octopus._reject_undivided_solver(GaussianPoissonSolver()) === nothing
+    end
+
+    # MPI runs at :funneled, and the design promised a tripwire: a collective
+    # issued off the main thread throws by name. Checked on a communicator of
+    # two built by hand -- the passthrough still answers, so the only thing
+    # under test is the thread check. Each iteration records the thread it
+    # actually ran on and whether the seam threw, and the two must agree
+    # iteration by iteration; `:static` spreads the iterations over the
+    # threads, so at least one runs off thread 1 (asserted, not assumed).
+    if Threads.nthreads(:default) > 1
+        context = Octopus.MultiProcessContext(nothing, 2, 0, :auto, :serial_passthrough)
+        Octopus._with_resolved_policy(Octopus.ResolvedCPUExecutionPolicy(1, context)) do
+            n = Threads.nthreads(:default)
+            ran_on = zeros(Int, n)
+            threw = fill(false, n)
+            Threads.@threads :static for i in 1:n
+                ran_on[i] = Threads.threadid()
+                threw[i] = try
+                    Octopus._mp_barrier(); false
+                catch err
+                    err isa ArgumentError && occursin("thread", sprint(showerror, err))
+                end
+            end
+            @test all(threw[i] == (ran_on[i] != 1) for i in 1:n)
+            @test any(!=(1), ran_on)                       # anti-vacuity: some iteration was off thread 1
+            @test Octopus._mp_barrier() === nothing        # the main thread, at "two ranks"
+        end
+    else
+        @test_skip "the :funneled tripwire needs a second thread"
+    end
+    let path = tempname() * ".h5", policy = MultiProcessExecutionPolicy(threads=1)
+        b1, b2 = beams(policy)
+        pic = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(16, 16),
+                               slicing=LongitudinalSlicing(nslices=3, method=:equal_area))
+        pl(which) = (L6((0.31, 0.27, 0.02)), StrongStrongCollision(:ip; poisson_solver=pic))
+        execute!(StrongStrongTask(pl(1), pl(2); policy=policy, artifact=path), b1, b2; turns=1)
+        @test read(TaskOutput(path), :luminosity; name="ip").turn == [0]
+        rm(path; force=true)
+    end
+end
+
 @testset "Scalar diagnostics reduce the whole beam, and a lost particle still counts for nothing" begin
     # Multi-process step 3b. The moment and orbit reductions became
     # rank-aware; at one rank they must be EXACTLY what they were, because
@@ -7076,8 +7220,18 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                      "JULIA_LOAD_PATH" => "@:@stdlib",
                      "JULIA_PROJECT" => Base.active_project())
         out = IOBuffer()
-        ok = success(pipeline(cmd; stdout=out, stderr=out))
-        (ok, String(take!(out)))
+        # Bounded (step 4b): every multi-process hazard shows up as ranks
+        # blocked in a collective, and a rank that blocks WITHOUT exiting
+        # would otherwise hang the whole suite rather than fail it. Generous,
+        # because the child precompiles on a cold depot; a kill is a failed
+        # test with the captured output, never a silent pass.
+        proc = run(pipeline(cmd; stdout=out, stderr=out); wait=false)
+        watchdog = Timer(1800) do _
+            process_running(proc) && kill(proc)
+        end
+        wait(proc)
+        close(watchdog)
+        (success(proc), String(take!(out)))
     end
     if launcher === nothing
         @test_broken false          # visible in the summary, unlike a silent skip
@@ -7266,6 +7420,103 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             offsets = [parse(Int, match(r"offset=(\d+)", line).captures[1])
                        for line in split(out2, '\n') if startswith(line, "MPI-SHARD ")]
             @test sort(offsets) == [0, div(_mpi_check_global_n(), 2)]
+
+            # --- step 4b: the strong-strong TASK divides ------------------
+            #
+            # The collide divided in 4a; the child now runs it through
+            # `execute!` with two lines that draw per particle, a line-placed
+            # moment observer in each, the luminosity channel and the run
+            # artifact -- on two beams of DIFFERENT sizes, which is where one
+            # scoped shard handed the second beam the first beam's offset.
+            #
+            # Three claims, in descending strength. The one-rank MPI run
+            # reproduces this process's CPUThreadsExecutionPolicy run BIT FOR
+            # BIT (the campaign's literal requirement; the strings are `repr`
+            # at full precision). Two ranks agree with one to the parity
+            # tolerance the collide (4a) and the moment observer (3b) already
+            # price. And only rank 0 wrote: the row counts say so.
+            reference = let path = tempname() * ".h5"
+                cpu = CPUThreadsExecutionPolicy(threads=1)
+                b1, b2 = _mpi_check_ss_beams(cpu)
+                execute!(_mpi_check_ss_task(cpu, path), b1, b2; turns=3)
+                rec = _mpi_check_ss_record(path)
+                s1 = _mpi_check_collide_signature(b1.rep)
+                s2 = _mpi_check_collide_signature(b2.rep)
+                rm(path; force=true)
+                (lum=join((repr(v) for v in rec.values), " "),
+                 turns=join(rec.turns, ","),
+                 m1=join((repr(v) for v in rec.m1), " "),
+                 m2=join((repr(v) for v in rec.m2), " "),
+                 beam1=join((repr(v) for v in (s1.maxpx, s1.rmspx, s1.rmspy)), " "),
+                 beam2=join((repr(v) for v in (s2.maxpx, s2.rmspx, s2.rmspy)), " "),
+                 rows="$(rec.m1rows) $(rec.m2rows)", values=rec.values)
+            end
+            @test all(reference.values .> 0)                       # anti-vacuity
+            @test reference.turns == "0,1,2"
+            for (tag, want) in (("MPI-SSLUM ", reference.lum), ("MPI-SSMOM1 ", reference.m1),
+                                ("MPI-SSMOM2 ", reference.m2), ("MPI-SSBEAM1 ", reference.beam1),
+                                ("MPI-SSBEAM2 ", reference.beam2),
+                                ("MPI-SSLUMTURNS ", reference.turns),
+                                ("MPI-SSMOMROWS ", reference.rows))
+                @test length(tagged(out1, tag)) == 1               # rank 0 alone reports
+                @test length(tagged(out2, tag)) == 1
+                @test first(tagged(out1, tag)) == want              # one rank: bit for bit
+            end
+            @test first(tagged(out2, "MPI-SSLUMTURNS ")) == "0,1,2"
+            @test first(tagged(out2, "MPI-SSMOMROWS ")) == "3 3"   # rank 0 wrote, once per turn
+            floats(s) = [parse(Float64, v) for v in split(s)]
+            for tag in ("MPI-SSLUM ", "MPI-SSMOM1 ", "MPI-SSMOM2 ", "MPI-SSBEAM1 ", "MPI-SSBEAM2 ")
+                one, two = floats(first(tagged(out1, tag))), floats(first(tagged(out2, tag)))
+                @test length(one) == length(two) >= 3
+                for (a, b) in zip(one, two)
+                    @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
+                end
+            end
+            # What still refuses at two ranks and runs at one: PIC (step 4c)
+            # and a line action. The child asserts the direction itself and
+            # prints what it saw; both counts must have reached that line.
+            @test tagged(out1, "MPI-SSREFUSE ") == ["pic=false action=false"]
+            @test tagged(out2, "MPI-SSREFUSE ") == ["pic=true action=true"]
+            # Each beam's shard, as each rank resolved it: the two beams
+            # differ in size, so their offsets differ on rank 1 and a scope
+            # that handed beam 2 beam 1's shard would print 128 for both.
+            @test tagged(out1, "MPI-SSSHARD ") == ["rank=0 b1=0/256 b2=0/192"]
+            @test sort(tagged(out2, "MPI-SSSHARD ")) ==
+                  ["rank=0 b1=0/256 b2=0/192", "rank=1 b1=128/256 b2=96/192"]
+
+            # Above the chunked thresholds (see the fixture): the same three
+            # claims on a pair whose slices chunk on every rank, signatures
+            # and luminosity only.
+            big = let path = tempname() * ".h5"
+                cpu = CPUThreadsExecutionPolicy(threads=1)
+                b1, b2 = _mpi_check_ss_big_beams(cpu)
+                execute!(_mpi_check_ss_task(cpu, path; solver=_mpi_check_ss_big_solver(),
+                                            observers=false), b1, b2; turns=2)
+                series = read(TaskOutput(path), :luminosity; name="ip")
+                s1 = _mpi_check_collide_signature(b1.rep)
+                s2 = _mpi_check_collide_signature(b2.rep)
+                rm(path; force=true)
+                (lum=join((repr(Float64(v)) for v in series.value), " "),
+                 beam1=join((repr(v) for v in (s1.maxpx, s1.rmspx, s1.rmspy)), " "),
+                 beam2=join((repr(v) for v in (s2.maxpx, s2.rmspx, s2.rmspy)), " "))
+            end
+            for (tag, want) in (("MPI-SSBIGLUM ", big.lum), ("MPI-SSBIGBEAM1 ", big.beam1),
+                                ("MPI-SSBIGBEAM2 ", big.beam2))
+                @test length(tagged(out1, tag)) == 1 && length(tagged(out2, tag)) == 1
+                @test first(tagged(out1, tag)) == want              # one rank: bit for bit
+                one, two = floats(first(tagged(out1, tag))), floats(first(tagged(out2, tag)))
+                @test length(one) == length(two) >= 2
+                for (a, b) in zip(one, two)
+                    @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
+                end
+            end
+
+            # A shard with no live particle must not hang its peers: the
+            # slicing decides emptiness from the whole beam's counts. The
+            # child fails a rank that could not slice the half-dead beam or
+            # did not refuse the all-dead one; rank 0 reports.
+            @test tagged(out1, "MPI-SSPOISON ") == ["half_dead_sliced=true all_dead_refused=true"]
+            @test tagged(out2, "MPI-SSPOISON ") == ["half_dead_sliced=true all_dead_refused=true"]
         end
     end
 end

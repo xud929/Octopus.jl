@@ -236,10 +236,14 @@ const BENCH_RANK, BENCH_RANKS = let
 end
 
 # One scope for the whole measurement: every reduction the collide issues sees
-# the communicator, and the shard is derived once instead of per collide.
+# the communicator, and BOTH beams' shards are derived once instead of per
+# collide. Both, keyed by beam (multi-process step 4b): this scoped one shard
+# -- the electron beam's -- and the single-slot scope of the time handed it to
+# the proton beam as well, so every divided measurement before 4b ran the
+# proton beam's lane folds and shift origins at the electron beam's offset.
 const BENCH_RESOLVED = Octopus._resolve_execution_policy(policy, beam_ele.rep)
 bench_scoped(f) = Octopus._with_execution_policy(BENCH_RESOLVED) do
-    Octopus._with_shard(f, Octopus._mp_resolve_shard(length(beam_ele.rep)))
+    Octopus._with_beam_shards(f, beam_ele.rep, beam_pro.rep)
 end
 
 @printf("solver=%s rank=%d ranks=%d n_ele=%d n_pro=%d local_ele=%d slices=%d grid=%d julia_threads=%d\n",

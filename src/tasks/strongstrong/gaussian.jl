@@ -5,6 +5,16 @@ Advance two beams through one strong-strong collision and return the luminosity
 estimate for that collision.
 """
 function collide!(solver::GaussianPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend})
+    # Both beams' shards in scope for the whole collide (step 4b): a task has
+    # already scoped them and this adds nothing; a bare collide resolves each
+    # once here, at the entry, instead of a per-slice function paying a hidden
+    # collective on a miss.
+    return _with_beam_shards(beam1.rep, beam2.rep) do
+        _cpu_gaussian_collide!(solver, beam1, beam2)
+    end
+end
+
+function _cpu_gaussian_collide!(solver::GaussianPoissonSolver, beam1::Beam, beam2::Beam)
     slices1 = longitudinal_slices(beam1.rep, solver.slicing1)
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
     kbb1 = _strong_strong_kbb1(solver, beam1, beam2)
@@ -303,7 +313,7 @@ function _cpu_gaussian_slice_plan(rep::Phase6DRep, slices, divided::Bool)
     end
     divided || return (counts=counts, owns_reference=trues(ns))
     _mp_allsum!(counts)
-    offset, _ = _mp_current_shard(length(rep.z))
+    offset, _ = _mp_current_shard(rep)
     owns = falses(ns)
     @inbounds for s in 1:ns
         idx = slices.indices[s]

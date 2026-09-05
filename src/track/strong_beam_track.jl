@@ -74,7 +74,7 @@ function _track_thin_strong_beam!(rep, elem::ThinStrongBeam, turns, policy, mask
 	# rather than recomputed locally, so the local partition IS the global one
 	# rather than something that happens to agree with it.
 	nchunks = _REDUCTION_CHUNKS
-	offset, global_n = _mp_current_shard(length(rep))
+	offset, global_n = _mp_current_shard(rep)
 	first_chunk, local_chunks = _mp_first_chunk(), _mp_local_chunks()
 	for _ in 1:turns
 		local_lum = zeros(eltype(rep.x), local_chunks)
@@ -126,7 +126,7 @@ function _track_gaussian_strong_beam!(rep, elem::GaussianStrongBeam, turns, poli
 	# rather than recomputed locally, so the local partition IS the global one
 	# rather than something that happens to agree with it.
 	nchunks = _REDUCTION_CHUNKS
-	offset, global_n = _mp_current_shard(length(rep))
+	offset, global_n = _mp_current_shard(rep)
 	first_chunk, local_chunks = _mp_first_chunk(), _mp_local_chunks()
 	for _ in 1:turns
 		local_lum = zeros(eltype(rep.x), local_chunks)

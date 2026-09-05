@@ -50,15 +50,27 @@ longitudinal_slices(beam::Beam, slicing::LongitudinalSlicing) =
 
 function longitudinal_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
     slicing.nslices > 0 || throw(ArgumentError("nslices must be positive"))
-    isempty(rep.z) && throw(ArgumentError("longitudinal slicing requires at least one particle"))
+    # Both refusals below are decided from the WHOLE beam's counts, never from
+    # this rank's shard (step 4b, found by review and reproduced under a
+    # launcher): a shard that is empty, or whose particles are all dead, is
+    # legal -- a beam smaller than the chunk count leaves empty shards, and an
+    # aperture can kill one rank's whole run of it -- and a rank that refused
+    # on its own count while its peers went on into `_live_z_stats` left them
+    # blocked in the first collective. Integer sums, so exact and symmetric;
+    # at one rank they are the local counts and cost nothing.
+    _mp_global_count(length(rep.z)) == 0 &&
+        throw(ArgumentError("longitudinal slicing requires at least one particle"))
     method = slicing.method
     flags = _live_flags(rep, active_live_mask())
     # Every method below divides by the live count and sizes boundaries from
     # live extrema, so an all-dead beam has to be rejected here rather than
     # surfacing downstream as a non-finite boundary.
-    flags === nothing || count(flags) > 0 || throw(ArgumentError(
-        "longitudinal slicing requires at least one live particle; " *
-        "all $(length(rep.z)) are non-finite"))
+    if flags !== nothing
+        live = _masked_global_count(k -> _flag_live(flags, k), length(rep.z))
+        live > 0 || throw(ArgumentError(
+            "longitudinal slicing requires at least one live particle; " *
+            "all $(_mp_global_count(length(rep.z))) are non-finite"))
+    end
     # `:equal_count` orders the whole beam and cuts it into equal parts, which
     # is a global sort rather than a fold: a rank can sort its own shard but
     # not learn where its particles sit in the beam's order without moving
@@ -112,8 +124,9 @@ function _strong_strong_luminosity_scales(solver, beam1, beam2)
     # The macroparticle counts here are the BEAMS', not the shards': the scale
     # turns a per-macroparticle overlap into a physical luminosity, and a rank
     # dividing by its own count would scale its contribution by the rank count.
-    n1 = _mp_global_count(length(beam1.rep))
-    n2 = _mp_global_count(length(beam2.rep))
+    # Read from the shards the collide scoped at its entry -- no collective.
+    n1 = last(_mp_current_shard(beam1.rep))
+    n2 = last(_mp_current_shard(beam2.rep))
     n1 == 0 && throw(ArgumentError("strong-strong luminosity requires a nonempty beam1"))
     n2 == 0 && throw(ArgumentError("strong-strong luminosity requires a nonempty beam2"))
     return p1.npart * p2.npart / n1,
@@ -126,7 +139,7 @@ function _longitudinal_slices_equal_area(rep::Phase6DRep, slicing::LongitudinalS
     T = eltype(z)
     ns = slicing.nslices
     bins = ns * slicing.resolution
-    stats = _live_z_stats(z, flags)
+    stats = _live_z_stats(z, flags, _mp_current_shard(rep))
     zmin = stats.zmin
     zmax = stats.zmax
     if zmin == zmax
@@ -295,9 +308,13 @@ function _lane_indexed_sum(z::AbstractVector, idx)
 end
 
 """
-    _live_z_stats(z, flags)
+    _live_z_stats(z, flags, shard=_mp_current_shard(length(z)))
 
 Longitudinal extrema, mean, standard deviation and live count in one pass.
+`shard` is the beam's `(offset, global_n)`; the slicing methods pass their
+representation's, because a strong-strong run holds two beams and a count
+alone cannot say which one `z` belongs to (multi-process step 4b). The
+two-argument form resolves by count, for callers that hold only the array.
 
 Every slicing method sizes its boundaries from some subset of these five
 numbers, so masking them here is what stops a dead particle from moving a
@@ -306,7 +323,8 @@ the old NaN-propagating behaviour on purpose: `min`/`max` propagate `NaN` in
 Julia, so a non-finite `z` still reaches `_finish_longitudinal_slices` as a
 non-finite boundary and trips the chokepoint there, exactly as before.
 """
-function _live_z_stats(z::AbstractVector, flags)
+_live_z_stats(z::AbstractVector, flags) = _live_z_stats(z, flags, _mp_current_shard(length(z)))
+function _live_z_stats(z::AbstractVector, flags, shard::Tuple)
     T = eltype(z)
     zmin = T(Inf); zmax = T(-Inf)
     n_live = 0
@@ -324,7 +342,7 @@ function _live_z_stats(z::AbstractVector, flags)
     # offset so lanes match.
     offset = 0
     if _mp_nranks() > 1
-        offset, _ = _mp_current_shard(length(z))
+        offset = Int(shard[1])
         counts = [n_live]
         _mp_allsum!(counts)
         n_live = counts[1]
@@ -410,7 +428,7 @@ function _longitudinal_slices_equal_count(rep::Phase6DRep, slicing::Longitudinal
         end
     end
     sorted_z = z[order]
-    stats = _live_z_stats(z, flags)
+    stats = _live_z_stats(z, flags, _mp_current_shard(rep))
     boundaries = Vector{T}(undef, ns + 1)
     boundaries[1] = stats.zmin
     boundaries[end] = stats.zmax
@@ -431,7 +449,7 @@ function _longitudinal_slices_equal_width(rep::Phase6DRep, slicing::Longitudinal
     z = _host_array(rep.z)
     T = eltype(z)
     ns = slicing.nslices
-    stats = _live_z_stats(z, flags)
+    stats = _live_z_stats(z, flags, _mp_current_shard(rep))
     zmin = stats.zmin
     zmax = stats.zmax
     boundaries = collect(range(zmin, zmax; length=ns + 1))
@@ -452,7 +470,7 @@ end
 function _longitudinal_slices_specified(rep::Phase6DRep, slicing::LongitudinalSlicing, flags)
     z = _host_array(rep.z)
     T = eltype(z)
-    stats = _live_z_stats(z, flags)
+    stats = _live_z_stats(z, flags, _mp_current_shard(rep))
     μ = stats.mean
     σ = stats.sigma
     internal = sort([T(μ + p * σ) for p in slicing.positions])
@@ -469,7 +487,7 @@ function _longitudinal_slices_gaussian(rep::Phase6DRep, slicing::LongitudinalSli
     z = _host_array(rep.z)
     T = eltype(z)
     ns = slicing.nslices
-    stats = _live_z_stats(z, flags)
+    stats = _live_z_stats(z, flags, _mp_current_shard(rep))
     μ = stats.mean
     σ = stats.sigma
     if σ == zero(T)
@@ -760,7 +778,7 @@ contributes its coordinates while the others contribute zeros, so the sum is
 that rank's values exactly.
 """
 function _mp_slice_reference(rep::Phase6DRep, idx::Vector{Int}, ::Type{T}) where {T}
-    offset, _ = _mp_current_shard(length(rep.z))
+    offset, _ = _mp_current_shard(rep)
     mine = isempty(idx) ? typemax(Int) : offset + idx[1]
     first_global, _ = _mp_allminmax(mine, mine)
     values = zeros(T, 4)

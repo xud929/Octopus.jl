@@ -898,6 +898,7 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
     _validate_pic_solver(pic)
     isempty(workspaces) && throw(ArgumentError(
         "GaussianPIC CPU collide needs at least one scratch workspace; got an empty pool."))
+    _reject_undivided_solver(gsolver)           # step 4c divides this collide
     _require_linear_slice_interpolation(pic, "GaussianPICPoissonSolver")
     # Reset and report the dropped-charge counter, as the plain-PIC twin does
     # (2026-08-05_b audit, U10-2). This solver shares `_PICCPUWorkspace` and

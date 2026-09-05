@@ -101,6 +101,10 @@ _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
 function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
                        workspaces, green_cache)
     _validate_pic_solver(solver)
+    # Step 4c divides this collide; until then a divided run must refuse here
+    # too, not only at the task's preflight, so a bare `collide!` cannot
+    # collide one rank's shard and call it the beam.
+    _reject_undivided_solver(solver)
     isempty(workspaces) && throw(ArgumentError(
         "PIC CPU collide needs at least one scratch workspace; got an empty pool."))
     slices1 = longitudinal_slices(beam1.rep, solver.slicing1)
