@@ -309,16 +309,21 @@ let policy = MultiProcessExecutionPolicy(threads=1)
         println("MPI-SSMOM2 ", join((repr(v) for v in rec.m2), " "))
     end
 
-    # What still refuses at more than one rank, and runs at one: a solver step
-    # 4c has not divided, and a line action. Each must throw ONLY when the
-    # ranks are more than one, naming what is missing.
-    threw_undivided = try
+    # What still refuses at more than one rank, and runs at one: a line action,
+    # the one thing left that Octopus cannot reason about. Where the
+    # undivided-solver refusal used to be asserted there is now its opposite:
+    # spectral was the last solver the campaign had not divided (step 4g), and
+    # the whole TASK around it must run at every rank count.
+    spectral_ran = try
         pb1, pb2 = _mpi_check_ss_beams(policy)
-        execute!(_mpi_check_ss_task(policy, nothing; solver=_mpi_check_undivided_solver()),
+        execute!(_mpi_check_ss_task(policy, nothing; solver=_mpi_check_spectral_solver(),
+                                    observers=false),
                  pb1, pb2; turns=1)
-        false
+        true
     catch err
-        err isa ArgumentError && occursin("still to come", sprint(showerror, err))
+        Octopus._mp_is_root() &&
+            write(stdout, "MPI-SPECTASKERR " * sprint(showerror, err) * "\n")
+        false
     end
     threw_action = try
         ab1, ab2 = _mpi_check_ss_beams(policy)
@@ -329,12 +334,12 @@ let policy = MultiProcessExecutionPolicy(threads=1)
     end
     Octopus._with_execution_policy(resolved) do
         expected = Octopus._mp_nranks() > 1
-        threw_undivided == expected ||
-            fail("undivided-solver refusal was $(threw_undivided) at $(Octopus._mp_nranks()) rank(s)")
+        spectral_ran ||
+            fail("the spectral strong-strong task failed at $(Octopus._mp_nranks()) rank(s)")
         threw_action == expected ||
             fail("line-action refusal was $(threw_action) at $(Octopus._mp_nranks()) rank(s)")
         # Every rank checked the direction above; rank 0 alone reports it.
-        Octopus._mp_is_root() && println("MPI-SSREFUSE undivided=", threw_undivided,
+        Octopus._mp_is_root() && println("MPI-SSREFUSE spectral_ran=", spectral_ran,
                                          " action=", threw_action)
     end
 end
@@ -451,6 +456,24 @@ let policy = MultiProcessExecutionPolicy(threads=1)
         if child_rank() == 0
             emit("MPI-PICVAR $(name) $(r.line)")
             emit("MPI-PICVARSCHED $(name) pair_workers=$(r.pair_workers) inner_workers=$(r.inner_workers) exchange=$(r.exchange) schedule=$(r.schedule)")
+        end
+    end
+    # --- step 4g: spectral, the last solver the campaign divided -----------
+    #
+    # Two routes, and the receipt says which ran: the 6D map on the
+    # slice-aligned layout (`exchange = :sliced`) and the transverse-only map
+    # on the home layout (`:order_free`). `MPI-SPECVARWORK` is this rank's
+    # share of the sliced route's work; the parent sums it over the ranks and
+    # holds the total to the pair count, so a rank that did nothing shows up.
+    for (name, solver, threads, _) in _mpi_check_spectral_variants()
+        vpolicy = threads == 1 ? policy : MultiProcessExecutionPolicy(threads=threads)
+        r = _mpi_check_spectral_collide_line(vpolicy, solver)
+        emit_by_rank("MPI-SPECVARLUM $(name) $(child_rank()) $(r.lum)")
+        emit_by_rank("MPI-SPECVARZ $(name) $(child_rank()) $(r.restored)")
+        emit_by_rank("MPI-SPECVARWORK $(name) $(child_rank()) $(r.planes_solved) $(r.pairs_coordinated)")
+        if child_rank() == 0
+            emit("MPI-SPECVAR $(name) $(r.line)")
+            emit("MPI-SPECVARSCHED $(name) batch_mode=$(r.batch_mode) exchange=$(r.exchange)")
         end
     end
     # The threaded deposit, which the small beams never reach.

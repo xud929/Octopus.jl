@@ -359,8 +359,18 @@ group of ranks and batch by batch where a rank holds whole slices (the two
 are bit-identical, and the choice is a measured rule); the node and
 source-slice meshes exchange per pair.
 Gaussian-PIC divides on the same transport (its slice moments folded from
-each part's shifted sums, its Gaussian subtracted on the plane's owner);
-spectral is the last solver that refuses at more than one rank.
+each part's shifted sums, its Gaussian subtracted on the plane's owner).
+Spectral divides on two routes, because it has two collides: the 6D map
+(`longitudinal_kick=true`, the default) is order-dependent and takes the same
+slice-aligned transport, with the FIELD slice's group head folding the two
+drifted deposits and solving them, while the transverse-only map is
+order-free and stays on the home layout (one all-sum for every source slice's
+plane, a second for the dealt mesh solves, and the luminosity's folded
+deposits). The `:spectral_pair_schedule` receipt names which ran:
+`exchange=:sliced`, `:home`, or `:none` for an undivided run. No solver in
+the roster refuses at more than one rank; `_solver_divides` is a
+deny-by-default tripwire, so a solver added later refuses until it is
+divided.
 `StrongStrongPICMultiProcessConsistencyContract` states the three-way claim
 (CPU against MPI per rank count, CPU against CUDA, MPI against CUDA by
 composition) and needs a launcher command to run its MPI legs.

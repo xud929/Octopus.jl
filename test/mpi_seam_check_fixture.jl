@@ -234,12 +234,81 @@ _mpi_check_ss_big_solver() = Octopus.GaussianPoissonSolver(
 
 _mpi_check_ss_big_artifact_path() = joinpath(tempdir(), "octopus_mpi_seam_check_4b_big.h5")
 
-"""A spectral solver, which step 4c has not yet divided and which must refuse
-at more than one rank (PIC divided 2026-09-05; Gaussian-PIC and spectral are
-still to come)."""
-_mpi_check_undivided_solver() = Octopus.SpectralPoissonSolver(
+"""
+The spectral solver the step-4g checks run: a 16 x 16 mesh and three
+equal-area slices, matching the PIC fixture so the two solvers' divided
+arms see the same slicing.
+
+This is also the solver the task-level arm runs where the undivided-solver
+refusal used to fire: spectral was the last solver the campaign had not
+divided, so what that arm asserts now is that it RUNS at every rank count.
+"""
+_mpi_check_spectral_solver(; kw...) = Octopus.SpectralPoissonSolver(
     kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(16, 16),
-    slicing=Octopus.LongitudinalSlicing(nslices=3, method=:equal_area))
+    slicing=Octopus.LongitudinalSlicing(nslices=3, method=:equal_area); kw...)
+
+"""
+The spectral arms, `(name, solver, threads, same_as)`.
+
+`same_as` names an arm this one must equal bit for bit at the same rank count:
+the two schedules of the 6D map agree by construction, and the thread count
+changes no fold. The two routes are BOTH here because they divide by different
+means -- the 6D map on the slice-aligned layout, the transverse-only map on the
+home layout -- and each method is here because the payload a field member
+evaluates differs (a solved mesh for `:grid`, folded mode sums for
+`:grid_free`).
+"""
+_mpi_check_spectral_variants() = (
+    (:spec, _mpi_check_spectral_solver(), 1, nothing),
+    (:spec_seq, _mpi_check_spectral_solver(batch_mode=:sequential), 1, :spec),
+    (:spec_threads, _mpi_check_spectral_solver(), 2, :spec),
+    (:spec_free, _mpi_check_spectral_solver(method=:grid_free), 1, nothing),
+    (:spec_skew, _mpi_check_spectral_solver(slicing=_mpi_check_pic_skewed_slicing()), 1, nothing),
+    (:spec_trans, _mpi_check_spectral_solver(longitudinal_kick=false), 1, nothing),
+    (:spec_trans_free, _mpi_check_spectral_solver(longitudinal_kick=false, method=:grid_free), 1, nothing),
+    (:spec_trans_threads, _mpi_check_spectral_solver(longitudinal_kick=false), 2, :spec_trans),
+)
+
+"""
+One divided spectral collide, reported the way the PIC one is: the signature
+line, the luminosity every rank must agree on, whether `z` came home bit for
+bit, and the receipts that say WHICH route ran (`exchange = :sliced` for the
+6D map, `:order_free` for the transverse one) and how much of the work this
+rank did.
+"""
+function _mpi_check_spectral_collide_line(policy, solver; beams=_mpi_check_ss_beams)
+    b1, b2 = beams(policy)
+    resolved = Octopus._resolve_execution_policy(policy, b1.rep)
+    audit = Octopus.ExecutionAudit()
+    # The collide never writes `z`, so `z` must come back to its home slot bit
+    # for bit: the migration's own check, layout-independent.
+    z1 = copy(Array(b1.rep.z)); z2 = copy(Array(b2.rep.z))
+    return Octopus._with_execution_policy(resolved) do
+        lum = Ref{Float64}(NaN)
+        Octopus.with_execution_audit(audit) do
+            lum[] = Octopus.collide!(solver, b1, b2, Octopus.CPUThreadsBackend)
+        end
+        sched = [r.values for r in Octopus.execution_receipts(audit)
+                 if r.consumer === :spectral_pair_schedule]
+        length(sched) == 1 ||
+            error("expected one spectral pair-schedule receipt, got $(length(sched))")
+        exch = [r.values for r in Octopus.execution_receipts(audit)
+                if r.consumer === :spectral_slice_exchange]
+        restored = Array(b1.rep.z) == z1 && Array(b2.rep.z) == z2
+        Octopus._with_beam_shards(b1.rep, b2.rep) do
+            s1 = _mpi_check_collide_signature(b1.rep)
+            s2 = _mpi_check_collide_signature(b2.rep)
+            (line=join((repr(v) for v in (lum[], s1.maxpx, s1.rmspx, s1.rmspy, s1.rmspz,
+                                          s2.maxpx, s2.rmspx, s2.rmspy, s2.rmspz)), " "),
+             lum=repr(lum[]),
+             batch_mode=Symbol(sched[1].batch_mode),
+             exchange=Symbol(sched[1].exchange),
+             planes_solved=isempty(exch) ? 0 : Int(exch[1].planes_solved),
+             pairs_coordinated=isempty(exch) ? 0 : Int(exch[1].pairs_coordinated),
+             restored=restored)
+        end
+    end
+end
 
 # --- step 4c fixtures: the PIC collide ---------------------------------------
 

@@ -239,6 +239,8 @@ whose route solves every pair through one workspace and always runs in collision
 )
 solver_option_schema(::Type{<:SpectralPoissonSolver}) = _SPECTRAL_SOLVER_OPTION_SCHEMA
 
+_solver_divides(::SpectralPoissonSolver) = true       # multi-process step 4g
+
 function solver_configuration(solver::SpectralPoissonSolver)
     configured = _solver_configured_values(solver)
     return merge(configured, (
@@ -297,8 +299,13 @@ _spectral_kbb2(solver, beam1, beam2) = _strong_strong_kbb2(solver, beam1, beam2)
 # 1/nmacro factors).
 function _spectral_luminosity_scale(solver, beam1, beam2)
     solver.luminosity_scale !== nothing && return solver.luminosity_scale
-    return beam1.params.npart * beam2.params.npart /
-           (length(beam1.rep) * length(beam2.rep))
+    # The BEAMS' macroparticle counts, not the shards' (multi-process step 4g;
+    # the same defect step 4c fixed in `_pic_luminosity_scale`, still live here
+    # because spectral had not been divided yet). Read from the shards the
+    # collide scoped at its entry, so no collective.
+    n1 = last(_mp_current_shard(beam1.rep))
+    n2 = last(_mp_current_shard(beam2.rep))
+    return beam1.params.npart * beam2.params.npart / (n1 * n2)
 end
 
 # Luminosity scheduling, same convention as PICPoissonSolver: when the schedule
@@ -509,16 +516,17 @@ _spectral_field_grid!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly) =
      _spectral_field_grid_eval(ws.Exg, ws.Eyg, ws.Nx, ws.Ny, fx, fy, Lx, Ly))
 
 """
-Deposit `sx, sy` and solve, leaving `Exg`/`Eyg` on the workspace mesh. The
-source-only half of `_spectral_field_grid!` (see `_spectral_field_grid_eval`
-for why it is split -- audit part 6, R12).
+CIC-deposit one source into `rho`, which the caller has sized and zeroed.
+
+Split out of the two solve entry points below so a DIVIDED collide can deposit
+its own share of a slice and fold the partials (multi-process step 4g). The
+loop, and therefore the accumulation order within one rank's share, is the
+undivided one; at one rank the callers below are the functions they replaced,
+term for term.
 """
-function _spectral_field_grid_solve!(ws::_SpectralGridWS, sx, sy, Lx, Ly)
-    Nx, Ny = ws.Nx, ws.Ny
+function _spectral_grid_deposit!(rho, sx, sy, Lx, Ly)
+    Nx, Ny = size(rho)
     a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1)
-    ns = length(sx)
-    _spectral_ws_setbox!(ws, a, b)
-    rho = ws.rho; fill!(rho, 0.0)
     @inbounds for p in eachindex(sx)
         X = (sx[p] + Lx) / hx; Y = (sy[p] + Ly) / hy
         i = _grid_floor(X); j = _grid_floor(Y); wx = X - i; wy = Y - j
@@ -526,6 +534,32 @@ function _spectral_field_grid_solve!(ws::_SpectralGridWS, sx, sy, Lx, Ly)
             (1 <= ii <= Nx && 1 <= jj <= Ny) && (rho[ii, jj] += cx * cy)
         end
     end
+    return rho
+end
+
+"""
+Deposit `sx, sy` and solve, leaving `Exg`/`Eyg` on the workspace mesh. The
+source-only half of `_spectral_field_grid!` (see `_spectral_field_grid_eval`
+for why it is split -- audit part 6, R12).
+"""
+function _spectral_field_grid_solve!(ws::_SpectralGridWS, sx, sy, Lx, Ly)
+    _spectral_ws_setbox!(ws, 2Lx, 2Ly)
+    fill!(ws.rho, 0.0)
+    _spectral_grid_deposit!(ws.rho, sx, sy, Lx, Ly)
+    return _spectral_grid_solve_from_rho!(ws, length(sx), Lx, Ly)
+end
+
+"""
+Solve for `Exg`/`Eyg` from the deposit already in `ws.rho`, whose total is `ns`
+source particles. The divided collide folds the ranks' partial deposits into
+`ws.rho` and calls this with the slice's GLOBAL count, so the normalization and
+the deposit tripwire are the whole slice's, not a shard's.
+"""
+function _spectral_grid_solve_from_rho!(ws::_SpectralGridWS, ns::Integer, Lx, Ly)
+    Nx, Ny = ws.Nx, ws.Ny
+    a = 2Lx; b = 2Ly
+    _spectral_ws_setbox!(ws, a, b)
+    rho = ws.rho
     _spectral_deposit_tripwire(rho, ns, Lx, Ly)
     # rholm = DST(rho) / (a*b*ns); philm = -rholm * G
     mul!(ws.rholm, ws.prho, rho)
@@ -584,18 +618,23 @@ end
 
 function _spectral_field_grid_potential!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx, Ly;
                                          vslot::Int=0)
+    _spectral_ws_setbox!(ws, 2Lx, 2Ly)
+    fill!(ws.rho, 0.0)
+    _spectral_grid_deposit!(ws.rho, sx, sy, Lx, Ly)
+    _spectral_grid_potential_from_rho!(ws, length(sx), Lx, Ly)
+    return _spectral_grid_potential_eval(ws, fx, fy, Lx, Ly; vslot=vslot)
+end
+
+"""
+`Phig`/`Exg`/`Eyg` on the mesh from the deposit already in `ws.rho`. The divided
+twin of the deposit half of `_spectral_field_grid_potential!`; see
+`_spectral_grid_solve_from_rho!` for why `ns` is a parameter.
+"""
+function _spectral_grid_potential_from_rho!(ws::_SpectralGridWS, ns::Integer, Lx, Ly)
     Nx, Ny = ws.Nx, ws.Ny
-    a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1)
-    ns = length(sx)
+    a = 2Lx; b = 2Ly
     _spectral_ws_setbox!(ws, a, b)
-    rho = ws.rho; fill!(rho, 0.0)
-    @inbounds for p in eachindex(sx)
-        X = (sx[p] + Lx) / hx; Y = (sy[p] + Ly) / hy
-        i = _grid_floor(X); j = _grid_floor(Y); wx = X - i; wy = Y - j
-        for (ii, cx) in ((i, 1 - wx), (i + 1, wx)), (jj, cy) in ((j, 1 - wy), (j + 1, wy))
-            (1 <= ii <= Nx && 1 <= jj <= Ny) && (rho[ii, jj] += cx * cy)
-        end
-    end
+    rho = ws.rho
     _spectral_deposit_tripwire(rho, ns, Lx, Ly)
     mul!(ws.rholm, ws.prho, rho)
     invn = ns > 0 ? 1.0 / (a * b * ns) : 1.0 / (a * b)
@@ -634,6 +673,14 @@ function _spectral_field_grid_potential!(ws::_SpectralGridWS, sx, sy, fx, fy, Lx
     @inbounds for m in 1:Ny, l in 1:Nx
         ws.Eyg[l, m] = -scale * (ws.cosy[l, m + 1] / 2)
     end
+    return nothing
+end
+
+"""Interpolate `Phig`/`Exg`/`Eyg` at the field particles."""
+function _spectral_grid_potential_eval(ws::_SpectralGridWS, fx, fy, Lx, Ly;
+                                       vslot::Int=0)
+    Nx, Ny = ws.Nx, ws.Ny
+    a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1)
     nf = length(fx)
     Phi = vslot == 0 ? Vector{Float64}(undef, nf) : _spectral_slot(ws.phi_buf, vslot, nf)
     Ex  = vslot == 0 ? Vector{Float64}(undef, nf) : _spectral_slot(ws.ex_buf,  vslot, nf)
@@ -742,14 +789,39 @@ function _spectral_mode_sum_guard(sx, sy, Lx, Ly)
     return nothing
 end
 
-function _spectral_field_free_potential(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
+"""
+This source's contribution to the sine-mode sums, written into `M` (Nx x Ny).
+
+The `:grid_free` twin of `_spectral_grid_deposit!`: the modes are a plain sum
+over the source particles, so a divided collide computes each rank's partial
+here and folds them exactly as it folds a mesh deposit (multi-process step 4g).
+At one rank `M` is the `rho_modes` the single-shot path built.
+"""
+function _spectral_free_modes!(M, sx, sy, Lx, Ly)
+    Nx, Ny = size(M)
     _spectral_mode_sum_guard(sx, sy, Lx, Ly)
-    a = 2Lx; b = 2Ly; ns = length(sx)
-    al = [l * pi / a for l in 1:Nx]
-    bm = [m * pi / b for m in 1:Ny]
     sX, _ = _spectral_mode_sincos(sx, Lx, Nx; need_cos=false)
     sY, _ = _spectral_mode_sincos(sy, Ly, Ny; need_cos=false)
-    rho_modes = transpose(sX) * sY
+    M .= transpose(sX) * sY
+    return M
+end
+
+function _spectral_field_free_potential(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
+    rho_modes = Matrix{Float64}(undef, Nx, Ny)
+    _spectral_free_modes!(rho_modes, sx, sy, Lx, Ly)
+    return _spectral_free_potential_from_modes(rho_modes, length(sx), fx, fy,
+                                               Lx, Ly, Nx, Ny)
+end
+
+"""
+Field and potential at `fx`/`fy` from the folded mode sums of a source of `ns`
+particles. See `_spectral_grid_potential_from_rho!` for why `ns` is a parameter.
+"""
+function _spectral_free_potential_from_modes(rho_modes, ns::Integer, fx, fy,
+                                             Lx, Ly, Nx, Ny)
+    a = 2Lx; b = 2Ly
+    al = [l * pi / a for l in 1:Nx]
+    bm = [m * pi / b for m in 1:Ny]
     invns = ns > 0 ? 1.0 / ns : 1.0
     philm = Matrix{Float64}(undef, Nx, Ny)
     @inbounds for m in 1:Ny, l in 1:Nx
@@ -804,17 +876,33 @@ function _spectral_field_free(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
     return Ex, Ey
 end
 
+"""`Ex`/`Ey` from folded mode sums; the hoisted twin of `_spectral_field_free`."""
+function _spectral_free_field_from_modes(rho_modes, ns::Integer, fx, fy, Lx, Ly, Nx, Ny)
+    _, Ex, Ey = _spectral_free_potential_from_modes(rho_modes, ns, fx, fy, Lx, Ly, Nx, Ny)
+    return Ex, Ey
+end
+
 # Transverse density-overlap luminosity for one slice pair, mirroring the PIC
 # convention (CIC deposit of both slices on a shared grid, summed product times
 # klum / cell-area). The spectral and PIC luminosity therefore agree for the same
 # beams up to deposition detail, giving a direct cross-check.
-@inline function _spectral_luminosity_extents(solver::SpectralPoissonSolver,
-                                               xspan, yspan, ::Type{T}) where {T}
+@inline function _spectral_luminosity_extents_ok(solver::SpectralPoissonSolver,
+                                                 xspan, yspan, ::Type{T}) where {T}
     minimum_width = T(2) * T(solver.min_domain_halfwidth)
     width = max(T(xspan), minimum_width)
     height = max(T(yspan), minimum_width)
-    if !(isfinite(width) && isfinite(height) &&
-         width > zero(T) && height > zero(T))
+    ok = isfinite(width) && isfinite(height) && width > zero(T) && height > zero(T)
+    return width, height, ok
+end
+
+# The verdict split off above so the sliced collide can carry it in the mesh
+# message: there only the pair's coordinator sees the folded extents, and a
+# throw it took alone would leave its peers in the next receive (multi-process
+# step 4g, the 4c rule for a refusal).
+@inline function _spectral_luminosity_extents(solver::SpectralPoissonSolver,
+                                               xspan, yspan, ::Type{T}) where {T}
+    width, height, ok = _spectral_luminosity_extents_ok(solver, xspan, yspan, T)
+    if !ok
         throw(ArgumentError(
             "Spectral luminosity requires finite, positive transverse extents; " *
             "observed (x=$(xspan), y=$(yspan)) with min_domain_halfwidth=" *
@@ -883,7 +971,13 @@ that slicing applies for free does not reach here and has to be explicit.
 the box still comes out non-finite and trips the chokepoint below when
 `allow_lost_particles` is off.
 """
-function _masked_rms(v, flags)
+function _masked_rms(v, flags; offset::Integer=0)
+    nloc = flags === nothing ? length(v) : count(flags)
+    return _masked_rms(v, flags, _mp_nranks() == 1 ? nloc : _mp_global_count(nloc);
+                       offset=offset)
+end
+
+function _masked_rms(v, flags, n::Integer; offset::Integer=0)
     T = eltype(v)
     # Mean and squared-deviation sums through the canonical lane fold
     # (`_SLICE_FOLD_LANES`, U6-7 machinery; 2026-08-07 neighbour audit, N5):
@@ -894,52 +988,117 @@ function _masked_rms(v, flags)
     # dominates, which is the documented production regime. One shape now;
     # NaN from live input still propagates through the lane sums, so the
     # non-finite chokepoints downstream fire exactly as before.
-    n = flags === nothing ? length(v) : count(flags)
+    #
+    # Divided (multi-process step 4g): `_lane_z_moment` already returns the
+    # folded scalar over every rank, so what was left local here is the COUNT
+    # -- a rank dividing its own lane sums by its own live count would size the
+    # Dirichlet box from its shard, and every kick is solved on that box. `n`
+    # is the BEAM's live count, taken once per beam by the caller so the x and
+    # y half of one beam cannot disagree; `offset` keys the lanes by the global
+    # particle index, the convention the slicing methods already pass.
     n == 0 && return T(NaN)
-    m = _lane_z_moment(v, flags, zero(T), Val(1)) / n
-    s2 = _lane_z_moment(v, flags, m, Val(2))
+    m = _lane_z_moment(v, flags, zero(T), Val(1); offset=offset) / n
+    s2 = _lane_z_moment(v, flags, m, Val(2); offset=offset)
     return sqrt(s2 / n)
 end
 
+# LOCAL by construction, and it stays local: the divided box agrees its
+# non-finite verdict as an integer count before it exchanges any bound, because
+# a NaN into `_mp_allminmax` is rank-divergent (the seam's own rule). `-Inf` is
+# "this rank holds nothing live", which a divided run reaches legitimately --
+# an empty shard, or an aperture that killed one rank's whole run of the beam
+# -- and `NaN` is "a live entry is non-finite", which is the verdict.
 function _masked_ext(v, flags)
     T = eltype(v)
-    flags === nothing && return maximum(abs, v)
     e = T(-Inf)
     @inbounds for i in eachindex(v)
-        _flag_live(flags, i) || continue
-        e = max(e, abs(v[i]))
+        flags === nothing || _flag_live(flags, i) || continue
+        a = abs(v[i])
+        isfinite(a) || return T(NaN)
+        e = max(e, a)
     end
-    return isfinite(e) ? e : T(NaN)
+    return e
+end
+
+"""
+The divided box's two exchanges, in the order the seam requires (step 4g).
+
+The non-finite verdict comes FIRST and is an integer count over LOCAL data,
+because a NaN handed to `_mp_allminmax`/`_mp_allmax!` comes back different on
+different ranks -- so a rank that decided from an exchanged bound would throw
+while its peers walked into the next collective. Counting per beam keeps the
+message: the rank that actually holds the offending particle still scans its
+own coordinates and names it, and the rest say which beam it was.
+"""
+function _spectral_box_verdict(bad1::Bool, bad2::Bool)
+    _mp_nranks() == 1 && return (bad1, bad2)
+    counts = Int[bad1, bad2]
+    _mp_allsum!(counts)
+    return (counts[1] > 0, counts[2] > 0)
+end
+
+function _spectral_nonfinite_box(mine::Bool, coords, context::AbstractString, which::Int)
+    mine && _nonfinite_coordinate_error(:beam, coords; context=context)
+    throw(ArgumentError(
+        "$(context): another rank holds a non-finite live coordinate of beam " *
+        "$(which). Every rank refuses together so none is left in a collective; " *
+        "the rank holding it names the particle."))
+end
+
+"""The beam's live macroparticle count, one collective per beam per box."""
+function _spectral_live_count(v, flags)
+    nloc = flags === nothing ? length(v) : count(flags)
+    return _mp_nranks() == 1 ? nloc : _mp_global_count(nloc)
 end
 
 _spectral_box(solver::SpectralPoissonSolver, rep1::Phase6DRep, rep2::Phase6DRep) =
     _spectral_box(solver, rep1.x, rep1.y, rep2.x, rep2.y,
                   _live_flags(rep1, active_live_mask()),
-                  _live_flags(rep2, active_live_mask()))
+                  _live_flags(rep2, active_live_mask());
+                  offset1=first(_mp_current_shard(rep1)),
+                  offset2=first(_mp_current_shard(rep2)))
 
 function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2,
-                       flags1=nothing, flags2=nothing)
+                       flags1=nothing, flags2=nothing;
+                       offset1::Integer=0, offset2::Integer=0)
     d = solver.domain_factor
     # A flat beam's transverse field extends on the scale of the LARGER rms in
     # BOTH directions, so the Dirichlet box must be square and sized to sigma_max.
     # An anisotropic box (Ly ~ d*sigma_y) clips the wide field and biases the
     # kick by ~10% at 5:1; the thin direction is resolved by the grid (Ny), not a
     # smaller box. See docs/theory/spectral_sine_poisson_solver.md.
-    smax = max(_masked_rms(x1, flags1), _masked_rms(x2, flags2),
-               _masked_rms(y1, flags1), _masked_rms(y2, flags2))
     ext_x1 = _masked_ext(x1, flags1); ext_y1 = _masked_ext(y1, flags1)
     ext_x2 = _masked_ext(x2, flags2); ext_y2 = _masked_ext(y2, flags2)
-    emax = max(ext_x1, ext_x2, ext_y1, ext_y2)
-    L = max(d * smax, 1.05 * emax)
     # Non-finite chokepoint (N1, docs/history/todo_ledger_archive.md): NaN/Inf coordinates propagate into
     # the box size; out-of-box particles are silently dropped by the Dirichlet
     # deposit, so fail fast here instead. Under `allow_lost_particles` the
     # extrema skipped the dead, so reaching this means live input produced a
-    # non-finite box -- still the bug this was written for.
+    # non-finite box -- still the bug this was written for. Divided, the
+    # verdict runs BEFORE the bounds are exchanged (see `_spectral_box_verdict`).
+    local_bad1 = isnan(ext_x1) || isnan(ext_y1)
+    local_bad2 = isnan(ext_x2) || isnan(ext_y2)
+    bad1, bad2 = _spectral_box_verdict(local_bad1, local_bad2)
+    if bad1
+        _spectral_nonfinite_box(local_bad1, (x=x1, y=y1),
+                                "spectral Dirichlet box, beam 1", 1)
+    elseif bad2
+        _spectral_nonfinite_box(local_bad2, (x=x2, y=y2),
+                                "spectral Dirichlet box, beam 2", 2)
+    end
+    if _mp_nranks() > 1
+        folded = [ext_x1, ext_y1, ext_x2, ext_y2]
+        _mp_allmax!(folded)
+        ext_x1, ext_y1, ext_x2, ext_y2 = folded[1], folded[2], folded[3], folded[4]
+    end
+    n1 = _spectral_live_count(x1, flags1)
+    n2 = _spectral_live_count(x2, flags2)
+    smax = max(_masked_rms(x1, flags1, n1; offset=offset1),
+               _masked_rms(x2, flags2, n2; offset=offset2),
+               _masked_rms(y1, flags1, n1; offset=offset1),
+               _masked_rms(y2, flags2, n2; offset=offset2))
+    emax = max(ext_x1, ext_x2, ext_y1, ext_y2)
+    L = max(d * smax, 1.05 * emax)
     if !isfinite(L)
-        all(isfinite, (ext_x1, ext_y1)) ||
-            _nonfinite_coordinate_error(:beam, (x=x1, y=y1);
-                                        context="spectral Dirichlet box, beam 1")
         _nonfinite_coordinate_error(:beam, (x=x2, y=y2);
                                     context="spectral Dirichlet box, beam 2")
     end
@@ -964,19 +1123,39 @@ function _spectral_box_drifted(solver::SpectralPoissonSolver, rep1, rep2)
     mask = active_live_mask()
     f1 = _live_flags(rep1, mask); f2 = _live_flags(rep2, mask)
     d = solver.domain_factor
-    sdrift = (_masked_ext(rep1.z, f1) + _masked_ext(rep2.z, f2)) / 2
-    extd(w, pw, f) = _masked_ext(w, f) + sdrift * _masked_ext(pw, f)
-    smax = max(_masked_rms(rep1.x, f1), _masked_rms(rep2.x, f2),
-               _masked_rms(rep1.y, f1), _masked_rms(rep2.y, f2))
-    ext1x = extd(rep1.x, rep1.px, f1); ext1y = extd(rep1.y, rep1.py, f1)
-    emax = max(ext1x, extd(rep2.x, rep2.px, f2),
-               ext1y, extd(rep2.y, rep2.py, f2))
+    # Ten local extrema, then ONE verdict and ONE fold (step 4g): the verdict
+    # is taken on local data before any of them is exchanged, for the reason
+    # `_spectral_box_verdict` gives.
+    e = [_masked_ext(rep1.x, f1), _masked_ext(rep1.px, f1), _masked_ext(rep1.y, f1),
+         _masked_ext(rep1.py, f1), _masked_ext(rep1.z, f1),
+         _masked_ext(rep2.x, f2), _masked_ext(rep2.px, f2), _masked_ext(rep2.y, f2),
+         _masked_ext(rep2.py, f2), _masked_ext(rep2.z, f2)]
+    local_bad1 = any(isnan, view(e, 1:5))
+    local_bad2 = any(isnan, view(e, 6:10))
+    bad1, bad2 = _spectral_box_verdict(local_bad1, local_bad2)
+    if bad1
+        _spectral_nonfinite_box(local_bad1,
+            (x=rep1.x, px=rep1.px, y=rep1.y, py=rep1.py, z=rep1.z),
+            "spectral drifted Dirichlet box, beam 1", 1)
+    elseif bad2
+        _spectral_nonfinite_box(local_bad2,
+            (x=rep2.x, px=rep2.px, y=rep2.y, py=rep2.py, z=rep2.z),
+            "spectral drifted Dirichlet box, beam 2", 2)
+    end
+    _mp_nranks() > 1 && _mp_allmax!(e)
+    sdrift = (e[5] + e[10]) / 2
+    n1 = _spectral_live_count(rep1.x, f1)
+    n2 = _spectral_live_count(rep2.x, f2)
+    off1 = first(_mp_current_shard(rep1)); off2 = first(_mp_current_shard(rep2))
+    smax = max(_masked_rms(rep1.x, f1, n1; offset=off1),
+               _masked_rms(rep2.x, f2, n2; offset=off2),
+               _masked_rms(rep1.y, f1, n1; offset=off1),
+               _masked_rms(rep2.y, f2, n2; offset=off2))
+    ext1x = e[1] + sdrift * e[2]; ext1y = e[3] + sdrift * e[4]
+    emax = max(ext1x, e[6] + sdrift * e[7],
+               ext1y, e[8] + sdrift * e[9])
     L = max(d * smax, 1.05 * emax)
     if !isfinite(L)
-        all(isfinite, (ext1x, ext1y, _masked_ext(rep1.z, f1))) ||
-            _nonfinite_coordinate_error(:beam,
-                (x=rep1.x, px=rep1.px, y=rep1.y, py=rep1.py, z=rep1.z);
-                context="spectral drifted Dirichlet box, beam 1")
         _nonfinite_coordinate_error(:beam,
             (x=rep2.x, px=rep2.px, y=rep2.y, py=rep2.py, z=rep2.z);
             context="spectral drifted Dirichlet box, beam 2")
@@ -1079,11 +1258,197 @@ collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThre
 # parallelize over FIELD slices: each worker owns a disjoint set of field slices
 # and accumulates the kick from every source slice, so writes never collide.
 # Direction 1 (kick beam2) also accumulates the density-overlap luminosity.
-function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing)
-    _reject_undivided_solver(solver)            # step 4c divides this collide
+function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing;
+                           sliced_scratch::Base.RefValue{Any}=Ref{Any}(nothing),
+                           sliced_migration_ref::Base.RefValue{Any}=Ref{Any}(nothing))
+    # Both routes divide (multi-process step 4g), by different means: the 6D map
+    # is order-dependent and takes the slice-aligned layout
+    # (`spectral_sliced.jl`), the transverse-only map is order-free and stays on
+    # the home layout. The refs are the sliced route's scratch, kept across
+    # turns by `_strong_strong_collide!`; a direct `collide!` gets fresh ones.
     return solver.longitudinal_kick ?
-        _spectral_collide_longitudinal!(solver, beam1, beam2, ctx) :
+        _spectral_collide_longitudinal!(solver, beam1, beam2, ctx;
+                                        sliced_scratch=sliced_scratch,
+                                        sliced_migration_ref=sliced_migration_ref) :
         _spectral_collide_transverse!(solver, beam1, beam2, ctx)
+end
+
+# --- the divided transverse map (multi-process step 4g) -------------------------
+#
+# The transverse-only collide is ORDER-FREE -- it reads positions and only
+# accumulates px/py -- so it needs no slice-aligned layout and no pair schedule:
+# every rank keeps its home shard, and what has to cross the ranks is only what
+# a whole slice contributes. That is two things per collide. The SOURCE side of
+# a slice is a single plane (a CIC deposit for `:grid`, sine-mode sums for
+# `:grid_free`), summed over the ranks; and the density-overlap luminosity is a
+# product of two folded deposits, which no rank can form from its own share.
+# Everything else -- the mesh evaluation and the kick -- each rank does for its
+# own particles from the folded planes, in the same `i` order at any rank count,
+# so the kick a particle receives is accumulated exactly as it would be
+# undivided.
+#
+# The mesh solves are DEALT round-robin rather than repeated on every rank: at
+# the production grid one DST solve costs ~4x the evaluation of the mesh it
+# produces against a slice, so a redundant solve would cap the speed-up near
+# 1.2x however many ranks ran. Each mesh is written by exactly one rank and
+# zero everywhere else, so folding them is exact.
+
+"""
+Every source slice's plane for one collide, folded across the ranks.
+
+`partials[:, :, k]` is source slice `k`'s CIC deposit (`:grid`) or its sine-mode
+sums (`:grid_free`), beam 1's slices first. One all-sum makes each plane the
+WHOLE slice's, which is what the normalization and the deposit tripwire need.
+"""
+function _spectral_source_partials!(partials, solver::SpectralPoissonSolver,
+                                    r1, r2, idx1, idx2, Lx, Ly,
+                                    nchunks::Int, divided::Bool)
+    n1 = length(idx1); nslices = size(partials, 3)
+    grid = solver.method !== :grid_free
+    fill!(partials, 0.0)
+    nw = clamp(nchunks, 1, max(1, nslices))
+    _run_logical_workers(nw) do chunk, _
+        lo, hi = _chunk_bounds(nslices, nw, chunk)
+        for k in lo:hi
+            sdx = k <= n1 ? idx1[k] : idx2[k - n1]
+            isempty(sdx) && continue
+            rep = k <= n1 ? r1 : r2
+            sx = @view rep.x[sdx]; sy = @view rep.y[sdx]
+            M = view(partials, :, :, k)
+            grid ? _spectral_grid_deposit!(M, sx, sy, Lx, Ly) :
+                   _spectral_free_modes!(M, sx, sy, Lx, Ly)
+        end
+    end
+    divided && _mp_allsum!(partials)
+    return partials
+end
+
+"""
+`Exg`/`Eyg` for every source slice, one solve each, dealt across the ranks.
+
+Slice `k` is solved by rank `(k - 1) % P` and left zero on every other, so the
+all-sum that publishes them is each owner's value exactly. `:grid_free` has no
+mesh: its field is evaluated straight from the folded mode sums, and the only
+work a rank could deal away is per FIELD particle, which is already its own.
+"""
+function _spectral_source_meshes!(meshes, partials, counts1, counts2, Lx, Ly,
+                                  pool, nchunks::Int, divided::Bool)
+    n1 = length(counts1); nslices = n1 + length(counts2)
+    rank = _mp_rank(); P = _mp_nranks()
+    fill!(meshes, 0.0)
+    mine = [k for k in 1:nslices
+            if (k - 1) % P == rank && (k <= n1 ? counts1[k] : counts2[k - n1]) > 0]
+    if !isempty(mine)
+        nw = clamp(nchunks, 1, length(mine))
+        _run_logical_workers(nw) do chunk, _
+            ws = pool[chunk]
+            lo, hi = _chunk_bounds(length(mine), nw, chunk)
+            for t in lo:hi
+                k = mine[t]
+                ns = k <= n1 ? counts1[k] : counts2[k - n1]
+                copyto!(ws.rho, view(partials, :, :, k))
+                _spectral_grid_solve_from_rho!(ws, ns, Lx, Ly)
+                copyto!(view(meshes, :, :, 1, k), ws.Exg)
+                copyto!(view(meshes, :, :, 2, k), ws.Eyg)
+            end
+        end
+    end
+    divided && _mp_allsum!(meshes)
+    return meshes
+end
+
+"""The luminosity mesh two slices share, from their folded extents."""
+@inline function _spectral_lum_box(solver::SpectralPoissonSolver, ext, a::Int, b::Int,
+                                   nx::Int, ny::Int, ::Type{T}) where {T}
+    xmin = min(-ext[1, a], -ext[1, b]); xmax = max(ext[2, a], ext[2, b])
+    ymin = min(-ext[3, a], -ext[3, b]); ymax = max(ext[4, a], ext[4, b])
+    width, height = _spectral_luminosity_extents(solver, xmax - xmin, ymax - ymin, T)
+    tx = width / T(nx - 1.1); ty = height / T(ny - 1.1)
+    width += T(0.1) * tx; height += T(0.1) * ty
+    xmin -= T(0.05) * tx; ymin -= T(0.05) * ty
+    return (xmin=xmin, ymin=ymin, hx=width / (nx - 1), hy=height / (ny - 1))
+end
+
+"""
+The transverse density-overlap luminosity, slice pair by slice pair.
+
+`lum_parts[j]` accumulates over the source slices in `i` order, so the fold is a
+property of the data and not of the worker count (2026-08-05_b audit, U6-5).
+
+Divided (step 4g): a pair's mesh is sized from both slices' GLOBAL extents and
+its overlap is a product of two folded deposits, so the extents go in one
+all-max for the whole collide and the deposits in one all-sum per GROUP of
+field slices -- grouped so the buffer stays bounded however many slices a run
+carries. At one rank both folds are no-ops and every number is
+`_spectral_luminosity_pair`'s.
+"""
+function _spectral_transverse_luminosity!(lum_parts, solver::SpectralPoissonSolver,
+                                          r1, r2, idx1, idx2, c1, c2, klum,
+                                          lnx::Int, lny::Int, nchunks::Int,
+                                          divided::Bool, ::Type{LT}) where {LT}
+    n1 = length(idx1); n2 = length(idx2)
+    ext = fill(LT(-Inf), 4, n1 + n2)
+    for (off, idx, rep) in ((0, idx1, r1), (n1, idx2, r2))
+        for s in eachindex(idx)
+            sdx = idx[s]; isempty(sdx) && continue
+            xmin = LT(Inf); xmax = LT(-Inf); ymin = LT(Inf); ymax = LT(-Inf)
+            @inbounds for p in sdx
+                x = LT(rep.x[p]); y = LT(rep.y[p])
+                xmin = min(xmin, x); xmax = max(xmax, x)
+                ymin = min(ymin, y); ymax = max(ymax, y)
+            end
+            ext[1, off + s] = -xmin; ext[2, off + s] = xmax
+            ext[3, off + s] = -ymin; ext[4, off + s] = ymax
+        end
+    end
+    divided && _mp_allmax!(ext)
+    # ~16 MiB of deposits in flight, whatever the grid and the slice count are.
+    per_j = max(1, n1) * 2 * lnx * lny
+    jstep = clamp(div(2 * 1024 * 1024, max(1, per_j)), 1, max(1, n2))
+    q = zeros(LT, lnx, lny, 2, n1, jstep)
+    jg = 0
+    while jg < n2
+        njg = min(jstep, n2 - jg)
+        fill!(q, zero(LT))
+        # `let`: `jg` and `njg` move with the group, and a closure that
+        # captured them from the loop body would grow one shared `Core.Box`
+        # per name (the permanent lowered-code sweep catches exactly that).
+        let jg = jg, njg = njg, npair = njg * n1,
+            nw = clamp(nchunks, 1, max(1, njg * n1))
+        _run_logical_workers(nw) do chunk, _
+            lo, hi = _chunk_bounds(npair, nw, chunk)
+            for t in lo:hi
+                jj = div(t - 1, n1) + 1
+                i = mod(t - 1, n1) + 1
+                j = jg + jj
+                (c1[i] == 0 || c2[j] == 0) && continue
+                box = _spectral_lum_box(solver, ext, i, n1 + j, lnx, lny, LT)
+                sdx = idx1[i]; jdx = idx2[j]
+                isempty(sdx) || _spectral_cic_deposit!(
+                    view(q, :, :, 1, i, jj), (@view r1.x[sdx]), (@view r1.y[sdx]),
+                    box.xmin, box.ymin, box.hx, box.hy)
+                isempty(jdx) || _spectral_cic_deposit!(
+                    view(q, :, :, 2, i, jj), (@view r2.x[jdx]), (@view r2.y[jdx]),
+                    box.xmin, box.ymin, box.hx, box.hy)
+            end
+        end
+        end
+        divided && _mp_allsum!(q)
+        for jj in 1:njg
+            j = jg + jj
+            c2[j] == 0 && continue
+            for i in 1:n1
+                c1[i] == 0 && continue
+                box = _spectral_lum_box(solver, ext, i, n1 + j, lnx, lny, LT)
+                q1 = view(q, :, :, 1, i, jj); q2 = view(q, :, :, 2, i, jj)
+                lum = zero(LT)
+                @inbounds for k in eachindex(q1); lum += q1[k] * q2[k]; end
+                @inbounds lum_parts[j] += lum * LT(klum) / (box.hx * box.hy)
+            end
+        end
+        jg += njg
+    end
+    return lum_parts
 end
 
 function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing)
@@ -1095,25 +1460,41 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
     # (the Gaussian's klum divides by only nmacro1 because its per-particle kick sum
     # supplies the other factor; a grid overlap needs both).
     klum = _spectral_luminosity_scale(solver, beam1, beam2)
-    compute_luminosity = _spectral_compute_luminosity(solver, ctx)
+    divided = _mp_nranks() > 1
+    # Divided (step 4g): rank 0's verdict on every rank, because a
+    # `PredicateSchedule` is user code and its answer gates collectives.
+    compute_luminosity = divided ? _mp_bcast(_spectral_compute_luminosity(solver, ctx)) :
+                                   _spectral_compute_luminosity(solver, ctx)
     lnx, lny = solver.grid
     r1 = beam1.rep; r2 = beam2.rep
     T = eltype(r1.x)
     idx1 = slices1.indices; idx2 = slices2.indices
     w1 = slices1.weight; w2 = slices2.weight
     n1 = length(idx1); n2 = length(idx2)
+    # Every skip below reads a slice's GLOBAL membership (the 4a/4c rule): a
+    # rank whose shard holds no member of a populated slice must still apply
+    # that slice's kick to the particles it does hold.
+    plan1 = _divided_slice_plan(r1, slices1, divided)
+    plan2 = _divided_slice_plan(r2, slices2, divided)
+    c1 = plan1.counts; c2 = plan2.counts
     # Order-free by construction (positions are read, only px/py accumulate),
     # so there is no pair schedule to choose here; the receipt says so rather
     # than leaving a `batch_mode` request unrecorded (2026-09-04).
     _record_execution!(:spectral_pair_schedule, CPUThreadsBackend,
                        (batch_mode=:order_free, requested=solver.batch_mode,
-                        pairs=n1 * n2, batches=0, widest_batch=0))
+                        pairs=n1 * n2, batches=0, widest_batch=0,
+                        ranks=_mp_nranks(),
+                        # `:home` says the collide ran the DIVIDED protocol on
+                        # the home layout, whose folds are no-ops at one rank;
+                        # `:none` is the undivided route. Reading the policy and
+                        # not the rank count is what lets a one-rank arm assert
+                        # that the divided path is the one it measured.
+                        exchange=_mp_multi_process_active() ? :home : :none))
     Lx, Ly = _spectral_box(solver, r1, r2)
     grid = solver.method !== :grid_free
+    Nx, Ny = solver.grid
     nchunks = clamp(_cpu_worker_count(), 1, max(n1, n2))
-    lease = grid ?
-        _acquire_spectral_grid_ws_pool(solver.grid[1], solver.grid[2], nchunks) :
-        nothing
+    lease = grid ? _acquire_spectral_grid_ws_pool(Nx, Ny, nchunks) : nothing
     pool = grid ? lease.workspaces : nothing
 
     try
@@ -1124,35 +1505,55 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
         # path, so both beams' solves are valid for both directions) and
         # store the mesh fields; the kick loops below evaluate the stored
         # meshes in the exact order they used to solve in, so the kick
-        # accumulation is unchanged term for term. :grid_free keeps its
-        # per-pair mode sums.
-        meshes1 = Vector{Union{Nothing,Tuple{Matrix{Float64},Matrix{Float64}}}}(nothing, n1)
-        meshes2 = Vector{Union{Nothing,Tuple{Matrix{Float64},Matrix{Float64}}}}(nothing, n2)
-        if grid
-            _run_logical_workers(nchunks) do chunk, _
-                ws = pool[chunk]
-                lo1, hi1 = _chunk_bounds(n1, nchunks, chunk)
-                for i in lo1:hi1
-                    sdx = idx1[i]; isempty(sdx) && continue
-                    _spectral_field_grid_solve!(ws, (@view r1.x[sdx]), (@view r1.y[sdx]), Lx, Ly)
-                    meshes1[i] = (copy(ws.Exg), copy(ws.Eyg))
-                end
-                lo2, hi2 = _chunk_bounds(n2, nchunks, chunk)
-                for j in lo2:hi2
-                    sdx = idx2[j]; isempty(sdx) && continue
-                    _spectral_field_grid_solve!(ws, (@view r2.x[sdx]), (@view r2.y[sdx]), Lx, Ly)
-                    meshes2[j] = (copy(ws.Exg), copy(ws.Eyg))
+        # accumulation is unchanged term for term. `:grid_free` hoists the
+        # same way: its mode sums are a function of the source alone.
+        nslices = n1 + n2
+        partials = zeros(Float64, Nx, Ny, nslices)
+        _spectral_source_partials!(partials, solver, r1, r2, idx1, idx2, Lx, Ly,
+                                   nchunks, divided)
+        meshes = grid ? zeros(Float64, Nx, Ny, 2, nslices) : zeros(Float64, 0, 0, 0, 0)
+        grid && _spectral_source_meshes!(meshes, partials, c1, c2, Lx, Ly, pool,
+                                         nchunks, divided)
+        field_for(k, ns, fx, fy) = grid ?
+            _spectral_field_grid_eval(view(meshes, :, :, 1, k), view(meshes, :, :, 2, k),
+                                      Nx, Ny, fx, fy, Lx, Ly) :
+            _spectral_free_field_from_modes(view(partials, :, :, k), ns, fx, fy,
+                                            Lx, Ly, Nx, Ny)
+
+        # Direction 1: beam1 sources -> kick beam2 field slices (parallel over j).
+        _run_logical_workers(nchunks) do chunk, _
+            jlo, jhi = _chunk_bounds(n2, nchunks, chunk)
+            for j in jlo:jhi
+                jdx = idx2[j]; isempty(jdx) && continue
+                fx = @view r2.x[jdx]; fy = @view r2.y[jdx]
+                for i in 1:n1
+                    c1[i] == 0 && continue
+                    ex, ey = field_for(i, c1[i], fx, fy)
+                    a = w1[i] * kbb2
+                    @inbounds for (t, p) in enumerate(jdx)
+                        r2.px[p] += a * ex[t]; r2.py[p] += a * ey[t]
+                    end
                 end
             end
         end
-        gnx = grid ? pool[1].Nx : 0
-        gny = grid ? pool[1].Ny : 0
-        field_for(meshes, i, ws, sx, sy, fx, fy) = grid ?
-            _spectral_field_grid_eval(meshes[i][1], meshes[i][2], gnx, gny, fx, fy, Lx, Ly) :
-            _spectral_field_ws(solver, ws, sx, sy, fx, fy, Lx, Ly)
 
-        # Direction 1: beam1 sources -> kick beam2 field slices (parallel over j).
-        #
+        # Direction 2: beam2 sources -> kick beam1 field slices (parallel over i).
+        _run_logical_workers(nchunks) do chunk, _
+            ilo, ihi = _chunk_bounds(n1, nchunks, chunk)
+            for i in ilo:ihi
+                fdx = idx1[i]; isempty(fdx) && continue
+                fx = @view r1.x[fdx]; fy = @view r1.y[fdx]
+                for j in 1:n2
+                    c2[j] == 0 && continue
+                    ex, ey = field_for(n1 + j, c2[j], fx, fy)
+                    a = w2[j] * kbb1
+                    @inbounds for (t, p) in enumerate(fdx)
+                        r1.px[p] += a * ex[t]; r1.py[p] += a * ey[t]
+                    end
+                end
+            end
+        end
+
         # `lum_parts` is indexed by SLICE, not by chunk (2026-08-05_b audit,
         # U6-5). Its length was `nchunks`, i.e. the worker count, so
         # `sum(lum_parts)` reassociated whenever the worker count changed and
@@ -1161,68 +1562,33 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
         # 90,000 particles over 15 slices, while the coordinates were bitwise
         # identical (0 of 540,000 differing). The campaign that recorded
         # "including spectral luminosity (0 ulp)" had measured the LONGITUDINAL
-        # solver.
-        #
-        # Indexing by slice makes the fold order a property of the data: n2
-        # entries summed in j order at any worker count. The fixed-chunk-grid
-        # precedent (`_REDUCTION_CHUNKS`, U5-2) is not usable here because
-        # `nchunks` also sizes the grid-workspace pool, and 64 workspaces is a
-        # memory cost this path should not pay; a per-slice vector of floats is
-        # negligible. Each j is written by exactly one chunk, so there is no
-        # race.
+        # solver. Indexing by slice makes the fold order a property of the data:
+        # n2 entries summed in j order at any worker count.
         lum_parts = zeros(T, n2)
-        _run_logical_workers(nchunks) do chunk, _
-            ws = grid ? pool[chunk] : nothing
-            jlo, jhi = _chunk_bounds(n2, nchunks, chunk)
-            for j in jlo:jhi
-                jdx = idx2[j]; isempty(jdx) && continue
-                fx = @view r2.x[jdx]; fy = @view r2.y[jdx]
-                for i in 1:n1
-                    sdx = idx1[i]; isempty(sdx) && continue
-                    sx = @view r1.x[sdx]; sy = @view r1.y[sdx]
-                    ex, ey = field_for(meshes1, i, ws, sx, sy, fx, fy)
-                    a = w1[i] * kbb2
-                    @inbounds for (t, p) in enumerate(jdx)
-                        r2.px[p] += a * ex[t]; r2.py[p] += a * ey[t]
-                    end
-                    compute_luminosity &&
-                        (@inbounds lum_parts[j] += _spectral_luminosity_pair(
-                            solver, sx, sy, fx, fy, klum, lnx, lny))
-                end
-            end
-        end
-
-        # Direction 2: beam2 sources -> kick beam1 field slices (parallel over i).
-        _run_logical_workers(nchunks) do chunk, _
-            ws = grid ? pool[chunk] : nothing
-            ilo, ihi = _chunk_bounds(n1, nchunks, chunk)
-            for i in ilo:ihi
-                fdx = idx1[i]; isempty(fdx) && continue
-                fx = @view r1.x[fdx]; fy = @view r1.y[fdx]
-                for j in 1:n2
-                    sdx = idx2[j]; isempty(sdx) && continue
-                    sx = @view r2.x[sdx]; sy = @view r2.y[sdx]
-                    ex, ey = field_for(meshes2, j, ws, sx, sy, fx, fy)
-                    a = w2[j] * kbb1
-                    @inbounds for (t, p) in enumerate(fdx)
-                        r1.px[p] += a * ex[t]; r1.py[p] += a * ey[t]
-                    end
-                end
-            end
-        end
+        compute_luminosity && _spectral_transverse_luminosity!(
+            lum_parts, solver, r1, r2, idx1, idx2, c1, c2, klum, lnx, lny,
+            nchunks, divided, promote_type(eltype(r1.x), eltype(r2.x), typeof(klum)))
         return compute_luminosity ? sum(lum_parts) : T(NaN)
     finally
         lease === nothing || _release_spectral_grid_ws_pool!(lease)
     end
 end
 
-function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing)
+function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam,
+                                        ctx=nothing;
+                                        sliced_scratch::Base.RefValue{Any}=Ref{Any}(nothing),
+                                        sliced_migration_ref::Base.RefValue{Any}=Ref{Any}(nothing))
     slices1 = longitudinal_slices(beam1.rep, solver.slicing1)
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
     kbb1 = _spectral_kbb1(solver, beam1, beam2)
     kbb2 = _spectral_kbb2(solver, beam1, beam2)
     klum = _spectral_luminosity_scale(solver, beam1, beam2)
-    compute_luminosity = _spectral_compute_luminosity(solver, ctx)
+    divided = _mp_nranks() > 1
+    # Divided (step 4g): rank 0's verdict on every rank, because a
+    # `PredicateSchedule` is user code and its answer gates the luminosity
+    # exchanges.
+    compute_luminosity = divided ? _mp_bcast(_spectral_compute_luminosity(solver, ctx)) :
+                                   _spectral_compute_luminosity(solver, ctx)
     lnx, lny = solver.grid
     Lx, Ly = _spectral_box_drifted(solver, beam1.rep, beam2.rep)
     LT = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(klum))
@@ -1247,6 +1613,28 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
     batches = collision_pair_batches(slices1, slices2)
     max_workers = batched ?
         clamp(_cpu_worker_count(), 1, max(1, maximum(length, batches; init=1))) : 1
+    pair_pos = Dict{Tuple{Int,Int},Int}()
+    sizehint!(pair_pos, npairs)
+    for (p, entry) in pairs(order)
+        pair_pos[(entry[2], entry[3])] = p
+    end
+    lum_parts = zeros(LT, npairs)
+    # The slice-aligned collide (step 4g, `spectral_sliced.jl`) is what a
+    # multi-process policy runs -- at one rank too, where it is the CPU collide
+    # bit for bit and the launcher child pins it there.
+    if _mp_multi_process_active()
+        plan1 = _divided_slice_plan(beam1.rep, slices1, divided)
+        plan2 = _divided_slice_plan(beam2.rep, slices2, divided)
+        _spectral_sliced_transport!(solver, beam1, beam2, slices1, slices2, order,
+                                    npairs, pair_pos, lum_parts, plan1, plan2,
+                                    kbb1, kbb2, klum, Lx, Ly, compute_luminosity,
+                                    requested, sliced_scratch, sliced_migration_ref, LT)
+        sliced_luminosity = zero(LT)
+        for p in 1:npairs
+            @inbounds sliced_luminosity += lum_parts[p]
+        end
+        return compute_luminosity ? sliced_luminosity : LT(NaN)
+    end
     # Consumer-boundary receipt: `batch_mode` is the schedule that RAN, from
     # the same predicate that selects the loop below, and `requested` is the
     # field -- so a test asserts on what the run RECORDED rather than on what
@@ -1258,13 +1646,12 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
                         requested=requested,
                         pairs=npairs,
                         batches=batched ? length(batches) : 0,
-                        widest_batch=batched ? maximum(length, batches; init=0) : 0))
-    pair_pos = Dict{Tuple{Int,Int},Int}()
-    sizehint!(pair_pos, npairs)
-    for (p, entry) in pairs(order)
-        pair_pos[(entry[2], entry[3])] = p
-    end
-    lum_parts = zeros(LT, npairs)
+                        widest_batch=batched ? maximum(length, batches; init=0) : 0,
+                        # One receipt shape across the routes (step 4g): the
+                        # divided ones name their exchange, the undivided one
+                        # says it has none, so a test reads the same key
+                        # whichever ran.
+                        ranks=_mp_nranks(), exchange=:none))
     lease = grid ?
         _acquire_spectral_grid_ws_pool(solver.grid[1], solver.grid[2], max_workers) :
         nothing

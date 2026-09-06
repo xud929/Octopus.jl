@@ -346,6 +346,12 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   (Gaussian-PIC divides: the second solver on the slice-aligned transport,
   its slice moments folded from shifted sums and its Gaussian subtracted on
   the plane's owner because the amplitude reads the folded grid),
+  [`multi_process_step4g_spectral_2026_09_05.md`](history/multi_process_step4g_spectral_2026_09_05.md)
+  (spectral divides, and the campaign's last solver takes TWO routes: the 6D
+  map is order-dependent and rides the slice-aligned transport with the field
+  slice's group head solving, the transverse-only map is order-free and stays
+  on the home layout; 6.7x at sixteen ranks, and the refusal becomes a
+  deny-by-default tripwire),
   [`multi_process_pic_allocations_2026_09_05.md`](history/multi_process_pic_allocations_2026_09_05.md)
   (the divided PIC collide stops rebuilding its buffers: 0.149 GiB per rank
   per collide down to 0.004-0.013, the warm-up gone, and what that did to

@@ -7179,15 +7179,100 @@ end
             @test series[name] != series[:default]
         end
     end
-    # Gaussian-PIC no longer refuses to divide. The refusal only fires above
-    # one rank, so what it still refuses is asserted by the launcher child
-    # (`MPI-SSREFUSE`, whose undivided solver is a spectral one); here the
-    # message is enough to say which solvers the refusal now names.
     @test Octopus._reject_undivided_solver(gpic()) === nothing
-    # At one rank the refusal fires for nothing at all, spectral included:
-    # what it refuses above one rank is the launcher child's assertion.
-    @test Octopus._reject_undivided_solver(
-        SpectralPoissonSolver(slicing=slc, grid=(16, 16))) === nothing
+end
+
+@testset "A spectral task under the multi-process policy is the task it composes" begin
+    # Multi-process step 4g, the last solver. Spectral has TWO collides and
+    # they divide by different means, so both are here. The 6D map is
+    # order-dependent -- a slice is kicked by the pairs before it and then
+    # serves as a source at its kicked positions -- and takes the
+    # slice-aligned transport PIC uses (`exchange = :sliced`). The
+    # transverse-only map reads positions and only accumulates px/py, so it is
+    # order-free and stays on the home layout (`:home`): what crosses the
+    # ranks there is each source slice's plane and the luminosity's two
+    # deposits, nothing else. At one rank both must be the CPU policy's
+    # collide bit for bit, on every route the options select, and each route
+    # must differ from the default so no arm passes by running the default
+    # twice.
+    L6(dmu) = Linear6DSpec{Float64}(beta1=(1.0, 1.0, 1.0), beta2=(1.0, 1.0, 1.0), dmu=dmu)
+    slc = LongitudinalSlicing(nslices=3, method=:equal_area)
+    spec(; kw...) = SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                                          grid=(16, 16), slicing=slc; kw...)
+    variants = (
+        (:default, spec(), :sliced),
+        (:sequential, spec(batch_mode=:sequential), :sliced),
+        (:free, spec(method=:grid_free), :sliced),
+        (:transverse, spec(longitudinal_kick=false), :home),
+        (:transverse_free, spec(longitudinal_kick=false, method=:grid_free), :home),
+    )
+    line(solver) = (L6((0.31, 0.27, 0.02)),
+                    StrongStrongCollision(:ip; poisson_solver=solver),
+                    L6((0.11, 0.07, 0.01)))
+    beams(policy) = begin
+        set_global_rng!(seed=4242, method=:philox)
+        (Beam(256, policy, Float64; rng_id=1, beta=(1.0, 1.0, 1.0),
+              emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11),
+         Beam(192, policy, Float64; rng_id=2, beta=(1.0, 1.0, 1.0),
+              emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11))
+    end
+    run_spec(policy, solver) = begin
+        path = tempname() * ".h5"
+        b1, b2 = beams(policy)
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            execute!(StrongStrongTask(line(solver), line(solver);
+                                      policy=policy, artifact=path), b1, b2; turns=2)
+        end
+        lum = read(TaskOutput(path), :luminosity; name="ip")
+        rm(path; force=true)
+        sched = [r.values for r in execution_receipts(audit)
+                 if r.consumer === :spectral_pair_schedule]
+        (map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)),
+         collect(lum.value), sched)
+    end
+    series = Dict{Symbol,Vector{Float64}}()
+    with_logger(NullLogger()) do
+        for (name, solver, exchange) in variants
+            cpu = run_spec(CPUThreadsExecutionPolicy(threads=1), solver)
+            mp = run_spec(MultiProcessExecutionPolicy(threads=1), solver)
+            @test all(a == b for (a, b) in zip(cpu[1], mp[1]))
+            @test all(a == b for (a, b) in zip(cpu[2], mp[2]))
+            @test cpu[3] == mp[3] && length(cpu[3]) == 2
+            @test all(cpu[3] .> 0)
+            # The multi-process run really took the divided route this arm
+            # names, and the CPU one really did not: an arm that fell back to
+            # the undivided collide would compare that path with itself.
+            @test !isempty(mp[4]) && all(s -> s.exchange === exchange, mp[4])
+            @test !isempty(cpu[4]) && all(s -> s.exchange === :none, cpu[4])
+            series[name] = cpu[3]
+        end
+    end
+    for (name, _, _) in variants
+        # `:sequential` is the same physics on the other schedule, so it is the
+        # one arm that must MATCH the default rather than differ from it.
+        if name === :sequential
+            @test series[name] == series[:default]
+        elseif name !== :default
+            @test series[name] != series[:default]
+        end
+    end
+    # The campaign's last solver. The refusal is now a DENY-BY-DEFAULT
+    # tripwire, so what the suite owes is both halves: every solver in the
+    # roster answers `true`, and the fallback answers `false` -- a solver
+    # added later refuses under a multi-process policy until someone divides
+    # it and says so.
+    for T in Octopus._solver_contract_types()
+        schema = solver_option_schema(T)
+        solver = haskey(schema, :grid) ? T(; grid=(16, 16), slicing=slc) : T(; slicing=slc)
+        @test Octopus._solver_divides(solver)
+        @test Octopus._reject_undivided_solver(solver) === nothing
+    end
+    fallback = which(Octopus._solver_divides, Tuple{Octopus.AbstractPoissonSolver})
+    @test fallback.sig === Tuple{typeof(Octopus._solver_divides),Octopus.AbstractPoissonSolver}
+    # The fallback's ANSWER, not only its existence: `invoke` reaches past
+    # every solver's own method to the one a new solver would land on.
+    @test invoke(Octopus._solver_divides, Tuple{Octopus.AbstractPoissonSolver}, spec()) === false
 end
 
 @testset "Scalar diagnostics reduce the whole beam, and a lost particle still counts for nothing" begin
@@ -7670,11 +7755,18 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                     @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
                 end
             end
-            # What still refuses at two ranks and runs at one: PIC (step 4c)
-            # and a line action. The child asserts the direction itself and
-            # prints what it saw; both counts must have reached that line.
-            @test tagged(out1, "MPI-SSREFUSE ") == ["undivided=false action=false"]
-            @test tagged(out2, "MPI-SSREFUSE ") == ["undivided=true action=true"]
+            # What still refuses at two ranks and runs at one: a line action,
+            # the one thing left. Where the undivided-solver refusal used to be
+            # there is now its opposite -- spectral was the last solver the
+            # campaign had not divided (step 4g), and the whole TASK around it
+            # runs at every rank count. The child asserts the direction itself
+            # and prints what it saw; both counts must have reached that line.
+            @test tagged(out1, "MPI-SSREFUSE ") == ["spectral_ran=true action=false"]
+            @test tagged(out2, "MPI-SSREFUSE ") == ["spectral_ran=true action=true"]
+            # The child prints this only when the spectral TASK threw; an empty
+            # list is the claim, and a non-empty one carries the message.
+            @test isempty(tagged(out1, "MPI-SPECTASKERR ")) &&
+                  isempty(tagged(out2, "MPI-SPECTASKERR "))
             # Each beam's shard, as each rank resolved it: the two beams
             # differ in size, so their offsets differ on rank 1 and a scope
             # that handed beam 2 beam 1's shard would print 128 for both.
@@ -7937,6 +8029,84 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                     end
                 end
                 name in (:threads2, :node2) && @test ref.pair_workers == 2   # two threads changed the CPU run
+            end
+            # --- step 4g: spectral, the last solver -----------------------
+            #
+            # The same three claims as the PIC arms -- one rank bit for bit,
+            # more ranks in the parity class, `z` home on every rank -- plus
+            # the two things only spectral has: WHICH of its two routes ran
+            # (`exchange`), and, for the 6D map, that the sliced route's work
+            # really was spread. The per-rank counts are summed and held to a
+            # total derived from the slice populations: four solves per pair
+            # (two directions, two drifted planes) and one coordinator per
+            # pair, however the slices fell across the ranks.
+            specref = Dict(String(name) => _mpi_check_spectral_collide_line(
+                               CPUThreadsExecutionPolicy(threads=threads), solver)
+                           for (name, solver, threads, _) in _mpi_check_spectral_variants())
+            svariant(out, name) = let lines = [strip(split(line, "MPI-SPECVAR " * name * " ")[2])
+                                               for line in split(out, '\n')
+                                               if startswith(line, "MPI-SPECVAR " * name * " ")]
+                length(lines) == 1 ? lines[1] : nothing
+            end
+            for (name, solver, threads, same_as) in _mpi_check_spectral_variants()
+                key = String(name)
+                ref = specref[key]
+                v1, v2, v4 = svariant(out1, key), svariant(out2, key), svariant(out4, key)
+                @test v1 !== nothing && v2 !== nothing && v4 !== nothing
+                (v1 === nothing || v2 === nothing || v4 === nothing) && continue
+                @test v1 == ref.line                                # one rank: bit for bit
+                for vP in (v2, v4), (a, b) in zip(floats(v1), floats(vP))
+                    @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
+                end
+                for out in (out1, out2, out4)
+                    zs = [last(split(s)) for s in ranklines(out, "MPI-SPECVARZ ", key)]
+                    @test !isempty(zs) && all(==("true"), zs)
+                end
+                # Anti-vacuity: each arm selects a route of its own and must
+                # differ from the default, except the arms whose difference is
+                # only the SCHEDULE or the THREAD COUNT, which must equal the
+                # arm they name bit for bit at every rank count.
+                if same_as !== nothing
+                    @test v1 == specref[String(same_as)].line
+                    @test v2 == svariant(out2, String(same_as))
+                    @test v4 == svariant(out4, String(same_as))
+                elseif name !== :spec
+                    @test v1 != specref["spec"].line
+                end
+                # Every rank leaves the collide with the same luminosity bits:
+                # the coordinators hold their pairs' values and one all-sum
+                # publishes the vector, so a rank whose fold differed from its
+                # peers' would show here first.
+                for out in (out1, out2, out4)
+                    lums = [last(split(s)) for s in ranklines(out, "MPI-SPECVARLUM ", key)]
+                    @test !isempty(lums) && all(==(lums[1]), lums)
+                end
+                @test [last(split(s)) for s in ranklines(out1, "MPI-SPECVARLUM ", key)] == [ref.lum]
+                want_exchange = solver.longitudinal_kick ? "sliced" : "home"
+                for out in (out1, out2, out4)
+                    sched = ranklines(out, "MPI-SPECVARSCHED ", key)
+                    @test length(sched) == 1
+                    @test occursin("exchange=" * want_exchange, sched[1])
+                end
+                np = let (cb1, cb2) = _mpi_check_ss_beams(CPUThreadsExecutionPolicy(threads=1))
+                    s1 = longitudinal_slices(cb1.rep, solver.slicing1)
+                    s2 = longitudinal_slices(cb2.rep, solver.slicing2)
+                    count(!isempty, s1.indices) * count(!isempty, s2.indices)
+                end
+                @test np > 0
+                for (out, P) in ((out1, 1), (out2, 2), (out4, 4))
+                    works = [split(s) for s in ranklines(out, "MPI-SPECVARWORK ", key)]
+                    @test length(works) == P
+                    length(works) == P || continue
+                    planes = sum(parse(Int, w[2]) for w in works)
+                    coord = sum(parse(Int, w[3]) for w in works)
+                    if solver.longitudinal_kick
+                        @test planes == 4 * np && coord == np
+                    else
+                        # The transverse route runs no sliced exchange at all.
+                        @test planes == 0 && coord == 0
+                    end
+                end
             end
             # The arms' premises, from the layout rule (step 4d): `:sparse`
             # is many WHOLE slices per rank (64 slices on two ranks), `:skewed`

@@ -2372,28 +2372,45 @@ function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam;
 end
 
 """
+    _solver_divides(solver) -> Bool
+
+Whether this solver's collide has been divided across MPI ranks.
+
+DENY BY DEFAULT: the fallback is `false`, so a solver added after the
+multi-process campaign refuses under a multi-process policy until someone
+divides it and says so here. That is the direction that fails loudly; the
+other direction would let each rank collide its own shard alone and report the
+answer as the whole beam's, silently. The suite asserts both halves -- that
+every solver in the roster answers `true`, and that the fallback is `false`.
+"""
+_solver_divides(::AbstractPoissonSolver) = false
+_solver_divides(::GaussianPoissonSolver) = true          # step 4a
+_solver_divides(::PICPoissonSolver) = true               # steps 4c, 4d, 4e
+# `GaussianPICPoissonSolver` (4f) and `SpectralPoissonSolver` (4g) declare
+# theirs beside their own definitions; those types do not exist yet here.
+
+"""
 Refuse, at more than one rank, a solver whose collide has not been divided.
 
-Step 4a divided the soft-Gaussian collide and step 4c the PIC one (per-pair
-grid all-sums before each field solve, global mesh extents). Gaussian-PIC and
-spectral are still to come, and until then each rank would collide its own
-shard alone and report the result as the beam's. Called at the task's
-preflight AND at each undivided solver's CPU collide entry, so a bare
-`collide!` refuses too.
+Every solver in the roster divides: the soft-Gaussian (step 4a), PIC (4c, and
+the slice-aligned collide of 4d/4e), Gaussian-PIC (4f) and spectral (4g -- the
+slice-aligned 6D map, and the order-free transverse map on the home layout).
+The check stays as the tripwire `_solver_divides` describes. Called at the
+task's preflight AND at the CPU collide entry of the solvers that route through
+one, so a bare `collide!` refuses too.
 """
 function _reject_undivided_solver(solver::AbstractPoissonSolver)
     nranks = _mp_nranks()
     nranks > 1 || return nothing
-    solver isa Union{GaussianPoissonSolver,PICPoissonSolver,
-                     GaussianPICPoissonSolver} && return nothing
+    _solver_divides(solver) && return nothing
     throw(ArgumentError(
         "$(nameof(typeof(solver))) does not divide across the $(nranks) MPI " *
-        "ranks in force: the multi-process campaign divided the soft-Gaussian " *
-        "(step 4a), PIC (4c, and the slice-aligned collide of 4d/4e) and " *
-        "Gaussian-PIC (4f) collides; spectral is still to come, and until then " *
-        "each rank would collide its own shard alone and report the result as " *
-        "the whole beam's. Use one of the divided solvers, run one rank, or use " *
-        "CPUThreadsExecutionPolicy."))
+        "ranks in force: the multi-process campaign divided every solver in " *
+        "the roster (soft-Gaussian 4a, PIC 4c/4d/4e, Gaussian-PIC 4f, spectral " *
+        "4g), and a solver added since divides only once someone divides it and " *
+        "declares it in `_solver_divides`. Until then each rank would collide " *
+        "its own shard alone and report the result as the whole beam's. Divide " *
+        "it, run one rank, or use CPUThreadsExecutionPolicy."))
 end
 
 """

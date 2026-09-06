@@ -301,10 +301,12 @@ reduce (3b) or gather (3c); the artifact is rank 0's. What refuses, named in
 the message: line ACTIONS in either line and line observers on a
 `PredicateSchedule` (both are user code handed one rank's shard, and a
 schedule predicate gates a collective every rank must issue -- the tracking
-task refuses the same two), `:equal_count` slicing (4a), and every solver but
-the soft-Gaussian -- PIC, Gaussian-PIC and spectral are step 4c onward, and
-each refuses at its CPU collide entry as well as at the task's preflight, so
-a bare `collide!` cannot collide one rank's shard and call it the beam.
+task refuses the same two), `:equal_count` slicing (4a), and, when this was
+written, every solver but the soft-Gaussian. Steps 4c through 4g divided the
+rest; the solver refusal survives as a deny-by-default tripwire
+(`_solver_divides`, false for `AbstractPoissonSolver`), fired at the task's
+preflight and at the PIC collide entry, so a solver added after the campaign
+cannot collide one rank's shard and call it the beam.
 
 Two decisions that gated a collective were still rank-local on the collide
 path and were found by the 4b review: the slicing refused an EMPTY shard, or
@@ -696,10 +698,104 @@ Measured against the CPU policy: bit for bit at one rank on every option
 route (the default subtraction, the coupled one, no margin, the
 un-neutralised amplitude, and the sequential schedule), and 4e-16 to 1.4e-15
 relative at two and four ranks -- the same parity class as PIC's. Spectral
-is now the only solver that refuses, and it will not use this transport:
-its collide is order-free (it records `batch_mode = :order_free`, has no
-pair schedule, and solves each source slice once rather than once per pair),
-so its division belongs on the home layout.
+is the only solver left, and step 4g divides it.
+
+## Step 4g: spectral, and why it takes two routes
+
+Spectral is the last solver, and it is the one with TWO collides. Which one
+runs is `longitudinal_kick`, and they divide by different means because they
+are different algorithms:
+
+- The **6D map** (`longitudinal_kick = true`, the default and the production
+  route) is order-DEPENDENT in exactly the way PIC's collide is: a slice is
+  kicked by the pairs before it and then serves as a source at its kicked
+  positions. It takes the slice-aligned transport, and `spectral_sliced.jl`
+  is its batch loop.
+- The **transverse-only map** (`longitudinal_kick = false`, a compatibility
+  route) reads positions and only accumulates `px`/`py`, so slice-pair order
+  is irrelevant. It stays on the home layout: no migration, no pair
+  protocol, two collectives for the whole collide.
+
+The earlier reading -- that spectral would divide on the home layout because
+it "records `batch_mode = :order_free` and solves each source slice once" --
+was taken from the transverse route alone and is wrong for the default one.
+
+### The 6D map on the slice-aligned layout
+
+Against the PIC protocol, what spectral changes is how little is negotiated
+and therefore who solves. The Dirichlet box is ONE box for the whole collide
+(`_spectral_box_drifted`, made global in this step), so there is no per-pair
+geometry to reduce, no extents record, no owner deal and no Green table to
+publish: stages 0 and 1 of the PIC loop do not exist here. And because no
+geometry has to be agreed first, the solver of a directed interaction is the
+FIELD slice's group head rather than a dealt third party. The source group
+sends TWO drifted deposits -- the L and R planes of `_spectral_interaction!`
+-- the field head folds and solves them, and the potentials it produces never
+leave the group that needs them. Under `P <= nslices` that is two messages
+per direction per pair and no broadcast at all, against the six a
+source-solves scheme would send (three mesh arrays for each of the two drifted
+planes).
+
+Dealing the solve out is the whole point. At the production grid one DST
+solve costs about four times the evaluation of the mesh it produces against a
+slice (measured 271 us against 64 us at 64x64 with 6000 particles), so a
+scheme that folded the deposit and let every rank solve it would leave the
+dominant term undivided and cap the speed-up near 1.2x however many ranks
+ran. Pairs in one wavefront batch share no slice, so the field heads of a
+batch are distinct ranks and the batch's solves run at once.
+
+Two more things the divided loop gets for free by taking every source deposit
+and every virtual position BEFORE the pair kicks anything: the two directions
+become independent of each other, and both slices can be kicked in place. The
+undivided loop copies slice j only because it takes its deposits later.
+
+`:grid_free` rides the same protocol with a different payload. Its planes are
+sine-mode sums rather than a CIC deposit, and there is no mesh to send: the
+head folds the modes and the field members evaluate them per particle, which
+is already each member's own work. `_spectral_payload_planes` is the one
+place that difference lives.
+
+### The transverse map on the home layout
+
+Two things have to cross the ranks and nothing else. Each source slice's
+plane -- a deposit for `:grid`, mode sums for `:grid_free` -- is summed once
+for the whole collide; then the `:grid` solves are dealt round-robin and
+their meshes published by a second all-sum, each mesh written by exactly one
+rank and zero everywhere else so the fold is that rank's value exactly. The
+density-overlap luminosity needs both slices' global extents (one all-max for
+the collide) and the product of two FOLDED deposits, which no rank can form
+from its own share; those go in one all-sum per group of field slices, the
+group sized so the buffer stays bounded however many slices a run carries.
+The kick itself never leaves a rank: each evaluates the published meshes at
+its own particles, in the same `i` order at any rank count.
+
+### The global scalars both routes needed
+
+The Dirichlet box is the beam's, not the shard's, and sizing it from a shard
+would change every kick. `_lane_z_moment` already returned the folded scalar,
+so what was left local was the rms COUNT and the extrema. The count is one
+collective per beam per box; the extrema are one all-max. The non-finite
+verdict runs BEFORE either -- taken on local data and agreed as an integer
+count -- because a NaN handed to `_mp_allminmax`/`_mp_allmax!` comes back
+different on different ranks, and a rank that decided from an exchanged bound
+would throw while its peers walked into the next collective. Same rule the
+PIC collide follows. `_spectral_luminosity_scale` divided by
+`length(beam.rep)`, the 4c shard-count defect still live in spectral; it now
+reads the scoped global count.
+
+`_reject_undivided_solver` has nothing left to refuse, so it became a
+deny-by-default tripwire: `_solver_divides` answers `false` for
+`AbstractPoissonSolver` and `true` only where someone divided the collide and
+said so. A solver added after the campaign refuses under a multi-process
+policy until it is divided.
+
+Measured against the CPU policy: bit for bit at one rank on both routes and
+both methods, and last-bit agreement (~1e-15 relative) at two and four ranks.
+Scaling of the 6D map at 90,000 particles per beam, fifteen slices and a
+64x64 mesh, best of five on a shared box: 451 ms undivided, 497 ms at one
+rank, then 372, 230, 130 and 74 ms at two, four, eight and sixteen ranks --
+6.7x over the one-rank divided run. At thirty-two ranks, more ranks than
+slices, it turns back up to 227 ms; that regime is a todo row, not a claim.
 
 ## The CPU, MPI and CUDA consistency statement
 

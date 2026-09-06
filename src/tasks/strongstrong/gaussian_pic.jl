@@ -129,6 +129,8 @@ const _GAUSSIAN_PIC_EXTRA_OPTION_SCHEMA = (
 solver_option_schema(::Type{<:GaussianPICPoissonSolver}) =
     merge(_PIC_SOLVER_OPTION_SCHEMA, _GAUSSIAN_PIC_EXTRA_OPTION_SCHEMA)
 
+_solver_divides(::GaussianPICPoissonSolver) = true    # multi-process step 4f
+
 function solver_configuration(solver::GaussianPICPoissonSolver)
     picconf = solver_configuration(solver.pic)
     return merge(picconf, (

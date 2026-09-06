@@ -519,6 +519,27 @@ teaches something reusable, it lands here (dated), and the full record goes to
   semantics. A refusal is priced against what a knob DID at the time; when a
   campaign changes what the knob means, re-read the refusals too.
 
+## A structural claim read off one route is not a claim about the solver
+
+A solver with a flag that selects a different ALGORITHM has more than one
+structure, and a claim about "the solver" is only as good as the route it was
+read from. The multi-process campaign's step 4f recorded that spectral would
+divide on the home layout because "its collide is order-free -- it records
+`batch_mode = :order_free`, has no pair schedule, and solves each source
+slice once rather than once per pair". Every clause was true. Every clause
+was read from `longitudinal_kick = false`, the compatibility route. The
+DEFAULT route is the 6D map, which is order-dependent in exactly the way the
+PIC collide is -- a slice is kicked by the pairs before it, then serves as a
+source at its kicked positions -- and needed the slice-aligned transport the
+note had just ruled out.
+
+The tell was in the reading itself: `_spectral_option_active` says
+`batch_mode` is INACTIVE under `longitudinal_kick = false`, which is the code
+saying "this route has no schedule because the other one does". Cheap check,
+and it is the one to run before a design decision rests on a structural
+claim: find the dispatch that selects the route, and re-read the claim on
+each branch, starting with the default.
+
 ## Process habits that earned their place
 
 - The full-suite gate runs before every PUSH, on the final tree of the batch
