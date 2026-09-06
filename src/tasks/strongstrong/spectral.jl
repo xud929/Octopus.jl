@@ -386,7 +386,68 @@ mutable struct _SpectralGridWS
     mid_y::Vector{Vector{Float64}}
 end
 
+"""Largest prime factor of `n`."""
+function _spectral_max_prime(n::Int)
+    m = n; p = 2; r = 1
+    while p * p <= m
+        while m % p == 0
+            r = p; m ÷= p
+        end
+        p += 1
+    end
+    return max(r, m)
+end
+
+"""The nearest grid width whose DST-I logical size is smooth, at most `span` away."""
+function _spectral_smooth_grid(N::Int, span::Int=6)
+    for d in 1:span, c in (N - d, N + d)
+        c >= 4 && _spectral_max_prime(2 * (c + 1)) <= 7 && return c
+    end
+    return N
+end
+
+"""
+Say so when the mesh width makes the transform slow.
+
+A DST-I over `N` interior points has LOGICAL size `2(N + 1)`, and FFTW is fast
+only when that number is smooth. Measured on one thread, `RODFT00` on an
+`N x N` array: N=63 (logical 128) 39.2 us against N=64 (logical 130 = 2*5*13)
+67.5 us; N=127 (logical 256) 166.7 us against N=128 (logical 258 = 2*3*43)
+663.2 us; N=255 (logical 512) 634.0 us against N=256 (logical 514 = 2*257)
+5602.7 us. The solve is roughly 70% of a 6D spectral collide, so at 256 that
+is an 8.8x tax on the dominant term.
+
+`2(2^k + 1)` is twice a Fermat-ish number -- 17, 43, 97, 193, 257 -- so every
+power-of-two mesh is one of the slow ones, and a power of two is exactly what a
+reader reaches for. Nothing about `grid=(256, 256)` looks slower than
+`grid=(255, 255)`, which is why this warns rather than leaving it to be found.
+The criterion is the largest prime factor, not the power of two: N=48 (logical
+98 = 2*7^2) beats N=47 (logical 96).
+
+Below 48 points the absolute cost is small enough that the note would be noise,
+so it starts there.
+"""
+function _spectral_note_grid_size(Nx::Int, Ny::Int)
+    for (N, axis) in ((Nx, :x), (Ny, :y))
+        N >= 48 || continue
+        L = 2 * (N + 1)
+        q = _spectral_max_prime(L)
+        q <= 7 && continue
+        best = _spectral_smooth_grid(N)
+        _record_execution!(:spectral_grid_transform, CPUThreadsBackend,
+                           (axis=axis, points=N, logical=L, largest_prime=q,
+                            smooth=false, suggested=best))
+        @warn "spectral mesh width makes the DST slow: a transform of $(N) interior \
+               points has logical size $(L), whose largest prime factor is $(q), and \
+               FFTW has no fast algorithm for it. A nearby width whose logical size is \
+               smooth runs several times faster per solve, and the solve is most of a \
+               6D spectral collide." axis = axis grid_points = N logical_size = L largest_prime = q suggested_points = best maxlog = 4
+    end
+    return nothing
+end
+
 function _SpectralGridWS(Nx::Int, Ny::Int)
+    _spectral_note_grid_size(Nx, Ny)
     rho = zeros(Nx, Ny); rholm = zeros(Nx, Ny); philm = zeros(Nx, Ny)
     tmp = zeros(Nx, Ny); Phig = zeros(Nx, Ny); Exg = zeros(Nx, Ny); Eyg = zeros(Nx, Ny)
     padx = zeros(Nx + 2, Ny); cosx = zeros(Nx + 2, Ny)
@@ -676,16 +737,18 @@ function _spectral_grid_potential_from_rho!(ws::_SpectralGridWS, ns::Integer, Lx
     return nothing
 end
 
-"""Interpolate `Phig`/`Exg`/`Eyg` at the field particles."""
-function _spectral_grid_potential_eval(ws::_SpectralGridWS, fx, fy, Lx, Ly;
-                                       vslot::Int=0)
-    Nx, Ny = ws.Nx, ws.Ny
+"""
+Interpolate a solved mesh at the field particles, into caller-owned buffers.
+
+Takes the mesh ARRAYS rather than the workspace so the divided collide can
+evaluate straight out of the payload it received: copying that payload into a
+workspace first cost three planes per drifted plane per direction per pair,
+about 88 MiB a collide at a 64x64 mesh, for nothing.
+"""
+function _spectral_grid_potential_eval!(Phi, Ex, Ey, Phig, Exg, Eyg, fx, fy, Lx, Ly)
+    Nx, Ny = size(Phig)
     a = 2Lx; b = 2Ly; hx = a / (Nx + 1); hy = b / (Ny + 1)
     nf = length(fx)
-    Phi = vslot == 0 ? Vector{Float64}(undef, nf) : _spectral_slot(ws.phi_buf, vslot, nf)
-    Ex  = vslot == 0 ? Vector{Float64}(undef, nf) : _spectral_slot(ws.ex_buf,  vslot, nf)
-    Ey  = vslot == 0 ? Vector{Float64}(undef, nf) : _spectral_slot(ws.ey_buf,  vslot, nf)
-    Phig = ws.Phig; Exg = ws.Exg; Eyg = ws.Eyg
     @inbounds for k in 1:nf
         X = (fx[k] + Lx) / hx; Y = (fy[k] + Ly) / hy
         i = _grid_floor(X); j = _grid_floor(Y); wx = X - i; wy = Y - j
@@ -701,6 +764,17 @@ function _spectral_grid_potential_eval(ws::_SpectralGridWS, fx, fy, Lx, Ly;
         Phi[k] = phi; Ex[k] = ex; Ey[k] = ey
     end
     return Phi, Ex, Ey
+end
+
+"""The workspace form: the mesh `ws` holds, into `ws`'s own slots."""
+function _spectral_grid_potential_eval(ws::_SpectralGridWS, fx, fy, Lx, Ly;
+                                       vslot::Int=0)
+    nf = length(fx)
+    Phi = vslot == 0 ? Vector{Float64}(undef, nf) : _spectral_slot(ws.phi_buf, vslot, nf)
+    Ex  = vslot == 0 ? Vector{Float64}(undef, nf) : _spectral_slot(ws.ex_buf,  vslot, nf)
+    Ey  = vslot == 0 ? Vector{Float64}(undef, nf) : _spectral_slot(ws.ey_buf,  vslot, nf)
+    return _spectral_grid_potential_eval!(Phi, Ex, Ey, ws.Phig, ws.Exg, ws.Eyg,
+                                          fx, fy, Lx, Ly)
 end
 
 function _spectral_field_grid(sx, sy, fx, fy, Lx, Ly, Nx, Ny)
@@ -1051,6 +1125,24 @@ function _spectral_live_count(v, flags)
     return _mp_nranks() == 1 ? nloc : _mp_global_count(nloc)
 end
 
+"""
+Each slice's GLOBAL live count, and nothing else.
+
+`_divided_slice_plan` also resolves every slice's globally-first member -- the
+origin a shifted-moment fold needs -- at two `Allreduce`s PER SLICE. Spectral
+reads none of it: its Dirichlet box is one box for the whole collide, so it has
+no shift origin and no per-pair geometry. At fifteen slices a beam that was
+sixty blocking collectives per collide for a field nobody consumed.
+"""
+function _spectral_slice_counts(slices, divided::Bool)
+    counts = Vector{Int}(undef, length(slices.indices))
+    @inbounds for s in eachindex(counts)
+        counts[s] = length(slices.indices[s])
+    end
+    divided && _mp_allsum!(counts)
+    return counts
+end
+
 _spectral_box(solver::SpectralPoissonSolver, rep1::Phase6DRep, rep2::Phase6DRep) =
     _spectral_box(solver, rep1.x, rep1.y, rep2.x, rep2.y,
                   _live_flags(rep1, active_live_mask()),
@@ -1099,6 +1191,15 @@ function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2,
     emax = max(ext_x1, ext_x2, ext_y1, ext_y2)
     L = max(d * smax, 1.05 * emax)
     if !isfinite(L)
+        # The verdict above caught a non-finite LIVE COORDINATE. This catches
+        # what is left: an empty live set (whose extremum is -Inf, legal on a
+        # divided shard but not for the whole beam) and a finite input whose
+        # `d * smax` overflowed. Both agree across the ranks -- every number
+        # here is folded -- and beam 1 is named first, as it was before the
+        # verdict was split out.
+        all(isfinite, (ext_x1, ext_y1)) ||
+            _nonfinite_coordinate_error(:beam, (x=x1, y=y1);
+                                        context="spectral Dirichlet box, beam 1")
         _nonfinite_coordinate_error(:beam, (x=x2, y=y2);
                                     context="spectral Dirichlet box, beam 2")
     end
@@ -1156,6 +1257,13 @@ function _spectral_box_drifted(solver::SpectralPoissonSolver, rep1, rep2)
                ext1y, e[8] + sdrift * e[9])
     L = max(d * smax, 1.05 * emax)
     if !isfinite(L)
+        # See the note in `_spectral_box`: the verdict took the non-finite
+        # coordinates, this takes the empty live set and the overflowed drift,
+        # and beam 1 is named first.
+        all(isfinite, (ext1x, ext1y, e[5])) ||
+            _nonfinite_coordinate_error(:beam,
+                (x=rep1.x, px=rep1.px, y=rep1.y, py=rep1.py, z=rep1.z);
+                context="spectral drifted Dirichlet box, beam 1")
         _nonfinite_coordinate_error(:beam,
             (x=rep2.x, px=rep2.px, y=rep2.y, py=rep2.py, z=rep2.z);
             context="spectral drifted Dirichlet box, beam 2")
@@ -1261,6 +1369,20 @@ collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThre
 function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing;
                            sliced_scratch::Base.RefValue{Any}=Ref{Any}(nothing),
                            sliced_migration_ref::Base.RefValue{Any}=Ref{Any}(nothing))
+    # Both beams' shards in scope for the whole collide (step 4g, as the
+    # soft-Gaussian's entry does since 4b and PIC's since 4c): a task has
+    # already scoped them and this adds nothing; a bare divided collide -- which
+    # spectral now permits -- resolves each ONCE here instead of paying a hidden
+    # collective every time `_spectral_luminosity_scale` or the box asks.
+    return _with_beam_shards(beam1.rep, beam2.rep) do
+        _spectral_collide_routed!(solver, beam1, beam2, ctx, sliced_scratch,
+                                  sliced_migration_ref)
+    end
+end
+
+function _spectral_collide_routed!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam,
+                                   ctx, sliced_scratch::Base.RefValue{Any},
+                                   sliced_migration_ref::Base.RefValue{Any})
     # Both routes divide (multi-process step 4g), by different means: the 6D map
     # is order-dependent and takes the slice-aligned layout
     # (`spectral_sliced.jl`), the transverse-only map is order-free and stays on
@@ -1474,9 +1596,8 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
     # Every skip below reads a slice's GLOBAL membership (the 4a/4c rule): a
     # rank whose shard holds no member of a populated slice must still apply
     # that slice's kick to the particles it does hold.
-    plan1 = _divided_slice_plan(r1, slices1, divided)
-    plan2 = _divided_slice_plan(r2, slices2, divided)
-    c1 = plan1.counts; c2 = plan2.counts
+    c1 = _spectral_slice_counts(slices1, divided)
+    c2 = _spectral_slice_counts(slices2, divided)
     # Order-free by construction (positions are read, only px/py accumulate),
     # so there is no pair schedule to choose here; the receipt says so rather
     # than leaving a `batch_mode` request unrecorded (2026-09-04).
@@ -1610,9 +1731,6 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
     npairs = length(order)
     requested = solver.batch_mode
     batched = requested === :wavefront && npairs > 1
-    batches = collision_pair_batches(slices1, slices2)
-    max_workers = batched ?
-        clamp(_cpu_worker_count(), 1, max(1, maximum(length, batches; init=1))) : 1
     pair_pos = Dict{Tuple{Int,Int},Int}()
     sizehint!(pair_pos, npairs)
     for (p, entry) in pairs(order)
@@ -1623,10 +1741,10 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
     # multi-process policy runs -- at one rank too, where it is the CPU collide
     # bit for bit and the launcher child pins it there.
     if _mp_multi_process_active()
-        plan1 = _divided_slice_plan(beam1.rep, slices1, divided)
-        plan2 = _divided_slice_plan(beam2.rep, slices2, divided)
+        counts1 = _spectral_slice_counts(slices1, divided)
+        counts2 = _spectral_slice_counts(slices2, divided)
         _spectral_sliced_transport!(solver, beam1, beam2, slices1, slices2, order,
-                                    npairs, pair_pos, lum_parts, plan1, plan2,
+                                    npairs, pair_pos, lum_parts, counts1, counts2,
                                     kbb1, kbb2, klum, Lx, Ly, compute_luminosity,
                                     requested, sliced_scratch, sliced_migration_ref, LT)
         sliced_luminosity = zero(LT)
@@ -1635,6 +1753,12 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
         end
         return compute_luminosity ? sliced_luminosity : LT(NaN)
     end
+    # Below the sliced branch, because the sliced transport builds its own
+    # batches from the same rule and neither the batch list nor a workspace
+    # count is of any use to it (the wavefront costs a walk over every pair).
+    batches = collision_pair_batches(slices1, slices2)
+    max_workers = batched ?
+        clamp(_cpu_worker_count(), 1, max(1, maximum(length, batches; init=1))) : 1
     # Consumer-boundary receipt: `batch_mode` is the schedule that RAN, from
     # the same predicate that selects the loop below, and `requested` is the
     # field -- so a test asserts on what the run RECORDED rather than on what

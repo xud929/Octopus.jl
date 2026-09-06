@@ -17,6 +17,17 @@ include(joinpath(@__DIR__, "mpi_seam_check_fixture.jl"))
 
 fail(msg) = (println("MPI-CHECK FAIL ", msg); flush(stdout); exit(1))
 
+"""
+A solver nobody has divided, standing in for the one someone adds next.
+
+Declared in the CHILD and nowhere else: it exists only to exercise the
+throwing half of `_reject_undivided_solver`, which no solver in the roster can
+reach any more, and a new `AbstractPoissonSolver` subtype visible to the parent
+would be picked up by the suite's solver-tree coverage tripwires and demand a
+contract, a schema and a backend it has no business having.
+"""
+struct _MPICheckUndividedSolver <: Octopus.AbstractPoissonSolver end
+
 # Labelling comes from the communicator, not from `Octopus._mp_rank()`: that
 # accessor reads the policy in force and correctly reports a single process
 # OUTSIDE an execution scope, which is where these lines are printed.
@@ -458,6 +469,35 @@ let policy = MultiProcessExecutionPolicy(threads=1)
             emit("MPI-PICVARSCHED $(name) pair_workers=$(r.pair_workers) inner_workers=$(r.inner_workers) exchange=$(r.exchange) schedule=$(r.schedule)")
         end
     end
+    # The refusal the tripwire still owes. Every solver in the roster divides,
+    # so nothing in it can exercise the throwing half of
+    # `_reject_undivided_solver` -- and that half is the whole point of a
+    # DENY-BY-DEFAULT rule. A solver type declared HERE, in the child, stands
+    # for the one someone adds next: it never reaches the parent process, so
+    # the suite's solver-tree tripwires do not see it. It must refuse above one
+    # rank and pass at one, which is the same direction the line-action refusal
+    # is held to below.
+    #
+    # INSIDE the policy scope, and reported by the COMMUNICATOR's rank: both
+    # `_mp_nranks` and `_mp_is_root` read the policy in force and correctly
+    # report a single process outside a scope, so the first draft of this arm
+    # asserted `false == false` on all four ranks and printed itself four
+    # times. That is the shape of a check that cannot fail.
+    Octopus._with_execution_policy(resolved) do
+        dummy = _MPICheckUndividedSolver()
+        threw = try
+            Octopus._reject_undivided_solver(dummy)
+            false
+        catch err
+            err isa ArgumentError && occursin("_solver_divides", sprint(showerror, err))
+        end
+        expected = Octopus._mp_nranks() > 1
+        threw == expected || fail(
+            "the deny-by-default solver tripwire was $(threw) at $(Octopus._mp_nranks()) rank(s)")
+        child_rank() == 0 && emit("MPI-SPECDENY undivided_refused=$(threw) " *
+                                  "divides=$(Octopus._solver_divides(dummy))")
+    end
+
     # --- step 4g: spectral, the last solver the campaign divided -----------
     #
     # Two routes, and the receipt says which ran: the 6D map on the

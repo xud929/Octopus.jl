@@ -267,6 +267,25 @@ _mpi_check_spectral_variants() = (
     (:spec_trans, _mpi_check_spectral_solver(longitudinal_kick=false), 1, nothing),
     (:spec_trans_free, _mpi_check_spectral_solver(longitudinal_kick=false, method=:grid_free), 1, nothing),
     (:spec_trans_threads, _mpi_check_spectral_solver(longitudinal_kick=false), 2, :spec_trans),
+    # `luminosity_scale = nothing` is the arm that actually RUNS
+    # `_spectral_luminosity_scale`: every other arm pins the scale and
+    # short-circuits it, so the shard-count fix step 4g claims (the beams'
+    # macroparticle counts, not this rank's) was executed by no test.
+    (:spec_lumscale, _mpi_check_spectral_solver(luminosity_scale=nothing), 1, nothing),
+    # A NON-SQUARE mesh: every other arm is 16 x 16, under which an (Nx, Ny)
+    # transposition in a buffer only the divided routes allocate -- the deposit
+    # planes, the payloads, the luminosity grids -- cannot be seen.
+    (:spec_rect, _mpi_check_spectral_solver(grid=(8, 24)), 1, nothing),
+    (:spec_trans_rect, _mpi_check_spectral_solver(grid=(8, 24), longitudinal_kick=false), 1, nothing),
+    # Sixty-four slices over 256 and 192 particles: at two and four ranks a rank
+    # holds NO member of many populated slices, which is the case the transverse
+    # route's global-count gate exists for -- a rank must still apply that
+    # slice's kick to the particles it does hold, and must not skip the folds
+    # its peers are in. On the home layout, so it costs n1+n2 solves, not
+    # n1*n2 pairs of them.
+    (:spec_trans_sparse,
+     _mpi_check_spectral_solver(longitudinal_kick=false,
+                                slicing=_mpi_check_pic_sparse_slicing()), 1, nothing),
 )
 
 """

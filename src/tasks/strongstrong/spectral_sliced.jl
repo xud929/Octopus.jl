@@ -43,8 +43,34 @@ const _SPEC_TAG_LUMMESH = 10
 const _SPEC_TAG_LUMDEP1 = 11
 const _SPEC_TAG_LUMDEP2 = 12
 
-"""Tag base for one pair, so no two pairs of a batch can collide."""
+"""
+Tag base for one pair of a batch.
+
+Keyed by the pair's position in the BATCH's canonical order, not by its index
+in the whole collide. A batch is a barrier -- every message it posts is waited
+before the next batch posts anything -- so positions are all the separation
+tags need, and the largest tag is then `(widest batch) * 16` rather than
+`ns1 * ns2 * 16`. The MPI standard only guarantees tags up to 32767, which the
+global keying would have exceeded past 45 slices a beam; and since the slice
+count is exactly the knob that raises the rank ceiling (a batch holds at most
+`min(n1, n2)` pairs and so `4 * min(n1, n2)` independent solves), that ceiling
+must not be the thing that caps it.
+"""
 _spectral_sliced_tag(pair::Int, code::Int) = (pair - 1) * _SPECTRAL_TAG_CODES + code
+
+"""
+Which member of a field slice's group solves each of its two drifted planes.
+
+Offset by the pair's collision position so consecutive pairs pick different
+members, and by the plane so the two planes of one direction never land on the
+same rank when the group can spare a second. A group of one gives that member
+both planes, which is the rule this replaces -- so a run with whole slices on
+whole ranks is unchanged, message for message.
+"""
+@inline function _spectral_sliced_solvers(group::UnitRange{Int}, p::Int)
+    g = length(group)
+    return (group[((p) % g) + 1], group[((p + 1) % g) + 1])
+end
 
 # --- scratch -------------------------------------------------------------------
 
@@ -209,10 +235,14 @@ function _spectral_sliced_eval(solver::SpectralPoissonSolver, payload, ns::Int,
         return _spectral_free_potential_from_modes(view(payload, :, :, 1), ns, fx, fy,
                                                    Lx, Ly, size(payload, 1), size(payload, 2))
     end
-    copyto!(ws.Phig, view(payload, :, :, 1))
-    copyto!(ws.Exg, view(payload, :, :, 2))
-    copyto!(ws.Eyg, view(payload, :, :, 3))
-    return _spectral_grid_potential_eval(ws, fx, fy, Lx, Ly; vslot=vslot)
+    # Straight out of the payload: the mesh a field member evaluates is the one
+    # that arrived, and copying it into the workspace first bought nothing.
+    nf = length(fx)
+    return _spectral_grid_potential_eval!(
+        _spectral_slot(ws.phi_buf, vslot, nf), _spectral_slot(ws.ex_buf, vslot, nf),
+        _spectral_slot(ws.ey_buf, vslot, nf),
+        view(payload, :, :, 1), view(payload, :, :, 2), view(payload, :, :, 3),
+        fx, fy, Lx, Ly)
 end
 
 """The drift IN of `_spectral_interaction!`, on this part of the field slice."""
@@ -258,7 +288,10 @@ mutable struct _SpectralSlicedPair{T}
     in1::Bool
     in2::Bool
     coord::Int                   # first rank of slice i's group
-    head::NTuple{2,Int}          # by direction: the FIELD slice's group head
+    # By (direction, plane): the member of the FIELD slice's group that folds
+    # that plane's deposits and solves it. Dealt across the group rather than
+    # pinned to its head -- see `_spectral_sliced_solvers`.
+    solvers::NTuple{2,NTuple{2,Int}}
     param1::NamedTuple{(:weight, :lb, :center, :rb),NTuple{4,T}}
     param2::NamedTuple{(:weight, :lb, :center, :rb),NTuple{4,T}}
     planes_out::NTuple{2,Vector{Matrix{T}}}           # source member: per plane
@@ -273,9 +306,9 @@ mutable struct _SpectralSlicedPair{T}
     lumdeps_in::NTuple{2,Vector{Matrix{T}}}
 end
 
-function _spectral_sliced_pair(::Type{T}, p, i, j, ns2, in1, in2, coord, head,
+function _spectral_sliced_pair(::Type{T}, p, i, j, tagbase, in1, in2, coord, solvers,
                                param1, param2) where {T}
-    return _SpectralSlicedPair{T}(p, i, j, (i - 1) * ns2 + j, in1, in2, coord, head,
+    return _SpectralSlicedPair{T}(p, i, j, tagbase, in1, in2, coord, solvers,
         param1, param2,
         (Matrix{T}[], Matrix{T}[]), (Vector{Matrix{T}}[], Vector{Matrix{T}}[]),
         (Array{T,3}[], Array{T,3}[]), (Array{T,3}[], Array{T,3}[]),
@@ -297,14 +330,13 @@ function _spectral_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T
                                    compute_luminosity::Bool) where {T}
     P = _mp_nranks()
     rank = _mp_rank()
-    ns1 = length(sb1.layout.counts)
-    ns2 = length(sb2.layout.counts)
     Nx, Ny = solver.grid
     lnx, lny = solver.grid
     np = _spectral_payload_planes(solver)
     grid = solver.method !== :grid_free
     reqs = _mp_requests()
-    _mp_check_tag_bound(_spectral_sliced_tag(ns1 * ns2, _SPECTRAL_TAG_CODES))
+    _mp_check_tag_bound(_spectral_sliced_tag(maximum(length, batches; init=1),
+                                             _SPECTRAL_TAG_CODES))
     partials_sent = 0; partials_received = 0
     payloads_sent = 0; payloads_received = 0
     lum_sent = 0; lum_received = 0; messages = 0
@@ -313,7 +345,11 @@ function _spectral_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T
     for batch in batches
         _spectral_sliced_reset!(sc)
         plist = _SpectralSlicedPair{T}[]
-        for (i, j) in sort([(pr.i, pr.j) for pr in batch])
+        # `qb` is the pair's position in the batch's canonical order -- the same
+        # number on every rank, and this batch's tag base. Skipped pairs keep
+        # their position (the skip reads global counts, so every rank skips the
+        # same ones).
+        for (qb, (i, j)) in enumerate(sort([(pr.i, pr.j) for pr in batch]))
             counts1[i] == 0 && continue
             counts2[j] == 0 && continue
             g1 = sb1.layout.groups[i]; g2 = sb2.layout.groups[j]
@@ -323,10 +359,21 @@ function _spectral_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T
                       center=T(slices1.center[i]), rb=T(slices1.boundary[i + 1]))
             param2 = (weight=T(slices2.weight[j]), lb=T(slices2.boundary[j]),
                       center=T(slices2.center[j]), rb=T(slices2.boundary[j + 1]))
-            # The FIELD slice's head solves: direction 1 kicks slice j, so slice
-            # j's head folds and solves it, and its potentials never leave g2.
-            push!(plist, _spectral_sliced_pair(T, pair_pos[(i, j)], i, j, ns2, in1, in2,
-                                               first(g1), (first(g2), first(g1)),
+            # A pair has FOUR independent solves -- two directions times the two
+            # drifted planes -- and they are dealt across the FIELD slice's
+            # group. Direction 1 kicks slice j, so g2 solves it and its
+            # potentials never leave the group that needs them; direction 2 is
+            # g1's. With a whole slice on one rank the group has one member and
+            # this is the head rule it replaces, bit for bit. Once a slice
+            # spans a group it is what lets more than `nslices` ranks solve at
+            # all: the solve is ~70% of the collide and the only step that does
+            # not split by particle, so pinning it to `first(group)` capped the
+            # run at one solver per slice however many ranks were in force
+            # (measured: 74 ms at sixteen ranks, 227 ms at thirty-two).
+            p = pair_pos[(i, j)]
+            push!(plist, _spectral_sliced_pair(T, p, i, j, qb, in1, in2, first(g1),
+                                               (_spectral_sliced_solvers(g2, p),
+                                                _spectral_sliced_solvers(g1, p)),
                                                param1, param2))
         end
         isempty(plist) && continue
@@ -349,10 +396,10 @@ function _spectral_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T
                     d == 1 ? (pr.vx1 = vx; pr.vy1 = vy) : (pr.vx2 = vx; pr.vy2 = vy)
                     push!(srcwork, (q, d))
                 end
-                if rank == pr.head[d]
-                    src_group = d == 1 ? sb1.layout.groups[pr.i] : sb2.layout.groups[pr.j]
-                    for m in 1:2
-                        got = Matrix{T}[]
+                src_group = d == 1 ? sb1.layout.groups[pr.i] : sb2.layout.groups[pr.j]
+                for m in 1:2
+                    got = Matrix{T}[]
+                    if rank == pr.solvers[d][m]
                         for r in src_group
                             plane = _spectral_plane!(sc, Nx, Ny)
                             push!(got, plane)
@@ -360,8 +407,8 @@ function _spectral_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T
                                 _spectral_sliced_tag(pr.pair, _SPEC_TAG_PARTIAL + 2 * (d - 1) + m - 1)))
                             partials_received += 1
                         end
-                        push!(pr.partials_in[d], got)
                     end
+                    push!(pr.partials_in[d], got)     # empty unless this rank solves it
                 end
             end
         end
@@ -395,29 +442,97 @@ function _spectral_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T
         for (q, d) in srcwork
             pr = plist[q]
             for m in 1:2
-                push!(reqs, _mp_isend(pr.planes_out[d][m], pr.head[d],
+                push!(reqs, _mp_isend(pr.planes_out[d][m], pr.solvers[d][m],
                     _spectral_sliced_tag(pr.pair, _SPEC_TAG_PARTIAL + 2 * (d - 1) + m - 1)))
                 partials_sent += 1
+            end
+        end
+        # The luminosity's extents ride THIS wait (they are read from the virtual
+        # positions the pass above just wrote, and nothing else needs them
+        # earlier), and its mesh rides the payload wait below. That is two of
+        # the batch's five barriers removed: every barrier costs the slowest
+        # rank of the batch, and the count multiplies by the batch count.
+        if compute_luminosity
+            for pr in plist
+                g1 = sb1.layout.groups[pr.i]; g2 = sb2.layout.groups[pr.j]
+                for (as, vx, vy, code) in ((pr.in1, pr.vx1, pr.vy1, _SPEC_TAG_LUMEXT1),
+                                           (pr.in2, pr.vx2, pr.vy2, _SPEC_TAG_LUMEXT2))
+                    as || continue
+                    v = _spectral_record!(sc, 4)
+                    v[1] = -_pic_extremum(minimum, vx, T(Inf)); v[2] = _pic_extremum(maximum, vx, T(-Inf))
+                    v[3] = -_pic_extremum(minimum, vy, T(Inf)); v[4] = _pic_extremum(maximum, vy, T(-Inf))
+                    push!(reqs, _mp_isend(v, pr.coord, _spectral_sliced_tag(pr.pair, code)))
+                    messages += 1
+                end
+                if rank == pr.coord
+                    pairs_coordinated += 1
+                    for (g, code) in ((g1, _SPEC_TAG_LUMEXT1), (g2, _SPEC_TAG_LUMEXT2)), r in g
+                        v = _spectral_record!(sc, 4)
+                        push!(pr.lumexts_in, v)
+                        push!(reqs, _mp_irecv!(v, r, _spectral_sliced_tag(pr.pair, code)))
+                    end
+                end
             end
         end
         _mp_wait_all(reqs, :wait_deposits)
 
         # --- stage 2: the field heads fold and solve ----------------------------
-        headwork = Tuple{Int,Int}[]
+        # The coordinators' luminosity meshes go out with the payloads: the
+        # folded extents arrived at the wait above, and nothing reads the mesh
+        # before the deposits below.
+        if compute_luminosity
+            for pr in plist
+                members = _pic_sliced_members(sb1.layout.groups[pr.i], sb2.layout.groups[pr.j])
+                if rank == pr.coord
+                    xmin = T(Inf); xmax = T(-Inf); ymin = T(Inf); ymax = T(-Inf)
+                    for v in pr.lumexts_in
+                        xmin = min(xmin, -v[1]); xmax = max(xmax, v[2])
+                        ymin = min(ymin, -v[3]); ymax = max(ymax, v[4])
+                    end
+                    width, height, ok = _spectral_luminosity_extents_ok(
+                        solver, xmax - xmin, ymax - ymin, T)
+                    tx = width / T(lnx - 1.1); ty = height / T(lny - 1.1)
+                    width += T(0.1) * tx; height += T(0.1) * ty
+                    xmin -= T(0.05) * tx; ymin -= T(0.05) * ty
+                    mv = _spectral_record!(sc, 5)
+                    mv[1] = xmin; mv[2] = ymin
+                    mv[3] = width / (lnx - 1); mv[4] = height / (lny - 1)
+                    # The verdict travels WITH the mesh: only the coordinator can
+                    # see the folded extents, so a throw it took alone would leave
+                    # its peers in the next receive (the 4c rule for a refusal).
+                    mv[5] = ok ? one(T) : zero(T)
+                    pr.lummesh = mv
+                    for r in members
+                        push!(reqs, _mp_isend(mv, r, _spectral_sliced_tag(pr.pair, _SPEC_TAG_LUMMESH)))
+                        messages += 1
+                    end
+                end
+                # Every member of the pair receives, the coordinator included: its
+                # own send is the seam's self-delivery, so one code path serves both.
+                mv = _spectral_record!(sc, 5)
+                pr.lummesh = mv
+                push!(reqs, _mp_irecv!(mv, pr.coord, _spectral_sliced_tag(pr.pair, _SPEC_TAG_LUMMESH)))
+            end
+        end
+        # One work item per (pair, direction, PLANE), not per (pair, direction):
+        # four independent solves per pair instead of two chunks of two, which
+        # is both what spreads them over the group and what gives a rank four
+        # threads' worth of independent solves when it holds whole slices.
+        headwork = NTuple{4,Int}[]
         for (q, pr) in enumerate(plist)
             for d in 1:2
-                if rank == pr.head[d]
-                    for _ in 1:2
+                for m in 1:2
+                    if rank == pr.solvers[d][m]
                         push!(pr.payload_out[d], _spectral_payload!(sc, Nx, Ny, np))
+                        push!(headwork, (q, d, m, length(pr.payload_out[d])))
                     end
-                    push!(headwork, (q, d))
                 end
                 as_field = d == 1 ? pr.in2 : pr.in1
                 as_field || continue
                 for m in 1:2
                     payload = _spectral_payload!(sc, Nx, Ny, np)
                     push!(pr.payload_in[d], payload)
-                    push!(reqs, _mp_irecv!(payload, pr.head[d],
+                    push!(reqs, _mp_irecv!(payload, pr.solvers[d][m],
                         _spectral_sliced_tag(pr.pair, _SPEC_TAG_PAYLOAD + 2 * (d - 1) + m - 1)))
                     payloads_received += 1
                 end
@@ -429,25 +544,23 @@ function _spectral_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T
                 ws = grid ? pool[chunk] : nothing
                 lo, hi = _chunk_bounds(length(headwork), nw, chunk)
                 for t in lo:hi
-                    q, d = headwork[t]
+                    q, d, m, slot = headwork[t]
                     pr = plist[q]
                     ns = d == 1 ? counts1[pr.i] : counts2[pr.j]
-                    for m in 1:2
-                        # Folded in SOURCE-GROUP rank order, never on arrival.
-                        acc = pr.payload_out[d][m]
-                        fold = _spectral_sliced_fold!(pr.partials_in[d][m])
-                        _spectral_sliced_payload!(acc, solver, fold, ns, Lx, Ly, ws)
-                    end
+                    # Folded in SOURCE-GROUP rank order, never on arrival.
+                    fold = _spectral_sliced_fold!(pr.partials_in[d][m])
+                    _spectral_sliced_payload!(pr.payload_out[d][slot], solver, fold,
+                                              ns, Lx, Ly, ws)
                 end
             end
             end
-            planes_solved += 2 * length(headwork)
+            planes_solved += length(headwork)
         end
-        for (q, d) in headwork
+        for (q, d, m, slot) in headwork
             pr = plist[q]
             field_group = d == 1 ? sb2.layout.groups[pr.j] : sb1.layout.groups[pr.i]
-            for m in 1:2, r in field_group
-                push!(reqs, _mp_isend(pr.payload_out[d][m], r,
+            for r in field_group
+                push!(reqs, _mp_isend(pr.payload_out[d][slot], r,
                     _spectral_sliced_tag(pr.pair, _SPEC_TAG_PAYLOAD + 2 * (d - 1) + m - 1)))
                 payloads_sent += 1
             end
@@ -489,61 +602,8 @@ function _spectral_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T
         end
 
         # --- stage 4: the luminosity --------------------------------------------
+        # Last in the batch, so this skip skips only itself.
         compute_luminosity || continue
-        for pr in plist
-            g1 = sb1.layout.groups[pr.i]; g2 = sb2.layout.groups[pr.j]
-            for (as, vx, vy, code) in ((pr.in1, pr.vx1, pr.vy1, _SPEC_TAG_LUMEXT1),
-                                       (pr.in2, pr.vx2, pr.vy2, _SPEC_TAG_LUMEXT2))
-                as || continue
-                v = _spectral_record!(sc, 4)
-                v[1] = -_pic_extremum(minimum, vx, T(Inf)); v[2] = _pic_extremum(maximum, vx, T(-Inf))
-                v[3] = -_pic_extremum(minimum, vy, T(Inf)); v[4] = _pic_extremum(maximum, vy, T(-Inf))
-                push!(reqs, _mp_isend(v, pr.coord, _spectral_sliced_tag(pr.pair, code)))
-                messages += 1
-            end
-            if rank == pr.coord
-                pairs_coordinated += 1
-                for (g, code) in ((g1, _SPEC_TAG_LUMEXT1), (g2, _SPEC_TAG_LUMEXT2)), r in g
-                    v = _spectral_record!(sc, 4)
-                    push!(pr.lumexts_in, v)
-                    push!(reqs, _mp_irecv!(v, r, _spectral_sliced_tag(pr.pair, code)))
-                end
-            end
-        end
-        _mp_wait_all(reqs, :wait_lum_extents)
-        for pr in plist
-            members = _pic_sliced_members(sb1.layout.groups[pr.i], sb2.layout.groups[pr.j])
-            if rank == pr.coord
-                xmin = T(Inf); xmax = T(-Inf); ymin = T(Inf); ymax = T(-Inf)
-                for v in pr.lumexts_in
-                    xmin = min(xmin, -v[1]); xmax = max(xmax, v[2])
-                    ymin = min(ymin, -v[3]); ymax = max(ymax, v[4])
-                end
-                width, height, ok = _spectral_luminosity_extents_ok(
-                    solver, xmax - xmin, ymax - ymin, T)
-                tx = width / T(lnx - 1.1); ty = height / T(lny - 1.1)
-                width += T(0.1) * tx; height += T(0.1) * ty
-                xmin -= T(0.05) * tx; ymin -= T(0.05) * ty
-                mv = _spectral_record!(sc, 5)
-                mv[1] = xmin; mv[2] = ymin
-                mv[3] = width / (lnx - 1); mv[4] = height / (lny - 1)
-                # The verdict travels WITH the mesh: only the coordinator can
-                # see the folded extents, so a throw it took alone would leave
-                # its peers in the next receive (the 4c rule for a refusal).
-                mv[5] = ok ? one(T) : zero(T)
-                pr.lummesh = mv
-                for r in members
-                    push!(reqs, _mp_isend(mv, r, _spectral_sliced_tag(pr.pair, _SPEC_TAG_LUMMESH)))
-                    messages += 1
-                end
-            end
-            # Every member of the pair receives, the coordinator included: its
-            # own send is the seam's self-delivery, so one code path serves both.
-            mv = _spectral_record!(sc, 5)
-            pr.lummesh = mv
-            push!(reqs, _mp_irecv!(mv, pr.coord, _spectral_sliced_tag(pr.pair, _SPEC_TAG_LUMMESH)))
-        end
-        _mp_wait_all(reqs, :wait_lum_mesh)
         # A degenerate mesh is COUNTED, not thrown here: only the ranks of that
         # pair received the verdict, and a throw they took alone would leave
         # every other rank in the next batch's first receive. The transport
@@ -551,7 +611,12 @@ function _spectral_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T
         # together -- the 4c rule.
         bad = falses(length(plist))
         for (q, pr) in enumerate(plist)
-            pr.lummesh[5] == zero(T) && (bad[q] = true; nbad += 1)
+            pr.lummesh[5] == zero(T) || continue
+            bad[q] = true
+            # Counted by the COORDINATOR alone: every member of the pair
+            # receives the same verdict, so counting them all would report a
+            # pair count multiplied by the group size.
+            rank == pr.coord && (nbad += 1)
         end
         for (q, pr) in enumerate(plist)
             bad[q] && continue
@@ -560,17 +625,17 @@ function _spectral_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T
             for (as, vx, vy, code) in ((pr.in1, pr.vx1, pr.vy1, _SPEC_TAG_LUMDEP1),
                                        (pr.in2, pr.vx2, pr.vy2, _SPEC_TAG_LUMDEP2))
                 as || continue
-                q = _spectral_lumgrid!(sc, lnx, lny)
-                fill!(q, zero(T))
-                _spectral_cic_deposit!(q, vx, vy, mv[1], mv[2], mv[3], mv[4])
-                push!(reqs, _mp_isend(q, pr.coord, _spectral_sliced_tag(pr.pair, code)))
+                dep = _spectral_lumgrid!(sc, lnx, lny)
+                fill!(dep, zero(T))
+                _spectral_cic_deposit!(dep, vx, vy, mv[1], mv[2], mv[3], mv[4])
+                push!(reqs, _mp_isend(dep, pr.coord, _spectral_sliced_tag(pr.pair, code)))
                 lum_sent += 1
             end
             if rank == pr.coord
                 for (g, code, slot) in ((g1, _SPEC_TAG_LUMDEP1, 1), (g2, _SPEC_TAG_LUMDEP2, 2)), r in g
-                    q = _spectral_lumgrid!(sc, lnx, lny)
-                    push!(pr.lumdeps_in[slot], q)
-                    push!(reqs, _mp_irecv!(q, r, _spectral_sliced_tag(pr.pair, code)))
+                    dep = _spectral_lumgrid!(sc, lnx, lny)
+                    push!(pr.lumdeps_in[slot], dep)
+                    push!(reqs, _mp_irecv!(dep, r, _spectral_sliced_tag(pr.pair, code)))
                     lum_received += 1
                 end
             end
@@ -622,14 +687,14 @@ above.
 """
 function _spectral_sliced_transport!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam,
                                      slices1, slices2, order, npairs::Int, pair_pos,
-                                     lum_parts, plan1, plan2, kbb1, kbb2, klum, Lx, Ly,
+                                     lum_parts, counts1, counts2, kbb1, kbb2, klum, Lx, Ly,
                                      compute_luminosity::Bool, requested::Symbol,
                                      sliced_scratch::Base.RefValue{Any},
                                      sliced_migration_ref::Base.RefValue{Any},
                                      ::Type{T}) where {T}
     P = _mp_nranks()
-    layout1 = _pic_sliced_layout(plan1.counts, P)
-    layout2 = _pic_sliced_layout(plan2.counts, P)
+    layout1 = _pic_sliced_layout(counts1, P)
+    layout2 = _pic_sliced_layout(counts2, P)
     mig1, mig2 = _pic_migration_scratch(T, sliced_migration_ref)
     sb1 = _pic_sliced_migrate_in(beam1.rep, slices1, layout1, mig1, T)
     sb2 = _pic_sliced_migrate_in(beam2.rep, slices2, layout2, mig2, T)
@@ -656,7 +721,7 @@ function _spectral_sliced_transport!(solver::SpectralPoissonSolver, beam1::Beam,
     sc = _spectral_sliced_scratch(T, sliced_scratch)
     nbad = try
         _spectral_collide_sliced!(sb1, sb2, batches, pair_pos, lum_parts, solver,
-                                  slices1, slices2, plan1.counts, plan2.counts,
+                                  slices1, slices2, counts1, counts2,
                                   pool, sc, kbb1, kbb2, klum, Lx, Ly, compute_luminosity)
     finally
         lease === nothing || _release_spectral_grid_ws_pool!(lease)

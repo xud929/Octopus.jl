@@ -367,7 +367,16 @@ drifted deposits and solving them, while the transverse-only map is
 order-free and stays on the home layout (one all-sum for every source slice's
 plane, a second for the dealt mesh solves, and the luminosity's folded
 deposits). The `:spectral_pair_schedule` receipt names which ran:
-`exchange=:sliced`, `:home`, or `:none` for an undivided run. No solver in
+`exchange=:sliced`, `:home`, or `:none` for an undivided run. On the sliced
+route a pair's four solves -- two directions times the two drifted planes --
+are dealt across the field slice's group rather than pinned to its head, so
+every rank of a run solves once a slice spans more than one rank; the ceiling
+is then `4 * min(n1, n2)` concurrent solves, which is the most a wavefront
+batch can offer, and `nslices` is the knob that raises it. The mesh width is
+its own lever: a DST-I over `N` interior points has logical size `2(N + 1)`
+and FFTW is fast only when that is smooth, so `grid=(256, 256)` costs 8.8x
+`grid=(255, 255)`; `_spectral_note_grid_size` records a
+`:spectral_grid_transform` receipt and warns, naming the nearby smooth width. No solver in
 the roster refuses at more than one rank; `_solver_divides` is a
 deny-by-default tripwire, so a solver added later refuses until it is
 divided.

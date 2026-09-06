@@ -386,6 +386,19 @@ teaches something reusable, it lands here (dated), and the full record goes to
   on a value computed beside it -- the same "assert what the run recorded"
   rule, applied to a reduction rather than to a configuration.
 
+### The same scope rule makes a TEST vacuous, not only a collective
+
+`_mp_nranks()` and `_mp_is_root()` read the policy in force, so outside an
+execution scope they correctly report a single process. A launcher-child arm
+written outside the scope therefore computes `expected = _mp_nranks() > 1` as
+`false` on every rank, asserts `false == false`, and prints its receipt once
+per rank because every rank thinks it is rank 0. That is exactly what the
+first draft of step 4g's deny-by-default arm did at four ranks: it passed,
+four times, and proved nothing. The fixture already carried the warning for
+`_mp_rank` in a comment about LABELLING; the lesson is that the rule applies to
+the assertion's premise too. A count of the receipt lines is the cheap tell --
+one line per run means the scope was there, `P` lines mean it was not.
+
 ## A keyword one solver ignores is a second keyword
 
 - `batch_mode` was spelled identically on three solvers and meant three

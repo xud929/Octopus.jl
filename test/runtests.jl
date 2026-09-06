@@ -7182,6 +7182,52 @@ end
     @test Octopus._reject_undivided_solver(gpic()) === nothing
 end
 
+@testset "The spectral mesh width says when it makes the DST slow" begin
+    # A DST-I over N interior points has LOGICAL size 2(N+1), and FFTW is fast
+    # only when that is smooth. Measured on one thread, RODFT00 on an N x N
+    # array: N=63 (logical 128) 39.2us against N=64 (logical 130) 67.5us;
+    # N=127 (256) 166.7us against N=128 (258) 663.2us; N=255 (512) 634.0us
+    # against N=256 (514 = 2*257) 5602.7us. The solve is most of a 6D spectral
+    # collide, so at 256 that is an 8.8x tax on the dominant term -- and
+    # `2(2^k+1)` is twice a Fermat-ish number, so every power-of-two mesh is one
+    # of the slow ones. Nothing about the option says so, hence the note.
+    @test Octopus._spectral_max_prime(2 * (63 + 1)) == 2
+    @test Octopus._spectral_max_prime(2 * (64 + 1)) == 13
+    @test Octopus._spectral_max_prime(2 * (256 + 1)) == 257
+    # The suggestion is the nearby width whose logical size IS smooth, and the
+    # criterion is the largest prime factor rather than the power of two: 48
+    # (logical 98 = 2*7^2) is smooth and 47 (96) is too, but 48 is not warned.
+    @test Octopus._spectral_smooth_grid(64) == 63
+    @test Octopus._spectral_smooth_grid(128) == 127
+    @test Octopus._spectral_smooth_grid(256) == 255
+    note(nx, ny) = begin
+        audit = ExecutionAudit()
+        with_logger(NullLogger()) do
+            with_execution_audit(audit) do
+                Octopus._spectral_note_grid_size(nx, ny)
+            end
+        end
+        [r.values for r in execution_receipts(audit)
+         if r.consumer === :spectral_grid_transform]
+    end
+    # A bad width is RECORDED, not only warned: a test asserts on what the run
+    # said rather than on a log line.
+    bad = note(128, 128)
+    @test length(bad) == 2
+    @test all(v -> v.smooth === false, bad)
+    @test all(v -> v.largest_prime == 43, bad)
+    @test all(v -> v.suggested == 127, bad)
+    @test [v.axis for v in bad] == [:x, :y]
+    # A smooth width says nothing, and neither does a width small enough that
+    # the absolute cost would make the note noise (the suite's own 16 x 16).
+    @test isempty(note(127, 127))
+    @test isempty(note(16, 16))
+    @test isempty(note(48, 48))
+    # One axis bad, one good.
+    one = note(127, 128)
+    @test length(one) == 1 && one[1].axis === :y && one[1].points == 128
+end
+
 @testset "A spectral task under the multi-process policy is the task it composes" begin
     # Multi-process step 4g, the last solver. Spectral has TWO collides and
     # they divide by different means, so both are here. The 6D map is
@@ -8083,10 +8129,17 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 end
                 @test [last(split(s)) for s in ranklines(out1, "MPI-SPECVARLUM ", key)] == [ref.lum]
                 want_exchange = solver.longitudinal_kick ? "sliced" : "home"
+                # `batch_mode` is what RAN, and it is asserted, not merely
+                # printed: without it the "the two schedules agree" arms
+                # (`:spec_seq` against `:spec`) would be satisfied by a route
+                # that silently ran the same schedule twice.
+                want_mode = !solver.longitudinal_kick ? "order_free" :
+                            solver.batch_mode === :sequential ? "sequential" : "wavefront"
                 for out in (out1, out2, out4)
                     sched = ranklines(out, "MPI-SPECVARSCHED ", key)
                     @test length(sched) == 1
                     @test occursin("exchange=" * want_exchange, sched[1])
+                    @test occursin("batch_mode=" * want_mode, sched[1])
                 end
                 np = let (cb1, cb2) = _mpi_check_ss_beams(CPUThreadsExecutionPolicy(threads=1))
                     s1 = longitudinal_slices(cb1.rep, solver.slicing1)
@@ -8102,12 +8155,34 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                     coord = sum(parse(Int, w[3]) for w in works)
                     if solver.longitudinal_kick
                         @test planes == 4 * np && coord == np
+                        # WHERE the solves went, not only how many there were.
+                        # The four solves of a pair -- two directions times the
+                        # two drifted planes -- are dealt across the field
+                        # slice's group, so once the layout gives a slice more
+                        # than one rank EVERY rank of the run solves something.
+                        # Pinning the head rule this replaced would leave the
+                        # non-head members of every group at zero: measured
+                        # 20 of 32 ranks and 23 of 64 solving before the deal,
+                        # 32 of 32 and 64 of 64 after, with the busiest rank's
+                        # share falling 60 planes to 20.
+                        @test count(w -> parse(Int, w[2]) > 0, works) == P
                     else
                         # The transverse route runs no sliced exchange at all.
                         @test planes == 0 && coord == 0
                     end
                 end
             end
+            # The deny-by-default tripwire's REFUSING half, which no solver in
+            # the roster can reach: the child declares a stand-in solver and
+            # holds it to the same direction as the line-action refusal --
+            # throws above one rank, passes at one.
+            # Exactly one line per run: rank 0 of the COMMUNICATOR reports it,
+            # and four copies would mean the arm was taken outside the policy
+            # scope, where every rank believes it is alone and the refusal
+            # cannot fire.
+            @test tagged(out1, "MPI-SPECDENY ") == ["undivided_refused=false divides=false"]
+            @test tagged(out2, "MPI-SPECDENY ") == ["undivided_refused=true divides=false"]
+            @test tagged(out4, "MPI-SPECDENY ") == ["undivided_refused=true divides=false"]
             # The arms' premises, from the layout rule (step 4d): `:sparse`
             # is many WHOLE slices per rank (64 slices on two ranks), `:skewed`
             # is a slice split over two ranks at four (its middle slice holds

@@ -110,7 +110,7 @@ the verdict is rank 0's, broadcast, because a schedule predicate is user code
 and its answer gates the luminosity exchanges.
 
 Scaling of the 6D map, 90,000 particles per beam, fifteen slices, a 64x64
-mesh, best of five on a shared box:
+mesh, best of five on a shared box (which carried other work throughout, so these are best-observed rather than means):
 
 | ranks | ms |
 |---|---|
@@ -127,3 +127,119 @@ ranks than slices, where every slice becomes a group and the protocol pays
 for it; that regime is a todo row, not a claim. The box was shared during the
 measurement and the spread run to run was large, which is why these are
 best-of-five rather than means.
+
+---
+
+## The second half, 2026-09-06: the rank ceiling, and a lever nobody was pulling
+
+The first cut scaled to sixteen ranks and turned back up at thirty-two. The
+owner asked for that to be fixed rather than recorded, on the ground that
+"it is quite often we have more CPUs than slices" -- which is the regime the
+turn-up sat in.
+
+### What the ceiling actually was
+
+Every step of the collide splits by particle across a slice's group except the
+DST solve, which is one indivisible FFT per drifted plane and about 70% of the
+work. That solve was pinned to the field slice's group HEAD. So the number of
+ranks that could solve was the number of SLICES, and -- because both beams'
+layouts are built by the same rule from near-identical counts -- the
+direction-1 heads and the direction-2 heads are the same ranks, not two sets.
+
+Read from each rank's own exchange receipt, 90,000 particles a beam, fifteen
+slices:
+
+| ranks | solving before | solving after | busiest rank's planes |
+|---|---|---|---|
+| 8 | 8 of 8 | 8 of 8 | 120 -> 120 |
+| 16 | 16 of 16 | 16 of 16 | 60 -> 60 |
+| 32 | 20 of 32 | 32 of 32 | 60 -> 30 |
+| 64 | 23 of 64 | 64 of 64 | 60 -> 20 |
+
+At sixty-four ranks forty-one did nothing, and the busiest rank carried exactly
+the load it had at sixteen. The thirty-two-rank distribution was
+`60,0,60,0,...`: `first(group)` is always the even rank.
+
+### The fix
+
+Deal a pair's four solves -- two directions times the two drifted planes --
+across the field slice's group, one solver per (direction, plane), offset by
+the pair's collision position. A group of one gives that member both planes, so
+the regime that already worked is unchanged message for message and bit for
+bit; the launcher child's spectral lines are identical across the change at 1,
+2 and 4 ranks.
+
+Measured end to end against the same benchmark on the commit before -- 90,000
+particles a beam, fifteen slices, a 64x64 mesh, best of five on a shared box:
+
+| ranks | pinned to the head | dealt across the group |
+|---|---|---|
+| 1 | 497 ms | 485 ms |
+| 2 | 372 | 378 |
+| 4 | 230 | 236 |
+| 8 | 130 | 130 |
+| 16 | 74 | 68.9 |
+| 32 | 227 | **47.4** |
+| 64 | -- | 209 |
+
+Thirty-two ranks went from a 3x regression against sixteen to a 1.5x
+improvement over it, 4.8x faster than the same point before. Below sixteen the
+two columns are the same run, which is the point.
+
+`4 * min(n1, n2)` is the most any schedule can use, because a wavefront batch
+holds at most `min(n1, n2)` pairs.
+
+That the ceiling is `4 * nslices` and not some fixed number is measured, not
+argued: at fifteen slices sixty-four ranks run 209 ms against 458 undivided
+(2.2x -- past the sixty solves a batch can offer), while at THIRTY slices the
+same sixty-four ranks run 97.1 ms against 1701 undivided (17.5x, still under
+the hundred and twenty). The slice count is the knob. `nslices` is therefore the knob that raises
+the rank ceiling -- so the batch's tags moved from the pair's index in the
+COLLIDE to its position in the BATCH. A batch is a barrier, so positions are
+all the separation tags need, and the old keying wanted `ns1 * ns2 * 16` tags
+against the 32767 the MPI standard guarantees: it would have capped the slice
+count near 45, the very number that has to grow.
+
+Three constant factors went with it: the luminosity's extents now ride the
+deposit wait and its mesh the payload wait (five barriers a batch down to
+three); a field member evaluates straight out of the received payload instead
+of copying it through a workspace; and the per-slice counts come from a
+counts-only helper rather than `_divided_slice_plan`, whose `owns_reference`
+cost two Allreduces per slice for a field spectral never reads.
+
+### The lever that was not in the MPI code at all
+
+A DST-I over `N` interior points has LOGICAL size `2(N + 1)`, and FFTW is fast
+only when that is smooth. One thread, `RODFT00` on an `N x N` array: N=63
+(logical 128) 39.2 us against N=64 (130) 67.5; N=127 (256) 166.7 against N=128
+(258) 663.2; N=255 (512) 634.0 against N=256 (514 = 2*257) 5602.7. So
+`grid=(256, 256)` costs 8.8x `grid=(255, 255)` for a mesh one point narrower,
+and since `2(2^k + 1)` is twice a Fermat-ish number every power-of-two width is
+one of the slow ones -- which is what a reader reaches for. The criterion is
+the largest prime factor, not the power of two: N=48 (logical 98 = 2*7^2) beats
+N=47 (96). `_spectral_note_grid_size` now records and warns, naming the nearby
+smooth width, from 48 points up.
+
+End to end on the same benchmark, moving the mesh one point from 64 to 63:
+348 ms against 485 undivided, 57.5 against 68.9 at sixteen ranks, 39.7 against
+47.4 at thirty-two. Against the pushed baseline's 227 ms at thirty-two ranks,
+the two changes together are 5.7x.
+
+### The review that found the rest
+
+An adversarial pass over the change (five lenses, forty findings, each
+refuted independently; eight survived) found what the author had not, mostly in
+the TESTS rather than the code: every spectral fixture pinned
+`luminosity_scale = 1.0`, which short-circuits the very function step 4g claims
+to have fixed; the deny-by-default tripwire's refusing half was asserted
+nowhere; every divided arm used a square mesh, so an `(Nx, Ny)` transposition
+in a divided-only buffer was invisible; and `MPI-SPECVARWORK` asserted only the
+cross-rank SUM, so it could not see the concentration its own comment claimed
+to detect. All four now have arms, the last of them the pin that would have
+caught the ceiling.
+
+One of those new arms was itself vacuous on its first run -- it read
+`_mp_nranks()` outside an execution scope, where the seam correctly reports a
+single process, and so asserted `false == false` on all four ranks while
+printing its receipt four times. The line count was the tell. That is recorded
+in `experiences.md`.

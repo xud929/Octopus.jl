@@ -769,6 +769,122 @@ group sized so the buffer stays bounded however many slices a run carries.
 The kick itself never leaves a rank: each evaluates the published meshes at
 its own particles, in the same `i` order at any rank count.
 
+### Lifting the ceiling: who is allowed to solve
+
+The first cut of the 6D route gave every one of a pair's four solves to the
+FIELD slice's group HEAD. That is optimal while a slice fits on one rank and
+wrong the moment it does not: the head is one rank however wide the group
+grows, the DST solve is the only step that does not split by particle, and it
+is about 70% of the collide. So the number of ranks that could solve was the
+number of SLICES, not the number of ranks -- and both beams' layouts are built
+by the same rule from near-identical counts, so the direction-1 heads and the
+direction-2 heads are the same set of ranks rather than two.
+
+Measured, by reading each rank's own exchange receipt at 90,000 particles a
+beam over fifteen slices:
+
+| ranks | ranks that solved | busiest rank's planes |
+|---|---|---|
+| 8 | 8 of 8 | 120 |
+| 16 | 16 of 16 | 60 |
+| 32 | 20 of 32 | 60 |
+| 64 | 23 of 64 | 60 |
+
+At sixty-four ranks forty-one did no solving at all, and the busiest rank did
+exactly as much absolute work as it had at sixteen. The distribution at
+thirty-two was `60,0,60,0,...`: every odd rank idle, because `first(group)` is
+always the even one.
+
+The fix is to DEAL the four solves across the field group instead of pinning
+them to its head -- one solver per (direction, plane), offset by the pair's
+collision position so consecutive pairs pick different members. A group of one
+gives that member both planes, which is the rule it replaces, so a run with
+whole slices on whole ranks is unchanged message for message and bit for bit.
+After it: 32 of 32 and 64 of 64 ranks solving, the busiest rank's share down
+from 60 planes to 20.
+
+Measured end to end, 90,000 particles a beam, fifteen slices, a 64x64 mesh,
+best of five on a shared box, against the same benchmark on the commit before. The box carried other work throughout and the run-to-run spread was several fold, so these are BEST-OBSERVED rather than means, and the timing-independent evidence above -- which rank solved how many planes -- is the stronger half of the claim:
+
+| ranks | pinned to the head | dealt across the group |
+|---|---|---|
+| 1 | 497 ms | 485 ms |
+| 2 | 372 | 378 |
+| 4 | 230 | 236 |
+| 8 | 130 | 130 |
+| 16 | 74 | 68.9 |
+| 32 | 227 | **47.4** |
+| 64 | -- | 209 |
+
+Thirty-two ranks went from a 3x REGRESSION against sixteen to a 1.5x
+improvement over it -- 4.8x faster than the same point on the commit before --
+and the curve now keeps falling past sixteen. Below sixteen the two are the
+same run, which is the point: a group of one is the rule that was there.
+
+Two constraints shape how a run should be laid out on a box with more CPUs
+than slices. The shard rule (step 3a) rejects any rank count that does not
+divide 64, so the choices are 1, 2, 4, 8, 16, 32 and 64; and the wavefront
+gives at most `4 * min(n1, n2)` concurrent solves whatever the rank count is.
+With fifteen slices that puts the useful point at 32 ranks rather than the 16
+the head rule allowed, and THREADS take up the rest: a rank's per-batch solve
+list is four items now instead of two, so four threads have independent solves
+to run.
+
+That is the most the schedule can ever use.
+
+That the ceiling is `4 * nslices` and not some fixed number is measured, not
+argued: at fifteen slices sixty-four ranks run 209 ms against 458 undivided
+(2.2x -- past the sixty solves a batch can offer), while at THIRTY slices the
+same sixty-four ranks run 97.1 ms against 1701 undivided (17.5x, still under
+the hundred and twenty). The slice count is the knob. A wavefront batch holds at most
+`min(n1, n2)` pairs, hence `4 * min(n1, n2)` independent solves; past that many
+ranks the extra ones can only help with the particle work. `nslices` is
+therefore the knob that raises the rank ceiling, which is why the batch's tags
+are keyed by a pair's position in the BATCH rather than in the whole collide:
+the global keying needed `ns1 * ns2 * 16` tags and the MPI standard only
+guarantees 32767, so it would have capped the slice count near 45 -- the very
+number that has to grow.
+
+Three constant factors went with it: the luminosity's extents now ride the
+deposit wait and its mesh the payload wait, taking the batch from five
+barriers to three; a field member evaluates straight out of the payload it
+received instead of copying it into a workspace first; and the per-slice facts
+come from a counts-only helper rather than `_divided_slice_plan`, whose
+`owns_reference` cost two Allreduces per slice for a field spectral never
+reads.
+
+### The mesh width is a 4x lever, and it is invisible
+
+A DST-I over `N` interior points has LOGICAL size `2(N + 1)`, and FFTW is fast
+only when that number is smooth. Measured on one thread, `RODFT00` on an
+`N x N` array:
+
+| N | logical | largest prime | us |
+|---|---|---|---|
+| 63 | 128 | 2 | 39.2 |
+| 64 | 130 | 13 | 67.5 |
+| 95 | 192 | 3 | 143.8 |
+| 96 | 194 | 97 | 735.3 |
+| 127 | 256 | 2 | 166.7 |
+| 128 | 258 | 43 | 663.2 |
+| 255 | 512 | 2 | 634.0 |
+| 256 | 514 | 257 | 5602.7 |
+
+`grid=(256, 256)` costs 8.8x what `grid=(255, 255)` costs for a mesh one point
+narrower, and `2(2^k + 1)` is twice a Fermat-ish number -- 17, 43, 97, 193, 257
+-- so every power-of-two width is one of the slow ones, which is exactly what a
+reader reaches for. The criterion is the largest prime factor and not the power
+of two: `N = 48` (logical 98 = 2*7^2) beats `N = 47` (96). Since the solve is
+most of the collide and nothing about the option says any of this,
+`_spectral_note_grid_size` records it and warns, naming the nearby width whose
+logical size is smooth. It starts at 48 points, below which the absolute cost
+makes the note noise.
+
+End to end on the same benchmark, moving the mesh ONE point from 64 to 63:
+348 ms against 485 undivided (1.39x), 57.5 against 68.9 at sixteen ranks, and
+39.7 against 47.4 at thirty-two. Against the pushed baseline's 227 ms at
+thirty-two ranks, the two changes together are 5.7x.
+
 ### The global scalars both routes needed
 
 The Dirichlet box is the beam's, not the shard's, and sizing it from a shard
@@ -792,7 +908,7 @@ policy until it is divided.
 Measured against the CPU policy: bit for bit at one rank on both routes and
 both methods, and last-bit agreement (~1e-15 relative) at two and four ranks.
 Scaling of the 6D map at 90,000 particles per beam, fifteen slices and a
-64x64 mesh, best of five on a shared box: 451 ms undivided, 497 ms at one
+64x64 mesh, best of five on a shared box (which carried other work throughout, so these are best-observed rather than means): 451 ms undivided, 497 ms at one
 rank, then 372, 230, 130 and 74 ms at two, four, eight and sixteen ranks --
 6.7x over the one-rank divided run. At thirty-two ranks, more ranks than
 slices, it turns back up to 227 ms; that regime is a todo row, not a claim.
