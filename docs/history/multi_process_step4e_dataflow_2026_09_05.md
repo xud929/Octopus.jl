@@ -100,6 +100,16 @@ warm, rank 0's wall per collide in order:
 rank count.) The dataflow loop is **1.4x faster at sixty-four ranks**, a tie
 at thirty-two, and **2x SLOWER at sixteen**.
 
+**Corrected the same day.** These numbers carry 0.149 GiB per rank per
+collide of garbage, which was fixed immediately afterwards
+([`multi_process_pic_allocations_2026_09_05.md`](multi_process_pic_allocations_2026_09_05.md));
+a good part of what reads here as a scheduling penalty was GC. Re-measured
+with the buffers pooled, the two loops are much closer -- medians 0.55-0.66
+against 0.63-0.99 at thirty-two ranks, 0.46-0.88 against 0.48-0.94 at
+sixty-four, 0.91-0.94 against 0.85-0.95 at sixteen, and best-of-six a tie
+above sixteen. The rule below is unchanged and its direction still holds;
+its margin is a few percent to a quarter, not 1.4x and 2x.
+
 The clocks say why, and the reason is the gate rather than the loop. A pair
 may not start until each of its slices has been kicked by the pair before it,
 so the pairs on one slice are strictly a chain. At sixteen ranks over fifteen
@@ -121,15 +131,13 @@ batched one.** `batch_mode = :sequential` always runs the batched loop.
 
 ## What is left
 
-1. **The warm-up, now the largest single factor at every rank count and in
-   BOTH loops**: the first two timed collides run 2 to 4 times the later
-   ones (4.43, 1.78, then 0.74, 0.77, 0.55, 0.89 at sixty-four ranks). It is
-   not the Green cache -- rank 0 hits 42 of 42 owned tables on every collide
-   after the first, read from the task's own cache -- and it is not the
-   dataflow loop, which shows it no more than the batched one. What is left
-   is the heap: 0.149 GiB per rank per collide at the production point, the
-   first paying 0.36 s of GC. The migration's `Alltoallv` buffers are cached
-   now; the pools, the per-pair records and the sort permutations are not.
+1. ~~The warm-up~~ **done the same day**
+   ([`multi_process_pic_allocations_2026_09_05.md`](multi_process_pic_allocations_2026_09_05.md)):
+   an allocation profile named three sites in one run -- the one-rank
+   passthrough copying every send, the virtual positions rebuilt per pair,
+   the migration rebuilding its scratch -- and pooling all three took the
+   collide from 0.149 GiB per rank per collide to 0.004-0.013 GiB and
+   removed the warm-up entirely.
 2. **The chain itself**, which binds at `P ~ nslices`: fifteen pairs in
    series per slice, each a deposit, a solve and a kick. More slices would
    lengthen it; splitting a slice's pairs across the ranks of its group --

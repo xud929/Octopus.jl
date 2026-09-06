@@ -631,8 +631,11 @@ the same loop runs there and stays the CPU bit for bit.
 
 **Which loop, and what it bought.** Measured as an A/B of the two loops on
 one box, interleaved ([`../history/multi_process_step4e_dataflow_2026_09_05.md`](../history/multi_process_step4e_dataflow_2026_09_05.md)):
-at sixty-four ranks the dataflow loop runs the production collide 1.4x
-faster, at thirty-two it ties, and at sixteen it is 2x SLOWER. The gate is
+the dataflow loop runs the production collide faster where a slice spans a
+group of ranks (medians 25% at thirty-two, 13% at sixty-four) and slower
+where a rank holds whole slices (5% at sixteen), with best-of-six a tie
+above sixteen. (First measured at 1.4x and 2x, before the collide stopped
+rebuilding its buffers; a good part of that gap was GC.) The gate is
 the reason, not the loop: a slice's pairs are a chain, so a rank holding a
 WHOLE slice has nothing to overlap and the loop only adds a wake per hop,
 while a rank holding a fraction of a slice has the rest of its group's pairs

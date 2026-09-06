@@ -123,7 +123,8 @@ slice order, each `(s, part)`), their coordinates (`states[s]`, six vectors
 in the beam's global member order), and what the return migration needs --
 the received columns' order by slice (`bucket`), where each slice's bucket
 starts (`starts`), the columns' senders (`senders`), and, for the home side,
-the home index of every column it sent in the order it sent them (`home`).
+the home index of every column it packed (`home`) with the order it sent
+them in (`order`).
 """
 struct _PICSlicedBeam{T}
     layout::_PICSlicedLayout
@@ -133,8 +134,64 @@ struct _PICSlicedBeam{T}
     starts::Dict{Int,Int}
     senders::Vector{Int}
     home::Vector{Int}
+    order::Vector{Int}
     migrated_out::Int
     migrated_in::Int
+end
+
+"""
+The migration's buffers, one set per beam, kept across collides in the run's
+cache. Every one of them is sized by this rank's particle count or by the
+columns it receives, both of which barely move from turn to turn, so
+rebuilding them per collide was pure garbage -- measured as the largest
+remaining source after the planes were pooled.
+"""
+mutable struct _PICMigrationScratch{T}
+    cols::Vector{T}
+    out::Vector{T}
+    dest::Vector{Int}
+    home::Vector{Int}
+    order::Vector{Int}
+    slice_of::Vector{Int}
+    bucket::Vector{Int}
+    senders::Vector{Int}
+    counts::Matrix{Float64}
+    states::Dict{Int,NamedTuple{(:x, :px, :y, :py, :z, :pz),NTuple{6,Vector{T}}}}
+end
+_PICMigrationScratch{T}() where {T} =
+    _PICMigrationScratch{T}(T[], T[], Int[], Int[], Int[], Int[], Int[], Int[],
+                            zeros(Float64, 0, 0),
+                            Dict{Int,NamedTuple{(:x, :px, :y, :py, :z, :pz),NTuple{6,Vector{T}}}}())
+
+"""The two beams' migration scratch for this collide label."""
+function _pic_migration_scratch(::Type{T}, holder::Base.RefValue{Any}) where {T}
+    held = holder[]
+    held isa Tuple{_PICMigrationScratch{T},_PICMigrationScratch{T}} && return held
+    fresh = (_PICMigrationScratch{T}(), _PICMigrationScratch{T}())
+    holder[] = fresh
+    return fresh
+end
+
+"""`buf` as a `k` x `n` matrix, grown if it must be."""
+function _pic_mig_matrix!(buf::Vector{T}, k::Int, n::Int) where {T}
+    length(buf) < k * n && resize!(buf, k * n)
+    return reshape(view(buf, 1:(k * n)), k, n)
+end
+_pic_mig_ints!(v::Vector{Int}, n::Int) = (resize!(v, n); v)
+
+"""This slice's six coordinate vectors, resized in place."""
+function _pic_mig_state!(sc::_PICMigrationScratch{T}, s::Int, n::Int) where {T}
+    st = get(sc.states, s, nothing)
+    if st === nothing
+        st = (x=Vector{T}(undef, n), px=Vector{T}(undef, n), y=Vector{T}(undef, n),
+              py=Vector{T}(undef, n), z=Vector{T}(undef, n), pz=Vector{T}(undef, n))
+        sc.states[s] = st
+        return st
+    end
+    for v in st
+        length(v) == n || resize!(v, n)
+    end
+    return st
 end
 
 """
@@ -145,11 +202,13 @@ prefix of the slice's members over the ranks before it plus its local order
 -- the prefix from one all-sum of the per-rank slice counts.
 """
 function _pic_sliced_migrate_in(rep::Phase6DRep, slices, layout::_PICSlicedLayout,
-                                ::Type{T}) where {T}
+                                sc::_PICMigrationScratch{T}, ::Type{T}) where {T}
     ns = length(layout.counts)
     P = _mp_nranks()
     rank = _mp_rank()
-    local_counts = zeros(Float64, ns, P)
+    size(sc.counts) == (ns, P) || (sc.counts = zeros(Float64, ns, P))
+    local_counts = sc.counts
+    fill!(local_counts, 0.0)
     for s in 1:ns
         local_counts[s, rank + 1] = length(slices.indices[s])
     end
@@ -159,9 +218,9 @@ function _pic_sliced_migrate_in(rep::Phase6DRep, slices, layout::_PICSlicedLayou
         prefix[s] += Int(local_counts[s, q])
     end
     ncols = sum(length, slices.indices; init=0)
-    cols = Matrix{T}(undef, 7, ncols)
-    dest = Vector{Int}(undef, ncols)
-    home = Vector{Int}(undef, ncols)
+    cols = _pic_mig_matrix!(sc.cols, 7, ncols)
+    dest = _pic_mig_ints!(sc.dest, ncols)
+    home = _pic_mig_ints!(sc.home, ncols)
     c = 0
     for s in 1:ns
         for (o, i) in enumerate(slices.indices[s])
@@ -176,12 +235,17 @@ function _pic_sliced_migrate_in(rep::Phase6DRep, slices, layout::_PICSlicedLayou
             home[c] = i
         end
     end
-    order = sortperm(dest; alg=MergeSort)          # the stable order the exchange applies
+    order = _pic_mig_ints!(sc.order, ncols)     # the stable order the exchange applies
+    sortperm!(order, dest; alg=MergeSort, initialized=false)
     received, from_counts = _mp_exchange_columns(cols, dest)
     m = size(received, 2)
-    slice_of = [Int(received[7, j]) for j in 1:m]
-    bucket = sortperm(slice_of; alg=MergeSort)
-    senders = Vector{Int}(undef, m)
+    slice_of = _pic_mig_ints!(sc.slice_of, m)
+    for j in 1:m
+        @inbounds slice_of[j] = Int(received[7, j])
+    end
+    bucket = _pic_mig_ints!(sc.bucket, m)
+    sortperm!(bucket, slice_of; alg=MergeSort, initialized=false)
+    senders = _pic_mig_ints!(sc.senders, m)
     j = 0
     for (q, n) in enumerate(from_counts), _ in 1:n
         j += 1
@@ -196,23 +260,22 @@ function _pic_sliced_migrate_in(rep::Phase6DRep, slices, layout::_PICSlicedLayou
         while b + n <= m && slice_of[bucket[b + n]] == s
             n += 1
         end
-        x = Vector{T}(undef, n); px = similar(x); y = similar(x)
-        py = similar(x); z = similar(x); pz = similar(x)
+        st = _pic_mig_state!(sc, s, n)
         for o in 1:n
             col = bucket[b + o - 1]
             @inbounds begin
-                x[o] = received[1, col]; px[o] = received[2, col]
-                y[o] = received[3, col]; py[o] = received[4, col]
-                z[o] = received[5, col]; pz[o] = received[6, col]
+                st.x[o] = received[1, col]; st.px[o] = received[2, col]
+                st.y[o] = received[3, col]; st.py[o] = received[4, col]
+                st.z[o] = received[5, col]; st.pz[o] = received[6, col]
             end
         end
-        states[s] = (x=x, px=px, y=y, py=py, z=z, pz=pz)
+        states[s] = st
         starts[s] = b
         b += n
     end
     b - 1 == m || error("received $(m) columns but bucketed $(b - 1): a column of a slice this rank does not hold")
-    return _PICSlicedBeam{T}(layout, mine, states, bucket, starts, senders, home[order],
-                            ncols, m)
+    return _PICSlicedBeam{T}(layout, mine, states, bucket, starts, senders, home, order,
+                             ncols, m)
 end
 
 """
@@ -220,9 +283,10 @@ Migrate one beam back: every column returns to its sender in the order it
 arrived, so the home rank's columns come back in the order it sent them and
 land in their home slots through the order it remembered.
 """
-function _pic_sliced_migrate_out!(rep::Phase6DRep, beam::_PICSlicedBeam{T}) where {T}
+function _pic_sliced_migrate_out!(rep::Phase6DRep, beam::_PICSlicedBeam{T},
+                                  sc::_PICMigrationScratch{T}) where {T}
     m = length(beam.bucket)
-    cols = Matrix{T}(undef, 6, m)
+    cols = _pic_mig_matrix!(sc.out, 6, m)
     for (s, _) in beam.slices
         st = beam.states[s]
         b0 = beam.starts[s]
@@ -239,7 +303,7 @@ function _pic_sliced_migrate_out!(rep::Phase6DRep, beam::_PICSlicedBeam{T}) wher
     size(back, 2) == length(beam.home) || error(
         "$(size(back, 2)) columns came home, $(length(beam.home)) were sent")
     for k in eachindex(beam.home)
-        i = beam.home[k]
+        i = beam.home[beam.order[k]]
         @inbounds begin
             rep.x[i] = back[1, k]; rep.px[i] = back[2, k]
             rep.y[i] = back[3, k]; rep.py[i] = back[4, k]
@@ -263,9 +327,21 @@ mutable struct _PICSlicedScratch{T}
     record_cursor::Int
     fields::Vector{_PICFieldWorkspace{T}}   # Ex, Ey per plane on the field side
     field_cursor::Int
+    virts::Vector{Vector{T}}                # the virtual positions, per direction
+    virt_cursor::Int
 end
 _PICSlicedScratch{T}() where {T} =
-    _PICSlicedScratch{T}(Matrix{T}[], 0, Matrix{T}[], 0, Vector{T}[], 0, _PICFieldWorkspace{T}[], 0)
+    _PICSlicedScratch{T}(Matrix{T}[], 0, Matrix{T}[], 0, Vector{T}[], 0, _PICFieldWorkspace{T}[], 0,
+                         Vector{T}[], 0)
+
+"""A virtual-position buffer. Kept across collides like the planes: fresh
+ones cost a slice of coordinates per pair per direction -- 94 MiB of a 560
+MiB collide, measured."""
+function _pic_sliced_virt!(sc::_PICSlicedScratch{T}) where {T}
+    sc.virt_cursor += 1
+    sc.virt_cursor > length(sc.virts) && push!(sc.virts, T[])
+    return sc.virts[sc.virt_cursor]
+end
 
 function _pic_sliced_plane!(sc::_PICSlicedScratch{T}, nx::Int, ny::Int) where {T}
     sc.plane_cursor += 1
@@ -307,6 +383,7 @@ function _pic_sliced_field!(sc::_PICSlicedScratch{T}, nx::Int, ny::Int) where {T
 end
 function _pic_sliced_reset!(sc::_PICSlicedScratch)
     sc.plane_cursor = 0; sc.lum_cursor = 0; sc.record_cursor = 0; sc.field_cursor = 0
+    sc.virt_cursor = 0
     return nothing
 end
 
@@ -928,8 +1005,9 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
                     partials_sent += 1
                 end
                 # the source's virtual positions, before anything kicks this part
-                _pic_sliced_virtual!(d == 1 ? pr.vx1 : pr.vx2, d == 1 ? pr.vy1 : pr.vy2,
-                                     part, param_source, param_field, T)
+                vx = _pic_sliced_virt!(sc); vy = _pic_sliced_virt!(sc)
+                d == 1 ? (pr.vx1 = vx; pr.vy1 = vy) : (pr.vx2 = vx; pr.vy2 = vy)
+                _pic_sliced_virtual!(vx, vy, part, param_source, param_field, T)
             end
             for d in 1:2
                 rank == pr.owner[d] || continue
@@ -1172,6 +1250,7 @@ mutable struct _PICDataflowPool{T}
     lums::Vector{Matrix{T}}
     fields::Vector{_PICFieldWorkspace{T}}
     recs::Dict{Int,Vector{Vector{T}}}
+    virts::Vector{Vector{T}}
     nx::Int
     ny::Int
     lnx::Int
@@ -1181,7 +1260,7 @@ mutable struct _PICDataflowPool{T}
 end
 _PICDataflowPool{T}(nx, ny, lnx, lny) where {T} =
     _PICDataflowPool{T}(Matrix{T}[], Matrix{T}[], _PICFieldWorkspace{T}[],
-                        Dict{Int,Vector{Vector{T}}}(), nx, ny, lnx, lny, 0, 0)
+                        Dict{Int,Vector{Vector{T}}}(), Vector{T}[], nx, ny, lnx, lny, 0, 0)
 
 function _pic_df_pool(::Type{T}, holder::Base.RefValue{Any}, nx, ny, lnx, lny) where {T}
     pool = holder[]
@@ -1208,6 +1287,8 @@ _pic_df_field!(pool::_PICDataflowPool{T}) where {T} =
     isempty(pool.fields) ?
         _PICFieldWorkspace(zeros(T, 0, 0), zeros(T, pool.nx, pool.ny), zeros(T, pool.nx, pool.ny)) :
         pop!(pool.fields)
+_pic_df_virt!(pool::_PICDataflowPool{T}) where {T} =
+    isempty(pool.virts) ? T[] : pop!(pool.virts)
 function _pic_df_rec!(pool::_PICDataflowPool{T}, n::Int) where {T}
     free = get!(() -> Vector{T}[], pool.recs, n)
     v = isempty(free) ? zeros(T, n) : pop!(free)
@@ -1280,6 +1361,7 @@ mutable struct _PICDataflowPair{T,R}
     took_lums::Vector{Matrix{T}}
     took_fields::Vector{_PICFieldWorkspace{T}}
     took_recs::Vector{Vector{T}}
+    took_virts::Vector{Vector{T}}
 end
 
 function _pic_df_pair(::Type{T}, ::Type{R}, p, i, j, ns2, batch, in1, in2, coord, owner,
@@ -1295,7 +1377,7 @@ function _pic_df_pair(::Type{T}, ::Type{R}, p, i, j, ns2, batch, in1, in2, coord
         Any[nothing, nothing],
         (Vector{Matrix{T}}[], Vector{Matrix{T}}[]), (Matrix{T}[], Matrix{T}[]),
         T[], T[], T[], T[], Vector{T}[], nothing, (Matrix{T}[], Matrix{T}[]),
-        Matrix{T}[], Matrix{T}[], _PICFieldWorkspace{T}[], Vector{T}[])
+        Matrix{T}[], Matrix{T}[], _PICFieldWorkspace{T}[], Vector{T}[], Vector{T}[])
 end
 
 _pic_df_take_rec!(pr::_PICDataflowPair{T}, pool, n::Int) where {T} =
@@ -1306,6 +1388,8 @@ _pic_df_take_lum!(pr::_PICDataflowPair{T}, pool) where {T} =
     (A = _pic_df_lum!(pool); push!(pr.took_lums, A); A)
 _pic_df_take_field!(pr::_PICDataflowPair{T}, pool) where {T} =
     (f = _pic_df_field!(pool); push!(pr.took_fields, f); f)
+_pic_df_take_virt!(pr::_PICDataflowPair{T}, pool) where {T} =
+    (v = _pic_df_virt!(pool); push!(pr.took_virts, v); v)
 
 """Give a finished pair's buffers back. Called only once its sends have
 completed, so no buffer is handed out while MPI may still be reading it."""
@@ -1318,7 +1402,9 @@ function _pic_df_retire!(pr::_PICDataflowPair{T}, pool::_PICDataflowPool{T}) whe
     for v in pr.took_recs
         push!(get!(() -> Vector{T}[], pool.recs, length(v)), v)
     end
-    empty!(pr.took_planes); empty!(pr.took_lums); empty!(pr.took_fields); empty!(pr.took_recs)
+    append!(pool.virts, pr.took_virts)
+    empty!(pr.took_planes); empty!(pr.took_lums); empty!(pr.took_fields)
+    empty!(pr.took_recs); empty!(pr.took_virts)
     pr.retired = true
     return nothing
 end
@@ -1583,8 +1669,9 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
                         pr.pair, _PIC_TAG_PARTIAL + 3 * (d - 1) + m - 1)))
                     c.partials_sent += 1
                 end
-                _pic_sliced_virtual!(d == 1 ? pr.vx1 : pr.vx2, d == 1 ? pr.vy1 : pr.vy2,
-                                     part, param_source, param_field, T)
+                vx = _pic_df_take_virt!(pr, pool); vy = _pic_df_take_virt!(pr, pool)
+                d == 1 ? (pr.vx1 = vx; pr.vy1 = vy) : (pr.vx2 = vx; pr.vy2 = vy)
+                _pic_sliced_virtual!(vx, vy, part, param_source, param_field, T)
             end
             for d in 1:2
                 as_field = d == 1 ? pr.in2 : pr.in1

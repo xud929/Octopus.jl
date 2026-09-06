@@ -1065,7 +1065,13 @@ const _MP_SELF_PENDING = Vector{Tuple{Int,Any}}()
 function _mp_isend_impl(A, dest::Int, tag::Int, ::Nothing)
     dest == 0 || error("a one-rank run sent to rank $(dest)")
     haskey(_MP_SELF_MAILBOX, tag) && error("tag $(tag) sent twice before a wait")
-    _MP_SELF_MAILBOX[tag] = copy(A)
+    # By REFERENCE, not a copy: the seam's contract is that a send's buffer
+    # stays untouched until the send completes, and both collide loops honour
+    # it (the batched one waits per stage, the dataflow one tests its send
+    # list before returning a buffer to its pool). Copying here made a
+    # one-rank run allocate the whole protocol -- 250 MiB of a 560 MiB
+    # collide, measured -- for nothing.
+    _MP_SELF_MAILBOX[tag] = A
     return (:send, tag)
 end
 function _mp_irecv_impl!(A, source::Int, tag::Int, ::Nothing)

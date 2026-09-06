@@ -39,8 +39,11 @@ function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
                           (:cpu_pic_sliced_scratch, label))::Base.RefValue{Any}
     sliced_pool = get!(() -> Ref{Any}(nothing), task.runtime_cache,
                        (:cpu_pic_sliced_pool, label))::Base.RefValue{Any}
+    sliced_migration = get!(() -> Ref{Any}(nothing), task.runtime_cache,
+                            (:cpu_pic_sliced_migration, label))::Base.RefValue{Any}
     return _pic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache;
-                         sliced_scratch=sliced_scratch, sliced_pool_ref=sliced_pool)
+                         sliced_scratch=sliced_scratch, sliced_pool_ref=sliced_pool,
+                         sliced_migration_ref=sliced_migration)
 end
 
 """
@@ -113,7 +116,8 @@ _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
 function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
                        workspaces, green_cache;
                        sliced_scratch::Base.RefValue{Any}=Ref{Any}(nothing),
-                       sliced_pool_ref::Base.RefValue{Any}=Ref{Any}(nothing))
+                       sliced_pool_ref::Base.RefValue{Any}=Ref{Any}(nothing),
+                       sliced_migration_ref::Base.RefValue{Any}=Ref{Any}(nothing))
     _validate_pic_solver(solver)
     # Step 4c divides this collide; until then a divided run must refuse here
     # too, not only at the task's preflight, so a bare `collide!` cannot
@@ -205,11 +209,13 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
             held isa _PICSlicedScratch{T} ? held : (sliced_scratch[] = _PICSlicedScratch{T}())
         end
         sliced_pool = sliced_pool_ref
+        sliced_migration = sliced_migration_ref
         P = _mp_nranks()
         layout1 = _pic_sliced_layout(plan1.counts, P)
         layout2 = _pic_sliced_layout(plan2.counts, P)
-        sb1 = _pic_sliced_migrate_in(beam1.rep, slices1, layout1, T)
-        sb2 = _pic_sliced_migrate_in(beam2.rep, slices2, layout2, T)
+        mig1, mig2 = _pic_migration_scratch(T, sliced_migration)
+        sb1 = _pic_sliced_migrate_in(beam1.rep, slices1, layout1, mig1, T)
+        sb2 = _pic_sliced_migrate_in(beam2.rep, slices2, layout2, mig2, T)
         # `sliced_batches`, not `batches`: the per-pair branch below assigns
         # `batches` too, and one name assigned in two places and captured by
         # the closure below is a `Core.Box` (the lowered-code sweep).
@@ -274,8 +280,8 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
                                      scratch, kbb1, kbb2, klum, compute_luminosity)
             end
         end
-        _pic_sliced_migrate_out!(beam1.rep, sb1)
-        _pic_sliced_migrate_out!(beam2.rep, sb2)
+        _pic_sliced_migrate_out!(beam1.rep, sb1, mig1)
+        _pic_sliced_migrate_out!(beam2.rep, sb2, mig2)
         # The coordinators hold their pairs' values and everyone else zeros,
         # so the all-sum is exact and every rank folds the same vector below.
         _mp_allsum!(lum_parts)

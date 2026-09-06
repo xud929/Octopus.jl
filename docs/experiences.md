@@ -303,6 +303,18 @@ teaches something reusable, it lands here (dated), and the full record goes to
   parse is built whole and written once; lines that every rank prints go out
   one rank at a time with a barrier between, inside the policy scope where
   the barrier is a collective.
+- A buffer that a divided run rebuilds per call is the first thing to look
+  at when a run is slow before it is warm (2026-09-05, step 4e). The
+  slice-aligned PIC collide allocated 0.149 GiB per rank per collide and its
+  first two collides ran 2-4x the later ones; the heap was the whole of it.
+  An allocation profile named three sites in one run -- the one-rank
+  passthrough copying every send, the virtual positions rebuilt per pair, the
+  migration rebuilding its scratch -- and pooling all three took the collide
+  to 0.004-0.011 GiB and removed the warm-up entirely. It also removed a
+  2x performance gap that had been attributed to the SCHEDULE: with the
+  garbage gone the two loops came within 10% of each other where one had
+  looked twice as slow. Measure allocation before drawing a conclusion about
+  a schedule.
 - An origin is a moving particle (2026-09-05, step 4d). The `:sigma` mesh
   estimator is shifted about a slice's first member, and the per-pair path
   reads that member at each pair -- already kicked by the pairs before it.

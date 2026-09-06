@@ -342,6 +342,10 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   grid is all-summed before every field solve, mesh extents and the kick
   scale become the beam's; every option route agrees across rank counts to
   7e-15 and bit for bit at one rank),
+  [`multi_process_pic_allocations_2026_09_05.md`](history/multi_process_pic_allocations_2026_09_05.md)
+  (the divided PIC collide stops rebuilding its buffers: 0.149 GiB per rank
+  per collide down to 0.004-0.013, the warm-up gone, and what that did to
+  the schedule question),
   [`multi_process_step4e_dataflow_2026_09_05.md`](history/multi_process_step4e_dataflow_2026_09_05.md)
   (the wavefront batch stops being a barrier: each rank runs an event loop
   over its pairs, bit for bit against the loop it replaces, and the A/B that
