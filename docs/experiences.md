@@ -541,6 +541,24 @@ line and turned a silent tautology into a loud failure.
   semantics. A refusal is priced against what a knob DID at the time; when a
   campaign changes what the knob means, re-read the refusals too.
 
+## A synchronising collective's clock is mostly the skew it absorbs
+
+The divided spectral collide issued 91 all-sums, 72 of them from
+`longitudinal_slices` taking two per slice. Folding them into one all-sum over
+a length-`ns` vector cut the count to 35 and the wall by under a millisecond --
+because the remaining 35 calls then cost 141 us each where 91 had cost 65. The
+time was never the calls' own latency; it was the ranks arriving at different
+moments, and the first collective after the imbalance charges for all of it.
+Removing calls concentrates the same waiting into fewer of them.
+
+So a per-kind clock answers "where does a rank wait", not "what costs time",
+and a call COUNT is the thing to reason about for a bigger machine while the
+clock is the thing to reason about for imbalance. Read them as two different
+measurements. The corollary for optimisation: cutting collectives is worth
+doing on its own terms -- latency a wider machine will pay for real -- but do
+not expect the wall to move unless the skew moves too, and do not let a clock
+that dropped convince you the term is gone.
+
 ## Nothing that recompiles may run while a gate or a launcher does
 
 Two failures in one session traced to the same thing: a probe that recompiled

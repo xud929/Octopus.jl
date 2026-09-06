@@ -286,7 +286,11 @@ end
 
 """Lane-shaped Σ z[idx[k]] over a slice's member list, in list order; the
 CUDA centroid kernel implements exactly this fold."""
-function _lane_indexed_sum(z::AbstractVector, idx)
+_lane_indexed_sum(z::AbstractVector, idx) = _mp_global_sum(_lane_indexed_sum_local(z, idx))
+
+"""The lane fold of `_lane_indexed_sum` WITHOUT its exchange, so a caller with
+many slices can fold them all and exchange the vector once."""
+function _lane_indexed_sum_local(z::AbstractVector, idx)
     T = eltype(z)
     L = _SLICE_FOLD_LANES
     acc = zeros(T, L)
@@ -303,8 +307,10 @@ function _lane_indexed_sum(z::AbstractVector, idx)
     # member is still counted exactly once; the difference is the
     # accumulation, and it is the parity tolerance class the campaign prices
     # (docs/design/multi_process_policy.md). So the ranks exchange the folded
-    # scalar rather than the lanes.
-    return _mp_global_sum(s)
+    # scalar rather than the lanes -- `_lane_indexed_sum` above does that for
+    # one slice, and `longitudinal_slices` folds every slice and exchanges the
+    # vector once.
+    return s
 end
 
 """
@@ -625,27 +631,43 @@ function _finish_longitudinal_slices(rep::Phase6DRep, slicing, indices, boundari
     ns = length(indices)
     centers = Vector{T}(undef, ns)
     weights = Vector{T}(undef, ns)
+    divided = _mp_nranks() > 1
+    centroid = slicing.center_position == :centroid
+    centroid || slicing.center_position == :midpoint ||
+        throw(ArgumentError("unknown slice center_position $(slicing.center_position)"))
+    # ONE exchange for every slice's member count and ONE for every slice's
+    # lane-folded z, instead of two per slice. `_mp_allsum!` folds a vector
+    # element by element in rank order, which is exactly what `_mp_global_count`
+    # and `_mp_global_sum` do for a scalar, so every number below is the one the
+    # per-slice calls produced -- bit for bit, at any rank count.
+    #
+    # This is the collide's largest FIXED-COUNT collective term and it is paid
+    # by every divided solver, because they all slice: of the 91 all-sums a
+    # divided spectral collide issued, 72 were here, and at sixty-four ranks
+    # they cost 5.9 ms of a 39.8 ms collide (2026-09-06 attribution). The count
+    # is now 12.
+    members = Vector{Int}(undef, ns)
+    @inbounds for s in 1:ns
+        members[s] = length(indices[s])
+    end
+    divided && _mp_allsum!(members)
+    # Canonical lane fold (U6-7): the CUDA centroid kernel and the equal-count
+    # host path fold the same member list the same way.
+    zsums = Vector{T}(undef, centroid ? ns : 0)
+    if centroid
+        @inbounds for s in 1:ns
+            zsums[s] = _lane_indexed_sum_local(z, indices[s])
+        end
+        divided && _mp_allsum!(zsums)
+    end
     for s in 1:ns
-        idx = indices[s]
-        members = _mp_nranks() == 1 ? length(idx) : _mp_global_count(length(idx))
-        weights[s] = members / total
-        if slicing.center_position == :centroid
-            # Canonical lane fold (U6-7): the CUDA centroid kernel and the
-            # equal-count host path fold the same member list the same way.
-            centers[s] = if _mp_nranks() == 1
-                isempty(idx) ? (boundaries[s] + boundaries[s + 1]) / 2 :
-                _lane_indexed_sum(z, idx) / length(idx)
-            else
-                # `_lane_indexed_sum` is itself a collective, so every rank
-                # calls it whether or not it holds members of this slice.
-                total_z = _lane_indexed_sum(z, idx)
-                members == 0 ? (boundaries[s] + boundaries[s + 1]) / 2 :
-                               total_z / members
-            end
-        elseif slicing.center_position == :midpoint
-            centers[s] = (boundaries[s] + boundaries[s + 1]) / 2
+        weights[s] = members[s] / total
+        centers[s] = if !centroid
+            (boundaries[s] + boundaries[s + 1]) / 2
+        elseif members[s] == 0
+            (boundaries[s] + boundaries[s + 1]) / 2
         else
-            throw(ArgumentError("unknown slice center_position $(slicing.center_position)"))
+            zsums[s] / members[s]
         end
     end
     return LongitudinalSlices(centers, weights, collect(boundaries), indices)

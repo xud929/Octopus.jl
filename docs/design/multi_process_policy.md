@@ -976,6 +976,61 @@ and under the launcher at one, two and four. That pin is the only thing that
 would catch a dataflow gate letting a pair read a slice before its predecessor
 kicked it, because the answer would still look plausible.
 
+### Where the flattening near thirty-two ranks goes
+
+`_mp_collective_times` keeps per-kind clocks and nothing had read them for this
+route. Reading them settles it. One collide, 90,000 particles a beam, fifteen
+slices, a 63x63 mesh, best of five with a barrier before each, wait kinds
+averaged over the ranks and the local remainder taken as `wall - this rank's
+MPI time`:
+
+| ranks | wall | local | migration | collectives | idle at sync |
+|---|---|---|---|---|---|
+| 4 | 178.7 ms | 86.1 | 32.6 | 1.1 | 52.8 |
+| 8 | 98.6 | 38.3 | 21.7 | 0.9 | ~28 |
+| 16 | 54.1 | 20.7 | 14.8 | 1.0 | ~12 |
+| 32 | 36.9 | 13.0 | 9.8 | 1.8 | ~9 |
+| 64 | 39.5 | 9.9 | 8.6 | 4.9 | ~14 |
+
+Three findings, none of them the one that was guessed.
+
+**Local compute stops scaling, and the solve is why.** It falls by 1.59 from
+sixteen to thirty-two ranks and by only 1.31 from thirty-two to sixty-four. A
+pair offers four solves and they are dealt across the FIELD slice's group, so a
+group can use at most two of its members per direction however wide it is: at
+thirty-two ranks the groups are two to three wide and every member solves, at
+sixty-four they are four to five and most do not. The per-rank solve load bears
+that out -- the busiest rank carries 30 planes at thirty-two ranks and 20 at
+sixty-four, a factor of 1.5 for a doubling. `4 * min(n1, n2)` bounds the solves
+a BATCH offers; `2 * (number of groups)` bounds the ranks that can take them,
+and that is the tighter of the two.
+
+**The migration is flat.** Four all-to-alls a collide (`_mp_exchange_columns`,
+two in and two out), 15 ms at sixteen ranks and 8.6 at sixty-four -- it barely
+scales, and at sixty-four ranks it is the largest single MPI term, 22% of the
+collide. It is latency-bound rather than bandwidth-bound: each rank holds 1,400
+particles there and sends 1.2 KB to each of sixty-four peers, so an exchange is
+4,096 tiny messages. Packing both beams into ONE exchange per direction would
+halve that; it touches the migration PIC and Gaussian-PIC share, so it is its
+own step.
+
+**The rest is ranks waiting for each other**, and it grows as the local work
+shrinks: local compute is 38% of the wall at sixteen ranks and 25% at
+sixty-four.
+
+A fourth thing turned up on the way. The collide issued 91 all-sums, and 72 of
+them were not the collide's at all -- they were `longitudinal_slices` taking
+two per slice, one for the member count and one for the centroid fold, which
+every divided solver pays because they all slice. Folding them into one all-sum
+over a length-`ns` vector is bit-identical (`_mp_allsum!` folds element by
+element in rank order, which is what the scalar calls did) and takes the
+collide to 35. It bought less than a millisecond, and THAT is the lesson: the
+remaining 35 calls cost 141 us each where 91 cost 65, because a synchronising
+collective's measured time is mostly the skew it absorbs. Removing calls
+concentrates the same waiting into fewer of them. The count is still worth
+cutting -- it is latency a bigger machine would pay for real -- but it was
+never the flattening.
+
 ## The CPU, MPI and CUDA consistency statement
 
 Three execution modes, and the relation between them is asserted in two
