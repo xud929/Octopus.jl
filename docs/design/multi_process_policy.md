@@ -647,6 +647,60 @@ rank the batched one**, and `batch_mode = :sequential` always runs the
 batched one. The floor is then the chain and the warm-up, both priced in the
 record.
 
+## Step 4f: Gaussian-PIC on the same transport
+
+Gaussian-PIC is PIC with a control variate: it deposits the same charge,
+subtracts a reference Gaussian fitted to the SOURCE SLICE, solves the
+residual on the same mesh with the same Green table, and adds the Gaussian's
+kick back analytically. So it rides the slice-aligned transport unchanged --
+the layout, the two migrations, the pair protocol, both loops, the leaves
+that deposit and kick -- and what it contributes is a solver's three hooks:
+its record, what its owner makes of the folded record, and the two leaves
+that differ. That split is what the transport was factored for, and PIC's
+bits are unmoved by it (the launcher child's PIC lines are byte-identical
+across the change).
+
+Three quantities are the SLICE's rather than one rank's part of it, and each
+rides a stage the protocol already has:
+
+- **The moments.** The reference Gaussian is fitted to the slice, so a rank
+  cannot fit it to its own particles. Each member sends the fourteen SHIFTED
+  sums of its part -- about the slice's globally-first member -- and the
+  coordinator folds them in group rank order. Shifted sums are the only form
+  in which such a fold is the serial sum, and a shared origin is what makes
+  them comparable, which is why Gaussian-PIC needs the origin exchange at
+  every pair where PIC needs it only under `grid_extent = :sigma`. The
+  moments themselves come from one expression, shared with the undivided
+  path, so a folded group and a whole slice compute the same thing.
+- **The subtraction, on the plane's owner, after the fold.** With the default
+  `neutralize = true` the amplitude is the DEPOSITED grid's total divided by
+  the profile sums, and that total does not exist until the group's partials
+  have been summed: a per-rank residual is not defined. So members deposit
+  exactly what PIC deposits, and the owner subtracts -- the uncoupled
+  profile or, when the mode says so, the coupled one with its three outer
+  products.
+- **The control-variate mode**, which decides both the mesh (the Gaussian's
+  margin widens the source extent) and the kick (whether the analytic
+  add-back runs at all). It is decided once, on the owner, from the folded
+  moments, and travels in the grids message together with the moments, the
+  slice's global count and the two boundary drifts -- because the field
+  members need the SOURCE slice's moments for the add-back and are not in
+  the source group.
+
+The slice's global count comes free from the layout, which already carries
+it; `nsource` read locally would have been the 4c kick-scale trap in three
+more places. Gaussian-PIC rejects `interaction_grid`, so it has no node or
+source-slice mesh and no per-pair path to keep.
+
+Measured against the CPU policy: bit for bit at one rank on every option
+route (the default subtraction, the coupled one, no margin, the
+un-neutralised amplitude, and the sequential schedule), and 4e-16 to 1.4e-15
+relative at two and four ranks -- the same parity class as PIC's. Spectral
+is now the only solver that refuses, and it will not use this transport:
+its collide is order-free (it records `batch_mode = :order_free`, has no
+pair schedule, and solves each source slice once rather than once per pair),
+so its division belongs on the home layout.
+
 ## The CPU, MPI and CUDA consistency statement
 
 Three execution modes, and the relation between them is asserted in two

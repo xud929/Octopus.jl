@@ -200,97 +200,13 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # is what a multi-process policy runs on the `:slice_pair` mesh -- at
     # one rank too, where it is the CPU collide bit for bit. The node and
     # source-slice meshes keep the per-pair paths below.
-    requested = Symbol(solver.batch_mode)
+    requested = Symbol(_sliced_pic(solver).batch_mode)
     sliced = _mp_multi_process_active() && !node_grid && !share_grid
     if sliced
-        # ONE assignment each: the scoped-value closure below captures these
-        # names, and a second assignment would box them (the lowered sweep).
-        scratch = let held = sliced_scratch[]
-            held isa _PICSlicedScratch{T} ? held : (sliced_scratch[] = _PICSlicedScratch{T}())
-        end
-        sliced_pool = sliced_pool_ref
-        sliced_migration = sliced_migration_ref
-        P = _mp_nranks()
-        layout1 = _pic_sliced_layout(plan1.counts, P)
-        layout2 = _pic_sliced_layout(plan2.counts, P)
-        mig1, mig2 = _pic_migration_scratch(T, sliced_migration)
-        sb1 = _pic_sliced_migrate_in(beam1.rep, slices1, layout1, mig1, T)
-        sb2 = _pic_sliced_migrate_in(beam2.rep, slices2, layout2, mig2, T)
-        # `sliced_batches`, not `batches`: the per-pair branch below assigns
-        # `batches` too, and one name assigned in two places and captured by
-        # the closure below is a `Core.Box` (the lowered-code sweep).
-        batching = _pic_batching_requested(solver) && npairs > 1
-        sliced_batches = batching ? collision_pair_batches(slices1, slices2) :
-                                    [[(i=Int(entry[2]), j=Int(entry[3]))] for entry in order]
-        # Each pair's batch and its position in that batch's canonical order:
-        # the position deals the plane owners (the same deal both loops use),
-        # the batch index is what the dataflow loop's overlap counters read.
-        deal_of = Dict{Int,Tuple{Int,Int}}()
-        for (b, batch) in pairs(sliced_batches)
-            for (q, (i, j)) in pairs(sort([(pr.i, pr.j) for pr in batch]))
-                deal_of[pair_pos[(i, j)]] = (b, q)
-            end
-        end
-        # `:wavefront` runs the dataflow loop (step 4e), `:sequential` the
-        # batched one it grew from -- two loops, the same leaves, pinned
-        # against each other by the launcher's `:sequential` arm.
-        # `_PIC_SLICED_LOOP` overrides that for a measurement or a pin, so the
-        # two can be timed on the same box at the same moment.
-        #
-        # WHICH loop, when the schedule leaves it open, is a measured rule
-        # rather than a preference (step 4e, A/B at the production point on
-        # one box, both loops interleaved). A pair may not start until each of
-        # its slices has been kicked by the pair before it, so a rank holding
-        # a WHOLE slice has its pairs on that slice strictly in series and
-        # nothing to overlap: the dataflow loop then only adds a wake per hop,
-        # and at sixteen ranks over fifteen slices it ran 1.8-2.1 s against
-        # the batched loop's 0.83. Once a slice spans a group the picture
-        # inverts -- each rank holds a fraction of the chain's work and owns
-        # planes of pairs it is not a member of, so there is real independent
-        # work between the hops, and at sixty-four ranks the dataflow loop ran
-        # 0.40-0.77 s against 0.55-0.99. The rule is therefore the layout's:
-        # groups wider than one rank get the dataflow loop.
-        widest_group = max(maximum(length, layout1.groups; init=0),
-                           maximum(length, layout2.groups; init=0))
-        loop = _PIC_SLICED_LOOP[] !== :auto ? _PIC_SLICED_LOOP[] :
-               !batching ? :batched :
-               widest_group >= 2 ? :dataflow : :batched
-        _record_execution!(:pic_pair_schedule, CPUThreadsBackend,
-                           (batch_mode=batching ? :wavefront : :sequential, requested=requested,
-                            pairs=npairs, batches=length(sliced_batches),
-                            widest_batch=maximum(length, sliced_batches; init=0),
-                            pair_workers=1, inner_workers=_cpu_worker_count(),
-                            ranks=P, exchange=:sliced, schedule=loop))
-        for (which, sb) in ((1, sb1), (2, sb2))
-            _record_execution!(:pic_slice_layout, CPUThreadsBackend,
-                               (beam=which, groups=[length(g) for g in sb.layout.groups],
-                                migrated_out=sb.migrated_out, migrated_in=sb.migrated_in,
-                                ranks=P))
-        end
-        nbad = Base.ScopedValues.with(_PIC_MAP_WORKER_BUDGET => _cpu_worker_count()) do
-            if loop === :dataflow
-                _pic_collide_dataflow!(sb1, sb2, order, pair_pos, deal_of, lum_parts, ran,
-                                       solver, slices1, slices2, first(workspaces), green_cache,
-                                       _pic_df_pool(T, sliced_pool, solver.grid...,
-                                                    _pic_luminosity_grid(solver)...),
-                                       kbb1, kbb2, klum, compute_luminosity)
-            else
-                _pic_collide_sliced!(sb1, sb2, sliced_batches, order, pair_pos, lum_parts, ran,
-                                     solver, slices1, slices2, first(workspaces), green_cache,
-                                     scratch, kbb1, kbb2, klum, compute_luminosity)
-            end
-        end
-        _pic_sliced_migrate_out!(beam1.rep, sb1, mig1)
-        _pic_sliced_migrate_out!(beam2.rep, sb2, mig2)
-        # The coordinators hold their pairs' values and everyone else zeros,
-        # so the all-sum is exact and every rank folds the same vector below.
-        _mp_allsum!(lum_parts)
-        # The non-finite verdict, agreed once per collide: every rank throws
-        # or none (the 4c rule), the pair's ranks having already skipped it.
-        nbad_all = _mp_global_count(nbad)
-        nbad_all > 0 && throw(ArgumentError(
-            "PIC collide: $(nbad_all) slice pair(s) met a non-finite coordinate " *
-            "(this rank held $(nbad) of them); the run cannot continue."))
+        _sliced_collide!(solver, beam1, beam2, slices1, slices2, order, npairs, pair_pos,
+                         lum_parts, ran, plan1, plan2, workspaces, green_cache,
+                         kbb1, kbb2, klum, compute_luminosity, requested,
+                         sliced_scratch, sliced_pool_ref, sliced_migration_ref, T)
     else
         # Gather each slice ONCE, and give it a scratch twin to be kicked into. The
         # pair loop then neither gathers nor scatters; it copies state -> scratch,

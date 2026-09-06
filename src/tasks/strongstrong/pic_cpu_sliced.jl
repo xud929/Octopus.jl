@@ -496,7 +496,7 @@ extents by max (negated minima), sums, counts and flags in group rank order
 each group's first rank. `recs1` are `G1_i`'s records in rank order (source
 of direction 1, field of direction 2), `recs2` are `G2_j`'s.
 """
-function _pic_sliced_reduce(red::Vector{T}, recs1, recs2) where {T}
+function _pic_sliced_reduce(red::Vector{T}, solver::PICPoissonSolver, recs1, recs2) where {T}
     fill!(red, zero(T))
     fill!(view(red, 1:4), T(-Inf)); fill!(view(red, 11:14), T(-Inf))
     fill!(view(red, 31:34), T(-Inf)); fill!(view(red, 41:44), T(-Inf))
@@ -531,8 +531,8 @@ The grids of one direction from the reduced record (`d = 1`: offsets 0 and
 10; `d = 2`: 30 and 40), the `_pic_batch_prepare!` arithmetic. Returns
 `(source_grid0, field_grid0, source_bounds, field_bounds)`.
 """
-function _pic_sliced_grids(solver::PICPoissonSolver, ::Type{T}, red, d::Int,
-                           param_source, param_field) where {T}
+function _pic_sliced_extents(solver::PICPoissonSolver, ::Type{T}, red, d::Int,
+                            param_source, param_field) where {T}
     o = d == 1 ? 0 : 30
     ge = Symbol(solver.grid_extent)
     kext = T(solver.grid_extent_sigma)
@@ -556,6 +556,23 @@ function _pic_sliced_grids(solver::PICPoissonSolver, ::Type{T}, red, d::Int,
     fymin, fymax = _pic_axis_extent(ge, fymin, fymax, fy0, fys, fys2, nf, kext)
     all(isfinite, (sxmin, sxmax, symin, symax, fxmin, fxmax, fymin, fymax)) ||
         return nothing
+    return (sxmin, sxmax, symin, symax, fxmin, fxmax, fymin, fymax)
+end
+
+"""
+The grids of one direction from the folded record. `extend` widens the
+SOURCE extents before the mesh is sized -- Gaussian-PIC's margin, which must
+cover the reference Gaussian as well as the particles.
+"""
+function _pic_sliced_grids(solver::PICPoissonSolver, ::Type{T}, red, d::Int,
+                           param_source, param_field, extend=nothing) where {T}
+    ext = _pic_sliced_extents(solver, T, red, d, param_source, param_field)
+    ext === nothing && return nothing
+    sxmin, sxmax, symin, symax, fxmin, fxmax, fymin, fymax = ext
+    if extend !== nothing
+        sxmin = min(sxmin, extend[1]); sxmax = max(sxmax, extend[2])
+        symin = min(symin, extend[3]); symax = max(symax, extend[4])
+    end
     source_grid0, field_grid0 = _pic_interaction_grids(
         solver, sxmin, sxmax, symin, symax, fxmin, fxmax, fymin, fymax)
     return (source_grid0, field_grid0,
@@ -637,6 +654,32 @@ function _pic_sliced_pair(::Type{T}, p, i, j, ns2, in1, in2, coord, owner, param
         (Matrix{T}[], Matrix{T}[]), T[], T[], T[], T[], nothing, Vector{T}[], nothing,
         nothing, nothing, (Matrix{T}[], Matrix{T}[]), false)
 end
+
+# --- what a solver contributes to the sliced protocol --------------------------
+#
+# The transport below -- the layout, the migration, the pools, the tags, the
+# two loops -- is the same for every solver that collides slice against
+# slice. What differs is the RECORD each member sends (what its part
+# contributes to the pair's shared quantities), what the owner makes of the
+# folded record, and the three leaves that touch particles. Those are
+# dispatched on the solver; everything else is shared, which is what keeps
+# the PIC path's bits where they were when Gaussian-PIC joined it.
+
+"""How many numbers a member's record, the coordinator's folded record and
+the owner's grids message hold for this solver."""
+_sliced_record_len(::PICPoissonSolver) = _PIC_SLICED_RECORD
+_sliced_reduced_len(::PICPoissonSolver) = _PIC_SLICED_REDUCED
+_sliced_grids_len(::PICPoissonSolver) = _PIC_SLICED_GRIDS
+
+"""Whether the slice's globally-first member must reach every member of its
+group before the records are built. PIC needs it only for the `:sigma`
+extent estimator, whose shift origin it is; Gaussian-PIC needs it always,
+because its moments are shifted sums and only a shared origin makes the
+group's fold the serial sum."""
+_sliced_needs_origin(solver::PICPoissonSolver) = Symbol(solver.grid_extent) === :sigma
+
+"""The PIC solver whose grid, deposit and Green table a solver uses."""
+_sliced_pic(solver::PICPoissonSolver) = solver
 
 # --- the leaves: the arithmetic BOTH loops run ---------------------------------
 #
@@ -787,6 +830,69 @@ function _pic_sliced_overlap(q1, q2, q1s, q2s, mesh, klum, lnx::Int, lny::Int,
     return lum * T(klum) * mesh[5] * mesh[6]
 end
 
+"""
+    _sliced_owner_grids!(g, solver, T, red, d, param_source, param_field,
+                         workspace, green_cache, cache_key) -> owned or nothing
+
+One direction's mesh on its owner: the extents from the coordinator's folded
+record, the grids, the pair's Green table, and the message `g` that tells
+every member of the pair what the owner decided. `nothing` (with `g[1]` set)
+when the record carries a non-finite verdict or the extents are not finite.
+"""
+function _sliced_owner_grids!(g, solver::PICPoissonSolver, ::Type{T}, red, d::Int,
+                              param_source, param_field, workspace::_PICCPUWorkspace,
+                              green_cache, cache_key) where {T}
+    grids = red[61] > 0 ? nothing :
+            _pic_sliced_grids(solver, T, red, d, param_source, param_field)
+    if grids === nothing
+        g[1] = one(T)
+        return nothing
+    end
+    source_grid0, field_grid0, sbnd, fbnd = grids
+    source_grid, field_grid, green_fft = _pic_slice_pair_green!(
+        workspace, solver, T, green_cache, cache_key, source_grid0, field_grid0, sbnd, fbnd)
+    # the no-cache path returns the workspace's own table; keep a copy
+    green_fft === workspace.green_fft && (green_fft = copy(green_fft))
+    _sliced_write_grids!(g, source_grid, field_grid, T)
+    return (source_grid, field_grid, green_fft)
+end
+
+"""The nine numbers every solver's grids message starts with."""
+function _sliced_write_grids!(g, source_grid, field_grid, ::Type{T}) where {T}
+    @inbounds begin
+        g[2] = T(source_grid.x0); g[3] = T(source_grid.y0)
+        g[4] = T(source_grid.width); g[5] = T(source_grid.height)
+        g[6] = T(field_grid.x0); g[7] = T(field_grid.y0)
+        g[8] = T(field_grid.width); g[9] = T(field_grid.height)
+    end
+    return g
+end
+
+"""
+    _sliced_solve_plane!(phi, solver, partials, green_fft, workspace, nx, ny,
+                         m, grids_in, T)
+
+One plane on its owner. PIC folds and solves; a solver with a control
+variate subtracts it from the folded charge before the solve, which is why
+the plane index and the owner's grids message are passed.
+"""
+_sliced_solve_plane!(phi, solver::PICPoissonSolver, partials, green_fft,
+                     workspace::_PICCPUWorkspace, nx::Int, ny::Int, m::Int, grids_in,
+                     ::Type{T}) where {T} =
+    _pic_sliced_solve_plane!(phi, partials, green_fft, workspace, nx, ny, T)
+
+"""
+    _sliced_kick!(fields, solver, field, potentials, source_grid, field_grid,
+                  param_source, param_field, kbb, workspace, grids_in, T)
+
+One direction's field work on a field part.
+"""
+_sliced_kick!(fields, solver::PICPoissonSolver, field, potentials, source_grid,
+              field_grid, param_source, param_field, kbb, workspace::_PICCPUWorkspace,
+              grids_in, ::Type{T}) where {T} =
+    _pic_sliced_kick!(fields, solver, field, potentials, source_grid, field_grid,
+                      param_source, param_field, kbb, workspace, T)
+
 """The distinct ranks of both groups, ascending."""
 function _pic_sliced_members(g1::UnitRange{Int}, g2::UnitRange{Int})
     ranks = Int[]
@@ -803,19 +909,19 @@ The slice-aligned collide of one batch list. Fills `ran` and `lum_parts`
 the kicked coordinates in the sliced beams.
 """
 function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, batches, order,
-                              pair_pos, lum_parts, ran, solver::PICPoissonSolver,
+                              pair_pos, lum_parts, ran, solver,
                               slices1, slices2, workspace::_PICCPUWorkspace, green_cache,
                               sc::_PICSlicedScratch{T}, kbb1, kbb2, klum,
                               compute_luminosity::Bool) where {T}
+    pic = _sliced_pic(solver)
     P = _mp_nranks()
     rank = _mp_rank()
     ns1 = length(sb1.layout.counts)
     ns2 = length(sb2.layout.counts)
-    nx, ny = solver.grid
-    lnx, lny = _pic_luminosity_grid(solver)
-    nplanes = _pic_quadratic_slice(solver) ? 3 : 2
-    ge = Symbol(solver.grid_extent)
-    sigma = ge === :sigma
+    nx, ny = pic.grid
+    lnx, lny = _pic_luminosity_grid(pic)
+    nplanes = _pic_quadratic_slice(pic) ? 3 : 2
+    origins = _sliced_needs_origin(solver)
     reqs = _mp_requests()
     nbad = 0
     _mp_check_tag_bound(_pic_sliced_tag(ns1 * ns2, _PIC_TAG_CODES))
@@ -826,9 +932,9 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
     # :sigma only; one small hop). Held outside the per-batch pool.
     origins1 = Dict{Int,Vector{T}}()
     origins2 = Dict{Int,Vector{T}}()
-    if sigma
-        for (sb, origins) in ((sb1, origins1), (sb2, origins2)), (s, _) in sb.slices
-            origins[s] = zeros(T, 5)
+    if origins
+        for (sb, org) in ((sb1, origins1), (sb2, origins2)), (s, _) in sb.slices
+            org[s] = zeros(T, 5)
         end
     end
     partials_sent = 0; partials_received = 0; potentials_sent = 0; potentials_received = 0
@@ -861,14 +967,14 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
                       center=T(slices2.center[j]), rb=T(slices2.boundary[j + 1]))
             push!(pairs, _pic_sliced_pair(T, p, i, j, ns2, in1, in2, coord, owner, param1, param2))
         end
-        # --- stage 0 (:sigma): the current first member of each slice in play
-        if sigma
-            for pr in pairs, (sb, origins, code, s, in_group) in
+        # --- stage 0: the current first member of each slice in play
+        if origins
+            for pr in pairs, (sb, org, code, s, in_group) in
                     ((sb1, origins1, _PIC_TAG_ORIGIN1, pr.i, pr.in1),
                      (sb2, origins2, _PIC_TAG_ORIGIN2, pr.j, pr.in2))
                 in_group || continue
                 group = sb.layout.groups[s]
-                v = origins[s]
+                v = org[s]
                 st = sb.states[s]
                 if rank == first(group)
                     fill!(v, zero(T))
@@ -890,28 +996,28 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
         for pr in pairs
             g1 = sb1.layout.groups[pr.i]; g2 = sb2.layout.groups[pr.j]
             if pr.in1
-                pr.rec1 = _pic_sliced_record(_pic_sliced_record!(sc, _PIC_SLICED_RECORD),
+                pr.rec1 = _pic_sliced_record(_pic_sliced_record!(sc, _sliced_record_len(solver)),
                                              solver, sb1.states[pr.i], pr.param1, pr.param2,
-                                             sigma ? origins1[pr.i] : nothing)
+                                             origins ? origins1[pr.i] : nothing)
                 push!(reqs, _mp_isend(pr.rec1, pr.coord, _pic_sliced_tag(pr.pair, _PIC_TAG_RECORD1)))
                 messages += 1
             end
             if pr.in2
-                pr.rec2 = _pic_sliced_record(_pic_sliced_record!(sc, _PIC_SLICED_RECORD),
+                pr.rec2 = _pic_sliced_record(_pic_sliced_record!(sc, _sliced_record_len(solver)),
                                              solver, sb2.states[pr.j], pr.param2, pr.param1,
-                                             sigma ? origins2[pr.j] : nothing)
+                                             origins ? origins2[pr.j] : nothing)
                 push!(reqs, _mp_isend(pr.rec2, pr.coord, _pic_sliced_tag(pr.pair, _PIC_TAG_RECORD2)))
                 messages += 1
             end
             if rank == pr.coord
                 pairs_coordinated += 1
                 for r in g1
-                    v = _pic_sliced_record!(sc, _PIC_SLICED_RECORD)
+                    v = _pic_sliced_record!(sc, _sliced_record_len(solver))
                     push!(pr.recs_in, v)
                     push!(reqs, _mp_irecv!(v, r, _pic_sliced_tag(pr.pair, _PIC_TAG_RECORD1)))
                 end
                 for r in g2
-                    v = _pic_sliced_record!(sc, _PIC_SLICED_RECORD)
+                    v = _pic_sliced_record!(sc, _sliced_record_len(solver))
                     push!(pr.recs_in, v)
                     push!(reqs, _mp_irecv!(v, r, _pic_sliced_tag(pr.pair, _PIC_TAG_RECORD2)))
                 end
@@ -922,8 +1028,8 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
         for pr in pairs
             if rank == pr.coord
                 n1 = length(sb1.layout.groups[pr.i])
-                pr.reduced = _pic_sliced_reduce(_pic_sliced_record!(sc, _PIC_SLICED_REDUCED),
-                                                view(pr.recs_in, 1:n1),
+                pr.reduced = _pic_sliced_reduce(_pic_sliced_record!(sc, _sliced_reduced_len(solver)),
+                                                solver, view(pr.recs_in, 1:n1),
                                                 view(pr.recs_in, (n1 + 1):length(pr.recs_in)))
                 for d in 1:2
                     push!(reqs, _mp_isend(pr.reduced, pr.owner[d], _pic_sliced_tag(pr.pair, _PIC_TAG_REDUCED + d - 1)))
@@ -932,7 +1038,7 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
             end
             for d in 1:2
                 rank == pr.owner[d] || continue
-                v = _pic_sliced_record!(sc, _PIC_SLICED_REDUCED)
+                v = _pic_sliced_record!(sc, _sliced_reduced_len(solver))
                 pr.grids_out = Base.setindex(pr.grids_out, v, d)   # reuse the slot to hold the received reduced record for now
                 push!(reqs, _mp_irecv!(v, pr.coord, _pic_sliced_tag(pr.pair, _PIC_TAG_REDUCED + d - 1)))
             end
@@ -946,25 +1052,11 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
                     red = pr.grids_out[d]
                     param_source = d == 1 ? pr.param1 : pr.param2
                     param_field = d == 1 ? pr.param2 : pr.param1
-                    g = _pic_sliced_record!(sc, _PIC_SLICED_GRIDS)
-                    bad = red[61] > 0
-                    grids = bad ? nothing : _pic_sliced_grids(solver, T, red, d, param_source, param_field)
-                    if grids === nothing
-                        g[1] = one(T)
-                        pr.owned = Base.setindex(pr.owned, nothing, d)
-                    else
-                        source_grid0, field_grid0, sb, fb = grids
-                        source_grid, field_grid, green_fft = _pic_slice_pair_green!(
-                            workspace, solver, T, green_cache, (pr.i, pr.j, d),
-                            source_grid0, field_grid0, sb, fb)
-                        # the no-cache path returns the workspace's own table; keep a copy
-                        green_fft === workspace.green_fft && (green_fft = copy(green_fft))
-                        pr.owned = Base.setindex(pr.owned, (source_grid, field_grid, green_fft), d)
-                        g[2] = T(source_grid.x0); g[3] = T(source_grid.y0)
-                        g[4] = T(source_grid.width); g[5] = T(source_grid.height)
-                        g[6] = T(field_grid.x0); g[7] = T(field_grid.y0)
-                        g[8] = T(field_grid.width); g[9] = T(field_grid.height)
-                    end
+                    g = _pic_sliced_record!(sc, _sliced_grids_len(solver))
+                    owned = _sliced_owner_grids!(g, solver, T, red, d, param_source,
+                                                 param_field, workspace, green_cache,
+                                                 (pr.i, pr.j, d))
+                    pr.owned = Base.setindex(pr.owned, owned, d)
                     pr.grids_out = Base.setindex(pr.grids_out, g, d)
                     for r in members
                         push!(reqs, _mp_isend(g, r, _pic_sliced_tag(pr.pair, _PIC_TAG_GRIDS + d - 1)))
@@ -972,7 +1064,7 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
                     end
                 end
                 if pr.in1 || pr.in2
-                    v = _pic_sliced_record!(sc, _PIC_SLICED_GRIDS)
+                    v = _pic_sliced_record!(sc, _sliced_grids_len(solver))
                     pr.grids_in = Base.setindex(pr.grids_in, v, d)
                     push!(reqs, _mp_irecv!(v, pr.owner[d], _pic_sliced_tag(pr.pair, _PIC_TAG_GRIDS + d - 1)))
                 end
@@ -997,7 +1089,7 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
                 param_field = d == 1 ? pr.param2 : pr.param1
                 source_grid = _pic_sliced_grid_from(pr.grids_in[d], 1)
                 planes = [_pic_sliced_plane!(sc, nx, ny) for _ in 1:nplanes]
-                _pic_sliced_deposit!(planes, solver, part, param_source, param_field,
+                _pic_sliced_deposit!(planes, pic, part, param_source, param_field,
                                      source_grid, workspace, T)
                 for m in 1:nplanes
                     push!(reqs, _mp_isend(planes[m], pr.owner[d],
@@ -1037,9 +1129,9 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
                 _, _, green_fft = owned
                 field_group = d == 1 ? sb2.layout.groups[pr.j] : sb1.layout.groups[pr.i]
                 for m in 1:nplanes
-                    phi = _pic_sliced_solve_plane!(_pic_sliced_plane!(sc, nx, ny),
-                                                   pr.partials_in[d][m], green_fft,
-                                                   workspace, nx, ny, T)
+                    phi = _sliced_solve_plane!(_pic_sliced_plane!(sc, nx, ny), solver,
+                                               pr.partials_in[d][m], green_fft,
+                                               workspace, nx, ny, m, pr.grids_out[d], T)
                     planes_solved += 1
                     push!(pr.potentials_out[d], phi)
                     for r in field_group
@@ -1073,9 +1165,9 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
                 source_grid = _pic_sliced_grid_from(pr.grids_in[d], 1)
                 field_grid = _pic_sliced_grid_from(pr.grids_in[d], 5)
                 fields = [_pic_sliced_field!(sc, nx, ny) for _ in 1:nplanes]
-                _pic_sliced_kick!(fields, solver, field, pr.potentials_in[d],
-                                  source_grid, field_grid, param_source, param_field,
-                                  kbb, workspace, T)
+                _sliced_kick!(fields, solver, field, pr.potentials_in[d],
+                              source_grid, field_grid, param_source, param_field,
+                              kbb, workspace, pr.grids_in[d], T)
             end
         end
         # --- stage 3: the luminosity ------------------------------------------------------
@@ -1111,7 +1203,7 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
                     xmin = min(xmin, -v[1]); xmax = max(xmax, v[2])
                     ymin = min(ymin, -v[3]); ymax = max(ymax, v[4])
                 end
-                mesh = _pic_luminosity_mesh(solver, T, xmin, xmax, ymin, ymax)
+                mesh = _pic_luminosity_mesh(pic, T, xmin, xmax, ymin, ymax)
                 mv = _pic_sliced_record!(sc, 6)
                 mv[1] = mesh.xmin; mv[2] = mesh.ymin; mv[3] = mesh.hx; mv[4] = mesh.hy
                 mv[5] = mesh.hxi; mv[6] = mesh.hyi
@@ -1128,7 +1220,7 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
             end
         end
         _mp_wait_all(reqs, :wait_lum_mesh)
-        method = _pic_luminosity_deposit_method(solver)
+        method = _pic_luminosity_deposit_method(pic)
         for pr in pairs
             pr.bad && continue
             g1 = sb1.layout.groups[pr.i]; g2 = sb2.layout.groups[pr.j]
@@ -1437,18 +1529,19 @@ arithmetic and same messages as `_pic_collide_sliced!`; only when a rank runs
 them differs.
 """
 function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, order,
-                                pair_pos, batch_of, lum_parts, ran, solver::PICPoissonSolver,
+                                pair_pos, batch_of, lum_parts, ran, solver,
                                 slices1, slices2, workspace::_PICCPUWorkspace, green_cache,
                                 pool::_PICDataflowPool{T}, kbb1, kbb2, klum,
                                 compute_luminosity::Bool) where {T}
+    pic = _sliced_pic(solver)
     P = _mp_nranks()
     rank = _mp_rank()
     ns1 = length(sb1.layout.counts)
     ns2 = length(sb2.layout.counts)
-    nx, ny = solver.grid
-    lnx, lny = _pic_luminosity_grid(solver)
-    nplanes = _pic_quadratic_slice(solver) ? 3 : 2
-    sigma = Symbol(solver.grid_extent) === :sigma
+    nx, ny = pic.grid
+    lnx, lny = _pic_luminosity_grid(pic)
+    nplanes = _pic_quadratic_slice(pic) ? 3 : 2
+    origins = _sliced_needs_origin(solver)
     R = eltype(_mp_requests())
     prev1, prev2 = _pic_df_predecessors(order, pair_pos, sb1.layout.counts, sb2.layout.counts)
     # This rank's pairs, in the collision order, with the position of each in
@@ -1505,7 +1598,7 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
             c.inflight += 1
             c.max_in_flight = max(c.max_in_flight, c.inflight)
             c.batches_in_flight_max = max(c.batches_in_flight_max, length(live))
-            if sigma
+            if origins
                 for (sb, code, s_idx, in_group) in ((sb1, _PIC_TAG_ORIGIN1, pr.i, pr.in1),
                                                     (sb2, _PIC_TAG_ORIGIN2, pr.j, pr.in2))
                     in_group || continue
@@ -1532,17 +1625,17 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
             pr.stage = _PIC_DF_RECORDS
         elseif s == _PIC_DF_RECORDS
             if pr.in1
-                pr.rec1 = _pic_sliced_record(_pic_df_take_rec!(pr, pool, _PIC_SLICED_RECORD),
+                pr.rec1 = _pic_sliced_record(_pic_df_take_rec!(pr, pool, _sliced_record_len(solver)),
                                              solver, sb1.states[pr.i], pr.param1, pr.param2,
-                                             sigma ? pr.origin1 : nothing)
+                                             origins ? pr.origin1 : nothing)
                 push!(pr.sends, _mp_isend(pr.rec1, pr.coord,
                                           _pic_sliced_tag(pr.pair, _PIC_TAG_RECORD1)))
                 c.messages += 1
             end
             if pr.in2
-                pr.rec2 = _pic_sliced_record(_pic_df_take_rec!(pr, pool, _PIC_SLICED_RECORD),
+                pr.rec2 = _pic_sliced_record(_pic_df_take_rec!(pr, pool, _sliced_record_len(solver)),
                                              solver, sb2.states[pr.j], pr.param2, pr.param1,
-                                             sigma ? pr.origin2 : nothing)
+                                             origins ? pr.origin2 : nothing)
                 push!(pr.sends, _mp_isend(pr.rec2, pr.coord,
                                           _pic_sliced_tag(pr.pair, _PIC_TAG_RECORD2)))
                 c.messages += 1
@@ -1550,13 +1643,13 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
             if rank == pr.coord
                 c.pairs_coordinated += 1
                 for r in g1
-                    v = _pic_df_take_rec!(pr, pool, _PIC_SLICED_RECORD)
+                    v = _pic_df_take_rec!(pr, pool, _sliced_record_len(solver))
                     push!(pr.recs_in, v)
                     push!(pr.recv[_PIC_DF_REDUCE],
                           _mp_irecv!(v, r, _pic_sliced_tag(pr.pair, _PIC_TAG_RECORD1)))
                 end
                 for r in g2
-                    v = _pic_df_take_rec!(pr, pool, _PIC_SLICED_RECORD)
+                    v = _pic_df_take_rec!(pr, pool, _sliced_record_len(solver))
                     push!(pr.recs_in, v)
                     push!(pr.recv[_PIC_DF_REDUCE],
                           _mp_irecv!(v, r, _pic_sliced_tag(pr.pair, _PIC_TAG_RECORD2)))
@@ -1564,13 +1657,13 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
             end
             for d in 1:2
                 if rank == pr.owner[d]
-                    v = _pic_df_take_rec!(pr, pool, _PIC_SLICED_REDUCED)
+                    v = _pic_df_take_rec!(pr, pool, _sliced_reduced_len(solver))
                     pr.reduced_in[d] = v
                     push!(pr.recv[_PIC_DF_GRIDS],
                           _mp_irecv!(v, pr.coord, _pic_sliced_tag(pr.pair, _PIC_TAG_REDUCED + d - 1)))
                 end
                 if pr.in1 || pr.in2
-                    v = _pic_df_take_rec!(pr, pool, _PIC_SLICED_GRIDS)
+                    v = _pic_df_take_rec!(pr, pool, _sliced_grids_len(solver))
                     pr.grids_in[d] = v
                     push!(pr.recv[_PIC_DF_DEPOSIT],
                           _mp_irecv!(v, pr.owner[d], _pic_sliced_tag(pr.pair, _PIC_TAG_GRIDS + d - 1)))
@@ -1581,8 +1674,8 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
             if rank == pr.coord
                 n1 = length(g1)
                 pr.reduced = _pic_sliced_reduce(
-                    _pic_df_take_rec!(pr, pool, _PIC_SLICED_REDUCED), view(pr.recs_in, 1:n1),
-                    view(pr.recs_in, (n1 + 1):length(pr.recs_in)))
+                    _pic_df_take_rec!(pr, pool, _sliced_reduced_len(solver)), solver,
+                    view(pr.recs_in, 1:n1), view(pr.recs_in, (n1 + 1):length(pr.recs_in)))
                 for d in 1:2
                     push!(pr.sends, _mp_isend(pr.reduced, pr.owner[d],
                                               _pic_sliced_tag(pr.pair, _PIC_TAG_REDUCED + d - 1)))
@@ -1597,24 +1690,10 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
                 red = pr.reduced_in[d]
                 param_source = d == 1 ? pr.param1 : pr.param2
                 param_field = d == 1 ? pr.param2 : pr.param1
-                g = _pic_df_take_rec!(pr, pool, _PIC_SLICED_GRIDS)
-                grids = red[61] > 0 ? nothing :
-                        _pic_sliced_grids(solver, T, red, d, param_source, param_field)
-                if grids === nothing
-                    g[1] = one(T)
-                    pr.owned[d] = nothing
-                else
-                    source_grid0, field_grid0, sbnd, fbnd = grids
-                    source_grid, field_grid, green_fft = _pic_slice_pair_green!(
-                        workspace, solver, T, green_cache, (pr.i, pr.j, d),
-                        source_grid0, field_grid0, sbnd, fbnd)
-                    green_fft === workspace.green_fft && (green_fft = copy(green_fft))
-                    pr.owned[d] = (source_grid, field_grid, green_fft)
-                    g[2] = T(source_grid.x0); g[3] = T(source_grid.y0)
-                    g[4] = T(source_grid.width); g[5] = T(source_grid.height)
-                    g[6] = T(field_grid.x0); g[7] = T(field_grid.y0)
-                    g[8] = T(field_grid.width); g[9] = T(field_grid.height)
-                end
+                g = _pic_df_take_rec!(pr, pool, _sliced_grids_len(solver))
+                pr.owned[d] = _sliced_owner_grids!(g, solver, T, red, d, param_source,
+                                                   param_field, workspace, green_cache,
+                                                   (pr.i, pr.j, d))
                 pr.grids_out[d] = g
                 for r in members
                     push!(pr.sends, _mp_isend(g, r, _pic_sliced_tag(pr.pair, _PIC_TAG_GRIDS + d - 1)))
@@ -1662,7 +1741,7 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
                 param_field = d == 1 ? pr.param2 : pr.param1
                 source_grid = _pic_sliced_grid_from(pr.grids_in[d], 1)
                 planes = [_pic_df_take_plane!(pr, pool) for _ in 1:nplanes]
-                _pic_sliced_deposit!(planes, solver, part, param_source, param_field,
+                _pic_sliced_deposit!(planes, pic, part, param_source, param_field,
                                      source_grid, workspace, T)
                 for m in 1:nplanes
                     push!(pr.sends, _mp_isend(planes[m], pr.owner[d], _pic_sliced_tag(
@@ -1693,9 +1772,9 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
                 _, _, green_fft = owned
                 field_group = d == 1 ? g2 : g1
                 for m in 1:nplanes
-                    phi = _pic_sliced_solve_plane!(_pic_df_take_plane!(pr, pool),
-                                                   pr.partials_in[d][m], green_fft,
-                                                   workspace, nx, ny, T)
+                    phi = _sliced_solve_plane!(_pic_df_take_plane!(pr, pool), solver,
+                                               pr.partials_in[d][m], green_fft,
+                                               workspace, nx, ny, m, pr.grids_out[d], T)
                     c.planes_solved += 1
                     for r in field_group
                         push!(pr.sends, _mp_isend(phi, r, _pic_sliced_tag(
@@ -1716,9 +1795,9 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
                 source_grid = _pic_sliced_grid_from(pr.grids_in[d], 1)
                 field_grid = _pic_sliced_grid_from(pr.grids_in[d], 5)
                 fields = [_pic_df_take_field!(pr, pool) for _ in 1:nplanes]
-                _pic_sliced_kick!(fields, solver, field, pr.potentials_in[d],
-                                  source_grid, field_grid, param_source, param_field,
-                                  kbb, workspace, T)
+                _sliced_kick!(fields, solver, field, pr.potentials_in[d],
+                              source_grid, field_grid, param_source, param_field,
+                              kbb, workspace, pr.grids_in[d], T)
             end
             pr.stage = compute_luminosity ? _PIC_DF_LUMEXT : _PIC_DF_DONE
             pr.stage == _PIC_DF_DONE && (c.inflight -= 1)
@@ -1754,7 +1833,7 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
                     xmin = min(xmin, -v[1]); xmax = max(xmax, v[2])
                     ymin = min(ymin, -v[3]); ymax = max(ymax, v[4])
                 end
-                mesh = _pic_luminosity_mesh(solver, T, xmin, xmax, ymin, ymax)
+                mesh = _pic_luminosity_mesh(pic, T, xmin, xmax, ymin, ymax)
                 mv = _pic_df_take_rec!(pr, pool, 6)
                 mv[1] = mesh.xmin; mv[2] = mesh.ymin; mv[3] = mesh.hx; mv[4] = mesh.hy
                 mv[5] = mesh.hxi; mv[6] = mesh.hyi
@@ -1773,7 +1852,7 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
             end
             pr.stage = _PIC_DF_LUMDEP
         elseif s == _PIC_DF_LUMDEP
-            method = _pic_luminosity_deposit_method(solver)
+            method = _pic_luminosity_deposit_method(pic)
             mv = pr.lummesh
             for (as, vx, vy, code) in ((pr.in1, pr.vx1, pr.vy1, _PIC_TAG_LUMDEP1),
                                        (pr.in2, pr.vx2, pr.vy2, _PIC_TAG_LUMDEP2))
@@ -1856,3 +1935,113 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
                         schedule=:dataflow, ranks=P))
     return c.nbad
 end
+
+"""
+    _sliced_collide!(solver, beam1, beam2, ...) -> nothing
+
+The slice-aligned collide's transport, shared by every solver that collides
+slice against slice: the layout, the two migrations, the owner deal, the
+choice of loop, the receipts, the luminosity all-sum and the non-finite
+verdict. What a solver contributes is its record, what its owner makes of
+the folded record, and the three leaves that touch particles -- all
+dispatched on the solver (see `_sliced_record_len` and its neighbours).
+"""
+function _sliced_collide!(solver, beam1::Beam, beam2::Beam, slices1, slices2, order,
+                          npairs::Int, pair_pos, lum_parts, ran, plan1, plan2,
+                          workspaces, green_cache, kbb1, kbb2, klum,
+                          compute_luminosity::Bool, requested::Symbol,
+                          sliced_scratch::Base.RefValue{Any},
+                          sliced_pool_ref::Base.RefValue{Any},
+                          sliced_migration_ref::Base.RefValue{Any}, ::Type{T}) where {T}
+    pic = _sliced_pic(solver)
+    # ONE assignment each: the scoped-value closure below captures these
+    # names, and a second assignment would box them (the lowered sweep).
+    scratch = let held = sliced_scratch[]
+        held isa _PICSlicedScratch{T} ? held : (sliced_scratch[] = _PICSlicedScratch{T}())
+    end
+    sliced_pool = sliced_pool_ref
+    sliced_migration = sliced_migration_ref
+    P = _mp_nranks()
+    layout1 = _pic_sliced_layout(plan1.counts, P)
+    layout2 = _pic_sliced_layout(plan2.counts, P)
+    mig1, mig2 = _pic_migration_scratch(T, sliced_migration)
+    sb1 = _pic_sliced_migrate_in(beam1.rep, slices1, layout1, mig1, T)
+    sb2 = _pic_sliced_migrate_in(beam2.rep, slices2, layout2, mig2, T)
+    # `sliced_batches`, not `batches`: the per-pair branch below assigns
+    # `batches` too, and one name assigned in two places and captured by
+    # the closure below is a `Core.Box` (the lowered-code sweep).
+    batching = _pic_batching_requested(pic) && npairs > 1
+    sliced_batches = batching ? collision_pair_batches(slices1, slices2) :
+                                [[(i=Int(entry[2]), j=Int(entry[3]))] for entry in order]
+    # Each pair's batch and its position in that batch's canonical order:
+    # the position deals the plane owners (the same deal both loops use),
+    # the batch index is what the dataflow loop's overlap counters read.
+    deal_of = Dict{Int,Tuple{Int,Int}}()
+    for (b, batch) in pairs(sliced_batches)
+        for (q, (i, j)) in pairs(sort([(pr.i, pr.j) for pr in batch]))
+            deal_of[pair_pos[(i, j)]] = (b, q)
+        end
+    end
+    # `:wavefront` runs the dataflow loop (step 4e), `:sequential` the
+    # batched one it grew from -- two loops, the same leaves, pinned
+    # against each other by the launcher's `:sequential` arm.
+    # `_PIC_SLICED_LOOP` overrides that for a measurement or a pin, so the
+    # two can be timed on the same box at the same moment.
+    #
+    # WHICH loop, when the schedule leaves it open, is a measured rule
+    # rather than a preference (step 4e, A/B at the production point on
+    # one box, both loops interleaved). A pair may not start until each of
+    # its slices has been kicked by the pair before it, so a rank holding
+    # a WHOLE slice has its pairs on that slice strictly in series and
+    # nothing to overlap: the dataflow loop then only adds a wake per hop,
+    # and at sixteen ranks over fifteen slices it ran 1.8-2.1 s against
+    # the batched loop's 0.83. Once a slice spans a group the picture
+    # inverts -- each rank holds a fraction of the chain's work and owns
+    # planes of pairs it is not a member of, so there is real independent
+    # work between the hops, and at sixty-four ranks the dataflow loop ran
+    # 0.40-0.77 s against 0.55-0.99. The rule is therefore the layout's:
+    # groups wider than one rank get the dataflow loop.
+    widest_group = max(maximum(length, layout1.groups; init=0),
+                       maximum(length, layout2.groups; init=0))
+    loop = _PIC_SLICED_LOOP[] !== :auto ? _PIC_SLICED_LOOP[] :
+           !batching ? :batched :
+           widest_group >= 2 ? :dataflow : :batched
+    _record_execution!(:pic_pair_schedule, CPUThreadsBackend,
+                       (batch_mode=batching ? :wavefront : :sequential, requested=requested,
+                        pairs=npairs, batches=length(sliced_batches),
+                        widest_batch=maximum(length, sliced_batches; init=0),
+                        pair_workers=1, inner_workers=_cpu_worker_count(),
+                        ranks=P, exchange=:sliced, schedule=loop))
+    for (which, sb) in ((1, sb1), (2, sb2))
+        _record_execution!(:pic_slice_layout, CPUThreadsBackend,
+                           (beam=which, groups=[length(g) for g in sb.layout.groups],
+                            migrated_out=sb.migrated_out, migrated_in=sb.migrated_in,
+                            ranks=P))
+    end
+    nbad = Base.ScopedValues.with(_PIC_MAP_WORKER_BUDGET => _cpu_worker_count()) do
+        if loop === :dataflow
+            _pic_collide_dataflow!(sb1, sb2, order, pair_pos, deal_of, lum_parts, ran,
+                                   solver, slices1, slices2, first(workspaces), green_cache,
+                                   _pic_df_pool(T, sliced_pool, pic.grid...,
+                                                _pic_luminosity_grid(pic)...),
+                                   kbb1, kbb2, klum, compute_luminosity)
+        else
+            _pic_collide_sliced!(sb1, sb2, sliced_batches, order, pair_pos, lum_parts, ran,
+                                 solver, slices1, slices2, first(workspaces), green_cache,
+                                 scratch, kbb1, kbb2, klum, compute_luminosity)
+        end
+    end
+    _pic_sliced_migrate_out!(beam1.rep, sb1, mig1)
+    _pic_sliced_migrate_out!(beam2.rep, sb2, mig2)
+    # The coordinators hold their pairs' values and everyone else zeros,
+    # so the all-sum is exact and every rank folds the same vector below.
+    _mp_allsum!(lum_parts)
+    # The non-finite verdict, agreed once per collide: every rank throws
+    # or none (the 4c rule), the pair's ranks having already skipped it.
+    nbad_all = _mp_global_count(nbad)
+    nbad_all > 0 && throw(ArgumentError(
+        "PIC collide: $(nbad_all) slice pair(s) met a non-finite coordinate " *
+        "(this rank held $(nbad) of them); the run cannot continue."))
+    return nothing
+end
+

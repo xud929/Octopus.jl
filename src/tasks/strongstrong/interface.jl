@@ -2384,15 +2384,16 @@ preflight AND at each undivided solver's CPU collide entry, so a bare
 function _reject_undivided_solver(solver::AbstractPoissonSolver)
     nranks = _mp_nranks()
     nranks > 1 || return nothing
-    solver isa Union{GaussianPoissonSolver,PICPoissonSolver} && return nothing
+    solver isa Union{GaussianPoissonSolver,PICPoissonSolver,
+                     GaussianPICPoissonSolver} && return nothing
     throw(ArgumentError(
         "$(nameof(typeof(solver))) does not divide across the $(nranks) MPI " *
-        "ranks in force: multi-process steps 4a and 4c divided the " *
-        "soft-Gaussian and PIC collides (GaussianPoissonSolver, " *
-        "PICPoissonSolver); Gaussian-PIC and spectral are still to come, and " *
-        "until then each rank would collide its own shard alone and report the " *
-        "result as the whole beam's. Use one of the divided solvers, run one " *
-        "rank, or use CPUThreadsExecutionPolicy."))
+        "ranks in force: the multi-process campaign divided the soft-Gaussian " *
+        "(step 4a), PIC (4c, and the slice-aligned collide of 4d/4e) and " *
+        "Gaussian-PIC (4f) collides; spectral is still to come, and until then " *
+        "each rank would collide its own shard alone and report the result as " *
+        "the whole beam's. Use one of the divided solvers, run one rank, or use " *
+        "CPUThreadsExecutionPolicy."))
 end
 
 """

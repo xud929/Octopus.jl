@@ -303,6 +303,38 @@ _mpi_check_pic_variants() = (
 
 _mpi_check_pic_sparse_slicing() = Octopus.LongitudinalSlicing(nslices=64, method=:equal_area)
 
+"""The slicing an arm's solver uses, whichever solver it is: Gaussian-PIC
+carries the PIC solver its slicing belongs to."""
+_mpi_check_arm_slicing(solver) = hasproperty(solver, :slicing1) ? solver.slicing1 :
+                                 solver.pic.slicing1
+
+"""
+The Gaussian-PIC arms (step 4f). gpic is PIC with a control variate fitted
+to the SOURCE SLICE, so what it adds to the divided collide is the slice's
+moments, the mode they imply and the analytic add-back -- and the arms are
+the routes those take: the default (the uncoupled subtraction), the coupled
+one (`coupling_tol = 1e-3` resolves every slice of this fixture to
+`:coupled`, measured), no Gaussian margin on the mesh, the un-neutralised
+amplitude -- the one route whose subtraction does NOT read the folded grid
+total, and so the one that would still be right if a rank subtracted its own
+share -- and the sequential schedule, which must MATCH the default because
+it is the same physics on the other loop. The mode's `:pic` fallback needs a
+coupling that is requested and cannot be resolved, which these round beams
+never produce; it is covered by the in-process arms rather than here.
+"""
+_mpi_check_gpic_solver(; kw...) = Octopus.GaussianPICPoissonSolver(
+    kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(16, 16),
+    green_cache=:slice_pair,
+    slicing=Octopus.LongitudinalSlicing(nslices=3, method=:equal_area); kw...)
+
+_mpi_check_gpic_variants() = (
+    (:gpic, _mpi_check_gpic_solver(), 1, nothing),
+    (:gpic_coupled, _mpi_check_gpic_solver(coupling_tol=1.0e-3), 1, nothing),
+    (:gpic_nomargin, _mpi_check_gpic_solver(margin_sigma=0.0), 1, nothing),
+    (:gpic_noneutral, _mpi_check_gpic_solver(neutralize=false), 1, nothing),
+    (:gpic_seq, _mpi_check_gpic_solver(batch_mode=:sequential), 1, :gpic),
+)
+
 """
 The slice-aligned layout (step 4d) of `rep` under `slicing` at `nranks`
 ranks, from the global slice counts and the layout rule alone -- what the

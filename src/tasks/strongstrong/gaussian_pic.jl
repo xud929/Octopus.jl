@@ -407,6 +407,60 @@ function _gpic_source_moments(source, coupled::Bool=true)
             sypx += dy * dpx; spxpy += dpx * dpy
         end
     end
+    return _gpic_moments_from_sums(
+        x0, px0, y0, py0, n, coupled,
+        sx, spx, sy, spy, sxx, spxpx, syy, spypy, sxpx, sypy, sxy, sxpy, sypx, spxpy)
+end
+
+"""
+    _gpic_source_sums!(v, at, source, x0, px0, y0, py0, coupled) -> v
+
+The fourteen shifted sums of `_gpic_source_moments`, about a GIVEN origin,
+into `v[at:at+13]`. Divided (step 4f), each rank sums its part of a slice
+about the slice's globally-first member and the group's partials are folded;
+the shifted sums are the only form in which they can be, and a shared origin
+is what makes the fold the serial sum. The loop is the one above, so the two
+cannot drift.
+"""
+function _gpic_source_sums!(v, at::Int, source, x0, px0, y0, py0, coupled::Bool)
+    T = eltype(source.x)
+    n = length(source.x)
+    sx = zero(T); spx = zero(T); sy = zero(T); spy = zero(T)
+    sxx = zero(T); spxpx = zero(T); syy = zero(T); spypy = zero(T)
+    sxpx = zero(T); sypy = zero(T)
+    sxy = zero(T); sxpy = zero(T); sypx = zero(T); spxpy = zero(T)
+    @inbounds for i in 1:n
+        dx = source.x[i] - x0; dpx = source.px[i] - px0
+        dy = source.y[i] - y0; dpy = source.py[i] - py0
+        sx += dx; spx += dpx; sy += dy; spy += dpy
+        sxx += dx * dx; spxpx += dpx * dpx
+        syy += dy * dy; spypy += dpy * dpy
+        sxpx += dx * dpx; sypy += dy * dpy
+        if coupled
+            sxy += dx * dy; sxpy += dx * dpy
+            sypx += dy * dpx; spxpy += dpx * dpy
+        end
+    end
+    @inbounds begin
+        v[at] = sx; v[at + 1] = spx; v[at + 2] = sy; v[at + 3] = spy
+        v[at + 4] = sxx; v[at + 5] = spxpx; v[at + 6] = syy; v[at + 7] = spypy
+        v[at + 8] = sxpx; v[at + 9] = sypy
+        v[at + 10] = sxy; v[at + 11] = sxpy; v[at + 12] = sypx; v[at + 13] = spxpy
+    end
+    return v
+end
+
+const _GPIC_NSUMS = 14
+
+"""
+The slice's moments from its shifted sums and the origin they were shifted
+about -- the tail of `_gpic_source_moments`, and the only place it lives, so
+an undivided slice and a folded group compute the same expression.
+"""
+function _gpic_moments_from_sums(x0, px0, y0, py0, n::Integer, coupled::Bool,
+                                 sx, spx, sy, spy, sxx, spxpx, syy, spypy,
+                                 sxpx, sypy, sxy, sxpy, sypx, spxpy)
+    T = typeof(x0)
     invn = inv(T(n))
     dmx = sx * invn; dmpx = spx * invn; dmy = sy * invn; dmpy = spy * invn
     mx = x0 + dmx; mpx = px0 + dmpx; my = y0 + dmy; mpy = py0 + dmpy
@@ -425,6 +479,14 @@ function _gpic_source_moments(source, coupled::Bool=true)
             my=my, mpy=mpy, vary=vary, cypy=cypy, varpy=varpy,
             cxy=cxy, cxpy=cxpy, cypx=cypx, cpxpy=cpxpy)
 end
+
+"""The moments of a slice whose group's shifted sums sit in `v[at:at+13]`,
+shifted about `origin` (its globally-first member) and over `n` members."""
+_gpic_moments_from_record(v, at::Int, origin, n::Integer, coupled::Bool) =
+    @inbounds _gpic_moments_from_sums(
+        origin[1], origin[2], origin[3], origin[4], n, coupled,
+        v[at], v[at + 1], v[at + 2], v[at + 3], v[at + 4], v[at + 5], v[at + 6],
+        v[at + 7], v[at + 8], v[at + 9], v[at + 10], v[at + 11], v[at + 12], v[at + 13])
 
 # Full 4x4 transverse covariance of the source slice as StrongTransverseMoments,
 # so the coupled analytic add-back can reuse the validated soft-Gaussian
@@ -893,12 +955,14 @@ _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     _gpic_collide!(gsolver, beam1, beam2, ctx, (workspace,), green_cache)
 
 function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
-                        workspaces, green_cache)
+                        workspaces, green_cache;
+                        sliced_scratch::Base.RefValue{Any}=Ref{Any}(nothing),
+                        sliced_pool_ref::Base.RefValue{Any}=Ref{Any}(nothing),
+                        sliced_migration_ref::Base.RefValue{Any}=Ref{Any}(nothing))
     pic = gsolver.pic
     _validate_pic_solver(pic)
     isempty(workspaces) && throw(ArgumentError(
         "GaussianPIC CPU collide needs at least one scratch workspace; got an empty pool."))
-    _reject_undivided_solver(gsolver)           # step 4c divides this collide
     _require_linear_slice_interpolation(pic, "GaussianPICPoissonSolver")
     # Reset and report the dropped-charge counter, as the plain-PIC twin does
     # (2026-08-05_b audit, U10-2). This solver shares `_PICCPUWorkspace` and
@@ -949,7 +1013,21 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
     # `batch_mode` read on CPU exactly as `_pic_collide!` reads it (2026-09-04):
     # the keyword is the schedule, the pool is the width.
     requested = Symbol(pic.batch_mode)
-    if _pic_batching_requested(pic) && npairs > 1
+    # Divided (step 4f): the slice-aligned transport, with gpic's own record,
+    # owner mesh and leaves. gpic rejects `interaction_grid`, so there is no
+    # node or source-slice mesh to keep on the per-pair path.
+    divided_plan1 = _divided_slice_plan(beam1.rep, slices1, _mp_nranks() > 1)
+    divided_plan2 = _divided_slice_plan(beam2.rep, slices2, _mp_nranks() > 1)
+    # The sliced transport migrates the particles out of the beam and back,
+    # so the resident slice states this function gathered are stale the
+    # moment it returns and must NOT be scattered over the kicked beams.
+    sliced = _mp_multi_process_active()
+    if sliced
+        _sliced_collide!(gsolver, beam1, beam2, slices1, slices2, order, npairs, pair_pos,
+                         lum_parts, ran, divided_plan1, divided_plan2, workspaces,
+                         green_cache, kbb1, kbb2, klum, compute_luminosity, requested,
+                         sliced_scratch, sliced_pool_ref, sliced_migration_ref, T)
+    elseif _pic_batching_requested(pic) && npairs > 1
         # No nesting inside the batched pair loop, except where the pair level
         # is width 1 and there is nothing to nest under; see `_pic_collide!`
         # for the measurement that decided this.
@@ -960,7 +1038,8 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
                             pairs=npairs, batches=length(batches),
                             widest_batch=maximum(length, batches; init=0),
                             pair_workers=pool_workers,
-                            inner_workers=inner_workers))
+                            inner_workers=inner_workers,
+                            ranks=_mp_nranks(), exchange=:none, schedule=:none))
         Base.ScopedValues.with(_PIC_MAP_WORKER_BUDGET => inner_workers) do
         for batch in batches
             nworkers = clamp(pool_workers, 1, length(batch))
@@ -987,7 +1066,8 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
                            (batch_mode=:sequential, requested=requested,
                             pairs=npairs, batches=0,
                             widest_batch=0, pair_workers=1,
-                            inner_workers=_cpu_worker_count()))
+                            inner_workers=_cpu_worker_count(),
+                            ranks=_mp_nranks(), exchange=:none, schedule=:none))
         serial_ws = first(workspaces)
         for (p, entry) in pairs(order)
             ran[p] = _gpic_collide_pair!(
@@ -1013,8 +1093,10 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
         end
     end
     # Scatter the resident slices back into the beams, once.
-    _pic_store_slice_states!(beam1.rep, slices1.indices, state1)
-    _pic_store_slice_states!(beam2.rep, slices2.indices, state2)
+    if !sliced
+        _pic_store_slice_states!(beam1.rep, slices1.indices, state1)
+        _pic_store_slice_states!(beam2.rep, slices2.indices, state2)
+    end
 
     _pic_report_green_cache(green_cache)
     _pic_report_dropped(workspaces)         # U10-2, summed over the pool
@@ -1105,7 +1187,12 @@ function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
     workspaces = _pic_cpu_workspace_pool!(task.runtime_cache, label, solver.pic, T,
                                           _pic_pool_size(solver.pic))
     green_cache = _pic_green_cache!(task.runtime_cache, label, solver.pic, T)
-    return _gpic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache)
+    # The slice-aligned collide's scratch, kept across turns like the pool.
+    ref(key) = get!(() -> Ref{Any}(nothing), task.runtime_cache, (key, label))::Base.RefValue{Any}
+    return _gpic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache;
+                          sliced_scratch=ref(:cpu_pic_sliced_scratch),
+                          sliced_pool_ref=ref(:cpu_pic_sliced_pool),
+                          sliced_migration_ref=ref(:cpu_pic_sliced_migration))
 end
 
 _strong_strong_collide_backend!(task::StrongStrongTask, label::Symbol,
@@ -1115,3 +1202,307 @@ _strong_strong_collide_backend!(task::StrongStrongTask, label::Symbol,
     _strong_strong_collide!(task, label, solver, beam1, beam2, CPUThreadsBackend, ctx)
 
 # The CUDA path is defined in gaussian_pic_cuda.jl (only when CUDA is available).
+
+# ---------------------------------------------------------------------------
+# Gaussian-PIC on the slice-aligned layout (multi-process step 4f)
+#
+# gpic is PIC with a control variate: it deposits the same charge, subtracts a
+# reference Gaussian fitted to the SOURCE SLICE, solves the residual on the
+# same mesh with the same Green table, and adds the Gaussian's analytic kick
+# back. Everything the sliced protocol already carries -- the extents, the
+# grids, the partial planes, the potentials, the luminosity -- it carries
+# unchanged. Three things are new, and all three are properties of the SLICE
+# rather than of one rank's part of it:
+#
+#  * **The moments.** The reference Gaussian is fitted to the slice, so a
+#    rank cannot fit it to its own particles. Each member sends the fourteen
+#    SHIFTED sums of its part, about the slice's globally-first member, and
+#    the coordinator folds them in group rank order -- the only form in which
+#    such sums can be folded, and the reason gpic needs the origin exchange
+#    at every pair where PIC needs it only under `:sigma`.
+#  * **The subtraction happens on the plane's owner**, after the fold. With
+#    the default `neutralize = true` the amplitude is the DEPOSITED grid's
+#    total divided by the profile sums, which does not exist until the
+#    group's partials have been summed; a per-rank residual is not defined.
+#    So members deposit exactly what PIC deposits, and the owner subtracts.
+#  * **The control-variate mode** decides both the mesh (the Gaussian's
+#    margin widens the source extent) and the kick (whether the analytic
+#    add-back runs at all). It is decided once, on the owner, from the folded
+#    moments, and travels in the grids message so that every member of the
+#    pair uses the same one.
+#
+# The field members need the SOURCE slice's moments for the add-back, and a
+# member of the field group is not in the source group, so the moments ride
+# the owner's grids message rather than the origin exchange.
+
+_sliced_record_len(::GaussianPICPoissonSolver) = _PIC_SLICED_RECORD + _GPIC_NSUMS
+_sliced_reduced_len(::GaussianPICPoissonSolver) = _PIC_SLICED_REDUCED + 2 * _GPIC_NSUMS
+# 9 PIC + mode + count + 4 origin + 14 sums + the two boundary drifts
+_sliced_grids_len(::GaussianPICPoissonSolver) = _PIC_SLICED_GRIDS + 22
+_sliced_needs_origin(::GaussianPICPoissonSolver) = true
+_sliced_pic(g::GaussianPICPoissonSolver) = g.pic
+
+@inline _gpic_coupled_gate(g::GaussianPICPoissonSolver, ::Type{T}) where {T} =
+    isfinite(T(g.coupling_tol))
+@inline _gpic_sliced_sum_at(d::Int) =
+    _PIC_SLICED_REDUCED + (d == 1 ? 1 : _GPIC_NSUMS + 1)
+# The grids message's gpic band.
+@inline _gpic_grids_mode(g) = Int(g[_PIC_SLICED_GRIDS + 1])
+@inline _gpic_grids_count(g) = Int(g[_PIC_SLICED_GRIDS + 2])
+@inline _gpic_grids_origin(g) = (g[_PIC_SLICED_GRIDS + 3], g[_PIC_SLICED_GRIDS + 4],
+                                 g[_PIC_SLICED_GRIDS + 5], g[_PIC_SLICED_GRIDS + 6])
+@inline _gpic_grids_sums_at() = _PIC_SLICED_GRIDS + 7
+# The drifts of the two boundary planes, so the owner's solve knows which
+# Gaussian each plane carries without being handed the slice parameters.
+@inline _gpic_grids_drift(g, m::Int) = g[_PIC_SLICED_GRIDS + 20 + m]
+
+"""
+The profile buffers of one plane, from the workspace's own scratch so a
+plane's subtraction allocates nothing. `green` is 2nx x 2ny and free at this
+point -- the table the solve convolves with is the cached `green_fft`, not
+this scratch -- so its first columns serve as the six profiles the coupled
+subtraction needs and the first two as the uncoupled pair's.
+"""
+function _gpic_profile_buffers(workspace::_PICCPUWorkspace{T}, nx::Int, ny::Int,
+                               ::Type{T}) where {T}
+    g = workspace.green
+    return (view(g, 1:nx, 1), view(g, 1:nx, 2), view(g, 1:nx, 3),
+            view(g, 1:ny, 4), view(g, 1:ny, 5), view(g, 1:ny, 6))
+end
+const _GPIC_MODE_CODES = (:pic, :uncoupled, :coupled)
+@inline _gpic_mode_code(mode::Symbol) = findfirst(==(mode), _GPIC_MODE_CODES)
+
+"""A member's record: PIC's, plus its part's shifted sums about the slice's
+globally-first member (the origin the stage-0 exchange delivered)."""
+function _pic_sliced_record(rec::Vector{T}, g::GaussianPICPoissonSolver, part,
+                            param_own, param_other, origin) where {T}
+    _pic_sliced_record(rec, g.pic, part, param_own, param_other, origin)
+    if origin !== nothing
+        x0 = T(origin[1]); px0 = T(origin[2]); y0 = T(origin[3]); py0 = T(origin[4])
+    elseif !isempty(part.x)
+        x0 = part.x[1]; px0 = part.px[1]; y0 = part.y[1]; py0 = part.py[1]
+    else
+        x0 = zero(T); px0 = zero(T); y0 = zero(T); py0 = zero(T)
+    end
+    _gpic_source_sums!(rec, _PIC_SLICED_RECORD + 1, part, x0, px0, y0, py0,
+                       _gpic_coupled_gate(g, T))
+    return rec
+end
+
+"""The coordinator's fold: PIC's, plus each direction's source group's sums
+added in group rank order."""
+function _pic_sliced_reduce(red::Vector{T}, g::GaussianPICPoissonSolver,
+                            recs1, recs2) where {T}
+    _pic_sliced_reduce(red, g.pic, recs1, recs2)
+    for (recs, at) in ((recs1, _gpic_sliced_sum_at(1)), (recs2, _gpic_sliced_sum_at(2)))
+        for r in recs
+            @inbounds for k in 0:(_GPIC_NSUMS - 1)
+                red[at + k] += r[_PIC_SLICED_RECORD + 1 + k]
+            end
+        end
+    end
+    return red
+end
+
+"""
+The owner's mesh for one direction: the slice's moments from the folded
+sums, the control-variate mode they imply, the Gaussian's margin unioned
+into the source extent, and the mesh PIC would then build. The message
+carries the mode, the count, the origin and the sums onward, so the field
+members rebuild the same moments for the analytic add-back.
+"""
+function _sliced_owner_grids!(gmsg, g::GaussianPICPoissonSolver, ::Type{T}, red, d::Int,
+                              param_source, param_field, workspace::_PICCPUWorkspace,
+                              green_cache, cache_key) where {T}
+    pic = g.pic
+    if red[61] > 0
+        gmsg[1] = one(T)
+        return nothing
+    end
+    o = d == 1 ? 0 : 30
+    ns = Int(red[o + 9]) ÷ 2          # PIC's record carries 2 * nsource
+    origin = (red[o + 21], red[o + 22], red[o + 23], red[o + 24])
+    coupled_gate = _gpic_coupled_gate(g, T)
+    sumat = _gpic_sliced_sum_at(d)
+    sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
+    sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
+    mode = :pic
+    margin_box = nothing
+    if ns > 0
+        mom = _gpic_moments_from_record(red, sumat, origin, ns, coupled_gate)
+        bL = _gpic_boundary(mom, sL, coupled_gate)
+        bR = _gpic_boundary(mom, sR, coupled_gate)
+        mode = _gpic_control_variate_mode(ns, T(g.coupling_tol), bL, bR)
+        margin = T(g.margin_sigma)
+        if mode !== :pic && margin > 0
+            margin_box = (min(bL.mux - margin * bL.sigx, bR.mux - margin * bR.sigx),
+                          max(bL.mux + margin * bL.sigx, bR.mux + margin * bR.sigx),
+                          min(bL.muy - margin * bL.sigy, bR.muy - margin * bR.sigy),
+                          max(bL.muy + margin * bL.sigy, bR.muy + margin * bR.sigy))
+        end
+    end
+    grids = _pic_sliced_grids(pic, T, red, d, param_source, param_field, margin_box)
+    if grids === nothing
+        gmsg[1] = one(T)
+        return nothing
+    end
+    source_grid0, field_grid0, sbnd, fbnd = grids
+    source_grid, field_grid, green_fft = _pic_slice_pair_green!(
+        workspace, pic, T, green_cache, cache_key, source_grid0, field_grid0, sbnd, fbnd)
+    green_fft === workspace.green_fft && (green_fft = copy(green_fft))
+    _sliced_write_grids!(gmsg, source_grid, field_grid, T)
+    @inbounds begin
+        gmsg[_PIC_SLICED_GRIDS + 1] = T(_gpic_mode_code(mode))
+        gmsg[_PIC_SLICED_GRIDS + 2] = T(ns)
+        gmsg[_PIC_SLICED_GRIDS + 3] = origin[1]; gmsg[_PIC_SLICED_GRIDS + 4] = origin[2]
+        gmsg[_PIC_SLICED_GRIDS + 5] = origin[3]; gmsg[_PIC_SLICED_GRIDS + 6] = origin[4]
+        for k in 0:(_GPIC_NSUMS - 1)
+            gmsg[_gpic_grids_sums_at() + k] = red[sumat + k]
+        end
+        gmsg[_PIC_SLICED_GRIDS + 21] = sL
+        gmsg[_PIC_SLICED_GRIDS + 22] = sR
+    end
+    return (source_grid, field_grid, green_fft)
+end
+
+"""The slice's moments as the owner and every member of the pair rebuild
+them, from the grids message alone."""
+function _gpic_sliced_moments(gmsg, g::GaussianPICPoissonSolver, ::Type{T}) where {T}
+    ns = _gpic_grids_count(gmsg)
+    return _gpic_moments_from_record(gmsg, _gpic_grids_sums_at(), _gpic_grids_origin(gmsg),
+                                     ns, _gpic_coupled_gate(g, T)), ns
+end
+
+"""
+One plane on its owner: the group's partials folded exactly as PIC folds
+them, then the reference Gaussian subtracted from the folded charge (the
+amplitude reads that total, which is why this cannot happen earlier), then
+the shared Green-FFT solve.
+"""
+function _sliced_solve_plane!(phi, g::GaussianPICPoissonSolver, partials, green_fft,
+                              workspace::_PICCPUWorkspace, nx::Int, ny::Int, m::Int,
+                              grids_in, ::Type{T}) where {T}
+    mode = _GPIC_MODE_CODES[_gpic_grids_mode(grids_in)]
+    mode === :pic && return _pic_sliced_solve_plane!(phi, partials, green_fft,
+                                                     workspace, nx, ny, T)
+    pic = g.pic
+    mom, ns = _gpic_sliced_moments(grids_in, g, T)
+    source_grid = _pic_sliced_grid_from(grids_in, 1)
+    hx = T(source_grid.width) / T(nx - 1)
+    hy = T(source_grid.height) / T(ny - 1)
+    charge = workspace.charge
+    fill!(charge, zero(T))
+    interior = view(charge, 1:nx, 1:ny)
+    for partial in partials          # group rank order
+        interior .+= partial
+    end
+    # The plane's own boundary: plane 1 sits at sL, plane 2 at sR (gpic
+    # rejects the quadratic interpolation, so there is no third).
+    bnd = _gpic_boundary(mom, T(_gpic_grids_drift(grids_in, m)), _gpic_coupled_gate(g, T))
+    gxbuf, m1xbuf, m2xbuf, gybuf, dgybuf, ddgybuf = _gpic_profile_buffers(workspace, nx, ny, T)
+    qsum = zero(T)
+    @inbounds for j in 1:ny, i in 1:nx
+        qsum += charge[i, j]
+    end
+    if mode === :coupled
+        _gpic_coupled_profiles!(gxbuf, m1xbuf, m2xbuf, gybuf, dgybuf, ddgybuf,
+                                T(source_grid.x0), hx, T(bnd.mux), T(sqrt(bnd.a)),
+                                T(source_grid.y0), hy, T(bnd.muy), T(bnd.sigc),
+                                pic.deposit_method)
+        lam = T(bnd.lam); half_lam2 = T(0.5) * lam * lam
+        sg = sum(gxbuf) * sum(gybuf) + lam * sum(m1xbuf) * sum(dgybuf) +
+             half_lam2 * sum(m2xbuf) * sum(ddgybuf)
+        amp = (g.neutralize && sg != 0) ? qsum / sg : T(ns)
+        @inbounds for j in 1:ny
+            gj = amp * gybuf[j]; dj = amp * lam * dgybuf[j]; ddj = amp * half_lam2 * ddgybuf[j]
+            for i in 1:nx
+                charge[i, j] -= gxbuf[i] * gj + m1xbuf[i] * dj + m2xbuf[i] * ddj
+            end
+        end
+    else
+        _gpic_gaussian_profile!(gxbuf, T(source_grid.x0), hx, T(bnd.mux), T(bnd.sigx),
+                                pic.deposit_method)
+        _gpic_gaussian_profile!(gybuf, T(source_grid.y0), hy, T(bnd.muy), T(bnd.sigy),
+                                pic.deposit_method)
+        sgx = sum(gxbuf); sgy = sum(gybuf)
+        amp = T(ns)
+        if g.neutralize && sgx * sgy > zero(T)
+            amp = qsum / (sgx * sgy)
+        end
+        @inbounds for j in 1:ny
+            gj = amp * gybuf[j]
+            for i in 1:nx
+                charge[i, j] -= gxbuf[i] * gj
+            end
+        end
+    end
+    spectral = workspace.spectral
+    spectral .= charge
+    workspace.fft_plan * spectral
+    spectral .*= green_fft
+    workspace.ifft_plan * spectral
+    @inbounds for j in 1:ny, i in 1:nx
+        phi[i, j] = real(spectral[i, j])
+    end
+    return phi
+end
+
+"""
+One direction's field work on a field part: the gradients and the drift as
+PIC does them, then the kick with the reference Gaussian's analytic
+contribution added back -- from the SOURCE slice's moments, which the owner's
+grids message carried here.
+"""
+function _sliced_kick!(fields, g::GaussianPICPoissonSolver, field, potentials,
+                       source_grid, field_grid, param_source, param_field, kbb,
+                       workspace::_PICCPUWorkspace, grids_in, ::Type{T}) where {T}
+    mode = _GPIC_MODE_CODES[_gpic_grids_mode(grids_in)]
+    pic = g.pic
+    mode === :pic && return _pic_sliced_kick!(fields, pic, field, potentials,
+                                              source_grid, field_grid, param_source,
+                                              param_field, kbb, workspace, T)
+    nx, ny = pic.grid
+    hx = T(source_grid.width) / T(nx - 1)
+    hy = T(source_grid.height) / T(ny - 1)
+    fourth = _pic_fourth_order(pic)
+    for m in eachindex(fields)
+        fw = fields[m]
+        _pic_field!(fw.Ex, fw.Ey, potentials[m], hx, hy, fourth)
+    end
+    nfield = length(field.x)
+    center = T(param_source.center)
+    for k in 1:nfield
+        @inbounds begin
+            s = T(0.5) * (field.z[k] - center)
+            field.x[k] += s * field.px[k]
+            field.y[k] += s * field.py[k]
+            if pic.longitudinal_kick
+                field.pz[k] -= T(0.25) * (field.px[k] * field.px[k] + field.py[k] * field.py[k])
+            end
+        end
+    end
+    mom, ns = _gpic_sliced_moments(grids_in, g, T)
+    coupled_gate = _gpic_coupled_gate(g, T)
+    sL = T(_gpic_grids_drift(grids_in, 1))
+    sR = T(_gpic_grids_drift(grids_in, 2))
+    bL = _gpic_boundary(mom, sL, coupled_gate)
+    bR = _gpic_boundary(mom, sR, coupled_gate)
+    kick_scale = T(2) * T(kbb)
+    half_ns = T(0.5) * T(ns)
+    kbb_eff = kick_scale * half_ns
+    rxL = 2 * (mom.cxpx + sL * mom.varpx); ryL = 2 * (mom.cypy + sL * mom.varpy)
+    rxR = 2 * (mom.cxpx + sR * mom.varpx); ryR = 2 * (mom.cypy + sR * mom.varpy)
+    cmom = _gpic_coupled_moments(mom)
+    hzi, zbias = _slice_interpolation_parameters(T(param_field.lb), T(param_field.rb))
+    bndL = (mux=bL.mux, muy=bL.muy, sigx=bL.sigx, sigy=bL.sigy, rx=rxL, ry=ryL, s=sL)
+    bndR = (mux=bR.mux, muy=bR.muy, sigx=bR.sigx, sigy=bR.sigy, rx=rxR, ry=ryR, s=sR)
+    phiL = potentials[1]; phiR = potentials[2]
+    L = fields[1]; R = fields[2]
+    _pic_map_particles(nfield) do first_i, last_i
+        _gpic_apply_kick_range!(
+            pic, field, field_grid, phiL, L.Ex, L.Ey, phiR, R.Ex, R.Ey,
+            bndL, bndR, cmom, kick_scale, half_ns, kbb_eff, mom.mpx, mom.mpy,
+            hzi, zbias, center, mode === :coupled, T, first_i, last_i)
+    end
+    return nothing
+end

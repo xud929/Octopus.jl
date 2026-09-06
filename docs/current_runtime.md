@@ -358,6 +358,9 @@ ranks holding its two slices, run by an event loop where a slice spans a
 group of ranks and batch by batch where a rank holds whole slices (the two
 are bit-identical, and the choice is a measured rule); the node and
 source-slice meshes exchange per pair.
+Gaussian-PIC divides on the same transport (its slice moments folded from
+each part's shifted sums, its Gaussian subtracted on the plane's owner);
+spectral is the last solver that refuses at more than one rank.
 `StrongStrongPICMultiProcessConsistencyContract` states the three-way claim
 (CPU against MPI per rank count, CPU against CUDA, MPI against CUDA by
 composition) and needs a launcher command to run its MPI legs.

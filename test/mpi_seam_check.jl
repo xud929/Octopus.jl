@@ -442,6 +442,17 @@ let policy = MultiProcessExecutionPolicy(threads=1)
             child_rank() == 0 && emit("MPI-PICVAR2 $(name) $(r2.line)")
         end
     end
+    # --- step 4f: Gaussian-PIC on the same transport ------------------------
+    for (name, solver, threads, _) in _mpi_check_gpic_variants()
+        vpolicy = threads == 1 ? policy : MultiProcessExecutionPolicy(threads=threads)
+        r = _mpi_check_pic_collide_line(vpolicy, solver)
+        emit_by_rank("MPI-PICVARLUM $(name) $(child_rank()) $(r.lum)")
+        emit_by_rank("MPI-PICVARZ $(name) $(child_rank()) $(r.restored)")
+        if child_rank() == 0
+            emit("MPI-PICVAR $(name) $(r.line)")
+            emit("MPI-PICVARSCHED $(name) pair_workers=$(r.pair_workers) inner_workers=$(r.inner_workers) exchange=$(r.exchange) schedule=$(r.schedule)")
+        end
+    end
     # The threaded deposit, which the small beams never reach.
     big = _mpi_check_pic_big_line(policy)
     emit_by_rank("MPI-PICBIGLUM $(child_rank()) $(big.lum)")

@@ -7108,6 +7108,88 @@ end
     @test Octopus._reject_undivided_solver(pic()) === nothing
 end
 
+@testset "A Gaussian-PIC task under the multi-process policy is the task it composes" begin
+    # Multi-process step 4f. Gaussian-PIC rides the slice-aligned transport
+    # PIC uses, and adds three things of its own: the reference Gaussian's
+    # moments (folded from each part's SHIFTED sums about the slice's
+    # globally-first member), the control-variate mode they imply, and the
+    # analytic add-back. At one rank every one of those must be inert -- the
+    # collide must be the CPU policy's, bit for bit -- on each route the
+    # options select, and each route must differ from the default so no arm
+    # passes by running the default twice.
+    L6(dmu) = Linear6DSpec{Float64}(beta1=(1.0, 1.0, 1.0), beta2=(1.0, 1.0, 1.0), dmu=dmu)
+    slc = LongitudinalSlicing(nslices=3, method=:equal_area)
+    gpic(; kw...) = GaussianPICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+                                            grid=(16, 16), green_cache=:slice_pair,
+                                            slicing=slc; kw...)
+    variants = (
+        (:default, gpic()),
+        (:coupled, gpic(coupling_tol=1.0e-3)),     # the rotated subtraction
+        (:nomargin, gpic(margin_sigma=0.0)),       # no Gaussian margin on the mesh
+        (:noneutral, gpic(neutralize=false)),      # the amplitude that is NOT the grid total
+        (:sequential, gpic(batch_mode=:sequential)),
+    )
+    line(which, solver) = (L6((0.31, 0.27, 0.02)),
+                           StrongStrongCollision(:ip; poisson_solver=solver),
+                           L6((0.11, 0.07, 0.01)))
+    beams(policy) = begin
+        set_global_rng!(seed=4242, method=:philox)
+        (Beam(256, policy, Float64; rng_id=1, beta=(1.0, 1.0, 1.0),
+              emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11),
+         Beam(192, policy, Float64; rng_id=2, beta=(1.0, 1.0, 1.0),
+              emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11))
+    end
+    run(policy, solver) = begin
+        path = tempname() * ".h5"
+        b1, b2 = beams(policy)
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            execute!(StrongStrongTask(line(1, solver), line(2, solver);
+                                      policy=policy, artifact=path), b1, b2; turns=2)
+        end
+        lum = read(TaskOutput(path), :luminosity; name="ip")
+        rm(path; force=true)
+        sched = [r.values for r in execution_receipts(audit) if r.consumer === :pic_pair_schedule]
+        (map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)),
+         collect(lum.value), sched)
+    end
+    series = Dict{Symbol,Vector{Float64}}()
+    with_logger(NullLogger()) do
+        for (name, solver) in variants
+            cpu = run(CPUThreadsExecutionPolicy(threads=1), solver)
+            mp = run(MultiProcessExecutionPolicy(threads=1), solver)
+            @test all(a == b for (a, b) in zip(cpu[1], mp[1]))
+            @test all(a == b for (a, b) in zip(cpu[2], mp[2]))
+            @test cpu[3] == mp[3] && length(cpu[3]) == 2
+            @test all(cpu[3] .> 0)
+            # The multi-process run really took the sliced transport, and the
+            # CPU one really did not: an arm that fell back to the undivided
+            # collide would compare that path with itself.
+            @test all(s -> s.exchange === :sliced, mp[4])
+            @test all(s -> s.exchange === :none, cpu[4])
+            series[name] = cpu[3]
+        end
+    end
+    for (name, _) in variants
+        # `:sequential` is the same physics on the other loop, so it is the
+        # one arm that must MATCH the default rather than differ from it.
+        if name === :sequential
+            @test series[name] == series[:default]
+        elseif name !== :default
+            @test series[name] != series[:default]
+        end
+    end
+    # Gaussian-PIC no longer refuses to divide. The refusal only fires above
+    # one rank, so what it still refuses is asserted by the launcher child
+    # (`MPI-SSREFUSE`, whose undivided solver is a spectral one); here the
+    # message is enough to say which solvers the refusal now names.
+    @test Octopus._reject_undivided_solver(gpic()) === nothing
+    # At one rank the refusal fires for nothing at all, spectral included:
+    # what it refuses above one rank is the launcher child's assertion.
+    @test Octopus._reject_undivided_solver(
+        SpectralPoissonSolver(slicing=slc, grid=(16, 16))) === nothing
+end
+
 @testset "Scalar diagnostics reduce the whole beam, and a lost particle still counts for nothing" begin
     # Multi-process step 3b. The moment and orbit reductions became
     # rank-aware; at one rank they must be EXACTLY what they were, because
@@ -7668,7 +7750,8 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 # two-thread MPI, not a thread-invariance claim in disguise.
                 variants = Dict(String(name) => _mpi_check_pic_collide_line(
                                     CPUThreadsExecutionPolicy(threads=threads), solver)
-                                for (name, solver, threads, _) in _mpi_check_pic_variants())
+                                for (name, solver, threads, _) in
+                                    (_mpi_check_pic_variants()..., _mpi_check_gpic_variants()...))
                 (lum=join((repr(v) for v in rec.values), " "),
                  beam1=join((repr(v) for v in (s1.maxpx, s1.rmspx, s1.rmspy)), " "),
                  beam2=join((repr(v) for v in (s2.maxpx, s2.rmspx, s2.rmspy)), " "),
@@ -7753,7 +7836,8 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             ranklines(out, tag, key) = [strip(split(line, tag * key * " ")[2])
                                         for line in split(out, '\n')
                                         if startswith(line, tag * key * " ")]
-            for (name, _, threads, same_as) in _mpi_check_pic_variants()
+            for (name, _, threads, same_as) in (_mpi_check_pic_variants()...,
+                                               _mpi_check_gpic_variants()...)
                 key = String(name)
                 ref = picref.variants[key]
                 v1, v2, v4 = variant(out1, key), variant(out2, key), variant(out4, key)
@@ -7802,11 +7886,16 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                                                   rtol=1.0e-12, atol=0.0)
                 # The dropped-particle count is the BEAM's at every rank
                 # count (the pool's sum, then the ranks'); the `:node` arm is
-                # the one that drops, so the cross-rank sum is exercised.
-                drop = "$(ref.dropped)"
-                @test ranklines(out1, "MPI-PICVARDROP ", key) == [drop]
-                @test ranklines(out2, "MPI-PICVARDROP ", key) == [drop]
-                name === :node && @test ref.dropped > 0
+                # the one that drops, so the cross-rank sum is exercised. The
+                # Gaussian-PIC arms do not print it: gpic forces `:extrema`,
+                # under which the count is structurally zero, so an arm would
+                # assert a guardrail rather than evidence of division.
+                if !startswith(key, "gpic")
+                    drop = "$(ref.dropped)"
+                    @test ranklines(out1, "MPI-PICVARDROP ", key) == [drop]
+                    @test ranklines(out2, "MPI-PICVARDROP ", key) == [drop]
+                    name === :node && @test ref.dropped > 0
+                end
                 # The schedule: at one rank the run is the CPU policy's. At
                 # two, the batched exchange keeps the CPU policy's workers
                 # (no collective inside a pair), while the per-pair exchange
@@ -7824,15 +7913,19 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 sched1 = ranklines(out1, "MPI-PICVARSCHED ", key)
                 sched2 = ranklines(out2, "MPI-PICVARSCHED ", key)
                 sched4 = ranklines(out4, "MPI-PICVARSCHED ", key)
+                # Gaussian-PIC has no node or source-slice mesh (it rejects
+                # `interaction_grid`), so every gpic arm is on the sliced path.
                 per_pair = name in (:node, :node2, :source_slice)
                 # `:sequential` always runs the BATCHED loop; the others
                 # follow the layout rule, so at four ranks -- where a slice is
                 # split -- the `same_as` equalities compare two different
                 # loops rather than one with itself (step 4e).
-                armloop(P) = name === :sequential ? "batched" :
-                    (maximum(_mpi_check_pic_groups(_mpi_check_ss_beams(CPUThreadsExecutionPolicy(threads=1))[1].rep,
-                                                   _mpi_check_pic_variants()[findfirst(v -> v[1] === name, _mpi_check_pic_variants())][2].slicing1, P)) >= 2 ?
-                     "dataflow" : "batched")
+                arms = (_mpi_check_pic_variants()..., _mpi_check_gpic_variants()...)
+                armsolver = arms[findfirst(v -> v[1] === name, arms)][2]
+                armloop(P) = name in (:sequential, :gpic_seq) ? "batched" :
+                    (maximum(_mpi_check_pic_groups(
+                         _mpi_check_ss_beams(CPUThreadsExecutionPolicy(threads=1))[1].rep,
+                         _mpi_check_arm_slicing(armsolver), P)) >= 2 ? "dataflow" : "batched")
                 if per_pair
                     @test sched1 == ["pair_workers=$(ref.pair_workers) inner_workers=$(ref.inner_workers) exchange=none schedule=none"]
                     for sched in (sched2, sched4)
