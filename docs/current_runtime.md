@@ -598,6 +598,38 @@ For multi-GPU runs, place each beam on the intended device and use
 `CUDAExecutionPolicy(device=N)`. The requested device must match every
 coordinate array in the tracked representation.
 
+## Measured Production Timings
+
+Full record with the case definitions, every solver's constructor options and
+the method:
+[`history/production_benchmark_2026_09_06.md`](history/production_benchmark_2026_09_06.md).
+Seconds per turn on one 128-core node with one RTX 4500 Ada, 200-turn runs
+averaged over turns 100-200; strong-strong at 2.56M electron / 1.024M proton
+macroparticles with 15 slices, weak-strong at 1.024M.
+
+| case | CPU 16 threads | CPU 64 threads | MPI 8r x 8t | MPI 16r x 8t | CUDA |
+|---|---|---|---|---|---|
+| strong-strong, soft-Gaussian | 3.11 | 2.64 | 1.13 | 0.77 | 0.24 |
+| strong-strong, PIC | 4.46 | 4.98 | 1.85 | 1.56 | 0.34 |
+| strong-strong, spectral | 4.73 | 5.67 | 3.39 | 1.79 | 0.53 |
+| strong-strong, Gaussian-PIC | 7.38 | 8.43 | 5.21 | 3.76 | 0.68 |
+| weak-strong tracking | 0.47 | 0.64 | 0.15 | 0.09 | 0.038 |
+
+Three readings the table is there to support. CUDA wins every case on both
+tasks -- 8.8x to 13x the best CPU-threads time -- and holds a standard
+deviation of milliseconds where the CPU arms scatter by tenths of a second.
+Sixty-four threads in ONE process is slower than sixteen for every solver but
+the soft-Gaussian, and for weak-strong tracking too, which is the whole
+argument for dividing across ranks rather than adding threads. And MPI is what
+takes the CPU past one socket: 16 ranks of 8 threads beat the best threads-only
+arm on every row, by 2.0x to 5.2x.
+
+Two caveats travel with the numbers. The 64-thread weak-strong arm is not
+linear in the turn count -- its rate climbs from 0.31 to 0.82 s a turn across
+one run -- so its entry is a fitted slope over a degrading series, not a
+steady state. And the PIC CUDA mean carries one 2.2 s stall in an otherwise
+0.31 s window. Both are stated where they are measured.
+
 ## Current Limitations
 
 - Contract execution is not yet automatic in `execute!`.
