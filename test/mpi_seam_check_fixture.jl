@@ -295,7 +295,8 @@ bit, and the receipts that say WHICH route ran (`exchange = :sliced` for the
 6D map, `:order_free` for the transverse one) and how much of the work this
 rank did.
 """
-function _mpi_check_spectral_collide_line(policy, solver; beams=_mpi_check_ss_beams)
+function _mpi_check_spectral_collide_line(policy, solver; beams=_mpi_check_ss_beams,
+                                         loop::Symbol=:auto)
     b1, b2 = beams(policy)
     resolved = Octopus._resolve_execution_policy(policy, b1.rep)
     audit = Octopus.ExecutionAudit()
@@ -304,8 +305,10 @@ function _mpi_check_spectral_collide_line(policy, solver; beams=_mpi_check_ss_be
     z1 = copy(Array(b1.rep.z)); z2 = copy(Array(b2.rep.z))
     return Octopus._with_execution_policy(resolved) do
         lum = Ref{Float64}(NaN)
-        Octopus.with_execution_audit(audit) do
-            lum[] = Octopus.collide!(solver, b1, b2, Octopus.CPUThreadsBackend)
+        Base.ScopedValues.with(Octopus._SPECTRAL_SLICED_LOOP => loop) do
+            Octopus.with_execution_audit(audit) do
+                lum[] = Octopus.collide!(solver, b1, b2, Octopus.CPUThreadsBackend)
+            end
         end
         sched = [r.values for r in Octopus.execution_receipts(audit)
                  if r.consumer === :spectral_pair_schedule]
@@ -322,6 +325,7 @@ function _mpi_check_spectral_collide_line(policy, solver; beams=_mpi_check_ss_be
              lum=repr(lum[]),
              batch_mode=Symbol(sched[1].batch_mode),
              exchange=Symbol(sched[1].exchange),
+             schedule=Symbol(sched[1].schedule),
              planes_solved=isempty(exch) ? 0 : Int(exch[1].planes_solved),
              pairs_coordinated=isempty(exch) ? 0 : Int(exch[1].pairs_coordinated),
              restored=restored)

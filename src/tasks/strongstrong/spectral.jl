@@ -1368,6 +1368,7 @@ collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ::Type{CPUThre
 # Direction 1 (kick beam2) also accumulates the density-overlap luminosity.
 function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam, ctx=nothing;
                            sliced_scratch::Base.RefValue{Any}=Ref{Any}(nothing),
+                           sliced_pool_ref::Base.RefValue{Any}=Ref{Any}(nothing),
                            sliced_migration_ref::Base.RefValue{Any}=Ref{Any}(nothing))
     # Both beams' shards in scope for the whole collide (step 4g, as the
     # soft-Gaussian's entry does since 4b and PIC's since 4c): a task has
@@ -1376,12 +1377,13 @@ function _spectral_collide!(solver::SpectralPoissonSolver, beam1::Beam, beam2::B
     # collective every time `_spectral_luminosity_scale` or the box asks.
     return _with_beam_shards(beam1.rep, beam2.rep) do
         _spectral_collide_routed!(solver, beam1, beam2, ctx, sliced_scratch,
-                                  sliced_migration_ref)
+                                  sliced_pool_ref, sliced_migration_ref)
     end
 end
 
 function _spectral_collide_routed!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam,
                                    ctx, sliced_scratch::Base.RefValue{Any},
+                                   sliced_pool_ref::Base.RefValue{Any},
                                    sliced_migration_ref::Base.RefValue{Any})
     # Both routes divide (multi-process step 4g), by different means: the 6D map
     # is order-dependent and takes the slice-aligned layout
@@ -1391,6 +1393,7 @@ function _spectral_collide_routed!(solver::SpectralPoissonSolver, beam1::Beam, b
     return solver.longitudinal_kick ?
         _spectral_collide_longitudinal!(solver, beam1, beam2, ctx;
                                         sliced_scratch=sliced_scratch,
+                                        sliced_pool_ref=sliced_pool_ref,
                                         sliced_migration_ref=sliced_migration_ref) :
         _spectral_collide_transverse!(solver, beam1, beam2, ctx)
 end
@@ -1610,7 +1613,10 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
                         # `:none` is the undivided route. Reading the policy and
                         # not the rank count is what lets a one-rank arm assert
                         # that the divided path is the one it measured.
-                        exchange=_mp_multi_process_active() ? :home : :none))
+                        exchange=_mp_multi_process_active() ? :home : :none,
+                        # One receipt shape across the routes: the sliced route
+                        # names the loop it ran, the others say they have none.
+                        schedule=:none))
     Lx, Ly = _spectral_box(solver, r1, r2)
     grid = solver.method !== :grid_free
     Nx, Ny = solver.grid
@@ -1698,6 +1704,7 @@ end
 function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::Beam, beam2::Beam,
                                         ctx=nothing;
                                         sliced_scratch::Base.RefValue{Any}=Ref{Any}(nothing),
+                                        sliced_pool_ref::Base.RefValue{Any}=Ref{Any}(nothing),
                                         sliced_migration_ref::Base.RefValue{Any}=Ref{Any}(nothing))
     slices1 = longitudinal_slices(beam1.rep, solver.slicing1)
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
@@ -1746,7 +1753,8 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
         _spectral_sliced_transport!(solver, beam1, beam2, slices1, slices2, order,
                                     npairs, pair_pos, lum_parts, counts1, counts2,
                                     kbb1, kbb2, klum, Lx, Ly, compute_luminosity,
-                                    requested, sliced_scratch, sliced_migration_ref, LT)
+                                    requested, sliced_scratch, sliced_pool_ref,
+                                    sliced_migration_ref, LT)
         sliced_luminosity = zero(LT)
         for p in 1:npairs
             @inbounds sliced_luminosity += lum_parts[p]
@@ -1775,7 +1783,7 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
                         # divided ones name their exchange, the undivided one
                         # says it has none, so a test reads the same key
                         # whichever ran.
-                        ranks=_mp_nranks(), exchange=:none))
+                        ranks=_mp_nranks(), exchange=:none, schedule=:none))
     lease = grid ?
         _acquire_spectral_grid_ws_pool(solver.grid[1], solver.grid[2], max_workers) :
         nothing

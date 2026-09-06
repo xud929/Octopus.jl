@@ -513,7 +513,23 @@ let policy = MultiProcessExecutionPolicy(threads=1)
         emit_by_rank("MPI-SPECVARWORK $(name) $(child_rank()) $(r.planes_solved) $(r.pairs_coordinated)")
         if child_rank() == 0
             emit("MPI-SPECVAR $(name) $(r.line)")
-            emit("MPI-SPECVARSCHED $(name) batch_mode=$(r.batch_mode) exchange=$(r.exchange)")
+            emit("MPI-SPECVARSCHED $(name) batch_mode=$(r.batch_mode) " *
+                 "exchange=$(r.exchange) schedule=$(r.schedule)")
+        end
+        # The two loops of the 6D map are two independent implementations of one
+        # collide -- a batch-at-a-time walk and an event loop over the same
+        # dependency graph -- so holding them to the same BITS at every rank
+        # count is the strongest correctness check the transport has. It is also
+        # the only thing that would catch a dataflow gate that let a pair read a
+        # slice before its predecessor kicked it: the answer would still look
+        # plausible.
+        if solver.longitudinal_kick
+            rb = _mpi_check_spectral_collide_line(vpolicy, solver; loop=:batched)
+            rd = _mpi_check_spectral_collide_line(vpolicy, solver; loop=:dataflow)
+            child_rank() == 0 && emit(
+                "MPI-SPECLOOP $(name) identical=$(rb.line == rd.line) " *
+                "batched=$(rb.schedule) dataflow=$(rd.schedule) " *
+                "z=$(rb.restored && rd.restored)")
         end
     end
     # The threaded deposit, which the small beams never reach.

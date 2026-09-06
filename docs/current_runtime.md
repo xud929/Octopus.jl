@@ -366,8 +366,13 @@ slice-aligned transport, with the FIELD slice's group head folding the two
 drifted deposits and solving them, while the transverse-only map is
 order-free and stays on the home layout (one all-sum for every source slice's
 plane, a second for the dealt mesh solves, and the luminosity's folded
-deposits). The `:spectral_pair_schedule` receipt names which ran:
-`exchange=:sliced`, `:home`, or `:none` for an undivided run. On the sliced
+deposits). The sliced route runs one of TWO loops over the same stages and the same
+messages -- a batch-at-a-time walk and an event loop over the pair dependency
+graph -- which are bit-identical and chosen by the layout: groups wider than
+one rank get the event loop, whole slices keep the batched walk.
+`_SPECTRAL_SLICED_LOOP` overrides that for a measurement or a pin. The
+`:spectral_pair_schedule` receipt names what ran: `exchange=:sliced`, `:home`,
+or `:none` for an undivided run, and `schedule=:batched`/`:dataflow`/`:none`. On the sliced
 route a pair's four solves -- two directions times the two drifted planes --
 are dealt across the field slice's group rather than pinned to its head, so
 every rank of a run solves once a slice spans more than one rank; the ceiling

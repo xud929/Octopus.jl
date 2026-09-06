@@ -690,6 +690,7 @@ function _spectral_sliced_transport!(solver::SpectralPoissonSolver, beam1::Beam,
                                      lum_parts, counts1, counts2, kbb1, kbb2, klum, Lx, Ly,
                                      compute_luminosity::Bool, requested::Symbol,
                                      sliced_scratch::Base.RefValue{Any},
+                                     sliced_pool_ref::Base.RefValue{Any},
                                      sliced_migration_ref::Base.RefValue{Any},
                                      ::Type{T}) where {T}
     P = _mp_nranks()
@@ -701,12 +702,27 @@ function _spectral_sliced_transport!(solver::SpectralPoissonSolver, beam1::Beam,
     batching = requested === :wavefront && npairs > 1
     batches = batching ? collision_pair_batches(slices1, slices2) :
                          [[(i=Int(entry[2]), j=Int(entry[3]))] for entry in order]
+    # WHICH loop, when the schedule leaves it open, is the layout's question
+    # rather than a preference. A pair may not start until each of its slices
+    # has been kicked by the pair before it, so a rank holding a WHOLE slice
+    # has its pairs on that slice strictly in series and nothing to overlap:
+    # the dataflow loop then only adds a wake per hop, and it gives up the
+    # batched loop's threading (four independent solves a batch). Once a slice
+    # spans a group each rank holds a fraction of the chain's work and there is
+    # real independent work between the hops. `_SPECTRAL_SLICED_LOOP` overrides
+    # it for a measurement or a pin, so the two can be timed on the same box at
+    # the same moment and held to the same bits.
+    widest_group = max(maximum(length, layout1.groups; init=0),
+                       maximum(length, layout2.groups; init=0))
+    loop = _SPECTRAL_SLICED_LOOP[] !== :auto ? _SPECTRAL_SLICED_LOOP[] :
+           !batching ? :batched :
+           widest_group >= 2 ? :dataflow : :batched
     _record_execution!(:spectral_pair_schedule, CPUThreadsBackend,
                        (batch_mode=batching ? :wavefront : :sequential,
                         requested=requested, pairs=npairs,
                         batches=batching ? length(batches) : 0,
                         widest_batch=batching ? maximum(length, batches; init=0) : 0,
-                        ranks=P, exchange=:sliced))
+                        ranks=P, exchange=:sliced, schedule=loop))
     for (which, sb) in ((1, sb1), (2, sb2))
         _record_execution!(:spectral_slice_layout, CPUThreadsBackend,
                            (beam=which, groups=[length(g) for g in sb.layout.groups],
@@ -718,11 +734,22 @@ function _spectral_sliced_transport!(solver::SpectralPoissonSolver, beam1::Beam,
     lease = grid ? _acquire_spectral_grid_ws_pool(solver.grid[1], solver.grid[2], nworkers) :
                    nothing
     pool = grid ? lease.workspaces : fill(nothing, nworkers)
-    sc = _spectral_sliced_scratch(T, sliced_scratch)
     nbad = try
-        _spectral_collide_sliced!(sb1, sb2, batches, pair_pos, lum_parts, solver,
-                                  slices1, slices2, counts1, counts2,
-                                  pool, sc, kbb1, kbb2, klum, Lx, Ly, compute_luminosity)
+        if loop === :dataflow
+            _spectral_collide_dataflow!(sb1, sb2, order, pair_pos, lum_parts, solver,
+                                        slices1, slices2, counts1, counts2,
+                                        _spectral_df_pool(T, sliced_pool_ref, solver.grid[1],
+                                                          solver.grid[2],
+                                                          _spectral_payload_planes(solver),
+                                                          solver.grid[1], solver.grid[2]),
+                                        grid ? pool[1] : nothing,
+                                        kbb1, kbb2, klum, Lx, Ly, compute_luminosity)
+        else
+            _spectral_collide_sliced!(sb1, sb2, batches, pair_pos, lum_parts, solver,
+                                      slices1, slices2, counts1, counts2, pool,
+                                      _spectral_sliced_scratch(T, sliced_scratch),
+                                      kbb1, kbb2, klum, Lx, Ly, compute_luminosity)
+        end
     finally
         lease === nothing || _release_spectral_grid_ws_pool!(lease)
     end
@@ -752,6 +779,7 @@ function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
     ref(key) = get!(() -> Ref{Any}(nothing), task.runtime_cache, (key, label))::Base.RefValue{Any}
     return _spectral_collide!(solver, beam1, beam2, ctx;
                               sliced_scratch=ref(:cpu_spectral_sliced_scratch),
+                              sliced_pool_ref=ref(:cpu_spectral_sliced_pool),
                               sliced_migration_ref=ref(:cpu_spectral_sliced_migration))
 end
 
@@ -760,3 +788,529 @@ _strong_strong_collide_backend!(task::StrongStrongTask, label::Symbol,
                                 beam1::Beam, beam2::Beam, ::Type{CPUThreadsBackend},
                                 ctx::TrackingContext) =
     _strong_strong_collide!(task, label, solver, beam1, beam2, CPUThreadsBackend, ctx)
+
+# --- the dataflow loop (multi-process step 4h) ---------------------------------
+#
+# The batched loop above walks every pair of a wavefront batch through the same
+# stage at the same time, so a rank waits at each stage for the slowest member
+# of the batch and idles whenever its own pairs are done. Nothing in the physics
+# asks for that: a pair depends only on its two slices' PREVIOUS pairs, so each
+# rank can instead run an event loop -- scan its pairs in the collision order,
+# run every stage whose receives have arrived, and block on the union of what is
+# outstanding only when a whole scan ran nothing.
+#
+# The stages, their messages, their tags' CODES and every number they compute
+# are the batched loop's (the leaves are shared), so the two loops are
+# bit-identical; `_SPECTRAL_SLICED_LOOP` pins them against each other and the
+# launcher child holds them to the same bits at every rank count.
+#
+# Three rules make it safe, and they are PIC's (step 4e) because the hazards are
+# the layout's rather than the solver's:
+#
+#  * **The gate** is the collision order, not index arithmetic. A pair may start
+#    once the pair BEFORE it on each of its slices (among the non-empty pairs,
+#    in `order`) has kicked. For ascending slice centres the collision time
+#    `-(c1+c2)/2` puts the largest `j` first, so slice `i`'s predecessor of
+#    `(i, j)` is `(i, j+1)`, not `(i, j-1)` -- which is why this is derived from
+#    `order` and never computed from indices. `_pic_df_predecessors` already
+#    does it.
+#  * **A send buffer belongs to its send** until MPI says the send completed. A
+#    pair returns its buffers to the free lists only after `_mp_test_all` on its
+#    send list is true; under the batched loop the per-stage `_mp_wait_all`
+#    covered that, and here nothing else does.
+#  * **A pair whose luminosity mesh is degenerate still kicks**, and skips only
+#    its luminosity -- which is what the batched loop does, because spectral's
+#    `bad` verdict is about the luminosity mesh alone and arrives after the
+#    kick. (PIC's is about the pair's field extents and comes before, so its
+#    dataflow loop skips the kick; the wording is not transferable.) Either way
+#    the pair reaches DONE, so its successors run and the collide reaches the
+#    count that makes every rank throw; a bad pair that simply stopped would
+#    hang both its slices.
+#
+# One thing differs from the batched loop and it is in the TAGS. A batch is a
+# barrier, so the batched loop can key its tags by a pair's position in the
+# batch; the dataflow loop has pairs from different batches in flight at once,
+# so its tags must separate every pair of the collide. `_mp_check_tag_bound`
+# is what says whether the communicator has room, and it throws rather than
+# letting two pairs share a tag.
+
+"""
+Which loop the slice-aligned spectral collide runs, for measurement and for the
+pin that holds the two to the same bits: `:auto` (the layout decides),
+`:dataflow`, or `:batched`. NOT a solver keyword: one keyword means one thing
+everywhere, and this selects an implementation of the same physics rather than
+a configuration of it.
+"""
+const _SPECTRAL_SLICED_LOOP = Base.ScopedValues.ScopedValue{Symbol}(:auto)
+
+const _SPEC_DF_DEPOSIT = 1
+const _SPEC_DF_SOLVE = 2
+const _SPEC_DF_KICK = 3
+const _SPEC_DF_LUMFOLD = 4
+const _SPEC_DF_DONE = 5
+const _SPEC_DF_STAGE_NAMES = (:wait_deposits, :wait_payloads, :wait_lum_deposits,
+                              :wait_lum_fold, :wait_done)
+# The relay stages: a rank serves these before its own deposits and kicks, so
+# the pairs waiting on it are not held behind a long stage of its own. The
+# solve is a relay because a whole field group waits on it, and the luminosity
+# fold because it is the last thing a coordinator owes.
+const _SPEC_DF_RELAY = (_SPEC_DF_SOLVE, _SPEC_DF_LUMFOLD)
+
+"""Free lists for the dataflow loop, by shape: a pair takes what it needs and
+gives it all back once its receives are consumed and its sends complete."""
+mutable struct _SpectralDataflowPool{T}
+    planes::Vector{Matrix{T}}
+    payloads::Vector{Array{T,3}}
+    lums::Vector{Matrix{T}}
+    recs::Dict{Int,Vector{Vector{T}}}
+    virts::Vector{Vector{T}}
+    nx::Int
+    ny::Int
+    np::Int
+    lnx::Int
+    lny::Int
+    live_planes::Int
+    high_planes::Int
+end
+_SpectralDataflowPool{T}(nx, ny, np, lnx, lny) where {T} =
+    _SpectralDataflowPool{T}(Matrix{T}[], Array{T,3}[], Matrix{T}[],
+                             Dict{Int,Vector{Vector{T}}}(), Vector{T}[],
+                             nx, ny, np, lnx, lny, 0, 0)
+
+function _spectral_df_pool(::Type{T}, holder::Base.RefValue{Any}, nx, ny, np, lnx, lny) where {T}
+    pool = holder[]
+    if pool isa _SpectralDataflowPool{T} && pool.nx == nx && pool.ny == ny &&
+       pool.np == np && pool.lnx == lnx && pool.lny == lny
+        return pool
+    end
+    fresh = _SpectralDataflowPool{T}(nx, ny, np, lnx, lny)
+    holder[] = fresh
+    return fresh
+end
+
+function _spectral_df_plane!(pool::_SpectralDataflowPool{T}) where {T}
+    pool.live_planes += 1
+    pool.high_planes = max(pool.high_planes, pool.live_planes)
+    isempty(pool.planes) && return zeros(T, pool.nx, pool.ny)
+    return pop!(pool.planes)
+end
+_spectral_df_payload!(pool::_SpectralDataflowPool{T}) where {T} =
+    isempty(pool.payloads) ? zeros(T, pool.nx, pool.ny, pool.np) : pop!(pool.payloads)
+_spectral_df_lum!(pool::_SpectralDataflowPool{T}) where {T} =
+    isempty(pool.lums) ? zeros(T, pool.lnx, pool.lny) : pop!(pool.lums)
+_spectral_df_virt!(pool::_SpectralDataflowPool{T}) where {T} =
+    isempty(pool.virts) ? T[] : pop!(pool.virts)
+function _spectral_df_rec!(pool::_SpectralDataflowPool{T}, n::Int) where {T}
+    free = get!(() -> Vector{T}[], pool.recs, n)
+    v = isempty(free) ? zeros(T, n) : pop!(free)
+    fill!(v, zero(T))
+    return v
+end
+
+"""What the dataflow loop counted, in a struct because its event loop reads
+these outside the closure that writes them (a local would be one `Core.Box`
+each, which the permanent lowered-code sweep names)."""
+mutable struct _SpectralDataflowCounters
+    nbad::Int
+    partials_sent::Int
+    partials_received::Int
+    payloads_sent::Int
+    payloads_received::Int
+    lum_sent::Int
+    lum_received::Int
+    messages::Int
+    pairs_coordinated::Int
+    planes_solved::Int
+    max_in_flight::Int
+    inflight::Int
+end
+_SpectralDataflowCounters() = _SpectralDataflowCounters(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+"""One pair on this rank under the dataflow loop: its roles, its gate, the stage
+it will run next, its per-stage receives, its outstanding sends, and every
+buffer it holds."""
+mutable struct _SpectralDataflowPair{T,R}
+    p::Int
+    i::Int
+    j::Int
+    in1::Bool
+    in2::Bool
+    coord::Int
+    solvers::NTuple{2,NTuple{2,Int}}
+    param1::NamedTuple{(:weight, :lb, :center, :rb),NTuple{4,T}}
+    param2::NamedTuple{(:weight, :lb, :center, :rb),NTuple{4,T}}
+    gate1::Int
+    gate2::Int
+    stage::Int
+    bad::Bool
+    retired::Bool
+    recv::Vector{Vector{R}}
+    sends::Vector{R}
+    planes_out::NTuple{2,Vector{Matrix{T}}}
+    partials_in::NTuple{2,Vector{Vector{Matrix{T}}}}
+    payload_in::NTuple{2,Vector{Array{T,3}}}
+    payload_out::NTuple{2,Vector{Array{T,3}}}
+    solve_slots::Vector{NTuple{3,Int}}      # (direction, plane, slot) this rank solves
+    vx1::Vector{T}; vy1::Vector{T}
+    vx2::Vector{T}; vy2::Vector{T}
+    lumexts_in::Vector{Vector{T}}
+    lummesh::Union{Nothing,Vector{T}}
+    lumdeps_in::NTuple{2,Vector{Matrix{T}}}
+    took_planes::Vector{Matrix{T}}
+    took_payloads::Vector{Array{T,3}}
+    took_lums::Vector{Matrix{T}}
+    took_recs::Vector{Vector{T}}
+    took_virts::Vector{Vector{T}}
+end
+
+function _spectral_df_pair(::Type{T}, ::Type{R}, p, i, j, in1, in2, coord, solvers,
+                           param1, param2) where {T,R}
+    return _SpectralDataflowPair{T,R}(
+        p, i, j, in1, in2, coord, solvers, param1, param2,
+        0, 0, _SPEC_DF_DEPOSIT, false, false,
+        [R[] for _ in 1:_SPEC_DF_DONE], R[],
+        (Matrix{T}[], Matrix{T}[]), (Vector{Matrix{T}}[], Vector{Matrix{T}}[]),
+        (Array{T,3}[], Array{T,3}[]), (Array{T,3}[], Array{T,3}[]),
+        NTuple{3,Int}[], T[], T[], T[], T[], Vector{T}[], nothing,
+        (Matrix{T}[], Matrix{T}[]),
+        Matrix{T}[], Array{T,3}[], Matrix{T}[], Vector{T}[], Vector{T}[])
+end
+
+_spectral_df_take_plane!(pr::_SpectralDataflowPair, pool) =
+    (A = _spectral_df_plane!(pool); push!(pr.took_planes, A); A)
+_spectral_df_take_payload!(pr::_SpectralDataflowPair, pool) =
+    (A = _spectral_df_payload!(pool); push!(pr.took_payloads, A); A)
+_spectral_df_take_lum!(pr::_SpectralDataflowPair, pool) =
+    (A = _spectral_df_lum!(pool); push!(pr.took_lums, A); A)
+_spectral_df_take_rec!(pr::_SpectralDataflowPair, pool, n::Int) =
+    (v = _spectral_df_rec!(pool, n); push!(pr.took_recs, v); v)
+_spectral_df_take_virt!(pr::_SpectralDataflowPair, pool) =
+    (v = _spectral_df_virt!(pool); push!(pr.took_virts, v); v)
+
+"""Give a finished pair's buffers back. Called only once its sends have
+completed, so no buffer is handed out while MPI may still be reading it."""
+function _spectral_df_retire!(pr::_SpectralDataflowPair{T},
+                              pool::_SpectralDataflowPool{T}) where {T}
+    for A in pr.took_planes
+        pool.live_planes -= 1
+        push!(pool.planes, A)
+    end
+    append!(pool.payloads, pr.took_payloads)
+    append!(pool.lums, pr.took_lums)
+    for v in pr.took_recs
+        push!(get!(() -> Vector{T}[], pool.recs, length(v)), v)
+    end
+    append!(pool.virts, pr.took_virts)
+    empty!(pr.took_planes); empty!(pr.took_payloads); empty!(pr.took_lums)
+    empty!(pr.took_recs); empty!(pr.took_virts)
+    pr.retired = true
+    return nothing
+end
+
+"""
+The slice-aligned spectral collide under the dataflow loop. Same stages, same
+arithmetic and the same messages as `_spectral_collide_sliced!`; only WHEN a
+rank runs them differs.
+"""
+function _spectral_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T},
+                                     order, pair_pos, lum_parts, solver, slices1, slices2,
+                                     counts1, counts2, pool::_SpectralDataflowPool{T},
+                                     ws, kbb1, kbb2, klum, Lx, Ly,
+                                     compute_luminosity::Bool) where {T}
+    P = _mp_nranks()
+    rank = _mp_rank()
+    Nx, Ny = solver.grid
+    lnx, lny = solver.grid
+    grid = solver.method !== :grid_free
+    R = eltype(_mp_requests())
+    prev1, prev2 = _pic_df_predecessors(order, pair_pos, counts1, counts2)
+    # This rank's pairs, in the collision order, with the position of each in
+    # this list so a gate is a local index.
+    plist = _SpectralDataflowPair{T,R}[]
+    index_of = Dict{Int,Int}()
+    for entry in order
+        i = Int(entry[2]); j = Int(entry[3])
+        (counts1[i] == 0 || counts2[j] == 0) && continue
+        p = pair_pos[(i, j)]
+        g1 = sb1.layout.groups[i]; g2 = sb2.layout.groups[j]
+        in1 = rank in g1; in2 = rank in g2
+        (in1 || in2) || continue
+        param1 = (weight=T(slices1.weight[i]), lb=T(slices1.boundary[i]),
+                  center=T(slices1.center[i]), rb=T(slices1.boundary[i + 1]))
+        param2 = (weight=T(slices2.weight[j]), lb=T(slices2.boundary[j]),
+                  center=T(slices2.center[j]), rb=T(slices2.boundary[j + 1]))
+        push!(plist, _spectral_df_pair(T, R, p, i, j, in1, in2, first(g1),
+                                       (_spectral_sliced_solvers(g2, p),
+                                        _spectral_sliced_solvers(g1, p)),
+                                       param1, param2))
+        index_of[p] = length(plist)
+    end
+    for pr in plist
+        pr.in1 && (pr.gate1 = get(index_of, get(prev1, pr.p, 0), 0))
+        pr.in2 && (pr.gate2 = get(index_of, get(prev2, pr.p, 0), 0))
+    end
+    # Every pair of the collide needs its own tag band here: unlike the batched
+    # loop, pairs from different wavefront batches are in flight at once.
+    _mp_check_tag_bound(_spectral_sliced_tag(length(counts1) * length(counts2),
+                                             _SPECTRAL_TAG_CODES))
+    c = _SpectralDataflowCounters()
+    wait_calls = 0; wait_ns = 0; scans = 0
+
+    ready(pr) = _mp_test_all(pr.recv[pr.stage])
+    gated(pr) = (pr.gate1 != 0 && plist[pr.gate1].stage <= _SPEC_DF_KICK) ||
+                (pr.gate2 != 0 && plist[pr.gate2].stage <= _SPEC_DF_KICK)
+
+    function run_stage!(pr)
+        s = pr.stage
+        g1 = sb1.layout.groups[pr.i]; g2 = sb2.layout.groups[pr.j]
+        if s == _SPEC_DF_DEPOSIT
+            c.inflight += 1
+            c.max_in_flight = max(c.max_in_flight, c.inflight)
+            sx = T[]; sy = T[]
+            for d in 1:2
+                as_source = d == 1 ? pr.in1 : pr.in2
+                src_group = d == 1 ? g1 : g2
+                if as_source
+                    part = d == 1 ? sb1.states[pr.i] : sb2.states[pr.j]
+                    param_source = d == 1 ? pr.param1 : pr.param2
+                    param_field = d == 1 ? pr.param2 : pr.param1
+                    for m in 1:2
+                        plane = _spectral_df_take_plane!(pr, pool)
+                        push!(pr.planes_out[d], plane)
+                        _spectral_sliced_source!(plane, solver, part, param_source,
+                                                 param_field, m, sx, sy, Lx, Ly)
+                    end
+                    # The virtual positions, read BEFORE anything kicks this part.
+                    vx = _spectral_df_take_virt!(pr, pool)
+                    vy = _spectral_df_take_virt!(pr, pool)
+                    d == 1 ? (pr.vx1 = vx; pr.vy1 = vy) : (pr.vx2 = vx; pr.vy2 = vy)
+                    _spectral_sliced_virtual!(vx, vy, part, param_source, param_field)
+                end
+                for m in 1:2
+                    got = Matrix{T}[]
+                    if rank == pr.solvers[d][m]
+                        for r in src_group
+                            plane = _spectral_df_take_plane!(pr, pool)
+                            push!(got, plane)
+                            push!(pr.recv[_SPEC_DF_SOLVE], _mp_irecv!(plane, r,
+                                _spectral_sliced_tag(pr.p, _SPEC_TAG_PARTIAL + 2 * (d - 1) + m - 1)))
+                            c.partials_received += 1
+                        end
+                    end
+                    push!(pr.partials_in[d], got)
+                end
+            end
+            for d in 1:2
+                (d == 1 ? pr.in1 : pr.in2) || continue
+                for m in 1:2
+                    push!(pr.sends, _mp_isend(pr.planes_out[d][m], pr.solvers[d][m],
+                        _spectral_sliced_tag(pr.p, _SPEC_TAG_PARTIAL + 2 * (d - 1) + m - 1)))
+                    c.partials_sent += 1
+                end
+            end
+            if compute_luminosity
+                for (as, vx, vy, code) in ((pr.in1, pr.vx1, pr.vy1, _SPEC_TAG_LUMEXT1),
+                                           (pr.in2, pr.vx2, pr.vy2, _SPEC_TAG_LUMEXT2))
+                    as || continue
+                    v = _spectral_df_take_rec!(pr, pool, 4)
+                    v[1] = -_pic_extremum(minimum, vx, T(Inf)); v[2] = _pic_extremum(maximum, vx, T(-Inf))
+                    v[3] = -_pic_extremum(minimum, vy, T(Inf)); v[4] = _pic_extremum(maximum, vy, T(-Inf))
+                    push!(pr.sends, _mp_isend(v, pr.coord, _spectral_sliced_tag(pr.p, code)))
+                    c.messages += 1
+                end
+                if rank == pr.coord
+                    c.pairs_coordinated += 1
+                    for (g, code) in ((g1, _SPEC_TAG_LUMEXT1), (g2, _SPEC_TAG_LUMEXT2)), r in g
+                        v = _spectral_df_take_rec!(pr, pool, 4)
+                        push!(pr.lumexts_in, v)
+                        push!(pr.recv[_SPEC_DF_SOLVE],
+                              _mp_irecv!(v, r, _spectral_sliced_tag(pr.p, code)))
+                    end
+                end
+            end
+            pr.stage = _SPEC_DF_SOLVE
+        elseif s == _SPEC_DF_SOLVE
+            if compute_luminosity
+                members = _pic_sliced_members(g1, g2)
+                if rank == pr.coord
+                    xmin = T(Inf); xmax = T(-Inf); ymin = T(Inf); ymax = T(-Inf)
+                    for v in pr.lumexts_in
+                        xmin = min(xmin, -v[1]); xmax = max(xmax, v[2])
+                        ymin = min(ymin, -v[3]); ymax = max(ymax, v[4])
+                    end
+                    width, height, ok = _spectral_luminosity_extents_ok(
+                        solver, xmax - xmin, ymax - ymin, T)
+                    tx = width / T(lnx - 1.1); ty = height / T(lny - 1.1)
+                    width += T(0.1) * tx; height += T(0.1) * ty
+                    xmin -= T(0.05) * tx; ymin -= T(0.05) * ty
+                    mv = _spectral_df_take_rec!(pr, pool, 5)
+                    mv[1] = xmin; mv[2] = ymin
+                    mv[3] = width / (lnx - 1); mv[4] = height / (lny - 1)
+                    mv[5] = ok ? one(T) : zero(T)
+                    for r in members
+                        push!(pr.sends, _mp_isend(mv, r,
+                            _spectral_sliced_tag(pr.p, _SPEC_TAG_LUMMESH)))
+                        c.messages += 1
+                    end
+                end
+                mv = _spectral_df_take_rec!(pr, pool, 5)
+                pr.lummesh = mv
+                push!(pr.recv[_SPEC_DF_KICK],
+                      _mp_irecv!(mv, pr.coord, _spectral_sliced_tag(pr.p, _SPEC_TAG_LUMMESH)))
+            end
+            for d in 1:2
+                for m in 1:2
+                    if rank == pr.solvers[d][m]
+                        payload = _spectral_df_take_payload!(pr, pool)
+                        push!(pr.payload_out[d], payload)
+                        ns = d == 1 ? counts1[pr.i] : counts2[pr.j]
+                        # Folded in SOURCE-GROUP rank order, never on arrival.
+                        fold = _spectral_sliced_fold!(pr.partials_in[d][m])
+                        _spectral_sliced_payload!(payload, solver, fold, ns, Lx, Ly, ws)
+                        c.planes_solved += 1
+                        push!(pr.solve_slots, (d, m, length(pr.payload_out[d])))
+                    end
+                end
+                as_field = d == 1 ? pr.in2 : pr.in1
+                as_field || continue
+                for m in 1:2
+                    payload = _spectral_df_take_payload!(pr, pool)
+                    push!(pr.payload_in[d], payload)
+                    push!(pr.recv[_SPEC_DF_KICK], _mp_irecv!(payload, pr.solvers[d][m],
+                        _spectral_sliced_tag(pr.p, _SPEC_TAG_PAYLOAD + 2 * (d - 1) + m - 1)))
+                    c.payloads_received += 1
+                end
+            end
+            for (d, m, slot) in pr.solve_slots
+                field_group = d == 1 ? g2 : g1
+                for r in field_group
+                    push!(pr.sends, _mp_isend(pr.payload_out[d][slot], r,
+                        _spectral_sliced_tag(pr.p, _SPEC_TAG_PAYLOAD + 2 * (d - 1) + m - 1)))
+                    c.payloads_sent += 1
+                end
+            end
+            pr.stage = _SPEC_DF_KICK
+        elseif s == _SPEC_DF_KICK
+            # A degenerate luminosity mesh is COUNTED, and the pair still
+            # releases its slices: a bad pair that stopped here would hang every
+            # successor on both of them.
+            # The kick runs whatever the luminosity mesh turned out to be: the
+            # batched loop kicks first and reads the verdict afterwards, and the
+            # two loops have to be the same collide, not merely the same answer
+            # when nothing goes wrong.
+            if compute_luminosity && pr.lummesh[5] == zero(T)
+                pr.bad = true
+                rank == pr.coord && (c.nbad += 1)
+            end
+            for d in 1:2
+                as_field = d == 1 ? pr.in2 : pr.in1
+                as_field || continue
+                field = d == 1 ? sb2.states[pr.j] : sb1.states[pr.i]
+                param_source = d == 1 ? pr.param1 : pr.param2
+                param_field = d == 1 ? pr.param2 : pr.param1
+                ns = d == 1 ? counts1[pr.i] : counts2[pr.j]
+                kbb = d == 1 ? T(slices1.weight[pr.i]) * kbb2 :
+                               T(slices2.weight[pr.j]) * kbb1
+                _spectral_sliced_drift_in!(field, param_source, T)
+                phiL, ExL, EyL = _spectral_sliced_eval(solver, pr.payload_in[d][1], ns,
+                                                       field.x, field.y, Lx, Ly, ws, 1)
+                phiR, ExR, EyR = _spectral_sliced_eval(solver, pr.payload_in[d][2], ns,
+                                                       field.x, field.y, Lx, Ly, ws, 2)
+                _spectral_sliced_kick!(field, param_source, param_field, kbb,
+                                       phiL, ExL, EyL, phiR, ExR, EyR, T)
+            end
+            if compute_luminosity && !pr.bad
+                mv = pr.lummesh
+                for (as, vx, vy, code) in ((pr.in1, pr.vx1, pr.vy1, _SPEC_TAG_LUMDEP1),
+                                           (pr.in2, pr.vx2, pr.vy2, _SPEC_TAG_LUMDEP2))
+                    as || continue
+                    dep = _spectral_df_take_lum!(pr, pool)
+                    fill!(dep, zero(T))
+                    _spectral_cic_deposit!(dep, vx, vy, mv[1], mv[2], mv[3], mv[4])
+                    push!(pr.sends, _mp_isend(dep, pr.coord,
+                                              _spectral_sliced_tag(pr.p, code)))
+                    c.lum_sent += 1
+                end
+                if rank == pr.coord
+                    for (g, code, slot) in ((g1, _SPEC_TAG_LUMDEP1, 1),
+                                            (g2, _SPEC_TAG_LUMDEP2, 2)), r in g
+                        dep = _spectral_df_take_lum!(pr, pool)
+                        push!(pr.lumdeps_in[slot], dep)
+                        push!(pr.recv[_SPEC_DF_LUMFOLD],
+                              _mp_irecv!(dep, r, _spectral_sliced_tag(pr.p, code)))
+                        c.lum_received += 1
+                    end
+                end
+            end
+            pr.stage = _SPEC_DF_LUMFOLD
+        elseif s == _SPEC_DF_LUMFOLD
+            if compute_luminosity && !pr.bad && rank == pr.coord
+                q1 = _spectral_sliced_fold!(pr.lumdeps_in[1])
+                q2 = _spectral_sliced_fold!(pr.lumdeps_in[2])
+                mv = pr.lummesh
+                lum = zero(T)
+                @inbounds for k in eachindex(q1); lum += q1[k] * q2[k]; end
+                @inbounds lum_parts[pr.p] = lum * T(klum) / (mv[3] * mv[4])
+            end
+            pr.stage = _SPEC_DF_DONE
+            c.inflight -= 1
+        end
+        return true
+    end
+
+    remaining = length(plist)
+    while remaining > 0
+        scans += 1
+        ran_any = false
+        # Relay duties first (a solver's fold and solve, a coordinator's mesh
+        # and luminosity fold), then this rank's own particle work: a pair
+        # waiting on this rank is not held behind a long deposit of its own.
+        for relay in (true, false)
+            for pr in plist
+                pr.stage == _SPEC_DF_DONE && continue
+                (pr.stage in _SPEC_DF_RELAY) == relay || continue
+                pr.stage == _SPEC_DF_DEPOSIT && gated(pr) && continue
+                ready(pr) || continue
+                run_stage!(pr)
+                ran_any = true
+                pr.stage == _SPEC_DF_DONE && (remaining -= 1)
+            end
+        end
+        # Buffers go back only once the sends that read them have completed.
+        for pr in plist
+            (pr.stage == _SPEC_DF_DONE && !pr.retired && _mp_test_all(pr.sends)) &&
+                _spectral_df_retire!(pr, pool)
+        end
+        ran_any && continue
+        remaining == 0 && break
+        # Nothing ran: block on everything outstanding, whichever arrives.
+        union = _mp_requests()
+        stage = _SPEC_DF_DONE
+        for pr in plist
+            pr.stage == _SPEC_DF_DONE && continue
+            isempty(pr.recv[pr.stage]) && continue   # gated, not waiting on a message
+            append!(union, pr.recv[pr.stage])
+            stage = min(stage, pr.stage)
+        end
+        isempty(union) && error(
+            "the spectral dataflow loop has $(remaining) pair(s) to run and nothing " *
+            "outstanding: the first is pair " *
+            "$(first(pr.p for pr in plist if pr.stage != _SPEC_DF_DONE)) at stage " *
+            "$(_SPEC_DF_STAGE_NAMES[first(pr.stage for pr in plist if pr.stage != _SPEC_DF_DONE)])")
+        t0 = time_ns()
+        _mp_wait_any(union, _SPEC_DF_STAGE_NAMES[stage])
+        wait_ns += Int(time_ns() - t0)
+        wait_calls += 1
+    end
+    # Every send drained before the buffers are handed back to the next collide.
+    for pr in plist
+        pr.retired || (_mp_wait_all(pr.sends, :wait_sends); _spectral_df_retire!(pr, pool))
+    end
+    _record_execution!(:spectral_slice_exchange, CPUThreadsBackend,
+                       (partials_sent=c.partials_sent, partials_received=c.partials_received,
+                        payloads_sent=c.payloads_sent, payloads_received=c.payloads_received,
+                        lum_sent=c.lum_sent, lum_received=c.lum_received, messages=c.messages,
+                        pairs_coordinated=c.pairs_coordinated, planes_solved=c.planes_solved,
+                        schedule=:dataflow, ranks=P))
+    return c.nbad
+end

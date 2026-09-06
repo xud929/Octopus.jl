@@ -169,33 +169,51 @@ the regime that already worked is unchanged message for message and bit for
 bit; the launcher child's spectral lines are identical across the change at 1,
 2 and 4 ranks.
 
-Measured end to end against the same benchmark on the commit before -- 90,000
-particles a beam, fifteen slices, a 64x64 mesh, best of five on a shared box:
+**The timing comparison first published here has been WITHDRAWN** (2026-09-06).
+It went through the bare `collide!` entry, which defaults its scratch,
+migration and pool refs to fresh ones per call while a `StrongStrongTask` holds
+them across turns, so every collide rebuilt every buffer it owns -- a term
+invisible at one rank and dominant at sixty-four -- and it ran on a box
+carrying other work. It reported 209 ms at sixty-four ranks where the identical
+collide measures 40.8 with the refs a task holds, and the conclusion drawn from
+it ("the curve turns up past thirty-two ranks") does not survive. The evidence
+for the ceiling that stands is the solve distribution above, which no clock
+enters. The lesson is in `experiences.md`.
 
-| ranks | pinned to the head | dealt across the group |
+Measured again through the refs a task holds, arms interleaved in one process,
+90,000 particles a beam, fifteen slices, a 63x63 mesh:
+
+| ranks | widest group | ms |
 |---|---|---|
-| 1 | 497 ms | 485 ms |
-| 2 | 372 | 378 |
-| 4 | 230 | 236 |
-| 8 | 130 | 130 |
-| 16 | 74 | 68.9 |
-| 32 | 227 | **47.4** |
-| 64 | -- | 209 |
+| 1 | 1 | 379.4 |
+| 2 | 1 | 286.1 |
+| 4 | 1 | 179.0 |
+| 8 | 1 | 100.0 |
+| 16 | 2 | 55.6 |
+| 32 | 2-3 | 37.4 |
+| 64 | 4-5 | 39.0 |
 
-Thirty-two ranks went from a 3x regression against sixteen to a 1.5x
-improvement over it, 4.8x faster than the same point before. Below sixteen the
-two columns are the same run, which is the point.
+Ten times the one-rank run at thirty-two ranks, and the curve FLATTENS rather
+than turning up, which is what sixty concurrent solves predicts for fifteen
+slices. Below sixteen ranks the deal changes nothing -- a group of one is the
+rule it replaced.
 
 `4 * min(n1, n2)` is the most any schedule can use, because a wavefront batch
 holds at most `min(n1, n2)` pairs.
 
-That the ceiling is `4 * nslices` and not some fixed number is measured, not
-argued: at fifteen slices sixty-four ranks run 209 ms against 458 undivided
-(2.2x -- past the sixty solves a batch can offer), while at THIRTY slices the
-same sixty-four ranks run 97.1 ms against 1701 undivided (17.5x, still under
-the hundred and twenty). The slice count is the knob. `nslices` is therefore the knob that raises
-the rank ceiling -- so the batch's tags moved from the pair's index in the
-COLLIDE to its position in the BATCH. A batch is a barrier, so positions are
+`4 * min(n1, n2)` is an upper bound on solve concurrency and nothing more: it
+is NOT what binds this problem size. Measured through the refs a task holds,
+fifteen slices reach 10.1x at thirty-two ranks and 9.7x at sixty-four, while
+THIRTY slices -- which double the bound -- reach 8.5x at sixty-four rather than
+more. The curve flattens near thirty-two ranks for a reason the bound does not
+explain, and an earlier claim here that the slice count is the knob, drawn from
+a contaminated benchmark, is WITHDRAWN. Attributing the flattening is the next
+step, and the instrument exists: `_mp_collective_times` records per-kind wait
+clocks that nothing has read for this route.
+
+The tag change stands on the bound being the slice count in principle: the
+batch's tags moved from the pair's index in the COLLIDE to its position in the
+BATCH. A batch is a barrier, so positions are
 all the separation tags need, and the old keying wanted `ns1 * ns2 * 16` tags
 against the 32767 the MPI standard guarantees: it would have capped the slice
 count near 45, the very number that has to grow.
@@ -243,3 +261,79 @@ One of those new arms was itself vacuous on its first run -- it read
 single process, and so asserted `false == false` on all four ranks while
 printing its receipt four times. The line count was the tell. That is recorded
 in `experiences.md`.
+
+---
+
+## Step 4h, 2026-09-06: the dataflow loop, and two withdrawn measurements
+
+The batched loop makes a wavefront batch a barrier: a rank waits at each stage
+for the slowest member and idles when its own pairs are done. Nothing in the
+physics asks for that, so `_spectral_collide_dataflow!` runs an event loop
+instead -- scan this rank's pairs in the collision order, run every stage whose
+receives have arrived, block on the union of what is outstanding only when a
+whole scan ran nothing. It is PIC's step 4e applied to spectral's four stages,
+and it takes PIC's gate (`_pic_df_predecessors`) unchanged: the hazard belongs
+to the layout, not the solver.
+
+Two things are spectral's own. Its tags must separate every pair of the
+COLLIDE, where the batched loop separates only the pairs of a batch -- a batch
+is a barrier, an event loop is not. And a pair whose luminosity mesh is
+degenerate still KICKS and skips only its luminosity, because spectral's
+verdict is about the mesh and arrives after the kick; PIC's is about the field
+extents and arrives before, so PIC's loop skips the kick and its comment does
+not transfer. The first draft copied that comment and the code with it, which
+would have made the two loops different collides on a path no test reaches.
+
+### Which loop, measured
+
+Through the refs a task holds, arms INTERLEAVED in one process, 90,000
+particles a beam, fifteen slices, a 63x63 mesh:
+
+| ranks | widest group | batched | dataflow |
+|---|---|---|---|
+| 1 | 1 | **379.4 ms** | 387.7 |
+| 2 | 1 | **286.1** | 304.1 |
+| 4 | 1 | **179.0** | 191.9 |
+| 8 | 1 | **100.0** | 113.7 |
+| 16 | 2 | 69.6 | **55.6** |
+| 32 | 2-3 | 38.2 | **37.4** |
+| 64 | 4-5 | 40.8 | **39.0** |
+
+Groups wider than one rank get the dataflow loop -- 25% at sixteen ranks, where
+a slice first spans two -- and whole slices keep the batched one, which also
+keeps its four independent solves a batch for the threads. That is the rule 4e
+measured for PIC, arrived at independently here.
+
+The two loops are two implementations of one collide, so the suite holds them
+to the same BITS rather than the same answer: in process at one rank and under
+the launcher at one, two and four, on every 6D arm. Nothing else would catch a
+gate that let a pair read a slice before its predecessor kicked it, because the
+answer would still look plausible.
+
+### Two measurements withdrawn
+
+Building this exposed that the step-4g rank scan was wrong twice over, and both
+faults were the harness rather than the code.
+
+It went through the bare `collide!`, which defaults its scratch, migration and
+pool refs to fresh ones per call while a task holds them across turns. Every
+collide therefore rebuilt every buffer it owns -- invisible at one rank, where
+the collide's own work dominates, and decisive at sixty-four, where each rank's
+share is small. It reported 209 ms at sixty-four ranks; the identical collide
+measures 40.8 with the refs a task holds. And the arms ran whole-ladder-then-
+whole-ladder on a box carrying other work, so at sixteen ranks the same
+comparison came out "batched wins by 26%" that way and "dataflow wins by 25%"
+interleaved.
+
+What that cost: the claim that the curve TURNS UP past thirty-two ranks, and
+the claim that the ceiling tracks the slice count. Neither survives. The clean
+numbers flatten near thirty-two ranks (10.1x at 32, 9.7x at 64 with fifteen
+slices), and doubling the slices to thirty gives 8.5x at sixty-four rather than
+more -- so `4 * min(n1, n2)` is a real upper bound on solve concurrency but is
+NOT what binds this size. What still stands is the ceiling evidence that never
+had a clock in it: 20 of 32 and 23 of 64 ranks solving before the deal, 32 of
+32 and 64 of 64 after.
+
+Attributing the flattening is the next step, and the instrument is already
+there and unread: `_mp_collective_times` keeps per-kind wait clocks. Both
+lessons are in `experiences.md`.

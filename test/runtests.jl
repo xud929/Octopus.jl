@@ -7303,6 +7303,48 @@ end
             @test series[name] != series[:default]
         end
     end
+    # The two loops of the 6D map, in process and at one rank: a batch-at-a-time
+    # walk and an event loop over the same dependency graph, which must be the
+    # same collide and not merely the same answer. The launcher child holds them
+    # to this at two and four ranks as well; here it costs nothing and runs in
+    # every lane.
+    with_logger(NullLogger()) do
+        for (name, solver, exchange) in variants
+            exchange === :sliced || continue
+            outs = map((:batched, :dataflow)) do loop
+                policy = MultiProcessExecutionPolicy(threads=1)
+                b1, b2 = beams(policy)
+                audit = ExecutionAudit()
+                lum = Ref{Float64}(NaN)
+                # INSIDE the policy scope. A bare `collide!` sees no
+                # multi-process policy, takes the UNDIVIDED route and records
+                # `exchange = :none`, so both arms would run the same loop and
+                # the comparison would be of one path with itself -- which is
+                # what the first draft of this did. And `with_execution_audit`
+                # returns the AUDIT, not the block's value, so the luminosity
+                # comes out through a Ref.
+                Octopus._with_execution_policy(
+                        Octopus._resolve_execution_policy(policy, b1.rep)) do
+                    Base.ScopedValues.with(Octopus._SPECTRAL_SLICED_LOOP => loop) do
+                        with_execution_audit(audit) do
+                            lum[] = collide!(solver, b1, b2, CPUThreadsBackend)
+                        end
+                    end
+                end
+                sched = [r.values for r in execution_receipts(audit)
+                         if r.consumer === :spectral_pair_schedule]
+                @test length(sched) == 1 && Symbol(sched[1].exchange) === :sliced
+                (lum[], map(copy, coordinate_arrays(b1.rep)), map(copy, coordinate_arrays(b2.rep)),
+                 length(sched) == 1 ? Symbol(sched[1].schedule) : :none)
+            end
+            # Each arm really ran the loop it names -- an arm that fell back
+            # would compare one loop with itself.
+            @test outs[1][4] === :batched && outs[2][4] === :dataflow
+            @test outs[1][1] == outs[2][1]
+            @test all(a == b for (a, b) in zip(outs[1][2], outs[2][2]))
+            @test all(a == b for (a, b) in zip(outs[1][3], outs[2][3]))
+        end
+    end
     # The campaign's last solver. The refusal is now a DENY-BY-DEFAULT
     # tripwire, so what the suite owes is both halves: every solver in the
     # roster answers `true`, and the fallback answers `false` -- a solver
@@ -8128,6 +8170,21 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                     @test !isempty(lums) && all(==(lums[1]), lums)
                 end
                 @test [last(split(s)) for s in ranklines(out1, "MPI-SPECVARLUM ", key)] == [ref.lum]
+                # Two loops, one collide: the batched walk and the event loop
+                # must agree bit for bit at every rank count, and the child says
+                # which one each actually ran so an arm cannot pass by running
+                # the same loop twice.
+                if solver.longitudinal_kick
+                    for out in (out1, out2, out4)
+                        lp = ranklines(out, "MPI-SPECLOOP ", key)
+                        @test length(lp) == 1
+                        length(lp) == 1 || continue
+                        @test occursin("identical=true", lp[1])
+                        @test occursin("batched=batched", lp[1])
+                        @test occursin("dataflow=dataflow", lp[1])
+                        @test occursin("z=true", lp[1])
+                    end
+                end
                 want_exchange = solver.longitudinal_kick ? "sliced" : "home"
                 # `batch_mode` is what RAN, and it is asserted, not merely
                 # printed: without it the "the two schedules agree" arms
@@ -8135,11 +8192,27 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 # that silently ran the same schedule twice.
                 want_mode = !solver.longitudinal_kick ? "order_free" :
                             solver.batch_mode === :sequential ? "sequential" : "wavefront"
-                for out in (out1, out2, out4)
+                for (out, P) in ((out1, 1), (out2, 2), (out4, 4))
                     sched = ranklines(out, "MPI-SPECVARSCHED ", key)
                     @test length(sched) == 1
+                    length(sched) == 1 || continue
                     @test occursin("exchange=" * want_exchange, sched[1])
                     @test occursin("batch_mode=" * want_mode, sched[1])
+                    # WHICH loop `:auto` picked, derived from the layout rule
+                    # rather than restated: groups wider than one rank get the
+                    # event loop, whole slices keep the batched walk, and a
+                    # schedule that cannot batch keeps it too. Three slices on
+                    # four ranks put one slice on two, so the 4-rank arm is the
+                    # one that exercises the dataflow branch at all.
+                    want_loop = !solver.longitudinal_kick ? "none" :
+                                solver.batch_mode === :sequential ? "batched" :
+                                begin
+                                    cb1, cb2 = _mpi_check_ss_beams(CPUThreadsExecutionPolicy(threads=1))
+                                    w = max(maximum(_mpi_check_pic_groups(cb1.rep, solver.slicing1, P)),
+                                            maximum(_mpi_check_pic_groups(cb2.rep, solver.slicing2, P)))
+                                    w >= 2 ? "dataflow" : "batched"
+                                end
+                    @test occursin("schedule=" * want_loop, sched[1])
                 end
                 np = let (cb1, cb2) = _mpi_check_ss_beams(CPUThreadsExecutionPolicy(threads=1))
                     s1 = longitudinal_slices(cb1.rep, solver.slicing1)

@@ -803,23 +803,34 @@ whole slices on whole ranks is unchanged message for message and bit for bit.
 After it: 32 of 32 and 64 of 64 ranks solving, the busiest rank's share down
 from 60 planes to 20.
 
-Measured end to end, 90,000 particles a beam, fifteen slices, a 64x64 mesh,
-best of five on a shared box, against the same benchmark on the commit before. The box carried other work throughout and the run-to-run spread was several fold, so these are BEST-OBSERVED rather than means, and the timing-independent evidence above -- which rank solved how many planes -- is the stronger half of the claim:
+**The timing comparison first published here has been WITHDRAWN.** It was taken
+through the bare `collide!` entry, which defaults its scratch, migration and
+pool refs to fresh ones per call while a `StrongStrongTask` holds them across
+turns -- so every collide rebuilt every buffer it owns, a term invisible at one
+rank and dominant at sixty-four -- and on a box carrying other work. It
+reported 209 ms at sixty-four ranks where the identical collide measured 40.8
+with the refs a task holds, and the "the curve turns up past thirty-two ranks"
+conclusion drawn from it does not survive. The evidence for the ceiling that
+DOES stand is the solve distribution above, which no clock enters.
 
-| ranks | pinned to the head | dealt across the group |
+Measured again through the refs a task holds, arms interleaved in one process,
+90,000 particles a beam, fifteen slices, a 63x63 mesh (see the mesh-width note
+below for why 63):
+
+| ranks | widest group | ms |
 |---|---|---|
-| 1 | 497 ms | 485 ms |
-| 2 | 372 | 378 |
-| 4 | 230 | 236 |
-| 8 | 130 | 130 |
-| 16 | 74 | 68.9 |
-| 32 | 227 | **47.4** |
-| 64 | -- | 209 |
+| 1 | 1 | 379.4 |
+| 2 | 1 | 286.1 |
+| 4 | 1 | 179.0 |
+| 8 | 1 | 100.0 |
+| 16 | 2 | 55.6 |
+| 32 | 2-3 | 37.4 |
+| 64 | 4-5 | 39.0 |
 
-Thirty-two ranks went from a 3x REGRESSION against sixteen to a 1.5x
-improvement over it -- 4.8x faster than the same point on the commit before --
-and the curve now keeps falling past sixteen. Below sixteen the two are the
-same run, which is the point: a group of one is the rule that was there.
+Ten times the one-rank run at thirty-two ranks, and the curve FLATTENS there
+rather than turning up -- which is what `4 * min(n1, n2)` = sixty concurrent
+solves predicts for fifteen slices. Below sixteen ranks the deal changes
+nothing, which is the point: a group of one is the rule it replaced.
 
 Two constraints shape how a run should be laid out on a box with more CPUs
 than slices. The shard rule (step 3a) rejects any rank count that does not
@@ -830,20 +841,22 @@ the head rule allowed, and THREADS take up the rest: a rank's per-batch solve
 list is four items now instead of two, so four threads have independent solves
 to run.
 
-That is the most the schedule can ever use.
+`4 * min(n1, n2)` is an upper bound on solve concurrency and nothing more: it
+is NOT what binds this problem size. Measured through the refs a task holds,
+fifteen slices reach 10.1x at thirty-two ranks and 9.7x at sixty-four, while
+THIRTY slices -- which double the bound -- reach 8.5x at sixty-four rather than
+more. The curve flattens near thirty-two ranks for a reason the bound does not
+explain, and an earlier claim here that the slice count is the knob, drawn from
+a contaminated benchmark, is WITHDRAWN. Attributing the flattening is the next
+step, and the instrument exists: `_mp_collective_times` records per-kind wait
+clocks that nothing has read for this route.
 
-That the ceiling is `4 * nslices` and not some fixed number is measured, not
-argued: at fifteen slices sixty-four ranks run 209 ms against 458 undivided
-(2.2x -- past the sixty solves a batch can offer), while at THIRTY slices the
-same sixty-four ranks run 97.1 ms against 1701 undivided (17.5x, still under
-the hundred and twenty). The slice count is the knob. A wavefront batch holds at most
-`min(n1, n2)` pairs, hence `4 * min(n1, n2)` independent solves; past that many
-ranks the extra ones can only help with the particle work. `nslices` is
-therefore the knob that raises the rank ceiling, which is why the batch's tags
-are keyed by a pair's position in the BATCH rather than in the whole collide:
-the global keying needed `ns1 * ns2 * 16` tags and the MPI standard only
-guarantees 32767, so it would have capped the slice count near 45 -- the very
-number that has to grow.
+The tag keying stands on the bound being the slice count in principle: a pair's
+tags are keyed by its position in the BATCH rather than in the whole collide,
+because the global keying needed `ns1 * ns2 * 16` tags where the MPI standard
+guarantees only 32767, which would have capped the slice count near 45 -- and
+whatever binds the curve, a protocol should not be the thing that forbids more
+slices.
 
 Three constant factors went with it: the luminosity's extents now ride the
 deposit wait and its mesh the payload wait, taking the batch from five
@@ -912,6 +925,56 @@ Scaling of the 6D map at 90,000 particles per beam, fifteen slices and a
 rank, then 372, 230, 130 and 74 ms at two, four, eight and sixteen ranks --
 6.7x over the one-rank divided run. At thirty-two ranks, more ranks than
 slices, it turns back up to 227 ms; that regime is a todo row, not a claim.
+
+### Step 4h: the dataflow loop for spectral
+
+The batched loop walks every pair of a wavefront batch through the same stage
+at the same time, so a rank waits at each stage for the slowest member of the
+batch and idles whenever its own pairs are done. Nothing in the physics asks
+for that -- a pair depends only on its two slices' PREVIOUS pairs -- so
+`_spectral_collide_dataflow!` runs an event loop instead: scan this rank's
+pairs in the collision order, run every stage whose receives have arrived, and
+block on the union of what is outstanding only when a whole scan ran nothing.
+It is PIC's step 4e applied to spectral's four stages, and it borrows PIC's
+gate (`_pic_df_predecessors`) unchanged, because the hazard is the layout's and
+not the solver's.
+
+Two things are spectral's own. Its tags must separate every pair of the
+COLLIDE, where the batched loop separates only the pairs of a batch: a batch is
+a barrier, an event loop is not. And a pair whose luminosity mesh is degenerate
+still kicks and skips only its luminosity, because spectral's verdict is about
+the mesh and arrives after the kick -- PIC's is about the field extents and
+arrives before, so PIC's dataflow loop skips the kick and the wording is not
+transferable.
+
+WHICH loop, measured rather than assumed, through the refs a task holds and
+with the two arms interleaved in one process (90,000 particles a beam, fifteen
+slices, a 63x63 mesh):
+
+| ranks | widest group | batched | dataflow |
+|---|---|---|---|
+| 1 | 1 | **379.4 ms** | 387.7 |
+| 2 | 1 | **286.1** | 304.1 |
+| 4 | 1 | **179.0** | 191.9 |
+| 8 | 1 | **100.0** | 113.7 |
+| 16 | 2 | 69.6 | **55.6** |
+| 32 | 2-3 | 38.2 | **37.4** |
+| 64 | 4-5 | 40.8 | **39.0** |
+
+The rule is the layout's, and it is the one 4e measured for PIC: a rank holding
+a WHOLE slice has its pairs on that slice strictly in series and nothing to
+overlap, so the event loop only adds a wake per hop and gives up the batched
+loop's four independent solves a batch; once a slice spans a group each rank
+holds a fraction of the chain's work and there is real independent work between
+the hops. Groups wider than one rank get the dataflow loop -- 25% at sixteen
+ranks, where a slice first spans two.
+
+`_SPECTRAL_SLICED_LOOP` overrides the rule for a measurement or a pin. The two
+loops are two independent implementations of one collide, so the suite holds
+them to the same BITS rather than to the same answer: in process at one rank,
+and under the launcher at one, two and four. That pin is the only thing that
+would catch a dataflow gate letting a pair read a slice before its predecessor
+kicked it, because the answer would still look plausible.
 
 ## The CPU, MPI and CUDA consistency statement
 

@@ -399,6 +399,15 @@ four times, and proved nothing. The fixture already carried the warning for
 the assertion's premise too. A count of the receipt lines is the cheap tell --
 one line per run means the scope was there, `P` lines mean it was not.
 
+It bit twice in one session. Step 4h's in-process loop pin called `collide!`
+outside the scope as well, so both arms took the UNDIVIDED route and the pin
+compared that path with itself -- and this time it FAILED rather than passing
+vacuously, only because the arms also asserted which loop each had run. That is
+the shape to copy: whenever a test claims two paths agree, make it assert that
+each arm really took its path. Here the receipt already carried it
+(`exchange = :sliced`, `schedule = :batched`/`:dataflow`), so the check cost one
+line and turned a silent tautology into a loud failure.
+
 ## A keyword one solver ignores is a second keyword
 
 - `batch_mode` was spelled identically on three solvers and meant three
@@ -531,6 +540,56 @@ one line per run means the scope was there, `P` lines mean it was not.
   price collapsed and the keyword completed the set with reporting-only
   semantics. A refusal is priced against what a knob DID at the time; when a
   campaign changes what the knob means, re-read the refusals too.
+
+## Nothing that recompiles may run while a gate or a launcher does
+
+Two failures in one session traced to the same thing: a probe that recompiled
+Octopus while a long multi-process run was loading it. Sixty-four ranks all
+loading the package while another process wrote the precompile cache sat at 0%
+CPU for seven minutes and looked exactly like a protocol deadlock -- the same
+configuration completed cleanly once the cache was warm and nothing else was
+building. And a gate reported a `Core.Box` in `_pic_collide! @ pic_cpu.jl:106`,
+a line where that function has never been defined in this tree; its methods sit
+at 15, 112 and 116, so the offender came from a cache the run had no business
+loading.
+
+The tell for both is a claim that does not typecheck against the source: a line
+number that holds nothing of that name, or a hang with no CPU and no message
+outstanding that a rerun cannot reproduce. Before believing either, check
+whether anything else was writing `~/.julia/compiled` at the time. The rule is
+simply that a gate, a launcher child and a rank scan get the depot to
+themselves -- `ps` for `Pkg.test`, `runtests.jl` and `mpiexec` before starting
+one, and no `julia --project=.` probe of your own until it is done.
+
+## Benchmark the entry the RUN uses, not the one that is convenient
+
+`collide!(solver, b1, b2, backend)` and a `StrongStrongTask` do not run the
+same thing. The task holds the collide's scratch, migration and pool refs in
+its runtime cache across turns; the bare entry defaults them to fresh `Ref`s,
+so every call rebuilds every buffer the collide owns. Step 4g's rank scan used
+the bare entry and measured buffer construction as physics -- harmless at low
+rank counts, where the collide's own work dominates, and decisive at high ones,
+where each rank's share is small: 209 ms at sixty-four ranks against 40.8 ms
+for the identical collide with the refs a task holds. A whole conclusion ("the
+curve turns up past thirty-two ranks") rested on it, was written into two
+documents and pushed, and had to be withdrawn.
+
+Two habits fall out. Benchmark through the entry the run actually uses, or pass
+the persistent refs explicitly and say in the harness that you did. And when a
+scaling curve turns UP, suspect the harness before the design: the per-call
+overheads that are invisible at one rank are exactly the ones that dominate at
+sixty-four.
+
+## Interleave the arms of an A/B, do not run all of A then all of B
+
+The same campaign measured its two loops by running the whole rank ladder for
+one and then the whole ladder for the other, on a box carrying other work. The
+arms then differ by the box's mood as much as by the code, and best-of-five
+does not save you: the 16-rank comparison came out "batched wins by 26%" that
+way and "dataflow wins by 25%" when the two were interleaved in ONE process,
+alternating rep by rep. Interleaving costs nothing and removes the confound;
+the spread between an arm's own reps (54.8 best against 123.2 median, in the
+contended run) is the tell that the numbers are not yet about the code.
 
 ## A structural claim read off one route is not a claim about the solver
 
