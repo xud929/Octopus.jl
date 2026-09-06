@@ -559,6 +559,46 @@ doing on its own terms -- latency a wider machine will pay for real -- but do
 not expect the wall to move unless the skew moves too, and do not let a clock
 that dropped convince you the term is gone.
 
+## Vary the CHAIN, not the rank count, to find what a parallel wall tracks
+
+A divided collide that stopped scaling past thirty-two ranks took three
+attempts at the wrong term -- merge the migration's four exchanges into two
+(no change), balance the solve deal from a 2.9x spread to 1.33x (no change),
+strip the luminosity (13%). Each was a defensible reading of a per-kind clock
+and each was structurally right; none of them was the wall.
+
+What settled it took one experiment: hold the rank count and the particle
+count and vary the SLICE count, because the number of sequential batches is
+`2 * nslices - 1`. Halving the slices halves the work per rank, so a work-bound
+collide predicts one number and a chain-bound one predicts another, and they
+differ enough to tell apart -- 21 ms against 27, measured 27.1. The wall was
+the batch count times a roughly constant per-batch cost that was ten times the
+compute inside it.
+
+The general move: when a parallel wall will not scale, find the parameter that
+changes the LENGTH of the dependency chain without changing the total work, and
+sweep that. Rank scans cannot separate the two -- more ranks shrink the work
+per rank and leave the chain alone, so both hypotheses predict the same
+flattening. And note the failure mode of the alternative: three plausible
+attributions, each confirmed by a clock, all wrong, because a per-kind clock
+tells you where a rank waits and not what the run is waiting ON.
+
+## Keep a structural fix that measures flat, and say that it measured flat
+
+Two changes in this campaign were correct and bought nothing: one migration
+exchange instead of two per direction (4,096 messages to 2,048, 15.11 -> 14.80
+ms, noise), and an owner deal that actually rotates (solve spread 2.9x -> 1.33x,
+wall 41.2 against 39.5, noise). Both stayed in -- fewer messages and an even
+deal are right on a machine where those terms bind, and neither costs
+complexity worth removing.
+
+What must not happen is the write-up quietly inheriting the motivation as a
+result. The commit message and the design note say the change is in and the
+clock did not move, and they say what that REFUTES: the migration is not
+latency-bound, and the solve imbalance was not the binding one. A flat
+measurement on a change you believed in is the most informative kind, and it
+is the one most easily lost.
+
 ## Nothing that recompiles may run while a gate or a launcher does
 
 Two failures in one session traced to the same thing: a probe that recompiled

@@ -67,9 +67,35 @@ same rank when the group can spare a second. A group of one gives that member
 both planes, which is the rule this replaces -- so a run with whole slices on
 whole ranks is unchanged, message for message.
 """
-@inline function _spectral_sliced_solvers(group::UnitRange{Int}, p::Int)
+@inline function _spectral_sliced_solvers(group::UnitRange{Int}, k::Int)
     g = length(group)
-    return (group[((p) % g) + 1], group[((p + 1) % g) + 1])
+    return (group[((k) % g) + 1], group[((k + 1) % g) + 1])
+end
+
+"""
+Each pair's position among the pairs on each of ITS OWN slices, in collision
+order.
+
+The deal rotates over a group by this and not by the pair's position in the
+whole collide, because a slice's pairs sit at scattered positions of that order
+and `p % g` over a scattered set is not a rotation. It showed: at sixty-four
+ranks the busiest rank carried 20 solved planes and the idlest 7, a 2.9x spread
+where the group sizes alone (four and five) predict at most 1.25x. Numbering a
+slice's pairs 1, 2, 3, ... makes the rotation exact, and an all-to-all is a
+barrier that charges every rank for the slowest -- so this imbalance was being
+paid twice, once in the solve and again in the migration's clock.
+"""
+function _spectral_slice_pair_positions(order, pair_pos, counts1, counts2)
+    pos1 = Dict{Int,Int}(); pos2 = Dict{Int,Int}()
+    seen1 = zeros(Int, length(counts1)); seen2 = zeros(Int, length(counts2))
+    for entry in order
+        i = Int(entry[2]); j = Int(entry[3])
+        (counts1[i] == 0 || counts2[j] == 0) && continue
+        p = pair_pos[(i, j)]
+        seen1[i] += 1; seen2[j] += 1
+        pos1[p] = seen1[i]; pos2[p] = seen2[j]
+    end
+    return pos1, pos2
 end
 
 # --- scratch -------------------------------------------------------------------
@@ -324,7 +350,7 @@ coordinated pairs into `lum_parts` (the caller all-sums the vector) and leaves
 the kicked coordinates in the sliced beams.
 """
 function _spectral_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T},
-                                   batches, pair_pos, lum_parts, solver, slices1, slices2,
+                                   batches, order, pair_pos, lum_parts, solver, slices1, slices2,
                                    counts1, counts2, pool, sc::_SpectralSlicedScratch{T},
                                    kbb1, kbb2, klum, Lx, Ly,
                                    compute_luminosity::Bool) where {T}
@@ -342,6 +368,7 @@ function _spectral_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T
     lum_sent = 0; lum_received = 0; messages = 0
     pairs_coordinated = 0; planes_solved = 0; nbad = 0
     nworkers = length(pool)
+    pos1, pos2 = _spectral_slice_pair_positions(order, pair_pos, counts1, counts2)
     for batch in batches
         _spectral_sliced_reset!(sc)
         plist = _SpectralSlicedPair{T}[]
@@ -372,8 +399,8 @@ function _spectral_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T
             # (measured: 74 ms at sixteen ranks, 227 ms at thirty-two).
             p = pair_pos[(i, j)]
             push!(plist, _spectral_sliced_pair(T, p, i, j, qb, in1, in2, first(g1),
-                                               (_spectral_sliced_solvers(g2, p),
-                                                _spectral_sliced_solvers(g1, p)),
+                                               (_spectral_sliced_solvers(g2, pos2[p]),
+                                                _spectral_sliced_solvers(g1, pos1[p])),
                                                param1, param2))
         end
         isempty(plist) && continue
@@ -697,8 +724,8 @@ function _spectral_sliced_transport!(solver::SpectralPoissonSolver, beam1::Beam,
     layout1 = _pic_sliced_layout(counts1, P)
     layout2 = _pic_sliced_layout(counts2, P)
     mig1, mig2 = _pic_migration_scratch(T, sliced_migration_ref)
-    sb1 = _pic_sliced_migrate_in(beam1.rep, slices1, layout1, mig1, T)
-    sb2 = _pic_sliced_migrate_in(beam2.rep, slices2, layout2, mig2, T)
+    sb1, sb2 = _pic_sliced_migrate_pair_in(beam1.rep, slices1, layout1,
+                                          beam2.rep, slices2, layout2, mig1, mig2, T)
     batching = requested === :wavefront && npairs > 1
     batches = batching ? collision_pair_batches(slices1, slices2) :
                          [[(i=Int(entry[2]), j=Int(entry[3]))] for entry in order]
@@ -745,7 +772,7 @@ function _spectral_sliced_transport!(solver::SpectralPoissonSolver, beam1::Beam,
                                         grid ? pool[1] : nothing,
                                         kbb1, kbb2, klum, Lx, Ly, compute_luminosity)
         else
-            _spectral_collide_sliced!(sb1, sb2, batches, pair_pos, lum_parts, solver,
+            _spectral_collide_sliced!(sb1, sb2, batches, order, pair_pos, lum_parts, solver,
                                       slices1, slices2, counts1, counts2, pool,
                                       _spectral_sliced_scratch(T, sliced_scratch),
                                       kbb1, kbb2, klum, Lx, Ly, compute_luminosity)
@@ -753,8 +780,7 @@ function _spectral_sliced_transport!(solver::SpectralPoissonSolver, beam1::Beam,
     finally
         lease === nothing || _release_spectral_grid_ws_pool!(lease)
     end
-    _pic_sliced_migrate_out!(beam1.rep, sb1, mig1)
-    _pic_sliced_migrate_out!(beam2.rep, sb2, mig2)
+    _pic_sliced_migrate_pair_out!(beam1.rep, sb1, beam2.rep, sb2, mig1)
     # The coordinators hold their pairs' values and everyone else zeros, so the
     # all-sum is exact and every rank folds the same vector below.
     _mp_allsum!(lum_parts)
@@ -1024,6 +1050,7 @@ function _spectral_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam
     grid = solver.method !== :grid_free
     R = eltype(_mp_requests())
     prev1, prev2 = _pic_df_predecessors(order, pair_pos, counts1, counts2)
+    pos1, pos2 = _spectral_slice_pair_positions(order, pair_pos, counts1, counts2)
     # This rank's pairs, in the collision order, with the position of each in
     # this list so a gate is a local index.
     plist = _SpectralDataflowPair{T,R}[]
@@ -1040,8 +1067,8 @@ function _spectral_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam
         param2 = (weight=T(slices2.weight[j]), lb=T(slices2.boundary[j]),
                   center=T(slices2.center[j]), rb=T(slices2.boundary[j + 1]))
         push!(plist, _spectral_df_pair(T, R, p, i, j, in1, in2, first(g1),
-                                       (_spectral_sliced_solvers(g2, p),
-                                        _spectral_sliced_solvers(g1, p)),
+                                       (_spectral_sliced_solvers(g2, pos2[p]),
+                                        _spectral_sliced_solvers(g1, pos1[p])),
                                        param1, param2))
         index_of[p] = length(plist)
     end

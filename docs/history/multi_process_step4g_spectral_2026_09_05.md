@@ -337,3 +337,68 @@ had a clock in it: 20 of 32 and 23 of 64 ranks solving before the deal, 32 of
 Attributing the flattening is the next step, and the instrument is already
 there and unread: `_mp_collective_times` keeps per-kind wait clocks. Both
 lessons are in `experiences.md`.
+
+### One migration exchange for both beams, and a deal that rotates
+
+Two changes made after the attribution, both structural, both measured, and
+neither of them moved the clock. That is the finding.
+
+The migration used to run four all-to-alls a collide: beam 1 out, beam 2 out,
+beam 1 back, beam 2 back. `_pic_sliced_migrate_pair_in` and
+`_pic_sliced_migrate_pair_out!` do it in two. The packed column grows from
+seven rows to eight -- six coordinates, the slice, and now the beam -- the two
+beams' per-slice counts fold in ONE `_mp_allsum!` over an `(ns1 + ns2, P)`
+matrix, and the receiver buckets by the composite key
+`(beam - 1) * (maxns + 1) + slice` with a stable sort, which puts a rank's
+particles in exactly the order the two separate exchanges left them in. Bit
+for bit at one and four ranks. PIC, Gaussian-PIC and spectral all get it,
+because all three ride this transport.
+
+It bought nothing. 15.11 ms in the migration at sixteen ranks before, 14.80
+after; 9.65 before at thirty-two, 9.76 after. Halving the message count from
+4,096 to 2,048 per direction is a real change and the clock did not notice,
+which refutes the reading that put it there. The same collide reports a
+minimum migration wait of 1.09 ms and a maximum of 37.57 at sixteen ranks: the
+exchange is not paying for messages, it is absorbing the spread in when ranks
+arrive. Keep the change -- fewer messages is right on a bigger machine, and one
+exchange is simpler than two -- but do not claim a speed-up for it.
+
+The second change is a defect fix that also did not pay. `_spectral_sliced_solvers`
+deals a pair's two field solves as `group[k % g + 1]` and `group[(k+1) % g + 1]`,
+and `k` was the pair's index in the global pair order. The pairs sharing one
+slice are scattered through that order, so stepping `k` by one between them is
+not stepping the deal by one: over a group of four, a slice whose pairs sat at
+global indices 3, 7, 11 hands all three to the same two members.
+`_spectral_slice_pair_positions` numbers each pair by its position among the
+pairs on its OWN slice, once per direction, and those are what the deal sees.
+The solve spread at sixty-four ranks goes from 7-20 planes to 12-16 -- 2.9x
+down to 1.33x. The wall: 41.2 ms against 39.5. Unchanged. So the imbalance was
+real and was not what the collide was waiting on.
+
+### Where the time actually is: the chain
+
+Vary the slice count at sixty-four ranks and hold everything else:
+
+| slices | batches | wall | per batch | compute in a batch |
+|---|---|---|---|---|
+| 8 | 15 | 27.1 ms | 1.81 ms | ~0.35 |
+| 15 | 29 | 42.0 | 1.45 | ~0.37 |
+| 30 | 59 | 225.6 | 3.82 | ~1.03 |
+
+Going from fifteen slices to eight roughly halves the work each rank does. A
+work-bound collide would have gone from 42.0 to about 21 ms; a chain-bound one,
+paying per batch, to about 27. It measured 27.1. The per-batch cost is roughly
+flat and roughly ten times the compute inside it -- three barriers and the skew
+they absorb, paid `2 * nslices - 1` times, because the longitudinal map is
+order-dependent and slice `i` cannot be a source until the pairs before it have
+kicked it.
+
+The luminosity was the last candidate for that per-batch cost and it is not it:
+42.6 ms with the luminosity at sixty-four ranks against 37.1 without, 13% of
+the wall and 0.19 ms of the 1.45 per batch.
+
+So the sliced route is at its ceiling as specified. The chain length is the
+physics; shortening it is a change to what the solver computes, not to how the
+ranks are arranged. The levers still inside the contract are per-batch -- fewer
+barriers in a batch, or overlapping a batch's sends with the next batch's local
+work, and the dataflow loop already takes the second as far as its gates allow.

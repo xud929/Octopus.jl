@@ -375,9 +375,14 @@ one rank get the event loop, whole slices keep the batched walk.
 or `:none` for an undivided run, and `schedule=:batched`/`:dataflow`/`:none`. On the sliced
 route a pair's four solves -- two directions times the two drifted planes --
 are dealt across the field slice's group rather than pinned to its head, so
-every rank of a run solves once a slice spans more than one rank; the ceiling
-is then `4 * min(n1, n2)` concurrent solves, which is the most a wavefront
-batch can offer, and `nslices` is the knob that raises it. The mesh width is
+every rank of a run solves once a slice spans more than one rank. Two ceilings
+sit above that: `4 * min(n1, n2)` is the most a wavefront batch can OFFER, and
+`2 * (number of groups)` is the most it can PLACE, since a group takes at most
+two solves per direction however wide it is -- the second is the tighter one
+past thirty-two ranks. Raising `nslices` raises both and is NOT a speed knob:
+the collide runs `2 * nslices - 1` batches in sequence, and measured at
+sixty-four ranks the wall tracks that chain rather than the work (8 slices
+27.1 ms, 15 slices 42.0, 30 slices 225.6). The mesh width is
 its own lever: a DST-I over `N` interior points has logical size `2(N + 1)`
 and FFTW is fast only when that is smooth, so `grid=(256, 256)` costs 8.8x
 `grid=(255, 255)`; `_spectral_note_grid_size` records a

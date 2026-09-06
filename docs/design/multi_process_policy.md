@@ -1010,9 +1010,9 @@ two in and two out), 15 ms at sixteen ranks and 8.6 at sixty-four -- it barely
 scales, and at sixty-four ranks it is the largest single MPI term, 22% of the
 collide. It is latency-bound rather than bandwidth-bound: each rank holds 1,400
 particles there and sends 1.2 KB to each of sixty-four peers, so an exchange is
-4,096 tiny messages. Packing both beams into ONE exchange per direction would
-halve that; it touches the migration PIC and Gaussian-PIC share, so it is its
-own step.
+4,096 tiny messages. Packing both beams into ONE exchange per direction halves
+the message count; that is now done (below), and it did not move the clock,
+which refutes the latency reading of this line.
 
 **The rest is ranks waiting for each other**, and it grows as the local work
 shrinks: local compute is 38% of the wall at sixteen ranks and 25% at
@@ -1030,6 +1030,67 @@ collective's measured time is mostly the skew it absorbs. Removing calls
 concentrates the same waiting into fewer of them. The count is still worth
 cutting -- it is latency a bigger machine would pay for real -- but it was
 never the flattening.
+
+### Two structural fixes that did not move the clock, and what did explain it
+
+Both were worth making and neither paid on this box. Recording that is the
+point: the measurement is what says which of a plausible pair of levers is
+real, and here it said neither.
+
+**One migration exchange for both beams.** `_pic_sliced_migrate_pair_in` and
+`_pic_sliced_migrate_pair_out!` replace the per-beam pair of calls. Eight rows
+travel instead of seven -- six coordinates, the slice, and the beam -- the
+counts fold in ONE `_mp_allsum!` over an `(ns1 + ns2, P)` matrix, and the
+receiver buckets by the key `(beam - 1) * (maxns + 1) + slice` with a stable
+sort, so a rank's particles land in the same order they landed in before.
+Exchanges a collide: four to two. PIC, Gaussian-PIC and spectral all use it,
+because all three share this transport. Bit-identical at one and four ranks.
+Time at sixteen ranks: 15.11 ms before, 14.80 after. At thirty-two: 9.65
+before, 9.76 after. That is noise, and it is the answer to "the migration is
+latency-bound on 4,096 tiny messages" -- if it were, halving the messages would
+have shown. The clock there is skew: the same collide reports a min wait of
+1.09 ms and a max of 37.57 at sixteen ranks. The exchange is mostly ranks
+arriving at different times.
+
+**The owner deal rotates per slice now.** `_spectral_sliced_solvers(group, k)`
+picks the two solvers as `group[k % g + 1]` and `group[(k+1) % g + 1]`, and `k`
+used to be the pair's index in the global pair order. A slice's pairs are
+scattered through that order, so `k % g` over them is not a rotation -- some
+group members drew the deal repeatedly and others never. `_spectral_slice_pair_positions`
+numbers each pair by its position among the pairs on its OWN slice, one per
+direction, and hands those in. The solve spread at sixty-four ranks goes from
+7-20 planes (2.9x) to 12-16 (1.33x). The wall: 41.2 ms against 39.5 before --
+unchanged. So the solve imbalance was not binding either. It is still the
+right shape; it just means the busiest rank was not the clock.
+
+**What does explain it: the chain.** A collide runs `2 * nslices - 1` batches
+in sequence because the longitudinal map is order-dependent, and the batch
+count -- not the work in it -- is what the wall tracks. At sixty-four ranks,
+same particle count and mesh, varying only the slice count:
+
+| slices | batches | wall | per batch | compute in it |
+|---|---|---|---|---|
+| 8 | 15 | 27.1 ms | 1.81 ms | ~0.35 |
+| 15 | 29 | 42.0 | 1.45 | ~0.37 |
+| 30 | 59 | 225.6 | 3.82 | ~1.03 |
+
+Halving the slices from fifteen to eight cuts the work per rank by about half
+and the wall by 36%; a work-bound collide would have gone to ~21 ms and a
+chain-bound one to ~27. It went to 27.1. The per-batch cost is roughly constant
+and roughly ten times the compute inside it: three barriers and their skew,
+paid `2 * nslices - 1` times. The luminosity is a measurable but minor part of
+that -- 42.6 ms with it against 37.1 without at sixty-four ranks, 13% of the
+wall, 0.19 ms of the 1.45 -- so its extra round trips are not the per-batch
+cost either.
+
+This is the ceiling for the sliced route as specified. The chain length is
+physics: slice `i` of one beam must see slice `j` of the other after the
+kicks that precede it. Shortening it means changing what the solver computes,
+not how the ranks are arranged, and that is not a performance decision to make
+here. The levers that remain inside the current contract are per-batch --
+fewer barriers per batch, or overlapping a batch's sends with the next
+batch's local work -- and the dataflow loop already takes the second of those
+as far as the gate ordering allows.
 
 ## The CPU, MPI and CUDA consistency statement
 
