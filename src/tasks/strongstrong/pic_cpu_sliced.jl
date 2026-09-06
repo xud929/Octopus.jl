@@ -153,13 +153,17 @@ mutable struct _PICMigrationScratch{T}
     home::Vector{Int}
     order::Vector{Int}
     slice_of::Vector{Int}
+    beam_of::Vector{Int}
+    key::Vector{Int}
     bucket::Vector{Int}
+    beam_home::Vector{Int}
     senders::Vector{Int}
     counts::Matrix{Float64}
     states::Dict{Int,NamedTuple{(:x, :px, :y, :py, :z, :pz),NTuple{6,Vector{T}}}}
 end
 _PICMigrationScratch{T}() where {T} =
-    _PICMigrationScratch{T}(T[], T[], Int[], Int[], Int[], Int[], Int[], Int[],
+    _PICMigrationScratch{T}(T[], T[], Int[], Int[], Int[], Int[], Int[], Int[], Int[],
+                            Int[], Int[],
                             zeros(Float64, 0, 0),
                             Dict{Int,NamedTuple{(:x, :px, :y, :py, :z, :pz),NTuple{6,Vector{T}}}}())
 
@@ -276,6 +280,184 @@ function _pic_sliced_migrate_in(rep::Phase6DRep, slices, layout::_PICSlicedLayou
     b - 1 == m || error("received $(m) columns but bucketed $(b - 1): a column of a slice this rank does not hold")
     return _PICSlicedBeam{T}(layout, mine, states, bucket, starts, senders, home, order,
                              ncols, m)
+end
+
+"""
+Migrate BOTH beams in with ONE exchange.
+
+The migration is the collide's largest MPI term at high rank counts and it is
+LATENCY-bound, not bandwidth-bound: at sixty-four ranks a rank holds ~1,400
+particles here and sends ~1.2 KB to each of sixty-four peers, so one exchange
+is 4,096 tiny messages and four of them ran per collide. Merging the two beams
+halves that (2026-09-06 attribution: 8.6 ms of a 39.5 ms collide at sixty-four
+ranks, and flat from thirty-two).
+
+Bit-identical, and the seam's ordering contract is what makes it so. Beam 1's
+columns are packed first, then beam 2's, each slice-major exactly as before,
+and the destination sort is stable; the seam then delivers columns in SENDER
+order and, within a sender, in the sender's column order. Bucketing the
+arrivals by `(beam, slice)` -- beam the major key, stable -- therefore leaves
+each beam's members of each slice in the order two separate exchanges produced:
+sender by sender, and within a sender the packing order. Nothing downstream
+sees a different sequence, so no fold changes.
+
+The per-rank slice counts ride the same merge: one all-sum over both beams'
+slices rather than one each.
+"""
+function _pic_sliced_migrate_pair_in(rep1::Phase6DRep, slices1, layout1::_PICSlicedLayout,
+                                     rep2::Phase6DRep, slices2, layout2::_PICSlicedLayout,
+                                     sc::_PICMigrationScratch{T},
+                                     sc2::_PICMigrationScratch{T}, ::Type{T}) where {T}
+    P = _mp_nranks()
+    rank = _mp_rank()
+    ns1 = length(layout1.counts); ns2 = length(layout2.counts)
+    size(sc.counts) == (ns1 + ns2, P) || (sc.counts = zeros(Float64, ns1 + ns2, P))
+    local_counts = sc.counts
+    fill!(local_counts, 0.0)
+    for s in 1:ns1
+        local_counts[s, rank + 1] = length(slices1.indices[s])
+    end
+    for s in 1:ns2
+        local_counts[ns1 + s, rank + 1] = length(slices2.indices[s])
+    end
+    _mp_allsum!(local_counts)
+    prefix1 = zeros(Int, ns1); prefix2 = zeros(Int, ns2)
+    for s in 1:ns1, q in 1:rank
+        prefix1[s] += Int(local_counts[s, q])
+    end
+    for s in 1:ns2, q in 1:rank
+        prefix2[s] += Int(local_counts[ns1 + s, q])
+    end
+    ncols1 = sum(length, slices1.indices; init=0)
+    ncols2 = sum(length, slices2.indices; init=0)
+    ncols = ncols1 + ncols2
+    # Row 7 is the slice, row 8 the beam: both travel with the particle so the
+    # receiver can bucket without a second message.
+    cols = _pic_mig_matrix!(sc.cols, 8, ncols)
+    dest = _pic_mig_ints!(sc.dest, ncols)
+    home = _pic_mig_ints!(sc.home, ncols)
+    beam_home = _pic_mig_ints!(sc.beam_home, ncols)
+    c = 0
+    for (b, slices, layout, rep, prefix) in ((1, slices1, layout1, rep1, prefix1),
+                                             (2, slices2, layout2, rep2, prefix2))
+        for s in eachindex(slices.indices)
+            for (o, i) in enumerate(slices.indices[s])
+                c += 1
+                @inbounds begin
+                    cols[1, c] = rep.x[i]; cols[2, c] = rep.px[i]
+                    cols[3, c] = rep.y[i]; cols[4, c] = rep.py[i]
+                    cols[5, c] = rep.z[i]; cols[6, c] = rep.pz[i]
+                    cols[7, c] = T(s);     cols[8, c] = T(b)
+                end
+                dest[c] = _pic_sliced_rank(layout, s, prefix[s] + o)
+                home[c] = i
+                beam_home[c] = b
+            end
+        end
+    end
+    order = _pic_mig_ints!(sc.order, ncols)     # the stable order the exchange applies
+    sortperm!(order, dest; alg=MergeSort, initialized=false)
+    received, from_counts = _mp_exchange_columns(cols, dest)
+    m = size(received, 2)
+    slice_of = _pic_mig_ints!(sc.slice_of, m)
+    beam_of = _pic_mig_ints!(sc.beam_of, m)
+    key = _pic_mig_ints!(sc.key, m)
+    maxns = max(ns1, ns2)
+    for j in 1:m
+        @inbounds begin
+            slice_of[j] = Int(received[7, j])
+            beam_of[j] = Int(received[8, j])
+            # Beam is the MAJOR key, so each beam's arrivals stay contiguous and
+            # a stable sort keeps sender order inside a slice.
+            key[j] = (beam_of[j] - 1) * (maxns + 1) + slice_of[j]
+        end
+    end
+    allbucket = _pic_mig_ints!(sc.bucket, m)
+    sortperm!(allbucket, key; alg=MergeSort, initialized=false)
+    senders = _pic_mig_ints!(sc.senders, m)
+    j = 0
+    for (q, n) in enumerate(from_counts), _ in 1:n
+        j += 1
+        senders[j] = q - 1
+    end
+    beams = Vector{_PICSlicedBeam{T}}(undef, 2)
+    b0 = 1
+    for (b, layout, states_sc, ncols_b) in ((1, layout1, sc, ncols1),
+                                            (2, layout2, sc2, ncols2))
+        states = Dict{Int,NamedTuple{(:x, :px, :y, :py, :z, :pz),NTuple{6,Vector{T}}}}()
+        starts = Dict{Int,Int}()
+        mine = _pic_sliced_mine(layout, rank)
+        bucket = Int[]
+        for (s, _) in mine
+            n = 0
+            while b0 + n <= m && beam_of[allbucket[b0 + n]] == b &&
+                  slice_of[allbucket[b0 + n]] == s
+                n += 1
+            end
+            st = _pic_mig_state!(states_sc, s, n)
+            for o in 1:n
+                col = allbucket[b0 + o - 1]
+                @inbounds begin
+                    st.x[o] = received[1, col]; st.px[o] = received[2, col]
+                    st.y[o] = received[3, col]; st.py[o] = received[4, col]
+                    st.z[o] = received[5, col]; st.pz[o] = received[6, col]
+                end
+                push!(bucket, col)
+            end
+            states[s] = st
+            starts[s] = length(bucket) - n + 1
+            b0 += n
+        end
+        beams[b] = _PICSlicedBeam{T}(layout, mine, states, bucket, starts, senders,
+                                     home, order, ncols_b, length(bucket))
+    end
+    b0 - 1 == m || error(
+        "received $(m) columns but bucketed $(b0 - 1): a column of a slice or beam this rank does not hold")
+    return beams[1], beams[2]
+end
+
+"""
+Migrate BOTH beams back with ONE exchange, the twin of the pair migration in.
+
+Each beam writes its slices into the columns it received -- `bucket` holds
+indices into the MERGED arrival -- and the single exchange returns every column
+to its sender in the order it was sent, so `beam_home` says which
+representation each landing belongs to and `home` says which slot.
+"""
+function _pic_sliced_migrate_pair_out!(rep1::Phase6DRep, sb1::_PICSlicedBeam{T},
+                                       rep2::Phase6DRep, sb2::_PICSlicedBeam{T},
+                                       sc::_PICMigrationScratch{T}) where {T}
+    m = length(sc.senders)
+    cols = _pic_mig_matrix!(sc.out, 6, m)
+    for sb in (sb1, sb2)
+        for (s, _) in sb.slices
+            st = sb.states[s]
+            b0 = sb.starts[s]
+            for o in eachindex(st.x)
+                col = sb.bucket[b0 + o - 1]
+                @inbounds begin
+                    cols[1, col] = st.x[o]; cols[2, col] = st.px[o]
+                    cols[3, col] = st.y[o]; cols[4, col] = st.py[o]
+                    cols[5, col] = st.z[o]; cols[6, col] = st.pz[o]
+                end
+            end
+        end
+    end
+    back, _ = _mp_exchange_columns(cols, sc.senders)
+    ncols = length(sc.home)
+    size(back, 2) == ncols || error(
+        "$(size(back, 2)) columns came home, $(ncols) were sent")
+    for k in 1:ncols
+        idx = sc.order[k]
+        i = sc.home[idx]
+        rep = sc.beam_home[idx] == 1 ? rep1 : rep2
+        @inbounds begin
+            rep.x[i] = back[1, k]; rep.px[i] = back[2, k]
+            rep.y[i] = back[3, k]; rep.py[i] = back[4, k]
+            rep.z[i] = back[5, k]; rep.pz[i] = back[6, k]
+        end
+    end
+    return nothing
 end
 
 """
@@ -1965,8 +2147,8 @@ function _sliced_collide!(solver, beam1::Beam, beam2::Beam, slices1, slices2, or
     layout1 = _pic_sliced_layout(plan1.counts, P)
     layout2 = _pic_sliced_layout(plan2.counts, P)
     mig1, mig2 = _pic_migration_scratch(T, sliced_migration)
-    sb1 = _pic_sliced_migrate_in(beam1.rep, slices1, layout1, mig1, T)
-    sb2 = _pic_sliced_migrate_in(beam2.rep, slices2, layout2, mig2, T)
+    sb1, sb2 = _pic_sliced_migrate_pair_in(beam1.rep, slices1, layout1,
+                                          beam2.rep, slices2, layout2, mig1, mig2, T)
     # `sliced_batches`, not `batches`: the per-pair branch below assigns
     # `batches` too, and one name assigned in two places and captured by
     # the closure below is a `Core.Box` (the lowered-code sweep).
@@ -2031,8 +2213,7 @@ function _sliced_collide!(solver, beam1::Beam, beam2::Beam, slices1, slices2, or
                                  scratch, kbb1, kbb2, klum, compute_luminosity)
         end
     end
-    _pic_sliced_migrate_out!(beam1.rep, sb1, mig1)
-    _pic_sliced_migrate_out!(beam2.rep, sb2, mig2)
+    _pic_sliced_migrate_pair_out!(beam1.rep, sb1, beam2.rep, sb2, mig1)
     # The coordinators hold their pairs' values and everyone else zeros,
     # so the all-sum is exact and every rank folds the same vector below.
     _mp_allsum!(lum_parts)
