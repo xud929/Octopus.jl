@@ -473,6 +473,13 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   10.04 s between two runs of the same configuration; within one process the
   64-thread series falls monotonically at 0.0% GC and 0.000 GiB/turn, and the
   record's own anomalous -0.5 s intercept comes back at +46.0 and +44.9 s),
+  [`gpic_wobble_mechanism_2026_09_07.md`](history/gpic_wobble_mechanism_2026_09_07.md)
+  (member 2 of the CUDA wobble ledger closed: it is the float-atomic deposition
+  nondeterminism already documented at the top of `pic_cuda.jl`, not a gpic A/B
+  coin -- found by comparing a route against ITSELF, which no probe had done;
+  the row's "exactly two profiles", "belongs to the fallback" and "not
+  reproducible standalone" were all sampling artifacts, and the fix is the pin's
+  tolerance, now derived in-process, not the solver),
   [`metadata_cluster_2026_09_07.md`](history/metadata_cluster_2026_09_07.md)
   (closing three metadata-validator rows at once, two of which were wrong about
   their own subject: the observer schema-vs-report check is an identity for one
