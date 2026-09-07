@@ -1,4 +1,5 @@
-export TrackingContext, TrackingTask, execute!, update!, luminosity, loss_record
+export TrackingContext, TrackingTask, execute!, update!, luminosity, loss_record,
+       tracking_task_option_schema
 
 """
     update!(elem, ctx)
@@ -67,6 +68,16 @@ struct TrackingTask <: AbstractTask
     # alive. A collected referent reads as `nothing`, which simply fails the
     # match and builds a fresh record -- the safe direction.
     loss_owner::Base.RefValue{WeakRef}
+    # Per-turn wall-clock timing (2026-09-07), the `TrackingTask` twin of
+    # `StrongStrongDiagnostics.record_turn_times`. Same keyword, same meaning,
+    # same accessor (`turn_timings`) -- one keyword, one meaning, now on both
+    # tasks. It is NOT a `StrongStrongDiagnostics` field: five of that struct's
+    # six options have no consumer on this path, and `_warn_inactive_diagnostics`
+    # filters on backend rather than on task, so a `TrackingTask` handed
+    # `pic_timing=true` would accept it in silence -- the silently-ignored
+    # non-default request AGENTS.md names first.
+    record_turn_times::Bool
+    turn_times::Vector{Float64}
 end
 
 function configuration_report(task::TrackingTask, rep::Phase6DRep)
@@ -82,7 +93,8 @@ function configuration_report(task::TrackingTask, rep::Phase6DRep)
         schedule=configuration_report(item.schedule),
     ) for item in task.observers)
     return (policy=configuration_report(policy, rep),
-            actions=action_reports, observers=observer_reports)
+            actions=action_reports, observers=observer_reports,
+            record_turn_times=task.record_turn_times)
 end
 
 """
@@ -165,7 +177,8 @@ function TrackingTask(elements;
                       loss_log=nothing,      # retired 2026-08-18; throws below
                       loss_report::Bool=true,
                       luminosity=nothing,    # retired 2026-08-18; throws below
-                      artifact::Union{Nothing,RunArtifact,AbstractString}=nothing)
+                      artifact::Union{Nothing,RunArtifact,AbstractString}=nothing,
+                      record_turn_times::Bool=false)
     luminosity === nothing || throw(ArgumentError(
         "the standalone luminosity outputs were retired (text observer " *
         "2026-08-18; the path keywords 2026-08-17): pass " *
@@ -186,7 +199,67 @@ function TrackingTask(elements;
           artifact isa RunArtifact ? artifact : RunArtifact(String(artifact))
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
                         Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),
-                        loss_report, Ref{Any}(nothing), art, Ref(WeakRef(nothing)))
+                        loss_report, Ref{Any}(nothing), art, Ref(WeakRef(nothing)),
+                        record_turn_times, Float64[])
+end
+
+"""
+Public configuration options of `TrackingTask` itself, the twin of
+`strong_strong_task_option_schema()`. Checked by
+`validate_configuration_metadata()`: every key must be a field, every declared
+default must equal what the constructor builds, and every option must name a
+runtime consumer.
+"""
+tracking_task_option_schema() = (
+    record_turn_times=ConfigurationOptionMeta(Bool, false,
+        "Record complete-turn wall-clock seconds, read back with " *
+        "`turn_timings(task)`. OPT-IN because it costs storage without bound " *
+        "-- 8 bytes per turn, against workloads that run 1e7 turns -- and " *
+        "because on CUDA it synchronizes the device at every complete-turn " *
+        "boundary and therefore PERTURBS the throughput it measures; leave it " *
+        "off for production timing. PER RANK under MPI: each rank clocks its " *
+        "own shard's turn and no collective is issued (a collective belongs at " *
+        "a run's entry, not inside a per-turn loop), so a reader takes the MAX " *
+        "across ranks -- the slowest rank is the turn's wall time. CLEARED at " *
+        "the top of every `execute!`, so index i is turn `first_turn + i - 1` " *
+        "for the window just run, which is the only rule that survives a " *
+        "repositioned (`start_turn=`) call.";
+        category=:diagnostics, consumer=:tracking_turn_timing),
+)
+
+"""
+    turn_timings(task::TrackingTask) -> Vector{Float64}
+
+Complete-turn wall-clock seconds for the window most recently executed, or an
+empty vector when `record_turn_times=false`. A defensive copy.
+
+The `StrongStrongTask` method of this same accessor is in
+`src/tasks/strongstrong/interface.jl`; one accessor, one meaning, two tasks.
+"""
+turn_timings(task::TrackingTask) = copy(task.turn_times)
+
+"""
+    _stamp_turn!(record, times, t0, backend) -> nothing
+
+Close one complete-turn boundary. On CUDA the device must be drained before the
+clock is read: `_cuda_launch_track_policy!` (`src/track/phase6d_track.jl`)
+queues work and returns, so an unsynchronized stamp measures launch-queue
+latency rather than the turn. The OPENING boundary is closed by the caller
+before its loop -- without it turn 1, and only turn 1, absorbs whatever was
+already in flight at entry.
+"""
+@inline function _stamp_turn!(record::Bool, times::Vector{Float64},
+                              t0::UInt64, backend)
+    record || return nothing
+    backend === CUDABackend && _HAS_CUDA && CUDA.synchronize()
+    push!(times, (time_ns() - t0) * 1.0e-9)
+    return nothing
+end
+
+"""Drain the device so the first turn starts from an empty queue."""
+@inline function _open_turn_boundary(record::Bool, backend)
+    record && backend === CUDABackend && _HAS_CUDA && CUDA.synchronize()
+    return nothing
 end
 
 """
@@ -470,11 +543,29 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     # second receipt for one run; the scope is then entered twice, around the
     # tracking and around the accounting that follows it.
     active = _activate_resolved_policy!(policy)
+    # CLEARED per call, never appended. `execute!` accepts `start_turn=`, so an
+    # appended vector's index would map to no turn at all after a reposition;
+    # cleared, index i is turn `first_turn + i - 1` for the window just run.
+    # Matches the strong-strong facility, which empties at the same point.
+    if task.record_turn_times
+        empty!(task.turn_times)
+        sizehint!(task.turn_times, nturns)
+    end
     result = try
         _with_resolved_policy(active) do
             # Once per call, inside the policy scope: deriving the shard is a
             # collective, and every fold inside the run reads it from here
             # instead of paying for its own.
+            # `fast_path` is what makes the pin non-vacuous: it is the only
+            # way a test can assert the instrument ran on the loop the
+            # benchmark takes, rather than merely that some loop produced
+            # numbers.
+            _record_execution!(:tracking_turn_timing, backend_type(policy), (
+                record_turn_times=task.record_turn_times,
+                turns=nturns,
+                fast_path=isempty(task.actions) && isempty(task.observers) &&
+                          !_has_line_hooks(runtime_entries) && task.artifact === nothing,
+            ))
             _with_shard(rep, _mp_resolve_shard(length(rep))) do
                 _execute_tracking_task!(
                     task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy)
@@ -726,7 +817,8 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
        !_has_line_hooks(runtime_entries) && task.artifact === nothing
         _execute_fast_tracking_turns!(
             rep, runtime_elems, turns, first_turn, policy,
-            with_index_offset(TrackingContext(), first(_mp_current_shard(rep))))
+            with_index_offset(TrackingContext(), first(_mp_current_shard(rep))),
+            task.record_turn_times, task.turn_times, backend_type(policy))
         return rep
     end
     # `first_turn`, not just the count: `should_run` is handed the ABSOLUTE turn
@@ -761,8 +853,15 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
         # not. (Reachable at one rank today; step 3b opens this path to more.)
         base_ctx = with_index_offset(TrackingContext(),
                                      first(_mp_current_shard(rep)))
+        # The other of the two turn loops; see `_execute_fast_tracking_turns!`
+        # for why both must carry this and why that one takes the flags
+        # positionally.
+        _record_turns = task.record_turn_times
+        _turn_backend = backend_type(policy)
+        _open_turn_boundary(_record_turns, _turn_backend)
         for offset in 0:(turns - 1)
             turn = first_turn + offset
+            _turn_t0 = _record_turns ? time_ns() : UInt64(0)
             ctx = with_turn(base_ctx, turn)
             run_actions!(task.actions, ctx, rep)
             task_diagnostics = requires_elementwise_tracking(task.observers, ctx) ||
@@ -785,6 +884,7 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                                                   turn, Float64(lum))
                 end
             end
+            _stamp_turn!(_record_turns, task.turn_times, _turn_t0, _turn_backend)
         end
         tracking_completed = true
     finally
@@ -860,14 +960,29 @@ function _warn_unfireable_schedules(observers, turns::Integer, first_turn::Integ
     return nothing
 end
 
+# `record`, `times` and `backend` are REQUIRED POSITIONAL parameters, not
+# keywords with defaults, and that is deliberate. `TrackingTask` has TWO turn
+# loops -- this one and the general loop in `_execute_tracking_task!` -- with one
+# caller each, and the witnesses for them disagree: the weak-strong harness
+# always attaches an artifact and so takes the GENERAL loop, while
+# `profiling/benchmark_track_cpu.jl` builds a bare task and takes THIS one. An
+# implementer who instruments only the general loop gets a green harness, a
+# green MPI arm, a plausible per-turn series, and a permanently empty vector for
+# the very case the instrument was added for. Required parameters make that
+# omission a compile error instead of a silent hole (2026-09-07).
 function _execute_fast_tracking_turns!(rep, runtime_elems, turns::Int,
                                        first_turn::Int64, policy,
-                                       base_ctx::TrackingContext)
+                                       base_ctx::TrackingContext,
+                                       record::Bool, times::Vector{Float64},
+                                       backend)
+    _open_turn_boundary(record, backend)
     for offset in 0:(turns - 1)
         turn = first_turn + offset
+        t0 = record ? time_ns() : UInt64(0)
         ctx = with_turn(base_ctx, turn)
         _update_runtime_line!(runtime_elems, ctx)
         track!(rep, runtime_elems, 1, policy, ctx)
+        _stamp_turn!(record, times, t0, backend)
     end
     return nothing
 end

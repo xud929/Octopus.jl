@@ -169,7 +169,15 @@ radiation = LumpedRadSpec{Float64}(; damping_turns = rad.damping_turns,
 line_specs = (tccb2ip_inv, tccb, tccb2ip, LorentzBoostSpec(opt.crossing_angle),
               gsb, RevLorentzBoostSpec(opt.crossing_angle), ip2tcca, tcca,
               ip2tcca_inv, one_turn, chrom, radiation)
-task = TrackingTask(line_specs)
+# OCTOPUS_BENCH_TURN_SERIES=1 records a per-turn wall-clock series WITHIN each
+# window. This is the instrument whose absence forced the 2026-09-06 benchmark to
+# derive weak-strong per-turn cost by differencing SEPARATE whole-process runs --
+# which gave a spurious "the 64-thread arm degrades as the run proceeds" with an
+# unphysical -0.5 s intercept (retracted:
+# docs/history/weak_strong_64thread_lead_2026_09_07.md). With this on, the
+# question is answered inside one run and needs no subtraction.
+const TURN_SERIES = get(ENV, "OCTOPUS_BENCH_TURN_SERIES", "0") == "1"
+task = TrackingTask(line_specs; record_turn_times = TURN_SERIES)
 
 """Process CPU seconds (user+sys); see `benchmark_collide_cpu.jl` for how to
 read the derived utilisation number (diagnostic, not target)."""
@@ -261,6 +269,7 @@ if get(ENV, "OCTOPUS_BENCH_ALLOC_PROFILE", "0") == "1"
 end
 
 times = Float64[]
+series = Float64[]
 for w in 1:WINDOWS
     gc0 = Base.gc_num()
     cpu0 = cpu_seconds()
@@ -277,6 +286,19 @@ for w in 1:WINDOWS
             get(ENV, "JULIA_THREAD_SLEEP_THRESHOLD", "") == "0" ? "" :
                 "   (idle threads spinning: util inflated)")
     push!(times, dt / TURNS)
+    # Cleared per execute!, so this is THIS window's turns; concatenating the
+    # windows gives the whole run's series in turn order.
+    TURN_SERIES && append!(series, turn_timings(task))
+end
+if TURN_SERIES && !isempty(series)
+    q = max(1, length(series) ÷ 4)
+    @printf("WS-TURN-SERIES rank=%d turns=%d first_quarter_mean=%.4f last_quarter_mean=%.4f drift=%.3fx\n",
+            BENCH_RANK, length(series),
+            sum(series[1:q]) / q, sum(series[end-q+1:end]) / q,
+            (sum(series[end-q+1:end]) / q) / max(sum(series[1:q]) / q, eps()))
+    for (i, dt) in enumerate(series)
+        @printf("WS-TURN rank=%d turn=%d seconds=%.6f\n", BENCH_RANK, i, dt)
+    end
 end
 sorted = sort(times)
 median = sorted[cld(length(sorted), 2)]

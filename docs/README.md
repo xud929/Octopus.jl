@@ -480,6 +480,15 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   the row's "exactly two profiles", "belongs to the fallback" and "not
   reproducible standalone" were all sampling artifacts, and the fix is the pin's
   tolerance, now derived in-process, not the solver),
+  [`tracking_task_turn_timing_2026_09_07.md`](history/tracking_task_turn_timing_2026_09_07.md)
+  (TrackingTask gains per-turn timing under the same `record_turn_times` keyword
+  and `turn_timings` accessor as StrongStrongTask, closing the asymmetry that
+  produced the retracted 64-thread lead; the artifact-ledger route is rejected on
+  the record because it overwrites and because attaching an artifact moves the
+  run off the fast loop a benchmark measures; the two-turn-loop trap is closed by
+  required positional parameters and a `fast_path` receipt field; and the
+  instrument being mirrored is fixed -- it synchronized at every complete-turn
+  boundary except the opening one, so turn 1 absorbed the entry backlog),
   [`metadata_cluster_2026_09_07.md`](history/metadata_cluster_2026_09_07.md)
   (closing three metadata-validator rows at once, two of which were wrong about
   their own subject: the observer schema-vs-report check is an identity for one

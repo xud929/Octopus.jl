@@ -297,7 +297,12 @@ Runtime observation is explicit and task-scoped. Pass
 `diagnostics=StrongStrongDiagnostics(...)` to `StrongStrongTask`; controls
 cover complete-turn timing, CUDA memory logging, PIC phase timing, Green-cache
 statistics, and NVTX ranges. Read structured results with `turn_timings`,
-`pic_phase_timings`, or `diagnostic_summary`. Detailed PIC phase timing inserts
+`pic_phase_timings`, or `diagnostic_summary`. `TrackingTask` carries the
+complete-turn timing half of that under the SAME keyword and the same accessor
+-- `TrackingTask(line; record_turn_times=true)`, read back with
+`turn_timings(task)` -- rather than a second spelling for one idea; it is
+per-rank under MPI (no collective is issued inside a turn loop, so a reader
+takes the max across ranks) and cleared at the top of every `execute!`. Detailed PIC phase timing inserts
 synchronization and is not a production throughput measurement. Environment
 variables in the shell example are convenience adapters; library runtime code
 does not read them.

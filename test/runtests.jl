@@ -402,6 +402,111 @@ end
     @test fast != initial
 end
 
+@testset "TrackingTask records per-turn timings on BOTH of its turn loops" begin
+    # 2026-09-07. TrackingTask had no per-turn timing while StrongStrongTask
+    # did, so every weak-strong timing claim rested on differencing whole
+    # process wall clocks -- which is what produced the retracted "the
+    # 64-thread arm degrades as the run proceeds" finding
+    # (docs/history/weak_strong_64thread_lead_2026_09_07.md).
+    #
+    # THE TRAP THIS TESTSET EXISTS FOR: TrackingTask has TWO turn loops, and
+    # the witnesses for them disagree. The weak-strong harness always attaches
+    # an artifact and takes the GENERAL loop; profiling/benchmark_track_cpu.jl
+    # builds a bare task and takes the FAST loop. Instrumenting only the
+    # general one leaves a green harness and a permanently empty vector for the
+    # case the instrument was added for, so each loop is asserted here BY NAME,
+    # through the receipt's `fast_path` field rather than by inference.
+    line = (DriftSpec(L=1.0),)
+    mkrep() = Phase6DRep([1.0e-4, 2.0e-4], [0.0, 0.0], [0.0, 0.0],
+                         [0.0, 0.0], [0.0, 0.0], [0.0, 0.0])
+    timing_receipt(audit) = only(filter(r -> r.consumer === :tracking_turn_timing,
+                                        execution_receipts(audit)))
+
+    # Off by default, and off means EMPTY -- the non-vacuous direction.
+    off = TrackingTask(line)
+    @test off.record_turn_times === false
+    execute!(off, mkrep(); turns=5)
+    @test isempty(turn_timings(off))
+
+    # The FAST loop: no actions, no observers, no hooks, no artifact.
+    fast = TrackingTask(line; record_turn_times=true)
+    audit_fast = ExecutionAudit()
+    wall_fast = @elapsed with_execution_audit(audit_fast) do
+        execute!(fast, mkrep(); turns=7)
+    end
+    @test timing_receipt(audit_fast).values.fast_path === true
+    @test timing_receipt(audit_fast).values.record_turn_times === true
+    @test length(turn_timings(fast)) == 7
+    @test all(>(0.0), turn_timings(fast))
+    # A shape bound that kills a stamp-once-push-N implementation: the turns
+    # must sum to less than the wall clock around the whole call.
+    @test sum(turn_timings(fast)) <= wall_fast
+
+    # The GENERAL loop: an artifact takes the run off the fast path.
+    general = TrackingTask(line; record_turn_times=true,
+                           artifact=joinpath(mktempdir(), "turn_timing.h5"))
+    audit_general = ExecutionAudit()
+    with_execution_audit(audit_general) do
+        execute!(general, mkrep(); turns=4)
+    end
+    @test timing_receipt(audit_general).values.fast_path === false
+    @test length(turn_timings(general)) == 4
+
+    # CLEARED per execute!, never appended: `start_turn=` repositions, and an
+    # appended index would then map to no turn at all.
+    execute!(fast, mkrep(); turns=3)
+    @test length(turn_timings(fast)) == 3
+    execute!(fast, mkrep(); turns=2, start_turn=9)
+    @test length(turn_timings(fast)) == 2
+
+    # Defensive copy: the accessor must not hand out the task's own buffer.
+    borrowed = turn_timings(fast)
+    borrowed[1] = -1.0
+    @test turn_timings(fast)[1] != -1.0
+
+    # Recording must not move the physics. A radiating line, so the RNG stream
+    # is in play and a changed call order would show.
+    rad_line = (DriftSpec(L=1.0),
+                LumpedRadSpec{Float64}(; damping_turns=(1.0e4, 1.0e4, 1.0e4),
+                    beta=(1.0, 1.0, 1.0), alpha=(0.0, 0.0, 0.0),
+                    sigma=(1.0e-4, 1.0e-4, 1.0e-3), rng_id=2))
+    rep_off = mkrep(); rep_on = mkrep()
+    execute!(TrackingTask(rad_line), rep_off; turns=6)
+    execute!(TrackingTask(rad_line; record_turn_times=true), rep_on; turns=6)
+    for (a, b) in zip(coordinate_arrays(rep_off), coordinate_arrays(rep_on))
+        @test a == b
+    end
+
+    # The instrument must not allocate per turn: the weak-strong path was taken
+    # to 0.000 GiB/turn on 2026-09-04 and is pinned there. `sizehint!` at the
+    # top of execute! means the vector grows once, not once per turn, so the
+    # cost must not scale with the turn count.
+    # The comparison is ON against OFF at the SAME turn count, not short against
+    # long: the tracking machinery itself allocates per turn, so total
+    # allocation scales with turns whatever this option does, and an
+    # absolute-growth bound only measures that. What must hold is that turning
+    # the instrument ON adds nothing that scales -- `empty!` plus `sizehint!` at
+    # the top of execute! means the vector is allocated once per call, not once
+    # per turn, so the whole overhead is the 8 bytes/turn of storage plus a
+    # constant.
+    warm_off = TrackingTask(line)
+    warm_on = TrackingTask(line; record_turn_times=true)
+    # THREE warm-up rounds each, not one: with a single round the first measured
+    # call still pays compilation and reads ~101 kB against a steady-state
+    # 6.9 kB, which would make any bound here pass for the wrong reason. Warmed
+    # properly the two are bit-stable and EQUAL -- recording adds no
+    # steady-state allocation at all, because `empty!` keeps the vector's
+    # capacity between calls -- so the bound below is tight rather than
+    # decorative, and a per-turn allocation regression blows it.
+    for _ in 1:3
+        execute!(warm_off, mkrep(); turns=8)
+        execute!(warm_on, mkrep(); turns=8)
+    end
+    a_off = @allocated execute!(warm_off, mkrep(); turns=64)
+    a_on = @allocated execute!(warm_on, mkrep(); turns=64)
+    @test a_on <= a_off + 8 * 64 + 1024
+end
+
 @testset "TrackingTask absolute turns survive chunked execution" begin
     observer = TestTurnObserver(Int[])
     task = TrackingTask((); hooks=(observer,))
@@ -3804,6 +3909,9 @@ end
     # through the run artifact's step 1; and (:artifact,) alone since step 4
     # retired the text observer (2026-08-18): the artifact IS the output.
     @test keys(strong_strong_task_option_schema()) == (:artifact,)
+    # The TrackingTask twin (2026-09-07). Same shape as the line above: a new
+    # public task option is invisible until it appears in the schema.
+    @test keys(tracking_task_option_schema()) == (:record_turn_times,)
 end
 
 @testset "CUDA and CPU PIC cache keys cannot drift apart" begin

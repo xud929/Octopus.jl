@@ -75,6 +75,7 @@ Use Julia help:
 ?diagnostics_option_schema
 ?diagnostics_help
 ?turn_timings
+?tracking_task_option_schema
 ?pic_phase_timings
 ?diagnostic_summary
 ?StrongStrongCollision

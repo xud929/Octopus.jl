@@ -2048,6 +2048,31 @@ function validate_configuration_metadata()
         isequal(getproperty(default_task, name), meta.default) || push!(errors,
             "StrongStrongTask.$(name) metadata default disagrees with constructor")
     end
+    # TrackingTask's own options (2026-09-07), the same three checks the block
+    # above applies to StrongStrongTask, against a CONSTRUCTED task rather than
+    # a literal -- the U5-4 rule.
+    default_tracking = TrackingTask(())
+    Set(keys(tracking_task_option_schema())) ⊆ Set(fieldnames(TrackingTask)) ||
+        push!(errors, "TrackingTask schema names a key the type does not have")
+    for (name, meta) in pairs(tracking_task_option_schema())
+        meta.consumer === :unspecified && push!(errors,
+            "TrackingTask.$(name) has no runtime consumer")
+        isequal(getproperty(default_tracking, name), meta.default) || push!(errors,
+            "TrackingTask.$(name) metadata default disagrees with constructor")
+    end
+    # The FIFTH tree walk, added with the second task schema rather than after
+    # it (2026-09-07). The other four are the policy, solver, schedule and
+    # observer walks; tasks were the family whose completeness rested on a
+    # reviewer noticing, and this repository's record is that it does not: U3-5
+    # added a task option with no schema, U5-11 shipped a schema unexported.
+    # `StrongStrongTask` is parametric, so the walk sees a UnionAll -- which is
+    # exactly why `_concrete_octopus_subtypes` gates on abstractness rather than
+    # on `isconcretetype`.
+    for T in _concrete_octopus_subtypes(AbstractTask)
+        T in (TrackingTask, StrongStrongTask) || push!(errors,
+            "$(T) is a concrete Octopus task with no block in " *
+            "validate_configuration_metadata; add one (see the solver tree guard)")
+    end
     Set(keys(diagnostics_option_schema())) == Set(fieldnames(StrongStrongDiagnostics)) ||
         push!(errors, "StrongStrongDiagnostics fields and metadata keys disagree")
     default_diagnostics = StrongStrongDiagnostics()
@@ -2658,6 +2683,21 @@ function _execute_strong_strong_turns!(
     # takes the turn-only context; it reads its offsets from the same scope.
     shard_offset1 = first(_mp_current_shard(beam1.rep))
     shard_offset2 = first(_mp_current_shard(beam2.rep))
+    # The OPENING complete-turn boundary (2026-09-07). The schema promises
+    # "Synchronize at complete-turn boundaries"; the tail sync below honoured
+    # every boundary except the first, so turn 1 -- and only turn 1 -- absorbed
+    # whatever was still queued on the device when this loop began: the beam
+    # upload, warm-up launches, anything the caller left in flight. CUDA
+    # launches are asynchronous (`_cuda_launch_track_policy!`,
+    # src/track/phase6d_track.jl:282-297, queues and returns), so `turn_t0` was
+    # taken with work already pending and the tail `synchronize()` waited for
+    # all of it. Turns 2..N were always correct, because the previous
+    # iteration's sync had drained the queue -- which is why the defect is
+    # invisible to any reader that averages over a later window, as the
+    # 2026-09-06 production benchmark did (turns 100-200).
+    if task.diagnostics.record_turn_times
+        backend === CUDABackend && CUDA.synchronize()
+    end
     for offset in 0:(turns - 1)
         turn = first_turn + offset
         turn_t0 = task.diagnostics.record_turn_times ? time_ns() : UInt64(0)

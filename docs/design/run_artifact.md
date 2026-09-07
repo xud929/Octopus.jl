@@ -161,6 +161,16 @@ its record; rows from a replayed window are RETAINED too, distinguishable by
 execution index, because both attempts' timings are exactly what a retry
 diagnosis wants. Richer per-turn timing joins the same group behind the
 existing diagnostics precedent (`StrongStrongDiagnostics.record_turn_times`),
+**(Corrected 2026-09-07: the ledger route cannot serve this.** The per-execution
+ledger OVERWRITES -- `current_turn` and `elapsed` are one slot per `execute!` --
+so a reader gets one (turn, elapsed) pair per execution, not a series; it is
+live progress for `h5ls` during a run, not history. And decisively,
+`task.artifact === nothing` is a term of the fast-path gate in
+`_execute_tracking_task!`, so attaching an artifact to obtain timings moves the
+run OFF the loop a benchmark measures -- the route cannot instrument its own
+motivating case. Per-turn timing landed instead as `record_turn_times` on the
+task itself, in memory, read back with `turn_timings`. Record:
+[`../history/tracking_task_turn_timing_2026_09_07.md`](../history/tracking_task_turn_timing_2026_09_07.md).)
 and the opt-in/out keyword for execution logging harmonises with that
 diagnostics object on both tasks rather than inventing a second switch. The
 interim fix already landed on the moment files: a per-execution ledger

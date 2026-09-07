@@ -477,8 +477,16 @@ line_specs = (
 # execution, OCTOPUS_CUDA_DEVICE now reaches execution, and OCTOPUS_USE_MPI
 # works at all: an inferred default is a `CPUThreadsExecutionPolicy`, so without
 # this every rank would have tracked the whole beam, silently.
+# OCTOPUS_RECORD_TURN_TIMES=1 gives a per-turn wall-clock series from ONE run.
+# Off by default: on CUDA it synchronizes at every complete-turn boundary and so
+# perturbs the throughput it measures, and it stores 8 bytes per turn without
+# bound. It exists because the alternative -- differencing whole-process wall
+# times across separate runs -- produced a wrong answer on 2026-09-06 and cost a
+# retraction (docs/history/weak_strong_64thread_lead_2026_09_07.md).
+record_turn_times = env_bool("OCTOPUS_RECORD_TURN_TIMES", false)
 task = TrackingTask(line_specs;
     policy = policy,
+    record_turn_times = record_turn_times,
     artifact = RunArtifact(artifact_path; capacity = input.output.capacity))
 execute!(task, beam; turns = turns)
 
@@ -491,6 +499,35 @@ execute!(task, beam; turns = turns)
 mpi_nranks = use_mpi ? MPI.Comm_size(MPI.COMM_WORLD) : 1
 mpi_rank = use_mpi ? MPI.Comm_rank(MPI.COMM_WORLD) : 0
 use_mpi && println("mpi_rank = ", mpi_rank, " of ", mpi_nranks)
+# Rank 0 alone writes files; every rank prints. One path and P writers is a
+# race, and this harness had no such flag before (the strong-strong one does).
+writes_files = mpi_rank == 0
+if record_turn_times
+    series = turn_timings(task)
+    # PER RANK, and said so: each rank clocked its own shard's turn and no
+    # collective was issued, so the turn's true wall time is the MAX across
+    # ranks, not this line. Printed by every rank for the same reason the
+    # configuration dump is -- each rank asserting what it actually measured.
+    println("turn_timings_seconds", mpi_nranks > 1 ? " (rank $(mpi_rank) shard of $(mpi_nranks); the turn's wall time is the max over ranks)" : "",
+            " = ", series)
+    if writes_files
+        path = get(ENV, "OCTOPUS_TURN_TIMING_PATH", "")
+        if !isempty(path)
+            # Relative paths resolve against the repository, never into
+            # OCTOPUS_RESULT_DIR: the suite asserts rank 0's result directory
+            # holds exactly one file.
+            full = isabspath(path) ? path : joinpath(@__DIR__, "..", "..", path)
+            mkpath(dirname(full))
+            open(full, "w") do io
+                println(io, "turn\tseconds")
+                for (i, dt) in enumerate(series)
+                    println(io, i, "\t", dt)
+                end
+            end
+            println("turn_timing_path = ", full)
+        end
+    end
+end
 # `beam_statistics` is a purely local reduction -- no collective, no shard
 # argument (src/beam/Beam.jl) -- and under MPI `beam` holds this rank's SHARD.
 # Named for what it is, so a reader comparing an MPI run's rms against a
