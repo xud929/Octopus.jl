@@ -24,10 +24,13 @@ the rules are in [`../experiences.md`](../experiences.md).
   CUDA runtime, device diagnostics) are in `../current_runtime.md`.
 - Test-only dependencies (`ForwardDiff`, `Symbolics`, `Logging`, `MPI`,
   `MPICH_jll`) are listed under `[targets]` in `Project.toml`; a plain
-  `--project=.` session does not have them. The tracked `Manifest.toml`
-  currently predates `Project.toml`, so `Pkg.test` re-resolves into a
-  temporary environment on every run and this section's "reproduces the exact
-  environment" is aspirational until the open `../todo.md` row closes.
+  `--project=.` session does not have them. The tracked `Manifest.toml` was
+  re-resolved and committed 2026-09-07, so `Pkg.test` no longer prints the
+  "dependencies have changed since the manifest was last resolved" banner and
+  no longer re-resolves into a temporary environment: the gate runs against the
+  environment the Manifest names. If that banner ever comes back, the Manifest
+  and `Project.toml` have drifted apart again and every measurement taken since
+  is against an environment nobody recorded.
 - `ext/` holds the package extensions for the `[weakdeps]` (`ForwardDiff`,
   `Symbolics`, `MPI`). They activate only in package mode (next section), so
   a script-mode session gets each one's core fallback: for `MPI` that is the
