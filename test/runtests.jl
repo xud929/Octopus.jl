@@ -195,20 +195,65 @@ end
     # had no tripwire, and the soft-Gaussian wavefront record of 2026-09-04
     # sat unindexed for a day until the next session's design review noticed
     # (2026-09-04). Hidden directories (editor checkpoints) are skipped.
+    # The directory shortcut is DECLARED, not inferred (2026-09-07). It read
+    # `occursin(basename(root) * "/", index)`, meaning "some file's parent
+    # directory name appears somewhere in the index". `history/` appears in
+    # every one of the ~70 per-file links below it AND in its own section
+    # heading, so that clause was true for every file under `docs/history/` and
+    # not one of them was ever checked individually -- the largest documentation
+    # directory, and the one this testset's own comment says it exists to
+    # police. Measured when this was fixed: 94 files were indexed by name and 48
+    # relied on the shortcut, all 48 in the two audit unit-report bundles that
+    # genuinely are covered wholesale.
+    #
+    # No substring rule can separate "the index declares this directory covered"
+    # from "the index links a file that lives in it", so the exemption is an
+    # explicit marker in README.md. And a marker for a directory that no longer
+    # exists FAILS, so the exemption list cannot outlive its subject -- the same
+    # stale-exemption discipline the solver-option contract uses.
     let docs = joinpath(pkgdir(Octopus), "docs"),
         index = read(joinpath(docs, "README.md"), String),
-        unindexed = String[]
+        unindexed = String[],
+        stale = String[]
+        wholesale = Set{String}(String(m.captures[1]) for m in
+            eachmatch(r"<!--\s*indexed-wholesale:\s*(\S+?)/?\s*-->", index))
+        for d in sort!(collect(wholesale))
+            isdir(joinpath(docs, d)) || push!(stale, d)
+        end
         for (root, dirs, files) in walkdir(docs)
             filter!(d -> !startswith(d, "."), dirs)
             for f in files
                 endswith(f, ".md") || continue
                 f == "README.md" && root == docs && continue
-                (occursin(f, index) || occursin(basename(root) * "/", index)) ||
+                (occursin(f, index) || relpath(root, docs) in wholesale) ||
                     push!(unindexed, relpath(joinpath(root, f), docs))
             end
         end
         @test isempty(unindexed)
         isempty(unindexed) || @info "documents missing from docs/README.md" unindexed
+        @test isempty(stale)
+        isempty(stale) || @info "indexed-wholesale markers naming no directory" stale
+        # The exemption is narrow: it must not have swallowed `history/` again.
+        @test !("history" in wholesale)
+        @test !isempty(wholesale)          # and the marker syntax still parses
+
+        # The rule shown failing, on a synthetic index rather than by writing
+        # into docs/: an index that merely LINKS files inside a directory must
+        # not thereby exempt that directory. This is the old rule's hole, and it
+        # is the whole difference between the two clauses.
+        let fake = "see [`history/a.md`](history/a.md) and (`history/`)\n",
+            old_rule(f, dir, idx) = occursin(f, idx) || occursin(dir * "/", idx),
+            marks(idx) = Set{String}(String(m.captures[1]) for m in
+                eachmatch(r"<!--\s*indexed-wholesale:\s*(\S+?)/?\s*-->", idx)),
+            new_rule(f, dir, idx) = occursin(f, idx) || dir in marks(idx)
+            @test old_rule("b.md", "history", fake)        # waved through
+            @test !new_rule("b.md", "history", fake)       # caught
+            @test new_rule("a.md", "history", fake)        # named files still pass
+            # and a declared directory is still exempt, which is what the two
+            # audit bundles rely on
+            @test new_rule("b.md", "bundle",
+                           fake * "<!-- indexed-wholesale: bundle -->\n")
+        end
     end
 
     # Every directory under src/ has an ownership bullet in AGENTS.md's source
@@ -14209,6 +14254,35 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         gpu_pair(y1, y2) =
             (test_gpu_beam(x1, y1), test_gpu_beam(x2, y2))
         host_arrays(beam) = map(Array, coordinate_arrays(beam))
+
+        # WHAT THE TRAP CAPTURES, widened 2026-09-07 (member 2 of the CUDA
+        # wobble ledger). The arrays alone are no longer the useful datum: two
+        # bit-identical profiles A/B are exactly what the ledger already
+        # records, so another dump of them says only "it happened again". What
+        # is missing is the STATE at the moment of the draw.
+        #
+        # The standing account is allocation layout, and a device POINTER is
+        # that account's direct observable -- if the straddling arms differ in
+        # layout, the addresses say so, and if they do not, the account is
+        # refuted by the firing itself rather than by another synthetic probe.
+        # (A synthetic probe already reproduced the two-profile SHAPE at this
+        # geometry and then failed to reproduce it on the real route: 160/160
+        # bit-exact including deliberate pool growth and fragmentation. So a
+        # standalone probe cannot produce this datum -- only a suite firing can.)
+        #
+        # The `:cuda_pic_launch` receipts are the second half, because the
+        # launch geometry is not knowable from the source here:
+        # `_cuda_pic_threads` returns a fixed 256 unless a task scope installs a
+        # `ResolvedCUDAPICLaunchConfig`, so the block count at the deposit
+        # depends on scope, and block count is what the measured ordering
+        # freedom varies with. The receipt records what actually ran.
+        arm_context = Ref{Any}(nothing)
+        # `string` rather than a numeric conversion: a CuPtr prints its address
+        # and this must never be the thing that throws inside a failure path.
+        addresses(beam) = [string(pointer(a)) for a in coordinate_arrays(beam)]
+        launch_receipts(audit) = [(; r.consumer, r.values) for r in
+            execution_receipts(audit) if r.consumer === :cuda_pic_launch]
+
         # The ledger rule for near-identity CUDA wobbles: CAPTURE the data
         # before comparing away the evidence. On any mismatch the pair is
         # dumped whole, so the next in-suite failure is a mechanical diff
@@ -14220,6 +14294,11 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
                 open(dump, "w") do io
                     println(io, "expected = ", repr(expected))
                     println(io, "actual   = ", repr(actual))
+                    println(io, "norm(actual - expected) = ",
+                            norm(Float64.(actual) .- Float64.(expected)))
+                    # The state at the draw (2026-09-07). `repr` on the whole
+                    # context so a reader diffs two firings mechanically.
+                    println(io, "context = ", repr(arm_context[]))
                 end
                 @info "GaussianPIC fallback mismatch captured" tag dump
             end
@@ -14230,12 +14309,23 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         # indexed-wavefront mode selected by a finite coupling tolerance.
         pic1, pic2 = gpu_pair(0.75 .* x1, -1.25 .* x2)
         gpic1, gpic2 = gpu_pair(0.75 .* x1, -1.25 .* x2)
-        luminosity_pic = collide!(
-            PICPoissonSolver(; common...), pic1, pic2, Octopus.CUDABackend)
-        luminosity_gpic = collide!(
-            GaussianPICPoissonSolver(; common..., coupling_tol=0.0),
-            gpic1, gpic2, Octopus.CUDABackend)
+        luminosity_pic = 0.0
+        luminosity_gpic = 0.0
+        pic_audit = with_execution_audit() do
+            luminosity_pic = collide!(
+                PICPoissonSolver(; common...), pic1, pic2, Octopus.CUDABackend)
+        end
+        gpic_audit = with_execution_audit() do
+            luminosity_gpic = collide!(
+                GaussianPICPoissonSolver(; common..., coupling_tol=0.0),
+                gpic1, gpic2, Octopus.CUDABackend)
+        end
         Octopus.CUDA.synchronize()
+        arm_context[] = (arm="rankone",
+                         pic_addresses=vcat(addresses(pic1), addresses(pic2)),
+                         gpic_addresses=vcat(addresses(gpic1), addresses(gpic2)),
+                         pic_launch=launch_receipts(pic_audit),
+                         gpic_launch=launch_receipts(gpic_audit))
         @test luminosity_gpic ≈ luminosity_pic rtol=2.0e-12
         for (k, (expected, actual)) in enumerate(zip(host_arrays(pic1), host_arrays(gpic1)))
             @test checked(actual, expected, "rankone_b1c$(k)")
@@ -14259,13 +14349,23 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             ), route)
             pic1, pic2 = gpu_pair(zeros(n), zeros(n))
             gpic1, gpic2 = gpu_pair(zeros(n), zeros(n))
-            collide!(
-                PICPoissonSolver(; route_common...), pic1, pic2,
-                Octopus.CUDABackend)
-            collide!(
-                GaussianPICPoissonSolver(; route_common...),
-                gpic1, gpic2, Octopus.CUDABackend)
+            route_pic_audit = with_execution_audit() do
+                collide!(
+                    PICPoissonSolver(; route_common...), pic1, pic2,
+                    Octopus.CUDABackend)
+            end
+            route_gpic_audit = with_execution_audit() do
+                collide!(
+                    GaussianPICPoissonSolver(; route_common...),
+                    gpic1, gpic2, Octopus.CUDABackend)
+            end
             Octopus.CUDA.synchronize()
+            arm_context[] = (arm=string(route.batch_mode, "_",
+                                        route.cuda_indexed_wavefront),
+                             pic_addresses=vcat(addresses(pic1), addresses(pic2)),
+                             gpic_addresses=vcat(addresses(gpic1), addresses(gpic2)),
+                             pic_launch=launch_receipts(route_pic_audit),
+                             gpic_launch=launch_receipts(route_gpic_audit))
             for (k, (expected, actual)) in enumerate(zip(host_arrays(pic1), host_arrays(gpic1)))
                 @test checked(actual, expected, "route_$(route.batch_mode)_$(route.cuda_indexed_wavefront)_b1c$(k)")
             end

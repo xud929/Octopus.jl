@@ -304,6 +304,20 @@ reference material, not API docs; the implementing code links back to them.
 
 ## Development history and records (`history/`)
 
+<!--
+Directories whose files the index covers WHOLESALE, declared here EXPLICITLY
+because the alternative does not work. The suite's index check used to accept
+any file whose parent directory name appeared anywhere in this document, and
+`history/` appears in every per-file link below (and in the heading just
+above), so no file under `docs/history/` was ever actually checked -- the very
+directory the check exists to police. Substring rules cannot tell "the index
+names this directory as covered" from "the index links a file that happens to
+live in it"; only a declaration can. A marker naming a directory that no longer
+exists fails the suite, so these cannot rot silently.
+-->
+<!-- indexed-wholesale: history/comprehensive_audit_2026_08_05_unit_reports -->
+<!-- indexed-wholesale: history/comprehensive_audit_2026_08_05_b_unit_reports -->
+
 Dated records of implemented work — optimization campaigns, benchmark decisions,
 and audits. The source code is the authority; these preserve the rationale.
 Forward-looking (not-yet-done) items live in `todo.md`, not here; the
@@ -451,6 +465,14 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   equal; the host fold is pinned to `fma`, one line closing two members of the
   wobble ledger, and the "in-suite vs standalone" framing is corrected by
   measurement),
+  [`weak_strong_64thread_lead_2026_09_07.md`](history/weak_strong_64thread_lead_2026_09_07.md)
+  (the production benchmark's "64-thread weak-strong degrades as the run
+  proceeds" lead, retracted by replication: the rate was derived by differencing
+  SEPARATE whole-process wall times on a shared node, and replicating that
+  protocol twice gives one series that falls and one that climbs, with up to
+  10.04 s between two runs of the same configuration; within one process the
+  64-thread series falls monotonically at 0.0% GC and 0.000 GiB/turn, and the
+  record's own anomalous -0.5 s intercept comes back at +46.0 and +44.9 s),
   [`metadata_cluster_2026_09_07.md`](history/metadata_cluster_2026_09_07.md)
   (closing three metadata-validator rows at once, two of which were wrong about
   their own subject: the observer schema-vs-report check is an identity for one
