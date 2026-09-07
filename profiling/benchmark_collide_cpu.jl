@@ -75,10 +75,12 @@ using Printf
 using Profile
 using Dates
 
-# Only the soft-Gaussian solver divides today (campaign step 4a); the others
-# refuse, loudly, when asked to.
+# Every solver in the roster divides (campaign steps 4a, 4c-4e, 4f, 4g-4h), so
+# any OCTOPUS_BENCH_SOLVER value is a legal MPI arm. `_solver_divides` is the
+# one authority on that and `_reject_undivided_solver` is its tripwire at the
+# collide entry; this script does not keep a second copy of the roster.
 #
-#     OCTOPUS_BENCH_MPI=1 OCTOPUS_BENCH_SOLVER=gaussian mpiexec -bind-to core \
+#     OCTOPUS_BENCH_MPI=1 OCTOPUS_BENCH_SOLVER=spectral mpiexec -bind-to core \
 #         -n 16 julia --startup-file=no --threads=4 profiling/benchmark_collide_cpu.jl
 #
 env_int(name, default) = parse(Int, get(ENV, name, string(default)))
@@ -108,11 +110,13 @@ set_global_rng!(seed = 123456789, method = :philox)
 
 policy = BENCH_MPI ? MultiProcessExecutionPolicy(threads = :auto) :
                      CPUThreadsExecutionPolicy(threads = :auto)
-if BENCH_MPI && !(SOLVER in ("gaussian", "pic"))
-    error("OCTOPUS_BENCH_MPI=1 supports OCTOPUS_BENCH_SOLVER=gaussian (step 4a) " *
-          "and pic (step 4c) only: gaussian_pic and spectral still refuse to " *
-          "run divided.")
-end
+# No solver gate here. There was one -- "gaussian (step 4a) and pic (step 4c)
+# only: gaussian_pic and spectral still refuse to run divided" -- a hand-copied
+# roster that went stale the day steps 4f and 4g landed and then refused two
+# configurations the runtime supports, telling the operator the opposite of the
+# truth (2026-09-06 neighbour audit). `_reject_undivided_solver` at the collide
+# entry is the single authority, so a solver that genuinely does not divide is
+# still refused, by the code that knows.
 
 # The production case of test/examples/strong_strong_tracking.jl. Kept here as
 # literals rather than included from that harness: this script must stay a

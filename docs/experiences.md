@@ -92,6 +92,36 @@ teaches something reusable, it lands here (dated), and the full record goes to
 - The registry snapshot is regenerated, never hand-edited; a stale snapshot
   aborts the suite loudly.
 
+### A RULE gets hand-copied too, and the missing copy is the last one written
+
+The hand-copy lesson was learned on lists — case tables, spec tables, fold
+sites. The 2026-09-06 neighbour audit found the same failure in a one-line
+RULE. "A decision that gates a collective must be broadcast" was written three
+times, once per solver that divides, each with a comment explaining why:
+`pic_cpu.jl`, and both spectral routes. Gaussian-PIC, the fourth solver and the
+last divided, rides the identical slice-aligned transport and did not have it —
+so a `PredicateSchedule` answering differently on two ranks skipped sends its
+pair coordinator was already blocked on. A deadlock, in a public option, with
+no error.
+
+Three tells, each of which is cheap to look for and any one of which would have
+caught it:
+
+- The rule was stated in the design note as a general requirement and nowhere
+  as a mechanism. Prose that says "must" with no single place that makes it so
+  is a list of future omissions.
+- The comment was copied with the code. Three sites carrying the same sentence
+  is the signature of a rule that wants to be a function.
+- The omission was in the LAST sibling to be written. A rule established while
+  implementing N-1 of something is at its weakest when N arrives, because by
+  then it reads as settled.
+
+The repair for a copied rule is the same as for a copied list — one source and
+a tripwire — but the source is a function every consumer must route through,
+not a table they read. Where that function already exists, as it did here (one
+memoized schedule consult shared by all four solvers), the copies are pure
+liability.
+
 ## Loud beats silent — and loud-but-wrong is worse than silent
 
 - A typo'd physics key stored as silent metadata is silent wrong physics; the
@@ -407,6 +437,40 @@ the shape to copy: whenever a test claims two paths agree, make it assert that
 each arm really took its path. Here the receipt already carried it
 (`exchange = :sliced`, `schedule = :batched`/`:dataflow`), so the check cost one
 line and turned a silent tautology into a loud failure.
+
+## A weak dependency's extension does not exist for an `include`d module
+
+Both `test/examples` harnesses load Octopus with
+`include(joinpath(@__DIR__, "..", "..", "src", "Octopus.jl"))`. That is
+convenient -- no precompilation, the working tree runs as it stands -- and it
+also means `Base.PkgId(Main.Octopus)` is `Base.PkgId(nothing, "Main")`. Package
+extensions are keyed on a package's id, so they never attach. Measured
+2026-09-06, one probe, both loads: `Base.get_extension(Main.Octopus,
+:OctopusMPIExt)` is `nothing` under the include and `OctopusMPIExt` under
+`using Octopus`.
+
+Nothing warns. The extension simply is not there, every method it would have
+added is missing, and the core fallback answers instead. When that fallback is
+a legitimate degenerate case -- here the collective seam's serial passthrough,
+"this process is a communicator of one" -- the result is not an error but a
+wrong answer at scale: an `OCTOPUS_MP`-style branch bolted onto those files as
+they stood would have made `mpiexec -n 8` eight identical whole simulations
+racing on one artifact path, exit 0, with timings a reader would believe.
+
+The shape to watch for: a script that includes a package's SOURCE rather than
+loading the package, in a repository that has `[weakdeps]`. Every behaviour
+that lives in an extension is silently absent there, and a degenerate fallback
+cannot tell you it is degenerate. Two guards, and the cheap one is not the
+assertion:
+
+- Assert the extension by name where the script asks for the behaviour:
+  `Base.get_extension(M, :Ext) !== nothing`, with an error that names the
+  consequence rather than the condition.
+- Ask for an explicit COUNT rather than accepting whatever is there.
+  `ranks = :auto` accepts a communicator of one as legitimate; `ranks = 2`
+  makes the policy reject it. A default that accepts anything cannot fail, so
+  a pin built on one proves nothing -- the same reason the launcher pin in
+  `test/runtests.jl` passes `OCTOPUS_RANKS=2` rather than letting it default.
 
 ## A keyword one solver ignores is a second keyword
 

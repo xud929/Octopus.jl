@@ -2415,11 +2415,16 @@ end
 
 """
 Refuse, at more than one rank, the parts of a strong-strong task that are
-still not divided: line ACTIONS in either line, the one thing left that
-Octopus cannot reason about (a callback the user wrote, handed the rep this
-rank holds). Line observers are Octopus's own and divide (steps 3b and 3c);
-apertures divide (3c); the soft-Gaussian collide divides (4a); the turn loop,
-the luminosity channel and the artifact divide here (4b).
+still not divided: line ACTIONS in either line, which Octopus cannot reason
+about (a callback the user wrote, handed the rep this rank holds), and line
+observers on a `PredicateSchedule`, whose predicate is user code and whose
+answer gates a collective every rank must issue. Both are in the loop below;
+the docstring named only the actions until the 2026-09-06 neighbour audit.
+
+Line observers are otherwise Octopus's own and divide (steps 3b and 3c);
+apertures divide (3c); every solver in the roster divides (4a, 4c-4e, 4f,
+4g-4h); the turn loop, the luminosity channel and the artifact divide here
+(4b).
 """
 function _reject_unsharded_strong_strong_features(blocks1, blocks2)
     _mp_nranks() > 1 || return nothing

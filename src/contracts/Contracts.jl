@@ -1876,12 +1876,22 @@ source energy the strong-strong SCHEDULING reduces to the weak-strong
 construction -- slice ordering, slice weights, `kbb`, `klum` and the virtual
 drift plumbing. It is **not** an independent check of the kick itself.
 `_wsl_weakstrong_reference!` calls `_slice_collision_order`,
-`_slice_transverse_moments` and `_slice_slice_gaussian_kick!`, and each has
-exactly one method in the package -- the same ones `_gaussian_collide_pair!`
-calls. The reference differs only in loop structure, so a defect inside the
-kick cancels exactly on both sides and this tolerance cannot see it. The
-docstring previously called this "the analytic weak-strong reference (this is
-the sharp limit statement)", which reads as a claim about the kick
+`_slice_transverse_moments` and `_slice_slice_gaussian_kick!`, each with
+exactly one method in the package. The production side reaches the SAME
+arithmetic by a different entry, because this contract builds its solver with
+`batch_mode = :wavefront`: `collide!` takes the wavefront branch, whose moments
+come from `_cpu_gaussian_batch_moments` -- which calls the same
+`_slice_moment_local_sums!` and `_slice_moments_finalize` that
+`_slice_transverse_moments` calls -- and whose kick is
+`_cpu_gaussian_kick_chunk!` over the same per-slice accumulation. So the two
+sides still share their arithmetic, and the reference still differs only in
+loop structure: a defect inside the kick cancels exactly on both sides and this
+tolerance cannot see it. (This paragraph named `_gaussian_collide_pair!`, which
+is not in the tree, and the sequential route's entries, until the 2026-09-06
+neighbour audit.)
+
+The docstring previously called this "the analytic weak-strong reference (this
+is the sharp limit statement)", which reads as a claim about the kick
 (2026-08-05_b audit, U4-11).
 
 The PIC half IS a genuine cross-implementation comparison -- a grid solver

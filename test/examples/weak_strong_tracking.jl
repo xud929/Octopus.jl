@@ -25,6 +25,38 @@ Select a CUDA device explicitly:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_DEVICE=1 julia --project=. test/examples/weak_strong_tracking.jl
 
+Choose the CPU logical-worker count (default `auto`, meaning the process's
+default thread count):
+
+    OCTOPUS_CPU_THREADS=8 julia --project=. --threads=8 test/examples/weak_strong_tracking.jl
+
+Run divided across MPI ranks -- one Octopus process per rank, each with its own
+CPU logical workers. OCTOPUS_CPU_THREADS sets the per-rank thread count (the
+same keyword as above), and OCTOPUS_RANKS optionally states the process count
+the run must match; left `auto` it accepts whatever the launcher started:
+
+    OCTOPUS_USE_MPI=1 OCTOPUS_CPU_THREADS=8 OCTOPUS_RANKS=16 mpiexec -n 16 julia --project=. test/examples/weak_strong_tracking.jl
+
+This arm needs an environment where BOTH Octopus and MPI resolve as PACKAGES.
+The multi-process policy reaches a communicator only through the OctopusMPIExt
+package extension, and that extension does not load for the `include` of
+src/Octopus.jl this harness uses by default -- so OCTOPUS_USE_MPI=1 loads
+Octopus as a package instead, and refuses to run if the extension is still
+absent. Without it every rank would be its own communicator of one -- which
+OCTOPUS_RANKS=auto accepts -- and every process would track the whole beam.
+Octopus's own launcher tripwire catches that under the six launcher variables
+it knows (PMI_SIZE and its siblings); this refusal fires earlier, at load,
+names the cause rather than a size disagreement, and covers the launchers that
+tripwire does not know. OCTOPUS_USE_GPU=1 together with
+OCTOPUS_USE_MPI=1 is an error: the multi-process policy composes the CPU policy
+and is CPU storage only.
+
+Under MPI every rank prints these lines behind its own `mpi_rank = r of P`
+line, each rank asserting the configuration it actually read. Only rank 0
+writes the run artifact (the library gates that itself). The `rms` line is that
+RANK'S SHARD and is labelled so: `beam_statistics` is a local reduction with no
+collective in it, so under MPI it describes a shard, never the beam.
+
 CUDA checks:
 
     julia --project=. -e 'using CUDA; println(CUDA.functional()); println(CUDA.has_cuda_gpu())'
@@ -51,10 +83,76 @@ the same layout under the repo-root `result/`):
   `read(TaskOutput(path), kind; name = ...)`.
 =#
 
-if !isdefined(Main, :Octopus)
+"""
+Parse a boolean `OCTOPUS_*` switch, rejecting anything it does not recognise.
+
+The same one grammar the strong-strong harness uses
+(test/examples/strong_strong_tracking.jl, 2026-08-05_b audit U21-15/U21-16),
+brought here 2026-09-06 because this file still carried the defect that fix was
+about: `OCTOPUS_USE_GPU` was read as `== "1"`, so `OCTOPUS_USE_GPU=true` and
+`=yes` -- the words that enable every other flag in these harnesses -- silently
+ran on CPU, and the whole point of the switch is which hardware the timing came
+from. One grammar, and a value outside it is an error naming the variable.
+
+Defined above the Octopus load because `OCTOPUS_USE_MPI` decides HOW Octopus is
+loaded and so must be read before it.
+"""
+function env_bool(key::AbstractString, default::Bool)
+    raw = get(ENV, key, default ? "1" : "0")
+    lowered = lowercase(strip(raw))
+    lowered in ("1", "true", "yes", "on") && return true
+    lowered in ("0", "false", "no", "off") && return false
+    error("$(key)=$(repr(raw)) is not a boolean; use 1/0, true/false, yes/no or on/off")
+end
+
+# OCTOPUS_USE_MPI=1 runs this harness divided across MPI ranks -- one Octopus
+# process per rank, each with its own CPU logical workers (OCTOPUS_CPU_THREADS).
+# Read BEFORE Octopus is loaded because it decides HOW Octopus is loaded:
+# `MultiProcessExecutionPolicy` reaches a communicator only through the
+# `OctopusMPIExt` package extension, and a package extension loads only for a
+# PACKAGE, which the default `include` of src/Octopus.jl into `Main` is not.
+# Measured on this tree 2026-09-06: `Base.get_extension(Main.Octopus,
+# :OctopusMPIExt)` is `nothing` under the include and `OctopusMPIExt` under
+# `using Octopus`. Without the extension every process is its own communicator
+# of one, which `ranks = :auto` accepts. The library's `_launcher_rank_count`
+# tripwire already throws under the six launcher variables it knows; the
+# assertion below fires earlier (at load, not after the run), names the cause
+# rather than a size disagreement, and covers a launcher outside that list --
+# which is where a silent P-whole-simulations run would otherwise come from.
+# With the switch off this is the same `include` the suite has always run.
+use_mpi = env_bool("OCTOPUS_USE_MPI", false)
+if use_mpi
+    # A Main.Octopus that came from an `include` cannot be turned into the
+    # package: Julia 1.12 makes `using Octopus` a hard error here ("importing
+    # Octopus into Main conflicts with an existing global"), which is loud but
+    # says nothing about the cause. Say it here instead.
+    if isdefined(Main, :Octopus) && Base.PkgId(Main.Octopus).uuid === nothing
+        error("OCTOPUS_USE_MPI=1 needs Octopus loaded as a PACKAGE, because the " *
+              "OctopusMPIExt extension attaches only to a package -- but " *
+              "Main.Octopus is already an `include`d module (its PkgId carries no " *
+              "UUID). Either drop the earlier `include` of src/Octopus.jl and let " *
+              "this harness load the package, or `using Octopus` before including " *
+              "this file.")
+    end
+    using Octopus
+    using MPI
+    # Idempotent through `Initialized()`, and the extension's own activation
+    # makes exactly this call (test/mpi_seam_check.jl inits early for the same
+    # reason); doing it here makes this process's rank available to this file
+    # before `execute!` rather than only after it.
+    MPI.Initialized() || MPI.Init(threadlevel = :funneled)
+elseif !isdefined(Main, :Octopus)
     include(joinpath(@__DIR__, "..", "..", "src", "Octopus.jl"))
 end
 using .Octopus
+if use_mpi && Base.get_extension(Main.Octopus, :OctopusMPIExt) === nothing
+    error("OCTOPUS_USE_MPI=1, but OctopusMPIExt did not load. Every rank would " *
+          "then be its own communicator of one and each would run the WHOLE " *
+          "simulation, racing on one artifact path and reporting plausible " *
+          "timings. Run this harness against an environment where Octopus and " *
+          "MPI both resolve as packages, and do not pre-`include` src/Octopus.jl " *
+          "into Main before it.")
+end
 
 # Input for this weak-proton crab-crossing case.
 # Set OCTOPUS_TURNS and OCTOPUS_N_MACRO in the shell to run a smaller or larger
@@ -154,7 +252,14 @@ n_macro = parse(Int, get(ENV, "OCTOPUS_N_MACRO", "10000"))
 # beam storage at execution time.
 # CPU threads are the portable default. Set OCTOPUS_USE_GPU=1 to use CUDA.
 # Observers still write on the host and may synchronize GPU data when scheduled.
-use_gpu = get(ENV, "OCTOPUS_USE_GPU", "0") == "1"
+use_gpu = env_bool("OCTOPUS_USE_GPU", false)
+# The multi-process policy composes the CPU policy and is CPU storage only, so
+# there is no CUDA arm to divide; asking for both is a request one of the two
+# switches would have to be silently dropped from.
+use_gpu && use_mpi && error(
+    "OCTOPUS_USE_GPU=1 and OCTOPUS_USE_MPI=1 together: MultiProcessExecutionPolicy " *
+    "composes CPUThreadsExecutionPolicy and runs on CPU storage, so there is no " *
+    "CUDA-plus-MPI mode to select. Choose one.")
 if use_gpu
     import CUDA
     CUDA.functional(false) || error("OCTOPUS_USE_GPU=1 requested, but CUDA.functional(false) is false.")
@@ -164,7 +269,23 @@ policy = if use_gpu
     cuda_device = isempty(cuda_device_env) ? nothing : parse(Int, cuda_device_env)
     CUDAExecutionPolicy(device = cuda_device)
 else
-    CPUThreadsExecutionPolicy()
+    # OCTOPUS_CPU_THREADS, the same keyword and the same `auto` default the
+    # strong-strong harness reads. This file did not read it at all before
+    # 2026-09-06, so the only thread count it could run at was the process
+    # default -- and the MPI arm needs a per-rank count, which is exactly this.
+    cpu_threads_text = lowercase(strip(get(ENV, "OCTOPUS_CPU_THREADS", "auto")))
+    cpu_threads = cpu_threads_text == "auto" ? :auto : parse(Int, cpu_threads_text)
+    if use_mpi
+        # OCTOPUS_RANKS passes straight through as the policy's `ranks` with no
+        # harness logic: the policy already rejects a communicator whose size
+        # differs from an explicit request. `auto` accepts whatever `mpiexec -n`
+        # started.
+        ranks_text = lowercase(strip(get(ENV, "OCTOPUS_RANKS", "auto")))
+        ranks = ranks_text == "auto" ? :auto : parse(Int, ranks_text)
+        MultiProcessExecutionPolicy(threads = cpu_threads, ranks = ranks)
+    else
+        CPUThreadsExecutionPolicy(threads = cpu_threads)
+    end
 end
 set_global_rng!(seed = input.seed, method = :philox)
 
@@ -323,13 +444,39 @@ line_specs = (
     radiation,
     moment_observer,
 )
+# `policy = policy` is load-bearing, not tidiness. With `task.policy === nothing`
+# `execute!` resolves a FRESH default policy, so the one built above reached only
+# `Beam(...)` and was discarded -- the strong-strong harness carries the same
+# note (2026-08-05_b audit, U21-17) and this twin never got the fix. At the
+# defaults nothing changes (`CPUThreadsExecutionPolicy(threads = :auto)` is what
+# the fresh default resolved to anyway), but OCTOPUS_CPU_THREADS now reaches
+# execution, OCTOPUS_CUDA_DEVICE now reaches execution, and OCTOPUS_USE_MPI
+# works at all: an inferred default is a `CPUThreadsExecutionPolicy`, so without
+# this every rank would have tracked the whole beam, silently.
 task = TrackingTask(line_specs;
+    policy = policy,
     artifact = RunArtifact(artifact_path; capacity = input.output.capacity))
 execute!(task, beam; turns = turns)
 
+# Under MPI every rank runs this whole file. The rank comes from
+# `MPI.Comm_rank(MPI.COMM_WORLD)`, NOT from Octopus's `_mp_is_root()`: the
+# Octopus collectives read a serial passthrough outside an active policy scope
+# and `execute!` has closed its scope by this line, so `_mp_is_root()` would
+# return `true` on every rank -- silently (docs/experiences.md, "A collective
+# outside its scope is a silent no-op").
+mpi_nranks = use_mpi ? MPI.Comm_size(MPI.COMM_WORLD) : 1
+mpi_rank = use_mpi ? MPI.Comm_rank(MPI.COMM_WORLD) : 0
+use_mpi && println("mpi_rank = ", mpi_rank, " of ", mpi_nranks)
+# `beam_statistics` is a purely local reduction -- no collective, no shard
+# argument (src/beam/Beam.jl) -- and under MPI `beam` holds this rank's SHARD.
+# Named for what it is, so a reader comparing an MPI run's rms against a
+# threads-only run's is not comparing a shard with a beam. At one rank the shard
+# IS the beam, so the qualifier appears only when it is true.
 stats = beam_statistics(beam)
 println("turns = ", turns)
 println("n_macro = ", n_macro)
 println("artifact = ", artifact_path)
 println("  /luminosity/strong_beam_1, /moments/weak_beam, /execution")
-println("rms = ", stats.rms)
+println(mpi_nranks > 1 ?
+        "rms (rank $(mpi_rank) shard of $(mpi_nranks), not the whole beam) = " :
+        "rms = ", stats.rms)

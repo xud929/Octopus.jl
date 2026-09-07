@@ -210,13 +210,13 @@ than silently accepted. Without `MPI` loaded the process is its own
 communicator of one, so `ranks = 1` is accepted and any larger integer is
 not: the collective seam runs its serial passthrough and `nranks` is 1.
 
-A `TrackingTask` and a soft-Gaussian `StrongStrongTask` run divided across
-the ranks (multi-process steps 3a-3c and 4a-4b; the design and the
-per-step records are in `docs/design/multi_process_policy.md`). What still
-refuses at more than one rank, naming what is missing: task and line
-ACTIONS and observers on a `PredicateSchedule` (callbacks Octopus cannot
-reason about), `:equal_count` slicing (a global sort), and the PIC,
-Gaussian-PIC and spectral solvers (step 4c onward). CPU storage only.
+A `TrackingTask` and a `StrongStrongTask` run divided across the ranks on
+EVERY solver in the roster -- soft-Gaussian, PIC, Gaussian-PIC and spectral
+(multi-process steps 3a-3c and 4a-4h; the design and the per-step records
+are in `docs/design/multi_process_policy.md`). What still refuses at more
+than one rank, naming what is missing: task and line ACTIONS and observers
+on a `PredicateSchedule` (callbacks Octopus cannot reason about), and
+`:equal_count` slicing (a global sort). CPU storage only.
 """
 struct MultiProcessExecutionPolicy <: AbstractExecutionPolicy
     threads::Union{Int,Symbol}
@@ -508,8 +508,11 @@ end
 
 # --- the collective seam -----------------------------------------------------
 #
-# Six operations, each with a serial passthrough in core and an MPI method in
-# the extension, dispatching on the communicator so the two never collide.
+# The seam's operations, each with a serial passthrough in core and an MPI
+# method in the extension, dispatching on the communicator so the two never
+# collide. The first six are step 2's; the rest arrived with the steps that
+# needed them (the design note carries the same sentence, and this copy said
+# "Six operations" until the 2026-09-06 neighbour audit).
 # Every floating-point reduction is an ALLGATHER FOLLOWED BY A FOLD IN RANK
 # ORDER, never `MPI_SUM`: a library sum may associate as it likes and by rank
 # count, which would make a result depend on how many processes computed it.
@@ -1038,10 +1041,13 @@ sleeps on its messages instead of spinning. At one rank a receive completes
 when its tag has been sent (the mailbox delivers at the test), and waiting
 with nothing deliverable is a protocol error and says so.
 
-Neither records a receipt: a dataflow loop polls thousands of times per
-collide and an audit would drown in them, so the collide counts its own
+`_mp_test_all` records no receipt: a dataflow loop polls thousands of times
+per collide and an audit would drown in them, so the collide counts its own
 polls instead. The `:funneled` tripwire is still honoured -- it is the
-receipt's first act, and is done by hand here.
+receipt's first act, and is done by hand there. `_mp_wait_any` blocks once
+per stage rather than once per poll, so it records under the stage name like
+every other wait. (This said "neither" until the 2026-09-06 neighbour audit,
+while the body below recorded on every call.)
 """
 function _mp_test_all(requests)
     _mp_nranks() > 1 && Threads.threadid() != 1 && throw(ArgumentError(

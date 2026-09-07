@@ -84,12 +84,32 @@ has something to count and the moment reductions have something to mask."""
 function _mpi_check_poisoned_beam(policy)
     beam = _mpi_check_build_beam(policy)
     # Global indices, chosen to fall in different ranks' shards at P = 2 and 4.
-    offset = first(Octopus._mp_resolve_shard(length(beam.rep)))
-    for g in (7, 70, 150, 249)
-        local_i = g - offset
-        1 <= local_i <= length(beam.rep) || continue
-        for a in Octopus.coordinate_arrays(beam.rep)
-            a[local_i] = NaN
+    #
+    # The shard resolution must happen INSIDE the execution-policy scope.
+    # `_mp_resolve_shard` reads the policy in force and all-sums the ranks'
+    # counts; outside a scope it takes its early return and hands back offset 0
+    # on every rank, so every rank poisoned its own LOCAL 7 and 70 and the
+    # "different ranks' shards" the comment promises never happened. The dead
+    # totals came out the same either way, which is why the pin below still
+    # passed -- a check that cannot tell a correct `_mp_resolve_shard` from a
+    # broken one (2026-09-06 neighbour audit; docs/experiences.md, "A collective
+    # outside its scope is a silent no-op").
+    Octopus._with_execution_policy(
+            Octopus._resolve_execution_policy(policy, beam.rep)) do
+        # `_mp_resolve_shard(local_n) -> (offset, GLOBAL_n)`. The second value is
+        # the whole beam's count, never this rank's array length -- bound the
+        # write with `length(beam.rep)`.
+        offset, _global_n = Octopus._mp_resolve_shard(length(beam.rep))
+        # Anti-vacuity: at more than one rank at least one rank must have a
+        # non-zero offset, or the scope was not in force after all.
+        Octopus._mp_nranks() == 1 || Octopus._mp_rank() == 0 || offset != 0 ||
+            error("MPI-CHECK FAIL poisoned beam resolved offset 0 off rank 0")
+        for g in (7, 70, 150, 249)
+            local_i = g - offset
+            1 <= local_i <= length(beam.rep) || continue
+            for a in Octopus.coordinate_arrays(beam.rep)
+                a[local_i] = NaN
+            end
         end
     end
     return beam

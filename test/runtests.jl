@@ -7799,14 +7799,23 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                       first(tagged(out, "MPI-COLLIDESEQ "))
             end
 
-            # The child runs at ONE thread, where `_run_logical_workers` runs
-            # its chunk grid inline instead of spawning a task per chunk --
-            # a pool of one cannot run two things at once, and a
-            # strong-strong collide asks for ~900 of those grids per turn.
-            # The inline path writes the same slots in the same order, so it
-            # must give the same numbers as this process's spawning one; the
-            # suite runs at four threads, so this comparison is the only
-            # place the two paths meet.
+            # The child's collide at ONE logical worker per rank against this
+            # process's, which runs the same chunk grids on a four-thread pool:
+            # the divided arithmetic must not depend on how wide the pool that
+            # ran it was.
+            #
+            # It is NOT a comparison of `_run_logical_workers`' two BRANCHES,
+            # though this comment claimed to be until the 2026-09-06 neighbour
+            # audit. The inline branch is guarded on the POOL
+            # (`Threads.nthreads(:default) == 1`, Policies.jl), not on the
+            # policy's worker count, and the child is launched at `--threads=2`
+            # above -- it must be, because the thread-count sweeps below build
+            # `MultiProcessExecutionPolicy(threads = 2)`, which a one-thread
+            # process rejects. So both sides of this comparison take the
+            # spawning branch, and the pool-of-one inline path is exercised
+            # nowhere in the suite. That gap is on `docs/todo.md`; the
+            # `_run_logical_workers` unit test above reaches the
+            # `nworkers == 1` short-circuit, which returns before the pool test.
             b1, b2 = _mpi_check_collide_beams(CPUThreadsExecutionPolicy())
             reference_lum = collide!(_mpi_check_gaussian_solver(), b1, b2,
                                      CPUThreadsBackend)
@@ -8337,6 +8346,88 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
     end
 end
 end # _lane_gate("The multi-process seam runs under an MPI launcher")
+
+if _lane_gate("The developer harnesses run divided under an MPI launcher")
+@testset "The developer harnesses run divided under an MPI launcher" begin
+    # `OCTOPUS_USE_MPI=1` in test/examples/{strong_strong,weak_strong}_tracking.jl
+    # (2026-09-06), the branch that closed the production benchmark's
+    # reproducibility gap: before it, the MPI arms of
+    # docs/history/production_benchmark_2026_09_06.md ran through scratch copies
+    # that are not in the repository.
+    #
+    # This is the only place that branch executes. The suite's example-runner
+    # testset runs both harnesses at their defaults, which is the switch OFF, so
+    # without this the whole MPI path would be unrun -- and its one failure mode
+    # is silent: a package extension attaches only to a PACKAGE, and these files
+    # `include` src/Octopus.jl into `Main` by default, so with the extension
+    # absent every rank is its own communicator of one and `mpiexec -n 2` runs
+    # two whole simulations, exit 0, with plausible timings.
+    #
+    # `OCTOPUS_RANKS=2` is what makes this assertion non-vacuous: the policy
+    # rejects a communicator whose size differs from an explicit request, so a
+    # run that silently fell back to the passthrough throws instead of passing.
+    # The shard label on the rms line is the second, independent tell -- the
+    # harness only prints it when the communicator holds more than one rank.
+    root = dirname(@__DIR__)
+    launcher = try
+        MPICH_jll.mpiexec(exe -> exe)
+    catch err
+        @info "MPICH_jll provided no mpiexec; the harness MPI branch was NOT exercised" err
+        nothing
+    end
+    if launcher === nothing
+        @test_broken false          # visible in the summary, unlike a silent skip
+    else
+        for harness in ("weak_strong_tracking.jl", "strong_strong_tracking.jl")
+            script = joinpath(root, "test", "examples", harness)
+            outdir = mktempdir()
+            cmd = addenv(
+                `$(launcher) -n 2 $(Base.julia_cmd()) --startup-file=no --threads=2 $(script)`,
+                "JULIA_LOAD_PATH" => "@:@stdlib",
+                "JULIA_PROJECT" => Base.active_project(),
+                "OCTOPUS_USE_MPI" => "1",
+                "OCTOPUS_RANKS" => "2",
+                "OCTOPUS_CPU_THREADS" => "2",
+                "OCTOPUS_TURNS" => "1",
+                "OCTOPUS_N_MACRO" => "4096",
+                # Its own directory, so this never races the example-runner
+                # testset's artifacts or leaves any behind.
+                "OCTOPUS_RESULT_DIR" => outdir)
+            buf = IOBuffer()
+            proc = run(pipeline(cmd; stdout=buf, stderr=buf); wait=false)
+            # Bounded for the same reason the seam check is: a multi-process
+            # hazard shows up as ranks blocked in a collective, and a rank that
+            # blocks without exiting would hang the suite rather than fail it.
+            watchdog = Timer(1800) do _
+                process_running(proc) && kill(proc)
+            end
+            wait(proc)
+            close(watchdog)
+            text = String(take!(buf))
+            ok = success(proc)
+            ok || @info "the harness MPI branch failed" harness out=last(text, 4000)
+            # EXIT 0 IS THE ASSERTION, and under `OCTOPUS_RANKS=2` it is a
+            # complete one. The policy rejects a communicator whose size differs
+            # from an explicit request, so a run that reached the end at all had
+            # a communicator of two -- which means the package extension loaded
+            # (without it the process is a communicator of one and this throws)
+            # and the run was divided. A `ranks=auto` run could not say that,
+            # which is why this passes the count.
+            @test ok
+            # And rank 0 wrote exactly one artifact, into a directory of its own.
+            @test length(readdir(joinpath(outdir, "123456789"))) == 1
+            # NOT asserted: the `mpi_rank = r of P` and shard-labelled rms lines
+            # the harness prints. They arrive through the LAUNCHER'S MERGED
+            # STDOUT, which drops bytes under load -- measured over twenty child
+            # runs, three corrupted (docs/experiences.md, "A launcher's merged
+            # stdout is not a data channel, and a pin built on it lies"), which
+            # is why the seam check moved its receipts to per-rank files. A pin
+            # on those strings would flake about one gate in ten and would add
+            # nothing: exit 0 above already proves what they would.
+        end
+    end
+end
+end # _lane_gate("The developer harnesses run divided under an MPI launcher")
 
 @testset "Slice moments are a function of the beam, not of the launch geometry" begin
     # 2026-08-05_b audit, U3-1. `_cuda_gaussian_moment_launch` derived threads

@@ -147,9 +147,12 @@ monitors, loss counts -- reduce across the ranks, and rank 0 writes the one
 output file. Per-particle output -- aperture loss rows, coordinate snapshots -- carries the
 global particle id and is gathered onto rank 0, which writes the one file.
 Still refused at more than one rank: task and line ACTIONS, which are
-callbacks Octopus cannot reason about; and a strong-strong task still refuses outright, though the
-soft-Gaussian `collide!` itself divides
-(`design/multi_process_policy.md`, campaign step 3a of 4).
+callbacks Octopus cannot reason about; observers on a `PredicateSchedule`,
+whose predicate is user code and whose answer gates a collective every rank
+must issue; and `:equal_count` slicing, which needs a global ordering of the
+beam. Strong-strong tasks run divided on all four solvers
+(`design/multi_process_policy.md`, campaign steps 3a-3c and 4a-4h), which is
+what the strong-strong section below records in detail.
 
 Measured on the 64-core, 128-thread box at the production point
 (`history/multi_process_tracking_scaling_2026_09_04.md`): ranks beat threads

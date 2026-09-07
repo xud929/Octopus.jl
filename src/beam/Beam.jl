@@ -449,6 +449,13 @@ function _open_multi_process_context(request::MultiProcessRequest, threads::Int)
 end
 
 function _activate_resolved_policy!(policy::ResolvedCUDAExecutionPolicy)
+	# The same launcher tripwire the CPU activation runs. A CUDA policy IS an
+	# ordinary single-process policy, so `mpiexec -n 4` with one of these is the
+	# case the warning exists for -- four processes tracking the whole beam and
+	# writing one artifact path -- and it was reachable only through the CPU
+	# branch until the 2026-09-06 neighbour audit. `maxlog` keeps it once per
+	# process.
+	_warn_launcher_without_policy()
 	_HAS_CUDA || error("CUDA execution requires CUDA.jl to be available.")
 	CUDA.device!(policy.device)
 	_record_execution!(:cuda_device, CUDABackend, (device=policy.device,))

@@ -1127,7 +1127,7 @@ without a launcher it returns `:skipped` naming the legs it did not run, and a
 requested CUDA leg the device cannot run downgrades the result to `:skipped`
 too -- the three-way claim is not made on two legs.
 
-## Determinism, and what step 3 must choose
+## Determinism, and what step 3 chose
 
 Fixed-P bit-repeatability holds for any shard, because the cross-rank fold is
 rank-ordered.
@@ -1142,17 +1142,23 @@ partials fold to the same bits at any P. Folds keyed by *member-list
 position* rather than global index — per-slice moments, slice centroids, the
 PIC deposit — cannot be aligned that way, because slice membership is
 per-turn data; those are the CPU/CUDA-parity tolerance class Phase 0 named.
-The two aligned rules are mutually exclusive distributions, so step 3 picks
-one and states which folds it buys.
+The two aligned rules are mutually exclusive distributions. Step 3a picked the
+contiguous whole-chunk one (`P | 64`; the rule and the rejection of counts that
+do not divide 64 are stated in the step-3a section above), which buys the
+chunk-ordered folds across processes unchanged.
 
-Three more things step 3 owns, listed here because the seam is shaped for
-them and they are easy to discover late: the counter RNG keys beam allocation
+Three more things step 3 owned, listed here because the seam is shaped for
+them and they are easy to discover late; all three landed, and each is
+recorded in its own step section above. The counter RNG keys beam allocation
 and radiation on the **global** particle index, so a shard carries an offset
-or P > 1 draws different noise than P = 1; every length that enters physics
-(slice weights, luminosity scales) becomes a global count through
-`_mp_allsum!`; and any decision that gates a collective — a schedule
-predicate, a slicing choice — must be broadcast, because a rank that decides
-differently deadlocks its peers at the next collective.
+(`TrackingContext.index_offset`) or P > 1 draws different noise than P = 1.
+Every length that enters physics (slice weights, luminosity scales) becomes a
+global count through `_mp_allsum!`. And any decision that gates a collective —
+a schedule predicate, a slicing choice — must be broadcast, because a rank
+that decides differently deadlocks its peers at the next collective; the
+2026-09-06 neighbour audit found the fourth solver had not been given that
+broadcast for its luminosity schedule, which is the failure this paragraph
+predicts.
 
 ## Threading, output, and the launcher
 
@@ -1164,8 +1170,10 @@ when called off the main thread, so a collective that ever reaches a worker
 fails loudly instead of corrupting the communicator or hanging.
 
 Rank 0 owns the artifact and the console summaries — the run artifact is
-serial HDF5 and two ranks opening one path is corruption. Step 3 implements
-it; step 2's refusal is what keeps the question from arising early.
+serial HDF5 and two ranks opening one path is corruption. Step 3c implemented
+it (`_ra_write_losses!` and the observers' writers all return early off rank
+0), and step 4b retired the blanket refusal that had kept the question from
+arising earlier.
 
 A launcher that starts several ranks while Octopus holds no communicator is
 the trap this design most wants to avoid: every rank runs the whole job and

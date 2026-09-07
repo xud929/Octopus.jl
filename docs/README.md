@@ -43,9 +43,9 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
 - [`multi_process_policy.md`](design/multi_process_policy.md) — the
   multi-process execution policy: why the resolved state is a slot on the CPU
   policy rather than a wrapper around it, why resolution is pure while
-  activation reads the communicator, the six-function collective seam and its
-  rank-ordered folds, the determinism that buys at fixed and at varying rank
-  counts, and what step 3 must still choose.
+  activation reads the communicator, the collective seam and its rank-ordered
+  folds, the determinism that buys at fixed and at varying rank counts, and the
+  per-step records for 3a-3c and 4a-4h.
 - [`run_artifact.md`](design/run_artifact.md) — the one-output-file-per-task
   design (2026-08-18, decided, implementation on the ledger): the
   probe/channel split, per-producer groups with independent turn axes (which
@@ -321,6 +321,17 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   and why, the per-fix measurements with their bitwise-parity digests, and the
   machine-level findings — idle-thread spin, GC share, and why a pool wider
   than the data's parallelism costs rather than pays),
+  [`production_benchmark_2026_09_06.md`](history/production_benchmark_2026_09_06.md)
+  (the first end-to-end measurement of the finished multi-process campaign:
+  both production cases on all four solvers across CPU threads, MPI and CUDA,
+  200 turns averaged over turns 100-200, with the reproducibility gap it
+  exposed),
+  [`harness_mpi_branch_2026_09_06.md`](history/harness_mpi_branch_2026_09_06.md)
+  (`OCTOPUS_USE_MPI` in both `test/examples` harnesses, which closes that gap:
+  why a package extension cannot attach to an `include`d module and what that
+  would have made `mpiexec -n 8` do silently, the three fixes the weak-strong
+  twin had never received, and the measured default-path and one-rank
+  identities),
   [`batch_mode_one_keyword_2026_09_04.md`](history/batch_mode_one_keyword_2026_09_04.md)
   (`batch_mode` made one keyword on every strong-strong solver and both
   backends: the PIC pair loops read it on CPU, the spectral solver gains it,
@@ -433,6 +444,14 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   on a missing `_inner_method` twin, and a nested sub-line's `ref_tilt` was
   invisible to both geometry walkers while tracking rolled it -- both fixed
   and pinned against the flat spellings at 0.0),
+  [`neighbour_audit_2026_09_06.md`](history/neighbour_audit_2026_09_06.md)
+  (the multi-process campaign's neighbour audit, deferred by owner decision
+  until the last solver divided: twelve classes swept, three majors — the
+  Gaussian-PIC luminosity verdict that gates point-to-point messages and was
+  never broadcast, the artifact's rank-local aperture counts beside whole-beam
+  rows, and a hand-copied solver roster in the collide benchmark — plus two
+  classes inspected and found clean, and the two findings that did not survive
+  the auditor's own re-verification),
   [`neighbour_audit_2026_08_18_b.md`](history/neighbour_audit_2026_08_18_b.md)
   (over the run-artifact step-4 campaign -- writer retirement, the
   `TaskOutput` reader, capacity unification: the weak-strong finalize-order

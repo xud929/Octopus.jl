@@ -647,9 +647,15 @@ end
 
 """
 Whether an observer records one row per PARTICLE rather than reducing the beam
-to scalars. The scalar ones divide; these need a gather the seam does not
-have. Declared beside the refusal that reads it, and specialised beside each
-observer that answers `true`.
+to scalars. The scalar ones divide by REDUCING across the ranks; these divide
+by GATHERING onto rank 0 through `_mp_gather_rows`, the seventh collective,
+which step 3c added for exactly them. So a `true` answer is not a refusal: it
+is a promise that the observer's `observe!` issues that gather on every rank
+(`CoordinateSnapshotObserver` is the one that answers `true`, and does).
+
+Specialised beside each observer that answers `true`. It was DECLARED beside a
+refusal that read it, and step 3c retired both the refusal and its reader; the
+docstring said otherwise until the 2026-09-06 neighbour audit.
 """
 _observer_is_per_particle(::Any) = false
 
@@ -657,9 +663,6 @@ _observer_is_per_particle(::Any) = false
 rep it is handed. Line OBSERVERS are Octopus's own and divide; actions are the
 user's and cannot be reasoned about."""
 _has_line_actions(entries::Tuple) = any(e -> e isa LineActionEntry, entries)
-_task_has_per_particle_observer(observers) =
-    any(o -> _observer_is_per_particle(_as_scheduled_observer(o).observer),
-        _hook_tuple(observers))
 
 """
 Whether any line observer runs on a `PredicateSchedule`. Its predicate is
@@ -691,7 +694,9 @@ would be quietly wrong. So actions are refused rather than guessed at, and a
 user who wants one under a divided run has the rank accessors to write it
 against and can say so by dividing the work themselves.
 
-Line OBSERVERS are Octopus's own and divide; only line ACTIONS are refused.
+Line OBSERVERS are Octopus's own and divide -- except on a `PredicateSchedule`,
+whose predicate is user code and whose answer gates a collective, so it is
+refused alongside the actions (step 4b) and is in the `blocked` list below.
 """
 function _reject_unsharded_tracking_features(task, runtime_entries)
     _mp_nranks() > 1 || return nothing

@@ -982,7 +982,20 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
     kbb1 = _pic_kbb1(pic, beam1, beam2)
     kbb2 = _pic_kbb2(pic, beam1, beam2)
     klum = _pic_luminosity_scale(pic, beam1, beam2)
-    compute_luminosity = _pic_compute_luminosity(pic, ctx)
+    # Divided (step 4f, and MISSING until the 2026-09-06 neighbour audit): rank
+    # 0's verdict on every rank, because a `PredicateSchedule` is user code and
+    # its answer gates COLLECTIVES here, not just arithmetic. Under a
+    # multi-process policy `sliced` below is always true, so this flag is handed
+    # straight into the shared slice-aligned transport, where
+    # `compute_luminosity || continue` (pic_cpu_sliced.jl) sits immediately above
+    # the stage-3 `_mp_isend`/`_mp_irecv!` pair and their
+    # `_mp_wait_all(reqs, :wait_lum_extents)`. A rank answering `false` while its
+    # coordinator answers `true` therefore skips sends the coordinator is already
+    # blocked on: a deadlock, with no error. `_pic_collide!` and both spectral
+    # routes broadcast for exactly this reason; this was the fourth copy of that
+    # rule and the one that was never written.
+    compute_luminosity = _mp_nranks() > 1 ? _mp_bcast(_pic_compute_luminosity(pic, ctx)) :
+                                            _pic_compute_luminosity(pic, ctx)
     T = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(kbb1), typeof(kbb2))
     # N7: the luminosity estimate returns Float64 everywhere (see pic_cpu.jl).
     LT = Float64
@@ -1178,7 +1191,16 @@ function _gpic_collide_fresh!(solver::GaussianPICPoissonSolver, beam1::Beam,
     nx, ny = solver.pic.grid
     workspaces = [_pic_cpu_workspace(T, nx, ny) for _ in 1:_pic_pool_size(solver.pic)]
     green_cache = _pic_green_cache(solver.pic, T)
-    return _gpic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache)
+    # Both beams' shards in scope for the whole collide, as `_pic_collide!`,
+    # `_spectral_collide!` and the soft-Gaussian entry all do. gpic was the one
+    # divided solver whose BARE collide did not, so each of its eight shard
+    # resolutions paid a hidden collective inside a per-slice function instead
+    # of one resolution at the entry (2026-09-06 neighbour audit).
+    # `_with_beam_shards` skips reps already in scope, so the task path through
+    # `_strong_strong_collide!` keeps paying nothing.
+    return _with_beam_shards(beam1.rep, beam2.rep) do
+        _gpic_collide!(solver, beam1, beam2, ctx, workspaces, green_cache)
+    end
 end
 
 function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,

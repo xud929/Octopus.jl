@@ -303,7 +303,20 @@ function _ra_write_losses!(art::RunArtifact, record, s_positions, summary,
     haskey(art.file, "losses") && HDF5.delete_object(art.file, "losses")
     g = HDF5.create_group(art.file, "losses")
     g["aperture_names"] = aperture_names(record)
-    g["aperture_counts"] = loss_counts(record)
+    # The GLOBAL attribution, not this rank's. `loss_counts(record)` is the
+    # rank-local `LossRecord.counts`, bumped only by this rank's own kills, and
+    # every other value in this group is the whole beam's: `data` is
+    # `_mp_gather_rows`ed over all ranks and the `summary_*` attributes come from
+    # the all-summed counts. Writing the local array here made a reader
+    # reconciling `sum(aperture_counts)` against `summary_dead` -- which is
+    # precisely what `loss_summary`'s docstring tells them to do -- see a
+    # phantom unattributed gap that grew with the rank count, silently
+    # (2026-09-06 neighbour audit). `summary.by_aperture` is the same array
+    # all-summed by `_global_loss_summary`, index-aligned with `aperture_names`
+    # because both derive from the same record, and identical to the local one
+    # at a single rank.
+    g["aperture_counts"] = summary === nothing ? loss_counts(record) :
+                           collect(Int, summary.by_aperture)
     s_positions === nothing || (g["aperture_s"] = collect(Float64, s_positions))
     if gathered !== nothing
         g["data"] = gathered
