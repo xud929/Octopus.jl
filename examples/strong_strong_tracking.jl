@@ -43,7 +43,20 @@ using .Octopus
 # Run configuration. Edit these; the physics `input` below is separate.
 # ---------------------------------------------------------------------------
 config = (
-    use_gpu = false,       # true routes beam storage and tracking to CUDA
+    # WHICH DEVICE THIS RUN USES -- the one line to edit.
+    #
+    #   :auto          CUDA when a device is functional, CPU threads otherwise.
+    #                  The default, so this file runs unmodified on a GPU box
+    #                  and on one without (CI has no GPU).
+    #   :cuda          one CUDA device, and an ERROR if none is functional.
+    #   :threads       CPU logical workers, one process.
+    #   :multiprocess  MPI ranks x CPU threads. Read the note in the execution
+    #                  policy block below first: this file must then be run in
+    #                  PACKAGE mode under a launcher.
+    execution = :auto,
+    gpu_device = nothing,  # CUDA device index, or nothing for the current one
+    threads = :auto,       # CPU logical workers per process
+    ranks = :auto,         # :multiprocess only; an integer asserts the count
     turns = 2,             # small for an interactive check; raise for a real run
     n_macro_ele = 200,     # ~2_560_000 for a production electron beam
     n_macro_pro = 200,     # ~1_024_000 for a production proton beam
@@ -133,11 +146,53 @@ input = (
 # ---------------------------------------------------------------------------
 # Execution policy and live beams.
 # ---------------------------------------------------------------------------
-if config.use_gpu
+# ---------------------------------------------------------------------------
+# Execution policy.
+#
+# `:auto` prefers CUDA and falls back to CPU threads, and the run PRINTS which
+# it chose: a measurement whose device you have to guess at is one you cannot
+# report. `:cuda` is the same choice made strict -- it errors rather than
+# quietly running on the CPU, which is what you want when the device is the
+# point of the run.
+# ---------------------------------------------------------------------------
+cuda_ok = false
+if config.execution === :auto || config.execution === :cuda
     import CUDA
-    CUDA.functional(false) || error("config.use_gpu is true, but CUDA is not functional")
+    cuda_ok = CUDA.functional(false)
+    config.execution === :cuda && !cuda_ok && error(
+        "config.execution = :cuda, but CUDA.functional(false) is false: no " *
+        "usable device. Use :auto to fall back to CPU threads, or :threads.")
 end
-policy = config.use_gpu ? CUDAExecutionPolicy() : CPUThreadsExecutionPolicy()
+
+policy = if config.execution === :multiprocess
+    # One Octopus process per MPI rank, each with its own CPU logical workers.
+    #
+    # This choice needs the file run in PACKAGE MODE under a launcher:
+    #
+    #   mpiexec -n 4 julia --project=. -e 'using Octopus, MPI; include("examples/strong_strong_tracking.jl")'
+    #
+    # because `MultiProcessExecutionPolicy` reaches a real communicator only
+    # through the `OctopusMPIExt` package extension, and a package extension
+    # attaches only to a PACKAGE -- which the `include` of src/Octopus.jl at the
+    # top of this file is not. Without the extension every rank would be its own
+    # communicator of one, `ranks = :auto` would accept that, and `mpiexec -n 4`
+    # would run FOUR whole simulations racing on one artifact path: exit 0,
+    # plausible timings, wrong answer. So it is refused instead.
+    Base.get_extension(Main.Octopus, :OctopusMPIExt) === nothing && error(
+        "config.execution = :multiprocess needs the OctopusMPIExt extension, " *
+        "which attaches only when Octopus is loaded as a PACKAGE with MPI also " *
+        "loaded. Run: mpiexec -n <P> julia --project=. -e 'using Octopus, MPI; " *
+        "include(\"examples/strong_strong_tracking.jl\")'")
+    MultiProcessExecutionPolicy(threads = config.threads, ranks = config.ranks)
+elseif cuda_ok
+    CUDAExecutionPolicy(device = config.gpu_device)
+else
+    CPUThreadsExecutionPolicy(threads = config.threads)
+end
+println("execution policy = ", nameof(typeof(policy)),
+        config.execution === :auto ?
+            (cuda_ok ? "  (auto: a CUDA device is available)" :
+                       "  (auto: no CUDA device, running on CPU threads)") : "")
 
 set_global_rng!(seed = input.seed, method = :philox)
 
@@ -296,5 +351,12 @@ println("turns = ", config.turns)
 println("poisson_solver = ", nameof(typeof(solver)))
 println("artifact = ", artifact_path)
 println("  /luminosity/ip, /moments/electron, /moments/proton, /execution")
-println("electron rms = ", stats_ele.rms)
-println("proton rms = ", stats_pro.rms)
+# `beam_statistics` is a purely local reduction -- no collective, no shard
+# argument -- so under `:multiprocess` it describes THIS RANK'S SHARD, not the
+# beam. Labelled accordingly, because a reader comparing a divided run's rms
+# against a single-process one would otherwise be comparing a shard with a beam
+# and calling the difference physics.
+_rms_label(name) = policy isa MultiProcessExecutionPolicy ?
+    "$(name) (this rank's shard, not the whole beam)" : name
+println(_rms_label("electron rms"), " = ", stats_ele.rms)
+println(_rms_label("proton rms"), " = ", stats_pro.rms)
