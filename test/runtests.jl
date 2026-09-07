@@ -5635,6 +5635,40 @@ end
     end
 end
 
+@testset "Observer schema keys must name public fields" begin
+    # U4-18, re-enabled 2026-09-07. `validate_configuration_metadata` compares
+    # each observer's schema keys against its `configuration_report` entry
+    # names. That is REAL for the two observers with hand-written reports and an
+    # IDENTITY for `BPMObserver`, whose report is built by iterating the same
+    # `_BPM_OBSERVER_OPTION_SCHEMA` const the schema accessor returns
+    # (BPMObserver.jl:412 and :416) -- both sides are `keys` of one object, so
+    # it passes for any schema, correct or not.
+    #
+    # The coverage that comparison cannot give a derived report is a FIELD
+    # check, which was tried in 2026-08 and reverted because three observers
+    # then exposed `capacity` while storing `buffer_capacity`. Those observers
+    # were deleted and the option retired, so it is back -- and this is the
+    # check being shown to fail, which is the whole point of the row.
+    @test validate_configuration_metadata()
+    try
+        @eval Octopus observer_option_schema(::Type{BPMObserver}) =
+            merge(_BPM_OBSERVER_OPTION_SCHEMA,
+                  (not_a_field = ConfigurationOptionMeta(Int, 0, "injected probe"),))
+        err = try
+            validate_configuration_metadata()
+            ""
+        catch e
+            sprint(showerror, e)
+        end
+        @test occursin("BPMObserver schema keys are not fields", err)
+        @test occursin("not_a_field", err)
+    finally
+        @eval Octopus observer_option_schema(::Type{BPMObserver}) =
+            _BPM_OBSERVER_OPTION_SCHEMA
+    end
+    @test validate_configuration_metadata()       # restored
+end
+
 @testset "The module precompiles without overwriting its own methods" begin
     # Part 6 §8.7: a same-signature method silently overwrote another, PASSED
     # the full suite (both methods behaved identically), and was caught only
@@ -5729,6 +5763,33 @@ end
     end
     @test validate_element_metadata().passed      # registry restored
 
+    # U12-6, closed 2026-09-07: `ParamMeta.unit` was free text, and it is not
+    # decoration -- `_perturb_is_physical` (Contracts.jl) reads
+    # `pmeta.unit in ("m", "rad")` to choose whether the parameter-effectiveness
+    # contract perturbs an integer-declared parameter physically or by an
+    # enum-style step. A misspelt unit therefore downgrades a physical parameter
+    # to a weaker probe SILENTLY, with the contract still passing. It now draws
+    # from `ALLOWED_PARAM_UNITS`, and this is that check shown failing.
+    try
+        Octopus.register_element_meta!(Octopus.ElementMeta(;
+            kind=:u12_6_probe, spec_type=ElementSpec{:u12_6_probe},
+            runtime_type=Octopus.LatticeMagnet,
+            parameters=(bogus=Octopus.ParamMeta(; unit="furlong", meaning="probe"),),
+            example=ElementSpec{:u12_6_probe}(Dict{Symbol,Any}())))
+        r = validate_element_metadata()
+        @test !r.passed
+        @test any(e -> occursin("u12_6_probe", e) &&
+                       occursin("unrecognised unit", e) &&
+                       occursin("furlong", e), r.errors)
+    finally
+        delete!(Octopus.ELEMENT_META_BY_KIND, :u12_6_probe)
+        let T = ElementSpec{:u12_6_probe}
+            delete!(Octopus.ELEMENT_META_BY_SPEC_TYPE, T)
+            filter!(t -> t !== T, Octopus.REGISTERED_ELEMENT_SPECS)
+        end
+    end
+    @test validate_element_metadata().passed      # registry restored
+
     # U12-8, repaired 2026-09-07. The three friendly-constructor checks
     # (schema, construction_help, example kind) were TAUTOLOGIES: every
     # accessor they used is `_element_meta_or_nothing(x)` followed by a field
@@ -5770,6 +5831,95 @@ end
         end
     end
     @test validate_element_metadata().passed      # registry restored again
+end
+
+@testset "The configuration validator's tree walks reach concrete types at any depth" begin
+    using InteractiveUtils: subtypes
+    # The 2026-08-05 "enumerates types by hand" row, re-measured 2026-09-07.
+    # Everything the row NAMED is already closed -- the solver and observer
+    # loops were totalized by U3-4, the policy and schedule loops by U12-3, and
+    # `Contracts.jl`'s solver roster is derived by U4-7. What was left is the
+    # difference BETWEEN those repairs: two of the four walks recursed and two
+    # did not. `subtypes` returns direct children only, and the two one-level
+    # loops SKIPPED abstract children (`isabstracttype(T) && continue`) instead
+    # of descending, so a concrete solver or observer under an intermediate
+    # abstract type was invisible to the guard that exists to find it.
+    #
+    # The mechanism is not hypothetical, and it is pinned here on REAL types
+    # rather than an injected tree: the execution-policy tree is genuinely two
+    # deep, and a one-level walk over it misses the two policies that matter
+    # most. That is the trap U12-3 fixed there, shown live.
+    direct = subtypes(Octopus.AbstractExecutionPolicy)
+    @test Octopus.AbstractGPUExecutionPolicy in direct
+    @test !(Octopus.CUDAExecutionPolicy in direct)      # hidden by the abstract parent
+    @test !(Octopus.GPUExecutionPolicy in direct)
+    walked = Octopus._concrete_octopus_subtypes(Octopus.AbstractExecutionPolicy)
+    @test Octopus.CUDAExecutionPolicy in walked         # the recursive walk finds them
+    @test Octopus.GPUExecutionPolicy in walked
+    @test !any(isabstracttype, walked)
+
+    # And the walk keeps the filter it had: types defined in `Main` -- which
+    # this very file defines several of -- stay out, or the public-configuration
+    # contract fails in suite context only.
+    @test TestNoopObserver <: Octopus.AbstractBeamObserver
+    @test !(TestNoopObserver in
+            Octopus._concrete_octopus_subtypes(Octopus.AbstractBeamObserver))
+
+    # Why the solver and observer swaps change no result TODAY, asserted rather
+    # than assumed: neither tree has an abstract intermediate yet. The day one
+    # appears, this assertion is what stops being true -- and the guards now
+    # descend through it instead of reporting clean.
+    @test all(!isabstracttype, subtypes(Octopus.AbstractPoissonSolver))
+    @test all(!isabstracttype, subtypes(Octopus.AbstractBeamObserver))
+    @test Set(Octopus._concrete_octopus_subtypes(Octopus.AbstractPoissonSolver)) ==
+          Set((Octopus.PICPoissonSolver, Octopus.GaussianPoissonSolver,
+               Octopus.SpectralPoissonSolver, Octopus.GaussianPICPoissonSolver))
+end
+
+@testset "A solver hidden under an abstract intermediate fails the validator" begin
+    # The negative control for the walk above, and it runs in a CHILD PROCESS
+    # for a reason worth stating: the only way to show this guard failing is to
+    # define a bogus concrete solver inside `Octopus`, and a type definition
+    # cannot be undone. Injected in-process it would persist for the rest of the
+    # session and fail every later `validate_configuration_metadata()` -- the
+    # suite's own line 170, and the public-configuration contract -- turning one
+    # control into a session-wide breakage. The child exits and takes it away.
+    root = dirname(@__DIR__)
+    script = """
+        using Octopus
+        using InteractiveUtils: subtypes
+        # An abstract intermediate with a concrete leaf: the shape the one-level
+        # walk could not see.
+        @eval Octopus abstract type _TreeProbeSolver <: AbstractPoissonSolver end
+        @eval Octopus struct _TreeProbeHidden <: _TreeProbeSolver end
+        # The premise, asserted rather than assumed: the leaf is NOT a direct
+        # subtype, so a bare `subtypes` walk genuinely cannot reach it.
+        println("HIDDEN-FROM-DIRECT ",
+                !(Octopus._TreeProbeHidden in subtypes(Octopus.AbstractPoissonSolver)))
+        println("FOUND-BY-WALK ",
+                Octopus._TreeProbeHidden in
+                Octopus._concrete_octopus_subtypes(Octopus.AbstractPoissonSolver))
+        # And the guard therefore fires, naming the type that has no block.
+        caught = try
+            Octopus.validate_configuration_metadata()
+            ""
+        catch err
+            sprint(showerror, err)
+        end
+        println("VALIDATOR-REFUSED ",
+                occursin("_TreeProbeHidden", caught) &&
+                occursin("no validate_configuration_metadata block", caught))
+        """
+    buf = IOBuffer()
+    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(root) -e $(script)`
+    proc = run(pipeline(cmd; stdout=buf, stderr=buf); wait=false)
+    wait(proc)
+    text = String(take!(buf))
+    success(proc) || @info "the hidden-solver child failed" out=last(text, 2000)
+    @test success(proc)
+    @test occursin("HIDDEN-FROM-DIRECT true", text)
+    @test occursin("FOUND-BY-WALK true", text)
+    @test occursin("VALIDATOR-REFUSED true", text)
 end
 
 @testset "The run artifact carries the strong-strong luminosity channel" begin

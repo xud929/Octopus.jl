@@ -2009,15 +2009,18 @@ function validate_configuration_metadata()
     # Completeness by TYPE TREE, not hand list (U3-4): a new concrete solver
     # fails here until it gets its block, instead of going unchecked until
     # someone edits an enumeration.
-    for T in subtypes(AbstractPoissonSolver)
-        # Parametric solver/observer types are UnionAlls, for which
-        # `isconcretetype` is false — gate on abstractness instead. And only
-        # types DEFINED IN OCTOPUS: the suite defines throwaway observer
-        # subtypes in Main, and the tree guard flagging those failed the
-        # public-configuration contract in suite context only (2026-08-05
-        # campaign shakeout).
-        isabstracttype(T) && continue
-        parentmodule(T) === (@__MODULE__) || continue
+    #
+    # Through `_concrete_octopus_subtypes`, which RECURSES, since 2026-09-07.
+    # It was a bare one-level `subtypes` that skipped abstract children rather
+    # than descending into them, so an intermediate abstract solver type would
+    # have hidden every concrete leaf beneath it and this guard would have
+    # reported clean -- the exact trap U12-3 had already fixed for the policy
+    # walk above, and which `_solver_contract_types` (`Contracts.jl`, U4-7)
+    # already avoids for the very same type tree. Two of the four walks over
+    # this file's trees followed the rule and two did not. No abstract
+    # intermediate exists under either tree today, so this changes no result
+    # now; it is the latent half of a trap already sprung twice.
+    for T in _concrete_octopus_subtypes(AbstractPoissonSolver)
         T in (PICPoissonSolver, GaussianPoissonSolver, SpectralPoissonSolver,
               GaussianPICPoissonSolver) || push!(errors,
             "$(T) is a concrete AbstractPoissonSolver with no validate_configuration_metadata block")
@@ -2104,15 +2107,8 @@ function validate_configuration_metadata()
     )
     # BPMObserver was absent from these lists (U3-4); the tree guard below
     # keeps the next observer from repeating that.
-    for T in subtypes(AbstractBeamObserver)
-        # Parametric solver/observer types are UnionAlls, for which
-        # `isconcretetype` is false — gate on abstractness instead. And only
-        # types DEFINED IN OCTOPUS: the suite defines throwaway observer
-        # subtypes in Main, and the tree guard flagging those failed the
-        # public-configuration contract in suite context only (2026-08-05
-        # campaign shakeout).
-        isabstracttype(T) && continue
-        parentmodule(T) === (@__MODULE__) || continue
+    # Recursive for the same reason as the solver walk above (2026-09-07).
+    for T in _concrete_octopus_subtypes(AbstractBeamObserver)
         any(o -> o isa T, observer_instances) || push!(errors,
             "$(T) is a concrete AbstractBeamObserver with no validate_configuration_metadata coverage")
     end
@@ -2127,18 +2123,49 @@ function validate_configuration_metadata()
         report_names = Set(entry.name for entry in configuration_report(observer))
         schema_names == report_names || push!(errors,
             "$(typeof(observer)) schema and configuration-report keys disagree")
-        # NOTE (2026-08-05_b audit, U4-18): the comparison above is real for the
-        # five observers whose reports are hand-written tuples, and an IDENTITY
-        # for any observer that derives its report by iterating the schema --
-        # `configuration_report(::BPMObserver)` does exactly that, so for it the
-        # check passes for any possible schema.
+        # NOTE (2026-08-05_b audit, U4-18; re-measured 2026-09-07): the
+        # comparison above is REAL for the two observers whose reports are
+        # hand-written tuples -- `MomentObserver` (BeamObservers.jl:795-802) and
+        # `CoordinateSnapshotObserver` (:804-812), each naming its entry symbols
+        # literally against a separately written schema -- and an IDENTITY for
+        # `BPMObserver`, whose report is built by iterating the same
+        # `_BPM_OBSERVER_OPTION_SCHEMA` const its schema accessor returns
+        # (BPMObserver.jl:412 and :416), so both sides are `keys` of one object
+        # and the check passes for any schema, correct or not. It is kept for
+        # the two it bites on rather than dropped; the coverage it CANNOT give
+        # for a derived report is supplied by the field check below.
         #
-        # A "every option names a field" check was tried here and REVERTED: an
-        # option is a CONSTRUCTOR KEYWORD, not a field, and three observers
-        # legitimately expose `capacity` while storing `buffer_capacity`. There
-        # is no cheap field-based substitute; making this non-vacuous needs the
-        # keyword set of the constructor, which Julia does not expose directly.
-        # Recorded on docs/todo.md rather than replaced with a wrong check.
+        # (The note here used to say "five observers". That was true when
+        # written: 2026-08-11's legacy cut and the 2026-08-18/19 artifact sweep
+        # took the concrete observer count from six to three, so the vacuous
+        # fraction went from 1-in-6 to 1-in-3.)
+    end
+    # Every observer schema key must name a public FIELD.
+    #
+    # This was tried once and REVERTED, and the note recording that is why it
+    # stayed absent: an option is a CONSTRUCTOR KEYWORD, not necessarily a
+    # field, and three observers then exposed `capacity` while storing
+    # `buffer_capacity`. Both of those observers were deleted in the 2026-08-11
+    # legacy-observer cut, and the per-observer `capacity` option retired
+    # 2026-08-18 -- `capacity=ConfigurationOptionMeta` appears nowhere in src/
+    # today. The obstacle is gone, so the check is re-enabled rather than left
+    # recorded as impossible.
+    #
+    # MEASURED BEFORE ENABLING: all three observers' schema keys are fields
+    # today (2 of 2, 2 of 2, 12 of 12), so this passes on a correct tree. It is
+    # a subset test, not equality: observers carry buffers and cursors that are
+    # not options, which is why `BPMObserver` has 20 fields behind 12 options.
+    #
+    # It is also the check the docstring above has claimed all along ("schema
+    # keys match public fields"); observers were the one family without it,
+    # while every sibling has had it (LongitudinalSlicing, CUDAPICLaunchConfig,
+    # the four solvers, StrongStrongTask, the diagnostics, both schedules).
+    for observer_type in (MomentObserver, CoordinateSnapshotObserver, BPMObserver)
+        stray = setdiff(Set(keys(observer_option_schema(observer_type))),
+                        Set(fieldnames(observer_type)))
+        isempty(stray) || push!(errors,
+            "$(observer_type) schema keys are not fields: " *
+            join(sort!(collect(stray)), ", "))
     end
     isempty(errors) || throw(ArgumentError(join(errors, '\n')))
     return true

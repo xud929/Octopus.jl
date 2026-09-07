@@ -451,6 +451,16 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   equal; the host fold is pinned to `fma`, one line closing two members of the
   wobble ledger, and the "in-suite vs standalone" framing is corrected by
   measurement),
+  [`metadata_cluster_2026_09_07.md`](history/metadata_cluster_2026_09_07.md)
+  (closing three metadata-validator rows at once, two of which were wrong about
+  their own subject: the observer schema-vs-report check is an identity for one
+  of three observers and its "five observers" count was stale, replaced by the
+  field check a since-deleted obstacle had blocked; `ParamMeta.unit` was NOT
+  merely help text as its row claimed but drives `_perturb_is_physical`, so a
+  misspelt unit silently downgraded a physical parameter to a weaker probe
+  while the contract kept passing, now a controlled vocabulary; and the
+  "enumerates types by hand" row was stale in every specific it named, with the
+  real remainder being that two of four tree walks did not recurse),
   [`mpi_audit_followups_2026_09_07.md`](history/mpi_audit_followups_2026_09_07.md)
   (closing all six of that audit's priced rows: the `:funneled` tripwire gains a
   task-based half and the audit's own frequency claim is corrected by

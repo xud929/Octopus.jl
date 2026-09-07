@@ -9,7 +9,8 @@ export AbstractOctopusObject,
        ParamMeta, ElementMeta, element_meta, register_element_meta!, @element_spec,
        register_element_spec!, register_friendly_alias!, registered_element_specs,
        parameter_schema, example_spec, construction_help, element_help,
-       validate_element_metadata, allowed_physics_keywords, set_param!
+       validate_element_metadata, allowed_physics_keywords, allowed_param_units,
+       set_param!
 
 """Root type for structured, introspectable architectural objects in Octopus."""
 abstract type AbstractOctopusObject end
@@ -363,6 +364,39 @@ const ALLOWED_PHYSICS_KEYWORDS = Set{Symbol}([
 
 """Return the current controlled physics-keyword set."""
 allowed_physics_keywords() = copy(ALLOWED_PHYSICS_KEYWORDS)
+
+"""
+The controlled vocabulary for `ParamMeta.unit`, mirroring
+`ALLOWED_PHYSICS_KEYWORDS` above.
+
+`unit` is NOT decoration. Besides `element_help`, it has a BEHAVIOURAL consumer:
+`_perturb_is_physical` (`src/contracts/Contracts.jl`) reads
+`pmeta.unit in ("m", "rad")` to decide whether the parameter-effectiveness
+contract perturbs an integer-declared parameter by a physical amount
+(`1.0e-3`) or by an enum-style step. So a misspelt unit does not merely print
+oddly -- it silently downgrades a physical parameter to an enum probe, and the
+contract still passes, testing something weaker than it claims. That is the
+"a check that cannot fail" family one level out, and it is why this field earns
+a vocabulary rather than staying free text (2026-08-06 audit U12-6; closed
+2026-09-07).
+
+Empty means "dimensionless or unspecified" and is admitted: 233 of the 255
+`ParamMeta` declarations do not set a unit at all.
+
+MEMBERSHIP HERE IS NOT THE SAME AS BEING PHYSICAL. `Hz` is a legitimate unit and
+is admitted, but `_perturb_is_physical` treats only `m` and `rad` as physical;
+adding a unit here does not change the contract's perturbation policy, and
+changing that policy is a separate decision with its own evidence.
+"""
+const ALLOWED_PARAM_UNITS = Set{String}([
+    "",      # dimensionless, or deliberately unspecified
+    "m",     # length; physical to the effectiveness contract
+    "rad",   # angle; physical to the effectiveness contract
+    "Hz",    # frequency
+])
+
+"""Return the current controlled parameter-unit vocabulary."""
+allowed_param_units() = copy(ALLOWED_PARAM_UNITS)
 
 """
     _help_mentions_parameter(help, key) -> Bool
@@ -1067,6 +1101,15 @@ function validate_element_metadata(; throw_on_error::Bool=false)
 
         for (key, pmeta) in pairs(parameter_schema(T))
             if pmeta isa ParamMeta
+                # The unit is drawn from a controlled vocabulary, for the same
+                # reason the keywords above are: it drives behaviour. See
+                # `ALLOWED_PARAM_UNITS`. Measured when this landed: the whole
+                # registry declares only "m", "rad" and "Hz", so this passes on
+                # a correct tree and bites on the next typo.
+                pmeta.unit in ALLOWED_PARAM_UNITS || push!(errors,
+                    "ElementMeta $(meta.kind) parameter $(key) declares " *
+                    "unrecognised unit $(repr(pmeta.unit)); allowed: " *
+                    join(sort!(collect(ALLOWED_PARAM_UNITS)), ", "))
                 if pmeta.required && pmeta.default !== nothing
                     push!(errors, "ElementMeta $(meta.kind) parameter $(key) is required but has a default")
                 end
