@@ -444,6 +444,13 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   on a missing `_inner_method` twin, and a nested sub-line's `ref_tilt` was
   invisible to both geometry walkers while tracking rolled it -- both fixed
   and pinned against the flat spellings at 0.0),
+  [`cuda_lastbit_fma_2026_09_07.md`](history/cuda_lastbit_fma_2026_09_07.md)
+  (the CPU/CUDA 1-ulp sigma divergence, solved: the NVPTX backend contracts the
+  `Val(2)` lane accumulation into one `fma.rn.f64` and the host did not, which
+  is why the mean -- a bare add with nothing to contract -- was always bitwise
+  equal; the host fold is pinned to `fma`, one line closing two members of the
+  wobble ledger, and the "in-suite vs standalone" framing is corrected by
+  measurement),
   [`mpi_audit_followups_2026_09_07.md`](history/mpi_audit_followups_2026_09_07.md)
   (closing all six of that audit's priced rows: the `:funneled` tripwire gains a
   task-based half and the audit's own frequency claim is corrected by

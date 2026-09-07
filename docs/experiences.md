@@ -541,6 +541,66 @@ assertion:
 
 ## `muladd` is a 1-ulp coin that refactoring flips
 
+### A float atomic is deterministic within a block and not across blocks
+
+The other half of the same investigation, and a different mechanism with a
+similar smell. A CIC deposit written as `CUDA.@atomic charge[i, j] += w` is a
+FLOAT atomic add, and float addition does not associate, so the order concurrent
+threads land in is part of the answer. Measured on 64 particles over a 16x16
+grid, 200 repetitions per geometry in one quiet process: `blocks=2` gave FOUR
+distinct charge arrays, while `blocks=1` at 64, 128, 256 and 512 threads gave
+ONE each -- the same one. Two thousand repetitions at `blocks=1` gave a single
+profile.
+
+So the ordering is repeatable while one block owns the contended cell, and stops
+being repeatable the moment two blocks do, because block scheduling order varies
+between launches. That is why a standalone probe of such a kernel can come back
+"20 of 20 bit-exact" and be believed, while the same code straddles two answers
+inside a larger run: the probe was single-block and the run was not.
+
+Two things follow, and the second is the expensive one:
+
+- **A launch geometry is part of a bitwise claim.** Anywhere a thread count is
+  chosen by ambient configuration rather than fixed -- here
+  `_cuda_pic_threads` returns 256 unless a task scope installs a config -- a
+  bit-identity pin on an atomically-accumulated quantity is really a pin on
+  that configuration too, whether or not it says so.
+- **"Bit-exact standalone" is not evidence about the suite** unless the probe
+  reproduces the suite's launch shape. Twenty repetitions of the wrong geometry
+  is twenty repetitions of the wrong question.
+
+The repair is usually not to make the deposit deterministic -- per-block
+partials and an ordered reduction change every result to buy a reproducibility
+the physics does not need -- but to derive the tolerance from the measured
+spread and say WHY it is there. A tolerance with a mechanism behind it is a
+different object from one fitted to the last failure.
+
+### The device flips that coin for you, and only where there is a multiply
+
+The GPU does not need a `muladd` in the source to contract. `acc += (zi - μ) *
+(zi - μ)` in a CUDA kernel compiles to a single `fma.rn.f64` on NVPTX -- one
+rounding -- while the identical Julia source on the host rounds twice, because
+Julia's codegen does not contract by default. Nothing in the source says `fma`,
+no `@fastmath` is present, and the two backends still disagree by 1 ulp on
+inputs that sit on a rounding boundary. Twelve ledgered observations, three of
+them chasing a process-state phantom, cost less than the one measurement that
+settled it: emulate the fold on the host BOTH ways and see which reproduces
+which backend, to the bit.
+
+The tell is available before any measurement, and it is worth learning to read:
+**a reduction that moves has a multiply feeding its accumulator; one that never
+moves does not.** In the same family of folds, `acc += zi` (the mean, the
+centroid) had never once wobbled across backends, while `acc += (zi-μ)*(zi-μ)`
+(sigma, rms) wobbled repeatedly. That asymmetry was recorded as a puzzle for a
+month; it was the answer.
+
+So when a cross-backend bit-identity pin fails on ONE statistic and not its
+neighbours, look at which of them contains a contractible multiply-add before
+looking anywhere else. And when writing a fold that a device twin must match,
+choose the contraction explicitly on BOTH sides -- `fma` on the host too -- so
+the two agree by construction rather than by luck about codegen.
+
+
 - `muladd(x, y, z)` is defined as "fuse if the compiler thinks it profitable",
   so which of two last bits a call site returns is a CODEGEN decision, not a
   property of the source. Splitting `_slice_transverse_moments`'s finalize into

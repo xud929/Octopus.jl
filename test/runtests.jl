@@ -15744,18 +15744,27 @@ end
                 @test sc.n_live == sg.n_live
                 @test sc.zmin == sg.zmin && sc.zmax == sg.zmax
                 @test sc.mean == sg.mean
-                # Sigma alone is bounded at 1 ulp rather than pinned bitwise
-                # (owner decision, 2026-08-19, wobble-row observations 10-12):
-                # the discriminator above measured the in-suite CUDA masked
-                # sigma deviating from the standalone value by exactly 1 ulp,
-                # DETERMINISTICALLY per process (recompute matches the first
-                # GPU value, same pair of values across gates), with count,
-                # extrema and mean bitwise equal throughout and no fastmath or
-                # math_mode setter anywhere in src/ or test/. The measured
-                # invariant is therefore: moments exact, sigma within 1 ulp.
-                # The mechanism stays open on the ledger row; the discriminator
-                # keeps logging every occurrence.
-                @test abs(reinterpret(Int64, sc.sigma) - reinterpret(Int64, sg.sigma)) <= 1
+                # BITWISE again, since 2026-09-07. This was relaxed to a 1-ulp
+                # bound by owner decision on 2026-08-19 (wobble-row
+                # observations 10-12) because the mechanism was unknown; it is
+                # known now and fixed, so the weaker pin has no reason to
+                # stand.
+                #
+                # The mechanism: the CUDA kernel writes
+                # `acc += (zi - μ) * (zi - μ)` and the NVPTX backend contracts
+                # that into ONE `fma.rn.f64` (measured in the kernel's PTX --
+                # one fma, zero mul, zero add), while Julia's host codegen does
+                # not contract, so the CPU rounded twice where the device
+                # rounded once. Emulating the fold on the host with `fma`
+                # reproduces the device value exactly and with `*` then `+`
+                # reproduces the old host value exactly, which is what named
+                # it. `_lane_z_moment`'s Val(2) branch now accumulates with
+                # `fma`, so both backends round once and agree.
+                #
+                # It also explains why the three asserts above never moved:
+                # count, extrema and the MEAN have no multiply to contract.
+                # Record: docs/history/cuda_lastbit_fma_2026_09_07.md.
+                @test sc.sigma == sg.sigma
             end
         end
         # Whole-structure equality for every method, Float64 and Float32, on

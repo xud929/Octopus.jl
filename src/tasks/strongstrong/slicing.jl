@@ -266,10 +266,37 @@ function _lane_z_moment(z::AbstractVector, flags, μ, ::Val{POW};
     # particle in the lane it would have occupied undivided. The ranks then
     # exchange lane partials rather than scalars, which keeps the fold's shape
     # across processes even though the accumulation within a lane is split.
+    # The Val(2) accumulation is `fma`, NOT `(d*d) + acc`, and that is what
+    # makes this fold bit-identical with the device rather than merely
+    # same-shaped (2026-09-07; the mechanism is in
+    # `docs/history/cuda_lastbit_fma_2026_09_07.md`).
+    #
+    # The CUDA twin writes `acc += (zi - μ) * (zi - μ)` and the NVPTX backend
+    # CONTRACTS that multiply-add into one `fma.rn.f64` -- measured, the
+    # kernel's PTX carries one `fma.rn.f64` and zero `mul.f64`/`add.f64`.
+    # Julia's host codegen does not contract, so the CPU rounded twice where
+    # the device rounded once, and the two answers differed by 1 ulp on inputs
+    # that sit on the boundary. That was the whole of the "CUDA in-suite vs
+    # standalone" mystery and of the spectral `_masked_rms` counterexample:
+    # emulating this fold with `fma` reproduces the device value exactly, and
+    # emulating it with `*` then `+` reproduces the old host value exactly.
+    #
+    # It also explains why the MEAN never moved: `Val(1)` accumulates `z[i]`
+    # with a bare add, which has no multiply to contract, so it was uniquely
+    # determined all along.
+    #
+    # `POW` is a compile-time `Val` parameter, so this branch costs nothing at
+    # runtime. `fma` is a single hardware instruction on this target and is the
+    # more accurate of the two (one rounding, not two).
     @inbounds for i in eachindex(z)
         _flag_live(flags, i) || continue
-        v = POW == 2 ? (z[i] - μ) * (z[i] - μ) : z[i]
-        acc[((i + Int(offset) - 1) % L) + 1] += v
+        lane = ((i + Int(offset) - 1) % L) + 1
+        if POW == 2
+            d = z[i] - μ
+            acc[lane] = fma(d, d, acc[lane])
+        else
+            acc[lane] += z[i]
+        end
     end
     s = zero(T)
     @inbounds for t in 1:L
