@@ -206,6 +206,53 @@ Both the block-count framing and the plan-cache framing are recorded here beside
 the measurement that replaced them, because the useful part of this row has
 always been its wrong turns.
 
+### SECOND CORRECTION, same day: the layout account is NOT confirmed on the real route
+
+The section above is a synthetic result generalised too far, and this is the
+correction rather than an edit.
+
+What was measured is a kernel I wrote: a 64-particle CIC deposit into a 16×16
+grid, at the failing route's launch geometry. That kernel is layout-sensitive
+and produces exactly two profiles. The shape matching the ledger's signature —
+*exactly two* — made it persuasive. Shape-matching is not reproduction.
+
+Tested on the REAL route: the fixture from
+`test/runtests.jl`'s "CUDA GaussianPIC singular-reference fallback matches PIC"
+copied verbatim, running the paired PIC and Gaussian-PIC collides and comparing
+the py column, with the CUDA pool deliberately disturbed BETWEEN the two arms.
+Two perturbation styles, 160 paired trials total:
+
+| between the arms | trials | distinct py profiles | max abs difference |
+|---|---|---|---|
+| nothing (quiet pool) | 40 + 40 | 1 | 0.0 |
+| one large alloc/free, ten sizes to 512 MiB | 40 | 1 | 0.0 |
+| pool FRAGMENTED, up to 1499 live varied blocks kept across the second arm | 40 | 1 | 0.0 |
+
+Every trial bit-identical. So pool perturbation does not flip the real
+comparison in a standalone process, and the mechanism the previous section
+proposed is **not established for this phenomenon**.
+
+What survives, and what does not:
+
+- **Survives:** the cuFFT plan-eviction account is still impossible — that rests
+  on `register_reclaimable!` being absent from cuFFT, which is a fact about the
+  package, independent of anything measured here.
+- **Survives:** float atomic adds ARE order-sensitive, and a deposit's result
+  CAN depend on allocation layout. That is a true and useful fact. It is not
+  demonstrated to be this route's lever.
+- **Does NOT survive:** "the lever is allocation layout" as an account of member
+  2. Withdrawn.
+- **Strengthened, as a negative result:** the ledger recorded standalone
+  stability at 20 of 20 bit-exact. It is now 160 of 160, including deliberate
+  pool growth and fragmentation between the paired calls. Whatever in-suite
+  state flips the coin, it is not something these perturbations reach.
+
+Member 2 therefore stays open with its leading hypothesis dead and its
+replacement withdrawn — a smaller claim than the section above made, and the
+accurate one. The next instrument has to come from the suite rather than from a
+standalone probe: the capture trap is armed, and the useful next datum is a
+firing with the pool state and the launch receipts captured beside the arrays.
+
 **Is it a defect? No.** Nondeterministic ordering is inherent to float atomic
 deposition; the alternative is per-block partials and an ordered reduction,
 which changes every PIC result to buy a reproducibility the physics does not

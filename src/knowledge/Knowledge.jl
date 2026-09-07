@@ -1197,18 +1197,56 @@ function validate_element_metadata(; throw_on_error::Bool=false)
 
         friendly = meta.friendly_constructor
         if friendly !== nothing
-            raw_schema = parameter_schema(T)
-            friendly_schema = parameter_schema(friendly)
-            raw_schema == friendly_schema ||
-                push!(errors, "ElementMeta $(meta.kind) friendly_constructor schema disagrees with raw spec")
-            construction_help(T) == construction_help(friendly) ||
-                push!(errors, "ElementMeta $(meta.kind) friendly_constructor construction_help disagrees with raw spec")
-            friendly_example = example_spec(friendly)
-            if friendly_example isa ElementSpec && example isa ElementSpec
-                kind(friendly_example) == kind(example) ||
-                    push!(errors, "ElementMeta $(meta.kind) friendly_constructor example kind disagrees with raw spec")
-            else
-                push!(errors, "ElementMeta $(meta.kind) friendly_constructor example is not an ElementSpec")
+            # These were three TAUTOLOGIES until 2026-09-07 (2026-08-06 audit,
+            # U12-8). They compared `parameter_schema(T)` with
+            # `parameter_schema(friendly)`, `construction_help(T)` with
+            # `construction_help(friendly)`, and the two examples' kinds -- and
+            # every one of those accessors is `_element_meta_or_nothing(x)`
+            # followed by a field read (:746-754, :779-787, :762-770). `T` is
+            # registered in `ELEMENT_META_BY_SPEC_TYPE` and `friendly` in
+            # `ELEMENT_META_BY_FRIENDLY_TYPE` pointing at the SAME `ElementMeta`
+            # object, so all three compared one field of one object with itself.
+            # They could not fail for any content, correct or not, while their
+            # messages claimed the friendly constructor had been checked against
+            # the raw spec. A check that executes and cannot fail is worse than
+            # an unrun one, because it reads as coverage.
+            #
+            # Replaced by two whose sides come from different places.
+            #
+            # (1) The table binding, stated honestly rather than implied. It CAN
+            # fail: a second `@element_spec` block naming the same
+            # `friendly_constructor`, or `register_friendly_alias!` (:448-452)
+            # onto a type another block already declared, rebinds
+            # `ELEMENT_META_BY_FRIENDLY_TYPE` and the last write wins.
+            resolved = _element_meta_or_nothing(friendly)
+            resolved === meta || push!(errors,
+                "ElementMeta $(meta.kind) friendly_constructor $(friendly) resolves to " *
+                (resolved === nothing ? "no ElementMeta" : "ElementMeta $(resolved.kind)") *
+                "; a second @element_spec block or register_friendly_alias! claimed it")
+            # (2) What the constructor actually BUILDS -- the non-circular half,
+            # and the check the old three only claimed to be. `kind` reads the
+            # spec's type parameter (:610) and a friendly constructor hardcodes
+            # its own `ElementSpec{k}`; neither consults `ELEMENT_META_BY_*`, so
+            # these two sides can genuinely differ. It is the same move this
+            # file already makes for the example at :1124-1130 ("the
+            # non-circular consumer check: the example must actually compile").
+            #
+            # Measured before enabling, over the whole registry: 31 friendly
+            # constructors, all build from their own example's parameters, all
+            # yield the declared kind -- so this passes on a correct tree and is
+            # not a latent gate break.
+            if example isa ElementSpec
+                built = try
+                    friendly(; params(example)...)
+                catch err
+                    push!(errors,
+                        "ElementMeta $(meta.kind) friendly_constructor $(friendly) does not " *
+                        "build from its own example's parameters: $(sprint(showerror, err))")
+                    nothing
+                end
+                built === nothing || kind(built) == meta.kind || push!(errors,
+                    "ElementMeta $(meta.kind) friendly_constructor $(friendly) builds " *
+                    "$(kind(built)), not the declared $(meta.kind)")
             end
         end
     end

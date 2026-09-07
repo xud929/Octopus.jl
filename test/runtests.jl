@@ -5728,6 +5728,48 @@ end
         end
     end
     @test validate_element_metadata().passed      # registry restored
+
+    # U12-8, repaired 2026-09-07. The three friendly-constructor checks
+    # (schema, construction_help, example kind) were TAUTOLOGIES: every
+    # accessor they used is `_element_meta_or_nothing(x)` followed by a field
+    # read, and the spec type and the friendly constructor are registered to the
+    # SAME `ElementMeta`, so each compared one field of one object with itself.
+    # They could not fail for any content while claiming the friendly
+    # constructor had been checked against the raw spec.
+    #
+    # The pair that replaced them must reject the defect the old three passed:
+    # a friendly constructor whose table binding is perfectly consistent but
+    # which BUILDS THE WRONG ELEMENT. `DriftSpec` builds `ElementSpec{:drift}`;
+    # declaring it as the friendly constructor of another kind is exactly that.
+    let saved = get(Octopus.ELEMENT_META_BY_FRIENDLY_TYPE, DriftSpec, nothing)
+        try
+            Octopus.register_element_meta!(Octopus.ElementMeta(;
+                kind=:u12_8_probe, spec_type=ElementSpec{:u12_8_probe},
+                runtime_type=Octopus.LatticeMagnet,
+                friendly_constructor=DriftSpec,
+                example=ElementSpec{:u12_8_probe}(Dict{Symbol,Any}(:L => 1.0))))
+            r = validate_element_metadata()
+            @test !r.passed
+            # (2) what the constructor BUILDS -- the non-circular half.
+            @test any(e -> occursin("u12_8_probe", e) &&
+                           occursin("builds drift, not the declared", e), r.errors)
+            # (1) the table binding: drift's own friendly type now resolves to
+            # the probe's meta, which is the rebinding hazard stated honestly.
+            @test any(e -> occursin("resolves to ElementMeta u12_8_probe", e), r.errors)
+        finally
+            delete!(Octopus.ELEMENT_META_BY_KIND, :u12_8_probe)
+            T = ElementSpec{:u12_8_probe}
+            delete!(Octopus.ELEMENT_META_BY_SPEC_TYPE, T)
+            filter!(t -> t !== T, Octopus.REGISTERED_ELEMENT_SPECS)
+            # Restore drift's LEGITIMATE binding, which registering the probe
+            # overwrote. A plain `delete!` here leaves the registry broken for
+            # every later testset -- measured while writing this control.
+            saved === nothing ?
+                delete!(Octopus.ELEMENT_META_BY_FRIENDLY_TYPE, DriftSpec) :
+                (Octopus.ELEMENT_META_BY_FRIENDLY_TYPE[DriftSpec] = saved)
+        end
+    end
+    @test validate_element_metadata().passed      # registry restored again
 end
 
 @testset "The run artifact carries the strong-strong luminosity channel" begin
