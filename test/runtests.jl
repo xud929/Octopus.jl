@@ -7575,14 +7575,28 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
         @info "MPICH_jll provided no mpiexec; the MPI seam was NOT exercised" err
         nothing
     end
+    #
+    # The receipts come back through per-rank FILES, not through the launcher's
+    # merged stdout. Measured 2026-09-06: over twenty child runs, three
+    # captures were corrupted -- two receipts concatenated with the newline
+    # lost, one truncated mid-line, and one with bytes dropped outright -- so
+    # `split(line)[3]` returned `"MPI-LUM"` or `"5.02448981514298e9MPI-LUM"`
+    # and the luminosity bit-identity pin failed on a tree whose arithmetic was
+    # correct, about one gate in ten. Bytes go missing rather than merely
+    # reordering, so the fix is a channel that is not shared, not a better
+    # parse. Every assertion below reads `outN`, which is now the rank files
+    # joined in rank order; the raw merged stream is kept as `rawN` for saying
+    # what happened when a rank dies, which is what it is good for.
     run_ranks(n) = begin
         # `Pkg.test` runs this process with JULIA_LOAD_PATH emptied and
         # `Base.julia_cmd()` inherits the environment, so the child is given
         # its load path explicitly; the active project is the test environment
         # that carries both Octopus and MPI.
+        dir = mktempdir()
         cmd = addenv(`$(launcher) -n $(n) $(Base.julia_cmd()) --startup-file=no --threads=2 $(child)`,
                      "JULIA_LOAD_PATH" => "@:@stdlib",
-                     "JULIA_PROJECT" => Base.active_project())
+                     "JULIA_PROJECT" => Base.active_project(),
+                     "OCTOPUS_MPI_RECEIPT_DIR" => dir)
         out = IOBuffer()
         # Bounded (step 4b): every multi-process hazard shows up as ranks
         # blocked in a collective, and a rank that blocks WITHOUT exiting
@@ -7595,28 +7609,42 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
         end
         wait(proc)
         close(watchdog)
-        (success(proc), String(take!(out)))
+        # Rank order, so a fold printed rank by rank still reads in rank order
+        # downstream. A rank that wrote nothing leaves no file and is counted,
+        # not silently skipped: `delivered` is asserted against `n` below,
+        # because the guard this replaces (`!isempty(reported)`) passed happily
+        # while the receipt count fell from four to three.
+        files = [joinpath(dir, "rank_$(r).txt") for r in 0:(n - 1)]
+        delivered = count(isfile, files)
+        receipts = join((isfile(f) ? read(f, String) : "" for f in files), "")
+        (success(proc), receipts, String(take!(out)), delivered)
     end
     if launcher === nothing
         @test_broken false          # visible in the summary, unlike a silent skip
     else
-        ok1, out1 = run_ranks(1)
-        ok2, out2 = run_ranks(2)
+        ok1, out1, raw1, got1 = run_ranks(1)
+        ok2, out2, raw2, got2 = run_ranks(2)
         # Four ranks (step 4d): three slices on four ranks put one slice on
         # two ranks, the first real group of the slice-aligned collide.
-        ok4, out4 = run_ranks(4)
+        ok4, out4, raw4, got4 = run_ranks(4)
         if !ok1 && !occursin("MPI-CHECK", out1)
             # The environment could not run an MPI child at all (no launcher
             # permissions, no shared memory). Loud, and NOT counted as a pass.
-            @info "the MPI child could not run; the MPI seam was NOT exercised" out=first(out1, 2000)
+            @info "the MPI child could not run; the MPI seam was NOT exercised" out=first(raw1, 2000)
             @test_broken false
         else
-            ok1 || @info "the MPI child failed at 1 rank" out=last(out1, 4000)
-            ok2 || @info "the MPI child failed at 2 ranks" out=last(out2, 4000)
-            ok4 || @info "the MPI child failed at 4 ranks" out=last(out4, 4000)
+            ok1 || @info "the MPI child failed at 1 rank" out=last(raw1, 4000)
+            ok2 || @info "the MPI child failed at 2 ranks" out=last(raw2, 4000)
+            ok4 || @info "the MPI child failed at 4 ranks" out=last(raw4, 4000)
             @test ok1
             @test ok2
             @test ok4
+            # N ranks owe N receipt files. Nothing below can tell a rank that
+            # stayed silent from one that agreed, so this is the anti-vacuity
+            # guard for the whole section.
+            @test got1 == 1
+            @test got2 == 2
+            @test got4 == 4
             # Both ranks must report, and both must report through MPI: a
             # child that silently fell back to the passthrough would print
             # `resolved_by=serial_passthrough` and one rank line.

@@ -599,6 +599,40 @@ latency-bound, and the solve imbalance was not the binding one. A flat
 measurement on a change you believed in is the most informative kind, and it
 is the one most easily lost.
 
+## A launcher's merged stdout is not a data channel, and a pin built on it lies
+
+The multi-process suite reads its receipts by capturing the MPI child's stdout
+and stderr into ONE buffer and parsing fields off lines that start with a
+marker. On 2026-09-06 the luminosity bit-identity pin
+(`runtests.jl`, `all(==(reference_lum), reported)`) failed on a tree that had
+passed the same gate an hour earlier and passed it again straight after.
+
+Twenty child runs settled it. Three came back corrupted and every luminosity
+value that survived was the correct one:
+
+    MPI-LUM 2 MPI-LUM 35.02448981514298e9          rank 2 truncated, a space dropped
+    MPI-LUM 0 5.02448981514298e9MPI-LUM 1 5.02...  the newline between two ranks lost
+    MPI-LUM MPI-LUM 3 5.02448981514298e9           a rank id lost
+
+So `split(line)[3]` returns `"MPI-LUM"`, or `"5.02448981514298e9MPI-LUM"`, or
+`"3"`, and the test reports a broken bit-identity claim. The bits were never
+wrong. The launcher forwards several processes' output through one stream and
+under load it interleaves AND drops bytes -- the third case is missing
+characters, not merely reordered ones, which is why no cleverer parse of that
+stream can be trusted either.
+
+Two things this teaches beyond the one bug. A pin that fails ~10% of the time
+on correct code is worse than no pin: it trains everyone to re-run, and the
+day it means something nobody believes it. And the anti-vacuity guard chosen
+here could not catch it -- `!isempty(reported)` still passed while the receipt
+COUNT silently fell from four to three, so the guard proved only that the
+channel had said something. Where N processes each owe one receipt, assert that
+N arrived.
+
+The fix is to stop using the merged stream as a data channel: each rank writes
+its receipts to its own file and the suite reads the files, leaving stdout for
+what it is good at, which is diagnosing a rank that died.
+
 ## Nothing that recompiles may run while a gate or a launcher does
 
 Two failures in one session traced to the same thing: a probe that recompiled

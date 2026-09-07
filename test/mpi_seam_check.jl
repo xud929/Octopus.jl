@@ -9,13 +9,59 @@
 # Every line it prints that the suite asserts on begins with `MPI-`. It exits
 # non-zero on the first failure, so a rank that dies takes the launcher down
 # with it rather than hanging the others at the next collective.
+#
+# Those lines go to a PER-RANK FILE, not to the shared stdout the launcher
+# merges. Measured 2026-09-06 over twenty child runs: three came back corrupted
+# -- two receipts concatenated with the newline lost, one truncated mid-line,
+# and one with bytes dropped so a rank's value never appeared -- because a
+# launcher forwarding several processes through one stream interleaves and
+# drops under load. Every value that survived was correct, so the pin that read
+# that stream reported a broken bit-identity claim about arithmetic that was
+# never wrong, roughly one gate in ten. Bytes go MISSING, so no cleverer parse
+# of the merged stream would have been safe either. `OCTOPUS_MPI_RECEIPT_DIR`
+# names the directory; the suite makes a fresh one per launch and reads
+# `rank_<r>.txt` back in rank order. Run by hand without it and the receipts
+# go to stdout as before, which is fine for reading but not for asserting on.
 using Octopus
 using MPI
 using Printf
 
 include(joinpath(@__DIR__, "mpi_seam_check_fixture.jl"))
 
-fail(msg) = (println("MPI-CHECK FAIL ", msg); flush(stdout); exit(1))
+# MPI is initialised HERE rather than left to the policy's first activation,
+# because the receipt file is named by rank and has to exist before the first
+# receipt is written. `MPI.Init` is idempotent through `MPI.Initialized()` and
+# the extension's own activation does exactly this call, so nothing downstream
+# can tell the difference.
+MPI.Initialized() || MPI.Init(threadlevel = :funneled)
+
+const _RECEIPT_DIR = get(ENV, "OCTOPUS_MPI_RECEIPT_DIR", "")
+const _RECEIPT_IO = if isempty(_RECEIPT_DIR)
+    nothing
+else
+    mkpath(_RECEIPT_DIR)
+    open(joinpath(_RECEIPT_DIR, "rank_$(MPI.Comm_rank(MPI.COMM_WORLD)).txt"), "w")
+end
+if _RECEIPT_IO !== nothing
+    # Every receipt site writes with `println`/`@printf` to `stdout`, so one
+    # redirect moves all of them at once and no call site has to know. stderr
+    # is left alone: a rank that dies still says so on the stream the launcher
+    # merges, which is what that stream is good for.
+    redirect_stdout(_RECEIPT_IO)
+    atexit(() -> (flush(_RECEIPT_IO); close(_RECEIPT_IO)))
+end
+
+# A failure goes to BOTH: the file, so the suite's assertions see it, and
+# stderr, so it is visible in the launcher's output even if the process dies
+# before the receipt file is flushed.
+function fail(msg)
+    println("MPI-CHECK FAIL ", msg)
+    flush(stdout)
+    _RECEIPT_IO === nothing || flush(_RECEIPT_IO)
+    println(stderr, "MPI-CHECK FAIL ", msg)
+    flush(stderr)
+    exit(1)
+end
 
 """
 A solver nobody has divided, standing in for the one someone adds next.
@@ -30,9 +76,9 @@ struct _MPICheckUndividedSolver <: Octopus.AbstractPoissonSolver end
 
 # Labelling comes from the communicator, not from `Octopus._mp_rank()`: that
 # accessor reads the policy in force and correctly reports a single process
-# OUTSIDE an execution scope, which is where these lines are printed.
-# Evaluated at CALL time, not at load time: Octopus initialises MPI when the
-# policy is first activated, which is after this file is parsed.
+# OUTSIDE an execution scope, which is where these lines are printed. MPI is
+# initialised at the top of this file for the receipt path, so the guard is
+# now belt and braces rather than load-order care.
 child_rank() = MPI.Initialized() ? MPI.Comm_rank(MPI.COMM_WORLD) : 0
 
 # The extension must be LOADED, not merely resolvable: a child that silently
@@ -618,3 +664,4 @@ let policy = MultiProcessExecutionPolicy(threads=1)
     end
 end
 flush(stdout)
+_RECEIPT_IO === nothing || flush(_RECEIPT_IO)
