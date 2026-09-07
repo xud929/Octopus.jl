@@ -91,6 +91,46 @@ const _ACTIVE_EXECUTION_AUDIT = Base.ScopedValues.ScopedValue{Any}(nothing)
 const _ACTIVE_RESOLVED_POLICY = Base.ScopedValues.ScopedValue{Any}(nothing)
 
 """
+True while `_run_logical_workers` is running its bodies on SPAWNED TASKS -- the
+`@sync`/`Threads.@spawn` branch only, never the two inline branches.
+
+Half of the `:funneled` tripwire, and the deterministic half. The other half
+asks `Threads.threadid() != 1`, which is not the same question and whose answer
+depends on how Julia was STARTED. Measured, Julia 1.12.4, 256 spawned tasks:
+
+| invocation | interactive threads | driver id | spawned ids | on the driver's id |
+|---|---|---|---|---|
+| `--threads=4` | 1 | 1 | 2..5 | 0 |
+| `--threads=auto` | 1 | 1 | 2.. | 0 |
+| `JULIA_NUM_THREADS=4` | 1 | 1 | 2..5 | 0 |
+| `--threads=4,0` | 0 | 1 | 1..4 | **104** |
+
+With an interactive thread -- which every ordinary invocation gives, this
+suite's `--threads=4` included -- the default pool excludes the driver's thread
+and the thread test does catch every spawned worker. Without one the pool
+CONTAINS it, and roughly forty per cent of workers read `threadid() == 1` and
+are waved through. So the exposure is real but narrower than the 2026-09-06
+neighbour audit stated: the audit said workers run on thread 1 "frequently",
+which holds only for `--threads=N,0`, and that is why the gate never saw it.
+
+A `ScopedValue` is inherited by spawned tasks and is unaffected by which OS
+thread runs them, so this half answers the same under every invocation and on
+every rank. That is the point: a tripwire must not depend on how the process
+was launched.
+
+NOT bound on the inline branches, and that is the whole subtlety: a body run
+inline executes on the caller's own task, on the main thread, where a collective
+is LEGAL at `:funneled`. The divided PIC collide depends on exactly that -- it
+forces `pool_workers = 1` when divided so its per-pair collectives run one at a
+time on the main thread (`pic_cpu.jl`, "ONE pair worker when divided"). A flag
+meaning "lexically inside a worker body" would refuse that legitimate path; this
+one means "on a task that is not the driver's", which is what the tripwire is
+actually about (2026-09-06 neighbour audit, and the blast-radius sweep that
+caught the first draft refusing the `:node` collide).
+"""
+const _ON_SPAWNED_WORKER = Base.ScopedValues.ScopedValue{Bool}(false)
+
+"""
     execution_receipts(audit) -> Vector
 
 The receipts recorded inside a `with_execution_audit` block: one entry per
@@ -492,11 +532,24 @@ function _record_collective!(kind::Symbol, count::Integer, bytes::Integer)
     # reached from a worker task throws a named error instead of corrupting
     # the communicator or hanging. Nothing to check at one rank, where every
     # collective is its passthrough.
-    _mp_nranks() > 1 && Threads.threadid() != 1 && throw(ArgumentError(
-        "a multi-process collective ($(kind)) was issued from thread " *
-        "$(Threads.threadid()); MPI runs at :funneled and Octopus issues " *
-        "collectives from the task driver on the main thread only, never from " *
-        "inside _run_logical_workers."))
+    # Two tests, because they catch different things and neither subsumes the
+    # other. `_ON_SPAWNED_WORKER[]` catches every worker body, deterministically
+    # and identically on every rank -- including the workers that happen to run
+    # ON thread 1, which the thread test waves through and which are a large
+    # share of them. `threadid() != 1` still catches a collective issued from
+    # some other task entirely, which no worker flag would see. Ordered so the
+    # cheap rank check short-circuits first: at one rank every collective is its
+    # passthrough and there is nothing to police.
+    if _mp_nranks() > 1 && (_ON_SPAWNED_WORKER[] || Threads.threadid() != 1)
+        throw(ArgumentError(
+            "a multi-process collective ($(kind)) was issued " *
+            (_ON_SPAWNED_WORKER[] ?
+             "from a spawned _run_logical_workers worker" :
+             "from thread $(Threads.threadid())") *
+            "; MPI runs at :funneled and Octopus issues collectives from the " *
+            "task driver on the main thread only, never from inside " *
+            "_run_logical_workers."))
+    end
     # The `audit === nothing` check inside `_record_execution!` runs before
     # anything is built, and this NamedTuple is small and concrete, so an
     # unaudited collective pays a load and a branch.
@@ -1050,9 +1103,16 @@ every other wait. (This said "neither" until the 2026-09-06 neighbour audit,
 while the body below recorded on every call.)
 """
 function _mp_test_all(requests)
-    _mp_nranks() > 1 && Threads.threadid() != 1 && throw(ArgumentError(
-        "a multi-process completion test was issued from thread $(Threads.threadid()); " *
-        "MPI runs at :funneled and Octopus polls from the main thread only."))
+    # The same two tests as `_record_collective!`, by hand: this one records no
+    # receipt (see the docstring), so it cannot inherit them.
+    if _mp_nranks() > 1 && (_ON_SPAWNED_WORKER[] || Threads.threadid() != 1)
+        throw(ArgumentError(
+            "a multi-process completion test was issued " *
+            (_ON_SPAWNED_WORKER[] ?
+             "from a spawned _run_logical_workers worker" :
+             "from thread $(Threads.threadid())") *
+            "; MPI runs at :funneled and Octopus polls from the main thread only."))
+    end
     done = _mp_test_all_impl(requests, _mp_comm())
     done && empty!(requests)
     return done
@@ -1167,12 +1227,21 @@ function _run_logical_workers(f::F, workers::Integer=_cpu_worker_count()) where 
         end
         return nothing
     end
-    try
-        @sync for worker in 1:nworkers
-            Threads.@spawn f(worker, nworkers)
+    # `_ON_SPAWNED_WORKER` is bound HERE and nowhere else: this is the only
+    # branch whose bodies leave the driver's task, and leaving it is what the
+    # `:funneled` tripwire is about. The two inline branches above run on the
+    # caller's own task and are deliberately left `false` -- the divided PIC
+    # collide routes its per-pair collectives through `nworkers == 1` for
+    # exactly that reason. One binding covers every worker: a `ScopedValue` is
+    # inherited by tasks spawned inside the scope.
+    Base.ScopedValues.with(_ON_SPAWNED_WORKER => true) do
+        try
+            @sync for worker in 1:nworkers
+                Threads.@spawn f(worker, nworkers)
+            end
+        catch err
+            _rethrow_worker_failure(err)
         end
-    catch err
-        _rethrow_worker_failure(err)
     end
     return nothing
 end

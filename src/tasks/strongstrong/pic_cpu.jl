@@ -135,8 +135,10 @@ function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx,
     # all-sums. ONE assignment -- the batch closure below captures this name,
     # and a second assignment would box it (the permanent lowered-code sweep
     # caught exactly that on the first draft).
-    compute_luminosity = _mp_nranks() > 1 ? _mp_bcast(_pic_compute_luminosity(solver, ctx)) :
-                                            _pic_compute_luminosity(solver, ctx)
+    # The broadcast lives in `_luminosity_schedule_evaluated` (interface.jl)
+    # since 2026-09-07 -- one source for every solver, because this was the
+    # rule that got hand-copied three times and omitted the fourth.
+    compute_luminosity = _pic_compute_luminosity(solver, ctx)
     T = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(kbb1), typeof(kbb2))
     # The luminosity ESTIMATE is returned as Float64 on every backend and
     # every beam precision (2026-08-07 neighbour audit, N7). Nothing else is

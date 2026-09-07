@@ -4193,7 +4193,15 @@ end
         let l = read(TaskOutput(path), :losses)
             @test l.aperture_s == [1.0, 3.5]
             @test l.aperture_names == ["COLL_A", "COLL_B"]
-            @test l.summary == (particles=4, live=2, dead=2, unattributed=0)
+            # The whole summary, field for field and in order. `logged` and
+            # `folded` joined it 2026-09-07: `logged` so
+            # `sum(aperture_counts) == summary_logged` is checkable inside the
+            # file, `folded` so a crashed divided run's rank-local accounting
+            # says so rather than reading like a completed run's. Both apertures
+            # attributed one particle each, and a completed run is folded.
+            @test l.summary == (particles=4, live=2, dead=2, logged=2,
+                                folded=true, unattributed=0)
+            @test l.summary.logged == sum(l.aperture_counts)
         end
         rm(path; force=true)
 
@@ -4503,6 +4511,12 @@ end
     let l = read(TaskOutput(path), :losses)
         @test l.aperture_counts == [1]
         @test l.summary !== nothing && l.summary.dead == 1
+        # Self-consistency on the CRASH path too, which rewrites the group whole
+        # as well and so owes the same equality.
+        @test l.summary.logged == sum(l.aperture_counts)
+        # And it SAYS which it is: a crashed run flushes this rank's accounting
+        # on purpose, outside the policy scope, so the group is not folded.
+        @test l.summary.folded === false
     end
     @test readings(bpm)[1] == [0, 1, 2]
     allow_lost_particles(; enabled=true) do
@@ -5588,6 +5602,39 @@ end # _lane_gate("Every example script runs against the current interface")
     @test isempty(undocumented)
 end
 
+@testset "The harnesses refuse the retired OCTOPUS_MP spelling" begin
+    # `docs/history/production_benchmark_2026_09_06.md` is frozen, as every
+    # record under history/ is, and it names an `OCTOPUS_MP`/`OCTOPUS_RANKS`
+    # branch as the thing to add to these harnesses -- the spelling the
+    # throwaway scratch copies behind that measurement used. The shipped switch
+    # is `OCTOPUS_USE_MPI`, matching `OCTOPUS_USE_GPU`.
+    #
+    # Nothing in `env_bool`'s grammar catches a variable that is simply never
+    # read, so an operator following that record would have set `OCTOPUS_MP=1`,
+    # got a threads-only run, and reported it as MPI -- a non-default request
+    # silently ignored, the defect class this repository names first. Both
+    # harnesses refuse the dead spelling BY NAME; this says they still do.
+    #
+    # Cheap on purpose: the refusal sits above the Octopus load, so each of
+    # these subprocesses is a bare Julia startup, not a package load.
+    root = dirname(@__DIR__)
+    for harness in ("weak_strong_tracking.jl", "strong_strong_tracking.jl")
+        script = joinpath(root, "test", "examples", harness)
+        # Presence, not truthiness: `OCTOPUS_MP=0` also means the reader
+        # believes the switch exists, so both values must be refused.
+        for value in ("1", "0")
+            buf = IOBuffer()
+            cmd = addenv(`$(Base.julia_cmd()) --startup-file=no --project=$(root) $(script)`,
+                         "OCTOPUS_MP" => value)
+            p = run(pipeline(cmd; stdout=buf, stderr=buf); wait=false)
+            wait(p)
+            text = String(take!(buf))
+            @test !success(p)
+            @test occursin("OCTOPUS_USE_MPI", text)
+        end
+    end
+end
+
 @testset "The module precompiles without overwriting its own methods" begin
     # Part 6 §8.7: a same-signature method silently overwrote another, PASSED
     # the full suite (both methods behaved identically), and was caught only
@@ -5824,6 +5871,15 @@ end
             @test l.aperture_counts == [1]
             @test length(l.particle_id) == 1        # per-loss rows present
             @test l.summary !== nothing && l.summary.dead == 1
+            # The group is self-checking since 2026-09-07: `aperture_counts` is
+            # what each aperture attributed and `summary_logged` is their total.
+            # Under a divided run both are the whole beam's -- the 2026-09-06
+            # neighbour audit found `aperture_counts` was one rank's while
+            # everything beside it was global, which this equality would have
+            # caught had the file carried both halves.
+            @test l.summary.logged == sum(l.aperture_counts)
+            # A completed run's group is the BEAM's, folded across the ranks.
+            @test l.summary.folded === true
         end
         wa3 = tempname() * ".h5"
         execute!(TrackingTask((DriftSpec(L=1.0),); artifact=wa3),
@@ -6988,6 +7044,69 @@ end
     else
         @test_skip "the :funneled tripwire needs a second thread"
     end
+
+    # The SPAWNED-WORKER half of the same tripwire (2026-09-07, closing the
+    # 2026-09-06 neighbour audit's row). The thread half above is
+    # scheduler-dependent by nature: `Threads.@spawn` schedules onto the
+    # `:default` pool, thread 1 is in that pool, and a worker landing on thread
+    # 1 reads `threadid() == 1` and is waved through -- so "a collective
+    # reached from a worker task throws" was not true of the code claiming it.
+    #
+    # `_ON_SPAWNED_WORKER` is inherited by spawned tasks and does not care which
+    # OS thread runs them, so this half is deterministic. It is bound on the
+    # SPAWN branch only, and both halves of that are pinned below: spawned
+    # bodies are flagged and refused, INLINE bodies are not -- the divided PIC
+    # collide runs its per-pair collectives through `_run_logical_workers(1)`
+    # precisely because inline means "still on the main thread, where :funneled
+    # allows it".
+    let context = Octopus.MultiProcessContext(nothing, 2, 0, :auto, :serial_passthrough)
+        Octopus._with_resolved_policy(Octopus.ResolvedCPUExecutionPolicy(1, context)) do
+            @test !Octopus._ON_SPAWNED_WORKER[]            # nothing set outside
+            if Threads.nthreads(:default) > 1
+                flags = fill(false, 32)
+                tids = zeros(Int, 32)
+                Octopus._run_logical_workers(32) do w, n
+                    tids[w] = Threads.threadid()
+                    flags[w] = Octopus._ON_SPAWNED_WORKER[]
+                end
+                @test all(flags)                           # set in EVERY worker
+                @test !Octopus._ON_SPAWNED_WORKER[]        # restored on exit
+                # NOT asserted here: that a worker ran on thread 1. Measured on
+                # Julia 1.12.4, it does not, under any ordinary invocation --
+                # `--threads=N`, `--threads=auto` and `JULIA_NUM_THREADS=N` all
+                # give one INTERACTIVE thread, the driver sits on id 1, and
+                # `Threads.@spawn` uses the default pool at ids 2..N+1. So in
+                # this process the thread half catches these workers too. The
+                # configuration where it does not is `--threads=N,0`, and the
+                # subprocess testset below is where that is demonstrated;
+                # `tids` is read here only so the two testsets share a shape.
+                @test all(!=(0), tids)                     # every worker ran
+                caught = Ref{Any}(nothing)
+                try
+                    Octopus._run_logical_workers(32) do w, n
+                        Octopus._mp_barrier()
+                    end
+                catch err
+                    caught[] = err
+                end
+                @test caught[] isa ArgumentError
+                @test occursin("spawned _run_logical_workers", sprint(showerror, caught[]))
+            end
+            # The single-worker short circuit runs INLINE on the caller's task
+            # and must NOT be refused: that is the path the divided PIC collide
+            # deliberately uses for its per-pair collectives.
+            inline_flag = Ref(true)
+            Octopus._run_logical_workers(1) do w, n
+                inline_flag[] = Octopus._ON_SPAWNED_WORKER[]
+            end
+            @test inline_flag[] === false
+            @test Octopus._run_logical_workers(1) do w, n
+                Octopus._mp_barrier()
+            end === nothing
+            # And the driver itself, outside any worker, is still allowed.
+            @test Octopus._mp_barrier() === nothing
+        end
+    end
     let path = tempname() * ".h5", policy = MultiProcessExecutionPolicy(threads=1)
         b1, b2 = beams(policy)
         pic = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(16, 16),
@@ -6997,6 +7116,67 @@ end
         @test read(TaskOutput(path), :luminosity; name="ip").turn == [0]
         rm(path; force=true)
     end
+end
+
+@testset "A spawned worker on the driver's own thread is still refused" begin
+    # The exposure the `:funneled` tripwire's thread half actually has, and the
+    # only configuration in which it has one. Measured on Julia 1.12.4:
+    #
+    #   --threads=4          interactive=1, driver on id 1, spawned on 2..5,
+    #                        0 of 256 spawned tasks on id 1
+    #   --threads=auto       same shape
+    #   JULIA_NUM_THREADS=4  same shape
+    #   --threads=4,0        interactive=0, driver on id 1, spawned on 1..4,
+    #                        104 of 256 spawned tasks ON id 1
+    #
+    # So with no interactive thread the default pool contains the driver's own
+    # thread, and roughly forty per cent of spawned workers read
+    # `threadid() == 1` and are waved through by the thread half. That is the
+    # 2026-09-06 neighbour audit's finding, narrowed: the audit said workers run
+    # on thread 1 "frequently", which is true only here and not under the
+    # invocation this suite and CI use -- which is why it was never caught.
+    #
+    # `--threads=4,0` is a legal invocation (no idle interactive thread), so the
+    # tripwire must not depend on avoiding it. `_ON_SPAWNED_WORKER` does not.
+    root = dirname(@__DIR__)
+    script = """
+        using Octopus
+        Threads.nthreads(:interactive) == 0 || error("expected no interactive thread")
+        ctx = Octopus.MultiProcessContext(nothing, 2, 0, :auto, :serial_passthrough)
+        Octopus._with_resolved_policy(Octopus.ResolvedCPUExecutionPolicy(1, ctx)) do
+            tids = zeros(Int, 64)
+            Octopus._run_logical_workers(64) do w, n
+                tids[w] = Threads.threadid()
+            end
+            # The premise: workers DO land on the driver's thread here, where
+            # `threadid() != 1` is false and the thread half sees nothing.
+            println("ON-DRIVER-THREAD ", count(==(1), tids) > 0)
+            caught = Ref{Any}(nothing)
+            try
+                Octopus._run_logical_workers(64) do w, n
+                    Octopus._mp_barrier()
+                end
+            catch err
+                caught[] = err
+            end
+            println("REFUSED ", caught[] isa ArgumentError)
+            println("BY-WORKER-FLAG ",
+                    caught[] !== nothing &&
+                    occursin("spawned _run_logical_workers", sprint(showerror, caught[])))
+        end
+        """
+    buf = IOBuffer()
+    cmd = `$(Base.julia_cmd()) --startup-file=no --threads=4,0 --project=$(root) -e $(script)`
+    proc = run(pipeline(cmd; stdout=buf, stderr=buf); wait=false)
+    wait(proc)
+    text = String(take!(buf))
+    success(proc) || @info "the no-interactive-thread child failed" out=last(text, 2000)
+    @test success(proc)
+    # If this first one ever fails the premise is gone and the rest is vacuous,
+    # so it is asserted rather than assumed.
+    @test occursin("ON-DRIVER-THREAD true", text)
+    @test occursin("REFUSED true", text)
+    @test occursin("BY-WORKER-FLAG true", text)
 end
 
 @testset "A PIC task under the multi-process policy is the task it composes" begin
@@ -7515,6 +7695,54 @@ end
         push!(solo, w + n)
     end
     @test solo == [2]
+    # NOTE the grid above ran on THIS process's pool, which the suite runs at
+    # four threads, so it took the SPAWNING branch. The pool-of-one inline
+    # branch is a different one, covered by the subprocess below.
+end
+
+@testset "The pool-of-one inline worker path agrees with the spawning one" begin
+    # `_run_logical_workers` runs its chunk grid inline instead of spawning when
+    # `Threads.nthreads(:default) == 1`, and one thread per rank is the
+    # configuration that scales best under MPI -- so this is the branch the
+    # production multi-process runs actually take. Nothing exercised it. The
+    # 2026-09-06 neighbour audit read all 25 callers and found the property it
+    # rests on holds per caller, but an unrun check is not a pass.
+    #
+    # The audit's own proposed fix -- launching the MPI seam-check child at one
+    # thread -- is impossible: that child's thread-count sweeps build
+    # `MultiProcessExecutionPolicy(threads = 2)`, which a one-thread process
+    # rejects with "CPU threads must be in 1:1". A plain one-thread subprocess
+    # needs no MPI and no launcher, which is what this is. The parent (four
+    # threads) took the spawning branch above; this child takes the inline one,
+    # and the two must agree. Costs one package load.
+    root = dirname(@__DIR__)
+    script = """
+        using Octopus
+        Threads.nthreads(:default) == 1 || error("expected a one-thread pool")
+        seen = zeros(Int, 16)
+        Octopus._run_logical_workers(16) do w, n
+            seen[w] = w * 10 + n
+        end
+        println("INLINE-GRID ", seen == [w * 10 + 16 for w in 1:16])
+        # The inline path must NOT set `_ON_SPAWNED_WORKER`: it runs on the
+        # caller's own task, on the main thread, where a collective is legal at
+        # :funneled -- and the divided PIC collide depends on that being
+        # allowed, routing its per-pair collectives through this very branch.
+        flags = fill(true, 16)
+        Octopus._run_logical_workers(16) do w, n
+            flags[w] = Octopus._ON_SPAWNED_WORKER[]
+        end
+        println("INLINE-UNFLAGGED ", !any(flags))
+        """
+    buf = IOBuffer()
+    cmd = `$(Base.julia_cmd()) --startup-file=no --threads=1 --project=$(root) -e $(script)`
+    proc = run(pipeline(cmd; stdout=buf, stderr=buf); wait=false)
+    wait(proc)
+    text = String(take!(buf))
+    success(proc) || @info "the one-thread worker child failed" out=last(text, 2000)
+    @test success(proc)
+    @test occursin("INLINE-GRID true", text)
+    @test occursin("INLINE-UNFLAGGED true", text)
 end
 
 @testset "The multi-process policy rejects what it cannot honour" begin
@@ -9651,6 +9879,46 @@ end
         # answer across turns: a stateful predicate alternating true/false has
         # to keep alternating, which a sticky cache would break.
         @test calls[] == 4
+    end
+
+    # EVERY solver, not just this one (2026-09-07). The check above covered PIC
+    # alone, and the spectral solver did not share the memoized consult at all:
+    # `_spectral_compute_luminosity` was a private copy of it with its own
+    # `should_run`, its own receipt and NO memo, so U5-2 was still live there.
+    # Measured before the fix, on this same alternating schedule: spectral
+    # consulted 8 times over 4 turns and the gate disagreed with the solver on
+    # every one of them, while the other three consulted 4 and agreed. A
+    # per-solver property tested on one solver is a property tested nowhere.
+    let slc = LongitudinalSlicing(nslices=3, method=:equal_area)
+        solvers = (
+            (:pic, sched -> PICPoissonSolver(grid=(16, 16), slicing=slc,
+                                             luminosity_schedule=sched)),
+            (:gpic, sched -> GaussianPICPoissonSolver(grid=(16, 16), slicing=slc,
+                                                      luminosity_schedule=sched)),
+            (:spectral, sched -> SpectralPoissonSolver(grid=(16, 16), slicing=slc,
+                                                       luminosity_schedule=sched)),
+            (:gaussian, sched -> GaussianPoissonSolver(slicing=slc,
+                                                       luminosity_schedule=sched)),
+        )
+        for (name, build) in solvers
+            calls = Ref(0)
+            stateful = PredicateSchedule(_ -> (calls[] += 1; isodd(calls[])))
+            sv = build(stateful)
+            for t in 1:4
+                c = TrackingContext(turn=t)
+                # Both consults a turn makes: the file-writing gate, and the
+                # solver's own. They must agree, whichever solver it is.
+                gate = Octopus._strong_strong_luminosity_evaluated(sv, c)
+                own = sv isa SpectralPoissonSolver ?
+                        Octopus._spectral_compute_luminosity(sv, c) :
+                      sv isa GaussianPoissonSolver ?
+                        Octopus._luminosity_schedule_evaluated(sv.luminosity_schedule, c) :
+                        Octopus._pic_compute_luminosity(sv, c)
+                @test gate == own
+            end
+            # Four turns, four consults -- one per turn for every solver.
+            @test calls[] == 4
+        end
     end
 end
 

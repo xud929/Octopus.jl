@@ -438,6 +438,45 @@ each arm really took its path. Here the receipt already carried it
 (`exchange = :sliced`, `schedule = :batched`/`:dataflow`), so the check cost one
 line and turned a silent tautology into a loud failure.
 
+## A guard that reads the scheduler is a guard on how you launched the process
+
+The `:funneled` tripwire asked `Threads.threadid() != 1` and its comment said it
+caught "a collective reached from a worker task". Those are different questions,
+and which way the difference falls depends on the command line. Measured on
+Julia 1.12.4, 256 spawned tasks:
+
+- `--threads=4`, `--threads=auto`, `JULIA_NUM_THREADS=4` — one INTERACTIVE
+  thread, the driver on id 1, spawned tasks on ids 2 and up. Zero land on the
+  driver's thread, so the guard happens to be right.
+- `--threads=4,0` — no interactive thread, so the default pool contains id 1.
+  104 of 256 spawned tasks run there, read `threadid() == 1`, and walk through
+  the guard.
+
+Both are ordinary invocations. The guard was correct under the one the gate
+uses and wrong under the other, which is exactly why it survived: the check that
+would have failed was never run in the configuration that fails it.
+
+The repair is to ask a question the runtime cannot answer differently on
+different days: a `ScopedValue` bound where the property actually begins is
+inherited by spawned tasks and does not know what thread it is on. The shape to
+watch for is any guard whose condition is a fact about the SCHEDULER --
+a thread id, a task count, a pool size, `nprocs()` -- standing in for a fact
+about the PROGRAM. Write the program fact down.
+
+Two corollaries, both paid for here:
+
+- **State the predicate precisely before implementing it.** "Inside a worker
+  body" and "on a task that is not the driver's" sound like the same thing and
+  are not: the divided PIC collide deliberately runs its collectives through a
+  ONE-worker grid whose body executes inline on the main thread, where they are
+  legal. The first draft used the lexical predicate and would have refused that
+  path at every rank count.
+- **A guard that cannot be shown failing has not been tested.** The in-process
+  pin cannot demonstrate this one, because under the suite's own invocation the
+  old guard also passes. Demonstrating it took a subprocess launched the other
+  way, which first asserts the premise -- that workers really do land on the
+  driver's thread there -- and only then asserts the refusal.
+
 ## A weak dependency's extension does not exist for an `include`d module
 
 Both `test/examples` harnesses load Octopus with
@@ -453,9 +492,19 @@ Nothing warns. The extension simply is not there, every method it would have
 added is missing, and the core fallback answers instead. When that fallback is
 a legitimate degenerate case -- here the collective seam's serial passthrough,
 "this process is a communicator of one" -- the result is not an error but a
-wrong answer at scale: an `OCTOPUS_MP`-style branch bolted onto those files as
-they stood would have made `mpiexec -n 8` eight identical whole simulations
-racing on one artifact path, exit 0, with timings a reader would believe.
+wrong answer at scale: a multi-process branch bolted onto those files as they
+stood would have made `mpiexec -n 8` eight identical whole simulations racing
+on one artifact path, exit 0, with timings a reader would believe.
+
+And the sharpest part of it: THE RULE WAS ALREADY WRITTEN DOWN.
+`docs/guides/development_workflow.md`, "Two load modes", says it exactly --
+"Only package mode activates the `ext/` extensions ... for `MPI` that is the
+collective seam's serial passthrough, a communicator of one", and even closes
+with "A probe that passes in one mode has not verified the other". The guide was
+right, and the two harnesses that needed it were in another file and did not
+apply it. A rule stated in a guide does not enforce itself; what closed this was
+an assertion at the site, in the code that would otherwise have been wrong.
+Prose teaches the reader who already went looking.
 
 The shape to watch for: a script that includes a package's SOURCE rather than
 loading the package, in a repository that has `[weakdeps]`. Every behaviour

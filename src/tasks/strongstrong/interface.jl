@@ -2759,10 +2759,27 @@ _pic_compute_luminosity(::PICPoissonSolver, ::Nothing) = true
 _pic_compute_luminosity(solver::PICPoissonSolver, ctx::TrackingContext) =
     _luminosity_schedule_evaluated(solver.luminosity_schedule, ctx)
 
-# The one memoized consult shared by every solver's schedule (the PIC gate's
+# The one memoized consult shared by EVERY solver's schedule (the PIC gate's
 # body, extracted 2026-08-19 when the soft-Gaussian gained its reporting-only
-# schedule): same one-slot memo, same receipt.
-function _luminosity_schedule_evaluated(schedule, ctx::TrackingContext)
+# schedule): same one-slot memo, same broadcast, per-solver receipt name.
+#
+# `consumer` exists so the spectral solver keeps its own receipt stream while
+# sharing this body. It had a private copy of this whole function until
+# 2026-09-07 -- with its own `should_run` call, its own receipt, and NO MEMO --
+# so the U5-2 defect the memo was written to fix was live in it: measured on a
+# schedule alternating true/false, spectral consulted 8 times over 4 turns and
+# the gate disagreed with the solver on every one of them, which is exactly the
+# "gate says evaluated, solver declined, artifact gets a NaN row" failure. The
+# other three solvers, sharing this body, consulted 4 times and agreed
+# (2026-09-06 neighbour audit, found while closing its hand-copy row).
+#
+# The memo is keyed on the SCHEDULE, not on the consumer, so two solvers sharing
+# one schedule object in one turn get one evaluation and one receipt, named for
+# whichever consulted first. That is the memo's existing contract; it is noted
+# rather than fixed because two solvers sharing a schedule object still owe the
+# same answer.
+function _luminosity_schedule_evaluated(schedule, ctx::TrackingContext,
+                                        consumer::Symbol=:pic_luminosity_schedule)
     if schedule !== nothing
         key = objectid(schedule)
         memo = _LUM_SCHEDULE_MEMO[]
@@ -2771,12 +2788,26 @@ function _luminosity_schedule_evaluated(schedule, ctx::TrackingContext)
         end
     end
     evaluated = schedule === nothing || should_run(schedule, ctx)
+    # Divided: rank 0's verdict on every rank, because a `PredicateSchedule` is
+    # user code and its answer gates COLLECTIVES and point-to-point messages
+    # downstream -- a rank that decides differently deadlocks its peers. This
+    # lived as four copies, one per solver, until 2026-09-07; the fourth was
+    # never written, which is how the Gaussian-PIC deadlock got in (the
+    # 2026-09-06 audit's F1). One source now, so a solver added later cannot
+    # omit it.
+    #
+    # Inside the memo miss, and only for a real schedule: a `nothing` schedule
+    # is `true` on every rank by construction, and every rank reaches this
+    # point the same number of times per turn, so the broadcast counts match.
+    if schedule !== nothing && _mp_nranks() > 1
+        evaluated = _mp_bcast(evaluated)
+    end
     schedule === nothing ||
         (_LUM_SCHEDULE_MEMO[] = (objectid(schedule), Int64(ctx.turn), evaluated))
     active_policy = _ACTIVE_RESOLVED_POLICY[]
     active_backend = active_policy isa AbstractResolvedExecutionPolicy ?
         backend_type(active_policy) : :unknown
-    _record_execution!(:pic_luminosity_schedule, active_backend,
+    _record_execution!(consumer, active_backend,
                        (turn=ctx.turn, evaluated=evaluated,
                         schedule=schedule === nothing ? :every_turn : Symbol(nameof(typeof(schedule)))))
     return evaluated

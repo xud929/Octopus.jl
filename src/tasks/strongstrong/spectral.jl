@@ -314,17 +314,18 @@ end
 # leaves those turns out of the artifact's luminosity channel (see
 # _strong_strong_luminosity_evaluated).
 _spectral_compute_luminosity(::SpectralPoissonSolver, ::Nothing) = true
-function _spectral_compute_luminosity(solver::SpectralPoissonSolver, ctx::TrackingContext)
-    schedule = solver.luminosity_schedule
-    evaluated = schedule === nothing || should_run(schedule, ctx)
-    active_policy = _ACTIVE_RESOLVED_POLICY[]
-    active_backend = active_policy isa AbstractResolvedExecutionPolicy ?
-        backend_type(active_policy) : :unknown
-    _record_execution!(:spectral_luminosity_schedule, active_backend,
-                       (turn=ctx.turn, evaluated=evaluated,
-                        schedule=schedule === nothing ? :every_turn : Symbol(nameof(typeof(schedule)))))
-    return evaluated
-end
+# Through the ONE shared consult (`_luminosity_schedule_evaluated`,
+# interface.jl), keeping this solver's own receipt name. This was a private copy
+# of that function until 2026-09-07 -- and the copy had no memo, so the schedule
+# was consulted twice per collision per turn and a stateful `PredicateSchedule`
+# answered differently each time: measured, 8 consults over 4 turns with the
+# file-writing gate disagreeing with the solver on every turn (the U5-2 defect,
+# fixed for the PIC family in 2026-08 and never ported here). Sharing the body
+# also gives this solver the divided broadcast from one place instead of the two
+# hand-written copies its collide entries used to carry.
+_spectral_compute_luminosity(solver::SpectralPoissonSolver, ctx::TrackingContext) =
+    _luminosity_schedule_evaluated(solver.luminosity_schedule, ctx,
+                                   :spectral_luminosity_schedule)
 
 _strong_strong_luminosity_evaluated(solver::SpectralPoissonSolver, ctx::TrackingContext) =
     _spectral_compute_luminosity(solver, ctx)
@@ -1588,8 +1589,10 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
     divided = _mp_nranks() > 1
     # Divided (step 4g): rank 0's verdict on every rank, because a
     # `PredicateSchedule` is user code and its answer gates collectives.
-    compute_luminosity = divided ? _mp_bcast(_spectral_compute_luminosity(solver, ctx)) :
-                                   _spectral_compute_luminosity(solver, ctx)
+    # The broadcast lives in `_luminosity_schedule_evaluated` (interface.jl)
+    # since 2026-09-07 -- one source for every solver, because this was the
+    # rule that got hand-copied three times and omitted the fourth.
+    compute_luminosity = _spectral_compute_luminosity(solver, ctx)
     lnx, lny = solver.grid
     r1 = beam1.rep; r2 = beam2.rep
     T = eltype(r1.x)
@@ -1715,8 +1718,10 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
     # Divided (step 4g): rank 0's verdict on every rank, because a
     # `PredicateSchedule` is user code and its answer gates the luminosity
     # exchanges.
-    compute_luminosity = divided ? _mp_bcast(_spectral_compute_luminosity(solver, ctx)) :
-                                   _spectral_compute_luminosity(solver, ctx)
+    # The broadcast lives in `_luminosity_schedule_evaluated` (interface.jl)
+    # since 2026-09-07 -- one source for every solver, because this was the
+    # rule that got hand-copied three times and omitted the fourth.
+    compute_luminosity = _spectral_compute_luminosity(solver, ctx)
     lnx, lny = solver.grid
     Lx, Ly = _spectral_box_drifted(solver, beam1.rep, beam2.rep)
     LT = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(klum))

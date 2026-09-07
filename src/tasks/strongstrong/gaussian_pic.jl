@@ -994,8 +994,10 @@ function _gpic_collide!(gsolver::GaussianPICPoissonSolver, beam1::Beam, beam2::B
     # blocked on: a deadlock, with no error. `_pic_collide!` and both spectral
     # routes broadcast for exactly this reason; this was the fourth copy of that
     # rule and the one that was never written.
-    compute_luminosity = _mp_nranks() > 1 ? _mp_bcast(_pic_compute_luminosity(pic, ctx)) :
-                                            _pic_compute_luminosity(pic, ctx)
+    # The broadcast lives in `_luminosity_schedule_evaluated` (interface.jl)
+    # since 2026-09-07 -- one source for every solver, because this was the
+    # rule that got hand-copied three times and omitted the fourth.
+    compute_luminosity = _pic_compute_luminosity(pic, ctx)
     T = promote_type(eltype(beam1.rep.x), eltype(beam2.rep.x), typeof(kbb1), typeof(kbb2))
     # N7: the luminosity estimate returns Float64 everywhere (see pic_cpu.jl).
     LT = Float64

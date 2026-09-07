@@ -552,7 +552,7 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
                 # that cannot be written must raise, the task-observer rule.
                 _ra_write_losses!(task.artifact, task.loss_record[],
                                   _aperture_s_positions(task.elements), summary,
-                                  first(_mp_current_shard(rep)))
+                                  first(_mp_current_shard(rep)); folded=true)
                 finalize_run_artifact!(task.artifact)
             end
         end

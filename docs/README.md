@@ -444,6 +444,14 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   on a missing `_inner_method` twin, and a nested sub-line's `ref_tilt` was
   invisible to both geometry walkers while tracking rolled it -- both fixed
   and pinned against the flat spellings at 0.0),
+  [`mpi_audit_followups_2026_09_07.md`](history/mpi_audit_followups_2026_09_07.md)
+  (closing all six of that audit's priced rows: the `:funneled` tripwire gains a
+  task-based half and the audit's own frequency claim is corrected by
+  measurement, the pool-of-one inline path gains a test, two rows close as
+  not-defects, and hoisting the hand-copied luminosity broadcast turns up a
+  defect the audit missed -- the spectral solver never routed through the
+  memoized schedule consult, so a stateful schedule made its gate and its
+  solver disagree on every turn),
   [`neighbour_audit_2026_09_06.md`](history/neighbour_audit_2026_09_06.md)
   (the multi-process campaign's neighbour audit, deferred by owner decision
   until the last solver divided: twelve classes swept, three majors — the

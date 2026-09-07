@@ -1163,11 +1163,29 @@ predicts.
 ## Threading, output, and the launcher
 
 MPI is initialised at `:funneled`: Octopus issues collectives from the task
-driver on the main thread, never from inside `_run_logical_workers`. The
-tripwire landed in step 4b: `_record_collective!`, which every seam function
-calls before it communicates, throws a named error at more than one rank
-when called off the main thread, so a collective that ever reaches a worker
-fails loudly instead of corrupting the communicator or hanging.
+driver on the main thread, never from a task `_run_logical_workers` spawned.
+The tripwire landed in step 4b: `_record_collective!`, which every seam
+function calls before it communicates, throws a named error at more than one
+rank, so a collective that ever reaches a spawned worker fails loudly instead
+of corrupting the communicator or hanging.
+
+It asks TWO questions, since 2026-09-07. `_ON_SPAWNED_WORKER` is a
+`ScopedValue` bound around `_run_logical_workers`' spawn branch and inherited
+by the tasks it spawns, so it answers the same however the process was
+launched. `Threads.threadid() != 1` is kept beside it because it catches a
+collective from some other task entirely, which no worker flag would see.
+Neither subsumes the other, and the thread test alone was not enough: with
+`--threads=N,0` the default pool contains the driver's own thread and about
+forty per cent of spawned workers read `threadid() == 1` (measured; every
+ordinary invocation gives an interactive thread instead, which is why this
+was invisible to the gate).
+
+What the flag deliberately does NOT cover is the two INLINE branches, where the
+body runs on the caller's own task on the main thread and a collective is legal.
+The divided PIC collide depends on that: it forces `pool_workers = 1` when
+divided so its per-pair collectives run one at a time on the main thread. A flag
+meaning "lexically inside a worker body" would refuse that legitimate path, and
+the first draft of this change did.
 
 Rank 0 owns the artifact and the console summaries — the run artifact is
 serial HDF5 and two ranks opening one path is corruption. Step 3c implemented

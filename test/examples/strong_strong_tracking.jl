@@ -33,6 +33,12 @@ the process count the run must match:
 
     OCTOPUS_USE_MPI=1 OCTOPUS_CPU_THREADS=8 OCTOPUS_RANKS=16 mpiexec -n 16 julia --project=. test/examples/strong_strong_tracking.jl
 
+Setting OCTOPUS_MP is an error, not a no-op.
+docs/history/production_benchmark_2026_09_06.md names that spelling -- it is
+what the scratch copies behind that measurement used -- and history is frozen,
+so the record still says it. An unread variable would have made a threads-only
+run look like an MPI one, so the dead spelling is refused by name.
+
 OCTOPUS_RANKS defaults to `auto`, which accepts whatever the launcher started;
 naming the count makes the policy reject a communicator of another size, which
 is the cheap way to catch a launcher that started a different number of
@@ -238,6 +244,24 @@ end
 #
 # The default path is untouched: with the switch off this is the same `include`
 # the suite's example-runner testset has always executed.
+# `OCTOPUS_MP` is NOT this switch, and setting it must not look like it worked.
+# `docs/history/production_benchmark_2026_09_06.md` -- frozen, as history is --
+# names an `OCTOPUS_MP`/`OCTOPUS_RANKS` branch as the thing to add, because that
+# is the spelling the throwaway scratch copies behind that measurement used. An
+# operator following that record would set `OCTOPUS_MP=1`, get a threads-only
+# run, and report it as MPI: a non-default request silently ignored, which this
+# repository counts as a defect rather than a typo. The dead spelling is
+# therefore refused BY NAME, the way `TrackingTask` refuses `loss_log` and
+# `luminosity` (src/tasks/Tasks.jl, retired 2026-08-18). Refused on presence,
+# not on value: `OCTOPUS_MP=0` also means the reader believes this switch
+# exists.
+haskey(ENV, "OCTOPUS_MP") && error(
+    "OCTOPUS_MP is not a switch this harness reads. The multi-process switch is " *
+    "OCTOPUS_USE_MPI=1, matching OCTOPUS_USE_GPU; OCTOPUS_RANKS and " *
+    "OCTOPUS_CPU_THREADS are spelled as you have them. OCTOPUS_MP is what the " *
+    "scratch copies behind docs/history/production_benchmark_2026_09_06.md used, " *
+    "and that record is frozen, so it still names the old spelling.")
+
 use_mpi = env_bool("OCTOPUS_USE_MPI", false)
 if use_mpi
     # A Main.Octopus that came from an `include` cannot be turned into the

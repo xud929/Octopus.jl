@@ -5,6 +5,14 @@ collide? Measured answer (2026-08-19, this 128-thread box): yes -- PIC at
 8x8 socket-bound is 1.86x over socket-bound 1x16 and 2.23x over unbound.
 Full matrix: docs/history/multi_process_phase0_2026_08_19.md.
 
+SUPERSEDED AS A MEASUREMENT, kept as the Phase 0 record. The multi-process
+policy it was asking about now exists and every solver divides (campaign steps
+2 through 4h), so the actual divided collide is measurable rather than modelled:
+`OCTOPUS_BENCH_MPI=1 profiling/benchmark_collide_cpu.jl`, which runs the real
+`MultiProcessExecutionPolicy` on the real shards. Prefer that for any number you
+intend to quote. What follows still runs, and is still the honest description of
+what it does -- but it is a cost model of a design, not a measurement of one.
+
 COST MODEL, NOT PHYSICS. In the real particle-decomposed design each rank
 holds N/P particles of both beams, deposits its own particles, Allgathers and
 folds the partial grids in rank order, redundantly solves the field, and kicks
@@ -30,13 +38,26 @@ SETUP -- two environment traps, both measured (see the history record):
      path, HDF5_jll selects an mpi+openmpi ARTIFACT VARIANT that is not
      installed and Octopus fails to load. So Octopus is loaded FIRST (serial
      HDF5), and the MPI environment joins the load path afterwards.
-  2. Load-order lock: because HDF5 itself depends on MPIPreferences, step 1
-     loads MPIPreferences with its MPICH_jll DEFAULT before MPI.jl ever
-     reads a preference -- so the ranks run MPICH_jll regardless of any
-     use_system_binary() configuration, and the launcher must be MPICH's
-     hydra mpiexec (a PMIx launcher like Open MPI's prterun aborts with
-     "unsupported PMI version"). For on-box timing the transport is
-     immaterial; production MPI selection is a Phase 1 environment task.
+  2. Preferences pushed onto LOAD_PATH after start are never read. This
+     script does exactly that (the `push!` below), so its ranks run
+     MPICH_jll whatever `use_system_binary()` says, and the launcher must be
+     MPICH's hydra mpiexec (a PMIx launcher like Open MPI's prterun aborts
+     with "unsupported PMI version").
+
+     CORRECTED 2026-09-04 (docs/history/mpi_environment_2026_09_04.md,
+     "Correction to trap 2"): this was recorded here as a LOAD-ORDER LOCK --
+     "HDF5 depends on MPIPreferences, so loading Octopus first pins the
+     default before MPI.jl reads a preference". That general form is false,
+     and probe 4 of that record disproves it: with the preferences in an
+     environment on the load path AT PROCESS START, Octopus loaded first and
+     MPI.jl still ran the system Open MPI. Julia reads a package's
+     preferences from load-path entries whose Project.toml names it, so what
+     matters is WHEN the environment joined the load path, not which package
+     loaded first. The trap is real for this script; the reason given was
+     wrong.
+
+     Production MPI selection is no longer open either: MPICH_jll by default,
+     no configuration, same record's "Decision".
 
 One-time setup of the side environment (any path; MPI.jl is NOT an Octopus
 dependency and must not become one through this script):
@@ -146,9 +167,14 @@ end
 
 # The comm phase: NCOMM x (Allgather one GRIDxGRID Float64 grid + fold the P
 # partials in rank order). Rank-ordered serial fold => bit-identical result on
-# every rank, the determinism posture the real design uses. Cost grows O(P);
-# the real design must interleave it with compute and, past ~16 ranks, use a
-# deterministic tree instead.
+# every rank, the determinism posture the real design uses. Cost grows O(P).
+#
+# What the real design did about that, since this line used to predict it: the
+# all-sum became a reduce-scatter (step 4c), then per-pair point-to-point on a
+# slice-aligned layout (4d), then a dataflow loop that overlaps the exchanges
+# with the next batch's compute (4e) -- so it neither kept the O(P) Allgather
+# nor needed the "deterministic tree" this comment guessed at. The rank-ordered
+# fold survived all three.
 partial = fill(Float64(rank + 1), GRID, GRID)
 gathered = zeros(Float64, GRID * GRID * nranks)
 folded = zeros(Float64, GRID, GRID)

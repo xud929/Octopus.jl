@@ -293,7 +293,7 @@ aperture in the line) writes nothing; a counters-only record (no log
 slots requested) writes the per-aperture accounting without rows.
 """
 function _ra_write_losses!(art::RunArtifact, record, s_positions, summary,
-                           shard_offset::Integer=0)
+                           shard_offset::Integer=0; folded::Bool=false)
     # Every rank builds and gathers its rows -- the gather is a collective, so
     # a rank that returned early would hang the rest -- and only rank 0, which
     # holds the file, writes them.
@@ -328,6 +328,25 @@ function _ra_write_losses!(art::RunArtifact, record, s_positions, summary,
         _ra_set_attr!(g, "summary_live", Int64(summary.live))
         _ra_set_attr!(g, "summary_dead", Int64(summary.dead))
         _ra_set_attr!(g, "summary_unattributed", Int64(summary.unattributed))
+        # `logged` is what makes the group SELF-CHECKING: `sum(aperture_counts)
+        # == summary_logged` is the reconciliation `loss_summary`'s docstring
+        # tells a reader to make, and until 2026-09-07 the file carried one side
+        # of it and not the other. `write_loss_record` has always written it
+        # (src/elements/aperture.jl); this group had not.
+        _ra_set_attr!(g, "summary_logged", Int64(summary.logged))
+        # WHOSE numbers these are, said in the file (2026-09-07). The success
+        # path folds this group across the ranks; the CRASH path deliberately
+        # does not -- it runs outside the execution-policy scope, where every
+        # collective is its passthrough, precisely so a rank-local failure
+        # flushes what this rank saw instead of deadlocking against peers that
+        # may not have thrown (see the catch block in `_execute!`). Both are
+        # right, and they are different numbers: a crashed four-rank run wrote
+        # `dead=1` where a successful one writes `dead=4`, with nothing in the
+        # file to tell them apart. The 2026-09-06 neighbour audit priced that
+        # as "write this rank's rows, LABELLED AS SUCH"; this is the label.
+        # `Int64`, like every other attribute here: HDF5 has no native bool and
+        # a round-tripped `Bool` would depend on HDF5.jl's mapping.
+        _ra_set_attr!(g, "summary_folded", Int64(folded))
     end
     HDF5.flush(art.file)
     return nothing
@@ -586,6 +605,13 @@ function _ra_losses(f)
         (particles=Int(read(a["summary_particles"])),
          live=Int(read(a["summary_live"])),
          dead=Int(read(a["summary_dead"])),
+         # `nothing` for a file written before 2026-09-07, the same shape this
+         # reader already uses for an absent `aperture_s`.
+         logged=haskey(a, "summary_logged") ? Int(read(a["summary_logged"])) : nothing,
+         # `true` when this group was folded across the ranks, `false` when it
+         # is one rank's (a crashed divided run). `nothing` for a file written
+         # before 2026-09-07, which cannot say.
+         folded=haskey(a, "summary_folded") ? read(a["summary_folded"]) != 0 : nothing,
          unattributed=Int(read(a["summary_unattributed"]))) : nothing
     merge(rows,
           (aperture_names=String.(read(g["aperture_names"])),
