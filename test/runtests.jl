@@ -8633,17 +8633,42 @@ if _lane_gate("The developer harnesses run divided under an MPI launcher")
             close(watchdog)
             text = String(take!(buf))
             ok = success(proc)
-            ok || @info "the harness MPI branch failed" harness out=last(text, 4000)
-            # EXIT 0 IS THE ASSERTION, and under `OCTOPUS_RANKS=2` it is a
-            # complete one. The policy rejects a communicator whose size differs
-            # from an explicit request, so a run that reached the end at all had
-            # a communicator of two -- which means the package extension loaded
-            # (without it the process is a communicator of one and this throws)
-            # and the run was divided. A `ranks=auto` run could not say that,
-            # which is why this passes the count.
-            @test ok
-            # And rank 0 wrote exactly one artifact, into a directory of its own.
-            @test length(readdir(joinpath(outdir, "123456789"))) == 1
+            # Did the child RUN, or can this environment not launch one at all?
+            # The seam-check testset above already draws that line -- "the
+            # environment could not run an MPI child at all (no launcher
+            # permissions, no shared memory)" -- and degrades to `@test_broken`
+            # rather than a red gate. This testset hard-asserted instead, and
+            # CPU-only CI went red on it (2026-09-07, GitHub run 34092076095:
+            # the child wrote no artifact and the unguarded `readdir` threw
+            # ENOENT, so it was reported as a thrown exception rather than as a
+            # failed assertion). Same tolerance now, and for the same reason.
+            #
+            # The discriminator is whether the harness got far enough to print
+            # its own report. If it did, this environment CAN launch MPI and a
+            # failure is real, so assert it. If nothing recognisable came back,
+            # the launcher never got a Julia process running and there is
+            # nothing to conclude about this branch either way.
+            ran = occursin("mpi_rank = ", text) || occursin("turns = ", text)
+            if !ok && !ran
+                @info "the MPI launcher could not run a harness child; the harness MPI branch was NOT exercised" harness out=last(text, 3000)
+                @test_broken false      # visible in the summary, never a silent pass
+            else
+                ok || @info "the harness MPI branch failed" harness out=last(text, 4000)
+                # EXIT 0 IS THE ASSERTION, and under `OCTOPUS_RANKS=2` it is a
+                # complete one. The policy rejects a communicator whose size
+                # differs from an explicit request, so a run that reached the end
+                # at all had a communicator of two -- which means the package
+                # extension loaded (without it the process is a communicator of
+                # one and this throws) and the run was divided. A `ranks=auto`
+                # run could not say that, which is why this passes the count.
+                @test ok
+                # And rank 0 wrote exactly one artifact, into a directory of its
+                # own. `isdir` FIRST: when the child dies before writing, this
+                # must fail as an assertion rather than throw ENOENT out of the
+                # testset, which is how CI reported it.
+                seed_dir = joinpath(outdir, "123456789")
+                @test isdir(seed_dir) && length(readdir(seed_dir)) == 1
+            end
             # NOT asserted: the `mpi_rank = r of P` and shard-labelled rms lines
             # the harness prints. They arrive through the LAUNCHER'S MERGED
             # STDOUT, which drops bytes under load -- measured over twenty child

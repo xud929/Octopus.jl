@@ -162,6 +162,50 @@ Gaussian-PIC fallback testset's contended cell actually spans more than one
 block is NOT yet established. It is the one remaining step and it is a single
 receipt away — `:cuda_pic_launch` already records the family and thread count.
 
+### CORRECTION, same day: the lever is ALLOCATION LAYOUT, not block count
+
+The paragraph above reasoned that the deposit "can run in one block outside a
+task and in several inside one". That is wrong for this testset, and it is
+corrected here rather than edited away.
+
+The deposit launches `blocks = cld(length(x), deposit_threads)` (`pic_cuda.jl`),
+and the failing route has 64 particles with `deposit_threads = 256`, so
+`blocks = 1` — the geometry I had measured as deterministic. Block count cannot
+be the lever here.
+
+Measured at the REAL geometry instead (64 particles, `threads=256`, `blocks=1`),
+varying only the CUDA memory-pool state between deposits — 400 deposits across
+ten pool states:
+
+| distinct charge arrays | occurrences |
+|---|---|
+| `2573bba8615ac3eb` | 242 |
+| `77b494327a74b6f7` | 158 |
+
+**Exactly two.** Same launch shape, same input, different allocation layout,
+two bit-identical profiles each drawn a large fraction of the time. That is the
+ledger's signature reproduced on demand in one quiet process: "exactly TWO
+reproducible py-noise profiles exist for this route, and EACH collide call draws
+one of them".
+
+So the mechanism is: the deposit's atomic ordering depends on where its arrays
+land, and the pool's layout differs between a quiet standalone process (same
+addresses every run — hence 20 of 20 bit-exact, the coin looking "frozen") and a
+late-suite process whose pool has grown and fragmented (addresses differ between
+the paired PIC and Gaussian-PIC calls — hence straddling).
+
+This also vindicates the testset's OWN original attribution, which the ledger
+later talked itself out of. `test/runtests.jl` says the wobble is "the recorded
+CUDA atomic-deposition nondeterminism, entering here through
+allocation-layout-dependent scheduling". That was right. Observation 7's "refined
+model" of a cuFFT plan handle evicted under memory pressure was the wrong turn —
+and it is not merely unsupported but impossible, since cuFFT never registers its
+handle cache as reclaimable.
+
+Both the block-count framing and the plan-cache framing are recorded here beside
+the measurement that replaced them, because the useful part of this row has
+always been its wrong turns.
+
 **Is it a defect? No.** Nondeterministic ordering is inherent to float atomic
 deposition; the alternative is per-block partials and an ordered reduction,
 which changes every PIC result to buy a reproducibility the physics does not

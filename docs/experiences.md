@@ -553,10 +553,21 @@ ONE each -- the same one. Two thousand repetitions at `blocks=1` gave a single
 profile.
 
 So the ordering is repeatable while one block owns the contended cell, and stops
-being repeatable the moment two blocks do, because block scheduling order varies
-between launches. That is why a standalone probe of such a kernel can come back
-"20 of 20 bit-exact" and be believed, while the same code straddles two answers
-inside a larger run: the probe was single-block and the run was not.
+being repeatable the moment two blocks do.
+
+But block count was NOT the lever in the case that prompted this. That route
+deposits 64 particles at 256 threads, so it runs in one block, and one block had
+just measured as deterministic. The lever is ALLOCATION LAYOUT: at that exact
+geometry, 400 deposits across ten CUDA memory-pool states produced EXACTLY TWO
+distinct charge arrays, 242 and 158 occurrences. Same launch shape, same input,
+different addresses, two bit-identical answers.
+
+That is why a standalone probe of such a kernel comes back "20 of 20 bit-exact"
+and is believed: a quiet process reuses the same addresses every run, so it
+draws the same profile every time. A late-suite process, whose pool has grown
+and fragmented, hands the two arms different layouts and straddles. The probe
+was not wrong about its own process; it was answering a question about a pool
+state the suite never has.
 
 Two things follow, and the second is the expensive one:
 
