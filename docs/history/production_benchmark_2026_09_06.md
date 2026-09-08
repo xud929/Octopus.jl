@@ -1,5 +1,12 @@
 # Production benchmark: two cases, four solvers, three execution modes
 
+> **Later records (added 2026-09-07, no text below is altered):** this record's
+> weak-strong per-turn numbers were derived by differencing whole-process wall
+> times and its "the 64-thread arm degrades as the run proceeds" lead is
+> retracted -- see [`weak_strong_64thread_lead_2026_09_07.md`](weak_strong_64thread_lead_2026_09_07.md),
+> and [`weak_strong_rerun_instrumented_2026_09_07.md`](weak_strong_rerun_instrumented_2026_09_07.md) for the arms re-run with a per-turn instrument.
+
+
 2026-09-06, owner-requested. The first end-to-end measurement of the finished
 multi-process campaign against the production cases, rather than against a
 collide in isolation. Every number below is a 200-turn run averaged over turns

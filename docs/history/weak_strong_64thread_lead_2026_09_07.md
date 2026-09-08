@@ -1,5 +1,14 @@
 # The 64-thread weak-strong "degradation" is the measurement — 2026-09-07
 
+> **Later record (added 2026-09-07, no text below is altered):** the arms were
+> re-run with the per-turn instrument. This document's central retraction
+> stands, but its ABSOLUTE LEVELS and its "~2.9x over 16" are from
+> `profiling/benchmark_track_cpu.jl`, a different line from the harness, and
+> must not be read as production-case costs; its "gets faster as a run
+> proceeds" does not hold for the harness either. Corrections in
+> [`weak_strong_rerun_instrumented_2026_09_07.md`](weak_strong_rerun_instrumented_2026_09_07.md).
+
+
 [`production_benchmark_2026_09_06.md`](production_benchmark_2026_09_06.md)
 recorded one arm it would not quote plainly:
 

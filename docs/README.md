@@ -480,6 +480,13 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   the row's "exactly two profiles", "belongs to the fallback" and "not
   reproducible standalone" were all sampling artifacts, and the fix is the pin's
   tolerance, now derived in-process, not the solver),
+  [`weak_strong_rerun_instrumented_2026_09_07.md`](history/weak_strong_rerun_instrumented_2026_09_07.md)
+  (the weak-strong arms re-run with the new per-turn instrument: both series are
+  STEP functions rather than drifts, the 64-thread arm steps DOWN mid-run which
+  no degradation mechanism produces, the apparent "rises then flattens" reading is
+  a window-placement artifact caught in verification before publication, the
+  16-thread arm's step is the larger one, and the earlier record's absolute levels
+  and "~2.9x over 16" are corrected -- they came from a different line),
   [`tracking_task_turn_timing_2026_09_07.md`](history/tracking_task_turn_timing_2026_09_07.md)
   (TrackingTask gains per-turn timing under the same `record_turn_times` keyword
   and `turn_timings` accessor as StrongStrongTask, closing the asymmetry that
