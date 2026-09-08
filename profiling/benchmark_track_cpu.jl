@@ -177,7 +177,24 @@ line_specs = (tccb2ip_inv, tccb, tccb2ip, LorentzBoostSpec(opt.crossing_angle),
 # docs/history/weak_strong_64thread_lead_2026_09_07.md). With this on, the
 # question is answered inside one run and needs no subtraction.
 const TURN_SERIES = get(ENV, "OCTOPUS_BENCH_TURN_SERIES", "0") == "1"
-task = TrackingTask(line_specs; record_turn_times = TURN_SERIES)
+# OCTOPUS_BENCH_ARTIFACT=1 attaches a run artifact, which is what makes this
+# instrument able to price THE SPLIT: with a strong beam in the line, an
+# attached artifact sets `task_diagnostics`, and the plan builder pulls the
+# beam-beam element out of the fused traversal into an `IsolatedSegment` -- one
+# pass over the beam becomes three (`Fused -> Isolated -> Fused`). Off, the same
+# line compiles to a single `FusedSegment`. Same fixed point, same particles,
+# only the plan shape differs, so the difference IS the split's cost.
+#
+# Caveat worth stating: the attached artifact also does its own per-turn
+# bookkeeping (a `last_luminosity` field read and a buffered push). That is
+# small -- the artifact's capacity is far above these turn counts, so it never
+# flushes mid-run -- but it is not zero, so read the difference as "the cost of
+# asking for a luminosity channel", of which the split is the dominant term.
+const BENCH_ARTIFACT = get(ENV, "OCTOPUS_BENCH_ARTIFACT", "0") == "1"
+task = BENCH_ARTIFACT ?
+    TrackingTask(line_specs; record_turn_times = TURN_SERIES,
+                 artifact = RunArtifact(joinpath(mktempdir(), "bench.h5"))) :
+    TrackingTask(line_specs; record_turn_times = TURN_SERIES)
 
 """Process CPU seconds (user+sys); see `benchmark_collide_cpu.jl` for how to
 read the derived utilisation number (diagnostic, not target)."""

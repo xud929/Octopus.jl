@@ -402,6 +402,102 @@ end
     @test fast != initial
 end
 
+@testset "A wrapped strong beam cannot silently lose its luminosity" begin
+    # 2026-09-07. A strong beam inside a BeamLine compiles to a CompositeLine, so
+    # the top-level scan in _execute_tracking_task! does not see it: no
+    # IsolatedSegment is built, last_luminosity is never written, and the
+    # artifact opened with NO /luminosity channel -- no number and no error.
+    # Measured before the guard: a flat line gave 1 visible strong beam, 3 plan
+    # segments and luminosity 1.76e-13; the same beam inside BeamLine("inner",
+    # sb) gave 0 visible, 1 segment, and nothing. NO TEST IN THIS SUITE PLACED A
+    # STRONG BEAM INSIDE A LINE, which is why it survived; that gap is what this
+    # testset closes.
+    #
+    # Refused rather than fixed in place, deliberately: making the element
+    # visible is not sufficient, because a composite's call operator delegates to
+    # `fusedTrack`, which DROPS the luminosity its own kernel already computed.
+    # Threading luminosity through fusion is the real fix and is on docs/todo.md.
+    sb = ThinStrongBeamSpec{Float64}(kbb=1.0e-4, beta=(1.0, 1.0),
+                                     sigma=(106.0e-6, 9.5e-6))
+    n = 64
+    mkrep() = Phase6DRep(fill(1.0e-4, n), zeros(n), fill(1.0e-4, n),
+                         zeros(n), zeros(n), zeros(n))
+    art() = RunArtifact(joinpath(mktempdir(), "nested_lum.h5"))
+
+    # Top level with an artifact is unaffected, and still records a luminosity.
+    flat = TrackingTask((DriftSpec(L=0.5), sb, DriftSpec(L=0.5)); artifact=art())
+    # ONE rep throughout: the runtime line is cached against the loss record,
+    # which is keyed on the representation, so handing `_runtime_entries` a
+    # fresh rep recompiles the line and returns a DIFFERENT element object whose
+    # last_luminosity is still zero. Asking the rebuilt element for the value
+    # the tracked element holds reads 0.0 and looks like a defect.
+    # ONE turn, not two: `last_luminosity` holds the FINAL turn's value, and at
+    # this fixture's offset (y = 1e-4 against sigma_y = 9.5e-6, about ten sigma)
+    # the first kick scatters the beam far enough that the second turn's overlap
+    # underflows to exactly 0.0. Measured: n=64 gives 5.64e-15 after one turn and
+    # 0.0 after two. Asserting `> 0` after two turns tests the fixture, not the
+    # code.
+    flat_rep = mkrep()
+    execute!(flat, flat_rep; turns=1)
+    strong = only(filter(e -> e isa Octopus.ThinStrongBeam,
+                         collect(Octopus._physics_line(
+                             Octopus._runtime_entries(flat, flat_rep)))))
+    @test luminosity(strong, with_turn(TrackingContext(), Int64(1)), flat_rep) > 0.0
+
+    # Nested plus an artifact must REFUSE, naming the cause and the remedy.
+    nested = TrackingTask((DriftSpec(L=0.5), BeamLine("inner", sb), DriftSpec(L=0.5));
+                          artifact=art())
+    err = try
+        execute!(nested, mkrep(); turns=2)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test occursin("hidden behind a wrapper", sprint(showerror, err))
+    @test occursin("luminosity", sprint(showerror, err))
+
+    # Nesting is counted through more than one level.
+    deep = TrackingTask((BeamLine("outer", BeamLine("inner", sb)),); artifact=art())
+    @test_throws ArgumentError execute!(deep, mkrep(); turns=2)
+
+    # MISALIGNMENT hides it too, and needs no sub-line at all -- an alignment
+    # parameter alone wraps the element in a MisalignedElement, for which
+    # `isa ThinStrongBeam` is false. Measured 2026-09-07: visible=1 for the
+    # plain spec, visible=0 with x_offset set. This is the likelier of the two
+    # ways to hit it, and it was invisible to the first version of this guard.
+    sb_off = ThinStrongBeamSpec{Float64}(kbb=1.0e-4, beta=(1.0, 1.0),
+                                         sigma=(106.0e-6, 9.5e-6), x_offset=1.0e-4)
+    misaligned = TrackingTask((DriftSpec(L=0.5), sb_off, DriftSpec(L=0.5));
+                              artifact=art())
+    err_m = try
+        execute!(misaligned, mkrep(); turns=2)
+        nothing
+    catch e
+        e
+    end
+    @test err_m isa ArgumentError
+    @test occursin("hidden behind a wrapper", sprint(showerror, err_m))
+    # and a misaligned beam inside a line is still exactly one hidden beam
+    both = TrackingTask((BeamLine("inner", sb_off),); artifact=art())
+    @test_throws ArgumentError execute!(both, mkrep(); turns=2)
+    # without an artifact, misalignment stays legal
+    execute!(TrackingTask((DriftSpec(L=0.5), sb_off, DriftSpec(L=0.5))), mkrep(); turns=2)
+    @test true
+
+    # WITHOUT an artifact no channel was promised, so nesting stays legal --
+    # the guard must not become a blanket ban on strong beams in sub-lines.
+    ok = TrackingTask((DriftSpec(L=0.5), BeamLine("inner", sb), DriftSpec(L=0.5)))
+    execute!(ok, mkrep(); turns=2)
+    @test true
+
+    # And a sub-line with no strong beam is untouched.
+    plain = TrackingTask((DriftSpec(L=0.5), BeamLine("plain", DriftSpec(L=0.2)));
+                         artifact=art())
+    execute!(plain, mkrep(); turns=2)
+    @test true
+end
+
 @testset "TrackingTask records per-turn timings on BOTH of its turn loops" begin
     # 2026-09-07. TrackingTask had no per-turn timing while StrongStrongTask
     # did, so every weak-strong timing claim rested on differencing whole

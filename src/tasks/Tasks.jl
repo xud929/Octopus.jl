@@ -828,6 +828,37 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     art = task.artifact
     strong_beams = art === nothing ? () :
         Tuple(e for e in runtime_elems if e isa Union{ThinStrongBeam,GaussianStrongBeam})
+    # A WRAPPED strong beam is invisible to the scan above: a sub-line compiles
+    # to a `CompositeLine`, an alignment parameter to a `MisalignedElement` and a
+    # reference tilt to a `RefTilted`, so `e isa ThinStrongBeam` is false for
+    # any of them, `requires_isolated_tracking` never fires, no `IsolatedSegment` is
+    # built, `last_luminosity` is never written, and the artifact opens with NO
+    # luminosity channel. Not a wrong number -- no number and no error, which is
+    # this repository's worst failure shape ("nothing was lost" reading as
+    # "nothing was recorded"). Measured 2026-09-07: a flat line yields 1 visible
+    # strong beam, 3 segments and a luminosity of 1.76e-13; the same beam inside
+    # `BeamLine("inner", sb)` yields 0 visible, 1 segment and nothing at all. No
+    # test in the suite placed a strong beam inside a line, which is why it
+    # survived.
+    #
+    # Refused rather than papered over. Making the beam VISIBLE is not enough on
+    # its own: a composite's call operator delegates to `fusedTrack`, which drops
+    # the luminosity the kernel already computes, so the number would still not
+    # arrive. The real fix is to thread luminosity through fusion (todo row);
+    # until then this is loud.
+    if art !== nothing
+        hidden = sum(_hidden_strong_beam_count, runtime_elems; init=0)
+        hidden == 0 || throw(ArgumentError(
+            "this line has $(hidden) strong-beam element(s) hidden behind a " *
+            "wrapper -- a sub-line, a misalignment (any of x_offset, y_offset, " *
+            "tilt, ...), or a reference tilt -- and their luminosity CANNOT be " *
+            "recorded: a wrapped element is invisible to the per-element " *
+            "luminosity isolation, so the artifact would open with no " *
+            "/luminosity channel for them and report nothing rather than fail. " *
+            "Place the strong beam at the top level of the line with no " *
+            "alignment parameters set, or drop the artifact if you do not need " *
+            "the luminosity channel."))
+    end
     if art !== nothing
         # Per-strong-beam luminosity channel labels are positional; the
         # element `name` will take over when runtime elements carry it. The
@@ -1442,6 +1473,37 @@ function _flush_fused_segment!(segments, fused)
     empty!(fused)
     return nothing
 end
+
+"""
+    _hidden_strong_beam_count(elem) -> Int
+
+Strong beams the top-level scan in `_execute_tracking_task!` cannot see, because
+`e isa ThinStrongBeam` is false for a WRAPPED element. Three wrappers hide one:
+`CompositeLine` (a sub-line), `MisalignedElement` (any alignment parameter set)
+and `RefTilted` (a reference tilt). The same recursion already exists for
+tracking methods -- `_inner_method` walks `MisalignedElement` and `RefTilted`
+(`src/elements/ref_tilt.jl`) -- and this is that walk for luminosity ownership.
+
+A top-level, unwrapped strong beam is not hidden and counts zero.
+
+Misalignment is the likelier of the three in practice: a strong beam needs only
+`x_offset` set to become a `MisalignedElement`, with no sub-line anywhere in
+sight (measured 2026-09-07: `visible=1` plain, `visible=0` with `x_offset`).
+"""
+_hidden_strong_beam_count(elem) = 0
+_hidden_strong_beam_count(elem::Union{MisalignedElement,RefTilted}) =
+    _strong_beam_units(elem.inner)
+function _hidden_strong_beam_count(elem::CompositeLine)
+    total = 0
+    for op in elem.ops
+        total += _strong_beam_units(op)
+    end
+    return total
+end
+
+"""One if this op IS a strong beam, else whatever it hides."""
+_strong_beam_units(e) =
+    e isa Union{ThinStrongBeam,GaussianStrongBeam} ? 1 : _hidden_strong_beam_count(e)
 
 requires_isolated_tracking(elem) = false
 requires_isolated_tracking(elem::Union{ThinStrongBeam,GaussianStrongBeam}) = true
