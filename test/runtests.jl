@@ -402,6 +402,102 @@ end
     @test fast != initial
 end
 
+@testset "The fused route carries luminosity through all three wrappers" begin
+    # 2026-09-08, the follow-up to the 2026-09-07 guard. A strong beam behind a
+    # CompositeLine, MisalignedElement or RefTilted is invisible to the
+    # isolation scan, so on the :isolated route it CANNOT be measured and is
+    # refused. The :fused route serves it, because each wrapper now forwards the
+    # accumulator it used to drop.
+    #
+    # RefTilted is pinned here for the first time: _hidden_strong_beam_count has
+    # declared three wrapper types since it was written and the fixtures covered
+    # two, and after this change the same walk decides which beams get artifact
+    # channels -- a miss would be a missing channel, not just a missed guard.
+    plain = ThinStrongBeamSpec{Float64}(kbb=1.0e-4, beta=(1.0, 1.0),
+                                        sigma=(106.0e-6, 9.5e-6))
+    offset = ThinStrongBeamSpec{Float64}(kbb=1.0e-4, beta=(1.0, 1.0),
+                                         sigma=(106.0e-6, 9.5e-6), x_offset=1.0e-4)
+    tilted = ThinStrongBeamSpec{Float64}(kbb=1.0e-4, beta=(1.0, 1.0),
+                                         sigma=(106.0e-6, 9.5e-6), ref_tilt=0.3)
+    n = 2048
+    mkrep() = Phase6DRep(collect(range(-2.0e-4, 2.0e-4; length=n)), zeros(n),
+                         collect(range(-1.0e-5, 1.0e-5; length=n)), zeros(n),
+                         zeros(n), zeros(n))
+    art() = RunArtifact(joinpath(mktempdir(), "wrap.h5"))
+    function lum_of(line, route)
+        task = TrackingTask(line; artifact=art(), luminosity_tracking=route)
+        rep = mkrep()
+        execute!(task, rep; turns=1)
+        beams = Octopus._strong_beams_of(
+            Octopus._physics_line(Octopus._runtime_entries(task, rep)))
+        return only(beams).last_luminosity
+    end
+
+    flat = lum_of((DriftSpec(L=0.5), plain, DriftSpec(L=0.5)), :fused)
+    @test flat > 0.0
+
+    # A wrapper that does not move the beam must not move the number.
+    @test lum_of((DriftSpec(L=0.5), BeamLine("in", plain), DriftSpec(L=0.5)), :fused) === flat
+    @test lum_of((BeamLine("outer", BeamLine("in", plain)),), :fused) === flat
+
+    # A wrapper that DOES move the beam changes it -- and agrees with itself
+    # however it is nested, which is what proves the value is the element's own
+    # rather than an artefact of where it sits.
+    mis = lum_of((DriftSpec(L=0.5), offset, DriftSpec(L=0.5)), :fused)
+    @test mis > 0.0
+    @test mis != flat
+    @test lum_of((BeamLine("in", offset),), :fused) === mis
+
+    # RefTilted, previously unfixtured.
+    tilt = lum_of((DriftSpec(L=0.5), tilted, DriftSpec(L=0.5)), :fused)
+    @test tilt > 0.0
+    @test lum_of((BeamLine("in", tilted),), :fused) === tilt
+
+    # The isolated route still REFUSES every wrapped form: it cannot take a
+    # wrapper apart, so a channel there would never be written.
+    for line in ((DriftSpec(L=0.5), BeamLine("in", plain), DriftSpec(L=0.5)),
+                 (DriftSpec(L=0.5), offset, DriftSpec(L=0.5)),
+                 (DriftSpec(L=0.5), tilted, DriftSpec(L=0.5)),
+                 (BeamLine("in", offset),))
+        task = TrackingTask(line; artifact=art(), luminosity_tracking=:isolated)
+        @test_throws ArgumentError execute!(task, mkrep(); turns=1)
+    end
+    # ...and the refusal now names the way out.
+    err = try
+        execute!(TrackingTask((BeamLine("in", plain),); artifact=art()), mkrep(); turns=1)
+        nothing
+    catch e
+        e
+    end
+    @test occursin("luminosity_tracking = :fused", sprint(showerror, err))
+
+    # ATTRIBUTION. Two strong beams, one wrapped, must keep separate numbers in
+    # LINE ORDER -- the walk and the kernel's accumulator order have to agree or
+    # beam 1's value lands in beam 2's dataset with nothing to notice it.
+    #
+    # NO DRIFT BETWEEN THEM, and that is not incidental. With a 0.5 m drift after
+    # the first kick this fixture's bunch leaves the second beam's overlap and
+    # the second luminosity reads exactly 0.0 -- physically right, and useless
+    # for testing attribution, because a wiring bug that filled only the first
+    # accumulator would look identical. Measured both ways when this was
+    # written: with a drift between, 1.8192e11 then 0.0; back to back, 1.8192e11
+    # twice. Only the second arrangement can tell the two apart.
+    two = (plain, BeamLine("in", offset))
+    task2 = TrackingTask(two; artifact=art(), luminosity_tracking=:fused)
+    rep2 = mkrep()
+    execute!(task2, rep2; turns=1)
+    beams2 = Octopus._strong_beams_of(
+        Octopus._physics_line(Octopus._runtime_entries(task2, rep2)))
+    @test length(beams2) == 2
+    @test all(b -> b.last_luminosity > 0.0, beams2)
+    @test beams2[1].last_luminosity != beams2[2].last_luminosity
+    # The first is the unwrapped one and sees the untouched bunch, so it must
+    # equal that beam measured alone. If the order were crossed this would hold
+    # the wrapped beam's number instead.
+    solo = lum_of((plain,), :fused)
+    @test beams2[1].last_luminosity === solo
+end
+
 @testset "luminosity_tracking selects the route and both give the same number" begin
     # 2026-09-08. The per-element luminosity was obtainable only by lifting the
     # strong beam OUT of the fused traversal into its own plan segment

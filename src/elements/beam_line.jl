@@ -667,6 +667,13 @@ end
                               x, px, y, py, z, pz) =
     fusedTrack(ctx, elem.ops, particle_id, x, px, y, py, z, pz)
 
+# The luminosity-carrying twin: a sub-line forwards its contents' accumulators
+# outward instead of swallowing them. Without this a strong beam inside a line
+# produced no luminosity at all -- the defect guarded on 2026-09-07.
+@inline track_luminous(elem::CompositeLine, mask, ctx::TrackingContext, particle_id,
+                       x, px, y, py, z, pz) =
+    fusedTrackLuminous(mask, ctx, elem.ops, particle_id, x, px, y, py, z, pz)
+
 # A composite has no method of its own; it borrows its first element's, which is
 # what the wrappers ask for when a misaligned line is tracked directly.
 _inner_method(elem::CompositeLine) =

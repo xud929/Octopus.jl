@@ -92,6 +92,17 @@ end
     return x, px, y, py, z, pz
 end
 
+# The luminosity-carrying twin, same shape as the misalignment wrapper's.
+@inline function track_luminous(elem::RefTilted, mask, ctx::TrackingContext,
+                                particle_id, x, px, y, py, z, pz)
+    c, s = elem.c, elem.s
+    x, px, y, py = _s_rotate(c, s, x, px, y, py)
+    inner, lums = track_luminous(elem.inner, mask, ctx, particle_id, x, px, y, py, z, pz)
+    x, px, y, py, z, pz = inner
+    x, px, y, py = _s_rotate(c, -s, x, px, y, py)
+    return ((x, px, y, py, z, pz), lums)
+end
+
 _inner_method(inner) = inner.method
 _inner_method(inner::MisalignedElement) = _inner_method(inner.inner)
 # The sibling case the MisalignedElement recursion always needed: a kept-whole

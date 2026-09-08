@@ -480,6 +480,13 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   the row's "exactly two profiles", "belongs to the fallback" and "not
   reproducible standalone" were all sampling artifacts, and the fix is the pin's
   tolerance, now derived in-process, not the solver),
+  [`luminosity_wrapper_support_2026_09_08.md`](history/luminosity_wrapper_support_2026_09_08.md)
+  (the fused route carries luminosity through CompositeLine, MisalignedElement
+  and RefTilted, so a wrapped strong beam reports for the first time; discovery,
+  labels and the push loop were made wrapper-aware BEFORE the guard was scoped,
+  because the reverse order reintroduces the silent empty-channel bug the guard
+  prevents; RefTilted pinned for the first time, and an attribution fixture that
+  looked exactly like a wiring bug explained by measurement),
   [`luminosity_tracking_route_2026_09_08.md`](history/luminosity_tracking_route_2026_09_08.md)
   (the luminosity route becomes a TrackingTask option: `:fused` folds the value
   inside the single fused pass instead of lifting the beam-beam element into its

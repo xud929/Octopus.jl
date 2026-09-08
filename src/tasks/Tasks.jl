@@ -855,8 +855,12 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     # (`first_turn + offset` below), so a planner filtering against `0:turns-1`
     # disagrees with it on every execute! after the first.
     art = task.artifact
-    strong_beams = art === nothing ? () :
-        Tuple(e for e in runtime_elems if e isa Union{ThinStrongBeam,GaussianStrongBeam})
+    # WRAPPER-AWARE since 2026-09-08. This scan feeds three things -- the beam
+    # list, the artifact's channel labels and the per-turn push loop -- so all
+    # three were equally blind to a wrapped beam, and fixing only the isolation
+    # predicate would have left an artifact with channels it never filled. The
+    # order is line order, matching `fusedTrackLuminous`' accumulator order.
+    strong_beams = art === nothing ? () : _strong_beams_of(runtime_elems)
     # A WRAPPED strong beam is invisible to the scan above: a sub-line compiles
     # to a `CompositeLine`, an alignment parameter to a `MisalignedElement` and a
     # reference tilt to a `RefTilted`, so `e isa ThinStrongBeam` is false for
@@ -875,7 +879,12 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     # the luminosity the kernel already computes, so the number would still not
     # arrive. The real fix is to thread luminosity through fusion (todo row);
     # until then this is loud.
-    if art !== nothing
+    # Refused for the ISOLATED route only (2026-09-08). A wrapper cannot be taken
+    # apart to isolate the element inside it -- rigid-body misalignment is the
+    # whole point of a sub-line -- so on that route a wrapped beam would get a
+    # channel that is never written. The FUSED route serves it correctly,
+    # because luminosity flows out through each wrapper's own forwarding.
+    if art !== nothing && task.luminosity_tracking === :isolated
         hidden = sum(_hidden_strong_beam_count, runtime_elems; init=0)
         hidden == 0 || throw(ArgumentError(
             "this line has $(hidden) strong-beam element(s) hidden behind a " *
@@ -885,8 +894,9 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             "luminosity isolation, so the artifact would open with no " *
             "/luminosity channel for them and report nothing rather than fail. " *
             "Place the strong beam at the top level of the line with no " *
-            "alignment parameters set, or drop the artifact if you do not need " *
-            "the luminosity channel."))
+            "alignment parameters set, pass luminosity_tracking = :fused (the " *
+            "fused route carries luminosity through wrappers), or drop the " *
+            "artifact if you do not need the luminosity channel."))
     end
     if art !== nothing
         # Per-strong-beam luminosity channel labels are positional; the
@@ -1553,8 +1563,7 @@ function _flush_fused_segment!(segments, fused, task_diagnostics::Bool=false,
     isempty(fused) && return nothing
     elems = Tuple(fused)
     if task_diagnostics && luminosity_tracking === :fused
-        beams = Tuple(e for e in elems
-                      if e isa Union{ThinStrongBeam,GaussianStrongBeam})
+        beams = _strong_beams_of(elems)
         if !isempty(beams)
             push!(segments, LuminousFusedSegment(elems, beams))
             empty!(fused)
@@ -1564,6 +1573,40 @@ function _flush_fused_segment!(segments, fused, task_diagnostics::Bool=false,
     push!(segments, FusedSegment(elems))
     empty!(fused)
     return nothing
+end
+
+"""
+    _collect_strong_beams!(acc, elem) -> acc
+
+Every strong beam reachable through `elem`, in LINE ORDER, descending through the
+three wrappers that hide one (`CompositeLine`, `MisalignedElement`, `RefTilted`).
+
+The order matters as much as the membership: `fusedTrackLuminous` concatenates
+its per-element accumulators depth-first in the same order, so this walk and that
+expansion must agree or the artifact's channels get crossed -- beam 1's number
+written to beam 2's dataset, with nothing to notice it.
+"""
+_collect_strong_beams!(acc, elem) =
+    elem isa Union{ThinStrongBeam,GaussianStrongBeam} ?
+        (push!(acc, elem); acc) : _descend_strong_beams!(acc, elem)
+
+_descend_strong_beams!(acc, elem) = acc
+_descend_strong_beams!(acc, elem::Union{MisalignedElement,RefTilted}) =
+    _collect_strong_beams!(acc, elem.inner)
+function _descend_strong_beams!(acc, elem::CompositeLine)
+    for op in elem.ops
+        _collect_strong_beams!(acc, op)
+    end
+    return acc
+end
+
+"""Strong beams in `elems`, wrapper-aware, in line order."""
+function _strong_beams_of(elems)
+    acc = Any[]
+    for e in elems
+        _collect_strong_beams!(acc, e)
+    end
+    return Tuple(acc)
 end
 
 """

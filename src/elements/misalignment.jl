@@ -266,6 +266,18 @@ end
     return _frame_change(elem.qout, elem.oout, x, px, y, py, z, pz)
 end
 
+# The luminosity-carrying twin. Liveness for a wrapped beam is judged in the
+# INNER frame, immediately after the kick -- the direct analogue of the
+# unwrapped case's "judge the kick's output", and a semantics this defines
+# rather than preserves, since a misaligned strong beam produced no luminosity
+# at all before (2026-09-08).
+@inline function track_luminous(elem::MisalignedElement, mask, ctx::TrackingContext,
+                                particle_id, x, px, y, py, z, pz)
+    x, px, y, py, z, pz = _frame_change(elem.qin, elem.oin, x, px, y, py, z, pz)
+    inner, lums = track_luminous(elem.inner, mask, ctx, particle_id, x, px, y, py, z, pz)
+    return (_frame_change(elem.qout, elem.oout, inner...), lums)
+end
+
 """
     _misalignment_wrap(spec, inner)
 
