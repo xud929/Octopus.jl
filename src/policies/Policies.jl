@@ -22,16 +22,47 @@ struct ConfigurationOptionMeta
     supported_backends::Tuple
     dependencies::Tuple{Vararg{Symbol}}
     consumer::Symbol
+    # Does turning this on change the throughput of the very run it observes?
+    # (2026-09-07, brought over from `DiagnosticsOptionMeta`, which has carried
+    # it since the diagnostics schema was written.)
+    #
+    # TRUE means the cost is an artifact of OBSERVING: inserted synchronization,
+    # logging inside a hot loop, instrumentation-only reductions. A user reading
+    # a benchmark with such an option on is measuring their instrument.
+    #
+    # FALSE means the option selects WHAT WORK IS DONE -- a thread count, a
+    # grid, an algorithm, a physics toggle. Those change timing too, but that is
+    # the point rather than an observation artifact. The distinction is
+    # "observing changed the measurement" against "you asked for different
+    # work", and it is why the default is false: most configuration is the
+    # second kind.
+    #
+    # AUDITED when the field landed (2026-09-07): all 44 `ConfigurationOptionMeta`
+    # declarations in `src/` were classified against their runtime consumers, and
+    # exactly ONE is true -- `tracking_task_option_schema().record_turn_times`,
+    # which drains the device at every complete-turn boundary purely so the clock
+    # read means something. The nine policy options select worker counts, rank
+    # counts, devices and launch geometry; the twenty-one observer options are
+    # arithmetic on the reported value. The tree's own calibration agrees: the
+    # diagnostics twin `cache_stats` merely prints host-side counters already
+    # being maintained and is declared false, while every true one perturbs the
+    # EXECUTION PIPELINE -- CUDA syncs, per-N-turn allocator logging, NVTX
+    # ranges. `artifact` was the one arguable case (synchronous HDF5 inside the
+    # per-turn loop, priced at 2.3 ms/turn on a networked filesystem) and is
+    # false: it is `category=:output`, and it buys a durable product the caller
+    # asked for rather than a reading about the run.
+    perturbs_timing::Bool
 end
 
 ConfigurationOptionMeta(option_type, default, meaning;
                         category=:execution,
                         supported_backends=(),
                         dependencies=(),
-                        consumer=:unspecified) =
+                        consumer=:unspecified,
+                        perturbs_timing::Bool=false) =
     ConfigurationOptionMeta(option_type, default, String(meaning), Symbol(category),
                             Tuple(supported_backends), Tuple(Symbol.(dependencies)),
-                            Symbol(consumer))
+                            Symbol(consumer), perturbs_timing)
 
 """
     CONFIGURATION_STATUSES

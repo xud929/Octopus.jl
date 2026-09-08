@@ -6029,6 +6029,60 @@ end
                Octopus.SpectralPoissonSolver, Octopus.GaussianPICPoissonSolver))
 end
 
+@testset "perturbs_timing is declared consistently across schemas" begin
+    # 2026-09-07. `perturbs_timing` moved onto `ConfigurationOptionMeta` so a
+    # task option can say what its diagnostics twin already said. A declared
+    # fact with no consumer is the shape this campaign keeps closing, so it has
+    # one: cross-schema AGREEMENT. `record_turn_times` is declared twice -- as a
+    # DiagnosticsOptionMeta on the strong-strong diagnostics and as a
+    # ConfigurationOptionMeta on TrackingTask -- and one keyword with one
+    # meaning cannot perturb timing on one task and not the other.
+    @test ConfigurationOptionMeta(Bool, false, "x").perturbs_timing === false
+    @test diagnostics_option_schema().record_turn_times.perturbs_timing === true
+    @test tracking_task_option_schema().record_turn_times.perturbs_timing === true
+    # The property itself, in process.
+    let ss = diagnostics_option_schema(), tt = tracking_task_option_schema()
+        shared = intersect(Set(keys(ss)), Set(keys(tt)))
+        @test !isempty(shared)      # the check above is not vacuous
+        for name in shared
+            @test getproperty(ss, name).perturbs_timing ==
+                  getproperty(tt, name).perturbs_timing
+        end
+    end
+end
+
+@testset "A perturbs_timing disagreement fails the validator" begin
+    # The negative control, in a CHILD PROCESS for the same reason the hidden
+    # solver's is: making the two schemas disagree means redefining a method on
+    # `Octopus`, which cannot be undone and would fail every later
+    # `validate_configuration_metadata()` in the session.
+    root = dirname(@__DIR__)
+    script = """
+        using Octopus
+        using Octopus: validate_configuration_metadata, ConfigurationOptionMeta
+        @eval Octopus tracking_task_option_schema() = (
+            record_turn_times=ConfigurationOptionMeta(Bool, false, "probe";
+                category=:diagnostics, consumer=:tracking_turn_timing,
+                perturbs_timing=false),)
+        caught = try
+            validate_configuration_metadata()
+            ""
+        catch err
+            sprint(showerror, err)
+        end
+        println("DISAGREEMENT-REFUSED ",
+                occursin("record_turn_times", caught) && occursin("one keyword", caught))
+        """
+    buf = IOBuffer()
+    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(root) -e $(script)`
+    proc = run(pipeline(cmd; stdout=buf, stderr=buf); wait=false)
+    wait(proc)
+    text = String(take!(buf))
+    success(proc) || @info "the perturbs_timing child failed" out=last(text, 2000)
+    @test success(proc)
+    @test occursin("DISAGREEMENT-REFUSED true", text)
+end
+
 @testset "A solver hidden under an abstract intermediate fails the validator" begin
     # The negative control for the walk above, and it runs in a CHILD PROCESS
     # for a reason worth stating: the only way to show this guard failing is to

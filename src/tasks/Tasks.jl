@@ -224,7 +224,8 @@ tracking_task_option_schema() = (
         "the top of every `execute!`, so index i is turn `first_turn + i - 1` " *
         "for the window just run, which is the only rule that survives a " *
         "repositioned (`start_turn=`) call.";
-        category=:diagnostics, consumer=:tracking_turn_timing),
+        category=:diagnostics, consumer=:tracking_turn_timing,
+        perturbs_timing=true),
 )
 
 """

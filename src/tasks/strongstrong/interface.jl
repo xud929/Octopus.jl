@@ -2060,6 +2060,30 @@ function validate_configuration_metadata()
         isequal(getproperty(default_tracking, name), meta.default) || push!(errors,
             "TrackingTask.$(name) metadata default disagrees with constructor")
     end
+    # `perturbs_timing` is a DECLARED fact, and a declared fact with no consumer
+    # is the shape this campaign keeps closing. Its consumer is cross-schema
+    # AGREEMENT: a keyword declared in more than one schema must answer this the
+    # same way in both. `record_turn_times` is declared twice today -- as a
+    # `DiagnosticsOptionMeta` on the strong-strong diagnostics and as a
+    # `ConfigurationOptionMeta` on `TrackingTask` -- and one keyword with one
+    # meaning cannot perturb timing on one task and not on the other. The check
+    # is non-vacuous the moment two schemas share a name, and it is silent when
+    # they share none (2026-09-07).
+    let ss = diagnostics_option_schema(), tt = tracking_task_option_schema()
+        shared = sort!(collect(intersect(Set(keys(ss)), Set(keys(tt)))))
+        isempty(shared) && push!(errors,
+            "no keyword is shared between the diagnostics and TrackingTask " *
+            "schemas, so the perturbs_timing agreement check is vacuous; " *
+            "remove it or restore the shared keyword")
+        for name in shared
+            a = getproperty(ss, name).perturbs_timing
+            b = getproperty(tt, name).perturbs_timing
+            a == b || push!(errors,
+                "$(name) declares perturbs_timing=$(a) as a strong-strong " *
+                "diagnostic and $(b) as a TrackingTask option; one keyword, " *
+                "one meaning")
+        end
+    end
     # The FIFTH tree walk, added with the second task schema rather than after
     # it (2026-09-07). The other four are the policy, solver, schedule and
     # observer walks; tasks were the family whose completeness rested on a
