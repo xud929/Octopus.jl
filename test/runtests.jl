@@ -402,6 +402,107 @@ end
     @test fast != initial
 end
 
+@testset "luminosity_tracking selects the route and both give the same number" begin
+    # 2026-09-08. The per-element luminosity was obtainable only by lifting the
+    # strong beam OUT of the fused traversal into its own plan segment
+    # (Fused -> Isolated -> Fused), because the fused kernel computes the value
+    # and discards it. `luminosity_tracking = :fused` folds it inside the single
+    # pass instead.
+    #
+    # THE NUMBER MUST NOT MOVE, and that is asserted with `===`, not a
+    # tolerance: the fused route reuses the isolated route's fixed 64-chunk
+    # GLOBAL partition and its chunk-ordered `_mp_chunk_fold`, so the
+    # accumulation order per chunk is identical and the rounding is identical.
+    # Anything else here is a bug, not a judgement call.
+    sb = ThinStrongBeamSpec{Float64}(kbb=1.0e-4, beta=(1.0, 1.0),
+                                     sigma=(106.0e-6, 9.5e-6))
+    line = (DriftSpec(L=0.5), sb, DriftSpec(L=0.5))
+    n = 4096
+    mkrep() = Phase6DRep(collect(range(-2.0e-4, 2.0e-4; length=n)), zeros(n),
+                         collect(range(-1.0e-5, 1.0e-5; length=n)), zeros(n),
+                         zeros(n), zeros(n))
+    art() = RunArtifact(joinpath(mktempdir(), "route.h5"))
+    strong_of(task, rep) = only(filter(e -> e isa Octopus.ThinStrongBeam,
+        collect(Octopus._physics_line(Octopus._runtime_entries(task, rep)))))
+
+    results = Dict{Symbol,Any}()
+    for route in (:isolated, :fused)
+        task = TrackingTask(line; artifact=art(), luminosity_tracking=route)
+        rep = mkrep()
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            execute!(task, rep; turns=1)
+        end
+        # The receipt names the route that RAN. A receipt echoing the request
+        # would pass while the run took the other path -- the `fast_path`
+        # lesson from the turn-timing work.
+        receipt = only(filter(r -> r.consumer === :tracking_luminosity_route,
+                              execution_receipts(audit)))
+        @test receipt.values.luminosity_tracking === route
+        results[route] = (strong_of(task, rep).last_luminosity,
+                          [copy(a) for a in coordinate_arrays(rep)])
+    end
+    @test results[:isolated][1] === results[:fused][1]      # exact, not approx
+    @test results[:isolated][1] > 0.0                       # and not trivially zero
+    for (a, b) in zip(results[:isolated][2], results[:fused][2])
+        @test a == b
+    end
+
+    # The routes must actually DIFFER in plan shape, or the equality above is
+    # comparing one implementation with itself.
+    plan_for(route) = begin
+        t = TrackingTask(line; artifact=art(), luminosity_tracking=route)
+        e = Octopus._runtime_entries(t, mkrep())
+        Octopus._build_tracking_plan(e,
+            Octopus._active_plan_key(e, TrackingContext(), true, route))
+    end
+    @test length(plan_for(:isolated)) == 3
+    @test length(plan_for(:fused)) == 1
+    @test any(s -> s isa Octopus.IsolatedSegment, plan_for(:isolated))
+    @test only(plan_for(:fused)) isa Octopus.LuminousFusedSegment
+
+    # Thread-count invariance of the fused fold. The partition is a fixed 64
+    # chunks in GLOBAL terms precisely so the answer does not depend on the
+    # worker count; a fold sized by `policy.threads` is the defect this
+    # repository already removed once.
+    lums = map((1, 2, 4)) do nthreads
+        t = TrackingTask(line; artifact=art(), luminosity_tracking=:fused,
+                         policy=CPUThreadsExecutionPolicy(threads=nthreads))
+        r = mkrep()
+        execute!(t, r; turns=1)
+        strong_of(t, r).last_luminosity
+    end
+    @test all(l -> l === first(lums), lums)
+    @test first(lums) === results[:fused][1]
+
+    # An illegal value is refused at construction, naming the legal set.
+    err = try
+        TrackingTask(line; luminosity_tracking=:nope)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test occursin("luminosity_tracking", sprint(showerror, err))
+
+    # The default is the route that works on every backend.
+    @test TrackingTask(line).luminosity_tracking === :isolated
+    @test tracking_task_option_schema().luminosity_tracking.default === :isolated
+    # ...and it is declared CPU-only, which is a permanent fact rather than a
+    # gap: measured 2026-09-08, the split costs nothing on CUDA (0.96x).
+    @test tracking_task_option_schema().luminosity_tracking.supported_backends ==
+          (CPUThreadsBackend,)
+
+    # No artifact means no route is taken at all, so neither is requested and
+    # no receipt is emitted -- the option is vacuous there rather than ignored.
+    quiet = ExecutionAudit()
+    with_execution_audit(quiet) do
+        execute!(TrackingTask(line; luminosity_tracking=:fused), mkrep(); turns=1)
+    end
+    @test isempty(filter(r -> r.consumer === :tracking_luminosity_route,
+                         execution_receipts(quiet)))
+end
+
 @testset "A wrapped strong beam cannot silently lose its luminosity" begin
     # 2026-09-07. A strong beam inside a BeamLine compiles to a CompositeLine, so
     # the top-level scan in _execute_tracking_task! does not see it: no
@@ -4007,7 +4108,7 @@ end
     @test keys(strong_strong_task_option_schema()) == (:artifact,)
     # The TrackingTask twin (2026-09-07). Same shape as the line above: a new
     # public task option is invisible until it appears in the schema.
-    @test keys(tracking_task_option_schema()) == (:record_turn_times,)
+    @test keys(tracking_task_option_schema()) == (:record_turn_times, :luminosity_tracking)
 end
 
 @testset "CUDA and CPU PIC cache keys cannot drift apart" begin

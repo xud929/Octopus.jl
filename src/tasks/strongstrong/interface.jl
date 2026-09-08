@@ -2989,7 +2989,9 @@ function _execute_strong_strong_segment!(rep, entries::Tuple, plan_cache, policy
     isempty(entries) && return nothing
     # Active-hook state alone is not unique: blocks before and after a collision
     # commonly have the same hook state but contain different physics elements.
-    plan_key = (Int(block_index), _active_plan_key(entries, ctx, false))
+    # `:isolated` explicitly: a strong-strong block never carries a weak-strong
+    # luminosity route, and the plan key gained a third element (2026-09-08).
+    plan_key = (Int(block_index), _active_plan_key(entries, ctx, false, :isolated))
     plan = get!(plan_cache, plan_key) do
         _build_tracking_plan(entries, plan_key[2])
     end

@@ -480,6 +480,13 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   the row's "exactly two profiles", "belongs to the fallback" and "not
   reproducible standalone" were all sampling artifacts, and the fix is the pin's
   tolerance, now derived in-process, not the solver),
+  [`luminosity_tracking_route_2026_09_08.md`](history/luminosity_tracking_route_2026_09_08.md)
+  (the luminosity route becomes a TrackingTask option: `:fused` folds the value
+  inside the single fused pass instead of lifting the beam-beam element into its
+  own segment, bit-identically -- it reuses the isolated route's 64-chunk
+  partition and fold order -- for a measured ~10% on CPU, while CUDA keeps the
+  split because the split costs nothing there; retracts a 3.4-4.5x synthetic
+  figure and two single-run readings),
   [`weak_strong_rerun_instrumented_2026_09_07.md`](history/weak_strong_rerun_instrumented_2026_09_07.md)
   (the weak-strong arms re-run with the new per-turn instrument: both series are
   STEP functions rather than drifts, the 64-thread arm steps DOWN mid-run which

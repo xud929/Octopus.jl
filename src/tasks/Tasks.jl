@@ -78,7 +78,17 @@ struct TrackingTask <: AbstractTask
     # non-default request AGENTS.md names first.
     record_turn_times::Bool
     turn_times::Vector{Float64}
+    # Which route produces the per-element luminosity (2026-09-08).
+    # `:isolated` lifts the strong beam out of the fused traversal into its own
+    # segment, which is the only way it was ever measured; `:fused` folds it
+    # inside the single fused pass. Same number either way -- bit-identical, by
+    # reusing the isolated path's partition and fold order -- so this is an
+    # execution choice, not a physics one.
+    luminosity_tracking::Symbol
 end
+
+"""Routes `luminosity_tracking` accepts."""
+const _LUMINOSITY_TRACKING_ROUTES = (:isolated, :fused)
 
 function configuration_report(task::TrackingTask, rep::Phase6DRep)
     policy = task.policy === nothing ?
@@ -94,7 +104,8 @@ function configuration_report(task::TrackingTask, rep::Phase6DRep)
     ) for item in task.observers)
     return (policy=configuration_report(policy, rep),
             actions=action_reports, observers=observer_reports,
-            record_turn_times=task.record_turn_times)
+            record_turn_times=task.record_turn_times,
+            luminosity_tracking=task.luminosity_tracking)
 end
 
 """
@@ -178,7 +189,8 @@ function TrackingTask(elements;
                       loss_report::Bool=true,
                       luminosity=nothing,    # retired 2026-08-18; throws below
                       artifact::Union{Nothing,RunArtifact,AbstractString}=nothing,
-                      record_turn_times::Bool=false)
+                      record_turn_times::Bool=false,
+                      luminosity_tracking::Symbol=:isolated)
     luminosity === nothing || throw(ArgumentError(
         "the standalone luminosity outputs were retired (text observer " *
         "2026-08-18; the path keywords 2026-08-17): pass " *
@@ -190,6 +202,9 @@ function TrackingTask(elements;
         "artifact=RunArtifact(path) or artifact=path -- the loss accounting " *
         "goes into its /losses group -- and read it back with " *
         "read(TaskOutput(path), :losses)"))
+    luminosity_tracking in _LUMINOSITY_TRACKING_ROUTES || throw(ArgumentError(
+        "luminosity_tracking must be one of $(_LUMINOSITY_TRACKING_ROUTES); " *
+        "got $(repr(luminosity_tracking))"))
     element_tuple = _element_tuple(elements)
     seed !== nothing && @warn "TrackingTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
     _warn_duplicate_radiation_streams(element_tuple)
@@ -200,7 +215,7 @@ function TrackingTask(elements;
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
                         Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),
                         loss_report, Ref{Any}(nothing), art, Ref(WeakRef(nothing)),
-                        record_turn_times, Float64[])
+                        record_turn_times, Float64[], luminosity_tracking)
 end
 
 """
@@ -226,6 +241,20 @@ tracking_task_option_schema() = (
         "repositioned (`start_turn=`) call.";
         category=:diagnostics, consumer=:tracking_turn_timing,
         perturbs_timing=true),
+    luminosity_tracking=ConfigurationOptionMeta(Symbol, :isolated,
+        "Which route produces each strong beam's luminosity for the run " *
+        "artifact: `:isolated` (default) lifts the beam-beam element out of " *
+        "the fused traversal into its own plan segment; `:fused` folds the " *
+        "luminosity inside the single fused pass. The NUMBER IS THE SAME -- " *
+        "bit-identical, because the fused route reuses the isolated route's " *
+        "fixed 64-chunk partition and chunk-ordered fold -- so this is an " *
+        "execution choice. Measured on the production fixed point, medians of " *
+        "three: `:fused` is 1.13x faster at 16 CPU threads and 1.08x at 64. " *
+        "CPU ONLY: on CUDA the split costs nothing (measured 0.96x, i.e. " *
+        "marginally faster than fusing), so the device keeps `:isolated` and " *
+        "asking for `:fused` there is refused rather than silently downgraded.";
+        category=:execution, consumer=:tracking_luminosity_route,
+        supported_backends=(CPUThreadsBackend,)),
 )
 
 """
@@ -878,6 +907,38 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     # The artifact's luminosity channel needs the same diagnostic isolation
     # the luminosity observer requests; constant over the window, so hoisted.
     artifact_diagnostics = art !== nothing && !isempty(strong_beams)
+    # The luminosity route is decided HERE, at the consumer boundary, not in the
+    # constructor: `policy=nothing` defers the backend to `execute!`, so a
+    # construction-time check could not know it and would read as covered while
+    # never firing.
+    #
+    # REFUSED, not degraded, on a device. The fused route is CPU-only and will
+    # stay that way: measured 2026-09-08 on this box, the split costs nothing on
+    # CUDA (0.96x, marginally FASTER than fusing) because the device's isolated
+    # path is async kernel launches plus an on-device reduction rather than
+    # extra passes through a host chunk grid. Warning and falling back would
+    # leave the numbers right and the request silently unmet -- and a timing
+    # comparison would then measure the other route without saying so, which is
+    # the defect class AGENTS.md names first.
+    #
+    # Only when a route is actually TAKEN. With no artifact or no strong beam
+    # neither route runs, so there is no request to ignore.
+    if artifact_diagnostics
+        if task.luminosity_tracking === :fused && backend_type(policy) !== CPUThreadsBackend
+            throw(ArgumentError(
+                "luminosity_tracking = :fused is implemented for the CPU " *
+                "threads backend only, and this task resolved to " *
+                "$(backend_type(policy)). The device keeps the isolated route " *
+                "deliberately -- the split costs nothing there. Either run on a " *
+                "CPU policy, or pass luminosity_tracking = :isolated."))
+        end
+        # The route that ACTUALLY ran, not the one requested: a receipt naming
+        # the request would pass while the run took the other path.
+        _record_execution!(:tracking_luminosity_route, backend_type(policy), (
+            luminosity_tracking=task.luminosity_tracking,
+            beams=length(strong_beams),
+        ))
+    end
     tracking_completed = false
     try
         # Same global keying as the fused path: an element that draws per
@@ -898,7 +959,8 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             run_actions!(task.actions, ctx, rep)
             task_diagnostics = requires_elementwise_tracking(task.observers, ctx) ||
                                artifact_diagnostics
-            plan_key = _active_plan_key(runtime_entries, ctx, task_diagnostics)
+            plan_key = _active_plan_key(runtime_entries, ctx, task_diagnostics,
+                                        task.luminosity_tracking)
             plan = get!(task.plan_cache, plan_key) do
                 _build_tracking_plan(runtime_entries, plan_key)
             end
@@ -1393,6 +1455,18 @@ struct IsolatedSegment{Elem}
     element::Elem
 end
 
+"""
+A fused segment that ALSO folds luminosity, emitted instead of `FusedSegment`
+when `luminosity_tracking = :fused` and the segment carries luminosity-producing
+elements. `beams` names those elements in line order, so each gets its own
+`last_luminosity` from its own accumulator and the artifact's per-element
+channels keep their attribution.
+"""
+struct LuminousFusedSegment{Elems,Beams}
+    elements::Elems
+    beams::Beams
+end
+
 struct ObserverSegment{O}
     observer::O
 end
@@ -1401,26 +1475,28 @@ struct ActionSegment{A}
     action::A
 end
 
-function _active_plan_key(entries::Tuple, ctx, task_diagnostics::Bool)
+function _active_plan_key(entries::Tuple, ctx, task_diagnostics::Bool,
+                          luminosity_tracking::Symbol=:isolated)
     active_hooks = Int[]
     for entry in entries
         if entry isa Union{LineObserverEntry,LineActionEntry} && _line_entry_active(entry, ctx)
             push!(active_hooks, entry.hook_index)
         end
     end
-    return (Tuple(active_hooks), task_diagnostics)
+    return (Tuple(active_hooks), task_diagnostics, luminosity_tracking)
 end
 
 function _build_tracking_plan(entries::Tuple, plan_key)
-    active_hooks, task_diagnostics = plan_key
+    active_hooks, task_diagnostics, luminosity_tracking = plan_key
     active_set = Set(active_hooks)
     segments = Any[]
     fused = Any[]
     tracked = Any[]
     pending_line_diagnostics = Ref(_count_active_line_diagnostics(entries, active_set))
     _append_tracking_segments!(segments, fused, tracked, entries, active_set,
-                               task_diagnostics, pending_line_diagnostics)
-    _flush_fused_segment!(segments, fused)
+                               task_diagnostics, pending_line_diagnostics,
+                               luminosity_tracking)
+    _flush_fused_segment!(segments, fused, task_diagnostics, luminosity_tracking)
     return Tuple(segments)
 end
 
@@ -1438,21 +1514,26 @@ end
 
 function _append_tracking_segments!(segments, fused, tracked, entries::Tuple,
                                     active_hooks::Set, task_diagnostics::Bool,
-                                    pending_line_diagnostics::Base.RefValue)
+                                    pending_line_diagnostics::Base.RefValue,
+                                    luminosity_tracking::Symbol=:isolated)
     for entry in entries
         if entry isa PhysicsEntry
             elem = entry.element
             push!(tracked, elem)
             diagnostics_required = task_diagnostics || pending_line_diagnostics[] > 0
-            if diagnostics_required && requires_isolated_tracking(elem)
-                _flush_fused_segment!(segments, fused)
+            # `luminosity_tracking === :isolated` is the ONLY new conjunct.
+            # `requires_isolated_tracking` stays an element-level fact; the
+            # option is a task-level veto over it, not a replacement.
+            if diagnostics_required && luminosity_tracking === :isolated &&
+               requires_isolated_tracking(elem)
+                _flush_fused_segment!(segments, fused, task_diagnostics, luminosity_tracking)
                 push!(segments, IsolatedSegment(elem))
             else
                 push!(fused, elem)
             end
         elseif entry isa LineObserverEntry
             entry.hook_index in active_hooks || continue
-            _flush_fused_segment!(segments, fused)
+            _flush_fused_segment!(segments, fused, task_diagnostics, luminosity_tracking)
             prepare_observer!(entry.observer.observer, Tuple(tracked))
             push!(segments, ObserverSegment(entry.observer))
             if _line_entry_requires_diagnostics(entry)
@@ -1460,16 +1541,27 @@ function _append_tracking_segments!(segments, fused, tracked, entries::Tuple,
             end
         elseif entry isa LineActionEntry
             entry.hook_index in active_hooks || continue
-            _flush_fused_segment!(segments, fused)
+            _flush_fused_segment!(segments, fused, task_diagnostics, luminosity_tracking)
             push!(segments, ActionSegment(entry.action))
         end
     end
     return nothing
 end
 
-function _flush_fused_segment!(segments, fused)
+function _flush_fused_segment!(segments, fused, task_diagnostics::Bool=false,
+                              luminosity_tracking::Symbol=:isolated)
     isempty(fused) && return nothing
-    push!(segments, FusedSegment(Tuple(fused)))
+    elems = Tuple(fused)
+    if task_diagnostics && luminosity_tracking === :fused
+        beams = Tuple(e for e in elems
+                      if e isa Union{ThinStrongBeam,GaussianStrongBeam})
+        if !isempty(beams)
+            push!(segments, LuminousFusedSegment(elems, beams))
+            empty!(fused)
+            return nothing
+        end
+    end
+    push!(segments, FusedSegment(elems))
     empty!(fused)
     return nothing
 end
@@ -1521,6 +1613,13 @@ function _execute_tracking_segment_turn!(rep, segment::FusedSegment, policy, ctx
     return nothing
 end
 
+function _execute_tracking_segment_turn!(rep, segment::LuminousFusedSegment, policy, ctx;
+                                        stream=nothing)
+    _update_runtime_line!(segment.elements, ctx)
+    _track_fused_luminous!(rep, segment.elements, segment.beams, policy, ctx)
+    return nothing
+end
+
 function _execute_tracking_segment_turn!(rep, segment::IsolatedSegment, policy, ctx; stream=nothing)
     update!(segment.element, ctx)
     _track_isolated_runtime!(rep, segment.element, policy, ctx, stream)
@@ -1536,6 +1635,53 @@ end
 function _execute_tracking_segment_turn!(rep, segment::ActionSegment, policy, ctx; stream=nothing)
     _synchronize_segment_stream(stream)
     run_actions!((segment.action,), ctx, rep)
+    return nothing
+end
+
+"""
+    _track_fused_luminous!(rep, elems, beams, policy, ctx)
+
+One fused pass that also produces each strong beam's luminosity.
+
+THE REDUCTION IS THE ISOLATED PATH'S, UNCHANGED -- the fixed `_REDUCTION_CHUNKS`
+partition in GLOBAL terms, one scalar partial per chunk, folded by
+`_mp_chunk_fold` in chunk order. That is deliberate and it is what makes this
+route's number bit-identical to the isolated route's: thread-count invariance
+and the MPI shard semantics are properties of THAT partition and THAT fold
+order, so reusing them preserves both by construction rather than by argument.
+Measured on landing: `===` on the folded Float64, and coordinates bit-identical.
+
+It also means this loop must NOT use the fused path's own membership
+(`worker:nworkers:length(rep)`, strided and sized by the thread count). That
+shape is exactly what made `last_luminosity` thread-count dependent before, and
+the comment on `_track_thin_strong_beam!` records it being removed for that
+reason.
+"""
+function _track_fused_luminous!(rep, elems, beams, policy, ctx)
+    mask = active_live_mask()
+    nchunks = _REDUCTION_CHUNKS
+    offset, global_n = _mp_current_shard(rep)
+    first_chunk, local_chunks = _mp_first_chunk(), _mp_local_chunks()
+    nbeams = length(beams)
+    partials = zeros(eltype(rep.x), local_chunks, nbeams)
+    _run_logical_workers(local_chunks) do chunk, _
+        lo, hi = _chunk_bounds(global_n, nchunks, first_chunk + chunk - 1)
+        acc = ntuple(_ -> zero(eltype(rep.x)), nbeams)
+        for index in (lo - offset):(hi - offset)
+            @inbounds begin
+                coords, lums = fusedTrackLuminous(mask, ctx, elems,
+                                                  ctx.index_offset + index, rep[index]...)
+                rep[index] = coords
+                acc = ntuple(k -> acc[k] + lums[k], nbeams)
+            end
+        end
+        for k in 1:nbeams
+            @inbounds partials[chunk, k] = acc[k]
+        end
+    end
+    for k in 1:nbeams
+        beams[k].last_luminosity = _mp_chunk_fold(@view(partials[:, k]), first_chunk)
+    end
     return nothing
 end
 

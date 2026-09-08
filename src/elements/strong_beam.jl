@@ -494,6 +494,45 @@ end
     return x, px, y, py, z, pz
 end
 
+# The luminosity-carrying forms. Both kernels below ALREADY compute the value --
+# `_thin_strong_beam_track` returns seven, and the Gaussian form accumulates over
+# every slice -- and both then drop it, which is the only reason a strong beam
+# has to be lifted out of the fused traversal to be measured at all. These
+# forms stop the discard; they add no arithmetic.
+#
+# The mask is applied HERE, against the coordinates this element just produced,
+# which is what makes the fused route's number identical to the isolated route's.
+# `_add_luminosity` judges liveness from the coordinates it is handed and the
+# rule is to judge the kick's output; a caller in a fused pass holds only
+# end-of-line coordinates, so masking there would drop a particle that was alive
+# at the beam and lost at a later aperture.
+@inline function track_luminous(elem::ThinStrongBeam, mask, ctx::TrackingContext,
+                                particle_id, x, px, y, py, z, pz)
+    x1, px1, y1, py1, z1, pz1, l = _thin_strong_beam_track(elem, x, px, y, py, z, pz)
+    contribution = _add_luminosity(mask, zero(l), l, x1, px1, y1, py1, z1, pz1)
+    return ((x1, px1, y1, py1, z1, pz1), (contribution,))
+end
+
+@inline function track_luminous(elem::GaussianStrongBeam, mask, ctx::TrackingContext,
+                                particle_id, x, px, y, py, z, pz)
+    lum = zero(x + px + y + py + z + pz)
+    kbb0 = elem.thin.kbb
+    x0, y0, z0 = elem.thin.xo, elem.thin.yo, elem.thin.zo
+    for i in elem.ns:-1:1
+        slice_pxo, slice_pyo = _slice_transverse_angles(elem, i)
+        thin = _slice_thin_strong_beam(elem.thin,
+                                       kbb0 * elem.slice_weight[i],
+                                       x0 + elem.slice_hoffset[i],
+                                       y0 + elem.slice_voffset[i],
+                                       z0 + elem.slice_center[i],
+                                       slice_pxo, slice_pyo)
+        x, px, y, py, z, pz, l = _thin_strong_beam_track(thin, x, px, y, py, z, pz)
+        lum += l * elem.slice_weight[i]
+    end
+    contribution = _add_luminosity(mask, zero(lum), lum, x, px, y, py, z, pz)
+    return ((x, px, y, py, z, pz), (contribution,))
+end
+
 @inline (elem::ThinStrongBeam)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
 @inline (elem::GaussianStrongBeam)(x, px, y, py, z, pz) =

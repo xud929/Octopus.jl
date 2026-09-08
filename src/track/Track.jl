@@ -80,4 +80,35 @@ end
 	return op(x0, px0, y0, py0, z0, pz0)
 end
 
+"""
+    track_luminous(op, mask, ctx, particle_id, x, px, y, py, z, pz)
+        -> ((x, px, y, py, z, pz), (lums...))
+
+Track one particle through `op` AND hand back whatever luminosity it produced,
+as a tuple with one entry per luminosity-producing element inside `op` -- empty
+for the overwhelming majority of elements, which produce none.
+
+This exists because the fused kernel throws luminosity away. The strong-beam
+kernels already compute it (`_thin_strong_beam_track` returns seven values; the
+`GaussianStrongBeam` form accumulates over every slice) and then drop it on the
+floor, which is why a strong beam has to be pulled OUT of the fused traversal
+into its own segment before its luminosity can be recorded at all. The wrappers
+drop it for the same reason: each forwards to a six-value `track_particle`.
+
+MASKING HAPPENS HERE, not in the caller, and that is the whole point of the
+shape. `_add_luminosity` judges liveness from the coordinates it is handed, and
+the rule (`src/track/strong_beam_track.jl`) is to judge the OUTPUT of the kick.
+In a fused pass the caller only ever sees end-of-line coordinates, so a caller
+that applied the mask would exclude a particle that was alive at the strong beam
+and lost at a downstream aperture -- a plausible, slightly wrong luminosity, with
+every coordinate digest still bit-identical. Judged here, at the element's own
+position, the semantics are exactly the isolated path's.
+
+The default produces nothing and costs nothing: an empty tuple splices away at
+compile time.
+"""
+@inline track_luminous(op, mask, ctx::TrackingContext, particle_id,
+                       x, px, y, py, z, pz) =
+	(op(ctx, particle_id, x, px, y, py, z, pz), ())
+
 include("fused_track.jl")
