@@ -915,6 +915,42 @@ each branch, starting with the default.
   not override it — check the decision items before implementing a
   predecessor's sub-item.
 
+## A singular optics parameterization need not mean unstable motion
+
+The Twiss/dispersion theory review (2026-09-08) supplies a concrete example:
+at ideal GLSF compression the continuously labeled longitudinal mode has no
+physical z projection, so its longitudinal 2x2 projection is singular while
+the full symplectic basis and distinct stable tunes remain regular. Changing
+from an iterative graph solve to a closed-form graph solve cannot repair a
+missing coordinate chart. Retain the invariant basis and covariance, report
+unavailable coefficients, and make any mode reassignment explicit. The
+derivation and reproducible fixture are in
+[the theory-review record](history/audit_twiss_dispersion_theory_2026_09_08.md).
+
+## Translate references into one notation
+
+The notation review of the first optics note (2026-09-09) found that correct
+algebra was not enough to make a comparison usable: carrying source-paper
+letters into each section made one quantity acquire several names and one
+name acquire several dimensions. Translate references into the note's own
+symbols, keep a source dictionary, and name intermediate quantities only
+when they have a clear role and repeated use. Renaming also needs a neighbour
+check: equation tags, function arguments, and LaTeX command boundaries can
+change accidentally. The [notation-review record](history/audit_twiss_dispersion_notation_2026_09_09.md)
+keeps reproducible algebra and syntax checks, including failing injections.
+
+## A source's decoupling basis is not necessarily canonical
+
+The optics literature review (2026-09-09) encountered three distinct
+constructions: Glukhov's mode-adapted columns carry signed area factors,
+Dieci–Friedman's continuation basis is orthogonal, and our normalizer is
+symplectic. All isolate invariant subspaces, but their normalization metrics
+are different. Verify the preserved form before substituting one basis for
+another. A computational chart change also cannot restore dispersion over
+a singular physical longitudinal projection. The
+[literature-review record](history/audit_twiss_dispersion_literature_2026_09_09.md)
+keeps the matrix identities, source translations, and numerical controls.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.
