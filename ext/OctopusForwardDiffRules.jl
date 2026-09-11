@@ -30,3 +30,22 @@ function Octopus.faddeeva_w(z::Complex{ForwardDiff.Dual{T,V,N}}) where {T,V,N}
     imp = ForwardDiff.Partials(ntuple(k -> imag(dw) * pr[k] + real(dw) * pim[k], Val(N)))
     return Complex(ForwardDiff.Dual{T}(real(w), rep), ForwardDiff.Dual{T}(imag(w), imp))
 end
+
+# The ForwardDiff route of the one-turn-matrix helper (design note
+# docs/design/twiss_dispersion_analysis.md, "Input boundary" item 3). Core
+# owns the tag `ForwardDiffLinearization` and a fallback on the abstract
+# method type that throws a directed error; this ADDS the method on the tag,
+# it never redefines a core method. Both load routes include this file, so
+# package mode and script mode share one implementation.
+function Octopus._linearize(::Octopus.ForwardDiffLinearization, f, point::NTuple{6,Float64})
+    g = u -> collect(Octopus._six_coordinates(f(u...), "under ForwardDiff"))
+    return ForwardDiff.jacobian(g, collect(point))
+end
+
+# The relabelling guard's LEAF predicate for this route: one value or one type
+# is ForwardDiff's perturbation number when it is a dual. Core's
+# `_involves_method_number` walks containers and type parameters
+# (Vector{Dual}, Tuple{Dual,...}) and calls this leaf, so only an error whose
+# argument types involve a dual number is attributed to ForwardDiff.
+Octopus._is_method_number(::Octopus.ForwardDiffLinearization, x) =
+    x isa ForwardDiff.Dual || (x isa Type && x <: ForwardDiff.Dual)

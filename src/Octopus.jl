@@ -51,6 +51,8 @@ include("knobs/symbolic.jl")
 include("policies/Policies.jl")
 include("contracts/Contracts.jl")
 include("analysis/Analysis.jl")
+# Pure symplectic matrix algebra for the analyses; no element dependency.
+include("analysis/symplectic_linear_algebra.jl")
 include("examples/Examples.jl")
 
 # Generic tracking interface.
@@ -75,6 +77,17 @@ include("elements/aperture.jl")
 include("track/phase6d_track.jl")
 include("track/radiation_track.jl")
 include("track/strong_beam_track.jl")
+
+# The one-turn-matrix helper of the analysis layer (design note
+# docs/design/twiss_dispersion_analysis.md, "Input boundary"). It sits here
+# rather than beside analysis/Analysis.jl because it calls `compile_runtime`
+# on element specs and lines and describes their runtime maps, so it must
+# follow every element include (the aperture's included after Beam.jl) and
+# the tracking files; it defines only tag types and a helper, nothing the
+# tasks below consume, so it precedes them. The ForwardDiff route's method is
+# added by ext/OctopusForwardDiffRules.jl, which both load routes include
+# after this file.
+include("analysis/one_turn_matrix.jl")
 
 # Workflow composition, schedules, observers, and actions. The run artifact
 # loads first so the task structs can carry a typed RunArtifact field; its

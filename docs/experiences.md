@@ -91,6 +91,12 @@ teaches something reusable, it lands here (dated), and the full record goes to
   five new routing cases on the spot.
 - The registry snapshot is regenerated, never hand-edited; a stale snapshot
   aborts the suite loudly.
+- The LABEL beside a derived number is a hand-copy too. The stage 1 Twiss
+  measurement (2026-09-11) computed every extreme from its fixture set and
+  typed the name of the extreme fixture by hand; twice in one session the
+  name was wrong ("the TBA+sext finite-difference matrix" for a value that
+  belonged to a 1e-10 entry perturbation), while the number beside it was
+  right. Carry the name with the value and print the argmax's own name.
 
 ### A RULE gets hand-copied too, and the missing copy is the last one written
 
@@ -963,6 +969,20 @@ membership by `===` on the type, never by substring, and tripwire the derived
 set against the declared set in both directions. The
 [design note](design/twiss_dispersion_analysis.md) records the episode and
 the rule it adopted.
+
+## Code that runs only on the failure path is the least-tested code
+
+The one-turn-matrix helper's relabelling guard (2026-09-11) read `err.val` on
+an `InexactError`, whose fields on Julia 1.12.4 are `(:func, :args)`. Every
+green run had taken the success path; the first genuine `InexactError` from a
+user map made the guard itself throw a `FieldError`, replacing the map's own
+error with one from inside the helper, under both differentiation methods. A
+review found it, not a test: the fixtures covered the error classes the guard
+was designed around and none of the class it also claimed to handle. A
+`catch` branch is exercised only when something is already wrong, so it needs
+one fixture per error class it names, plus a pin on the fields it reads
+(`hasfield(InexactError, :args) && !hasfield(InexactError, :val)`), so that a
+Julia release moving a field is loud instead of a second silent relabelling.
 
 ## Standing decisions, deliberately not being done
 

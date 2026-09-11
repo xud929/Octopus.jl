@@ -267,6 +267,682 @@ end
     end
 end
 
+# Twiss analysis stage 1, Part A: symplectic kernel and availability
+# vocabularies (src/analysis/symplectic_linear_algebra.jl, Analysis.jl).
+# Placed beside the architecture testsets because the last block is the
+# stage guard (no analysis claimed yet). Uses only the file-level `using
+# Test, Octopus, LinearAlgebra, Random`; no lane gate, no test-only
+# dependency. Every tolerance is stated as c * eps * kappa with c justified
+# beside it; the measured ratios behind the constants are recorded in the
+# campaign history file docs/history/twiss_dispersion_analysis_history.md
+# (stage 1 record).
+#
+# Injected defects, each shown red on 2026-09-11 (script-mode harness on a
+# patched copy of src/, the injection harness the history file's stage 1
+# record describes; the unpatched control is green; per-injection fail counts
+# in that record):
+#   01 form:        S[c, c+1] = -1 (sign flip in _symplectic_form)
+#   02 defect:      row_ratio returned as err.tolerance instead of err.ratio
+#   03 zeta:        _unscale_crab_dispersion divided by a3 instead of multiplying
+#   04 residual:    normalized (I1) divisor dropped the `1` floor
+#   05 rho_M0:      roundoff arm used norm(M) (Frobenius) instead of opnorm(M, 2)
+#   06 vocabulary:  :not_invariant removed from DETERMINATION_REASONS
+#   07 accessor:    determined_value returned d.value (nothing) for :unavailable
+#   08 set:         AmbiguitySet multiplicity guard relaxed to >= 1
+#   09 stage guard: a `function analyze end` stub defined in Analysis.jl
+#   10 embed:       _embed_4to6 wrote 0 instead of 1 at M6[6, 6]
+#   11 twiss:       _unscale_twiss returned (beta a^2, alpha, gamma / a^2)
+#   12 graph:       _unscale_graph used C_l^{-1} instead of C_l
+#   13 eta:         _unscale_momentum_dispersion multiplied by a3 instead of dividing
+
+@testset "Symplectic kernel: form, inverse, adjugate, rotation block" begin
+    # The expected form is DERIVED from (C1)-(C2) block by block, never typed
+    # as a 6x6 literal, so the test and the source cannot share a typo.
+    S2 = [0.0 1.0; -1.0 0.0]
+    for d in (2, 4, 6)
+        S = Octopus._symplectic_form(d)
+        expected = zeros(d, d)
+        for b in 1:2:d
+            expected[b:b + 1, b:b + 1] .= S2
+        end
+        @test S == expected                        # exact: entries are 0, 1, -1
+        @test transpose(S) == -S
+        @test S * S == -Matrix(1.0I, d, d)
+    end
+    # {x, px} = +1 is the convention of (C1): S[1, 2] = +1. The sign flip is
+    # the injected defect this block was shown red on.
+    @test Octopus._symplectic_form(6)[1, 2] == 1.0
+    for bad in (0, 1, 3, 5, 8, -2)
+        @test_throws ArgumentError Octopus._symplectic_form(bad)
+    end
+
+    # (C4)-(C5) on random 2x2 blocks: adj(K) = -S2 K' S2, K adj(K) = det K I,
+    # adj(KL) = adj(L) adj(K), K + adj(K) = tr K I. Tolerance 16 eps kappa,
+    # kappa = ||K|| ||L||: each identity is one or two products of 2 terms.
+    rng = Xoshiro(20260911)
+    for _ in 1:20
+        K = randn(rng, 2, 2); L = randn(rng, 2, 2)
+        aK = Octopus._adjugate2(K)
+        @test aK == -S2 * transpose(K) * S2
+        @test norm(K * aK - det(K) * I) <= 16 * eps() * max(1, norm(K)^2)
+        @test norm(aK * K - det(K) * I) <= 16 * eps() * max(1, norm(K)^2)
+        @test norm(Octopus._adjugate2(K * L) - Octopus._adjugate2(L) * aK) <=
+              16 * eps() * max(1, norm(K) * norm(L))
+        @test K + aK == tr(K) * I
+    end
+    @test_throws ArgumentError Octopus._adjugate2(zeros(3, 3))
+
+    # Symplectic inverse -S M' S against the identity, on exp(S H) maps. The
+    # manufactured map carries the roundoff of `exp`, so the residual of
+    # M^{-1} M - I is bounded by c eps ||M||_F^2 with the Linear6D validator's
+    # margin c = 64 over the d-term first-order product bound.
+    for d in (4, 6), _ in 1:20
+        M, H = Octopus._manufactured_symplectic_map(rng, d; scale=0.5)
+        @test H == transpose(H)
+        Minv = Octopus._symplectic_inverse(M)
+        kappa = max(1.0, norm(M)^2)
+        @test norm(Minv * M - I) <= 64 * eps() * kappa
+        @test norm(M * Minv - I) <= 64 * eps() * kappa
+    end
+    @test_throws ArgumentError Octopus._symplectic_inverse(zeros(4, 6))
+    @test_throws ArgumentError Octopus._symplectic_inverse(zeros(3, 3))
+
+    # Rotation block: with the oriented eigenvector (E3)-(E4), M u = e^{-i mu} u,
+    # and the real pair U = [Re u, -Im u] of (E6), M U = U R(mu) with
+    # R(mu) = [cos sin; -sin cos]. Derived here from `eigen`, not assumed.
+    @test Octopus._rotation2(0.0) == Matrix(1.0I, 2, 2)
+    @test Octopus._rotation2(pi / 2) ≈ [0 1; -1 0] atol = 4 * eps()
+    S6 = Octopus._symplectic_form(6)
+    M, _ = Octopus._manufactured_symplectic_map(rng, 6; scale=0.5, stable=true)
+    F = eigen(M)
+    for (k, rho) in enumerate(F.values)
+        imag(rho) > 0 || continue          # one member per conjugate pair; orientation below
+        v = F.vectors[:, k]
+        area = imag(dot(v, S6 * v))
+        w = area < 0 ? v : conj(v)          # (E4): Im(v' S v) < 0 selects the member
+        u = sqrt(-2 / imag(dot(w, S6 * w))) * w
+        rho_u = area < 0 ? rho : conj(rho)
+        mu = mod(-angle(rho_u), 2pi)        # M u = e^{-i mu} u
+        @test abs(dot(u, S6 * u) + 2im) <= 64 * eps() * max(1, norm(u)^2)
+        U = hcat(real.(u), -imag.(u))
+        # Eigen backward error d eps ||M||, amplified by the eigenvector
+        # conditioning (~1/gap, order 10 for a random stable map) and the
+        # normalization: c = 1e3 on kappa = max(1, ||M||).
+        @test norm(M * U - U * Octopus._rotation2(mu)) <= 1e3 * eps() * max(1, norm(M))
+    end
+end
+
+@testset "Symplectic defect is at roundoff on 200 manufactured maps and catches a perturbation" begin
+    rng = Xoshiro(20260911)
+    # The Frobenius defect ||M'SM - S||_F / max(1, ||M||_F^2) of exp(S H) is
+    # roundoff: the d-term products bound it by d eps, and the `exp` itself
+    # adds a few eps of its own; c = 64 is the Linear6D validator's margin.
+    # The row ratio <= 1 is that validator's acceptance verdict.
+    for k in 1:200
+        d = isodd(k) ? 6 : 4
+        scale = k % 4 < 2 ? 0.3 : 1.0
+        M, _ = Octopus._manufactured_symplectic_map(rng, d; scale=scale)
+        def = Octopus._symplectic_defect(M)
+        @test def.frobenius <= 64 * eps()
+        @test def.row_ratio <= 1
+        @test def.row_residual <= def.row_tolerance
+    end
+
+    # The design's cross-plane shear fixture, M = I + 0.3 e_1 e_3': M'SM - S is
+    # 0.3 (e_3 e_2' - e_2 e_3') exactly (S e_1 = -e_2, e_1' S e_1 = 0), so the
+    # Frobenius defect is 0.3 sqrt(2) / (6 + 0.09). Pin derived, not copied.
+    M = Matrix(1.0I, 6, 6); M[1, 3] = 0.3
+    def = Octopus._symplectic_defect(M)
+    @test abs(def.frobenius - 0.3 * sqrt(2) / (6 + 0.3^2)) <= 8 * eps()
+    @test def.row_ratio > 10                       # rejected by more than a decade
+    @test def.frobenius > 0
+
+    # A shear on a random symplectic map and a 1e-10 perturbation of one entry
+    # are both caught: "smallest rejected above ten" (design, measurement rule).
+    for d in (4, 6)
+        M, _ = Octopus._manufactured_symplectic_map(rng, d; scale=0.3)
+        Msh = copy(M); Msh[1, 3] += 0.3
+        @test Octopus._symplectic_defect(Msh).frobenius > 1e-2
+        @test Octopus._symplectic_defect(Msh).row_ratio > 10
+        Mtiny = copy(M); Mtiny[2, 1] += 1e-10
+        @test Octopus._symplectic_defect(Mtiny).frobenius > 1e-11 / max(1, norm(M)^2)
+        @test Octopus._symplectic_defect(Mtiny).row_ratio > 10
+    end
+
+    # A 4x4 embeds as diag(M4, I2): structure exact; the defect numerator is
+    # the same number (the extra products are with 0 and 1) and the row ratio
+    # of the 4x4 IS the ratio of its embedding (one code path, no copy).
+    M4, _ = Octopus._manufactured_symplectic_map(rng, 4; scale=0.5)
+    M6 = Octopus._embed_4to6(M4)
+    @test M6[1:4, 1:4] == M4
+    @test M6[5:6, 5:6] == Matrix(1.0I, 2, 2)
+    @test iszero(M6[1:4, 5:6]) && iszero(M6[5:6, 1:4])
+    S4 = Octopus._symplectic_form(4); S6 = Octopus._symplectic_form(6)
+    # (equal up to the summation order of the two BLAS products: 4 eps relative)
+    n6 = norm(transpose(M6) * S6 * M6 - S6); n4 = norm(transpose(M4) * S4 * M4 - S4)
+    @test abs(n6 - n4) <= 4 * eps() * max(n6, n4)
+    @test Octopus._symplectic_defect(M4).row_ratio == Octopus._symplectic_defect(M6).row_ratio
+    M4sh = copy(M4); M4sh[1, 3] += 0.3
+    @test Octopus._symplectic_defect(M4sh).row_ratio > 10
+    @test Octopus._symplectic_defect(Octopus._embed_4to6(M4sh)).row_ratio > 10
+    @test_throws ArgumentError Octopus._embed_4to6(zeros(6, 6))
+
+    # Loud on the wrong shape or a non-finite entry.
+    @test_throws ArgumentError Octopus._symplectic_defect(zeros(5, 5))
+    @test_throws ArgumentError Octopus._symplectic_defect(zeros(4, 6))
+    @test_throws ArgumentError Octopus._symplectic_defect(zeros(2, 2))
+    Mnan = Matrix(1.0I, 6, 6); Mnan[3, 3] = NaN
+    @test_throws ArgumentError Octopus._symplectic_defect(Mnan)
+end
+
+@testset "Reciprocal canonical scaling: modes, wrong length, C'SC = S" begin
+    rng = Xoshiro(20260911)
+    M, _ = Octopus._manufactured_symplectic_map(rng, 6; scale=0.7)
+    S6 = Octopus._symplectic_form(6)
+
+    # :auto pins the documented rule a_i = sqrt(||row 2i|| / ||row 2i-1||).
+    auto = Octopus._reciprocal_scaling(M, :auto)
+    @test auto.mode === :auto && auto.dimension == 6 && length(auto.factors) == 3
+    @test all(auto.factors .> 0)
+    for i in 1:3
+        @test auto.factors[i] == sqrt(norm(M[2i, :]) / norm(M[2i - 1, :]))
+    end
+    Mz = copy(M); Mz[1, :] .= 0                    # a vanishing row falls back to 1
+    @test Octopus._reciprocal_scaling(Mz, :auto).factors[1] == 1.0
+
+    # :none is the identity, bit for bit.
+    none = Octopus._reciprocal_scaling(M, :none)
+    @test none.mode === :none && none.factors == ones(3)
+    @test Octopus._scale_map(none, M) == M
+
+    # Explicit factors, tuple or vector.
+    ex = Octopus._reciprocal_scaling(M, (0.5, 2.0, 4.0))
+    @test ex.mode === :explicit && ex.factors == [0.5, 2.0, 4.0]
+    @test Octopus._reciprocal_scaling(M, [0.5, 2.0, 4.0]).factors == ex.factors
+    M4, _ = Octopus._manufactured_symplectic_map(rng, 4; scale=0.5)
+    @test Octopus._reciprocal_scaling(M4, (0.5, 2.0)).factors == [0.5, 2.0]
+
+    # Wrong length, unknown option, bad factors, bad shapes: all loud.
+    @test_throws ArgumentError Octopus._reciprocal_scaling(M, (0.5, 2.0))
+    @test_throws ArgumentError Octopus._reciprocal_scaling(M, (0.5, 2.0, 4.0, 8.0))
+    @test_throws ArgumentError Octopus._reciprocal_scaling(M4, (0.5, 2.0, 4.0))
+    @test_throws ArgumentError Octopus._reciprocal_scaling(M, :balanced)
+    @test_throws ArgumentError Octopus._reciprocal_scaling(M, (0.0, 1.0, 1.0))
+    @test_throws ArgumentError Octopus._reciprocal_scaling(M, (-1.0, 1.0, 1.0))
+    @test_throws ArgumentError Octopus._reciprocal_scaling(M, (NaN, 1.0, 1.0))
+    @test_throws ArgumentError Octopus._reciprocal_scaling(M, ("a", 1.0, 1.0))
+    @test_throws ArgumentError Octopus._reciprocal_scaling(M, 2.0)
+    @test_throws ArgumentError Octopus._reciprocal_scaling(zeros(5, 5), :auto)
+    @test_throws ArgumentError Octopus.ReciprocalScaling(:auto, [1.0, 1.0], 6)
+    @test_throws ArgumentError Octopus.ReciprocalScaling(:other, [1.0, 1.0, 1.0], 6)
+    @test_throws ArgumentError Octopus._scale_map(ex, M4)
+
+    # C' S C = S: exactly for power-of-two factors (a * (1/a) == 1 in binary
+    # floating point), and to 4 eps otherwise (two roundings per product).
+    C = Octopus._scaling_matrix(ex)
+    @test C.diag == [0.5, 2.0, 2.0, 0.5, 4.0, 0.25]
+    @test transpose(C) * S6 * C == S6
+    gen = Octopus._reciprocal_scaling(M, (0.3, 1.7, 2.9))
+    Cg = Octopus._scaling_matrix(gen)
+    @test norm(transpose(Cg) * S6 * Cg - S6) <= 4 * eps()
+    @test norm(Cg * Octopus._scaling_inverse(gen) - I) <= 4 * eps()
+    @test Octopus._scaling_inverse(gen).diag[2] == 0.3       # the factor re-enters bit for bit
+
+    # The scaled map is symplectic with respect to the UNCHANGED form. Its
+    # roundoff defect grows with cond(C)^2 = (max(a, 1/a))^4 relative to M's:
+    # c = 64 on kappa = cond(C)^2.
+    for rec in (auto, ex, gen)
+        Mt = Octopus._scale_map(rec, M)
+        kappa = cond(Octopus._scaling_matrix(rec))^2
+        @test Octopus._symplectic_defect(Mt).frobenius <= 64 * eps() * kappa
+        # The projector rule C^{-1} (.) C undoes the similarity: the round trip
+        # of M itself is M to 8 eps ||M|| kappa (two diagonal scalings each way).
+        @test norm(Octopus._unscale_projector(rec, Mt) - M) <= 8 * eps() * max(1, norm(M)) * kappa
+    end
+end
+
+@testset "Back-transformation rows are scaling-invariant on manufactured 6D maps" begin
+    # Every row of the design's table (design note, "Input boundary" item 5)
+    # is exercised: a quantity is computed from the SCALED map by a
+    # construction that is test-local and covariant (eigen + (E3)-(E6),
+    # (D8), (D10), (D12)), back-transformed, and compared with the same
+    # quantity from the unscaled map under three scalings. A wrong h, zeta/a3
+    # or a3 eta rule shows here as a mismatch between scalings.
+    rng = Xoshiro(20260911)
+    S6 = Octopus._symplectic_form(6)
+    S4 = Octopus._symplectic_form(4)
+    S2 = Octopus._symplectic_form(2)
+
+    # (E4) orientation and normalization, test-local; the phase of an
+    # eigenvector is arbitrary, so `align` fixes it by making component k real
+    # and positive (k chosen once per mode from the unscaled run).
+    orient(v) = begin
+        w = imag(dot(v, S6 * v)) < 0 ? v : conj(v)
+        sqrt(-2 / imag(dot(w, S6 * w))) * w
+    end
+    align(u, k) = u * (abs(u[k]) / u[k])
+
+    # Eigen backward error is d eps ||M~||; the eigenvectors of the scaled
+    # map amplify it by their conditioning cond(V), and the (E4)
+    # normalization by the size of the normalized vector, which the norm of
+    # the compared quantity carries. kappa = cond(V) max(1, ||M~||) max(1, ||x||)
+    # is measured per run (the larger of the reference run and the current
+    # run). Measured at c = 100 the worst row ratio is 0.51 (the quadratic
+    # rows G, Sigma and Twiss double the eigenvector error); c = 1000 leaves
+    # every row a decade of margin (the ratio table is in the stage 1 record
+    # of docs/history/twiss_dispersion_analysis_history.md).
+    amp(Mt, F) = cond(F.vectors) * max(1.0, norm(Mt))
+    tol(x, a) = 1000 * eps() * a * max(1.0, norm(x))
+    scalings = (:none, :auto, (0.5, 2.0, 3.0))
+
+    for trial in 1:6
+        M, _ = Octopus._manufactured_symplectic_map(rng, 6; scale=0.5, stable=true)
+        reference = nothing
+        for mode in scalings
+            rec = Octopus._reciprocal_scaling(M, mode)
+            Mt = Octopus._scale_map(rec, M)
+            F = eigen(Mt)
+            a_run = amp(Mt, F)
+            a_cmp = reference === nothing ? a_run : max(a_run, reference.amp)
+            tolc(x) = tol(x, a_cmp)
+            # One member per conjugate pair, ordered by the (scaling-invariant)
+            # eigenvalue angle so mode j means the same mode in every run.
+            idx = sort([k for k in eachindex(F.values) if imag(F.values[k]) > 0];
+                       by=k -> angle(F.values[k]))
+            @test length(idx) == 3
+            us = [orient(F.vectors[:, k]) for k in idx]
+            ks = reference === nothing ? [argmax(abs.(u)) for u in us] : reference.ks
+            us = [align(us[j], ks[j]) for j in 1:3]
+            Us = [hcat(real.(u), -imag.(u)) for u in us]
+            Ps = [-U * S2 * transpose(U) * S6 for U in Us]           # symplectic projector on span U
+            Gs = [U * transpose(U) for U in Us]                       # mode covariance G_j
+            Sigma = 1.0 * Gs[1] + 2.0 * Gs[2] + 3.0 * Gs[3]           # matched covariance, emittances (1, 2, 3)
+            @test norm(Mt * Sigma * transpose(Mt) - Sigma) <= tolc(Sigma)   # (K10): closes under the map
+            # Longitudinal mode by the largest signed longitudinal area (D12).
+            areas = [-imag(conj(u[5]) * u[6]) for u in us]
+            s = argmax(areas)
+            Us_s = Us[s]
+            D = Us_s[1:4, :] / Us_s[5:6, :]                           # (D10): D = U_rs U_ls^{-1}
+            zeta = D[:, 1]                                            # (D8)
+            h = 1 / (1 + dot(zeta, S4 * D[:, 2]))
+            eta = h * D[:, 2]
+            @test abs(h - det(Us_s[5:6, :])) <= tolc(1.0)              # (D8) h agrees with (D12) h = det U_ls
+            @test abs(h - areas[s]) <= tolc(1.0)
+            @test Octopus._graph_invariance_residual(Mt, D).normalized <= tolc(1.0)   # (D14) holds for the (D10) graph
+            twiss = [(G[2p - 1, 2p - 1], -G[2p - 1, 2p], G[2p, 2p]) for G in Gs, p in 1:3]
+            R = Mt[3:4, 1:2]   # transforms as the Edwards-Teng R (plane 1 -> plane 2); an honest witness of the rule
+
+            phys = (
+                U=[Octopus._unscale_normalizer(rec, U) for U in Us],
+                P=[Octopus._unscale_projector(rec, P) for P in Ps],
+                G=[Octopus._unscale_covariance(rec, G) for G in Gs],
+                Sigma=Octopus._unscale_covariance(rec, Sigma),
+                D=Octopus._unscale_graph(rec, D),
+                zeta=Octopus._unscale_crab_dispersion(rec, zeta),
+                eta=Octopus._unscale_momentum_dispersion(rec, eta),
+                h=Octopus._unscale_longitudinal_factor(rec, h),
+                R=Octopus._unscale_edwards_teng_R(rec, R),
+                twiss=[Octopus._unscale_twiss(rec, p, twiss[j, p]...) for j in 1:3, p in 1:3],
+                ks=ks, s=s, amp=a_run)
+            if reference === nothing
+                @test mode === :none
+                reference = phys
+                # The :none run must reproduce the raw unscaled construction
+                # exactly (the identity scaling changes no bit).
+                @test phys.R == M[3:4, 1:2]
+                continue
+            end
+            @test phys.s == reference.s
+            for j in 1:3
+                @test norm(phys.U[j] - reference.U[j]) <= tolc(reference.U[j])
+                @test norm(phys.P[j] - reference.P[j]) <= tolc(reference.P[j])
+                @test norm(phys.G[j] - reference.G[j]) <= tolc(reference.G[j])
+                for p in 1:3
+                    b, a, g = phys.twiss[j, p]; b0, a0, g0 = reference.twiss[j, p]
+                    @test abs(b - b0) <= tolc(b0) && abs(a - a0) <= tolc(a0) && abs(g - g0) <= tolc(g0)
+                    # ...and the Twiss row is consistent with the covariance row.
+                    Gp = phys.G[j]
+                    @test abs(b - Gp[2p - 1, 2p - 1]) <= tolc(b0)
+                end
+            end
+            @test norm(phys.Sigma - reference.Sigma) <= tolc(reference.Sigma)
+            @test norm(phys.D - reference.D) <= tolc(reference.D)
+            @test norm(phys.zeta - reference.zeta) <= tolc(reference.zeta)
+            @test norm(phys.eta - reference.eta) <= tolc(reference.eta)
+            @test abs(phys.h - reference.h) <= tolc(reference.h)
+            @test norm(phys.R - reference.R) <= tolc(reference.R)
+            # Physical D and the physical (D8) triple agree: the graph row and
+            # the zeta/eta/h rows are one table, not three conventions.
+            @test norm(phys.D[:, 1] - phys.zeta) <= tolc(phys.zeta)
+            @test norm(phys.h * phys.D[:, 2] - phys.eta) <= tolc(phys.eta)
+        end
+    end
+
+    # Shape guards on every row.
+    M, _ = Octopus._manufactured_symplectic_map(rng, 6; scale=0.5)
+    rec = Octopus._reciprocal_scaling(M, (0.5, 2.0, 3.0))
+    rec4 = Octopus._reciprocal_scaling(M[1:4, 1:4], (0.5, 2.0))
+    @test_throws ArgumentError Octopus._unscale_normalizer(rec, zeros(4, 2))
+    @test_throws ArgumentError Octopus._unscale_covariance(rec, zeros(4, 4))
+    @test_throws ArgumentError Octopus._unscale_projector(rec, zeros(4, 4))
+    @test_throws ArgumentError Octopus._unscale_graph(rec, zeros(2, 4))
+    @test_throws ArgumentError Octopus._unscale_graph(rec4, zeros(4, 2))
+    @test_throws ArgumentError Octopus._unscale_crab_dispersion(rec, zeros(6))
+    @test_throws ArgumentError Octopus._unscale_momentum_dispersion(rec, zeros(6))
+    @test_throws ArgumentError Octopus._unscale_longitudinal_factor(rec4, 1.0)
+    @test_throws ArgumentError Octopus._unscale_edwards_teng_R(rec, zeros(4, 4))
+    @test_throws ArgumentError Octopus._unscale_twiss(rec, 4, 1.0, 0.0, 1.0)
+    @test_throws ArgumentError Octopus._unscale_twiss(rec4, 3, 1.0, 0.0, 1.0)
+    # The Twiss row: beta / a^2, alpha, gamma a^2, from the factor of the plane.
+    @test Octopus._unscale_twiss(rec, 3, 9.0, 0.5, 4.0) == (1.0, 0.5, 36.0)
+    @test Octopus._unscale_longitudinal_factor(rec, 0.7) === 0.7
+end
+
+@testset "Invariance residual (I1): eigenmode and graph forms, normalized and raw" begin
+    rng = Xoshiro(20260911)
+    S6 = Octopus._symplectic_form(6)
+    M, _ = Octopus._manufactured_symplectic_map(rng, 6; scale=0.5, stable=true)
+    F = eigen(M)
+    k = findfirst(r -> imag(r) > 0, F.values)
+    v = F.vectors[:, k]
+    w = imag(dot(v, S6 * v)) < 0 ? v : conj(v)
+    rho = imag(dot(v, S6 * v)) < 0 ? F.values[k] : conj(F.values[k])
+    u = sqrt(-2 / imag(dot(w, S6 * w))) * w
+    U = hcat(real.(u), -imag.(u))
+    R = Octopus._rotation2(mod(-angle(rho), 2pi))
+
+    # Matrix form: Frobenius norms; the normalized value divides the raw one
+    # by max(1, ||MU||_F, ||U||_F), recomputed here from the definition.
+    r = Octopus._invariance_residual(M, U, R)
+    @test r.raw == norm(M * U - U * R)
+    @test r.normalized == r.raw / max(1.0, norm(M * U), norm(U))
+    @test r.normalized <= 1e3 * eps() * max(1, norm(M))      # same bound as the rotation identity
+    # Vector form: infinity norms.
+    rv = Octopus._invariance_residual(M, u, rho)
+    @test rv.raw == norm(M * u - rho * u, Inf)
+    @test rv.normalized == rv.raw / max(1.0, norm(M * u, Inf), norm(u, Inf))
+    @test rv.normalized <= 1e3 * eps() * max(1, norm(M))
+    # A perturbed basis is not invariant: the residual is a check that can fail.
+    Up = copy(U); Up[1, 1] += 1e-6
+    @test Octopus._invariance_residual(M, Up, R).normalized > 1e-8
+    @test Octopus._invariance_residual(M, u .+ 1e-6, rho).normalized > 1e-8
+    # The divisor floor: a tiny basis is judged on the ABSOLUTE residual, so
+    # scaling U down cannot buy acceptance (dropping the `1` floor is the
+    # injected defect this block was shown red on).
+    tiny = 1e-8 * Up
+    @test Octopus._invariance_residual(M, tiny, R).normalized ==
+          Octopus._invariance_residual(M, tiny, R).raw
+    @test_throws ArgumentError Octopus._invariance_residual(M, zeros(4, 2), R)
+    @test_throws ArgumentError Octopus._invariance_residual(M, U, zeros(3, 3))
+    @test_throws ArgumentError Octopus._invariance_residual(M, zeros(4), 1.0)
+
+    # Graph form on the design's false-graph fixture: M = diag(R(0.73),
+    # R(1.41), R(0.73)), D = [diag(1, -0.5); 0]. With M_rl = M_lr = 0 the
+    # residual is R(0.73) A - A R(0.73), A = diag(1, -0.5), whose only entries
+    # are -1.5 sin(0.73) off the diagonal: raw = 1.5 sqrt(2) sin(0.73). The
+    # divisor is max(1, ||M_rr D||, ||M_rl||, ||D M_ll||) = sqrt(1.25),
+    # recomputed from the blocks. Tolerance 16 eps: a handful of operations
+    # on O(1) numbers.
+    Mf = zeros(6, 6)
+    Mf[1:2, 1:2] .= Octopus._rotation2(0.73); Mf[3:4, 3:4] .= Octopus._rotation2(1.41)
+    Mf[5:6, 5:6] .= Octopus._rotation2(0.73)
+    D = zeros(4, 2); D[1, 1] = 1.0; D[2, 2] = -0.5
+    g = Octopus._graph_invariance_residual(Mf, D)
+    @test abs(g.raw - 1.5 * sqrt(2) * sin(0.73)) <= 16 * eps()
+    divisor = max(1.0, norm(Mf[1:4, 1:4] * D), norm(Mf[1:4, 5:6]), norm(D * (Mf[5:6, 1:4] * D + Mf[5:6, 5:6])))
+    @test abs(divisor - sqrt(1.25)) <= 16 * eps()
+    @test abs(g.normalized - g.raw / divisor) <= 16 * eps()
+    @test g.normalized < g.raw                       # the two are distinct values (pitfall 20, I7)
+    # The zero graph IS invariant for a block-diagonal map: exactly zero.
+    @test Octopus._graph_invariance_residual(Mf, zeros(4, 2)) == (normalized=0.0, raw=0.0)
+    # The ||M_rl|| arm of the divisor, which the fixture above cannot see
+    # (its M_rl is zero): with D = 0 the residual is M_rl itself, so raw =
+    # ||M_rl||_F and normalized = raw / max(1, ||M_rl||) = 1 exactly once
+    # ||M_rl|| > 1. A divisor without the arm would report ||M_rl|| (the
+    # injection `max(1, ||A||, ||B||)` left the block green before this pin,
+    # review of 2026-09-11). Exact arithmetic on integer entries.
+    Mrl = Matrix{Float64}(I, 6, 6); Mrl[1, 5] = 10.0; Mrl[2, 6] = -4.0
+    g_rl = Octopus._graph_invariance_residual(Mrl, zeros(4, 2))
+    @test g_rl.raw == norm(Mrl[1:4, 5:6]) && g_rl.raw > 1
+    @test g_rl.normalized == 1.0
+    @test g_rl.normalized == g_rl.raw / max(1.0, norm(Mrl[1:4, 5:6]))
+    # A graph that must be invariant: the (D10) graph of the longitudinal
+    # mode of a manufactured map (tested at the same 1e4 eps bound as the
+    # scaling-invariance block, same amplification argument).
+    idx = [k for k in eachindex(F.values) if imag(F.values[k]) > 0]
+    areas = map(idx) do kk
+        vv = F.vectors[:, kk]; ww = imag(dot(vv, S6 * vv)) < 0 ? vv : conj(vv)
+        uu = sqrt(-2 / imag(dot(ww, S6 * ww))) * ww
+        -imag(conj(uu[5]) * uu[6])
+    end
+    ks = idx[argmax(areas)]
+    vs = F.vectors[:, ks]; Us = hcat(real.(vs), -imag.(vs))
+    Dinv = Us[1:4, :] / Us[5:6, :]
+    @test Octopus._graph_invariance_residual(M, Dinv).normalized <= 1e4 * eps()
+    @test Octopus._graph_invariance_residual(M, Dinv .+ 1e-6).normalized > 1e-8
+    @test_throws ArgumentError Octopus._graph_invariance_residual(M[1:4, 1:4], D)
+    @test_throws ArgumentError Octopus._graph_invariance_residual(M, zeros(2, 4))
+end
+
+@testset "First perturbation scale rho_M0 takes the largest arm" begin
+    # M = 2 I_6: ||M||_2 = 2 and ||M||_F = 2 sqrt(6), so the four arms are
+    # separable by construction and each is compared with the same expression
+    # the docstring states, computed here.
+    M = Matrix(2.0I, 6, 6)
+    r = Octopus._perturbation_scale(M, 0.0)
+    @test r.arms.roundoff == 6 * eps() * 2.0                 # d eps ||M||_2, spectral norm
+    @test r.arms.defect == 0.0 && r.arms.user == 0.0 && r.arms.provenance == 0.0
+    @test r.scale == 6 * eps() * 2.0
+    r = Octopus._perturbation_scale(M, 1e-10)
+    @test r.arms.defect == 1e-10 * norm(M)                   # defect ||M||_F
+    @test r.scale == r.arms.defect
+    r = Octopus._perturbation_scale(M, 1e-10; user_uncertainty=1e-3)
+    @test r.scale == 1e-3
+    r = Octopus._perturbation_scale(M, 1e-10; user_uncertainty=1e-3, provenance_uncertainty=2e-3)
+    @test r.scale == 2e-3
+    @test r.scale == max(r.arms...)
+    # A non-diagonal map distinguishes the spectral from the Frobenius norm
+    # (using the Frobenius norm in the roundoff arm is the injected defect).
+    N = [1.0 1.0; 0.0 1.0]; N6 = zeros(6, 6); N6[1:2, 1:2] .= N; N6[3:4, 3:4] .= N; N6[5:6, 5:6] .= N
+    @test Octopus._perturbation_scale(N6, 0.0).arms.roundoff == 6 * eps() * opnorm(N6, 2)
+    @test opnorm(N6, 2) != norm(N6)
+    @test Octopus._perturbation_scale(M[1:4, 1:4], 0.0).arms.roundoff == 4 * eps() * 2.0
+    # Loud on bad arms and shapes.
+    @test_throws ArgumentError Octopus._perturbation_scale(M, -1e-10)
+    @test_throws ArgumentError Octopus._perturbation_scale(M, NaN)
+    @test_throws ArgumentError Octopus._perturbation_scale(M, 0.0; user_uncertainty=-1.0)
+    @test_throws ArgumentError Octopus._perturbation_scale(M, 0.0; provenance_uncertainty=Inf)
+    @test_throws ArgumentError Octopus._perturbation_scale(zeros(4, 6), 0.0)
+    Mnan = copy(M); Mnan[1, 1] = NaN
+    @test_throws ArgumentError Octopus._perturbation_scale(Mnan, 0.0)
+end
+
+@testset "Manufactured symplectic maps: seed, symmetry, stability" begin
+    A, _ = Octopus._manufactured_symplectic_map(Xoshiro(20260911), 6)
+    B, _ = Octopus._manufactured_symplectic_map(Xoshiro(20260911), 6)
+    @test A == B                                            # the seed reproduces bit for bit
+    C, _ = Octopus._manufactured_symplectic_map(Xoshiro(20260912), 6)
+    @test A != C
+    rng = Xoshiro(20260911)
+    for d in (4, 6)
+        M, H = Octopus._manufactured_symplectic_map(rng, d; scale=0.5, stable=true)
+        @test H == transpose(H)
+        @test minimum(eigvals(Symmetric(H))) > 0                 # positive definite generator
+        # All eigenvalues on the unit circle: |rho| - 1 within the eigenvalue
+        # roundoff d eps ||M|| times a margin of 64.
+        @test maximum(abs.(abs.(eigvals(M)) .- 1)) <= 64 * eps() * max(1, norm(M))
+        Mg, Hg = Octopus._manufactured_symplectic_map(rng, d; scale=0.5)
+        @test Hg == transpose(Hg)
+        @test Octopus._symplectic_defect(Mg).frobenius <= 64 * eps()
+    end
+    @test_throws ArgumentError Octopus._manufactured_symplectic_map(rng, 5)
+end
+
+@testset "Availability vocabularies are pinned against the source" begin
+    # Statuses: the three the design names, in the documented order.
+    @test Octopus.DETERMINATION_STATUSES === (:unique, :ambiguous_set, :unavailable)
+    # Reasons: the sixteen the design lists ("Types and availability"), as a
+    # set; :none first because it is the reason of a unique value.
+    designed = Set([:none, :cluster_unresolved, :indefinite_cluster, :unresolved_defective,
+                    :singular_longitudinal_projection, :unstable_spectrum, :unit_eigenvalue,
+                    :coasting_structure, :form_inadmissible, :zero_projection,
+                    :singular_coefficient, :not_invariant, :not_derived_for_cluster,
+                    :not_requested, :route_not_selected, :graph_isotropic])
+    @test length(designed) == 16
+    @test Set(Octopus.DETERMINATION_REASONS) == designed
+    @test length(Octopus.DETERMINATION_REASONS) == 16
+    @test allunique(Octopus.DETERMINATION_REASONS)
+    @test first(Octopus.DETERMINATION_REASONS) === :none
+    @test :not_invariant in Octopus.DETERMINATION_REASONS       # pitfall 20: was missing from design A
+    @test Octopus.AMBIGUITY_KINDS === (:exact_set, :orientation_envelope)
+
+    # Every declared member is documented in its constant's docstring, and the
+    # docstring documents no member the constant lacks: the two copies (code
+    # and prose) are reconciled by a tripwire, not by convention.
+    function documented(sym)
+        text = string(Base.Docs.doc(Base.Docs.Binding(Octopus, sym)))
+        return Set(Symbol(m.captures[1]) for m in eachmatch(r"\*\s*`:([a-z_]+)`", text))
+    end
+    @test documented(:DETERMINATION_REASONS) == Set(Octopus.DETERMINATION_REASONS)
+    @test documented(:DETERMINATION_STATUSES) == Set(Octopus.DETERMINATION_STATUSES)
+    kinds_doc = string(Base.Docs.doc(Base.Docs.Binding(Octopus, :AMBIGUITY_KINDS)))
+    for k in Octopus.AMBIGUITY_KINDS
+        @test occursin("`:$(k)`", kinds_doc)
+    end
+
+    # The constructors refuse anything outside the vocabularies.
+    @test_throws ArgumentError Determined{Float64}(:bogus_reason)
+    @test_throws ArgumentError Determined{Float64}(:bogus_status, 1.0, nothing, :none, "")
+    @test_throws ArgumentError Determined{Float64}(:unique, 1.0, nothing, :bogus_reason, "")
+end
+
+@testset "Determined accessors throw with the reason" begin
+    d = Determined(1.5)
+    @test d isa Determined{Float64}
+    @test is_determined(d) && !is_ambiguous(d)
+    @test d.status === :unique && d.reason === :none
+    @test determined_value(d) === 1.5
+    @test_throws UndeterminedQuantityError ambiguity_set(d)
+    @test_throws UndeterminedQuantityError dispersion_interval(d, [1.0])
+    @test occursin("Determined(1.5)", sprint(show, d))
+
+    u = Determined{Vector{Float64}}(:unstable_spectrum, "the cluster's Schur block leaves the unit circle")
+    @test !is_determined(u) && !is_ambiguous(u)
+    @test u.status === :unavailable && u.value === nothing && u.set === nothing
+    err = try
+        determined_value(u); nothing
+    catch e
+        e
+    end
+    @test err isa UndeterminedQuantityError
+    @test err.status === :unavailable
+    @test err.reason === :unstable_spectrum
+    @test occursin("unit circle", err.detail)
+    msg = sprint(showerror, err)
+    @test occursin("unstable_spectrum", msg) && occursin("unit circle", msg) && occursin("unavailable", msg)
+    @test_throws UndeterminedQuantityError ambiguity_set(u)
+    @test_throws UndeterminedQuantityError dispersion_interval(u, [1.0, 0.0, 0.0, 0.0])
+    @test occursin(":unavailable, :unstable_spectrum", sprint(show, u))
+
+    # Every reason but :none makes an unavailable quantity whose accessor
+    # carries exactly that reason: derived from the vocabulary, not a list.
+    for reason in Octopus.DETERMINATION_REASONS
+        reason === :none && continue
+        q = Determined{Float64}(reason)
+        e = try
+            determined_value(q); nothing
+        catch ex
+            ex
+        end
+        @test e isa UndeterminedQuantityError && e.reason === reason
+    end
+
+    # Inconsistent combinations are refused at construction.
+    @test_throws ArgumentError Determined{Float64}(:none)                                   # unavailable needs a reason
+    @test_throws ArgumentError Determined{Float64}(:unique, nothing, nothing, :none, "")     # unique needs a value
+    @test_throws ArgumentError Determined{Float64}(:unique, 1.0, nothing, :not_invariant, "") # unique carries :none
+    @test_throws ArgumentError Determined{Float64}(:ambiguous_set, nothing, nothing, :cluster_unresolved, "")
+    @test_throws ArgumentError Determined{Float64}(:unavailable, 1.0, nothing, :not_invariant, "")
+end
+
+@testset "AmbiguitySet refuses multiplicity one and a bad kind; the interval reads a'center +- sqrt(a'shape a)" begin
+    # The design's fixture: diag(R(0.73), R(1.41), R(0.73)) has center 0 and
+    # shape diag(1/4, 1/4, 0, 0); the interval on e_x is (-0.5, 0.5).
+    center = zeros(4)
+    shape = Matrix(Diagonal([0.25, 0.25, 0.0, 0.0]))
+    factor = Matrix(Diagonal([0.5, 0.5, 0.0, 0.0]))
+    set = AmbiguitySet(center, shape, factor, 2, :exact_set)
+    @test set.multiplicity == 2 && set.kind === :exact_set
+    ex = [1.0, 0.0, 0.0, 0.0]; epx = [0.0, 1.0, 0.0, 0.0]; ey = [0.0, 0.0, 1.0, 0.0]
+    @test dispersion_interval(set, ex) == (-0.5, 0.5)
+    @test dispersion_interval(set, epx) == (-0.5, 0.5)       # the degenerate plane is (x, px)
+    @test dispersion_interval(set, ey) == (0.0, 0.0)         # the isolated plane has no spread
+    lo, hi = dispersion_interval(set, ex .+ epx)
+    @test abs(hi - sqrt(0.5)) <= 4 * eps() && abs(lo + sqrt(0.5)) <= 4 * eps()
+    # A shifted center shifts the interval, and the width follows the shape.
+    set2 = AmbiguitySet([0.1, 0.0, 0.0, 0.0], shape, factor, 3, :orientation_envelope)
+    @test dispersion_interval(set2, ex) == (0.1 - 0.5, 0.1 + 0.5)
+    @test set2.kind === :orientation_envelope
+
+    # Refusals: multiplicity one (a single mode has a unique dispersion), a
+    # bad kind, mismatched shapes, an inconsistent factor, asymmetry, NaN.
+    @test_throws ArgumentError AmbiguitySet(center, shape, factor, 1, :exact_set)
+    @test_throws ArgumentError AmbiguitySet(center, shape, factor, 0, :exact_set)
+    @test_throws ArgumentError AmbiguitySet(center, shape, factor, 2, :envelope)
+    @test_throws ArgumentError AmbiguitySet(center, shape[1:3, 1:3], factor, 2, :exact_set)
+    @test_throws ArgumentError AmbiguitySet(center, shape, factor[1:3, :], 2, :exact_set)
+    @test_throws ArgumentError AmbiguitySet(center, shape, Matrix(1.0I, 4, 4), 2, :exact_set)   # F F' != shape
+    asym = copy(shape); asym[1, 2] = 0.1
+    @test_throws ArgumentError AmbiguitySet(center, asym, factor, 2, :exact_set)
+    @test_throws ArgumentError AmbiguitySet([NaN, 0, 0, 0], shape, factor, 2, :exact_set)
+    @test_throws ArgumentError dispersion_interval(set, [1.0, 0.0])
+    @test_throws ArgumentError dispersion_interval(set, [NaN, 0.0, 0.0, 0.0])
+
+    # Wrapped in a Determined: the set is reachable only through the loud
+    # accessors, and the value accessor throws with the reason.
+    d = Determined{Vector{Float64}}(set, :cluster_unresolved, "longitudinal candidate inside a definite cluster")
+    @test is_ambiguous(d) && !is_determined(d)
+    @test d.status === :ambiguous_set && d.reason === :cluster_unresolved
+    @test ambiguity_set(d) === set
+    @test dispersion_interval(d, ex) == (-0.5, 0.5)
+    e = try
+        determined_value(d); nothing
+    catch ex_
+        ex_
+    end
+    @test e isa UndeterminedQuantityError && e.status === :ambiguous_set && e.reason === :cluster_unresolved
+    @test occursin("definite cluster", e.detail)
+    @test Determined{Vector{Float64}}(set).reason === :cluster_unresolved     # the default reason
+    @test_throws ArgumentError Determined{Vector{Float64}}(set, :none)
+    @test occursin("multiplicity=2", sprint(show, d)) && occursin("exact_set", sprint(show, d))
+end
+
+@testset "Stage 1 claims no analysis: the placeholder is the only analysis and there is no analyze" begin
+    # Stage 4 lands `analyze` and the analysis type; it deletes the three
+    # assertions marked below when it does. Until then, nothing in the source
+    # may say an analysis exists (design "Staging" item 1).
+    @test PlaceholderAnalysis <: AbstractAnalysis
+    @test Octopus.description(PlaceholderAnalysis) == "Placeholder for element analyses not yet implemented."
+    @test Set(Octopus._subtypes_recursive(AbstractAnalysis)) == Set([PlaceholderAnalysis])   # stage 4 deletes
+    @test !isdefined(Octopus, :analyze)                                                        # stage 4 deletes
+    @test !isdefined(Octopus, :TwissDispersionAnalysis)                                       # stage 4 deletes
+    # The vocabulary types are plain types, not registry roots, so the
+    # snapshot is unchanged by this stage.
+    for T in (Determined, AmbiguitySet, Octopus.ReciprocalScaling, UndeterminedQuantityError)
+        @test !(T <: Octopus.AbstractOctopusObject)
+    end
+    @test AbstractAnalysisResult isa Type && !(AbstractAnalysisResult <: Octopus.AbstractOctopusObject)
+    # Every export of this stage is documented (the suite's "Every export is
+    # documented" covers the whole module; this names the stage's own).
+    for n in (:AbstractAnalysisResult, :DETERMINATION_STATUSES, :DETERMINATION_REASONS,
+              :AMBIGUITY_KINDS, :Determined, :AmbiguitySet, :UndeterminedQuantityError,
+              :is_determined, :is_ambiguous, :determined_value, :ambiguity_set,
+              :dispersion_interval)
+        @test n in names(Octopus)
+        @test !occursin("No documentation found", string(Base.Docs.doc(Base.Docs.Binding(Octopus, n))))
+    end
+end
+
 @testset "Non-symplectic Lorentz method classification" begin
     forward_spec = LorentzBoostSpec(0.01)
     reverse_spec = RevLorentzBoostSpec(0.01)
@@ -1715,7 +2391,13 @@ end
 @testset "Lattice magnets" begin
     S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
     u0 = (1.3e-3, 3.0e-4, -0.9e-3, -2.2e-4, 2.0e-3, 1.1e-3)
-    function cs_jacobian(elem)
+    # The complex-step rule lives in `one_turn_matrix` now (stage 1 of the
+    # Twiss analysis, docs/design/twiss_dispersion_analysis.md "Input
+    # boundary"). The closure this testset used to own stays as an
+    # INDEPENDENT WITNESS: the helper must reproduce it bit for bit, so a
+    # change to either arithmetic (the step, the read-out, the fold order)
+    # lands here and not only in the helper's own testsets.
+    function cs_jacobian_witness(elem)
         J = zeros(6, 6)
         for j in 1:6
             u = ComplexF64[u0...]
@@ -1724,6 +2406,7 @@ end
         end
         return J
     end
+    cs_jacobian(elem) = one_turn_matrix(elem; point=u0).matrix
 
     # Every magnet must be symplectic to round-off, including a bend whose
     # frame curvature differs from its field and one with the full pole face.
@@ -1749,7 +2432,10 @@ end
             ("bend with skew dipole", SBendSpec(L=1.1, h=0.18, b0=0.18, ks=(0.05,), nst=2)),
             ("bend with skew quadrupole", SBendSpec(L=1.1, h=0.18, b0=0.18, k1s=0.4, nst=2)),
             ("bend with normal dipole error", SBendSpec(L=1.1, h=0.18, b0=0.18, kn=(0.05,), nst=2)))
-        J = cs_jacobian(compile_runtime(spec))
+        elem = compile_runtime(spec)
+        J = cs_jacobian(elem)
+        # Bit identity, not a tolerance: the helper IS this closure's arithmetic.
+        @test J == cs_jacobian_witness(elem)
         @test maximum(abs, J' * S6 * J - S6) < 1.0e-13
     end
 
@@ -10132,7 +10818,11 @@ if _lane_gate("Lattice cells track and stay symplectic")
 @testset "Lattice cells track and stay symplectic" begin
     S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
     track(cell, u) = foldl((c, e) -> e(c...), cell; init=u)
-    function jac(cell, u0)
+    # The tuple-of-runtime-maps route of `one_turn_matrix` folds a cell in
+    # this same order (stage 1 of the Twiss analysis). The former closure
+    # stays as an INDEPENDENT WITNESS of the fold and of the complex-step
+    # arithmetic: the helper must match it bit for bit on every cell below.
+    function jac_witness(cell, u0)
         J = zeros(6, 6)
         for j in 1:6
             u = ComplexF64[u0...]
@@ -10141,6 +10831,7 @@ if _lane_gate("Lattice cells track and stay symplectic")
         end
         return J
     end
+    jac(cell, u0) = one_turn_matrix(cell; point=u0).matrix
     q(k, L=0.3) = compile_runtime(QuadrupoleSpec(L=L, kn=(0.0, k), nst=4, integrator_order=4))
     d(L) = compile_runtime(DriftSpec(L=L))
     b(L, ang) = compile_runtime(SBendSpec(L=L, h=ang / L, b0=ang / L, nst=4, integrator_order=4))
@@ -10158,6 +10849,7 @@ if _lane_gate("Lattice cells track and stay symplectic")
                          ("DBA+sext", (dba..., sx(8.0))),
                          ("TBA+sext", (tba..., sx(8.0))))
         J = jac(cell, u0)
+        @test J == jac_witness(cell, u0)
         @test maximum(abs, J' * S6 * J - S6) < 1.0e-12
         # Linearly stable in both planes, i.e. a usable cell rather than an
         # arbitrary sequence of elements.
@@ -10216,6 +10908,525 @@ if _lane_gate("Lattice cells track and stay symplectic")
           (stochastic_gpu.status === :skipped && !CUDA_TESTS_ACTIVE)
 end
 end # _lane_gate("Lattice cells track and stay symplectic")
+
+# Twiss analysis stage 1, Part B: the one-turn-matrix helper
+# (src/analysis/one_turn_matrix.jl). Placed after "Lattice cells track and
+# stay symplectic", the second of the two closures the helper replaced (the
+# first is in "Lattice magnets"), and outside its lane gate so the fast lane
+# runs it too (~20 s). Requires only `using Octopus, Test, LinearAlgebra`.
+#
+# Tolerances are stated as c * eps * kappa with the constant measured on the
+# fixtures (the measurement lines are in the stage 1 record of
+# docs/history/twiss_dispersion_analysis_history.md); bit identity is
+# asserted as `==`, never a tolerance.
+
+# A tag with no `_linearize` method anywhere: the fallback must be reached
+# through the public entry, not only through `invoke`. Top level because a
+# struct cannot be defined inside a testset (the suite's own helper types sit
+# at top level the same way).
+struct _OTMUnimplementedMethod <: Octopus.AbstractLinearizationMethod end
+# A function with an Int-only method: a user map calling it with a String
+# raises a MethodError whose arguments involve no complex number, the
+# fixture that proves the relabelling guard reads argument TYPES.
+_otm_int_only(n::Int) = n
+# Float64-typed helpers fed a CONTAINER of coordinates: under a perturbation
+# their MethodError argument is a Vector or Tuple whose element type is the
+# perturbation number, the "involves" case of the relabelling guard.
+_otm_vector_only(v::Vector{Float64}) = v[1]
+_otm_pair_only(t::NTuple{2,Float64}) = t[1]
+
+# The FODO of validation/lattice_cells.jl, rebuilt inline (that script is not
+# included: it scans working points and tracks thousands of particles). Same
+# lengths, same nst and integrator order. `kq` is one of the script's grid
+# points; the stability of the cell at it is asserted, not assumed.
+_otm_fodo(kq; nst=4, order=4) = (
+    compile_runtime(QuadrupoleSpec(L=0.3, kn=(0.0, kq), nst=nst, integrator_order=order)),
+    compile_runtime(DriftSpec(L=1.2)),
+    compile_runtime(QuadrupoleSpec(L=0.3, kn=(0.0, -kq), nst=nst, integrator_order=order)),
+    compile_runtime(DriftSpec(L=1.2)))
+_otm_fodo_line(kq; nst=4, order=4) = BeamLine("FODO",
+    QuadrupoleSpec(L=0.3, kn=(0.0, kq), nst=nst, integrator_order=order),
+    DriftSpec(L=1.2),
+    QuadrupoleSpec(L=0.3, kn=(0.0, -kq), nst=nst, integrator_order=order),
+    DriftSpec(L=1.2))
+_otm_track(cell, u) = foldl((c, e) -> e(c...), cell; init=u)
+# The closure of validation/lattice_cells.jl `one_turn_jacobian`, verbatim in
+# its arithmetic: the independent witness of the helper's complex step.
+function _otm_inline_complex_step(cell, u0)
+    J = zeros(6, 6)
+    for j in 1:6
+        u = ComplexF64[u0...]
+        u[j] += 1e-30im
+        J[:, j] = imag.(collect(_otm_track(cell, Tuple(u)))) ./ 1e-30
+    end
+    return J
+end
+const _OTM_S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
+_otm_defect(J) = maximum(abs, J' * _OTM_S6 * J - _OTM_S6)
+
+@testset "one_turn_matrix reproduces the inline complex step bit for bit" begin
+    kq = 1.6
+    fodo = _otm_fodo(kq)
+    u0 = (1.0e-4, 2.0e-5, -0.8e-4, -1.5e-5, 3.0e-4, 2.0e-4)
+    Jw = _otm_inline_complex_step(fodo, u0)
+    @test abs(Jw[1, 1] + Jw[2, 2]) < 2 && abs(Jw[3, 3] + Jw[4, 4]) < 2   # a stable cell
+
+    # Tuple route: the fold order and the complex-step arithmetic are the
+    # closure's, so the matrices are identical bit for bit, not close.
+    lm = one_turn_matrix(fodo; point=u0)
+    @test lm isa LinearizedMap
+    @test lm.matrix == Jw
+    @test lm.matrix == one_turn_matrix(fodo; method=ComplexStepLinearization(), point=u0).matrix
+    # Symplectic to roundoff: measured 2.2e-16 on this cell; 64 eps ||J||_F^2
+    # is 1.5e-13 here, the margin the suite's 1e-12 pin also leaves.
+    @test _otm_defect(lm.matrix) < 64 * eps(Float64) * norm(lm.matrix)^2
+
+    # Destructuring and the copying accessor.
+    M, prov = lm
+    @test M === lm.matrix && prov === lm.provenance
+    @test Matrix(lm) == M && Matrix(lm) !== M
+    @test length(lm) == 2
+
+    # Provenance of the exact method: no step, no declared uncertainty.
+    @test prov.source_kind === :runtime_tuple
+    @test occursin("4 runtime maps", prov.source) && occursin("LatticeMagnet", prov.source)
+    @test prov.method isa ComplexStepLinearization
+    @test prov.step == 0.0 && prov.map_uncertainty == 0.0
+    @test prov.point == u0
+
+    # Element-spec route (a BeamLine) and single-callable route (the compiled
+    # line): a line's fused fold applies the same maps in the same order, so
+    # these are bit-identical to the tuple route as well.
+    line = _otm_fodo_line(kq)
+    lm_spec = one_turn_matrix(line; point=u0)
+    @test lm_spec.matrix == Jw
+    @test lm_spec.provenance.source_kind === :element_spec
+    @test occursin("FODO", lm_spec.provenance.source)
+    compiled = compile_runtime(line)
+    lm_call = one_turn_matrix(compiled; point=u0)
+    @test lm_call.matrix == Jw
+    @test lm_call.provenance.source_kind === :callable
+    @test occursin("CompositeLine", lm_call.provenance.source)
+
+    # A single element spec compiles and matches the compiled callable.
+    qspec = QuadrupoleSpec(L=0.3, kn=(0.0, kq), nst=4, integrator_order=4)
+    @test one_turn_matrix(qspec; point=u0).matrix ==
+          one_turn_matrix(compile_runtime(qspec); point=u0).matrix ==
+          _otm_inline_complex_step((compile_runtime(qspec),), u0)
+
+    # The default expansion point is the origin.
+    @test one_turn_matrix(fodo).provenance.point == ntuple(_ -> 0.0, 6)
+    @test one_turn_matrix(fodo).matrix == _otm_inline_complex_step(fodo, ntuple(_ -> 0.0, 6))
+end
+
+@testset "one_turn_matrix: finite difference is order step^2 and declares it" begin
+    # A cubic kick makes the central difference's truncation term nonzero
+    # (a sextupole's quadratic kick is differenced exactly). The octupole is
+    # the suite's "Lattice magnets" one.
+    cell = (_otm_fodo(1.6)..., compile_runtime(OctupoleSpec(L=0.15, kn=(0.0, 0.0, 0.0, 220.0), nst=2)))
+    u0 = (1.0e-4, 2.0e-5, -0.8e-4, -1.5e-5, 3.0e-4, 2.0e-4)
+    Jcs = one_turn_matrix(cell; point=u0).matrix
+
+    # The default step is the symplecticity contract's, derived not copied,
+    # and it is the value the dossier pins (src/contracts/Contracts.jl).
+    @test FiniteDifferenceLinearization().step == SymplecticityContract().step == 3.0e-7
+    @test Octopus._DEFAULT_FD_STEP == 3.0e-7
+
+    # Order step^2 where truncation dominates: the error against the exact
+    # complex step is C * step^2 with C set by the third derivatives of the
+    # map (the octupole's k3*L through the cell's own matrix), not by ||J||.
+    # Measured 2026-09-11 on this cell: 3.43e-4 at step 1e-3 and 3.43e-6 at
+    # 1e-4, ratio 100.0, so C = 343. The bracket [100, 1000] on C is a factor
+    # 3 either side of the measurement; the ratio bracket [30, 300] the same.
+    errs = Dict{Float64,Float64}()
+    for step in (1.0e-3, 1.0e-4)
+        lm = one_turn_matrix(cell; method=FiniteDifferenceLinearization(step), point=u0)
+        errs[step] = norm(lm.matrix - Jcs)
+        prov = lm.provenance
+        @test prov.method isa FiniteDifferenceLinearization && prov.method.step == step
+        @test prov.step == step
+        # The declared uncertainty is exactly the design's formula
+        # step^2 * ||J||_F. Measured here it is 65x BELOW the truncation error
+        # (5.28e-6 against 3.43e-4 at 1e-3): the formula is a scale for the
+        # analysis's perturbation estimate, not a bound on a nonlinear cell's
+        # truncation; recorded for the design's measurement stage (stage 1
+        # record of docs/history/twiss_dispersion_analysis_history.md). This
+        # test pins the formula and the measured ratio's
+        # order so a change to either is visible.
+        @test prov.map_uncertainty == step^2 * norm(lm.matrix)
+        @test 100 < errs[step] / step^2 < 1000
+        @test 10 < errs[step] / prov.map_uncertainty < 1000
+    end
+    @test 30 < errs[1.0e-3] / errs[1.0e-4] < 300
+
+    # At the default step 3e-7 roundoff dominates: the z row is a difference
+    # of O(1) path-length intermediates, so each entry carries ~eps/(2h) =
+    # 3.7e-10 of roundoff. Measured Frobenius error 1.0e-9 (2.7 floors) and
+    # symplectic defect 7.3e-10; the bounds leave a factor ~37 and ~50.
+    # The lower bound catches a finite difference that secretly became exact.
+    h_default = 3.0e-7
+    floor = eps(Float64) / (2 * h_default)
+    lm_default = one_turn_matrix(cell; method=FiniteDifferenceLinearization(), point=u0)
+    @test norm(lm_default.matrix - Jcs) < 100 * floor
+    @test norm(lm_default.matrix - Jcs) > floor / 100
+    @test _otm_defect(lm_default.matrix) < 100 * floor * norm(lm_default.matrix)
+    # Which is why the design makes a finite-difference input REQUIRE an
+    # explicit symplectic tolerance: at the contract's step the matrix is
+    # symplectic to ~1e-9, four decades above the complex-step matrix.
+    @test _otm_defect(lm_default.matrix) > 1.0e3 * _otm_defect(Jcs)
+
+    # The relative step h = step * max(|q_j|, 1): above one the abscissae
+    # move with the coordinate, below one they move by the bare step. A
+    # recording map pins them exactly: the pins are the same floating sums
+    # the helper forms (2.0 + 2e-3, 1e-4 + 1e-3), and 2e-3 = 1e-3 * 2.0 is an
+    # exact power-of-two product. Every earlier fixture has |q_j| <= 3e-4, so
+    # `h = step` passed them all (review injection of 2026-09-11).
+    seen_x = Float64[]; seen_z = Float64[]
+    recorder = (x, px, y, py, z, pz) -> (push!(seen_x, x); push!(seen_z, z); (x, px, y, py, z, pz))
+    big = (1.0e-4, 0.0, 0.0, 0.0, 2.0, 0.0)
+    one_turn_matrix(recorder; method=FiniteDifferenceLinearization(1.0e-3), point=big)
+    @test sort(unique(seen_z)) == [2.0 - 2.0e-3, 2.0, 2.0 + 2.0e-3]
+    @test sort(unique(seen_x)) == [1.0e-4 - 1.0e-3, 1.0e-4, 1.0e-4 + 1.0e-3]
+    @test 2.0 + 2.0e-3 != 2.0 + 1.0e-3        # the pin distinguishes h = 2 step from h = step
+
+    # Invalid steps are refused at construction, before any evaluation.
+    for bad in (0.0, -1.0e-7, Inf, NaN)
+        @test_throws ArgumentError FiniteDifferenceLinearization(bad)
+    end
+end
+
+# The ForwardDiff route exists only where the extension (package mode) or the
+# script-mode rules include supplied its `_linearize` method. The method-table
+# fact must agree with the load-route facts in every mode, and then the arm
+# that applies runs; the OTHER arm's error path is exercised unconditionally
+# below through `invoke` and through a tag nothing implements, so the fallback
+# is executed in every mode, not only where the extension is absent.
+@testset "one_turn_matrix: the ForwardDiff route and the core fallback" begin
+    available = Octopus._forward_diff_linearization_available()
+    ext_loaded = Base.get_extension(Octopus, :OctopusForwardDiffExt) !== nothing
+    @test available == (ext_loaded || Octopus._HAS_FORWARDDIFF_SCRIPT_MODE)
+    println("one_turn_matrix ForwardDiff arm: ", available ? "ACTIVE" : "FALLBACK",
+            " (extension ", ext_loaded ? "loaded" : "absent", ", script-mode flag ",
+            Octopus._HAS_FORWARDDIFF_SCRIPT_MODE, ")")
+    # The arm is ASSERTED, not only printed. With ForwardDiff loaded beside
+    # Octopus (this file's header does that) the route must be live, and in
+    # package mode it must be live THROUGH the extension: Julia only logs a
+    # failed extension load and continues, and a scratch tree whose rules
+    # file threw at load ran this block green on the FALLBACK arm before these
+    # lines existed (review of 2026-09-11). Script mode has no extension, so
+    # there only the route itself is asserted.
+    package_mode = Base.PkgId(Octopus).uuid !== nothing
+    if isdefined(@__MODULE__, :ForwardDiff)
+        @test available
+        if package_mode
+            @test ext_loaded
+        end
+    end
+
+    cell = (_otm_fodo(1.6)..., compile_runtime(OctupoleSpec(L=0.15, kn=(0.0, 0.0, 0.0, 220.0), nst=2)))
+    u0 = (1.0e-4, 2.0e-5, -0.8e-4, -1.5e-5, 3.0e-4, 2.0e-4)
+    Jcs = one_turn_matrix(cell; point=u0).matrix
+
+    # A strong-beam evaluator compares a coordinate against a threshold, which
+    # a complex step cannot pass (measured: MethodError isless(::ComplexF64,
+    # ::Int64) from both ThinStrongBeam and GaussianStrongBeam, probe of
+    # 2026-09-11). The directed error names both alternatives and carries the
+    # original error's text.
+    thin = ThinStrongBeamSpec{Float64}(kbb=1.0e-4, beta=(1.0, 1.0), sigma=(106.0e-6, 9.5e-6))
+    bb_cell = (_otm_fodo(1.6)..., compile_runtime(thin))
+    err = try
+        one_turn_matrix(bb_cell; point=u0)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    msg = sprint(showerror, err)
+    @test occursin("cannot differentiate", msg)
+    @test occursin("FiniteDifferenceLinearization", msg)
+    @test occursin("ForwardDiffLinearization", msg)
+    @test !occursin("ComplexStepLinearization()", msg)     # the failing method is not an alternative
+    @test occursin("isless", msg) && occursin("ComplexF64", msg)   # the original error travels
+    # The finite difference differentiates the same line.
+    lm_fd = one_turn_matrix(bb_cell; method=FiniteDifferenceLinearization(), point=u0)
+    @test all(isfinite, lm_fd.matrix)
+
+    if available
+        # ForwardDiff agrees with the exact complex step to roundoff on the
+        # octupole cell: measured 2e-15 in Frobenius norm on a matrix of norm
+        # ~3; the bound is 64 eps ||J||_F ~ 4e-14.
+        lm_ad = one_turn_matrix(cell; method=ForwardDiffLinearization(), point=u0)
+        @test norm(lm_ad.matrix - Jcs) < 64 * eps(Float64) * norm(Jcs)
+        @test lm_ad.provenance.method isa ForwardDiffLinearization
+        @test lm_ad.provenance.step == 0.0 && lm_ad.provenance.map_uncertainty == 0.0
+        # On the strong-beam line ForwardDiff is the exact reference (its
+        # matrix is symplectic to 5.6e-12 against ||J||_F = 2.2e4, i.e. far
+        # inside 64 eps ||J||_F^2 = 6.8e-6). The finite difference is order
+        # step^2 with a large coefficient: measured 2026-09-11 ||FD - AD||_F
+        # = 0.334 at 3e-7 and 3.34e-3 at 3e-8, ratio 100.0, so C = 3.7e12 and
+        # the relative error at the default step is 1.5e-5. The design's
+        # declared step^2 ||J||_F (2.0e-9 here) is 1.7e8 below the measured
+        # error on this fixture, recorded in the history file's stage 1 record
+        # for the measurement stage. Brackets are a factor 3 either side of
+        # the measurements.
+        lm_bb = one_turn_matrix(bb_cell; method=ForwardDiffLinearization(), point=u0)
+        @test _otm_defect(lm_bb.matrix) < 64 * eps(Float64) * norm(lm_bb.matrix)^2
+        e_default = norm(lm_fd.matrix - lm_bb.matrix)
+        @test 1.0e12 < e_default / 3.0e-7^2 < 1.0e13
+        @test 5.0e-6 < e_default / norm(lm_bb.matrix) < 5.0e-5
+        lm_fd_small = one_turn_matrix(bb_cell; method=FiniteDifferenceLinearization(3.0e-8), point=u0)
+        @test 30 < e_default / norm(lm_fd_small.matrix - lm_bb.matrix) < 300
+
+        # The extension's leaf of the relabelling guard. A Float64 typeassert
+        # raises TypeError with a dual in `got`; a Float64-typed helper fed
+        # the coordinate vector raises MethodError on Vector{Dual}: both are
+        # ForwardDiff's limit and are relabelled, naming the OTHER two tags. A
+        # plain error thrown only under duals stays the map's own. Replacing
+        # the leaf's body with `false` left this block green before these
+        # fixtures existed (review of 2026-09-11).
+        assert_ad = (x, px, y, py, z, pz) -> ((x::Float64), px, y, py, z, pz)
+        e_ad = try; one_turn_matrix(assert_ad; method=ForwardDiffLinearization(), point=u0); nothing; catch e; e; end
+        @test e_ad isa ArgumentError
+        msg_ad = sprint(showerror, e_ad)
+        @test occursin("cannot differentiate", msg_ad) && occursin("TypeError", msg_ad)
+        @test occursin("under ForwardDiffLinearization", msg_ad)
+        @test occursin("method=ComplexStepLinearization()", msg_ad) && occursin("method=FiniteDifferenceLinearization()", msg_ad)
+        @test !occursin("method=ForwardDiffLinearization()", msg_ad)
+        vec_ad = (x, px, y, py, z, pz) -> (_otm_vector_only([x, px]), px, y, py, z, pz)
+        e_adv = try; one_turn_matrix(vec_ad; method=ForwardDiffLinearization(), point=u0); nothing; catch e; e; end
+        @test e_adv isa ArgumentError && occursin("MethodError", sprint(showerror, e_adv))
+        boom_dual = (x, px, y, py, z, pz) -> (x isa Float64 || error("boom under duals"); (x, px, y, py, z, pz))
+        e_adb = try; one_turn_matrix(boom_dual; method=ForwardDiffLinearization(), point=u0); nothing; catch e; e; end
+        @test e_adb isa ErrorException && e_adb.msg == "boom under duals"
+    else
+        # Neither activation route is live: the public call reaches the core
+        # fallback, which names both routes and the two alternatives.
+        err2 = try
+            one_turn_matrix(cell; method=ForwardDiffLinearization(), point=u0)
+            nothing
+        catch e
+            e
+        end
+        @test err2 isa ArgumentError
+        msg2 = sprint(showerror, err2)
+        @test occursin("using ForwardDiff", msg2) && occursin("script mode", msg2)
+        @test occursin("ComplexStepLinearization", msg2) && occursin("FiniteDifferenceLinearization", msg2)
+    end
+
+    # The fallback body itself, executed in EVERY mode: `invoke` selects the
+    # abstract-typed method with the ForwardDiff tag, so the directed message
+    # naming both activation routes is exercised even where the extension has
+    # added the specific method.
+    f = _otm_fodo(1.6)
+    fold = Octopus._linearizable(f)
+    p = ntuple(i -> Float64(u0[i]), 6)
+    err3 = try
+        invoke(Octopus._linearize,
+               Tuple{Octopus.AbstractLinearizationMethod,Any,NTuple{6,Float64}},
+               ForwardDiffLinearization(), fold, p)
+        nothing
+    catch e
+        e
+    end
+    @test err3 isa ArgumentError
+    msg3 = sprint(showerror, err3)
+    @test occursin("ForwardDiffLinearization", msg3)
+    @test occursin("using ForwardDiff", msg3) && occursin("OctopusForwardDiffExt", msg3)
+    @test occursin("script mode", msg3) && occursin("include(\"src/Octopus.jl\")", msg3)
+    @test occursin("ComplexStepLinearization()", msg3) && occursin("FiniteDifferenceLinearization(step)", msg3)
+
+    # A tag nothing implements fails loudly through the public entry, in
+    # every mode: nothing falls back to another method.
+    err4 = try
+        one_turn_matrix(f; method=_OTMUnimplementedMethod(), point=u0)
+        nothing
+    catch e
+        e
+    end
+    @test err4 isa ArgumentError
+    @test occursin("_OTMUnimplementedMethod", sprint(showerror, err4))
+    @test occursin("no active implementation", sprint(showerror, err4))
+end
+
+@testset "one_turn_matrix: the relabelling guard, the argument errors, the fixed point" begin
+    fodo = _otm_fodo(1.6)
+    u0 = (1.0e-4, 2.0e-5, -0.8e-4, -1.5e-5, 3.0e-4, 2.0e-4)
+
+    # A map that throws in real arithmetic: its own error, unchanged.
+    boom = (x, px, y, py, z, pz) -> error("boom")
+    @test_throws ErrorException one_turn_matrix(boom)
+    e1 = try; one_turn_matrix(boom); nothing; catch e; e; end
+    @test e1 isa ErrorException && e1.msg == "boom"
+
+    # A map that throws a PLAIN error only under the complex step: still its
+    # own error. The guard relabels only errors whose argument types involve
+    # the method's perturbation numbers, so an unrelated bug is never called a
+    # differentiation limit.
+    boom_complex = (x, px, y, py, z, pz) -> (x isa Complex && error("boom"); (x, px, y, py, z, pz))
+    e2 = try; one_turn_matrix(boom_complex; point=u0); nothing; catch e; e; end
+    @test e2 isa ErrorException && e2.msg == "boom"
+
+    # A MethodError whose arguments involve NO complex number, thrown only
+    # under the complex step: the error-class layer of the guard lets it
+    # through to the argument-type layer, which must refuse to relabel it.
+    # (The injected defect `_is_method_number(::ComplexStepLinearization, x)
+    # = true` passed every other fixture here and was caught by this one.)
+    boom_method = (x, px, y, py, z, pz) -> (x isa Complex && _otm_int_only("not an Int"); (x, px, y, py, z, pz))
+    e2b = try; one_turn_matrix(boom_method; point=u0); nothing; catch e; e; end
+    @test e2b isa MethodError
+    @test e2b.f === _otm_int_only && e2b.args == ("not an Int",)
+
+    # A map whose failure DOES involve the complex number (a threshold
+    # comparison, the strong-beam class): relabelled, with the original kept.
+    threshold = (x, px, y, py, z, pz) -> (x < 1 ? x : 2x, px, y, py, z, pz)
+    e3 = try; one_turn_matrix(threshold; point=u0); nothing; catch e; e; end
+    @test e3 isa ArgumentError
+    @test occursin("cannot differentiate", sprint(showerror, e3))
+    @test occursin("MethodError", sprint(showerror, e3))
+    # The same map differentiates by finite differences: the identity, to the
+    # roundoff of (q+h) - (q-h) over 2h, i.e. eps*|q|/(2h) ~ 4e-14 measured;
+    # 64x that is the bound.
+    J_thr = one_turn_matrix(threshold; method=FiniteDifferenceLinearization(), point=u0).matrix
+    @test maximum(abs, J_thr - Matrix{Float64}(I, 6, 6)) <
+          64 * eps(Float64) * maximum(abs, u0) / (2 * 3.0e-7)
+
+    # An InexactError under the complex step: Float64(x) of a ComplexF64 with
+    # a nonzero imaginary part. On Julia 1.12 InexactError carries (func,
+    # args) with args = (target type, value); the guard reads `args`, finds
+    # the perturbation number, and relabels. Before the fix the guard read a
+    # `val` field InexactError does not have and threw a FieldError in place
+    # of the map's error, under EVERY method (review of 2026-09-11). The field
+    # pin makes a Julia change here loud instead of a FieldError in the guard.
+    @test hasfield(InexactError, :args) && !hasfield(InexactError, :val)
+    @test hasfield(DomainError, :val) && hasfield(TypeError, :got)
+    conv = (x, px, y, py, z, pz) -> (Float64(x), px, y, py, z, pz)
+    e6 = try; one_turn_matrix(conv; point=u0); nothing; catch e; e; end
+    @test e6 isa ArgumentError
+    @test occursin("cannot differentiate", sprint(showerror, e6)) && occursin("InexactError", sprint(showerror, e6))
+    # A real-only InexactError reached only under the step (Int(1.5) has no
+    # complex argument): the map's own, unchanged, under the complex step and
+    # under a finite difference alike.
+    real_inexact = (x, px, y, py, z, pz) -> (x isa Complex && Int(1.5); (x, px, y, py, z, pz))
+    e7 = try; one_turn_matrix(real_inexact; point=u0); nothing; catch e; e; end
+    @test e7 isa InexactError && 1.5 in e7.args
+    fd_inexact = (x, px, y, py, z, pz) -> (x > 1.5e-4 && Int(1.5); (x, px, y, py, z, pz))
+    e8 = try; one_turn_matrix(fd_inexact; method=FiniteDifferenceLinearization(1.0e-3), point=u0); nothing; catch e; e; end
+    @test e8 isa InexactError && 1.5 in e8.args
+
+    # Complex numbers INSIDE an argument: a Float64-typed helper fed the
+    # coordinate vector or a pair of coordinates raises a MethodError on
+    # Vector{ComplexF64} / Tuple{ComplexF64,ComplexF64}. The design's
+    # "argument types involve a complex number" covers these; before the fix
+    # the guard saw only a bare Complex and let the raw MethodError through
+    # undirected (review of 2026-09-11).
+    vec_cs = (x, px, y, py, z, pz) -> (_otm_vector_only([x, px]), px, y, py, z, pz)
+    e9 = try; one_turn_matrix(vec_cs; point=u0); nothing; catch e; e; end
+    @test e9 isa ArgumentError && occursin("MethodError", sprint(showerror, e9))
+    @test occursin("Vector{ComplexF64}", sprint(showerror, e9))
+    pair_cs = (x, px, y, py, z, pz) -> (_otm_pair_only((x, px)), px, y, py, z, pz)
+    e10 = try; one_turn_matrix(pair_cs; point=u0); nothing; catch e; e; end
+    @test e10 isa ArgumentError && occursin("MethodError", sprint(showerror, e10))
+    # A container with the WRONG real element type is not a complex-step
+    # limit: the MethodError passes through unchanged.
+    int_vec = (x, px, y, py, z, pz) -> (x isa Complex && _otm_vector_only([1, 2]); (x, px, y, py, z, pz))
+    e11 = try; one_turn_matrix(int_vec; point=u0); nothing; catch e; e; end
+    @test e11 isa MethodError && e11.f === _otm_vector_only
+    # The TypeError branch: a Float64 typeassert hit by a ComplexF64.
+    assert_cs = (x, px, y, py, z, pz) -> ((x::Float64), px, y, py, z, pz)
+    e12 = try; one_turn_matrix(assert_cs; point=u0); nothing; catch e; e; end
+    @test e12 isa ArgumentError && occursin("TypeError", sprint(showerror, e12))
+    # The predicate itself, on values, containers, and types.
+    cs = ComplexStepLinearization()
+    @test Octopus._involves_method_number(cs, 1.0 + 2.0im)
+    @test Octopus._involves_method_number(cs, Vector{ComplexF64})
+    @test Octopus._involves_method_number(cs, Tuple{Float64,ComplexF64})
+    @test Octopus._involves_method_number(cs, ComplexF64[])            # empty: the eltype decides
+    @test Octopus._involves_method_number(cs, (1.0, 2.0im))
+    @test Octopus._involves_method_number(cs, Union{Float64,ComplexF64})
+    @test !Octopus._involves_method_number(cs, Vector{Float64})
+    @test !Octopus._involves_method_number(cs, (1.0, "s"))
+    @test !Octopus._involves_method_number(cs, Float64)
+    @test !Octopus._involves_method_number(FiniteDifferenceLinearization(), 1.0im)
+
+    # The alternatives a directed error names are DERIVED from the tag tree:
+    # every Octopus-owned concrete tag except the failing one, each as
+    # `method=Name()`, and never the failing one. The suite's own
+    # `_OTMUnimplementedMethod` subtypes the root but lives in Main, so the
+    # derivation excludes it, as it must (a user's tag is not an alternative
+    # the helper can vouch for).
+    tags = Octopus._concrete_octopus_subtypes(Octopus.AbstractLinearizationMethod)
+    @test length(tags) >= 3 && ComplexStepLinearization in tags
+    @test Octopus._alternative_method_names(ComplexStepLinearization()) ==
+          [nameof(T) for T in tags if T !== ComplexStepLinearization]
+    @test Octopus._alternative_method_names(FiniteDifferenceLinearization()) ==
+          [nameof(T) for T in tags if T !== FiniteDifferenceLinearization]
+    @test !(:_OTMUnimplementedMethod in Octopus._alternative_method_names(ComplexStepLinearization()))
+    msg_alt = sprint(showerror, e3)
+    for T in tags
+        T === ComplexStepLinearization && continue
+        @test occursin("method=$(nameof(T))()", msg_alt)
+    end
+    @test !occursin("method=ComplexStepLinearization()", msg_alt)
+
+    # Under finite differences nothing is relabelled: a real-arithmetic
+    # failure at the stepped point is the map's own.
+    fd_boom = (x, px, y, py, z, pz) -> (x > 1.5e-4 && error("stepped"); (x, px, y, py, z, pz))
+    e4 = try
+        one_turn_matrix(fd_boom; method=FiniteDifferenceLinearization(1.0e-3), point=u0)
+        nothing
+    catch e
+        e
+    end
+    @test e4 isa ErrorException && e4.msg == "stepped"
+
+    # Wrong output arity and wrong inputs are argument errors, before any
+    # differentiation.
+    four = (x, px, y, py, z, pz) -> (x, px, y, py)
+    @test_throws ArgumentError one_turn_matrix(four)
+    @test occursin("six coordinates", sprint(showerror, try; one_turn_matrix(four); catch e; e; end))
+    @test_throws ArgumentError one_turn_matrix(())
+    @test_throws ArgumentError one_turn_matrix((fodo[1], DriftSpec(L=1.0)))    # a spec inside a tuple
+    @test_throws ArgumentError one_turn_matrix(fodo; point=(0.0, 0.0, 0.0))
+    @test_throws ArgumentError one_turn_matrix(fodo; point=(0.0, NaN, 0.0, 0.0, 0.0, 0.0))
+    @test_throws ArgumentError one_turn_matrix(fodo; point=(0.0, Inf, 0.0, 0.0, 0.0, 0.0))
+
+    # The aperture. Measured 2026-09-11: a surviving particle passes through a
+    # complex step (the limit comparisons act on |x|), so the Jacobian is the
+    # identity with zero defect; a killed particle returns NaN coordinates in
+    # real arithmetic and is refused before differentiation with a message
+    # naming the aperture case.
+    open = compile_runtime(ApertureSpec(x_limit=1.0e-2, y_limit=1.0e-2))
+    lm_open = one_turn_matrix((fodo..., open); point=u0)
+    @test lm_open.matrix == one_turn_matrix(fodo; point=u0).matrix
+    @test one_turn_matrix(open; point=u0).matrix == Matrix{Float64}(I, 6, 6)
+    tight = compile_runtime(ApertureSpec(x_limit=1.0e-5, y_limit=1.0e-2))
+    e5 = try; one_turn_matrix((fodo..., tight); point=u0); nothing; catch e; e; end
+    @test e5 isa ArgumentError
+    @test occursin("finite coordinates", sprint(showerror, e5)) && occursin("aperture", sprint(showerror, e5))
+
+    # The solenoid. The design note expected a solenoid to fail under the
+    # complex step; its map was rewritten in real arithmetic (audit F17,
+    # src/elements/solenoid.jl) and now complex-steps cleanly: measured defect
+    # 1.1e-16 alone and 2.2e-16 in a line (probe of 2026-09-11). Pinned here
+    # so the corrected expectation is a check and not a comment.
+    sol_line = (compile_runtime(DriftSpec(L=0.5)), compile_runtime(SolenoidSpec(L=1.3, ks=0.35)))
+    lm_sol = one_turn_matrix(sol_line; point=u0)
+    @test _otm_defect(lm_sol.matrix) < 64 * eps(Float64) * norm(lm_sol.matrix)^2
+    @test lm_sol.matrix == _otm_inline_complex_step(sol_line, u0)
+
+    # The fixed-point residual is map(point) - point in raw coordinates:
+    # exactly zero at the origin of a magnet cell (drifts and quadrupoles map
+    # the origin to itself in exact arithmetic and in floating point), and
+    # exactly the tracked difference off it, component for component.
+    @test one_turn_matrix(fodo).provenance.fixed_point_residual == ntuple(_ -> 0.0, 6)
+    r = one_turn_matrix(fodo; point=u0).provenance.fixed_point_residual
+    @test r isa NTuple{6,Float64}
+    @test maximum(abs, r) > 0
+    tracked = _otm_track(fodo, u0)
+    @test r == ntuple(i -> tracked[i] - u0[i], 6)
+    # The residual is the map's, not the method's: identical across methods.
+    @test one_turn_matrix(fodo; method=FiniteDifferenceLinearization(), point=u0).provenance.fixed_point_residual == r
+end
 
 @testset "Configuration rejection" begin
     @test_throws ArgumentError CPUThreadsExecutionPolicy(threads=0)
