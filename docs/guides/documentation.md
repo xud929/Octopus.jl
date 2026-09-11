@@ -59,6 +59,13 @@ gate.
 ## Finish
 
 `write_registry_snapshot()` when a public object changed, the docs index
-entry, and the full gate (`development_workflow.md`). Docs-only changes are a
-full-gate class: the suite walks docstrings and indexes, and "it's only docs"
-is a claim the gate checks.
+entry, and the gate the `AGENTS.md` matrix names. The class is read from the
+diff, never claimed: when `git diff --name-only` lists only `.md` files and
+none of them is `docs/registry_snapshot.md`, the gate is the fast lane on the
+final tree, because the fast lane already runs every docs check the suite has
+(the index walk, the snapshot compare, the docstring and source-map
+tripwires); anything else -- a `.jl` comment, the snapshot, the CI workflow --
+is the full gate (`development_workflow.md`). The commit message names the
+gate it rode, and nothing reaches `origin` ungated. (Owner decision
+2026-09-04, restated 2026-09-11 when this paragraph still said docs-only
+changes were a full-gate class.)

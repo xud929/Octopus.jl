@@ -1,16 +1,22 @@
 # Coupled Twiss and dispersion: theory and analysis requirements
 
-Status: theory draft for the first concrete Octopus analysis. No optics analysis
+Status: theory for the first concrete Octopus analysis. No optics analysis
 API is implemented by this document; the current analysis layer contains only
 `PlaceholderAnalysis`. This note derives the mathematics and the requirements
-an implementation must satisfy. Architecture and public API decisions belong in
-`docs/design/` and source docstrings when implementation begins.
+an implementation must satisfy. The architecture decided on 2026-09-11 is
+recorded in [the design note](../design/twiss_dispersion_analysis.md); public
+API details belong in source docstrings when implementation lands.
 
 Reading order: Sections 2–7 cover 4D extraction and parameterization conversion;
 Sections 8–9 cover direct and eigenbasis-based 6D decoupling; Section 10 covers
 transport and mode identity. Sections 11–12 specify future implementation
-requirements and verification coverage. Appendix A is the single-plane reduction.
-The original draft's equation labels are retained where practical.
+requirements and verification coverage. Section 13 derives what changes when
+normal modes are degenerate: the Krein classification of a repeated
+eigenspace, the group quantities that remain determined, the dispersion
+ambiguity set, the failure of closed-form extraction, and the numerical
+handling an implementation must follow. Appendix A is the single-plane
+reduction. The original draft's equation labels are retained where practical;
+Section 13 uses the label letter N.
 
 ## 1. Purpose and conventions
 
@@ -2114,7 +2120,9 @@ The existing [analysis layer](../../src/analysis/Analysis.jl) is placeholder-onl
 A future implementation should separate the following mathematical operations:
 normalized mode extraction; complete parameterization conversion; invariant-plane
 solution; canonical factorization; basis transport; covariance reconstruction.
-Public architecture decisions should be recorded separately when they are made.
+Public architecture decisions are recorded in
+[the design note](../design/twiss_dispersion_analysis.md) (decided 2026-09-11,
+not yet implemented).
 
 The mathematical alternatives for dispersion are eigenplane extraction (D12),
 the cubic-root algebraic expression (D19), full-mode projectors (D26)–(D27),
@@ -2131,7 +2139,7 @@ conditioning ranking is claimed.
 1. Find or accept the reference closed orbit, linearize, and convert to the documented canonical coordinates.
 2. Scale coordinates for conditioning using a documented transformation; preserve the corresponding symplectic form and transform final results back.
 3. Check symplecticity. Do not silently alter a substantially nonsymplectic matrix to make the optics routine succeed.
-4. For a 4D problem, run Section 3 directly. For a bunched 6D problem, identify the longitudinal eigenmode and apply the selected dispersion solution method. Initialize an iteration with (D15), a neighboring solution, or the scan predictor (D29). Use (D24) for the coasting block structure (D23).
+4. Test for the coasting block structure (D23) first and use (D24) when it holds. Otherwise classify the spectrum into resolved pairs and unresolved groups, and classify each group's Krein signature by the Gram matrix (N2), before selecting any individual mode (Section 13.8). For a 4D problem, run Section 3 directly on resolved pairs. For a bunched 6D problem, identify the longitudinal eigenmode and apply the selected dispersion solution method. Initialize an iteration with (D15), a neighboring solution, or the scan predictor (D29). If the longitudinal candidate lies inside a definite unresolved group, report the dispersion ambiguity set (N11)–(N14) instead of a unique vector.
 5. Check the graph invariance (D14) and the selected longitudinal trace or eigenvalue pair, construct the canonical transformation (D3), and obtain the betatron and longitudinal blocks with (K4). Verify their symplecticity and the off-diagonal residuals. If the longitudinal projection is singular, retain the full 6D basis and report that this dispersion representation is unavailable.
 6. Where the 4+2 factorization is available, extract Mais–Ripken functions and their cosine/sine factors from the 4D betatron eigenbasis. Derive Edwards–Teng parameters from that basis, and benchmark against (T9) at well-conditioned points. If this chart is unavailable, retain physical projections of all three full modes; do not apply the complete-4D single-$u$ identities to truncated 6D vectors.
 7. Propagate the full basis through the lattice, and propagate the graph where its chart is valid. Reconstruct local maps, maintain eigenmode labels, and unwrap phase advances only with sufficient sampling.
@@ -2143,7 +2151,7 @@ Return diagnostic information with the optics result, rather than replacing inva
 
 - Coordinate convention and reference point.
 - Symplectic defect, unit-circle departure, eigenvector residual, and normalizer reconstruction residual.
-- Conjugate-pair separation, eigenmode-label assignment, and near-degeneracy status.
+- Conjugate-pair separation, including the distance to the conjugate class, eigenmode-label assignment, and near-degeneracy status: the group partition, each group's Gram inertia and classification (definite, indefinite, unresolved), the minimal-polynomial residual (N19), and the resolution chord (N22) with the perturbation scale and normalizer conditioning it was computed from.
 - Edwards–Teng parameterization form, relevant area weights, and block conditioning.
 - Longitudinal projection conditioning, $h$, the convention $\mathcal M=\mathcal M_\zeta\mathcal M_\eta$, and the dispersion invariance residual.
 - Validity of each relative cosine/sine pair when a projection vanishes.
@@ -2200,7 +2208,613 @@ The lattice benchmarks below are requirements, **not passed tests**.
 6. **Dispersion solution methods:** compare eigenvector, both algebraic constructions, fixed-point, and Newton results on the same longitudinal branch. Check Parzen's block cubic against (D17), and the three signed-area row/column sums in (K12). Include a case with a poorly conditioned raw Sylvester operator and verify that the routine reports it or selects another method.
 7. **Ohmi and Xsuite conventions:** verify (O2)–(O5) and (X2) after coordinate conversion; distinguish full-6D normalization from forced 4D responses.
 8. **Parameter continuation:** compare (D28) against finite differences, verify the $O((\Delta t)^2)$ predictor error and corrected graph residual, and preserve mode identity across a physical projection singularity using the full basis. Reject ambiguous steps near a mode collision; do not claim the individual plane remains unique there.
-9. **Exceptional cases:** exercise nearly equal mode frequencies, eigenvalues near $\pm1$, ill-conditioned longitudinal projections, and the $h=0$ graph singularity. Include negative $h$. Verify that diagnostics identify ambiguous or unavailable parameters without returning spurious unique values.
+9. **Exceptional cases:** exercise nearly equal mode frequencies, eigenvalues near $\pm1$, ill-conditioned longitudinal projections, and the $h=0$ graph singularity. Include negative $h$. Verify that diagnostics identify ambiguous or unavailable parameters without returning spurious unique values. Section 13 supplies the exact fixtures: the definite degenerate family $\operatorname{diag}(\mathcal R(\mu),\mathcal R(\gamma),\mathcal R(\mu))$ with its ambiguity set (N11)–(N14), the indefinite family (N15), the false polynomial graph (N17), and the rolled equal-tune FODO cell of Section 13.10 with its detuned controls.
+
+## 13. Mode degeneracy
+
+The preceding sections assume that the eigenvalue pairs of the one-turn map are
+distinct. This section derives what changes when two or more normal modes share
+an eigenvalue pair, which quantities remain determined by the map, how the
+canonical dispersion of Section 8 becomes a set rather than a vector, why the
+closed-form and iterative extraction routes lose sufficiency there, and how an
+implementation must classify and report such a map. The conventions are exactly
+those of Sections 2–3: $M_6\mathbf u_j=e^{-i\mu_j}\mathbf u_j$,
+$\mathbf u_j^\dagger S_6\mathbf u_j=-2i$, $U_j=[\operatorname{Re}\mathbf u_j,
+-\operatorname{Im}\mathbf u_j]$, $\tau_j=2\cos\mu_j$. A **group** (the research
+notes say cluster) is a set of modes whose oriented eigenvalues coincide or are
+not resolved; the subscript $c$ marks group quantities. The identities below are
+checked by the reproducible probe in
+[the degeneracy-theory record](../history/twiss_dispersion_degeneracy_theory_2026_09_11.md);
+the material follows the working notes [13] and, for the Krein-signature
+statements, Ref. [12].
+
+### 13.1 Repeated eigenvalues: semisimple and defective
+
+**Mode degeneracy** means that eigenvalue pairs of the full coupled map
+coincide. For elliptic pairs it is detected algebraically by $\tau_j=\tau_k$.
+Equal traces mean $\mu_j=\mu_k$ or $\mu_j=-\mu_k$ modulo $2\pi$, so the oriented
+phases and symplectic signs must still be retained; a trace discards the
+orientation. Equal bare tunes of an uncoupled model do not by themselves
+establish degeneracy of the coupled map, and degeneracy is distinct from a
+change between Edwards–Teng forms or a mode-label exchange (Sections 4–5),
+which can occur while the eigenvalue pairs remain distinct.
+
+| Type | Linear-algebra condition | Consequence |
+|---|---|---|
+| Semisimple degeneracy | Each repeated eigenvalue retains as many independent eigenvectors as its algebraic multiplicity. | Normal-mode planes can be selected, but their selection inside the repeated eigenspace need not be unique. |
+| Defective degeneracy | A repeated eigenvalue has too few independent eigenvectors. | No complete ordinary eigenmode normalizer exists; generalized eigenvectors and Jordan blocks enter. |
+
+If every eigenvalue lies on the unit circle and the map is semisimple,
+$M_6=U_6\operatorname{diag}(\mathcal R(\mu_1),\mathcal R(\mu_2),\mathcal R(\mu_s))U_6^{-1}$
+even when two phases coincide, and
+
+$$
+\boxed{\|M_6^n\|_2\le\|U_6\|_2\,\|U_6^{-1}\|_2\quad\text{for all }n.}
+\tag{N1}
+$$
+
+A nontrivial Jordan block at a unit-modulus eigenvalue instead produces
+polynomial growth with turn number, so unit modulus alone does not establish
+bounded motion. Conversely, a degenerate but semisimple map is bounded; a
+failed periodic parameterization at such a map is not evidence of instability
+(Section 13.10).
+
+### 13.2 Krein signature within a repeated eigenspace
+
+Equation (E2) explains why separate eigenvector normalization becomes
+insufficient. When $\rho_j=\rho_k$ with $|\rho_j|=1$, the factor
+$(1-\rho_j^*\rho_k)$ vanishes, so $\mathbf v_j^\dagger S_6\mathbf v_k$ is
+unconstrained: two independently normalized eigensolver columns need not be
+mutually symplectically orthogonal. For any complex basis $\mathsf Q_c$ of the
+eigenspace at one repeated nonreal eigenvalue, define the Hermitian Gram
+matrix
+
+$$
+\boxed{\mathsf H_c=\frac{i}{2}\,\mathsf Q_c^\dagger S_6\mathsf Q_c.}
+\tag{N2}
+$$
+
+Its inertia (the numbers of positive and negative eigenvalues) does not depend
+on the basis, and conjugating the eigenspace reverses every sign. This is the
+Krein-signature classification in the normalization of (E3):
+
+- **Definite:** all signs agree. Select the conjugate eigenspace if necessary
+  so that $\mathsf H_c$ is positive definite; a joint normalization to (E3)
+  is then possible within the eigenspace (Section 13.8).
+- **Indefinite:** both signs occur. Conjugating the whole eigenspace reverses
+  all signs and cannot make the form definite.
+
+For a Euclidean-orthonormal $\mathsf Q_c$ the eigenvalues of $\mathsf H_c$ lie
+in $[-\tfrac12,\tfrac12]$; a single (E3)-normalized vector has
+$\mathsf H_c=1$. A definite semisimple repeated pair away from $\pm1$ that is
+separated from the other spectral groups is compatible with stability under
+sufficiently small symplectic perturbations. An indefinite semisimple repeated
+pair can have bounded motion at the exact setting while being destabilized by
+arbitrarily small suitable symplectic perturbations [12]. Defectiveness and
+sign indefiniteness are different properties.
+
+### 13.3 Exact equality is a special setting
+
+Inside a definite two-mode group, the collective normalization of Section 13.8
+makes the restricted complex map unitary. On a local phase branch write it as
+$\exp(-i\mathsf H)$ with a Hermitian $2\times2$ phase generator $\mathsf H$.
+Its phase splitting satisfies
+
+$$
+\boxed{|\mu_j-\mu_k|=\sqrt{(\mathsf H_{11}-\mathsf H_{22})^2+4|\mathsf H_{12}|^2}.}
+\tag{N3}
+$$
+
+Equality requires equal diagonal entries and a vanishing complex off-diagonal
+entry: three real conditions in an unrestricted family. Symmetry can impose
+them; otherwise tuning one bare tune through another generally leaves a finite
+minimum eigen-tune separation when the effective coupling is nonzero. The
+off-diagonal entry is an effective coupling in the normalized phase generator,
+not a physical off-diagonal block of $M_6$. Exact degeneracy is nongeneric but
+occurs identically in a symmetry-preserving family, as in the FODO cell of
+Section 13.10. A definite semisimple degeneracy need not be a boundary of
+dynamical stability.
+
+### 13.4 What the linear theory still determines
+
+Let a definite group $c$ contain $m\ge2$ modes at one oriented eigenvalue, and
+let $\mathsf U_c=[\mathbf u_j]_{j\in c}$ be a jointly normalized frame,
+
+$$
+\boxed{\mathsf U_c^\dagger S_6\mathsf U_c=-2iI_m,\qquad
+\mathsf U_c^TS_6\mathsf U_c=0.}
+\tag{N4}
+$$
+
+The second relation follows from (E2) because the repeated eigenvalue is not
+$\pm1$. Multiplying $\mathsf U_c$ by any unitary $m\times m$ matrix gives
+another valid normalized eigenbasis. The individual projectors $P_j$, modal
+covariances $G_j$, projected Mais–Ripken functions (M1), and the assignment of
+actions to modes all change under that mixing. Invariant under it are the group
+projector and group covariance,
+
+$$
+\boxed{P_c=\sum_{j\in c}P_j=-\operatorname{Im}(\mathsf U_c\mathsf U_c^\dagger)S_6,
+\qquad
+G_c=\sum_{j\in c}G_j=\operatorname{Re}(\mathsf U_c\mathsf U_c^\dagger),}
+\tag{N5}
+$$
+
+with $P_c^2=P_c$, $M_6P_c=P_cM_6$, $P_c^TS_6=S_6P_c$, and
+$M_6G_cM_6^T=G_c$. At an exact common phase $\mu$ the group version of (E12)
+holds,
+
+$$
+\boxed{G_c=-\frac{(M_6-M_6^{-1})P_cS_6}{2\sin\mu},}
+\tag{N6}
+$$
+
+with the phase orientation chosen so that $G_c$ is positive semidefinite of
+rank $2m$; for an indefinite eigenspace no single sign makes it a positive
+covariance. For a four-dimensional semisimple equal pair the group is the whole
+space,
+
+$$
+\boxed{P_c=I_4,\qquad M_4^2-\tau M_4+I_4=0,\qquad
+G_c=-\frac{(M_4-\cos\mu\,I_4)S_4}{\sin\mu}.}
+\tag{N7}
+$$
+
+In exact arithmetic the polynomial identity with $|\tau|<2$ certifies
+semisimplicity, because its two roots are distinct. In finite precision its
+residual is a diagnostic, not a proof (Section 13.8).
+
+**Covariance.** Equations (M9) and, for the full six-dimensional basis,
+(K12) remain valid for a specified normal basis and specified uncorrelated
+mode emittances. If all emittances in the definite group
+equal $\epsilon$, the group's contribution is uniquely
+
+$$
+\boxed{\Sigma_c=\epsilon\,G_c,}
+\tag{N8}
+$$
+
+independent of the orientation choice. With unequal emittances the map and the
+emittance values alone do not identify the orientation inside the group; a
+supplied covariance is additional information. Matching $M_6\Sigma M_6^T=\Sigma$
+implies $M_6(\Sigma S_6)=(\Sigma S_6)M_6$, so distinct eigenemittances of a
+supplied matched $\Sigma$ select common invariant planes through the
+eigenvectors of $\Sigma S_6$; equal eigenemittances leave the freedom. An
+unmatched beam covariance must not be used as if it defined matched lattice
+modes.
+
+**Spectral reason for regularity.** The projector onto the selected complex
+group is the resolvent integral
+
+$$
+\boxed{\Pi_c=\frac1{2\pi i}\oint_\Gamma(\rho I_6-M_6)^{-1}\,d\rho
+=\frac{i}{2}\,\mathsf U_c\mathsf U_c^\dagger S_6,\qquad P_c=2\operatorname{Re}\Pi_c,}
+\tag{N9}
+$$
+
+where the contour $\Gamma$ encloses the whole selected complex group and
+excludes its conjugate and all other eigenvalues. Small map changes perturb
+$\Pi_c$ through resolvents on the contour, with no division by the internal
+mode splitting. By contrast, the individual projectors (E11) and (D26) divide by
+internal trace separations. This is why the group stays reliable when its
+individual modes are not resolved.
+
+### 13.5 Betatron versus synchrobetatron degeneracy
+
+| Case | Valid conclusion |
+|---|---|
+| $\tau_1=\tau_2$, $\tau_s$ distinct (semisimple) | Individual betatron modes require a convention. The longitudinal invariant plane is isolated, and its canonical dispersion remains uniquely defined when the physical longitudinal projection is regular; the selected kernel of (D18) stays two-dimensional. |
+| $\tau_s=\tau_1$ or $\tau_s=\tau_2$ (definite, semisimple) | Selecting a longitudinal two-plane inside the repeated group needs additional information. Canonical dispersion is generally not a function of the endpoint map alone; it ranges over the set of Section 13.6. |
+| All three coincide (definite, semisimple) | Every individual mode selection needs additional information; the dispersion set is the full ellipsoid (N13). |
+| Indefinite semisimple degeneracy | Canonical dispersion can be unbounded across valid mode choices for one fixed map with bounded powers (N15); the map is not structurally stable. |
+| Defective degeneracy | Independent eigenvectors are lost; an ordinary eigenmode normalizer does not exist. |
+
+Nonuniqueness of the normal-coordinate decomposition does not mean several
+trajectories or several observable dispersions: the map, its action on
+particles, and a supplied beam covariance remain meaningful. The statements
+concern the canonical mode-based definition (D1). The coasting forced-orbit
+dispersion (D24) is a separate quantity and can remain uniquely solvable.
+
+### 13.6 Canonical dispersion at a definite degenerate group
+
+For $m\ge2$, every unit complex coefficient vector $\mathbf c$ selects a
+normalized eigenvector $\mathbf u_s(\mathbf c)=\mathsf U_c\mathbf c$,
+$\mathbf c^\dagger\mathbf c=1$, and every real invariant two-plane inside the
+definite repeated group arises from such a complex line. Equation (D12) gives
+its canonical momentum dispersion as the transverse part of the $z$ column of
+the mode's Hermitian outer product,
+
+$$
+\boxed{\boldsymbol\eta(\mathbf c)=
+-\operatorname{Im}\bigl(\mathsf U_c\mathbf c\mathbf c^\dagger\mathsf U_c^\dagger\bigr)_{\mathbf r,z}.}
+\tag{N10}
+$$
+
+Two group quantities describe its range: a midpoint vector and a shape matrix,
+
+$$
+\boxed{\boldsymbol\eta_{\rm mid}=\tfrac12\,(P_c)_{\mathbf r,p_z},\qquad
+\mathcal A_\eta=\tfrac14\left[(G_c)_{zz}(G_c)_{\mathbf r\mathbf r}
+-(G_c)_{\mathbf r,z}(G_c)_{z,\mathbf r}\right].}
+\tag{N11}
+$$
+
+The matrix $\mathcal A_\eta$ is positive semidefinite. With a rectangular
+factor $F_\eta$ of $2m-1$ columns such that $F_\eta F_\eta^T=\mathcal A_\eta$,
+the complete set of canonical momentum dispersions of the group is
+
+$$
+\boxed{\mathcal E_\eta=\left\{\boldsymbol\eta_{\rm mid}+F_\eta\mathbf n:
+\ \mathbf n\in\mathbb R^{2m-1},\ \|\mathbf n\|_2=1\right\}.}
+\tag{N12}
+$$
+
+For two modes, $F_\eta$ has three columns. Rank three gives an ellipsoid
+**surface** in an affine three-dimensional subspace of the four dispersion
+coordinates; lower rank gives a filled ellipse, an interval, or a point. The
+surface must not be replaced by its convex hull when listing actual mode
+solutions. For three coincident definite modes in six dimensions, $P_c=I_6$,
+$G_c$ is positive definite, $F_\eta$ has five columns and rank four, and the
+set is the filled four-dimensional ellipsoid
+
+$$
+\boxed{\boldsymbol\eta^T\mathcal A_\eta^{-1}\boldsymbol\eta\le1,\qquad
+\boldsymbol\eta_{\rm mid}=0.}
+\tag{N13}
+$$
+
+For any real scalar readout $\mathbf a^T\boldsymbol\eta$ the exact endpoints
+are
+
+$$
+\boxed{\mathbf a^T\boldsymbol\eta\in
+\left[\mathbf a^T\boldsymbol\eta_{\rm mid}-\sqrt{\mathbf a^T\mathcal A_\eta\mathbf a},\
+\mathbf a^T\boldsymbol\eta_{\rm mid}+\sqrt{\mathbf a^T\mathcal A_\eta\mathbf a}\right].}
+\tag{N14}
+$$
+
+In fixed scaled coordinates the smallest achievable worst-case Euclidean error
+of any unrestricted point estimate is $\sqrt{\lambda_{\max}(\mathcal A_\eta)}$,
+attained by the midpoint; the midpoint need not itself represent a selected
+mode, and raw Euclidean norms mixing lengths and normalized momenta do not
+define universal physical tolerances.
+
+*Derivation.* Set $\mathbf a_z=\mathsf U_c^\dagger\mathbf e_z$ and
+$\mathbf w=\mathbf c\mathbf c^\dagger\mathbf a_z$, so that
+$\mathbf a_z^\dagger\mathbf w=\|\mathbf w\|^2$. Every $\mathbf w$ with this
+property is attainable ($\mathbf c=\mathbf w/\|\mathbf w\|$, or a unit
+$\mathbf c\perp\mathbf a_z$ when $\mathbf w=0$, which needs $m\ge2$). For
+$\mathbf a_z\ne0$ the condition describes the real sphere
+$\operatorname{Im}(\mathbf a_z^\dagger\mathbf w)=0$,
+$\|\mathbf w-\mathbf a_z/2\|^2=\|\mathbf a_z\|^2/4$, and the output
+$-\operatorname{Im}(\mathsf U_c\mathbf w)_{\mathbf r}$ is its linear image;
+projecting the output matrix onto the sphere's hyperplane and scaling by
+$\|\mathbf a_z\|/2$ constructs $F_\eta$ and gives (N11). Multiplicity one must
+be handled separately: there is only one mode, and the sphere construction
+would introduce a spurious zero-projection choice.
+
+**Graph qualification.** The ordered transformation (D3) requires the selected
+plane to have a regular longitudinal projection, $h\ne0$. When graph-regular
+choices exist they are dense in the definite family, and (N12) is the closure
+of their canonical-momentum values; some endpoints are approached only as
+limits. For $m\ge2$ there is always a member with zero longitudinal-position
+component, which has no regular graph. If every candidate plane has a singular
+longitudinal projection, report that the graph-based dispersion representation
+is unavailable. This qualification is part of the statement.
+
+**Definiteness is essential.** For the fixed orthogonal map
+$M_6=\operatorname{diag}(\mathcal R(\mu),\mathcal R(\mu_2),\mathcal R(-\mu))$,
+the vectors
+
+$$
+\mathbf u_s(t)=i\sinh t\,(\mathbf e_x+i\mathbf e_{p_x})
++\cosh t\,(\mathbf e_z-i\mathbf e_{p_z})
+\tag{N15}
+$$
+
+all have eigenvalue $e^{i\mu}$, hence oriented phase $-\mu$ by (E5), and
+satisfy $\mathbf u_s(t)^\dagger S_6\mathbf u_s(t)=-2i$. Substitution into
+(D12) gives $\eta_x(t)=-\sinh t\cosh t$ and $h(t)=\cosh^2t$: canonical
+dispersion is unbounded across valid mode choices with regular graphs,
+although the map is orthogonal with bounded powers. The eigenspace is
+indefinite: its Gram matrix (N2) has eigenvalues $\pm\tfrac12$ in an
+orthonormal basis. The parameter $t$ changes the chosen plane, not the map or
+any trajectory.
+
+**Exact tunes cannot select the mode.** Families of maps with identical
+complete spectra and a prescribed selected tune can converge to the same
+definite degenerate map while their selected dispersion vectors approach
+different points of (N12). In the working notes [13] two such maps at a
+distance of order $10^{-9}$ from the limit have dispersion vectors differing by
+$1.25$ in normalized coordinates, both with regular graphs. This is an intrinsic
+limitation of the information in the map, not a computational error.
+
+### 13.7 Closed-form extraction loses sufficiency at a repeated selected pair
+
+The polynomial $M_6^2-\tau_sM_6+I_6$ of (D18) has a two-dimensional kernel when
+the selected pair is isolated, and its top four rows then determine the graph
+(Section 8.5). At a semisimple degeneracy that includes the selected pair the
+kernel is four-dimensional. An arbitrary real two-plane inside it need not be
+$M_6$-invariant: the polynomial condition is necessary, not sufficient, and
+checking its top four rows cannot restore sufficiency. At a regular graph the
+coefficient matrix of (D19) has determinant
+
+$$
+\boxed{\det\left(M_{rr}^2+M_{r\ell}M_{\ell r}-\tau_sM_{rr}+I_4\right)
+=h^2(\tau_1-\tau_s)^2(\tau_2-\tau_s)^2,}
+\tag{N16}
+$$
+
+with no factor $(\tau_1-\tau_2)$: equality of the two betatron traces alone
+does not singularize it, but coincidence of the selected trace with a betatron
+trace does.
+
+*Counterexample.* For $M_6=\operatorname{diag}(\mathcal R(\mu),\mathcal R(\mu_2),\mathcal R(\mu))$
+with $\sin\mu\ne0$ and $\tau_2\ne2\cos\mu$, every graph with an arbitrary
+horizontal $2\times2$ block and zero vertical block satisfies (D18). The
+candidate
+
+$$
+\widehat{\mathscr D}_{(x,p_x),:}=\operatorname{diag}(1,-1+t),\qquad
+\widehat{\mathscr D}_{(y,p_y),:}=0,\qquad t>0,
+\tag{N17}
+$$
+
+has zero polynomial residual for every $t$, and (D8) converts it to a candidate
+$\widehat\eta_{p_x}=(t-1)/t$ that diverges as $t\to0$, while its actual
+invariance residual (D14) is
+$\|M_{rr}\widehat{\mathscr D}+M_{r\ell}-\widehat{\mathscr D}(M_{\ell r}\widehat{\mathscr D}+M_{\ell\ell})\|_F
+=\sqrt2\,|\sin\mu|\,|2-t|$, far from zero. The true invariant graphs of this
+map are $\mathscr D_{(x,p_x),:}=aI_2+bS_2$, giving
+$\boldsymbol\eta=(b,a,0,0)^T/(1+a^2+b^2)$ and
+$\eta_x^2+\eta_{p_x}^2\le\tfrac14$: the false divergence is neither physical
+amplification nor instability. Replacing the singular inverse in (D19) by a
+Moore–Penrose pseudoinverse does not repair this: after the symplectic
+similarity generated by a thin crab kick $p_x\mapsto p_x-kz$,
+$p_z\mapsto p_z-kx$, the polynomial is unchanged, so the minimum-norm solution
+is $\mathscr D=0$, which fails (D14) with residual $\sqrt2\,k\,|\sin\mu|$
+($0.28293$ for $k=0.3$, $\mu=0.73$).
+
+The Newton operator of (D21), $L_{\mathscr D}(E)=(M_{rr}-\mathscr DM_{\ell r})E
+-E(M_{\ell\ell}+M_{\ell r}\mathscr D)$, has
+
+$$
+\boxed{\det L_{\mathscr D}=(\tau_1-\tau_s)^2(\tau_2-\tau_s)^2,}
+\tag{N18}
+$$
+
+so it is singular exactly when the longitudinal and a betatron spectrum
+overlap; a continuous family of invariant graphs supplies its null directions
+directly. Both determinants are singularity criteria, not condition numbers.
+The consequences for the four routes of Section 8:
+
+| Route | At a repeated selected pair |
+|---|---|
+| Eigenmode (D9)–(D12) | The repeated eigenspace is determined, but independent scalar normalization neither selects nor orthogonalizes individual modes. Normalize the whole definite eigenspace (Section 13.8), then apply an explicit selection rule if one is available. |
+| Closed form (D19) with supplied $\tau_s$ | The selected trace identifies a larger kernel; the coefficient matrix is singular by (N16); arbitrary polynomial solutions can be non-invariant. Retain the group; require (D14) and canonical decoupling before accepting any graph. |
+| Fixed point (D20) | Genuine fixed points remain invariant graphs, but a family of them exists; the seed selects one. Test the full residual and label the selection convention. |
+| Newton (D21) | The derivative is singular by (N18). Continue the combined subspace; impose justified selection data. |
+
+A converged iteration, a supplied tune, or a small update cannot supply
+missing mode-selection information. Conversely, a small nonzero splitting with
+accurately resolved invariant planes need not cause a practical extraction
+failure. A successful numerical return is not a uniqueness certificate.
+
+### 13.8 Numerical handling
+
+**Diagnose the input before selecting modes.** Follow the coordinate
+conversion, scaling, and residual requirements of Section 11. In particular:
+check the symplectic defect in documented scaled coordinates; inspect the full
+spectrum and estimate separation and conditioning, comparing complex
+eigenvalues, including the distance to the conjugate class, and not traces
+alone; distinguish resolved individual pairs from unresolved groups, where
+floating-point equality is not a physical degeneracy test and a fixed decimal
+tune threshold is not a universal resolution criterion; inspect the group's
+Gram matrix (N2) and the conditioning of any proposed normalizer, since a small
+algebraic discriminant does not decide whether the group is definite,
+indefinite, or defective; and at a suspected equal-pair degeneracy evaluate the
+minimal-polynomial residual
+
+$$
+\boxed{r_{\rm mp}=\frac{\|(M_6^2-\tau_cM_6+I_6)P_c\|_F}{\|M_6\|_F^2},}
+\tag{N19}
+$$
+
+with $\tau_c$ the common trace and the normalization by $\|M_6\|_F^2$ chosen
+here (the source states only that the residual is interpreted relative to map
+accuracy and scaling; for a four-dimensional map use $M_4^2-\tau M_4+I_4$).
+Numerically
+distinguishing an exactly defective matrix from a nearby diagonalizable one can
+itself be ill conditioned; when the available accuracy cannot support that
+classification, report the group as unresolved rather than asserting either.
+
+**Normalize an entire definite group.** An ordered complex Schur decomposition
+provides an orthonormal basis $\mathsf Q_c$ of the selected complex invariant
+subspace. Select the whole group, one member of each conjugate pair, excluding
+the conjugate group and unrelated modes; this basis is computational, not yet
+a canonical normalizer. Form (N2). If $\mathsf H_c$ is positive definite with a
+resolved positive smallest eigenvalue, set
+
+$$
+\boxed{\mathsf U_c=\mathsf Q_c\,\mathsf H_c^{-1/2}.}
+\tag{N20}
+$$
+
+Then $\mathsf U_c^\dagger S_6\mathsf U_c=-2iI_m$; also check
+$\mathsf U_c^TS_6\mathsf U_c=0$ and the invariant-subspace residual
+$\|M_6\mathsf Q_c-\mathsf Q_c\mathsf T\|$. Extract real column pairs with the
+$[\operatorname{Re},-\operatorname{Im}]$ convention of (E6). At exact definite
+degeneracy these columns are valid eigenmode pairs whose orientation is a
+convention; for a split group they form a canonical basis of the group but are
+generally not individual eigenvectors. The restricted complex map
+
+$$
+\boxed{\mathsf T_c=\frac{i}{2}\,\mathsf U_c^\dagger S_6M_6\mathsf U_c}
+\tag{N21}
+$$
+
+is unitary in exact arithmetic, and equals $e^{-i\mu}I_m$ at an exact common
+phase. If its internal eigenvalues are resolved, diagonalize $\mathsf T_c$ and
+rotate the group basis accordingly to recover individual modes. Do not mix
+vectors with distinct resolved eigenvalues and continue calling them
+eigenvectors. A negative definite Gram matrix calls for the conjugate group.
+
+**Indefinite and unresolved groups.** An indefinite matrix requires a treatment
+that retains its signs and tests semisimplicity. At an exactly semisimple
+repeated eigenvalue, diagonalize $\mathsf H_c$ and divide each transformed
+column by the square root of the magnitude of its Gram eigenvalue. A positive
+eigenvalue gives the required norm $-2i$; a negative one gives $+2i$, so
+conjugate that column and retain the resulting conjugate eigenvalue and phase
+branch. The cross-mode and reconstruction checks remain required. Normalizing
+by absolute values while discarding the signs is not a valid substitute, and
+the column mixing above may not be applied to distinct resolved eigenvectors
+without re-establishing their eigenvector property. If semisimplicity is
+unresolved or an elliptic normalizer is unavailable, preserve the real
+invariant block for linear transport and flag the ordinary modal optics as
+unavailable; the definite-group covariance (N8) and the bounded dispersion set
+(N12) do not extend to the indefinite case.
+
+**Return group quantities when individual modes are unresolved.** For a
+definite group return $P_c$, $G_c$, the spectrum, the sign classification, and
+the residuals. For an indefinite group retain its projector and signed
+invariant basis without presenting $G_c$ as a uniquely determined positive
+covariance. For a candidate longitudinal plane inside a definite exactly
+degenerate group, (N11)–(N14) are legitimate additional outputs; do not
+silently report the midpoint as a unique physical dispersion. For a nearby
+split group the same construction describes an envelope over all normalized
+lines in the group: it contains the actual mode outputs, but most of those
+lines are not invariant under the split map, so it is not the exact solution
+set of (D14) away from degeneracy.
+
+**Use additional information explicitly.** An individual plane can be selected
+by a specified symmetry, a continuously followed lattice family (Section 8.8),
+or a suitable supplied matched covariance (N8). State which information is
+used. The endpoint map alone cannot reconstruct an unrecorded approach
+direction to a degeneracy, and an overlap rule such as (F8) does not make
+different limiting approach directions equivalent.
+
+**Resolution.** At finite separation the internal complex eigenvalue gap is
+$g_{jk}=|\rho_j-\rho_k|=2\left|\sin\tfrac{\mu_j-\mu_k}{2}\right|$. Its
+significance depends on the perturbation scale and on the normalizer
+conditioning; small absolute tune separation does not by itself imply poor
+extraction. In the normalized representation of a definite two-mode group the
+restricted map (N21) with oriented phases $\mu\pm\delta$ is
+$\mathsf T(\mathbf n)=e^{-i\mu}(\cos\delta\,I_2-i\sin\delta\,
+\mathbf n\cdot\boldsymbol\sigma)$, where the unit vector $\mathbf n$ selects
+the two planes and $\boldsymbol\sigma$ are the Pauli matrices (the working
+notes [13] write the conjugate); then
+
+$$
+\boxed{\|\mathsf T(\mathbf n)-\mathsf T(\mathbf n_0)\|_2
+=|\sin\delta|\,\|\mathbf n-\mathbf n_0\|_2,}
+\tag{N22}
+$$
+
+so a map error of size $\rho_M$, measured after the normalizing similarity, can
+rotate the mode orientation by a chord of at most
+$q=\min\{2,\ \rho_M/|\sin\delta|\}=\min\{2,\ 2\rho_M/g\}$. A chord of $2$ means
+the orientation is undetermined. With a supplied matched covariance whose
+assigned eigenemittances differ by $\Delta\epsilon$ and are known to
+$\rho_\Sigma$, the covariance channel adds $(\Delta\epsilon)^2/(4\rho_\Sigma^2)$
+to $\sin^2\delta/\rho_M^2$ inside an inverse square root [13], so orientation
+can be resolved even at zero tune split when the emittances differ. Both
+statements hold for a fixed cluster normalizer and known phases; the working
+notes also bound the Hausdorff distance between the dispersion sets of two
+nearby maps with no denominator from the internal splitting, which is the
+quantitative form of the regularity of Section 13.4. Use
+structured subspace or Sylvester condition estimates when setting tolerances;
+a nonzero determinant or tune gap alone is insufficient, and calling two tunes
+"close" establishes nothing until $\rho_M$ and $g$ are both stated.
+
+**Validate every requested representation.** For an accepted individual mode
+check its eigenvector residual, symplectic normalization, and normalizer
+reconstruction. For dispersion additionally check the invariance residual
+(D14) normalized as in (I1), the trace difference
+$\operatorname{tr}(M_{\ell r}\mathscr D+M_{\ell\ell})-\tau_s$, the scaled
+singular values of $U_{\ell s}$, the canonical area
+$1+\mathscr D_{:1}^TS_4\mathscr D_{:2}$ (whose vanishing means the graph exists
+but cannot be canonically normalized), and the off-diagonal blocks of
+$\mathcal M^{-1}M_6\mathcal M$. The full residual (I1) is the stopping
+criterion; neither the polynomial residual nor a small update suffices. For a
+covariance check symmetry, positive semidefiniteness, and
+$M_6\Sigma M_6^T-\Sigma$. Report loss of the original graph coordinates
+separately from spectral instability: a different computational chart can
+preserve the plane but cannot make a singular physical $(z,p_z)$ projection
+invertible.
+
+### 13.9 Design implications
+
+Exact equality, unresolved finite splitting, a singular longitudinal
+projection, and defective dynamics should receive different diagnostics.
+Preserve the invariant basis or group when a scalar parameterization becomes
+unavailable. A degenerate but bounded map should not be labeled unstable merely
+because a periodic optics initializer fails.
+
+For a realistic machine, assess the actual eigenvalue separation, structured
+perturbations, normalization conditioning, and physical output tolerances. The
+exact-degeneracy results establish limiting behavior and stringent analysis
+checks. They do not by themselves establish that normal operation lies in an
+unresolved regime.
+
+### 13.10 Example: a rolled equal-tune FODO cell
+
+The thick-lens cell `qf, dr, qd, dr` with $L_q=0.2\,\mathrm m$,
+$K_1=\pm1\,\mathrm m^{-2}$, drifts of $1\,\mathrm m$, and a common quadrupole
+roll $\theta$ is a symmetry-preserving family with an exact semisimple betatron
+degeneracy. With $Q_F$, $Q_D$ the focusing and defocusing $2\times2$ quadrupole
+maps and $D$ the drift, the unrolled planes are $A_x=DQ_DDQ_F$ and
+$A_y=DQ_FDQ_D$, whose traces are equal by cyclic invariance for any
+$K_1$ pair with $K_{1,F}=-K_{1,D}$, so the two tunes coincide identically.
+Rolling every quadrupole by $\theta$ conjugates the map,
+$M_4(\theta)=\mathcal C(\theta)M_4(0)\mathcal C(\theta)^{-1}$ with
+$\mathcal C(\theta)=\begin{pmatrix}\cos\theta\,I_2&-\sin\theta\,I_2\\
+\sin\theta\,I_2&\cos\theta\,I_2\end{pmatrix}$, which preserves the spectrum
+and $\|M_4(\theta)^n\|_2=\|M_4(0)^n\|_2$: the rolled cell is exactly as stable
+as the unrolled one.
+
+MAD-X 5.03.06 and 5.09.03 nevertheless report for $\theta=\pi/4$ the warning
+`TWCPIN: Mode 1 is unstable for delta(p)/p = 0.000000: cosmux = 1.032392,
+cosmuy = 0.916408` (whitespace shortened; the incorrect numbers depend on the
+build and on rounding) and `Twiss failed`, and at smaller rolls return tunes
+that drift from the correct value ($0.0363$ at $0.01\,\mathrm{rad}$, $0.0431$
+at $\pi/8$) [13]. The correct cell tune is
+$Q_1=Q_2=0.0360896443733161$ ($\cos\mu=0.9744003972058644$). The mechanism is
+Section 13.7 in its four-dimensional form: $M_4^2-\tau M_4+I_4=0$ gives
+$M_4+M_4^{-1}=\tau I_4$, hence $\operatorname{tr}M_{xx}=\operatorname{tr}M_{yy}$
+and $\operatorname{adj}(M_{xy})+M_{yx}=0$, so the discriminant (T7) vanishes
+and both numerator and denominator of the Edwards–Teng coupling formula (T9)
+are zero. Rounding then yields a finite incorrect $R$, and a cosine above one
+is an invalid periodic initialization, not a property of the eigenvalues. The
+group construction of Section 13.8 has no such singularity: on the analytic
+rebuild of the $\theta=\pi/4$ map the Gram matrix (N2) of the two-dimensional
+eigenspace is positive definite with smallest eigenvalue
+$0.0838222432933016$ in an orthonormal Schur basis, $P_c=I_4$, and
+$G_c=-(M_4-\cos\mu\,I_4)S_4/\sin\mu$ is a positive definite matched
+covariance with one-cell closure residual below $10^{-14}$; the same numbers
+were obtained in [13] from the MAD-X exported map. It does not invent a unique
+pair of individual Twiss modes.
+
+Detuning the cell with $K_{1,D}=-(1+\varepsilon)$ splits the pair and provides
+the controls that fix the resolution criterion of an implementation. The
+table is computed by the probe of the degeneracy-theory record from the
+analytic cell; the tune errors quoted after it are from [13]:
+
+| $\varepsilon$ | tune split $\Delta Q$ | complex gap $g$ | $\|M_4\|_2$ |
+|---|---|---|---|
+| $10^{-3}$ | $3.394\times10^{-4}$ | $2.133\times10^{-3}$ | $2.980$ |
+| $10^{-6}$ | $3.396\times10^{-7}$ | $2.134\times10^{-6}$ | $2.980$ |
+| $10^{-9}$ | $3.396\times10^{-10}$ | $2.134\times10^{-9}$ | $2.980$ |
+| $10^{-12}$ | $3.397\times10^{-13}$ | $2.134\times10^{-12}$ | $2.980$ |
+
+With a roundoff-level map error $\rho_M\approx4\,\epsilon_{\rm mach}\|M_4\|_2
+\approx2.6\times10^{-15}$, the chord of (N22) is $q\approx2.5\times10^{-6}$ at
+$\varepsilon=10^{-9}$ and $q\approx2.5\times10^{-3}$ at $\varepsilon=10^{-12}$;
+the working notes report a periodic tune error of $4.45\times10^{-9}$ in the
+first case and $5.89\times10^{-6}$ in the second. For MAD-X itself, exporting
+the transfer map (`twiss, ..., rmatrix`) and supplying a symmetry-derived seed,
+$R=-\tan\theta\,I_2$ in the block convention of (T5) together with the matched
+$\beta,\alpha$ of the unrolled planes, recovers the correct tunes, but that
+seed is not a general algorithm.
 
 ## Appendix A. Single-transverse-plane Edwards–Teng reduction
 
@@ -2276,3 +2890,14 @@ parameterization of a fully coupled motion,” *Phys. Rev. Accel. Beams*
 [doi:10.1002/nla.245](https://doi.org/10.1002/nla.245);
 [author preprint, February 19, 2001](https://dieci.math.gatech.edu/preps/DiFrContInvSub.pdf).
 Equation numbers cited above refer to this supplied preprint.
+
+[12] H. Qin, M. Chung, R. C. Davidson, and J. W. Burby, “Spectral and
+structural stability properties of charged particle dynamics in coupled
+lattices,” *Phys. Plasmas* **22**, 056702 (2015), Sec. II (Krein signature
+and the definite/indefinite classification of repeated eigenvalues).
+[arXiv:1504.04315](https://arxiv.org/abs/1504.04315).
+
+[13] D. Xu, “Canonical dispersion at mode degeneracy,” working notes and
+numbered research trials, September 2026 (unpublished). Source of Section 13;
+its constructions are re-derived and checked in
+[the degeneracy-theory record](../history/twiss_dispersion_degeneracy_theory_2026_09_11.md).

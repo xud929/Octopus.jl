@@ -53,6 +53,17 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   paths, the three buffer shapes behind one protocol, the device-write
   constraints, capacity posture, crash-recovery cursor, live text mirror,
   and the migration order behind the current APIs.
+- [`twiss_dispersion_analysis.md`](design/twiss_dispersion_analysis.md) — the
+  first analysis (decided 2026-09-11, not implemented): one non-parametric
+  `AbstractAnalysis` object with an `analyze` verb and six pure-math kernels;
+  input by matrix or one-turn Jacobian (complex step, finite difference,
+  ForwardDiff through the extension); reciprocal canonical scaling; a
+  cluster-first pipeline with the coasting test before Krein classification,
+  Gram inertia deciding orientation per cluster, the dispersion ambiguity set
+  for definite degenerate groups, and an availability type in place of
+  NaN-as-silence; the resolution-chord criterion and how its default is
+  measured; receipt-based option certification; the verification plan mapped
+  to the theory's benchmarks; seven staged commits plus an external-benchmark stage (MAD-X, PTC, Xsuite); rejected alternatives.
 - [`survey_and_reference_channel.md`](design/survey_and_reference_channel.md) —
   the channel telling a runtime element its place on the reference trajectory:
   static survey values (`s_elem`, later `P0`) baked at compile via the line
@@ -93,12 +104,18 @@ Procedures, one per task class, routed from the Task Routing table in
 Self-contained derivations behind the accelerator-physics methods. They are
 reference material, not API docs; the implementing code links back to them.
 
-- [`twiss_dispersion.md`](theory/twiss_dispersion.md) — theory draft for the
-  first concrete analysis: 4D eigenmode, Edwards–Teng, and Mais–Ripken
+- [`twiss_dispersion.md`](theory/twiss_dispersion.md) — theory for the first
+  concrete analysis: 4D eigenmode, Edwards–Teng, and Mais–Ripken
   extraction/conversion; closed-form and iterative 6D dispersion decoupling;
   Ohmi and pinned Xsuite comparisons; Parzen's tune cubic, symmetric 6D
-  projectors and covariance, and invariant-subspace scan continuation. Analysis
-  implementation and tracked-lattice validation remain future work.
+  projectors and covariance, and invariant-subspace scan continuation; and
+  (Section 13) mode degeneracy: Krein classification of a repeated eigenspace,
+  the group projector and covariance that stay determined, the canonical
+  dispersion ambiguity set, the failure of closed-form extraction at a repeated
+  selected pair, the numerical handling, and the rolled equal-tune FODO cell
+  that MAD-X reports as unstable. The architecture is decided in
+  `design/twiss_dispersion_analysis.md`; implementation and tracked-lattice
+  validation are the open ledger row.
 - [`arc_survey_and_velocity_slip.md`](theory/arc_survey_and_velocity_slip.md) —
   what the survey coordinate is (arc length; bend `L` *is* the arc, so
   curvature changes nothing; the patch and kept-whole-line caveats), why the
@@ -329,6 +346,12 @@ and audits. The source code is the authority; these preserve the rationale.
 Forward-looking (not-yet-done) items live in `todo.md`, not here; the
 frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_ledger_archive.md).
 
+- [`twiss_dispersion_degeneracy_theory_2026_09_11.md`](history/twiss_dispersion_degeneracy_theory_2026_09_11.md) —
+  derivation record for theory Section 13 (mode degeneracy) and the analysis
+  design note: provenance of the ported working notes and the convention key,
+  a runnable Julia probe checking identities N1–N22 with negative controls,
+  the analytic rebuild of the rolled equal-tune FODO cell pinned to the MAD-X
+  exported map, and the detuned controls behind the resolution-chord default.
 - [`audit_twiss_dispersion_literature_2026_09_09.md`](history/audit_twiss_dispersion_literature_2026_09_09.md) —
   Parzen, Glukhov, and Dieci–Friedman review; direct 6D projectors and
   continuation checks; GLSF application removed from the active design.

@@ -951,6 +951,19 @@ a singular physical longitudinal projection. The
 [literature-review record](history/audit_twiss_dispersion_literature_2026_09_09.md)
 keeps the matrix identities, source translations, and numerical controls.
 
+## A substring match over type names is not a set
+
+The Twiss-analysis design review (2026-09-11) needed "every element kind
+whose tracking methods contain `Symplectic6DMap`". A grep counted 27 kinds;
+the exact-identity test the symplecticity contract already uses counts 22,
+because `Symplectic6DMap` is a substring of `NonSymplectic6DMap`. The 27 would
+have declared a symplectic optics analysis on the aperture and both Lorentz
+boosts, which the analysis's own symplectic check would then reject. Derive
+membership by `===` on the type, never by substring, and tripwire the derived
+set against the declared set in both directions. The
+[design note](design/twiss_dispersion_analysis.md) records the episode and
+the rule it adopted.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.
