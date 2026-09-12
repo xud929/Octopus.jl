@@ -72,7 +72,7 @@ submodules. Every directory under `src/` has a bullet below; the suite checks.
 - `src/track/`: generic tracking infrastructure only.
 - `src/policies/`: execution policies and their option schemas.
 - `src/contracts/`: contract types and `validate` implementations.
-- `src/analysis/`: analysis types (placeholder-only today).
+- `src/analysis/`: analysis types and the Twiss kernel files (symplectic linear algebra, `one_turn_matrix`, the 4D eigenmode route, the coupled parameterizations); the placeholder is still the only registered analysis.
 - `src/tasks/`: workflow composition and execution; `strongstrong/` holds the
   solvers and the configuration validator.
 - `src/constants/`: shared physical constants, units documented.

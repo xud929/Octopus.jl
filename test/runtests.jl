@@ -943,6 +943,1203 @@ end
     end
 end
 
+# Twiss analysis stage 2, Part A: the 4D eigenmode route
+# (src/analysis/eigenmodes_4d.jl). Placed right after the stage 1 kernel
+# testsets. Uses only the file-level `using Test, Octopus, LinearAlgebra,
+# Random`; no lane gate, no test-only dependency. Every tolerance is stated
+# as c * eps * kappa with c justified beside it; the measured ratios behind
+# the constants (probe measure_eig4d.jl) are recorded in the campaign history
+# file docs/history/twiss_dispersion_analysis_history.md (stage 2 record).
+# The two guard thresholds below (min_gap, stability_atol) and the closed
+# form's min_trace_gap are TEST choices for the provisional stage 2 guards;
+# stage 3 replaces the guards (resolution chord, per-cluster Schur block).
+#
+# Injected defects, each shown red on 2026-09-11 (script-mode harness on a
+# patched copy of src/; the unpatched control is green; per-injection fail
+# counts in the stage 2 record):
+#   e01a orientation: the (E4) rule kept the member with Im(v'Sv) > 0
+#   e01b selection:   the member chosen by Im(rho) < 0 instead of Im(v'Sv) < 0
+#   e02 normalizer:  the minus of (E6) dropped, U = [Re u, +Im u, ...]
+#   e03 kappa:       (M1) signed area with Re instead of Im
+#   e04 guard:       the stability guard inverted (departure < atol rejects)
+#   e05 cf guard:    the coincident-trace guard reduced to radicand < 0
+#   e06 cf sign:     sin(mu_j) forced positive in (E12) (tunes above 1/2 lost)
+#   e07 actions:     the 1/2 of (E9) dropped in the eigenvector evaluation
+#   e08 cf matching: the closed-form check matched mode j to mode j by label
+#                    instead of by trace (the det R = 1 label-tie fixtures; 9 fails)
+#   e09 cf normalizer: the minus of (E6) dropped in the closed form's U_cf (403 fails)
+#   e10 actions alias: from_vectors copied from from_normal_coordinates (99 fails)
+#   e11 cf differences: all five ClosedFormCheck4D differences set to 0.0 (1009 fails)
+
+const _EIG4D_MIN_GAP = 1e-6          # provisional resolution threshold (test choice)
+const _EIG4D_STAB = 1e-8             # provisional unit-circle tolerance (test choice)
+const _EIG4D_TRACE_GAP = 1e-8        # closed-form coincident-trace threshold (test choice)
+_eig4d_R(mu) = Octopus._rotation2(mu)
+_eig4d_blockdiag(A, B) = [A zeros(2, 2); zeros(2, 2) B]
+_eig4d(M) = Octopus._eigenmodes_4d(M; min_gap=_EIG4D_MIN_GAP, stability_atol=_EIG4D_STAB)
+_eig4d_cf(f) = Octopus._closed_form_check_4d(f; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB)
+# The 200 manufactured stable 4x4 maps of the design's verification plan
+# (seed 20260911), built once and shared by the testsets below.
+const _EIG4D_MAPS = let rng = Xoshiro(20260911)
+    [Octopus._manufactured_symplectic_map(rng, 4; stable=true).M for _ in 1:200]
+end
+
+@testset "4D eigenmodes: R(2pi 0.7) (+) R(2pi 0.31) gives tunes 0.7 and 0.31 with the orientation Im(v'Sv) < 0" begin
+    S4 = Octopus._symplectic_form(4)
+    M = _eig4d_blockdiag(_eig4d_R(2pi * 0.7), _eig4d_R(2pi * 0.31))
+    res = _eig4d(M)
+    @test res isa Octopus.Eigenmodes4D
+    @test is_determined(res.frame)
+    f = determined_value(res.frame)
+    # Tunes on the (E5) branch: 0.7, not 0.3 (the design's fixture row). A
+    # handful of O(1) operations: 16 eps.
+    @test abs(f.tunes[1] / (2pi) - 0.7) <= 16 * eps()
+    @test abs(f.tunes[2] / (2pi) - 0.31) <= 16 * eps()
+    @test all(0 <= mu < 2pi for mu in f.tunes)
+    for j in 1:2
+        u = f.vectors[j]
+        s = dot(u, S4 * u)                       # u' S u, purely imaginary
+        @test imag(s) < 0                        # the ORIENTED member (E4)
+        @test abs(s + 2im) <= 16 * eps() * norm(u)^2                     # (E3)
+        @test abs(f.eigenvalues[j] - exp(-im * f.tunes[j])) <= 16 * eps() # rho = e^{-i mu}
+        @test norm(M * u - f.eigenvalues[j] * u) <= 16 * eps() * norm(u)
+        # The rejected member: conj(u) has Im(v'Sv) > 0 and would give the
+        # tune 1 - Q on the other branch (tune-branch loss).
+        @test imag(dot(conj(u), S4 * conj(u))) > 0
+        @test abs(mod(-angle(conj(f.eigenvalues[j])), 2pi) / (2pi) - (1 - f.tunes[j] / (2pi))) <= 16 * eps()
+    end
+    # U_4: each 2x2 diagonal block is a rotation (an overall phase of u_j is
+    # a rotation of its real pair), the off-diagonal blocks vanish, and after
+    # the Section 6.2 phase fix (u_jx real positive for the x mode, u_jy for
+    # the y mode) U_4 = I. Phase-free P_j and G_j are the plane projectors.
+    U = f.normalizer
+    for (j, blk) in ((1, 1:2), (2, 3:4))
+        Uj = U[blk, blk]
+        @test norm(transpose(Uj) * Uj - I) <= 16 * eps()
+        @test abs(det(Uj) - 1) <= 16 * eps()
+    end
+    @test norm(U[1:2, 3:4]) <= 16 * eps() && norm(U[3:4, 1:2]) <= 16 * eps()
+    Ufix = zeros(4, 4)
+    for j in 1:2
+        b = 2j - 1
+        u = f.vectors[j] * (conj(f.vectors[j][b]) / abs(f.vectors[j][b]))
+        Ufix[:, b] = real(u); Ufix[:, b + 1] = -imag(u)
+    end
+    @test norm(Ufix - I) <= 64 * eps()
+    Ex = Diagonal([1.0, 1.0, 0.0, 0.0]); Ey = Diagonal([0.0, 0.0, 1.0, 1.0])
+    @test norm(f.projectors[1] - Ex) <= 16 * eps() && norm(f.projectors[2] - Ey) <= 16 * eps()
+    @test norm(f.covariances[1] - Ex) <= 16 * eps() && norm(f.covariances[2] - Ey) <= 16 * eps()
+    @test norm(f.signed_areas - I) <= 16 * eps()
+    @test f.label_margin > 0.5
+    # Spectrum diagnostics: both discriminants equal (tau_1 - tau_2)^2 with
+    # tau_j = 2 cos mu_j, and (T14) holds on this stable fixture.
+    s = res.spectrum
+    dtau = 2 * (cos(2pi * 0.7) - cos(2pi * 0.31))
+    @test abs(s.discriminant_t7 - dtau^2) <= 64 * eps()
+    @test abs(s.discriminant_e10 - dtau^2) <= 64 * eps()
+    @test s.t14_holds
+    @test s.unit_circle_departure <= 4 * eps()
+    @test abs(s.gap - min(abs(exp(-2pi * 0.7im) - exp(-2pi * 0.31im)), abs(exp(-2pi * 0.7im) - exp(2pi * 0.31im)))) <= 16 * eps()
+    @test s.min_gap == _EIG4D_MIN_GAP && s.stability_atol == _EIG4D_STAB   # the thresholds the code read
+    # Both evaluations of u (M4) are zero here: uncoupled.
+    @test f.u_evaluations == (f.signed_areas[1, 2], f.signed_areas[2, 1])
+    @test abs(f.u_difference) <= 16 * eps()
+    # The residuals on this exact fixture are at roundoff, and the closed
+    # form agrees on the tunes: a selection by the sign of Im(rho) instead
+    # of Im(v'Sv) (the design's rejected alternative) keeps u and takes the
+    # conjugate eigenvalue, which these three lines catch (injection e01b).
+    @test f.reconstruction_residual.normalized <= 16 * eps()
+    @test all(r.normalized <= 16 * eps() for r in f.eigenvector_residuals)
+    @test determined_value(_eig4d_cf(f)).tune_difference <= 64 * eps()
+end
+
+@testset "4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps" begin
+    S4 = Octopus._symplectic_form(4)
+    # Tolerances, all c eps kappa. Per-mode identities carry the polynomial
+    # degree of the check in the data (||u||^2, ||U||_F^2, the (M5) quartic
+    # ||u||^4); the normalized (I1) residuals carry max(1, ||M||); the
+    # CROSS-mode identities ((E7), P_1 + P_2 = I, P_1 P_2 = 0, the (M3)
+    # column sums, the (M4) difference) rest on the eigenvector DIRECTIONS,
+    # whose roundoff error is the design's chord, eps ||M||_2 ||U||_2^2 / g
+    # with g the conjugate-class gap, so they carry kq = max(1, ||M||_2)
+    # ||U||_2^2 / g times ||U||_F^2. c = 64 is at least ten times the largest
+    # required c the measurement found (stage 2 record).
+    c = 64
+    n_frames = 0
+    for (i, M) in enumerate(_EIG4D_MAPS)
+        res = _eig4d(M)
+        @test is_determined(res.frame)
+        is_determined(res.frame) || continue
+        n_frames += 1
+        f = determined_value(res.frame)
+        U = f.normalizer; nU = norm(U)^2; nM = max(1, norm(M))
+        kq = max(1, opnorm(M)) * opnorm(U)^2 / res.spectrum.gap
+        @test f.symplecticity_residual <= c * eps() * kq * nU                     # (E7)
+        @test norm(transpose(U) * S4 * U - S4) == f.symplecticity_residual       # the field IS that residual
+        @test f.reconstruction_residual.normalized <= c * eps() * nM              # (E8) in the (I1) form
+        Rb = _eig4d_blockdiag(_eig4d_R(f.tunes[1]), _eig4d_R(f.tunes[2]))
+        @test f.reconstruction_residual == Octopus._invariance_residual(M, U, Rb)
+        @test norm(U * Rb * Octopus._symplectic_inverse(U) - M) <= c * eps() * nU * nM   # (E8) as stated
+        P1, P2 = f.projectors
+        @test norm(P1 + P2 - I) <= c * eps() * kq * nU
+        @test norm(P1 * P2) <= c * eps() * kq * nU
+        for j in 1:2
+            u = f.vectors[j]; nu = norm(u)^2
+            @test imag(dot(u, S4 * u)) < 0
+            @test f.normalization_residuals[j] <= c * eps() * nu                  # (E3)
+            @test f.eigenvector_residuals[j].normalized <= c * eps() * nM
+            @test 0 <= f.tunes[j] < 2pi
+            @test abs(f.eigenvalues[j] - exp(-im * f.tunes[j])) <= c * eps()
+            P = f.projectors[j]; G = f.covariances[j]
+            @test norm(P * P - P) <= c * eps() * norm(P)^2                       # idempotent
+            Uj = U[:, 2j - 1:2j]
+            @test norm(G - Uj * transpose(Uj)) <= 16 * eps() * nU                # G_j = U_j U_j'
+            @test G == transpose(G)                                              # exact by construction
+            @test eigmin(Symmetric(G)) >= -c * eps() * norm(G)                    # PSD
+            @test norm(P - Uj * (-Octopus._symplectic_form(2) * transpose(Uj) * S4)) <= c * eps() * nU  # P_j = U_j(-S_2 U_j' S_4)
+            @test abs(f.signed_area_row_sums[j] - 1) <= c * eps() * nu            # (M2)
+            @test f.signed_area_row_sums[j] == f.signed_areas[j, 1] + f.signed_areas[j, 2]
+            for a in 1:2
+                q = u[2a - 1]; p = u[2a]
+                @test f.beta[j, a] == abs2(q) && f.gamma[j, a] == abs2(p)          # (M1) verbatim
+                @test f.alpha[j, a] == -real(conj(q) * p)
+                @test f.signed_areas[j, a] == -imag(conj(q) * p)
+                @test abs(f.beta[j, a] * f.gamma[j, a] - f.alpha[j, a]^2 - f.signed_areas[j, a]^2) <= c * eps() * nu^2   # (M5)
+                @test abs(f.signed_areas[j, a] - (P * S4)[2a - 1, 2a]) <= 16 * eps() * nu   # kappa = (P_j S)_{a,pa}
+                @test f.beta[j, a] >= 0 && f.gamma[j, a] >= 0
+            end
+        end
+        for a in 1:2
+            @test abs(f.signed_area_column_sums[a] - 1) <= c * eps() * kq * nU    # (M3)
+        end
+        @test f.u_evaluations == (f.signed_areas[1, 2], f.signed_areas[2, 1])      # (M4), both evaluations
+        @test abs(f.u_difference) <= c * eps() * kq * nU
+        @test f.signed_areas[1, 1] >= f.signed_areas[2, 1]                          # the label rule
+        @test f.label_margin == abs(f.signed_areas[1, 1] - f.signed_areas[2, 1])
+        @test f.matrix == M && !(f.matrix === M)
+    end
+    @test n_frames == 200
+    # The (M5) right-hand side is generally NOT one on a coupled map, so
+    # (1 + alpha^2) / beta would be wrong: at least one plane of one mode of
+    # the first map has kappa^2 away from one by more than the tolerance.
+    f1 = determined_value(_eig4d(_EIG4D_MAPS[1]).frame)
+    @test any(abs(f1.signed_areas[j, a]^2 - 1) > 1e-3 for j in 1:2, a in 1:2)
+end
+
+@testset "4D eigenmodes: closed-form (E10)-(E14) agrees with the eigenvector route and its guards fire" begin
+    S4 = Octopus._symplectic_form(4)
+    # Agreement tolerance: the difference of two routes carries either
+    # route's error. The closed-form arm kc = max(1, ||M||^2) max(1, ||U||^2)
+    # / |tau_1 - tau_2| is the roundoff of M + M^-1 - tau_k I over the (E11)
+    # denominator; the eigenvector arm is the chord kq ||U||_F^2 of the
+    # previous testset; kcf = kq ||U||^2 + kc. (E12) divides by sin mu_j, so
+    # the tune carries kcf / min |sin mu_j|, and G_j and everything derived
+    # from it (the (E14) vector, its (E3) residual, the PSD margin) carry
+    # kcf / min sin^2 because sin mu = sqrt(1 - tau^2/4) has
+    # d sin ~ d tau / (2 sin) (theory 4.4: ill conditioned near sin mu = 0).
+    # c = 64 is at least ten times the largest required c of the
+    # measurement.
+    c = 64
+    n_checked = 0
+    n_labels_clear = 0
+    # The agreement checks for one frame `f` of the map `M` and its determined
+    # check `k`; run on the 200 maps and on the two label-tie fixtures below.
+    # Returns whether both label margins were clear of the kappa tolerance.
+    function check_agreement(M, f, k)
+        cf = k.closed_form
+        root = abs(cf.traces[1] - cf.traces[2])
+        nU = norm(f.normalizer)^2
+        kq = max(1, opnorm(M)) * opnorm(f.normalizer)^2 / _eig4d(M).spectrum.gap
+        # kc: the roundoff of M + M^-1 (eps ||M||^2) plus that of tau_k itself,
+        # eps ||M||^2 / (2 root) from the square root of the radicand, over
+        # the (E11) denominator root.
+        kc = max(1, norm(M)^2) * max(1, nU) * (1 + 1 / (2 * root)) / root
+        kcf = kq * nU + kc
+        smin = minimum(abs.(cf.sines))
+        # Modes are matched by the eigenvalue trace (a class invariant), never
+        # by the label rule: at a label tie each route keeps its own given
+        # order. The permutation and both margins are reported; recomputed here.
+        t = (2cos(f.tunes[1]), 2cos(f.tunes[2]))
+        p = abs(cf.traces[1] - t[1]) + abs(cf.traces[2] - t[2]) <= abs(cf.traces[2] - t[1]) + abs(cf.traces[1] - t[2]) ? (1, 2) : (2, 1)
+        @test k.mode_permutation == p
+        @test k.label_margins == (f.label_margin, cf.label_margin)
+        # Each reported difference IS its recomputation over the matched modes
+        # (a check that reports zero without computing it would show here).
+        @test k.tune_difference == maximum(abs(cf.tunes[p[j]] - f.tunes[j]) for j in 1:2)
+        @test k.projector_difference == maximum(norm(cf.projectors[p[j]] - f.projectors[j]) for j in 1:2)
+        @test k.covariance_difference == maximum(norm(cf.covariances[p[j]] - f.covariances[j]) for j in 1:2)
+        @test k.outer_product_difference == maximum(norm(cf.vectors[p[j]] * cf.vectors[p[j]]' - f.vectors[j] * f.vectors[j]') for j in 1:2)
+        @test k.signed_area_difference == maximum(abs.(cf.signed_areas[[p[1], p[2]], :] - f.signed_areas))
+        @test k.projector_difference <= c * eps() * kcf
+        @test k.covariance_difference <= c * eps() * kcf / smin^2
+        @test k.outer_product_difference <= c * eps() * kcf / smin^2
+        @test k.signed_area_difference <= c * eps() * kcf
+        @test k.tune_difference <= c * eps() * kcf / smin
+        # The closed form's reconstruction residual is the (I1) form on the
+        # (E6) normalizer of its (E14) vectors (the field IS that residual; the
+        # (E14) sum itself is an identity of (E11)/(E12) and is not reported).
+        # U_cf carries the (E14) vectors' kcf / sin^2, as their (E3) residual.
+        @test cf.normalizer == hcat(real(cf.vectors[1]), -imag(cf.vectors[1]), real(cf.vectors[2]), -imag(cf.vectors[2]))
+        @test cf.reconstruction_residual == Octopus._invariance_residual(M, cf.normalizer, _eig4d_blockdiag(_eig4d_R(cf.tunes[1]), _eig4d_R(cf.tunes[2])))
+        @test cf.reconstruction_residual.normalized <= c * eps() * kcf / smin^2
+        @test cf.reconstruction_residual.raw >= cf.reconstruction_residual.normalized
+        @test cf.projector_residuals.idempotent <= c * eps() * kcf
+        @test cf.projector_residuals.complete <= c * eps() * kcf
+        @test cf.projector_residuals.disjoint <= c * eps() * kcf
+        for j in 1:2
+            @test abs(cf.traces[j] - 2 * cos(cf.tunes[j])) <= c * eps() * kc
+            @test abs(cf.sines[j] - sin(cf.tunes[j])) <= 64 * eps()
+            @test cf.covariance_min_eigenvalues[j] >= -c * eps() * kcf / smin^2  # the sign choice gave a PSD G_j
+            @test cf.normalization_residuals[j] <= c * eps() * kcf / smin^2       # (E3) on the (E14) vector
+            b = cf.pivots[j]
+            @test imag(cf.vectors[j][b]) == 0 && real(cf.vectors[j][b]) > 0     # pivot real positive
+            @test b == argmax(diag(cf.covariances[j]))
+        end
+        # (E10) is the eigenvalue-trace pair: {tau_1, tau_2} = {2 cos mu_j} of the frame
+        @test maximum(abs.(sort(collect(cf.traces)) .- sort([2cos(f.tunes[1]), 2cos(f.tunes[2])]))) <= c * eps() * kc
+        # When both label margins are clear of the kappa tolerance, the label
+        # rule (mode 1 = larger kappa_jx, on both routes) and the trace
+        # matching agree; at a tie the matching alone decides.
+        clear = min(k.label_margins...) > 2 * c * eps() * kcf
+        clear && @test k.mode_permutation == (1, 2)
+        return clear
+    end
+    for M in _EIG4D_MAPS
+        f = determined_value(_eig4d(M).frame)
+        chk = _eig4d_cf(f)
+        @test is_determined(chk)
+        is_determined(chk) || continue
+        n_checked += 1
+        n_labels_clear += check_agreement(M, f, determined_value(chk))
+    end
+    @test n_checked == 200
+    @test n_labels_clear == 200          # every manufactured map has clear labels; the tie branch is exercised below
+    # Label ties (u = 1/2, det R = 1): kappa_1x = kappa_2x exactly, so both
+    # routes' label margins are at roundoff and each keeps its own given order
+    # (eigensolver order in the frame, (tau_+, tau_-) in the closed form). A
+    # comparison of mode j with mode j by label is O(1) whenever those orders
+    # differ (the stage 2 review saw tune_difference 2.07 on the first fixture);
+    # the trace-matched check stays at c eps kappa. Fixtures: the det R = 1
+    # (r1..r4) of the design's benchmark 12.2-2 row through V_1(R) (T2), and a
+    # 45-degree roll of an uncoupled cell (det R = tan^2 45 = 1).
+    Rtie = [0.8 0.3; -0.6 1.025]
+    @test det(Rtie) == 1.0
+    Vtie = Octopus._edwards_teng_V(1, Rtie)
+    Mtie = Vtie * _eig4d_blockdiag(Octopus._twiss_block(2.3, 0.4, 2pi * 0.28), Octopus._twiss_block(1.7, -0.6, 2pi * 0.61)) * Octopus._symplectic_inverse(Vtie)
+    th = pi / 4
+    Wroll = [cos(th) * Matrix(1.0I, 2, 2) sin(th) * Matrix(1.0I, 2, 2); -sin(th) * Matrix(1.0I, 2, 2) cos(th) * Matrix(1.0I, 2, 2)]
+    Mroll = Wroll * _eig4d_blockdiag(Octopus._twiss_block(2.0, 0.3, 2pi * 0.7), Octopus._twiss_block(1.5, -0.4, 2pi * 0.31)) * transpose(Wroll)
+    n_tie_clear = 0
+    for Mt in (Mtie, Mroll)
+        ft = determined_value(_eig4d(Mt).frame)
+        kt = determined_value(_eig4d_cf(ft))
+        nUt = norm(ft.normalizer)^2
+        @test abs(ft.signed_areas[1, 1] - 0.5) <= 64 * eps() * nUt            # u = 1/2: the tie is exact in the data
+        @test maximum(kt.label_margins) <= 64 * eps() * nUt                    # both routes' margins at roundoff
+        n_tie_clear += check_agreement(Mt, ft, kt)
+    end
+    @test n_tie_clear == 0                # neither tie fixture had clear labels: the matching, not the label, carried the check
+    # Tunes above one half survive: the rotation fixture's mode 1 has Q = 0.7,
+    # so sin mu_1 < 0 and the (E12) sign choice must NOT impose sin > 0.
+    Mrot = _eig4d_blockdiag(_eig4d_R(2pi * 0.7), _eig4d_R(2pi * 0.31))
+    frot = determined_value(_eig4d(Mrot).frame)
+    krot = determined_value(_eig4d_cf(frot)).closed_form
+    @test krot.sines[1] < 0 && abs(krot.tunes[1] / (2pi) - 0.7) <= 64 * eps()
+    @test abs(krot.tunes[2] / (2pi) - 0.31) <= 64 * eps()
+    # Guards. Equal pairs R(a) (+) R(a) and the conjugate coincidence
+    # R(a) (+) R(-a) both have coincident traces: :singular_coefficient
+    # (the (E11) denominator), the reason this stage chose for the
+    # coincident-trace exclusion of theory 3.4.
+    for Meq in (_eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(0.9)), _eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(-0.9)))
+        cfe = Octopus._closed_form_eigenmodes_4d(Meq; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB)
+        @test !is_determined(cfe) && cfe.reason === :singular_coefficient
+        @test_throws UndeterminedQuantityError determined_value(cfe)
+    end
+    # A split of 1e-7 in the angle gives |tau_+ - tau_-| ~ 1.6e-7 > 1e-8: the
+    # closed form is available; with min_trace_gap = 1e-6 it is not. The
+    # threshold is read.
+    Mnear = _eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(0.9 + 1e-7))
+    @test is_determined(Octopus._closed_form_eigenmodes_4d(Mnear; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB))
+    @test Octopus._closed_form_eigenmodes_4d(Mnear; min_trace_gap=1e-6, stability_atol=_EIG4D_STAB).reason === :singular_coefficient
+    # Hyperbolic mode: diag(2, 1/2, R(1.2)) has tau_+ = 2.5.
+    Mhyp = _eig4d_blockdiag([2.0 0.0; 0.0 0.5], _eig4d_R(1.2))
+    @test Octopus._closed_form_eigenmodes_4d(Mhyp; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB).reason === :unstable_spectrum
+    # Unit eigenvalue: I_2 (+) S_2 has tau = 2 EXACTLY (tr M = 2, tr M^2 = 0,
+    # radicand 4). The fixture is exact on purpose: a trace excess delta from
+    # roundoff maps to a unit-circle departure sqrt(delta) (~2e-8 for
+    # I_2 (+) R(1.2)), the square-root sensitivity of a raw modulus test that
+    # stage 3's Schur-block test replaces (design pipeline step 6).
+    Mone = _eig4d_blockdiag(Matrix(1.0I, 2, 2), [0.0 1.0; -1.0 0.0])
+    @test 2 * tr(Mone * Mone) - tr(Mone)^2 + 8 == 4.0
+    @test Octopus._closed_form_eigenmodes_4d(Mone; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB).reason === :unit_eigenvalue
+    # Complex quartet: positions mapped by A = r R(theta), momenta by A^-T,
+    # a symplectic map with eigenvalues r e^{+-i theta}, e^{+-i theta} / r,
+    # whose (E10) radicand is negative.
+    A = 1.5 * _eig4d_R(1.0); B = transpose(inv(A))
+    Mq = zeros(4, 4)
+    Mq[1, 1] = A[1, 1]; Mq[1, 3] = A[1, 2]; Mq[3, 1] = A[2, 1]; Mq[3, 3] = A[2, 2]
+    Mq[2, 2] = B[1, 1]; Mq[2, 4] = B[1, 2]; Mq[4, 2] = B[2, 1]; Mq[4, 4] = B[2, 2]
+    @test norm(transpose(Mq) * S4 * Mq - S4) <= 64 * eps() * norm(Mq)^2
+    @test 2 * tr(Mq * Mq) - tr(Mq)^2 + 8 < -1
+    @test Octopus._closed_form_eigenmodes_4d(Mq; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB).reason === :unstable_spectrum
+    @test _eig4d(Mq).frame.reason === :unstable_spectrum
+    # Arguments are checked loudly.
+    @test_throws ArgumentError Octopus._closed_form_eigenmodes_4d(zeros(3, 3); min_trace_gap=1e-8, stability_atol=1e-8)
+    @test_throws ArgumentError Octopus._closed_form_eigenmodes_4d(Mrot; min_trace_gap=0.0, stability_atol=1e-8)
+    @test_throws ArgumentError Octopus._closed_form_eigenmodes_4d(Mrot; min_trace_gap=1e-8, stability_atol=-1.0)
+    @test_throws ArgumentError Octopus._closed_form_eigenmodes_4d([NaN 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]; min_trace_gap=1e-8, stability_atol=1e-8)
+end
+
+@testset "4D eigenmodes: normal coordinates and actions (E9) agree and are invariant under the map" begin
+    # kappa: J is quadratic in U^-1 r, and ||U^-1||_F = ||U||_F for a
+    # symplectic U, so ||U||^2 ||r||^2; the invariance check adds
+    # max(1, ||M||)^2 for the point M r. c = 64 covers the measured need
+    # tenfold.
+    c = 64
+    S4 = Octopus._symplectic_form(4)
+    rng = Xoshiro(20260911 + 1)
+    for (i, M) in enumerate(_EIG4D_MAPS[1:50])
+        f = determined_value(_eig4d(M).frame)
+        nU = norm(f.normalizer)^2
+        for _ in 1:3
+            r = randn(rng, 4)
+            xi = Octopus._normal_coordinates(f.normalizer, r)
+            @test norm(f.normalizer * xi - r) <= c * eps() * nU * norm(r)       # xi = U^-1 r
+            J = Octopus._mode_actions(f, r)
+            @test J.from_normal_coordinates == ((xi[1]^2 + xi[2]^2) / 2, (xi[3]^2 + xi[4]^2) / 2)
+            @test J.from_vectors == (abs2(dot(f.vectors[1], S4 * r)) / 2, abs2(dot(f.vectors[2], S4 * r)) / 2)   # the second (E9) evaluation IS its formula, not a copy of the first
+            @test maximum(abs.(J.from_normal_coordinates .- J.from_vectors)) <= c * eps() * nU * norm(r)^2
+            JM = Octopus._mode_actions(f, M * r)
+            @test maximum(abs.(JM.from_normal_coordinates .- J.from_normal_coordinates)) <= c * eps() * nU * max(1, norm(M))^2 * norm(r)^2
+            @test all(J.from_vectors .>= 0)
+        end
+    end
+    # On the rotation fixture the normal coordinates are the coordinates up
+    # to the eigenvector phase, so J_1 = (x^2 + px^2) / 2 exactly in form.
+    Mrot = _eig4d_blockdiag(_eig4d_R(2pi * 0.7), _eig4d_R(2pi * 0.31))
+    frot = determined_value(_eig4d(Mrot).frame)
+    r = [0.3, -0.2, 0.1, 0.4]
+    J = Octopus._mode_actions(frot, r)
+    @test abs(J.from_vectors[1] - (0.3^2 + 0.2^2) / 2) <= 16 * eps()
+    @test abs(J.from_vectors[2] - (0.1^2 + 0.4^2) / 2) <= 16 * eps()
+    @test_throws ArgumentError Octopus._normal_coordinates(zeros(3, 3), r)
+    @test_throws ArgumentError Octopus._normal_coordinates(frot.normalizer, [1.0, 2.0])
+end
+
+@testset "4D eigenmodes: the FODO cell of validation/lattice_cells.jl against its Courant-Snyder rule (benchmark 12.2-1)" begin
+    # The cell rebuilt inline with the script's constants (kq = 1.6, nst 4,
+    # integrator order 4), through `one_turn_matrix` on the tuple; the
+    # transverse 4x4 block is taken. The SYMMETRIC cell (kd = -kf) has
+    # exactly equal x and y traces, tr(F D Dq D) = tr(Dq D F D) by cyclicity,
+    # so it is a degenerate cluster (theory Section 13.10 rolls exactly this
+    # cell) and the generic route must refuse it; the accepted fixture is the
+    # design's own detuning K_1D = -(1 + eps) at eps = 1e-3, its "resolved"
+    # control. `twiss()` of the script (T15) is the reference rule.
+    function eig4d_fodo4(kf, kd)
+        qf = compile_runtime(QuadrupoleSpec(L=0.3, kn=(0.0, kf), nst=4, integrator_order=4))
+        qd = compile_runtime(QuadrupoleSpec(L=0.3, kn=(0.0, kd), nst=4, integrator_order=4))
+        dr = compile_runtime(DriftSpec(L=1.2))
+        M6, prov = one_turn_matrix((qf, dr, qd, dr))
+        @test prov.map_uncertainty == 0.0                       # complex step
+        @test norm(M6[1:4, 5:6]) == 0 && norm(M6[5:6, 1:4]) == 0   # no bends: the block is symplectic on its own
+        return M6[1:4, 1:4]
+    end
+    function eig4d_cs_rule(blk)   # validation/lattice_cells.jl `twiss(M)`, (T15), plus the (E5) branch of mu
+        t = blk[1, 1] + blk[2, 2]
+        smu = sign(blk[1, 2]) * sqrt(1 - (t / 2)^2)
+        return (beta=blk[1, 2] / smu, alpha=(blk[1, 1] - blk[2, 2]) / (2smu),
+                mu=mod(atan(smu, t / 2), 2pi))
+    end
+    kq = 1.6
+    Mexact = eig4d_fodo4(kq, -kq)
+    rex = _eig4d(Mexact)
+    @test abs((Mexact[1, 1] + Mexact[2, 2]) - (Mexact[3, 3] + Mexact[4, 4])) <= 16 * eps() * norm(Mexact)
+    @test rex.spectrum.gap <= 64 * eps()                            # measured 4.4e-16
+    @test rex.frame.reason === :cluster_unresolved
+    @test Octopus._closed_form_eigenmodes_4d(Mexact; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB).reason === :singular_coefficient
+    M4 = eig4d_fodo4(kq, -kq * (1 + 1e-3))
+    @test norm(M4[1:2, 3:4]) == 0 && norm(M4[3:4, 1:2]) == 0        # uncoupled
+    res = _eig4d(M4)
+    @test is_determined(res.frame)
+    f = determined_value(res.frame)
+    # kappa: the eigenvector route carries the chord kq ||U||^2 (the
+    # detuned cell's gap is 2.3e-3, so the amplifier is genuinely large) and
+    # (T15) divides by sin mu; c = 64 covers the measured need tenfold.
+    nU = norm(f.normalizer)^2
+    kq = max(1, opnorm(M4)) * opnorm(f.normalizer)^2 / res.spectrum.gap
+    for (a, blk) in ((1, M4[1:2, 1:2]), (2, M4[3:4, 3:4]))
+        ref = eig4d_cs_rule(blk)
+        tol = 64 * eps() * kq * nU / abs(sin(ref.mu))
+        @test abs(f.beta[a, a] - ref.beta) <= tol
+        @test abs(f.alpha[a, a] - ref.alpha) <= tol
+        @test abs(f.gamma[a, a] - (1 + ref.alpha^2) / ref.beta) <= tol      # kappa = 1 here, so (M5) gives the CS gamma
+        @test abs(f.tunes[a] - ref.mu) <= tol                              # mu = acos(tr/2) on the (E5) branch
+        half_trace = (blk[1, 1] + blk[2, 2]) / 2
+        @test abs(f.tunes[a] - (blk[1, 2] > 0 ? acos(half_trace) : 2pi - acos(half_trace))) <= tol
+        # The other mode has no projection on this plane.
+        b = 3 - a
+        @test abs(f.beta[b, a]) <= 64 * eps() * nU
+    end
+    @test abs(f.signed_areas[1, 2]) <= 64 * eps() * nU      # kappa_1y = 0
+    @test abs(f.signed_areas[2, 1]) <= 64 * eps() * nU      # kappa_2x = 0
+    @test abs(f.u_difference) <= 64 * eps() * nU
+    @test abs(f.signed_areas[1, 1] - 1) <= 64 * eps() * nU
+    @test f.label_margin > 0.5
+    @test res.spectrum.t14_holds
+end
+
+@testset "4D eigenmodes: guards land diag(2, 1/2, R(1.2)) in :unstable_spectrum and equal pairs in :cluster_unresolved" begin
+    # The design's counterexample: symplectic, positive discriminant, one
+    # hyperbolic mode. The decision is the modulus guard; (T14) itself fails
+    # only on |tau_+| = 2.5 > 2, which is reported, not decided on.
+    Mu = _eig4d_blockdiag([2.0 0.0; 0.0 0.5], _eig4d_R(1.2))
+    ru = _eig4d(Mu)
+    @test !is_determined(ru.frame) && ru.frame.reason === :unstable_spectrum
+    @test ru.frame.reason in DETERMINATION_REASONS
+    @test_throws UndeterminedQuantityError determined_value(ru.frame)
+    err = nothing
+    try
+        determined_value(ru.frame)
+    catch e
+        err = e
+    end
+    @test err isa UndeterminedQuantityError && err.reason === :unstable_spectrum && err.status === :unavailable
+    @test ru.spectrum.unit_circle_departure == 1.0
+    @test ru.spectrum.discriminant_e10 > 0 && !ru.spectrum.t14_holds
+    @test abs(real(ru.spectrum.traces[1]) - 2.5) <= 16 * eps()
+    # Equal pairs under a min_gap: R(a) (+) R(a), gap 0; the conjugate
+    # coincidence R(a) (+) R(-a) has the same traces and gap 0 through the
+    # conjugate distance.
+    for Me in (_eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(0.9)), _eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(-0.9)))
+        re = _eig4d(Me)
+        @test re.frame.reason === :cluster_unresolved
+        @test re.spectrum.gap <= 16 * eps()
+        @test re.spectrum.unit_circle_departure <= 16 * eps()     # stable, only unresolved
+    end
+    # min_gap is READ: a split of 1e-7 is unresolved at min_gap 1e-6 and
+    # resolved at 1e-9 (the same map).
+    Mn = _eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(0.9 + 1e-7))
+    @test Octopus._eigenmodes_4d(Mn; min_gap=1e-6, stability_atol=_EIG4D_STAB).frame.reason === :cluster_unresolved
+    rn = Octopus._eigenmodes_4d(Mn; min_gap=1e-9, stability_atol=_EIG4D_STAB)
+    @test is_determined(rn.frame) && abs(rn.spectrum.gap - 1e-7) <= 1e-9
+    # stability_atol is READ: a departure of 1e-6 is unstable at 1e-8 and
+    # not at 1e-4, where the real eigenvalues near 1 are a unit-eigenvalue
+    # class instead.
+    Md = _eig4d_blockdiag([1 + 1e-6 0.0; 0.0 1 / (1 + 1e-6)], _eig4d_R(1.2))
+    @test Octopus._eigenmodes_4d(Md; min_gap=1e-6, stability_atol=1e-8).frame.reason === :unstable_spectrum
+    @test Octopus._eigenmodes_4d(Md; min_gap=1e-6, stability_atol=1e-4).frame.reason === :unit_eigenvalue
+    # The identity and +-I_2 (+) R(1.2) are unit-eigenvalue classes.
+    @test _eig4d(Matrix(1.0I, 4, 4)).frame.reason === :unit_eigenvalue
+    @test _eig4d(_eig4d_blockdiag(Matrix(1.0I, 2, 2), _eig4d_R(1.2))).frame.reason === :unit_eigenvalue
+    @test _eig4d(_eig4d_blockdiag(-Matrix(1.0I, 2, 2), _eig4d_R(1.2))).frame.reason === :unit_eigenvalue
+    # Every reason this file can return is in the pinned vocabulary and the
+    # spectrum report is present in each case.
+    for M in (Mu, Mn, Md, Matrix(1.0I, 4, 4))
+        r = _eig4d(M)
+        @test r.frame.reason in DETERMINATION_REASONS
+        @test r.spectrum isa Octopus.SpectrumReport4D && length(r.spectrum.eigenvalues) == 4
+    end
+    # Arguments: size, finiteness, thresholds; no exported default.
+    Mok = _eig4d_blockdiag(_eig4d_R(0.7), _eig4d_R(0.31))
+    @test_throws ArgumentError Octopus._eigenmodes_4d(zeros(3, 3); min_gap=1e-6, stability_atol=1e-8)
+    @test_throws ArgumentError Octopus._eigenmodes_4d(zeros(6, 6); min_gap=1e-6, stability_atol=1e-8)
+    @test_throws ArgumentError Octopus._eigenmodes_4d([Inf 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]; min_gap=1e-6, stability_atol=1e-8)
+    @test_throws ArgumentError Octopus._eigenmodes_4d(Mok; min_gap=0.0, stability_atol=1e-8)
+    @test_throws ArgumentError Octopus._eigenmodes_4d(Mok; min_gap=1e-6, stability_atol=0.0)
+    @test_throws ArgumentError Octopus._eigenmodes_4d(Mok; min_gap=NaN, stability_atol=1e-8)
+    @test_throws UndefKeywordError Octopus._eigenmodes_4d(Mok; stability_atol=1e-8)
+    @test_throws UndefKeywordError Octopus._eigenmodes_4d(Mok; min_gap=1e-6)
+    @test_throws ArgumentError Octopus._orient_eigenvector(ComplexF64[1, 0, 0, 0], Octopus._symplectic_form(4))  # neutral vector
+    # Stage 2 exports nothing new, documents its types, and claims no analysis.
+    for n in (:NormalModeFrame4D, :Eigenmodes4D, :SpectrumReport4D, :ClosedFormEigenmodes4D, :ClosedFormCheck4D)
+        @test isdefined(Octopus, n) && !(n in names(Octopus))
+        @test !occursin("No documentation found", string(Base.Docs.doc(Base.Docs.Binding(Octopus, n))))
+    end
+    @test !isdefined(Octopus, :analyze)
+end
+
+@testset "4D eigenmodes: scaling invariance through _reciprocal_scaling and _unscale_twiss on three scalings" begin
+    # The frame of the scaled map C M C^-1 transformed back by the stage 1
+    # table equals the frame of M: beta / a^2, alpha, gamma a^2 (the Twiss
+    # row), kappa and tunes unchanged, P by C^-1 P~ C, G by C^-1 G~ C^-T.
+    # kappa: the similarity amplifies roundoff by cond(C)^2, each frame's
+    # eigenvector directions carry their chord kq (the larger of the two),
+    # and the quantities are quadratic in U (the larger ||U||_F^2). c = 1000
+    # as for stage 1's back-transformation rows: the measured need was 16.4
+    # (the G row under :auto), so 64 would leave a ratio of 0.26 and 1000
+    # buys the decade the design rule asks for.
+    c = 1000
+    n_rows = 0
+    for M in _EIG4D_MAPS[1:20], sc in ((2.0, 0.5), (0.3, 4.0), :auto)
+        f = determined_value(_eig4d(M).frame)
+        rec = Octopus._reciprocal_scaling(M, sc)
+        @test rec.mode === (sc === :auto ? :auto : :explicit)
+        C = Matrix(Octopus._scaling_matrix(rec))
+        Ms = Octopus._scale_map(rec, M)
+        rs = _eig4d(Ms)
+        fs = determined_value(rs.frame)
+        kqM = max(1, opnorm(M)) * opnorm(f.normalizer)^2 / _eig4d(M).spectrum.gap
+        kqS = max(1, opnorm(Ms)) * opnorm(fs.normalizer)^2 / rs.spectrum.gap
+        ksc = cond(C)^2 * max(kqM, kqS) * max(norm(f.normalizer)^2, norm(fs.normalizer)^2)
+        tol = c * eps() * ksc
+        for j in 1:2, a in 1:2
+            b, al, g = Octopus._unscale_twiss(rec, a, fs.beta[j, a], fs.alpha[j, a], fs.gamma[j, a])
+            @test abs(b - f.beta[j, a]) <= tol
+            @test abs(al - f.alpha[j, a]) <= tol
+            @test abs(g - f.gamma[j, a]) <= tol
+            @test abs(fs.signed_areas[j, a] - f.signed_areas[j, a]) <= tol      # kappa unchanged
+        end
+        @test maximum(abs.(fs.tunes .- f.tunes)) <= tol                            # tunes unchanged
+        for j in 1:2
+            @test norm(Octopus._unscale_projector(rec, fs.projectors[j]) - f.projectors[j]) <= tol
+            @test norm(Octopus._unscale_covariance(rec, fs.covariances[j]) - f.covariances[j]) <= tol
+        end
+        # The scaled Twiss values themselves DO move (unless C = I), so the
+        # rows above are not trivially satisfied.
+        if sc !== :auto
+            @test abs(fs.beta[1, 1] - f.beta[1, 1]) > 1e-6 * f.beta[1, 1]
+        end
+        n_rows += 1
+    end
+    @test n_rows == 60
+end
+
+# Twiss analysis stage 2, Part B: Mais-Ripken and Edwards-Teng
+# (src/analysis/coupled_parameterizations.jl). Placed right after the stage 2
+# Part A testsets. Uses only the file-level `using Test, Octopus,
+# LinearAlgebra, Random`; no lane gate, no test-only dependency. Every
+# tolerance is stated as c * eps * kappa with c justified beside it; the
+# measured ratios behind the constants (probe measure_param.jl) are recorded
+# in the campaign history file docs/history/twiss_dispersion_analysis_history.md
+# (stage 2 record). The guard values below are TEST choices.
+#
+# Injected defects, each shown red on 2026-09-11 (script-mode harness on a
+# patched copy of src/; the unpatched control is green; per-injection fail
+# counts in the stage 2 record):
+#   b01 kappa:        (M1) signed area with Re instead of Im
+#   b02 phase floor:  the (M6) zero-projection guard inverted
+#   b03 B10 sign:     R = +U_y U_x^{-1} (the minus of (B10) dropped)
+#   b04 admissible:   admissibility from sign(det R) > -1 alone (weight ignored)
+#   b05 T9 branch:    the form-2 denominator D + s sqrt(Delta) (same as form 1)
+#   b06 B11 weight:   form 2 of (B11) divided by 1 - u instead of u
+#   b07 M8 sign:      the -sin nu_1 entry of (M8) with a plus
+#   b08 M16:          the u(1 - u) term of (M16) dropped
+#   b09 T15 branch:   sin mu forced positive in _twiss_from_block
+#   b10 trace guard:  the map-route coincident-trace guard reduced to sqrt(Delta) < 0
+#   b11 guard weight: area_weight = NaN restored on the map route's guard path (2 fails)
+#   b12 tunes check:  the Real test of _check_tunes dropped (a String pair gives a MethodError; 2 fails)
+#   b13 thin kwargs:  kwargs... restored on _edwards_teng_from_map(frame), a caller mode_traces wins silently (1 fail)
+#   b14 T5 provenance: the normalizer route ignored M4 and measured its own (E8) rebuild (373 fails)
+#   b15 T5 provenance: the direct route ignored M4 and measured its own (E14) rebuild (373 fails)
+
+const _PB_TRACE_GAP = 1e-8           # map-route coincident-trace guard (test choice)
+_pb_R(mu) = Octopus._rotation2(mu)
+_pb_blockdiag(A, B) = [A zeros(2, 2); zeros(2, 2) B]
+const _PB_S4 = Octopus._symplectic_form(4)
+_pb_val(d) = determined_value(d)
+
+# The eigen frame these testsets need comes from Part A's constructor
+# (`_eigenmodes_4d`, eigenmodes_4d.jl): the oriented (E3)/(E4) vectors, the
+# tunes (E5), U_4 (E6), and the conjugate-class eigenvalue gap g of the
+# spectrum report (the design's chord divisor for the tolerances). The frame's
+# labels are mode 1 = the larger x-area kappa_jx; when `expected` tunes are
+# given the two modes are returned in the order closest to them (the coupled
+# construction and the scaling rows label by the constructing tunes), which
+# only reorders the returned tuples: the frame itself is returned unchanged
+# as `frame` for the thin methods on it. Loud when the frame is unavailable.
+const _PB_MIN_GAP = 1e-6             # provisional resolution threshold (test choice, as Part A)
+const _PB_STAB = 1e-8                # provisional unit-circle tolerance (test choice, as Part A)
+function _pb_frame(M; expected=nothing)
+    res = Octopus._eigenmodes_4d(M; min_gap=_PB_MIN_GAP, stability_atol=_PB_STAB)
+    fr = determined_value(res.frame)
+    us = collect(fr.vectors); mus = collect(fr.tunes); rhos = collect(fr.eigenvalues)
+    if expected !== nothing
+        d = [abs(mod(mus[i] - expected[j] + pi, 2pi) - pi) for i in 1:2, j in 1:2]
+        if d[1, 1] + d[2, 2] > d[1, 2] + d[2, 1]
+            us = reverse(us); mus = reverse(mus); rhos = reverse(rhos)
+        end
+    end
+    return (u1=us[1], u2=us[2], U=Octopus._vectors_to_normalizer(us...), tunes=(mus[1], mus[2]),
+            eigenvalues=(rhos[1], rhos[2]), gap=res.spectrum.gap, frame=fr)
+end
+
+# The 200 manufactured stable 4x4 maps of the design's verification plan
+# (seed 20260911), shared by the testsets below; the same seed and count as
+# Part A, so the two files see the same fixtures.
+const _PB_MAPS = let rng = Xoshiro(20260911)
+    [Octopus._manufactured_symplectic_map(rng, 4; stable=true).M for _ in 1:200]
+end
+# 200 manufactured NORMALIZERS: any real symplectic 4x4 matrix is a valid (E6)
+# normalizer of the map U diag(R(mu_1), R(mu_2)) U^{-1}; tunes drawn in (0, 2 pi).
+const _PB_NORMALIZERS = let rng = Xoshiro(20260912)
+    [(U=Octopus._manufactured_symplectic_map(rng, 4).M, tunes=(2pi * rand(rng), 2pi * rand(rng))) for _ in 1:200]
+end
+
+@testset "Mais-Ripken: (M1)-(M8) on 200 manufactured normalizers, zero projections, loud input" begin
+    # Tolerances c eps kappa: every (M1)-(M5) identity is quadratic in the
+    # entries of U (kappa = ||U||_F^2); the (M8) rebuild is linear in U with
+    # divisions by sqrt(beta_ja) (kappa = ||U||_F^2 / min beta); the (M7)
+    # rephasing multiplies by a unit complex number (kappa = ||u||). c = 64:
+    # ten times the largest measured requirement (stage 2 record).
+    c = 64
+    for (U, mu) in _PB_NORMALIZERS
+        nU = norm(U)^2
+        mr = Octopus._mais_ripken(U)
+        @test mr isa Octopus.MaisRipkenSet
+        for j in 1:2
+            @test abs(mr.kappa_row_sums[j] - 1) <= c * eps() * nU                  # (M2)
+            @test abs(mr.kappa_column_sums[j] - 1) <= c * eps() * nU               # (M3)
+            @test mr.kappa_row_sums[j] == mr.kappa[j, 1] + mr.kappa[j, 2]
+            @test mr.kappa_column_sums[j] == mr.kappa[1, j] + mr.kappa[2, j]
+            for a in 1:2
+                @test abs(mr.m5_residuals[j, a]) <= c * eps() * nU^2               # (M5), quartic
+                @test mr.beta[j, a] >= 0 && mr.gamma[j, a] >= 0
+                @test abs(mr.kappa[j, a]) <= sqrt(mr.beta[j, a] * mr.gamma[j, a]) * (1 + c * eps())   # |Im(q* p)| <= |q||p|
+            end
+        end
+        @test mr.u == mr.u_from_mode1 == mr.kappa[1, 2]                              # (M4) first evaluation
+        @test mr.u_from_mode2 == mr.kappa[2, 1]                                      # (M4) second evaluation
+        @test abs(mr.u_difference) <= c * eps() * nU
+        @test mr.u_difference == mr.u_from_mode1 - mr.u_from_mode2
+        # (M6): both position projections are nonzero almost surely here.
+        @test mr.phase_valid == (true, true)
+        for j in 1:2
+            p = _pb_val(mr.phases[j])
+            @test abs(p.cos^2 + p.sin^2 - 1) <= c * eps() * nU                         # normalized pair
+        end
+        # (M7) convention: u_1x > 0 and u_2y > 0 real after the rephasing, (M1) unchanged.
+        v1, v2 = mr.vectors
+        @test real(v1[1]) > 0 && abs(imag(v1[1])) <= c * eps() * norm(v1)
+        @test real(v2[3]) > 0 && abs(imag(v2[3])) <= c * eps() * norm(v2)
+        mr2 = Octopus._mais_ripken(v1, v2)
+        @test mr2.beta == mr.beta || norm(mr2.beta - mr.beta) <= c * eps() * nU
+        @test norm(mr2.kappa - mr.kappa) <= c * eps() * nU
+        # The two entry forms agree exactly: U -> vectors -> set is the U method.
+        u1, u2 = Octopus._normalizer_to_vectors(U)
+        @test Octopus._mais_ripken(u1, u2).kappa == mr.kappa
+        @test Octopus._vectors_to_normalizer(u1, u2) == U
+        # (M8): the complete set rebuilds the normalizer of the REPHASED vectors,
+        # which is symplectic and reconstructs the same map.
+        W = Octopus._mais_ripken_normalizer(mr)
+        @test is_determined(W)
+        U8 = _pb_val(W)
+        @test norm(U8 - Octopus._vectors_to_normalizer(v1, v2)) <= c * eps() * nU / minimum(mr.beta)
+        @test norm(transpose(U8) * _PB_S4 * U8 - _PB_S4) <= c * eps() * nU^2 / minimum(mr.beta)
+        Rb = _pb_blockdiag(_pb_R(mu[1]), _pb_R(mu[2]))
+        M = U * Rb * Octopus._symplectic_inverse(U)
+        @test Octopus._invariance_residual(M, U8, Rb).normalized <= c * eps() * max(1, norm(M)) * nU / minimum(mr.beta)
+        # Plain-argument (M8) equals the set method.
+        @test Octopus._mais_ripken_normalizer(mr.beta, mr.alpha, mr.u, _pb_val(mr.phases[1]), _pb_val(mr.phases[2])) == U8
+        @test mr.projection_rtol == 64 * eps()
+    end
+    # Zero projections: the identity normalizer (exactly uncoupled) has both
+    # secondary projections zero; every phase-independent quantity is unique.
+    mr0 = Octopus._mais_ripken(Matrix(1.0I, 4, 4))
+    @test mr0.phase_valid == (false, false)
+    @test mr0.phases[1].reason === :zero_projection && mr0.phases[2].reason === :zero_projection
+    @test_throws UndeterminedQuantityError determined_value(mr0.phases[1])
+    @test mr0.kappa == [1.0 0.0; 0.0 1.0] && mr0.beta == [1.0 0.0; 0.0 1.0] && mr0.u == 0.0
+    @test Octopus._mais_ripken_normalizer(mr0).reason === :zero_projection
+    @test mr0.vectors == Octopus._normalizer_to_vectors(Matrix(1.0I, 4, 4))     # no rephasing of an already real primary
+    # One mode with a zero PRIMARY projection (u_1x = 0): labels swapped on the identity.
+    u1s, u2s = Octopus._normalizer_to_vectors(Matrix(1.0I, 4, 4))
+    mrs = Octopus._mais_ripken(u2s, u1s)
+    @test mrs.phase_valid == (false, false) && mrs.u == 1.0 && mrs.kappa == [0.0 1.0; 1.0 0.0]
+    @test mrs.vectors == (u2s, u1s)                                            # kept unchanged, not rephased
+    # Rank-one coupling: mode 1 loses its y projection while mode 2 keeps its x projection.
+    Ur = Octopus._edwards_teng_normalizer(1, [0.0 0.0; 0.0 0.4], 2.0, 0.3, 1.5, -0.2)
+    mrr = Octopus._mais_ripken(Ur)
+    @test mrr.phase_valid == (false, true) && mrr.phases[1].reason === :zero_projection
+    @test abs(mrr.u) <= 64 * eps() && mrr.beta[1, 2] == 0.0 && mrr.beta[2, 1] > 0
+    @test Octopus._mais_ripken_normalizer(mrr).reason === :zero_projection
+    # The floor is scale-aware: a tiny but genuine projection passes at rtol 0.
+    @test Octopus._mais_ripken(Ur; projection_rtol=0.0).phase_valid == (false, true)
+    # Loud input.
+    @test_throws ArgumentError Octopus._mais_ripken(zeros(3), zeros(4))
+    @test_throws ArgumentError Octopus._mais_ripken([NaN, 0, 0, 0] .+ 0im, zeros(4))
+    @test_throws ArgumentError Octopus._mais_ripken(zeros(3, 3))
+    @test_throws ArgumentError Octopus._mais_ripken(Matrix(1.0I, 4, 4); projection_rtol=-1.0)
+    @test_throws ArgumentError Octopus._mais_ripken_normalizer(zeros(2, 2), zeros(2, 2), 0.0, (cos=1.0, sin=0.0), (cos=1.0, sin=0.0))
+    @test_throws ArgumentError Octopus._normalizer_to_vectors(zeros(4, 3))
+end
+
+@testset "Mais-Ripken covariance: (M9)-(M16) agree, close under the map, and refuse a zero projection" begin
+    # kappa: Sigma is quadratic in U and linear in the emittances (||U||_F^2
+    # max eps); (M12)-(M16) divide by sqrt(beta beta), so their kappa carries
+    # 1 / min beta_ja; closure M Sigma M' - Sigma is quadratic in M on top.
+    c = 64
+    for (U, mu) in _PB_NORMALIZERS[1:100]
+        e = (1.3, 0.4)
+        nU = norm(U)^2; ne = maximum(e)
+        S9 = Octopus._matched_covariance_4d(U, e)
+        u1, u2 = Octopus._normalizer_to_vectors(U)
+        S9v = Octopus._matched_covariance_4d(u1, u2, e)
+        @test norm(S9 - S9v) <= c * eps() * nU * ne                              # both (M9) expressions
+        @test norm(S9 - transpose(S9)) <= c * eps() * nU * ne
+        @test S9 == U * Diagonal([e[1], e[1], e[2], e[2]]) * transpose(U)        # the field IS (M9)
+        P1, G1 = Octopus._mode_projector_covariance(u1)
+        P2, G2 = Octopus._mode_projector_covariance(u2)
+        @test norm(S9v - (e[1] * G1 + e[2] * G2)) <= c * eps() * nU * ne          # sum eps_j G_j
+        mr = Octopus._mais_ripken(U)
+        S12 = Octopus._mais_ripken_covariance(mr, e)
+        @test is_determined(S12)
+        @test norm(_pb_val(S12) - S9) <= c * eps() * nU * ne / minimum(mr.beta)  # (M10)-(M16) entrywise
+        @test maximum(abs, Octopus._mais_ripken_gamma_identities(mr)) <= c * eps() * nU / minimum(mr.beta)   # (M13)
+        # Closure under the map (a matched ensemble stays matched).
+        Rb = _pb_blockdiag(_pb_R(mu[1]), _pb_R(mu[2]))
+        M = U * Rb * Octopus._symplectic_inverse(U)
+        @test norm(M * S9 * transpose(M) - S9) <= c * eps() * nU * ne * max(1, norm(M))^2
+        # (M10): the diagonal entries are emittance-weighted projected betas.
+        @test abs(S9[1, 1] - (e[1] * mr.beta[1, 1] + e[2] * mr.beta[2, 1])) <= c * eps() * nU * ne
+        @test abs(S9[3, 3] - (e[1] * mr.beta[1, 2] + e[2] * mr.beta[2, 2])) <= c * eps() * nU * ne
+        # (M11) through the phases.
+        p1, p2 = _pb_val(mr.phases[1]), _pb_val(mr.phases[2])
+        Sxy = e[1] * sqrt(mr.beta[1, 1] * mr.beta[1, 2]) * p1.cos + e[2] * sqrt(mr.beta[2, 1] * mr.beta[2, 2]) * p2.cos
+        @test abs(S9[1, 3] - Sxy) <= c * eps() * nU * ne
+        # Emittance linearity: zero emittance in mode 2 leaves eps_1 G_1.
+        @test norm(Octopus._matched_covariance_4d(U, (e[1], 0.0)) - e[1] * G1) <= c * eps() * nU * ne
+    end
+    # Zero projection: (M9) is finite, (M12) has no chart.
+    mr0 = Octopus._mais_ripken(Matrix(1.0I, 4, 4))
+    @test Octopus._matched_covariance_4d(Matrix(1.0I, 4, 4), (1.0, 2.0)) == Diagonal([1.0, 1.0, 2.0, 2.0])
+    @test Octopus._mais_ripken_covariance(mr0, (1.0, 2.0)).reason === :zero_projection
+    @test Octopus._mais_ripken_gamma_identities(mr0) == [0.0 Inf; Inf 0.0]
+    # Loud input.
+    @test_throws ArgumentError Octopus._matched_covariance_4d(Matrix(1.0I, 4, 4), (1.0,))
+    @test_throws ArgumentError Octopus._matched_covariance_4d(Matrix(1.0I, 4, 4), (1.0, -1.0))
+    @test_throws ArgumentError Octopus._matched_covariance_4d(Matrix(1.0I, 4, 4), (1.0, NaN))
+    @test_throws ArgumentError Octopus._matched_covariance_4d(zeros(3, 3), (1.0, 1.0))
+    @test_throws ArgumentError Octopus._mais_ripken_covariance(mr0, (1.0, 2.0, 3.0))
+end
+
+@testset "Edwards-Teng: normalizer (B10), map (T9) and direct (B11) routes agree on 200 maps; every reconstruction returns M; the 7.5 round trips" begin
+    # Tolerances c eps kappa. Quantities computed from the SAME frame
+    # (normalizer vs direct) differ by route arithmetic only: kappa_R =
+    # ||U||_F^2 / |w| (the (B10) solve divides the block by its determinant w).
+    # The map route never sees the frame, so its comparison carries the
+    # eigenvector chord kq = max(1, ||M||_2) ||U||_2^2 / g of Part A on top,
+    # and (T15) divides by sin mu_j (kappa_T = 1 / min |sin mu_j|). c = 64:
+    # ten times the largest measured requirement (stage 2 record).
+    c = 64
+    n_both = 0
+    for M in _PB_MAPS
+        f = _pb_frame(M)
+        U = f.U; mu = f.tunes
+        nU = norm(U)^2; nM = max(1, norm(M))
+        kq = max(1, opnorm(M)) * opnorm(U)^2 / f.gap
+        kT = 1 / minimum(abs.(sin.(mu)))
+        etn = Octopus._edwards_teng_from_normalizer(U, mu; M4=M)
+        etd = Octopus._edwards_teng_direct(f.u1, f.u2; tunes=mu, M4=M)
+        etm = Octopus._edwards_teng_from_map(M; min_trace_gap=_PB_TRACE_GAP, mode_traces=(2cos(mu[1]), 2cos(mu[2])))
+        @test (etn.route, etd.route, etm.route) == (:normalizer, :direct, :map)
+        @test _pb_val(etn.u) == _pb_val(etd.u)                                  # both read kappa_1y of mode 1
+        # The thin methods on Part A's frame unpack it into exactly these plain
+        # calls (same vectors, normalizer, tunes, projectors and matrix), so
+        # every result is bit-identical; the frame's labels are the ones above.
+        @test f.U == f.frame.normalizer && f.tunes == f.frame.tunes
+        @test Octopus._mais_ripken(f.frame).kappa == Octopus._mais_ripken(f.u1, f.u2).kappa
+        etnf = Octopus._edwards_teng_from_normalizer(f.frame)
+        etdf = Octopus._edwards_teng_direct(f.frame)
+        etmf = Octopus._edwards_teng_from_map(f.frame; min_trace_gap=_PB_TRACE_GAP)
+        for (g, h) in ((etnf, etn), (etdf, etd), (etmf, etm))
+            @test g.route == h.route && _pb_val(g.u) == _pb_val(h.u)
+            for form in 1:2
+                gf = getfield(g, form == 1 ? :form1 : :form2); hf = getfield(h, form == 1 ? :form1 : :form2)
+                @test _pb_val(gf.R) == _pb_val(hf.R) && gf.area_weight == hf.area_weight && gf.admissible == hf.admissible
+                if gf.admissible
+                    @test _pb_val(gf.reconstruction_residual) == _pb_val(hf.reconstruction_residual)   # the (T5) residual is against frame.matrix = M
+                else
+                    @test gf.reconstruction_residual.reason === hf.reconstruction_residual.reason === :form_inadmissible
+                end
+            end
+        end
+        @test Octopus._matched_covariance_4d(f.frame, (1.3, 0.4)) == Octopus._matched_covariance_4d(f.u1, f.u2, (1.3, 0.4))
+        @test abs(_pb_val(etn.u) - _pb_val(etm.u)) <= c * eps() * kq * nU
+        mr = Octopus._mais_ripken(U)
+        @test _pb_val(etn.u) == mr.u
+        f1, f2 = etn.form1, etn.form2
+        @test f1.area_weight == mr.kappa[1, 1] && f2.area_weight == mr.kappa[2, 1]   # 1 - u and u by (M3)
+        @test is_determined(f1.R) && is_determined(f2.R)                        # generic: both weights nonzero
+        @test abs(_pb_val(f1.det_R) * _pb_val(f2.det_R) - 1) <= c * eps() * nU^2 / min(abs(f1.area_weight), abs(f2.area_weight))^2
+        @test norm(_pb_val(f2.R) + _pb_val(f1.R) / _pb_val(f1.det_R)) <= c * eps() * nU^2 / min(abs(f1.area_weight), abs(f2.area_weight))^2   # R_2 = -R_1 / det R_1
+        @test f1.admissible == (1 + _pb_val(f1.det_R) > 0 && f1.area_weight > 0)
+        @test f2.admissible == (1 + _pb_val(f2.det_R) > 0 && f2.area_weight > 0)
+        @test f1.admissible || f2.admissible                                      # at least one form for every real u (7.3)
+        n_both += f1.admissible && f2.admissible
+        for (fn, fd, fm) in ((etn.form1, etd.form1, etm.form1), (etn.form2, etd.form2, etm.form2))
+            w = fn.area_weight; kR = nU / abs(w)
+            @test fn.form == fd.form == fm.form
+            @test fd.admissible == fn.admissible && fm.admissible == fn.admissible
+            Rn = _pb_val(fn.R)
+            @test norm(Rn - _pb_val(fd.R)) <= c * eps() * kR * max(1, norm(Rn))
+            @test norm(Rn - _pb_val(fm.R)) <= c * eps() * kq * kR * max(1, norm(Rn))
+            @test abs(w - fd.area_weight) <= c * eps() * nU
+            @test abs(w - fm.area_weight) <= c * eps() * kq * nU * max(1, abs(w))^2   # 1/(1 + det R) of a perturbed R
+            @test fn.consistency_residual <= 4c * eps() * kR * max(1, norm(Rn))       # the second (B10) expression: two solves each dividing by w; measured requirement 12.4 (stage 2 record), so 4c = 256
+            @test fd.consistency_residual == 0.0 && fm.consistency_residual == 0.0
+            if !fn.admissible
+                for g in (fn, fd, fm)
+                    @test g.lambda.reason === :form_inadmissible && g.twiss.reason === :form_inadmissible
+                    @test g.blocks.reason === :form_inadmissible && g.reconstruction_residual.reason === :form_inadmissible
+                    @test_throws UndeterminedQuantityError determined_value(g.twiss)
+                end
+                continue
+            end
+            lam = _pb_val(fn.lambda)
+            @test lam == 1 / sqrt(1 + _pb_val(fn.det_R))                            # (T3)
+            @test abs(lam^2 - w) <= c * eps() * kR                                 # lambda^2 = area weight (B3)/(B7)
+            tn, td, tm = _pb_val(fn.twiss), _pb_val(fd.twiss), _pb_val(fm.twiss)
+            for j in 1:2
+                @test tn[j].mu == mu[j] && td[j].mu == mu[j]
+                @test abs(mod(tm[j].mu - mu[j] + pi, 2pi) - pi) <= c * eps() * kq * kT * nU
+                @test tn[j].beta > 0 && abs(tn[j].beta * tn[j].gamma - tn[j].alpha^2 - 1) <= c * eps() * kR^2   # unit area
+                for k in (:beta, :alpha, :gamma)
+                    scale = max(1, abs(tn[j][k]))
+                    @test abs(tn[j][k] - td[j][k]) <= c * eps() * kR * scale
+                    @test abs(tn[j][k] - tm[j][k]) <= c * eps() * kq * kR * kT * scale
+                end
+            end
+            bn, bd, bm = _pb_val(fn.blocks), _pb_val(fd.blocks), _pb_val(fm.blocks)
+            for j in 1:2
+                @test bn[j] == Octopus._twiss_block(tn[j].beta, tn[j].alpha, mu[j])   # (T16)
+                @test norm(bn[j] - bd[j]) <= c * eps() * kR * max(1, norm(bn[j]))
+                @test norm(bn[j] - bm[j]) <= c * eps() * kq * kR * max(1, norm(bn[j]))
+                @test abs(tr(bm[j]) - 2cos(mu[j])) <= c * eps() * kq * nU              # (T11) blocks carry the mode traces
+            end
+            # (T5): M V = V diag(Mbar_1, Mbar_2) in the (I1) form, on every route.
+            for g in (fn, fd, fm)
+                r = _pb_val(g.reconstruction_residual)
+                @test r.normalized <= c * eps() * kq * kR * nM
+                @test r.raw >= r.normalized
+                # The field IS the (I1) residual against the caller's M on this route's own V and blocks
+                # (a route that ignored M4 and measured its own rebuild would show here).
+                @test r == Octopus._invariance_residual(M, Octopus._edwards_teng_V(g.form, _pb_val(g.R)), _pb_blockdiag(_pb_val(g.blocks)...))
+            end
+            V = Octopus._edwards_teng_V(fn.form, Rn)
+            @test norm(transpose(V) * _PB_S4 * V - _PB_S4) <= c * eps() * max(1, norm(V))^2   # V is symplectic
+            @test norm(V * _pb_blockdiag(bn...) * Octopus._symplectic_inverse(V) - M) <= c * eps() * kR * nM * max(1, norm(V))^2   # (T1) as stated
+            # (B4)/(B8) phases equal the (M6) phases of the rebuilt normalizer, on every route.
+            Uet = Octopus._edwards_teng_normalizer(fn.form, Rn, tn[1].beta, tn[1].alpha, tn[2].beta, tn[2].alpha)
+            mret = Octopus._mais_ripken(Uet)
+            @test mret.phase_valid == (true, true)
+            for g in (fn, fd, fm), j in 1:2
+                pg = _pb_val(g.phases)[j]; pm = _pb_val(mret.phases[j])
+                @test hypot(pg.cos - pm.cos, pg.sin - pm.sin) <= c * eps() * (g.route === :map ? kq : 1) * kR * nU / minimum(mret.beta)
+            end
+            # 7.5 row "Edwards-Teng": V B -> U_4 -> (E6) vectors -> (M1), (M6); it reconstructs M and
+            # its (M1) functions are the projected tables of 7.2/7.3.
+            Rb = _pb_blockdiag(_pb_R(mu[1]), _pb_R(mu[2]))
+            @test Octopus._invariance_residual(M, Uet, Rb).normalized <= c * eps() * kq * kR * nM
+            Q1 = [tn[1].beta -tn[1].alpha; -tn[1].alpha tn[1].gamma]; Q2 = [tn[2].beta -tn[2].alpha; -tn[2].alpha tn[2].gamma]
+            A = Octopus._adjugate2(Rn)
+            proj(K, Q) = lam^2 * K * Q * transpose(K)
+            tab = fn.form == 1 ? ((lam^2 * Q1, proj(Rn, Q1)), (proj(A, Q2), lam^2 * Q2)) :   # 7.2 table: (mode 1: x, y), (mode 2: x, y)
+                                 ((proj(A, Q1), lam^2 * Q1), (lam^2 * Q2, proj(Rn, Q2)))      # 7.3 table
+            for j in 1:2, a in 1:2
+                T = tab[j][a]
+                @test abs(mret.beta[j, a] - T[1, 1]) <= c * eps() * kR * nU * max(1, norm(T))
+                @test abs(mret.alpha[j, a] + T[1, 2]) <= c * eps() * kR * nU * max(1, norm(T))
+                @test abs(mret.gamma[j, a] - T[2, 2]) <= c * eps() * kR * nU * max(1, norm(T))
+            end
+            # 7.5 row "Complete Mais-Ripken": (M8) -> U_4 -> (B10), (B5)/(B9) recover R and the Twiss.
+            U8 = _pb_val(Octopus._mais_ripken_normalizer(mret))
+            et8 = Octopus._edwards_teng_from_normalizer(U8, mu; M4=M)
+            g8 = fn.form == 1 ? et8.form1 : et8.form2
+            @test norm(_pb_val(g8.R) - Rn) <= c * eps() * kR * nU * max(1, norm(Rn)) / minimum(mret.beta)
+            t8 = _pb_val(g8.twiss)
+            for j in 1:2, k in (:beta, :alpha, :gamma)
+                @test abs(t8[j][k] - tn[j][k]) <= c * eps() * kR * nU * max(1, abs(tn[j][k])) / minimum(mret.beta)
+            end
+        end
+    end
+    @test n_both > 0              # the fixtures exercise the two-form case (the one-form case has its own fixtures below)
+end
+
+@testset "Edwards-Teng: the coupled construction of benchmark 12.2-2 (Linear6DSpec optics form conjugated by XYCouplingSpec)" begin
+    # The XYCoupling kernel (src/elements/linear_maps.jl 360-370) is, on
+    # (x, px, y, py), g [I adj(Rm); -Rm I] in XY_MODEA and g [adj(Rm) I; I -Rm]
+    # in XY_MODEB with Rm = [r1 r2; r3 r4], g = 1 / sqrt(1 + r1 r4 - r2 r3) =
+    # 1 / sqrt(1 + det Rm): exactly V_1(Rm) and V_2(Rm) of (T2)/(T3). Their
+    # inverses are V_1(-Rm) and V_2(adj(Rm)) (the (T2) forms are involutive up
+    # to those substitutions), so the tuple (W^{-1}, M_0, W) folded in order by
+    # `one_turn_matrix` is W M_0 W^{-1} = V diag(Mbar_1, Mbar_2) V^{-1} (T1)
+    # with M_0 the block-diagonal Courant-Snyder map of the Linear6DSpec optics
+    # form (beta1, alpha1, dmu; beta2 = beta1 so the map is periodic). The
+    # (r1..r4) below give det R = r1 r4 - r2 r3 in (-0.5, 0, 0.3, 1): the design
+    # row; derivation in the stage 2 record.
+    # kappa: the recovered R is a linear solve on a frame with chord kq;
+    # betas and alphas divide by the weight; c = 64 as measured.
+    c = 64
+    bx, ax, mux = 2.0, 0.3, 2pi * 0.7
+    by, ay, muy = 1.5, -0.4, 2pi * 0.31
+    bz, muz = 10.0, 2pi * 0.05
+    Rs = ((0.5, 0.5, 1.5, 0.5), (0.4, 0.2, 0.6, 0.3), (0.5, 0.2, -0.1, 0.56), (0.8, 0.3, -0.6, 1.025))
+    @test maximum(abs.([r[1] * r[4] - r[2] * r[3] for r in Rs] .- [-0.5, 0.0, 0.3, 1.0])) <= 2 * eps()
+    m0 = compile_runtime(Linear6DSpec(beta1=(bx, by, bz), alpha1=(ax, ay, 0.0), dmu=(mux, muy, muz)))
+    M0 = one_turn_matrix((m0,)).matrix[1:4, 1:4]
+    @test norm(M0 - _pb_blockdiag(Octopus._twiss_block(bx, ax, mux), Octopus._twiss_block(by, ay, muy))) <= 64 * eps() * norm(M0)
+    for (mode, form) in ((XY_MODEA, 1), (XY_MODEB, 2)), r in Rs
+        Rm = [r[1] r[2]; r[3] r[4]]; d = det(Rm)
+        W = compile_runtime(XYCouplingSpec(r1=r[1], r2=r[2], r3=r[3], r4=r[4], mode=mode))
+        Winv = form == 1 ? compile_runtime(XYCouplingSpec(r1=-r[1], r2=-r[2], r3=-r[3], r4=-r[4], mode=mode)) :
+                           compile_runtime(XYCouplingSpec(r1=r[4], r2=-r[2], r3=-r[3], r4=r[1], mode=mode))
+        M6, prov = one_turn_matrix((Winv, m0, W))
+        M = M6[1:4, 1:4]
+        @test norm(M6[5:6, 1:4]) == 0 && norm(M6[1:4, 5:6]) == 0                # the coupling stays transverse
+        V = Octopus._edwards_teng_V(form, Rm)
+        @test norm(one_turn_matrix((W,)).matrix[1:4, 1:4] - V) <= 16 * eps() * norm(V)        # the kernel IS V_form(Rm)
+        @test norm(one_turn_matrix((Winv,)).matrix[1:4, 1:4] * V - I) <= 16 * eps() * norm(V)^2
+        @test norm(M - V * M0 * Octopus._symplectic_inverse(V)) <= 64 * eps() * norm(M) * norm(V)^2
+        # Labels: in form 1 mode 1 is the x block of M_0 (tune mux); in form 2 it is
+        # ALSO the block in the first diagonal position (T1), i.e. the x block of
+        # M_0, now carried by (y, py) (B6). Both give expected tunes (mux, muy).
+        f = _pb_frame(M; expected=(mux, muy))
+        nU = norm(f.U)^2; kq = max(1, opnorm(M)) * opnorm(f.U)^2 / f.gap
+        @test abs(f.tunes[1] - mux) <= c * eps() * kq && abs(f.tunes[2] - muy) <= c * eps() * kq
+        for et in (Octopus._edwards_teng_from_normalizer(f.U, f.tunes; M4=M),
+                   Octopus._edwards_teng_direct(f.u1, f.u2; tunes=f.tunes, M4=M),
+                   Octopus._edwards_teng_from_map(M; min_trace_gap=_PB_TRACE_GAP, mode_traces=(2cos(mux), 2cos(muy))))
+            g = form == 1 ? et.form1 : et.form2
+            other = form == 1 ? et.form2 : et.form1
+            w = 1 / (1 + d)
+            @test g.admissible
+            @test is_determined(g.R)
+            @test norm(_pb_val(g.R) - Rm) <= c * eps() * kq * nU * max(1, norm(Rm)) / w   # R recovered
+            @test abs(_pb_val(g.det_R) - d) <= c * eps() * kq * nU * max(1, norm(Rm))^2 / w
+            @test abs(_pb_val(g.lambda) - 1 / sqrt(1 + d)) <= c * eps() * kq * nU / w^2      # lambda recovered
+            @test abs(g.area_weight - w) <= c * eps() * kq * nU / w
+            t = _pb_val(g.twiss)
+            for (j, (b, a, mu)) in enumerate(((bx, ax, mux), (by, ay, muy)))
+                @test abs(t[j].beta - b) <= c * eps() * kq * nU * b / w                      # beta_j recovered
+                @test abs(t[j].alpha - a) <= c * eps() * kq * nU * max(1, abs(a)) / w         # alpha_j recovered
+                @test abs(mod(t[j].mu - mu + pi, 2pi) - pi) <= c * eps() * kq * nU            # mu_j recovered
+            end
+            @test _pb_val(g.reconstruction_residual).normalized <= c * eps() * kq * nU * max(1, norm(M)) / w
+            # Admissibility keyed on the constructing form: u = det R / (1 + det R)
+            # (form 1) or 1 / (1 + det R) (form 2); the OTHER form has det = 1 / det R
+            # and weight 1 - w, admissible iff det R > 0.
+            uexp = form == 1 ? d / (1 + d) : 1 / (1 + d)
+            @test abs(_pb_val(et.u) - uexp) <= c * eps() * kq * nU
+            @test other.admissible == (d > 0)
+            if d == 0
+                @test !is_determined(other.R) && other.R.reason === :form_inadmissible   # zero weight: no finite R
+                @test other.det_R.reason === :form_inadmissible
+            elseif d < 0
+                @test is_determined(other.R) && 1 + _pb_val(other.det_R) < 0                # det = 1/d < -1
+                @test other.lambda.reason === :form_inadmissible && other.twiss.reason === :form_inadmissible
+            else
+                @test abs(_pb_val(other.det_R) - 1 / d) <= c * eps() * kq * nU * max(1, norm(Rm))^2 / (w * d)^2
+                @test abs(_pb_val(other.lambda)^2 - (1 - w)) <= c * eps() * kq * nU / min(w, 1 - w)^2
+            end
+        end
+    end
+end
+
+@testset "Edwards-Teng: the uncoupled FODO has R = 0 and lambda = 1, zero projections and inadmissible forms carry their reasons, the map-route guards fire" begin
+    # The FODO of validation/lattice_cells.jl rebuilt inline (kq = 1.6, nst 4,
+    # integrator order 4) through `one_turn_matrix` on the tuple, 4x4 block.
+    # The symmetric cell has tr M_xx = tr M_yy to roundoff (equal tunes), so the
+    # map route's coincident-trace guard fires on it (asserted below) and the
+    # quantitative checks use the cell detuned by kd -> kd (1 + 1e-3), still
+    # exactly uncoupled, as Part A does for its closed-form route.
+    kq_fodo = 1.6
+    function pb_fodo4(kf, kd)
+        qf = compile_runtime(QuadrupoleSpec(L=0.3, kn=(0.0, kf), nst=4, integrator_order=4))
+        qd = compile_runtime(QuadrupoleSpec(L=0.3, kn=(0.0, kd), nst=4, integrator_order=4))
+        dr = compile_runtime(DriftSpec(L=1.2))
+        return one_turn_matrix((qf, dr, qd, dr)).matrix[1:4, 1:4]
+    end
+    Mexact = pb_fodo4(kq_fodo, -kq_fodo)
+    @test abs(tr(Mexact[1:2, 1:2]) - tr(Mexact[3:4, 3:4])) <= 16 * eps() * norm(Mexact)
+    @test Octopus._edwards_teng_from_map(Mexact; min_trace_gap=_PB_TRACE_GAP).form1.R.reason === :singular_coefficient
+    M = pb_fodo4(kq_fodo, -kq_fodo * (1 + 1e-3))
+    @test norm(M[1:2, 3:4]) == 0 && norm(M[3:4, 1:2]) == 0                    # exactly uncoupled
+    c = 64
+    f = _pb_frame(M)                                                            # mode 1 = the x mode (larger x-area)
+    nU = norm(f.U)^2; kq = max(1, opnorm(M)) * opnorm(f.U)^2 / f.gap
+    mr = Octopus._mais_ripken(f.U)
+    @test abs(mr.kappa[1, 2]) <= c * eps() * kq * nU && abs(mr.kappa[2, 1]) <= c * eps() * kq * nU   # kappa_1y = kappa_2x = 0
+    @test mr.phase_valid == (false, false)                                      # secondary projections vanish
+    @test mr.phases[1].reason === :zero_projection && mr.phases[2].reason === :zero_projection
+    @test abs(mr.beta[1, 1] * mr.gamma[1, 1] - mr.alpha[1, 1]^2 - 1) <= c * eps() * nU^2     # kappa_1x = 1: unit area (M5)
+    for et in (Octopus._edwards_teng_from_normalizer(f.U, f.tunes; M4=M),
+               Octopus._edwards_teng_direct(f.u1, f.u2; tunes=f.tunes, M4=M),
+               Octopus._edwards_teng_from_map(M; min_trace_gap=_PB_TRACE_GAP))
+        g = et.form1
+        @test g.admissible && norm(_pb_val(g.R)) <= c * eps() * kq * nU          # R = 0 to roundoff
+        @test abs(_pb_val(g.lambda) - 1) <= c * eps() * kq * nU                  # lambda = 1
+        @test abs(_pb_val(et.u)) <= c * eps() * kq * nU
+        @test abs(g.area_weight - 1) <= c * eps() * kq * nU
+        t = _pb_val(g.twiss)
+        # Against the cell's Courant-Snyder rule (validation/lattice_cells.jl `twiss(M)`, (T15)).
+        for (j, blk) in enumerate((M[1:2, 1:2], M[3:4, 3:4]))
+            cs = _pb_val(Octopus._twiss_from_block(blk))
+            @test abs(t[j].beta - cs.beta) <= c * eps() * kq * nU * cs.beta
+            @test abs(t[j].alpha - cs.alpha) <= c * eps() * kq * nU * max(1, abs(cs.alpha))
+            @test abs(mod(t[j].mu - cs.mu + pi, 2pi) - pi) <= c * eps() * kq * nU
+            @test abs(cs.mu - acos(tr(blk) / 2)) <= 16 * eps() || abs(cs.mu - (2pi - acos(tr(blk) / 2))) <= 16 * eps()   # the (E5) branch
+        end
+        @test _pb_val(g.reconstruction_residual).normalized <= c * eps() * kq * nU * max(1, norm(M))
+        @test g.phases.reason === :zero_projection                              # (B4) with R = 0: denominators vanish
+        # Form 2 under the x-first labelling has zero area weight: no finite R.
+        @test !et.form2.admissible && et.form2.R.reason === :form_inadmissible
+        @test abs(et.form2.area_weight) <= c * eps() * kq * nU
+    end
+    # With the labels swapped (mode 1 = the y mode, u_1x = 0), form 2 is the
+    # admissible one with R = 0 and lambda = 1, and form 1 has no finite R:
+    # "both forms admissible" for the uncoupled cell holds across the two
+    # labellings, never within one.
+    fs = _pb_frame(M; expected=reverse(f.tunes))
+    @test fs.tunes == reverse(f.tunes)
+    mrs = Octopus._mais_ripken(fs.U)
+    @test mrs.phase_valid == (false, false) && abs(mrs.u - 1) <= c * eps() * kq * nU
+    @test abs(mrs.beta[1, 1]) <= c * eps() * kq * nU                            # u_1x = 0: the design's zero-projection fixture
+    @test mrs.vectors[1] == fs.u1                                               # no rephasing without a primary projection
+    for k in (:beta, :alpha, :gamma, :kappa)
+        @test getfield(mrs, k) == getfield(mr, k)[[2, 1], :]                      # phase-independent quantities: relabelled, unique
+    end
+    ets = Octopus._edwards_teng_from_normalizer(fs.U, fs.tunes; M4=M)
+    @test ets.form2.admissible && norm(_pb_val(ets.form2.R)) <= c * eps() * kq * nU && abs(_pb_val(ets.form2.lambda) - 1) <= c * eps() * kq * nU
+    @test !ets.form1.admissible && ets.form1.R.reason === :form_inadmissible
+    etsm = Octopus._edwards_teng_from_map(M; min_trace_gap=_PB_TRACE_GAP, mode_traces=(2cos(fs.tunes[1]), 2cos(fs.tunes[2])))
+    @test etsm.form2.admissible && norm(_pb_val(etsm.form2.R)) <= c * eps() * norm(M)^2
+    @test etsm.form1.R.reason === :form_inadmissible
+    # An inadmissible-form fixture: form 1 with det R = -0.5 leaves form 2 with
+    # det R_2 = -2 (1 + det R_2 < 0), a finite R but no lambda, Twiss, blocks or phases.
+    Ui = Octopus._edwards_teng_normalizer(1, [0.5 0.5; 1.5 0.5], 2.0, 0.3, 1.5, -0.4)
+    eti = Octopus._edwards_teng_from_normalizer(Ui, (2pi * 0.7, 2pi * 0.31))
+    @test eti.form1.admissible && !eti.form2.admissible
+    @test is_determined(eti.form2.R) && abs(_pb_val(eti.form2.det_R) + 2) <= 64 * eps() * norm(Ui)^4
+    @test eti.form2.area_weight < 0 && abs(eti.form2.area_weight + 1) <= 64 * eps() * norm(Ui)^2
+    for fld in (:lambda, :twiss, :blocks, :phases, :reconstruction_residual)
+        @test getfield(eti.form2, fld).reason === :form_inadmissible
+    end
+    @test_throws UndeterminedQuantityError determined_value(eti.form2.lambda)
+    @test_throws ArgumentError Octopus._edwards_teng_V(2, [0.5 0.5; 1.5 0.5] .* 2)     # 1 + det R = -1: loud, not |.|
+    # Map-route guards.
+    Mhyp = _pb_blockdiag([2.0 0.0; 0.0 0.5], _pb_R(1.2))
+    eth = Octopus._edwards_teng_from_map(Mhyp; min_trace_gap=_PB_TRACE_GAP)
+    @test eth.form1.R.reason === :unstable_spectrum && eth.form2.R.reason === :unstable_spectrum
+    @test eth.u.reason === :unstable_spectrum && !eth.form1.admissible
+    @test eth.form1.twiss.reason === :unstable_spectrum
+    @test eth.form1.area_weight == 0.0 && eth.form2.area_weight == 0.0        # never NaN: the reason is on R, det_R, lambda
+    Meq = _pb_blockdiag(_pb_R(0.9), _pb_R(0.9))
+    eteq = Octopus._edwards_teng_from_map(Meq; min_trace_gap=_PB_TRACE_GAP)
+    @test eteq.form1.R.reason === :singular_coefficient
+    @test eteq.form1.area_weight == 0.0 && eteq.form2.area_weight == 0.0 && !eteq.form1.admissible
+    Mneg = _pb_blockdiag(_pb_R(0.9), _pb_R(-0.9))                              # equal traces too (cos is even)
+    @test Octopus._edwards_teng_from_map(Mneg; min_trace_gap=_PB_TRACE_GAP).form1.R.reason === :singular_coefficient
+    # A Krein quartet (complex mode traces, Delta < 0): positions mapped by
+    # A = r R(theta), momenta by A^-T (Part A's fixture), a symplectic map with
+    # eigenvalues r e^{+-i theta}, e^{+-i theta} / r.
+    Mq = let A = 1.5 * _pb_R(1.0), B = transpose(inv(1.5 * _pb_R(1.0)))
+        Mq = zeros(4, 4)
+        Mq[1, 1] = A[1, 1]; Mq[1, 3] = A[1, 2]; Mq[3, 1] = A[2, 1]; Mq[3, 3] = A[2, 2]
+        Mq[2, 2] = B[1, 1]; Mq[2, 4] = B[1, 2]; Mq[4, 2] = B[2, 1]; Mq[4, 4] = B[2, 2]
+        Mq
+    end
+    @test norm(transpose(Mq) * _PB_S4 * Mq - _PB_S4) <= 64 * eps() * norm(Mq)^2
+    @test (tr(Mq[1:2, 1:2]) - tr(Mq[3:4, 3:4]))^2 + 4 * det(Octopus._adjugate2(Mq[1:2, 3:4]) + Mq[3:4, 1:2]) < 0   # Delta < 0
+    @test Octopus._edwards_teng_from_map(Mq; min_trace_gap=_PB_TRACE_GAP).form1.R.reason === :unstable_spectrum
+    # Guards are ordered: coincident traces are reported before the trace bound.
+    @test_throws ArgumentError Octopus._edwards_teng_from_map(M; min_trace_gap=0.0)
+    @test_throws ArgumentError Octopus._edwards_teng_from_map(M; min_trace_gap=1e-8, mode_traces=(1.0, 1.0))
+    @test_throws ArgumentError Octopus._edwards_teng_from_map(M; min_trace_gap=1e-8, mode_traces=(1.0,))
+    @test_throws ArgumentError Octopus._edwards_teng_from_map(zeros(3, 3); min_trace_gap=1e-8)
+    @test_throws ArgumentError Octopus._edwards_teng_from_normalizer(f.U, (1.0,))
+    @test_throws ArgumentError Octopus._edwards_teng_from_normalizer(f.U, f.tunes; weight_rtol=-1.0)
+    @test_throws ArgumentError Octopus._edwards_teng_direct(f.u1, f.u2; tunes=(NaN, 1.0))
+    @test_throws ArgumentError Octopus._edwards_teng_from_normalizer(f.U, "ab")           # a non-numeric pair: ArgumentError, not isfinite(::Char)
+    @test_throws ArgumentError Octopus._edwards_teng_direct(f.u1, f.u2; tunes=("a", "b"))
+    # The frame methods take no keyword splat: a caller mode_traces / tunes cannot
+    # silently override the frame's labels (unsupported keyword, loud).
+    @test_throws MethodError Octopus._edwards_teng_from_map(f.frame; min_trace_gap=_PB_TRACE_GAP, mode_traces=(1.0, 2.0))
+    @test_throws MethodError Octopus._edwards_teng_direct(f.frame; tunes=(1.0, 2.0))
+    @test_throws MethodError Octopus._edwards_teng_from_normalizer(f.frame; tunes=(1.0, 2.0))
+    # Direct route without tunes: R, lambda and admissibility, the rest :not_requested.
+    etd0 = Octopus._edwards_teng_direct(f.u1, f.u2)
+    @test etd0.form1.admissible && etd0.form1.twiss.reason === :not_requested && etd0.form1.reconstruction_residual.reason === :not_requested
+    @test is_determined(etd0.form1.lambda)
+end
+
+@testset "Edwards-Teng: the Sagan-Rubin identities (T12) on the (T9) branch, and scaling invariance of R, lambda, det R, u, beta/alpha/gamma" begin
+    c = 64
+    n_sr = 0
+    for M in _PB_MAPS[1:100]
+        Mxx, Mxy, Myx, Myy = M[1:2, 1:2], M[1:2, 3:4], M[3:4, 1:2], M[3:4, 3:4]
+        D = tr(Mxx) - tr(Myy)
+        A = Octopus._adjugate2(Mxy) + Myx
+        Delta = D^2 + 4 * det(A)
+        Delta > 0 || continue
+        n_sr += 1
+        et = Octopus._edwards_teng_from_map(M; min_trace_gap=_PB_TRACE_GAP)   # (T9) labelling: mode 1 = larger x-area
+        g = et.form1
+        @test g.admissible                                                       # the (T9) branch has -1 < det R <= 1 (T10)
+        R = _pb_val(g.R); d = _pb_val(g.det_R); lam = _pb_val(g.lambda)
+        nM = max(1, norm(M))^2
+        @test -1 < d <= 1 + c * eps() * nM
+        # (T10): det R and lambda^2 in closed form.
+        @test abs(d - (sqrt(Delta) - abs(D)) / (sqrt(Delta) + abs(D))) <= c * eps() * nM^2 / Delta
+        @test abs(lam^2 - (1 + abs(D) / sqrt(Delta)) / 2) <= c * eps() * nM / Delta
+        # (T12): lambda^2 + det(lambda adj R) = 1 and the coupling block in Sagan-Rubin form.
+        @test abs(lam^2 + det(lam * Octopus._adjugate2(R)) - 1) <= c * eps() * nM^2 / Delta
+        s = D == 0 ? 1.0 : sign(D)
+        @test norm(lam * Octopus._adjugate2(R) + s * (Mxy + Octopus._adjugate2(Myx)) / (lam * sqrt(Delta))) <= c * eps() * nM^2 / Delta
+        # (T7): Delta equals the squared separation of the (T11) block traces.
+        b = _pb_val(g.blocks)
+        @test abs((tr(b[1]) - tr(b[2]))^2 - Delta) <= c * eps() * nM^2
+        @test s * (tr(b[1]) - tr(b[2])) >= 0                                     # s = sign(tr Mbar_1 - tr Mbar_2): the (T9) branch orders by x-area, not by trace
+        # The (T9) labelling agrees with the eigen frame labelled by larger x-area.
+        f = _pb_frame(M)
+        kq = max(1, opnorm(M)) * opnorm(f.U)^2 / f.gap
+        @test abs(mod(_pb_val(g.twiss)[1].mu - f.tunes[1] + pi, 2pi) - pi) <= c * eps() * kq * norm(f.U)^2 / minimum(abs.(sin.(f.tunes)))
+    end
+    @test n_sr == 100                     # every fixture map reached the (T9) branch; a silent skip would show here
+    # Scaling invariance (design table rows: tunes, det R, lambda, kappa, u
+    # unchanged; R = diag(a_2, 1/a_2)^{-1} R~ diag(a_1, 1/a_1); beta_ja/a_a^2,
+    # alpha_ja, gamma_ja a_a^2), three scalings on ten maps. The frame is
+    # rebuilt on the scaled map, so the eigenvector chord enters: kappa =
+    # kq cond(C)^2 ||U||^2.
+    for M in _PB_MAPS[1:10], factors in ((0.5, 2.0), (3.0, 0.25), (1.7, 1.7))
+        rec = Octopus._reciprocal_scaling(M, factors)
+        Ms = Octopus._scale_map(rec, M)
+        f = _pb_frame(M); fs = _pb_frame(Ms; expected=f.tunes)
+        condC = maximum(factors)^2 * maximum(1 ./ factors)^2
+        kq = max(1, opnorm(M)) * max(opnorm(f.U), opnorm(fs.U))^2 / min(f.gap, fs.gap) * condC
+        nU = max(norm(f.U), norm(fs.U))^2
+        @test maximum(abs.(fs.tunes .- f.tunes)) <= c * eps() * kq
+        mr = Octopus._mais_ripken(f.U); mrs = Octopus._mais_ripken(fs.U)
+        @test norm(mrs.kappa - mr.kappa) <= c * eps() * kq * nU
+        @test abs(mrs.u - mr.u) <= c * eps() * kq * nU
+        for j in 1:2, a in 1:2
+            b, al, ga = Octopus._unscale_twiss(rec, a, mrs.beta[j, a], mrs.alpha[j, a], mrs.gamma[j, a])
+            @test abs(b - mr.beta[j, a]) <= c * eps() * kq * nU * max(1, mr.beta[j, a])
+            @test abs(al - mr.alpha[j, a]) <= c * eps() * kq * nU * max(1, abs(mr.alpha[j, a]))
+            @test abs(ga - mr.gamma[j, a]) <= c * eps() * kq * nU * max(1, mr.gamma[j, a])
+        end
+        et = Octopus._edwards_teng_from_normalizer(f.U, f.tunes; M4=M)
+        ets = Octopus._edwards_teng_from_normalizer(fs.U, fs.tunes; M4=Ms)
+        for (g, gs) in ((et.form1, ets.form1), (et.form2, ets.form2))
+            @test g.admissible == gs.admissible
+            R = _pb_val(g.R); kR = nU / abs(g.area_weight)
+            @test norm(Octopus._unscale_edwards_teng_R(rec, _pb_val(gs.R)) - R) <= c * eps() * kq * kR * max(1, norm(R))
+            @test abs(_pb_val(gs.det_R) - _pb_val(g.det_R)) <= c * eps() * kq * kR * max(1, norm(R))^2
+            @test abs(gs.area_weight - g.area_weight) <= c * eps() * kq * nU
+            g.admissible || continue
+            @test abs(_pb_val(gs.lambda) - _pb_val(g.lambda)) <= c * eps() * kq * kR^2
+            t = _pb_val(g.twiss); ts = _pb_val(gs.twiss)
+            for j in 1:2
+                # Mode j's unit-area Twiss is the projection onto the plane carrying it (form 1: mode 1 -> x, mode 2 -> y).
+                plane = g.form == 1 ? j : 3 - j
+                b, al, ga = Octopus._unscale_twiss(rec, plane, ts[j].beta, ts[j].alpha, ts[j].gamma)
+                @test abs(b - t[j].beta) <= c * eps() * kq * kR * t[j].beta
+                @test abs(al - t[j].alpha) <= c * eps() * kq * kR * max(1, abs(t[j].alpha))
+                @test abs(ga - t[j].gamma) <= c * eps() * kq * kR * t[j].gamma
+            end
+        end
+    end
+end
+
 @testset "Non-symplectic Lorentz method classification" begin
     forward_spec = LorentzBoostSpec(0.01)
     reverse_spec = RevLorentzBoostSpec(0.01)

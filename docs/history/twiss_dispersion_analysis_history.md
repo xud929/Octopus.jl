@@ -876,3 +876,1470 @@ pr("- z component of a coasting cell's residual at delta != 0 is the path-length
 write(OUT_MD, String(take!(io)))
 println("\nwritten: ", OUT_MD)
 ```
+
+## 2026-09-11: stage 2 landed (4D eigenmode route, Mais-Ripken, Edwards-Teng)
+
+Stage 2 of the design note's staging: `feat(analysis)`. Registry snapshot
+UNCHANGED (the eight new result structs are plain types, none a subtype of a
+registry root). Nothing in this stage claims an analysis exists: no
+`TwissDispersionAnalysis`, no `analyze`, `summarize_registry().analyses` is
+still `[:PlaceholderAnalysis]`, the stage-guard testset of stage 1 stayed
+green on the folded tree, and nothing new is exported (the public verb is
+stage 4). Every kernel computes on the (already scaled) matrix it is given;
+undetermined outputs are `Determined` values with a pinned reason from the
+stage 1 vocabulary (no reason added).
+
+### What landed
+
+| File | Change | Content |
+|---|---|---|
+| `src/analysis/eigenmodes_4d.jl` | new, 651 lines, internal `_` names | `SpectrumReport4D` (always available: eigenvalues, moduli, unit-circle departure, unit-eigenvalue distance, the conjugate-class gap `g = min(abs(rho_j - rho_k), abs(rho_j - conj rho_k))`, trace, the (T7) and (E10) discriminants, `tau_+, tau_-`, `t14_holds`); `NormalModeFrame4D` (two oriented (E3)/(E4) vectors, eigenvalues `e^{-i mu_j}`, tunes in `[0, 2 pi)`, U_4 by (E6), the (E7) symplecticity residual, the (I1) reconstruction residual, projectors `P_j = -Im(u u') S`, covariances `G_j = Re(u u')`, signed areas (M1) with row and column sums (M2)/(M3), per-plane beta/alpha/gamma by (M1), both (M4) evaluations of u and their difference, `label_margin`); `Eigenmodes4D`; `_eigenmodes_4d(M; min_gap, stability_atol)` (both keywords required) with the PROVISIONAL guards `:unstable_spectrum`, `:unit_eigenvalue`, `:cluster_unresolved` and the `:unresolved_defective` branch, each marked for stage 3; `_orient_eigenvector`, `_mode_label_order` (mode 1 = larger kappa_jx), `_projected_twiss`; `_normal_coordinates`, `_mode_actions` (both (E9) evaluations); `ClosedFormEigenmodes4D` and `_closed_form_eigenmodes_4d(M; min_trace_gap, stability_atol)` ((E10)-(E14), guard `:singular_coefficient` at coincident traces, the (E12) sign by `tr G_j > 0`, its own (E6) normalizer and (I1) residual); `ClosedFormCheck4D` and `_closed_form_check_4d(frame; ...)` matching modes by eigenvalue trace (`_closed_form_mode_permutation`) and reporting `mode_permutation`, both `label_margins` and five differences. |
+| `src/analysis/coupled_parameterizations.jl` | new, 851 lines, internal `_` names | Mais-Ripken: `MaisRipkenSet`, `_mais_ripken(u1, u2)` / `(U4)` ((M1)-(M5), (M6) phases as `Determined` with `:zero_projection` below `projection_rtol ||u_j||^2`, the (M7) rephasing, both (M4) evaluations), `_mais_ripken_normalizer` (M8), `_matched_covariance_4d` (M9, both expressions), `_mais_ripken_covariance` (M10)-(M16), `_mais_ripken_gamma_identities` (M13). Edwards-Teng: `EdwardsTengForm`, `EdwardsTengPair`; `_edwards_teng_from_normalizer` ((B10) by linear solves, (B5)/(B9), the second (B10) expression as `consistency_residual`), `_edwards_teng_from_map` ((T7)-(T9), (T11), (T15)/(T16), form 2 as the other sign of (T8) under the same labels, guards `:unstable_spectrum` and `:singular_coefficient`, `_map_route_label_sign`), `_edwards_teng_direct` (B11), `_edwards_teng_normalizer` ((B2)/(B6)), `_edwards_teng_V`, `_twiss_from_block`, `_twiss_block`; admissibility = `1 + det R > 0` of the reported form AND positive area weight, an inadmissible form `:form_inadmissible`; the (T5) residual against the caller's `M4`. Thin methods on `NormalModeFrame4D` for `_mais_ripken`, `_matched_covariance_4d`, `_edwards_teng_from_normalizer`, `_edwards_teng_from_map` (passing `mode_traces = 2 cos mu_j` so the frame's labels win), `_edwards_teng_direct` (reading the frame's `P_j`, `G_j`); no `kwargs...` splat, so a caller cannot override the frame's labels. |
+| `src/Octopus.jl` | +5 lines | both includes right after `analysis/symplectic_linear_algebra.jl` (A before B), each with a one-line comment. |
+| `test/runtests.jl` | +1197 lines | Part A block (lines 946-1531, 7 testsets) and Part B block (1533-2136, 7 testsets, incl. the Sagan-Rubin (T12) testset), pasted right after the stage-guard testset; both headers list the injected defects below and point at this record for the measured ratios. |
+
+Not touched: the design note, the theory note, `docs/registry_snapshot.md`
+(regenerated and byte-identical), `AGENTS.md` (its "placeholder-only today"
+bullet is stale since stage 1 and is reworded in stage 4 by the design's
+Staging item 4; the runner reviewer wanted it here, the repository reviewer
+read the design as deferring it; recorded, not edited), `validation/`.
+
+### Standalone verification on the folded and fixed tree (no lane, no gate)
+
+Same conventions as stage 1 (`J` = `julia --startup-file=no`, OUT =
+`result/twiss_impl_2026_09_11/stage2`, `ps` checked for `runtests`/`Pkg.test`
+before every package-mode run). Counts are the fixer's final runs.
+
+| run | command shape | result |
+|---|---|---|
+| Part A testsets, package mode | `J --project=REPO --threads=4 OUT/run_eig4d.jl` | 21872 pass / 0 fail (7 testsets: 38, 12602, 6891, 904, 28, 48, 1361), 17 s |
+| Part B testsets, package mode | `J --project=REPO --threads=4 OUT/run_param.jl` | 45608 / 0 (7 testsets: 8018, 1208, 33862, 450, 101, 1969 and the loud-input checks), 19 s |
+| suite extract: every analysis testset of `test/runtests.jl` 270-2136 (stage 1 kernel + vocabularies + stage guard, stage 2 A, stage 2 B), package + fdenv | `J --threads=4 OUT/fixer/extract/run_suite_extract.jl` | 69098 / 69098 in 24 testsets, 32 s; "Stage 1 claims no analysis" 34/34 |
+| suite tripwires: "Architecture integrity" (incl. `validate_configuration_metadata()`), Core.Box allowlist, "Every export is documented", "No docstring is detached" | `OUT/fixer/extract/run_tripwires.jl` | 32 / 32 |
+| script-mode smoke | `include("src/Octopus.jl"); using .Octopus; summarize_registry()` | exit 0, `analyses = [:PlaceholderAnalysis]`; `_mais_ripken` 3 methods, `_edwards_teng_direct` 3, `_edwards_teng_from_map` 2, `_edwards_teng_from_normalizer` 2 |
+| snapshot and validators | `write_registry_snapshot()` then `git diff --quiet docs/registry_snapshot.md`; `validate_element_metadata()` | exit 0 (byte-identical); passed; undocumented exports `Symbol[]` |
+
+Count history: Part A was 19448 in the worktree, 19451 after three fixture
+assertions added under injection e01b, 21872 after the review fixes; Part B
+was 40881 in the worktree, 44481 after the integrator's 18 thin-method
+assertions on 200 maps, 45608 after the review fixes. The integrator's first
+tripwire run was 31/32: a `Core.Box` at `_edwards_teng_from_map` (the label
+sign assigned in two branches and captured by the `ntuple` closure), fixed by
+the one-assignment helper `_map_route_label_sign` before any count above.
+
+### Part A: eigenmode tolerances, every one `c eps kappa` with `c` measured
+
+Probe `measure_eig4d.jl` (seed 20260911, the suite's own fixtures; the table
+is reproduced verbatim under "Measurement tables"). Test thresholds for the
+provisional guards: `min_gap = 1e-6`, `stability_atol = 1e-8`, closed form
+`min_trace_gap = 1e-8`. Kappa vocabulary: `kq = max(1, ||M||_2) ||U||_2^2 / g`
+is the design's chord amplifier (eigenvector direction error per eps, `g` the
+conjugate-class gap), carried by every CROSS-mode identity; per-mode
+identities carry the polynomial `||u||^2` or `||u||^4`; the closed form
+carries `kc = max(1, ||M||^2) max(1, ||U||_F^2) (1 + 1/(2 root)) / root`
+with `root = |tau_+ - tau_-|` (the (E11) division; the `1/(2 root)` is the
+error of `tau_k` through the square root of the radicand), `kcf = kq ||U||_F^2 + kc`
+for either route's error, `kcf / min sin^2 mu_j` for G-derived quantities
+(`d sin = d tau / (2 sin)`) and `kcf / min |sin mu_j|` for the tune; scaling
+rows carry `cond(C)^2 max(kq, kq~) max(||U||_F^2, ||U~||_F^2)` at `c = 1000`
+(as stage 1's back-transformation rows); the FODO rows `kq ||U||_F^2 / |sin mu|`.
+
+"ratio to used" = largest observed residual / the suite's threshold over the
+fixture set; the rule wants it below one tenth on every accepted check.
+
+| check family | c used | worst ratio to used (fixture) |
+|---|---|---|
+| (E3) normalization, (E7) symplecticity of U_4, (E8) reconstruction (I1), per-vector (I1) | 64 | 0.0226, 0.0185, 0.0586, 0.0732 (map 102: the largest of the whole part) |
+| projectors: idempotent, complete, disjoint; `G_j = U_j U_j'` (c = 16); G positive semidefinite | 64 / 16 | 0.0205, 0.0173, 0.0131, 0.0132, 0.0226 |
+| (M2) row sums, (M3) column sums, (M4) two evaluations of u, (M5) per plane, (M1) kappa against `(P S)_{a, pa}` (c = 16) | 64 / 16 | 0.0135, 0.0036, 0.0030, 0.0053, 0 (exact) |
+| closed form: (E10) traces against `2 cos mu` / kc; P residuals, kappa and projector differences / kcf; covariance and outer-product differences, (E3) on the (E14) vector, G PSD margin, the (I1) residual on the closed form's own (E6) normalizer / (kcf / min sin^2); tune difference / (kcf / min sin) | 64 | 0.0031; 0.0072, 0.0033, 0.0107; 0.0018, 0.0012, 0.0006, 8.4e-5; 0.0005 (the covariance and outer rows peak on the detuned FODO, whose `kcf` is 1.2e4 from `g = 2.3e-3`) |
+| actions (E9): xi against u, invariance under M | 64 | 0.0087, 0.0096 |
+| scaling invariance of beta/alpha/gamma, kappa, tunes, P, G | 1000 | 0.0087, 7.5e-5, 9.6e-5, 2.8e-4, 0.0164 (map 17, `:auto`; measured 16.4 at c = 1, the same amplifier stage 1 met) |
+| FODO (detuned) beta/alpha against T15, tune against the acos branch, `kappa_1y = kappa_2x = 0` | 64 | 1.8e-6, 2.8e-7, 0 |
+| rotation fixture: tunes 0.7 and 0.31 (c = 16), phase-fixed `U_4 = I` | 16 / 64 | 0.0156, 0.0156 |
+
+Lessons the implementer recorded while measuring: the cross-mode identities
+first carried only `||U||^2` and needed c = 75 on map 190; the closed-form G
+rows first carried `1/root` only and needed c = 6e5 on a tune-2e-5 map, 12.2
+with `1/sin`; both now carry the amplifier that was missing. Before the fixer's
+change the closed form's "reconstruction residual" was the (E14) sum, an
+algebraic identity that measured 7.9e-16 on a matrix with symplectic defect 2.9;
+it is now the (I1) residual on the closed form's own normalizer (0.00538 at
+c = 1, 8.4e-5 of the threshold).
+
+Rejected fixtures of the guards (value / threshold; every one landed in the
+reason the test pins): `diag(2, 1/2, R(1.2))` departure 1 against 1e-8
+(1e8, `:unstable_spectrum`); `diag(1 + 1e-6, 1/(1 + 1e-6), R(1.2))` 1e-6 (100);
+the identity distance 0 (`:unit_eigenvalue`); `R(0.9) (+) R(0.9)`,
+`R(0.9) (+) R(-0.9)` gap 0 (`:cluster_unresolved`, closed form
+`:singular_coefficient`); the exact symmetric FODO gap 4.4e-16 (2.2e9);
+`R(0.9) (+) R(0.9 + 1e-7)` gap 1e-7 (10.0, the deliberate 10x control, which
+the closed form ACCEPTS at root 1.63e-7; Part D below).
+
+The symmetric FODO of `validation/lattice_cells.jl` (kf = -kd = 1.6) is
+exactly degenerate: `tr(F D Dq D) = tr(Dq D F D)` by cyclicity, so the x and
+y tunes are equal (gap 4.4e-16, equal traces to 2e-16). The generic route
+refuses it (`:cluster_unresolved`; closed form and map route
+`:singular_coefficient`) and the tests pin that; the quantitative
+Courant-Snyder comparison of benchmark 12.2-1 runs on the design's own
+detuning `kd = -1.6 (1 + 1e-3)` (gap 2.3e-3, its "resolved" control), which is
+still exactly uncoupled. The design's fixture row "uncoupled FODO: beta, alpha
+equal `twiss()`" as written names the symmetric cell, which belongs to stage
+3's definite-cluster path (`P_c = I_4`, individual modes a convention).
+
+Convention facts pinned: for `R(2 pi 0.7)` the oriented member has
+`Im(v'Sv) < 0`, `rho = e^{-i 2 pi 0.7}`, tune 0.7 (the rejected conjugate
+would give 0.3). LAPACK's eigenvector phase is not zero on the rotation
+fixture (`u_1 = (i, 1)`, so `U_1 = R(-pi/2)`): the test asserts rotation
+diagonal blocks, zero off-diagonal blocks and `U_4 = I` after the Section 6.2
+phase fix; "U_4 = I up to the (E6) column signs" holds only up to a rotation
+of each column pair.
+
+Injected defects (script-mode harness on a patched copy of `src/`, one exact
+replacement each; the unpatched control was green at the count of its day;
+e01a-e07 recorded from the worktree at 19448/19451 assertions and re-run
+red on the folded tree by the runner reviewer, e08-e11 from the fixed tree
+at 21872):
+
+| id | injection | fails |
+|---|---|---|
+| e01a | orientation rule inverted (keeps the member with `Im(v'Sv) > 0`) | 4386 (4389 on the folded tree) |
+| e01b | selection by `Im(rho) < 0` instead of `Im(v'Sv) < 0` (tune 0.3 on the 0.7 fixture) | 2 before, 5 after three fixture assertions were added |
+| e02 | the minus of (E6) dropped, `U = [Re u, +Im u, ...]` | 1152 |
+| e03 | (M1) signed area with Re instead of Im | 4034 |
+| e04 | stability guard inverted (`departure < atol` rejects) | 215 fail + 6 errors of 267 reached (the accessor throws abort the testsets) |
+| e05 | closed-form coincident-trace guard reduced to `radicand < 0` | 2 (the two exact equal-trace fixtures) |
+| e06 | (E12) sign forced, `sj = s0` (tunes above one half lost) | 1 (2 on the folded tree) |
+| e07 | the 1/2 of (E9) dropped in the eigenvector evaluation | 151 |
+| e08 | closed-form check matched mode j to mode j by label instead of by trace | 9 / 21872 (the det R = 1 label-tie fixtures) |
+| e09 | the minus of (E6) dropped in the closed form's own `U_cf` | 403 / 21872 |
+| e10 | `from_vectors` aliased to `from_normal_coordinates` in `_mode_actions` | 99 / 21872 |
+| e11 | all five `ClosedFormCheck4D` differences set to 0.0 | 1009 / 21872 |
+
+The scaling testset went red only through the shared frame (e01a, e03): it
+compares two frames of the same code and cannot see a symmetric defect on
+its own, so it is not an independent witness of the frame.
+
+### Part B: Mais-Ripken and Edwards-Teng tolerances, `c = 64` unless stated, measured
+
+Probe `measure_param.jl` (the file-level helpers of the Part B block, so the
+eigen frames are Part A's; table verbatim under "Measurement tables"). It
+prints, per check family, the largest residual / (eps kappa) = the c the check
+REQUIRES with the argmax fixture's own name, and `64 / required` = the margin
+of the suite's constant. Kappa families: `nU = ||U||_F^2` (identities
+quadratic in U), `nU^2` for the (M5) quartic, `1 / min beta_ja` where (M8) or
+(M11)-(M16) divide by `sqrt(beta)`, `kR = nU / |w|` for the (B10) solve that
+divides a block by its determinant `w`, `kq` (Part A's chord) whenever the map
+route is compared with a frame-based route, `kT = 1 / min |sin mu_j|` for
+(T15), `sR = max(1, ||R||)`, `nM = max(1, ||M||_F)`.
+
+| check family | required c (argmax fixture) | margin 64 / required |
+|---|---|---|
+| Mais-Ripken on 200 normalizers: (M2), (M3), (M4), (M5), phase norm, rephasing, (M8) rebuild / symplecticity / (I1), (M9) two forms, (M12) vs (M9), (M13), closure `M Sigma M' = Sigma` | 0.05 .. 1.09 (worst: (M9) two forms, normalizer 50) | 59 .. 1680 |
+| Edwards-Teng, three routes on 200 maps: R, weights, blocks, Twiss and tunes agree pairwise; `det R_1 det R_2 = 1`, `R_2 = -R_1 / det R_1`; `lambda^2 = w`; unit area of each Q_j; (T5) on every route; V symplectic; (T1) rebuild; (T11) traces; `Uet` (I1); phases against (M6); the 7.2/7.3 conversion tables; (M8) -> (B10) R and (B5)/(B9) Twiss | 0.02 .. 4.99 (worst: "twiss n-d", map 134; next "twiss n-m" 1.74, "T11 trace" 1.66) | 12.8 .. 3120 |
+| (B10) consistency residual `||adj(R) - U_x U_y^{-1}||` (two solves each dividing by w, adj of a solved R) | 12.4 (map 8) | 5.2 at c = 64, so the suite checks it at `4c = 256` (margin 20.7) |
+| coupled construction (benchmark 12.2-2), 8 cases x 3 routes: R, lambda, weight, beta, alpha, mu, (T5), u, the other form's det and lambda^2, tunes | 0.003 .. 0.19 | 340 .. 18400 |
+| detuned FODO against Courant-Snyder (beta, alpha, mu), `kappa_1y = kappa_2x = 0`, R = 0, lambda = 1, form-2 weight 0 | <= 5.7e-5 | >= 1.1e6 |
+
+Rule check: at c = 64 the largest accepted ratio is 0.078 ("twiss n-d",
+map 134) and at c = 256 the (B10) consistency ratio is 0.048; every family
+is below one tenth. Rejected side: the exact FODO's `sqrt(Delta) = 2.2e-16`
+against the 1e-8 guard (4.5e7); the detuned cell's 2.86e-3 is accepted at
+2.9e5 times the guard. On the exactly uncoupled cell LAPACK returns plane
+eigenvectors, so R, u, the form-2 weight and the secondary projections are
+EXACT zeros there; the det R = 0 coupled construction's zero weight arrives
+at 15 eps through the eigen frame, which is why the floor `weight_rtol` was
+raised from 64 eps to 256 eps after the first measurement (Part D re-measures
+both floors per route below).
+
+Derivations the tests rest on (recorded by the implementer; the tests pin
+every line): form 2 from the map is the other sign of (T8) under the SAME
+labels (`V_2(R) = V_1(R) P` with P the column-pair swap exchanges the blocks;
+cross-checked from (B2): `R_2 = -adj(R_1)^{-1} = -R_1 / det R_1`,
+`det R_2 = 1 / det R_1`). With `u = kappa_1y`: form 1 weight `1 - u =
+1/(1 + det R_1)`, form 2 weight `u = 1/(1 + det R_2)`, so form 1 is admissible
+iff `u < 1`, form 2 iff `u > 0`; an UNCOUPLED cell under the x-first labelling
+has exactly one admissible form (form 2 has weight 0 and no finite R), the
+other labelling makes form 2 the admissible one: the dossier's "both forms
+admissible" holds across the two labellings, not within one, and the test
+asserts exactly that. `XYCouplingSpec` mode A on (x, px, y, py) is exactly
+`V_1(Rm)` of (T2)/(T3) with `Rm = [r1 r2; r3 r4]`, `g = 1/sqrt(1 + det Rm)`,
+mode B is `V_2(Rm)`; the design row `det R in (-0.5, 0, 0.3, 1)` is realized by
+`(r1, r2, r3, r4) = (0.5, 0.5, 1.5, 0.5)`, `(0.4, 0.2, 0.6, 0.3)` (rank one),
+`(0.5, 0.2, -0.1, 0.56)`, `(0.8, 0.3, -0.6, 1.025)`; inverses `V_1(R)^{-1} =
+V_1(-R)` (mode A with the negated r's) and `V_2(R)^{-1} = V_2(adj R)` (mode B
+with `(r4, -r2, -r3, r1)`). Expected from the construction: `R = Rm`,
+`lambda = 1/sqrt(1 + det Rm)`, `(beta_j, alpha_j, mu_j)` the optics form's,
+`u = det Rm / (1 + det Rm)` (form 1) or `1 / (1 + det Rm)` (form 2).
+
+Injected defects (`OUT/inject_all_B.sh`, one exact string replacement each,
+refused unless the old string occurs once; b01-b10 recorded from the worktree
+at 40881 assertions and re-run red on the folded tree by the runner reviewer
+at 44481; b11-b15 from the fixed tree at 45608):
+
+| id | injection (theory label) | fails / errors |
+|---|---|---|
+| b01 | (M1) signed area with Re instead of Im | 2730 / 7 |
+| b02 | (M6) zero-projection floor inverted | 6 / 4 |
+| b03 | (B10) `R = +U_y U_x^{-1}` (the minus dropped) | 4200 / 0 |
+| b04 | admissibility from the sign of det R alone (weight and `1 + det R` ignored) | 57 / 3 |
+| b05 | form-2 map-route denominator `D + s sqrt(Delta)` (same as form 1) | 2945 / 2 |
+| b06 | (B11) form 2 divided by `kappa_1x = 1 - u` instead of `kappa_2x = u` | 379 / 2 |
+| b07 | (M8) entry `-sqrt(beta_1y) sin nu_1` with a plus | 611 / 1 |
+| b08 | (M16) `u(1 - u)` term dropped | 100 / 0 |
+| b09 | (T15) `sin mu` forced positive | 24 / 0 |
+| b10 | map-route coincident-trace guard reduced to `sqrt(Delta) < 0` | 3 / 0 |
+| b11 | `area_weight = NaN` restored on the map route's guard path | 2 / 45608 |
+| b12 | the `Real` test of `_check_tunes` dropped (a String pair gives a MethodError) | 2 / 45608 |
+| b13 | `kwargs...` restored on `_edwards_teng_from_map(frame)`: a caller's `mode_traces` wins silently | 1 / 45608 |
+| b14 | normalizer route ignores `M4` and measures its own (E8) rebuild | 373 / 45608 |
+| b15 | direct route ignores `M4` and measures its own (E14) rebuild | 373 / 45608 |
+
+Not injected, with the reason: the `weight > 0` conjunct of admissibility
+cannot be shown red alone because under fixed labels `1 + det R = 1 / weight`
+for both routes, so the two conditions are algebraically equivalent; the code
+keeps both because the design states both, and b04 shows the pair red against
+"the sign of det R alone".
+
+### Review findings and fixes (four reviewers: theory, repository facts, runner, tests)
+
+Sixteen findings, every runtime claim reproduced before it was acted on
+(`OUT/fixer/verify_findings.log`). Thirteen source or test fixes, all within
+the design's decisions (eigenvector route primary, closed form a cross-check
+whose disagreement is reported, guards provisional, no new reason, no export):
+
+1. (theory, major) The closed-form check compared mode j to mode j by label;
+   at a label tie (u = 1/2, det R = 1) the two routes' labels can cross and
+   an O(1) "disagreement" between identical modes was reported
+   (`tune_difference` 2.07 on the det R = 1 design row). Fixed: modes are
+   matched by eigenvalue trace (`_closed_form_mode_permutation`), the check
+   reports `mode_permutation` and both `label_margins`; the closed-form
+   testset is restructured around one `check_agreement`, asserts
+   `n_labels_clear == 200` on the manufactured maps and `n_tie_clear == 0`
+   on two tie fixtures (the det R = 1 design row through `V_1(R)`, a
+   45-degree roll of an uncoupled cell). Injection e08.
+2. (theory) The closed form's `reconstruction_residual` was the (E14) sum,
+   an identity that holds for any matrix (7.9e-16 at symplectic defect 2.9;
+   8.1e-17 against the frame's 8.7e-7 on a 1e-6 perturbation). Fixed: the
+   (I1) residual `_invariance_residual(M, U_cf, diag(R(mu)))` on the closed
+   form's own (E6) normalizer (new field `normalizer`); the docstring records
+   why the sum is not reported; the test pins the field to its recomputation.
+   Injection e09.
+3. (theory + repo) `SpectrumReport4D` docstring said `diag(2, 1/2, R(1.2))`
+   satisfies (T14); it has `tau_+ = 2.5` and `t14_holds = false`. Reworded.
+4. (repo) `_check_tunes` gave a `MethodError` on a String pair; now an
+   `ArgumentError` ("two finite reals"). Injection b12.
+5. (repo) The 64 eps `||v||^2` floor of the `:unresolved_defective` branch
+   was unmarked: now commented PROVISIONAL and unmeasured (no fixture reaches
+   it past the three guards; stage 3 owns the fixture).
+6. (repo) The Part A test header listed e01 while the record has e01a/e01b;
+   split, and both headers now carry e08-e11 / b11-b15 with counts.
+7. (tests) The (T5) residual was never pinned against the caller's `M4`:
+   now `== _invariance_residual(M, V_form(R), blockdiag(blocks))` on all
+   three routes. Injections b14, b15.
+8. (tests) The second (E9) evaluation could have been a copy of the first:
+   `from_vectors` is pinned to its formula. Injection e10.
+9. (tests) The five `ClosedFormCheck4D` differences were only bounded: each
+   is asserted `==` its recomputation over the matched modes. Injection e11.
+10. (tests) `area_weight` was `NaN` on the map route's guard path: now 0.0
+    with the reason on R / det_R / lambda (not made `Determined`: every
+    `area_weight` test compares a plain Float64). Injection b11.
+11. (tests) The Sagan-Rubin loop never pinned its count: `n_sr == 100`.
+12. (runner) The frame thin methods accepted `kwargs...`, so a caller's
+    `mode_traces` or `tunes` silently overrode the frame's labels (swapped R
+    and Twiss returned without error). Splat removed on all four, the one
+    remaining keyword spelled out; `mode_traces` / `tunes` now a
+    `MethodError`. Injection b13.
+13. (integrator) `Core.Box` at `_edwards_teng_from_map` (above).
+
+Skipped, with reasons: the test headers pointing at this record (fixed by
+this append landing in the same commit as the tests: a sequencing constraint,
+not a tree edit); the integrator's stale line numbers (a git-ignored report);
+the `AGENTS.md` "placeholder-only today" wording (design Staging item 4 defers
+it to stage 4; the two reviewers disagreed, recorded above); the `Inf` values
+of `_mais_ripken_gamma_identities` at a zero beta and of the normalizer
+route's `consistency_residual` at the floor (documented and asserted; a
+`Determined` shape for them is a stage 4 result-shape decision, open).
+
+### Part D: measurement of every stage-2 multiplier and provisional guard on the fixtures
+
+Fixtures: the 200 manufactured stable 4x4 maps of the design's verification
+plan (seed 20260911), the 200 manufactured normalizers of Part B (seed
+20260912), the detuned FODO (`kd = -1.6 (1 + 1e-3)`), the rotation
+`R(2 pi 0.7) (+) R(2 pi 0.31)`, the two label-tie fixtures of the closed-form
+testset (the det R = 1 design row through `V_1(R)`, the 45-degree roll), the
+eight coupled constructions of benchmark 12.2-2 (212 accepted frames); the
+seven guard fixtures of the Part A testsets (rejected); the zero-projection
+fixtures of the Part B testsets. Driver `measure_stage2.jl` (package mode)
+runs the two probes above in place (their tables are its Tables A and B,
+verbatim), then measures the guard quantities on every fixture (Table D1),
+the two provisional floors per route on Part A's frames (Table D2), the
+REJECTED side of the `c eps kappa` checks (Table D3: the residual a wrong
+quantity produces on the accepted frames, divided by the suite's threshold;
+the injections show the same defects red through the tests, this table shows
+by how much) and the one-tenth rule over every check (Table D4), and derives
+the windows. Every extreme is printed with the name of the fixture that
+produced it, taken from the data.
+
+Commands (from the repository root; package mode):
+
+```bash
+julia --startup-file=no --project=. --threads=4 measure_stage2.jl measurement_table.md
+```
+
+The three scripts are reproduced in the appendix of this section; until stage
+6 moves them under `validation/`, this record is their committed home. The
+Part B probe copy differs from the worktree original in one line (the include
+path of the test helpers, `..`).
+
+Iterations of the driver, kept visible because each was a classification
+error of the kind stage 1 also met: (1) the exactly uncoupled fixtures were
+counted on the ACCEPTED side of the projection floor (their secondary
+projections are exact zeros, i.e. rejected) and the zero-weight form was
+assigned by the constructing form instead of by the frame's labels (under
+"mode 1 = larger x-area" a zero weight is always form 2; the first table
+reported a "rejected" weight of 1); (2) the rejected side of the (B10) sign
+and of the gamma formula was measured on fixtures where the wrong formula
+coincides with the right one (`R = 0` has no sign; on a plane with
+`kappa^2 = 1` the wrong gamma `(1 + alpha^2)/beta` IS the (M1) gamma, and the
+det R = -0.5 form-2 construction has such a plane by algebra, `u = 2`,
+`1 - u = -1`), reporting rejected ratios 0, 0.034, 0.104 before the witness
+condition `|1 - kappa^2| > 64 eps kq ||U||^2` was stated and its 12 excluded
+planes counted; (3) the e08 rejected row first looked for maps whose label
+match is crossed and found none of 200 (both routes label alike), so it now
+measures the residual of the WRONG mode assignment on every frame (107 at
+its smallest, map 50), and the sin-branch row first ran over the 200 maps,
+none of which has a tune above one half (the rotation, tie and construction
+fixtures supply 11 such modes).
+
+### Derived windows (rule: largest accepted ratio below one tenth, smallest rejected above ten; arithmetic in the "Derived windows" block of the table)
+
+Nothing here is frozen: every guard and floor is a PROVISIONAL test choice
+that stage 3 replaces (`min_gap` by the resolution chord, `stability_atol` by
+the per-cluster Schur-block test) or stage 4 shapes.
+
+| threshold | test choice | window from the rule | accepted extreme (ratio) | rejected extreme (ratio) |
+|---|---|---|---|---|
+| `min_gap` (frame, reject iff `g <= min_gap`) | 1e-6 | [10 x 1e-7, 2.26e-3 / 10] = [1e-6, 2.26e-4], geometric mean 1.5e-5; the choice sits AT the lower edge because `R(0.9) (+) R(0.9 + 1e-7)` was built as its 10x control | smallest g 2.26e-3 (detuned FODO; 0.032 on the manufactured maps, map 8), ratio 4.4e-4 | largest g 1e-7 (the 1e-7 control), ratio 10.0; exact FODO 4.4e-16 (2.3e9), equal pairs 0 |
+| `stability_atol` (frame, reject iff departure > atol) | 1e-8 | [10 x 7.55e-15, 1e-6 / 10] = [7.6e-14, 1e-7], geometric mean 8.7e-11 | largest departure 7.55e-15 (construction det -0.5, form 2), ratio 7.6e-7 | smallest departure 1e-6 (`diag(1 + 1e-6, ...)`), ratio 100; `diag(2, 1/2, ...)` 1e8 |
+| `min_trace_gap`, closed form (reject iff root <= gap) | 1e-8 | [10 x 0, 2.86e-3 / 10] = [0, 2.86e-4]; with the 1e-7 control counted as rejected [1.63e-6, 2.86e-4], which EXCLUDES 1e-8 | smallest root 2.86e-3 (detuned FODO), ratio 3.5e-6 | every `:singular_coefficient` fixture has root 0 (equal pairs, the identity, the exact FODO), ratio Inf |
+| `min_trace_gap`, map route ((T9) conditioning, reject iff `sqrt(Delta) <= gap`) | 1e-8 | [10 x 2.22e-16, 2.86e-3 / 10] = [2.2e-15, 2.86e-4], geometric mean 8.0e-10 | smallest `sqrt(Delta)` 2.86e-3 (detuned FODO), ratio 3.5e-6 | largest 2.22e-16 (exact FODO), ratio 4.5e7 |
+| `projection_rtol` (M6 floor, relative to `||u_j||^2`) | 64 eps = 1.42e-14 | [0, 1.56e-4]: the rejected side (820 accepted projections, 8 rejected: the identity normalizer, the rank-one `Ur` exactly and through the eigen frame, the detuned FODO and the rotation through the eigen frame) is EXACTLY zero on every fixture, so the lower edge is the roundoff floor and the default is a roundoff-scale choice | smallest genuine projection 1.56e-3 (map 136 mode 1), ratio 9.1e-12 | 0, ratio Inf |
+| `weight_rtol` (zero area weight; normalizer route relative to `||U_x||^2`, direct route absolute on `kappa_jx`, map route relative to `|D| + sqrt(Delta)`) | 256 eps = 5.68e-14 | normalizer [4.97e-14, 3.72e-5]; direct [3.33e-14, 2.32e-4]; map [9.98e-15, 2.33e-4]; the default is inside all three | smallest nonzero weight 3.7e-4 (map 50 form 1, normalizer route), 2.3e-3 (map 180 form 2, direct and map routes) | the det R = 0 constructions' zero form through the eigen frame: 4.97e-15 (normalizer, ratio 11.4), 3.33e-15 (direct, 17.1), 9.98e-16 (map, 57); the uncoupled cells 0 exactly |
+
+The 1e-7 control: the frame refuses `R(0.9) (+) R(0.9 + 1e-7)` (g = 1e-7)
+while both trace guards accept it (root 1.63e-7, `sqrt(Delta)` 1.57e-7
+against 1e-8). The two guard families measure different quantities (an
+eigenvalue gap against a trace gap, which scale alike here but need not near
+a tie of the OTHER kind, `R(a) (+) R(-a)`, where the traces coincide while the
+eigenvalues are conjugate pairs at distance 0 in the conjugate class); the
+frame is the primary route and the closed form and map route are
+cross-checks, so the disagreement is recorded, not reconciled. The
+`weight_rtol` margin on the normalizer route (11.4 against the required 10)
+is the thinnest of the stage and rests on ONE near-miss fixture; a
+`Determined` weight rather than a floor is a stage 4 shape question.
+
+The one-tenth rule over the `c eps kappa` checks (Table D4): Part A's worst
+accepted ratio is 0.0732 (the per-vector (I1) residual, map 102), Part B's
+0.078 ("twiss n-d", map 134) at c = 64 and 0.048 for the (B10) consistency
+residual at c = 256; the rejected side (Table D3) is at least 107 (the wrong
+mode assignment of the closed-form check, map 50) and otherwise 8.6e5 or
+more. Not measured: the 64 eps `||v||^2` floor of the `:unresolved_defective`
+branch (no fixture reaches it; stage 3).
+
+Open items recorded for the next stages (this record edits neither note):
+
+1. Stage 3: the symmetric FODO of `validation/lattice_cells.jl` is exactly
+   degenerate and belongs to the definite-cluster path; the design's fixture
+   row for benchmark 12.2-1 names it and should say so, and the detuned
+   control (1e-3) is what stage 2 tests. Pitfall 13's trial-012 control
+   (g = 2.13e-9 at detuning 1e-9) must be a fixture of the chord table.
+2. Stage 3: a fixture for the `:unresolved_defective` branch (a near-defective
+   Jordan-type map with a tiny `min_gap`) and the Schur-block test that
+   replaces its floor; the raw-modulus `stability_atol` is sqrt-sensitive
+   near +-1.
+3. Stage 4 (result shape): labels at a tie (`label_margin = 0`, no
+   `Determined`); the `Inf` gamma identities at a zero beta and the
+   normalizer route's `consistency_residual` at the floor; a `Determined`
+   area weight; whether form 2 is presented as form 1 with exchanged labels
+   ((T4) reading), since under one labelling an uncoupled cell has exactly
+   one admissible form; one status for coincident traces across routes
+   (frame `:cluster_unresolved`, closed form and map route
+   `:singular_coefficient`; no reason was added); the `AGENTS.md`
+   "placeholder-only today" bullet (Staging item 4).
+
+### Not verified in stage 2
+
+- No lane and no gate ran on this tree; every count above is standalone. The
+  full gate on the assembled batch is owed before the push and is recorded in
+  this file when it runs. After the ledger edits of Part D (this section, the
+  todo row, the README entry, the experiences bullet) the four suite
+  tripwires were re-run in package mode: 32/32.
+- `validation/tracking_backend_consistency.jl` and `validation/lattice_cells.jl`
+  were not run (no kernel, element or tracking code changed; pure host matrix
+  algebra, nothing CUDA-reachable).
+- The Part A/B injections e01a-e07 and b01-b10 were re-run on the folded tree
+  by the runner reviewer (every one red, counts above); e08-e11 and b11-b15
+  ran on the fixed tree; none was re-run after the ledger edits (markdown
+  only).
+- The `:unresolved_defective` branch and its floor (no fixture).
+- The closed-form and map-route guards were not exercised on a coincident
+  trace of the `R(a) (+) R(-a)` kind with UNEQUAL eigenvalue classes (none
+  exists in 4D: equal traces of two stable modes mean equal or conjugate
+  eigenvalue pairs), so the "different quantities" remark above is an
+  argument, not a measurement.
+
+### Measurement tables (output of `measure_stage2.jl`, verbatim; the fenced blocks are the two probes' stdout)
+
+#### Contents
+
+#### Part A probe (measure_eig4d.jl), stdout verbatim
+
+```
+
+| check | required c (max ratio / eps kappa) | argmax fixture | max raw | c used | ratio to used |
+|---|---|---|---|---|---|
+| E3 normalization |u'Su+2i| / ||u||^2 | 1.45 | manufactured map 112 | 8.88e-16 | 64 | 0.0226 |
+| E7 ||U'SU-S|| / (kq ||U||^2) | 1.18 | manufactured map 80 | 3.42e-15 | 64 | 0.0185 |
+| E8 (I1) normalized / max(1,||M||) | 3.75 | manufactured map 50 | 2.51e-15 | 64 | 0.0586 |
+| FODO beta,alpha vs T15 / kfodo | 0.000113 | FODO plane 2 | 4.88e-15 | 64 | 1.76e-06 |
+| FODO kappa_1y, kappa_2x / ||U||^2 | 0 | FODO | 0 | 64 | 0 |
+| FODO tune vs acos branch / kfodo | 1.8e-05 | FODO plane 2 | 7.77e-16 | 64 | 2.81e-07 |
+| G = U_j U_j' / ||U||^2 | 0.212 | manufactured map 181 | 4.44e-16 | 16 | 0.0132 |
+| G PSD: -eigmin(G) / ||G|| | 1.45 | manufactured map 180 | 9.58e-16 | 64 | 0.0226 |
+| M2 row sums / ||u||^2 | 0.866 | manufactured map 129 | 4.44e-16 | 64 | 0.0135 |
+| M3 column sums / (kq ||U||^2) | 0.231 | manufactured map 80 | 6.66e-16 | 64 | 0.0036 |
+| M4 u difference / (kq ||U||^2) | 0.192 | manufactured map 80 | 5.55e-16 | 64 | 0.003 |
+| M5 |bg-a^2-k^2| / ||u||^4 | 0.338 | manufactured map 174 | 7.44e-15 | 64 | 0.00528 |
+| P complete ||P1+P2-I|| / (kq ||U||^2) | 1.11 | manufactured map 80 | 3.2e-15 | 64 | 0.0173 |
+| P disjoint ||P1P2|| / (kq ||U||^2) | 0.837 | manufactured map 80 | 2.42e-15 | 64 | 0.0131 |
+| P idempotent ||P^2-P|| / ||P||^2 | 1.31 | manufactured map 131 | 6.81e-16 | 64 | 0.0205 |
+| R(0.7)+R(0.31) phase-fixed U = I / 1 | 1 | rotation | 2.22e-16 | 64 | 0.0156 |
+| R(0.7)+R(0.31) tunes / 1 | 0.25 | rotation | 5.55e-17 | 16 | 0.0156 |
+| actions invariance / (||U||^2 max(1,||M||)^2 ||r||^2) | 0.611 | map 2 point 3 | 1.33e-14 | 64 | 0.00955 |
+| actions xi vs u / (||U||^2 ||r||^2) | 0.556 | map 16 point 1 | 7.11e-15 | 64 | 0.00868 |
+| cf (I1) on E14 normalizer / (kcf/min sin^2) | 0.00538 | manufactured map 133 | 2.38e-15 | 64 | 8.4e-05 |
+| cf E10 traces vs 2cos(mu) / kc | 0.2 | manufactured map 177 | 9.99e-16 | 64 | 0.00312 |
+| cf E3 on E14 vector / (kcf/min sin^2) | 0.0784 | R(0.7)+R(0.31) | 1.55e-14 | 64 | 0.00123 |
+| cf G PSD margin / (kcf/min sin^2) | 0.0367 | manufactured map 62 | 4.46e-14 | 64 | 0.000573 |
+| cf P residuals / kcf | 0.461 | manufactured map 134 | 1.77e-12 | 64 | 0.0072 |
+| cf covariance diff / (kcf/min sin^2) | 0.116 | detuned FODO kq=1.6, eps=1e-3 | 9.93e-10 | 64 | 0.00181 |
+| cf kappa diff / kcf | 0.214 | manufactured map 36 | 5.4e-14 | 64 | 0.00334 |
+| cf outer diff / (kcf/min sin^2) | 0.104 | detuned FODO kq=1.6, eps=1e-3 | 8.89e-10 | 64 | 0.00162 |
+| cf projector diff / kcf | 0.687 | manufactured map 36 | 1.74e-13 | 64 | 0.0107 |
+| cf tune diff / (kcf/min|sin|) | 0.031 | manufactured map 54 | 5.09e-15 | 64 | 0.000485 |
+| eigenvector (I1) normalized / max(1,||M||) | 4.69 | manufactured map 102 | 2.35e-15 | 64 | 0.0732 |
+| kappa (M1) vs (PS)_{a,pa} / ||u||^2 | 0 | manufactured map 1 | 0 | 16 | 0 |
+| scaling G / ksc | 16.4 | map 17 scaling auto | 2.23e-11 | 1000 | 0.0164 |
+| scaling P / ksc | 0.284 | map 4 scaling auto | 9.14e-15 | 1000 | 0.000284 |
+| scaling beta,alpha,gamma / ksc | 8.72 | map 17 scaling auto | 1.19e-11 | 1000 | 0.00872 |
+| scaling kappa / ksc | 0.0749 | map 8 scaling auto | 4.69e-14 | 1000 | 7.49e-05 |
+| scaling tunes / ksc | 0.096 | map 19 scaling auto | 5.55e-16 | 1000 | 9.6e-05 |
+
+| rejected fixture | quantity | value | threshold | ratio | reason |
+|---|---|---|---|---|---|
+| diag(2, 1/2, R(1.2)) | unit-circle departure | 1 | 1e-08 | 1e+08 | unstable_spectrum |
+| R(0.9) (+) R(0.9) | min_gap / gap | 0 | 1e-06 | Inf | cluster_unresolved |
+| R(0.9) (+) R(-0.9) | min_gap / gap | 0 | 1e-06 | Inf | cluster_unresolved |
+| R(0.9) (+) R(0.9 + 1e-7) | min_gap / gap | 1e-07 | 1e-06 | 10 | cluster_unresolved |
+| identity | unit-eigenvalue distance | 0 | 1e-08 | 1e+292 | unit_eigenvalue |
+| symmetric FODO kq=1.6 (exact) | min_gap / gap | 4.44e-16 | 1e-06 | 2.25e+09 | cluster_unresolved |
+| diag(1+1e-6, 1/(1+1e-6), R(1.2)) | unit-circle departure | 1e-06 | 1e-08 | 100 | unstable_spectrum |
+| closed form R(0.9) (+) R(0.9) | |tau+ - tau-| | 0 | 1e-08 | Inf | singular_coefficient |
+| closed form R(0.9) (+) R(-0.9) | |tau+ - tau-| | 0 | 1e-08 | Inf | singular_coefficient |
+| closed form R(0.9) (+) R(0.9 + 1e-7) | |tau+ - tau-| | 1.63e-07 | 1e-08 | 0.0613 | none |
+| closed form symmetric FODO kq=1.6 (exact) | |tau+ - tau-| | 0 | 1e-08 | Inf | singular_coefficient |
+
+accepted side: largest unit-circle departure 1.67e-15 (map 4), ratio to STAB 1.67e-07; smallest gap 0.0322 (map 8), ratio to MIN_GAP 3.22e+04; smallest |tau+ - tau-| 0.00436 (map 8), ratio to TRACE_GAP 4.36e+05
+```
+
+#### Part B probe (measure_param.jl), stdout verbatim
+
+```
+FODO exact: sqrt(Delta) = 2.220446049250313e-16 (guard 1e-8: rejected ratio = guard / sqrtDelta)
+FODO detuned: sqrt(Delta) = 0.002858939262204485 accepted ratio = sqrtDelta / guard = 285893.9262204485
+FODO detuned: kq = 11869.559513281038, nU = 10.390774255193092, gap = 0.0022627650456965914, phase floors: sqrt(b1x b1y) = 0.0 vs 64 eps ||u||^2 = 9.337051834757788e-14
+
+| check (residual / (eps kappa)) | required c (max ratio) | argmax fixture | 64 / required |
+|---|---|---|---|
+| 7.2/7.3 tables / (kR nU sT) | 0.295 | map 180 | 217.0 |
+| B10 consistency / (kR sR) | 12.4 | map 8 | 5.17 |
+| FODO alpha vs CS / (kq nU sa) | 5.68e-5 | FODO n | 1.13e6 |
+| FODO beta vs CS / (kq nU b) | 5.39e-5 | FODO n | 1.19e6 |
+| FODO mu vs CS / (kq nU) | 3.24e-5 | FODO n | 1.97e6 |
+| M12 vs M9 / (nU ne/minbeta) | 0.391 | normalizer 50 | 164.0 |
+| M13 / (nU/minbeta) | 0.514 | normalizer 56 | 124.0 |
+| M2 row sum / nU | 0.531 | normalizer 164 | 121.0 |
+| M3 col sum / nU | 0.619 | normalizer 164 | 103.0 |
+| M4 diff / nU | 0.292 | normalizer 56 | 220.0 |
+| M5 / nU^2 | 0.111 | normalizer 163 | 575.0 |
+| M8 (I1) / (nM nU/minbeta) | 0.0528 | normalizer 181 | 1210.0 |
+| M8 -> B10 R / (kR nU sR/minbeta) | 0.0205 | map 39 | 3120.0 |
+| M8 -> B5/B9 twiss / (kR nU sc/minbeta) | 0.0294 | map 158 | 2180.0 |
+| M8 rebuild / (nU/minbeta) | 0.264 | normalizer 56 | 242.0 |
+| M8 sympl / (nU^2/minbeta) | 0.0382 | normalizer 56 | 1680.0 |
+| M9 two forms / (nU ne) | 1.09 | normalizer 50 | 58.6 |
+| R n-d / (kR sR) | 0.193 | map 1 | 332.0 |
+| R n-m / (kq kR sR) | 0.402 | map 80 | 159.0 |
+| R2 + R1/d1 / (nU^2/wmin^2) | 0.461 | map 194 | 139.0 |
+| REJECTED zero weight (other form) |w| / (kq nU) [want > 10 x floor... reported raw] | 15.0 | construction form 2 det 0.0 n | 4.27 |
+| T1 rebuild / (kR nM sV^2) | 0.406 | map 114 | 158.0 |
+| T11 trace / (kq nU) | 1.66 | map 130 | 38.5 |
+| T5 rec / (kq kR nM) | 0.173 | map 80 | 369.0 |
+| Uet (I1) / (kq kR nM) | 0.169 | map 80 | 378.0 |
+| V sympl / sV^2 | 0.995 | map 62 | 64.3 |
+| blocks n-m / (kq kR sB) | 0.438 | map 80 | 146.0 |
+| closure / (nU ne nM^2) | 0.433 | normalizer 8 | 148.0 |
+| construction R / (kq nU sR/w) | 0.186 | construction form 2 det 0.0 d | 344.0 |
+| construction T5 / (kq nU nM/w) | 0.0269 | construction form 2 det 0.0 d | 2380.0 |
+| construction alpha / (kq nU sa/w) | 0.0979 | construction form 1 det 1.0 n | 653.0 |
+| construction beta / (kq nU b/w) | 0.157 | construction form 2 det 0.0 n | 407.0 |
+| construction lambda / (kq nU/w^2) | 0.0536 | construction form 2 det -0.5 d | 1190.0 |
+| construction mu / (kq nU) | 0.0139 | construction form 1 det 0.3 n | 4600.0 |
+| construction other det / (kq nU sR^2/(w d)^2) | 0.0141 | construction form 1 det 0.3 d | 4550.0 |
+| construction other lambda^2 / (kq nU/min(w,1-w)^2) | 0.00349 | construction form 1 det 1.0 n | 18400.0 |
+| construction tunes / kq | 0.0659 | construction form 1 det 0.3 | 971.0 |
+| construction u / (kq nU) | 0.0639 | construction form 1 det 1.0 n | 1000.0 |
+| construction weight / (kq nU/w) | 0.1 | construction form 2 det 0.0 n | 639.0 |
+| detR1 detR2 - 1 / (nU^2/wmin^2) | 0.421 | map 88 | 152.0 |
+| lambda^2 - w / kR | 0.424 | map 12 | 151.0 |
+| mu n-m / (kq kT nU) | 0.613 | map 130 | 104.0 |
+| phase norm / nU | 0.48 | normalizer 48 | 133.0 |
+| phases vs M6 / (kq? kR nU/minbeta) | 0.449 | map 192 | 143.0 |
+| rephase imag / norm(u) | 0.336 | normalizer 163 | 190.0 |
+| twiss n-d / (kR sc) | 4.99 | map 134 | 12.8 |
+| twiss n-m / (kq kR kT sc) | 1.74 | map 192 | 36.7 |
+| u n-m / (kq nU) | 0.19 | map 176 | 336.0 |
+| unit area / kR^2 | 0.0483 | map 181 | 1330.0 |
+| w n-m / (kq nU w^2) | 0.204 | map 176 | 314.0 |
+
+WORST accepted required c: 12.382502182260561 -> 64 / worst = 5.168583785245584
+```
+
+#### Part D tables (output of measure_stage2.jl, verbatim)
+
+Fixtures: the 200 manufactured stable maps (seed 20260911), the detuned FODO (kd = -1.6 (1 + 1e-3)), the rotation R(2 pi 0.7) (+) R(2 pi 0.31), the two label-tie fixtures, the 8 coupled constructions of benchmark 12.2-2 (accepted, 212 frames); the 200 manufactured normalizers (seed 20260912, Part B); the guard fixtures of the Part A testsets (rejected, 7). Test thresholds: min_gap = 1.0e-6, stability_atol = 1.0e-8, min_trace_gap = 1.0e-8 (closed form and map route); floors projection_rtol = 64 eps = 1.42e-14, weight_rtol = 256 eps = 5.68e-14.
+
+#### Table D1: guard quantities, accepted fixtures (extremes only) and every rejected fixture
+
+| quantity | accepted extreme (fixture) | ratio to threshold |
+|---|---|---|
+| conjugate-class gap g (smallest) | 0.00226 (detuned FODO kq=1.6, eps=1e-3) | min_gap / g = 0.000442 |
+| unit-circle departure (largest) | 7.55e-15 (construction form 2 det -0.5) | departure / stability_atol = 7.55e-07 |
+| closed form |tau+ - tau-| (smallest) | 0.00286 (detuned FODO kq=1.6, eps=1e-3) | min_trace_gap / root = 3.5e-06 |
+| map route sqrt(Delta) (T7) (smallest) | 0.00286 (detuned FODO kq=1.6, eps=1e-3) | min_trace_gap / sqrt(Delta) = 3.5e-06 |
+
+| rejected fixture | frame reason | g | departure | unit-eigenvalue distance | closed form reason | |tau+ - tau-| | map route reason | sqrt(Delta) |
+|---|---|---|---|---|---|---|---|---|
+| R(0.9) (+) R(0.9 + 1e-7) | cluster_unresolved | 1e-07 | 1.11e-16 | 0.87 | available | 1.63e-07 | available | 1.57e-07 |
+| R(0.9) (+) R(0.9) | cluster_unresolved | 0 | 0 | 0.87 | singular_coefficient | 0 | singular_coefficient | 0 |
+| R(0.9) (+) R(-0.9) | cluster_unresolved | 0 | 0 | 0.87 | singular_coefficient | 0 | singular_coefficient | 0 |
+| symmetric FODO kq=1.6 (exact) | cluster_unresolved | 4.44e-16 | 2.22e-16 | 0.67 | singular_coefficient | 0 | singular_coefficient | 2.22e-16 |
+| identity | unit_eigenvalue | 0 | 0 | 0 | singular_coefficient | 0 | singular_coefficient | 0 |
+| diag(2, 1/2, R(1.2)) | unstable_spectrum | 0.942 | 1 | 0.5 | unstable_spectrum | 1.78 | unstable_spectrum | 1.78 |
+| diag(1+1e-6, 1/(1+1e-6), R(1.2)) | unstable_spectrum | 1.13 | 1e-06 | 1e-06 | unstable_spectrum | 1.28 | unstable_spectrum | 1.28 |
+
+The control R(0.9) (+) R(0.9 + 1e-7) is refused by the frame (g = 1e-07 <= min_gap) and ACCEPTED by both trace guards (root 1.63e-07, sqrt(Delta) 1.57e-07 > 1.0e-8); the two guard families measure different quantities (an eigenvalue gap versus a trace gap, sqrt-related near a tie), and the frame is the primary route (design pipeline step 10). Window arithmetic below treats it as rejected for min_gap only.
+
+#### Table D2: provisional floors projection_rtol (M6) and weight_rtol (B10 / B11 / T8) on Part A's frames
+
+| floor | accepted smallest (fixture) | rejected largest (fixture) | threshold | accepted ratio (thr / smallest) | rejected ratio (thr / largest) | rule window [10 max rej, min acc / 10] |
+|---|---|---|---|---|---|---|
+| projection_rtol: sqrt(beta_jx beta_jy) / ||u_j||^2, 820 accepted, 8 rejected | 0.00156 (manufactured map 136 mode 1) | 0 (identity normalizer mode 1) | 1.42e-14 | 9.11e-12 | Inf | [0, 0.000156] |
+| weight_rtol, normalizer route: |w| / ||U_x||^2 | 0.000372 (manufactured map 50 form 1) | 4.97e-15 (construction form 1 det 0.0 form 2) | 5.68e-14 | 1.53e-10 | 11.4 | [4.97e-14, 3.72e-05] |
+| weight_rtol, direct route: |kappa_jx| (absolute) | 0.00232 (manufactured map 180 form 2) | 3.33e-15 (construction form 2 det 0.0 form 2) | 5.68e-14 | 2.45e-11 | 17.1 | [3.33e-14, 0.000232] |
+| weight_rtol, map route: |den| / (|D| + sqrt Delta) | 0.00233 (manufactured map 180 form 2) | 9.98e-16 (construction form 1 det 0.0 form 2) | 5.68e-14 | 2.44e-11 | 57 | [9.98e-15, 0.000233] |
+
+Zero-weight forms (rejected side): detuned FODO kq=1.6, eps=1e-3 form 2; R(0.7)+R(0.31) form 2; construction form 1 det 0.0 form 2; construction form 2 det 0.0 form 2. Rejected projections: identity normalizer mode 1; identity normalizer mode 2; rank-one Ur (exact) mode 1; rank-one Ur through the eigen frame mode 1; detuned FODO through the eigen frame mode 1; detuned FODO through the eigen frame mode 2; R(0.7)+R(0.31) through the eigen frame mode 1; R(0.7)+R(0.31) through the eigen frame mode 2.
+
+#### Table D3: rejected side of the c eps kappa checks (a wrong quantity's residual / the suite's threshold; smallest over the accepted frames)
+
+| wrong quantity on a check | smallest ratio to the suite's threshold | fixture |
+|---|---|---|
+| b03 (B10) R = +U_y U_x^-1 vs direct / (64 eps kR sR) | 5.53e+09 | manufactured map 50 form 2 |
+| e02 on E7: ||U'SU - S|| / (64 eps kq ||U||^2) | 3.93e+06 | manufactured map 50 |
+| e02 on E8: (I1) of U_bad / (64 eps max(1,||M||)) | 1.02e+12 | manufactured map 50 |
+| e03 on M2: |sum_a kappa_Re - 1| / (64 eps ||u||^2) | 2.11e+11 | manufactured map 186 mode 2 |
+| e08 wrong mode assignment on cf tune diff / (64 eps kcf/min|sin|) | 107 | manufactured map 50 |
+| gamma = (1+alpha^2)/beta on M5 / (64 eps ||u||^4) | 8.55e+05 | manufactured map 50 mode 1 plane 1 |
+| sin mu > 0 forced on tunes above 1/2: |mu_bad - mu| / (64 eps max(1,||M||)) | 9.94e+12 | construction form 2 det -0.5 mode 2 |
+
+Rows run over the 212 accepted frames, except that the (B10)-sign row skips the two exactly uncoupled fixtures (R = 0 has no sign) and the gamma row skips the 12 planes with kappa^2 = 1 within kappa's uncertainty (there (1 + alpha^2)/beta IS the (M1) gamma: the uncoupled cells, the unit-weight plane of the rank-one constructions, the kappa = -1 plane of the det R = -0.5 form-2 construction): the wrong formula coincides with the right one on those fixtures and cannot be witnessed; the first three versions of this script counted them and reported smallest rejected ratios of 0, 0.034 and 0.104. The trace match is crossed (mode_permutation = (2, 1)) on 2 of them [label tie det R = 1 (design row); construction form 2 det 1.0]: on every manufactured map both routes label alike, so a label match is red only where the labels cross, which is why the suite's tie fixtures exist; the e08 row measures the residual of the wrong assignment on every frame. The sin-branch row runs over the 11 modes with tune above one half (the 200 manufactured maps have none; the rotation, tie and construction fixtures do).
+
+#### Table D4: the one-tenth rule over every c eps kappa check
+
+| part | checks | worst accepted ratio to the c used | where |
+|---|---|---|---|
+| A (eigenmodes_4d.jl) | 36 | 0.0732 | eigenvector (I1) normalized / max(1,||M||) [manufactured map 102] |
+| B (coupled_parameterizations.jl) | 49 | 0.078 | twiss n-d / (kR sc) [map 134] at c = 64 |
+| B, (B10) consistency at the suite's c = 256 | 1 | 0.0484 | map 8 (required c 12.4; at c = 64 the ratio would be 0.193) |
+| D3 rejected side, smallest over the rows | 7 | 107 | e08 wrong mode assignment on cf tune diff / (64 eps kcf/min|sin|) |
+
+#### Derived windows (rule: largest accepted ratio below one tenth, smallest rejected above ten)
+
+##### min_gap (frame guard, reject iff g <= min_gap; PROVISIONAL, stage 3 replaces it with the resolution chord)
+- accepted: 212 frames, smallest g = 0.00226 (detuned FODO kq=1.6, eps=1e-3); rejected: 4 fixtures, largest g = 1e-07 (R(0.9) (+) R(0.9 + 1e-7)).
+- window [10 x 1e-07, 0.00226 / 10] = [1e-06, 0.000226]; geometric mean 1.5e-05. The test choice 1.0e-6 sits at the lower edge because the 1e-7 control was built as the deliberate 10x control of that choice. Pitfall 13 (trial 012, detuning 1e-9: g = 2.13e-9) is a fixture the chord default of stage 3 must resolve; no stage 2 value is frozen.
+##### stability_atol (frame guard, reject iff departure > stability_atol; PROVISIONAL, stage 3 replaces it with the per-cluster Schur-block test)
+- accepted: largest departure = 7.55e-15 (construction form 2 det -0.5); rejected: 2 fixtures, smallest departure = 1e-06 (diag(1+1e-6, 1/(1+1e-6), R(1.2))).
+- window [10 x 7.55e-15, 1e-06 / 10] = [7.55e-14, 1e-07]; geometric mean 8.69e-11; the test choice 1.0e-8 is inside. Not to be frozen: a trace excess delta from roundoff maps to a departure sqrt(delta) near +-1 (Part A finding 2), so a raw-modulus guard at 1e-8 would call I_2 (+) R(1.2) unstable at trace roundoff 1e-16.
+##### min_trace_gap, closed form (reject iff |tau+ - tau-| <= min_trace_gap; the coincident-trace guard of theory 3.4)
+- accepted: smallest root = 0.00286 (detuned FODO kq=1.6, eps=1e-3); rejected (reason :singular_coefficient): 4 fixtures, largest root = 0 (R(0.9) (+) R(0.9)).
+- window [10 x 0, 0.00286 / 10] = [0, 0.000286]; geometric mean NaN; the test choice 1.0e-8 is inside. With the 1e-7 control counted as rejected the window would be [1.63e-06, 0.000286], which excludes 1.0e-8: the closed form's guard is a division guard for (E11), not a resolution criterion.
+##### min_trace_gap, map route (the (T9) conditioning guard, reject iff sqrt(Delta) <= min_trace_gap)
+- accepted: smallest sqrt(Delta) = 0.00286 (detuned FODO kq=1.6, eps=1e-3); rejected (reason :singular_coefficient): 4 fixtures, largest = 2.22e-16 (symmetric FODO kq=1.6 (exact)).
+- window [10 x 2.22e-16, 0.00286 / 10] = [2.22e-15, 0.000286]; geometric mean 7.97e-10; the test choice 1.0e-8 is inside. sqrt(Delta) of (T7) and the closed form's root are the same trace gap computed two ways; their measured extremes agree to the digits shown.
+##### projection_rtol = 64 eps (M6 floor, relative to ||u_j||^2)
+- window [0, 0.000156] from Table D2; the default 1.42e-14 is inside when the lower edge is below it. Every rejected fixture is an exact zero or a roundoff zero of an exactly vanishing projection; no genuine tiny projection exists among the fixtures, so the lower edge is a roundoff floor and the default is a roundoff-scale choice, as its docstring says.
+##### weight_rtol = 256 eps (zero area weight, per route)
+- normalizer route window [4.97e-14, 3.72e-05]; direct route [3.33e-14, 0.000232]; map route [9.98e-15, 0.000233]. The default 5.68e-14 is inside a window when its lower edge is below it; Part B raised it from 64 eps after the det R = 0 construction's zero weight arrived at 15 eps through the eigen frame (Table D2 shows the current value of that near-miss per route).
+##### Unmeasured
+- The 64 eps ||v||^2 floor of the :unresolved_defective branch of _eigenmodes_4d (eigenmodes_4d.jl, marked PROVISIONAL and unmeasured): no fixture reaches the branch past the three guards at the test thresholds; stage 3 owns the fixture and the Schur-block test that replaces it.
+
+### Appendix: the measurement scripts
+
+`measure_stage2.jl` (the Part D driver; runs the two probes below from its own directory and writes the tables):
+
+```julia
+# Stage 2 Part D measurement: every stage-2 tolerance multiplier and guard
+# threshold on the suite's own fixtures, with the design rule "largest
+# residual-to-threshold ratio on an accepted fixture below one tenth, smallest
+# on a rejected fixture above ten". Runs the two Part A/B probes (their tables
+# are reproduced verbatim), then measures what they did not: the guard
+# windows (min_gap, stability_atol, the closed-form coincident-trace guard,
+# the (T9) conditioning guard of the map route, the two provisional floors
+# projection_rtol and weight_rtol on Part A's frames, per route), and the
+# REJECTED side of the c eps kappa checks (the residual a wrong quantity
+# produces, divided by the threshold the suite uses). Every extreme carries
+# the name of the fixture that produced it (experiences: derive the label
+# with the number, never type it).
+#
+# Package mode, from the repository root:
+#   julia --startup-file=no --project=. --threads=4 measure_stage2.jl <out.md>
+using Octopus, LinearAlgebra, Random, Printf
+const OUT_MD = length(ARGS) >= 1 ? ARGS[1] : joinpath(@__DIR__, "measurement_table.md")
+const EPS = eps(Float64)
+e2(x) = @sprintf("%.3g", x)
+
+# --- 1. the Part A probe, in its own module so its top-level names stay put ---
+const MeasA = Module(:MeasA)
+logA = joinpath(@__DIR__, "probe_A_stdout.log")
+open(logA, "w") do io
+    redirect_stdout(io) do
+        Base.include(MeasA, joinpath(@__DIR__, "measure_eig4d.jl"))
+    end
+end
+# --- 2. the Part B probe, in Main (it include_strings the test helpers into Main) ---
+logB = joinpath(@__DIR__, "probe_B_stdout.log")
+open(logB, "w") do io
+    redirect_stdout(io) do
+        include(joinpath(@__DIR__, "measure_param.jl"))
+    end
+end
+tableA = read(logA, String)
+tableB = read(logB, String)
+
+# --- 3. Part D fixtures ---------------------------------------------------------
+val = determined_value
+S4 = Octopus._symplectic_form(4)
+R2(mu) = Octopus._rotation2(mu)
+bd(A, B) = [A zeros(2, 2); zeros(2, 2) B]
+MIN_GAP, STAB, TRACE_GAP = MeasA.MIN_GAP, MeasA.STAB, MeasA.TRACE_GAP
+W_RTOL = 256 * EPS        # weight_rtol default (coupled_parameterizations.jl)
+P_RTOL = 64 * EPS         # projection_rtol default
+frame_of(M) = Octopus._eigenmodes_4d(M; min_gap=MIN_GAP, stability_atol=STAB)
+
+# accepted fixtures: (name, M, frame); every one must resolve
+accepted = Any[]
+for (i, (M, f)) in enumerate(MeasA.frames)
+    push!(accepted, ("manufactured map $(i)", M, f))
+end
+push!(accepted, ("detuned FODO kq=1.6, eps=1e-3", MeasA.M4, MeasA.ff))
+push!(accepted, ("R(0.7)+R(0.31)", MeasA.Mrot, MeasA.fr))
+# the two label-tie fixtures of the closed-form testset (runtests.jl, "Label ties")
+Rtie = [0.8 0.3; -0.6 1.025]; Vtie = Octopus._edwards_teng_V(1, Rtie)
+Mtie = Vtie * bd(Octopus._twiss_block(2.3, 0.4, 2pi * 0.28), Octopus._twiss_block(1.7, -0.6, 2pi * 0.61)) * Octopus._symplectic_inverse(Vtie)
+th = pi / 4
+Wroll = [cos(th) * Matrix(1.0I, 2, 2) sin(th) * Matrix(1.0I, 2, 2); -sin(th) * Matrix(1.0I, 2, 2) cos(th) * Matrix(1.0I, 2, 2)]
+Mroll = Wroll * bd(Octopus._twiss_block(2.0, 0.3, 2pi * 0.7), Octopus._twiss_block(1.5, -0.4, 2pi * 0.31)) * transpose(Wroll)
+for (nm, M) in (("label tie det R = 1 (design row)", Mtie), ("label tie 45-degree roll", Mroll))
+    push!(accepted, (nm, M, val(frame_of(M).frame)))
+end
+# the coupled construction of benchmark 12.2-2 (the design row det R in (-0.5, 0, 0.3, 1))
+constructions = Any[]   # (name, M, frame, form, d, expected tunes)
+let
+    bx, ax, mux = 2.0, 0.3, 2pi * 0.7; by, ay, muy = 1.5, -0.4, 2pi * 0.31; bz, muz = 10.0, 2pi * 0.05
+    Rs = ((0.5, 0.5, 1.5, 0.5), (0.4, 0.2, 0.6, 0.3), (0.5, 0.2, -0.1, 0.56), (0.8, 0.3, -0.6, 1.025))
+    m0 = compile_runtime(Linear6DSpec(beta1=(bx, by, bz), alpha1=(ax, ay, 0.0), dmu=(mux, muy, muz)))
+    for (mode, form) in ((XY_MODEA, 1), (XY_MODEB, 2)), r in Rs
+        Rm = [r[1] r[2]; r[3] r[4]]; d = det(Rm)
+        W = compile_runtime(XYCouplingSpec(r1=r[1], r2=r[2], r3=r[3], r4=r[4], mode=mode))
+        Winv = form == 1 ? compile_runtime(XYCouplingSpec(r1=-r[1], r2=-r[2], r3=-r[3], r4=-r[4], mode=mode)) :
+                           compile_runtime(XYCouplingSpec(r1=r[4], r2=-r[2], r3=-r[3], r4=r[1], mode=mode))
+        M = one_turn_matrix((Winv, m0, W)).matrix[1:4, 1:4]
+        pf = _pb_frame(M; expected=(mux, muy))
+        nm = "construction form $(form) det $(abs(d) < 1e-12 ? 0.0 : round(d, digits=2))"
+        push!(constructions, (nm, M, pf.frame, form, d, (mux, muy)))
+        push!(accepted, (nm, M, pf.frame))
+    end
+end
+# rejected fixtures of the guards (name, M)
+fodo_exact = MeasA.fodo4(1.6, -1.6)
+rejected_guard = [
+    ("R(0.9) (+) R(0.9 + 1e-7)", bd(R2(0.9), R2(0.9 + 1e-7))),
+    ("R(0.9) (+) R(0.9)", bd(R2(0.9), R2(0.9))),
+    ("R(0.9) (+) R(-0.9)", bd(R2(0.9), R2(-0.9))),
+    ("symmetric FODO kq=1.6 (exact)", fodo_exact),
+    ("identity", Matrix(1.0I, 4, 4)),
+    ("diag(2, 1/2, R(1.2))", bd([2.0 0; 0 0.5], R2(1.2))),
+    ("diag(1+1e-6, 1/(1+1e-6), R(1.2))", bd([1 + 1e-6 0; 0 1 / (1 + 1e-6)], R2(1.2))),
+]
+
+named_extreme(vals, names, which) = (k = which(vals); "$(e2(vals[k])) ($(names[k]))")
+function window_gap(acc, accn, rej, rejn)     # reject iff q <= t: window [10 max rej, min acc / 10]
+    lo = 10 * maximum(rej); hi = minimum(acc) / 10
+    return lo, hi, named_extreme(acc, accn, argmin), named_extreme(rej, rejn, argmax)
+end
+function window_departure(acc, accn, rej, rejn) # reject iff q > t: window [10 max acc, min rej / 10]
+    lo = 10 * maximum(acc); hi = minimum(rej) / 10
+    return lo, hi, named_extreme(acc, accn, argmax), named_extreme(rej, rejn, argmin)
+end
+gmean(lo, hi) = lo > 0 ? sqrt(lo * hi) : NaN
+io = IOBuffer()
+pr(args...) = println(io, args...)
+
+pr("# Stage 2 measurement tables (output of measure_stage2.jl, verbatim)\n")
+pr("Fixtures: the 200 manufactured stable maps (seed 20260911), the detuned FODO (kd = -1.6 (1 + 1e-3)), the rotation R(2 pi 0.7) (+) R(2 pi 0.31), the two label-tie fixtures, the 8 coupled constructions of benchmark 12.2-2 (accepted, $(length(accepted)) frames); the 200 manufactured normalizers (seed 20260912, Part B); the guard fixtures of the Part A testsets (rejected, $(length(rejected_guard))). Test thresholds: min_gap = $(MIN_GAP), stability_atol = $(STAB), min_trace_gap = $(TRACE_GAP) (closed form and map route); floors projection_rtol = 64 eps = $(e2(P_RTOL)), weight_rtol = 256 eps = $(e2(W_RTOL)).\n")
+
+# --- 4. Table D1: guard quantities on every fixture -----------------------------
+pr("## Table D1: guard quantities, accepted fixtures (extremes only) and every rejected fixture\n")
+acc_gap = Float64[]; acc_dep = Float64[]; acc_root = Float64[]; acc_sqd = Float64[]; acc_n = String[]
+function trace_quantities(M)
+    rad = 2 * tr(M * M) - tr(M)^2 + 8                     # (E10) radicand, closed form
+    Mxx, Mxy, Myx, Myy = M[1:2, 1:2], M[1:2, 3:4], M[3:4, 1:2], M[3:4, 3:4]
+    Delta = (tr(Mxx) - tr(Myy))^2 + 4 * det(Octopus._adjugate2(Mxy) + Myx)   # (T7), map route
+    return sqrt(abs(rad)), sqrt(abs(Delta))
+end
+for (nm, M, f) in accepted
+    s = frame_of(M).spectrum
+    root, sqd = trace_quantities(M)
+    push!(acc_gap, s.gap); push!(acc_dep, s.unit_circle_departure); push!(acc_root, root); push!(acc_sqd, sqd); push!(acc_n, nm)
+end
+pr("| quantity | accepted extreme (fixture) | ratio to threshold |")
+pr("|---|---|---|")
+pr("| conjugate-class gap g (smallest) | $(named_extreme(acc_gap, acc_n, argmin)) | min_gap / g = $(e2(MIN_GAP / minimum(acc_gap))) |")
+pr("| unit-circle departure (largest) | $(named_extreme(acc_dep, acc_n, argmax)) | departure / stability_atol = $(e2(maximum(acc_dep) / STAB)) |")
+pr("| closed form |tau+ - tau-| (smallest) | $(named_extreme(acc_root, acc_n, argmin)) | min_trace_gap / root = $(e2(TRACE_GAP / minimum(acc_root))) |")
+pr("| map route sqrt(Delta) (T7) (smallest) | $(named_extreme(acc_sqd, acc_n, argmin)) | min_trace_gap / sqrt(Delta) = $(e2(TRACE_GAP / minimum(acc_sqd))) |")
+pr("")
+pr("| rejected fixture | frame reason | g | departure | unit-eigenvalue distance | closed form reason | |tau+ - tau-| | map route reason | sqrt(Delta) |")
+pr("|---|---|---|---|---|---|---|---|---|")
+rej_gap = Float64[]; rej_gap_n = String[]; rej_dep = Float64[]; rej_dep_n = String[]
+rej_root = Float64[]; rej_root_n = String[]; rej_sqd = Float64[]; rej_sqd_n = String[]
+for (nm, M) in rejected_guard
+    r = frame_of(M); s = r.spectrum
+    cf = Octopus._closed_form_eigenmodes_4d(M; min_trace_gap=TRACE_GAP, stability_atol=STAB)
+    em = Octopus._edwards_teng_from_map(M; min_trace_gap=TRACE_GAP)
+    root, sqd = trace_quantities(M)
+    fr_reason = is_determined(r.frame) ? :resolved : r.frame.reason
+    freason = string(fr_reason)
+    cfreason = is_determined(cf) ? "available" : string(cf.reason)
+    emreason = is_determined(em.form1.R) || is_determined(em.form2.R) ? "available" : string(em.form1.R.reason)
+    pr("| $(nm) | $(freason) | $(e2(s.gap)) | $(e2(s.unit_circle_departure)) | $(e2(s.unit_eigenvalue_distance)) | $(cfreason) | $(e2(root)) | $(emreason) | $(e2(sqd)) |")
+    if fr_reason === :cluster_unresolved
+        push!(rej_gap, s.gap); push!(rej_gap_n, nm)
+    elseif fr_reason === :unstable_spectrum
+        push!(rej_dep, s.unit_circle_departure); push!(rej_dep_n, nm)
+    end
+    if !is_determined(cf) && cf.reason === :singular_coefficient
+        push!(rej_root, root); push!(rej_root_n, nm)
+    end
+    if !is_determined(em.form1.R) && em.form1.R.reason === :singular_coefficient
+        push!(rej_sqd, sqd); push!(rej_sqd_n, nm)
+    end
+end
+# the 1e-7 control: the frame rejects it, the two trace guards accept it (recorded, not hidden)
+ctrl = rejected_guard[1]
+ctrl_root, ctrl_sqd = trace_quantities(ctrl[2])
+pr("")
+pr("The control $(ctrl[1]) is refused by the frame (g = $(e2(frame_of(ctrl[2]).spectrum.gap)) <= min_gap) and ACCEPTED by both trace guards (root $(e2(ctrl_root)), sqrt(Delta) $(e2(ctrl_sqd)) > $(TRACE_GAP)); the two guard families measure different quantities (an eigenvalue gap versus a trace gap, sqrt-related near a tie), and the frame is the primary route (design pipeline step 10). Window arithmetic below treats it as rejected for min_gap only.")
+
+# --- 5. Table D2: the two provisional floors on Part A's frames -------------------
+pr("\n## Table D2: provisional floors projection_rtol (M6) and weight_rtol (B10 / B11 / T8) on Part A's frames\n")
+proj_acc = Float64[]; proj_acc_n = String[]
+w_norm_acc = Float64[]; w_norm_n = String[]; w_dir_acc = Float64[]; w_dir_n = String[]; w_map_acc = Float64[]; w_map_n = String[]
+function weight_quantities(M, f)
+    U = f.normalizer; mu = f.tunes
+    etn = Octopus._edwards_teng_from_normalizer(U, mu; M4=M)
+    etd = Octopus._edwards_teng_direct(f.projectors[1], f.covariances[1], f.projectors[2], f.covariances[2]; tunes=mu, M4=M)
+    Mxx, Mxy, Myx, Myy = M[1:2, 1:2], M[1:2, 3:4], M[3:4, 1:2], M[3:4, 3:4]
+    A = Octopus._adjugate2(Mxy) + Myx; D = tr(Mxx) - tr(Myy); sq = sqrt(max(D^2 + 4 * det(A), 0.0))
+    s = Octopus._map_route_label_sign(D, (2cos(mu[1]), 2cos(mu[2])))
+    rel(w, Ux) = norm(Ux) == 0 ? 0.0 : abs(w) / norm(Ux)^2                 # an all-zero block has weight 0 and no finite R at any floor
+    wn = (rel(etn.form1.area_weight, U[1:2, 1:2]), rel(etn.form2.area_weight, U[1:2, 3:4]))                   # normalizer route: |w| / ||U_x||^2
+    wd = (abs(etd.form1.area_weight), abs(etd.form2.area_weight))                                                # direct route: |kappa_jx| absolute
+    wm = (abs(D + s * sq) / (abs(D) + sq), abs(D - s * sq) / (abs(D) + sq))                                       # map route: |den| / (|D| + sqrt Delta)
+    return wn, wd, wm
+end
+# exactly uncoupled fixtures: both secondary projections and the form-2 weight are zero in exact arithmetic
+uncoupled_fixtures = Set(["detuned FODO kq=1.6, eps=1e-3", "R(0.7)+R(0.31)"])
+for (nm, M, f) in accepted
+    nm in uncoupled_fixtures && continue
+    mr = Octopus._mais_ripken(f)
+    for j in 1:2
+        push!(proj_acc, sqrt(mr.beta[j, 1] * mr.beta[j, 2]) / norm(mr.vectors[j])^2); push!(proj_acc_n, "$(nm) mode $(j)")
+    end
+end
+for (i, (U, mu)) in enumerate(_PB_NORMALIZERS)
+    mr = Octopus._mais_ripken(U)
+    for j in 1:2
+        push!(proj_acc, sqrt(mr.beta[j, 1] * mr.beta[j, 2]) / norm(mr.vectors[j])^2); push!(proj_acc_n, "normalizer $(i) mode $(j)")
+    end
+end
+# weights: every form that is admissible on an accepted fixture (the uncoupled cell's form 2 and the
+# det R = 0 constructions' other form have weight 0 by construction and are the rejected side)
+# Fixtures with a weight that is zero in exact arithmetic: the uncoupled cells (u = 0) and the
+# det R = 0 constructions (one of u, 1 - u is zero). WHICH form carries the zero depends on the
+# labels: under the frame's labels (mode 1 = larger x-area) it is the smaller of the two direct-route
+# weights, derived from the data below rather than from the constructing form (a first version of
+# this script assigned it by the constructing form and measured a "rejected" weight of 1).
+zero_weight_fixtures = copy(uncoupled_fixtures)
+for (nm, M, f, form, d, _) in constructions
+    abs(d) < 1e-12 && push!(zero_weight_fixtures, nm)
+end
+zero_weight_names = String[]
+for (nm, M, f) in accepted
+    nm in zero_weight_fixtures || continue
+    wn, wd, wm = weight_quantities(M, f)
+    push!(zero_weight_names, "$(nm) form $(argmin(wd))")
+end
+for (nm, M, f) in accepted
+    wn, wd, wm = weight_quantities(M, f)
+    for form in 1:2
+        "$(nm) form $(form)" in zero_weight_names && continue
+        push!(w_norm_acc, wn[form]); push!(w_norm_n, "$(nm) form $(form)")
+        push!(w_dir_acc, wd[form]); push!(w_dir_n, "$(nm) form $(form)")
+        push!(w_map_acc, wm[form]); push!(w_map_n, "$(nm) form $(form)")
+    end
+end
+# rejected side of the floors: quantities that are zero in exact arithmetic, as the routes see them
+proj_rej = Float64[]; proj_rej_n = String[]
+w_norm_rej = Float64[]; w_norm_rej_n = String[]; w_dir_rej = Float64[]; w_dir_rej_n = String[]; w_map_rej = Float64[]; w_map_rej_n = String[]
+Ur = Octopus._edwards_teng_normalizer(1, [0.0 0.0; 0.0 0.4], 2.0, 0.3, 1.5, -0.2)      # rank-one coupling, u_1y = 0 exactly (test fixture)
+Mr = Ur * bd(R2(2pi * 0.7), R2(2pi * 0.31)) * Octopus._symplectic_inverse(Ur)
+proj_fixtures = [("identity normalizer", Octopus._mais_ripken(Matrix(1.0I, 4, 4)), 1:2),
+                 ("rank-one Ur (exact)", Octopus._mais_ripken(Ur), 1:1),
+                 ("rank-one Ur through the eigen frame", Octopus._mais_ripken(val(frame_of(Mr).frame)), 1:1),
+                 ("detuned FODO through the eigen frame", Octopus._mais_ripken(MeasA.ff), 1:2),
+                 ("R(0.7)+R(0.31) through the eigen frame", Octopus._mais_ripken(MeasA.fr), 1:2)]
+for (nm, mr, modes) in proj_fixtures, j in modes
+    push!(proj_rej, sqrt(mr.beta[j, 1] * mr.beta[j, 2]) / norm(mr.vectors[j])^2); push!(proj_rej_n, "$(nm) mode $(j)")
+end
+for (nm, M, f) in accepted
+    wn, wd, wm = weight_quantities(M, f)
+    for form in 1:2
+        "$(nm) form $(form)" in zero_weight_names || continue
+        push!(w_norm_rej, wn[form]); push!(w_norm_rej_n, "$(nm) form $(form)")
+        push!(w_dir_rej, wd[form]); push!(w_dir_rej_n, "$(nm) form $(form)")
+        push!(w_map_rej, wm[form]); push!(w_map_rej_n, "$(nm) form $(form)")
+    end
+end
+pr("| floor | accepted smallest (fixture) | rejected largest (fixture) | threshold | accepted ratio (thr / smallest) | rejected ratio (thr / largest) | rule window [10 max rej, min acc / 10] |")
+pr("|---|---|---|---|---|---|---|")
+function floor_row(label, acc, accn, rej, rejn, thr)
+    lo, hi, a, r = window_gap(acc, accn, rej, rejn)
+    rr = maximum(rej) == 0 ? "Inf" : e2(thr / maximum(rej))
+    pr("| $(label) | $(a) | $(r) | $(e2(thr)) | $(e2(thr / minimum(acc))) | $(rr) | [$(e2(lo)), $(e2(hi))] |")
+    return lo, hi
+end
+win_proj = floor_row("projection_rtol: sqrt(beta_jx beta_jy) / ||u_j||^2, $(length(proj_acc)) accepted, $(length(proj_rej)) rejected", proj_acc, proj_acc_n, proj_rej, proj_rej_n, P_RTOL)
+win_wn = floor_row("weight_rtol, normalizer route: |w| / ||U_x||^2", w_norm_acc, w_norm_n, w_norm_rej, w_norm_rej_n, W_RTOL)
+win_wd = floor_row("weight_rtol, direct route: |kappa_jx| (absolute)", w_dir_acc, w_dir_n, w_dir_rej, w_dir_rej_n, W_RTOL)
+win_wm = floor_row("weight_rtol, map route: |den| / (|D| + sqrt Delta)", w_map_acc, w_map_n, w_map_rej, w_map_rej_n, W_RTOL)
+pr("")
+pr("Zero-weight forms (rejected side): $(join(zero_weight_names, "; ")). Rejected projections: $(join(proj_rej_n, "; ")).")
+
+# --- 6. Table D3: rejected side of the c eps kappa checks ---------------------------
+pr("\n## Table D3: rejected side of the c eps kappa checks (a wrong quantity's residual / the suite's threshold; smallest over the accepted frames)\n")
+rej_rows = Dict{String,Tuple{Float64,String}}()
+crossed_names = String[]
+n_above_half = 0
+n_unit_kappa = 0
+function rejmin!(name, ratio, fx)
+    cur = get(rej_rows, name, (Inf, ""))
+    ratio < cur[1] && (rej_rows[name] = (ratio, fx))
+end
+for (nm, M, f) in accepted
+    U = f.normalizer; nU = norm(U)^2; nM = max(1, norm(M))
+    kq = max(1, opnorm(M)) * opnorm(U)^2 / frame_of(M).spectrum.gap
+    u1, u2 = f.vectors
+    Ubad = hcat(real(u1), imag(u1), real(u2), imag(u2))                        # e02: the (E6) minus dropped
+    rejmin!("e02 on E7: ||U'SU - S|| / (64 eps kq ||U||^2)", norm(transpose(Ubad) * S4 * Ubad - S4) / (64 * EPS * kq * nU), nm)
+    Rb = bd(R2(f.tunes[1]), R2(f.tunes[2]))
+    rejmin!("e02 on E8: (I1) of U_bad / (64 eps max(1,||M||))", Octopus._invariance_residual(M, Ubad, Rb).normalized / (64 * EPS * nM), nm)
+    for j in 1:2
+        u = f.vectors[j]; nu = norm(u)^2
+        kre = sum(-real(conj(u[2a - 1]) * u[2a]) for a in 1:2)                 # e03/b01: (M1) with Re
+        rejmin!("e03 on M2: |sum_a kappa_Re - 1| / (64 eps ||u||^2)", abs(kre - 1) / (64 * EPS * nu), "$(nm) mode $(j)")
+        for a in 1:2
+            # the two gammas differ by (1 - kappa^2)/beta: a plane with kappa^2 = 1 within kappa's own
+            # uncertainty (the chord-amplified 64 eps kq ||U||^2 the suite uses for kappa) cannot witness the
+            # defect: every plane of an uncoupled cell, the unit-weight plane of a rank-one construction, and
+            # the kappa = -1 plane of the det R = -0.5 construction (u = 1/(1 + det R) = 2, so 1 - u = -1)
+            if abs(1 - f.signed_areas[j, a]^2) <= 64 * EPS * kq * nU
+                global n_unit_kappa += 1
+                continue
+            end
+            gbad = (1 + f.alpha[j, a]^2) / f.beta[j, a]                       # gamma by (1 + alpha^2)/beta instead of (M1)
+            m5 = abs(f.beta[j, a] * gbad - f.alpha[j, a]^2 - f.signed_areas[j, a]^2)
+            rejmin!("gamma = (1+alpha^2)/beta on M5 / (64 eps ||u||^4)", m5 / (64 * EPS * nu^2), "$(nm) mode $(j) plane $(a)")
+        end
+        if f.tunes[j] > pi                                                     # e06/b09: sin mu forced positive
+            global n_above_half += 1
+            mu_bad = 2pi - f.tunes[j]
+            rejmin!("sin mu > 0 forced on tunes above 1/2: |mu_bad - mu| / (64 eps max(1,||M||))", abs(mu_bad - f.tunes[j]) / (64 * EPS * nM), "$(nm) mode $(j)")
+        end
+    end
+    # e08: the closed-form check with the WRONG mode assignment (the permutation the trace match rejects);
+    # a label match produces exactly this residual whenever the two routes' labels cross (the tie fixtures)
+    c = val(Octopus._closed_form_check_4d(f; min_trace_gap=TRACE_GAP, stability_atol=STAB))
+    root = abs(c.closed_form.traces[1] - c.closed_form.traces[2])
+    kc = max(1, norm(M)^2) * max(1, nU) * (1 + 1 / (2 * root)) / root
+    kcf = kq * nU + kc; smin = minimum(abs.(c.closed_form.sines))
+    q = (c.mode_permutation[2], c.mode_permutation[1])
+    td = maximum(abs(c.closed_form.tunes[q[j]] - f.tunes[j]) for j in 1:2)
+    rejmin!("e08 wrong mode assignment on cf tune diff / (64 eps kcf/min|sin|)", td / (64 * EPS * kcf / smin), nm)
+    c.mode_permutation == (1, 2) || push!(crossed_names, nm)
+    # b03: (B10) with the sign dropped, against the direct route's R (R = 0 on an uncoupled cell has no sign: no witness there)
+    etd = Octopus._edwards_teng_direct(f; M4=M)
+    for form in 1:2
+        nm in uncoupled_fixtures && continue
+        Ux = form == 1 ? U[1:2, 1:2] : U[1:2, 3:4]; Uy = form == 1 ? U[3:4, 1:2] : U[3:4, 3:4]
+        w = det(Ux); kR = nU / abs(w)
+        g = form == 1 ? etd.form1 : etd.form2
+        is_determined(g.R) || continue
+        Rd = val(g.R); sR = max(1, norm(Rd))
+        rejmin!("b03 (B10) R = +U_y U_x^-1 vs direct / (64 eps kR sR)", norm(Uy / Ux - Rd) / (64 * EPS * kR * sR), "$(nm) form $(form)")
+    end
+end
+pr("| wrong quantity on a check | smallest ratio to the suite's threshold | fixture |")
+pr("|---|---|---|")
+for k in sort(collect(keys(rej_rows)))
+    r, fx = rej_rows[k]
+    pr("| $(k) | $(e2(r)) | $(fx) |")
+end
+pr("")
+pr("Rows run over the $(length(accepted)) accepted frames, except that the (B10)-sign row skips the two exactly uncoupled fixtures (R = 0 has no sign) and the gamma row skips the $(n_unit_kappa) planes with kappa^2 = 1 within kappa's uncertainty (there (1 + alpha^2)/beta IS the (M1) gamma: the uncoupled cells, the unit-weight plane of the rank-one constructions, the kappa = -1 plane of the det R = -0.5 form-2 construction): the wrong formula coincides with the right one on those fixtures and cannot be witnessed; the first three versions of this script counted them and reported smallest rejected ratios of 0, 0.034 and 0.104. The trace match is crossed (mode_permutation = (2, 1)) on $(length(crossed_names)) of them [$(join(crossed_names, "; "))]: on every manufactured map both routes label alike, so a label match is red only where the labels cross, which is why the suite's tie fixtures exist; the e08 row measures the residual of the wrong assignment on every frame. The sin-branch row runs over the $(n_above_half) modes with tune above one half (the 200 manufactured maps have none; the rotation, tie and construction fixtures do).")
+
+# --- 7. Summary of the one-tenth rule for the c multipliers ----------------------------
+pr("\n## Table D4: the one-tenth rule over every c eps kappa check\n")
+worstA = -1.0; worstA_n = ""
+for (name, (ratio, fx, raw)) in MeasA.rows
+    q = ratio / MeasA.C_USED[name]
+    q > worstA && (global worstA = q; global worstA_n = "$(name) [$(fx)]")
+end
+cB(k) = startswith(k, "B10 consistency") ? 256 : 64
+worstB = -1.0; worstB_n = ""
+for (k, (r, who)) in req
+    startswith(k, "REJECTED") && continue
+    q = r / cB(k)
+    q > worstB && (global worstB = q; global worstB_n = "$(k) [$(who)] at c = $(cB(k))")
+end
+pr("| part | checks | worst accepted ratio to the c used | where |")
+pr("|---|---|---|---|")
+pr("| A (eigenmodes_4d.jl) | $(length(MeasA.rows)) | $(e2(worstA)) | $(worstA_n) |")
+pr("| B (coupled_parameterizations.jl) | $(count(!startswith(k, "REJECTED") for k in keys(req))) | $(e2(worstB)) | $(worstB_n) |")
+pr("| B, (B10) consistency at the suite's c = 256 | 1 | $(e2(req["B10 consistency / (kR sR)"][1] / 256)) | $(req["B10 consistency / (kR sR)"][2]) (required c $(e2(req["B10 consistency / (kR sR)"][1])); at c = 64 the ratio would be $(e2(req["B10 consistency / (kR sR)"][1] / 64))) |")
+pr("| D3 rejected side, smallest over the rows | $(length(rej_rows)) | $(e2(minimum(v[1] for v in values(rej_rows)))) | $(first(k for (k, v) in rej_rows if v[1] == minimum(v[1] for v in values(rej_rows)))) |")
+
+# --- 8. Derived windows for the guard thresholds -------------------------------------------
+pr("\n## Derived windows (rule: largest accepted ratio below one tenth, smallest rejected above ten)\n")
+lo, hi, a, r = window_gap(acc_gap, acc_n, rej_gap, rej_gap_n)
+pr("### min_gap (frame guard, reject iff g <= min_gap; PROVISIONAL, stage 3 replaces it with the resolution chord)")
+pr("- accepted: $(length(acc_gap)) frames, smallest g = $(a); rejected: $(length(rej_gap)) fixtures, largest g = $(r).")
+pr("- window [10 x $(e2(maximum(rej_gap))), $(e2(minimum(acc_gap))) / 10] = [$(e2(lo)), $(e2(hi))]; geometric mean $(e2(gmean(lo, hi))). The test choice $(MIN_GAP) sits at the lower edge because the 1e-7 control was built as the deliberate 10x control of that choice. Pitfall 13 (trial 012, detuning 1e-9: g = 2.13e-9) is a fixture the chord default of stage 3 must resolve; no stage 2 value is frozen.")
+lo, hi, a, r = window_departure(acc_dep, acc_n, rej_dep, rej_dep_n)
+pr("### stability_atol (frame guard, reject iff departure > stability_atol; PROVISIONAL, stage 3 replaces it with the per-cluster Schur-block test)")
+pr("- accepted: largest departure = $(a); rejected: $(length(rej_dep)) fixtures, smallest departure = $(r).")
+pr("- window [10 x $(e2(maximum(acc_dep))), $(e2(minimum(rej_dep))) / 10] = [$(e2(lo)), $(e2(hi))]; geometric mean $(e2(gmean(lo, hi))); the test choice $(STAB) is inside. Not to be frozen: a trace excess delta from roundoff maps to a departure sqrt(delta) near +-1 (Part A finding 2), so a raw-modulus guard at 1e-8 would call I_2 (+) R(1.2) unstable at trace roundoff 1e-16.")
+lo, hi, a, r = window_gap(acc_root, acc_n, rej_root, rej_root_n)
+pr("### min_trace_gap, closed form (reject iff |tau+ - tau-| <= min_trace_gap; the coincident-trace guard of theory 3.4)")
+pr("- accepted: smallest root = $(a); rejected (reason :singular_coefficient): $(length(rej_root)) fixtures, largest root = $(r).")
+pr("- window [10 x $(e2(maximum(rej_root))), $(e2(minimum(acc_root))) / 10] = [$(e2(lo)), $(e2(hi))]; geometric mean $(e2(gmean(lo, hi))); the test choice $(TRACE_GAP) is inside. With the 1e-7 control counted as rejected the window would be [$(e2(10 * ctrl_root)), $(e2(minimum(acc_root) / 10))], which excludes $(TRACE_GAP): the closed form's guard is a division guard for (E11), not a resolution criterion.")
+lo, hi, a, r = window_gap(acc_sqd, acc_n, rej_sqd, rej_sqd_n)
+pr("### min_trace_gap, map route (the (T9) conditioning guard, reject iff sqrt(Delta) <= min_trace_gap)")
+pr("- accepted: smallest sqrt(Delta) = $(a); rejected (reason :singular_coefficient): $(length(rej_sqd)) fixtures, largest = $(r).")
+pr("- window [10 x $(e2(maximum(rej_sqd))), $(e2(minimum(acc_sqd))) / 10] = [$(e2(lo)), $(e2(hi))]; geometric mean $(e2(gmean(lo, hi))); the test choice $(TRACE_GAP) is inside. sqrt(Delta) of (T7) and the closed form's root are the same trace gap computed two ways; their measured extremes agree to the digits shown.")
+pr("### projection_rtol = 64 eps (M6 floor, relative to ||u_j||^2)")
+pr("- window [$(e2(win_proj[1])), $(e2(win_proj[2]))] from Table D2; the default $(e2(P_RTOL)) is inside when the lower edge is below it. Every rejected fixture is an exact zero or a roundoff zero of an exactly vanishing projection; no genuine tiny projection exists among the fixtures, so the lower edge is a roundoff floor and the default is a roundoff-scale choice, as its docstring says.")
+pr("### weight_rtol = 256 eps (zero area weight, per route)")
+pr("- normalizer route window [$(e2(win_wn[1])), $(e2(win_wn[2]))]; direct route [$(e2(win_wd[1])), $(e2(win_wd[2]))]; map route [$(e2(win_wm[1])), $(e2(win_wm[2]))]. The default $(e2(W_RTOL)) is inside a window when its lower edge is below it; Part B raised it from 64 eps after the det R = 0 construction's zero weight arrived at 15 eps through the eigen frame (Table D2 shows the current value of that near-miss per route).")
+pr("### Unmeasured")
+pr("- The 64 eps ||v||^2 floor of the :unresolved_defective branch of _eigenmodes_4d (eigenmodes_4d.jl, marked PROVISIONAL and unmeasured): no fixture reaches the branch past the three guards at the test thresholds; stage 3 owns the fixture and the Schur-block test that replaces it.")
+
+# --- 9. write -------------------------------------------------------------------------------
+out = IOBuffer()
+println(out, "# Stage 2 measurement tables\n")
+println(out, "## Part A probe (measure_eig4d.jl), stdout verbatim\n")
+println(out, "```")
+print(out, tableA)
+println(out, "```\n")
+println(out, "## Part B probe (measure_param.jl), stdout verbatim\n")
+println(out, "```")
+print(out, tableB)
+println(out, "```\n")
+print(out, String(take!(io)))
+write(OUT_MD, String(take!(out)))
+println("written: ", OUT_MD)
+```
+
+`measure_eig4d.jl` (the Part A probe, byte-identical to the worktree original):
+
+```julia
+# Measurement probe behind the stage 2 Part A tolerances (eig4d_testsets.jl).
+# For every check the testsets state as c * eps * kappa it prints the largest
+# residual / (eps * kappa) over the fixtures (seed 20260911), i.e. the c the
+# fixtures REQUIRE, with the argmax fixture's own name (experiences: carry the
+# name with the value), and the same ratio against the c the testsets use.
+# Rejected fixtures print residual / threshold, which must exceed ten.
+# Package mode: julia --startup-file=no --project=<tree> --threads=4 measure_eig4d.jl
+using Octopus, LinearAlgebra, Random, Printf
+
+const S4 = Octopus._symplectic_form(4)
+const MIN_GAP = 1e-6
+const STAB = 1e-8
+const TRACE_GAP = 1e-8
+R(mu) = Octopus._rotation2(mu)
+blockdiag(A, B) = [A zeros(2, 2); zeros(2, 2) B]
+
+# c used by the testsets (keep in step with eig4d_testsets.jl)
+const C_USED = Dict(
+    "E3 normalization |u'Su+2i| / ||u||^2" => 64,
+    "eigenvector (I1) normalized / max(1,||M||)" => 64,
+    "E7 ||U'SU-S|| / (kq ||U||^2)" => 64,
+    "E8 (I1) normalized / max(1,||M||)" => 64,
+    "P idempotent ||P^2-P|| / ||P||^2" => 64,
+    "P complete ||P1+P2-I|| / (kq ||U||^2)" => 64,
+    "P disjoint ||P1P2|| / (kq ||U||^2)" => 64,
+    "G = U_j U_j' / ||U||^2" => 16,
+    "G PSD: -eigmin(G) / ||G||" => 64,
+    "M2 row sums / ||u||^2" => 64,
+    "M3 column sums / (kq ||U||^2)" => 64,
+    "M5 |bg-a^2-k^2| / ||u||^4" => 64,
+    "M4 u difference / (kq ||U||^2)" => 64,
+    "kappa (M1) vs (PS)_{a,pa} / ||u||^2" => 16,
+    "cf projector diff / kcf" => 64,
+    "cf covariance diff / (kcf/min sin^2)" => 64,
+    "cf outer diff / (kcf/min sin^2)" => 64,
+    "cf kappa diff / kcf" => 64,
+    "cf tune diff / (kcf/min|sin|)" => 64,
+    "cf (I1) on E14 normalizer / (kcf/min sin^2)" => 64,
+    "cf P residuals / kcf" => 64,
+    "cf E3 on E14 vector / (kcf/min sin^2)" => 64,
+    "cf G PSD margin / (kcf/min sin^2)" => 64,
+    "cf E10 traces vs 2cos(mu) / kc" => 64,
+    "actions xi vs u / (||U||^2 ||r||^2)" => 64,
+    "actions invariance / (||U||^2 max(1,||M||)^2 ||r||^2)" => 64,
+    "scaling beta,alpha,gamma / ksc" => 1000,
+    "scaling kappa / ksc" => 1000,
+    "scaling tunes / ksc" => 1000,
+    "scaling P / ksc" => 1000,
+    "scaling G / ksc" => 1000,
+    "FODO beta,alpha vs T15 / kfodo" => 64,
+    "FODO tune vs acos branch / kfodo" => 64,
+    "FODO kappa_1y, kappa_2x / ||U||^2" => 64,
+    "R(0.7)+R(0.31) tunes / 1" => 16,
+    "R(0.7)+R(0.31) phase-fixed U = I / 1" => 64,
+)
+rows = Dict{String,Tuple{Float64,String,Float64}}()
+function record!(name, ratio, fixture, raw)
+    haskey(C_USED, name) || error("unnamed check $(name)")
+    cur = get(rows, name, (-1.0, "", 0.0))
+    ratio > cur[1] && (rows[name] = (ratio, fixture, raw))
+    return nothing
+end
+E = eps(Float64)
+
+function measure_frame!(M, name)
+    r = Octopus._eigenmodes_4d(M; min_gap=MIN_GAP, stability_atol=STAB)
+    is_determined(r.frame) || error("$(name): frame unavailable, $(r.frame)")
+    f = determined_value(r.frame)
+    U = f.normalizer; nU = norm(U)^2; nM = max(1, norm(M))
+    g = r.spectrum.gap
+    kq = max(1, opnorm(M)) * opnorm(U)^2 / g        # the design's chord amplifier: eigenvector direction error / eps
+    for j in 1:2
+        u = f.vectors[j]; nu = norm(u)^2
+        record!("E3 normalization |u'Su+2i| / ||u||^2", f.normalization_residuals[j] / (E * nu), name, f.normalization_residuals[j])
+        record!("eigenvector (I1) normalized / max(1,||M||)", f.eigenvector_residuals[j].normalized / (E * nM), name, f.eigenvector_residuals[j].normalized)
+        P = f.projectors[j]; G = f.covariances[j]
+        record!("P idempotent ||P^2-P|| / ||P||^2", norm(P * P - P) / (E * norm(P)^2), name, norm(P * P - P))
+        Uj = U[:, 2j - 1:2j]
+        record!("G = U_j U_j' / ||U||^2", norm(G - Uj * transpose(Uj)) / (E * nU), name, norm(G - Uj * transpose(Uj)))
+        record!("G PSD: -eigmin(G) / ||G||", -eigmin(Symmetric(G)) / (E * norm(G)), name, -eigmin(Symmetric(G)))
+        record!("M2 row sums / ||u||^2", abs(f.signed_area_row_sums[j] - 1) / (E * nu), name, abs(f.signed_area_row_sums[j] - 1))
+        for a in 1:2
+            m5 = abs(f.beta[j, a] * f.gamma[j, a] - f.alpha[j, a]^2 - f.signed_areas[j, a]^2)
+            record!("M5 |bg-a^2-k^2| / ||u||^4", m5 / (E * nu^2), name, m5)
+            kd = abs(f.signed_areas[j, a] - (P * S4)[2a - 1, 2a])
+            record!("kappa (M1) vs (PS)_{a,pa} / ||u||^2", kd / (E * nu), name, kd)
+        end
+    end
+    record!("E7 ||U'SU-S|| / (kq ||U||^2)", f.symplecticity_residual / (E * kq * nU), name, f.symplecticity_residual)
+    record!("E8 (I1) normalized / max(1,||M||)", f.reconstruction_residual.normalized / (E * nM), name, f.reconstruction_residual.normalized)
+    P1, P2 = f.projectors
+    record!("P complete ||P1+P2-I|| / (kq ||U||^2)", norm(P1 + P2 - I) / (E * kq * nU), name, norm(P1 + P2 - I))
+    record!("P disjoint ||P1P2|| / (kq ||U||^2)", norm(P1 * P2) / (E * kq * nU), name, norm(P1 * P2))
+    for a in 1:2
+        record!("M3 column sums / (kq ||U||^2)", abs(f.signed_area_column_sums[a] - 1) / (E * kq * nU), name, abs(f.signed_area_column_sums[a] - 1))
+    end
+    record!("M4 u difference / (kq ||U||^2)", abs(f.u_difference) / (E * kq * nU), name, abs(f.u_difference))
+    # closed form
+    cf = Octopus._closed_form_check_4d(f; min_trace_gap=TRACE_GAP, stability_atol=STAB)
+    is_determined(cf) || error("$(name): closed form unavailable, $(cf)")
+    c = determined_value(cf)
+    root = abs(c.closed_form.traces[1] - c.closed_form.traces[2])
+    kc = max(1, norm(M)^2) * max(1, nU) * (1 + 1 / (2 * root)) / root   # the (E11) arm: roundoff of M + M^-1 and of tau_k (eps ||M||^2 / (2 root)) over the trace gap
+    kcf = kq * nU + kc                                   # either route's error
+    smin = minimum(abs.(c.closed_form.sines))            # (E12) divides by sin mu_j
+    record!("cf projector diff / kcf", c.projector_difference / (E * kcf), name, c.projector_difference)
+    record!("cf covariance diff / (kcf/min sin^2)", c.covariance_difference / (E * kcf / smin^2), name, c.covariance_difference)
+    record!("cf outer diff / (kcf/min sin^2)", c.outer_product_difference / (E * kcf / smin^2), name, c.outer_product_difference)
+    record!("cf kappa diff / kcf", c.signed_area_difference / (E * kcf), name, c.signed_area_difference)
+    record!("cf tune diff / (kcf/min|sin|)", c.tune_difference / (E * kcf / smin), name, c.tune_difference)
+    record!("cf (I1) on E14 normalizer / (kcf/min sin^2)", c.closed_form.reconstruction_residual.normalized / (E * kcf / smin^2), name, c.closed_form.reconstruction_residual.normalized)   # fixer: the (E14) sum was an identity; the (I1) residual on U_cf replaces it
+    record!("cf P residuals / kcf", max(c.closed_form.projector_residuals...) / (E * kcf), name, max(c.closed_form.projector_residuals...))
+    record!("cf E3 on E14 vector / (kcf/min sin^2)", maximum(c.closed_form.normalization_residuals) / (E * kcf / smin^2), name, maximum(c.closed_form.normalization_residuals))
+    record!("cf G PSD margin / (kcf/min sin^2)", -minimum(c.closed_form.covariance_min_eigenvalues) / (E * kcf / smin^2), name, -minimum(c.closed_form.covariance_min_eigenvalues))
+    dtr = maximum(abs.(sort(collect(c.closed_form.traces)) .- sort([2cos(f.tunes[1]), 2cos(f.tunes[2])])))
+    record!("cf E10 traces vs 2cos(mu) / kc", dtr / (E * kc), name, dtr)
+    return f
+end
+
+# 1. 200 manufactured stable maps (seed 20260911), the suite's fixture set.
+rng = Xoshiro(20260911)
+frames = Any[]
+for i in 1:200
+    M, _ = Octopus._manufactured_symplectic_map(rng, 4; stable=true)
+    push!(frames, (M, measure_frame!(M, "manufactured map $(i)")))
+end
+# 2. actions on random points (first 50 maps, 3 points each)
+rng2 = Xoshiro(20260911 + 1)
+for (i, (M, f)) in enumerate(frames[1:50]), k in 1:3
+    r = randn(rng2, 4)
+    J = Octopus._mode_actions(f, r)
+    JM = Octopus._mode_actions(f, M * r)
+    nU = norm(f.normalizer)^2; nr = norm(r)^2
+    d1 = maximum(abs.(J.from_normal_coordinates .- J.from_vectors))
+    record!("actions xi vs u / (||U||^2 ||r||^2)", d1 / (E * nU * nr), "map $(i) point $(k)", d1)
+    d2 = maximum(abs.(JM.from_normal_coordinates .- J.from_normal_coordinates))
+    record!("actions invariance / (||U||^2 max(1,||M||)^2 ||r||^2)", d2 / (E * nU * max(1, norm(M))^2 * nr), "map $(i) point $(k)", d2)
+end
+# 3. scaling invariance on the first 20 maps, three scalings
+for (i, (M, f)) in enumerate(frames[1:20]), sc in ((2.0, 0.5), (0.3, 4.0), :auto)
+    rec = Octopus._reciprocal_scaling(M, sc)
+    C = Octopus._scaling_matrix(rec); condC = cond(Matrix(C))
+    Ms = Octopus._scale_map(rec, M)
+    rs = Octopus._eigenmodes_4d(Ms; min_gap=MIN_GAP, stability_atol=STAB)
+    fs = determined_value(rs.frame)
+    kqM = max(1, opnorm(M)) * opnorm(f.normalizer)^2 / Octopus._eigenmodes_4d(M; min_gap=MIN_GAP, stability_atol=STAB).spectrum.gap
+    kqS = max(1, opnorm(Ms)) * opnorm(fs.normalizer)^2 / rs.spectrum.gap
+    ksc = condC^2 * max(kqM, kqS) * max(norm(f.normalizer)^2, norm(fs.normalizer)^2)
+    nm = "map $(i) scaling $(sc)"
+    dtw = 0.0
+    for j in 1:2, a in 1:2
+        b, al, g = Octopus._unscale_twiss(rec, a, fs.beta[j, a], fs.alpha[j, a], fs.gamma[j, a])
+        dtw = max(dtw, abs(b - f.beta[j, a]), abs(al - f.alpha[j, a]), abs(g - f.gamma[j, a]))
+    end
+    record!("scaling beta,alpha,gamma / ksc", dtw / (E * ksc), nm, dtw)
+    dk = maximum(abs.(fs.signed_areas - f.signed_areas))
+    record!("scaling kappa / ksc", dk / (E * ksc), nm, dk)
+    dt = maximum(abs.(fs.tunes .- f.tunes))
+    record!("scaling tunes / ksc", dt / (E * ksc), nm, dt)
+    dP = maximum(norm(Octopus._unscale_projector(rec, fs.projectors[j]) - f.projectors[j]) for j in 1:2)
+    record!("scaling P / ksc", dP / (E * ksc), nm, dP)
+    dG = maximum(norm(Octopus._unscale_covariance(rec, fs.covariances[j]) - f.covariances[j]) for j in 1:2)
+    record!("scaling G / ksc", dG / (E * ksc), nm, dG)
+end
+# 4. the uncoupled FODO of validation/lattice_cells.jl (kq = 1.6), rebuilt inline
+# The SYMMETRIC cell (kd = -kf) has exactly equal x and y traces (cyclicity of
+# the trace) and is a degenerate cluster; the design's detuning K_1D = -(1 + eps)
+# with eps = 1e-3 (its "resolved" control) is the accepted fixture here.
+kq = 1.6
+function fodo4(kf, kd)
+    qf = compile_runtime(QuadrupoleSpec(L=0.3, kn=(0.0, kf), nst=4, integrator_order=4))
+    qd = compile_runtime(QuadrupoleSpec(L=0.3, kn=(0.0, kd), nst=4, integrator_order=4))
+    dr = compile_runtime(DriftSpec(L=1.2))
+    M6, _ = one_turn_matrix((qf, dr, qd, dr))
+    return M6[1:4, 1:4]
+end
+M4 = fodo4(kq, -kq * (1 + 1e-3))
+ff = measure_frame!(M4, "detuned FODO kq=1.6, eps=1e-3")
+for (a, blk) in ((1, M4[1:2, 1:2]), (2, M4[3:4, 3:4]))
+    t = blk[1, 1] + blk[2, 2]
+    smu = sign(blk[1, 2]) * sqrt(1 - (t / 2)^2)
+    beta_ref = blk[1, 2] / smu; alpha_ref = (blk[1, 1] - blk[2, 2]) / (2smu)
+    mu_ref = blk[1, 2] > 0 ? acos(t / 2) : 2pi - acos(t / 2)
+    gf = Octopus._eigenmodes_4d(M4; min_gap=MIN_GAP, stability_atol=STAB).spectrum.gap
+    kfodo = max(1, opnorm(M4)) * opnorm(ff.normalizer)^2 / gf * norm(ff.normalizer)^2 / abs(smu)
+    d = max(abs(ff.beta[a, a] - beta_ref), abs(ff.alpha[a, a] - alpha_ref))
+    record!("FODO beta,alpha vs T15 / kfodo", d / (E * kfodo), "FODO plane $(a)", d)
+    record!("FODO tune vs acos branch / kfodo", abs(ff.tunes[a] - mu_ref) / (E * kfodo), "FODO plane $(a)", abs(ff.tunes[a] - mu_ref))
+end
+dk = max(abs(ff.signed_areas[1, 2]), abs(ff.signed_areas[2, 1]))
+record!("FODO kappa_1y, kappa_2x / ||U||^2", dk / (E * norm(ff.normalizer)^2), "FODO", dk)
+# 5. the rotation fixture
+Mrot = blockdiag(R(2pi * 0.7), R(2pi * 0.31))
+fr = measure_frame!(Mrot, "R(0.7)+R(0.31)")
+dt = max(abs(fr.tunes[1] / (2pi) - 0.7), abs(fr.tunes[2] / (2pi) - 0.31))
+record!("R(0.7)+R(0.31) tunes / 1", dt / E, "rotation", dt)
+Ufix = zeros(4, 4)
+for j in 1:2
+    u = fr.vectors[j]; b = 2j - 1
+    u = u * (conj(u[b]) / abs(u[b]))
+    Ufix[:, b] = real(u); Ufix[:, b + 1] = -imag(u)
+end
+record!("R(0.7)+R(0.31) phase-fixed U = I / 1", norm(Ufix - I) / E, "rotation", norm(Ufix - I))
+
+println("\n| check | required c (max ratio / eps kappa) | argmax fixture | max raw | c used | ratio to used |")
+println("|---|---|---|---|---|---|")
+for name in sort(collect(keys(C_USED)))
+    haskey(rows, name) || (println("| $(name) | NOT MEASURED |"); continue)
+    ratio, fx, raw = rows[name]
+    @printf("| %s | %.3g | %s | %.3g | %d | %.3g |\n", name, ratio, fx, raw, C_USED[name], ratio / C_USED[name])
+end
+
+# Rejected fixtures: residual / threshold must exceed ten.
+println("\n| rejected fixture | quantity | value | threshold | ratio | reason |")
+println("|---|---|---|---|---|---|")
+function rej(name, M)
+    r = Octopus._eigenmodes_4d(M; min_gap=MIN_GAP, stability_atol=STAB)
+    s = r.spectrum
+    if r.frame.reason === :unstable_spectrum
+        @printf("| %s | unit-circle departure | %.3g | %.1g | %.3g | %s |\n", name, s.unit_circle_departure, STAB, s.unit_circle_departure / STAB, r.frame.reason)
+    elseif r.frame.reason === :cluster_unresolved
+        @printf("| %s | min_gap / gap | %.3g | %.1g | %s | %s |\n", name, s.gap, MIN_GAP, s.gap == 0 ? "Inf" : @sprintf("%.3g", MIN_GAP / s.gap), r.frame.reason)
+    else
+        @printf("| %s | unit-eigenvalue distance | %.3g | %.1g | %.3g | %s |\n", name, s.unit_eigenvalue_distance, STAB, STAB / max(s.unit_eigenvalue_distance, 1e-300), r.frame.reason)
+    end
+end
+rej("diag(2, 1/2, R(1.2))", blockdiag([2.0 0; 0 0.5], R(1.2)))
+rej("R(0.9) (+) R(0.9)", blockdiag(R(0.9), R(0.9)))
+rej("R(0.9) (+) R(-0.9)", blockdiag(R(0.9), R(-0.9)))
+rej("R(0.9) (+) R(0.9 + 1e-7)", blockdiag(R(0.9), R(0.9 + 1e-7)))
+rej("identity", Matrix(1.0I, 4, 4))
+rej("symmetric FODO kq=1.6 (exact)", fodo4(kq, -kq))
+rej("diag(1+1e-6, 1/(1+1e-6), R(1.2))", blockdiag([1 + 1e-6 0; 0 1 / (1 + 1e-6)], R(1.2)))
+# closed-form guard at the equal-trace fixture
+for (nm, M) in (("R(0.9) (+) R(0.9)", blockdiag(R(0.9), R(0.9))), ("R(0.9) (+) R(-0.9)", blockdiag(R(0.9), R(-0.9))),
+                ("R(0.9) (+) R(0.9 + 1e-7)", blockdiag(R(0.9), R(0.9 + 1e-7))),
+                ("symmetric FODO kq=1.6 (exact)", fodo4(kq, -kq)))
+    cf = Octopus._closed_form_eigenmodes_4d(M; min_trace_gap=TRACE_GAP, stability_atol=STAB)
+    rad = 2 * tr(M * M) - tr(M)^2 + 8
+    @printf("| closed form %s | |tau+ - tau-| | %.3g | %.1g | %s | %s |\n", nm, sqrt(abs(rad)), TRACE_GAP, sqrt(abs(rad)) == 0 ? "Inf" : @sprintf("%.3g", TRACE_GAP / sqrt(abs(rad))), cf.reason)
+end
+# accepted side of the guards: worst departure and smallest gap over the 200 maps
+worst_dep = 0.0; worst_name = ""; small_gap = Inf; small_name = ""; small_root = Inf; small_root_name = ""
+for (i, (M, f)) in enumerate(frames)
+    s = Octopus._eigenmodes_4d(M; min_gap=MIN_GAP, stability_atol=STAB).spectrum
+    s.unit_circle_departure > worst_dep && (global worst_dep = s.unit_circle_departure; global worst_name = "map $(i)")
+    s.gap < small_gap && (global small_gap = s.gap; global small_name = "map $(i)")
+    rt = sqrt(abs(s.discriminant_e10))
+    rt < small_root && (global small_root = rt; global small_root_name = "map $(i)")
+end
+@printf("\naccepted side: largest unit-circle departure %.3g (%s), ratio to STAB %.3g; smallest gap %.3g (%s), ratio to MIN_GAP %.3g; smallest |tau+ - tau-| %.3g (%s), ratio to TRACE_GAP %.3g\n",
+        worst_dep, worst_name, worst_dep / STAB, small_gap, small_name, small_gap / MIN_GAP, small_root, small_root_name, small_root / TRACE_GAP)
+```
+
+`measure_param.jl` (the Part B probe; includes the file-level helpers of the Part B test block from `param_testsets.jl`, the byte-identical source of `test/runtests.jl` 1533-1572):
+
+```julia
+# Measurement of the Part B tolerance constants: for every check of
+# param_testsets.jl the ratio (observed residual) / (eps kappa) is the c the
+# check REQUIRES; the file's c must be >= 10x the largest required c on the
+# accepted fixtures (design "Verification plan"). Package mode:
+#   julia --startup-file=no --project=<tree> --threads=4 measure_param.jl
+# Prints the max required c per check family with the argmax fixture index.
+using Octopus, LinearAlgebra, Random
+# The file-level helpers and fixtures of param_testsets.jl (everything before its first testset).
+include_string(Main, split(read(joinpath(@__DIR__, "..", "param_testsets.jl"), String), "\n@testset")[1])
+req = Dict{String, Tuple{Float64, String}}()
+function bump!(k, ratio, who)
+    r = get(req, k, (0.0, ""))
+    ratio > r[1] && (req[k] = (ratio, who))
+end
+val = determined_value
+# --- Mais-Ripken identities on the 200 normalizers
+for (i, (U, mu)) in enumerate(_PB_NORMALIZERS)
+    nU = norm(U)^2; mr = Octopus._mais_ripken(U); who = "normalizer $i"
+    for j in 1:2
+        bump!("M2 row sum / nU", abs(mr.kappa_row_sums[j] - 1) / (eps() * nU), who)
+        bump!("M3 col sum / nU", abs(mr.kappa_column_sums[j] - 1) / (eps() * nU), who)
+        for a in 1:2; bump!("M5 / nU^2", abs(mr.m5_residuals[j, a]) / (eps() * nU^2), who); end
+        p = val(mr.phases[j]); bump!("phase norm / nU", abs(p.cos^2 + p.sin^2 - 1) / (eps() * nU), who)
+    end
+    bump!("M4 diff / nU", abs(mr.u_difference) / (eps() * nU), who)
+    v1, v2 = mr.vectors
+    bump!("rephase imag / norm(u)", max(abs(imag(v1[1])) / norm(v1), abs(imag(v2[3])) / norm(v2)) / eps(), who)
+    U8 = val(Octopus._mais_ripken_normalizer(mr)); mb = minimum(mr.beta)
+    bump!("M8 rebuild / (nU/minbeta)", norm(U8 - Octopus._vectors_to_normalizer(v1, v2)) / (eps() * nU / mb), who)
+    bump!("M8 sympl / (nU^2/minbeta)", norm(transpose(U8) * _PB_S4 * U8 - _PB_S4) / (eps() * nU^2 / mb), who)
+    Rb = _pb_blockdiag(_pb_R(mu[1]), _pb_R(mu[2])); M = U * Rb * Octopus._symplectic_inverse(U)
+    bump!("M8 (I1) / (nM nU/minbeta)", Octopus._invariance_residual(M, U8, Rb).normalized / (eps() * max(1, norm(M)) * nU / mb), who)
+    e = (1.3, 0.4); ne = maximum(e)
+    S9 = Octopus._matched_covariance_4d(U, e); u1, u2 = Octopus._normalizer_to_vectors(U)
+    bump!("M9 two forms / (nU ne)", norm(S9 - Octopus._matched_covariance_4d(u1, u2, e)) / (eps() * nU * ne), who)
+    bump!("M12 vs M9 / (nU ne/minbeta)", norm(val(Octopus._mais_ripken_covariance(mr, e)) - S9) / (eps() * nU * ne / mb), who)
+    bump!("M13 / (nU/minbeta)", maximum(abs, Octopus._mais_ripken_gamma_identities(mr)) / (eps() * nU / mb), who)
+    bump!("closure / (nU ne nM^2)", norm(M * S9 * transpose(M) - S9) / (eps() * nU * ne * max(1, norm(M))^2), who)
+end
+# --- Edwards-Teng routes on the 200 maps (eigen frame from the test-local builder)
+for (i, M) in enumerate(_PB_MAPS)
+    f = _pb_frame(M); U = f.U; mu = f.tunes; who = "map $i"
+    nU = norm(U)^2; nM = max(1, norm(M))
+    kq = max(1, opnorm(M)) * opnorm(U)^2 / f.gap
+    kT = 1 / minimum(abs.(sin.(mu)))
+    etn = Octopus._edwards_teng_from_normalizer(U, mu; M4=M)
+    etd = Octopus._edwards_teng_direct(f.u1, f.u2; tunes=mu, M4=M)
+    etm = Octopus._edwards_teng_from_map(M; min_trace_gap=_PB_TRACE_GAP, mode_traces=(2cos(mu[1]), 2cos(mu[2])))
+    bump!("u n-m / (kq nU)", abs(val(etn.u) - val(etm.u)) / (eps() * kq * nU), who)
+    f1, f2 = etn.form1, etn.form2
+    wmin = min(abs(f1.area_weight), abs(f2.area_weight))
+    bump!("detR1 detR2 - 1 / (nU^2/wmin^2)", abs(val(f1.det_R) * val(f2.det_R) - 1) / (eps() * nU^2 / wmin^2), who)
+    bump!("R2 + R1/d1 / (nU^2/wmin^2)", norm(val(f2.R) + val(f1.R) / val(f1.det_R)) / (eps() * nU^2 / wmin^2), who)
+    for (fn, fd, fm) in ((etn.form1, etd.form1, etm.form1), (etn.form2, etd.form2, etm.form2))
+        w = fn.area_weight; kR = nU / abs(w); Rn = val(fn.R); sR = max(1, norm(Rn))
+        bump!("R n-d / (kR sR)", norm(Rn - val(fd.R)) / (eps() * kR * sR), who)
+        bump!("R n-m / (kq kR sR)", norm(Rn - val(fm.R)) / (eps() * kq * kR * sR), who)
+        bump!("w n-d / nU", abs(w - fd.area_weight) / (eps() * nU), who)
+        bump!("w n-m / (kq nU w^2)", abs(w - fm.area_weight) / (eps() * kq * nU * max(1, abs(w))^2), who)
+        bump!("B10 consistency / (kR sR)", fn.consistency_residual / (eps() * kR * sR), who)
+        fn.admissible || continue
+        lam = val(fn.lambda)
+        bump!("lambda^2 - w / kR", abs(lam^2 - w) / (eps() * kR), who)
+        tn, td, tm = val(fn.twiss), val(fd.twiss), val(fm.twiss)
+        for j in 1:2
+            bump!("mu n-m / (kq kT nU)", abs(mod(tm[j].mu - mu[j] + pi, 2pi) - pi) / (eps() * kq * kT * nU), who)
+            bump!("unit area / kR^2", abs(tn[j].beta * tn[j].gamma - tn[j].alpha^2 - 1) / (eps() * kR^2), who)
+            for k in (:beta, :alpha, :gamma)
+                sc = max(1, abs(tn[j][k]))
+                bump!("twiss n-d / (kR sc)", abs(tn[j][k] - td[j][k]) / (eps() * kR * sc), who)
+                bump!("twiss n-m / (kq kR kT sc)", abs(tn[j][k] - tm[j][k]) / (eps() * kq * kR * kT * sc), who)
+            end
+        end
+        bn, bd, bm = val(fn.blocks), val(fd.blocks), val(fm.blocks)
+        for j in 1:2
+            bump!("blocks n-d / (kR sB)", norm(bn[j] - bd[j]) / (eps() * kR * max(1, norm(bn[j]))), who)
+            bump!("blocks n-m / (kq kR sB)", norm(bn[j] - bm[j]) / (eps() * kq * kR * max(1, norm(bn[j]))), who)
+            bump!("T11 trace / (kq nU)", abs(tr(bm[j]) - 2cos(mu[j])) / (eps() * kq * nU), who)
+        end
+        for g in (fn, fd, fm)
+            bump!("T5 rec / (kq kR nM)", val(g.reconstruction_residual).normalized / (eps() * kq * kR * nM), who)
+        end
+        V = Octopus._edwards_teng_V(fn.form, Rn)
+        bump!("V sympl / sV^2", norm(transpose(V) * _PB_S4 * V - _PB_S4) / (eps() * max(1, norm(V))^2), who)
+        bump!("T1 rebuild / (kR nM sV^2)", norm(V * _pb_blockdiag(bn...) * Octopus._symplectic_inverse(V) - M) / (eps() * kR * nM * max(1, norm(V))^2), who)
+        Uet = Octopus._edwards_teng_normalizer(fn.form, Rn, tn[1].beta, tn[1].alpha, tn[2].beta, tn[2].alpha)
+        mret = Octopus._mais_ripken(Uet); mb = minimum(mret.beta)
+        for g in (fn, fd, fm), j in 1:2
+            pg = val(g.phases)[j]; pm = val(mret.phases[j])
+            bump!("phases vs M6 / (kq? kR nU/minbeta)", hypot(pg.cos - pm.cos, pg.sin - pm.sin) / (eps() * (g.route === :map ? kq : 1) * kR * nU / mb), who)
+        end
+        Rb = _pb_blockdiag(_pb_R(mu[1]), _pb_R(mu[2]))
+        bump!("Uet (I1) / (kq kR nM)", Octopus._invariance_residual(M, Uet, Rb).normalized / (eps() * kq * kR * nM), who)
+        Q1 = [tn[1].beta -tn[1].alpha; -tn[1].alpha tn[1].gamma]; Q2 = [tn[2].beta -tn[2].alpha; -tn[2].alpha tn[2].gamma]
+        A = Octopus._adjugate2(Rn); proj(K, Q) = lam^2 * K * Q * transpose(K)
+        tab = fn.form == 1 ? ((lam^2 * Q1, proj(Rn, Q1)), (proj(A, Q2), lam^2 * Q2)) : ((proj(A, Q1), lam^2 * Q1), (lam^2 * Q2, proj(Rn, Q2)))
+        for j in 1:2, a in 1:2
+            T = tab[j][a]; sc = max(1, norm(T))
+            bump!("7.2/7.3 tables / (kR nU sT)", max(abs(mret.beta[j, a] - T[1, 1]), abs(mret.alpha[j, a] + T[1, 2]), abs(mret.gamma[j, a] - T[2, 2])) / (eps() * kR * nU * sc), who)
+        end
+        U8 = val(Octopus._mais_ripken_normalizer(mret))
+        et8 = Octopus._edwards_teng_from_normalizer(U8, mu; M4=M)
+        g8 = fn.form == 1 ? et8.form1 : et8.form2
+        bump!("M8 -> B10 R / (kR nU sR/minbeta)", norm(val(g8.R) - Rn) / (eps() * kR * nU * sR / mb), who)
+        t8 = val(g8.twiss)
+        for j in 1:2, k in (:beta, :alpha, :gamma)
+            bump!("M8 -> B5/B9 twiss / (kR nU sc/minbeta)", abs(t8[j][k] - tn[j][k]) / (eps() * kR * nU * max(1, abs(tn[j][k])) / mb), who)
+        end
+    end
+end
+# --- Coupled construction (benchmark 12.2-2)
+let
+    bx, ax, mux = 2.0, 0.3, 2pi * 0.7; by, ay, muy = 1.5, -0.4, 2pi * 0.31; bz, muz = 10.0, 2pi * 0.05
+    Rs = ((0.5, 0.5, 1.5, 0.5), (0.4, 0.2, 0.6, 0.3), (0.5, 0.2, -0.1, 0.56), (0.8, 0.3, -0.6, 1.025))
+    m0 = compile_runtime(Linear6DSpec(beta1=(bx, by, bz), alpha1=(ax, ay, 0.0), dmu=(mux, muy, muz)))
+    for (mode, form) in ((XY_MODEA, 1), (XY_MODEB, 2)), r in Rs
+        Rm = [r[1] r[2]; r[3] r[4]]; d = det(Rm); w = 1 / (1 + d); who = "construction form $form det $(round(d, digits=2))"
+        W = compile_runtime(XYCouplingSpec(r1=r[1], r2=r[2], r3=r[3], r4=r[4], mode=mode))
+        Winv = form == 1 ? compile_runtime(XYCouplingSpec(r1=-r[1], r2=-r[2], r3=-r[3], r4=-r[4], mode=mode)) :
+                           compile_runtime(XYCouplingSpec(r1=r[4], r2=-r[2], r3=-r[3], r4=r[1], mode=mode))
+        M = one_turn_matrix((Winv, m0, W)).matrix[1:4, 1:4]
+        f = _pb_frame(M; expected=(mux, muy)); nU = norm(f.U)^2; kq = max(1, opnorm(M)) * opnorm(f.U)^2 / f.gap
+        bump!("construction tunes / kq", max(abs(f.tunes[1] - mux), abs(f.tunes[2] - muy)) / (eps() * kq), who)
+        for (et, rn) in ((Octopus._edwards_teng_from_normalizer(f.U, f.tunes; M4=M), "n"), (Octopus._edwards_teng_direct(f.u1, f.u2; tunes=f.tunes, M4=M), "d"),
+                         (Octopus._edwards_teng_from_map(M; min_trace_gap=_PB_TRACE_GAP, mode_traces=(2cos(mux), 2cos(muy))), "m"))
+            g = form == 1 ? et.form1 : et.form2; other = form == 1 ? et.form2 : et.form1
+            bump!("construction R / (kq nU sR/w)", norm(val(g.R) - Rm) / (eps() * kq * nU * max(1, norm(Rm)) / w), who * " " * rn)
+            bump!("construction lambda / (kq nU/w^2)", abs(val(g.lambda) - 1 / sqrt(1 + d)) / (eps() * kq * nU / w^2), who * " " * rn)
+            bump!("construction weight / (kq nU/w)", abs(g.area_weight - w) / (eps() * kq * nU / w), who * " " * rn)
+            t = val(g.twiss)
+            for (j, (b, a, mu)) in enumerate(((bx, ax, mux), (by, ay, muy)))
+                bump!("construction beta / (kq nU b/w)", abs(t[j].beta - b) / (eps() * kq * nU * b / w), who * " " * rn)
+                bump!("construction alpha / (kq nU sa/w)", abs(t[j].alpha - a) / (eps() * kq * nU * max(1, abs(a)) / w), who * " " * rn)
+                bump!("construction mu / (kq nU)", abs(mod(t[j].mu - mu + pi, 2pi) - pi) / (eps() * kq * nU), who * " " * rn)
+            end
+            bump!("construction T5 / (kq nU nM/w)", val(g.reconstruction_residual).normalized / (eps() * kq * nU * max(1, norm(M)) / w), who * " " * rn)
+            uexp = form == 1 ? d / (1 + d) : 1 / (1 + d)
+            bump!("construction u / (kq nU)", abs(val(et.u) - uexp) / (eps() * kq * nU), who * " " * rn)
+            if d > 0
+                bump!("construction other det / (kq nU sR^2/(w d)^2)", abs(val(other.det_R) - 1 / d) / (eps() * kq * nU * max(1, norm(Rm))^2 / (w * d)^2), who * " " * rn)
+                bump!("construction other lambda^2 / (kq nU/min(w,1-w)^2)", abs(val(other.lambda)^2 - (1 - w)) / (eps() * kq * nU / min(w, 1 - w)^2), who * " " * rn)
+            elseif d == 0
+                bump!("REJECTED zero weight (other form) |w| / (kq nU) [want > 10 x floor... reported raw]", abs(other.area_weight) / eps(), who * " " * rn)
+            end
+        end
+    end
+end
+# --- Uncoupled FODO (detuned kd (1 + 1e-3)) and the exact cell's guard
+let
+    function pb_fodo4(kf, kd)
+        qf = compile_runtime(QuadrupoleSpec(L=0.3, kn=(0.0, kf), nst=4, integrator_order=4))
+        qd = compile_runtime(QuadrupoleSpec(L=0.3, kn=(0.0, kd), nst=4, integrator_order=4))
+        dr = compile_runtime(DriftSpec(L=1.2))
+        return one_turn_matrix((qf, dr, qd, dr)).matrix[1:4, 1:4]
+    end
+    Mexact = pb_fodo4(1.6, -1.6)
+    Mxx, Mxy, Myx, Myy = Mexact[1:2, 1:2], Mexact[1:2, 3:4], Mexact[3:4, 1:2], Mexact[3:4, 3:4]
+    println("FODO exact: sqrt(Delta) = ", sqrt(max(0, (tr(Mxx) - tr(Myy))^2 + 4det(Octopus._adjugate2(Mxy) + Myx))), " (guard 1e-8: rejected ratio = guard / sqrtDelta)")
+    M = pb_fodo4(1.6, -1.6 * (1 + 1e-3))
+    Mxx, Myy = M[1:2, 1:2], M[3:4, 3:4]
+    println("FODO detuned: sqrt(Delta) = ", abs(tr(Mxx) - tr(Myy)), " accepted ratio = sqrtDelta / guard = ", abs(tr(Mxx) - tr(Myy)) / 1e-8)
+    f = _pb_frame(M); nU = norm(f.U)^2; kq = max(1, opnorm(M)) * opnorm(f.U)^2 / f.gap
+    mr = Octopus._mais_ripken(f.U)
+    bump!("FODO kappa_1y, kappa_2x / (kq nU)", max(abs(mr.kappa[1, 2]), abs(mr.kappa[2, 1])) / (eps() * kq * nU), "FODO detuned")
+    for (et, rn) in ((Octopus._edwards_teng_from_normalizer(f.U, f.tunes; M4=M), "n"), (Octopus._edwards_teng_direct(f.u1, f.u2; tunes=f.tunes, M4=M), "d"),
+                     (Octopus._edwards_teng_from_map(M; min_trace_gap=_PB_TRACE_GAP), "m"))
+        g = et.form1
+        bump!("FODO R / (kq nU)", norm(val(g.R)) / (eps() * kq * nU), "FODO " * rn)
+        bump!("FODO lambda - 1 / (kq nU)", abs(val(g.lambda) - 1) / (eps() * kq * nU), "FODO " * rn)
+        bump!("FODO form-2 weight / (kq nU)", abs(et.form2.area_weight) / (eps() * kq * nU), "FODO " * rn)
+        t = val(g.twiss)
+        for (j, blk) in enumerate((M[1:2, 1:2], M[3:4, 3:4]))
+            cs = val(Octopus._twiss_from_block(blk))
+            bump!("FODO beta vs CS / (kq nU b)", abs(t[j].beta - cs.beta) / (eps() * kq * nU * cs.beta), "FODO " * rn)
+            bump!("FODO alpha vs CS / (kq nU sa)", abs(t[j].alpha - cs.alpha) / (eps() * kq * nU * max(1, abs(cs.alpha))), "FODO " * rn)
+            bump!("FODO mu vs CS / (kq nU)", abs(mod(t[j].mu - cs.mu + pi, 2pi) - pi) / (eps() * kq * nU), "FODO " * rn)
+        end
+    end
+    println("FODO detuned: kq = $kq, nU = $nU, gap = $(f.gap), phase floors: sqrt(b1x b1y) = $(sqrt(mr.beta[1,1]*mr.beta[1,2])) vs 64 eps ||u||^2 = $(64eps()*norm(f.u1)^2)")
+end
+# --- Table: required c per check family (the file uses c = 64 everywhere; rule: 64 >= 10 x required)
+println("\n| check (residual / (eps kappa)) | required c (max ratio) | argmax fixture | 64 / required |")
+println("|---|---|---|---|")
+for k in sort(collect(keys(req)))
+    r, who = req[k]
+    println("| ", k, " | ", round(r, sigdigits=3), " | ", who, " | ", round(64 / max(r, 1e-300), sigdigits=3), " |")
+end
+println("\nWORST accepted required c: ", maximum(v[1] for (k, v) in req if !startswith(k, "REJECTED")), " -> 64 / worst = ",
+        64 / maximum(v[1] for (k, v) in req if !startswith(k, "REJECTED")))
+```

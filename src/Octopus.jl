@@ -53,6 +53,11 @@ include("contracts/Contracts.jl")
 include("analysis/Analysis.jl")
 # Pure symplectic matrix algebra for the analyses; no element dependency.
 include("analysis/symplectic_linear_algebra.jl")
+# The 4D eigenmode route of the Twiss analysis (stage 2, Part A); pure matrix algebra.
+include("analysis/eigenmodes_4d.jl")
+# Mais-Ripken and Edwards-Teng parameterizations (stage 2, Part B; plain inputs
+# plus thin methods on the Part A frame).
+include("analysis/coupled_parameterizations.jl")
 include("examples/Examples.jl")
 
 # Generic tracking interface.

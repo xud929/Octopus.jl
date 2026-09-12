@@ -37,6 +37,18 @@ teaches something reusable, it lands here (dated), and the full record goes to
   in `batch_mode` and what ran in a sibling field, and an adversarial review
   of the plan caught it before the gate did). Write the literal in the branch
   that executed; put the request beside it under another name.
+- A rejected fixture must be one the defect can reach. Measuring the
+  rejected side of the stage 2 Twiss tolerances (2026-09-11), the wrong
+  formulas were fed the suite's own fixtures and three of them scored a
+  rejected ratio of 0 instead of the required 10: on an uncoupled cell
+  `R = 0` has no sign to drop, and on every plane with `kappa^2 = 1` the
+  wrong gamma `(1 + alpha^2)/beta` IS the (M1) gamma, including the
+  `kappa = -1` plane that the design row `det R = -0.5` produces by algebra
+  (`u = 1/(1 + det R) = 2`). The fixture was not rejected because the
+  defect had nothing to act on there, not because the check was weak. Pick
+  the witness fixtures where the wrong and the right formula differ by
+  O(1), state that condition in the script, and count the fixtures it
+  excludes.
 
 ## A filter keyed on a proxy stops checking when the proxy moves
 
