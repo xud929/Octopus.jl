@@ -3839,6 +3839,1282 @@ end
     @test opnorm(Jd^400) / opnorm(Jd) > 40
 end
 
+# Twiss analysis stage 4a: the 6D dispersion routes, the coasting branch, the
+# mode labels (src/analysis/dispersion_routes.jl; dossier E1-E10), the
+# canonical separation, the 6D normalizer, the projected optics, the matched
+# covariance and the Ohmi factor (src/analysis/canonical_separation.jl;
+# E11-E12), and the integrator's chaining methods (Part C). Standalone runners
+# with the same testsets: result/twiss_impl_2026_09_11/stage4/run_routes.jl,
+# run_separation.jl (they substitute for neither lane). Every tolerance below
+# is c eps kappa with c measured (report_A.md, report_B.md); nothing here
+# claims an analysis. The `_st4_` block first: the shared test-local fixture
+# library of the fixture table (seed 20260911, no git-ignored file); the
+# stage 3 builders (`_st3_rot`, `_st3_block_diag`, `_st3_defective_spectator`,
+# `_st3_crab_map`) are reused, not duplicated.
+const _ST4_SEED = 20260911
+const _st4_S4 = Octopus._symplectic_form(4)
+const _st4_S2 = Octopus._symplectic_form(2)
+const _st4_S6 = Octopus._symplectic_form(6)
+const _st4_rot = _st3_rot
+const _st4_R = _st3_rot
+const _st4_block_diag = _st3_block_diag
+_st4_bd(As...) = _st3_block_diag(As...)
+_st4_blockrot(m1, m2, m3) = _st3_block_diag(_st3_rot(m1), _st3_rot(m2), _st3_rot(m3))
+_st4_rho0(M; rho1=0.0) = Octopus._perturbation_scale(M, Octopus._symplectic_defect(M).frobenius; user_uncertainty=rho1).scale
+
+"M_cal = M_zeta M_eta (D3) built test-locally (independent of the source's `_dispersion_transformation`); the coasting family."
+function _st4_mcal(zeta, eta)
+    S4 = Octopus._symplectic_form(4)
+    Meta = Matrix(1.0I, 6, 6); Meta[1:4, 6] = eta; Meta[5, 1:4] = transpose(eta) * S4
+    Mzeta = Matrix(1.0I, 6, 6); Mzeta[1:4, 5] = zeta; Mzeta[6, 1:4] = -transpose(zeta) * S4
+    return Mzeta * Meta
+end
+
+"Dense elliptic map k (fixture table row 1): W random symplectic (scale 0.12), phases (0.47 + 0.009k, 1.6 + 0.008k, -0.87 - 0.003k); exact graph D = W_rl / W_ll, h by (D8)."
+function _st4_dense(k::Integer; rng=MersenneTwister(_ST4_SEED + k), scale=0.12,
+                    mus=(0.47 + 0.009k, 1.6 + 0.008k, -0.87 - 0.003k))
+    W = Octopus._manufactured_symplectic_map(rng, 6; scale=scale).M
+    M = W * _st4_blockrot(mus...) * Octopus._symplectic_inverse(W)
+    D = W[1:4, 5:6] / W[5:6, 5:6]
+    h = 1 / (1 + dot(D[:, 1], _st4_S4 * D[:, 2]))                      # (D8)
+    return (M=M, W=W, D=D, zeta=D[:, 1], eta=h .* D[:, 2], h=h, mus=mus)
+end
+
+"Prescribed-h map (row 2): zeta = (1, 0.2, 0.1, 0), eta = (0, 1 - h, 0, 0), phases (0.63, 1.74, -0.94)."
+const _st4_prescribed_h = (-2.0, -1.0, -0.3, 0.05, 0.5, 1.0, 2.0)
+function _st4_prescribed(h::Real; mus=(0.63, 1.74, -0.94))
+    zeta = [1.0, 0.2, 0.1, 0.0]; eta = [0.0, 1 - h, 0.0, 0.0]
+    t = Octopus._dispersion_transformation(zeta, eta)
+    Mi = Octopus._dispersion_transformation_inverse(zeta, eta, h)
+    M = t.M_cal * _st4_blockrot(mus...) * Mi
+    return (M=M, M_cal=t.M_cal, zeta=zeta, eta=eta, h=Float64(h), mus=mus)
+end
+
+"Coasting map (row 5): zeta = 0, random eta (scale 0.2), a stable random 4D block and the shear s."
+function _st4_coasting(s::Real; seed=_ST4_SEED)
+    rng = MersenneTwister(seed)
+    eta = 0.2 * randn(rng, 4)
+    A4 = Octopus._manufactured_symplectic_map(rng, 4; scale=0.3, stable=true).M
+    Mc = _st4_mcal(zeros(4), eta)
+    return (M=Mc * _st4_block_diag(A4, [1.0 s; 0.0 1.0]) * Octopus._symplectic_inverse(Mc), eta=eta, shear=Float64(s), A=A4)
+end
+
+"The clusters report of a scaled matrix with the default rho_M0 (or the declared one)."
+function _st4_clusters(M; rho_M0=nothing, kwargs...)
+    r0 = rho_M0 === nothing ? _st4_rho0(M) : rho_M0
+    return Octopus._mode_clusters(M; rho_M0=r0, kwargs...)
+end
+
+_st4_route(rep, name) = rep.routes[findfirst(r -> r.route === name, rep.routes)]
+_st4_val(d) = Octopus.determined_value(d)
+
+"The Part B chain on one map from a given triple (the pieces `_transverse_optics_6d` chains, spelled out so the thin method is checked against them)."
+function _st4_chain(M, zeta, eta, h; emittances=(1e-9, 2e-9, 3e-6), resolution_chord=Octopus._DEFAULT_RESOLUTION_CHORD)
+    sep = Octopus._canonical_separation(M, zeta, eta, h)
+    rho_bar = _st4_rho0(sep.transverse_map; rho1=_st4_rho0(M))
+    e4 = Octopus._eigenmodes_4d(sep.transverse_map; rho_M0=rho_bar, resolution_chord=resolution_chord)
+    frame = Octopus.determined_value(e4.frame)
+    lon = Octopus.determined_value(Octopus._longitudinal_normalizer(sep.longitudinal_map))
+    optics = Octopus._full_normalizer_6d(sep, frame.normalizer, lon.normalizer, (frame.tunes[1], frame.tunes[2], lon.tune))
+    cov = Octopus._matched_covariance_6d(M, optics, emittances, frame.covariances, eta)
+    ohmi = Octopus._ohmi_factorization(M, zeta, eta, h, sep.transformation, hcat(zeta, eta ./ h))
+    return (sep=sep, e4=e4, frame=frame, lon=lon, optics=optics, cov=cov, ohmi=ohmi)
+end
+
+_st4_kappa_sep(sep, M) = max(1.0, norm(M)) * norm(sep.transformation) * norm(sep.inverse)
+_st4_wrap(mu) = mod(mu, 2pi)
+
+@testset "Dispersion routes: vocabulary pin and the dense elliptic maps (all five routes, agreement, cubic roots, labels)" begin
+    @test Octopus.DISPERSION_ROUTES == (:eigenplane, :polynomial, :projector, :newton, :fixed_point)
+    @test length(unique(Octopus.DISPERSION_ROUTES)) == 5
+    # c measured over k = 0..199 (report_A.md): direct routes and Newton <= 401 eps kappa (projector h),
+    # the (I1) normalized residual <= 94 eps kappa, agreement <= 935 eps kappa, cubic residual <= 11 eps ||M||^3.
+    c_route = 1024.0; c_agree = 2048.0; c_cubic = 64.0; c_fp = 4096.0
+    n_fp_noncontractive = 0
+    for k in 0:199
+        f = _st4_dense(k)
+        cl = _st4_clusters(f.M)
+        rep = Octopus._dispersion_routes(f.M, cl)
+        kappa = max(1, norm(f.M)) * max(1, norm(f.D))^2
+        tol = c_route * eps() * kappa
+        @test rep.primary === :eigenplane
+        @test length(rep.routes) == 5 && [r.route for r in rep.routes] == collect(Octopus.DISPERSION_ROUTES)
+        @test rep.coasting.holds == false && rep.coasting.margin > 1
+        @test norm(_st4_val(rep.graph) - f.D) <= tol
+        @test norm(_st4_val(rep.zeta) - f.zeta, Inf) <= tol && norm(_st4_val(rep.eta) - f.eta, Inf) <= tol && abs(_st4_val(rep.h) - f.h) <= tol
+        for r in rep.routes
+            if r.route === :fixed_point && r.status === :not_invariant
+                # theory 8.6: the fixed point contracts only when 2 ||M_lr|| ||D|| / sigma_min(op) < 1; the graph is still reported
+                @test occursin("contraction ratio", r.detail) && Octopus.is_determined(r.graph)
+                n_fp_noncontractive += 1
+                continue
+            end
+            @test r.status === :none
+            c = r.route === :fixed_point ? c_fp : c_route
+            @test norm(_st4_val(r.zeta) - f.zeta, Inf) <= c * eps() * kappa
+            @test norm(_st4_val(r.eta) - f.eta, Inf) <= c * eps() * kappa
+            @test abs(_st4_val(r.h) - f.h) <= c * eps() * kappa
+            @test _st4_val(r.invariance_residual).normalized <= Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * kappa
+            @test abs(_st4_val(r.trace_residual)) <= c_route * eps() * kappa
+            @test r.converged
+            r.route in (:newton, :fixed_point) ? (@test r.iterations >= 1) : (@test r.iterations == 0 && r.halvings == 0)
+        end
+        # h_alternative: (D12) for the eigenplane, (D8) of the projector graph
+        @test abs(_st4_val(_st4_route(rep, :eigenplane).h_alternative) - f.h) <= tol
+        @test abs(_st4_val(_st4_route(rep, :projector).h_alternative) - f.h) <= tol
+        # agreement: every pair of unique routes, infinity-norm differences
+        nu = count(r -> Octopus.is_determined(r.zeta), rep.routes)
+        @test length(rep.agreement) == nu * (nu - 1) / 2
+        @test all(max(a.zeta, a.eta, a.h) <= c_agree * eps() * kappa for a in rep.agreement)
+        # tau_s and the trace cubic (D17): 2 cos mu_s is a root
+        @test abs(_st4_val(rep.tau_s) - 2cos(f.mus[3])) <= c_route * eps() * max(1, norm(f.M))
+        @test length(rep.trace_cubic_roots) == 3
+        @test rep.trace_cubic_residual <= c_cubic * eps() * max(1, norm(f.M))^3
+        @test minimum(abs.(rep.trace_cubic_roots .- _st4_val(rep.tau_s))) <= c_cubic * eps() * max(1, norm(f.M))^3
+        # labels (K12): row and column sums one, the longitudinal mode has the largest z-area
+        lb = _st4_val(rep.labels)
+        @test norm(lb.row_sums .- 1, Inf) <= 64 * eps() * max(1, norm(f.W)^2)
+        @test norm(lb.column_sums .- 1, Inf) <= 64 * eps() * max(1, norm(f.W)^2)
+        @test lb.longitudinal == argmax(lb.signed_areas[:, 3]) && lb.rule === :max_signed_z_area && !lb.tie
+        @test lb.signed_areas[lb.transverse[1], 1] >= lb.signed_areas[lb.transverse[2], 1]
+        @test length(rep.tunes) == 3 && abs(rep.tunes[3] - mod(f.mus[3], 2pi)) <= 64 * eps() * max(1, norm(f.M))
+        @test abs(rep.tunes[1] - f.mus[1]) <= 64 * eps() * max(1, norm(f.M)) && abs(rep.tunes[2] - f.mus[2]) <= 64 * eps() * max(1, norm(f.M))
+    end
+    @test n_fp_noncontractive <= 8       # 6 of 200 measured (ratio 5 to 19 near coincident betatron / synchrotron traces)
+end
+
+@testset "Dispersion routes: the prescribed-h maps (every direct route returns the triple; h negative included)" begin
+    # c measured (report_A.md): eigenplane <= 5.0, polynomial <= 22.4, projector <= 9.6 eps kappa over the seven h;
+    # Newton and the fixed point from the (D15) start reach the triple for h in (1, 2) (fixed point 42 eps kappa)
+    # and converge on ANOTHER invariant plane for h <= 0.5 (trace residual 0.44: flagged :not_invariant).
+    c_direct = 64.0; c_fp = 256.0
+    for h in (-2.0, -1.0, -0.3, 0.05, 0.5, 1.0, 2.0)
+        f = _st4_prescribed(h)
+        @test abs(dot(f.zeta, Octopus._symplectic_form(4) * f.eta) - (1 - h)) <= 4eps()
+        @test Octopus._symplectic_defect(f.M).frobenius <= 64eps()
+        cl = _st4_clusters(f.M)
+        @test cl.degeneracy_status === :all_resolved
+        # the synchrotron mode is the oriented eigenvalue e^{-i mu_s} = e^{+0.94 i}; the caller names it (E3, E9)
+        idx = argmin(abs.(cl.eigenvalues .- exp(0.94im)))
+        rep = Octopus._dispersion_routes(f.M, cl; longitudinal=idx)
+        @test rep.longitudinal == idx && _st4_val(rep.labels).rule === :explicit
+        @test occursin("named by the caller", rep.labels.detail) && occursin("canonical index $(idx)", rep.labels.detail)
+        D = [f.zeta f.eta / h]; kappa = max(1, norm(f.M)) * max(1, norm(D))^2; tol = c_direct * eps() * kappa
+        for name in (:eigenplane, :polynomial, :projector)
+            r = _st4_route(rep, name)
+            @test r.status === :none
+            @test norm(_st4_val(r.zeta) - f.zeta, Inf) <= tol && norm(_st4_val(r.eta) - f.eta, Inf) <= tol && abs(_st4_val(r.h) - h) <= tol
+            @test norm(_st4_val(r.graph) - D) <= tol
+        end
+        @test abs(_st4_val(rep.h) - h) <= tol
+        for name in (:newton, :fixed_point)
+            r = _st4_route(rep, name)
+            if r.status === :none
+                @test norm(_st4_val(r.zeta) - f.zeta, Inf) <= c_fp * eps() * kappa && abs(_st4_val(r.h) - h) <= c_fp * eps() * kappa
+            else
+                @test r.status === :not_invariant && Octopus.is_determined(r.graph)
+                @test occursin("another branch", r.detail) || occursin("contraction ratio", r.detail)
+                @test r.route === :fixed_point || abs(_st4_val(r.trace_residual)) > 0.1   # Newton: an exact plane of another mode
+            end
+        end
+        if h in (1.0, 2.0)
+            @test _st4_route(rep, :newton).status === :none && _st4_route(rep, :fixed_point).status === :none
+        end
+        # the default rule (largest signed z-area) is a heuristic: for h < 0.5 a betatron mode carries more z-area
+        repd = Octopus._dispersion_routes(f.M, cl)
+        lb = _st4_val(repd.labels)
+        @test lb.rule === :max_signed_z_area
+        # the mis-selection for h <= 1/2 is (K12) kappa_sz = h at work; the report says so (theory 10.4, 13.5)
+        @test occursin("uncertified heuristic", repd.labels.detail) && occursin("kappa_sz = h", repd.labels.detail)
+        @test (repd.longitudinal == idx) == (h > 0.5) || h == 0.5
+        @test abs(lb.signed_areas[findfirst(m -> m == idx || cl.conjugate_partner[m] == idx, [mm.index for c in cl.clusters for mm in _st4_val(c.modes)]), 3] - h) <= 64 * eps() * max(1, norm(f.M_cal)^2)
+    end
+end
+
+@testset "Dispersion routes: repeated betatron and the defective spectator (design row 3: the dispersion is unique)" begin
+    # c measured: repeated betatron <= 7.7 eps kappa (fixed point), spectator <= 12.6 eps kappa
+    c = 64.0
+    for k in 0:3
+        rng = MersenneTwister(_ST4_SEED + 1000 + k)
+        W = Octopus._manufactured_symplectic_map(rng, 6; scale=0.1).M
+        M = W * _st4_blockrot(0.72, 0.72, -1.3) * Octopus._symplectic_inverse(W)
+        D = W[1:4, 5:6] / W[5:6, 5:6]; h = det(W[5:6, 5:6])
+        cl = _st4_clusters(M)
+        @test cl.degeneracy_status === :degenerate
+        rep = Octopus._dispersion_routes(M, cl)
+        cl_long = cl.clusters[rep.longitudinal_cluster]
+        @test cl_long.resolved && length(cl_long.half_members) == 1
+        @test any(c -> c.classification === :definite && !c.resolved && length(c.half_members) == 2, cl.clusters)
+        @test !Octopus.is_determined(rep.labels) && rep.labels.reason === :cluster_unresolved
+        kappa = max(1, norm(M)) * max(1, norm(D))^2
+        for r in rep.routes
+            @test r.status === :none
+            @test norm(_st4_val(r.zeta) - D[:, 1], Inf) <= c * eps() * kappa
+            @test norm(_st4_val(r.eta) - h * D[:, 2], Inf) <= c * eps() * kappa
+            @test abs(_st4_val(r.h) - h) <= c * eps() * kappa
+        end
+        @test length(rep.agreement) == 10
+        @test length(rep.tunes) == 1 && abs(rep.tunes[1] - mod(-1.3, 2pi)) <= 64eps()
+        # the projector retained the repeated betatron factor: both trace gaps equal the betatron / synchrotron gap
+        r = _st4_route(rep, :projector)
+        @test length(r.singular_values) == 2 && abs(r.singular_values[1] - r.singular_values[2]) <= 64 * eps() * max(1, norm(M))
+    end
+    rng = MersenneTwister(_ST4_SEED + 2000)
+    W = Octopus._manufactured_symplectic_map(rng, 6; scale=0.1).M
+    M = W * _st4_block_diag(_st3_defective_spectator(0.9), _st4_rot(-1.3)) * Octopus._symplectic_inverse(W)
+    D = W[1:4, 5:6] / W[5:6, 5:6]; h = det(W[5:6, 5:6])
+    cl = _st4_clusters(M)
+    @test cl.degeneracy_status === :unresolved
+    rep = Octopus._dispersion_routes(M, cl)
+    @test any(c -> c.classification === :unresolved && c.reason === :unresolved_defective, cl.clusters)
+    @test cl.clusters[rep.longitudinal_cluster].resolved
+    kappa = max(1, norm(M)) * max(1, norm(D))^2
+    for r in rep.routes
+        @test r.status === :none
+        @test norm(_st4_val(r.zeta) - D[:, 1], Inf) <= c * eps() * kappa && abs(_st4_val(r.h) - h) <= c * eps() * kappa
+    end
+    # the spectator's common trace comes from the trace identity tr M = sum tau_j (its eigenvalues are sqrt(eps) accurate)
+    r = _st4_route(rep, :projector)
+    @test occursin("||P^2 - P||", r.detail)
+    @test all(abs(g - abs(2cos(0.9) - 2cos(-1.3))) <= 64 * eps() * max(1, norm(M)) for g in r.singular_values)
+    @test rep.labels.reason === :unresolved_defective
+end
+
+@testset "Dispersion routes: coasting maps, the weak cavity, and the DBA cell at delta = +-1e-4" begin
+    # c measured: coasting eta <= 0.03 eps kappa (kappa includes cond(I - M_rr)), shear exact, M_rr symplectic <= 0.43 eps
+    for s in (-0.4, 0.0, 0.7)
+        f = _st4_coasting(s)
+        cl = _st4_clusters(f.M)
+        rep = Octopus._dispersion_routes(f.M, cl)
+        c = rep.coasting
+        @test c.holds && c.margin < 1e-3
+        @test c.residuals.z_column == 0 || c.residuals.z_column <= c.tolerance
+        kappa = max(1, norm(f.M)) * max(1, norm(f.eta))^2 * _st4_val(c.coefficient_condition)
+        @test norm(_st4_val(c.eta) - f.eta, Inf) <= 4 * eps() * kappa
+        @test abs(c.shear - s) <= 4 * eps() * kappa && c.longitudinal_map == [1.0 c.shear; 0.0 1.0]
+        @test c.transverse_map == f.M[1:4, 1:4] && c.transverse_symplecticity <= 16eps()
+        @test c.symplectic_consistency <= 16 * eps() * max(1, norm(f.M))
+        @test _st4_val(c.solve_residual) <= 16eps()
+        @test all(r.status === :coasting_structure for r in rep.routes) && isempty(rep.agreement)
+        @test _st4_val(rep.zeta) == zeros(4) && _st4_val(rep.h) == 1.0 && _st4_val(rep.eta) == _st4_val(c.eta)
+        @test rep.labels.reason === :coasting_structure && rep.longitudinal == 0
+        @test Octopus.is_determined(rep.graph) && _st4_val(rep.graph) == hcat(zeros(4), _st4_val(c.eta))     # (D7) with zeta = 0, h = 1
+        @test rep.tau_s.reason === :coasting_structure
+    end
+    # (D24) singular coefficient: M_rr with a unit eigenvalue (a shear in the y plane) while the coasting structure holds.
+    # eta is :singular_coefficient, the condition number is unavailable (no Inf), (D25) needs eta so no shear is reported,
+    # the graph carries eta's reason, and the chain refuses naming the coasting branch (review 2026-09-12).
+    fs = _st4_coasting(0.7); Mcs = _st4_mcal(zeros(4), fs.eta)
+    Msing = Mcs * _st4_block_diag(_st4_block_diag(_st4_R(0.3), [1.0 0.2; 0.0 1.0]), [1.0 0.7; 0.0 1.0]) * Octopus._symplectic_inverse(Mcs)
+    cls = _st4_clusters(Msing); reps = Octopus._dispersion_routes(Msing, cls); cs = reps.coasting
+    @test cs.holds && cs.margin < 1e-3 && svdvals(I - Msing[1:4, 1:4])[end] == 0
+    @test cs.eta.reason === :singular_coefficient && cs.solve_residual.reason === :singular_coefficient
+    @test !Octopus.is_determined(cs.coefficient_condition) && cs.coefficient_condition.reason === :singular_coefficient
+    @test cs.longitudinal_map == zeros(2, 2) && cs.shear == 0.0 && cs.transverse_map == Msing[1:4, 1:4]
+    @test reps.graph.reason === :singular_coefficient && _st4_val(reps.zeta) == zeros(4) && _st4_val(reps.h) == 1.0
+    @test all(r.status === :coasting_structure for r in reps.routes)
+    errs = try; Octopus._canonical_separation(Msing, reps); nothing; catch e; e; end
+    @test errs isa ArgumentError && occursin("the coasting branch", errs.msg) && occursin("singular_coefficient", errs.msg)
+    @test !occursin("primary route", errs.msg)
+    # the weak cavity (M[6, 5] = -1e-6 folded symplectically) must NOT take the branch (design step 3)
+    f = _st4_coasting(0.7); Mc = _st4_mcal(zeros(4), f.eta)
+    Mw = Mc * _st4_block_diag(f.A, [1.0 0.7; -1e-6 1 - 0.7e-6]) * Octopus._symplectic_inverse(Mc)
+    @test Octopus._symplectic_defect(Mw).frobenius <= 16eps()
+    cl = _st4_clusters(Mw)
+    rep = Octopus._dispersion_routes(Mw, cl)
+    @test !rep.coasting.holds && rep.coasting.margin > 1e5
+    @test rep.coasting.eta.reason === :not_derived_for_cluster && occursin("absent", rep.coasting.eta.detail)
+    @test cl.degeneracy_status === :all_resolved                  # a resolved synchrotron pair, tune sqrt(0.7e-6)
+    # c eps kappa: the synchrotron tune sits 1 / sin(mu_s) = 1195 from the unit eigenvalue and the eigenplane's
+    # cond(U_ls) = 837 amplifies the eigenvector roundoff; measured tau_s 0.06, eta 0.06, h - 1 4e-5 of eps kappa
+    mus = sqrt(0.7e-6); kappa_tau = max(1, norm(Mw)) / sin(mus)
+    kappa_w = kappa_tau * _st4_val(_st4_route(rep, :eigenplane).coefficient_condition)
+    @test abs(_st4_val(rep.tau_s) - 2cos(mus)) <= 16 * eps() * kappa_tau
+    @test _st4_route(rep, :eigenplane).status === :none
+    # the exact graph of M_cal diag(A, B) M_cal^-1 is [0, eta] for EVERY longitudinal block B: eta and h = 1 are exact
+    @test norm(_st4_val(rep.eta) - f.eta, Inf) <= 16 * eps() * kappa_w && abs(_st4_val(rep.h) - 1) <= 16 * eps() * kappa_w
+    # the polynomial route sees the near-coincident traces (N16) through a regular but ill-conditioned solve
+    # (cond 1.1e4 measured): its formed graph is flagged :not_invariant by the (I1) floor (normalized residual
+    # eps cond(A_s), ten times the acceptance), while Newton and the fixed point converge
+    @test _st4_route(rep, :polynomial).status === :not_invariant && Octopus.is_determined(_st4_route(rep, :polynomial).graph)
+    @test _st4_route(rep, :newton).status === :none && _st4_route(rep, :fixed_point).status === :none
+    @test _st4_val(_st4_route(rep, :polynomial).coefficient_condition) > 1e3     # measured 1.1e4
+    # the coasting-structure absent fields are all present (dossier Part A)
+    @test rep.coasting.longitudinal_map == zeros(2, 2) && rep.coasting.shear == 0.0 && rep.coasting.transverse_map == Mw[1:4, 1:4]
+    # DBA cell (benchmark 12.2-3), test-local Newton closed orbit at delta = +-1e-4
+    NST = 4; ORDER = 4
+    bend = compile_runtime(SBendSpec(L=1.0, h=0.2, b0=0.2, nst=NST, integrator_order=ORDER))
+    qf = compile_runtime(QuadrupoleSpec(L=0.35, kn=(0.0, 1.5), nst=NST, integrator_order=ORDER))
+    qd = compile_runtime(QuadrupoleSpec(L=0.25, kn=(0.0, -1.1), nst=NST, integrator_order=ORDER))
+    dr = compile_runtime(DriftSpec(L=0.6))
+    cell = (qd, dr, bend, dr, qf, dr, bend, dr, qd)
+    lin = one_turn_matrix(cell)
+    @test lin.provenance.map_uncertainty == 0.0
+    M = lin.matrix
+    cl = _st4_clusters(M)
+    rep = Octopus._dispersion_routes(M, cl)
+    @test rep.coasting.holds && rep.coasting.margin < 1e-3
+    function closed_orbit(cell, delta)
+        x = zeros(4); best = (Inf, x)
+        for it in 1:12
+            l = one_turn_matrix(cell; point=(x[1], x[2], x[3], x[4], 0.0, delta))
+            r4 = collect(l.provenance.fixed_point_residual)[1:4]; rn = maximum(abs, r4)
+            rn < best[1] && (best = (rn, copy(x))); rn == 0.0 && break
+            x = x - (l.matrix[1:4, 1:4] - I) \ r4
+        end
+        return best
+    end
+    step = 1e-4; xp = closed_orbit(cell, step); xm = closed_orbit(cell, -step)
+    @test xp[1] <= 1e-12 && xm[1] <= 1e-12
+    eta_fd = (xp[2] - xm[2]) / (2step)
+    # FD tolerance: step^2 truncation (the orbit's second derivative ~ 1) plus roundoff 1e-12 / step
+    @test norm(eta_fd - _st4_val(rep.coasting.eta), Inf) <= 4 * step^2 + 1e-12 / step      # measured 3.3e-9
+    @test abs(_st4_val(rep.coasting.eta)[1] - 0.7063) <= 1e-3                                # stage 1 record: x_co / delta = 0.706
+    @test abs(rep.coasting.shear - (-0.3896)) <= 1e-3                                         # stage 1 record: z slip / delta = -0.390
+end
+
+@testset "Dispersion routes: singular projection, isotropic graph, degeneracy rejection (theory 13.7, E9)" begin
+    # zeta = e_x, eta = e_px: h = 1 - zeta' S_4 eta = 0; the synchrotron mode (tune -0.9) has zero z-area, so it is named
+    zeta = [1.0, 0.0, 0.0, 0.0]; eta = [0.0, 1.0, 0.0, 0.0]
+    @test 1 - dot(zeta, Octopus._symplectic_form(4) * eta) == 0
+    Mc = _st4_mcal(zeta, eta)
+    Ms = Mc * _st4_blockrot(0.73, 1.41, -0.9) * Octopus._symplectic_inverse(Mc)
+    cl = _st4_clusters(Ms)
+    @test cl.degeneracy_status === :all_resolved
+    idx = argmin(abs.(cl.eigenvalues .- exp(0.9im)))
+    rep = Octopus._dispersion_routes(Ms, cl; longitudinal=idx)
+    @test rep.longitudinal == idx
+    r = _st4_route(rep, :eigenplane)
+    @test r.status === :singular_longitudinal_projection && !Octopus.is_determined(r.graph) && rep.eta.reason === :singular_longitudinal_projection
+    @test length(r.singular_values) == 2 && r.singular_values[end] <= Octopus._GRAPH_SINGULARITY_MULTIPLIER * cl.rho_M1 * max(1, 1.0)
+    @test Octopus.is_determined(r.coefficient_condition)                       # the diagnostics stay
+    @test _st4_route(rep, :polynomial).status === :singular_coefficient        # (N16): h = 0
+    @test _st4_route(rep, :projector).status === :singular_longitudinal_projection
+    @test occursin("||P^2 - P||", _st4_route(rep, :projector).detail)
+    # the mode itself is retained in the cluster report (design return table row 6)
+    @test abs(Octopus._signed_z_area(_st4_val(cl.clusters[rep.longitudinal_cluster].modes)[1].vector)) <= 64eps()
+    @test Octopus.is_determined(rep.labels)
+    # isotropic graph: the kernel refuses an exactly zero area; a route with a formed isotropic graph is :graph_isotropic
+    Diso = [1.0 0.0; 0.0 -1.0; 0.0 0.0; 0.0 0.0]
+    @test 1 + dot(Diso[:, 1], Octopus._symplectic_form(4) * Diso[:, 2]) == 0
+    @test_throws ArgumentError Octopus._graph_to_dispersion(Diso)
+    @test_throws ArgumentError Octopus._dispersion_to_graph(zeta, eta, 0.0)
+    Md = _st4_blockrot(0.73, 1.41, 0.73)
+    r = Octopus._route_from_graph(:eigenplane, Md, Diso, 2cos(0.73); rho_M1=1e-15)
+    @test r.status === :graph_isotropic && Octopus.is_determined(r.graph) && Octopus.is_determined(r.canonical_area)
+    @test _st4_val(r.canonical_area) == 0 && !Octopus.is_determined(r.h) && r.h.reason === :graph_isotropic
+    @test Octopus.is_determined(r.invariance_residual) && Octopus.is_determined(r.trace_residual)
+    # degeneracy rejection: the false graph [diag(1, -0.5); 0] solves the polynomial kernel but not (D14)
+    Dfalse = [1.0 0.0; 0.0 -0.5; 0.0 0.0; 0.0 0.0]
+    res = Octopus._route_residuals(Md, Dfalse, 2cos(0.73))
+    @test abs(res.invariance.raw - 1.5 * sqrt(2) * sin(0.73)) <= 16eps()
+    r = Octopus._route_from_graph(:polynomial, Md, Dfalse, 2cos(0.73); rho_M1=1e-15)
+    @test r.status === :not_invariant && Octopus.is_determined(r.graph) && !Octopus.is_determined(r.zeta)
+    @test _st4_val(r.invariance_residual).normalized > Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * max(1, norm(Md)) * max(1, norm(Dfalse))^2
+    # the pseudoinverse graph of the degenerate map is 0 with raw residual ||M_rl|| = 0 here; the design's 0.28293 belongs to the crab similarity
+    cld = _st4_clusters(Md)
+    @test cld.degeneracy_status === :degenerate
+    repd = Octopus._dispersion_routes(Md, cld)
+    c_long = cld.clusters[repd.longitudinal_cluster]
+    @test c_long.classification === :definite && !c_long.resolved && length(c_long.half_members) == 2
+    @test Octopus.is_ambiguous(repd.eta) && repd.eta.reason === :cluster_unresolved
+    setref = Octopus._dispersion_ambiguity_set(c_long)
+    @test all(getfield(repd.eta.set, n) == getfield(setref, n) for n in fieldnames(typeof(setref)))
+    # against the construction, not the kernel (theory 13.6, the design probe's oracle): the degenerate x-z pair
+    # u = a u_x + b u_z, |a|^2 + |b|^2 = 1, gives eta = (-Im(conj(b) a), -Re(conj(b) a), 0, 0), the disc of radius
+    # |a||b| <= 1/2 in the (x, px) plane: center 0, shape (1/2)^2 I on x, px and 0 on y, py; multiplicity 2
+    @test norm(repd.eta.set.center) <= 64eps() && norm(repd.eta.set.shape - Diagonal([0.25, 0.25, 0.0, 0.0])) <= 64eps()
+    @test repd.eta.set.multiplicity == 2
+    @test !Octopus.is_determined(repd.zeta) && repd.zeta.reason === :cluster_unresolved && repd.h.reason === :cluster_unresolved
+    @test _st4_route(repd, :polynomial).status === :singular_coefficient && _st4_route(repd, :projector).status === :singular_coefficient
+    @test _st4_route(repd, :eigenplane).status === :cluster_unresolved && _st4_route(repd, :newton).status === :cluster_unresolved
+    @test _st4_route(repd, :fixed_point).status === :cluster_unresolved && repd.longitudinal == 0
+    @test abs(_st4_val(repd.tau_s) - 2cos(0.73)) <= 16eps()
+    # crab similarity k = 0.3 of the same degenerate map: the design's pseudoinverse residual 0.28293 is a documented number
+    k = 0.3; Ck = Matrix(1.0I, 6, 6); Ck[2, 5] = -k; Ck[6, 1] = -k
+    Mk = Md * Ck
+    # M_rr = diag(R(0.73), R(1.41)) and M_ll = R(0.73) share a spectrum: the (D15) operator is singular (named)
+    @test_throws ArgumentError Octopus._sylvester_initializer(Mk)
+    @test Octopus._newton_route(Mk, 2cos(0.73); rho_M1=1e-15).status === :singular_coefficient
+    @test Octopus._fixed_point_route(Mk, 2cos(0.73); rho_M1=1e-15).status === :singular_coefficient
+    @test occursin("no initializer", Octopus._newton_route(Mk, 2cos(0.73); rho_M1=1e-15).detail)
+    # the (I1) raw residual of the zero graph is ||M_rl||_F = k on Md C_k (the crab kick moves -k Md[1:4, 2] into column 5)
+    @test abs(Octopus._graph_invariance_residual(Mk, zeros(4, 2)).raw - norm(Mk[1:4, 5:6])) <= 16eps()
+    @test abs(norm(Mk[1:4, 5:6]) - k) <= 16eps()
+    # the design's 0.28293 = sqrt(2) k sin 0.73 (theory 13.7) is the zero graph's raw residual on the crab SIMILARITY
+    # C_k Md C_k^-1, whose degenerate pair keeps the same ambiguity set (C_k is symplectic and leaves u_z, u_x, so eta,
+    # unchanged): the set center and shape of Md are pinned there too, and the algebraic routes stay :singular_coefficient
+    Mks = Ck * Md / Ck
+    @test abs(Octopus._graph_invariance_residual(Mks, zeros(4, 2)).raw - sqrt(2) * k * sin(0.73)) <= 64eps()
+    clks = _st4_clusters(Mks); repks = Octopus._dispersion_routes(Mks, clks)
+    @test clks.degeneracy_status === :degenerate && Octopus.is_ambiguous(repks.eta) && repks.eta.reason === :cluster_unresolved
+    @test norm(repks.eta.set.center) <= 64eps() && norm(repks.eta.set.shape - Diagonal([0.25, 0.25, 0.0, 0.0])) <= 256eps()
+    @test _st4_route(repks, :polynomial).status === :singular_coefficient && _st4_route(repks, :projector).status === :singular_coefficient
+end
+
+@testset "Dispersion routes: non-definite longitudinal clusters (E9): indefinite, unit-eigenvalue, hyperbolic" begin
+    # Every route and the triple carry the longitudinal cluster's reason; the chain refuses. The default rule finds a
+    # real-class synchrotron pair through the z-content the complex-class clusters leave (1 - sum kappa_z = h by (K12)),
+    # so a betatron mode's graph is never published as the dispersion (review 2026-09-12: before the fix the shear and
+    # the hyperbolic pair below selected a betatron mode with a UNIQUE triple). c: the hyperbolic-x triple <= 1.2 eps kappa.
+    function e9_pins(M, reason, members)
+        cl = _st4_clusters(M); rep = Octopus._dispersion_routes(M, cl)
+        @test !rep.coasting.holds
+        @test cl.clusters[rep.longitudinal_cluster].members == members && cl.clusters[rep.longitudinal_cluster].reason === reason
+        @test rep.longitudinal == 0 && rep.labels.reason === reason
+        for d in (rep.zeta, rep.eta, rep.h, rep.graph)
+            @test !Octopus.is_determined(d) && d.reason === reason && occursin("longitudinal candidate cluster", d.detail)
+        end
+        @test all(r.status === reason for r in rep.routes) && isempty(rep.agreement)
+        @test Octopus.is_determined(rep.tau_s)
+        err = try; Octopus._canonical_separation(M, rep); nothing; catch e; e; end
+        @test err isa ArgumentError && occursin(string(reason), err.msg) && occursin("primary route :eigenplane", err.msg)
+        return (cl=cl, rep=rep)
+    end
+    # indefinite: diag(R(0.73), R(1.41), R(-0.73)) (the stage 3 builder): the x-z pair has opposite Krein signs
+    e9_pins(_st3_indefinite_6d(), :indefinite_cluster, [1, 2, 5, 6])
+    # unit eigenvalue with a NON-zero crab dispersion: not coasting (M[1:4, 5] = zeta (M_ll - 1) ... != 0), the shear pair
+    zeta_u = [0.1, 0.0, 0.05, 0.0]; eta_u = [0.0, 0.3, 0.0, 0.0]; Mcu = _st4_mcal(zeta_u, eta_u)
+    Mu = Mcu * _st4_block_diag(_st4_R(0.5), _st4_R(1.6), [1.0 0.7; 0.0 1.0]) * Octopus._symplectic_inverse(Mcu)
+    ru = e9_pins(Mu, :unit_eigenvalue, [1, 6])
+    @test ru.rep.coasting.margin > 1e6 && abs(_st4_val(ru.rep.tau_s) - 2) <= 64eps()
+    # hyperbolic synchrotron pair conjugated by a random W: the two real eigenvalues are separate clusters; the first wins
+    W = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4_SEED + 5), 6; scale=0.12).M
+    Mh = W * _st4_block_diag(_st4_R(0.5), _st4_R(1.6), [2.0 0.0; 0.0 0.5]) * Octopus._symplectic_inverse(W)
+    rh = e9_pins(Mh, :unstable_spectrum, [1])
+    @test count(c -> c.classification === :unstable, rh.cl.clusters) == 2
+    @test abs(_st4_val(rh.rep.tau_s) - 2.5) <= 64eps()                          # rho + 1 / rho of the real pair
+    # the explicit index still overrides: a betatron index on the hyperbolic map runs that mode's eigenplane (E9)
+    idx3 = findfirst(c -> c.classification === :definite, rh.cl.clusters)
+    ex = Octopus._dispersion_routes(Mh, rh.cl; longitudinal=rh.cl.clusters[idx3].members[1])
+    @test ex.longitudinal_cluster == idx3 && Octopus.is_determined(ex.zeta) && _st4_route(ex, :eigenplane).status === :none
+    @test _st4_route(ex, :projector).status === :unstable_spectrum              # three traces do not exist
+    # a hyperbolic BETATRON plane with an elliptic synchrotron mode: the dispersion is that mode's eigenplane (unique),
+    # the labels are :unstable_spectrum (no three resolved modes), the projector route needs three traces
+    Mx = W * _st4_block_diag([2.0 0.0; 0.0 0.5], _st4_R(1.6), _st4_R(-0.8)) * Octopus._symplectic_inverse(W)
+    clx = _st4_clusters(Mx); repx = Octopus._dispersion_routes(Mx, clx)
+    Dx = W[1:4, 5:6] / W[5:6, 5:6]; hx = 1 / (1 + dot(Dx[:, 1], _st4_S4 * Dx[:, 2])); kx = max(1, norm(Mx)) * max(1, norm(Dx))^2
+    @test clx.clusters[repx.longitudinal_cluster].classification === :definite && repx.labels.reason === :unstable_spectrum
+    @test norm(_st4_val(repx.graph) - Dx) <= 64 * eps() * kx && abs(_st4_val(repx.h) - hx) <= 64 * eps() * kx
+    for name in (:eigenplane, :polynomial, :newton, :fixed_point)
+        @test _st4_route(repx, name).status === :none
+    end
+    @test _st4_route(repx, :projector).status === :unstable_spectrum
+    sx = Octopus._canonical_separation(Mx, repx)                                # the separation holds; Mbar_beta carries the hyperbolic plane
+    @test sx.status === :none && norm(sort(abs.(eigvals(sx.transverse_map))) - [0.5, 1.0, 1.0, 2.0], Inf) <= 64 * eps() * kx * cond(W)
+    @test abs(tr(sx.transverse_map) - (2.5 + 2cos(1.6))) <= 64 * eps() * kx * cond(W)
+end
+
+@testset "Dispersion routes: the trial-011 crab map against its analytic eta_+" begin
+    # c measured with kappa_d = max(1, ||M||) max(1, ||D||)^2 (cos 0.85 - cos(-0.75))^2 / d: eta <= 1202, agreement <= 4154
+    c_eta = 4096.0; c_agree = 16384.0
+    kc = _st3_crab_kc()                                                  # 0.1002018291014, asserted by the stage 3 pins
+    prev_cond = 0.0
+    for e in (1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6)
+        k = kc * (1 - e)
+        M = _st3_crab_map(k)                                             # trial 011: diag(R(0.85), R(2.1), R(-0.75)) C_k
+        @test Octopus._symplectic_defect(M).frobenius <= 16eps()
+        cl = _st4_clusters(M)
+        @test cl.degeneracy_status === :all_resolved
+        rep = Octopus._dispersion_routes(M, cl)
+        d = (cos(0.85) - cos(-0.75))^2 + k^2 * sin(0.85) * sin(-0.75)
+        @test d > 0
+        eta_plus = [0.0, -k * sin(-0.75), 0.0, 0.0] / (2sqrt(d))
+        kappa_d = max(1, norm(M)) * max(1, norm(_st4_val(rep.graph)))^2 * (cos(0.85) - cos(-0.75))^2 / d
+        # the (D12) sign agrees with the theory's eta_+ (recorded in report_A.md: no sign flip)
+        @test norm(_st4_val(rep.eta) - eta_plus, Inf) <= c_eta * eps() * kappa_d
+        @test _st4_val(rep.eta)[2] > 0 && abs(_st4_val(rep.eta)[1]) <= c_eta * eps() * kappa_d && abs(_st4_val(rep.eta)[3]) <= c_eta * eps() * kappa_d
+        for name in (:eigenplane, :polynomial, :projector, :newton)
+            @test _st4_route(rep, name).status === :none
+        end
+        @test all(max(a.zeta, a.eta, a.h) <= c_agree * eps() * kappa_d for a in rep.agreement)
+        # near k_c the projector's trace separation shrinks: its condition grows monotonically
+        pc = _st4_val(_st4_route(rep, :projector).coefficient_condition)
+        @test pc > prev_cond
+        prev_cond = pc
+        @test _st4_val(rep.h) > 1
+        # the fixed point stops contracting near k_c (ratio > 1) and says so
+        fp = _st4_route(rep, :fixed_point)
+        @test fp.status in (:none, :not_invariant) && occursin("contraction ratio", fp.detail)
+    end
+end
+
+@testset "Dispersion routes: linear-map line versus matrix, and the DBA cell with RF and a thin crab cavity" begin
+    # three linear-map elements around a Linear6DSpec rotation (digest DETAIL 3: the inverse shears first)
+    rot = compile_runtime(Linear6DSpec(beta1=(1, 1, 1), dmu=(0.63, 1.74, -0.94)))
+    zt = (0.3, -0.1, 0.1, 0.2); et = (0.2, 0.1, -0.1, 0.05)
+    mz = compile_runtime(CrabDispersionSpec(zeta1=zt[1], zeta2=zt[2], zeta3=zt[3], zeta4=zt[4]))
+    mzi = compile_runtime(CrabDispersionSpec(zeta1=-zt[1], zeta2=-zt[2], zeta3=-zt[3], zeta4=-zt[4]))
+    me = compile_runtime(MomentumDispersionSpec(eta1=et[1], eta2=et[2], eta3=et[3], eta4=et[4]))
+    mei = compile_runtime(MomentumDispersionSpec(eta1=-et[1], eta2=-et[2], eta3=-et[3], eta4=-et[4]))
+    lin = one_turn_matrix((mzi, mei, rot, me, mz))
+    @test lin.provenance.map_uncertainty == 0.0
+    M = lin.matrix
+    Mref = _st4_mcal(collect(zt), collect(et)) * _st4_blockrot(0.63, 1.74, -0.94) * Octopus._symplectic_inverse(_st4_mcal(collect(zt), collect(et)))
+    @test norm(M - Mref) <= 64eps()
+    h = 1 - dot(collect(zt), Octopus._symplectic_form(4) * collect(et))
+    cl = _st4_clusters(M)
+    idx = argmin(abs.(cl.eigenvalues .- exp(0.94im)))
+    rep = Octopus._dispersion_routes(M, cl; longitudinal=idx)
+    kappa = max(1, norm(M)) * max(1, norm(_st4_val(rep.graph)))^2
+    @test norm(_st4_val(rep.zeta) - collect(zt), Inf) <= 64 * eps() * kappa           # measured 0.9 eps
+    @test norm(_st4_val(rep.eta) - collect(et), Inf) <= 64 * eps() * kappa            # measured 0.8 eps
+    @test abs(_st4_val(rep.h) - h) <= 64 * eps() * kappa
+    @test all(r.status === :none for r in rep.routes)
+    # here the synchrotron mode also carries the largest z-area (h = 0.94), so the default rule agrees
+    @test Octopus._dispersion_routes(M, cl).longitudinal == idx
+    # the same map as a matrix through Linear6DSpec(matrix=M) gives the same result to the bit
+    M2 = one_turn_matrix((compile_runtime(Linear6DSpec(matrix=M)),)).matrix
+    @test M2 == M
+    rep2 = Octopus._dispersion_routes(M2, _st4_clusters(M2); longitudinal=idx)
+    @test _st4_val(rep2.zeta) == _st4_val(rep.zeta) && _st4_val(rep2.eta) == _st4_val(rep.eta) && _st4_val(rep2.h) == _st4_val(rep.h)
+    # DBA cell + RF + thin crab (benchmark 12.2-4 moved onto a cell with z slip: a FODO has M[5, 6] = 0 and its
+    # longitudinal plane is parabolic with any RF; recorded in report_A.md)
+    NST = 4; ORDER = 4
+    bend = compile_runtime(SBendSpec(L=1.0, h=0.2, b0=0.2, nst=NST, integrator_order=ORDER))
+    qf = compile_runtime(QuadrupoleSpec(L=0.35, kn=(0.0, 1.5), nst=NST, integrator_order=ORDER))
+    qd = compile_runtime(QuadrupoleSpec(L=0.25, kn=(0.0, -1.1), nst=NST, integrator_order=ORDER))
+    dr = compile_runtime(DriftSpec(L=0.6))
+    dba = (qd, dr, bend, dr, qf, dr, bend, dr, qd)
+    b0, g0 = reference_beta_gamma(3.0e9, PMASS_EV)
+    rf = compile_runtime(ThinRFCavitySpec(400.0e6; strength=0.02, beta0=b0, gamma0=g0))
+    for k in (0.05, 0.3)
+        crab = compile_runtime(ThinCrabCavitySpec{1}(400.0e6; strengthX=(-k,)))     # pitfall 9: the kernel's sign
+        M = one_turn_matrix((dba..., rf, crab)).matrix
+        @test abs(M[2, 5] - k) <= 16eps()                                              # the theory's +k convention
+        @test abs(tr(M[5:6, 5:6])) < 2 + 0.3 && Octopus._symplectic_defect(M).frobenius <= 16eps()
+        cl = _st4_clusters(M)
+        @test cl.degeneracy_status === :all_resolved
+        rep = Octopus._dispersion_routes(M, cl)
+        @test !rep.coasting.holds && rep.coasting.margin > 1e6
+        @test all(r.status === :none for r in rep.routes)
+        kappa = max(1, norm(M)) * max(1, norm(_st4_val(rep.graph)))^2
+        @test all(max(a.zeta, a.eta, a.h) <= 64 * eps() * kappa for a in rep.agreement)        # measured <= 7.6
+        z = _st4_val(rep.zeta)
+        @test norm(z) > 0.01 && abs(z[3]) <= 1e-12 && abs(z[4]) <= 1e-12
+        k == 0.3 && @test z[1] > 0                # zeta_x = +0.164 for k = 0.3 (recorded against the theory's +k)
+        @test abs(_st4_val(rep.eta)[1] - 0.75) < 0.02                                        # the DBA's eta_x ~ 0.74-0.76
+        @test Octopus.is_determined(rep.labels) && length(rep.tunes) == 3
+    end
+end
+
+@testset "Dispersion routes: route selection, newton_max_iterations READ, rho_M1 READ, scaling (E13)" begin
+    f = _st4_dense(3)
+    cl = _st4_clusters(f.M)
+    rep = Octopus._dispersion_routes(f.M, cl; routes=(:polynomial, :eigenplane))
+    @test [r.route for r in rep.routes] == collect(Octopus.DISPERSION_ROUTES)
+    for r in rep.routes
+        if r.route in (:polynomial, :eigenplane)
+            @test r.status === :none
+        else
+            @test r.status === :route_not_selected && !Octopus.is_determined(r.graph) && r.graph.reason === :route_not_selected
+            @test r.zeta.reason === :route_not_selected && r.coefficient_condition.reason === :route_not_selected
+        end
+    end
+    @test length(rep.agreement) == 1 && rep.agreement[1].first === :eigenplane && rep.agreement[1].second === :polynomial
+    # a single route: no agreement entries
+    @test isempty(Octopus._dispersion_routes(f.M, cl; routes=(:newton,)).agreement)
+    # newton_max_iterations READ: the dense map needs 3 Newton steps from the Sylvester start (measured); cap it at 1
+    full = _st4_route(Octopus._dispersion_routes(f.M, cl; routes=(:newton,)), :newton)
+    @test full.status === :none && full.converged && full.iterations >= 2
+    capped = _st4_route(Octopus._dispersion_routes(f.M, cl; routes=(:newton,), newton_max_iterations=1), :newton)
+    @test capped.status === :not_invariant && !capped.converged && capped.iterations == 1
+    @test Octopus.is_determined(capped.graph) && Octopus.is_determined(capped.invariance_residual)
+    @test _st4_val(capped.invariance_residual).normalized > _st4_val(full.invariance_residual).normalized
+    @test norm(_st4_val(capped.graph) - f.D) < 1e-3 && norm(_st4_val(capped.graph) - f.D) > 1e-9      # one step: quadratic, not exact
+    @test occursin("iteration cap 1", capped.detail)
+    # the fixed point has its own cap; capped at 1 it stops short (recorded as :none only if within acceptance)
+    fp1 = _st4_route(Octopus._dispersion_routes(f.M, cl; routes=(:fixed_point,), fixed_point_max_iterations=1), :fixed_point)
+    @test fp1.iterations == 1 && !fp1.converged && fp1.halvings == 0
+    # the halving rule (E7): from D0 = D_exact + 100 the full Newton step increases the residual; with halvings
+    # (10 measured) the iteration still reaches the exact graph. Accepting a residual increase breaks this.
+    far = Octopus._newton_route(f.M, _st4_val(rep.tau_s); rho_M1=cl.rho_M1, D0=f.D .+ 100.0, max_iterations=100)
+    @test far.status === :none && far.converged && far.halvings >= 1 && far.halvings <= 2 * far.iterations
+    @test norm(_st4_val(far.graph) - f.D) <= 1024 * eps() * max(1, norm(f.M)) * max(1, norm(f.D))^2
+    # the halving CAP (_MAX_HALVINGS, PROVISIONAL): a step none of whose halved trials decreases the residual is a
+    # stall (converged = false, :not_invariant with the last accepted graph reported). Measured on the far start over
+    # the 200 dense maps: 162 stall at the cap (k = 50: iteration 3, exactly 40 halved trials), 38 converge.
+    # `max_halvings` READ: with 0 halvings allowed k = 3 stalls at iteration 4 instead of converging at 14.
+    f50 = _st4_dense(50); cl50 = _st4_clusters(f50.M); tau50 = _st4_val(Octopus._dispersion_routes(f50.M, cl50; routes=(:newton,)).tau_s)
+    far50 = Octopus._newton_route(f50.M, tau50; rho_M1=cl50.rho_M1, D0=f50.D .+ 100.0, max_iterations=100)
+    @test far50.status === :not_invariant && !far50.converged && far50.halvings == Octopus._MAX_HALVINGS
+    @test Octopus.is_determined(far50.graph) && occursin("stalled", far50.detail) && occursin("within $(Octopus._MAX_HALVINGS) halvings", far50.detail)
+    zero_h = Octopus._newton_route(f.M, _st4_val(rep.tau_s); rho_M1=cl.rho_M1, D0=f.D .+ 100.0, max_iterations=100, max_halvings=0)
+    @test zero_h.status === :not_invariant && !zero_h.converged && zero_h.halvings == 0 && zero_h.iterations < far.iterations
+    @test occursin("within 0 halvings", zero_h.detail)
+    @test_throws ArgumentError Octopus._newton_route(f.M, _st4_val(rep.tau_s); rho_M1=cl.rho_M1, max_halvings=-1)
+    @test Octopus._MAX_HALVINGS isa Int && Octopus._MAX_HALVINGS >= 1
+    # a start that converges on another invariant plane is flagged (trace residual -1.38 = tau_k - tau_s)
+    other = Octopus._newton_route(f.M, _st4_val(rep.tau_s); rho_M1=cl.rho_M1, D0=f.D .+ 3.0 * [1.0 -1; -1 1; 1 -1; -1 1], max_iterations=100)
+    @test other.status === :not_invariant && other.converged && occursin("another branch", other.detail)
+    @test abs(_st4_val(other.trace_residual)) > 0.5 && _st4_val(other.invariance_residual).normalized <= Octopus._ITERATION_STOP_MULTIPLIER * eps() * max(1, norm(f.M))
+    # rho_M1 READ through the clusters: a declared rho_M0 = 1e-6 moves the coasting tolerance and the floors
+    cl6 = _st4_clusters(f.M; rho_M0=1e-6)
+    @test cl6.rho_M1 >= 1e-6 && cl.rho_M1 < 1e-12
+    rep6 = Octopus._dispersion_routes(f.M, cl6)
+    @test rep6.coasting.tolerance > 1e6 * rep.coasting.tolerance && rep6.coasting.margin < 1e-6 * rep.coasting.margin
+    @test !rep6.coasting.holds
+    r = Octopus._eigenplane_route(f.M, _st4_val(cl.clusters[rep.longitudinal_cluster].modes)[1].vector, _st4_val(rep.tau_s); rho_M1=0.5)
+    @test r.status === :singular_longitudinal_projection                # the floor 64 * 0.5 swallows sigma_min(U_ls) ~ 1
+    @test Octopus._polynomial_route(f.M, _st4_val(rep.tau_s); rho_M1=0.5).status === :singular_coefficient
+    # scaling (E13): three reciprocal scalings, the back-transformation rows for D, zeta, eta, h; c measured <= 0.07
+    f = _st4_dense(21)
+    for fac in ((2.0, 0.5, 3.0), (0.1, 0.2, 5.0), (0.5, 4.0, 0.25))
+        rec = Octopus._reciprocal_scaling(f.M, fac)
+        Ms = Octopus._scale_map(rec, f.M)
+        reps = Octopus._dispersion_routes(Ms, _st4_clusters(Ms))
+        kappa = max(1, norm(Ms)) * max(1, norm(_st4_val(reps.graph)))^2 * maximum(fac)^2 / minimum(fac)^2
+        @test norm(Octopus._unscale_graph(rec, _st4_val(reps.graph)) - f.D) <= 16 * eps() * kappa
+        @test norm(Octopus._unscale_crab_dispersion(rec, _st4_val(reps.zeta)) - f.zeta) <= 16 * eps() * kappa
+        @test norm(Octopus._unscale_momentum_dispersion(rec, _st4_val(reps.eta)) - f.eta) <= 16 * eps() * kappa
+        @test abs(Octopus._unscale_longitudinal_factor(rec, _st4_val(reps.h)) - f.h) <= 16 * eps() * kappa
+        # the coasting eta likewise
+        fc = _st4_coasting(0.7); recc = Octopus._reciprocal_scaling(fc.M, fac); Mcs = Octopus._scale_map(recc, fc.M)
+        cc = Octopus._coasting_structure(Mcs; rho_M1=_st4_clusters(Mcs).rho_M1)
+        @test cc.holds
+        @test norm(Octopus._unscale_momentum_dispersion(recc, _st4_val(cc.eta)) - fc.eta) <= 16 * eps() * max(1, norm(Mcs)) * _st4_val(cc.coefficient_condition) * maximum(fac)^2 / minimum(fac)^2
+    end
+end
+
+@testset "Dispersion routes: argument errors, label ties, and the kernels' loud inputs" begin
+    f = _st4_dense(3); cl = _st4_clusters(f.M); g = _st4_dense(4); clg = _st4_clusters(g.M)
+    @test_throws ArgumentError Octopus._dispersion_routes(f.M[1:4, 1:4], cl)
+    Mnan = copy(f.M); Mnan[2, 5] = NaN
+    @test_throws ArgumentError Octopus._dispersion_routes(Mnan, cl)
+    @test_throws ArgumentError Octopus._dispersion_routes(f.M, clg)                       # clusters of another matrix
+    @test_throws ArgumentError Octopus._dispersion_routes(f.M, cl; routes=())
+    @test_throws ArgumentError Octopus._dispersion_routes(f.M, cl; routes=(:eigenplane, :eigenplane))
+    @test_throws ArgumentError Octopus._dispersion_routes(f.M, cl; routes=(:eigenplane, :spectral))
+    @test_throws ArgumentError Octopus._dispersion_routes(f.M, cl; routes=[:eigenplane])   # not a tuple
+    @test_throws ArgumentError Octopus._dispersion_routes(f.M, cl; longitudinal=0)
+    @test_throws ArgumentError Octopus._dispersion_routes(f.M, cl; longitudinal=7)
+    @test_throws ArgumentError Octopus._dispersion_routes(f.M, cl; newton_max_iterations=0)
+    @test_throws ArgumentError Octopus._dispersion_routes(f.M, cl; fixed_point_max_iterations=0)
+    err = try; Octopus._dispersion_routes(f.M, cl; routes=(:spectral,)); catch e; e; end
+    @test occursin("DISPERSION_ROUTES", err.msg)
+    # the explicit index may name either member of the conjugate pair; both select the same oriented mode
+    idx = rep_idx = Octopus._dispersion_routes(f.M, cl).longitudinal
+    @test Octopus._dispersion_routes(f.M, cl; longitudinal=cl.conjugate_partner[idx]).longitudinal == idx
+    @test _st4_val(Octopus._dispersion_routes(f.M, cl; longitudinal=idx).labels).rule === :explicit
+    # kernels
+    @test_throws ArgumentError Octopus._coasting_structure(f.M[1:4, 1:4]; rho_M1=1e-15)
+    @test_throws ArgumentError Octopus._coasting_structure(f.M; rho_M1=-1.0)
+    @test_throws ArgumentError Octopus._eigenplane_route(f.M, ComplexF64[1, 0, 0, 0], 1.0; rho_M1=1e-15)
+    @test_throws ArgumentError Octopus._eigenplane_route(f.M, zeros(ComplexF64, 6), 1.0; rho_M1=-1.0)
+    @test Octopus._eigenplane_route(f.M, zeros(ComplexF64, 6), 1.0; rho_M1=1e-15).status === :singular_longitudinal_projection
+    @test_throws ArgumentError Octopus._projector_route(f.M, [1.0, 2.0], 1; rho_M1=1e-15)
+    @test_throws ArgumentError Octopus._projector_route(f.M, [1.0, 2.0, 0.5], 4; rho_M1=1e-15)
+    @test_throws ArgumentError Octopus._newton_route(f.M, 1.0; rho_M1=1e-15, max_iterations=0)
+    @test_throws ArgumentError Octopus._newton_route(f.M, 1.0; rho_M1=1e-15, D0=zeros(2, 4))
+    @test_throws ArgumentError Octopus._fixed_point_route(f.M, 1.0; rho_M1=1e-15, D0=[NaN 0; 0 0; 0 0; 0 0])
+    @test_throws ArgumentError Octopus._mode_labels_6d([ComplexF64[1, -im, 0, 0, 0, 0]], [0.5])
+    @test_throws ArgumentError Octopus._unavailable_route(:spectral, :none, "")
+    # a given D0 that already solves (D14): zero iterations, converged
+    r = Octopus._newton_route(f.M, _st4_val(Octopus._dispersion_routes(f.M, cl).tau_s); rho_M1=cl.rho_M1, D0=f.D)
+    @test r.iterations == 0 && r.converged && r.status === :none && occursin("given D0", r.detail)
+    # label ties: the 45-degree roll of two equal-tune betatron modes shares the x-area exactly
+    u1 = ComplexF64[1, -im, 0, 0, 0, 0]; u2 = ComplexF64[0, 0, 1, -im, 0, 0]; u3 = ComplexF64[0, 0, 0, 0, 1, -im]
+    v1 = (u1 + u2) / sqrt(2); v2 = (u1 - u2) / sqrt(2)
+    lb = Octopus._mode_labels_6d([v1, v2, u3], [0.73, 0.73, 5.4])
+    @test lb.tie && lb.transverse_margin == 0 && lb.longitudinal == 3 && lb.transverse == (1, 2)   # the given order is kept
+    @test lb.signed_areas == [0.5 0.5 0; 0.5 0.5 0; 0 0 1] || norm(lb.signed_areas - [0.5 0.5 0; 0.5 0.5 0; 0 0 1]) <= 4eps()
+    @test lb.row_sums == ones(3) || norm(lb.row_sums - ones(3)) <= 4eps()
+    lb = Octopus._mode_labels_6d([u2, u1, u3], [1.41, 0.73, 5.4])
+    @test !lb.tie && lb.transverse == (2, 1) && lb.longitudinal == 3 && lb.rule === :max_signed_z_area
+    @test lb.longitudinal_margin == 1.0 && lb.transverse_margin == 1.0 && lb.tie_tolerance == Octopus._LABEL_TIE_MULTIPLIER * eps()
+    lb = Octopus._mode_labels_6d([u2, u1, u3], [1.41, 0.73, 5.4]; longitudinal=1)
+    @test lb.rule === :explicit && lb.longitudinal == 1 && lb.longitudinal_margin == -1.0 && lb.transverse == (2, 3)
+    # a longitudinal tie: two modes with equal z-area (a 45-degree y-z roll)
+    w2 = (u2 + u3) / sqrt(2); w3 = (u2 - u3) / sqrt(2)
+    lb = Octopus._mode_labels_6d([u1, w2, w3], [0.73, 1.41, 5.4])
+    @test lb.tie && lb.longitudinal_margin <= lb.tie_tolerance && lb.longitudinal == 2       # the first of the tied rows
+    # the signed area is used, never |kappa| (pitfall 8): a mode with negative z-area loses to zero
+    lb = Octopus._mode_labels_6d([u1, u2, conj(u3)], [0.73, 1.41, 5.4])
+    @test lb.signed_areas[3, 3] == -1.0 && lb.longitudinal != 3
+end
+
+@testset "Canonical separation: (D3) block form, (K2) inverse and (K1) for every h" begin
+    rng = MersenneTwister(_ST4_SEED)
+    for trial in 1:40
+        zeta = randn(rng, 4); eta = randn(rng, 4)
+        t = Octopus._dispersion_transformation(zeta, eta)
+        h = t.h
+        @test h == 1 - dot(zeta, _st4_S4 * eta)
+        # the displayed block form of (D3)
+        B = zeros(6, 6)
+        B[1:4, 1:4] .= I(4) + zeta * transpose(transpose(_st4_S4) * eta)
+        B[1:4, 5] .= zeta; B[1:4, 6] .= eta
+        B[5, 1:4] .= transpose(_st4_S4) * eta; B[5, 5] = 1.0
+        B[6, 1:4] .= -(transpose(_st4_S4) * zeta); B[6, 6] = h
+        @test norm(t.M_cal - B) <= 4 * eps() * max(1.0, norm(B))
+        # the factor order: M_zeta M_eta, never the reverse (the reverse differs when zeta' S_4 eta != 0)
+        f = Octopus._dispersion_factors(zeta, eta)
+        @test t.M_cal == f.M_zeta * f.M_eta
+        # (K2)
+        Mi = Octopus._dispersion_transformation_inverse(zeta, eta, h)
+        @test norm(t.M_cal * Mi - I) <= 16 * eps() * norm(t.M_cal) * norm(Mi)
+        @test norm(Mi * t.M_cal - I) <= 16 * eps() * norm(t.M_cal) * norm(Mi)
+        # (K1) for whatever sign h took
+        @test norm(transpose(t.M_cal) * _st4_S6 * t.M_cal - _st4_S6) <= 16 * eps() * norm(t.M_cal)^2
+    end
+    # (K1) and (K2) on the prescribed-h family, negative h included
+    for h in _st4_prescribed_h
+        p = _st4_prescribed(h)
+        Mi = Octopus._dispersion_transformation_inverse(p.zeta, p.eta, h)
+        @test norm(transpose(p.M_cal) * _st4_S6 * p.M_cal - _st4_S6) <= 16 * eps() * norm(p.M_cal)^2
+        @test norm(p.M_cal * Mi - I) <= 16 * eps() * norm(p.M_cal) * norm(Mi)
+        @test abs(p.M_cal[6, 6] - h) <= 4 * eps() * max(1.0, abs(h))     # the product (D3) forms h in roundoff
+    end
+    @test_throws ArgumentError Octopus._dispersion_factors([1.0, 0, 0], [0.0, 0, 0, 0])
+end
+
+@testset "Canonical separation: dense maps (K4), (K5), (K7), (K8), raw defect" begin
+    worst_off = 0.0; worst_k7 = 0.0; worst_k8 = 0.0
+    for k in 0:199
+        f = _st4_dense(k)
+        sep = Octopus._canonical_separation(f.M, f.zeta, f.eta, f.h)
+        ks = _st4_kappa_sep(sep, f.M)
+        @test sep.status === :none
+        @test sep.off_diagonal_residual <= 64 * eps() * ks
+        worst_off = max(worst_off, sep.off_diagonal_residual / (eps() * ks))
+        @test sep.inverse_residual <= 16 * eps() * norm(sep.transformation) * norm(sep.inverse)
+        @test sep.symplecticity <= 16 * eps() * norm(sep.transformation)^2
+        @test sep.transverse_symplecticity <= 64 * eps() * norm(sep.transverse_map)^2
+        @test sep.longitudinal_symplecticity <= 64 * eps() * norm(sep.longitudinal_map)^2
+        @test is_determined(sep.k7_difference)
+        @test sep.k7_difference.value <= 256 * eps() * ks * max(1.0, 1 / abs(f.h))
+        worst_k7 = max(worst_k7, sep.k7_difference.value / (eps() * ks * max(1.0, 1 / abs(f.h))))
+        @test sep.k8_residual <= 64 * eps() * max(1.0, norm(f.M))^2
+        worst_k8 = max(worst_k8, sep.k8_residual / (eps() * max(1.0, norm(f.M))^2))
+        # the raw transverse defect equals the symplectic defect of M_rr (K8)
+        Mrr = f.M[1:4, 1:4]
+        @test abs(sep.raw_transverse_defect - norm(transpose(Mrr) * _st4_S4 * Mrr - _st4_S4)) <= 64 * eps() * max(1.0, norm(f.M))^2
+        # the barred blocks are exactly the blocks of `separated`
+        @test sep.transverse_map == sep.separated[1:4, 1:4]
+        @test sep.longitudinal_map == sep.separated[5:6, 5:6]
+        @test sep.triple_consistency <= 8 * eps() * max(1.0, norm(f.zeta) * norm(f.eta))
+        # the longitudinal block carries the prescribed synchrotron tune
+        @test abs(tr(sep.longitudinal_map) - 2cos(f.mus[3])) <= 64 * eps() * ks
+    end
+    @info "dense separation multipliers (worst over 200): off/(eps kappa_sep)=$(worst_off) k7=$(worst_k7) k8=$(worst_k8)"
+end
+
+@testset "Canonical separation: prescribed-h maps, (K8) on every symplectic map, h = 0" begin
+    for h in _st4_prescribed_h
+        p = _st4_prescribed(h)
+        sep = Octopus._canonical_separation(p.M, p.zeta, p.eta, h)
+        ks = _st4_kappa_sep(sep, p.M)
+        @test sep.status === :none
+        @test sep.h == h && sep.zeta == p.zeta && sep.eta == p.eta
+        @test sep.symplecticity <= 16 * eps() * norm(sep.transformation)^2       # (K1) for negative h too
+        @test sep.off_diagonal_residual <= 64 * eps() * ks
+        @test sep.transverse_symplecticity <= 64 * eps() * norm(sep.transverse_map)^2
+        @test sep.longitudinal_symplecticity <= 64 * eps() * norm(sep.longitudinal_map)^2
+        @test is_determined(sep.k7_difference)
+        @test sep.k7_difference.value <= 256 * eps() * ks * max(1.0, 1 / abs(h))
+        # the barred blocks are the prescribed rotations (the construction is block diagonal in barred coordinates)
+        @test norm(sep.transverse_map - _st4_bd(_st4_R(p.mus[1]), _st4_R(p.mus[2]))) <= 64 * eps() * ks
+        @test norm(sep.longitudinal_map - _st4_R(p.mus[3])) <= 64 * eps() * ks
+        # h = 1 is the control where zeta' S_4 eta = 0
+        h == 1 && @test dot(p.zeta, _st4_S4 * p.eta) == 0
+    end
+    # (K8) is an identity of every symplectic 6D map, not only the separated ones
+    rng = MersenneTwister(_ST4_SEED + 7)
+    for k in 1:200
+        M = Octopus._manufactured_symplectic_map(rng, 6; scale=0.3).M
+        Mrr = M[1:4, 1:4]; Mlr = M[5:6, 1:4]
+        @test norm(transpose(Mrr) * _st4_S4 * Mrr + transpose(Mlr) * _st4_S2 * Mlr - _st4_S4) <= 64 * eps() * max(1.0, norm(M))^2
+    end
+    # h = 0: the separation still exists ((K1)-(K5) need no h != 0), (K7) is unavailable
+    zeta = [1.0, 0, 0, 0]; eta = [0.0, 1, 0, 0]
+    t = Octopus._dispersion_transformation(zeta, eta)
+    @test t.h == 0
+    M0 = t.M_cal * _st4_bd(_st4_R(0.7), _st4_R(0.31), _st4_R(0.05)) * Octopus._dispersion_transformation_inverse(zeta, eta, 0.0)
+    sep0 = Octopus._canonical_separation(M0, zeta, eta, 0.0)
+    @test sep0.status === :none
+    @test sep0.k7_difference.status === :unavailable && sep0.k7_difference.reason === :singular_longitudinal_projection
+    @test sep0.symplecticity <= 16 * eps() * norm(sep0.transformation)^2
+end
+
+@testset "Canonical separation: 4D pipeline on Mbar_beta and the longitudinal normalizer" begin
+    for k in (0, 50, 100, 150, 199)
+        f = _st4_dense(k)
+        sep = Octopus._canonical_separation(f.M, f.zeta, f.eta, f.h)
+        rho_bar = _st4_rho0(sep.transverse_map; rho1=_st4_rho0(f.M))
+        e4 = Octopus._eigenmodes_4d(sep.transverse_map; rho_M0=rho_bar)
+        @test is_determined(e4.frame)
+        fr = Octopus.determined_value(e4.frame)
+        ks = _st4_kappa_sep(sep, f.M)
+        @test abs(fr.tunes[1] - _st4_wrap(f.mus[1])) <= 256 * eps() * ks
+        @test abs(fr.tunes[2] - _st4_wrap(f.mus[2])) <= 256 * eps() * ks
+        # rho_M0_bar READ: a large 6D user uncertainty propagates into the barred block's scale
+        @test _st4_rho0(sep.transverse_map; rho1=1e-3) > rho_bar
+        ln = Octopus._longitudinal_normalizer(sep.longitudinal_map)
+        @test is_determined(ln)
+        l = ln.value
+        @test abs(l.tune - _st4_wrap(f.mus[3])) <= 256 * eps() * ks
+        @test l.beta > 0 && abs(l.beta * l.gamma - l.alpha^2 - 1) <= 64 * eps() * max(1.0, l.beta * l.gamma)
+        @test l.reconstruction <= 64 * eps()
+        B = l.normalizer
+        @test norm(B \ sep.longitudinal_map * B - _st4_R(l.tune)) <= 256 * eps() * max(1.0, norm(B) * norm(inv(B)))
+        @test norm(transpose(B) * _st4_S2 * B - _st4_S2) <= 16 * eps() * norm(B)^2
+    end
+    # :unit_eigenvalue on a shear and on a hyperbolic block; the multiplier is READ
+    sh = Octopus._longitudinal_normalizer([1.0 0.3; 0.0 1.0])
+    @test sh.status === :unavailable && sh.reason === :unit_eigenvalue
+    hy = Octopus._longitudinal_normalizer([2.0 0.0; 0.0 0.5])
+    @test hy.status === :unavailable && hy.reason === :unit_eigenvalue
+    near = _st4_R(1e-7)                       # tr = 2 - 1e-14, inside the 64 eps band
+    @test Octopus._longitudinal_normalizer(near).reason === :unit_eigenvalue
+    @test is_determined(Octopus._longitudinal_normalizer(near; multiplier=0.0))
+    @test is_determined(Octopus._longitudinal_normalizer(_st4_R(1e-6)))
+    @test_throws ArgumentError Octopus._longitudinal_normalizer(zeros(3, 3))
+    @test_throws ArgumentError Octopus._longitudinal_normalizer([1.0 0.3; 0.0 1.0]; multiplier=-1.0)
+end
+
+@testset "Canonical separation: (K9) U_6 symplectic, reconstructs the rotations, equals W up to phase" begin
+    worst_sym = 0.0; worst_rec = 0.0; worst_g = 0.0
+    for k in 0:9:199
+        f = _st4_dense(k)
+        c = _st4_chain(f.M, f.zeta, f.eta, f.h)
+        o = c.optics
+        kU = max(1.0, norm(o.normalizer))^2
+        @test o.symplecticity <= 64 * eps() * kU
+        @test o.reconstruction.normalized <= 64 * eps() * max(1.0, norm(f.M))
+        worst_sym = max(worst_sym, o.symplecticity / (eps() * kU))
+        worst_rec = max(worst_rec, o.reconstruction.normalized / (eps() * max(1.0, norm(f.M))))
+        # U_6 = M_cal diag(Ubar_beta, Ubar_s) to the bit (it is how it was built)
+        @test o.normalizer == c.sep.transformation * _st4_bd(c.frame.normalizer, c.lon.normalizer)
+        # U_6^-1 M U_6 is the block rotation
+        Rot = _st4_bd(_st4_R(o.tunes[1]), _st4_R(o.tunes[2]), _st4_R(o.tunes[3]))
+        @test norm(o.normalizer \ f.M * o.normalizer - Rot) <= 256 * eps() * max(1.0, norm(f.M)) * kU
+        @test all(abs.(collect(o.tunes) .- _st4_wrap.(collect(f.mus))) .<= 256 * eps() * _st4_kappa_sep(c.sep, f.M))
+        # the vectors are (E6) inverted and (E3)-normalized
+        for j in 1:3
+            u = o.vectors[j]
+            @test u == ComplexF64.(o.normalizer[:, 2j-1]) .- im .* o.normalizer[:, 2j]
+            @test abs(dot(u, _st4_S6 * u) + 2im) <= 64 * eps() * norm(u)^2       # (E3) u^dagger S u = -2i
+            # G_j and P_j equal W's mode pair up to the within-mode phase
+            Wj = f.W[:, 2j-1:2j]
+            wj = ComplexF64.(Wj[:, 1]) .- im .* Wj[:, 2]
+            @test norm(o.covariances[j] - Wj * transpose(Wj)) <= 64 * eps() * max(1.0, norm(f.W))^2
+            @test norm(o.projectors[j] + imag(wj * wj') * _st4_S6) <= 64 * eps() * max(1.0, norm(f.W))^2
+            worst_g = max(worst_g, norm(o.covariances[j] - Wj * transpose(Wj)) / (eps() * max(1.0, norm(f.W))^2))
+        end
+        # the three projectors resolve the identity and commute with M
+        @test norm(sum(o.projectors) - I) <= 64 * eps() * kU
+        @test all(norm(f.M * P - P * f.M) <= 64 * eps() * max(1.0, norm(f.M)) * kU for P in o.projectors)
+    end
+    @info "U_6 multipliers: symplecticity=$(worst_sym) reconstruction=$(worst_rec) G_j vs W=$(worst_g)"
+    # argument errors
+    f = _st4_dense(3); sep = Octopus._canonical_separation(f.M, f.zeta, f.eta, f.h)
+    @test_throws ArgumentError Octopus._full_normalizer_6d(sep, zeros(3, 3), Matrix(1.0I, 2, 2), (0.1, 0.2, 0.3))
+    @test_throws ArgumentError Octopus._full_normalizer_6d(sep, Matrix(1.0I, 4, 4), zeros(3, 3), (0.1, 0.2, 0.3))
+    @test_throws ArgumentError Octopus._full_normalizer_6d(sep, Matrix(1.0I, 4, 4), Matrix(1.0I, 2, 2), (0.1, NaN, 0.3))
+end
+
+@testset "Canonical separation: the (K12) 3x3 array, (M5) and (K13)" begin
+    worst_sum = 0.0; worst_ksz = 0.0; worst_m5 = 0.0; worst_k13 = 0.0
+    fixtures = vcat([_st4_dense(k) for k in 0:19:199], [(M=p.M, zeta=p.zeta, eta=p.eta, h=p.h) for p in _st4_prescribed.(_st4_prescribed_h)])
+    for f in fixtures
+        c = _st4_chain(f.M, f.zeta, f.eta, f.h)
+        o = c.optics
+        kU = max(1.0, norm(o.normalizer))^2
+        @test size(o.beta) == (3, 3) && size(o.signed_areas) == (3, 3)
+        @test all(abs.(o.row_sums .- 1) .<= 64 * eps() * kU)
+        @test all(abs.(o.column_sums .- 1) .<= 64 * eps() * kU)
+        @test o.row_sums == vec(sum(o.signed_areas; dims=2)) && o.column_sums == vec(sum(o.signed_areas; dims=1))
+        @test abs(o.kappa_sz_minus_h) <= 64 * eps() * kU                     # kappa_sz = h
+        @test o.kappa_sz_minus_h == o.signed_areas[3, 3] - f.h
+        @test all(o.beta .>= 0) && all(o.gamma .>= 0)
+        @test o.m5_residual <= 64 * eps() * kU^2
+        @test o.k13_residual <= 256 * eps() * max(1.0, norm(f.M)) * kU
+        worst_sum = max(worst_sum, maximum(abs.(vcat(o.row_sums, o.column_sums) .- 1)) / (eps() * kU))
+        worst_ksz = max(worst_ksz, abs(o.kappa_sz_minus_h) / (eps() * kU))
+        worst_m5 = max(worst_m5, o.m5_residual / (eps() * kU^2))
+        worst_k13 = max(worst_k13, o.k13_residual / (eps() * max(1.0, norm(f.M)) * kU))
+        # the array is read from the vectors, not from a formula with |.|: a negative area must survive
+        @test all(o.signed_areas[j, a] == -imag(conj(o.vectors[j][2a-1]) * o.vectors[j][2a]) for j in 1:3, a in 1:3)
+        @test all(o.beta[j, a] == abs2(o.vectors[j][2a-1]) for j in 1:3, a in 1:3)
+    end
+    # a prescribed-h map with h = 2 forces a negative area somewhere (row sums one, kappa_sz = 2)
+    c2 = _st4_chain(_st4_prescribed(2.0).M, [1.0, 0.2, 0.1, 0.0], [0.0, -1.0, 0.0, 0.0], 2.0)
+    @test c2.optics.signed_areas[3, 3] > 1 && minimum(c2.optics.signed_areas) < 0
+    @info "(K12)/(K13) multipliers: sums=$(worst_sum) kappa_sz-h=$(worst_ksz) m5=$(worst_m5) k13=$(worst_k13)"
+end
+
+@testset "Canonical separation: matched covariance (K10), (K12), (K14), bunch length" begin
+    worst_clos = 0.0; worst_k14 = 0.0
+    for k in 0:13:199
+        f = _st4_dense(k)
+        emit = (1e-9, 2e-9, 3e-6)
+        c = _st4_chain(f.M, f.zeta, f.eta, f.h; emittances=emit)
+        cv = c.cov; o = c.optics
+        kS = max(1.0, norm(f.M))^2 * norm(cv.sigma)
+        @test cv.emittances == emit
+        @test cv.closure_residual <= 64 * eps() * kS                                  # M Sigma M' = Sigma
+        @test cv.decomposition_residual <= 64 * eps() * norm(cv.sigma)                # sum eps_j G_j = Sigma
+        @test cv.symmetry_residual <= 16 * eps() * norm(cv.sigma)
+        @test cv.min_eigenvalue >= -64 * eps() * norm(cv.sigma)                        # PSD
+        @test cv.min_eigenvalue > 0
+        @test abs(cv.bunch_length_squared - cv.sigma[5, 5]) <= 64 * eps() * norm(cv.sigma)
+        @test cv.bunch_length_squared == sum(emit[j] * o.covariances[j][5, 5] for j in 1:3)
+        @test cv.k14_residual <= 64 * eps() * max(1.0, norm(o.normalizer))^2 * max(1.0, norm(f.eta))^2
+        worst_clos = max(worst_clos, cv.closure_residual / (eps() * kS))
+        worst_k14 = max(worst_k14, cv.k14_residual / (eps() * max(1.0, norm(o.normalizer))^2 * max(1.0, norm(f.eta))^2))
+        # (K14) written out: (G_j)_zz = eta' S_4 Gbar_j S_4' eta for j = 1, 2
+        for j in 1:2
+            w = transpose(_st4_S4) * f.eta
+            @test abs(o.covariances[j][5, 5] - dot(w, c.frame.covariances[j] * w)) <= 64 * eps() * max(1.0, norm(o.normalizer))^2 * max(1.0, norm(f.eta))^2
+        end
+        # the sigma is built from all three emittances: dropping eps_s changes sigma_z^2
+        c0 = _st4_chain(f.M, f.zeta, f.eta, f.h; emittances=(1e-9, 2e-9, 0.0))
+        @test c0.cov.bunch_length_squared < cv.bunch_length_squared
+        @test c0.cov.min_eigenvalue >= -64 * eps() * norm(cv.sigma)                  # PSD with a zero emittance
+        # equal emittances: Sigma = eps U_6 U_6'
+        ce = _st4_chain(f.M, f.zeta, f.eta, f.h; emittances=(2e-9, 2e-9, 2e-9))
+        @test norm(ce.cov.sigma - 2e-9 .* o.normalizer * transpose(o.normalizer)) <= 64 * eps() * norm(ce.cov.sigma)
+    end
+    @info "covariance multipliers: closure=$(worst_clos) k14=$(worst_k14)"
+    # argument errors on emittances and shapes
+    f = _st4_dense(1); c = _st4_chain(f.M, f.zeta, f.eta, f.h)
+    @test_throws ArgumentError Octopus._matched_covariance_6d(f.M, c.optics, (1e-9, 2e-9), c.frame.covariances, f.eta)
+    @test_throws ArgumentError Octopus._matched_covariance_6d(f.M, c.optics, (1e-9, -2e-9, 3e-6), c.frame.covariances, f.eta)
+    @test_throws ArgumentError Octopus._matched_covariance_6d(f.M, c.optics, (1e-9, NaN, 3e-6), c.frame.covariances, f.eta)
+    @test_throws ArgumentError Octopus._matched_covariance_6d(f.M, c.optics, (1e-9, Inf, 3e-6), c.frame.covariances, f.eta)
+    @test_throws ArgumentError Octopus._matched_covariance_6d(f.M, c.optics, [1e-9, 2e-9, 3e-6], c.frame.covariances, f.eta)
+    @test_throws ArgumentError Octopus._matched_covariance_6d(f.M, c.optics, (1e-9, 2e-9, 3e-6), c.frame.covariances, f.eta[1:3])
+    @test_throws ArgumentError Octopus._matched_covariance_6d(f.M[1:4, 1:4], c.optics, (1e-9, 2e-9, 3e-6), c.frame.covariances, f.eta)
+end
+
+@testset "Canonical separation: Ohmi factorization (O2)-(O5), h < 0 and h = 0" begin
+    worst = zeros(5)
+    fixtures = vcat([_st4_dense(k) for k in 0:17:199], [(M=p.M, zeta=p.zeta, eta=p.eta, h=p.h) for p in _st4_prescribed.((0.05, 0.5, 1.0, 2.0))])
+    for f in fixtures
+        @test f.h > 0
+        sep = Octopus._canonical_separation(f.M, f.zeta, f.eta, f.h)
+        D = hcat(f.zeta, f.eta ./ f.h)
+        oh = Octopus._ohmi_factorization(f.M, f.zeta, f.eta, f.h, sep.transformation, D)
+        @test is_determined(oh)
+        o = oh.value
+        kO = max(1.0, norm(o.transformation))^2
+        @test o.inverse_residual <= 64 * eps() * kO
+        @test o.symplecticity <= 64 * eps() * kO
+        @test o.separated_off_diagonal <= 256 * eps() * max(1.0, norm(f.M)) * kO
+        @test o.chart_change_off_diagonal <= 64 * eps() * kO * max(1.0, norm(sep.transformation))
+        @test o.chart_change_block_symplecticity <= 64 * eps() * norm(o.chart_change)^2
+        @test o.graph_difference == 0                                                    # (O4) against the exact graph
+        worst .= max.(worst, [o.inverse_residual / (eps() * kO), o.symplecticity / (eps() * kO),
+                              o.separated_off_diagonal / (eps() * max(1.0, norm(f.M)) * kO),
+                              o.chart_change_off_diagonal / (eps() * kO * max(1.0, norm(sep.transformation))),
+                              o.chart_change_block_symplecticity / (eps() * norm(o.chart_change)^2)])
+        # (O2) displayed entries: the longitudinal block is sqrt(h) I_2, the crab column sqrt(h) zeta, the eta column eta / sqrt(h)
+        r = sqrt(f.h)
+        @test o.transformation[5:6, 5:6] == r * Matrix(1.0I, 2, 2)
+        @test o.transformation[1:4, 5] == r .* f.zeta && o.transformation[1:4, 6] == f.eta ./ r
+        @test o.inverse[1:4, 5] == -r .* f.zeta && o.inverse[1:4, 1:4] == o.transformation[1:4, 1:4]
+        # (O5) displayed blocks
+        C = o.chart_change
+        @test norm(C[5:6, 5:6] - Diagonal([1 / r, r])) <= 16 * eps() * max(1.0, 1 / r, r)
+        zS = transpose(_st4_S4) * f.zeta; eS = transpose(_st4_S4) * f.eta
+        B4 = I(4) + f.zeta * transpose(eS) ./ (1 + r) + f.eta * transpose(zS) ./ (r * (1 + r))
+        @test norm(C[1:4, 1:4] - B4) <= 64 * eps() * kO * max(1.0, norm(sep.transformation))
+        # unit-scale statement of the design: 1e-12 on these maps
+        @test max(o.inverse_residual, o.symplecticity, o.separated_off_diagonal, o.chart_change_off_diagonal) < 1e-12
+        # a wrong graph is seen
+        @test Octopus._ohmi_factorization(f.M, f.zeta, f.eta, f.h, sep.transformation, D .+ 1e-3).value.graph_difference > 1e-3
+    end
+    @info "Ohmi multipliers (inverse, symplecticity, O1, O5 off, O5 sym): $(worst)"
+    for h in (-2.0, -1.0, -0.3)
+        p = _st4_prescribed(h)
+        oh = Octopus._ohmi_factorization(p.M, p.zeta, p.eta, h, p.M_cal, hcat(p.zeta, p.eta ./ h))
+        @test oh.status === :unavailable && oh.reason === :form_inadmissible
+        @test occursin("outside the positive-root representation (O2) for this mode selection", oh.detail)
+    end
+    p0 = (zeta=[1.0, 0, 0, 0], eta=[0.0, 1, 0, 0])
+    Mc0 = Octopus._dispersion_transformation(p0.zeta, p0.eta).M_cal
+    oh0 = Octopus._ohmi_factorization(Matrix(1.0I, 6, 6), p0.zeta, p0.eta, 0.0, Mc0, zeros(4, 2))
+    @test oh0.status === :unavailable && oh0.reason === :singular_longitudinal_projection
+    @test Octopus._ohmi_factorization(Matrix(1.0I, 6, 6), p0.zeta, p0.eta, 1e-15, Mc0, zeros(4, 2)).reason === :singular_longitudinal_projection
+    @test Octopus._ohmi_factorization(Matrix(1.0I, 6, 6), p0.zeta, p0.eta, -1e-15, Mc0, zeros(4, 2)).reason === :singular_longitudinal_projection
+    @test_throws ArgumentError Octopus._ohmi_factorization(Matrix(1.0I, 6, 6), p0.zeta, p0.eta, 0.5, Mc0, zeros(4, 3))
+    @test_throws ArgumentError Octopus._ohmi_factorization(Matrix(1.0I, 4, 4), p0.zeta, p0.eta, 0.5, Mc0, zeros(4, 2))
+end
+
+@testset "Canonical separation: scaling back-transformation (E13) for U_6, Sigma, P_j, G_j" begin
+    f = _st4_dense(11)
+    ref = _st4_chain(f.M, f.zeta, f.eta, f.h)
+    for factors in ((2.0, 0.5, 3.0), (0.1, 10.0, 1.0), (1.7, 1.7, 0.03))
+        rec = Octopus._reciprocal_scaling(f.M, factors)
+        Ms = Octopus._scale_map(rec, f.M)
+        b = Octopus._transverse_block(rec)
+        # the scaled triple by the design table (forward direction inverted): zeta~ = C_r zeta / a_3, eta~ = a_3 C_r eta
+        zs = b.Cr * f.zeta ./ b.a3; es = b.a3 .* (b.Cr * f.eta)
+        @test abs(1 - dot(zs, _st4_S4 * es) - f.h) <= 64 * eps() * max(1.0, norm(zs) * norm(es))
+        c = _st4_chain(Ms, zs, es, f.h)
+        @test c.sep.h == f.h
+        # tunes and traces invariant
+        @test all(abs.(collect(c.optics.tunes) .- collect(ref.optics.tunes)) .<= 1e3 * eps() * max(1.0, norm(Ms)))
+        @test abs(tr(c.sep.transverse_map) - tr(ref.sep.transverse_map)) <= 256 * eps() * max(1.0, norm(Ms)) * max(1.0, norm(f.M))
+        # back-transformed U_6 equals the reference up to the within-mode phase: compare G_j and P_j
+        kU = max(1.0, norm(c.optics.normalizer))^2 * max(1.0, maximum(factors), 1 / minimum(factors))^2
+        for j in 1:3
+            @test norm(Octopus._unscale_covariance(rec, c.optics.covariances[j]) - ref.optics.covariances[j]) <= 256 * eps() * kU
+            @test norm(Octopus._unscale_projector(rec, c.optics.projectors[j]) - ref.optics.projectors[j]) <= 256 * eps() * kU
+        end
+        Ub = Octopus._unscale_normalizer(rec, c.optics.normalizer)
+        @test norm(Ub * transpose(Ub) - ref.optics.normalizer * transpose(ref.optics.normalizer)) <= 256 * eps() * kU
+        @test norm(Octopus._unscale_covariance(rec, c.cov.sigma) - ref.cov.sigma) <= 256 * eps() * kU * norm(ref.cov.sigma)
+        # the unscaled zeta, eta return to the physical ones
+        @test norm(Octopus._unscale_crab_dispersion(rec, zs) - f.zeta) <= 16 * eps() * norm(f.zeta) * kU
+        @test norm(Octopus._unscale_momentum_dispersion(rec, es) - f.eta) <= 16 * eps() * norm(f.eta) * kU
+        # residuals are scaled-coordinate quantities: reported, not transformed (they may differ from the reference)
+        @test c.sep.status === :none
+    end
+end
+
+@testset "Canonical separation: a perturbed triple is :not_invariant, an inconsistent triple throws" begin
+    f = _st4_dense(5)
+    for delta in (1e-3, 1e-6, 1e-9)
+        zp = f.zeta .+ delta .* [1.0, -1.0, 0.5, 0.25]
+        hp = 1 - dot(zp, _st4_S4 * f.eta)                                    # keep the triple (D8)-consistent
+        sep = Octopus._canonical_separation(f.M, zp, f.eta, hp)
+        @test sep.status === :not_invariant
+        @test sep.off_diagonal_residual > Octopus._SEPARATION_RESIDUAL_MULTIPLIER * eps() * _st4_kappa_sep(sep, f.M)
+        # everything is still reported: (K1), (K2) exact, blocks present, (K7) unique
+        @test sep.symplecticity <= 16 * eps() * norm(sep.transformation)^2
+        @test sep.inverse_residual <= 16 * eps() * norm(sep.transformation) * norm(sep.inverse)
+        @test size(sep.transverse_map) == (4, 4) && size(sep.longitudinal_map) == (2, 2)
+        @test is_determined(sep.k7_difference)
+        @test sep.k8_residual <= 64 * eps() * max(1.0, norm(f.M))^2
+    end
+    # the residual is monotone in the perturbation (the acceptance READS the residual, not the input)
+    r(d) = Octopus._canonical_separation(f.M, f.zeta .+ d .* [1.0, 0, 0, 0], f.eta, 1 - dot(f.zeta .+ d .* [1.0, 0, 0, 0], _st4_S4 * f.eta)).off_diagonal_residual
+    @test r(1e-3) > r(1e-6) > r(1e-9)
+    # the consistency check: h not matching zeta' S_4 eta is loud
+    @test_throws ArgumentError Octopus._canonical_separation(f.M, f.zeta, f.eta, f.h + 1e-6)
+    @test_throws ArgumentError Octopus._canonical_separation(f.M, f.zeta, f.eta, -f.h)
+    @test_throws ArgumentError Octopus._canonical_separation(f.M, f.zeta, f.eta, f.h + 1e-12)
+    # shape and finiteness errors
+    @test_throws ArgumentError Octopus._canonical_separation(f.M[1:4, 1:4], f.zeta, f.eta, f.h)
+    @test_throws ArgumentError Octopus._canonical_separation(f.M, f.zeta[1:3], f.eta, f.h)
+    @test_throws ArgumentError Octopus._canonical_separation(f.M, f.zeta, f.eta, NaN)
+    Mn = copy(f.M); Mn[1, 1] = Inf
+    @test_throws ArgumentError Octopus._canonical_separation(Mn, f.zeta, f.eta, f.h)
+    # the reasons and statuses used here are in the stage 1 vocabulary
+    @test :not_invariant in Octopus.DETERMINATION_REASONS && :unit_eigenvalue in Octopus.DETERMINATION_REASONS
+    @test :form_inadmissible in Octopus.DETERMINATION_REASONS && :singular_longitudinal_projection in Octopus.DETERMINATION_REASONS
+end
+
+@testset "Stage 4a chain: _canonical_separation(M, routes) and _transverse_optics_6d on dense, repeated-betatron and coasting maps (E1, E12a)" begin
+    # c measured over the 200 dense maps (report_integrator.md, probes_C/measure_chain.jl): triple <= 54.7 eps kappa,
+    # W-frame G_j <= 132 and P_j <= 54 eps kappa_W, tunes <= 4.0 eps, kappa_sz - h <= 2 eps, closed-form tune
+    # difference <= 776 eps (the 1e-8 guards); bounds at least ten times above.
+    c_triple = 1024.0; c_frame = 2048.0; c_tune = 64.0; c_cf = 8192.0
+    gaps = (min_trace_gap=1e-8, stability_atol=1e-8)                      # the stage 2 guards, the suite's test choice
+    for k in 0:10:199
+        f = _st4_dense(k); cl = _st4_clusters(f.M)
+        rep = Octopus._dispersion_routes(f.M, cl)
+        sep = Octopus._canonical_separation(f.M, rep)
+        kappa = max(1, norm(f.M)) * max(1, norm(f.D))^2
+        # the thin method reads the PRIMARY graph: zeta and eta bit for bit, h the (D8) value of the same graph (the
+        # report's h is the eigenplane's det U_ls (D11); the two differ by roundoff times cond(U_ls), measured <= 2 eps kappa here)
+        @test sep.zeta == _st4_val(rep.zeta) && sep.eta == _st4_val(rep.eta) && sep.h == Octopus._graph_to_dispersion(_st4_val(rep.graph)).h
+        @test abs(sep.h - _st4_val(rep.h)) <= 64 * eps() * kappa * _st4_val(_st4_route(rep, :eigenplane).coefficient_condition)
+        @test norm(sep.zeta - f.zeta, Inf) <= c_triple * eps() * kappa && abs(sep.h - f.h) <= c_triple * eps() * kappa
+        @test sep.status === :none
+        t = Octopus._transverse_optics_6d(sep; rho_M1=cl.rho_M1, gaps...)
+        @test t.rho_M0_bar == _st4_rho0(sep.transverse_map; rho1=cl.rho_M1)
+        @test t.eigenmodes isa Octopus.Eigenmodes4D && t.eigenmodes.clusters.matrix == sep.transverse_map
+        @test all(Octopus.is_determined, (t.frame, t.closed_form, t.mais_ripken, t.edwards_teng_normalizer,
+                                          t.edwards_teng_map, t.edwards_teng_direct, t.longitudinal, t.optics))
+        fr = _st4_val(t.frame); cf = _st4_val(t.closed_form); lon = _st4_val(t.longitudinal); o = _st4_val(t.optics)
+        # the stage 2 thin methods exactly as stage 2 defines them
+        @test _st4_val(t.mais_ripken).beta == Octopus._mais_ripken(fr).beta
+        @test cf.tune_difference <= c_cf * eps()
+        @test _st4_val(t.edwards_teng_map).route === Octopus._edwards_teng_from_map(fr; min_trace_gap=gaps.min_trace_gap).route
+        @test _st4_val(t.edwards_teng_direct).form1.area_weight == Octopus._edwards_teng_direct(fr).form1.area_weight
+        # the projected optics reproduce the manufactured W up to the within-mode phase: G_j, P_j, tunes
+        kW = max(1, norm(f.W))^2
+        for j in 1:3
+            w = f.W[:, 2j-1] - im * f.W[:, 2j]
+            @test norm(o.covariances[j] - real(w * w')) <= c_frame * eps() * kW
+            @test norm(o.projectors[j] + imag(w * w') * _st4_S6) <= c_frame * eps() * kW
+        end
+        @test norm(_st4_wrap.(collect(o.tunes)) .- _st4_wrap.(collect(f.mus)), Inf) <= c_tune * eps()
+        @test o.tunes == (fr.tunes[1], fr.tunes[2], lon.tune)
+        @test abs(o.kappa_sz_minus_h) <= c_tune * eps() * max(1, abs(f.h))
+        # against the spelled-out chain from the exact triple: phase-invariant pieces (the within-mode phase of the
+        # 4D frame is a convention that can flip by a quarter turn between two Mbar_beta that differ at roundoff: k = 151)
+        cb = _st4_chain(f.M, f.zeta, f.eta, f.h)
+        @test maximum(norm(o.covariances[j] - cb.optics.covariances[j]) for j in 1:3) <= c_frame * eps() * kW
+        @test maximum(norm(o.projectors[j] - cb.optics.projectors[j]) for j in 1:3) <= c_frame * eps() * kW
+        @test norm(collect(o.tunes) .- collect(cb.optics.tunes), Inf) <= c_tune * eps()
+    end
+    # repeated betatron (design row 3): the dispersion is unique, the transverse optics are :cluster_unresolved
+    for k in 0:3
+        W = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4_SEED + 1000 + k), 6; scale=0.1).M
+        M = W * _st4_blockrot(0.72, 0.72, -1.3) * Octopus._symplectic_inverse(W)
+        D = W[1:4, 5:6] / W[5:6, 5:6]; h = 1 / (1 + dot(D[:, 1], _st4_S4 * D[:, 2]))
+        cl = _st4_clusters(M); rep = Octopus._dispersion_routes(M, cl)
+        @test rep.labels.reason === :cluster_unresolved && Octopus.is_determined(rep.eta) && rep.eta.status === :unique
+        sep = Octopus._canonical_separation(M, rep)
+        kappa = max(1, norm(M)) * max(1, norm(D))^2
+        @test norm(sep.zeta - D[:, 1], Inf) <= c_triple * eps() * kappa && abs(sep.h - h) <= c_triple * eps() * kappa && sep.status === :none
+        t = Octopus._transverse_optics_6d(sep; rho_M1=cl.rho_M1, gaps...)
+        @test t.frame.reason === :cluster_unresolved && t.eigenmodes.clusters.degeneracy_status !== :all_resolved
+        for piece in (t.closed_form, t.mais_ripken, t.edwards_teng_normalizer, t.edwards_teng_map, t.edwards_teng_direct, t.optics)
+            @test !Octopus.is_determined(piece) && piece.reason === :cluster_unresolved && piece.detail == t.frame.detail
+        end
+        lon = _st4_val(t.longitudinal)                                     # the synchrotron block is still elliptic
+        @test abs(cos(lon.tune) - cos(1.3)) <= c_tune * eps() && lon.reconstruction <= c_tune * eps()
+        # resolution_chord READ: Inf forces the resolution of the repeated pair (stage 3 D1: `forced` marks it), so the
+        # frame, the stage 2 routes and the optics become unique on the same separation
+        ti = Octopus._transverse_optics_6d(sep; rho_M1=cl.rho_M1, resolution_chord=Inf, gaps...)
+        @test ti.eigenmodes.clusters.resolution_chord == Inf && any(c -> c.forced, ti.eigenmodes.clusters.clusters)
+        @test Octopus.is_determined(ti.frame) && Octopus.is_determined(ti.mais_ripken) && Octopus.is_determined(ti.optics)
+        @test abs(_st4_val(ti.optics).kappa_sz_minus_h) <= c_tune * eps() * max(1, abs(h))
+    end
+    # the trial-011 crab ladder down to eps = 1e-6 (|h| = 354, cond(U_ls) large): every route :none and the chain runs
+    # (before the fix the (D11) h of the report failed the E11 gate at eps = 1e-6 by 316 eps h; review 2026-09-12)
+    kc = _st3_crab_kc()
+    for e in (1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6)
+        M = _st3_crab_map(kc * (1 - e)); cl = _st4_clusters(M); rep = Octopus._dispersion_routes(M, cl)
+        @test _st4_route(rep, :eigenplane).status === :none
+        sep = Octopus._canonical_separation(M, rep)
+        @test sep.status === :none && sep.zeta == _st4_val(rep.zeta) && sep.eta == _st4_val(rep.eta)
+        @test sep.triple_consistency <= Octopus._TRIPLE_CONSISTENCY_MULTIPLIER * eps() * max(1, norm(sep.zeta) * norm(sep.eta))
+        t = Octopus._transverse_optics_6d(sep; rho_M1=cl.rho_M1, gaps...)
+        @test Octopus.is_determined(t.frame) && Octopus.is_determined(t.optics)
+        # C_k is a kick, not a similarity: the x and s tunes move with k (0.80 and 5.48 at eps = 1e-5) while the untouched
+        # y plane keeps 2.1; the optics tunes are the report's label-ordered tunes (mode 1, mode 2, s) to roundoff
+        @test norm(_st4_wrap.(collect(_st4_val(t.optics).tunes)) .- _st4_wrap.(rep.tunes), Inf) <= c_tune * eps() * max(1, abs(sep.h))
+        @test abs(_st4_wrap(_st4_val(t.optics).tunes[2]) - 2.1) <= c_tune * eps()
+    end
+    # a prescribed |h| = 0.05 map with the synchrotron mode named (the default rule would take a betatron mode, E3 heuristic)
+    for h in (0.05, -0.3)
+        f = _st4_prescribed(h); cl = _st4_clusters(f.M)
+        idx = argmin(abs.(cl.eigenvalues .- exp(0.94im)))
+        rep = Octopus._dispersion_routes(f.M, cl; longitudinal=idx)
+        sep = Octopus._canonical_separation(f.M, rep)
+        kappa = max(1, norm(f.M)) * max(1, norm(hcat(f.zeta, f.eta ./ h)))^2
+        @test sep.status === :none && abs(sep.h - h) <= c_triple * eps() * kappa && norm(sep.eta - f.eta, Inf) <= c_triple * eps() * kappa
+        t = Octopus._transverse_optics_6d(sep; rho_M1=cl.rho_M1, gaps...)
+        @test Octopus.is_determined(t.optics) && abs(_st4_val(t.optics).kappa_sz_minus_h) <= c_tune * eps() * max(1, norm(f.M_cal)^2)
+    end
+    # coasting maps: the thin method takes the coasting triple (zeta = 0, h = 1, eta of (D24)); no separation beyond M_rr
+    for s in (-0.4, 0.0, 0.7)
+        c = _st4_coasting(s); cl = _st4_clusters(c.M); rep = Octopus._dispersion_routes(c.M, cl)
+        @test rep.coasting.holds && all(r.status === :coasting_structure for r in rep.routes)
+        sep = Octopus._canonical_separation(c.M, rep)
+        @test sep.zeta == zeros(4) && sep.h == 1.0 && sep.eta == _st4_val(rep.coasting.eta)
+        @test norm(sep.transverse_map - c.M[1:4, 1:4]) <= 16 * eps() * max(1, norm(c.M)) * max(1, norm(c.eta))^2
+        @test norm(sep.longitudinal_map - [1.0 rep.coasting.shear; 0.0 1.0]) <= 16 * eps() * max(1, norm(c.M)) * max(1, norm(c.eta))^2
+        t = Octopus._transverse_optics_6d(sep; rho_M1=cl.rho_M1, gaps...)
+        @test Octopus.is_determined(t.frame) && Octopus.is_determined(t.mais_ripken)      # the 4D optics of M_rr
+        @test t.longitudinal.reason === :unit_eigenvalue && t.optics.reason === :unit_eigenvalue   # the shear has no U_6
+        @test t.optics.detail == t.longitudinal.detail
+    end
+    # loud on a non-unique primary triple (the ambiguity set), on a foreign matrix, on a bad rho_M1; rho_M1 READ
+    Md = _st3_definite_pair_6d(); cld = _st4_clusters(Md); repd = Octopus._dispersion_routes(Md, cld)
+    @test repd.eta.status === :ambiguous_set && repd.eta.reason === :cluster_unresolved
+    err = try; Octopus._canonical_separation(Md, repd); nothing; catch e; e; end
+    @test err isa ArgumentError && occursin("cluster_unresolved", err.msg) && occursin("eigenplane", err.msg)
+    f = _st4_dense(7); cl = _st4_clusters(f.M); rep = Octopus._dispersion_routes(f.M, cl)
+    @test_throws ArgumentError Octopus._canonical_separation(Md, rep)
+    sep = Octopus._canonical_separation(f.M, rep)
+    @test_throws ArgumentError Octopus._transverse_optics_6d(sep; rho_M1=-1.0, gaps...)
+    @test_throws ArgumentError Octopus._transverse_optics_6d(sep; rho_M1=Inf, gaps...)
+    @test_throws UndefKeywordError Octopus._transverse_optics_6d(sep; rho_M1=cl.rho_M1)
+    t1 = Octopus._transverse_optics_6d(sep; rho_M1=cl.rho_M1, gaps...)
+    t2 = Octopus._transverse_optics_6d(sep; rho_M1=1e-6, gaps...)
+    @test t2.rho_M0_bar >= 1e-6 > t1.rho_M0_bar
+    @test t2.eigenmodes.clusters.rho_M0 == t2.rho_M0_bar
+    # a separation that does not hold: the frame of the reported block is still formed, the optics are :not_invariant
+    zp = f.zeta + 1e-6 * [1.0, -1.0, 0.5, 0.25]; hp = 1 - dot(zp, _st4_S4 * f.eta)
+    sepp = Octopus._canonical_separation(f.M, zp, f.eta, hp)
+    @test sepp.status === :not_invariant
+    tp = Octopus._transverse_optics_6d(sepp; rho_M1=cl.rho_M1, gaps...)
+    @test tp.optics.reason === :not_invariant && occursin("off-diagonal residual", tp.optics.detail)
+    @test tp.eigenmodes.clusters.matrix == sepp.transverse_map
+end
+
+@testset "Dispersion routes and canonical separation: pinned vocabulary, documented structs, functions and consts, PROVISIONAL constants" begin
+    # The stage 3 pins (review 2026-09-12, repository lens: the 4a block had none of them, and an injected tree with a
+    # dropped vocabulary bullet, a PROVISIONAL marker removed and a docstring deleted ran 17413 / 17413 green).
+    doc = string(Base.Docs.doc(Base.Docs.Binding(Octopus, :DISPERSION_ROUTES)))
+    listed = Symbol[]
+    for m in eachmatch(r"^\s*\* `:(\w+)`"m, doc)
+        push!(listed, Symbol(m.captures[1]))
+    end
+    @test Set(listed) == Set(Octopus.DISPERSION_ROUTES) && length(listed) == length(Octopus.DISPERSION_ROUTES)
+    @test Octopus.DISPERSION_ROUTES[1] === :eigenplane                     # the primary (E10)
+    # the two source files, DERIVED from the method tables (never a hand-copied path)
+    stage4a_paths = unique(String(first(methods(f)).file) for f in (Octopus._dispersion_routes, Octopus._canonical_separation))
+    @test length(stage4a_paths) == 2 && all(isfile, stage4a_paths)
+    sources = Dict(path => read(path, String) for path in stage4a_paths)
+    # every struct of the two files (derived from `^struct Name`): documented, and every field named as `field`
+    structs = Symbol[]
+    for (path, txt) in sources, m in eachmatch(r"^struct (\w+)"m, txt)
+        push!(structs, Symbol(m.captures[1]))
+    end
+    @test length(structs) == 8 && :DispersionRoutes in structs && :CanonicalSeparation in structs
+    for s in structs
+        T = getfield(Octopus, s)
+        sdoc = string(Base.Docs.doc(Base.Docs.Binding(Octopus, s)))
+        @test !occursin("No documentation found", sdoc)
+        for f in fieldnames(T)
+            @test occursin("`$(f)`", sdoc)
+        end
+    end
+    # every function whose methods live in the two files is documented (derived from the method tables)
+    undocumented = String[]; ndefined = 0
+    for n in names(Octopus; all=true)
+        s = String(n)
+        (startswith(s, "#") || !isdefined(Octopus, n)) && continue
+        obj = getfield(Octopus, n)
+        obj isa Function || continue
+        any(m -> String(m.file) in stage4a_paths, methods(obj)) || continue
+        ndefined += 1
+        occursin("No documentation found", string(Base.Docs.doc(Base.Docs.Binding(Octopus, n)))) && push!(undocumented, s)
+    end
+    @test undocumented == String[]
+    @test ndefined >= 30                                                      # 37 functions on 2026-09-12
+    # every `const _NAME = ` of the two files has a docstring IN THE SOURCE (the line above it closes a docstring; the
+    # Docs lookup falls through to Base's NamedTuple docs for a type alias, so the text is the evidence), and every
+    # threshold constant (MULTIPLIER, MAX_ITERATIONS, MAX_HALVINGS) says PROVISIONAL
+    consts = Symbol[]; thresholds = Symbol[]; undocumented_consts = String[]
+    for (path, txt) in sources
+        lines = split(txt, "\n")
+        for (i, line) in enumerate(lines)
+            m = match(r"^const (_[A-Z][A-Z0-9_]*) = ", line)
+            m === nothing && continue
+            name = Symbol(m.captures[1]); push!(consts, name)
+            prev = strip(lines[i - 1])
+            (endswith(prev, "\"\"\"") || (startswith(prev, "\"") && endswith(prev, "\"") && length(prev) > 2)) || push!(undocumented_consts, String(name))
+            occursin(r"MULTIPLIER|MAX_ITERATIONS|MAX_HALVINGS", String(name)) && push!(thresholds, name)
+        end
+    end
+    @test undocumented_consts == String[]
+    @test length(consts) == 18 && :_DISPERSION_ROUTES_ARGUMENT_HELP in consts && :_LONG_NORMALIZER_T in consts
+    @test length(thresholds) == 13 && :_MAX_HALVINGS in thresholds && :_FIXED_POINT_MAX_ITERATIONS in thresholds
+    for c in thresholds
+        @test occursin("PROVISIONAL", string(Base.Docs.doc(Base.Docs.Binding(Octopus, c))))
+        @test getfield(Octopus, c) isa Real && getfield(Octopus, c) > 0
+    end
+    # DETERMINATION_REASONS is untouched: every reason the two files use is already a member (derived from the source)
+    used = Set{Symbol}()
+    for (path, txt) in sources, m in eachmatch(r":([a-z_]+)", txt)
+        s = Symbol(m.captures[1])
+        s in Octopus.DETERMINATION_REASONS && push!(used, s)
+    end
+    for r in (:singular_longitudinal_projection, :singular_coefficient, :graph_isotropic, :not_invariant, :cluster_unresolved,
+              :coasting_structure, :route_not_selected, :form_inadmissible, :not_derived_for_cluster, :unit_eigenvalue, :none)
+        @test r in used && r in Octopus.DETERMINATION_REASONS
+    end
+    @test length(Octopus.DETERMINATION_REASONS) == 16
+end
+
 @testset "Non-symplectic Lorentz method classification" begin
     forward_spec = LorentzBoostSpec(0.01)
     reverse_spec = RevLorentzBoostSpec(0.01)

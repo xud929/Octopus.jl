@@ -63,6 +63,13 @@ include("analysis/eigenmodes_4d.jl")
 # Mais-Ripken and Edwards-Teng parameterizations (stage 2, Part B; plain inputs
 # plus thin methods on the Part A frame).
 include("analysis/coupled_parameterizations.jl")
+# The 6D dispersion routes, the coasting branch and the mode labels (stage 4a, Part A);
+# consumes the clusters (mode_clusters.jl) and the stage 1 kernel; before canonical_separation.jl.
+include("analysis/dispersion_routes.jl")
+# Canonical separation, the 6D normalizer, projected optics, matched covariance and the
+# Ohmi factor (stage 4a, Part B), plus the thin chaining methods on DispersionRoutes and
+# the 4D frame (Part C); after every file it consumes.
+include("analysis/canonical_separation.jl")
 include("examples/Examples.jl")
 
 # Generic tracking interface.

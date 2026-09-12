@@ -4137,3 +4137,2111 @@ with open(dst, 'w') as fh:
     fh.write('\n'.join(rows) + '\n')
 print('wrote', dst, len(rows), 'rows')
 ```
+
+## 2026-09-12: stage 4a landed (6D dispersion routes, coasting branch, canonical separation, covariance, Ohmi factor)
+
+Stage 4 of the design note's staging, split in two commits as its reviewers
+advised (pitfall 20, "commit 4 bundles too much"): 4a = the pure-math kernels
+of this section (`feat(analysis)`), 4b = the analysis object, `analyze`, the
+option schema, receipts, configuration report, validator block, effectiveness
+contract, snapshot and the rewording of every placeholder-only statement.
+Registry snapshot UNCHANGED (the eight new result structs `ModeLabels6D`,
+`CoastingStructure`, `DispersionRoute`, `DispersionRoutes`,
+`CanonicalSeparation`, `ProjectedOptics6D`, `MatchedCovariance6D`,
+`OhmiFactorization` are plain types, none a subtype of a registry root, none
+exported). Nothing in this stage claims an analysis exists: no
+`TwissDispersionAnalysis`, no `analyze`, `summarize_registry().analyses` is
+still `[:PlaceholderAnalysis]`, the stage-guard testset stayed green on the
+folded tree. No `DETERMINATION_REASONS` member was added (the eleven reasons
+the two files use are members of the stage 1 vocabulary, its length pinned at
+16); one new pinned vocabulary, `DISPERSION_ROUTES = (:eigenplane,
+:polynomial, :projector, :newton, :fixed_point)`, is documented and pinned the
+way `CLUSTER_CLASSIFICATIONS` is. Every kernel computes on the (already
+scaled) matrix it is given; undetermined outputs are `Determined` values with
+a pinned reason, never NaN or Inf (the one reachable sentinel,
+`CoastingStructure.margin = Inf` at `rho_M1 = 0`, is documented). Thirteen
+PROVISIONAL threshold constants (eleven multipliers, two integer caps) were
+measured by the one-tenth / ten rule; NONE was moved (ten of eleven
+multipliers sit inside their window; `c_inv` has no window under the suite's
+own pins, recorded below with the conditioned alternative).
+
+Work of 2026-09-12 (parts A and B in two worktrees at 6a580be; integrator,
+four reviewers, fixer, measurement D1 and this record on the main tree). The
+previous stages are dated in the todo row and the README (stages 1-2 on
+2026-09-11, stage 3 and 4a on 2026-09-12).
+
+### What landed
+
+| File | Change | Content |
+|---|---|---|
+| `src/analysis/dispersion_routes.jl` | new, 1229 lines, internal `_` names | `DISPERSION_ROUTES` (pinned); nine PROVISIONAL constants with their measurement in the docstring: `_GRAPH_SINGULARITY_MULTIPLIER = 64.0` (c_graph), `_ISOTROPY_MULTIPLIER = 64.0` (c_iso), `_COEFFICIENT_CONDITION_MULTIPLIER = 64.0` (c_coef), `_ROUTE_INVARIANCE_MULTIPLIER = 256.0` (c_inv), `_ITERATION_STOP_MULTIPLIER = 16.0` (c_stop), `_FIXED_POINT_MAX_ITERATIONS = 500`, `_MAX_HALVINGS = 40`, `_COASTING_MULTIPLIER = 64.0` (c_coast), `_LABEL_TIE_MULTIPLIER = 64.0` (c_tie); the file-local aliases `_ROUTE_RESIDUAL_T`, `_AGREEMENT_T`, the const `_DISPERSION_ROUTES_ARGUMENT_HELP`; the structs `ModeLabels6D` (3x3 `signed_areas`, row and column sums, longitudinal index, `rule`, `longitudinal_margin`, `transverse_margin`, `tie`), `CoastingStructure` (holds, `residuals`, tolerance, margin, `symplectic_consistency`, eta as `Determined`, solve residual and condition, shear, longitudinal and `transverse_map`, transverse symplecticity), `DispersionRoute` (route, status, detail, graph, canonical_area, zeta, eta, h, h_alternative, invariance_residual (normalized, raw), trace_residual, coefficient_condition, singular_values, iterations, halvings, converged), `DispersionRoutes` (matrix, rho_M1, `labels`, `coasting`, longitudinal index, tau_s, tunes, trace_cubic_roots and residual, the five `routes` in vocabulary order, primary, graph, zeta, eta, h, agreement); the kernels `_graph_to_dispersion` (D8), `_dispersion_to_graph` (D7), `_route_residuals` ((D14) raw and (I1) normalized, trace residual), `_trace_cubic_roots`, `_sylvester_initializer` (D15/D16), `_route_agreement`; the bodies `_mode_labels_6d` (E3), `_coasting_structure` (E2, D23-D25), `_eigenplane_route` (E4), `_polynomial_route` (E5), `_projector_route` (E6, both factors retained, `cluster_projector` keyword), `_newton_route` (E7, `max_halvings` keyword, halved TRIALS counted), `_fixed_point_route` (E7, D20), `_dispersion_routes(M, clusters; longitudinal, routes, newton_max_iterations, fixed_point_max_iterations)` (E1, E8-E10); the helpers `_unavailable_route`, `_route_from_graph` (the shared acceptance with `check_branch`), `_iteration_start`, `_condition_number`, `_signed_z_area`, `_cluster_trace`, `_longitudinal_candidate` (E9 with the real-class z-content share), every one documented. |
+| `src/analysis/canonical_separation.jl` | new, 614 lines, internal `_` names | four PROVISIONAL constants: `_SEPARATION_RESIDUAL_MULTIPLIER = 256.0` (c_sep), `_TRIPLE_CONSISTENCY_MULTIPLIER = 64.0` (c_triple), `_LONGITUDINAL_ELLIPTIC_MULTIPLIER = 64.0` (c_ell), `_OHMI_POSITIVITY_MULTIPLIER = 64.0` (c_ohmi); the structs `CanonicalSeparation` (M_cal, its inverse, `inverse_residual`, `symplecticity` (K1), Mbar, transverse_map, longitudinal_map, off_diagonal_residual, status, block symplecticities (K5), `k7_difference`, k8_residual, raw_transverse_defect), `ProjectedOptics6D` (U_6, its symplecticity and (I1) reconstruction, the three vectors, the 3x3 beta / alpha / gamma / signed_areas, row and column sums, `kappa_sz - h`, the (M5) and (K13) residuals, P_j, G_j), `MatchedCovariance6D` (sigma, the G-sum difference, closure, symmetry, PSD margin, bunch length, the (K14) differences), `OhmiFactorization` (M_O, inverse, residuals, (O1) off-diagonal, chart change (O5) with its off-diagonal and block symplecticity, the (O4) graph difference); `_dispersion_factors` (D2), `_dispersion_transformation` (D3, order `M_zeta M_eta`), `_dispersion_transformation_inverse` (K2); the bodies `_canonical_separation(M, zeta, eta, h)` (E11), `_longitudinal_normalizer(Mbar_s; multiplier)` (E12b; alias `_LONG_NORMALIZER_T`), `_full_normalizer_6d(sep, Ubar_beta, Ubar_s, tunes)` (E12c), `_matched_covariance_6d(M, optics, emittances, Gbar, eta)` (E12d), `_ohmi_factorization(M, zeta, eta, h, M_cal, D_graph)` (E12e); the Part C thin methods `_canonical_separation(M, routes::DispersionRoutes)` (forwards ONE (D8) evaluation of the primary graph; ArgumentError naming the member, the primary route or "the coasting branch" and the reason when the triple is not unique) and `_transverse_optics_6d(sep; rho_M1, resolution_chord, min_trace_gap, stability_atol) -> _TRANSVERSE_OPTICS_6D_T` (E12a: `rho_M0_bar`, `_eigenmodes_4d` on `Mbar_beta`, the stage 2 thin methods, the longitudinal normalizer, `U_6`, `ProjectedOptics6D`, every unavailable piece propagating its reason and detail). |
+| `src/Octopus.jl` | +7 lines (66-72) | includes in the order ... coupled_parameterizations -> dispersion_routes -> canonical_separation, one merged four-line comment naming both parts (the two worktrees' insertions at the same line resolved by hand). |
+| `test/runtests.jl` | 20759 -> 22035 lines (+1276, a pure insertion: `git diff` removes no line) | the stage 4a block 3842-5117 pasted right after the stage 3 block, before "Non-symplectic Lorentz method classification" (5118): the `_st4_` fixture library (ONE `_st4_dense(k; rng, scale, mus)` with `h` by (D8), ONE `_st4_prescribed(h; mus)`, `_st4_mcal`, `_st4_coasting`, `_st4_clusters`, `_st4_route`, `_st4_val`, `_st4_blockrot`, `_st4_rho0`, `_st4_chain`, `_st4_kappa_sep`, `_st4_wrap`, `_ST4_SEED = 20260911`; the stage 3 builders `_st3_rot`, `_st3_block_diag`, `_st3_crab_map`, `_st3_crab_kc`, `_st3_defective_spectator`, `_st3_indefinite_6d`, `_st3_definite_pair_6d` reused, not duplicated) and 22 testsets: 10 "Dispersion routes: ...", 10 "Canonical separation: ...", the "Stage 4a chain: ..." testset and the "Dispersion routes and canonical separation: pinned vocabulary, documented structs, functions and consts, PROVISIONAL constants" testset (17728 assertions in the block run). File-level `using` unchanged, no lane gate, no git-ignored input. |
+
+Not touched: the design note, the theory note, `docs/registry_snapshot.md`
+(regenerated and byte-identical to HEAD), `AGENTS.md` (its placeholder-only
+bullet is reworded by stage 4b), `validation/`, `Analysis.jl`, every stage
+1-3 source file and test line.
+
+### Standalone verification on the folded, fixed and measured tree (no lane, no gate)
+
+Same conventions as stages 1-3 (`J` = `julia --startup-file=no`, OUT =
+`result/twiss_impl_2026_09_11/stage4`, `ps` checked for `runtests` /
+`Pkg.test` before every package-mode run, `--project=REPO --threads=4`).
+Counts are the fixer's re-runs after the review fixes (`OUT/fixer/*.log`) and
+the measurement part's extract re-run (`OUT/measure/suite_extract_D1.log`);
+no source or test line changed between the two.
+
+| run | command shape | result |
+|---|---|---|
+| suite extract: EVERY analysis testset of `test/runtests.jl` 270-5117 (stage 1 kernel + vocabularies + stage guard, stage 2 A and B, stage 3, stage 4a), fallback arm (ForwardDiff not stacked) | `python3 OUT/extract/extract.py OUT/extract; J OUT/extract/run_suite_extract.jl` | 107362 / 107362 (1m10 s); `one_turn_matrix` block 121 / 121; exit 0 (fixer `suite_extract_fallback.log`, D1 `suite_extract_D1.log`) |
+| the same, ForwardDiff STACKED (`JULIA_LOAD_PATH=REPO:result/twiss_impl_2026_09_11/stage1/fdenv:@stdlib`) | same runner | 107362 / 107362; `one_turn_matrix` 134 / 134; `extension: OctopusForwardDiffExt` (fixer `suite_extract_fd.log`) |
+| suite tripwires: "Architecture integrity" (incl. the docs index and the snapshot comparison), Core.Box allowlist, "Every export is documented", "No docstring is detached" | `J OUT/extract/run_tripwires.jl`, both arms | 32 / 32 (28 + 2 + 1 + 1) in each arm |
+| docs + snapshot probe (cwd = main tree) | `OUT/probes_C/probe_docs_snapshot.jl`, then `cmp docs/registry_snapshot.md <(git show HEAD:docs/registry_snapshot.md)`; `validate_element_metadata()` | byte-identical; passed, `errors = String[]`; undocumented exports `Symbol[]`; the eight structs not `<: AbstractOctopusObject`, not exported |
+| script-mode smoke | `include("src/Octopus.jl"); using .Octopus; summarize_registry()` + the routes on a dispersive rotation | `analyses = [:PlaceholderAnalysis]`; all five routes `:none`, zeta = (0.1, 0, 0, 0), eta = (0, 0.3, 0, 0), h = 0.97, separation `:none`, optics unique, `kappa_sz - h = 2.2e-16`; output byte-identical between the integrator's and the fixer's runs |
+| stage 4a block, extracted from `test/runtests.jl` at run time (3842-5117, 22 testsets), script mode | `STAGE4A_SCRIPT_MODE=1 J OUT/run_stage4a_block.jl` | 17728 / 17728, 43.2 s (per testset, routes: 11761, 169, 124, 61, 41, 44, 78, 28, 51, 35 = 12392; separation: 262, 2800, 275, 57, 440, 199, 231, 251, 45, 31 = 4591; chain 584; pins 161) |
+| Part A's standalone testsets | `J OUT/run_routes.jl` (OUT/routes_testsets.jl) | 12313 / 12313 in 9 testsets, 30.8 s |
+| Part B's standalone testsets | `J OUT/run_separation.jl` (OUT/separation_testsets.jl) | 4591 / 4591 in 10 testsets, 19.1 s |
+| stage 3 runners on the integrated tree (runner review) | `J OUT/../stage3/run_clusters.jl`, `run_ambiguity.jl`, `run_stage3_block.jl`, `run_stage2_updated.jl`; stage 1 `run_kernel.jl` | 11479, 7811, 37903 (stage 3 block incl. the 4a testsets the runner picks up), 105463, 1618; all green |
+| symbol grep | `grep -rn` over src/ for the 42 new names | every struct / const / function defined once (two methods of `_canonical_separation`), each used at least twice, no stray reference |
+
+Count history: A's testsets 12306 -> 12310 in the worktree (the far-start
+halving test added under injection a06) -> 12313 after the fixer's coasting
+graph pin; B's 4591 from its second run on; the assembled block 17413 at
+integration (A 12310 + B 4591 + chain 512) -> 17728 after the review fixes
+(+315: the E9 non-definite testset 44, the pins testset 161, the coasting
+`Msing` fixture, the crab-ladder chain, the (D8)-h pins); the suite extract
+107047 at integration -> 107362 after the fixes (stages 1-3 contribute 89634,
+unchanged from the stage 3 landing). The integrator's first tripwire run was
+31 / 32: two new `Core.Box` sites in `dispersion_routes.jl` (`d` in
+`_dispersion_routes`, assigned in three branches and captured by the coasting
+comprehension; `s` in `_mode_labels_6d`, assigned in both arms of the
+selection `if` and captured by a comprehension), both rewritten without a
+behaviour change (`d_coast`, `d_block`, `d_unres`; `s, long_margin, rule` from
+ONE tuple assignment) before any count above. The integrator also found a
+DETACHED docstring in Part B (`_longitudinal_normalizer`'s docstring attached
+to the `const _LONG_NORMALIZER_T` between it and the function; the suite's
+tripwire catches only COMMENT-line detachment, so it stayed green) and moved
+the const above the docstring; and a fixture-helper name clash (A and B each
+defined `_st4_dense` and `_st4_prescribed` with different keyword sets and
+return fields; the second definition would have replaced the first silently),
+unified into one builder each.
+
+### The decisions E1-E13 that closed the design's open points for stage 4a (orchestrator, 2026-09-12; amendments by the parts and the review marked)
+
+The design fixes the criterion, the outputs and the staging but left the
+order of operations, the route acceptance and several report shapes open.
+The stage 4a dossier closed them as follows; a part that found one wrong
+implemented it anyway and recorded the objection, and the fixer applied the
+objections that contradicted theory Sections 8-9 (theory review section 5:
+every decision consistent with the theory except the UNIVERSALITY of the E3
+default selection rule, finding T1 below).
+
+1. **E1, order of operations and entry points.** Part A: `_coasting_structure`
+   first (design step 3, before any spectral classification); if it does not
+   hold, `_mode_labels_6d` on the three resolved modes of the `ModeClusters`
+   report the caller passes, the longitudinal selection, then the requested
+   routes; `_dispersion_routes(M, clusters; longitudinal, routes,
+   newton_max_iterations)` returns the `DispersionRoutes` report. Part B:
+   `_canonical_separation(M, zeta, eta, h)` from the PRIMARY triple, then
+   `_longitudinal_normalizer`, the 4D pipeline on `Mbar_beta`,
+   `_full_normalizer_6d`, `_matched_covariance_6d`, `_ohmi_factorization`;
+   the chaining is the integrator's thin methods. AMENDED (A): one keyword
+   beyond E1, `fixed_point_max_iterations = _FIXED_POINT_MAX_ITERATIONS`
+   (the fixed point is linearly convergent and needs up to 176 iterations
+   where Newton needs at most 12; `newton_max_iterations` keeps its E10
+   meaning); `_projector_route` gained `cluster_projector` (E6's difference
+   from the cluster's projector); the fixer added `max_halvings` to
+   `_newton_route` (`_dispersion_routes`'s signature unchanged). The
+   integrator's `_transverse_optics_6d` has two REQUIRED keywords beyond the
+   dossier's, `min_trace_gap` and `stability_atol`, because stage 2 defined
+   `_closed_form_check_4d` and `_edwards_teng_from_map` with no defaults and
+   E12a asks for them "exactly as stage 2 defined them" (a default here would
+   decide a 4b option; the omission is pinned as an `UndefKeywordError`).
+2. **E2, coasting test (theory 8.7, D23-D25).** Four structure residuals
+   against `c_coast rho_M1 max(1, ||M||_F)`, `margin` reported either way,
+   `symplectic_consistency = ||M[5, 1:4] - M[1:4, 6]' S_4 M_rr||`; when it
+   holds zeta = 0, h = 1, eta from (D24) with the c_coef floor on
+   `sigma_min(I - M_rr)`, the shear (D25), `transverse_map = M_rr` with its
+   symplecticity residual; no U_6, no 3x3 array, no 6D covariance. The weak
+   cavity (`M[6, 5] = -1e-6` FOLDED symplectically inside `M_cal`) does not
+   take the branch (margin 3.4e6); A recorded that an UNSYMPLECTIC edit of
+   the entry raises rho_M0 to 1e-6 and the test then holds (margin 0.015), so
+   the fixture must be built symplectically. AMENDED (fixer T2, T3): the
+   (D24) singular-coefficient branch reports zero shear and map like the
+   structure-absent branch ((D25) needs eta; the old code reported `shear =
+   M56` without the `M_zr eta` term, 0.7255 for a constructing 0.7); the
+   report's `graph` is `[0, eta]` when the coasting eta is unique (D7), else
+   it carries eta's reason. The structure-absent `CoastingStructure` has
+   every field present (zeros, unavailable `Determined`s with
+   `:not_derived_for_cluster`, detail "coasting structure absent"); the
+   garbled docstring sentence was rewritten.
+3. **E3, labels (K12, theory 10.4).** `kappa[j, a] = -Im(conj(u_ja) u_j,pa)`
+   over x, y, z from the (E3)-normalized vectors, row and column sums
+   reported; longitudinal = the row with the largest SIGNED z-area or the
+   caller's explicit canonical index (`rule` = `:max_signed_z_area` /
+   `:explicit`); transverse labels by stage 2's `_mode_label_order`; a tie
+   (either margin at or below `c_tie eps kappa_frame`) sets `tie = true` and
+   keeps the given order; labelling never blocks a computation; absolute
+   values never used. AMENDED (theory review F1 = fixer T1, the one theory
+   contradiction): by (K12) `kappa_sz = h` and the two betatron z-areas sum
+   to `1 - h`, so for h <= 1/2 a betatron mode carries more z-area and the
+   3x3 array alone cannot tell h = 0.05 from h = 0.95 (a row permutation).
+   On the prescribed-h maps with h in (-2, -1, -0.3, 0.05, 0.5) the default
+   rule selects the mu = 0.63 betatron mode and every route returns that
+   plane's invariant graph as a unique dispersion (h = 3, 2, 1.3, 0.95, 0.5).
+   Theory 10.4 and 13.5: the longitudinal mode is identified by continuation
+   from the synchrotron mode and no endpoint-map heuristic is universal. The
+   rule is KEPT for 4a as an UNCERTIFIED heuristic: the unique `labels`
+   carries the detail "uncertified heuristic: ... by (K12) kappa_sz = h a
+   betatron mode carries more z-area when h < 1/2 ...; an explicit
+   `longitudinal` index certifies the selection" (or "longitudinal mode named
+   by the caller (canonical index k)"), both details pinned; the prescribed-h,
+   singular-projection and line-versus-matrix tests name the mode explicitly
+   and also pin the mis-selection `(longitudinal == idx) == (h > 0.5)`. The
+   4b policy (explicit `longitudinal_mode`, or a continuation datum such as
+   the RF's synchrotron tune; the z-area only as a label) is carried forward.
+4. **E4, eigenplane route (theory 8.3), the primary.** `U_s = [Re u_s, -Im
+   u_s]`; regular iff `sigma_min(U_ls) > c_graph rho_M1 max(1, ||U_s||_2)`,
+   else `:singular_longitudinal_projection` with the singular values
+   reported; `D = U_rs / U_ls` (D10), `h = det U_ls` (D11), `h_alternative =
+   -Im(conj(u_z) u_pz)` (D12); zeta, eta by (D8) from D, their difference
+   from the direct (D12) forms into `detail`; `:graph_isotropic` when
+   `|area| <= c_iso rho_M1 max(1, ||D||_2^2)`; `:not_invariant` when the (I1)
+   residual exceeds `c_inv eps kappa_route`, `kappa_route = max(1, ||M||_F)
+   max(1, ||D||_F)^2`. KEPT unchanged; the theory review notes that (D11)
+   depends on the `-2i` normalization while (D8) does not, so a
+   normalization residual `r` puts the report's triple `r ||zeta|| ||eta||`
+   off the E11 consistency gate (measured 0 on the dense maps, `316 eps h`
+   on the crab ladder at eps = 1e-6 where `cond(U_ls)` grows): see E11.
+5. **E5, polynomial route (theory 8.5, D18-D19).** `tau_s = 2 cos mu_s` from
+   the selected mode (no cubic solve; the cubic roots are a diagnostic
+   compared with the three tunes), `A_s = M_rr^2 + M_rl M_lr - tau_s M_rr +
+   I_4`, `B_s = M_rr M_rl + M_rl M_ll - tau_s M_rl`, `D = -(A_s \ B_s)`;
+   `coefficient_condition = cond(A_s)`; `:singular_coefficient` when
+   `sigma_min(A_s) <= c_coef rho_M1 max(1, ||A_s||_2)` ((N16): a coincident
+   selected trace or h = 0 lands here); then (D8) and the E4 residuals (the
+   kernel is necessary, not sufficient: the (I1) residual decides, 13.7).
+   KEPT. Measured consequence: on the weak cavity (synchrotron tune 8.4e-4
+   beside a betatron tune 2.6e-3) `cond(A_s) = 1.1e4` and the formed graph
+   is `:not_invariant` (normalized residual `eps cond(A_s)`, ten times the
+   acceptance) although it is the MOST accurate of the three direct graphs
+   (error 2.0e-12 against 3.3e-11 and 3.8e-11): the (I1) residual measures
+   the invariance defect, not the graph error; pinned as the measured status
+   (fixer TS6) and the reason `c_inv` has no window (below).
+6. **E6, projector route (theory 8.5, D26-D27).** `Z = M + M^-1` with the
+   symplectic inverse, `P_s = prod_{k != s} (Z - tau_k I) / (tau_s - tau_k)`
+   with the repeated betatron factor RETAINED (never simplified through
+   `tau_1 - tau_2`), guard `|tau_s - tau_k| > c_coef rho_M1 max(1, ||Z||_2)`,
+   projector residuals `||P_s^2 - P_s||`, `||M P_s - P_s M||` and the
+   difference from the cluster's `projector` into `detail`; `h = tr((P_s)_ll)
+   / 2` (D27), `D = (P_s)_rl / h`. AMENDED (A, items 5-6): on the defective
+   spectator the cluster's eigenvalue-derived common trace is only sqrt(eps)
+   accurate (8e-11), leaving `||P^2 - P|| = 1.4e-9` and `:not_invariant`;
+   when exactly one cluster has half multiplicity >= 2 and all three modes
+   are accounted for, its common trace comes from `tr M = sum tau_j` (eps
+   accurate; `||P^2 - P|| = 2.5e-15`, every route the exact triple). A
+   real-class (unstable / unit-eigenvalue) cluster breaks the three-trace
+   count: the projector route is then unavailable with that cluster's reason
+   (no ArgumentError; pinned on the hyperbolic betatron plane).
+7. **E7, iterative routes (theory 8.6).** Both start from the Sylvester
+   initializer (D15) unless `D0` is given, the (D16) operator's condition
+   reported; Newton: `delta = sylvester(M_rr - D M_lr, -(M_ll + M_lr D),
+   F(D))`, accept when the (I1) residual of `D + delta` decreases, else halve
+   (at most `_MAX_HALVINGS` halved trials per step); stop at `c_stop eps
+   max(1, ||M||_F)` (converged) or after `max_iterations` or a stalled step
+   (`converged = false`, `:not_invariant` with the graph reported unless the
+   residual is already within the E4 acceptance); fixed point `D_next =
+   sylvester(M_rr, -M_ll, M_rl - D M_lr D)` (D20), same stopping rule, no
+   halving, the contraction ratio in `detail`; a LAPACK-singular operator is
+   `:singular_coefficient`. AMENDED (A, item 3; D1 confirmed on the oracle
+   maps): from the (D15) start both iterations converge to ANOTHER invariant
+   plane on the prescribed-h maps with h <= 0.5 (trace residual 0.4365 =
+   `tau_1 - tau_s`: the (D15) start lies in the betatron plane's basin); the
+   theory's branch continuation is mandatory and (D15) is not it under
+   strong coupling. `_route_from_graph(...; check_branch=true)` marks a
+   CONVERGED graph whose trace residual exceeds the floor `:not_invariant`
+   with the detail "the graph is invariant but lies on another branch: ...";
+   the theory review reads this as the note's own "verify the selected
+   longitudinal trace". The integrator did NOT seed the iterations with the
+   eigenplane graph (E7's letter, and the routes' independence as a
+   cross-check); a start on the selected branch (E7's `D0`) whenever the
+   heuristic and the certified mode disagree is carried to 4b. The (D22)
+   identity is a test, not a stopping rule. The fixed-point stall rule ends a
+   non-monotone but convergent iteration early on 7 of 36 bunched oracle maps
+   and 23 of 260 fixtures (`:not_invariant`, the other four routes `:none`);
+   the suite tolerates it (the primary is the eigenplane).
+8. **E8, route statuses.** Every `DispersionRoute` carries route, status,
+   detail and the `Determined` fields; a FORMED graph has `graph`,
+   `canonical_area`, `invariance_residual`, `trace_residual` unique even
+   under `:not_invariant` or `:graph_isotropic` (the disagreement visible),
+   zeta / eta / h unavailable with that reason; `:singular_coefficient` and
+   `:singular_longitudinal_projection` leave only the diagnostics;
+   `coefficient_condition` unique wherever a solve or trace separation
+   exists. AMENDED (fixer T4): `Determined(Inf)` condition numbers (an
+   exactly singular `A_s`, the singular coasting coefficient) are replaced by
+   the helper `_condition_number(sigma_max, sigma_min, what)`: unique when
+   `sigma_min > 0`, unavailable `:singular_coefficient` when exactly zero;
+   the dead `cubic_residual = Inf` branch is a loud ArgumentError ("no
+   cluster with eigenvalues").
+9. **E9, degenerate or non-definite longitudinal cluster (theory 13.5-13.6).**
+   Definite UNRESOLVED longitudinal cluster: no route runs on a mode; `eta`
+   is `Determined{Vector}(set, :cluster_unresolved)` with `set =
+   _dispersion_ambiguity_set(cluster)` (stage 3), zeta / h / graph
+   `:cluster_unresolved`; the polynomial and projector routes run with the
+   common trace and land in `:singular_coefficient` by (N16) (pinned, ratio
+   exactly 0); Newton and the fixed point `:cluster_unresolved`. Indefinite,
+   unresolved, unstable or unit-eigenvalue longitudinal cluster: everything
+   unavailable with that cluster's reason. A definite unresolved BETATRON
+   cluster with an isolated longitudinal singleton is the normal case
+   (design row 3: dispersion unique; Part B reports the transverse optics of
+   `Mbar_beta` as `:cluster_unresolved`). AMENDED twice. (A, item 1) the
+   candidate cluster is the one with the largest TOTAL signed z-area
+   (resolved modes, else frame / signed-basis columns; invariant under the
+   within-cluster unitary), then the mode with the largest z-area inside it:
+   E9's literal two-step rule picks the resolved y-mode (z-area -0.0) on
+   `diag(R(0.73), R(1.41), R(0.73))` and misses the unresolved x-z pair; the
+   theory review found this consistent with the (K12) row sums. (fixer TS3 =
+   runner F1) a real-class cluster has no frame and no signed basis, so under
+   the literal rule a unit-eigenvalue or hyperbolic synchrotron pair was
+   NEVER the candidate and a betatron mode's graph was published as the
+   unique dispersion (shear pair with zeta = (0.1, 0, 0.05, 0): cluster
+   [2, 5] selected, zeta = (-3.23, ...), h = 0.03 unique); now the real-class
+   clusters compete with the z-content the complex-class clusters leave,
+   `1 - sum_c kappa_cz` (the spectral projectors sum to `I_6`; measured
+   exactly `h = 0.97` on the shear fixture, `det W_ll = 1.006` on the
+   hyperbolic one), and when that share is the largest the first real-class
+   cluster is the candidate and the E9 branch reports everything unavailable
+   with its reason (pinned: `:indefinite_cluster`, `:unit_eigenvalue`,
+   `:unstable_spectrum` each reached; a hyperbolic BETATRON plane with an
+   elliptic synchrotron mode, share -0.003, still selects the synchrotron
+   mode). Still a heuristic (item 3).
+10. **E10, the report.** `routes` always has five entries in the
+    `DISPERSION_ROUTES` order (unrequested ones `:route_not_selected`),
+    `primary = :eigenplane`, the report's graph / zeta / eta / h are the
+    primary's (or the coasting branch's zeta = 0, h = 1, (D24) eta, graph
+    `[0, eta]`), `agreement` over every pair of unique routes, the cubic
+    roots and residual diagnostics, `tunes` in label order when labelled,
+    else the canonical order of the RESOLVED modes only (A, item 13: length
+    1 for the repeated-betatron maps, per E10's letter); loud on a non-tuple
+    or repeated `routes`, an unknown member (the message names the
+    vocabulary), `newton_max_iterations < 1`, a `clusters` of another matrix
+    (compared to the bit). KEPT.
+11. **E11, canonical separation (theory 9.1-9.2).** Triple gate `|zeta' S_4
+    eta - (1 - h)| <= c_triple eps max(1, ||zeta|| ||eta||)` (ArgumentError
+    above), `M_cal` by (D3) in the order `M_zeta M_eta`, (K2) inverse with
+    `inverse_residual`, (K1) symplecticity for EVERY h (negative pinned),
+    `Mbar = M_cal^-1 M M_cal`, the off-diagonal residual against `c_sep eps
+    kappa_sep`, `kappa_sep = max(1, ||M||_F) ||M_cal||_F ||M_cal^-1||_F`,
+    `status = :not_invariant` above (everything still reported), (K5), (K7)
+    when h != 0 else `:singular_longitudinal_projection`, (K8), the raw
+    transverse defect. AMENDED (fixer TS1 = runner F2): the thin method
+    `_canonical_separation(M, routes)` threw on the trial-011 crab ladder at
+    eps = 1e-6 (ratio 315 against the gate 64) because the report's h is
+    (D11) `det U_ls` while the gate demands the (D8) identity, and the two
+    differ by `316 eps h` at `cond(U_ls)`. E4 and E11 are BOTH kept; the
+    thin method forwards ONE (D8) evaluation of the primary GRAPH
+    (`_graph_to_dispersion(routes.graph)`: zeta, eta bit-identical to the
+    report's, h the (D8) value of the same graph, which satisfies the
+    identity by construction); pinned on the dense maps (`|sep.h - rep.h| <=
+    64 eps kappa cond(U_ls)`) and on the whole crab ladder (eps = 1e-1 ..
+    1e-6, separation `:none`). The presentation of the two h values
+    (`routes.h` (D11) and `sep.h` (D8)) is a 4b receipt question.
+12. **E12, transverse optics, normalizer, projections, covariance, Ohmi
+    (theory 9.3-9.4).** (a) `rho_M0_bar = _perturbation_scale(Mbar_beta,
+    _symplectic_defect(Mbar_beta).frobenius; user_uncertainty=rho_M1_6D).scale`,
+    `_eigenmodes_4d(Mbar_beta; rho_M0=rho_M0_bar, resolution_chord)`, the
+    stage 2 thin methods on the frame, an unavailable frame propagating its
+    reason AND detail; (b) `_longitudinal_normalizer`: elliptic iff `|tr
+    Mbar_s| < 2 - c_ell eps max(1, ||Mbar_s||_F)`, `_twiss_from_block`,
+    `_courant_snyder_B`, reconstruction residual, else `:unit_eigenvalue`;
+    (c) `U_6 = M_cal diag(Ubar_beta, Ubar_s)` (K9), symplecticity and (I1)
+    reconstruction, the (M1)/(K12) 3x3 arrays, sums, `kappa_sz - h`, (M5),
+    (K13) over nine blocks with `P_j = -Im(u_j u_j') S_6`, `G_j = Re(u_j
+    u_j')`; (d) covariance (K10)/(K12)/(K14) for a 3-tuple of non-negative
+    finite emittances; (e) Ohmi: `h > c_ohmi eps max(1, ||zeta|| ||eta||)`
+    required, `|h|` at or below `:singular_longitudinal_projection`, a
+    negative h `:form_inadmissible` with the detail "outside the
+    positive-root representation (O2) for this mode selection", else (O2)-(O5).
+    Recorded decisions: `_full_normalizer_6d` re-forms the physical map as
+    `M_cal Mbar M_cal^-1` (the skeleton signature carries no M; exact to
+    roundoff, the chained W comparison holds at <= 132 eps kappa_W; a
+    keyword `M` is a 4b option if receipts want the caller's matrix bit for
+    bit); `chart_change_block_symplecticity` is one number (root sum of
+    squares of the two blocks); the integrator's `optics` is unavailable with
+    `:not_invariant` when `sep.status !== :none` (the (K4) blocks do not
+    decouple, so (K9) would not reconstruct the map; the 4D frame of the
+    reported block is still formed; the theory review found this to follow
+    (K4)/(K9)); a coasting report RUNS through the separation (its triple is
+    unique; `Mbar_beta = M_rr` and the shear to the bit) and E2's "no U_6" is
+    delivered by the normalizer's `:unit_eigenvalue` propagating to `optics`
+    (4b may present the coasting result without the separation). The
+    integrator found on ONE dense map (k = 151) that the two frames of the
+    chain differ by a quarter-turn within-mode phase (vector ratio exactly
+    i) although `Mbar_beta` differs by 2.8e-16: a convention discontinuity,
+    not a defect; the chained test compares the phase-invariant `G_j`,
+    `P_j` and the tunes (a phase-continuity rule if 4b ever reports `U_6`).
+13. **E13, scaling.** Both parts compute on the scaled matrix; the tests pin
+    the design's back-transformation rows on three reciprocal scalings:
+    `D_phys = C_r^-1 D C_l`, `zeta_phys = a_3 C_r^-1 zeta`, `eta_phys =
+    C_r^-1 eta / a_3`, h unchanged, `U_6`, `Sigma`, `P_j`, `G_j` by the
+    stage 1 helpers, the coasting eta likewise. KEPT (measured 0.07 of the
+    bound 16 on the routes, 45 checks green in Part B).
+
+Objections recorded, not applied: (A, item 8) the fixture table's "FODO + RF
++ thin crab" benchmark is PARABOLIC (a FODO has `M[5, 6] = 0` exactly, so the
+longitudinal trace is 2 with any RF and the pair is `:unit_eigenvalue`); the
+test uses the DBA cell + RF (strength 0.02, 400 MHz, 3 GeV protons) +
+`ThinCrabCavitySpec{1}(strengthX = (-k,))`, where `M[2, 5] = +k` (the
+theory's `+k`), all routes agree at <= 7.6 eps kappa, `zeta_x = +0.164` for
+k = 0.3 (sign recorded: positive for the theory's `+k`), `eta_x = 0.756`, h =
+1.13; with RF and k = 0 the canonical zeta is already non-zero ((-0.068,
+0.042)): dispersion at an RF cavity produces a crab term in the (D3)
+factorization. (A, item 11) the design's pseudoinverse residual 0.28293
+belongs to the crab SIMILARITY `C_k Md C_k^-1` (raw residual of the zero
+graph `sqrt(2) k sin 0.73 = 0.28292882464710756` to the bit), not to the
+product `Md C_k`, on which the (D15) operator is LAPACK-singular (`M_rr` and
+`M_ll` share `R(0.73)`; pinned as the named ArgumentError of
+`_sylvester_initializer` and `:singular_coefficient` of both iterative
+routes) and whose `norm(M[1:4, 5:6])` is exactly k; the first draft's test
+hid this behind a `|| true` (fixer TS6). (A, item 9) the trial-011 eta agrees
+with the theory's `eta_+` WITHOUT a sign flip under (D12) (`eta_px = -k
+sin(-0.75) / (2 sqrt d) > 0`).
+
+### Part A: route tolerances, every one `c eps kappa` with `c` measured (`OUT/report_A.md`, `kappa_route = max(1, ||M||_F) max(1, ||D||_F)^2`)
+
+| check | measured worst ratio (fixture) | c in the suite |
+|---|---|---|
+| dense maps: direct routes and Newton against the manufactured triple | 401 (the projector's h) | 1024 |
+| dense maps: fixed point against the triple | 1485 | 4096 |
+| dense maps: agreement entries | 935 | 2048 |
+| trace-cubic roots against `2 cos mu_j` (`eps ||M||^3`) | 11 | 64 |
+| (K12) row and column sums (`eps ||W||^2`) | 1.0 | 64 |
+| prescribed-h maps: eigenplane / polynomial / projector | 5.0 / 22.4 / 9.6 | 64 |
+| prescribed-h maps: fixed point at h = 2 | 42 | 256 |
+| repeated betatron / defective spectator triples | 7.7 / 12.6 | 64 |
+| coasting eta (kappa includes `cond(I - M_rr) = 1.5e4`) | 0.03 | 4 |
+| DBA closed-orbit finite difference (absolute: `4 step^2 + 1e-12 / step = 5e-8`) | 3.3e-9 (ratio 0.065) | 1 |
+| trial-011 crab eta against `eta_+` (`kappa_d = kappa_route (cos 0.85 - cos(-0.75))^2 / d`) | 1202 (D1: 913 at eps = 1e-6) | 4096 |
+| trial-011 route agreement (`eps kappa_d`) | 4154 (D1: 4174) | 16384 |
+| line versus matrix | 0.9 | 64 |
+| DBA + RF + crab agreement | 7.6 | 64 |
+| scaling (E13, three reciprocal scalings, kappa times `(max a / min a)^2`) | 0.07 | 16 |
+| weak cavity `tau_s` (`kappa_tau = max(1, ||M||) / sin mu_s = 1195`), eta and h (`kappa_w = kappa_tau cond(U_ls)`, cond 837) | 0.06 / 0.06 / 4e-5 (fixer TS6; replaced two absolute 1e-9 bounds) | 16 |
+
+Every bound is at least ten times its measurement except the trial-011 pins
+(3.4x and 3.9x; the ratios grow as 1/d along the ladder and the suite's c
+holds on every rung) and the fixed point on the dense maps (2.8x).
+
+### Part B: separation tolerances, `c = 64` unless stated, measured (`OUT/report_B.md`, `@info` lines of the testsets)
+
+| check | worst ratio | bound |
+|---|---|---|
+| (K4) off-diagonal (`eps kappa_sep`) | 0.143 | 256 |
+| (K7) = (K4) when h != 0 (extra `max(1, 1/|h|)`) | 0.222 | 256 |
+| (K8) on 200 raw symplectic maps | 1.46 | 64 |
+| `U_6` symplecticity / (I1) reconstruction | 1.58 / 1.89 | 64 |
+| `G_j` versus W (up to the within-mode phase) | 8.4 (factor 7.6, the thinnest margin; the chained testset's W pin measured 132 (`G_j`) and 54 (`P_j`) against 2048 over 200 maps) | 64 |
+| (K12) sums / `kappa_sz - h` / (M5) / (K13) | 0.49 / 0.08 / 0.036 / 0.42 | 64 |
+| covariance closure (K10) / (K14) | 0.52 / 0.005 | 64 |
+| Ohmi inverse and symplecticity / (O1) / (O5) off-diagonal / (O5) block symplecticity | 0.34 / 0.074 / 0.036 / 0.74 | 64 |
+| 4D tune pin on `Mbar_beta` (`eps kappa_sep`) | well inside | 256 |
+
+The Ohmi identities are pinned BOTH at `c eps kappa` and below the design's
+`1e-12` on the unit-scale maps. The (E3) normalization in the tests is `u^H S
+u = -2i` (Julia `dot(u, S u)`; the plain transpose gives 0); the `h = 1`
+control has `M_cal[6, 6] = 1 - 0` exactly while the other prescribed h carry
+roundoff (`-0.30000000000000004`), pinned at `4 eps`.
+
+### Part C: the chained testset's measured c's (`OUT/probes_C/measure_chain.jl`, 200 dense, 4 repeated-betatron, 3 coasting maps)
+
+Routes' triple against the manufactured one 54.7 (bound 1024); `G_j` 132 and
+`P_j` 54 eps kappa_W (2048); tunes 4.0 eps (64); `kappa_sz - h` 2.0 eps
+(64); closed-form tune difference 776 eps with the 1e-8 guards (8192);
+repeated betatron: triple 1.18, longitudinal cos-tune 4.0 eps, reconstruction
+4.1 eps (1024 / 64 / 64); coasting blocks 0.014 eps kappa (16; exact to the
+bit on the probe, the bound a roundoff allowance). The fixer's crab-ladder
+chain pins `|sep.h - rep.h| <= 64 eps kappa cond(U_ls)` (dense maps) and the
+E11 gate on the (D8) triple of the graph along eps = 1e-1 .. 1e-6 (D1: (D8)
+triples at most 0.914 of `eps max(1, ||zeta|| ||eta||)`, the REPORT triples
+with (D11) h up to 315).
+
+### Review findings and fixes (four reviewers: theory, repository facts, test adequacy, runner; 20 findings, 20 fixed, none skipped; two seen by two lenses)
+
+The fixer re-verified every finding before a change (`OUT/fixer/probe_reverify*.jl`),
+patched with exact single-match replacements (`OUT/fixer/patch_*.py`), and
+re-ran A's runner, B's runner, the block, both extract arms, the tripwires,
+the smoke and the snapshot comparison (the counts of the verification table
+above). Line numbers are those of the tree after the fixes.
+
+1. **T1 (theory, major).** Default longitudinal selection contradicts (K12)
+   for h <= 1/2 (decision 3 above). Fixed minimally: the heuristic named in
+   the `labels` detail and in the `ModeLabels6D` / `_dispersion_routes`
+   docstrings, both details pinned; the rule kept; 4b policy carried.
+2. **T2 (theory, minor).** The coasting (D24) singular-coefficient branch
+   reported `shear = M56` and `[1 M56; 0 1]` without the `M_zr eta` term.
+   Fixed: zero shear and map, docstring says so, fixture `Msing` (a y-plane
+   shear inside `M_rr`) pins eta / solve residual / condition
+   `:singular_coefficient`, the graph's reason and the chain refusing with
+   "the coasting branch".
+3. **T3 (theory, minor).** The coasting report's graph was unavailable
+   although (D7) `[0, eta]` exists. Fixed: reported when eta is unique.
+4. **T4 (theory, minor).** `Determined(Inf)` condition numbers at four sites
+   and `margin = Inf`. Fixed by `_condition_number` (decision 8); `margin =
+   Inf` at `rho_M1 = 0` documented as the one sentinel.
+5. **T5 (theory, minor).** `_route_from_graph`'s docstring described an
+   `accept` keyword it does not have. Fixed (`converged` / `check_branch`).
+6. **R1 (repo, major).** The 4a block carried none of the documentation pins
+   the stage 3 block established; the reviewer's injection (the
+   `:fixed_point` bullet dropped from the `DISPERSION_ROUTES` docstring,
+   `_COASTING_MULTIPLIER` unmarked, `_transverse_optics_6d` undocumented)
+   left all 17413 checks green. Fixed: the pins testset (runtests.jl
+   5042-5116, 161 assertions): the vocabulary bullets parsed against the
+   tuple (set, length, `:eigenplane` first), every `^struct` of the two
+   files documented with every field as `field`, every function with a
+   method in the two files documented (>= 30), every `^const _NAME` with a
+   docstring line above it in the source (18), the 13 threshold consts
+   saying PROVISIONAL, the eleven reasons members of `DETERMINATION_REASONS`
+   (length 16); the fixer's injection inj1 (bullet dropped) is red only there.
+7. **R2 (repo, minor).** Struct docstrings missing field names; five
+   consts / aliases undocumented. Fixed (the new pin went red on exactly the
+   named fields before the wording fix).
+8. **R3 (repo, minor).** Eleven ArgumentError messages in
+   canonical_separation.jl did not name the throwing function. Fixed
+   (prefixed; the Gbar message prints the sizes).
+9. **R4 (repo, minor).** `_MAX_HALVINGS = 40` unmarked, unmeasured, its cap
+   branch untested. Fixed: `max_halvings` keyword (ArgumentError when
+   negative), the count is of halved TRIALS (the old loop read 41 at a cap
+   of 40), PROVISIONAL docstring with the far-start data, the cap pinned on
+   dense k = 50 (`halvings == _MAX_HALVINGS`, `!converged`, `:not_invariant`,
+   "stalled"), `max_halvings = 0` READ on k = 3 (stalls at iteration 4
+   instead of converging at 14), the argument error.
+10. **R5 (repo, minor).** Two undocumented `Inf` sentinels in dead branches
+    (`trace_cubic_residual`, `margin`). Fixed with T4.
+11. **TS1 = RN2 (tests blocker = runner major).** `_canonical_separation(M,
+    routes)` threw on the trial-011 ladder at eps = 1e-6 (decision 11).
+    Fixed by forwarding the (D8) triple of the primary graph; the crab ladder
+    and the prescribed h = 0.05 / -0.3 maps (synchrotron index named) chained
+    in the test; the fixer's injection inj2 (forward `routes.h` instead) is
+    red only in the chain testset (9 fail + 1 error).
+12. **TS2 (tests, major).** The E9 non-definite branch was executed by no
+    test (the reviewer's injection c10, `if false` on the definite check,
+    left the block green). Fixed: the testset "Dispersion routes:
+    non-definite longitudinal clusters (E9): indefinite, unit-eigenvalue,
+    hyperbolic" (44 assertions): `_st3_indefinite_6d()` ->
+    `:indefinite_cluster`; a shear synchrotron pair with a non-zero crab
+    dispersion -> `:unit_eigenvalue`; a hyperbolic synchrotron pair
+    conjugated by a random W -> `:unstable_spectrum`; each pins labels, zeta,
+    eta, h, graph, all five statuses, an empty agreement, a unique `tau_s`,
+    and the chain refusing with the reason and the primary route.
+13. **TS3 = RN1 (tests major = runner major).** A real-class longitudinal
+    cluster was never the default candidate (decision 9). Fixed by the
+    z-content share; the fixer's injection inj3 (share removed) is red only
+    in the E9 testset (18 fail).
+14. **TS4 (tests, minor).** No fixture for the coasting (D24)
+    `:singular_coefficient` path; the chain named "primary route :eigenplane"
+    for a coasting triple; `Determined(Inf)`. Fixed with T2 / T4; the thin
+    method names "the coasting branch" when `routes.coasting.holds`.
+15. **TS5 (tests, minor).** `resolution_chord` READ by no 4a test. Fixed:
+    the chain's repeated-betatron loop calls `_transverse_optics_6d(sep;
+    resolution_chord=Inf)` and pins `clusters.resolution_chord == Inf`, a
+    `forced` cluster, and the frame, Mais-Ripken and optics becoming unique
+    with `kappa_sz - h` at roundoff (the default chord leaves them
+    `:cluster_unresolved` two lines above).
+16. **TS6 (tests, minor).** A `|| true` at the 0.28293 check hid a false
+    statement (the number belongs to the crab similarity, decision
+    objections); the polynomial status admitted three values; two absolute
+    1e-9 bounds on the weak cavity. Fixed: the similarity built and the
+    design's number pinned to 64 eps on it, `norm(Mk[1:4, 5:6]) == k` on
+    `Md C_k`, the polynomial status pinned to the measured `:not_invariant`
+    with a formed graph, the weak-cavity bounds `16 eps kappa` with the
+    near-unit-eigenvalue condition (Part A table).
+17. **TS7 (tests, minor).** The E9 ambiguity-set pin compared the kernel with
+    itself (the stage 3 injection s05, a wrong center, left the 4a block
+    green). Fixed: pinned against the construction: for the degenerate x-z
+    pair `u = a u_x + b u_z`, eta = `(-Im(conj(b) a), -Re(conj(b) a), 0, 0)`
+    is the disc of radius `|a||b| <= 1/2`: center 0, shape `diag(1/4, 1/4,
+    0, 0)` (64 eps), multiplicity 2, on `Md` and on `C_k Md C_k^-1` (the
+    symplectic `C_k` leaves `u_x`, `u_z` and hence eta unchanged).
+18. **RN3 (runner, documentation).** The integrator's "package mode with
+    ForwardDiff (stacked)" wording described the fallback arm (both logs
+    print `ForwardDiff importable: false`; 121 / 121 is the fallback count).
+    Fixed in the runner headers and by a correction paragraph in
+    report_integrator.md; both arms recorded above.
+19. **Repo nits N1-N5 (no action for the 4a commit).** A test-file string
+    docstring above `const _st4_prescribed_h` documents the tuple, not
+    `_st4_prescribed` (harmless, no tripwire scans test/); the block header
+    (runtests.jl 3847-3849) cites the git-ignored runners and reports as the
+    source of the measured c's and should point at THIS record once it
+    exists (carried to 4b together with the same stage 3 header, 2197);
+    `_ITERATION_STOP_MULTIPLIER`'s docstring extremes (15.7 / 16.4) are the
+    iterates on either side of the stop and cannot satisfy the rule by
+    construction (D1 states the window against the exact-graph floor 0.58
+    instead); `_FIXED_POINT_MAX_ITERATIONS`'s docstring does not say why 500
+    rather than 200; the tests' route subsets could be derived as
+    `filter(!=(:fixed_point), DISPERSION_ROUTES)`.
+20. **Theory review, remark on E4 / (D11).** (D11) depends on the `-2i`
+    normalization while (D8) does not (decision 4); resolved for the chain
+    by TS1, the presentation of the two h values carried.
+
+### Part D1: the oracle agreement table (39 maps of the canonical-dispersion note, design acceptance `2e-10`)
+
+Reference: `OUT/measure/dump_oracle_reference.py` drives the note's
+`verify_dispersion.py` helpers (`check_map`, every identity of the note at
+its 2e-10, then `coefficients`) once per map with
+`/opt/anaconda3_2024_02/bin/python3` (python 3.11.5, numpy 1.23.5, scipy
+1.11.4, seed 20260911, `verify_dispersion.py` sha256 `2b66098b...94f12`, the
+same file stage 1 used) and re-dumps each map: 39 / 39 bit-identical to
+stage 1's `oracle_maps.tsv`; the graph, zeta, eta, h per map are in
+`OUT/measure/oracle_reference.tsv`. Julia side (`measure_stage4a.jl` section
+1): `_mode_clusters` at the roundoff rho_M0, `_dispersion_routes` with the
+default rules, then a second pass with the CERTIFIED longitudinal index (the
+resolved mode nearest `exp(-i mu_s)` for the note's own synchrotron phase).
+The full table (rows per map with statuses, differences, agreement, (I1)
+residuals, areas, conditions, iteration counts, cubic residuals) is section
+1 of the measurement tables below.
+
+| result | value |
+|---|---|
+| default rule: maps with every unique route within 2e-10 of the note | 34 / 39; the five misses are the prescribed-h maps with h in (-2, -1, -0.3, 0.05, 0.5): the E3 heuristic selects the mu = 0.63 betatron mode (z-areas 3, 2, 1.3, 0.95, 0.5 against h; at h = 0.5 an exact tie, margin 3.8 eps kappa_frame) and the routes agree among themselves (<= 8.1e-14) on the betatron plane's graph: dzeta up to 2.0, deta up to 6.0, dh up to 5.0 |
+| certified index | 39 / 39 within 2e-10; worst 2.386e-13 at "prescribed_h oracle index 3 (parameter 0.05)" (dzeta; h = 0.05 makes `||D|| = 20`); largest agreement entry 2.707e-13 (same map) |
+| dense maps (24) | worst difference 1.6e-14 ("dense oracle index 10", dzeta); primary (I1) normalized residual <= 3.73e-15 ("dense oracle index 2"); every route `:none` except the fixed point's E7 stall on indices 7, 11, 23 |
+| trace residual / cubic-root residual | <= 6.2e-15 ("prescribed_h oracle index 0"); cubic 5.7e-8 on the repeated maps (a double root: sqrt(eps) sensitivity), <= 5.1e-15 elsewhere |
+| repeated maps (4) / defective map (1) | statuses ok x5, worst 1.1e-14 / 3.3e-15; degeneracy `degenerate` / `unresolved` |
+| coasting maps (3) | the branch holds with margin exactly 0, eta within 5.6e-17 of the note, graph `[0, eta]`, every route `:coasting_structure`, degeneracy `unit_eigenvalue`; the bunched maps' coasting margins 5.3e11 .. 3.7e12 |
+| iterative routes with the certified index on the five prescribed maps with h not in (1, 2) | Newton AND fixed point `:not_invariant`, detail "the graph is invariant but lies on another branch: tr(M_lr D + M_ll) - tau_s = 0.436 ..." (decision 7) |
+| fixed point E7 stall | 7 / 36 bunched oracle maps (dense 7, 11, 23; prescribed 0, 1, 3, 4) after 1..49 iterations; 23 / 260 fixtures of section 2 |
+| smallest canonical area (bunched) | 1/3 at "prescribed_h oracle index 0 (parameter -2.0)" |
+
+### Derived windows (rule: largest must-accept ratio below one tenth of `c`, smallest must-reject above ten times `c`; ratios at multiplier 1; arithmetic in section 2 of the tables)
+
+Labelling criterion (D1, stated once and applied everywhere): a fixture is
+must-accept when the guarded quantity is the correct object computed at the
+map's roundoff (an exact triple, the coasting maps, a regular projection) or
+when the suite pins its acceptance; must-reject when the object is wrong by
+construction (a false / zero / other-map graph, an exactly singular
+coefficient, a shear or a hyperbolic block, a perturbation of at least 1e-12
+in h or 1e-10 in zeta) or the quantity sits within the roundoff of its own
+value (`2 - tr` for tr = 2 at 2.8 eps, h at 4.4 eps). Synthetic values in
+between (`R(1e-7)` at 31.8, h = 1e-14 at 44, h + 1e-13 at 449, zeta + 1e-12 at
+514..700, zeta + 1e-13 at <= 118) are UNLABELLED and listed. Part B's
+docstrings call some of them "rejected" and then say the constant "sits
+inside": by this rule those sentences are wrong (c_triple 64 > 449 / 10,
+c_ell 64 < 10 x 31.8, c_ohmi 64 < 10 x 44, c_sep 256 > 651 / 10); the windows
+below are the record, and the docstring wording is carried to 4b. Every
+fixture name is the builder's own string.
+
+| constant | value | window | inside | accepted extreme (name) | rejected extreme (name) |
+|---|---|---|---|---|---|
+| `_GRAPH_SINGULARITY_MULTIPLIER` (c_graph) | 64 | [2.59, 6.2e10] | yes | smallest accepted 6.212e11 "weak cavity (M[6,5] = -1e-6 folded, shear 0.7)" | 0.259 "singular projection zeta=e_x, eta=e_px (h=0) around R(0.73, 1.41, -0.9)" |
+| `_ISOTROPY_MULTIPLIER` (c_iso) | 64 | [0, 1.76e11] | yes | 1280 formed graphs accepted, smallest 1.759e12 | 0 "isotropic graph [e_x, -e_px] on degenerate diag(R(0.73), R(1.41), R(0.73))" |
+| `_COEFFICIENT_CONDITION_MULTIPLIER` (c_coef) | 64 | [3.76, 1.55e8] | yes | smallest accepted 1.546e9 "weak cavity ... [projector trace gap]" | 0.376 "singular projection ... [polynomial A_s]"; exactly 0 on Md (A_s and trace gap) and on the (D24) coefficient of the y-shear coasting map; the LAPACK-singular (D15) operators at 0.012 (guarded by LAPACK failure only, the docstring's floor claim is wrong: carried) |
+| `_ROUTE_INVARIANCE_MULTIPLIER` (c_inv) | 256 | [1519, 64.2] EMPTY | no | 151.9 "weak cavity ... [eigenplane]" (pinned `:none`); next 93.3 "dense k=66 (mu_s=-1.068) [projector]" | 642 "weak cavity ... [polynomial, formed graph]" (pinned `:not_invariant`, TS6); next 1.57e4 "weak cavity ... [projector]", 1.70e5 "prescribed h=-1.0 [fixed_point, stalled iterate]" |
+| `_ITERATION_STOP_MULTIPLIER` (c_stop) | 16 | [5.79, open] | yes | largest exact-graph floor 0.579 "dense k=159 (mu_s=-1.347) [exact graph floor]" | none by definition (unlabelled: converged final iterates <= 15.9, the iterate one step short >= 16.2 "trial-011 crab k=kc(1-0.1) [newton iterate 4 of 5]", up to 1.4e9) |
+| `_COASTING_MULTIPLIER` (c_coast) | 64 | [0, 2.18e7] | yes | 0 (all four coasting fixtures: structure residual exactly 0) | 2.183e8 "weak cavity (M[6,5] = -1e-6 folded, shear 0.7)" (margin 3.4e6 at 64); bunched maps >= 5.3e11 |
+| `_LABEL_TIE_MULTIPLIER` (c_tie) | 64 | [38.2, 1.23e11] | yes | smallest clear margin 1.234e12 "weak cavity ... [transverse margin]" | 3.82 "prescribed h=0.5 [longitudinal margin, declared tie]" (kappa_sz = h = 0.5 = the betatron z-area: an exact tie); 1.29 h = 0 map [transverse], 0.24 "degenerate Md C_k (k=0.3) [longitudinal]", 0 for the 45-degree rolls |
+| `_SEPARATION_RESIDUAL_MULTIPLIER` (c_sep) | 256 | [10.3, 5.14e3] | yes | 1.026 "trial-011 crab k=kc(1-1.0e-5)" (unlabelled 33.5 "weak cavity ... [triple at cond(U_ls) = 8.4e2]") | 5.138e4 "dense k=1 (mu_s=-0.873) [zeta + 1.0e-10 (1, -1, 0.5, 0.25)]"; unlabelled zeta + 1e-12 at 514..700, + 1e-13 <= 118, + 1e-14 <= 12 |
+| `_TRIPLE_CONSISTENCY_MULTIPLIER` (c_triple) | 64 | [9.14, 450] | yes | 0.914 "trial-011 crab k=kc(1-0.0001)" ((D8) triples) | 4.503e3 "dense k=111 (mu_s=-1.203) [h + 1.0e-12]"; unlabelled h + 1e-13 at 449 and the REPORT triples with the (D11) h up to 315 ("trial-011 crab k=kc(1-1.0e-6)") |
+| `_LONGITUDINAL_ELLIPTIC_MULTIPLIER` (c_ell) | 64 | [28.3, 2.0e8] | yes | smallest accepted 1.998e9 "weak cavity ..." (mu_s = 8.4e-4) | 2.83 "R(3.0e-8) (2 - tr within the roundoff 2 eps of tr itself)"; 0 for the shears and R(1e-8); unlabelled R(1e-7) 31.8, R(1e-6) 3185 |
+| `_OHMI_POSITIVITY_MULTIPLIER` (c_ohmi) | 64 | [44.0, 2.25e13] | yes | smallest accepted 2.252e14 "prescribed h=0.05" | 4.40 "prescribed construction h=1.0e-15" (h within a few eps of 0); 0 at h = 0; unlabelled h = 1e-14 (44.0), 2e-14 (87.9); negative h refused by sign |
+
+Constants moved: NONE. c_tie, c_ell and c_ohmi sit within a factor 2.3 of
+their lower edge and c_stop 2.8 above its (the rejected sides are synthetic:
+no fixture has a small synchrotron phase or a small positive h; a graded
+fixture is a 4b lead). `c_inv` has NO window under the suite's own pins: the
+weak cavity's eigenplane graph (152, `:none`) and its polynomial graph (642,
+`:not_invariant`) are 4.2 apart, the projector graph (1.57e4) is a third
+value of the same map, and all three approximate the exact `[0, eta]` with
+errors 3.3e-11, 2.0e-12, 3.8e-11 (the rejected one the most accurate) at
+conditions 8.4e2, 1.1e4, 3.4e5: `kappa_route` lacks the route's condition,
+and near a degeneracy the invariance defect and the graph error decouple by
+it. Folding the reported `coefficient_condition` into kappa (the INFORMATIONAL
+block of the tables) puts the three weak-cavity graphs at 0.18, 0.06, 0.05
+and the stalled fixed-point iterates at >= 8.2e3 (accepted graphs <= 5.34), so
+with that kappa the rule is satisfiable at 256 (window [53, 816]) once the
+two weak-cavity pins are read as measured statuses rather than requirements.
+No move of the constant can create a window (any c in (152, 642) keeps both
+pins; above 642 flips TS6's pin), so 256 stays and the choice goes to 4b:
+extend `kappa_route` by the route's condition (a design change) or have the
+receipt say that a `:not_invariant` graph beside a unique primary is
+"residual above `c eps kappa_route`" and print the route's condition beside it.
+
+Integer caps (stopping rules, no window). `_MAX_HALVINGS = 40`: from the
+(D15) start at most 2 halved trials over a run ("dense k=67 (mu_s=-1.071)";
+259 of 260 fixtures never halve; the docstring's "no dense map halves" is
+false by this one line, carried), Newton at most 12 iterations ("trial-011
+crab k=kc(1-1.0e-6)"); far start `D0 = D_exact + 100` on the 200 dense maps:
+38 converge (up to 151 halved trials over the run, "dense k=69
+(mu_s=-1.077)"), 162 stall at the per-step cap (40 in the stalling step,
+0..375 accumulated). `_FIXED_POINT_MAX_ITERATIONS = 500`: converged on 239 of
+260 fixtures, slowest 176 iterations ("trial-011 crab k=kc(1-0.01)"), E7
+stall on 23, the cap reached on 4 (the crab ladder at eps <= 1e-3,
+contraction ratio 2.05..2.14: not contracting, and the detail says so).
+
+### The rejected side of every `c eps kappa` check family, and the paper cross-checks (D1 sections 3-4)
+
+Seventeen check families of the stage 4a testsets, each with the check's
+ratio on a legitimate fixture (the dense map k = 66 near the coincident-trace
+region, or the family's own fixture) and under one injected defect the check
+exists for: 17 / 17 defects red (ratio above the test's c), 15 / 17
+legitimate ratios below the test's c (the two others are below the suite's
+actual c: "route agreement entries" 239 < 2048, "route triple vs exact" 58 <
+1024; D1's first table carried 64 in those columns and was corrected).
+
+| family | c | green | defect | red |
+|---|---|---|---|---|
+| route triple vs exact (dense) | 1024 | 58.3 | eta with the (D12) sign flipped | 2.7e14 |
+| route agreement entries | 2048 | 239 | eigenplane vs a Newton graph on another branch (prescribed h = -2) | 7.1e14 |
+| trace-cubic roots vs `2 cos mu` | 64 | 39.2 | `M + 1e-8 N` non-symplectic | 9.5e8 |
+| (K4) separation off-diagonal | 256 | 0.356 | factor order reversed to `M_eta M_zeta` | 9.0e11 |
+| (K1) `M_cal` symplecticity | 64 | 0.12 | `M_zeta` pz-row sign flipped | 3.1e13 |
+| (K5) block symplecticity | 64 | 0.022 | `M + 1e-8 N` | 7.7e5 |
+| (K9) `U_6` reconstruction | 64 | 0.286 | betatron tunes swapped in the target | 2.2e14 |
+| (K12) sums, `kappa_sz - h` | 64 | 0.313 | longitudinal vector scaled by 1.1 | 1.5e14 |
+| (M5), (K13) | 64 | 0.168 | kappa of mode 2 with beta, alpha, gamma of mode 1 (the identities hold for ANY single vector: a scaling or a sign convention cannot break them) | 1.1e14 |
+| (K10) covariance closure | 64 | 0.583 | Sigma of dense k = 3 under this M | 3.3e14 |
+| (K14) barred covariance | 64 | 1.2e-3 | eta scaled by 1.1 ((K14) is quadratic in eta: a sign flip is invisible) | 1.2e12 |
+| Ohmi (O2)-(O5) | 64 | 0.358 | `h (1 + 1e-8)` in (O2) | 4.0e6 |
+| coasting (D24) eta | 4 | 0.024 | `eta = M[1:4, 6]` without the solve | 4.2e10 |
+| coasting shear (D25) | 16 | 0 | `shear = M[5, 6]` alone | 3.1e9 |
+| trial-011 `eta_+` | 4096 | 12.8 | sign of k flipped in the formula | 4.2e13 |
+| scaling `D_phys = C_r^-1 D C_l` | 64 | 1.96 | `C_r D C_l^-1` | 4.6e14 |
+| DBA FD eta (absolute `4 step^2 + 1e-12 / step = 5e-8`) | 1 | 0.065 | one-sided difference | 1.6e3 |
+
+Paper cross-checks. (a) Trial-011 crab map `M = diag(R(0.85), R(2.1),
+R(-0.75)) C_k`, `k = k_c (1 - eps)`, `k_c = 0.1002018291014244` (the stage 3
+pin): `|eta - eta_+| / (eps kappa_d)` = 11.2, 4.9, 12.8, 22.5, 348, 913 for
+eps = 1e-1 .. 1e-6 (the suite's 4096 holds; the growth follows 1/d); the
+(D12) sign agrees with `eta_+`, no flip; h = 1.65, 4.04, 11.7, 35.9, 112, 354
+(h > 1 as pinned); the four direct routes `:none` on every rung; agreement
+<= 4174 eps kappa_d (16384 holds); `cond(U_ls)` stays 1.04..1.08 while the
+projector's condition grows 23.4 -> 7225 monotonically; the fixed point
+converges at eps = 0.1, 0.01 (49, 176 iterations, ratio 1.2, 1.8) and
+reaches the cap at eps <= 1e-3 (ratio > 2). (b) N15 `diag(R(0.73), R(1.41),
+R(-0.73))`: the cluster of the +-0.73 pairs is `indefinite`, every route
+`:indefinite_cluster`, eta and labels unavailable with that reason (an
+explicit index inside the cluster changes nothing: its modes are
+unavailable). (c) N16 / N17 on `Md = diag(R(0.73), R(1.41), R(0.73))`:
+eigenplane / Newton / fixed point `:cluster_unresolved`, polynomial and
+projector `:singular_coefficient` (ratio exactly 0), eta an `AmbiguitySet`;
+the false graph `[diag(1, -0.5); 0]` has polynomial kernel residual exactly 0
+and (I1) raw residual `1.415 = 1.5 sqrt(2) sin 0.73` (normalized 1.27,
+rejected at 1.9e15 eps kappa); the zero graph on `C_k Md C_k^-1` has raw
+residual `0.28292882464710756 = sqrt(2) k sin 0.73` to the last bit (the
+design's 0.28293); `Md C_k`: the (D15) operator LAPACK-singular (iterative
+routes `:singular_coefficient`), the direct routes `:none` because the crab
+kick splits the spectrum; `C_k Md C_k^-1` keeps Md's statuses and set. (d)
+DBA cell `dba_cell(1.5, -1.1)`, delta = +-1e-4: coasting holds (margin
+exactly 0), `eta_x = 0.7063` (stage 1 record 0.706), closed-orbit residuals
+<= 1.6e-17, `|eta_fd - eta_x| = 3.256e-9` against `4 step^2 + 1e-12 / step =
+5.0e-8` (ratio 0.065); shear -0.38965 (stage 1 record -0.390); the one-sided
+difference misses by 8.1e-5 (ratio 1617, red). No Python reference exists for
+(a)-(c) (`verify_dispersion.py` has no such fixture); the theory's analytic
+formulas were used directly.
+
+### Injected defects, each shown red once (script mode on a patched copy of `src/` or of the block; harnesses under OUT: `inject_all_A.sh`, `inject_all_B.sh`, `review_runner/inject_main.sh`, `review_tests/`, `fixer/run_block_inj.jl`)
+
+The dossier's fourteen defects were run by the parts on their worktrees, by
+the runner review on the INTEGRATED main-tree source (identical counts,
+every patch matched once) and by the test review through the assembled
+block; the test review added nine acceptance defects (c01-c09) and re-ran the
+six stage 3 defects of its brief in BOTH blocks; the repo review injected the
+documentation defect that motivated R1; the fixer injected three against its
+new pins. 37 distinct defects red; one (c10) was GREEN and became TS2.
+
+| id | part | defect | result (block pass / fail / error unless stated) |
+|---|---|---|---|
+| a01 | A | (D8) area with `1 - D1' S_4 D2` | 14837 / 2064 / 1 (A's runner 2064 fail / 12310) |
+| a02 | A | (D12) h with `Re` | 17213 / 200 (the `h_alternative` pin) |
+| a03 | A | `det U_ls` with the columns swapped | 16263 / 638 / 1 |
+| a04 | A | polynomial `+ tau_s M_rr` | 16156 / 637 / 620 |
+| a05 | A | projector dividing by `tau_1 - tau_2` | 16803 / 415 / 2 |
+| a06 | A | Newton accepting a residual increase | GREEN at first (every dense start took full steps from (D15)); the far-start halving test (`D0 = D_exact + 100`) was added and the rerun is 17412 / 1: ONE sensor (`far.halvings >= 1` on k = 3), kept beside the fixer's cap pins |
+| a07 | A | coasting tolerance x 1e6 | 17409 / 4 (the symplectic weak cavity takes the branch; the DBA + RF map; rho_M1 READ) |
+| a08 | A | labels by `abs(kappa)` | 17039 / 374 |
+| b01 | B | `M_eta M_zeta` order in (D3) | 14619 / 2040 / 6 (every separation testset, the prescribed-h routes, the chain) |
+| b02 | B | (K2) with `1/h` in the (5, 5) entry | 15210 / 1474 / 11 (the h = 1 controls pass, as they must) |
+| b03 | B | (K12) kappa with `Re` | 17284 / 129 |
+| b04 | B | covariance without `eps_s` | 17351 / 62 |
+| b05 | B | Ohmi factor `h` for `sqrt(h)` | 17248 / 165 (h = 1 passes) |
+| b06 | B | elliptic test inverted | 15938 / 2 / 9 |
+| c01 | tests | `optics` no longer gated on `sep.status` | 17412 / 1 (ONE sensor: the perturbed-triple pin) |
+| c02 | tests | `rho_M0_bar = rho_M1` | 17412 / 1 (ONE sensor: `t.rho_M0_bar == _st4_rho0(...)`) |
+| c03 | tests | `routes.matrix != M` check removed | 17412 / 1 (ONE sensor: the foreign-matrix `@test_throws`) |
+| c04 | tests | closed form propagates `:not_invariant` instead of the frame's reason | 17409 / 4 |
+| c05 | tests | `:not_invariant` acceptance disabled (`> Inf`) | 17396 / 51 |
+| c06 | tests | `:graph_isotropic` disabled | 17411 / 2 |
+| c07 | tests | separation `status = :none` always | 17408 / 5 |
+| c08 | tests | `tie = false` | 17411 / 2 |
+| c09 | tests | E9 unresolved branch gives Newton / fixed point `:route_not_selected` | 17411 / 2 |
+| c10 | tests | E9 non-definite branch deleted (`if false`) | 17413 / 0 GREEN -> finding TS2; red after the fix (the new testset, 44 checks) |
+| s01-s06 | tests | the six stage 3 defects (Gram sign, `_pair_gap` without the conjugate, chord with kappa 1, raw-modulus stability, ambiguity center from the z column, recovery without `qr`) | every one red in the stage 3 block (2245, 1, 6, 16, 3247, 2 fail); in the 4a block s01 and s04 red (4829 / 604 errors; 3), s02 / s03 / s05 / s06 GREEN: s05 became TS7 (the set now pinned against the construction), s02 has no 4a fixture with `mu_j = -mu_k` beyond the E9 testset's indefinite control (recorded) |
+| r01 | repo | `:fixed_point` bullet dropped from the vocabulary docstring, `_COASTING_MULTIPLIER` unmarked, `_transverse_optics_6d` undocumented | 17413 / 0 GREEN -> finding R1; after the fix the fixer's inj1 (bullet dropped) is 17727 / 1, red only in the pins testset |
+| inj2 | fixer | the thin method forwards `routes.h` instead of the (D8) h | 17678 / 9 / 1, red only in the chain testset (the crab ladder) |
+| inj3 | fixer | the real-class z-content share removed from `_longitudinal_candidate` | 17710 / 18, red only in the E9 testset |
+
+Single-check sensors (a06, c01, c02, c03): adequate under "red once" but each
+rests on one fixture and one `@test`; whoever touches that line removes the
+only sensor (test review). The stage 1-3 tests are not weakened: the
+runtests.jl diff is a pure insertion.
+
+### Not verified in stage 4a
+
+- No lane and no gate ran on this tree; every count above is standalone. One
+  full gate on the assembled stage 4a tree is owed before the push and is
+  recorded in this file when it runs. After the ledger edits of Part D2
+  (this section, the todo row, the README sentence) the four suite tripwires
+  were re-run in package mode: 32 / 32 (Architecture integrity 28 incl. the docs index and the
+  snapshot comparison, Core.Box 2, exports 1, detached docstrings 1; fallback
+  arm, exit 0, 27.0 s after load; `OUT/ledgers/run_tripwires_after_ledgers.log`).
+- `validation/tracking_backend_consistency.jl` and `validation/lattice_cells.jl`
+  were not run (no kernel, element or tracking code changed; host matrix
+  algebra only, nothing CUDA-reachable). The DBA and FODO cells the tests use
+  are rebuilt inline from `validation/lattice_cells.jl`'s constructors.
+- The injections were not re-run after the fixer's edits except the three
+  the fixer aimed at its new pins and the fourteen dossier defects the
+  runner review repeated on the integrated source BEFORE the fixes; the
+  patch sites of a01-b06 were not touched by the fixes (docstrings,
+  `_condition_number`, the singular coasting branch, the halving loop, the
+  candidate share and the thin method).
+- The stacked ForwardDiff arm of the extract was run by the fixer (107362 /
+  107362, `one_turn_matrix` 134 / 134); D1 and D2 re-ran the fallback arm
+  and the tripwires only.
+- The FODO + RF + thin crab benchmark (12.2-4) is replaced by the DBA + RF +
+  crab cell (a FODO's longitudinal block is parabolic with any RF); the
+  benchmark's line-versus-matrix and sign pins are exercised by the suite's
+  testsets (extract green), not re-measured by D1.
+- No Python reference exists for the trial-011 crab map, N15 or N17
+  (`verify_dispersion.py` has no such fixture); those cross-checks rest on
+  the theory's analytic formulas and the design probe's numbers (0.28293,
+  `1.5 sqrt(2) sin 0.73`).
+- D1 ran no injected defect through the assembled block; its section 3
+  defects are kernel-level (the block-level defects are the reviews' and the
+  fixer's, above).
+- `c_stop`'s rejected side does not exist by definition (the iterates on
+  either side of the stop are set by the rule itself); its window is
+  one-sided against the exact-graph floor. `c_tie`, `c_ell`, `c_ohmi` have
+  only synthetic rejected fixtures (45-degree rolls, `R(mu)` at small `mu`,
+  `h = 1e-15`): no lattice fixture sits near those thresholds.
+- `c_inv`'s empty window (above) is recorded, not resolved; the informational
+  conditioned kappa was computed by D1 but is not in the source.
+- The `_MAX_HALVINGS` far-start table counts halved trials over a whole run;
+  the per-step count at the stall (40 exactly on k = 50) comes from the
+  fixer's probe, not from D1's table.
+- `_full_normalizer_6d` re-forms the physical map as `M_cal Mbar M_cal^-1`;
+  the (I1) reconstruction and (K13) are measured against that re-formed
+  matrix, not against the caller's M bit for bit (the chained W comparison
+  bounds the difference at <= 132 eps kappa_W).
+- Part B's `G_j`-versus-W pin (8.4 against 64) is the one test bound below a
+  factor ten of its measurement; left as written.
+- The within-mode phase discontinuity of the 4D frame (dense k = 151, ratio
+  exactly i) was seen once; no rule for phase continuity exists yet.
+- The stage 3 remarks still open: `c_sub` has no fixture-reachable rejected
+  side; the Schur spectral projector's accuracy near a unit eigenvalue is
+  bounded empirically; the isolated-singleton paper rows agree only to their
+  own conditioning.
+
+### Carried forward to stage 4b (this record edits neither note)
+
+1. **Longitudinal selection policy (T1, D1 finding 1).** The default largest
+   signed z-area rule is an uncertified heuristic, wrong on 5 of 7
+   prescribed-h maps (h < 1/2 and the exact tie at h = 1/2) and silent about
+   it beyond the `labels` detail; a betatron plane's invariant graph is then
+   published as the dispersion with the routes agreeing among themselves.
+   `analyze` must take the certified mode before any route runs: an explicit
+   `longitudinal_mode` option, or a continuation datum (the RF's synchrotron
+   tune, the mode nearest `exp(-i mu_s)`), with the z-area only as a label;
+   the real-class share rule names the FIRST real-class cluster when several
+   exist (a hyperbolic betatron plane beside a unit-eigenvalue synchrotron
+   pair reports `:unstable_spectrum`; the detail lists the cluster).
+2. **Iterative routes' branch (E7, D1 finding 2).** From the (D15) start
+   Newton and the fixed point land on the OTHER invariant plane on the same
+   five maps (`:not_invariant`, "lies on another branch"); a start on the
+   selected branch (E7's `D0`, e.g. the eigenplane's graph, at the cost of
+   independence) is needed whenever the heuristic and the certified mode
+   disagree. Also the fixed point's E7 stall on non-monotone but convergent
+   iterations (23 / 260 fixtures) and its cap on the crab ladder: a
+   presentation question (the primary is the eigenplane).
+3. **`c_inv` has no window.** Either extend `kappa_route` by the route's
+   `coefficient_condition` (a design change; the conditioned window is [53,
+   816] at 256) or state in the receipt that a `:not_invariant` graph beside
+   a unique primary is "residual above `c eps kappa_route`" and print the
+   route's condition beside it. The weak-cavity pins (eigenplane `:none`,
+   polynomial `:not_invariant`) are measured statuses.
+4. **Docstring wording to correct in 4b (no source edit by D1 / D2).** Part
+   B's c_sep / c_triple / c_ell / c_ohmi docstrings call unlabelled fixtures
+   "rejected" and say the constant "sits inside" (false by the stage 3 rule;
+   quote the windows above); `_COEFFICIENT_CONDITION_MULTIPLIER` claims the
+   (D15) / (D21) Sylvester operators are guarded by the c_coef floor while
+   the code guards them by LAPACK failure only (reword or add the floor);
+   `_MAX_HALVINGS` says "no dense map halves" (2 halved trials on "dense
+   k=67"); `_ITERATION_STOP_MULTIPLIER`'s extremes should be the exact-graph
+   floor; `_FIXED_POINT_MAX_ITERATIONS` should say why 500 (slowest fixture
+   176). The block header (runtests.jl 3847-3849, and the stage 3 header at
+   2197) should cite this record instead of the git-ignored runners.
+5. **Two h values.** `routes.h` is (D11) `det U_ls`, `sep.h` the (D8) value
+   of the same graph (they differ by `316 eps h` at `cond(U_ls) = 1.08` on
+   the crab ladder's last rung); a receipt should say which is which.
+6. **Presentation questions the decisions defer.** Which `P_c` the analysis
+   presents (the cluster's Schur spectral projector or N5's `P_c`, far more
+   accurate near a unit eigenvalue; `projector_n5_difference` is reported);
+   the coasting result's shape (present the 4D optics of `M_rr` and the
+   synchrotron mode as `:coasting_structure` without calling the separation,
+   or run it and let `:unit_eigenvalue` propagate: both paths agree on `M_rr`
+   and the shear to the bit); label ties (`tie = true` keeps the given
+   order; whether a tied label is a `Determined`); the rounding rule of a
+   frozen default (the design's power-of-ten example) when 4b freezes a
+   constant; whether an envelope is shown beside the resolved modes of a
+   two-mode cluster under an explicit partition; the within-mode phase
+   discontinuity if `U_6` is ever reported; the equal-emittance group form
+   `eps G_c` (stage 3's `covariance`) beside `sum eps_j G_j`.
+7. **Options the integrator left to the schema.** `_transverse_optics_6d`
+   requires `min_trace_gap` and `stability_atol` (stage 2's division
+   guards, the suite uses 1e-8); `_dispersion_routes` has
+   `fixed_point_max_iterations` and `newton_max_iterations`; `_newton_route`
+   has `max_halvings`; `_full_normalizer_6d` may want a keyword `M` for the
+   caller's matrix bit for bit; what a user-supplied cluster partition
+   promises (stage 3 item 10).
+8. **Fixtures to add.** A graded fixture near the c_ell / c_ohmi / c_sep /
+   c_tie thresholds with a lattice origin (a very weak RF, a small positive
+   h); a `c_inv` fixture that separates the graph error from the invariance
+   defect; a real-class longitudinal candidate beside a hyperbolic betatron
+   plane; a 4a fixture with `mu_j = -mu_k` beyond the indefinite control;
+   the single-check sensors a06, c01, c02, c03 want a second fixture each.
+9. **Result-shape items carried from stages 2-3, still open.** The `Inf`
+   gamma identities at a zero beta, the normalizer route's
+   `consistency_residual` at the floor, a `Determined` area weight, form 2
+   as form 1 with exchanged labels, one status for coincident traces across
+   routes (frame `:cluster_unresolved`, closed form and map route
+   `:singular_coefficient`, now also polynomial / projector
+   `:singular_coefficient` by (N16)); partial splitting of an m >= 3
+   cluster; the eigenvalue moduli known to `eps ||u||^2 / 2`; whether
+   `|rho| - 1` is reported at all.
+10. **`AGENTS.md`'s placeholder-only wording and every "the placeholder is
+    still the only registered analysis" statement: reworded when `analyze`
+    lands (Staging item 4).**
+11. **The measurement scripts of stages 1-4a live inline in this record until
+    stage 6 moves them under `validation/`; D1's `measure_stage4a.jl`
+    extracts the suite's fixture builders by name at run time and will need
+    the runtests.jl anchors kept.**
+12. **Ledger dates.** Stages 1-2 landed 2026-09-11, stage 3 and stage 4a on
+    2026-09-12; the todo row and the README carry the dates per stage.
+
+### Measurement tables (output of `measure_stage4a.jl` sections 1, 1a-1c, 2, 3 and 4, verbatim with its headings demoted; the file is `OUT/measure/measurement_table_4a.md`, 383 lines; the NaN entries in the coasting rows are the table's own marker for a residual no route formed, not a source value)
+
+#### Stage 4a measurement table (Part D1)
+
+Produced by measure_stage4a.jl (package mode, main tree). Julia 1.12.4; threads 4; seed 20260911; oracle TSV result/twiss_impl_2026_09_11/stage4/measure/../../stage1/measure/oracle_maps.tsv; reference TSV result/twiss_impl_2026_09_11/stage4/measure/oracle_reference.tsv.
+Reference dump: seed 20260911; python 3.11.5; numpy 1.23.5; scipy 1.11.4 / verify_dispersion.py sha256 2b66098bf27b508a1099e76376cae8c464a82bccec190b21a70ee26eae094f12 / check_map evaluations by name: {'Symplectic maps and planes': 78, 'Response and canonical coefficients': 117, 'Polynomial and projector extraction': 78, 'Canonical block separation': 234, 'Exact determinant identities': 78, 'Explicit correction-column system': 39, 'Trace cubic': 117, 'Normalized eigenvector extraction': 180}
+Source constants at run time: c_graph = 64.0, c_iso = 64.0, c_coef = 64.0, c_inv = 256.0, c_stop = 16.0, c_coast = 64.0, c_tie = 64.0, c_sep = 256.0, c_triple = 64.0, c_ell = 64.0, c_ohmi = 64.0, _MAX_HALVINGS = 40, _FIXED_POINT_MAX_ITERATIONS = 500. Every fixture name in this file is produced by the code that built the fixture; none is typed into the text.
+
+##### 1. Oracle agreement table (39 maps of the canonical-dispersion note; reference = the note's own graph, zeta, eta, h)
+
+Reference values: dump_oracle_reference.py drives verify_dispersion.py's `check_map` (every note identity at its 2e-10) and `coefficients` once per map; the 36 map entries re-dumped there equal the stage 1 TSV bit for bit on 39/39 maps. Julia side: `_mode_clusters` with the default rho_M0 (roundoff arm), `_dispersion_routes` with the default rules. Differences are infinity norms against the reference; `worst` = max over the unique routes of |dzeta|, |deta|, |dh|; the design's acceptance is 2e-10. Statuses in DISPERSION_ROUTES order [:eigenplane, :polynomial, :projector, :newton, :fixed_point] (ok = :none, coast = :coasting_structure, unres = :cluster_unresolved, singcoef, singproj, notinv). Conditions in the same order (the coefficient condition of each route's solve).
+
+| map | coasting (margin) | statuses | unique | max dzeta | max deta | max dh | max dD | agreement | (I1) norm | (I1) raw | trace res | area | conditions | it N/FP | cubic res | <= 2e-10 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| dense oracle index 0 (parameter -0.87) | false (1.360e+12) | ok ok ok ok ok | 5 | 1.690e-15 | 5.264e-15 | 1.110e-15 | 5.258e-15 | 5.283e-15 | 1.336e-15 | 1.336e-15 | 6.661e-16 | 9.997e-01 | 2.085e+00 4.219e+00 3.724e+00 9.865e+00 1.045e+01 | 3/14 | 1.034e-15 | true |
+| dense oracle index 1 (parameter -0.873) | false (2.126e+12) | ok ok ok ok ok | 5 | 7.945e-15 | 2.470e-15 | 2.776e-15 | 7.945e-15 | 7.980e-15 | 1.256e-15 | 1.256e-15 | 1.110e-15 | 1.045e+00 | 1.599e+00 6.079e+00 3.958e+00 9.364e+00 1.250e+01 | 3/31 | 2.220e-15 | true |
+| dense oracle index 2 (parameter -0.876) | false (2.837e+12) | ok ok ok ok ok | 5 | 3.199e-15 | 1.610e-15 | 1.332e-15 | 3.199e-15 | 3.442e-15 | 3.726e-15 | 3.726e-15 | 2.442e-15 | 1.000e+00 | 2.003e+00 6.878e+00 3.805e+00 1.353e+01 1.371e+01 | 3/13 | 2.220e-16 | true |
+| dense oracle index 3 (parameter -0.879) | false (2.703e+12) | ok ok ok ok ok | 5 | 5.621e-15 | 2.748e-15 | 1.776e-15 | 5.621e-15 | 5.856e-15 | 3.218e-15 | 3.342e-15 | 1.110e-15 | 1.054e+00 | 2.675e+00 4.925e+00 4.037e+00 1.891e+01 2.134e+01 | 3/21 | 2.887e-15 | true |
+| dense oracle index 4 (parameter -0.882) | false (1.412e+12) | ok ok ok ok ok | 5 | 2.665e-15 | 4.774e-15 | 2.442e-15 | 5.912e-15 | 5.024e-15 | 1.761e-15 | 1.761e-15 | -8.882e-16 | 1.131e+00 | 1.075e+00 1.089e+01 3.804e+00 9.549e+00 1.084e+01 | 4/29 | 1.332e-15 | true |
+| dense oracle index 5 (parameter -0.885) | false (1.428e+12) | ok ok ok ok ok | 5 | 1.610e-15 | 1.416e-15 | 1.110e-15 | 1.610e-15 | 1.985e-15 | 2.012e-15 | 2.012e-15 | 1.776e-15 | 1.037e+00 | 1.480e+00 6.885e+00 4.096e+00 1.224e+01 1.480e+01 | 3/23 | 8.882e-16 | true |
+| dense oracle index 6 (parameter -0.888) | false (1.407e+12) | ok ok ok ok ok | 5 | 9.992e-16 | 3.941e-15 | 1.332e-15 | 4.344e-15 | 4.566e-15 | 1.019e-15 | 1.019e-15 | -2.220e-16 | 1.066e+00 | 1.664e+00 6.877e+00 3.744e+00 9.864e+00 1.192e+01 | 3/23 | 9.992e-16 | true |
+| dense oracle index 7 (parameter -0.891) | false (6.816e+11) | ok ok ok ok notinv | 4 | 2.220e-15 | 3.497e-15 | 2.442e-15 | 3.081e-15 | 3.580e-15 | 1.789e-15 | 2.185e-15 | 8.882e-16 | 9.391e-01 | 1.504e+00 1.142e+01 4.009e+00 1.291e+01 2.977e+01 | 5/1 | 1.776e-15 | true |
+| dense oracle index 8 (parameter -0.894) | false (1.412e+12) | ok ok ok ok ok | 5 | 3.275e-15 | 7.994e-15 | 3.664e-15 | 1.038e-14 | 8.049e-15 | 1.399e-15 | 1.454e-15 | -1.332e-15 | 1.073e+00 | 1.710e+00 5.773e+00 4.380e+00 1.000e+01 1.518e+01 | 4/102 | 5.107e-15 | true |
+| dense oracle index 9 (parameter -0.897) | false (1.451e+12) | ok ok ok ok ok | 5 | 1.929e-15 | 4.108e-15 | 5.551e-16 | 4.496e-15 | 4.552e-15 | 1.691e-15 | 1.691e-15 | 6.661e-16 | 1.063e+00 | 2.913e+00 8.097e+00 3.907e+00 2.315e+01 2.380e+01 | 3/17 | 2.220e-15 | true |
+| dense oracle index 10 (parameter -0.9) | false (3.119e+12) | ok ok ok ok ok | 5 | 1.625e-14 | 5.828e-15 | 1.110e-15 | 1.625e-14 | 1.703e-14 | 1.471e-15 | 1.471e-15 | 8.882e-16 | 1.017e+00 | 1.611e+00 5.398e+00 4.035e+00 9.496e+00 1.040e+01 | 3/15 | 2.220e-15 | true |
+| dense oracle index 11 (parameter -0.903) | false (1.277e+12) | ok ok ok ok notinv | 4 | 4.441e-16 | 2.554e-15 | 8.882e-16 | 2.193e-15 | 2.776e-15 | 1.933e-15 | 1.933e-15 | 1.332e-15 | 9.420e-01 | 1.731e+00 7.001e+00 3.840e+00 1.057e+01 2.477e+01 | 4/2 | 2.665e-15 | true |
+| dense oracle index 12 (parameter -0.906) | false (2.593e+12) | ok ok ok ok ok | 5 | 4.996e-15 | 2.772e-15 | 1.443e-15 | 4.996e-15 | 5.773e-15 | 2.137e-15 | 2.137e-15 | 1.332e-15 | 1.127e+00 | 2.021e+00 7.253e+00 3.816e+00 1.298e+01 1.366e+01 | 4/34 | 1.027e-15 | true |
+| dense oracle index 13 (parameter -0.909) | false (1.953e+12) | ok ok ok ok ok | 5 | 7.216e-16 | 9.159e-16 | 1.110e-15 | 9.714e-16 | 1.332e-15 | 1.829e-15 | 1.829e-15 | -4.441e-16 | 1.030e+00 | 1.664e+00 7.538e+00 4.631e+00 1.267e+01 1.253e+01 | 3/11 | 1.998e-15 | true |
+| dense oracle index 14 (parameter -0.912) | false (2.450e+12) | ok ok ok ok ok | 5 | 4.940e-15 | 2.415e-15 | 5.551e-16 | 4.940e-15 | 4.718e-15 | 2.202e-15 | 2.202e-15 | -2.220e-16 | 1.000e+00 | 3.011e+00 7.335e+00 4.024e+00 2.365e+01 2.355e+01 | 3/12 | 1.110e-15 | true |
+| dense oracle index 15 (parameter -0.915) | false (1.509e+12) | ok ok ok ok ok | 5 | 6.304e-15 | 6.668e-15 | 1.221e-15 | 6.752e-15 | 8.209e-15 | 1.687e-15 | 1.687e-15 | 0.000e+00 | 1.024e+00 | 1.508e+00 8.626e+00 4.667e+00 1.541e+01 1.747e+01 | 3/17 | 2.220e-15 | true |
+| dense oracle index 16 (parameter -0.918) | false (2.051e+12) | ok ok ok ok ok | 5 | 3.469e-15 | 5.308e-15 | 1.110e-15 | 5.294e-15 | 5.530e-15 | 1.878e-15 | 1.878e-15 | -8.882e-16 | 9.908e-01 | 1.338e+00 8.526e+00 4.273e+00 1.033e+01 1.078e+01 | 3/14 | 1.110e-15 | true |
+| dense oracle index 17 (parameter -0.921) | false (1.308e+12) | ok ok ok ok ok | 5 | 7.192e-15 | 6.828e-15 | 8.882e-16 | 7.192e-15 | 7.586e-15 | 1.979e-15 | 1.979e-15 | 4.441e-16 | 9.741e-01 | 1.179e+00 9.328e+00 4.321e+00 1.209e+01 1.332e+01 | 3/15 | 1.998e-15 | true |
+| dense oracle index 18 (parameter -0.924) | false (1.331e+12) | ok ok ok ok ok | 5 | 4.358e-15 | 2.887e-15 | 7.772e-16 | 4.358e-15 | 5.107e-15 | 1.127e-15 | 1.127e-15 | 1.110e-15 | 1.040e+00 | 2.839e+00 8.120e+00 4.015e+00 2.346e+01 2.326e+01 | 3/11 | 3.553e-15 | true |
+| dense oracle index 19 (parameter -0.927) | false (1.717e+12) | ok ok ok ok ok | 5 | 2.859e-15 | 3.282e-15 | 6.661e-16 | 3.123e-15 | 3.830e-15 | 2.112e-15 | 2.112e-15 | 1.110e-15 | 9.428e-01 | 1.173e+00 7.834e+00 4.553e+00 1.022e+01 1.173e+01 | 3/17 | 1.554e-15 | true |
+| dense oracle index 20 (parameter -0.9299999999999999) | false (1.257e+12) | ok ok ok ok ok | 5 | 8.882e-16 | 3.164e-15 | 7.772e-16 | 3.386e-15 | 3.497e-15 | 1.727e-15 | 1.727e-15 | 0.000e+00 | 1.053e+00 | 1.532e+00 1.225e+01 4.459e+00 1.575e+01 1.694e+01 | 3/15 | 2.442e-15 | true |
+| dense oracle index 21 (parameter -0.933) | false (1.852e+12) | ok ok ok ok ok | 5 | 1.638e-15 | 3.303e-15 | 1.221e-15 | 3.608e-15 | 3.969e-15 | 6.034e-16 | 6.034e-16 | 1.332e-15 | 1.030e+00 | 1.204e+00 7.466e+00 4.968e+00 1.065e+01 1.139e+01 | 3/13 | 3.109e-15 | true |
+| dense oracle index 22 (parameter -0.9359999999999999) | false (1.816e+12) | ok ok ok ok ok | 5 | 2.567e-15 | 3.691e-15 | 1.776e-15 | 3.164e-15 | 4.649e-15 | 1.364e-15 | 1.364e-15 | 8.882e-16 | 8.996e-01 | 1.883e+00 5.505e+00 4.294e+00 1.284e+01 1.143e+01 | 3/14 | 1.332e-15 | true |
+| dense oracle index 23 (parameter -0.9390000000000001) | false (1.042e+12) | ok ok ok ok notinv | 4 | 4.580e-15 | 1.832e-15 | 1.443e-15 | 4.580e-15 | 4.760e-15 | 2.601e-15 | 3.031e-15 | -4.441e-16 | 1.089e+00 | 1.469e+00 1.592e+01 4.497e+00 2.235e+01 2.015e+01 | 4/4 | 2.442e-15 | true |
+| prescribed_h oracle index 0 (parameter -2.0) | false (5.316e+11) | ok ok ok ok notinv | 4 | 3.333e-01 | 6.000e+00 | 5.000e+00 | 5.000e-01 | 8.127e-14 | 6.090e-16 | 3.044e-15 | 6.217e-15 | 3.333e-01 | 3.015e+00 6.536e+00 6.664e+00 3.732e+01 1.620e+01 | 6/12 | 4.441e-15 | false |
+| prescribed_h oracle index 1 (parameter -1.0) | false (9.049e+11) | ok ok ok ok notinv | 4 | 5.000e-01 | 4.000e+00 | 3.000e+00 | 1.000e+00 | 1.377e-14 | 1.921e-15 | 2.755e-15 | -1.998e-15 | 5.000e-01 | 2.027e+00 4.012e+00 5.156e+00 1.370e+01 2.082e+01 | 5/49 | 2.665e-15 | false |
+| prescribed_h oracle index 2 (parameter -0.3) | false (2.003e+12) | ok ok ok ok ok | 5 | 7.692e-01 | 2.600e+00 | 1.600e+00 | 3.333e+00 | 5.778e-15 | 8.373e-16 | 8.373e-16 | 6.661e-16 | 7.692e-01 | 1.370e+00 4.438e+00 4.274e+00 7.287e+00 3.657e+00 | 4/30 | 1.998e-15 | false |
+| prescribed_h oracle index 3 (parameter 0.05) | false (2.266e+12) | ok ok ok ok notinv | 4 | 1.053e+00 | 1.900e+00 | 9.000e-01 | 2.000e+01 | 1.865e-14 | 1.253e-15 | 1.378e-15 | -2.220e-16 | 1.053e+00 | 1.235e+00 5.585e+00 3.932e+00 6.588e+00 1.154e+01 | 3/6 | 1.110e-15 | false |
+| prescribed_h oracle index 4 (parameter 0.5) | false (2.083e+12) | ok ok ok ok notinv | 4 | 2.000e+00 | 1.000e+00 | 6.106e-16 | 2.000e+00 | 4.441e-15 | 8.922e-16 | 1.438e-15 | 8.882e-16 | 2.000e+00 | 2.105e+00 1.660e+01 3.720e+00 1.499e+01 9.446e+02 | 10/1 | 8.882e-16 | false |
+| prescribed_h oracle index 5 (parameter 1.0) | false (1.766e+12) | ok ok ok ok ok | 5 | 1.943e-15 | 2.058e-15 | 6.661e-16 | 2.058e-15 | 2.453e-15 | 1.024e-15 | 1.079e-15 | -2.220e-16 | 1.000e+00 | 1.000e+00 3.474e+00 3.960e+00 8.741e+00 8.741e+00 | 0/0 | 6.661e-16 | true |
+| prescribed_h oracle index 6 (parameter 2.0) | false (2.356e+12) | ok ok ok ok ok | 5 | 2.476e-14 | 2.820e-14 | 5.329e-14 | 2.476e-14 | 5.240e-14 | 1.804e-15 | 2.967e-15 | 4.219e-15 | 5.000e-01 | 2.000e+00 2.691e+00 5.136e+00 1.448e+01 2.097e+01 | 5/152 | 3.775e-15 | true |
+| repeated oracle index 0 (parameter -1.3) | false (2.068e+12) | ok ok ok ok ok | 5 | 1.582e-15 | 1.499e-15 | 4.441e-16 | 1.582e-15 | 2.054e-15 | 1.074e-15 | 1.074e-15 | 3.331e-16 | 9.868e-01 | 1.327e+00 3.332e+00 1.638e+00 6.191e+00 6.396e+00 | 3/12 | 5.670e-08 | true |
+| repeated oracle index 1 (parameter -1.3) | false (3.197e+12) | ok ok ok ok ok | 5 | 1.110e-14 | 7.438e-15 | 2.220e-15 | 1.110e-14 | 1.113e-14 | 7.340e-16 | 7.340e-16 | 1.110e-16 | 1.053e+00 | 1.094e+00 2.167e+00 1.656e+00 3.861e+00 4.019e+00 | 3/24 | 2.492e-08 | true |
+| repeated oracle index 2 (parameter -1.3) | false (3.749e+12) | ok ok ok ok ok | 5 | 1.769e-15 | 1.811e-15 | 4.441e-16 | 1.783e-15 | 1.874e-15 | 5.926e-16 | 5.926e-16 | 2.220e-16 | 9.921e-01 | 1.482e+00 2.202e+00 1.632e+00 5.138e+00 5.295e+00 | 3/13 | 5.465e-08 | true |
+| repeated oracle index 3 (parameter -1.3) | false (2.655e+12) | ok ok ok ok ok | 5 | 4.066e-15 | 5.284e-15 | 1.110e-15 | 5.298e-15 | 5.322e-15 | 5.087e-16 | 5.087e-16 | 2.220e-16 | 9.971e-01 | 1.060e+00 2.389e+00 1.578e+00 4.026e+00 3.910e+00 | 2/7 | 4.424e-08 | true |
+| defective oracle index 0 (parameter -1.3) | false (2.768e+12) | ok ok ok ok ok | 5 | 2.665e-15 | 1.887e-15 | 3.331e-15 | 2.665e-15 | 3.331e-15 | 1.021e-15 | 1.021e-15 | 1.776e-15 | 9.778e-01 | 1.663e+00 2.166e+00 1.713e+00 6.137e+00 5.799e+00 | 3/9 | 2.658e-08 | true |
+| coasting oracle index 0 (parameter -0.4) | true (0.000e+00) | coast coast coast coast coast | 1 | 0.000e+00 | 4.163e-17 | 0.000e+00 | 4.163e-17 | 0.000e+00 | NaN | NaN | NaN | NaN | coast coast coast coast coast | 0/0 | 5.107e-15 | true |
+| coasting oracle index 1 (parameter 0.0) | true (0.000e+00) | coast coast coast coast coast | 1 | 0.000e+00 | 2.776e-17 | 0.000e+00 | 2.776e-17 | 0.000e+00 | NaN | NaN | NaN | NaN | coast coast coast coast coast | 0/0 | 5.107e-15 | true |
+| coasting oracle index 2 (parameter 0.7) | true (0.000e+00) | coast coast coast coast coast | 1 | 0.000e+00 | 5.551e-17 | 0.000e+00 | 5.551e-17 | 0.000e+00 | NaN | NaN | NaN | NaN | coast coast coast coast coast | 0/0 | 5.107e-15 | true |
+
+###### 1a. Route-agreement matrix (max over the maps where the route is unique; count of such maps)
+
+| route | maps unique | max dzeta (map) | max deta (map) | max dh (map) | max dD (map) |
+|---|---|---|---|---|---|
+| eigenplane | 36 | 2.000e+00 (prescribed_h oracle index 4 (parameter 0.5)) | 6.000e+00 (prescribed_h oracle index 0 (parameter -2.0)) | 5.000e+00 (prescribed_h oracle index 0 (parameter -2.0)) | 2.000e+01 (prescribed_h oracle index 3 (parameter 0.05)) |
+| polynomial | 36 | 2.000e+00 (prescribed_h oracle index 4 (parameter 0.5)) | 6.000e+00 (prescribed_h oracle index 0 (parameter -2.0)) | 5.000e+00 (prescribed_h oracle index 0 (parameter -2.0)) | 2.000e+01 (prescribed_h oracle index 3 (parameter 0.05)) |
+| projector | 36 | 2.000e+00 (prescribed_h oracle index 4 (parameter 0.5)) | 6.000e+00 (prescribed_h oracle index 0 (parameter -2.0)) | 5.000e+00 (prescribed_h oracle index 0 (parameter -2.0)) | 2.000e+01 (prescribed_h oracle index 3 (parameter 0.05)) |
+| newton | 36 | 2.000e+00 (prescribed_h oracle index 4 (parameter 0.5)) | 6.000e+00 (prescribed_h oracle index 0 (parameter -2.0)) | 5.000e+00 (prescribed_h oracle index 0 (parameter -2.0)) | 2.000e+01 (prescribed_h oracle index 3 (parameter 0.05)) |
+| fixed_point | 29 | 7.692e-01 (prescribed_h oracle index 2 (parameter -0.3)) | 2.600e+00 (prescribed_h oracle index 2 (parameter -0.3)) | 1.600e+00 (prescribed_h oracle index 2 (parameter -0.3)) | 3.333e+00 (prescribed_h oracle index 2 (parameter -0.3)) |
+| coasting | 3 | 0.000e+00 (coasting oracle index 0 (parameter -0.4)) | 5.551e-17 (coasting oracle index 2 (parameter 0.7)) | 0.000e+00 (coasting oracle index 0 (parameter -0.4)) | 5.551e-17 (coasting oracle index 2 (parameter 0.7)) |
+
+###### 1b. Extremes named from the rows
+
+- maps with every unique route within 2e-10 of the note: 34/39; worst overall 6.000e+00 at "prescribed_h oracle index 0 (parameter -2.0)".
+- largest agreement entry: 8.127e-14 at "prescribed_h oracle index 0 (parameter -2.0)".
+- largest (I1) normalized residual of the primary: 3.726e-15 at "dense oracle index 2 (parameter -0.876)".
+- largest (I1) raw residual: 3.726e-15 at "dense oracle index 2 (parameter -0.876)".
+- largest |trace residual|: 6.217e-15 at "prescribed_h oracle index 0 (parameter -2.0)".
+- largest cubic-root residual: 5.670e-08 at "repeated oracle index 0 (parameter -1.3)".
+- largest coasting margin (non-coasting maps): 3.749e+12 at "repeated oracle index 2 (parameter -1.3)".
+- smallest |canonical area| (bunched maps): 3.333e-01 at "prescribed_h oracle index 0 (parameter -2.0)".
+- largest coasting margin among the coasting maps: 0.000e+00 at "coasting oracle index 0 (parameter -0.4)".
+- repeated maps: statuses ok ok ok ok ok; worst difference 1.110e-14; degeneracy degenerate.
+- defective maps: statuses ok ok ok ok ok; worst difference 3.331e-15; degeneracy unresolved.
+- coasting maps: statuses coast coast coast coast coast; worst difference 5.551e-17; degeneracy unit_eigenvalue.
+
+###### 1c. Longitudinal selection: the default z-area heuristic versus the certified index
+
+The default rule (E3/E9, fixer T1: an UNCERTIFIED heuristic) takes the resolved mode with the largest signed z-area; by (K12) kappa_sz = h, so a betatron mode carries more z-area when h < 1/2. The certified index here is the resolved mode whose eigenvalue is nearest exp(-i mu_s) for the note's own synchrotron phase (dense: the parameter, prescribed: -0.94, repeated / defective: -1.3), passed as `longitudinal`. Rows whose default selection differs from the certified one are re-run with it; kappa[j, z] lists the signed z-areas of the three labelled modes (label order) as the default rule saw them.
+
+| map | h (note) | default index | certified index | default selection's tune | kappa[:, z] (default labels) | statuses (certified) | max dzeta | max deta | max dh | agreement | <= 2e-10 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| prescribed_h oracle index 0 (parameter -2.0) | -2.000e+00 | 1 | 2 | 6.300e-01 | 3.000e+00 -2.000e+00 -3.813e-17 | ok ok ok notinv notinv | 8.882e-15 | 8.393e-14 | 5.684e-14 | 6.040e-14 | true |
+| prescribed_h oracle index 1 (parameter -1.0) | -1.000e+00 | 1 | 2 | 6.300e-01 | 2.000e+00 -1.000e+00 1.055e-17 | ok ok ok notinv notinv | 8.493e-15 | 3.997e-14 | 2.487e-14 | 4.441e-14 | true |
+| prescribed_h oracle index 2 (parameter -0.3) | -3.000e-01 | 1 | 2 | 6.300e-01 | 1.300e+00 -3.000e-01 9.715e-18 | ok ok ok notinv notinv | 5.773e-15 | 1.243e-14 | 6.273e-15 | 1.132e-14 | true |
+| prescribed_h oracle index 3 (parameter 0.05) | 5.000e-02 | 1 | 2 | 6.300e-01 | 9.500e-01 5.000e-02 -1.746e-17 | ok ok ok notinv notinv | 2.386e-13 | 4.019e-14 | 1.874e-14 | 2.707e-13 | true |
+| prescribed_h oracle index 4 (parameter 0.5) | 5.000e-01 | 1 | 2 | 6.300e-01 | 5.000e-01 5.000e-01 -5.581e-18 | ok ok ok notinv notinv | 3.553e-15 | 2.163e-15 | 8.882e-16 | 3.691e-15 | true |
+
+- default selection differs from the certified index on 5 of 36 bunched maps; with the certified index every unique route is within 2e-10 of the note on 39/39 maps (default rule: 34/39).
+- worst difference with the certified selection: 2.386e-13 at "prescribed_h oracle index 3 (parameter 0.05)".
+- largest agreement entry with the certified selection: 2.707e-13 at "prescribed_h oracle index 3 (parameter 0.05)".
+- fixed point `:not_invariant` (E7 stall: a step that did not decrease the (I1) residual) on 7 of 36 bunched maps by the default selection; the other four routes `:none` on every bunched map: true.
+- labels detail on the bunched maps: uncertified heuristic: the longitudinal mode is the largest  | unavailable...
+
+##### 2. PROVISIONAL constants: windows by the one-tenth / ten rule (fixture names derived from the data)
+
+Every ratio is the guarded quantity divided by its floor at multiplier 1; `accepted` fixtures are ones the guard must pass (the ratio must exceed 10 c, or stay below c / 10 for a residual-type guard), `rejected` ones it must refuse; `unlabelled` values are reported but do not constrain the window (boundary cases named in the text). Fixtures: 200 dense maps, 7 prescribed-h maps, 4 repeated, 1 defective, the trial-011 ladder, the weak cavity, 39 oracle maps (certified longitudinal index), 3 coasting maps, the singular-coefficient coasting map, the guard fixtures (h = 0, Md, Md C_k, C_k Md C_k^-1, N15), the synthetic rejection fixtures of the constants' docstrings.
+
+###### c_graph (_GRAPH_SINGULARITY_MULTIPLIER)
+
+- ratio at multiplier 1: sigma_min(U_ls) / (rho_M1 max(1, ||U_s||_2)); accepted = regular eigenplane routes, rejected = :singular_longitudinal_projection
+- source value: 64.0; accepted 256, rejected 1, unlabelled 0 fixture values
+- smallest accepted ratio (must exceed 10 c): 6.212e+11 at "weak cavity (M[6,5] = -1e-6 folded, shear 0.7)"
+- largest rejected ratio (must stay below c / 10): 2.591e-01 at "singular projection zeta=e_x, eta=e_px (h=0) around R(0.73, 1.41, -0.9)"
+- window [2.591e+00, 6.212e+10]; source value inside: true
+  - accepted "weak cavity (M[6,5] = -1e-6 folded, shear 0.7)" 6.212e+11
+  - accepted "prescribed h=0.05" 1.523e+13
+  - accepted "prescribed_h oracle index 3 (parameter 0.05)" 1.523e+13
+  - accepted "prescribed h=-2.0" 2.154e+13
+  - rejected "singular projection zeta=e_x, eta=e_px (h=0) around R(0.73, 1.41, -0.9)" 2.591e-01
+
+###### c_iso (_ISOTROPY_MULTIPLIER)
+
+- ratio at multiplier 1: |1 + D1' S_4 D2| / (rho_M1 max(1, ||D||_2^2)) of every formed graph; rejected = the isotropic graph
+- source value: 64.0; accepted 1280, rejected 1, unlabelled 0 fixture values
+- smallest accepted ratio (must exceed 10 c): 1.759e+12 at "trial-011 crab k=kc(1-1.0e-6) [newton]"
+- largest rejected ratio (must stay below c / 10): 0.000e+00 at "isotropic graph [e_x, -e_px] on degenerate diag(R(0.73), R(1.41), R(0.73))"
+- window [0.000e+00, 1.759e+11]; source value inside: true
+  - accepted "trial-011 crab k=kc(1-1.0e-6) [newton]" 1.759e+12
+  - accepted "trial-011 crab k=kc(1-1.0e-6) [polynomial]" 1.759e+12
+  - accepted "trial-011 crab k=kc(1-1.0e-6) [projector]" 1.759e+12
+  - accepted "trial-011 crab k=kc(1-1.0e-6) [eigenplane]" 1.759e+12
+  - rejected "isotropic graph [e_x, -e_px] on degenerate diag(R(0.73), R(1.41), R(0.73))" 0.000e+00
+
+###### c_coef (_COEFFICIENT_CONDITION_MULTIPLIER)
+
+- ratio at multiplier 1: sigma_min / (rho_M1 max(1, sigma_max)) of A_s, the projector trace gap / (rho_M1 max(1, ||Z||_2)), sigma_min(I - M_rr) of (D24); rejected = :singular_coefficient; the (D15) operator is LAPACK-guarded only (unlabelled)
+- source value: 64.0; accepted 515, rejected 7, unlabelled 259 fixture values
+- smallest accepted ratio (must exceed 10 c): 1.546e+09 at "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [projector trace gap]"
+- largest rejected ratio (must stay below c / 10): 3.764e-01 at "singular projection zeta=e_x, eta=e_px (h=0) around R(0.73, 1.41, -0.9) [polynomial A_s]"
+- window [3.764e+00, 1.546e+08]; source value inside: true
+  - accepted "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [projector trace gap]" 1.546e+09
+  - accepted "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [polynomial A_s]" 2.806e+09
+  - accepted "coasting shear s=0.7 [(D24) I - M_rr]" 1.940e+10
+  - accepted "coasting shear s=0.0 [(D24) I - M_rr]" 2.178e+10
+  - rejected "singular projection zeta=e_x, eta=e_px (h=0) around R(0.73, 1.41, -0.9) [polynomial A_s]" 3.764e-01
+  - rejected "degenerate Md C_k (k=0.3) [(D15) Sylvester operator, LAPACK-singular]" 1.191e-02
+  - rejected "degenerate diag(R(0.73), R(1.41), R(0.73)) [polynomial A_s]" 0.000e+00
+  - rejected "degenerate diag(R(0.73), R(1.41), R(0.73)) [projector trace gap]" 0.000e+00
+  - unlabelled "dense k=191 (mu_s=-1.443) [(D15) Sylvester operator]" 2.261e+14
+  - unlabelled "dense k=197 (mu_s=-1.461) [(D15) Sylvester operator]" 2.126e+14
+  - unlabelled "dense k=177 (mu_s=-1.401) [(D15) Sylvester operator]" 2.049e+14
+  - unlabelled extreme "N15 indefinite diag(R(0.73), R(1.41), R(-0.73)) [projector trace gap, indefinite_cluster]" 0.000e+00
+
+###### c_inv (_ROUTE_INVARIANCE_MULTIPLIER)
+
+- ratio at multiplier 1: normalized (I1) / (eps kappa_route), kappa_route = max(1, ||M||_F) max(1, ||D||_F)^2; accepted = :none routes, rejected = :not_invariant graphs (stalled iterates, the false and zero graphs); other-branch graphs and short Newton iterates unlabelled
+- source value: 256.0; accepted 1244, rejected 24, unlabelled 266 fixture values
+- largest accepted ratio (must stay below c / 10): 1.519e+02 at "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [eigenplane]"
+- smallest rejected ratio (must exceed 10 c): 6.424e+02 at "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [polynomial, formed graph]"
+- window [1.519e+03, 6.424e+01] is EMPTY (the fixtures on both sides are closer than a factor 100)
+  - accepted "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [eigenplane]" 1.519e+02
+  - accepted "dense k=66 (mu_s=-1.068) [projector]" 9.325e+01
+  - accepted "trial-011 crab k=kc(1-0.001) [fixed_point]" 5.247e+01
+  - accepted "dense k=63 (mu_s=-1.059) [projector]" 2.772e+01
+  - rejected "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [polynomial, formed graph]" 6.424e+02
+  - rejected "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [projector, formed graph]" 1.571e+04
+  - rejected "prescribed_h oracle index 1 (parameter -1.0) [fixed_point, stalled iterate]" 1.699e+05
+  - rejected "prescribed h=-1.0 [fixed_point, stalled iterate]" 1.699e+05
+  - unlabelled "prescribed_h oracle index 0 (parameter -2.0) [newton, other branch]" 4.911e-02
+  - unlabelled "prescribed h=-2.0 [newton, other branch]" 6.663e-02
+  - unlabelled "prescribed h=0.5 [newton, other branch]" 1.168e-01
+  - unlabelled extreme "dense k=53 (mu_s=-1.029) [newton iterate 1 of 2]" 1.398e+09
+
+###### INFORMATIONAL: c_inv with the route's coefficient condition folded into kappa
+
+- ratio at multiplier 1: normalized (I1) / (eps kappa_route cond_route), cond_route = the route's reported coefficient_condition (cond(U_ls), cond(A_s), the trace-gap or Sylvester condition); same labels as c_inv; not a source constant
+- source value: 256.0; accepted 1244, rejected 22, unlabelled 0 fixture values
+- largest accepted ratio (must stay below c / 10): 5.341e+00 at "dense k=197 (mu_s=-1.461) [fixed_point]"
+- smallest rejected ratio (must exceed 10 c): 4.672e-02 at "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [projector]"
+- window [5.341e+01, 4.672e-03] is EMPTY (the fixtures on both sides are closer than a factor 100)
+  - accepted "dense k=197 (mu_s=-1.461) [fixed_point]" 5.341e+00
+  - accepted "dense k=137 (mu_s=-1.281) [eigenplane]" 4.217e+00
+  - accepted "repeated oracle index 1 (parameter -1.3) [newton]" 3.630e+00
+  - accepted "dense k=157 (mu_s=-1.341) [eigenplane]" 3.193e+00
+  - rejected "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [projector]" 4.672e-02
+  - rejected "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [polynomial]" 5.733e-02
+  - rejected "prescribed_h oracle index 1 (parameter -1.0) [fixed_point]" 8.162e+03
+  - rejected "prescribed h=-1.0 [fixed_point]" 8.162e+03
+
+###### c_stop (_ITERATION_STOP_MULTIPLIER)
+
+- ratio at multiplier 1: normalized (I1) / (eps max(1, ||M||_F)); accepted = the EXACT graph's roundoff floor (the iteration must be able to stop there); converged final iterates and the iterate one step short are unlabelled (the rule defines that boundary itself)
+- source value: 16.0; accepted 200, rejected 0, unlabelled 743 fixture values
+- largest accepted ratio (must stay below c / 10): 5.793e-01 at "dense k=159 (mu_s=-1.347) [exact graph floor]"
+- window [5.793e+00, Inf]; source value inside: true (no rejected fixture: that edge is open)
+  - accepted "dense k=159 (mu_s=-1.347) [exact graph floor]" 5.793e-01
+  - accepted "dense k=177 (mu_s=-1.401) [exact graph floor]" 4.170e-01
+  - accepted "dense k=96 (mu_s=-1.158) [exact graph floor]" 3.995e-01
+  - accepted "dense k=189 (mu_s=-1.437) [exact graph floor]" 3.891e-01
+  - unlabelled "dense k=150 (mu_s=-1.32) [newton final iterate]" 2.223e-02
+  - unlabelled "dense k=181 (mu_s=-1.413) [newton final iterate]" 2.534e-02
+  - unlabelled "repeated betatron k=1 (phases 0.72, 0.72, -1.3) [newton final iterate]" 2.642e-02
+  - unlabelled extreme "dense k=53 (mu_s=-1.029) [newton iterate 1 of 2]" 1.398e+09
+
+###### c_coast (_COASTING_MULTIPLIER)
+
+- ratio at multiplier 1: max structure residual / (rho_M1 max(1, ||M||_F)) = margin * c_coast; accepted = coasting maps, rejected = every bunched map and the weak cavity
+- source value: 64.0; accepted 4, rejected 260, unlabelled 0 fixture values
+- largest accepted ratio (must stay below c / 10): 0.000e+00 at "coasting with a y-plane shear inside M_rr (singular (D24) coefficient)"
+- smallest rejected ratio (must exceed 10 c): 2.183e+08 at "weak cavity (M[6,5] = -1e-6 folded, shear 0.7)"
+- window [0.000e+00, 2.183e+07]; source value inside: true
+  - accepted "coasting with a y-plane shear inside M_rr (singular (D24) coefficient)" 0.000e+00
+  - accepted "coasting shear s=0.7" 0.000e+00
+  - accepted "coasting shear s=0.0" 0.000e+00
+  - accepted "coasting shear s=-0.4" 0.000e+00
+  - rejected "weak cavity (M[6,5] = -1e-6 folded, shear 0.7)" 2.183e+08
+  - rejected "prescribed_h oracle index 0 (parameter -2.0)" 3.402e+13
+  - rejected "prescribed h=-2.0" 3.402e+13
+  - rejected "dense oracle index 7 (parameter -0.891)" 4.362e+13
+
+###### c_tie (_LABEL_TIE_MULTIPLIER)
+
+- ratio at multiplier 1: |margin| / (eps kappa_frame); accepted = clear labels, rejected = declared ties (the 45-degree rolls and every margin the data put at or below the tolerance)
+- source value: 64.0; accepted 490, rejected 6, unlabelled 0 fixture values
+- smallest accepted ratio (must exceed 10 c): 1.234e+12 at "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [transverse margin]"
+- largest rejected ratio (must stay below c / 10): 3.820e+00 at "prescribed h=0.5 [longitudinal margin, declared tie]"
+- window [3.820e+01, 1.234e+11]; source value inside: true
+  - accepted "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [transverse margin]" 1.234e+12
+  - accepted "weak cavity (M[6,5] = -1e-6 folded, shear 0.7) [longitudinal margin]" 5.383e+12
+  - accepted "prescribed_h oracle index 3 (parameter 0.05) [transverse margin]" 7.531e+13
+  - accepted "prescribed h=0.05 [transverse margin]" 7.531e+13
+  - rejected "prescribed h=0.5 [longitudinal margin, declared tie]" 3.820e+00
+  - rejected "singular projection zeta=e_x, eta=e_px (h=0) around R(0.73, 1.41, -0.9) [transverse margin, declared tie]" 1.292e+00
+  - rejected "degenerate Md C_k (k=0.3) [longitudinal margin, declared tie]" 2.407e-01
+  - rejected "45-degree y-z roll (equal z-areas) [longitudinal margin]" 0.000e+00
+
+###### c_sep (_SEPARATION_RESIDUAL_MULTIPLIER)
+
+- ratio at multiplier 1: off-diagonal (K4) / (eps kappa_sep); accepted = the primary triple of every bunched fixture, rejected = zeta perturbed by delta (1, -1, 0.5, 0.25), delta >= 1e-12 (1e-13, 1e-14 unlabelled)
+- source value: 256.0; accepted 218, rejected 400, unlabelled 601 fixture values
+- largest accepted ratio (must stay below c / 10): 1.026e+00 at "trial-011 crab k=kc(1-1.0e-5)"
+- smallest rejected ratio (must exceed 10 c): 5.138e+04 at "dense k=1 (mu_s=-0.873) [zeta + 1.0e-10 (1, -1, 0.5, 0.25)]"
+- window [1.026e+01, 5.138e+03]; source value inside: true
+  - accepted "trial-011 crab k=kc(1-1.0e-5)" 1.026e+00
+  - accepted "trial-011 crab k=kc(1-0.0001)" 9.667e-01
+  - accepted "dense k=137 (mu_s=-1.281)" 9.659e-01
+  - accepted "dense k=157 (mu_s=-1.341)" 9.170e-01
+  - rejected "dense k=1 (mu_s=-0.873) [zeta + 1.0e-10 (1, -1, 0.5, 0.25)]" 5.138e+04
+  - rejected "dense k=6 (mu_s=-0.888) [zeta + 1.0e-10 (1, -1, 0.5, 0.25)]" 5.470e+04
+  - rejected "dense k=12 (mu_s=-0.906) [zeta + 1.0e-10 (1, -1, 0.5, 0.25)]" 5.802e+04
+  - rejected "dense k=44 (mu_s=-1.002) [zeta + 1.0e-10 (1, -1, 0.5, 0.25)]" 6.168e+04
+  - unlabelled "dense k=1 (mu_s=-0.873) [zeta + 1.0e-14 (1, -1, 0.5, 0.25)]" 5.147e+00
+  - unlabelled "dense k=6 (mu_s=-0.888) [zeta + 1.0e-14 (1, -1, 0.5, 0.25)]" 5.454e+00
+  - unlabelled "dense k=12 (mu_s=-0.906) [zeta + 1.0e-14 (1, -1, 0.5, 0.25)]" 5.810e+00
+  - unlabelled extreme "dense k=155 (mu_s=-1.335) [zeta + 1.0e-12 (1, -1, 0.5, 0.25)]" 1.180e+03
+
+###### c_triple (_TRIPLE_CONSISTENCY_MULTIPLIER)
+
+- ratio at multiplier 1: |zeta' S_4 eta - (1 - h)| / (eps max(1, ||zeta|| ||eta||)); rejected = h + 1e-12, h + 1e-13 (1e-14 unlabelled)
+- source value: 64.0; accepted 219, rejected 200, unlabelled 619 fixture values
+- largest accepted ratio (must stay below c / 10): 9.139e-01 at "trial-011 crab k=kc(1-0.0001)"
+- smallest rejected ratio (must exceed 10 c): 4.503e+03 at "dense k=111 (mu_s=-1.203) [h + 1.0e-12]"
+- window [9.139e+00, 4.503e+02]; source value inside: true
+  - accepted "trial-011 crab k=kc(1-0.0001)" 9.139e-01
+  - accepted "prescribed h=-0.3" 7.507e-01
+  - accepted "trial-011 crab k=kc(1-0.001)" 7.455e-01
+  - accepted "dense k=186 (mu_s=-1.428)" 7.031e-01
+  - rejected "dense k=111 (mu_s=-1.203) [h + 1.0e-12]" 4.503e+03
+  - rejected "dense k=76 (mu_s=-1.098) [h + 1.0e-12]" 4.503e+03
+  - rejected "dense k=10 (mu_s=-0.9) [h + 1.0e-12]" 4.503e+03
+  - rejected "dense k=6 (mu_s=-0.888) [h + 1.0e-12]" 4.503e+03
+  - unlabelled "prescribed h=2.0 [report triple with the (D11) h = det U_ls]" 0.000e+00
+  - unlabelled "dense k=192 (mu_s=-1.446) [report triple with the (D11) h = det U_ls]" 1.953e-03
+  - unlabelled "dense k=86 (mu_s=-1.128) [report triple with the (D11) h = det U_ls]" 1.440e-02
+  - unlabelled extreme "dense k=186 (mu_s=-1.428) [h + 1.0e-13]" 4.511e+02
+
+###### c_ell (_LONGITUDINAL_ELLIPTIC_MULTIPLIER)
+
+- ratio at multiplier 1: (2 - |tr Mbar_s|) / (eps max(1, ||Mbar_s||_F)); accepted = every separated longitudinal block, rejected = shears, R(mu <= 1e-7), a hyperbolic block (R(1e-6) unlabelled)
+- source value: 64.0; accepted 219, rejected 6, unlabelled 2 fixture values
+- smallest accepted ratio (must exceed 10 c): 1.998e+09 at "weak cavity (M[6,5] = -1e-6 folded, shear 0.7)"
+- largest rejected ratio (must stay below c / 10): 2.828e+00 at "R(3.0e-8) (2 - tr within the roundoff 2 eps of tr itself)"
+- window [2.828e+01, 1.998e+08]; source value inside: true
+  - accepted "weak cavity (M[6,5] = -1e-6 folded, shear 0.7)" 1.998e+09
+  - accepted "trial-011 crab k=kc(1-1.0e-6)" 1.135e+13
+  - accepted "trial-011 crab k=kc(1-1.0e-5)" 3.577e+13
+  - accepted "trial-011 crab k=kc(1-0.0001)" 1.118e+14
+  - rejected "R(3.0e-8) (2 - tr within the roundoff 2 eps of tr itself)" 2.828e+00
+  - rejected "shear [1 -0.4; 0 1] (unit eigenvalue)" 0.000e+00
+  - rejected "R(1.0e-8) (2 - tr within the roundoff 2 eps of tr itself)" 0.000e+00
+  - rejected "shear [1 0.7; 0 1] (unit eigenvalue)" 0.000e+00
+  - unlabelled "R(1.0e-6) (boundary: elliptic, 2 - tr = 1.000e-12)" 3.185e+03
+  - unlabelled "R(1.0e-7) (boundary: elliptic, 2 - tr = 9.992e-15)" 3.182e+01
+
+###### c_ohmi (_OHMI_POSITIVITY_MULTIPLIER)
+
+- ratio at multiplier 1: h / (eps max(1, ||zeta|| ||eta||)); accepted = positive-h triples, rejected = h in (0, 1e-15, 1e-14) (2e-14 unlabelled; negative h is refused by sign)
+- source value: 64.0; accepted 216, rejected 2, unlabelled 5 fixture values
+- smallest accepted ratio (must exceed 10 c): 2.252e+14 at "prescribed h=0.05"
+- largest rejected ratio (must stay below c / 10): 4.395e+00 at "prescribed construction h=1.0e-15 (h within a few eps of 0)"
+- window [4.395e+01, 2.252e+13]; source value inside: true
+  - accepted "prescribed h=0.05" 2.252e+14
+  - accepted "prescribed h=0.5" 2.252e+15
+  - accepted "dense k=23 (mu_s=-0.939)" 4.340e+15
+  - accepted "dense k=158 (mu_s=-1.344)" 4.370e+15
+  - rejected "prescribed construction h=1.0e-15 (h within a few eps of 0)" 4.395e+00
+  - rejected "prescribed construction h=0.0 (h within a few eps of 0)" 0.000e+00
+  - unlabelled "prescribed construction h=2.0e-14 (boundary)" 8.790e+01
+  - unlabelled "prescribed construction h=1.0e-14 (boundary)" 4.395e+01
+  - unlabelled "prescribed h=-0.3 [h < 0: form_inadmissible by sign, not by the floor]" -1.014e+15
+  - unlabelled extreme "prescribed h=-2.0 [h < 0: form_inadmissible by sign, not by the floor]" -2.930e+15
+
+###### Summary
+
+| constant | source | window low | window high | inside | accepted | rejected | unlabelled |
+|---|---|---|---|---|---|---|---|
+| c_graph | 64.0 | 2.591e+00 | 6.212e+10 | true | 256 | 1 | 0 |
+| c_iso | 64.0 | 0.000e+00 | 1.759e+11 | true | 1280 | 1 | 0 |
+| c_coef | 64.0 | 3.764e+00 | 1.546e+08 | true | 515 | 7 | 259 |
+| c_inv | 256.0 | 1.519e+03 | 6.424e+01 | EMPTY | 1244 | 24 | 266 |
+| c_inv_conditioned | 256.0 | 5.341e+01 | 4.672e-03 | EMPTY | 1244 | 22 | 0 |
+| c_stop | 16.0 | 5.793e+00 | Inf | true | 200 | 0 | 743 |
+| c_coast | 64.0 | 0.000e+00 | 2.183e+07 | true | 4 | 260 | 0 |
+| c_tie | 64.0 | 3.820e+01 | 1.234e+11 | true | 490 | 6 | 0 |
+| c_sep | 256.0 | 1.026e+01 | 5.138e+03 | true | 218 | 400 | 601 |
+| c_triple | 64.0 | 9.139e+00 | 4.503e+02 | true | 219 | 200 | 619 |
+| c_ell | 64.0 | 2.828e+01 | 1.998e+08 | true | 219 | 6 | 2 |
+| c_ohmi | 64.0 | 4.395e+01 | 2.252e+13 | true | 216 | 2 | 5 |
+
+###### _MAX_HALVINGS = 40 and _FIXED_POINT_MAX_ITERATIONS = 500 (integer caps: stopping rules, no tolerance window)
+
+- from the (D15) start: halved trials over the whole run at most 2 at "dense k=67 (mu_s=-1.071)" over the 260 fixtures (259 fixtures never halve); Newton iterations at most 12 at "trial-011 crab k=kc(1-1.0e-6)".
+- far start D0 = D_exact + 100 on the 200 dense maps: 38 converge (halved trials over the run up to 151 at "dense k=69 (mu_s=-1.077)"), 162 stall at the per-step cap (40 halved trials in the stalling step; accumulated over the run 0 .. 375).
+- fixed point: converged on 239 fixtures, slowest 176 iterations at "trial-011 crab k=kc(1-0.01)"; `:not_invariant` (E7 stall) on 23; cap 500 reached on 4.
+
+##### 3. The rejected side of every `c eps kappa` check family (ratio to eps kappa; the test's c beside it)
+
+| family | test c | kappa | legitimate fixture | ratio (green) | injected defect | ratio (red) | red > c |
+|---|---|---|---|---|---|---|---|
+| route triple vs exact triple (dense) | 1024 | max(1,||M||) max(1,||D||)^2 | dense k=66 (mu_s=-1.068) | 5.833e+01 | eta with the (D12) sign flipped | 2.746e+14 | true |
+| route agreement entries | 2048 | max(1,||M||) max(1,||D||)^2 | dense k=66 (mu_s=-1.068) | 2.395e+02 | eigenplane vs the Newton graph on ANOTHER branch (prescribed h=-2, certified index) | 7.147e+14 | true |
+| trace-cubic roots vs 2 cos mu_j | 64 | max(1,||M||) | dense k=66 (mu_s=-1.068) | 3.916e+01 | M + 1e-8 N (non-symplectic) | 9.467e+08 | true |
+| (K4) separation off-diagonal | 256.0 | max(1,||M||) ||M_cal|| ||M_cal^-1|| | dense k=66 (mu_s=-1.068) | 3.561e-01 | factor order reversed to M_eta M_zeta | 9.048e+11 | true |
+| (K1) M_cal symplecticity | 64 | ||M_cal||^2 | dense k=66 (mu_s=-1.068) | 1.205e-01 | M_zeta pz-row sign flipped | 3.069e+13 | true |
+| (K5) separated block symplecticity | 64 | ||M||^2 ||M_cal||^2 ||M_cal^-1||^2 | dense k=66 (mu_s=-1.068) | 2.165e-02 | M + 1e-8 N (non-symplectic) | 7.664e+05 | true |
+| (K9) U_6 reconstruction (normalized) | 64 | max(1,||M||) ||U_6||^2 | dense k=66 (mu_s=-1.068) | 2.861e-01 | betatron tunes swapped in the target rotation | 2.204e+14 | true |
+| (K12) row/column sums and kappa_sz - h | 64 | ||U_6||^2 | dense k=66 (mu_s=-1.068) | 3.131e-01 | longitudinal vector scaled by 1.1 | 1.493e+14 | true |
+| (M5) beta gamma - alpha^2 - kappa^2 and (K13) | 64 | ||U_6||^4 | dense k=66 (mu_s=-1.068) | 1.678e-01 | kappa of mode 2 combined with beta, alpha, gamma of mode 1 | 1.095e+14 | true |
+| (K10) covariance closure | 64 | ||M||^2 ||Sigma|| | dense k=66 (mu_s=-1.068) | 5.830e-01 | Sigma of dense k=3 (mu_s=-0.879) under this M | 3.276e+14 | true |
+| (K14) barred covariance identity | 64 | max(1,||U_6||)^2 max(1,||eta||)^2 | dense k=66 (mu_s=-1.068) | 1.223e-03 | eta scaled by 1.1 in (K14) | 1.191e+12 | true |
+| Ohmi (O2)-(O5) identities | 64 | max(1,||M||) ||M_O||^2 | dense k=66 (mu_s=-1.068) | 3.583e-01 | h (1 + 1e-8) in (O2) | 3.990e+06 | true |
+| coasting (D24) eta vs construction | 4 | max(1,||M||) max(1,||eta||)^2 cond(I - M_rr) | coasting shear s=0.7 | 2.448e-02 | eta = M[1:4, 6] (no (D24) solve) | 4.237e+10 | true |
+| coasting shear (D25) | 16 | max(1,||M||) max(1,||eta||)^2 cond | coasting shear s=0.7 | 0.000e+00 | shear = M[5, 6] alone | 3.105e+09 | true |
+| trial-011 eta_+ analytic | 4096 | max(1,||M||) max(1,||D||)^2 (cos 0.85 - cos 0.75)^2 / d | trial-011 crab k=kc(1-0.001) | 1.278e+01 | eta_+ with the sign of k flipped | 4.229e+13 | true |
+| scaling back-transformation D_phys = C_r^-1 D C_l | 64 | max(1,||M||) max(1,||D||)^2 cond(C) | dense k=3 (mu_s=-0.879) scaled by (2, 0.5, 4) | 1.961e+00 | C_r D C_l^-1 (exponents reversed) | 4.625e+14 | true |
+| DBA coasting eta vs closed-orbit central difference | 1 | FD tolerance 4 step^2 + 1e-12 / step = 5.000e-08 (absolute) | DBA cell dba_cell(1.5, -1.1) at delta = +-0.0001 | 6.512e-02 | one-sided difference (x(+step) - x(0)) / step | 1.617e+03 | true |
+
+- families whose legitimate ratio is below the test's c and whose defect ratio is above it: 17/17.
+
+##### 4. Paper cross-checks
+
+###### 4a. Trial-011 crab map M = diag(R(0.85), R(2.1), R(-0.75)) C_k, k = k_c (1 - eps), k_c = 0.1002018291014244
+
+eta_+ = (0, -k sin(-0.75), 0, 0) / (2 sqrt d), d = (cos 0.85 - cos(-0.75))^2 + k^2 sin 0.85 sin(-0.75). kappa_d = max(1, ||M||) max(1, ||D||)^2 (cos 0.85 - cos 0.75)^2 / d. The (D12) sign: eta_x' > 0 both in the routes and in the formula (no flip).
+
+| eps | k | d | |eta - eta_+| / (eps kappa_d) | eta_x' (routes) | eta_x' (formula) | h | statuses | agreement / (eps kappa_d) | cond eigenplane | cond projector | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0.1 | 0.0901816462 | 9.769e-04 | 1.123e+01 | 9.834e-01 | 9.834e-01 | 1.647e+00 | ok ok ok ok ok | 1.078e+02 | 1.043e+00 | 2.344e+01 | 49 it, ratio 1.2127114591717312 |
+| 0.01 | 0.0991998108 | 1.023e-04 | 4.877e+00 | 3.342e+00 | 3.342e+00 | 4.044e+00 | ok ok ok ok ok | 2.366e+02 | 1.065e+00 | 7.243e+01 | 176 it, ratio 1.8465144393012376 |
+| 0.001 | 0.1001016273 | 1.028e-05 | 1.278e+01 | 1.064e+01 | 1.064e+01 | 1.168e+01 | ok ok ok ok ok | 4.174e+03 | 1.073e+00 | 2.285e+02 | 500 it, ratio 2.053660983189055 |
+| 0.0001 | 0.1001918089 | 1.028e-06 | 2.251e+01 | 3.367e+01 | 3.367e+01 | 3.586e+01 | ok ok ok ok notinv | 5.530e+01 | 1.075e+00 | 7.226e+02 | 500 it, ratio 2.1193317789068424 |
+| 1.0e-5 | 0.1002008271 | 1.028e-07 | 3.482e+02 | 1.065e+02 | 1.065e+02 | 1.123e+02 | ok ok ok ok notinv | 2.999e+02 | 1.076e+00 | 2.285e+03 | 500 it, ratio 2.137966293872289 |
+| 1.0e-6 | 0.1002017289 | 1.028e-08 | 9.125e+02 | 3.368e+02 | 3.368e+02 | 3.541e+02 | ok ok ok ok notinv | 7.980e+02 | 1.076e+00 | 7.225e+03 | 500 it, ratio 2.140969573059938 |
+
+###### 4b. N15 indefinite control diag(R(0.73), R(1.41), R(-0.73)) (default rule)
+
+- clusters: indefinite (indefinite_cluster, pairs 2); definite (none, pairs 1); coasting holds: false (margin 3.193e+12).
+- route statuses: indefinite_cluster, indefinite_cluster, indefinite_cluster, indefinite_cluster, indefinite_cluster; report eta: unavailable:indefinite_cluster; labels: unavailable:indefinite_cluster; longitudinal index 0 (cluster 1).
+
+###### 4c. N16 / N17 degeneracy rejection (theory 13.7): Md = diag(R(0.73), R(1.41), R(0.73)), the false graph, the crab products
+
+- Md route statuses: cluster_unresolved, singular_coefficient, singular_coefficient, cluster_unresolved, cluster_unresolved; eta ambiguous_set:cluster_unresolved (an ambiguity set: AmbiguitySet); tau_s residual 0.000e+00; cubic residual 1.990e-08.
+- false graph [diag(1, -0.5); 0]: polynomial kernel residual ||(M^2 - tau M + I)[D; I]|| = 0.000e+00 (zero), (I1) raw residual 1.415e+00 vs the theory's 1.5 sqrt(2) sin 0.73 = 1.415e+00; normalized 1.265e+00.
+- zero (pseudoinverse) graph on C_k Md C_k^-1 (k = 0.3): raw residual 2.829e-01 vs the design's sqrt(2) k sin 0.73 = 2.829e-01 (difference 0.000e+00).
+- Md C_k statuses: none, none, none, singular_coefficient, singular_coefficient; C_k Md C_k^-1 statuses: cluster_unresolved, singular_coefficient, singular_coefficient, cluster_unresolved, cluster_unresolved; eta ambiguous_set:cluster_unresolved.
+
+###### 4d. DBA cell (benchmark 12.2-3): coasting eta against the closed-orbit central difference
+
+- DBA cell dba_cell(1.5, -1.1) at delta = +-0.0001: coasting holds true (margin 0.000e+00); eta_x = 7.063e-01 (stage 1 record x_co / delta = 0.706); closed-orbit residuals at +step, -step, 0: 1.171e-17, 5.024e-18, 1.603e-17.
+- central difference eta_fd,x = [0.7062987611114697, 4.7087147506385246e-14, 0.0, 0.0]; |eta_fd - eta_x| = 3.256e-09; FD tolerance 4 step^2 + 1e-12 / step = 5.000e-08 (step^2 truncation of the orbit's second derivative ~ 1 plus roundoff 1e-12 / step); ratio 6.512e-02. One-sided difference: |eta_one - eta_x| = 8.085e-05 (ratio 1.617e+03, rejected).
+
+### Appendix: the measurement scripts
+
+`measure_stage4a.jl` (the Part D1 driver: sections 1-4 of the table; package mode from the tree under test, `julia --startup-file=no --project=REPO --threads=4 measure_stage4a.jl <oracle_maps.tsv> <oracle_reference.tsv> <out.md>`; the fixture builders are extracted from `test/runtests.jl` by name at run time):
+
+```julia
+# Stage 4a measurement (Part D1). Package mode, from the tree under test:
+#   julia --startup-file=no --project=<tree> --threads=4 measure_stage4a.jl <oracle_maps.tsv> <oracle_reference.tsv> <out.md>
+# (1) the ORACLE AGREEMENT TABLE: every route of `_dispersion_routes` on the 39 oracle maps of the
+#     canonical-dispersion note against the note's own reference values (oracle_reference.tsv, dumped
+#     once by dump_oracle_reference.py driving verify_dispersion.py's helpers) at the design's 2e-10;
+# (2) every PROVISIONAL constant's window by the one-tenth / ten rule, fixture names DERIVED from the data;
+# (3) the rejected side of every `c eps kappa` check family of the stage 4a testsets;
+# (4) the paper cross-checks (trial-011 crab eta_+, the N15 / N17 controls, the DBA coasting eta).
+# The fixture builders are the suite's own `_st3_` / `_st4_` helpers, extracted from test/runtests.jl
+# by NAME at run time (never copied by hand); nothing here is a test lane.
+using Octopus, LinearAlgebra, Random, Printf
+using Octopus: determined_value, is_determined
+const ORACLE_TSV = ARGS[1]
+const REF_TSV = ARGS[2]
+const OUT_MD = ARGS[3]
+const REPO = normpath(joinpath(@__DIR__, "..", "..", "..", ".."))
+const EPS = eps(Float64)
+e2(x) = x isa Bool ? string(x) : x isa Real ? @sprintf("%.3e", x) : string(x)
+dv(d) = is_determined(d) ? determined_value(d) : nothing
+st(d) = is_determined(d) ? "unique" : string(d.status, ":", d.reason)
+
+# --- the suite's fixture helpers, extracted by name -------------------------------------------------
+const RUNTESTS = readlines(joinpath(REPO, "test", "runtests.jl"))
+"Lines of the top-level definition that starts at a line beginning with one of `starts` (a one-liner or a `function ... end` block)."
+function definition_lines(starts...)
+    i = findfirst(l -> any(s -> startswith(l, s), starts), RUNTESTS)
+    i === nothing && error("definition not found in runtests.jl: $(starts)")
+    startswith(RUNTESTS[i], "function ") || return RUNTESTS[i:i]
+    j = findnext(==("end"), RUNTESTS, i)
+    return RUNTESTS[i:j]
+end
+function fixture_prelude()
+    pieces = String[]
+    for name in ("const _ST3_J2 =", "_st3_rot(mu::Real)", "function _st3_block_diag(", "function _st3_crab_map(",
+                 "_st3_crab_kc(;", "function _st3_defective_spectator(", "_st3_indefinite_6d() =", "_st3_definite_pair_6d() =")
+        append!(pieces, definition_lines(name))
+    end
+    i = findfirst(l -> startswith(l, "const _ST4_SEED"), RUNTESTS)
+    j = findnext(l -> startswith(l, "@testset \"Dispersion routes:"), RUNTESTS, i)
+    append!(pieces, RUNTESTS[i:j-1])
+    return join(pieces, "\n")
+end
+const PRELUDE = fixture_prelude()
+include_string(Main, PRELUDE, "runtests_prelude")
+
+# --- loaders --------------------------------------------------------------------------------------------
+function load_oracle_maps(path)
+    lines = readlines(path)
+    hdr = split(lines[1], '\t')
+    @assert hdr[1:3] == ["family", "index", "parameter"] "oracle TSV header moved: $(hdr[1:3])"
+    return [(f = split(l, '\t');
+             (family=String(f[1]), index=parse(Int, f[2]), parameter=String(f[3]),
+              M=permutedims(reshape(parse.(Float64, f[4:39]), 6, 6))))
+            for l in lines[2:end] if !isempty(l)]
+end
+function load_reference(path)
+    lines = readlines(path)
+    hdr = split(lines[1], '\t')
+    @assert hdr[4] == "d11" && hdr[12] == "z1" && hdr[16] == "e1" && hdr[20] == "h" && hdr[21] == "map_matches" "reference TSV header moved"
+    return [(f = split(l, '\t');
+             (family=String(f[1]), index=parse(Int, f[2]),
+              D=permutedims(reshape(parse.(Float64, f[4:11]), 2, 4)), zeta=parse.(Float64, f[12:15]),
+              eta=parse.(Float64, f[16:19]), h=parse(Float64, f[20]), matches=f[21] == "1"))
+            for l in lines[2:end] if !isempty(l)]
+end
+oname(o) = "$(o.family) oracle index $(o.index) (parameter $(o.parameter))"
+
+# --- shared kernels ----------------------------------------------------------------------------------------
+routes_of(M; kwargs...) = (cl = _st4_clusters(M); (cl=cl, rep=Octopus._dispersion_routes(M, cl; kwargs...)))
+route(rep, name) = _st4_route(rep, name)
+"Longitudinal mode vector of the report (the cluster's mode with the report's canonical index)."
+function longitudinal_vector(cl, rep)
+    rep.longitudinal == 0 && return nothing
+    modes = dv(cl.clusters[rep.longitudinal_cluster].modes)
+    modes === nothing && return nothing
+    k = findfirst(m -> m.index == rep.longitudinal, modes)
+    return k === nothing ? nothing : modes[k].vector
+end
+kappa_route(M, D) = max(1.0, norm(M)) * max(1.0, norm(D))^2
+const RESULTS = Dict{String,Any}()
+const LINES = String[]
+pr(s...) = push!(LINES, string(s...))
+
+# =====================================================================================================
+# Section 1: the oracle agreement table (39 maps of the note against its own reference values).
+# =====================================================================================================
+const ROUTE_NAMES = collect(Octopus.DISPERSION_ROUTES)
+short(s::Symbol) = s === :none ? "ok" : s === :coasting_structure ? "coast" : s === :cluster_unresolved ? "unres" :
+                   s === :singular_coefficient ? "singcoef" : s === :singular_longitudinal_projection ? "singproj" :
+                   s === :not_invariant ? "notinv" : s === :route_not_selected ? "notsel" : string(s)
+condstr(r) = is_determined(r.coefficient_condition) ? e2(dv(r.coefficient_condition)) : short(r.coefficient_condition.reason)
+"One oracle map through `_dispersion_routes` and against the reference triple; returns the row record."
+function oracle_row(o, rf; longitudinal=nothing)
+    cl, rep = longitudinal === nothing ? routes_of(o.M) : routes_of(o.M; longitudinal=longitudinal)
+    rs = [route(rep, n) for n in ROUTE_NAMES]
+    coast = rep.coasting.holds
+    dzeta = Dict{Symbol,Float64}(); deta = Dict{Symbol,Float64}(); dh = Dict{Symbol,Float64}(); dD = Dict{Symbol,Float64}()
+    if coast
+        eta = dv(rep.coasting.eta)
+        dzeta[:coasting] = 0.0; deta[:coasting] = norm(eta - rf.eta, Inf); dh[:coasting] = abs(1 - rf.h); dD[:coasting] = norm(hcat(zeros(4), eta) - rf.D, Inf)
+    else
+        for r in rs
+            is_determined(r.zeta) || continue
+            dzeta[r.route] = norm(dv(r.zeta) - rf.zeta, Inf); deta[r.route] = norm(dv(r.eta) - rf.eta, Inf)
+            dh[r.route] = abs(dv(r.h) - rf.h); dD[r.route] = norm(dv(r.graph) - rf.D, Inf)
+        end
+    end
+    prim = route(rep, :eigenplane)
+    inv = is_determined(prim.invariance_residual) ? dv(prim.invariance_residual) : (normalized=NaN, raw=NaN)
+    agree = isempty(rep.agreement) ? 0.0 : maximum(max(a.zeta, a.eta, a.h) for a in rep.agreement)
+    nuniq = length(dzeta)
+    worst = nuniq == 0 ? NaN : max(maximum(values(dzeta)), maximum(values(deta)), maximum(values(dh)))
+    return (name=oname(o), family=o.family, index=o.index, M=o.M, cl=cl, rep=rep, ref=rf, coast=coast, statuses=[r.status for r in rs],
+            dzeta=dzeta, deta=deta, dh=dh, dD=dD, agree=agree, nuniq=nuniq, worst=worst,
+            inv_norm=inv.normalized, inv_raw=inv.raw,
+            trace_res=is_determined(prim.trace_residual) ? dv(prim.trace_residual) : NaN,
+            area=is_determined(prim.canonical_area) ? dv(prim.canonical_area) : NaN,
+            conds=[condstr(r) for r in rs], iters=(route(rep, :newton).iterations, route(rep, :fixed_point).iterations),
+            margin=rep.coasting.margin, cubic=rep.trace_cubic_residual, tunes=rep.tunes, longitudinal=rep.longitudinal,
+            labels=rep.labels)
+end
+named_max(rows, f) = (v = [f(r) for r in rows]; k = argmax(replace(v, NaN => -Inf)); (rows[k].name, v[k]))
+named_min(rows, f) = (v = [f(r) for r in rows]; k = argmin(replace(v, NaN => Inf)); (rows[k].name, v[k]))
+function oracle_section(oracle, ref)
+    rows = [oracle_row(o, ref[findfirst(r -> r.family == o.family && r.index == o.index, ref)]) for o in oracle]
+    RESULTS["oracle_rows"] = rows
+    pr("\n## 1. Oracle agreement table (39 maps of the canonical-dispersion note; reference = the note's own graph, zeta, eta, h)\n")
+    pr("Reference values: dump_oracle_reference.py drives verify_dispersion.py's `check_map` (every note identity at its 2e-10) and `coefficients` once per map; the 36 map entries re-dumped there equal the stage 1 TSV bit for bit on $(count(r -> r.ref.matches, rows))/$(length(rows)) maps. Julia side: `_mode_clusters` with the default rho_M0 (roundoff arm), `_dispersion_routes` with the default rules. Differences are infinity norms against the reference; `worst` = max over the unique routes of |dzeta|, |deta|, |dh|; the design's acceptance is 2e-10. Statuses in DISPERSION_ROUTES order $(ROUTE_NAMES) (ok = :none, coast = :coasting_structure, unres = :cluster_unresolved, singcoef, singproj, notinv). Conditions in the same order (the coefficient condition of each route's solve).\n")
+    pr("| map | coasting (margin) | statuses | unique | max dzeta | max deta | max dh | max dD | agreement | (I1) norm | (I1) raw | trace res | area | conditions | it N/FP | cubic res | <= 2e-10 |")
+    pr("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    for r in rows
+        pr("| $(r.name) | $(r.coast) ($(e2(r.margin))) | $(join(short.(r.statuses), " ")) | $(r.nuniq) | $(e2(maximum(values(r.dzeta); init=0.0))) | $(e2(maximum(values(r.deta); init=0.0))) | $(e2(maximum(values(r.dh); init=0.0))) | $(e2(maximum(values(r.dD); init=0.0))) | $(e2(r.agree)) | $(e2(r.inv_norm)) | $(e2(r.inv_raw)) | $(e2(r.trace_res)) | $(e2(r.area)) | $(join(r.conds, " ")) | $(r.iters[1])/$(r.iters[2]) | $(e2(r.cubic)) | $(r.worst <= 2e-10) |")
+    end
+    # the route-agreement matrix: per route, the largest difference from the reference over the maps where it is unique
+    pr("\n### 1a. Route-agreement matrix (max over the maps where the route is unique; count of such maps)\n")
+    pr("| route | maps unique | max dzeta (map) | max deta (map) | max dh (map) | max dD (map) |")
+    pr("|---|---|---|---|---|---|")
+    for n in vcat(ROUTE_NAMES, :coasting)
+        sub = [r for r in rows if haskey(r.dzeta, n)]
+        isempty(sub) && (pr("| $(n) | 0 | - | - | - | - |"); continue)
+        f(k) = (nm, v) = named_max(sub, r -> getfield(r, k)[n])
+        pr("| $(n) | $(length(sub)) | $(e2(f(:dzeta)[2])) ($(f(:dzeta)[1])) | $(e2(f(:deta)[2])) ($(f(:deta)[1])) | $(e2(f(:dh)[2])) ($(f(:dh)[1])) | $(e2(f(:dD)[2])) ($(f(:dD)[1])) |")
+    end
+    pr("\n### 1b. Extremes named from the rows\n")
+    npass = count(r -> r.worst <= 2e-10, rows)
+    pr("- maps with every unique route within 2e-10 of the note: $(npass)/$(length(rows)); worst overall $(e2(named_max(rows, r -> r.worst)[2])) at \"$(named_max(rows, r -> r.worst)[1])\".")
+    for (lab, f) in (("agreement entry", r -> r.agree), ("(I1) normalized residual of the primary", r -> r.inv_norm), ("(I1) raw residual", r -> r.inv_raw),
+                     ("|trace residual|", r -> abs(r.trace_res)), ("cubic-root residual", r -> r.cubic), ("coasting margin (non-coasting maps)", r -> r.coast ? NaN : r.margin))
+        nm, v = named_max(rows, f); pr("- largest $(lab): $(e2(v)) at \"$(nm)\".")
+    end
+    nm, v = named_min(rows, r -> r.coast ? NaN : abs(r.area)); pr("- smallest |canonical area| (bunched maps): $(e2(v)) at \"$(nm)\".")
+    nm, v = named_max(rows, r -> r.coast ? r.margin : NaN); pr("- largest coasting margin among the coasting maps: $(e2(v)) at \"$(nm)\".")
+    for fam in ("repeated", "defective", "coasting")
+        sub = [r for r in rows if r.family == fam]
+        pr("- $(fam) maps: statuses $(join(unique([join(short.(r.statuses), " ") for r in sub]), "; ")); worst difference $(e2(maximum(r.worst for r in sub))); degeneracy $(join(unique(string(r.cl.degeneracy_status) for r in sub), ", ")).")
+    end
+    return rows
+end
+
+"Reference synchrotron phase of an oracle family (the note's fixture loop: dense = the parameter, prescribed = -0.94, repeated / defective = -1.3)."
+reference_mu_s(o) = o.family == "dense" ? parse(Float64, o.parameter) : o.family == "prescribed_h" ? -0.94 : -1.3
+"Canonical index of the resolved mode whose eigenvalue is nearest exp(-i mu_s) (the certified longitudinal selection), or 0."
+function certified_index(cl, mu_s)
+    best = (Inf, 0)
+    for c in cl.clusters
+        modes = dv(c.modes); modes === nothing && continue
+        for m in modes
+            d = abs(m.eigenvalue - exp(-im * mu_s)); d < best[1] && (best = (d, m.index))
+        end
+    end
+    return best[1] <= 1e-3 ? best[2] : 0     # no resolved mode near the phase (E9 clusters): fall back to the default rule
+end
+function certified_section(oracle, ref, rows)
+    pr("\n### 1c. Longitudinal selection: the default z-area heuristic versus the certified index\n")
+    pr("The default rule (E3/E9, fixer T1: an UNCERTIFIED heuristic) takes the resolved mode with the largest signed z-area; by (K12) kappa_sz = h, so a betatron mode carries more z-area when h < 1/2. The certified index here is the resolved mode whose eigenvalue is nearest exp(-i mu_s) for the note's own synchrotron phase (dense: the parameter, prescribed: -0.94, repeated / defective: -1.3), passed as `longitudinal`. Rows whose default selection differs from the certified one are re-run with it; kappa[j, z] lists the signed z-areas of the three labelled modes (label order) as the default rule saw them.\n")
+    pr("| map | h (note) | default index | certified index | default selection's tune | kappa[:, z] (default labels) | statuses (certified) | max dzeta | max deta | max dh | agreement | <= 2e-10 |")
+    pr("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    cert_rows = Any[]; n_differ = 0
+    for (o, r) in zip(oracle, rows)
+        r.coast && continue
+        idx = certified_index(r.cl, reference_mu_s(o))
+        idx == r.longitudinal && (push!(cert_rows, r); continue)
+        n_differ += 1
+        rc = oracle_row(o, r.ref; longitudinal=idx)
+        push!(cert_rows, rc)
+        lb = dv(r.labels); kz = lb === nothing ? "unavailable" : join(e2.(lb.signed_areas[:, 3]), " ")
+        tune_default = lb === nothing ? NaN : r.tunes[end]
+        pr("| $(r.name) | $(e2(r.ref.h)) | $(r.longitudinal) | $(idx) | $(e2(tune_default)) | $(kz) | $(join(short.(rc.statuses), " ")) | $(e2(maximum(values(rc.dzeta); init=0.0))) | $(e2(maximum(values(rc.deta); init=0.0))) | $(e2(maximum(values(rc.dh); init=0.0))) | $(e2(rc.agree)) | $(rc.worst <= 2e-10) |")
+    end
+    RESULTS["oracle_rows_certified"] = cert_rows
+    npass = count(r -> r.coast || r.worst <= 2e-10, cert_rows) + count(r -> r.coast, rows)
+    ntot = length(rows)
+    pr("\n- default selection differs from the certified index on $(n_differ) of $(count(r -> !r.coast, rows)) bunched maps; with the certified index every unique route is within 2e-10 of the note on $(count(r -> r.worst <= 2e-10, cert_rows) + count(r -> r.coast, rows))/$(ntot) maps (default rule: $(count(r -> r.worst <= 2e-10, rows))/$(ntot)).")
+    nm, v = named_max(cert_rows, r -> r.worst); pr("- worst difference with the certified selection: $(e2(v)) at \"$(nm)\".")
+    nm, v = named_max(cert_rows, r -> r.agree); pr("- largest agreement entry with the certified selection: $(e2(v)) at \"$(nm)\".")
+    fp = [r for r in rows if !r.coast && r.statuses[end] === :not_invariant]
+    pr("- fixed point `:not_invariant` (E7 stall: a step that did not decrease the (I1) residual) on $(length(fp)) of $(count(r -> !r.coast, rows)) bunched maps by the default selection; the other four routes `:none` on every bunched map: $(all(r -> all(==(:none), r.statuses[1:4]), [r for r in rows if !r.coast])).")
+    lbd = [dv(r.labels) for r in rows if !r.coast]
+    pr("- labels detail on the bunched maps: $(join(unique([dv(r.labels) === nothing ? "unavailable" : r.labels.detail[1:min(60, end)] for r in rows if !r.coast]), " | "))...")
+    return cert_rows
+end
+
+# =====================================================================================================
+# Section 2: PROVISIONAL constants' windows (one-tenth / ten rule; names derived from the data).
+# =====================================================================================================
+const ACC = Dict{String,Dict{String,Float64}}(); const REJ = Dict{String,Dict{String,Float64}}(); const UNL = Dict{String,Dict{String,Float64}}()
+acc!(c, name, v) = (get!(ACC, c, Dict{String,Float64}())[name] = v)
+rej!(c, name, v) = (get!(REJ, c, Dict{String,Float64}())[name] = v)
+unl!(c, name, v) = (get!(UNL, c, Dict{String,Float64}())[name] = v)
+S4 = Octopus._symplectic_form(4)
+sinv(W) = Octopus._symplectic_inverse(W)
+"Repeated-betatron map k (fixture row 3): W scale 0.1, phases (0.72, 0.72, -1.3)."
+function repeated_map(k)
+    W = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4_SEED + 300 + k), 6; scale=0.1).M
+    (M=W * _st4_blockrot(0.72, 0.72, -1.3) * sinv(W), W=W, name="repeated betatron k=$(k) (phases 0.72, 0.72, -1.3)")
+end
+"Defective spectator map (row 4): the 4D Jordan block of `_st3_defective_spectator(0.72)` with R(-1.3), conjugated by W (scale 0.08)."
+function defective_map()
+    W = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4_SEED + 400), 6; scale=0.08).M
+    (M=W * _st4_block_diag(_st3_defective_spectator(0.72), _st3_rot(-1.3)) * sinv(W), W=W, name="defective spectator (Jordan 0.72, R(-1.3))")
+end
+"The bunched fixture set: (name, M, exact triple or nothing, certified longitudinal phase)."
+function bunched_fixtures()
+    fx = Any[]
+    for k in 0:199
+        f = _st4_dense(k); push!(fx, (name="dense k=$(k) (mu_s=$(round(f.mus[3]; digits=4)))", M=f.M, zeta=f.zeta, eta=f.eta, h=f.h, mu_s=f.mus[3], family="dense"))
+    end
+    for h in _st4_prescribed_h
+        f = _st4_prescribed(h); push!(fx, (name="prescribed h=$(h)", M=f.M, zeta=f.zeta, eta=f.eta, h=f.h, mu_s=f.mus[3], family="prescribed"))
+    end
+    for k in 0:3
+        f = repeated_map(k); D = f.W[1:4, 5:6] / f.W[5:6, 5:6]; z, e, h, _ = Octopus._graph_to_dispersion(D)
+        push!(fx, (name=f.name, M=f.M, zeta=z, eta=e, h=h, mu_s=-1.3, family="repeated"))
+    end
+    f = defective_map(); D = f.W[1:4, 5:6] / f.W[5:6, 5:6]; z, e, h, _ = Octopus._graph_to_dispersion(D)
+    push!(fx, (name=f.name, M=f.M, zeta=z, eta=e, h=h, mu_s=-1.3, family="defective"))
+    kc = _st3_crab_kc()
+    for e in (1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6)
+        push!(fx, (name="trial-011 crab k=kc(1-$(e))", M=_st3_crab_map(kc * (1 - e)), zeta=nothing, eta=nothing, h=nothing, mu_s=-0.75, family="crab"))
+    end
+    fc = _st4_coasting(0.7); Mc = _st4_mcal(zeros(4), fc.eta)
+    Mw = Mc * _st4_block_diag(fc.A, [1.0 0.7; -1e-6 1 - 0.7e-6]) * sinv(Mc)
+    push!(fx, (name="weak cavity (M[6,5] = -1e-6 folded, shear 0.7)", M=Mw, zeta=nothing, eta=nothing, h=nothing, mu_s=nothing, family="weak"))
+    return fx
+end
+"Coasting fixtures: the three coasting maps, the singular-coefficient coasting map, the DBA cell (matrix only)."
+function coasting_fixtures()
+    fx = Any[]
+    for s in (-0.4, 0.0, 0.7)
+        f = _st4_coasting(s); push!(fx, (name="coasting shear s=$(s)", M=f.M, eta=f.eta, family="coasting"))
+    end
+    fs = _st4_coasting(0.7); Mcs = _st4_mcal(zeros(4), fs.eta)
+    Msing = Mcs * _st4_block_diag(_st4_block_diag(_st4_R(0.3), [1.0 0.2; 0.0 1.0]), [1.0 0.7; 0.0 1.0]) * sinv(Mcs)
+    push!(fx, (name="coasting with a y-plane shear inside M_rr (singular (D24) coefficient)", M=Msing, eta=nothing, family="coasting_singular"))
+    return fx
+end
+"The rejection fixtures of the route guards: singular projection (h = 0), the degenerate Md, its crab products, the N15 indefinite map."
+function guard_fixtures()
+    zeta = [1.0, 0, 0, 0]; eta = [0.0, 1, 0, 0]; Mc = _st4_mcal(zeta, eta)
+    Ms = Mc * _st4_blockrot(0.73, 1.41, -0.9) * sinv(Mc)
+    Md = _st4_blockrot(0.73, 1.41, 0.73)
+    k = 0.3; Ck = Matrix(1.0I, 6, 6); Ck[2, 5] = -k; Ck[6, 1] = -k
+    return (Ms=(name="singular projection zeta=e_x, eta=e_px (h=0) around R(0.73, 1.41, -0.9)", M=Ms),
+            Md=(name="degenerate diag(R(0.73), R(1.41), R(0.73))", M=Md),
+            Mk=(name="degenerate Md C_k (k=0.3)", M=Md * Ck), Mks=(name="crab similarity C_k Md C_k^-1 (k=0.3)", M=Ck * Md / Ck),
+            N15=(name="N15 indefinite diag(R(0.73), R(1.41), R(-0.73))", M=_st3_indefinite_6d()),
+            Dfalse=[1.0 0.0; 0.0 -0.5; 0.0 0.0; 0.0 0.0], Diso=[1.0 0.0; 0.0 -1.0; 0.0 0.0; 0.0 0.0], Ck=Ck, k=k)
+end
+
+const ITER = Dict{String,Any}()   # iteration data for _MAX_HALVINGS and _FIXED_POINT_MAX_ITERATIONS
+"Route ratios at multiplier 1 for one bunched map (the report `rep` of `cl`); `tag` names the fixture."
+function collect_route_ratios!(tag, M, cl, rep)
+    rho = cl.rho_M1; eig = route(rep, :eigenplane); pol = route(rep, :polynomial); prj = route(rep, :projector)
+    new = route(rep, :newton); fp = route(rep, :fixed_point)
+    # c_coast: every bunched map is a rejected fixture of the coasting test (ratio = margin * c_coast)
+    rej!("c_coast", tag, rep.coasting.margin * Octopus._COASTING_MULTIPLIER)
+    # c_graph: sigma_min(U_ls) / (rho_M1 max(1, ||U_s||_2))
+    u = longitudinal_vector(cl, rep)
+    if u !== nothing && length(eig.singular_values) == 2
+        Us = hcat(real(u), -imag(u)); r = eig.singular_values[end] / (rho * max(1.0, opnorm(Us)))
+        eig.status === :singular_longitudinal_projection ? rej!("c_graph", tag, r) : acc!("c_graph", tag, r)
+    end
+    # c_iso: |area| / (rho_M1 max(1, ||D||_2^2)) for every formed graph
+    for r in (eig, pol, prj, new, fp)
+        is_determined(r.graph) || continue
+        D = dv(r.graph); v = abs(dv(r.canonical_area)) / (rho * max(1.0, opnorm(D)^2))
+        r.status === :graph_isotropic ? rej!("c_iso", "$(tag) [$(r.route)]", v) : acc!("c_iso", "$(tag) [$(r.route)]", v)
+    end
+    # c_coef: polynomial A_s (singular values reported), projector trace gaps, the (D15) Sylvester operator
+    if length(pol.singular_values) == 4
+        v = pol.singular_values[end] / (rho * max(1.0, pol.singular_values[1]))
+        pol.status === :singular_coefficient ? rej!("c_coef", "$(tag) [polynomial A_s]", v) :
+            is_determined(pol.graph) ? acc!("c_coef", "$(tag) [polynomial A_s]", v) : unl!("c_coef", "$(tag) [polynomial A_s, $(pol.status)]", v)
+    end
+    if is_determined(rep.tau_s) && prj.status !== :cluster_unresolved && rep.longitudinal_cluster > 0
+        Z = M + sinv(M); taus = [Octopus._cluster_trace(c) for c in cl.clusters]
+        # the repeated factor: a selected cluster with several pairs has an exactly vanishing trace gap inside it ((N16))
+        gap = minimum(i == rep.longitudinal_cluster ? (length(cl.clusters[i].half_members) > 1 ? 0.0 : Inf) : abs(dv(rep.tau_s) - taus[i]) for i in eachindex(taus); init=Inf)
+        if isfinite(gap)
+            v = gap / (rho * max(1.0, opnorm(Z)))
+            prj.status === :singular_coefficient ? rej!("c_coef", "$(tag) [projector trace gap]", v) :
+                is_determined(prj.graph) ? acc!("c_coef", "$(tag) [projector trace gap]", v) : unl!("c_coef", "$(tag) [projector trace gap, $(prj.status)]", v)
+        end
+    end
+    op = kron(Matrix(1.0I, 2, 2), M[1:4, 1:4]) - kron(transpose(M[5:6, 5:6]), Matrix(1.0I, 4, 4)); sv = svdvals(op)
+    v = sv[end] / (rho * max(1.0, sv[1]))
+    # the source guards the Sylvester operators by LAPACK failure only (no c_coef floor acts on them): unlabelled unless singular
+    if new.status === :singular_coefficient
+        rej!("c_coef", "$(tag) [(D15) Sylvester operator, LAPACK-singular]", v)
+    elseif new.status !== :cluster_unresolved && new.status !== :coasting_structure
+        unl!("c_coef", "$(tag) [(D15) Sylvester operator]", v)
+    end
+    # c_inv: normalized (I1) / (eps kappa_route); accepted = :none routes, rejected = :not_invariant graphs (stalled or other branch)
+    for r in (eig, pol, prj, new, fp)
+        is_determined(r.invariance_residual) || continue
+        v = dv(r.invariance_residual).normalized / (EPS * kappa_route(M, dv(r.graph)))
+        cr = is_determined(r.coefficient_condition) ? dv(r.coefficient_condition) : 1.0
+        if r.status === :none
+            acc!("c_inv", "$(tag) [$(r.route)]", v); acc!("c_inv_conditioned", "$(tag) [$(r.route)]", v / cr)
+        elseif r.status === :not_invariant
+            # a graph on ANOTHER branch is invariant (rejected by the trace check, not by (I1)): unlabelled for c_inv
+            occursin("another branch", r.detail) ? unl!("c_inv", "$(tag) [$(r.route), other branch]", v) : rej!("c_inv", "$(tag) [$(r.route), $(r.iterations > 0 ? "stalled iterate" : "formed graph")]", v)
+            occursin("another branch", r.detail) || rej!("c_inv_conditioned", "$(tag) [$(r.route)]", v / cr)
+        end
+    end
+    # c_stop: converged iterates' final residual / (eps max(1, ||M||_F)) accepted; the iterate one step short rejected
+    for r in (new, fp)
+        (r.converged && is_determined(r.invariance_residual)) || continue
+        unl!("c_stop", "$(tag) [$(r.route) final iterate]", dv(r.invariance_residual).normalized / (EPS * max(1.0, norm(M))))
+    end
+    if new.converged && new.iterations >= 2 && is_determined(rep.tau_s)
+        short_run = Octopus._newton_route(M, dv(rep.tau_s); rho_M1=rho, max_iterations=new.iterations - 1)
+        if is_determined(short_run.invariance_residual)
+            v = dv(short_run.invariance_residual).normalized / (EPS * max(1.0, norm(M)))
+            unl!("c_stop", "$(tag) [newton iterate $(new.iterations - 1) of $(new.iterations)]", v)
+            unl!("c_inv", "$(tag) [newton iterate $(new.iterations - 1) of $(new.iterations)]", dv(short_run.invariance_residual).normalized / (EPS * kappa_route(M, dv(short_run.graph))))
+        end
+    end
+    # c_tie: label margins / (eps kappa_frame) = margin / tie_tolerance * c_tie (clear labels are accepted fixtures)
+    lb = dv(rep.labels)
+    if lb !== nothing && lb.tie_tolerance > 0
+        f = Octopus._LABEL_TIE_MULTIPLIER / lb.tie_tolerance
+        for (what, m) in (("longitudinal margin", lb.longitudinal_margin), ("transverse margin", lb.transverse_margin))
+            # a margin at or below the tie tolerance IS a tie (the rule declares it; the data names the fixture)
+            abs(m) <= lb.tie_tolerance ? rej!("c_tie", "$(tag) [$(what), declared tie]", abs(m) * f) : acc!("c_tie", "$(tag) [$(what)]", abs(m) * f)
+        end
+    end
+    ITER[tag] = (newton=(new.iterations, new.halvings, new.converged, new.status), fixed_point=(fp.iterations, fp.converged, fp.status))
+    return nothing
+end
+"The (D24) coasting ratios: structure residual / (rho_M1 max(1, ||M||_F)) accepted, sigma_min(I - M_rr) coefficient ratio."
+function collect_coasting_ratios!(tag, M, cl, rep)
+    c = rep.coasting
+    acc!("c_coast", tag, c.margin * Octopus._COASTING_MULTIPLIER)
+    sv = svdvals(I - M[1:4, 1:4]); v = sv[end] / (cl.rho_M1 * max(1.0, sv[1]))
+    is_determined(c.eta) ? acc!("c_coef", "$(tag) [(D24) I - M_rr]", v) : rej!("c_coef", "$(tag) [(D24) I - M_rr]", v)
+    return nothing
+end
+
+"Run the routes on every fixture (certified longitudinal index where a phase is known) and collect the Part A ratios; returns the reports for Part B."
+function part_a_collection()
+    reports = Any[]
+    for f in bunched_fixtures()
+        cl = _st4_clusters(f.M)
+        idx = f.mu_s === nothing ? 0 : certified_index(cl, f.mu_s)
+        rep = idx == 0 ? Octopus._dispersion_routes(f.M, cl) : Octopus._dispersion_routes(f.M, cl; longitudinal=idx)
+        collect_route_ratios!(f.name, f.M, cl, rep)
+        push!(reports, (f=f, cl=cl, rep=rep))
+    end
+    for r in RESULTS["oracle_rows_certified"]
+        r.coast ? collect_coasting_ratios!(r.name, r.M, r.cl, r.rep) : collect_route_ratios!(r.name, r.M, r.cl, r.rep)
+    end
+    for f in coasting_fixtures()
+        cl = _st4_clusters(f.M); rep = Octopus._dispersion_routes(f.M, cl)
+        rep.coasting.holds ? collect_coasting_ratios!(f.name, f.M, cl, rep) : collect_route_ratios!(f.name, f.M, cl, rep)
+        push!(reports, (f=f, cl=cl, rep=rep))
+    end
+    g = guard_fixtures()
+    for (fx, mu) in ((g.Ms, -0.9), (g.Md, nothing), (g.Mk, nothing), (g.Mks, nothing), (g.N15, -0.73))
+        cl = _st4_clusters(fx.M); idx = mu === nothing ? 0 : certified_index(cl, mu)
+        rep = idx == 0 ? Octopus._dispersion_routes(fx.M, cl) : Octopus._dispersion_routes(fx.M, cl; longitudinal=idx)
+        collect_route_ratios!(fx.name, fx.M, cl, rep)
+        RESULTS["guard " * fx.name] = (cl=cl, rep=rep)
+    end
+    # the isotropic graph and the false graph through the route acceptance (rho_M1 of Md's clusters)
+    rho_d = RESULTS["guard " * g.Md.name].cl.rho_M1
+    r = Octopus._route_from_graph(:eigenplane, g.Md.M, g.Diso, 2cos(0.73); rho_M1=rho_d)
+    rej!("c_iso", "isotropic graph [e_x, -e_px] on $(g.Md.name)", abs(dv(r.canonical_area)) / (rho_d * max(1.0, opnorm(g.Diso)^2)))
+    r = Octopus._route_from_graph(:polynomial, g.Md.M, g.Dfalse, 2cos(0.73); rho_M1=rho_d)
+    rej!("c_inv", "false graph [diag(1, -0.5); 0] on $(g.Md.name) (theory 13.7)", dv(r.invariance_residual).normalized / (EPS * kappa_route(g.Md.M, g.Dfalse)))
+    # the pseudoinverse (zero) graph on the crab similarity: raw residual sqrt(2) k sin 0.73 (design 0.28293)
+    r0 = Octopus._route_residuals(g.Mks.M, zeros(4, 2), 2cos(0.73))
+    RESULTS["zero graph raw residual on crab similarity"] = (raw=r0.invariance.raw, design=sqrt(2) * g.k * sin(0.73))
+    rej!("c_inv", "zero (pseudoinverse) graph on $(g.Mks.name)", Octopus._graph_invariance_residual(g.Mks.M, zeros(4, 2)).normalized / (EPS * kappa_route(g.Mks.M, zeros(4, 2))))
+    # label ties: the 45-degree rolls (x-y for the transverse margin, y-z for the longitudinal one)
+    ux = ComplexF64[1, -im, 0, 0, 0, 0]; uy = ComplexF64[0, 0, 1, -im, 0, 0]; uz = ComplexF64[0, 0, 0, 0, 1, -im]
+    lb = Octopus._mode_labels_6d([(ux + uy) / sqrt(2), (ux - uy) / sqrt(2), uz], [0.73, 0.73, 5.4])
+    rej!("c_tie", "45-degree x-y roll of equal-tune betatron modes [transverse margin]", lb.transverse_margin / lb.tie_tolerance * Octopus._LABEL_TIE_MULTIPLIER)
+    lb = Octopus._mode_labels_6d([ux, (uy + uz) / sqrt(2), (uy - uz) / sqrt(2)], [0.73, 1.41, 5.4])
+    rej!("c_tie", "45-degree y-z roll (equal z-areas) [longitudinal margin]", lb.longitudinal_margin / lb.tie_tolerance * Octopus._LABEL_TIE_MULTIPLIER)
+    # exact-graph floor of the (I1) residual (accepted side of c_stop) on the dense maps
+    for rp in reports
+        rp.f.family == "dense" || continue
+        D = hcat(rp.f.zeta, rp.f.eta ./ rp.f.h)
+        acc!("c_stop", "$(rp.f.name) [exact graph floor]", Octopus._graph_invariance_residual(rp.f.M, D).normalized / (EPS * max(1.0, norm(rp.f.M))))
+    end
+    RESULTS["reports"] = reports
+    return reports
+end
+"Far-start Newton (D0 = D_exact + 100) on the dense maps: halved trials of the converged runs and the stalls at the cap."
+function far_start_halvings(reports)
+    conv = Dict{String,Int}(); stall = Dict{String,Int}(); maxstep = Dict{String,Int}()
+    for rp in reports
+        rp.f.family == "dense" || continue
+        D0 = hcat(rp.f.zeta, rp.f.eta ./ rp.f.h) .+ 100.0
+        r = Octopus._newton_route(rp.f.M, dv(rp.rep.tau_s); rho_M1=rp.cl.rho_M1, D0=D0, max_iterations=50)
+        (r.converged ? conv : stall)[rp.f.name] = r.halvings
+    end
+    RESULTS["far_start"] = (conv=conv, stall=stall)
+    return (conv=conv, stall=stall)
+end
+
+# --- Part B ratios: c_sep, c_triple, c_ell, c_ohmi ------------------------------------------------------------
+triple_ratio(zeta, eta, h) = abs(dot(zeta, S4 * eta) - (1 - h)) / (EPS * max(1.0, norm(zeta) * norm(eta)))
+ell_ratio(Mbar_s) = (2 - abs(tr(Mbar_s))) / (EPS * max(1.0, norm(Mbar_s)))
+ohmi_ratio(zeta, eta, h) = h / (EPS * max(1.0, norm(zeta) * norm(eta)))
+"Part B ratios on every report whose primary triple is unique, plus the synthetic rejection fixtures of the B docstrings."
+function part_b_collection(reports)
+    seps = Any[]
+    for rp in reports
+        rep = rp.rep; is_determined(rep.zeta) || continue
+        rep.coasting.holds && continue
+        tag = rp.f.name
+        # the chain's thin method: ONE (D8) evaluation of the primary graph (the report's h is (D11) det U_ls, which differs from
+        # the (D8) h by eps cond(U_ls): the report triple is recorded unlabelled, the (D8) triple is the accepted fixture)
+        sep = Octopus._canonical_separation(rp.f.M, rep)
+        zeta, eta, h = sep.zeta, sep.eta, sep.h
+        acc!("c_triple", tag, triple_ratio(zeta, eta, h))
+        unl!("c_triple", "$(tag) [report triple with the (D11) h = det U_ls]", triple_ratio(dv(rep.zeta), dv(rep.eta), dv(rep.h)))
+        v_sep = sep.off_diagonal_residual / (EPS * _st4_kappa_sep(sep, rp.f.M))
+        # a triple whose error is eps cond(U_ls) (the weak cavity: cond 8e2) is limited by the route's conditioning, which kappa_sep does not carry
+        rp.f.family == "weak" ? unl!("c_sep", "$(tag) [triple at cond(U_ls) = $(e2(dv(route(rep, :eigenplane).coefficient_condition)))]", v_sep) : acc!("c_sep", tag, v_sep)
+        acc!("c_ell", tag, ell_ratio(sep.longitudinal_map))
+        h > 0 ? acc!("c_ohmi", tag, ohmi_ratio(zeta, eta, h)) : unl!("c_ohmi", "$(tag) [h < 0: form_inadmissible by sign, not by the floor]", ohmi_ratio(zeta, eta, h))
+        push!(seps, (tag=tag, M=rp.f.M, sep=sep, zeta=zeta, eta=eta, h=h, family=rp.f.family))
+        # rejected side of c_sep: the exact zeta perturbed by delta (1, -1, 0.5, 0.25), h re-derived so the triple stays consistent
+        if rp.f.family == "dense" && rp.f.zeta !== nothing
+            for delta in (1e-8, 1e-10, 1e-12, 1e-13, 1e-14)
+                zp = rp.f.zeta + delta * [1.0, -1.0, 0.5, 0.25]; hp = 1 - dot(zp, S4 * rp.f.eta)
+                sp = Octopus._canonical_separation(rp.f.M, zp, rp.f.eta, hp)
+                v = sp.off_diagonal_residual / (EPS * _st4_kappa_sep(sp, rp.f.M))
+                delta >= 1e-10 ? rej!("c_sep", "$(tag) [zeta + $(delta) (1, -1, 0.5, 0.25)]", v) : unl!("c_sep", "$(tag) [zeta + $(delta) (1, -1, 0.5, 0.25)]", v)
+            end
+            for dh in (1e-12, 1e-13, 1e-14)
+                v = triple_ratio(rp.f.zeta, rp.f.eta, rp.f.h + dh)
+                dh >= 1e-12 ? rej!("c_triple", "$(tag) [h + $(dh)]", v) : unl!("c_triple", "$(tag) [h + $(dh)]", v)
+            end
+        end
+    end
+    RESULTS["separations"] = seps
+    # c_ell rejected: the shear (a coasting longitudinal block), rotations by phases at or below roundoff of tr = 2
+    for s in (-0.4, 0.0, 0.7); rej!("c_ell", "shear [1 $(s); 0 1] (unit eigenvalue)", ell_ratio([1.0 s; 0.0 1.0])); end
+    for mu in (1e-8, 3e-8); rej!("c_ell", "R($(mu)) (2 - tr within the roundoff 2 eps of tr itself)", ell_ratio(_st4_R(mu))); end
+    for mu in (1e-7, 1e-6); unl!("c_ell", "R($(mu)) (boundary: elliptic, 2 - tr = $(e2(2 - 2cos(mu))))", ell_ratio(_st4_R(mu))); end
+    rej!("c_ell", "hyperbolic diag(2, 1/2)", ell_ratio([2.0 0.0; 0.0 0.5]))
+    # c_ohmi rejected: h = 0 and h at roundoff on the prescribed construction zeta = (1, 0.2, 0.1, 0), eta = (0, 1 - h, 0, 0)
+    for h in (0.0, 1e-15, 1e-14, 2e-14)
+        zeta = [1.0, 0.2, 0.1, 0.0]; eta = [0.0, 1 - h, 0.0, 0.0]
+        h <= 1e-15 ? rej!("c_ohmi", "prescribed construction h=$(h) (h within a few eps of 0)", ohmi_ratio(zeta, eta, h)) : unl!("c_ohmi", "prescribed construction h=$(h) (boundary)", ohmi_ratio(zeta, eta, h))
+    end
+    return seps
+end
+
+# --- the one-tenth / ten rule ------------------------------------------------------------------------------------
+const WINDOWS = Dict{String,Any}()
+"Window lines for one constant: accepted ratios must stay below c / 10 (accepted_below) and rejected ones above 10 c, or the reverse."
+function window_lines(key, title, formula, current; accepted_below::Bool=true)
+    acc = get(ACC, key, Dict{String,Float64}()); rej = get(REJ, key, Dict{String,Float64}()); unl = get(UNL, key, Dict{String,Float64}())
+    out = String["### $(title)", "", "- ratio at multiplier 1: $(formula)", "- source value: $(current); accepted $(length(acc)), rejected $(length(rej)), unlabelled $(length(unl)) fixture values"]
+    if accepted_below
+        ka = isempty(acc) ? nothing : argmax(acc); kr = isempty(rej) ? nothing : argmin(rej)
+        ka === nothing || push!(out, "- largest accepted ratio (must stay below c / 10): $(e2(acc[ka])) at \"$(ka)\"")
+        kr === nothing || push!(out, "- smallest rejected ratio (must exceed 10 c): $(e2(rej[kr])) at \"$(kr)\"")
+        lo = ka === nothing ? 0.0 : 10 * acc[ka]; hi = kr === nothing ? Inf : rej[kr] / 10
+        top_acc = sort(collect(acc); by=last, rev=true); top_rej = sort(collect(rej); by=last)
+    else
+        ka = isempty(acc) ? nothing : argmin(acc); kr = isempty(rej) ? nothing : argmax(rej)
+        ka === nothing || push!(out, "- smallest accepted ratio (must exceed 10 c): $(e2(acc[ka])) at \"$(ka)\"")
+        kr === nothing || push!(out, "- largest rejected ratio (must stay below c / 10): $(e2(rej[kr])) at \"$(kr)\"")
+        lo = kr === nothing ? 0.0 : 10 * rej[kr]; hi = ka === nothing ? Inf : acc[ka] / 10
+        top_acc = sort(collect(acc); by=last); top_rej = sort(collect(rej); by=last, rev=true)
+    end
+    empty = lo > hi
+    inside = !empty && lo <= current <= hi
+    push!(out, "- window [$(e2(lo)), $(e2(hi))]" * (empty ? " is EMPTY (the fixtures on both sides are closer than a factor 100)" : "; source value inside: $(inside)") *
+               (isempty(rej) ? " (no rejected fixture: that edge is open)" : ""))
+    for (k, v) in top_acc[1:min(4, length(top_acc))]; push!(out, "  - accepted \"$(k)\" $(e2(v))"); end
+    for (k, v) in top_rej[1:min(4, length(top_rej))]; push!(out, "  - rejected \"$(k)\" $(e2(v))"); end
+    if !isempty(unl)
+        us = accepted_below ? sort(collect(unl); by=last) : sort(collect(unl); by=last, rev=true)
+        for (k, v) in us[1:min(3, length(us))]; push!(out, "  - unlabelled \"$(k)\" $(e2(v))"); end
+        length(us) > 3 && push!(out, "  - unlabelled extreme \"$(us[end][1])\" $(e2(us[end][2]))")
+    end
+    push!(out, "")
+    WINDOWS[key] = (lo=lo, hi=hi, inside=inside, empty=empty, current=current, n_acc=length(acc), n_rej=length(rej), n_unl=length(unl),
+                    acc_extreme=ka === nothing ? ("-", NaN) : (ka, acc[ka]), rej_extreme=kr === nothing ? ("-", NaN) : (kr, rej[kr]))
+    return out
+end
+function multiplier_section(reports)
+    pr("\n## 2. PROVISIONAL constants: windows by the one-tenth / ten rule (fixture names derived from the data)\n")
+    pr("Every ratio is the guarded quantity divided by its floor at multiplier 1; `accepted` fixtures are ones the guard must pass (the ratio must exceed 10 c, or stay below c / 10 for a residual-type guard), `rejected` ones it must refuse; `unlabelled` values are reported but do not constrain the window (boundary cases named in the text). Fixtures: 200 dense maps, 7 prescribed-h maps, 4 repeated, 1 defective, the trial-011 ladder, the weak cavity, 39 oracle maps (certified longitudinal index), 3 coasting maps, the singular-coefficient coasting map, the guard fixtures (h = 0, Md, Md C_k, C_k Md C_k^-1, N15), the synthetic rejection fixtures of the constants' docstrings.\n")
+    specs = [("c_graph", "c_graph (_GRAPH_SINGULARITY_MULTIPLIER)", "sigma_min(U_ls) / (rho_M1 max(1, ||U_s||_2)); accepted = regular eigenplane routes, rejected = :singular_longitudinal_projection", Octopus._GRAPH_SINGULARITY_MULTIPLIER, false),
+             ("c_iso", "c_iso (_ISOTROPY_MULTIPLIER)", "|1 + D1' S_4 D2| / (rho_M1 max(1, ||D||_2^2)) of every formed graph; rejected = the isotropic graph", Octopus._ISOTROPY_MULTIPLIER, false),
+             ("c_coef", "c_coef (_COEFFICIENT_CONDITION_MULTIPLIER)", "sigma_min / (rho_M1 max(1, sigma_max)) of A_s, the projector trace gap / (rho_M1 max(1, ||Z||_2)), sigma_min(I - M_rr) of (D24); rejected = :singular_coefficient; the (D15) operator is LAPACK-guarded only (unlabelled)", Octopus._COEFFICIENT_CONDITION_MULTIPLIER, false),
+             ("c_inv", "c_inv (_ROUTE_INVARIANCE_MULTIPLIER)", "normalized (I1) / (eps kappa_route), kappa_route = max(1, ||M||_F) max(1, ||D||_F)^2; accepted = :none routes, rejected = :not_invariant graphs (stalled iterates, the false and zero graphs); other-branch graphs and short Newton iterates unlabelled", Octopus._ROUTE_INVARIANCE_MULTIPLIER, true),
+             ("c_inv_conditioned", "INFORMATIONAL: c_inv with the route's coefficient condition folded into kappa", "normalized (I1) / (eps kappa_route cond_route), cond_route = the route's reported coefficient_condition (cond(U_ls), cond(A_s), the trace-gap or Sylvester condition); same labels as c_inv; not a source constant", Octopus._ROUTE_INVARIANCE_MULTIPLIER, true),
+             ("c_stop", "c_stop (_ITERATION_STOP_MULTIPLIER)", "normalized (I1) / (eps max(1, ||M||_F)); accepted = the EXACT graph's roundoff floor (the iteration must be able to stop there); converged final iterates and the iterate one step short are unlabelled (the rule defines that boundary itself)", Octopus._ITERATION_STOP_MULTIPLIER, true),
+             ("c_coast", "c_coast (_COASTING_MULTIPLIER)", "max structure residual / (rho_M1 max(1, ||M||_F)) = margin * c_coast; accepted = coasting maps, rejected = every bunched map and the weak cavity", Octopus._COASTING_MULTIPLIER, true),
+             ("c_tie", "c_tie (_LABEL_TIE_MULTIPLIER)", "|margin| / (eps kappa_frame); accepted = clear labels, rejected = declared ties (the 45-degree rolls and every margin the data put at or below the tolerance)", Octopus._LABEL_TIE_MULTIPLIER, false),
+             ("c_sep", "c_sep (_SEPARATION_RESIDUAL_MULTIPLIER)", "off-diagonal (K4) / (eps kappa_sep); accepted = the primary triple of every bunched fixture, rejected = zeta perturbed by delta (1, -1, 0.5, 0.25), delta >= 1e-12 (1e-13, 1e-14 unlabelled)", Octopus._SEPARATION_RESIDUAL_MULTIPLIER, true),
+             ("c_triple", "c_triple (_TRIPLE_CONSISTENCY_MULTIPLIER)", "|zeta' S_4 eta - (1 - h)| / (eps max(1, ||zeta|| ||eta||)); rejected = h + 1e-12, h + 1e-13 (1e-14 unlabelled)", Octopus._TRIPLE_CONSISTENCY_MULTIPLIER, true),
+             ("c_ell", "c_ell (_LONGITUDINAL_ELLIPTIC_MULTIPLIER)", "(2 - |tr Mbar_s|) / (eps max(1, ||Mbar_s||_F)); accepted = every separated longitudinal block, rejected = shears, R(mu <= 1e-7), a hyperbolic block (R(1e-6) unlabelled)", Octopus._LONGITUDINAL_ELLIPTIC_MULTIPLIER, false),
+             ("c_ohmi", "c_ohmi (_OHMI_POSITIVITY_MULTIPLIER)", "h / (eps max(1, ||zeta|| ||eta||)); accepted = positive-h triples, rejected = h in (0, 1e-15, 1e-14) (2e-14 unlabelled; negative h is refused by sign)", Octopus._OHMI_POSITIVITY_MULTIPLIER, false)]
+    for (key, title, formula, current, below) in specs
+        for l in window_lines(key, title, formula, current; accepted_below=below); pr(l); end
+    end
+    pr("### Summary\n")
+    pr("| constant | source | window low | window high | inside | accepted | rejected | unlabelled |")
+    pr("|---|---|---|---|---|---|---|---|")
+    for (key, _, _, _, _) in specs
+        w = WINDOWS[key]; pr("| $(key) | $(w.current) | $(e2(w.lo)) | $(e2(w.hi)) | $(w.empty ? "EMPTY" : w.inside) | $(w.n_acc) | $(w.n_rej) | $(w.n_unl) |")
+    end
+    # the two integer caps (stopping rules): iteration data
+    fs = far_start_halvings(reports)
+    nconv = length(fs.conv); nstall = length(fs.stall)
+    kc = isempty(fs.conv) ? ("-", 0) : (argmax(fs.conv), maximum(values(fs.conv)))
+    pr("\n### _MAX_HALVINGS = $(Octopus._MAX_HALVINGS) and _FIXED_POINT_MAX_ITERATIONS = $(Octopus._FIXED_POINT_MAX_ITERATIONS) (integer caps: stopping rules, no tolerance window)\n")
+    hv = Dict(k => v.newton[2] for (k, v) in ITER); kh = argmax(hv)
+    pr("- from the (D15) start: halved trials over the whole run at most $(hv[kh]) at \"$(kh)\" over the $(length(ITER)) fixtures ($(count(==(0), values(hv))) fixtures never halve); Newton iterations at most $(maximum(v.newton[1] for v in values(ITER))) at \"$(argmax(Dict(k => v.newton[1] for (k, v) in ITER)))\".")
+    pr("- far start D0 = D_exact + 100 on the 200 dense maps: $(nconv) converge (halved trials over the run up to $(kc[2]) at \"$(kc[1])\"), $(nstall) stall at the per-step cap ($(Octopus._MAX_HALVINGS) halved trials in the stalling step; accumulated over the run $(minimum(values(fs.stall); init=0)) .. $(maximum(values(fs.stall); init=0))).")
+    fpi = Dict(k => v.fixed_point[1] for (k, v) in ITER if v.fixed_point[2]); kf = isempty(fpi) ? "-" : argmax(fpi)
+    pr("- fixed point: converged on $(length(fpi)) fixtures, slowest $(isempty(fpi) ? 0 : fpi[kf]) iterations at \"$(kf)\"; `:not_invariant` (E7 stall) on $(count(v -> v.fixed_point[3] === :not_invariant, values(ITER))); cap $(Octopus._FIXED_POINT_MAX_ITERATIONS) reached on $(count(v -> v.fixed_point[1] >= Octopus._FIXED_POINT_MAX_ITERATIONS, values(ITER))).")
+end
+
+# =====================================================================================================
+# Section 3: the rejected side of every `c eps kappa` check family of the stage 4a testsets.
+# Each family: the check's ratio (residual / (eps kappa), the test's c beside it) on a legitimate
+# fixture (green) and under one injected defect the check exists for (red once).
+# =====================================================================================================
+const FAMILIES = Any[]
+fam!(name, c, kappa_text, legit_name, legit, defect_name, defect) = push!(FAMILIES, (name=name, c=c, kappa=kappa_text, legit_name=legit_name, legit=legit, defect_name=defect_name, defect=defect))
+function rejected_side_section(reports)
+    dense = [rp for rp in reports if rp.f.family == "dense"]
+    rp = dense[1 + 66]; f = rp.f; M = f.M; rep = rp.rep; cl = rp.cl        # a dense map near the coincident-trace region (k = 66) and
+    rq = dense[1 + 3]; fq = rq.f                                             # a well separated one (k = 3)
+    eig = route(rep, :eigenplane); D = dv(eig.graph)
+    # F1: route triple against the exact triple; defect: the (D12) sign of eta flipped
+    kap = max(1, norm(M)) * max(1, norm(D))^2
+    fam!("route triple vs exact triple (dense)", 1024, "max(1,||M||) max(1,||D||)^2", f.name, norm(dv(rep.eta) - f.eta, Inf) / (EPS * kap),
+         "eta with the (D12) sign flipped", norm(-dv(rep.eta) - f.eta, Inf) / (EPS * kap))
+    # F2: agreement entries; defect: a graph on another branch (the Newton graph of the prescribed h = -2 map with the certified index)
+    pre = reports[findfirst(r -> r.f.name == "prescribed h=-2.0", reports)]
+    a_ok = maximum(max(a.zeta, a.eta, a.h) for a in rep.agreement)
+    kap_p = max(1, norm(pre.f.M)) * max(1, norm(dv(route(pre.rep, :eigenplane).graph)))^2
+    other = dv(route(pre.rep, :newton).graph); z2, e2_, h2, _ = Octopus._graph_to_dispersion(other)
+    fam!("route agreement entries", 2048, "max(1,||M||) max(1,||D||)^2", f.name, a_ok / (EPS * kap),
+         "eigenplane vs the Newton graph on ANOTHER branch (prescribed h=-2, certified index)", max(norm(z2 - pre.f.zeta, Inf), norm(e2_ - pre.f.eta, Inf), abs(h2 - pre.f.h)) / (EPS * kap_p))
+    # F3: cubic roots vs 2 cos mu_j; defect: a non-symplectic 1e-8 perturbation of M (the trace identities no longer hold on a symplectic spectrum)
+    Mp = M + 1e-8 * randn(MersenneTwister(1), 6, 6)
+    rts = Octopus._trace_cubic_roots(Mp); taus = sort(2cos.(rep.tunes))
+    fam!("trace-cubic roots vs 2 cos mu_j", 64, "max(1,||M||)", f.name, rep.trace_cubic_residual / (EPS * max(1, norm(M))),
+         "M + 1e-8 N (non-symplectic)", maximum(abs.(sort(real.(rts)) - taus)) / (EPS * max(1, norm(M))))
+    # F4: (K4) off-diagonal; defect: the reversed factor order M_eta M_zeta (the dossier's NEVER)
+    sep = Octopus._canonical_separation(M, rep); ks = _st4_kappa_sep(sep, M)
+    fac = Octopus._dispersion_factors(sep.zeta, sep.eta); Mrev = fac.M_eta * fac.M_zeta
+    Mbar_rev = sinv(Mrev) * M * Mrev; off_rev = sqrt(norm(Mbar_rev[1:4, 5:6])^2 + norm(Mbar_rev[5:6, 1:4])^2)
+    fam!("(K4) separation off-diagonal", Octopus._SEPARATION_RESIDUAL_MULTIPLIER, "max(1,||M||) ||M_cal|| ||M_cal^-1||", f.name, sep.off_diagonal_residual / (EPS * ks),
+         "factor order reversed to M_eta M_zeta", off_rev / (EPS * ks))
+    # F5: (K1) symplecticity of M_cal; defect: the pz row of M_zeta with the wrong sign
+    Mz_bad = copy(fac.M_zeta); Mz_bad[6, 1:4] .= -Mz_bad[6, 1:4]; Mc_bad = Mz_bad * fac.M_eta
+    fam!("(K1) M_cal symplecticity", 64, "||M_cal||^2", f.name, sep.symplecticity / (EPS * norm(sep.transformation)^2),
+         "M_zeta pz-row sign flipped", Octopus._symplectic_defect(Mc_bad).frobenius / (EPS * norm(Mc_bad)^2))
+    # F6: (K5) block symplecticity; defect: the non-symplectic M + 1e-8 N separated with the same triple
+    sep_p = Octopus._canonical_separation(Mp, sep.zeta, sep.eta, sep.h)
+    fam!("(K5) separated block symplecticity", 64, "||M||^2 ||M_cal||^2 ||M_cal^-1||^2", f.name, max(sep.transverse_symplecticity, sep.longitudinal_symplecticity) / (EPS * ks^2),
+         "M + 1e-8 N (non-symplectic)", max(sep_p.transverse_symplecticity, sep_p.longitudinal_symplecticity) / (EPS * ks^2))
+    # F7: (K9) U_6 reconstruction diag(R(mu_1), R(mu_2), R(mu_s)); defect: the two betatron tunes swapped
+    ch = _st4_chain(M, sep.zeta, sep.eta, sep.h)
+    kap_u = max(1, norm(M)) * norm(ch.optics.normalizer)^2
+    bad = Octopus._full_normalizer_6d(sep, ch.frame.normalizer, ch.lon.normalizer, (ch.frame.tunes[2], ch.frame.tunes[1], ch.lon.tune))
+    fam!("(K9) U_6 reconstruction (normalized)", 64, "max(1,||M||) ||U_6||^2", f.name, ch.optics.reconstruction.normalized / (EPS * kap_u),
+         "betatron tunes swapped in the target rotation", bad.reconstruction.normalized / (EPS * kap_u))
+    # F8: (K12) sums one and kappa_sz - h; defect: a vector scaled by 1.1 (normalization broken)
+    kap_k = norm(ch.optics.normalizer)^2
+    v = ch.optics.vectors; k11 = -imag(conj(1.1v[3][5]) * 1.1v[3][6])
+    fam!("(K12) row/column sums and kappa_sz - h", 64, "||U_6||^2", f.name, max(maximum(abs, ch.optics.row_sums .- 1), maximum(abs, ch.optics.column_sums .- 1), abs(ch.optics.kappa_sz_minus_h)) / (EPS * kap_k),
+         "longitudinal vector scaled by 1.1", abs(k11 - sep.h) / (EPS * kap_k))
+    # F9: (M5) and (K13) are algebraic identities of ONE vector; the defect that can act is mixing modes: kappa of mode 2 with (beta, alpha, gamma) of mode 1
+    u1 = v[1]; u2 = v[2]
+    m5_bad = maximum(abs(abs2(u1[2a-1]) * abs2(u1[2a]) - real(conj(u1[2a-1]) * u1[2a])^2 - imag(conj(u2[2a-1]) * u2[2a])^2) for a in 1:3)
+    fam!("(M5) beta gamma - alpha^2 - kappa^2 and (K13)", 64, "||U_6||^4", f.name, max(ch.optics.m5_residual, ch.optics.k13_residual) / (EPS * kap_k^2),
+         "kappa of mode 2 combined with beta, alpha, gamma of mode 1", m5_bad / (EPS * kap_k^2))
+    # F10: covariance closure M Sigma M' = Sigma; defect: the covariance of ANOTHER map (dense k = 3) closed under this M
+    kap_c = max(1, norm(M))^2 * norm(ch.cov.sigma)
+    chq = _st4_chain(fq.M, fq.zeta, fq.eta, fq.h)
+    fam!("(K10) covariance closure", 64, "||M||^2 ||Sigma||", f.name, ch.cov.closure_residual / (EPS * kap_c),
+         "Sigma of $(fq.name) under this M", norm(M * chq.cov.sigma * transpose(M) - chq.cov.sigma) / (EPS * kap_c))
+    # F11: (K14) barred covariances; defect: eta with the sign flipped in the (K14) reassembly
+    # (K14) is quadratic in eta (a sign flip is invisible): the defect that acts is eta scaled by 1.1
+    cov_bad = Octopus._matched_covariance_6d(M, ch.optics, (1e-9, 2e-9, 3e-6), ch.frame.covariances, 1.1 * sep.eta)
+    kap_14 = max(1, norm(ch.optics.normalizer))^2 * max(1, norm(sep.eta))^2
+    fam!("(K14) barred covariance identity", 64, "max(1,||U_6||)^2 max(1,||eta||)^2", f.name, ch.cov.k14_residual / (EPS * kap_14), "eta scaled by 1.1 in (K14)", cov_bad.k14_residual / (EPS * kap_14))
+    # F12: Ohmi (O2)-(O5); defect: h scaled by (1 + 1e-8) in the factor
+    oh = dv(ch.ohmi); kap_o = max(1, norm(M)) * norm(oh.transformation)^2
+    oh_bad = dv(Octopus._ohmi_factorization(M, sep.zeta, sep.eta, sep.h * (1 + 1e-8), sep.transformation, hcat(sep.zeta, sep.eta ./ sep.h)))
+    fam!("Ohmi (O2)-(O5) identities", 64, "max(1,||M||) ||M_O||^2", f.name, max(oh.inverse_residual, oh.symplecticity, oh.separated_off_diagonal, oh.chart_change_off_diagonal, oh.graph_difference) / (EPS * kap_o),
+         "h (1 + 1e-8) in (O2)", max(oh_bad.inverse_residual, oh_bad.symplecticity, oh_bad.separated_off_diagonal, oh_bad.chart_change_off_diagonal, oh_bad.graph_difference) / (EPS * kap_o))
+    return nothing
+end
+
+function rejected_side_section_2(reports)
+    # F13: coasting eta against the construction; defect: eta read off M[1:4, 6] without the (D24) solve
+    fc = _st4_coasting(0.7); rc = reports[findfirst(r -> r.f.name == "coasting shear s=0.7", reports)]; c = rc.rep.coasting
+    kap = max(1, norm(fc.M)) * max(1, norm(fc.eta))^2 * dv(c.coefficient_condition)
+    fam!("coasting (D24) eta vs construction", 4, "max(1,||M||) max(1,||eta||)^2 cond(I - M_rr)", rc.f.name, norm(dv(c.eta) - fc.eta, Inf) / (EPS * kap),
+         "eta = M[1:4, 6] (no (D24) solve)", norm(fc.M[1:4, 6] - fc.eta, Inf) / (EPS * kap))
+    # F14: the shear (D25); defect: M[5, 6] alone taken as the shear
+    fam!("coasting shear (D25)", 16, "max(1,||M||) max(1,||eta||)^2 cond", rc.f.name, abs(c.shear - fc.shear) / (EPS * kap), "shear = M[5, 6] alone", abs(fc.M[5, 6] - fc.shear) / (EPS * kap))
+    # F15: trial-011 analytic eta_+; defect: the sign of k in the analytic formula
+    kc = _st3_crab_kc(); k = kc * (1 - 1e-3); rk = reports[findfirst(r -> r.f.name == "trial-011 crab k=kc(1-0.001)", reports)]
+    d = (cos(0.85) - cos(-0.75))^2 + k^2 * sin(0.85) * sin(-0.75); eta_plus = [0.0, -k * sin(-0.75), 0.0, 0.0] / (2sqrt(d))
+    kap_d = max(1, norm(rk.f.M)) * max(1, norm(dv(rk.rep.graph)))^2 * (cos(0.85) - cos(-0.75))^2 / d
+    fam!("trial-011 eta_+ analytic", 4096, "max(1,||M||) max(1,||D||)^2 (cos 0.85 - cos 0.75)^2 / d", rk.f.name, norm(dv(rk.rep.eta) - eta_plus, Inf) / (EPS * kap_d),
+         "eta_+ with the sign of k flipped", norm(dv(rk.rep.eta) + eta_plus, Inf) / (EPS * kap_d))
+    # F16: scaling back-transformation (E13) D_phys = C_r^-1 D C_l; defect: C_r D C_l^-1
+    rp = reports[4]; f = rp.f; a = (2.0, 0.5, 4.0)
+    Cr = Diagonal([a[1], 1 / a[1], a[2], 1 / a[2]]); Cl = Diagonal([a[3], 1 / a[3]]); C6 = Diagonal(vcat(diag(Cr), diag(Cl)))
+    Ms = C6 * f.M * inv(C6); cls = _st4_clusters(Ms); reps = Octopus._dispersion_routes(Ms, cls; longitudinal=certified_index(cls, f.mu_s))
+    Ds = dv(reps.graph); kap_s = max(1, norm(f.M)) * max(1, norm(f.zeta), norm(f.eta))^2 * cond(Matrix(C6))
+    D_exact = hcat(f.zeta, f.eta ./ f.h)
+    fam!("scaling back-transformation D_phys = C_r^-1 D C_l", 64, "max(1,||M||) max(1,||D||)^2 cond(C)", f.name * " scaled by (2, 0.5, 4)", norm(inv(Cr) * Ds * Cl - D_exact, Inf) / (EPS * kap_s),
+         "C_r D C_l^-1 (exponents reversed)", norm(Cr * Ds * inv(Cl) - D_exact, Inf) / (EPS * kap_s))
+    # F17: DBA coasting eta against the closed-orbit central difference (FD tolerance 4 step^2 + 1e-12 / step); defect: a one-sided difference
+    NST = 4; ORDER = 4
+    bend = compile_runtime(SBendSpec(L=1.0, h=0.2, b0=0.2, nst=NST, integrator_order=ORDER))
+    qf = compile_runtime(QuadrupoleSpec(L=0.35, kn=(0.0, 1.5), nst=NST, integrator_order=ORDER))
+    qd = compile_runtime(QuadrupoleSpec(L=0.25, kn=(0.0, -1.1), nst=NST, integrator_order=ORDER))
+    dr = compile_runtime(DriftSpec(L=0.6)); cell = (qd, dr, bend, dr, qf, dr, bend, dr, qd)
+    lin = one_turn_matrix(cell); Mdba = lin.matrix; cld = _st4_clusters(Mdba); repd = Octopus._dispersion_routes(Mdba, cld)
+    function closed_orbit(delta)
+        x = zeros(4); best = (Inf, x)
+        for it in 1:12
+            l = one_turn_matrix(cell; point=(x[1], x[2], x[3], x[4], 0.0, delta))
+            r4 = collect(l.provenance.fixed_point_residual)[1:4]; rn = maximum(abs, r4)
+            rn < best[1] && (best = (rn, copy(x))); rn == 0.0 && break
+            x = x - (l.matrix[1:4, 1:4] - I) \ r4
+        end
+        return best
+    end
+    step = 1e-4; xp = closed_orbit(step); xm = closed_orbit(-step); x0 = closed_orbit(0.0)
+    eta_fd = (xp[2] - xm[2]) / (2step); eta_one = (xp[2] - x0[2]) / step; tol = 4 * step^2 + 1e-12 / step
+    eta_c = dv(repd.coasting.eta)
+    RESULTS["dba"] = (holds=repd.coasting.holds, margin=repd.coasting.margin, eta=eta_c, eta_fd=eta_fd, eta_one=eta_one, tol=tol, step=step,
+                      orbit_residuals=(xp[1], xm[1], x0[1]), diff=norm(eta_fd - eta_c, Inf), diff_one=norm(eta_one - eta_c, Inf), name="DBA cell dba_cell(1.5, -1.1) at delta = +-$(step)")
+    fam!("DBA coasting eta vs closed-orbit central difference", 1, "FD tolerance 4 step^2 + 1e-12 / step = $(e2(tol)) (absolute)", RESULTS["dba"].name, norm(eta_fd - eta_c, Inf) / tol,
+         "one-sided difference (x(+step) - x(0)) / step", norm(eta_one - eta_c, Inf) / tol)
+    return nothing
+end
+function print_families()
+    pr("\n## 3. The rejected side of every `c eps kappa` check family (ratio to eps kappa; the test's c beside it)\n")
+    pr("| family | test c | kappa | legitimate fixture | ratio (green) | injected defect | ratio (red) | red > c |")
+    pr("|---|---|---|---|---|---|---|---|")
+    for fm in FAMILIES
+        pr("| $(fm.name) | $(fm.c) | $(fm.kappa) | $(fm.legit_name) | $(e2(fm.legit)) | $(fm.defect_name) | $(e2(fm.defect)) | $(fm.defect > fm.c) |")
+    end
+    pr("\n- families whose legitimate ratio is below the test's c and whose defect ratio is above it: $(count(fm -> fm.legit <= fm.c && fm.defect > fm.c, FAMILIES))/$(length(FAMILIES)).")
+end
+
+# =====================================================================================================
+# Section 4: paper cross-checks (trial-011 crab eta_+, the N15 / N17 controls, the DBA coasting eta).
+# =====================================================================================================
+function paper_section(reports)
+    pr("\n## 4. Paper cross-checks\n")
+    pr("### 4a. Trial-011 crab map M = diag(R(0.85), R(2.1), R(-0.75)) C_k, k = k_c (1 - eps), k_c = $(_st3_crab_kc())\n")
+    pr("eta_+ = (0, -k sin(-0.75), 0, 0) / (2 sqrt d), d = (cos 0.85 - cos(-0.75))^2 + k^2 sin 0.85 sin(-0.75). kappa_d = max(1, ||M||) max(1, ||D||)^2 (cos 0.85 - cos 0.75)^2 / d. The (D12) sign: eta_x' > 0 both in the routes and in the formula (no flip).\n")
+    pr("| eps | k | d | |eta - eta_+| / (eps kappa_d) | eta_x' (routes) | eta_x' (formula) | h | statuses | agreement / (eps kappa_d) | cond eigenplane | cond projector | fixed point |")
+    pr("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    for e in (1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6)
+        rp = reports[findfirst(r -> r.f.name == "trial-011 crab k=kc(1-$(e))", reports)]; rep = rp.rep; k = _st3_crab_kc() * (1 - e)
+        d = (cos(0.85) - cos(-0.75))^2 + k^2 * sin(0.85) * sin(-0.75); eta_plus = [0.0, -k * sin(-0.75), 0.0, 0.0] / (2sqrt(d))
+        kap = max(1, norm(rp.f.M)) * max(1, norm(dv(rep.graph)))^2 * (cos(0.85) - cos(-0.75))^2 / d
+        ag = isempty(rep.agreement) ? 0.0 : maximum(max(a.zeta, a.eta, a.h) for a in rep.agreement)
+        fp = route(rep, :fixed_point)
+        pr("| $(e) | $(round(k; digits=10)) | $(e2(d)) | $(e2(norm(dv(rep.eta) - eta_plus, Inf) / (EPS * kap))) | $(e2(dv(rep.eta)[2])) | $(e2(eta_plus[2])) | $(e2(dv(rep.h))) | $(join(short.([r.status for r in rep.routes]), " ")) | $(e2(ag / (EPS * kap))) | $(condstr(route(rep, :eigenplane))) | $(condstr(route(rep, :projector))) | $(fp.iterations) it, $(occursin("contraction ratio", fp.detail) ? "ratio " * split(split(fp.detail, "sigma_min(op) = ")[2], ";")[1] : "-") |")
+    end
+    pr("\n### 4b. N15 indefinite control diag(R(0.73), R(1.41), R(-0.73)) (default rule)\n")
+    g = RESULTS["guard N15 indefinite diag(R(0.73), R(1.41), R(-0.73))"]
+    pr("- clusters: $(join([string(c.classification, " (", c.reason, ", pairs ", length(c.half_members), ")") for c in g.cl.clusters], "; ")); coasting holds: $(g.rep.coasting.holds) (margin $(e2(g.rep.coasting.margin))).")
+    pr("- route statuses: $(join(string.([r.status for r in g.rep.routes]), ", ")); report eta: $(st(g.rep.eta)); labels: $(st(g.rep.labels)); longitudinal index $(g.rep.longitudinal) (cluster $(g.rep.longitudinal_cluster)).")
+    pr("\n### 4c. N16 / N17 degeneracy rejection (theory 13.7): Md = diag(R(0.73), R(1.41), R(0.73)), the false graph, the crab products\n")
+    gd = RESULTS["guard degenerate diag(R(0.73), R(1.41), R(0.73))"]; gf = guard_fixtures()
+    poly = gd.rep.matrix * gd.rep.matrix - dv(gd.rep.tau_s) * gd.rep.matrix + I
+    kern = norm(poly * vcat(gf.Dfalse, Matrix(1.0I, 2, 2))); rr = Octopus._route_residuals(gd.rep.matrix, gf.Dfalse, 2cos(0.73))
+    pr("- Md route statuses: $(join(string.([r.status for r in gd.rep.routes]), ", ")); eta $(st(gd.rep.eta)) (an ambiguity set: $(gd.rep.eta.set === nothing ? "none" : string(typeof(gd.rep.eta.set)))); tau_s residual $(e2(abs(dv(gd.rep.tau_s) - 2cos(0.73)))); cubic residual $(e2(gd.rep.trace_cubic_residual)).")
+    pr("- false graph [diag(1, -0.5); 0]: polynomial kernel residual ||(M^2 - tau M + I)[D; I]|| = $(e2(kern)) (zero), (I1) raw residual $(e2(rr.invariance.raw)) vs the theory's 1.5 sqrt(2) sin 0.73 = $(e2(1.5 * sqrt(2) * sin(0.73))); normalized $(e2(rr.invariance.normalized)).")
+    z = RESULTS["zero graph raw residual on crab similarity"]
+    pr("- zero (pseudoinverse) graph on C_k Md C_k^-1 (k = 0.3): raw residual $(e2(z.raw)) vs the design's sqrt(2) k sin 0.73 = $(e2(z.design)) (difference $(e2(abs(z.raw - z.design)))).")
+    gk = RESULTS["guard degenerate Md C_k (k=0.3)"]; gks = RESULTS["guard crab similarity C_k Md C_k^-1 (k=0.3)"]
+    pr("- Md C_k statuses: $(join(string.([r.status for r in gk.rep.routes]), ", ")); C_k Md C_k^-1 statuses: $(join(string.([r.status for r in gks.rep.routes]), ", ")); eta $(st(gks.rep.eta)).")
+    pr("\n### 4d. DBA cell (benchmark 12.2-3): coasting eta against the closed-orbit central difference\n")
+    d = RESULTS["dba"]
+    pr("- $(d.name): coasting holds $(d.holds) (margin $(e2(d.margin))); eta_x = $(e2(d.eta[1])) (stage 1 record x_co / delta = 0.706); closed-orbit residuals at +step, -step, 0: $(join(e2.(d.orbit_residuals), ", ")).")
+    pr("- central difference eta_fd,x = $(e2(d.eta_fd)); |eta_fd - eta_x| = $(e2(d.diff)); FD tolerance 4 step^2 + 1e-12 / step = $(e2(d.tol)) (step^2 truncation of the orbit's second derivative ~ 1 plus roundoff 1e-12 / step); ratio $(e2(d.diff / d.tol)). One-sided difference: |eta_one - eta_x| = $(e2(d.diff_one)) (ratio $(e2(d.diff_one / d.tol)), rejected).")
+end
+
+function main()
+    oracle = load_oracle_maps(ORACLE_TSV); ref = load_reference(REF_TSV)
+    dump_log = joinpath(@__DIR__, "dump_oracle_reference.log")
+    pr("# Stage 4a measurement table (Part D1)\n")
+    pr("Produced by measure_stage4a.jl (package mode, main tree). Julia $(VERSION); threads $(Threads.nthreads()); seed $(_ST4_SEED); oracle TSV $(ORACLE_TSV); reference TSV $(REF_TSV).")
+    isfile(dump_log) && pr("Reference dump: " * join(strip.(readlines(dump_log)[end-2:end]), " / "))
+    pr("Source constants at run time: c_graph = $(Octopus._GRAPH_SINGULARITY_MULTIPLIER), c_iso = $(Octopus._ISOTROPY_MULTIPLIER), c_coef = $(Octopus._COEFFICIENT_CONDITION_MULTIPLIER), c_inv = $(Octopus._ROUTE_INVARIANCE_MULTIPLIER), c_stop = $(Octopus._ITERATION_STOP_MULTIPLIER), c_coast = $(Octopus._COASTING_MULTIPLIER), c_tie = $(Octopus._LABEL_TIE_MULTIPLIER), c_sep = $(Octopus._SEPARATION_RESIDUAL_MULTIPLIER), c_triple = $(Octopus._TRIPLE_CONSISTENCY_MULTIPLIER), c_ell = $(Octopus._LONGITUDINAL_ELLIPTIC_MULTIPLIER), c_ohmi = $(Octopus._OHMI_POSITIVITY_MULTIPLIER), _MAX_HALVINGS = $(Octopus._MAX_HALVINGS), _FIXED_POINT_MAX_ITERATIONS = $(Octopus._FIXED_POINT_MAX_ITERATIONS). Every fixture name in this file is produced by the code that built the fixture; none is typed into the text.")
+    rows = oracle_section(oracle, ref); certified_section(oracle, ref, rows)
+    reports = part_a_collection(); part_b_collection(reports)
+    multiplier_section(reports)
+    rejected_side_section(reports); rejected_side_section_2(reports); print_families()
+    paper_section(reports)
+    open(OUT_MD, "w") do io; for l in LINES; println(io, l); end; end
+    println("wrote $(OUT_MD): $(length(LINES)) lines")
+    for (k, w) in sort(collect(WINDOWS); by=first); println("window $(k): [$(e2(w.lo)), $(e2(w.hi))] $(w.empty ? "EMPTY" : "inside " * string(w.inside)) (source $(w.current))"); end
+end
+main()
+```
+
+`dump_oracle_reference.py` (drives the note's `verify_dispersion.py` helpers once on the 39 oracle maps, replaying `dump_oracle_maps.py`'s RNG order, re-dumping each map and comparing it bit for bit with stage 1's TSV; `/opt/anaconda3_2024_02/bin/python3`):
+
+```python
+"""Stage 4a Part D1: the canonical-dispersion note's OWN reference values for its 39 oracle maps.
+
+Replays dump_oracle_maps.py's fixture loop (stage 1; the same RNG consumption
+order as verify_dispersion.py run(), lines 200-277) and, for every map, drives
+the note's helpers once: check_map (all of the note's identities at its 2e-10)
+returns d = graph(w[:, 4:6]) and h; coefficients(d) gives zeta, eta, h by (D8).
+The map itself is re-dumped and compared bit-for-bit with the stage 1 TSV by the
+Julia side (a construction drift shows there, not downstream).
+
+Run:  /opt/anaconda3_2024_02/bin/python3 dump_oracle_reference.py <stage1 oracle_maps.tsv> <out.tsv>
+Columns: family, index, parameter, d11 d12 d21 d22 d31 d32 d41 d42 (row-major 4x2 graph),
+z1..z4 (zeta), e1..e4 (eta), h, map_matches (1 when the 36 entries equal stage 1's TSV reprs).
+"""
+import hashlib
+import platform
+import sys
+from pathlib import Path
+
+import numpy as np
+import scipy
+from scipy.linalg import block_diag, expm
+
+NOTE = Path('/home/cfsd/dxu/Paper/2026_twiss_dispersion/dispersion_note')
+sys.path.insert(0, str(NOTE))
+import verify_dispersion as vd  # noqa: E402
+
+stage1 = [l.split('\t') for l in Path(sys.argv[1]).read_text().splitlines()[1:] if l]
+out = Path(sys.argv[2])
+rows = []
+
+def add(family, index, parameter, mat, d, h):
+    zeta, eta, hh = vd.coefficients(d)
+    assert abs(hh - h) <= 2e-10 * max(1., abs(h)), (family, index, hh, h)
+    key = [r for r in stage1 if r[0] == family and int(r[1]) == index]
+    assert len(key) == 1, (family, index)
+    same = int([repr(float(v)) for v in mat.reshape(-1)] == key[0][3:39])
+    rows.append([family, str(index), repr(parameter)] + [repr(float(v)) for v in d.reshape(-1)] +
+                [repr(float(v)) for v in zeta] + [repr(float(v)) for v in eta] + [repr(float(h)), str(same)])
+
+rng = np.random.default_rng(vd.SEED)
+for index in range(24):
+    generator = rng.normal(size=(6, 6))
+    generator = .12*(generator+generator.T)
+    w = expm(vd.S6 @ generator)
+    phases = [.47+.009*index, 1.6+.008*index, -.87-.003*index]
+    traces = 2*np.cos(phases)
+    mat = w @ block_diag(*map(vd.rotation, phases)) @ vd.inverse_symplectic(w)
+    d, h = vd.check_map(mat, w, traces, phases[2])
+    add('dense', index, phases[2], mat, d, h)
+    rng.normal(size=(6, 6))  # the transport section generator: consumed, not dumped
+phases = [.63, 1.74, -.94]
+for index, h0 in enumerate([-2., -1., -.3, .05, .5, 1., 2.]):
+    mz, me = vd.elementary_factors(np.array([1., .2, .1, 0.]), np.array([0., 1-h0, 0., 0.]))
+    w = mz @ me
+    mat = w @ block_diag(*map(vd.rotation, phases)) @ vd.inverse_symplectic(w)
+    d, h = vd.check_map(mat, w, 2*np.cos(phases), phases[2])
+    add('prescribed_h', index, h0, mat, d, h)
+for index in range(4):
+    gen = rng.normal(size=(6, 6))
+    w = expm(.1*vd.S6 @ (gen+gen.T))
+    ph = [.72, .72, -1.3]
+    mat = w @ block_diag(*map(vd.rotation, ph)) @ vd.inverse_symplectic(w)
+    d, h = vd.check_map(mat, w, 2*np.cos(ph), ph[2])
+    add('repeated', index, ph[2], mat, d, h)
+rr = vd.rotation(.72)
+grouped = np.block([[rr, .2*rr], [np.zeros((2, 2)), rr]])
+beta = grouped[np.ix_([0, 2, 1, 3], [0, 2, 1, 3])]
+gen = rng.normal(size=(6, 6))
+w = expm(.08*vd.S6 @ (gen+gen.T))
+mat = w @ block_diag(beta, vd.rotation(-1.3)) @ vd.inverse_symplectic(w)
+d, h = vd.check_map(mat, w, 2*np.cos([.72, .72, -1.3]), -1.3)
+add('defective', 0, -1.3, mat, d, h)
+for index, shear in enumerate([-.4, 0., .7]):
+    eta = rng.normal(size=4)*.2
+    mz, me = vd.elementary_factors(np.zeros(4), eta)
+    w = mz @ me
+    mat = w @ block_diag(vd.rotation(.57), vd.rotation(1.43), np.array([[1., shear], [0., 1.]])) @ vd.inverse_symplectic(w)
+    d, h = vd.check_map(mat, w, np.array([2*np.cos(.57), 2*np.cos(1.43), 2.]))
+    add('coasting', index, shear, mat, d, h)
+
+header = (['family', 'index', 'parameter'] + [f'd{i}{j}' for i in range(1, 5) for j in (1, 2)] +
+          [f'z{i}' for i in range(1, 5)] + [f'e{i}' for i in range(1, 5)] + ['h', 'map_matches'])
+out.write_text('\n'.join(['\t'.join(header)] + ['\t'.join(r) for r in rows]) + '\n')
+sha = hashlib.sha256((NOTE/'verify_dispersion.py').read_bytes()).hexdigest()
+print(f'reference rows written: {len(rows)} -> {out}; maps matching stage 1 TSV: {sum(int(r[-1]) for r in rows)}/{len(rows)}')
+print(f'seed {vd.SEED}; python {platform.python_version()}; numpy {np.__version__}; scipy {scipy.__version__}')
+print(f'verify_dispersion.py sha256 {sha}')
+print('check_map evaluations by name:', {k: v["count"] for k, v in vd.CHECKS.items()})
+```
