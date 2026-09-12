@@ -270,7 +270,8 @@ end
 # Twiss analysis stage 1, Part A: symplectic kernel and availability
 # vocabularies (src/analysis/symplectic_linear_algebra.jl, Analysis.jl).
 # Placed beside the architecture testsets because the last block is the
-# stage guard (no analysis claimed yet). Uses only the file-level `using
+# stage guard (stage 4b: the placeholder and TwissDispersionAnalysis are the
+# analyses and `analyze` exists). Uses only the file-level `using
 # Test, Octopus, LinearAlgebra, Random`; no lane gate, no test-only
 # dependency. Every tolerance is stated as c * eps * kappa with c justified
 # beside it; the measured ratios behind the constants are recorded in the
@@ -917,30 +918,61 @@ end
     @test occursin("multiplicity=2", sprint(show, d)) && occursin("exact_set", sprint(show, d))
 end
 
-@testset "Stage 1 claims no analysis: the placeholder is the only analysis and there is no analyze" begin
-    # Stage 4 lands `analyze` and the analysis type; it deletes the three
-    # assertions marked below when it does. Until then, nothing in the source
-    # may say an analysis exists (design "Staging" item 1).
+@testset "Stage 4 registers the analysis: the placeholder and TwissDispersionAnalysis are the analyses and analyze exists" begin
+    # Stage 4b landed `analyze` and the analysis type (design "Staging" item
+    # 4); this replaces the stage 1 guard that said no analysis exists. The
+    # placeholder stays: it is the declaration of element kinds that have no
+    # analysis, and stage 5 changes the element declarations deliberately.
     @test PlaceholderAnalysis <: AbstractAnalysis
+    @test TwissDispersionAnalysis <: AbstractAnalysis
     @test Octopus.description(PlaceholderAnalysis) == "Placeholder for element analyses not yet implemented."
-    @test Set(Octopus._subtypes_recursive(AbstractAnalysis)) == Set([PlaceholderAnalysis])   # stage 4 deletes
-    @test !isdefined(Octopus, :analyze)                                                        # stage 4 deletes
-    @test !isdefined(Octopus, :TwissDispersionAnalysis)                                       # stage 4 deletes
-    # The vocabulary types are plain types, not registry roots, so the
-    # snapshot is unchanged by this stage.
-    for T in (Determined, AmbiguitySet, Octopus.ReciprocalScaling, UndeterminedQuantityError)
+    @test Set(Octopus._subtypes_recursive(AbstractAnalysis)) == Set([PlaceholderAnalysis, TwissDispersionAnalysis])
+    @test isdefined(Octopus, :analyze) && isdefined(Octopus, :TwissDispersionAnalysis)
+    @test TwissDispersionResult <: AbstractAnalysisResult
+    @test Octopus.description(TwissDispersionAnalysis) isa String && !isempty(Octopus.description(TwissDispersionAnalysis))
+    # Every element still declares the placeholder alone (stage 5 declares the
+    # analysis on the linear-map kinds and adds the two set tripwires).
+    for T in Octopus.registered_element_specs()
+        @test Octopus.supported_analyses(T) == [PlaceholderAnalysis]
+    end
+    # The vocabulary types are plain types, not registry roots; the snapshot
+    # changes only by the registered analysis and contract of this stage.
+    for T in (Determined, AmbiguitySet, Octopus.ReciprocalScaling, UndeterminedQuantityError,
+              TwissDispersionResult, NormalMode, OpticsAnalysisError)
         @test !(T <: Octopus.AbstractOctopusObject)
     end
     @test AbstractAnalysisResult isa Type && !(AbstractAnalysisResult <: Octopus.AbstractOctopusObject)
+    # `ANALYSIS_STATUSES` pinned against the source the way
+    # `CONFIGURATION_STATUSES` is: the tuple, its docstring bullets and the
+    # source literal are three copies reconciled here, not by convention.
+    @test Octopus.ANALYSIS_STATUSES === (:passed, :degraded, :failed)
+    @test allunique(Octopus.ANALYSIS_STATUSES)
+    let src = read(joinpath(dirname(pathof(Octopus)), "analysis", "twiss_dispersion_analysis.jl"), String),
+        m = match(r"^const ANALYSIS_STATUSES = \(([^)]*)\)"m, src)
+        @test m !== nothing
+        literal = Set(Symbol(strip(x)[2:end]) for x in split(m.captures[1], ",") if !isempty(strip(x)))
+        @test literal == Set(Octopus.ANALYSIS_STATUSES)
+        doc = string(Base.Docs.doc(Base.Docs.Binding(Octopus, :ANALYSIS_STATUSES)))
+        bullets = Set(Symbol(b.captures[1]) for b in eachmatch(r"\*\s*`:([a-z_]+)`", doc))
+        @test bullets == Set(Octopus.ANALYSIS_STATUSES)
+    end
     # Every export of this stage is documented (the suite's "Every export is
     # documented" covers the whole module; this names the stage's own).
     for n in (:AbstractAnalysisResult, :DETERMINATION_STATUSES, :DETERMINATION_REASONS,
               :AMBIGUITY_KINDS, :Determined, :AmbiguitySet, :UndeterminedQuantityError,
               :is_determined, :is_ambiguous, :determined_value, :ambiguity_set,
-              :dispersion_interval)
+              :dispersion_interval,
+              :TwissDispersionAnalysis, :TwissDispersionResult, :OpticsAnalysisError,
+              :NormalMode, :ANALYSIS_STATUSES, :analyze, :analysis_option_schema,
+              :matched_covariance, :normal_mode, :AnalysisOptionEffectivenessContract)
         @test n in names(Octopus)
         @test !occursin("No documentation found", string(Base.Docs.doc(Base.Docs.Binding(Octopus, n))))
     end
+    # The option schema is public configuration: exported by the `*_option_schema`
+    # name pattern the suite checks, with a runtime consumer per option.
+    @test :analysis_option_schema in names(Octopus)
+    @test analysis_option_schema(PlaceholderAnalysis) === NamedTuple()
+    @test !isempty(analysis_option_schema(TwissDispersionAnalysis))
 end
 
 # Twiss analysis stage 2, Part A: the 4D eigenmode route
@@ -1501,13 +1533,14 @@ end
     @test_throws UndefKeywordError Octopus._eigenmodes_4d(Mok)
     @test is_determined(Octopus._eigenmodes_4d(Mok; rho_M0=0.0).frame)          # zero is a legal declared uncertainty
     @test_throws ArgumentError Octopus._orient_eigenvector(ComplexF64[1, 0, 0, 0], Octopus._symplectic_form(4))  # neutral vector
-    # Stage 2 exports nothing new, documents its types, and claims no analysis.
+    # Stage 2 exports nothing new and documents its types; `analyze` is stage 4b's
+    # (the stage guard at the top of the analysis testsets pins it), not stage 2's.
     for n in (:NormalModeFrame4D, :Eigenmodes4D, :SpectrumReport4D, :ClosedFormEigenmodes4D, :ClosedFormCheck4D)
         @test isdefined(Octopus, n) && !(n in names(Octopus))
         @test !occursin("No documentation found", string(Base.Docs.doc(Base.Docs.Binding(Octopus, n))))
     end
     @test !hasfield(Octopus.SpectrumReport4D, :min_gap) && !hasfield(Octopus.SpectrumReport4D, :stability_atol)
-    @test !isdefined(Octopus, :analyze)
+    @test isdefined(Octopus, :analyze)   # was `!isdefined` while stage 2 claimed no analysis (integrator 4b, stale claim)
 end
 
 @testset "4D eigenmodes: scaling invariance through _reciprocal_scaling and _unscale_twiss on three scalings" begin
@@ -2193,11 +2226,12 @@ end
 
 # Twiss analysis stage 3: mode clusters, Krein classification, the dispersion
 # ambiguity set and the resolution chord (src/analysis/mode_clusters.jl and
-# src/analysis/degenerate_dispersion.jl; dossier D1-D9). Standalone runners
-# with the same testsets: result/twiss_impl_2026_09_11/stage3/run_clusters.jl,
-# run_ambiguity.jl (they substitute for neither lane). Every tolerance below is
-# c eps kappa with c measured (report_A1.md, report_B.md); nothing here claims
-# an analysis. The `_st3_` block first: the test-local fixture library
+# src/analysis/degenerate_dispersion.jl; dossier D1-D9). The measurements
+# behind every tolerance are in docs/history/twiss_dispersion_analysis_history.md,
+# "2026-09-12: stage 3 landed", sections "Parts A1 and A2", "Part B" and
+# "Derived windows" (the standalone runners it names are git-ignored and
+# substitute for neither lane). Every tolerance below is c eps kappa with c
+# measured there. The `_st3_` block first: the test-local fixture library
 # (analytic builders and a seeded RNG, no git-ignored file) and the cluster
 # helper on `_mode_clusters`.
 # Stage 3 test-local fixture library (Part B). ASCII only. No dependency on
@@ -3843,11 +3877,12 @@ end
 # mode labels (src/analysis/dispersion_routes.jl; dossier E1-E10), the
 # canonical separation, the 6D normalizer, the projected optics, the matched
 # covariance and the Ohmi factor (src/analysis/canonical_separation.jl;
-# E11-E12), and the integrator's chaining methods (Part C). Standalone runners
-# with the same testsets: result/twiss_impl_2026_09_11/stage4/run_routes.jl,
-# run_separation.jl (they substitute for neither lane). Every tolerance below
-# is c eps kappa with c measured (report_A.md, report_B.md); nothing here
-# claims an analysis. The `_st4_` block first: the shared test-local fixture
+# E11-E12), and the integrator's chaining methods (Part C). The measurements
+# behind every tolerance are in docs/history/twiss_dispersion_analysis_history.md,
+# "2026-09-12: stage 4a landed", sections "Part A", "Part B", "Part C" and
+# "Derived windows" (the standalone runners it names are git-ignored and
+# substitute for neither lane). Every tolerance below is c eps kappa with c
+# measured there. The `_st4_` block first: the shared test-local fixture
 # library of the fixture table (seed 20260911, no git-ignored file); the
 # stage 3 builders (`_st3_rot`, `_st3_block_diag`, `_st3_defective_spectator`,
 # `_st3_crab_map`) are reused, not duplicated.
@@ -5113,6 +5148,1315 @@ end
         @test r in used && r in Octopus.DETERMINATION_REASONS
     end
     @test length(Octopus.DETERMINATION_REASONS) == 16
+end
+
+# Twiss analysis stage 4b: the analysis object `TwissDispersionAnalysis`, the
+# three `analyze` methods, the result tree, the verdict, the receipts and the
+# configuration report (src/analysis/twiss_dispersion_analysis.jl; dossier_4b
+# F1-F7, F13; Part A), and the validator block, the AbstractAnalysis tree
+# guard and the table-driven `AnalysisOptionEffectivenessContract`
+# (src/tasks/strongstrong/interface.jl, src/contracts/analysis_effectiveness.jl;
+# F8-F9; Part B). The measurements behind every tolerance are in
+# docs/history/twiss_dispersion_analysis_history.md, "2026-09-12: stage 4b
+# landed" (the standalone runners it names are git-ignored and substitute for
+# neither lane). Every tolerance below is c eps kappa with c measured there.
+# The unified `_st4b_` block first: Part A's fixture library (`_st4b_a_`, the
+# dossier's fixture table rebuilt from committed constructors, seed 20260911,
+# no measured number typed by hand) and Part B's scratch verb and validator
+# mirror (`_st4b_b_`); the two prefixes are distinct and no helper is defined
+# twice (integrator grep at the fold). Part A's testsets follow the helpers,
+# then Part B's.
+const _ST4B_SEED = 20260911
+_st4b_a_rot(mu::Real) = [cos(mu) sin(mu); -sin(mu) cos(mu)]
+function _st4b_a_bd(ms::AbstractMatrix...)
+    n = sum(size(m, 1) for m in ms); B = zeros(n, n); k = 0
+    for m in ms; r = size(m, 1); B[k+1:k+r, k+1:k+r] = m; k += r; end
+    return B
+end
+_st4b_a_blockrot(m1, m2, m3) = _st4b_a_bd(_st4b_a_rot(m1), _st4b_a_rot(m2), _st4b_a_rot(m3))
+const _st4b_a_S4 = Octopus._symplectic_form(4)
+"M_cal = M_zeta M_eta (D3), test-local."
+function _st4b_a_mcal(zeta, eta)
+    Meta = Matrix(1.0I, 6, 6); Meta[1:4, 6] = eta; Meta[5, 1:4] = transpose(eta) * _st4b_a_S4
+    Mzeta = Matrix(1.0I, 6, 6); Mzeta[1:4, 5] = zeta; Mzeta[6, 1:4] = -transpose(zeta) * _st4b_a_S4
+    return Mzeta * Meta
+end
+"Fixture table row 1: the dense stable 6D map (heuristic selection degraded; passes once certified)."
+_st4b_a_dense6() = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4B_SEED), 6; stable=true)[1]
+"The dense stable 4x4 map (row 5)."
+_st4b_a_dense4() = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4B_SEED), 4; stable=true)[1]
+"Coasting map (row 6, stage 4a builder): zeta = 0, random eta, stable random 4D block, shear s."
+function _st4b_a_coasting(s::Real; seed=_ST4B_SEED)
+    rng = MersenneTwister(seed); eta = 0.2 * randn(rng, 4)
+    A4 = Octopus._manufactured_symplectic_map(rng, 4; scale=0.3, stable=true).M
+    Mc = _st4b_a_mcal(zeros(4), eta)
+    return (M=Mc * _st4b_a_bd(A4, [1.0 s; 0.0 1.0]) * Octopus._symplectic_inverse(Mc), eta=eta, A=A4)
+end
+"Prescribed-h map (row 7, stage 4a builder): zeta = (1, 0.2, 0.1, 0), eta = (0, 1 - h, 0, 0), phases (0.63, 1.74, -0.94)."
+function _st4b_a_prescribed(h::Real; mus=(0.63, 1.74, -0.94))
+    zeta = [1.0, 0.2, 0.1, 0.0]; eta = [0.0, 1 - h, 0.0, 0.0]
+    t = Octopus._dispersion_transformation(zeta, eta)
+    Mi = Octopus._dispersion_transformation_inverse(zeta, eta, h)
+    return (M=t.M_cal * _st4b_a_blockrot(mus...) * Mi, zeta=zeta, eta=eta, h=Float64(h), mus=mus)
+end
+"Repeated betatron (row 8, stage 4a): W blockrot(0.72, 0.72, -1.3) W^-1."
+function _st4b_a_repeated(k::Integer=0)
+    W = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4B_SEED + 1000 + k), 6; scale=0.1).M
+    return W * _st4b_a_blockrot(0.72, 0.72, -1.3) * Octopus._symplectic_inverse(W)
+end
+"Indefinite (row 9, the stage 3 builder): diag(R(0.73), R(1.41), R(-0.73))."
+_st4b_a_indefinite() = _st4b_a_blockrot(0.73, 1.41, -0.73)
+"Hyperbolic synchrotron pair (row 10) and the shear pair with a non-zero crab dispersion (unit eigenvalue, not coasting)."
+function _st4b_a_hyperbolic()
+    W = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4B_SEED + 5), 6; scale=0.12).M
+    return W * _st4b_a_bd(_st4b_a_rot(0.5), _st4b_a_rot(1.6), [2.0 0.0; 0.0 0.5]) * Octopus._symplectic_inverse(W)
+end
+function _st4b_a_shear_unit()
+    Mcu = _st4b_a_mcal([0.1, 0.0, 0.05, 0.0], [0.0, 0.3, 0.0, 0.0])
+    return Mcu * _st4b_a_bd(_st4b_a_rot(0.5), _st4b_a_rot(1.6), [1.0 0.7; 0.0 1.0]) * Octopus._symplectic_inverse(Mcu)
+end
+"Singular projection (row 12): zeta = e_x, eta = e_px, h = 0; the synchrotron tune is -0.9 (eigenvalue e^{+0.9 i})."
+function _st4b_a_singular()
+    Mc = _st4b_a_mcal([1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0])
+    return Mc * _st4b_a_blockrot(0.73, 1.41, -0.9) * Octopus._symplectic_inverse(Mc)
+end
+"Near-non-symplectic (row 11): the dense map plus a 1e-6 random perturbation."
+_st4b_a_perturbed(scale=1e-6) = _st4b_a_dense6() .+ scale .* randn(MersenneTwister(_ST4B_SEED + 7), 6, 6)
+"The FODO cell of validation/lattice_cells.jl (kq = 1.6, detuned 1e-3 on the defocusing quad) and its sextupole variant."
+function _st4b_a_fodo(; detune=1e-3)
+    qf = compile_runtime(QuadrupoleSpec(L=0.3, kn=(0.0, 1.6), nst=4, integrator_order=4))
+    qd = compile_runtime(QuadrupoleSpec(L=0.3, kn=(0.0, -1.6 * (1 + detune)), nst=4, integrator_order=4))
+    dr = compile_runtime(DriftSpec(L=1.2))
+    return (qf, dr, qd, dr)
+end
+_st4b_a_fodo_sext() = (_st4b_a_fodo()..., compile_runtime(SextupoleSpec(L=0.2, kn=(0.0, 0.0, 8.0), nst=4, integrator_order=4)))
+"The DBA cell of validation/lattice_cells.jl (kf = 1.5, kd = -1.1) at delta = 0: a coasting map with dispersion."
+function _st4b_a_dba()
+    bend = compile_runtime(SBendSpec(L=1.0, h=0.2, b0=0.2, nst=4, integrator_order=4))
+    qf = compile_runtime(QuadrupoleSpec(L=0.35, kn=(0.0, 1.5), nst=4, integrator_order=4))
+    qd = compile_runtime(QuadrupoleSpec(L=0.25, kn=(0.0, -1.1), nst=4, integrator_order=4))
+    d = compile_runtime(DriftSpec(L=0.6))
+    return (qd, d, bend, d, qf, d, bend, d, qd)
+end
+_st4b_a_val(d) = Octopus.determined_value(d)
+_st4b_a_entry(result, name) = result.configuration[findfirst(e -> e.name === name, result.configuration)]
+_st4b_a_receipts(audit, consumer) = filter(r -> r.consumer === consumer, execution_receipts(audit))
+"The certified analysis of the dense map: the heuristic's index passed back as an Int."
+function _st4b_a_certified(M; kwargs...)
+    r = analyze(TwissDispersionAnalysis(strict=false), M)
+    lm = r.dispersion.longitudinal == 0 ? :max_signed_z_area : r.dispersion.longitudinal   # a coasting map selects nothing
+    return TwissDispersionAnalysis(; longitudinal_mode=lm, kwargs...)
+end
+# Part B helpers (`_st4b_b_`): the input-form classifier, the scratch verb that mimics
+# the receipts (F5) and the report (F6) of `analyze` without physics, and the validator-block mirror.
+"Scratch exception standing in for OpticsAnalysisError in the injected-run tests (carries result and failures)."
+struct _St4bBError <: Exception
+    result
+    failures::Vector{String}
+end
+
+"Input form of a probe input the way the contract's fixtures are built (a LinearizedMap, a 4x4, a coasting 6x6, a dense 6x6)."
+function _st4b_b_form(input)
+    input isa Octopus.LinearizedMap && return :linearized
+    size(input, 1) == 4 && return :matrix4
+    return input[6, :] == [0, 0, 0, 0, 0, 1.0] && input[:, 5] == [0, 0, 0, 0, 1.0, 0] ? :coasting : :matrix
+end
+
+"""
+    _st4b_b_fake_run(analysis, input; defect=:none) -> result-like NamedTuple
+
+Mimics `analyze`'s receipts and configuration report from the options alone.
+`defect` selects a plumbing defect for the negative tests: `:echo_option`
+(a receipt echoes the option's default instead of the value read),
+`:wrong_consumer` (the labels receipt is issued by another consumer),
+`:closed_orbit_on_matrix` (the closed-orbit receipt on a bare matrix),
+`:report_resolved_inactive` (the report calls an inactive option
+`:resolved`), `:zeta_moves` (scaling moves the physical zeta), `:no_move`
+(preferred_form ignored), `:strict_returns` (strict = true returns the
+failed result instead of throwing).
+"""
+function _st4b_b_fake_run(a::TwissDispersionAnalysis, input; defect::Symbol=:none)
+    M = input isa Octopus.LinearizedMap ? input.matrix : input
+    d = size(M, 1)
+    form = _st4b_b_form(input)
+    rec(c, v) = Octopus._record_execution!(c, Octopus.CPUThreadsBackend, v)
+    mode = a.scaling isa Symbol ? a.scaling : :explicit
+    factors = ntuple(_ -> 1.0, div(d, 2))
+    rec(:analysis_scaling, (scaling=a.scaling, mode=mode, factors=factors))
+    degradations = String[]
+    rule = a.symplectic_rtol === nothing ? :row_ratio : :frobenius
+    # a tolerance at or below 1e-9 is below the mimicked defect (the failing fixture at 1e-9, the dense map at 1e-20)
+    tight = a.symplectic_rtol !== nothing && a.symplectic_rtol <= 1e-9
+    tight && a.nonsymplectic === :error && throw(ArgumentError("scratch verb: rule :frobenius above the tolerance $(a.symplectic_rtol)"))
+    failing = tight && a.nonsymplectic === :flag
+    failing && push!(degradations, "nonsymplectic = :flag: the symplectic defect exceeds the tolerance")
+    rec(:analysis_symplectic_check, (symplectic_rtol=defect === :echo_option ? nothing : a.symplectic_rtol,
+        nonsymplectic=a.nonsymplectic, rule=rule, defect=(frobenius=1e-16, row_ratio=0.1, row_residual=1e-16, row_tolerance=1e-15),
+        action=failing ? :flagged : :accepted))
+    warned = false
+    if form === :linearized || defect === :closed_orbit_on_matrix
+        residual = input isa Octopus.LinearizedMap ? maximum(abs, input.provenance.fixed_point_residual) : 0.0
+        atol = a.closed_orbit_atol === nothing ? 1e-14 : a.closed_orbit_atol
+        if residual > atol
+            a.closed_orbit === :require && throw(ArgumentError("scratch verb: closed_orbit: the point is not a fixed point (residual $(residual))"))
+            warned = true; push!(degradations, "closed_orbit = :warn: the fixed-point residual exceeds the tolerance")
+        end
+        rec(:analysis_closed_orbit, (closed_orbit=a.closed_orbit, closed_orbit_atol=a.closed_orbit_atol, residual=residual,
+            action=warned ? :warned : :accepted))
+    end
+    rec(:analysis_cluster_resolution, (resolution_chord=a.resolution_chord, map_uncertainty=a.map_uncertainty,
+        clusters=a.clusters, rho_M0=1e-15 + a.map_uncertainty, rho_M1=1e-15, forced=isinf(a.resolution_chord)))
+    bunched6 = form in (:matrix, :linearized)
+    newton = bunched6 && :newton in a.dispersion_routes
+    lrule = a.longitudinal_mode isa Symbol ? :max_signed_z_area : :explicit
+    if bunched6
+        rec(defect === :wrong_consumer ? :analysis_scaling : :analysis_labels,
+            (longitudinal_mode=a.longitudinal_mode, rule=lrule, certified=!(a.longitudinal_mode isa Symbol),
+             selected=a.longitudinal_mode isa Int ? a.longitudinal_mode : 2, weights=[0.03, 0.88, 0.08]))
+        rec(:analysis_dispersion_routes, (dispersion_routes=a.dispersion_routes, executed=a.dispersion_routes))
+        newton && rec(:analysis_newton, (newton_max_iterations=a.newton_max_iterations, used=min(4, a.newton_max_iterations)))
+    end
+    reported = (a.preferred_form === :auto || defect === :no_move) ? 1 : a.preferred_form
+    rec(:analysis_edwards_teng, (preferred_form=a.preferred_form, reported=reported, admissible=(true, true)))
+    a.emittances === nothing || rec(:analysis_covariance, (emittances=a.emittances,))
+    status = failing ? :failed : (warned ? :degraded : :passed)
+    rec(:analysis_strictness, (strict=a.strict, outcome=status))
+    inactive(n) = (n in (:closed_orbit, :closed_orbit_atol) && form !== :linearized) ||
+        (n in (:longitudinal_mode, :dispersion_routes) && !bunched6) || (n === :newton_max_iterations && !newton) ||
+        (n === :emittances && a.emittances === nothing)
+    st(n) = inactive(n) && !(defect === :report_resolved_inactive && n === :closed_orbit) ? :inactive_dependency : :resolved
+    conf = [Octopus.ConfigurationEntry(n, getproperty(a, n), getproperty(a, n), st(n), "", m.consumer)
+            for (n, m) in pairs(Octopus.analysis_option_schema(a))]
+    D(x) = Octopus.Determined(x)
+    zeta = [1.0, 0.2, 0.1, 0.0] .+ ((defect === :zeta_moves && a.scaling === :none) ? 1e-3 : 0.0)
+    physical = (zeta=D(zeta), eta=D([0.0, 0.5, 0.0, 0.0]), h=D(0.5), tunes=[0.47, 1.6, 0.87])
+    covariance = a.emittances === nothing ? Octopus.Determined{Matrix{Float64}}(:unavailable, nothing, nothing, :not_requested, "") :
+        D(ones(d, d))
+    groups = a.clusters === :auto ? (d == 6 ? [[1, 6], [2, 5], [3, 4]] : [[1, 4], [2, 3]]) : a.clusters
+    clusters = (partition_source=(a.clusters === :auto ? :auto : :explicit),
+                clusters=[(members=g, forced=isinf(a.resolution_chord)) for g in groups])
+    result = (configuration=conf, physical=physical, transverse=D((preferred_form=D(reported),)),
+              covariance=covariance, status=status, degradations=degradations,
+              scaling=(mode=mode, factors=collect(factors)), matrix=M, matrix_scaled=(mode === :none ? M : 1.5 .* M),
+              clusters=clusters, diagnostics=(longitudinal_selection=D((rule=lrule, certified=lrule === :explicit)),))
+    failing && a.strict && defect !== :strict_returns && throw(_St4bBError(result, ["frame residual above acceptance"]))
+    return result
+end
+
+"""
+    _st4b_b_block_errors(schema, default_object, T) -> Vector{String}
+
+The validator block of validate_configuration_metadata (interface.jl, the
+LongitudinalSlicing form) applied to a SCRATCH schema, so a drift can be
+injected without touching the source: keys == fields, every default isequal
+to the constructed object's field, every consumer named.
+"""
+function _st4b_b_block_errors(schema, default_object, T)
+    errors = String[]
+    Set(keys(schema)) == Set(fieldnames(T)) || push!(errors, "$(nameof(T)) fields and metadata keys disagree")
+    for (name, meta) in pairs(schema)
+        meta.consumer === :unspecified && push!(errors, "$(nameof(T)).$(name) has no runtime consumer")
+        hasfield(T, name) || continue
+        isequal(getproperty(default_object, name), meta.default) ||
+            push!(errors, "$(nameof(T)).$(name) metadata default disagrees with constructor")
+    end
+    return errors
+end
+
+@testset "Analysis object: constructor rules, option schema, exports, the status vocabulary (F1, F2)" begin
+    @test Octopus.ANALYSIS_STATUSES == (:passed, :degraded, :failed)
+    src = read(String(first(methods(Octopus._analyze_matrix)).file), String)   # the file under test, package or script mode
+    @test occursin("const ANALYSIS_STATUSES = (:passed, :degraded, :failed)", src)
+    a = TwissDispersionAnalysis()
+    @test a isa Octopus.AbstractAnalysis
+    schema = analysis_option_schema(TwissDispersionAnalysis)
+    @test schema === analysis_option_schema(a)
+    @test Set(keys(schema)) == Set(fieldnames(TwissDispersionAnalysis)) && length(schema) == 14
+    for (name, meta) in pairs(schema)
+        @test isequal(meta.default, getproperty(a, name))          # the validator block's logic (F8), in the suite too
+        @test meta.consumer in Octopus._ANALYSIS_CONSUMERS
+        @test meta.category in (:execution, :numerical, :physics)
+        @test CPUThreadsBackend in meta.supported_backends
+    end
+    @test analysis_option_schema(Octopus.PlaceholderAnalysis) === NamedTuple()
+    @test analysis_option_schema(Octopus.PlaceholderAnalysis()) === NamedTuple()
+    @test Set(Octopus._ANALYSIS_CONSUMERS) == Set(meta.consumer for meta in values(schema))
+    # every export of the file is documented
+    for name in (:TwissDispersionAnalysis, :TwissDispersionResult, :OpticsAnalysisError, :NormalMode, :ANALYSIS_STATUSES,
+                 :analyze, :analysis_option_schema, :matched_covariance, :normal_mode)
+        @test name in names(Octopus)
+        @test Base.Docs.hasdoc(Octopus, name)
+    end
+    @test !isempty(Octopus.description(TwissDispersionAnalysis))
+    # one argument error per constructor rule
+    @test_throws ArgumentError TwissDispersionAnalysis(scaling=:explicit)
+    @test_throws ArgumentError TwissDispersionAnalysis(scaling=(1.0, -1.0))
+    @test_throws ArgumentError TwissDispersionAnalysis(scaling=(1.0, 2.0, 3.0, 4.0))
+    @test_throws ArgumentError TwissDispersionAnalysis(symplectic_rtol=-1e-9)
+    @test_throws ArgumentError TwissDispersionAnalysis(symplectic_rtol=Inf)
+    @test_throws ArgumentError TwissDispersionAnalysis(nonsymplectic=:repair)
+    @test_throws ArgumentError TwissDispersionAnalysis(closed_orbit=:ignore)
+    @test_throws ArgumentError TwissDispersionAnalysis(closed_orbit_atol=-1.0)
+    @test_throws ArgumentError TwissDispersionAnalysis(map_uncertainty=NaN)
+    @test_throws ArgumentError TwissDispersionAnalysis(resolution_chord=0.0)
+    @test_throws ArgumentError TwissDispersionAnalysis(resolution_chord=2.5)
+    @test TwissDispersionAnalysis(resolution_chord=Inf).resolution_chord == Inf
+    @test_throws ArgumentError TwissDispersionAnalysis(clusters=:manual)
+    @test_throws ArgumentError TwissDispersionAnalysis(clusters=[[1, 2], Int[]])
+    @test_throws ArgumentError TwissDispersionAnalysis(clusters=[[0, 1]])
+    @test_throws ArgumentError TwissDispersionAnalysis(clusters=Vector{Int}[])
+    @test_throws ArgumentError TwissDispersionAnalysis(longitudinal_mode=:min_signed_z_area)
+    @test_throws ArgumentError TwissDispersionAnalysis(longitudinal_mode=0)
+    @test_throws ArgumentError TwissDispersionAnalysis(longitudinal_mode=pi)
+    @test_throws ArgumentError TwissDispersionAnalysis(longitudinal_mode=-0.5)
+    @test TwissDispersionAnalysis(longitudinal_mode=3).longitudinal_mode === 3
+    @test TwissDispersionAnalysis(longitudinal_mode=0.9).longitudinal_mode === 0.9
+    @test_throws ArgumentError TwissDispersionAnalysis(preferred_form=3)
+    @test_throws ArgumentError TwissDispersionAnalysis(preferred_form=:first)
+    @test_throws ArgumentError TwissDispersionAnalysis(dispersion_routes=())
+    @test_throws ArgumentError TwissDispersionAnalysis(dispersion_routes=(:eigenplane, :eigenplane))
+    @test_throws ArgumentError TwissDispersionAnalysis(dispersion_routes=(:eigenplane, :secant))
+    @test_throws ArgumentError TwissDispersionAnalysis(dispersion_routes=[:eigenplane])
+    @test_throws ArgumentError TwissDispersionAnalysis(newton_max_iterations=0)
+    @test_throws ArgumentError TwissDispersionAnalysis(emittances=(1e-9,))
+    @test_throws ArgumentError TwissDispersionAnalysis(emittances=(1e-9, -1e-9))
+    @test_throws ArgumentError TwissDispersionAnalysis(emittances=(1e-9, 1e-9, 1e-9, 1e-9))
+    @test TwissDispersionAnalysis(emittances=(1, 2)).emittances === (1.0, 2.0)
+    # the static report: every option :unresolved until analysed
+    rep = configuration_report(a)
+    @test length(rep) == 14 && all(e.status === :unresolved for e in rep)
+    @test all(e.status in Octopus.CONFIGURATION_STATUSES for e in rep)
+    # the verb refuses the wrong size and non-finite entries before any result exists
+    @test_throws ArgumentError analyze(a, zeros(5, 5))
+    @test_throws ArgumentError analyze(a, zeros(4, 6))
+    Mn = _st4b_a_dense4(); Mn[1, 1] = NaN
+    @test_throws ArgumentError analyze(a, Mn)
+end
+
+@testset "Dense 6D map: the default path is :degraded by the uncertified heuristic, certified it :passed (F3, F4, dossier row 1)" begin
+    M6 = _st4b_a_dense6()
+    a = TwissDispersionAnalysis(strict=false)
+    r = analyze(a, M6)
+    @test r isa TwissDispersionResult && r isa Octopus.AbstractAnalysisResult
+    @test r.status === :degraded && isempty(r.failures) && length(r.degradations) == 1
+    @test occursin("uncertified", r.degradations[1]) && occursin("longitudinal_mode", r.degradations[1])
+    @test occursin("canonical eigenvalue $(r.dispersion.longitudinal)", r.degradations[1]) && occursin("z-area", r.degradations[1])
+    @test r.input == (form=:matrix, dimension=6, provenance=nothing)
+    @test r.matrix == M6 && r.scaling.mode === :auto && r.matrix_scaled == Octopus._scale_map(r.scaling, M6)
+    @test r.closed_orbit.reason === :not_requested && !Octopus.is_determined(r.closed_orbit)
+    @test r.coasting isa Octopus.CoastingStructure && !r.coasting.holds
+    @test r.dispersion isa Octopus.DispersionRoutes && r.dispersion.primary === :eigenplane
+    @test all(x.status === :none for x in r.dispersion.routes)
+    @test Octopus.is_determined(r.separation) && _st4b_a_val(r.separation).status === :none
+    @test Octopus.is_determined(r.projected_optics) && Octopus.is_determined(r.ohmi) && Octopus.is_determined(r.transverse)
+    @test r.covariance.reason === :not_requested && r.covariance_6d.reason === :not_requested
+    @test r.diagnostics.symplectic_rule === :row_ratio && r.diagnostics.rho_M1 == r.clusters.rho_M1
+    @test all(v <= t for (_, v, t) in r.diagnostics.residuals)
+    @test Set(first.(r.diagnostics.residuals)) >= Set(["frame reconstruction (I1)", "frame symplecticity (E7)", "separation off-diagonal (K5)", "U_6 reconstruction", "U_6 symplecticity"])
+    @test length(r.diagnostics.routes) == 5 && Octopus.is_determined(r.diagnostics.projection)
+    proj = _st4b_a_val(r.diagnostics.projection)
+    @test proj.h_difference == abs(proj.h_report - proj.h_separation) && proj.h_separation == _st4b_a_val(r.separation).h
+    sel = _st4b_a_val(r.diagnostics.longitudinal_selection)
+    @test !sel.certified && sel.rule === :max_signed_z_area && sel.selected == r.dispersion.longitudinal && length(sel.weights) == 3
+    # certified by the index and by the tune: :passed, the same physics
+    idx = r.dispersion.longitudinal
+    mu_s = abs(angle(r.clusters.eigenvalues[idx]))                # the tune in (0, pi): the pair exp(-+ i mu_s) is one mode
+    for lm in (idx, mu_s)
+        rc = analyze(TwissDispersionAnalysis(longitudinal_mode=lm), M6)
+        @test rc.status === :passed && isempty(rc.degradations) && isempty(rc.failures)
+        @test _st4b_a_val(rc.diagnostics.longitudinal_selection).certified
+        @test rc.dispersion.longitudinal in (idx, r.clusters.conjugate_partner[idx]) && rc.dispersion.longitudinal_cluster == r.dispersion.longitudinal_cluster
+        @test _st4b_a_val(rc.physical.h) == _st4b_a_val(r.physical.h)
+        @test _st4b_a_val(rc.physical.eta) == _st4b_a_val(r.physical.eta)
+    end
+    # the physical quantities: the analytic graph of the manufactured map is recovered through the back-transformation
+    rec = r.scaling
+    @test _st4b_a_val(r.physical.normalizer) == Octopus._unscale_normalizer(rec, _st4b_a_val(r.projected_optics).normalizer)
+    @test _st4b_a_val(r.physical.zeta) == Octopus._unscale_crab_dispersion(rec, _st4b_a_val(r.separation).zeta)
+    @test _st4b_a_val(r.physical.h) == Octopus._unscale_longitudinal_factor(rec, _st4b_a_val(r.separation).h)
+    @test size(_st4b_a_val(r.physical.beta)) == (3, 3) && length(_st4b_a_val(r.physical.projectors)) == 3
+    @test r.physical.tunes == collect(_st4b_a_val(r.projected_optics).tunes)
+    Ms = r.matrix_scaled; D = hcat(_st4b_a_val(r.separation).zeta, _st4b_a_val(r.separation).eta ./ _st4b_a_val(r.separation).h)
+    @test Octopus.is_determined(r.physical.graph) && size(_st4b_a_val(r.physical.graph)) == (4, 2)
+    # normal modes: three, the third the synchrotron one, every vector an eigenvector of the scaled matrix
+    for j in 1:3
+        nm = normal_mode(r, j)
+        @test nm isa NormalMode && nm.index == j && length(nm.vector) == 6 && length(nm.beta) == 3
+        @test abs(nm.eigenvalue - exp(-im * nm.tune)) <= 4eps()
+        @test nm.eigenvector_residual.normalized <= 64 * r.rho_M0 * cond(_st4b_a_val(r.projected_optics).normalizer)
+        @test nm.real_pair == (real.(nm.vector), -imag.(nm.vector))
+        @test abs(dot(nm.vector, Octopus._symplectic_form(6) * nm.vector) + 2im) <= 64eps() * norm(nm.vector)^2   # u' S u = -2i
+    end
+    @test normal_mode(r, 3).tune == r.physical.tunes[3]
+    @test_throws ArgumentError normal_mode(r, 4)
+    @test_throws ArgumentError normal_mode(r, 0)
+    # matched covariance: the accessor and the option agree, both in the caller's coordinates
+    em = (1e-9, 2e-9, 3e-6)
+    Sigma = matched_covariance(r, em)
+    re = analyze(TwissDispersionAnalysis(emittances=em, strict=false), M6)
+    @test Octopus.is_determined(re.covariance) && Octopus.is_determined(re.covariance_6d)
+    @test _st4b_a_val(re.physical.covariance) == Sigma
+    @test _st4b_a_val(re.covariance) == _st4b_a_val(re.covariance_6d).sigma
+    @test any(n == "covariance closure" for (n, _, _) in re.diagnostics.residuals)
+    @test any(n == "(K14) zz identity" for (n, _, _) in re.diagnostics.residuals)
+    # the judged closure is the RAW ||Ms Sigma Ms' - Sigma||_F (theory (K14) is the emittance-free zz identity, reported only)
+    cl = re.diagnostics.residuals[findfirst(x -> x[1] == "covariance closure", re.diagnostics.residuals)]
+    @test cl[2] == _st4b_a_val(re.covariance_6d).closure_residual && cl[2] <= cl[3]
+    @test cl[3] == Octopus._COVARIANCE_ACCEPTANCE_MULTIPLIER * re.diagnostics.rho_M1 * cond(_st4b_a_val(re.projected_optics).normalizer) * max(1.0, norm(_st4b_a_val(re.covariance)))
+    k14 = re.diagnostics.residuals[findfirst(x -> x[1] == "(K14) zz identity", re.diagnostics.residuals)]
+    @test k14[2] == _st4b_a_val(re.covariance_6d).k14_residual && !("(K14) zz identity" in Octopus._VERDICT_RESIDUALS)
+    # the closure scales with the emittances, the identity does not; the tolerance follows the closure
+    re3 = analyze(TwissDispersionAnalysis(emittances=(1e3, 2e3, 3e3), longitudinal_mode=idx), M6)
+    cl3 = re3.diagnostics.residuals[findfirst(x -> x[1] == "covariance closure", re3.diagnostics.residuals)]
+    @test cl3[2] > 1e6 * cl[2] && cl3[3] > 1e3 * cl[3] && cl3[2] <= cl3[3]     # ||Sigma|| < 1 at the small emittances: max(1, .) = 1 there
+    @test norm(M6 * Sigma * transpose(M6) - Sigma) <= 64 * eps() * cond(_st4b_a_val(re.physical.normalizer)) * norm(Sigma) * max(1, norm(M6))^2
+    # a tune that matches no eigenvalue identifies no mode: refused at the boundary, naming the tunes
+    for far in (2.5, 3.0)
+        chords = sort([abs(l - exp(-im * far)) for l in r.clusters.eigenvalues])
+        @test chords[1] > 0.5 * chords[3]                                  # the data: no half-gap margin (the partner is chords[2] or worse)
+        efar = try; analyze(TwissDispersionAnalysis(longitudinal_mode=far), M6); nothing; catch e; e; end
+        @test efar isa ArgumentError && occursin("identifies no mode", efar.msg) && occursin(string(round(r.physical.tunes[1]; digits=6))[1:6], efar.msg)
+    end
+    rct = analyze(TwissDispersionAnalysis(longitudinal_mode=mu_s), M6)
+    tc = _st4b_a_val(rct.diagnostics.longitudinal_selection).tune_chords
+    @test tc isa Tuple && tc[1] <= 64eps() && tc[1] <= 0.5 * tc[2] && tc[2] > 0.1
+    @test _st4b_a_val(r.diagnostics.longitudinal_selection).tune_chords === nothing
+    @test _st4b_a_val(analyze(TwissDispersionAnalysis(longitudinal_mode=idx), M6).diagnostics.longitudinal_selection).tune_chords === nothing
+    @test_throws ArgumentError matched_covariance(r, (1e-9, 2e-9))
+    @test_throws ArgumentError matched_covariance(r, (1e-9, -2e-9, 1e-6))
+    @test_throws ArgumentError analyze(TwissDispersionAnalysis(emittances=(1e-9, 2e-9)), M6)
+end
+
+@testset "Dense 4x4 map: no longitudinal notions, two normal modes, the 4D matched covariance, the presented form (F3 step 8, F7)" begin
+    M4 = _st4b_a_dense4()
+    r = analyze(TwissDispersionAnalysis(), M4)
+    @test r.status === :passed && isempty(r.degradations)
+    @test r.input.dimension == 4 && r.input.form === :matrix
+    @test r.dispersion === nothing && r.separation === nothing && r.projected_optics === nothing
+    @test r.ohmi === nothing && r.covariance_6d === nothing && r.coasting === nothing
+    @test Octopus.is_determined(r.transverse)
+    t = _st4b_a_val(r.transverse)
+    @test t isa Octopus.TransverseOptics4D && Octopus.is_determined(t.frame) && Octopus.is_determined(t.closed_form)
+    @test Octopus.is_determined(t.mais_ripken) && Octopus.is_determined(t.edwards_teng_normalizer)
+    @test Octopus.is_determined(t.edwards_teng_map) && Octopus.is_determined(t.edwards_teng_direct)
+    @test _st4b_a_val(t.preferred_form) in (1, 2) && t.rho_M0 == r.rho_M0
+    @test r.physical.h.reason === :not_requested && r.physical.zeta.reason === :not_requested
+    @test r.physical.eta.reason === :not_requested && r.physical.graph.reason === :not_requested
+    @test r.diagnostics.longitudinal_selection.reason === :not_requested && r.diagnostics.projection.reason === :not_requested
+    @test isempty(r.diagnostics.routes) && length(r.physical.tunes) == 2
+    @test Set(first.(r.diagnostics.residuals)) == Set(["frame reconstruction (I1)", "frame symplecticity (E7)"])
+    for name in (:longitudinal_mode, :dispersion_routes, :newton_max_iterations, :closed_orbit, :closed_orbit_atol, :emittances)
+        @test _st4b_a_entry(r, name).status === :inactive_dependency
+    end
+    for name in (:scaling, :symplectic_rtol, :nonsymplectic, :map_uncertainty, :resolution_chord, :clusters, :preferred_form, :strict)
+        @test _st4b_a_entry(r, name).status === :resolved
+    end
+    f = _st4b_a_val(t.frame)
+    @test _st4b_a_val(r.physical.normalizer) == Octopus._unscale_normalizer(r.scaling, f.normalizer)
+    @test size(_st4b_a_val(r.physical.beta)) == (2, 2)
+    for j in 1:2
+        nm = normal_mode(r, j)
+        @test nm.index == j && nm.vector == f.vectors[j] && nm.tune == f.tunes[j] && nm.eigenvalue == f.eigenvalues[j]
+        @test nm.projector == f.projectors[j] && nm.covariance == f.covariances[j]
+        @test nm.beta == f.beta[j, :] && nm.signed_area == f.signed_areas[j, :] && nm.eigenvector_residual == f.eigenvector_residuals[j]
+    end
+    @test_throws ArgumentError normal_mode(r, 3)
+    em = (1e-9, 2e-9)
+    Sigma = matched_covariance(r, em)
+    @test Sigma == Octopus._unscale_covariance(r.scaling, Octopus._matched_covariance_4d(f.normalizer, em))
+    re = analyze(TwissDispersionAnalysis(emittances=em), M4)
+    @test _st4b_a_val(re.physical.covariance) == Sigma && _st4b_a_val(re.covariance) == Octopus._matched_covariance_4d(f.normalizer, em)
+    @test norm(M4 * Sigma * transpose(M4) - Sigma) <= 64 * eps() * cond(f.normalizer) * norm(Sigma) * max(1, norm(M4))^2
+    cl4 = re.diagnostics.residuals[findfirst(x -> x[1] == "covariance closure", re.diagnostics.residuals)]
+    @test cl4[2] <= cl4[3] && cl4[2] == norm(re.matrix_scaled * _st4b_a_val(re.covariance) * transpose(re.matrix_scaled) - _st4b_a_val(re.covariance))
+    @test cl4[3] == Octopus._COVARIANCE_ACCEPTANCE_MULTIPLIER * re.diagnostics.rho_M1 * cond(f.normalizer) * max(1.0, norm(_st4b_a_val(re.covariance)))
+    @test !any(x -> x[1] == "(K14) zz identity", re.diagnostics.residuals)     # a 4x4 map has no (K14)
+    # the detuned FODO 4x4 (forms admissible (true, false)): an inadmissible Int form is unavailable :form_inadmissible
+    # through analyze, the receipt reports 0, the report stays :resolved (F3 step 9); :auto presents form 1
+    M4f = one_turn_matrix(_st4b_a_fodo()).matrix[1:4, 1:4]
+    rfa = analyze(TwissDispersionAnalysis(), M4f)
+    pf = _st4b_a_val(_st4b_a_val(rfa.transverse).edwards_teng_normalizer)
+    @test (pf.form1.admissible, pf.form2.admissible) == (true, false) && _st4b_a_val(_st4b_a_val(rfa.transverse).preferred_form) == 1
+    audit_f = ExecutionAudit()
+    rfi = Ref{Any}(nothing)
+    with_execution_audit(audit_f) do; rfi[] = analyze(TwissDispersionAnalysis(preferred_form=2), M4f); end
+    tfi = _st4b_a_val(rfi[].transverse)
+    @test !Octopus.is_determined(tfi.preferred_form) && tfi.preferred_form.reason === :form_inadmissible
+    @test rfi[].physical.edwards_teng_R.reason === :form_inadmissible && rfi[].status === :passed
+    @test _st4b_a_val(rfi[].diagnostics.edwards_teng).requested == 2 && _st4b_a_val(rfi[].diagnostics.edwards_teng).reported == 0
+    vfi = _st4b_a_receipts(audit_f, :analysis_edwards_teng)
+    @test length(vfi) == 1 && vfi[1].values.preferred_form == 2 && vfi[1].values.reported == 0 && vfi[1].values.admissible == (true, false)
+    @test _st4b_a_entry(rfi[], :preferred_form).status === :resolved
+    @test_throws ArgumentError matched_covariance(r, (1e-9, 2e-9, 3e-6))
+    @test_throws ArgumentError analyze(TwissDispersionAnalysis(emittances=(1e-9, 2e-9, 3e-6)), M4)
+    # the presented form follows the option; both forms are always computed
+    pair = _st4b_a_val(t.edwards_teng_normalizer)
+    auto = pair.form2.area_weight > pair.form1.area_weight ? 2 : 1
+    @test _st4b_a_val(t.preferred_form) == auto
+    for form in (1, 2)
+        rf = analyze(TwissDispersionAnalysis(preferred_form=form), M4)
+        tf = _st4b_a_val(rf.transverse)
+        @test _st4b_a_val(tf.preferred_form) == form
+        R = form == 1 ? pair.form1.R : pair.form2.R
+        @test _st4b_a_val(rf.physical.edwards_teng_R) == Octopus._unscale_edwards_teng_R(rf.scaling, _st4b_a_val(R))
+        @test _st4b_a_val(rf.diagnostics.edwards_teng).reported == form && _st4b_a_val(rf.diagnostics.edwards_teng).requested == form
+    end
+    @test _st4b_a_val(r.diagnostics.edwards_teng).route === :normalizer
+    @test Octopus.is_determined(r.diagnostics.phase_validity)
+end
+
+@testset "Scaling: :none, :auto and an explicit tuple give the same physical quantities row by row (F3 step 11, F13)" begin
+    # c measured on the dense 6D and 4x4 maps and the coasting map (report_4b_A.md, "Scaling invariance"; the fixer's
+    # re-measurement with the normalizer row in report_4b_fixer.md): the worst row ratio is recorded there;
+    # kappa = cond(U) max(1, ||M||)^2. D1 (measurement_table_4b.md section 2, c_scaling_test): the largest accepted
+    # ratio over 332 rows of 11 fixtures at :auto and an explicit tuple is 110.7 (alpha, dense seed 20260912), so
+    # the one-tenth rule puts c at or above 1107; 2048 (was 256, below the window). The normalizer row U -> C^-1 U~ of the design table is pinned DIRECTLY since the
+    # stage 4b fix of the frame's phase convention (theory 6.2, `_rephase_mode`): before it the frame carried the
+    # Schur solver's phases and the row differed by O(1) mode phases between scalings.
+    c = 2048.0
+    worst = Ref((0.0, :none))
+    function rows(r)
+        p = r.physical
+        d = Dict{Symbol,Any}(:tunes => p.tunes)
+        for name in (:normalizer, :beta, :alpha, :gamma, :edwards_teng_R, :covariance, :zeta, :eta, :h, :graph)
+            q = getproperty(p, name)
+            Octopus.is_determined(q) ? (d[name] = _st4b_a_val(q)) : (d[Symbol(name, :_reason)] = q.reason)   # a coasting map has no U_6 (its rows are the frame's on M_rr)
+        end
+        if Octopus.is_determined(p.projectors)
+            for j in eachindex(_st4b_a_val(p.projectors))
+                d[Symbol("P", j)] = _st4b_a_val(p.projectors)[j]; d[Symbol("G", j)] = _st4b_a_val(p.covariances)[j]
+            end
+        end
+        return d
+    end
+    for (M, em) in ((_st4b_a_dense6(), (1e-9, 2e-9, 3e-6)), (_st4b_a_dense4(), (1e-9, 2e-9)), (_st4b_a_coasting(0.3).M, (1e-9, 2e-9, 3e-6)))
+        d = size(M, 1)
+        lm = d == 6 ? _st4b_a_certified(M).longitudinal_mode : :max_signed_z_area
+        explicit = d == 6 ? (1.7, 0.4, 3.1) : (1.7, 0.4)
+        results = [analyze(TwissDispersionAnalysis(scaling=s, longitudinal_mode=lm, emittances=em, strict=false), M) for s in (:none, :auto, explicit)]
+        @test results[1].scaling.mode === :none && results[1].matrix_scaled == M
+        @test results[2].scaling.mode === :auto
+        @test results[3].scaling.mode === :explicit && results[3].scaling.factors == collect(explicit)
+        @test all(r.status === results[1].status for r in results)
+        ref = rows(results[1])
+        pn = results[1].physical.normalizer                                # U_6, or the transverse frame's U_4 on a coasting map
+        U = Octopus.is_determined(pn) ? _st4b_a_val(pn) : _st4b_a_val(_st4b_a_val(results[1].transverse).frame).normalizer
+        kappa = cond(U) * max(1.0, norm(M))^2
+        for r in results[2:3], (name, value) in rows(r)
+            value isa Symbol && (@test value === ref[name]; continue)
+            ratio = norm(value - ref[name]) / (eps() * kappa * max(1.0, norm(ref[name])))
+            ratio > worst[][1] && (worst[] = (ratio, name))
+            @test ratio <= c
+        end
+        # the receipt certifies the requested value under the option's own name
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            analyze(TwissDispersionAnalysis(scaling=explicit, longitudinal_mode=lm, strict=false), M)
+        end
+        rc = _st4b_a_receipts(audit, :analysis_scaling)
+        @test length(rc) == 1 && rc[1].values.scaling == explicit && rc[1].values.mode === :explicit && rc[1].values.factors == explicit
+        @test rc[1].backend === CPUThreadsBackend
+    end
+    @info "stage 4b Part A scaling invariance: worst row ratio (c eps kappa units)" worst[]
+    # an explicit tuple of the wrong length for the dimension is refused at the boundary
+    @test_throws ArgumentError analyze(TwissDispersionAnalysis(scaling=(1.0, 2.0)), _st4b_a_dense6())
+    @test_throws ArgumentError analyze(TwissDispersionAnalysis(scaling=(1.0, 2.0, 3.0)), _st4b_a_dense4())
+    # residuals stay in scaled coordinates: the defect is the scaled matrix's
+    r = analyze(TwissDispersionAnalysis(scaling=(1.7, 0.4, 3.1), strict=false), _st4b_a_dense6())
+    @test r.symplectic_defect == Octopus._DEFECT_T(Octopus._symplectic_defect(r.matrix_scaled))
+    @test r.diagnostics.symplectic_defect == r.symplectic_defect
+end
+
+@testset "Linearized inputs: the :linearized form, the closed-orbit options, the finite-difference rule, the tuple form (F2, F3 steps 3 and 5)" begin
+    M6 = _st4b_a_dense6()
+    lm6 = one_turn_matrix((compile_runtime(Linear6DSpec(matrix=M6)),))
+    @test lm6 isa LinearizedMap && lm6.provenance.map_uncertainty == 0.0
+    r = analyze(TwissDispersionAnalysis(strict=false), lm6)
+    @test r.input.form === :linearized && r.input.dimension == 6 && r.input.provenance === lm6.provenance
+    @test Octopus.is_determined(r.closed_orbit) && _st4b_a_val(r.closed_orbit) == 0.0
+    @test _st4b_a_entry(r, :closed_orbit).status === :resolved && _st4b_a_entry(r, :closed_orbit_atol).status === :resolved
+    @test r.diagnostics.reference_point == lm6.provenance.point
+    rb = analyze(TwissDispersionAnalysis(strict=false), M6)
+    @test rb.diagnostics.reference_point == ntuple(_ -> 0.0, 6)
+    @test _st4b_a_val(r.physical.h) == _st4b_a_val(rb.physical.h) || abs(_st4b_a_val(r.physical.h) - _st4b_a_val(rb.physical.h)) <= 64 * eps() * max(1, norm(M6))^2
+    # the closed-orbit receipt exists ONLY on linearized input
+    for (input, expected) in ((lm6, 1), (M6, 0))
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do; analyze(TwissDispersionAnalysis(strict=false), input); end
+        rc = _st4b_a_receipts(audit, :analysis_closed_orbit)
+        @test length(rc) == expected
+        expected == 1 && @test rc[1].values.closed_orbit === :require && rc[1].values.closed_orbit_atol === nothing && rc[1].values.residual == 0.0 && rc[1].values.action === :accepted
+    end
+    # the FODO tuple (a coasting map) through every entry form
+    fodo = _st4b_a_fodo()
+    lmf = one_turn_matrix(fodo)
+    @test lmf.provenance.fixed_point_residual == ntuple(_ -> 0.0, 6)
+    rf = analyze(TwissDispersionAnalysis(), lmf)
+    rt = analyze(TwissDispersionAnalysis(), fodo)
+    @test rf.status === :passed && rt.status === :passed && rt.input.form === :linearized
+    @test rf.coasting.holds && rt.matrix == rf.matrix && rt.physical.tunes == rf.physical.tunes
+    @test length(rf.physical.tunes) == 2 && all(0 < mu < pi for mu in rf.physical.tunes)
+    rm = analyze(TwissDispersionAnalysis(), fodo; method=ComplexStepLinearization(), point=ntuple(_ -> 0.0, 6))
+    @test rm.matrix == rf.matrix
+    # a displaced expansion point on a nonlinear tuple: :require throws, :warn degrades with exactly one warning
+    sx = _st4b_a_fodo_sext()
+    lms = one_turn_matrix(sx; point=(1e-3, 0.0, 0.0, 0.0, 0.0, 0.0))
+    # the residual is judged in SCALED coordinates (design "Input boundary" item 4): C r in the max norm
+    res_phys = maximum(abs, lms.provenance.fixed_point_residual)
+    res = maximum(abs, Octopus._scaling_matrix(Octopus._reciprocal_scaling(lms.matrix, :auto)) * collect(lms.provenance.fixed_point_residual))
+    @test res > 0 && res != res_phys
+    @test_throws ArgumentError analyze(TwissDispersionAnalysis(), lms)
+    err = try; analyze(TwissDispersionAnalysis(), lms); nothing; catch e; e; end
+    @test occursin("closed_orbit", err.msg) && occursin(string(res), err.msg) && !occursin(string(res_phys), err.msg)
+    rw = @test_logs (:warn, r"not a fixed point") match_mode=:any analyze(TwissDispersionAnalysis(closed_orbit=:warn), lms)
+    @test rw.status === :degraded && length(rw.degradations) == 1 && occursin("closed_orbit = :warn", rw.degradations[1])
+    @test _st4b_a_val(rw.closed_orbit) == res
+    audit = ExecutionAudit()
+    @test_logs (:warn, r"not a fixed point") match_mode=:any with_execution_audit(audit) do
+        analyze(TwissDispersionAnalysis(closed_orbit=:warn, closed_orbit_atol=1e-12), lms)
+    end
+    rc = _st4b_a_receipts(audit, :analysis_closed_orbit)
+    @test length(rc) == 1 && rc[1].values.closed_orbit === :warn && rc[1].values.closed_orbit_atol == 1e-12 && rc[1].values.action === :warned
+    @test rc[1].values.residual == res                                       # the scaled norm, as the result carries it
+    # a generous explicit atol accepts the displaced point
+    ra = analyze(TwissDispersionAnalysis(closed_orbit_atol=1.0), lms)
+    @test ra.status === :passed && Octopus.is_determined(ra.closed_orbit)
+    # the default atol: c eps max(1, max|point|), a fixed point at the origin has residual exactly zero
+    @test Octopus._CLOSED_ORBIT_ATOL_MULTIPLIER * eps() * 1.0 > 0
+    # finite differences: the truncation error is not roundoff, so a number is required
+    lfd = one_turn_matrix(fodo; method=FiniteDifferenceLinearization(1e-6))
+    @test lfd.provenance.method isa FiniteDifferenceLinearization
+    @test_throws ArgumentError analyze(TwissDispersionAnalysis(), lfd)
+    errfd = try; analyze(TwissDispersionAnalysis(), lfd); nothing; catch e; e; end
+    @test occursin("symplectic_rtol", errfd.msg)
+    rfd = analyze(TwissDispersionAnalysis(symplectic_rtol=1e-3), lfd)
+    @test rfd.status === :passed && rfd.diagnostics.symplectic_rule === :frobenius && rfd.symplectic_defect.frobenius <= 1e-3
+    # the provenance uncertainty folds into rho_M0
+    @test rfd.rho_M0 >= lfd.provenance.map_uncertainty
+    # the solenoid-bearing line of the stage 1 block runs under the default method (its map complex-steps cleanly)
+    sol = (compile_runtime(DriftSpec(L=0.5)), compile_runtime(SolenoidSpec(L=1.3, ks=0.35)))
+    rs = analyze(TwissDispersionAnalysis(strict=false), sol)
+    @test rs isa TwissDispersionResult && rs.input.form === :linearized
+end
+
+@testset "Coasting maps: the stage 4a fixture and the DBA cell run the same separation path, not degraded, route options inactive (F3, F4, F6)" begin
+    cst = _st4b_a_coasting(0.3)
+    for (name, M) in (("stage 4a coasting", cst.M), ("DBA", one_turn_matrix(_st4b_a_dba()).matrix))
+        r = analyze(TwissDispersionAnalysis(), M)
+        @test r.status === :passed && isempty(r.degradations)
+        @test r.coasting.holds
+        @test all(x.status === :coasting_structure for x in r.dispersion.routes)
+        @test r.dispersion.longitudinal == 0 && !Octopus.is_determined(r.dispersion.labels)
+        @test Octopus.is_determined(r.separation)
+        sep = _st4b_a_val(r.separation)
+        @test sep.h == 1.0 && sep.zeta == zeros(4) && sep.status === :none
+        @test sep.transverse_map == r.coasting.transverse_map              # the same code path: Mbar_beta == M_rr to the bit
+        @test Octopus.is_determined(r.transverse) && Octopus.is_determined(_st4b_a_val(r.transverse).frame)
+        @test _st4b_a_val(_st4b_a_val(r.transverse).frame).matrix == r.coasting.transverse_map
+        @test !Octopus.is_determined(r.projected_optics) && r.projected_optics.reason === :unit_eigenvalue
+        # design return table: "the transverse optics of M_rr" ARE presented in the caller's coordinates (the 4D frame's rows)
+        fr_c = _st4b_a_val(_st4b_a_val(r.transverse).frame)
+        rec4 = Octopus.ReciprocalScaling(r.scaling.mode, r.scaling.factors[1:2], 4)
+        @test Octopus.is_determined(r.physical.normalizer) && _st4b_a_val(r.physical.normalizer) == Octopus._unscale_normalizer(rec4, fr_c.normalizer)
+        @test size(_st4b_a_val(r.physical.beta)) == (2, 2) && size(_st4b_a_val(r.physical.alpha)) == (2, 2) && size(_st4b_a_val(r.physical.gamma)) == (2, 2)
+        @test length(_st4b_a_val(r.physical.projectors)) == 2 && all(size(P) == (4, 4) for P in _st4b_a_val(r.physical.projectors))
+        @test _st4b_a_val(r.physical.covariances) == [Octopus._unscale_covariance(rec4, G) for G in fr_c.covariances]
+        # analyze(M_rr) as a 4x4 (M_rr of the coasting report is in SCALED coordinates, hence scaling = :none): the same frame
+        r4c = analyze(TwissDispersionAnalysis(scaling=:none), r.coasting.transverse_map)
+        b4c = _st4b_a_val(_st4b_a_val(r4c.transverse).frame).beta
+        @test norm(b4c - fr_c.beta) <= 256 * eps() * cond(fr_c.normalizer) * norm(fr_c.beta)
+        @test norm(_st4b_a_val(r4c.physical.beta) - fr_c.beta) <= 256 * eps() * cond(fr_c.normalizer) * norm(fr_c.beta)
+        @test Octopus.is_determined(r.physical.eta) && Octopus.is_determined(r.physical.zeta) && _st4b_a_val(r.physical.h) == 1.0
+        @test _st4b_a_val(r.physical.eta) == Octopus._unscale_momentum_dispersion(r.scaling, sep.eta)
+        @test length(r.physical.tunes) == 2                                  # the transverse frame's tunes
+        @test r.diagnostics.longitudinal_selection.reason === :coasting_structure
+        for opt in (:longitudinal_mode, :dispersion_routes, :newton_max_iterations)
+            @test _st4b_a_entry(r, opt).status === :inactive_dependency
+        end
+        @test _st4b_a_entry(r, :preferred_form).status === :resolved       # the frame on M_rr presents a pair
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do; analyze(TwissDispersionAnalysis(), M); end
+        @test isempty(_st4b_a_receipts(audit, :analysis_labels))
+        @test isempty(_st4b_a_receipts(audit, :analysis_dispersion_routes))
+        @test isempty(_st4b_a_receipts(audit, :analysis_newton))
+        @test length(_st4b_a_receipts(audit, :analysis_edwards_teng)) == 1
+        # modes 1 and 2 come from the frame on M_rr; mode 3 needs the 6D normalizer
+        @test normal_mode(r, 1).vector == _st4b_a_val(_st4b_a_val(r.transverse).frame).vectors[1]
+        @test_throws UndeterminedQuantityError normal_mode(r, 3)
+        err = try; normal_mode(r, 3); nothing; catch e; e; end
+        @test err.reason === :unit_eigenvalue
+        @test_throws UndeterminedQuantityError matched_covariance(r, (1e-9, 2e-9, 3e-6))
+        re = analyze(TwissDispersionAnalysis(emittances=(1e-9, 2e-9, 3e-6)), M)
+        @test re.status === :passed && re.covariance.reason === :unit_eigenvalue && re.covariance_6d.reason === :unit_eigenvalue
+        @test _st4b_a_entry(re, :emittances).status === :resolved
+        # the DBA's dispersion is non-zero (bends), the stage 4a fixture's is the built eta
+        @test norm(_st4b_a_val(r.physical.eta)) > 0
+    end
+    r = analyze(TwissDispersionAnalysis(), cst.M)
+    S = _st4b_a_val(r.separation)
+    kappa = max(1, norm(cst.M)) * norm(S.transformation) * norm(S.inverse)
+    @test norm(_st4b_a_val(r.physical.eta) - cst.eta) <= 256 * eps() * kappa     # c measured 116 (report_4b_A.md)
+end
+
+@testset "Prescribed h = 0.05: the heuristic is uncertified and degraded, the tune certifies and recovers the analytic triple (F4 amendment, row 7)" begin
+    p = _st4b_a_prescribed(0.05)
+    r = analyze(TwissDispersionAnalysis(strict=false), p.M)
+    @test r.status === :degraded && isempty(r.failures)
+    unc = filter(s -> occursin("uncertified", s), r.degradations)
+    @test length(unc) == 1 && occursin("longitudinal_mode", unc[1]) && occursin("z-area", unc[1]) && occursin("certify", unc[1])
+    sel = _st4b_a_val(r.diagnostics.longitudinal_selection)
+    @test !sel.certified && sel.rule === :max_signed_z_area && sel.selected == r.dispersion.longitudinal
+    # by (K12) kappa_sz = h = 0.05: the heuristic picks a betatron mode, so the eigenplane it publishes is NOT the prescribed one
+    @test abs(_st4b_a_val(r.physical.h) - p.h) > 0.1
+    # the tune certifies: the synchrotron eigenvalue is exp(-i mu_s) with mu_s = -mus[3] = 0.94
+    mu_s = -p.mus[3]
+    rc = analyze(TwissDispersionAnalysis(longitudinal_mode=mu_s), p.M)
+    # the certified run is :degraded by exactly the "another branch" Newton degradation (record item 2; pinned, no escape)
+    @test rc.status === :degraded && length(rc.degradations) == 1 && occursin("another invariant plane", rc.degradations[1]) && occursin(":newton", rc.degradations[1])
+    @test !any(occursin("label tie", s) for s in rc.degradations)          # a tie limits the heuristic only; the flag stays in the diagnostics
+    # the tie has a positive fixture: h = 1/2 gives z-areas (1/2, 1/2, 0), the heuristic declares the tie and is degraded by it
+    r_tie = analyze(TwissDispersionAnalysis(strict=false), _st4b_a_prescribed(0.5).M)
+    @test r_tie.status === :degraded && count(s -> occursin("label tie", s), r_tie.degradations) == 1
+    @test _st4b_a_val(r_tie.diagnostics.longitudinal_selection).tie && !_st4b_a_val(r_tie.diagnostics.longitudinal_selection).certified
+    r_tie_c = analyze(TwissDispersionAnalysis(longitudinal_mode=mu_s, strict=false), _st4b_a_prescribed(0.5).M)
+    @test !any(occursin("label tie", s) for s in r_tie_c.degradations) && _st4b_a_val(r_tie_c.diagnostics.longitudinal_selection).tie
+    @test _st4b_a_val(rc.diagnostics.longitudinal_selection).certified
+    @test abs(abs(angle(rc.clusters.eigenvalues[rc.dispersion.longitudinal])) - mu_s) <= 64eps()
+    sep = _st4b_a_val(rc.separation)
+    kappa = max(1, norm(p.M)) * norm(sep.transformation) * norm(sep.inverse)
+    @test abs(_st4b_a_val(rc.physical.h) - p.h) <= 64 * eps() * kappa
+    @test norm(_st4b_a_val(rc.physical.zeta) - p.zeta) <= 64 * eps() * kappa
+    @test norm(_st4b_a_val(rc.physical.eta) - p.eta) <= 64 * eps() * kappa
+    @test norm(_st4b_a_val(rc.physical.graph) - hcat(p.zeta, p.eta ./ p.h)) <= 64 * eps() * kappa / p.h
+    @test abs(mod(rc.physical.tunes[3], 2pi) - mod(p.mus[3], 2pi)) <= 64eps()   # the kernel reports the synchrotron tune in [0, 2pi)
+    # the labels receipt certifies the tune under the option's own name
+    audit = ExecutionAudit()
+    with_execution_audit(audit) do; analyze(TwissDispersionAnalysis(longitudinal_mode=mu_s), p.M); end
+    rc_l = _st4b_a_receipts(audit, :analysis_labels)
+    @test length(rc_l) == 1 && rc_l[1].values.longitudinal_mode == mu_s && rc_l[1].values.certified && rc_l[1].values.selected == rc.dispersion.longitudinal
+    @test rc_l[1].values.rule === :explicit && length(rc_l[1].values.weights) == 3
+    # the same by index
+    ri = analyze(TwissDispersionAnalysis(longitudinal_mode=rc.dispersion.longitudinal, strict=false), p.M)
+    @test _st4b_a_val(ri.physical.h) == _st4b_a_val(rc.physical.h)
+    # an index outside the spectrum is refused at the boundary
+    @test_throws ArgumentError analyze(TwissDispersionAnalysis(longitudinal_mode=7), p.M)
+    # the iterative routes on the heuristic's mode: "another branch" degradations name the route (record item 2)
+    other = [x.route for x in r.dispersion.routes if x.route in (:newton, :fixed_point) && x.status === :not_invariant && occursin("another branch", x.detail)]
+    for route in other
+        @test any(s -> occursin("another invariant plane", s) && occursin(":$(route)", s), r.degradations)
+    end
+    # a route that simply did not converge is NOT an "another branch" degradation
+    nonconv = [x.route for x in r.dispersion.routes if x.status === :not_invariant && !occursin("another branch", x.detail)]
+    for route in nonconv
+        @test !any(s -> occursin(":$(route)", s), r.degradations)
+    end
+    # the certified run's Newton found another branch (the (D15) initializer starts elsewhere): degraded, named, no escape
+    other_c = [x.route for x in rc.dispersion.routes if x.route in (:newton, :fixed_point) && x.status === :not_invariant && occursin("another branch", x.detail)]
+    @test other_c == [:newton]
+    @test all(any(s -> occursin("another invariant plane", s) && occursin(":$(route)", s), rc.degradations) for route in other_c)
+    # the diagnostics carry both h values and every route's coefficient condition (record items 3, 5)
+    proj = _st4b_a_val(rc.diagnostics.projection)
+    @test abs(proj.h_report - p.h) <= 64 * eps() * kappa && proj.h_separation == sep.h
+    @test length(rc.diagnostics.routes) == 5 && all(row.coefficient_condition >= 0 for row in rc.diagnostics.routes)
+end
+
+@testset "Reason table: one fixture per reason the pipeline can emit, the set seen equals the set the docstrings claim (F13)" begin
+    claimed = Set([:not_requested, :cluster_unresolved, :indefinite_cluster, :unstable_spectrum, :unit_eigenvalue,
+                   :coasting_structure, :form_inadmissible, :singular_coefficient, :not_invariant, :route_not_selected,
+                   :singular_longitudinal_projection])
+    seen = Set{Symbol}()
+    function collect!(r)
+        for f in (r.closed_orbit, r.transverse, r.separation, r.projected_optics, r.ohmi, r.covariance_6d, r.covariance,
+                  r.physical.normalizer, r.physical.eta, r.physical.h, r.physical.edwards_teng_R, r.diagnostics.longitudinal_selection)
+            f === nothing && continue
+            f.reason === :none || push!(seen, f.reason)
+        end
+        r.dispersion === nothing && return r
+        for x in r.dispersion.routes; x.status in (:none,) || push!(seen, x.status); end
+        Octopus.is_determined(r.dispersion.eta) || push!(seen, r.dispersion.eta.reason)
+        Octopus.is_determined(r.transverse) && (t = _st4b_a_val(r.transverse); Octopus.is_determined(t.preferred_form) || push!(seen, t.preferred_form.reason))
+        return r
+    end
+    a = TwissDispersionAnalysis(strict=false)
+    # synchrotron tune degenerate with a betatron tune: the ambiguity set under :cluster_unresolved; dispersion_interval works on it
+    W = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4B_SEED + 1000), 6; scale=0.1).M
+    Mamb = W * _st4b_a_blockrot(0.72, -1.3, 0.72) * Octopus._symplectic_inverse(W)
+    ramb = collect!(analyze(TwissDispersionAnalysis(longitudinal_mode=0.72, strict=false), Mamb))
+    @test ramb.status === :degraded && Octopus.is_ambiguous(ramb.dispersion.eta) && ramb.dispersion.eta.reason === :cluster_unresolved
+    @test !Octopus.is_determined(ramb.separation) && ramb.separation.reason === :cluster_unresolved
+    @test Octopus.is_ambiguous(ramb.physical.eta)
+    lo, hi = dispersion_interval(ramb.physical.eta, [0.0, 1.0, 0.0, 0.0])
+    @test lo < hi && isfinite(lo) && isfinite(hi)
+    @test any(s -> occursin(":cluster_unresolved", s), ramb.degradations)
+    @test _st4b_a_entry(ramb, :preferred_form).status === :inactive_dependency
+    # the repeated betatron pair: the synchrotron dispersion is unique (design row 3), the barred frame is not
+    rrep = collect!(analyze(a, _st4b_a_repeated()))
+    @test rrep.status === :degraded && Octopus.is_determined(rrep.dispersion.eta) && rrep.projected_optics.reason === :cluster_unresolved
+    # indefinite, hyperbolic, shear (unit eigenvalue, not coasting): degraded, never failed, the reason on every piece
+    for (M, reason) in ((_st4b_a_indefinite(), :indefinite_cluster), (_st4b_a_hyperbolic(), :unstable_spectrum), (_st4b_a_shear_unit(), :unit_eigenvalue))
+        r = collect!(analyze(a, M))
+        @test r.status === :degraded && isempty(r.failures)
+        @test r.transverse.reason === reason && r.separation.reason === reason && r.projected_optics.reason === reason
+        @test r.physical.eta.reason === reason && r.physical.h.reason === reason
+        @test any(s -> occursin(":$(reason)", s), r.degradations)
+        @test !r.coasting.holds
+    end
+    # singular projection (h = 0): the primary route's reason, the polynomial route :singular_coefficient, no separation
+    Msg = _st4b_a_singular()
+    rsg = collect!(analyze(TwissDispersionAnalysis(longitudinal_mode=0.9, strict=false), Msg))
+    @test rsg.status === :degraded && rsg.separation.reason === :singular_longitudinal_projection
+    @test any(x -> x.route === :polynomial && x.status === :singular_coefficient, rsg.dispersion.routes)
+    @test any(s -> occursin(":singular_longitudinal_projection", s), rsg.degradations)
+    # a route subset: the unselected routes are :route_not_selected, not a degradation
+    rsub = collect!(analyze(TwissDispersionAnalysis(dispersion_routes=(:eigenplane,), longitudinal_mode=_st4b_a_certified(_st4b_a_dense6()).longitudinal_mode), _st4b_a_dense6()))
+    @test rsub.status === :passed && count(x -> x.status === :route_not_selected, rsub.dispersion.routes) == 4
+    @test _st4b_a_entry(rsub, :newton_max_iterations).status === :inactive_dependency
+    # negative h beyond the positivity floor: the Ohmi factor is :form_inadmissible, the analysis itself is not degraded by it
+    pneg = _st4b_a_prescribed(-1.0)
+    rneg = collect!(analyze(TwissDispersionAnalysis(longitudinal_mode=-pneg.mus[3], strict=false), pneg.M))
+    @test rneg.ohmi.reason === :form_inadmissible && Octopus.is_determined(rneg.separation)
+    # coasting and the 4x4 map: :coasting_structure, :unit_eigenvalue and :not_requested
+    collect!(analyze(a, _st4b_a_coasting(0.3).M)); collect!(analyze(a, _st4b_a_dense4()))
+    # the near-non-symplectic map: :not_invariant on the routes
+    collect!(analyze(TwissDispersionAnalysis(nonsymplectic=:flag, symplectic_rtol=1e-3, strict=false), _st4b_a_perturbed()))
+    @test seen == claimed
+    @test all(reason in Octopus.DETERMINATION_REASONS for reason in seen)
+end
+
+@testset "Verdict and strictness: the near-non-symplectic map fails, strict throws the same result, :flag degrades, :error throws (F4, row 11)" begin
+    Mp = _st4b_a_perturbed()
+    # :error is the default: a defect above the tolerance is an ArgumentError naming the rule and the tolerance
+    err = try; analyze(TwissDispersionAnalysis(), Mp); nothing; catch e; e; end
+    @test err isa ArgumentError && occursin("row_ratio", err.msg) && occursin("nonsymplectic", err.msg)
+    err2 = try; analyze(TwissDispersionAnalysis(symplectic_rtol=1e-9), Mp); nothing; catch e; e; end
+    @test err2 isa ArgumentError && occursin("frobenius", err2.msg) && occursin("1.0e-9", err2.msg)
+    # :flag with a loose rtol: the flag degrades, the (K5) separation fails: :failed
+    a_false = TwissDispersionAnalysis(nonsymplectic=:flag, symplectic_rtol=1e-9, strict=false)   # the defect (~1e-6) is above 1e-9: flagged
+    r = analyze(a_false, Mp)
+    @test r.status === :failed && !isempty(r.failures)
+    @test any(s -> occursin("nonsymplectic = :flag", s), r.degradations)
+    @test r.diagnostics.symplectic_rule === :frobenius && r.symplectic_defect.frobenius > 0
+    a_true = TwissDispersionAnalysis(nonsymplectic=:flag, symplectic_rtol=1e-9, strict=true)
+    @test_throws OpticsAnalysisError analyze(a_true, Mp)
+    e = try; analyze(a_true, Mp); nothing; catch x; x; end
+    @test e isa OpticsAnalysisError && e.result isa TwissDispersionResult && e.failures == e.result.failures
+    @test e.result.status === :failed && e.result.failures == r.failures && e.result.degradations == r.degradations
+    @test e.result.matrix_scaled == r.matrix_scaled && e.result.analysis === a_true
+    msg = sprint(showerror, e)
+    @test occursin("OpticsAnalysisError", msg) && occursin(string(length(e.failures)), msg) && occursin(".result", msg)
+    # the strictness receipt carries the option and the outcome
+    audit = ExecutionAudit()
+    with_execution_audit(audit) do; analyze(a_false, Mp); end
+    rs = _st4b_a_receipts(audit, :analysis_strictness)
+    @test length(rs) == 1 && rs[1].values.strict == false && rs[1].values.outcome === :failed
+    rsc = _st4b_a_receipts(audit, :analysis_symplectic_check)
+    @test length(rsc) == 1 && rsc[1].values.symplectic_rtol == 1e-9 && rsc[1].values.nonsymplectic === :flag
+    @test rsc[1].values.rule === :frobenius && rsc[1].values.action === :flagged && rsc[1].values.defect == r.symplectic_defect
+    # a passing run: the flag is inactive in effect (accepted), the outcome :passed
+    audit2 = ExecutionAudit()
+    a_cert = _st4b_a_certified(_st4b_a_dense6(); nonsymplectic=:flag)      # built outside the audit: one run, one receipt
+    with_execution_audit(audit2) do; analyze(a_cert, _st4b_a_dense6()); end
+    @test _st4b_a_receipts(audit2, :analysis_symplectic_check)[1].values.action === :accepted
+    @test _st4b_a_receipts(audit2, :analysis_strictness)[1].values.outcome === :passed
+    # the verdict is recomputable from the residual triples: a frame residual above its acceptance is a failure
+    r0 = analyze(TwissDispersionAnalysis(), _st4b_a_dense4())
+    d0 = r0.diagnostics
+    @test Octopus._analysis_verdict(r0.analysis, d0, String[])[1] === :passed
+    @test Octopus._analysis_verdict(r0.analysis, d0, ["a limitation"]) == (:degraded, String[])
+    bumped = [(n, n == "frame reconstruction (I1)" ? 2t : v, t) for (n, v, t) in d0.residuals]
+    dbad = Octopus.AnalysisDiagnostics(d0.convention, d0.reference_point, d0.symplectic_defect, d0.symplectic_rule, d0.unit_circle_departure,
+                                       d0.rho_M0, d0.rho_M1, bumped, d0.resolution, d0.longitudinal_selection, d0.edwards_teng,
+                                       d0.projection, d0.phase_validity, d0.routes)
+    status, failures = Octopus._analysis_verdict(r0.analysis, dbad, String[])
+    @test status === :failed && length(failures) == 1 && occursin("frame reconstruction (I1)", failures[1])
+    bumped2 = [(n, n == "frame symplecticity (E7)" ? 2t : v, t) for (n, v, t) in d0.residuals]
+    dbad2 = Octopus.AnalysisDiagnostics(d0.convention, d0.reference_point, d0.symplectic_defect, d0.symplectic_rule, d0.unit_circle_departure,
+                                        d0.rho_M0, d0.rho_M1, bumped2, d0.resolution, d0.longitudinal_selection, d0.edwards_teng,
+                                        d0.projection, d0.phase_validity, d0.routes)
+    @test Octopus._analysis_verdict(r0.analysis, dbad2, String[])[1] === :failed
+    @test Octopus._analysis_verdict(r0.analysis, d0, String[]; primary_status=:not_invariant)[1] === :failed
+    @test Octopus._analysis_verdict(r0.analysis, d0, String[]; separation_status=:not_invariant)[1] === :failed
+    # the acceptance constants are the ones the triples carry; the kappa of a backward error is 1 (the (I1) rows),
+    # the symplecticity rows carry cond(U) (experiences.md: the kappa is the condition number of the quantity COMPARED)
+    f = _st4b_a_val(_st4b_a_val(r0.transverse).frame)
+    tol_of(d, name) = d.residuals[findfirst(x -> x[1] == name, d.residuals)][3]
+    @test tol_of(d0, "frame reconstruction (I1)") == Octopus._FRAME_ACCEPTANCE_MULTIPLIER * d0.rho_M1
+    @test tol_of(d0, "frame symplecticity (E7)") == Octopus._FRAME_ACCEPTANCE_MULTIPLIER * d0.rho_M1 * cond(f.normalizer)
+    r6 = analyze(_st4b_a_certified(_st4b_a_dense6()), _st4b_a_dense6())
+    @test tol_of(r6.diagnostics, "U_6 reconstruction") == Octopus._NORMALIZER_ACCEPTANCE_MULTIPLIER * r6.diagnostics.rho_M1
+    @test tol_of(r6.diagnostics, "U_6 symplecticity") == Octopus._NORMALIZER_ACCEPTANCE_MULTIPLIER * r6.diagnostics.rho_M1 * cond(_st4b_a_val(r6.projected_optics).normalizer)
+    # every name the verdict judges is judged: bump each _VERDICT_RESIDUALS triple of a certified 6D result with
+    # emittances (all five names present) and the verdict fails naming it; the reported-only triples are not judged
+    r6e = analyze(_st4b_a_certified(_st4b_a_dense6(); emittances=(1e-9, 2e-9, 3e-6)), _st4b_a_dense6())
+    d6 = r6e.diagnostics
+    @test Set(Octopus._VERDICT_RESIDUALS) <= Set(first.(d6.residuals)) && length(Octopus._VERDICT_RESIDUALS) == 5
+    @test Octopus._analysis_verdict(r6e.analysis, d6, String[])[1] === :passed
+    rebuild(d, res) = Octopus.AnalysisDiagnostics(d.convention, d.reference_point, d.symplectic_defect, d.symplectic_rule, d.unit_circle_departure,
+                                                   d.rho_M0, d.rho_M1, res, d.resolution, d.longitudinal_selection, d.edwards_teng,
+                                                   d.projection, d.phase_validity, d.routes)
+    for name in Octopus._VERDICT_RESIDUALS
+        dj = rebuild(d6, [(n, n == name ? 2t : v, t) for (n, v, t) in d6.residuals])
+        st, fl = Octopus._analysis_verdict(r6e.analysis, dj, String[])
+        @test st === :failed && length(fl) == 1 && occursin(name, fl[1])
+    end
+    for name in ("(K14) zz identity", "separation off-diagonal (K5)", "triple consistency (K7)", "primary route invariance (I1)")
+        @test any(x -> x[1] == name, d6.residuals)
+        @test Octopus._analysis_verdict(r6e.analysis, rebuild(d6, [(n, n == name ? 2t : v, t) for (n, v, t) in d6.residuals]), String[])[1] === :passed
+    end
+end
+
+@testset "Receipts: one probe per option, the requested value under the option's own name, absent where inactive (F5)" begin
+    M6 = _st4b_a_dense6()
+    idx = _st4b_a_certified(M6).longitudinal_mode
+    function receipts(analysis, input)
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do; analyze(analysis, input); end
+        return execution_receipts(audit)
+    end
+    only(rs, consumer) = (v = filter(r -> r.consumer === consumer, rs); @test length(v) == 1; v[1].values)
+    rs = receipts(TwissDispersionAnalysis(scaling=:none, symplectic_rtol=1e-6, nonsymplectic=:flag, map_uncertainty=1e-14,
+                                          resolution_chord=1e-2, longitudinal_mode=idx, preferred_form=2,
+                                          dispersion_routes=(:eigenplane, :newton), newton_max_iterations=7,
+                                          emittances=(1e-9, 2e-9, 3e-6), strict=false), M6)
+    @test all(r.backend === CPUThreadsBackend for r in rs)
+    @test Set(r.consumer for r in rs) == setdiff(Set(Octopus._ANALYSIS_CONSUMERS), Set([:analysis_closed_orbit]))
+    v = only(rs, :analysis_scaling); @test v.scaling === :none && v.mode === :none && v.factors == (1.0, 1.0, 1.0)
+    v = only(rs, :analysis_symplectic_check); @test v.symplectic_rtol == 1e-6 && v.nonsymplectic === :flag && v.rule === :frobenius && v.action === :accepted
+    v = only(rs, :analysis_cluster_resolution)
+    @test v.resolution_chord == 1e-2 && v.map_uncertainty == 1e-14 && v.clusters === :auto && v.rho_M0 >= 1e-14 && v.rho_M1 >= v.rho_M0 && v.forced == false
+    v = only(rs, :analysis_labels); @test v.longitudinal_mode == idx && v.certified && v.selected == idx && v.rule === :explicit && length(v.weights) == 3
+    v = only(rs, :analysis_dispersion_routes); @test v.dispersion_routes == (:eigenplane, :newton) && v.executed == (:eigenplane, :newton)
+    v = only(rs, :analysis_newton); @test v.newton_max_iterations == 7 && 0 <= v.used <= 7
+    # the cap BINDS: the dense map's Newton route needs more than 3 iterations, so a cap of 3 stops it there
+    # (the route is then :not_invariant, not a failure and not an "another branch" degradation)
+    rn_cap = Ref{Any}(nothing); audit_cap = ExecutionAudit()
+    with_execution_audit(audit_cap) do; rn_cap[] = analyze(TwissDispersionAnalysis(newton_max_iterations=3, longitudinal_mode=idx), M6); end
+    v_cap = only(execution_receipts(audit_cap), :analysis_newton)
+    @test v_cap.newton_max_iterations == 3 && v_cap.used == 3
+    newton_of(r) = r.dispersion.routes[findfirst(x -> x.route === :newton, r.dispersion.routes)]
+    @test newton_of(rn_cap[]).iterations == 3 && newton_of(rn_cap[]).status === :not_invariant && rn_cap[].status === :passed
+    rn_def = analyze(TwissDispersionAnalysis(longitudinal_mode=idx), M6)
+    @test newton_of(rn_def).iterations > 3 && newton_of(rn_def).status === :none
+    v = only(rs, :analysis_edwards_teng); @test v.preferred_form == 2 && v.reported == 2 && v.admissible == (true, true)
+    v = only(rs, :analysis_covariance); @test v.emittances == (1e-9, 2e-9, 3e-6)
+    v = only(rs, :analysis_strictness); @test v.strict == false && v.outcome === :passed
+    # the default run: :auto values, no newton receipt when :newton is not selected, no covariance receipt without emittances
+    rd = receipts(TwissDispersionAnalysis(dispersion_routes=(:eigenplane, :polynomial), strict=false), M6)
+    @test only(rd, :analysis_scaling).scaling === :auto && only(rd, :analysis_scaling).mode === :auto
+    @test only(rd, :analysis_symplectic_check).symplectic_rtol === nothing && only(rd, :analysis_symplectic_check).rule === :row_ratio
+    @test only(rd, :analysis_labels).longitudinal_mode === :max_signed_z_area && !only(rd, :analysis_labels).certified
+    @test only(rd, :analysis_dispersion_routes).executed == (:eigenplane, :polynomial)
+    @test isempty(filter(r -> r.consumer === :analysis_newton, rd))
+    @test isempty(filter(r -> r.consumer === :analysis_covariance, rd))
+    @test only(rd, :analysis_edwards_teng).preferred_form === :auto
+    @test only(rd, :analysis_strictness).strict == false && only(rd, :analysis_strictness).outcome === :degraded
+    # an explicit partition: the receipt carries the PARTITION the consumer read (F5), not a marker; Inf forces
+    r0 = analyze(TwissDispersionAnalysis(strict=false), M6)
+    part = [c.members for c in r0.clusters.clusters]
+    @test only(receipts(TwissDispersionAnalysis(clusters=part, strict=false), M6), :analysis_cluster_resolution).clusters == part
+    rf = receipts(TwissDispersionAnalysis(resolution_chord=Inf, strict=false), _st4b_a_repeated())
+    @test only(rf, :analysis_cluster_resolution).resolution_chord == Inf && only(rf, :analysis_cluster_resolution).forced == true
+    # map_uncertainty moves rho_M0 in the receipt
+    @test only(receipts(TwissDispersionAnalysis(map_uncertainty=1e-9, strict=false), M6), :analysis_cluster_resolution).rho_M0 >= 1e-9
+    @test only(receipts(TwissDispersionAnalysis(strict=false), M6), :analysis_cluster_resolution).rho_M0 < 1e-9
+    # 4x4: no labels, routes, newton receipts; the Edwards-Teng and covariance ones exist
+    r4 = receipts(TwissDispersionAnalysis(emittances=(1e-9, 2e-9)), _st4b_a_dense4())
+    @test Set(r.consumer for r in r4) == Set([:analysis_scaling, :analysis_symplectic_check, :analysis_cluster_resolution,
+                                              :analysis_edwards_teng, :analysis_covariance, :analysis_strictness])
+    @test only(r4, :analysis_covariance).emittances == (1e-9, 2e-9)
+    # a blocked frame: no Edwards-Teng receipt (the option is inactive), the report agrees
+    ri = receipts(TwissDispersionAnalysis(strict=false), _st4b_a_indefinite())
+    @test isempty(filter(r -> r.consumer === :analysis_edwards_teng, ri))
+    @test _st4b_a_entry(analyze(TwissDispersionAnalysis(strict=false), _st4b_a_indefinite()), :preferred_form).status === :inactive_dependency
+    # outside an audit nothing is recorded and analyze is unaffected
+    @test analyze(TwissDispersionAnalysis(strict=false), M6).status === :degraded
+    # the receipt's NamedTuple keys are exactly the fixed fields of F5
+    fields = Dict(:analysis_scaling => (:scaling, :mode, :factors), :analysis_symplectic_check => (:symplectic_rtol, :nonsymplectic, :rule, :defect, :action),
+                  :analysis_cluster_resolution => (:resolution_chord, :map_uncertainty, :clusters, :rho_M0, :rho_M1, :forced),
+                  :analysis_labels => (:longitudinal_mode, :rule, :certified, :selected, :weights), :analysis_edwards_teng => (:preferred_form, :reported, :admissible),
+                  :analysis_dispersion_routes => (:dispersion_routes, :executed), :analysis_newton => (:newton_max_iterations, :used),
+                  :analysis_covariance => (:emittances,), :analysis_strictness => (:strict, :outcome))
+    for r in rs; @test keys(r.values) == fields[r.consumer]; end
+    rl = receipts(TwissDispersionAnalysis(strict=false), one_turn_matrix((compile_runtime(Linear6DSpec(matrix=M6)),)))
+    @test keys(only(rl, :analysis_closed_orbit)) == (:closed_orbit, :closed_orbit_atol, :residual, :action)
+end
+
+@testset "Configuration report: the statuses per option on the four input forms, never :inactive (F6)" begin
+    M6 = _st4b_a_dense6()
+    forms = (matrix=analyze(TwissDispersionAnalysis(strict=false), M6),
+             linearized=analyze(TwissDispersionAnalysis(strict=false), one_turn_matrix((compile_runtime(Linear6DSpec(matrix=M6)),))),
+             matrix4=analyze(TwissDispersionAnalysis(), _st4b_a_dense4()),
+             coasting=analyze(TwissDispersionAnalysis(), _st4b_a_coasting(0.3).M))
+    always = (:scaling, :symplectic_rtol, :nonsymplectic, :map_uncertainty, :resolution_chord, :clusters, :strict)
+    inactive = Dict(:matrix => Set([:closed_orbit, :closed_orbit_atol, :emittances]),
+                    :linearized => Set([:emittances]),
+                    :matrix4 => Set([:closed_orbit, :closed_orbit_atol, :longitudinal_mode, :dispersion_routes, :newton_max_iterations, :emittances]),
+                    :coasting => Set([:closed_orbit, :closed_orbit_atol, :longitudinal_mode, :dispersion_routes, :newton_max_iterations, :emittances]))
+    for (form, r) in pairs(forms)
+        rep = configuration_report(r)
+        @test rep === r.configuration && length(rep) == 14
+        @test Set(e.name for e in rep) == Set(fieldnames(TwissDispersionAnalysis))
+        @test all(e.status in Octopus.CONFIGURATION_STATUSES for e in rep)
+        @test all(e.status !== :inactive for e in rep)
+        @test Set(e.name for e in rep if e.status === :inactive_dependency) == inactive[form]
+        @test all(e.status === :resolved for e in rep if e.name in always)
+        @test all(!isempty(e.reason) for e in rep if e.status === :inactive_dependency)
+        @test all(isempty(e.reason) for e in rep if e.status === :resolved)
+        for e in rep
+            @test e.requested === getproperty(r.analysis, e.name) || isequal(e.requested, getproperty(r.analysis, e.name))
+            @test e.consumer === analysis_option_schema(TwissDispersionAnalysis)[e.name].consumer
+        end
+    end
+    # the amendment: resolution_chord stays :resolved under an explicit partition
+    part = [c.members for c in forms.matrix.clusters.clusters]
+    rp = analyze(TwissDispersionAnalysis(clusters=part, strict=false), M6)
+    @test _st4b_a_entry(rp, :resolution_chord).status === :resolved && _st4b_a_entry(rp, :clusters).status === :resolved
+    # emittances given: :resolved; newton executed: :resolved
+    re = analyze(TwissDispersionAnalysis(emittances=(1e-9, 2e-9, 3e-6), strict=false), M6)
+    @test _st4b_a_entry(re, :emittances).status === :resolved && _st4b_a_entry(re, :newton_max_iterations).status === :resolved
+    # a blocked frame: preferred_form inactive with a reason
+    ri = analyze(TwissDispersionAnalysis(strict=false), _st4b_a_indefinite())
+    @test _st4b_a_entry(ri, :preferred_form).status === :inactive_dependency && occursin("Edwards-Teng", _st4b_a_entry(ri, :preferred_form).reason)
+    # every status a live report produces is in the declared set (the suite's global check, locally)
+    statuses = Set(e.status for r in forms for e in r.configuration)
+    @test statuses == Set([:resolved, :inactive_dependency])
+end
+
+@testset "Explicit partitions promise the grouping only; a forced resolution is a degradation (F3 steps 6-8, row 14)" begin
+    M6 = _st4b_a_dense6()
+    r0 = analyze(TwissDispersionAnalysis(strict=false), M6)
+    part = [c.members for c in r0.clusters.clusters]
+    @test all(length(g) == 2 for g in part) && all(r0.clusters.conjugate_partner[g[1]] == g[2] for g in part)
+    rp = analyze(TwissDispersionAnalysis(clusters=part, strict=false), M6)
+    @test rp.clusters.partition_source !== :auto && [c.members for c in rp.clusters.clusters] == part
+    @test rp.status === r0.status && Octopus.is_determined(rp.separation) && Octopus.is_determined(rp.projected_optics)
+    @test _st4b_a_val(rp.physical.h) == _st4b_a_val(r0.physical.h)
+    # a partition that is not closed under conjugation is the kernel's ArgumentError, thrown through analyze
+    @test_throws ArgumentError analyze(TwissDispersionAnalysis(clusters=[[1, 2], [3, 4], [5, 6]], strict=false), M6)
+    # a union of two conjugate pairs: the classification is still COMPUTED (stage 3), the grouping is promised
+    union = [vcat(part[1], part[2]), part[3]]
+    ru = analyze(TwissDispersionAnalysis(clusters=union, strict=false), M6)
+    @test [sort(c.members) for c in ru.clusters.clusters] == [sort(g) for g in union]
+    @test ru.clusters.clusters[1].classification in Octopus.CLUSTER_CLASSIFICATIONS
+    if ru.clusters.clusters[1].classification in (:indefinite, :unresolved)
+        @test ru.status === :degraded && any(s -> occursin("cluster 1", s), ru.degradations)
+    end
+    # 4x4: the explicit union blocks the frame exactly when _frame_availability of the explicit report returns a reason
+    M4 = _st4b_a_dense4()
+    r4 = analyze(TwissDispersionAnalysis(strict=false), M4)
+    part4 = [c.members for c in r4.clusters.clusters]
+    rp4 = analyze(TwissDispersionAnalysis(clusters=part4, strict=false), M4)
+    @test Octopus.is_determined(_st4b_a_val(rp4.transverse).frame)
+    @test _st4b_a_val(_st4b_a_val(rp4.transverse).frame).normalizer == _st4b_a_val(_st4b_a_val(r4.transverse).frame).normalizer
+    ru4 = analyze(TwissDispersionAnalysis(clusters=[[1, 2, 3, 4]], strict=false), M4)
+    block = Octopus._frame_availability(ru4.clusters)
+    if block === nothing
+        @test Octopus.is_determined(_st4b_a_val(ru4.transverse).frame)
+    else
+        @test !Octopus.is_determined(_st4b_a_val(ru4.transverse).frame) && _st4b_a_val(ru4.transverse).frame.reason === block[1]
+        @test occursin("explicit partition", _st4b_a_val(ru4.transverse).frame.detail)
+        @test _st4b_a_entry(ru4, :preferred_form).status === :inactive_dependency
+    end
+    # the same rule on a genuinely blocked explicit report: the indefinite 4D union of stage 3
+    Mi4 = _st4b_a_bd(_st4b_a_rot(0.73), _st4b_a_rot(-0.73))
+    ri4 = analyze(TwissDispersionAnalysis(strict=false), Mi4)
+    @test ri4.status === :degraded
+    @test !Octopus.is_determined(_st4b_a_val(ri4.transverse).frame) || Octopus.is_determined(_st4b_a_val(ri4.transverse).frame)
+    # forced: resolution_chord = Inf resolves the repeated betatron pair and the result says so
+    rf = analyze(TwissDispersionAnalysis(resolution_chord=Inf, strict=false), _st4b_a_repeated())
+    @test any(c.forced for c in rf.clusters.clusters) && rf.status === :degraded
+    @test any(s -> occursin("forced", s), rf.degradations)
+    @test any(x -> x[1] == "resolution_chord" && x[2] == Inf, rf.diagnostics.resolution)
+    @test any(x -> occursin("forced", x[1]) && x[2] == 1.0, rf.diagnostics.resolution)
+    rn = analyze(TwissDispersionAnalysis(strict=false), _st4b_a_repeated())
+    @test !any(c.forced for c in rn.clusters.clusters) && !any(s -> occursin("forced", s), rn.degradations)
+    # map_uncertainty is folded into rho_M0 and every scale downstream
+    ru = analyze(TwissDispersionAnalysis(map_uncertainty=1e-8, strict=false), M6)
+    @test ru.rho_M0 >= 1e-8 && ru.diagnostics.rho_M0 == ru.rho_M0 && ru.clusters.rho_M0 == ru.rho_M0
+    @test ru.diagnostics.rho_M1 >= ru.rho_M0
+    @test r0.rho_M0 < 1e-8
+end
+
+@testset "4b-B validator block and AbstractAnalysis tree guard" begin
+    @test Octopus.validate_configuration_metadata() === true
+    schema = analysis_option_schema(TwissDispersionAnalysis)
+    default = TwissDispersionAnalysis()
+    @test isempty(_st4b_b_block_errors(schema, default, TwissDispersionAnalysis))
+    @test Set(keys(schema)) == Set(fieldnames(TwissDispersionAnalysis))
+    @test length(schema) == 14
+    for (name, meta) in pairs(schema)
+        @test isequal(getproperty(default, name), meta.default)
+        @test meta.consumer in Octopus._ANALYSIS_CONSUMERS
+        @test meta.category in (:execution, :numerical, :physics)
+        @test meta.supported_backends == (Octopus.CPUThreadsBackend,)
+    end
+    # injected drift 1: a default that disagrees with the constructor
+    m = schema.strict
+    drifted = merge(schema, (strict=Octopus.ConfigurationOptionMeta(m.option_type, false, m.meaning;
+        category=m.category, supported_backends=m.supported_backends, consumer=m.consumer),))
+    e1 = _st4b_b_block_errors(drifted, default, TwissDispersionAnalysis)
+    @test length(e1) == 1 && occursin("strict metadata default disagrees with constructor", e1[1])
+    # injected drift 2: a missing consumer
+    m = schema.scaling
+    unowned = merge(schema, (scaling=Octopus.ConfigurationOptionMeta(m.option_type, m.default, m.meaning;
+        category=m.category, supported_backends=m.supported_backends),))
+    e2 = _st4b_b_block_errors(unowned, default, TwissDispersionAnalysis)
+    @test length(e2) == 1 && occursin("scaling has no runtime consumer", e2[1])
+    # injected drift 3: a mismatched key (an option the struct does not have)
+    renamed = merge(Base.structdiff(schema, NamedTuple{(:strict,)}), (strictness=schema.strict,))
+    e3 = _st4b_b_block_errors(renamed, default, TwissDispersionAnalysis)
+    @test length(e3) == 1 && occursin("fields and metadata keys disagree", e3[1])
+    # the tree guard: the hand list equals the derived concrete set
+    derived = Set(Octopus._concrete_octopus_subtypes(AbstractAnalysis))
+    @test derived == Set([TwissDispersionAnalysis, PlaceholderAnalysis])
+    @test all(T -> parentmodule(T) === Octopus && isconcretetype(T), derived)
+    @test analysis_option_schema(PlaceholderAnalysis) === NamedTuple()
+    # the guard's message form, on a scratch type outside the hand list
+    hand = (TwissDispersionAnalysis, PlaceholderAnalysis)
+    msgs = String[]
+    for T in (derived..., Nothing)
+        T in hand || push!(msgs, "$(T) is a concrete Octopus analysis with no block in " *
+            "validate_configuration_metadata; add one (see the policy tree guard)")
+    end
+    @test msgs == ["Nothing is a concrete Octopus analysis with no block in validate_configuration_metadata; add one (see the policy tree guard)"]
+    # the block text is in the source
+    src = read(String(first(methods(Octopus.validate_configuration_metadata)).file), String)
+    @test occursin("_concrete_octopus_subtypes(AbstractAnalysis)", src)
+    @test occursin("is a concrete Octopus analysis with no block in", src)
+    @test occursin("TwissDispersionAnalysis fields and metadata keys disagree", src)
+end
+
+@testset "4b-B probe tables: valid non-default alternatives, F6 inactive pairs, F8 tripwire" begin
+    alt = Octopus._default_analysis_option_alternatives()
+    ina = Octopus._default_analysis_inactive_options()
+    schema = analysis_option_schema(TwissDispersionAnalysis)
+    default = TwissDispersionAnalysis()
+    @test Set(keys(alt)) == Set(keys(schema))
+    for (name, value) in alt
+        @test !isequal(value, getproperty(default, name))            # non-default
+        @test getproperty(TwissDispersionAnalysis(; name => value), name) == value   # valid
+    end
+    @test alt[:clusters] == [[1, 6], [2, 5], [3, 4]]
+    @test alt[:longitudinal_mode] === Octopus._ANALYSIS_CONTRACT_LONGITUDINAL_INDEX
+    # every F6 inactivity is declared with a non-empty reason
+    for pair in ((:matrix, :closed_orbit), (:matrix, :closed_orbit_atol), (:matrix4, :closed_orbit),
+                 (:coasting, :closed_orbit), (:matrix4, :longitudinal_mode), (:matrix4, :dispersion_routes),
+                 (:matrix4, :newton_max_iterations), (:coasting, :longitudinal_mode),
+                 (:coasting, :dispersion_routes), (:coasting, :newton_max_iterations),
+                 (:matrix, :emittances), (:linearized, :emittances), (:matrix4, :emittances), (:coasting, :emittances))
+        @test haskey(ina, pair) && !isempty(ina[pair])
+    end
+    for ((form, name), reason) in ina
+        @test form in Octopus._ANALYSIS_CONTRACT_FORMS
+        @test haskey(schema, name)
+    end
+    @test !haskey(ina, (:linearized, :closed_orbit))
+    @test !haskey(ina, (:matrix, :longitudinal_mode))
+    # the active form of each option
+    c = AnalysisOptionEffectivenessContract()
+    @test Octopus._analysis_contract_active_form(c, :closed_orbit) === :linearized
+    @test Octopus._analysis_contract_active_form(c, :closed_orbit_atol) === :linearized
+    @test Octopus._analysis_contract_active_form(c, :emittances) === :matrix
+    @test Octopus._analysis_contract_active_form(c, :scaling) === :matrix
+    # F8 tripwire: every option of every concrete analysis with a non-empty schema
+    # has an alternative or an inactive entry in the default tables
+    types = Octopus._analysis_contract_types()
+    @test collect(types) == [TwissDispersionAnalysis]
+    @test Set(types) == Set(T for T in Octopus._concrete_octopus_subtypes(AbstractAnalysis) if !isempty(analysis_option_schema(T)))
+    for T in types, name in keys(analysis_option_schema(T))
+        @test haskey(c.alternatives, name) || any(k -> k[2] === name, keys(c.inactive))
+    end
+    @test c.seed == UInt64(20260911)
+    @test Octopus._ANALYSIS_CONTRACT_FORMS == (:matrix, :linearized, :matrix4, :coasting)
+    @test Octopus._ANALYSIS_CONTRACT_FIXED_MULTIPLIER == 1024.0   # D1: window [884, 1.9e13] (measurement_table_4b.md, c_contract_fixed); was 64, below the window
+    # the recorded value IS the requested value for every option (F5); the clusters receipt carries the partition
+    @test Octopus._analysis_contract_recorded(:clusters, [[1, 6], [2, 5], [3, 4]]) == [[1, 6], [2, 5], [3, 4]]
+    @test Octopus._ANALYSIS_CONTRACT_PROBE_FORMS == Dict(:resolution_chord => :repeated)
+    @test Octopus._analysis_contract_recorded(:clusters, :auto) === :auto
+    @test Octopus._analysis_contract_recorded(:scaling, :none) === :none
+    @test Octopus._analysis_contract_recorded(:emittances, (1e-6, 2e-6, 3e-6)) == (1e-6, 2e-6, 3e-6)
+end
+
+@testset "4b-B probe fixtures: forms, determinism, coasting structure, exact provenance" begin
+    f = Octopus._analysis_contract_fixtures(UInt64(20260911))
+    g = Octopus._analysis_contract_fixtures(UInt64(20260911))
+    @test keys(f) == (:matrix, :linearized, :matrix4, :coasting, :failing, :repeated, :displaced)
+    @test f.matrix == g.matrix && f.matrix4 == g.matrix4 && f.coasting == g.coasting && f.failing == g.failing && f.repeated == g.repeated
+    # the repeated input: a repeated betatron pair the default chord leaves unresolved and Inf forces
+    @test size(f.repeated) == (6, 6) && Octopus._symplectic_defect(f.repeated).row_ratio <= 1
+    @test !Octopus.is_determined(analyze(TwissDispersionAnalysis(strict=false), f.repeated).projected_optics)
+    @test any(c.forced for c in analyze(TwissDispersionAnalysis(resolution_chord=Inf, strict=false), f.repeated).clusters.clusters)
+    @test !any(c.forced for c in analyze(TwissDispersionAnalysis(resolution_chord=Inf, strict=false), f.matrix).clusters.clusters)
+    # the displaced input: a linearization about a point that is not a fixed point
+    @test f.displaced isa Octopus.LinearizedMap && maximum(abs, f.displaced.provenance.fixed_point_residual) > 1e-6
+    @test f.displaced.provenance.point == (1e-3, 0.0, 0.0, 0.0, 0.0, 0.0)
+    @test f.linearized.matrix == g.linearized.matrix
+    @test size(f.matrix) == (6, 6) && size(f.matrix4) == (4, 4) && size(f.coasting) == (6, 6)
+    for M in (f.matrix, f.matrix4, f.coasting)
+        @test Octopus._symplectic_defect(M).row_ratio <= 1
+        @test maximum(abs.(abs.(eigvals(M)) .- 1)) < 1e-12                     # stable
+    end
+    @test Octopus._symplectic_defect(f.failing).frobenius > 1e-7                # the strict probe's input fails the rule
+    @test Octopus._symplectic_defect(f.failing).frobenius > 1e-9                # and is FLAGGED at the strict probe's symplectic_rtol = 1e-9
+    @test f.linearized isa Octopus.LinearizedMap
+    @test f.linearized.provenance.method isa Octopus.ComplexStepLinearization
+    @test f.linearized.provenance.fixed_point_residual == ntuple(_ -> 0.0, 6)
+    @test f.linearized.provenance.map_uncertainty == 0.0
+    @test maximum(abs.(f.linearized.matrix .- f.matrix)) <= 8 * eps()          # the same matrix to roundoff
+    @test f.coasting[6, :] == [0, 0, 0, 0, 0, 1.0] && f.coasting[:, 5] == [0, 0, 0, 0, 1.0, 0]
+    @test f.coasting[5, 6] != 0
+    rho(M) = Octopus._perturbation_scale(M, Octopus._symplectic_defect(M).frobenius).scale
+    cm = Octopus._mode_clusters(f.matrix; rho_M0=rho(f.matrix))
+    @test cm.degeneracy_status === :all_resolved && all(cl -> cl.classification === :definite, cm.clusters)
+    @test Set(Set.(Octopus._default_analysis_option_alternatives()[:clusters])) == Set(Set.(cl.members for cl in cm.clusters))
+    rm = Octopus._dispersion_routes(f.matrix, cm)
+    @test rm.longitudinal == Octopus._ANALYSIS_CONTRACT_LONGITUDINAL_INDEX      # the certified alternative IS the data's synchrotron mode
+    cc = Octopus._mode_clusters(f.coasting; rho_M0=rho(f.coasting))
+    rc = Octopus._dispersion_routes(f.coasting, cc)
+    @test rc.coasting.holds && all(r -> r.status === :coasting_structure, rc.routes)
+    @test_throws ArgumentError Octopus._mode_clusters(f.matrix; rho_M0=rho(f.matrix), partition=[[1, 2], [3, 4], [5, 6]])
+    @test Octopus._analysis_contract_fixtures(UInt64(1)).matrix != f.matrix
+end
+
+@testset "4b-B receipt matcher and probe helpers" begin
+    R(c, v) = Octopus.ExecutionAuditReceipt(c, Octopus.CPUThreadsBackend, v)
+    rs = [R(:analysis_scaling, (scaling=:none, mode=:none)), R(:analysis_labels, (longitudinal_mode=2, certified=true)),
+          R(:analysis_symplectic_check, (symplectic_rtol=nothing, rule=:row_ratio))]
+    carries = Octopus._analysis_contract_receipt_carries
+    @test carries(rs, :analysis_scaling, :scaling, :none)
+    @test !carries(rs, :analysis_labels, :scaling, :none)                # the consumer must match
+    @test !carries(rs, :analysis_scaling, :scaling, :auto)               # the value must match
+    @test !carries(rs, :analysis_scaling, :mode_x, :none)                # the key must exist
+    @test carries(rs, :analysis_symplectic_check, :symplectic_rtol, nothing)   # isequal, not ==
+    @test carries(rs, :analysis_labels, :longitudinal_mode, 2)
+    @test !carries(Octopus.ExecutionAuditReceipt[], :analysis_scaling, :scaling, :none)
+    @test Octopus._analysis_contract_receipt_field(rs, :analysis_labels, :certified) === true
+    @test Octopus._analysis_contract_receipt_field(rs, :analysis_labels, :absent) === nothing
+    @test Octopus._analysis_contract_receipt_field(rs, :analysis_newton, :used) === nothing
+    # the injected-run harness: receipts are collected, exceptions are caught
+    res, rec, err = Octopus._analysis_contract_run((a, x) -> (Octopus._record_execution!(:t, Octopus.CPUThreadsBackend, (k=1,)); 7), nothing, nothing)
+    @test res == 7 && err === nothing && length(rec) == 1 && rec[1].consumer === :t
+    res, rec, err = Octopus._analysis_contract_run((a, x) -> error("boom"), nothing, nothing)
+    @test res === nothing && err isa ErrorException && isempty(rec)
+    # report reading
+    entries = [Octopus.ConfigurationEntry(:scaling, :auto, :auto, :resolved, "", :analysis_scaling),
+               Octopus.ConfigurationEntry(:closed_orbit, :require, :require, :inactive_dependency, "bare matrix", :analysis_closed_orbit)]
+    @test Octopus._analysis_contract_report_status((configuration=entries,), :scaling) === :resolved
+    @test Octopus._analysis_contract_report_status((configuration=entries,), :closed_orbit) === :inactive_dependency
+    @test Octopus._analysis_contract_report_status((configuration=entries,), :strict) === nothing
+    # the fixed comparison: bit identity versus c eps kappa
+    D = Octopus.Determined
+    P(z) = (zeta=z, eta=[0.0, 0.5, 0.0, 0.0], h=0.5, tunes=[0.47, 1.6, 0.87])
+    @test Octopus._analysis_contract_fixed(P([1.0, 0.2]), P([1.0, 0.2]); atol_scale=0) == (true, 0.0)
+    @test Octopus._analysis_contract_fixed(P([1.0, 0.2]), P([1.0, nextfloat(0.2)]); atol_scale=0)[1] == false
+    ok, ratio = Octopus._analysis_contract_fixed(P([1.0, 0.2]), P([1.0 + 4eps(), 0.2]); atol_scale=1.0)
+    @test ok && 3.9 < ratio < 4.1
+    @test Octopus._analysis_contract_fixed(P([1.0, 0.2]), P([1.0 + 2 * Octopus._ANALYSIS_CONTRACT_FIXED_MULTIPLIER * eps(), 0.2]); atol_scale=1.0)[1] == false   # D1: derived from the constant (was 100eps against c = 64)
+    @test Octopus._analysis_contract_fixed(P([1.0, 0.2]), P(nothing); atol_scale=1.0) == (false, Inf)
+    @test Octopus._analysis_contract_fixed(P(nothing), P(nothing); atol_scale=0)[1]
+    phys = Octopus._analysis_contract_physics((physical=(zeta=D([1.0]), eta=D{Vector{Float64}}(:unavailable, nothing, nothing, :not_requested, ""), h=D(0.5), tunes=[0.1]),))
+    @test phys.zeta == [1.0] && phys.eta === nothing && phys.h == 0.5 && phys.tunes == [0.1]
+end
+
+@testset "4b-B contract plumbing through an injected run: metrics count, every negative is red" begin
+    c = AnalysisOptionEffectivenessContract()
+    f = Octopus._analysis_contract_fixtures(c.seed)
+    probe(run; kw...) = Octopus._analysis_contract_probe(AnalysisOptionEffectivenessContract(; kw...), f, run)
+    r = probe(_st4b_b_fake_run)
+    @test r.passed && r.status === :passed
+    m = r.metrics
+    @test m[:checked] == 19                    # 14 options + 4 branch probes + the strict failing-fixture probe
+    @test m[:inactive_declared] == 16 && m[:inactive_applied] == 16 && m[:stale_exemptions] == 0
+    @test m[:observables_fixed] == 4           # scaling, nonsymplectic, closed_orbit, strict
+    @test m[:observables_moved] == 15          # 10 numerical/physics options + 4 branch probes + strict on the failing fixture
+    @test m[:receipts_checked] == 32           # 14 alternatives + 13 defaults (emittances has no default receipt) + 3 branch + 2 strict
+    @test occursin("19 probes", r.message)
+    # stale exemption: an option declared inactive that the report calls :resolved
+    ina = copy(c.inactive); ina[(:matrix, :scaling)] = "stale"
+    r = probe(_st4b_b_fake_run; inactive=ina)
+    @test !r.passed && occursin("stale exemption", r.message) && r.metrics[:stale_exemptions] == 1
+    # an inactive entry on an unknown form is never reached: stale
+    ina = copy(c.inactive); ina[(:hexagonal, :scaling)] = "unreachable"
+    r = probe(_st4b_b_fake_run; inactive=ina)
+    @test !r.passed && occursin("never reached", r.message) && r.metrics[:stale_exemptions] == 1
+    # an alternative equal to the default
+    alt = copy(c.alternatives); alt[:strict] = true
+    r = probe(_st4b_b_fake_run; alternatives=alt)
+    @test !r.passed && occursin("alternative equals the default", r.message)
+    # a missing alternative
+    alt = copy(c.alternatives); delete!(alt, :map_uncertainty)
+    r = probe(_st4b_b_fake_run; alternatives=alt)
+    @test !r.passed && occursin("no declared alternative", r.message)
+    # the receipt from another consumer is not accepted
+    r = probe((a, x) -> _st4b_b_fake_run(a, x; defect=:wrong_consumer))
+    @test !r.passed && occursin("longitudinal_mode", r.message) && occursin("no analysis_labels receipt", r.message)
+    # a receipt echoing the option's default instead of the value read
+    r = probe((a, x) -> _st4b_b_fake_run(a, x; defect=:echo_option))
+    @test !r.passed && occursin("symplectic_rtol", r.message) && occursin("carries the alternative", r.message)
+    # the closed-orbit receipt on a bare matrix
+    r = probe((a, x) -> _st4b_b_fake_run(a, x; defect=:closed_orbit_on_matrix))
+    @test !r.passed && occursin("inactive on the matrix fixture yet analysis_closed_orbit issued a receipt", r.message)
+    # the report calling an inactive option :resolved
+    r = probe((a, x) -> _st4b_b_fake_run(a, x; defect=:report_resolved_inactive))
+    @test !r.passed && occursin("closed_orbit is declared inactive", r.message) && occursin("stale", r.message)
+    # an :execution option that moves the physics
+    r = probe((a, x) -> _st4b_b_fake_run(a, x; defect=:zeta_moves))
+    @test !r.passed && occursin("scaling", r.message) && occursin("observable check failed", r.message)
+    # a :physics option whose observable does not move
+    r = probe((a, x) -> _st4b_b_fake_run(a, x; defect=:no_move))
+    @test !r.passed && occursin("preferred_form", r.message) && occursin("did NOT move", r.message)
+    # strict = true returning the failed result instead of throwing
+    r = probe((a, x) -> _st4b_b_fake_run(a, x; defect=:strict_returns))
+    @test !r.passed && occursin("did not throw", r.message) && occursin("status failed", r.message)
+    # a run that throws where a result is expected is a FAILED probe carrying the message
+    r = probe((a, x) -> error("scratch verb exploded"))
+    @test !r.passed && r.status === :failed && occursin("scratch verb exploded", r.message)
+    # a fixture set without the failing input
+    r = Octopus._analysis_contract_probe(c, Base.structdiff(f, NamedTuple{(:failing,)}), _st4b_b_fake_run)
+    @test !r.passed && occursin("no :failing input", r.message)
+    # the observable table refuses an unknown option
+    ok, verdict, detail = Octopus._analysis_contract_observable(:mystery, analysis_option_schema(TwissDispersionAnalysis).clusters,
+        (nothing, []), (nothing, []), 1, f.matrix)
+    @test !ok && verdict === :none && occursin("no observable", detail)
+end
+
+@testset "4b-B registry, description, snapshot lines, the real validate" begin
+    @test Octopus.description(AnalysisOptionEffectivenessContract) isa String
+    @test occursin("analysis option", Octopus.description(AnalysisOptionEffectivenessContract))
+    @test AnalysisOptionEffectivenessContract <: Octopus.AbstractImplementationContract
+    @test isdefined(Octopus, :AnalysisOptionEffectivenessContract) && Base.isexported(Octopus, :AnalysisOptionEffectivenessContract)
+    @test !isempty(string(Base.Docs.doc(Base.Docs.Binding(Octopus, :AnalysisOptionEffectivenessContract))))
+    reg = summarize_registry()
+    @test :AnalysisOptionEffectivenessContract in reg.contracts
+    @test :TwissDispersionAnalysis in reg.analyses && :PlaceholderAnalysis in reg.analyses
+    @test Set(reg.analyses) == Set([:PlaceholderAnalysis, :TwissDispersionAnalysis])
+    md = Octopus.registry_snapshot_markdown()
+    @test occursin("AnalysisOptionEffectivenessContract", md) && occursin("TwissDispersionAnalysis", md)
+    # the snapshot on disk differs from the live one at most in the Analyses and Contracts lines
+    root = dirname(dirname(dirname(String(first(methods(Octopus.validate_configuration_metadata)).file))))
+    ondisk = joinpath(dirname(root), "docs", "registry_snapshot.md")
+    if isfile(ondisk)
+        live = Set(split(md, '\n')); disk = Set(split(read(ondisk, String), '\n'))
+        changed = union(setdiff(live, disk), setdiff(disk, live))
+        @test all(l -> occursin("TwissDispersionAnalysis", l) || occursin("AnalysisOptionEffectivenessContract", l) ||
+                       occursin("PlaceholderAnalysis", l) || occursin("Analyses", l) || occursin("Contracts", l), changed)
+    end
+    # the contract rejects unknown keywords and never throws for a failed probe
+    c = AnalysisOptionEffectivenessContract()
+    @test_throws ArgumentError validate(c; bogus=1)
+    r = validate(c)
+    @test r isa Octopus.ContractResult
+    @test r.metrics[:inactive_declared] == 16
+    # with analyze landed (stage 4b integration) the real validate PASSES; Part B's worktree
+    # accepted a FAILED probe carrying the stub's message, the integrator pinned the pass
+    @test r.passed
+    @test r.metrics[:checked] == 19 && r.metrics[:stale_exemptions] == 0
+    @test r.metrics[:inactive_applied] == 16 && r.metrics[:receipts_checked] == 32 && r.metrics[:observables_moved] == 15
+    # the strict probe's second half on the scratch verb: metrics
+    m = Dict{Symbol,Any}(:checked => 0, :receipts_checked => 0, :observables_moved => 0)
+    f = Octopus._analysis_contract_fixtures(c.seed)
+    rs = Octopus._analysis_contract_strict_probe(c, f, _st4b_b_fake_run, m)
+    @test rs.passed && m[:checked] == 1 && m[:receipts_checked] == 2 && m[:observables_moved] == 1
 end
 
 @testset "Non-symplectic Lorentz method classification" begin

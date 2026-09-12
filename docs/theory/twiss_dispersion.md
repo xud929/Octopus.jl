@@ -1,11 +1,13 @@
 # Coupled Twiss and dispersion: theory and analysis requirements
 
 Status: theory for the first concrete Octopus analysis. No optics analysis
-API is implemented by this document; the current analysis layer contains only
-`PlaceholderAnalysis`. This note derives the mathematics and the requirements
-an implementation must satisfy. The architecture decided on 2026-09-11 is
-recorded in [the design note](../design/twiss_dispersion_analysis.md); public
-API details belong in source docstrings when implementation lands.
+API is defined by this document; the analysis layer implements it as the
+Twiss and dispersion analysis of `src/analysis/` (landed in stages during
+2026-09-11 and 2026-09-12; the placeholder remains the declaration of element
+kinds that have no analysis). This note derives the mathematics and the
+requirements the implementation must satisfy. The architecture decided on
+2026-09-11 is recorded in [the design note](../design/twiss_dispersion_analysis.md);
+public API details live in the source docstrings, not here.
 
 Reading order: Sections 2–7 cover 4D extraction and parameterization conversion;
 Sections 8–9 cover direct and eigenbasis-based 6D decoupling; Section 10 covers
@@ -2116,13 +2118,15 @@ At exact or nearly unresolved resonances, track invariant subspaces and report t
 ## 11. Requirements for the planned analysis
 
 No function names, result types, keywords, or contracts are introduced here.
-The existing [analysis layer](../../src/analysis/Analysis.jl) is placeholder-only.
-A future implementation should separate the following mathematical operations:
+The [analysis layer](../../src/analysis/Analysis.jl) implements this section's
+requirements in the kernel files of `src/analysis/` (names in the source
+docstrings; the placeholder type remains for element kinds without an
+analysis). The implementation separates the following mathematical operations:
 normalized mode extraction; complete parameterization conversion; invariant-plane
-solution; canonical factorization; basis transport; covariance reconstruction.
-Public architecture decisions are recorded in
-[the design note](../design/twiss_dispersion_analysis.md) (decided 2026-09-11,
-not yet implemented).
+solution; canonical factorization; basis transport (deferred to a later
+stage); covariance reconstruction. Public architecture decisions are recorded in
+[the design note](../design/twiss_dispersion_analysis.md) (decided 2026-09-11;
+its status paragraph records the landing).
 
 The mathematical alternatives for dispersion are eigenplane extraction (D12),
 the cubic-root algebraic expression (D19), full-mode projectors (D26)–(D27),

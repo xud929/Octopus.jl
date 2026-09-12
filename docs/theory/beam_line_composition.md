@@ -285,9 +285,10 @@ BeamLine
   girder has its own orientation and origin) is the geometry layer again, and
   only the 1D part should be attempted first.
 - **Twiss as the first real `Analysis`**, consuming a `BeamLine`. `Analysis` is
-  one of the seven core objects in `AGENTS.md` and has only `PlaceholderAnalysis`
-  behind it; this is the consumer that keeps the container from being
-  speculative.
+  one of the seven core objects in `AGENTS.md`; `TwissDispersionAnalysis`
+  (`analyze` on a compiled line's one-turn Jacobian, `docs/design/twiss_dispersion_analysis.md`)
+  is now behind it beside the placeholder; this is the consumer that keeps the
+  container from being speculative.
 
 **A line is an `ElementSpec`, not a new core object.** `AGENTS.md` lists
 *categories* — `ElementSpec`, `TrackingMethod`, `Contract`, … — not instances.

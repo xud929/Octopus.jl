@@ -105,6 +105,9 @@ include("track/strong_beam_track.jl")
 # added by ext/OctopusForwardDiffRules.jl, which both load routes include
 # after this file.
 include("analysis/one_turn_matrix.jl")
+# Stage 4b: the analysis object, analyze, the result tree (dispatches on
+# LinearizedMap and calls one_turn_matrix; before Tasks).
+include("analysis/twiss_dispersion_analysis.jl")
 
 # Workflow composition, schedules, observers, and actions. The run artifact
 # loads first so the task structs can carry a typed RunArtifact field; its
@@ -114,6 +117,10 @@ include("tasks/Tasks.jl")
 include("tasks/BeamObservers.jl")
 include("tasks/BPMObserver.jl")
 include("tasks/StrongStrong.jl")
+# Stage 4b: the analysis option effectiveness contract (needs
+# validate_configuration_metadata from tasks/strongstrong; before Registry so
+# the registry discovers it).
+include("contracts/analysis_effectiveness.jl")
 
 # Generated registry/introspection helpers. Keep this last.
 include("registry/Registry.jl")

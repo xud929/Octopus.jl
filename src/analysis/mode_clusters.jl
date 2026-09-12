@@ -6,8 +6,9 @@
 # steps 4-7 and "Resolution criterion". Stage 3 of the campaign (design
 # "Staging", item 3). Pure matrix arithmetic on a real 4x4 or 6x6 matrix the
 # caller has ALREADY scaled (design "Input boundary" item 5): no scaling here;
-# the stage 1 `_unscale_*` table transforms P_c, G_c back. Nothing in this
-# file claims an analysis exists: no `analyze`, no analysis type, no export.
+# the stage 1 `_unscale_*` table transforms P_c, G_c back. This file defines
+# no `analyze`, no analysis type and no export; the public verb is `analyze`
+# of twiss_dispersion_analysis.jl (stage 4b).
 #
 # Conventions (theory Sections 2, 3 and 13): oriented eigenvalue
 # rho_j = e^{-i mu_j}, u_j' S u_j = -2i (E3); the half-cluster basis Q_c is

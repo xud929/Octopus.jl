@@ -12,9 +12,10 @@ description(::Type{PlaceholderAnalysis}) = "Placeholder for element analyses not
 # The availability vocabulary below is stage 1 of the Twiss and dispersion
 # analysis campaign (docs/design/twiss_dispersion_analysis.md, "Types and
 # availability"; staging item 1). It defines HOW a quantity the physics may
-# leave undetermined is represented and read. No analysis exists yet: there is
-# no `analyze` function and no concrete analysis type besides the placeholder;
-# stage 4 adds those. `Determined` and `AmbiguitySet` are plain types, not
+# leave undetermined is represented and read. The first analysis is
+# `TwissDispersionAnalysis` (twiss_dispersion_analysis.jl, stage 4b) with its
+# `analyze` method; the placeholder remains the declaration of element kinds
+# that have none. `Determined` and `AmbiguitySet` are plain types, not
 # registry roots, so the registry snapshot is unchanged by this file.
 
 """
@@ -23,8 +24,8 @@ what an analysis computed, including every diagnostic the theory asks for, and
 may change shape between releases. The analysis object itself (a concrete
 `AbstractAnalysis` carrying options) and its option schema are the stable
 surface (design note `docs/design/twiss_dispersion_analysis.md`, "Types and
-availability"). No concrete subtype exists yet; the first lands with the Twiss
-and dispersion analysis.
+availability"). The first concrete subtype is `TwissDispersionResult`, the
+result of `analyze(::TwissDispersionAnalysis, ...)`.
 """
 abstract type AbstractAnalysisResult end
 

@@ -39,13 +39,15 @@
 or below `c_sep * eps * kappa_sep`, `kappa_sep = max(1, ||M||_F) * ||M_cal||_F
 * ||M_cal^-1||_F`; above it the separation is `:not_invariant` (the triple
 does not span an invariant plane) but every block is still REPORTED.
-PROVISIONAL; measured 2026-09-12 (Part B, `probes_B/measure_constants.jl`)
-on the 200 dense maps and the 7 prescribed-h maps: accepted extreme
-`off / (eps kappa_sep) = 0.143`; rejected extremes on a dense map with the
-exact `zeta` perturbed by `delta (1, -1, 0.5, 0.25)`: ratio `651` at `delta =
-1e-12` (rejected), `65.1` at `1e-13` and `6.5` at `1e-14` (accepted). The
-constant sits between the accepted 0.14 and the first rejection at 651
-(more than one-tenth / ten on both sides).
+PROVISIONAL; measured 2026-09-12 (stage 4a record, "Derived windows") on
+the 260 fixtures: must-accept extreme `off / (eps kappa_sep) = 1.026` (the
+(D8) triple of "trial-011 crab k=kc(1-1.0e-5)"); must-reject extreme
+`5.138e4` (a dense map's exact `zeta` perturbed by `1e-10 (1, -1, 0.5,
+0.25)`, an error far above roundoff). Window by the one-tenth / ten rule
+`[10.3, 5.14e3]`; 256 lies inside it. The perturbations `1e-12` (ratio
+514..700), `1e-13` (<= 118) and `1e-14` (<= 12) are UNLABELLED: neither
+side of the rule classifies them, and the code's verdict on them is not a
+claim of this docstring.
 """
 const _SEPARATION_RESIDUAL_MULTIPLIER = 256.0
 
@@ -55,10 +57,15 @@ const _SEPARATION_RESIDUAL_MULTIPLIER = 256.0
 `c_triple` of the `(zeta, eta, h)` consistency check `|zeta' S_4 eta - (1 - h)|
 <= c_triple * eps * max(1, ||zeta|| ||eta||)` (theory 9.4 uses the identity to
 verify (K2) and (O3)); a triple failing it is an `ArgumentError` (it did not
-come from (D8)). PROVISIONAL; measured 2026-09-12 on the 207 fixture
-triples: accepted extreme `0.72` (the ratio to `eps max(1, ||zeta|| ||eta||)`);
-rejected extremes `h + 1e-13` at ratio `450` and `h + 1e-12` at `4504`;
-`h + 1e-14` (ratio 44.8) is accepted.
+come from (D8)). PROVISIONAL; measured 2026-09-12 (stage 4a record,
+"Derived windows") on the 260 fixture triples: must-accept extreme `0.914`
+(the ratio to `eps max(1, ||zeta|| ||eta||)`, the (D8) triple of "trial-011
+crab k=kc(1-0.0001)"); must-reject extreme `4.503e3` (`h + 1e-12` on "dense
+k=111"). Window by the one-tenth / ten rule `[9.14, 450]`; 64 lies inside
+it. `h + 1e-13` (ratio 449), `h + 1e-14` (44.8) and the REPORT triples
+carrying the (D11) `h` (up to 315 on the crab ladder) are UNLABELLED: the
+rule classifies neither, and the code's verdict on them is not a claim of
+this docstring.
 """
 const _TRIPLE_CONSISTENCY_MULTIPLIER = 64.0
 
@@ -70,12 +77,17 @@ max(1, ||Mbar_s||_F)` is required for the 2x2 Courant-Snyder normalizer
 `Ubar_s` of (K9); otherwise `U_6`, the projected optics of the third mode
 and the covariance are unavailable with `:unit_eigenvalue` (a shear or a
 hyperbolic longitudinal block; the coasting branch of Part A handles the
-shear before this file is reached). PROVISIONAL; measured 2026-09-12: the
-smallest accepted margin ratio `(2 - |tr|) / (eps max(1, ||Mbar_s||))` over
-the 207 fixture longitudinal blocks is `1.9e15` (synchrotron phases far from
-0); rejected extremes: the shear (ratio 0), `R(1e-8)` (ratio 0, `tr` rounds
-to 2), `R(3e-8)` (ratio 2.8), `R(1e-7)` (ratio 31.8); `R(1e-6)` (ratio 3185)
-is accepted, and the (E5) branch of `_twiss_from_block` is well defined there.
+shear before this file is reached). PROVISIONAL; measured 2026-09-12 (stage
+4a record, "Derived windows"): the smallest must-accept margin ratio `(2 -
+|tr|) / (eps max(1, ||Mbar_s||))` over the fixture longitudinal blocks is
+`1.998e9` (the weak-cavity map, `mu_s = 8.4e-4`); must-reject extremes: the
+shears and `R(1e-8)` (ratio 0, `tr` rounds to 2) and `R(3e-8)` (ratio 2.83,
+`2 - tr` within the roundoff `2 eps` of `tr` itself). Window by the
+one-tenth / ten rule `[28.3, 2.0e8]`; 64 lies inside it, a factor 2.3 above
+the lower edge. `R(1e-7)` (ratio 31.8) and `R(1e-6)` (3185) are UNLABELLED:
+the rule classifies neither, and the code's verdict on them is not a claim
+of this docstring; the (E5) branch of `_twiss_from_block` is well defined at
+`R(1e-6)`.
 """
 const _LONGITUDINAL_ELLIPTIC_MULTIPLIER = 64.0
 
@@ -87,10 +99,16 @@ max(1, ||zeta|| ||eta||)` (a positive `h` beyond roundoff); `h` at or below
 that is `:singular_longitudinal_projection` (h = 0: the graph itself is
 unavailable) and a negative `h` beyond it is `:form_inadmissible` with the
 detail "outside the positive-root representation (O2) for this mode
-selection" (theory 9.4). PROVISIONAL; measured 2026-09-12: the smallest
-accepted `h / (eps max(1, ||zeta|| ||eta||))` over the positive-h fixtures is
-`2.3e14` (`h = 0.05`); rejected extremes `h = 0` (ratio 0), `1e-15` (4.5),
-`1e-14` (45.0); `2e-14` (ratio 90.1) is the first accepted synthetic value.
+selection" (theory 9.4). PROVISIONAL; measured 2026-09-12 (stage 4a record,
+"Derived windows"): the smallest must-accept `h / (eps max(1, ||zeta||
+||eta||))` over the positive-h fixtures is `2.252e14` ("prescribed h=0.05");
+must-reject extremes `h = 0` (ratio 0) and the prescribed construction `h =
+1e-15` (ratio 4.40, `h` within a few eps of 0); a negative `h` is refused by
+sign, not by this constant. Window by the one-tenth / ten rule `[44.0,
+2.25e13]`; 64 lies inside it, a factor 1.5 above the lower edge. The
+synthetic `h = 1e-14` (ratio 44.0) and `2e-14` (87.9) are UNLABELLED: the
+rule classifies neither, and the code's verdict on them is not a claim of
+this docstring.
 """
 const _OHMI_POSITIVITY_MULTIPLIER = 64.0
 

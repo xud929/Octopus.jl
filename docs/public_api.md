@@ -269,6 +269,44 @@ Use Julia help:
 Implementation details that are expected to evolve are summarized in
 `docs/current_runtime.md`.
 
+## Analyses
+
+The first analysis: coupled Twiss and canonical dispersion from a one-turn
+matrix (design note in `docs/design/twiss_dispersion_analysis.md`, theory in
+`docs/theory/twiss_dispersion.md`). The analysis object carries the public
+options; `analyze` consumes a real symplectic 4x4 or 6x6 matrix, a
+`LinearizedMap`, or anything `one_turn_matrix` accepts, and returns a
+`TwissDispersionResult` whose undetermined quantities are `Determined` values.
+
+```julia
+analysis = TwissDispersionAnalysis()                 # defaults; keywords validate
+analysis = TwissDispersionAnalysis(strict=false, closed_orbit=:warn)
+result = analyze(analysis, M)                        # bare 4x4 or 6x6 matrix
+result = analyze(analysis, lm)                       # lm::LinearizedMap
+result = analyze(analysis, line; method=ComplexStepLinearization(), point=ntuple(_ -> 0.0, 6))
+lm = one_turn_matrix(line; method=ComplexStepLinearization())
+configuration_report(result)                         # which option each branch read
+```
+
+Use Julia help:
+
+```julia
+?TwissDispersionAnalysis
+?analyze
+?analysis_option_schema
+?TwissDispersionResult
+?configuration_report
+?matched_covariance
+?normal_mode
+?NormalMode
+?dispersion_interval
+?Determined
+?UndeterminedQuantityError
+?OpticsAnalysisError
+?ANALYSIS_STATUSES
+?one_turn_matrix
+```
+
 ## Validation
 
 The package regression suite runs at CI settings: plain `Pkg.test` at
@@ -295,6 +333,7 @@ Use Julia help:
 ?StrongStrongPICBackendConsistencyContract
 ?StrongStrongPICMultiProcessConsistencyContract
 ?PublicConfigurationEffectivenessContract
+?AnalysisOptionEffectivenessContract
 ?SymplecticityContract
 ?HighEnergyWeakStrongLimitContract
 ?CoherentModePhysicsContract

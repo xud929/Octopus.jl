@@ -300,6 +300,7 @@ constructor names remain the user-facing way to build those specs.
 - `StrongStrongGaussianBackendConsistencyContract`
 - `StrongStrongPICBackendConsistencyContract`
 - `StrongStrongPICMultiProcessConsistencyContract`
+- `AnalysisOptionEffectivenessContract`
 - `ElementParameterEffectivenessContract`
 - `KnobEffectivenessContract`
 - `MADXSurveyConsistencyContract`
@@ -314,6 +315,7 @@ constructor names remain the user-facing way to build those specs.
 ## Analyses
 
 - `PlaceholderAnalysis`
+- `TwissDispersionAnalysis`
 
 ## Examples
 

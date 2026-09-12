@@ -553,7 +553,7 @@ Validation checklist:
   compact runtime structs;
 - use `friendly_constructor`, not `friendly`;
 - use `DataType[]` for contracts until real validation implementations exist;
-- use `PlaceholderAnalysis` until real analysis implementations exist;
+- use `PlaceholderAnalysis` for kinds that have no analysis; `TwissDispersionAnalysis` is declared on the linear-map kinds in stage 5 of the Twiss campaign;
 - run `validate_element_metadata()`;
 - run `element_help(MyElementSpec)` and `element_help(:my_element)`;
 - smoke-test execution through `TrackingTask`.

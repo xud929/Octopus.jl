@@ -65,7 +65,8 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   measured; receipt-based option certification; the verification plan mapped
   to the theory's benchmarks; seven staged commits plus an external-benchmark stage (MAD-X, PTC, Xsuite); rejected alternatives. Landing record:
   [`history/twiss_dispersion_analysis_history.md`](history/twiss_dispersion_analysis_history.md)
-  (stages 1 to 3 and 4a landed 2026-09-11 and 2026-09-12; 4b next).
+  (stages 1 to 4 landed 2026-09-11 and 2026-09-12; stage 5, the element
+  declaration, next).
 - [`survey_and_reference_channel.md`](design/survey_and_reference_channel.md) —
   the channel telling a runtime element its place on the reference trajectory:
   static survey values (`s_elem`, later `P0`) baked at compile via the line
@@ -93,7 +94,8 @@ Procedures, one per task class, routed from the Task Routing table in
   the schema and validator hooks, the effectiveness contract.
 - [`guides/contracts_and_analyses.md`](guides/contracts_and_analyses.md) —
   contracts (attachment, `:skipped`, blast radius, the backend-consistency
-  scripts) and the placeholder-only state of analyses.
+  scripts) and analyses (`TwissDispersionAnalysis` and `analyze` as the
+  first, how the next one joins, the placeholder on undeclared kinds).
 - [`guides/examples_and_validation.md`](guides/examples_and_validation.md) —
   `examples/`, the `test/examples/` harnesses, the examples catalogue,
   validation scripts, and run output versus the tracked record.
@@ -366,7 +368,10 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   symplectic kernel, the availability vocabularies, `one_turn_matrix`) and
   stage 2 (the 4D eigenmode route, Mais-Ripken and Edwards-Teng, every
   multiplier and provisional guard measured by the one-tenth / ten rule)
-  landed 2026-09-11.
+  landed 2026-09-11; stage 3 (mode clusters, the ambiguity set) and stage 4
+  (the 6D dispersion routes and canonical separation, then the analysis
+  object `TwissDispersionAnalysis`, `analyze`, its options, receipts and
+  effectiveness contract) landed 2026-09-12.
 - [`audit_twiss_dispersion_literature_2026_09_09.md`](history/audit_twiss_dispersion_literature_2026_09_09.md) —
   Parzen, Glukhov, and Dieci–Friedman review; direct 6D projectors and
   continuation checks; GLSF application removed from the active design.

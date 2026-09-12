@@ -6245,3 +6245,2455 @@ print(f'seed {vd.SEED}; python {platform.python_version()}; numpy {np.__version_
 print(f'verify_dispersion.py sha256 {sha}')
 print('check_map evaluations by name:', {k: v["count"] for k, v in vd.CHECKS.items()})
 ```
+
+## 2026-09-12: stage 4b landed (the analysis object, `analyze`, options, receipts, configuration report, validator block, effectiveness contract, snapshot, docs)
+
+The second half of the design note's Staging item 4 and the first commit
+that claims an analysis exists: `TwissDispersionAnalysis <: AbstractAnalysis`
+with the design's fourteen options, the verb `analyze` on a bare 4x4 or 6x6
+matrix, a `LinearizedMap` or anything `one_turn_matrix` accepts, the result
+tree `TwissDispersionResult` (`TransverseOptics4D`, `PhysicalOptics`,
+`AnalysisDiagnostics`, `NormalMode`), `OpticsAnalysisError`, the pinned
+`ANALYSIS_STATUSES = (:passed, :degraded, :failed)`, `matched_covariance`,
+`normal_mode`, the exported `analysis_option_schema`, ten receipt-issuing
+consumers, `configuration_report` on the result, the validator block and
+the `AbstractAnalysis` tree guard in `validate_configuration_metadata`, the
+table-driven `AnalysisOptionEffectivenessContract`, the registry snapshot
+(two lines added), the public_api.md "Analyses" section and the rewording of
+every placeholder-only statement in the source and the docs. The registry
+snapshot CHANGED for the first time in the campaign (`Analyses` gains
+`TwissDispersionAnalysis`, `Contracts` gains
+`AnalysisOptionEffectivenessContract`; nothing removed). No
+`DETERMINATION_REASONS` member was added (the eleven reasons the pipeline
+emits are stage 1 members; `:not_requested` covers "the input carries no
+such datum" and "no emittances given"); no new pinned vocabulary beyond
+`ANALYSIS_STATUSES`; no NaN or Inf sentinel (the one reachable NaN in a
+degradation string was found by two reviewers and removed). Every element
+still declares `[PlaceholderAnalysis]`: the declaration of the analysis on
+the linear-map kinds is stage 5, and the stage guard pins it.
+
+Nine PROVISIONAL constants were measured by the one-tenth / ten rule: the
+seven analysis multipliers of `twiss_dispersion_analysis.jl` (six from the
+dossier plus the fixer's `_TUNE_CHORD_FLOOR_MULTIPLIER`) all sit inside their
+windows at 64 and were NOT moved; two were OUTSIDE their windows on the low
+side and MOVED: the Scaling testset's test-side `c` 256 -> 2048 (largest
+accepted row ratio 110.7) and the contract's
+`_ANALYSIS_CONTRACT_FIXED_MULTIPLIER` 64 -> 1024 (largest accepted 88.4,
+smallest rejected 1.93e14). Both contracts pass on the final source
+(`AnalysisOptionEffectivenessContract`: 19 probes, 16 inactive entries
+applied, 32 receipts checked, 15 observables moved, 4 fixed, 0 stale
+exemptions, cold 38.6 s in a fresh process / 0.2 s warm;
+`PublicConfigurationEffectivenessContract`: 59-79 s, every metric true).
+
+Work of 2026-09-12 (parts A, B and C in three worktrees at ef804f6;
+integrator, four reviewers, fixer, measurement D1 and this record on the
+main tree). Twenty-six review findings, twenty-four fixed, two recorded
+(the pipeline order of the coasting test, documented; the test-side 64s,
+recorded not tightened). The stage 4a section above precedes this one; the
+todo row and the README carry the dates per stage.
+
+### What landed
+
+| File | Change | Content |
+|---|---|---|
+| `src/analysis/twiss_dispersion_analysis.jl` | new, 1625 lines (the orchestrator's 926-line skeleton filled by Part A, amended by the integrator, the fixer and D1) | `ANALYSIS_STATUSES` (pinned, line 35); seven PROVISIONAL constants with D1's extremes in their docstrings: `_FRAME_ACCEPTANCE_MULTIPLIER = 64.0` (64), `_NORMALIZER_ACCEPTANCE_MULTIPLIER = 64.0` (80), `_COVARIANCE_ACCEPTANCE_MULTIPLIER = 64.0` (102), `_TRACE_GAP_MULTIPLIER = 64.0` (121), `_STABILITY_ATOL_MULTIPLIER = 64.0` (136), `_CLOSED_ORBIT_ATOL_MULTIPLIER = 64.0` (155), `_TUNE_CHORD_FLOOR_MULTIPLIER = 64.0` (177, the fixer's T4 guard); `_LONGITUDINAL_RULES`, `_ANALYSIS_CONSUMERS` (the ten consumer symbols); `struct TwissDispersionAnalysis <: AbstractAnalysis` (267) with the validating keyword constructor (one ArgumentError per rule) and `description`; `_TWISS_DISPERSION_OPTION_SCHEMA` (363, fourteen `ConfigurationOptionMeta` entries, categories :execution / :numerical / :physics, a `consumer` each) and the four `analysis_option_schema` methods; the result types `NormalMode` (448), `TransverseOptics4D` (480), `PhysicalOptics` (516), `AnalysisDiagnostics` (582), `TwissDispersionResult <: AbstractAnalysisResult` (642), `OpticsAnalysisError <: Exception` (681) with `showerror`; the file-local NamedTuple aliases `_ANALYSIS_INPUT_T`, `_DEFECT_T`, `_ROUTE_DIAGNOSTIC_T`, `_LONGITUDINAL_SELECTION_T` (with `tune_chords`), `_EDWARDS_TENG_DIAGNOSTIC_T`, `_PROJECTION_DIAGNOSTIC_T`; `normal_mode` (710), `matched_covariance` (749), `configuration_report(analysis)` static and `configuration_report(result)`; the pipeline steps `_analysis_scaling` (816), `_analysis_symplectic_check` (844), `_analysis_closed_orbit` (895, scaled norm), `_analysis_clusters` (934), `_analysis_transverse` (957), `_analysis_transverse_from_6d` (987), `_analysis_preferred_form` (1003) and `_preferred_form_selection` (1017), `_analysis_6d` (1081: selection by symbol / Int / tune with the nearness guard, routes, receipts, separation, `_transverse_optics_6d`, Ohmi, degradations), `_analysis_covariance` (1204, raw closure and the (K14) identity), `_analysis_back_transform` (1251, row by row; coasting maps get the frame's rows on M_rr), `_analysis_diagnostics` (1345), `_analysis_verdict` (1441) with `_VERDICT_RESIDUALS` (1461, five judged names), `_analysis_configuration` (1477), the driver `_analyze_matrix` (1522) and the three `analyze` methods (1611, 1618, 1622). Exports: `TwissDispersionAnalysis, TwissDispersionResult, OpticsAnalysisError, NormalMode, ANALYSIS_STATUSES, analyze, analysis_option_schema, matched_covariance, normal_mode`, every one documented. |
+| `src/contracts/analysis_effectiveness.jl` | new, 673 lines (the 116-line skeleton filled by Part B, amended by the integrator, the fixer and D1) | `AnalysisOptionEffectivenessContract` (exported, `description`) with `alternatives::Dict{Symbol,Any}` (14 valid non-default values) and `inactive::Dict{Tuple{Symbol,Symbol},String}` (16 `(form, option)` entries); `_ANALYSIS_CONTRACT_LONGITUDINAL_INDEX = 2` (52, measured on the seeded fixture), `_ANALYSIS_CONTRACT_FORMS` (227), `_ANALYSIS_CONTRACT_FIXED_MULTIPLIER = 1024.0` (246, PROVISIONAL, moved by D1), `_ANALYSIS_CONTRACT_PROBE_FORMS` (283, `resolution_chord` probed on the `repeated` fixture); `_analysis_contract_fixtures(seed)` (153: matrix, linearized, matrix4, coasting, failing, repeated, displaced); `validate` (204: `validate_configuration_metadata()` first, then the probe loop, seven metrics); `_analysis_contract_types`, `_analysis_contract_active_form`, `_analysis_contract_run` (two `Ref{Any}`, the Core.Box fix), `_analysis_contract_report_status`, `_analysis_contract_physics`, `_analysis_contract_fixed`, `_analysis_contract_failing_fixture`, `_analysis_contract_receipt_carries`, `_analysis_contract_receipt_field`, `_analysis_contract_observable` (411), `_analysis_contract_probe` (491, `run` injectable), `_analysis_contract_branch_probe` (588, four branch probes), `_analysis_contract_strict_probe` (647, at `symplectic_rtol = 1e-9`). |
+| `src/tasks/strongstrong/interface.jl` | +18 lines (2219-2236) | the `TwissDispersionAnalysis` block of `validate_configuration_metadata` (keys == fields; every consumer named; every metadata default `isequal` to the constructor's) and the `AbstractAnalysis` tree guard (`_analysis_types = (TwissDispersionAnalysis, PlaceholderAnalysis)`; any other concrete subtype is the error "... is a concrete Octopus analysis with no block in validate_configuration_metadata; add one (see the policy tree guard)"). |
+| `src/Octopus.jl` | +7 lines | `include("analysis/twiss_dispersion_analysis.jl")` after `analysis/one_turn_matrix.jl` (108-110); `include("contracts/analysis_effectiveness.jl")` after `tasks/StrongStrong.jl`, before `registry/Registry.jl` (120-123). |
+| `src/analysis/eigenmodes_4d.jl` | +49 -6 (fixer T3) | `_PHASE_REFERENCE_FLOOR = sqrt(eps)` (465, PROVISIONAL) and `_rephase_mode(u, b)` (theory 6.2: `u_{1,x} > 0`, `u_{2,y} > 0` real, the (E14) pivot below the floor) applied by `_eigenmodes_4d` to the frame's two vectors before the Twiss arrays are formed (so the physical normalizer `C^-1 U~` is scaling-invariant); the header comment and the `vectors` docstring bullet reworded. |
+| `src/analysis/canonical_separation.jl`, `src/analysis/dispersion_routes.jl` | docstrings only (+39 -21, +58 -32; a hunk-to-docstring-range proof in report_4b_C.md) | the stage 4a record item 4: `c_sep`, `c_triple`, `c_ell`, `c_ohmi` quote their windows and call the unlabelled perturbations UNLABELLED; `_COEFFICIENT_CONDITION_MULTIPLIER` no longer claims the (D15)/(D21) Sylvester operators are floor-guarded (LAPACK-guarded only); `_MAX_HALVINGS` says "at most 2 halved trials" not "no dense map halves"; `_ITERATION_STOP_MULTIPLIER`'s extremes are the exact-graph floor; `_FIXED_POINT_MAX_ITERATIONS` says why 500 (slowest fixture 176); the three kernel file headers (eigenmodes_4d, dispersion_routes, mode_clusters) say "the public verb is `analyze` of twiss_dispersion_analysis.jl (stage 4b)". |
+| `src/analysis/Analysis.jl`, `src/knowledge/Knowledge.jl:556`, `AGENTS.md:75` | reworded (before / after below) | the placeholder-only statements. |
+| `docs/public_api.md` | +39 (272-309, 336) | the "## Analyses" section (lead, construction fence, 14 help queries) and `?AnalysisOptionEffectivenessContract` in the Validation help fence. |
+| `docs/guides/contracts_and_analyses.md` (48-71), `docs/README.md` (96-97), `docs/theory/twiss_dispersion.md` (3-10, 2120-2129), `docs/design/twiss_dispersion_analysis.md` (3-22, the status paragraph only), `docs/theory/beam_line_composition.md` (287-291) | reworded (below) | what exists, how the next analysis joins, "every element registers the placeholder" kept TRUE with stage 5 named. |
+| `docs/registry_snapshot.md` | +2 lines, regenerated by `write_registry_snapshot()`, STAGED | `- \`AnalysisOptionEffectivenessContract\`` under Contracts, `- \`TwissDispersionAnalysis\`` under Analyses. |
+| `test/runtests.jl` | 22035 -> 23379 lines (`git diff --numstat` +1368 -24) | the stage-guard testset 921-976 renamed "Stage 4 registers the analysis: the placeholder and TwissDispersionAnalysis are the analyses and analyze exists" (Part C; the three "stage 4 deletes" lines gone; pins the subtype set, `isdefined(Octopus, :analyze)`, the 22 documented exports, `ANALYSIS_STATUSES` against the source literal and its docstring bullets, every element still `[PlaceholderAnalysis]`); the stale stage 2 claim at 1541 flipped (`isdefined(Octopus, :analyze)`); the stage 3 and 4a block headers (2227-2232, 3878-3883) cite the record instead of git-ignored runners; the stage 4b block 5153-6460 (header, the `_st4b_a_` fixture library with `_ST4B_SEED = 20260911`, B's `_St4bBError`, `_st4b_b_form`, `_st4b_b_fake_run`, `_st4b_b_block_errors`; A's twelve testsets 5366-6179 and B's six "4b-B" testsets 6180-6459; 1072 assertions in the extract; the rewritten stage guard adds its 98). |
+
+Not touched: the theory note's mathematics, the design note's body (its
+status paragraph is the only edit; its lines 39, 232-233 and 505 still
+describe the pre-landing state as history, see "Not verified"),
+`validation/`, every stage 1-3 kernel body; the stage 4a kernel BODIES
+except `_eigenmodes_4d` (the phase convention, T3).
+
+### Standalone verification on the folded, fixed and measured tree (no lane, no gate)
+
+Same conventions as stages 1-4a (`J` = `julia --startup-file=no`, OUT =
+`result/twiss_impl_2026_09_11/stage4`, `ps` checked for `runtests` /
+`Pkg.test` before every package-mode run, `--project=REPO --threads=4`).
+Counts are the fixer's re-runs after the review fixes (`OUT/fixer4b/*.log`)
+and the measurement part's re-runs after the two constant moves
+(`OUT/measure/*.log`, `OUT/measure/extract/*.log`); no source line changed
+between D1's last edit and this record.
+
+| run | command shape | result |
+|---|---|---|
+| suite extract: EVERY analysis testset of `test/runtests.jl` 270-6460 (stage 1 kernel + vocabularies + the stage guard, stage 2 A and B, stage 3, stage 4a, stage 4b), fallback arm | `python3 OUT/extract_4b/extract.py OUT/measure/extract; J OUT/measure/extract/run_suite_extract.jl` | 108498 / 108498 in 1m46 (was 107362 after stage 4a; +1136 = the stage 4b block 1072 with the stage guard 98 replacing the old guard's, the flipped stage 2 line, the fixer's added tests); `one_turn_matrix` block 121 / 121; exit 0 (`suite_extract_nofd_D1b.log`); first pass after the constant moves 108497 / 108498 (the Part B probe's literal `100eps()` against the moved constant; the probe now derives its offset from the constant) |
+| the same, ForwardDiff STACKED (`JULIA_LOAD_PATH=REPO:result/twiss_impl_2026_09_11/stage1/fdenv:@stdlib`) | same runner | 108498 / 108498 in 1m47; `one_turn_matrix` ACTIVE arm 134 / 134; `OctopusForwardDiffExt` loaded (fixer `extract/suite_extract_fd2.log`, source before D1's constant moves and docstrings) |
+| suite tripwires: "Architecture integrity" (incl. the docs index and the snapshot comparison), Core.Box allowlist, "Every export is documented", "No docstring is detached" | `J OUT/measure/extract/run_tripwires.jl`, both arms | 32 / 32 (28 + 2 + 1 + 1) in each arm (fixer `tripwires_nofd2.log`, `tripwires_fd2.log`; D1 `tripwires_nofd_D1.log`, 27.2 s) |
+| `write_registry_snapshot()` from the repo root | package mode | 16816 -> 16884 bytes at integration (+2 lines, 0 removed), byte comparison `read(snap) == registry_snapshot_markdown()` true; the fixer's and D1's re-runs 16884 -> 16884, 0 lines changed; staged |
+| `validate_element_metadata()`; `validate_configuration_metadata()` | package mode | `(passed = true, errors = String[])` in 17.9 s; `true` in 4.6 s (the new block and tree guard included) |
+| `validate(AnalysisOptionEffectivenessContract())` | package mode, main tree | passed = true; message "analysis options certified: 19 probes, 16 inactive entries applied, 32 receipts checked, 15 moved, 4 fixed"; metrics `checked = 19, inactive_declared = 16, inactive_applied = 16, stale_exemptions = 0, observables_moved = 15, observables_fixed = 4, receipts_checked = 32`; timings: COLD 38.6 s in a fresh process (the `analyze` compilation; fixer `validate_main2.log`), 3.78 s first call after `analyze` had compiled on the fixtures (D1 `measure_stage4b.log`), WARM 0.20-0.36 s; at integration (before the fixer's four branch probes and the `repeated` / `displaced` fixtures) 15 probes, 29 receipts, 11 moved, 4 fixed |
+| `validate(PublicConfigurationEffectivenessContract())` | package mode, main tree | passed = true, "Public configuration reached CPU, fused CUDA, and CUDA PIC consumers."; `cuda_status = passed`, `cpu_workers_tested = [1, 2, 4]`, `cuda_threads_tested = (64, 128, 256, 512)`, every `*_rejected` / `*_unchanged` / `*_effective` metric true, inactive and inherited configuration reported, `multi_process_resolved_by = serial_passthrough`; 78.4 s (integrator), 78.8 s (fixer), 59.3 s (D1, 58.5 and 59.2 in two earlier full runs) |
+| script-mode smoke (`include("src/Octopus.jl")`) | `OUT/int/smoke_script_mode.jl` (integrator, fixer, runner review) | `summarize_registry().analyses == [:PlaceholderAnalysis, :TwissDispersionAnalysis]`, `:AnalysisOptionEffectivenessContract in .contracts`; the seeded dense 6D map (symplectic defect 3.6e-16) under the default analysis `:degraded` with the single degradation "uncertified longitudinal selection: the :max_signed_z_area heuristic selected canonical eigenvalue 2 ..."; tunes [0.8426, 0.1148, 0.2228]; `longitudinal_mode = 2` -> `:passed`; `configuration_report` prints 14 rows (closed_orbit, closed_orbit_atol, emittances `:inactive_dependency`, all others `:resolved`); `normal_mode(rc, 1:3)`; `matched_covariance(rc, (1e-6, 2e-6, 3e-6))` 6x6 with closure 1.0e-15 relative; the 4x4 fixture `:passed` (tunes [0.0512, 0.3423]); the coasting fixture `:passed` (tunes [8.9e-4, 0.2898]); SMOKE OK, exit 0 |
+| Part A's standalone testsets (the twelve of the block) | `J OUT/run_analysis.jl` (OUT/analysis_testsets.jl, kept byte-equal to the block) | 804 / 804 in 55.8 s (fixer, package mode; 733 at integration, +71 by the review fixes); 804 / 804 after D1's `c = 2048` (`measure/run_analysis_D1.log`, 56 s); 0 "Warning" lines (runner finding R4 fixed) |
+| Part B's standalone testsets (the six "4b-B") | `J OUT/run_contract.jl` (OUT/contract_testsets.jl) | 268 / 268 in 53.9 s (fixer; 259 in worktree B with the stub, 260 / 261 at integration); 268 / 268 after D1's pin and probe edits (`measure/run_contract_D1.log`, 54 s) |
+| the stage 1-4a regression runners on the integrated tree (runner review; the fixer's stage 1 rerun) | `J stage1/run_kernel.jl`, stage 3 `run_clusters.jl`, `run_ambiguity.jl`, `run_stage3_block.jl`, stage 4a `run_routes.jl`, `run_separation.jl` | stage 1 kernel 1615 / 3 FAIL at the review (the git-ignored scratch testset still asserted "no analyze"; rewritten to the stage 4 truth) -> 1618 / 1618 (fixer `stage1_kernel.log`); the stage 3 and 4a runners green (review4b_runner.md section 7) |
+| D1's measurement | `J OUT/measure/measure_stage4b.jl OUT/measure/measurement_table_4b.md` | 76 acceptance rows, 15 closed-orbit rows, 74 tune rows, 56 receipt cells, 354 scaling rows, 3 contract runs in 76.6 s after load; exit 0; the table (812 lines) is appended below |
+| symbol grep over src/ and ext/ (integrator, python word-boundary counts) | - | `TwissDispersionAnalysis` 75 hits in 4 files (its own file, Analysis.jl, the contract, interface.jl); `analyze` 41 (own 28, contract 6, Octopus.jl, Analysis.jl, the three kernel headers and one_turn_matrix.jl); `analysis_option_schema` 18; `AnalysisOptionEffectivenessContract` 11; the private names defined once each; no new symbol in a file that should not know it |
+
+Count history: A's testsets 733 in the worktree and at integration -> 804
+after the review fixes (T1 the raw closure, T2 the coasting rows, T3 the
+normalizer row pinned, T4 the tune guard, the newton cap, the five bumped
+verdict names, the `:form_inadmissible` 4x4 path, the "another branch" and
+"label tie" positives, the `@test_logs` wrap); B's 259 (stub) -> 260 at
+integration (the real `validate` passes) -> 261 (the lenient `r.passed ||
+occursin("threw", ...)` tightened to `r.passed` with the metric pins) -> 268
+after the fixer's table, fixture and plumbing changes; the extract 108419 at
+integration (one stale stage 2 line flipped from a red 108418 / 1) -> 108420
+after the schema meaning string and the tightening -> 108498 after the fixer
+(two intermediate red runs of the fixer's own T3 change: 1791 then 150 stage
+2 bitwise Twiss identities, because the frame's arrays were computed from
+the unrephased vectors; fixed by computing them from the stored vectors) ->
+108497 / 1 after D1's constant move (the literal `100eps()` probe) -> 108498.
+The integrator's first tripwire run was 31 / 32 (two `Core.Box` sites:
+`_analysis_contract_run`'s do-block locals and `_analyze_matrix`'s closure
+over the branch-assigned `dispersion`; both rewritten without a behaviour
+change); the fixer's first was 31 / 32 again (`_analysis_6d`'s runner-up
+generator capturing the branch-assigned `longitudinal`; a once-assigned
+`nearest`). The stage guard was shown RED once on an injected copy of src/
+with `TwissDispersionAnalysis` dropped from the export list (45 passed, 4
+errored).
+
+### The decisions F1-F14 that closed the design's open points for stage 4b (orchestrator, 2026-09-12; amendments by the parts, the review, the fixer and D1 marked)
+
+The design fixes the option table, the pipeline order, the return table and
+the certification chain but left the acceptance kappas, the inactivity
+rules, the receipt shapes and the fixture behaviour open. The stage 4b
+dossier closed them as follows; a part or a reviewer that found one wrong
+on the fixtures recorded the amendment instead of redesigning.
+
+1. **F1, the analysis object.** `struct TwissDispersionAnalysis <:
+   AbstractAnalysis` with the design's fourteen options and a validating
+   keyword constructor (`scaling = :auto` | `:none` | a tuple of 2 or 3
+   positive factors; `symplectic_rtol = nothing`; `nonsymplectic = :error`;
+   `closed_orbit = :require`; `closed_orbit_atol = nothing`; `map_uncertainty
+   = 0.0`; `resolution_chord = _DEFAULT_RESOLUTION_CHORD`; `clusters =
+   :auto`; `longitudinal_mode = :max_signed_z_area`; `preferred_form =
+   :auto`; `dispersion_routes = DISPERSION_ROUTES`; `newton_max_iterations =
+   50`; `emittances = nothing`; `strict = true`). AMENDMENT to the design's
+   option table (stage 4a record, carried item 1): `longitudinal_mode` also
+   accepts a `Float64` synchrotron tune `mu_s` in `(0, pi)` rad/turn; an
+   `Int` index and a tune are CERTIFIED selections, the symbol is the
+   uncertified heuristic. REVIEW AMENDMENT (theory T4, fixer): a tune
+   certifies only under a nearness guard: the chord of the nearest canonical
+   eigenvalue to `exp(-i mu_s)` must be at most `max(0.5 * (runner-up chord
+   outside the conjugate pair), _TUNE_CHORD_FLOOR_MULTIPLIER * rho_M1)`,
+   else an ArgumentError naming the map's tunes (tunes 2.5 and 3.0 on the
+   dense map, which certified eigenvalue 3 at chords 1.47 / 1.76 before the
+   guard, are refused; exact tunes have chords <= 4.6e-13 against runner-ups
+   >= 0.108; on a degenerate pair the floor decides). The receipt's
+   `selected` and `dispersion.longitudinal` carry the ORIENTED canonical
+   index of the pair containing the nearest eigenvalue (the kernel maps an
+   index and its conjugate partner to one oriented mode, so the sign
+   convention of "nearest `exp(-i mu_s)`" is unobservable through `analyze`
+   and no sign test is owed; tests finding 7). The schema, `description`,
+   the four `analysis_option_schema` methods and the exports are as the
+   dossier listed; the suite requires every `*_option_schema` exported.
+2. **F2, the verb and its entry forms.** `analyze(analysis, M)` (bare 4x4
+   or 6x6: exact provenance, the closed-orbit options inactive,
+   `map_uncertainty` the only uncertainty); `analyze(analysis,
+   lm::LinearizedMap)` (the provenance's `map_uncertainty` folds into
+   rho_M0; a `FiniteDifferenceLinearization` provenance requires an explicit
+   `symplectic_rtol`; the closed-orbit test reads
+   `provenance.fixed_point_residual`); `analyze(analysis, map; method =
+   ComplexStepLinearization(), point = ntuple(_ -> 0.0, 6))` for any input
+   `one_turn_matrix` accepts (the integrator aligned the docstring's `point`
+   default with the signature and public_api.md). REVIEW AMENDMENT (theory
+   T6, design "Input boundary" item 4): the closed-orbit residual is judged
+   in SCALED coordinates, `max |C r|`, and the default atol uses `max |C
+   point|`; the receipt, `result.closed_orbit`, the error text ("(scaled
+   coordinates)") and the warning carry the scaled norm (FODO + sextupole at
+   x = 1e-3: physical 1.20e-3, scaled 7.73e-4). Also exported:
+   `matched_covariance(result, emittances)`, `normal_mode(result, j)`,
+   `analysis_option_schema`, `TwissDispersionResult`, `OpticsAnalysisError`,
+   `NormalMode`, `ANALYSIS_STATUSES`; `configuration_report` gains its
+   methods. Nothing named `value`, `mode`, `result`. FIXTURE AMENDMENT (Part
+   A, confirmed by the integrator): the stage 1 solenoid-bearing line
+   complex-steps cleanly since audit F17, so `analyze(analysis, line)` RUNS
+   on it (the dossier expected the stage 1 directed ArgumentError); the
+   Linearized testset asserts that it runs.
+3. **F3, the pipeline inside `_analyze_matrix`.** In order: size and
+   finiteness; `_analysis_scaling` (an explicit tuple of the wrong length is
+   an ArgumentError; receipt `:analysis_scaling (scaling, mode, factors)`);
+   `_analysis_symplectic_check` (rule `:row_ratio`, accept iff `row_ratio <=
+   1`, when `symplectic_rtol === nothing`; `:frobenius`, accept iff
+   `frobenius <= rtol`, otherwise; a finite-difference provenance with
+   `nothing` is an ArgumentError naming the option; `:error` throws naming
+   defect, rule and tolerance, `:flag` degrades; receipt
+   `:analysis_symplectic_check (symplectic_rtol, nonsymplectic, rule, defect,
+   action)`); `rho_M0 = _perturbation_scale(Ms, frobenius; user_uncertainty,
+   provenance_uncertainty).scale`; `_analysis_closed_orbit` (linearized input
+   only; default atol `_CLOSED_ORBIT_ATOL_MULTIPLIER eps max(1, max |C
+   point|)`; `:require` throws, `:warn` emits ONE warning (`maxlog=1 _id =
+   :twiss_dispersion_closed_orbit`) and degrades; receipt
+   `:analysis_closed_orbit (closed_orbit, closed_orbit_atol, residual,
+   action)` ONLY on linearized input; a bare matrix: no receipt,
+   `closed_orbit` unavailable `:not_requested`, both options
+   `:inactive_dependency`); `_analysis_clusters` (`_mode_clusters(Ms; rho_M0,
+   resolution_chord, partition)`; receipt `:analysis_cluster_resolution
+   (resolution_chord, map_uncertainty, clusters, rho_M0, rho_M1, forced)`;
+   REVIEW AMENDMENT (repo F-2, fixer): `clusters` in the receipt is the VALUE
+   READ, `:auto` or the partition itself, never the marker `:explicit` the
+   skeleton docstring had allowed, so the contract's probe compares the
+   receipt, `partition_source` and the cluster members with the requested
+   partition and an ignored partition is red in the contract as well as the
+   suite; the explicit partition PROMISES the grouping only); 4x4:
+   `_analysis_transverse` (`_eigenmodes_4d(Ms; rho_M0, resolution_chord)`,
+   under an explicit partition FURTHER blocked by
+   `_frame_availability(explicit clusters)` when that returns a reason; the
+   stage 2 thin methods with the DERIVED guards `min_trace_gap =
+   _TRACE_GAP_MULTIPLIER rho_M1 max(1, ||M_4||_F)`, `stability_atol =
+   _STABILITY_ATOL_MULTIPLIER rho_M1`, internal PROVISIONAL constants since
+   the design's option table has no such option); 6x6: `_analysis_6d`
+   (selection; `_dispersion_routes(Ms, clusters; longitudinal, routes,
+   newton_max_iterations)`; receipts `:analysis_labels (longitudinal_mode,
+   rule, certified, selected, weights)`, `:analysis_dispersion_routes
+   (dispersion_routes, executed)`, `:analysis_newton (newton_max_iterations,
+   used)` when `:newton` executed; PART A AMENDMENT: none of the three is
+   issued on a COASTING map, where the options are inactive and F9 demands
+   no receipt for an inactive option; the separation runs iff `zeta`, `eta`
+   AND `h` of the routes are all unique (the dossier said "when `routes.h`
+   is unique"; on the synchrotron-degenerate fixture `h` is unique while
+   `eta` is an ambiguity set, and `_canonical_separation(Ms, routes)` throws
+   on a non-unique triple), the blocked member's reason becoming the reason
+   of `separation`, `projected_optics`, `ohmi` and `transverse`; then
+   `_transverse_optics_6d(sep; rho_M1, resolution_chord, min_trace_gap,
+   stability_atol)` on the SAME path for a coasting map (`sep.transverse_map
+   == M_rr` to the bit, longitudinal `:unit_eigenvalue`) and
+   `_ohmi_factorization` when `sep.h > 0`); `_analysis_preferred_form` on the
+   presented pair (`:auto` = the admissible form with the larger
+   `area_weight`, ties to 1; an Int = that form, `:form_inadmissible` when
+   not admissible; receipt `:analysis_edwards_teng (preferred_form,
+   reported, admissible)` only when the pair is unique; the driver re-reads
+   the selection through the receipt-free `_preferred_form_selection`);
+   `_analysis_covariance` (`emittances === nothing` -> `:not_requested`, no
+   receipt; a 3-tuple on 4x4 or a 2-tuple on 6x6 is an ArgumentError;
+   receipt `:analysis_covariance (emittances,)`; REVIEW AMENDMENT (theory
+   T1, fixer): the closure judged by the verdict is the RAW `||Ms Sigma Ms'
+   - Sigma||_F` in BOTH dimensions against `c rho_M1 cond(U) max(1,
+   ||Sigma||_F)`, one normalization; the theory (K14) zz identity the
+   dossier had named as the 6D closure is reported as the non-judged triple
+   "(K14) zz identity" with tolerance `c rho_M1 cond(U) max(1, max_j
+   (G_j)_zz)` (it was 2.78e-17 at emittances 1e-6, 1 and 1e3 alike while the
+   raw closure scaled with `||Sigma||`, so it was not a closure));
+   `_analysis_back_transform` row by row (REVIEW AMENDMENT (theory T2): on a
+   coasting map, where `projected_optics` is `:unit_eigenvalue`, the
+   physical transverse rows are the 4D frame's on M_rr back-transformed with
+   the two transverse factors: `normalizer` 4x4, beta / alpha / gamma 2x2,
+   two 4x4 `P_j` and `G_j`, the frame's two tunes, the shapes documented in
+   `PhysicalOptics`; the design's return table is honoured); an ambiguous
+   `eta` is unscaled as an `AmbiguitySet` (center and shape);
+   `_analysis_diagnostics`, `_analysis_configuration`, `_analysis_verdict`
+   (F4); receipt `:analysis_strictness (strict, outcome)`; `strict` throws
+   `OpticsAnalysisError(result, failures)` on `:failed`. ORDER NOTE (theory
+   T7): the coasting test runs INSIDE `_dispersion_routes`, after
+   `_mode_clusters`, not before it as the stage 3 and 4a sections of this
+   record say ("stage 4 runs it first", lines 3003 and 4242 above, left as
+   written by the append-only rule); the driver's docstring records the
+   actual order and why it is harmless (the unit pair is a stage 3
+   real-class flag; no fixture degrades before the coasting branch).
+4. **F4, verdict, strictness, the error.** `status` in `ANALYSIS_STATUSES`.
+   FAILURES (numerical checks that did not hold): the primary dispersion
+   route `:not_invariant`; the separation `:not_invariant`; the five judged
+   acceptance triples of `_VERDICT_RESIDUALS`: "frame reconstruction (I1)",
+   "frame symplecticity (E7)", "U_6 reconstruction", "U_6 symplecticity",
+   "covariance closure". REVIEW AMENDMENT (theory T5, fixer, partly): the
+   two RECONSTRUCTION rows are judged against `c rho_M1` (kappa = 1: the
+   (I1) residual of a backward-stable eigen-solve scales with rho alone; on
+   the dense map 0.28 rho_M1 and 0.45 rho_M1); the two SYMPLECTICITY rows
+   keep `c rho_M1 cond(U)` (second order in the eigenvector error); the
+   covariance closure `c rho_M1 cond(U) max(1, ||Sigma||_F)`. Every
+   acceptance is a `(name, value, tolerance)` triple in
+   `diagnostics.residuals`, so the verdict is recomputable; the separation
+   (K5), triple-consistency (K7), primary-route (I1) and "(K14) zz identity"
+   triples are reported with the tolerance their kernel used, not judged
+   (the two statuses carry the first two into the verdict). The Verdict
+   testset bumps each of the five judged names to twice its tolerance and
+   shows the verdict failing by name, and bumps the four reported-only names
+   to show `:passed` unchanged. D1 CARRY: with kappa = cond(U) the (E7) row
+   FAILS a resolved 4x4 frame whose tunes differ by 1e-3 rad/turn (the
+   coupled ladder R(0.5) (+) R(0.5 + delta) rotated by 0.3: cond(U_4) = 1.000
+   and (E7)/(rho_M1 cond U_4) = 8.3e2 at delta 1e-3 up to 1.25e10 at 1e-11,
+   the residual being eps/delta, the first-order mixing of two nearly
+   degenerate eigenvectors that cond(U) does not see); under the theory
+   review's resolution kappa cond(U) ||U||^2 / chord_min the same rows read
+   0.13-0.83 and the accepted extreme over the 54 must-pass frames is 1.56:
+   a design decision for stage 5 (see "Carried forward"). DEGRADATIONS
+   (each one string): `nonsymplectic = :flag` fired; `closed_orbit = :warn`
+   fired; any cluster `forced`; a label tie UNDER THE HEURISTIC only (Part A
+   amendment: a certified index or tune is not chosen by the z-areas, the
+   `tie` flag stays in `diagnostics.longitudinal_selection`; the prescribed
+   h = 1/2 map is the positive tie fixture, tests finding 6); an indefinite
+   or unresolved cluster classification (Part A amendment: `:unstable` and
+   `:unit_eigenvalue` classifications are not degradations, the unavailable
+   dispersion they cause is one, "primary dispersion unavailable
+   (:unstable_spectrum): ..."); an unavailable primary dispersion for a
+   physical reason (`:singular_longitudinal_projection`, `:graph_isotropic`,
+   an ambiguity set under `:cluster_unresolved`); the UNCERTIFIED heuristic
+   selection on a bunched 6x6 map (the string names the selected index and
+   its signed z-area and says how to certify; when the z-areas are
+   unavailable it says so with the labels' reason, the NaN the first version
+   interpolated is gone (repo F-3, runner R2); skipped when no mode was
+   selected, the unavailable dispersion already carrying the reason; by
+   (K12) `kappa_sz = h` the rule cannot certify itself for h < 1/2, so the
+   default 6D run is `:degraded` until the caller passes an index or a
+   tune); Newton or fixed-point routes `:not_invariant` with "another
+   invariant plane" while the primary is unique (the certified prescribed
+   h = 0.05 run is `:degraded` by exactly the Newton string, pinned without
+   escapes, tests finding 5). NOT degradations: `:coasting_structure`, the
+   longitudinal `:unit_eigenvalue` of a coasting map, `:not_requested`,
+   `:route_not_selected`. `OpticsAnalysisError(result, failures)` with
+   `showerror`. FIXTURE AMENDMENT (Part A, integrator, D1): the
+   near-non-symplectic map (dense + 1e-6, `nonsymplectic = :flag`) FAILS
+   through the (K5) separation `:not_invariant` at every perturbation from
+   1e-6 down to 1e-12 (and passes at 1e-14), NOT through the frame residual
+   as the dossier's fixture table said: rho_M0 folds the Frobenius defect,
+   so (I1)/rho_M1 = 0.31 and (E7)/(rho_M1 cond U_4) = 0.90 sit inside the
+   acceptance; and `symplectic_rtol = 1e-3` does NOT fire the flag on the
+   1.7e-6 defect, so the strictness fixture and the contract's strict probe
+   run at `symplectic_rtol = 1e-9` (flagged). The frame-triple verdict is
+   therefore exercised by bumped triples and by injection, not end-to-end.
+5. **F5, receipts.** The ten consumers and their fixed fields as the dossier
+   listed (`:analysis_scaling`, `:analysis_symplectic_check`,
+   `:analysis_closed_orbit`, `:analysis_cluster_resolution`,
+   `:analysis_labels`, `:analysis_edwards_teng`, `:analysis_dispersion_routes`,
+   `:analysis_newton`, `:analysis_covariance`, `:analysis_strictness`);
+   the key that certifies an option is the OPTION'S OWN NAME holding the
+   value the consumer READ (F3 step 7 reconciled with this literal reading
+   for `clusters`); backend `CPUThreadsBackend`; consumers record
+   unconditionally (`_record_execution!` is a no-op outside an audit). D1's
+   completeness matrix: 56 / 56 cells (14 options x 4 forms) consistent,
+   below.
+6. **F6, the configuration report.** `configuration_report(result)` returns
+   `result.configuration`, one `ConfigurationEntry` per option from the
+   branch taken: `:resolved` for a read option; `:inactive_dependency` with
+   the reason for `closed_orbit`, `closed_orbit_atol` on a bare matrix
+   (matrix, matrix4, coasting forms); `longitudinal_mode`,
+   `dispersion_routes` on 4x4 input and on a coasting map;
+   `newton_max_iterations` unless `:newton` executed; `preferred_form` when
+   the presented pair is unavailable; `emittances` when `nothing`.
+   AMENDMENT (dossier): `resolution_chord` stays `:resolved` under an
+   explicit partition (the frame construction re-clusters at that chord).
+   AMENDMENT (Part A, theory T8, fixer; against the design's Certification
+   paragraph): `dispersion_routes` stays `:resolved` on a BUNCHED map whose
+   dispersion is unavailable (the tuple is read, the routes execute and fail,
+   the receipt is issued); it is inactive on 4x4 input and coasting maps
+   only; the schema meaning string says so and the dead
+   `dispersion_available` parameter of `_analysis_configuration` was removed
+   (repo F-4). `emittances` is `:resolved` on every form when given,
+   including a coasting map where the covariance is `:unit_eigenvalue`.
+   Never `:inactive` (injection d04: 32 red lines). The static
+   `configuration_report(analysis)` reports `:unresolved`.
+7. **F7, the result tree.** As the skeleton's docstrings specify:
+   `Union{Nothing, X}` = does not exist for this dimension (`dispersion`,
+   `separation`, `projected_optics`, `ohmi`, `coasting` are `nothing` on 4x4
+   input); `Determined` = unknown for a reason; the `P_j` presented are the
+   normal-mode frame's projectors; the diagnostics carry both `h` values,
+   every route's coefficient condition beside its residual, the defect in
+   both forms, the longitudinal selection with its `tune_chords`, the
+   Edwards-Teng diagnostic (requested, reported, admissible, area weights),
+   the projection diagnostic and the acceptance triples. The 6D physical
+   `normalizer`, beta / alpha / gamma, `projectors`, `covariances` come from
+   `ProjectedOptics6D` (the barred frame has no direct back-transformation)
+   except on a coasting map (F3, T2). `matched_covariance` returns a matrix
+   symmetric to 4.8e-17 relative but not bitwise (`issymmetric` false;
+   carried). The 6D synchrotron tune is reported in [0, 2pi) by the stage 4a
+   normalizer (5.343 for the prescribed `mu_s = -0.94`; a certified
+   `longitudinal_mode = 0.94` selects the pair correctly; presentation
+   question carried).
+8. **F8, the validator block and tree guard.** In the LongitudinalSlicing
+   form at interface.jl 2219-2236: keys == `fieldnames(TwissDispersionAnalysis)`
+   ("TwissDispersionAnalysis fields and metadata keys disagree"); every
+   `consumer !== :unspecified` ("... has no runtime consumer"); every
+   `meta.default` `isequal` to the default-constructed field ("... metadata
+   default disagrees with constructor"; guarded by `hasfield` so a renamed
+   key reports once); the tree guard `for T in
+   _concrete_octopus_subtypes(AbstractAnalysis): T in (TwissDispersionAnalysis,
+   PlaceholderAnalysis) || push!(errors, "... is a concrete Octopus analysis
+   with no block in validate_configuration_metadata; add one (see the policy
+   tree guard)")`. The runner review evaluated a fake concrete
+   `_RvFakeAnalysis` into the module: `validate_configuration_metadata()`
+   THROWS the guard's message and `validate(AnalysisOptionEffectivenessContract())`
+   returns passed = false ("configuration metadata validation failed"). The
+   F8 tripwire: B's "probe tables" testset derives the concrete analyses
+   with a non-empty schema and asserts every option of each has an
+   `alternatives` or an `inactive` entry, so a second analysis cannot land
+   without probes. Three drifts (default, missing consumer, renamed key)
+   were each injected in a scratch schema and in the source (block_default_drift
+   243/14/1, block_missing_consumer 234/23/1, block_key_mismatch 221/25/3).
+9. **F9, the effectiveness contract.** Table-driven: `alternatives` (one
+   valid non-default value per option: `scaling => :none`, `symplectic_rtol
+   => 1e-6`, `nonsymplectic => :flag`, `closed_orbit => :warn`,
+   `closed_orbit_atol => 1e-9`, `map_uncertainty => 1e-9`, `resolution_chord
+   => Inf`, `clusters => [[1, 6], [2, 5], [3, 4]]` (PART B AMENDMENT: the
+   dossier's `[[1,2],[3,4],[5,6]]` is REJECTED by `_check_partition`, "not
+   closed under conjugation": explicit partitions are conjugation-closed in
+   the CANONICAL index order, `conjugate_partner` pairs 1 with 6 on the dense
+   map), `longitudinal_mode => 2` (measured: the heuristic's own index on the
+   seeded fixture, z-areas [0.032, 0.884, 0.084]), `preferred_form => 2`
+   (`:auto` presents 1 there), `dispersion_routes => (:eigenplane,
+   :polynomial)`, `newton_max_iterations => 3` (a BINDING cap: the default
+   run uses 4), `emittances => (1e-6, 2e-6, 3e-6)`, `strict => false`);
+   `inactive` (16 entries, the `(form, option)` pairs of F6 for the DEFAULT
+   run); fixtures `_analysis_contract_fixtures(seed)`: `matrix` (dense 6D,
+   seed 20260911), `linearized` (the same matrix through
+   `one_turn_matrix((compile_runtime(Linear6DSpec(matrix = M6)),))`,
+   complex-step provenance, residual exactly 0), `matrix4`, `coasting`
+   (`E(eta) diag(A4, [1 0.37; 0 1]) E(eta)^-1`), `failing` (M6 + 1e-6
+   randn), FIXER ADDITIONS `repeated` (the repeated-betatron map, where
+   `resolution_chord = Inf` FORCES and the default does not) and `displaced`
+   (FODO + thin sextupole linearized at x = 1e-3). `validate` runs
+   `validate_configuration_metadata()` first (a throw is a FAILED result),
+   then for EVERY concrete analysis with a non-empty schema and EVERY
+   option: declared inactive on a form -> the default run's report must say
+   `:inactive_dependency` (else STALE, FAIL) and the consumer must have
+   issued NO receipt carrying the option; otherwise the default and the
+   alternative run under `with_execution_audit` on the active form (or the
+   `_ANALYSIS_CONTRACT_PROBE_FORMS` override), the named consumer's receipt
+   must carry the alternative under the option's name, the report must say
+   `:resolved`, and the observable must hold. REVIEW AMENDMENT (tests
+   finding 2, the fixer): the observables read the BRANCH'S OWN OUTPUTS, not
+   the echoed request: scaling -> `mode` and `factors` in the receipt,
+   `matrix_scaled == matrix` under `:none` and `!=` under `:auto`, and zeta,
+   eta, h, tunes of `result.physical` fixed within
+   `_ANALYSIS_CONTRACT_FIXED_MULTIPLIER eps cond(M) max(1, |x_i|)`;
+   nonsymplectic, closed_orbit, strict -> bit-identical physics;
+   symplectic_rtol -> the rule flips to `:frobenius` AND `defect.frobenius <=
+   rtol` with action accepted; closed_orbit_atol -> the receipt's atol;
+   map_uncertainty -> a larger rho_M0; resolution_chord -> `forced` true on
+   the `repeated` fixture, false by default; clusters -> the receipt's
+   partition, `partition_source` and the cluster members; longitudinal_mode
+   -> `rule === :explicit` in the receipt and the diagnostic, `certified`,
+   `selected == 2`; preferred_form -> the presented form 2, the receipt's
+   `reported`, the default's differs; dispersion_routes -> `executed ==
+   (:eigenplane, :polynomial)`; newton_max_iterations -> `used_alt <= 3 <
+   used_default` and the Newton route `:not_invariant`; emittances -> the
+   covariance becomes unique. FIXER ADDITION `_analysis_contract_branch_probe`
+   on dedicated inputs: rtol 1e-20 on the dense map throws the `:frobenius`
+   ArgumentError; on `failing` at rtol 1e-9 `:error` throws while `:flag`
+   returns `action = :flagged` with the degradation; on `displaced`
+   `:require` throws naming `closed_orbit`, `:warn` returns `:degraded` with
+   `action = :warned` (under a null logger), `closed_orbit_atol = 1.0`
+   returns `action = :accepted`. `_analysis_contract_strict_probe` on
+   `failing` at rtol 1e-9: `strict = true` throws `OpticsAnalysisError` with
+   a `:failed` payload, `strict = false` returns `:failed` with the
+   `:analysis_strictness` receipt `(strict = false, outcome = :failed)`.
+   Metrics `checked, inactive_declared, inactive_applied, stale_exemptions,
+   observables_moved, observables_fixed, receipts_checked`; a probe with no
+   verdict FAILS; `run` is injectable (`_st4b_b_fake_run` drives the
+   plumbing tests: metric counting, stale and unreached exemptions,
+   alternative == default, missing alternative, wrong consumer, echoed
+   option, closed-orbit receipt on a bare matrix, an execution option moving
+   zeta, a physics option not moving, strict returning instead of throwing,
+   a throwing verb, a fixture set without `failing`, unknown option).
+10. **F10, registry, snapshot, stage guard.** `summarize_registry().analyses
+    == [:PlaceholderAnalysis, :TwissDispersionAnalysis]`, the contract in
+    `.contracts`, no type without `description`; `write_registry_snapshot()`
+    run by the integrator, the +2-line docs/registry_snapshot.md STAGED, the
+    byte comparison true (re-verified by the fixer and D1: 0 lines changed).
+    The stage-guard testset renamed and rewritten by Part C (921-976, 98
+    assertions): the subtype set, `isdefined(Octopus, :analyze)`, the 22
+    exports documented, `ANALYSIS_STATUSES` pinned three ways (tuple, source
+    literal read from the file by path, docstring bullets), the seven
+    vocabulary and result types not registry roots, every element
+    `[PlaceholderAnalysis]`, `analysis_option_schema(PlaceholderAnalysis)
+    === NamedTuple()`. INTEGRATOR ADDITION: the stale stage 2 claim
+    runtests.jl 1541 `@test !isdefined(Octopus, :analyze)` (missed by Part
+    C's grep, red in the first extract) flipped with its comment.
+11. **F11, the rewording of every placeholder-only statement (Part C, the
+    integrator, the fixer).** Edited in place, same commit: Analysis.jl
+    15-18 and 27-28 (the placeholder docstring at 7 stays), AGENTS.md 75,
+    contracts_and_analyses.md 48-71, docs/README.md 96-97,
+    twiss_dispersion.md 3-10 and 2120-2129, the design note's status
+    paragraph 3-22, beam_line_composition.md 287-291; the 4a kernel
+    docstring corrections (record item 4) docstring-only, proven by mapping
+    every diff hunk onto the docstring ranges; the block headers 2227-2232
+    and 3878-3883 cite the record. INTEGRATOR ADDITIONS (missed by the
+    grep): runtests.jl 273-274 and 1535-1542 (the stage 2 claim), the
+    three kernel file headers. REVIEW ADDITION (repo F-1): Knowledge.jl:556
+    "use `PlaceholderAnalysis` until real analysis implementations exist"
+    -> "for kinds that have no analysis; `TwissDispersionAnalysis` is
+    declared on the linear-map kinds in stage 5". The before / after table
+    is below. Remaining by design: the design note's body lines 39
+    ("The problem" describes the pre-design state), 232-233 and 505
+    (Staging item 4's own instruction) are history, and
+    docs/guides/elements.md:46 is the still-true rule for kinds without an
+    analysis.
+12. **F12, public_api.md.** The "## Analyses" section (272-309) before
+    "## Validation": the lead sentence, the construction fence (the
+    constructor with and without keywords, the three `analyze` forms with
+    the `point = ntuple(_ -> 0.0, 6)` default, `one_turn_matrix`,
+    `configuration_report(result)`), the help fence with the fourteen
+    queries of the dossier; `?AnalysisOptionEffectivenessContract` in the
+    Validation fence (336). No new document under docs/ (the README index
+    tripwire needs nothing).
+13. **F13, tests.** Part A's twelve testsets (5366-6179) and Part B's six
+    (6180-6459) pasted as ONE stage 4b block after the stage 4a block, the
+    stage guard rewritten; distinct helper prefixes `_st4b_a_` / `_st4b_b_`
+    (23 + 4 names, each defined once, none at HEAD, none shared; the
+    duplicate-definition grep at the fold). The reason table testset pins
+    the set of reasons seen across the fixtures equal to the eleven the
+    docstrings claim. FIXTURE AMENDMENTS to the dossier's table (Part A,
+    confirmed by the integrator and D1): (a) the stage 4a repeated-betatron
+    fixture `W blockrot(0.72, 0.72, -1.3) W^-1` has a UNIQUE synchrotron
+    dispersion; the ambiguity set needs the synchrotron tune degenerate with
+    a betatron tune (`blockrot(0.72, -1.3, 0.72)`), which also blocks
+    `projected_optics` with `:cluster_unresolved`; (b) the explicit union
+    `[1, 6, 2, 5]` of the dense map is classified `:definite` by stage 3
+    (Gram signs agree), so the 4x4 union `[[1,2,3,4]]` does NOT block the
+    frame and the testset asserts the `_frame_availability` rule
+    conditionally; (c) the solenoid line runs (F2); (d) the perturbed map
+    fails through the (K5) separation (F4). REVIEW ADDITIONS (the fixer):
+    `newton_max_iterations = 3` binds (`used == 3`, Newton `:not_invariant`,
+    result `:passed`; the default uses more with `:none`); the five judged
+    verdict names bumped one by one; the `:form_inadmissible` path driven
+    through `analyze` on the detuned uncoupled FODO 4x4 (`preferred_form =
+    2` -> `:form_inadmissible`, receipt `(preferred_form = 2, reported = 0,
+    admissible = (true, false))`, report `:resolved`, status `:passed`); the
+    "another branch" degradation pinned without escapes; the h = 1/2 tie
+    fixture; the Scaling testset pins the `normalizer` row (T3) at `c = 2048`
+    (D1) with kappa `cond(U) max(1, ||M||)^2`; the coasting rows of
+    `PhysicalOptics` against `analyze(scaling = :none, M_rr)`; the closed-orbit
+    residual asserted in scaled coordinates and the physical value NOT in
+    the message; the `:warn` receipt probe under `@test_logs` (runner R4).
+    Injections: below.
+14. **F14, out of scope here (later stages).** Element declaration and the
+    two set tripwires (stage 5); the physics identity contract, the
+    validation script, the README section and the executable example (stage
+    6); the `lattice_cells.jl` refactor (stage 7); external benchmarks
+    (stage 8); transport, scans, covariance-based mode selection, a public
+    closed-orbit finder, seeding the iterative routes on the selected
+    branch, extending `kappa_route` by the coefficient condition (the
+    diagnostics print the condition). Nothing of these was started.
+
+### The option table as landed (schema `_TWISS_DISPERSION_OPTION_SCHEMA`; consumer, receipt fields, the contract's alternative and observable; D1's completeness matrix on the contract's fixtures, `R+` = `:resolved` with one receipt of the consumer carrying the requested value under the option's name, `I-` = `:inactive_dependency` with no such receipt)
+
+| option | category | default | consumer, receipt fields | alternative (contract) | observable that must move (or stay) | matrix | linearized | matrix4 | coasting |
+|---|---|---|---|---|---|---|---|---|---|
+| `scaling` | :execution | `:auto` | `:analysis_scaling (scaling, mode, factors)` | `:none` | `mode`, `factors`; `matrix_scaled == matrix` under `:none`, `!=` under `:auto`; physical zeta, eta, h, tunes FIXED within `1024 eps cond(M) max(1, abs(x_i))` | R+ | R+ | R+ | R+ |
+| `symplectic_rtol` | :numerical | `nothing` | `:analysis_symplectic_check (symplectic_rtol, nonsymplectic, rule, defect, action)` | `1e-6` | `rule` `:row_ratio` -> `:frobenius` AND `defect.frobenius <= rtol`, action `:accepted`; branch probe: rtol 1e-20 throws | R+ | R+ | R+ | R+ |
+| `nonsymplectic` | :execution | `:error` | the same consumer | `:flag` | physics bit-identical on the dense fixture; branch probe on `failing` at rtol 1e-9: `:error` throws, `:flag` returns `action = :flagged` and the degradation | R+ | R+ | R+ | R+ |
+| `closed_orbit` | :execution | `:require` | `:analysis_closed_orbit (closed_orbit, closed_orbit_atol, residual, action)`, linearized input only | `:warn` | physics bit-identical on the linearized fixture (residual 0); branch probe on `displaced`: `:require` throws naming the option, `:warn` returns `:degraded` with `action = :warned` | I- | R+ | I- | I- |
+| `closed_orbit_atol` | :numerical | `nothing` | the same consumer | `1e-9` | the receipt's `closed_orbit_atol`; branch probe: `1.0` on `displaced` returns `action = :accepted`, no orbit degradation | I- | R+ | I- | I- |
+| `map_uncertainty` | :numerical | `0.0` | `:analysis_cluster_resolution (resolution_chord, map_uncertainty, clusters, rho_M0, rho_M1, forced)` | `1e-9` | the receipt's `rho_M0` strictly larger (default 2.46e-15 on the dense fixture) | R+ | R+ | R+ | R+ |
+| `resolution_chord` | :numerical | `_DEFAULT_RESOLUTION_CHORD` | the same consumer | `Inf` | probed on the `repeated` fixture: `forced` true in the receipt and the clusters, false by default; the receipt's chord | R+ | R+ | R+ | R+ |
+| `clusters` | :physics | `:auto` | the same consumer (`clusters` = the value read: `:auto` or the partition) | `[[1, 6], [2, 5], [3, 4]]` (the conjugate pairs of the dense fixture; on a coasting map the pairs come from the clusters report, the real unit pair included) | the receipt's partition == the request, `partition_source`, the cluster members | R+ | R+ | R+ | R+ |
+| `longitudinal_mode` | :physics | `:max_signed_z_area` | `:analysis_labels (longitudinal_mode, rule, certified, selected, weights)`, bunched 6x6 only | `2` (the heuristic's own index on the fixture) | `rule === :explicit` in the receipt and the diagnostic, `certified` true, `selected == 2` (the default: `:max_signed_z_area`, false) | R+ | R+ | I- | I- |
+| `preferred_form` | :physics | `:auto` | `:analysis_edwards_teng (preferred_form, reported, admissible)`, only when the pair is unique | `2` | `transverse.preferred_form == 2`, the receipt's `reported == 2`, the default's `reported != 2` | R+ | R+ | R+ | R+ |
+| `dispersion_routes` | :physics | `DISPERSION_ROUTES` | `:analysis_dispersion_routes (dispersion_routes, executed)`, bunched 6x6 only | `(:eigenplane, :polynomial)` | `executed == (:eigenplane, :polynomial)`, the default's differs | R+ | R+ | I- | I- |
+| `newton_max_iterations` | :numerical | `50` | `:analysis_newton (newton_max_iterations, used)`, only when `:newton` executed | `3` | `used_alt <= 3 < used_default` (4 on the fixture), the Newton route `:not_invariant` under the cap | R+ | R+ | I- | I- |
+| `emittances` | :physics | `nothing` | `:analysis_covariance (emittances,)`, only when given | `(1e-6, 2e-6, 3e-6)` (a 2-tuple on 4x4 in D1's matrix) | `result.covariance` unique (the default `:not_requested`); declared inactive on every form for the DEFAULT run | R+ | R+ | R+ | R+ |
+| `strict` | :execution | `true` | `:analysis_strictness (strict, outcome)` | `false` | physics bit-identical; the strict probe on `failing` at rtol 1e-9: `true` throws `OpticsAnalysisError` with a `:failed` payload, `false` returns `:failed` with the receipt `(strict = false, outcome = :failed)` | R+ | R+ | R+ | R+ |
+
+The 16 `I-` cells are exactly the contract's `inactive` table; their reasons
+as reported: "a bare matrix carries no closed-orbit information" (6 cells),
+"a 4x4 map has no longitudinal mode" (2), "the :newton route did not execute
+(4x4 input)" (1), "the map has the coasting structure: no synchrotron mode
+and a single (coasting) dispersion" (2), "the :newton route did not
+execute" (1); `emittances` is `:inactive_dependency` "emittances = nothing:
+no matched covariance is requested" on every form of the DEFAULT run (4
+entries of the table; D1's matrix set it and shows `R+`). The report never
+says `:inactive` (injection d04). Probe count: 14 option probes + 4 branch
+probes + the strict probe = 19 `checked`; 32 receipts checked; 15 observables
+moved (the ten :numerical / :physics options, the four branch probes, the
+strict probe) and 4 fixed (the four :execution options' physics).
+
+### The configuration report statuses per input form (the Configuration report testset, 148 assertions; the same matrix as above read from `configuration_report(result)`)
+
+| form | fixture | `:resolved` | `:inactive_dependency` |
+|---|---|---|---|
+| `:matrix` (bare 6x6, bunched) | dense 6D seed 20260911 | scaling, symplectic_rtol, nonsymplectic, map_uncertainty, resolution_chord, clusters, longitudinal_mode, preferred_form, dispersion_routes, newton_max_iterations (when `:newton` executed, the default), strict; emittances when given | closed_orbit, closed_orbit_atol; emittances when `nothing`; newton_max_iterations when `:newton` is not in the executed routes |
+| `:linearized` (`LinearizedMap`, exact provenance) | the same matrix through `Linear6DSpec` | the eleven above AND closed_orbit, closed_orbit_atol | emittances when `nothing` |
+| `:matrix4` (bare 4x4) | dense 4x4 | scaling, symplectic_rtol, nonsymplectic, map_uncertainty, resolution_chord, clusters, preferred_form, strict; emittances when given | closed_orbit, closed_orbit_atol, longitudinal_mode, dispersion_routes, newton_max_iterations; emittances when `nothing` |
+| `:coasting` (bare 6x6 with the coasting structure; also the DBA cell at delta = 0) | `E(eta) diag(A4, shear) E(eta)^-1` | scaling, symplectic_rtol, nonsymplectic, map_uncertainty, resolution_chord, clusters, preferred_form (the frame on M_rr is unique), strict; emittances when given (`:resolved`, covariance `:unit_eigenvalue`) | closed_orbit, closed_orbit_atol, longitudinal_mode, dispersion_routes, newton_max_iterations; emittances when `nothing` |
+| any form, the presented Edwards-Teng pair unavailable (a blocked frame) | the indefinite 6D fixture `_st4b_a_indefinite()` | as the form | preferred_form ("the presented Edwards-Teng pair is unavailable") |
+
+### The reworded statements, before / after (F11; every site edited in place; the full unified diffs are in `OUT/report_4b_C.md`)
+
+| site | before | after |
+|---|---|---|
+| `src/analysis/Analysis.jl` 15-17 (comment) | "No analysis exists yet: there is no `analyze` function and no concrete analysis type besides the placeholder; stage 4 adds those." | "The first analysis is `TwissDispersionAnalysis` (twiss_dispersion_analysis.jl, stage 4b) with its `analyze` method; the placeholder remains the declaration of element kinds that have none." |
+| `src/analysis/Analysis.jl` 26-28 (`AbstractAnalysisResult` docstring) | "No concrete subtype exists yet; the first lands with the Twiss and dispersion analysis." | "The first concrete subtype is `TwissDispersionResult`, the result of `analyze(::TwissDispersionAnalysis, ...)`." |
+| `src/analysis/Analysis.jl` 7 (the `PlaceholderAnalysis` docstring) | unchanged | unchanged on purpose (F11) |
+| `AGENTS.md` 75 | "... the coupled parameterizations); the placeholder is still the only registered analysis." | "... the coupled parameterizations, mode clusters, the 6D dispersion routes, canonical separation); `TwissDispersionAnalysis` with its `analyze` method is the first registered analysis, the placeholder remains the declaration of element kinds that have none (element declaration on kinds is stage 5)." |
+| `docs/guides/contracts_and_analyses.md` 48-57 -> 48-71 | "No concrete analysis exists yet: `src/analysis/` holds only `PlaceholderAnalysis`, every element registers `analyses = [PlaceholderAnalysis]`, and there is no execution API. The first real analysis: 1. defines the type and its execution API; 2. is declared in the spec's `analyses` field ...; 3. ships a small executable example ..." | "The first concrete analysis is `TwissDispersionAnalysis` (...): a non-parametric analysis object whose options are public configuration (`analysis_option_schema`, `configuration_report`), executed by `analyze` on a real symplectic 4x4 or 6x6 matrix, a `LinearizedMap`, a compiled line or an element tuple, returning a `TwissDispersionResult`; its option probe table is `AnalysisOptionEffectivenessContract`. Every element still registers `analyses = [PlaceholderAnalysis]`: the declaration ... is stage 5 ... The next analysis joins by: 1. defining the type with a `description`, its `analysis_option_schema` (a runtime `consumer` per option) and its `analyze` method, exporting each with a docstring; 2. adding its block to `validate_configuration_metadata()` (the tree guard names any concrete analysis without one) and one probe per option to the `AnalysisOptionEffectivenessContract` table; 3. declaring it in the spec's `analyses` field ... and regenerating the registry snapshot; 4. shipping a small executable example if the output is user-facing." |
+| `docs/README.md` 96 | "... scripts) and the placeholder-only state of analyses." | "... scripts) and analyses (`TwissDispersionAnalysis` and `analyze` as the first, how the next one joins, the placeholder on undeclared kinds)." |
+| `docs/theory/twiss_dispersion.md` 3-8 (status) | "No optics analysis API is implemented by this document; the current analysis layer contains only `PlaceholderAnalysis`. ... public API details belong in source docstrings when implementation lands." | "No optics analysis API is defined by this document; the analysis layer implements it as the Twiss and dispersion analysis of `src/analysis/` (landed in stages during 2026-09-11 and 2026-09-12; the placeholder remains the declaration of element kinds that have no analysis). ... public API details live in the source docstrings, not here." (no API name added: the note's own rule) |
+| `docs/theory/twiss_dispersion.md` 2119-2123 (Section 11) | "The existing analysis layer is placeholder-only. A future implementation should separate the following mathematical operations: ... basis transport; covariance reconstruction. Public architecture decisions are recorded in the design note (decided 2026-09-11, not yet implemented)." | "The analysis layer implements this section's requirements in the kernel files of `src/analysis/` (names in the source docstrings; the placeholder type remains for element kinds without an analysis). The implementation separates the following mathematical operations: ... basis transport (deferred to a later stage); covariance reconstruction. ... (decided 2026-09-11; its status paragraph records the landing)." |
+| `docs/design/twiss_dispersion_analysis.md` 3-13 (the status paragraph) | "**Status: decided ...; not implemented.** No type, function, option, contract, or keyword named in this note exists in the source yet: `src/analysis/` still holds only `PlaceholderAnalysis`, and there is no analysis execution API. ... When implementation lands, the landing record and the todo row will say so; this paragraph is the only place that should be updated to reflect it." | "**Status: decided ...; implemented through Staging item 4 (stages 1-4b, landed 2026-09-11 and 2026-09-12).** `TwissDispersionAnalysis`, `analyze`, `analysis_option_schema`, `TwissDispersionResult`, `OpticsAnalysisError`, `NormalMode`, `ANALYSIS_STATUSES`, `matched_covariance`, `normal_mode` and `AnalysisOptionEffectivenessContract` exist in the source with the kernel files of `src/analysis/`; `PlaceholderAnalysis` remains the declaration of element kinds without an analysis until Staging item 5 ... Staging items 5-8 ... are open. The amendments the implementation forced on this note's tables are recorded in the campaign history, not edited into the body. ... This paragraph is the only place in the note that tracks implementation status." |
+| `docs/theory/beam_line_composition.md` 288-290 | "... one of the seven core objects in `AGENTS.md` and has only `PlaceholderAnalysis` behind it; this is the consumer that keeps the container from being speculative." | "... one of the seven core objects in `AGENTS.md`; `TwissDispersionAnalysis` (`analyze` on a compiled line's one-turn Jacobian, `docs/design/twiss_dispersion_analysis.md`) is now behind it beside the placeholder; this is the consumer that keeps the container from being speculative." |
+| `src/knowledge/Knowledge.jl` 556 (validation checklist docstring; repo review F-1) | "- use `PlaceholderAnalysis` until real analysis implementations exist;" | "- use `PlaceholderAnalysis` for kinds that have no analysis; `TwissDispersionAnalysis` is declared on the linear-map kinds in stage 5 of the Twiss campaign;" |
+| `src/analysis/eigenmodes_4d.jl` 9-11, `dispersion_routes.jl` 12-14, `mode_clusters.jl` 9-11 (file headers; integrator) | "Nothing in this file claims an analysis exists: no `analyze`, no analysis type, no export; the public verb is stage 4." | "This file defines no `analyze`, no analysis type and no export; the public verb is `analyze` of twiss_dispersion_analysis.jl (stage 4b)." |
+| `test/runtests.jl` 920-923 (the stage guard) | "Stage 1 claims no analysis: the placeholder is the only analysis and there is no analyze" with three "stage 4 deletes" assertions | "Stage 4 registers the analysis: the placeholder and TwissDispersionAnalysis are the analyses and analyze exists" (contents in F10) |
+| `test/runtests.jl` 273-274, 1535-1542 (integrator) | "no analysis claimed yet"; `@test !isdefined(Octopus, :analyze)` in the stage 2 clusters testset | reworded; `@test isdefined(Octopus, :analyze)` |
+| `test/runtests.jl` 2227-2232, 3878-3883 (block headers) | "Standalone runners with the same testsets: result/.../run_clusters.jl, run_ambiguity.jl" / "run_routes.jl, run_separation.jl ...; nothing here claims an analysis" | "The measurements behind every tolerance are in docs/history/twiss_dispersion_analysis_history.md, '2026-09-12: stage 3 landed' / '2026-09-12: stage 4a landed', sections ... (the standalone runners it names are git-ignored and substitute for neither lane)." |
+| `src/analysis/twiss_dispersion_analysis.jl` schema meaning of `dispersion_routes` (integrator, A6) and of `longitudinal_mode` (fixer T9) | the meaning called the option inactive under a "blocked longitudinal cluster" (paraphrased) / the (K12) sentence overstated | "Inactive on 4x4 input and on a coasting map." (the requested tuple is read on a blocked bunched map) / "(UNCERTIFIED: by (K12) kappa_sz = h and kappa_1z + kappa_2z = 1 - h, so a betatron mode CAN carry more z-area and the 3x3 array cannot distinguish a row permutation ...)" with the tune guard named |
+
+Left as written (history, not claims): design note 39 ("The problem": an
+analysis layer with one placeholder type), 232-233 (the guide sentence
+"becomes a statement about a mixed state"), 505 (Staging item 4's own
+instruction); docs/guides/elements.md:46 (the rule for kinds without an
+analysis, still true); the stage 1-4a sections of this record.
+
+### The snapshot diff (`docs/registry_snapshot.md`, regenerated by `write_registry_snapshot()`, 16816 -> 16884 bytes, staged; `git diff --cached`)
+
+```diff
+@@ -300,6 +300,7 @@ constructor names remain the user-facing way to build those specs.
+ - `StrongStrongGaussianBackendConsistencyContract`
+ - `StrongStrongPICBackendConsistencyContract`
+ - `StrongStrongPICMultiProcessConsistencyContract`
++- `AnalysisOptionEffectivenessContract`
+ - `ElementParameterEffectivenessContract`
+ - `KnobEffectivenessContract`
+ - `MADXSurveyConsistencyContract`
+@@ -314,6 +315,7 @@ constructor names remain the user-facing way to build those specs.
+ ## Analyses
+ 
+ - `PlaceholderAnalysis`
++- `TwissDispersionAnalysis`
+ 
+ ## Examples
+```
+
+Two lines added, none removed; `summarize_registry().analyses ==
+[:PlaceholderAnalysis, :TwissDispersionAnalysis]`; the eight stage 4a result
+structs and the six stage 4b result / error types are plain types, not
+registry roots (pinned in the stage guard). The "Architecture integrity"
+tripwire's snapshot comparison passes on the staged file (28 / 28 in every
+run since integration).
+
+### Review findings and fixes (four reviewers: theory, repository compliance, test adequacy, runner; 26 rows, 22 distinct findings, 20 fixed, 2 documented or recorded without a code change, none skipped; three seen by two lenses)
+
+The fixer re-verified every finding on the unpatched tree first
+(`OUT/fixer4b/probe_verify.jl`, `probe_verify.log`), patched with exact
+single-match replacements (`OUT/fixer4b/patch_*.py`) and re-ran A's and B's
+runners, both extract arms, the tripwires, the smoke, the snapshot
+comparison, both contracts and the stage 1 scratch runner (the counts of the
+verification table above). Line numbers are those of the tree after the
+fixes (D1's docstring edits moved `twiss_dispersion_analysis.jl` by up to +29
+lines below line 177; the "What landed" table has the final ones).
+
+1. **T1 (theory, major).** The 6D "covariance closure" verdict compared the
+   (K14) zz identity (2.78e-17 at emittances 1e-6, 1 and 1e3 alike) while
+   the raw closure grew with `||Sigma||`. FIXED: both dimensions judge the
+   raw `||Ms Sigma Ms' - Sigma||_F` against `c rho_M1 cond(U) max(1,
+   ||Sigma||)`; the (K14) identity is reported, not judged (F3 step 10).
+2. **T2 (theory, major).** A coasting map had NO physical transverse optics
+   (normalizer, beta, alpha, gamma, projectors, covariances all
+   `:unit_eigenvalue` while the frame was unique) and the test pinned it.
+   FIXED: the frame's rows on M_rr are back-transformed with the two
+   transverse factors; `PhysicalOptics` documents the shapes; the Coasting
+   testset asserts the rows against `analyze(scaling = :none, M_rr)`.
+3. **T3 (theory, major).** The physical normalizer `C^-1 U~` was not
+   scaling-invariant: the frame carried LAPACK's phases (1.9 / 1.8 rad) and
+   the Scaling testset sidestepped the row. FIXED in `_eigenmodes_4d`:
+   `_rephase_mode` (theory 6.2, `_PHASE_REFERENCE_FLOOR = sqrt(eps)`); the
+   row is now pinned (D1: invariant to 2.5e-12 relative on all 11 fixtures).
+   Two stage 2 bitwise identities broke on the first run (the arrays were
+   computed from the unrephased vectors) and were made bitwise on the stored
+   vectors.
+4. **T4 (theory, major).** A tune certified the nearest eigenvalue with no
+   nearness check (2.5 and 3.0 certified eigenvalue 3 at chords 1.47 /
+   1.76). FIXED: the half-gap / `_TUNE_CHORD_FLOOR_MULTIPLIER rho_M1` guard,
+   `tune_chords` in the selection diagnostic, ArgumentError naming the
+   tunes; the Dense 6D testset refuses 2.5 and 3.0 and pins the exact tune's
+   chords.
+5. **T5 (theory, major).** The F4 acceptance kappas were cond(U) where the
+   compared residuals scale with rho alone (cond(U) up to 1050 on the
+   review's 26 fixtures loosened the (I1) rows). FIXED partly: the two
+   reconstruction rows at kappa = 1; the symplecticity rows keep cond(U);
+   the (E7) kappa carried (D1 measured both; see F4 and "Carried forward").
+6. **T6 (theory, minor).** The closed-orbit residual was judged in physical
+   coordinates. FIXED: scaled norm, scaled default atol, "(scaled
+   coordinates)" in the error text.
+7. **T7 (theory, minor).** The coasting test runs inside `_dispersion_routes`,
+   after clustering (the stage 3 / 4a record says "first"). DOCUMENTED in
+   the driver's docstring, not reordered (no failing case justifies moving a
+   stage 4a kernel call); this section states the order.
+8. **T8 (theory, minor) + F-4 (repo, minor).** `dispersion_routes` stays
+   `:resolved` on a blocked bunched map against the design's Certification
+   paragraph; `_analysis_configuration` took a `dispersion_available` it
+   never read. FIXED as an AMENDMENT (F6): the parameter removed, the
+   docstring records why the option is read.
+9. **T9 (theory, minor).** The `longitudinal_mode` meaning overstated (K12).
+   FIXED (the wording in the reworded table).
+10. **F-2 (repo, major).** The `clusters` receipt recorded the marker
+    `:explicit`, so the contract passed when the consumer IGNORED the
+    partition (shown by injection: contract green, suite red). FIXED: the
+    receipt carries the partition read; the probe compares it,
+    `partition_source` and the members.
+11. **F-1 (repo, minor).** Knowledge.jl:556 placeholder-only checklist line.
+    FIXED (reworded table).
+12. **F-3 (repo, minor) = R2 (runner).** A reachable NaN in the uncertified
+    selection string when the labels are undetermined (the repeated-betatron
+    map printed "signed z-area NaN"). FIXED: the string names the labels'
+    reason; no NaN literal remains in the two new files.
+13. **Tests 1 (major).** `newton_max_iterations` had no effective test
+    anywhere (`0 <= used <= 7` with a cap the map never reached). FIXED:
+    cap 3 binds in the suite and the contract (`used_alt <= cap <
+    used_default`).
+14. **Tests 2 (major).** Eight of the contract's fourteen option probes could
+    not fail when the consumer ignored the option (echoed receipt fields;
+    fixtures where neither branch fires). FIXED: the branch-output
+    observables, the `repeated` and `displaced` fixtures, the four branch
+    probes (F9); metrics 15 -> 19 probes, 29 -> 32 receipts, 11 -> 15 moved.
+15. **Tests 3 (major).** "U_6 reconstruction", "U_6 symplecticity" and the
+    covariance closure were unjudged by any test. FIXED: every
+    `_VERDICT_RESIDUALS` name bumped and shown failing by name; the four
+    reported-only names bumped and shown `:passed`.
+16. **Tests 4 (major).** The `preferred_form` `:form_inadmissible` path was
+    never driven through `analyze`. FIXED on the detuned FODO 4x4.
+17. **Tests 5 (major).** The "another branch" degradation was unpinned (three
+    escapes ending in `|| rc.status === :passed`). FIXED: exactly one
+    degradation naming "another invariant plane" and `:newton`.
+18. **Tests 6 (minor).** No positive "label tie" fixture. FIXED: the
+    prescribed h = 1/2 map (degraded under the heuristic, not under the tune).
+19. **Tests 7 (minor).** The "nearest `exp(-i mu_s)`" convention is
+    unobservable (index and partner map to one oriented mode). FIXED
+    (docstring): `selected` is the oriented canonical index; no sign test owed.
+20. **Tests 8 (minor).** Two contract docstrings claimed the flag fires and
+    the frame fails on the failing fixture. FIXED: the strict probe runs at
+    rtol 1e-9 and both docstrings name the (K5) separation.
+21. **Tests 9 (minor).** The test-side 64s of the block were unmeasured.
+    RECORDED, not tightened: prescribed h 0.052, zeta 4.08, eta 0.31, graph
+    1.23 of 64 eps kappa; tune and angle exactly 0; dense eigenvector
+    residual 0.13 of 64 rho cond(U), `|u' S u + 2i|` 0.73, closure 0.10 of
+    64; the Scaling `c` left to D1 (moved 256 -> 2048 by the window).
+22. **R1 (runner, minor).** The git-ignored stage 1 scratch runner still
+    asserted "no analyze" (1615 / 3 FAIL). FIXED: rewritten to the stage 4
+    truth, 1618 / 1618.
+23. **R3 (runner, minor).** Bookkeeping in the integrator's report (line
+    counts, 0-based tripwire ranges). RECORDED in the fixer's section 3; this
+    record uses the final counts.
+24. **R4 (runner, minor).** A leaked `@warn` from the `:warn` receipt probe.
+    FIXED with `@test_logs`; 0 "Warning" lines in A's runner log.
+25. **Integrator (before the review).** Two `Core.Box` sites, the stale stage
+    2 claim at 1541, two stale skeleton docstrings (`_analysis_covariance`'s
+    3-tuple, `_analysis_verdict`'s keywords), the `point` default in the
+    `analyze` docstring, the `dispersion_routes` meaning string, the lenient
+    `r.passed || occursin("threw", ...)` assertion tightened. All fixed at
+    integration.
+26. **Fixer (own).** A third `Core.Box` in `_analysis_6d` after T4 (a
+    once-assigned `nearest`); two of the fixer's own new assertions corrected
+    on the first run (the closure tolerance factor; M_rr in scaled
+    coordinates).
+
+### Derived windows (D1; rule: largest must-accept ratio below one tenth of `c`, smallest must-reject above ten times `c`, the trace gap reversed; ratios at multiplier 1 in scaled coordinates; arithmetic in section 2 of the tables below)
+
+Fixtures (all built by the suite's `_st4b_a_` helpers extracted from
+`test/runtests.jl` by name at run time, names printed by the builders): 25
+dense 6D seeds 20260911-20260935 (certified by the heuristic's own index
+passed back as an Int; 4 of them `:degraded` by an "another branch" Newton
+flag), the dense map at four emittance scales, its linearized form, its
+explicit conjugate-pair partition, 8 dense 4x4 seeds, 4 coupled 4x4 maps
+(two prescribed tunes under an x-y rotation, including theta = pi/4 - 1e-3
+where the block traces nearly coincide), 3 coasting maps (shear 0.3, 0,
+-1.7), the DBA and FODO cells, 5 prescribed-h maps (h = 0.05, -1, 2, 0.3,
+0.9, tune 0.94); the fixtures a defect can act on: the dense map plus random
+perturbations 1e-6 to 1e-14 (rtol 1e3 x scale, `:flag`), two perturbed 4x4
+maps, the near-degenerate coupled ladder R(0.5) (+) R(0.5 + delta), the stage
+4a reason fixtures (repeated, indefinite, hyperbolic, shear-unit, singular
+projection, hyperbolic and shear 4x4). Labelling criterion as in stage 4a:
+must-accept when the guarded quantity is the correct object at the map's
+roundoff or the suite pins its acceptance; must-reject when the object is
+wrong by construction (a displaced expansion point, a hyperbolic pair, a
+midpoint tune, a row left in scaled coordinates); everything else UNLABELLED
+and reported without constraining the window.
+
+| constant (file:line) | value | accepted extreme (fixture) | rejected extreme (fixture) | window | inside |
+|---|---|---|---|---|---|
+| `_FRAME_ACCEPTANCE_MULTIPLIER` (twiss_dispersion_analysis.jl:64) | 64 | 4.44 = (I1)/rho_M1 (dense 6D seed 20260932); (E7)/(rho_M1 cond U_4) 3.90 (seed 20260919); 108 accepted rows | none on the table (28 unlabelled; see the next subsection) | [44.4, open) | yes |
+| the (E7) row under the review's resolution kappa `cond(U_4) ||U_4||^2 / chord_min` (reported only, not a source constant) | (64) | 1.56 (coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.784398); the ladder 0.13-0.83 | none | [15.6, open) | yes |
+| `_NORMALIZER_ACCEPTANCE_MULTIPLIER` (:80) | 64 | 6.39 = U_6 symplecticity/(rho_M1 cond U_6) (seed 20260919); reconstruction/rho_M1 4.45 (seed 20260932); 74 rows | none | [63.9, open) | yes, the tightest edge (one adverse seed would put 64 below; 128 next) |
+| `_COVARIANCE_ACCEPTANCE_MULTIPLIER` (:102) | 64 | 0.165 = closure/(rho_M1 cond U max(1, ||Sigma||)) (seed 20260911 at emittances (1, 1, 1)); the (K14) identity reported <= 0.036; 49 rows | none | [1.65, open) | yes |
+| `_TRACE_GAP_MULTIPLIER` (:121) | 64 | 2.49e11 = |tau_+ - tau_-|/(rho_M1 max(1, ||M_4||)) (FODO cell (kq = 1.6, detune 1e-3) tuple; accepted must EXCEED 10 c); the coupled map at theta = pi/4 - 1e-3 keeps its closed form (4.3e12: the guard compares MODE traces, not block traces) | none: equal mode traces mean coincident eigenvalues and no frame, so no resolved frame must be refused; the ladder's closed form is `:singular_coefficient` at delta 1e-11 (5.4e3) and available at 1e-9 (5.4e5) | [0, 2.49e10] | yes |
+| `_STABILITY_ATOL_MULTIPLIER` (:136) | 64 | 5.04 = max|1 - abs(lambda)|/rho_M1 (seed 20260932); 54 rows | 7.47e5 (shear unit pair with crab dispersion: its computed unit eigenvalues split by 7.5e5 rho_M1); the hyperbolic pairs ~1e15 | [50.4, 7.47e4] | yes |
+| `_CLOSED_ORBIT_ATOL_MULTIPLIER` (:155) | 64 | 0.068 = scaled residual/(eps max(1, max abs(C p))) (DBA cell (kf = 1.5, kd = -1.1, h = 0.2) at the origin; raw 2.3e-17, scaled 1.5e-17; the FODO and the linear maps at the origin are exactly 0) | 3.48e6 (FODO + thin sextupole (kn3 = 8) expanded at x = 1e-9); every displaced point from x = 1e-3 down to 1e-9 refused under `:require` and degraded with one warning under `:warn`; boundary: x = 1e-12 refused (3.5e3), 1e-14 accepted (35), 1e-16 accepted (0.35), unlabelled | [0.68, 3.48e5] | yes |
+| `_TUNE_CHORD_FLOOR_MULTIPLIER` (:177) | 64 | 2.60 = chord/rho_M1 (indefinite diag(R(0.73), R(1.41), R(-0.73)), degenerate tune 0.73 + 16 eps; the floor decides only on a degenerate pair, runner-up 3.5e-15); exact tunes accepted by the half-gap rule at chords <= 4.6e-13 against runner-ups >= 0.108 | 2.19e13 (dense 6D seed 20260911, midpoint tune 0.168766); 2.5 and 3.0 refused; degenerate offsets 1e-12 and 1e-10 refused (6.1e2, 6.1e4; boundary, unlabelled) | [26.0, 2.19e12] | yes |
+| test-side Scaling `c` (test/runtests.jl 5609-5616, kappa `cond(U) max(1, ||M||)^2`) | 256 -> 2048 | 110.7 (dense 6D seed 20260912 under `:auto`, row alpha; 332 rows over 11 fixtures x {`:auto`, explicit}); the fixer's 109.2 on the suite's three fixtures (beta, coasting) agrees | none (the testset has no rejected fixture) | [1107, open) | 256 was OUTSIDE (below); 2048 inside |
+| `_ANALYSIS_CONTRACT_FIXED_MULTIPLIER` (analysis_effectiveness.jl:246, `max_i abs(dx_i)/(eps cond(M) max(1, abs(x_i)))`) | 64 -> 1024 | 88.4 (dense 6D seed 20260911 under (1.7, 0.4, 3.1), row zeta); 84.8 (prescribed h = 0.05 under `:auto`); 76 rows | 1.93e14 (DBA cell at delta = 0, the eta row left in scaled coordinates; 14 rejected rows; the zero zeta rows of the coasting maps cannot show the defect and are unlabelled) | [884, 1.93e13] | 64 was OUTSIDE (below); 1024 inside |
+| `_PHASE_REFERENCE_FLOOR` (eigenmodes_4d.jl:465, the fixer's T3 floor) | sqrt(eps) | not measured by D1 (the zero-projection fixtures of stage 2 have `u_1x = 0` exactly; no stage 2-4b fixture lies between 0 and the floor) | - | - | recorded, not windowed |
+
+The contract's own scaling probe runs `:auto` on the dense fixture only,
+where the ratio is 6.33, which is why it passed at 64; the window is set by
+the explicit tuple on the same map (88.4) and by the prescribed map under
+`:auto` (84.8). The contract does not probe scaling on the coasting form
+(the integrator's ratio 5182 there was the eta row's separation kappa; D1's
+row-by-row kappa gives 110.7 at most on every form).
+
+Scaling invariance (table section 4, 354 rows): every `PhysicalOptics` row
+invariant under `:auto` and an explicit tuple relative to `:none` at <=
+5.1e-12 relative (zeta 6.0e-14, eta 5.1e-14, h 2.6e-14, graph 1.6e-13, tunes
+1.3e-14, normalizer 2.5e-12, beta / alpha / gamma 5.1e-12, edwards_teng_R
+3.9e-14, P_1..P_3 <= 1.0e-13, G_1 1.9e-14, G_2 5.1e-12, G_3 1.4e-12,
+covariance 3.7e-17); the 1e-12 rows sit on the coasting map (shear 0.3)
+under `:auto`, whose transverse rows pass through the barred coordinates,
+and on seed 20260912's G_3; unavailable rows carry the same reason under
+every scaling (22 rows). Receipt completeness: 56 / 56 cells (the option
+table above).
+
+### The rejected side: what the acceptances CAN and CANNOT refuse (D1, table section 1)
+
+- **Symplectic defects are folded, not rejected.** The dossier's fixture
+  table expected the dense map + 1e-6 (rtol 1e-3, `:flag`) to be `:failed`
+  BY THE FRAME RESIDUAL. It is not, and cannot be: `rho_M0 =
+  _perturbation_scale(Ms, frobenius; ...)` folds the Frobenius defect, so the
+  perturbed map has rho_M1 = 4.85e-6 and (I1)/rho_M1 = 0.31, (E7)/(rho_M1
+  cond U_4) = 0.90, well inside the acceptance. It FAILS through the (K5)
+  canonical separation (`:not_invariant`, "the off-diagonal blocks of
+  M_cal^-1 M M_cal exceed their tolerance", a stage 4a constant) at every
+  perturbation from 1e-6 down to 1e-12 and passes at 1e-14. The perturbed
+  4x4 maps (rtol 1e3 x scale, the defect accepted) PASS entirely: no 4x4
+  check acts on a symplectic defect within the declared tolerance. The
+  frame, normalizer and covariance acceptances therefore have NO must-reject
+  fixture on the table; their windows are open above and the constants are
+  justified by the accepted side alone (the fixer's docstrings said so; D1
+  confirmed; the frame-triple verdict is exercised by bumped triples in the
+  Verdict testset and by injection d07).
+- **What the frame acceptance DOES reject is a resolved near-degenerate
+  frame.** The coupled ladder R(0.5) (+) R(0.5 + delta) rotated by 0.3 forms
+  a resolved frame with cond(U_4) = 1.000 at every delta from 1e-3 to 1e-11,
+  and its (E7)/(rho_M1 cond U_4) is 8.3e2 (delta 1e-3), 3.5e4 (1e-5), 1.25e6
+  (1e-7), 3.1e8 (1e-9), 1.25e10 (1e-11): the residual is eps/delta, the
+  first-order mixing of two nearly degenerate eigenvectors, which cond(U_4)
+  does not see. The analysis returns `:failed` (`strict = true` throws) for
+  a resolved 4x4 map whose tunes differ by 1e-3 rad/turn. Under the theory
+  review's resolution kappa `cond(U_4) ||U_4||^2 / chord_min` (chord_min the
+  smallest chord between the two modes' eigenvalue pairs) the same rows read
+  0.83, 0.35, 0.13, 0.31, 0.13 and the accepted extreme over the 54
+  must-pass frames is 1.56 (window [15.6, open)): that kappa makes the (E7)
+  acceptance a check of the eigen-solve alone and leaves rejection to the
+  cluster resolution (delta = 1e-13 gives no frame). The ladder rows are
+  UNLABELLED on the table (both columns reported); the kappa is a design
+  (F4) choice carried to stage 5.
+- **Stability.** The shear unit pair with crab dispersion (not coasting) is
+  refused at 7.47e5 rho_M1 (its computed unit eigenvalues split by roundoff
+  times 7.5e5), the hyperbolic pairs at ~1e15; the largest stable departure
+  is 5.04 rho_M1: a factor 1.5e5 between the sides, 64 near the low edge
+  (50.4) but inside.
+- **Closed orbit.** The displaced expansion points x = 1e-3 .. 1e-9 on the
+  FODO + sextupole cell and on the linear map are refused (ratios 3.48e6 and
+  above); x = 1e-12 is still refused (3.5e3), 1e-14 and 1e-16 accepted (35,
+  0.35): the constant separates a roundoff-level residual from any
+  displacement above 1e-12 on these cells.
+- **Tune guard.** Midpoint tunes (chord/rho_M1 >= 2.19e13), 2.5 and 3.0 are
+  refused by the half-gap rule on every non-degenerate map; the floor decides
+  only on the repeated-betatron and indefinite maps, where tune + 4 eps and +
+  16 eps are accepted (0.41-2.60) and + 1e-12, + 1e-10 refused (6.1e2,
+  6.1e4).
+- **The contract's fixed test.** The DBA cell's eta row left in scaled
+  coordinates (a real back-transformation defect, injection d05's shape) is
+  rejected at 1.93e14 of eps cond(M); the 14 rejected rows are the non-zero
+  rows of the coasting cells and the dense map under the explicit tuple; the
+  zero zeta rows cannot show the defect and are unlabelled.
+
+### Injected defects, each shown red once (script mode on a patched copy of `src/` or of the block; harnesses under OUT: `inject_all_4bA.sh`, `inject_all_4b_B.sh`, `int/inj_guard/`, `review4b_tests/`, `review4b_runner/inj/`, `fixer4b/inj/`)
+
+The dossier's seven Part A defects and eight Part B defects were run by the
+parts on their worktrees (baselines 733 and 258 in script mode); the test
+review ran 25 defects on the INTEGRATED source against the assembled block
+(baseline 993) AND the real contract; the runner review ran two on the main
+tree plus the tree guard; the fixer ran nine after the review fixes
+(baseline 1069 for the block) to show the new sensors bite; the integrator
+showed the stage guard red. Where a defect was GREEN it became a finding
+(the "Review findings" list) and a sensor was added; the fixer's batch shows
+those sensors red.
+
+| id (harness) | defect (one textual replacement) | result |
+|---|---|---|
+| d1_receipt_echo (A) = d01 (tests) | the cluster receipt says `clusters = :auto` regardless of the partition read | A 732 / 1 FAIL; tests: suite 989 / 4, contract RED "no analysis_cluster_resolution receipt carries the alternative" |
+| d2_strict_inverted (A) = d02 | `strict` negated in the throw | A 710 / 2 errors; suite 967 / 3 / 2 err, contract RED "strict = true ... did not throw OpticsAnalysisError" |
+| d3_orbit_receipt_bare (A) = d03 | `:analysis_closed_orbit` receipt on a bare matrix | A 730 / 3 / 1 err; suite 987 / 6 / 1 err, contract RED "closed_orbit is inactive on the matrix fixture yet ... issued a receipt" |
+| d4_inactive_status (A) = d04 | `:inactive` instead of `:inactive_dependency` | A 704 / 29; suite 961 / 32, contract RED "stale exemption" |
+| d5_zeta_row_skipped (A) = d05 | physical zeta copied unscaled | A 729 / 4; suite 986 / 7, contract RED "scaling: ... ratio 2.0e14 (bound 64.0)" |
+| d6_form_ignored (A) = d06 = pref (runner) | an Int `preferred_form` presents form 1 | A 729 / 4; suite 986 / 7, contract RED "preferred_form: the controlled observable did NOT move"; runner on the main tree: contract passed = false in 40.8 s, A's runner 728 / 5 |
+| d7_verdict_skips_frame (A) = d07 | the verdict skips the two frame triples | A 731 / 2; suite 991 / 2 (the bumped triples); contract GREEN as expected (no fixture fails end-to-end by a frame residual) |
+| d08_heuristic_degradation_removed (tests) | the uncertified-selection degradation not pushed | suite 985 / 6 / 2 err; contract GREEN (it never reads a verdict on the default run) |
+| d09_tune_plus_sign (tests) | `exp(-i mu_s)` -> `exp(+i mu_s)` | GREEN everywhere: unobservable (index and partner map to one oriented mode); tests finding 7, docstring fixed |
+| d10_orbit_atol_ignored (tests) | the atol option ignored (default always) | suite 985 / 0 / 1 err (`closed_orbit_atol = 1.0` throws); contract GREEN -> finding 2; the fixer's `displaced` branch probe now reads `action = :accepted` at atol 1.0 |
+| d11_newton_cap_ignored (tests) = i01 (fixer) | `newton_max_iterations = 50` regardless | GREEN in suite AND contract at the review (finding 1); after the fix: contract passed = false, block 1066 / 5 |
+| d12_chord_ignored (tests) = i08 (fixer) | `resolution_chord = _DEFAULT_RESOLUTION_CHORD` regardless | suite 988 / 5, contract GREEN (Inf forces nothing on the dense fixture) -> finding 2; after the fix (the `repeated` probe): contract passed = false, block 1062 / 9 |
+| d13_rtol_value_ignored (tests) = i06 (fixer) | `accepted = defect.frobenius <= 1.0` (the rule still flips) | suite 990 / 3, contract GREEN -> finding 2; after the fix: contract passed = false, block 1065 / 6 |
+| d14_int_index_ignored (tests) | an Int `longitudinal_mode` passes `longitudinal = nothing` but `certified = true` | suite 991 / 2, contract GREEN (the heuristic picks the alternative's index) -> finding 2; the probe now reads `rule === :explicit` |
+| d15_warn_removed (tests) | the `@warn` guarded by `false &&` | suite 992 / 1 (`@test_logs`); contract GREEN (residual 0 on the linearized fixture) -> the `displaced` fixture |
+| d16_map_uncertainty_ignored (tests) | `user_uncertainty = 0.0` regardless | suite 987 / 6, contract RED "map_uncertainty: ... did NOT move" |
+| d17_nonsymplectic_ignored (tests) | `:flag` treated as `:error` | suite 972 / 1 (Verdict aborted); contract GREEN (the failing fixture accepted at rtol 1e-3) -> the strict probe at 1e-9 and the `:flag` branch probe |
+| d18_closed_orbit_ignored (tests) = i07 (fixer) | `:warn` treated as `:require` | suite 981 / 4; contract GREEN (residual 0) -> `displaced`; after the fix: contract passed = false, block 1062 / 4 / 5 err |
+| d19_scaling_ignored_echo (tests) | `:none` computes with the `:auto` factors while the receipt echoes `mode = :none` | suite 989 / 4; contract GREEN (a no-op scaling leaves the physics fixed) -> the probe reads `mode`, `factors`, `matrix_scaled` |
+| d20_inadmissible_form_presented (tests) = i09 (fixer) | an inadmissible Int form presented | GREEN at the review (finding 4); after the 4x4 fixture: block 1068 / 3 |
+| d21_verdict_drops_covariance (tests) = i03 (fixer), d22_verdict_drops_U6 | a name removed from `_VERDICT_RESIDUALS` | GREEN at the review (finding 3); after the bump loop: block 1069 / 1 (contract green, expected) |
+| d23_routes_ignored (tests) | `routes = DISPERSION_ROUTES` regardless | suite 984 / 9, contract RED "dispersion_routes: ... did NOT move" |
+| d29_tie_degradation_removed (tests) | the "label tie" degradation never pushed | GREEN at the review (finding 6); the h = 1/2 fixture now pins it |
+| d31_another_branch_degradation_removed (tests) = i05 (fixer) | the "another invariant plane" degradation never pushed | GREEN at the review (finding 5); after the fix: block 1069 / 2 |
+| i02 (fixer) | the partition ignored (`partition = nothing`) | contract passed = false, block 1065 / 6 (the F-2 fix's sensor) |
+| i04 (fixer) | the tune guard removed (`if false`) | block 1069 / 2 |
+| any_consumer, matcher_ignores_value (B) | the receipt matcher drops the consumer test / returns true on key presence | 256 / 2 each (the matcher tests and the wrong-consumer / echoed-option plumbing probes) |
+| alt_equals_default (B) | `:strict => true` in the alternatives | 248 / 10 ("alternative equals the default") |
+| no_stale_check (B) | `if status !== :inactive_dependency` -> `if false` | 256 / 2 (stale exemption not detected; a report calling an inactive option resolved accepted) |
+| block_default_drift, block_missing_consumer, block_key_mismatch (B) | the schema default of `strict` false / `scaling` without `consumer` / key `strict` renamed | 243 / 14 / 1, 234 / 23 / 1, 221 / 25 / 3: `validate_configuration_metadata` throws the block's message each time |
+| guard_removed (B); fake analysis (runner) | the tree guard loop over `()`; a concrete `_RvFakeAnalysis` evaluated into the module | 257 / 1 (the guard text pinned in the source; no stray analysis exists to trip it live); the live guard: `validate_configuration_metadata()` THROWS naming the fake type, the contract returns passed = false |
+| strict receipt dropped (runner) | `_record_execution!(:analysis_strictness, ...)` commented out | contract passed = false "no analysis_strictness receipt carries the default true on the matrix fixture" |
+| export dropped (integrator) | `TwissDispersionAnalysis` removed from the export list | the stage guard 45 passed / 4 errored (`UndefVarError`) |
+
+Tally: 7 (A) + 8 (B) + 25 (tests) + 3 (runner) + 9 (fixer) + 1 (integrator)
+= 53 injection runs over 38 distinct defects (the overlaps are named in the id column); every defect is red in at
+least one harness on the final source except d09 (unobservable by
+construction, documented). Eight defects GREEN at the review became
+findings 1-6 and the two docstring findings; the fixer's batch shows each
+new sensor red.
+
+### Not verified in stage 4b
+
+- No lane and no gate ran on this tree; every count above is standalone
+  (the extract of every analysis testset in both ForwardDiff arms, the four
+  tripwires, the runners, both contracts). One full gate on the assembled
+  stage 4 tree (4a + 4b) is owed before the push and is recorded in this
+  file when it runs. After the ledger edits of Part D2 (this section, the
+  todo row, the README sentences) the four suite tripwires were re-run in
+  package mode: 32 / 32 (Architecture integrity 28 incl. the docs index and
+  the snapshot comparison, Core.Box 2, exports 1, detached docstrings 1;
+  fallback arm, exit 0, 27.2 s after load;
+  `OUT/ledgers4b/run_tripwires_after_ledgers.log`).
+- The stacked-ForwardDiff extract arm and the nine fixer injections were
+  not re-run after D1's edits (two constant moves, one derived probe offset,
+  docstrings); the fixer's runs on the source one edit earlier stand
+  (108498 / 108498 and 134 / 134; 9 / 9 red).
+- A fixture the frame, U_6 or covariance acceptance MUST reject at c = 64:
+  none exists on the table (the rejected-side subsection); those three
+  windows are open above and the constants are justified by the accepted
+  side alone. The dossier's fixture-table line "near-non-symplectic ...
+  :failed by the frame residual" reads ":failed by the (K5) separation" in
+  the code, the tests and the docstrings.
+- The (E7) / U_6-symplecticity kappa: measured both ways (cond(U) and the
+  review's cond(U) ||U||^2 / chord_min), not changed; with the landed kappa
+  a resolved 4x4 frame with tunes 1e-3 apart is `:failed`. Carried.
+- `_NORMALIZER_ACCEPTANCE_MULTIPLIER` sits at 64 against a window low of
+  63.9 (U_6 symplecticity 6.39 on one of 25 dense seeds); a 26th adverse
+  seed would put it below the window; 128 is the next value if that
+  happens. Not moved: the rule holds on the measured table.
+- The contracts' timings were taken in three different states: a fresh
+  process (cold 38.6 s, the `analyze` compilation), a process where
+  `analyze` had compiled on the fixtures (3.78 s), and warm (0.20-0.36 s);
+  the public contract 59-79 s depending on the machine load (the runner
+  review ran it under a 10-process load). None is a benchmark.
+- `_PHASE_REFERENCE_FLOOR = sqrt(eps)` (the T3 fix) has no measured window:
+  no fixture lies between 0 and the floor.
+- `matched_covariance` returns a matrix symmetric to 4.8e-17 relative but
+  not bitwise (`issymmetric` false); no consumer wraps it in `Symmetric`.
+- The design note's body still describes the pre-landing state at lines 39,
+  232-233 and 505 (history by decision; only the status paragraph tracks
+  the landing); the stage 3 and 4a sections of this record say the coasting
+  test runs "first" (T7: it runs inside `_dispersion_routes`, after
+  clustering; this section states the order, the earlier sections are not
+  edited).
+- `validation/tracking_backend_consistency.jl` and `validation/lattice_cells.jl`
+  were not run (host matrix algebra only; nothing CUDA-reachable changed);
+  the DBA and FODO cells the tests use are built by the suite's own helpers.
+- The full `Pkg.test` lanes were never run by any part; the extract's
+  108498 assertions are the analysis testsets only (runtests.jl 270-6460
+  plus the four tripwire blocks and the stage 1 Part B block).
+- Nothing was committed or pushed; `docs/registry_snapshot.md` is the only
+  staged path (the integrator's `git add`); the two new source files are
+  untracked.
+
+### Carried forward to stage 5 (element declaration; this record edits neither note)
+
+1. **Element declaration and the two set tripwires (design Staging item
+   5).** Declare `TwissDispersionAnalysis` in the `analyses = [...]` field of
+   the linear-map element kinds (replacing the placeholder where it
+   applies), regenerate the snapshot, and turn the stage guard's "every
+   element still declares `[PlaceholderAnalysis]`" loop into the design's
+   two set tripwires (the declared set equals the derived set; every kind
+   with a one-turn map declares the analysis). The guide sentence "every
+   element registers the placeholder" then becomes a statement about a
+   mixed state (design 232-233) and Knowledge.jl:556's forward reference
+   resolves.
+2. **The (E7) / U_6-symplecticity kappa (F4, theory T5, D1).** Decide
+   between the landed `c rho_M1 cond(U)` (fails resolved frames whose tunes
+   differ by 1e-3 rad/turn: the coupled ladder, (E7) ratio 8.3e2 at cond(U_4)
+   = 1, growing as eps/(delta rho_M1)) and the review's resolution kappa
+   `cond(U) ||U||^2 / chord_min` (the ladder 0.13-0.83, accepted extreme
+   1.56, window [15.6, open)), or a `:degraded` rather than `:failed` verdict
+   for the symplecticity rows. D1 recommends the resolution kappa; the
+   numbers are in table section 1 (columns (E7), (E7)res). The same
+   question applies to "U_6 symplecticity".
+3. **A must-reject fixture for the frame, U_6 and covariance acceptances.**
+   The perturbed maps cannot serve (rho_M0 folds the defect); a fixture
+   whose FRAME is wrong at fixed rho (a hand-built U with a wrong column, a
+   Sigma that is not matched) would close the open edges of three windows
+   and give injection d07 an end-to-end twin.
+4. **`_NORMALIZER_ACCEPTANCE_MULTIPLIER` at the edge (63.9).** Re-measure
+   on the stage 5 fixtures (more dense seeds); 128 if the accepted extreme
+   crosses 6.4.
+5. **The presentation questions from stage 4a, still open.** The 6D
+   synchrotron tune reported in [0, 2pi) by the stage 4a normalizer (5.343
+   for `mu_s = -0.94`; a caller who certifies with `longitudinal_mode = 0.94`
+   is served); `matched_covariance` not bitwise symmetric (wrap in
+   `Symmetric` at the boundary if a consumer wants it); the rounding rule
+   for reported tunes.
+6. **Design paragraphs to reconcile in the note (a docs-only stage 5/6
+   item).** The Certification paragraph's inactivity list (`dispersion_routes`
+   is read on a blocked bunched map; `resolution_chord` is read under an
+   explicit partition); the option table's `longitudinal_mode` row (the tune
+   with its nearness guard; the oriented index in the receipt); the
+   pipeline's coasting-test position; the covariance row's closure
+   (raw, one normalization; (K14) reported). This record is the source; the
+   note's status paragraph points here.
+7. **Stage 6 prerequisites already in hand.** The physics identity contract
+   can read `diagnostics.residuals` (every acceptance a `(name, value,
+   tolerance)` triple) and the (K14) / (K7) / (K5) reported triples; the
+   executable example can be the script-mode smoke (dense map degraded ->
+   certified, `configuration_report`, `normal_mode`, `matched_covariance`).
+8. **Later stages, unchanged from 4a's list.** Seeding the iterative routes
+   on the selected branch (the "another branch" degradation is the symptom);
+   extending `kappa_route` by the coefficient condition (the diagnostics
+   print the condition); transport, scans, covariance-based mode selection,
+   a public closed-orbit finder; the `lattice_cells.jl` refactor (stage 7);
+   external benchmarks (stage 8).
+9. **Process items for the next dossier.** The fixture table's expectations
+   were wrong in four rows (repeated betatron, the wrong union, the solenoid
+   line, the frame-residual failure): derive the expected behaviour from a
+   probe before writing the row; the certification chain's "observable"
+   must be the branch's own output, never the echoed request (eight probes
+   were inert at the review); a test-side `c` needs the same one-tenth /
+   ten measurement as a source constant (two were below their windows).
+
+### Measurement tables (output of `measure_stage4b.jl` sections 1, 1a, 1b, 2, 3, 4 and 5, verbatim with its headings demoted; the file is `OUT/measure/measurement_table_4b.md`, 812 lines; the `NaN (-)` entries in the window summary are the table's own marker for a side with no labelled fixture, not a source value)
+
+#### Stage 4b measurement table (Part D1)
+
+Produced by measure_stage4b.jl (package mode, main tree). Julia 1.12.4; threads 4; seed 20260911; fixture helpers = the suite's `_st4b_a_` block extracted from test/runtests.jl by name at run time (81 lines). Every fixture name in this file is produced by the code that built the fixture; none is typed into the text.
+Source constants at run time: _FRAME_ACCEPTANCE_MULTIPLIER = 64.0, _NORMALIZER_ACCEPTANCE_MULTIPLIER = 64.0, _COVARIANCE_ACCEPTANCE_MULTIPLIER = 64.0, _TRACE_GAP_MULTIPLIER = 64.0, _STABILITY_ATOL_MULTIPLIER = 64.0, _CLOSED_ORBIT_ATOL_MULTIPLIER = 64.0, _TUNE_CHORD_FLOOR_MULTIPLIER = 64.0; test-side Scaling c = 2048.0 (read from runtests.jl); _ANALYSIS_CONTRACT_FIXED_MULTIPLIER = 1024.0.
+
+##### 1. Acceptance and guard ratios per fixture (scaled coordinates; every ratio is the guarded quantity over its floor at multiplier 1)
+
+Columns: (I1) = frame reconstruction / rho_M1; (E7) = frame symplecticity / (rho_M1 cond U_4); (E7)res = the same over cond(U_4) ||U_4||^2 / min inter-cluster chord (the theory review's proposed kappa, reported only); U6r = U_6 reconstruction / rho_M1; U6s = U_6 symplecticity / (rho_M1 cond U_6); closure = covariance closure / (rho_M1 cond U max(1, ||Sigma||)); (K14) = the reported identity over the same floor; gap = |tau_+ - tau_-| / (rho_M1 max(1, ||M_4||)); dep = max |1 - |lambda|| / rho_M1 of the frame (of the clusters where no frame forms).
+
+| fixture | status | rho_M1 | (I1) | (E7) | (E7)res | cond U_4 | U6r | U6s | cond U_6 | closure | (K14) | gap | dep | closed form | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| dense 6D seed 20260911 certified | passed | 2.461e-15 | 2.831e-01 | 3.226e-01 | 6.633e-02 | 3.462e+00 | 4.395e-01 | 3.042e-01 | 3.812e+00 | 8.107e-07 | 1.109e-03 | 1.068e+14 | 1.804e-01 | unique | - |
+| dense 6D seed 20260912 certified | passed | 1.702e-15 | 5.920e-01 | 6.869e-01 | 1.624e-01 | 2.458e+00 | 1.747e+00 | 1.678e-01 | 1.005e+01 | 1.144e-05 | 6.491e-03 | 1.618e+14 | 7.829e-01 | unique | - |
+| dense 6D seed 20260913 certified | passed | 1.777e-15 | 2.370e-01 | 1.242e+00 | 1.012e-01 | 1.691e+00 | 3.799e-01 | 8.158e-01 | 2.475e+00 | 8.312e-07 | 6.311e-03 | 8.921e+12 | 5.623e-01 | unique | - |
+| dense 6D seed 20260914 certified | passed | 2.401e-15 | 2.545e-01 | 4.907e-01 | 4.813e-02 | 3.128e+00 | 4.782e-01 | 3.890e-01 | 4.002e+00 | 1.271e-06 | 5.778e-03 | 4.052e+13 | 9.248e-02 | unique | - |
+| dense 6D seed 20260915 certified | degraded | 1.871e-15 | 4.289e-01 | 6.111e-01 | 6.037e-03 | 1.284e+01 | 5.923e-01 | 1.507e+00 | 5.143e+00 | 3.738e-07 | 1.836e-02 | 6.595e+12 | 3.561e-01 | unique | - |
+| dense 6D seed 20260916 certified | passed | 2.119e-15 | 4.830e-01 | 7.948e-01 | 2.109e-01 | 2.489e+00 | 1.218e+00 | 5.000e-01 | 4.078e+00 | 2.892e-06 | 0.000e+00 | 1.663e+14 | 4.191e-01 | unique | - |
+| dense 6D seed 20260917 certified | passed | 3.435e-15 | 3.014e-01 | 9.042e-02 | 3.913e-03 | 9.469e+00 | 5.206e-01 | 6.190e-02 | 1.500e+01 | 2.920e-07 | 2.155e-03 | 2.740e+13 | 2.909e-01 | unique | - |
+| dense 6D seed 20260918 certified | passed | 2.543e-15 | 2.054e-01 | 1.086e-01 | 2.894e-02 | 3.534e+00 | 9.158e-01 | 3.865e-02 | 1.034e+01 | 1.534e-06 | 2.112e-03 | 1.776e+14 | 1.746e-01 | unique | - |
+| dense 6D seed 20260919 certified | passed | 2.415e-15 | 3.151e-01 | 3.901e+00 | 3.963e-03 | 2.291e+01 | 4.140e-01 | 6.389e+00 | 1.398e+01 | 1.004e-07 | 5.053e-03 | 4.744e+11 | 4.138e-01 | unique | - |
+| dense 6D seed 20260920 certified | passed | 2.064e-15 | 5.039e-01 | 3.244e-01 | 6.083e-02 | 2.996e+00 | 5.845e-01 | 2.348e-01 | 4.223e+00 | 1.558e-06 | 3.185e-03 | 6.703e+13 | 1.291e+00 | unique | - |
+| dense 6D seed 20260921 certified | degraded | 2.321e-15 | 3.795e-01 | 1.012e+00 | 3.073e-02 | 5.681e+00 | 9.975e-01 | 1.819e-01 | 3.102e+01 | 1.671e-06 | 2.313e-03 | 1.741e+13 | 3.348e-01 | unique | - |
+| dense 6D seed 20260922 certified | passed | 2.518e-15 | 4.607e-01 | 6.497e-01 | 7.619e-02 | 3.496e+00 | 4.769e-01 | 4.450e-01 | 5.125e+00 | 4.420e-07 | 2.151e-03 | 4.066e+13 | 3.968e-01 | unique | - |
+| dense 6D seed 20260923 certified | passed | 2.237e-15 | 3.695e+00 | 2.650e-02 | 1.807e-04 | 9.512e+01 | 3.762e+00 | 2.406e-02 | 9.342e+01 | 2.645e-08 | 5.330e-04 | 7.364e+13 | 4.070e+00 | unique | - |
+| dense 6D seed 20260924 certified | passed | 1.869e-15 | 2.153e-01 | 2.384e-01 | 1.636e-02 | 4.946e+00 | 5.190e-01 | 2.457e-01 | 4.963e+00 | 1.295e-06 | 0.000e+00 | 5.105e+13 | 2.376e-01 | unique | - |
+| dense 6D seed 20260925 certified | passed | 2.164e-15 | 2.906e-01 | 5.485e-01 | 7.834e-02 | 3.286e+00 | 4.112e-01 | 1.942e-01 | 9.611e+00 | 9.644e-07 | 6.673e-04 | 5.439e+13 | 6.157e-01 | unique | - |
+| dense 6D seed 20260926 certified | degraded | 2.287e-15 | 4.718e-01 | 1.116e+00 | 2.413e-02 | 7.593e+00 | 5.591e-01 | 1.049e+00 | 8.043e+00 | 2.979e-07 | 0.000e+00 | 8.252e+12 | 2.912e-01 | unique | - |
+| dense 6D seed 20260927 certified | degraded | 2.200e-15 | 3.747e-01 | 2.800e-01 | 3.250e-03 | 1.471e+01 | 4.315e-01 | 2.025e-01 | 2.075e+01 | 9.621e-08 | 3.386e-03 | 7.793e+12 | 3.028e-01 | unique | - |
+| dense 6D seed 20260928 certified | passed | 2.053e-15 | 2.644e-01 | 1.619e-01 | 1.534e-02 | 8.259e+00 | 3.540e-01 | 2.073e-01 | 6.389e+00 | 4.948e-07 | 2.116e-03 | 1.590e+14 | 4.326e-01 | unique | - |
+| dense 6D seed 20260929 certified | passed | 1.919e-15 | 3.916e-01 | 9.337e-01 | 3.327e-02 | 6.177e+00 | 8.676e-01 | 4.639e-01 | 1.262e+01 | 3.639e-06 | 8.851e-04 | 2.051e+13 | 3.470e-01 | unique | - |
+| dense 6D seed 20260930 certified | passed | 2.319e-15 | 3.380e-01 | 2.469e-01 | 1.190e-02 | 1.168e+01 | 3.888e-01 | 3.705e-01 | 7.673e+00 | 3.180e-07 | 6.240e-03 | 6.000e+13 | 2.873e-01 | unique | - |
+| dense 6D seed 20260931 certified | passed | 2.272e-15 | 3.351e-01 | 1.242e+00 | 3.069e-02 | 5.862e+00 | 6.294e-01 | 1.582e+00 | 4.598e+00 | 1.059e-06 | 5.314e-03 | 1.496e+13 | 1.954e-01 | unique | - |
+| dense 6D seed 20260932 certified | passed | 1.984e-15 | 4.444e+00 | 2.849e-02 | 2.829e-05 | 3.792e+02 | 4.446e+00 | 2.182e-02 | 4.392e+02 | 1.902e-08 | 1.216e-03 | 3.494e+13 | 5.035e+00 | unique | - |
+| dense 6D seed 20260933 certified | passed | 3.798e-15 | 2.646e-01 | 6.777e-01 | 1.598e-02 | 6.428e+00 | 4.819e-01 | 6.055e-01 | 7.185e+00 | 4.560e-07 | 4.068e-03 | 4.936e+12 | 1.169e-01 | unique | - |
+| dense 6D seed 20260934 certified | passed | 1.711e-15 | 4.419e-01 | 6.107e-01 | 9.312e-02 | 3.089e+00 | 5.683e-01 | 1.064e+00 | 1.784e+00 | 1.922e-06 | 3.637e-02 | 1.002e+14 | 3.893e-01 | unique | - |
+| dense 6D seed 20260935 certified | passed | 2.306e-15 | 3.235e-01 | 4.782e-01 | 5.316e-02 | 2.540e+00 | 5.045e-01 | 3.525e-01 | 3.526e+00 | 1.367e-06 | 0.000e+00 | 3.788e+13 | 1.926e-01 | unique | - |
+| dense 6D seed 20260911 heuristic (degraded) | degraded | 2.461e-15 | 2.831e-01 | 3.226e-01 | 6.633e-02 | 3.462e+00 | 4.395e-01 | 3.042e-01 | 3.812e+00 | 8.107e-07 | 1.109e-03 | 1.068e+14 | 1.804e-01 | unique | - |
+| dense 6D seed 20260911 certified, emittances (1.0e-6, 1.0e-6, 1.0e-6) | passed | 2.461e-15 | 2.831e-01 | 3.226e-01 | 6.633e-02 | 3.462e+00 | 4.395e-01 | 3.042e-01 | 3.812e+00 | 7.585e-07 | 1.109e-03 | 1.068e+14 | 1.804e-01 | unique | - |
+| dense 6D seed 20260911 certified, emittances (1.0, 1.0, 1.0) | passed | 2.461e-15 | 2.831e-01 | 3.226e-01 | 6.633e-02 | 3.462e+00 | 4.395e-01 | 3.042e-01 | 3.812e+00 | 1.647e-01 | 1.109e-03 | 1.068e+14 | 1.804e-01 | unique | - |
+| dense 6D seed 20260911 certified, emittances (1000.0, 1000.0, 1000.0) | passed | 2.461e-15 | 2.831e-01 | 3.226e-01 | 6.633e-02 | 3.462e+00 | 4.395e-01 | 3.042e-01 | 3.812e+00 | 1.601e-01 | 1.109e-03 | 1.068e+14 | 1.804e-01 | unique | - |
+| dense 6D seed 20260911 certified, emittances (1.0e-12, 1.0e-9, 0.001) | passed | 2.461e-15 | 2.831e-01 | 3.226e-01 | 6.633e-02 | 3.462e+00 | 4.395e-01 | 3.042e-01 | 3.812e+00 | 2.693e-04 | 1.109e-03 | 1.068e+14 | 1.804e-01 | unique | - |
+| dense 6D seed 20260911 linearized (Linear6DSpec, complex step) | passed | 2.461e-15 | 3.361e-01 | 3.010e-01 | 6.188e-02 | 3.462e+00 | 5.019e-01 | 2.812e-01 | 3.812e+00 | 1.077e-06 | 3.698e-04 | 1.068e+14 | 2.707e-01 | unique | - |
+| dense 6D seed 20260911 explicit partition [[1,6],[2,5],[3,4]] (conjugate pairs of the clusters report) | passed | 2.461e-15 | 2.831e-01 | 3.226e-01 | 6.633e-02 | 3.462e+00 | 4.395e-01 | 3.042e-01 | 3.812e+00 | 8.107e-07 | 1.109e-03 | 1.068e+14 | 1.804e-01 | unique | - |
+| dense 4x4 seed 20260911 | passed | 1.269e-15 | 7.436e-01 | 2.553e-01 | 5.986e-03 | 3.032e+01 | - | - | - | 2.451e-09 | - | 1.920e+14 | 3.498e-01 | unique | - |
+| dense 4x4 seed 20260912 | passed | 1.493e-15 | 4.311e-01 | 1.202e+00 | 4.674e-02 | 4.637e+00 | - | - | - | 1.022e-09 | - | 2.607e+13 | 5.950e-01 | unique | - |
+| dense 4x4 seed 20260913 | passed | 1.930e-15 | 4.757e-01 | 5.229e-01 | 1.879e-02 | 7.964e+00 | - | - | - | 1.360e-09 | - | 2.985e+13 | 3.452e-01 | unique | - |
+| dense 4x4 seed 20260914 | passed | 1.741e-15 | 3.203e-01 | 1.701e-01 | 4.124e-03 | 1.430e+01 | - | - | - | 5.131e-10 | - | 3.109e+13 | 4.464e-01 | unique | - |
+| dense 4x4 seed 20260915 | passed | 1.269e-15 | 5.393e-01 | 5.532e-01 | 3.565e-02 | 5.744e+00 | - | - | - | 1.439e-09 | - | 5.651e+13 | 1.749e-01 | unique | - |
+| dense 4x4 seed 20260916 | passed | 1.450e-15 | 1.195e+00 | 2.761e-01 | 1.366e-02 | 1.070e+01 | - | - | - | 2.627e-09 | - | 9.302e+13 | 4.594e-01 | unique | - |
+| dense 4x4 seed 20260917 | passed | 1.231e-15 | 5.783e-01 | 1.445e-01 | 5.292e-03 | 2.361e+01 | - | - | - | 8.403e-10 | - | 2.909e+14 | 8.120e-01 | unique | - |
+| dense 4x4 seed 20260918 | passed | 1.285e-15 | 5.842e-01 | 6.217e-01 | 8.083e-02 | 3.384e+00 | - | - | - | 9.726e-10 | - | 8.992e+13 | 3.457e-01 | unique | - |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | passed | 1.243e-15 | 5.714e-01 | 1.211e+00 | 8.308e-01 | 1.000e+00 | - | - | - | 1.931e-09 | - | 4.145e+14 | 7.145e-01 | unique | - |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.784398 | passed | 9.977e-16 | 8.159e-01 | 2.279e+00 | 1.563e+00 | 1.000e+00 | - | - | - | 4.079e-09 | - | 5.164e+14 | 4.451e-01 | unique | - |
+| coupled 4x4 R(2.9) (+) R(0.1) rotated by 1.1 | passed | 8.882e-16 | 7.365e-01 | 6.895e-01 | 1.359e+00 | 1.000e+00 | - | - | - | 4.376e-09 | - | 2.213e+15 | 7.500e-01 | unique | - |
+| coupled 4x4 R(0.31) (+) R(0.7) rotated by 0.0 | passed | 8.882e-16 | 6.250e-02 | 3.536e-01 | 1.370e-01 | 1.000e+00 | - | - | - | 7.132e-10 | - | 2.111e+14 | 5.000e-01 | unique | - |
+| coasting shear s = 0.3 (stage 4a builder, seed 20260911) | passed | 1.706e-15 | 1.016e+00 | 1.786e-01 | 5.654e-04 | 6.768e+01 | - | - | - | - | - | 1.338e+13 | 1.301e+00 | unique | - |
+| coasting shear s = 0.0 (stage 4a builder, seed 20260911) | passed | 1.690e-15 | 1.026e+00 | 1.803e-01 | 5.709e-04 | 6.768e+01 | - | - | - | - | - | 1.351e+13 | 1.314e+00 | unique | - |
+| coasting shear s = -1.7 (stage 4a builder, seed 20260911) | passed | 2.024e-15 | 8.562e-01 | 1.505e-01 | 4.766e-04 | 6.768e+01 | - | - | - | - | - | 1.128e+13 | 1.097e+00 | unique | - |
+| DBA cell (kf = 1.5, kd = -1.1, h = 0.2) at delta = 0 | passed | 9.957e-15 | 6.895e-02 | 2.106e-03 | 1.808e-05 | 7.487e+00 | - | - | - | - | - | 1.688e+12 | 4.460e-02 | unique | - |
+| FODO cell (kq = 1.6, detune 1e-3) tuple | passed | 3.311e-15 | 1.462e-01 | 2.675e-02 | 1.690e-05 | 3.582e+00 | - | - | - | - | - | 2.489e+11 | 1.341e-01 | unique | - |
+| prescribed h = 0.05 (zeta = [1.0, 0.2, 0.1, 0.0], eta = [0.0, 0.95, 0.0, 0.0]), tune 0.94 | degraded | 2.290e-15 | 1.256e-01 | 1.460e-01 | 9.228e-02 | 1.667e+00 | 2.878e-01 | 6.432e-02 | 4.096e+00 | 6.521e-07 | 1.184e-02 | 4.067e+14 | 2.909e-01 | unique | - |
+| prescribed h = -1.0 (zeta = [1.0, 0.2, 0.1, 0.0], eta = [0.0, 2.0, 0.0, 0.0]), tune 0.94 | degraded | 2.906e-15 | 1.379e-01 | 5.844e-02 | 1.379e-02 | 4.467e+00 | 3.358e-01 | 2.818e-02 | 1.191e+01 | 7.775e-07 | 5.288e-03 | 2.099e+14 | 7.642e-02 | unique | - |
+| prescribed h = 2.0 (zeta = [1.0, 0.2, 0.1, 0.0], eta = [0.0, -1.0, 0.0, 0.0]), tune 0.94 | passed | 2.986e-15 | 1.872e-01 | 2.373e-01 | 2.037e-01 | 1.228e+00 | 6.197e-01 | 2.192e-02 | 1.395e+01 | 1.980e-06 | 0.000e+00 | 3.246e+14 | 1.487e-01 | unique | - |
+| prescribed h = 0.3 (zeta = [1.0, 0.2, 0.1, 0.0], eta = [0.0, 0.7, 0.0, 0.0]), tune 0.94 | degraded | 2.495e-15 | 9.568e-02 | 6.368e-02 | 4.321e-02 | 1.553e+00 | 2.371e-01 | 4.781e-02 | 3.180e+00 | 4.686e-07 | 3.450e-34 | 3.780e+14 | 8.900e-02 | unique | - |
+| prescribed h = 0.9 (zeta = [1.0, 0.2, 0.1, 0.0], eta = [0.0, 0.09999999999999998, 0.0, 0.0]), tune 0.94 | passed | 2.349e-15 | 1.870e-01 | 2.302e-01 | 1.864e-01 | 1.301e+00 | 2.889e-01 | 9.128e-02 | 3.427e+00 | 8.437e-07 | 2.155e-04 | 4.107e+14 | 9.453e-02 | unique | - |
+| dense 6D seed 20260911 + 1.0e-6 random perturbation (rtol 0.001, :flag) | failed | 4.850e-06 | 3.095e-01 | 9.008e-01 | 1.852e-01 | 3.462e+00 | - | - | - | - | - | 5.418e+04 | 3.624e-01 | unique | failed: the canonical separation is  |
+| dense 6D seed 20260911 + 1.0e-7 random perturbation (rtol 9.999999999999999e-5, :flag) | failed | 4.850e-07 | 3.095e-01 | 9.008e-01 | 1.852e-01 | 3.462e+00 | - | - | - | - | - | 5.418e+05 | 3.624e-01 | unique | failed: the canonical separation is  |
+| dense 6D seed 20260911 + 1.0e-8 random perturbation (rtol 1.0e-5, :flag) | failed | 4.850e-08 | 3.095e-01 | 9.008e-01 | 1.852e-01 | 3.462e+00 | - | - | - | - | - | 5.418e+06 | 3.624e-01 | unique | failed: the canonical separation is  |
+| dense 4x4 seed 20260911 + 1.0e-6 random perturbation (rtol 0.001, :flag) | passed | 2.293e-06 | 4.452e-01 | 4.209e-02 | 9.939e-04 | 3.011e+01 | - | - | - | 1.778e-09 | - | 1.063e+05 | 4.470e-01 | unique | passed |
+| dense 4x4 seed 20260911 + 1.0e-8 random perturbation (rtol 1.0e-5, :flag) | passed | 2.293e-08 | 4.452e-01 | 4.193e-02 | 9.832e-04 | 3.031e+01 | - | - | - | 1.778e-09 | - | 1.063e+07 | 4.470e-01 | unique | passed |
+| dense 6D seed 20260911 + 1.0e-10 random perturbation (rtol 1.0000000000000001e-7, :flag) | failed | 4.850e-10 | 3.095e-01 | 9.008e-01 | 1.852e-01 | 3.462e+00 | - | - | - | - | - | 5.418e+08 | 3.624e-01 | unique | failed: the canonical separation is  |
+| dense 6D seed 20260911 + 1.0e-12 random perturbation (rtol 1.0e-9, :flag) | failed | 4.850e-12 | 3.095e-01 | 9.008e-01 | 1.852e-01 | 3.462e+00 | - | - | - | - | - | 5.418e+10 | 3.625e-01 | unique | failed: the canonical separation is  |
+| dense 6D seed 20260911 + 1.0e-14 random perturbation (rtol 1.0e-11, :flag) | passed | 4.852e-14 | 3.078e-01 | 9.069e-01 | 1.865e-01 | 3.462e+00 | 1.449e+00 | 8.234e-01 | 3.812e+00 | 6.478e-06 | 9.378e-06 | 5.416e+12 | 4.096e-01 | unique | passed |
+| coupled 4x4 R(0.5) (+) R(0.5 + 0.001) rotated by 0.3 | failed | 8.939e-16 | 4.386e-01 | 8.335e+02 | 8.335e-01 | 1.000e+00 | - | - | - | - | - | 5.368e+11 | 1.118e+00 | unique | - |
+| coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-5) rotated by 0.3 | failed | 8.882e-16 | 4.128e-01 | 3.536e+04 | 3.536e-01 | 1.000e+00 | - | - | - | - | - | 5.398e+09 | 1.250e-01 | unique | - |
+| coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-7) rotated by 0.3 | failed | 8.882e-16 | 3.504e-01 | 1.250e+06 | 1.250e-01 | 1.000e+00 | - | - | - | - | - | 5.398e+07 | 0.000e+00 | unique | - |
+| coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-9) rotated by 0.3 | failed | 8.882e-16 | 3.981e-01 | 3.125e+08 | 3.125e-01 | 1.000e+00 | - | - | - | - | - | 5.398e+05 | 2.500e-01 | unique | - |
+| coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-11) rotated by 0.3 | failed | 8.882e-16 | 3.046e-01 | 1.250e+10 | 1.250e-01 | 1.000e+00 | - | - | - | - | - | 5.398e+03 | 5.000e-01 | unavailable:singular_coefficient | - |
+| coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-13) rotated by 0.3 | passed | 8.882e-16 | - | - | - | - | - | - | - | - | - | - | - | no frame: unique | - |
+| repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1 | degraded | 1.652e-15 | - | - | - | - | - | - | - | - | - | - | 4.705e-01 | no frame: unique | - |
+| indefinite diag(R(0.73), R(1.41), R(-0.73)) | degraded | 1.332e-15 | - | - | - | - | - | - | - | - | - | - | 1.667e-01 | no frame: unavailable:indefinite_cluster | - |
+| hyperbolic synchrotron pair diag(2, 0.5) (folded) | degraded | 3.109e-15 | - | - | - | - | - | - | - | - | - | - | 3.216e+14 | no frame: unavailable:unstable_spectrum | - |
+| shear unit pair with crab dispersion (not coasting) | degraded | 1.796e-15 | - | - | - | - | - | - | - | - | - | - | 7.470e+05 | no frame: unavailable:unit_eigenvalue | - |
+| singular projection zeta = e_x, eta = e_px (h = 0) | degraded | 1.967e-15 | - | - | - | - | - | - | - | - | - | - | 3.386e-01 | no frame: unique | - |
+| singular projection zeta = e_x, eta = e_px (h = 0) | degraded | 1.967e-15 | 2.986e-01 | 1.991e-01 | 7.334e-02 | 1.370e+00 | 2.870e-01 | 8.841e-02 | 3.269e+00 | - | - | 2.276e+14 | 1.129e-01 | unique | - |
+| hyperbolic 4x4 diag(R(0.5), [2 0; 0 0.5]) | passed | 1.776e-15 | - | - | - | - | - | - | - | - | - | - | 5.629e+14 | no frame: unique | - |
+| 4x4 shear pair diag(R(0.5), [1 0.7; 0 1]) | passed | 1.179e-15 | - | - | - | - | - | - | - | - | - | - | 9.420e-02 | no frame: unique | - |
+
+###### 1a. Closed-orbit rows (linearized inputs; residual and point in scaled coordinates)
+
+| fixture | label | raw max-norm residual | scaled residual | floor eps max(1, |C p|) | ratio | default :require outcome | :warn degraded |
+|---|---|---|---|---|---|---|---|
+| dense 6D seed 20260911 Linear6DSpec at the origin | accepted | 0.000e+00 | 0.000e+00 | 2.220e-16 | 0.000e+00 | accepted | false |
+| dense 6D seed 20260911 Linear6DSpec, finite differences 1e-6 at the origin | accepted | 0.000e+00 | 0.000e+00 | 2.220e-16 | 0.000e+00 | accepted | false |
+| FODO cell (kq = 1.6, detune 1e-3) at the origin | accepted | 0.000e+00 | 0.000e+00 | 2.220e-16 | 0.000e+00 | accepted | false |
+| DBA cell (kf = 1.5, kd = -1.1, h = 0.2) at the origin | accepted | 2.303e-17 | 1.507e-17 | 2.220e-16 | 6.787e-02 | accepted | false |
+| FODO + thin sextupole (kn3 = 8) at the origin | accepted | 0.000e+00 | 0.000e+00 | 2.220e-16 | 0.000e+00 | accepted | false |
+| FODO + thin sextupole (kn3 = 8) expanded at x = 0.001 | rejected | 1.202e-03 | 7.725e-04 | 2.220e-16 | 3.479e+12 | rejected (ArgumentError) | true |
+| dense 6D seed 20260911 Linear6DSpec expanded at x = 0.001 | rejected | 7.503e-04 | 8.677e-04 | 2.220e-16 | 3.908e+12 | rejected (ArgumentError) | true |
+| FODO + thin sextupole (kn3 = 8) expanded at x = 1.0e-6 | rejected | 1.202e-06 | 7.723e-07 | 2.220e-16 | 3.478e+09 | rejected (ArgumentError) | true |
+| dense 6D seed 20260911 Linear6DSpec expanded at x = 1.0e-6 | rejected | 7.503e-07 | 8.677e-07 | 2.220e-16 | 3.908e+09 | rejected (ArgumentError) | true |
+| FODO + thin sextupole (kn3 = 8) expanded at x = 1.0e-9 | rejected | 1.202e-09 | 7.723e-10 | 2.220e-16 | 3.478e+06 | rejected (ArgumentError) | true |
+| dense 6D seed 20260911 Linear6DSpec expanded at x = 1.0e-9 | rejected | 7.503e-10 | 8.677e-10 | 2.220e-16 | 3.908e+06 | rejected (ArgumentError) | true |
+| FODO + thin sextupole (kn3 = 8) expanded at y = 1e-3 | rejected | 3.233e-04 | 7.962e-04 | 2.220e-16 | 3.586e+12 | rejected (ArgumentError) | true |
+| FODO + thin sextupole (kn3 = 8) expanded at x = 1.0e-12 | unlabelled | 1.202e-12 | 7.723e-13 | 2.220e-16 | 3.478e+03 | rejected (ArgumentError) | true |
+| FODO + thin sextupole (kn3 = 8) expanded at x = 1.0e-14 | unlabelled | 1.202e-14 | 7.723e-15 | 2.220e-16 | 3.478e+01 | accepted | false |
+| FODO + thin sextupole (kn3 = 8) expanded at x = 1.0e-16 | unlabelled | 1.202e-16 | 7.723e-17 | 2.220e-16 | 3.478e-01 | accepted | false |
+
+###### 1b. Tune rows (chord of the nearest eigenvalue to exp(-i mu_s); half-gap = chord <= 0.5 runner-up outside the conjugate pair)
+
+| map, tune | chord | runner-up | half-gap rule | chord / rho_M1 | outcome |
+|---|---|---|---|---|---|
+| dense 6D seed 20260911, exact tune 0.114764 | 1.144e-16 | 1.080e-01 | true | 4.650e-02 | accepted |
+| dense 6D seed 20260911, exact tune 0.222768 | 1.138e-15 | 1.080e-01 | true | 4.624e-01 | accepted |
+| dense 6D seed 20260911, exact tune 0.842569 | 4.965e-16 | 6.099e-01 | true | 2.017e-01 | accepted |
+| dense 6D seed 20260911, midpoint tune 0.168766 | 5.400e-02 | 5.400e-02 | false | 2.194e+13 | rejected |
+| dense 6D seed 20260911, midpoint tune 0.532669 | 3.087e-01 | 3.087e-01 | false | 1.254e+14 | rejected |
+| dense 6D seed 20260911, tune 2.5 | 1.474e+00 | 1.816e+00 | false | 5.990e+14 | rejected |
+| dense 6D seed 20260911, tune 3.0 | 1.763e+00 | 1.967e+00 | false | 7.162e+14 | rejected |
+| dense 6D seed 20260912, exact tune 0.008608 | 5.551e-16 | 3.172e-01 | true | 3.262e-01 | accepted |
+| dense 6D seed 20260912, exact tune 0.327199 | 1.241e-16 | 3.172e-01 | true | 7.294e-02 | accepted |
+| dense 6D seed 20260912, exact tune 0.916807 | 1.110e-15 | 5.811e-01 | true | 6.524e-01 | accepted |
+| dense 6D seed 20260912, midpoint tune 0.167903 | 1.591e-01 | 1.591e-01 | false | 9.350e+13 | rejected |
+| dense 6D seed 20260912, midpoint tune 0.622003 | 2.937e-01 | 2.937e-01 | false | 1.726e+14 | rejected |
+| dense 6D seed 20260912, tune 2.5 | 1.423e+00 | 1.770e+00 | false | 8.361e+14 | rejected |
+| dense 6D seed 20260912, tune 3.0 | 1.726e+00 | 1.945e+00 | false | 1.014e+15 | rejected |
+| dense 6D seed 20260913, exact tune 0.046653 | 2.545e-16 | 1.378e-01 | true | 1.432e-01 | accepted |
+| dense 6D seed 20260913, exact tune 0.184554 | 6.621e-16 | 1.378e-01 | true | 3.726e-01 | accepted |
+| dense 6D seed 20260913, exact tune 0.731213 | 6.753e-16 | 5.399e-01 | true | 3.801e-01 | accepted |
+| dense 6D seed 20260913, midpoint tune 0.115603 | 6.894e-02 | 6.894e-02 | false | 3.880e+13 | rejected |
+| dense 6D seed 20260913, midpoint tune 0.457883 | 2.725e-01 | 2.725e-01 | false | 1.533e+14 | rejected |
+| dense 6D seed 20260913, tune 2.5 | 1.547e+00 | 1.832e+00 | false | 8.707e+14 | rejected |
+| dense 6D seed 20260913, tune 3.0 | 1.813e+00 | 1.973e+00 | false | 1.020e+15 | rejected |
+| dense 6D seed 20260914, exact tune 0.097946 | 2.225e-16 | 1.143e-01 | true | 9.266e-02 | accepted |
+| dense 6D seed 20260914, exact tune 0.212288 | 7.948e-16 | 1.143e-01 | true | 3.310e-01 | accepted |
+| dense 6D seed 20260914, exact tune 0.520288 | 7.022e-16 | 3.068e-01 | true | 2.925e-01 | accepted |
+| dense 6D seed 20260914, midpoint tune 0.155117 | 5.716e-02 | 5.716e-02 | false | 2.381e+13 | rejected |
+| dense 6D seed 20260914, midpoint tune 0.366288 | 1.538e-01 | 1.538e-01 | false | 6.408e+13 | rejected |
+| dense 6D seed 20260914, tune 2.5 | 1.672e+00 | 1.820e+00 | false | 6.964e+14 | rejected |
+| dense 6D seed 20260914, tune 3.0 | 1.891e+00 | 1.969e+00 | false | 7.878e+14 | rejected |
+| dense 6D seed 20260915, exact tune 0.060299 | 6.231e-16 | 1.269e-01 | true | 3.331e-01 | accepted |
+| dense 6D seed 20260915, exact tune 0.187238 | 6.804e-16 | 1.269e-01 | true | 3.637e-01 | accepted |
+| dense 6D seed 20260915, exact tune 0.724531 | 3.140e-16 | 5.309e-01 | true | 1.678e-01 | accepted |
+| dense 6D seed 20260915, midpoint tune 0.123769 | 6.346e-02 | 6.346e-02 | false | 3.392e+13 | rejected |
+| dense 6D seed 20260915, midpoint tune 0.455884 | 2.678e-01 | 2.678e-01 | false | 1.432e+14 | rejected |
+| dense 6D seed 20260915, tune 2.5 | 1.551e+00 | 1.831e+00 | false | 8.292e+14 | rejected |
+| dense 6D seed 20260915, tune 3.0 | 1.815e+00 | 1.973e+00 | false | 9.703e+14 | rejected |
+| dense 6D seed 20260916, exact tune 0.08119 | 1.110e-16 | 3.527e-01 | true | 5.238e-02 | accepted |
+| dense 6D seed 20260916, exact tune 0.435793 | 2.483e-16 | 3.527e-01 | true | 1.171e-01 | accepted |
+| dense 6D seed 20260916, exact tune 1.108872 | 5.661e-16 | 6.604e-01 | true | 2.671e-01 | accepted |
+| dense 6D seed 20260916, midpoint tune 0.258491 | 1.771e-01 | 1.771e-01 | false | 8.354e+13 | rejected |
+| dense 6D seed 20260916, midpoint tune 0.772333 | 3.350e-01 | 3.350e-01 | false | 1.580e+14 | rejected |
+| dense 6D seed 20260916, tune 2.5 | 1.282e+00 | 1.717e+00 | false | 6.047e+14 | rejected |
+| dense 6D seed 20260916, tune 3.0 | 1.622e+00 | 1.917e+00 | false | 7.651e+14 | rejected |
+| prescribed h = 0.05, exact tune 0.63 | 4.003e-16 | 3.088e-01 | true | 1.748e-01 | accepted |
+| prescribed h = 0.05, exact tune 0.94 | 9.930e-16 | 3.088e-01 | true | 4.336e-01 | accepted |
+| prescribed h = 0.05, exact tune 1.74 | 3.724e-16 | 7.788e-01 | true | 1.626e-01 | accepted |
+| prescribed h = 0.05, midpoint tune 0.785 | 1.548e-01 | 1.548e-01 | false | 6.761e+13 | rejected |
+| prescribed h = 0.05, midpoint tune 1.34 | 3.973e-01 | 3.973e-01 | false | 1.735e+14 | rejected |
+| prescribed h = 0.05, tune 2.5 | 7.418e-01 | 1.407e+00 | false | 3.239e+14 | rejected |
+| prescribed h = 0.05, tune 3.0 | 1.178e+00 | 1.715e+00 | false | 5.145e+14 | rejected |
+| prescribed h = 2.0, exact tune 0.63 | 1.821e-15 | 3.088e-01 | true | 6.098e-01 | accepted |
+| prescribed h = 2.0, exact tune 0.94 | 9.550e-16 | 3.088e-01 | true | 3.199e-01 | accepted |
+| prescribed h = 2.0, exact tune 1.74 | 2.238e-16 | 7.788e-01 | true | 7.494e-02 | accepted |
+| prescribed h = 2.0, midpoint tune 0.785 | 1.548e-01 | 1.548e-01 | false | 5.186e+13 | rejected |
+| prescribed h = 2.0, midpoint tune 1.34 | 3.973e-01 | 3.973e-01 | false | 1.331e+14 | rejected |
+| prescribed h = 2.0, tune 2.5 | 7.418e-01 | 1.407e+00 | false | 2.485e+14 | rejected |
+| prescribed h = 2.0, tune 3.0 | 1.178e+00 | 1.715e+00 | false | 3.946e+14 | rejected |
+| repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, exact tune 0.72 | 4.441e-16 | 7.109e-16 | false | 2.689e-01 | accepted |
+| repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, exact tune 1.3 | 2.776e-16 | 5.719e-01 | true | 1.680e-01 | accepted |
+| repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, degenerate tune 0.72 + 4 eps | 6.753e-16 | 1.110e-15 | false | 4.089e-01 | accepted |
+| repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, degenerate tune 0.72 + 16 eps | 3.265e-15 | 3.580e-15 | false | 1.977e+00 | accepted |
+| repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, degenerate tune 0.72 + 1.0e-12 | 9.997e-13 | 1.000e-12 | false | 6.053e+02 | rejected |
+| repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, degenerate tune 0.72 + 1.0e-10 | 1.000e-10 | 1.000e-10 | false | 6.054e+04 | rejected |
+| repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, midpoint tune 1.01 | 2.890e-01 | 2.890e-01 | false | 1.750e+14 | rejected |
+| repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, tune 2.5 | 1.129e+00 | 1.554e+00 | false | 6.837e+14 | rejected |
+| repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, tune 3.0 | 1.503e+00 | 1.817e+00 | false | 9.097e+14 | rejected |
+| indefinite diag(R(0.73), R(1.41), R(-0.73)), exact tune 0.73 | 0.000e+00 | 0.000e+00 | true | 0.000e+00 | accepted |
+| indefinite diag(R(0.73), R(1.41), R(-0.73)), exact tune 1.41 | 2.776e-17 | 6.670e-01 | true | 2.083e-02 | accepted |
+| indefinite diag(R(0.73), R(1.41), R(-0.73)), degenerate tune 0.73 + 4 eps | 8.671e-16 | 8.671e-16 | false | 6.509e-01 | accepted |
+| indefinite diag(R(0.73), R(1.41), R(-0.73)), degenerate tune 0.73 + 16 eps | 3.458e-15 | 3.458e-15 | false | 2.595e+00 | accepted |
+| indefinite diag(R(0.73), R(1.41), R(-0.73)), degenerate tune 0.73 + 1.0e-12 | 1.000e-12 | 1.000e-12 | false | 7.506e+02 | rejected |
+| indefinite diag(R(0.73), R(1.41), R(-0.73)), degenerate tune 0.73 + 1.0e-10 | 1.000e-10 | 1.000e-10 | false | 7.506e+04 | rejected |
+| indefinite diag(R(0.73), R(1.41), R(-0.73)), midpoint tune 1.07 | 3.384e-01 | 3.384e-01 | false | 2.540e+14 | rejected |
+| indefinite diag(R(0.73), R(1.41), R(-0.73)), tune 2.5 | 1.037e+00 | 1.548e+00 | false | 7.782e+14 | rejected |
+| indefinite diag(R(0.73), R(1.41), R(-0.73)), tune 3.0 | 1.428e+00 | 1.813e+00 | false | 1.072e+15 | rejected |
+
+##### 2. PROVISIONAL constants: windows by the one-tenth / ten rule (fixture names derived from the data)
+
+Accepted ratios must stay below c / 10 and rejected ones above 10 c (for the trace gap the reverse: accepted must exceed 10 c). `unlabelled` rows are reported but do not constrain the window. Fixtures: 25 dense 6D seeds, 8 dense 4x4 seeds, 4 coupled 4x4 maps, the near-degenerate coupled ladder, 3 coasting maps, the DBA and FODO cells, 5 prescribed-h maps, the linearized dense map, the explicit partition, 6 perturbed 6D and 2 perturbed 4x4 maps, the stage 4a reason fixtures.
+
+###### _FRAME_ACCEPTANCE_MULTIPLIER (c_frame)
+
+- ratio at multiplier 1: (I1) normalized reconstruction / rho_M1 and (E7) symplecticity / (rho_M1 cond U_4); accepted = every fixture with a unique frame that must pass; no fixture the frame acceptance must reject exists (the perturbed maps fold their defect into rho_M1 and fail through the separation); the near-degenerate ladder is the boundary
+- source value: 64.0; accepted 108, rejected 0, unlabelled 28 fixture values
+- largest accepted ratio (must stay below c / 10): 4.444e+00 at "dense 6D seed 20260932 certified [(I1)]"
+- window [4.444e+01, Inf]; source value inside: true (no rejected fixture: that edge is open)
+  - accepted "dense 6D seed 20260932 certified [(I1)]" 4.444e+00
+  - accepted "dense 6D seed 20260919 certified [(E7)]" 3.901e+00
+  - accepted "dense 6D seed 20260923 certified [(I1)]" 3.695e+00
+  - accepted "coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.784398 [(E7)]" 2.279e+00
+  - accepted "dense 6D seed 20260913 certified [(E7)]" 1.242e+00
+  - unlabelled "coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-11) rotated by 0.3 [(E7)]" 1.250e+10
+  - unlabelled "coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-9) rotated by 0.3 [(E7)]" 3.125e+08
+  - unlabelled "coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-7) rotated by 0.3 [(E7)]" 1.250e+06
+  - unlabelled "coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-5) rotated by 0.3 [(E7)]" 3.536e+04
+
+###### (E7) under the proposed resolution kappa (reported, not a source constant)
+
+- ratio at multiplier 1: (E7) symplecticity / (rho_M1 cond(U_4) ||U_4||_2^2 / min inter-cluster chord); same fixtures as c_frame
+- source value: 64.0; accepted 54, rejected 0, unlabelled 14 fixture values
+- largest accepted ratio (must stay below c / 10): 1.563e+00 at "coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.784398 [(E7), resolution kappa]"
+- window [1.563e+01, Inf]; source value inside: true (no rejected fixture: that edge is open)
+  - accepted "coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.784398 [(E7), resolution kappa]" 1.563e+00
+  - accepted "coupled 4x4 R(2.9) (+) R(0.1) rotated by 1.1 [(E7), resolution kappa]" 1.359e+00
+  - accepted "coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 [(E7), resolution kappa]" 8.308e-01
+  - accepted "dense 6D seed 20260916 certified [(E7), resolution kappa]" 2.109e-01
+  - accepted "prescribed h = 2.0 (zeta = [1.0, 0.2, 0.1, 0.0], eta = [0.0, -1.0, 0.0, 0.0]), tune 0.94 [(E7), resolution kappa]" 2.037e-01
+  - unlabelled "coupled 4x4 R(0.5) (+) R(0.5 + 0.001) rotated by 0.3 [(E7), resolution kappa]" 8.335e-01
+  - unlabelled "coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-5) rotated by 0.3 [(E7), resolution kappa]" 3.536e-01
+  - unlabelled "coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-9) rotated by 0.3 [(E7), resolution kappa]" 3.125e-01
+  - unlabelled "dense 6D seed 20260911 + 1.0e-14 random perturbation (rtol 1.0e-11, :flag) [(E7), resolution kappa]" 1.865e-01
+
+###### _NORMALIZER_ACCEPTANCE_MULTIPLIER (c_normalizer)
+
+- ratio at multiplier 1: U_6 reconstruction / rho_M1 and U_6 symplecticity / (rho_M1 cond U_6); accepted = every bunched fixture with a unique U_6 that must pass
+- source value: 64.0; accepted 74, rejected 0, unlabelled 4 fixture values
+- largest accepted ratio (must stay below c / 10): 6.389e+00 at "dense 6D seed 20260919 certified [symplecticity]"
+- window [6.389e+01, Inf]; source value inside: true (no rejected fixture: that edge is open)
+  - accepted "dense 6D seed 20260919 certified [symplecticity]" 6.389e+00
+  - accepted "dense 6D seed 20260932 certified [reconstruction]" 4.446e+00
+  - accepted "dense 6D seed 20260923 certified [reconstruction]" 3.762e+00
+  - accepted "dense 6D seed 20260912 certified [reconstruction]" 1.747e+00
+  - accepted "dense 6D seed 20260931 certified [symplecticity]" 1.582e+00
+  - unlabelled "dense 6D seed 20260911 + 1.0e-14 random perturbation (rtol 1.0e-11, :flag) [reconstruction]" 1.449e+00
+  - unlabelled "dense 6D seed 20260911 + 1.0e-14 random perturbation (rtol 1.0e-11, :flag) [symplecticity]" 8.234e-01
+  - unlabelled "singular projection zeta = e_x, eta = e_px (h = 0) [reconstruction]" 2.870e-01
+  - unlabelled "singular projection zeta = e_x, eta = e_px (h = 0) [symplecticity]" 8.841e-02
+
+###### _COVARIANCE_ACCEPTANCE_MULTIPLIER (c_covariance)
+
+- ratio at multiplier 1: raw closure ||Ms Sigma Ms' - Sigma||_F / (rho_M1 cond(U) max(1, ||Sigma||)); accepted = every fixture with emittances that must pass; the (K14) identity rows are reported only
+- source value: 64.0; accepted 49, rejected 0, unlabelled 41 fixture values
+- largest accepted ratio (must stay below c / 10): 1.647e-01 at "dense 6D seed 20260911 certified, emittances (1.0, 1.0, 1.0)"
+- window [1.647e+00, Inf]; source value inside: true (no rejected fixture: that edge is open)
+  - accepted "dense 6D seed 20260911 certified, emittances (1.0, 1.0, 1.0)" 1.647e-01
+  - accepted "dense 6D seed 20260911 certified, emittances (1000.0, 1000.0, 1000.0)" 1.601e-01
+  - accepted "dense 6D seed 20260911 certified, emittances (1.0e-12, 1.0e-9, 0.001)" 2.693e-04
+  - accepted "dense 6D seed 20260912 certified" 1.144e-05
+  - accepted "dense 6D seed 20260929 certified" 3.639e-06
+  - unlabelled "dense 6D seed 20260934 certified [(K14) identity, reported only]" 3.637e-02
+  - unlabelled "dense 6D seed 20260915 certified [(K14) identity, reported only]" 1.836e-02
+  - unlabelled "prescribed h = 0.05 (zeta = [1.0, 0.2, 0.1, 0.0], eta = [0.0, 0.95, 0.0, 0.0]), tune 0.94 [(K14) identity, reported only]" 1.184e-02
+  - unlabelled "dense 6D seed 20260912 certified [(K14) identity, reported only]" 6.491e-03
+
+###### _TRACE_GAP_MULTIPLIER (c_trace_gap)
+
+- ratio at multiplier 1: |tau_+ - tau_-| / (rho_M1 max(1, ||M_4||_F)) of the frame's transverse block; accepted = every unique frame that must keep its closed form (ratio must EXCEED 10 c); rejected = none (equal mode traces mean coincident eigenvalues, where no frame forms); the ladder is the boundary
+- source value: 64.0; accepted 54, rejected 0, unlabelled 14 fixture values
+- smallest accepted ratio (must exceed 10 c): 2.489e+11 at "FODO cell (kq = 1.6, detune 1e-3) tuple"
+- window [0.000e+00, 2.489e+10]; source value inside: true (no rejected fixture: that edge is open)
+  - accepted "FODO cell (kq = 1.6, detune 1e-3) tuple" 2.489e+11
+  - accepted "dense 6D seed 20260919 certified" 4.744e+11
+  - accepted "DBA cell (kf = 1.5, kd = -1.1, h = 0.2) at delta = 0" 1.688e+12
+  - accepted "dense 6D seed 20260933 certified" 4.936e+12
+  - accepted "dense 6D seed 20260915 certified" 6.595e+12
+  - unlabelled "coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-11) rotated by 0.3" 5.398e+03
+  - unlabelled "dense 6D seed 20260911 + 1.0e-6 random perturbation (rtol 0.001, :flag)" 5.418e+04
+  - unlabelled "dense 4x4 seed 20260911 + 1.0e-6 random perturbation (rtol 0.001, :flag)" 1.063e+05
+  - unlabelled "coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-9) rotated by 0.3" 5.398e+05
+
+###### _STABILITY_ATOL_MULTIPLIER (c_stability)
+
+- ratio at multiplier 1: max |1 - |lambda|| / rho_M1; accepted = elliptic frames that must pass; rejected = spectra off the unit circle (the clusters' departure, hyperbolic fixtures)
+- source value: 64.0; accepted 54, rejected 3, unlabelled 14 fixture values
+- largest accepted ratio (must stay below c / 10): 5.035e+00 at "dense 6D seed 20260932 certified"
+- smallest rejected ratio (must exceed 10 c): 7.470e+05 at "shear unit pair with crab dispersion (not coasting)"
+- window [5.035e+01, 7.470e+04]; source value inside: true
+  - accepted "dense 6D seed 20260932 certified" 5.035e+00
+  - accepted "dense 6D seed 20260923 certified" 4.070e+00
+  - accepted "coasting shear s = 0.0 (stage 4a builder, seed 20260911)" 1.314e+00
+  - accepted "coasting shear s = 0.3 (stage 4a builder, seed 20260911)" 1.301e+00
+  - accepted "dense 6D seed 20260920 certified" 1.291e+00
+  - rejected "shear unit pair with crab dispersion (not coasting)" 7.470e+05
+  - rejected "hyperbolic synchrotron pair diag(2, 0.5) (folded)" 3.216e+14
+  - rejected "hyperbolic 4x4 diag(R(0.5), [2 0; 0 0.5])" 5.629e+14
+  - unlabelled "coupled 4x4 R(0.5) (+) R(0.5 + 0.001) rotated by 0.3" 1.118e+00
+  - unlabelled "coupled 4x4 R(0.5) (+) R(0.5 + 1.0e-11) rotated by 0.3" 5.000e-01
+  - unlabelled "dense 4x4 seed 20260911 + 1.0e-8 random perturbation (rtol 1.0e-5, :flag)" 4.470e-01
+  - unlabelled "dense 4x4 seed 20260911 + 1.0e-6 random perturbation (rtol 0.001, :flag)" 4.470e-01
+
+###### _CLOSED_ORBIT_ATOL_MULTIPLIER (c_closed_orbit)
+
+- ratio at multiplier 1: scaled max-norm fixed-point residual / (eps max(1, max |C point|)); accepted = linearizations at the origin; rejected = displaced expansion points (x, y >= 1e-9)
+- source value: 64.0; accepted 5, rejected 7, unlabelled 3 fixture values
+- largest accepted ratio (must stay below c / 10): 6.787e-02 at "DBA cell (kf = 1.5, kd = -1.1, h = 0.2) at the origin"
+- smallest rejected ratio (must exceed 10 c): 3.478e+06 at "FODO + thin sextupole (kn3 = 8) expanded at x = 1.0e-9"
+- window [6.787e-01, 3.478e+05]; source value inside: true
+  - accepted "DBA cell (kf = 1.5, kd = -1.1, h = 0.2) at the origin" 6.787e-02
+  - accepted "dense 6D seed 20260911 Linear6DSpec at the origin" 0.000e+00
+  - accepted "FODO cell (kq = 1.6, detune 1e-3) at the origin" 0.000e+00
+  - accepted "dense 6D seed 20260911 Linear6DSpec, finite differences 1e-6 at the origin" 0.000e+00
+  - accepted "FODO + thin sextupole (kn3 = 8) at the origin" 0.000e+00
+  - rejected "FODO + thin sextupole (kn3 = 8) expanded at x = 1.0e-9" 3.478e+06
+  - rejected "dense 6D seed 20260911 Linear6DSpec expanded at x = 1.0e-9" 3.908e+06
+  - rejected "FODO + thin sextupole (kn3 = 8) expanded at x = 1.0e-6" 3.478e+09
+  - rejected "dense 6D seed 20260911 Linear6DSpec expanded at x = 1.0e-6" 3.908e+09
+  - rejected "FODO + thin sextupole (kn3 = 8) expanded at x = 0.001" 3.479e+12
+  - unlabelled "FODO + thin sextupole (kn3 = 8) expanded at x = 1.0e-12" 3.478e+03
+  - unlabelled "FODO + thin sextupole (kn3 = 8) expanded at x = 1.0e-14" 3.478e+01
+  - unlabelled "FODO + thin sextupole (kn3 = 8) expanded at x = 1.0e-16" 3.478e-01
+
+###### _TUNE_CHORD_FLOOR_MULTIPLIER (c_tune_floor)
+
+- ratio at multiplier 1: chord of the nearest eigenvalue / rho_M1 where the half-gap rule does NOT decide; accepted = a degenerate pair's tune offset by a few eps; rejected = midpoint and far tunes
+- source value: 64.0; accepted 5, rejected 38, unlabelled 31 fixture values
+- largest accepted ratio (must stay below c / 10): 2.595e+00 at "indefinite diag(R(0.73), R(1.41), R(-0.73)), degenerate tune 0.73 + 16 eps"
+- smallest rejected ratio (must exceed 10 c): 2.194e+13 at "dense 6D seed 20260911, midpoint tune 0.168766"
+- window [2.595e+01, 2.194e+12]; source value inside: true
+  - accepted "indefinite diag(R(0.73), R(1.41), R(-0.73)), degenerate tune 0.73 + 16 eps" 2.595e+00
+  - accepted "repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, degenerate tune 0.72 + 16 eps" 1.977e+00
+  - accepted "indefinite diag(R(0.73), R(1.41), R(-0.73)), degenerate tune 0.73 + 4 eps" 6.509e-01
+  - accepted "repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, degenerate tune 0.72 + 4 eps" 4.089e-01
+  - accepted "repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, exact tune 0.72" 2.689e-01
+  - rejected "dense 6D seed 20260911, midpoint tune 0.168766" 2.194e+13
+  - rejected "dense 6D seed 20260914, midpoint tune 0.155117" 2.381e+13
+  - rejected "dense 6D seed 20260915, midpoint tune 0.123769" 3.392e+13
+  - rejected "dense 6D seed 20260913, midpoint tune 0.115603" 3.880e+13
+  - rejected "prescribed h = 2.0, midpoint tune 0.785" 5.186e+13
+  - unlabelled "indefinite diag(R(0.73), R(1.41), R(-0.73)), degenerate tune 0.73 + 1.0e-10 [boundary: rejected]" 7.506e+04
+  - unlabelled "repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, degenerate tune 0.72 + 1.0e-10 [boundary: rejected]" 6.054e+04
+  - unlabelled "indefinite diag(R(0.73), R(1.41), R(-0.73)), degenerate tune 0.73 + 1.0e-12 [boundary: rejected]" 7.506e+02
+  - unlabelled "repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1, degenerate tune 0.72 + 1.0e-12 [boundary: rejected]" 6.053e+02
+
+###### test-side Scaling c (runtests.jl Scaling testset, c = 2048.0)
+
+- ratio at multiplier 1: ||row(:auto or explicit) - row(:none)|| / (eps cond(U) max(1, ||M||)^2 max(1, ||row||)); accepted = every physical row of section 3
+- source value: 2048.0; accepted 332, rejected 0, unlabelled 0 fixture values
+- largest accepted ratio (must stay below c / 10): 1.107e+02 at "dense 6D seed 20260912 certified, scaling auto, row alpha"
+- window [1.107e+03, Inf]; source value inside: true (no rejected fixture: that edge is open)
+  - accepted "dense 6D seed 20260912 certified, scaling auto, row alpha" 1.107e+02
+  - accepted "dense 6D seed 20260912 certified, scaling (1.7, 0.4, 3.1), row alpha" 1.105e+02
+  - accepted "dense 4x4 seed 20260911, scaling (1.7, 0.4), row beta" 1.092e+02
+  - accepted "dense 4x4 seed 20260911, scaling (1.7, 0.4), row alpha" 1.091e+02
+  - accepted "dense 4x4 seed 20260911, scaling (1.7, 0.4), row G2" 1.089e+02
+
+###### _ANALYSIS_CONTRACT_FIXED_MULTIPLIER (contract, c = 1024.0)
+
+- ratio at multiplier 1: max_i |x_i(scaled run) - x_i(:none)| / (eps cond(M) max(1, |x_i|)) over zeta, eta, h, tunes; rejected = a back-transformation row left in scaled coordinates
+- source value: 1024.0; accepted 76, rejected 14, unlabelled 4 fixture values
+- largest accepted ratio (must stay below c / 10): 8.836e+01 at "dense 6D seed 20260911 certified, scaling (1.7, 0.4, 3.1), row zeta"
+- smallest rejected ratio (must exceed 10 c): 1.929e+14 at "DBA cell at delta = 0, scaling (1.7, 0.4, 3.1), row eta left in scaled coordinates"
+- window [8.836e+02, 1.929e+13]; source value inside: true
+  - accepted "dense 6D seed 20260911 certified, scaling (1.7, 0.4, 3.1), row zeta" 8.836e+01
+  - accepted "prescribed h = 0.05, tune 0.94, scaling auto, row zeta" 8.476e+01
+  - accepted "coasting shear s = 0.3 (stage 4a builder), scaling auto, row eta" 8.378e+01
+  - accepted "prescribed h = 0.05, tune 0.94, scaling (1.7, 0.4, 3.1), row zeta" 8.288e+01
+  - accepted "dense 6D seed 20260911 linearized (Linear6DSpec), scaling (1.7, 0.4, 3.1), row zeta" 8.169e+01
+  - rejected "DBA cell at delta = 0, scaling (1.7, 0.4, 3.1), row eta left in scaled coordinates" 1.929e+14
+  - rejected "dense 6D seed 20260911 certified, scaling (1.7, 0.4, 3.1), row zeta left in scaled coordinates" 2.431e+14
+  - rejected "dense 6D seed 20260911 linearized (Linear6DSpec), scaling (1.7, 0.4, 3.1), row zeta left in scaled coordinates" 2.431e+14
+  - rejected "dense 6D seed 20260913 certified, scaling (1.7, 0.4, 3.1), row zeta left in scaled coordinates" 4.330e+14
+  - rejected "prescribed h = 0.05, tune 0.94, scaling (1.7, 0.4, 3.1), row zeta left in scaled coordinates" 6.966e+14
+  - unlabelled "FODO cell tuple, scaling (1.7, 0.4, 3.1), row zeta left in scaled coordinates [row is zero]" 0.000e+00
+  - unlabelled "DBA cell at delta = 0, scaling (1.7, 0.4, 3.1), row zeta left in scaled coordinates [row is zero]" 0.000e+00
+  - unlabelled "FODO cell tuple, scaling (1.7, 0.4, 3.1), row eta left in scaled coordinates [row is zero]" 0.000e+00
+  - unlabelled "coasting shear s = 0.3 (stage 4a builder), scaling (1.7, 0.4, 3.1), row zeta left in scaled coordinates [row is zero]" 0.000e+00
+
+###### Summary
+
+| constant | source | window low | window high | inside | accepted | rejected | unlabelled | accepted extreme | rejected extreme |
+|---|---|---|---|---|---|---|---|---|---|
+| c_frame | 64.0 | 4.444e+01 | Inf | true | 108 | 0 | 28 | 4.444e+00 (dense 6D seed 20260932 certified [(I1)]) | NaN (-) |
+| c_frame_e7_resolution | 64.0 | 1.563e+01 | Inf | true | 54 | 0 | 14 | 1.563e+00 (coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.784398 [(E7), resolution kappa]) | NaN (-) |
+| c_normalizer | 64.0 | 6.389e+01 | Inf | true | 74 | 0 | 4 | 6.389e+00 (dense 6D seed 20260919 certified [symplecticity]) | NaN (-) |
+| c_covariance | 64.0 | 1.647e+00 | Inf | true | 49 | 0 | 41 | 1.647e-01 (dense 6D seed 20260911 certified, emittances (1.0, 1.0, 1.0)) | NaN (-) |
+| c_trace_gap | 64.0 | 0.000e+00 | 2.489e+10 | true | 54 | 0 | 14 | 2.489e+11 (FODO cell (kq = 1.6, detune 1e-3) tuple) | NaN (-) |
+| c_stability | 64.0 | 5.035e+01 | 7.470e+04 | true | 54 | 3 | 14 | 5.035e+00 (dense 6D seed 20260932 certified) | 7.470e+05 (shear unit pair with crab dispersion (not coasting)) |
+| c_closed_orbit | 64.0 | 6.787e-01 | 3.478e+05 | true | 5 | 7 | 3 | 6.787e-02 (DBA cell (kf = 1.5, kd = -1.1, h = 0.2) at the origin) | 3.478e+06 (FODO + thin sextupole (kn3 = 8) expanded at x = 1.0e-9) |
+| c_tune_floor | 64.0 | 2.595e+01 | 2.194e+12 | true | 5 | 38 | 31 | 2.595e+00 (indefinite diag(R(0.73), R(1.41), R(-0.73)), degenerate tune 0.73 + 16 eps) | 2.194e+13 (dense 6D seed 20260911, midpoint tune 0.168766) |
+| c_scaling_test | 2048.0 | 1.107e+03 | Inf | true | 332 | 0 | 0 | 1.107e+02 (dense 6D seed 20260912 certified, scaling auto, row alpha) | NaN (-) |
+| c_contract_fixed | 1024.0 | 8.836e+02 | 1.929e+13 | true | 76 | 14 | 4 | 8.836e+01 (dense 6D seed 20260911 certified, scaling (1.7, 0.4, 3.1), row zeta) | 1.929e+14 (DBA cell at delta = 0, scaling (1.7, 0.4, 3.1), row eta left in scaled coordinates) |
+
+##### 3. Receipt completeness matrix (option x input form; the contract's fixtures `_analysis_contract_fixtures(UInt64(20260911))`)
+
+Each run sets ONE option to its non-default alternative (the contract's table; `clusters` = the conjugate pairs of the default run's clusters report, `emittances` a 2-tuple on 4x4). Cell: `R+` = report `:resolved` and the consumer's receipt carries the requested value under the option's name; `I-` = report `:inactive_dependency` and no receipt of that consumer carries the option; `R-`, `I+`, `?` and `THROWS` are defects. The count in brackets is the number of receipts of the consumer carrying the option's name.
+
+| option | consumer | matrix | linearized | matrix4 | coasting |
+|---|---|---|---|---|---|
+| scaling | analysis_scaling | R+ [1] | R+ [1] | R+ [1] | R+ [1] |
+| symplectic_rtol | analysis_symplectic_check | R+ [1] | R+ [1] | R+ [1] | R+ [1] |
+| nonsymplectic | analysis_symplectic_check | R+ [1] | R+ [1] | R+ [1] | R+ [1] |
+| closed_orbit | analysis_closed_orbit | I- [0] | R+ [1] | I- [0] | I- [0] |
+| closed_orbit_atol | analysis_closed_orbit | I- [0] | R+ [1] | I- [0] | I- [0] |
+| map_uncertainty | analysis_cluster_resolution | R+ [1] | R+ [1] | R+ [1] | R+ [1] |
+| resolution_chord | analysis_cluster_resolution | R+ [1] | R+ [1] | R+ [1] | R+ [1] |
+| clusters | analysis_cluster_resolution | R+ [1] | R+ [1] | R+ [1] | R+ [1] |
+| longitudinal_mode | analysis_labels | R+ [1] | R+ [1] | I- [0] | I- [0] |
+| preferred_form | analysis_edwards_teng | R+ [1] | R+ [1] | R+ [1] | R+ [1] |
+| dispersion_routes | analysis_dispersion_routes | R+ [1] | R+ [1] | I- [0] | I- [0] |
+| newton_max_iterations | analysis_newton | R+ [1] | R+ [1] | I- [0] | I- [0] |
+| emittances | analysis_covariance | R+ [1] | R+ [1] | R+ [1] | R+ [1] |
+| strict | analysis_strictness | R+ [1] | R+ [1] | R+ [1] | R+ [1] |
+
+Consistent cells: 56 / 56. Inactive reasons seen:
+- (matrix, closed_orbit): a bare matrix carries no closed-orbit information
+- (matrix, closed_orbit_atol): a bare matrix carries no closed-orbit information
+- (matrix4, closed_orbit): a bare matrix carries no closed-orbit information
+- (matrix4, closed_orbit_atol): a bare matrix carries no closed-orbit information
+- (matrix4, longitudinal_mode): a 4x4 map has no longitudinal mode
+- (matrix4, dispersion_routes): a 4x4 map has no longitudinal mode
+- (matrix4, newton_max_iterations): the :newton route did not execute (4x4 input)
+- (coasting, closed_orbit): a bare matrix carries no closed-orbit information
+- (coasting, closed_orbit_atol): a bare matrix carries no closed-orbit information
+- (coasting, longitudinal_mode): the map has the coasting structure: no synchrotron mode and a single (coasting) dispersion
+- (coasting, dispersion_routes): the map has the coasting structure: no synchrotron mode and a single (coasting) dispersion
+- (coasting, newton_max_iterations): the :newton route did not execute
+
+##### 4. Scaling invariance of every PhysicalOptics row at three scalings (:none = reference, :auto, explicit (1.7, 0.4, 3.1) or (1.7, 0.4))
+
+relative = ||row(s) - row(:none)|| / max(1, ||row(:none)||); test ratio = the same over eps cond(U) max(1, ||M||)^2 (the suite's Scaling testset, c = 2048.0); contract ratio (zeta, eta, h, tunes) = max_i |dx_i| / (eps cond(M) max(1, |x_i|)) (the contract's c = 1024.0). A row that is unavailable under one scaling must carry the same reason under the others (`same reason`).
+
+###### 4a. Worst relative deviation per row over every fixture and scaling
+
+| row | max relative deviation | at |
+|---|---|---|
+| G1 | 1.934e-14 | dense 6D seed 20260912 certified, scaling (1.7, 0.4, 3.1) |
+| G2 | 5.067e-12 | coasting shear s = 0.3 (stage 4a builder), scaling auto |
+| G3 | 1.360e-12 | dense 6D seed 20260912 certified, scaling auto |
+| P1 | 2.248e-14 | dense 6D seed 20260914 certified, scaling (1.7, 0.4, 3.1) |
+| P2 | 9.984e-14 | coasting shear s = 0.3 (stage 4a builder), scaling (1.7, 0.4, 3.1) |
+| P3 | 5.403e-14 | dense 6D seed 20260911 certified, scaling (1.7, 0.4, 3.1) |
+| alpha | 5.075e-12 | coasting shear s = 0.3 (stage 4a builder), scaling auto |
+| beta | 5.096e-12 | coasting shear s = 0.3 (stage 4a builder), scaling auto |
+| covariance | 3.735e-17 | dense 6D seed 20260912 certified, scaling auto |
+| edwards_teng_R | 3.949e-14 | dense 6D seed 20260911 certified, scaling (1.7, 0.4, 3.1) |
+| eta | 5.137e-14 | coasting shear s = 0.3 (stage 4a builder), scaling auto |
+| gamma | 5.050e-12 | coasting shear s = 0.3 (stage 4a builder), scaling auto |
+| graph | 1.591e-13 | prescribed h = 0.05, tune 0.94, scaling (1.7, 0.4, 3.1) |
+| h | 2.565e-14 | dense 6D seed 20260911 certified, scaling (1.7, 0.4, 3.1) |
+| normalizer | 2.481e-12 | coasting shear s = 0.3 (stage 4a builder), scaling auto |
+| tunes | 1.293e-14 | dense 6D seed 20260912 certified, scaling (1.7, 0.4, 3.1) |
+| zeta | 5.975e-14 | dense 6D seed 20260911 certified, scaling (1.7, 0.4, 3.1) |
+
+###### 4b. Every row (fixture x scaling x row)
+
+| fixture | scaling | row | relative | test ratio (c = 2048.0) | contract ratio (c = 1024.0) | note |
+|---|---|---|---|---|---|---|
+| dense 6D seed 20260911 certified | auto | alpha | 1.114e-14 | 1.100e+00 | 1.684e+01 |  |
+| dense 6D seed 20260911 certified | auto | gamma | 1.112e-14 | 1.098e+00 | 1.740e+01 |  |
+| dense 6D seed 20260911 certified | auto | normalizer | 5.994e-15 | 5.921e-01 | 1.923e+01 |  |
+| dense 6D seed 20260911 certified | auto | G3 | 4.456e-15 | 4.403e-01 | 8.169e+00 |  |
+| dense 6D seed 20260911 certified | auto | h | 1.554e-15 | 1.536e-01 | 2.334e+00 |  |
+| dense 6D seed 20260911 certified | auto | G2 | 1.185e-14 | 1.171e+00 | 1.740e+01 |  |
+| dense 6D seed 20260911 certified | auto | tunes | 1.422e-15 | 1.405e-01 | 1.667e+00 |  |
+| dense 6D seed 20260911 certified | auto | eta | 3.665e-15 | 3.621e-01 | 3.918e+00 |  |
+| dense 6D seed 20260911 certified | auto | P1 | 4.031e-15 | 3.982e-01 | 4.751e+00 |  |
+| dense 6D seed 20260911 certified | auto | P3 | 4.731e-15 | 4.674e-01 | 4.418e+00 |  |
+| dense 6D seed 20260911 certified | auto | zeta | 4.518e-15 | 4.463e-01 | 6.335e+00 |  |
+| dense 6D seed 20260911 certified | auto | graph | 6.310e-15 | 6.234e-01 | 6.335e+00 |  |
+| dense 6D seed 20260911 certified | auto | edwards_teng_R | 3.164e-15 | 3.126e-01 | 3.501e+00 |  |
+| dense 6D seed 20260911 certified | auto | G1 | 3.575e-15 | 3.532e-01 | 4.835e+00 |  |
+| dense 6D seed 20260911 certified | auto | P2 | 3.817e-15 | 3.771e-01 | 4.835e+00 |  |
+| dense 6D seed 20260911 certified | auto | covariance | 3.370e-20 | 3.330e-06 | 2.480e-05 |  |
+| dense 6D seed 20260911 certified | auto | beta | 2.108e-15 | 2.083e-01 | 4.251e+00 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | alpha | 4.163e-14 | 4.112e+00 | 5.401e+01 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | gamma | 6.535e-14 | 6.456e+00 | 1.941e+02 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | normalizer | 4.258e-14 | 4.207e+00 | 1.050e+02 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | G3 | 7.570e-14 | 7.479e+00 | 1.941e+02 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | h | 2.565e-14 | 2.534e+00 | 3.851e+01 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | G2 | 7.956e-14 | 7.860e+00 | 2.226e+02 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | tunes | 1.387e-15 | 1.370e-01 | 1.542e+00 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | eta | 4.425e-14 | 4.371e+00 | 4.955e+01 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | P1 | 2.907e-15 | 2.871e-01 | 3.001e+00 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | P3 | 5.403e-14 | 5.338e+00 | 5.001e+01 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | zeta | 5.975e-14 | 5.903e+00 | 8.836e+01 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | graph | 7.236e-14 | 7.149e+00 | 8.836e+01 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | edwards_teng_R | 3.949e-14 | 3.901e+00 | 4.284e+01 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | G1 | 3.917e-15 | 3.870e-01 | 4.960e+00 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | P2 | 5.845e-14 | 5.774e+00 | 5.335e+01 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | covariance | 5.654e-19 | 5.585e-05 | 5.806e-04 |  |
+| dense 6D seed 20260911 certified | (1.7, 0.4, 3.1) | beta | 1.936e-14 | 1.913e+00 | 3.613e+01 |  |
+| dense 6D seed 20260912 certified | auto | alpha | 1.483e-12 | 1.107e+02 | 4.068e+03 |  |
+| dense 6D seed 20260912 certified | auto | gamma | 1.201e-12 | 8.966e+01 | 3.334e+03 |  |
+| dense 6D seed 20260912 certified | auto | normalizer | 6.188e-13 | 4.619e+01 | 2.037e+03 |  |
+| dense 6D seed 20260912 certified | auto | G3 | 1.360e-12 | 1.015e+02 | 4.071e+03 |  |
+| dense 6D seed 20260912 certified | auto | h | 2.220e-16 | 1.657e-02 | 6.006e-01 |  |
+| dense 6D seed 20260912 certified | auto | G2 | 3.822e-15 | 2.853e-01 | 5.255e+00 |  |
+| dense 6D seed 20260912 certified | auto | tunes | 1.290e-14 | 9.631e-01 | 3.488e+01 |  |
+| dense 6D seed 20260912 certified | auto | eta | 2.532e-15 | 1.890e-01 | 5.565e+00 |  |
+| dense 6D seed 20260912 certified | auto | P1 | 4.388e-15 | 3.275e-01 | 5.386e+00 |  |
+| dense 6D seed 20260912 certified | auto | P3 | 5.386e-15 | 4.020e-01 | 7.507e+00 |  |
+| dense 6D seed 20260912 certified | auto | zeta | 5.972e-15 | 4.458e-01 | 1.306e+01 |  |
+| dense 6D seed 20260912 certified | auto | graph | 5.385e-15 | 4.019e-01 | 1.306e+01 |  |
+| dense 6D seed 20260912 certified | auto | edwards_teng_R | 3.217e-15 | 2.402e-01 | 8.127e+00 |  |
+| dense 6D seed 20260912 certified | auto | G1 | 3.526e-15 | 2.632e-01 | 5.856e+00 |  |
+| dense 6D seed 20260912 certified | auto | P2 | 3.171e-15 | 2.367e-01 | 4.504e+00 |  |
+| dense 6D seed 20260912 certified | auto | covariance | 3.735e-17 | 2.788e-03 | 3.387e-02 |  |
+| dense 6D seed 20260912 certified | auto | beta | 1.237e-12 | 9.237e+01 | 4.068e+03 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | alpha | 1.480e-12 | 1.105e+02 | 4.077e+03 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | gamma | 1.193e-12 | 8.902e+01 | 3.308e+03 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | normalizer | 6.173e-13 | 4.608e+01 | 2.057e+03 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | G3 | 1.354e-12 | 1.011e+02 | 4.115e+03 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | h | 3.886e-15 | 2.901e-01 | 1.051e+01 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | G2 | 8.942e-15 | 6.675e-01 | 1.486e+01 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | tunes | 1.293e-14 | 9.650e-01 | 3.489e+01 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | eta | 7.191e-15 | 5.368e-01 | 1.288e+01 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | P1 | 1.755e-14 | 1.310e+00 | 2.335e+01 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | P3 | 1.767e-14 | 1.319e+00 | 2.858e+01 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | zeta | 2.309e-14 | 1.723e+00 | 5.056e+01 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | graph | 1.987e-14 | 1.483e+00 | 5.056e+01 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | edwards_teng_R | 1.432e-14 | 1.069e+00 | 5.262e+01 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | G1 | 1.934e-14 | 1.444e+00 | 2.537e+01 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | P2 | 9.188e-15 | 6.858e-01 | 1.246e+01 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | covariance | 3.720e-17 | 2.777e-03 | 3.355e-02 |  |
+| dense 6D seed 20260912 certified | (1.7, 0.4, 3.1) | beta | 1.230e-12 | 9.178e+01 | 4.115e+03 |  |
+| dense 6D seed 20260913 certified | auto | alpha | 1.415e-15 | 2.484e-01 | 1.771e+00 |  |
+| dense 6D seed 20260913 certified | auto | gamma | 1.998e-15 | 3.509e-01 | 6.123e+00 |  |
+| dense 6D seed 20260913 certified | auto | normalizer | 2.413e-15 | 4.237e-01 | 7.525e+00 |  |
+| dense 6D seed 20260913 certified | auto | G3 | 1.182e-15 | 2.075e-01 | 1.586e+00 |  |
+| dense 6D seed 20260913 certified | auto | h | 2.203e-16 | 3.868e-02 | 2.927e-01 |  |
+| dense 6D seed 20260913 certified | auto | G2 | 2.128e-15 | 3.737e-01 | 2.066e+00 |  |
+| dense 6D seed 20260913 certified | auto | tunes | 6.088e-16 | 1.069e-01 | 7.378e-01 |  |
+| dense 6D seed 20260913 certified | auto | eta | 8.295e-16 | 1.457e-01 | 8.669e-01 |  |
+| dense 6D seed 20260913 certified | auto | P1 | 6.870e-15 | 1.207e+00 | 8.263e+00 |  |
+| dense 6D seed 20260913 certified | auto | P3 | 1.311e-15 | 2.302e-01 | 1.180e+00 |  |
+| dense 6D seed 20260913 certified | auto | zeta | 1.354e-15 | 2.377e-01 | 1.254e+00 |  |
+| dense 6D seed 20260913 certified | auto | graph | 1.549e-15 | 2.720e-01 | 1.254e+00 |  |
+| dense 6D seed 20260913 certified | auto | edwards_teng_R | 8.953e-15 | 1.572e+00 | 1.003e+01 |  |
+| dense 6D seed 20260913 certified | auto | G1 | 3.755e-15 | 6.594e-01 | 6.123e+00 |  |
+| dense 6D seed 20260913 certified | auto | P2 | 2.720e-15 | 4.777e-01 | 2.066e+00 |  |
+| dense 6D seed 20260913 certified | auto | covariance | 7.684e-21 | 1.349e-06 | 4.644e-06 |  |
+| dense 6D seed 20260913 certified | auto | beta | 1.381e-15 | 2.426e-01 | 2.213e+00 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | alpha | 5.426e-15 | 9.529e-01 | 5.459e+00 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | gamma | 5.384e-15 | 9.455e-01 | 1.247e+01 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | normalizer | 5.781e-15 | 1.015e+00 | 1.282e+01 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | G3 | 1.118e-15 | 1.964e-01 | 1.734e+00 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | h | 4.405e-16 | 7.736e-02 | 5.855e-01 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | G2 | 1.083e-14 | 1.902e+00 | 1.222e+01 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | tunes | 1.022e-15 | 1.795e-01 | 1.070e+00 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | eta | 6.667e-16 | 1.171e-01 | 8.853e-01 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | P1 | 2.825e-15 | 4.960e-01 | 3.320e+00 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | P3 | 1.593e-15 | 2.798e-01 | 1.254e+00 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | zeta | 1.656e-15 | 2.908e-01 | 1.171e+00 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | graph | 1.765e-15 | 3.100e-01 | 1.171e+00 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | edwards_teng_R | 3.348e-15 | 5.879e-01 | 4.058e+00 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | G1 | 8.221e-15 | 1.444e+00 | 9.296e+00 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | P2 | 1.219e-14 | 2.141e+00 | 1.254e+01 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | covariance | 7.949e-21 | 1.396e-06 | 5.347e-06 |  |
+| dense 6D seed 20260913 certified | (1.7, 0.4, 3.1) | beta | 5.977e-15 | 1.050e+00 | 7.938e+00 |  |
+| dense 6D seed 20260914 certified | auto | alpha | 1.743e-14 | 1.714e+00 | 2.761e+01 |  |
+| dense 6D seed 20260914 certified | auto | gamma | 6.006e-15 | 5.906e-01 | 2.307e+01 |  |
+| dense 6D seed 20260914 certified | auto | normalizer | 1.278e-14 | 1.257e+00 | 3.389e+01 |  |
+| dense 6D seed 20260914 certified | auto | G3 | 3.057e-14 | 3.006e+00 | 6.514e+01 |  |
+| dense 6D seed 20260914 certified | auto | h | 7.772e-16 | 7.642e-02 | 1.157e+00 |  |
+| dense 6D seed 20260914 certified | auto | G2 | 7.679e-15 | 7.551e-01 | 1.306e+01 |  |
+| dense 6D seed 20260914 certified | auto | tunes | 2.290e-15 | 2.252e-01 | 3.369e+00 |  |
+| dense 6D seed 20260914 certified | auto | eta | 9.637e-15 | 9.476e-01 | 1.290e+01 |  |
+| dense 6D seed 20260914 certified | auto | P1 | 1.463e-14 | 1.439e+00 | 2.695e+01 |  |
+| dense 6D seed 20260914 certified | auto | P3 | 1.586e-14 | 1.559e+00 | 3.175e+01 |  |
+| dense 6D seed 20260914 certified | auto | zeta | 2.117e-14 | 2.082e+00 | 3.389e+01 |  |
+| dense 6D seed 20260914 certified | auto | graph | 2.103e-14 | 2.068e+00 | 3.389e+01 |  |
+| dense 6D seed 20260914 certified | auto | edwards_teng_R | 1.047e-14 | 1.030e+00 | 1.381e+01 |  |
+| dense 6D seed 20260914 certified | auto | G1 | 6.666e-15 | 6.555e-01 | 1.453e+01 |  |
+| dense 6D seed 20260914 certified | auto | P2 | 1.306e-14 | 1.285e+00 | 1.951e+01 |  |
+| dense 6D seed 20260914 certified | auto | covariance | 3.187e-19 | 3.134e-05 | 1.960e-04 |  |
+| dense 6D seed 20260914 certified | auto | beta | 9.044e-15 | 8.893e-01 | 1.422e+01 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | alpha | 1.841e-14 | 1.810e+00 | 3.208e+01 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | gamma | 1.223e-14 | 1.203e+00 | 5.554e+01 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | normalizer | 1.743e-14 | 1.714e+00 | 4.687e+01 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | G3 | 4.305e-14 | 4.234e+00 | 8.660e+01 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | h | 4.441e-15 | 4.367e-01 | 6.614e+00 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | G2 | 4.655e-15 | 4.578e-01 | 6.200e+00 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | tunes | 2.276e-15 | 2.238e-01 | 3.369e+00 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | eta | 1.532e-14 | 1.507e+00 | 1.810e+01 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | P1 | 2.248e-14 | 2.210e+00 | 4.051e+01 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | P3 | 1.965e-14 | 1.932e+00 | 4.167e+01 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | zeta | 2.102e-14 | 2.067e+00 | 3.886e+01 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | graph | 2.308e-14 | 2.269e+00 | 3.886e+01 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | edwards_teng_R | 1.079e-14 | 1.061e+00 | 1.604e+01 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | G1 | 1.698e-14 | 1.670e+00 | 4.266e+01 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | P2 | 5.398e-15 | 5.308e-01 | 8.102e+00 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | covariance | 4.488e-19 | 4.413e-05 | 2.600e-04 |  |
+| dense 6D seed 20260914 certified | (1.7, 0.4, 3.1) | beta | 1.316e-14 | 1.294e+00 | 2.397e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | alpha | 6.299e-15 | 6.223e-01 | 6.981e+00 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | gamma | 8.876e-15 | 8.768e-01 | 3.851e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | normalizer | 8.820e-15 | 8.713e-01 | 2.451e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | G3 | 1.673e-14 | 1.653e+00 | 3.834e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | h | 2.554e-15 | 2.523e-01 | 3.834e+00 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | G2 | 1.003e-14 | 9.912e-01 | 3.067e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | tunes | 9.751e-16 | 9.633e-02 | 1.334e+00 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | eta | 1.588e-14 | 1.569e+00 | 2.251e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | P1 | 2.219e-15 | 2.192e-01 | 2.751e+00 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | P3 | 1.730e-14 | 1.709e+00 | 2.334e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | zeta | 2.069e-14 | 2.044e+00 | 2.967e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | graph | 2.533e-14 | 2.502e+00 | 2.967e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | edwards_teng_R | 1.349e-14 | 1.332e+00 | 1.467e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | G1 | 2.536e-15 | 2.505e-01 | 3.476e+00 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | P2 | 1.732e-14 | 1.711e+00 | 2.234e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | covariance | 1.252e-19 | 1.237e-05 | 1.151e-04 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | auto | beta | 3.448e-15 | 3.406e-01 | 6.418e+00 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | alpha | 2.227e-14 | 2.200e+00 | 2.957e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | gamma | 3.656e-14 | 3.612e+00 | 1.680e+02 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | normalizer | 3.312e-14 | 3.272e+00 | 9.336e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | G3 | 6.623e-14 | 6.543e+00 | 1.684e+02 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | h | 1.998e-14 | 1.974e+00 | 3.001e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | G2 | 4.967e-14 | 4.907e+00 | 1.907e+02 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | tunes | 2.591e-15 | 2.560e-01 | 3.876e+00 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | eta | 2.985e-14 | 2.949e+00 | 3.818e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | P1 | 5.881e-15 | 5.810e-01 | 6.252e+00 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | P3 | 4.467e-14 | 4.414e+00 | 4.985e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | zeta | 5.557e-14 | 5.489e+00 | 8.169e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | graph | 6.102e-14 | 6.029e+00 | 8.169e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | edwards_teng_R | 3.773e-14 | 3.728e+00 | 4.259e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | G1 | 3.952e-15 | 3.905e-01 | 5.460e+00 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | P2 | 5.037e-14 | 4.976e+00 | 5.218e+01 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | covariance | 4.946e-19 | 4.887e-05 | 5.043e-04 |  |
+| dense 6D seed 20260911 linearized (Linear6DSpec) | (1.7, 0.4, 3.1) | beta | 1.037e-14 | 1.025e+00 | 1.596e+01 |  |
+| dense 4x4 seed 20260911 | auto | alpha | 1.849e-12 | 5.981e+01 | 4.573e+03 |  |
+| dense 4x4 seed 20260911 | auto | zeta_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| dense 4x4 seed 20260911 | auto | gamma | 1.836e-12 | 5.939e+01 | 4.635e+03 |  |
+| dense 4x4 seed 20260911 | auto | normalizer | 8.956e-13 | 2.897e+01 | 2.332e+03 |  |
+| dense 4x4 seed 20260911 | auto | eta_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| dense 4x4 seed 20260911 | auto | graph_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| dense 4x4 seed 20260911 | auto | G2 | 1.851e-12 | 5.987e+01 | 4.664e+03 |  |
+| dense 4x4 seed 20260911 | auto | tunes | 5.559e-15 | 1.798e-01 | 1.361e+01 |  |
+| dense 4x4 seed 20260911 | auto | P1 | 9.482e-16 | 3.067e-02 | 1.506e+00 |  |
+| dense 4x4 seed 20260911 | auto | edwards_teng_R | 1.182e-15 | 3.823e-02 | 2.738e+00 |  |
+| dense 4x4 seed 20260911 | auto | G1 | 1.860e-15 | 6.018e-02 | 3.012e+00 |  |
+| dense 4x4 seed 20260911 | auto | P2 | 1.485e-14 | 4.804e-01 | 2.957e+01 |  |
+| dense 4x4 seed 20260911 | auto | covariance | 1.161e-19 | 3.757e-06 | 1.126e-04 |  |
+| dense 4x4 seed 20260911 | auto | beta | 1.884e-12 | 6.094e+01 | 4.664e+03 |  |
+| dense 4x4 seed 20260911 | auto | h_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | alpha | 3.374e-12 | 1.091e+02 | 8.326e+03 |  |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | zeta_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | gamma | 3.350e-12 | 1.084e+02 | 8.328e+03 |  |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | normalizer | 1.629e-12 | 5.271e+01 | 4.175e+03 |  |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | eta_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | graph_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | G2 | 3.367e-12 | 1.089e+02 | 8.350e+03 |  |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | tunes | 9.708e-15 | 3.141e-01 | 2.393e+01 |  |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | P1 | 6.542e-16 | 2.116e-02 | 1.095e+00 |  |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | edwards_teng_R | 7.343e-16 | 2.376e-02 | 1.916e+00 |  |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | G1 | 1.743e-15 | 5.637e-02 | 2.464e+00 |  |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | P2 | 3.495e-14 | 1.131e+00 | 7.420e+01 |  |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | covariance | 2.113e-19 | 6.836e-06 | 2.060e-04 |  |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | beta | 3.374e-12 | 1.092e+02 | 8.351e+03 |  |
+| dense 4x4 seed 20260911 | (1.7, 0.4) | h_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | alpha | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | zeta_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | gamma | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | normalizer | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | eta_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | graph_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | G2 | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | tunes | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | P1 | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | edwards_teng_R | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | G1 | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | P2 | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | covariance | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | beta | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | auto | h_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | alpha | 1.470e-15 | 1.655e+00 | 4.586e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | zeta_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | gamma | 1.920e-15 | 2.162e+00 | 7.500e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | normalizer | 2.559e-15 | 2.881e+00 | 1.156e+01 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | eta_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | graph_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | G2 | 3.387e-15 | 3.813e+00 | 1.105e+01 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | tunes | 1.742e-15 | 1.961e+00 | 8.333e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | P1 | 3.677e-15 | 4.140e+00 | 1.000e+01 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | edwards_teng_R | 4.110e-15 | 4.628e+00 | 1.325e+01 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | G1 | 3.886e-15 | 4.375e+00 | 9.250e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | P2 | 2.814e-15 | 3.169e+00 | 9.629e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | covariance | 1.161e-23 | 1.307e-08 | 3.013e-08 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | beta | 1.685e-15 | 1.897e+00 | 6.500e+00 |  |
+| coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3 | (1.7, 0.4) | h_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| coasting shear s = 0.3 (stage 4a builder) | auto | alpha | 5.075e-12 | 5.166e+01 | 1.361e+04 |  |
+| coasting shear s = 0.3 (stage 4a builder) | auto | gamma | 5.050e-12 | 5.140e+01 | 1.356e+04 |  |
+| coasting shear s = 0.3 (stage 4a builder) | auto | normalizer | 2.481e-12 | 2.525e+01 | 6.834e+03 |  |
+| coasting shear s = 0.3 (stage 4a builder) | auto | h | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coasting shear s = 0.3 (stage 4a builder) | auto | G2 | 5.067e-12 | 5.158e+01 | 1.367e+04 |  |
+| coasting shear s = 0.3 (stage 4a builder) | auto | tunes | 1.274e-14 | 1.297e-01 | 3.416e+01 |  |
+| coasting shear s = 0.3 (stage 4a builder) | auto | eta | 5.137e-14 | 5.229e-01 | 8.378e+01 |  |
+| coasting shear s = 0.3 (stage 4a builder) | auto | P1 | 2.725e-15 | 2.774e-02 | 4.836e+00 |  |
+| coasting shear s = 0.3 (stage 4a builder) | auto | zeta | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coasting shear s = 0.3 (stage 4a builder) | auto | graph | 5.141e-14 | 5.233e-01 | 8.392e+01 |  |
+| coasting shear s = 0.3 (stage 4a builder) | auto | edwards_teng_R | 3.946e-15 | 4.017e-02 | 1.056e+01 |  |
+| coasting shear s = 0.3 (stage 4a builder) | auto | G1 | 2.605e-15 | 2.651e-02 | 8.035e+00 |  |
+| coasting shear s = 0.3 (stage 4a builder) | auto | P2 | 9.596e-14 | 9.768e-01 | 1.931e+02 |  |
+| coasting shear s = 0.3 (stage 4a builder) | auto | covariance_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| coasting shear s = 0.3 (stage 4a builder) | auto | beta | 5.096e-12 | 5.188e+01 | 1.367e+04 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | alpha | 3.849e-12 | 3.918e+01 | 1.032e+04 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | gamma | 3.844e-12 | 3.912e+01 | 1.032e+04 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | normalizer | 1.884e-12 | 1.918e+01 | 5.166e+03 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | h | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | G2 | 3.848e-12 | 3.917e+01 | 1.032e+04 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | tunes | 1.006e-14 | 1.024e-01 | 2.698e+01 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | eta | 7.039e-16 | 7.166e-03 | 1.339e+00 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | P1 | 1.151e-15 | 1.172e-02 | 1.786e+00 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | zeta | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | graph | 7.039e-16 | 7.166e-03 | 1.339e+00 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | edwards_teng_R | 1.996e-15 | 2.032e-02 | 3.869e+00 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | G1 | 2.872e-15 | 2.923e-02 | 8.112e+00 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | P2 | 9.984e-14 | 1.016e+00 | 1.949e+02 |  |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | covariance_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| coasting shear s = 0.3 (stage 4a builder) | (1.7, 0.4, 3.1) | beta | 3.846e-12 | 3.915e+01 | 1.031e+04 |  |
+| DBA cell at delta = 0 | auto | alpha | 1.213e-15 | 8.458e-03 | 7.757e-02 |  |
+| DBA cell at delta = 0 | auto | gamma | 6.939e-17 | 4.839e-04 | 4.438e-03 |  |
+| DBA cell at delta = 0 | auto | normalizer | 1.319e-16 | 9.200e-04 | 2.675e-02 |  |
+| DBA cell at delta = 0 | auto | h | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| DBA cell at delta = 0 | auto | G2 | 2.938e-16 | 2.049e-03 | 7.757e-02 |  |
+| DBA cell at delta = 0 | auto | tunes | 7.197e-16 | 5.019e-03 | 6.583e-02 |  |
+| DBA cell at delta = 0 | auto | eta | 1.150e-16 | 8.022e-04 | 7.101e-03 |  |
+| DBA cell at delta = 0 | auto | P1 | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| DBA cell at delta = 0 | auto | zeta | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| DBA cell at delta = 0 | auto | graph | 3.008e-17 | 2.098e-04 | 1.924e-03 |  |
+| DBA cell at delta = 0 | auto | edwards_teng_R | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| DBA cell at delta = 0 | auto | G1 | 2.563e-16 | 1.788e-03 | 1.755e-02 |  |
+| DBA cell at delta = 0 | auto | P2 | 3.925e-16 | 2.737e-03 | 2.840e-02 |  |
+| DBA cell at delta = 0 | auto | covariance_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| DBA cell at delta = 0 | auto | beta | 2.594e-17 | 1.809e-04 | 8.775e-03 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | alpha | 1.650e-16 | 1.151e-03 | 1.055e-02 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | gamma | 1.241e-16 | 8.657e-04 | 7.101e-03 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | normalizer | 2.739e-16 | 1.910e-03 | 1.959e-02 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | h | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | G2 | 4.236e-16 | 2.954e-03 | 2.703e-02 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | tunes | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | eta | 1.120e-16 | 7.814e-04 | 7.101e-03 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | P1 | 1.755e-16 | 1.224e-03 | 1.420e-02 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | zeta | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | graph | 1.120e-16 | 7.814e-04 | 7.101e-03 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | edwards_teng_R | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | G1 | 1.433e-16 | 9.994e-04 | 8.775e-03 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | P2 | 5.027e-16 | 3.506e-03 | 3.551e-02 |  |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | covariance_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| DBA cell at delta = 0 | (1.7, 0.4, 3.1) | beta | 8.304e-16 | 5.791e-03 | 5.406e-02 |  |
+| FODO cell tuple | auto | alpha | 3.325e-16 | 9.038e-03 | 1.426e-01 |  |
+| FODO cell tuple | auto | gamma | 3.511e-16 | 9.543e-03 | 8.556e-02 |  |
+| FODO cell tuple | auto | normalizer | 2.251e-16 | 6.119e-03 | 9.406e-02 |  |
+| FODO cell tuple | auto | h | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| FODO cell tuple | auto | G2 | 6.702e-16 | 1.822e-02 | 1.724e-01 |  |
+| FODO cell tuple | auto | tunes | 3.331e-16 | 9.054e-03 | 8.556e-02 |  |
+| FODO cell tuple | auto | eta | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| FODO cell tuple | auto | P1 | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| FODO cell tuple | auto | zeta | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| FODO cell tuple | auto | graph | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| FODO cell tuple | auto | edwards_teng_R | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| FODO cell tuple | auto | G1 | 3.869e-17 | 1.052e-03 | 3.940e-02 |  |
+| FODO cell tuple | auto | P2 | 2.220e-16 | 6.036e-03 | 5.704e-02 |  |
+| FODO cell tuple | auto | covariance_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| FODO cell tuple | auto | beta | 3.216e-16 | 8.742e-03 | 1.034e-01 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | alpha | 2.660e-16 | 7.231e-03 | 7.880e-02 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | gamma | 1.570e-16 | 4.268e-03 | 2.852e-02 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | normalizer | 2.038e-16 | 5.539e-03 | 6.271e-02 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | h | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | G2 | 5.015e-16 | 1.363e-02 | 1.379e-01 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | tunes | 2.483e-16 | 6.748e-03 | 5.704e-02 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | eta | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | P1 | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | zeta | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | graph | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | edwards_teng_R | 0.000e+00 | 0.000e+00 | 0.000e+00 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | G1 | 1.704e-16 | 4.632e-03 | 7.880e-02 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | P2 | 5.027e-16 | 1.366e-02 | 1.426e-01 |  |
+| FODO cell tuple | (1.7, 0.4, 3.1) | covariance_reason | 0.000e+00 | 0.000e+00 | - | same reason |
+| FODO cell tuple | (1.7, 0.4, 3.1) | beta | 4.068e-16 | 1.106e-02 | 2.068e-01 |  |
+| prescribed h = 0.05, tune 0.94 | auto | alpha | 6.269e-15 | 1.232e+00 | 5.266e+00 |  |
+| prescribed h = 0.05, tune 0.94 | auto | gamma | 1.891e-15 | 3.715e-01 | 5.289e+00 |  |
+| prescribed h = 0.05, tune 0.94 | auto | normalizer | 2.410e-15 | 4.736e-01 | 4.523e+00 |  |
+| prescribed h = 0.05, tune 0.94 | auto | G3 | 3.552e-15 | 6.978e-01 | 4.752e+00 |  |
+| prescribed h = 0.05, tune 0.94 | auto | h | 2.637e-16 | 5.181e-02 | 4.067e-01 |  |
+| prescribed h = 0.05, tune 0.94 | auto | G2 | 7.271e-16 | 1.428e-01 | 1.370e+00 |  |
+| prescribed h = 0.05, tune 0.94 | auto | tunes | 4.390e-17 | 8.626e-03 | 1.968e-01 |  |
+| prescribed h = 0.05, tune 0.94 | auto | eta | 2.969e-15 | 5.834e-01 | 4.418e+00 |  |
+| prescribed h = 0.05, tune 0.94 | auto | P1 | 2.994e-15 | 5.883e-01 | 4.418e+00 |  |
+| prescribed h = 0.05, tune 0.94 | auto | P3 | 3.016e-15 | 5.926e-01 | 4.418e+00 |  |
+| prescribed h = 0.05, tune 0.94 | auto | zeta | 5.365e-14 | 1.054e+01 | 8.476e+01 |  |
+| prescribed h = 0.05, tune 0.94 | auto | graph | 5.989e-15 | 1.177e+00 | 8.836e+01 |  |
+| prescribed h = 0.05, tune 0.94 | auto | edwards_teng_R | 1.781e-16 | 3.499e-02 | 2.602e-01 |  |
+| prescribed h = 0.05, tune 0.94 | auto | G1 | 3.928e-15 | 7.718e-01 | 5.223e+00 |  |
+| prescribed h = 0.05, tune 0.94 | auto | P2 | 2.832e-16 | 5.564e-02 | 3.425e-01 |  |
+| prescribed h = 0.05, tune 0.94 | auto | covariance | 2.401e-20 | 4.718e-06 | 1.453e-05 |  |
+| prescribed h = 0.05, tune 0.94 | auto | beta | 1.890e-15 | 3.713e-01 | 4.281e+00 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | alpha | 7.597e-15 | 1.493e+00 | 7.149e+00 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | gamma | 8.582e-15 | 1.686e+00 | 2.414e+01 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | normalizer | 6.405e-15 | 1.258e+00 | 1.319e+01 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | G3 | 9.602e-15 | 1.887e+00 | 2.414e+01 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | h | 7.369e-15 | 1.448e+00 | 1.137e+01 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | G2 | 2.355e-15 | 4.628e-01 | 3.254e+00 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | tunes | 1.583e-16 | 3.110e-02 | 7.873e-01 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | eta | 1.171e-14 | 2.301e+00 | 1.747e+01 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | P1 | 1.286e-14 | 2.527e+00 | 1.747e+01 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | P3 | 1.314e-14 | 2.582e+00 | 1.781e+01 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | zeta | 5.257e-14 | 1.033e+01 | 8.288e+01 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | graph | 1.591e-13 | 3.127e+01 | 2.457e+02 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | edwards_teng_R | 9.444e-16 | 1.856e-01 | 1.445e+00 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | G1 | 1.065e-14 | 2.093e+00 | 2.500e+01 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | P2 | 1.424e-15 | 2.797e-01 | 1.289e+00 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | covariance | 6.525e-20 | 1.282e-05 | 7.185e-05 |  |
+| prescribed h = 0.05, tune 0.94 | (1.7, 0.4, 3.1) | beta | 9.056e-15 | 1.779e+00 | 2.500e+01 |  |
+
+##### 5. Both contracts' validate (main tree, this process)
+
+| run | passed | seconds | message | metrics |
+|---|---|---|---|---|
+| validate(AnalysisOptionEffectivenessContract()) cold | true | 3.78 | analysis options certified: 19 probes, 16 inactive entries applied, 32 receipts checked, 15 moved, 4 fixed | checked = 19, inactive_applied = 16, inactive_declared = 16, observables_fixed = 4, observables_moved = 15, receipts_checked = 32, stale_exemptions = 0 |
+| validate(AnalysisOptionEffectivenessContract()) warm | true | 0.20 | analysis options certified: 19 probes, 16 inactive entries applied, 32 receipts checked, 15 moved, 4 fixed | checked = 19, inactive_applied = 16, inactive_declared = 16, observables_fixed = 4, observables_moved = 15, receipts_checked = 32, stale_exemptions = 0 |
+| validate(PublicConfigurationEffectivenessContract()) | true | 59.29 | Public configuration reached CPU, fused CUDA, and CUDA PIC consumers. | cpu_worker_coordinate_max_abs_error = 0.0, cpu_worker_effective = true, cpu_worker_receipts = Dict(4 => 2, 2 => 2, 1 => 2), cpu_workers_tested = [1, 2, 4], cuda_auto_launch_effective = true, cuda_coordinate_max_abs_error = 1.0842021724855044e-19, cuda_device_mismatch_rejected = true, cuda_device_mismatch_unchanged = true, cuda_explicit_launch_effective = true, cuda_fused_receipts = Dict{Tuple{Int64, Any}, Int64}((512, :auto) => 2, (128, :auto) => 2, (256, :auto) => 2, (128, 3) => 2, (64, :auto) => 2, (256, 3) => 2, (64, 3) => 2, (512, 3) => 2), cuda_pic_families_observed = [:deposition, :field, :gather_scatter, :green, :kick, :luminosity, :spectral], cuda_pic_launch_effective = true, cuda_pic_sequential_algorithm_effective = true, cuda_pic_wavefront_algorithm_effective = true, cuda_status = passed, cuda_threads_tested = (64, 128, 256, 512), inactive_configuration_reported = true, inherited_configuration_reported = true, invalid_cpu_threads_rejected = true, invalid_cuda_pic_launch_rejected = true, invalid_cuda_pic_launch_unchanged = true, multi_process_coordinate_max_abs_error = 0.0, multi_process_nranks = 1, multi_process_receipts = 1, multi_process_resolved_by = serial_passthrough, schedule_and_capacity_effective = true, solver_equal_config_accepted = true, solver_mismatch_rejected = true, solver_mismatch_unchanged = true, unknown_beam_keyword_rejected = true |
+
+Wall time 76.6 s after the package load.
+
+### Appendix: the measurement script
+
+`measure_stage4b.jl` (the Part D1 driver: sections 1-5 of the table; package mode from the tree under test, `julia --startup-file=no --project=REPO --threads=4 measure_stage4b.jl <out.md>`; the fixture builders are the suite's `_st4b_a_` block, extracted from `test/runtests.jl` by name at run time):
+
+```julia
+# Stage 4b measurement (Part D1). Package mode, from the tree under test:
+#   julia --startup-file=no --project=<tree> --threads=4 measure_stage4b.jl <out.md>
+# (1) the PROVISIONAL multipliers of twiss_dispersion_analysis.jl (six named by the dossier plus the fixer's
+#     _TUNE_CHORD_FLOOR_MULTIPLIER): accepted extreme over the fixtures that must pass, rejected extreme over the
+#     fixtures the defect can act on, the one-tenth / ten window, fixture names DERIVED from the rows;
+# (2) the receipt completeness matrix, option x input form (matrix, linearized, matrix4, coasting);
+# (3) the scaling invariance of every PhysicalOptics row at three scalings (max relative deviation per row);
+# (4) both contracts' validate with metrics and timings.
+# The fixture builders are the suite's own `_st4b_a_` helpers, extracted from test/runtests.jl BY NAME at run time
+# (never copied by hand); nothing here is a test lane (no Pkg.test, no @testset).
+using Octopus, LinearAlgebra, Random, Printf
+using Octopus: determined_value, is_determined
+const OUT_MD = ARGS[1]
+const REPO = normpath(joinpath(@__DIR__, "..", "..", "..", ".."))
+const EPS = eps(Float64)
+e2(x) = x isa Bool ? string(x) : x isa Real ? @sprintf("%.3e", x) : string(x)
+dv(d) = is_determined(d) ? determined_value(d) : nothing
+st(d) = is_determined(d) ? "unique" : string(d.status, ":", d.reason)
+
+# --- the suite's fixture helpers, extracted by name -------------------------------------------------
+const RUNTESTS = readlines(joinpath(REPO, "test", "runtests.jl"))
+function fixture_prelude()
+    i = findfirst(l -> startswith(l, "const _ST4B_SEED"), RUNTESTS)
+    j = findnext(l -> startswith(l, "# Part B helpers"), RUNTESTS, i)
+    (i === nothing || j === nothing) && error("the _st4b_a_ helper block was not found in test/runtests.jl")
+    return join(RUNTESTS[i:j-1], "\n")
+end
+const PRELUDE = fixture_prelude()
+include_string(Main, PRELUDE, "runtests_prelude_4b")
+const PRELUDE_LINES = count(==('\n'), PRELUDE) + 1
+
+# --- shared helpers -----------------------------------------------------------------------------------------
+const OUTBUF = IOBuffer()
+pr(s...) = println(OUTBUF, s...)
+entry(r, name) = r.configuration[findfirst(e -> e.name === name, r.configuration)]
+receipts_of(audit, consumer) = filter(r -> r.consumer === consumer, execution_receipts(audit))
+"analyze under an audit; returns (result-or-exception, receipts)."
+function audited(analysis, input)
+    audit = ExecutionAudit()
+    holder = Ref{Any}(nothing)
+    try
+        with_execution_audit(audit) do; holder[] = analyze(analysis, input); end   # with_execution_audit returns the audit, not the block's value
+    catch err
+        holder[] = err
+    end
+    return holder[], execution_receipts(audit)
+end
+"The certified analysis of a bunched 6D map (the heuristic's index passed back), the way the suite does it."
+certified(M; kwargs...) = _st4b_a_certified(M; kwargs...)
+"Residual triple (value, tolerance) by name from the diagnostics, or nothing."
+function triple(r, name)
+    k = findfirst(t -> t[1] == name, r.diagnostics.residuals)
+    return k === nothing ? nothing : (value=r.diagnostics.residuals[k][2], tolerance=r.diagnostics.residuals[k][3])
+end
+frame_of(r) = (is_determined(r.transverse) && is_determined(dv(r.transverse).frame)) ? dv(dv(r.transverse).frame) : nothing
+
+# --- the one-tenth / ten rule (the stage 4a shape) --------------------------------------------------------
+const ACC = Dict{String,Dict{String,Float64}}(); const REJ = Dict{String,Dict{String,Float64}}(); const UNL = Dict{String,Dict{String,Float64}}()
+acc!(key, name, v) = (get!(ACC, key, Dict{String,Float64}())[name] = v)
+rej!(key, name, v) = (get!(REJ, key, Dict{String,Float64}())[name] = v)
+unl!(key, name, v) = (get!(UNL, key, Dict{String,Float64}())[name] = v)
+const WINDOWS = Dict{String,Any}()
+"Window lines for one constant: accepted ratios must stay below c / 10 and rejected ones above 10 c (accepted_below), or the reverse."
+function window_lines(key, title, formula, current; accepted_below::Bool=true)
+    acc = get(ACC, key, Dict{String,Float64}()); rej = get(REJ, key, Dict{String,Float64}()); unl = get(UNL, key, Dict{String,Float64}())
+    out = String["### $(title)", "", "- ratio at multiplier 1: $(formula)", "- source value: $(current); accepted $(length(acc)), rejected $(length(rej)), unlabelled $(length(unl)) fixture values"]
+    if accepted_below
+        ka = isempty(acc) ? nothing : argmax(acc); kr = isempty(rej) ? nothing : argmin(rej)
+        ka === nothing || push!(out, "- largest accepted ratio (must stay below c / 10): $(e2(acc[ka])) at \"$(ka)\"")
+        kr === nothing || push!(out, "- smallest rejected ratio (must exceed 10 c): $(e2(rej[kr])) at \"$(kr)\"")
+        lo = ka === nothing ? 0.0 : 10 * acc[ka]; hi = kr === nothing ? Inf : rej[kr] / 10
+        top_acc = sort(collect(acc); by=last, rev=true); top_rej = sort(collect(rej); by=last)
+    else
+        ka = isempty(acc) ? nothing : argmin(acc); kr = isempty(rej) ? nothing : argmax(rej)
+        ka === nothing || push!(out, "- smallest accepted ratio (must exceed 10 c): $(e2(acc[ka])) at \"$(ka)\"")
+        kr === nothing || push!(out, "- largest rejected ratio (must stay below c / 10): $(e2(rej[kr])) at \"$(kr)\"")
+        lo = kr === nothing ? 0.0 : 10 * rej[kr]; hi = ka === nothing ? Inf : acc[ka] / 10
+        top_acc = sort(collect(acc); by=last); top_rej = sort(collect(rej); by=last, rev=true)
+    end
+    empty = lo > hi
+    inside = !empty && lo <= current <= hi
+    push!(out, "- window [$(e2(lo)), $(e2(hi))]" * (empty ? " is EMPTY (the fixtures on both sides are closer than a factor 100)" : "; source value inside: $(inside)") *
+               (isempty(rej) ? " (no rejected fixture: that edge is open)" : ""))
+    for (k, v) in top_acc[1:min(5, length(top_acc))]; push!(out, "  - accepted \"$(k)\" $(e2(v))"); end
+    for (k, v) in top_rej[1:min(5, length(top_rej))]; push!(out, "  - rejected \"$(k)\" $(e2(v))"); end
+    if !isempty(unl)
+        us = accepted_below ? sort(collect(unl); by=last, rev=true) : sort(collect(unl); by=last)
+        for (k, v) in us[1:min(4, length(us))]; push!(out, "  - unlabelled \"$(k)\" $(e2(v))"); end
+    end
+    push!(out, "")
+    WINDOWS[key] = (lo=lo, hi=hi, inside=inside, empty=empty, current=current, n_acc=length(acc), n_rej=length(rej), n_unl=length(unl),
+                    acc_extreme=ka === nothing ? ("-", NaN) : (ka, acc[ka]), rej_extreme=kr === nothing ? ("-", NaN) : (kr, rej[kr]))
+    return out
+end
+
+# --- the fixture table (dossier "Fixtures"; names carry the data that built them) ---------------------------
+"A 4x4 map with two prescribed tunes coupled by a symplectic x-y rotation of angle theta (theta = pi/4 equalizes the block traces)."
+function coupled4(mu1, mu2, theta)
+    c, s = cos(theta), sin(theta)
+    Rot = [c 0 s 0; 0 c 0 s; -s 0 c 0; 0 -s 0 c]
+    return Rot * _st4b_a_bd(_st4b_a_rot(mu1), _st4b_a_rot(mu2)) * transpose(Rot)
+end
+"Perturbed dense map: dense 6D + scale * randn (seed derived from the suite's), analysed with symplectic_rtol = 1e3 * scale, nonsymplectic = :flag."
+perturbed_analysis(scale; kwargs...) = TwissDispersionAnalysis(; symplectic_rtol=1e3 * scale, nonsymplectic=:flag, strict=false, kwargs...)
+const DENSE_SEEDS = [_ST4B_SEED; _ST4B_SEED .+ (1:24)]
+"Fixtures that MUST pass (rows: name, input, analysis, kind)."
+function must_pass_fixtures()
+    fx = Any[]
+    for seed in DENSE_SEEDS
+        M = Octopus._manufactured_symplectic_map(MersenneTwister(seed), 6; stable=true)[1]
+        push!(fx, (name="dense 6D seed $(seed) certified", input=M, analysis=certified(M; emittances=(1e-9, 2e-9, 3e-6)), kind=:bunched))
+    end
+    M6 = _st4b_a_dense6()
+    push!(fx, (name="dense 6D seed $(_ST4B_SEED) heuristic (degraded)", input=M6, analysis=TwissDispersionAnalysis(strict=false, emittances=(1e-9, 2e-9, 3e-6)), kind=:bunched))
+    for em in ((1e-6, 1e-6, 1e-6), (1.0, 1.0, 1.0), (1e3, 1e3, 1e3), (1e-12, 1e-9, 1e-3))
+        push!(fx, (name="dense 6D seed $(_ST4B_SEED) certified, emittances $(em)", input=M6, analysis=certified(M6; emittances=em), kind=:bunched))
+    end
+    lm6 = one_turn_matrix((compile_runtime(Linear6DSpec(matrix=M6)),))
+    push!(fx, (name="dense 6D seed $(_ST4B_SEED) linearized (Linear6DSpec, complex step)", input=lm6, analysis=certified(M6; emittances=(1e-9, 2e-9, 3e-6)), kind=:bunched))
+    push!(fx, (name="dense 6D seed $(_ST4B_SEED) explicit partition [[1,6],[2,5],[3,4]] (conjugate pairs of the clusters report)", input=M6,
+               analysis=certified(M6; clusters=[[1, 6], [2, 5], [3, 4]], emittances=(1e-9, 2e-9, 3e-6)), kind=:bunched))
+    for seed in DENSE_SEEDS[1:8]
+        M4 = Octopus._manufactured_symplectic_map(MersenneTwister(seed), 4; stable=true)[1]
+        push!(fx, (name="dense 4x4 seed $(seed)", input=M4, analysis=TwissDispersionAnalysis(strict=false, emittances=(1e-9, 2e-9)), kind=:four))
+    end
+    for (mu1, mu2, th) in ((0.5, 1.2, 0.3), (0.5, 1.2, pi / 4 - 1e-3), (2.9, 0.1, 1.1), (0.31, 0.7, 0.0))
+        push!(fx, (name="coupled 4x4 R($(mu1)) (+) R($(mu2)) rotated by $(round(th; digits=6))", input=coupled4(mu1, mu2, th),
+                   analysis=TwissDispersionAnalysis(strict=false, emittances=(1e-9, 2e-9)), kind=:four))
+    end
+    for s in (0.3, 0.0, -1.7)
+        push!(fx, (name="coasting shear s = $(s) (stage 4a builder, seed $(_ST4B_SEED))", input=_st4b_a_coasting(s).M,
+                   analysis=TwissDispersionAnalysis(strict=false, emittances=(1e-9, 2e-9, 3e-6)), kind=:coasting))
+    end
+    push!(fx, (name="DBA cell (kf = 1.5, kd = -1.1, h = 0.2) at delta = 0", input=_st4b_a_dba(), analysis=TwissDispersionAnalysis(strict=false), kind=:coasting))
+    push!(fx, (name="FODO cell (kq = 1.6, detune 1e-3) tuple", input=_st4b_a_fodo(), analysis=TwissDispersionAnalysis(strict=false), kind=:coasting))
+    for h in (0.05, -1.0, 2.0, 0.3, 0.9)
+        p = _st4b_a_prescribed(h)
+        push!(fx, (name="prescribed h = $(h) (zeta = $(p.zeta), eta = $(p.eta)), tune $(abs(p.mus[3]))", input=p.M,
+                   analysis=TwissDispersionAnalysis(longitudinal_mode=abs(p.mus[3]), strict=false, emittances=(1e-9, 2e-9, 3e-6)), kind=:bunched))
+    end
+    return fx
+end
+"Fixtures the defect can act on (rows that must be REJECTED by some guard) and boundary rows (unlabelled)."
+function rejected_fixtures()
+    fx = Any[]
+    for scale in (1e-6, 1e-7, 1e-8)
+        push!(fx, (name="dense 6D seed $(_ST4B_SEED) + $(scale) random perturbation (rtol $(1e3 * scale), :flag)",
+                   input=_st4b_a_perturbed(scale), analysis=certified(_st4b_a_dense6(); symplectic_rtol=1e3 * scale, nonsymplectic=:flag, strict=false,
+                                                                      emittances=(1e-9, 2e-9, 3e-6)), kind=:bunched, label=:unlabelled))
+    end
+    for scale in (1e-6, 1e-8)
+        M4 = _st4b_a_dense4() .+ scale .* randn(MersenneTwister(_ST4B_SEED + 7), 4, 4)
+        push!(fx, (name="dense 4x4 seed $(_ST4B_SEED) + $(scale) random perturbation (rtol $(1e3 * scale), :flag)", input=M4,
+                   analysis=perturbed_analysis(scale; emittances=(1e-9, 2e-9)), kind=:four, label=:unlabelled))
+    end
+    for scale in (1e-10, 1e-12, 1e-14)
+        push!(fx, (name="dense 6D seed $(_ST4B_SEED) + $(scale) random perturbation (rtol $(1e3 * scale), :flag)",
+                   input=_st4b_a_perturbed(scale), analysis=certified(_st4b_a_dense6(); symplectic_rtol=1e3 * scale, nonsymplectic=:flag, strict=false,
+                                                                      emittances=(1e-9, 2e-9, 3e-6)), kind=:bunched, label=:unlabelled))
+    end
+    return fx
+end
+"Fixtures whose spectrum is not elliptic or whose clusters do not resolve (reasons propagate; no acceptance rows)."
+function reason_fixtures()
+    return Any[(name="repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1", input=_st4b_a_repeated(), analysis=TwissDispersionAnalysis(strict=false), kind=:bunched),
+               (name="indefinite diag(R(0.73), R(1.41), R(-0.73))", input=_st4b_a_indefinite(), analysis=TwissDispersionAnalysis(strict=false), kind=:bunched),
+               (name="hyperbolic synchrotron pair diag(2, 0.5) (folded)", input=_st4b_a_hyperbolic(), analysis=TwissDispersionAnalysis(strict=false), kind=:bunched),
+               (name="shear unit pair with crab dispersion (not coasting)", input=_st4b_a_shear_unit(), analysis=TwissDispersionAnalysis(strict=false), kind=:bunched),
+               (name="singular projection zeta = e_x, eta = e_px (h = 0)", input=_st4b_a_singular(), analysis=TwissDispersionAnalysis(strict=false), kind=:bunched),
+               (name="hyperbolic 4x4 diag(R(0.5), [2 0; 0 0.5])", input=_st4b_a_bd(_st4b_a_rot(0.5), [2.0 0.0; 0.0 0.5]), analysis=TwissDispersionAnalysis(strict=false), kind=:four),
+               (name="4x4 shear pair diag(R(0.5), [1 0.7; 0 1])", input=_st4b_a_bd(_st4b_a_rot(0.5), [1.0 0.7; 0.0 1.0]), analysis=TwissDispersionAnalysis(strict=false), kind=:four)]
+end
+
+# --- Section 1: the PROVISIONAL multipliers -----------------------------------------------------------------
+const MULT = (frame=Octopus._FRAME_ACCEPTANCE_MULTIPLIER, normalizer=Octopus._NORMALIZER_ACCEPTANCE_MULTIPLIER,
+              covariance=Octopus._COVARIANCE_ACCEPTANCE_MULTIPLIER, trace_gap=Octopus._TRACE_GAP_MULTIPLIER,
+              stability=Octopus._STABILITY_ATOL_MULTIPLIER, closed_orbit=Octopus._CLOSED_ORBIT_ATOL_MULTIPLIER,
+              tune_floor=Octopus._TUNE_CHORD_FLOOR_MULTIPLIER)
+const ROWS = Any[]     # one row per fixture for the residual table
+"Record the acceptance ratios of one analysed fixture under `label` (:accepted, :rejected, :unlabelled)."
+function record_acceptance!(name, r::TwissDispersionResult, label::Symbol)
+    put! = label === :accepted ? acc! : (label === :rejected ? rej! : unl!)
+    rho = r.diagnostics.rho_M1
+    row = Dict{String,Any}("name" => name, "status" => string(r.status), "rho_M1" => rho, "failures" => length(r.failures))
+    f = frame_of(r)
+    if f !== nothing
+        i1 = f.reconstruction_residual.normalized / rho; e7 = f.symplecticity_residual / (rho * cond(f.normalizer))
+        put!("c_frame", name * " [(I1)]", i1); put!("c_frame", name * " [(E7)]", e7)
+        row["i1"] = i1; row["e7"] = e7; row["cond_U4"] = cond(f.normalizer)
+        # the (E7) row under the theory review's proposed kappa: cond(U) ||U||_2^2 / (smallest inter-cluster chord of the transverse clusters)
+        l1, l2 = f.eigenvalues[1], f.eigenvalues[2]
+        chord_min = min(abs(l1 - l2), abs(l1 - conj(l2)))          # the smallest chord between the two modes' eigenvalue pairs
+        e7alt = f.symplecticity_residual / (rho * cond(f.normalizer) * opnorm(f.normalizer)^2 / min(chord_min, 2.0))
+        put!("c_frame_e7_resolution", name * " [(E7), resolution kappa]", e7alt); row["e7alt"] = e7alt; row["chord_min"] = chord_min
+        # the closed-form guards read the frame's transverse block: tau_+ - tau_- = 2 cos mu_1 - 2 cos mu_2
+        gap = abs(2cos(f.tunes[1]) - 2cos(f.tunes[2])) / (rho * max(1.0, norm(f.matrix)))
+        put!("c_trace_gap", name, gap); row["trace_gap"] = gap
+        dep = maximum(abs(abs(l) - 1) for l in f.eigenvalues) / rho
+        put!("c_stability", name, dep); row["departure"] = dep
+        cf = dv(r.transverse).closed_form
+        row["closed_form"] = st(cf)
+    end
+    if r.projected_optics !== nothing && is_determined(r.projected_optics)
+        o = dv(r.projected_optics)
+        u6r = o.reconstruction.normalized / rho; u6s = o.symplecticity / (rho * cond(o.normalizer))
+        put!("c_normalizer", name * " [reconstruction]", u6r); put!("c_normalizer", name * " [symplecticity]", u6s)
+        row["u6r"] = u6r; row["u6s"] = u6s; row["cond_U6"] = cond(o.normalizer)
+    end
+    t = triple(r, "covariance closure")
+    if t !== nothing
+        ratio = t.value / (t.tolerance / MULT.covariance)      # tolerance = c rho cond(U) max(1, ||Sigma||)
+        put!("c_covariance", name, ratio); row["closure"] = ratio
+        k = triple(r, "(K14) zz identity")
+        k === nothing || (row["k14"] = k.value / (k.tolerance / MULT.covariance); unl!("c_covariance", name * " [(K14) identity, reported only]", row["k14"]))
+    end
+    push!(ROWS, row)
+    return row
+end
+function measure_acceptance!()
+    for fx in must_pass_fixtures()
+        r = analyze(fx.analysis, fx.input)
+        record_acceptance!(fx.name, r, :accepted)
+    end
+    for fx in rejected_fixtures()
+        r = analyze(fx.analysis, fx.input)
+        row = record_acceptance!(fx.name, r, fx.label)
+        row["verdict"] = string(r.status) * (isempty(r.failures) ? "" : ": " * join(first.(split.(r.failures, ":")), "; "))
+        row["defect"] = r.symplectic_defect.frobenius
+    end
+    # near-degenerate 4x4 ladder: the trace gap shrinks with delta; where the clusters still resolve the closed form must stay available
+    for delta in (1e-3, 1e-5, 1e-7, 1e-9, 1e-11, 1e-13)
+        M4 = coupled4(0.5, 0.5 + delta, 0.3)
+        r = analyze(TwissDispersionAnalysis(strict=false), M4)
+        name = "coupled 4x4 R(0.5) (+) R(0.5 + $(delta)) rotated by 0.3"
+        f = frame_of(r)
+        if f === nothing
+            push!(ROWS, Dict{String,Any}("name" => name, "status" => string(r.status), "rho_M1" => r.diagnostics.rho_M1, "failures" => 0,
+                                         "closed_form" => "no frame: " * st(r.transverse)))
+        else
+            record_acceptance!(name, r, :unlabelled)
+        end
+    end
+    # spectra that are not elliptic: the stability guard must refuse them (the frame does not form; the departure is the clusters')
+    for fx in reason_fixtures()
+        r = analyze(fx.analysis, fx.input)
+        rho = r.diagnostics.rho_M1
+        dep = r.diagnostics.unit_circle_departure / rho
+        if dep > 1e3
+            rej!("c_stability", fx.name, dep)
+        end
+        push!(ROWS, Dict{String,Any}("name" => fx.name, "status" => string(r.status), "rho_M1" => rho, "failures" => length(r.failures),
+                                     "departure" => dep, "closed_form" => "no frame: " * st(r.transverse)))
+        f = frame_of(r)
+        f === nothing || record_acceptance!(fx.name, r, :unlabelled)
+    end
+end
+
+# --- Section 1 (continued): the closed-orbit default and the tune-chord floor -----------------------------------
+const CO_ROWS = Any[]
+"Closed-orbit rows: linearized inputs at the origin (must be accepted) and at displaced points (must be rejected)."
+function measure_closed_orbit!()
+    M6 = _st4b_a_dense6()
+    lin6(point) = one_turn_matrix((compile_runtime(Linear6DSpec(matrix=M6)),); point=point)
+    origin = ntuple(_ -> 0.0, 6)
+    fixtures = Any[("dense 6D seed $(_ST4B_SEED) Linear6DSpec at the origin", lin6(origin), :accepted),
+                   ("dense 6D seed $(_ST4B_SEED) Linear6DSpec, finite differences 1e-6 at the origin",
+                    one_turn_matrix((compile_runtime(Linear6DSpec(matrix=M6)),); method=FiniteDifferenceLinearization(1e-6)), :accepted),
+                   ("FODO cell (kq = 1.6, detune 1e-3) at the origin", one_turn_matrix(_st4b_a_fodo()), :accepted),
+                   ("DBA cell (kf = 1.5, kd = -1.1, h = 0.2) at the origin", one_turn_matrix(_st4b_a_dba()), :accepted),
+                   ("FODO + thin sextupole (kn3 = 8) at the origin", one_turn_matrix(_st4b_a_fodo_sext()), :accepted)]
+    for x in (1e-3, 1e-6, 1e-9)
+        push!(fixtures, ("FODO + thin sextupole (kn3 = 8) expanded at x = $(x)", one_turn_matrix(_st4b_a_fodo_sext(); point=(x, 0.0, 0.0, 0.0, 0.0, 0.0)), :rejected))
+        push!(fixtures, ("dense 6D seed $(_ST4B_SEED) Linear6DSpec expanded at x = $(x)", lin6((x, 0.0, 0.0, 0.0, 0.0, 0.0)), :rejected))
+    end
+    push!(fixtures, ("FODO + thin sextupole (kn3 = 8) expanded at y = 1e-3", one_turn_matrix(_st4b_a_fodo_sext(); point=(0.0, 0.0, 1e-3, 0.0, 0.0, 0.0)), :rejected))
+    for x in (1e-12, 1e-14, 1e-16)
+        push!(fixtures, ("FODO + thin sextupole (kn3 = 8) expanded at x = $(x)", one_turn_matrix(_st4b_a_fodo_sext(); point=(x, 0.0, 0.0, 0.0, 0.0, 0.0)), :unlabelled))
+    end
+    for (name, lm, label) in fixtures
+        # the residual and the point in SCALED coordinates (design "Input boundary" item 4), read the way the branch reads them
+        rtol = lm.provenance.method isa FiniteDifferenceLinearization ? 1e-6 : nothing
+        r = Base.CoreLogging.with_logger(Base.CoreLogging.NullLogger()) do
+            analyze(TwissDispersionAnalysis(closed_orbit=:warn, strict=false, symplectic_rtol=rtol), lm)
+        end
+        C = Octopus._scaling_matrix(r.scaling)
+        residual = dv(r.closed_orbit)
+        floor = EPS * max(1.0, maximum(abs, C * collect(Float64, lm.provenance.point)))
+        ratio = residual / floor
+        raw = maximum(abs, lm.provenance.fixed_point_residual)
+        (label === :accepted ? acc! : label === :rejected ? rej! : unl!)("c_closed_orbit", name, ratio)
+        # the default-atol branch itself: :require throws exactly when the ratio exceeds c
+        outcome = try
+            analyze(TwissDispersionAnalysis(strict=false, symplectic_rtol=rtol), lm); "accepted"
+        catch err
+            err isa ArgumentError && occursin("not a fixed point", sprint(showerror, err)) ? "rejected (ArgumentError)" : "OTHER: " * sprint(showerror, err)[1:80]
+        end
+        push!(CO_ROWS, (name=name, label=label, raw=raw, scaled=residual, floor=floor, ratio=ratio, outcome=outcome, warned=any(occursin("closed_orbit = :warn", d) for d in r.degradations)))
+    end
+end
+const TUNE_ROWS = Any[]
+"Tune rows: the chord of the nearest eigenvalue over rho_M1, with the half-gap margin, for exact, degenerate and wrong tunes."
+function measure_tune_floor!()
+    maps = Any[("dense 6D seed $(s)", Octopus._manufactured_symplectic_map(MersenneTwister(s), 6; stable=true)[1]) for s in DENSE_SEEDS[1:6]]
+    for h in (0.05, 2.0); p = _st4b_a_prescribed(h); push!(maps, ("prescribed h = $(h)", p.M)); end
+    push!(maps, ("repeated betatron W diag(R(0.72), R(0.72), R(-1.3)) W^-1", _st4b_a_repeated()))
+    push!(maps, ("indefinite diag(R(0.73), R(1.41), R(-0.73))", _st4b_a_indefinite()))
+    for (name, M) in maps
+        r0 = analyze(TwissDispersionAnalysis(strict=false), M)
+        cl = r0.clusters; rho = cl.rho_M1
+        raw_tunes = sort(abs.(angle.(cl.eigenvalues)))
+        tunes = Float64[]                                  # the distinct tunes of the map (a degenerate pair collapses to one)
+        for t in raw_tunes; (isempty(tunes) || t - tunes[end] > 1e-9) && push!(tunes, t); end
+        degenerate = length(tunes) < 3
+        candidates = Any[(t, "exact tune $(round(t; digits=6))") for t in tunes]
+        if degenerate
+            # the floor decides on a degenerate pair: chords of a few eps against a runner-up of a few eps
+            for k in (4, 16); push!(candidates, (tunes[1] + k * EPS, "degenerate tune $(round(tunes[1]; digits=6)) + $(k) eps")); end
+            for off in (1e-12, 1e-10); push!(candidates, (tunes[1] + off, "degenerate tune $(round(tunes[1]; digits=6)) + $(off)")); end
+        end
+        for k in 1:length(tunes)-1
+            push!(candidates, ((tunes[k] + tunes[k+1]) / 2, "midpoint tune $(round((tunes[k] + tunes[k+1]) / 2; digits=6))"))
+        end
+        push!(candidates, (2.5, "tune 2.5")); push!(candidates, (3.0, "tune 3.0"))
+        for (mu, what) in candidates
+            0 < mu < pi || continue
+            target = exp(-im * mu)
+            chords = [abs(l - target) for l in cl.eigenvalues]
+            nearest = argmin(chords); partner = cl.conjugate_partner[nearest]
+            runner = minimum(chords[k] for k in eachindex(chords) if k != nearest && k != partner)
+            half_gap = chords[nearest] <= 0.5 * runner
+            outcome = try
+                analyze(TwissDispersionAnalysis(longitudinal_mode=mu, strict=false), M); :accepted
+            catch err
+                err isa ArgumentError && occursin("identifies no mode", sprint(showerror, err)) ? :rejected : :other
+            end
+            ratio = chords[nearest] / rho
+            rowname = "$(name), $(what)"
+            if half_gap
+                unl!("c_tune_floor", rowname * " [half-gap rule decides]", ratio)
+            elseif occursin("degenerate tune", what) && !occursin("eps", what)
+                unl!("c_tune_floor", rowname * " [boundary: " * string(outcome) * "]", ratio)
+            elseif outcome === :accepted
+                acc!("c_tune_floor", rowname, ratio)
+            else
+                rej!("c_tune_floor", rowname, ratio)
+            end
+            push!(TUNE_ROWS, (name=rowname, chord=chords[nearest], runner=runner, half_gap=half_gap, ratio=ratio, outcome=outcome))
+        end
+    end
+end
+
+# --- Section 2: the receipt completeness matrix (option x input form) ---------------------------------------
+const FORMS = (:matrix, :linearized, :matrix4, :coasting)
+const CONTRACT_FIXTURES = Octopus._analysis_contract_fixtures(UInt64(20260911))
+"The conjugate pairs of the default run's clusters report, as an explicit partition (derived from the data, never typed)."
+function pairs_partition(input)
+    r = analyze(TwissDispersionAnalysis(strict=false), input)
+    return [copy(c.members) for c in r.clusters.clusters]        # the grouping the default run resolved (a real unit pair is one cluster)
+end
+"The alternative value of `option` on `form` (the contract's table, adapted where the form fixes the shape)."
+function alternative_on(option, form, input)
+    alt = Octopus._default_analysis_option_alternatives()[option]
+    option === :emittances && form === :matrix4 && return (1e-6, 2e-6)
+    option === :clusters && return pairs_partition(input)
+    return alt
+end
+const RECEIPT_CELLS = Dict{Tuple{Symbol,Symbol},Any}()
+function measure_receipts!()
+    schema = analysis_option_schema(TwissDispersionAnalysis)
+    for form in FORMS
+        input = getproperty(CONTRACT_FIXTURES, form)
+        for (option, meta) in pairs(schema)
+            requested = alternative_on(option, form, input)
+            analysis = TwissDispersionAnalysis(; strict=false, option => requested)
+            out, rc = audited(analysis, input)
+            if out isa Exception
+                RECEIPT_CELLS[(form, option)] = (status=:throws, receipt=:none, detail=sprint(showerror, out)[1:min(120, end)], consumer=meta.consumer, requested=requested)
+                continue
+            end
+            status = entry(out, option).status
+            mine = filter(r -> r.consumer === meta.consumer, rc)
+            carrying = filter(r -> haskey(r.values, option), mine)
+            receipt = isempty(carrying) ? :absent : (any(r -> isequal(getproperty(r.values, option), requested), carrying) ? :requested_value : :other_value)
+            n_receipts = length(carrying)
+            RECEIPT_CELLS[(form, option)] = (status=status, receipt=receipt, detail=entry(out, option).reason, consumer=meta.consumer, requested=requested,
+                                             n=n_receipts, consistent=(status === :resolved && receipt === :requested_value) || (status === :inactive_dependency && receipt === :absent))
+        end
+    end
+end
+"Cell code: R+ resolved with the requested value in the receipt; I- inactive with no receipt; anything else is a defect code."
+function cell_code(c)
+    c.status === :throws && return "THROWS"
+    s = c.status === :resolved ? "R" : (c.status === :inactive_dependency ? "I" : string(c.status))
+    r = c.receipt === :requested_value ? "+" : (c.receipt === :absent ? "-" : "?")
+    return s * r
+end
+
+# --- Section 3: scaling invariance of every PhysicalOptics row at three scalings --------------------------------
+"The physical rows of a result as name => value (Determined rows keep their reason as a Symbol)."
+function physical_rows(r)
+    p = r.physical
+    d = Dict{Symbol,Any}(:tunes => p.tunes)
+    for name in (:normalizer, :beta, :alpha, :gamma, :edwards_teng_R, :covariance, :zeta, :eta, :h, :graph)
+        q = getproperty(p, name)
+        is_determined(q) ? (d[name] = dv(q)) : (d[Symbol(name, :_reason)] = q.reason)
+    end
+    if is_determined(p.projectors)
+        for j in eachindex(dv(p.projectors)); d[Symbol("P", j)] = dv(p.projectors)[j]; d[Symbol("G", j)] = dv(p.covariances)[j]; end
+    end
+    return d
+end
+const SCALING_ROWS = Any[]
+const SCALING_WORST = Dict{Symbol,Any}()
+function measure_scaling!()
+    M6 = _st4b_a_dense6()
+    fixtures = Any[("dense 6D seed $(_ST4B_SEED) certified", M6, certified(M6; emittances=(1e-9, 2e-9, 3e-6)))]
+    for seed in DENSE_SEEDS[2:4]
+        M = Octopus._manufactured_symplectic_map(MersenneTwister(seed), 6; stable=true)[1]
+        push!(fixtures, ("dense 6D seed $(seed) certified", M, certified(M; emittances=(1e-9, 2e-9, 3e-6))))
+    end
+    push!(fixtures, ("dense 6D seed $(_ST4B_SEED) linearized (Linear6DSpec)", one_turn_matrix((compile_runtime(Linear6DSpec(matrix=M6)),)), certified(M6; emittances=(1e-9, 2e-9, 3e-6))))
+    push!(fixtures, ("dense 4x4 seed $(_ST4B_SEED)", _st4b_a_dense4(), TwissDispersionAnalysis(strict=false, emittances=(1e-9, 2e-9))))
+    push!(fixtures, ("coupled 4x4 R(0.5) (+) R(1.2) rotated by 0.3", coupled4(0.5, 1.2, 0.3), TwissDispersionAnalysis(strict=false, emittances=(1e-9, 2e-9))))
+    push!(fixtures, ("coasting shear s = 0.3 (stage 4a builder)", _st4b_a_coasting(0.3).M, TwissDispersionAnalysis(strict=false, emittances=(1e-9, 2e-9, 3e-6))))
+    push!(fixtures, ("DBA cell at delta = 0", _st4b_a_dba(), TwissDispersionAnalysis(strict=false)))
+    push!(fixtures, ("FODO cell tuple", _st4b_a_fodo(), TwissDispersionAnalysis(strict=false)))
+    p = _st4b_a_prescribed(0.05)
+    push!(fixtures, ("prescribed h = 0.05, tune 0.94", p.M, TwissDispersionAnalysis(longitudinal_mode=0.94, strict=false, emittances=(1e-9, 2e-9, 3e-6))))
+    for (name, input, a0) in fixtures
+        r_none = analyze(TwissDispersionAnalysis(; (k => getproperty(a0, k) for k in fieldnames(TwissDispersionAnalysis) if k !== :scaling)..., scaling=:none), input)
+        d = r_none.input.dimension
+        explicit = d == 6 ? (1.7, 0.4, 3.1) : (1.7, 0.4)
+        M = r_none.matrix
+        pn = r_none.physical.normalizer
+        U = is_determined(pn) ? dv(pn) : (frame_of(r_none) === nothing ? nothing : frame_of(r_none).normalizer)
+        kappa_test = U === nothing ? NaN : cond(U) * max(1.0, norm(M))^2         # the suite's Scaling testset kappa (c read from runtests.jl)
+        kappa_contract = cond(M)                                                 # the contract's _ANALYSIS_CONTRACT_FIXED_MULTIPLIER kappa (c = 64)
+        ref = physical_rows(r_none)
+        for sc in (:auto, explicit)
+            r = analyze(TwissDispersionAnalysis(; (k => getproperty(a0, k) for k in fieldnames(TwissDispersionAnalysis) if k !== :scaling)..., scaling=sc), input)
+            rows = physical_rows(r)
+            for (key, value) in rows
+                if value isa Symbol
+                    push!(SCALING_ROWS, (fixture=name, scaling=sc, row=key, relative=0.0, ratio_test=0.0, ratio_contract=NaN, note=value === ref[key] ? "same reason" : "REASON DIFFERS"))
+                    continue
+                end
+                haskey(ref, key) || (push!(SCALING_ROWS, (fixture=name, scaling=sc, row=key, relative=NaN, ratio_test=NaN, ratio_contract=NaN, note="ROW MISSING under :none")); continue)
+                rel = norm(value - ref[key]) / max(1.0, norm(ref[key]))
+                ratio_test = norm(value - ref[key]) / (EPS * kappa_test * max(1.0, norm(ref[key])))
+                ratio_contract = maximum(abs.(value - ref[key]) ./ (EPS * kappa_contract * max.(1.0, abs.(ref[key])))) 
+                push!(SCALING_ROWS, (fixture=name, scaling=sc, row=key, relative=rel, ratio_test=ratio_test, ratio_contract=ratio_contract, note=""))
+                acc!("c_scaling_test", "$(name), scaling $(sc), row $(key)", ratio_test)
+                key in (:zeta, :eta, :h, :tunes) && acc!("c_contract_fixed", "$(name), scaling $(sc), row $(key)", ratio_contract)
+                w = get(SCALING_WORST, key, (0.0, ""))
+                rel > w[1] && (SCALING_WORST[key] = (rel, "$(name), scaling $(sc)"))
+            end
+            # the rejected side of the contract's fixed check: a SKIPPED back-transformation row (the scaled zeta presented as physical)
+            if sc !== :auto && d == 6 && r.separation !== nothing && is_determined(r.separation) && is_determined(r.physical.zeta)
+                for (rowname, xs, xp) in ((:zeta, dv(r.separation).zeta, ref[:zeta]), (:eta, dv(r.separation).eta, ref[:eta]))
+                    ratio = maximum(abs.(xs - xp) ./ (EPS * kappa_contract * max.(1.0, abs.(xp))))
+                    # a row the scaling leaves numerically unchanged (zeta = 0 on a coasting map) cannot show a skipped transformation
+                    (ratio > 0 ? rej! : unl!)("c_contract_fixed", "$(name), scaling $(sc), row $(rowname) left in scaled coordinates" * (ratio > 0 ? "" : " [row is zero]"), ratio)
+                end
+            end
+        end
+    end
+end
+
+# --- Section 4: both contracts' validate, metrics and timings ------------------------------------------------------
+const CONTRACT_RUNS = Any[]
+function measure_contracts!()
+    c1 = AnalysisOptionEffectivenessContract()
+    t_cold = @elapsed res_cold = validate(c1)
+    t_warm = @elapsed res_warm = validate(c1)
+    push!(CONTRACT_RUNS, (name="validate(AnalysisOptionEffectivenessContract()) cold", passed=res_cold.passed, message=res_cold.message, metrics=res_cold.metrics, seconds=t_cold))
+    push!(CONTRACT_RUNS, (name="validate(AnalysisOptionEffectivenessContract()) warm", passed=res_warm.passed, message=res_warm.message, metrics=res_warm.metrics, seconds=t_warm))
+    t_pub = @elapsed res_pub = validate(PublicConfigurationEffectivenessContract())
+    push!(CONTRACT_RUNS, (name="validate(PublicConfigurationEffectivenessContract())", passed=res_pub.passed, message=res_pub.message, metrics=res_pub.metrics, seconds=t_pub))
+end
+
+# --- the table writer -----------------------------------------------------------------------------------------------
+fmt(x) = x === nothing ? "-" : x isa AbstractString ? x : x isa Symbol ? string(x) : e2(x)
+g(row, k) = haskey(row, k) ? fmt(row[k]) : "-"
+function write_table()
+    pr("# Stage 4b measurement table (Part D1)\n")
+    pr("Produced by measure_stage4b.jl (package mode, main tree). Julia $(VERSION); threads $(Threads.nthreads()); seed $(_ST4B_SEED); fixture helpers = the suite's `_st4b_a_` block extracted from test/runtests.jl by name at run time ($(PRELUDE_LINES) lines). Every fixture name in this file is produced by the code that built the fixture; none is typed into the text.")
+    pr("Source constants at run time: _FRAME_ACCEPTANCE_MULTIPLIER = $(MULT.frame), _NORMALIZER_ACCEPTANCE_MULTIPLIER = $(MULT.normalizer), _COVARIANCE_ACCEPTANCE_MULTIPLIER = $(MULT.covariance), _TRACE_GAP_MULTIPLIER = $(MULT.trace_gap), _STABILITY_ATOL_MULTIPLIER = $(MULT.stability), _CLOSED_ORBIT_ATOL_MULTIPLIER = $(MULT.closed_orbit), _TUNE_CHORD_FLOOR_MULTIPLIER = $(MULT.tune_floor); test-side Scaling c = $(SCALING_TEST_C) (read from runtests.jl); _ANALYSIS_CONTRACT_FIXED_MULTIPLIER = $(Octopus._ANALYSIS_CONTRACT_FIXED_MULTIPLIER).\n")
+    pr("## 1. Acceptance and guard ratios per fixture (scaled coordinates; every ratio is the guarded quantity over its floor at multiplier 1)\n")
+    pr("Columns: (I1) = frame reconstruction / rho_M1; (E7) = frame symplecticity / (rho_M1 cond U_4); (E7)res = the same over cond(U_4) ||U_4||^2 / min inter-cluster chord (the theory review's proposed kappa, reported only); U6r = U_6 reconstruction / rho_M1; U6s = U_6 symplecticity / (rho_M1 cond U_6); closure = covariance closure / (rho_M1 cond U max(1, ||Sigma||)); (K14) = the reported identity over the same floor; gap = |tau_+ - tau_-| / (rho_M1 max(1, ||M_4||)); dep = max |1 - |lambda|| / rho_M1 of the frame (of the clusters where no frame forms).\n")
+    pr("| fixture | status | rho_M1 | (I1) | (E7) | (E7)res | cond U_4 | U6r | U6s | cond U_6 | closure | (K14) | gap | dep | closed form | verdict |")
+    pr("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    for row in ROWS
+        pr("| ", row["name"], " | ", row["status"], " | ", e2(row["rho_M1"]), " | ", g(row, "i1"), " | ", g(row, "e7"), " | ", g(row, "e7alt"), " | ", g(row, "cond_U4"), " | ",
+           g(row, "u6r"), " | ", g(row, "u6s"), " | ", g(row, "cond_U6"), " | ", g(row, "closure"), " | ", g(row, "k14"), " | ", g(row, "trace_gap"), " | ", g(row, "departure"), " | ",
+           g(row, "closed_form"), " | ", g(row, "verdict"), " |")
+    end
+    pr("\n### 1a. Closed-orbit rows (linearized inputs; residual and point in scaled coordinates)\n")
+    pr("| fixture | label | raw max-norm residual | scaled residual | floor eps max(1, |C p|) | ratio | default :require outcome | :warn degraded |")
+    pr("|---|---|---|---|---|---|---|---|")
+    for c in CO_ROWS; pr("| $(c.name) | $(c.label) | $(e2(c.raw)) | $(e2(c.scaled)) | $(e2(c.floor)) | $(e2(c.ratio)) | $(c.outcome) | $(c.warned) |"); end
+    pr("\n### 1b. Tune rows (chord of the nearest eigenvalue to exp(-i mu_s); half-gap = chord <= 0.5 runner-up outside the conjugate pair)\n")
+    pr("| map, tune | chord | runner-up | half-gap rule | chord / rho_M1 | outcome |")
+    pr("|---|---|---|---|---|---|")
+    for t in TUNE_ROWS; pr("| $(t.name) | $(e2(t.chord)) | $(e2(t.runner)) | $(t.half_gap) | $(e2(t.ratio)) | $(t.outcome) |"); end
+end
+"The Scaling testset's test-side c, read from test/runtests.jl (the line `c = <value>` after the testset header)."
+function scaling_test_c()
+    i = findfirst(l -> startswith(l, "@testset \"Scaling: :none, :auto and an explicit tuple"), RUNTESTS)
+    j = findnext(l -> occursin(r"^    c = [0-9.]+$", l), RUNTESTS, i)
+    return parse(Float64, strip(split(RUNTESTS[j], "=")[2]))
+end
+const SCALING_TEST_C = scaling_test_c()
+const WINDOW_SPECS = [
+    ("c_frame", "_FRAME_ACCEPTANCE_MULTIPLIER (c_frame)", "(I1) normalized reconstruction / rho_M1 and (E7) symplecticity / (rho_M1 cond U_4); accepted = every fixture with a unique frame that must pass; no fixture the frame acceptance must reject exists (the perturbed maps fold their defect into rho_M1 and fail through the separation); the near-degenerate ladder is the boundary", MULT.frame, true),
+    ("c_frame_e7_resolution", "(E7) under the proposed resolution kappa (reported, not a source constant)", "(E7) symplecticity / (rho_M1 cond(U_4) ||U_4||_2^2 / min inter-cluster chord); same fixtures as c_frame", MULT.frame, true),
+    ("c_normalizer", "_NORMALIZER_ACCEPTANCE_MULTIPLIER (c_normalizer)", "U_6 reconstruction / rho_M1 and U_6 symplecticity / (rho_M1 cond U_6); accepted = every bunched fixture with a unique U_6 that must pass", MULT.normalizer, true),
+    ("c_covariance", "_COVARIANCE_ACCEPTANCE_MULTIPLIER (c_covariance)", "raw closure ||Ms Sigma Ms' - Sigma||_F / (rho_M1 cond(U) max(1, ||Sigma||)); accepted = every fixture with emittances that must pass; the (K14) identity rows are reported only", MULT.covariance, true),
+    ("c_trace_gap", "_TRACE_GAP_MULTIPLIER (c_trace_gap)", "|tau_+ - tau_-| / (rho_M1 max(1, ||M_4||_F)) of the frame's transverse block; accepted = every unique frame that must keep its closed form (ratio must EXCEED 10 c); rejected = none (equal mode traces mean coincident eigenvalues, where no frame forms); the ladder is the boundary", MULT.trace_gap, false),
+    ("c_stability", "_STABILITY_ATOL_MULTIPLIER (c_stability)", "max |1 - |lambda|| / rho_M1; accepted = elliptic frames that must pass; rejected = spectra off the unit circle (the clusters' departure, hyperbolic fixtures)", MULT.stability, true),
+    ("c_closed_orbit", "_CLOSED_ORBIT_ATOL_MULTIPLIER (c_closed_orbit)", "scaled max-norm fixed-point residual / (eps max(1, max |C point|)); accepted = linearizations at the origin; rejected = displaced expansion points (x, y >= 1e-9)", MULT.closed_orbit, true),
+    ("c_tune_floor", "_TUNE_CHORD_FLOOR_MULTIPLIER (c_tune_floor)", "chord of the nearest eigenvalue / rho_M1 where the half-gap rule does NOT decide; accepted = a degenerate pair's tune offset by a few eps; rejected = midpoint and far tunes", MULT.tune_floor, true),
+    ("c_scaling_test", "test-side Scaling c (runtests.jl Scaling testset, c = $(SCALING_TEST_C))", "||row(:auto or explicit) - row(:none)|| / (eps cond(U) max(1, ||M||)^2 max(1, ||row||)); accepted = every physical row of section 3", SCALING_TEST_C, true),
+    ("c_contract_fixed", "_ANALYSIS_CONTRACT_FIXED_MULTIPLIER (contract, c = $(Octopus._ANALYSIS_CONTRACT_FIXED_MULTIPLIER))", "max_i |x_i(scaled run) - x_i(:none)| / (eps cond(M) max(1, |x_i|)) over zeta, eta, h, tunes; rejected = a back-transformation row left in scaled coordinates", Octopus._ANALYSIS_CONTRACT_FIXED_MULTIPLIER, true),
+]
+function write_windows()
+    pr("\n## 2. PROVISIONAL constants: windows by the one-tenth / ten rule (fixture names derived from the data)\n")
+    pr("Accepted ratios must stay below c / 10 and rejected ones above 10 c (for the trace gap the reverse: accepted must exceed 10 c). `unlabelled` rows are reported but do not constrain the window. Fixtures: $(length(DENSE_SEEDS)) dense 6D seeds, 8 dense 4x4 seeds, 4 coupled 4x4 maps, the near-degenerate coupled ladder, 3 coasting maps, the DBA and FODO cells, 5 prescribed-h maps, the linearized dense map, the explicit partition, 6 perturbed 6D and 2 perturbed 4x4 maps, the stage 4a reason fixtures.\n")
+    for (key, title, formula, current, below) in WINDOW_SPECS
+        for l in window_lines(key, title, formula, current; accepted_below=below); pr(l); end
+    end
+    pr("### Summary\n")
+    pr("| constant | source | window low | window high | inside | accepted | rejected | unlabelled | accepted extreme | rejected extreme |")
+    pr("|---|---|---|---|---|---|---|---|---|---|")
+    for (key, title, _, _, _) in WINDOW_SPECS
+        w = WINDOWS[key]
+        pr("| $(key) | $(w.current) | $(e2(w.lo)) | $(e2(w.hi)) | $(w.empty ? "EMPTY" : w.inside) | $(w.n_acc) | $(w.n_rej) | $(w.n_unl) | $(e2(w.acc_extreme[2])) ($(w.acc_extreme[1])) | $(e2(w.rej_extreme[2])) ($(w.rej_extreme[1])) |")
+    end
+end
+function write_receipts()
+    pr("\n## 3. Receipt completeness matrix (option x input form; the contract's fixtures `_analysis_contract_fixtures(UInt64(20260911))`)\n")
+    pr("Each run sets ONE option to its non-default alternative (the contract's table; `clusters` = the conjugate pairs of the default run's clusters report, `emittances` a 2-tuple on 4x4). Cell: `R+` = report `:resolved` and the consumer's receipt carries the requested value under the option's name; `I-` = report `:inactive_dependency` and no receipt of that consumer carries the option; `R-`, `I+`, `?` and `THROWS` are defects. The count in brackets is the number of receipts of the consumer carrying the option's name.\n")
+    pr("| option | consumer | matrix | linearized | matrix4 | coasting |")
+    pr("|---|---|---|---|---|---|")
+    schema = analysis_option_schema(TwissDispersionAnalysis)
+    n_ok = 0; n_cells = 0
+    for (option, meta) in pairs(schema)
+        cells = [RECEIPT_CELLS[(f, option)] for f in FORMS]
+        n_cells += length(cells); n_ok += count(c -> c.status !== :throws && c.consistent, cells)
+        pr("| $(option) | $(meta.consumer) | ", join(["$(cell_code(c)) [$(get(c, :n, "-"))]" for c in cells], " | "), " |")
+    end
+    pr("\nConsistent cells: $(n_ok) / $(n_cells). Inactive reasons seen:")
+    for f in FORMS, (option, _) in pairs(schema)
+        c = RECEIPT_CELLS[(f, option)]
+        c.status === :inactive_dependency && pr("- ($(f), $(option)): ", c.detail)
+    end
+    for f in FORMS, (option, _) in pairs(schema)
+        c = RECEIPT_CELLS[(f, option)]
+        (c.status === :throws || !c.consistent) && pr("- DEFECT ($(f), $(option)): status $(c.status), receipt $(c.receipt), requested $(c.requested): $(c.detail)")
+    end
+    return n_ok, n_cells
+end
+function write_scaling()
+    pr("\n## 4. Scaling invariance of every PhysicalOptics row at three scalings (:none = reference, :auto, explicit (1.7, 0.4, 3.1) or (1.7, 0.4))\n")
+    pr("relative = ||row(s) - row(:none)|| / max(1, ||row(:none)||); test ratio = the same over eps cond(U) max(1, ||M||)^2 (the suite's Scaling testset, c = $(SCALING_TEST_C)); contract ratio (zeta, eta, h, tunes) = max_i |dx_i| / (eps cond(M) max(1, |x_i|)) (the contract's c = $(Octopus._ANALYSIS_CONTRACT_FIXED_MULTIPLIER)). A row that is unavailable under one scaling must carry the same reason under the others (`same reason`).\n")
+    pr("### 4a. Worst relative deviation per row over every fixture and scaling\n")
+    pr("| row | max relative deviation | at |")
+    pr("|---|---|---|")
+    for (key, w) in sort(collect(SCALING_WORST); by=x -> string(x[1])); pr("| $(key) | $(e2(w[1])) | $(w[2]) |"); end
+    pr("\n### 4b. Every row (fixture x scaling x row)\n")
+    pr("| fixture | scaling | row | relative | test ratio (c = $(SCALING_TEST_C)) | contract ratio (c = $(Octopus._ANALYSIS_CONTRACT_FIXED_MULTIPLIER)) | note |")
+    pr("|---|---|---|---|---|---|---|")
+    for s in SCALING_ROWS
+        pr("| $(s.fixture) | $(s.scaling) | $(s.row) | $(e2(s.relative)) | $(e2(s.ratio_test)) | $(isnan(s.ratio_contract) ? "-" : e2(s.ratio_contract)) | $(s.note) |")
+    end
+end
+function write_contracts()
+    pr("\n## 5. Both contracts' validate (main tree, this process)\n")
+    pr("| run | passed | seconds | message | metrics |")
+    pr("|---|---|---|---|---|")
+    for c in CONTRACT_RUNS
+        pr("| $(c.name) | $(c.passed) | $(@sprintf("%.2f", c.seconds)) | $(c.message) | $(join(["$(k) = $(v)" for (k, v) in sort(collect(c.metrics); by=x -> string(x[1]))], ", ")) |")
+    end
+end
+
+# --- main ---------------------------------------------------------------------------------------------------------------------
+function main()
+    t0 = time()
+    measure_acceptance!();   println("acceptance rows: ", length(ROWS), " (", round(time() - t0; digits=1), " s)")
+    measure_closed_orbit!(); println("closed-orbit rows: ", length(CO_ROWS))
+    measure_tune_floor!();   println("tune rows: ", length(TUNE_ROWS))
+    measure_receipts!();     println("receipt cells: ", length(RECEIPT_CELLS))
+    measure_scaling!();      println("scaling rows: ", length(SCALING_ROWS))
+    measure_contracts!();    println("contract runs: ", length(CONTRACT_RUNS))
+    write_table()
+    write_windows()
+    n_ok, n_cells = write_receipts()
+    write_scaling()
+    write_contracts()
+    pr("\nWall time $(round(time() - t0; digits=1)) s after the package load.")
+    open(OUT_MD, "w") do io; write(io, String(take!(OUTBUF))); end
+    println("wrote $(OUT_MD): $(countlines(OUT_MD)) lines")
+    for (key, _, _, _, _) in WINDOW_SPECS
+        w = WINDOWS[key]
+        println("window $(key): [$(e2(w.lo)), $(e2(w.hi))] $(w.empty ? "EMPTY" : "inside " * string(w.inside)) (source $(w.current))")
+    end
+    println("receipt cells consistent: $(n_ok) / $(n_cells)")
+    for c in CONTRACT_RUNS; println(c.name, ": passed = ", c.passed, " in ", round(c.seconds; digits=2), " s: ", c.message); end
+end
+main()
+```

@@ -6,9 +6,9 @@
 # 3) rebuilt it on the mode clusters of mode_clusters.jl. Pure matrix
 # arithmetic on a real 4x4 matrix the caller has ALREADY scaled (design
 # "Input boundary" item 5): no scaling happens here; the stage 1 `_unscale_*`
-# table transforms the outputs back. Nothing in this file claims an analysis
-# exists: no `analyze`, no analysis type, no export; the public verb is
-# stage 4.
+# table transforms the outputs back. This file defines no `analyze`, no
+# analysis type and no export; the public verb is `analyze` of
+# twiss_dispersion_analysis.jl (stage 4b).
 #
 # Conventions (theory Section 2 and 3): coordinates (x, px, y, py),
 # S_4 = diag(S_2, S_2), the oriented eigenvector u_j satisfies M u_j =
@@ -89,7 +89,11 @@ mode and `a` the plane (`1 = x`, `2 = y`):
   * `matrix`: the matrix analysed (a copy, already scaled by the caller).
   * `eigenvalues`, `tunes`: the oriented eigenvalue `rho_j = e^{-i mu_j}` and
     `mu_j = mod(-arg rho_j, 2 pi)` (E5) by `atan2`, in `[0, 2 pi)` (T16).
-  * `vectors`: the oriented eigenvectors `u_j` with `u_j' S_4 u_j = -2i`
+  * `vectors`: the oriented eigenvectors `u_j` with `u_j' S_4 u_j = -2i`,
+    rephased to the theory 6.2 convention (`u_{1,x} > 0`, `u_{2,y} > 0` real,
+    or the (E14) pivot real and positive when that component vanishes;
+    [`_rephase_mode`](@ref)), so the frame and its normalizer are
+    scaling-covariant
     (E3)-(E4); `normalization_residuals` is `|u_j' S_4 u_j + 2i|`.
   * `eigenvector_residuals`: the (I1) vector form of `M u_j - rho_j u_j`
     (normalized and raw).
@@ -393,9 +397,18 @@ function _eigenmodes_4d(M::AbstractMatrix{<:Real}; rho_M0::Real, resolution_chor
     tw = [_projected_twiss(u) for u in us]
     first, second, margin = _mode_label_order(tw[1].kappa[1], tw[2].kappa[1])
     order = (first, second)
-    u1, u2 = us[order[1]], us[order[2]]
+    # Theory 6.2 phase convention (stage 4b fix): u_{1,x} > 0 and u_{2,y} > 0 real, the multiplier
+    # conj(u_jb) / |u_jb| with no angle evaluated; when the reference position component vanishes the
+    # (E14) pivot (the largest |component|) is made real and positive instead. The convention is covariant
+    # under the diagonal scaling C, so the analysis's physical normalizer C^-1 U~ is scaling-invariant
+    # (design "Input boundary" table); every phase-free product (G_j, P_j, beta, alpha, gamma, kappa,
+    # the Edwards-Teng forms) is unchanged by it.
+    u1, u2 = _rephase_mode(us[order[1]], 1), _rephase_mode(us[order[2]], 3)
     rho1, rho2 = rhos[order[1]], rhos[order[2]]
-    tw1, tw2 = tw[order[1]], tw[order[2]]
+    # the projected Twiss of the STORED (rephased) vectors: bitwise the (M1) formulas on `vectors` (the phase-free
+    # labelling above used the unrephased ones; the two agree to roundoff, the stored arrays must agree exactly)
+    tw1, tw2 = _projected_twiss(u1), _projected_twiss(u2)
+    margin = abs(tw1.kappa[1] - tw2.kappa[1])                # the same rule, on the stored vectors
 
     mu = (mod(atan(-imag(rho1), real(rho1)), 2pi), mod(atan(-imag(rho2), real(rho2)), 2pi))
     U = hcat(real(u1), -imag(u1), real(u2), -imag(u2))
@@ -435,6 +448,36 @@ function _normal_coordinates(U4::AbstractMatrix{<:Real}, r::AbstractVector{<:Rea
     size(U4) == (4, 4) || throw(ArgumentError("_normal_coordinates: U4 must be 4x4, got $(size(U4))"))
     length(r) == 4 || throw(ArgumentError("_normal_coordinates: r must have length 4, got $(length(r))"))
     return _symplectic_inverse(U4) * Vector{Float64}(r)
+end
+
+"""
+    _PHASE_REFERENCE_FLOOR
+
+The relative floor below which a mode's reference position component
+(`u_{1,x}` for mode 1, `u_{2,y}` for mode 2) counts as vanishing for the
+theory 6.2 phase convention, and the (E14) pivot (the largest |component|)
+fixes the phase instead: `|u_jb| <= _PHASE_REFERENCE_FLOOR * ||u_j||`. The
+value `sqrt(eps)` is where the phase of the component stops being
+determined to better than `sqrt(eps)` relative by roundoff of order `eps`
+in the vector (the zero-projection fixtures of stage 2 have `u_1x = 0`
+exactly; no stage 2-4b fixture lies between 0 and the floor).
+"""
+const _PHASE_REFERENCE_FLOOR = sqrt(eps(Float64))
+
+"""
+    _rephase_mode(u, b) -> Vector{ComplexF64}
+
+Theory 6.2: `u` times `conj(u_b) / |u_b|` so that the reference component
+`u_b` is real and positive; when `|u_b| <= _PHASE_REFERENCE_FLOOR ||u||`
+the (E14) pivot `argmax(|u|)` is used as the reference. A unit-modulus
+multiplier: `u' S u`, the outer products and every projected quantity are
+unchanged. Used by [`_eigenmodes_4d`](@ref) on the frame's two vectors
+(`b = 1` for mode 1, `b = 3` for mode 2).
+"""
+function _rephase_mode(u::AbstractVector{<:Complex}, b::Integer)
+    v = Vector{ComplexF64}(u)
+    ref = abs(v[b]) > _PHASE_REFERENCE_FLOOR * norm(v) ? v[b] : v[argmax(abs.(v))]
+    return v .* (conj(ref) / abs(ref))
 end
 
 """

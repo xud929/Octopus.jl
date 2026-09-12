@@ -2216,6 +2216,24 @@ function validate_configuration_metadata()
             "$(observer_type) schema keys are not fields: " *
             join(sort!(collect(stray)), ", "))
     end
+    # ---- Stage 4b: the analysis block and the AbstractAnalysis tree guard
+    # (LongitudinalSlicing form; design "Certification", campaign record 4b).
+    Set(keys(analysis_option_schema(TwissDispersionAnalysis))) == Set(fieldnames(TwissDispersionAnalysis)) ||
+        push!(errors, "TwissDispersionAnalysis fields and metadata keys disagree")
+    default_analysis = TwissDispersionAnalysis()
+    for (name, meta) in pairs(analysis_option_schema(TwissDispersionAnalysis))
+        meta.consumer === :unspecified && push!(errors,
+            "TwissDispersionAnalysis.$(name) has no runtime consumer")
+        hasfield(TwissDispersionAnalysis, name) || continue
+        isequal(getproperty(default_analysis, name), meta.default) || push!(errors,
+            "TwissDispersionAnalysis.$(name) metadata default disagrees with constructor")
+    end
+    _analysis_types = (TwissDispersionAnalysis, PlaceholderAnalysis)
+    for T in _concrete_octopus_subtypes(AbstractAnalysis)
+        T in _analysis_types || push!(errors,
+            "$(T) is a concrete Octopus analysis with no block in " *
+            "validate_configuration_metadata; add one (see the policy tree guard)")
+    end
     isempty(errors) || throw(ArgumentError(join(errors, '\n')))
     return true
 end

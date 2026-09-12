@@ -9,8 +9,9 @@
 # return table. Stage 4a of the campaign (design "Staging", item 4, first
 # half). Pure matrix arithmetic on a real 6x6 matrix the caller has ALREADY
 # scaled (design "Input boundary" item 5); the stage 1 `_unscale_*` table
-# transforms the graph, zeta, eta back (h is invariant). Nothing in this file
-# claims an analysis exists: no `analyze`, no analysis type, no export.
+# transforms the graph, zeta, eta back (h is invariant). This file defines no
+# `analyze`, no analysis type and no export; the public verb is `analyze` of
+# twiss_dispersion_analysis.jl (stage 4b).
 #
 # Conventions (theory 8.1-8.2): coordinates (x, px, y, py, z, pz), r = 1:4,
 # l = 5:6 (z = 5, pz = 6); M = M_zeta M_eta (D3) with h = 1 - zeta' S_4 eta;
@@ -75,18 +76,26 @@ const _ISOTROPY_MULTIPLIER = 64.0
     _COEFFICIENT_CONDITION_MULTIPLIER
 
 `c_coef` of the linear-solve guards: the polynomial route's coefficient
-matrix `A_s` (D19), the projector route's trace separations (D26), the
-coasting solve's `I - M_rr` (D24) and the Sylvester operators (D15), (D21)
-are `:singular_coefficient` when the relevant smallest singular value (or
-trace gap) is at or below `c_coef * rho_M1 * max(1, ||A||_2)` (theory 8.5:
-near coincident traces or a singular projection the solve is ill
-conditioned; (N16) `det A_s = h^2 (tau_1 - tau_s)^2 (tau_2 - tau_s)^2`).
-PROVISIONAL; measured: accepted extreme `sigma_min / (rho_M1 max(1,
-||A||_2)) = 7.2e11` over the 200 dense maps (polynomial `A_s` and projector
-trace gaps together); rejected extremes `0.38` on the `zeta = e_x, eta =
-e_px` (h = 0) fixture and exactly 0 on `diag(R(0.73), R(1.41), R(0.73))`
-(coincident selected trace). The weak-cavity map's `A_s` (condition 1.1e4,
-near-coincident traces) stays ABOVE the floor and is judged by (I1).
+matrix `A_s` (D19), the projector route's trace separations (D26) and the
+coasting solve's `I - M_rr` (D24) are `:singular_coefficient` when the
+relevant smallest singular value (or trace gap) is at or below `c_coef *
+rho_M1 * max(1, ||A||_2)` (theory 8.5: near coincident traces or a singular
+projection the solve is ill conditioned; (N16) `det A_s = h^2 (tau_1 -
+tau_s)^2 (tau_2 - tau_s)^2`). The Sylvester operators of the Newton and
+fixed-point routes (D15), (D21) are NOT tested against this floor: their
+solves are guarded by LAPACK failure only (a singular operator is caught as
+an exception and reported), and the resulting graph is judged by (I1);
+extending `kappa_route` by the coefficient condition is carried (stage 4a
+record, "Carried forward", item 3). PROVISIONAL; measured 2026-09-12 (stage
+4a record, "Derived windows"): must-accept extreme `sigma_min / (rho_M1
+max(1, ||A||_2)) = 1.546e9` (the weak-cavity map's projector trace gap;
+its `A_s`, condition 1.1e4, also stays above the floor and is judged by
+(I1)); must-reject extremes `0.376` on the `zeta = e_x, eta = e_px` (h = 0)
+fixture's polynomial `A_s`, exactly 0 on `diag(R(0.73), R(1.41), R(0.73))`
+(coincident selected trace: `A_s` and the trace gap) and on the (D24)
+coefficient of the y-shear coasting map. Window by the one-tenth / ten
+rule `[3.76, 1.55e8]`; 64 lies inside it. The LAPACK-singular (D15)
+operators at ratio 0.012 are outside this guard's reach (see above).
 """
 const _COEFFICIENT_CONDITION_MULTIPLIER = 64.0
 
@@ -113,22 +122,35 @@ const _ROUTE_INVARIANCE_MULTIPLIER = 256.0
 stop when the normalized (I1) residual is at or below `c_stop * eps *
 max(1, ||M||_F)` or when a step no longer decreases it after
 `_MAX_HALVINGS` halvings (theory 8.6: "Stop using the full residual in (I1)
-... A small update alone is insufficient"). PROVISIONAL; measured: the
-roundoff floor of the (I1) residual of the EXACT graph is `0.58 eps max(1,
-||M||_F)` over the 200 dense maps (a Newton polish from the exact graph does
-not move it); converged Newton and fixed-point iterates end at `<= 15.7`;
-the last Newton iterate before convergence is `>= 16.4` (the stop rule
-defines that boundary; the floor gives the multiplier 27x headroom).
+... A small update alone is insufficient"). PROVISIONAL; measured
+2026-09-12 (stage 4a record, "Derived windows"): the only labelled side is
+the exact-graph floor, the roundoff level of the (I1) residual of the EXACT
+graph, whose largest value is `0.579 eps max(1, ||M||_F)` ("dense k=159
+(mu_s=-1.347)"; a Newton polish from the exact graph does not move it); a
+stopping rule has no must-reject side by definition. Window `[5.79, open)`;
+16 lies inside it, a factor 2.8 above the lower edge. UNLABELLED
+observations, consequences of the rule rather than measurements of it:
+converged Newton and fixed-point iterates end at `<= 15.9`, the iterate one
+step short of convergence sits at `>= 16.2` ("trial-011 crab k=kc(1-0.1)",
+Newton iterate 4 of 5) and up to `1.4e9`.
 """
 const _ITERATION_STOP_MULTIPLIER = 16.0
 
 """
     _FIXED_POINT_MAX_ITERATIONS
 
-The default cap of the fixed-point iteration (D20) in `_dispersion_routes` (theory 8.6: linear
-convergence at the contraction ratio `2 ||M_lr|| ||D|| / sigma_min(op)`). PROVISIONAL; measured on the
-200 dense maps: the slowest needs 139 iterations (ratio 0.94), Newton at most 5; the cap 50 leaves 8
-of 200 short of the stop floor.
+The default cap of the fixed-point iteration (D20) in `_dispersion_routes`
+(theory 8.6: linear convergence at the contraction ratio `2 ||M_lr|| ||D|| /
+sigma_min(op)`). An integer stopping rule, no window. PROVISIONAL; why 500:
+measured 2026-09-12 (stage 4a record, "Derived windows", integer caps) on
+the 260 fixtures, the fixed point converges on 239, the slowest in 176
+iterations ("trial-011 crab k=kc(1-0.01)"), so the cap is about 2.8 times
+the slowest converging fixture and no converging fixture is cut short; the
+former cap 50 left 8 of the 200 dense maps short of the stop floor (the
+slowest dense map needs 139). The record counts an E7 stall on 23 runs and
+the cap reached on 4 (the crab ladder at `eps <= 1e-3`, contraction ratio
+2.05..2.14: not contracting, and the detail says so). Newton needs at most
+12 iterations on the same fixtures.
 """
 const _FIXED_POINT_MAX_ITERATIONS = 500
 
@@ -139,14 +161,18 @@ The cap on the halved trials of one Newton step (theory 8.6 gives none): a step
 none of whose `_MAX_HALVINGS` halved trials decreases the normalized (I1)
 residual is a STALL and ends the iteration on the last accepted graph
 (`converged = false`, `:not_invariant` with the graph reported); the keyword
-`max_halvings` of `_newton_route` overrides it. PROVISIONAL; measured
-2026-09-12 (fixer, `fixer/probe_after.jl`): from the (D15) start no dense map
-halves; from the far start `D0 = D_exact + 100` the dense map k = 3 converges
-with 10 halved trials in 14 steps (the a06 sensor), 38 of the 200 dense maps
-converge (up to 151 halved trials in all) and 162 stall at the cap (k = 50:
-iteration 3, exactly 40 halved trials, then `:not_invariant`); a trial `2^-40`
-of the Newton step that still does not decrease the residual is a stall for
-any purpose, so the cap is a stopping rule, not a tolerance.
+`max_halvings` of `_newton_route` overrides it. An integer stopping rule, no
+window. PROVISIONAL; measured 2026-09-12 (stage 4a record, "Derived
+windows", integer caps): from the (D15) start at most 2 halved trials occur
+over a whole run ("dense k=67 (mu_s=-1.071)"; 259 of the 260 fixtures never
+halve) and Newton takes at most 12 iterations ("trial-011 crab
+k=kc(1-1.0e-6)"); from the far start `D0 = D_exact + 100` on the 200 dense
+maps, 38 converge (up to 151 halved trials over the run, "dense k=69
+(mu_s=-1.077)"; k = 3 converges with 10 halved trials in 14 steps, the a06
+sensor) and 162 stall at the per-step cap (40 in the stalling step, 0..375
+accumulated); a trial `2^-40` of the Newton step that still does not
+decrease the residual is a stall for any purpose, so the cap is a stopping
+rule, not a tolerance.
 """
 const _MAX_HALVINGS = 40
 

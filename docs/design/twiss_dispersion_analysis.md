@@ -1,16 +1,25 @@
 # The first analysis: coupled Twiss and canonical dispersion from a one-turn matrix
 
 **Status: decided 2026-09-11 (design review, three judged designs, four
-adversarial verifications; the owner adopted every recommendation); not
-implemented.** No type, function, option, contract, or keyword named in this
-note exists in the source yet: `src/analysis/` still holds only
-`PlaceholderAnalysis`, and there is no analysis execution API. This note
-records which architecture was chosen and why. The mathematics it builds on is
+adversarial verifications; the owner adopted every recommendation);
+implemented through Staging item 4 (stages 1-4b, landed 2026-09-11 and
+2026-09-12).** `TwissDispersionAnalysis`, `analyze`, `analysis_option_schema`,
+`TwissDispersionResult`, `OpticsAnalysisError`, `NormalMode`,
+`ANALYSIS_STATUSES`, `matched_covariance`, `normal_mode` and
+`AnalysisOptionEffectivenessContract` exist in the source with the kernel
+files of `src/analysis/`; `PlaceholderAnalysis` remains the declaration of
+element kinds without an analysis until Staging item 5 declares the analysis
+on the linear-map kinds. Staging items 5-8 (element declaration, the physics
+identity contract with its validation script and example, the `lattice_cells.jl`
+refactor, the external benchmarks) are open. The amendments the implementation
+forced on this note's tables are recorded in
+[the campaign history](../history/twiss_dispersion_analysis_history.md), not
+edited into the body. This note records which architecture was chosen and why.
+The mathematics it builds on is
 [the theory note](../theory/twiss_dispersion.md), Sections 1–13; the
 degeneracy theory of its Section 13 and the reproducible checks behind it are
 in [the degeneracy-theory record](../history/twiss_dispersion_degeneracy_theory_2026_09_11.md).
-When implementation lands, the landing record and the todo row will say so;
-this paragraph is the only place that should be updated to reflect it.
+This paragraph is the only place in the note that tracks implementation status.
 
 ## The problem
 
