@@ -996,6 +996,30 @@ one fixture per error class it names, plus a pin on the fields it reads
 (`hasfield(InexactError, :args) && !hasfield(InexactError, :val)`), so that a
 Julia release moving a field is loud instead of a second silent relabelling.
 
+## The kappa in `c eps kappa` is the condition number of the quantity COMPARED
+
+- A simple eigenvalue of a symplectic map with an (E3)-normalized eigenvector
+  `u` has condition number `||u|| ||S u|| / |u' S u| = ||u||^2 / 2`, so a
+  backward error `rho` moves the computed eigenvalue, its modulus and anything
+  read off the restricted map by `rho ||u||^2 / 2`, not by `rho`. The same
+  missing factor bit five times in one day of the Twiss stage 3 campaign
+  (2026-09-12), in five places written by four agents: the design's chord
+  sketch at unit kappa (2.5e-6 against the measured 2.96e-5: the FODO's Gram
+  has minimum eigenvalue 0.084, kappa 11.9); a stability multiplier fitted to
+  256 so that stable manufactured maps stayed stable (their departures were
+  `rho kappa`, up to 21 rho); a recovered eigenvalue read from the N21
+  restricted map (1766 eps ||M|| on one map against a 64 eps ||M|| pin); the
+  complex Schur moduli of the same map (1268 eps); and a stable crab-cavity
+  map near its Krein collision flagged unstable (departures `eps ||M|| kappa /
+  2` with kappa up to 1.4e5). Every fix was the same and none was a larger
+  `c`: put the conditioning of the compared quantity into the scale (`kappa_c`
+  in the stability scale, the snap to the backward-stable Schur eigenvalue,
+  `||u||^2` in the modulus pin). A multiplier that has to grow past about a
+  hundred before a valid fixture is accepted is a kappa missing from the
+  formula, and the measurement rule (accepted below one tenth, rejected above
+  ten) is what exposes it: the 256 lay outside the window the corrected
+  formula produced ([5.2, 189]).
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

@@ -1,22 +1,33 @@
 # The 4D eigenmode route of the coupled Twiss analysis: theory
 # docs/theory/twiss_dispersion.md Section 3 (E1)-(E14), Section 4.4
-# (T13)-(T16), Section 6.1 (M1)-(M5); design docs/design/
-# twiss_dispersion_analysis.md "Pipeline" steps 6, 8 and 10. Stage 2 of the
-# campaign (design "Staging", item 2). Pure matrix arithmetic on a real 4x4
-# matrix the caller has ALREADY scaled (design "Input boundary" item 5): no
-# scaling happens here; the stage 1 `_unscale_*` table transforms the outputs
-# back. Nothing in this file claims an analysis exists: no `analyze`, no
-# analysis type, no export; the public verb is stage 4.
+# (T13)-(T16), Section 6.1 (M1)-(M5), Section 13 (N20)-(N22); design
+# docs/design/twiss_dispersion_analysis.md "Pipeline" steps 4-8 and 10. Stage
+# 2 of the campaign built the frame (design "Staging", item 2); stage 3 (item
+# 3) rebuilt it on the mode clusters of mode_clusters.jl. Pure matrix
+# arithmetic on a real 4x4 matrix the caller has ALREADY scaled (design
+# "Input boundary" item 5): no scaling happens here; the stage 1 `_unscale_*`
+# table transforms the outputs back. Nothing in this file claims an analysis
+# exists: no `analyze`, no analysis type, no export; the public verb is
+# stage 4.
 #
 # Conventions (theory Section 2 and 3): coordinates (x, px, y, py),
 # S_4 = diag(S_2, S_2), the oriented eigenvector u_j satisfies M u_j =
 # e^{-i mu_j} u_j and u_j' S_4 u_j = -2i (E3), the real pair is
 # U_j = [Re u_j, -Im u_j] (E6), and M U = U diag(R(mu_1), R(mu_2)) (E8).
 #
-# Two guards below are PROVISIONAL (dossier of the stage): the resolution
-# guard on the complex eigenvalue gap and the raw-modulus stability guard.
-# Stage 3 replaces them with the resolution chord (N22) and the per-cluster
-# Schur-block test (design "Pipeline" steps 5-6); each is marked at its site.
+# Route (design "Pipeline" steps 4-7, dossier D11): `_eigenmodes_4d` calls
+# `_mode_clusters` on the matrix with the caller's first perturbation scale
+# `rho_M0` and the resolution chord; the clusters decide stability (the
+# per-cluster Schur-block test, D5), unit eigenvalues, the Krein
+# classification (the sign of the Gram matrix, 13.8) and resolution (the
+# chord (N22) against `resolution_chord`). The frame exists exactly when
+# every cluster is definite and resolved with two modes in total; its two
+# oriented (E3)/(E4) vectors are the clusters' `modes`. No threshold lives
+# in this file: `_DEFAULT_RESOLUTION_CHORD` and the cluster multipliers are
+# owned by mode_clusters.jl. The closed-form route (E10)-(E14) below is a
+# cross-check that keeps its own DIVISION guards (`min_trace_gap`,
+# `stability_atol`; dossier D10); they are algebraic guards on the closed
+# form's traces, not a second resolution criterion.
 
 """
     SpectrumReport4D
@@ -24,18 +35,21 @@
 The spectral diagnostics of a real 4x4 matrix that are available whether or
 not a [`NormalModeFrame4D`](@ref) could be formed (theory 11.2: "unit-circle
 departure", "conjugate-pair separation, including the distance to the
-conjugate class"). Fields:
+conjugate class"). Every field is REPORTED, none is judged here: the
+decisions (stability, unit eigenvalues, classification, resolution) are the
+clusters' (`Eigenmodes4D.clusters`). Fields:
 
-  * `eigenvalues`: the four eigenvalues in eigensolver order (unoriented).
+  * `eigenvalues`: the four eigenvalues in the clusters' canonical order
+    (ascending `mod(angle, 2 pi)`, then modulus; unoriented).
   * `moduli`, `unit_circle_departure`: `abs.(eigenvalues)` and
-    `max(abs(moduli - 1))`; `stability_atol` is the tolerance the provisional
-    stability guard compared it against.
+    `max(abs(moduli - 1))` (a raw-modulus diagnostic; the stability
+    decision is the per-cluster Schur-block test of `_mode_clusters`).
   * `unit_eigenvalue_distance`: `min over rho of min(|rho - 1|, |rho + 1|)`,
     the distance to a self-conjugate class.
   * `gap`: the complex gap between the two conjugate classes,
     `g = min(|rho_j - rho_k|, |rho_j - conj(rho_k)|)` over eigenvalues of
-    different classes (design "Resolution criterion"); `min_gap` is the
-    caller's threshold.
+    different classes (design "Resolution criterion"; the chord divisor the
+    tests use for their tolerances).
   * `trace`, `discriminant_t7`, `discriminant_e10`: `tr M`; the (T7)
     discriminant `(tr M_xx - tr M_yy)^2 + 4 det(adj(M_xy) + M_yx)` from the
     2x2 blocks; and the (E10) radicand `2 tr(M^2) - (tr M)^2 + 8`. Both equal
@@ -46,16 +60,14 @@ conjugate class"). Fields:
   * `t14_holds`: the (T14) test `Delta > 0, |tau_+| < 2, |tau_-| < 2`. A
     DIAGNOSTIC only: `diag(2, 1/2, R(1.2))` has a positive discriminant but
     fails `|tau_+| < 2` (`tau_+ = 2.5`, one hyperbolic mode; theory 4.4); the
-    stability decision is the modulus guard either way.
+    stability decision is the clusters' either way.
 """
 struct SpectrumReport4D
     eigenvalues::Vector{ComplexF64}
     moduli::Vector{Float64}
     unit_circle_departure::Float64
-    stability_atol::Float64
     unit_eigenvalue_distance::Float64
     gap::Float64
-    min_gap::Float64
     trace::Float64
     discriminant_t7::Float64
     discriminant_e10::Float64
@@ -124,13 +136,20 @@ end
     Eigenmodes4D
 
 What [`_eigenmodes_4d`](@ref) returns: the [`SpectrumReport4D`](@ref)
-diagnostics, always present, and the `frame`, a
-`Determined{NormalModeFrame4D}` that is unique in the generic case and
-unavailable with a pinned reason (`:unstable_spectrum`, `:unit_eigenvalue`,
-`:cluster_unresolved`, `:unresolved_defective`) otherwise. Never a NaN.
+diagnostics, always present; the `clusters`, the full
+[`ModeClusters`](@ref) report of `_mode_clusters` on the matrix (the
+per-cluster Schur blocks, Gram matrices, Krein signs, chords, receipts and
+`degeneracy_status`), always present; and the `frame`, a
+`Determined{NormalModeFrame4D}` that is unique when every cluster is
+definite and resolved with two modes in total, and unavailable with a
+pinned reason otherwise (`:unstable_spectrum`, `:unit_eigenvalue`,
+`:cluster_unresolved` for a definite unresolved cluster,
+`:indefinite_cluster`, `:unresolved_defective`; the detail is the deciding
+cluster's `detail`). Never a NaN.
 """
 struct Eigenmodes4D
     spectrum::SpectrumReport4D
+    clusters::ModeClusters
     frame::Determined{NormalModeFrame4D}
 end
 
@@ -241,15 +260,14 @@ function _projected_twiss(u::AbstractVector{<:Complex})
 end
 
 """
-    _spectrum_report_4d(M, rho; min_gap, stability_atol) -> SpectrumReport4D
+    _spectrum_report_4d(M, rho) -> SpectrumReport4D
 
 The [`SpectrumReport4D`](@ref) of `M` with its eigenvalues `rho`: moduli
 and their unit-circle departure, the distance to a unit eigenvalue, the
 conjugate-class gap, both discriminants ((T7) from the blocks with
 `_adjugate2`, (E10) from the traces), the (E10) traces and the (T14) verdict.
 """
-function _spectrum_report_4d(M::AbstractMatrix{<:Real}, rho::AbstractVector{<:Complex};
-                             min_gap::Real, stability_atol::Real)
+function _spectrum_report_4d(M::AbstractMatrix{<:Real}, rho::AbstractVector{<:Complex})
     moduli = abs.(rho)
     departure = maximum(abs.(moduli .- 1))
     unit_distance = minimum(min(abs(r - 1), abs(r + 1)) for r in rho)
@@ -261,112 +279,117 @@ function _spectrum_report_4d(M::AbstractMatrix{<:Real}, rho::AbstractVector{<:Co
     root = sqrt(complex(d_e10))
     taus = ((trM + root) / 2, (trM - root) / 2)
     t14 = d_e10 > 0 && all(abs(real(t)) < 2 for t in taus)
-    return SpectrumReport4D(collect(ComplexF64, rho), moduli, departure, Float64(stability_atol),
-                            unit_distance, gap, Float64(min_gap), trM, d_t7, d_e10,
+    return SpectrumReport4D(collect(ComplexF64, rho), moduli, departure,
+                            unit_distance, gap, trM, d_t7, d_e10,
                             (ComplexF64(taus[1]), ComplexF64(taus[2])), t14)
 end
 
 # ---------------------------------------------------------------------------
 # The eigenvector route (E1)-(E8), (M1)-(M5).
 
-const _EIGENMODE_ARGUMENT_HELP = "a real 4x4 matrix with finite entries, min_gap > 0 and stability_atol > 0"
+const _EIGENMODE_ARGUMENT_HELP = "a real 4x4 matrix with finite entries"
 
-function _check_eigenmode_arguments(M::AbstractMatrix, min_gap::Real, stability_atol::Real)
+function _check_eigenmode_arguments(M::AbstractMatrix)
     size(M) == (4, 4) || throw(ArgumentError(
         "the 4D eigenmode route takes $(_EIGENMODE_ARGUMENT_HELP); got size $(size(M))"))
     all(isfinite, M) || throw(ArgumentError(
         "the 4D eigenmode route takes $(_EIGENMODE_ARGUMENT_HELP); the matrix has a non-finite entry"))
-    (isfinite(min_gap) && min_gap > 0) || throw(ArgumentError(
-        "the 4D eigenmode route takes $(_EIGENMODE_ARGUMENT_HELP); got min_gap = $(min_gap)"))
-    (isfinite(stability_atol) && stability_atol > 0) || throw(ArgumentError(
-        "the 4D eigenmode route takes $(_EIGENMODE_ARGUMENT_HELP); got stability_atol = $(stability_atol)"))
     return nothing
 end
 
 """
-    _eigenmodes_4d(M; min_gap, stability_atol) -> Eigenmodes4D
+    _frame_availability(clusters::ModeClusters) -> nothing or (reason, detail)
 
-The 4D eigenmode route (theory (E1)-(E8), design pipeline steps 6, 8, 10)
-for a real 4x4 matrix `M` the caller has already scaled. Two keyword
-thresholds, both REQUIRED (no default is exported before the measurement
-stage freezes one): `min_gap`, the smallest conjugate-class gap of
-[`_conjugate_class_gap`](@ref) at which the two pairs count as resolved, and
-`stability_atol`, the largest unit-circle departure of any eigenvalue at
-which the spectrum counts as stable.
+The frame's availability read off the clusters, in the order of dossier D11:
+any `:unstable` cluster gives `:unstable_spectrum`; then any
+`:unit_eigenvalue` cluster gives `:unit_eigenvalue`; when every cluster is
+definite and resolved the frame is available (`nothing`); otherwise a
+definite unresolved cluster gives `:cluster_unresolved`, an `:indefinite`
+cluster `:indefinite_cluster`, an `:unresolved` cluster
+`:unresolved_defective`. The detail names the deciding cluster's members
+and carries its own `detail`. A classification outside
+[`CLUSTER_CLASSIFICATIONS`](@ref) is an error, never a silent reason.
+"""
+function _frame_availability(clusters::ModeClusters)
+    cs = clusters.clusters
+    detail(c) = "cluster $(c.members) ($(c.classification)): $(c.detail)"
+    first_of(pred) = findfirst(pred, cs)
+    k = first_of(c -> c.classification === :unstable)
+    k === nothing || return (:unstable_spectrum, detail(cs[k]))
+    k = first_of(c -> c.classification === :unit_eigenvalue)
+    k === nothing || return (:unit_eigenvalue, detail(cs[k]))
+    all(c -> c.classification === :definite && c.resolved, cs) && return nothing
+    k = first_of(c -> c.classification === :definite && !c.resolved)
+    k === nothing || return (:cluster_unresolved, detail(cs[k]))
+    k = first_of(c -> c.classification === :indefinite)
+    k === nothing || return (:indefinite_cluster, detail(cs[k]))
+    k = first_of(c -> c.classification === :unresolved)
+    k === nothing || return (:unresolved_defective, detail(cs[k]))
+    error("_frame_availability: a cluster classification outside CLUSTER_CLASSIFICATIONS: " *
+          "$([c.classification for c in cs])")
+end
 
-Order of the guards, each an unavailable `frame` with its pinned reason:
+"""
+    _eigenmodes_4d(M; rho_M0, resolution_chord=_DEFAULT_RESOLUTION_CHORD) -> Eigenmodes4D
 
- 1. `unit_circle_departure > stability_atol` gives `:unstable_spectrum`
-    (the design's `diag(2, 1/2, R(1.2))` lands here, never in a Twiss).
-    PROVISIONAL: stage 3 replaces this guard with the per-cluster Schur-block
-    test.
- 2. an eigenvalue within `stability_atol` of `+1` or `-1` gives
-    `:unit_eigenvalue` (its eigenvector is real and has no orientation).
- 3. `gap <= min_gap` gives `:cluster_unresolved`. PROVISIONAL: stage 3
-    replaces this guard with the resolution chord.
- 4. anything else that leaves the orientation rule without exactly one
-    oriented member per class (a symplectic norm `|Im(v' S v)|` below
-    `64 eps ||v||^2`, or two oriented members in one class) gives
-    `:unresolved_defective` with the detail; the word defective is never
-    asserted.
+The 4D eigenmode route (theory (E1)-(E8), (N20)-(N22); design pipeline
+steps 4-8 and 10) for a real 4x4 matrix `M` the caller has already scaled.
+`rho_M0` is REQUIRED and is data, not a threshold: stage 1's first
+perturbation scale of the matrix, `_perturbation_scale(M,
+_symplectic_defect(M).frobenius; ...).scale`, which the clusters READ (a
+declared uncertainty of 1e-6 leaves `R(0.9) (+) R(0.9 + 1e-7)` unresolved
+and `diag(1 + 1e-6, 1/(1 + 1e-6), R(1.2))` a unit-eigenvalue class, where
+the roundoff scale resolves the first and calls the second unstable).
+`resolution_chord` is the chord (N22) above which two candidate clusters
+merge, in `(0, 2]` or `Inf` (`Inf` forces resolution and marks the clusters
+`forced`); the default is `_DEFAULT_RESOLUTION_CHORD` of mode_clusters.jl.
+Both are passed to [`_mode_clusters`](@ref) unchanged, which also validates
+them.
 
-In the generic case the oriented vectors are normalized by (E4), labelled by
+Availability of the `frame`, read from the clusters by
+[`_frame_availability`](@ref) in this order: an `:unstable` cluster gives
+`:unstable_spectrum` (the design's `diag(2, 1/2, R(1.2))` lands here, never
+in a Twiss); a `:unit_eigenvalue` cluster gives `:unit_eigenvalue` (a real
+eigenvector has no orientation); when every cluster is definite and resolved
+with two modes in total the frame is formed from the clusters' `modes` (an
+`m = 1` cluster's column IS the (E3)/(E4) vector, a recovered `m = 2` cluster
+gives both); a definite unresolved cluster gives `:cluster_unresolved`
+(`R(0.9) (+) R(0.9)`, the symmetric FODO), an indefinite cluster
+`:indefinite_cluster` (`R(0.9) (+) R(-0.9)`, opposite Krein signs), an
+unresolved cluster `:unresolved_defective` (the minimal-polynomial or
+Gram-floor sub-reasons; the word defective is never asserted). The detail is
+the deciding cluster's.
+
+In the available case the two oriented vectors are labelled by
 [`_mode_label_order`](@ref), and every field of [`NormalModeFrame4D`](@ref)
 is formed: the (E6) normalizer, its (E7) residual, the (I1) reconstruction
 residual against `diag(R(mu_1), R(mu_2))` (`_rotation2`, `_invariance_residual`),
 `P_j`, `G_j`, the (M1) array and Twiss projections, the (M2)/(M3) sums and
 both (M4) evaluations of `u`. The residuals are REPORTED, not judged: the
 acceptance threshold on the normalized (I1) value belongs to the analysis
-(stage 4), which reads it from the frame. Argument errors: any other size, a
-non-finite entry, a non-positive or non-finite threshold.
+(stage 4), which reads it from the frame. Argument errors: any other size or
+a non-finite entry here; a negative or non-finite `rho_M0` or a
+`resolution_chord` outside `(0, 2]` and not `Inf` from `_mode_clusters`.
 """
-function _eigenmodes_4d(M::AbstractMatrix{<:Real}; min_gap::Real, stability_atol::Real)
-    _check_eigenmode_arguments(M, min_gap, stability_atol)
+function _eigenmodes_4d(M::AbstractMatrix{<:Real}; rho_M0::Real, resolution_chord::Real=_DEFAULT_RESOLUTION_CHORD)
+    _check_eigenmode_arguments(M)
     Mf = Matrix{Float64}(M)
     S = _symplectic_form(4)
-    F = eigen(Mf)
-    rho = Vector{ComplexF64}(F.values)
-    V = Matrix{ComplexF64}(F.vectors)
-    spectrum = _spectrum_report_4d(Mf, rho; min_gap=min_gap, stability_atol=stability_atol)
-    unavailable(reason, detail) = Eigenmodes4D(spectrum, Determined{NormalModeFrame4D}(reason, detail))
-
-    # Guard 1 (provisional; stage 3 replaces this guard with the per-cluster
-    # Schur-block test): raw eigenvalue moduli against the unit circle.
-    if spectrum.unit_circle_departure > stability_atol
-        return unavailable(:unstable_spectrum,
-            "largest unit-circle departure $(spectrum.unit_circle_departure) exceeds stability_atol $(stability_atol)")
+    clusters = _mode_clusters(Mf; rho_M0=rho_M0, resolution_chord=resolution_chord)
+    spectrum = _spectrum_report_4d(Mf, clusters.eigenvalues)
+    blocked = _frame_availability(clusters)
+    if blocked !== nothing
+        return Eigenmodes4D(spectrum, clusters, Determined{NormalModeFrame4D}(blocked[1], blocked[2]))
     end
-    # Guard 2: an eigenvalue at +-1 has a real eigenvector; no orientation.
-    if spectrum.unit_eigenvalue_distance <= stability_atol
-        return unavailable(:unit_eigenvalue,
-            "an eigenvalue lies within $(stability_atol) of +1 or -1 (distance $(spectrum.unit_eigenvalue_distance))")
-    end
-    # Guard 3 (provisional; stage 3 replaces this guard with the resolution
-    # chord): the two conjugate classes must be separated by more than min_gap.
-    if spectrum.gap <= min_gap
-        return unavailable(:cluster_unresolved,
-            "conjugate-class gap $(spectrum.gap) does not exceed min_gap $(min_gap); the two pairs are one cluster")
-    end
-
-    # Orientation (E4): every eigensolver output with Im(v' S v) < 0 is an
-    # oriented member. Exactly one per class is expected here. The roundoff
-    # floor 64 eps ||v||^2 below is PROVISIONAL and unmeasured (no fixture
-    # reaches this branch at the test thresholds; stage 2 record): stage 3
-    # replaces it with the per-cluster Schur-block test.
-    norms = [imag(dot(view(V, :, k), S * view(V, :, k))) for k in 1:4]
-    scale = [64 * eps(Float64) * norm(view(V, :, k))^2 for k in 1:4]
-    if any(abs(norms[k]) <= scale[k] for k in 1:4)
-        return unavailable(:unresolved_defective,
-            "an eigenvector has a symplectic norm |Im(v' S v)| = $(minimum(abs, norms)) at or below its roundoff scale; the pair is neutral within the map's accuracy")
-    end
-    oriented = [k for k in 1:4 if norms[k] < 0]
-    if length(oriented) != 2 || _conjugate_partner(rho, oriented[1]) == oriented[2]
-        return unavailable(:unresolved_defective,
-            "the orientation rule selected $(length(oriented)) members ($(oriented)) instead of one per conjugate class")
-    end
-
-    us = [_orient_eigenvector(view(V, :, k), S).u for k in oriented]
-    rhos = [rho[k] for k in oriented]
+    # Every cluster is definite and resolved: its `modes` hold the oriented
+    # (E3)/(E4) vectors (the rotated frame of a recovered m = 2 cluster, the
+    # single column of an m = 1 cluster). A 4x4 map with complex-class
+    # clusters only has two half members, hence two modes; anything else is
+    # an invariant violation of _mode_clusters, not a reason.
+    modes = reduce(vcat, (determined_value(c.modes) for c in clusters.clusters); init=ClusterMode[])
+    length(modes) == 2 || error("_eigenmodes_4d: the resolved clusters carry $(length(modes)) modes, not two")
+    us = [m.vector for m in modes]
+    rhos = [m.eigenvalue for m in modes]
     tw = [_projected_twiss(u) for u in us]
     first, second, margin = _mode_label_order(tw[1].kappa[1], tw[2].kappa[1])
     order = (first, second)
@@ -396,7 +419,7 @@ function _eigenmodes_4d(M::AbstractMatrix{<:Real}; min_gap::Real, stability_atol
         (kappa[1, 1] + kappa[1, 2], kappa[2, 1] + kappa[2, 2]),
         (kappa[1, 1] + kappa[2, 1], kappa[1, 2] + kappa[2, 2]),
         beta, alpha, gamma, u_eval, u_eval[1] - u_eval[2], margin)
-    return Eigenmodes4D(spectrum, Determined(frame))
+    return Eigenmodes4D(spectrum, clusters, Determined(frame))
 end
 
 # ---------------------------------------------------------------------------
@@ -483,10 +506,13 @@ end
     _closed_form_eigenmodes_4d(M; min_trace_gap, stability_atol) -> Determined{ClosedFormEigenmodes4D}
 
 (E10)-(E14) on a real 4x4 matrix `M` (already scaled). Both keywords are
-REQUIRED: `min_trace_gap`, the smallest `|tau_+ - tau_-|` at which (E11)'s
-denominator is trusted, and `stability_atol`, the same eigenvalue-distance
-tolerance [`_eigenmodes_4d`](@ref) takes, applied here through the traces
-so that both routes judge a spectrum on one scale: for `|tau| <= 2` the
+REQUIRED and both are DIVISION guards of the closed form's own algebra, not
+resolution or stability criteria (dossier D10; the frame's verdicts come
+from the clusters, and this route is called only on a resolved frame):
+`min_trace_gap`, the smallest `|tau_+ - tau_-|` at which (E11)'s
+denominator is trusted, and `stability_atol`, a (T14)-style guard on the
+traces (`|tau| < 2` gives a real angle and a non-zero `sin mu`, which (E12)
+divides by), expressed as an eigenvalue distance: for `|tau| <= 2` the
 distance of `e^{-i mu}` to `+-1` is `sqrt(2 - |tau|)` exactly, and for
 `|tau| > 2` the unit-circle departure is `(|tau| + sqrt(tau^2 - 4)) / 2 - 1`.
 Guards, each an unavailable value:

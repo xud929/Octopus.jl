@@ -950,9 +950,12 @@ end
 # as c * eps * kappa with c justified beside it; the measured ratios behind
 # the constants (probe measure_eig4d.jl) are recorded in the campaign history
 # file docs/history/twiss_dispersion_analysis_history.md (stage 2 record).
-# The two guard thresholds below (min_gap, stability_atol) and the closed
-# form's min_trace_gap are TEST choices for the provisional stage 2 guards;
-# stage 3 replaces the guards (resolution chord, per-cluster Schur block).
+# Stage 3 (Part A2) rebuilt the frame on the mode clusters of
+# src/analysis/mode_clusters.jl: `_eigenmodes_4d(M; rho_M0, resolution_chord)`
+# reads the caller's first perturbation scale (`_eig4d_rho`, stage 1's
+# `_perturbation_scale`) and the chord; the closed form's min_trace_gap and
+# stability_atol below are its own division guards (dossier D10), TEST
+# choices that decide nothing about resolution.
 #
 # Injected defects, each shown red on 2026-09-11 (script-mode harness on a
 # patched copy of src/; the unpatched control is green; per-injection fail
@@ -961,7 +964,7 @@ end
 #   e01b selection:   the member chosen by Im(rho) < 0 instead of Im(v'Sv) < 0
 #   e02 normalizer:  the minus of (E6) dropped, U = [Re u, +Im u, ...]
 #   e03 kappa:       (M1) signed area with Re instead of Im
-#   e04 guard:       the stability guard inverted (departure < atol rejects)
+#   e04 guard:       the stability decision on raw moduli (stage 3: the per-cluster Schur-block test of mode_clusters.jl, injection a04 there)
 #   e05 cf guard:    the coincident-trace guard reduced to radicand < 0
 #   e06 cf sign:     sin(mu_j) forced positive in (E12) (tunes above 1/2 lost)
 #   e07 actions:     the 1/2 of (E9) dropped in the eigenvector evaluation
@@ -971,13 +974,15 @@ end
 #   e10 actions alias: from_vectors copied from from_normal_coordinates (99 fails)
 #   e11 cf differences: all five ClosedFormCheck4D differences set to 0.0 (1009 fails)
 
-const _EIG4D_MIN_GAP = 1e-6          # provisional resolution threshold (test choice)
-const _EIG4D_STAB = 1e-8             # provisional unit-circle tolerance (test choice)
+const _EIG4D_CF_STAB = 1e-8          # closed-form (T14)-style trace guard, an eigenvalue distance (test choice)
 const _EIG4D_TRACE_GAP = 1e-8        # closed-form coincident-trace threshold (test choice)
+# The first perturbation scale of a matrix, as stage 4 will compute it: data
+# read by the clusters, not a threshold (dossier D1, D11).
+_eig4d_rho(M) = Octopus._perturbation_scale(M, Octopus._symplectic_defect(M).frobenius).scale
 _eig4d_R(mu) = Octopus._rotation2(mu)
 _eig4d_blockdiag(A, B) = [A zeros(2, 2); zeros(2, 2) B]
-_eig4d(M) = Octopus._eigenmodes_4d(M; min_gap=_EIG4D_MIN_GAP, stability_atol=_EIG4D_STAB)
-_eig4d_cf(f) = Octopus._closed_form_check_4d(f; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB)
+_eig4d(M) = Octopus._eigenmodes_4d(M; rho_M0=_eig4d_rho(M))
+_eig4d_cf(f) = Octopus._closed_form_check_4d(f; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_CF_STAB)
 # The 200 manufactured stable 4x4 maps of the design's verification plan
 # (seed 20260911), built once and shared by the testsets below.
 const _EIG4D_MAPS = let rng = Xoshiro(20260911)
@@ -1040,7 +1045,8 @@ end
     @test s.t14_holds
     @test s.unit_circle_departure <= 4 * eps()
     @test abs(s.gap - min(abs(exp(-2pi * 0.7im) - exp(-2pi * 0.31im)), abs(exp(-2pi * 0.7im) - exp(2pi * 0.31im)))) <= 16 * eps()
-    @test s.min_gap == _EIG4D_MIN_GAP && s.stability_atol == _EIG4D_STAB   # the thresholds the code read
+    @test res.clusters.rho_M0 == _eig4d_rho(M) && res.clusters.resolution_chord == Octopus._DEFAULT_RESOLUTION_CHORD   # the data the code read
+    @test res.clusters.degeneracy_status === :all_resolved && length(res.clusters.clusters) == 2
     # Both evaluations of u (M4) are zero here: uncoupled.
     @test f.u_evaluations == (f.signed_areas[1, 2], f.signed_areas[2, 1])
     @test abs(f.u_difference) <= 16 * eps()
@@ -1063,7 +1069,14 @@ end
     # whose roundoff error is the design's chord, eps ||M||_2 ||U||_2^2 / g
     # with g the conjugate-class gap, so they carry kq = max(1, ||M||_2)
     # ||U||_2^2 / g times ||U||_F^2. c = 64 is at least ten times the largest
-    # required c the measurement found (stage 2 record).
+    # required c the measurement found (stage 2 record). Stage 3: the frame's
+    # eigenvalues are the complex Schur eigenvalues of the clusters (dossier
+    # D2), each conjugate computed separately, so their MODULUS is known to
+    # eps kappa(lambda) = eps ||u||^2 / 2 (stage 2's real `eigen` paired the
+    # conjugates and pinned the modulus to eps ||M||^2); the two pins that
+    # compare against the exactly unimodular e^{-i mu} and R(mu) carry
+    # ||u||^2 or ||U||_F^2 (measured on the 200 maps 2026-09-12: 3.76 and
+    # 1.24 in units eps ||u||^2, eps ||U||_F^2; map 50, tune 9e-5).
     c = 64
     n_frames = 0
     for (i, M) in enumerate(_EIG4D_MAPS)
@@ -1076,7 +1089,7 @@ end
         kq = max(1, opnorm(M)) * opnorm(U)^2 / res.spectrum.gap
         @test f.symplecticity_residual <= c * eps() * kq * nU                     # (E7)
         @test norm(transpose(U) * S4 * U - S4) == f.symplecticity_residual       # the field IS that residual
-        @test f.reconstruction_residual.normalized <= c * eps() * nM              # (E8) in the (I1) form
+        @test f.reconstruction_residual.normalized <= c * eps() * nU              # (E8) in the (I1) form; nU: the eigenvalue modulus (see above)
         Rb = _eig4d_blockdiag(_eig4d_R(f.tunes[1]), _eig4d_R(f.tunes[2]))
         @test f.reconstruction_residual == Octopus._invariance_residual(M, U, Rb)
         @test norm(U * Rb * Octopus._symplectic_inverse(U) - M) <= c * eps() * nU * nM   # (E8) as stated
@@ -1089,7 +1102,7 @@ end
             @test f.normalization_residuals[j] <= c * eps() * nu                  # (E3)
             @test f.eigenvector_residuals[j].normalized <= c * eps() * nM
             @test 0 <= f.tunes[j] < 2pi
-            @test abs(f.eigenvalues[j] - exp(-im * f.tunes[j])) <= c * eps()
+            @test abs(f.eigenvalues[j] - exp(-im * f.tunes[j])) <= c * eps() * nu   # the modulus is known to eps kappa(lambda) = eps nu / 2
             P = f.projectors[j]; G = f.covariances[j]
             @test norm(P * P - P) <= c * eps() * norm(P)^2                       # idempotent
             Uj = U[:, 2j - 1:2j]
@@ -1251,7 +1264,7 @@ end
     # (the (E11) denominator), the reason this stage chose for the
     # coincident-trace exclusion of theory 3.4.
     for Meq in (_eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(0.9)), _eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(-0.9)))
-        cfe = Octopus._closed_form_eigenmodes_4d(Meq; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB)
+        cfe = Octopus._closed_form_eigenmodes_4d(Meq; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_CF_STAB)
         @test !is_determined(cfe) && cfe.reason === :singular_coefficient
         @test_throws UndeterminedQuantityError determined_value(cfe)
     end
@@ -1259,11 +1272,11 @@ end
     # closed form is available; with min_trace_gap = 1e-6 it is not. The
     # threshold is read.
     Mnear = _eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(0.9 + 1e-7))
-    @test is_determined(Octopus._closed_form_eigenmodes_4d(Mnear; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB))
-    @test Octopus._closed_form_eigenmodes_4d(Mnear; min_trace_gap=1e-6, stability_atol=_EIG4D_STAB).reason === :singular_coefficient
+    @test is_determined(Octopus._closed_form_eigenmodes_4d(Mnear; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_CF_STAB))
+    @test Octopus._closed_form_eigenmodes_4d(Mnear; min_trace_gap=1e-6, stability_atol=_EIG4D_CF_STAB).reason === :singular_coefficient
     # Hyperbolic mode: diag(2, 1/2, R(1.2)) has tau_+ = 2.5.
     Mhyp = _eig4d_blockdiag([2.0 0.0; 0.0 0.5], _eig4d_R(1.2))
-    @test Octopus._closed_form_eigenmodes_4d(Mhyp; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB).reason === :unstable_spectrum
+    @test Octopus._closed_form_eigenmodes_4d(Mhyp; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_CF_STAB).reason === :unstable_spectrum
     # Unit eigenvalue: I_2 (+) S_2 has tau = 2 EXACTLY (tr M = 2, tr M^2 = 0,
     # radicand 4). The fixture is exact on purpose: a trace excess delta from
     # roundoff maps to a unit-circle departure sqrt(delta) (~2e-8 for
@@ -1271,7 +1284,7 @@ end
     # stage 3's Schur-block test replaces (design pipeline step 6).
     Mone = _eig4d_blockdiag(Matrix(1.0I, 2, 2), [0.0 1.0; -1.0 0.0])
     @test 2 * tr(Mone * Mone) - tr(Mone)^2 + 8 == 4.0
-    @test Octopus._closed_form_eigenmodes_4d(Mone; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB).reason === :unit_eigenvalue
+    @test Octopus._closed_form_eigenmodes_4d(Mone; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_CF_STAB).reason === :unit_eigenvalue
     # Complex quartet: positions mapped by A = r R(theta), momenta by A^-T,
     # a symplectic map with eigenvalues r e^{+-i theta}, e^{+-i theta} / r,
     # whose (E10) radicand is negative.
@@ -1281,7 +1294,7 @@ end
     Mq[2, 2] = B[1, 1]; Mq[2, 4] = B[1, 2]; Mq[4, 2] = B[2, 1]; Mq[4, 4] = B[2, 2]
     @test norm(transpose(Mq) * S4 * Mq - S4) <= 64 * eps() * norm(Mq)^2
     @test 2 * tr(Mq * Mq) - tr(Mq)^2 + 8 < -1
-    @test Octopus._closed_form_eigenmodes_4d(Mq; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB).reason === :unstable_spectrum
+    @test Octopus._closed_form_eigenmodes_4d(Mq; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_CF_STAB).reason === :unstable_spectrum
     @test _eig4d(Mq).frame.reason === :unstable_spectrum
     # Arguments are checked loudly.
     @test_throws ArgumentError Octopus._closed_form_eigenmodes_4d(zeros(3, 3); min_trace_gap=1e-8, stability_atol=1e-8)
@@ -1356,7 +1369,7 @@ end
     @test abs((Mexact[1, 1] + Mexact[2, 2]) - (Mexact[3, 3] + Mexact[4, 4])) <= 16 * eps() * norm(Mexact)
     @test rex.spectrum.gap <= 64 * eps()                            # measured 4.4e-16
     @test rex.frame.reason === :cluster_unresolved
-    @test Octopus._closed_form_eigenmodes_4d(Mexact; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_STAB).reason === :singular_coefficient
+    @test Octopus._closed_form_eigenmodes_4d(Mexact; min_trace_gap=_EIG4D_TRACE_GAP, stability_atol=_EIG4D_CF_STAB).reason === :singular_coefficient
     M4 = eig4d_fodo4(kq, -kq * (1 + 1e-3))
     @test norm(M4[1:2, 3:4]) == 0 && norm(M4[3:4, 1:2]) == 0        # uncoupled
     res = _eig4d(M4)
@@ -1388,14 +1401,17 @@ end
     @test res.spectrum.t14_holds
 end
 
-@testset "4D eigenmodes: guards land diag(2, 1/2, R(1.2)) in :unstable_spectrum and equal pairs in :cluster_unresolved" begin
+@testset "4D eigenmodes: clusters land diag(2, 1/2, R(1.2)) in :unstable_spectrum, equal pairs in :cluster_unresolved, R(a) (+) R(-a) in :indefinite_cluster" begin
     # The design's counterexample: symplectic, positive discriminant, one
-    # hyperbolic mode. The decision is the modulus guard; (T14) itself fails
-    # only on |tau_+| = 2.5 > 2, which is reported, not decided on.
+    # hyperbolic mode. The decision is the clusters' Schur-block stability
+    # test (dossier D5); (T14) itself fails only on |tau_+| = 2.5 > 2, which
+    # is reported, not decided on.
     Mu = _eig4d_blockdiag([2.0 0.0; 0.0 0.5], _eig4d_R(1.2))
     ru = _eig4d(Mu)
     @test !is_determined(ru.frame) && ru.frame.reason === :unstable_spectrum
     @test ru.frame.reason in DETERMINATION_REASONS
+    @test ru.clusters isa Octopus.ModeClusters && ru.clusters.degeneracy_status === :unstable
+    @test any(c.classification === :unstable for c in ru.clusters.clusters)
     @test_throws UndeterminedQuantityError determined_value(ru.frame)
     err = nothing
     try
@@ -1407,54 +1423,90 @@ end
     @test ru.spectrum.unit_circle_departure == 1.0
     @test ru.spectrum.discriminant_e10 > 0 && !ru.spectrum.t14_holds
     @test abs(real(ru.spectrum.traces[1]) - 2.5) <= 16 * eps()
-    # Equal pairs under a min_gap: R(a) (+) R(a), gap 0; the conjugate
-    # coincidence R(a) (+) R(-a) has the same traces and gap 0 through the
-    # conjugate distance.
-    for Me in (_eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(0.9)), _eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(-0.9)))
-        re = _eig4d(Me)
-        @test re.frame.reason === :cluster_unresolved
-        @test re.spectrum.gap <= 16 * eps()
-        @test re.spectrum.unit_circle_departure <= 16 * eps()     # stable, only unresolved
+    # Equal pairs R(a) (+) R(a): one DEFINITE cluster of two modes that the
+    # chord cannot resolve (internal chord 2 at gap 0), :cluster_unresolved.
+    # The conjugate coincidence R(a) (+) R(-a) has the same traces and gap 0
+    # but OPPOSITE Krein signs: an INDEFINITE cluster, :indefinite_cluster
+    # (theory 13.8; the frame never orients it into two definite modes).
+    Me = _eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(0.9))
+    re = _eig4d(Me)
+    @test re.frame.reason === :cluster_unresolved
+    @test length(re.clusters.clusters) == 1 && re.clusters.clusters[1].classification === :definite
+    @test !re.clusters.clusters[1].resolved && re.clusters.degeneracy_status === :degenerate
+    Mi = _eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(-0.9))
+    ri = _eig4d(Mi)
+    @test ri.frame.reason === :indefinite_cluster
+    @test length(ri.clusters.clusters) == 1 && ri.clusters.clusters[1].classification === :indefinite
+    @test sort(ri.clusters.clusters[1].krein_signs) == [-1, 1]
+    for r in (re, ri)
+        @test r.spectrum.gap <= 16 * eps()
+        @test r.spectrum.unit_circle_departure <= 16 * eps()     # stable, only unresolved / indefinite
     end
-    # min_gap is READ: a split of 1e-7 is unresolved at min_gap 1e-6 and
-    # resolved at 1e-9 (the same map).
+    # rho_M0 and resolution_chord are READ (dossier D10-D11): a split of
+    # 1e-7 is RESOLVED at the roundoff scale (chord q = 2 kappa rho / g of
+    # order 5e-8 << 1e-4), unresolved with a declared uncertainty rho_M0 =
+    # 1e-6 (q of order 20), and unresolved at resolution_chord = 1e-9.
     Mn = _eig4d_blockdiag(_eig4d_R(0.9), _eig4d_R(0.9 + 1e-7))
-    @test Octopus._eigenmodes_4d(Mn; min_gap=1e-6, stability_atol=_EIG4D_STAB).frame.reason === :cluster_unresolved
-    rn = Octopus._eigenmodes_4d(Mn; min_gap=1e-9, stability_atol=_EIG4D_STAB)
+    rn = _eig4d(Mn)
     @test is_determined(rn.frame) && abs(rn.spectrum.gap - 1e-7) <= 1e-9
-    # stability_atol is READ: a departure of 1e-6 is unstable at 1e-8 and
-    # not at 1e-4, where the real eigenvalues near 1 are a unit-eigenvalue
-    # class instead.
+    @test rn.clusters.rho_M0 == _eig4d_rho(Mn) && rn.clusters.resolution_chord == Octopus._DEFAULT_RESOLUTION_CHORD
+    @test all(c.classification === :definite && c.resolved for c in rn.clusters.clusters)
+    @test Octopus._eigenmodes_4d(Mn; rho_M0=1e-6).frame.reason === :cluster_unresolved
+    @test Octopus._eigenmodes_4d(Mn; rho_M0=1e-6).clusters.rho_M0 == 1e-6
+    rc = Octopus._eigenmodes_4d(Mn; rho_M0=_eig4d_rho(Mn), resolution_chord=1e-9)
+    @test rc.frame.reason === :cluster_unresolved && rc.clusters.resolution_chord == 1e-9
+    # rho_M0 is READ by the stability test (D5): a real pair at 1 +- 1e-6
+    # is unstable at the roundoff scale and a unit-eigenvalue class with a
+    # declared rho_M0 = 1e-5 (the departure is inside the scale).
     Md = _eig4d_blockdiag([1 + 1e-6 0.0; 0.0 1 / (1 + 1e-6)], _eig4d_R(1.2))
-    @test Octopus._eigenmodes_4d(Md; min_gap=1e-6, stability_atol=1e-8).frame.reason === :unstable_spectrum
-    @test Octopus._eigenmodes_4d(Md; min_gap=1e-6, stability_atol=1e-4).frame.reason === :unit_eigenvalue
-    # The identity and +-I_2 (+) R(1.2) are unit-eigenvalue classes.
-    @test _eig4d(Matrix(1.0I, 4, 4)).frame.reason === :unit_eigenvalue
-    @test _eig4d(_eig4d_blockdiag(Matrix(1.0I, 2, 2), _eig4d_R(1.2))).frame.reason === :unit_eigenvalue
-    @test _eig4d(_eig4d_blockdiag(-Matrix(1.0I, 2, 2), _eig4d_R(1.2))).frame.reason === :unit_eigenvalue
-    # Every reason this file can return is in the pinned vocabulary and the
-    # spectrum report is present in each case.
-    for M in (Mu, Mn, Md, Matrix(1.0I, 4, 4))
+    @test _eig4d(Md).frame.reason === :unstable_spectrum
+    @test Octopus._eigenmodes_4d(Md; rho_M0=1e-5).frame.reason === :unit_eigenvalue
+    # The R(1.2) cluster stays a resolved definite singleton beside the
+    # off-circle pair either way.
+    for r in (_eig4d(Md), Octopus._eigenmodes_4d(Md; rho_M0=1e-5))
+        @test any(c.classification === :definite && c.resolved && length(c.half_members) == 1 for c in r.clusters.clusters)
+    end
+    # The identity and +-I_2 (+) R(1.2) are unit-eigenvalue classes, never unstable.
+    for M in (Matrix(1.0I, 4, 4), _eig4d_blockdiag(Matrix(1.0I, 2, 2), _eig4d_R(1.2)), _eig4d_blockdiag(-Matrix(1.0I, 2, 2), _eig4d_R(1.2)))
+        r = _eig4d(M)
+        @test r.frame.reason === :unit_eigenvalue
+        @test !any(c.classification === :unstable for c in r.clusters.clusters)
+    end
+    # Every reason this file can return is in the pinned vocabulary, the
+    # spectrum report and the clusters are present in each case, and the
+    # frame's reason is the D11 image of the deciding classification.
+    reason_of = Dict(:unstable => :unstable_spectrum, :unit_eigenvalue => :unit_eigenvalue,
+                     :indefinite => :indefinite_cluster, :unresolved => :unresolved_defective)
+    for M in (Mu, Me, Mi, Mn, Md, Matrix(1.0I, 4, 4))
         r = _eig4d(M)
         @test r.frame.reason in DETERMINATION_REASONS
         @test r.spectrum isa Octopus.SpectrumReport4D && length(r.spectrum.eigenvalues) == 4
+        @test r.spectrum.eigenvalues == r.clusters.eigenvalues
+        @test all(c.classification in Octopus.CLUSTER_CLASSIFICATIONS for c in r.clusters.clusters)
+        worst = r.clusters.degeneracy_status
+        expected = worst === :all_resolved ? :none : worst === :degenerate ? :cluster_unresolved : reason_of[worst]
+        @test r.frame.reason === expected
+        @test !occursin("defective", r.frame.detail)
     end
-    # Arguments: size, finiteness, thresholds; no exported default.
+    # Arguments: size and finiteness here; rho_M0 and the chord are
+    # validated by _mode_clusters; rho_M0 has no default.
     Mok = _eig4d_blockdiag(_eig4d_R(0.7), _eig4d_R(0.31))
-    @test_throws ArgumentError Octopus._eigenmodes_4d(zeros(3, 3); min_gap=1e-6, stability_atol=1e-8)
-    @test_throws ArgumentError Octopus._eigenmodes_4d(zeros(6, 6); min_gap=1e-6, stability_atol=1e-8)
-    @test_throws ArgumentError Octopus._eigenmodes_4d([Inf 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]; min_gap=1e-6, stability_atol=1e-8)
-    @test_throws ArgumentError Octopus._eigenmodes_4d(Mok; min_gap=0.0, stability_atol=1e-8)
-    @test_throws ArgumentError Octopus._eigenmodes_4d(Mok; min_gap=1e-6, stability_atol=0.0)
-    @test_throws ArgumentError Octopus._eigenmodes_4d(Mok; min_gap=NaN, stability_atol=1e-8)
-    @test_throws UndefKeywordError Octopus._eigenmodes_4d(Mok; stability_atol=1e-8)
-    @test_throws UndefKeywordError Octopus._eigenmodes_4d(Mok; min_gap=1e-6)
+    @test_throws ArgumentError Octopus._eigenmodes_4d(zeros(3, 3); rho_M0=1e-12)
+    @test_throws ArgumentError Octopus._eigenmodes_4d(zeros(6, 6); rho_M0=1e-12)
+    @test_throws ArgumentError Octopus._eigenmodes_4d([Inf 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]; rho_M0=1e-12)
+    @test_throws ArgumentError Octopus._eigenmodes_4d(Mok; rho_M0=-1e-12)
+    @test_throws ArgumentError Octopus._eigenmodes_4d(Mok; rho_M0=NaN)
+    @test_throws ArgumentError Octopus._eigenmodes_4d(Mok; rho_M0=1e-12, resolution_chord=0.0)
+    @test_throws ArgumentError Octopus._eigenmodes_4d(Mok; rho_M0=1e-12, resolution_chord=3.0)
+    @test_throws UndefKeywordError Octopus._eigenmodes_4d(Mok)
+    @test is_determined(Octopus._eigenmodes_4d(Mok; rho_M0=0.0).frame)          # zero is a legal declared uncertainty
     @test_throws ArgumentError Octopus._orient_eigenvector(ComplexF64[1, 0, 0, 0], Octopus._symplectic_form(4))  # neutral vector
     # Stage 2 exports nothing new, documents its types, and claims no analysis.
     for n in (:NormalModeFrame4D, :Eigenmodes4D, :SpectrumReport4D, :ClosedFormEigenmodes4D, :ClosedFormCheck4D)
         @test isdefined(Octopus, n) && !(n in names(Octopus))
         @test !occursin("No documentation found", string(Base.Docs.doc(Base.Docs.Binding(Octopus, n))))
     end
+    @test !hasfield(Octopus.SpectrumReport4D, :min_gap) && !hasfield(Octopus.SpectrumReport4D, :stability_atol)
     @test !isdefined(Octopus, :analyze)
 end
 
@@ -1547,10 +1599,9 @@ _pb_val(d) = determined_value(d)
 # construction and the scaling rows label by the constructing tunes), which
 # only reorders the returned tuples: the frame itself is returned unchanged
 # as `frame` for the thin methods on it. Loud when the frame is unavailable.
-const _PB_MIN_GAP = 1e-6             # provisional resolution threshold (test choice, as Part A)
-const _PB_STAB = 1e-8                # provisional unit-circle tolerance (test choice, as Part A)
+_pb_rho(M) = _eig4d_rho(M)   # Part A's helper: one derivation of rho_M0 for the whole Twiss test region
 function _pb_frame(M; expected=nothing)
-    res = Octopus._eigenmodes_4d(M; min_gap=_PB_MIN_GAP, stability_atol=_PB_STAB)
+    res = Octopus._eigenmodes_4d(M; rho_M0=_pb_rho(M))
     fr = determined_value(res.frame)
     us = collect(fr.vectors); mus = collect(fr.tunes); rhos = collect(fr.eigenvalues)
     if expected !== nothing
@@ -2138,6 +2189,1654 @@ end
             end
         end
     end
+end
+
+# Twiss analysis stage 3: mode clusters, Krein classification, the dispersion
+# ambiguity set and the resolution chord (src/analysis/mode_clusters.jl and
+# src/analysis/degenerate_dispersion.jl; dossier D1-D9). Standalone runners
+# with the same testsets: result/twiss_impl_2026_09_11/stage3/run_clusters.jl,
+# run_ambiguity.jl (they substitute for neither lane). Every tolerance below is
+# c eps kappa with c measured (report_A1.md, report_B.md); nothing here claims
+# an analysis. The `_st3_` block first: the test-local fixture library
+# (analytic builders and a seeded RNG, no git-ignored file) and the cluster
+# helper on `_mode_clusters`.
+# Stage 3 test-local fixture library (Part B). ASCII only. No dependency on
+# any git-ignored file: every fixture is rebuilt analytically or from a seeded
+# RNG. `_st3_cluster_frame` is the design probe's `cluster_basis` +
+# `normalize_cluster`, kept ONLY for the one agreement witness against Part
+# A's `_mode_clusters` (the pins testset); every other test goes through
+# `_st3_cluster` below.
+#
+# Conventions: coordinates (x, px, y, py[, z, pz]); S_2 = [0 1; -1 0];
+# R(mu) = [cos mu, sin mu; -sin mu, cos mu]; oriented eigenvalue e^{-i mu},
+# frame normalization u' S u = -2i. The isospectral family is ported from the
+# paper's trial_015_verify.py (`split_map`, `readouts`, `spinor`), which uses
+# the e^{+i mu} convention for its complex frame `v`; only REAL outputs of
+# that port (the endpoint maps, the expected eta, the diameter) are consumed,
+# so the convention difference (v = conj(u)) cannot leak (pitfall 10).
+
+const _ST3_J2 = [0.0 1.0; -1.0 0.0]
+
+"The symplectic form S_d = diag(S_2, ...) for even d."
+_st3_symplectic_form(d::Integer) = kron(Matrix{Float64}(I, div(d, 2), div(d, 2)), _ST3_J2)
+
+"R(mu) = [cos mu, sin mu; -sin mu, cos mu] (the shared rotation convention)."
+_st3_rot(mu::Real) = [cos(mu) sin(mu); -sin(mu) cos(mu)]
+
+"Block-diagonal concatenation of square matrices."
+function _st3_block_diag(ms::AbstractMatrix...)
+    n = sum(size(m, 1) for m in ms)
+    out = zeros(promote_type(map(eltype, ms)...), n, n)
+    i = 1
+    for m in ms
+        r = i:i + size(m, 1) - 1
+        out[r, r] = m
+        i += size(m, 1)
+    end
+    return out
+end
+
+"""
+    _st3_random_symplectic(rng, d, scale) -> Matrix{Float64}
+
+W = exp(scale * S_d (K + K^T)) for a Gaussian K (the design probe's `randsymp`):
+an exactly symplectic random conjugation for manufactured fixtures.
+"""
+function _st3_random_symplectic(rng::AbstractRNG, d::Integer, scale::Real)
+    K = randn(rng, d, d)
+    return exp(scale * _st3_symplectic_form(d) * (K + transpose(K)))
+end
+
+"""
+    _st3_rolled_fodo(theta; eps=0.0) -> Matrix{Float64} (4 x 4)
+
+The rolled equal-tune FODO cell of theory 13.10 (probe lines 284-330,
+verbatim): L_q = 0.2, K_1 = +-1, drifts 1.0, every quadrupole rolled by
+`theta`; M4 = C(theta) diag(A_x, A_y) C(theta)^T with A_x = D Q_D D Q_F and
+A_y = D Q_F D Q_D. With `eps != 0` the defocusing quadrupole is detuned to
+K_1D = -(1 + eps): the x plane sees quad(-1 - eps), the y plane quad(+1 + eps)
+(a quadrupole focuses in one plane and defocuses in the other), which splits
+the pair (the four controls eps in (1e-3, 1e-6, 1e-9, 1e-12) of the table).
+"""
+function _st3_rolled_fodo(theta::Real; eps::Real=0.0)
+    L = 0.2; k = 1.0; w = sqrt(abs(k)); a = w * L
+    QF = [cos(a) sin(a)/w; -w*sin(a) cos(a)]
+    QD = [cosh(a) sinh(a)/w; w*sinh(a) cosh(a)]
+    Dr = [1.0 1.0; 0.0 1.0]
+    Rt = kron([cos(theta) -sin(theta); sin(theta) cos(theta)], Matrix{Float64}(I, 2, 2))
+    if eps == 0
+        Ax = Dr * QD * Dr * QF
+        Ay = Dr * QF * Dr * QD
+        return Rt * _st3_block_diag(Ax, Ay) * transpose(Rt)
+    end
+    wd = sqrt(1 + eps); ad = wd * L
+    QDe = [cosh(ad) sinh(ad)/wd; wd*sinh(ad) cosh(ad)]          # quad(-1-eps), x plane
+    QFe = [cos(ad) sin(ad)/wd; -wd*sin(ad) cos(ad)]             # quad(+1+eps), y plane
+    Axe = Dr * QDe * Dr * QF
+    Aye = Dr * QFe * Dr * QD
+    return Rt * _st3_block_diag(Axe, Aye) * transpose(Rt)
+end
+
+"""
+    _st3_fodo_pins() -> NamedTuple
+
+The four pinned numbers of the exact rolled FODO (theory 13.10 and the stage 3
+fixture table): cos mu, the tune (both members), the Gram minimum in the
+orthonormal Schur basis, and the roll used by the pins (pi/4). The detuned
+controls' complex gaps and ||M||_2 are derived by the tests from the maps
+themselves, never typed.
+"""
+_st3_fodo_pins() = (cos_mu=0.9744003972058644, tune=0.0360896443733161,
+                   gram_minimum=0.0838222432933016, theta=pi / 4)
+
+# ---- isospectral family (port of trial_015_verify.py, seed there 150926) ----
+
+const _ST3_PAULI = (ComplexF64[0 1; 1 0], ComplexF64[0 -im; im 0], ComplexF64[1 0; 0 -1])
+const _ST3_MU, _ST3_GAMMA = 0.73, 1.41
+
+"""
+    _st3_readouts(V) -> (hs, center, F)
+
+Port of trial 015 `readouts` for a 6 x 2 complex frame `V`: the Hermitian
+forms `h_a` (a = 1:4) with `eta_a(c) = c' h_a c` for the member `V c`, the
+center `tr(h_a) / 2` and the factor `F[a, k] = tr(h_a sigma_k) / 2`, so that
+`eta(c) = center + F n(c)` with `n_k = c' sigma_k c` the Bloch vector (N12).
+Written for the paper's frame convention (`V` with V^T S V ... = +2i,
+V = conj(U)); for OUR frame `U` (u' S u = -2i) pass `conj(U)`, or use
+`_st3_readouts_frame(U)` which does that. Real outputs only are consumed.
+"""
+function _st3_readouts(V::AbstractMatrix{<:Complex})
+    Vh = V'                      # 2 x 6, rows are conj of the frame's rows
+    a = Vh[:, 5]                 # z row, conjugated
+    hs = Matrix{ComplexF64}[]
+    for i in 1:4
+        b = Vh[:, i]
+        push!(hs, (a * b' - b * a') / (2im))
+    end
+    center = [real(tr(h)) / 2 for h in hs]
+    F = [real(tr(h * s)) / 2 for h in hs, s in _ST3_PAULI]
+    return (hs=hs, center=center, F=F)
+end
+
+"""
+    _st3_readouts_frame(U) -> (hs, center, F)
+
+The readouts in the NOTE's convention for a 6 x m frame `U` (u' S u = -2i):
+`eta_a(c) = c' H_a c` with `H_a = (conj(r_a) r_z^T - conj(r_z) r_a^T) / (2i)`,
+`r_a = U[a, :]` the a-th row, so that `-Im(conj(u_z) u_a)` of (D12) is the
+Hermitian form of the coefficients. For m = 2, `center_a = tr(H_a) / 2`,
+`F[a, k] = tr(H_a sigma_k) / 2` and `eta(c) = center + F n(c)`, `n_k = c'
+sigma_k c`. Relation to the paper port `_st3_readouts(conj(U))`: the same
+center and the same `F` except the sign of the sigma_2 column, because the
+Bloch vector of conj(c) flips n_2 (pitfall 10: complex quantities differ by
+conjugation, real outputs agree up to that relabelling).
+"""
+function _st3_readouts_frame(U::AbstractMatrix{<:Complex})
+    m = size(U, 2)
+    rz = U[5, :]
+    hs = Matrix{ComplexF64}[]
+    for a in 1:4
+        ra = U[a, :]
+        push!(hs, (conj(ra) * transpose(rz) - conj(rz) * transpose(ra)) / (2im))
+    end
+    center = [real(tr(h)) / 2 for h in hs]
+    F = m == 2 ? [real(tr(h * s)) / 2 for h in hs, s in _ST3_PAULI] : zeros(4, 0)
+    return (hs=hs, center=center, F=F)
+end
+
+"""
+    _st3_spinor(n) -> Vector{ComplexF64}
+
+Port of trial 015 `spinor`: the unit eigenvector with the LARGEST eigenvalue
+of `sum_k n_k sigma_k`, so its Bloch vector `c' sigma_k c` equals `n / ||n||`.
+"""
+function _st3_spinor(n::AbstractVector{<:Real})
+    h = sum(n[k] * _ST3_PAULI[k] for k in 1:3)
+    return eigen(Hermitian(h)).vectors[:, end]
+end
+
+"""
+    _st3_split_map(W, u, eps) -> Matrix{Float64}
+
+Port of trial 015 `split_map` (lines 36-41): with `v = W[:, [1, 5]] + i W[:,
+[2, 6]]` the paper-convention frame of the degenerate x and z pairs, the
+member `v u` and its Krein-orthogonal partner `v u_perp`, `u_perp =
+(-conj(u_2), conj(u_1))`, form the real basis `B = [Re(v u), Im(v u), W[:, 3],
+W[:, 4], Re(v u_perp), Im(v u_perp)]` and return `B diag(R(mu + eps),
+R(gamma), R(mu - eps)) B^{-S}` (the symplectic inverse). The map has spectrum
+{mu +- eps, gamma} for every `u`; the SELECTED member `v u` carries mu + eps.
+"""
+function _st3_split_map(W::AbstractMatrix{<:Real}, u::AbstractVector{<:Complex}, eps::Real)
+    v = W[:, [1, 5]] + im * W[:, [2, 6]]
+    up = [-conj(u[2]), conj(u[1])]
+    first, second = v * u, v * up
+    B = hcat(real(first), imag(first), W[:, 3], W[:, 4], real(second), imag(second))
+    S6 = _st3_symplectic_form(6)
+    Binv = -S6 * transpose(B) * S6
+    return B * _st3_block_diag(_st3_rot(_ST3_MU + eps), _st3_rot(_ST3_GAMMA), _st3_rot(_ST3_MU - eps)) * Binv
+end
+
+"""
+    _st3_isospectral_family(rng, eps; spinors=nothing) -> NamedTuple
+
+The trial-015 isospectral family with Julia's RNG: `H` symmetric Gaussian
+scaled by 0.07, `W = exp(S_6 H)`, the degenerate limit map `M = W
+diag(R(0.73), R(1.41), R(0.73)) W^{-S}`, the paper frame `v` of the x and z
+pairs, the factor `F` of `_st3_readouts(v)`, the axis = first right singular
+vector of `F`, the spinors `u_+ = spinor(+axis)`, `u_- = spinor(-axis)`, the
+endpoint maps `M_plus = split_map(W, u_+, eps)`, `M_minus = split_map(W, u_-,
+eps)`, the expected dispersions `eta_plus`, `eta_minus` (the pz column of the
+real projector `Im(w w') S_6` of the selected member `w = v u`, rows 1:4)
+and the diameter `2 sigma_1(F)`. `spinors=(u_+, u_-)` overrides the two
+spinors (the injection "same spinor at both endpoints" uses it).
+"""
+function _st3_isospectral_family(rng::AbstractRNG, eps::Real; spinors=nothing)
+    H = randn(rng, 6, 6); H = (H + transpose(H)) * 0.07
+    S6 = _st3_symplectic_form(6)
+    W = exp(S6 * H)
+    Winv = -S6 * transpose(W) * S6
+    M = W * _st3_block_diag(_st3_rot(_ST3_MU), _st3_rot(_ST3_GAMMA), _st3_rot(_ST3_MU)) * Winv
+    v = W[:, [1, 5]] + im * W[:, [2, 6]]
+    rd = _st3_readouts(v)
+    sv = svd(rd.F)
+    axis = sv.V[:, 1]
+    up, um = spinors === nothing ? (_st3_spinor(axis), _st3_spinor(-axis)) : spinors
+    eta_of_member(w) = (imag(w * w') * S6)[1:4, 6]
+    return (M_plus=_st3_split_map(W, up, eps), M_minus=_st3_split_map(W, um, eps), W=W, M=M,
+            eta_plus=eta_of_member(v * up), eta_minus=eta_of_member(v * um),
+            diameter=2 * sv.S[1], F=rd.F, center=rd.center, axis=axis, spinors=(up, um))
+end
+
+# ---- crab map (trial 011), defective spectator, 6D block fixtures ----------
+
+"""
+    _st3_crab_map(k; ax=0.85, ay=2.1, az=-0.75) -> Matrix{Float64}
+
+Trial 011 `crab_map`: `diag(R(ax), R(ay), R(az)) C_k` with the thin crab kick
+`C_k`: `p_x -= k z`, `p_z -= k x` (`C_k[2, 5] = -k`, `C_k[6, 1] = -k`).
+"""
+function _st3_crab_map(k::Real; ax::Real=0.85, ay::Real=2.1, az::Real=-0.75)
+    Ck = Matrix{Float64}(I, 6, 6); Ck[2, 5] = -k; Ck[6, 1] = -k
+    return _st3_block_diag(_st3_rot(ax), _st3_rot(ay), _st3_rot(az)) * Ck
+end
+
+"""
+    _st3_crab_kc(; ax=0.85, az=-0.75) -> Float64
+
+Trial 011 critical kick `k_c = |cos ax - cos az| / sqrt(-sin ax sin az)` at
+which the x and z pairs (opposite Krein signs) collide; 0.1002018291014 at the
+defaults (the paper's value, asserted by the tests).
+"""
+_st3_crab_kc(; ax::Real=0.85, az::Real=-0.75) = abs(cos(ax) - cos(az)) / sqrt(-sin(ax) * sin(az))
+
+"""
+    _st3_defective_spectator(mu) -> Matrix{Float64} (4 x 4)
+
+The design probe's defective block (lines 73-75): `Jd = [R(mu) 0.2 R(mu); 0
+R(mu)]` interleaved by the permutation [1, 3, 2, 4] into (x, px, y, py)
+order. Symplectic, eigenvalues e^{+-i mu} each of multiplicity two in one
+2 x 2 Jordan block per sign; its powers grow linearly.
+"""
+function _st3_defective_spectator(mu::Real)
+    R = _st3_rot(mu)
+    Jd = [R 0.2*R; zeros(2, 2) R]
+    perm = [1, 3, 2, 4]
+    return Jd[perm, perm]
+end
+
+"diag(R(0.73), R(1.41), R(0.73)): the definite x-z pair of the fixture table."
+_st3_definite_pair_6d() = _st3_block_diag(_st3_rot(0.73), _st3_rot(1.41), _st3_rot(0.73))
+
+"diag(R(mu), R(mu), R(mu)): three coincident definite modes (N13)."
+_st3_definite_triple_6d(mu::Real) = _st3_block_diag(_st3_rot(mu), _st3_rot(mu), _st3_rot(mu))
+
+"diag(R(0.73), R(1.41), R(-0.73)): the indefinite N15 fixture."
+_st3_indefinite_6d() = _st3_block_diag(_st3_rot(0.73), _st3_rot(1.41), _st3_rot(-0.73))
+
+"diag(R(0.73), R(1.41), R(-0.73 - delta)): the near-collision of opposite Krein signs."
+_st3_near_collision_6d(delta::Real) = _st3_block_diag(_st3_rot(0.73), _st3_rot(1.41), _st3_rot(-0.73 - delta))
+
+"""
+    _st3_n15_vector(t) -> Vector{ComplexF64}
+
+The N15 family `u(t) = i sinh t (e_x + i e_px) + cosh t (e_z - i e_pz)` on
+`_st3_indefinite_6d()`: eigenvalue e^{+i 0.73}, u' S u = -2i, eta_x(t) =
+-sinh t cosh t, h(t) = cosh^2 t (theory 13.6, "Definiteness is essential").
+"""
+function _st3_n15_vector(t::Real)
+    e = Matrix{ComplexF64}(I, 6, 6)
+    return im * sinh(t) * (e[:, 1] + im * e[:, 2]) + cosh(t) * (e[:, 5] - im * e[:, 6])
+end
+
+"""
+    _st3_cluster_frame(M, center, radius) -> NamedTuple
+
+TEST-LOCAL cluster-frame builder: the design probe's `cluster_basis` +
+`normalize_cluster`, kept for ONE agreement witness against `_st3_cluster`
+(Part A's `_mode_clusters`) on P_c and G_c. Ordered
+complex Schur on the eigenvalues within `radius` of `center` (the circle must
+isolate one half-cluster, excluding its conjugate group); Gram `H = (i/2) Q' S
+Q` symmetrized; requires H positive definite (an error otherwise: the caller
+picks the oriented half by `center = e^{-i mu}`); frame `U = Q H^{-1/2}`
+(N20); `P = -Im(U U') S`, `G = Re(U U')` (N5); `kappa_frame = ||U||_2^2`;
+`internal_gap` = the smallest distance between the selected eigenvalues (0 for
+m = 1); `T = (i/2) U' S M U` (N21).
+"""
+function _st3_cluster_frame(M::AbstractMatrix{<:Real}, center::Number, radius::Real)
+    d = size(M, 1)
+    S = _st3_symplectic_form(d)
+    F = schur(complex(Matrix{Float64}(M)))
+    sel = [abs(z - center) < radius for z in F.values]
+    m = count(sel)
+    1 <= m <= div(d, 2) || error("_st3_cluster_frame: the circle must isolate an admissible cluster, got m = $(m)")
+    Fo = ordschur(F, sel)
+    Q = Fo.Z[:, 1:m]
+    H = (im / 2) * (Q' * S * Q); H = (H + H') / 2
+    lam, V = eigen(Hermitian(H))
+    minimum(lam) > 0 || error("_st3_cluster_frame: the cluster Gram is not positive definite (eigenvalues $(lam))")
+    U = Q * (V * Diagonal(1 ./ sqrt.(lam)) * V')
+    UU = U * U'
+    vals = Fo.values[1:m]
+    gap = m == 1 ? 0.0 : minimum(abs(vals[i] - vals[j]) for i in 1:m for j in 1:m if i != j)
+    return (U=U, P=-imag(UU) * S, G=real(UU), Q=Q, H=H, gram_eigenvalues=lam, eigenvalues=vals,
+            multiplicity=m, kappa_frame=opnorm(U, 2)^2, internal_gap=gap, T=(im / 2) * (U' * S * M * U),
+            schur_backward_error=norm(M * Fo.Z - Fo.Z * Fo.T))
+end
+
+# The cluster of `M` selected by a circle |rho - center| < radius in the
+# eigenvalue plane, through Part A's `_mode_clusters` (the design probe's
+# builder `_st3_cluster_frame` above stays for ONE agreement witness). With
+# `explicit=false` the automatic clustering must contain a cluster whose
+# members are exactly the selection and its conjugates (an error otherwise,
+# loud: the test then says what it expected); with `explicit=true` the
+# selection and its conjugates form one component of an explicit partition,
+# every other conjugate pair its own component (the design's "treated as one
+# cluster" reading of a split map). Returns the probe builder's fields read
+# from the cluster (`U` = the cluster frame, `P` = -Im(U U') S and `G` = the
+# cluster covariance of (N5), `nothing` when the cluster has no frame) plus
+# the cluster and the whole report.
+# The stage 3 block's ONE derivation of rho_M0 (A1's `_mc_rho0` is an alias of it). It repeats stage 2's
+# `_eig4d_rho` (line ~981) on purpose: the block is extracted standalone by OUT/run_stage3_block.jl.
+_st3_rho(M) = Octopus._perturbation_scale(M, Octopus._symplectic_defect(M).frobenius).scale
+function _st3_cluster(M::AbstractMatrix{<:Real}, center::Number, radius::Real;
+                      explicit::Bool=false, rho_M0::Real=_st3_rho(M), kw...)
+    d = size(M, 1)
+    r0 = Octopus._mode_clusters(M; rho_M0=rho_M0, kw...)
+    rho = r0.eigenvalues
+    sel = findall(z -> abs(z - center) < radius, rho)
+    isempty(sel) && error("_st3_cluster: no eigenvalue of $(rho) within $(radius) of $(center)")
+    partner(j) = r0.conjugate_partner[j]
+    block = sort(unique(vcat(sel, [partner(j) for j in sel if partner(j) != 0])))
+    if explicit
+        part = Vector{Int}[block]
+        for j in 1:d
+            j in block && continue
+            p = partner(j)
+            p != 0 && p < j && continue          # its pair was pushed when p came up
+            push!(part, p == 0 ? [j] : sort([j, p]))
+        end
+        r = Octopus._mode_clusters(M; rho_M0=rho_M0, partition=part, kw...)
+    else
+        r = r0
+    end
+    idx = findfirst(c -> sort(c.members) == block, r.clusters)
+    idx === nothing && error("_st3_cluster: no cluster of $(M) has members $(block); the clusters are " *
+                             "$([(c.members, c.classification) for c in r.clusters]) (explicit = $(explicit))")
+    c = r.clusters[idx]
+    S = _st3_symplectic_form(d)
+    has_frame = Octopus.is_determined(c.frame)
+    U = has_frame ? determined_value(c.frame) : nothing
+    return (U=U, P=has_frame ? -imag(U * U') * S : nothing,
+            G=has_frame ? determined_value(c.covariance) : nothing,
+            Q=c.schur_basis, H=c.gram_matrix, gram_eigenvalues=c.gram_eigenvalues, eigenvalues=c.eigenvalues,
+            multiplicity=length(c.half_members), kappa_frame=has_frame ? determined_value(c.kappa_frame) : Inf,
+            internal_gap=c.internal_gap, T=has_frame ? determined_value(c.restricted_map) : nothing,
+            schur_backward_error=r.schur_backward_error, cluster=c, report=r, index=idx)
+end
+
+# Stage 3 Part A1: mode clusters (dossier D1-D8). Every tolerance is
+# c * eps * kappa with c measured (report_A1.md).
+const _MC_EPS = eps(Float64)
+const _MC_SEED = 20260911
+_mc_R(mu) = Octopus._rotation2(mu)
+_mc_bd(ms...) = cat(ms...; dims=(1, 2))
+_mc_eye(n) = Matrix{Float64}(I, n, n)
+_mc_rho0(M) = _st3_rho(M)
+_mc_run(M; kw...) = Octopus._mode_clusters(M; rho_M0=_mc_rho0(M), kw...)
+# A1's fixture names point at Part B's builders (one coding of each fixture; review 2026-09-12):
+# the rolled equal-tune FODO of theory 13.10 at roll pi/4 with the y-plane quad detuned to (1 + ep),
+# the defective spectator Jd = [R(mu) 0.2 R(mu); 0 R(mu)] interleaved, and W = exp(scale S (K + K')).
+_mc_rolled_fodo(ep=0.0) = _st3_rolled_fodo(pi / 4; eps=ep)
+_mc_defective(mu=0.73) = _st3_defective_spectator(mu)
+_mc_randsymp(rng, d, scale) = _st3_random_symplectic(rng, d, scale)
+_mc_by_first(r) = r.clusters   # clusters are already sorted by first member
+_mc_cluster_of(r, j) = r.clusters[findfirst(c -> j in c.members, r.clusters)]
+
+@testset "Mode clusters: pinned vocabulary and documented structs" begin
+    @test Octopus.CLUSTER_CLASSIFICATIONS === (:definite, :indefinite, :unresolved, :unstable, :unit_eigenvalue)
+    doc = string(Base.Docs.doc(Base.Docs.Binding(Octopus, :CLUSTER_CLASSIFICATIONS)))
+    listed = Symbol[]
+    for m in eachmatch(r"^\s*\* `:(\w+)`"m, doc)
+        push!(listed, Symbol(m.captures[1]))
+    end
+    for m in eachmatch(r"\* `:(\w+)` --", doc)
+        s = Symbol(m.captures[1]); s in listed || push!(listed, s)
+    end
+    @test Set(listed) == Set(Octopus.CLUSTER_CLASSIFICATIONS)
+    @test length(listed) == length(Octopus.CLUSTER_CLASSIFICATIONS)
+    for T in (Octopus.ClusterMode, Octopus.ModeCluster, Octopus.ModeClusters)
+        doc = string(Base.Docs.doc(Base.Docs.Binding(Octopus, nameof(T))))
+        @test !occursin("No documentation found", doc)
+        for f in fieldnames(T)
+            @test occursin("`$(f)`", doc)
+        end
+    end
+    # Every function the two stage 3 files define is documented. The list is DERIVED from the method
+    # tables (AGENTS.md "derive, don't hand-copy"; review 2026-09-12 found two undocumented functions
+    # behind the earlier hand list of ten names), so a new undocumented function fails here.
+    stage3_files = ("mode_clusters.jl", "degenerate_dispersion.jl")
+    undocumented = String[]; ndefined = 0
+    for n in names(Octopus; all=true)
+        s = String(n)
+        (startswith(s, "#") || !isdefined(Octopus, n)) && continue
+        obj = getfield(Octopus, n)
+        obj isa Function || continue
+        any(m -> any(f -> endswith(String(m.file), f), stage3_files), methods(obj)) || continue
+        ndefined += 1
+        occursin("No documentation found", string(Base.Docs.doc(Base.Docs.Binding(Octopus, n)))) && push!(undocumented, s)
+    end
+    @test undocumented == String[]
+    @test ndefined >= 30                                   # 35 functions on 2026-09-12: the derivation saw them
+    # The default chord is PROVISIONAL (Part D freezes the measured value; dossier D1): pin the admissible
+    # range, never the literal (review 2026-09-12: "a test that pins the literal 1e-4 is a finding to fix").
+    @test 0 < Octopus._DEFAULT_RESOLUTION_CHORD <= 2
+    # Every PROVISIONAL constant of both files, derived from the source text (`^const _NAME = `), must say
+    # PROVISIONAL in its docstring; the count pins the nine the dossier lists (six of A1, three of B).
+    stage3_paths = unique(String(first(methods(f)).file) for f in (Octopus._mode_clusters, Octopus._dispersion_ambiguity_set))
+    @test length(stage3_paths) == 2
+    provisional = Symbol[]
+    for path in stage3_paths, m in eachmatch(r"^const (_[A-Z][A-Z0-9_]*(?:MULTIPLIER|CHORD)) = "m, read(path, String))
+        push!(provisional, Symbol(m.captures[1]))
+    end
+    @test length(provisional) == 9 && :_DEFAULT_RESOLUTION_CHORD in provisional
+    @test :_CLUSTER_FRAME_N4_MULTIPLIER in provisional && :_AMBIGUITY_PSD_MULTIPLIER in provisional
+    for c in provisional
+        @test occursin("PROVISIONAL", string(Base.Docs.doc(Base.Docs.Binding(Octopus, c))))
+        @test getfield(Octopus, c) isa Float64 && getfield(Octopus, c) > 0
+    end
+    # DETERMINATION_REASONS is untouched: every reason this file uses is already a member.
+    for r in (:cluster_unresolved, :indefinite_cluster, :unresolved_defective, :unstable_spectrum, :unit_eigenvalue, :none)
+        @test r in Octopus.DETERMINATION_REASONS
+    end
+end
+
+@testset "Mode clusters: rolled equal-tune FODO (13.10) and its detuned controls" begin
+    S4 = Octopus._symplectic_form(4)
+    M = _mc_rolled_fodo()
+    r = _mc_run(M)
+    @test r.partition_source === :auto
+    @test length(r.clusters) == 1
+    c = r.clusters[1]
+    @test c.classification === :definite && c.reason === :cluster_unresolved && !c.resolved && !c.forced
+    @test length(c.half_members) == 2 && sort(c.members) == [1, 2, 3, 4]
+    @test r.degeneracy_status === :degenerate
+    cosmu = 0.9744003972058644; mu0 = acos(cosmu)
+    @test abs(tr(M) / 4 - cosmu) <= 8 * _MC_EPS                      # measured 1.1 eps
+    @test all(abs.(c.tunes ./ (2pi) .- 0.0360896443733161) .<= 1e-13)  # pin (13.10); split 2e-15
+    @test abs(minimum(c.gram_eigenvalues) - 0.0838222432933016) <= 1e-12   # paper pin; measured 7e-15
+    kap = determined_value(c.kappa_frame)                                                 # 11.93
+    @test norm(determined_value(c.projector) - I) <= 128 * _MC_EPS * kap                  # measured 17.6 eps kappa
+    Sig = -(M - cosmu * I) * S4 / sin(mu0)
+    @test norm(determined_value(c.covariance) - Sig) <= 256 * _MC_EPS * kap                # N7; measured 32.4 eps kappa
+    @test minimum(eigvals(Symmetric(determined_value(c.covariance)))) > 0.08
+    @test norm(M * determined_value(c.covariance) * M' - determined_value(c.covariance)) <= 64 * _MC_EPS * kap   # measured 8.4 eps kappa
+    T = determined_value(c.restricted_map)
+    @test norm(T - exp(-im * mu0) * I) <= 64 * _MC_EPS * kap           # N21 at exact degeneracy; measured 0.33 eps kappa
+    @test determined_value(c.frame_residuals).unitarity <= 64 * _MC_EPS * determined_value(c.kappa_frame)
+    @test determined_value(c.residuals).minimal_polynomial <= 64 * _MC_EPS
+    @test maximum(c.chord_matrix) == 2.0
+    @test c.modes.status === :unavailable && c.modes.reason === :cluster_unresolved
+    @test abs(determined_value(c.kappa_frame) - 1 / minimum(c.gram_eigenvalues)) <= 64 * _MC_EPS * determined_value(c.kappa_frame)
+    # (T7) discriminant zero: the Edwards-Teng branch does not exist here.
+    J2 = [0.0 1.0; -1.0 0.0]; adj(K) = -J2 * K' * J2
+    Delta = (tr(M[1:2, 1:2]) - tr(M[3:4, 3:4]))^2 + 4det(adj(M[1:2, 3:4]) + M[3:4, 1:2])
+    @test abs(Delta) <= 64 * _MC_EPS * opnorm(M)^2                     # measured 6e-33 (exact cancellation)
+    # Receipt: the single candidate merged with chord 2 (gap at roundoff); its kappa is the frame estimate
+    # 1 / lambda_min of the union's Gram, the pinned 13.10 minimum.
+    @test length(r.resolution_receipt) == 1 && r.resolution_receipt[1].merged && r.resolution_receipt[1].chord == 2.0
+    @test r.resolution_receipt[1].kappa_source === :frame
+    @test abs(r.resolution_receipt[1].kappa - 1 / 0.0838222432933016) <= 1e-9 * (1 / 0.0838222432933016)
+    # Detuned controls: gaps pinned, resolved at 1e-3, 1e-6, 1e-9, unresolved at 1e-12.
+    pinned_gap = Dict(1e-3 => 2.133e-3, 1e-6 => 2.134e-6, 1e-9 => 2.134e-9, 1e-12 => 2.134e-12)
+    chords = Dict{Float64,Float64}()
+    for ep in (1e-3, 1e-6, 1e-9, 1e-12)
+        Me = _mc_rolled_fodo(ep)
+        @test abs(opnorm(Me) - 2.980) <= 1e-3
+        re = _mc_run(Me)
+        up = sort(filter(z -> imag(z) > 0, re.eigenvalues); by=angle)
+        g = abs(up[1] - up[2])
+        @test abs(g - pinned_gap[ep]) <= 2e-3 * pinned_gap[ep] + 4 * _MC_EPS
+        if ep == 1e-12
+            @test length(re.clusters) == 1 && re.clusters[1].classification === :definite && !re.clusters[1].resolved
+            @test re.degeneracy_status === :degenerate
+            chords[ep] = maximum(re.clusters[1].chord_matrix)
+        else
+            @test length(re.clusters) == 2 && all(c -> c.classification === :definite && c.resolved, re.clusters)
+            @test re.degeneracy_status === :all_resolved
+            chords[ep] = re.inter_cluster_chords[1, 2]
+            @test length(re.resolution_receipt) == 1 && !re.resolution_receipt[1].merged
+            e = re.resolution_receipt[1]
+            @test e.kappa_source === :frame && abs(e.kappa - 1 / 0.0838222432933016) <= 1e-2 * e.kappa   # measured 1.2e-6 at 1e-3
+            @test e.chord == Octopus._chord(e.kappa, e.rho_M1, e.gap) && e.chord == chords[ep]
+        end
+    end
+    @test chords[1e-3] < chords[1e-6] < chords[1e-9] < Octopus._DEFAULT_RESOLUTION_CHORD < chords[1e-12]
+    # The must-resolve / must-not-resolve statements of the design's bracket (Part D1 may move the default
+    # inside [2.96e-5, 2.96e-2] without touching these; the one-tenth / ten rule on the rejected side).
+    @test chords[1e-9] < Octopus._DEFAULT_RESOLUTION_CHORD                  # measured 2.96e-5 (must resolve)
+    @test chords[1e-12] > 10 * Octopus._DEFAULT_RESOLUTION_CHORD            # measured 2.96e-2 (must not resolve)
+    # kappa in the chord DECIDES here (review 2026-09-12): the eps = 2.8e-11 control has g = 6.0e-11, rho_M1 =
+    # 2.6e-15 and kappa_frame = 11.93, so q = 1.06e-3 (merged, unresolved) while the chord WITHOUT kappa,
+    # 8.9e-5, would resolve it under any default in [8.9e-5, 1.06e-3] (1e-4 and 1e-3 both).
+    r3 = _mc_run(_mc_rolled_fodo(2.8e-11))
+    @test length(r3.clusters) == 1 && r3.clusters[1].classification === :definite && !r3.clusters[1].resolved
+    e3 = r3.resolution_receipt[1]
+    @test e3.merged && e3.kappa_source === :frame && e3.kappa > 10
+    @test e3.chord > Octopus._DEFAULT_RESOLUTION_CHORD > Octopus._chord(1.0, e3.rho_M1, e3.gap)
+    # D7b's Gram floor, reached: an explicit partition [[1, 3], [2, 4]] hands each "cluster" one member of the
+    # repeated pair (partners are [3, 4, 1, 2]); its single Schur vector is an arbitrary mixture, g_ext is the
+    # roundoff split, the floor c_gram rho_M1 / g_ext is huge (79 here) and both clusters are :unresolved with
+    # the pinned sub-reason, never definite (the Gram value 0.09 is real but has no sign at this floor).
+    rg = Octopus._mode_clusters(M; rho_M0=_mc_rho0(M), partition=[[1, 3], [2, 4]])
+    @test rg.conjugate_partner == [3, 4, 1, 2] && length(rg.clusters) == 2 && rg.partition_source === :explicit
+    @test all(c -> c.classification === :unresolved && c.reason === :unresolved_defective, rg.clusters)
+    @test all(c -> occursin("at or below the floor", c.detail) && c.gram_floor > 1 && c.krein_signs == [0], rg.clusters)
+    @test rg.degeneracy_status === :unresolved
+    # A definite cluster asserts no other classification through its Determined fields (review 2026-09-12):
+    # the unformed signed basis is :not_derived_for_cluster, the unformed kappa_eig and modes :cluster_unresolved.
+    for f in fieldnames(Octopus.ModeCluster)
+        x = getfield(c, f)
+        x isa Octopus.Determined || continue
+        @test x.status === :unique || x.reason in (:cluster_unresolved, :not_derived_for_cluster)
+    end
+    @test c.signed_basis.status === :unavailable && c.signed_basis.reason === :not_derived_for_cluster
+    @test c.kappa_eig.status === :unavailable && c.kappa_eig.reason === :cluster_unresolved
+    # The 13.8 reconstruction check of the N20 frame at EXACT degeneracy: its columns are eigenvectors.
+    @test determined_value(c.frame_residuals).eigenvector <= 64 * _MC_EPS * kap                  # measured 0.57 eps kappa
+end
+
+@testset "Mode clusters: resolution_chord = Inf forces the exact FODO, explicit partition" begin
+    M = _mc_rolled_fodo()
+    r = _mc_run(M; resolution_chord=Inf)
+    @test r.resolution_chord == Inf && length(r.clusters) == 1
+    c = r.clusters[1]
+    @test c.classification === :definite && c.resolved && c.forced && c.reason === :none
+    @test c.modes.status === :unique && length(determined_value(c.modes)) == 2
+    S4 = Octopus._symplectic_form(4)
+    for m in determined_value(c.modes)
+        @test m.normalization_residual <= 64 * _MC_EPS * determined_value(c.kappa_frame)     # measured 1.3e-15
+        @test m.eigenvector_residual.normalized <= 64 * _MC_EPS * determined_value(c.kappa_frame)  # measured 2.2e-15: exact degeneracy, any vector is an eigenvector
+        @test abs(abs(m.eigenvalue) - 1) <= 16 * _MC_EPS
+        @test abs(m.tune / (2pi) - 0.0360896443733161) <= 1e-13
+    end
+    @test norm(determined_value(c.frame)' * S4 * determined_value(c.frame) + 2im * I) <= 64 * _MC_EPS * determined_value(c.kappa_frame)
+    @test r.degeneracy_status === :all_resolved
+    # An explicit partition of the same map: the chord does not drive the merging, the receipt is empty.
+    rp = _mc_run(M; partition=[[1, 2, 3, 4]])
+    @test rp.partition_source === :explicit && isempty(rp.resolution_receipt)
+    @test length(rp.clusters) == 1 && rp.clusters[1].classification === :definite && !rp.clusters[1].resolved
+    # A well-separated map with {1,2,3,4} recovers both modes through D7e (resolved, two modes).
+    W = _mc_randsymp(MersenneTwister(_MC_SEED), 4, 0.2)
+    Ms = W * _mc_bd(_mc_R(0.7), _mc_R(0.31)) * inv(W)
+    rs = _mc_run(Ms; partition=[[1, 2, 3, 4]])
+    @test rs.partition_source === :explicit && length(rs.clusters) == 1
+    cs = rs.clusters[1]
+    @test cs.classification === :definite && cs.resolved && !cs.forced && length(determined_value(cs.modes)) == 2
+    @test isapprox(sort([m.tune for m in determined_value(cs.modes)]), [0.31, 0.7]; atol=64 * _MC_EPS * determined_value(cs.kappa_frame))
+    for m in determined_value(cs.modes)
+        @test m.eigenvector_residual.normalized <= 64 * _MC_EPS * determined_value(cs.kappa_frame)
+    end
+    @test length(_mc_run(Ms).clusters) == 2
+    # A nearly degenerate coupled pair under a partition and chord Inf: the restricted map's eigenvectors from
+    # `eigen` are orthogonal only to eps / split ~ 1e-9; the qr re-orthonormalization (D7e) keeps the rotated
+    # frame (N4)-normalized to eps kappa, and the modes' (I1) residuals stay at roundoff.
+    Wn = _mc_randsymp(MersenneTwister(_MC_SEED + 7), 4, 0.3)
+    Mnear = Wn * _mc_bd(_mc_R(0.9), _mc_R(0.9 + 1e-7)) * inv(Wn)
+    rn = _mc_run(Mnear; partition=[[1, 2, 3, 4]], resolution_chord=Inf)
+    cn = rn.clusters[1]
+    @test cn.classification === :definite && cn.resolved && length(determined_value(cn.modes)) == 2
+    @test !cn.forced && maximum(cn.chord_matrix) < Octopus._DEFAULT_RESOLUTION_CHORD   # D1: Inf marks only the clusters it affected (q here 5e-7)
+    Un = determined_value(cn.frame)
+    @test norm(Un' * S4 * Un + 2im * I) <= 64 * _MC_EPS * determined_value(cn.kappa_frame)        # measured 0.84 eps kappa (kappa 9.18)
+    @test norm(transpose(Un) * S4 * Un) <= 64 * _MC_EPS * determined_value(cn.kappa_frame)        # measured 1.22 eps kappa
+    for m in determined_value(cn.modes)
+        @test m.normalization_residual <= 64 * _MC_EPS * determined_value(cn.kappa_frame)          # measured 0.87 eps kappa
+        @test m.eigenvector_residual.normalized <= 64 * _MC_EPS * determined_value(cn.kappa_frame) # measured 0.73 eps kappa
+    end
+    @test isapprox(sort([m.tune for m in determined_value(cn.modes)]), [0.9, 0.9 + 1e-7]; atol=1e-9)
+    # Invalid partitions.
+    @test_throws ArgumentError _mc_run(Ms; partition=[[1, 2], [3, 4]])          # 1's partner is 4: not closed
+    @test_throws ArgumentError _mc_run(Ms; partition=[[1, 2, 3]])                # misses 4
+    @test_throws ArgumentError _mc_run(Ms; partition=[[1, 2, 3, 4], [1]])        # repeats 1
+    @test_throws ArgumentError _mc_run(Ms; partition=[[1, 2, 3, 5]])             # out of range
+    @test_throws ArgumentError _mc_run(Ms; partition=[[1, 4], Int[]])            # empty block
+    @test_throws ArgumentError _mc_run(Ms; partition=[[1.5, 2, 3, 4]])           # not integers
+    @test_throws ArgumentError _mc_run(Ms; partition=[1, 2, 3, 4])               # not a vector of vectors
+end
+
+@testset "Mode clusters: 200 + 200 manufactured stable maps are resolved singletons" begin
+    rng = MersenneTwister(_MC_SEED)
+    worst = Dict(:psum => 0.0, :pn5 => 0.0, :closes => 0.0, :kappa => 0.0, :norm => 0.0, :iso => 0.0, :unit => 0.0,
+                 :n5sum => 0.0)
+    for d in (4, 6), trial in 1:200
+        M = Octopus._manufactured_symplectic_map(rng, d; stable=true).M
+        S = Octopus._symplectic_form(d)
+        r = _mc_run(M)
+        @test length(r.clusters) == div(d, 2)
+        @test all(c -> c.classification === :definite && c.resolved && !c.forced && length(c.half_members) == 1, r.clusters)
+        @test r.degeneracy_status === :all_resolved
+        @test !any(r.real_class) && all(j -> r.conjugate_partner[r.conjugate_partner[j]] == j, 1:d)
+        @test length(r.resolution_receipt) == div(div(d, 2) * (div(d, 2) - 1), 2) && !any(e -> e.merged, r.resolution_receipt)
+        @test all(iszero, diag(r.inter_cluster_chords)) && all(r.inter_cluster_chords .< Octopus._DEFAULT_RESOLUTION_CHORD)
+        kap = maximum(determined_value(c.kappa_frame) for c in r.clusters)
+        # The Schur spectral projector (D7d) loses accuracy as (||M|| / g_ext)^2 when a member sits near a
+        # unit eigenvalue (its half is 2 sin mu from its own conjugate); the N5 projector -Im(U U') S is
+        # accurate to eps kappa because a mixture with the conjugate vector cancels in the imaginary part.
+        # Both are tested at their own conditioning; report_A1.md carries the measurement.
+        cond_schur = maximum((norm(M) / c.external_gap)^2 for c in r.clusters)
+        Psum = sum(determined_value(c.projector) for c in r.clusters)
+        worst[:psum] = max(worst[:psum], norm(Psum - I) / (_MC_EPS * kap * cond_schur))
+        Pn5 = sum(-imag(determined_value(c.frame) * determined_value(c.frame)') * S for c in r.clusters)
+        worst[:n5sum] = max(worst[:n5sum], norm(Pn5 - I) / (_MC_EPS * kap))
+        for c in r.clusters
+            G = determined_value(c.covariance)
+            @test issymmetric(G)
+            @test minimum(eigvals(Symmetric(G))) >= -64 * _MC_EPS * kap
+            worst[:closes] = max(worst[:closes], norm(M * G * M' - G) / (_MC_EPS * kap * norm(G)))
+            worst[:pn5] = max(worst[:pn5], determined_value(c.projector_n5_difference) / (_MC_EPS * kap * cond_schur))
+            @test determined_value(c.residuals).projector_commutes <= 64 * _MC_EPS * kap * norm(M) / c.external_gap
+            worst[:kappa] = max(worst[:kappa], abs(determined_value(c.kappa_frame) - determined_value(c.kappa_eig)) / (_MC_EPS * kap))
+            worst[:norm] = max(worst[:norm], determined_value(c.frame_residuals).normalization / (_MC_EPS * kap))
+            worst[:iso] = max(worst[:iso], determined_value(c.frame_residuals).isotropy / (_MC_EPS * kap))
+            worst[:unit] = max(worst[:unit], determined_value(c.frame_residuals).unitarity / (_MC_EPS * kap))
+            # the 13.8 reconstruction check of a resolved singleton IS its mode's (I1) residual
+            @test determined_value(c.frame_residuals).eigenvector == maximum(m.eigenvector_residual.normalized for m in determined_value(c.modes))
+            m = determined_value(c.modes)[1]
+            @test m.index == c.half_members[1]
+            @test abs(m.eigenvalue - c.eigenvalues[1]) == 0 && m.tune == c.tunes[1]
+            @test m.eigenvector_residual.normalized <= 64 * _MC_EPS * kap
+            @test imag(dot(m.vector, S * m.vector)) < 0                       # (E4) orientation
+            @test abs(dot(m.vector, S * m.vector) + 2im) <= 64 * _MC_EPS * kap
+        end
+    end
+    # Measured worst ratios (residual / (eps kappa)) over the 400 maps, report_A1.md.
+    @test worst[:psum] <= 4     # measured 0.46 (Schur projector, conditioning (||M||/g_ext)^2 included)
+    @test worst[:pn5] <= 4      # measured 0.48
+    @test worst[:n5sum] <= 256  # measured 88 (N5 projectors sum to I at eps kappa)
+    @test worst[:closes] <= 64
+    @test worst[:kappa] <= 64
+    @test worst[:norm] <= 64 && worst[:iso] <= 64 && worst[:unit] <= 64
+    @info "Mode clusters: manufactured-map worst ratios residual/(eps kappa)" worst
+end
+
+@testset "Mode clusters: definite m = 2 and m = 3 6D fixtures (N4, N5, N6/N7, N21, N19)" begin
+    rng = MersenneTwister(_MC_SEED)
+    S6 = Octopus._symplectic_form(6)
+    base2 = _mc_bd(_mc_R(0.73), _mc_R(1.41), _mc_R(0.73))
+    base3 = _mc_bd(_mc_R(0.5), _mc_R(0.5), _mc_R(0.5))
+    for (base, m, ntrial) in ((base2, 2, 30), (base3, 3, 10))
+        for trial in 0:ntrial
+            W = trial == 0 ? _mc_eye(6) : _mc_randsymp(rng, 6, 0.15)
+            M = W * base * inv(W)
+            r = _mc_run(M)
+            big = r.clusters[findfirst(c -> length(c.half_members) == m, r.clusters)]
+            @test big.classification === :definite && !big.resolved && big.reason === :cluster_unresolved
+            @test r.degeneracy_status === :degenerate
+            @test length(r.clusters) == (m == 2 ? 2 : 1)
+            kap = determined_value(big.kappa_frame)
+            U = determined_value(big.frame)
+            @test norm(U' * S6 * U + 2im * I) <= 64 * _MC_EPS * kap                 # N4 first relation
+            @test norm(transpose(U) * S6 * U) <= 64 * _MC_EPS * kap                  # N4 second relation
+            P = determined_value(big.projector); G = determined_value(big.covariance)
+            @test norm(P - (-imag(U * U') * S6)) <= 64 * _MC_EPS * kap * norm(P)      # Schur projector = N5 projector
+            @test norm(P * P - P) <= 64 * _MC_EPS * kap * norm(P)
+            @test norm(M * P - P * M) <= 64 * _MC_EPS * kap * norm(M) * norm(P)
+            @test norm(transpose(P) * S6 - S6 * P) <= 64 * _MC_EPS * kap * norm(P)
+            m == 3 && @test norm(P - I) <= 64 * _MC_EPS * kap
+            @test norm(M * G * M' - G) <= 64 * _MC_EPS * kap * norm(G) * norm(M)^2    # N6: G closes under M
+            # N7: P_c G_c = G_c P_c^T = G_c.
+            @test norm(P * G - G) <= 64 * _MC_EPS * kap * norm(G) && norm(G * transpose(P) - G) <= 64 * _MC_EPS * kap * norm(G)
+            # P_c is invariant under a unitary mixing of the frame (the group quantity does not depend on the basis).
+            Vq = Matrix(qr(randn(rng, m, m) + im * randn(rng, m, m)).Q)
+            U2 = U * Vq
+            @test norm(-imag(U2 * U2') * S6 - P) <= 64 * _MC_EPS * kap * norm(P)
+            @test norm(real(U2 * U2') - G) <= 64 * _MC_EPS * kap * norm(G)
+            T = determined_value(big.restricted_map)
+            @test norm(T' * T - I) <= 64 * _MC_EPS * kap
+            mu = m == 2 ? 0.73 : 0.5
+            @test norm(T - exp(-im * mu) * I) <= 64 * _MC_EPS * kap * norm(M)          # exact degeneracy: N21 is e^{-i mu} I
+            @test determined_value(big.residuals).minimal_polynomial <= 64 * _MC_EPS * kap
+            @test all(abs.(big.tunes .- mu) .<= 64 * _MC_EPS * kap * norm(M))
+        end
+    end
+end
+
+@testset "Mode clusters: indefinite fixture, near collision, R(a) (+) R(-a)" begin
+    S6 = Octopus._symplectic_form(6)
+    M = _mc_bd(_mc_R(0.73), _mc_R(1.41), _mc_R(-0.73))
+    r = _mc_run(M)
+    @test r.degeneracy_status === :indefinite
+    @test length(r.clusters) == 2
+    big = r.clusters[findfirst(c -> length(c.half_members) == 2, r.clusters)]
+    one = r.clusters[findfirst(c -> length(c.half_members) == 1, r.clusters)]
+    @test big.classification === :indefinite && big.reason === :indefinite_cluster && !big.resolved
+    @test sort(big.krein_signs) == [-1, 1]
+    @test all(abs.(abs.(big.gram_eigenvalues) .- 0.5) .<= 16 * _MC_EPS)     # +-1/2 in the orthonormal basis; measured 3e-16
+    @test big.covariance.status === :unavailable && big.covariance.reason === :indefinite_cluster
+    @test big.frame.status === :unavailable && big.frame.reason === :indefinite_cluster
+    @test big.modes.status === :unavailable && big.kappa_frame.status === :unavailable
+    W = determined_value(big.signed_basis)
+    @test size(W) == (6, 2)
+    @test norm(W' * S6 * W + 2im * I) <= 64 * _MC_EPS                          # both columns normalized to -2i after conjugation
+    @test all(imag(dot(W[:, i], S6 * W[:, i])) < 0 for i in 1:2)
+    @test norm(transpose(W) * S6 * W) <= 64 * _MC_EPS
+    @test determined_value(big.frame_residuals).normalization <= 64 * _MC_EPS
+    @test big.projector.status === :unique && norm(determined_value(big.projector) - _mc_bd(_mc_eye(2), zeros(2, 2), _mc_eye(2))) <= 64 * _MC_EPS
+    @test determined_value(big.residuals).minimal_polynomial <= 64 * _MC_EPS
+    @test one.classification === :definite && one.resolved && abs(one.tunes[1] - 1.41) <= 16 * _MC_EPS
+    # Never two definite modes for the +-0.73 pairs.
+    @test count(c -> c.classification === :definite, r.clusters) == 1
+    # The near collision: at roundoff rho_M0 the exact block-diagonal map has q = 2 kappa rho_M1 / g ~ 5e-6
+    # and the two pairs stay resolved singletons (objection recorded in report_A1.md); with a declared
+    # uncertainty rho_M0 = 1e-12 the chord exceeds the default and the pair is ONE indefinite cluster.
+    Mn = _mc_bd(_mc_R(0.73), _mc_R(1.41), _mc_R(-0.73 - 1e-9))
+    rn = _mc_run(Mn)
+    qn = maximum(rn.inter_cluster_chords)
+    @test 1e-7 < qn < Octopus._DEFAULT_RESOLUTION_CHORD                              # measured 5.3e-6
+    rn2 = Octopus._mode_clusters(Mn; rho_M0=1e-12)
+    @test length(rn2.clusters) == 2
+    bign = rn2.clusters[findfirst(c -> length(c.half_members) == 2, rn2.clusters)]
+    # D7b decides INDEFINITE here through the g_int arm of mp_tol (r_mp 2.2e-10 <= 64 max(rho_M1, g_int) ||P|| / ||M||
+    # = 2.6e-8; without g_int the tolerance would be 3.5e-14 and the verdict :unresolved). Review 2026-09-12.
+    @test bign.classification === :indefinite && bign.reason === :indefinite_cluster
+    @test count(c -> c.classification === :definite && c.resolved, rn2.clusters) == 1
+    # The eigenvector estimate behind kappa_eig: every column oriented by the sign of its Gram value, so
+    # Im(u' S u) = -2 (E4; review 2026-09-12 found the sign inverted), and kappa_eig equals ||[u_j]||_2^2 of
+    # independently oriented, (E3)-normalized eigenvectors from `eigen`.
+    specn = Octopus._canonical_spectrum(Mn)
+    evn = Octopus._evaluate_component(specn, specn.eigenvalues, S6, bign.half_members, 1e-12)
+    Ue = evn.eigenvector_estimate
+    @test size(Ue) == (6, 2) && all(abs(imag(dot(Ue[:, i], S6 * Ue[:, i])) + 2) <= 64 * _MC_EPS for i in 1:2)
+    En = eigen(Mn)
+    Ui = zeros(ComplexF64, 6, 2)
+    for (k, h) in enumerate(bign.half_members)
+        v = En.vectors[:, argmin(abs.(En.values .- specn.eigenvalues[h]))]
+        v = imag(dot(v, S6 * v)) > 0 ? conj(v) : v
+        Ui[:, k] = v * sqrt(2 / abs(imag(dot(v, S6 * v))))
+    end
+    @test abs(determined_value(bign.kappa_eig) - opnorm(Ui, 2)^2) <= 64 * _MC_EPS * opnorm(Ui, 2)^2     # both 2.0
+    @test abs(evn.kappa_eig - opnorm(Ue, 2)^2) <= 64 * _MC_EPS * evn.kappa_eig
+    # The indefinite signed basis at exact degeneracy: its columns ARE eigenvectors of their by-index
+    # eigenvalues (13.8 reconstruction check, reported as frame_residuals.eigenvector).
+    @test determined_value(big.frame_residuals).eigenvector <= 64 * _MC_EPS                          # measured 3.6e-16
+    @test big.kappa_eig.status === :unavailable && big.kappa_eig.reason === :cluster_unresolved      # repeated pair: no member orientable alone
+    @test any(e -> e.merged && e.chord > Octopus._DEFAULT_RESOLUTION_CHORD, rn2.resolution_receipt)
+    # R(a) (+) R(-a): one indefinite cluster, never two definite modes (the conjugate distance in the gap).
+    ra = _mc_run(_mc_bd(_mc_R(0.9), _mc_R(-0.9)))
+    @test length(ra.clusters) == 1 && ra.clusters[1].classification === :indefinite
+    @test ra.resolution_receipt[1].gap <= 16 * _MC_EPS && ra.resolution_receipt[1].chord == 2.0
+    @test ra.degeneracy_status === :indefinite
+end
+
+@testset "Mode clusters: defective spectator is unresolved with the minimal-polynomial sub-reason" begin
+    Md = _mc_defective()
+    S4 = Octopus._symplectic_form(4)
+    @test norm(Md' * S4 * Md - S4) <= 16 * _MC_EPS
+    r = _mc_run(Md)
+    @test length(r.clusters) == 1
+    c = r.clusters[1]
+    @test c.classification === :unresolved && c.reason === :unresolved_defective
+    @test occursin("minimal-polynomial residual", c.detail) && !occursin("defective", c.detail)
+    @test !any(cl -> cl.classification === :unstable, r.clusters)
+    @test all(c.unit_circle_departures .<= sqrt(_MC_EPS))
+    @test c.stability_scale > maximum(c.unit_circle_departures)
+    @test abs(c.departure_from_normality - 0.2) <= 64 * _MC_EPS                    # the Jordan coupling 0.2 R(mu); measured 2.1 eps
+    @test determined_value(c.residuals).minimal_polynomial > 1e-2                              # measured 0.092
+    @test c.frame.status === :unavailable && c.covariance.status === :unavailable && c.modes.status === :unavailable
+    @test c.projector.status === :unique && norm(determined_value(c.projector) - I) <= 64 * _MC_EPS   # the whole space
+    @test r.degeneracy_status === :unresolved
+    # 6D embedding: the isolated longitudinal mode stays a resolved singleton.
+    M6 = _mc_bd(Md, _mc_R(1.1))
+    r6 = _mc_run(M6)
+    @test length(r6.clusters) == 2
+    long = r6.clusters[findfirst(c -> length(c.half_members) == 1, r6.clusters)]
+    @test long.classification === :definite && long.resolved && abs(long.tunes[1] - 1.1) <= 16 * _MC_EPS
+    @test r6.clusters[findfirst(c -> length(c.half_members) == 2, r6.clusters)].classification === :unresolved
+    @test r6.degeneracy_status === :unresolved
+end
+
+@testset "Mode clusters: unstable and unit-eigenvalue fixtures (D4, D5)" begin
+    R12 = _mc_R(1.2)
+    # A symplectic complex quartet lambda e^{+-i theta}, lambda^-1 e^{+-i theta} with |lambda| - 1 = 1e-4:
+    # bd(A, inv(A)') is symplectic for S = [0 I; -I 0]; permute to (x, px, y, py).
+    A = (1 + 1e-4) * _mc_R(0.6)
+    Mq = _mc_bd(A, inv(A)')[[1, 3, 2, 4], [1, 3, 2, 4]]
+    S4 = Octopus._symplectic_form(4)
+    @test norm(Mq' * S4 * Mq - S4) <= 16 * _MC_EPS
+    rq = _mc_run(Mq)
+    @test !any(rq.real_class) && 1 <= length(rq.clusters) <= 2      # the off-circle pairs are Krein-neutral (kappa = Inf), so they merge
+    @test all(c -> c.classification === :unstable && c.reason === :unstable_spectrum, rq.clusters)
+    @test all(c -> abs(minimum(c.unit_circle_departures) - 1e-4) <= 1e-8, rq.clusters)
+    @test all(c -> minimum(c.unit_circle_departures) / c.stability_scale > 1e4, rq.clusters)   # measured 1e-4 / 9e-13
+    @test rq.degeneracy_status === :unstable
+    for (name, M, nreal, expect) in (("diag(2, 1/2, R(1.2))", _mc_bd([2.0 0; 0 0.5], R12), 2, :unstable),
+                                     ("diag(1 + 1e-6, 1/(1 + 1e-6), R(1.2))", _mc_bd([1 + 1e-6 0; 0 1 / (1 + 1e-6)], R12), 2, :unstable),
+                                     ("I_2 (+) R(1.2)", _mc_bd(_mc_eye(2), R12), 1, :unit_eigenvalue),
+                                     ("-I_2 (+) R(1.2)", _mc_bd(-_mc_eye(2), R12), 1, :unit_eigenvalue),
+                                     ("[1 L; 0 1] (+) R(1.2)", _mc_bd([1.0 3.0; 0 1], R12), 1, :unit_eigenvalue))
+        r = _mc_run(M)
+        @test count(r.real_class) == 2
+        real_clusters = filter(c -> isempty(c.half_members), r.clusters)
+        @test length(real_clusters) == nreal
+        @test all(c -> c.classification === expect, real_clusters)
+        @test all(c -> c.reason === (expect === :unstable ? :unstable_spectrum : :unit_eigenvalue), real_clusters)
+        @test all(c -> c.frame.status === :unavailable && c.projector.status === :unavailable && c.modes.status === :unavailable, real_clusters)
+        cplx = filter(c -> !isempty(c.half_members), r.clusters)
+        @test length(cplx) == 1 && cplx[1].classification === :definite && cplx[1].resolved && abs(cplx[1].tunes[1] - 1.2) <= 16 * _MC_EPS
+        @test r.degeneracy_status === expect
+        @test isempty(r.resolution_receipt)                                     # one complex pair: nothing to evaluate
+    end
+    # D5's Jordan term acts only when the Schur diagonal is not exact (review 2026-09-12: the unrotated
+    # spectator and drift are triangular, so nothing reached the term): a random symplectic conjugation of
+    # the defective spectator (4D, 6D) and of the drift-like [1 3; 0 1] (+) R(1.2) moves their Jordan pairs by
+    # sqrt(eps)-type roundoff (departures 4e-9 .. 1e-8 against the term's scale ~2e-6), ABOVE what the scale
+    # without the term (c_stab rho_M1 ~ 1e-13) would allow: the verdicts would flip to :unstable.
+    W4 = _mc_randsymp(MersenneTwister(_MC_SEED + 11), 4, 0.2); W6 = _mc_randsymp(MersenneTwister(_MC_SEED + 12), 6, 0.2)
+    rr = _mc_run(W4 * _mc_defective() * inv(W4))
+    @test length(rr.clusters) == 1 && rr.clusters[1].classification === :unresolved && rr.clusters[1].reason === :unresolved_defective
+    @test occursin("minimal-polynomial residual", rr.clusters[1].detail) && rr.degeneracy_status === :unresolved
+    @test maximum(rr.clusters[1].unit_circle_departures) > Octopus._STABILITY_MULTIPLIER * rr.clusters[1].rho_M1   # measured 1.7e4 times
+    @test maximum(rr.clusters[1].unit_circle_departures) < rr.clusters[1].stability_scale / 10                     # measured 2e-3 of the scale
+    rr6 = _mc_run(W6 * _mc_bd(_mc_defective(), _mc_R(1.1)) * inv(W6))
+    @test !any(c -> c.classification === :unstable, rr6.clusters) && rr6.degeneracy_status === :unresolved
+    @test count(c -> c.classification === :definite && c.resolved && length(c.half_members) == 1, rr6.clusters) == 1
+    rd = _mc_run(W4 * _mc_bd([1.0 3.0; 0 1], _mc_R(1.2)) * inv(W4))
+    @test count(rd.real_class) == 2 && rd.degeneracy_status === :unit_eigenvalue
+    ru = rd.clusters[findfirst(c -> isempty(c.half_members), rd.clusters)]
+    @test ru.classification === :unit_eigenvalue && maximum(ru.unit_circle_departures) > Octopus._STABILITY_MULTIPLIER * ru.rho_M1   # measured 108 times
+    # D4's third branch, reached: one pair at +1 exactly and a hyperbolic pair off by tau_real / 2 (derived from
+    # the identity's own tau_real so the fixture follows _REAL_CLASS_MULTIPLIER: 1.5e-8 at c_real = 1, far above
+    # the stability scale 64 rho_M1) form ONE real-class component whose members straddle the circle: :unresolved
+    # with the pinned detail (an "any member leaves the circle" rule would call it :unstable).
+    ds = _mc_run(_mc_eye(4)).tau_real / 2
+    @test ds > Octopus._STABILITY_MULTIPLIER * _mc_rho0(_mc_eye(4))
+    rs = _mc_run(_mc_bd(_mc_eye(2), [1 + ds 0; 0 1 / (1 + ds)]))
+    @test count(rs.real_class) == 4 && length(rs.clusters) == 1 && rs.clusters[1].members == [1, 2, 3, 4]
+    @test rs.clusters[1].classification === :unresolved && rs.clusters[1].reason === :unresolved_defective
+    @test rs.clusters[1].detail == "real-class members straddle the unit circle" && rs.degeneracy_status === :unresolved
+    # degeneracy_status precedence and D11's frame order with BOTH flag kinds present (either block order):
+    # :unstable outranks :unit_eigenvalue, and the 4D frame reports :unstable_spectrum.
+    for Mb in (_mc_bd([2.0 0; 0 0.5], _mc_eye(2)), _mc_bd(_mc_eye(2), [2.0 0; 0 0.5]))
+        rb = _mc_run(Mb)
+        @test Set(c.classification for c in rb.clusters) == Set([:unstable, :unit_eigenvalue])
+        @test rb.degeneracy_status === :unstable
+        fb = Octopus._eigenmodes_4d(Mb; rho_M0=_mc_rho0(Mb))
+        @test fb.frame.status === :unavailable && fb.frame.reason === :unstable_spectrum
+    end
+    # I_4: two unit-eigenvalue clusters or one; every cluster :unit_eigenvalue, no NaN anywhere.
+    r4 = _mc_run(_mc_eye(4))
+    @test all(r4.real_class) && all(c -> c.classification === :unit_eigenvalue, r4.clusters)
+    @test r4.degeneracy_status === :unit_eigenvalue
+    @test length(r4.clusters) == 1 && r4.clusters[1].members == [1, 2, 3, 4]
+    # Raw moduli never decide: the defective spectator has departures ~eps and a Jordan chain; stays stable (tested above).
+    # rho_M0 is READ by the stability test (D11).
+    Mr = _mc_bd([1 + 1e-6 0; 0 1 / (1 + 1e-6)], R12)
+    r0 = _mc_run(Mr)
+    @test r0.degeneracy_status === :unstable
+    r5 = Octopus._mode_clusters(Mr; rho_M0=1e-5)
+    @test r5.degeneracy_status === :unit_eigenvalue
+    @test all(c -> c.classification === :unit_eigenvalue, filter(c -> isempty(c.half_members), r5.clusters))
+end
+
+@testset "Mode clusters: the chord and rho_M0 are READ (D11) on R(0.9) (+) R(0.9 + 1e-7)" begin
+    M = _mc_bd(_mc_R(0.9), _mc_R(0.9 + 1e-7))
+    r = _mc_run(M)
+    @test length(r.clusters) == 2 && all(c -> c.classification === :definite && c.resolved, r.clusters)
+    q = r.inter_cluster_chords[1, 2]
+    @test 1e-9 < q < 1e-6                                                       # measured 3.6e-8 (design: 5e-8)
+    @test r.degeneracy_status === :all_resolved
+    r6 = Octopus._mode_clusters(M; rho_M0=1e-6)
+    @test length(r6.clusters) == 1 && r6.clusters[1].classification === :definite && !r6.clusters[1].resolved
+    @test r6.clusters[1].reason === :cluster_unresolved && r6.degeneracy_status === :degenerate
+    @test r6.resolution_receipt[1].merged && r6.resolution_receipt[1].rho_M1 == 1e-6
+    r9 = Octopus._mode_clusters(M; rho_M0=_mc_rho0(M), resolution_chord=1e-9)
+    @test length(r9.clusters) == 1 && !r9.clusters[1].resolved && r9.resolution_chord == 1e-9
+    # R(0.9) (+) R(0.9): definite unresolved (:cluster_unresolved).
+    rd = _mc_run(_mc_bd(_mc_R(0.9), _mc_R(0.9)))
+    @test length(rd.clusters) == 1 && rd.clusters[1].classification === :definite && rd.clusters[1].reason === :cluster_unresolved
+    @test rd.clusters[1].kappa_eig.status === :unavailable                     # a member of an exactly repeated pair is not orientable alone
+    @test rd.clusters[1].kappa_eig.reason === :cluster_unresolved              # never :unresolved_defective on a definite cluster
+    @test isapprox(determined_value(rd.clusters[1].kappa_frame), 2; atol=64 * _MC_EPS)
+end
+
+@testset "Mode clusters: the crab ladder k = k_c (1 - eps) is stable for eps > 0 (D5 with kappa_c)" begin
+    # Fixture-table row (trial 011): M = diag(R(0.85), R(2.1), R(-0.75)) C_k, opposite Krein signs of the x
+    # and z pairs colliding at k_c. Exact 256-bit arithmetic (review_theory/probe4.log) puts BOTH colliding
+    # pairs ON the unit circle for every eps > 0; their Float64 eigenvalues leave it by eps_mach ||M|| kappa / 2
+    # (kappa = ||u||^2 from 1.4e3 at eps = 1e-6 to 1.4e5 at 1e-10), which D5's scale absorbs only through the
+    # cluster's kappa_c (review 2026-09-12: the earlier 256 rho_M1 declared eps <= 1e-7 :unstable on a stable map).
+    kc = _st3_crab_kc()
+    S6 = Octopus._symplectic_form(6)
+    colliding(r) = filter(c -> !(length(c.half_members) == 1 && abs(c.tunes[1] - 2.1) < 0.1), r.clusters)   # the y pair is the spectator
+    ncoll = Dict{Float64,Int}(); qcoll = Dict{Float64,Float64}()
+    for e in (1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10, 1e-11)
+        M = _st3_crab_map(kc * (1 - e))
+        @test norm(M' * S6 * M - S6) <= 64 * _MC_EPS * opnorm(M)^2
+        r = _mc_run(M)
+        @test !any(c -> c.classification === :unstable, r.clusters) && r.degeneracy_status !== :unstable
+        cc = colliding(r)
+        ncoll[e] = length(cc)
+        # the colliding pair's own chord: between the two singletons, or the receipt chord that merged them
+        qcoll[e] = length(cc) == 2 ? maximum(r.inter_cluster_chords) : maximum(x.chord for x in r.resolution_receipt if x.merged)
+        @test all(c -> c.classification in (:definite, :indefinite, :unresolved), cc)
+        if length(cc) == 2
+            # two definite singletons of opposite Krein sign, resolved by the chord (q below the default),
+            # each with the one-tenth margin of an accepted c_stab fixture
+            @test all(c -> c.classification === :definite && c.resolved && length(c.half_members) == 1, cc)
+            @test maximum(r.inter_cluster_chords) < Octopus._DEFAULT_RESOLUTION_CHORD
+            @test all(c -> maximum(c.unit_circle_departures) < c.stability_scale / 10, cc)      # measured <= 3.6e-3 of the scale
+            @test all(c -> determined_value(c.kappa_frame) >= 2, cc)
+        else
+            # near k_c: ONE cluster of the x and z pairs, never definite (fixture table row)
+            @test length(cc) == 1 && length(cc[1].half_members) == 2 && cc[1].classification in (:indefinite, :unresolved)
+            @test cc[1].frame.status === :unavailable && cc[1].modes.status === :unavailable
+        end
+    end
+    # The chord (kappa_eig grows tenfold per decade: 1.4e5 at eps = 1e-10, gap 1.4e-6, q = 2.8e-4) merges the colliding
+    # pair exactly where its own chord exceeds the default and keeps two singletons below it; the ladder must
+    # exercise BOTH branches (at the frozen default 1e-3: two singletons down to eps = 1e-10, one cluster at 1e-11;
+    # the earlier hard-coded split at 1e-9 / 1e-10 pinned the provisional 1e-4).
+    @test all(e -> ncoll[e] == (qcoll[e] > Octopus._DEFAULT_RESOLUTION_CHORD ? 1 : 2), keys(ncoll))
+    @test any(e -> ncoll[e] == 2, keys(ncoll)) && any(e -> ncoll[e] == 1, keys(ncoll))
+    ks = sort(collect(keys(qcoll)); rev=true)                                     # eps descending: q grows down the ladder
+    @test all(i -> qcoll[ks[i + 1]] > qcoll[ks[i]], 1:length(ks) - 1)
+    # The unstable side k > k_c (the rejected c_stab fixtures): the colliding block leaves the circle by far
+    # more than ten times its scale (measured 29 at eps = -1e-7 .. 9.3e3 at -1e-2), every modal output unavailable.
+    for e in (-1e-2, -1e-3, -1e-4, -1e-5, -1e-6)
+        r = _mc_run(_st3_crab_map(kc * (1 - e)))
+        cc = colliding(r)
+        @test length(cc) == 1 && cc[1].classification === :unstable && cc[1].reason === :unstable_spectrum
+        @test minimum(cc[1].unit_circle_departures) > 10 * cc[1].stability_scale
+        @test r.degeneracy_status === :unstable
+        @test cc[1].frame.status === :unavailable && cc[1].frame.reason === :unstable_spectrum && cc[1].projector.status === :unavailable
+    end
+end
+
+@testset "Mode clusters: scaling invariance of classification, tunes, P_c, G_c; q reported per scaling" begin
+    rng = MersenneTwister(_MC_SEED + 1)
+    W = _mc_randsymp(rng, 6, 0.2)
+    base = W * _mc_bd(_mc_R(0.73), _mc_R(1.41), _mc_R(0.73)) * inv(W)      # a definite m = 2 cluster plus a singleton
+    single = Octopus._manufactured_symplectic_map(rng, 6; stable=true).M   # three resolved singletons
+    for M in (base, single)
+        ref = nothing
+        qs = Float64[]
+        for factors in ((1.0, 1.0, 1.0), (3.0, 0.2, 7.0), (0.05, 11.0, 0.5))
+            rec = Octopus._reciprocal_scaling(M, factors)
+            C = Octopus._scaling_matrix(rec)
+            Ms = C * M * inv(C)
+            r = _mc_run(Ms)
+            out = [(c.classification, c.resolved, c.reason, round.(c.tunes; digits=9),
+                    Octopus._unscale_projector(rec, determined_value(c.projector)), Octopus._unscale_covariance(rec, determined_value(c.covariance)),
+                    determined_value(c.kappa_frame)) for c in r.clusters]
+            push!(qs, maximum(r.inter_cluster_chords))
+            if ref === nothing
+                ref = out
+            else
+                @test length(out) == length(ref)
+                for (a, b) in zip(out, ref)
+                    @test a[1] === b[1] && a[2] == b[2] && a[3] === b[3]
+                    @test a[4] == b[4]
+                    kap = max(a[7], b[7]) * opnorm(C) * opnorm(inv(C))
+                    @test norm(a[5] - b[5]) <= 64 * _MC_EPS * kap * norm(b[5])   # measured 0.15 eps kappa ||P|| (fixer probe_tol.jl)
+                    @test norm(a[6] - b[6]) <= 64 * _MC_EPS * kap * norm(b[6])   # measured 0.25 eps kappa ||G||
+                end
+            end
+        end
+        @test length(unique(qs)) == 3                 # the chord is a scaled-coordinate quantity: reported per scaling
+    end
+end
+
+@testset "Mode clusters: argument errors and the receipt lists every candidate" begin
+    M = _mc_bd(_mc_R(0.7), _mc_R(0.31))
+    @test_throws ArgumentError Octopus._mode_clusters(_mc_eye(3); rho_M0=0.0)
+    @test_throws ArgumentError Octopus._mode_clusters(_mc_eye(5); rho_M0=0.0)
+    @test_throws ArgumentError Octopus._mode_clusters(rand(4, 6); rho_M0=0.0)
+    Mn = copy(M); Mn[1, 1] = NaN
+    @test_throws ArgumentError Octopus._mode_clusters(Mn; rho_M0=0.0)
+    Mi = copy(M); Mi[2, 3] = Inf
+    @test_throws ArgumentError Octopus._mode_clusters(Mi; rho_M0=0.0)
+    @test_throws ArgumentError Octopus._mode_clusters(M; rho_M0=-1e-12)
+    @test_throws ArgumentError Octopus._mode_clusters(M; rho_M0=NaN)
+    @test_throws ArgumentError Octopus._mode_clusters(M; rho_M0=Inf)
+    @test_throws ArgumentError Octopus._mode_clusters(M; rho_M0=0.0, resolution_chord=0.0)
+    @test_throws ArgumentError Octopus._mode_clusters(M; rho_M0=0.0, resolution_chord=-1e-3)
+    @test_throws ArgumentError Octopus._mode_clusters(M; rho_M0=0.0, resolution_chord=2.5)
+    @test_throws ArgumentError Octopus._mode_clusters(M; rho_M0=0.0, resolution_chord=NaN)
+    @test_throws UndefKeywordError Octopus._mode_clusters(M)
+    @test Octopus._mode_clusters(M; rho_M0=0.0, resolution_chord=2.0) isa Octopus.ModeClusters
+    r00 = Octopus._mode_clusters(M; rho_M0=0.0)                          # rho_M0 = 0 is allowed: the Schur error floors rho_M1
+    @test r00 isa Octopus.ModeClusters && r00.rho_M0 == 0.0
+    @test r00.rho_M1 > 0 && all(c -> c.rho_M1 > 0, r00.clusters) && r00.schur_backward_error > 0   # the floor is READ (measured 4.4e-16)
+    # The per-cluster Schur backward error is measured against the matrix PASSED IN (dossier D5, design step
+    # 5), not against the reconstruction Z T Z' (which satisfies Z T Z' Q = Q T11 identically; review
+    # 2026-09-12): the factorization's own matrix gives roundoff, a perturbed matrix shows its perturbation.
+    spec = Octopus._canonical_spectrum(M)
+    sel = Octopus._select(spec.order, [1], 4)
+    @test Octopus._ordered_schur_basis(spec.schur, sel, spec.matrix).backward_error <= 64 * _MC_EPS * opnorm(M)
+    be = Octopus._ordered_schur_basis(spec.schur, sel, M + 1e-6 * ones(4, 4)).backward_error
+    @test 1e-7 < be < 1e-5                                                          # measured ~1e-6
+    @test_throws ArgumentError Octopus._ordered_schur_basis(spec.schur, sel, _mc_eye(6))
+    @test_throws ArgumentError Octopus._cluster_stability(ComplexF64[1.0], ones(ComplexF64, 1, 1), 1e-15; kappa=Inf)
+    # Kernel pins: the gap carries the conjugate distance (D3), the chord saturates at 2.
+    @test Octopus._pair_gap(exp(im * 0.9), exp(-im * 0.9)) == 0.0
+    @test Octopus._pair_gap(exp(im * 0.9), exp(im * 0.7)) == abs(exp(im * 0.9) - exp(im * 0.7))
+    @test Octopus._chord(2.0, 1e-15, 0.0) == 2.0 && Octopus._chord(Inf, 1e-15, 1.0) == 2.0 && abs(Octopus._chord(2.0, 1e-15, 1e-9) - 4e-6) <= 4 * _MC_EPS * 4e-6
+    # Receipt on a 6D map with three well separated pairs: three candidates in round one, none merged.
+    r = _mc_run(_mc_bd(_mc_R(0.73), _mc_R(1.41), _mc_R(2.2)))
+    @test length(r.resolution_receipt) == 3 && !any(e -> e.merged, r.resolution_receipt)
+    @test Set(Set.([vcat(e.first, e.second) for e in r.resolution_receipt])) == Set(Set.([[1, 6, 2, 5], [1, 6, 3, 4], [2, 5, 3, 4]]))
+    @test all(e -> e.kappa_source === :frame && e.chord == r.inter_cluster_chords[findfirst(c -> c.members == e.first, r.clusters), findfirst(c -> c.members == e.second, r.clusters)], r.resolution_receipt)
+    # Receipt on a merging 6D map: round one has three candidates (one merged), round two has one.
+    rm = _mc_run(_mc_bd(_mc_R(0.73), _mc_R(1.41), _mc_R(0.73)))
+    @test length(rm.resolution_receipt) == 4 && count(e -> e.merged, rm.resolution_receipt) == 1
+    @test rm.resolution_receipt[end].first == [1, 2, 5, 6] && rm.resolution_receipt[end].second == [3, 4]
+    @test !rm.resolution_receipt[end].merged
+    @test size(rm.inter_cluster_chords) == (2, 2) && rm.inter_cluster_chords[1, 2] == rm.resolution_receipt[end].chord
+    # The report fields: eigenvalues in canonical order, partners a perfect matching, a copy of the matrix.
+    @test issorted(mod.(angle.(rm.eigenvalues), 2pi))
+    @test rm.matrix == _mc_bd(_mc_R(0.73), _mc_R(1.41), _mc_R(0.73)) && rm.matrix !== M
+    @test rm.rho_M1 >= rm.rho_M0 && rm.schur_backward_error <= 64 * _MC_EPS * norm(rm.matrix)
+    @test rm.tau_real == Octopus._REAL_CLASS_MULTIPLIER * sqrt(max(rm.rho_M0, rm.schur_backward_error)) * max(1, opnorm(rm.matrix))
+end
+# Stage 3 Part B: the dispersion ambiguity set of theory 13.6
+# (src/analysis/degenerate_dispersion.jl). Every tolerance is `c eps kappa`
+# with `c` measured (report_B.md, Part B tables); the injected defects shown
+# red once are listed there too:
+#   i01 center from the z column (P[1:4, 5]) instead of pz; i02 shape without
+#   the 1/4; i03 factor by Cholesky of the rank-deficient shape; i04 (D12)
+#   with Re instead of -Im; i05 the isospectral family with the SAME spinor at
+#   both endpoints (the diameter check goes red); i06 the N4 check with +2i.
+# The cluster frame comes from Part A's `_mode_clusters` through `_st3_cluster`
+# (the design probe's builder `_st3_cluster_frame` is kept for one P_c/G_c
+# agreement witness in the pins testset); the thin methods on `ModeCluster`
+# and `ModeClusters` are exercised there too.
+
+const _AMB_EPS = eps(Float64)
+const _AMB_SEED = 20260911
+_amb_e(i) = (v = zeros(6); v[i] = 1.0; v)
+_amb_rho(M) = Octopus._perturbation_scale(M, Octopus._symplectic_defect(M).frobenius).scale
+# The (D12) readout of one (E3)-normalized vector, spelled out independently of
+# the source (the test's own oracle for the convention).
+_amb_eta_d12(u) = [-imag(conj(u[5]) * u[a]) for a in 1:4]
+_amb_h_d12(u) = -imag(conj(u[5]) * u[6])
+# Orient (Im(v' S v) < 0) and normalize (v' S v = -2i) one eigenvector.
+function _amb_orient(v, S)
+    w = imag(dot(v, S * v)) < 0 ? copy(v) : conj(v)
+    return w / sqrt(abs(imag(dot(w, S * w))) / 2)
+end
+
+@testset "Ambiguity set: pins on diag(R(0.73), R(1.41), R(0.73))" begin
+    M = _st3_definite_pair_6d()
+    S6 = _st3_symplectic_form(6)
+    cf = _st3_cluster(M, exp(-im * 0.73), 0.2)
+    @test cf.multiplicity == 2
+    @test cf.cluster.classification === :definite && cf.report.partition_source === :auto
+    # The one agreement witness: the design probe's builder and _mode_clusters
+    # give the same P_c and G_c (N5) at c eps kappa (the frames may differ by a
+    # unitary mixing, which N5 removes).
+    cf_probe = _st3_cluster_frame(M, exp(-im * 0.73), 0.2)
+    @test cf_probe.multiplicity == 2
+    @test norm(cf_probe.P - cf.P) <= 64 * _AMB_EPS * cf.kappa_frame
+    @test norm(cf_probe.G - cf.G) <= 64 * _AMB_EPS * cf.kappa_frame
+    @test abs(cf_probe.kappa_frame - cf.kappa_frame) <= 64 * _AMB_EPS * cf.kappa_frame
+    # The N5 projector of the frame against the cluster's Schur spectral projector.
+    @test norm(cf.P - determined_value(cf.cluster.projector)) <= 64 * _AMB_EPS * cf.kappa_frame
+    @test norm(cf.G - determined_value(cf.cluster.covariance)) == 0     # G IS the cluster covariance
+    chk = Octopus._check_cluster_frame(cf.U)
+    @test chk.kappa >= 2 - 64 * _AMB_EPS      # an (E3) column has ||u||^2 >= 2, equality on this fixture
+    @test chk.normalization <= 64 * _AMB_EPS * 2 * chk.kappa / 10
+    @test chk.isotropy <= 64 * _AMB_EPS * 2 * chk.kappa / 10
+    set = Octopus._dispersion_ambiguity_set(cf.U; kind=:exact_set)
+    @test set isa AmbiguitySet
+    @test set.multiplicity == 2
+    @test set.kind === :exact_set
+    @test norm(set.center) <= 16 * _AMB_EPS
+    @test norm(set.shape - Diagonal([0.25, 0.25, 0.0, 0.0])) <= 16 * _AMB_EPS
+    @test size(set.factor) == (4, 3)
+    @test norm(set.factor * transpose(set.factor) - set.shape) <= 16 * _AMB_EPS
+    @test rank(set.shape; atol=1e-12) == 2
+    @test count(>(1e-12), svdvals(set.factor)) == 2
+    lo, hi = dispersion_interval(set, [1.0, 0.0, 0.0, 0.0])
+    @test abs(lo + 0.5) <= 16 * _AMB_EPS && abs(hi - 0.5) <= 16 * _AMB_EPS
+    lo_y, hi_y = dispersion_interval(set, [0.0, 0.0, 1.0, 0.0])
+    @test abs(lo_y) <= 16 * _AMB_EPS && abs(hi_y) <= 16 * _AMB_EPS
+    # The thin methods on the cluster and on the report: kind defaults to
+    # _ambiguity_kind(internal_gap, rho_M1), :exact_set for the exact fixture.
+    set_c = Octopus._dispersion_ambiguity_set(cf.cluster)
+    @test set_c.kind === :exact_set
+    @test set_c.center == set.center && set_c.shape == set.shape && set_c.factor == set.factor
+    set_r = Octopus._dispersion_ambiguity_set(cf.report, cf.index; kind=:orientation_envelope)
+    @test set_r.kind === :orientation_envelope && set_r.shape == set.shape
+    @test_throws ArgumentError Octopus._dispersion_ambiguity_set(cf.report, length(cf.report.clusters) + 1)
+    # The second method on the group quantities gives the same set.
+    set2 = Octopus._dispersion_ambiguity_set(cf.P, cf.G, 2; kind=:orientation_envelope)
+    @test set2.kind === :orientation_envelope
+    @test set2.center == set.center
+    @test norm(set2.shape - set.shape) <= 16 * _AMB_EPS
+    @test norm(set2.factor * transpose(set2.factor) - set.shape) <= 16 * _AMB_EPS
+    # Graph qualification (13.6): a member with zero longitudinal position
+    # exists for m >= 2: c perpendicular to a_z = U' e_z has u_z = 0 and h = 0.
+    az = cf.U' * _amb_e(5)
+    c_perp = [-conj(az[2]), conj(az[1])]; c_perp /= norm(c_perp)
+    u0 = cf.U * c_perp
+    @test abs(u0[5]) <= 16 * _AMB_EPS
+    @test abs(_amb_h_d12(u0)) <= 16 * _AMB_EPS
+    @test norm(Octopus._sampled_mode_dispersion(cf.U, c_perp)) <= 16 * _AMB_EPS   # eta = 0 there
+    # A member with regular graph: c = a_z / ||a_z|| has h = 1 here (a_z has norm sqrt 2).
+    c_z = az / norm(az)
+    uz = cf.U * c_z
+    @test abs(_amb_h_d12(uz) - 1) <= 16 * _AMB_EPS
+    # (D12) readout equals the projector column of the member: eta = (-Im(u u') S)[1:4, 6].
+    for c in (c_z, c_perp, [1.0, im] / sqrt(2))
+        u = cf.U * c
+        @test norm(Octopus._sampled_mode_dispersion(cf.U, c) - (-imag(u * u') * S6)[1:4, 6]) <= 16 * _AMB_EPS
+        @test norm(Octopus._sampled_mode_dispersion(cf.U, c) - _amb_eta_d12(u)) <= 16 * _AMB_EPS
+    end
+    # Rank 2: the sphere of coefficients maps onto a FILLED disc (theory 13.6,
+    # "lower rank gives a filled ellipse"), eta_x^2 + eta_px^2 <= 1/4 with
+    # eta_y = eta_py = 0 (the true graphs a I + b S_2 of 13.7 give the same disc).
+    rng = MersenneTwister(_AMB_SEED)
+    best = 0.0
+    for k in 1:50
+        c = randn(rng, ComplexF64, 2); c /= norm(c)
+        eta = Octopus._sampled_mode_dispersion(cf.U, c)
+        @test eta[1]^2 + eta[2]^2 <= 0.25 + 16 * _AMB_EPS
+        @test abs(eta[3]) <= 16 * _AMB_EPS && abs(eta[4]) <= 16 * _AMB_EPS
+        best = max(best, eta[1]^2 + eta[2]^2)
+    end
+    @test best > 0.1                                              # the samples do reach out into the disc
+    # The rim is attained: the spinor of n = +-e_1 in the frame readout gives eta = +-e_x / 2.
+    rd = _st3_readouts_frame(cf.U)
+    @test norm(rd.F * transpose(rd.F) - set.shape) <= 16 * _AMB_EPS
+    for sgn in (1.0, -1.0)
+        n = transpose(rd.F) * [sgn, 0.0, 0.0, 0.0]; n /= norm(n)
+        eta = Octopus._sampled_mode_dispersion(cf.U, _st3_spinor(n))
+        @test norm(eta - [sgn / 2, 0.0, 0.0, 0.0]) <= 64 * _AMB_EPS
+    end
+end
+
+@testset "Ambiguity set: 30 conjugated copies (N12 surface, N14 endpoints, affine readout)" begin
+    rng = MersenneTwister(_AMB_SEED)
+    M0 = _st3_definite_pair_6d()
+    S6 = _st3_symplectic_form(6)
+    n_trials = 0
+    for trial in 1:30
+        W = _st3_random_symplectic(rng, 6, 0.15)
+        M = W * M0 / W
+        cf = _st3_cluster(M, exp(-im * 0.73), 0.2)
+        @test cf.multiplicity == 2
+        kappa = cf.kappa_frame
+        chk = Octopus._check_cluster_frame(cf.U)
+        @test abs(chk.kappa - kappa) <= 64 * _AMB_EPS * kappa    # ||U||_2^2 by two routes (N20 vs the rotated frame)
+        @test max(chk.normalization, chk.isotropy) <= 64 * _AMB_EPS * 2 * kappa / 10   # one tenth of the refusal
+        set = Octopus._dispersion_ambiguity_set(cf.U; kind=:exact_set)
+        A = set.shape
+        # N11 spelled out from the group quantities, independently of the source.
+        A_ref = (cf.G[5, 5] * cf.G[1:4, 1:4] - cf.G[1:4, 5] * transpose(cf.G[5, 1:4])) / 4
+        @test norm(set.center - cf.P[1:4, 6] / 2) <= 16 * _AMB_EPS * kappa
+        @test norm(A - (A_ref + transpose(A_ref)) / 2) <= 16 * _AMB_EPS * kappa^2
+        @test size(set.factor) == (4, 3)
+        @test norm(set.factor * transpose(set.factor) - A) <= 16 * _AMB_EPS * max(1.0, kappa^2)
+        @test rank(A; atol=1e-10 * kappa^2) <= 3
+        @test minimum(eigvals(Symmetric(A))) >= -16 * _AMB_EPS * kappa^2
+        # Both methods agree.
+        set2 = Octopus._dispersion_ambiguity_set(cf.P, cf.G, 2; kind=:exact_set)
+        @test set2.center == set.center && set2.shape == set.shape && set2.factor == set.factor
+        # Unitary mixing of the frame leaves the set invariant (N5).
+        V = Matrix(qr(randn(rng, ComplexF64, 2, 2)).Q)
+        set_mix = Octopus._dispersion_ambiguity_set(cf.U * V; kind=:exact_set)
+        @test norm(set_mix.center - set.center) <= 64 * _AMB_EPS * kappa
+        @test norm(set_mix.shape - A) <= 64 * _AMB_EPS * kappa^2
+        # (N12): every sampled member lies on the ellipsoid surface,
+        # (eta - c)' A^+ (eta - c) = 1, and eta - c is in the range of A.
+        Ap = pinv(A; rtol=1e-10)
+        for k in 1:40
+            c = randn(rng, ComplexF64, 2); c /= norm(c)
+            u = cf.U * c
+            @test norm(M * u - exp(-im * 0.73) * u) <= 64 * _AMB_EPS * kappa * opnorm(M)
+            eta = Octopus._sampled_mode_dispersion(cf.U, c)
+            dev = eta - set.center
+            @test abs(dot(dev, Ap * dev) - 1) <= 2048 * _AMB_EPS * kappa
+            @test norm(A * (Ap * dev) - dev) <= 256 * _AMB_EPS * kappa^2
+        end
+        # (N14): the scalar readout a' eta(c) = c' K c with K Hermitian; its
+        # extrema are the eigenvalues of K and equal a' c0 +- sqrt(a' A a).
+        for k in 1:6
+            a = randn(rng, 4)
+            hs = _st3_readouts_frame(cf.U).hs
+            K = sum(a[i] * hs[i] for i in 1:4)
+            K = (K + K') / 2
+            lam = eigvals(Hermitian(K))
+            lo, hi = dispersion_interval(set, a)
+            @test abs(minimum(lam) - lo) <= 64 * _AMB_EPS * kappa * norm(a)
+            @test abs(maximum(lam) - hi) <= 64 * _AMB_EPS * kappa * norm(a)
+            # The endpoints are attained by the eigenvectors of K (an :exact_set is sharp).
+            vecs = eigen(Hermitian(K)).vectors
+            @test abs(dot(a, Octopus._sampled_mode_dispersion(cf.U, vecs[:, 1])) - lo) <= 64 * _AMB_EPS * kappa * norm(a)
+            @test abs(dot(a, Octopus._sampled_mode_dispersion(cf.U, vecs[:, end])) - hi) <= 64 * _AMB_EPS * kappa * norm(a)
+        end
+        # (N12) affine readout: eta(c) = center + F_p n(c) with n the Bloch vector
+        # of the spinor c and F_p the trial-015 readout factor (a factor of A too).
+        rd = _st3_readouts_frame(cf.U)
+        @test norm(rd.center - set.center) <= 64 * _AMB_EPS * kappa
+        @test norm(rd.F * transpose(rd.F) - A) <= 64 * _AMB_EPS * kappa^2
+        # The paper port on conj(U) agrees up to the sign of the sigma_2 column (pitfall 10).
+        rp = _st3_readouts(conj(cf.U))
+        @test norm(rp.center - rd.center) <= 64 * _AMB_EPS * kappa
+        @test norm(rp.F - rd.F * Diagonal([1.0, -1.0, 1.0])) <= 64 * _AMB_EPS * kappa
+        for k in 1:10
+            c = randn(rng, ComplexF64, 2); c /= norm(c)
+            n = [real(dot(c, s * c)) for s in _ST3_PAULI]
+            @test abs(norm(n) - 1) <= 16 * _AMB_EPS
+            eta = Octopus._sampled_mode_dispersion(cf.U, c)
+            @test norm(eta - (rd.center + rd.F * n)) <= 64 * _AMB_EPS * kappa
+        end
+        # The spinor of a unit n reproduces n and lands on the support point (N14).
+        n0 = randn(rng, 3); n0 /= norm(n0)
+        c0 = _st3_spinor(n0)
+        @test norm([real(dot(c0, s * c0)) for s in _ST3_PAULI] - n0) <= 64 * _AMB_EPS
+        n_trials += 1
+    end
+    @test n_trials == 30
+end
+
+@testset "Ambiguity set: three coincident modes (N13) and the (D12) convention on resolved maps" begin
+    rng = MersenneTwister(_AMB_SEED + 1)
+    S6 = _st3_symplectic_form(6)
+    mu = 0.73
+    for trial in 1:10
+        W = _st3_random_symplectic(rng, 6, 0.15)
+        M = W * _st3_definite_triple_6d(mu) / W
+        cf = _st3_cluster(M, exp(-im * mu), 0.2)
+        @test cf.multiplicity == 3
+        kappa = cf.kappa_frame
+        @test norm(cf.P - I) <= 64 * _AMB_EPS * kappa          # N13: P_c = I_6
+        set = Octopus._dispersion_ambiguity_set(cf.U; kind=:exact_set)
+        @test set.multiplicity == 3
+        @test norm(set.center) <= 64 * _AMB_EPS * kappa        # N13: center 0
+        @test size(set.factor) == (4, 5)
+        @test rank(set.shape; atol=1e-10 * kappa^2) == 4
+        @test count(>(1e-10 * kappa), svdvals(set.factor)) == 4
+        Ai = inv(Symmetric(set.shape))
+        best = 0.0
+        for k in 1:100
+            c = randn(rng, ComplexF64, 3); c /= norm(c)
+            eta = Octopus._sampled_mode_dispersion(cf.U, c)
+            q = dot(eta, Ai * eta)
+            @test q <= 1 + 512 * _AMB_EPS * kappa * cond(set.shape)
+            best = max(best, q)
+        end
+        @test best > 0.5                                      # the samples do reach out into the ellipsoid
+        # The support point along a random direction is attained (N14) and lies inside.
+        a = randn(rng, 4)
+        lo, hi = dispersion_interval(set, a)
+        @test hi - lo > 0 && abs(hi + lo) <= 64 * _AMB_EPS * kappa * norm(a)
+    end
+    # (D12) convention on a RESOLVED 6D map: for every oriented eigenvector u,
+    # -Im(conj(u_z) u_a) equals the graph route U_rs U_ls^{-1} converted by (D8).
+    n_modes = 0
+    for trial in 1:50
+        M = Octopus._manufactured_symplectic_map(rng, 6; stable=true).M
+        vals, vecs = eigen(M)
+        for j in 1:6
+            imag(vals[j]) > 0 || continue                     # one member per pair; orientation below
+            u = _amb_orient(vecs[:, j], S6)
+            @test abs(dot(u, S6 * u) + 2im) <= 64 * _AMB_EPS * norm(u)^2
+            Us = hcat(real(u), -imag(u))                      # (D9)
+            Urs, Uls = Us[1:4, :], Us[5:6, :]
+            abs(det(Uls)) > 1e-3 || continue                  # a regular graph; the singular case is stage 4
+            D = Urs / Uls                                     # (D10) by a linear solve
+            h = 1 / (1 + dot(D[:, 1], _st3_symplectic_form(4) * D[:, 2]))   # (D8)
+            eta_graph = h * D[:, 2]
+            eta_d12 = Octopus._sampled_mode_dispersion(reshape(u, 6, 1), [1.0])
+            kap = norm(u)^2
+            @test norm(eta_d12 - eta_graph) <= 64 * _AMB_EPS * kap * max(1.0, opnorm(D)^2) * max(1.0, abs(h))
+            @test abs(_amb_h_d12(u) - h) <= 64 * _AMB_EPS * kap * max(1.0, opnorm(D)^2)
+            @test abs(det(Uls) - h) <= 64 * _AMB_EPS * kap          # h = det U_ls (D11)
+            n_modes += 1
+        end
+    end
+    @test n_modes >= 100
+end
+
+@testset "Ambiguity set: refusals name their reason before any set is built" begin
+    cf = _st3_cluster(_st3_definite_pair_6d(), exp(-im * 0.73), 0.2)
+    U = cf.U
+    msg(f) = try; f(); ""; catch e; e isa ArgumentError ? e.msg : "WRONG_TYPE " * string(typeof(e)); end
+    # Thin method: the resolved gamma singleton has a unique dispersion, not a set.
+    c1 = _st3_cluster(_st3_definite_pair_6d(), exp(-im * 1.41), 0.2)
+    @test c1.multiplicity == 1 && c1.cluster.resolved
+    m1 = msg(() -> Octopus._dispersion_ambiguity_set(c1.cluster))
+    @test occursin("multiplicity 1", m1) && occursin("reason :none", m1) && occursin("$(c1.cluster.members)", m1)
+    # Thin method on a 4D cluster (the exact rolled FODO): no longitudinal plane.
+    c4 = _st3_cluster(_st3_rolled_fodo(_st3_fodo_pins().theta), exp(-im * acos(_st3_fodo_pins().cos_mu)), 0.1)
+    @test c4.multiplicity == 2 && c4.cluster.classification === :definite
+    m4c = msg(() -> Octopus._dispersion_ambiguity_set(c4.cluster))
+    @test occursin("6 rows", m4c) && occursin("no longitudinal plane", m4c)
+    # 4-row frame: no longitudinal plane.
+    m4 = msg(() -> Octopus._dispersion_ambiguity_set(U[1:4, :]; kind=:exact_set))
+    @test occursin("_dispersion_ambiguity_set", m4) && occursin("6 rows", m4) && occursin("no longitudinal plane", m4)
+    m4b = msg(() -> Octopus._dispersion_ambiguity_set(cf.P[1:4, 1:4], cf.G[1:4, 1:4], 2; kind=:exact_set))
+    @test occursin("6x6", m4b) && occursin("no longitudinal plane", m4b)
+    # m = 1: the wrapper refuses BEFORE the AmbiguitySet constructor and names the reason.
+    m1 = msg(() -> Octopus._dispersion_ambiguity_set(U[:, 1:1]; kind=:exact_set))
+    @test occursin("_dispersion_ambiguity_set", m1) && occursin("multiplicity 1", m1) && occursin("unique dispersion", m1)
+    @test !occursin("AmbiguitySet needs multiplicity", m1)
+    m1b = msg(() -> Octopus._dispersion_ambiguity_set(cf.P, cf.G, 1; kind=:exact_set))
+    @test occursin("multiplicity 1", m1b) && !occursin("AmbiguitySet needs", m1b)
+    @test occursin("at most 3 modes", msg(() -> Octopus._dispersion_ambiguity_set(cf.P, cf.G, 4; kind=:exact_set)))
+    # A frame violating (N4): the N15 indefinite family (no one-sign Krein basis).
+    Un15 = hcat(_st3_n15_vector(0.0), _st3_n15_vector(1.0))
+    mn = msg(() -> Octopus._dispersion_ambiguity_set(Un15; kind=:exact_set))
+    @test occursin("(N4)", mn) && occursin("_check_cluster_frame", mn)
+    # A frame with one column rescaled fails normalization; a frame whose second
+    # column is the conjugate of the first fails isotropy (both loud).
+    Us = copy(U); Us[:, 2] *= 1 + 1e-6
+    @test occursin("normalization residual", msg(() -> Octopus._check_cluster_frame(Us)))
+    Uc = hcat(U[:, 1], conj(U[:, 1]))
+    @test occursin("isotropy residual", msg(() -> Octopus._check_cluster_frame(Uc))) ||
+          occursin("normalization residual", msg(() -> Octopus._check_cluster_frame(Uc)))
+    # _CLUSTER_FRAME_N4_MULTIPLIER (64) is READ (review 2026-09-12), with eps-literal perturbations so a moved
+    # multiplier shows: rescaling a column by 1 + 4 eps leaves a normalization residual ~16 eps, accepted
+    # against the tolerance 64 eps m max(1, kappa) = 256 eps here (a multiplier below 4 would refuse it);
+    # rescaling by 1 + 1e-13 leaves ~4e-13 = 1.8e3 eps, refused (a multiplier above 450 would accept it).
+    chk0 = Octopus._check_cluster_frame(U)
+    @test chk0.tolerance == Octopus._CLUSTER_FRAME_N4_MULTIPLIER * eps() * size(U, 2) * max(1.0, chk0.kappa)
+    @test abs(chk0.kappa - 2) <= 64 * _AMB_EPS                                                  # block-diagonal pair: ||U||^2 = 2
+    Ulo = copy(U); Ulo[:, 2] *= 1 + 4 * eps()
+    @test 0 < Octopus._check_cluster_frame(Ulo).normalization <= chk0.tolerance / 8            # measured 16 eps / 256 eps
+    Uhi = copy(U); Uhi[:, 2] *= 1 + 1e-13
+    @test occursin("normalization residual", msg(() -> Octopus._check_cluster_frame(Uhi)))
+    # _AMBIGUITY_PSD_MULTIPLIER (8) is READ: on a unit-norm bare shape tol_psd = c eps; an eigenvalue at
+    # -4 eps is a zero (rank 1, factor padded; a multiplier below 4 would refuse), one at -32 eps an error
+    # (a multiplier above 32 would accept).
+    flo = Octopus._ambiguity_factor([1.0 0.0; 0.0 -4 * eps()], 3)
+    @test flo.rank == 1 && size(flo.factor) == (2, 3) && flo.tol_psd == Octopus._AMBIGUITY_PSD_MULTIPLIER * eps()
+    @test occursin("below -tol_psd", msg(() -> Octopus._ambiguity_factor([1.0 0.0; 0.0 -32 * eps()], 3)))
+    # Non-PSD shape.
+    mp = msg(() -> Octopus._ambiguity_factor([1.0 0.0; 0.0 -1e-3], 3))
+    @test occursin("below -tol_psd", mp) && occursin("positive semidefinite", mp)
+    # Rank above the requested columns.
+    @test occursin("rank 4", msg(() -> Octopus._ambiguity_factor(Matrix(1.0I, 4, 4), 3)))
+    # Unknown kind; both methods.
+    @test occursin("kind must be one of", msg(() -> Octopus._dispersion_ambiguity_set(U; kind=:midpoint)))
+    @test occursin("kind must be one of", msg(() -> Octopus._dispersion_ambiguity_set(cf.P, cf.G, 2; kind=:midpoint)))
+    @test_throws UndefKeywordError Octopus._dispersion_ambiguity_set(U)
+    # Non-symmetric G_c and non-idempotent P_c.
+    Gb = copy(cf.G); Gb[1, 2] += 1e-6
+    @test occursin("symmetric", msg(() -> Octopus._dispersion_ambiguity_set(cf.P, Gb, 2; kind=:exact_set)))
+    Pb = copy(cf.P); Pb[1, 1] += 1e-6
+    @test occursin("projector", msg(() -> Octopus._dispersion_ambiguity_set(Pb, cf.G, 2; kind=:exact_set)))
+    # Non-finite input.
+    Pn = copy(cf.P); Pn[1, 6] = NaN
+    @test occursin("finite", msg(() -> Octopus._dispersion_ambiguity_set(Pn, cf.G, 2; kind=:exact_set)))
+    Unan = copy(U); Unan[1, 1] = NaN
+    @test occursin("finite", msg(() -> Octopus._check_cluster_frame(Unan)))
+    # Frame checker shape refusals.
+    @test occursin("even row count", msg(() -> Octopus._check_cluster_frame(U[1:5, :])))
+    @test occursin("1 to 3", msg(() -> Octopus._check_cluster_frame(hcat(U, U))))
+    @test occursin("positive finite", msg(() -> Octopus._check_cluster_frame(U; multiplier=0.0)))
+    # Sampled-mode readout refusals.
+    @test occursin("unit vector", msg(() -> Octopus._sampled_mode_dispersion(U, [1.0, 1.0])))
+    @test occursin("6 rows", msg(() -> Octopus._sampled_mode_dispersion(U[1:4, :], [1.0, 0.0])))
+    @test occursin("2 entries", msg(() -> Octopus._sampled_mode_dispersion(U, [1.0])))
+    # Kind refusals.
+    for bad in ((NaN, 1.0), (1.0, -1.0), (Inf, 1.0), (-1.0, 1.0))
+        @test occursin("non-negative finite", msg(() -> Octopus._ambiguity_kind(bad...)))
+    end
+    @test occursin("positive", msg(() -> Octopus._ambiguity_kind(1.0, 1.0; exact_set_multiplier=0.0)))
+    # The vocabulary consumed here is the stage 1 pin.
+    @test AMBIGUITY_KINDS == (:exact_set, :orientation_envelope)
+    @test Octopus._ambiguity_kind(0.0, 0.0) === :exact_set
+    @test Octopus._ambiguity_kind(1.0, 0.0) === :orientation_envelope
+end
+
+@testset "Ambiguity set: exact-set versus envelope kind on the FODO gaps" begin
+    pins = _st3_fodo_pins()
+    M4 = _st3_rolled_fodo(pins.theta)
+    S4 = _st3_symplectic_form(4)
+    @test norm(transpose(M4) * S4 * M4 - S4) <= 64 * _AMB_EPS * opnorm(M4)^2
+    @test abs(tr(M4) / 4 - pins.cos_mu) <= 1e-13
+    mu = acos(pins.cos_mu)
+    @test abs(mu / (2pi) - pins.tune) <= 1e-13
+    cf = _st3_cluster(M4, exp(-im * mu), 0.1)
+    @test cf.multiplicity == 2
+    @test abs(minimum(cf.gram_eigenvalues) - pins.gram_minimum) <= 1e-12
+    @test norm(cf.P - I) <= 128 * _AMB_EPS * cf.kappa_frame           # measured 17.6 eps kappa (kappa 11.93)
+    rho1(M, c) = max(_amb_rho(M), c.schur_backward_error)
+    # Exact cell, 4 x 4: the gap is roundoff, the kind is :exact_set with margin.
+    r_exact = cf.internal_gap / rho1(M4, cf)
+    @test r_exact <= Octopus._EXACT_SET_MULTIPLIER / 10
+    @test Octopus._ambiguity_kind(cf.internal_gap, rho1(M4, cf)) === :exact_set
+    # Its 6D embedding diag(M4, I_2) (the identity longitudinal block of stage 1's _embed_4to6).
+    M6 = Octopus._embed_4to6(M4)
+    cf6 = _st3_cluster(M6, exp(-im * mu), 0.1)
+    @test cf6.multiplicity == 2
+    @test cf6.internal_gap / rho1(M6, cf6) <= Octopus._EXACT_SET_MULTIPLIER / 10
+    @test Octopus._ambiguity_kind(cf6.internal_gap, rho1(M6, cf6)) === :exact_set
+    set6 = Octopus._dispersion_ambiguity_set(cf6.U; kind=Octopus._ambiguity_kind(cf6.internal_gap, rho1(M6, cf6)))
+    @test set6.kind === :exact_set
+    @test norm(set6.center) <= 64 * _AMB_EPS * cf6.kappa_frame       # the betatron cluster has no pz column
+    @test norm(set6.shape) <= 64 * _AMB_EPS * cf6.kappa_frame^2
+    # Detuned controls: the gaps are real and the kind is :orientation_envelope,
+    # the 1e-12 control by a factor above ten. Gaps and ||M||_2 derived, not typed.
+    gaps = Float64[]
+    for ep in (1e-3, 1e-6, 1e-9, 1e-12)
+        Me = _st3_rolled_fodo(pins.theta; eps=ep)
+        ce = _st3_cluster(Me, exp(-im * mu), 0.1; explicit=true)   # the pair as one group
+        @test ce.multiplicity == 2
+        push!(gaps, ce.internal_gap)
+        r = ce.internal_gap / rho1(Me, ce)
+        @test r >= 10 * Octopus._EXACT_SET_MULTIPLIER
+        @test Octopus._ambiguity_kind(ce.internal_gap, rho1(Me, ce)) === :orientation_envelope
+        @test abs(opnorm(Me) - 2.980) <= 1e-3
+        # The thin methods' DEFAULT kind (review 2026-09-12: only an :exact_set fixture read it before): the
+        # 6D embedding of the detuned control as one explicit group is an :orientation_envelope by default.
+        ce6 = _st3_cluster(Octopus._embed_4to6(Me), exp(-im * mu), 0.1; explicit=true)
+        @test ce6.multiplicity == 2 && ce6.cluster.classification === :definite
+        @test Octopus._dispersion_ambiguity_set(ce6.cluster).kind === :orientation_envelope
+        @test Octopus._dispersion_ambiguity_set(ce6.report, ce6.index).kind === :orientation_envelope
+    end
+    @test all(diff(log10.(gaps)) .< -2.9)                       # gaps scale with eps
+    @test abs(gaps[4] / 2.134e-12 - 1) <= 1e-2                    # the theory 13.10 table row
+    @test abs(gaps[1] / 2.133e-3 - 1) <= 1e-2
+    # The multiplier is read: a smaller one flips the exact cell to an envelope.
+    @test Octopus._ambiguity_kind(cf.internal_gap, rho1(M4, cf); exact_set_multiplier=r_exact / 2) === :orientation_envelope
+end
+
+@testset "Ambiguity set: the trial-015 isospectral family" begin
+    rng = MersenneTwister(_AMB_SEED + 15)
+    S6 = _st3_symplectic_form(6)
+    mu, gam = 0.73, 1.41
+    # Eigenvector route of a RESOLVED map: the member at oriented phase `phase`.
+    function eta_eig(M, phase)
+        vals, vecs = eigen(M)
+        j = argmin(abs.(vals .- exp(-im * phase)))
+        u = _amb_orient(vecs[:, j], S6)
+        return (eta=_amb_eta_d12(u), u=u, err=abs(vals[j] - exp(-im * phase)))
+    end
+    n_eps = 0
+    for ep in (1e-3, 1e-5, 1e-7, 1e-9)
+        fam = _st3_isospectral_family(rng, ep)
+        kappaW = opnorm(fam.W)^2
+        for Mx in (fam.M_plus, fam.M_minus, fam.M)
+            @test norm(transpose(Mx) * S6 * Mx - S6) <= 64 * _AMB_EPS * kappaW * opnorm(Mx)^2
+        end
+        # Both endpoint maps share the spectrum {mu +- eps, gamma} to c eps.
+        ph(M) = sort(mod.(-angle.(filter(z -> imag(z) < 0, eigvals(M))), 2pi))
+        @test norm(ph(fam.M_plus) - ph(fam.M_minus)) <= 256 * _AMB_EPS * kappaW
+        @test norm(ph(fam.M_plus) - sort([mu - ep, gam, mu + ep])) <= 256 * _AMB_EPS * kappaW
+        # The fixture's expected etas differ by the diameter 2 sigma_1(F).
+        @test abs(norm(fam.eta_plus - fam.eta_minus) - fam.diameter) <= 64 * _AMB_EPS * kappaW
+        @test fam.diameter > 0.1
+        # Eigenvector route on each endpoint: the selected member (phase mu + eps)
+        # reproduces the expected eta to c eps kappa ||M|| / g (the orientation
+        # moves by the chord q = 2 kappa rho / g; the design's "resolved" claim).
+        g = 2 * sin(ep)
+        for (M, eta_exp) in ((fam.M_plus, fam.eta_plus), (fam.M_minus, fam.eta_minus))
+            r = eta_eig(M, mu + ep)
+            @test r.err <= 64 * _AMB_EPS * kappaW * opnorm(M)
+            @test abs(dot(r.u, S6 * r.u) + 2im) <= 64 * _AMB_EPS * norm(r.u)^2
+            @test norm(r.eta - eta_exp) <= 256 * _AMB_EPS * kappaW * opnorm(M) / g
+        end
+        d_eig = norm(eta_eig(fam.M_plus, mu + ep).eta - eta_eig(fam.M_minus, mu + ep).eta)
+        @test abs(d_eig - fam.diameter) <= 512 * _AMB_EPS * kappaW * opnorm(fam.M) / g
+        # The DEGENERATE limit map's cluster: its set (exact) contains both endpoints'
+        # etas, along 20 random directions, and the envelope kind is a caller choice.
+        cl = _st3_cluster(fam.M, exp(-im * mu), 0.2)
+        @test cl.multiplicity == 2
+        set = Octopus._dispersion_ambiguity_set(cl.U; kind=:orientation_envelope)
+        @test set.kind === :orientation_envelope
+        @test norm(set.center - fam.center) <= 64 * _AMB_EPS * cl.kappa_frame
+        @test norm(set.factor * transpose(set.factor) - fam.F * transpose(fam.F)) <= 64 * _AMB_EPS * cl.kappa_frame^2
+        @test abs(2 * svdvals(set.factor)[1] - fam.diameter) <= 64 * _AMB_EPS * cl.kappa_frame
+        for k in 1:20
+            a = randn(rng, 4)
+            lo, hi = dispersion_interval(set, a)
+            tol = 64 * _AMB_EPS * cl.kappa_frame * norm(a)
+            @test lo - tol <= dot(a, fam.eta_plus) <= hi + tol
+            @test lo - tol <= dot(a, fam.eta_minus) <= hi + tol
+        end
+        # The endpoints are support points of the set along the axis direction:
+        # a = F axis gives lo and hi attained by eta_minus and eta_plus.
+        a_ax = fam.F * fam.axis
+        lo, hi = dispersion_interval(set, a_ax)
+        @test abs(dot(a_ax, fam.eta_plus) - hi) <= 64 * _AMB_EPS * cl.kappa_frame * norm(a_ax)
+        @test abs(dot(a_ax, fam.eta_minus) - lo) <= 64 * _AMB_EPS * cl.kappa_frame * norm(a_ax)
+        # A SPLIT endpoint map treated as one cluster (radius covering mu +- eps,
+        # the explicit-partition reading): its envelope contains BOTH of its members.
+        cs = _st3_cluster(fam.M_plus, exp(-im * mu), 0.2; explicit=true)
+        @test cs.multiplicity == 2
+        @test cs.internal_gap > 0
+        kind_s = Octopus._ambiguity_kind(cs.internal_gap, max(_amb_rho(fam.M_plus), cs.schur_backward_error))
+        @test kind_s === :orientation_envelope
+        set_s = Octopus._dispersion_ambiguity_set(cs.U; kind=kind_s)
+        for (phase, eta_exp) in ((mu + ep, fam.eta_plus),)
+            r = eta_eig(fam.M_plus, phase)
+            for k in 1:20
+                a = randn(rng, 4)
+                lo, hi = dispersion_interval(set_s, a)
+                tol = 256 * _AMB_EPS * cs.kappa_frame * norm(a) * opnorm(fam.M_plus) / g
+                @test lo - tol <= dot(a, r.eta) <= hi + tol
+            end
+        end
+        # The partner member (phase mu - eps) of the split map is in its envelope too.
+        r2 = eta_eig(fam.M_plus, mu - ep)
+        for k in 1:20
+            a = randn(rng, 4)
+            lo, hi = dispersion_interval(set_s, a)
+            tol = 256 * _AMB_EPS * cs.kappa_frame * norm(a) * opnorm(fam.M_plus) / g
+            @test lo - tol <= dot(a, r2.eta) <= hi + tol
+        end
+        n_eps += 1
+    end
+    @test n_eps == 4
+    # Injection witness (i05): the SAME spinor at both endpoints gives two maps
+    # with equal eta and zero diameter; the diameter check above must go red then.
+    fam_same = _st3_isospectral_family(MersenneTwister(_AMB_SEED + 15), 1e-5;
+                                      spinors=(_st3_spinor([0.0, 0.0, 1.0]), _st3_spinor([0.0, 0.0, 1.0])))
+    @test norm(fam_same.eta_plus - fam_same.eta_minus) <= 64 * _AMB_EPS
+    @test fam_same.diameter > 0.1                                # the fixture's diameter is F's, not the etas'
+end
+
+@testset "Ambiguity set: N15 indefinite family and the N16/N17 negative controls of 13.7" begin
+    S6 = _st3_symplectic_form(6)
+    mu, gam = 0.73, 1.41
+    # N15: an indefinite group's members have unbounded canonical dispersion; the
+    # ambiguity set refuses the group (no (N4) frame exists) instead of bounding it.
+    Mi = _st3_indefinite_6d()
+    for t in (0.0, 0.5, 1.0, 2.0, 4.0)
+        u = _st3_n15_vector(t)
+        @test norm(Mi * u - exp(im * mu) * u) <= 64 * _AMB_EPS * norm(u)^2
+        @test abs(dot(u, S6 * u) + 2im) <= 64 * _AMB_EPS * norm(u)^2
+        eta = Octopus._sampled_mode_dispersion(reshape(u, 6, 1), [1.0])
+        @test abs(eta[1] + sinh(t) * cosh(t)) <= 64 * _AMB_EPS * norm(u)^2
+        @test abs(_amb_h_d12(u) - cosh(t)^2) <= 64 * _AMB_EPS * norm(u)^2
+    end
+    F = schur(complex(Mi))
+    sel = [abs(z - exp(im * mu)) < 0.2 for z in F.values]
+    @test count(sel) == 2
+    Q = ordschur(F, sel).Z[:, 1:2]
+    H = (im / 2) * (Q' * S6 * Q); H = (H + H') / 2
+    @test norm(sort(eigvals(Hermitian(H))) - [-0.5, 0.5]) <= 64 * _AMB_EPS
+    # _mode_clusters: the x and z pairs share their eigenvalues, so the circle
+    # selects one member of each; the cluster is INDEFINITE (both Krein signs),
+    # has no frame, and the thin method refuses it naming the reason.
+    ci = _st3_cluster(Mi, exp(-im * mu), 0.2)
+    @test ci.multiplicity == 2 && ci.cluster.classification === :indefinite
+    @test ci.cluster.reason === :indefinite_cluster && ci.U === nothing && ci.G === nothing
+    @test sort(ci.cluster.krein_signs) == [-1, 1]
+    @test norm(sort(ci.gram_eigenvalues) - [-0.5, 0.5]) <= 64 * _AMB_EPS
+    mi = try; Octopus._dispersion_ambiguity_set(ci.cluster); ""; catch e; e isa ArgumentError ? e.msg : "WRONG_TYPE"; end
+    @test occursin("indefinite", mi) && occursin("reason :indefinite_cluster", mi) && occursin("$(ci.cluster.members)", mi)
+    @test_throws ArgumentError Octopus._dispersion_ambiguity_set(ci.report, ci.index)
+    for t in (0.5, 2.0)
+        Ut = hcat(_st3_n15_vector(0.0), _st3_n15_vector(t))
+        @test_throws ArgumentError Octopus._dispersion_ambiguity_set(Ut; kind=:exact_set)
+    end
+    # The near collision diag(R(0.73), R(1.41), R(-0.73 - 1e-9)): still no one-sign frame.
+    Mn = _st3_near_collision_6d(1e-9)
+    # Treated as one group (explicit partition) it is not definite: no set, never
+    # two definite modes below the chord from that group.
+    cn = _st3_cluster(Mn, exp(-im * mu), 0.2; explicit=true)
+    @test cn.multiplicity == 2 && cn.cluster.classification === :indefinite       # D7b through the g_int arm of mp_tol (review 2026-09-12)
+    @test cn.U === nothing
+    @test_throws ArgumentError Octopus._dispersion_ambiguity_set(cn.cluster)
+    # N16/N17 on diag(R(mu), R(gam), R(mu)): the polynomial kernel is not sufficient.
+    M = _st3_definite_pair_6d()
+    tau_s = 2cos(mu)
+    poly = M * M - tau_s * M + I
+    @test abs(det(poly[1:4, 1:4])) <= 64 * _AMB_EPS * max(1.0, opnorm(poly))^4   # (N16): (D19) coefficient singular; measured 0
+    for t in (1.0, 0.1, 1e-2, 1e-4, 1e-6, 1e-8)
+        D = zeros(4, 2); D[1, 1] = 1.0; D[2, 2] = -1 + t
+        @test norm(poly * vcat(D, I)) <= 64 * _AMB_EPS                 # polynomial residual 0 for every t
+        r = Octopus._graph_invariance_residual(M, D)
+        expected = sqrt(2) * abs(sin(mu)) * abs(2 - t)
+        @test abs(r.raw - expected) <= 64 * _AMB_EPS * max(1.0, expected)   # (D14) residual is NOT 0
+        @test r.normalized > 0.1                                       # not invariant on the normalized value either
+    end
+    # The true invariant graphs a I_2 + b S_2 in the x rows have eta on the disc of radius 1/2.
+    for (a, b) in ((0.3, 0.2), (0.0, 0.5), (1.0, 0.0), (-0.7, 0.4))
+        D = zeros(4, 2); D[1:2, 1:2] = a * I + b * _ST3_J2
+        @test Octopus._graph_invariance_residual(M, D).raw <= 64 * _AMB_EPS * (1 + a^2 + b^2)
+        h = 1 / (1 + dot(D[:, 1], _st3_symplectic_form(4) * D[:, 2]))
+        eta = h * D[:, 2]
+        @test abs(h - 1 / (1 + a^2 + b^2)) <= 64 * _AMB_EPS
+        @test eta[1]^2 + eta[2]^2 <= 0.25 + 64 * _AMB_EPS
+        # and every such eta lies in the ambiguity set of the cluster (interval on e_x).
+        cf = _st3_cluster(M, exp(-im * mu), 0.2)
+        set = Octopus._dispersion_ambiguity_set(cf.U; kind=:exact_set)
+        lo, hi = dispersion_interval(set, [1.0, 0.0, 0.0, 0.0])
+        @test lo - 64 * _AMB_EPS <= eta[1] <= hi + 64 * _AMB_EPS
+    end
+    # Pseudoinverse counterexample after the thin crab similarity (k = 0.3).
+    k = 0.3
+    Ck = Matrix{Float64}(I, 6, 6); Ck[2, 5] = -k; Ck[6, 1] = -k
+    @test norm(transpose(Ck) * S6 * Ck - S6) <= 64 * _AMB_EPS
+    Mk = Ck * M / Ck
+    polyk = Mk * Mk - tau_s * Mk + I
+    Dmp = -pinv(polyk[1:4, 1:4]; rtol=1e-12) * polyk[1:4, 5:6]
+    @test norm(Dmp) <= 64 * _AMB_EPS * opnorm(polyk)                  # the minimum-norm solution is D = 0; measured 0
+    rk = Octopus._graph_invariance_residual(Mk, Dmp)
+    @test abs(rk.raw - sqrt(2) * k * sin(mu)) <= 64 * _AMB_EPS
+    @test abs(rk.raw - 0.28293) <= 5e-6                               # the theory's quoted value
+    @test rk.normalized > 0.1
+    # The crab fixture of trial 011 and its critical kick (a chord-table row for Part D).
+    @test abs(_st3_crab_kc() - 0.1002018291014) <= 1e-12
+    Mc = _st3_crab_map(0.5 * _st3_crab_kc())
+    @test norm(transpose(Mc) * S6 * Mc - S6) <= 64 * _AMB_EPS
+    # Far from k_c the x and z pairs are two resolved definite singletons of opposite
+    # Krein sign: each half-cluster alone has a one-sign Gram, together they do not.
+    vals = eigvals(Mc)
+    @test all(abs.(abs.(vals) .- 1) .<= 64 * _AMB_EPS)
+    # The crab kick moves the x and z phases to 0.843 and 0.757 (trial 011's
+    # (a +- sqrt(d)) / 2 at eps = 1/2); the circle picks the oriented member of
+    # each pair from the computed spectrum, radius 0.04 (their distance is 0.086).
+    zx = vals[argmin(abs.(vals .- exp(-im * 0.85)))]
+    zz = vals[argmin(abs.(vals .- exp(+im * 0.75)))]
+    @test abs(zx - exp(-im * 0.85)) < 0.02 && abs(zz - exp(+im * 0.75)) < 0.02
+    cx = _st3_cluster(Mc, zx, 0.04)
+    @test cx.multiplicity == 1 && cx.cluster.resolved && Octopus._check_cluster_frame(cx.U).kappa >= 2 - 64 * _AMB_EPS
+    cz = _st3_cluster(Mc, zz, 0.04)                                       # oriented member of the z pair
+    @test cz.multiplicity == 1 && cz.cluster.resolved && Octopus._check_cluster_frame(cz.U).kappa >= 2 - 64 * _AMB_EPS
+    @test abs(cx.eigenvalues[1] - zx) <= 64 * _AMB_EPS && abs(cz.eigenvalues[1] - zz) <= 64 * _AMB_EPS
+    # The two together (explicit partition): mixed Krein signs, not definite, no set.
+    cxz = _st3_cluster(Mc, (zx + conj(zz)) / 2, 0.06; explicit=true)
+    @test cxz.multiplicity == 2 && cxz.cluster.classification === :indefinite       # D7b: mixed signs above the floor, r_mp 0.027 <= mp_tol
+    @test sort(cxz.cluster.krein_signs) == [-1, 1]
+    # A SPLIT indefinite group (g_int 0.087): the signed basis is a Krein-signed basis of the invariant
+    # subspace, not eigenvectors of the by-index eigenvalues; the 13.8 reconstruction check says so
+    # (measured 0.025, of order the split), while normalization and isotropy stay at roundoff.
+    fr_xz = determined_value(cxz.cluster.frame_residuals)
+    @test cxz.cluster.internal_gap / 10 < fr_xz.eigenvector < 10 * cxz.cluster.internal_gap
+    @test fr_xz.normalization <= 64 * _AMB_EPS * determined_value(cxz.cluster.kappa_eig) && fr_xz.isotropy <= 64 * _AMB_EPS * determined_value(cxz.cluster.kappa_eig)
+    @test_throws ArgumentError Octopus._dispersion_ambiguity_set(cxz.cluster)
+    # The defective spectator is symplectic, on the circle, and its powers grow.
+    Jd = _st3_defective_spectator(0.72)
+    S4 = _st3_symplectic_form(4)
+    @test norm(transpose(Jd) * S4 * Jd - S4) <= 64 * _AMB_EPS
+    @test all(abs.(abs.(eigvals(Jd)) .- 1) .<= 1e-7)                  # roundoff splits by sqrt(eps)
+    @test opnorm(Jd^400) / opnorm(Jd) > 40
 end
 
 @testset "Non-symplectic Lorentz method classification" begin

@@ -2368,3 +2368,1772 @@ fresh agent so nothing else compiled against the depot while it ran:
 This section is the only change between the gated tree and the pushed tree;
 the commit carrying it is markdown-only and finishes with the fast lane on
 its own tree (matrix row "markdown only"), `result/gates/fast_lane_gate_record_2026_09_11.log`; its exit code is named in that commit's message.
+
+## 2026-09-12: stage 3 landed (mode clusters, Krein classification, ambiguity set, resolution chord)
+
+Stage 3 of the design note's staging: `feat(analysis)`. Registry snapshot
+UNCHANGED (the three new result structs `ClusterMode`, `ModeCluster`,
+`ModeClusters` are plain types, none a subtype of a registry root). Nothing in
+this stage claims an analysis exists: no `TwissDispersionAnalysis`, no
+`analyze`, `summarize_registry().analyses` is still `[:PlaceholderAnalysis]`,
+the stage-guard testset stayed green on the folded tree, nothing new is
+exported (the public verb is stage 4). No `DETERMINATION_REASONS` member was
+added; the cluster classification vocabulary `CLUSTER_CLASSIFICATIONS =
+(:definite, :indefinite, :unresolved, :unstable, :unit_eigenvalue)` is new and
+pinned the way `DETERMINATION_REASONS` is. Every kernel computes on the
+(already scaled) matrix it is given; undetermined outputs are `Determined`
+values with a pinned reason, never NaN. The stage 2 PROVISIONAL guards of the
+4D frame (`min_gap`, `stability_atol`, the 64 eps orientation floor) are gone:
+the frame is built on the clusters (D11). The resolution chord's default is
+FROZEN by measurement at `1e-3` (the provisional `1e-4` lay inside the bracket
+but the rounded geometric mean differed, so the measured value won; the
+arithmetic is below and in the constant's docstring).
+
+Work of 2026-09-12 (parts A1, A2, B in two worktrees at c488dff; integrator,
+four reviewers, fixer, measurement D1 and this record on the main tree). The
+dates in the todo row and the README distinguish stages 1-2 (2026-09-11) from
+stage 3 (2026-09-12).
+
+### What landed
+
+| File | Change | Content |
+|---|---|---|
+| `src/analysis/mode_clusters.jl` | new, 1323 lines, internal `_` names | `CLUSTER_CLASSIFICATIONS` (pinned); `ClusterMode` (index, eigenvalue, tune, vector, eigenvector_residual (normalized, raw), normalization_residual); `ModeCluster` (35 fields: members, half_members, oriented eigenvalues and tunes, classification, reason, detail, conjugated, Schur basis and half/full blocks, departure from normality, stability scale, unit-circle departures, Gram matrix, eigenvalues, Krein signs and floor, `frame`, `signed_basis`, Schur spectral `projector`, `projector_n5_difference`, `covariance`, `restricted_map`, `residuals` (subspace, minimal_polynomial, projector_idempotent, projector_commutes, projector_adjoint) and `frame_residuals` (normalization, isotropy, unitarity, eigenvector), rho_M1, both kappa estimates, internal and external gap, chord_matrix, resolved, forced, `modes`); `ModeClusters` (matrix, canonical eigenvalues, conjugate_partner, real_class, tau_real, schur_backward_error, rho_M0, rho_M1, resolution_chord, partition_source, clusters, resolution_receipt, inter_cluster_chords, degeneracy_status); `_mode_clusters(M; rho_M0, resolution_chord=_DEFAULT_RESOLUTION_CHORD, partition=nothing)` with the kernels `_canonical_spectrum` (one complex Schur decomposition, canonical order), `_real_class_mask`, `_conjugate_pairs`, `_pair_gap`, `_cluster_gap`, `_external_gap`, `_ordered_schur_basis(F, select, M)`, `_gram_matrix`, `_krein_classification`, `_cluster_stability(...; kappa)`, `_cluster_frame` (N20 + N4), `_group_quantities` (N5, N21, N19), `_schur_spectral_projector` (D7d, `sylvester`), `_recover_modes` (D7e, eigenvalues snapped to the oriented Schur values), `_chord`, `_agglomerate` (D6), `_check_partition`, `_column_eigenvector_residual`, `_evaluate_component`, `_component_basis` and the smaller helpers, every one documented; six PROVISIONAL constants with their measurement in the docstring: `_DEFAULT_RESOLUTION_CHORD = 1.0e-3` (frozen), `_REAL_CLASS_MULTIPLIER = 1.0`, `_STABILITY_MULTIPLIER = 64.0`, `_GRAM_FLOOR_MULTIPLIER = 64.0`, `_MINIMAL_POLYNOMIAL_MULTIPLIER = 64.0`, `_SUBSPACE_RESIDUAL_MULTIPLIER = 64.0`. |
+| `src/analysis/degenerate_dispersion.jl` | new, 378 lines, internal `_` names | `_check_cluster_frame(U_c; multiplier)` (N4 residuals, `ArgumentError` above `c eps m max(1, kappa)`), `_sampled_mode_dispersion(U_c, c)` ((N10)/(D12) readout of one member, unit `c` required), `_ambiguity_factor(A, columns; tol_psd)` (PSD eigen-factorization, negative eigenvalues below `-tol_psd` an error, rank asserted, zero-padded to `2m - 1`; no Cholesky), `_ambiguity_kind(internal_gap, rho_M1; exact_set_multiplier)` (:exact_set iff `gap <= c rho_M1`, else :orientation_envelope), `_dispersion_ambiguity_set(U_c; kind)` and `(P_c, G_c, multiplicity; kind)` per D9 (center `P_c[1:4, 6] / 2`, shape (N11) symmetrized and reported as `F F'`, factor `4 x (2m - 1)`; every refusal named before any set is built; the midpoint is never a dispersion), the thin methods `_dispersion_ambiguity_set(c::ModeCluster; kind=nothing)` and `(r::ModeClusters, index; kind=nothing)` (kind from `_ambiguity_kind(c.internal_gap, c.rho_M1)`; refuse a non-definite cluster or m = 1 with the cluster's reason in the message); three PROVISIONAL constants `_EXACT_SET_MULTIPLIER = 10.0`, `_CLUSTER_FRAME_N4_MULTIPLIER = 64.0`, `_AMBIGUITY_PSD_MULTIPLIER = 8.0`. |
+| `src/analysis/eigenmodes_4d.jl` | 651 -> 677 lines | D10-D11: `_eigenmodes_4d(M; rho_M0, resolution_chord=_DEFAULT_RESOLUTION_CHORD)` calls `_mode_clusters` and takes its two oriented vectors from the clusters' `modes`; `Eigenmodes4D` gains `clusters::ModeClusters`; `SpectrumReport4D` loses `min_gap` and `stability_atol` (eigenvalues now in the clusters' canonical order); new `_frame_availability(clusters)` with the D11 order; the raw-modulus stability guard, the unit-eigenvalue distance guard, the `min_gap` guard, the 64 eps orientation floor and the `eigen` call are DELETED; `_orient_eigenvector`, the (E9) helpers, the closed-form route and check kept, their `min_trace_gap` / `stability_atol` documented as DIVISION guards of the closed form's own algebra; header and docstrings rewritten, no PROVISIONAL wording left in the file. |
+| `src/Octopus.jl` | +5 lines | includes in the order symplectic_linear_algebra -> mode_clusters -> degenerate_dispersion -> eigenmodes_4d -> coupled_parameterizations, each new include with a one-line comment (the two worktrees' insertions at the same line were merged by hand). |
+| `test/runtests.jl` | 19060 -> 20759 lines | stage 2 blocks (946-2193) updated by A2: every `_eigenmodes_4d` call passes `rho_M0` through `_eig4d_rho(M)`, the guard testset rewritten per D11 (1404-1511), `_EIG4D_CF_STAB` for the closed-form guard, two pins re-expressed as `c eps ||u||^2` / `c eps ||U||_F^2` (F8 below), `_pb_rho = _eig4d_rho`; @test lines 425 -> 442, nothing dropped. Stage 3 block 2194-3841 (1648 lines, 19 testsets: 12 "Mode clusters: ...", 7 "Ambiguity set: ..."; 512 @test lines, 20490 assertions) pasted right after the stage 2 Part B block, before "Non-symplectic Lorentz method classification" (3842): the `_st3_` fixture library (23 builders incl. the rolled FODO of 13.10 verbatim from the design probe, the trial-015 isospectral family, the trial-011 crab map, the defective spectator) and `_st3_cluster(M, center, radius; explicit)` selecting a cluster of `_mode_clusters` by a circle in the canonical eigenvalue list; file-level `using` unchanged, no lane gate, no git-ignored input. |
+
+Not touched: the design note, the theory note, `docs/registry_snapshot.md`
+(regenerated and byte-identical), `AGENTS.md` (its "the placeholder is still
+the only registered analysis" bullet at line 75 stays true until stage 4, when
+Staging item 4 rewords every placeholder-only statement), `validation/`,
+`Analysis.jl`.
+
+### Standalone verification on the folded, fixed and measured tree (no lane, no gate)
+
+Same conventions as stages 1 and 2 (`J` = `julia --startup-file=no`, OUT =
+`result/twiss_impl_2026_09_11/stage3`, `ps` checked for `runtests`/`Pkg.test`
+before every package-mode run, `--project=REPO --threads=4`). Counts are the
+measurement part's final chain (`OUT/measure/chain.sh`, third pass, logs
+`OUT/measure/chain/`), run after the two constants were frozen and the tests
+that pinned the provisional values were re-derived.
+
+| run | command shape | result |
+|---|---|---|
+| suite extract: EVERY analysis testset of `test/runtests.jl` 270-3841 (stage 1 kernel + vocabularies + stage guard, stage 2 A and B, stage 3), plain arm (ForwardDiff not stacked, CUDA active) | `J OUT/measure/chain/extract/run_suite_extract.jl` | 89634 / 89634; `one_turn_matrix` block 121 / 121 (fallback arm); exit 0, 71 s |
+| the same, ForwardDiff stacked (`JULIA_LOAD_PATH` with `stage1/fdenv`) | same runner | 89634 / 89634; `one_turn_matrix` 134 / 134; exit 0, 88 s |
+| suite tripwires: "Architecture integrity" (incl. the docs index and `validate_configuration_metadata()`), Core.Box allowlist, "Every export is documented", "No docstring is detached" | `J OUT/measure/chain/extract/run_tripwires.jl` | 32 / 32 (28 + 2 + 1 + 1) |
+| docs + snapshot probe (cwd = main tree) | `int_probe_docs_snapshot.jl`, then `git diff --quiet -- docs/registry_snapshot.md`; `validate_element_metadata()` | byte-identical (exit 0); passed, `errors = String[]`; undocumented exports `Symbol[]` |
+| script-mode smoke | `include("src/Octopus.jl"); using .Octopus; summarize_registry()` + the thin methods | exit 0; `analyses = [:PlaceholderAnalysis]`; `_dispersion_ambiguity_set` 4 methods; `diag(R(0.7), R(1.41), R(0.7))` -> clusters [1,2,5,6] definite unresolved and [3,4] definite resolved, status :degenerate, set :exact_set, `dispersion_interval(set, e_x) == (-0.5, 0.5)` |
+| stage 3 block, extracted from `test/runtests.jl` at run time (2194-3841, 19 testsets) | `J OUT/run_stage3_block.jl` | 20490 / 20490, 35 s (per testset: 91, 71, 37, 11406, 725, 30, 16, 70, 11, 98, 46, 34; 144, 5431, 1685, 42, 46, 419, 88) |
+| A2's updated stage 2 extract (stage guard 920-945 + lines 946-3841, i.e. stage 2 + stage 3) | `OCTOPUS_TEST_TREE=REPO J OUT/run_stage2_updated.jl` | 88050 / 88050 (= 67560 stage 2 + guard, + 20490 stage 3), 53 s |
+| Part B's standalone testsets | `J OUT/run_ambiguity.jl` (OUT/ambiguity_testsets.jl) | 7811 / 7811 in 7 testsets |
+| Part A1's standalone testsets | `J OUT/run_clusters.jl` (OUT/clusters_testsets.jl) | 11479 / 11479 in 11 testsets |
+| stage 1 kernel regression | `J result/twiss_impl_2026_09_11/stage1/run_kernel.jl` | 1618 / 1618 |
+
+Count history: A1's testsets 11468 -> 11479 in the worktree (two kernel pins
+added under injections a02/a03); B's 7811 from its second run on; A2's stage 2
+extract 67555 / 5 fail -> 67558 / 2 -> 67560 / 0 (F7, F8 below); the pasted
+stage 3 block 19313 / 1 (a `kappa >= 2` pin met exactly 2 - 4e-16 on the
+block-diagonal fixture) -> 19314 at integration (A1 11479 + B 7811 + 24
+integrator assertions) -> 20485 after the review fixes -> 20490 after the
+measurement's two derived pins; the suite extract 88458 at integration ->
+89629 after the fixes -> 89634 final (stages 1-2 contribute 69144, up from the
+stage 2 landing's 69098 by A2's guard-testset rewrite). The integrator's first
+tripwire run was 31 / 32: two new `Core.Box` sites in `mode_clusters.jl`
+(`_recover_modes`, a comprehension capturing a twice-assigned `theta`;
+`_agglomerate`, a comprehension capturing loop-reassigned `components`, `n`,
+`best`), both rewritten as explicit loops before any count above. The
+measurement's first pass after freezing the constants was 89629 / 3 fail, all
+three expected: the PROVISIONAL tripwire on the two rewritten docstrings and
+the crab-ladder split hard-coded at `1e-4`; its second pass had one `KeyError`
+of its own (a `10 * 1e-6 != 1e-5` key), replaced by a sorted-keys pin.
+
+### The decisions that closed the design's open points (orchestrator, 2026-09-12; amendments by the review marked)
+
+The design fixes the criterion and the outputs but left the algorithm's order
+of operations open in places. The stage 3 dossier closed them as follows; a
+part that found one wrong implemented it anyway and recorded the objection,
+and the fixer applied the one objection that contradicted theory Section 13.
+
+1. **Entry point.** `_mode_clusters(M; rho_M0, resolution_chord=_DEFAULT_RESOLUTION_CHORD, partition=nothing) -> ModeClusters`, d = 4 or 6, finite, already scaled. `rho_M0` is REQUIRED (data: stage 1's `_perturbation_scale(M, _symplectic_defect(M).frobenius).scale`); `resolution_chord` in (0, 2] or `Inf`; `partition` a conjugation-closed partition of 1:d or `nothing`; with a partition the chord does not drive the merging but mode recovery still evaluates it. AMENDED (A1, then the fixer): under `Inf` the agglomeration runs at the frozen default and recovery is forced inside the identified cluster; `forced = true` marks only the clusters the default chord would have left unresolved (the exact FODO under `Inf` is forced, the coupled `R(0.9) (+) R(0.9 + 1e-7)` under partition + `Inf` is not, q = 5e-7).
+2. **Spectrum.** One complex Schur decomposition, eigenvalues in canonical order (angle mod 2 pi ascending, then modulus), global backward error reported; real-class iff `|Im rho| <= tau_real = c_real sqrt(rho_M1_global) max(1, ||M||_2)` (the square root for a +-1 Jordan pair); complex-class members paired by nearest conjugate, a failed perfect matching makes the whole class one :unresolved cluster ("conjugate pairing failed"). Consequence measured by A2 (F8): the two members of a pair are computed SEPARATELY, so a modulus is known only to `eps ||u||^2 / 2` (the eigenvalue's condition number), not to `eps ||M||^2` as stage 2's real `eigen` gave; two stage 2 pins carry that kappa now.
+3. **Gaps.** `g_jk = min(|rho_j - rho_k|, |rho_j - conj rho_k|)`; component gap the minimum over members; external gap of a cluster the minimum distance from its half to every other eigenvalue (scales the Gram floor). RECORDED (A1 F3, fixer 20): the conjugate distance is INERT for complex-class clustering because the component gap runs over full components (both conjugates present); `R(a) (+) R(-a)` is one cluster because the pairs share eigenvalues (gap 0). Its injection is red only through the kernel pin `_pair_gap(e^{ia}, e^{-ia}) == 0`; `_pair_gap` is also the D4 real-class metric, so the definition stays.
+4. **Real-class clusters.** Components under `g_jk <= tau_real`; :unit_eigenvalue when every member is within `delta_c` of +-1, :unstable when every member's `||rho| - 1|` exceeds `delta_c`, else :unresolved ("real-class members straddle the unit circle"; fixture `diag(1, 1, 1 + 1e-7, 1/(1 + 1e-7))`, its departure now derived from `tau_real`). A real-class cluster is a flag, never a mode (stage 4's coasting test runs first).
+5. **Stability on the Schur half block.** Henrici departure `dep_c`, scale `delta_c = c_stab * kappa_c * max(rho_M1(c), (rho_M1(c) dep_c^(m-1))^(1/m))`, `rho_M1(c) = max(rho_M0, ||M Q_c - Q_c T_c||_F)` measured against the INPUT matrix (fixer 3: the reconstruction `Z T Z'` hid the error); a cluster is :unstable iff every member leaves the circle by more than `delta_c`. AMENDED by the theory review and applied (fixer 1): the dossier's scale had no `kappa_c`; the crab ladder `k = k_c (1 - eps)` (both colliding pairs ON the circle for every eps > 0, proved in 256-bit arithmetic) came out :unstable at eps = 1e-7 .. 1e-9 because its singleton eigenvalues leave the circle by `eps_mach ||M|| kappa / 2` with `kappa = ||u||^2` up to 1.4e5. Theory 13.8 asks for the normalizer conditioning in the tolerances and 13.9 says a degenerate but bounded map is not unstable, so `kappa_c` = `kappa_frame` for a Gram-definite half, `kappa_eig` when every member is orientable alone, 1 for real-class or Krein-isotropic blocks (whose off-circle eigenvectors carry no Krein bound: the quartet, the hyperbolic pairs and the crab ladder's k > k_c side stay rejected). `c_stab` moved 4 (dossier) -> 256 (A1, fitted without kappa) -> 64 (fixer, window [5.2, 189]; Part D1 [5.18, 188.6]). No raw-modulus decision anywhere.
+6. **Agglomeration.** Conjugate pairs as components; every candidate union evaluated by `q = min(2, 2 kappa rho_M1(u) / g)` with `kappa = kappa_frame = 1 / lambda_min |H_u|` when the union's Gram is definite above the floor, else `kappa_eig = ||[B_1 B_2]||_2^2` from each component's OWN normalized basis (A1's amendment: the literal per-pair test gives `Inf` for an exactly repeated pair and merged the indefinite fixture's 1.41 singleton into it), else `Inf`; merge the largest q first, repeat; every candidate in `resolution_receipt`; Gram floor `c_gram rho_M1(c) / g_ext(c)`.
+7. **Classification and recovery.** (a) subspace residual `<= c_sub d eps`; (b) Gram eigenvalues and Krein signs above the floor: all positive DEFINITE, all negative DEFINITE after conjugating the half (`conjugated = true`), mixed with `r_mp <= mp_tol = c_mp max(rho_M1, g_int) ||P_c||_2 / ||M||_F` INDEFINITE with the signed basis, anything else :unresolved with the sub-reason in `detail` (the word defective never asserted); (c) N20 frame, N4 residuals, N5 `P_c`, `G_c`, N21 `T_c`, N19 `r_mp`; (d) Schur spectral projector by `sylvester` for every stable cluster, `P_c = 2 Re(Pi_c)`, three residuals; (e) recovery for a definite m >= 2 cluster: eigen-decompose `T_c`, internal chords `2 kappa_frame rho_M1 / |theta_j - theta_k|`, resolved iff all `<= resolution_chord`. AMENDED (A2 F7): the recovered eigenvalue read from `T_c` carries `eps ||M|| kappa_frame` (map 50 of the manufactured set: 1766 eps ||M|| against the stage 2 pin 64), so each `theta_j` is snapped to the nearest oriented Schur eigenvalue when the assignment is one-to-one; the chords still come from `T_c`. Partial splitting of a cluster of m >= 3 is not done (carried).
+8. **Outputs.** As designed, with two recorded deviations: the eight-field residual tuple is split into `residuals` (5, every stable cluster) and `frame_residuals` (4, definite or indefinite clusters only), the fourth frame residual `eigenvector` (the largest (I1) residual of a column against its by-index eigenvalue) added by the fixer (4); reason mapping for fields a cluster does not derive: a definite cluster's `signed_basis` is `:not_derived_for_cluster`, `kappa_eig` of a cluster whose members are not orientable alone is `:cluster_unresolved`, and no `Determined` of a :definite cluster carries `:indefinite_cluster` or `:unresolved_defective` (pinned; fixer 5, 6).
+9. **Ambiguity set.** `_dispersion_ambiguity_set(U_c; kind)` and `(P_c, G_c, m; kind)`, center `P_c[1:4, 6] / 2`, shape (N11), PSD factor `4 x (2m - 1)` by eigen-decomposition (never Cholesky), `_ambiguity_kind` :exact_set iff `g_int <= c rho_M1`; the (D12) convention `eta_a = -Im(conj(u_z) u_a)`; the midpoint is never presented as a dispersion; the docstring states the graph qualification of 13.6. Part B's recorded decisions: `kind` is a required keyword of the frame methods (the thin methods derive it), the reported shape is `F F'` (the (N11) matrix with its roundoff-null eigenvalues zeroed, reconciled by construction with the `AmbiguitySet` constructor's check), the frame checker's tolerance is `c eps m max(1, kappa)` (the dossier's `c eps m` would refuse the FODO's kappa 11.9 frame), a rank-2 shape is a filled disc (13.6), the paper's `readouts` works on `conj(U)` and flips `n_2`. The thin method ACCEPTS a resolved two-mode cluster under an explicit partition (the split isospectral endpoint wants its envelope); whether stage 4 presents such an envelope is open.
+10. **Cross-check routes keep their algebraic guards.** The closed-form `min_trace_gap` and the map route's `sqrt(Delta) <= min_trace_gap` are DIVISION guards of (E11) and (T9), not resolution criteria; they stay. The stage 2 carry item (the frame refused `R(0.9) (+) R(0.9 + 1e-7)` while both trace guards accepted it) is closed: at roundoff rho_M0 the pair is RESOLVED by the chord (q = 5e-8), the physically correct answer for an exact map, and unresolved at a declared `rho_M0 = 1e-6` or at `resolution_chord = 1e-9` (pinned: "the chord and rho_M0 are READ").
+11. **The 4D frame on the clusters.** `_eigenmodes_4d(M; rho_M0, resolution_chord)`; availability in order: any :unstable cluster -> `:unstable_spectrum`; any :unit_eigenvalue -> `:unit_eigenvalue`; every cluster definite and resolved with exactly two modes -> the frame; a definite unresolved cluster -> `:cluster_unresolved`; an indefinite cluster -> `:indefinite_cluster`; an unresolved cluster -> `:unresolved_defective`. Consequences pinned in the stage 2 tests: `R(0.9) (+) R(0.9)` is `:cluster_unresolved` (as before), `R(0.9) (+) R(-0.9)` is `:indefinite_cluster` (stage 2 said `:cluster_unresolved`; the design's return table row "Indefinite cluster" agrees), `diag(1 + 1e-6, 1/(1 + 1e-6), R(1.2))` is `:unstable_spectrum` at roundoff and `:unit_eigenvalue` at `rho_M0 = 1e-5`. `SpectrumReport4D.eigenvalues` changed from eigensolver order to the canonical order; `Eigenmodes4D` positional order is (spectrum, clusters, frame); no caller depended on either.
+
+Objection recorded, not applied (A1 deviation 3, fixer 21, D1): the fixture
+table's row for the block-diagonal near collision `diag(R(0.73), R(1.41),
+R(-0.73 - 1e-9))` said "one cluster (q = 2 through kappa_eig), never two
+definite modes", and the design's verification row 450 says the same. The
+data: for this exactly separable map the individually normalized eigenvectors
+are exact, `kappa_eig = 2`, `q = 2 * 2 * 1.3e-15 / 1e-9 = 5.3e-6`, and the
+automatic route returns THREE resolved definite singletons at roundoff rho_M0
+(one indefinite cluster at a declared `rho_M0 = 1e-12` or under an explicit
+partition; both pinned). A Krein collision needs a COUPLING to make the
+eigenvectors neutral; the trial-011 crab ladder supplies it and behaves as the
+row says (one non-definite cluster for eps <= 1e-11 at the frozen default,
+eps <= 1e-10 under the provisional 1e-4). The row should name the crab ladder;
+the design and dossier wording is the orchestrator's to change.
+
+### Parts A1 and A2: cluster and frame tolerances, every one `c eps kappa` with `c` measured
+
+A1 measured its test tolerances on the 200 + 200 manufactured stable maps
+(seed 20260911) and the fixture table (worktree stage3-A, `OUT/report_A1.md`;
+the ratios are residual / (eps kappa) with kappa the frame's `||U||_2^2`):
+normalization 1.99, isotropy 0.35, unitarity 1.78, `kappa_frame` vs
+`kappa_eig` on singletons 23.9, `G` closes under `M` 6.3, the N5 projectors
+sum to `I` at 88 (bounded at 256), the Schur spectral projector's sum and its
+difference from N5 at 0.46 / 0.48 in units `eps kappa (||M||_F / g_ext)^2`
+(bounded at 4 with that factor); everything else at 64. Two measured facts
+behind those factors:
+
+- A1 F1: the Schur spectral projector (D7d, a Sylvester solve) is far less
+  accurate than the N5 projector when a cluster member sits near a unit
+  eigenvalue: manufactured 6D map trial 1 (tune 1.55e-4, kappa 1154,
+  `g_ext = 3.1e-4`) has the Sylvester and complement routes agreeing to
+  2.5e-10 with each other but 3.4e-7 from N5 and from `eigen`, while N5 and
+  `eigen` agree to 2e-11. Empirical conditioning over the 400 maps:
+  difference `<= 0.48 eps kappa (||M||_F / g_ext)^2`. D8 says Schur, so the
+  `projector` field stays Schur (unavailable only for :unstable and
+  :unit_eigenvalue) and the N5 difference is reported; the recommendation to
+  report N5 for definite clusters is carried to stage 4.
+- A1 F2 / A2 F8 / fixer 1, one phenomenon met three times: a simple
+  eigenvalue of a symplectic map with (E3)-normalized eigenvector `u` has
+  condition number `||u|| ||S u|| / |u' S u| = ||u||^2 / 2 = kappa / 2`, so
+  a perturbation of size `rho_M1` moves the computed eigenvalue (and its
+  modulus) by `rho_M1 kappa / 2`. A1 saw it as departure/rho_M1 up to 21.3
+  on a stable manufactured map and raised `c_stab` to 256; A2 saw it as the
+  complex Schur moduli of map 50 at 1268 eps (`kappa = 2873`) and as the
+  recovered eigenvalue read from `T_c` at 1766 eps ||M|| (F7, the snap to the
+  oriented Schur value fixed it: worst frame residual over the 200 maps 9.1
+  eps ||M||, worst `|rho| - 1` 9.2 eps after the fix); the theory review saw
+  it as the crab ladder flagged :unstable. The D5 amendment (`kappa_c` in the
+  scale) is the fix at the decision; the two stage 2 pins `|rho_j - e^{-i
+  mu_j}| <= 64 eps ||u||^2` and `recon <= 64 eps ||U||_F^2` (measured ratios
+  3.76 / 1.24 at c = 1, i.e. 0.06 / 0.02 at 64) are the fix at the
+  assertion. A paired modulus (a real Schur form, or averaging the pair)
+  would restore `eps ||M||^2` but redesigns D2 (one complex Schur
+  decomposition) and was not done (fixer 8, skipped with that reason).
+
+A2's stage 2 update kept every other assertion byte-identical (lines
+946-2193 of the worktree's runtests.jl diffed against the main tree: equal;
+@test lines 425 -> 442, none removed). The rewritten guard testset
+(1404-1511) pins, per D11: `diag(2, 1/2, R(1.2))` :unstable_spectrum with an
+:unstable cluster and `degeneracy_status === :unstable`; `R(0.9) (+) R(0.9)`
+one :definite unresolved cluster, `R(0.9) (+) R(-0.9)` one :indefinite
+cluster with `sort(krein_signs) == [-1, 1]`; the 1e-7 control resolved at
+roundoff and unresolved at `rho_M0 = 1e-6` and at `resolution_chord = 1e-9`
+with the fields reading the values passed; the hyperbolic 1e-6 pair
+:unstable_spectrum at roundoff and :unit_eigenvalue at `rho_M0 = 1e-5`;
+`I_4`, `+-I_2 (+) R(1.2)` :unit_eigenvalue and never :unstable; a vocabulary
+loop over six fixtures asserting the frame reason is the D11 image of
+`degeneracy_status`; the argument errors (3x3, 6x6, `Inf`, `rho_M0 < 0` or
+NaN, chord 0 or 3, missing `rho_M0` -> `UndefKeywordError`; `rho_M0 = 0.0`
+legal); `!hasfield(SpectrumReport4D, :min_gap)` and `:stability_atol`;
+`!isdefined(Octopus, :analyze)`.
+
+### Part B: ambiguity-set tolerances, `c = 64` unless stated, measured (`OUT/probes_B/measure_B.log`)
+
+Accepted side: the largest residual / threshold over the fixtures the testset
+uses, the argmax fixture printed from the data row. Rule: below one tenth.
+
+| check (tolerance) | worst accepted ratio | at |
+|---|---|---|
+| (N4) refusal, `64 eps m kappa` | 0.043 | conjugated pair 11 |
+| `P_c` idempotency refusal of the `(P_c, G_c)` method, `8 eps 6 max(||G||^2, ||P||^2)` | 0.070 | conjugated pair 11 |
+| zero / negative shape eigenvalue vs `tol_psd = 8 eps ||G||^2` | 0.019 | family limit 1 (0.034 on the split `M_plus` at 1e-9, not a set fixture) |
+| `F F' - shape` vs the `AmbiguitySet` constructor tolerance | 0 by construction (0.25 before the shape-by-construction change) | - |
+| center vs `P[1:4, 6] / 2`, `16 eps kappa` | 0 | diag pair |
+| N12 affine readout `eta = center + F n`, `64 eps kappa` | 0.0094 | conjugated pair 17 |
+| N12 surface `(eta - c)' A^+ (eta - c) = 1`, `2048 eps kappa` (raised from 512: ratio 0.21) | 0.052 | conjugated pair 8 |
+| N12 range `A A^+ dev = dev`, `256 eps kappa^2` (raised from 64: ratio 0.27) | 0.068 | conjugated pair 11 |
+| N14 endpoints = eigenvalues of the Hermitian form, `64 eps kappa ||a||`; attained by its eigenvectors | 0.031 / 0.028 | family limit 3 |
+| unitary mixing invariance of center / shape, `64 eps kappa` / `kappa^2` | 0.010 / 0.012 | conjugated pairs 11 / 15 |
+| N13 `P_c = I`, center 0, `64 eps kappa` | 0.074 / 0.021 | conjugated triple 3 |
+| N13 sampled `q <= 1 + 2048 eps kappa cond(A)` | never exceeded | - |
+| (D12) vs the (D8) graph route, `64 eps kappa max(1, ||D||^2) max(1, |h|)`; `h = det U_ls` | 0.0043; 0.0049 / 0.0054 | manufactured 6x6 maps 35, 18, 17 |
+| isospectral family: spectra equal, `256 eps kappa_W`; eigenvector-route eta vs expected, `256 eps kappa_W ||M|| / g`; diameter `64 eps kappa_W`; envelope containment | 0.0032; 0.0037; 0.028 / 0.036; 0 | eps = 1e-7, 1e-7 minus, 1e-3 / 1e-5 |
+
+The two `pinv`-based checks were the only ones above one tenth at their first
+constants (both go through `pinv(A; rtol = 1e-10)`, amplified by the
+conditioning of A's nonzero part). Integrator additions when B's test-local
+frame builder was replaced by `_mode_clusters` (`_st3_cluster`): ONE witness
+that the probe builder and the cluster agree on `P_c`, `G_c`, `kappa_frame`
+at 64 eps kappa (pins fixture); the cluster's N5 `P_c` against its Schur
+`projector` at 64 eps kappa; `chk.kappa >= 2 - 64 eps` (the rotated frame
+gives 1.9999999999999996 on the block-diagonal fixture). The paper's case-3
+dump (`OUT/dump_trial015_case3.py`, `trial015_case3.tsv`: limit map, both
+endpoint maps and their eta at eps in (1e-3, 1e-5, 1e-7, 1e-9), python
+3.11.5 / numpy 1.23.5 / scipy 1.11.4, seed 150926, `2 sigma_1(F) =
+1.2476901122751427`, the theory's "1.25") is Part D's input only; the suite
+reads no git-ignored file.
+
+### Review findings and fixes (four reviewers: theory, repository facts, runner, tests)
+
+Twenty-eight findings (theory 5, repository 9, tests 11, runner 3), every
+runtime claim reproduced on the pre-fix source before it was acted on
+(`OUT/fixer/probe_verify1-3.log`); twenty-four applied within the design and
+the decisions above, four skipped with reasons. Twenty-one injections re-run
+after the fixes (below).
+
+1. (theory, major) D5's stability scale was blind to the eigenvalue's
+   conditioning: the crab ladder `k = k_c (1 - eps)`, a STABLE map for every
+   eps > 0, came out :unstable at eps = 1e-7, 1e-8, 1e-9. Applied as the D5
+   amendment (`kappa_c`), `c_stab` 256 -> 64, new testset (98 assertions).
+2. (theory) The `kappa_eig` vectors were anti-oriented (`h = +Im(q' S q)/2`
+   is minus the Gram): `h = -Im(...)/2`; `_evaluate_component` returns the
+   oriented `eigenvector_estimate`, pinned `Im(u' S u) = -2` at 64 eps.
+3. (theory) The per-cluster Schur backward error was measured against the
+   reconstruction `Z T Z'` (1.10e-15 reported, 7.9e-16 true): now against
+   the input matrix, `_ordered_schur_basis(F, select, M)` at all five sites.
+4. (theory, minor) A split :indefinite cluster's signed basis is not an
+   eigenbasis and the 13.8 reconstruction check was not reported: fourth
+   frame residual `eigenvector` (`_column_eigenvector_residual`), pinned on
+   the FODO (0.57 eps kappa), N15 (3.6e-16), the crab union (between
+   `g_int / 10` and `10 g_int`) and every manufactured singleton.
+5. (theory) `kappa_eig` of a definite degenerate cluster carried
+   `:unresolved_defective`: now `:cluster_unresolved` for every
+   non-orientable case.
+6. (repo) A definite cluster's `signed_basis` carried `:indefinite_cluster`:
+   now `:not_derived_for_cluster`; pinned that no `Determined` of a :definite
+   cluster carries `:indefinite_cluster` or `:unresolved_defective`.
+7. (repo) The suite pinned the PROVISIONAL default literally (`== 1.0e-4`):
+   replaced by `0 < chord <= 2` and by the must-resolve / must-not-resolve
+   statements (`chords[1e-9] < default`, `chords[1e-12] > 10 default`), valid
+   for any default in the bracket; this is what let Part D1 move the constant
+   with three expected failures instead of a rewrite.
+8. (repo) Two stage 2 pins loosened by A2 to `c eps ||U||_F^2` / `c eps
+   ||u||^2`: SKIPPED (the proposed fix redesigns D2; the loosened form IS
+   `c eps kappa` with `kappa(lambda) = ||u||^2 / 2`, recorded in D2 above).
+9. (repo) Six undocumented internals and a hand-copied docstring list in the
+   suite: docstrings added; the list replaced by a derived loop over
+   `names(Octopus; all=true)` filtered by the two files (35 functions seen,
+   `undocumented == []`); injection fDoc.
+10. (repo) The PROVISIONAL tripwire covered A1's six constants only: now a
+    derived loop over `^const _NAME = ` of both files, count pinned at 9,
+    plus two behavioural pins per Part B multiplier with eps-literal
+    perturbations (N4: `1 + 4 eps` accepted, `1 + 1e-13` refused; PSD:
+    `-4 eps` a zero, `-32 eps` an error); injections fN4, fPSD, fProv.
+11. (repo) Eight residual checks with absolute literals: rewritten as
+    `c eps kappa` with measured c (`P - I` 128 eps kappa at 17.6 measured,
+    `G - N7` 256 at 32.4, `M G M' - G` 64 at 8.4, `T - e^{-i mu} I` 64 at
+    0.33, (T7) `Delta` 64 eps ||M||^2, `dep - 0.2` 64 eps at 2.1, ...); the
+    pins of published numbers (tune, Gram minimum, `k_c`, 0.28293, 2.980, the
+    gaps) stay literal as the fixture table sanctions.
+12. (repo) D8's residual tuple split into `residuals` and `frame_residuals`
+    without a record: RECORDED (D8 above).
+13. (repo) Duplicated test-local builders: `_mc_rolled_fodo`,
+    `_mc_defective`, `_mc_randsymp`, `_mc_rho0` now delegate to the `_st3_`
+    library; `_pb_rho = _eig4d_rho`.
+14. (repo) 50 direct `.value` reads of `Determined` in the block: all
+    `determined_value(...)`.
+15. (tests) D5's Jordan term had no fixture that could fail: the rotated
+    defective spectator (4D, 6D) and the rotated drift pin `departure >
+    c_stab rho_M1` and `< scale / 10`; injection f34.
+16. (tests) kappa in the chord was detected only by a margin pin: the FODO
+    `eps = 2.8e-11` control (q = 1.06e-3 merged; without kappa 8.9e-5) pins
+    `e.chord > default > _chord(1, rho_M1, g)`, `kappa > 10`, `kappa_source
+    === :frame`, and flips under both 1e-4 and 1e-3; injection f03.
+17. (tests) `mp_tol`'s `g_int` arm decided on two fixtures whose assertions
+    accepted either verdict: `=== :indefinite` pinned at three sites; the
+    wide-union vacuity (crab `k_c / 2` union: `mp_tol` 2.26 unreachable by
+    `r_mp` 0.027) recorded for the `c_mp` window; injection f18.
+18. (tests) The Gram floor and the D4 straddle branch had no fixture: the
+    exact FODO under partition `[[1, 3], [2, 4]]` (two :unresolved clusters
+    "at or below the floor", `gram_floor > 1`, `krein_signs == [0]`) and
+    `diag(1, 1, 1 + 1e-7, 1/(1 + 1e-7))`; injections f22, f25.
+19. (tests) `degeneracy_status` precedence and D11's order untested:
+    `diag(2, 1/2, 1, 1)` and its block swap; injection f15.
+20. (tests) The conjugate distance of D3 inert: RECORDED (D3 above).
+21. (tests) The near-collision test pins the automatic route as resolved
+    singletons, opposite of the fixture-table row: RECORDED for the
+    orchestrator (objection above); the coupled version is pinned through
+    the crab ladder.
+22. (tests) "measured: see report" labels without a measurement, a hand-set
+    `* 64` (c = 4096), a `rho_M0 = 0` comment without substance: labelled with
+    the measured ratios (0.84, 1.22, 0.87, 0.73 eps kappa), the factor
+    dropped (measured 0.15 / 0.25), `rho_M1 > 0` and `schur_backward_error >
+    0` pinned at `rho_M0 = 0`; injection f40.
+23. (tests) The thin method's default `kind` exercised only on an exact
+    fixture: default-kind pins on every detuned control's 6D embedding as one
+    explicit group (`:orientation_envelope`); injection f01. Second half
+    (refuse a resolved two-mode cluster): SKIPPED, the integrator's
+    documented semantics, carried to stage 4.
+24. (tests) `forced` set on every m >= 2 cluster under `Inf`: now only where
+    the default chord would have left it unresolved (D1 above); injection fF.
+25. (tests) `kappa_eig` orientation barely detected: pinned through
+    `eigenvector_estimate` (row 2; injections f35, fH). The wish for a
+    fixed-atol detector: SKIPPED, the rotated spectator's departures (4e-9)
+    sit below 1e-8; the D11 READ pins and the crab ladder are the detectors.
+26. (runner) `report_integrator.md` misstated the extract environment
+    (ForwardDiff stacked, CUDA inactive) and copied the fallback count 121:
+    corrected (plain arm 121, stacked 134, CUDA active); both arrangements
+    run in every chain since.
+27. (runner) The default-kind branch of `_dispersion_ambiguity_set(c::
+    ModeCluster)` could not fail: the pins of row 23.
+28. (runner) `test/runtests.jl` line count off by one in the integrator's
+    report: corrected.
+
+Skipped, with reasons: 8, 21 (wording owned by the orchestrator), the second
+half of 23, the detector wish of 25 (all above). Skipped by the integrator
+and carried: A1 F1 (N5 vs Schur projector), the `_AMBIGUITY_PSD_MULTIPLIER`
+lower-edge margin (1.4x on the idempotency use; Part B open issue 2).
+
+### Part D: the chord table and the frozen default (design "Default value")
+
+Driver `OUT/measure/measure_stage3.jl` (480 lines, package mode; Part B's
+scaffold wired to `_mode_clusters`) tabulates, for every fixture of the
+dossier's list, one row per cluster: `kappa_frame`, `kappa_eig`, `rho_M0` and
+its winning arm (`argmax(ps.arms)`, printed from the row: "roundoff" on every
+fixture), `rho_M1`, `g_int`, `g_ext`, the deciding chord `q` with its source
+(the receipt chord of the merge that formed the cluster, its internal chord
+matrix, or the last round's chord to every other final cluster, whichever is
+largest), classification, resolved, ambiguity kind, label. Fixtures: the
+exact rolled FODO of 13.10; its four detuned controls (`K_1D = -(1 + eps)`,
+eps in 1e-3, 1e-6, 1e-9, 1e-12); the paper's case-3 dump (limit map + 8
+endpoints); the 39 oracle maps of stage 1's TSV (24 dense, 7 prescribed_h, 4
+repeated, 1 defective, 3 coasting; family and index carried); the crab ladder
+`k = k_c (1 - eps)`, eps = 1e-1 .. 1e-11 (1e-10 and 1e-11 added as data: the
+coupled near collision the fixer pinned); the block-diagonal near collision;
+the defective spectator; 200 + 200 manufactured stable maps (seed 20260911).
+466 fixtures, 1182 cluster rows (the table below omits the manufactured
+maps' 996 rows; the extremes over them appear in the windows).
+
+Labels come from the design and the theory and from nothing else: MUST
+RESOLVE = FODO 1e-3, 1e-6, 1e-9 (the working notes' periodic tune error
+4.45e-9 at 1e-9) and the 24 dense oracle maps (distinct tunes by
+construction), 27 fixtures; MUST NOT RESOLVE = FODO 1e-12 (tune error
+5.89e-6). All 27 must-resolve fixtures have every cluster resolved; the 1e-12
+control is one definite unresolved m = 2 cluster.
+
+| quantity | value | row (printed from the data) |
+|---|---|---|
+| largest must-resolve q | 2.960e-5 (`kappa_frame` 11.93, `rho_M1` 2.647e-15, g 2.134e-9) | "rolled FODO detuned eps = 1.0e-9" |
+| next must-resolve chords | 2.960e-8, 2.974e-11, then the dense oracle maps at 9.435e-14 and below | FODO 1e-6, FODO 1e-3, "oracle dense 23 (parameter -0.939)" |
+| smallest must-not-resolve q | 2.959e-2 (internal chord of the m = 2 cluster; `kappa_frame` 11.93, g 2.135e-12) | "rolled FODO detuned eps = 1.0e-12" |
+| bracket | [2.960e-5, 2.959e-2]; contains the provisional 1e-4 | |
+| geometric mean | `sqrt(2.960e-5 * 2.959e-2) = 9.358e-4` | |
+| rounding | to one significant digit 9e-4; to a power of ten 1e-3 | |
+| FROZEN default | `_DEFAULT_RESOLUTION_CHORD = 1.0e-3` (mode_clusters.jl line 80) | margins: the 1e-9 control resolves at ratio 0.030 of the default, the 1e-12 control stays merged at 29.6 |
+| unlabelled fixtures inside the bracket | crab ladder eps = 1e-10 (q 2.822e-4: two definite singletons at 1e-3, one cluster at 1e-4) and eps = 1e-11 (q 2.822e-3: one unresolved cluster, `kappa_eig` 4.5e5) | the two rungs added as data; none of the dossier's own list |
+
+The rounding rule, stated here so the next re-measurement does not re-argue
+it: the design's paragraph says "rounded to one digit" and its own worked
+example rounds `7.9e-5` to `1e-4`, i.e. to the nearest power of ten (the
+strict one-significant-digit reading would give `8e-5` there and `9e-4` here).
+The example is the rule as the design applied it, so the default is the
+geometric mean rounded to the nearest power of ten: `1e-3`. The provisional
+`1e-4` lay inside the bracket, but the rounded mean differs from it, and the
+design says the measured value wins in that case ("If the bracket does not
+contain 1e-4, the measured value wins and this paragraph records the change";
+the dossier extended the rule to a different rounded mean inside the bracket).
+Why the bracket sits a decade above the design's sketch: the design's chords
+`2.5e-6` / `2.5e-3` assumed unit kappa; the rolled FODO's Gram in the
+orthonormal Schur basis has minimum eigenvalue 0.0838 (pinned in 13.10), so
+`kappa_frame = 1 / 0.0838 = 11.93` on the exact cell and on every detuned
+control (`kappa_eig` of the EXACT cell is 21.7: individually normalized
+eigenvectors of a degenerate pair are arbitrary).
+
+Consequences in source and tests (all re-verified by the chain above):
+`_DEFAULT_RESOLUTION_CHORD` 1e-4 -> 1e-3 with this arithmetic in its
+docstring (the word PROVISIONAL is kept because the derived tripwire pins it
+on all nine constants; the docstring says "PROVISIONAL in the design's sense
+... FROZEN by the stage 3 measurement"); the crab-ladder testset's hard-coded
+split (two singletons for eps >= 1e-9, one cluster at 1e-10 and 1e-11, which
+pinned the provisional value and carried the wrong comment "(q = 2 through
+kappa_eig)") is now derived: `qcoll[e]` is the colliding pair's own chord,
+`ncoll[e] == (qcoll[e] > default ? 1 : 2)` for every rung, both branches must
+occur, q monotone down the sorted ladder; the D4 straddle fixture's departure
+is derived from `tau_real` (`ds = tau_real / 2` with `ds > c_stab rho_M0`)
+instead of a literal tuned to `c_real = 4`; A1's standalone runner took the
+fixer's F7 form. First pass after the constant change: 89629 pass / 3 fail,
+exactly the three expected consequences (kept in
+`OUT/measure/chain1_first_pass/`).
+
+Objection recorded (also under the decisions): labelling the block-diagonal
+near collision must-not-resolve, as the fixture table and the design's
+verification row do, inverts the bracket to [2.960e-5, 5.329e-6]
+(`OUT/measure/measurement_table_run1.md`, kept): that map is three definite
+resolved singletons at q = 5.329e-6 through `kappa_eig = 2` exactly. The
+final table leaves it unlabelled and prints the bracket it would impose
+beside it. Whether a 2.8e-4 relative eigenvector uncertainty (the crab rung
+eps = 1e-10) should count as resolved is policy, exactly the design's word
+for the default.
+
+### Derived windows (rule: largest accepted ratio below one tenth, smallest rejected above ten; arithmetic in section 2 of the table)
+
+Ratio = the decision quantity at multiplier 1 over its threshold. For
+`c_real`, `c_stab`, `c_mp`, `c_sub` and the exact-set multiplier the accepted
+side must sit below the threshold: window `[10 x max accepted, min rejected /
+10]`. For the Gram floor the accepted side (a definite Gram eigenvalue) must
+sit ABOVE the floor: window `[10 x max rejected, min accepted / 10]`. Every
+name is the argmax row's own (printed by `window_lines`). `c_stab` was first
+re-measured by the fixer with `kappa_c` in the scale (`OUT/fixer/
+probe_measure.log`, window [5.2, 189]); D1's independent run agrees.
+
+| multiplier | source (before -> after) | accepted extreme (row) | rejected extreme (row) | window | inside |
+|---|---|---|---|---|---|
+| `c_real` `_REAL_CLASS_MULTIPLIER`, `tau_real = c sqrt(rho_M1) max(1, ||M||_2)` | 4 -> **1** | 0.0204 "rotated drift (+) R(1.2), W4 seed 20260911, eigenvalue 4" (a +1 Jordan pair split by sqrt(roundoff); 22 accepted rows) | 33.55 "R(1e-6) (+) R(1.2), eigenvalue 1" (2466 rejected rows; the FODO controls and the crab ladder at 1e6 and above) | [0.204, 3.355] | 4 was OUTSIDE (rejected margin 8.4 < 10, as A1's docstring already said); moved to 1 (margins 49 / 33.6) |
+| `c_stab` `_STABILITY_MULTIPLIER`, `delta_c = c kappa_c max(rho_M1, (rho_M1 dep^(m-1))^(1/m))` | 4 -> 256 (A1) -> **64** (fixer) | 0.518 "rotated defective spectator, W4 seed 20260911, cluster [1, 2, 3, 4]" (1200 accepted rows incl. the crab ladder to 1e-11 and the 400 manufactured maps, best of those 0.479) | 1886 "crab ladder k = k_c (1 - -1.0e-7), cluster [1, 2, 5, 6]" (11 rejected rows: the hyperbolic 1e-6 pair 1.1e9, the quartet, diag(2, 1/2)) | [5.18, 188.6] | yes (8.1e-3 / 29) |
+| `c_gram` `_GRAM_FLOOR_MULTIPLIER`, `floor = c rho_M1 / g_ext` | 64 | smallest accepted 7111 "crab ladder k = k_c (1 - 1.0e-10), cluster [2, 5]" (1254 definite clusters) | largest rejected 0.197 "trial-015 case 3 limit eps = 0.0, crosswise partition [[1, 5], [2, 6], [3, 4]], cluster [1, 5]" (8 rows: single copies of an exactly degenerate eigenspace under a crosswise partition derived from the eigenvalue data; Gram value arbitrary in [-1/2, 1/2], floor > 1, `krein_signs [0]`) | [1.97, 711] | yes; A1 had no rejected fixture (F4), this one is derived |
+| `c_mp` `_MINIMAL_POLYNOMIAL_MULTIPLIER`, `mp_tol = c max(rho_M1, g_int) ||P||_2 / ||M||_F` | 64 | 0.545 "near collision diag(R(0.73), R(1.41), R(-0.73 - 1e-9)), partition x/z union [1, 2, 5, 6]" (53 groups: 30 conjugated pairs, 10 triples, the indefinite fixture, the FODO controls under partition, the case-3 limit) | 6.4e6 "rotated defective spectator (+) R(1.1), W6 seed 20260911, cluster [1, 2, 5, 6]" (4 defective rows; the plain spectator 1.9e14) | [5.45, 6.4e5] | yes |
+| `c_sub` `_SUBSPACE_RESIDUAL_MULTIPLIER`, `sub_tol = c d eps` | 64 | 1.308 "manufactured stable 4x4 seed 20260911 index 31, cluster [2, 3]" (1263 rows) | none reachable by a fixture (an ordered Schur basis is backward stable); the injected non-invariant basis of section 3 rejects at 2.4e5 | [13.1, open) | yes |
+| exact-set `_EXACT_SET_MULTIPLIER`, `:exact_set iff g_int <= c rho_M1` | 10 | 0.5875 "diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 trial 19, cluster [1, 2, 5, 6]" (33 rows: FODO 6D embedding 0.538, case-3 limit 0.421) | 537.7 "rolled FODO detuned eps = 1.0e-12 (+) R(1.1), 6D embedding, cluster [1, 2, 3, 4, 5, 6]" | [5.87, 53.8] | yes (Part B's own measurement: [5.87, 68.1]) |
+| `_CLUSTER_FRAME_N4_MULTIPLIER` (Part B; refusal above `c eps m kappa`) | 64 | 0.043 x 64 = 2.7 eps m kappa, conjugated pair 11 | a column rescaled by 1 + 1e-6: 1.2e7 x; the N15 frame 1.7e13 x; a conjugate partner 7.0e12 x | [27, 7.5e7] | yes (Part B's measurement; not re-measured by D1) |
+| `_AMBIGUITY_PSD_MULTIPLIER` (Part B; `tol_psd = c eps ||G||^2`, also the `G` symmetry and `P` idempotency refusals) | 8 | zero / negative eigenvalue 0.019 x 8 = 0.15 eps ||G||^2 (family limit 1); idempotency 0.070 (conjugated pair 11) | eigenvalue -1e-3 on a unit shape: 5.6e11 x | [1.5, 5.6e10] for the eigenvalue use; the idempotency use pins the lower edge at 5.6 | yes, thinnest margin of the stage (1.4x on the idempotency use) |
+
+Kernel refusals recorded as data on `c_gram`'s rejected side: the
+bit-identical repeated eigenvalues of `diag(R(0.73), R(1.41), R(0.73))`,
+`diag(R(0.9), R(0.9), R(0.9))`, the defective spectator and the oracle
+`repeated` maps have no spectral projector onto ONE copy;
+`_schur_spectral_projector` refuses loudly (LAPACK `trsyl` info 1) and the
+rows say so. The FODO and the case-3 limit map (computed, so their copies
+differ at 1e-16) go through and give the rejected extremes. Unlabelled row
+for `c_stab`: the crab ladder at eps = -1e-9 is :unstable (correct) by 2.2e-6
+against a Jordan-term scale 7.7e-7 at 64, margin 2.9 below ten.
+
+### The rejected side of every `c eps kappa` check family, and the paper cross-check
+
+`OUT/measure/measure_stage3_tol.jl` (section 3 of the table): the stage 3
+block holds 175 `EPS` tolerance lines in 55 check families (same quantity,
+same threshold form); each family gets one row: the wrong quantity a
+plausible defect produces (the a01-a07 and i01-i07 injections where one
+exists: Gram `-i/2`, `Q Q'` as projector, `tau` from the tune sum, the
+unnormalized Schur basis, the conjugate orientation, a conjugate partner as a
+column, the same spinor at both endpoints, `Re` instead of `-Im` in (D12), `F`
+without the sqrt, the midpoint instead of the endpoints, ...) on a fixture
+where the defect ACTS, divided by the check's own threshold with its c and
+kappa. Result: 55 / 55 above ten; the smallest 67.1 (the hyperbolic 1e-6
+pair's departure against the defective spectator's `sqrt(eps)` pin), then 601
+(the SPLIT 1e-12 control's receipt gap against the exact-degeneracy pin
+`16 eps`); every other row 2.4e5 (the backward error against a matrix
+perturbed by 1e-8) to 1.6e15.
+
+Five first-choice defects were INERT and replaced (the lesson of 2026-09-11,
+recorded in the script beside each row): (a) N6 closure `M G M' = G` holds
+for `Re(Q Q')` of ANY orthonormal invariant basis with unitary restricted map
+-> the covariance of the WRONG map (the 1e-3 control's G under the exact
+FODO); (b) `P G = G` holds for any G with range in the cluster's real
+invariant subspace -> the y singleton's covariance paired with the pair's P;
+(c) N5 on the conjugated signed basis of the block-diagonal indefinite fixture
+reproduces P -> the UNconjugated signed basis; (d) the (N16) polynomial with
+the y tune annihilates the y block -> a tune outside the spectrum; (e) "the
+betatron cluster has no pz column" is a structural zero of the block-diagonal
+embedding -> the COUPLED embedding `W6 (FODO (+) R(1.1)) W6^-1`, whose
+betatron cluster carries dispersion (3.4e9 times the tolerance). Three rows
+report that the production guard REFUSES the wrong input (the N4 checker on a
+scaled column, the set constructor on a non-unitary mixing and on `P^T`),
+with the guard's residual over its tolerance as the ratio.
+
+Paper cross-check (`OUT/measure/paper_crosscheck.py`, run once from the
+driver; python 3.11.5, numpy 1.23.5, scipy 1.11.4, `mode_degeneracy.py` from
+`/cfs/ad/dxu/Paper/2026_twiss_dispersion/research`; Julia 1.12.4). Only REAL
+outputs are compared (pitfall 10: the prototype's circle is centred on
+`e^{+i mu}`); rows and maximum absolute differences:
+
+| row | m | Gram min (py / jl) | P | G | center | shape | eta vs dump |
+|---|---|---|---|---|---|---|---|
+| rolled FODO exact 4x4 | 2 | 0.083822243293302 / 0.08382224329330203 | 4.1e-14 | 7.1e-15 | (4D: no longitudinal plane) | | |
+| its 6D embedding (+) R(1.1) | 2 | same | 4.1e-14 | 7.1e-15 | 0 | 0 | |
+| trial-015 case 3 limit | 2 | 0.43256473072538343 / 0.4325647307253834 | 6.0e-16 | 1.3e-15 | 1.1e-16 | 3.3e-16 | |
+| case 3 endpoints plus / minus, eps = 1e-3 .. 1e-9 (8 rows, the selected member isolated by eps / 2) | 1 | agree to 1e-15 | 6.8e-14 .. 2.8e-7 | <= 4.4e-16 | | | 5.8e-14 .. 6.1e-8 |
+
+The three m >= 2 rows agree to 4.1e-14 (the dossier asked 1e-12). The eight
+singleton rows carry the conditioning of a copy isolated from a pair split by
+eps on BOTH routes (`kappa rho_M1 / eps` = 5.2e-12 .. 5.2e-6, the row's own q,
+printed) and sit at 0.03 q; the dump's eta (exact by construction) is matched
+by Julia's `P[1:4, 6]` of the selected member at that scale. Two conventions
+had to be stated: `split_map` puts the selected member `v @ u` on
+`rotation(MU + eps)` in BOTH endpoint maps (plus / minus name the spinor
+axis), and a single mode's eta is the pz column itself (the `/2` belongs to
+the m >= 2 center, N11); run 1 shows both slips before they were understood.
+
+### Injected defects, each shown red once (script mode on a patched copy of `src/` or of the block; harnesses under OUT)
+
+| id | part | defect | result |
+|---|---|---|---|
+| a01 | A1 | Gram with `-i/2` (orientation flips) | 8227 pass / 3241 fail |
+| a02 | A1 | conjugate distance dropped from `_pair_gap` | 11477 / 2 (the kernel pin only; D3 above) |
+| a03 | A1 | `kappa_frame` replaced by 1 in the candidate evaluation | 11474 / 5 (receipt kappa pins; the 2.8e-11 control of fixer 16 adds f03 below) |
+| a04 | A1 | stability on raw moduli | 205 pass / 46 fail / 28 errors |
+| a05 | A1 | Schur spectral projector taken as `Q Q'` | 10205 / 1263 |
+| a06 | A1 | mode recovery without the `qr` re-orthonormalization | 11466 / 2 (the coupled 1e-7 pair under partition + Inf) |
+| a07 | A1 | mp residual with the wrong `tau` (tune sum) | 11413 / 50 / 5 errors |
+| a201 | A2 | frame built when a cluster is unresolved (guard removed) | 67552 / 8 |
+| a202 | A2 | reason mapping swapped (`:indefinite_cluster` reported as `:cluster_unresolved`) | 67558 / 2 |
+| i01 | B | center from the z column `P[1:4, 5]` | 4564 / 3247 |
+| i02 | B | shape without the 1/4 | 5802 / 2009 |
+| i03 | B | factor by Cholesky of the rank-deficient shape | 116 pass / 6 errors (`PosDefException` aborts six testsets) |
+| i04 | B | (D12) with `Re` instead of `-Im` | 4253 / 3558 |
+| i05 | B | isospectral family with the SAME spinor at both endpoints (fixture file) | 7799 / 12, all in the family testset |
+| i06 | B | (N4) check with `-2i` | 111 pass / 6 errors |
+| i07 | B | `_ambiguity_kind` branches swapped | 7797 / 14 |
+| f01 | fixer | thin method's default kind := `:exact_set` | 20473 / 8 |
+| f03 | fixer | kappa dropped from `_chord` | 20480 / 5 |
+| f34 | fixer | D5 Jordan term dropped | 20475 / 6 |
+| f05 | fixer | `kappa_c` dropped from D5 (the pre-amendment scale) | 20455 / 21 / 5 errors (the crab ladder goes :unstable) |
+| f22 | fixer | Gram floor := 0 | 20478 / 3 |
+| f25 | fixer | "any member leaves the circle" stability rule | 20479 / 2 |
+| f15 | fixer | `degeneracy_status` rank swap | 20479 / 2 |
+| f18 | fixer | `mp_tol` without the `g_int` arm | 20472 / 3 / 1 |
+| f35, fH | fixer | `kappa_eig` columns not oriented; the Gram sign of `h` reverted | 20480 / 1 each |
+| f40 | fixer | Schur backward error dropped from `rho_M1` | 20480 / 1 |
+| fF | fixer | `forced = true` under Inf regardless | 20480 / 1 |
+| fR1, fR2 | fixer | the old reasons restored on `kappa_eig` / `signed_basis` | 20477 / 4; 20479 / 2 |
+| fDoc, fProv | fixer | an undocumented function added; PROVISIONAL removed from one docstring | 20480 / 1 each |
+| fN4, fPSD | fixer | `_CLUSTER_FRAME_N4_MULTIPLIER` 64 -> 4096; `_AMBIGUITY_PSD_MULTIPLIER` 8 -> 64 | 20480 / 1 each |
+| fEig | fixer | `_column_eigenvector_residual := 0` | 19480 / 1001 |
+| fBE, fBE2 | fixer | backward error against `Z T Z'` | fBE GREEN at first (rho_M0 dominates every maximum, as the review predicted) -> kernel pin on a 1e-6-perturbed matrix added -> fBE2 20484 / 1 |
+
+Part B's first injection sweep had six of seven patches silently REFUSED
+("0 matches"): `inject_B.sh` copied `src/` with `cp -r` into an existing
+`inj_B/<id>/src`, nesting `src/src` and leaving the already patched copy as
+the target, while the report claimed "every injection re-run on the final
+source". B's second pass found it from the log, fixed the harness (`rm -rf`
+before the copy) and re-ran all seven; the counts above are from that run.
+The a01-a07, a201, a202 and i01-i07 harnesses were re-run on the main tree's
+pasted block by the runner reviewer (every one red,
+`OUT/review_runner/inject_summary.txt`); the f-series ran on the fixed tree.
+None was re-run after the measurement's constant change or after the ledger
+edits (the constant change touched two docstrings, two tests and one
+scratch runner; the extract and the block re-ran green).
+
+### Not verified in stage 3
+
+- No lane and no gate ran on this tree; every count above is standalone. One
+  full gate on the assembled stage 3 tree is owed before the push and is
+  recorded in this file when it runs. After the ledger edits of Part D2
+  (this section, the todo row, the README sentence, the experiences lesson)
+  the four suite tripwires were re-run in package mode: 32 / 32 (Architecture integrity 28 incl. the docs index and the snapshot, Core.Box 2, exports 1, detached docstrings 1; plain arm, exit 0; `OUT/ledgers/run_tripwires_after_ledgers.log`).
+- `validation/tracking_backend_consistency.jl` and `validation/lattice_cells.jl`
+  were not run (no kernel, element or tracking code changed; host matrix
+  algebra only, nothing CUDA-reachable).
+- The injections were not re-run after the measurement's constant change or
+  the ledger edits (above).
+- The rounding rule of the default rests on the design's worked example
+  (power of ten), not on a sentence that says so; recorded above as the rule
+  applied. If the owner reads "one digit" strictly, the default is `9e-4`
+  and the bracket margins (0.033 / 32.9) are essentially the same.
+- The fixture-table and design row for the block-diagonal near collision
+  contradict the data (three definite singletons); the wording is the
+  orchestrator's and the design note was not edited. The coupled near
+  collision that does not resolve at 1e-3 is the crab ladder eps <= 1e-11
+  (eps = 1e-10 resolves at q = 2.8e-4, one decade below the default; it
+  merged under 1e-4).
+- `c_sub` has no fixture-reachable rejected side (window one-sided [13.1,
+  open)); only the injected non-invariant basis rejects (2.4e5).
+- `c_gram`'s rejected side exists only for COMPUTED degeneracies (the FODO,
+  the case-3 limit); bit-identical repeated eigenvalues are refused by
+  `_schur_spectral_projector` before the floor is reached (recorded rows). A
+  rejected fixture with a coupled, computed degenerate eigenspace at larger
+  `g_ext` is a lead.
+- Part B's `_CLUSTER_FRAME_N4_MULTIPLIER` and `_AMBIGUITY_PSD_MULTIPLIER`
+  were measured by Part B only (windows above); D1's section 3 exercises the
+  N4 guard's rejected side (1.2e7) but did not re-derive the windows.
+- Section 3 covers each of the 55 check FAMILIES once (175 `EPS` lines), not
+  every line; the mapping is the `runtests lines` column of the table.
+- Paper cross-check: the m >= 2 rows agree to 4.1e-14; the eight
+  isolated-singleton endpoint rows agree only to their own conditioning q
+  (5e-12 .. 5e-6), not to 1e-12, by the nature of the comparison.
+- The `(cd $P && run ...)` snapshot step of the fixer's and D1's `chain.sh`
+  wrote to a relative path inside the subshell and silently did not run;
+  the docs + snapshot probe was run by hand from the main tree in both
+  chains and again for this record. Fix the script before reusing it.
+- The Schur spectral projector's accuracy near a unit eigenvalue (A1 F1) is
+  bounded by a measured empirical factor `eps kappa (||M||_F / g_ext)^2`, not
+  by a derived one.
+- Stage 2's remark that the closed-form and map-route guards were not
+  exercised on a coincident trace with unequal eigenvalue classes still
+  stands (none exists in 4D).
+
+### Carried forward to stage 4 (this record edits neither note)
+
+1. Partial splitting of a definite cluster of m >= 3 whose restricted map
+   resolves some but not all modes: not done (D7e); every unresolved chord
+   leaves the whole cluster's `modes` unavailable with `:cluster_unresolved`.
+2. The `projector` field of a definite cluster is the Schur spectral
+   projector (D8); A1 F1 measured N5's `P_c` to be far more accurate near a
+   unit eigenvalue (3.4e-7 vs 2e-11 on manufactured 6D trial 1). Stage 4
+   decides which one `TwissDispersionAnalysis` presents; `projector_n5_difference`
+   is reported on every definite cluster for that decision.
+3. The thin method `_dispersion_ambiguity_set(c::ModeCluster)` accepts a
+   RESOLVED two-mode cluster under an explicit partition (the split
+   isospectral endpoint wants its envelope); stage 4's presentation rules
+   decide whether such an envelope is shown beside the resolved modes.
+4. Result-shape items carried from stage 2, still open: labels at a tie
+   (`label_margin = 0`, no `Determined`); the `Inf` gamma identities at a
+   zero beta and the normalizer route's `consistency_residual` at the floor;
+   a `Determined` area weight; whether form 2 is presented as form 1 with
+   exchanged labels ((T4) reading); one status for coincident traces across
+   routes (frame `:cluster_unresolved`, closed form and map route
+   `:singular_coefficient`).
+5. `AGENTS.md` line 75 ("the placeholder is still the only registered
+   analysis") and every placeholder-only statement: reworded by Staging item
+   4 when `analyze` lands.
+6. The fixture-table and design verification-row wording for the
+   near-collision fixture (name the crab ladder; the block-diagonal map is
+   three resolved singletons), the orchestrator's.
+7. The eigenvalue condition number `||u||^2 / 2` (D2 above): the frame's
+   moduli are known to `eps kappa(lambda)`; a paired modulus (real Schur
+   form, or averaging the pair) would restore `eps ||M||^2` and let the two
+   stage 2 pins return to `64 eps`, at the price of redesigning D2. Stage 4
+   should decide whether `TwissDispersionAnalysis` reports `|rho| - 1` at
+   all (the design rejects raw-modulus decisions; a reported diagnostic is a
+   different question).
+8. The `_AMBIGUITY_PSD_MULTIPLIER` lower-edge margin (1.4x on the
+   idempotency use of the `(P_c, G_c)` method): split the idempotency
+   multiplier off if stage 4 exercises that method on worse-conditioned
+   frames.
+9. A `c_gram` rejected fixture with a coupled computed degeneracy at larger
+   `g_ext`; a `c_sub` rejected fixture (none reachable: backward-stable
+   Schur).
+10. The `c_mp` window was measured on narrow splits; for wide explicit unions
+    (`g_int` of order 0.1) `mp_tol` is unreachable by `r_mp` (crab `k_c / 2`
+    union: 2.26 vs 0.027), so an explicit partition of far-apart pairs is
+    always :indefinite when the Gram is mixed. Stage 4's option schema should
+    say what a user-supplied partition promises.
+11. Stage 4 runs the coasting test (design D23) BEFORE `_mode_clusters`; the
+    real-class code path of D4 is a flag, and the 3 coasting oracle maps
+    (chord table rows, `:unit_eigenvalue` clusters) are its fixtures.
+12. The measurement scripts of stages 1-3 live inline in this record until
+    stage 6 moves them under `validation/`; D1's `chain.sh` snapshot step
+    needs the `cd` fix before reuse.
+13. Ledger dates: stages 1-2 landed 2026-09-11 and stage 3 on 2026-09-12; the
+    todo row and the README carry both dates (the dossier's draft wording
+    said "stages 1-3 landed 2026-09-11").
+
+### Measurement tables (output of `measure_stage3.jl` sections 1, 1a, 2, 4 and `measure_stage3_tol.jl` section 3, verbatim except that the 996 rows of the 200 + 200 manufactured maps are omitted from section 1; the full file is `OUT/measure/measurement_table.md`, 1400 lines)
+
+#### Stage 3 measurement table (Part D1), header
+
+Produced by measure_stage3.jl (sections 1, 2, 4; package mode, main tree, FINAL constants: chord 1e-3, c_real 1) and measure_stage3_tol.jl (section 3); this file is their concatenation (run3 + section3), assembled as described in report_D1.md.
+
+Julia 1.12.4; threads 4; seed 20260911; oracle TSV /cfs/ad/dxu/Library/Julia/Octopus/result/twiss_impl_2026_09_11/stage1/measure/oracle_maps.tsv; case-3 TSV /cfs/ad/dxu/Library/Julia/Octopus/result/twiss_impl_2026_09_11/stage3/trial015_case3.tsv.
+Source constants at run time: _DEFAULT_RESOLUTION_CHORD = 0.001, c_real = 1.0, c_stab = 64.0, c_gram = 64.0, c_mp = 64.0, c_sub = 64.0, exact-set = 10.0.
+q = min(2, 2 kappa rho_M1 / g) as `_mode_clusters` evaluated it (q_source names which chord decided the row: merge, internal, between); rho_M1 = max(rho_M0, Schur backward error of the half). Every name in this file is printed from its data row.
+
+#### 1. Chord table
+
+| name | cluster | m | kappa_frame | kappa_eig | rho_M0 | rho_arm | rho_M1 | g_int | g_ext | q | q_source | classification | resolved | kind | label |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| rolled FODO exact (theta = pi/4) | 1.000e+00 | 2.000e+00 | 1.193e+01 | nothing | 2.647e-15 | roundoff | 2.647e-15 | 2.136e-15 | 4.496e-01 | 2.000e+00 | merge | definite | false | none | unlabelled |
+| rolled FODO detuned eps = 0.001 | 1.000e+00 | 1.000e+00 | 1.198e+01 | 1.198e+01 | 2.647e-15 | roundoff | 2.647e-15 | Inf | 2.133e-03 | 2.974e-11 | between | definite | true | none | must_resolve |
+| rolled FODO detuned eps = 0.001 | 2.000e+00 | 1.000e+00 | 9.745e+00 | 9.745e+00 | 2.647e-15 | roundoff | 2.647e-15 | Inf | 2.133e-03 | 2.974e-11 | between | definite | true | none | must_resolve |
+| rolled FODO detuned eps = 1.0e-6 | 1.000e+00 | 1.000e+00 | 1.193e+01 | 1.193e+01 | 2.647e-15 | roundoff | 2.647e-15 | Inf | 2.134e-06 | 2.960e-08 | between | definite | true | none | must_resolve |
+| rolled FODO detuned eps = 1.0e-6 | 2.000e+00 | 1.000e+00 | 9.795e+00 | 9.795e+00 | 2.647e-15 | roundoff | 2.647e-15 | Inf | 2.134e-06 | 2.960e-08 | between | definite | true | none | must_resolve |
+| rolled FODO detuned eps = 1.0e-9 | 1.000e+00 | 1.000e+00 | 1.193e+01 | 1.193e+01 | 2.647e-15 | roundoff | 2.647e-15 | Inf | 2.134e-09 | 2.960e-05 | between | definite | true | none | must_resolve |
+| rolled FODO detuned eps = 1.0e-9 | 2.000e+00 | 1.000e+00 | 9.795e+00 | 9.795e+00 | 2.647e-15 | roundoff | 2.647e-15 | Inf | 2.134e-09 | 2.960e-05 | between | definite | true | none | must_resolve |
+| rolled FODO detuned eps = 1.0e-12 | 1.000e+00 | 2.000e+00 | 1.193e+01 | 1.193e+01 | 2.647e-15 | roundoff | 2.647e-15 | 2.135e-12 | 4.496e-01 | 2.959e-02 | internal | definite | false | none | must_not_resolve |
+| trial-015 case 3 limit eps = 0.0 | 1.000e+00 | 2.000e+00 | 2.312e+00 | nothing | 2.237e-15 | roundoff | 2.237e-15 | 9.421e-16 | 6.670e-01 | 2.000e+00 | merge | definite | false | exact_set | unlabelled |
+| trial-015 case 3 limit eps = 0.0 | 2.000e+00 | 1.000e+00 | 2.200e+00 | 2.200e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 6.670e-01 | 1.608e-14 | between | definite | true | none | unlabelled |
+| trial-015 case 3 minus eps = 0.001 | 1.000e+00 | 1.000e+00 | 2.139e+00 | 2.139e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-03 | 5.172e-12 | between | definite | true | none | unlabelled |
+| trial-015 case 3 minus eps = 0.001 | 2.000e+00 | 1.000e+00 | 2.303e+00 | 2.303e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-03 | 5.172e-12 | between | definite | true | none | unlabelled |
+| trial-015 case 3 minus eps = 0.001 | 3.000e+00 | 1.000e+00 | 2.200e+00 | 2.200e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 6.660e-01 | 1.608e-14 | between | definite | true | none | unlabelled |
+| trial-015 case 3 plus eps = 0.001 | 1.000e+00 | 1.000e+00 | 2.303e+00 | 2.303e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-03 | 5.171e-12 | between | definite | true | none | unlabelled |
+| trial-015 case 3 plus eps = 0.001 | 2.000e+00 | 1.000e+00 | 2.139e+00 | 2.139e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-03 | 5.171e-12 | between | definite | true | none | unlabelled |
+| trial-015 case 3 plus eps = 0.001 | 3.000e+00 | 1.000e+00 | 2.200e+00 | 2.200e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 6.660e-01 | 1.603e-14 | between | definite | true | none | unlabelled |
+| trial-015 case 3 minus eps = 1.0e-5 | 1.000e+00 | 1.000e+00 | 2.139e+00 | 2.139e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-05 | 5.172e-10 | between | definite | true | none | unlabelled |
+| trial-015 case 3 minus eps = 1.0e-5 | 2.000e+00 | 1.000e+00 | 2.303e+00 | 2.303e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-05 | 5.172e-10 | between | definite | true | none | unlabelled |
+| trial-015 case 3 minus eps = 1.0e-5 | 3.000e+00 | 1.000e+00 | 2.200e+00 | 2.200e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 6.670e-01 | 1.605e-14 | between | definite | true | none | unlabelled |
+| trial-015 case 3 plus eps = 1.0e-5 | 1.000e+00 | 1.000e+00 | 2.303e+00 | 2.303e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-05 | 5.172e-10 | between | definite | true | none | unlabelled |
+| trial-015 case 3 plus eps = 1.0e-5 | 2.000e+00 | 1.000e+00 | 2.139e+00 | 2.139e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-05 | 5.172e-10 | between | definite | true | none | unlabelled |
+| trial-015 case 3 plus eps = 1.0e-5 | 3.000e+00 | 1.000e+00 | 2.200e+00 | 2.200e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 6.670e-01 | 1.605e-14 | between | definite | true | none | unlabelled |
+| trial-015 case 3 minus eps = 1.0e-7 | 1.000e+00 | 1.000e+00 | 2.139e+00 | 2.139e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-07 | 5.172e-08 | between | definite | true | none | unlabelled |
+| trial-015 case 3 minus eps = 1.0e-7 | 2.000e+00 | 1.000e+00 | 2.303e+00 | 2.303e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-07 | 5.172e-08 | between | definite | true | none | unlabelled |
+| trial-015 case 3 minus eps = 1.0e-7 | 3.000e+00 | 1.000e+00 | 2.200e+00 | 2.200e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 6.670e-01 | 1.689e-14 | between | definite | true | none | unlabelled |
+| trial-015 case 3 plus eps = 1.0e-7 | 1.000e+00 | 1.000e+00 | 2.303e+00 | 2.303e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-07 | 5.172e-08 | between | definite | true | none | unlabelled |
+| trial-015 case 3 plus eps = 1.0e-7 | 2.000e+00 | 1.000e+00 | 2.139e+00 | 2.139e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-07 | 5.172e-08 | between | definite | true | none | unlabelled |
+| trial-015 case 3 plus eps = 1.0e-7 | 3.000e+00 | 1.000e+00 | 2.200e+00 | 2.200e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 6.670e-01 | 1.605e-14 | between | definite | true | none | unlabelled |
+| trial-015 case 3 minus eps = 1.0e-9 | 1.000e+00 | 1.000e+00 | 2.139e+00 | 2.139e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-09 | 5.172e-06 | between | definite | true | none | unlabelled |
+| trial-015 case 3 minus eps = 1.0e-9 | 2.000e+00 | 1.000e+00 | 2.303e+00 | 2.303e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-09 | 5.172e-06 | between | definite | true | none | unlabelled |
+| trial-015 case 3 minus eps = 1.0e-9 | 3.000e+00 | 1.000e+00 | 2.200e+00 | 2.200e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 6.670e-01 | 1.605e-14 | between | definite | true | none | unlabelled |
+| trial-015 case 3 plus eps = 1.0e-9 | 1.000e+00 | 1.000e+00 | 2.303e+00 | 2.303e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-09 | 5.172e-06 | between | definite | true | none | unlabelled |
+| trial-015 case 3 plus eps = 1.0e-9 | 2.000e+00 | 1.000e+00 | 2.139e+00 | 2.139e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 2.000e-09 | 5.172e-06 | between | definite | true | none | unlabelled |
+| trial-015 case 3 plus eps = 1.0e-9 | 3.000e+00 | 1.000e+00 | 2.200e+00 | 2.200e+00 | 2.237e-15 | roundoff | 2.237e-15 | Inf | 6.670e-01 | 1.605e-14 | between | definite | true | none | unlabelled |
+| oracle dense 0 (parameter -0.87) | 1.000e+00 | 1.000e+00 | 2.124e+00 | 2.124e+00 | 2.495e-15 | roundoff | 2.495e-15 | Inf | 3.973e-01 | 3.454e-14 | between | definite | true | none | must_resolve |
+| oracle dense 0 (parameter -0.87) | 2.000e+00 | 1.000e+00 | 2.691e+00 | 2.691e+00 | 2.495e-15 | roundoff | 2.495e-15 | Inf | 3.973e-01 | 3.454e-14 | between | definite | true | none | must_resolve |
+| oracle dense 0 (parameter -0.87) | 3.000e+00 | 1.000e+00 | 2.184e+00 | 2.184e+00 | 2.495e-15 | roundoff | 2.495e-15 | Inf | 7.139e-01 | 1.895e-14 | between | definite | true | none | must_resolve |
+| oracle dense 1 (parameter -0.873) | 1.000e+00 | 1.000e+00 | 2.317e+00 | 2.317e+00 | 2.702e-15 | roundoff | 2.702e-15 | Inf | 3.915e-01 | 3.556e-14 | between | definite | true | none | must_resolve |
+| oracle dense 1 (parameter -0.873) | 2.000e+00 | 1.000e+00 | 2.326e+00 | 2.326e+00 | 2.702e-15 | roundoff | 2.702e-15 | Inf | 3.915e-01 | 3.556e-14 | between | definite | true | none | must_resolve |
+| oracle dense 1 (parameter -0.873) | 3.000e+00 | 1.000e+00 | 2.491e+00 | 2.491e+00 | 2.702e-15 | roundoff | 2.702e-15 | Inf | 7.186e-01 | 1.903e-14 | between | definite | true | none | must_resolve |
+| oracle dense 2 (parameter -0.876) | 1.000e+00 | 1.000e+00 | 2.722e+00 | 2.722e+00 | 2.608e-15 | roundoff | 2.608e-15 | Inf | 3.856e-01 | 4.357e-14 | between | definite | true | none | must_resolve |
+| oracle dense 2 (parameter -0.876) | 2.000e+00 | 1.000e+00 | 2.653e+00 | 2.653e+00 | 2.608e-15 | roundoff | 2.608e-15 | Inf | 3.856e-01 | 4.357e-14 | between | definite | true | none | must_resolve |
+| oracle dense 2 (parameter -0.876) | 3.000e+00 | 1.000e+00 | 2.389e+00 | 2.389e+00 | 2.608e-15 | roundoff | 2.608e-15 | Inf | 7.232e-01 | 2.046e-14 | between | definite | true | none | must_resolve |
+| oracle dense 3 (parameter -0.879) | 1.000e+00 | 1.000e+00 | 2.634e+00 | 2.634e+00 | 3.026e-15 | roundoff | 3.026e-15 | Inf | 3.797e-01 | 5.156e-14 | between | definite | true | none | must_resolve |
+| oracle dense 3 (parameter -0.879) | 2.000e+00 | 1.000e+00 | 3.146e+00 | 3.146e+00 | 3.026e-15 | roundoff | 3.026e-15 | Inf | 3.797e-01 | 5.156e-14 | between | definite | true | none | must_resolve |
+| oracle dense 3 (parameter -0.879) | 3.000e+00 | 1.000e+00 | 2.252e+00 | 2.252e+00 | 3.026e-15 | roundoff | 3.026e-15 | Inf | 7.279e-01 | 2.654e-14 | between | definite | true | none | must_resolve |
+| oracle dense 4 (parameter -0.882) | 1.000e+00 | 1.000e+00 | 2.902e+00 | 2.902e+00 | 2.962e-15 | roundoff | 2.962e-15 | Inf | 3.738e-01 | 4.615e-14 | between | definite | true | none | must_resolve |
+| oracle dense 4 (parameter -0.882) | 2.000e+00 | 1.000e+00 | 2.035e+00 | 2.035e+00 | 2.962e-15 | roundoff | 2.962e-15 | Inf | 3.738e-01 | 4.615e-14 | between | definite | true | none | must_resolve |
+| oracle dense 4 (parameter -0.882) | 3.000e+00 | 1.000e+00 | 2.612e+00 | 2.612e+00 | 2.962e-15 | roundoff | 2.962e-15 | Inf | 7.325e-01 | 2.118e-14 | between | definite | true | none | must_resolve |
+| oracle dense 5 (parameter -0.885) | 1.000e+00 | 1.000e+00 | 3.423e+00 | 3.423e+00 | 2.784e-15 | roundoff | 2.784e-15 | Inf | 3.679e-01 | 5.395e-14 | between | definite | true | none | must_resolve |
+| oracle dense 5 (parameter -0.885) | 2.000e+00 | 1.000e+00 | 2.335e+00 | 2.335e+00 | 2.784e-15 | roundoff | 2.784e-15 | Inf | 3.679e-01 | 5.395e-14 | between | definite | true | none | must_resolve |
+| oracle dense 5 (parameter -0.885) | 3.000e+00 | 1.000e+00 | 2.297e+00 | 2.297e+00 | 2.784e-15 | roundoff | 2.784e-15 | Inf | 7.372e-01 | 1.878e-14 | between | definite | true | none | must_resolve |
+| oracle dense 6 (parameter -0.888) | 1.000e+00 | 1.000e+00 | 2.276e+00 | 2.276e+00 | 2.351e-15 | roundoff | 2.351e-15 | Inf | 3.620e-01 | 3.186e-14 | between | definite | true | none | must_resolve |
+| oracle dense 6 (parameter -0.888) | 2.000e+00 | 1.000e+00 | 2.312e+00 | 2.312e+00 | 2.351e-15 | roundoff | 2.351e-15 | Inf | 3.620e-01 | 3.186e-14 | between | definite | true | none | must_resolve |
+| oracle dense 6 (parameter -0.888) | 3.000e+00 | 1.000e+00 | 2.332e+00 | 2.332e+00 | 2.351e-15 | roundoff | 2.351e-15 | Inf | 7.418e-01 | 1.544e-14 | between | definite | true | none | must_resolve |
+| oracle dense 7 (parameter -0.891) | 1.000e+00 | 1.000e+00 | 2.391e+00 | 2.391e+00 | 4.449e-15 | roundoff | 4.449e-15 | Inf | 3.561e-01 | 6.808e-14 | between | definite | true | none | must_resolve |
+| oracle dense 7 (parameter -0.891) | 2.000e+00 | 1.000e+00 | 2.720e+00 | 2.720e+00 | 4.449e-15 | roundoff | 4.449e-15 | Inf | 3.561e-01 | 6.808e-14 | between | definite | true | none | must_resolve |
+| oracle dense 7 (parameter -0.891) | 3.000e+00 | 1.000e+00 | 3.833e+00 | 3.833e+00 | 4.449e-15 | roundoff | 4.449e-15 | Inf | 7.465e-01 | 4.997e-14 | between | definite | true | none | must_resolve |
+| oracle dense 8 (parameter -0.894) | 1.000e+00 | 1.000e+00 | 2.535e+00 | 2.535e+00 | 2.531e-15 | roundoff | 2.531e-15 | Inf | 3.502e-01 | 4.345e-14 | between | definite | true | none | must_resolve |
+| oracle dense 8 (parameter -0.894) | 2.000e+00 | 1.000e+00 | 2.630e+00 | 2.630e+00 | 2.531e-15 | roundoff | 2.531e-15 | Inf | 3.502e-01 | 4.345e-14 | between | definite | true | none | must_resolve |
+| oracle dense 8 (parameter -0.894) | 3.000e+00 | 1.000e+00 | 2.427e+00 | 2.427e+00 | 2.531e-15 | roundoff | 2.531e-15 | Inf | 7.511e-01 | 1.848e-14 | between | definite | true | none | must_resolve |
+| oracle dense 9 (parameter -0.897) | 1.000e+00 | 1.000e+00 | 2.443e+00 | 2.443e+00 | 3.097e-15 | roundoff | 3.097e-15 | Inf | 3.443e-01 | 6.116e-14 | between | definite | true | none | must_resolve |
+| oracle dense 9 (parameter -0.897) | 2.000e+00 | 1.000e+00 | 3.242e+00 | 3.242e+00 | 3.097e-15 | roundoff | 3.097e-15 | Inf | 3.443e-01 | 6.116e-14 | between | definite | true | none | must_resolve |
+| oracle dense 9 (parameter -0.897) | 3.000e+00 | 1.000e+00 | 2.421e+00 | 2.421e+00 | 3.097e-15 | roundoff | 3.097e-15 | Inf | 7.557e-01 | 2.771e-14 | between | definite | true | none | must_resolve |
+| oracle dense 10 (parameter -0.9) | 1.000e+00 | 1.000e+00 | 2.265e+00 | 2.265e+00 | 2.224e-15 | roundoff | 2.224e-15 | Inf | 3.384e-01 | 3.177e-14 | between | definite | true | none | must_resolve |
+| oracle dense 10 (parameter -0.9) | 2.000e+00 | 1.000e+00 | 2.304e+00 | 2.304e+00 | 2.224e-15 | roundoff | 2.224e-15 | Inf | 3.384e-01 | 3.177e-14 | between | definite | true | none | must_resolve |
+| oracle dense 10 (parameter -0.9) | 3.000e+00 | 1.000e+00 | 2.204e+00 | 2.204e+00 | 2.224e-15 | roundoff | 2.224e-15 | Inf | 7.604e-01 | 1.356e-14 | between | definite | true | none | must_resolve |
+| oracle dense 11 (parameter -0.903) | 1.000e+00 | 1.000e+00 | 2.144e+00 | 2.144e+00 | 2.954e-15 | roundoff | 2.954e-15 | Inf | 3.324e-01 | 5.042e-14 | between | definite | true | none | must_resolve |
+| oracle dense 11 (parameter -0.903) | 2.000e+00 | 1.000e+00 | 2.770e+00 | 2.770e+00 | 2.954e-15 | roundoff | 2.954e-15 | Inf | 3.324e-01 | 5.042e-14 | between | definite | true | none | must_resolve |
+| oracle dense 11 (parameter -0.903) | 3.000e+00 | 1.000e+00 | 2.759e+00 | 2.759e+00 | 2.954e-15 | roundoff | 2.954e-15 | Inf | 7.650e-01 | 2.365e-14 | between | definite | true | none | must_resolve |
+| oracle dense 12 (parameter -0.906) | 1.000e+00 | 1.000e+00 | 2.064e+00 | 2.064e+00 | 2.458e-15 | roundoff | 2.458e-15 | Inf | 3.265e-01 | 3.956e-14 | between | definite | true | none | must_resolve |
+| oracle dense 12 (parameter -0.906) | 2.000e+00 | 1.000e+00 | 2.602e+00 | 2.602e+00 | 2.458e-15 | roundoff | 2.458e-15 | Inf | 3.265e-01 | 3.956e-14 | between | definite | true | none | must_resolve |
+| oracle dense 12 (parameter -0.906) | 3.000e+00 | 1.000e+00 | 2.370e+00 | 2.370e+00 | 2.458e-15 | roundoff | 2.458e-15 | Inf | 7.696e-01 | 1.669e-14 | between | definite | true | none | must_resolve |
+| oracle dense 13 (parameter -0.909) | 1.000e+00 | 1.000e+00 | 2.354e+00 | 2.354e+00 | 2.833e-15 | roundoff | 2.833e-15 | Inf | 3.206e-01 | 4.297e-14 | between | definite | true | none | must_resolve |
+| oracle dense 13 (parameter -0.909) | 2.000e+00 | 1.000e+00 | 2.318e+00 | 2.318e+00 | 2.833e-15 | roundoff | 2.833e-15 | Inf | 3.206e-01 | 4.297e-14 | between | definite | true | none | must_resolve |
+| oracle dense 13 (parameter -0.909) | 3.000e+00 | 1.000e+00 | 2.564e+00 | 2.564e+00 | 2.833e-15 | roundoff | 2.833e-15 | Inf | 7.742e-01 | 1.895e-14 | between | definite | true | none | must_resolve |
+| oracle dense 14 (parameter -0.912) | 1.000e+00 | 1.000e+00 | 2.285e+00 | 2.285e+00 | 3.283e-15 | roundoff | 3.283e-15 | Inf | 3.147e-01 | 7.588e-14 | between | definite | true | none | must_resolve |
+| oracle dense 14 (parameter -0.912) | 2.000e+00 | 1.000e+00 | 3.445e+00 | 3.445e+00 | 3.283e-15 | roundoff | 3.283e-15 | Inf | 3.147e-01 | 7.588e-14 | between | definite | true | none | must_resolve |
+| oracle dense 14 (parameter -0.912) | 3.000e+00 | 1.000e+00 | 2.411e+00 | 2.411e+00 | 3.283e-15 | roundoff | 3.283e-15 | Inf | 7.788e-01 | 3.018e-14 | between | definite | true | none | must_resolve |
+| oracle dense 15 (parameter -0.915) | 1.000e+00 | 1.000e+00 | 2.924e+00 | 2.924e+00 | 3.059e-15 | roundoff | 3.059e-15 | Inf | 3.088e-01 | 6.233e-14 | between | definite | true | none | must_resolve |
+| oracle dense 15 (parameter -0.915) | 2.000e+00 | 1.000e+00 | 2.332e+00 | 2.332e+00 | 3.059e-15 | roundoff | 3.059e-15 | Inf | 3.088e-01 | 6.233e-14 | between | definite | true | none | must_resolve |
+| oracle dense 15 (parameter -0.915) | 3.000e+00 | 1.000e+00 | 2.420e+00 | 2.420e+00 | 3.059e-15 | roundoff | 3.059e-15 | Inf | 7.834e-01 | 2.098e-14 | between | definite | true | none | must_resolve |
+| oracle dense 16 (parameter -0.918) | 1.000e+00 | 1.000e+00 | 2.260e+00 | 2.260e+00 | 2.521e-15 | roundoff | 2.521e-15 | Inf | 3.028e-01 | 3.869e-14 | between | definite | true | none | must_resolve |
+| oracle dense 16 (parameter -0.918) | 2.000e+00 | 1.000e+00 | 2.269e+00 | 2.269e+00 | 2.521e-15 | roundoff | 2.521e-15 | Inf | 3.028e-01 | 3.869e-14 | between | definite | true | none | must_resolve |
+| oracle dense 16 (parameter -0.918) | 3.000e+00 | 1.000e+00 | 2.528e+00 | 2.528e+00 | 2.521e-15 | roundoff | 2.521e-15 | Inf | 7.880e-01 | 1.709e-14 | between | definite | true | none | must_resolve |
+| oracle dense 17 (parameter -0.921) | 1.000e+00 | 1.000e+00 | 3.178e+00 | 3.178e+00 | 2.747e-15 | roundoff | 2.747e-15 | Inf | 2.969e-01 | 6.024e-14 | between | definite | true | none | must_resolve |
+| oracle dense 17 (parameter -0.921) | 2.000e+00 | 1.000e+00 | 2.251e+00 | 2.251e+00 | 2.747e-15 | roundoff | 2.747e-15 | Inf | 2.969e-01 | 6.024e-14 | between | definite | true | none | must_resolve |
+| oracle dense 17 (parameter -0.921) | 3.000e+00 | 1.000e+00 | 2.319e+00 | 2.319e+00 | 2.747e-15 | roundoff | 2.747e-15 | Inf | 7.926e-01 | 1.702e-14 | between | definite | true | none | must_resolve |
+| oracle dense 18 (parameter -0.924) | 1.000e+00 | 1.000e+00 | 2.173e+00 | 2.173e+00 | 3.208e-15 | roundoff | 3.208e-15 | Inf | 2.910e-01 | 7.185e-14 | between | definite | true | none | must_resolve |
+| oracle dense 18 (parameter -0.924) | 2.000e+00 | 1.000e+00 | 3.235e+00 | 3.235e+00 | 3.208e-15 | roundoff | 3.208e-15 | Inf | 2.910e-01 | 7.185e-14 | between | definite | true | none | must_resolve |
+| oracle dense 18 (parameter -0.924) | 3.000e+00 | 1.000e+00 | 2.280e+00 | 2.280e+00 | 3.208e-15 | roundoff | 3.208e-15 | Inf | 7.972e-01 | 2.609e-14 | between | definite | true | none | must_resolve |
+| oracle dense 19 (parameter -0.927) | 1.000e+00 | 1.000e+00 | 2.561e+00 | 2.561e+00 | 2.534e-15 | roundoff | 2.534e-15 | Inf | 2.850e-01 | 4.660e-14 | between | definite | true | none | must_resolve |
+| oracle dense 19 (parameter -0.927) | 2.000e+00 | 1.000e+00 | 2.321e+00 | 2.321e+00 | 2.534e-15 | roundoff | 2.534e-15 | Inf | 2.850e-01 | 4.660e-14 | between | definite | true | none | must_resolve |
+| oracle dense 19 (parameter -0.927) | 3.000e+00 | 1.000e+00 | 2.403e+00 | 2.403e+00 | 2.534e-15 | roundoff | 2.534e-15 | Inf | 8.018e-01 | 1.567e-14 | between | definite | true | none | must_resolve |
+| oracle dense 20 (parameter -0.9299999999999999) | 1.000e+00 | 1.000e+00 | 2.595e+00 | 2.595e+00 | 2.768e-15 | roundoff | 2.768e-15 | Inf | 2.791e-01 | 5.191e-14 | between | definite | true | none | must_resolve |
+| oracle dense 20 (parameter -0.9299999999999999) | 2.000e+00 | 1.000e+00 | 2.205e+00 | 2.205e+00 | 2.768e-15 | roundoff | 2.768e-15 | Inf | 2.791e-01 | 5.191e-14 | between | definite | true | none | must_resolve |
+| oracle dense 20 (parameter -0.9299999999999999) | 3.000e+00 | 1.000e+00 | 2.517e+00 | 2.517e+00 | 2.768e-15 | roundoff | 2.768e-15 | Inf | 8.064e-01 | 1.756e-14 | between | definite | true | none | must_resolve |
+| oracle dense 21 (parameter -0.933) | 1.000e+00 | 1.000e+00 | 2.299e+00 | 2.299e+00 | 2.740e-15 | roundoff | 2.740e-15 | Inf | 2.731e-01 | 4.666e-14 | between | definite | true | none | must_resolve |
+| oracle dense 21 (parameter -0.933) | 2.000e+00 | 1.000e+00 | 2.052e+00 | 2.052e+00 | 2.740e-15 | roundoff | 2.740e-15 | Inf | 2.731e-01 | 4.666e-14 | between | definite | true | none | must_resolve |
+| oracle dense 21 (parameter -0.933) | 3.000e+00 | 1.000e+00 | 2.437e+00 | 2.437e+00 | 2.740e-15 | roundoff | 2.740e-15 | Inf | 8.110e-01 | 1.661e-14 | between | definite | true | none | must_resolve |
+| oracle dense 22 (parameter -0.9359999999999999) | 1.000e+00 | 1.000e+00 | 2.551e+00 | 2.551e+00 | 2.392e-15 | roundoff | 2.392e-15 | Inf | 2.672e-01 | 6.245e-14 | between | definite | true | none | must_resolve |
+| oracle dense 22 (parameter -0.9359999999999999) | 2.000e+00 | 1.000e+00 | 2.986e+00 | 2.986e+00 | 2.392e-15 | roundoff | 2.392e-15 | Inf | 2.672e-01 | 6.245e-14 | between | definite | true | none | must_resolve |
+| oracle dense 22 (parameter -0.9359999999999999) | 3.000e+00 | 1.000e+00 | 2.122e+00 | 2.122e+00 | 2.392e-15 | roundoff | 2.392e-15 | Inf | 8.155e-01 | 1.795e-14 | between | definite | true | none | must_resolve |
+| oracle dense 23 (parameter -0.9390000000000001) | 1.000e+00 | 1.000e+00 | 3.586e+00 | 3.586e+00 | 3.212e-15 | roundoff | 3.212e-15 | Inf | 2.613e-01 | 9.435e-14 | between | definite | true | none | must_resolve |
+| oracle dense 23 (parameter -0.9390000000000001) | 2.000e+00 | 1.000e+00 | 2.307e+00 | 2.307e+00 | 3.212e-15 | roundoff | 3.212e-15 | Inf | 2.613e-01 | 9.435e-14 | between | definite | true | none | must_resolve |
+| oracle dense 23 (parameter -0.9390000000000001) | 3.000e+00 | 1.000e+00 | 2.660e+00 | 2.660e+00 | 3.212e-15 | roundoff | 3.212e-15 | Inf | 8.201e-01 | 2.232e-14 | between | definite | true | none | must_resolve |
+| oracle prescribed_h 0 (parameter -2.0) | 1.000e+00 | 1.000e+00 | 1.549e+01 | 1.549e+01 | 1.286e-14 | roundoff | 1.286e-14 | Inf | 3.088e-01 | 1.473e-12 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 0 (parameter -2.0) | 2.000e+00 | 1.000e+00 | 1.505e+01 | 1.505e+01 | 1.286e-14 | roundoff | 1.286e-14 | Inf | 3.088e-01 | 1.473e-12 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 0 (parameter -2.0) | 3.000e+00 | 1.000e+00 | 2.010e+00 | 2.010e+00 | 1.286e-14 | roundoff | 1.286e-14 | Inf | 7.788e-01 | 4.971e-13 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 1 (parameter -1.0) | 1.000e+00 | 1.000e+00 | 7.240e+00 | 7.240e+00 | 4.453e-15 | roundoff | 4.453e-15 | Inf | 3.088e-01 | 2.410e-13 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 1 (parameter -1.0) | 2.000e+00 | 1.000e+00 | 7.050e+00 | 7.050e+00 | 4.453e-15 | roundoff | 4.453e-15 | Inf | 3.088e-01 | 2.410e-13 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 1 (parameter -1.0) | 3.000e+00 | 1.000e+00 | 2.010e+00 | 2.010e+00 | 4.453e-15 | roundoff | 4.453e-15 | Inf | 7.788e-01 | 8.072e-14 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 2 (parameter -0.3) | 1.000e+00 | 1.000e+00 | 3.904e+00 | 3.904e+00 | 1.916e-15 | roundoff | 1.916e-15 | Inf | 3.088e-01 | 5.548e-14 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 2 (parameter -0.3) | 2.000e+00 | 1.000e+00 | 3.830e+00 | 3.830e+00 | 1.916e-15 | roundoff | 1.916e-15 | Inf | 3.088e-01 | 5.548e-14 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 2 (parameter -0.3) | 3.000e+00 | 1.000e+00 | 2.010e+00 | 2.010e+00 | 1.916e-15 | roundoff | 1.916e-15 | Inf | 7.788e-01 | 1.889e-14 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 3 (parameter 0.05) | 1.000e+00 | 1.000e+00 | 2.990e+00 | 2.990e+00 | 2.277e-15 | roundoff | 2.277e-15 | Inf | 3.088e-01 | 4.935e-14 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 3 (parameter 0.05) | 2.000e+00 | 1.000e+00 | 2.955e+00 | 2.955e+00 | 2.277e-15 | roundoff | 2.277e-15 | Inf | 3.088e-01 | 4.935e-14 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 3 (parameter 0.05) | 3.000e+00 | 1.000e+00 | 2.010e+00 | 2.010e+00 | 2.277e-15 | roundoff | 2.277e-15 | Inf | 7.788e-01 | 1.733e-14 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 4 (parameter 0.5) | 1.000e+00 | 1.000e+00 | 2.552e+00 | 2.552e+00 | 2.412e-15 | roundoff | 2.412e-15 | Inf | 3.088e-01 | 4.224e-14 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 4 (parameter 0.5) | 2.000e+00 | 1.000e+00 | 2.550e+00 | 2.550e+00 | 2.412e-15 | roundoff | 2.412e-15 | Inf | 3.088e-01 | 4.224e-14 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 4 (parameter 0.5) | 3.000e+00 | 1.000e+00 | 2.010e+00 | 2.010e+00 | 2.412e-15 | roundoff | 2.412e-15 | Inf | 7.788e-01 | 1.582e-14 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 5 (parameter 1.0) | 1.000e+00 | 1.000e+00 | 3.040e+00 | 3.040e+00 | 2.219e-15 | roundoff | 2.219e-15 | Inf | 3.088e-01 | 4.385e-14 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 5 (parameter 1.0) | 2.000e+00 | 1.000e+00 | 3.050e+00 | 3.050e+00 | 2.219e-15 | roundoff | 2.219e-15 | Inf | 3.088e-01 | 4.385e-14 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 5 (parameter 1.0) | 3.000e+00 | 1.000e+00 | 2.010e+00 | 2.010e+00 | 2.219e-15 | roundoff | 2.219e-15 | Inf | 7.788e-01 | 1.738e-14 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 6 (parameter 2.0) | 1.000e+00 | 1.000e+00 | 7.090e+00 | 7.090e+00 | 4.509e-15 | roundoff | 4.509e-15 | Inf | 3.088e-01 | 2.081e-13 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 6 (parameter 2.0) | 2.000e+00 | 1.000e+00 | 7.050e+00 | 7.050e+00 | 4.509e-15 | roundoff | 4.509e-15 | Inf | 3.088e-01 | 2.081e-13 | between | definite | true | none | unlabelled |
+| oracle prescribed_h 6 (parameter 2.0) | 3.000e+00 | 1.000e+00 | 2.010e+00 | 2.010e+00 | 4.509e-15 | roundoff | 4.509e-15 | Inf | 7.788e-01 | 8.165e-14 | between | definite | true | none | unlabelled |
+| oracle repeated 0 (parameter -1.3) | 1.000e+00 | 2.000e+00 | 2.775e+00 | nothing | 2.407e-15 | roundoff | 2.407e-15 | 2.220e-16 | 5.719e-01 | 2.000e+00 | merge | definite | false | exact_set | unlabelled |
+| oracle repeated 0 (parameter -1.3) | 2.000e+00 | 1.000e+00 | 2.341e+00 | 2.341e+00 | 2.407e-15 | roundoff | 2.407e-15 | Inf | 5.719e-01 | 2.371e-14 | between | definite | true | none | unlabelled |
+| oracle repeated 1 (parameter -1.3) | 1.000e+00 | 2.000e+00 | 2.557e+00 | nothing | 2.015e-15 | roundoff | 2.015e-15 | 2.483e-16 | 5.719e-01 | 2.000e+00 | merge | definite | false | exact_set | unlabelled |
+| oracle repeated 1 (parameter -1.3) | 2.000e+00 | 1.000e+00 | 2.289e+00 | 2.289e+00 | 2.015e-15 | roundoff | 2.015e-15 | Inf | 5.719e-01 | 1.908e-14 | between | definite | true | none | unlabelled |
+| oracle repeated 2 (parameter -1.3) | 1.000e+00 | 2.000e+00 | 2.502e+00 | nothing | 2.195e-15 | roundoff | 2.195e-15 | 8.951e-16 | 5.719e-01 | 2.000e+00 | merge | definite | false | exact_set | unlabelled |
+| oracle repeated 2 (parameter -1.3) | 2.000e+00 | 1.000e+00 | 2.384e+00 | 2.384e+00 | 2.195e-15 | roundoff | 2.195e-15 | Inf | 5.719e-01 | 2.040e-14 | between | definite | true | none | unlabelled |
+| oracle repeated 3 (parameter -1.3) | 1.000e+00 | 2.000e+00 | 2.434e+00 | nothing | 2.055e-15 | roundoff | 2.055e-15 | 1.570e-16 | 5.719e-01 | 2.000e+00 | merge | definite | false | exact_set | unlabelled |
+| oracle repeated 3 (parameter -1.3) | 2.000e+00 | 1.000e+00 | 2.073e+00 | 2.073e+00 | 2.055e-15 | roundoff | 2.055e-15 | Inf | 5.719e-01 | 1.765e-14 | between | definite | true | none | unlabelled |
+| oracle defective 0 (parameter -1.3) | 1.000e+00 | 2.000e+00 | nothing | nothing | 2.246e-15 | roundoff | 2.246e-15 | 1.553e-08 | 5.719e-01 | 2.000e+00 | merge | unresolved | false | none | unlabelled |
+| oracle defective 0 (parameter -1.3) | 2.000e+00 | 1.000e+00 | 2.401e+00 | 2.401e+00 | 2.246e-15 | roundoff | 2.246e-15 | Inf | 5.719e-01 | 2.308e-14 | between | definite | true | none | unlabelled |
+| oracle coasting 0 (parameter -0.4) | 1.000e+00 | 0.000e+00 | nothing | nothing | 1.718e-15 | roundoff | 1.718e-15 | 0.000e+00 | 5.623e-01 | 0.000e+00 | merge | unit_eigenvalue | false | none | unlabelled |
+| oracle coasting 0 (parameter -0.4) | 2.000e+00 | 1.000e+00 | 2.009e+00 | 2.009e+00 | 1.718e-15 | roundoff | 1.718e-15 | Inf | 5.623e-01 | 8.476e-15 | between | definite | true | none | unlabelled |
+| oracle coasting 0 (parameter -0.4) | 3.000e+00 | 1.000e+00 | 2.048e+00 | 2.048e+00 | 1.718e-15 | roundoff | 1.718e-15 | Inf | 8.337e-01 | 8.476e-15 | between | definite | true | none | unlabelled |
+| oracle coasting 1 (parameter 0.0) | 1.000e+00 | 0.000e+00 | nothing | nothing | 1.533e-15 | roundoff | 1.533e-15 | 0.000e+00 | 5.623e-01 | 0.000e+00 | merge | unit_eigenvalue | false | none | unlabelled |
+| oracle coasting 1 (parameter 0.0) | 2.000e+00 | 1.000e+00 | 2.050e+00 | 2.050e+00 | 1.533e-15 | roundoff | 1.533e-15 | Inf | 5.623e-01 | 7.639e-15 | between | definite | true | none | unlabelled |
+| oracle coasting 1 (parameter 0.0) | 3.000e+00 | 1.000e+00 | 2.028e+00 | 2.028e+00 | 1.533e-15 | roundoff | 1.533e-15 | Inf | 8.337e-01 | 7.639e-15 | between | definite | true | none | unlabelled |
+| oracle coasting 2 (parameter 0.7) | 1.000e+00 | 0.000e+00 | nothing | nothing | 2.096e-15 | roundoff | 2.096e-15 | 0.000e+00 | 5.623e-01 | 0.000e+00 | merge | unit_eigenvalue | false | none | unlabelled |
+| oracle coasting 2 (parameter 0.7) | 2.000e+00 | 1.000e+00 | 2.051e+00 | 2.051e+00 | 2.096e-15 | roundoff | 2.096e-15 | Inf | 5.623e-01 | 1.066e-14 | between | definite | true | none | unlabelled |
+| oracle coasting 2 (parameter 0.7) | 3.000e+00 | 1.000e+00 | 2.068e+00 | 2.068e+00 | 2.096e-15 | roundoff | 2.096e-15 | Inf | 8.337e-01 | 1.066e-14 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 0.1) | 1.000e+00 | 1.000e+00 | 4.597e+00 | 4.597e+00 | 1.394e-15 | roundoff | 1.394e-15 | Inf | 4.353e-02 | 3.727e-13 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 0.1) | 2.000e+00 | 1.000e+00 | 4.597e+00 | 4.597e+00 | 1.394e-15 | roundoff | 1.394e-15 | Inf | 4.353e-02 | 3.727e-13 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 0.1) | 3.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.394e-15 | roundoff | 1.394e-15 | Inf | 1.192e+00 | 1.118e-14 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 0.01) | 1.000e+00 | 1.000e+00 | 1.421e+01 | 1.421e+01 | 1.400e-15 | roundoff | 1.400e-15 | Inf | 1.408e-02 | 2.834e-12 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 0.01) | 2.000e+00 | 1.000e+00 | 1.421e+01 | 1.421e+01 | 1.400e-15 | roundoff | 1.400e-15 | Inf | 1.408e-02 | 2.834e-12 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 0.01) | 3.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.400e-15 | roundoff | 1.400e-15 | Inf | 1.204e+00 | 3.306e-14 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 0.001) | 1.000e+00 | 1.000e+00 | 4.484e+01 | 4.484e+01 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 4.464e-03 | 2.823e-11 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 0.001) | 2.000e+00 | 1.000e+00 | 4.484e+01 | 4.484e+01 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 4.464e-03 | 2.823e-11 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 0.001) | 3.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.208e+00 | 1.040e-13 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 0.0001) | 1.000e+00 | 1.000e+00 | 1.418e+02 | 1.418e+02 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.412e-03 | 3.091e-10 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 0.0001) | 2.000e+00 | 1.000e+00 | 1.418e+02 | 1.418e+02 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.412e-03 | 3.091e-10 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 0.0001) | 3.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.209e+00 | 3.285e-13 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-5) | 1.000e+00 | 1.000e+00 | 4.483e+02 | 4.483e+02 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 4.465e-04 | 2.822e-09 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-5) | 2.000e+00 | 1.000e+00 | 4.483e+02 | 4.483e+02 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 4.465e-04 | 2.822e-09 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-5) | 3.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.209e+00 | 1.039e-12 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-6) | 1.000e+00 | 1.000e+00 | 1.418e+03 | 1.418e+03 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.412e-04 | 2.822e-08 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-6) | 2.000e+00 | 1.000e+00 | 1.418e+03 | 1.418e+03 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.412e-04 | 2.822e-08 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-6) | 3.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.209e+00 | 3.284e-12 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-7) | 1.000e+00 | 1.000e+00 | 4.483e+03 | 4.483e+03 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 4.465e-05 | 3.175e-07 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-7) | 2.000e+00 | 1.000e+00 | 4.483e+03 | 4.483e+03 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 4.465e-05 | 3.175e-07 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-7) | 3.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.209e+00 | 1.075e-11 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-8) | 1.000e+00 | 1.000e+00 | 1.418e+04 | 1.418e+04 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.412e-05 | 2.822e-06 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-8) | 2.000e+00 | 1.000e+00 | 1.418e+04 | 1.418e+04 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.412e-05 | 2.822e-06 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-8) | 3.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.209e+00 | 3.284e-11 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-9) | 1.000e+00 | 1.000e+00 | 4.483e+04 | 4.483e+04 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 4.465e-06 | 2.822e-05 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-9) | 2.000e+00 | 1.000e+00 | 4.483e+04 | 4.483e+04 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 4.465e-06 | 2.822e-05 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-9) | 3.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.209e+00 | 1.038e-10 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-10) | 1.000e+00 | 1.000e+00 | 1.418e+05 | 1.418e+05 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.412e-06 | 2.822e-04 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-10) | 2.000e+00 | 1.000e+00 | 1.418e+05 | 1.418e+05 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.412e-06 | 2.822e-04 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-10) | 3.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.209e+00 | 3.284e-10 | between | definite | true | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-11) | 1.000e+00 | 2.000e+00 | nothing | 4.498e+05 | 1.401e-15 | roundoff | 1.401e-15 | 4.466e-07 | 1.209e+00 | 2.822e-03 | merge | unresolved | false | none | unlabelled |
+| crab ladder k = k_c (1 - 1.0e-11) | 2.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.401e-15 | roundoff | 1.401e-15 | Inf | 1.209e+00 | 4.664e-15 | between | definite | true | none | unlabelled |
+| near collision diag(R(0.73), R(1.41), R(-0.73 - 1e-9)) | 1.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.332e-15 | roundoff | 1.332e-15 | Inf | 1.000e-09 | 5.329e-06 | between | definite | true | none | unlabelled |
+| near collision diag(R(0.73), R(1.41), R(-0.73 - 1e-9)) | 2.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.332e-15 | roundoff | 1.332e-15 | Inf | 1.000e-09 | 5.329e-06 | between | definite | true | none | unlabelled |
+| near collision diag(R(0.73), R(1.41), R(-0.73 - 1e-9)) | 3.000e+00 | 1.000e+00 | 2.000e+00 | 2.000e+00 | 1.332e-15 | roundoff | 1.332e-15 | Inf | 6.670e-01 | 7.990e-15 | between | definite | true | none | unlabelled |
+| defective spectator (mu = 0.72) | 1.000e+00 | 2.000e+00 | nothing | nothing | 9.814e-16 | roundoff | 9.814e-16 | 0.000e+00 | 1.319e+00 | 2.000e+00 | merge | unresolved | false | none | unlabelled |
+
+
+#### 1a. Bracket (design "Default value")
+
+- must-resolve fixtures: 27; all their clusters resolved: true
+- must-not-resolve fixture "rolled FODO detuned eps = 1.0e-12": clusters m = 2 definite resolved = false
+- (objection record) "near collision diag(R(0.73), R(1.41), R(-0.73 - 1e-9))": clusters m = 1 definite resolved = true, m = 1 definite resolved = true, m = 1 definite resolved = true; q = 5.329e-06; labelled must-not-resolve it would give the bracket [2.960e-05, 5.329e-06]
+- largest q of a must-resolve fixture: 2.960e-05 at "rolled FODO detuned eps = 1.0e-9"
+- smallest q of a must-not-resolve fixture: 2.959e-02 at "rolled FODO detuned eps = 1.0e-12"
+- bracket [2.960e-05, 2.959e-02]; geometric mean sqrt(2.960e-05 * 2.959e-02) = 9.358e-04; rounded to one significant digit 0.0009; rounded to a power of ten (the design's own example 7.9e-5 -> 1e-4) 0.001
+- source constant 0.001 equals the power-of-ten rounding: true; margins at the source constant: must-resolve extreme ratio 2.960e-02, must-not-resolve extreme ratio 2.959e+01
+- provisional 1e-4 inside the bracket: true; rounded mean equals the source constant 0.001: false
+- unlabelled fixtures with q inside the bracket (2): "crab ladder k = k_c (1 - 1.0e-10)" (2.822e-04); "crab ladder k = k_c (1 - 1.0e-11)" (2.822e-03)
+- must-resolve chords, descending: "rolled FODO detuned eps = 1.0e-9" 2.960e-05; "rolled FODO detuned eps = 1.0e-6" 2.960e-08; "rolled FODO detuned eps = 0.001" 2.974e-11; "oracle dense 23 (parameter -0.9390000000000001)" 9.435e-14; "oracle dense 14 (parameter -0.912)" 7.588e-14; "oracle dense 18 (parameter -0.924)" 7.185e-14
+- must-not-resolve chords, ascending: "rolled FODO detuned eps = 1.0e-12" 2.959e-02
+
+Rows: 1182; fixtures: 466.
+
+#### 2. PROVISIONAL multiplier windows (one tenth / ten rule)
+
+Fixture sets: the chord table's 466 fixtures plus the fixtures each docstring names (built in `extra_fixtures`, `measure_gram_mp_sub_exact`); every name printed from its row. Crosswise partitions are derived from the eigenvalue data (see `crosswise_partition`).
+
+##### c_real (_REAL_CLASS_MULTIPLIER)
+
+- ratio at multiplier 1: |Im rho_j| / (sqrt(rho_M1) max(1, ||M||_2)); accepted = real-class eigenvalues, rejected = complex-class eigenvalues
+- source value: 1.0
+- largest accepted ratio: 2.039e-02 at "rotated drift (+) R(1.2), W4 seed 20260911, eigenvalue 4"
+- smallest rejected ratio: 3.355e+01 at "R(1e-6) (+) R(1.2), eigenvalue 1"
+- window [2.039e-01, 3.355e+00]; source value inside: true
+  - accepted "rotated drift (+) R(1.2), W4 seed 20260911, eigenvalue 4" 2.039e-02
+  - accepted "rotated drift (+) R(1.2), W4 seed 20260911, eigenvalue 1" 2.039e-02
+  - accepted "I_2 (+) R(1.2), eigenvalue 2" 0.000e+00
+  - accepted "-I_2 (+) R(1.2), eigenvalue 3" 0.000e+00
+  - rejected "R(1e-6) (+) R(1.2), eigenvalue 1" 3.355e+01
+  - rejected "R(1e-6) (+) R(1.2), eigenvalue 4" 3.355e+01
+  - rejected "manufactured stable 6x6 seed 20260911 index 9, eigenvalue 6" 5.906e+02
+  - rejected "manufactured stable 6x6 seed 20260911 index 9, eigenvalue 1" 5.906e+02
+
+##### c_stab (_STABILITY_MULTIPLIER)
+
+- ratio at multiplier 1: departure / (kappa_c max(rho_M1, (rho_M1 dep^(m-1))^(1/m))); accepted = max departure of every cluster of a stable fixture, rejected = min departure of the off-circle clusters
+- source value: 64.0
+- largest accepted ratio: 5.179e-01 at "rotated defective spectator, W4 seed 20260911, cluster [1, 2, 3, 4]"
+- smallest rejected ratio: 1.886e+03 at "crab ladder k = k_c (1 - -1.0e-7), cluster [1, 2, 5, 6]"
+- window [5.179e+00, 1.886e+02]; source value inside: true
+  - accepted "rotated defective spectator, W4 seed 20260911, cluster [1, 2, 3, 4]" 5.179e-01
+  - accepted "manufactured stable 6x6 seed 20260911 index 134, cluster [3, 4]" 4.785e-01
+  - accepted "manufactured stable 4x4 seed 20260911 index 33, cluster [2, 3]" 4.697e-01
+  - accepted "manufactured stable 4x4 seed 20260911 index 42, cluster [2, 3]" 4.486e-01
+  - rejected "crab ladder k = k_c (1 - -1.0e-7), cluster [1, 2, 5, 6]" 1.886e+03
+  - rejected "crab ladder k = k_c (1 - -1.0e-6), cluster [1, 2, 5, 6]" 5.962e+03
+  - rejected "crab ladder k = k_c (1 - -1.0e-5), cluster [1, 2, 5, 6]" 1.885e+04
+  - rejected "crab ladder k = k_c (1 - -0.0001), cluster [1, 2, 5, 6]" 5.688e+04
+
+##### c_gram (_GRAM_FLOOR_MULTIPLIER)
+
+- ratio at multiplier 1: min |lambda(H)| / (rho_M1 / g_ext); accepted = every definite cluster (must exceed 10 c), rejected = single-copy halves of an exactly degenerate eigenspace under a crosswise partition (must stay below c / 10)
+- source value: 64.0
+- refused: "oracle repeated 3 (parameter -1.3), crosswise partition [[1, 5], [2, 6], [3, 4]]: REFUSED by the kernel: ArgumentError: _schur_spectral_projector: the selected block shares an eigenvalue with its"
+- refused: "diag(R(0.73), R(1.41), R(0.73)), crosswise partition [[1, 5], [2, 6], [3, 4]]: REFUSED by the kernel: ArgumentError: _schur_spectral_projector: the selected block shares an eigenvalue with its"
+- refused: "diag(R(0.9), R(0.9), R(0.9)), crosswise partition [[1, 4], [2, 5], [3, 6]]: REFUSED by the kernel: ArgumentError: _schur_spectral_projector: the selected block shares an eigenvalue with its"
+- refused: "oracle repeated 0 (parameter -1.3), crosswise partition [[1, 6], [2, 5], [3, 4]]: REFUSED by the kernel: ArgumentError: _schur_spectral_projector: the selected block shares an eigenvalue with its"
+- refused: "defective spectator (mu = 0.72), crosswise partition [[1, 3], [2, 4]]: REFUSED by the kernel: ArgumentError: _schur_spectral_projector: the selected block shares an eigenvalue with its"
+- smallest accepted ratio (must exceed 10 c): 7.111e+03 at "crab ladder k = k_c (1 - 1.0e-10), cluster [2, 5]"
+- largest rejected ratio (must stay below c / 10): 1.966e-01 at "trial-015 case 3 limit eps = 0.0, crosswise partition [[1, 5], [2, 6], [3, 4]], cluster [1, 5]"
+- window [1.966e+00, 7.111e+02]; source value inside: true
+  - accepted "crab ladder k = k_c (1 - 1.0e-10), cluster [2, 5]" 7.111e+03
+  - accepted "crab ladder k = k_c (1 - 1.0e-10), cluster [1, 6]" 7.111e+03
+  - accepted "rolled FODO detuned eps = 1.0e-9, cluster [1, 4]" 6.757e+04
+  - accepted "crab ladder k = k_c (1 - 1.0e-9), cluster [1, 6]" 7.111e+04
+  - rejected "trial-015 case 3 limit eps = 0.0, crosswise partition [[1, 5], [2, 6], [3, 4]], cluster [1, 5]" 1.966e-01
+  - rejected "trial-015 case 3 limit eps = 0.0, crosswise partition [[1, 5], [2, 6], [3, 4]], cluster [2, 6]" 1.854e-01
+  - rejected "oracle repeated 2 (parameter -1.3), crosswise partition [[1, 6], [2, 5], [3, 4]], cluster [2, 5]" 1.794e-01
+  - rejected "oracle repeated 2 (parameter -1.3), crosswise partition [[1, 6], [2, 5], [3, 4]], cluster [1, 6]" 1.654e-01
+
+##### c_mp (_MINIMAL_POLYNOMIAL_MULTIPLIER)
+
+- ratio at multiplier 1: r_mp / (max(rho_M1, g_int) ||P_c||_2 / ||M||_F); accepted = definite and indefinite groups m >= 2 (incl. explicit partitions of the split controls), rejected = the defective spectators
+- source value: 64.0
+- largest accepted ratio: 5.445e-01 at "near collision diag(R(0.73), R(1.41), R(-0.73 - 1e-9)), partition x/z union [1, 2, 5, 6], cluster [1, 2, 5, 6]"
+- smallest rejected ratio: 6.404e+06 at "rotated defective spectator (+) R(1.1), W6 seed 20260911, cluster [1, 2, 5, 6]"
+- window [5.445e+00, 6.404e+05]; source value inside: true
+  - accepted "near collision diag(R(0.73), R(1.41), R(-0.73 - 1e-9)), partition x/z union [1, 2, 5, 6], cluster [1, 2, 5, 6]" 5.445e-01
+  - accepted "diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 trial 24, cluster [1, 2, 5, 6]" 3.499e-01
+  - accepted "diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 trial 15, cluster [1, 2, 5, 6]" 2.984e-01
+  - accepted "oracle repeated 2 (parameter -1.3), cluster [1, 2, 5, 6]" 2.654e-01
+  - rejected "rotated defective spectator (+) R(1.1), W6 seed 20260911, cluster [1, 2, 5, 6]" 6.404e+06
+  - rejected "rotated defective spectator, W4 seed 20260911, cluster [1, 2, 3, 4]" 1.180e+07
+  - rejected "defective spectator (+) R(1.1), cluster [1, 2, 5, 6]" 1.039e+14
+  - rejected "defective spectator (mu = 0.73), cluster [1, 2, 3, 4]" 1.903e+14
+
+##### c_sub (_SUBSPACE_RESIDUAL_MULTIPLIER)
+
+- ratio at multiplier 1: r_sub / (d eps); accepted = every cluster of every fixture; rejected = none reachable by a fixture (an ordered Schur basis is backward stable; the rejected side is an injected non-invariant basis, section 3)
+- source value: 64.0
+- largest accepted ratio: 1.308e+00 at "manufactured stable 4x4 seed 20260911 index 31, cluster [2, 3]"
+- window [1.308e+01, Inf]; source value inside: true (no rejected fixture: the upper edge is open)
+  - accepted "manufactured stable 4x4 seed 20260911 index 31, cluster [2, 3]" 1.308e+00
+  - accepted "manufactured stable 4x4 seed 20260911 index 176, cluster [2, 3]" 1.286e+00
+  - accepted "manufactured stable 4x4 seed 20260911 index 103, cluster [1, 4]" 1.218e+00
+  - accepted "manufactured stable 4x4 seed 20260911 index 102, cluster [1, 4]" 1.201e+00
+
+##### exact-set multiplier (_EXACT_SET_MULTIPLIER)
+
+- ratio at multiplier 1: g_int / rho_M1; accepted = exactly degenerate definite m >= 2 clusters of 6D maps (FODO embedding, diag(R(0.73), R(1.41), R(0.73)) and 30 conjugations, the case-3 limit map), rejected = the 1e-12 control's 6D embedding
+- source value: 10.0
+- largest accepted ratio: 5.875e-01 at "diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 trial 19, cluster [1, 2, 5, 6]"
+- smallest rejected ratio: 5.377e+02 at "rolled FODO detuned eps = 1.0e-12 (+) R(1.1), 6D embedding, cluster [1, 2, 3, 4, 5, 6]"
+- window [5.875e+00, 5.377e+01]; source value inside: true
+  - accepted "diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 trial 19, cluster [1, 2, 5, 6]" 5.875e-01
+  - accepted "rolled FODO exact (+) R(1.1), 6D embedding, cluster [1, 2, 5, 6]" 5.379e-01
+  - accepted "trial-015 case 3 limit eps = 0.0, cluster [1, 2, 5, 6]" 4.211e-01
+  - accepted "diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 trial 24, cluster [1, 2, 5, 6]" 3.849e-01
+  - rejected "rolled FODO detuned eps = 1.0e-12 (+) R(1.1), 6D embedding, cluster [1, 2, 3, 4, 5, 6]" 5.377e+02
+
+| multiplier | source | window low | window high | inside | accepted rows | rejected rows |
+|---|---|---|---|---|---|---|
+| c_real | 1.0 | 2.039e-01 | 3.355e+00 | true | 22 | 2466 |
+| c_stab | 64.0 | 5.179e+00 | 1.886e+02 | true | 1200 | 11 |
+| c_gram | 64.0 | 1.966e+00 | 7.111e+02 | true | 1254 | 8 |
+| c_mp | 64.0 | 5.445e+00 | 6.404e+05 | true | 53 | 4 |
+| c_sub | 64.0 | 1.308e+01 | Inf | true | 1263 | 0 |
+| exact_set | 10.0 | 5.875e+00 | 5.377e+01 | true | 33 | 1 |
+
+#### 3. Rejected side of the c eps kappa check families (stage 3 block of test/runtests.jl)
+
+Julia 1.12.4; seed 20260911. ratio = wrong-quantity residual / the check's threshold; every ratio must exceed 10. Rows whose fixture gives the defect nothing to act on are stated as such in section 3a of the report.
+
+| runtests lines | fixture | wrong quantity (the defect) | residual | threshold | ratio | > 10 |
+|---|---|---|---|---|---|---|
+| 2648 | rolled FODO exact (theta = pi/4) | P from the unnormalized Schur basis Q (H^-1/2 skipped): \|\|P_Q - I\|\| | 1.814e+00 | 3.391e-13 | 5.350e+12 | true |
+| 2650 | rolled FODO exact (theta = pi/4) | G from the unnormalized Schur basis: \|\|G_Q - Sigma_closed_form\|\| | 1.391e+01 | 6.781e-13 | 2.051e+13 | true |
+| 2652, 2866 | rolled FODO exact (theta = pi/4) against the 1e-3 control's covariance | N6 closure under the exact map of the SPLIT control's G: \|\|M G_3 M' - G_3\|\| | 5.738e-03 | 1.695e-13 | 3.385e+10 | true |
+| 2654, 2877 | rolled FODO exact (theta = pi/4) | restricted map of the conjugate orientation: \|\|T_conj - e^{-i mu} I\|\| | 2.756e+00 | 1.695e-13 | 1.626e+13 | true |
+| 2655, 2875 | rolled FODO exact (theta = pi/4) | restricted map from Q (unnormalized): \|\|T_Q' T_Q - I\|\| | 1.402e+00 | 1.695e-13 | 8.269e+12 | true |
+| 2656, 2878, 2905 | rolled FODO exact (theta = pi/4) | minimal-polynomial residual with tau = 2 cos(sum of tunes) | 3.818e-02 | 1.421e-14 | 2.687e+12 | true |
+| 2659 | rolled FODO exact (theta = pi/4) | kappa_frame from 1 / max lambda instead of 1 / min lambda | 2.135e+00 | 1.695e-13 | 1.259e+13 | true |
+| 2663 | rolled FODO detuned eps = 0.001 | (T7) discriminant of the SPLIT control (equal tunes assumed) | 9.203e-07 | 1.262e-13 | 7.292e+06 | true |
+| 2737, 2829, 2900, 2903, 3453, 3648, 3720 | rolled FODO exact (theta = pi/4) | normalization of the CONJUGATE vector: \|conj(u)' S conj(u) + 2i\| | 4.000e+00 | 1.695e-13 | 2.359e+13 | true |
+| 2742, 2770, 2858 | rolled FODO exact (theta = pi/4) | N4 first relation on Q (unnormalized): \|\|Q' S Q + 2i I\|\| | 2.566e+00 | 1.695e-13 | 1.513e+13 | true |
+| 2771, 2859 | rolled FODO exact (theta = pi/4) | isotropy with a conjugate partner as second column: \|\|U^T S U\|\| | 2.828e+00 | 1.695e-13 | 1.668e+13 | true |
+| 2739, 2906, 2973, 3005 | rolled FODO exact (theta = pi/4) | tune of the conjugate eigenvalue: \|(2 pi - mu) - mu\| | 5.830e+00 | 3.553e-15 | 1.641e+15 | true |
+| 2725, 2941 | rolled FODO exact (theta = pi/4) | 13.8 reconstruction check with the frame's columns assigned the CONJUGATE eigenvalues | 4.496e-01 | 1.695e-13 | 2.652e+12 | true |
+| 2808, 2861, 2872, 3252 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | Schur projector taken as 2 Re(Q Q') (a05): \|\|P_QQ - P_N5\|\| | 1.728e+00 | 1.703e-13 | 1.015e+13 | true |
+| 2862 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | idempotency of 2 Re(Q Q') | 2.081e+00 | 1.703e-13 | 1.222e+13 | true |
+| 2817, 2863 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | commutation of Re(Q Q') with M | 3.664e+00 | 7.975e-13 | 4.595e+12 | true |
+| 2864 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | symplectic adjointness of Re(Q Q'): \|\|P^T S - S P\|\| | 1.617e+00 | 1.703e-13 | 9.499e+12 | true |
+| 2868 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | P G = G with the y singleton's covariance paired with the pair's P | 1.714e+00 | 1.380e-13 | 1.242e+13 | true |
+| 2814 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | PSD of Re(U U^T) (transpose instead of adjoint): -min eigenvalue | 2.850e+00 | 8.053e-14 | 3.539e+13 | true |
+| 2818, 2937, 2938, 3076, 3514 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | kappa from the Frobenius norm squared instead of the 2-norm squared | 2.782e+00 | 8.053e-14 | 3.455e+13 | true |
+| 2873 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | covariance without the real part's partner: \|\|Re(U U^T) - G\|\| | 7.688e+00 | 4.790e-13 | 1.605e+13 | true |
+| 2879 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | tunes of the conjugate half | 4.823e+00 | 3.772e-13 | 1.279e+13 | true |
+| 3149 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911, reciprocal scaling (3, 0.2, 7) | scaled P compared WITHOUT _unscale_projector | 1.199e+01 | 1.123e-10 | 1.068e+11 | true |
+| 3150 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911, reciprocal scaling (3, 0.2, 7) | scaled G compared WITHOUT _unscale_covariance | 7.787e+01 | 3.160e-10 | 2.464e+11 | true |
+| 2894, 3730, 3738 | diag(R(0.73), R(1.41), R(-0.73)) | Gram without the factor 1/2: \| \|lambda\| - 1/2 \| | 5.000e-01 | 3.553e-15 | 1.407e+14 | true |
+| 2900 | diag(R(0.73), R(1.41), R(-0.73)) | signed basis with the negative column unconjugated: \|\|W' S W + 2i I\|\| | 4.000e+00 | 1.421e-14 | 2.815e+14 | true |
+| 2904, 2966 | diag(R(0.73), R(1.41), R(-0.73)) | N5 formula on the unconjugated signed basis: \|\|-Im(W_u W_u') S - P\|\| | 2.828e+00 | 1.421e-14 | 1.990e+14 | true |
+| 2954, 2985, 3091, 3567, 3632, 3784, 3796, 3826 | defective spectator (mu = 0.73) | fixture built without the interleaving permutation: \|\|J' S J - S\|\| | 4.040e-01 | 3.553e-15 | 1.137e+14 | true |
+| 2961, 3800 | diag(1 + 1e-6, 1/(1 + 1e-6)) (+) R(1.2) | unit-circle departures of the hyperbolic pair against sqrt(eps) | 1.000e-06 | 1.490e-08 | 6.711e+01 | true |
+| 2963 | defective spectator (mu = 0.73) | departure from normality of the FULL block (both halves) instead of the half block | 8.284e-02 | 1.421e-14 | 5.830e+12 | true |
+| 2738, 2757, 2774, 2827, 3365 | W R(0.9) (+) R(0.9 + 1e-7) W^-1, partition [[1,2,3,4]], chord Inf | (I1) eigenvector residual with the two modes' eigenvalues SWAPPED | 1.000e-07 | 1.304e-13 | 7.668e+05 | true |
+| 2773 | W R(0.9) (+) R(0.9 + 1e-7) W^-1, partition [[1,2,3,4]], chord Inf | normalization of a mode vector scaled by (1 + 1e-6) | 4.000e-06 | 1.304e-13 | 3.067e+07 | true |
+| 2947 | rolled FODO detuned eps = 1.0e-12 | receipt gap of the SPLIT control against the exact-degeneracy pin 16 eps | 2.135e-12 | 3.553e-15 | 6.008e+02 | true |
+| 3184, 3207 | rolled FODO exact (theta = pi/4) | backward error measured against a matrix perturbed by 1e-8 (fBE2) | 1.000e-08 | 4.234e-14 | 2.362e+05 | true |
+| 3192 | _chord(2, 1e-15, 1e-9) | chord without the factor 2: \|kappa rho / g - 4e-6\| | 2.000e-06 | 3.553e-21 | 5.629e+14 | true |
+| 3262, 3345, 3390, 3425, 3659 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | center from the z column P[1:4, 5] / 2 instead of the pz column P[1:4, 6] / 2 | 1.461e-01 | 2.013e-14 | 7.256e+12 | true |
+| 3263, 3346, 3358 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | shape without the 1/4 | 4.111e+00 | 1.141e-13 | 3.604e+13 | true |
+| 3265, 3285, 3319, 3348, 3391, 3660 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | factor F = V Lambda (sqrt forgotten): \|\|F F^T - A\|\| | 5.094e-01 | 1.141e-13 | 4.466e+12 | true |
+| 3269, 3271, 3380, 3381, 3442, 3673, 3674 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | interval endpoints replaced by the midpoint (the rejected alternative): \|mid - hi\| | 6.701e-01 | 8.053e-14 | 8.322e+12 | true |
+| 3380, 3381 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | N14 endpoint with the shape's quadratic form unrooted: \|hi_nosqrt - hi\| | 2.211e-01 | 8.053e-14 | 2.745e+12 | true |
+| 3291-3302, 3462, 3463, 3722 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | (D12) readout with Re(conj(u_z) u_a) instead of -Im | 1.321e-01 | 3.553e-15 | 3.719e+13 | true |
+| 3368, 3435 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | ellipsoid membership of a member scaled by 1.1 (\|\|c\|\| != 1) | 2.100e-01 | 2.577e-12 | 8.150e+10 | true |
+| 3312, 3313, 3369 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | A A^+ dev = dev with A^+ replaced by inv(A + I) (rank ignored) | 4.144e-01 | 1.825e-12 | 2.271e+11 | true |
+| 3357 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | frame with a column scaled by 2 (non-unitary mixing): the (N4) guard's normalization residual (set constructor refuses it: true) | 6.000e+00 | 5.179e-13 | 1.159e+13 | true |
+| 3394, 3395 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | (P, G) method with P^T instead of P: center shift (method refuses P^T: false) | 1.415e-01 | 8.053e-14 | 1.758e+12 | true |
+| 3255-3257, 3339, 3340, 3821 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | (N4) normalization residual of a column scaled by 1 + 1e-6 against one tenth of the refusal (the checker refuses it: true) | 4.000e-06 | 1.611e-14 | 2.484e+08 | true |
+| 3323, 3399-3406 | diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed 20260911 | Bloch readout with the spinor sign flipped: \|\|F n - F (-n)\|\| | 2.099e-01 | 8.053e-14 | 2.607e+12 | true |
+| 3636-3652, 3707 | isospectral family seed 20260920, eps = 1e-7 | SAME spinor at both endpoints (Part B's injection): \|diameter_wrong - 2 sigma_1\| | 1.204e+00 | 2.342e-14 | 5.140e+13 | true |
+| 3719 | diag(R(0.73), R(1.41), R(-0.73)) | N15 vector against the CONJUGATE eigenvalue e^{-i mu} | 2.181e+00 | 3.801e-14 | 5.739e+13 | true |
+| 3722, 3723 | diag(R(0.73), R(1.41), R(-0.73)) | N15 eta_x with the sign flipped: \|+sinh t cosh t - (-sinh t cosh t)\| | 8.881e-01 | 3.801e-14 | 2.336e+13 | true |
+| 3758 | diag(R(0.73), R(1.41), R(0.73)) | (N16) determinant of the polynomial block with a tune outside the spectrum (1.0) | 9.707e-02 | 1.421e-14 | 6.831e+12 | true |
+| 3764, 3790 | diag(R(0.73), R(1.41), R(0.73)), graph residual pin | (D14) residual expected with \|1 - t\| instead of \|2 - t\| at t = 0.3 | 9.431e-01 | 2.278e-14 | 4.139e+13 | true |
+| 3788 | crab map k = 0.3 on diag(R(0.73), R(1.41), R(0.73)) | graph from a regularized solve instead of pinv: \|\|D\|\| | 4.939e-05 | 1.663e-14 | 2.970e+09 | true |
+| 3574 | rolled FODO exact (+) R(1.1), 6D embedding | P of the betatron cluster compared with I_6 (the whole space) instead of diag(I_4, 0) | 1.414e+00 | 3.391e-13 | 4.171e+12 | true |
+| 3588, 3589 | W6 (rolled FODO exact (+) R(1.1)) W6^-1, seed 20260911 | center of the betatron cluster of the COUPLED embedding (nonzero dispersion) against the block-diagonal zero pin | 5.441e-01 | 3.547e-13 | 1.534e+12 | true |
+
+Rows: 55; below ten: 0.
+
+#### 4. Paper cross-check (mode_degeneracy.py analyze_cluster, real outputs, 1e-12 absolute)
+
+python 3.11.5 numpy 1.23.5 scipy 1.11.4; mode_degeneracy.py from /cfs/ad/dxu/Paper/2026_twiss_dispersion/research/mode_degeneracy.py; Julia 1.12.4. Only real outputs are compared (pitfall 10: the prototype's frame is the conjugate of ours). Endpoint rows compare the isolated single mode's projector, covariance and the pz column eta = P[1:4, 6] / 2 against the dump's expected eta.
+
+| name | m (py) | m (jl) | Gram min py | Gram min jl | max|P diff| | max|G diff| | max|center diff| | max|shape diff| | max|eta - dump| | q of the row | ok |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| rolled FODO exact (theta = pi/4) | 2 | 2 | 0.083822243293302 | 0.08382224329330203 | 4.086e-14 | 7.105e-15 | NaN | NaN | NaN | 0.000e+00 | true |
+| rolled FODO exact (+) R(1.1), 6D embedding | 2 | 2 | 0.083822243293302 | 0.08382224329330203 | 4.086e-14 | 7.105e-15 | 0.000e+00 | 0.000e+00 | NaN | 0.000e+00 | true |
+| trial-015 case 3 limit eps = 0.0 | 2 | 2 | 0.43256473072538343 | 0.4325647307253834 | 6.037e-16 | 1.332e-15 | 1.110e-16 | 3.331e-16 | NaN | 0.000e+00 | true |
+| trial-015 case 3 minus eps = 0.001 | 1 | 1 | 0.43423562795242504 | 0.43423562795242504 | 6.777e-14 | 1.110e-16 | 2.670e-14 | NaN | 5.829e-14 | 5.172e-12 | true |
+| trial-015 case 3 plus eps = 0.001 | 1 | 1 | 0.4674336623794959 | 0.467433662379496 | 1.102e-13 | 1.665e-16 | 4.785e-14 | NaN | 1.031e-13 | 5.171e-12 | true |
+| trial-015 case 3 minus eps = 1.0e-5 | 1 | 1 | 0.4342356279527478 | 0.4342356279527476 | 2.014e-11 | 4.441e-16 | 8.290e-12 | NaN | 1.090e-11 | 5.172e-10 | true |
+| trial-015 case 3 plus eps = 1.0e-5 | 1 | 1 | 0.46743366237969897 | 0.46743366237969897 | 4.785e-11 | 1.110e-16 | 1.610e-11 | NaN | 1.066e-11 | 5.172e-10 | true |
+| trial-015 case 3 minus eps = 1.0e-7 | 1 | 1 | 0.43423562795306947 | 0.43423562795306936 | 2.185e-09 | 2.220e-16 | 8.150e-10 | NaN | 1.765e-09 | 5.172e-08 | true |
+| trial-015 case 3 plus eps = 1.0e-7 | 1 | 1 | 0.46743366242139384 | 0.4674336624213938 | 1.391e-09 | 2.220e-16 | 6.250e-10 | NaN | 1.528e-09 | 5.172e-08 | true |
+| trial-015 case 3 minus eps = 1.0e-9 | 1 | 1 | 0.4342356268670648 | 0.43423562686706474 | 1.566e-07 | 0.000e+00 | 4.753e-08 | NaN | 3.020e-08 | 5.172e-06 | true |
+| trial-015 case 3 plus eps = 1.0e-9 | 1 | 1 | 0.4674336620161902 | 0.46743366201619024 | 2.767e-07 | 2.776e-17 | 8.678e-08 | NaN | 6.061e-08 | 5.172e-06 | true |
+
+Rows: 11; worst difference over the m >= 2 rows 4.086e-14; all m >= 2 rows within 1e-12: true; singleton rows are judged against their own q (conditioning of a copy isolated from a split pair). Input /cfs/ad/dxu/Library/Julia/Octopus/result/twiss_impl_2026_09_11/stage3/measure/paper_input.tsv, output /cfs/ad/dxu/Library/Julia/Octopus/result/twiss_impl_2026_09_11/stage3/measure/paper_output.tsv.
+
+### Appendix: the measurement scripts
+
+`measure_stage3.jl` (the Part D1 driver: sections 1, 1a, 2 and 4 of the table; package mode from `OUT/measure`, reads stage 1's oracle TSV and the case-3 TSV, runs `paper_crosscheck.py` once):
+
+```julia
+# Stage 3 measurement (Part D1): the scaffold of Part B wired to `_mode_clusters`.
+# Tabulates, for the fixture list of the dossier, the resolution-chord
+# quantities of the design ("Default value"): kappa_frame, kappa_eig, rho_M0
+# and its winning arm (named from the data), rho_M1, the internal and external
+# gaps, the chord q that decided the cluster, the classification and the
+# resolved flag; prints the bracket with the argmax rows' OWN names; then
+# measures every PROVISIONAL multiplier's window by the one-tenth / ten rule
+# (section 2), and cross-checks the paper's mode_degeneracy.py real outputs
+# (section 4) by running Python once from here.
+#
+# Package mode, from the tree under test:
+#   julia --startup-file=no --project=<tree> --threads=4 measure_stage3.jl <oracle_maps.tsv> <trial015_case3.tsv> <out.md>
+using Octopus, LinearAlgebra, Random, Printf
+include(joinpath(@__DIR__, "..", "fixtures_stage3.jl"))
+
+const ORACLE_TSV = ARGS[1]
+const CASE3_TSV = ARGS[2]
+const OUT_MD = ARGS[3]
+const EPS = eps(Float64)
+const SEED = 20260911
+const PYTHON = "/opt/anaconda3_2024_02/bin/python3"
+const RESEARCH = "/cfs/ad/dxu/Paper/2026_twiss_dispersion/research"
+e2(x) = x isa Bool ? string(x) : x isa Real ? @sprintf("%.3e", x) : string(x)
+dv(d) = Octopus.is_determined(d) ? determined_value(d) : nothing   # unavailable -> nothing (printed as such)
+rho0(M) = Octopus._perturbation_scale(M, Octopus._symplectic_defect(M).frobenius)
+bd(ms...) = cat(ms...; dims=(1, 2))
+R(mu) = Octopus._rotation2(mu)
+
+# --- loaders (family and index carried with every map) -----------------------
+function load_oracle_maps(path)
+    lines = readlines(path)
+    hdr = split(lines[1], '\t')
+    @assert hdr[1:3] == ["family", "index", "parameter"] "oracle TSV header moved: $(hdr[1:3])"
+    return [(f = split(l, '\t');
+             (family=String(f[1]), index=parse(Int, f[2]), parameter=String(f[3]),
+              M=permutedims(reshape(parse.(Float64, f[4:39]), 6, 6))))
+            for l in lines[2:end] if !isempty(l)]
+end
+function load_case3(path)
+    lines = filter(l -> !isempty(l) && !startswith(l, '#'), readlines(path))
+    hdr = split(lines[1], '\t')
+    @assert hdr[1:2] == ["kind", "epsilon"] "case-3 TSV header moved: $(hdr[1:2])"
+    return [(f = split(l, '\t');
+             (kind=String(f[1]), epsilon=parse(Float64, f[2]),
+              M=permutedims(reshape(parse.(Float64, f[3:38]), 6, 6)), eta=parse.(Float64, f[39:42])))
+            for l in lines[2:end]]
+end
+
+# --- the fixture list: (name, map, label) ---------------------------------------
+# Labels come from the design ("Default value") and the theory only: the FODO
+# controls at 1e-3, 1e-6, 1e-9 must resolve (periodic tune error 4.45e-9 at
+# 1e-9), the 1e-12 control must not (tune error 5.89e-6); every dense oracle
+# map must resolve (distinct tunes by construction); the near collision must
+# not ("never two definite modes"). Nothing else is labelled.
+struct Fixture
+    name::String
+    M::Matrix{Float64}
+    label::Symbol            # :must_resolve, :must_not_resolve, :unlabelled
+end
+function fixture_list()
+    pins = st3_fodo_pins()
+    fx = Fixture[]
+    push!(fx, Fixture("rolled FODO exact (theta = pi/4)", st3_rolled_fodo(pins.theta), :unlabelled))
+    for ep in (1e-3, 1e-6, 1e-9, 1e-12)
+        lab = ep == 1e-12 ? :must_not_resolve : :must_resolve
+        push!(fx, Fixture("rolled FODO detuned eps = $(ep)", st3_rolled_fodo(pins.theta; eps=ep), lab))
+    end
+    for r in load_case3(CASE3_TSV)
+        push!(fx, Fixture("trial-015 case 3 $(r.kind) eps = $(r.epsilon)", r.M, :unlabelled))
+    end
+    for o in load_oracle_maps(ORACLE_TSV)
+        lab = o.family == "dense" ? :must_resolve : :unlabelled
+        push!(fx, Fixture("oracle $(o.family) $(o.index) (parameter $(o.parameter))", o.M, lab))
+    end
+    kc = st3_crab_kc()
+    for ep in (1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10, 1e-11)   # 1e-10, 1e-11: the fixer's coupled near collision, added as data
+        push!(fx, Fixture("crab ladder k = k_c (1 - $(ep))", st3_crab_map(kc * (1 - ep)), :unlabelled))
+    end
+    # The fixture table labelled the block-diagonal near collision "never two definite modes"; the fixer's F21
+    # showed the wording wrong for THIS fixture (block-diagonal: kappa_eig = 2 exactly, the modes are separable and
+    # the chord resolves them), and the coupled crab ladder is the near collision that must not resolve. It is
+    # therefore UNLABELLED here (design + theory label nothing else); the bracket it would impose is printed below.
+    push!(fx, Fixture("near collision diag(R(0.73), R(1.41), R(-0.73 - 1e-9))", st3_near_collision_6d(1e-9), :unlabelled))
+    push!(fx, Fixture("defective spectator (mu = 0.72)", st3_defective_spectator(0.72), :unlabelled))
+    rng = MersenneTwister(SEED)
+    for d in (4, 6), i in 1:200
+        push!(fx, Fixture("manufactured stable $(d)x$(d) seed $(SEED) index $(i)",
+                          Octopus._manufactured_symplectic_map(rng, d; stable=true).M, :unlabelled))
+    end
+    return fx
+end
+
+# --- one row per cluster, from `_mode_clusters` ---------------------------------
+# q is the chord that decided the cluster: the largest of (a) the receipt chord of
+# the merge that formed it, (b) its internal chord matrix (mode recovery), (c) the
+# last round's chord between it and every other final cluster. For a resolved
+# singleton this is the chord that kept it apart; for a merged cluster the chord
+# that merged it or that keeps its modes unresolved.
+const ROW_FIELDS = (:name, :cluster, :m, :kappa_frame, :kappa_eig, :rho_M0, :rho_arm, :rho_M1,
+                    :g_int, :g_ext, :q, :q_source, :classification, :resolved, :kind, :label)
+function cluster_rows(fx::Fixture; chord=Octopus._DEFAULT_RESOLUTION_CHORD)
+    M = fx.M
+    ps = rho0(M)
+    arm = string(argmax(ps.arms))                 # the winning arm NAMED from the data
+    r = Octopus._mode_clusters(M; rho_M0=ps.scale, resolution_chord=chord)
+    rows = NamedTuple[]
+    for (i, c) in enumerate(r.clusters)
+        q_merge = maximum((e.chord for e in r.resolution_receipt
+                           if e.merged && issubset(vcat(e.first, e.second), c.members)); init=0.0)
+        q_int = isempty(c.chord_matrix) ? 0.0 : maximum(c.chord_matrix)
+        q_ext = length(r.clusters) > 1 ? maximum(r.inter_cluster_chords[i, :]) : 0.0
+        q, which = findmax((merge=q_merge, internal=q_int, between=q_ext))
+        m = length(c.half_members)
+        kind = (c.classification === :definite && m >= 2 && size(M, 1) == 6) ?
+               Octopus._ambiguity_kind(c.internal_gap, c.rho_M1) : :none
+        push!(rows, (name=fx.name, cluster=i, m=m, kappa_frame=dv(c.kappa_frame), kappa_eig=dv(c.kappa_eig),
+                     rho_M0=ps.scale, rho_arm=arm, rho_M1=c.rho_M1, g_int=c.internal_gap, g_ext=c.external_gap,
+                     q=q, q_source=which, classification=c.classification, resolved=c.resolved, kind=kind, label=fx.label))
+    end
+    return (rows=rows, result=r)
+end
+
+# --- section 1: the chord table and the bracket -----------------------------------
+function chord_table(io, fixtures)
+    rows = NamedTuple[]; results = Dict{String,Any}()
+    for fx in fixtures
+        out = cluster_rows(fx)
+        append!(rows, out.rows); results[fx.name] = out.result
+    end
+    pr(s) = println(io, s)
+    pr("# Stage 3 measurement table (Part D1)\n")
+    pr("Julia $(VERSION); threads $(Threads.nthreads()); seed $(SEED); oracle TSV $(ORACLE_TSV); case-3 TSV $(CASE3_TSV).")
+    pr("Source constants at run time: _DEFAULT_RESOLUTION_CHORD = $(Octopus._DEFAULT_RESOLUTION_CHORD), c_real = $(Octopus._REAL_CLASS_MULTIPLIER), c_stab = $(Octopus._STABILITY_MULTIPLIER), c_gram = $(Octopus._GRAM_FLOOR_MULTIPLIER), c_mp = $(Octopus._MINIMAL_POLYNOMIAL_MULTIPLIER), c_sub = $(Octopus._SUBSPACE_RESIDUAL_MULTIPLIER), exact-set = $(Octopus._EXACT_SET_MULTIPLIER).")
+    pr("q = min(2, 2 kappa rho_M1 / g) as `_mode_clusters` evaluated it (q_source names which chord decided the row: merge, internal, between); rho_M1 = max(rho_M0, Schur backward error of the half). Every name in this file is printed from its data row.\n")
+    pr("## 1. Chord table\n")
+    pr("| " * join(string.(ROW_FIELDS), " | ") * " |")
+    pr("|" * repeat("---|", length(ROW_FIELDS)))
+    for r in rows
+        pr("| " * join([e2(getfield(r, f)) for f in ROW_FIELDS], " | ") * " |")
+    end
+    # Bracket: the design's rule. A must-resolve fixture's q is the largest chord
+    # over its clusters (all must be resolved); a must-not-resolve fixture's q is
+    # the chord of the cluster that must stay merged (the largest over its clusters).
+    byname = Dict{String,Vector{NamedTuple}}()
+    for r in rows; push!(get!(byname, r.name, NamedTuple[]), r); end
+    fixq(name) = maximum(r.q for r in byname[name])
+    must = unique([r.name for r in rows if r.label === :must_resolve])
+    mustnot = unique([r.name for r in rows if r.label === :must_not_resolve])
+    unl = unique([r.name for r in rows if r.label === :unlabelled])
+    pr("\n## 1a. Bracket (design \"Default value\")\n")
+    pr("- must-resolve fixtures: $(length(must)); all their clusters resolved: $(all(all(r.resolved for r in byname[n]) for n in must))")
+    for n in mustnot
+        pr("- must-not-resolve fixture \"$(n)\": clusters $(join(["m = $(r.m) $(r.classification) resolved = $(r.resolved)" for r in byname[n]], ", "))")
+    end
+    for n in unl
+        occursin("near collision", n) || continue
+        pr("- (objection record) \"$(n)\": clusters $(join(["m = $(r.m) $(r.classification) resolved = $(r.resolved)" for r in byname[n]], ", ")); q = $(e2(fixq(n))); labelled must-not-resolve it would give the bracket [$(e2(maximum(fixq(x) for x in must))), $(e2(fixq(n)))]")
+    end
+    n_lo = must[argmax([fixq(n) for n in must])]; lo = fixq(n_lo)
+    n_hi = mustnot[argmin([fixq(n) for n in mustnot])]; hi = fixq(n_hi)
+    gm = sqrt(lo * hi); rounded = round(gm; sigdigits=1)
+    pr("- largest q of a must-resolve fixture: $(e2(lo)) at \"$(n_lo)\"")
+    pr("- smallest q of a must-not-resolve fixture: $(e2(hi)) at \"$(n_hi)\"")
+    pow10 = 10.0^round(log10(gm))
+    pr("- bracket [$(e2(lo)), $(e2(hi))]; geometric mean sqrt($(e2(lo)) * $(e2(hi))) = $(e2(gm)); rounded to one significant digit $(rounded); rounded to a power of ten (the design's own example 7.9e-5 -> 1e-4) $(pow10)")
+    pr("- source constant $(Octopus._DEFAULT_RESOLUTION_CHORD) equals the power-of-ten rounding: $(pow10 == Octopus._DEFAULT_RESOLUTION_CHORD); margins at the source constant: must-resolve extreme ratio $(e2(lo / Octopus._DEFAULT_RESOLUTION_CHORD)), must-not-resolve extreme ratio $(e2(hi / Octopus._DEFAULT_RESOLUTION_CHORD))")
+    pr("- provisional 1e-4 inside the bracket: $(lo < 1e-4 < hi); rounded mean equals the source constant $(Octopus._DEFAULT_RESOLUTION_CHORD): $(rounded == Octopus._DEFAULT_RESOLUTION_CHORD)")
+    inside = [n for n in unl if lo < fixq(n) < hi]
+    pr("- unlabelled fixtures with q inside the bracket ($(length(inside))): " * (isempty(inside) ? "none" : join(["\"$(n)\" ($(e2(fixq(n))))" for n in inside], "; ")))
+    # Sorted list of the must-resolve chords (the dense oracle maps and the FODO controls).
+    pr("- must-resolve chords, descending: " * join(["\"$(n)\" $(e2(fixq(n)))" for n in sort(must; by=n -> -fixq(n))[1:min(6, end)]], "; "))
+    pr("- must-not-resolve chords, ascending: " * join(["\"$(n)\" $(e2(fixq(n)))" for n in sort(mustnot; by=fixq)], "; "))
+    pr("\nRows: $(length(rows)); fixtures: $(length(fixtures)).")
+    return (rows=rows, results=results, lo=lo, hi=hi, gm=gm, rounded=rounded, n_lo=n_lo, n_hi=n_hi)
+end
+
+# --- section 2: PROVISIONAL multiplier windows (design: one tenth / ten) ------------
+# Every ratio is the decision quantity at multiplier 1 (quantity / threshold with
+# the multiplier divided out). For a check where the ACCEPTED side must sit below
+# the threshold (c_real, c_stab, c_mp, c_sub, exact-set) the window is
+# [10 * max accepted, min rejected / 10]; for the Gram floor, where the accepted
+# side (a definite Gram eigenvalue) must sit ABOVE the floor, the roles swap:
+# [10 * max rejected, min accepted / 10]. Names are printed from the rows.
+function window_lines(title, formula, acc::Dict{String,Float64}, rej::Dict{String,Float64}, current; accepted_below::Bool=true)
+    out = String["### $(title)", "", "- ratio at multiplier 1: $(formula)", "- source value: $(current)"]
+    refused = [k for (k, v) in rej if isnan(v)]
+    rej = Dict(k => v for (k, v) in rej if !isnan(v))
+    for k in refused; push!(out, "- refused: \"$(k)\""); end
+    ka = isempty(acc) ? nothing : argmax(acc); kr = isempty(rej) ? nothing : argmin(rej)
+    if accepted_below
+        ka === nothing || push!(out, "- largest accepted ratio: $(e2(acc[ka])) at \"$(ka)\"")
+        kr === nothing || push!(out, "- smallest rejected ratio: $(e2(rej[kr])) at \"$(kr)\"")
+        lo = ka === nothing ? 0.0 : 10 * acc[ka]; hi = kr === nothing ? Inf : rej[kr] / 10
+    else
+        kr2 = isempty(rej) ? nothing : argmax(rej); ka2 = isempty(acc) ? nothing : argmin(acc)
+        ka2 === nothing || push!(out, "- smallest accepted ratio (must exceed 10 c): $(e2(acc[ka2])) at \"$(ka2)\"")
+        kr2 === nothing || push!(out, "- largest rejected ratio (must stay below c / 10): $(e2(rej[kr2])) at \"$(kr2)\"")
+        lo = kr2 === nothing ? 0.0 : 10 * rej[kr2]; hi = ka2 === nothing ? Inf : acc[ka2] / 10
+    end
+    inside = lo <= current <= hi
+    push!(out, "- window [$(e2(lo)), $(e2(hi))]; source value inside: $(inside)" * (isempty(rej) ? " (no rejected fixture: the upper edge is open)" : ""))
+    for k in (accepted_below ? sort(collect(keys(acc)); by=k -> -acc[k]) : sort(collect(keys(acc)); by=k -> acc[k]))[1:min(4, length(acc))]
+        push!(out, "  - accepted \"$(k)\" $(e2(acc[k]))")
+    end
+    for k in (accepted_below ? sort(collect(keys(rej)); by=k -> rej[k]) : sort(collect(keys(rej)); by=k -> -rej[k]))[1:min(4, length(rej))]
+        push!(out, "  - rejected \"$(k)\" $(e2(rej[k]))")
+    end
+    push!(out, "")
+    return (lines=out, lo=lo, hi=hi, inside=inside, n_acc=length(acc), n_rej=length(rej))
+end
+
+# Extra fixtures named by the constants' docstrings (built here, names carried).
+function extra_fixtures()
+    rng = MersenneTwister(SEED)
+    W4 = st3_random_symplectic(rng, 4, 0.2); W6 = st3_random_symplectic(rng, 6, 0.2)
+    pins = st3_fodo_pins()
+    fodo6 = bd(st3_rolled_fodo(pins.theta), R(1.1))
+    A = (1 + 1e-4) * R(0.6); quartet = bd(A, inv(A)')[[1, 3, 2, 4], [1, 3, 2, 4]]
+    kc = st3_crab_kc()
+    unit = [("I_4", Matrix(1.0I, 4, 4)), ("I_2 (+) R(1.2)", bd(Matrix(1.0I, 2, 2), R(1.2))),
+            ("-I_2 (+) R(1.2)", bd(-Matrix(1.0I, 2, 2), R(1.2))), ("drift [1 3; 0 1] (+) R(1.2)", bd([1.0 3.0; 0 1], R(1.2))),
+            ("rotated drift (+) R(1.2), W4 seed $(SEED)", W4 * bd([1.0 3.0; 0 1], R(1.2)) * inv(W4))]
+    defect = [("defective spectator (mu = 0.73)", st3_defective_spectator(0.73)),
+              ("rotated defective spectator, W4 seed $(SEED)", W4 * st3_defective_spectator(0.73) * inv(W4)),
+              ("defective spectator (+) R(1.1)", bd(st3_defective_spectator(0.73), R(1.1))),
+              ("rotated defective spectator (+) R(1.1), W6 seed $(SEED)", W6 * bd(st3_defective_spectator(0.73), R(1.1)) * inv(W6))]
+    offcircle = [("diag(1 + 1e-6, 1/(1 + 1e-6)) (+) R(1.2)", bd([1 + 1e-6 0; 0 1 / (1 + 1e-6)], R(1.2))),
+                 ("diag(2, 1/2) (+) R(1.2)", bd([2.0 0; 0 0.5], R(1.2))),
+                 ("complex quartet (1 + 1e-4) R(0.6) (+) its inverse adjoint", quartet)]
+    crab_unstable = [("crab ladder k = k_c (1 - $(e))", st3_crab_map(kc * (1 - e))) for e in (-1e-2, -1e-3, -1e-4, -1e-5, -1e-6, -1e-7)]
+    crab_deep = [("crab ladder k = k_c (1 - $(e))", st3_crab_map(kc * (1 - e))) for e in (1e-10, 1e-11)]
+    tiny = [("R(1e-6) (+) R(1.2)", bd(R(1e-6), R(1.2)))]
+    return (unit=unit, defect=defect, offcircle=offcircle, crab_unstable=crab_unstable, crab_deep=crab_deep, tiny=tiny,
+            fodo6=("rolled FODO exact (+) R(1.1), 6D embedding", fodo6),
+            fodo6_12=("rolled FODO detuned eps = 1.0e-12 (+) R(1.1), 6D embedding", bd(st3_rolled_fodo(pins.theta; eps=1e-12), R(1.1))),
+            W4=W4, W6=W6)
+end
+runmc(M; kw...) = Octopus._mode_clusters(M; rho_M0=rho0(M).scale, kw...)
+
+# c_real and c_stab over the chord-table results plus the docstring fixtures.
+function measure_real_stab(results::Dict{String,Any}, ex)
+    acc_r = Dict{String,Float64}(); rej_r = Dict{String,Float64}(); acc_s = Dict{String,Float64}(); rej_s = Dict{String,Float64}()
+    c_real = Octopus._REAL_CLASS_MULTIPLIER; c_stab = Octopus._STABILITY_MULTIPLIER
+    function real!(name, r)
+        for (j, z) in enumerate(r.eigenvalues)
+            (r.real_class[j] ? acc_r : rej_r)["$(name), eigenvalue $(j)"] = abs(imag(z)) / (r.tau_real / c_real)
+        end
+    end
+    stab_acc!(name, r) = for c in r.clusters
+        acc_s["$(name), cluster $(c.members)"] = maximum(c.unit_circle_departures) / (c.stability_scale / c_stab)
+        c.classification === :unstable && println("  !! accepted fixture $(name) has an :unstable cluster $(c.members)")
+    end
+    stab_rej!(name, r, pred) = for c in r.clusters
+        pred(c) || continue
+        rej_s["$(name), cluster $(c.members)"] = minimum(c.unit_circle_departures) / (c.stability_scale / c_stab)
+        c.classification === :unstable || println("  !! rejected fixture $(name) cluster $(c.members) is $(c.classification)")
+    end
+    for (name, r) in results; real!(name, r); stab_acc!(name, r); end
+    for (name, M) in vcat(ex.unit, ex.defect, ex.crab_deep, [ex.fodo6, ex.fodo6_12]); r = runmc(M); real!(name, r); stab_acc!(name, r); end
+    for (name, M) in vcat(ex.offcircle, ex.tiny); r = runmc(M); real!(name, r); end
+    for (name, M) in ex.offcircle; stab_rej!(name, runmc(M), c -> isempty(c.half_members) || startswith(name, "complex quartet")); end
+    # crab k > k_c: the colliding x/z pair leaves the circle (Krein collision); the y block R(2.1) is a spectator.
+    for (name, M) in ex.crab_unstable; r = runmc(M); real!(name, r); stab_rej!(name, r, c -> length(c.half_members) != 1 || abs(c.tunes[1] - 2.1) > 0.1); end
+    return (acc_r=acc_r, rej_r=rej_r, acc_s=acc_s, rej_s=rej_s)
+end
+
+# Degenerate copies split into their own pairs: for an exactly degenerate group
+# of half members {j1, j2, ...} (equal eigenvalues to 1e-12) the partition
+# [[j1, partner(j1)], [j2, partner(j2)], ...] makes every cluster's half a single
+# member of the degenerate eigenspace, whose Gram value is arbitrary in
+# [-1/2, 1/2] and whose external gap is the copy distance (roundoff), so its
+# floor exceeds 1: the Gram-floor REJECTED fixture (fixer F18, derived here from
+# the eigenvalue data and the report's own conjugate pairing).
+function crosswise_partition(r)
+    d = length(r.eigenvalues)
+    half = [j for j in 1:d if !r.real_class[j] && imag(r.eigenvalues[j]) > 0]
+    groups = Vector{Vector{Int}}()
+    for j in half
+        g = findfirst(G -> abs(r.eigenvalues[G[1]] - r.eigenvalues[j]) <= 1e-12, groups)
+        g === nothing ? push!(groups, [j]) : push!(groups[g], j)
+    end
+    parts = Vector{Vector{Int}}()
+    for G in groups
+        for j in G
+            push!(parts, sort([j, r.conjugate_partner[j]]))
+        end
+    end
+    for j in 1:d
+        r.real_class[j] && push!(parts, [j])
+    end
+    return (parts=parts, degenerate=any(G -> length(G) >= 2, groups))
+end
+
+function measure_gram_mp_sub_exact(results::Dict{String,Any}, ex)
+    acc_g = Dict{String,Float64}(); rej_g = Dict{String,Float64}()
+    acc_m = Dict{String,Float64}(); rej_m = Dict{String,Float64}()
+    acc_s = Dict{String,Float64}()
+    acc_e = Dict{String,Float64}(); rej_e = Dict{String,Float64}()
+    mp_ratio(c, M) = determined_value(c.residuals).minimal_polynomial /
+                     (max(c.rho_M1, c.internal_gap) * opnorm(determined_value(c.projector), 2) / norm(M))
+    function gather!(name, r; mp_accept=true)
+        for c in r.clusters
+            key = "$(name), cluster $(c.members)"
+            Octopus.is_determined(c.residuals) && (acc_s[key] = determined_value(c.residuals).subspace / (size(r.matrix, 1) * EPS))
+            if c.classification === :definite
+                acc_g[key] = minimum(abs, c.gram_eigenvalues) / (c.rho_M1 / c.external_gap)
+            end
+            # accepted: the groups the minimal polynomial let through; rejected: the groups it refused
+            # (:unresolved with the minimal-polynomial sub-reason), both with the residual available.
+            if length(c.half_members) >= 2 && Octopus.is_determined(c.residuals) && Octopus.is_determined(c.projector)
+                if mp_accept && c.classification in (:definite, :indefinite)
+                    acc_m[key] = mp_ratio(c, r.matrix)
+                elseif !mp_accept && c.classification === :unresolved && occursin("minimal-polynomial", c.detail)
+                    rej_m[key] = mp_ratio(c, r.matrix)
+                elseif !mp_accept
+                    println("  !! rejected mp fixture $(key) is $(c.classification): $(c.detail)")
+                end
+            end
+        end
+    end
+    for (name, r) in results; gather!(name, r); end
+    # Gram floor, rejected: crosswise partitions of the exactly degenerate fixtures.
+    rng = MersenneTwister(SEED + 1)
+    degenerate = Any[(n, r.matrix) for (n, r) in results if crosswise_partition(r).degenerate]
+    push!(degenerate, ("diag(R(0.73), R(1.41), R(0.73))", st3_definite_pair_6d()), ("diag(R(0.9), R(0.9), R(0.9))", st3_definite_triple_6d(0.9)))
+    for (name, M) in degenerate
+        r0 = runmc(M); cp = crosswise_partition(r0)
+        # A bit-identical repeated eigenvalue has no spectral projector onto one copy: the
+        # kernel refuses loudly (LAPACK trsyl); the refusal is recorded as data, not skipped.
+        rp = try
+            runmc(M; partition=cp.parts)
+        catch e
+            rej_g["$(name), crosswise partition $(cp.parts): REFUSED by the kernel: $(first(sprint(showerror, e), 90))"] = NaN
+            continue
+        end
+        degenerate_half = [j for j in 1:length(r0.eigenvalues) if imag(r0.eigenvalues[j]) > 0 &&
+                           count(k -> abs(r0.eigenvalues[k] - r0.eigenvalues[j]) <= 1e-12, 1:length(r0.eigenvalues)) >= 2]
+        for c in rp.clusters
+            (length(c.half_members) == 1 && c.half_members[1] in degenerate_half) || continue   # a copy of the degenerate eigenspace only
+            key = "$(name), crosswise partition $(cp.parts), cluster $(c.members)"
+            rej_g[key] = minimum(abs, c.gram_eigenvalues) / (c.rho_M1 / c.external_gap)
+            c.krein_signs == [0] || println("  !! crosswise cluster $(key) has signs $(c.krein_signs)")
+        end
+    end
+    # Minimal polynomial: accepted (definite / indefinite groups, incl. the conjugated 6D fixtures and
+    # the resolved controls forced into one cluster by an explicit partition), rejected (defective spectators).
+    conj = [("diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 trial $(t)", (W = st3_random_symplectic(rng, 6, 0.2); W * st3_definite_pair_6d() * inv(W))) for t in 1:30]
+    trip = [("diag(R(0.9), R(0.9), R(0.9)) conjugated by W6 trial $(t)", (W = st3_random_symplectic(rng, 6, 0.2); W * st3_definite_triple_6d(0.9) * inv(W))) for t in 1:10]
+    for (name, M) in vcat(conj, trip, [("diag(R(0.73), R(1.41), R(-0.73))", st3_indefinite_6d())]); gather!(name, runmc(M)); end
+    pins = st3_fodo_pins()
+    for ep in (1e-3, 1e-6, 1e-9, 1e-12)
+        gather!("rolled FODO detuned eps = $(ep), partition [[1, 2, 3, 4]]", runmc(st3_rolled_fodo(pins.theta; eps=ep); partition=[[1, 2, 3, 4]]))
+    end
+    rn = runmc(st3_near_collision_6d(1e-9)); xz = [j for j in 1:6 if abs(abs(rn.eigenvalues[j]) - 1) < 1e-8 && abs(mod(-angle(rn.eigenvalues[j]), 2pi) - 1.41) > 0.1 && abs(mod(angle(rn.eigenvalues[j]), 2pi) - 1.41) > 0.1]
+    gather!("near collision diag(R(0.73), R(1.41), R(-0.73 - 1e-9)), partition x/z union $(sort(xz))", runmc(st3_near_collision_6d(1e-9); partition=[sort(xz), sort(setdiff(1:6, xz))]))
+    for (name, M) in ex.defect; gather!(name, runmc(M); mp_accept=false); end
+    # Exact-set multiplier: accepted = exactly degenerate m >= 2 clusters of 6D maps; rejected = the 1e-12 control's embedding.
+    for (name, M) in vcat([ex.fodo6, ("diag(R(0.73), R(1.41), R(0.73))", st3_definite_pair_6d())], conj, [(n, r.matrix) for (n, r) in results if occursin("limit", n)])
+        for c in runmc(M).clusters
+            length(c.half_members) >= 2 && c.classification === :definite && (acc_e["$(name), cluster $(c.members)"] = c.internal_gap / c.rho_M1)
+        end
+    end
+    for c in runmc(ex.fodo6_12[2]).clusters
+        length(c.half_members) >= 2 && (rej_e["$(ex.fodo6_12[1]), cluster $(c.members)"] = c.internal_gap / c.rho_M1)
+    end
+    return (acc_g=acc_g, rej_g=rej_g, acc_m=acc_m, rej_m=rej_m, acc_s=acc_s, acc_e=acc_e, rej_e=rej_e)
+end
+
+function multiplier_section(io, results::Dict{String,Any})
+    ex = extra_fixtures()
+    rs = measure_real_stab(results, ex)
+    gm = measure_gram_mp_sub_exact(results, ex)
+    println(io, "\n## 2. PROVISIONAL multiplier windows (one tenth / ten rule)\n")
+    println(io, "Fixture sets: the chord table's $(length(results)) fixtures plus the fixtures each docstring names (built in `extra_fixtures`, `measure_gram_mp_sub_exact`); every name printed from its row. Crosswise partitions are derived from the eigenvalue data (see `crosswise_partition`).\n")
+    ws = Dict{String,Any}()
+    ws["c_real"] = window_lines("c_real (_REAL_CLASS_MULTIPLIER)", "|Im rho_j| / (sqrt(rho_M1) max(1, ||M||_2)); accepted = real-class eigenvalues, rejected = complex-class eigenvalues",
+                                rs.acc_r, rs.rej_r, Octopus._REAL_CLASS_MULTIPLIER)
+    ws["c_stab"] = window_lines("c_stab (_STABILITY_MULTIPLIER)", "departure / (kappa_c max(rho_M1, (rho_M1 dep^(m-1))^(1/m))); accepted = max departure of every cluster of a stable fixture, rejected = min departure of the off-circle clusters",
+                                rs.acc_s, rs.rej_s, Octopus._STABILITY_MULTIPLIER)
+    ws["c_gram"] = window_lines("c_gram (_GRAM_FLOOR_MULTIPLIER)", "min |lambda(H)| / (rho_M1 / g_ext); accepted = every definite cluster (must exceed 10 c), rejected = single-copy halves of an exactly degenerate eigenspace under a crosswise partition (must stay below c / 10)",
+                                gm.acc_g, gm.rej_g, Octopus._GRAM_FLOOR_MULTIPLIER; accepted_below=false)
+    ws["c_mp"] = window_lines("c_mp (_MINIMAL_POLYNOMIAL_MULTIPLIER)", "r_mp / (max(rho_M1, g_int) ||P_c||_2 / ||M||_F); accepted = definite and indefinite groups m >= 2 (incl. explicit partitions of the split controls), rejected = the defective spectators",
+                              gm.acc_m, gm.rej_m, Octopus._MINIMAL_POLYNOMIAL_MULTIPLIER)
+    ws["c_sub"] = window_lines("c_sub (_SUBSPACE_RESIDUAL_MULTIPLIER)", "r_sub / (d eps); accepted = every cluster of every fixture; rejected = none reachable by a fixture (an ordered Schur basis is backward stable; the rejected side is an injected non-invariant basis, section 3)",
+                               gm.acc_s, Dict{String,Float64}(), Octopus._SUBSPACE_RESIDUAL_MULTIPLIER)
+    ws["exact_set"] = window_lines("exact-set multiplier (_EXACT_SET_MULTIPLIER)", "g_int / rho_M1; accepted = exactly degenerate definite m >= 2 clusters of 6D maps (FODO embedding, diag(R(0.73), R(1.41), R(0.73)) and 30 conjugations, the case-3 limit map), rejected = the 1e-12 control's 6D embedding",
+                                   gm.acc_e, gm.rej_e, Octopus._EXACT_SET_MULTIPLIER)
+    for k in ("c_real", "c_stab", "c_gram", "c_mp", "c_sub", "exact_set")
+        foreach(l -> println(io, l), ws[k].lines)
+    end
+    println(io, "| multiplier | source | window low | window high | inside | accepted rows | rejected rows |")
+    println(io, "|---|---|---|---|---|---|---|")
+    for (k, cur) in (("c_real", Octopus._REAL_CLASS_MULTIPLIER), ("c_stab", Octopus._STABILITY_MULTIPLIER), ("c_gram", Octopus._GRAM_FLOOR_MULTIPLIER),
+                     ("c_mp", Octopus._MINIMAL_POLYNOMIAL_MULTIPLIER), ("c_sub", Octopus._SUBSPACE_RESIDUAL_MULTIPLIER), ("exact_set", Octopus._EXACT_SET_MULTIPLIER))
+        w = ws[k]
+        println(io, "| $(k) | $(cur) | $(e2(w.lo)) | $(e2(w.hi)) | $(w.inside) | $(w.n_acc) | $(w.n_rej) |")
+    end
+    return ws
+end
+
+# --- section 4: the paper's mode_degeneracy.py on the same matrices ---------------
+# Julia hands the matrices (shortest round-trip reprs) and the prototype's circle
+# (center e^{+i mu} in ITS convention, pitfall 10) to paper_crosscheck.py, runs
+# Python once, and compares the REAL outputs to `_mode_clusters` +
+# `_dispersion_ambiguity_set` at 1e-12 absolute (the dossier's figure).
+function paper_section(io, results::Dict{String,Any})
+    pins = st3_fodo_pins(); mu = acos(pins.cos_mu)
+    fodo = st3_rolled_fodo(pins.theta)
+    jobs = Any[("rolled FODO exact (theta = pi/4)", fodo, exp(im * mu), 0.1),
+               ("rolled FODO exact (+) R(1.1), 6D embedding", bd(fodo, R(1.1)), exp(im * mu), 0.1)]
+    for r in load_case3(CASE3_TSV)
+        if r.kind == "limit"
+            push!(jobs, ("trial-015 case 3 $(r.kind) eps = $(r.epsilon)", r.M, exp(im * 0.73), 0.2))
+        else
+            # the endpoint's selected member: trial_015_verify.py `split_map` puts `v @ u` on rotation(MU + eps)
+            # in BOTH endpoint maps (plus / minus name the spinor axis, not the eigenvalue), isolated by eps / 2
+            push!(jobs, ("trial-015 case 3 $(r.kind) eps = $(r.epsilon)", r.M, exp(im * (0.73 + r.epsilon)), r.epsilon / 2, r.eta))
+        end
+    end
+    src = joinpath(@__DIR__, "paper_input.tsv"); dst = joinpath(@__DIR__, "paper_output.tsv")
+    open(src, "w") do f
+        for j in jobs
+            println(f, join(vcat([j[1], string(size(j[2], 1)), repr(real(j[3])), repr(imag(j[3])), repr(j[4])], [repr(x) for x in vec(permutedims(j[2]))]), '\t'))
+        end
+    end
+    run(pipeline(`$(PYTHON) $(joinpath(@__DIR__, "paper_crosscheck.py")) $(src) $(dst)`; stdout=devnull))
+    lines = readlines(dst)
+    versions = lines[1]
+    println(io, "\n## 4. Paper cross-check (mode_degeneracy.py analyze_cluster, real outputs, 1e-12 absolute)\n")
+    println(io, versions[3:end] * "; Julia $(VERSION). Only real outputs are compared (pitfall 10: the prototype's frame is the conjugate of ours). Endpoint rows compare the isolated single mode's projector, covariance and the pz column eta = P[1:4, 6] / 2 against the dump's expected eta.\n")
+    println(io, "| name | m (py) | m (jl) | Gram min py | Gram min jl | max|P diff| | max|G diff| | max|center diff| | max|shape diff| | max|eta - dump| | q of the row | ok |")
+    println(io, "|---|---|---|---|---|---|---|---|---|---|---|---|")
+    worst = 0.0; nrows = 0
+    for l in lines[3:end]
+        isempty(l) && continue
+        f = split(l, '\t'); name = String(f[1]); mpy = parse(Int, f[2]); kmin_py = parse(Float64, f[3])
+        j = jobs[findfirst(x -> x[1] == name, jobs)]; d = size(j[2], 1)
+        Ppy = permutedims(reshape(parse.(Float64, f[4:3 + d * d]), d, d)); Gpy = permutedims(reshape(parse.(Float64, f[4 + d * d:3 + 2d * d]), d, d))
+        cpy = parse.(Float64, f[4 + 2d * d:3 + 2d * d + (d - 2)]); Apy = permutedims(reshape(parse.(Float64, f[4 + 2d * d + (d - 2):end]), d - 2, d - 2))
+        r = haskey(results, name) ? results[name] : runmc(j[2])
+        # the Julia cluster whose oriented eigenvalues are the conjugates of the circle's content
+        ci = findfirst(c -> c.classification === :definite && all(abs(conj(z) - j[3]) < j[4] for z in c.eigenvalues) &&
+                            length(c.half_members) == mpy, r.clusters)
+        c = r.clusters[ci]
+        dP = maximum(abs, determined_value(c.projector) - Ppy); dG = maximum(abs, determined_value(c.covariance) - Gpy)
+        dk = abs(minimum(c.gram_eigenvalues) - kmin_py)
+        dc = NaN; dA = NaN; de = NaN
+        if d == 6 && mpy >= 2
+            set = Octopus._dispersion_ambiguity_set(c)
+            dc = maximum(abs, set.center - cpy); dA = maximum(abs, set.shape - Apy)
+        elseif d == 6 && mpy == 1 && length(j) == 5
+            # a single (E3) mode's dispersion is the pz column itself (D12; test 3301); the /2 is the m >= 2 center (N11)
+            eta = determined_value(c.projector)[1:4, 6]
+            de = maximum(abs, eta - j[5]); dc = maximum(abs, eta / 2 - cpy)
+        end
+        # A singleton isolated from a pair split by eps carries the conditioning error kappa rho_M1 / eps on both
+        # routes; its rows are judged against that scale (q of the row), the m >= 2 rows against 1e-12 absolute.
+        qrow = mpy == 1 ? maximum(r.inter_cluster_chords[ci, :]) : 0.0
+        vals = filter(!isnan, [dP, dG, dk, dc, dA, de]); wv = maximum(vals)
+        ok = mpy >= 2 ? wv <= 1e-12 : wv <= max(1e-12, qrow)
+        mpy >= 2 && (worst = max(worst, wv)); nrows += 1
+        println(io, "| $(name) | $(mpy) | $(length(c.half_members)) | $(repr(kmin_py)) | $(repr(minimum(c.gram_eigenvalues))) | $(e2(dP)) | $(e2(dG)) | $(e2(dc)) | $(e2(dA)) | $(e2(de)) | $(e2(qrow)) | $(ok) |")
+    end
+    println(io, "\nRows: $(nrows); worst difference over the m >= 2 rows $(e2(worst)); all m >= 2 rows within 1e-12: $(worst <= 1e-12); singleton rows are judged against their own q (conditioning of a copy isolated from a split pair). Input $(src), output $(dst).")
+    return worst
+end
+
+function main()
+    fixtures = fixture_list()
+    open(OUT_MD, "w") do io
+        t = chord_table(io, fixtures)
+        println("bracket [$(t.lo), $(t.hi)] gm $(t.gm) rounded $(t.rounded); lo at \"$(t.n_lo)\", hi at \"$(t.n_hi)\"")
+        ws = multiplier_section(io, t.results)
+        for (k, w) in ws; println("window $(k): [$(w.lo), $(w.hi)] inside $(w.inside)"); end
+        worst = paper_section(io, t.results)
+        println("paper cross-check worst difference $(worst)")
+    end
+    println("wrote $(OUT_MD)")
+end
+main()
+```
+
+`measure_stage3_tol.jl` (section 3: the rejected side of the 55 check families):
+
+```julia
+# Stage 3 measurement, section 3 (Part D1): the REJECTED side of every c eps kappa
+# check family of the stage 3 testsets (test/runtests.jl, stage 3 block). For
+# each family the wrong quantity a plausible defect produces (the quantity the
+# check exists to catch) is formed on a fixture where the defect acts, and its
+# residual is divided by the check's own threshold: the ratio must exceed ten
+# (experiences 2026-09-11: "A rejected fixture must be one the defect can
+# reach"). Fixture names travel with the rows. Package mode:
+#   julia --startup-file=no --project=<tree> --threads=4 measure_stage3_tol.jl <out.md>
+using Octopus, LinearAlgebra, Random, Printf
+include(joinpath(@__DIR__, "..", "fixtures_stage3.jl"))
+const OUT_MD = ARGS[1]
+const EPS = eps(Float64)
+const SEED = 20260911
+e2(x) = x isa Real ? @sprintf("%.3e", x) : string(x)
+dv = determined_value
+bd(ms...) = cat(ms...; dims=(1, 2))
+R(mu) = Octopus._rotation2(mu)
+S4 = Octopus._symplectic_form(4); S6 = Octopus._symplectic_form(6)
+rho0(M) = Octopus._perturbation_scale(M, Octopus._symplectic_defect(M).frobenius).scale
+runmc(M; kw...) = Octopus._mode_clusters(M; rho_M0=rho0(M), kw...)
+const ROWS = NamedTuple[]
+# lines: the runtests.jl lines of the family; fixture: the row's own name; defect: the wrong quantity;
+# residual / threshold: the check's tolerance with its c and kappa as the test states them.
+function rec!(lines, fixture, defect, residual, threshold)
+    push!(ROWS, (lines=lines, fixture=fixture, defect=defect, residual=residual, threshold=threshold, ratio=residual / threshold))
+end
+
+# --- fixtures ---------------------------------------------------------------------
+pins = st3_fodo_pins(); mu0 = acos(pins.cos_mu)
+fodo = st3_rolled_fodo(pins.theta); fodo_name = "rolled FODO exact (theta = pi/4)"
+rng = MersenneTwister(SEED)
+W6 = st3_random_symplectic(rng, 6, 0.2); W4 = st3_random_symplectic(rng, 4, 0.2)
+pair6 = W6 * st3_definite_pair_6d() * inv(W6); pair6_name = "diag(R(0.73), R(1.41), R(0.73)) conjugated by W6 seed $(SEED)"
+indef = st3_indefinite_6d(); indef_name = "diag(R(0.73), R(1.41), R(-0.73))"
+defect = st3_defective_spectator(0.73); defect_name = "defective spectator (mu = 0.73)"
+Wn = st3_random_symplectic(MersenneTwister(SEED + 7), 4, 0.3)
+near = Wn * bd(R(0.9), R(0.9 + 1e-7)) * inv(Wn); near_name = "W R(0.9) (+) R(0.9 + 1e-7) W^-1, partition [[1,2,3,4]], chord Inf"
+
+# --- family A: the exact FODO's definite m = 2 cluster (runtests 2644-2663) -----------
+r = runmc(fodo); c = r.clusters[1]; kap = dv(c.kappa_frame); U = dv(c.frame); Q = c.schur_basis
+Sig = -(fodo - pins.cos_mu * I) * S4 / sin(mu0)
+P_Q = -imag(Q * Q') * S4                     # N5 applied to the UNNORMALIZED Schur basis (H^{-1/2} skipped)
+G_Q = real(Q * Q')
+rec!("2648", fodo_name, "P from the unnormalized Schur basis Q (H^-1/2 skipped): ||P_Q - I||", norm(P_Q - I), 128 * EPS * kap)
+rec!("2650", fodo_name, "G from the unnormalized Schur basis: ||G_Q - Sigma_closed_form||", norm(G_Q - Sig), 256 * EPS * kap)
+# Any orthonormal basis of an invariant subspace with unitary restricted map closes (M Q Q' M^T = Q T T' Q'), so a
+# normalization defect is inert for N6; the defect N6 catches is a covariance of the WRONG map (a fixture mismatch).
+G_3 = dv(runmc(st3_rolled_fodo(pins.theta; eps=1e-3)).clusters[1].covariance)   # the split control: two singletons, the first one
+rec!("2652, 2866", fodo_name * " against the 1e-3 control's covariance", "N6 closure under the exact map of the SPLIT control's G: ||M G_3 M' - G_3||", norm(fodo * G_3 * fodo' - G_3), 64 * EPS * kap)
+T_conj = (im / 2) * conj(U)' * S4 * fodo * conj(U)   # the restricted map of the CONJUGATE orientation
+rec!("2654, 2877", fodo_name, "restricted map of the conjugate orientation: ||T_conj - e^{-i mu} I||", norm(T_conj - exp(-im * mu0) * I), 64 * EPS * kap)
+T_Q = (im / 2) * Q' * S4 * fodo * Q
+rec!("2655, 2875", fodo_name, "restricted map from Q (unnormalized): ||T_Q' T_Q - I||", norm(T_Q' * T_Q - I), 64 * EPS * kap)
+tau_wrong = 2 * cos(2 * mu0)                  # the a07 injection: tau from the SUM of the tunes
+Pc = dv(c.projector)
+rec!("2656, 2878, 2905", fodo_name, "minimal-polynomial residual with tau = 2 cos(sum of tunes)", norm((fodo^2 - tau_wrong * fodo + I) * Pc) / norm(fodo)^2, 64 * EPS)
+rec!("2659", fodo_name, "kappa_frame from 1 / max lambda instead of 1 / min lambda", abs(kap - 1 / maximum(c.gram_eigenvalues)), 64 * EPS * kap)
+J2 = [0.0 1.0; -1.0 0.0]; adj(K) = -J2 * K' * J2
+disc(M) = (tr(M[1:2, 1:2]) - tr(M[3:4, 3:4]))^2 + 4det(adj(M[1:2, 3:4]) + M[3:4, 1:2])
+f3 = st3_rolled_fodo(pins.theta; eps=1e-3)
+rec!("2663", "rolled FODO detuned eps = 0.001", "(T7) discriminant of the SPLIT control (equal tunes assumed)", abs(disc(f3)), 64 * EPS * opnorm(f3)^2)
+rec!("2737, 2829, 2900, 2903, 3453, 3648, 3720", fodo_name, "normalization of the CONJUGATE vector: |conj(u)' S conj(u) + 2i|", abs(dot(conj(U[:, 1]), S4 * conj(U[:, 1])) + 2im), 64 * EPS * kap)
+rec!("2742, 2770, 2858", fodo_name, "N4 first relation on Q (unnormalized): ||Q' S Q + 2i I||", norm(Q' * S4 * Q + 2im * I), 64 * EPS * kap)
+Uc = hcat(U[:, 1], conj(U[:, 1]))              # a conjugate partner as second column (Part B's injection)
+rec!("2771, 2859", fodo_name, "isotropy with a conjugate partner as second column: ||U^T S U||", norm(transpose(Uc) * S4 * Uc), 64 * EPS * kap)
+rec!("2739, 2906, 2973, 3005", fodo_name, "tune of the conjugate eigenvalue: |(2 pi - mu) - mu|", abs((2pi - mu0) - mu0), 16 * EPS)
+rec!("2725, 2941", fodo_name, "13.8 reconstruction check with the frame's columns assigned the CONJUGATE eigenvalues", Octopus._column_eigenvector_residual(fodo, U, conj.(c.eigenvalues)), 64 * EPS * kap)
+
+# --- family B: a coupled definite m = 2 cluster in 6D (runtests 2808-2879, 3149-3150) -----
+r6 = runmc(pair6); c6 = r6.clusters[findfirst(c -> length(c.half_members) == 2, r6.clusters)]
+kap6 = dv(c6.kappa_frame); U6 = dv(c6.frame); Q6 = c6.schur_basis; P6 = dv(c6.projector); G6 = dv(c6.covariance)
+PQQ = 2 * real(Q6 * Q6')                       # the a05 injection: the Schur spectral projector taken as Q Q'
+rec!("2808, 2861, 2872, 3252", pair6_name, "Schur projector taken as 2 Re(Q Q') (a05): ||P_QQ - P_N5||", norm(PQQ - P6), 64 * EPS * kap6 * norm(P6))
+rec!("2862", pair6_name, "idempotency of 2 Re(Q Q')", norm(PQQ * PQQ - PQQ), 64 * EPS * kap6 * norm(P6))
+rec!("2817, 2863", pair6_name, "commutation of Re(Q Q') with M", norm(pair6 * real(Q6 * Q6') - real(Q6 * Q6') * pair6), 64 * EPS * kap6 * norm(pair6) * norm(P6))
+rec!("2864", pair6_name, "symplectic adjointness of Re(Q Q'): ||P^T S - S P||", norm(transpose(real(Q6 * Q6')) * S6 - S6 * real(Q6 * Q6')), 64 * EPS * kap6 * norm(P6))
+# Re(Q Q') has its range inside the cluster's real invariant subspace whatever the normalization (P G_Q = G_Q holds),
+# so the defect that acts is a covariance of ANOTHER cluster (the y singleton's) paired with this P.
+G_y = dv(r6.clusters[findfirst(c -> length(c.half_members) == 1, r6.clusters)].covariance)
+rec!("2868", pair6_name, "P G = G with the y singleton's covariance paired with the pair's P", norm(P6 * G_y - G_y), 64 * EPS * kap6 * norm(G_y))
+rec!("2814", pair6_name, "PSD of Re(U U^T) (transpose instead of adjoint): -min eigenvalue", -minimum(eigvals(Symmetric(real(U6 * transpose(U6))))), 64 * EPS * kap6)
+rec!("2818, 2937, 2938, 3076, 3514", pair6_name, "kappa from the Frobenius norm squared instead of the 2-norm squared", abs(norm(U6)^2 - kap6), 64 * EPS * kap6)
+rec!("2873", pair6_name, "covariance without the real part's partner: ||Re(U U^T) - G||", norm(real(U6 * transpose(U6)) - G6), 64 * EPS * kap6 * norm(G6))
+rec!("2879", pair6_name, "tunes of the conjugate half", maximum(abs.((2pi .- c6.tunes) .- 0.73)), 64 * EPS * kap6 * norm(pair6))
+# scaling (3149-3150): compare the SCALED projector directly, skipping `_unscale_projector`
+rec_sc = Octopus._reciprocal_scaling(pair6, (3.0, 0.2, 7.0)); C = Octopus._scaling_matrix(rec_sc); Ms = C * pair6 * inv(C)
+rs6 = runmc(Ms); cs6 = rs6.clusters[findfirst(c -> length(c.half_members) == 2, rs6.clusters)]
+kk = max(kap6, dv(cs6.kappa_frame)) * opnorm(C) * opnorm(inv(C))
+rec!("3149", pair6_name * ", reciprocal scaling (3, 0.2, 7)", "scaled P compared WITHOUT _unscale_projector", norm(dv(cs6.projector) - P6), 64 * EPS * kk * norm(P6))
+rec!("3150", pair6_name * ", reciprocal scaling (3, 0.2, 7)", "scaled G compared WITHOUT _unscale_covariance", norm(dv(cs6.covariance) - G6), 64 * EPS * kk * norm(G6))
+
+# --- family C: the indefinite fixture (2894-2906, 3730, 3738) --------------------------
+ri = runmc(indef); ci = ri.clusters[findfirst(c -> c.classification === :indefinite, ri.clusters)]
+Wi = dv(ci.signed_basis); Qi = ci.schur_basis; Hi = Hermitian((im / 2) * Qi' * S6 * Qi)
+rec!("2894, 3730, 3738", indef_name, "Gram without the factor 1/2: | |lambda| - 1/2 |", maximum(abs.(abs.(eigvals(Hermitian(im * Qi' * S6 * Qi))) .- 0.5)), 16 * EPS)
+Wu = hcat(Wi[:, 1], conj(Wi[:, 2]))            # the negative-sign column NOT conjugated
+rec!("2900", indef_name, "signed basis with the negative column unconjugated: ||W' S W + 2i I||", norm(Wu' * S6 * Wu + 2im * I), 64 * EPS)
+Pi_signed = -imag(Wu * Wu') * S6              # N5 on the signed basis WITHOUT conjugating the negative column: P_+ - P_-
+rec!("2904, 2966", indef_name, "N5 formula on the unconjugated signed basis: ||-Im(W_u W_u') S - P||", norm(Pi_signed - dv(ci.projector)), 64 * EPS)
+# --- family D: the defective spectator (2954-2966) --------------------------------------
+rd = runmc(defect); cd_ = rd.clusters[1]
+Jd_wrong = [R(0.73) 0.2 * R(0.73); zeros(2, 2) R(0.73)]   # the interleaving permutation forgotten
+rec!("2954, 2985, 3091, 3567, 3632, 3784, 3796, 3826", defect_name, "fixture built without the interleaving permutation: ||J' S J - S||", norm(Jd_wrong' * S4 * Jd_wrong - S4), 16 * EPS)
+hyp = bd([1 + 1e-6 0; 0 1 / (1 + 1e-6)], R(1.2))
+rec!("2961, 3800", "diag(1 + 1e-6, 1/(1 + 1e-6)) (+) R(1.2)", "unit-circle departures of the hyperbolic pair against sqrt(eps)", 1e-6, sqrt(EPS))
+rec!("2963", defect_name, "departure from normality of the FULL block (both halves) instead of the half block", abs(sqrt(max(0.0, norm(cd_.full_block)^2 - sum(abs2, eigvals(cd_.full_block)))) - 0.2), 64 * EPS)
+# --- family E: the coupled 1e-7 pair under partition + Inf (2770-2774) --------------------
+rn = runmc(near; partition=[[1, 2, 3, 4]], resolution_chord=Inf); cn = rn.clusters[1]; Un = dv(cn.frame); kn = dv(cn.kappa_frame)
+modes = dv(cn.modes)
+rec!("2738, 2757, 2774, 2827, 3365", near_name, "(I1) eigenvector residual with the two modes' eigenvalues SWAPPED", maximum(Octopus._invariance_residual(near, modes[1].vector, modes[2].eigenvalue).normalized for _ in 1:1), 64 * EPS * kn)
+rec!("2773", near_name, "normalization of a mode vector scaled by (1 + 1e-6)", abs(dot((1 + 1e-6) * modes[1].vector, S4 * ((1 + 1e-6) * modes[1].vector)) + 2im), 64 * EPS * kn)
+# --- family F: kernel pins (2947, 3184, 3192, 3207) ---------------------------------------
+r12 = runmc(st3_rolled_fodo(pins.theta; eps=1e-12))
+rec!("2947", "rolled FODO detuned eps = 1.0e-12", "receipt gap of the SPLIT control against the exact-degeneracy pin 16 eps", r12.resolution_receipt[1].gap, 16 * EPS)
+spec = Octopus._canonical_spectrum(fodo); sel = falses(4); sel[spec.order[1]] = true
+rec!("3184, 3207", fodo_name, "backward error measured against a matrix perturbed by 1e-8 (fBE2)", Octopus._ordered_schur_basis(spec.schur, sel, fodo + 1e-8 * I).backward_error, 64 * EPS * opnorm(fodo))
+rec!("3192", "_chord(2, 1e-15, 1e-9)", "chord without the factor 2: |kappa rho / g - 4e-6|", abs(2.0 * 1e-15 / 1e-9 - 4e-6), 4 * EPS * 4e-6)
+
+# --- family G: the ambiguity set on the coupled definite pair (3248-3302, 3319-3401, 3422-3442, 3659-3674) ----
+set6 = Octopus._dispersion_ambiguity_set(c6); A6 = set6.shape; F6 = set6.factor
+rec!("3262, 3345, 3390, 3425, 3659", pair6_name, "center from the z column P[1:4, 5] / 2 instead of the pz column P[1:4, 6] / 2", norm(P6[1:4, 5] / 2 - set6.center), 16 * EPS * kap6)
+A_no4 = G6[5, 5] * G6[1:4, 1:4] - G6[1:4, 5] * transpose(G6[5, 1:4])
+rec!("3263, 3346, 3358", pair6_name, "shape without the 1/4", norm(A_no4 - A6), 16 * EPS * kap6^2)
+lam6, V6 = eigen(Symmetric(A6)); F_wrong = V6 * Diagonal(lam6)   # F = V Lambda instead of V sqrt(Lambda), zero columns kept
+rec!("3265, 3285, 3319, 3348, 3391, 3660", pair6_name, "factor F = V Lambda (sqrt forgotten): ||F F^T - A||", norm(F_wrong * transpose(F_wrong) - A6), 16 * EPS * max(1.0, kap6^2))
+a = normalize(randn(MersenneTwister(SEED + 3), 4))
+lo, hi = dispersion_interval(set6, a)
+mid = dot(a, set6.center)
+rec!("3269, 3271, 3380, 3381, 3442, 3673, 3674", pair6_name, "interval endpoints replaced by the midpoint (the rejected alternative): |mid - hi|", abs(mid - hi), 64 * EPS * kap6 * norm(a))
+hi_nosqrt = mid + dot(a, A6 * a)
+rec!("3380, 3381", pair6_name, "N14 endpoint with the shape's quadratic form unrooted: |hi_nosqrt - hi|", abs(hi_nosqrt - hi), 64 * EPS * kap6 * norm(a))
+cvec = normalize(randn(MersenneTwister(SEED + 4), 2) + im * randn(MersenneTwister(SEED + 5), 2))
+u = U6 * cvec
+eta_d12 = Octopus._sampled_mode_dispersion(U6, cvec)
+eta_re = [real(conj(u[5]) * u[k]) for k in 1:4]      # (D12) with Re instead of -Im
+rec!("3291-3302, 3462, 3463, 3722", pair6_name, "(D12) readout with Re(conj(u_z) u_a) instead of -Im", norm(eta_re - eta_d12), 16 * EPS)
+Ap = pinv(A6; rtol=1e-10)
+dev = eta_d12 - set6.center
+rec!("3368, 3435", pair6_name, "ellipsoid membership of a member scaled by 1.1 (||c|| != 1)", abs(dot(1.1 * dev, Ap * (1.1 * dev)) - 1), 2048 * EPS * kap6)
+rec!("3312, 3313, 3369", pair6_name, "A A^+ dev = dev with A^+ replaced by inv(A + I) (rank ignored)", norm(A6 * (inv(A6 + I) * dev) - dev), 256 * EPS * kap6^2)
+Um = U6 * [1.0 0.0; 0.0 2.0]                          # a NON-unitary column scaling instead of a unitary mixing
+refused_mix = try; Octopus._dispersion_ambiguity_set(Um; kind=:exact_set); false; catch e; e isa ArgumentError; end
+rec!("3357", pair6_name, "frame with a column scaled by 2 (non-unitary mixing): the (N4) guard's normalization residual (set constructor refuses it: $(refused_mix))", norm(Um' * S6 * Um + 2im * I), 64 * EPS * 2 * max(1.0, opnorm(Um)^2))
+center_T = transpose(P6)[1:4, 6] / 2                  # P^T instead of P in the (P, G) method
+refused_T = try; Octopus._dispersion_ambiguity_set(Matrix(transpose(P6)), G6, 2; kind=:exact_set); false; catch e; e isa ArgumentError; end
+rec!("3394, 3395", pair6_name, "(P, G) method with P^T instead of P: center shift (method refuses P^T: $(refused_T))", norm(center_T - set6.center), 64 * EPS * kap6)
+Us = hcat(U6[:, 1] * (1 + 1e-6), U6[:, 2])
+refused_s = try; Octopus._check_cluster_frame(Us); false; catch e; e isa ArgumentError; end
+rec!("3255-3257, 3339, 3340, 3821", pair6_name, "(N4) normalization residual of a column scaled by 1 + 1e-6 against one tenth of the refusal (the checker refuses it: $(refused_s))", norm(Us' * S6 * Us + 2im * I), 64 * EPS * 2 * kap6 / 10)
+rec!("3323, 3399-3406", pair6_name, "Bloch readout with the spinor sign flipped: ||F n - F (-n)||", 2 * norm(F6 * [1.0, 0.0, 0.0]), 64 * EPS * kap6)
+# --- family H: the isospectral family and the N15 / N16 controls (3636-3707, 3719-3723, 3758-3790) --------------
+fam = st3_isospectral_family(MersenneTwister(SEED + 9), 1e-7)
+rec!("3636-3652, 3707", "isospectral family seed $(SEED + 9), eps = 1e-7", "SAME spinor at both endpoints (Part B's injection): |diameter_wrong - 2 sigma_1|", abs(0.0 - fam.diameter), 64 * EPS * opnorm(fam.W)^2)
+t = 0.4; uN = st3_n15_vector(t)
+rec!("3719", indef_name, "N15 vector against the CONJUGATE eigenvalue e^{-i mu}", norm(indef * uN - exp(-im * 0.73) * uN), 64 * EPS * norm(uN)^2)
+rec!("3722, 3723", indef_name, "N15 eta_x with the sign flipped: |+sinh t cosh t - (-sinh t cosh t)|", 2 * sinh(t) * cosh(t), 64 * EPS * norm(uN)^2)
+Mdp = bd(R(0.73), R(1.41), R(0.73)); poly = Mdp * Mdp - 2cos(0.73) * Mdp + I
+poly_wrong = Mdp * Mdp - 2cos(1.0) * Mdp + I            # a polynomial of a tune NOT in the spectrum (2 cos 1.41 would annihilate the y block: inert)
+rec!("3758", "diag(R(0.73), R(1.41), R(0.73))", "(N16) determinant of the polynomial block with a tune outside the spectrum (1.0)", abs(det(poly_wrong[1:4, 1:4])), 64 * EPS * max(1.0, opnorm(poly_wrong))^4)
+rec!("3764, 3790", "diag(R(0.73), R(1.41), R(0.73)), graph residual pin", "(D14) residual expected with |1 - t| instead of |2 - t| at t = 0.3", abs(sqrt(2) * sin(0.73) * abs(1 - 0.3) - sqrt(2) * sin(0.73) * abs(2 - 0.3)), 64 * EPS * sqrt(2) * sin(0.73) * 1.7)
+k = 0.3; Ck = Matrix{Float64}(I, 6, 6); Ck[2, 5] = -k; Ck[6, 1] = -k; Mk = Ck * Mdp / Ck; polyk = Mk * Mk - 2cos(0.73) * Mk + I
+D_solve = -(polyk[1:4, 1:4] + 1e-13 * I) \ polyk[1:4, 5:6]    # a regularized solve instead of the minimum-norm pseudoinverse
+rec!("3788", "crab map k = 0.3 on diag(R(0.73), R(1.41), R(0.73))", "graph from a regularized solve instead of pinv: ||D||", norm(D_solve), 64 * EPS * opnorm(polyk))
+# --- family I: the exact-degeneracy pins on the 6D FODO embedding (3574, 3588, 3589) -----------------------------
+fodo6 = bd(fodo, R(1.1)); r66 = runmc(fodo6); c66 = r66.clusters[findfirst(c -> length(c.half_members) == 2, r66.clusters)]
+rec!("3574", "rolled FODO exact (+) R(1.1), 6D embedding", "P of the betatron cluster compared with I_6 (the whole space) instead of diag(I_4, 0)", norm(dv(c66.projector) - I), 128 * EPS * dv(c66.kappa_frame))
+# The pin 'the betatron cluster has no pz column' is a structural zero of the block-diagonal embedding; on the
+# COUPLED embedding W6 (FODO (+) R(1.1)) W6^-1 the betatron cluster carries dispersion, which is what the pin would catch.
+fodo6c = W6 * fodo6 * inv(W6); r66c = runmc(fodo6c); c66c = r66c.clusters[findfirst(c -> length(c.half_members) == 2, r66c.clusters)]
+rec!("3588, 3589", "W6 (rolled FODO exact (+) R(1.1)) W6^-1, seed $(SEED)", "center of the betatron cluster of the COUPLED embedding (nonzero dispersion) against the block-diagonal zero pin", norm(dv(c66c.projector)[1:4, 6] / 2), 64 * EPS * dv(c66c.kappa_frame))
+
+# --- table ------------------------------------------------------------------------------
+open(OUT_MD, "w") do io
+    println(io, "\n## 3. Rejected side of the c eps kappa check families (stage 3 block of test/runtests.jl)\n")
+    println(io, "Julia $(VERSION); seed $(SEED). ratio = wrong-quantity residual / the check's threshold; every ratio must exceed 10. Rows whose fixture gives the defect nothing to act on are stated as such in section 3a of the report.\n")
+    println(io, "| runtests lines | fixture | wrong quantity (the defect) | residual | threshold | ratio | > 10 |")
+    println(io, "|---|---|---|---|---|---|---|")
+    for x in ROWS
+        println(io, "| $(x.lines) | $(x.fixture) | $(replace(x.defect, "|" => "\\|")) | $(e2(x.residual)) | $(e2(x.threshold)) | $(e2(x.ratio)) | $(x.ratio > 10) |")   # pipes inside a cell are escaped for the markdown table
+    end
+    bad = [x for x in ROWS if !(x.ratio > 10)]
+    println(io, "\nRows: $(length(ROWS)); below ten: $(length(bad))" * (isempty(bad) ? "" : " -> " * join(["$(x.lines) ($(e2(x.ratio)))" for x in bad], "; ")) * ".")
+end
+println("wrote $(OUT_MD) with $(length(ROWS)) rows; below ten: $(count(x -> !(x.ratio > 10), ROWS))")
+```
+
+`paper_crosscheck.py` (the prototype's `analyze_cluster` on the maps the driver writes to `paper_input.tsv`; real outputs only):
+
+```python
+"""Part D1 cross-check: run the paper's mode_degeneracy.analyze_cluster once on the
+matrices Julia hands over and dump its REAL outputs (pitfall 10: the prototype
+uses e^{+i mu}, +2i; only projector, covariance, center, shape and the Gram
+minimum are comparable).
+
+Input TSV (from measure_stage3.jl): name, d, center_re, center_im, radius, then
+d*d row-major entries. Output TSV: name, multiplicity, krein_minimum, then the
+d*d projector, the d*d covariance, the 4 center entries and the 16 shape entries
+(center and shape are the prototype's z = d - 2 readout; for d = 4 they are
+NOT dispersion quantities and Julia ignores them). The header records versions.
+"""
+import platform
+import sys
+
+import numpy as np
+import scipy
+
+sys.path.insert(0, '/cfs/ad/dxu/Paper/2026_twiss_dispersion/research')
+import mode_degeneracy as md  # noqa: E402
+
+src, dst = sys.argv[1], sys.argv[2]
+rows = []
+for line in open(src):
+    if not line.strip() or line.startswith('#'):
+        continue
+    f = line.rstrip('\n').split('\t')
+    name, d = f[0], int(f[1])
+    center = complex(float(f[2]), float(f[3]))
+    radius = float(f[4])
+    mat = np.array([float(x) for x in f[5:5 + d * d]]).reshape(d, d)
+    res = md.analyze_cluster(mat, center, radius)
+    out = [name, str(res['multiplicity']), repr(res['krein_minimum'])]
+    out += [repr(x) for x in res['projector'].ravel()]
+    out += [repr(x) for x in res['covariance'].ravel()]
+    out += [repr(x) for x in np.asarray(res['center']).ravel()]
+    out += [repr(x) for x in np.asarray(res['shape']).ravel()]
+    rows.append('\t'.join(out))
+with open(dst, 'w') as fh:
+    fh.write('# python %s numpy %s scipy %s; mode_degeneracy.py from %s\n' % (
+        platform.python_version(), np.__version__, scipy.__version__, md.__file__))
+    fh.write('# columns: name, multiplicity, krein_minimum, projector (d*d), covariance (d*d), center (d-2), shape ((d-2)^2)\n')
+    fh.write('\n'.join(rows) + '\n')
+print('wrote', dst, len(rows), 'rows')
+```
