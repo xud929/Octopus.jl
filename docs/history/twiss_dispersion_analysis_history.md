@@ -2343,3 +2343,28 @@ end
 println("\nWORST accepted required c: ", maximum(v[1] for (k, v) in req if !startswith(k, "REJECTED")), " -> 64 / worst = ",
         64 / maximum(v[1] for (k, v) in req if !startswith(k, "REJECTED")))
 ```
+
+## 2026-09-11: full gate on the stage 1 and stage 2 batch (1f6f9b7)
+
+Both stage commits (1bb75e4, 1f6f9b7) named this run as their gate: one full
+gate on the assembled tree of the batch before the push (AGENTS.md Definition
+of Done, owner decision 2026-09-04). It ran on 2026-09-11 on the clean tree
+at 1f6f9b7, CUDA active (RTX 4500 Ada, an unrelated IJulia kernel holding
+about 12 of 24 GiB), on acnlinj4 at four threads, launched detached by a
+fresh agent so nothing else compiled against the depot while it ran:
+
+    julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+
+| item | value |
+|---|---|
+| tree | 1f6f9b7 (`git status` clean) |
+| start / end / wall | 22:44:47 / 23:25:41 EDT / 40 min 54 s (about 5 min of it precompilation) |
+| exit code | 0 (`Testing Octopus tests passed`) |
+| test summary | 252 top-level testset rows, every one `Pass == Total`; summed 108556 passed of 108556; no Fail, Error or Broken column anywhere in the log |
+| skipped or unrunnable | none: no `LANE SKIP` banner (full lane), no skipped or broken testset; the CUDA (35 rows, e.g. `CUDA PIC parity across every execution route`), ForwardDiff (`ForwardDiff differentiates the lattice` 15/15, extension loaded), MPI launcher (`The multi-process seam runs under an MPI launcher` 1710/1710) and example-execution (`Every example script runs against the current interface` 5/5) sections all ran |
+| CUDA | active (`CUDA coverage status` passed; the test process held 412 MiB of device memory); 40 non-fatal `Warning:` lines of 11 distinct texts (launch-threads reductions, deprecations, the two known `observer_option_schema` test-side overwrites), none new to this batch |
+| log | `result/gates/full_gate_stage12_2026_09_11.log` (git-ignored; the counts above are copied from it) |
+
+This section is the only change between the gated tree and the pushed tree;
+the commit carrying it is markdown-only and finishes with the fast lane on
+its own tree (matrix row "markdown only"), `result/gates/fast_lane_gate_record_2026_09_11.log`; its exit code is named in that commit's message.
