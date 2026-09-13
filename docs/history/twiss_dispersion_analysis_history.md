@@ -8697,3 +8697,31 @@ function main()
 end
 main()
 ```
+
+## 2026-09-12: full gate on the stage 3-4 batch (6a580be, ef804f6, aa4edfe)
+
+The stage 3, 4a and 4b commits each named this run as their gate: one full
+gate on the batch's final tree before the push (AGENTS.md Definition of
+Done, owner decision 2026-09-04); stage 3 also had its own full gate on
+6a580be (exit 0, 2026-09-12 04:39-05:19, 129092/129092 in 271 rows), the
+stage 4a and 4b commits were checkpointed by the fast lane. This run was on
+2026-09-12 on the clean tree at aa4edfe, CUDA active (RTX 4500 Ada, an
+unrelated IJulia kernel holding about 12 of 24 GiB), on acnlinj4 at four
+threads, launched detached so nothing else compiled against the depot while
+it ran:
+
+    julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+
+| item | value |
+|---|---|
+| tree | aa4edfe (`git status` clean) |
+| start / end / wall | 19:13:44 / 19:59:36 EDT / 45 min 52 s (the stage 3 gate: 39 min 51 s; the stage 1-2 gate: 40 min 54 s) |
+| exit code | 0 (`Testing Octopus tests passed`) |
+| test summary | 311 top-level testset rows, every one `Pass == Total`; summed 147957 passed of 147957 (the stage 3 gate: 271 rows, 129092; the stage 1-2 gate: 252 rows, 108556); no Fail, Error or Broken column anywhere in the log |
+| skipped or unrunnable | none: no `LANE SKIP` banner (full lane); the CUDA, ForwardDiff, MPI launcher and example-execution sections all ran (CUDA 35 rows, e.g. `CUDA PIC parity across every execution route`; `ForwardDiff differentiates the lattice` 15/15, `script mode picks up the ForwardDiff rules` 2/2 and `one_turn_matrix: the ForwardDiff route and the core fallback` 32/32, extension loaded; `The multi-process seam runs under an MPI launcher` 1710/1710 and `The developer harnesses run divided under an MPI launcher` 4/4; `Every example script runs against the current interface` 5/5; the effectiveness contracts `Element parameter effectiveness` 37/37, `Solver option effectiveness` 8/8, `Physics contracts` 14/14 and `Contract coverage guards` 61/61; the stage 4b rows `Stage 4 registers the analysis` 98/98, `Analysis object` 121/121, `4b-B validator block and AbstractAnalysis tree guard` 70/70 and `4b-B contract plumbing through an injected run` 21/21) |
+| CUDA | active (`CUDA coverage status` passed); the test process held 794 MiB of device memory; 48 non-fatal `Warning:` lines of 13 distinct texts (the curved-frame notice 23 times, PIC mesh under-coverage 4, the DST width notice 4, CUDA-only solver options inactive on CPU 3, launch-threads reductions 2, the two known `observer_option_schema` test-side overwrites, the CUDA.jl CUSOLVER/CUSPARSE deprecations, the mpiexec, GPUExecutionPolicy and CUDA_Runtime_jll notices, the ApertureSpec `alive` notice), each text already present in the stage 3 or the stage 1-2 gate log, none new to this batch |
+| log | `result/gates/full_gate_stage4_2026_09_12.log` (git-ignored; the counts above are copied from it) |
+
+This section is the only change between the gated tree and the pushed tree;
+the commit carrying it is markdown-only and finishes with the fast lane on
+its own tree (matrix row "markdown only"), `result/gates/fast_lane_gate_record_stage4_2026_09_12.log`.
