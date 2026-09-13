@@ -10171,3 +10171,56 @@ next CI log prints them; if any row sits above 0.25 there, the H15 table
 gets a documented third-arm entry or the row's kappa is re-examined, per the
 "ratio that moves with the CPU target" tell of docs/experiences.md). Items
 M1 and M3 of the stage 6 section are untouched.
+
+## 2026-09-13: full gate on the CI-fix commit (21bce7d), in two CPU arms
+
+The CI-fix commit 21bce7d (`fix(test): the stage 6 one-tenth pins had no
+margin on the CI runner's CPU class`, the section above) named this run as its
+gate: one full gate on the commit's tree before the push (AGENTS.md Definition
+of Done, owner decision 2026-09-04), checkpointed by the fast lane on the
+uncommitted tree (result/gates/fast_lane_cifix_stage6_2026_09_13.log, exit 0,
+14:50:44-15:07:51 EDT, 299 rows, 146222/146222, the usual 15 heavyweight
+sections skipped). As for the stage 6 commit (the section two above), the gate
+ran TWICE on the clean tree at 21bce7d, CUDA active, four threads, both arms
+from one detached script with the depot otherwise idle (no other julia test
+process; the fast lane had exited five minutes earlier):
+
+    # native arm (the Verification Matrix's gate)
+    julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+    # AVX2 arm (CI-runner parity: OpenBLAS Haswell kernels, LLVM target haswell)
+    OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4", "-C", "haswell"])'
+
+| item | native arm | AVX2 arm |
+|---|---|---|
+| tree | 21bce7d (`git status` clean) | same |
+| start / end / wall | 15:12:47 / 15:55:40 EDT / 42 min 53 s (the stage 6 gate: 43 min 23 s) | 15:55:40 / 16:38:24 EDT / 42 min 44 s (the stage 6 gate: 43 min 18 s) |
+| exit code | 0 (`Testing Octopus tests passed`) | 0 (`Testing Octopus tests passed`) |
+| test summary | 314 top-level testset rows, every one `Pass == Total`; summed 148224 passed of 148224 (the stage 6 gate: 314 rows, 148224); no Fail, Error or Broken column anywhere | 314 rows, every one `Pass == Total`; summed 148224 passed of 148224; no Fail, Error or Broken column anywhere; every row's counts equal to the native arm's (0 differing counts in the row-by-row comparison) |
+| the stage 6 rows | `Stage 6 registers TwissDispersionIdentityContract: ...` 9/9 (1.5 s); `Stage 6: the identity contract passes on the tree with pinned metrics, and every negative is red` 157/157 (42.0 s; the same assertion count as before the fix); `Physics contracts` 17/17 (1 min 40.4 s); `the Example core object answers with real scripts` 20/20; `Every example script runs against the current interface` 6/6 (7 min 58.2 s) | the same five rows: 9/9 (1.5 s); 157/157 (42.0 s); `Physics contracts` 17/17 (1 min 46.3 s); the catalogue 20/20; the example runner 6/6 (7 min 54.8 s) |
+| the printed pin table (this commit's addition) | printed once (log line 261) with the header `host sapphirerapids, cpu_target native, OPENBLAS_CORETYPE auto`, 57 rows; the four largest ratios: `k_longitudinal_block_symplecticity` 0.09476 (c=16, F6a dense 6x6 map 20), `k_trace_cubic` 0.09068 (c=512, map 11), `k_k8_residual` 0.08308 (c=8, map 11), `c_projector_sum` 0.07983 (c=64, F6b dense 4x4 map 4); every row under the 0.5 pin by more than 5x | printed once (log line 261) with the header `host sapphirerapids, cpu_target haswell, OPENBLAS_CORETYPE Haswell`, 57 rows; the four largest ratios: `k_longitudinal_block_symplecticity` 0.09476 (c=16, F6a dense 6x6 map 20), `k_ohmi_chart_change_block_symplecticity` 0.09466 (c=8, map 5), `r_separation_off_diagonal_k5` 0.09391 (c=128, map 12), `k_trace_cubic` 0.09068 (c=512, map 11); every row under the 0.5 pin by more than 5x; the table differs from the native arm's row by row, as the arm-to-arm rounding variation predicts, without leaving the 0.1 band on this host |
+| skipped or unrunnable | none: no `LANE SKIP` banner; the heavyweight sections ran (`The multi-process seam runs under an MPI launcher` 1710/1710, 9 min 00 s; `The developer harnesses run divided under an MPI launcher` 4/4, 1 min 34 s; `one_turn_matrix: the ForwardDiff route and the core fallback` 32/32; `4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps` 12602/12602; `Mode clusters: 200 + 200 manufactured stable maps are resolved singletons` 11406/11406; `CPU solver stack is thread-count invariant` 118/118) | none: no `LANE SKIP` banner; the heavyweight sections ran (the MPI seam 1710/1710, 8 min 53 s; the divided harnesses 4/4, 1 min 32 s; the ForwardDiff route 32/32; the 200-map eigenmodes 12602/12602; the mode clusters 11406/11406; thread-count invariance 118/118) |
+| CUDA | active (`CUDA coverage status` 1/1) | active (`CUDA coverage status` 1/1) |
+| warnings | 42 non-fatal warning lines of 11 distinct texts (the stage 6 native arm: 41 of 10); the one text new to this log is the Profile stdlib's `There were no samples collected in one or more groups` (log line 822), an artefact of the profile peek described below, not a tree text; the other ten texts and their counts equal the stage 6 arm's | 41 non-fatal warning lines of 10 distinct texts, exactly the stage 6 arms' set (no profile peek in this arm) |
+| log | `result/gates/full_gate_cifix_stage6_native_2026_09_13.log` | `result/gates/full_gate_cifix_stage6_avx2_2026_09_13.log` |
+
+Row arithmetic: the commit changes no testset's assertion count (the stage 6
+contract testset keeps its 157 assertions: the two pins moved from 0.1 to 0.5
+and gained `@testset let` contexts, which add no summary rows, and the printed
+table is not an assertion), so the expected totals are the stage 6 gate's, 314
+rows and 148224 in both arms, exactly as measured (0 differing counts against the stage 6 gate's native log and between the two arms). The gate judges the tree on the two
+measured arms; the runner's class is judged by CI on the push, whose log now
+carries the 57-row table for that class (the CI-fix section above says what to
+do with it: any row above 0.25 there reopens the decision). The gate logs were
+summarized by `result/gates/summarize_gate.py` as before (314 rows in both logs, `grep -c 'Test Summary:'` agreeing). One non-test passage sits in the native log: at 15:39:13 EDT, after the flushed row count had stood at 150 for sixteen minutes, the orchestrator sent `SIGUSR1` to the test process, Julia's non-fatal information request, which appended the backtraces of every task and a one-second profile report (log lines 598-823) before the tests continued; the backtraces showed the main task waiting on the MPI seam's `mpiexec -n 2 ... test/mpi_seam_check.jl` subprocess, that is, normal progress. The misreading has a mechanical cause worth recording: the test process's stdout is redirected to a file and is therefore a block-buffered `IOStream`, so `Test Summary` rows reach the log in chunks of about 32 KB and the flushed row count is not a progress signal; progress is read from the child processes and their CPU (the example runner, 8 min, and the MPI seam, 9 min, run back to back with no row flushed). The peek changed no test outcome: every row after the 150th is green with the stage 6 gate's count, and the signal was not sent in the AVX2 arm.
+
+This section is the only change between the gated tree and the pushed tree
+(with the todo row's note); the commit carrying it is markdown-only and
+finishes with the fast lane on its own tree (matrix row "markdown only"),
+`result/gates/fast_lane_gate_record_cifix_stage6_2026_09_13.log` (exit 0, 16:43:14-17:00:33 EDT,
+`Testing Octopus tests passed`, 299 rows, 146222/146222, the usual 15
+heavyweight sections skipped by the lane; `summarize_gate.py` reads 298 rows
+and 146104 on this log because an unbuffered stderr WARNING line landed inside
+the `Test Summary:` header of `CPU solver stack is thread-count invariant`
+(118/118, present in the log), the same interleaving as in the 14:50 fast lane
+on the uncommitted fix; row for row otherwise identical to the stage 6 record's
+fast lane).
