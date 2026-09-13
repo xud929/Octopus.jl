@@ -1020,6 +1020,38 @@ Julia release moving a field is loud instead of a second silent relabelling.
   ten) is what exposes it: the 256 lay outside the window the corrected
   formula produced ([5.2, 189]).
 
+## A tolerance measured on one CPU is a hand-copy of that CPU's rounding
+
+The stage 3-4 Twiss batch (2026-09-12) passed the full gate on the local
+Sapphire Rapids host (AVX-512) and failed CI on an `ubuntu-latest` runner
+(an AVX2 EPYC class machine) in one assertion of 11406: a test-side pin on
+a worst ratio `residual / (eps kappa)` measured at 23.9 here, pinned at 64,
+and pushed past 64 by the runner's LAPACK kernels and JIT vectorization.
+Emulating the runner locally with `OPENBLAS_CORETYPE=Haswell julia -C
+haswell` doubled that ratio (55.7), doubled a second one (88 to 178 against
+256) and broke a third assertion outright (96 eps against 64 eps). Julia
+1.12.6 and 1.12.7 with the native target were green: the version was not
+the variable, the CPU was.
+
+All three had a `kappa` that was not the condition number of the quantity
+compared -- `||P||^2` for a projector's idempotency (the chord factor was
+missing), a pin of 64 on the difference of two condition-number estimates that are
+one quantity by two arithmetic chains (their relative roundoff is a
+hardware-set chain constant, 24 ulps here and 56 there), `eps kappa` for the sum
+of N5 projectors (the frame norm was missing) -- and a wrong kappa passes
+on the machine that measured it because the constant absorbs that machine's
+rounding. Two tells: a measured ratio far above 1 beside a claimed
+`eps kappa` conditioning (88 is not roundoff), and a ratio that moves with
+the CPU target (the corrected N5-sum normalization moved 88 to 10.7; the chain
+constant is measured on both targets and the pin set above the larger).
+
+Rules adopted: a `c eps kappa` row is measured in two CPU arms, native and
+`-C haswell` with Haswell OpenBLAS kernels, before its constant is frozen;
+the analysis extract and the pre-push gate run in both arms; a test-side
+pin obeys the one-tenth / ten rule against the larger of the two arms. The
+floating `'1.12'` pin resolved to 1.12.7 on 2026-09-13 UTC, so "1.12.6 is
+the newest" in the CI segfault row is a fact that aged.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

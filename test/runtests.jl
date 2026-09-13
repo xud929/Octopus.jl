@@ -1109,6 +1109,14 @@ end
     # compare against the exactly unimodular e^{-i mu} and R(mu) carry
     # ||u||^2 or ||U||_F^2 (measured on the 200 maps 2026-09-12: 3.76 and
     # 1.24 in units eps ||u||^2, eps ||U||_F^2; map 50, tune 9e-5).
+    # The idempotency of P_j = U_j (-S_2 U_j' S_4) is a CROSS-mode identity too:
+    # P_j^2 - P_j = U_j J (U_j' S U_j J - I) U_j' S is the mode's symplecticity
+    # residual scaled by ||U_j||^2, so it carries kq ||U||_F^2 like (E7). Its
+    # first form, c eps ||P||_F^2, passed on this AVX-512 host and failed under
+    # an AVX2 target (OPENBLAS_CORETYPE=Haswell, -C haswell, 2026-09-12: map 50,
+    # mode 1, ratio 96 against c = 64; native 52); with kq ||U||_F^2 the largest
+    # ratio over the 400 modes is 0.20 on either target (campaign history, the
+    # 2026-09-12 CI record).
     c = 64
     n_frames = 0
     for (i, M) in enumerate(_EIG4D_MAPS)
@@ -1136,7 +1144,7 @@ end
             @test 0 <= f.tunes[j] < 2pi
             @test abs(f.eigenvalues[j] - exp(-im * f.tunes[j])) <= c * eps() * nu   # the modulus is known to eps kappa(lambda) = eps nu / 2
             P = f.projectors[j]; G = f.covariances[j]
-            @test norm(P * P - P) <= c * eps() * norm(P)^2                       # idempotent
+            @test norm(P * P - P) <= c * eps() * kq * nU                         # idempotent; the chord factor, see above
             Uj = U[:, 2j - 1:2j]
             @test norm(G - Uj * transpose(Uj)) <= 16 * eps() * nU                # G_j = U_j U_j'
             @test G == transpose(G)                                              # exact by construction
@@ -2837,11 +2845,26 @@ end
         # unit eigenvalue (its half is 2 sin mu from its own conjugate); the N5 projector -Im(U U') S is
         # accurate to eps kappa because a mixture with the conjugate vector cancels in the imaginary part.
         # Both are tested at their own conditioning; report_A1.md carries the measurement.
+        # Two of the worst-ratio pins below carried the wrong conditioning until 2026-09-12,
+        # when CI run 434 (Julia 1.12.7, an AVX2 runner) failed this testset while the
+        # AVX-512 host passed it (campaign history, the 2026-09-12 CI record):
+        # |kappa_frame - kappa_eig|: for a resolved singleton both estimates are 1 / |h|
+        # of the same ordered-Schur vector (kappa_frame through eigvals of the 1x1 Gram,
+        # kappa_eig through the (E3) normalization and an SVD-based opnorm), so their
+        # difference is the relative roundoff of two arithmetic chains, eps kappa times a
+        # chain constant that the hardware sets: 23.9 ulps on this host, 55.7 under the AVX2
+        # target, against a pin of 64. The sum of the N5 projectors is -Im(U U') S over the
+        # whole frame, whose departure from I is the N4 normalization residual (eps kappa)
+        # scaled by ||U||_F^2, which the pin lacked (88 / 178 at eps kappa, 10.7 / 7.0 at
+        # eps kappa ||U||_F^2). psum 0.46 / 0.60 and pn5 0.48 / 0.61 miss the one-tenth rule
+        # at 4. Every pin below is at least ten times the larger of the two measured values
+        # (native / AVX2 emulation).
         cond_schur = maximum((norm(M) / c.external_gap)^2 for c in r.clusters)
         Psum = sum(determined_value(c.projector) for c in r.clusters)
         worst[:psum] = max(worst[:psum], norm(Psum - I) / (_MC_EPS * kap * cond_schur))
         Pn5 = sum(-imag(determined_value(c.frame) * determined_value(c.frame)') * S for c in r.clusters)
-        worst[:n5sum] = max(worst[:n5sum], norm(Pn5 - I) / (_MC_EPS * kap))
+        nU = sum(norm(determined_value(c.frame))^2 for c in r.clusters)
+        worst[:n5sum] = max(worst[:n5sum], norm(Pn5 - I) / (_MC_EPS * kap * nU))
         for c in r.clusters
             G = determined_value(c.covariance)
             @test issymmetric(G)
@@ -2863,12 +2886,14 @@ end
             @test abs(dot(m.vector, S * m.vector) + 2im) <= 64 * _MC_EPS * kap
         end
     end
-    # Measured worst ratios (residual / (eps kappa)) over the 400 maps, report_A1.md.
-    @test worst[:psum] <= 4     # measured 0.46 (Schur projector, conditioning (||M||/g_ext)^2 included)
-    @test worst[:pn5] <= 4      # measured 0.48
-    @test worst[:n5sum] <= 256  # measured 88 (N5 projectors sum to I at eps kappa)
-    @test worst[:closes] <= 64
-    @test worst[:kappa] <= 64
+    # Measured worst ratios over the 400 maps on the AVX-512 host / under the AVX2 target
+    # (report_A1.md for the 2026-09-12 stage 3 numbers; the CI record of 2026-09-12 for
+    # both targets); every pin is at least ten times the larger measured value.
+    @test worst[:psum] <= 8     # measured 0.46 / 0.60 (Schur projector, conditioning (||M||/g_ext)^2 included)
+    @test worst[:pn5] <= 8      # measured 0.48 / 0.61
+    @test worst[:n5sum] <= 128  # measured 10.7 / 7.0 at eps kappa ||U||_F^2 (88 / 178 at eps kappa)
+    @test worst[:closes] <= 64  # measured 6.32 / 6.36
+    @test worst[:kappa] <= 1024 # measured 23.9 / 55.7 ulps of relative roundoff between the two chains (see above); was 64
     @test worst[:norm] <= 64 && worst[:iso] <= 64 && worst[:unit] <= 64
     @info "Mode clusters: manufactured-map worst ratios residual/(eps kappa)" worst
 end

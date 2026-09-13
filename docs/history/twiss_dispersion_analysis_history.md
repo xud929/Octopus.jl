@@ -8725,3 +8725,128 @@ it ran:
 This section is the only change between the gated tree and the pushed tree;
 the commit carrying it is markdown-only and finishes with the fast lane on
 its own tree (matrix row "markdown only"), `result/gates/fast_lane_gate_record_stage4_2026_09_12.log`.
+
+## 2026-09-12: CI run 434 red on f7ee3c6; the AVX2 reproduction and three tolerance corrections
+
+The stage 3-4 batch pushed at 21:43 EDT was green on the local full gate
+(the section above) and RED on GitHub Actions: run 434 (job 103654006427,
+`ubuntu-latest`, Julia resolved by the floating `'1.12'` pin to **1.12.7**,
+not the 1.12.6 the todo row still names), test step 01:45:08-01:51:34 UTC
+(6 min 26 s against about 29 min for a green run), "Process completed with
+exit code 1". The log is admin-walled to the API (403 on the run-logs and
+job-logs endpoints; the check-run annotations carry only the exit code);
+the owner pasted its tail: `Some tests did not pass: 11405 passed, 1
+failed, 0 errored, 0 broken. in expression starting at
+test/runtests.jl:2821`, which is the stage 3 testset "Mode clusters: 200 +
+200 manufactured stable maps are resolved singletons" (11406 assertions;
+the file aborts at its first failing testset, so nothing after it ran).
+The failing `Expression` line was not available when this section was
+written.
+
+### Reproductions (every analysis testset of stages 1-4b plus stage 1 Part B, package mode, CUDA disabled, ForwardDiff stacked, four threads; `result/twiss_impl_2026_09_11/stage5/ci_repro/`)
+
+| arm | Julia | codegen target / OpenBLAS kernel | result |
+|---|---|---|---|
+| CPU-only native | 1.12.4 | sapphirerapids / native | green (`cpu_only.log`) |
+| Julia 1.12.6 native | 1.12.6 (fresh first depot, stacked on `~/.julia`) | sapphirerapids / native | green (`julia1126.log`) |
+| Julia 1.12.7 native | 1.12.7 (same arrangement) | sapphirerapids / native | green (`julia1127.log`) |
+| AVX2 emulation | 1.12.4 | `-C haswell` / `OPENBLAS_CORETYPE=Haswell` | ONE failure: runtests.jl:1139, the stage 2 projector idempotency, 8.94e-14 against 5.95e-14 (`haswell.log`); the 2821 testset passed with its worst ratios at 55.7 / 64 (`kappa`) and 178 / 256 (`n5sum`) against 23.9 and 88 natively |
+| Julia 1.12.7 AVX2 emulation | 1.12.7 | `-C haswell` / Haswell | ONE failure, the same runtests.jl:1139 idempotency row (the run started before the fix, on the unfixed slices); the 2821 testset's worst ratios identical to the 1.12.4 AVX2 arm to four digits (`kappa` 55.73, `n5sum` 177.6) |
+
+The Julia version is not the cause; the CPU target is. The emulation is an
+approximation of the runner (an AMD EPYC class machine whose exact model
+the log would name): it moved two pins of the 2821 testset to within 15%
+and 44% of their limits and broke a third assertion outright, so the
+runner's own rounding plausibly pushed `kappa` past 64. Which of the two
+pins fired on CI is NOT verified here; both are corrected.
+
+### The three corrections (test/runtests.jl only; no source line changes)
+
+Each tolerance had a `kappa` that is not the condition number of the
+quantity compared (`docs/experiences.md`, "The kappa in `c eps kappa` is
+the condition number of the quantity COMPARED"). Measured over the 400
+modes / 400 maps on both targets (`measure_idempotency.log`,
+`measure_mc_pins2.log`; ratios are residual / (eps kappa), i.e. the `c` the
+row needs; the argmax fixture is printed by the script):
+
+| assertion | quantity | kappa before | ratio native / AVX2 (before) | kappa after | ratio native / AVX2 (after) | pin |
+|---|---|---|---|---|---|---|
+| 1147 (stage 2, was 1139) | `norm(P_j^2 - P_j)` | `||P||_F^2` | 51.8 / 96.1 (map 50, mode 1) | `kq ||U||_F^2`, `kq = max(1, ||M||_2) ||U||_2^2 / gap` | 0.179 / 0.202 (maps 104 / 177) | 64 kept |
+| 2894 (stage 3) | `abs(kappa_frame - kappa_eig)` | `kap` | 23.9 / 55.7 ((4, 93)) | `kap` (unchanged: see derivation 2) | same | 64 -> 1024 |
+| 2865 (stage 3) | `norm(sum_c -Im(U_c U_c') S - I)` | `kap` | 88 / 178 ((6, 24) / (6, 14)) | `kap sum_c ||U_c||_F^2` | 10.7 / 6.98 | 256 -> 128 |
+| 2891, 2892 | `psum`, `pn5` (conditioning `(||M||/g_ext)^2` already included) | unchanged | 0.46 / 0.60, 0.48 / 0.61 | unchanged | same | 4 -> 8 (the one-tenth rule was missed natively) |
+| 2893 | `closes` | unchanged | 6.32 / 6.36 | unchanged | same | 64 kept (at the rule's edge: 6.4) |
+
+Derivations. (1) `P_j = U_j (-S_2 U_j' S_4)`, so `P_j^2 - P_j = U_j J (U_j' S
+U_j J - I) U_j' S`: the mode's symplecticity residual scaled by `||U_j||^2`,
+which carries the eigenvector-direction error `eps ||M|| ||U||^2 / g` of the
+design's chord, exactly as the (E7), `P_1 + P_2 = I` and `P_1 P_2 = 0` rows
+two lines above it already do. (2) For a resolved singleton the Gram `H_c` is
+the scalar `h = -Im(q' S q) / 2` of one ordered-Schur vector `q`, so
+`kappa_frame = 1 / |h|` (through `eigvals` of a 1x1 Hermitian) and
+`kappa_eig = ||q / sqrt|h| ||_2^2 = ||q||^2 / |h|` (through the (E3)
+normalization and an SVD-based `opnorm`) are one quantity by two arithmetic
+chains; their difference is relative roundoff, `eps kappa` times a chain
+constant the hardware sets (24 ulps here, 56 under the AVX2 target). A
+first draft of this fix normalized by `eps kappa^2` (measured 1.29 on both
+targets); that is the right conditioning only for a definite cluster with
+`m >= 2` members, where `lambda_min(H_c)` is perturbed by `eps ||H||`, and
+was withdrawn for this singleton testset in favour of the chain constant
+with the one-tenth rule. `kappa` for the general case stays a carried
+question (the definite m = 2, 3 fixtures pin their own frames at
+`64 eps kappa`). (3) The N5
+projectors sum to `-Im(U U') S` over the whole frame; `-Im(U U') S = I` iff
+`U' S U = -2i I` (N4), so the departure from `I` is the N4 normalization
+residual (measured at 2 eps kappa in the same testset) scaled by
+`||U||_F^2`. The remaining factor of about 10 in the corrected `n5sum`
+ratio (10.7 native) is not derived here; the pin 128 satisfies the
+one-tenth rule on both targets and the residual factor is carried as an
+open question (the cross-cluster orthogonality `U_c' S U_d = 0` presumably
+carries the inter-cluster gap, as `psum` does through `cond_schur`).
+
+### Rejected side (script mode on a patched copy of `src/`, the whole stage 1-3 slice up to and including the 2821 testset; `ci_repro/inj/`)
+
+| injection | patched line | result on the re-normalized pins |
+|---|---|---|
+| control (unpatched) | none | 80763 pass, 0 fail, 1 error (`control3`; re-run on the final text as `control3b`: 80763 pass, 0 fail, the same 1 artifact error). The one error is a harness artifact common to every row: the stage 4 guard testset reads `pathof(Octopus)`, which is `nothing` for an `include`d module in script mode |
+| a03 `kappa_frame := 1.0` (stage 3 record, injection a03) | mode_clusters.jl | 9 failures, none of them the `kappa` pin: the patched line is the Gram route of `_evaluate_component`, which for a singleton is not what the cluster reports (both estimates are `1/|h|`; see derivation 2); red through the receipt and frame assertions instead (`a03_kappa_frame_one`) |
+| a01 `H` sign flipped (stage 3 record, injection a01) | mode_clusters.jl | 8218 failures including `worst[:n5sum] <= 128`, `worst[:pn5] <= 8` and the norm / iso / unit pin (`a01_H_sign`) |
+| k1 `kappa_eig` scaled by `(1 + 1e-6)` (new; the `kappa` pin's own rejected side) | mode_clusters.jl:875 | `worst[:kappa]` evaluated 2.1e9 against the pin (`k1_kappa_eig_off_1e-6`, on the eps kappa^2 draft); on the final text (`k1b`): `worst[:kappa]` evaluated 4.5e9 against 1024, red; 80762 pass, 1 fail, 1 artifact error |
+| e02 normalizer minus dropped (stage 2 record, injection e02), stage 1-2 slice | eigenmodes_4d.jl | 2326 failures (`e02_normalizer_sign`; the stage 1-2 slice control `control2`: 69158 pass, 0 fail, the same 1 artifact error). The idempotency row itself stays green under e02: dropping the minus of (E6) is an orientation change and `P_j^2 = P_j` survives it, so that row's rejected side is the perturbation measurement below, not e02 |
+
+A relative perturbation of `U_j` (the idempotency row's own rejected side)
+gives min ratio 29.8 at 1e-6 and 2980 at 1e-5 over the 400 modes on both
+targets; the map with the largest `kq ||U||^2` (about 1e8) sets the
+minimum, so the ten rule (640 at c = 64) holds from a 2.2e-5 relative
+defect upward, and the meaningful must-reject fixtures for the frame
+remain the stage 2 injections.
+
+### Targeted checks on the fixed tree (matrix row "contracts, tolerances, acceptance or rejection": every probing test found first; the full gate before the push)
+
+- The analysis extract in both CPU arms, ForwardDiff stacked, package mode
+  from the main tree: native arm 108498 / 108498 plus 134 / 134 (1 min 48 s + 17 s after load), AVX2 arm 108498 / 108498 plus 134 / 134 (1 min 45 s + 17 s), both exit 0, `Test Failed` count 0 (`ci_repro/extract_fixed/both_arms.log`).
+- The four suite tripwires after the ledger edits: 32 / 32 (Architecture integrity 28 including the docs index and the snapshot byte comparison, Core.Box 2, exports 1, detached docstrings 1; fallback ForwardDiff arm; `ci_repro/extract_fixed/tripwires_after_ledgers.log` and `tripwires_final.log`).
+- No `src/` line changed (`git diff --stat`).
+
+### Not verified
+
+- The CI log itself (admin-walled) and therefore which pin fired on the
+  runner and the runner's CPU model; the emulation is `-C haswell` with
+  Haswell OpenBLAS kernels on a Sapphire Rapids host, not the runner.
+- The full gate: it runs on the batch's final tree (this commit plus the
+  stage 5 commit) before the push, in the native arm and in the AVX2 arm,
+  and is recorded below when it runs.
+- The factor of about 10 left in the corrected `n5sum` ratio (above).
+- Every other `c eps kappa` tolerance of stages 1-4b passed in the AVX2
+  emulation, once, on one host; that is one more sample, not a proof of
+  portability. The thinnest surviving margins seen: `closes` 6.36 against
+  the rule's 6.4 (pin 64); the 4b normalizer multiplier window low 63.9
+  (carried item 4 of the stage 4b record).
+
+### Process change (recorded in `docs/experiences.md`)
+
+The campaign's targeted checks gain an AVX2 arm
+(`OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. ...`) for every
+extract, and the batch gate before a push runs in both arms. Whether the
+Verification Matrix should name a CI-parity arm permanently is the
+owner's decision (todo row).
