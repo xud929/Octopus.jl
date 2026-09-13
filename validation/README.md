@@ -1041,7 +1041,8 @@ julia --project=. validation/generate_madx_survey_reference.jl
 ```
 
 `lattice_cells.jl` builds FODO, DBA and TBA cells from those magnets and checks
-that they compose into working lattices: one-turn symplecticity by complex step,
+that they compose into working lattices: one-turn symplecticity from the
+`one_turn_matrix` helper's complex-step Jacobian,
 linear stability in both planes, Courant-Snyder invariant drift measured on
 momentum, and CPU/CUDA tracking consistency. Quadrupole strengths are found by a
 stability scan rather than hand-tuned, and the chosen working point is reported.

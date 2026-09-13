@@ -12,7 +12,8 @@ CPU and CUDA.
 
 Error metric
 ------------
-- one-turn Jacobian residual `max|J' S J - S|` by complex-step differentiation;
+- one-turn Jacobian residual `max|J' S J - S|` by the `one_turn_matrix` helper's
+  complex-step linearization (src/analysis/one_turn_matrix.jl);
 - linear stability `|trace(M_2x2)| < 2` per transverse plane, which is what
   makes the cell a usable lattice rather than an arbitrary sequence;
 - long-term Courant-Snyder invariant drift over many turns, which catches a map
@@ -105,15 +106,11 @@ track_cell(cell, u) = foldl((c, e) -> e(c...), cell; init=u)
 
 const S6 = kron(Matrix{Float64}(I, 3, 3), [0.0 1.0; -1.0 0.0])
 
-function one_turn_jacobian(cell, u0)
-    J = zeros(6, 6)
-    for j in 1:6
-        u = ComplexF64[u0...]
-        u[j] += 1e-30im
-        J[:, j] = imag.(collect(track_cell(cell, Tuple(u)))) ./ 1e-30
-    end
-    return J
-end
+# Jacobian from the `one_turn_matrix` helper (src/analysis/one_turn_matrix.jl):
+# its default complex step folds a Tuple of runtime maps in `track_cell` order.
+# The suite's testset "Lattice cells track and stay symplectic" keeps this
+# script's pre-stage-7 closure verbatim as the helper's independent witness.
+one_turn_jacobian(cell, u0) = one_turn_matrix(cell; point=u0).matrix
 
 traces(J) = (abs(J[1, 1] + J[2, 2]), abs(J[3, 3] + J[4, 4]))
 

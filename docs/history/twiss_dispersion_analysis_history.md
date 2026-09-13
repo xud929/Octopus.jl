@@ -10224,3 +10224,373 @@ the `Test Summary:` header of `CPU solver stack is thread-count invariant`
 (118/118, present in the log), the same interleaving as in the 14:50 fast lane
 on the uncommitted fix; row for row otherwise identical to the stage 6 record's
 fast lane).
+
+## 2026-09-13: stage 7, `lattice_cells.jl` derives its Jacobian from the helper
+
+The design note's Staging item 7 (lines 518-520: "`refactor(validation)`:
+`lattice_cells.jl` derives its Jacobian from the helper, with a re-run
+record. Optional and separable"): the validation script
+`validation/lattice_cells.jl` no longer carries its own complex-step loop.
+Its `one_turn_jacobian(cell, u0)` (the nine-line closure of 21bce7d lines
+108-116: `J = zeros(6, 6)`, six columns of `u = ComplexF64[u0...]`,
+`u[j] += 1e-30im`, `J[:, j] = imag.(collect(track_cell(cell, Tuple(u)))) ./ 1e-30`)
+is now the one-line wrapper
+
+    one_turn_jacobian(cell, u0) = one_turn_matrix(cell; point=u0).matrix
+
+(line 113) under a four-line comment (109-112) naming the helper's file and
+the suite testset that keeps the old arithmetic. The helper's default method
+is `ComplexStepLinearization()` with `_COMPLEX_STEP = 1.0e-30`
+(`src/analysis/one_turn_matrix.jl` 92, 223-231); on a Tuple of compiled
+runtime maps it folds them in order (`_linearizable(maps::Tuple)`, 175-184:
+`foldl((c, e) -> e(c...), maps; init=coords)`), which is the script's own
+`track_cell` (105). Every cell the script builds is such a Tuple (`fodo_cell`
+70-74 a 4-tuple literal, `dba_cell` 81-88 a 9-tuple, `tba_cell` 91-98 a
+13-tuple, `with_sextupole` 101-103 `(cell..., compile_runtime(...))`; `CELLS`
+187-194), so the wrapper passes the cell unchanged and no builder changed.
+Provenance of the helper on FODO at the main-loop point: `source_kind =
+runtime_tuple`, `source = "tuple of 4 runtime maps (LatticeMagnet x4)"`,
+`method = ComplexStepLinearization()`, `step = 0.0`, `map_uncertainty = 0.0`,
+`fixed_point_residual = (-3.732e-5, -1.848e-5, -5.554e-5, 3.705e-5,
+-3.004e-9, 0.0)`; the script neither prints nor stores it (no TSV column
+change). The function name and its three call sites (136 in `find_stable`,
+157 in `invariant_drift`, 204 in the main loop), `track_cell`, `S6` (107),
+the env overrides (63-65), the CPU/CUDA block (212-221), the TSV writer
+(232-239, path `result/lattice_cells.tsv`) and the gate (260-278) are
+unchanged; no printed line changed. The script is 282 -> 279 lines. No code
+line under `src/` changed (one comment, review F2 below); `one_turn_matrix` is exported and reaches the script
+through `using .Octopus` (59).
+
+What changed, file by file (`git diff --stat HEAD` against 21bce7d: 6 files,
++22/-22; every hunk one of H2/H3/H4/H8 of the stage dossier, plus the F2
+comment edit the orchestrator made after the review):
+
+- `validation/lattice_cells.jl` 15, header: "- one-turn Jacobian residual
+  `max|J' S J - S|` by complex-step differentiation;" -> 15-16 "... by the
+  `one_turn_matrix` helper's" / "  complex-step linearization
+  (src/analysis/one_turn_matrix.jl);". 108-116 -> 109-113 as above.
+- `test/runtests.jl` 16789-16790 (comment only; the testset "Lattice cells
+  track and stay symplectic" 16654-16746 and the helpers after it are
+  untouched): "# The closure of validation/lattice_cells.jl
+  `one_turn_jacobian`, verbatim in / # its arithmetic: the independent
+  witness of the helper's complex step." -> 16789-16791 "# The complex-step
+  arithmetic that validation/lattice_cells.jl carried inline / # as
+  `one_turn_jacobian` before stage 7 (the script now calls the helper), /
+  # kept here verbatim as the helper's independent witness." The two suite
+  closures `jac_witness` (16661-16669, asserted `J == jac_witness(cell, u0)`
+  at 16688) and `_otm_inline_complex_step` (16792-16800) ARE the 21bce7d
+  arithmetic (`track` / `_otm_track` for `track_cell`): the stage 1
+  bit-identity witnesses now witness the only complex step the repository
+  has.
+- `validation/README.md` 1044: "one-turn symplecticity by complex step," ->
+  1044-1045 "one-turn symplecticity from the / `one_turn_matrix` helper's
+  complex-step Jacobian,".
+- `docs/design/twiss_dispersion_analysis.md` STATUS paragraph only: 5
+  "implemented through Staging item 6 (stages 1-6, landed 2026-09-11 to" ->
+  "... item 7 (stages 1-7, landed 2026-09-11 to"; 17-18 "Staging items 7-8
+  (the `lattice_cells.jl` refactor, optional; the external benchmarks) are
+  open." -> "Staging item 8 (the external benchmarks) is open." The body
+  (its mentions at 100 and 456) is history by decision, untouched.
+- `docs/README.md` 68-70 -> 68-69: "(stages 1 to 7 landed 2026-09-11 to
+  2026-09-13; stage 8, the external benchmarks, next)."
+- `src/analysis/one_turn_matrix.jl` 167-170 -> 167-172 (comment only, above
+  `_linearizable`; the orchestrator's edit after the review, F2 below):
+  "... folded in order exactly as the suite and the / # validation scripts
+  do (`foldl((c, e) -> e(c...), cell; init=u)`), which is / # what keeps the
+  complex-step Jacobian bit-identical to their closures." -> "... exactly
+  as the suite's witness / # closures and `track_cell` of
+  validation/lattice_cells.jl do / # (`foldl(...)`), which is what keeps
+  the / # complex-step Jacobian bit-identical to the witnesses; that script
+  takes / # its Jacobian from this helper." No code line changed;
+  `_linearizable(map)` moves 171 -> 173 and `_linearizable(maps::Tuple)`
+  173-182 -> 175-184.
+
+Work of 2026-09-13 (`date +%F` at the record = 2026-09-13): the orchestrator
+branched the worktree `stage7-A` at 21bce7d (the CI-fix commit whose two-arm
+full gate was running in the main tree from 15:12:47 EDT) and launched the
+UNMODIFIED script's CPU-only baseline from it at 15:51; the implementer copied
+that TSV first, made the five edits, re-ran the script and wrote the
+closure-vs-helper audit; two reviewers (repository compliance, runner) filed
+three minor findings; the fixer re-verified each and changed no tracked file; the orchestrator
+then closed F2 with the comment-only `src/` edit (a sixth file, outside the
+agents' H1 scope); this record and the todo / README ledgers close the stage. While the gate ran,
+every julia run of the stage was SCRIPT MODE with `CUDA_VISIBLE_DEVICES=""`
+(the script includes `src/Octopus.jl` in-process; no package image written
+into the depot the gate uses); no `Pkg.test`, no lane, no AVX2 arm, no
+package-mode load by any agent. The tree at this record: 6 tracked files
+modified (+22/-22 against 21bce7d), nothing committed; the commit step owns
+the fast lane, the two-arm full gate and the push.
+
+### The re-run record (design item 7: "with a re-run record")
+
+Same worktree, same environment (`CUDA_VISIBLE_DEVICES=""`, so the script's
+`cpu/cuda` column is `skipped` and `cuda_max_diff` is `NaN`, which its gate
+accepts), `julia --project=. validation/lattice_cells.jl` from the worktree
+root. Before: the unmodified 21bce7d script, launched 15:51 EDT, log
+`OUT/baseline_unmodified_cpu_only.log` (mtime 15:52:33, exit 0). After: the
+modified script, 16:00:37-16:01:34 EDT (57 s), `OUT/after_cpu_only.log`
+(exit 0). The two logs `diff` identical (rc 0). Both print
+
+    stable working points: FODO kq=1.60 | DBA kf=1.50 kd=-1.10 | TBA kf=0.90 kd=-1.00
+
+    Lattice cells built from LatticeMagnet elements
+    nst = 4, integrator_order = 4, particles = 4096, turns = 4
+
+    cell          elems   symplectic   |tr_x|   |tr_y|    inv drift
+    FODO              4     1.33e-15   1.5510   1.5510     3.56e-09
+    FODO+sext         5     1.22e-15   1.4861   1.4867     8.29e-04
+    DBA               9     3.33e-16   0.0066   0.1219     9.39e-05
+    DBA+sext         10     5.00e-16   0.1306   0.1006     7.24e-04
+    TBA              13     1.33e-15   0.1422   0.0802     7.35e-05
+    TBA+sext         14     1.55e-15   0.2454   0.0686     1.40e-03
+
+then six lines `cpu/cpu passed    cpu/cuda skipped   max|.| = n/a` (the
+script prints a Greek capital delta where this record writes `.`), `TSV
+written to result/lattice_cells.tsv` and `all cells gated: symplectic,
+linearly stable, invariant-conserving, and backend-consistent`.
+
+The TSVs (`OUT/tsv/before_cpu_only.tsv`, copied 15:59:14 before any other
+run; `OUT/tsv/after_cpu_only.tsv`, copied 16:01:51), 579 bytes each, header
+plus six rows, `cmp` rc 0 and `diff` rc 0: BYTE-IDENTICAL. The rows, which
+are the same in both files (columns cell, elements, symplectic_residual,
+trace_x, trace_y, invariant_drift, cpu_cpu, cpu_cuda, cuda_max_diff):
+
+    FODO       4   1.33226763e-15   1.55099523   1.55099522   3.56256550e-09   passed   skipped   NaN
+    FODO+sext  5   1.22124533e-15   1.48612429   1.48674970   8.29456463e-04   passed   skipped   NaN
+    DBA        9   3.33066907e-16   0.00659003   0.12193613   9.39003530e-05   passed   skipped   NaN
+    DBA+sext  10   4.99600361e-16   0.13057447   0.10055824   7.24185732e-04   passed   skipped   NaN
+    TBA       13   1.33226763e-15   0.14220233   0.08018777   7.35493195e-05   passed   skipped   NaN
+    TBA+sext  14   1.55431223e-15   0.24542373   0.06863894   1.40207755e-03   passed   skipped   NaN
+
+Two more CPU-only runs of the modified script confirmed it: the runner
+reviewer's (16:05:37-16:06:34, 57 s, `OUT/review7_runner/rerun_cpu_only.*`)
+and the fixer's after the review (16:15:57-16:16:55, 58 s,
+`OUT/fix7/after_fix_cpu_only.*`), logs `diff` rc 0 against both logs above,
+TSVs `cmp` rc 0 against both TSVs above. The runner reviewer also re-ran the
+UNMODIFIED 21bce7d script independently (`git show 21bce7d:validation/lattice_cells.jl`
+with only the include path made absolute; 16:10:14-16:11:12, 58 s, exit 0,
+`OUT/review7_runner/baseline_21bce7d_cpu_only.*`): its TSV `cmp` rc 0
+against all three, so the byte identity does not rest on the orchestrator's
+single baseline. The runner's tie without the helper: the symplectic and
+trace columns recomputed from the CLOSURE at u0 and formatted as the script
+does (`%.8e`, `%.8f`) equal the TSV row strings for all six cells.
+
+The CUDA-active run of the final script, owed by the stage dossier once the
+parent's gate had ended: `ps` showed no `runtests` / `Pkg.test` process at
+16:39 EDT; `julia --project=. validation/lattice_cells.jl` from the worktree
+with CUDA visible (NVIDIA RTX 4500 Ada Generation), 16:39:37-16:42:15 EDT
+(2 min 38 s including the CUDA compile), `OUT/after_cuda.log`, exit 0. The
+working-point line, the six-row table and both gate lines are the CPU-only
+ones verbatim; the CPU/CUDA block now reads `cpu/cpu passed    cpu/cuda
+passed` for every cell with `max|.|` = 1.199e-15 (FODO), 1.424e-15
+(FODO+sext), 1.886e-15 (DBA), 2.351e-15 (DBA+sext), 1.896e-15 (TBA),
+1.983e-15 (TBA+sext). Its TSV (`OUT/tsv/after_cuda.tsv`, 639 bytes) has
+`cpu_cuda = passed` and `cuda_max_diff` = 1.19869392e-15, 1.42420797e-15,
+1.88607810e-15, 2.35055031e-15, 1.89605276e-15, 1.98278893e-15 on the six
+rows; its first seven columns (cell .. cpu_cpu) `cmp` rc 0 against the
+CPU-only TSVs, so the Jacobian, trace and drift columns are the same strings
+whether CUDA is present or not. This run is native only (the AVX2 arm is
+never run in a worktree while the two-arm gate is the commit step's).
+
+### Neighbour audit: the closure and the helper on the script's own cells
+
+`OUT/audit/closure_vs_helper.jl` (script mode, `CUDA_VISIBLE_DEVICES=""`,
+16:01:51-16:02:30 EDT, exit 0; re-run unchanged by the fixer 16:15:58-
+16:16:35, log `diff` rc 0): the builders, `track_cell`, `S6`, the closure
+`one_turn_jacobian`, `traces` and `find_stable` copied verbatim from
+`git show 21bce7d:validation/lattice_cells.jl` (69-73, 80-87, 90-97,
+100-102, 104, 106, 108-116, 118, 134-150), `find_stable` called as the main
+loop does (181-183) -> `FODO kq=1.60 | DBA kf=1.50 kd=-1.10 | TBA kf=0.90
+kd=-1.00`, equal to the strengths the baseline log printed. For each cell
+and point: `J_closure == J_helper`, `max|J_closure - J_helper|`, and the
+symplectic residual `max|J' S6 J - S6|` of `J_helper`. Points: scan =
+(1.0e-6, 0.0, 1.0e-6, 0.0, 0.0, 0.0); u0 = (1.0e-4, 2.0e-5, -0.8e-4,
+-1.5e-5, 1.0e-3, 2.0e-4) (the main loop's); origin = zeros.
+
+| cell      | point  | J_closure == J_helper | max abs dJ | symp(J_helper) |
+|-----------|--------|------|-----------|-----------|
+| FODO      | scan   | true | 0.000e+00 | 5.551e-16 |
+| FODO      | u0     | true | 0.000e+00 | 1.332e-15 |
+| FODO      | origin | true | 0.000e+00 | 4.441e-16 |
+| DBA       | scan   | true | 0.000e+00 | 6.661e-16 |
+| DBA       | u0     | true | 0.000e+00 | 3.331e-16 |
+| DBA       | origin | true | 0.000e+00 | 1.110e-15 |
+| TBA       | scan   | true | 0.000e+00 | 7.772e-16 |
+| TBA       | u0     | true | 0.000e+00 | 1.332e-15 |
+| TBA       | origin | true | 0.000e+00 | 1.332e-15 |
+| FODO+sext | scan   | true | 0.000e+00 | 5.551e-16 |
+| FODO+sext | u0     | true | 0.000e+00 | 1.221e-15 |
+| FODO+sext | origin | true | 0.000e+00 | 8.882e-16 |
+
+`all equal: true` (12 of 12); the u0 residuals of FODO and FODO+sext
+(1.332e-15, 1.221e-15) are the script's symplectic column for those cells.
+
+The runner reviewer's own audit (`OUT/review7_runner/audit_runner.jl`, 152
+lines, written from 21bce7d and not from the file above; 16:08:26-16:09:05,
+exit 0) widened it to all SIX cells (DBA+sext and TBA+sext added) and five
+points (scan, u0, origin, the `invariant_drift` point `(u0[1..4], 0, 0)` of
+script line 205, and an extra point (2e-3, -1e-3, 1.5e-3, 0.5e-3, -2e-3,
+-1e-3)): 30 rows, `J_closure == J_helper` true and bit-identical (`UInt64`
+reinterpret) in every row, `max|dJ|` 0 everywhere, `symp(J_closure) ==
+symp(J_helper)` row by row, the largest residual 2.442e-15 (TBA+sext at the
+origin). Its scan ran `find_stable` twice, once per Jacobian route: identical
+picks and identical continue counts (throw, non-finite, unstable) = FODO
+(0, 0, 0), DBA (0, 0, 575), TBA (0, 0, 668); `every cell is a Tuple: true`.
+Provenance of TBA+sext at the extra point: `runtime_tuple`, "tuple of 14
+runtime maps", `ComplexStepLinearization()`, step 0.0, map_uncertainty 0.0,
+`fixed_point_residual = (-5.275e-3, -3.675e-4, 4.813e-3, -6.325e-4,
+1.667e-4, 0.0)`.
+
+By reading (repository reviewer): `_linearize(::ComplexStepLinearization,
+f, point)` (223-231) is `u = ComplexF64[point...]`, `u[j] += _COMPLEX_STEP *
+im`, `J[:, j] = imag.(collect(_six_coordinates(f(u...), ...))) ./
+_COMPLEX_STEP`, with `f` the tuple fold at `init = coords`, the
+`NTuple{6,ComplexF64}` that `Tuple(u)` gave the closure;
+`_linearization_point` (184-190) maps the script's Float64 `u0` to itself.
+Column for column the same operations, which is why the equality is exact
+and not merely within a tolerance.
+
+### Review findings and fixes (two reviewers: repository compliance, runner; 3 findings, all minor, all reproduced by the fixer; 0 tracked-file edits by the agents, 1 comment-only edit by the orchestrator after the review, 1 report correction, 1 recorded)
+
+| # | lens | site | finding | resolution |
+|---|---|---|---|---|
+| 1 | repo F1 (minor) | `validation/lattice_cells.jl` 113, 140, 157, 204; `src/analysis/one_turn_matrix.jl` 370-374, 392-393 | the wrapper changes the script's FAILURE path, not its results: the helper raises an `ArgumentError` on a non-finite map or Jacobian where the pre-stage-7 closure returned a NaN matrix that the gate (260-273: `r[3] <= 5.0e-7`, `isfinite(tr)`, `isfinite(r[6])`) rejected later; in `find_stable` the call is inside `try ... catch; continue` (135-139), so the scan is unchanged and its `all(isfinite, J) \|\| continue` (140) is now redundant on the helper path; at 157 and 204 a broken cell aborts at the call with the helper's message instead of at the gate | RECORDED: the gate outcome is unchanged (non-zero exit on both routes), no cell of `CELLS` exercises the path (0 throws, 0 non-finite in both routes' scan counts), and H2 prescribes the one-line wrapper (a try/catch restoring NaN semantics would be a redesign) |
+| 2 | repo F2 (minor, outside the diff) | `src/analysis/one_turn_matrix.jl` 167-170 | the comment above `_linearizable` says the tuple fold is "exactly as the suite and the validation scripts do ..., which is what keeps the complex-step Jacobian bit-identical to their closures"; after stage 7 only the suite keeps a closure (`test/runtests.jl` 16661, 16792); the fold clause itself stays true (`track_cell`, 105) | FIXED by the orchestrator after the review (the agents' H1 scope excluded `src/`): the comment, now 167-172, names the suite's witness closures and the script's `track_cell` as the fold's reference and says the script takes its Jacobian from this helper; comment only, no code line; item 14 below records it closed |
+| 3 | runner (minor) | `OUT/report_7_impl.md` sections 2-3 | the implementer report cited 21bce7d line numbers as after-tree numbers for the builders and `track_cell` (69-73, 80-87, 90-97, 100-102, 104) and a `CELLS` range (191-198) matching neither tree | FIXED in the report: section 8 appended with the after-tree numbers (`fodo_cell` 70-74, `dba_cell` 81-88, `tba_cell` 91-98, `with_sextupole` 101-103, `track_cell` 105, `S6` 107, `CELLS` 187-194); no code or doc line was wrong; this record uses the after-tree numbers |
+
+Checks that passed (repository reviewer, by reading; runner, by execution):
+the diff at review time was H2/H3/H4/H8 and nothing else (five files, no
+untracked file, no `src/` line; the F2 comment edit came after the review;
+`docs/todo.md` and `docs/history/` untouched in the worktree);
+every comment true after the change (the wrapper comment, the suite comment,
+the pre-existing suite comments 16657-16660 and 16774-16777, the script
+docstring line 3); the docs consistent with each other and with Staging item
+7 (script header, `validation/README.md`, the design STATUS, `docs/README.md`
+66 and 68-69); ASCII (`git diff -U0 HEAD | grep -nP '[^\x00-\x7F]'` empty
+over added and removed lines); the matrix class named correctly (a validation
+script plus a `.jl` comment in `test/runtests.jl` plus three docs: FULL
+gate, the record committed with the claim); the implementer's other line
+claims (15-16, 107, 109-113, 136, 157, 204; 16788-16800; 1044-1045; 5,
+17-18; 68-69) all as reported.
+
+### Not verified in stage 7
+
+- No lane and no gate ran on this tree: the worktree diff was exercised only
+  by the validation script itself (four CPU-only runs, all exit 0) and by the
+  two audits; the `test/runtests.jl` comment edit is exercised by the
+  orchestrator's fast lane and the two-arm full gate on the stage 7 commit,
+  which are recorded in this file when they run.
+- The CUDA-active run was made once, on the FINAL script only, after the
+  parent's gate had ended (above); there is no CUDA-active run of the
+  UNMODIFIED 21bce7d script from this worktree, so the before/after byte
+  identity is established CPU-only, and the CUDA run is tied to it by its
+  first seven TSV columns being the same strings (`cmp` rc 0 on columns
+  cell .. cpu_cpu); the `cpu_cuda` / `cuda_max_diff` columns do not involve
+  the Jacobian.
+- The baseline's wall time (about 1.5 min) is inferred from the 15:51 launch
+  and the log mtime 15:52:33; the after runs were stamped (57 s, 57 s, 58 s).
+- No cell of `CELLS` reaches the helper's non-finite branch, so the failure
+  path of finding 1 is described by reading, not by a run.
+- The stage's other agents ran no package-mode load: the exported name
+  `one_turn_matrix` reaching the script through `using .Octopus` was verified
+  by the script runs (which include `src/Octopus.jl` in-process), not by
+  `using Octopus`.
+
+### Carried forward to stage 8 (the external benchmarks; this record edits neither note)
+
+The stage 6 list (its section above, "Carried forward to stage 7/8") re-listed
+item by item; stage 7 changed no code line under `src/` (one comment, F2),
+so every analysis item stands as written there. Item 12's `lattice_cells.jl`
+clause closes here; item 11 stays open; item 14 is new and closed in this
+same commit.
+
+1. **The `:fixed_point` route's stall is reported as `:none` (stage 6 M1;
+   `src/analysis/dispersion_routes.jl` `_route_from_graph` 662ff,
+   `_fixed_point_route`, `_route_agreement` 490-500).** OPEN, unchanged: a
+   diverged graph passes the (I1) floor because the floor grows with
+   `||D||^2`; `k_route_agreement` 1.29e32 on dense maps 89 / 157 of the
+   200-map set; `validation/twiss_dispersion_identities.jl` exits 1 at its
+   defaults in both arms until a `src/analysis` fix with its own measured
+   windows lands.
+2. **The multipliers on the script's 200 + 20 set (stage 6 M3).** OPEN,
+   unchanged: frozen on the contract's 20 + 5 maps; at 200 + 20, 20 native /
+   18 haswell rows exceed one tenth and `c_scaling_invariance` exceeds its
+   budget natively (map 98, 1.11). Owner: re-freeze on the 200-map set,
+   report-not-gate at one tenth, or lower the script's defaults; measure the
+   one conditioning factor (mode gap or frame conditioning) first.
+3. **CI headroom on the 0.1 test pins (stage 6 R2).** REALIZED by CI run 436
+   and closed test-side by 21bce7d (pins at 0.5 naming their row, the 57-row
+   table printed by the testset; the section "CI run 436 on e960ca8 red"
+   above); the runner's per-row numbers are still unmeasured, so whether a
+   `c` should move by the H15 rule on that class stays with the owner.
+4. **The (E7) / U_6-symplecticity kappa (4b item 2, stage 5 item 2).** OPEN,
+   unchanged: the landed `c rho_M1 cond(U)` vs the review's resolution kappa
+   `cond(U) ||U||^2 / chord_min`, or a `:degraded` verdict for those rows.
+5. **The normalizer multiplier (4b item 4): MEASURED, VERDICT no change.**
+   Closes unless the 200-map set (item 2) says otherwise: ratios 2.47 / 1.80
+   native, 3.30 / 1.49 haswell, all below 6.4.
+6. **Arm-dependent verdicts at the analysis's floors.** OPEN, unchanged: D12's
+   weak-cavity map `:failed` native / `:degraded` haswell by the eigenplane
+   route's (I1) floor; whether the route floors should carry the coefficient
+   condition (4a's `c_inv` item) is the same question.
+7. **Result-shape items for the owner.** OPEN, unchanged: `dispersion.tunes`
+   in label order vs `physical.tunes` in frame order; a PRESET
+   `longitudinal_mode` treated as uncertified (theory T7); the 6D synchrotron
+   tune's `[0, 2pi)` presentation; `matched_covariance` not bitwise
+   symmetric; the rounding rule; the heuristic-degrades policy with the
+   stage 6 correction (crab_dispersion and thin_rf_cavity degrade by
+   `:unit_eigenvalue`).
+8. **Sharper kappas left as measured (below 100).** OPEN, unchanged:
+   `c_d14_graph_invariance` and `r_primary_route_invariance_i1` without the
+   Sylvester conditioning; `k_trace_cubic`'s partial root conditioning.
+9. **Test-side gaps recorded.** OPEN, unchanged: no negative for
+   `kinds_failed_example`; the last diagnostic row unpinned by the contiguity
+   test; i3 invisible by construction; T2's ~80 s cold cost and the example
+   runner's 66-s subprocess.
+10. **Design paragraphs to reconcile in the note (docs-only).** OPEN,
+    unchanged: the stage 5 list plus the verification table's row 461, the
+    isotropic-graph / false-graph rows, the 4b digest's "det M_cal = h", the
+    theory note's date clause. Stage 7 adds none: the design body's two
+    `lattice_cells.jl` mentions (100: "three identical complex-step closures
+    now in `validation/lattice_cells.jl`", the stage 1 motivation; 456: the
+    uncoupled-FODO benchmark row) are history by decision and still read
+    correctly as the state the design was written against.
+11. **Owner notes carried unchanged; STILL OPEN after stage 7.** Stage 5 item
+    7 (c): whether the Verification Matrix names a CI-parity (AVX2) arm
+    permanently (every stage 6 and CI-fix gate ran both arms regardless, and
+    CI run 436 showed the runner is a third class); a `_with_longitudinal_mode`
+    keyword copy in `src/analysis` would replace the two `fieldnames`-derived
+    rebuilds. Stage 7 was the candidate slot the stage 6 list named for the
+    keyword copy, but the stage's scope (H1) forbade any `src/` line; the
+    item moves to stage 8 or a `src/analysis` docs-and-helpers commit.
+12. **Later stages, unchanged, with one clause CLOSED.** The `lattice_cells.jl`
+    refactor (stage 7, optional) LANDED with this record: the script derives
+    its Jacobian from `one_turn_matrix`, the re-run record above is
+    byte-identical before and after, the identity script never depended on
+    it. Still open: seeding the iterative routes on the selected branch;
+    extending `kappa_route` by the coefficient condition (item 1 makes it
+    concrete); transport, scans, covariance-based mode selection, a public
+    closed-orbit finder; the external benchmarks (stage 8: MAD-X, PTC,
+    Xsuite, each a validation script with stated tolerances and a history
+    record; the identity contract's fixture recipes F1-F5 are the natural
+    inputs); the post-campaign neighbour audit.
+13. **Process items from stage 6.** Unchanged (probe "not reachable" claims
+    with the design row's own options; a count assertion is documentation
+    until an injection deletes a row; a kappa without `cond(U)` shows the
+    same argmax fixture across rows; a multiplier frozen on the suite's set
+    is not a property of a larger set; a script that gates on the contract
+    turns an analysis defect into a red record). Stage 7 adds one: when a
+    report cites line numbers across a refactor, it names the tree (the
+    baseline commit or the after-tree) each number belongs to; the stage's
+    only report defect was baseline numbers labelled as after-tree numbers.
+14. **NEW (stage 7 review F2) and CLOSED in this commit: a `src/` comment
+    made stale by this stage.** `src/analysis/one_turn_matrix.jl` 167-170,
+    the comment above `_linearizable`, said the tuple fold keeps the
+    complex-step Jacobian "bit-identical to their closures" of "the suite
+    and the validation scripts"; since stage 7 only the suite keeps a
+    closure (`test/runtests.jl` 16661 `jac_witness`, 16792
+    `_otm_inline_complex_step`). The orchestrator reworded it after the
+    review (comment only, now 167-172): the fold's reference is the suite's
+    witness closures and the script's `track_cell` (105), and the script
+    takes its Jacobian from this helper. The fold clause itself was always
+    true. Nothing to carry.

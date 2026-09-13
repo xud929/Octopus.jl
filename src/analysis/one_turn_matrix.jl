@@ -165,9 +165,11 @@ _source_kind(::Tuple) = :runtime_tuple
 _source_kind(::AbstractElementSpec) = :element_spec
 
 # Anything compile_runtime accepts is linearized through its compiled map; a
-# tuple of compiled maps is folded in order exactly as the suite and the
-# validation scripts do (`foldl((c, e) -> e(c...), cell; init=u)`), which is
-# what keeps the complex-step Jacobian bit-identical to their closures.
+# tuple of compiled maps is folded in order exactly as the suite's witness
+# closures and `track_cell` of validation/lattice_cells.jl do
+# (`foldl((c, e) -> e(c...), cell; init=u)`), which is what keeps the
+# complex-step Jacobian bit-identical to the witnesses; that script takes
+# its Jacobian from this helper.
 _linearizable(map) = map
 _linearizable(spec::AbstractElementSpec) = compile_runtime(spec)
 function _linearizable(maps::Tuple)

@@ -16786,8 +16786,9 @@ _otm_fodo_line(kq; nst=4, order=4) = BeamLine("FODO",
     QuadrupoleSpec(L=0.3, kn=(0.0, -kq), nst=nst, integrator_order=order),
     DriftSpec(L=1.2))
 _otm_track(cell, u) = foldl((c, e) -> e(c...), cell; init=u)
-# The closure of validation/lattice_cells.jl `one_turn_jacobian`, verbatim in
-# its arithmetic: the independent witness of the helper's complex step.
+# The complex-step arithmetic that validation/lattice_cells.jl carried inline
+# as `one_turn_jacobian` before stage 7 (the script now calls the helper),
+# kept here verbatim as the helper's independent witness.
 function _otm_inline_complex_step(cell, u0)
     J = zeros(6, 6)
     for j in 1:6
