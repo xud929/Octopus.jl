@@ -1071,6 +1071,30 @@ copy and make each one pass the new rule in the same commit; a template
 that the suite's own rule rejects is a trap, not documentation. The
 tripwire protects the tree, not the reader who copies stale text.
 
+## A headroom tripwire is a tolerance too, and CI is a CPU nobody measured
+
+The stage 6 contract (2026-09-13) froze 57 multipliers by the rule adopted
+after run 434: measured in two CPU arms, `c` at least ten times the larger
+arm. The suite then PINNED that rule, `ratio <= 0.1` per row, and CI run 436
+on `ubuntu-latest` was red on three rows at 0.154, 0.125 and 0.115 while both
+arms put every row under 0.095; the contract itself passed there (its
+threshold is 1). The pin re-measured the rule on a third CPU class that the
+two arms only emulate, with the margin the rule had already spent: the
+one-tenth rule guarantees headroom on the arms, not on the runner, and a pin
+AT the rule's value has none left for the class-to-class swing (1.2 to 1.7
+here; 2 to 2.3 between the arms after run 434). One row (`c_d8_round_trip`,
+kappa 1, `c` 8) went from exactly half an ulp to exactly one ulp: a quantized
+row does not swing by percent, it flips.
+
+Rules adopted: a tripwire on a measured ratio sits at half the enforced
+threshold, never at the measured arms' rule; a pinned table is PRINTED by the
+testset that pins it, so the only channel an unmeasured class has (its CI
+log) carries the measurement; a pin inside a loop names its row (`@testset
+let slug = slug, ratio = ...`), because a bare `Evaluated: 0.1537 <= 0.1` on
+an admin-walled runner is a number without a row. The review had recorded
+the risk as R2 with "decide before CI shows it": a recorded risk with a
+known fix is cheaper to close before the push than after.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

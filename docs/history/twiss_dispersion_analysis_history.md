@@ -10050,3 +10050,124 @@ This section is the only change between the gated tree and the pushed tree
 (with the todo row's note); the commit carrying it is markdown-only and
 finishes with the fast lane on its own tree (matrix row "markdown only"),
 `result/gates/fast_lane_gate_record_stage6_2026_09_13.log`.
+
+## 2026-09-13: CI run 436 on e960ca8 red on the stage 6 one-tenth pins; the test-side fix
+
+CI run 436 (https://github.com/xud929/Octopus.jl/actions/runs/34774489621,
+push of e960ca8, the ubuntu runner, Julia 1.12.7, four threads) was red at
+14:32:37 EDT after 9 min: the suite aborts at the first failing file, and the
+first failure was the stage 6 testset "Stage 6: the identity contract passes
+on the tree with pinned metrics, and every negative is red", 153 of 157, four
+assertions red, all of them the one-tenth pins of test/runtests.jl (the
+`<= 0.1` at 1144 on `worst_ratio` and at 1149 on every row's ratio at its
+frozen `c`):
+
+| assertion (as pushed) | evaluated on the runner | both local arms |
+|---|---|---|
+| `m[:worst_ratio] <= 0.1` | 0.1537336459459216 | 0.09476 (`k_longitudinal_block_symplecticity`, both arms) |
+| `m[Symbol("max_", slug)] <= 0.1` | 0.125 | one row: see below |
+| `m[Symbol("max_", slug)] <= 0.1` | 0.11487872638506012 | every row under 0.0948 |
+| `m[Symbol("max_", slug)] <= 0.1` | 0.1537336459459216 | (the worst row again) |
+
+The contract itself PASSED on the runner (`r.passed`, the first assertion of
+the testset, is green; the four reds are the suite's headroom tripwires, not
+the contract's `c eps kappa` tolerances, whose threshold is a ratio of 1).
+Everything before that file in the suite was green on the runner, including
+the two stage 5 testsets and the stage 6 registration testset (9/9).
+
+**What the two local arms show.** The same contract on the same tree,
+package mode, four threads, dumped row by row
+(`result/twiss_impl_2026_09_11/stage6/ci_repro/ratios_{native,avx2}.log`,
+`dump_ratios.jl`): status `:passed` in both arms, worst
+`k_longitudinal_block_symplecticity` 0.09476 in both, and every one of the 57
+rows under 0.095. The rows nearest the pin, ratio at the frozen `c`:
+
+| row | native | `-C haswell` + Haswell OpenBLAS | c |
+|---|---|---|---|
+| `k_longitudinal_block_symplecticity` | 0.09476 | 0.09476 | 16 |
+| `k_ohmi_chart_change_block_symplecticity` | 0.06683 | 0.09466 | 8 |
+| `r_separation_off_diagonal_k5` | 0.07940 | 0.09391 | 128 |
+| `k_trace_cubic` | 0.09068 | 0.09068 | 512 |
+| `k_route_agreement` | 0.07481 | 0.09061 | 32 |
+| `k_k8_residual` | 0.08308 | 0.08308 | 8 |
+| `c_d8_round_trip` | 0.06250 (residual 1.11e-16 = eps/2) | 0.06250 (eps/2) | 8 |
+
+The runner's 0.125 is `c_d8_round_trip`: its kappa is 1 and its `c` is 8, so
+0.125 is a multiplier-1 residual of exactly one ulp (2.22e-16) where both
+arms round to half an ulp; the row is quantized and the runner's arithmetic
+chain lands on the other side of the rounding. The 0.1537 and 0.1149 rows
+cannot be named from the runner's output (the test as pushed did not name
+them; the runner's log is admin-walled beyond the owner's paste): they are
+1.2 to 1.7 times the arms' values of the rows in the table above, in the
+range of the 18-42 percent inter-arm swing already recorded (stage 6 review,
+runner R2) plus the runner's own kernels. This is carried item 3 of the stage
+6 section ("CI headroom on the 0.1 test pins", options recorded there:
+"test pins at 0.2, the contract's `c` untouched, or `c` one power of two
+higher where the H15 margin is below 1.25 ... decide before CI shows it, or
+after run 436 shows it does not") realized: run 436 showed it.
+
+**Decision: the test pins move, the contract does not.** The multiplier table
+is a MEASUREMENT of two arms under the H15 rule (`c = max(8, 2^ceil(log2(10
+max)))`, "a multiplier moves only by the H15 rule", stage 6 review row 20).
+Raising `c` one power where the margin is thin would double the tolerance of
+the rows the contract judges most sharply, on the strength of three numbers
+from an unmeasured machine, and would still leave a 0.1 pin with less than a
+factor 1.3 for the runner class (its worst is 1.62 times the arms' worst;
+a doubled `c` puts it at 0.077). The pin is what has no measured basis on the
+runner, so the pin carries the margin: one half, `st6_pin = 0.5`, for
+`worst_ratio` and for every row. That is a factor of four over both arms'
+worst (0.0948), a factor of 3.25 over the runner's observed worst (0.154),
+and a factor of two under the contract's own threshold, so a row that trips
+it on any CPU has lost more than half its H15 headroom on the tree; the
+stage 6 option "0.2" was written before the runner's numbers existed and
+would leave 1.3 for the class-to-class swing (ubuntu-latest runners are not
+one CPU model). No line of `src/` changed; the contract's 57 `c` values, its
+kappas and its verdict are as landed in d4e67da.
+
+**The change (test/runtests.jl, the stage 6 contract testset only).**
+
+- `@test m[:worst_ratio] <= st6_pin` inside `@testset let worst =
+  m[:worst_identity]`: a failure prints `Context: worst = <slug>`.
+- The per-row pin `@test ratio <= st6_pin` inside `@testset let slug = slug,
+  ratio = ...`: a failure prints the row and its ratio (the pushed test
+  printed only the number, which is why the 0.1537 and 0.1149 rows are
+  unnamed above). `@testset let` adds context, not a summary row: the
+  testset stays 157 assertions, one top-level row.
+- The 57-row table (ratio at the frozen `c`, `c`, argmax fixture; sorted by
+  ratio; the host CPU, the `-C` target and `OPENBLAS_CORETYPE` in the header)
+  is printed by the testset on every run, so the next CI log measures the
+  runner's class row by row and the runner stops being a third arm nobody
+  can measure. The rows are read through `get(..., NaN)` so a missing metric
+  is still caught by the `haskey` assertion instead of throwing.
+- The comment carries the reason and the run-436 numbers; the H15 rule's
+  statement in the contract's docstring (both arms under 0.1) is unchanged
+  and still true.
+
+**Verification (package mode from the main tree, never Pkg.test by an agent;
+the orchestrator ran it).**
+
+- The stage 6 blocks T1, T2 and the identity rows of "Physics contracts",
+  extracted from the edited runtests.jl (`ci_repro/extract_main_ci.py`,
+  `run_stage6_ci.jl`): native 169/169 (T1 9, T2 157, the three identity rows 3; 84.9 s, exit 0); `-C haswell` with Haswell
+  OpenBLAS 169/169 (84.4 s, exit 0). The printed table matches the dumps above in both
+  arms.
+- Injected defect (`ci_repro/inj_c2/`, a scratch copy of `src/` with the `c`
+  of `k_longitudinal_block_symplecticity` cut from 16 to 2, so its ratio
+  at `c` becomes 0.758): `Some tests did not pass: 155 passed, 2 failed`, the two reds being the
+  pins, `worst_ratio` 0.7581 > 0.5 with `Context: worst =
+  k_longitudinal_block_symplecticity` and the row pin 0.7581 > 0.5 with
+  `Context: slug = k_longitudinal_block_symplecticity, ratio = 0.7581...`;
+  the contract itself still `:passed` (0.758 < 1), so the pins are the only
+  reds and both name the row; the printed table's first line shows the row
+  at 0.7581 with c = 2 (`ci_repro/inj_c2.log`). The unpatched blocks are the control
+  (green above).
+- The four suite tripwires after the ledger edits, inside the fast lane on the edited tree: `Architecture integrity` 28/28 (28.8 s), `No method grows a Core.Box outside the argued allowlist` 2/2, `Every export is documented` 1/1, `No docstring is detached by comment lines` 1/1.
+- Fast lane on the tree (HEAD e960ca8 plus the four uncommitted files): `result/gates/fast_lane_cifix_stage6_2026_09_13.log`, exit 0, `Testing Octopus tests passed`, 14:50:44-15:07:51 EDT (17 min 07 s), 299 top-level rows, 146222/146222, the usual 15 heavyweight sections skipped by the lane, every row's count equal to the previous fast lane's (`result/gates/fast_lane_gate_record_stage6_2026_09_13.log`, 14:06 EDT on the stage 6 tree). The two stage 6 rows 9/9 (1.3 s) and 157/157 (42.6 s); the 57-row pin table printed once, its top row `k_longitudinal_block_symplecticity 0.09476 c=16 F6a dense 6x6 map 20`, the multiplier-1 measurement's value. A parsing note: `summarize_gate.py` reports 298 rows and 146104 for this log because the `Test Summary:` header of `CPU solver stack is thread-count invariant` (118/118, log line 691) was interleaved with an `@info` block from another thread; the row is in the log, `grep -c` finds all 299 headers, and 146104 + 118 = 146222.
+- The full gate runs on the commit in both arms before the push and is
+  recorded in its own section below, as for d4e67da.
+
+**Not fixed here, still carried.** The runner's exact per-row ratios (the
+next CI log prints them; if any row sits above 0.25 there, the H15 table
+gets a documented third-arm entry or the row's kappa is re-examined, per the
+"ratio that moves with the CPU target" tell of docs/experiences.md). Items
+M1 and M3 of the stage 6 section are untouched.
