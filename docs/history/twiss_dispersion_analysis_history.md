@@ -10594,3 +10594,66 @@ same commit.
     witness closures and the script's `track_cell` (105), and the script
     takes its Jacobian from this helper. The fold clause itself was always
     true. Nothing to carry.
+
+## 2026-09-13: full gate on the stage 7 commit (b89fcab), in two CPU arms
+
+The stage 7 commit b89fcab (`refactor(validation): lattice_cells.jl derives
+its Jacobian from the one_turn_matrix helper`, the section above) named this
+run as its gate: one full gate on the commit's tree before the push (AGENTS.md
+Definition of Done, owner decision 2026-09-04), checkpointed by the fast lane
+on the uncommitted tree (result/gates/fast_lane_stage7_2026_09_13.log,
+exit 0, 17:03:16-17:21:03 EDT, `Testing Octopus tests passed`, 299 rows, 146222/146222, the usual 15 heavyweight sections skipped, among them the witness testset `Lattice cells track and stay symplectic`, which the full gate runs; `summarize_gate.py` reads 298 rows / 146104 on that log because a stderr WARNING line landed inside one `Test Summary:` header, the interleaving already described in the CI-fix gate section). As for the CI-fix commit (the section two above), the gate
+ran TWICE on the clean tree at b89fcab, CUDA active, four threads, both
+arms from one detached script with the depot otherwise idle (no other julia
+test process; the worktree `stage7-A` removed before the launch):
+
+    # native arm (the Verification Matrix's gate)
+    julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+    # AVX2 arm (CI-runner parity: OpenBLAS Haswell kernels, LLVM target haswell)
+    OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4", "-C", "haswell"])'
+
+| item | native arm | AVX2 arm |
+|---|---|---|
+| tree | b89fcab (`git status` clean) | same |
+| start / end / wall | 17:22:14 / 18:05:10 EDT / 42 min 56 s (the CI-fix gate: 42 min 53 s) | 18:05:10 / 18:47:53 EDT / 42 min 43 s (the CI-fix gate: 42 min 44 s) |
+| exit code | 0 (`Testing Octopus tests passed`) | 0 (`Testing Octopus tests passed`) |
+| test summary | 314 top-level testset rows, every one `Pass == Total`; summed 148224 passed of 148224 (the CI-fix gate: 314 rows, 148224); no Fail, Error or Broken column anywhere | 314 rows, every one `Pass == Total`; summed 148224 passed of 148224; no Fail, Error or Broken column anywhere; every row's counts equal to the native arm's (0 differing counts in the row-by-row comparison) |
+| the rows this commit touches | `Lattice cells track and stay symplectic` 41/41 (30.6s) (the suite's witness closure `jac_witness` asserted equal to the helper, unchanged by the commit); `one_turn_matrix: the ForwardDiff route and the core fallback` 32/32 (9.6s); the stage 6 contract testset 157/157 (44.4s) | 41/41 (29.2s); 32/32 (9.1s); 157/157 (40.9s) |
+| skipped or unrunnable | none: no `LANE SKIP` banner (full lane); the heavyweight sections ran (`The multi-process seam runs under an MPI launcher` 1710/1710 (8m57.8s); `The developer harnesses run divided under an MPI launcher` 4/4 (1m34.2s); `4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps` 12602/12602 (0.2s); `Mode clusters: 200 + 200 manufactured stable maps are resolved singletons` 11406/11406 (1.6s); `CPU solver stack is thread-count invariant` 118/118 (6.2s); the example runner `Every example script runs against the current interface` 6/6 (7m51.8s)) | none: no `LANE SKIP` banner (full lane); the heavyweight sections ran (`The multi-process seam runs under an MPI launcher` 1710/1710 (8m49.2s); `The developer harnesses run divided under an MPI launcher` 4/4 (1m33.2s); `4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps` 12602/12602 (0.2s); `Mode clusters: 200 + 200 manufactured stable maps are resolved singletons` 11406/11406 (1.5s); `CPU solver stack is thread-count invariant` 118/118 (6.3s); the example runner `Every example script runs against the current interface` 6/6 (7m43.4s)) |
+| CUDA | active (`CUDA coverage status` 1/1) | active (`CUDA coverage status` 1/1) |
+| warnings | 41 non-fatal warning lines of 11 distinct texts (numbers normalized; the CI-fix native arm: 42 of 12); exactly the CI-fix AVX2 arm's set and counts (the CI-fix native arm's eleventh text was the Profile notice of its SIGUSR1 peek, not repeated here) | 41 non-fatal warning lines of 11 distinct texts (numbers normalized; the CI-fix AVX2 arm: 41 of 11); exactly the CI-fix AVX2 arm's set and counts (the CI-fix native arm's eleventh text was the Profile notice of its SIGUSR1 peek, not repeated here) |
+| log | `result/gates/full_gate_stage7_native_2026_09_13.log` | `result/gates/full_gate_stage7_avx2_2026_09_13.log` |
+
+Row arithmetic: the commit changes no testset's assertion count (a validation
+script the suite does not run, one comment in `test/runtests.jl`, one comment
+in `src/analysis/one_turn_matrix.jl`, three docs and the ledgers), so the
+expected totals are the CI-fix gate's, 314 rows and 148224 in both arms,
+exactly as measured: 314 rows and 148224/148224 in each arm, 0 differing counts against the CI-fix gate's native log and 0 between the two arms (the witness row `Lattice cells track and stay symplectic` keeps its 41/41, the helper rows and the stage 6 rows their counts). The validation script itself was gated by its own re-run record
+(the stage 7 section above: CPU-only before/after TSVs byte-identical, the
+CUDA-active run exit 0), outside the suite by design. The gate logs were
+summarized by `result/gates/summarize_gate.py` as before (314 rows in both logs, `grep -c 'Test Summary:'` agreeing; no interleaved header this time, so the summarizer's count is the row count); no signal was sent to either test process and both logs are test output only.
+
+CI on the pushed CI-fix commit ce43179 (run 437,
+https://github.com/xud929/Octopus.jl/actions/runs/34782604175) finished red at
+17:34:59 EDT, 32 min 16 s into its test step, with `Process completed with exit
+code 1` as its only annotation. Run 436 had died after 8 min 44 s at the stage 6
+pin testset, which sits 5% into the suite; the green runs take 34-36 min; so this
+red is late in the suite and past the stage 6 pins, which the CI-fix commit
+addressed. The failed step's log could not be read from the gate host (no
+GitHub token; the API's log endpoint answers 403 without one); the owner's
+paste of the failure (18:50 EDT) identified it: `Physics contracts` 16 of 17,
+`idc.metrics[:worst_ratio] <= 0.1` at test/runtests.jl:22368 evaluated
+`0.1537336459459216 <= 0.1`, the one-tenth pin on the identity contract's
+worst ratio that the CI-fix commit 21bce7d left in this block while moving
+the stage 6 testset's pins to one half (the same 0.1537 the runner showed in
+run 436). The stage 7 commit changes no assertion and does not touch that
+line; the fix is the next commit (the next section), and the push waits for
+its gate.
+
+This section is the only change between the gated tree and the record tree
+(with the todo row's note); the commit carrying it is markdown-only (matrix
+row "markdown only"). It is not the last commit before the push: the
+`Physics contracts` pin fix that answers CI run 437 follows it (the next
+section), and that fix's two-arm full gate runs on a tree that contains this
+commit, so this commit is covered by that gate instead of a fast lane of its
+own; the fix's record commit, the last before the push, carries the fast lane.
