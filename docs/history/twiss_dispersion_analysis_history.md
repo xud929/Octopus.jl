@@ -9998,3 +9998,55 @@ docstrings 1; 27.5 s after load, exit 0, `run_tripwires_native.log`);
 `run_tripwires_haswell.log`). The ledger files are staged beside the stage 6
 changes; nothing is committed. The commit step owns the fast lane, the
 two-arm full gate and the push.
+
+## 2026-09-13: full gate on the stage 6 commit (d4e67da), in two CPU arms
+
+The stage 6 commit d4e67da named this run as its gate: one full gate on the
+commit's tree before the push (AGENTS.md Definition of Done, owner decision
+2026-09-04), checkpointed by the fast lane on the uncommitted tree
+(result/gates/fast_lane_stage6_2026_09_13.log, exit 0, 12:18:52-12:36:29 EDT,
+299 rows, 146222/146222, the usual 15 heavyweight sections skipped). As for
+the stage 5 batch (the section above), the gate ran TWICE on the clean tree at
+d4e67da, CUDA active, four threads, both arms from one detached script with
+the depot otherwise idle (no other julia process; the three stage 6 worktrees
+had been removed before the launch):
+
+    # native arm (the Verification Matrix's gate)
+    julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+    # AVX2 arm (CI-runner parity: OpenBLAS Haswell kernels, LLVM target haswell)
+    OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4", "-C", "haswell"])'
+
+| item | native arm | AVX2 arm |
+|---|---|---|
+| tree | d4e67da (`git status` clean) | same |
+| start / end / wall | 12:37:23 / 13:20:46 EDT / 43 min 23 s (the stage 5 gate: 41 min 06 s; the new example adds about a minute to the example runner, T2 43 s) | 13:20:46 / 14:04:04 EDT / 43 min 18 s (the stage 5 gate: 50 min 10 s) |
+| exit code | 0 (`Testing Octopus tests passed`) | 0 (`Testing Octopus tests passed`) |
+| test summary | 314 top-level testset rows, every one `Pass == Total`; summed 148224 passed of 148224 (the stage 5 gate: 312 rows, 148050); no Fail, Error or Broken column anywhere | 314 rows; 148224 of 148224; every row `Pass == Total`, and every row's counts equal the native arm's row by row; no Fail, Error or Broken column anywhere |
+| the stage 6 rows | `Stage 6 registers TwissDispersionIdentityContract: ...` 9/9 (1.3 s); `Stage 6: the identity contract passes on the tree with pinned metrics, and every negative is red` 157/157 (43.2 s); `Physics contracts` 17/17 (was 14: the three `idc` rows; 1 min 48 s); `the Example core object answers with real scripts` 20/20 (was 16); `Every example script runs against the current interface` 6/6 (was 5; 7 min 59 s, the DBA-ring example among the subprocesses) | the same five rows with the same counts: 9/9 (1.2 s), 157/157 (40.7 s), `Physics contracts` 17/17 (1 min 50 s), the catalogue 20/20, the example runner 6/6 (7 min 58 s) |
+| skipped or unrunnable | none: no `LANE SKIP` banner (full lane); the CUDA, ForwardDiff, MPI launcher and example-execution sections all ran (`CUDA coverage status` passed; `one_turn_matrix: the ForwardDiff route and the core fallback` 32/32; `The multi-process seam runs under an MPI launcher` 1710/1710, 9 min 08 s; `The developer harnesses run divided under an MPI launcher` 4/4; the two testsets behind CI run 434's red, `4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps` 12602/12602 and `Mode clusters: 200 + 200 manufactured stable maps are resolved singletons` 11406/11406) | none: the same sections ran with the same counts (`CUDA coverage status` passed; `one_turn_matrix: the ForwardDiff route and the core fallback` 32/32; the MPI seam 1710/1710 in 8 min 53 s; the developer harnesses 4/4; the CI-red rows 12602/12602 and 11406/11406 under the AVX2 target) |
+| CUDA | active (`CUDA coverage status` passed); the test process's device footprint was not sampled before it exited | active (`CUDA coverage status` passed); the process held 410 MiB of device memory when sampled at the 10- and 30-minute marks (the stage 5 AVX2 arm: 412 at 30 min); the final footprint was not sampled |
+| warnings | 41 non-fatal warning lines of 10 distinct texts (numbers normalized; the stage 5 native arm: 42 of 11 counted the same way); every text present in the stage 5 gate's log, none new to this commit; absent this time: the `CUDA_Runtime_jll provides CUDA ..., which is newer than CUDA_Compiler_jll's` notice (an environment notice, not a tree text) | 42 non-fatal warning lines of 11 distinct texts: the native arm's ten texts with the same counts plus ONE line, `particles were lost with no aperture responsible; a coordinate went non-finite where nothing was collimating` (unattributed = 1, dead = 1, logged = 0; src/tasks/Tasks.jl:730), printed once inside the MPI-launcher section between the rows `A sharded run keys its random streams on the global particle index` and `A beam built under the multi-process policy is the beam it composes`, whose testsets passed with the native arm's counts; the same text printed once in the stage 5 fast lane on the NATIVE arm (result/gates/fast_lane_stage5_2026_09_13.log, after the Gaussian-PIC multi-process row), so it is an intermittent, non-fatal notice of the multi-process tracking scenarios, neither new to this commit nor arm-specific. Absent this time from the AVX2 arm: the stage 5 AVX2 arm's `AES-acceleration instructions have not been detected` notice and its two CUDA CUSOLVER / CUSPARSE deprecation notices (environment notices emitted at library load; the tree does not print them) |
+| log | `result/gates/full_gate_stage6_native_2026_09_13.log` | `result/gates/full_gate_stage6_avx2_2026_09_13.log` |
+
+Row arithmetic: the stage 5 gate summed 148050 in 312 rows; this tree adds the
+two stage 6 testsets (9 + 157 = 166, two rows), three `idc` rows inside
+`Physics contracts` (14 -> 17), four catalogue assertions (16 -> 20) and one
+example subprocess (5 -> 6), so 148050 + 166 + 3 + 4 + 1 = 148224 in 314 rows,
+exactly the total of the native arm and of the AVX2 arm. Every other row keeps the stage
+5 gate's count (the row-by-row comparison of the two native logs differs in
+those five rows only). The two arms agree row by row, so no assertion of the tree is target-dependent at the gate's resolution; the two testsets behind CI run 434's red pass under the AVX2 target here, as in the stage 5 gate. The validation script's red at its 200-map
+defaults (the stage 6 section above) is outside the suite by design: the gate
+judges the contract's 20 + 5 fixture set through the suite's testsets, which
+are green in both arms; the two carried items M1 and M3 stand. The AVX2 arm is
+an emulation (`-C haswell` with Haswell OpenBLAS kernels on a Sapphire Rapids
+host), not the runner; CI itself is the remaining check and runs on the push.
+The gate logs were summarized by `result/gates/summarize_gate.py` (top-level
+rows after each `Test Summary:` header, summed Pass and Total, Fail / Error /
+Broken headers, `LANE SKIP` banners, warning lines, a row-by-row comparison),
+validated first on the stage 5 gate logs (312 rows, 148050 in both arms, as
+recorded above).
+
+This section is the only change between the gated tree and the pushed tree
+(with the todo row's note); the commit carrying it is markdown-only and
+finishes with the fast lane on its own tree (matrix row "markdown only"),
+`result/gates/fast_lane_gate_record_stage6_2026_09_13.log`.
