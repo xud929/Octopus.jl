@@ -534,7 +534,7 @@ MyElement(spec::ElementSpec{:my_element},
     keywords = [:my_element]
     tracking_methods = [Symplectic6DMap]
     contracts = DataType[]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         strength=ParamMeta(required=true, meaning="element strength"),
         tracking_method=ParamMeta(default=Symplectic6DMap(),
@@ -553,7 +553,7 @@ Validation checklist:
   compact runtime structs;
 - use `friendly_constructor`, not `friendly`;
 - use `DataType[]` for contracts until real validation implementations exist;
-- use `PlaceholderAnalysis` for kinds that have no analysis; `TwissDispersionAnalysis` is declared on the linear-map kinds in stage 5 of the Twiss campaign;
+- declare `TwissDispersionAnalysis` on every kind whose `tracking_methods` contain `Symplectic6DMap` and not `NonSymplectic6DMap` (the suite's set tripwires derive that set and fail on a kind that departs from it); use `PlaceholderAnalysis` only for kinds that have no analysis;
 - run `validate_element_metadata()`;
 - run `element_help(MyElementSpec)` and `element_help(:my_element)`;
 - smoke-test execution through `TrackingTask`.

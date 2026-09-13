@@ -367,7 +367,7 @@ _has_survey(elem::ThinRFCavity) = !isnan(elem.ds_turn)
     keywords = [:harmonic, :thick_element]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         frequency=ParamMeta(default=nothing, unit="Hz", meaning="RF frequency, in Hz as ThinCrabCavity takes it and not MAD-X's MHz. Give frequency OR harmon; a harmon spec stores no frequency at all"),
         harmon=ParamMeta(default=nothing, meaning="harmonic number h, the alternative to frequency: f = h*beta0*c/C is resolved against the line's total arc length when a task compiles the line (the survey channel). A harmon cavity compiled bare throws at its first kick rather than guess a circumference"),

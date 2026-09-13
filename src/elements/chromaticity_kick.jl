@@ -203,7 +203,7 @@ end
     keywords = [:thin_element, :coordinate_transform]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         xi=ParamMeta(required=true, meaning="horizontal and vertical chromaticities"),
         beta=ParamMeta(required=true, meaning="two- or three-plane beta functions; only horizontal and vertical values are used"),

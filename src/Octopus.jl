@@ -51,6 +51,10 @@ include("knobs/symbolic.jl")
 include("policies/Policies.jl")
 include("contracts/Contracts.jl")
 include("analysis/Analysis.jl")
+# The analysis object's type only (stage 5): the element specs declare it in their
+# `analyses` field at include time, so it precedes elements/Elements.jl; the
+# constructor, schema, `analyze` and result tree follow the elements below.
+include("analysis/twiss_dispersion_type.jl")
 # Pure symplectic matrix algebra for the analyses; no element dependency.
 include("analysis/symplectic_linear_algebra.jl")
 # Mode clusters, Krein classification and the resolution chord (stage 3, Part A); pure matrix algebra, used by eigenmodes_4d.jl.
@@ -105,8 +109,9 @@ include("track/strong_beam_track.jl")
 # added by ext/OctopusForwardDiffRules.jl, which both load routes include
 # after this file.
 include("analysis/one_turn_matrix.jl")
-# Stage 4b: the analysis object, analyze, the result tree (dispatches on
-# LinearizedMap and calls one_turn_matrix; before Tasks).
+# Stage 4b: the analysis object's constructor, schema, analyze and the result tree
+# (dispatches on LinearizedMap and calls one_turn_matrix; before Tasks). The struct
+# itself is in analysis/twiss_dispersion_type.jl above (stage 5).
 include("analysis/twiss_dispersion_analysis.jl")
 
 # Workflow composition, schedules, observers, and actions. The run artifact

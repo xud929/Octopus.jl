@@ -270,10 +270,10 @@ end
 # Twiss analysis stage 1, Part A: symplectic kernel and availability
 # vocabularies (src/analysis/symplectic_linear_algebra.jl, Analysis.jl).
 # Placed beside the architecture testsets because the last block is the
-# stage guard (stage 4b: the placeholder and TwissDispersionAnalysis are the
-# analyses and `analyze` exists). Uses only the file-level `using
-# Test, Octopus, LinearAlgebra, Random`; no lane gate, no test-only
-# dependency. Every tolerance is stated as c * eps * kappa with c justified
+# stage guard (stage 5: the placeholder and TwissDispersionAnalysis are the
+# analyses, `analyze` exists and the declared kind set is derived). Uses only
+# the file-level `using Test, Octopus, LinearAlgebra, Random`; no lane gate,
+# no test-only dependency. Every tolerance is stated as c * eps * kappa with c justified
 # beside it; the measured ratios behind the constants are recorded in the
 # campaign history file docs/history/twiss_dispersion_analysis_history.md
 # (stage 1 record).
@@ -918,11 +918,12 @@ end
     @test occursin("multiplicity=2", sprint(show, d)) && occursin("exact_set", sprint(show, d))
 end
 
-@testset "Stage 4 registers the analysis: the placeholder and TwissDispersionAnalysis are the analyses and analyze exists" begin
+@testset "Stage 5 declares the analysis: the placeholder and TwissDispersionAnalysis are the analyses, analyze exists, and the declared kind set is the derived set plus :line" begin
     # Stage 4b landed `analyze` and the analysis type (design "Staging" item
-    # 4); this replaces the stage 1 guard that said no analysis exists. The
-    # placeholder stays: it is the declaration of element kinds that have no
-    # analysis, and stage 5 changes the element declarations deliberately.
+    # 4); stage 5 declared it on the element kinds the design's rule selects
+    # (item 5). The placeholder remains the declaration of the eight kinds
+    # without an analysis; the set tripwires at the end of this testset
+    # derive both sets from the registry.
     @test PlaceholderAnalysis <: AbstractAnalysis
     @test TwissDispersionAnalysis <: AbstractAnalysis
     @test Octopus.description(PlaceholderAnalysis) == "Placeholder for element analyses not yet implemented."
@@ -930,13 +931,64 @@ end
     @test isdefined(Octopus, :analyze) && isdefined(Octopus, :TwissDispersionAnalysis)
     @test TwissDispersionResult <: AbstractAnalysisResult
     @test Octopus.description(TwissDispersionAnalysis) isa String && !isempty(Octopus.description(TwissDispersionAnalysis))
-    # Every element still declares the placeholder alone (stage 5 declares the
-    # analysis on the linear-map kinds and adds the two set tripwires).
+    # Stage 5 declared the analysis on the element kinds the design's
+    # discovery rule selects (design "Element declaration", 222-239): a kind
+    # declares `TwissDispersionAnalysis` iff its tracking methods contain
+    # `Symplectic6DMap` and not `NonSymplectic6DMap`, PLUS `:line`. The two
+    # tripwires below DERIVE that set from the registry every run; no kind
+    # list is carried here (AGENTS.md: derive, not copy). As history: on
+    # 2026-09-12 the rule gave 22 kinds, 23 with :line, and 8 kept the
+    # placeholder (five NonSymplectic6DMap-only kinds, lumped_radiation and
+    # the two strong-beam kinds).
+    #
+    # Tripwire (a), both directions. `===` and not a name match: the string
+    # "Symplectic6DMap" is a substring of "NonSymplectic6DMap", so
+    # `occursin` would count the five non-symplectic kinds as well
+    # (docs/experiences.md "A substring match over type names is not a set").
+    # `:line` is a UNION, not a rule hit: src/elements/beam_line.jl declares
+    # `tracking_methods = DataType[]` because a line tracks through its
+    # placements, so the rule alone never selects it, and the design names it
+    # explicitly (222-239).
+    let rule = meta -> any(M -> M === Symplectic6DMap, meta.tracking_methods) &&
+                       !any(M -> M === NonSymplectic6DMap, meta.tracking_methods),
+        derived = Set{Symbol}(), declared = Set{Symbol}(), keepers = Set{Symbol}()
+        for T in Octopus.registered_element_specs()
+            meta = Octopus._element_meta_or_nothing(T)
+            meta === nothing && continue
+            rule(meta) && push!(derived, meta.kind)
+            a = Octopus.supported_analyses(T)
+            if TwissDispersionAnalysis in a
+                push!(declared, meta.kind)
+                # One analysis per kind today; a second analysis on a kind is
+                # a deliberate future change of this line, not a drift.
+                @test a == [TwissDispersionAnalysis]
+            else
+                push!(keepers, meta.kind)
+                # A kind without an analysis declares the placeholder alone.
+                @test a == [PlaceholderAnalysis]
+            end
+        end
+        @test Octopus.element_meta(:line).tracking_methods == DataType[]   # why the union
+        union!(derived, Set([:line]))
+        @test isempty(setdiff(derived, declared))   # a rule kind still on the placeholder
+        @test isempty(setdiff(declared, derived))   # a declaration outside the rule
+        @test derived == declared
+        @test !isempty(keepers)                     # the mixed state is real, not vacuous
+        @test length(declared) + length(keepers) == length(Octopus.registered_element_specs())
+    end
+    # Tripwire (b): design 228-230, "the analysis is never declared beside
+    # the non-symplectic method". Vacuous today by construction (no kind
+    # carries both symplectic methods); it fires on the first kind that
+    # declares the analysis while tracking with NonSymplectic6DMap.
     for T in Octopus.registered_element_specs()
-        @test Octopus.supported_analyses(T) == [PlaceholderAnalysis]
+        meta = Octopus._element_meta_or_nothing(T)
+        meta === nothing && continue
+        TwissDispersionAnalysis in Octopus.supported_analyses(T) || continue
+        @test !any(M -> M === NonSymplectic6DMap, meta.tracking_methods)
     end
     # The vocabulary types are plain types, not registry roots; the snapshot
-    # changes only by the registered analysis and contract of this stage.
+    # changed only by the registered analysis and contract of stage 4b and by
+    # the 23 "Supported analyses" lines of stage 5.
     for T in (Determined, AmbiguitySet, Octopus.ReciprocalScaling, UndeterminedQuantityError,
               TwissDispersionResult, NormalMode, OpticsAnalysisError)
         @test !(T <: Octopus.AbstractOctopusObject)
@@ -973,6 +1025,55 @@ end
     @test :analysis_option_schema in names(Octopus)
     @test analysis_option_schema(PlaceholderAnalysis) === NamedTuple()
     @test !isempty(analysis_option_schema(TwissDispersionAnalysis))
+end
+
+@testset "Stage 5: every kind that declares the analysis analyzes its own example, or refuses it for the documented reason" begin
+    # The declaration is a claim that `analyze` has something to say about
+    # the kind. This runs the analysis on every declaring kind's own metadata
+    # `example` (default options, strict=false) and branches on the OUTCOME,
+    # never on a kind list: a `TwissDispersionResult` with a documented
+    # status, or the documented closed-orbit refusal (the example carries a
+    # constant kick, so the origin is not a fixed point of the map) which
+    # `closed_orbit = :warn` turns into a :degraded result with the warning
+    # (design 236-238: a single element's result is "still honest").
+    # Measured 2026-09-12 (history, not an assertion): 18 results (16
+    # :passed; crab_dispersion and thin_rf_cavity :degraded by the stage 4b
+    # longitudinal heuristic) and 5 refusals (thin_crab_cavity, thin_dipole,
+    # hkicker, vkicker, kicker).
+    n_results = 0; n_refusals = 0; n_declared = 0
+    for T in Octopus.registered_element_specs()
+        meta = Octopus._element_meta_or_nothing(T)
+        meta === nothing && continue
+        TwissDispersionAnalysis in Octopus.supported_analyses(T) || continue
+        n_declared += 1
+        @test meta.example !== nothing        # a declaring kind ships an example
+        meta.example === nothing && continue
+        r = try; analyze(TwissDispersionAnalysis(strict=false), meta.example); catch e; e; end
+        if r isa TwissDispersionResult
+            n_results += 1
+            @test r.status in Octopus.ANALYSIS_STATUSES
+        elseif r isa ArgumentError && occursin("not a fixed point", r.msg)
+            n_refusals += 1
+            # The documented refusal. The elseif filter only routes the
+            # outcome (a foreign ArgumentError falls to the else branch and
+            # its @info); the assertions below are the check: the message
+            # names the option that continues, and that option yields a
+            # :degraded result that says why. One @test_logs per kind: the
+            # warning's `maxlog=1 _id` is tracked per TestLogger.
+            @test occursin("closed_orbit = :warn", r.msg)
+            rw = @test_logs (:warn, r"not a fixed point") match_mode=:any analyze(TwissDispersionAnalysis(strict=false, closed_orbit=:warn), meta.example)
+            @test rw isa TwissDispersionResult && rw.status === :degraded
+            @test any(d -> occursin("closed_orbit = :warn", d), rw.degradations)
+        else
+            @test false   # neither a result nor the documented refusal
+            @info "stage 5 analyzable-kind test: unexpected outcome" kind = meta.kind outcome = sprint(showerror, r)
+        end
+    end
+    @test n_declared > 0
+    @test n_results + n_refusals == n_declared
+    # A declaration on a kind set that mostly refuses would be a claim, not
+    # an analysis.
+    @test n_refusals < n_results
 end
 
 # Twiss analysis stage 2, Part A: the 4D eigenmode route

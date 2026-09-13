@@ -1052,6 +1052,25 @@ pin obeys the one-tenth / ten rule against the larger of the two arms. The
 floating `'1.12'` pin resolved to 1.12.7 on 2026-09-13 UTC, so "1.12.6 is
 the newest" in the CI segfault row is a fact that aged.
 
+## A docstring template is a hand-copy the suite never runs
+
+The `@element_spec` docstring carries a fill-in template of an element
+declaration. When the Twiss analysis object landed (stage 4b, 2026-09-12)
+the template kept `analyses = [PlaceholderAnalysis]` beside
+`tracking_methods = [Symplectic6DMap]`, and the handoff ruled that it
+"stays". Stage 5 (2026-09-13) then added the tripwire that derives the
+required analysis set from the tracking methods: from that commit on, a
+kind copied from the template would have failed the suite on the spot,
+and nothing would have said so before the copy was made, because a
+docstring is text the tests never execute. The readiness audit caught it
+and the template now declares the analysis the rule requires.
+
+Rule adopted: when a tripwire starts deriving a set from declarations,
+grep the docstrings and guides for every TEMPLATE a reader is meant to
+copy and make each one pass the new rule in the same commit; a template
+that the suite's own rule rejects is a trap, not documentation. The
+tripwire protects the tree, not the reader who copies stale text.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

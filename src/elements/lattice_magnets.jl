@@ -1242,7 +1242,7 @@ end
     keywords = [:lattice_magnet, :thick_element]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
         L=ParamMeta(required=true, meaning="arc length in metres"),
         nst=ParamMeta(default=1, meaning="integration steps; a PURE drift is exact and ignores them, but the shared lattice-magnet runtime reads body strengths on every kind, so a drift given kn/ks content splits and steps like any magnet"),
@@ -1263,7 +1263,7 @@ end
     keywords = [:lattice_magnet, :thick_element, :nonlinear_interaction]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
         L=_COMMON_PARAMS.L,
         k1=ParamMeta(default=0, meaning="normal quadrupole strength K1; the normal way to build a quadrupole. Folded into kn[2] at construction"),
@@ -1300,7 +1300,7 @@ end
     keywords = [:lattice_magnet, :thick_element, :nonlinear_interaction]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
         L=_COMMON_PARAMS.L,
         k2=ParamMeta(default=0, meaning="normal sextupole strength K2; the normal way to build a sextupole. Folded into kn[3] at construction"),
@@ -1337,7 +1337,7 @@ end
     keywords = [:lattice_magnet, :thick_element, :nonlinear_interaction]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
         L=_COMMON_PARAMS.L,
         k3=ParamMeta(default=0, meaning="normal octupole strength K3; the normal way to build an octupole. Folded into kn[4] at construction"),
@@ -1374,7 +1374,7 @@ end
     keywords = [:lattice_magnet, :thick_element, :nonlinear_interaction]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
         L=_COMMON_PARAMS.L,
         k0=ParamMeta(default=0, meaning="normal dipole strength K0, i.e. a corrector kick; folded into kn[1] at construction"),
@@ -1421,7 +1421,7 @@ end
     keywords = [:lattice_magnet, :thick_element, :coordinate_transform]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
         L=_COMMON_PARAMS.L,
         angle=ParamMeta(default=0, meaning="design-orbit bend angle in radians; sets h = b0 = angle / L at construction. The normal way to build a bend. Contradicts h/b0, so giving both throws"),

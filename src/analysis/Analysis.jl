@@ -13,9 +13,11 @@ description(::Type{PlaceholderAnalysis}) = "Placeholder for element analyses not
 # analysis campaign (docs/design/twiss_dispersion_analysis.md, "Types and
 # availability"; staging item 1). It defines HOW a quantity the physics may
 # leave undetermined is represented and read. The first analysis is
-# `TwissDispersionAnalysis` (twiss_dispersion_analysis.jl, stage 4b) with its
-# `analyze` method; the placeholder remains the declaration of element kinds
-# that have none. `Determined` and `AmbiguitySet` are plain types, not
+# `TwissDispersionAnalysis` (the type in twiss_dispersion_type.jl, included
+# right after this file so the element specs can declare it; its constructor
+# and `analyze` method in twiss_dispersion_analysis.jl, stage 4b); the
+# placeholder remains the declaration of element kinds that have none.
+# `Determined` and `AmbiguitySet` are plain types, not
 # registry roots, so the registry snapshot is unchanged by this file.
 
 """

@@ -736,7 +736,7 @@ end
     keywords = [:beam_line, :thick_element]
     tracking_methods = DataType[]
     contracts = DataType[]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         name=ParamMeta(default="", meaning="line name; becomes the leading path segment of every placement it contains"),
         entries=ParamMeta(default=(), meaning="the expanded placements. Built by BeamLine(name, children...) from nested children; the keyword form takes them ready-made, which is how a slice becomes a line"),

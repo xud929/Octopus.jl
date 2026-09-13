@@ -211,7 +211,7 @@ const _THIN_COMMON = (
     keywords = [:thin_element, :placeholder]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         tracking_method=_THIN_COMMON.tracking_method,
         _PLACEMENT_PARAMS...,
@@ -229,7 +229,7 @@ end
     keywords = [:lattice_magnet, :thin_element, :nonlinear_interaction]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         knl=_THIN_COMMON.knl,
         ksl=_THIN_COMMON.ksl,
@@ -273,7 +273,7 @@ end
     keywords = [:lattice_magnet, :thin_element]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         k0l=ParamMeta(default=0, meaning="integrated dipole strength K0 L; folded into knl[1]. Gives dpx = -K0 L, the field convention, not the corrector one"),
         k0sl=ParamMeta(default=0, meaning="skew partner of k0l, giving dpy = +Ks0 L"),
@@ -307,7 +307,7 @@ end
     keywords = [:lattice_magnet, :thin_element]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         k1l=ParamMeta(default=0, meaning="integrated quadrupole strength K1 L; folded into knl[2]"),
         k1sl=ParamMeta(default=0, meaning="skew partner of k1l"),
@@ -341,7 +341,7 @@ end
     keywords = [:lattice_magnet, :thin_element, :nonlinear_interaction]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         k2l=ParamMeta(default=0, meaning="integrated sextupole strength K2 L; folded into knl[3]"),
         k2sl=ParamMeta(default=0, meaning="skew partner of k2l"),
@@ -375,7 +375,7 @@ end
     keywords = [:lattice_magnet, :thin_element]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         hkick=ParamMeta(default=0, meaning="horizontal steering kick, dpx = +hkick. This is the corrector sign convention, opposite to a dipole field of the same magnitude"),
         x_offset=_THIN_COMMON.x_offset,
@@ -406,7 +406,7 @@ end
     keywords = [:lattice_magnet, :thin_element]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         vkick=ParamMeta(default=0, meaning="vertical steering kick, dpy = +vkick"),
         x_offset=_THIN_COMMON.x_offset,
@@ -437,7 +437,7 @@ end
     keywords = [:lattice_magnet, :thin_element]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         hkick=ParamMeta(default=0, meaning="horizontal steering kick, dpx = +hkick"),
         vkick=ParamMeta(default=0, meaning="vertical steering kick, dpy = +vkick"),

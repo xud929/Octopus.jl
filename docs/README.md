@@ -65,8 +65,8 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   measured; receipt-based option certification; the verification plan mapped
   to the theory's benchmarks; seven staged commits plus an external-benchmark stage (MAD-X, PTC, Xsuite); rejected alternatives. Landing record:
   [`history/twiss_dispersion_analysis_history.md`](history/twiss_dispersion_analysis_history.md)
-  (stages 1 to 4 landed 2026-09-11 and 2026-09-12; stage 5, the element
-  declaration, next).
+  (stages 1 to 5 landed 2026-09-11 to 2026-09-13; stage 6, the identity
+  contract, next).
 - [`survey_and_reference_channel.md`](design/survey_and_reference_channel.md) —
   the channel telling a runtime element its place on the reference trajectory:
   static survey values (`s_elem`, later `P0`) baked at compile via the line

@@ -329,7 +329,7 @@ end
     keywords = [:coordinate_transform]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         matrix=ParamMeta(meaning="explicit canonical-symplectic 6x6 transfer matrix, or length-36 row-major collection"),
         beta1=ParamMeta(meaning="initial beta functions for optics construction"),

@@ -46,17 +46,26 @@ the layout rule, run it at the rank counts you can launch. See `../design/multi_
 ## Analyses
 
 Analyses define post-processing. The first concrete analysis is
-`TwissDispersionAnalysis` (`src/analysis/twiss_dispersion_analysis.jl`): a
+`TwissDispersionAnalysis` (the type in `src/analysis/twiss_dispersion_type.jl`,
+its constructor, option schema and `analyze` method in
+`src/analysis/twiss_dispersion_analysis.jl`): a
 non-parametric analysis object whose options are public configuration
 (`analysis_option_schema`, `configuration_report`), executed by `analyze` on
 a real symplectic 4x4 or 6x6 matrix, a `LinearizedMap`, a compiled line or an
 element tuple, returning a `TwissDispersionResult`; its option probe table is
-`AnalysisOptionEffectivenessContract`. Every element still registers
-`analyses = [PlaceholderAnalysis]`: the declaration of the analysis on the
-linear-map element kinds, with the two set tripwires, is stage 5 of the
-campaign (`../design/twiss_dispersion_analysis.md`, "Staging"), and the
-placeholder remains the declaration of kinds that have no analysis. The next
-analysis joins by:
+`AnalysisOptionEffectivenessContract`. The element declaration is a mixed
+state: every element kind whose `tracking_methods` contain `Symplectic6DMap`
+by exact identity and not `NonSymplectic6DMap`, plus `:line`, declares
+`analyses = [TwissDispersionAnalysis]`; the kinds without an analysis keep
+`analyses = [PlaceholderAnalysis]` (today the aperture, both Lorentz boosts,
+the patch, the thin accelerating cavity, the lumped radiation and both strong
+beams; `../registry_snapshot.md` is the source per kind, and the stage 5
+section of the campaign history lists both sets). The suite does not carry
+that list: two set tripwires derive the required set from the tracking
+methods and assert the declared set equals it in both directions and that the
+analysis is never declared beside `NonSymplectic6DMap`
+(`../design/twiss_dispersion_analysis.md`, "Discovery"). The next analysis
+joins by:
 
 1. defining the analysis type with a `description` method, its
    `analysis_option_schema` (a runtime `consumer` per option) and its
@@ -66,8 +75,13 @@ analysis joins by:
    `AnalysisOptionEffectivenessContract` table, with a receipt from the named
    consumer;
 3. declaring it in the spec's `analyses = [...]` field, replacing the
-   placeholder for the specs it applies to, so that `supported_analyses`
-   discovers it, and regenerating the registry snapshot;
+   placeholder for the specs it applies to (as stage 5 did for
+   `TwissDispersionAnalysis`), so that `supported_analyses` discovers it,
+   and regenerating the registry snapshot; once a spec declares it, the
+   type (struct and docstring) must be included before
+   `src/elements/Elements.jl`, as `src/analysis/twiss_dispersion_type.jl`
+   is, because `@element_spec` registers its metadata at include time; the
+   constructor and `analyze` may follow the elements;
 4. shipping a small executable example if the output is user-facing.
 
 ## Finish

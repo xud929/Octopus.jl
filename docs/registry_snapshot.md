@@ -19,7 +19,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:crab_dispersion`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => CrabDispersion`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -27,7 +27,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:momentum_dispersion`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => MomentumDispersion`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -35,7 +35,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:xy_coupling`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => XYCoupling`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -43,7 +43,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:coordinate_transform`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => Linear6D`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -51,7 +51,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:thin_element`, `:crab_cavity`, `:harmonic`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => ThinCrabCavity`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -75,7 +75,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:thin_element`, `:coordinate_transform`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => ChromaticityKick`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -107,7 +107,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thick_element`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => LatticeMagnet`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -115,7 +115,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thick_element`, `:nonlinear_interaction`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => LatticeMagnet`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -123,7 +123,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thick_element`, `:nonlinear_interaction`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => LatticeMagnet`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -131,7 +131,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thick_element`, `:nonlinear_interaction`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => LatticeMagnet`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -139,7 +139,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thick_element`, `:nonlinear_interaction`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => LatticeMagnet`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -147,7 +147,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thick_element`, `:coordinate_transform`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => LatticeMagnet`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -155,7 +155,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:thin_element`, `:placeholder`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => Marker`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -163,7 +163,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thin_element`, `:nonlinear_interaction`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => ThinMultipole`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -171,7 +171,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thin_element`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => ThinMultipole`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -179,7 +179,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thin_element`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => ThinMultipole`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -187,7 +187,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thin_element`, `:nonlinear_interaction`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`, `PTCConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => ThinMultipole`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -195,7 +195,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thin_element`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => ThinMultipole`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -203,7 +203,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thin_element`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => ThinMultipole`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -211,7 +211,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thin_element`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => ThinMultipole`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -219,7 +219,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:lattice_magnet`, `:thick_element`, `:coordinate_transform`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`, `SymplecticityContract`, `PTCConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => Solenoid`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -235,7 +235,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:harmonic`, `:thick_element`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `Symplectic6DMap => ThinRFCavity`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
@@ -251,7 +251,7 @@ constructor names remain the user-facing way to build those specs.
   - Physics keywords: `:beam_line`, `:thick_element`
   - Supported tracking methods: `[]`
   - Required contracts: `[]`
-  - Supported analyses: `PlaceholderAnalysis`
+  - Supported analyses: `TwissDispersionAnalysis`
   - Runtime mappings: `[]`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 

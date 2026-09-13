@@ -564,7 +564,7 @@ end
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract, SymplecticityContract,
                  PTCConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         L=ParamMeta(default=0, meaning="magnetic length in metres"),
         ks=ParamMeta(default=0, meaning="normalized longitudinal field B_s/(B*rho), MAD-X's KS. Sign follows charge and field direction; both polarities are checked against PTC. Note this is the SOLENOID strength, not the skew multipole tuple other magnets spell `ks`"),

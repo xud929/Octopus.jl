@@ -42,8 +42,12 @@ docstrings of public objects.
      `required_contracts(T)` and `supported_tracking_methods(T)` answer empty
      for a validated element.
 3. Attach contracts through the block's `contracts = [...]` field only when a
-   runnable `validate(...)` path exists; use an empty list otherwise. Keep
-   not-yet-implemented analyses behind `PlaceholderAnalysis`. Do not claim
+   runnable `validate(...)` path exists; use an empty list otherwise.
+   Declare `TwissDispersionAnalysis` on a kind that tracks with
+   `Symplectic6DMap` and not `NonSymplectic6DMap` (`:line` is the one union;
+   the suite's set tripwires derive the required set from the tracking
+   methods); keep not-yet-implemented analyses behind
+   `PlaceholderAnalysis`. Do not claim
    contracts, analyses, policies, or keywords before the implementation
    exists.
 4. Decide which tracking methods the element supports; users and agents

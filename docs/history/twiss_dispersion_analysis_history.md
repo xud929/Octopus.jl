@@ -8850,3 +8850,466 @@ The campaign's targeted checks gain an AVX2 arm
 extract, and the batch gate before a push runs in both arms. Whether the
 Verification Matrix should name a CI-parity arm permanently is the
 owner's decision (todo row).
+
+## 2026-09-13: stage 5 landed (the element declaration, the two set tripwires, the analyzable-kind test, the type file, the snapshot)
+
+The design note's Staging item 5 (lines 508-509) and its discovery rule
+(222-239): `TwissDispersionAnalysis` is now declared in the `analyses =
+[...]` field of every element kind whose `tracking_methods` contain
+`Symplectic6DMap` by exact identity and do not contain `NonSymplectic6DMap`
+(22 kinds on this tree), plus `:line` (its `tracking_methods` is
+`DataType[]` because a line tracks through its placements, so the rule
+alone never selects it and the design names it explicitly). Eight kinds
+keep `PlaceholderAnalysis`: the five that track only with
+`NonSymplectic6DMap` (aperture, lorentz_boost, rev_lorentz_boost, patch,
+thin_accelerating_cavity), lumped_radiation (`Radiation6DMap`,
+`Damping6DMap`, `Diffusion6DMap`) and the two strong beams
+(thin_strong_beam, gaussian_strong_beam; `WeakStrongBeamBeamMap`). The
+suite carries no kind list: the stage guard's "every element still declares
+the placeholder" loop became the design's two set tripwires (the declared
+set equals the derived set in both directions; the analysis is never
+declared beside the non-symplectic method), and a new testset runs
+`analyze` on every declaring kind's own metadata `example` and accepts
+only a `TwissDispersionResult` with a pinned status or the documented
+closed-orbit refusal that `closed_orbit = :warn` turns into a `:degraded`
+result. The declaration forced one structural move: `@element_spec`
+registers its `ElementMeta` eagerly at include time, so the analysis
+struct and its docstring moved verbatim into
+`src/analysis/twiss_dispersion_type.jl`, included right after
+`analysis/Analysis.jl` and before `elements/Elements.jl`; the constructor,
+the option schema, `analyze` and the result tree stay in
+`twiss_dispersion_analysis.jl` after `one_turn_matrix.jl`. The registry
+snapshot changed on exactly 23 lines, all "Supported analyses". Nothing
+in `src/analysis/` changed behaviour; no assertion of stages 1-4b was
+weakened (the `test/runtests.jl` diff has four hunks: the header comment
+270-279 and the stage guard 918-1077).
+
+Work of 2026-09-12 (evening) into 2026-09-13 EDT (`date +%F` at the
+record = 2026-09-13): the orchestrator pre-seeded worktree A (the type
+file and the 23 one-line edits), agent A wrote the tests, injections and
+the probe table in worktree A and agent C the element-side text in
+worktree C (both branched at f7ee3c6); the integrator applied both diffs
+onto the CURRENT main HEAD 2e8193c (the `fix(test)` commit of the CI red,
+recorded in the section above) with `git apply --3way`, zero conflicts,
+regenerated and staged the snapshot; four reviewers (design fidelity,
+repository compliance, test adequacy, runner) filed 12 findings, the fixer
+applied 8 as comment/prose edits and recorded 4 without a tree change; this
+record and the todo/README ledgers close the stage. No `Pkg.test`, no lane
+and no gate ran; the full gate belongs to the commit step (below, "Not
+verified"). The tree at this record: 20 staged files, +302/-162 against
+2e8193c, index == working tree, nothing committed.
+
+### What landed
+
+| File | Change | Content |
+|---|---|---|
+| `src/analysis/twiss_dispersion_type.jl` | new, 89 lines, staged | a 10-line header comment (why the file precedes `elements/Elements.jl`: eager `ElementMeta` registration; the design's rule by exact identity and not `NonSymplectic6DMap`, plus `:line`; what stays behind), then the docstring and `struct TwissDispersionAnalysis <: AbstractAnalysis` (14 fields, no inner constructor) moved VERBATIM from `twiss_dispersion_analysis.jl` (the 78 removed lines byte-equal to type-file lines 12-89, repo review 1.6). |
+| `src/analysis/twiss_dispersion_analysis.jl` | -81/+3 | the moved block replaced by a pointer comment (line ~205-207); the outer keyword constructor, `description`, `_TWISS_DISPERSION_OPTION_SCHEMA`, `ANALYSIS_STATUSES`, the result tree and the three `analyze` methods unchanged in place (the stage 4b tests still read `const ANALYSIS_STATUSES` and the file of `_analyze_matrix` from this file). |
+| `src/Octopus.jl` | +7/-2 | `include("analysis/twiss_dispersion_type.jl")` at line 57 with a three-line comment (54-56) after `analysis/Analysis.jl` (53); a comment at 113-115 saying why `twiss_dispersion_analysis.jl` (115) follows `one_turn_matrix.jl` (112) and the elements (it dispatches on `LinearizedMap`). |
+| `src/elements/beam_line.jl:739`, `chromaticity_kick.jl`, `crab_cavity.jl` (thin_crab_cavity), `lattice_magnets.jl` (drift, quadrupole, sextupole, octupole, multipole, sbend), `linear6d.jl`, `linear_maps.jl` (crab_dispersion, momentum_dispersion, xy_coupling), `rf_cavity.jl` (thin_rf_cavity), `solenoid.jl`, `thin_elements.jl` (marker, thin_multipole, thin_dipole, thin_quadrupole, thin_sextupole, hkicker, vkicker, kicker) | 23 one-line edits | `analyses = [PlaceholderAnalysis]` -> `analyses = [TwissDispersionAnalysis]`; `git diff HEAD -- src/elements/` has no other changed line. The eight keepers (`lorentz_boost.jl:69,107`, `strong_beam.jl:1644,1673`, `radiation.jl:310`, `rf_cavity.jl:612`, `patch.jl:245`, `aperture.jl:508`) untouched. |
+| `src/knowledge/Knowledge.jl` 537, 556 | docstring-only (the `@element_spec` docstring runs 488-560) | the TEMPLATE now declares `analyses = [TwissDispersionAnalysis]` beside its `tracking_methods = [Symplectic6DMap]` (G10 overrides the 4b handoff's "STAYS": a template that fails the suite's own rule is a trap); the checklist line 556 states the rule and "use `PlaceholderAnalysis` only for kinds that have no analysis". |
+| `src/analysis/Analysis.jl` 16-20 | comment | names `twiss_dispersion_type.jl` as the type's file, "included right after this file so the element specs can declare it"; "the placeholder remains the declaration of element kinds that have none" kept (true). |
+| `test/runtests.jl` | +113/-12 (`git diff --cached --numstat`); four hunks | header comment 270-279 (the stage guard is stage 5's, the declared set is derived; re-wrapped by the fixer, no line over 90 chars in 270-1080); the guard testset 921-1028 renamed "Stage 5 declares the analysis: the placeholder and TwissDispersionAnalysis are the analyses, analyze exists, and the declared kind set is the derived set plus :line" with tripwire (a) at 952-980 and (b) at 981-990 replacing the placeholder loop, every other 4b assertion kept; the new testset 1030-1077 "Stage 5: every kind that declares the analysis analyzes its own example, or refuses it for the documented reason" before the stage 2 Part A header (now 1079). Standalone counts 127 (was 121) and 64. |
+| `docs/registry_snapshot.md` | +23/-23, regenerated by `write_registry_snapshot()`, staged, 16884 -> 16976 bytes | the 23 declaring kinds' "Supported analyses" lines; nothing else changed; byte-equal to `registry_snapshot_markdown()` and to a regeneration into a temp path (integrator, runner review, fixer). |
+| `docs/guides/contracts_and_analyses.md` 49-51, 56-66, 75-82; `docs/guides/elements.md` 45-49; `AGENTS.md` 75; `docs/design/twiss_dispersion_analysis.md` 5-14 (STATUS paragraph only) | reworded (before / after below) | the mixed state, the rule, the type file, the include-order clause of "the next analysis joins by" step 3, the landing dates. |
+
+Not touched: the theory note; the design note's body (the STATUS paragraph
+is the only edit; body lines 40 "an analysis layer with one placeholder
+type", 231-234 "the five kinds declaring only the non-symplectic method ...
+keep `PlaceholderAnalysis`" and 506 "placeholder-only" describe the
+pre-landing state and are superseded by the STATUS paragraph, which says
+eight keepers: the five plus lumped_radiation and the two strong beams);
+every analysis kernel body; `validation/`; `docs/public_api.md` (its
+Analyses section needs no change: the constructor and `analyze` are as in
+4b). The docs/history sections above are untouched.
+
+### The rule and both sets (derived on the integrated tree; RE-DERIVE, never copy this list into a test)
+
+The derivation the suite runs (runtests.jl 952-980, the shape of
+`src/contracts/Contracts.jl` 1839-1842), in one package-mode probe:
+
+```julia
+using Octopus
+rule(meta) = any(M -> M === Symplectic6DMap, meta.tracking_methods) &&
+             !any(M -> M === NonSymplectic6DMap, meta.tracking_methods)
+specs = Octopus.registered_element_specs()
+metas = [Octopus._element_meta_or_nothing(T) for T in specs]
+derived = union(Set(m.kind for m in metas if m !== nothing && rule(m)), Set([:line]))
+declared = Set(m.kind for m in metas if m !== nothing &&
+               TwissDispersionAnalysis in Octopus.supported_analyses(m.spec_type))
+keepers = Set(m.kind for m in metas if m !== nothing &&
+              Octopus.supported_analyses(m.spec_type) == [PlaceholderAnalysis])
+(length(specs), length(derived), length(declared), length(keepers),
+ setdiff(derived, declared), setdiff(declared, derived))
+# -> (31, 23, 23, 8, Set(), Set())   [A, integrator, all four reviewers, fixer]
+```
+
+Derived = declared (23): chromaticity_kick, crab_dispersion, drift, hkicker,
+kicker, line, linear6d, marker, momentum_dispersion, multipole, octupole,
+quadrupole, sbend, sextupole, solenoid, thin_crab_cavity, thin_dipole,
+thin_multipole, thin_quadrupole, thin_rf_cavity, thin_sextupole, vkicker,
+xy_coupling. Keepers (8): aperture, gaussian_strong_beam, lorentz_boost,
+lumped_radiation, patch, rev_lorentz_boost, thin_accelerating_cavity,
+thin_strong_beam. No kind declares both symplectic methods, so tripwire
+(b) is vacuous today and fires on the first kind that would (the design
+review's scratch kind `inj_b` showed it). `===` and not a name match: a
+substring match counts 27 because `Symplectic6DMap` is a substring of
+`NonSymplectic6DMap` (injection i5; docs/experiences.md "A substring match
+over type names is not a set"). Static cross-check: `grep -n 'analyses =
+\[' src/elements/*.jl` shows 31 sites, 23 `[TwissDispersionAnalysis]` each
+two lines below a `tracking_methods = [Symplectic6DMap]` line except
+`beam_line.jl:739` (`DataType[]` at 737), and 8 `[PlaceholderAnalysis]`
+under `[NonSymplectic6DMap]`, `[WeakStrongBeamBeamMap]` or
+`[Radiation6DMap, Damping6DMap, Diffusion6DMap]`. The design's Discovery
+paragraph (224-225) calls the rule "the exact-identity rule the
+symplecticity contract already uses"; `Contracts.jl:1842` has no
+`NonSymplectic6DMap` exclusion, equivalent today, the design's own wording
+(design review, not a defect).
+
+### The type-file move and why (G2)
+
+`@element_spec` expands to `register_element_meta!(ElementMeta(; ...))`
+(Knowledge.jl ~570), evaluated when the element file is included, so a
+type named in an `analyses = [...]` field must be defined before
+`src/elements/Elements.jl` (Octopus.jl 83 at f7ee3c6). The struct has no
+inner constructor (its validating keyword constructor is the OUTER
+`function TwissDispersionAnalysis(; ...)`), so the docstring plus the
+struct block could move alone; everything that dispatches on
+`LinearizedMap` or calls `one_turn_matrix` stays after the elements. The
+script-mode smoke (`include("src/Octopus.jl")`; `summarize_registry().analyses
+== [:PlaceholderAnalysis, :TwissDispersionAnalysis]`;
+`supported_analyses(element_meta(:drift).spec_type) == [TwissDispersionAnalysis]`;
+`analyze(TwissDispersionAnalysis(strict=false), element_meta(:drift).example).status
+== :passed`) shows the placement holds on the include route as well as the
+pkgimage route (integrator 60 s, runner review 78 s, both exit 0). Layer
+invariant (AGENTS.md "spec layer / runtime layer"): the moved struct is the
+options-only object the specs point at (metadata); `analyze`, the result
+tree and the receipts stay in the runtime-side file (design review 3).
+
+### Standalone verification on the integrated and fixed tree (no lane, no gate)
+
+Conventions as in stages 1-4b (`J` = `julia --startup-file=no --project=REPO
+--threads=4`, CUDA off, OUT = `result/twiss_impl_2026_09_11/stage5`, `ps`
+checked for `runtests` / `Pkg.test` before every package-mode run). Every
+extract is regenerated from the MAIN tree's `test/runtests.jl` by anchor
+(unique-title assertion; both stage 5 testsets inside the analysis slice
+270-6586). FOUR arms (G12, after the CI red of the section above): native
+(Sys.CPU_NAME sapphirerapids) and `OPENBLAS_CORETYPE=Haswell julia -C
+haswell` (JLOptions cpu_target haswell, the CI runner's class), each with
+and without ForwardDiff stacked (`JULIA_LOAD_PATH=REPO:result/twiss_impl_2026_09_11/stage1/fdenv:@stdlib`,
+extension `OctopusForwardDiffExt`). Counts below are the fixer's post-fix
+runs (`OUT/fix5/run_fx_<arm>.log`), identical to the integrator's
+(`OUT/int/run_int_<arm>.log`) and the runner reviewer's independent harness
+(`OUT/review5_runner/run_rr_<arm>.log`); comment-only fixes lay between.
+
+| run | native noFD | native FD | haswell noFD | haswell FD |
+|---|---|---|---|---|
+| "Stage 5 declares the analysis: ... the declared kind set is the derived set plus :line" (runtests 921-1028; 2 s) | 127 / 127 | 127 / 127 | 127 / 127 | 127 / 127 |
+| "Stage 5: every kind that declares the analysis analyzes its own example, or refuses it for the documented reason" (1030-1077; 41-42 s on a fresh process, 0.1 s warm: compile of 23 + 5 `analyze` calls) | 64 / 64 | 64 / 64 | 64 / 64 | 64 / 64 |
+| TrackingTask T5 "Every walker over the line agrees on what a container is" (10999-11104; the line-built and the tuple-built task list the same analyses, now `[TwissDispersionAnalysis]` once) | 22 / 22 | 22 / 22 | 22 / 22 | 22 / 22 |
+| analysis extract stage 1 Part A .. before the Lorentz testset (270-6586; carries both stage 5 testsets; 1m13-1m16) | 108591 / 108591 | 108591 / 108591 | 108591 / 108591 | 108591 / 108591 |
+| stage 1 Part B `one_turn_matrix` block (16554-17071) | 121 / 121 (fallback) | 134 / 134 (active) | 121 / 121 | 134 / 134 |
+| "Architecture integrity" (incl. the docs index and the pinned snapshot byte comparison at 189-190) | 28 / 28 | 28 / 28 | 28 / 28 | 28 / 28 |
+| "No method grows a Core.Box outside the argued allowlist" / "Every export is documented" / "No docstring is detached by comment lines" | 2 / 2, 1 / 1, 1 / 1 | same | same | same |
+| process exit / wall | 0 / 182 s | 0 / 173 s | 0 / 176 s | 0 / 172 s |
+
+No stage 5 assertion differs between the CPU arms or the FD arms; the only
+cross-arm difference is the designed 121 -> 134 of the FD-active
+`one_turn_matrix` block. The stage 5 count 108591 = 108498 (the slice
+after the fix commit, unchanged by it) - 98 (the stage 4b guard testset's
+own count, recorded in the 4b section) + 127 (the renamed guard) + 64 (the
+new testset). Agent A's worktree runs
+(branched at f7ee3c6) saw the pre-fix kappa red in both haswell arms at old
+line 1139 and one Architecture red for the not-yet-regenerated snapshot;
+both were gone on the integrated main, as predicted.
+
+| check | result |
+|---|---|
+| `write_registry_snapshot()` (integrator, into `docs/`; runner review and fixer into a TEMP path) | 16884 -> 16976 bytes; `git diff -U0` 23 insertions / 23 deletions, every changed line "Supported analyses", all 23 additions `TwissDispersionAnalysis`; byte-equal to `registry_snapshot_markdown()`, to the temp regeneration and to the script-mode regeneration; the staged copy equals the working tree (`cmp` of `git show :docs/registry_snapshot.md`) |
+| `validate_element_metadata()` (both forms), `validate_configuration_metadata()` | `(passed = true, errors = String[])`; `true` (the `_analysis_types` tuple guard at interface.jl:2231 unchanged and still tripwired at runtests 6333-6334) |
+| `element_help` for every registered kind, four forms (`element_help(io, kind)`, `(io, spec_type)`, `(kind; io)`, `(spec_type; io)`) | 124 / 124 outputs with exactly one "Supported analyses" line naming `TwissDispersionAnalysis` iff the kind is in the DERIVED set (checked against the rule, not a list), `PlaceholderAnalysis` otherwise; the four outputs byte-identical per kind (runner review; the integrator's two-form check 62 / 62) |
+| `summarize_registry().analyses` | `[:PlaceholderAnalysis, :TwissDispersionAnalysis]` (unchanged from 4b: stage 5 adds no registry root) |
+| TrackingTask probe (runner review `probe_t5_rr.jl`) | `TrackingTask((quad,)).analyses == TrackingTask(BeamLine("Q", quad)).analyses == [TwissDispersionAnalysis]`; a drift + aperture + quad line and its tuple both `[TwissDispersionAnalysis, PlaceholderAnalysis]` (Tasks.jl 517-520 `unique`) |
+| the four suite tripwires after THIS record's ledger edits (this section, the todo row, the README sentence, the experiences lesson) | see "Not verified" below (`OUT/ledgers/run_tripwires_ld.log`) |
+
+### The decisions G1-G13 (orchestrator, 2026-09-12, from the design note, the 4b handoff's readiness audit and the probes; amendments by the parts, the review and the fixer marked)
+
+| # | decision | as landed / amendments |
+|---|---|---|
+| G1 | SCOPE: Staging item 5 only (declaration on the derived set plus `:line`, the two set tripwires, the element-side text, the snapshot) plus the type-file move G2 that the declaration forces and the analyzable-kind test G6 that makes the declaration honest; one `feat(elements)` commit, full-gate class. The 4b carry items 3 (must-reject fixture) and 4 (normalizer multiplier at 63.9) are NOT adopted: no owner ruling, analysis-side work that does not belong in an elements commit; they stay carried with this reason. | as decided; every carry item re-listed below. |
+| G2 | THE TYPE FILE: docstring + struct move verbatim to `src/analysis/twiss_dispersion_type.jl`, included right after `analysis/Analysis.jl`; nothing else moves. | as decided (repo review 1.6: the 78 removed lines byte-equal to type-file lines 12-89). Fixer #2: the header's rule sentence completed (exact identity, the exclusion, the `:line` union). |
+| G3 | THE 23 EDITS pre-seeded by the orchestrator in worktree A; A re-derives and compares with the grep of `analyses = [` sites, reports anything off. | nothing off (A section 1; integrator, design and runner reviews re-derived identical sets). |
+| G4 | TRIPWIRE (a), both directions, derived every run over `_element_meta_or_nothing`; every keeper exactly `[PlaceholderAnalysis]`, every declaring kind exactly `[TwissDispersionAnalysis]`; partition count against `length(registered_element_specs())`; no count literal in an assertion. | as decided (runtests 952-980; tests review 1.3 "to the letter"). Tests review r1: the per-kind `== [TwissDispersionAnalysis]` line is the ONLY guard against a kind declaring both analyses; r2: the `element_meta(:line).tracking_methods == DataType[]` assertion is what keeps the "why the union" comment honest. |
+| G5 | TRIPWIRE (b): no declaring kind carries `NonSymplectic6DMap`; own labelled block; vacuous today. | as decided (981-990); red under i2 and the design review's `inj_b`; GREEN under i3 as designed (b is about the non-symplectic method only). |
+| G6 | THE ANALYZABLE-KIND TEST: branch on the OUTCOME (result with a pinned status; the documented "not a fixed point" ArgumentError then one `@test_logs` per kind under `closed_orbit = :warn` with `:degraded` and the named degradation; anything else `@test false` with the kind and the message); count `n_results + n_refusals == n_declared` and `n_refusals < n_results`; 18 / 5 in the comment as history. | as decided (1030-1077, 64 assertions). i7 (the filter accepting any ArgumentError) stays GREEN: the filter routes, the assertions at 1062-1065 catch (i7b red 2 + error 2); fixer #9 says so in the comment. Tests review r5 / r5b: `n_refusals < n_results` is load-bearing alone (an all-refuse source is red only there); r6 / r7: the degradation text and the per-kind `@test_logs` each fail on all five refusing kinds. The result arm accepts any status in `ANALYSIS_STATUSES`, so a `:failed` example would pass (design 469 vocabulary; none is `:failed` today). |
+| G7 | PLACEMENT AND NAMES: the guard renamed, its comments rewritten, every non-loop assertion kept; the G6 testset immediately after it, before the stage 2 Part A header; 6210-6211, 6432 and the TrackingTask T5 block stay. | as decided; extract anchors unique and in order (270 < 921 < 1030 < 1079 < 2336 < 4002 < 5279 < 6588). Fixer #4: the kept 4b comment "the snapshot changes only by ... this stage" re-pointed at stage 4b plus the 23 lines of stage 5. |
+| G8 | INJECTIONS i1-i7 on scratch copies, script mode, the unpatched control green. | done by A (worktree), re-run by the tests review with the FULL testsets on the main tree, plus r1-r7 and the design review's two scratch kinds (table below). |
+| G9 | SNAPSHOT regenerated in the main tree by the integrator and staged; exactly 23 "Supported analyses" lines. | 23 / 23; byte-equal live, temp-path and script-mode regenerations (integrator, runner review, fixer). |
+| G10 | ELEMENT-SIDE TEXT: the sites and their meaning (below); Knowledge.jl:537 TEMPLATE -> `[TwissDispersionAnalysis]` (overrides the handoff's "STAYS": a template that fails the suite's own rule is a trap); the design body and the theory note NOT edited. | as decided by C. Amendments: fixer #1/#7 the elements guide names the exclusion and the union (design M1, repo F4: the prescribed sentence stated half the rule); #8 the contracts guide's step 3 gains the include-order clause (repo F5); #5 the STATUS landing date "2026-09-11 to 2026-09-13" (repo F2). Repo F3 ("22 kinds today" and the eight-kind list are changing facts in a guide) recorded for the owner, not changed: G10 prescribed the counts and the design STATUS carries the same. |
+| G11 | THE MAIN TREE MOVES: apply each worktree's `git diff HEAD` onto the current main HEAD with `git apply --3way`. | HEAD was 2e8193c (the fix commit); both patches applied with every hunk clean, zero conflicts; the fix commit's kappa lines (now 1228-1267) untouched; the runner review found A.patch, C.patch and the type file byte-equal to the worktrees' state. |
+| G12 | THE AVX2 ARM: every runner runs the analysis extract in both CPU arms besides both FD arms; a cross-arm difference is a finding. | four arms by A, the integrator, the runner review and the fixer: no stage 5 assertion is CPU- or FD-sensitive. |
+| G13 | LEDGERS: this section; todo row 20; README 68-69; an experiences lesson only if genuinely new. | this record; the todo row's state cell and an appended stage 5 paragraph; the README sentence; one lesson added ("A docstring template is a hand-copy the suite never runs"): the 4b handoff had ruled the template stays, and only the stage 5 readiness audit noticed it would trip the new tripwire. The theory note's date clause (docs/theory/twiss_dispersion.md:5-6 "landed in stages during 2026-09-11 and 2026-09-12") is left unedited by G10: it dates the analysis-layer implementation of `src/analysis/` (stages 1-4b), which is what landed on those days; stage 5 is the element-side declaration (an owner may align it at the next theory edit). |
+
+### The analyzable-kind table (`analyze(TwissDispersionAnalysis(strict=false), element_meta(kind).example)`, default options; orchestrator probe 2026-09-12, A's re-run, the design review's independent re-run and the runner review's probe agree row for row)
+
+| kind | outcome | status, or the fixed-point residual of the refusal |
+|---|---|---|
+| line (a cell; traces 1.733 / 2.277) | `TwissDispersionResult` | `:passed` (the y cluster `:unstable_spectrum`, Twiss quantities `Determined(:unavailable, :unstable_spectrum)`: unavailable is honest, not failed) |
+| chromaticity_kick | result | `:passed` |
+| crab_dispersion | result | `:degraded` (the stage 4b uncertified longitudinal heuristic, one degradation) |
+| drift | result | `:passed` (coasting branch; dispersion `Determined(:unavailable, :singular_coefficient)`, design 236-238's first "still honest" example) |
+| linear6d | result | `:passed` |
+| marker | result | `:passed` |
+| momentum_dispersion | result | `:passed` |
+| multipole | result | `:passed` |
+| octupole | result | `:passed` |
+| quadrupole (traces 1.892 / 2.108) | result | `:passed` (y cluster `:unstable_spectrum`; design 236-238's second example) |
+| sbend | result | `:passed` |
+| sextupole | result | `:passed` |
+| solenoid | result | `:passed` |
+| thin_multipole | result | `:passed` |
+| thin_quadrupole | result | `:passed` |
+| thin_rf_cavity | result | `:degraded` (the same heuristic, one degradation) |
+| thin_sextupole | result | `:passed` |
+| xy_coupling | result | `:passed` |
+| thin_crab_cavity | refusal, "not a fixed point" | residual 8.874e-3 above `closed_orbit_atol` 1.42e-14; under `closed_orbit = :warn` -> `:degraded` with the degradation "closed_orbit = :warn: ..." |
+| thin_dipole | refusal | 1.0e-3; `:warn` -> `:degraded` |
+| hkicker | refusal | 1.0e-4; `:warn` -> `:degraded` |
+| vkicker | refusal | 1.0e-4; `:warn` -> `:degraded` |
+| kicker | refusal | 1.0e-4; `:warn` -> `:degraded` |
+
+Totals: 23 probed (22 rule kinds plus `:line`); 18 results (16 `:passed`,
+2 `:degraded`); 5 refusals, every message naming `closed_orbit = :warn`,
+every `:warn` run `:degraded` with exactly one degradation naming it; 0
+other outcomes. The five refusing examples carry a constant kick, so the
+origin is not a fixed point of their map: the documented `:require`
+behaviour (type docstring, `closed_orbit`), the design's "still honest"
+(236-238). The G6 testset reproduces the table in-suite without naming a
+kind: 64 = 23 example-present + 18 status + 5 x 4 refusal checks + 3
+counting assertions. The tests review's r6 probe on a patched copy showed
+thin_crab_cavity `:degraded` for a second reason ("primary dispersion
+unavailable (:unit_eigenvalue)") once the closed-orbit degradation was
+removed, which is why the degradation TEXT assertion, not the status
+alone, covers all five.
+
+### The reworded statements, before / after (G10; every site edited in place by C, three amended by the fixer; the full diffs are in `OUT/report_5_C.md` and `OUT/report_5_fixer.md` section 2)
+
+| site | before | after |
+|---|---|---|
+| `docs/guides/contracts_and_analyses.md` 49-51 | "`TwissDispersionAnalysis` (`src/analysis/twiss_dispersion_analysis.jl`): a ..." | "`TwissDispersionAnalysis` (the type in `src/analysis/twiss_dispersion_type.jl`, its constructor, option schema and `analyze` method in `src/analysis/twiss_dispersion_analysis.jl`): a ..." |
+| `docs/guides/contracts_and_analyses.md` 56-66 | "Every element still registers `analyses = [PlaceholderAnalysis]`: the declaration of the analysis on the linear-map element kinds, with the two set tripwires, is stage 5 of the campaign ..., and the placeholder remains the declaration of kinds that have no analysis." | "The element declaration is a mixed state: every element kind whose `tracking_methods` contain `Symplectic6DMap` by exact identity and not `NonSymplectic6DMap` (22 kinds today), plus `:line`, declares `analyses = [TwissDispersionAnalysis]`; the eight kinds without an analysis (the aperture, both Lorentz boosts, the patch, the thin accelerating cavity, the lumped radiation and both strong beams) keep `analyses = [PlaceholderAnalysis]`. The suite does not carry that list: two set tripwires derive the required set from the tracking methods and assert the declared set equals it in both directions and that the analysis is never declared beside `NonSymplectic6DMap` (design "Discovery")." (repo F3: the count and the list are changing facts; owner note, see "Carried forward") |
+| `docs/guides/contracts_and_analyses.md` 75-82, "the next analysis joins by" step 3 | "... placeholder for the specs it applies to, so that `supported_analyses` discovers it, and regenerating the registry snapshot;" | "... (as stage 5 did for `TwissDispersionAnalysis`), so that `supported_analyses` discovers it, and regenerating the registry snapshot; once a spec declares it, the type (struct and docstring) must be included before `src/elements/Elements.jl`, as `src/analysis/twiss_dispersion_type.jl` is, because `@element_spec` registers its metadata at include time; the constructor and `analyze` may follow the elements;" (the include-order clause by the fixer, #8) |
+| `docs/guides/elements.md` 45-49, step 3 | "... use an empty list otherwise. Keep not-yet-implemented analyses behind `PlaceholderAnalysis`." | "... use an empty list otherwise. Declare `TwissDispersionAnalysis` on a kind that tracks with `Symplectic6DMap` and not `NonSymplectic6DMap` (`:line` is the one union; the suite's set tripwires derive the required set from the tracking methods); keep not-yet-implemented analyses behind `PlaceholderAnalysis`." (the exclusion and the union by the fixer, #1/#7; G10's sentence had stated half the rule) |
+| `AGENTS.md` 75 (tail of the `src/analysis/` bullet, one line) | "... is the first registered analysis, the placeholder remains the declaration of element kinds that have none (element declaration on kinds is stage 5)." | "... is the first registered analysis, declared on the linear-map element kinds (those tracking with `Symplectic6DMap` and not `NonSymplectic6DMap`, plus `:line`) by a rule the suite's two set tripwires derive; the placeholder remains the declaration of element kinds that have none." |
+| `src/knowledge/Knowledge.jl` 537 (the `@element_spec` docstring TEMPLATE) | `analyses = [PlaceholderAnalysis]` | `analyses = [TwissDispersionAnalysis]` (beside the template's `tracking_methods = [Symplectic6DMap]`; a kind copied from the old template would trip tripwire (a) on the spot) |
+| `src/knowledge/Knowledge.jl` 556 (checklist) | "- use `PlaceholderAnalysis` for kinds that have no analysis; `TwissDispersionAnalysis` is declared on the linear-map kinds in stage 5 of the Twiss campaign;" | "- declare `TwissDispersionAnalysis` on every kind whose `tracking_methods` contain `Symplectic6DMap` and not `NonSymplectic6DMap` (the suite's set tripwires derive that set and fail on a kind that departs from it); use `PlaceholderAnalysis` only for kinds that have no analysis;" |
+| `src/analysis/Analysis.jl` 16-20 (comment) | "`TwissDispersionAnalysis` (twiss_dispersion_analysis.jl, stage 4b) with its `analyze` method; the placeholder remains ..." | "`TwissDispersionAnalysis` (the type in twiss_dispersion_type.jl, included right after this file so the element specs can declare it; its constructor and `analyze` method in twiss_dispersion_analysis.jl, stage 4b); the placeholder remains the declaration of element kinds that have none." |
+| `src/analysis/twiss_dispersion_type.jl` 3-5 (header, fixer #2) | "field of every element kind that tracks with `Symplectic6DMap`, and" | "field of every element kind the design's rule selects (`Symplectic6DMap` by exact identity and not `NonSymplectic6DMap`, plus `:line`), and" |
+| `docs/design/twiss_dispersion_analysis.md` 5-14 (STATUS paragraph only) | "implemented through Staging item 4 (stages 1-4b, landed 2026-09-11 and 2026-09-12). ... `PlaceholderAnalysis` remains the declaration of element kinds without an analysis until Staging item 5 declares the analysis on the linear-map kinds. Staging items 5-8 (element declaration, ...) are open." | "implemented through Staging item 5 (stages 1-5, landed 2026-09-11 to 2026-09-13). ... the analysis is declared on the 22 linear-map kinds plus `:line` under the Discovery rule below, with the two set tripwires, and `PlaceholderAnalysis` remains the declaration of the eight kinds without an analysis. Staging items 6-8 (the physics identity contract with its validation script and example, the `lattice_cells.jl` refactor, the external benchmarks) are open." |
+| `test/runtests.jl` 921-929 (the guard's title and lead comment) | "Stage 4 registers the analysis: the placeholder and TwissDispersionAnalysis are the analyses and analyze exists"; "every element still declares `[PlaceholderAnalysis]`" | "Stage 5 declares the analysis: the placeholder and TwissDispersionAnalysis are the analyses, analyze exists, and the declared kind set is the derived set plus :line"; "the placeholder remains the declaration of the eight kinds without an analysis; the set tripwires at the end of this testset derive both sets from the registry" |
+| `test/runtests.jl` 270-279 (the analysis block header) | "the last block is the stage guard (stage 4b: ...)" | "(stage 5: ... and the declared kind set is derived)"; re-wrapped to 77/76/88 chars (fixer #10) |
+| `test/runtests.jl` 989-991, 1056-1061 (comments, fixer #4 and #9) | "the snapshot changes only by the registered analysis and contract of this stage"; "The documented refusal: the message names the option that continues, ..." | "... of stage 4b and by the 23 \"Supported analyses\" lines of stage 5"; "The documented refusal. The elseif filter only routes the outcome (a foreign ArgumentError falls to the else branch and its @info); the assertions below are the check: ..." |
+
+Every other "placeholder" / "stage 5" / "every element" statement outside
+docs/history was judged (C, the integrator's `PlaceholderAnalysis` grep,
+the repo review's 86-hit grep): `docs/README.md:98` ("the placeholder on
+undeclared kinds"), `docs/theory/twiss_dispersion.md:6-7` and `2123`
+("the placeholder remains the declaration of kinds that have no
+analysis"), `src/tasks/strongstrong/interface.jl:2231` (the two-member
+`_analysis_types` tuple with its 4b tripwire) and the eight keepers' own
+lines are TRUE after stage 5; no live statement says every element
+registers the placeholder; the only sites that still read placeholder-only
+or "five kinds" are the design note's body (40, 231-234, 506), history by
+decision.
+
+### The snapshot diff (`docs/registry_snapshot.md`, regenerated by `write_registry_snapshot()`, 16884 -> 16976 bytes, staged; `git diff -U0 --cached`)
+
+Twenty-three hunks of the form
+
+```diff
+-  - Supported analyses: `PlaceholderAnalysis`
++  - Supported analyses: `TwissDispersionAnalysis`
+```
+
+one under each of the 23 declaring kinds (line, chromaticity_kick,
+thin_crab_cavity, drift, quadrupole, sextupole, octupole, multipole, sbend,
+linear6d, crab_dispersion, momentum_dispersion, xy_coupling,
+thin_rf_cavity, solenoid, marker, thin_multipole, thin_dipole,
+thin_quadrupole, thin_sextupole, hkicker, vkicker, kicker); 0 changed lines
+of any other kind; the Analyses, Contracts and Examples sections
+unchanged. The eight keepers' lines (62, 70, 86, 94, 102, 230, 246, 262 of
+the snapshot) still read `PlaceholderAnalysis`. The pinned byte comparison
+of "Architecture integrity" (runtests 189-190) and the 4b comparison
+(6554-6565) both pass on the staged file in every arm.
+
+### Review findings and fixes (four reviewers: design fidelity, repository compliance, test adequacy, runner; 12 rows, 8 fixed as comment or prose edits, 4 recorded without a tree change, none skipped; two seen by two lenses; no assertion, code path or metadata changed)
+
+| # | lens | site | finding | resolution |
+|---|---|---|---|---|
+| 1 / 7 | design M1, repo F4 | `docs/guides/elements.md:46-48` | the step-3 sentence G10 prescribed stated half the rule ("tracks with `Symplectic6DMap`"); a kind carrying both symplectic methods would follow it and trip (a) and (b) (design review `inj_b`, 3 red) | FIXED: "and not `NonSymplectic6DMap` (`:line` is the one union; ...)" |
+| 2 | design M2 | `src/analysis/twiss_dispersion_type.jl:3-4` | the header paraphrased the rule without the exclusion and the union | FIXED: the design's rule quoted (exact identity, the exclusion, plus `:line`) |
+| 3 | design M3 | `docs/design/twiss_dispersion_analysis.md:231-233` | "the five kinds declaring only the non-symplectic method ... keep `PlaceholderAnalysis`" beside the STATUS paragraph's "eight kinds" in one file | RECORDED, not edited (G10: the body is history); superseded by the STATUS paragraph; listed under "Not touched" above |
+| 4 | repo F1 | `test/runtests.jl:989-990` | the kept 4b comment "the snapshot changes only by the registered analysis and contract of this stage" moved its referent with the title | FIXED: "... of stage 4b and by the 23 \"Supported analyses\" lines of stage 5" |
+| 5 | repo F2 | `docs/design/twiss_dispersion_analysis.md:5-6`; `docs/theory/twiss_dispersion.md:5-6` | STATUS said "landed 2026-09-11 and 2026-09-12" while stage 5 is uncommitted on 2026-09-13 (HEAD 2e8193c 23:33 -0400) | FIXED in the STATUS ("2026-09-11 to 2026-09-13"); the theory clause left by the ledgers (G13 row above) |
+| 6 | repo F3 | `docs/guides/contracts_and_analyses.md:56-62` | "(22 kinds today)" and the eight-kind list are changing facts in a guide with no tripwire (AGENTS.md: changing facts live in generated registries and history) | RECORDED for the owner: G10 prescribed the counts and the design STATUS carries the same; the tripwires derive, the prose does not, so a drift is harmless to correctness; a later pass may replace them by a pointer to `docs/registry_snapshot.md` and this section |
+| 8 | repo F5 | `docs/guides/contracts_and_analyses.md:75-78` | "the next analysis joins by" step 3 did not say the TYPE must be included before `elements/Elements.jl` (stated only in code comments) | FIXED: the include-order clause added to step 3 |
+| 9 | tests 5.1 (A's i7) | `test/runtests.jl:1054-1061` | the comment called the `occursin("not a fixed point")` filter "the documented refusal"; the filter routes, the assertions behind it catch (i7 green, i7b red) | FIXED, comment only |
+| 10 | tests 5.2 | `test/runtests.jl:274` | a 99-character comment line | FIXED: re-wrapped 77/76/88, the stage 1 Part A anchor at 270 untouched |
+| 11 | runner F1 | `OUT/report_5_integrator.md:17-18` | the report said the type file was left untracked while `git status` showed it staged | FIXED in the report text; no tree change |
+| 12 | runner F2, A4, integrator 4 | `test/runtests.jl:1030` (the G6 testset) | 41-42 s on a fresh process in every arm, 0.1 s warm: compile latency of `analyze` on 23 examples plus 5 `:warn` re-runs | RECORDED as information for the owner (precompile the `analyze` paths later if the suite budget asks) |
+
+Observations recorded without a finding: G6's result arm accepts any
+status in `ANALYSIS_STATUSES` (a `:failed` example would pass; design 469
+makes that a documented outcome; none is `:failed` today); `@test
+n_results + n_refusals == n_declared` is never the sole red (harmless,
+kept); `match_mode=:any` tolerates extra warnings in the `:warn` run (the
+degradation and status assertions carry the check); design 224-225 calls
+the rule "the one the symplecticity contract already uses" while
+`Contracts.jl:1842` has no exclusion (equivalent today); `runtests.jl:293`
+"09 stage guard: a `function analyze end` stub defined in Analysis.jl" is
+the stage 1 injection ledger's historical wording.
+
+### Injected defects, each shown red once (script mode on a patched copy of `src/` or of the extracted testset; the unpatched control green in every harness; harnesses `OUT/inj_A/`, `OUT/review5_tests/`, `OUT/review5_design/`)
+
+| id | patch | red assertions (pass / fail / error) | shows |
+|---|---|---|---|
+| control | none: tripwires (a)+(b) slice; the FULL guard testset; the G6 testset; T5 walkers | 60 / 0 (A's slice); 127 / 0; 64 / 0; 22 / 0 | the harnesses are green before any patch |
+| i1 | sextupole -> `[PlaceholderAnalysis]` | `isempty(setdiff(derived, declared))` = `Set([:sextupole])`; `derived == declared` (A 57 / 2; tests 124 / 2) | (a), the derived - declared direction |
+| i2 | aperture -> `[TwissDispersionAnalysis]` | `isempty(setdiff(declared, derived))` = `Set([:aperture])`; `derived == declared`; (b) `!any(=== NonSymplectic6DMap)` (58 / 3; 125 / 3) | (a) the other direction AND (b) |
+| i3 | lumped_radiation -> `[TwissDispersionAnalysis]` | the declared - derived setdiff and the equality (59 / 2; 126 / 2); (b) GREEN | (b) is about the non-symplectic method only, as designed |
+| i4 | test side: `union!(derived, Set([:line]))` dropped | `setdiff(declared, derived)` = `Set([:line])`; equality (58 / 2; 125 / 2) | the `:line` union is load-bearing |
+| i5 | test side: rule by `occursin("Symplectic6DMap", string(M))` without the exclusion | `setdiff(derived, declared)` = the five NonSymplectic6DMap-only kinds (27 derived); equality (58 / 2; 125 / 2) | `===`, not a substring |
+| i6 | aperture -> `[TwissDispersionAnalysis]`, the G6 testset | `@test false` (the @info names `:aperture` and "not under ComplexStepLinearization ... Use method=FiniteDiff"); `n_results + n_refusals == n_declared` evaluated 23 == 24 (64 / 2) | G6 refuses a kind that cannot be linearized; the count line |
+| i7 | test side: the refusal branch `elseif r isa ArgumentError` (filter dropped), unpatched src | 64 / 0 GREEN | a finding on the test, not an injection: no foreign ArgumentError exists in today's corpus; fixed as a comment (#9) |
+| i7b | i6 + i7 | `occursin("closed_orbit = :warn", r.msg)` false for the aperture message; the `:warn` re-run inside `@test_logs` throws; the `rw` follow-ups (65 / 2 / 2) | the assertions behind the filter catch a wrong refusal even without it |
+| r1 | drift -> `[TwissDispersionAnalysis, PlaceholderAnalysis]` | the per-kind `a == [TwissDispersionAnalysis]` (126 / 1; both setdiffs green) | the only guard against a kind declaring both analyses |
+| r2 | `beam_line.jl:737` `tracking_methods = DataType[]` -> `[Symplectic6DMap]` | `element_meta(:line).tracking_methods == DataType[]` (126 / 1) | the "why the union" assertion |
+| r3a / inj_a | a scratch kind (`Symplectic6DMap`, `[PlaceholderAnalysis]`) registered through `register_element_meta!` (tests) or a real `@element_spec` block appended to Elements.jl (design) | `setdiff(derived, declared)` = the scratch kind; equality (126 / 2; 59 / 2) | (a) fires on a NEW kind |
+| r3b | r3a's kind + test side: the derivation replaced by a hand list of today's 23 kinds | 128 / 0 GREEN | a hand list is blind to the new kind: why the derivation over `registered_element_specs()` is load-bearing (AGENTS.md) |
+| inj_b | a scratch kind with BOTH symplectic methods and `[TwissDispersionAnalysis]` | `setdiff(declared, derived)` = the scratch kind; equality; (b) (59 / 3) | (b) on a kind that exists only to carry both |
+| r4 / r5 / r5b | the two counting assertions removed (r4, 62 / 0); `twiss_dispersion_analysis.jl:831` `if residual <= atol` -> `if false` so every kind refuses (r5: 117 / 1, ONLY `n_refusals < n_results`, 23 < 0); r5 + r4 (r5b: 116 / 0) | `n_refusals < n_results` alone rejects "a declaration on a kind set that mostly refuses" |
+| r6 | source `:840` the `:warn` degradation string -> `nothing` | the degradation-text assertion on all 5 refusing kinds, `rw.status === :degraded` on 4 (55 / 9) | the text assertion covers all five (thin_crab_cavity is `:degraded` for a second reason) |
+| r7 | source `:839` the `@warn ... maxlog=1` line removed | 5 separate `@test_logs` failures (59 / 5) | one `@test_logs` per kind checks every kind's warning |
+
+Every stage 5 assertion was seen red in at least one run except the
+one-liners whose failure mode is a missing kind or field (`!isempty(keepers)`,
+`n_declared > 0`, `meta.example !== nothing`, `r.status in
+ANALYSIS_STATUSES`; judged obvious by the tests review). 20 red or
+designed-green runs over 18 defects (A's 9, the tests review's 9, the
+design review's 2 counted with r3a); the stage 4b stage guard's own
+injection (the export dropped) was not repeated.
+
+### Not verified in stage 5
+
+- No lane and no gate ran on this tree; every count above is standalone
+  (the analysis extract in four arms, the two stage 5 testsets, T5, the
+  `one_turn_matrix` block, the four tripwires, the validators, the
+  `element_help` sweep, the script-mode smoke). One full gate on the
+  assembled stage 5 tree is owed before the push, in the native AND the
+  AVX2 arm (the section above), and is recorded in this file when it runs.
+  After the ledger edits of G13 (this section, the todo row, the README
+  sentence, the experiences lesson) the four suite tripwires were re-run in
+  package mode from the main tree: 32 / 32 (Architecture integrity 28 incl.
+  the docs index and the snapshot byte comparison, Core.Box 2, exports 1,
+  detached docstrings 1; native arm, fallback ForwardDiff, exit 0, 27.1 s
+  after load; `OUT/ledgers/run_tripwires_ld.log`).
+- The G6 testset's suite cost (41-42 s of `analyze` compile on a fresh
+  process) is measured in the extracts, not in a full suite run; whether the
+  suite's budget wants the `analyze` paths precompiled is the owner's.
+- A kind whose own example returned `:failed` under `strict=false` would
+  pass G6's result arm (`status in ANALYSIS_STATUSES`); none does today.
+  Whether "analyzes its own example" should exclude `:failed` is a
+  presentation decision left with the stage 4b heuristic-degrades policy.
+- The two set tripwires and G6 run over `registered_element_specs()` in the
+  suite process; a kind registered by an extension or a downstream package
+  is covered only when that package's tests include them.
+- The `:line` example is a cell whose y cluster is `:unstable_spectrum`;
+  the analysis is honest about it (`Determined(:unavailable, ...)`), but no
+  stage 5 test asserts a line example with a stable spectrum. The stage 6
+  identity contract's fixtures are the place for one.
+- The theory note's date clause (`docs/theory/twiss_dispersion.md:5-6`) and
+  the design body lines 40, 231-234, 506 are unedited by G10; the G13 row
+  above and "Not touched" record why.
+
+### Carried forward to stage 6 (the physics identity contract, its validation script with the README section, the executable example with catalogue and runner entries; this record edits neither note)
+
+1. **Stage 6 prerequisites now in hand.** The declaration is live: every
+   linear-map kind and `:line` list `TwissDispersionAnalysis`, so a
+   `TrackingTask` built from a line lists it once (T5) and the contract can
+   discover its analysis through `supported_analyses` rather than by name.
+   The identity contract can read `diagnostics.residuals` (every acceptance
+   a `(name, value, tolerance)` triple) and the (K14) / (K7) / (K5)
+   reported triples; the executable example can be the script-mode smoke
+   (the drift example `:passed`; a dense map `:degraded` -> certified with
+   `longitudinal_mode`; `configuration_report`, `normal_mode`,
+   `matched_covariance`). The analyzable-kind table above is the fixture
+   inventory: 18 examples analyze, 5 refuse for the closed-orbit reason;
+   a stable-spectrum line example does not exist yet (use a cell with
+   traces inside (-2, 2) or the design's FODO).
+2. **The (E7) / U_6-symplecticity kappa (4b item 2, F4, theory T5, D1).**
+   Untouched by stage 5. Decide between the landed `c rho_M1 cond(U)`
+   (fails resolved frames whose tunes differ by 1e-3 rad/turn) and the
+   review's resolution kappa `cond(U) ||U||^2 / chord_min` (measured, not
+   adopted; D1 recommends it), or a `:degraded` verdict for those rows.
+3. **A must-reject fixture for the frame, U_6 and covariance acceptances
+   (4b item 3).** NOT adopted in stage 5 (G1: no owner ruling; analysis-side
+   work outside an elements commit). A hand-built frame with a wrong column
+   or an unmatched Sigma would close three open windows and give injection
+   d07 an end-to-end twin; the stage 6 contract fixtures are a natural home.
+4. **`_NORMALIZER_ACCEPTANCE_MULTIPLIER` at the edge (63.9; 4b item 4).**
+   NOT adopted in stage 5 (same reason). Re-measure on more dense seeds
+   (the 23 element examples are new fixtures); 128 if the accepted extreme
+   crosses 6.4.
+5. **The presentation questions (4a/4b item 5), still open.** The 6D
+   synchrotron tune in [0, 2pi); `matched_covariance` not bitwise symmetric
+   (`Symmetric` wrap at the boundary); the rounding rule for reported tunes;
+   the heuristic-degrades policy (the default 6D run is `:degraded` on
+   crab_dispersion and thin_rf_cavity until a caller passes an index or a
+   tune); whether G6's result arm should exclude `:failed`.
+6. **Design paragraphs to reconcile in the note (4b item 6, docs-only).**
+   The Certification paragraph's inactivity list; the option table's
+   `longitudinal_mode` row; the pipeline's coasting-test position; the
+   covariance row's closure; NOW ALSO the body lines 40, 231-234 and 506
+   (placeholder-only / "five kinds"), superseded by the STATUS paragraph
+   (eight keepers) and this record; and 224-225's "the exact-identity rule
+   the symplecticity contract already uses" (Contracts.jl:1842 has no
+   `NonSymplectic6DMap` exclusion; equivalent today). The theory note's
+   date clause (5-6) may follow the STATUS at the next theory edit.
+7. **Owner notes from the stage 5 review.** (a) Repo F3: the contracts
+   guide's "(22 kinds today)" and the eight-kind list are changing facts
+   in a guide; replace by a pointer to `docs/registry_snapshot.md` and this
+   section when the guide is next edited. (b) The G6 testset's 41-42 s
+   compile cost per suite run. (c) Whether the Verification Matrix names a
+   CI-parity (AVX2) arm permanently (the CI-red section's owner decision;
+   the stage 5 batch gate runs in both arms regardless).
+8. **Later stages, unchanged.** Seeding the iterative routes on the
+   selected branch; extending `kappa_route` by the coefficient condition;
+   transport, scans, covariance-based mode selection, a public closed-orbit
+   finder; the `lattice_cells.jl` refactor (stage 7); the external
+   benchmarks (stage 8); the post-campaign neighbour audit (9).
+9. **Process items for the stage 6 dossier.** Derive the expected behaviour
+   from a probe before writing a fixture row (stage 5 did: the analyzable-kind
+   table came from `analyze_each_kind.jl` before G6 was written, and the
+   test branches on the outcome, never on the list); when a tripwire starts
+   deriving a set, make every docstring TEMPLATE pass it in the same commit
+   (docs/experiences.md "A docstring template is a hand-copy the suite never
+   runs"); a filter in a test branch is documentation unless an injection
+   shows it red (i7 / i7b: the assertions behind it are the check); the
+   worktrees branch from the pushed HEAD, but the main tree may move under
+   them (the CI fix), so the integrator applies onto the CURRENT HEAD with
+   `git apply --3way` and re-derives every count on main.
+
+### Orchestrator amendment before the commit (2026-09-13 01:15)
+
+Review finding F3 (repository lens; recorded above as an owner note) was
+applied after all: docs/guides/contracts_and_analyses.md no longer states the
+kind count, and its keeper list is marked "today" with the registry snapshot
+named as the per-kind source and this section as the list of both sets. A
+guide instructs; the counts live here and in the snapshot (AGENTS.md,
+"Procedures live in docs/guides/; changing facts live in generated registries
+and docs/history/"). The design note's STATUS paragraph keeps its "22
+linear-map kinds plus :line" because that paragraph tracks the landing and
+carries its dates. This markdown edit landed after the fast lane of this
+tree had started (01:11:59); the four suite tripwires, the docs-index check
+among them, were re-run on the final tree before the commit.
+

@@ -163,7 +163,7 @@ end
     keywords = [:thin_element, :crab_cavity, :harmonic]
     tracking_methods = [Symplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract]
-    analyses = [PlaceholderAnalysis]
+    analyses = [TwissDispersionAnalysis]
     parameters = (
         N=ParamMeta(required=true, meaning="maximum harmonic count encoded by ThinCrabCavitySpec{N}"),
         frequency=ParamMeta(required=true, unit="Hz", meaning="RF frequency"),
