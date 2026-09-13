@@ -9313,3 +9313,52 @@ carries its dates. This markdown edit landed after the fast lane of this
 tree had started (01:11:59); the four suite tripwires, the docs-index check
 among them, were re-run on the final tree before the commit.
 
+
+## 2026-09-13: full gate on the CI-fix and stage 5 batch (2e8193c, ea8b52e), in two CPU arms
+
+The fix commit 2e8193c and the stage 5 commit ea8b52e each named this run as
+their gate: one full gate on the batch's final tree before the push
+(AGENTS.md Definition of Done, owner decision 2026-09-04); both were
+checkpointed by the fast lane (the fix by its targeted extracts in two arms,
+stage 5 by result/gates/fast_lane_stage5_2026_09_13.log, exit 0, 296 rows,
+145992/145992). Because CI run 434 on f7ee3c6 failed on the runner's AVX2
+CPU while the local AVX-512 gate was green (the "CI run 434" section above),
+this gate ran TWICE on the clean tree at ea8b52e, CUDA active, four threads,
+launched detached with the depot otherwise idle:
+
+    # native arm (the Verification Matrix's gate)
+    julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+    # AVX2 arm (CI-runner parity: OpenBLAS Haswell kernels, LLVM target haswell)
+    OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4", "-C", "haswell"])'
+
+| item | native arm | AVX2 arm |
+|---|---|---|
+| tree | ea8b52e (`git status` clean) | same |
+| start / end / wall | 01:30:16 / 02:11:22 EDT / 41 min 06 s (the stage 3-4 gate: 45 min 52 s) | 02:11:22 / 03:01:32 EDT / 50 min 10 s (the first pkgimage build for the `haswell` target is inside it) |
+| exit code | 0 (`Testing Octopus tests passed`) | 0 (`Testing Octopus tests passed`) |
+| test summary | 312 top-level testset rows, every one `Pass == Total`; summed 148050 passed of 148050 (the stage 3-4 gate: 311 rows, 147957); no Fail, Error or Broken column anywhere | 312 rows; 148050 of 148050; every row `Pass == Total`, and every row's counts equal the native arm's row by row; no Fail, Error or Broken column anywhere |
+| skipped or unrunnable | none: no `LANE SKIP` banner (full lane); the CUDA, ForwardDiff, MPI launcher and example-execution sections all ran (CUDA 35 rows; `script mode picks up the ForwardDiff rules` 2/2; `ForwardDiff differentiates the lattice` 15/15; `one_turn_matrix: the ForwardDiff route and the core fallba` 32/32; `The multi-process seam runs under an MPI launcher` 1710/1710; `The developer harnesses run divided under an MPI launcher` 4/4; `Every example script runs against the current interface` 5/5; the stage 5 rows `Stage 5 declares the analysis ...` 127/127 and `Stage 5: every kind that declares the analysis analyzes its own example ...` 64/64) | none: same sections ran, same counts (`CUDA coverage status` passed; the CI-red rows `4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps` 12602/12602 and `Mode clusters: 200 + 200 manufactured stable maps are resolved singletons` 11406/11406 under the AVX2 target; `one_turn_matrix: the ForwardDiff route and the core fallback` 32/32; the MPI seam 1710/1710; the example scripts 5/5) |
+| CUDA | active (`CUDA coverage status` passed); the test process held 796 MiB of device memory at the end (nvidia-smi; the stage 3-4 gate: 794) | active (`CUDA coverage status` passed); the process held 412 MiB of device memory when sampled at the 30-minute mark; the final footprint was not sampled |
+| warnings | 42 non-fatal warning lines of 12 distinct texts (the stage 3-4 gate: 44 of 14; counted the same way on both logs); every text present in that gate's log, none new to this batch; absent this time: Use of CUDA.CUSOLVER is deprecated, use cuSOLVER i; Use of CUDA.CUSPARSE is deprecated, use cuSPARSE i | 46 non-fatal warning lines of 14 distinct texts: the native arm's texts plus the two CUDA CUSOLVER / CUSPARSE deprecation notices (present in the stage 3-4 gate) and ONE text new to every gate log, "AES-acceleration instructions have not been detected, so the related RNG paths ...": the `haswell` codegen target omits the AES feature flags the host has, so the Random123 / AES-based RNG fallback announces itself; an emulation artifact of the arm, not of the tree (the counter RNG testsets passed with the same counts); the `CUDA_Runtime_jll ... newer than CUDA_Compiler` notice did not print in this arm |
+| log | `result/gates/full_gate_stage5_native_2026_09_13.log` | `result/gates/full_gate_stage5_avx2_2026_09_13.log` |
+
+Row arithmetic: the stage 3-4 gate summed 147957 in 311 rows; this tree
+adds the analyzable-kind testset (64) and turns the stage guard's 98 into 127,
+so 147957 - 98 + 127 + 64 = 148050 in 312 rows, exactly the total of both
+arms; this closes the assertion-count question the stage 5 record left open
+("Not verified in stage 5"). The two arms agree row by row, so no assertion
+of the tree is target-dependent at the gate's resolution; the CI red of run
+434 (the section "CI run 434 red on f7ee3c6" above) is the only known
+target-dependent failure and its two testsets pass under the AVX2 target
+here. The AVX2 arm is an emulation (`-C haswell` with Haswell OpenBLAS
+kernels on a Sapphire Rapids host), not the runner; CI itself is the
+remaining check and runs on the push. Fast lanes as checkpoints: the fix
+commit by its targeted two-arm extracts, the stage 5 commit by
+`result/gates/fast_lane_stage5_2026_09_13.log` (exit 0, 296 rows,
+145992/145992). Nothing else compiled against the depot while either arm
+ran (the arms ran sequentially from one detached script).
+
+This section is the only change between the gated tree and the pushed tree;
+the commit carrying it is markdown-only and finishes with the fast lane on
+its own tree (matrix row "markdown only"),
+`result/gates/fast_lane_gate_record_stage5_2026_09_13.log`.
