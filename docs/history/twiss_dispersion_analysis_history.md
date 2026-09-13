@@ -9362,3 +9362,639 @@ This section is the only change between the gated tree and the pushed tree;
 the commit carrying it is markdown-only and finishes with the fast lane on
 its own tree (matrix row "markdown only"),
 `result/gates/fast_lane_gate_record_stage5_2026_09_13.log`.
+
+
+## 2026-09-13: stage 6 landed (the identity contract, its validation script, the DBA-ring example)
+
+The design note's Staging item 6 (lines 511-514; the spec paragraph 472-478;
+the verification table 448-466): `TwissDispersionIdentityContract <:
+AbstractPhysicsContract`, the PHYSICS contract of `TwissDispersionAnalysis`
+(its implementation contract is the stage 4b
+`AnalysisOptionEffectivenessContract`), in its own file
+`src/contracts/twiss_dispersion_identity.jl`. Its `validate` runs `analyze`
+on a deterministic fixture set (the DBA cell as compiled elements and as a
+`BeamLine`, the detuned FODO, DBA + thin RF, DBA + RF + thin crab, 20 seeded
+dense 6x6 and 5 dense 4x4 manufactured symplectic maps, the coasting map of
+the 4b contract, and the metadata examples of every kind that declares the
+analysis, derived from `supported_analyses`, never listed) and re-judges 57
+identities of the theory note on their VALUES: nine reported residual
+triples (Layer 1, plus the verdict re-derivation V1), 28 kernel residuals the
+analysis computes but does not surface (Layer 2) and 20 identities
+recomputed in the caller's coordinates from `physical.*` (Layer 3), each
+against `c eps kappa` with `kappa` the conditioning of the quantity compared
+and `c` a power of two frozen by the one-tenth / ten rule from a
+multiplier-1 measurement in both CPU arms (H15). It also asserts that 17
+expected diagnostics of the verification table fire through `analyze` (a
+silent one fails by name), that every declaring kind has an example and
+analyzes it or refuses it for the documented closed-orbit reason, and the
+design's three absolute pins (the Ohmi factor 1e-12, the rolled-FODO tune
+and Gram pins). A row that ran on no fixture fails; a slug without a
+multiplier fails; the verb is injectable. The validation script
+`validation/twiss_dispersion_identities.jl` runs the contract ONCE at 200 +
+20 maps and prints one `TW-IDENT` line per row, `TW-DIAG`, `TW-KINDS` and a
+bitwise `TW-DIGEST`; the executable example
+`examples/twiss_dispersion_dba_ring.jl` shows the two `analyze` runs of a
+DBA ring with RF (`:degraded` by the uncertified heuristic, then certified
+`:passed`) and is catalogued and run by the suite's example runner. No line
+of `src/analysis/` changed (H1); the design body is unedited (STATUS
+paragraph only); the theory note is untouched.
+
+Work of 2026-09-13 (`date +%F` at the record = 2026-09-13): the orchestrator
+pre-seeded three worktrees at 59a2988 (the contract skeleton with every
+helper signature, the script header, the example header); agent A filled the
+contract and measured every multiplier at 1.0 in both arms, agent T wrote
+T1/T2/T3 and the injections in the same worktree, agent B the script and
+the README section, agent C the example, the catalogue entry, the runner
+tuple, the design STATUS and the guide; the integrator applied the three
+`git diff HEAD` patches onto main with `git apply --3way` (zero conflicts),
+regenerated and staged the snapshot and ran everything in both arms; the
+measurer re-measured H15 on the integrated tree in both arms; four reviewers
+(theory, repository, tests, runner) filed 22 findings; the fixer re-verified
+each, applied 15 and recorded 7; this record and the todo / README ledgers
+close the stage. No `Pkg.test`, no lane and no gate ran; the full gate
+belongs to the commit step (below, "Not verified"). The tree at this record:
+8 tracked files modified (+277/-12 against 59a2988) and 3 new files (1606
+lines), all staged, nothing committed. The validation script is RED at its
+defaults in both arms (below, "The validation script"): the contract caught
+a `src/analysis` defect that H1 forbids fixing in this stage.
+
+### What landed
+
+| File | Change | Content |
+|---|---|---|
+| `src/contracts/twiss_dispersion_identity.jl` | new, 1255 lines, staged | the type docstring and `Base.@kwdef struct TwissDispersionIdentityContract` (`seed`, `dense_maps = 20`, `dense_maps_4d = 5`, `emittances = (1, 1, 1)`, `multipliers`, `absolute_pins`; H2); `_default_identity_multipliers()` 77-146 (57 entries, each with both arms' multiplier-1 ratio and the argmax fixture as a comment; nine marked "(re-measured)"); `_default_identity_absolute_pins()`; the fixture builder `_identity_contract_fixtures` (F1-F8, `role=:dba_tuple` on F1); the rolled FODO (H10) and the FODO / coasting / manufactured-map recipes; `_identity_contract_diagnostics` 400-535 (17 rows D1-D14, docstring with the two not-reachable kernel fixtures and the (K1) correction); `_identity_contract_certified` (the two-run recipe, rebuilt over `fieldnames`); the injectable `_identity_contract_probe` with `_identity_contract_run` (audit-and-catch with `Ref`s), `_identity_contract_record!` (`get!` on `:failure_texts`), the three layers of rows, V1, the kind sweep (with the `:kinds_without_example` branch), the row-coverage guard, `_identity_contract_result`; `validate` (`_reject_unknown_validate_kwargs`, status `:passed` or `:failed` only, `residual = worst_ratio`). |
+| `src/Octopus.jl` 129-133 | +5 | the include after `contracts/analysis_effectiveness.jl`, with a comment. |
+| `test/runtests.jl` | +186/-2, FOUR hunks (`@@ -1076 +1076,179`, `@@ -12321`, `@@ -12329`, `@@ -22164`) | header 1079-1084; T1 `Stage 6 registers TwissDispersionIdentityContract: description, supertype, export, docstring, registry, snapshot, kwarg rejection` 1085-1106; `_st6_` helpers 1107-1136 (`_st6_declaring_kinds`, `_st6_with_longitudinal` over `fieldnames`, `_st6_certify_everything`, `_st6_perturb`, `_st6_perturb_symplectic_none`); T2 `Stage 6: the identity contract passes on the tree with pinned metrics, and every negative is red` 1137-1250 (negatives n1-n7, n3b, n5b); the runner comment and tuple entry 12498 / 12507; T3, three `idc` rows in `Physics contracts` 22347-22350. The stage 2 Part A header moved 1079 -> 1252. |
+| `validation/twiss_dispersion_identities.jl` | new, 208 lines | header (Reference model, Error metric, Fixtures, Outputs, Run, Environment), include guard, `IDENT_SEED / IDENT_MAPS / IDENT_MAPS4` from ENV (20260911 / 200 / 20), `identity_slugs`, `identity_digest` (rotate-then-xor over `maxval_` in slug order), `report_identities` (TW-IDENT `%-40s max=%.6e ratio=%.6e c=%g argmax=%s`, TW-DIAG, TW-KINDS with `without_example`, TW-DIGEST), `write_identities_tsv` (`result/twiss_dispersion_identities.tsv`), ONE `validate`, the gate `result.status === :passed || error(result.message)`, the closing line; an `IDENT_DRY_RUN` hook. |
+| `validation/README.md` 1057-1096 | +40 | `## Twiss and Dispersion Identities` before `## Paper Anchors` (now 1097), in the `lattice_cells.jl` entry's form; the tag list incl. (E3) and (I1); the two not-reachable diagnostics named; the 20 + 5 vs 200 + 20 sentence; the record pointer to this section. |
+| `examples/twiss_dispersion_dba_ring.jl` | new, 143 lines | the `#= =#` header, the include guard, `config`, the ring `BeamLine("DBA_RING", qd, d, bend, d, qf, d, bend, d, qd, rf)` from specs (H11), `show_determined`, run 1 (status, degradations, `dispersion.longitudinal`), run 2 with `longitudinal_mode` (tunes in rad and fractional, the oriented-tune note for a mode above pi at 111-116, zeta / eta / h, the configuration report, `normal_mode` 1:3, rms beam sizes, the residual triples); prints only. |
+| `src/examples/Examples.jl` 93-101 | +9 | the `ReferenceExample("examples/twiss_dispersion_dba_ring.jl", ..., Type[TwissDispersionAnalysis, BeamLine, ThinRFCavitySpec, SBendSpec])` after `knob_control`. |
+| `docs/registry_snapshot.md` 314 | +1, regenerated by `write_registry_snapshot()`, staged, 16976 -> 17012 bytes | the Contracts bullet `- \`TwissDispersionIdentityContract\`` after `SymplecticityContract`; byte-equal to `registry_snapshot_markdown()` and to temp-path regenerations in both arms (integrator, runner review, fixer). |
+| `docs/design/twiss_dispersion_analysis.md` 3-18 | STATUS paragraph only (+12/-9) | "implemented through Staging item 6 (stages 1-6, landed 2026-09-11 to 2026-09-13)"; the contract, the script and the example named; "Staging items 7-8 (the `lattice_cells.jl` refactor, optional; the external benchmarks) are open". |
+| `docs/guides/contracts_and_analyses.md` 36-53, 103-107 | +23/-1 | the contract paragraph in `## Contracts` (what it runs on, what fails it, "Run both after changing any file of `src/analysis/`"); step 4 of "the next analysis joins by" names the example as the precedent. |
+| `docs/public_api.md` 337 | +1 | `?TwissDispersionIdentityContract` in the contracts help list. |
+
+Not touched: the theory note; the design note's body (the STATUS paragraph
+3-18 is the only edit; the body's verification table rows 448-466 are
+mapped to the contract's rows below and its "not reachable" cases are
+recorded, not edited); every file of `src/analysis/` (H1: the `k_route_agreement`
+defect the script exposed is diagnosed below and carried, not fixed);
+`docs/public_api.md` 318-322 ("Useful beam-beam checks": the identity
+script is not a beam-beam check; the README and the guide document it);
+the docs/history sections above.
+
+### Standalone verification on the integrated and fixed tree (no lane, no gate)
+
+Conventions as in stages 1-5 (`J` = `julia --startup-file=no --project=REPO`,
+CUDA off, OUT = `result/twiss_impl_2026_09_11/stage6`, `ps` checked for
+`runtests` / `Pkg.test` before every package-mode run). TWO CPU arms: native
+(Sys.CPU_NAME sapphirerapids, Julia 1.12.4) and `OPENBLAS_CORETYPE=Haswell
+julia -C haswell` (the CI runner's class). Every extract is regenerated from
+the MAIN tree's `test/runtests.jl` by anchor (`OUT/extract/extract_main.py`).
+Counts are the fixer's post-fix runs (`OUT/fix/*.log`); the integrator's
+(`OUT/int/`), the runner review's (`OUT/review6_runner/`) and the measurer's
+(`OUT/measure/`) runs on the pre-fix tree agree on every row that the fixes
+did not touch (152 -> 157 in T2, 14 -> 17 diagnostics, 157 -> 160 fixture
+runs are the fixes' own additions).
+
+| run | native | haswell |
+|---|---|---|
+| `validate(TwissDispersionIdentityContract())` | `:passed`; worst ratio 0.09476392926469653 (`k_longitudinal_block_symplecticity`, value 7.85e-16 against 16 eps 1.527^2); 0 rows above 0.1, 24 above 0.05; 57 identities on 160 fixture runs; verdicts 54 consistent / 0 inconsistent; diagnostics 17 expected / 0 silent; kinds 23 declaring / 18 analyzed / 5 refused / 0 failed_example / 0 without_result / 0 without_example; dense6_unresolved 0, dense4_skipped 0; pins 3 (Ohmi maxval 2.52e-16 / 6.64e-16 / 3.34e-14, all <= 1e-12); `residual == worst_ratio`; wall 65.8 s first call (package + analysis compile), 0.10 s second, identical maxima | `:passed`; the SAME worst ratio 0.09476392926469653 and slug; 0 above 0.1, 23 above 0.05; every count identical; pins 2.23e-16 / 4.45e-16 / 5.66e-14; wall 64.5 s / 0.11 s |
+| message | "twiss identities certified: 57 identities on 160 fixture runs, worst ratio 0.09476392926469653 (k_longitudinal_block_symplecticity); 17 expected diagnostics fired; 18 kinds analyzed, 5 refused for the documented closed-orbit reason" | identical |
+| normalizer ratios (carry item 4; limit 6.4 = one tenth of the analysis's 64) | `u6_reconstruction` 2.4728, `u6_symplecticity` 1.8033 | 3.3029, 1.4864 |
+| `validate_configuration_metadata()` | true | true |
+| `write_registry_snapshot(<temp>)` vs `docs/registry_snapshot.md` vs `registry_snapshot_markdown()` | byte-equal, 17012 bytes | byte-equal, 17012 bytes |
+| T1 (runtests 1085-1106) | 9 / 9 | 9 / 9 |
+| T2 (1137-1250; 152 before the fixer's n3b, the `without_example` assertions and the contiguity pin) | 157 / 157 (83.2 s: 4 `validate` + 9 probes on one fixtures object) | 157 / 157 |
+| T3 rows as a scratch testset "Physics contracts: identity rows (scratch copy)" | 3 / 3 | 3 / 3 |
+| catalogue testset "the Example core object answers with real scripts" (10633-10661) | 20 / 20 | 20 / 20 |
+| the four stage 6 blocks together | 189 / 189, exit 0, 86.7 s | 189 / 189, exit 0, 84.9 s |
+| analysis extract stage 1 Part A .. before Lorentz (270-6761, incl. T1/T2) | 108757 / 108757, exit 0, 151.8 s (= the stage 5 count 108591 + 9 + 157) | 108752 / 108752 on the pre-fix tree (integrator, runner review); not re-run after the fixes (runtests.jl changed only inside T1/T2) |
+| "Architecture integrity" (28, incl. the docs index and the snapshot byte comparison), Core.Box sweep (2; offenders empty), "Every export is documented" (1), "No docstring is detached" (1) | 32 / 32, 28.2 s | 32 / 32, 28.3 s |
+| the example as the runner does it, `julia --startup-file=no --project=. examples/twiss_dispersion_dba_ring.jl` | exit 0, 66.4 s, 53 lines: run 1 `:degraded` (uncertified `:max_signed_z_area`, canonical eigenvalue 1, signed z-area 1.0318), run 2 `:passed`, tunes 1.5446 / 1.5101 / 6.0091 rad, eta_x 0.75687, h 1.03176, every residual triple holds; the oriented-tune line for mode 3 ("fractional tune 1 - Q = 0.0436") | exit 0, 66.3 s; the logs differ in last digits only |
+| the lane-gated example runner testset "Every example script runs against the current interface" (12490-12538) by extract, pre-fix tree (runner review) | 6 / 6 (the four `examples/` scripts and the two `test/examples/` scripts, each a subprocess), 419.8 s, exit 0; the cleanup block ran, `git status` unchanged | not run |
+| `validation/twiss_dispersion_identities.jl` at its defaults (200 + 20 maps) | EXIT 1 (below) | EXIT 1 (below) |
+| a THIRD arm, the CI configuration itself (runner review, pre-fix tree): `OPENBLAS_CORETYPE=Haswell julia-1.12.7 -C haswell --threads=4` | `:passed`, worst 0.09476392926469653, every above-0.05 row (values and argmax) BITWISE equal to the 1.12.4 haswell arm: the Julia patch version and the thread count do not move the numbers, the CPU target and the BLAS kernel do | (is the haswell arm) |
+
+No stage 6 assertion differs between the CPU arms in the suite's blocks; the
+maxima differ (the frozen table below carries both) and the one arm-dependent
+VERDICT lives in the validation script's 200-map set (`c_scaling_invariance`,
+below), not in the contract's fixture set. Agent A's worktree measurement,
+the measurer's and the fixer's re-measurement agree to the four printed
+digits on every unchanged row in both arms.
+
+### The decisions H1-H17 (orchestrator, 2026-09-13, from the design note, the critic, the digests and the probes; amendments by the parts, the review and the fixer marked)
+
+| # | decision | as landed / amendments |
+|---|---|---|
+| H1 | SCOPE: Staging item 6 only (the contract with include and snapshot; T1-T3 and the injected controls; the script with README section and record; the example with catalogue and runner entries; the ledgers), one `feat(contracts)` commit, full-gate class. Carry items 3 (must-reject fixture THROUGH `analyze`: D10) and 4 (the normalizer multiplier RE-MEASURED in both arms, not changed) adopted; item 2 (the (E7)/U_6 kappa) stays the owner's; no line of `src/analysis/`. | as decided. The script exposed a `src/analysis` defect (`k_route_agreement` 1.29e32 on a stalled `:fixed_point` route reported as `:none`); by H1 it is diagnosed and carried, not fixed, and the script is red at its defaults (below). |
+| H2 | THE CONTRACT OBJECT: `@kwdef` with `seed`, `dense_maps = 20`, `dense_maps_4d = 5`, `emittances`, `multipliers` (a missing slug fails by name), `absolute_pins` (`:ohmi` 1e-12, `:rolled_tune` 1e-13, `:rolled_gram` 1e-12); no floor field (`kappa >= 1` by construction); the description contains "identities". | as decided. The pins are pushed into `absolute_pins_checked` by a `pins=` TAG on the D3 row (fixer #12), not by the row's display name. |
+| H3 | THE FIXTURE SET F1-F9 through `analyze`, `strict = false`, unit emittances, the two-run certification recipe on every bunched 6D fixture; `dense6_unresolved` and `dense4_skipped` counted and asserted 0. | as decided: 5 lattice + 20 + 5 + 1 identity fixtures, x3 scalings, +1 per certified bunched run, 17 diagnostic rows, 23 kinds + 5 `:warn` re-runs = 160 `analyze` calls. F1 carries `role=:dba_tuple` for the F2 pairing (fixer #12). The seed's first 4x4 draw (tune 0.0028) is resolved; `dense4_skipped` 0. |
+| H4 | THE IDENTITY TABLE: 57 slugs in three layers plus V1, each `c eps kappa` with kappa the conditioning of the quantity compared; a row on no fixture fails; the rho-based rows keep the analysis's shape. | as decided with SIX kappa amendments by H15's own rule: A (worktree) `k_trace_cubic` runs on bunched maps only with the root-gap factor `max(1, 1/min gap)` (2.5e6 -> 46 at multiplier 1), `k_route_agreement` gains the largest reported `coefficient_condition` (152 -> 2.4), `c_d3_determinant` is `max(abs(det M_cal - 1), abs(M_cal[6,6] - h))` (the dossier's `det = h` was a slip: M_cal is symplectic by (K1)), `c_tune_consistency` compares `dispersion.tunes` as a SET (they are in ModeLabels6D label order, which differed from the frame order on dense map 10: 1.6e14 -> 2.2); the fixer (theory T3, T4) put `cond(U)` into `k_u6_column_sums`, `k_frame_column_sums`, `k_frame_u_difference`, `c_physical_normalizer_symplecticity`, `c_projector_sum`, `c_projector_idempotence` and `c_scaling_invariance` (map 42 of the 200-map set: 164 / 328 -> 2.76 / 5.51) and dropped `cond(I_4 - M_rr)` from the two (D24) RESIDUAL rows (a backward-stable solve makes the residual independent of it: on F8 the tolerance was 2e5 times too loose). Nine rows re-measured in both arms and re-frozen (table below). |
+| H5 | EMITTANCES unit on the identity fixtures; the example uses a physical class. | as decided (`(1.0e-9, 1.0e-9, 1.0e-6)` in the example). |
+| H6 | DENSE MAPS 20 / 5 in the contract, 200 / 20 in the script, overridable. | as decided; the consequence (multipliers frozen on 20 + 5 are not a property of the 200-map set) is measurer M3, recorded in the README and below. |
+| H7 | REPORTING SHAPE: `_reject_unknown_validate_kwargs`, never throws for a failed probe, `:passed` / `:failed` only, the metrics keys, the pass / fail messages, the injectable verb `_identity_contract_probe(contract, fixtures, run; metrics)`. | as decided plus `metrics[:kinds_without_example]` (fixer #7) and `metrics[Symbol("count_", slug)]` (A). `_identity_contract_record!` uses `get!(metrics, :failure_texts, String[])` (runner R3 / integrator issue 4: a KeyError on a bare Dict). |
+| H8 | THE SILENT-DIAGNOSTIC TABLE D1-D13, every row PROBED before it is written; predicates on reason symbols and statuses, never texts; the two kernel-level fixtures (isotropic graph, false graph) recorded as not reachable. | 17 rows as landed (table below). Probe-driven amendments: D3 runs with `scaling = :none` (the Gram pin is basis dependent: 0.1946 under `:auto`, 0.08382 unscaled); D12 fires as `:failed` (the eigenplane primary route is `:not_invariant` too, cond 673; the row asserts the polynomial condition > 1e3 and `status != :passed`, arm-independent); D13's reason is `:singular_coefficient` (the coasting branch), not `:unit_eigenvalue`; D10 and D11 are two rows each (the `:flag` verdict and the `strict` throw; the `:require` throw and the `:warn` degradation). A had DROPPED D6 as "not reachable" because the digest's "det M_cal = h" made the h = 0 recipe look singular; the theory review (T1, major) showed det M_cal = 1 and symplecticity 0.0 for every h, and that the row IS reachable when the synchrotron mode is NAMED (`longitudinal_mode = 0.9`): the fixer reinstated it as two rows (named mode -> `:singular_longitudinal_projection`, `:degraded`, degeneracy `:all_resolved`, three tunes retained; default heuristic -> `:degraded`, `longitudinal == 1`, uncertified: the (K12) mislabel) and added D14 (design row 465's negative-h half: h = -0.5, Ohmi `:form_inadmissible`, separation unique, `status != :failed`). |
+| H9 | THE KIND SWEEP derived from `supported_analyses` over `registered_element_specs()`, branch on the OUTCOME; no kind list or count literal. | as decided; the repo review (F1, major, latent) found `example === nothing && continue` a silent skip: now counted in `:kinds_without_example` and FAILED by name ("kind X: declares TwissDispersionAnalysis but has no metadata example"); T2 asserts `analyzed + refused + without_example == declaring` and `without_example == 0`; the liar n3b (`:idc_noexample`) shows it red. Today 23 / 18 / 5 / 0 / 0 / 0. |
+| H10 | THE ROLLED FODO rebuilt inside the contract from theory 2765-2776 (`_identity_contract_rolled_fodo`), a diagnostic fixture (D3), reversible. | as decided; both theory pins hold (tune / 2pi 0.0360896443733161 to 1e-13, min Gram eigenvalue 0.0838222432933016 to 7e-15) under `scaling = :none`. |
+| H11 | THE EXAMPLE: the `knob_control.jl` header form, the DBA ring as a `BeamLine` of specs with thin RF (400 MHz, strength 0.02, 3 GeV protons), the crab appended only when `crab_strength != 0`, two runs, prints only, no `@assert`. | as decided by C; one header sentence corrected (the RF sits in the dispersive cell so zeta is already nonzero; the crab CHANGES it); the fixer (theory T5) added the oriented-tune note under a mode with mu > pi ("the mode rotates in the opposite sense; fractional tune 1 - Q = 0.0436"). Mode 3 IS the synchrotron mode (tune 6.0091 rad, signed z-area 1.0318) although the heuristic's CANONICAL eigenvalue index is 1: the projected optics relabel by design. |
+| H12 | THE VALIDATION SCRIPT: ONE `validate`, the `TW-IDENT / TW-DIAG / TW-KINDS / TW-DIGEST` lines, the TSV, the gate, the closing line; the README section before `## Paper Anchors`; runs in BOTH arms at the record, the two digests side by side. | as decided by B (`Octopus._IDENTITY_CONTRACT_SLUGS` is the slug source; the digest is the profiling drivers' rotate-then-xor, `xor` spelled ASCII). The record H12 asked for (two GREEN digests) CANNOT be made on this tree: the script exits 1 in both arms (below); the README now says the multipliers are frozen on 20 + 5 maps, that the 200-map set can exceed one tenth or the budget, and that this section carries the digests, the rows above one tenth and the failing row by name. |
+| H13 | REGISTRATION AND TESTS: T1, T2 (the pinned metrics and the negatives n1-n7), T3 in `Physics contracts`; placement after the stage 5 kind testset; the Core.Box sweep clean. | as decided by T; n5 as the dossier worded it is not reachable (a 1e-8 randn perturbation is REJECTED by the symplecticity gate, so the red names the fixture, not a slug): T2 asserts that red as n5 and adds n5b (a symplectic perturbation `exp(1e-8 S H)` on the `scaling = :none` runs only: red naming `c_scaling_invariance` with `worst_ratio` Inf). The Core.Box sweep found ONE offender in A's D9 closure (a captured local kwarg function); T inlined the certified re-run's constructor (2 / 2 since). T1's docstring assertion made failable (`!occursin("No documentation found", ...)`, tests F-T2); T2's diagnostics-count pin made non-tautological (the D<n> labels cover `1:maximum` without a gap; tests F-T1); n4's message assertion adjusted (the certify-everything verb now silences D6's default-heuristic row first; D9 is still asserted among the silent names). |
+| H14 | PART SPLIT: A then T in stage6-A; B in stage6-B; C in stage6-C; integrator on main by `git apply --3way`; measurer with the four reviewers; fixer; ledgers. | as decided; every hunk applied cleanly onto 59a2988 (main did not move under the worktrees this time); C's runtests hunk landed at +173 lines after A+T's. |
+| H15 | MEASUREMENT RULE: every multiplier 1.0 in both arms, `c = max(8, 2^ceil(log2(10 max(ratio_native, ratio_haswell))))`; a multiplier-1 ratio above 100 is a WRONG KAPPA, fixed in the kappa; the frozen table carries both ratios and the argmax; the measurer re-runs on the integrated tree and asserts `<= 0.1` per arm; carry item 4 reported against 6.4. | as decided: A froze 57 rows (48 unchanged since), the measurer found NO violation on the contract set (min margin 1.055 at `k_longitudinal_block_symplecticity`, largest multiplier-1 ratio 67.09 at `c_d14_graph_invariance` haswell), the fixer re-froze nine after the kappa amendments (c 128 -> 8, 128 -> 16, 128 -> 8, 128 -> 64, 512 -> 64, 32 -> 8, 256 -> 8, two at 8 unchanged). Normalizer ratios 2.47 / 1.80 native, 3.30 / 1.49 haswell: below 6.4, nothing to carry on item 4 (the analysis's 64 keeps 2.6x / 1.9x over ten times the worst measured). |
+| H16 | LEDGERS: this section, the todo row (with the CI-run-435 note), the README sentence, the correction beside the stage 5 record, the carried list, an experiences lesson only if genuinely new. | this record; no lesson added (the row-coverage guard never fired during the stage: n7 at 0 + 0 dense maps still runs every row on at least one fixture). |
+| H17 | ARMS AND DEPOT: every runner in both CPU arms; no `Pkg.test`, no lane; `ps` before every package-mode run. | as decided by every agent; the runner review added the CI configuration itself as a third arm (Julia 1.12.7, `-C haswell`, four threads: bitwise equal to the haswell arm). |
+
+### The identity table (57 rows; multiplier-1 ratios in both arms from the fixer's re-measurement `OUT/fix/measure_fix_{native,haswell}.log`, identical to the measurer's `OUT/measure/table_6.md` on the 48 unchanged rows; `c` = the frozen `_default_identity_multipliers()`; margin = c / (10 max ratio); argmax = the fixture of the arm with the larger ratio)
+
+| slug | ratio native | ratio haswell | c | margin | argmax (the nine re-frozen rows marked) |
+|---|---|---|---|---|---|
+| c_caller_symplecticity | 4.037e-01 | 5.258e-01 | 8 | 1.521 | F6b dense 4x4 map 5 |
+| c_covariance_closure_caller | 4.988e+00 | 4.839e+00 | 64 | 1.283 | F6a dense 6x6 map 19 |
+| c_covariance_symmetry_caller | 4.917e-01 | 4.068e-01 | 8 | 1.627 | F8 coasting map |
+| c_d14_graph_invariance | 5.213e+01 | 6.709e+01 | 1024 | 1.526 | F6a dense 6x6 map 12 |
+| c_d24_coasting_caller | 1.176e-01 | 1.276e-01 | 8 | 6.270 | F1 DBA cell (tuple) (re-measured: no condition number on the residual) |
+| c_d3_determinant | 3.523e-03 | 3.701e-03 | 8 | 216.158 | F6a dense 6x6 map 13 |
+| c_d3_symplecticity | 2.206e-01 | 1.676e-01 | 8 | 3.626 | F6a dense 6x6 map 20 |
+| c_d8_round_trip | 5.000e-01 | 5.000e-01 | 8 | 1.600 | F5 DBA + RF + crab |
+| c_e8_reconstruction_caller | 1.948e+00 | 1.815e+00 | 32 | 1.643 | F6a dense 6x6 map 19 |
+| c_k4_block_diagonality | 2.644e+01 | 2.768e+01 | 512 | 1.850 | F6a dense 6x6 map 17 |
+| c_line_equals_matrix | 0.000e+00 | 0.000e+00 | 8 | inf | F2 DBA cell (BeamLine) |
+| c_matched_covariance_accessor | 0.000e+00 | 0.000e+00 | 8 | inf | F4 DBA + RF |
+| c_normal_mode_kappa | 9.670e-02 | 6.580e-02 | 8 | 8.273 | F8 coasting map |
+| c_normal_mode_tunes | 0.000e+00 | 0.000e+00 | 8 | inf | F1 DBA cell (tuple) |
+| c_physical_normalizer_symplecticity | 3.306e+00 | 2.161e+00 | 64 | 1.936 | F6b dense 4x4 map 4 (re-measured: kappa ||U||^2 cond(U)) |
+| c_projector_idempotence | 6.310e-01 | 4.280e-01 | 8 | 1.268 | F6b dense 4x4 map 4 (re-measured: kappa ||U||^4 cond(U)) |
+| c_projector_sum | 5.109e+00 | 3.497e+00 | 64 | 1.253 | F6b dense 4x4 map 4 (re-measured: kappa ||U||^2 cond(U)) |
+| c_scaling_invariance | 5.973e-01 | 5.028e-01 | 8 | 1.339 | F6b dense 4x4 map 1 (re-measured: kappa amax^2 ||U||^2 cond(U)) |
+| c_tune_consistency | 2.199e+00 | 2.080e+00 | 32 | 1.455 | F6a dense 6x6 map 19 |
+| c_x2_graph_readout | 1.120e-01 | 9.286e-02 | 8 | 7.143 | F6a dense 6x6 map 14 |
+| k_coasting_solve_residual | 9.020e-02 | 6.378e-02 | 8 | 8.869 | F1 DBA cell (tuple) (re-measured: no condition number on the residual) |
+| k_coasting_symplectic_consistency | 2.171e-02 | 2.032e-02 | 8 | 36.849 | F8 coasting map |
+| k_covariance_decomposition | 7.303e-01 | 8.142e-01 | 16 | 1.965 | F6a dense 6x6 map 18 |
+| k_covariance_psd | 0.000e+00 | 0.000e+00 | 8 | inf | F4 DBA + RF |
+| k_covariance_symmetry | 0.000e+00 | 0.000e+00 | 8 | inf | F4 DBA + RF |
+| k_frame_column_sums | 6.048e-01 | 1.120e+00 | 16 | 1.429 | F6b dense 4x4 map 4 (re-measured: kappa ||U4||^2 cond(U4)) |
+| k_frame_normalization | 6.611e-01 | 8.108e-01 | 16 | 1.973 | F6a dense 6x6 map 11 |
+| k_frame_row_sums | 3.305e-01 | 4.054e-01 | 8 | 1.973 | F6a dense 6x6 map 11 |
+| k_frame_u_difference | 6.074e-01 | 3.765e-01 | 8 | 1.317 | F6a dense 6x6 map 20 (re-measured: kappa ||U4||^2 cond(U4)) |
+| k_k13_residual | 2.281e+00 | 2.199e+00 | 32 | 1.403 | F6a dense 6x6 map 19 |
+| k_k7_difference | 4.062e+00 | 4.646e+00 | 64 | 1.378 | F6a dense 6x6 map 12 |
+| k_k8_residual | 6.647e-01 | 6.647e-01 | 8 | 1.204 | F6a dense 6x6 map 11 |
+| k_kappa_sz_minus_h | 6.771e-02 | 1.168e-01 | 8 | 6.849 | F6a dense 6x6 map 18 |
+| k_longitudinal_block_symplecticity | 1.516e+00 | 1.516e+00 | 16 | 1.055 | F6a dense 6x6 map 20 |
+| k_m5_residual_6d | 1.173e-01 | 2.368e-02 | 8 | 6.820 | F6a dense 6x6 map 12 |
+| k_mais_ripken_m5 | 2.636e-02 | 6.710e-02 | 8 | 11.923 | F8 coasting map |
+| k_ohmi_chart_change_block_symplecticity | 5.346e-01 | 7.573e-01 | 8 | 1.056 | F6a dense 6x6 map 5 |
+| k_ohmi_chart_change_off_diagonal | 1.765e-01 | 1.424e-01 | 8 | 4.533 | F6a dense 6x6 map 15 |
+| k_ohmi_graph_difference | 4.734e-01 | 2.647e-01 | 8 | 1.690 | F6a dense 6x6 map 2 |
+| k_ohmi_separated_off_diagonal | 2.874e+01 | 3.465e+01 | 512 | 1.478 | F6a dense 6x6 map 12 |
+| k_ohmi_symplecticity | 4.497e-01 | 3.075e-01 | 8 | 1.779 | F6a dense 6x6 map 6 |
+| k_route_agreement | 2.394e+00 | 2.900e+00 | 32 | 1.103 | F6a dense 6x6 map 9 |
+| k_separation_inverse | 2.209e-01 | 2.218e-01 | 8 | 3.607 | F6a dense 6x6 map 11 |
+| k_separation_symplecticity | 2.158e-01 | 1.714e-01 | 8 | 3.707 | F6a dense 6x6 map 20 |
+| k_trace_cubic | 4.643e+01 | 4.643e+01 | 512 | 1.103 | F6a dense 6x6 map 11 |
+| k_transverse_block_symplecticity | 9.753e-01 | 9.533e-01 | 16 | 1.641 | F6a dense 6x6 map 10 |
+| k_u6_column_sums | 4.285e-01 | 3.114e-01 | 8 | 1.867 | F6a dense 6x6 map 16 (re-measured: kappa ||U6||^2 cond(U6)) |
+| k_u6_row_sums | 2.335e-01 | 2.708e-01 | 8 | 2.954 | F6a dense 6x6 map 11 |
+| r_covariance_closure | 4.514e-01 | 3.531e-01 | 8 | 1.772 | F6a dense 6x6 map 19 |
+| r_frame_reconstruction_i1 | 4.429e+00 | 1.949e+00 | 64 | 1.445 | F8 coasting map |
+| r_frame_symplecticity_e7 | 3.486e+00 | 2.296e+00 | 64 | 1.836 | F6b dense 4x4 map 4 |
+| r_k14_zz_identity | 2.606e-02 | 5.212e-02 | 8 | 15.349 | F6a dense 6x6 map 14 |
+| r_primary_route_invariance_i1 | 4.397e+01 | 5.174e+01 | 1024 | 1.979 | F6a dense 6x6 map 12 |
+| r_separation_off_diagonal_k5 | 1.016e+01 | 1.202e+01 | 128 | 1.065 | F6a dense 6x6 map 12 |
+| r_triple_consistency_k7 | 5.449e-02 | 4.111e-02 | 8 | 14.682 | F6a dense 6x6 map 17 |
+| r_u6_reconstruction | 2.473e+00 | 3.303e+00 | 64 | 1.938 | F6a dense 6x6 map 12 |
+| r_u6_symplecticity | 1.803e+00 | 1.486e+00 | 32 | 1.775 | F6a dense 6x6 map 16 |
+
+Powers of two in the frozen table: 8 on 34 rows, 16 on 5, 32 on 5, 64 on 7,
+128 on 1, 512 on 3, 1024 on 2. Five rows carry an exact zero on every
+fixture (`c_line_equals_matrix`, `c_matched_covariance_accessor`,
+`c_normal_mode_tunes`, `k_covariance_symmetry`, `k_covariance_psd`): each
+is still a row with `c = 8` and its argmax the first fixture it ran on (H4).
+The thinnest margins (c / (10 max ratio) below 1.2, i.e. a frozen ratio in
+(0.083, 0.1]): `k_longitudinal_block_symplecticity` 1.055,
+`k_ohmi_chart_change_block_symplecticity` 1.056,
+`r_separation_off_diagonal_k5` 1.065, `k_route_agreement` 1.103,
+`k_trace_cubic` 1.103; the H15 rounding puts every row's frozen ratio in
+(0.05, 0.1] by construction, so rows near 0.1 are expected, and the same
+rows swing 18-42 percent between the two arms (runner R2, recorded below).
+The largest multiplier-1 ratios, `c_d14_graph_invariance` (52 | 67) and
+`r_primary_route_invariance_i1` (44 | 52), share the (I1) normalization
+with the analysis's own primary-route row and carry no Sylvester
+conditioning (A's open issue 4: the eigenplane route's
+`coefficient_condition`, 2..43 on the dense maps, would be a sharper kappa;
+left as measured, below 100). The re-measured rows' PINNED ratios at the new
+`c` (native / haswell): `k_u6_column_sums` 0.0536 / 0.0389,
+`k_frame_column_sums` 0.0378 / 0.0700, `k_frame_u_difference` 0.0759 /
+0.0471, `k_coasting_solve_residual` 0.0113 / 0.0080,
+`c_physical_normalizer_symplecticity` 0.0517 / 0.0338, `c_projector_sum`
+0.0798 / 0.0546, `c_projector_idempotence` 0.0789 / 0.0535,
+`c_scaling_invariance` 0.0747 / 0.0628, `c_d24_coasting_caller` 0.0147 /
+0.0159.
+
+The two `TW-DIGEST` lines of the validation script at its defaults (seed
+20260911, 200 + 20 maps), on the FIXED tree (`OUT/fix/script_{native,haswell}.log`),
+side by side as H12 asks; both are digests of a RED run (exit 1, below):
+
+    native:  TW-DIGEST 0x75730d37d3b5411c  (57 identities, seed 20260911, maps 200 + 20)
+    haswell: TW-DIGEST 0xd92ab6cce83d2d38  (57 identities, seed 20260911, maps 200 + 20)
+
+(the pre-fix tree's digests, `0x1dea0bb7aed3348e` native and
+`0x7235d3cca3bb680c` haswell, were reproduced bitwise by the integrator, the
+measurer and the runner review: the script is deterministic per arm; the
+arms differ because the digest is bitwise over the maxima and the OpenBLAS
+kernels differ).
+
+### The diagnostic table (`_identity_contract_diagnostics`, 17 rows; every predicate probed before it was written, `OUT/probes/diag_rows_A*.out`, `OUT/fix/probe_fix_native.log`; fired / silent in both arms: 17 / 0)
+
+| row (name prefix in the contract) | fixture | predicate (reason symbols and statuses) | probe |
+|---|---|---|---|
+| D1 unstable 4x4 `diag(2, 1/2, R(1.2))` (design 450) | 4x4 matrix | `frame_reason == :unstable_spectrum`, `status != :failed`, `isempty(physical.tunes)` | `:passed`, as H8 |
+| D2 exact symmetric FODO (equal tunes) | `_identity_contract_fodo(detune = 0)`, coasting | `frame_reason == :cluster_unresolved`, `status == :passed` | as H8 |
+| D3 rolled equal-tune FODO theta = pi/4 (theory 13.10 pins) | `_identity_contract_rolled_fodo(pi/4)`, `scaling = :none`, `pins = (:rolled_tune, :rolled_gram)` | `:cluster_unresolved`; the 4-member cluster's tunes / 2pi within 1e-13 of 0.0360896443733161 and its minimum Gram eigenvalue within 1e-12 of 0.0838222432933016 | holds unscaled (7e-15); under `:auto` the Gram minimum is 0.1946 (basis dependent), hence `scaling = :none` |
+| D4 definite degenerate `diag(R(0.73), R(1.41), R(0.73))` (design 458) | 6x6 | `is_ambiguous(dispersion.eta)` with `:cluster_unresolved`; `dispersion_interval(eta, e_x) == (-0.5, 0.5)` to 1e-12; `status != :failed` | `:degraded`, interval to 6e-17 |
+| D5 indefinite degenerate `diag(R(0.73), R(1.41), R(-0.73))` (design 460) | 6x6 | `:indefinite_cluster` in (dispersion, separation, frame) reasons; `!is_determined(physical.covariance)`; `status != :failed` | `:degraded`, all three reasons |
+| D6 h = 0 map `M_cal(e_x, e_px) blockrot(0.73, 1.41, -0.9) M_cal^-1` with the synchrotron mode NAMED (design 461) | 6x6, `longitudinal_mode = 0.9` | `separation_reason == :singular_longitudinal_projection`, `status == :degraded`, `clusters.degeneracy_status == :all_resolved`, `length(dispersion.tunes) == 3` | reinstated by the fixer (theory T1): det M_cal = 1.0, symplecticity 0.0; fires |
+| D6 the same map under the default heuristic | 6x6, default | `status == :degraded`, `dispersion.longitudinal == 1`, `!certified` (the x betatron mode carries the whole z-area by (K12): the mislabel must stay uncertified) | fires; A's probe had read this run as "h = 1, unique separation" and dropped the row |
+| D7 manufactured coasting map (shear 0.37) | F8's map | `coasting.holds`, longitudinal_selection reason `:coasting_structure`, `is_determined(physical.eta)`, `dispersion.longitudinal == 0` | `:passed`, as H8 |
+| D8 single drift (I - M_rr singular) | `(compile_runtime(DriftSpec(L = 0.5)),)` | `frame_reason == :singular_coefficient`, `status != :failed`, `isempty(physical.tunes)` | `:passed`, as H8 |
+| D9 DBA + RF default run and certified re-run | F4's tuple | default: `status == :degraded`, `!certified`, `dispersion.longitudinal != 0`; the re-run inside the predicate (through `analyze`, constructor inlined for the Core.Box sweep): `:passed`, certified, `isempty(degradations)` | `(false, :max_signed_z_area)`, index 1; certified `(true, :explicit)` |
+| D10 perturbed dense map under `nonsymplectic = :flag` (the must-reject fixture, carry item 3) | first dense map + 1e-6 randn(seed + 7), `symplectic_rtol = 1e-9` | `status == :failed`, `!isempty(failures)`, a degradation containing "nonsymplectic = :flag" | defect 1.7e-6 (rule `:frobenius`), fail 1, degradations 4 |
+| D10 the same under `strict = true` | same | the run THROWS `OpticsAnalysisError` | throws |
+| D11 displaced FODO + sextupole under `closed_orbit = :require` | `one_turn_matrix((qf, dr, qd, dr, sx); point = (1e-3, 0, ...))` | throws `ArgumentError` containing "closed_orbit" | "the expansion point (0.001, ...) is not a fixed point" |
+| D11 the same under `closed_orbit = :warn` (NullLogger) | same | `status == :degraded`, `is_determined(closed_orbit)`, value > 0 | 0.00077 |
+| D12 weak-cavity coasting-like map (design 456) | `Mc blockdiag(A4, [1 0.7; -1e-6 1 - 0.7e-6]) Mc^-1`, routes `(:eigenplane, :polynomial, :newton, :fixed_point)`, certified | the `:polynomial` route `status == :not_invariant` with `coefficient_condition > 1e3`; `status != :passed` | polynomial cond 2.29e6 both arms; the eigenplane primary route's normalized (I1) residual is 1.96e-13 native (`:not_invariant`, verdict `:failed`) and 9.98e-14 haswell (`:none`, verdict `:degraded`): the ONE arm-dependent verdict in the fixture set, kept out of the predicate; carried to the owner |
+| D13 identity map (the marker's map) | `Matrix(1.0I, 6, 6)` | `frame_reason == :singular_coefficient` (H8 had named `:unit_eigenvalue` "or the probe's reason"), `status != :failed`, `isempty(physical.tunes)` | `:passed`, the coasting branch |
+| D14 negative-h map `M_cal(1.5 e_x, e_px) blockrot M_cal^-1` (design 465, second half) | 6x6, `longitudinal_mode = 0.9` | the Ohmi factor's reason `:form_inadmissible`, the separation unique, `physical.h < 0`, `status != :failed` | added by the fixer (theory T2): h = -0.4999999999999929, `:degraded`, 0 failures |
+
+Not rows, not reachable through `analyze` (recorded in the table's
+docstring and here): the isotropic graph `diag(1, -1)` (design 461) and the
+false polynomial graph of design 459 / theory (N17) both need a FORMED
+graph, which `analyze` does not take (they are kernel-level fixtures of
+`_dispersion_routes`, runtests.jl 4358-4366). The h = 0 case was WRONGLY on
+this list in A's worktree (the prep digest's "det M_cal = h"; A's probe ran
+the default heuristic, not the named mode): M_cal = M_zeta M_eta is
+symplectic with determinant 1 for every h ((K1)), and the row fires.
+
+### The kind sweep (F7 / H9; derived every run from `supported_analyses` over `registered_element_specs()`; RE-DERIVE, never copy this list into a test)
+
+`kinds_declaring` 23 = 22 rule kinds plus `:line`; `kinds_analyzed` 18 (16
+`:passed`; 2 `:degraded`: `crab_dispersion` and `thin_rf_cavity`, both by
+"primary dispersion unavailable (:unit_eigenvalue)", see the correction to
+the stage 5 record below); `kinds_refused` 5 (`thin_crab_cavity`,
+`thin_dipole`, `hkicker`, `vkicker`, `kicker`: the "not a fixed point"
+`ArgumentError`, then `:degraded` under `closed_orbit = :warn`);
+`kinds_failed_example` 0; `kinds_declaring_without_result` 0;
+`kinds_without_example` 0 (the branch the repo review added: a declaring
+kind whose metadata `example` is `nothing` FAILS by name; the sibling
+tripwire `SymplecticityContract` fails the same way on a kind without a
+case). The 18 analyzed examples' reported triples enter the Layer 1 maxima
+under the kind's name (none is an argmax). The same numbers print as
+`TW-KINDS declaring=23 analyzed=18 refused=5 failed_example=0
+without_result=0 without_example=0` in both arms, and the stage 5 testset
+(runtests 1030-1077) and this sweep agree kind for kind.
+
+### The validation script at its defaults (`validation/twiss_dispersion_identities.jl`, seed 20260911, 200 + 20 maps, both arms, fixed tree; `OUT/fix/script_{native,haswell}.log`, `OUT/fix/tsv_{native,haswell}.tsv`)
+
+| arm | TW-DIAG | TW-KINDS | status / exit / wall | first finding | rows above 0.1 |
+|---|---|---|---|---|---|
+| native | expected=17 silent=0 [] | 23 / 18 / 5 / 0 / 0 / 0 | failed / 1 / 95.8 s; 3 findings | `identity k_route_agreement on F6a dense 6x6 map 89: value 2.667565368491653e11 exceeds c eps kappa = 8.836714166336409e-12` | 20 |
+| haswell | expected=17 silent=0 [] | 23 / 18 / 5 / 0 / 0 / 0 | failed / 1 / 96.3 s; 2 findings | the same row on map 89 (value 2.6675653684932565e11) | 18 |
+
+The script is RED in both arms; the H12 record of two green digests cannot
+be made from this tree. Two causes, both diagnosed with probes
+(`OUT/probes/route_probe_int.*`, `route_census_int.*`,
+`scaling42_probe_int.*`, `OUT/fix/probe_map98*`), neither a contract defect:
+
+1. `k_route_agreement` 1.29e32 (value 7.40e20) on dense map 157 and 2.67e11
+   on map 89 in BOTH arms (5 of 400 route runs over the 200-map set; 0 of
+   the contract's 20): a `src/analysis` DEFECT the contract caught.
+   `_route_from_graph` (`src/analysis/dispersion_routes.jl` 662ff) judges a
+   STALLED, diverged `:fixed_point` graph (||D|| 1e10..1e20, h ~1e-24..1e-43,
+   raw (I1) residual 6e22..6e41, `converged = false`) as status `:none`
+   because its invariance floor `mult eps max(1, ||M||) max(1, ||D||_F)^2`
+   grows with the diverged D itself; `_route_agreement` (490-500) then pairs
+   the garbage route with the three agreeing ones. The contract row is the
+   physics check working as designed (the theory reviewer and the measurer:
+   do NOT widen it or filter by `converged`, that would hide the defect).
+   Candidate fix, for the owner in a `src/analysis` commit: return
+   `_unavailable_route(:fixed_point, :not_invariant, ...)` when the
+   iteration stalls or is capped above the stop floor, or cap the ||D||^2
+   factor by the START graph's norm. Until then the script exits 1 at its
+   defaults; at the contract's 20 + 5 maps every route agrees (row ratio
+   0.0748 / 0.0906).
+2. `c_scaling_invariance` over budget in ONE arm: before the fixes 0.64
+   native / 1.28 haswell on map 42 (a mode with tune 0.00107 rad; the
+   `:auto` and `:none` runs differ by 1.9e-10 / 3.8e-10 relative in
+   beta / alpha / gamma / covariance while zeta / eta / h / graph / tunes
+   agree to 1e-13); its multiplier-1 ratio on that map was 164 / 328, i.e.
+   a WRONG KAPPA by H15 (`amax^2 ||U||^2` without the frame conditioning).
+   The fixer multiplied the kappa by `cond(U)` (map 42 -> 2.76 / 5.51) and
+   re-froze `c` on the contract set by H15 at 8 (0.597 / 0.503 at
+   multiplier 1). On the 200-map set the row now sits at 1.112 native (map
+   98: tune 0.0052 rad, cond(U) 4.4, multiplier-1 ratio 8.9 / 4.5) and 0.689
+   haswell (map 42): still one arm over budget, now the native one. The
+   200-map set would need `c = 128` by the same rule (measurer M3); that
+   re-freeze on a set the suite does not run is the OWNER's decision.
+
+Rows above one tenth at 200 + 20 maps (the multipliers are frozen on 20 + 5
+by H15, so one tenth is not a property of this set; measurer M3):
+native 20: `k_route_agreement` 1.29e32 (map 157), `c_scaling_invariance`
+1.112 (map 98), `k_k7_difference` 0.621 (map 70), `k_u6_column_sums` 0.370
+(map 71), `k_frame_column_sums` 0.287 (map 71), `c_covariance_closure_caller`
+0.263 (4x4 map 7), `r_separation_off_diagonal_k5` 0.262 (map 70),
+`k_frame_u_difference` 0.261 (4x4 map 18), `c_tune_consistency` 0.254 (map
+52), `k_k13_residual` 0.243 (map 111), `c_d8_round_trip` 0.198 (map 156),
+`r_u6_symplecticity` 0.170 (map 115), `r_covariance_closure` 0.140 (map
+134), `k_longitudinal_block_symplecticity` 0.132 (map 83),
+`c_projector_idempotence` 0.121 (4x4 map 18), `c_projector_sum` 0.118 (4x4
+map 18), `c_e8_reconstruction_caller` 0.114 (map 187),
+`k_ohmi_separated_off_diagonal` 0.110 (map 70), `r_frame_reconstruction_i1`
+0.108 (4x4 map 7), `r_frame_symplecticity_e7` 0.101 (4x4 map 18).
+haswell 18: `k_route_agreement` 1.29e32 (map 157), `c_scaling_invariance`
+0.689 (map 42), `c_tune_consistency` 0.654 (map 42), `k_k7_difference`
+0.516 (map 70), `c_covariance_closure_caller` 0.462 (map 42),
+`k_k13_residual` 0.353 (map 103), `k_frame_u_difference` 0.296 (map 173),
+`r_separation_off_diagonal_k5` 0.219 (map 70), `r_u6_reconstruction` 0.206
+(map 42), `c_e8_reconstruction_caller` 0.193 (map 103), `r_u6_symplecticity`
+0.181 (map 115), `c_d8_round_trip` 0.170 (map 83), `k_frame_column_sums`
+0.168 (map 184), `k_u6_column_sums` 0.157 (map 173),
+`k_longitudinal_block_symplecticity` 0.132 (map 103),
+`r_covariance_closure` 0.123 (map 120), `k_transverse_block_symplecticity`
+0.112 (map 156), `r_frame_reconstruction_i1` 0.108 (4x4 map 7). The maps
+42, 70, 98, 103, 115 carry a mode with a tune below 0.006 rad; the theory
+reviewer's reading is that ONE conditioning factor (the mode gap
+`1 / sin mu` or the frame conditioning) explains the 200-map excursions
+together; the 48 rows the fixer did not touch have script ratios byte-equal
+to the integrator's pre-fix TSVs.
+
+### Injected defects, each shown red once (script mode on a patched copy of `src/` or of the extracted T1 / T2; the unpatched control green in every harness; harnesses `OUT/inj_T/`, `OUT/review6_tests/`, `OUT/review6_repo/`, `OUT/fix/`; native arm unless stated)
+
+| id | patch or verb | red assertions (pass / fail / error) | shows |
+|---|---|---|---|
+| control | none: t2.jl on the unpatched worktree src (T); on the integrated main src (tests review ctrl2); after the fixes (fixer, both arms) | 152 / 0 (T, 80 s); 152 / 0 (ctrl2, 110.7 s); 157 / 0 both arms | the harnesses are green before any patch |
+| i1 / r1 | `c_d8_round_trip` computes h' = 1 + zeta' S4 eta (no `1 / (...)`) | 142 / 10: the real validate red ("identity c_d8_round_trip on F4 DBA + RF: value 0.0626 exceeds c eps kappa = 1.78e-15"), the slug loop, and every negative that asserts the FIRST failure text (n3, n4, n5, n5b, n7's `r7.passed`, the restored `validate(c).passed`) | the (D8) inverse is load-bearing; a wrong formula is red on a lattice fixture, not only on dense maps |
+| i2 / r2 | the D9 predicate inverted (`=== :degraded` -> `!== :degraded`) | 147 / 5: `r.passed`, `diagnostics_silent == 0`, n3's first-failure text, `validate(c).passed`, `r7.passed` | a silent expected diagnostic fails the contract by name |
+| i3 / r3 | the kind sweep accepts ANY `ArgumentError` as the documented refusal | 152 / 0 GREEN, INVISIBLE | a finding on the control, not a defect: the only `ArgumentError` `analyze` raises on a bad example is the size error, which the `closed_orbit = :warn` re-run raises again, so n3 still reds on `kinds_declaring_without_result`; a liar refused with a foreign `ArgumentError` that `:warn` then ACCEPTS does not exist in `analyze` (T's issue 4, tests F-T4) |
+| i4 / r4 | the V1 re-derivation skipped | 151 / 1: `verdicts_inconsistent == 0 && verdicts_consistent > 0` | V1 is asserted only there; the contract itself stays green (no `failure` from a skipped count) |
+| i5 / r5 | `export TwissDispersionIdentityContract` removed (t1.jl) | 3 / 2 / 3: `isexported` false, `@test_throws` sees `UndefVarError`, three bare-name assertions error | the export is load-bearing for T1; the registry test alone would not notice |
+| j1 | the D13 row deleted from `_identity_contract_diagnostics` | 152 / 0 GREEN before the fix (tests F-T1: the count assertion compared the function with itself) | FIXED: T2 now parses the `D<n>` labels and asserts they cover `1:maximum` without a gap; a deleted INTERIOR row opens a gap; the LAST row (D14) is still unpinned (recorded) |
+| j2 | `:k_longitudinal_block_symplecticity => 16` -> `8` (the worst row halved) | 150 / 2: `worst_ratio <= 0.1` and `max_<slug> <= 0.1` at 0.1895; the contract itself `:passed` | the one-tenth pins of T2 (and T3's copy) are the ONLY place H15's margin is asserted; the contract's own threshold is 1 |
+| j3 | j2 plus both `<= 0.1` of t2.jl raised to `<= 1.0` | 152 / 0 GREEN | the halved multiplier is invisible once the pins are 1.0: why the 0.1 literals stay |
+| j5b | the D9 row deleted | 149 / 3, ONLY through n4 (`silent >= 1`, `any(startswith("D9"), silent_names)`, the message) | before the contiguity pin, D9 was pinned by n4 alone and D3 by `absolute_pins_checked`; now every interior row is pinned |
+| P1 (repo review) | a scratch declaring kind registered with `example = nothing` | the contract GREEN with `kinds_declaring 24, analyzed 18, refused 5`, the kind not named; only T2's sum assertion would have caught it | FIXED (repo F1): `kinds_without_example` counted and FAILED by name; the fixer's n3b shows it red |
+| n1 | every multiplier 1e-300 | red: "identity r_frame_reconstruction_i1 on F1 DBA cell (tuple): value 6.86e-16 exceeds ..." (1207 findings native / 1197 haswell) | every row judges a value |
+| n2 | the first sorted slug deleted from `multipliers` | red: "identity c_caller_symplecticity on ...: no multiplier for this row" (one finding per fixture the row ran on) | no silent default multiplier |
+| n3 | the liar kind `:idc_liar` with a 2x2 example (registered in `try ... finally`, removed from the three registries) | red, `occursin("idc_liar", message)`, `kinds_declaring_without_result == 1`, `kinds_declaring == control + 1`; `validate(c).passed` after the restore | a declaring kind `analyze` cannot take fails by name; the registry restore leaves 23 |
+| n3b (fixer) | the liar kind `:idc_noexample` with `example = nothing` | red by name, `kinds_without_example == 1` | the no-example branch |
+| n4 | `_st6_certify_everything` (re-runs `analyze` with `longitudinal_mode = r.dispersion.longitudinal` on every bunched run) | red: the message names the first silent row (D6's default-heuristic row, certified into `:passed` by the verb) and D9 is among the silent names | an injected verb that hides the heuristic is caught by the diagnostic table |
+| n5 | `_st6_perturb` (1e-8 randn on Matrix inputs) | red naming the FIXTURE ("fixture F6a dense 6x6 map 1: analyze gave no result: ... not symplectic ..."): the symplecticity gate (rule `:row_ratio`) rejects the perturbed map before any identity runs | the dossier's "the identities drift" is not reachable this way; asserted as measured |
+| n5b | `_st6_perturb_symplectic_none` (a symplectic perturbation `exp(1e-8 S H)` on the `scaling = :none` runs only) | red naming `c_scaling_invariance`, `worst_identity === :c_scaling_invariance`, `worst_ratio` Inf | a disagreement BETWEEN paired runs is what an identity row sees (Layers 1-3 are intra-result) |
+| n6 | a verb that throws `error("scratch verb exploded")` | red, the message contains it | an exception where a result is expected is a failed row, never a throw out of `validate` |
+| n7 | `dense_maps = 0, dense_maps_4d = 0` | PASSES with `:dense_maps == 0`, 62 fixture runs (worst 0.0692 native / 0.0878 haswell); every row still ran on at least one fixture | a smaller run is not a defect; the row-coverage guard did not fire |
+| catalogue | the `ReferenceExample` entry removed | 1 FAIL at catalog.jl:26 (tests review) | the catalogue tripwire is red without the entry |
+| Core.Box (T) | A's D9 closure calling a captured local kwarg function | "No method grows a Core.Box outside the argued allowlist" 1 / 2 with the offender `_identity_contract_diagnostics @ twiss_dispersion_identity.jl:419` | the sweep runs on the new file; fixed by inlining the constructor (2 / 2 since, both arms) |
+| first post-fix extract (fixer) | the fixes themselves | 188 / 1 on `occursin("D9", r4.message)` (n4's message now names D6 first) | the n4 message assertion became "names a silent row"; D9 kept in the silent-names assertion |
+
+Every T1 / T2 assertion that carries physics or a threshold was seen red at
+least once (i1, i2, i4, i5, j2, j5b, the negatives); the two that were
+documentation (the diagnostics count, the docstring non-emptiness) were made
+failable by the fixer; i3 / r3 stays invisible by construction of
+`analyze`'s error set and the `kinds_failed_example` branch has no negative
+(no metadata-shaped example analyzes to `:failed` in both arms: the D12 map
+is `:failed` natively and `:degraded` on haswell) -- both recorded, not
+fixed.
+
+### Review findings and fixes (four reviewers: theory, repository compliance, test adequacy, runner; plus the measurer's M1-M4 and the integrator's issues; 22 findings, 15 applied by the fixer without redesign, 7 recorded without a tree change, none dismissed; four seen by two lenses)
+
+| # | lens | site | finding | resolution |
+|---|---|---|---|---|
+| 1 | theory T1 (major) | contract diagnostics table | D6 (h = 0, design 461) dropped on a false premise: "M_cal singular at h = 0" (the digest's det = h); det M_cal = 1, symplecticity 0.0, and the row IS reachable with the synchrotron mode named | FIXED: two D6 rows (461-474), the docstring rewritten (17 rows, the (K1) statement) |
+| 2 | theory T2 (minor) | diagnostics table | design 465's second half (h < 0 makes the Ohmi factor unavailable) had no fixture; reachable | FIXED: D14 (524-533) |
+| 3 | theory T3 (minor); confirms measurer M2 and the integrator's F2 | six Layer 2/3 kappas | `k_u6_column_sums`, `k_frame_column_sums`, `k_frame_u_difference`, `c_physical_normalizer_symplecticity`, `c_projector_sum`, `c_projector_idempotence` and `c_scaling_invariance` carry `||U||^2` where the compared quantity's conditioning is `cond(U) ||U||^2` (the outliers on dense map 16 were exactly these rows; map 42's 164 / 328) | FIXED (H4 kappa amendment by H15's rule): `cond(U)` in all seven; re-measured in both arms; c re-frozen (128 -> 8, 128 -> 16, 128 -> 8, 128 -> 64, 512 -> 64, 32 -> 8, 256 -> 8) |
+| 4 | theory T4 (minor) | `k_coasting_solve_residual`, `c_d24_coasting_caller` | `cond(I_4 - M_rr)` on a RESIDUAL that a backward-stable solve makes independent of it (on F8 the tolerance was 2e5 times too loose: 4.99e-7 with, 0.103 without) | FIXED: no condition factor; re-measured 0.0902 / 0.0638 and 0.1176 / 0.1276; c = 8 unchanged |
+| 5 | theory T5 (minor) | example | the synchrotron mode's oriented tune 6.009 rad printed as "Q = 0.9564" without a word | FIXED: the oriented-tune note and the `1 - Q` line (examples/twiss_dispersion_dba_ring.jl 111-116) |
+| 6 | theory T6 (minor) | validation/README.md | "every expected diagnostic of the design's verification table fires" overclaims (two are kernel-level) | FIXED: "that `analyze` can reach", the two named |
+| 7 | theory T7 (minor) | `_identity_contract_certified` | treats a fixture whose analysis PRESETS `longitudinal_mode` as uncertified, which blocks an optional negative-h IDENTITY fixture | RECORDED (carried): D14 covers design 465 as a diagnostic; changing the certification interface is beyond the findings |
+| 8 | repo F1 (major, latent) | kind sweep | `example === nothing && continue`: a declaring kind without an example neither counted nor reported; the script would print an inconsistent `TW-KINDS` and exit 0 | FIXED: `kinds_without_example` + failure by name; script column; T2 sum and zero; n3b |
+| 9 | repo F2 (minor); T's issue 2 / 6; integrator "keyword-copy helper" | contract 581-584, runtests 1118-1122 | the certified re-run rebuilt the analysis from a hand-typed list of its 14 keywords (a 15th option would silently reset) | FIXED: derived over `fieldnames(TwissDispersionAnalysis)` in both (probe: field-for-field equal) |
+| 10 | repo F3 (minor) | contract 78, 396, 483; script 72 | committed text pointed at git-ignored scratch paths (`probes/...`) | FIXED: pointers to this section; `grep probes/` 0 hits |
+| 11 | repo F4 (minor) | validation/README.md 1060-1061 | the tag list omitted (I1) and (E3) | FIXED: completed, "the contract's row table names every slug" |
+| 12 | repo F5 (minor) | `git diff HEAD -- test/runtests.jl` | four hunks, not the dossier's three: the runner COMMENT hunk (`@@ -12321`, an em dash replaced by "--") beside the tuple hunk | NO CHANGE; content-true; this record says four |
+| 13 | repo F6 (minor) | contract 1046, 1164 | display names as control flow (`startswith(row.name, "D3")`, `startswith(fx.name, "F1")`) | FIXED: `pins = (:rolled_tune, :rolled_gram)` on the D3 row, `role = :dba_tuple` on F1 |
+| 14 | tests F-T1 (minor) | runtests T2 | the diagnostics-count assertion compared the function with itself (j1 invisible) | FIXED (partial): the `D<n>` labels must cover `1:maximum` without a gap and `diagnostics_expected >= maximum`; the last row stays unpinned (recorded) |
+| 15 | tests F-T2 (minor) | runtests T1 1090 | the docstring assertion could not fail (`Docs.doc` of a nonexistent binding is non-empty) | FIXED: `!occursin("No documentation found", ...)` |
+| 16 | tests F-T3 (observation) | T2 / T3 pins | the one-tenth margin lives only in the two 0.1 literals (j2 / j3) and the worst row sits at 0.0948 in both arms | RECORDED: the design (contract threshold 1, suite margin 0.1); see 20 |
+| 17 | tests F-T4 (minor); T's issue 4 | T2 negatives | the `kinds_failed_example` branch has no negative; i3 invisible | RECORDED: no metadata-shaped example analyzes to `:failed` in both arms; the branch is proven by the reviewer's L2 probe only |
+| 18 | runner R1 (major); integrator F1 / F2; measurer M1 / M2 | validation script | RED at its defaults in both arms; the `c_scaling_invariance` verdict arm-dependent; the README described a green run | M2 FIXED (the kappa, row 3); M1 SKIPPED (`src/analysis`, H1 forbids; the row is right and not widened); README reworded; the digests and the rows above one tenth recorded above |
+| 19 | measurer M3 (low) | H12 vs H15 | at 200 + 20 maps 19 / 16 (now 20 / 18) rows exceed one tenth; `c` is frozen on 20 + 5 | RECORDED for the owner: re-freeze on the 200-map set (c doubling on ~15 rows; `c_scaling_invariance` to 128) or keep the script's rows reported-not-gated at one tenth |
+| 20 | runner R2 (major as a CI risk) | T2 / T3 pins | 5.5-6.5 percent of headroom on four rows (`k_longitudinal_block_symplecticity` 0.0948 both arms, `k_ohmi_chart_change_block_symplecticity` 0.0947, `r_separation_off_diagonal_k5` 0.0939, `k_route_agreement` 0.0906, haswell) while the same rows swing 18-42 percent between the arms; the CI hardware is a third BLAS / codegen combination (the run-434 lesson) | RECORDED (owner): no failure reproduced; the 1.12.7 / `-C haswell` / 4-thread run reproduces the haswell arm bitwise; a multiplier moves only by the H15 rule. Proposals: test pins at 0.2, or `c` one power higher where the margin is below 1.25 |
+| 21 | runner R3 (minor); integrator issue 4 | `_identity_contract_record!` | `KeyError: :failure_texts` on a bare Dict when a row exceeds its budget | FIXED: `get!(metrics, :failure_texts, String[])` and the docstring sentence |
+| 22 | measurer M4 (none) | the multiplier table's comments | the argmax convention (the arm with the larger ratio) | NO CHANGE: verified 57 / 57; the nine re-frozen entries follow it |
+
+Observations recorded without a finding: the D12 verdict is arm-dependent
+(the eigenplane route's normalized (I1) residual 1.96e-13 native vs
+9.98e-14 haswell against the analysis's 64-eps floor; the predicate is
+arm-independent; the tolerance at the edge on an ill-conditioned fixture is
+the owner's); `dispersion.tunes` are in ModeLabels6D LABEL order while
+`physical.tunes` and `projected_optics.tunes` are in frame order (A's open
+issue 5: is that intended?); `c_d14_graph_invariance` and
+`r_primary_route_invariance_i1` at 52-67 (a sharper kappa exists, A's
+issue 4); T2 costs ~80 s per fresh process (4 `validate` + 9 probes; ~12 x
+0.2 s once the analysis is compiled in the lane); the integrator's haswell
+snapshot driver printed `false` (16976 vs 17012) because it read the disk
+before the concurrent native write (the file is byte-equal; every later
+comparison true in both arms); `docs/public_api.md` 318-322 ("Useful
+beam-beam checks") deliberately not extended with the identity script.
+
+### Not verified in stage 6
+
+- No lane and no gate ran on this tree; every count above is standalone
+  (the contract's `validate`, T1 / T2 / the T3 rows / the catalogue testset
+  by extract, the analysis extract, the four tripwires, the snapshot
+  comparison, the example subprocess and the lane-gated example runner by
+  extract, the validation script, in both CPU arms unless marked). One full
+  gate on the assembled stage 6 tree is owed before the push, in the native
+  AND the AVX2 arm (the "full gate on the CI-fix and stage 5 batch" section
+  above), and is recorded in this file when it runs. After the ledger edits
+  of H16 (this section, the todo rows, the README sentence) the four suite
+  tripwires were re-run in package mode from the main tree in both arms:
+  see the paragraph at the end of this section (`OUT/ledgers/`).
+- The validation script's H12 record (two GREEN `TW-DIGEST` lines) does not
+  exist: the script exits 1 in both arms on the `src/analysis`
+  `:fixed_point` defect (M1) and, in the native arm, on `c_scaling_invariance`
+  at 200 maps (M3). The digests above are those of a red run. Whether the
+  owner fixes the route exit in a `src/analysis` commit, re-freezes the
+  multipliers on the 200-map set, or lowers the script's defaults is open;
+  until then `validation/README.md` says so.
+- The analysis extract in the haswell arm was run on the pre-fix tree
+  (108752 / 108752) and not repeated after the fixes (the fixes changed
+  `runtests.jl` inside T1 / T2 only, which ran 9 / 9 and 157 / 157 in that
+  arm); the full gate covers it.
+- T2's pins at 0.1 keep 5.5 percent of margin on
+  `k_longitudinal_block_symplecticity` in both arms and the CI runner is a
+  third BLAS / codegen combination (runner R2). The Julia 1.12.7 / `-C
+  haswell` / four-thread run reproduced the haswell arm bitwise, so the
+  emulation is faithful to what it emulates; CI itself is the remaining
+  check and runs on the push.
+- The D12 verdict differs between the arms (`:failed` native, `:degraded`
+  haswell) by the eigenplane route's (I1) floor; the predicate is
+  arm-independent and the row fires in both, but no stage 6 test asserts the
+  eigenplane verdict on that map.
+- The `kinds_failed_example` branch of the sweep and the last row of the
+  diagnostic table (D14) have no negative; the sweep's documented-reason
+  filter cannot be distinguished from an any-`ArgumentError` filter by any
+  example `analyze` refuses today (i3).
+- The example runner testset (six subprocesses, 420 s) ran once, natively,
+  on the pre-fix tree; the example itself ran as a subprocess in both arms
+  after the fixes (exit 0).
+- The (E7) / U_6-symplecticity kappa (carry item 2) was not decided: the
+  contract judges those values with its own `c` (`r_frame_symplecticity_e7`
+  64, `r_u6_symplecticity` 32, both with `cond(U)`) and reads the analysis's
+  tolerance only for V1, which agreed on all 54 verdicts.
+
+### Correction to the stage 5 analyzable-kind table (history 9059, 9072; dossier_5 G6)
+
+The stage 5 table above (section "2026-09-13: stage 5 landed", rows
+`crab_dispersion` at 9059 and `thin_rf_cavity` at 9072) says both examples
+are `:degraded` by "the stage 4b uncertified longitudinal heuristic, one
+degradation". That prose was WRONG: both are `:degraded` by "primary
+dispersion unavailable (:unit_eigenvalue): the longitudinal candidate
+cluster [1, 2, 3, 4, 5, 6] is unit_eigenvalue: real-class cluster at +-1
+within 0.0417676609458282" (crab_dispersion) and "... within
+0.0002909003923126619" (thin_rf_cavity) -- their examples are single thin
+elements whose one-turn map has every eigenvalue at 1 (a shear), so the
+longitudinal candidate is a unit-eigenvalue cluster and the primary
+dispersion is unavailable; `dispersion.longitudinal == 0` and no
+`longitudinal_selection` degradation is issued
+(`OUT/probes/fixture_reasons.out` 182-211, the orchestrator's stage 6
+prep probe; the stage 6 kind sweep sees the same two `:degraded` results).
+The stage 5 TEST asserts only the status (`r.status in ANALYSIS_STATUSES`
+with the pinned 18 / 5 counts), so the suite is right and only the record's
+prose was wrong; the stage 5 section itself is NOT edited (existing history
+sections stay as written; this paragraph is the correction). The stage 5
+"Not verified" bullet "whether 'analyzes its own example' should exclude
+`:failed`" and carry item 5's "the default 6D run is `:degraded` on
+crab_dispersion and thin_rf_cavity until a caller passes an index or a
+tune" inherit the same correction: on those two kinds no index or tune
+would certify anything, because the map has no synchrotron mode.
+
+### Carried forward to stage 7/8 (stage 7 the `lattice_cells.jl` refactor, optional; stage 8 the external benchmarks; this record edits neither note)
+
+1. **The `:fixed_point` route's stall is reported as `:none` (stage 6 M1;
+   `src/analysis/dispersion_routes.jl` `_route_from_graph` 662ff,
+   `_fixed_point_route`, `_route_agreement` 490-500).** A diverged graph
+   (||D|| 1e10..1e20, `converged = false`) passes the (I1) floor because the
+   floor grows with ||D||^2, and the agreement check then pairs it:
+   `k_route_agreement` 1.29e32 on dense maps 89 / 157 (and 165 under
+   `:none`) of the 200-map set, 5 of 400 route runs. A `src/analysis` fix
+   (return `_unavailable_route(:fixed_point, :not_invariant, ...)` on a
+   stall, or cap the ||D|| factor by the start graph's norm) with its own
+   measured windows; the contract row stays as written and will turn green
+   with it. Until then `validation/twiss_dispersion_identities.jl` exits 1
+   at its defaults in both arms.
+2. **The multipliers on the script's 200 + 20 set (stage 6 M3).** Frozen on
+   the contract's 20 + 5 maps by H15; at 200 + 20, 20 native / 18 haswell
+   rows exceed one tenth and `c_scaling_invariance` exceeds its budget
+   natively (map 98, 1.11; c = 128 would cover the set by the same rule).
+   Owner: re-freeze on the 200-map set (c doubling on ~15 rows), or keep
+   the script's rows reported-not-gated at one tenth, or lower its
+   defaults. The theory reviewer's reading: one conditioning factor (the
+   mode gap `1 / sin mu` or the frame conditioning) explains the excursions
+   on maps 42, 70, 98, 103, 115 together; measure it on the 200-map set
+   before freezing.
+3. **CI headroom on the 0.1 test pins (stage 6 R2).** Four rows keep 5.5-6.5
+   percent of margin under `<= 0.1` while swinging 18-42 percent between
+   the two arms; the CI runner is a third BLAS / codegen combination.
+   Options: test pins at 0.2 (the contract's `c` untouched), or `c` one
+   power of two higher where the H15 margin is below 1.25 (a documented
+   amendment). Decide before CI shows it, or after run 436 shows it does not.
+4. **The (E7) / U_6-symplecticity kappa (4b item 2, stage 5 item 2).**
+   Still the owner's: the landed `c rho_M1 cond(U)` vs the review's
+   resolution kappa `cond(U) ||U||^2 / chord_min`, or a `:degraded` verdict
+   for those rows. Stage 6 evidence: the contract's own (E7) rows carry
+   `cond(U)` and sit at 3.5 / 2.3 (frame) and 1.8 / 1.5 (U_6) at
+   multiplier 1 on the contract set; the stage 6 review had to ADD `cond(U)`
+   to six more rows (the outliers were exactly the rows without it).
+5. **The normalizer multiplier (4b item 4): MEASURED, VERDICT no change.**
+   `normalizer_ratio_u6_reconstruction` 2.47 native / 3.30 haswell,
+   `normalizer_ratio_u6_symplecticity` 1.80 / 1.49, all below 6.4 (one tenth
+   of the analysis's 64) on the contract's fixtures incl. the 18 element
+   examples; the analysis's 64 keeps 2.6x / 1.9x over ten times the worst.
+   The change to 128 is not needed on this evidence; the item closes unless
+   the 200-map set (item 2) says otherwise.
+6. **Arm-dependent verdicts at the analysis's floors.** D12's weak-cavity map:
+   the eigenplane route's normalized (I1) residual 1.96e-13 native /
+   9.98e-14 haswell against the 64-eps floor gives `:failed` / `:degraded`;
+   `c_scaling_invariance` on map 42 passed natively and failed on haswell
+   before the kappa fix. A verdict that flips with the BLAS kernel on an
+   ill-conditioned fixture is honest but surprising; whether the route
+   floors should carry the coefficient condition (4a's `c_inv` item) is the
+   same question.
+7. **Result-shape items for the owner.** `dispersion.tunes` are in
+   ModeLabels6D LABEL order while `physical.tunes` and
+   `projected_optics.tunes` are in frame order (they differed on dense map
+   10); `_identity_contract_certified` treats a PRESET `longitudinal_mode`
+   as uncertified (theory T7; blocks a negative-h identity fixture); the
+   presentation questions of 4a/4b item 5 (the 6D synchrotron tune in
+   [0, 2pi) -- the example now prints the `1 - Q` reading; `matched_covariance`
+   not bitwise symmetric; the rounding rule; the heuristic-degrades policy,
+   with the correction above: crab_dispersion and thin_rf_cavity degrade by
+   `:unit_eigenvalue`, not by the heuristic).
+8. **Sharper kappas left as measured (below 100).** `c_d14_graph_invariance`
+   and `r_primary_route_invariance_i1` at 52 / 67 and 44 / 52 lack the
+   Sylvester conditioning (the eigenplane route's `coefficient_condition`,
+   2..43); `k_trace_cubic`'s `1 / min gap` is a partial root conditioning
+   (the full one is `1 / |p'(tau_j)|`).
+9. **Test-side gaps recorded.** No negative for `kinds_failed_example` (no
+   metadata-shaped example analyzes to `:failed` in both arms); the last
+   diagnostic row is unpinned by the contiguity test; i3 (any
+   `ArgumentError` accepted) invisible by construction; T2 costs ~80 s on a
+   fresh process (the `analyze` compile; ~12 x 0.2 s once warm in the lane)
+   and the example runner testset gains one 66-s subprocess.
+10. **Design paragraphs to reconcile in the note (4b item 6, stage 5 item 6,
+    docs-only).** As listed in the stage 5 record, plus: the verification
+    table's row 461 (h = 0 "not reachable" was never true: the row fires
+    when the synchrotron mode is named) and the isotropic-graph / false-graph
+    rows (kernel-level, not reachable through `analyze`: recorded, not
+    edited); the 4b digest's "det M_cal = h" (M_cal is symplectic, det = 1)
+    wherever it was copied; the theory note's date clause (5-6).
+11. **Owner notes carried unchanged.** Stage 5 item 7 (c): whether the
+    Verification Matrix names a CI-parity (AVX2) arm permanently (every
+    stage 6 runner ran both arms regardless, and the CI configuration
+    itself as a third); a `_with_longitudinal_mode` keyword copy in
+    `src/analysis` would replace the two `fieldnames`-derived rebuilds
+    (stage 7 candidate).
+12. **Later stages, unchanged.** Seeding the iterative routes on the selected
+    branch; extending `kappa_route` by the coefficient condition (item 1
+    makes it concrete); transport, scans, covariance-based mode selection,
+    a public closed-orbit finder; the `lattice_cells.jl` refactor (stage 7,
+    optional: the identity script does not depend on it); the external
+    benchmarks (stage 8: MAD-X, PTC, Xsuite, each a validation script with
+    stated tolerances and a history record; the identity contract's fixture
+    recipes F1-F5 are the natural inputs); the post-campaign neighbour audit.
+13. **Process items from stage 6.** "Not reachable through `analyze`" is a
+    claim to PROBE with the design row's own options, not to conclude from
+    a formula (A dropped D6 on the digest's `det = h` and a default-heuristic
+    probe; the theory review reinstated it); a diagnostics-count assertion
+    derived from the same function is documentation until an injection
+    deletes a row (j1 -> the contiguity pin); a kappa without the frame's
+    `cond(U)` shows up as the SAME argmax fixture across several rows (dense
+    map 16); a multiplier frozen on the suite's set is not a property of a
+    larger validation set, and the README must say which set froze it; a
+    script that gates on the contract turns an analysis defect into a red
+    record, which is what it is for.
+
+After the ledger edits of H16 (this section, the todo rows 20 and 64, the
+README sentence) the four suite tripwires were re-run in package mode from
+the main tree in BOTH arms (`OUT/ledgers/run_tripwires.jl` over the
+integrator's extracts `OUT/extract/main/{arch,corebox,exports,detached}.jl`;
+`--threads=4`, CUDA off, ForwardDiff not stacked): native 32 / 32
+(Architecture integrity 28 incl. the docs index and the snapshot byte
+comparison, Core.Box 2 with an empty offender list, exports 1, detached
+docstrings 1; 27.5 s after load, exit 0, `run_tripwires_native.log`);
+`OPENBLAS_CORETYPE=Haswell julia -C haswell` 32 / 32 (27.2 s, exit 0,
+`run_tripwires_haswell.log`). The ledger files are staged beside the stage 6
+changes; nothing is committed. The commit step owns the fast lane, the
+two-arm full gate and the push.

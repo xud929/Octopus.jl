@@ -33,6 +33,24 @@ stochastic, or CUDA tracking, or an element implementation it covers, run
 reference table, which `validation/generate_ptc_reference.jl` regenerates when
 MAD-X is on `PATH`.
 
+`TwissDispersionIdentityContract` is the physics contract of
+`TwissDispersionAnalysis` (its implementation contract is
+`AnalysisOptionEffectivenessContract`). Its `validate` runs `analyze` on a
+deterministic fixture set -- a DBA cell as compiled elements and as a
+`BeamLine`, a detuned FODO, the DBA with thin RF and with a crab cavity,
+seeded manufactured symplectic maps (6x6 and 4x4), the coasting map and the
+metadata examples of every kind that declares the analysis -- and re-judges
+the identities of the theory note on their VALUES: the reported residual
+triples, the kernel residuals the analysis computes but does not surface,
+the physical back-transformations, the verdict re-derivation, and the
+absolute pins. Each identity row has its own multiplier `c` (tolerance
+`c * eps() * kappa`); a row that exceeds it, a row that ran on no fixture, a
+verdict the contract cannot re-derive, or an expected diagnostic that does
+not fire FAILS the contract. It is mirrored by
+`validation/twiss_dispersion_identities.jl` (section "Twiss and Dispersion
+Identities" of `validation/README.md`), which prints the per-row ratios. Run
+both after changing any file of `src/analysis/`.
+
 `StrongStrongPICMultiProcessConsistencyContract` is the three-way statement
 for the PIC collide -- CPU against MPI at each rank count, CPU against CUDA
 through `StrongStrongPICBackendConsistencyContract`, MPI against CUDA by
@@ -82,7 +100,11 @@ joins by:
    `src/elements/Elements.jl`, as `src/analysis/twiss_dispersion_type.jl`
    is, because `@element_spec` registers its metadata at include time; the
    constructor and `analyze` may follow the elements;
-4. shipping a small executable example if the output is user-facing.
+4. shipping a small executable example if the output is user-facing
+   (`examples/twiss_dispersion_dba_ring.jl` is the precedent: the two
+   `analyze` runs of a DBA ring with RF, every undetermined quantity
+   printed as its reason, catalogued in `example_catalog()` and run by
+   the suite's example runner).
 
 ## Finish
 

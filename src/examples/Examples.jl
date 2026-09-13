@@ -90,6 +90,15 @@ function example_catalog()
             "scenarios built on the strong-strong example's constants. The " *
             "precedent for parameterising a lattice rather than editing it.",
             Type[KnobRef, TrackingTask, ElementSpec]),
+        ReferenceExample(
+            "examples/twiss_dispersion_dba_ring.jl",
+            "The coupled Twiss and canonical dispersion analysis of a DBA ring with " *
+            "a thin RF cavity, given as a BeamLine: the default run is :degraded by " *
+            "the uncertified longitudinal selection, the certified second run is " *
+            ":passed and prints tunes, dispersions, normal modes, matched beam " *
+            "sizes and the residual checks. The precedent for running an analysis " *
+            "and reading its result (every undetermined quantity by its reason).",
+            Type[TwissDispersionAnalysis, BeamLine, ThinRFCavitySpec, SBendSpec]),
     ]
 end
 

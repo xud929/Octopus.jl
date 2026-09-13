@@ -1054,6 +1054,46 @@ Overrides: `OCTOPUS_LATTICE_N`, `OCTOPUS_LATTICE_TURNS`, `OCTOPUS_LATTICE_LONG`.
 Outputs `result/lattice_cells.tsv`. Derivations for every map:
 `../docs/theory/lattice_hamiltonian_and_conventions.md`.
 
+## Twiss and Dispersion Identities
+
+`twiss_dispersion_identities.jl` checks the tagged Twiss and dispersion
+identities of the theory note ((E3), (E7), (E8), (I1), (M2)-(M5), (D3), (D8),
+(D14), (D17), (D24), (K1), (K4), (K5), (K7), (K8), (K12)-(K14), (O1)-(O5), (X2);
+the contract's row table names every slug) through
+`analyze` on the DBA cell (element tuple and `BeamLine`), the detuned FODO,
+DBA + RF, DBA + RF + thin crab, manufactured dense 6x6 and 4x4 maps, the
+manufactured coasting map and the declaring kinds' metadata examples: the
+reported residual triples re-judged on their values, the kernel residuals the
+analysis does not surface, and the identities recomputed in the caller's
+coordinates, each against `c eps kappa` with kappa the conditioning of the
+quantity compared. It also counts that every expected diagnostic of the
+design's verification table that `analyze` can reach fires (a silent one
+fails; the two kernel-level ones, the isotropic graph and the false graph,
+are not reachable and are recorded as such) and that every element kind
+declaring the analysis has an example and analyzes it or refuses it for the
+documented closed-orbit reason.
+
+```bash
+julia --project=. validation/twiss_dispersion_identities.jl
+```
+
+Overrides: `OCTOPUS_TWISS_IDENTITY_SEED` (default 20260911),
+`OCTOPUS_TWISS_IDENTITY_MAPS` (dense 6x6 maps, default 200),
+`OCTOPUS_TWISS_IDENTITY_MAPS4` (dense 4x4 maps, default 20).
+Outputs `result/twiss_dispersion_identities.tsv` (one row per identity: slug,
+max ratio, max value, multiplier, the fixture that attained the maximum) and
+prints one `TW-IDENT` line per identity, `TW-DIAG`, `TW-KINDS` and a bitwise
+`TW-DIGEST` of the maxima so two CPU arms can be diffed. The multipliers are
+frozen on the contract's default 20 + 5 maps; the script's larger set can put
+a row above one tenth of its budget or, on a map that exposes an analysis
+defect, over it (the gate then exits non-zero naming the row). Derivations:
+`../docs/theory/twiss_dispersion.md`; the design and its verification table:
+`../docs/design/twiss_dispersion_analysis.md`. The script runs the contract
+once and prints its metrics: the contract `TwissDispersionIdentityContract` is
+the suite's copy; the record of the two CPU arms (the digests, the rows above
+one tenth, and any failing row by name) is in
+`../docs/history/twiss_dispersion_analysis_history.md`.
+
 ## Paper Anchors
 
 Two paper-cited scripts. They were committed and cited with no README entry at

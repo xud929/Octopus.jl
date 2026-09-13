@@ -334,6 +334,7 @@ Use Julia help:
 ?StrongStrongPICMultiProcessConsistencyContract
 ?PublicConfigurationEffectivenessContract
 ?AnalysisOptionEffectivenessContract
+?TwissDispersionIdentityContract
 ?SymplecticityContract
 ?HighEnergyWeakStrongLimitContract
 ?CoherentModePhysicsContract

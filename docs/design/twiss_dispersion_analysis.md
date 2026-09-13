@@ -2,17 +2,20 @@
 
 **Status: decided 2026-09-11 (design review, three judged designs, four
 adversarial verifications; the owner adopted every recommendation);
-implemented through Staging item 5 (stages 1-5, landed 2026-09-11 to
+implemented through Staging item 6 (stages 1-6, landed 2026-09-11 to
 2026-09-13).** `TwissDispersionAnalysis`, `analyze`, `analysis_option_schema`,
 `TwissDispersionResult`, `OpticsAnalysisError`, `NormalMode`,
-`ANALYSIS_STATUSES`, `matched_covariance`, `normal_mode` and
-`AnalysisOptionEffectivenessContract` exist in the source with the kernel
-files of `src/analysis/`; the analysis is declared on the 22 linear-map kinds
-plus `:line` under the Discovery rule below, with the two set tripwires, and
-`PlaceholderAnalysis` remains the declaration of the eight kinds without an
-analysis. Staging items 6-8 (the physics identity contract with its
-validation script and example, the `lattice_cells.jl` refactor, the external
-benchmarks) are open. The amendments the implementation
+`ANALYSIS_STATUSES`, `matched_covariance`, `normal_mode`,
+`AnalysisOptionEffectivenessContract` and `TwissDispersionIdentityContract`
+(the physics identity contract, `src/contracts/twiss_dispersion_identity.jl`)
+exist in the source with the kernel files of `src/analysis/`; the identity
+contract is mirrored by the validation script
+`validation/twiss_dispersion_identities.jl` and the analysis by the executable
+example `examples/twiss_dispersion_dba_ring.jl`; the analysis is declared on
+the 22 linear-map kinds plus `:line` under the Discovery rule below, with the
+two set tripwires, and `PlaceholderAnalysis` remains the declaration of the
+eight kinds without an analysis. Staging items 7-8 (the `lattice_cells.jl`
+refactor, optional; the external benchmarks) are open. The amendments the implementation
 forced on this note's tables are recorded in
 [the campaign history](../history/twiss_dispersion_analysis_history.md), not
 edited into the body. This note records which architecture was chosen and why.

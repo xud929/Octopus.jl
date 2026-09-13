@@ -126,6 +126,11 @@ include("tasks/StrongStrong.jl")
 # validate_configuration_metadata from tasks/strongstrong; before Registry so
 # the registry discovers it).
 include("contracts/analysis_effectiveness.jl")
+# Stage 6: the physics identity contract of the analysis (runs manufactured
+# and lattice fixtures through analyze; needs the analysis, one_turn_matrix,
+# compile_runtime and the element specs above; before Registry so the
+# registry discovers it and the snapshot gains its Contracts line).
+include("contracts/twiss_dispersion_identity.jl")
 
 # Generated registry/introspection helpers. Keep this last.
 include("registry/Registry.jl")

@@ -1076,6 +1076,179 @@ end
     @test n_refusals < n_results
 end
 
+# Twiss analysis stage 6: the identity contract
+# (src/contracts/twiss_dispersion_identity.jl, design "Staging" item 6). Placed
+# after the stage 5 analyzable-kind testset so the analysis extract (stage 1
+# Part A .. Lorentz) brackets it. T1 registration, T2 the real validate with
+# its pinned metrics and the negatives n1-n7; the physics siblings' row is in
+# "Physics contracts". Helpers `_st6_*`; every count is derived.
+@testset "Stage 6 registers TwissDispersionIdentityContract: description, supertype, export, docstring, registry, snapshot, kwarg rejection" begin
+    @test Octopus.description(TwissDispersionIdentityContract) isa String
+    @test occursin("identities", Octopus.description(TwissDispersionIdentityContract))
+    @test TwissDispersionIdentityContract <: Octopus.AbstractPhysicsContract
+    @test isdefined(Octopus, :TwissDispersionIdentityContract) && Base.isexported(Octopus, :TwissDispersionIdentityContract)
+    @test !occursin("No documentation found", string(Base.Docs.doc(Base.Docs.Binding(Octopus, :TwissDispersionIdentityContract))))
+    reg = summarize_registry()
+    @test :TwissDispersionIdentityContract in reg.contracts
+    md = Octopus.registry_snapshot_markdown()
+    @test occursin("TwissDispersionIdentityContract", md)
+    # the snapshot on disk differs from the live one at most in lines naming
+    # the contract (the integrator regenerates it on main; the 4b-B shape)
+    root = dirname(dirname(dirname(String(first(methods(Octopus.validate_configuration_metadata)).file))))
+    ondisk = joinpath(dirname(root), "docs", "registry_snapshot.md")
+    if isfile(ondisk)
+        live = Set(split(md, '\n')); disk = Set(split(read(ondisk, String), '\n'))
+        changed = union(setdiff(live, disk), setdiff(disk, live))
+        @test all(l -> occursin("TwissDispersionIdentityContract", l), changed)
+    end
+    # the contract rejects unknown keywords (the real validate is T2's)
+    @test_throws ArgumentError validate(TwissDispersionIdentityContract(); bogus=1)
+end
+
+# n5b: a symplectic perturbation x * exp(1e-8 S H) (H symmetric: the analysis's
+# symplecticity gate passes it) applied to the scaling = :none runs only.
+function _st6_perturb_symplectic_none(a::TwissDispersionAnalysis, x)
+    (x isa AbstractMatrix && a.scaling === :none) || return analyze(a, x)
+    n = size(x, 1); S = Octopus._symplectic_form(n)
+    H = randn(MersenneTwister(1), n, n); H = (H + H') / 2
+    return analyze(a, x * exp(1e-8 .* (S * H)))
+end
+# The analysis with its longitudinal mode pinned to `index` (the certification
+# rebuild of `_identity_contract_certified`; used by the certify-everything run n4).
+function _st6_with_longitudinal(a::TwissDispersionAnalysis, index::Int)
+    # derived over the fields (no hand-typed keyword list): a future option is carried, not reset
+    kept = (f => getfield(a, f) for f in fieldnames(TwissDispersionAnalysis) if f !== :longitudinal_mode)
+    TwissDispersionAnalysis(; kept..., longitudinal_mode=index)
+end
+# n4: a verb that certifies every bunched run silently (re-runs with the selected
+# index whenever the first run selected one and the analysis left the mode open).
+function _st6_certify_everything(a::TwissDispersionAnalysis, x)
+    r = analyze(a, x)
+    (r isa TwissDispersionResult && r.dispersion !== nothing && r.dispersion.longitudinal != 0 &&
+        a.longitudinal_mode isa Symbol) || return r
+    return analyze(_st6_with_longitudinal(a, r.dispersion.longitudinal), x)
+end
+# n5: a verb that perturbs every Matrix input by 1e-8 (the identities drift).
+_st6_perturb(a::TwissDispersionAnalysis, x) =
+    analyze(a, x isa AbstractMatrix ? x .+ 1e-8 .* randn(MersenneTwister(1), size(x)...) : x)
+# The kinds that declare the analysis, derived from the registry (H9: no kind list, no literal).
+_st6_declaring_kinds() = count(T -> TwissDispersionAnalysis in Octopus.supported_analyses(T), Octopus.registered_element_specs())
+
+@testset "Stage 6: the identity contract passes on the tree with pinned metrics, and every negative is red" begin
+    c = TwissDispersionIdentityContract()
+    r = validate(c)
+    @test r.passed && r.status === :passed
+    @test occursin("certified", r.message)
+    m = r.metrics
+    # the one-tenth rule (H15): every row's ratio at its frozen multiplier is under 0.1 in both arms
+    @test m[:worst_ratio] <= 0.1
+    @test r.residual == m[:worst_ratio]
+    @test m[:worst_identity] in keys(c.multipliers)
+    for slug in keys(c.multipliers)
+        @test haskey(m, Symbol("max_", slug)) && haskey(m, Symbol("maxval_", slug)) && haskey(m, Symbol("argmax_", slug))
+        @test m[Symbol("max_", slug)] <= 0.1
+    end
+    @test m[:identities] == length(c.multipliers)
+    # the silent-diagnostic table: every expected diagnostic fired
+    @test m[:diagnostics_silent] == 0 && isempty(m[:diagnostics_silent_names])
+    @test m[:diagnostics_expected] == length(Octopus._identity_contract_diagnostics(c))
+    # a non-tautological pin on the table itself: its rows are labelled by design row D<n>, and the labels
+    # cover 1..max without a gap (a row deleted from the table opens a gap; the reachable set is contiguous)
+    dnums = [parse(Int, match(r"^D(\d+)", row.name).captures[1]) for row in Octopus._identity_contract_diagnostics(c)]
+    @test Set(dnums) == Set(1:maximum(dnums))
+    @test m[:diagnostics_expected] >= maximum(dnums)
+    # the kind sweep (H9): the declaring count derived from the registry, every kind accounted for
+    @test m[:kinds_declaring] == _st6_declaring_kinds()
+    @test m[:kinds_analyzed] + m[:kinds_refused] + m[:kinds_without_example] == m[:kinds_declaring]
+    @test m[:kinds_declaring_without_result] == 0 && m[:kinds_failed_example] == 0 && m[:kinds_without_example] == 0
+    @test m[:kinds_analyzed] > m[:kinds_refused]
+    # the dense maps all resolved, the reported verdicts re-derived consistently
+    @test m[:dense_maps] == c.dense_maps && m[:dense_maps_4d] == c.dense_maps_4d
+    @test m[:dense6_unresolved] == 0 && m[:dense4_skipped] == 0
+    @test m[:verdicts_inconsistent] == 0 && m[:verdicts_consistent] > 0
+    @test m[:fixtures] > length(Octopus._identity_contract_fixtures(c))
+    # the design 465 pins: the Ohmi rows are absolute
+    @test m[:absolute_pins_checked] == length(c.absolute_pins)
+    for slug in (:k_ohmi_chart_change_off_diagonal, :k_ohmi_symplecticity, :k_ohmi_separated_off_diagonal)
+        @test m[Symbol("maxval_", slug)] <= 1e-12
+    end
+    # carry item 4: the analysis's normalizer multiplier re-measured (reported, judged by the measurer)
+    @test 0 < m[:normalizer_ratio_u6_reconstruction] < c.multipliers[:r_u6_reconstruction]
+    @test 0 < m[:normalizer_ratio_u6_symplecticity] < c.multipliers[:r_u6_symplecticity]
+    # NEGATIVES (design 443: every tripwire red once, the culprit named in the
+    # message). Each runs on the SAME fixtures object.
+    fx = Octopus._identity_contract_fixtures(c)
+    # n1: every multiplier 1e-300 -> every row exceeds; the message names a slug and "exceeds"
+    tiny = Dict{Symbol,Float64}(slug => 1e-300 for slug in keys(c.multipliers))
+    r1 = Octopus._identity_contract_probe(TwissDispersionIdentityContract(multipliers=tiny), fx, analyze)
+    @test !r1.passed && r1.status === :failed
+    @test occursin("exceeds", r1.message) && any(slug -> occursin(string(slug), r1.message), keys(c.multipliers))
+    # n2: one slug deleted from the multipliers -> "no multiplier" naming that slug
+    slug2 = first(sort(collect(keys(c.multipliers))))
+    fewer = copy(c.multipliers); delete!(fewer, slug2)
+    r2 = Octopus._identity_contract_probe(TwissDispersionIdentityContract(multipliers=fewer), fx, analyze)
+    @test !r2.passed && occursin(string(slug2), r2.message) && occursin("no multiplier", r2.message)
+    # n3: the liar kind declares the analysis with an example `analyze` cannot take
+    # (a 2x2 matrix); the sweep must fail the contract by name and count it.
+    try
+        Octopus.register_element_meta!(Octopus.ElementMeta(;
+            kind=:idc_liar, spec_type=ElementSpec{:idc_liar}, tracking_methods=[Symplectic6DMap],
+            analyses=[TwissDispersionAnalysis], example=[1.0 0.0; 0.0 1.0]))
+        r3 = Octopus._identity_contract_probe(c, fx, analyze)
+        @test !r3.passed && occursin("idc_liar", r3.message)
+        @test r3.metrics[:kinds_declaring_without_result] == 1
+        @test r3.metrics[:kinds_declaring] == m[:kinds_declaring] + 1
+    finally
+        delete!(Octopus.ELEMENT_META_BY_KIND, :idc_liar)
+        delete!(Octopus.ELEMENT_META_BY_SPEC_TYPE, ElementSpec{:idc_liar})
+        filter!(t -> t !== ElementSpec{:idc_liar}, Octopus.REGISTERED_ELEMENT_SPECS)
+    end
+    # n3b: a declaring kind with NO metadata example is uncovered, never silently skipped: counted
+    # in kinds_without_example and failed by name (the SymplecticityContract twin's rule).
+    try
+        Octopus.register_element_meta!(Octopus.ElementMeta(;
+            kind=:idc_noexample, spec_type=ElementSpec{:idc_noexample}, tracking_methods=[Symplectic6DMap],
+            analyses=[TwissDispersionAnalysis], example=nothing))
+        r3b = Octopus._identity_contract_probe(c, fx, analyze)
+        @test !r3b.passed && occursin("idc_noexample", r3b.message) && occursin("no metadata example", r3b.message)
+        @test r3b.metrics[:kinds_without_example] == 1
+        @test r3b.metrics[:kinds_analyzed] + r3b.metrics[:kinds_refused] + r3b.metrics[:kinds_without_example] == r3b.metrics[:kinds_declaring]
+    finally
+        delete!(Octopus.ELEMENT_META_BY_KIND, :idc_noexample)
+        delete!(Octopus.ELEMENT_META_BY_SPEC_TYPE, ElementSpec{:idc_noexample})
+        filter!(t -> t !== ElementSpec{:idc_noexample}, Octopus.REGISTERED_ELEMENT_SPECS)
+    end
+    @test validate(c).passed        # registry restored
+    # n4: a verb that certifies every bunched run silently -> D9's expected
+    # :degraded (the uncertified heuristic) never fires -> the row is named in
+    # the silent list and the message names a silent row (the first in table
+    # order: the verb also certifies the (K12) mislabel of the h = 0 map's
+    # default run, D6, into a :passed result, so that row is silent too).
+    r4 = Octopus._identity_contract_probe(c, fx, _st6_certify_everything)
+    @test !r4.passed && r4.metrics[:diagnostics_silent] >= 1
+    @test any(startswith("D9"), r4.metrics[:diagnostics_silent_names])
+    @test occursin("expected diagnostic silent", r4.message) && any(n -> occursin(n, r4.message), r4.metrics[:diagnostics_silent_names])
+    # n5: a verb that perturbs every Matrix input by 1e-8 randn. Measured: the
+    # analysis's own symplecticity gate rejects the perturbed map before any
+    # identity can drift, so the red names the perturbed FIXTURE (the first
+    # dense map), not a slug; the contract is red either way.
+    r5 = Octopus._identity_contract_probe(c, fx, _st6_perturb)
+    @test !r5.passed && occursin("F6a dense 6x6 map", r5.message)
+    # n5b: the drift the design means: a SYMPLECTIC perturbation (passes the
+    # gate) applied to the scaling = :none runs only -> the scaling pair row
+    # c_scaling_invariance drifts and the message names that slug.
+    r5b = Octopus._identity_contract_probe(c, fx, _st6_perturb_symplectic_none)
+    @test !r5b.passed && occursin("c_scaling_invariance", r5b.message) && occursin("exceeds", r5b.message)
+    @test r5b.metrics[:worst_identity] === :c_scaling_invariance && r5b.metrics[:worst_ratio] > 0.1
+    # n6: a verb that throws -> every fixture "gave no result", the text carried
+    r6 = Octopus._identity_contract_probe(c, fx, (a, x) -> error("scratch verb exploded"))
+    @test !r6.passed && occursin("scratch verb exploded", r6.message)
+    # n7: no dense maps at all is a smaller run, not a defect
+    r7 = validate(TwissDispersionIdentityContract(dense_maps=0, dense_maps_4d=0))
+    @test r7.passed && r7.metrics[:dense_maps] == 0 && r7.metrics[:dense_maps_4d] == 0
+    @test r7.metrics[:fixtures] < m[:fixtures]
+end
+
 # Twiss analysis stage 2, Part A: the 4D eigenmode route
 # (src/analysis/eigenmodes_4d.jl). Placed right after the stage 1 kernel
 # testsets. Uses only the file-level `using Test, Octopus, LinearAlgebra,
@@ -12321,7 +12494,8 @@ if _lane_gate("Every example script runs against the current interface")
     # an internal broke examples/knob_control.jl silently through six green
     # suite runs. Each script runs in a subprocess at its small config
     # defaults (the weak-strong pair at 2 turns / 10k macroparticles;
-    # knob_control at 1 turn / 4 particles; strong-strong at 200/beam —
+    # knob_control at 1 turn / 4 particles; strong-strong at 200/beam;
+    # twiss_dispersion_dba_ring at its fixed DBA ring, two analyze runs --
     # all CPU policy), so this also
     # enforces "update examples when public APIs change". Costs one package
     # load per script; exit 0 is the assertion, with the output tail
@@ -12329,7 +12503,8 @@ if _lane_gate("Every example script runs against the current interface")
     root = dirname(@__DIR__)
     scripts = vcat(
         [joinpath(root, "examples", f) for f in
-         ("knob_control.jl", "weak_strong_tracking.jl", "strong_strong_tracking.jl")],
+         ("knob_control.jl", "weak_strong_tracking.jl", "strong_strong_tracking.jl",
+          "twiss_dispersion_dba_ring.jl")],
         [joinpath(root, "test", "examples", f) for f in
          ("weak_strong_tracking.jl", "strong_strong_tracking.jl")])
     for script in scripts
@@ -22164,6 +22339,15 @@ if _lane_gate("Physics contracts")
     # soft-Gaussian closure that is documented to fail.
     @test gpic.metrics[:lambda_x] > gau.metrics[:lambda_x]
     @test gpic.metrics[:lambda_y] > gau.metrics[:lambda_y]
+
+    # The physics identity contract of the Twiss and dispersion analysis
+    # (stage 6): every identity row under its frozen multiplier is under one
+    # tenth of its budget and every expected diagnostic fires (~1 s after
+    # compile; the pinned metrics and the negatives are the stage 6 testset).
+    idc = validate(TwissDispersionIdentityContract())
+    @test idc.passed
+    @test idc.metrics[:worst_ratio] <= 0.1
+    @test idc.metrics[:diagnostics_silent] == 0
 end
 end # _lane_gate("Physics contracts")
 
