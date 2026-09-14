@@ -1102,6 +1102,82 @@ the suite's copy; the record of the two CPU arms (the digests, the rows above
 one tenth, and any failing row by name) is in
 `../docs/history/twiss_dispersion_analysis_history.md`.
 
+## Twiss and Dispersion Acceptance Windows
+
+`twiss_dispersion_acceptance_windows.jl` is the measurement driver behind the
+acceptance multipliers of the dispersion routes and the canonical separation:
+the `c` of the `c eps kappa` and `c rho_M1 ...` floors in
+`src/analysis/dispersion_routes.jl` (`c_graph`, `c_iso`, `c_coef`, `c_inv`,
+`c_stop`, `c_coast`, `c_tie`) and `src/analysis/canonical_separation.jl`
+(`c_sep`, `c_triple`, `c_ell`, `c_ohmi`), plus the informational
+`c_inv_conditioned` (`c_inv` with the route's coefficient condition folded
+into its kappa). It writes a markdown table of four sections: (1) the oracle
+agreement table, every route of `_dispersion_routes` on the 39 oracle maps of
+the canonical-dispersion note against the note's own reference graphs, zeta,
+eta and h at the design's `2e-10`; (2) every multiplier's window by the
+one-tenth / ten rule, one sub-section per constant with the two extremes named
+by the fixture that attains them, its `window [low, high]; source value
+inside: <bool>` line (or `is EMPTY`) and a summary table; (3) the rejected
+side of every `c eps kappa` check family of the dispersion-routes and
+canonical-separation testsets (17 families: the route triples and agreement,
+the coasting, covariance, scaling back-transformation, Ohmi and DBA rows among
+them), the test's `c` beside each ratio; (4) the paper cross-checks (the crab
+eta_+, the N15 / N17 controls, the DBA coasting eta). After the file is
+written the driver prints one `window <constant>: [low, high] inside <bool>
+(source <c>)` line per constant (`EMPTY` in place of `inside <bool>`) to
+standard output, so a run's log carries the twelve windows; they are not in
+the table.
+
+The one-tenth / ten rule has two directions. For a residual-type constant
+(`c_inv`, `c_inv_conditioned`, `c_stop`, `c_coast`, `c_sep`, `c_triple`) the
+guarded quantity must stay small: every accepted ratio at multiplier 1 must
+stay below `c / 10` and every rejected ratio must exceed `10 c`, so the window
+is `[10 * accepted extreme, rejected extreme / 10]`. For a floor-type constant
+(`c_graph`, `c_iso`, `c_coef`, `c_tie`, `c_ell`, `c_ohmi`) the guarded
+quantity must stay large: every accepted ratio must exceed `10 c` and every
+rejected ratio must stay below `c / 10`, so the window is `[10 * rejected
+extreme, accepted extreme / 10]`. A window is `EMPTY` when the fixtures on
+both sides are closer than a factor 100 (the driver's own wording); an edge
+with no fixture is open. Every landed multiplier is a power of two, measured
+in both CPU arms (the native one and `OPENBLAS_CORETYPE=Haswell julia -C
+haswell`) and sitting inside its window, except `c_inv`, whose window is EMPTY
+on this tree: the history's M1 record of 2026-09-14 keeps 256 and leaves the
+kappa to its derivation. The identity contract's freezing rule `c = max(8,
+2^ceil(log2(10 max(ratio_native, ratio_haswell))))` does not apply to these
+constants. A kappa changes only when its derivation is found wrong, never to
+fit a window.
+
+The fixture builders are the suite's own `_st3_` / `_st4_` helpers, extracted
+from `test/runtests.jl` by NAME at run time (the definitions from `const
+_ST4_SEED` to the first `Dispersion routes:` testset, plus the named `_st3_`
+helpers): renaming one of them breaks this script loudly, never silently.
+
+```bash
+julia --startup-file=no --project=. --threads=4 validation/twiss_dispersion_acceptance_windows.jl
+```
+
+Optional positional arguments: the oracle maps TSV, the reference TSV and the
+output file; defaults, from the repository root,
+`validation/reference/twiss_oracle_maps.tsv`,
+`validation/reference/twiss_oracle_reference.tsv` and
+`result/twiss_dispersion_acceptance_windows.md` (the table's header names the
+two inputs relative to the repository root, so the header is the same on every
+checkout). The maps TSV holds the 39 maps (24 dense, 7 prescribed-h, 3
+coasting, 4 repeated-betatron and 1 defective spectator), replayed once from
+the canonical-dispersion note's own `verify_dispersion.py` fixture loop with
+its seed and draw order, every map passed through the note's `check_map`;
+entries are exact binary64 reprs. The reference TSV holds their graph, zeta,
+eta and h, dumped once by the same helpers.
+`validation/reference/twiss_oracle_reference_provenance.txt` is that dump's
+log kept verbatim: its first line is the dump's own summary (naming the file
+by its pre-tracking name), then the seed, the python / numpy / scipy versions,
+the helper's sha256 and its `check_map` counts, shared by both dumps; the
+driver prints those last three lines in the table's header. The record of
+every measurement (the stage 4a table of 2026-09-12 and the re-measurements
+since) is in `../docs/history/twiss_dispersion_analysis_history.md`; the
+derivations are in `../docs/theory/twiss_dispersion.md` and the design's
+verification table in `../docs/design/twiss_dispersion_analysis.md`.
+
 ## Paper Anchors
 
 Two paper-cited scripts. They were committed and cited with no README entry at

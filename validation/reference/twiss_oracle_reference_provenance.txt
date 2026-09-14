@@ -1,0 +1,4 @@
+reference rows written: 39 -> oracle_reference.tsv; maps matching stage 1 TSV: 39/39
+seed 20260911; python 3.11.5; numpy 1.23.5; scipy 1.11.4
+verify_dispersion.py sha256 2b66098bf27b508a1099e76376cae8c464a82bccec190b21a70ee26eae094f12
+check_map evaluations by name: {'Symplectic maps and planes': 78, 'Response and canonical coefficients': 117, 'Polynomial and projector extraction': 78, 'Canonical block separation': 234, 'Exact determinant identities': 78, 'Explicit correction-column system': 39, 'Trace cubic': 117, 'Normalized eigenvector extraction': 180}
