@@ -285,6 +285,21 @@ function TwissDispersionAnalysis(; scaling=:auto, symplectic_rtol=nothing, nonsy
                                    Tuple(dispersion_routes), Int(newton_max_iterations), em, strict)
 end
 
+"""
+    _with_longitudinal_mode(a::TwissDispersionAnalysis, index::Integer) -> TwissDispersionAnalysis
+
+The same analysis with `longitudinal_mode` replaced by the Int `index` (the
+certified re-run of the two-run recipe: `index >= 1`, else the keyword
+constructor's `ArgumentError`). Every other option is carried by derivation
+over `fieldnames(TwissDispersionAnalysis)`, never by a hand-typed keyword
+list, so a future option is carried, not reset to its default. Used by the
+identity contract's `_identity_contract_certified` and by the suite.
+"""
+function _with_longitudinal_mode(a::TwissDispersionAnalysis, index::Integer)
+    kept = (f => getfield(a, f) for f in fieldnames(TwissDispersionAnalysis) if f !== :longitudinal_mode)
+    return TwissDispersionAnalysis(; kept..., longitudinal_mode=Int(index))
+end
+
 const _TWISS_DISPERSION_OPTION_SCHEMA = (
     scaling=ConfigurationOptionMeta(Union{Symbol,Tuple{Vararg{Float64}}}, :auto,
         "Reciprocal canonical scaling of the matrix before every kernel: :auto derives per-plane factors from the matrix, :none leaves it, a tuple gives the factors. Physical results are transformed back; residuals are reported in scaled coordinates.";

@@ -11428,3 +11428,83 @@ restated.
 - Item 9 (iii): T2's 41-44 s in-lane cost, report-only; the example runner
   and `Physics contracts` are lane-gated.
 - Item 11 (a), the AVX2 arm as a Verification Matrix row: the owner's.
+
+## 2026-09-14: _with_longitudinal_mode (refactor(analysis) commit)
+
+Item 11 (b) of the stage 7 carried list, the `refactor(analysis)` commit of
+the batch (the write-up's item 11 (b) is the plan, cited by path in the item
+10 section above). Line numbers are HEAD 180ce70. Its own commit by the
+scope rule and Phase 13: a behaviour-preserving move shares no commit with a
+fix, so a fingerprint change attributes to one of them.
+
+### The two rebuilds
+
+The identity contract's certified re-run (`_identity_contract_certified`,
+`src/contracts/twiss_dispersion_identity.jl:575-587`; 583-584) and the
+suite's certify-everything helper (`_st6_with_longitudinal`,
+`test/runtests.jl:1118-1122`, used by the negative n4) rebuild a
+`TwissDispersionAnalysis` with its `longitudinal_mode` replaced by a
+selected index, both by the same two lines: `kept = (f => getfield(a, f)
+for f in fieldnames(TwissDispersionAnalysis) if f !== :longitudinal_mode)`
+and `TwissDispersionAnalysis(; kept..., longitudinal_mode=index)`, each
+under the same comment (derived over the fields, so that a future option is
+carried and not reset by a hand-typed keyword list). Two copies of one
+derivation are the duplicate the stage 7 list named.
+
+### The helper and its contract
+
+`_with_longitudinal_mode(a::TwissDispersionAnalysis, index)` in
+`src/analysis/twiss_dispersion_analysis.jl`, placed after the keyword
+constructor (`function TwissDispersionAnalysis(;` at 218), private (no export,
+no docs-index entry: the write-up's "no docs-index entry" is the rule for a
+private helper). The analysis file is included before the contract file in
+`Octopus.jl` (its includes at 115 and 133), so the contract calls it; the
+suite calls it through `Octopus.`. Contract: `index >= 1` (0 is "no mode
+selected", which the contract's line 580 returns before any rebuild; the
+helper refuses it rather than build an analysis that pins nothing); every
+field other than `longitudinal_mode` carried by derivation over
+`fieldnames(TwissDispersionAnalysis)`; the result's `longitudinal_mode` is the
+index; the input is unchanged (the struct is immutable). The two call sites
+become calls; the suite's helper becomes a one-line call of it (the local name
+stays, so that n4 reads as before).
+
+### The suite test
+
+A testset on the helper itself: an analysis with every option away from its
+default, rebuilt at an index, differs from the original in `longitudinal_mode`
+alone (field by field over `fieldnames`), and an index below 1 throws. The
+existing users are the behaviour check: the stage 6 testset (n4 through the
+helper) and `Physics contracts` at their previous counts.
+
+### Checks
+
+The stage 6 testset and the new testset extracted on the commit's tree, both
+arms: the stage 6 block 166/166 (1m32.0s native, 1m29.9s in the AVX2 arm,
+`OPENBLAS_CORETYPE=Haswell julia -C haswell`), the tripwires commit's count,
+and the helper testset 16/16 (0.1s native, 0.1s AVX2), exit 0 in both arms,
+`carried/extract/refactor_extract.jl` and its two logs (pass counts; the stage
+6 block at its previous count). Fast lane on the commit's tree: not run on
+this commit's tree alone: AGENTS.md owes the lane before the PUSH, not before
+every commit (owner decision 2026-09-04); the checks of this commit are the
+extract above in both arms and the batch's two-arm full gate on the final tree
+of the push, recorded in its own section below; skipped on this tree alone:
+the fast lane and the full suite.
+
+### Not verified
+
+No julia ran for this section's drafting; the extract counts above are the
+orchestrator's runs; the helper's exact signature, error text and the
+testset's name are the commit's diff.
+
+### Carried
+
+- Item 7 (b), a PRESET `longitudinal_mode` treated as uncertified (the stage
+  6 review's finding 7, the item 10 section above): the fix named by the
+  write-up (return the preset's resolved index at contract 580) touches the
+  caller, not this helper; whether a preset counts as certified is the
+  owner's.
+- The two duplicated rebuilds were the only rebuilds: on HEAD 180ce70
+  `fieldnames(TwissDispersionAnalysis)` appears at contract 583 and runtests
+  1120 (the rebuilds) and in three schema tests (runtests 5721, 6445, 6532)
+  that compare option names and build nothing; a third rebuild, if one
+  comes, calls the helper.

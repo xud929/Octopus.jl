@@ -586,10 +586,8 @@ function _identity_contract_certified(run, analysis::TwissDispersionAnalysis, in
     r.dispersion === nothing && return (r, err, 0)
     index = r.dispersion.longitudinal
     (index == 0 || !(analysis.longitudinal_mode isa Symbol)) && return (r, err, 0)
-    # every option of `analysis` is carried by derivation over its fields (a hand-typed keyword list would reset a
-    # future option to its default on every certified re-run); only `longitudinal_mode` is replaced
-    kept = (f => getfield(analysis, f) for f in fieldnames(TwissDispersionAnalysis) if f !== :longitudinal_mode)
-    certified = TwissDispersionAnalysis(; kept..., longitudinal_mode=index)
+    # only `longitudinal_mode` is replaced; every other option is carried by derivation over the fields (the helper)
+    certified = _with_longitudinal_mode(analysis, index)
     r2, err2 = _identity_contract_run(run, certified, input)
     return (r2, err2, index)
 end

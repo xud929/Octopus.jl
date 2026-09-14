@@ -1114,12 +1114,10 @@ function _st6_perturb_symplectic_none(a::TwissDispersionAnalysis, x)
     return analyze(a, x * exp(1e-8 .* (S * H)))
 end
 # The analysis with its longitudinal mode pinned to `index` (the certification
-# rebuild of `_identity_contract_certified`; used by the certify-everything run n4).
-function _st6_with_longitudinal(a::TwissDispersionAnalysis, index::Int)
-    # derived over the fields (no hand-typed keyword list): a future option is carried, not reset
-    kept = (f => getfield(a, f) for f in fieldnames(TwissDispersionAnalysis) if f !== :longitudinal_mode)
-    TwissDispersionAnalysis(; kept..., longitudinal_mode=index)
-end
+# rebuild of `_identity_contract_certified`; used by the certify-everything run n4):
+# the analysis's own helper, one source for the rebuild (carried item 11b); the
+# local name stays so that n4 reads as before.
+_st6_with_longitudinal(a::TwissDispersionAnalysis, index::Int) = Octopus._with_longitudinal_mode(a, index)
 # n4: a verb that certifies every bunched run silently (re-runs with the selected
 # index whenever the first run selected one and the analysis left the mode open).
 function _st6_certify_everything(a::TwissDispersionAnalysis, x)
@@ -5924,6 +5922,25 @@ end
     @test_throws ArgumentError analyze(a, zeros(4, 6))
     Mn = _st4b_a_dense4(); Mn[1, 1] = NaN
     @test_throws ArgumentError analyze(a, Mn)
+end
+
+@testset "TwissDispersionAnalysis: _with_longitudinal_mode carries every other option" begin
+    # the one rebuild behind the contract's certified re-run and the suite's n4 verb (carried item 11b): only
+    # longitudinal_mode is replaced, every other field is carried by derivation over the fields (a hand-typed keyword
+    # list would reset a future option to its default on every certified re-run), and the constructor's rules still
+    # judge the index (0 is refused: an explicit index must be positive)
+    a = TwissDispersionAnalysis(strict=false, newton_max_iterations=7, emittances=(1e-9, 2e-9, 3e-9), scaling=:none)
+    b = Octopus._with_longitudinal_mode(a, 3)
+    @test b isa TwissDispersionAnalysis && b.longitudinal_mode == 3
+    for f in fieldnames(TwissDispersionAnalysis)
+        f === :longitudinal_mode && continue
+        @testset let f = f
+            @test getfield(a, f) == getfield(b, f)
+        end
+    end
+    @test_throws ArgumentError Octopus._with_longitudinal_mode(a, 0)
+    # the suite's local name is the same rebuild (n4 reads the local name)
+    @test all(getfield(_st6_with_longitudinal(a, 3), f) == getfield(b, f) for f in fieldnames(TwissDispersionAnalysis))
 end
 
 @testset "Dense 6D map: the default path is :degraded by the uncertified heuristic, certified it :passed (F3, F4, dossier row 1)" begin
