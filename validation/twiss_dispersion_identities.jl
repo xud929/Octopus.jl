@@ -23,7 +23,21 @@ Error metric
   ran on, with kappa the conditioning of the quantity compared and c the
   contract's multiplier, measured in two CPU arms (native and
   `OPENBLAS_CORETYPE=Haswell julia -C haswell`) and frozen at a power of two
-  at least ten times the larger measured ratio; a ratio above 1 fails;
+  at least ten times the larger measured ratio; a ratio above 1 fails. The
+  multipliers are FROZEN on the contract's default fixture set: the lattice
+  fixtures plus 20 dense 6x6 and 5 dense 4x4 maps at seed 20260911
+  (`_default_identity_multipliers` and the struct defaults `dense_maps = 20`,
+  `dense_maps_4d = 5` in src/contracts/twiss_dispersion_identity.jl), while
+  this script runs 200 + 20 dense maps by default (`IDENT_MAPS`,
+  `IDENT_MAPS4` below), so it reports ratios the freezing never saw, and a
+  ratio above 1 on any of them fails the script at the gate line at the end
+  of this file;
+- the two normalizer metrics: the analysis's own `U_6 reconstruction` and
+  `U_6 symplecticity` residuals at multiplier 1, value / rho_M1 and
+  value / (rho_M1 cond(U_6)), the largest over the fixtures (contract
+  `_identity_contract_reported_rows!`), which the suite pins below the
+  multipliers of the `r_u6_reconstruction` and `r_u6_symplecticity` rows;
+  printed and written here beside the identity rows, not gated;
 - the silent-diagnostic arm: every fixture whose status or reason must fire
   (unstable spectrum, unresolved and indefinite clusters, the h = 0
   projection, the coasting structure, the uncertified heuristic, the
@@ -42,11 +56,14 @@ fixtures of the design's verification table, the declaring kinds' examples.
 Outputs (under `result/`)
 -------------------------
 `twiss_dispersion_identities.tsv` -- one row per identity: slug, max ratio,
-max value, multiplier, the fixture that attained the maximum.
-Printed: one `TW-IDENT` line per identity in stable order, `TW-DIAG`,
-`TW-KINDS`, and one `TW-DIGEST` line (the profiling drivers' rotate-then-xor
-bitwise digest of the maxima vector), so two checkouts or two CPU arms can
-be diffed.
+max value, multiplier, the fixture that attained the maximum; then the two
+normalizer rows `normalizer_u6_reconstruction` and
+`normalizer_u6_symplecticity` (the metric as max ratio, NaN as max value,
+the suite's pin as multiplier, "analysis normalizer" as argmax).
+Printed: one `TW-IDENT` line per identity in stable order, two
+`TW-NORMALIZER` lines, `TW-DIAG`, `TW-KINDS`, and one `TW-DIGEST` line (the
+profiling drivers' rotate-then-xor bitwise digest of the maxima vector of the
+identity rows only), so two checkouts or two CPU arms can be diffed.
 
 Run
 ---
@@ -79,6 +96,17 @@ const IDENT_DRY_RUN = isdefined(Main, :IDENT_DRY_RUN)
 const IDENT_SEED  = parse(Int, get(ENV, "OCTOPUS_TWISS_IDENTITY_SEED",  "20260911"))
 const IDENT_MAPS  = parse(Int, get(ENV, "OCTOPUS_TWISS_IDENTITY_MAPS",  "200"))
 const IDENT_MAPS4 = parse(Int, get(ENV, "OCTOPUS_TWISS_IDENTITY_MAPS4", "20"))
+
+# The two normalizer metrics reported beside the identity rows: printed label,
+# metric key (contract `_identity_contract_reported_rows!`: the analysis's
+# U_6 residual at multiplier 1, value / rho_M1 and value / (rho_M1 cond(U_6)),
+# the largest over the fixtures), and the identity row whose multiplier the
+# suite pins the metric against (test/runtests.jl, the stage 6 testset). The
+# contract records no raw value and no argmax for them.
+const _IDENT_NORMALIZER_ROWS = (
+    ("u6_reconstruction", :normalizer_ratio_u6_reconstruction, :r_u6_reconstruction),
+    ("u6_symplecticity",  :normalizer_ratio_u6_symplecticity,  :r_u6_symplecticity),
+)
 
 """
     identity_slugs(result, slugs) -> Vector{Symbol}
@@ -124,9 +152,12 @@ end
 
 Print the contract's identity table from `result.metrics` (any object with
 `.metrics`, `.status`, `.message` and `.residual`): one `TW-IDENT` line per
-slug in stable order, then `TW-DIAG`, `TW-KINDS`, `TW-DIGEST`, the status and
-the message. `multipliers` is the contract's `c` per slug (the contract owns
-it; the result does not carry it). Returns the digest.
+slug in stable order, then one `TW-NORMALIZER` line per entry of
+`_IDENT_NORMALIZER_ROWS` (`ratio=` the metric, `c=` the suite's pin; NaN
+when the result lacks the key), then `TW-DIAG`, `TW-KINDS`, `TW-DIGEST`, the
+status and the message. `multipliers` is the contract's `c` per slug (the
+contract owns it; the result does not carry it). Returns the digest, which
+is over the identity rows only.
 """
 function report_identities(result, io::IO; multipliers, slugs,
                            seed::Integer=IDENT_SEED, maps::Integer=IDENT_MAPS,
@@ -140,6 +171,14 @@ function report_identities(result, io::IO; multipliers, slugs,
                 String(slug), Float64(m[Symbol("maxval_", slug)]),
                 Float64(m[Symbol("max_", slug)]), Float64(multipliers[slug]),
                 string(m[Symbol("argmax_", slug)]))
+    end
+    # The normalizer metrics are reported, not gated, and they are NOT inputs
+    # of `identity_digest`: TW-DIGEST stays a digest of the identity rows only,
+    # unchanged by this block. `get` with NaN: a result without the keys (a
+    # fake one under IDENT_DRY_RUN) prints NaN rather than throwing.
+    for (label, key, cslug) in _IDENT_NORMALIZER_ROWS
+        @printf(io, "TW-NORMALIZER %-17s ratio=%.6e c=%g\n", label,
+                Float64(get(m, key, NaN)), Float64(get(multipliers, cslug, NaN)))
     end
     silent_names = get(m, :diagnostics_silent_names, String[])
     @printf(io, "TW-DIAG expected=%d silent=%d [%s]\n",
@@ -161,8 +200,13 @@ end
     write_identities_tsv(result, path; multipliers, slugs)
 
 One row per identity slug in stable order under the header
-`identity\\tmax_ratio\\tmax_value\\tmultiplier\\targmax`. Creates the
-directory of `path`. Returns the number of rows written.
+`identity\\tmax_ratio\\tmax_value\\tmultiplier\\targmax`, plus the two
+normalizer rows of `_IDENT_NORMALIZER_ROWS` after them (`identity` =
+`normalizer_<label>`, `max_ratio` the metric, `max_value` NaN because the
+contract records the ratio only, `multiplier` the suite's pin, `argmax`
+"analysis normalizer" because the contract records no fixture for them).
+Creates the directory of `path`. Returns the number of rows written
+(identities plus normalizer rows).
 """
 function write_identities_tsv(result, path::AbstractString; multipliers, slugs)
     ordered = identity_slugs(result, slugs)
@@ -175,8 +219,13 @@ function write_identities_tsv(result, path::AbstractString; multipliers, slugs)
                     Float64(m[Symbol("max_", slug)]), Float64(m[Symbol("maxval_", slug)]),
                     Float64(multipliers[slug]), string(m[Symbol("argmax_", slug)]))
         end
+        for (label, key, cslug) in _IDENT_NORMALIZER_ROWS
+            @printf(io, "normalizer_%s\t%.8e\t%.8e\t%g\t%s\n", label,
+                    Float64(get(m, key, NaN)), NaN,
+                    Float64(get(multipliers, cslug, NaN)), "analysis normalizer")
+        end
     end
-    return length(ordered)
+    return length(ordered) + length(_IDENT_NORMALIZER_ROWS)
 end
 
 # ---------------------------------------------------------------------------
@@ -197,7 +246,8 @@ if !IDENT_DRY_RUN
     mkpath(resultdir)
     tsv = joinpath(resultdir, "twiss_dispersion_identities.tsv")
     nrows = write_identities_tsv(result, tsv; multipliers=contract.multipliers, slugs=slugs)
-    println("TSV written to result/twiss_dispersion_identities.tsv ($nrows identities)")
+    println("TSV written to result/twiss_dispersion_identities.tsv ($nrows rows: ",
+            length(slugs), " identities + ", length(_IDENT_NORMALIZER_ROWS), " normalizer)")
 
     # Gate, not just print: a :failed contract must exit non-zero here (the
     # message names the first failing row, diagnostic or kind).

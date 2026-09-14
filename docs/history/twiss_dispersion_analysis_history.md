@@ -11508,3 +11508,140 @@ testset's name are the commit's diff.
   1120 (the rebuilds) and in three schema tests (runtests 5721, 6445, 6532)
   that compare option names and build nothing; a third rebuild, if one
   comes, calls the helper.
+
+## 2026-09-14: carried item 5, the validation script prints the normalizer metrics
+
+The `feat(validation)` commit, the `validation/` slug of the five-commit
+carried-items batch (the owner's "Go" of 2026-09-14 on the recommendations
+write-up of 2026-09-13 23:35, item 5: "ORCHESTRATOR: add TW-NORMALIZER lines +
+TSV rows to report_identities"). Scope:
+`validation/twiss_dispersion_identities.jl`, one paragraph of
+`validation/README.md`, this section, the todo row and one experiences lesson.
+No `src/` and no `test/` change.
+
+What was wrong. The contract computes two metrics beside its 57 identity rows,
+`metrics[:normalizer_ratio_u6_reconstruction]` and
+`[:normalizer_ratio_u6_symplecticity]`
+(src/contracts/twiss_dispersion_identity.jl 709 and 713, initialised at 1174):
+the analysis's own `U_6 reconstruction` and `U_6 symplecticity` residuals at
+multiplier 1, `value / rho_M1` and `value / (rho_M1 cond(U_6))`, the largest
+over the fixtures. The analysis judges those residuals against
+`_NORMALIZER_ACCEPTANCE_MULTIPLIER = 64` times the same kappa
+(src/analysis/twiss_dispersion_analysis.jl 80, 1293-1294), and the suite pins
+the metrics below the multipliers of the `r_u6_reconstruction` (64) and
+`r_u6_symplecticity` (32) rows (test/runtests.jl 1217-1218). The validation
+script printed neither: its `report_identities` covered TW-IDENT, TW-DIAG,
+TW-KINDS and TW-DIGEST. So the stage 6 record's verdict on the item
+("MEASURED, VERDICT no change ... all below 6.4", the stage 6 carried list
+item 5 above and the stage 7 list item 5) was read from the SUITE's 20 + 5 run
+(2.47 / 1.80 native, 3.30 / 1.49 haswell) although the same record's 200-map
+table (the haswell "18 rows above one tenth" list of the stage 6 section)
+already carried the 200-map number in another guise: `r_u6_reconstruction`
+0.206 on map 42 is `value / (64 rho_M1)`, i.e. `value / rho_M1` about 13.2 on
+that map, above the 6.4 (one tenth of 64) closing criterion the item had set
+itself. Map 42 is the small-tune map (tune about 0.0011 rad, cond(U_6) about
+60) of the scaling-invariance and (E7) items. The write-up's three critics
+refuted "close" on this arithmetic; whether the remedy is a kappa (cond(U_6)
+or the cluster's internal gap) or a larger c is the M3 driver's question and
+the owner's decision, not this commit's.
+
+What changed (validation/twiss_dispersion_identities.jl).
+- `_IDENT_NORMALIZER_ROWS`: the two (printed label, metric key, pinned row)
+  triples, one constant read by both the printer and the TSV writer.
+- `report_identities` prints, after the TW-IDENT rows and before TW-DIAG,
+
+      TW-NORMALIZER u6_reconstruction ratio=%.6e c=%g
+      TW-NORMALIZER u6_symplecticity  ratio=%.6e c=%g
+
+  with `ratio` the metric and `c` the pinned row's multiplier
+  (`multipliers[:r_u6_reconstruction]`, `[:r_u6_symplecticity]`), both read
+  with `get(..., NaN)` so a result without the keys prints NaN rather than
+  throwing. `identity_digest`'s inputs are unchanged: TW-DIGEST stays a
+  digest of the identity rows only, so the two arms' digests remain
+  comparable with the stage 6 record's.
+- `write_identities_tsv` appends two rows after the identity rows,
+  `normalizer_u6_reconstruction` and `normalizer_u6_symplecticity`, with
+  max_ratio = the metric, max_value = NaN (the contract records the ratio
+  only), multiplier = the pin, argmax = `analysis normalizer` (the contract
+  records no fixture for them); it returns identities + 2 (59 rows) and the
+  closing line reads `TSV written to ... (59 rows: 57 identities + 2
+  normalizer)`.
+- The header's "Error metric" names the freezing set: the multipliers are
+  frozen on the contract's default fixture set (20 dense 6x6 + 5 dense 4x4
+  maps at seed 20260911 beside the lattice fixtures,
+  `_default_identity_multipliers`, struct defaults `dense_maps = 20`,
+  `dense_maps_4d = 5`) while the script runs 200 + 20 by default, so it
+  reports ratios the freezing never saw and a ratio above 1 fails it at the
+  gate line; a second bullet describes the two normalizer metrics, and the
+  "Outputs" paragraph lists the new lines and rows. The paragraph on the
+  script in validation/README.md lists them too; its freezing-set sentence
+  ("frozen on the contract's default 20 + 5 maps") was already right and is
+  unchanged. The root README.md does not mention the script.
+
+Measured (both arms, the script at its defaults 200 + 20 dense maps, seed
+20260911, on the batch's tree; the orchestrator's runs, pasted verbatim):
+
+    native:  TW-NORMALIZER u6_reconstruction ratio=5.335895e+00 c=64
+             TW-NORMALIZER u6_symplecticity  ratio=5.437241e+00 c=32
+    haswell: TW-NORMALIZER u6_reconstruction ratio=1.316640e+01 c=64
+             TW-NORMALIZER u6_symplecticity  ratio=5.803081e+00 c=32
+
+The lines print before the gate line, so they are read whatever the script's
+exit status on that tree (the M1 fix of the same batch clears
+`k_route_agreement`; `c_scaling_invariance` on map 98 stays with the
+freezing-set decision, item 2). The reconstruction number on haswell is
+expected at about 13.2 (map 42, the arithmetic above); a number above the
+suite's pin (64 / 32) would be a suite failure the pins already catch, a
+number above 6.4 / 3.2 is what the item's own closing criterion asks the
+driver to explain.
+
+Not changed, and why. The suite's two pins (test/runtests.jl 1217-1218) stay
+`< 64` / `< 32`: tightening them to one tenth is the write-up's option after
+the driver, and that file belongs to the tripwires and refactor commits in
+this batch. The script's `IDENT_DRY_RUN` hook has no testset in the suite (the
+hook's name occurs only in the script itself), so the new reporting code is
+exercised by the script run above and by a dry-run check on a fake result (the
+hook defined, two slugs' metrics plus the two normalizer keys: expected 2 + 2
+rows written and the two lines printed; the same fake without the keys:
+expected NaN printed and no throw): outcome 13/13 natively
+(`carried/dryrun_check.jl`, log
+`carried/validation_normalizer/dryrun_native.log`; the first run's one red was
+the check's own hand-typed padding of the TW-IDENT line, one space short of
+the script's `%-40s` field, corrected and re-run,
+`dryrun_native_first_attempt.log`): the two lines print between the TW-IDENT
+rows and TW-DIAG with the expected text, the TSV holds 2 + 2 rows, the fake
+without the keys prints `ratio=NaN` and writes NaN rows without throwing, and
+TW-DIGEST is the same with and without the keys. The gate is the batch's
+two-arm full gate, recorded in its own section.
+
+Checks. Fast lane on the commit's tree: not run on this commit's tree alone:
+AGENTS.md owes the lane before the PUSH, not before every commit (owner
+decision 2026-09-04); the checks of this commit are the script runs and the
+dry-run check above and the batch's two-arm full gate on the final tree of the
+push, recorded in its own section below; skipped on this tree alone: the fast
+lane and the full suite. The Verification Matrix row for a validation change
+("the script reproduces; the record is committed: full, before the commit
+carrying the claim") is met by the batch's two-arm full gate on the final tree
+of the push, which differs from this commit's tree in markdown only (the M3
+record and the gate record sections), recorded in its own section below; the
+script runs above are the reproduction and this section is the record. The
+script's exit statuses at the defaults are unchanged by print lines: native
+exit 1, `failed (1 findings)` on `c_scaling_invariance` (F6a dense 6x6 map 98,
+1.111989e+00) as in the M1 section, TW-DIGEST 0x75a0b10f84b2fdb1; the AVX2 arm
+(`OPENBLAS_CORETYPE=Haswell julia -C haswell`) exit 0, `passed`, TW-DIGEST
+0x11f90af4a5841198; both digests equal to the M1 section's after-fix digests,
+so the refactor commit between them moved no identity maximum; the closing
+line `59 rows: 57 identities + 2 normalizer` in both.
+
+Carried.
+- Item 5's kappa question: the M3 driver
+  (`result/twiss_impl_2026_09_11/carried/m3_driver.jl`, an ignored path cited
+  by name) tests whether map 42's metric tracks `cond(U_6)` or the internal
+  gap; if yes, a kappa at analysis 1293 and contract 708-709 and a re-freeze
+  of `c` at contract 90 by H15; if no, the headroom under the analysis's 64 is
+  recorded and the item closes. Optionally `test/runtests.jl` 1217-1218
+  tightened to `< c / 10`.
+- Item 2 (M3), the freezing set: the owner's decision with the driver's table;
+  until then the native script at its defaults is red on map 98.
+- The route diagnostics' new `converged` field (the M1 section) is printed by
+  no `TW-DIAG` line; a later validation commit if wanted.

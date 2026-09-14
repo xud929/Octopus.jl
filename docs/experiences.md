@@ -1178,6 +1178,28 @@ covered by a fixture beyond it); a census that prints every status and
 convergence flag over the LARGEST family the tree runs is part of freezing
 any floor, since a ratio table cannot show a tautological pass.
 
+## A metric that is pinned but printed nowhere is measured only where the pin runs
+
+The stage 6 identity contract (2026-09-13) computed two normalizer metrics
+beside its identity rows, the analysis's U_6 residuals over `rho_M1`, and
+the suite pinned them (`< 64`, `< 32`); the validation twin that runs the
+same contract on 200 + 20 dense maps instead of the suite's 20 + 5 printed
+neither. The stage 6 record therefore judged the carried item on the suite's
+numbers (2.47 / 1.80 native, 3.30 / 1.49 haswell, "all below 6.4, nothing to
+carry") while its own 200-map table already held the larger set's answer in
+another guise: the `r_u6_reconstruction` row at 0.206 on map 42 is the same
+residual over `64 rho_M1`, i.e. 13.2 over `rho_M1`, twice the closing
+criterion. Nobody misread a number; the number the verdict needed was never
+printed where the larger set ran, and a verdict about the larger set was
+drawn from the smaller one.
+
+Rules adopted (2026-09-14, the `TW-NORMALIZER` lines): every metric a
+testset pins, the validation twin prints beside its rows and writes to its
+TSV, with the pin as its `c`; a verdict about a fixture set is read from
+that set's own printout, never carried over from the suite's; and a script
+that runs a larger set than the one its tolerances were frozen on names both
+sets in its header.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

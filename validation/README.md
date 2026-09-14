@@ -1082,9 +1082,12 @@ Overrides: `OCTOPUS_TWISS_IDENTITY_SEED` (default 20260911),
 `OCTOPUS_TWISS_IDENTITY_MAPS` (dense 6x6 maps, default 200),
 `OCTOPUS_TWISS_IDENTITY_MAPS4` (dense 4x4 maps, default 20).
 Outputs `result/twiss_dispersion_identities.tsv` (one row per identity: slug,
-max ratio, max value, multiplier, the fixture that attained the maximum) and
-prints one `TW-IDENT` line per identity, `TW-DIAG`, `TW-KINDS` and a bitwise
-`TW-DIGEST` of the maxima so two CPU arms can be diffed. The multipliers are
+max ratio, max value, multiplier, the fixture that attained the maximum; then
+two `normalizer_u6_*` rows) and prints one `TW-IDENT` line per identity, two
+`TW-NORMALIZER` lines (the analysis's U_6 reconstruction and U_6
+symplecticity residuals at multiplier 1 against the suite's pins; reported,
+not gated), `TW-DIAG`, `TW-KINDS` and a bitwise `TW-DIGEST` of the identity
+maxima so two CPU arms can be diffed. The multipliers are
 frozen on the contract's default 20 + 5 maps; the script's larger set can put
 a row above one tenth of its budget or, on a map that exposes an analysis
 defect, over it (the gate then exits non-zero naming the row). Derivations:
