@@ -11645,3 +11645,280 @@ Carried.
   until then the native script at its defaults is red on map 98.
 - The route diagnostics' new `converged` field (the M1 section) is printed by
   no `TW-DIAG` line; a later validation commit if wanted.
+
+## 2026-09-14: the M3 driver, the identity rows at multiplier 1 on the 200 + 20 set (docs(history) commit)
+
+Carried item 2 of the stage 7 list (the freezing set, stage 6 M3) and the
+questions of items 4, 5 and 6/12 in the write-up
+`result/twiss_impl_2026_09_11/CARRIED_ITEMS_RECOMMENDATIONS_2026_09_13.md`
+needed one table: every identity row's ratio at multiplier 1 on every fixture
+of the validation script's 200 + 20 set, in both CPU arms, beside the
+fixture's conditioning numbers. This section is that record (Verification
+Matrix row "validation, study, or benchmark": the script reproduces, the
+record is committed). The driver is scratch under the ignored `result/` tree
+and is cited by path; nothing under `src/`, `test/`, `validation/` changes.
+
+The driver.
+- `result/twiss_impl_2026_09_11/carried/m3_driver.jl` (286 lines) builds the
+  fixtures of `TwissDispersionIdentityContract(dense_maps=200,
+  dense_maps_4d=20)` with the contract's own helpers
+  (`_identity_contract_fixtures`, `_identity_contract_run`,
+  `_identity_contract_certified`, the three row layers, the pair rows) and
+  mirrors the per-fixture loop of `_identity_contract_probe` (skip logic,
+  certified re-run, scaling pair, 4x4 replacement draws) with a FRESH metrics
+  Dict per fixture, so that `max_<slug>` is the row's ratio on that fixture
+  alone: the residual divided by eps times the row's kappa, the number the
+  frozen multiplier `c` bounds (the row passes at `c` when the ratio is at
+  most `c`; "ratio at c" below is ratio / c). Beside the 57 ratios, 32
+  conditioning columns: the three tunes and min |sin mu| (frame and
+  spectrum), cond and squared norm of U_6, U_4 and the physical normalizer,
+  kappa_frame / kappa_eig, the clusters' internal and external gaps, the
+  chord minimum, rho_M1, the routes' coefficient condition, the two U_6
+  normalizer ratios, |M| and |M_s|, the scaling amplitude, the route
+  counters (n_routes, n_not_invariant, n_unconverged), the certified index.
+- Two fixture sets in one TSV. `200+20` is every fixture of that contract.
+  `20+5` is F1-F5, F6a maps 1-20, F8 and the five F6b maps of the DEFAULT
+  contract, run separately: the 4x4 maps of the 200 + 20 contract are drawn
+  after its 200 6x6 maps from the same rng and are NOT the default
+  contract's five, so a re-freeze check on "20 + 5" must use the default
+  contract's own F6b draws.
+- `result/twiss_impl_2026_09_11/carried/m3_summarize.py` (338 lines, stdlib):
+  per row the per-arm and two-arm max on each set with its argmax fixture,
+  the H15 rule `c = max(8, 2^ceil(log2(10 max)))` on each set, the tree's
+  frozen `c` parsed from `_default_identity_multipliers` in
+  `src/contracts/twiss_dispersion_identity.jl`, the Spearman rank
+  correlation of each row's per-fixture ratio with every conditioning
+  column over the 200 F6a maps (plus derived columns such as
+  `cond_U6 * normU6_sq / chord_min`), the rows above one tenth of `c`, and
+  every column of five excursion maps. Output `carried/m3/summary.md`.
+- `result/twiss_impl_2026_09_11/carried/run_m3_driver.sh`: native arm, then
+  the AVX2 parity arm (`OPENBLAS_CORETYPE=Haswell julia -C haswell`),
+  sequential, `CUDA_VISIBLE_DEVICES=""`, four threads, never during a gate.
+
+Runs. Two, both on acnlinj4 (sapphirerapids).
+- On 180ce70 (the pushed tree, before M1): summary kept as
+  `carried/m3/summary_180ce70.md`.
+- On c43e50f (the batch's `refactor(analysis)` commit; its `src/` is the
+  final tree's, the later `feat(validation)` commit changing `validation/`
+  and docs only): 01:09:04-01:11:17 EDT, native exit 0 at 01:10:10,
+  haswell exit 0 at 01:11:17 (`carried/m3/run.log`); `carried/m3/native.tsv`
+  and `haswell.tsv`, 231 rows each (226 of the 200+20 set, 31 of the 20+5
+  set, 26 fixtures shared), statuses passed 192 / degraded 39 in both arms,
+  every probe action `rows` (no fixture skipped). This run is the record.
+- The two summaries differ in 22 lines, all the `k_route_agreement` row: its
+  200+20 max was 4.128e+33 on F6a map 157 before M1 (the unconverged
+  iterate's graph, the defect of the `fix(analysis)` section) and is 3.070
+  native (map 81) / 2.900 haswell (map 9) after, `c` 32 unchanged; the
+  count of rows whose `c` would change on 200+20 went from 22 to 21.
+
+Check that the driver reproduces the freeze. On the 20+5 set the H15 `c`
+recomputed from the two-arm max equals the tree's frozen `c` for every one of
+the 57 rows (the summary's line "CHECK rows whose c recomputed on the 20+5
+set differs from the tree's frozen c ... 0: none"); the frozen table is
+reproduced from scratch by an independent loop, in both arms.
+
+The 21 rows whose `c` would change if re-frozen on 200+20 (two-arm max, H15;
+the other 36 rows keep their `c`; max = ratio at multiplier 1 on the 200+20
+set, native | haswell; argmax = the fixture of the two-arm max):
+
+| row | frozen c | max 200+20 native | haswell | argmax | c on 200+20 |
+|---|---|---|---|---|---|
+| c_covariance_closure_caller | 64 | 1.686e+01 | 2.959e+01 | F6a dense 6x6 map 42 (haswell) | 512 |
+| c_d8_round_trip | 8 | 1.587e+00 | 1.361e+00 | F6a dense 6x6 map 156 (native) | 16 |
+| c_e8_reconstruction_caller | 32 | 3.634e+00 | 6.181e+00 | F6a dense 6x6 map 103 (haswell) | 64 |
+| c_projector_idempotence | 8 | 9.651e-01 | 4.319e-01 | F6b dense 4x4 map 18 (native) | 16 |
+| c_projector_sum | 64 | 7.582e+00 | 5.120e+00 | F6b dense 4x4 map 18 (native) | 128 |
+| c_scaling_invariance | 8 | 8.896e+00 | 5.510e+00 | F6a dense 6x6 map 98 (native) | 128 |
+| c_tune_consistency | 32 | 8.118e+00 | 2.094e+01 | F6a dense 6x6 map 42 (haswell) | 256 |
+| k_frame_column_sums | 16 | 4.598e+00 | 2.684e+00 | F6a dense 6x6 map 71 (native) | 64 |
+| k_frame_u_difference | 8 | 2.086e+00 | 2.365e+00 | F6a dense 6x6 map 173 (haswell) | 32 |
+| k_k13_residual | 32 | 7.787e+00 | 1.130e+01 | F6a dense 6x6 map 103 (haswell) | 128 |
+| k_k7_difference | 64 | 3.974e+01 | 3.300e+01 | F6a dense 6x6 map 70 (native) | 512 |
+| k_longitudinal_block_symplecticity | 16 | 2.106e+00 | 2.116e+00 | F6a dense 6x6 map 103 (haswell) | 32 |
+| k_ohmi_separated_off_diagonal | 512 | 5.643e+01 | 3.818e+01 | F6a dense 6x6 map 70 (native) | 1024 |
+| k_transverse_block_symplecticity | 16 | 1.581e+00 | 1.795e+00 | F6a dense 6x6 map 156 (haswell) | 32 |
+| k_u6_column_sums | 8 | 2.959e+00 | 1.260e+00 | F6a dense 6x6 map 71 (native) | 32 |
+| r_covariance_closure | 8 | 1.124e+00 | 9.858e-01 | F6a dense 6x6 map 134 (native) | 16 |
+| r_frame_reconstruction_i1 | 64 | 6.930e+00 | 6.930e+00 | F6b dense 4x4 map 7 (native) | 128 |
+| r_frame_symplecticity_e7 | 64 | 6.494e+00 | 5.508e+00 | F6b dense 4x4 map 18 (native) | 128 |
+| r_separation_off_diagonal_k5 | 128 | 3.352e+01 | 2.805e+01 | F6a dense 6x6 map 70 (native) | 512 |
+| r_u6_reconstruction | 64 | 5.336e+00 | 1.317e+01 | F6a dense 6x6 map 42 (haswell) | 256 |
+| r_u6_symplecticity | 32 | 5.437e+00 | 5.803e+00 | F6a dense 6x6 map 115 (haswell) | 64 |
+
+Rows above one tenth of the frozen `c` on the 200+20 set (ratio at c; the
+one-tenth level is the analysis's pin headroom, 0.25 the runner re-open
+rule of the `test(contracts)` section, which speaks of the runner's 20+5
+table, not of this set). Native, 19 rows, one of them above `c` itself:
+
+- c_scaling_invariance 1.112 = 8.896e+00 / 8 on F6a dense 6x6 map 98
+- k_k7_difference 0.621 = 3.974e+01 / 64 on F6a dense 6x6 map 70
+- k_u6_column_sums 0.3698 = 2.959e+00 / 8 on F6a dense 6x6 map 71
+- k_frame_column_sums 0.2874 = 4.598e+00 / 16 on F6a dense 6x6 map 71
+- c_covariance_closure_caller 0.2634 = 1.686e+01 / 64 on F6b dense 4x4 map 7
+- r_separation_off_diagonal_k5 0.2619 = 3.352e+01 / 128 on F6a dense 6x6 map 70
+- k_frame_u_difference 0.2608 = 2.086e+00 / 8 on F6b dense 4x4 map 18
+- c_tune_consistency 0.2537 = 8.118e+00 / 32 on F6a dense 6x6 map 52
+- k_k13_residual 0.2434 = 7.787e+00 / 32 on F6a dense 6x6 map 111
+- c_d8_round_trip 0.1983 = 1.587e+00 / 8 on F6a dense 6x6 map 156
+- r_u6_symplecticity 0.1699 = 5.437e+00 / 32 on F6a dense 6x6 map 115
+- r_covariance_closure 0.1405 = 1.124e+00 / 8 on F6a dense 6x6 map 134
+- k_longitudinal_block_symplecticity 0.1316 = 2.106e+00 / 16 on F6a dense 6x6 map 83
+- c_projector_idempotence 0.1206 = 9.651e-01 / 8 on F6b dense 4x4 map 18
+- c_projector_sum 0.1185 = 7.582e+00 / 64 on F6b dense 4x4 map 18
+- c_e8_reconstruction_caller 0.1135 = 3.634e+00 / 32 on F6a dense 6x6 map 187
+- k_ohmi_separated_off_diagonal 0.1102 = 5.643e+01 / 512 on F6a dense 6x6 map 70
+- r_frame_reconstruction_i1 0.1083 = 6.930e+00 / 64 on F6b dense 4x4 map 7
+- r_frame_symplecticity_e7 0.1015 = 6.494e+00 / 64 on F6b dense 4x4 map 18
+
+Haswell, 17 rows, none above `c`:
+
+- c_scaling_invariance 0.6888 = 5.510e+00 / 8 on F6a dense 6x6 map 42
+- c_tune_consistency 0.6543 = 2.094e+01 / 32 on F6a dense 6x6 map 42
+- k_k7_difference 0.5157 = 3.300e+01 / 64 on F6a dense 6x6 map 70
+- c_covariance_closure_caller 0.4623 = 2.959e+01 / 64 on F6a dense 6x6 map 42
+- k_k13_residual 0.3532 = 1.130e+01 / 32 on F6a dense 6x6 map 103
+- k_frame_u_difference 0.2956 = 2.365e+00 / 8 on F6a dense 6x6 map 173
+- r_separation_off_diagonal_k5 0.2192 = 2.805e+01 / 128 on F6a dense 6x6 map 70
+- r_u6_reconstruction 0.2057 = 1.317e+01 / 64 on F6a dense 6x6 map 42
+- c_e8_reconstruction_caller 0.1931 = 6.181e+00 / 32 on F6a dense 6x6 map 103
+- r_u6_symplecticity 0.1813 = 5.803e+00 / 32 on F6a dense 6x6 map 115
+- c_d8_round_trip 0.1701 = 1.361e+00 / 8 on F6a dense 6x6 map 83
+- k_frame_column_sums 0.1678 = 2.684e+00 / 16 on F6a dense 6x6 map 184
+- k_u6_column_sums 0.1574 = 1.260e+00 / 8 on F6a dense 6x6 map 173
+- k_longitudinal_block_symplecticity 0.1322 = 2.116e+00 / 16 on F6a dense 6x6 map 103
+- r_covariance_closure 0.1232 = 9.858e-01 / 8 on F6a dense 6x6 map 120
+- k_transverse_block_symplecticity 0.1122 = 1.795e+00 / 16 on F6a dense 6x6 map 156
+- r_frame_reconstruction_i1 0.1083 = 6.930e+00 / 64 on F6b dense 4x4 map 7
+
+The excursion maps (every column of both arms in the summary).
+- F6a map 42: tune3 1.075e-3 (the smallest tune, min |sin mu| 1.07e-3),
+  cond(U_6) 62.5, degraded, 2 routes :not_invariant, 1 unconverged. The U_6
+  reconstruction ratio 2.026 native / 13.166 haswell (the `TW-NORMALIZER`
+  value of the validation section above); c_tune_consistency 0.134 native /
+  20.94 haswell (a factor 156 between the arms on one fixture),
+  c_covariance_closure_caller 0.994 / 29.59, c_scaling_invariance haswell
+  5.51 (0.689 of its `c` 8).
+- F6a map 70: tune3 3.37e-4, cond(U_6) 1670, kappa_frame_max 1668, the
+  routes' coefficient condition 822. k_ohmi_separated_off_diagonal 56.4 /
+  38.2 (`c` 512), k_k7_difference 39.7 / 33.0 (`c` 64), c_k4_block_diagonality
+  37.5 / 31.3 (`c` 512), r_separation_off_diagonal_k5 33.5 / 28.1 (`c` 128),
+  c_d14_graph_invariance 32.0 / 19.8 (`c` 1024).
+- F6a map 98: tune3 5.19e-3, cond(U_6) 3.09 (well conditioned by every
+  column). c_scaling_invariance 8.90 / 4.46: 1.112 of its `c` 8 natively,
+  the only row above its `c` in either arm, the row that keeps the
+  validation script red at its defaults; c_tune_consistency 3.11 / 2.90,
+  c_e8_reconstruction_caller 3.16 / 3.10, c_covariance_closure_caller
+  3.14 / 2.97, k_k13_residual 3.06 / 2.98. No conditioning column of this
+  map is extreme: the scaling excursion is not a conditioning story.
+- F6a map 103: tune3 1.55e-2, cond(U_4) 25.3, status passed. An arm split:
+  k_k13_residual 0.64 native / 11.30 haswell (`c` 32),
+  c_covariance_closure_caller 1.75 / 9.22, c_tune_consistency 0.92 / 6.79,
+  c_e8_reconstruction_caller 0.70 / 6.18, r_u6_reconstruction 0.74 / 6.32.
+- F6a map 115: tune1 4.44e-2 (here the small tune is the first), cond(U_4)
+  9.94, cond(U_6) 3.33. The U_6 symplecticity ratio 5.437 / 5.803 (the other
+  `TW-NORMALIZER` value; `c` 32), c_projector_sum 4.47 / 5.12 (`c` 64),
+  c_physical_normalizer_symplecticity 4.52 / 4.80 (`c` 64).
+
+Arm dependence. On single fixtures the two arms differ by factors that no
+one-arm freeze would see: c_tune_consistency x156 (map 42: 0.134 native,
+20.94 haswell), k_trace_cubic x40 (map 119: 13.6 native, 0.336 haswell),
+c_tune_consistency x33 (map 198: 2.15 native, 0.065 haswell),
+c_covariance_closure_caller x30 (map 42), k_frame_column_sums x24 (map 184:
+0.112 native, 2.68 haswell), k_k13_residual x18 (map 103). The two-arm max is
+the freezing quantity, and the CI runner is a third arm (item 3: only the
+runner's own printed table measures it).
+
+Correlates (Spearman rho over the 200 F6a maps; native / haswell; the two
+arms agree in sign and within 0.1 on every row named here).
+- `r_u6_reconstruction` (the U_6 reconstruction row of items 4 and 5) IS the
+  per-fixture normalizer ratio (rho +1.00 with `norm_ratio_u6_rec`, a
+  consistency check, not a finding). Its informative correlates are tune3
+  -0.57 / -0.64 and the routes' coefficient condition +0.28 / +0.38; cond(U_6)
+  is not among its three strongest in either arm, and `internal_gap_min` is
+  Inf on every excursion map (single-mode clusters). Both kappa candidates
+  of item 4 (cond(U_6), the cluster's internal gap) are refuted by the data;
+  the ratio grows as the third frame tune (the longitudinal one) shrinks, and
+  it is tune3 specifically: min |sin mu| is not among the three strongest
+  correlates in either arm (rho with a tune is minus rho with 1 / (2 sin mu),
+  Spearman being monotone-invariant).
+- `r_u6_symplecticity` correlates NEGATIVELY with the conditioning columns
+  (cond(U_6) -0.50, kappa_frame_max -0.49, `cond_U6 * normU6_sq / chord_min`
+  -0.54 / -0.52): a kappa proportional to cond(U_6) would move against it.
+  Its max is map 115 in both arms.
+- The same U_6 error feeds the caller and projector rows:
+  c_covariance_closure_caller ~ `norm_ratio_u6_rec` +0.84 / +0.82,
+  k_k13_residual +0.65 / +0.65; c_physical_normalizer_symplecticity ~
+  `norm_ratio_u6_sym` +0.91 / +0.89, c_projector_sum +0.89 / +0.88,
+  c_projector_idempotence +0.85 / +0.83, k_u6_column_sums +0.82 / +0.78,
+  r_frame_symplecticity_e7 +0.77 / +0.73. A kappa or `c` decision on the two
+  normalizer rows propagates to these seven.
+- The small-third-tune family: k_k7_difference ~ tune3 -0.56 / -0.61,
+  r_separation_off_diagonal_k5 -0.53 / -0.58, k_k13_residual -0.48 / -0.48,
+  k_ohmi_separated_off_diagonal -0.42 / -0.45, c_k4_block_diagonality
+  -0.38 / -0.43, c_tune_consistency -0.31 / -0.46: the rows that compare
+  separated or longitudinal blocks lose digits as the third tune goes to 0
+  (maps 70, 42, 98). The frame rows go with cond(U_4) instead
+  (k_frame_normalization -0.66 / -0.59, k_frame_column_sums -0.64 / -0.60,
+  k_frame_row_sums -0.64 / -0.66, all negative).
+- `c_scaling_invariance`: no correlate beyond |0.25| (cond_Uphys -0.25
+  native; external_gap_min -0.25 haswell). Its excursions (map 98 native
+  8.90, map 42 haswell 5.51) are explained by no conditioning column; a
+  larger `c` (8 -> 128 by H15 on 200+20) or the re-derivation of items 6/12
+  remains the choice, and the write-up's "not a conditioning story" stands.
+- `k_route_agreement` ~ n_not_invariant -0.68 / -0.69, n_unconverged -0.64 /
+  -0.65: the fewer comparable routes, the smaller the disagreement; after M1
+  its max is 3.07 / 2.90 at `c` 32.
+
+What the table informs (the decisions stay the owner's).
+- Item 2, the freezing set. (a) Keep 20+5: the frozen table stands; on the
+  script's 200+20 set 19 native / 17 haswell rows sit above one tenth of
+  `c`, 8 / 6 of them at or above 0.25, and one row above `c`
+  (c_scaling_invariance, native, map 98), so the validation script at its
+  defaults stays red natively and green under `-C haswell`. (b) Re-freeze on
+  200+20: the 21 rows of the table change, x2 to x16 (c_scaling_invariance
+  8 -> 128; c_covariance_closure_caller, c_tune_consistency, k_k7_difference
+  x8; r_separation_off_diagonal_k5, r_u6_reconstruction, k_u6_column_sums,
+  k_frame_column_sums, k_frame_u_difference, k_k13_residual x4; eleven rows
+  x2); the script's gate is then green in both arms by construction, and the
+  H15 `c` from the two-arm max carries the arm dependence above. (c) The
+  correlates suggest a third route for the tune3 family, a kappa from the
+  third tune, and refute one from cond(U_6).
+- Item 4, a kappa for the E7 / U_6 rows: cond(U_6) and the internal gap are
+  refuted; the candidate the data leaves is 1 / sin(mu_3). The headroom
+  under the analysis's 64: the reconstruction ratio reaches 13.17 haswell
+  (0.206 of 64) and the symplecticity 5.80 (0.181 of 32) on the 200+20 set,
+  above the item's own one-tenth criterion in both arms, as the write-up
+  said; the item does not close as written.
+- Item 5: the `TW-NORMALIZER` values the validation script printed in the
+  section above (5.335895 / 1.316640e+01; 5.437241 / 5.803081) equal the
+  driver's per-arm maxima to the printed digits: the script and the driver
+  measure the same quantity on the same fixtures.
+- Items 6/12 (kappa_route): after M1 `k_route_agreement` is 3.07 / 2.90 at
+  `c` 32, no re-freeze; the driver does not bear on the patch-vs-re-derivation
+  choice.
+- Item 3: the x156 single-fixture arm split is the reason the runner's own
+  table (or a read-only Actions token) is the measurement of the runner's
+  arm; the two local arms bound each other, not the runner.
+
+Checks. The driver changed no tracked file (`git status` clean before and
+after both runs); this record is markdown only (this section and one
+`docs/todo.md` row 20 sentence). Lane: not run on this commit's tree alone:
+AGENTS.md owes the lane before the PUSH, not before every commit (owner
+decision 2026-09-04); the checks of this commit are the two driver runs above
+in both arms and the batch's two-arm full gate on the final tree of the push,
+recorded in its own section below; skipped on this tree alone: the fast lane
+(the matrix's row for a markdown-only commit) and the full suite. Reproduce
+with `sh result/twiss_impl_2026_09_11/carried/run_m3_driver.sh` then `python3
+result/twiss_impl_2026_09_11/carried/m3_summarize.py` (about 2 min 15 s for
+both arms; the summary is deterministic given the two TSVs).
+
+Carried.
+- The seven owner decisions of the write-up, unchanged; the freezing-set
+  decision (item 2) now has its table. If (b) is chosen, the re-freeze is the
+  summary's "c on 200+20" column applied to `_default_identity_multipliers`
+  in `src/contracts/twiss_dispersion_identity.jl`, the analysis's
+  `_ST6_PIN`-guarded pins re-read, and the validation section's dry-run
+  re-run; a `fix(contracts)` or `chore(contracts)` commit with its own
+  two-arm extract.
+- The 39 degraded fixtures of the 200+20 set (the same 39 in both arms) are
+  all F6a dense 6x6 maps; none of F1-F5, F8 or the 4x4 maps is degraded.
