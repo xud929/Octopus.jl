@@ -10805,3 +10805,100 @@ stage 6 section keeps its wording (the runner's per-row numbers unmeasured;
 whether a `c` moves on that class stays with the owner). Whether the AVX2 arm
 becomes a Verification Matrix row (stage 7 carried item 11) remains an owner
 decision. Items M1 and M3 of the stage 6 section are untouched.
+
+## 2026-09-13: full gate on the second CI-fix commit (1268b54), in two CPU arms
+
+The second CI-fix commit 1268b54 (`fix(test): the identity pin is one constant, Physics contracts included`, the section above)
+named this run as its gate: one full gate on the commit's tree before the push
+(AGENTS.md Definition of Done, owner decision 2026-09-04), checkpointed by the
+fast lane on the uncommitted tree (result/gates/fast_lane_cifix2_2026_09_13.log,
+exit 0, 19:24:18-19:41:28 EDT (17 min 10 s), `Testing Octopus tests passed`, 299 rows, 146223/146223, the heavyweight sections skipped by the lane (15 `LANE SKIP` banners), among them `Physics contracts`, which the full gate runs; the stage 6 testset 158/158 (43.7s) (the parser reads 298 rows and 146105 on that log: the `Test Summary:` header at log line 595 is interleaved with stderr output, its row `CPU solver stack is thread-count invariant` 118/118 standing at line 691; `grep -c` finds all 299 headers and 146105 + 118 = 146223)). As for the stage 7 commit (the section two above), the gate
+ran TWICE on the clean tree at 1268b54, CUDA active, four threads, both
+arms from one detached script (result/gates/run_full_gate_cifix2_both_arms.sh)
+with the depot otherwise idle (no other julia test process):
+
+    # native arm (the Verification Matrix's gate)
+    julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+    # AVX2 arm (CI-runner parity: OpenBLAS Haswell kernels, LLVM target haswell)
+    OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4", "-C", "haswell"])'
+
+| item | native arm | AVX2 arm |
+|---|---|---|
+| tree | 1268b54 (`git status` clean) | same |
+| start / end / wall | 20:16:09 / 20:59:16 EDT / 43 min 07 s (the stage 7 gate: 42 min 56 s) | 20:59:16 / 21:44:53 EDT / 45 min 37 s (the stage 7 gate: 42 min 43 s) |
+| exit code | 0 (`Testing Octopus tests passed`) | 0 (`Testing Octopus tests passed`) |
+| test summary | 314 top-level testset rows, every one `Pass == Total`; summed 148225 passed of 148225 (the stage 7 gate: 314 rows, 148224); no Fail, Error or Broken column anywhere | 314 rows, every one `Pass == Total`; summed 148225 passed of 148225; no Fail, Error or Broken column anywhere; every row's counts equal to the native arm's (0 differing counts in the row-by-row comparison) |
+| the rows this commit touches | the stage 6 contract testset `Stage 6: the identity contract passes on the tree with pinned metrics, and every negative is red` 158/158 (43.7s) (the stage 7 gate: 157/157 (44.4s); the one new assertion is the tripwire on the pin lines, last in the testset, `length(st6_pinned) == 3 && all(occursin("_ST6_PIN", l) ...)`); `Physics contracts` 17/17 (1m42.8s) (the stage 7 gate: 17/17 (1m50.9s); the block's literal one-tenth pin `idc.metrics[:worst_ratio] <= 0.1` became `ratio <= _ST6_PIN` inside a `@testset let` naming the row, one assertion before and after) | 158/158 (41.8s) (the stage 7 gate: 157/157 (40.9s)); 17/17 (1m50.4s) (the stage 7 gate: 17/17 (1m48.3s)) |
+| skipped or unrunnable | none: no `LANE SKIP` banner (full lane); the heavyweight sections ran (`The multi-process seam runs under an MPI launcher` 1710/1710 (9m02.5s); `The developer harnesses run divided under an MPI launcher` 4/4 (1m34.1s); `4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps` 12602/12602 (0.2s); `Mode clusters: 200 + 200 manufactured stable maps are resolved singletons` 11406/11406 (1.5s); `CPU solver stack is thread-count invariant` 118/118 (6.2s); the example runner `Every example script runs against the current interface` 6/6 (7m57.0s)) | none: no `LANE SKIP` banner (full lane); the heavyweight sections ran (`The multi-process seam runs under an MPI launcher` 1710/1710 (9m02.6s); `The developer harnesses run divided under an MPI launcher` 4/4 (1m33.6s); `4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps` 12602/12602 (0.2s); `Mode clusters: 200 + 200 manufactured stable maps are resolved singletons` 11406/11406 (1.5s); `CPU solver stack is thread-count invariant` 118/118 (6.2s); the example runner `Every example script runs against the current interface` 6/6 (8m05.1s)) |
+| CUDA | active (`CUDA coverage status` 1/1) | active (`CUDA coverage status` 1/1) |
+| warnings | 42 non-fatal warning lines of 12 distinct texts (numbers normalized; the stage 7 native arm: 41 of 11); every stage 7 text present, and one text not in the stage 7 arm's log: `Warning: particles were lost with no aperture responsible; a coordinate went non-finite where nothing was collimating` (`unattributed = 1`, `dead = 1`, `logged = 0`, `_report_losses` at src/tasks/Tasks.jl:730), once, log lines 677-681; the same one-particle report stands once in three earlier logs of the campaign (the stage 5 fast lane at its line 652, the stage 6 gate's AVX2 arm at 692, the stage 6 CI-fix record's fast lane at 615) and in neither arm of the stage 7 gate or of the first CI-fix gate, each time before a different testset's row, so it is an intermittent non-fatal report and not this commit's (which changes pin lines and adds a tripwire in test/runtests.jl, no `src/` line) | 42 non-fatal warning lines of 12 distinct texts (numbers normalized; the stage 7 AVX2 arm: 41 of 11); every stage 7 text present, and the same one text not in the stage 7 arm's log (the one-particle loss report, once, log lines 699-703; see the native cell) |
+| log | `result/gates/full_gate_cifix2_native_2026_09_13.log` | `result/gates/full_gate_cifix2_avx2_2026_09_13.log` |
+
+Row arithmetic: the commit adds exactly ONE assertion and moves none: the
+tripwire, LAST in the stage 6 testset so that nothing above it (the 57-row
+table, the row pins, the negatives) can be lost to a structural error in it
+(`@testset let st6_pinned = _st6_pin_lines(readlines(joinpath(pkgdir(Octopus), "test", "runtests.jl")))`
+around the one `@test length(st6_pinned) == 3 && all(occursin("_ST6_PIN", l) for l in st6_pinned)`;
+the suite is read by its package path, not `@__FILE__`, so an extract of the
+testset still audits the suite, and a red prints the lines found), is the
+158th assertion of that testset; the testset's worst-row pin and its 57
+per-row pins compare against the top-level `const _ST6_PIN = 0.5` instead of
+the local `st6_pin` (same count); the `Physics contracts` block's
+`@test idc.metrics[:worst_ratio] <= 0.1` became `@test ratio <= _ST6_PIN`
+inside `@testset let worst = ..., ratio = ...` (one assertion before, one
+after; a `@testset let` adds no top-level row and no count); no `src/` line
+changes and the contract's 57 multipliers are untouched (a multiplier moves
+only by the H15 rule). The expected totals are therefore the stage 7 gate's
+plus one, 314 rows and 148225 in both arms, with exactly ONE differing row
+against the stage 7 gate's native log (the stage 6 testset, 157 to 158) and
+none between the two arms, exactly as measured: 314 rows and 148225/148225 in each arm, ONE differing count against the stage 7 gate's native log (`Stage 6: the identity contract passes on the tree with pinned metrics, and every negative is red` 157 to 158, the tripwire) and 0 between the two arms (`Physics contracts` keeps its 17/17 with the pin now read from `_ST6_PIN`; every other row its stage 7 count). The gate logs were summarized by
+`result/gates/summarize_gate.py` as before (314 rows in both logs, `grep -c 'Test Summary:'` agreeing with the parsed row count in each; no signal was sent to either test process and both logs are test output only).
+
+Before the gate, the fix was verified standalone in both arms in package mode
+(result/gates/cifix2/extract_cifix2.py copies the three blocks out of the
+suite, result/gates/cifix2/run_cifix2.jl runs them, result/gates/cifix2/run_native.sh
+and run_haswell.sh drive the two arms; logs result/gates/cifix2/run_native.log and
+run_haswell.log, run one after the other, 19:20:58-19:22:31 and
+19:22:31-19:24:03 EDT, exit 0 both):
+170/170 in each arm (block walls 1m23.7s and 1m23.1s; the registration testset
+9/9, the stage 6 pinned testset 158/158 (157 before the fix: the tripwire is
+the one new assertion), the `Physics contracts` identity tail 3/3); the worst row
+`k_longitudinal_block_symplecticity` at 0.09476 in both arms (the 57-row table
+printed by the stage 6 testset); the tripwire sees exactly 3 pin lines, all
+naming `_ST6_PIN`; injection A (the worst-row pin at 0.01) red with
+`Evaluated: 0.09476392926469653 <= 0.01` and
+`Context: worst = k_longitudinal_block_symplecticity`; injection B (the
+literal 0.5 restored in `Physics contracts`) and injection C (that pin line
+deleted) both rejected by the tripwire predicate (3 lines with a literal,
+2 lines); injection D (the `Physics contracts` title renamed) rejected without
+a throw (2 lines); `INJECTIONS OK` in both logs. The same scratch-copy
+approach is what the run-436 fix 21bce7d had used
+(result/twiss_impl_2026_09_11/stage6/ci_repro/extract/t3_identity.jl,
+3/3 green in both of its arm logs with the old `<= 0.1` pin, because both
+measured arms put the worst row at 0.0948): that neighbour was RUN and passed,
+it was not READ as the same pin, and CI run 437 on ce43179 (the section above)
+was red on it at `0.1537336459459216 <= 0.1`, the worst row value run 436 had
+already shown.
+
+What this gate measures and what it does not: both arms are the two MEASURED
+CPU classes (native AVX-512 Sapphire Rapids; the AVX2 emulation
+`OPENBLAS_CORETYPE=Haswell julia -C haswell`), and both keep every identity row
+under 0.095, so a gate here confirms the assertion structure, the tripwire and
+the counts on the tree; it cannot measure the runner's third CPU class, where
+the worst row is 0.1537. The check of the fix is the CI run on the pushed HEAD:
+green there means the runner's worst row is under the one-half pin; the
+runner's printed 57-row table (the stage 6 testset prints it since 21bce7d),
+if the owner pastes it, is the measurement of the runner class (the run 437
+log is admin-walled from the gate host), and any runner row above 0.25 reopens
+the pin decision (the rule recorded with the run-436 fix, the section
+"2026-09-13: CI run 436 on e960ca8 red on the stage 6 one-tenth pins; the
+test-side fix").
+
+This section is the only change between the gated tree and the pushed tree
+(with the todo row's note); the commit carrying it is markdown-only and
+finishes with the fast lane on its own tree (matrix row "markdown only"),
+`result/gates/fast_lane_gate_record_cifix2_2026_09_13.log` (exit 0, 21:50:47-22:08:16 EDT (17 min 29 s), `Testing Octopus tests passed`, 299 rows, 146223/146223, the usual 15 heavyweight sections skipped by the lane (15 skip banners), every row's count equal to the fix commit's fast lane's; the parser reads 298 rows and 146105 on this log: the `Test Summary:` header at log line 595 is interleaved with stderr output, its row `CPU solver stack is thread-count invariant` 118/118 standing at line 691, and `grep -c` finds all 299 headers and 146105 + 118 = 146223).
+It is the LAST commit before the push: the push carries the stage 7 commit
+b89fcab, its gate record c1b7453, the fix 1268b54 and this record, on top
+of origin/main ce43179 (four commits), and the CI run on the new HEAD is the
+check of the fix.
