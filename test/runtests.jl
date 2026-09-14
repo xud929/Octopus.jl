@@ -5969,7 +5969,9 @@ end
     # skips the contract run; a fake result with two identity slugs and the two normalizer keys prints two
     # TW-NORMALIZER lines between the TW-IDENT rows and TW-DIAG and writes 2 + 2 TSV rows; the same fake without the
     # keys prints NaN and does not throw; TW-DIGEST is the same in both (the normalizer metrics are not digest
-    # inputs). The script is included into a module of its own (it defines constants and functions); it loads Printf,
+    # inputs). The TW-TENTH line (the freezing-set decision of 2026-09-14) counts the rows above 0.1, 0.25, 0.5 and 1
+    # with strict inequalities: the fake's a_row at exactly 0.1 is not counted, b_row at 0.2 is, and neither exceeds
+    # a quarter. The script is included into a module of its own (it defines constants and functions); it loads Printf,
     # a test dependency since this testset (Pkg.test runs without @stdlib in the load path).
     isdefined(Main, :IDENT_DRY_RUN) || Core.eval(Main, :(const IDENT_DRY_RUN = true))
     dry = Module(:IdentDryRun)
@@ -5987,7 +5989,8 @@ end
     @test lines[1] == "TW-IDENT " * rpad("a_row", 40) * " max=1.000000e-12 ratio=1.000000e-01 c=8 argmax=map 1"
     @test lines[3] == "TW-NORMALIZER u6_reconstruction ratio=3.500000e+00 c=64"
     @test lines[4] == "TW-NORMALIZER u6_symplecticity  ratio=1.250000e+00 c=32"
-    @test startswith(lines[5], "TW-DIAG") && startswith(lines[6], "TW-KINDS") && startswith(lines[7], "TW-DIGEST")
+    @test lines[5] == "TW-TENTH above_tenth=1 above_quarter=0 above_half=0 above_one=0 of 2 [b_row]"
+    @test startswith(lines[6], "TW-DIAG") && startswith(lines[7], "TW-KINDS") && startswith(lines[8], "TW-DIGEST")
     path = joinpath(mktempdir(), "dry.tsv")
     @test dry.write_identities_tsv(fake, path; multipliers=mult, slugs=slugs) == 4
     rows = readlines(path)
@@ -5997,6 +6000,7 @@ end
     delete!(m, :normalizer_ratio_u6_reconstruction); delete!(m, :normalizer_ratio_u6_symplecticity)
     io2 = IOBuffer(); d2 = dry.report_identities(fake, io2; multipliers=mult, slugs=slugs); s2 = String(take!(io2))
     @test occursin("TW-NORMALIZER u6_reconstruction ratio=NaN c=64\n", s2) && occursin("TW-NORMALIZER u6_symplecticity  ratio=NaN c=32\n", s2)
+    @test occursin("TW-TENTH above_tenth=1 above_quarter=0 above_half=0 above_one=0 of 2 [b_row]\n", s2)
     @test d1 == d2 && d1 == dry.identity_digest(fake, [:a_row, :b_row])
     path2 = joinpath(mktempdir(), "dry2.tsv")
     @test dry.write_identities_tsv(fake, path2; multipliers=mult, slugs=slugs) == 4

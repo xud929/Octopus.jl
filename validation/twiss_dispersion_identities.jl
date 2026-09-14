@@ -61,7 +61,12 @@ normalizer rows `normalizer_u6_reconstruction` and
 `normalizer_u6_symplecticity` (the metric as max ratio, NaN as max value,
 the suite's pin as multiplier, "analysis normalizer" as argmax).
 Printed: one `TW-IDENT` line per identity in stable order, two
-`TW-NORMALIZER` lines, `TW-DIAG`, `TW-KINDS`, and one `TW-DIGEST` line (the
+`TW-NORMALIZER` lines, one `TW-TENTH` line (the machine count of identity
+rows whose ratio at the frozen `c` exceeds one tenth, one quarter (the
+re-open rule beside `_ST6_PIN` in test/runtests.jl), one half (the suite's
+pin) and one (the contract's own gate), with the rows above one tenth named
+in stable order; the counts the freezing-set decision of 2026-09-14 reads,
+hand-read before), `TW-DIAG`, `TW-KINDS`, and one `TW-DIGEST` line (the
 profiling drivers' rotate-then-xor bitwise digest of the maxima vector of the
 identity rows only), so two checkouts or two CPU arms can be diffed.
 
@@ -154,8 +159,11 @@ Print the contract's identity table from `result.metrics` (any object with
 `.metrics`, `.status`, `.message` and `.residual`): one `TW-IDENT` line per
 slug in stable order, then one `TW-NORMALIZER` line per entry of
 `_IDENT_NORMALIZER_ROWS` (`ratio=` the metric, `c=` the suite's pin; NaN
-when the result lacks the key), then `TW-DIAG`, `TW-KINDS`, `TW-DIGEST`, the
-status and the message. `multipliers` is the contract's `c` per slug (the
+when the result lacks the key), then one `TW-TENTH` line (the number of
+identity rows whose `ratio=` exceeds 0.1, 0.25, 0.5 and 1, out of the rows
+printed, and the rows above 0.1 in stable order; strict inequalities, so a
+row at exactly one tenth is not counted), then `TW-DIAG`, `TW-KINDS`,
+`TW-DIGEST`, the status and the message. `multipliers` is the contract's `c` per slug (the
 contract owns it; the result does not carry it). Returns the digest, which
 is over the identity rows only.
 """
@@ -180,6 +188,17 @@ function report_identities(result, io::IO; multipliers, slugs,
         @printf(io, "TW-NORMALIZER %-17s ratio=%.6e c=%g\n", label,
                 Float64(get(m, key, NaN)), Float64(get(multipliers, cslug, NaN)))
     end
+    # The one-tenth count, a machine line for the freezing-set record (owner
+    # decision 2026-09-14, the set stays the contract's 20 + 5): how many rows
+    # exceed one tenth, one quarter (the re-open rule beside `_ST6_PIN`), one
+    # half (the suite's pin) and one (this contract's gate) of their frozen
+    # `c` on the maps this script ran, which the M3 record hand-read. Not a
+    # gate and not a digest input.
+    ratios = [Float64(m[Symbol("max_", slug)]) for slug in ordered]
+    above_tenth = [String(slug) for (slug, r) in zip(ordered, ratios) if r > 0.1]
+    @printf(io, "TW-TENTH above_tenth=%d above_quarter=%d above_half=%d above_one=%d of %d [%s]\n",
+            length(above_tenth), count(>(0.25), ratios), count(>(0.5), ratios),
+            count(>(1.0), ratios), length(ratios), join(above_tenth, ", "))
     silent_names = get(m, :diagnostics_silent_names, String[])
     @printf(io, "TW-DIAG expected=%d silent=%d [%s]\n",
             get(m, :diagnostics_expected, 0), get(m, :diagnostics_silent, 0),

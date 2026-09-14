@@ -1086,11 +1086,15 @@ max ratio, max value, multiplier, the fixture that attained the maximum; then
 two `normalizer_u6_*` rows) and prints one `TW-IDENT` line per identity, two
 `TW-NORMALIZER` lines (the analysis's U_6 reconstruction and U_6
 symplecticity residuals at multiplier 1 against the suite's pins; reported,
-not gated), `TW-DIAG`, `TW-KINDS` and a bitwise `TW-DIGEST` of the identity
-maxima so two CPU arms can be diffed. The multipliers are
-frozen on the contract's default 20 + 5 maps; the script's larger set can put
-a row above one tenth of its budget or, on a map that exposes an analysis
-defect, over it (the gate then exits non-zero naming the row). Derivations:
+not gated), one `TW-TENTH` line (the machine count of identity rows above
+one tenth, one quarter, one half and one of their frozen multiplier, the
+rows above one tenth named; reported, not gated), `TW-DIAG`, `TW-KINDS` and
+a bitwise `TW-DIGEST` of the identity maxima so two CPU arms can be diffed.
+The multipliers are frozen on the contract's default 20 + 5 maps (the
+freezing set, kept by owner decision 2026-09-14 with the M3 table in hand);
+the script's larger set can put a row above one tenth of its budget or, on a
+map that exposes an analysis defect, over it (the gate then exits non-zero
+naming the row). Derivations:
 `../docs/theory/twiss_dispersion.md`; the design and its verification table:
 `../docs/design/twiss_dispersion_analysis.md`. The script runs the contract
 once and prints its metrics: the contract `TwissDispersionIdentityContract` is

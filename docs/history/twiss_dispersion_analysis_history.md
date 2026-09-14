@@ -12205,3 +12205,236 @@ It is the LAST commit before the push, which is a separate ask to the owner:
 once approved, the push carries the seven batch commits and this record
 (eight commits on 180ce70), and the CI run on the new HEAD is the check of
 the batch at the runner's CPU class.
+
+## 2026-09-14: carried items 2 and 3 decided, the freezing set stays the contract's 20 + 5 (option a) and 0.25 stands as the re-open threshold; the TW-TENTH line; CI run 439 recorded (feat(validation) commit)
+
+The owner's decision. With the M3 table in hand (the section "2026-09-14:
+the M3 driver, the identity rows at multiplier 1 on the 200 + 20 set" above,
+commit 9f3cce6) and the three options restated to them (a: keep 20 + 5 as the
+freezing set; b: re-freeze on 200 + 20; c: lower the script's defaults,
+rejected in the recommendation because it hides the maps that exposed M1),
+the owner answered "Ok. Keep (a)" on 2026-09-14, between the 09:10 handoff
+and the 09:26 script run below. Carried item 2 of the stage 7 list (the
+freezing set, stage 6 M3) is closed by that answer; this section is its
+record, and the record of the owner's answer on item 3 (the carried paragraph
+at the end).
+
+What option (a) means on the tree. Nothing of the contract moves: the 57
+multipliers of `_default_identity_multipliers()` in
+`src/contracts/twiss_dispersion_identity.jl` stand as frozen on 2026-09-13
+from the two measured arms, and the struct defaults `dense_maps = 20`,
+`dense_maps_4d = 5` at seed 20260911 (with the lattice fixtures F1-F5 and F8)
+remain the set they were frozen on. The validation script
+`validation/twiss_dispersion_identities.jl` keeps its 200 + 20 default, so it
+goes on reporting ratios the freezing never saw, and at those defaults it
+stays red in the native arm on `c_scaling_invariance` (map 98, 1.112 of its
+`c` = 8, the M3 record) and green under `-C haswell`. That red is the visible
+cost of (a). The M3 record finds no conditioning correlate for
+`c_scaling_invariance` (none beyond |0.25|; its excursions, map 98 native and
+map 42 haswell, are explained by no conditioning column) and leaves the row
+two ways out, a larger `c` (8 -> 128 by H15 on 200 + 20, which (a) declines)
+or the re-derivation of items 6/12, so the red stays until items 6/12 are
+decided. A kappa changes only when its derivation is found wrong (H15 as
+recorded: a multiplier-1 ratio above 100 is a wrong kappa, fixed in the
+kappa), and `c` is re-measured under H15, never moved by hand. Option (b)
+would have loosened 21 of the 57 rows by x2 to x16 (`c_scaling_invariance` 8
+-> 128; `c_covariance_closure_caller`, `c_tune_consistency`, `k_k7_difference`
+x8; six rows x4; eleven rows x2), lowering the suite's sensitivity on those
+rows by the same factors and carrying the arm dependence of single fixtures
+(splits up to x156) into `c`.
+
+What this commit changes (the recommendation put to the owner in the session
+named option (a) as "keep 20 + 5 as the freezing set, script as is; add a
+machine TW-TENTH count line; header names the set"; the header has named the
+set since b2d8e83).
+- `validation/twiss_dispersion_identities.jl`: `report_identities` prints one
+  `TW-TENTH` line after the two `TW-NORMALIZER` lines and before `TW-DIAG`:
+  `TW-TENTH above_tenth=N above_quarter=N above_half=N above_one=N of N
+  [rows above one tenth in stable order]`, the number of identity rows whose
+  `ratio=` (the ratio at the frozen `c`) exceeds 0.1, 0.25 (the re-open rule
+  beside `_ST6_PIN`), 0.5 (the suite's pin) and 1 (the contract's own gate),
+  strict inequalities. Reported, not gated; not an input of `TW-DIGEST`. The
+  header's "Printed" paragraph and the docstring name the line.
+- `validation/README.md`: the script's paragraph names the `TW-TENTH` line and
+  the kept freezing set.
+- `test/runtests.jl`, the dry-run testset (its title
+  `validation/twiss_dispersion_identities.jl: the reporting code on a fake
+  result (dry run)`): the line indices of `TW-DIAG`, `TW-KINDS`, `TW-DIGEST`
+  move from 5, 6, 7 to 6, 7, 8 and two assertions are added, the exact
+  `TW-TENTH` line on the fake (`a_row` at exactly 0.1 is not counted, `b_row`
+  at 0.2 is: `above_tenth=1 above_quarter=0 above_half=0 above_one=0 of 2
+  [b_row]`) and the same line on the fake without the normalizer keys; 13 to
+  15 assertions.
+
+The script on this tree, both arms, at the defaults 200 + 20 (scratch
+`result/twiss_impl_2026_09_11/carried/item2_decision/`:
+`run_script_both_arms.sh` at 09:26-09:30 EDT, logs `script_native.log`,
+`script_haswell.log`; the exit statuses from `run_script_both_arms_rerun.sh`
+at 09:34-09:37 EDT, logs `script_native_rerun.log`,
+`script_haswell_rerun.log`, the first shell having recorded a `date`
+substitution's status in place of the script's; the rerun's `TW-TENTH` and
+`TW-DIGEST` lines equal the first run's; cited by path). The `TW-TENTH`
+counts, of 57 rows:
+
+| arm | above 0.1 | above 0.25 | above 0.5 | above 1 | TW-DIGEST | exit |
+|---|---|---|---|---|---|---|
+| native | 19 | 8 | 2 | 1 | 0x75a0b10f84b2fdb1 | 1 |
+| `OPENBLAS_CORETYPE=Haswell julia -C haswell` | 17 | 6 | 3 | 0 | 0x11f90af4a5841198 | 0 |
+
+The bracketed lists (the rows above one tenth) are the M3 record's two
+one-tenth lists, name for name (19 and 17 rows; the apply script compared
+them). The counts above one quarter, 8 and 6, equal the M3 record's "at or
+above 0.25" reading, so no row sits at exactly 0.25. Above one half, which the
+M3 record did not count: natively `c_scaling_invariance` (1.112) and
+`k_k7_difference` (0.621); under haswell `c_scaling_invariance` (0.689),
+`c_tune_consistency` (0.654) and `k_k7_difference` (0.516); these are the rows
+the suite's one-half pin would trip on if the suite ran the script's set,
+which is why the pin is stated on the freezing set. Above one:
+`c_scaling_invariance` natively (map 98), the row that keeps the script red.
+The digests equal the item 5 record's (`0x75a0b10f84b2fdb1` native,
+`0x11f90af4a5841198` haswell, the section "2026-09-14: carried item 5, the
+validation script prints the normalizer metrics" above), so the `TW-TENTH`
+line is not a digest input and no other printed number moved; the two
+`TW-NORMALIZER` lines read u6_reconstruction 5.336 native / 13.17 haswell and
+u6_symplecticity 5.437 / 5.803 (c 64 and 32), the item 5 record's four values.
+Native exits 1 on the gate line (`ERROR: LoadError:
+TwissDispersionIdentityContract failed (1 findings)`, `c_scaling_invariance`
+on F6a dense 6x6 map 98, 6.707e-12 against 6.031e-12); haswell exits 0 with 57
+identities certified on 925 fixture runs, worst ratio 0.6888
+(`c_scaling_invariance`).
+
+**CI run 439.** CI run 439 on b19003b green (33 min 32 s, 2026-09-14
+08:07-08:41 EDT,
+https://github.com/xud929/Octopus.jl/actions/runs/34841693768), the first run
+of the carried batch and the first with the `::notice` chunks (a418b56): the
+57-row table came through as six check-run annotations, readable from the gate
+host through the public API without a token
+(`/repos/xud929/Octopus.jl/check-runs/103967931156/annotations`; the step logs
+stay 403), so carried item 3's token question is closed. The runner names its
+host `sapphirerapids`; its worst row is `k_longitudinal_block_symplecticity`
+0.1537 at c = 16 on F5 (DBA + RF + crab), the number runs 436 and 437 showed,
+so the runner's table is deterministic; no row is above 0.25, the re-open rule
+does not fire, the one-half pin holds by a factor 3.25. The runner's table
+equals the native arm's on 34 rows and the AVX2 arm's on 9; 23 rows differ
+from both, 10 above both arms (the largest `c_d8_round_trip` 0.125 against
+0.0625 in each arm, x2.0; the worst row 0.1537 against 0.09476, x1.62), 9
+below both, 4 between. Eight local configurations of the identity contract
+(`result/gates/carried/st6/`: the native and `-C haswell` code targets with
+the auto, Cooperlake and SkylakeX OpenBLAS cores, 4 BLAS threads, Julia 1.12.7
+in its own depot) all reproduce the native table row for row: the code target
+moves no row, the Haswell OpenBLAS kernels alone make the AVX2 arm's table,
+and none of them makes the runner's; the runner's CPU class is measured only
+on the runner, and the two arms bound it on 47 of 57 rows
+(`result/gates/ci_carried_run439_table.md`). `Printf` resolved on the runner
+with no Manifest change. GitHub warns that actions/checkout@v4,
+julia-actions/setup-julia@v2 and actions/cache target Node.js 20, now forced
+onto Node.js 24 (a workflow-only item for the owner). The same facts go into
+todo row 20 with this commit (the run-435 convention: a CI result rides the
+next work commit).
+
+The runner's table, the 57 rows at their frozen `c` as the six annotations
+carried them, beside the two arms' values from the gate on 7e08248 (the
+numbers behind the counts above). Equal means |difference| <= 1e-4 max(1, arm)
++ 5e-5, the comparison of the local reproduction attempts
+(`result/gates/carried/st6/compare_st6_tables.py`); `= both` marks the 9 rows
+equal to both arms, so the runner equals the native arm on 34 rows in all and
+the AVX2 arm on 9, sits above both arms on 10 rows, below both on 9 and
+between them on 4; the multiplier is the runner's value over the larger arm
+value:
+
+| row | c | runner | native | AVX2 | runner against the arms |
+|---|---|---|---|---|---|
+| k_longitudinal_block_symplecticity | 16 | 0.1537 | 0.09476 | 0.09476 | above both, 1.62x |
+| c_d8_round_trip | 8 | 0.125 | 0.0625 | 0.0625 | above both, 2.00x |
+| k_trace_cubic | 512 | 0.09068 | 0.09068 | 0.09068 | = both |
+| k_k8_residual | 8 | 0.08308 | 0.08308 | 0.08308 | = both |
+| r_frame_reconstruction_i1 | 64 | 0.08057 | 0.0692 | 0.03046 | above both, 1.16x |
+| c_projector_sum | 64 | 0.07983 | 0.07983 | 0.05465 | = native |
+| c_covariance_closure_caller | 64 | 0.0797 | 0.07794 | 0.07561 | above both, 1.02x |
+| r_separation_off_diagonal_k5 | 128 | 0.0794 | 0.0794 | 0.09391 | = native |
+| c_projector_idempotence | 8 | 0.07888 | 0.07888 | 0.05349 | = native |
+| k_frame_u_difference | 8 | 0.07592 | 0.07592 | 0.04706 | = native |
+| k_route_agreement | 32 | 0.07481 | 0.07481 | 0.09061 | = native |
+| c_scaling_invariance | 8 | 0.0747 | 0.07467 | 0.06284 | = native |
+| k_k13_residual | 32 | 0.07323 | 0.07128 | 0.06872 | above both, 1.03x |
+| c_covariance_symmetry_caller | 8 | 0.07214 | 0.06146 | 0.05084 | above both, 1.17x |
+| c_tune_consistency | 32 | 0.06873 | 0.06873 | 0.065 | = native |
+| k_k7_difference | 64 | 0.06346 | 0.06346 | 0.07259 | = native |
+| r_u6_symplecticity | 32 | 0.0623 | 0.05635 | 0.04645 | above both, 1.11x |
+| c_e8_reconstruction_caller | 32 | 0.06165 | 0.06088 | 0.05672 | above both, 1.01x |
+| k_ohmi_chart_change_block_symplecticity | 8 | 0.06069 | 0.06683 | 0.09466 | below both, 0.64x |
+| k_ohmi_graph_difference | 8 | 0.05918 | 0.05918 | 0.03308 | = native |
+| r_covariance_closure | 8 | 0.05816 | 0.05642 | 0.04413 | above both, 1.03x |
+| k_transverse_block_symplecticity | 16 | 0.0581 | 0.06095 | 0.05958 | below both, 0.95x |
+| k_ohmi_separated_off_diagonal | 512 | 0.05613 | 0.05613 | 0.06767 | = native |
+| r_frame_symplecticity_e7 | 64 | 0.05448 | 0.05448 | 0.03587 | = native |
+| k_u6_column_sums | 8 | 0.05356 | 0.05356 | 0.03893 | = native |
+| c_physical_normalizer_symplecticity | 64 | 0.05166 | 0.05166 | 0.03377 | = native |
+| c_k4_block_diagonality | 512 | 0.05164 | 0.05164 | 0.05407 | = native |
+| c_caller_symplecticity | 8 | 0.05047 | 0.05047 | 0.06573 | = native |
+| c_d14_graph_invariance | 1024 | 0.0459 | 0.05091 | 0.06552 | below both, 0.70x |
+| k_ohmi_symplecticity | 8 | 0.0458 | 0.05621 | 0.03844 | between |
+| k_covariance_decomposition | 16 | 0.04564 | 0.04564 | 0.05089 | = native |
+| r_primary_route_invariance_i1 | 1024 | 0.03958 | 0.04294 | 0.05052 | below both, 0.78x |
+| k_frame_normalization | 16 | 0.03957 | 0.04132 | 0.05067 | below both, 0.78x |
+| k_frame_column_sums | 16 | 0.03799 | 0.0378 | 0.06997 | between |
+| r_u6_reconstruction | 64 | 0.034 | 0.03864 | 0.05161 | below both, 0.66x |
+| k_frame_row_sums | 8 | 0.03237 | 0.04131 | 0.05067 | below both, 0.64x |
+| k_separation_inverse | 8 | 0.02761 | 0.02761 | 0.02773 | = both |
+| c_d3_symplecticity | 8 | 0.02757 | 0.02757 | 0.02095 | = native |
+| k_u6_row_sums | 8 | 0.02703 | 0.02919 | 0.03385 | below both, 0.80x |
+| k_separation_symplecticity | 8 | 0.02698 | 0.02698 | 0.02143 | = native |
+| k_ohmi_chart_change_off_diagonal | 8 | 0.02207 | 0.02207 | 0.0178 | = native |
+| c_d24_coasting_caller | 8 | 0.0147 | 0.0147 | 0.01595 | = native |
+| c_x2_graph_readout | 8 | 0.014 | 0.014 | 0.01161 | = native |
+| c_normal_mode_kappa | 8 | 0.01209 | 0.01209 | 0.008225 | = native |
+| k_mais_ripken_m5 | 8 | 0.01152 | 0.003295 | 0.008387 | above both, 1.37x |
+| k_coasting_solve_residual | 8 | 0.01128 | 0.01128 | 0.007973 | = native |
+| k_kappa_sz_minus_h | 8 | 0.01013 | 0.008463 | 0.0146 | between |
+| k_m5_residual_6d | 8 | 0.008809 | 0.01467 | 0.00296 | between |
+| r_triple_consistency_k7 | 8 | 0.006812 | 0.006812 | 0.005138 | = native |
+| k_coasting_symplectic_consistency | 8 | 0.002713 | 0.002713 | 0.00254 | = native |
+| r_k14_zz_identity | 8 | 0.000957 | 0.003257 | 0.006515 | below both, 0.15x |
+| c_d3_determinant | 8 | 0.0004403 | 0.0004403 | 0.0004626 | = both |
+| c_normal_mode_tunes | 8 | 0.0 | 0.0 | 0.0 | = both |
+| k_covariance_psd | 8 | 0.0 | 0.0 | 0.0 | = both |
+| c_line_equals_matrix | 8 | 0.0 | 0.0 | 0.0 | = both |
+| c_matched_covariance_accessor | 8 | 0.0 | 0.0 | 0.0 | = both |
+| k_covariance_symmetry | 8 | 0.0 | 0.0 | 0.0 | = both |
+
+Carried after this commit. Item 2 closed (above). Item 3 closed: its token
+question by the public annotations (CI run 439, above), its threshold by the
+owner's answer "My decision to item 3 is yes: 0.25 stands as the re-open
+threshold" (2026-09-14, after the runner's table was in hand): the rule beside
+`_ST6_PIN` in `test/runtests.jl` stays as written (an identity row above 0.25
+in either arm or on the runner re-opens that row's measurement through H15,
+with a documented third-arm entry or a kappa re-examination, never a hand move
+of `c`); the runner's class is measured on every push through the annotations,
+and the largest runner-over-arm factor seen, x2.0, leaves one factor of two
+between 0.25 and the suite's one-half pin. Items 4, 6/12, 7b, 7d, 11a, 13 and
+14 and stage 8 stay open, seven owner decisions where nine stood before this
+section (their options in the handoff under result/, git-ignored, brought
+current alongside this commit).
+
+Checks. The dry-run assertions were reproduced by hand before the testset
+change (`report_identities` on the testset's fake, lines 1-8 read, lines 1 and
+3-5 matched exactly and 6-8 by prefix as the testset asserts, the digest
+unchanged with and without the normalizer keys); the changed testset ran
+standalone on this tree, its text lifted from `test/runtests.jl`
+(`dryrun_check_tenth.jl`, log `dryrun_tenth.log`, in the scratch directory
+above): 15 of 15 assertions in 2.8s, exit 0 (lines 5966-6008 of the suite file
+lifted); the script ran in both arms (the table above). Lane: not run on this
+commit's tree alone. AGENTS.md's Definition of Done owes the gate before every
+PUSH rather than before every commit (owner decision 2026-09-04), and this
+commit is the first of a new local batch on the pushed b19003b, so the two-arm
+full gate on the final tree of the next push is owed again before that push
+and will be recorded in its own section below; the gate recorded above (final
+tree 7e08248) did not run this tree. The Verification Matrix's row for a
+validation change ("the script reproduces; the record is committed: full,
+before the commit carrying the claim") is read as the item 5 commit read it:
+the script runs above are the reproduction, this section is the record, and
+the full lane is the next push's gate; the row's timing clause against the
+per-push rule is carried item 14, the owner's to reconcile. Skipped on this
+tree alone: the fast lane and the full suite. This commit changes
+`validation/`, `test/` and a README, no `src/`. Ledgers in this commit: this
+section; `docs/todo.md` row 20, one sentence.
