@@ -102,16 +102,27 @@ const _COEFFICIENT_CONDITION_MULTIPLIER = 64.0
 """
     _ROUTE_INVARIANCE_MULTIPLIER
 
-`c_inv` of a route's acceptance: a graph whose normalized (I1) residual
-exceeds `c_inv * eps * kappa_route` is `:not_invariant` (its graph, zeta,
-eta and h are still REPORTED beside the status so a disagreement is
-visible), where `kappa_route = max(1, ||M||_F) * max(1, ||D||_F)^2`.
-PROVISIONAL; measured: accepted extreme `normalized / (eps kappa_route) =
-94` over the 200 dense maps and all five routes (the fixed point's slow
-tail sets it; the direct routes stay below 60); rejected extreme `1.9e15` on
-the false graph `[diag(1, -0.5); 0]` of theory 13.7 (raw residual `1.5
-sqrt(2) sin 0.73`); a Newton iterate one step short of convergence on the
-dense maps sits at `>= 1.5e-6` normalized, also rejected.
+`c_inv` of a route's acceptance: a FORMED graph whose normalized (I1)
+residual exceeds `c_inv * eps * kappa_route` is `:not_invariant` (its graph,
+canonical area and residuals are still REPORTED beside the status so a
+disagreement is visible; zeta, eta and h are unavailable with that reason),
+where `kappa_route = max(1, ||M||_F) * max(1, ||D||_F)^2`. PROVISIONAL;
+measured 2026-09-12 (stage 4a record, "Derived windows"; ratios
+`normalized / (eps kappa_route)` at multiplier 1 over the 260 fixtures):
+accepted extreme 151.9, the eigenplane graph of "weak cavity (M[6,5] = -1e-6
+folded, shear 0.7)" (pinned `:none` by the suite; next 93.3, "dense k=66
+(mu_s=-1.068) [projector]"); rejected extreme 642, the polynomial route's
+formed graph of the same weak-cavity map (pinned `:not_invariant`, TS6; next
+1.57e4, its projector graph, and 1.70e5, "prescribed h=-1.0 [fixed_point,
+stalled iterate]"). The one-tenth / ten window `[1519, 64.2]` is EMPTY
+(rejected / accepted = 4.2 < 10): no value of `c_inv` separates the two
+pins; 256 lies between the two extremes (any c in (152, 642) keeps both
+pins), and the record reads the gap as `kappa_route` lacking the route's
+condition (carried to the kappa_route decision). The floor is vacuous for
+large `||D||_F` (M1, 2026-09-13): the normalized residual is at most 3 by
+construction while the floor grows with `||D||_F^2`, so the iterative
+routes are judged by convergence, not by this floor (see
+`_route_from_graph`).
 """
 const _ROUTE_INVARIANCE_MULTIPLIER = 256.0
 
@@ -652,10 +663,18 @@ end
 
 Dossier E4 and E8 for a FORMED 4x2 graph `D`: `graph`, `canonical_area`, `invariance_residual` and
 `trace_residual` are always unique; `:graph_isotropic` when `|area| <= _ISOTROPY_MULTIPLIER * rho_M1
-* max(1, ||D||_2^2)`; else `(zeta, eta, h)` by (D8); `:not_invariant` when the normalized (I1) residual
-exceeds `_ROUTE_INVARIANCE_MULTIPLIER * eps * kappa_route`, `kappa_route = max(1, ||M||_F) * max(1, ||D||_F)^2`
-(an iteration that stopped with `converged = false` is judged by the same floor: its graph is `:none` when
-the residual is nevertheless within it); in both cases `zeta`, `eta`, `h` are unavailable with the status's reason.
+* max(1, ||D||_2^2)`; else `(zeta, eta, h)` by (D8); `:not_invariant` when `converged` is false OR the
+normalized (I1) residual exceeds `_ROUTE_INVARIANCE_MULTIPLIER * eps * kappa_route`, `kappa_route =
+max(1, ||M||_F) * max(1, ||D||_F)^2` (the `detail` says which of the two fired). An iteration that stopped
+short of its stop floor (a stall or the cap, `converged = false`) is `:not_invariant` whatever the floor
+says, because the floor cannot judge it: the normalized residual is at most 3 by construction (the triangle
+inequality on the three terms of `_graph_invariance_residual`) while the floor grows with `||D||_F^2`, so a
+diverged iterate with a large graph is always within it (M1, 2026-09-13: fixed-point stalls of the
+contract's dense family at normalized residual 1.0 were reported `:none`). Convergence to the stop floor is
+the iterative routes' acceptance (a converged iterate is within the (I1) floor by construction: `c_stop <=
+c_inv` and `kappa_route >= max(1, ||M||_F)`), the (I1) floor the direct routes' (they call with the default
+`converged = true`). In every `:not_invariant` case `zeta`, `eta`, `h` are unavailable with the status's
+reason and the graph stays reported.
 With `check_branch` (the iterative routes) a CONVERGED graph whose `trace_residual` exceeds
 `inv_floor * max(1, ||M||_F)` is `:not_invariant` too: it is an invariant plane of another mode (theory 8.6).
 """
@@ -688,9 +707,12 @@ function _route_from_graph(route::Symbol, M::AbstractMatrix{<:Real}, D::Abstract
         return DispersionRoute(route, reason, d, common[1], Determined{Vector{Float64}}(reason, d), Determined{Vector{Float64}}(reason, d),
                                Determined{Float64}(reason, d), common[2:end]...)
     end
-    if res.invariance.normalized > inv_floor
+    if !converged || res.invariance.normalized > inv_floor
+        # An iterate that stopped short of its stop floor is judged by convergence, not by the (I1) floor: the
+        # normalized residual is at most 3 by construction while the floor grows with ||D||_F^2 (M1, 2026-09-13).
         reason = :not_invariant
-        d = "normalized (I1) residual $(res.invariance.normalized) exceeds the floor $(inv_floor) (kappa_route = $(kappa_route)); the graph is reported but is not a dispersion" *
+        d = (converged ? "normalized (I1) residual $(res.invariance.normalized) exceeds the floor $(inv_floor) (kappa_route = $(kappa_route)); the graph is reported but is not a dispersion" :
+                         "the iteration stopped short of the stop floor (converged = false): normalized (I1) residual $(res.invariance.normalized) against the floor $(inv_floor) (kappa_route = $(kappa_route)); the graph is reported but is not a dispersion") *
             (isempty(detail) ? "" : "; " * detail)
         return DispersionRoute(route, reason, d, common[1], Determined{Vector{Float64}}(reason, d), Determined{Vector{Float64}}(reason, d),
                                Determined{Float64}(reason, d), common[2:end]...)
@@ -946,7 +968,11 @@ end
 Dossier E7, theory 8.6 (D20): `D_next = sylvester(M_rr, -M_ll, M_rl - D M_lr D)`
 from the same start, the same stopping rule (the (D16) operator's condition
 is `coefficient_condition`; the contraction ratio `2 ||M_lr||_2 ||D||_2 /
-sigma_min(operator)` goes into `detail`), no halving (`halvings = 0`).
+sigma_min(operator)` goes into `detail`), no halving (`halvings = 0`). An
+unconverged result (a stall: the step no longer decreases the residual; or
+the cap `max_iterations`) is `:not_invariant` with its graph reported, like
+Newton's: `_route_from_graph` judges an iterate by `converged`, not by the
+(I1) floor.
 """
 function _fixed_point_route(M::AbstractMatrix{<:Real}, tau_s::Real; rho_M1::Real, max_iterations::Integer=50, D0=nothing)
     size(M) == (6, 6) || throw(ArgumentError("_fixed_point_route takes a 6x6 matrix, got $(size(M))"))

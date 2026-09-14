@@ -458,8 +458,8 @@ const _ANALYSIS_INPUT_T = NamedTuple{(:form, :dimension, :provenance),
                                      Tuple{Symbol, Int, Union{Nothing,LinearizationProvenance}}}
 const _DEFECT_T = NamedTuple{(:frobenius, :row_ratio, :row_residual, :row_tolerance), NTuple{4, Float64}}
 const _ROUTE_DIAGNOSTIC_T = NamedTuple{(:route, :status, :normalized_residual, :raw_residual,
-                                        :coefficient_condition, :iterations, :detail),
-                                       Tuple{Symbol, Symbol, Float64, Float64, Float64, Int, String}}
+                                        :coefficient_condition, :iterations, :converged, :detail),
+                                       Tuple{Symbol, Symbol, Float64, Float64, Float64, Int, Bool, String}}
 const _LONGITUDINAL_SELECTION_T = NamedTuple{(:rule, :certified, :selected, :cluster, :weights, :tie, :tune_chords, :detail),
                                              Tuple{Symbol, Bool, Int, Int, Vector{Float64}, Bool, Union{Nothing,NTuple{2,Float64}}, String}}
 const _EDWARDS_TENG_DIAGNOSTIC_T = NamedTuple{(:requested, :reported, :admissible, :area_weights, :route),
@@ -502,7 +502,10 @@ per bullet of theory Section 11.2, everything in SCALED coordinates:
     area and the triple consistency.
   * `phase_validity`: the Mais-Ripken phase-validity flags per mode.
   * `routes`: one row per executed dispersion route: status, normalized and
-    raw invariance residual, coefficient condition, iterations, detail.
+    raw invariance residual, coefficient condition, iterations, `converged`
+    (`false` for an iterative route that stopped short of its stop floor,
+    which is `:not_invariant` whatever the (I1) floor says; `true` for the
+    direct routes), detail.
 """
 struct AnalysisDiagnostics
     convention::String
@@ -1319,11 +1322,12 @@ function _analysis_diagnostics(input::_ANALYSIS_INPUT_T, defect::_DEFECT_T, rule
             r.status === :route_not_selected && continue
             res = is_determined(r.invariance_residual) ? determined_value(r.invariance_residual) : (normalized=0.0, raw=0.0)
             cc = is_determined(r.coefficient_condition) ? determined_value(r.coefficient_condition) : 0.0
-            push!(routes, _ROUTE_DIAGNOSTIC_T((r.route, r.status, res.normalized, res.raw, cc, r.iterations, r.detail)))
+            push!(routes, _ROUTE_DIAGNOSTIC_T((r.route, r.status, res.normalized, res.raw, cc, r.iterations, r.converged, r.detail)))
             if r.route === dispersion.primary && is_determined(r.invariance_residual) && is_determined(r.graph)
                 D = determined_value(r.graph)
+                # mirror of kappa_route in _route_from_graph (Frobenius norm of the graph, not opnorm)
                 push!(residuals, ("primary route invariance (I1)", res.normalized,
-                                  _ROUTE_INVARIANCE_MULTIPLIER * eps() * max(1.0, norm(clusters.matrix)) * max(1.0, opnorm(D))^2))
+                                  _ROUTE_INVARIANCE_MULTIPLIER * eps() * max(1.0, norm(clusters.matrix)) * max(1.0, norm(D))^2))
             end
         end
         if is_determined(separation)

@@ -4805,9 +4805,12 @@ end
     @test _st4_val(capped.invariance_residual).normalized > _st4_val(full.invariance_residual).normalized
     @test norm(_st4_val(capped.graph) - f.D) < 1e-3 && norm(_st4_val(capped.graph) - f.D) > 1e-9      # one step: quadratic, not exact
     @test occursin("iteration cap 1", capped.detail)
-    # the fixed point has its own cap; capped at 1 it stops short (recorded as :none only if within acceptance)
+    # the fixed point has its own cap; capped at 1 it stops short and is :not_invariant with its graph reported: an
+    # unconverged iterate is judged by its flag, not by the (I1) floor (M1, 2026-09-13; before the fix a stopped
+    # iterate within the floor was :none). The whole rule is pinned in the M1 testset below.
     fp1 = _st4_route(Octopus._dispersion_routes(f.M, cl; routes=(:fixed_point,), fixed_point_max_iterations=1), :fixed_point)
     @test fp1.iterations == 1 && !fp1.converged && fp1.halvings == 0
+    @test fp1.status === :not_invariant && Octopus.is_determined(fp1.graph) && occursin("converged = false", fp1.detail)
     # the halving rule (E7): from D0 = D_exact + 100 the full Newton step increases the residual; with halvings
     # (10 measured) the iteration still reaches the exact graph. Accepting a residual increase breaks this.
     far = Octopus._newton_route(f.M, _st4_val(rep.tau_s); rho_M1=cl.rho_M1, D0=f.D .+ 100.0, max_iterations=100)
@@ -4855,6 +4858,92 @@ end
         cc = Octopus._coasting_structure(Mcs; rho_M1=_st4_clusters(Mcs).rho_M1)
         @test cc.holds
         @test norm(Octopus._unscale_momentum_dispersion(recc, _st4_val(cc.eta)) - fc.eta) <= 16 * eps() * max(1, norm(Mcs)) * _st4_val(cc.coefficient_condition) * maximum(fac)^2 / minimum(fac)^2
+    end
+end
+
+@testset "Dispersion routes: an unconverged iterate is :not_invariant whatever the (I1) floor says (M1, 2026-09-13)" begin
+    # M1 (the stage 6 record's carried item 1, fixed 2026-09-13 in form A2): `_route_from_graph` judged every FORMED
+    # graph by the (I1) floor 256 eps max(1, ||M||_F) max(1, ||D||_F)^2 and read `converged` in the branch test only.
+    # The residual it compares is the NORMALIZED (I1) residual (divided by the norms of its terms, so bounded by a
+    # small constant for ANY graph) while the floor grows with ||D||_F^2: once ||D||_F is large the acceptance is
+    # vacuous, and a fixed-point iterate that stopped short (a stall or the cap) with a garbage graph was reported
+    # :none with Determined zeta, eta, h. The rule the Newton and `_MAX_HALVINGS` docstrings already promised: an
+    # iterate with converged = false is :not_invariant regardless of the floor; graph, canonical_area,
+    # invariance_residual and trace_residual are still reported, zeta, eta, h unavailable with reason :not_invariant.
+    # All three forms below are RED on 180ce70 (the unfixed tree).
+    # (i) the unit form: the EXACT graph of a dense map (its residual far inside the floor) passed with converged = false
+    f = _st4_dense(0)
+    cl = _st4_clusters(f.M)
+    rep = Octopus._dispersion_routes(f.M, cl)
+    tau = _st4_val(rep.tau_s)
+    kappa = max(1, norm(f.M)) * max(1, norm(f.D))^2
+    r = Octopus._route_from_graph(:fixed_point, f.M, f.D, tau; rho_M1=cl.rho_M1, converged=false)
+    @test r.status === :not_invariant && !r.converged
+    @test Octopus.is_determined(r.graph) && Octopus.is_determined(r.canonical_area)
+    @test Octopus.is_determined(r.invariance_residual) && Octopus.is_determined(r.trace_residual)
+    @test !Octopus.is_determined(r.zeta) && r.zeta.reason === :not_invariant
+    @test !Octopus.is_determined(r.eta) && !Octopus.is_determined(r.h) && r.h.reason === :not_invariant
+    @test occursin("converged = false", r.detail)
+    # the residual IS inside the floor: the status comes from the flag alone
+    @test _st4_val(r.invariance_residual).normalized <= Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * kappa
+    # the same call with converged = true (the direct routes' default) is :none: the direct routes are unchanged
+    r_ok = Octopus._route_from_graph(:fixed_point, f.M, f.D, tau; rho_M1=cl.rho_M1, converged=true)
+    @test r_ok.status === :none && r_ok.converged && Octopus.is_determined(r_ok.zeta) && Octopus.is_determined(r_ok.eta)
+    @test abs(_st4_val(r_ok.h) - f.h) <= 1024 * eps() * kappa
+    # (ii) the census form (result/twiss_impl_2026_09_11/stage6/probes/route_census_int.out, 2026-09-13): on the
+    # contract's 200-map family (seed 20260911, the fixture builder's stream; the 4x4 count does not move the 6x6
+    # draws) the fixed point stopped short on map 89 (both scalings), map 157 (both) and map 165 (scaling = :none):
+    # converged = false after 3-4 iterations, normalized residual 1.0, ||zeta|| ~ 1e11, h ~ 1e-24, and the unfixed
+    # tree reported them :none, pairing the garbage into dispersion.agreement (worst pair 7.4e20). The headline (the
+    # primary route, :eigenplane) never carried it. The fix does not move the iteration, so the flags are the census's;
+    # a run whose fixed point converges is checked for the headline only, and at least three of the six stay unconverged.
+    c = TwissDispersionIdentityContract(dense_maps=200, dense_maps_4d=0)
+    fx = Octopus._identity_contract_fixtures(c)
+    n_unconverged = 0
+    for name in ("F6a dense 6x6 map 89", "F6a dense 6x6 map 157", "F6a dense 6x6 map 165")
+        i = findfirst(t -> t.name == name, fx)
+        @test i !== nothing
+        i === nothing && continue
+        for scaling in (:auto, :none)
+            rr = analyze(TwissDispersionAnalysis(strict=false, emittances=c.emittances, scaling=scaling), fx[i].input)
+            @test rr.dispersion !== nothing
+            rr.dispersion === nothing && continue
+            fp = rr.dispersion.routes[findfirst(x -> x.route === :fixed_point, rr.dispersion.routes)]
+            # the diagnostics row carries the flag (the :converged field, added with the fix) beside the status
+            row = rr.diagnostics.routes[findfirst(x -> x.route === :fixed_point, rr.diagnostics.routes)]
+            @test row.converged == fp.converged && row.status === fp.status
+            if !fp.converged
+                n_unconverged += 1
+                @testset let name = name, scaling = scaling
+                    @test fp.status === :not_invariant && Octopus.is_determined(fp.graph)
+                    @test !Octopus.is_determined(fp.h) && fp.h.reason === :not_invariant
+                    @test !Octopus.is_determined(fp.zeta) && !Octopus.is_determined(fp.eta)
+                    @test !any(p -> p.first === :fixed_point || p.second === :fixed_point, rr.dispersion.agreement)
+                    @test row.status === :not_invariant && row.converged == false
+                end
+            end
+            # the headline is untouched either way
+            @test rr.dispersion.primary === :eigenplane && Octopus.is_determined(rr.dispersion.eta) && Octopus.is_determined(rr.dispersion.h)
+        end
+    end
+    @test n_unconverged >= 3       # the census: 5 of the 6 runs
+    # (iii) the whole-family invariant (400 analyses): no route that did not converge is :none; the offenders are named
+    offenders = String[]
+    n_analyses = 0
+    for t in fx
+        startswith(t.name, "F6a") || continue
+        for scaling in (:auto, :none)
+            rr = analyze(TwissDispersionAnalysis(strict=false, emittances=c.emittances, scaling=scaling), t.input)
+            rr.dispersion === nothing && continue
+            n_analyses += 1
+            for x in rr.dispersion.routes
+                (!x.converged && x.status === :none) && push!(offenders, "$(t.name) scaling=$(scaling) $(x.route)")
+            end
+        end
+    end
+    @test n_analyses == 2 * c.dense_maps
+    @testset let offenders = offenders
+        @test isempty(offenders)
     end
 end
 

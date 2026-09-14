@@ -11043,3 +11043,270 @@ row is "markdown only"; the fast lane was not run on this commit's tree alone: A
 stage 6 record); the runner's 57-row table (unread); no julia ran for this
 section: every number above is a line read on 180ce70 or a record cited by
 its history line.
+
+## 2026-09-14: M1, an unconverged iterate is :not_invariant (fix(analysis) commit)
+
+The first `src/analysis` change since stage 4b: item 1 of the stage 7
+carried list (stage 6 M1), the `fix(analysis)` commit of the batch (the
+section above names the batch; line numbers are HEAD 180ce70 unless a tree
+is named; the write-up's item 1 is the plan, cited by its path there and
+not restated). This ledger section was written beside the code commit, not
+after a run: every measured number that only a run can give is an ALL-CAPS
+token the orchestrator fills from the logs it names.
+
+### The defect
+
+The stage 6 route census (`result/twiss_impl_2026_09_11/stage6/probes/
+route_census_int.jl`, output `route_census_int.out`; the identity contract's
+F6a dense 6x6 family, seed 20260911, its 200 maps at `scaling = :auto` and
+`:none`, 400 fixed-point runs) found five `:fixed_point` routes with status
+`:none` on a garbage graph: map 89 (auto and none: `h` 8.7e-24, `||zeta||`
+2.7e11 / 3.5e11, raw (I1) residual 6.1e22 / 8.7e22, 3 iterations), map 157
+(auto: `h` 9.5e-43, `||zeta||` 7.4e20, raw 5.9e41, 4 iterations; none: `h`
+2.4e-20, `||zeta||` 5.5e9, raw 3.6e19, 3 iterations) and map 165 (none: `h`
+2.9e-40, `||zeta||` 5.3e19, raw 1.9e39, 4 iterations); every one
+`converged = false` and every one with normalized (I1) residual exactly
+1.000. The mechanism has two halves. (i) The normalized residual is bounded
+by construction: `_graph_invariance_residual`
+(`src/analysis/symplectic_linear_algebra.jl:407-416`) divides the raw
+residual `||A + M_rl - B||` (`A = M_rr D`, `B = D (M_lr D + M_ll)`) by
+`max(1, ||A||, ||M_rl||, ||B||)` (line 415), so the triangle inequality puts
+it at or below 3 for ANY graph, and on a diverged graph where `B` dominates
+it goes to 1, the census's value. (ii) The acceptance floor
+`_ROUTE_INVARIANCE_MULTIPLIER * eps * max(1, ||M||_F) * max(1, ||D||_F)^2`
+(`dispersion_routes.jl:670-671`, the constant 256 at 116) grows with
+`||D||_F^2`: it exceeds 1 once `||D||_F` passes about `4.2e6 /
+sqrt(max(1, ||M||_F))` and exceeds the bound 3 at about `7.3e6 / sqrt(max(1,
+||M||_F))`, so above that norm the acceptance is vacuous (map 89: floor of
+order 4e9 against 1.000). `_route_from_graph` took the `converged` flag
+(keyword at 663) and used it only in the branch test (682, `check_branch &&
+converged && ...`); the `:not_invariant` decision at 691 read the floor alone
+and the `:none` return at 698-699 formed `zeta`, `eta`, `h` from the garbage.
+The docstring at 657-658 documented exactly this ("an iteration that stopped
+with `converged = false` is judged by the same floor: its graph is `:none`
+when the residual is nevertheless within it") while the `_MAX_HALVINGS`
+docstring (162-163) and the `_newton_route` docstring (885-886) promised
+`:not_invariant` for an unconverged result.
+
+Where the garbage reached: `result.dispersion.routes[i]` (status `:none`,
+Determined `zeta`, `eta`, `h`); `result.dispersion.agreement`
+(`_route_agreement`, 483-499, pairs every two routes whose `zeta`, `eta`,
+`h` are all unique, so the garbage route was paired with the three agreeing
+ones: `k_route_agreement` 1.29e32 on map 157 and 2.67e11 on map 89 in the
+stage 6 script run, the section "The validation script at its defaults"
+above); `result.diagnostics.routes` (the `_ROUTE_DIAGNOSTIC_T` rows,
+`twiss_dispersion_analysis.jl:460`, which carried no `converged` field).
+Where it did not: the headline `zeta`, `eta`, `h`, `graph` (the primary
+route, `:eigenplane`), the physical block, the separation and the verdict
+(`_analysis_verdict`, 1366-1380, reads the primary route's status only), so
+`result.status` was `:passed` on such a map while a secondary route in it
+was garbage.
+
+### The fix (form A2)
+
+One condition. `src/analysis/dispersion_routes.jl:691` `if
+res.invariance.normalized > inv_floor` becomes `if !converged ||
+res.invariance.normalized > inv_floor`: an iterate with `converged = false` (a
+Newton stall, a Newton or fixed-point iteration cap) is `:not_invariant`
+whatever the floor says. The existing `:not_invariant` return is kept, so the
+route still reports `graph`, `canonical_area`, `invariance_residual`,
+`trace_residual`, `coefficient_condition`, `iterations`, `halvings` and
+`converged`, and `zeta`, `eta`, `h` are unavailable with reason
+`:not_invariant`. It is NOT a call to `_unavailable_route` (form A1 of the
+write-up): the suite's pins at 4328-4331 and 4396-4399 require
+`is_determined(graph)` on a `:fixed_point` `:not_invariant` route, and a
+reported graph is what makes a disagreement visible. The detail string of the
+return distinguishes the two causes (the iteration did not converge; the
+residual exceeds the floor); its wording is this commit's diff of
+`src/analysis/dispersion_routes.jl` (the batch's gate record section names the
+SHA).
+
+### The regression test
+
+`test/runtests.jl` gains the testset "Dispersion routes: an unconverged
+iterate is :not_invariant whatever the (I1) floor says (M1, 2026-09-13)" in
+the dispersion-routes block, the assertions the write-up's item 1 lists: a
+`_route_from_graph` call with `converged = false` on a graph whose norm puts
+the floor above the residual's bound is `:not_invariant` with `!converged`, a
+Determined graph and unavailable `zeta`, `eta`, `h`; the census maps 89 and
+157 (the contract's F6a builder,
+`src/contracts/twiss_dispersion_identity.jl:379-381`,
+`MersenneTwister(contract.seed)`, seed 20260911) through `analyze` at `scaling
+= :auto` and `:none` have no route with `converged = false` and status
+`:none`, and no such route in an `agreement` pair; a sweep of the family names
+every offender. Its text is this commit's diff of `test/runtests.jl`. Shown
+failing unfixed per AGENTS.md: the extract
+`result/twiss_impl_2026_09_11/carried/extract/m1_extract.jl` (the testset's
+block with the dispersion-routes helpers it needs) on HEAD 180ce70, native
+arm, log `extract/m1_red_native.log`: exit 1, `26 Pass 30 Fail 7 Error 63
+Total 33.6s`; the 7 errors are `FieldError: type NamedTuple has no field
+converged` (the diagnostics row had no such column), the 30 failures the
+status and agreement pins of the unit and census forms and the family sweep
+(00:24 EDT, 2026-09-14). The same extract on the commit's tree: `63 Pass 63
+Total`, exit 0, native 31.8 s (`extract/m1_green_native.log`) and haswell 30.8
+s (`extract/m1_green_haswell.log`, `OPENBLAS_CORETYPE=Haswell julia -C
+haswell`). The pin at 4808-4810 (`fp1` capped at one iteration,
+`!fp1.converged`, no status pin) is tightened to `fp1.status ===
+:not_invariant`. The pins the write-up flags as run-time unknowns, 4341
+(`@test r.converged` on a `:none` route, now implied by the status), 4403
+(fixed point `:none` for a prescribed `h` in (1, 2)) and 4522 (the unstable
+map's fixed point `:none`), flip only if those fixed points stalled within the
+floor: none flipped. The extract `carried/extract/routes_extract.jl` (the five
+dispersion-routes testsets 4309, 4368, 4465, 4690 and 4783 with the `_st3_`
+and `_st4_` helpers) is green on the commit's tree in both arms, 11761 + 169 +
+61 + 78 + 52 assertions (`routes_green_native.log`,
+`routes_green_haswell.log`), and so is `st4b_extract.jl` (the four stage 4b
+testsets 5872, 6237, 6299 and 6362; 73 + 25 + 30 + 40); no pin was rewritten
+in the tolerant form of 4719-4720. The one route the fix re-labels outside the
+200 + 20 family is the stage 4a crab probe's stalled fixed point (the c_inv
+paragraph below); its suite pin 4719-4720 is already tolerant.
+
+### The fingerprint before and after
+
+Phase 13 of the stage 6 process: the tree is fingerprinted before the edit and
+re-measured after it, both arms, the same scripts. Before (HEAD 180ce70;
+`result/twiss_impl_2026_09_11/carried/run_fingerprint_180ce70.sh`, logs in
+`carried/fingerprint_180ce70/`): the frozen 57-row table
+(`carried/frozen_table.jl`, the identity contract at its frozen multipliers on
+the 20 + 5 defaults, the shape of the stage 6 `measure_A_native.jl` with the
+frozen `c` in place of 1) `STATUS passed`, 57 rows on 160 fixture runs, worst
+ratio 0.0948 at `k_longitudinal_block_symplecticity`, no row at or above one
+tenth, wall 64.2 s (`frozen_native.log`: status and the rows at or above one
+tenth) and the same status, rows and worst ratio, wall 63.2 s
+(`frozen_haswell.log`); the validation script at its defaults (200 + 20) exit
+1, `failed (3 findings)`, the first `k_route_agreement` on map 89 (2.67e11
+against the floor 8.84e-12); rows above 1: `k_route_agreement` 1.29e32 (argmax
+map 157) and `c_scaling_invariance` 1.112 (map 98), so the findings are maps
+89, 157 and 98; `TW-DIGEST 0x75730d37d3b5411c` (`script_native.log`,
+`script_native.tsv`: exit status, rows above 1, `k_route_agreement`,
+`c_scaling_invariance` with their maps) and exit 1, `failed (2 findings)`,
+both `k_route_agreement` (the first on map 89, the row 1.29e32 at map 157; no
+other row above 1, `c_scaling_invariance` 0.689 on map 42); `TW-DIGEST
+0xd92ab6cce83d2d38`; the route census (`carried/census_180ce70.jl` through
+`run_census_180ce70.sh`, the 200 + 20 family through `analyze`, every route's
+status and `converged`) `CENSUS runs=402 nonconverged_routes=320
+nonconverged_with_status_none=5 not_invariant_routes=396`
+(`census_native.log`: runs, routes with `converged = false` and status
+`:none`, routes `:not_invariant`) and the identical line. After (the commit's
+tree, the same scripts, the orchestrator's directory beside the first):
+`STATUS passed`, worst ratio 0.0948 at the same row, wall 64.4 s, the 57
+`SLUG` rows byte-identical to the before run, identical rows too, wall 63.3 s,
+exit 1, `failed (1 findings)`: `c_scaling_invariance` 1.112 on map 98
+(6.707e-12 against 6.031e-12) as before; `k_route_agreement` 0.0959 (map 81);
+of the 57 TSV rows only `k_route_agreement` changed; `TW-DIGEST
+0x75a0b10f84b2fdb1`, exit 0, `passed`, 57 identities on 925 fixture runs,
+worst ratio 0.689 at `c_scaling_invariance` (map 42); `k_route_agreement`
+0.0906 (map 9); only that row changed; `TW-DIGEST 0x11f90af4a5841198`, `CENSUS
+runs=402 nonconverged_routes=320 nonconverged_with_status_none=0
+not_invariant_routes=401`, the five moved as predicted, the identical line in
+the haswell arm (`census_haswell.log`); the stage 6 probe
+`stage6/probes/route_census_int.jl`, re-run natively, prints `garbage :none
+routes: 0 over 400 runs` (5 before) with the worst route agreement 1.55e-11
+(7.40e20 before); and the `c_inv` section of the stage 4a measure
+(`result/twiss_impl_2026_09_11/stage4/measure/measure_stage4a.jl`, the
+accepted extreme, the rejected minimum, the window) before, on 180ce70 by the
+same script, native
+(`carried/fingerprint_180ce70/measurement_table_4a_180ce70.md`, a scratch
+worktree, 2026-09-14): accepted 1244, rejected 24, unlabelled 266 values;
+accepted extreme 1.519e+02 at "weak cavity (M[6,5] = -1e-6 folded, shear 0.7)
+[eigenplane]"; rejected minimum 6.424e+02 at "weak cavity (M[6,5] = -1e-6
+folded, shear 0.7) [polynomial, formed graph]"; window `[1.519e+03,
+6.424e+01]` EMPTY, the stage 4a record's numbers (history 4740), and after,
+accepted 1243, rejected 25, unlabelled 266: one value moved from the accepted
+to the rejected side, "trial-011 crab k=kc(1-0.001) [fixed_point, stalled
+iterate]" at 5.247e+01 (500 iterations, contraction ratio 2.05, `converged =
+false`, under the floor at 52.5 < 256 and so `:none` before), now the rejected
+minimum; window `[1.519e+03, 5.247e+00]` EMPTY, the accepted extreme 1.519e+02
+unchanged, 256 not re-measured
+(`carried/fingerprint_m1/measurement_table_4a_m1.md`). The run's route summary
+counts the fixed point's `:not_invariant` fixtures 23 before and 24 after with
+the iteration cap reached on 4 in both runs: the other three capped iterates
+were already outside the floor. In the same run's section 4a (the crab map at
+k = k_c (1 - 0.001)) the row's statuses read `ok ok ok ok notinv` (before `ok
+ok ok ok ok`) and its `agreement /(eps kappa_d)` falls from 4.174e+03 to
+2.086e+01; the suite's crab pin 4719-4720 is tolerant and green.
+
+What the fix predicts, written before the numbers: the census's `converged =
+false, :none` count goes to zero in both arms and its `:not_invariant` count
+rises by the same number; the stalled iterates move from the accepted to the
+rejected side of the `c_inv` table, so the accepted extreme cannot rise and
+the rejected minimum cannot rise, and the stage 4a row's window (history 4740,
+`[1519, 64.2] EMPTY`) stays EMPTY: the constant 256 is not re-measured by this
+commit. The script's `k_route_agreement` (2.67e11 on map 89, 1.29e32 on map
+157 in the stage 6 run) falls to the value of the agreeing pairs, since a
+`:not_invariant` route has no `zeta` to pair; its `c_scaling_invariance`
+(1.112 native on map 98, 0.689 haswell on map 42) does not move, so the script
+at its defaults stays red in the native arm and green under `-C haswell` until
+item 2 (M3) is decided (the validation section of this batch, below, records
+the same). The frozen 57-row table is expected unchanged in both arms: the fix
+changes the status of exactly the routes with `converged = false` inside the
+floor, and the stage 6 census found those on maps 89, 157 and 165 only, none
+among the first 20 dense maps of the seed (the M3 driver's summary,
+`carried/m3/summary.md`, notes that the 4D maps of the 200 + 20 set are drawn
+after its 200 6x6 maps and are not the five 4D maps of the 20 + 5 set; the
+frozen table below settles the 20 + 5 set directly). A number that contradicts
+a prediction is recorded as measured, and the prediction stands here as
+written.
+
+### The neighbour walk
+
+Per AGENTS.md (a fix walks the code paths that share the defect's shape):
+
+- `_newton_route` (`dispersion_routes.jl:870-887`; the call at 938-939 passes
+  `converged=converged, check_branch=true`) shares `_route_from_graph`, so A2
+  covers a Newton stall (the `_MAX_HALVINGS` cap, 158-176) and the Newton
+  iteration cap exactly as it covers the fixed-point cap
+  (`_FIXED_POINT_MAX_ITERATIONS = 500`, line 155); the three docstrings
+  (655-665, 870-887, 943-950) and the multiplier's (103-115) now say one
+  thing, and the multiplier's records the stage 4a measurement it rests on
+  (history 4740-4768: the accepted extreme, the rejected side, the window with
+  `coefficient_condition` folded, `[53, 816]`). - `_route_agreement` (483-499)
+  needs no filter: it pairs routes whose `zeta`, `eta`, `h` are all
+  Determined, and a `:not_invariant` route's are not. `k_route_agreement`
+  (contract 831) is not widened; the write-up's "do not filter agreement or
+  widen `k_route_agreement`" is followed. - The analysis's diagnostics triple
+  "primary route invariance (I1)" (`twiss_dispersion_analysis.jl:1326`)
+  mirrors the kernel's floor with `opnorm(D)` in place of the Frobenius norm;
+  the write-up's zero-risk piece (`opnorm(D) -> norm(D)`, a reported-only row:
+  `_VERDICT_RESIDUALS` at 1386-1387 does not include it) rides this commit
+  (the 1326 hunk of its diff of `src/analysis/twiss_dispersion_analysis.jl`);
+  the contract's own copy (693, `opnorm(graph)^2`, its comment at :94), 719
+  (`r_primary_route_invariance_i1`) and 895 (`c_d14_graph_invariance`, `nD^2`)
+  carry the same `||D||^2` and move with the kappa_route commit (stage 7 items
+  6 and 12): this commit changes no floor and no multiplier, which is why form
+  B (a start-norm cap) is deferred there too. - `_ROUTE_DIAGNOSTIC_T` (460)
+  gains `converged`, populated where the rows are pushed (1315-1327);
+  `report_identities` in the validation script does not print the field
+  (carried below). - The suite's fixed-point pins: 4328-4331 and 4396-4399 (a
+  `:not_invariant` route with `is_determined(graph)`) hold by construction of
+  A2; 4341, 4403, 4522 (unchanged, green in both arms) and 4808-4810
+  (tightened) are the regression-test paragraph above. - Nothing in
+  `src/analysis/mode_clusters.jl`, the frame or the normalizer path reads
+  `converged`; the flag is the route iteration's alone.
+
+### Not verified
+
+No julia ran for the writing of this section; every number in the
+regression-test and fingerprint paragraphs above was filled in by the
+orchestrator from the runs those paragraphs name (logs under
+`result/twiss_impl_2026_09_11/carried/`), and the test's assertions, the
+detail string and the 1326 mirror are the commit's diff. Not verified: the
+census's completeness for the 20 + 5 set (the 4D maps, above); the D12
+weak-cavity verdicts (the stage 6 record's); the wording of the write-up's
+item 1 is the plan and is cited by its path in the section above, not
+restated.
+
+### Carried
+
+- The kappa_route commit (stage 7 items 6 and 12): the three formulas (kernel
+  Frobenius at 670, diagnostics and contract `opnorm` at 1326 and 693,
+  contract 831 with `coefficient_condition` folded) unified, form B, 256
+  re-measured with the stalls on the flag side, `r_primary` and `c_d14`
+  re-frozen; it must not share a commit with M1 (attribution of M1's windows).
+  - Item 2 (M3): the freezing set; until it is decided the script at its
+  defaults stays red natively on map 98, which this commit does not touch. -
+  The route's `converged` is in `result.diagnostics.routes` but printed by no
+  TW-DIAG line; a print line is a validation commit, not this one. - No suite
+  pin flipped, so no tolerant rewrite and no re-pin is owed; the kappa_route
+  commit re-measures 256 with the stalls (the crab probe's among them) on the
+  flag side.

@@ -1135,6 +1135,49 @@ path, not the running file, counts the pin lines and sits where a structural
 error in it cannot abort the assertions it guards; a neighbour that executed
 green on the measuring host was run, not audited, and "green" names what ran.
 
+## A residual normalized by the quantity's own norms cannot be judged by a floor that grows with those norms
+
+The dispersion route kernel `_route_from_graph` accepted a graph `D` when its
+normalized (I1) invariance residual sat under `256 eps max(1, ||M||) max(1,
+||D||)^2`. The residual is `||M_rr D + M_rl - D (M_lr D + M_ll)|| / max(1,
+||M_rr D||, ||M_rl||, ||D (M_lr D + M_ll)||)`: dividing by the largest term
+of the very sum it measures bounds it by 3 for every graph, and on a graph
+that has diverged (`||D||` of order 1e11 to 1e20) it goes to 1. The floor,
+meanwhile, grows with `||D||^2` and passes 3 near `||D|| = 7e6`. Above that
+norm the acceptance test was a tautology: a fixed-point iteration that
+stopped at its cap with `converged = false` and a garbage graph was reported
+`:none` with Determined `zeta`, `eta`, `h`, and the analysis's route
+agreement diagnostic dutifully paired the garbage with the three real routes
+(`k_route_agreement` 1.29e32 on one contract map). The kernel had the
+`converged` flag in hand and used it only to gate the branch test. The
+docstring two lines up promised `:not_invariant` for an unconverged result;
+the docstring on the function itself documented the tautology as intended
+behaviour, so reading either alone confirmed whichever belief one came with.
+
+Two things went wrong, and the second is the lesson. First, an iteration's
+own verdict on itself (did it converge) was overruled by a downstream test
+that could not see the difference between a converged and a diverged
+iterate. Second, the floor and the residual scaled with the same quantity in
+opposite directions: kappa in the floor's numerator, kappa's terms in the
+residual's denominator. Such a pair has a crossover norm beyond which the
+test accepts everything, and the crossover is a computable number (here
+`sqrt(3 / (256 eps))` over `sqrt(max(1, ||M||))`), which nobody computed
+when the floor was frozen because the freezing set (the 20 + 5 default maps
+and the stage 4a probes) contained no iterate that had diverged that far;
+the 200 + 20 family the validation script runs contained three. The stage 6
+route census (400 fixed-point runs, every route's status and `converged`
+printed) found them in one pass; the frozen multiplier table, which reports
+ratios to the floor, could not, because a ratio of 1.000 to a floor of 4e9
+looks like a comfortable pass.
+
+Rules adopted: an iteration's convergence flag decides its status before any
+residual floor is consulted; a residual that is normalized by the norms of
+its own terms is bounded, and its floor must not grow with those norms (or
+the floor's crossover norm is computed, written into the docstring and
+covered by a fixture beyond it); a census that prints every status and
+convergence flag over the LARGEST family the tree runs is part of freezing
+any floor, since a ratio table cannot show a tautological pass.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.
