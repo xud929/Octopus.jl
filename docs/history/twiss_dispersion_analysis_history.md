@@ -11922,3 +11922,150 @@ Carried.
   two-arm extract.
 - The 39 degraded fixtures of the 200+20 set (the same 39 in both arms) are
   all F6a dense 6x6 maps; none of F1-F5, F8 or the 4x4 maps is degraded.
+
+## 2026-09-14: the carried batch reviewed; three tests strengthened, the dry-run check in the suite, six record corrections (test(analysis) commit)
+
+Before the batch's gate, a read-only review workflow (four reviewers along
+theory and numerics, AGENTS.md compliance, CI runner behaviour and test
+adequacy; the three most severe findings of each reviewer handed to an
+adversarial verifier; 10 agents, 188 tool uses, 19.7 min; no edit, no
+`Pkg.test`, no git state change) read the five commits 180ce70..b2d8e83 and
+the M3 record 9f3cce6. Theory and runner: no finding. Tests: five findings,
+the three most severe verified and confirmed (one medium, two low), two below
+the cut. Compliance: four findings, three verified and confirmed (all low),
+one below the cut. This commit acts on the six confirmed findings and on two
+of the three below the cut; the third is carried (below). The workflow's
+journal and transcripts live in the session directory, not in the repository,
+so every finding is restated here. Line numbers of the history are stable (the
+file is append-only); line numbers of `test/runtests.jl` are those of this
+tree.
+
+### Corrections to the batch's sections (the sections stay as written; the history is frozen)
+
+- The item 10 section (history 10938, commit 0f61cef) and the body of 0f61cef
+  anchor `_FRAME_ACCEPTANCE_MULTIPLIER` at twiss_dispersion_analysis.jl:66.
+  The constant is defined at src/analysis/twiss_dispersion_analysis.jl:64 on
+  180ce70 and on this tree (line 66 is a docstring fence); the :80 anchor of
+  `_NORMALIZER_ACCEPTANCE_MULTIPLIER` stands, as does the earlier citation at
+  history 7014.
+- The M1 section (history 11159, commit 90af63f) cites the four stage 4b
+  testsets at 5872, 6237, 6299 and 6362 under its rule "line numbers are HEAD
+  180ce70 unless a tree is named" (11051). Those are 90af63f numbers; on
+  180ce70 the testsets are at 5783, 6148, 6210 and 6273 (the M1 testset's 3 +
+  86 inserted lines at 4805 and 4858 lie above them). The five
+  dispersion-routes numbers in the same sentence (4309, 4368, 4465, 4690,
+  4783) are the same on both trees.
+- The M1 section (history 11128-11130) and the body of 90af63f ("the kernel
+  with converged = false on a large-norm graph") describe form (i) of the M1
+  testset as a call on a graph whose norm puts the floor above the residual's
+  bound. Form (i) calls the kernel on the EXACT graph of `_st4_dense(0)`:
+  norm(D) = 0.317, floor 1.43e-13, normalized residual 1.0e-16, a small-norm
+  graph whose residual is far inside the floor, as the test's own comment
+  says; the vacuous-floor regime was reached only through `analyze` in forms
+  (ii) and (iii). The direct call is added below, so the record's claim is now
+  true of the tree as well as corrected.
+- The tripwires section (history 11336, commit a418b56) cites the kind sweep's
+  `TwissDispersionAnalysis(strict=false)` at contract line 1029 on 180ce70; it
+  is at src/contracts/twiss_dispersion_identity.jl:1031 (1029 is the `kinds =
+  Type[...]` comprehension); 1069 and 1204 in the same paragraph are exact.
+- The body of a418b56 ("is shown to count every analyzed kind and to name
+  each") overstates n8, which pinned `kinds_failed_example >= 1` and one
+  kind's name: the branch counts and names one kind, not every declaring
+  kind's example fails. The section itself (history 11344) said "at least
+  one". Pinned to every kind below.
+- The validation section (history 11624, commit b2d8e83) says the Verification
+  Matrix row for a validation change ("full, before the commit carrying the
+  claim", AGENTS.md:160) "is met by" the batch's gate on the final tree. Read
+  precisely: the row's timing clause predates the per-push rule (owner
+  decision 2026-09-04, commit 6ac8d61, which rewrote the Definition of Done
+  and the routing row and left this clause), so the batch follows the rule and
+  the stage 6 and 7 precedent (d4e67da, e960ca8, ce43179, 180ce70: the gate as
+  a later commit), not the clause's letter. Reconciling the clause is the
+  owner's (carried, below).
+
+### Tests strengthened (`test/runtests.jl`)
+
+- The `_with_longitudinal_mode` testset (5940; medium finding). The fixture
+  set four of the thirteen carried options away from their defaults
+  (`scaling`, `newton_max_iterations`, `emittances`, `strict`), so its
+  equality loop could not tell a carried field from one reset to its default
+  for the other nine (`symplectic_rtol`, `nonsymplectic`, `closed_orbit`,
+  `closed_orbit_atol`, `map_uncertainty`, `resolution_chord`, `clusters`,
+  `preferred_form`, `dispersion_routes`), the regression its own comment
+  names; the refactor section (history 11473-11475) said "every option away
+  from its default" of a fixture that was not. The fixture now sets all
+  thirteen (`symplectic_rtol=1e-9, nonsymplectic=:flag, closed_orbit=:warn,
+  closed_orbit_atol=1e-7, map_uncertainty=1e-10, resolution_chord=Inf,
+  clusters=[[1, 2], [3, 4], [5, 6]], preferred_form=2,
+  dispersion_routes=(:eigenplane,)` beside the four) and the loop asserts each
+  field differs from `TwissDispersionAnalysis()` before asserting it is
+  carried: 16 -> 29 tests.
+- The M1 testset (4922), form (i): a direct kernel call on `1e8 .* D` of the
+  same map (floor 1.44e2 against the residual's bound of 3; `floor_big > 3`
+  asserted): `converged = false` is `:not_invariant` with `h` unavailable for
+  that reason, the normalized residual is inside the vacuous floor, and the
+  same call with `converged = true` is `:none`: the floor alone accepts the
+  garbage, the flag refuses it. 63 -> 67 tests.
+- The stage 6 testset (1188), n8: `kinds_failed_example == kinds_declaring`,
+  `kinds_analyzed == 0`, `kinds_refused == 0` (23 = 23 on this tree, both
+  arms): 166 -> 167 tests.
+- New testset "validation/twiss_dispersion_identities.jl: the reporting code
+  on a fake result (dry run)" (5966; 13 tests, about 2 s): the check the
+  validation section cites from the ignored
+  `result/twiss_impl_2026_09_11/carried/dryrun_check.jl`, as a suite testset
+  (AGENTS.md: the harness behind a claim lands in the tree, never only in
+  result/). The script is included into a module of its own with
+  `Main.IDENT_DRY_RUN` defined; a fake result with two identity slugs and the
+  two normalizer keys prints two `TW-NORMALIZER` lines between the `TW-IDENT`
+  rows and `TW-DIAG` and writes 2 + 2 TSV rows; the same fake without the keys
+  prints `NaN` and does not throw; `TW-DIGEST` is identical in both. The
+  script loads `Printf`, so `Printf` is now a test dependency (Project.toml
+  `[extras]` and the test target; a standard library, nothing to download):
+  `Pkg.test` runs the suite with `@:<test dir>` as the load path, without
+  `@stdlib`, and `using Printf` under that load path fails on this box without
+  the entry (checked before the change).
+
+### Checks
+
+The two extracts, built by `sh
+result/twiss_impl_2026_09_11/carried/build_review_extract.sh` and run by `sh
+result/twiss_impl_2026_09_11/carried/run_review_extract.sh` (both scratch
+under the ignored result/ tree, cited by path), on this tree with the edits
+above, 01:38-01:42 EDT, all four exits 0: `review_extract.jl` (the `_st6_`
+helper range 1110:1187, the stage 6 block, the helper testset, the dry-run
+testset), native: Stage 6 167/167 in 1m32.2s; the helper testset 29/29 in
+0.5s; the dry run 13/13 in 2.1s; haswell (`OPENBLAS_CORETYPE=Haswell julia -C
+haswell`): Stage 6 167/167 in 1m31.5s; the helper testset 29/29 in 0.5s; the
+dry run 13/13 in 2.0s. `m1b_extract.jl` (the M1 extract's helper snapshot,
+unchanged, plus the fresh M1 block), native: the M1 testset 67/67 in 31.3s;
+haswell: the M1 testset 67/67 in 31.5s. Logs:
+`carried/extract/review_{native,haswell}.log`,
+`carried/extract/m1b_{native,haswell}.log`.
+
+Checks. Lane: not run on this commit's tree alone: AGENTS.md owes the lane
+before the PUSH, not before every commit (owner decision 2026-09-04); the
+checks of this commit are the two extracts above in both arms and the batch's
+two-arm full gate on the final tree of the push, recorded in its own section
+below; skipped on this tree alone: the fast lane and the full suite. Not
+verified on this tree: `Printf` under the real `Pkg.test` sandbox (the
+extracts run with the default load path); the batch's gate below shows the
+dry-run testset's row, which is that check.
+
+### Carried
+
+- Item 13 (new; the tests reviewer's finding below the cut): the "primary
+  route invariance (I1)" diagnostics tolerance
+  (src/analysis/twiss_dispersion_analysis.jl:1343-1345) re-types the kernel's
+  floor (its comment calls it a mirror); M1 repaired a drift in it (`opnorm`
+  -> `norm`) that no test had noticed, and no assertion ties the row to the
+  kernel. AGENTS.md: derive from one source and add a tripwire. The fix is to
+  carry `inv_floor` on the `DispersionRoute` (a field of a public result type)
+  or return it beside the route, read it in the diagnostics row, and assert in
+  the M1 testset's form (ii) that the row's tolerance equals the primary
+  route's floor. The owner's call, since it adds a field.
+- Item 14 (new; the compliance reviewer's finding below the cut):
+  AGENTS.md:160's timing clause "full, before the commit carrying the claim"
+  against the 2026-09-04 per-push rule; the entry point is the owner's to
+  reconcile (for instance "full, on the batch's final tree, before the push").
+- Not changed: the frozen sections and the five commit bodies; the local
+  commits are not rewritten.

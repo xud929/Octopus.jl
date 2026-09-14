@@ -1200,6 +1200,25 @@ that set's own printout, never carried over from the suite's; and a script
 that runs a larger set than the one its tolerances were frozen on names both
 sets in its header.
 
+## A "carries every option" fixture must leave no option at its default, and say so
+
+The `_with_longitudinal_mode` testset (2026-09-14) rebuilt an analysis and
+compared every field with the original; its fixture set four of the thirteen
+carried options, so for the other nine a rebuild that reset the option to its
+default would have compared equal, exactly the regression the testset was
+written to catch, and the record said "every option away from its default"
+of a fixture that was not. A review found it; the fixture now sets all
+thirteen and the loop asserts each differs from the default before asserting
+it is carried. The same review found four line anchors in the batch's
+sections read on the wrong tree or two lines off, and one commit body that
+claimed more than its test pinned.
+
+Rules adopted (2026-09-14): a fixture that proves "every field is carried"
+asserts every field away from its default inside the same loop; a record's
+line numbers are read on the tree the record declares, by `git show
+<sha>:<path>`, not from the editor; and the strength a commit message claims
+for a pin is the strength the assertion has (`== declaring`, not `>= 1`).
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

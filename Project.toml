@@ -56,6 +56,7 @@ ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
 MPICH_jll = "7cb0a576-ebde-5e09-9194-50597f1243b4"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
@@ -63,5 +64,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 # launches; loading a jll does not activate OctopusMPIExt, so the parent
 # suite stays a serial-passthrough process and its passthrough pins mean what
 # they say. MPI itself is a test dep so the CHILD processes can resolve it.
+# Printf: the dry-run testset includes validation/twiss_dispersion_identities.jl
+# in-process, and Pkg.test runs the suite without @stdlib in the load path.
 [targets]
-test = ["Test", "ForwardDiff", "Symbolics", "Logging", "MPI", "MPICH_jll"]
+test = ["Test", "ForwardDiff", "Symbolics", "Logging", "MPI", "MPICH_jll", "Printf"]

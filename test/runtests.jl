@@ -1335,7 +1335,10 @@ end
     # reason), failed_example, declaring_without_result, without_example.
     r8 = Octopus._identity_contract_probe(c, fx, _st6_fail_every_kind)
     @test !r8.passed && r8.status === :failed
-    @test r8.metrics[:kinds_failed_example] >= 1 && r8.metrics[:kinds_declaring] == m[:kinds_declaring]
+    # every declaring kind lands in the failed_example bucket (the review of 2026-09-14: `>= 1` would also pass a
+    # replacement that reached one kind only, the other kinds analyzed honestly)
+    @test r8.metrics[:kinds_failed_example] == r8.metrics[:kinds_declaring] && r8.metrics[:kinds_declaring] == m[:kinds_declaring]
+    @test r8.metrics[:kinds_analyzed] == 0 && r8.metrics[:kinds_refused] == 0
     @test r8.metrics[:kinds_analyzed] + r8.metrics[:kinds_refused] + r8.metrics[:kinds_failed_example] +
           r8.metrics[:kinds_declaring_without_result] + r8.metrics[:kinds_without_example] == r8.metrics[:kinds_declaring]
     @test r8.metrics[:kinds_declaring_without_result] == 0 && r8.metrics[:kinds_without_example] == 0
@@ -4945,6 +4948,16 @@ end
     r_ok = Octopus._route_from_graph(:fixed_point, f.M, f.D, tau; rho_M1=cl.rho_M1, converged=true)
     @test r_ok.status === :none && r_ok.converged && Octopus.is_determined(r_ok.zeta) && Octopus.is_determined(r_ok.eta)
     @test abs(_st4_val(r_ok.h) - f.h) <= 1024 * eps() * kappa
+    # the same flag on a graph whose norm makes the floor vacuous (1e8 D: floor ~1.4e2 against the residual's bound
+    # of 3): the floor alone accepts the garbage (converged = true is :none), the flag refuses it. This is the direct
+    # kernel call in the regime M1 fixed; the census runs of (ii) reach it only through `analyze` (review 2026-09-14).
+    Dbig = 1e8 .* f.D
+    floor_big = Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * max(1, norm(f.M)) * max(1, norm(Dbig))^2
+    @test floor_big > 3
+    rb = Octopus._route_from_graph(:fixed_point, f.M, Dbig, tau; rho_M1=cl.rho_M1, converged=false)
+    @test rb.status === :not_invariant && !rb.converged && !Octopus.is_determined(rb.h) && rb.h.reason === :not_invariant
+    @test _st4_val(rb.invariance_residual).normalized <= floor_big
+    @test Octopus._route_from_graph(:fixed_point, f.M, Dbig, tau; rho_M1=cl.rho_M1, converged=true).status === :none
     # (ii) the census form (result/twiss_impl_2026_09_11/stage6/probes/route_census_int.out, 2026-09-13): on the
     # contract's 200-map family (seed 20260911, the fixture builder's stream; the 4x4 count does not move the 6x6
     # draws) the fixed point stopped short on map 89 (both scalings), map 157 (both) and map 165 (scaling = :none):
@@ -5929,18 +5942,65 @@ end
     # longitudinal_mode is replaced, every other field is carried by derivation over the fields (a hand-typed keyword
     # list would reset a future option to its default on every certified re-run), and the constructor's rules still
     # judge the index (0 is refused: an explicit index must be positive)
-    a = TwissDispersionAnalysis(strict=false, newton_max_iterations=7, emittances=(1e-9, 2e-9, 3e-9), scaling=:none)
+    # every option away from its default, and asserted so: a fixture at a default cannot tell a carried field from
+    # one reset to its default (the review of 2026-09-14; the first fixture set four of the thirteen)
+    a = TwissDispersionAnalysis(scaling=:none, symplectic_rtol=1e-9, nonsymplectic=:flag, closed_orbit=:warn,
+                                closed_orbit_atol=1e-7, map_uncertainty=1e-10, resolution_chord=Inf,
+                                clusters=[[1, 2], [3, 4], [5, 6]], preferred_form=2, dispersion_routes=(:eigenplane,),
+                                newton_max_iterations=7, emittances=(1e-9, 2e-9, 3e-9), strict=false)
+    default = TwissDispersionAnalysis()
     b = Octopus._with_longitudinal_mode(a, 3)
     @test b isa TwissDispersionAnalysis && b.longitudinal_mode == 3
     for f in fieldnames(TwissDispersionAnalysis)
         f === :longitudinal_mode && continue
         @testset let f = f
+            @test !isequal(getfield(a, f), getfield(default, f))
             @test getfield(a, f) == getfield(b, f)
         end
     end
     @test_throws ArgumentError Octopus._with_longitudinal_mode(a, 0)
     # the suite's local name is the same rebuild (n4 reads the local name)
     @test all(getfield(_st6_with_longitudinal(a, 3), f) == getfield(b, f) for f in fieldnames(TwissDispersionAnalysis))
+end
+
+@testset "validation/twiss_dispersion_identities.jl: the reporting code on a fake result (dry run)" begin
+    # the check behind the TW-NORMALIZER record (carried item 5) as a suite testset rather than a scratch driver under
+    # result/ (review 2026-09-14): with Main.IDENT_DRY_RUN defined the script defines its constants and functions and
+    # skips the contract run; a fake result with two identity slugs and the two normalizer keys prints two
+    # TW-NORMALIZER lines between the TW-IDENT rows and TW-DIAG and writes 2 + 2 TSV rows; the same fake without the
+    # keys prints NaN and does not throw; TW-DIGEST is the same in both (the normalizer metrics are not digest
+    # inputs). The script is included into a module of its own (it defines constants and functions); it loads Printf,
+    # a test dependency since this testset (Pkg.test runs without @stdlib in the load path).
+    isdefined(Main, :IDENT_DRY_RUN) || Core.eval(Main, :(const IDENT_DRY_RUN = true))
+    dry = Module(:IdentDryRun)
+    Core.eval(dry, :(using Octopus))
+    Base.include(dry, joinpath(pkgdir(Octopus), "validation", "twiss_dispersion_identities.jl"))
+    slugs = [:b_row, :a_row]
+    mult = Dict(:a_row => 8.0, :b_row => 16.0, :r_u6_reconstruction => 64.0, :r_u6_symplecticity => 32.0)
+    m = Dict{Symbol,Any}(:max_a_row => 0.1, :maxval_a_row => 1e-12, :argmax_a_row => "map 1",
+                         :max_b_row => 0.2, :maxval_b_row => 2e-12, :argmax_b_row => "map 2",
+                         :normalizer_ratio_u6_reconstruction => 3.5, :normalizer_ratio_u6_symplecticity => 1.25)
+    fake = (metrics=m, status=:passed, message="ok", residual=0.0)
+    io = IOBuffer(); d1 = dry.report_identities(fake, io; multipliers=mult, slugs=slugs)
+    lines = split(String(take!(io)), "\n")
+    @test count(l -> startswith(l, "TW-NORMALIZER"), lines) == 2
+    @test lines[1] == "TW-IDENT " * rpad("a_row", 40) * " max=1.000000e-12 ratio=1.000000e-01 c=8 argmax=map 1"
+    @test lines[3] == "TW-NORMALIZER u6_reconstruction ratio=3.500000e+00 c=64"
+    @test lines[4] == "TW-NORMALIZER u6_symplecticity  ratio=1.250000e+00 c=32"
+    @test startswith(lines[5], "TW-DIAG") && startswith(lines[6], "TW-KINDS") && startswith(lines[7], "TW-DIGEST")
+    path = joinpath(mktempdir(), "dry.tsv")
+    @test dry.write_identities_tsv(fake, path; multipliers=mult, slugs=slugs) == 4
+    rows = readlines(path)
+    @test length(rows) == 5 && startswith(rows[2], "a_row\t") && startswith(rows[3], "b_row\t")
+    @test rows[4] == "normalizer_u6_reconstruction\t3.50000000e+00\tNaN\t64\tanalysis normalizer"
+    @test rows[5] == "normalizer_u6_symplecticity\t1.25000000e+00\tNaN\t32\tanalysis normalizer"
+    delete!(m, :normalizer_ratio_u6_reconstruction); delete!(m, :normalizer_ratio_u6_symplecticity)
+    io2 = IOBuffer(); d2 = dry.report_identities(fake, io2; multipliers=mult, slugs=slugs); s2 = String(take!(io2))
+    @test occursin("TW-NORMALIZER u6_reconstruction ratio=NaN c=64\n", s2) && occursin("TW-NORMALIZER u6_symplecticity  ratio=NaN c=32\n", s2)
+    @test d1 == d2 && d1 == dry.identity_digest(fake, [:a_row, :b_row])
+    path2 = joinpath(mktempdir(), "dry2.tsv")
+    @test dry.write_identities_tsv(fake, path2; multipliers=mult, slugs=slugs) == 4
+    @test startswith(readlines(path2)[4], "normalizer_u6_reconstruction\tNaN\tNaN\t64\t")
 end
 
 @testset "Dense 6D map: the default path is :degraded by the uncertified heuristic, certified it :passed (F3, F4, dossier row 1)" begin
