@@ -10902,3 +10902,144 @@ It is the LAST commit before the push: the push carries the stage 7 commit
 b89fcab, its gate record c1b7453, the fix 1268b54 and this record, on top
 of origin/main ce43179 (four commits), and the CI run on the new HEAD is the
 check of the fix.
+
+## 2026-09-14: the stage 7 carried list, corrected before the batch (item 10)
+
+The owner said "Go" on the orchestrator's recommendations for the stage 7
+carried list (the section "Carried forward to stage 8" of the stage 7 record
+above, history 10499-10597; the write-up is
+result/twiss_impl_2026_09_11/CARRIED_ITEMS_RECOMMENDATIONS_2026_09_13.md,
+git-ignored, cited here and not restated). The work lands as a batch of
+commits on main, in this order, each with its own section below: this
+`docs(design)` commit (item 10, markdown only); `fix(analysis)` M1 (item 1);
+`test(contracts)` the identity contract's tripwires (items 3 and 9);
+`refactor(analysis)` the `_with_longitudinal_mode` helper (item 11b);
+`feat(validation)` the normalizer print lines (item 5). Every line number in
+this section is HEAD 180ce70 (the tree the batch starts from), per the stage
+7 list's process item 13 (name the tree a number belongs to). Three facts of
+the carried list and of the write-up are corrected here before any code
+moves, and the anchors the later sections cite are read once on this tree.
+
+**The route acceptance floor is 256 eps kappa_route, never 64.**
+`src/analysis/dispersion_routes.jl:116` reads
+`const _ROUTE_INVARIANCE_MULTIPLIER = 256.0`; `_route_from_graph` uses it at
+670-671 (`kappa_route = max(1.0, norm(M)) * max(1.0, norm(Df))^2`,
+`inv_floor = _ROUTE_INVARIANCE_MULTIPLIER * eps(Float64) * kappa_route`), and
+the analysis's diagnostics triple "primary route invariance (I1)" at
+`src/analysis/twiss_dispersion_analysis.jl:1326` carries the same constant
+with `opnorm(D)` in place of the Frobenius norm. The stage 4a window table
+(history 4740, the c_inv row of the window table) has the constant at 256 with the EMPTY window `[1519, 64.2]`.
+The "64-eps floor" is the stage 6 record's wording in two places: the
+observation on the D12 weak-cavity verdict (history 9798, "against the
+analysis's 64-eps floor") and its carried item 6 (9929, "against the 64-eps
+floor"); the stage 7 list's item 6 (10532-10535) repeats the item without the
+number, and its item 1 (10507-10514) says only that the floor grows with
+`||D||^2`, which is true. The 64s of the analysis are the two `c * rho_M1`
+acceptances `_FRAME_ACCEPTANCE_MULTIPLIER` (twiss_dispersion_analysis.jl:66)
+and `_NORMALIZER_ACCEPTANCE_MULTIPLIER` (:80), neither a route floor; the D12
+residuals the sentence quotes (1.96e-13 native, 9.98e-14 haswell) and the
+verdicts (`:failed` / `:degraded`) are the stage 6 record's and are not
+re-measured here.
+
+**"theory T7" is the stage 6 review's finding 7.** The stage 7 list's item 7
+(10538) and the stage 6 list's item 7 (9939) write "a PRESET
+`longitudinal_mode` treated as uncertified (theory T7)". T7 is the theory
+REVIEWER's seventh finding in the stage 6 review table (history 9779, row 7
+under "### Review findings and fixes" at 9769): `_identity_contract_certified`
+(`src/contracts/twiss_dispersion_identity.jl` 575-587; line 580 returns index
+0 whenever `analysis.longitudinal_mode` is not a Symbol) treats a fixture
+whose analysis presets the mode as uncertified, which blocks an optional
+negative-h identity fixture; resolution RECORDED (carried), D14 covering the
+design's (O2)-(O5) row as a diagnostic. It is not an item of the theory note:
+the theory note's "(T7)" is the Edwards-Teng discriminant identity (the stage
+2 record, history 1430 and 1620, "(T7), map route"). The write-up's item 7b
+names the fix (return the preset's resolved index) and leaves "a preset
+counts as certified" to the owner; nothing in this batch touches it.
+
+**The design rows the record cites as 461 / 465 / 459, and the "443".** The
+verification table of `docs/design/twiss_dispersion_analysis.md` moved when
+the STATUS paragraph grew (stage 5 and stage 6 added sentences to it; the
+body is frozen and did not change). On HEAD 180ce70: the record's "design
+461" (the h = 0 row `zeta = e_x, eta = e_px (h = 0); isotropic graph diag(1,
+-1)`; cited at history 9618, 9632, 9773) stands at line 464; the record's
+"design 465" (the `(O2)-(O5)` row whose second half is "h < 0 makes the
+factor unavailable"; 9629, 9774) at 468; the record's "design 459" (the
+false-graph row `[diag(1, -0.5); 0]`; 9633) at 462. The stage 7 list's
+"isotropic-graph / false-graph rows" are these 464 and 462, both kernel-level
+fixtures not reachable through `analyze` (history 9631-9634). "443" is not a
+citation of any history section (a grep for `443` over this file finds only
+table numbers); it is the suite's comment `design 443: every tripwire red
+once` at `test/runtests.jl:1219`, whose sentence ("every tripwire is shown
+red on an injected defect") stands at design 446-447. This commit's STATUS
+sentence adds nine lines above the table, so on the batch's trees the rows
+stand at 471, 473, 477 and 455-456; the record keeps citing them by the HEAD
+180ce70 numbers above.
+
+**HEAD 180ce70 anchors of the write-up's items 1, 3, 5, 9, 10 and 11b, each
+read on this tree before the batch** (the sections below cite them by these
+numbers; a number that a commit of the batch moves is re-stated in the
+section of that commit):
+
+| item | anchor at 180ce70 | what the line says |
+|---|---|---|
+| 1 (M1) | dispersion_routes.jl:116 | `const _ROUTE_INVARIANCE_MULTIPLIER = 256.0` |
+| 1 | dispersion_routes.jl:655-665 | the `_route_from_graph` docstring; 657-658: "an iteration that stopped with `converged = false` is judged by the same floor: its graph is `:none` when the residual is nevertheless within it" |
+| 1 | dispersion_routes.jl:670-671 | `kappa_route`, `inv_floor` |
+| 1 | dispersion_routes.jl:682 | the branch test `check_branch && converged && ...`: the only use of `converged` in the acceptance |
+| 1 | dispersion_routes.jl:691 | `if res.invariance.normalized > inv_floor`, the one condition the fix changes |
+| 1 | dispersion_routes.jl:698-699 | the `:none` return with `_graph_to_dispersion(Df)` |
+| 1 | dispersion_routes.jl:158-176 (162-163) | the `_MAX_HALVINGS` docstring: a stall ends the iteration "(`converged = false`, `:not_invariant` with the graph reported)" |
+| 1 | dispersion_routes.jl:870-887 (885-886) | the `_newton_route` docstring: "an unconverged result is `:not_invariant` with its graph reported"; 938-939 the call into `_route_from_graph` with `converged=converged, check_branch=true` |
+| 1 | dispersion_routes.jl:943-950 | the `_fixed_point_route` docstring ("the same stopping rule") |
+| 1 | dispersion_routes.jl:483-499 | `_route_agreement`: pairs every two routes whose `zeta`, `eta`, `h` are all unique |
+| 1 | symplectic_linear_algebra.jl:407-416 (415) | `_graph_invariance_residual`; `normalized = raw / max(1, ||Mrr D||, ||Mrl||, ||D (Mlr D + Mll)||)` |
+| 1 | twiss_dispersion_analysis.jl:460 | `_ROUTE_DIAGNOSTIC_T` (route, status, normalized_residual, raw_residual, coefficient_condition, iterations, detail; no `converged`) |
+| 1 | twiss_dispersion_analysis.jl:1315-1327 (1326) | the diagnostics rows and the primary-route triple; 1326 `max(1.0, opnorm(D))^2` |
+| 1 | twiss_dispersion_analysis.jl:1366-1380 | `_analysis_verdict`: the primary route's status only |
+| 1, 6, 8 | twiss_dispersion_identity.jl:693, 719, 831, 895 | `kappa_route` with `opnorm(graph)^2`; `r_primary_route_invariance_i1`; `k_route_agreement` with `norm(graph)^2 * max(1, cc)`; `c_d14_graph_invariance` with `nD^2` |
+| 1 | test/runtests.jl:4341, 4403, 4522, 4808-4810 | `@test r.converged` on a `:none` route; fixed point `:none` for h in (1, 2); the weak cavity's Newton and fixed point `:none`; `fp1` capped at one iteration, `!fp1.converged`, no status pin |
+| 3 | test/runtests.jl:1137-1151 | the `_ST6_PIN` comment and constant; the 0.25 re-open rule is not in it (history 10169-10173, 10802-10803, 10891-10892 only) |
+| 5 | twiss_dispersion_identity.jl:709, 713 | `metrics[:normalizer_ratio_u6_reconstruction] = max(..., value / rho)`; `[:normalizer_ratio_u6_symplecticity] = max(..., value / (rho * cU6))` |
+| 5 | twiss_dispersion_identity.jl:201-202; 90-91 | the struct defaults `dense_maps = 20`, `dense_maps_4d = 5`; the multipliers `r_u6_reconstruction => 64`, `r_u6_symplecticity => 32` |
+| 5 | test/runtests.jl:1217-1218 | `0 < m[:normalizer_ratio_u6_reconstruction] < c.multipliers[:r_u6_reconstruction]` and the symplecticity twin |
+| 5 | validation/twiss_dispersion_identities.jl:131-158, 204 | `report_identities` prints TW-IDENT, TW-DIAG, TW-KINDS, TW-DIGEST and nothing of the two metrics; 204 the gate `result.status === :passed || error(result.message)` |
+| 5 | validation/README.md:1087-1088 | "frozen on the contract's default 20 + 5 maps" |
+| 9 | twiss_dispersion_identity.jl:1017, 1069 | the kind sweep's docstring and the `metrics[:kinds_failed_example] += 1` branch |
+| 9 | test/runtests.jl:1197-1200, 1204 | the contiguity pin `Set(dnums) == Set(1:maximum(dnums))` with no pin on `maximum(dnums)`; `kinds_failed_example == 0` |
+| 10 | .github/workflows/ci.yml:34 | `version: '1.12'` (floating since 2026-08-14; the file's own comment at 15-33) |
+| 11b | twiss_dispersion_identity.jl:583-584; test/runtests.jl:1118-1122 | the two `fieldnames(TwissDispersionAnalysis)` rebuilds with `longitudinal_mode` replaced |
+
+**CI run 438.** CI run 438 on 180ce70 green (34 min 40 s, 2026-09-13 22:44
+EDT), the first run of the stage 7 refactor and the check of the second CI
+fix: the runner keeps every identity row under the one-half pin; closes the
+run-436 and run-437 reds. The same sentence goes into todo row 20 with this
+commit (the run-435 convention: a CI result rides the next work commit). The
+runner's printed 57-row table is still unread (step logs 403 from the gate
+host); the re-open rule stands as written in the run-436 section.
+
+**docs/todo.md:64.** The CI-segfault ledger row opened with "CI is pinned to
+1.12.4 as mitigation" (2026-08-12) and later in the same row recorded the
+2026-08-14 re-float; `.github/workflows/ci.yml:34` floats `'1.12'`, which
+resolved to 1.12.6 through August and to 1.12.7 on runs 434-438. This commit
+rewrites the opening sentence to the truth (pinned 2026-08-12 to 2026-08-14)
+and tallies the three 2026-09-13 runs: 436 (red at 9 min on the stage 6
+one-tenth pins, the run-436 section above), 437 (red at 32 min 16 s on the
+`Physics contracts` copy, the run-437 section) and 438 (green), none a
+signal 11.
+
+**What this commit changes.** `docs/theory/twiss_dispersion.md` 5-6: "(landed
+in stages during 2026-09-11 and 2026-09-12; ...)" becomes "(landed in stages
+2026-09-11 to 2026-09-13; ...)" (stages 5, 6 and 7 landed 2026-09-13:
+ea8b52e 01:30, d4e67da 12:37, b89fcab 17:21 EDT).
+`docs/design/twiss_dispersion_analysis.md` STATUS paragraph: one sentence
+added (the batch, this section's title, the stale body facts: the Discovery
+paragraph's "five kinds" beside the paragraph's eight, the stage 5 record's
+finding M3 at history 9151; "Octopus has none of this yet"; the two
+kernel-level verification rows); no body line. `docs/todo.md` rows 20 and 64
+as above. This section. No `src/`, `test/` or `validation/` line: the matrix
+row is "markdown only"; the fast lane was not run on this commit's tree alone: AGENTS.md owes the lane before the PUSH, not before every commit (owner decision 2026-09-04), so the check of this markdown-only commit is the batch's two-arm full gate on the final tree of the push, recorded in its own section below.
+
+**Not verified.** The D12 weak-cavity residuals and verdicts (quoted from the
+stage 6 record); the runner's 57-row table (unread); no julia ran for this
+section: every number above is a line read on 180ce70 or a record cited by
+its history line.

@@ -15,7 +15,16 @@ example `examples/twiss_dispersion_dba_ring.jl`; the analysis is declared on
 the 22 linear-map kinds plus `:line` under the Discovery rule below, with the
 two set tripwires, and `PlaceholderAnalysis` remains the declaration of the
 eight kinds without an analysis. Staging item 8 (the external benchmarks) is
-open. The amendments the implementation
+open. The stage 7 carried items (the history's stage 7 section, "Carried
+forward to stage 8") are being worked in a batch of commits recorded in the
+campaign history from its section "2026-09-14: the stage 7 carried list,
+corrected before the batch (item 10)" onward, which also names the body
+facts this note leaves stale because the body is frozen (the Discovery
+paragraph's "five kinds declaring only the non-symplectic method" beside
+this paragraph's eight kinds without an analysis, the stage 5 record's
+finding M3; "Octopus has none of this yet"; the false-graph and
+isotropic-graph verification rows, which are kernel-level and not reachable
+through `analyze`). The amendments the implementation
 forced on this note's tables are recorded in
 [the campaign history](../history/twiss_dispersion_analysis_history.md), not
 edited into the body. This note records which architecture was chosen and why.

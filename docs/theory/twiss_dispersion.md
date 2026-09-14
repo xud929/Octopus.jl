@@ -2,8 +2,8 @@
 
 Status: theory for the first concrete Octopus analysis. No optics analysis
 API is defined by this document; the analysis layer implements it as the
-Twiss and dispersion analysis of `src/analysis/` (landed in stages during
-2026-09-11 and 2026-09-12; the placeholder remains the declaration of element
+Twiss and dispersion analysis of `src/analysis/` (landed in stages
+2026-09-11 to 2026-09-13; the placeholder remains the declaration of element
 kinds that have no analysis). This note derives the mathematics and the
 requirements the implementation must satisfy. The architecture decided on
 2026-09-11 is recorded in [the design note](../design/twiss_dispersion_analysis.md);
